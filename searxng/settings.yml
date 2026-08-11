@@ -1,0 +1,18 @@
+use_default_settings: true
+
+server:
+  # Placeholder only. setup.sh copies this to settings.local.yml (gitignored)
+  # and writes a real secret there. Compose mounts settings.local.yml.
+  secret_key: "ultrasecretkey"
+  limiter: false
+
+search:
+  formats:
+    - html
+    - json
+
+# When running with: docker compose --profile searxng-prod up -d
+# server:
+#   limiter: true
+# redis:
+#   url: redis://valkey:6379/0
