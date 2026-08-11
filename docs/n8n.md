@@ -35,7 +35,6 @@ Encrypted credential JSON under `n8n/demo-data/credentials/` is **gitignored** a
 |---|---|---|
 | LightRAG API | Header Auth (`X-API-Key`) | `LIGHTRAG_API_KEY` |
 | Neo4j | Basic Auth | `NEO4J_USERNAME` / `NEO4J_PASSWORD` |
-| Proton Mail (Bridge) | IMAP | `compose/protonmail-bridge/credentials.env` (after `./scripts/proton-bridge-init.sh`) |
 
 If you change `LIGHTRAG_API_KEY`, `NEO4J_PASSWORD`, or `N8N_ENCRYPTION_KEY` after first boot, regenerate and re-import:
 

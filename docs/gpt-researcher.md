@@ -4,7 +4,7 @@
 
 Autonomous multi-step web research that writes structured reports, backed by SearXNG and your local model server.
 
-[GPT Researcher](https://github.com/assafelovic/gpt-researcher) performs autonomous multi-step web research and writes structured reports. It uses your existing **SearXNG** instance for retrieval and **LM Studio** (via `host.docker.internal`) for LLM calls — the same model server as LightRAG, OpenCode, and Hermes.
+[GPT Researcher](https://github.com/assafelovic/gpt-researcher) performs autonomous multi-step web research and writes structured reports. It uses your existing **SearXNG** instance for retrieval and your **model server** (via `OPENAI_BASE_URL` / `host.docker.internal`) for LLM calls — the same server as LightRAG, OpenCode, and Hermes.
 
 Two containers share the stack:
 
@@ -18,13 +18,13 @@ Quick search (`mcp-searxng` / SearXNG JSON) and deep research (`gptr-mcp` / GPT 
 ## Configuration
 
 1. Copy the GPT Researcher block from `.env.example` into `.env` (or rely on defaults wired in `docker-compose.yml`).
-2. Ensure `LLM_MODEL` and `EMBEDDING_MODEL` match what LM Studio is serving — GPT Researcher reads them via the `x-gptr` compose anchor.
+2. Ensure `LLM_MODEL` and `EMBEDDING_MODEL` match what your model server is serving — GPT Researcher reads them via the `x-gptr` compose anchor.
 3. GPT Researcher uses `SEARX_URL` (not `SEARXNG_URL`) — already set to `http://searxng:8080/` in compose.
 4. Start the stack: `docker compose up -d` (first run builds `gptr-mcp`).
 
 ## Resource sharing
 
-LightRAG, OpenCode, Hermes (when enabled), and GPT Researcher all call LM Studio at `host.docker.internal:1234`. Deep research issues many parallel LLM requests — defaults in `.env.example` (`GPTR_MAX_SCRAPER_WORKERS=2`, `GPTR_DEEP_RESEARCH_CONCURRENCY=1`, etc.) keep load manageable on a 16 GB M1. Avoid running deep research while LightRAG is indexing or Hermes has active subagents.
+LightRAG, OpenCode, Hermes, and GPT Researcher typically share one host model endpoint (`OPENAI_BASE_URL`, often `http://host.docker.internal:1234/v1`). Deep research issues many parallel LLM requests — defaults in `.env.example` (`GPTR_MAX_SCRAPER_WORKERS=2`, `GPTR_DEEP_RESEARCH_CONCURRENCY=1`, etc.) keep load manageable on a 16 GB machine. Avoid running deep research while LightRAG is indexing or Hermes has active subagents.
 
 ## n8n usage
 
@@ -64,7 +64,7 @@ curl -sf http://localhost:8000/ >/dev/null && echo "gptr REST ok"
 # MCP sidecar health (internal)
 docker compose exec gptr-mcp wget -qO- http://127.0.0.1:8000/health
 
-# End-to-end research (slow; needs LM Studio up)
+# End-to-end research (slow; needs the model server up)
 curl -X POST http://localhost:8000/report/ \
   -H "Content-Type: application/json" \
   -d '{"task":"What is SearXNG?","report_type":"research_report","report_source":"web","generate_in_background":false}'

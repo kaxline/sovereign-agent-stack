@@ -1,6 +1,7 @@
-# LightRAG image with LM Studio compatibility patch.
+# LightRAG image with OpenAI-compatible response_format patch.
 # Upstream LightRAG keyword/entity extraction sends response_format
-# {"type":"json_object"}; LM Studio only accepts "json_schema" or "text".
+# {"type":"json_object"}; some local servers (e.g. LM Studio) only accept
+# "json_schema" or "text".
 ARG LIGHTRAG_BASE_IMAGE=ghcr.io/hkuds/lightrag:v1.4.9.3
 FROM ${LIGHTRAG_BASE_IMAGE}
 
@@ -13,11 +14,12 @@ source = path.read_text()
 
 helper = '''
 def _normalize_openai_compat_response_format(kwargs: dict) -> None:
-    """Map OpenAI json_object mode to json_schema for LM Studio and similar servers.
+    """Map OpenAI json_object mode to json_schema for stricter local servers.
 
-    LM Studio rejects response_format.type=json_object (only json_schema|text).
-    LightRAG keyword/entity extraction still relies on JSON text in message.content,
-    so a permissive object schema preserves structured-output intent.
+    Some OpenAI-compatible servers reject response_format.type=json_object
+    (only json_schema|text). LightRAG keyword/entity extraction still relies on
+    JSON text in message.content, so a permissive object schema preserves
+    structured-output intent.
     """
     rf = kwargs.get("response_format")
     if not isinstance(rf, dict) or rf.get("type") != "json_object":

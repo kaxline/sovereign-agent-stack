@@ -35,7 +35,7 @@ docker compose run --rm --entrypoint /bin/sh n8n-import -c \
 
 OpenCode connects to `http://mcp-searxng:3000/mcp` (configured in `opencode/opencode.local.json`). Hermes is registered against the same sidecar on both its default and `api-server` profiles by [`compose/hermes/bootstrap-api-profile.sh`](../compose/hermes/bootstrap-api-profile.sh), filtered to `searxng_web_search` and `web_url_read`. MCP tools load when the agent invokes them during a session.
 
-`web_url_read` fetches a single known URL and returns it as markdown, which is the cheapest way to read a specific page — no search, no research agent. It does not execute JavaScript, and it blocks private/internal URLs. See [Reading a URL directly](crawl4ai.md) for when to reach for it versus the opt-in Crawl4AI browser.
+`web_url_read` fetches a single known URL and returns it as markdown, which is the cheapest way to read a specific page — no search, no research agent. It does not execute JavaScript, and it blocks private/internal URLs.
 
 ## Optional rate limiting
 
