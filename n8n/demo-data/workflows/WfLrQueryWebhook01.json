@@ -1,0 +1,95 @@
+{
+  "createdAt": "2026-06-05T00:00:00.000Z",
+  "updatedAt": "2026-06-05T00:00:00.000Z",
+  "id": "WfLrQueryWebhook01",
+  "name": "LightRAG Query (Webhook)",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lightrag-query",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0001-4000-8000-000000000001",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [260, 300],
+      "webhookId": "lightrag-query-webhook"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://lightrag:9621/query",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"query\": \"{{ $json.body.question || $json.body.query }}\",\n  \"mode\": \"{{ $json.body.mode || 'mix' }}\",\n  \"include_references\": true\n}",
+        "options": {
+          "timeout": 600000
+        }
+      },
+      "id": "a1b2c3d4-0001-4000-8000-000000000002",
+      "name": "LightRAG Query",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [520, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "LrH7tR4gApiKey01",
+          "name": "LightRAG API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0001-4000-8000-000000000003",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [780, 300]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "LightRAG Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LightRAG Query": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "pinData": {},
+  "versionId": "00000000-0000-4000-8000-000000000001",
+  "triggerCount": 0,
+  "tags": []
+}

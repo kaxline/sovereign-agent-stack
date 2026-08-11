@@ -1,0 +1,63 @@
+{
+  "createdAt": "2026-06-05T00:00:00.000Z",
+  "updatedAt": "2026-06-05T00:00:00.000Z",
+  "id": "WfLrScanInputs01",
+  "name": "LightRAG Scan Inputs",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "b1b2c3d4-0001-4000-8000-000000000001",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [260, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://lightrag:9621/documents/scan",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 600000
+        }
+      },
+      "id": "b1b2c3d4-0001-4000-8000-000000000002",
+      "name": "Scan Inputs Directory",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [520, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "LrH7tR4gApiKey01",
+          "name": "LightRAG API"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Scan Inputs Directory",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "pinData": {},
+  "versionId": "00000000-0000-4000-8000-000000000002",
+  "triggerCount": 0,
+  "tags": []
+}

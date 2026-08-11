@@ -1,0 +1,92 @@
+{
+  "createdAt": "2026-06-14T00:00:00.000Z",
+  "updatedAt": "2026-06-14T00:00:00.000Z",
+  "id": "WfGptrResearch01",
+  "name": "Deep Research (Webhook)",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "deep-research",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "e1f2a3b4-0001-4000-8000-000000000001",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [260, 300],
+      "webhookId": "deep-research-webhook"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.GPTR_URL }}/report/",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"task\": {{ JSON.stringify($json.body.query) }},\n  \"report_type\": \"research_report\",\n  \"report_source\": \"web\",\n  \"tone\": \"Objective\",\n  \"generate_in_background\": false\n}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 600000
+        }
+      },
+      "id": "e1f2a3b4-0001-4000-8000-000000000002",
+      "name": "GPT Researcher",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [520, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { report: $json.report, research_id: $json.research_id, costs: $json.costs } }}",
+        "options": {}
+      },
+      "id": "e1f2a3b4-0001-4000-8000-000000000003",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [780, 300]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "GPT Researcher",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GPT Researcher": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "pinData": {},
+  "versionId": "00000000-0000-4000-8000-000000000005",
+  "triggerCount": 0,
+  "tags": []
+}

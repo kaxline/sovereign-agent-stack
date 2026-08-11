@@ -1,0 +1,110 @@
+{
+  "createdAt": "2026-06-05T00:00:00.000Z",
+  "updatedAt": "2026-06-05T00:00:00.000Z",
+  "id": "WfNeo4jExplore01",
+  "name": "Neo4j Explore Graph",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "c1b2c3d4-0001-4000-8000-000000000001",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [260, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://neo4j:7474/db/neo4j/tx/commit",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"statements\": [\n    {\n      \"statement\": \"MATCH (n) RETURN labels(n) AS label, count(*) AS cnt ORDER BY cnt DESC LIMIT 20\",\n      \"parameters\": {}\n    }\n  ]\n}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "c1b2c3d4-0001-4000-8000-000000000002",
+      "name": "Neo4j Label Summary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [520, 300],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "N34jBas1cAuth001",
+          "name": "Neo4j"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "rows",
+              "name": "rows",
+              "value": "={{ $json.results[0].data.map(item => ({ label: item.row[0], count: item.row[1] })) }}",
+              "type": "array"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c1b2c3d4-0001-4000-8000-000000000003",
+      "name": "Format Rows",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [780, 300]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Neo4j Label Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Neo4j Label Summary": {
+      "main": [
+        [
+          {
+            "node": "Format Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "pinData": {},
+  "versionId": "00000000-0000-4000-8000-000000000003",
+  "triggerCount": 0,
+  "tags": []
+}

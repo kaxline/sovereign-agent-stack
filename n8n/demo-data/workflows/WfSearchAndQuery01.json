@@ -1,0 +1,175 @@
+{
+  "createdAt": "2026-06-14T00:00:00.000Z",
+  "updatedAt": "2026-06-14T00:00:00.000Z",
+  "id": "WfSearchAndQuery01",
+  "name": "Search and Query LightRAG (Webhook)",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "search-and-query",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "e1f2a3b4-0001-4000-8000-000000000001",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [260, 300],
+      "webhookId": "search-and-query-webhook"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://searxng:8080/search",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "q",
+              "value": "={{ $json.body.query }}"
+            },
+            {
+              "name": "format",
+              "value": "json"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 60000
+        }
+      },
+      "id": "e1f2a3b4-0001-4000-8000-000000000002",
+      "name": "SearXNG Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [520, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "searchContext",
+              "name": "searchContext",
+              "value": "={{ ($json.results || []).slice(0, 5).map(r => `- ${r.title}: ${r.content} (${r.url})`).join('\\n') }}",
+              "type": "string"
+            },
+            {
+              "id": "question",
+              "name": "question",
+              "value": "={{ $('Webhook').item.json.body.question || $('Webhook').item.json.body.query }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "e1f2a3b4-0001-4000-8000-000000000003",
+      "name": "Format Search Context",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [780, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://lightrag:9621/query",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"query\": \"Web search results:\\n{{ $json.searchContext }}\\n\\nQuestion: {{ $json.question }}\",\n  \"mode\": \"{{ $('Webhook').item.json.body.mode || 'mix' }}\",\n  \"include_references\": true\n}",
+        "options": {
+          "timeout": 600000
+        }
+      },
+      "id": "e1f2a3b4-0001-4000-8000-000000000004",
+      "name": "LightRAG Query",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1040, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "LrH7tR4gApiKey01",
+          "name": "LightRAG API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "e1f2a3b4-0001-4000-8000-000000000005",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1300, 300]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "SearXNG Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SearXNG Search": {
+      "main": [
+        [
+          {
+            "node": "Format Search Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Search Context": {
+      "main": [
+        [
+          {
+            "node": "LightRAG Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LightRAG Query": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "pinData": {},
+  "versionId": "00000000-0000-4000-8000-000000000005",
+  "triggerCount": 0,
+  "tags": []
+}
