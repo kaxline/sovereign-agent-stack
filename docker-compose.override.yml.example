@@ -1,0 +1,26 @@
+# Machine-specific overrides. Copy to docker-compose.override.yml (gitignored);
+# Compose loads that file automatically alongside docker-compose.yml.
+#
+# OpenCode has full read/write access to everything under OPENCODE_WORKSPACE_HOST.
+# When that path is a parent folder holding many projects, mount a blank file over
+# each secret so the agent sees an empty file instead of live credentials. The
+# mount is read-only, so the agent cannot overwrite the real file either.
+#
+# Destination paths must be absolute and must match the host path exactly, since
+# the code is mounted at its own path inside the container.
+#
+# Find candidates under your mount with:
+#   find "$OPENCODE_WORKSPACE_HOST" -name '.env' -o -name '*.env' -o -name 'credentials*' \
+#     | grep -v node_modules | grep -v '\.env\.example'
+#
+# This list is a point-in-time snapshot: a new .env in a new project is exposed
+# until you add it here. Re-run the find above when you add repos.
+
+services:
+  opencode:
+    volumes:
+      - ./compose/opencode/blank:/Users/you/code/assistant/.env:ro
+      - ./compose/opencode/blank:/Users/you/code/assistant/compose/hermes/api-server.env:ro
+      - ./compose/opencode/blank:/Users/you/code/assistant/data/hermes/.env:ro
+      - ./compose/opencode/blank:/Users/you/code/assistant/data/hermes/profiles/api-server/.env:ro
+      - ./compose/opencode/blank:/Users/you/code/my-project/.env:ro
