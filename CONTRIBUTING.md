@@ -57,4 +57,4 @@ docker compose run --rm --entrypoint /bin/sh n8n-import -c \
 
 ## First public history
 
-If you are cutting the first GitHub release from a finished working tree, follow [docs/releasing.md](docs/releasing.md) so commits tell the engineering story instead of one squash.
+If you are cutting the first GitHub release from a finished working tree, follow [docs/releasing.md](docs/releasing.md) so the commits tell the engineering story instead of collapsing into one squash.

@@ -12,7 +12,7 @@ HERMES_HOME="${HERMES_HOME:-/opt/data}"
 PROFILE="${HERMES_API_PROFILE_NAME:-api-server}"
 MAX_TURNS="${HERMES_API_MAX_TURNS:-20}"
 API_PORT="${HERMES_API_SERVER_PORT:-8643}"
-# hermes-api-server is hermes-cli minus interactive-only tools; interactive
+# hermes-api-server is hermes-cli minus the interactive-only tools. Interactive
 # front-ends (WebUI) want the full hermes-cli set back.
 API_TOOLSET="${HERMES_API_TOOLSET:-hermes-api-server}"
 SOURCE_ENV="${BOOTSTRAP_API_ENV:-/bootstrap/api-server.env}"
@@ -74,17 +74,17 @@ config_path_for() {
 
 # Write a real YAML list at a dotted key path in a config.yaml.
 #
-# `hermes config set` takes a single scalar and stores it verbatim, so a
-# multi-element list cannot be written through the CLI at all: '["a","b"]' lands
-# as a YAML *string*. Consumers then misread it rather than reject it —
-# _normalize_name_filter() turns the whole literal into a one-element allowlist
-# that no tool name can ever match, so an include filter written that way
+# `hermes config set` takes a single scalar and stores it verbatim, which makes
+# multi-element lists unwritable through the CLI: '["a","b"]' lands as a YAML
+# *string*. Consumers then misread it instead of rejecting it. What happens is
+# that _normalize_name_filter() turns the whole literal into a one-element
+# allowlist no tool name can ever match, so an include filter written that way
 # registers zero tools and logs nothing.
 #
 # Every key routed through here must be a list, so any scalar found at one is
-# wrong by definition — whether it is a bare path or a stringified JSON array —
-# and gets replaced. A real list is either already correct or a deliberate
-# hand-edit, so those are left alone with a warning.
+# wrong by definition (bare path or stringified JSON array alike) and gets
+# replaced. A real list is either already correct or a considered hand-edit, so
+# those are left alone with a warning.
 set_yaml_list() {
   _cfg="$1"
   _dotted="$2"
@@ -130,9 +130,9 @@ elif current == [] or not isinstance(current, list):
     atomic_yaml_write(cfg_path, config)
     print(f"{'Setting' if current in (None, []) else 'Repairing'} {label}")
 elif all(item in current for item in desired):
-    # A longer list that still covers everything we need is a deliberate
-    # addition, not a problem. Exact membership, not substring: '/opt/skills'
-    # must not be considered satisfied by '/opt/skills-backup'.
+    # A longer list that still covers everything we need was added on purpose,
+    # so leave it. Match on exact membership rather than substring, or
+    # '/opt/skills-backup' would satisfy a requirement for '/opt/skills'.
     print(f"{label} already includes {', '.join(desired)}")
 else:
     print(f"WARNING: {label} is {current!r} - not overwriting")
@@ -185,15 +185,15 @@ register_mcp_server() {
 # tool allowlist, on a managed profile only.
 #
 # Profiles are created with `profile create --clone`, so they inherit whatever
-# MCP servers the default profile has — including hand-added ones. If the user
+# MCP servers the default profile has, hand-added ones included. If the user
 # registered the same server unfiltered under a different key (lightrag-mcp
 # alongside our filtered lightrag), the clone carries both, and the unfiltered
-# copy silently re-exposes every tool the allowlist exists to withhold. The
-# allowlist is only a boundary if it is the ONLY route to that server.
+# copy hands back every tool the allowlist exists to withhold. The allowlist
+# only bounds anything while it is the ONLY route to that server.
 #
-# Deliberately narrow: same URL, and no tools.include of its own. A duplicate
-# the user filtered themselves is a considered choice and is left alone; the
-# default profile is never touched, since that is the user's own config.
+# The match is narrow on purpose: same URL, and no tools.include of its own. A
+# duplicate the user filtered themselves reads as a considered choice and stays.
+# The default profile is never touched, since that is the user's own config.
 #
 # Usage: drop_unfiltered_mcp_duplicate <profile> <keep-key> <drop-key> <url>
 drop_unfiltered_mcp_duplicate() {
@@ -242,9 +242,9 @@ PY
 }
 
 # Web-reading MCP servers, registered on both the default and api-server
-# profiles. Both are read-only against the public web, so unlike LightRAG there
-# is no mutating tool to keep out of unattended sessions; the allowlists below
-# exist to keep the tool count down, not as a security boundary.
+# profiles. Both are read-only against the public web, so unlike LightRAG they
+# have no mutating tool to keep out of unattended sessions. The allowlists below
+# just keep the tool count down; they draw no security boundary.
 #
 register_web_mcp_servers() {
   _rwms_profile="$1"
@@ -334,11 +334,11 @@ upsert_env "$DEFAULT_ENV" "API_SERVER_ENABLED" "false"
 remove_env_key "$DEFAULT_ENV" "HERMES_MAX_ITERATIONS"
 
 # --- Apply profile config ---
-# hermes-api-server matches dashboard chat (hermes-cli) minus interactive-only tools
-# (clarify, send_message, text_to_speech) — avoids web-only forced search loops.
-# Interactive profiles pass HERMES_API_TOOLSET=hermes-cli to get those back:
-# clarify is what turns an ambiguous browser request into a question instead of
-# a guess, and there is a human present to answer it.
+# hermes-api-server matches dashboard chat (hermes-cli) minus the interactive-only
+# tools (clarify, send_message, text_to_speech), which avoids web-only forced
+# search loops. Interactive profiles pass HERMES_API_TOOLSET=hermes-cli to get
+# those back; clarify turns an ambiguous browser request into a question instead
+# of a guess, and there is a human present to answer it.
 log "Setting agent.max_turns=${MAX_TURNS} and ${API_TOOLSET} toolset for api_server platform"
 hermes -p "$PROFILE" config set "agent.max_turns" "$MAX_TURNS"
 set_yaml_list "$(config_path_for "$PROFILE")" "platform_toolsets.api_server" "$API_TOOLSET"
@@ -347,19 +347,19 @@ set_yaml_list "$(config_path_for "$PROFILE")" "platform_toolsets.api_server" "$A
 # Opt-in via LIGHTRAG_MCP_ENABLED (set when the `rag` compose profile is on).
 # Set individual keys so existing user-defined MCP servers are preserved.
 #
-# The include list is a security boundary, not a convenience: the server exposes
-# 17 tools, 12 of which mutate the knowledge graph (insert_*, edit_*, and
-# delete_by_doc_ids / delete_by_entities). Only the five read-oriented ones
-# belong in unattended API sessions.
+# Treat the include list as a security boundary rather than a convenience. The
+# server exposes 17 tools, 12 of which mutate the knowledge graph (insert_*,
+# edit_*, and delete_by_doc_ids / delete_by_entities). Only the five
+# read-oriented ones belong in unattended API sessions.
 case "$LIGHTRAG_MCP_ENABLED" in
   1|true|TRUE|yes|YES)
     register_mcp_server "$PROFILE" lightrag LightRAG \
       "$LIGHTRAG_MCP_URL" "$LIGHTRAG_MCP_TIMEOUT" "$LIGHTRAG_MCP_CONNECT_TIMEOUT" \
       query_document get_documents get_pipeline_status get_graph_labels check_lightrag_health
 
-    # The clone inherits the default profile's own unfiltered LightRAG entry, which
-    # would hand this profile all 17 tools through the back door and make the
-    # allowlist above decorative.
+    # The clone inherits the default profile's own unfiltered LightRAG entry,
+    # which would hand this profile all 17 tools through the back door and leave
+    # the allowlist above meaning nothing.
     drop_unfiltered_mcp_duplicate "$PROFILE" lightrag lightrag-mcp "$LIGHTRAG_MCP_URL"
     ;;
   *)

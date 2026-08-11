@@ -15,8 +15,8 @@ What does it feel like to read them? Lead with what is distinctive, not what is 
 
 ## Sentence rhythm
 
-Use the measured values from `corpus-stats.py`. Include the spread, not just the mean —
-the variance is the voice.
+Use the measured values from `corpus-stats.py`. Record the spread as well as the mean,
+since much of the voice lives in the variance.
 
 - Mean sentence length: <n> words (median <n>)
 - Range: p10 <n>, p90 <n>
@@ -61,7 +61,7 @@ Per 1000 words, from the stats output.
 
 ## Never does
 
-The highest-value section. List concrete, checkable prohibitions drawn from what is
+The section that earns its keep. List concrete, checkable prohibitions drawn from what is
 absent in the corpus. Each item should be something you can verify in a finished draft.
 
 - Never <...>

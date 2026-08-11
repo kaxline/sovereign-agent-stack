@@ -29,15 +29,15 @@ If you discover a security issue in this repository, please open a private advis
 
 - Expose n8n, SearXNG, GPT Researcher, or Hermes to the public internet without authentication and rate limiting.
 - Commit `.env`, `compose/hermes/api-server.env`, `compose/hermes/browser.env`, `n8n/demo-data/credentials/*.json`, `searxng/settings.local.yml`, `opencode/opencode.local.json`, `docker-compose.override.yml`, or anything under `data/`.
-- Reuse one `API_SERVER_KEY` across Hermes profiles. Keys are scoped per profile and a shared key fails closed, so `compose/hermes/api-server.env` and `compose/hermes/browser.env` need distinct values.
+- Reuse one `API_SERVER_KEY` across Hermes profiles. Keys are scoped per profile and a shared key fails closed, so give `compose/hermes/api-server.env` and `compose/hermes/browser.env` distinct values.
 - Point `OPENCODE_WORKSPACE_HOST` at `$HOME` or `/` — OpenCode has full read/write access to the mount.
 
 **Do:**
 
-- Shadow every secret under `OPENCODE_WORKSPACE_HOST` if you mount a parent folder of many projects. A parent mount exposes each project's `.env` to the agent; mounting `compose/opencode/blank` read-only over each one leaves it reading an empty file and unable to overwrite the real one. Keep those machine-specific mounts in `docker-compose.override.yml` (gitignored) — see [docs/opencode.md](docs/opencode.md).
+- Shadow every secret under `OPENCODE_WORKSPACE_HOST` if you mount a parent folder of many projects. A parent mount exposes each project's `.env` to the agent; mounting `compose/opencode/blank` read-only over each one leaves it reading an empty file and unable to overwrite the real one. Keep those machine-specific mounts in `docker-compose.override.yml` (gitignored). See [docs/opencode.md](docs/opencode.md).
 - Re-run setup or rotate secrets if you suspect leakage.
-- Set a strong `HERMES_DASHBOARD_PASSWORD`. As of agent 0.20.0 the dashboard will not bind a non-loopback interface without an auth provider — basic auth is required for the healthcheck to pass. Move to OAuth (`hermes dashboard register`) if Hermes is reachable beyond localhost.
-- Keep the Hermes LightRAG MCP allowlist as a security boundary for unattended API sessions (five read-oriented tools). The bootstrap drops unfiltered clone duplicates so the allowlist cannot be bypassed.
+- Set a strong `HERMES_DASHBOARD_PASSWORD`. As of agent 0.20.0 the dashboard will not bind a non-loopback interface without an auth provider, so basic auth has to be there for the healthcheck to pass. Move to OAuth (`hermes dashboard register`) if Hermes is reachable beyond localhost.
+- Keep the Hermes LightRAG MCP allowlist as a security boundary for unattended API sessions (five read-oriented tools). The bootstrap drops unfiltered clone duplicates so nothing routes around it.
 - Enable SearXNG rate limiting (`--profile searxng-prod`) if the instance is shared on a LAN.
 
 ## Dependency updates

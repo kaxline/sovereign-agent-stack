@@ -4,7 +4,7 @@
 
 Isolated AI coding agent with a browser UI and an OpenAPI server, backed by your local model server.
 
-[OpenCode](https://opencode.ai) runs as an isolated AI coding agent with a browser UI and an OpenAPI server on the same port. Enable with the **`coding`** profile (keep `core` for SearXNG MCP):
+[OpenCode](https://opencode.ai) runs as an isolated AI coding agent, serving a browser UI and an OpenAPI server on the same port. Enable it with the **`coding`** profile, and keep `core` around for SearXNG MCP:
 
 ```bash
 ./scripts/setup.sh --coding
@@ -40,7 +40,7 @@ OPENCODE_WORKSPACE_HOST=/Users/you/code
 OPENCODE_WORKSPACE_HOST=/Users/you/code/my-project
 ```
 
-Mirroring the path means every path the agent prints, stores in a session, or resolves as a git worktree is the same path you would type in your own terminal — no translation between `/workspace` and the host.
+Mirroring the path means every path the agent prints, stores in a session, or resolves as a git worktree is the same path you would type in your own terminal. Nothing has to be translated between `/workspace` and the host.
 
 After changing `.env`, recreate the container:
 
@@ -58,7 +58,7 @@ docker volume rm assistant_opencode_workspace 2>/dev/null || true
 
 ### Why the image is built locally
 
-The upstream OpenCode image ships without a `git` binary, and OpenCode shells out to `git rev-parse` to find a directory's worktree root. Without it, every directory resolves to the single built-in `global` project: no per-repo project list, no per-repo session history, and no useful VCS diffs. [compose/opencode/Dockerfile](../compose/opencode/Dockerfile) is a thin layer over the upstream image that adds `git` and `openssh-client`, and marks bind-mounted repos as safe directories so git does not reject them for dubious ownership.
+The upstream OpenCode image ships without a `git` binary, and OpenCode shells out to `git rev-parse` to find a directory's worktree root. Without it, every directory resolves to the single built-in `global` project, which costs you the per-repo project list, the per-repo session history, and any useful VCS diffs. [compose/opencode/Dockerfile](../compose/opencode/Dockerfile) is a thin layer over the upstream image that adds `git` and `openssh-client`, and marks bind-mounted repos as safe directories so git does not reject them for dubious ownership.
 
 Confirm project detection is working:
 
@@ -67,13 +67,13 @@ curl -s -u "$OPENCODE_SERVER_USERNAME:$OPENCODE_SERVER_PASSWORD" \
   "http://localhost:4096/project?directory=$OPENCODE_WORKSPACE_HOST/my-project"
 ```
 
-A project whose `worktree` is the repo path means git resolution succeeded. An `id` of `global` with a `worktree` of `/` means it did not.
+A project whose `worktree` is the repo path means git resolution succeeded. An `id` of `global` with a `worktree` of `/` means it failed.
 
 ### Hiding secrets from the agent
 
-OpenCode has full read/write access to everything under the mounted path. Pointing it at a parent folder is convenient but exposes every `.env` in every project below it — including this repo's, if it lives there.
+OpenCode has full read/write access to everything under the mounted path. Pointing it at a parent folder is convenient, but it also exposes every `.env` in every project below that folder, this repo's included if it lives there.
 
-Mount a blank read-only file over each secret to neutralize them. These paths are machine-specific, so they belong in `docker-compose.override.yml`, which Compose loads automatically and which is gitignored. Copy the template and edit the paths:
+Neutralize them by mounting a blank read-only file over each secret. The paths are machine-specific, so they belong in `docker-compose.override.yml`, which Compose loads automatically and which is gitignored. Copy the template and edit the paths:
 
 ```bash
 cp docker-compose.override.yml.example docker-compose.override.yml
@@ -89,13 +89,13 @@ services:
       - ./compose/opencode/blank:/Users/you/code/my-project/.env:ro
 ```
 
-The agent then reads an empty file, and because the mount is read-only it cannot overwrite the real one either. Find candidates under your mount with:
+The agent then reads an empty file, and since the mount is read-only it cannot overwrite the real one either. Find candidates under your mount with:
 
 ```bash
 find "$OPENCODE_WORKSPACE_HOST" -name '.env' -not -path '*/node_modules/*'
 ```
 
-Two caveats. The list is a point-in-time snapshot — a new `.env` in a new project stays exposed until you add it, so re-run that `find` when you add repos. And a shadowed `.env` is genuinely empty to the agent, so OpenCode cannot debug anything that depends on real values; `.env.example` stays readable, so it can still see the expected shape.
+Two caveats come with this. The list is a point-in-time snapshot: a new `.env` in a new project stays exposed until you add it, so re-run that `find` whenever you add repos. And a shadowed `.env` really is empty as far as the agent is concerned, which means OpenCode cannot debug anything that depends on real values. `.env.example` stays readable, so it can still see the expected shape.
 
 ## Web search and deep research (MCP)
 

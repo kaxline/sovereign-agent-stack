@@ -3,9 +3,9 @@
 Step-by-step guide to turning a folder of markdown files into a reusable writing voice, then
 drafting new text in it. The mechanism is the repo-shipped `write-in-voice` Hermes skill.
 
-Two phases: **calibrate** once to distil your samples into a style guide, then **write** as
-often as you like against that guide. Calibration is the expensive step, so it is done
-deliberately rather than re-derived on every draft.
+You **calibrate** once, distilling your samples into a style guide, then **write** against
+that guide as often as you like. Calibration is the expensive half, which is why it happens
+on request instead of being re-derived on every draft.
 
 For the service-level view of mounts and configuration, see [Hermes Agent](hermes.md#writing-in-your-voice).
 
@@ -23,15 +23,16 @@ Your corpus lives on the host and is visible to the agent through a bind mount:
 | --- | --- | --- |
 | `data/voice/<name>/samples/` | `/opt/voice/<name>/samples/` | No (`data/` is gitignored) |
 
-Nothing you put under `data/voice/` is committed, so personal writing stays local.
+Nothing under `data/voice/` gets committed, so personal writing stays on your machine.
 
 ## Step 1: Choose your markdown files
 
-Corpus quality dominates output quality. The agent imitates whatever you give it, warts
-included, so curate rather than dump.
+Whatever you feed in sets the ceiling on what comes out. The agent imitates the corpus warts
+and all, so curate it rather than dumping a folder in.
 
 **Include** finished pieces you would be happy to publish again. Aim for **5 or more pieces
-of 500+ words**. More matters less than better: eight strong essays beat forty rough notes.
+of 500+ words**, and weight quality over volume: eight strong essays will do more than forty
+rough notes.
 
 **Exclude** anything not written in the voice you want:
 
@@ -39,17 +40,17 @@ of 500+ words**. More matters less than better: eight strong essays beat forty r
 - Reference material, changelogs, and API docs that are mostly headers, tables, and lists
 - Drafts you abandoned because the writing was not working
 
-That second point matters more than it looks. Calibration measures prose, and a document
-made of headers and bullet fragments counts each fragment as a very short sentence. Feed it
-reference docs and the measured sentence length collapses, producing a style guide that tells
-the agent to write in clipped fragments. Prefer flowing prose.
+That second point matters more than it looks. Calibration measures prose, and in a document
+made of headers and bullet fragments every fragment counts as one very short sentence. Feed
+it reference docs and the measured sentence length collapses, producing a style guide that
+tells the agent to write in clipped fragments. Flowing prose is what you want here.
 
 Recognised extensions are `.md`, `.markdown`, `.txt`, `.rst`, and `.text`. Subdirectories are
 scanned recursively, and dotfiles are skipped.
 
 ## Step 2: Create the voice
 
-Pick a short, memorable name; you will type it in every prompt.
+Pick a short, memorable name. You will be typing it in every prompt.
 
 ```bash
 mkdir -p data/voice/my-voice/samples
@@ -62,10 +63,10 @@ Confirm the agent can see the files:
 docker compose exec hermes ls /opt/voice/my-voice/samples
 ```
 
-The mount is live, so files you add appear immediately. You do **not** need to restart Hermes
-after adding samples. (A restart is only needed if you change the skill itself.)
+The mount is live, so files you add appear immediately. Adding samples needs **no** Hermes
+restart; only changing the skill itself does.
 
-If that listing is empty, check the [troubleshooting](#troubleshooting) table below.
+If that listing comes back empty, check the [troubleshooting](#troubleshooting) table below.
 
 ## Step 3: Calibrate
 
@@ -76,35 +77,36 @@ Calibrate the my-voice writing voice.
 ```
 
 The agent measures your corpus with a statistics script, reads the samples, picks two to four
-exemplars, and writes `data/voice/my-voice/STYLE.md`. The measurement step exists so the style
-guide is grounded in real numbers rather than a model's guess at what they probably are.
+exemplars, and writes `data/voice/my-voice/STYLE.md`. That measurement step exists to ground
+the style guide in real numbers instead of a model's guess at what they probably are.
 
-Expect it to report back the handful of most distinctive things it found. That summary is not
-the deliverable — `STYLE.md` is.
+Expect a short report of the most distinctive things it found. The real deliverable is
+`STYLE.md`, not the summary.
 
 ## Step 4: Read and edit STYLE.md
 
-**This is the highest-leverage step, and the one most people skip.**
+**Most people skip this step. It is the one that pays back the most.**
 
 ```bash
 open data/voice/my-voice/STYLE.md    # or your editor of choice
 ```
 
 It is a normal markdown file describing sentence rhythm, paragraph shape, vocabulary,
-punctuation habits, how you open and close, and your stance toward the reader. Hand-correcting
-it is the fastest way to improve output — far faster than adding samples or rewording prompts.
+punctuation habits, how you open and close, and your stance toward the reader. Correcting it
+by hand improves output faster than anything else you can do, including adding samples or
+rewording prompts.
 
-Pay particular attention to two parts:
+Two parts deserve extra attention.
 
 **The "Never does" list.** Voice is defined as much by absence as by habit, and absences do not
-show up in statistics. If you never use exclamation marks, never address the reader as "you",
-never open with a thesis statement, never use bulleted lists in prose pieces — make sure each
-is written down. These constraints do more work at generation time than any positive
-description, because the agent checks drafts against them item by item.
+show up in statistics. Never use exclamation marks? Never address the reader as "you"? Never
+open with a thesis statement, never use bulleted lists in prose pieces? Write each one down.
+The agent checks drafts against this list item by item, which makes these constraints more
+useful at generation time than any amount of positive description.
 
 **The `exemplars` frontmatter.** These are the specific sample files loaded in full whenever
-you draft. They demonstrate what the prose description merely explains, so they carry a lot of
-weight. If the picks are unrepresentative, change them:
+you draft, and they carry real weight: the prose description explains what you do, while the
+exemplars show it. Swap them out if the picks are unrepresentative.
 
 ```yaml
 exemplars:
@@ -122,7 +124,7 @@ Behind the scenes the agent loads `STYLE.md` and the exemplars, drafts against t
 targets, runs a `humanizer` pass to strip AI tells, then self-checks the result against your
 "Never does" list before showing it to you.
 
-Useful variations:
+Some variations worth knowing:
 
 ```text
 Draft a short announcement about the new release in the my-voice voice.
@@ -130,9 +132,9 @@ Rewrite the paragraph below in the my-voice voice: <paste>
 Write this in my voice, but keep it under 200 words.
 ```
 
-If the voice has not been calibrated, the agent stops and offers to calibrate rather than
-quietly producing generic prose. That refusal is deliberate: silently returning something that
-is not in your voice is worse than returning nothing.
+If the voice has not been calibrated, the agent stops and offers to calibrate instead of
+handing back generic prose. That refusal is on purpose. Text that is not in your voice, handed
+over as though it were, costs you more than an empty reply.
 
 ## Step 6: Iterate
 
@@ -140,10 +142,10 @@ Drafts are shown in the reply. Ask the agent to save one and it writes to
 `data/voice/my-voice/drafts/`.
 
 When a draft is not quite right, **fix `STYLE.md` rather than the prompt**. A prompt tweak
-fixes one draft; a `STYLE.md` correction fixes every future draft. If the output feels
-metrically correct but lifeless, the usual cause is averaging — matching your mean sentence
-length while losing the variance. Real voices mix long sentences with hard short ones, and
-that spread is described in the "Sentence rhythm" section.
+fixes one draft; a `STYLE.md` correction fixes every future draft. Output that is metrically
+correct but lifeless usually means averaging: the mean sentence length matched, the variance
+lost. Real voices mix long sentences with hard short ones, and the "Sentence rhythm" section
+is where that spread gets described.
 
 Re-calibrate whenever you add or remove samples:
 
@@ -172,15 +174,14 @@ uses it and tells you which it picked; with several, it asks.
 
 ## Optional: run the numbers yourself
 
-You do not need to do this — calibration runs it for you — but it is useful for sanity
-checking a corpus before you calibrate, or for seeing whether adding samples actually shifted
-anything.
+Calibration runs this for you, so nothing here is required. It is handy for sanity checking a
+corpus before you calibrate, or for seeing whether adding samples actually shifted anything.
 
 ```bash
 python3 compose/hermes/skills/write-in-voice/scripts/corpus-stats.py data/voice/my-voice/samples
 ```
 
-It is standard-library only, so it runs on the host without installing anything. Abbreviated
+It uses the standard library only, so it runs on the host with nothing to install. Abbreviated
 output:
 
 ```text
@@ -200,13 +201,13 @@ Files: 7    Words: 2,229    Sentences: 216
   exclamation mark   0.00   (total 0)
 ```
 
-That example is the repo's own documentation, and it shows the failure mode from Step 1: 38%
-of "sentences" are five words or shorter because headers and list fragments are counted as
-sentences. A corpus of real prose produces a much flatter distribution. Frontmatter, code
+That example is the repo's own documentation, and it demonstrates the Step 1 failure mode
+nicely: 38% of "sentences" run five words or shorter, because headers and list fragments get
+counted as sentences. Real prose produces a much flatter distribution. Frontmatter, code
 blocks, and inline code are stripped before measuring; headers and lists are not.
 
-Zero counts are as informative as high ones. No exclamation marks anywhere in the corpus is
-exactly the kind of finding that belongs in the "Never does" list.
+Zero counts tell you as much as high ones. Not a single exclamation mark anywhere in a corpus
+is exactly the kind of finding that belongs in the "Never does" list.
 
 ## Troubleshooting
 
@@ -217,13 +218,13 @@ exactly the kind of finding that belongs in the "Never does" list.
 | Samples directory looks empty in the container | Files were added outside `data/voice/`, or the Hermes profile is not running. Verify on the host with `ls data/voice/my-voice/samples`. |
 | Skill not available at all | Confirm discovery with `docker compose exec hermes hermes skills list \| grep write-in-voice`. See the [skills setup notes](hermes.md#writing-in-your-voice) if it is missing. |
 | Measured sentences are far shorter than your real writing | The corpus is reference material, not prose. See Step 1. |
-| Drafts are close but flat | Usually the drafting model rather than the corpus. Style matching is hard for small local models; a larger model helps more than adding samples. |
-| Drafts borrow topics from your samples | Exemplars are being leaned on too hard. Swap in exemplars further from the current subject. |
+| Drafts are close but flat | Usually the drafting model, not the corpus. Style matching is hard for small local models, and a bigger one tends to beat more samples. |
+| Drafts borrow topics from your samples | The exemplars are being leaned on too hard. Swap in ones further from the current subject. |
 
 ## Notes
 
 - Samples are read at draft time, so adding files takes effect immediately. Only the skill
   itself is read at startup.
-- `STYLE.md` is yours to edit and is never overwritten without you asking for re-calibration.
-- To clean up text that already exists rather than generate new text, use the `humanizer`
-  skill directly.
+- `STYLE.md` is yours to edit. Nothing overwrites it unless you ask for re-calibration.
+- Cleaning up text that already exists is a different job. Use the `humanizer` skill directly
+  for that.

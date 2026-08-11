@@ -4,7 +4,7 @@
 
 Autonomous multi-step web research that writes structured reports, backed by SearXNG and your local model server.
 
-[GPT Researcher](https://github.com/assafelovic/gpt-researcher) performs autonomous multi-step web research and writes structured reports. It uses your existing **SearXNG** instance for retrieval and your **model server** (via `OPENAI_BASE_URL` / `host.docker.internal`) for LLM calls — the same server as LightRAG, OpenCode, and Hermes.
+[GPT Researcher](https://github.com/assafelovic/gpt-researcher) performs autonomous multi-step web research and writes structured reports. Retrieval goes through your existing **SearXNG** instance, and LLM calls go to your **model server** (via `OPENAI_BASE_URL` / `host.docker.internal`), the same one LightRAG, OpenCode, and Hermes use.
 
 Two containers share the stack:
 
@@ -13,7 +13,7 @@ Two containers share the stack:
 | `gpt-researcher` | REST API on port 8000 | n8n, Hermes (HTTP) |
 | `gptr-mcp` | MCP sidecar (SSE, internal) | OpenCode, Hermes (MCP) |
 
-Quick search (`mcp-searxng` / SearXNG JSON) and deep research (`gptr-mcp` / GPT Researcher REST) are complementary — keep both.
+Quick search (`mcp-searxng` / SearXNG JSON) and deep research (`gptr-mcp` / GPT Researcher REST) do different jobs, so keep both.
 
 ## Configuration
 
@@ -24,7 +24,7 @@ Quick search (`mcp-searxng` / SearXNG JSON) and deep research (`gptr-mcp` / GPT 
 
 ## Resource sharing
 
-LightRAG, OpenCode, Hermes, and GPT Researcher typically share one host model endpoint (`OPENAI_BASE_URL`, often `http://host.docker.internal:1234/v1`). Deep research issues many parallel LLM requests — defaults in `.env.example` (`GPTR_MAX_SCRAPER_WORKERS=2`, `GPTR_DEEP_RESEARCH_CONCURRENCY=1`, etc.) keep load manageable on a 16 GB machine. Avoid running deep research while LightRAG is indexing or Hermes has active subagents.
+LightRAG, OpenCode, Hermes, and GPT Researcher typically share one host model endpoint (`OPENAI_BASE_URL`, often `http://host.docker.internal:1234/v1`). Deep research fires off many parallel LLM requests, so the defaults in `.env.example` (`GPTR_MAX_SCRAPER_WORKERS=2`, `GPTR_DEEP_RESEARCH_CONCURRENCY=1`, and friends) are tuned to keep load manageable on a 16 GB machine. Avoid running deep research while LightRAG is indexing or Hermes has active subagents.
 
 ## n8n usage
 
@@ -43,7 +43,7 @@ Content-Type: application/json
 }
 ```
 
-Set HTTP Request node timeout to **600000 ms** (10 min) — local-model research is slow.
+Set the HTTP Request node timeout to **600000 ms** (10 min). Research against a local model is slow.
 
 A starter workflow is auto-imported on first boot:
 

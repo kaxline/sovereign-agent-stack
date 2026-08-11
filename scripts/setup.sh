@@ -74,8 +74,8 @@ validate_workspace() {
   [[ "$slug" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]{0,62}$ ]] || die "Invalid workspace slug: $slug (use letters, numbers, hyphens)"
 }
 
-# OpenCode mounts this path at the identical path inside the container, so it
-# has to be a usable absolute path on both sides.
+# OpenCode mounts this path at the identical path inside the container, which
+# means it has to be a usable absolute path on both sides.
 validate_opencode_workspace() {
   local path="$1"
   [[ "$path" == /* ]] || die "OPENCODE_WORKSPACE_HOST must be an absolute path: $path"
@@ -174,10 +174,10 @@ set_env_if_missing() {
   fi
 }
 
-# Write opencode/opencode.local.json (gitignored) so tracked opencode.json stays
-# a placeholder template (provider "local", model "your-chat-model"). Your real
-# model ids and baseURL belong only in the local overlay.
-# Compose mounts the local overlay when it exists.
+# Write opencode/opencode.local.json (gitignored) and leave tracked
+# opencode.json as a placeholder template (provider "local", model
+# "your-chat-model"). Real model ids and baseURL belong in the local overlay
+# only. Compose mounts that overlay when it exists.
 ensure_opencode_local_config() {
   local base="$ROOT/opencode/opencode.json"
   local local_cfg="$ROOT/opencode/opencode.local.json"
@@ -257,7 +257,8 @@ ensure_hermes_env_files() {
 }
 
 # Write searxng/settings.local.yml (gitignored) from the tracked template.
-# Compose mounts the local file so setup never mutates tracked settings.yml.
+# Compose mounts the local file, which keeps setup from ever touching the
+# tracked settings.yml.
 sync_searxng_secret() {
   local secret="$1"
   local template="$ROOT/searxng/settings.yml"
@@ -309,8 +310,8 @@ Nothing in this directory is tracked by git.
        mkdir -p data/voice/my-voice/samples
        cp ~/writing/*.md data/voice/my-voice/samples/
 
-   Use finished writing you would be happy to publish again. The agent imitates
-   whatever is here, warts included. Aim for 5 or more pieces of 500+ words.
+   Use finished writing you would be happy to publish again. Whatever lands
+   here gets imitated, warts and all. Aim for 5 or more pieces of 500+ words.
    Plain text and markdown are read (.md, .txt, .rst).
 
 2. Calibrate once per voice, and again whenever you add samples. In Hermes:
@@ -318,8 +319,8 @@ Nothing in this directory is tracked by git.
        Calibrate the my-voice writing voice.
 
    This writes `data/voice/my-voice/STYLE.md`. Read it. It is a normal markdown
-   file and editing it by hand is the fastest way to improve results — pay
-   particular attention to the "Never does" section.
+   file, and editing it by hand improves results faster than anything else.
+   The "Never does" section deserves the most attention.
 
 3. Write:
 
@@ -337,8 +338,8 @@ Nothing in this directory is tracked by git.
 
 - Requires the Hermes profile. For the full step-by-step guide, including how to
   pick a corpus and troubleshoot, see `docs/writing-voice.md`.
-- Style matching is one of the harder tasks for a small local model. If drafts
-  feel flat, a larger drafting model helps more than adding samples.
+- Style matching is one of the harder tasks for a small local model. When drafts
+  feel flat, try a larger drafting model before adding samples.
 EOF
   log "Wrote $dest"
 }
@@ -348,12 +349,11 @@ create_projects_readme() {
   cat > "$dest" <<'EOF'
 # Projects
 
-Each subdirectory here is one project — a working directory the agent reads from
-and drafts into. Hermes reads them at `/opt/projects`. Nothing in this directory
-is tracked by git.
+Each subdirectory here is one project: a working directory the agent reads from
+and drafts into. Hermes reads them at `/opt/projects`. Git tracks none of it.
 
 Use this for work that needs its own reference material and generated output
-side by side: a job search, a book, a client engagement, a research topic.
+side by side, like a job search, a book, a client engagement, or a research topic.
 
 ## Setup
 
@@ -366,16 +366,15 @@ Then name it when you ask Hermes to do something:
 
     Using the notes in /opt/projects/my-project, draft a summary of X.
 
-The mount is live, so files you add appear immediately. You do not need to
-restart Hermes.
+The mount is live, so files you add appear immediately. No Hermes restart
+required.
 
 ## Keep source material and generated output apart
 
 Put reference material you wrote and drafts the agent produced in separate
-subdirectories. It is the difference between a corpus you can trust and one
-that quietly starts citing its own output back to you. That separation also
-lets you ingest only the source half into LightRAG later, if you want
-retrieval over a project that has outgrown reading files directly.
+subdirectories. Mix them and the corpus starts citing its own output back to
+you as fact. Keeping them apart also lets you ingest only the source half into
+LightRAG later, once a project outgrows reading files directly.
 
 ## Notes
 
@@ -435,9 +434,9 @@ set_env_if_placeholder .env OPENCODE_SERVER_PASSWORD "$(rand_secret)"
 set_env_if_placeholder .env LIGHTRAG_API_KEY "lr_$(rand_hex 16)"
 set_env_if_placeholder .env N8N_ENCRYPTION_KEY "$(rand_hex 16)"
 set_env_if_placeholder .env N8N_USER_MANAGEMENT_JWT_SECRET "$(rand_hex 16)"
-# Hermes dashboard basic auth. Not optional since agent 0.20.0: the dashboard
-# binds 0.0.0.0 inside the container and refuses to start without an auth
-# provider, which would fail the hermes healthcheck.
+# Hermes dashboard basic auth, mandatory since agent 0.20.0. The dashboard binds
+# 0.0.0.0 inside the container and refuses to start without an auth provider,
+# which takes the hermes healthcheck down with it.
 set_env_if_placeholder .env HERMES_DASHBOARD_PASSWORD "$(rand_hex 16)"
 set_env_if_placeholder .env HERMES_DASHBOARD_AUTH_SECRET "$(rand_hex 32)"
 
@@ -467,8 +466,8 @@ upsert_env .env OPENCODE_WORKSPACE_HOST "$OPENCODE_WORKSPACE_HOST"
 
 # --- data/ tree ---
 # data/voice and data/projects are bind-mount sources for the hermes service.
-# Create them here so Docker does not create them as root, which would leave
-# Hermes unable to write calibration output or drafts into them.
+# Create them here; if Docker gets there first it creates them owned by root,
+# and Hermes can then write neither calibration output nor drafts.
 mkdir -p "data/inputs/${WORKSPACE}" "data/rag_storage/${WORKSPACE}" "data/hermes" "data/voice" "data/projects"
 if [[ ! -f "data/inputs/${WORKSPACE}/getting-started.md" ]]; then
   create_getting_started "$WORKSPACE"

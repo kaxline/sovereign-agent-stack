@@ -1,6 +1,6 @@
 # Local Agent Stack
 
-A Docker Compose stack that runs a **robust local AI agent on your machine** — private by default, no cloud required for inference. Curated integrations for chat, web search, knowledge graphs, workflow automation, and coding agents. A desktop launcher that manages this stack for non-technical users is on the roadmap.
+A Docker Compose stack that runs a **capable AI agent on your own machine**, private by default, with no cloud service needed for inference. It wires together chat, web search, knowledge graphs, workflow automation, and coding agents. A desktop launcher for non-technical users is on the roadmap.
 
 ## Quick start
 
@@ -23,7 +23,7 @@ make up
 docker compose run --rm ollama-pull
 ```
 
-On Apple Silicon, Docker cannot use the GPU — prefer a **host** model server (LM Studio, host Ollama, llama.cpp, …) for speed; the `ollama` profile is the self-contained demo path.
+On Apple Silicon, Docker cannot reach the GPU. Prefer a **host** model server (LM Studio, host Ollama, llama.cpp, …) if you care about speed; the `ollama` profile exists as a self-contained demo path.
 
 ## Architecture
 
@@ -75,13 +75,13 @@ Examples:
 # COMPOSE_PROFILES=core,rag,automation,coding
 ```
 
-## Security model (why this isn't just a compose dump)
+## Security model (what the extra wiring buys you)
 
-- **Localhost binds** for SearXNG, GPT Researcher, Hermes dashboard/API/WebUI — not LAN-exposed by default.
-- **Hermes LightRAG MCP allowlist:** unattended API sessions get five read-oriented tools out of seventeen; the bootstrap **drops unfiltered clone duplicates** so a `--clone`d profile cannot bypass the allowlist.
-- **Per-profile API keys** for Hermes `api-server` vs `browser` gateways — sharing one key fails closed.
+- **Localhost binds** for SearXNG, GPT Researcher, and the Hermes dashboard/API/WebUI. Nothing is LAN-exposed by default.
+- **Hermes LightRAG MCP allowlist:** unattended API sessions get five read-oriented tools out of seventeen, and the bootstrap **drops unfiltered clone duplicates** so a `--clone`d profile cannot route around the allowlist.
+- **Per-profile API keys** for the Hermes `api-server` and `browser` gateways. Sharing one key fails closed.
 - **OpenCode secret shadowing:** mount `compose/opencode/blank` over project `.env` files via gitignored `docker-compose.override.yml`.
-- Setup writes secrets into **gitignored** overlays (`searxng/settings.local.yml`, Hermes `*.env`), not tracked templates.
+- Setup writes secrets into **gitignored** overlays (`searxng/settings.local.yml`, Hermes `*.env`) and leaves tracked templates alone.
 
 See [SECURITY.md](SECURITY.md).
 
@@ -101,7 +101,7 @@ See [SECURITY.md](SECURITY.md).
 | [docs/](docs/README.md) | Per-service guides |
 | [Hermes](docs/hermes.md) | Agent gateway, skills, MCP |
 | [Hermes WebUI](docs/hermes-webui.md) | Chat UI + lean gateway mode |
-| [LightRAG / rag](docs/n8n.md) | Workflows that call the stack (with `automation`) |
+| [n8n workflows](docs/n8n.md) | Workflows that call the stack (with `automation`) |
 | [Writing voice](docs/writing-voice.md) | Style calibration skill |
 | [Releasing](docs/releasing.md) | Thematic commit playbook for the first public history |
 

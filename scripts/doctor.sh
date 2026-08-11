@@ -233,7 +233,7 @@ else
   fi
 
   if [[ -z "$EMBED_DIM" ]]; then
-    warn "EMBEDDING_DIM is unset — a mismatch silently corrupts the vector store"
+    warn "EMBEDDING_DIM is unset — a mismatch corrupts the vector store with no error"
   else
     ok "EMBEDDING_DIM=${EMBED_DIM} (must match the embedding model exactly)"
   fi

@@ -13,7 +13,7 @@ Local meta-search API for quick lookups, shared by n8n over HTTP and OpenCode ov
 3. Optionally set `SEARXNG_PORT` in `.env` (default `8080`).
 4. Start the stack: `docker compose up -d`
 
-SearXNG is bound to `127.0.0.1` only — do not expose the JSON API publicly; it is abuse-prone without rate limiting.
+SearXNG binds `127.0.0.1` only. Keep the JSON API off the public internet: without rate limiting it is easy to abuse.
 
 ## n8n usage
 
@@ -35,7 +35,7 @@ docker compose run --rm --entrypoint /bin/sh n8n-import -c \
 
 OpenCode connects to `http://mcp-searxng:3000/mcp` (configured in `opencode/opencode.local.json`). Hermes is registered against the same sidecar on both its default and `api-server` profiles by [`compose/hermes/bootstrap-api-profile.sh`](../compose/hermes/bootstrap-api-profile.sh), filtered to `searxng_web_search` and `web_url_read`. MCP tools load when the agent invokes them during a session.
 
-`web_url_read` fetches a single known URL and returns it as markdown, which is the cheapest way to read a specific page — no search, no research agent. It does not execute JavaScript, and it blocks private/internal URLs.
+`web_url_read` fetches a single known URL and returns it as markdown. That is the cheapest way to read a specific page, with no search step and no research agent involved. It does not execute JavaScript, and it blocks private/internal URLs.
 
 ## Optional rate limiting
 

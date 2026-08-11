@@ -369,8 +369,8 @@ services:
   opencode:
     profiles: ["coding"]
     container_name: opencode
-    # Local image adds git; upstream ships none, so worktree detection fails
-    # and every directory collapses into the single `global` project.
+    # Local image adds git. Upstream ships none, which breaks worktree detection
+    # and collapses every directory into the single `global` project.
     build:
       context: ./compose/opencode
     image: assistant-opencode:local
@@ -493,7 +493,7 @@ services:
   # Same script as hermes-api-bootstrap with a different name, port, turn cap,
   # and toolset; its default-profile side effects are idempotent.
   #
-  # Port 8644 is deliberately unpublished — hermes-webui reaches it in-network
+  # Port 8644 stays unpublished on purpose. hermes-webui reaches it in-network
   # at http://hermes:8644.
   hermes-browser-bootstrap:
     profiles: ["core"]
@@ -506,8 +506,8 @@ services:
       - HERMES_UID=${HERMES_UID:-1000}
       - HERMES_GID=${HERMES_GID:-1000}
       - HERMES_API_PROFILE_NAME=${HERMES_BROWSER_PROFILE_NAME:-browser}
-      # Interactive chat: a human is watching and can interrupt, so the tight
-      # unattended cap would just truncate useful work mid-task.
+      # Interactive chat: a human is watching and can interrupt, and the tight
+      # unattended cap would only truncate useful work mid-task.
       - HERMES_API_MAX_TURNS=${HERMES_BROWSER_MAX_TURNS:-60}
       - HERMES_API_SERVER_PORT=${HERMES_BROWSER_API_PORT:-8644}
       # Full CLI toolset: interactive-only tools (clarify, send_message,
@@ -542,7 +542,7 @@ services:
       - HERMES_DASHBOARD=1
       # The dashboard always binds 0.0.0.0 inside the container (host ports are
       # localhost-only), and since agent 0.20.0 a non-loopback bind engages an
-      # auth gate that HERMES_DASHBOARD_INSECURE no longer opens — without a
+      # auth gate that HERMES_DASHBOARD_INSECURE no longer opens. With no
       # registered provider the dashboard refuses to bind at all and the
       # healthcheck below never passes. Basic auth is the lightest provider.
       # BASIC_AUTH_SECRET keeps dashboard sessions valid across restarts.
@@ -551,11 +551,11 @@ services:
       - HERMES_DASHBOARD_BASIC_AUTH_SECRET=${HERMES_DASHBOARD_AUTH_SECRET:?set HERMES_DASHBOARD_AUTH_SECRET in .env}
       # API server runs on the api-server profile (port 8643), not the default gateway.
       - API_SERVER_ENABLED=false
-      # The environment probe tells the agent its home and cwd are both /opt/data,
-      # and that is the only path it is given. Left at that, it builds every path
-      # for the user's own files under /opt/data (e.g. /opt/data/projects) and
-      # reports the mounts below as missing. Applies to both gateways in this
-      # container, so it does not need repeating per profile.
+      # The environment probe reports /opt/data as both home and cwd, and hands
+      # the agent no other path. Left at that, it builds every path for the
+      # user's own files under /opt/data (e.g. /opt/data/projects) and reports
+      # the mounts below as missing. Covers both gateways in this container, so
+      # there is no need to repeat it per profile.
       - "HERMES_ENVIRONMENT_HINT=Mount layout: /opt/data holds Hermes' own config
         and state, not the user's work. The user's material lives on separate mounts
         that no path under /opt/data can reach: /opt/projects (per-project working
@@ -566,8 +566,8 @@ services:
         resolve them relative to the working directory."
     volumes:
       - ./data/hermes:/opt/data
-      # Repo-shipped skills. Read-only: external skill dirs are NOT a write
-      # boundary in Hermes — the mount is what keeps skill_manage out.
+      # Repo-shipped skills. Read-only, because Hermes draws no write boundary
+      # around external skill dirs; the ro flag is what keeps skill_manage out.
       - ./compose/hermes/skills:/opt/skills:ro
       # Writing-voice corpora (gitignored). Writable: calibration writes STYLE.md.
       - ./data/voice:/opt/voice
@@ -580,8 +580,8 @@ services:
       resources:
         limits:
           # Three supervised gateways now live here (default, api-server, and
-          # browser for the WebUI). Each is its own Python process with its own
-          # loaded toolset and MCP clients, so 2G left no headroom for the third.
+          # browser for the WebUI). Each runs as its own Python process with its
+          # own loaded toolset and MCP clients, and 2G left the third no room.
           memory: 3G
     depends_on:
       hermes-api-bootstrap:
@@ -613,9 +613,9 @@ services:
   # to the browser gateway in the `hermes` container, so tools, MCP sidecars,
   # skills, and the /opt/projects mounts all execute where they already work.
   # The startup log therefore carries an expected
-  # "!! WARNING: hermes-agent source not found." — mounting the agent source is
-  # what full parity would cost, and it is not free (multi-minute editable
-  # install on every start, plus a second copy of the agent's dependency tree).
+  # "!! WARNING: hermes-agent source not found." Full parity would mean mounting
+  # the agent source, which costs a multi-minute editable install on every start
+  # plus a second copy of the agent's dependency tree to keep in sync.
   # ----------------------------------------------------------------------
   hermes-webui:
     profiles: ["core"]
@@ -625,8 +625,8 @@ services:
     ports:
       - "127.0.0.1:${HERMES_WEBUI_PORT:-8787}:8787"
     # Supplies API_SERVER_KEY, which _gateway_api_key() falls back to when
-    # HERMES_WEBUI_GATEWAY_API_KEY is unset — so the browser key is defined once.
-    # Deliberately NOT `.env`: that would leak unrelated provider keys into a
+    # HERMES_WEBUI_GATEWAY_API_KEY is unset, so the browser key is defined once.
+    # Pointedly NOT `.env`, which would leak unrelated provider keys into a
     # container that never makes a model call.
     env_file:
       - ./compose/hermes/browser.env
@@ -638,21 +638,21 @@ services:
       - HERMES_WEBUI_HOST=0.0.0.0
       - HERMES_WEBUI_DEFAULT_WORKSPACE=/opt/projects
       # Route chat to the `browser` gateway instead of running an in-process
-      # agent. This is what makes the lean image viable: api/gateway_chat.py
-      # imports only stdlib plus WebUI-local modules, so the agent is never
-      # imported and its source never needs to be present.
+      # agent. The lean image depends on this: api/gateway_chat.py imports only
+      # stdlib plus WebUI-local modules, so the agent is never imported and its
+      # source never needs to be present.
       - HERMES_WEBUI_CHAT_BACKEND=gateway
       - HERMES_WEBUI_GATEWAY_BASE_URL=http://hermes:${HERMES_BROWSER_API_PORT:-8644}
       - HERMES_WEBUI_GATEWAY_USE_RUNS_API=true
       # The first-run wizard decides "chat ready" by importing run_agent inside
       # this container. Lean/gateway mode never has that module, so without this
       # the wizard blocks every fresh browser with "Missing or partially
-      # importable" even though the remote browser gateway is already configured
-      # and healthy. Skip is unconditional: it marks onboarding complete and
-      # refuses to let the wizard rewrite config.yaml / .env.
+      # importable" even though the remote browser gateway is configured and
+      # healthy. The skip is unconditional: it marks onboarding complete and
+      # stops the wizard from rewriting config.yaml / .env.
       - HERMES_WEBUI_SKIP_ONBOARDING=1
-      # Each cached agent pins a full transcript, making this the dominant lever
-      # on resident memory. Default is 25, which does not fit the limit below.
+      # Each cached agent pins a full transcript, which makes this the biggest
+      # lever on resident memory. The default of 25 does not fit the limit below.
       - HERMES_WEBUI_AGENT_CACHE_MAX=5
       # Align the container user with the mounts; the entrypoint chowns its own
       # home and the workspace dir, so a mismatch here rewrites ownership of

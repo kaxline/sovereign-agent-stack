@@ -9,7 +9,7 @@ Workflow automation with starter workflows and credentials pre-imported for Ligh
 # COMPOSE_PROFILES=core,rag,automation
 ```
 
-n8n follows patterns from the [n8n self-hosted AI starter kit](https://github.com/n8n-io/self-hosted-ai-starter-kit): Postgres for n8n metadata, a one-shot `n8n-import` container, and demo data under `n8n/demo-data/`. We skip bundling Ollama/Qdrant by default — LightRAG owns RAG (`rag` profile), and inference uses your model server (or the `ollama` profile).
+n8n follows patterns from the [n8n self-hosted AI starter kit](https://github.com/n8n-io/self-hosted-ai-starter-kit): Postgres for n8n metadata, a one-shot `n8n-import` container, and demo data under `n8n/demo-data/`. Ollama and Qdrant are left out by default, since LightRAG owns RAG here (`rag` profile) and inference runs on your model server or the `ollama` profile.
 
 ## First-time n8n setup
 
@@ -29,7 +29,7 @@ n8n follows patterns from the [n8n self-hosted AI starter kit](https://github.co
 
 ## Credentials
 
-Encrypted credential JSON under `n8n/demo-data/credentials/` is **gitignored** and created locally by `./scripts/setup.sh` (or `node scripts/generate-n8n-credentials.js`). Files are encrypted with `N8N_ENCRYPTION_KEY` so they match your `.env` secrets — never commit them.
+Encrypted credential JSON under `n8n/demo-data/credentials/` is **gitignored** and created locally by `./scripts/setup.sh` (or `node scripts/generate-n8n-credentials.js`). The files are encrypted with `N8N_ENCRYPTION_KEY` so they line up with your `.env` secrets. Never commit them.
 
 | Credential | Type | Matches `.env` key |
 |---|---|---|
@@ -62,7 +62,7 @@ Alternatively, create credentials manually in the n8n UI and re-attach them to t
 }
 ```
 
-Use Header Auth with `X-API-Key`. Set node timeout to 600000 ms — local LLM queries are slow.
+Use Header Auth with `X-API-Key`, and set the node timeout to 600000 ms. Queries against a local LLM are slow.
 
 | Operation | Method | Path |
 |---|---|---|
@@ -86,7 +86,7 @@ Use Header Auth with `X-API-Key`. Set node timeout to 600000 ms — local LLM qu
 }
 ```
 
-Use Basic Auth (`neo4j` / `NEO4J_PASSWORD`). Cypher must be a single line in JSON. Prefer read-only queries — LightRAG owns graph ingestion; use LightRAG APIs to modify the knowledge base.
+Use Basic Auth (`neo4j` / `NEO4J_PASSWORD`). Cypher has to be a single line in JSON. Stick to read-only queries here; LightRAG owns graph ingestion, so go through its APIs to modify the knowledge base.
 
 **SearXNG search** (`http://searxng:8080/search`):
 
