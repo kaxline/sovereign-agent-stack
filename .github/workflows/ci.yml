@@ -1,0 +1,71 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  compose-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stub local overlays and secrets for compose config
+        run: |
+          cp .env.example .env
+          # Satisfy required interpolations without running full setup
+          sed -i 's/^NEO4J_PASSWORD=.*/NEO4J_PASSWORD=ci-neo4j-pass/' .env
+          sed -i 's/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=ci-postgres-pass/' .env
+          sed -i 's/^OPENCODE_SERVER_PASSWORD=.*/OPENCODE_SERVER_PASSWORD=ci-opencode-pass/' .env
+          sed -i 's/^LIGHTRAG_API_KEY=.*/LIGHTRAG_API_KEY=lr_ci_key/' .env
+          sed -i 's/^N8N_ENCRYPTION_KEY=.*/N8N_ENCRYPTION_KEY=0123456789abcdef/' .env
+          sed -i 's/^N8N_USER_MANAGEMENT_JWT_SECRET=.*/N8N_USER_MANAGEMENT_JWT_SECRET=0123456789abcdef/' .env
+          sed -i 's/^HERMES_DASHBOARD_PASSWORD=.*/HERMES_DASHBOARD_PASSWORD=ci-dashboard-pass/' .env
+          sed -i 's/^HERMES_DASHBOARD_AUTH_SECRET=.*/HERMES_DASHBOARD_AUTH_SECRET=0123456789abcdef0123456789abcdef/' .env
+          sed -i 's/^SEARXNG_SECRET=.*/SEARXNG_SECRET=ci-searxng-secret/' .env
+          sed -i 's|^OPENCODE_WORKSPACE_HOST=.*|OPENCODE_WORKSPACE_HOST=/tmp/opencode-workspace|' .env
+          mkdir -p /tmp/opencode-workspace
+          cp searxng/settings.yml searxng/settings.local.yml
+          cp opencode/opencode.json opencode/opencode.local.json
+          cp compose/hermes/api-server.env.example compose/hermes/api-server.env
+          cp compose/hermes/browser.env.example compose/hermes/browser.env
+          echo 'API_SERVER_KEY=ci-api-key-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' >> compose/hermes/api-server.env
+          # browser.env example already has a placeholder key line — ensure set
+          sed -i 's/^API_SERVER_KEY=.*/API_SERVER_KEY=ci-browser-key-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/' compose/hermes/browser.env
+          mkdir -p data/hermes data/voice data/projects data/inputs/my-kb data/rag_storage/my-kb
+      - name: Validate compose configs
+        run: |
+          set -e
+          for profiles in \
+            "core" \
+            "core,rag" \
+            "core,rag,automation,coding" \
+            "core,ollama" \
+            "core,rag,automation,coding,ollama,searxng-prod"
+          do
+            echo "=== COMPOSE_PROFILES=$profiles ==="
+            COMPOSE_PROFILES="$profiles" docker compose config -q
+          done
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Run shellcheck
+        run: |
+          shellcheck -x -e SC1090,SC1091 scripts/*.sh
+          shellcheck -s sh -e SC1090,SC1091 compose/hermes/bootstrap-api-profile.sh
+          shellcheck -s sh -e SC1090,SC1091 n8n/import-demo-data.sh || true
+
+  hadolint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: "compose/**/Dockerfile"
+          recursive: true
+          failure-threshold: warning
+          ignore: DL3008,DL3018,DL3009
