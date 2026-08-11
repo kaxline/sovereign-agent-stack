@@ -1,0 +1,24 @@
+11:SETUP_MAIL=0
+32:  --mail                    Enable Proton Mail Bridge (compose profile mail)
+55:    --mail) SETUP_MAIL=1; shift ;;
+183:proton_bridge_image_for_arch() {
+185:    arm64|aarch64) echo "shenxn/protonmail-bridge:build" ;;
+186:    *) echo "shenxn/protonmail-bridge" ;;
+190:setup_mail_profile() {
+191:  append_compose_profile mail
+192:  set_env_if_missing .env PROTON_BRIDGE_IMAGE "$(proton_bridge_image_for_arch)"
+193:  set_env_if_missing .env PROTON_BRIDGE_HOST protonmail-bridge
+194:  set_env_if_missing .env PROTON_BRIDGE_IMAP_PORT 143
+195:  set_env_if_missing .env PROTON_BRIDGE_SMTP_PORT 25
+196:  set_env_if_missing .env PROTON_BRIDGE_IMAP_SECURE false
+197:  set_env_if_missing .env PROTON_BRIDGE_ALLOW_UNAUTHORIZED_CERTS true
+199:  mkdir -p compose/protonmail-bridge
+200:  if [[ ! -f compose/protonmail-bridge/credentials.env ]]; then
+201:    cp compose/protonmail-bridge/credentials.env.example compose/protonmail-bridge/credentials.env
+202:    log "Created compose/protonmail-bridge/credentials.env (empty until init)"
+596:if [[ "$SETUP_MAIL" -eq 1 ]]; then
+597:  setup_mail_profile
+634:  --crawl / --mail
+648:if [[ "$SETUP_MAIL" -eq 1 ]]; then
+650:Proton Mail Bridge (mail profile enabled):
+651:  ./scripts/proton-bridge-init.sh    # one-time interactive Proton login

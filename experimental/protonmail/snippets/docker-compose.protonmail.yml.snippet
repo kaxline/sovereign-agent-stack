@@ -1,0 +1,26 @@
+  # ----------------------------------------------------------------------
+  # Proton Mail Bridge — IMAP/SMTP for n8n (opt-in profile)
+  # Enable:  COMPOSE_PROFILES=...,mail  OR  docker compose --profile mail up -d
+  # Setup:   ./scripts/setup.sh --mail && ./scripts/proton-bridge-init.sh
+  # IMAP:    protonmail-bridge:143 (compose-internal; no host ports)
+  # SMTP:    protonmail-bridge:25
+  # ----------------------------------------------------------------------
+  protonmail-bridge:
+    container_name: protonmail-bridge
+    profiles: ["mail"]
+    image: ${PROTON_BRIDGE_IMAGE:-shenxn/protonmail-bridge:build}
+    restart: unless-stopped
+    volumes:
+      - protonmail_bridge:/root
+      # Block Bridge auto-updates (amd64 binaries break arm64; see upstream #113)
+      - ./compose/protonmail-bridge/updates-block:/root/.local/share/protonmail/bridge-v3/updates:ro
+    healthcheck:
+      # Probe Bridge IMAP backend (1143), not socat (143) — socat alone is a false healthy
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/1143' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+
+# volumes:
+  protonmail_bridge:

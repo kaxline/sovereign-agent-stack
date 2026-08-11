@@ -1,0 +1,22 @@
+proton_bridge_image_for_arch() {
+  case "$(uname -m)" in
+    arm64|aarch64) echo "shenxn/protonmail-bridge:build" ;;
+    *) echo "shenxn/protonmail-bridge" ;;
+  esac
+}
+
+setup_mail_profile() {
+  append_compose_profile mail
+  set_env_if_missing .env PROTON_BRIDGE_IMAGE "$(proton_bridge_image_for_arch)"
+  set_env_if_missing .env PROTON_BRIDGE_HOST protonmail-bridge
+  set_env_if_missing .env PROTON_BRIDGE_IMAP_PORT 143
+  set_env_if_missing .env PROTON_BRIDGE_SMTP_PORT 25
+  set_env_if_missing .env PROTON_BRIDGE_IMAP_SECURE false
+  set_env_if_missing .env PROTON_BRIDGE_ALLOW_UNAUTHORIZED_CERTS true
+
+  mkdir -p compose/protonmail-bridge
+  if [[ ! -f compose/protonmail-bridge/credentials.env ]]; then
+    cp compose/protonmail-bridge/credentials.env.example compose/protonmail-bridge/credentials.env
+    log "Created compose/protonmail-bridge/credentials.env (empty until init)"
+  fi
+}

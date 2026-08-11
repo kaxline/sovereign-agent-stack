@@ -1,0 +1,3 @@
+# Empty mount point — bind-mounted read-only over Bridge's updates/
+# directory so the unofficial image cannot download amd64 binaries
+# that break arm64 containers (shenxn/protonmail-bridge-docker#113).
