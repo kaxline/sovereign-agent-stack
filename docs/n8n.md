@@ -29,7 +29,7 @@ n8n follows patterns from the [n8n self-hosted AI starter kit](https://github.co
 
 ## Credentials
 
-Pre-imported credentials live in `n8n/demo-data/credentials/` and are encrypted with `N8N_ENCRYPTION_KEY`. They ship with the `.env.example` defaults:
+Encrypted credential JSON under `n8n/demo-data/credentials/` is **gitignored** and created locally by `./scripts/setup.sh` (or `node scripts/generate-n8n-credentials.js`). Files are encrypted with `N8N_ENCRYPTION_KEY` so they match your `.env` secrets — never commit them.
 
 | Credential | Type | Matches `.env` key |
 |---|---|---|
@@ -37,7 +37,7 @@ Pre-imported credentials live in `n8n/demo-data/credentials/` and are encrypted 
 | Neo4j | Basic Auth | `NEO4J_USERNAME` / `NEO4J_PASSWORD` |
 | Proton Mail (Bridge) | IMAP | `compose/protonmail-bridge/credentials.env` (after `./scripts/proton-bridge-init.sh`) |
 
-If you change `LIGHTRAG_API_KEY`, `NEO4J_PASSWORD`, or `N8N_ENCRYPTION_KEY` after first boot, regenerate credential files and re-import:
+If you change `LIGHTRAG_API_KEY`, `NEO4J_PASSWORD`, or `N8N_ENCRYPTION_KEY` after first boot, regenerate and re-import:
 
 ```bash
 # Regenerate encrypted credential JSON (reads from your .env)
