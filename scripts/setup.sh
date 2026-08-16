@@ -338,6 +338,12 @@ Nothing in this directory is tracked by git.
 
 - Requires the Hermes profile. For the full step-by-step guide, including how to
   pick a corpus and troubleshoot, see `docs/writing-voice.md`.
+- This directory is for drafted artifacts ("write this post in my voice"). It
+  does not change how Hermes talks in WebUI or dashboard chat. Chat tone is
+  `SOUL.md` on the profile that serves that surface — for the WebUI,
+  `data/hermes/profiles/browser/SOUL.md`. Distill samples into that file; do
+  not paste this corpus into the prompt. Keep chat logs in a separate
+  subdirectory from essay/blog samples. See `docs/hermes.md`.
 - Style matching is one of the harder tasks for a small local model. When drafts
   feel flat, try a larger drafting model before adding samples.
 EOF
@@ -380,6 +386,125 @@ LightRAG later, once a project outgrows reading files directly.
 
 - Requires the Hermes profile.
 - Agents can write here. Review generated files before treating them as fact.
+EOF
+  log "Wrote $dest"
+}
+
+create_hermes_user_md() {
+  local dest="$ROOT/data/hermes/memories/USER.md"
+  cat > "$dest" <<'EOF'
+# User
+
+Short identity and preferences injected into every Hermes session. Keep this
+file small (Hermes caps it around 1375 characters). Longer notes belong in
+`data/memory/`, not here.
+
+Hand-edit freely. Empty sections stay empty until there is something true to
+write.
+
+## Identity
+
+## Preferences
+
+## Working style
+EOF
+  log "Wrote $dest"
+}
+
+create_memory_readme() {
+  local dest="$ROOT/data/memory/README.md"
+  cat > "$dest" <<'EOF'
+# Curated memory
+
+Long-form notes Hermes should remember across sessions, when they will not
+fit in the short USER.md / MEMORY.md files. Hermes reads this directory at
+`/opt/memory`. Git tracks none of it.
+
+## Setup
+
+The files are already here. Fill them in yourself, or ask Hermes:
+
+    Remember that I prefer terse replies and I am job-searching this quarter.
+    What do you know about my preferences?
+    Consolidate memory.
+
+Tiny durable facts (name, timezone, a standing preference) also go into
+Hermes' built-in `memory` tool, which injects USER.md every session. This
+directory is for everything that outgrows that cap.
+
+## Layout
+
+    data/memory/
+      README.md         # this file (not memory)
+      INDEX.md          # table of contents; hand-editable
+      people.md
+      decisions.md
+      preferences.md
+      notes/            # one topic file per extra note
+
+## Keep source notes and generated drafts apart
+
+Put facts you wrote and drafts the agent produced in separate files. Mix them
+and the store starts citing its own output back to you as fact.
+
+## Notes
+
+- Requires the Hermes profile. For the routing (built-in vs files vs past
+  chats vs LightRAG), see `docs/memory.md`.
+- Agents can write here. Review generated files before treating them as fact.
+EOF
+  log "Wrote $dest"
+}
+
+create_memory_index() {
+  local dest="$ROOT/data/memory/INDEX.md"
+  cat > "$dest" <<'EOF'
+# Memory index
+
+Hand-editable table of contents for `/opt/memory`. Rewrite on "consolidate
+memory". Do not invent entries; empty files stay listed with nothing under
+them.
+
+| File | What it holds |
+|---|---|
+| people.md | People, relationships, how you know them |
+| decisions.md | Decisions and why they superseded earlier ones |
+| preferences.md | Durable preferences that did not fit USER.md |
+| notes/ | One topic file per extra note |
+
+## Notes
+EOF
+  log "Wrote $dest"
+}
+
+create_memory_people() {
+  local dest="$ROOT/data/memory/people.md"
+  cat > "$dest" <<'EOF'
+# People
+
+One section per person. Empty until something is remembered.
+EOF
+  log "Wrote $dest"
+}
+
+create_memory_decisions() {
+  local dest="$ROOT/data/memory/decisions.md"
+  cat > "$dest" <<'EOF'
+# Decisions
+
+One section per decision. Record what changed and what it replaced, when you
+know. Empty until something is remembered.
+EOF
+  log "Wrote $dest"
+}
+
+create_memory_preferences() {
+  local dest="$ROOT/data/memory/preferences.md"
+  cat > "$dest" <<'EOF'
+# Preferences
+
+Durable preferences that will not fit in USER.md. Empty until something is
+remembered.
 EOF
   log "Wrote $dest"
 }
@@ -465,10 +590,15 @@ mkdir -p "$OPENCODE_WORKSPACE_HOST"
 upsert_env .env OPENCODE_WORKSPACE_HOST "$OPENCODE_WORKSPACE_HOST"
 
 # --- data/ tree ---
-# data/voice and data/projects are bind-mount sources for the hermes service.
-# Create them here; if Docker gets there first it creates them owned by root,
-# and Hermes can then write neither calibration output nor drafts.
-mkdir -p "data/inputs/${WORKSPACE}" "data/rag_storage/${WORKSPACE}" "data/hermes" "data/voice" "data/projects"
+# Bind-mount sources for the hermes service. Create them here; if Docker gets
+# there first it creates them owned by root, and Hermes can then write neither
+# calibration output, drafts, nor memory files. Profile parents exist so the
+# shared memories/ overlays in compose have somewhere to land.
+mkdir -p "data/inputs/${WORKSPACE}" "data/rag_storage/${WORKSPACE}" \
+  "data/hermes/memories" \
+  "data/hermes/profiles/api-server" \
+  "data/hermes/profiles/browser" \
+  "data/voice" "data/projects" "data/memory/notes"
 if [[ ! -f "data/inputs/${WORKSPACE}/getting-started.md" ]]; then
   create_getting_started "$WORKSPACE"
 fi
@@ -478,7 +608,25 @@ fi
 if [[ ! -f "data/projects/README.md" ]]; then
   create_projects_readme
 fi
-log "Created data/inputs/${WORKSPACE}/, data/rag_storage/${WORKSPACE}/, data/hermes/, data/voice/, and data/projects/"
+if [[ ! -f "data/hermes/memories/USER.md" ]]; then
+  create_hermes_user_md
+fi
+if [[ ! -f "data/memory/README.md" ]]; then
+  create_memory_readme
+fi
+if [[ ! -f "data/memory/INDEX.md" ]]; then
+  create_memory_index
+fi
+if [[ ! -f "data/memory/people.md" ]]; then
+  create_memory_people
+fi
+if [[ ! -f "data/memory/decisions.md" ]]; then
+  create_memory_decisions
+fi
+if [[ ! -f "data/memory/preferences.md" ]]; then
+  create_memory_preferences
+fi
+log "Created data/inputs/${WORKSPACE}/, data/rag_storage/${WORKSPACE}/, data/hermes/, data/voice/, data/projects/, and data/memory/"
 
 # --- Default profile: core (Hermes + WebUI + SearXNG) ---
 if ! grep -q '^COMPOSE_PROFILES=' .env 2>/dev/null; then
