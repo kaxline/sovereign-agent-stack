@@ -101,8 +101,10 @@ See [SECURITY.md](SECURITY.md).
 | [docs/](docs/README.md) | Per-service guides |
 | [Hermes](docs/hermes.md) | Agent gateway, skills, MCP |
 | [Hermes WebUI](docs/hermes-webui.md) | Chat UI + lean gateway mode |
+| [Knowledge bases](docs/knowledge-bases.md) | Corpora, ingest, hot-workspace switching (`rag`) |
 | [n8n workflows](docs/n8n.md) | Workflows that call the stack (with `automation`) |
-| [Writing voice](docs/writing-voice.md) | Style calibration skill |
+| [Writing voice](docs/writing-voice.md) | Drafting artifacts in your style (not chat tone) |
+| [Memory](docs/memory.md) | Built-in USER.md, session search, curated notes |
 | [Releasing](docs/releasing.md) | Thematic commit playbook for the first public history |
 
 ## Commands

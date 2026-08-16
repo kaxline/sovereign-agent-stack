@@ -27,6 +27,11 @@ That routing is why the addition stays small. `HERMES_WEBUI_CHAT_BACKEND=gateway
 
 There is also exactly one place where turns actually run. Configure a new MCP server, a skill, or a mount for the agent and the browser picks it up automatically; when something breaks, you only have one container to look in.
 
+How the agent *talks* is the `browser` profile's `SOUL.md`
+(`data/hermes/profiles/browser/SOUL.md`), not the dashboard copy and not the
+`write-in-voice` skill. Memories are shared across profiles; soul is not. See
+[Conversational tone](hermes.md#conversational-tone-soulmd).
+
 ## Enabling
 
 Ensure `core` is in `.env`:
@@ -119,6 +124,8 @@ Buying parity back is a one-line change: mount the agent source into the WebUI c
 ## Memory
 
 `HERMES_WEBUI_AGENT_CACHE_MAX=5` (default 25) is the biggest lever on the WebUI's resident memory, since each cached agent pins a full transcript. The service is capped at 512M and the default does not fit in that.
+
+That is RAM, not agent memory. Durable facts, past-chat search, and curated notes are documented in [Memory](memory.md) and [Hermes Agent](hermes.md#memory). Chat tone is [SOUL.md](hermes.md#conversational-tone-soulmd) on this same `browser` profile. WebUI chat runs on the `browser` gateway, so `session_search` from the WebUI does not see dashboard/CLI transcripts.
 
 Enabling the WebUI also raises the `hermes` container's own limit from 2G to 3G, since it now supervises a third gateway process (default, `api-server`, `browser`), each with its own loaded toolset and MCP clients.
 

@@ -17,6 +17,13 @@ API_PORT="${HERMES_API_SERVER_PORT:-8643}"
 API_TOOLSET="${HERMES_API_TOOLSET:-hermes-api-server}"
 SOURCE_ENV="${BOOTSTRAP_API_ENV:-/bootstrap/api-server.env}"
 SKILLS_EXTERNAL_DIR="${HERMES_SKILLS_EXTERNAL_DIR:-/opt/skills}"
+# Interactive sessions (dashboard / CLI / WebUI) review memory every 3 user
+# turns. The factory default of 10 almost never fires: most chats here are
+# 1–2 turns. Unattended API sessions keep a slower cadence so one-shot n8n
+# jobs do not distill themselves into USER.md. The clone inherits the
+# default-profile value, so the API profile must be set back explicitly.
+INTERACTIVE_MEMORY_NUDGE="${HERMES_INTERACTIVE_MEMORY_NUDGE_INTERVAL:-3}"
+PROFILE_MEMORY_NUDGE="${HERMES_MEMORY_NUDGE_INTERVAL:-10}"
 LIGHTRAG_MCP_URL="${LIGHTRAG_MCP_URL:-http://lightrag-mcp:8000/mcp}"
 LIGHTRAG_MCP_TIMEOUT="${LIGHTRAG_MCP_TIMEOUT:-120}"
 LIGHTRAG_MCP_CONNECT_TIMEOUT="${LIGHTRAG_MCP_CONNECT_TIMEOUT:-30}"
@@ -264,6 +271,9 @@ fi
 # who never set up the API server profile.
 set_yaml_list "$(config_path_for "")" "skills.external_dirs" "$SKILLS_EXTERNAL_DIR"
 
+log "Setting memory.nudge_interval=${INTERACTIVE_MEMORY_NUDGE} on default profile"
+hermes_config_set "" "memory.nudge_interval" "$INTERACTIVE_MEMORY_NUDGE"
+
 # --- Register web-reading MCP servers (default profile) ---
 # Same rationale as the skills registration: dashboard and CLI sessions get URL
 # reading whether or not the API server profile is ever configured.
@@ -342,6 +352,9 @@ remove_env_key "$DEFAULT_ENV" "HERMES_MAX_ITERATIONS"
 log "Setting agent.max_turns=${MAX_TURNS} and ${API_TOOLSET} toolset for api_server platform"
 hermes -p "$PROFILE" config set "agent.max_turns" "$MAX_TURNS"
 set_yaml_list "$(config_path_for "$PROFILE")" "platform_toolsets.api_server" "$API_TOOLSET"
+
+log "Setting memory.nudge_interval=${PROFILE_MEMORY_NUDGE} on profile '${PROFILE}'"
+hermes_config_set "$PROFILE" "memory.nudge_interval" "$PROFILE_MEMORY_NUDGE"
 
 # Register LightRAG MCP as read-oriented Knowledge Base access for API sessions.
 # Opt-in via LIGHTRAG_MCP_ENABLED (set when the `rag` compose profile is on).

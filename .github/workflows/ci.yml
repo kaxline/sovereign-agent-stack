@@ -32,7 +32,8 @@ jobs:
           echo 'API_SERVER_KEY=ci-api-key-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' >> compose/hermes/api-server.env
           # browser.env example already has a placeholder key line — ensure set
           sed -i 's/^API_SERVER_KEY=.*/API_SERVER_KEY=ci-browser-key-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/' compose/hermes/browser.env
-          mkdir -p data/hermes data/voice data/projects data/inputs/my-kb data/rag_storage/my-kb
+          mkdir -p data/hermes/memories data/hermes/profiles/api-server data/hermes/profiles/browser \
+            data/voice data/projects data/memory data/inputs/my-kb data/rag_storage/my-kb
       - name: Validate compose configs
         run: |
           set -e

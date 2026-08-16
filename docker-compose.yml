@@ -464,6 +464,8 @@ services:
   # Dashboard: http://localhost:9119 (localhost-bound)
   # Voice:   drop writing samples in data/voice/<name>/samples/ — see data/voice/README.md
   # Projects: one working directory per project in data/projects/<name>/ — see data/projects/README.md
+  # Memory:  curated notes in data/memory/ — see data/memory/README.md
+  #          MEMORY.md / USER.md are shared across profiles via memories/ overlays
   # ----------------------------------------------------------------------
   hermes-api-bootstrap:
     profiles: ["core"]
@@ -478,6 +480,8 @@ services:
       - HERMES_API_PROFILE_NAME=${HERMES_API_PROFILE_NAME:-api-server}
       - HERMES_API_MAX_TURNS=${HERMES_API_MAX_TURNS:-20}
       - HERMES_API_SERVER_PORT=${HERMES_API_SERVER_PORT:-8643}
+      # Unattended one-shots must not distill themselves into USER.md.
+      - HERMES_MEMORY_NUDGE_INTERVAL=${HERMES_API_MEMORY_NUDGE_INTERVAL:-10}
       # Web-reading MCP sidecar registered on both Hermes profiles.
       - SEARXNG_MCP_URL=${SEARXNG_MCP_URL:-http://mcp-searxng:3000/mcp}
       - LIGHTRAG_MCP_URL=${LIGHTRAG_MCP_URL:-http://lightrag-mcp:8000/mcp}
@@ -510,6 +514,9 @@ services:
       # unattended cap would only truncate useful work mid-task.
       - HERMES_API_MAX_TURNS=${HERMES_BROWSER_MAX_TURNS:-60}
       - HERMES_API_SERVER_PORT=${HERMES_BROWSER_API_PORT:-8644}
+      # Interactive chat: review memory every 3 user turns (factory default 10
+      # almost never fires on 1–2 turn WebUI sessions).
+      - HERMES_MEMORY_NUDGE_INTERVAL=${HERMES_BROWSER_MEMORY_NUDGE_INTERVAL:-3}
       # Full CLI toolset: interactive-only tools (clarify, send_message,
       # text_to_speech) are wanted here, unlike the unattended API profile.
       - HERMES_API_TOOLSET=hermes-cli
@@ -551,6 +558,12 @@ services:
       - HERMES_DASHBOARD_BASIC_AUTH_SECRET=${HERMES_DASHBOARD_AUTH_SECRET:?set HERMES_DASHBOARD_AUTH_SECRET in .env}
       # API server runs on the api-server profile (port 8643), not the default gateway.
       - API_SERVER_ENABLED=false
+      # The official image sets HERMES_WRITE_SAFE_ROOT=/opt/data. write_file and
+      # patch then hard-block every other mount, even when the bind is rw, and
+      # the agent invents /opt/data/projects (inside Hermes home) as a workaround.
+      # Keep /opt/data first so cron, memories, and profile state still write.
+      # Add any new writable bind here; do not add /opt/skills (that mount is ro).
+      - HERMES_WRITE_SAFE_ROOT=/opt/data:/opt/projects:/opt/voice:/opt/memory
       # The environment probe reports /opt/data as both home and cwd, and hands
       # the agent no other path. Left at that, it builds every path for the
       # user's own files under /opt/data (e.g. /opt/data/projects) and reports
@@ -560,12 +573,25 @@ services:
         and state, not the user's work. The user's material lives on separate mounts
         that no path under /opt/data can reach: /opt/projects (per-project working
         directories, read-write), /opt/voice (writing-voice corpora, read-write),
-        and /opt/skills (repo-shipped skills, read-only). A named project or 'the
-        projects dir' means /opt/projects/<name>, for example /opt/projects/career.
-        Pass these absolute paths to the file, search, and terminal tools; never
-        resolve them relative to the working directory."
+        /opt/memory (curated long-form notes, read-write), and /opt/skills
+        (repo-shipped skills, read-only). A named project or 'the projects dir'
+        means /opt/projects/<name>, for example /opt/projects/career. Pass these
+        absolute paths to the file, search, and terminal tools; never resolve them
+        relative to the working directory.
+        Active knowledge base (LightRAG WORKSPACE): ${WORKSPACE}. Host inputs for
+        that corpus live under data/inputs/${WORKSPACE}/. For knowledge questions,
+        prefer LightRAG query_document against this KB before web search; if the
+        KB has nothing relevant, say so rather than inventing, then search only
+        if the user wants broader context. For past conversations use session_search.
+        Short durable facts belong in the memory tool (USER.md / MEMORY.md);
+        longer notes belong under /opt/memory."
     volumes:
       - ./data/hermes:/opt/data
+      # Share MEMORY.md / USER.md across default, api-server, and browser.
+      # Without these overlays each profile writes into its own empty memories/
+      # and WebUI facts never reach the dashboard (or the other way around).
+      - ./data/hermes/memories:/opt/data/profiles/api-server/memories
+      - ./data/hermes/memories:/opt/data/profiles/browser/memories
       # Repo-shipped skills. Read-only, because Hermes draws no write boundary
       # around external skill dirs; the ro flag is what keeps skill_manage out.
       - ./compose/hermes/skills:/opt/skills:ro
@@ -573,6 +599,8 @@ services:
       - ./data/voice:/opt/voice
       # Per-project working directories (gitignored). Writable: agents draft here.
       - ./data/projects:/opt/projects
+      # Curated long-form memory (gitignored). Writable: the working-memory skill.
+      - ./data/memory:/opt/memory
     extra_hosts:
       - "host.docker.internal:host-gateway"
     shm_size: "1g"
@@ -665,6 +693,7 @@ services:
       - ./compose/hermes/skills:/opt/skills:ro
       - ./data/projects:/opt/projects
       - ./data/voice:/opt/voice
+      - ./data/memory:/opt/memory
     deploy:
       resources:
         limits:
