@@ -3,6 +3,12 @@
 Step-by-step guide to turning a folder of markdown files into a reusable writing voice, then
 drafting new text in it. The mechanism is the repo-shipped `write-in-voice` Hermes skill.
 
+This is **not** how you change how Hermes talks in WebUI or dashboard chat. Chat
+tone is `SOUL.md` on the profile that serves that surface — for the WebUI, that
+is `data/hermes/profiles/browser/SOUL.md`. Keep samples on disk and distill them
+into soul; do not paste the corpus into the prompt. See
+[Conversational tone](hermes.md#conversational-tone-soulmd).
+
 You **calibrate** once, distilling your samples into a style guide, then **write** against
 that guide as often as you like. Calibration is the expensive half, which is why it happens
 on request instead of being re-derived on every draft.
@@ -39,6 +45,10 @@ rough notes.
 - Co-authored or heavily edited text, where the voice is not purely yours
 - Reference material, changelogs, and API docs that are mostly headers, tables, and lists
 - Drafts you abandoned because the writing was not working
+- Chat logs and Slack-like fragments, unless this voice is *only* for chat-shaped
+  drafts. Mixing them with essays collapses measured sentence length. Even a
+  chat-only corpus still does not become the assistant's WebUI tone until you
+  copy its distilled constraints into `SOUL.md`.
 
 That second point matters more than it looks. Calibration measures prose, and in a document
 made of headers and bullet fragments every fragment counts as one very short sentence. Feed
@@ -215,11 +225,13 @@ is exactly the kind of finding that belongs in the "Never does" list.
 | --- | --- |
 | Agent says the voice is not calibrated | No `STYLE.md` yet. Run the calibrate prompt from Step 3. |
 | Agent cannot find the voice | Check `docker compose exec hermes ls /opt/voice`. A voice needs a `samples/` subdirectory to be recognised. |
+| Calibration fails with `Write denied` on `/opt/voice` | `HERMES_WRITE_SAFE_ROOT` on `hermes` no longer lists `/opt/voice`. The image default is `/opt/data` only; `write_file` then refuses `STYLE.md` even when the bind is rw. |
 | Samples directory looks empty in the container | Files were added outside `data/voice/`, or the Hermes profile is not running. Verify on the host with `ls data/voice/my-voice/samples`. |
 | Skill not available at all | Confirm discovery with `docker compose exec hermes hermes skills list \| grep write-in-voice`. See the [skills setup notes](hermes.md#writing-in-your-voice) if it is missing. |
 | Measured sentences are far shorter than your real writing | The corpus is reference material, not prose. See Step 1. |
 | Drafts are close but flat | Usually the drafting model, not the corpus. Style matching is hard for small local models, and a bigger one tends to beat more samples. |
 | Drafts borrow topics from your samples | The exemplars are being leaned on too hard. Swap in ones further from the current subject. |
+| WebUI chat still sounds like stock Hermes | Wrong file. This skill drafts documents; chat tone is `SOUL.md` on the `browser` profile. See [Conversational tone](hermes.md#conversational-tone-soulmd). |
 
 ## Notes
 
