@@ -1,4 +1,7 @@
-# Local runtime (created by setup)
+# Local runtime (created by setup). Includes Hermes SOUL.md (per-profile
+# personality), USER.md / MEMORY.md, writing-voice samples, curated memory,
+# and project working dirs. Never commit this tree — and do not force-add
+# SOUL.md or data/voice/<name>/samples/.
 data/
 # Hermes bind-mount home (also covered by data/ above)
 data/hermes/

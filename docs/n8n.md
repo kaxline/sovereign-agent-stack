@@ -113,6 +113,8 @@ No authentication required (internal instance). Set timeout to 600000 ms. Respon
 
 n8n mounts `./data/inputs` at `/data/shared` (read-only). Files for your workspace live under `data/inputs/<WORKSPACE>/` on the host. Use **Read/Write Files from Disk** or **Local File Trigger** nodes with paths under `/data/shared/<WORKSPACE>/`.
 
+Scan and query workflows always hit the **hot** LightRAG workspace (whatever `WORKSPACE` is in `.env`). To switch corpora from the host, use `make corpus-use SLUG=…` — see [Knowledge bases](knowledge-bases.md).
+
 ## Verification
 
 ```bash

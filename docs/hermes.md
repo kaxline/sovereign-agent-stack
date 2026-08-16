@@ -157,12 +157,165 @@ mcp_servers:
       include: [deep_research, quick_search, write_report, get_research_sources]
 ```
 
-Ask Hermes to use LightRAG for Knowledge Base questions, for example: "Use LightRAG to summarize what is in my Knowledge Base." Use SearXNG for quick lookups and `web_url_read` to read a specific page; use `gptr` MCP for deep research. Avoid `deep_research` while LightRAG is indexing.
+Ask Hermes to use LightRAG for Knowledge Base questions, for example: "Use LightRAG to summarize what is in my Knowledge Base." Prefer the KB before web search; if it is empty, say so. Use SearXNG for quick lookups and `web_url_read` to read a specific page; use `gptr` MCP for deep research. Avoid `deep_research` while LightRAG is indexing.
+
+Only one LightRAG workspace is hot at a time (`WORKSPACE` in `.env`). Create and switch corpora with `make corpus-*` — see [Knowledge bases](knowledge-bases.md).
+
+## Memory
+
+Four places a fact can live. They are not interchangeable.
+
+| Store | Job | Cap / scope |
+|---|---|---|
+| Native `memory` tool | Tiny durable facts (identity, standing prefs) injected every session | `USER.md` ~1375 chars, `MEMORY.md` ~2200 chars |
+| `session_search` | What was said in a past chat | FTS over **that gateway's** `state.db` |
+| `working-memory` skill | Long-form notes that will not fit the cap | files under `/opt/memory` |
+| LightRAG | Ingested documents | the hot `WORKSPACE` |
+
+`session_search` is a native Hermes tool on both `hermes-cli` and `hermes-api-server`. There is no companion recall skill.
+
+[Memory](memory.md) is the user-facing how-to (what to put where, remember / recall /
+consolidate, troubleshooting).
+
+### Built-in USER.md / MEMORY.md
+
+Hermes already had this enabled. It stayed empty because the local model never
+called the `memory` tool, and the factory `nudge_interval` of 10 almost never
+fires on 1–2 turn chats. Bootstrap now sets:
+
+| Profile | `memory.nudge_interval` | Why |
+|---|---|---|
+| default (dashboard / CLI) | 3 | interactive; review can fire on short chats |
+| `browser` (WebUI) | 3 | same |
+| `api-server` | 10 | unattended n8n one-shots must not distill themselves into USER.md |
+
+`flush_min_turns` is dead config in this agent tag. `memory.provider` stays empty
+(built-in only; no Honcho / Mem0).
+
+The three profiles each have their own Hermes home, so without extra mounts a
+WebUI write would never appear on the dashboard. Compose overlays the default
+store onto the other two:
+
+```text
+./data/hermes/memories  →  /opt/data/memories                  (default)
+                        →  /opt/data/profiles/api-server/memories
+                        →  /opt/data/profiles/browser/memories
+```
+
+`setup.sh` seeds `USER.md` once (empty Identity / Preferences / Working style
+headings). `MEMORY.md` appears on the first tool write. Hand-edit `USER.md`;
+it is a normal markdown file.
+
+Ask explicitly when you want something saved: `Remember that I prefer terse replies.`
+
+### Past chats (`session_search`)
+
+Shapes:
+
+- `session_search(query="…")` — FTS, snippets
+- `session_search(session_id=…, around_message_id=…)` — scroll
+- `session_search(session_id=…)` — dump one session
+- `session_search()` — browse recent
+
+Each gateway searches only its own database:
+
+| Gateway | Host path |
+|---|---|
+| default (dashboard / CLI) | `data/hermes/state.db` |
+| `browser` (WebUI) | `data/hermes/profiles/browser/state.db` |
+| `api-server` | `data/hermes/profiles/api-server/state.db` |
+
+Do not shell out to sqlite against a live WAL database.
+
+### Curated files (`working-memory`)
+
+A repo-shipped skill, same pattern as `write-in-voice`. User-owned markdown for
+people, decisions, preferences, and extra topic notes.
+
+| Host | Container | Mode | Contents |
+|---|---|---|---|
+| `./data/memory` | `/opt/memory` | read-write | Curated long-form notes (gitignored) |
+
+```bash
+# files are created by setup.sh; then in a Hermes session:
+Remember that I prefer terse replies and I am job-searching this quarter.
+What do you know about my preferences?
+Consolidate memory.
+```
+
+The skill routes: tiny facts → `memory` tool; past chats → `session_search`;
+documents → LightRAG; everything else → `/opt/memory`. `INDEX.md` is the
+hand-editable table of contents. Keep facts you wrote and drafts the agent
+produced in separate files.
+
+The `/opt/memory` mount must stay listed in `HERMES_ENVIRONMENT_HINT`. Without
+it the agent invents `/opt/data/memory` and concludes the store is missing.
+It must also stay on `HERMES_WRITE_SAFE_ROOT` or `write_file` refuses the mount
+even when the bind is read-write.
+
+## Conversational tone (SOUL.md)
+
+How the agent *talks* in chat is a different file from how it *drafts* in your
+prose. `write-in-voice` produces artifacts; `USER.md` holds facts about you.
+Neither one is the assistant's identity.
+
+Hermes loads `SOUL.md` from that profile's home as slot 1 of the system prompt
+(it replaces the stock Nous identity). Nous documents the format in
+[Use SOUL.md with Hermes](https://hermes-agent.nousresearch.com/docs/guides/use-soul-with-hermes);
+this stack's wrinkle is that the three gateways do **not** share the file.
+
+| Surface | Host path |
+| --- | --- |
+| WebUI (`browser` profile) | `data/hermes/profiles/browser/SOUL.md` |
+| Dashboard / CLI (default) | `data/hermes/SOUL.md` |
+| n8n API (`api-server`) | `data/hermes/profiles/api-server/SOUL.md` |
+
+Compose overlays `USER.md` / `MEMORY.md` across those homes. It does **not**
+overlay `SOUL.md`. Edit the browser copy for WebUI chat; copy the same text to
+the default file if you want the dashboard to match. Leaving them diverged is
+how you get a terse WebUI and a generic CLI.
+
+Hand-edit the markdown. Keep it to identity, style, avoid, and defaults — a few
+hundred words, not a manifesto. Absences belong in an **Avoid** list (no
+preamble, no sycophancy, no hype). Then start a **new** WebUI thread; the
+system prompt is built at session start, so continuing an old chat will not
+pick up the edit. No Hermes restart is required.
+
+`/personality` presets are session overlays on top of soul. Fine for a one-off
+mode switch; a poor loop for shaping the baseline, and this lean WebUI (gateway
+mode, no agent source in the UI container) is a weak place to drive them.
+
+### Samples: distill, do not inject
+
+Raw writing or chat samples belong on disk as a calibration corpus, not in the
+prompt:
+
+```text
+data/voice/<name>/samples/   →   /opt/voice/<name>/samples/
+```
+
+That mount is already gitignored. Calibrate (or hand-write) a `STYLE.md`, then
+copy the constraints that matter — especially the Avoid list — into the
+browser `SOUL.md`. Keep chat transcripts in a **separate** voice directory from
+essay/blog samples; mixed corpora wreck the sentence-length stats
+`write-in-voice` uses.
+
+Do not paste the corpus into `SOUL.md`, `USER.md`, `AGENTS.md`, or
+`HERMES_ENVIRONMENT_HINT`. `SOUL.md` is on every completion (including
+tool-follow-up calls). Hermes caps context files at a 20k-character floor and
+truncates with a 70/20 head/tail split, so a dumped corpus both costs thousands
+of tokens per request and loses its middle. On a local model that is prefill
+time and conversation room, not API spend.
+
+A one-liner in `USER.md` Preferences ("I prefer terse replies") is a cheap
+user-side nudge. It does not replace soul.
 
 ## Writing in your voice
 
 Hermes ships with a `write-in-voice` skill that drafts new text in your own writing style,
 calibrated from samples you provide. Samples stay local and git never tracks them.
+This skill does **not** change how the agent talks in WebUI or dashboard chat —
+that is [SOUL.md](#conversational-tone-soulmd).
 
 ```bash
 mkdir -p data/voice/my-voice/samples
@@ -229,9 +382,11 @@ Notes:
   with `docker compose restart hermes`.
 - The drafting model sets the ceiling on output quality. Style matching is hard for small
   local models, and swapping in a bigger one usually beats piling on more samples.
-- If Hermes cannot write into `/opt/voice`, the host directory is probably owned by root
-  because Docker created it instead of `setup.sh`. Fix ownership, or set `HERMES_UID` and
-  `HERMES_GID` in `.env` to your own `id -u` / `id -g`.
+- If Hermes cannot write into `/opt/voice`, check two things. The official image sets
+  `HERMES_WRITE_SAFE_ROOT=/opt/data`, so `write_file` / `patch` refuse `/opt/voice` unless
+  compose lists it (this stack does). If the sandbox is already correct, the host directory
+  is probably owned by root because Docker created it instead of `setup.sh`. Fix ownership,
+  or set `HERMES_UID` and `HERMES_GID` in `.env` to your own `id -u` / `id -g`.
 
 ## Per-project working directories
 
@@ -256,8 +411,18 @@ service describes the mount layout in the system prompt, so "the career project"
 `/opt/projects/career` on its own. Do not drop that hint. Hermes probes its environment at
 prompt-build time and reports only `/opt/data` as both home and working directory, so without
 it the agent builds paths like `/opt/data/projects`, gets `Path not found`, and concludes the
-folder does not exist even though the mount is perfectly healthy. Keep `/opt/projects` listed
-there when you add mounts of your own.
+folder does not exist even though the mount is perfectly healthy. Keep `/opt/projects` and
+`/opt/memory` listed there when you add mounts of your own.
+
+The hint is not enough by itself. The official image sets `HERMES_WRITE_SAFE_ROOT=/opt/data`,
+so `write_file` and `patch` hard-block `/opt/projects` (and `/opt/voice`, `/opt/memory`) even
+when the bind is read-write. The agent then treats that as "read-only" and writes under
+`/opt/data/projects`, which lands in `data/hermes/` mixed with Hermes state. Compose
+overrides the sandbox to `/opt/data:/opt/projects:/opt/voice:/opt/memory`. Keep `/opt/data`
+first so cron, memories, and profile state still write. Add any new writable bind to that
+list; do not add `/opt/skills`. Recreate the container after changing it — a restart does
+not pick up a new env value. Do not remount projects at `/opt/data/projects`, and do not
+ask the agent to remember that path: the hint will keep sending it to `/opt/projects`.
 
 The mount is live, so added files appear immediately and no restart is needed. Hermes can
 write here, so keep source material you wrote in different subdirectories from drafts the
@@ -313,15 +478,33 @@ docker compose logs -f hermes
 docker compose exec hermes hermes config get skills.external_dirs
 grep -A3 '^skills:' data/hermes/config.yaml data/hermes/profiles/api-server/config.yaml
 docker compose exec hermes ls /opt/skills/write-in-voice
+docker compose exec hermes ls /opt/skills/working-memory
 
 # Whether the skill is actually discovered. This is the one to trust.
 docker compose exec hermes hermes skills list | grep write-in-voice
+docker compose exec hermes hermes skills list | grep working-memory
 
-# Mount flags: /opt/skills must be ro, /opt/voice and /opt/projects must be rw
-docker compose exec hermes sh -c 'grep -E " /opt/(skills|voice|projects) " /proc/mounts'
+# Memory nudge: interactive profiles at 3, api-server at 10.
+docker compose exec hermes hermes config get memory.nudge_interval
+docker compose exec hermes hermes -p browser config get memory.nudge_interval
+docker compose exec hermes hermes -p api-server config get memory.nudge_interval
+
+# Shared built-in memory: all three paths are the same host dir.
+docker compose exec hermes ls /opt/data/memories
+docker compose exec hermes sh -c 'ls -id /opt/data/memories /opt/data/profiles/api-server/memories /opt/data/profiles/browser/memories'
+
+# Conversational tone: each profile has its own SOUL.md (not shared).
+docker compose exec hermes ls /opt/data/SOUL.md /opt/data/profiles/browser/SOUL.md /opt/data/profiles/api-server/SOUL.md
+
+# Mount flags: /opt/skills must be ro; voice, projects, and memory must be rw
+docker compose exec hermes sh -c 'grep -E " /opt/(skills|voice|projects|memory) " /proc/mounts'
+
+# File-tool write sandbox. Image default is /opt/data only; extra mounts must
+# be listed or write_file/patch refuse them even when the bind is rw.
+docker compose exec hermes printenv HERMES_WRITE_SAFE_ROOT
 
 # Effective permissions for the user Hermes actually runs as
-for d in /opt/voice /opt/projects /opt/skills; do
+for d in /opt/voice /opt/projects /opt/memory /opt/skills; do
   docker compose exec --user hermes hermes \
     sh -c "test -w $d && echo '$d WRITABLE' || echo '$d NOT-WRITABLE'"
 done

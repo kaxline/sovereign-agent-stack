@@ -1,4 +1,5 @@
-.PHONY: setup ensure-local up down logs ps restart clean doctor hermes-upgrade
+.PHONY: setup ensure-local up down logs ps restart clean doctor hermes-upgrade \
+	corpus-create corpus-use corpus-list corpus-ingest corpus-destroy
 
 setup:
 	./scripts/setup.sh
@@ -26,6 +27,30 @@ ps:
 
 restart:
 	docker compose restart hermes hermes-webui
+
+# Corpus lifecycle (requires rag profile). One hot WORKSPACE at a time.
+#   make corpus-create SLUG=demo-a
+#   make corpus-use SLUG=demo-a
+#   make corpus-ingest
+#   make corpus-list
+#   make corpus-destroy SLUG=demo-a
+corpus-create:
+	@test -n "$(SLUG)" || (echo "Usage: make corpus-create SLUG=<slug>"; exit 1)
+	./scripts/corpus.sh create "$(SLUG)"
+
+corpus-use:
+	@test -n "$(SLUG)" || (echo "Usage: make corpus-use SLUG=<slug>"; exit 1)
+	./scripts/corpus.sh use "$(SLUG)"
+
+corpus-list:
+	./scripts/corpus.sh list
+
+corpus-ingest:
+	./scripts/corpus.sh ingest $(SLUG)
+
+corpus-destroy:
+	@test -n "$(SLUG)" || (echo "Usage: make corpus-destroy SLUG=<slug>"; exit 1)
+	./scripts/corpus.sh destroy "$(SLUG)"
 
 # Upgrade Hermes and its WebUI together. The WebUI reads the agent's on-disk
 # state layout and is only tested against a matching agent, so bumping one alone

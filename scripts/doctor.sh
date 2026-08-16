@@ -139,6 +139,60 @@ if has_profile ollama; then
   check_port "$(env_get OLLAMA_HOST_PORT 11434)" "Ollama"
 fi
 
+# --- Knowledge corpus (rag) ---
+if has_profile rag; then
+  echo
+  echo "--- Knowledge corpus ---"
+  WS="$(env_get WORKSPACE)"
+  if [[ -n "$WS" ]]; then
+    ok "active WORKSPACE=${WS}"
+    if [[ -d "data/inputs/${WS}" ]]; then
+      ok "data/inputs/${WS}/ exists"
+    else
+      warn "data/inputs/${WS}/ missing — run: make corpus-create SLUG=${WS}"
+    fi
+  else
+    warn "WORKSPACE unset in .env"
+  fi
+  if [[ -n "$(env_get NEO4J_WORKSPACE)" ]]; then
+    bad "NEO4J_WORKSPACE is set — unset it or every corpus collapses into one Neo4j label"
+  else
+    ok "NEO4J_WORKSPACE is unset (correct for multi-corpus)"
+  fi
+  if [[ -n "$(env_get POSTGRES_WORKSPACE)" ]]; then
+    bad "POSTGRES_WORKSPACE is set — unset it or workspace isolation collapses"
+  fi
+  REG="data/corpora/registry.json"
+  if [[ -f "$REG" && -n "$WS" ]]; then
+    REG_DIM="$(python3 - "$REG" "$WS" <<'PY'
+import json, sys
+from pathlib import Path
+path, slug = Path(sys.argv[1]), sys.argv[2]
+data = json.loads(path.read_text())
+for c in data.get("corpora", []):
+    if c.get("slug") == slug:
+        print(c.get("embedding_dim") or "")
+        break
+PY
+)"
+    CUR_DIM="$(env_get EMBEDDING_DIM)"
+    if [[ -n "$REG_DIM" && -n "$CUR_DIM" && "$REG_DIM" != "$CUR_DIM" ]]; then
+      bad "active corpus dim=${REG_DIM} but EMBEDDING_DIM=${CUR_DIM} — mismatch corrupts vectors"
+    elif [[ -n "$REG_DIM" ]]; then
+      ok "registry embedding_dim=${REG_DIM} matches EMBEDDING_DIM for ${WS}"
+    fi
+  fi
+  if docker info >/dev/null 2>&1; then
+    LR_PORT="$(env_get PORT 9621)"
+    LR_KEY="$(env_get LIGHTRAG_API_KEY)"
+    if curl -sf -H "X-API-Key: ${LR_KEY}" "http://127.0.0.1:${LR_PORT}/health" >/dev/null 2>&1; then
+      ok "LightRAG health OK on :${LR_PORT}"
+    else
+      warn "LightRAG not healthy on :${LR_PORT} (start with make up, or switch: make corpus-use SLUG=...)"
+    fi
+  fi
+fi
+
 # --- Compose config ---
 if [[ -f .env ]] && docker compose version >/dev/null 2>&1; then
   if docker compose config >/dev/null 2>&1; then
