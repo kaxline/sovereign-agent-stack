@@ -37,6 +37,9 @@ Do **not** use this skill for:
 - "What did we talk about last Tuesday?" — that is `session_search`
 - Writing in the user's prose style — that is `write-in-voice`
 - Project working files (drafts, source material) — that is `/opt/projects`
+- The user's living todo / task list — that is `living-todos`
+  (`/opt/projects/project-todo-list/README.md`), not this store and not the
+  session `todo` tool
 
 ## Route first
 
