@@ -1,0 +1,17 @@
+{
+  "files": [
+    {
+      "mtime_ns": 1787337015904952734,
+      "path": "notes/heading-only.md",
+      "sha256": "864db977300d2f7e0deaf7184bc003baffdb53ab6a3cb0689f4a28115b23cd20",
+      "size": 85
+    },
+    {
+      "mtime_ns": 1787336897368927669,
+      "path": "notes/with-description.md",
+      "sha256": "26161eded3cb2074065b03bf5356d9bb944e90615c6ec49f42bc69f974fbed27",
+      "size": 110
+    }
+  ],
+  "version": 1
+}
