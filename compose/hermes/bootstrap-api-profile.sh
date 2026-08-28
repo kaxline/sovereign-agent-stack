@@ -40,6 +40,15 @@ log() {
   printf '[hermes-api-bootstrap] %s\n' "$1"
 }
 
+# Replace a dotenv file from a temp path. Use cat+rm instead of mv: Docker Desktop
+# bind mounts reject `mv tmp existing-file` with "File exists" when two bootstrap
+# services write the same path concurrently.
+replace_file() {
+  _tmp="$1"
+  _file="$2"
+  cat "$_tmp" > "$_file" && rm -f "$_tmp"
+}
+
 # Upsert KEY=VALUE in a dotenv file (replace existing line or append).
 upsert_env() {
   file="$1"
@@ -54,7 +63,7 @@ upsert_env() {
         *) printf '%s\n' "$line" ;;
       esac
     done < "$file" > "$tmp"
-    mv "$tmp" "$file"
+    replace_file "$tmp" "$file"
   else
     printf '%s=%s\n' "$key" "$value" >> "$file"
   fi
@@ -67,7 +76,7 @@ remove_env_key() {
   [ -f "$file" ] || return 0
   tmp="$(mktemp)"
   grep -v "^${key}=" "$file" > "$tmp" || true
-  mv "$tmp" "$file"
+  replace_file "$tmp" "$file"
 }
 
 # Path to a profile's config.yaml ("" selects the default profile).
@@ -341,6 +350,12 @@ remove_env_key "$PROFILE_ENV" "HERMES_MAX_ITERATIONS"
 # --- Disable API server on default profile ---
 touch "$DEFAULT_ENV"
 upsert_env "$DEFAULT_ENV" "API_SERVER_ENABLED" "false"
+# Drop any leftover default-profile API_SERVER_KEY. Hermes WebUI loads
+# HERMES_HOME/.env via _reload_dotenv and overwrites container env; a stale
+# key here replaces the browser.env credential and every WebUI turn 401s.
+remove_env_key "$DEFAULT_ENV" "API_SERVER_KEY"
+remove_env_key "$DEFAULT_ENV" "API_SERVER_HOST"
+remove_env_key "$DEFAULT_ENV" "API_SERVER_PORT"
 remove_env_key "$DEFAULT_ENV" "HERMES_MAX_ITERATIONS"
 
 # --- Apply profile config ---
@@ -353,8 +368,26 @@ log "Setting agent.max_turns=${MAX_TURNS} and ${API_TOOLSET} toolset for api_ser
 hermes -p "$PROFILE" config set "agent.max_turns" "$MAX_TURNS"
 set_yaml_list "$(config_path_for "$PROFILE")" "platform_toolsets.api_server" "$API_TOOLSET"
 
+# The built-in `todo` toolset is in-memory per chat session. WebUI users treat
+# "add to the todo list" as durable; the model then reports an empty list in the
+# next thread. Disable it on every profile this bootstrap touches so living
+# todos go through the living-todos skill + /opt/projects/project-todo-list.
+log "Disabling session-only todo toolset on default and '${PROFILE}' profiles"
+set_yaml_list "$(config_path_for "")" "agent.disabled_toolsets" "todo"
+set_yaml_list "$(config_path_for "$PROFILE")" "agent.disabled_toolsets" "todo"
+
 log "Setting memory.nudge_interval=${PROFILE_MEMORY_NUDGE} on profile '${PROFILE}'"
 hermes_config_set "$PROFILE" "memory.nudge_interval" "$PROFILE_MEMORY_NUDGE"
+
+# Interactive WebUI sessions hit a local LM Studio with one slot. Qwen-family
+# models often answer "Let me search/read/check …" with finish_reason=stop and
+# zero tool calls; Hermes' intent-ack continuation nudges those turns to
+# continue, but only when agent.intent_ack_continuation is enabled (default
+# "auto" limits it to codex_responses). Turn it on for hermes-cli profiles.
+if [ "$API_TOOLSET" = "hermes-cli" ]; then
+  log "Enabling agent.intent_ack_continuation=true on profile '${PROFILE}'"
+  hermes_config_set "$PROFILE" "agent.intent_ack_continuation" "true"
+fi
 
 # Register LightRAG MCP as read-oriented Knowledge Base access for API sessions.
 # Opt-in via LIGHTRAG_MCP_ENABLED (set when the `rag` compose profile is on).
@@ -393,6 +426,35 @@ GATEWAY_STATE_FILE="${PROFILE_DIR}/gateway_state.json"
 log "Marking gateway for profile '${PROFILE}' as running (gateway_state.json)"
 printf '{"gateway_state":"running"}\n' > "$GATEWAY_STATE_FILE"
 chmod 644 "$GATEWAY_STATE_FILE" 2>/dev/null || true
+
+# Browser profile never owns the Signal SSE lock — default gateway does.
+# Pin adapter disabled at bootstrap so fresh installs work before a second
+# sync-signal-profile run (config.yaml is created here, not at ensure-local).
+if [ "$PROFILE" = "browser" ]; then
+  browser_cfg="$(config_path_for "$PROFILE")"
+  if [ -f "$browser_cfg" ]; then
+    log "Pinning platforms.signal.enabled=false on browser profile (default owns SSE)"
+    python3 - "$browser_cfg" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+
+path = Path(sys.argv[1])
+data = yaml.safe_load(path.read_text()) or {}
+platforms = data.setdefault("platforms", {})
+signal = platforms.setdefault("signal", {})
+if signal.get("enabled") is not False:
+    signal["enabled"] = False
+    platforms["signal"] = signal
+    data["platforms"] = platforms
+    path.write_text(yaml.safe_dump(data, sort_keys=False, default_flow_style=False))
+    print("pinned platforms.signal.enabled=false")
+else:
+    print("platforms.signal.enabled already false")
+PY
+  fi
+fi
 
 log "Done: profile=${PROFILE} port=${API_PORT} max_turns=${MAX_TURNS} toolset=${API_TOOLSET}"
 log "API URL (host): http://localhost:${API_PORT}/v1"

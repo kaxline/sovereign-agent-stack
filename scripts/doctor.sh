@@ -139,6 +139,90 @@ if has_profile ollama; then
   check_port "$(env_get OLLAMA_HOST_PORT 11434)" "Ollama"
 fi
 
+# --- Signal (optional; toggled by HERMES_SIGNAL_ENABLED) ---
+signal_enabled="$(env_get HERMES_SIGNAL_ENABLED 0)"
+case "$(echo "$signal_enabled" | tr '[:upper:]' '[:lower:]')" in
+  1|true|yes) signal_enabled=1 ;;
+  *) signal_enabled=0 ;;
+esac
+
+if [[ "$signal_enabled" -eq 1 ]]; then
+  echo
+  echo "--- Signal ---"
+  account="$(env_get SIGNAL_ACCOUNT)"
+  if [[ -n "$account" ]]; then
+    ok "SIGNAL_ACCOUNT is set"
+  else
+    bad "HERMES_SIGNAL_ENABLED=1 but SIGNAL_ACCOUNT is empty"
+  fi
+  data_dir="$(env_get SIGNAL_CLI_DATA_DIR "${HOME}/.local/share/signal-cli")"
+  data_dir="${data_dir/\$HOME/$HOME}"
+  data_dir="${data_dir/#\~/$HOME}"
+  if [[ -d "$data_dir" ]]; then
+    ok "SIGNAL_CLI_DATA_DIR exists (${data_dir})"
+  else
+    bad "SIGNAL_CLI_DATA_DIR missing (${data_dir}) — link signal-cli on the host first"
+  fi
+  if has_profile signal; then
+    ok "COMPOSE_PROFILES includes signal"
+  else
+    bad "HERMES_SIGNAL_ENABLED=1 but 'signal' not in COMPOSE_PROFILES — run make ensure-local"
+  fi
+  if [[ -f data/hermes/.env ]] && grep -q '^SIGNAL_HTTP_URL=http://signal-cli:8080' data/hermes/.env; then
+    ok "data/hermes/.env has SIGNAL_HTTP_URL=http://signal-cli:8080"
+  else
+    warn "data/hermes/.env missing Signal adapter URL — run make ensure-local"
+  fi
+  home_ch="$(env_get SIGNAL_HOME_CHANNEL)"
+  if [[ "$home_ch" == *"="* ]]; then
+    bad "SIGNAL_HOME_CHANNEL is corrupted (contains '=' / mashed next key) — fix the newline in .env"
+  elif [[ -n "$home_ch" ]]; then
+    ok "SIGNAL_HOME_CHANNEL is set (cron + WebUI default delivery target)"
+  else
+    bad "SIGNAL_HOME_CHANNEL is empty — set it for cron/WebUI delivery (e.g. Note to Self number)"
+  fi
+  browser_cfg="data/hermes/profiles/browser/config.yaml"
+  if [[ -f "$browser_cfg" ]]; then
+    if grep -A3 '^  signal:' "$browser_cfg" 2>/dev/null | grep -q 'enabled: false'; then
+      ok "browser profile has platforms.signal.enabled=false (default owns SSE)"
+    else
+      warn "browser config missing platforms.signal.enabled=false — run make ensure-local or recreate bootstrap"
+    fi
+  fi
+  if [[ -f data/hermes/profiles/browser/.env ]] && grep -q '^SIGNAL_HTTP_URL=http://signal-cli:8080' data/hermes/profiles/browser/.env; then
+    ok "browser profile has Signal credentials for WebUI send"
+  else
+    warn "browser profile missing Signal credentials — run make ensure-local"
+  fi
+  browser_jobs="data/hermes/profiles/browser/cron/jobs.json"
+  if [[ -f "$browser_jobs" ]] && grep -q 'last_delivery_error' "$browser_jobs" \
+    && grep -qE 'api_server|not send\(\)' "$browser_jobs" 2>/dev/null; then
+    warn "browser cron jobs have api_server delivery errors — recreate hermes and re-run jobs"
+  fi
+  if docker info >/dev/null 2>&1; then
+    if docker compose ps --status running hermes 2>/dev/null | grep -q hermes; then
+      if docker compose exec -T hermes grep -q 'assistant-stack: reject undeliverable cron origin' /opt/hermes/cron/scheduler.py 2>/dev/null \
+        && docker compose exec -T hermes grep -q 'assistant-stack: cron synthesize Signal' /opt/hermes/cron/scheduler.py 2>/dev/null \
+        && docker compose exec -T hermes grep -q 'assistant-stack: default WebUI cron deliver to signal' /opt/hermes/tools/cronjob_tools.py 2>/dev/null; then
+        ok "Hermes cron Signal patches applied"
+      else
+        warn "Hermes cron Signal patches missing — docker compose up -d --force-recreate hermes"
+      fi
+    fi
+    if docker compose ps --status running signal-cli 2>/dev/null | grep -q signal-cli; then
+      if docker compose exec -T hermes curl -sf --max-time 5 http://signal-cli:8080/api/v1/check >/dev/null 2>&1; then
+        ok "signal-cli healthy (reachable from hermes)"
+      elif docker compose exec -T signal-cli bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080' >/dev/null 2>&1; then
+        ok "signal-cli port 8080 is open"
+      else
+        warn "signal-cli container is up but HTTP check failed"
+      fi
+    else
+      warn "signal-cli not running — make up after ensure-local"
+    fi
+  fi
+fi
+
 # --- Knowledge corpus (rag) ---
 if has_profile rag; then
   echo

@@ -170,6 +170,7 @@ Four places a fact can live. They are not interchangeable.
 | Native `memory` tool | Tiny durable facts (identity, standing prefs) injected every session | `USER.md` ~1375 chars, `MEMORY.md` ~2200 chars |
 | `session_search` | What was said in a past chat | FTS over **that gateway's** `state.db` |
 | `working-memory` skill | Long-form notes that will not fit the cap | files under `/opt/memory` |
+| `living-todos` skill | Cross-session task list | `/opt/projects/project-todo-list/README.md` |
 | LightRAG | Ingested documents | the hot `WORKSPACE` |
 
 `session_search` is a native Hermes tool on both `hermes-cli` and `hermes-api-server`. There is no companion recall skill.
@@ -186,7 +187,7 @@ fires on 1–2 turn chats. Bootstrap now sets:
 | Profile | `memory.nudge_interval` | Why |
 |---|---|---|
 | default (dashboard / CLI) | 3 | interactive; review can fire on short chats |
-| `browser` (WebUI) | 3 | same |
+| `browser` (WebUI) | 10 | local LM Studio has one slot; avoid turn-3/6 background review racing chat |
 | `api-server` | 10 | unattended n8n one-shots must not distill themselves into USER.md |
 
 `flush_min_turns` is dead config in this agent tag. `memory.provider` stays empty
@@ -397,14 +398,17 @@ generated output side by side: a job search, a book, a client engagement, a rese
 |---|---|---|---|
 | `./data/projects` | `/opt/projects` | read-write | Your per-project working directories (gitignored) |
 
-Each subdirectory is one project, structured however the work wants. `setup.sh` creates
-`data/projects/` and drops a `README.md` there explaining the convention.
+Each subdirectory is one project. `setup.sh` creates `data/projects/` and drops a `README.md`
+there. Scaffold a new project with `make project-init PROJECT=…`, keep a short `AGENTS.md`
+brief and an `INDEX.md` file map, and select the path as a WebUI workspace when you want the
+brief injected automatically. Full convention: [Projects](projects.md).
 
 ```bash
-mkdir -p data/projects/my-project
+make project-init PROJECT=my-project
+make project-index PROJECT=my-project
 ```
 
-Then reference it by path in a prompt: `Using the notes in /opt/projects/my-project, draft ...`
+You can still reference a path in a prompt: `Using the notes in /opt/projects/my-project, draft ...`
 
 You do not have to name the path every time. `HERMES_ENVIRONMENT_HINT` on the `hermes`
 service describes the mount layout in the system prompt, so "the career project" resolves to
@@ -429,6 +433,10 @@ write here, so keep source material you wrote in different subdirectories from d
 agent produced. Mix them and generated text starts coming back to you cited as fact, and you
 lose the ability to ingest just the source half into LightRAG later. The same root-ownership
 caveat as `/opt/voice` applies.
+
+## Signal
+
+Optional messaging over Signal via compose-managed `signal-cli`. Setup, architecture, WebUI outbound, verification, and troubleshooting: **[Signal](signal.md)**.
 
 ## Advanced options
 
@@ -471,6 +479,10 @@ docker compose exec hermes hermes -p api-server tools list | grep -A1 'MCP serve
 grep -A6 'mcp_servers:' data/hermes/config.yaml
 
 docker compose logs -f hermes
+
+# Signal (when HERMES_SIGNAL_ENABLED=1) — see docs/signal.md:
+docker compose ps signal-cli
+docker compose exec hermes curl -sf http://signal-cli:8080/api/v1/check && echo "signal-cli ok"
 
 # Writing voice: external_dirs must be a YAML list containing /opt/skills.
 # A quoted '["/opt/skills"]' means the skill never loads, so watch for the

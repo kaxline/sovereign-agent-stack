@@ -131,6 +131,21 @@ Enabling the WebUI also raises the `hermes` container's own limit from 2G to 3G,
 
 Heavy optional extras (`edge-tts`, `psutil`, Office document parsers) are left uninstalled on purpose. Those routes return HTTP 503 with an install hint.
 
+## Project briefs (workspace → AGENTS.md)
+
+The workspace dropdown selects a path under `/opt/projects`. Gateway chat does **not** pass that path as the agent cwd, so Hermes’ native `AGENTS.md` loading does not run for browser turns.
+
+Compose sets `HERMES_WEBUI_PREFILL_MESSAGES_SCRIPT` to
+`compose/hermes/scripts/project-brief-prefill.py`, which reads
+`last_workspace.txt` and injects that project’s `AGENTS.md` as a system prefill
+(subject to `HERMES_WEBUI_PREFILL_CONTEXT_MAX_CHARS`, default 8000). Home
+(`/opt/projects`) and projects without `AGENTS.md` inject nothing.
+
+`last_workspace.txt` is global for the WebUI profile — not per tab. Prefer one
+workspace at a time when testing briefs.
+
+Full convention (INDEX.md, `make project-*`, source vs drafts): [Projects](projects.md).
+
 ## Upgrading
 
 **Always upgrade both images together.** The WebUI reads the agent's on-disk state layout and imports agent modules directly, and the two are only tested against each other within a release window. Bumping one alone is the exact failure this setup guards against, which is why both tags sit adjacent in `.env` behind a single command:
@@ -179,6 +194,10 @@ docker compose logs hermes-webui | grep -F "hermes-agent source not found"
 
 # The WebUI ran as the right user — a mismatch here rewrites data/projects ownership
 docker compose logs hermes-webui | grep -E "WANTED_(UID|GID)"
+
+# Project-brief prefill script is mounted and configured
+docker compose exec hermes-webui printenv HERMES_WEBUI_PREFILL_MESSAGES_SCRIPT
+docker compose exec hermes-webui test -f /bootstrap/project-brief-prefill.py && echo "prefill script ok"
 ```
 
 Then send a message in the browser that forces a tool call, for example:
@@ -187,18 +206,38 @@ Then send a message in the browser that forces a tool call, for example:
 
 Confirm the tool card renders and the file resolves under `/opt/projects`. That proves execution landed in the `hermes` container with its mounts rather than in the WebUI.
 
+### Manual brief smoke (optional)
+
+1. `make project-init PROJECT=_scaffold-smoke` and put one distinctive sentence in its `AGENTS.md`.
+2. In the WebUI, add a workspace at `/opt/projects/_scaffold-smoke` and select it.
+3. Ask what the project brief says; the reply should reflect that sentence (or check the turn’s `context_status` prefill fields in the network panel).
+4. Switch the workspace back to Home and send another turn — the brief should not apply.
+5. Remove `data/projects/_scaffold-smoke` when done.
+
 ## Troubleshooting
 
 **First-run wizard says Hermes Agent is "Missing or partially importable".** Expected on a lean install. The wizard checks for `run_agent` inside the WebUI container, and gateway mode never has it. `HERMES_WEBUI_SKIP_ONBOARDING=1` (already set on the compose service) suppresses the wizard. Skip Provider setup, which would write credentials for a local agent that is not there. If an old tab still shows the modal after you recreate `hermes-webui`, reload it.
 
-**Every message fails with a 401 / "Gateway rejected the WebUI API key".** `compose/hermes/browser.env` and the `browser` profile disagree. The bootstrap copies the key into the profile, so re-run it and restart:
+**Every message fails with a 401 / "Gateway rejected the WebUI API key".** Usually a stale `API_SERVER_KEY` in `data/hermes/.env` (the default profile). WebUI reloads that file on startup and overwrites the key from `compose/hermes/browser.env`. Re-run bootstrap (it now strips the leftover) and recreate the WebUI:
 
 ```bash
-docker compose run --rm hermes-browser-bootstrap && docker compose restart hermes
+docker compose run --rm hermes-browser-bootstrap
+docker compose up -d --force-recreate hermes-webui
 ```
 
+Also confirm `HERMES_WEBUI_GATEWAY_API_KEY` in `compose/hermes/browser.env` matches `API_SERVER_KEY` there (setup writes both).
 **Messages hang, then fail.** The `browser` gateway is not running. Usually the profile was created while `hermes` was already up, so the boot-time reconciler never saw it; `docker compose restart hermes` fixes that. Confirm with `docker compose exec hermes-webui curl -sf http://hermes:8644/health`.
 
 **`hermes-webui` will not start, complaining about `browser.env`.** The file is a bind-mount source, and when it does not exist Docker helpfully creates a *directory* with that name. Remove the directory, then `cp compose/hermes/browser.env.example compose/hermes/browser.env` and set a key.
 
 **Replies work but no tool ever runs.** Check whether the toolset actually applied. `docker compose exec hermes hermes -p browser config get platform_toolsets.api_server` should be a YAML list containing `hermes-cli`. If it reads back as a quoted string, the bootstrap's list writer did not run.
+
+**Replies stop mid-thought ("Let me search…") with no tool card.** Common with local Qwen models on LM Studio: the model narrates the next step but returns `finish_reason=stop` without calling tools. The `browser` profile enables `agent.intent_ack_continuation=true` so Hermes nudges those turns to continue. Re-apply after bootstrap changes:
+
+```bash
+docker compose run --rm hermes-browser-bootstrap && docker compose restart hermes
+```
+
+Confirm with `docker compose exec hermes hermes -p browser config get agent.intent_ack_continuation` → `true`.
+
+**Project brief never appears in WebUI chat.** Confirm the workspace path is a project dir with `AGENTS.md` (not Home), recreate `hermes-webui` after compose changes so the script mount and env apply, then re-check the verification lines for `HERMES_WEBUI_PREFILL_MESSAGES_SCRIPT`. Oversized briefs are omitted entirely — shrink `AGENTS.md` or raise `HERMES_WEBUI_PREFILL_CONTEXT_MAX_CHARS`.

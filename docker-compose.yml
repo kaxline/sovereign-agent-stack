@@ -456,6 +456,55 @@ services:
         condition: service_healthy
 
   # ----------------------------------------------------------------------
+  # signal-cli — native HTTP JSON-RPC daemon for Hermes Signal messaging
+  # Profile: signal (toggled by HERMES_SIGNAL_ENABLED via scripts/sync-signal-profile.sh)
+  #
+  # Hermes expects the real signal-cli daemon (--http), not
+  # bbernhard/signal-cli-rest-api. Bind-mount the host linked store
+  # (SIGNAL_CLI_DATA_DIR, usually ~/.local/share/signal-cli). Stop any host
+  # signal-cli daemon first — only one receiver per account.
+  # Port 8080 is compose-internal only (SearXNG already owns host :8080).
+  # ----------------------------------------------------------------------
+  signal-cli:
+    profiles: ["signal"]
+    container_name: signal-cli
+    image: ${SIGNAL_CLI_IMAGE:-registry.gitlab.com/packaging/signal-cli/signal-cli-jre:v0-14-7-2}
+    restart: unless-stopped
+    # Match the Mac/Linux user that owns SIGNAL_CLI_DATA_DIR.
+    # scripts/sync-signal-profile.sh sets these from `id -u` / `id -g` when enabling.
+    user: "${SIGNAL_CLI_UID:-1000}:${SIGNAL_CLI_GID:-1000}"
+    environment:
+      - SIGNAL_ACCOUNT=${SIGNAL_ACCOUNT:-}
+    # packaging image ENTRYPOINT is signal-cli; --config points at the mount.
+    # SIGNAL_ACCOUNT / SIGNAL_CLI_DATA_DIR are required when the profile is on
+    # (enforced by scripts/sync-signal-profile.sh), not via ${VAR:?} here —
+    # compose still parses this service when the profile is off.
+    command:
+      - --config
+      - /var/lib/signal-cli
+      - -a
+      - ${SIGNAL_ACCOUNT:-}
+      - daemon
+      - --http
+      - 0.0.0.0:8080
+    volumes:
+      - ${SIGNAL_CLI_DATA_DIR:-./data/signal-cli-placeholder}:/var/lib/signal-cli
+    tmpfs:
+      - /tmp:exec
+    # No host publish — Hermes reaches http://signal-cli:8080 on the compose network.
+    healthcheck:
+      # Image may lack curl; /dev/tcp is enough to prove the HTTP daemon is up.
+      test:
+        [
+          "CMD-SHELL",
+          "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080' || exit 1",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 6
+      start_period: 40s
+
+  # ----------------------------------------------------------------------
   # Hermes Agent — persistent AI gateway + dashboard
   # Profile: core (default stack)
   # Setup:   docker compose run --rm hermes setup   (after first ./scripts/setup.sh)
@@ -514,9 +563,10 @@ services:
       # unattended cap would only truncate useful work mid-task.
       - HERMES_API_MAX_TURNS=${HERMES_BROWSER_MAX_TURNS:-60}
       - HERMES_API_SERVER_PORT=${HERMES_BROWSER_API_PORT:-8644}
-      # Interactive chat: review memory every 3 user turns (factory default 10
-      # almost never fires on 1–2 turn WebUI sessions).
-      - HERMES_MEMORY_NUDGE_INTERVAL=${HERMES_BROWSER_MEMORY_NUDGE_INTERVAL:-3}
+      # Interactive chat: background memory review every N user turns. Default 10
+      # keeps a single local LM Studio slot free for foreground chat; the old
+      # value of 3 fired on turn 3/6 and often raced the user's next message.
+      - HERMES_MEMORY_NUDGE_INTERVAL=${HERMES_BROWSER_MEMORY_NUDGE_INTERVAL:-10}
       # Full CLI toolset: interactive-only tools (clarify, send_message,
       # text_to_speech) are wanted here, unlike the unattended API profile.
       - HERMES_API_TOOLSET=hermes-cli
@@ -528,6 +578,9 @@ services:
       - ./data/hermes:/opt/data
       - ./compose/hermes/browser.env:/bootstrap/browser.env:ro
       - ./compose/hermes/bootstrap-api-profile.sh:/bootstrap/bootstrap-api-profile.sh:ro
+    depends_on:
+      hermes-api-bootstrap:
+        condition: service_completed_successfully
     entrypoint: /bin/sh
     command: /bootstrap/bootstrap-api-profile.sh
 
@@ -584,7 +637,10 @@ services:
         KB has nothing relevant, say so rather than inventing, then search only
         if the user wants broader context. For past conversations use session_search.
         Short durable facts belong in the memory tool (USER.md / MEMORY.md);
-        longer notes belong under /opt/memory."
+        longer notes belong under /opt/memory.
+        Living todos (cross-session task list) live at
+        /opt/projects/project-todo-list/README.md — read and edit that file;
+        do not use the session-only todo tool for the user's todo list."
     volumes:
       - ./data/hermes:/opt/data
       # Share MEMORY.md / USER.md across default, api-server, and browser.
@@ -601,6 +657,19 @@ services:
       - ./data/projects:/opt/projects
       # Curated long-form memory (gitignored). Writable: the working-memory skill.
       - ./data/memory:/opt/memory
+      # Relax intent-ack detection for browser/WebUI (LM Studio narration stalls).
+      - ./compose/hermes/patch-intent-ack-continuation.py:/bootstrap/patch-intent-ack-continuation.py:ro
+      - ./compose/hermes/03-patch-intent-ack.sh:/etc/cont-init.d/03-patch-intent-ack:ro
+      # WebUI Signal send with browser adapter disabled (default owns SSE lock).
+      - ./compose/hermes/patch-signal-send-disabled-adapter.py:/bootstrap/patch-signal-send-disabled-adapter.py:ro
+      - ./compose/hermes/patch-reregister-send-message.py:/bootstrap/patch-reregister-send-message.py:ro
+      - ./compose/hermes/patch-force-import-send-message.py:/bootstrap/patch-force-import-send-message.py:ro
+      - ./compose/hermes/patch-ensure-send-message-tools.py:/bootstrap/patch-ensure-send-message-tools.py:ro
+      - ./compose/hermes/patch-tool-search-visible.py:/bootstrap/patch-tool-search-visible.py:ro
+      - ./compose/hermes/patch-cron-api-server-origin.py:/bootstrap/patch-cron-api-server-origin.py:ro
+      - ./compose/hermes/patch-cron-signal-synthesize.py:/bootstrap/patch-cron-signal-synthesize.py:ro
+      - ./compose/hermes/patch-cron-default-deliver-signal.py:/bootstrap/patch-cron-default-deliver-signal.py:ro
+      - ./compose/hermes/04-patch-signal-send.sh:/etc/cont-init.d/04-patch-signal-send:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     shm_size: "1g"
@@ -624,6 +693,10 @@ services:
         condition: service_healthy
         required: false
       mcp-searxng:
+        condition: service_healthy
+        required: false
+      # Optional: only present when the `signal` profile is enabled.
+      signal-cli:
         condition: service_healthy
         required: false
     healthcheck:
@@ -652,8 +725,9 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:${HERMES_WEBUI_PORT:-8787}:8787"
-    # Supplies API_SERVER_KEY, which _gateway_api_key() falls back to when
-    # HERMES_WEBUI_GATEWAY_API_KEY is unset, so the browser key is defined once.
+    # Supplies API_SERVER_KEY (gateway credential) plus
+    # HERMES_WEBUI_GATEWAY_API_KEY (same value). WebUI prefers the latter, which
+    # survives _reload_dotenv overwriting API_SERVER_KEY from HERMES_HOME/.env.
     # Pointedly NOT `.env`, which would leak unrelated provider keys into a
     # container that never makes a model call.
     env_file:
@@ -682,6 +756,12 @@ services:
       # Each cached agent pins a full transcript, which makes this the biggest
       # lever on resident memory. The default of 25 does not fit the limit below.
       - HERMES_WEBUI_AGENT_CACHE_MAX=5
+      # Inject AGENTS.md from the selected WebUI workspace on each turn.
+      # Gateway mode does not pass cwd, so native agent AGENTS.md loading never
+      # fires for browser chat; this stock WebUI hook fills that gap. See
+      # docs/projects.md.
+      - HERMES_WEBUI_PREFILL_MESSAGES_SCRIPT=/bootstrap/project-brief-prefill.py
+      - HERMES_WEBUI_PREFILL_CONTEXT_MAX_CHARS=${HERMES_WEBUI_PREFILL_CONTEXT_MAX_CHARS:-8000}
       # Align the container user with the mounts; the entrypoint chowns its own
       # home and the workspace dir, so a mismatch here rewrites ownership of
       # data/projects out from under the hermes container.
@@ -691,6 +771,7 @@ services:
       # Shared Hermes state; WebUI keeps its own state under /opt/data/webui.
       - ./data/hermes:/opt/data
       - ./compose/hermes/skills:/opt/skills:ro
+      - ./compose/hermes/scripts/project-brief-prefill.py:/bootstrap/project-brief-prefill.py:ro
       - ./data/projects:/opt/projects
       - ./data/voice:/opt/voice
       - ./data/memory:/opt/memory

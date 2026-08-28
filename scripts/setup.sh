@@ -249,9 +249,22 @@ ensure_hermes_env_files() {
   fi
   if [[ ! -f "$browser_env" ]]; then
     cp compose/hermes/browser.env.example "$browser_env"
-    upsert_env "$browser_env" API_SERVER_KEY "$(rand_hex 32)"
+    local browser_key
+    browser_key="$(rand_hex 32)"
+    upsert_env "$browser_env" API_SERVER_KEY "$browser_key"
+    upsert_env "$browser_env" HERMES_WEBUI_GATEWAY_API_KEY "$browser_key"
     log "Created compose/hermes/browser.env"
   else
+    # Keep an existing API_SERVER_KEY, but ensure the WebUI-preferred alias is
+    # present and matches. WebUI's _reload_dotenv overwrites API_SERVER_KEY from
+    # HERMES_HOME/.env; HERMES_WEBUI_GATEWAY_API_KEY survives that reload.
+    local existing
+    existing="$(grep -E '^API_SERVER_KEY=' "$browser_env" | head -1 | cut -d= -f2- || true)"
+    existing="${existing%% #*}"
+    existing="$(printf '%s' "$existing" | tr -d '\r')"
+    if [[ -n "$existing" ]]; then
+      upsert_env "$browser_env" HERMES_WEBUI_GATEWAY_API_KEY "$existing"
+    fi
     log "Keeping existing compose/hermes/browser.env"
   fi
 }
@@ -363,17 +376,29 @@ side by side, like a job search, a book, a client engagement, or a research topi
 
 ## Setup
 
-Create a project and give it whatever structure fits the work:
+Scaffold a project from the repo template (from the assistant repo root):
 
-    mkdir -p data/projects/my-project
-    cp ~/reference/*.md data/projects/my-project/
+    make project-init PROJECT=my-project
 
-Then name it when you ask Hermes to do something:
+Or create the directory yourself and copy reference files in. Either way,
+give the project an `AGENTS.md` brief and keep source notes apart from drafts.
 
-    Using the notes in /opt/projects/my-project, draft a summary of X.
+Then either:
+
+- Select the project as a **WebUI workspace** (brief is injected automatically), or
+- Name the path in a prompt: `Using the notes in /opt/projects/my-project, …`
 
 The mount is live, so files you add appear immediately. No Hermes restart
 required.
+
+## Conventions that help small models
+
+| File | Role |
+| --- | --- |
+| `AGENTS.md` | Short always-on brief while this project is the WebUI workspace |
+| `INDEX.md` | One-line map of source files — `make project-index PROJECT=my-project` |
+| Source notes | Put a `description:` field in YAML frontmatter for a better index |
+| `drafts/` / `applications/` / `artifacts/` | Generated output; skipped by the indexer |
 
 ## Keep source material and generated output apart
 
@@ -384,8 +409,9 @@ LightRAG later, once a project outgrows reading files directly.
 
 ## Notes
 
-- Requires the Hermes profile.
+- Requires the Hermes `core` profile.
 - Agents can write here. Review generated files before treating them as fact.
+- Full convention: `docs/projects.md` in the assistant repo.
 EOF
   log "Wrote $dest"
 }
@@ -647,6 +673,11 @@ ensure_opencode_local_config
 # LightRAG MCP stays off until rag is enabled (avoids connect timeouts on core-only).
 set_env_if_missing .env LIGHTRAG_MCP_ENABLED 0
 
+# Signal daemon off by default; sync profile + data/hermes/.env from the toggle.
+set_env_if_missing .env HERMES_SIGNAL_ENABLED 0
+set_env_if_missing .env SIGNAL_CLI_IMAGE "registry.gitlab.com/packaging/signal-cli/signal-cli-jre:v0-14-7-2"
+./scripts/sync-signal-profile.sh
+
 # --- Optional profiles ---
 if [[ "$SETUP_RAG" -eq 1 ]]; then
   setup_rag_profile
@@ -692,6 +723,9 @@ Optional profiles (re-run setup with flags, or edit COMPOSE_PROFILES):
   --automation    n8n + GPT Researcher
   --coding        OpenCode
   --ollama        Bundled Ollama + demo model pull
+
+Signal (optional): set HERMES_SIGNAL_ENABLED=1 and SIGNAL_ACCOUNT in .env,
+link signal-cli on the host, then re-run setup or make ensure-local. See docs/signal.md.
 
 EOF
 
