@@ -104,6 +104,29 @@ model:
 
 Enable **Serve on Local Network**, then set `model` to the id LM Studio serves and `base_url` to `http://host.docker.internal:<port>/v1`.
 
+### Model suitability (agentic tool use)
+
+Hermes WebUI sends a large system prompt plus the full tool schema (~20k input tokens). Models that work in a minimal OpenRouter “one tool” smoke test can still fail here.
+
+| Model class | Agentic WebUI | Notes |
+|---|---|---|
+| Qwen 3.x (e.g. `qwen/qwen3-32b`, local Qwen via LM Studio) | Recommended | Strong structured `tool_calls` under this stack |
+| GPT / Gemini / DeepSeek (via OpenRouter) | Usually fine | Covered by Hermes `tool_use_enforcement: auto` |
+| Llama 3.x (e.g. `meta-llama/llama-3.3-70b-instruct` on OpenRouter) | Not recommended | Often emits `search_files(...)` or `<function/name=...>` as plain text (`tool_turns=0`), or OpenRouter returns an empty SSE body that retries replay from cache |
+
+Prefer Qwen-class (or other known-good agentic) models for folder listing, MCP, and multi-step tool work. A direct OpenRouter curl with one tool is not a counterexample when Hermes’ full prompt is the failure context.
+
+**Tool-use enforcement:** leave `agent.tool_use_enforcement` at `auto` (bootstrap default). Forcing `true` / stacking `execution_guidance` can help chatty models, but on weaker or quantized models it can make text-mimicked tool syntax *worse* ([Hermes #56360](https://github.com/NousResearch/hermes-agent/issues/56360)). Do not set those globally for OpenRouter Llama.
+
+**Stack overlays** (applied at container start; not Hermes upstream — they closed general content→tool_calls promotion in [#29115](https://github.com/NousResearch/hermes-agent/issues/29115)):
+
+| Overlay | What it does |
+|---|---|
+| `compose/hermes/patch-text-tool-call-recovery.py` | Recovers Python/XML tool mimicry into real `tool_calls` before dispatch |
+| `compose/hermes/patch-openrouter-empty-stream.py` | On `EmptyStreamError` after an OpenRouter cache HIT, sends `X-OpenRouter-Cache-Clear` and surfaces a clearer error |
+
+If OpenRouter empty streams persist with caching enabled, set `HERMES_OPENROUTER_CACHE=0` in the Hermes environment (or `openrouter.response_cache: false` in config). Recreate the `hermes` container after changing overlays or those env values.
+
 ## Optional internal integrations
 
 From inside the Hermes container, other stack services are reachable by compose DNS name:
@@ -512,6 +535,12 @@ docker compose exec hermes sh -c 'ls -id /opt/data/memories /opt/data/profiles/a
 
 # Conversational tone: each profile has its own SOUL.md (not shared).
 docker compose exec hermes ls /opt/data/SOUL.md /opt/data/profiles/browser/SOUL.md /opt/data/profiles/api-server/SOUL.md
+
+# Tool-calling overlays (cont-init). After recreate, logs should show both patches.
+docker compose logs hermes 2>&1 | grep -E 'patch-text-tool-call-recovery|patch-openrouter-empty-stream' | tail -5
+docker compose exec hermes test -f /opt/hermes/agent/text_tool_call_recovery.py && echo "text recovery helper ok"
+docker compose exec hermes grep -F 'assistant-stack: text-mimicked tool-call recovery' /opt/hermes/agent/conversation_loop.py >/dev/null && echo "text recovery call site ok"
+docker compose exec hermes grep -F 'assistant-stack: bust OpenRouter cache on empty stream' /opt/hermes/agent/chat_completion_helpers.py >/dev/null && echo "empty-stream cache bust ok"
 
 # Mount flags: /opt/skills must be ro; voice, projects, and memory must be rw
 docker compose exec hermes sh -c 'grep -E " /opt/(skills|voice|projects|memory) " /proc/mounts'

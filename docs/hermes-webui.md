@@ -104,7 +104,7 @@ Do not skip the `restart hermes`. `cont-init.d/02-reconcile-profiles` reads each
 
 Running without the agent source costs you:
 
-- **The model picker.** In gateway mode the model comes from the `browser` profile's `config.yaml` anyway, so the dropdown would offer a choice it cannot honor. Change models with `docker compose exec hermes hermes -p browser config set ...` instead.
+- **The model picker.** In gateway mode the model comes from the `browser` profile's `config.yaml` anyway, so the dropdown would offer a choice it cannot honor. Change models with `docker compose exec hermes hermes -p browser config set ...` instead. For agentic tool use, prefer Qwen-class models — Llama 3.x via OpenRouter often fakes tool calls as text or returns empty streams; see [Model suitability](hermes.md#model-suitability-agentic-tool-use).
 - **CLI session import.** You cannot pull an existing terminal `hermes` conversation into the browser.
 - **Profile management from the UI.** Use the `hermes` CLI, as documented in [docs/hermes.md](hermes.md).
 
@@ -234,10 +234,15 @@ Also confirm `HERMES_WEBUI_GATEWAY_API_KEY` in `compose/hermes/browser.env` matc
 
 **Replies stop mid-thought ("Let me search…") with no tool card.** Common with local Qwen models on LM Studio: the model narrates the next step but returns `finish_reason=stop` without calling tools. The `browser` profile enables `agent.intent_ack_continuation=true` so Hermes nudges those turns to continue. Re-apply after bootstrap changes:
 
+
 ```bash
 docker compose run --rm hermes-browser-bootstrap && docker compose restart hermes
 ```
 
 Confirm with `docker compose exec hermes hermes -p browser config get agent.intent_ack_continuation` → `true`.
+
+**Assistant prints `search_files(...)` or `<function/name=...>` instead of running tools.** Weak OpenRouter models (especially Llama 3.x) under the full Hermes prompt. This stack recovers those mimics at container start (`05-patch-tool-calling`); if recovery is missing, recreate `hermes` so cont-init re-applies. Prefer a Qwen-class model — see [Model suitability](hermes.md#model-suitability-agentic-tool-use).
+
+**`EmptyStreamError` / “empty response stream” with OpenRouter cache HIT lines in `agent.log`.** Provider returned an empty SSE body and retries replayed the cache. The same overlay busts cache on retry; if it keeps happening, set `HERMES_OPENROUTER_CACHE=0` or switch models.
 
 **Project brief never appears in WebUI chat.** Confirm the workspace path is a project dir with `AGENTS.md` (not Home), recreate `hermes-webui` after compose changes so the script mount and env apply, then re-check the verification lines for `HERMES_WEBUI_PREFILL_MESSAGES_SCRIPT`. Oversized briefs are omitted entirely — shrink `AGENTS.md` or raise `HERMES_WEBUI_PREFILL_CONTEXT_MAX_CHARS`.
