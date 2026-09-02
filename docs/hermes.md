@@ -115,6 +115,7 @@ From inside the Hermes container, other stack services are reachable by compose 
 | gptr-mcp (SSE) | `http://gptr-mcp:8000/sse` | MCP tools: `deep_research`, `quick_search`, `write_report`, etc. |
 | lightrag-mcp | `http://lightrag-mcp:8000/mcp` | MCP tools for LightRAG Knowledge Base queries |
 | mcp-searxng | `http://mcp-searxng:3000/mcp` | MCP tools: `searxng_web_search`, `web_url_read` (read one URL as markdown) |
+| caldav-mcp | `http://caldav-mcp:8080/mcp` | CalDAV calendars; one Hermes MCP entry per account (`calendar` profile) |
 | LightRAG | `http://lightrag:9621/query` | Header Auth: `X-API-Key: $LIGHTRAG_API_KEY` |
 | n8n | `http://n8n:5678` | Workflows can call Hermes API at `http://hermes:8643/v1` |
 
@@ -126,8 +127,11 @@ The `hermes-api-bootstrap` service registers these for you. Each one sets indivi
 |---|---|---|---|
 | `lightrag` | `api-server` / `browser` | `query_document`, `get_documents`, `get_pipeline_status`, `get_graph_labels`, `check_lightrag_health` | `LIGHTRAG_MCP_ENABLED=1` (`rag` profile; setup `--rag`) |
 | `searxng` | default + `api-server` / `browser` | `searxng_web_search`, `web_url_read` | Always (on `core`) |
+| `caldav-<slug>` | default + `api-server` / `browser` | Full 14 on default/browser; 8 read-only on `api-server` | `CALDAV_MCP_ENABLED=1` (`calendar` profile; setup `--calendar`) |
 
-These two filters serve different purposes. LightRAG's is a **safety boundary**: that server exposes 17 tools, and the 12 not listed above mutate the knowledge graph, `delete_by_doc_ids` and `delete_by_entities` among them. None of those belong in an unattended API session. The web filters just keep the tool count down, since both of those servers are read-only against the public internet.
+These filters serve different purposes. LightRAG's and CalDAV's on `api-server` are **safety boundaries**: mutating tools do not belong in unattended n8n sessions. The web filters just keep the tool count down, since both of those servers are read-only against the public internet.
+
+CalDAV accounts live in `compose/caldav-mcp/accounts/<slug>.env`. Bootstrap copies each into Hermes MCP headers (`X-Caldav-*`) against the shared `caldav-mcp` sidecar. See [Calendar](calendar.md).
 
 Either way the filter must be a YAML list. A stringified `'["a","b"]'` gets misread as a one-element allowlist that no tool name matches, and zero tools get registered without any complaint. See the verification commands below.
 
@@ -135,10 +139,11 @@ Either way the filter must be a YAML list. A stringified `'["a","b"]'` gets misr
 
 The `lightrag-mcp` image pins `lightrag_mcp==0.1.1` and patches its generated client to send LightRAG auth as `X-API-Key`, which is what current LightRAG servers expect.
 
-The bootstrap is a one-shot container and does not re-run on every `up`. After changing any of this, re-run it:
+The bootstrap is a one-shot container and does not re-run on every `up`. After changing any of this, re-run both profile bootstraps:
 
 ```bash
 docker compose run --rm hermes-api-bootstrap
+docker compose run --rm hermes-browser-bootstrap
 docker compose restart hermes
 ```
 

@@ -12,6 +12,7 @@ SETUP_OLLAMA=0
 SETUP_RAG=0
 SETUP_AUTOMATION=0
 SETUP_CODING=0
+SETUP_CALENDAR=0
 NON_INTERACTIVE=0
 
 usage() {
@@ -25,6 +26,7 @@ Options:
   --rag                     Enable knowledge graph (compose profile rag)
   --automation              Enable n8n + GPT Researcher (profile automation)
   --coding                  Enable OpenCode (profile coding)
+  --calendar                Enable CalDAV calendar MCP (profile calendar)
   --ollama                  Bundle Ollama in Docker + demo model pulls (profile ollama)
   --hermes                  Deprecated alias; core already includes Hermes
   --non-interactive         Fail if required values are missing
@@ -34,6 +36,7 @@ Default COMPOSE_PROFILES=core (Hermes + WebUI + SearXNG).
 Examples:
   ./scripts/setup.sh
   ./scripts/setup.sh --rag --automation --coding
+  ./scripts/setup.sh --calendar
   ./scripts/setup.sh --ollama --non-interactive --workspace my-kb --title "My KB"
 EOF
 }
@@ -47,6 +50,7 @@ while [[ $# -gt 0 ]]; do
     --rag) SETUP_RAG=1; shift ;;
     --automation) SETUP_AUTOMATION=1; shift ;;
     --coding) SETUP_CODING=1; shift ;;
+    --calendar) SETUP_CALENDAR=1; shift ;;
     --ollama) SETUP_OLLAMA=1; shift ;;
     --non-interactive) NON_INTERACTIVE=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -192,6 +196,19 @@ setup_rag_profile() {
   append_compose_profile rag
   upsert_env .env LIGHTRAG_MCP_ENABLED 1
   log "Enabled LightRAG MCP registration (LIGHTRAG_MCP_ENABLED=1)"
+}
+
+setup_calendar_profile() {
+  append_compose_profile calendar
+  upsert_env .env CALDAV_MCP_ENABLED 1
+  mkdir -p compose/caldav-mcp/accounts
+  if [[ ! -f compose/caldav-mcp/accounts/personal.env ]]; then
+    cp compose/caldav-mcp/account.env.example compose/caldav-mcp/accounts/personal.env
+    log "Created compose/caldav-mcp/accounts/personal.env — fill CALDAV_* credentials (iCloud: app-specific password)"
+  fi
+  log "Enabled CalDAV MCP registration (CALDAV_MCP_ENABLED=1)"
+  log "Add more accounts: cp compose/caldav-mcp/account.env.example compose/caldav-mcp/accounts/<name>.env"
+  log "Then: docker compose run --rm hermes-api-bootstrap && docker compose run --rm hermes-browser-bootstrap && docker compose restart hermes"
 }
 
 setup_automation_profile() {
@@ -673,6 +690,9 @@ ensure_opencode_local_config
 # LightRAG MCP stays off until rag is enabled (avoids connect timeouts on core-only).
 set_env_if_missing .env LIGHTRAG_MCP_ENABLED 0
 
+# CalDAV MCP stays off until calendar is enabled.
+set_env_if_missing .env CALDAV_MCP_ENABLED 0
+
 # Signal daemon off by default; sync profile + data/hermes/.env from the toggle.
 set_env_if_missing .env HERMES_SIGNAL_ENABLED 0
 set_env_if_missing .env SIGNAL_CLI_IMAGE "registry.gitlab.com/packaging/signal-cli/signal-cli-jre:v0-14-7-2"
@@ -687,6 +707,9 @@ if [[ "$SETUP_AUTOMATION" -eq 1 ]]; then
 fi
 if [[ "$SETUP_CODING" -eq 1 ]]; then
   setup_coding_profile
+fi
+if [[ "$SETUP_CALENDAR" -eq 1 ]]; then
+  setup_calendar_profile
 fi
 if [[ "$SETUP_OLLAMA" -eq 1 ]]; then
   setup_ollama_profile
@@ -722,6 +745,7 @@ Optional profiles (re-run setup with flags, or edit COMPOSE_PROFILES):
   --rag           Knowledge graph (LightRAG + Neo4j)
   --automation    n8n + GPT Researcher
   --coding        OpenCode
+  --calendar      CalDAV calendars (iCloud, Nextcloud, …) via caldav-mcp
   --ollama        Bundled Ollama + demo model pull
 
 Signal (optional): set HERMES_SIGNAL_ENABLED=1 and SIGNAL_ACCOUNT in .env,

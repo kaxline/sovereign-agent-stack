@@ -9,7 +9,8 @@ Per-service setup, usage, and verification guides. See the [project README](../R
 | [n8n workflows](n8n.md) | `automation` | Starter workflows and HTTP patterns |
 | [Knowledge bases](knowledge-bases.md) | `rag` — LightRAG + Neo4j | Corpora, ingest, hot-workspace switching |
 | [OpenCode](opencode.md) | `coding` | Isolated coding agent |
-| [Hermes Agent](hermes.md) | `core` | Gateway, dashboard, API, skills, MCP, [chat tone](hermes.md#conversational-tone-soulmd) |
+| [Hermes Agent](hermes.md) | `core` | Gateway, dashboard, API, skills, MCP, [model suitability](hermes.md#model-suitability-agentic-tool-use), [chat tone](hermes.md#conversational-tone-soulmd) |
+| [Calendar](calendar.md) | `calendar` — `caldav-mcp` | CalDAV calendars (iCloud, Nextcloud, …), multi-account |
 | [Signal](signal.md) | `signal` (+ `core`) | Linked-device messaging, WebUI send, cron delivery |
 | [Hermes WebUI](hermes-webui.md) | `core` | Chat UI via lean browser gateway |
 | [Projects](projects.md) | `core` / Hermes | Per-project briefs (`AGENTS.md`), INDEX, WebUI workspace prefill |

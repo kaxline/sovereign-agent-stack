@@ -31,6 +31,11 @@ LIGHTRAG_MCP_ENABLED="${LIGHTRAG_MCP_ENABLED:-0}"
 SEARXNG_MCP_URL="${SEARXNG_MCP_URL:-http://mcp-searxng:3000/mcp}"
 SEARXNG_MCP_TIMEOUT="${SEARXNG_MCP_TIMEOUT:-60}"
 SEARXNG_MCP_CONNECT_TIMEOUT="${SEARXNG_MCP_CONNECT_TIMEOUT:-30}"
+CALDAV_MCP_URL="${CALDAV_MCP_URL:-http://caldav-mcp:8080/mcp}"
+CALDAV_MCP_TIMEOUT="${CALDAV_MCP_TIMEOUT:-60}"
+CALDAV_MCP_CONNECT_TIMEOUT="${CALDAV_MCP_CONNECT_TIMEOUT:-30}"
+CALDAV_MCP_ENABLED="${CALDAV_MCP_ENABLED:-0}"
+CALDAV_MCP_ACCOUNTS_DIR="${CALDAV_MCP_ACCOUNTS_DIR:-/bootstrap/caldav-accounts}"
 
 PROFILE_DIR="${HERMES_HOME}/profiles/${PROFILE}"
 PROFILE_ENV="${PROFILE_DIR}/.env"
@@ -269,6 +274,236 @@ register_web_mcp_servers() {
     web_url_read searxng_web_search
 }
 
+# Register one CalDAV account as mcp_servers.caldav-<slug> with X-Caldav-* headers.
+# hermes config set cannot write nested header maps, so this uses atomic_yaml_write.
+#
+# Usage: register_caldav_account <profile> <slug> <url> <username> <password> <timeout> <connect_timeout> [tool...]
+register_caldav_account() {
+  _rca_profile="$1"
+  _rca_slug="$2"
+  _rca_url="$3"
+  _rca_user="$4"
+  _rca_pass="$5"
+  _rca_timeout="$6"
+  _rca_connect="$7"
+  shift 7
+  _rca_key="caldav-${_rca_slug}"
+  _rca_cfg="$(config_path_for "$_rca_profile")"
+  log "Registering CalDAV MCP server '${_rca_key}' for profile '${_rca_profile:-default}'"
+  _out="$(python3 - "$_rca_cfg" "$_rca_key" "$CALDAV_MCP_URL" "$_rca_url" "$_rca_user" "$_rca_pass" \
+    "$_rca_timeout" "$_rca_connect" "$@" <<'PY'
+import sys
+sys.path.insert(0, "/opt/hermes")
+import yaml
+from utils import atomic_yaml_write
+
+cfg_path, key, mcp_url, caldav_url, username, password, timeout, connect_timeout = sys.argv[1:9]
+tools = sys.argv[9:]
+
+try:
+    with open(cfg_path) as fh:
+        config = yaml.safe_load(fh) or {}
+except FileNotFoundError:
+    print(f"ERROR: {cfg_path} not found")
+    raise SystemExit(1)
+
+servers = config.setdefault("mcp_servers", {})
+if not isinstance(servers, dict):
+    servers = {}
+    config["mcp_servers"] = servers
+
+entry = servers.get(key)
+if not isinstance(entry, dict):
+    entry = {}
+entry["url"] = mcp_url
+entry["timeout"] = int(timeout) if str(timeout).isdigit() else timeout
+entry["connect_timeout"] = int(connect_timeout) if str(connect_timeout).isdigit() else connect_timeout
+entry["headers"] = {
+    "X-Caldav-Url": caldav_url,
+    "X-Caldav-Username": username,
+    "X-Caldav-Password": password,
+}
+if tools:
+    tools_block = entry.get("tools")
+    if not isinstance(tools_block, dict):
+        tools_block = {}
+    tools_block["include"] = list(tools)
+    entry["tools"] = tools_block
+servers[key] = entry
+atomic_yaml_write(cfg_path, config)
+print(f"Wrote mcp_servers.{key} ({len(tools)} tools)" if tools else f"Wrote mcp_servers.{key}")
+PY
+)"
+  if [ -n "$_out" ]; then log "$_out"; fi
+}
+
+# Drop mcp_servers.caldav-* keys that no longer have a matching accounts/<slug>.env.
+# Usage: reconcile_caldav_accounts <profile> <slug...>
+reconcile_caldav_accounts() {
+  _rec_profile="$1"
+  shift
+  _rec_cfg="$(config_path_for "$_rec_profile")"
+  _out="$(python3 - "$_rec_cfg" "$@" <<'PY'
+import sys
+sys.path.insert(0, "/opt/hermes")
+import yaml
+from utils import atomic_yaml_write
+
+cfg_path = sys.argv[1]
+keep_slugs = set(sys.argv[2:])
+keep_keys = {f"caldav-{s}" for s in keep_slugs}
+
+try:
+    with open(cfg_path) as fh:
+        config = yaml.safe_load(fh) or {}
+except FileNotFoundError:
+    raise SystemExit(0)
+
+servers = config.get("mcp_servers")
+if not isinstance(servers, dict):
+    raise SystemExit(0)
+
+removed = []
+for key in list(servers):
+    if not key.startswith("caldav-"):
+        continue
+    if key in keep_keys:
+        continue
+    del servers[key]
+    removed.append(key)
+
+if removed:
+    atomic_yaml_write(cfg_path, config)
+    print("Removed stale CalDAV MCP entries: " + ", ".join(sorted(removed)))
+PY
+)"
+  if [ -n "$_out" ]; then log "$_out"; fi
+}
+
+# Discover compose/caldav-mcp/accounts/*.env and register each as caldav-<slug>.
+# api-server gets the read-only allowlist; default and browser get all tools.
+register_caldav_mcp_servers() {
+  _rcms_profile="$1"
+  case "$CALDAV_MCP_ENABLED" in
+    1|true|TRUE|yes|YES) ;;
+    *)
+      log "Skipping CalDAV MCP registration (CALDAV_MCP_ENABLED=${CALDAV_MCP_ENABLED})"
+      return 0
+      ;;
+  esac
+
+  if [ ! -d "$CALDAV_MCP_ACCOUNTS_DIR" ]; then
+    log "WARNING: CalDAV accounts dir missing (${CALDAV_MCP_ACCOUNTS_DIR}) - skip registration"
+    return 0
+  fi
+
+  # Read-only tools for unattended api-server; full surface elsewhere.
+  if [ "$_rcms_profile" = "api-server" ]; then
+    set -- \
+      caldav_list_calendars \
+      caldav_get_events \
+      caldav_get_today_events \
+      caldav_get_week_events \
+      caldav_get_event_by_uid \
+      caldav_search_events \
+      caldav_get_freebusy \
+      caldav_list_attendees
+  else
+    set -- \
+      caldav_list_calendars \
+      caldav_get_events \
+      caldav_get_today_events \
+      caldav_get_week_events \
+      caldav_get_event_by_uid \
+      caldav_search_events \
+      caldav_get_freebusy \
+      caldav_list_attendees \
+      caldav_create_event \
+      caldav_update_event \
+      caldav_delete_event \
+      caldav_move_event \
+      caldav_add_attendee \
+      caldav_remove_attendee
+  fi
+
+  _rcms_slugs=""
+  _rcms_count=0
+  for _rcms_file in "$CALDAV_MCP_ACCOUNTS_DIR"/*.env; do
+    [ -f "$_rcms_file" ] || continue
+    _rcms_base="$(basename "$_rcms_file")"
+    case "$_rcms_base" in
+      *.example|.*) continue ;;
+    esac
+    _rcms_slug="${_rcms_base%.env}"
+    case "$_rcms_slug" in
+      *[!a-z0-9-]*|'')
+        log "WARNING: Skipping CalDAV account '${_rcms_base}' - slug must match [a-z0-9-]+"
+        continue
+        ;;
+    esac
+
+    _rcms_url=""
+    _rcms_user=""
+    _rcms_pass=""
+    while IFS= read -r _rcms_line || [ -n "$_rcms_line" ]; do
+      case "$_rcms_line" in
+        ''|'#'*) continue ;;
+        *=*)
+          _rcms_k="${_rcms_line%%=*}"
+          _rcms_v="${_rcms_line#*=}"
+          case "$_rcms_v" in
+            *' #'*) _rcms_v="${_rcms_v%% #*}" ;;
+          esac
+          # Trim CR and surrounding quotes.
+          _rcms_v="$(printf '%s' "$_rcms_v" | tr -d '\r')"
+          case "$_rcms_v" in
+            \"*\") _rcms_v="${_rcms_v#\"}"; _rcms_v="${_rcms_v%\"}" ;;
+            \'*\') _rcms_v="${_rcms_v#\'}"; _rcms_v="${_rcms_v%\'}" ;;
+          esac
+          case "$_rcms_k" in
+            CALDAV_URL) _rcms_url="$_rcms_v" ;;
+            CALDAV_USERNAME) _rcms_user="$_rcms_v" ;;
+            CALDAV_PASSWORD) _rcms_pass="$_rcms_v" ;;
+          esac
+          ;;
+      esac
+    done < "$_rcms_file"
+
+    if [ -z "$_rcms_url" ] || [ -z "$_rcms_user" ] || [ -z "$_rcms_pass" ]; then
+      log "WARNING: Skipping CalDAV account '${_rcms_slug}' - missing CALDAV_URL/USERNAME/PASSWORD"
+      continue
+    fi
+    case "$_rcms_pass" in
+      xxxx-xxxx-xxxx-xxxx|change-me*|changeme*|your-*|placeholder*)
+        log "WARNING: Skipping CalDAV account '${_rcms_slug}' - password still looks like a placeholder"
+        continue
+        ;;
+    esac
+    case "$_rcms_user" in
+      you@icloud.com|your-*|change-me*|user@example.com)
+        log "WARNING: Skipping CalDAV account '${_rcms_slug}' - username still looks like a placeholder"
+        continue
+        ;;
+    esac
+
+    register_caldav_account "$_rcms_profile" "$_rcms_slug" \
+      "$_rcms_url" "$_rcms_user" "$_rcms_pass" \
+      "$CALDAV_MCP_TIMEOUT" "$CALDAV_MCP_CONNECT_TIMEOUT" "$@"
+    _rcms_slugs="${_rcms_slugs} ${_rcms_slug}"
+    _rcms_count=$((_rcms_count + 1))
+  done
+
+  # shellcheck disable=SC2086
+  reconcile_caldav_accounts "$_rcms_profile" $_rcms_slugs
+
+  if [ "$_rcms_count" -eq 0 ]; then
+    log "WARNING: CALDAV_MCP_ENABLED=1 but no valid accounts in ${CALDAV_MCP_ACCOUNTS_DIR}"
+    log "  Copy compose/caldav-mcp/account.env.example to accounts/<slug>.env and fill credentials"
+  else
+    log "Registered ${_rcms_count} CalDAV account(s) on profile '${_rcms_profile:-default}'"
+  fi
+}
+
 if [ ! -f "${HERMES_HOME}/config.yaml" ]; then
   log "No ${HERMES_HOME}/config.yaml — run setup first:"
   log "  docker compose --profile hermes run --rm hermes setup"
@@ -287,6 +522,7 @@ hermes_config_set "" "memory.nudge_interval" "$INTERACTIVE_MEMORY_NUDGE"
 # Same rationale as the skills registration: dashboard and CLI sessions get URL
 # reading whether or not the API server profile is ever configured.
 register_web_mcp_servers ""
+register_caldav_mcp_servers ""
 
 if [ ! -f "$SOURCE_ENV" ]; then
   env_name="$(basename "$SOURCE_ENV")"
@@ -416,6 +652,7 @@ esac
 # Same web-reading servers as the default profile above; profiles carry their
 # own config.yaml, so the earlier registration does not reach API sessions.
 register_web_mcp_servers "$PROFILE"
+register_caldav_mcp_servers "$PROFILE"
 
 # --- Mark gateway for autostart (s6 reconciler in main hermes container) ---
 # `hermes gateway start` is a no-op inside Docker ("Service start is not

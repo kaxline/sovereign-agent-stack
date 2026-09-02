@@ -34,7 +34,7 @@ See [README.md](README.md) and [docs/](docs/README.md).
 
 ## Profiles
 
-Default: `COMPOSE_PROFILES=core`. Add with setup flags (`--rag`, `--automation`, `--coding`, `--ollama`) or by editing `.env`.
+Default: `COMPOSE_PROFILES=core`. Add with setup flags (`--rag`, `--calendar`, `--automation`, `--coding`, `--ollama`) or by editing `.env`.
 
 ## Changing secrets
 

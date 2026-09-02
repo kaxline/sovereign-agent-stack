@@ -44,6 +44,9 @@ flowchart TB
     Neo4j[neo4j]
     LragMcp[lightrag-mcp]
   end
+  subgraph calendar [calendar profile]
+    CaldavMcp[caldav-mcp]
+  end
   subgraph tools [automation / coding]
     N8n[n8n]
     OpenCode[opencode]
@@ -54,6 +57,7 @@ flowchart TB
   LLM --> LightRAG
   Hermes --> McpSearx
   Hermes --> LragMcp
+  Hermes --> CaldavMcp
   WebUI --> Hermes
 ```
 
@@ -63,6 +67,7 @@ flowchart TB
 |---|---|
 | **`core`** (default) | Hermes agent, Hermes WebUI, SearXNG, mcp-searxng |
 | **`rag`** | LightRAG + Neo4j knowledge graph + MCP sidecar |
+| **`calendar`** | CalDAV calendars via caldav-mcp (multi-account) |
 | **`automation`** | n8n + Postgres + GPT Researcher |
 | **`coding`** | OpenCode AI coding agent |
 | **`ollama`** | Bundled Ollama + demo model pull |
@@ -70,15 +75,16 @@ flowchart TB
 Examples:
 
 ```bash
-./scripts/setup.sh --rag --automation --coding
+./scripts/setup.sh --rag --calendar --automation --coding
 # or edit .env:
-# COMPOSE_PROFILES=core,rag,automation,coding
+# COMPOSE_PROFILES=core,rag,calendar,automation,coding
 ```
 
 ## Security model (what the extra wiring buys you)
 
 - **Localhost binds** for SearXNG, GPT Researcher, and the Hermes dashboard/API/WebUI. Nothing is LAN-exposed by default.
 - **Hermes LightRAG MCP allowlist:** unattended API sessions get five read-oriented tools out of seventeen, and the bootstrap **drops unfiltered clone duplicates** so a `--clone`d profile cannot route around the allowlist.
+- **Hermes CalDAV MCP allowlist:** unattended API sessions get read-only calendar tools; create/update/delete stay on dashboard and WebUI. Account credentials live in gitignored `compose/caldav-mcp/accounts/*.env` and are copied into Hermes MCP headers under `data/hermes/`.
 - **Per-profile API keys** for the Hermes `api-server` and `browser` gateways. Sharing one key fails closed.
 - **OpenCode secret shadowing:** mount `compose/opencode/blank` over project `.env` files via gitignored `docker-compose.override.yml`.
 - Setup writes secrets into **gitignored** overlays (`searxng/settings.local.yml`, Hermes `*.env`) and leaves tracked templates alone.
@@ -100,6 +106,7 @@ See [SECURITY.md](SECURITY.md).
 |---|---|
 | [docs/](docs/README.md) | Per-service guides |
 | [Hermes](docs/hermes.md) | Agent gateway, skills, MCP |
+| [Calendar](docs/calendar.md) | CalDAV calendars via caldav-mcp (`calendar`) |
 | [Hermes WebUI](docs/hermes-webui.md) | Chat UI + lean gateway mode |
 | [Knowledge bases](docs/knowledge-bases.md) | Corpora, ingest, hot-workspace switching (`rag`) |
 | [n8n workflows](docs/n8n.md) | Workflows that call the stack (with `automation`) |

@@ -216,6 +216,32 @@ services:
       start_period: 15s
 
   # ----------------------------------------------------------------------
+  # caldav-mcp — CalDAV bridge for Hermes (multi-account via X-Caldav headers)
+  # Profile: calendar
+  # MCP:     http://caldav-mcp:8080/mcp   (compose-internal only)
+  # Upstream: https://github.com/gelse/caldav-mcp
+  # Accounts: compose/caldav-mcp/accounts/<slug>.env (registered by bootstrap)
+  # ----------------------------------------------------------------------
+  caldav-mcp:
+    profiles: ["calendar"]
+    container_name: caldav-mcp
+    image: ${CALDAV_MCP_IMAGE:-ghcr.io/gelse/caldav-mcp:v0.1.0}
+    restart: unless-stopped
+    environment:
+      - CALDAV_MCP_PORT=8080
+      - CALDAV_MCP_PATH=/mcp
+      - TZ=${TZ:-UTC}
+    # No CALDAV_URL/USERNAME/PASSWORD — credentials come per-request from
+    # Hermes mcp_servers headers (one account file → one MCP registration).
+    # No host ports — compose-internal only.
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import socket; s=socket.create_connection(('127.0.0.1',8080),5); s.close()\""]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  # ----------------------------------------------------------------------
   # GPT Researcher — deep web research API (n8n/Hermes REST)
   # Profile: automation
   # API:     http://localhost:8000/report/   (localhost-bound)
@@ -535,10 +561,17 @@ services:
       - SEARXNG_MCP_URL=${SEARXNG_MCP_URL:-http://mcp-searxng:3000/mcp}
       - LIGHTRAG_MCP_URL=${LIGHTRAG_MCP_URL:-http://lightrag-mcp:8000/mcp}
       - LIGHTRAG_MCP_ENABLED=${LIGHTRAG_MCP_ENABLED:-0}
+      # CalDAV MCP (calendar profile); accounts mounted below.
+      - CALDAV_MCP_URL=${CALDAV_MCP_URL:-http://caldav-mcp:8080/mcp}
+      - CALDAV_MCP_ENABLED=${CALDAV_MCP_ENABLED:-0}
+      - CALDAV_MCP_TIMEOUT=${CALDAV_MCP_TIMEOUT:-60}
+      - CALDAV_MCP_CONNECT_TIMEOUT=${CALDAV_MCP_CONNECT_TIMEOUT:-30}
+      - CALDAV_MCP_ACCOUNTS_DIR=/bootstrap/caldav-accounts
     volumes:
       - ./data/hermes:/opt/data
       - ./compose/hermes/api-server.env:/bootstrap/api-server.env:ro
       - ./compose/hermes/bootstrap-api-profile.sh:/bootstrap/bootstrap-api-profile.sh:ro
+      - ./compose/caldav-mcp/accounts:/bootstrap/caldav-accounts:ro
     entrypoint: /bin/sh
     command: /bootstrap/bootstrap-api-profile.sh
 
@@ -574,10 +607,16 @@ services:
       - SEARXNG_MCP_URL=${SEARXNG_MCP_URL:-http://mcp-searxng:3000/mcp}
       - LIGHTRAG_MCP_URL=${LIGHTRAG_MCP_URL:-http://lightrag-mcp:8000/mcp}
       - LIGHTRAG_MCP_ENABLED=${LIGHTRAG_MCP_ENABLED:-0}
+      - CALDAV_MCP_URL=${CALDAV_MCP_URL:-http://caldav-mcp:8080/mcp}
+      - CALDAV_MCP_ENABLED=${CALDAV_MCP_ENABLED:-0}
+      - CALDAV_MCP_TIMEOUT=${CALDAV_MCP_TIMEOUT:-60}
+      - CALDAV_MCP_CONNECT_TIMEOUT=${CALDAV_MCP_CONNECT_TIMEOUT:-30}
+      - CALDAV_MCP_ACCOUNTS_DIR=/bootstrap/caldav-accounts
     volumes:
       - ./data/hermes:/opt/data
       - ./compose/hermes/browser.env:/bootstrap/browser.env:ro
       - ./compose/hermes/bootstrap-api-profile.sh:/bootstrap/bootstrap-api-profile.sh:ro
+      - ./compose/caldav-mcp/accounts:/bootstrap/caldav-accounts:ro
     depends_on:
       hermes-api-bootstrap:
         condition: service_completed_successfully
@@ -693,6 +732,10 @@ services:
         condition: service_healthy
         required: false
       mcp-searxng:
+        condition: service_healthy
+        required: false
+      # Optional: only present when the `calendar` profile is enabled.
+      caldav-mcp:
         condition: service_healthy
         required: false
       # Optional: only present when the `signal` profile is enabled.

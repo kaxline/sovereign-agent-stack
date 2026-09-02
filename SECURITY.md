@@ -16,6 +16,7 @@ This is a **local development** stack. It is not hardened for internet-facing de
 | n8n | `localhost:5678` | Owner account (first login) |
 | OpenCode | `localhost:4096` | HTTP basic auth |
 | GPT Researcher | `127.0.0.1:8000` | None (loopback-only) |
+| caldav-mcp (optional) | compose-internal `:8080` | Per-request CalDAV credentials from Hermes MCP headers; no host publish |
 | signal-cli (optional) | compose-internal `:8080` | None — HTTP JSON-RPC has no auth; keep unpublished |
 
 ## Reporting vulnerabilities
@@ -29,10 +30,11 @@ If you discover a security issue in this repository, please open a private advis
 **Do not:**
 
 - Expose n8n, SearXNG, GPT Researcher, or Hermes to the public internet without authentication and rate limiting.
-- Commit `.env`, `compose/hermes/api-server.env`, `compose/hermes/browser.env`, `n8n/demo-data/credentials/*.json`, `searxng/settings.local.yml`, `opencode/opencode.local.json`, `docker-compose.override.yml`, or anything under `data/`.
+- Commit `.env`, `compose/hermes/api-server.env`, `compose/hermes/browser.env`, `compose/caldav-mcp/accounts/*.env`, `n8n/demo-data/credentials/*.json`, `searxng/settings.local.yml`, `opencode/opencode.local.json`, `docker-compose.override.yml`, or anything under `data/`.
 - Reuse one `API_SERVER_KEY` across Hermes profiles. Keys are scoped per profile and a shared key fails closed, so give `compose/hermes/api-server.env` and `compose/hermes/browser.env` distinct values.
 - Point `OPENCODE_WORKSPACE_HOST` at `$HOME` or `/` — OpenCode has full read/write access to the mount.
 - Publish the signal-cli HTTP port to the LAN. The daemon has no authentication; anyone who can reach it can send as your linked Signal account. This stack keeps it compose-internal only.
+- Publish the caldav-mcp HTTP port. Calendar credentials travel as MCP headers from Hermes; keep the sidecar compose-internal.
 
 **Do:**
 
@@ -40,6 +42,7 @@ If you discover a security issue in this repository, please open a private advis
 - Re-run setup or rotate secrets if you suspect leakage.
 - Set a strong `HERMES_DASHBOARD_PASSWORD`. As of agent 0.20.0 the dashboard will not bind a non-loopback interface without an auth provider, so basic auth has to be there for the healthcheck to pass. Move to OAuth (`hermes dashboard register`) if Hermes is reachable beyond localhost.
 - Keep the Hermes LightRAG MCP allowlist as a security boundary for unattended API sessions (five read-oriented tools). The bootstrap drops unfiltered clone duplicates so nothing routes around it.
+- Keep the Hermes CalDAV MCP allowlist as a security boundary for unattended API sessions (eight read-oriented tools). Account passwords live in gitignored `compose/caldav-mcp/accounts/*.env` and are copied into Hermes `mcp_servers` headers under `data/hermes/` at bootstrap — treat that tree like a password store. See [docs/calendar.md](docs/calendar.md).
 - Enable SearXNG rate limiting (`--profile searxng-prod`) if the instance is shared on a LAN.
 - Treat `SIGNAL_CLI_DATA_DIR` (linked session data) like a password, and keep `SIGNAL_ALLOWED_USERS` tight when Signal is enabled.
 

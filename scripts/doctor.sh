@@ -223,6 +223,77 @@ if [[ "$signal_enabled" -eq 1 ]]; then
   fi
 fi
 
+# --- CalDAV calendar ---
+caldav_enabled="$(env_get CALDAV_MCP_ENABLED 0)"
+if [[ "$caldav_enabled" == "1" || "$caldav_enabled" == "true" || "$caldav_enabled" == "TRUE" || "$caldav_enabled" == "yes" ]] \
+  || has_profile calendar; then
+  echo
+  echo "--- CalDAV calendar ---"
+  if has_profile calendar; then
+    ok "COMPOSE_PROFILES includes calendar"
+  else
+    bad "CALDAV_MCP_ENABLED=1 but 'calendar' not in COMPOSE_PROFILES — run ./scripts/setup.sh --calendar"
+  fi
+  if [[ "$caldav_enabled" == "1" || "$caldav_enabled" == "true" || "$caldav_enabled" == "TRUE" || "$caldav_enabled" == "yes" ]]; then
+    ok "CALDAV_MCP_ENABLED=1"
+  else
+    warn "calendar profile on but CALDAV_MCP_ENABLED is not 1 — Hermes will skip CalDAV MCP registration"
+  fi
+  accounts_dir="compose/caldav-mcp/accounts"
+  valid_accounts=0
+  if [[ -d "$accounts_dir" ]]; then
+    for acc in "$accounts_dir"/*.env; do
+      [[ -f "$acc" ]] || continue
+      base="$(basename "$acc")"
+      slug="${base%.env}"
+      url="$(grep -E '^CALDAV_URL=' "$acc" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+      user="$(grep -E '^CALDAV_USERNAME=' "$acc" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+      pass="$(grep -E '^CALDAV_PASSWORD=' "$acc" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+      if [[ -z "$url" || -z "$user" || -z "$pass" ]]; then
+        warn "CalDAV account ${slug}: incomplete CALDAV_URL/USERNAME/PASSWORD"
+        continue
+      fi
+      if [[ "$pass" == "xxxx-xxxx-xxxx-xxxx" || "$user" == "you@icloud.com" ]]; then
+        warn "CalDAV account ${slug}: still has placeholder credentials — edit ${acc}"
+        continue
+      fi
+      ok "CalDAV account ${slug} looks filled in"
+      valid_accounts=$((valid_accounts + 1))
+    done
+  fi
+  if [[ "$valid_accounts" -eq 0 ]]; then
+    bad "No valid CalDAV accounts in ${accounts_dir}/ — copy account.env.example to accounts/<slug>.env"
+  else
+    ok "${valid_accounts} CalDAV account file(s) ready"
+  fi
+  if docker info >/dev/null 2>&1; then
+    if docker compose ps --status running caldav-mcp 2>/dev/null | grep -q caldav-mcp; then
+      ok "caldav-mcp container is running"
+    else
+      warn "caldav-mcp not running — make up with calendar in COMPOSE_PROFILES"
+    fi
+    if docker compose ps --status running hermes 2>/dev/null | grep -q hermes; then
+      for acc in "$accounts_dir"/*.env; do
+        [[ -f "$acc" ]] || continue
+        slug="$(basename "$acc" .env)"
+        pass="$(grep -E '^CALDAV_PASSWORD=' "$acc" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+        user="$(grep -E '^CALDAV_USERNAME=' "$acc" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+        [[ "$pass" == "xxxx-xxxx-xxxx-xxxx" || "$user" == "you@icloud.com" ]] && continue
+        if docker compose exec -T hermes hermes mcp list 2>/dev/null | grep -q "caldav-${slug}"; then
+          ok "Hermes default profile has mcp caldav-${slug}"
+        else
+          warn "Hermes missing caldav-${slug} — re-run hermes-api-bootstrap after filling credentials"
+        fi
+      done
+      if docker compose exec -T hermes hermes -p api-server mcp list 2>/dev/null | grep -q 'caldav-'; then
+        ok "api-server profile has at least one caldav-* MCP entry"
+      else
+        warn "api-server has no caldav-* MCP — re-run hermes-api-bootstrap"
+      fi
+    fi
+  fi
+fi
+
 # --- Knowledge corpus (rag) ---
 if has_profile rag; then
   echo

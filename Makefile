@@ -10,6 +10,8 @@ ensure-local:
 	@test -f opencode/opencode.local.json || cp opencode/opencode.json opencode/opencode.local.json
 	@test -f compose/hermes/api-server.env || (cp compose/hermes/api-server.env.example compose/hermes/api-server.env && echo "Created compose/hermes/api-server.env — set API_SERVER_KEY")
 	@test -f compose/hermes/browser.env || (cp compose/hermes/browser.env.example compose/hermes/browser.env && echo "Created compose/hermes/browser.env — set API_SERVER_KEY")
+	@mkdir -p compose/caldav-mcp/accounts
+	@test -f compose/caldav-mcp/accounts/personal.env || (cp compose/caldav-mcp/account.env.example compose/caldav-mcp/accounts/personal.env && echo "Created compose/caldav-mcp/accounts/personal.env — set CALDAV_* credentials for calendar profile")
 	@./scripts/sync-signal-profile.sh
 
 doctor:

@@ -33,16 +33,22 @@ jobs:
           # browser.env example already has a placeholder key line — ensure set
           sed -i 's/^API_SERVER_KEY=.*/API_SERVER_KEY=ci-browser-key-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/' compose/hermes/browser.env
           mkdir -p data/hermes/memories data/hermes/profiles/api-server data/hermes/profiles/browser \
-            data/voice data/projects data/memory data/inputs/my-kb data/rag_storage/my-kb
+            data/voice data/projects data/memory data/inputs/my-kb data/rag_storage/my-kb \
+            compose/caldav-mcp/accounts
+          cp compose/caldav-mcp/account.env.example compose/caldav-mcp/accounts/personal.env
+          # Non-placeholder so bootstrap would accept the file if run; compose config only needs the path present.
+          sed -i 's/^CALDAV_USERNAME=.*/CALDAV_USERNAME=ci@example.com/' compose/caldav-mcp/accounts/personal.env
+          sed -i 's/^CALDAV_PASSWORD=.*/CALDAV_PASSWORD=ci-caldav-app-password/' compose/caldav-mcp/accounts/personal.env
       - name: Validate compose configs
         run: |
           set -e
           for profiles in \
             "core" \
             "core,rag" \
+            "core,calendar" \
             "core,rag,automation,coding" \
             "core,ollama" \
-            "core,rag,automation,coding,ollama,searxng-prod"
+            "core,rag,calendar,automation,coding,ollama,searxng-prod"
           do
             echo "=== COMPOSE_PROFILES=$profiles ==="
             COMPOSE_PROFILES="$profiles" docker compose config -q
