@@ -104,6 +104,18 @@ model:
 
 Enable **Serve on Local Network**, then set `model` to the id LM Studio serves and `base_url` to `http://host.docker.internal:<port>/v1`.
 
+To switch models often, load the model in LM Studio and run:
+
+```bash
+./scripts/model-use.sh --from-lmstudio --lightrag same --restart
+# interactive menu when multiple models are loaded; -y to auto-pick first chat model
+# or: make model-use FROM_LMSTUDIO=1 LIGHTRAG=same RESTART=1
+```
+
+The script updates both `model.default` and `model.model` in each Hermes profile.
+
+Presets: copy `models.yaml.example` to `models.local.yaml`, then `make model-use PRESET=muse-glimmer`.
+
 ### Model suitability (agentic tool use)
 
 Hermes WebUI sends a large system prompt plus the full tool schema (~20k input tokens). Models that work in a minimal OpenRouter “one tool” smoke test can still fail here.

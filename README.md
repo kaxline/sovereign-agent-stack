@@ -119,6 +119,7 @@ See [SECURITY.md](SECURITY.md).
 ```bash
 make setup / ./scripts/setup.sh
 make doctor
+make model-use MODEL=…          # or FROM_LMSTUDIO=1 (interactive menu), YES=1, PRESET=…
 make up / make down / make ps
 make logs
 make hermes-upgrade AGENT=v… WEBUI=…

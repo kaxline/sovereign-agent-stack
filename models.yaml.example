@@ -1,0 +1,11 @@
+# Copy to models.local.yaml (gitignored) for short names when switching often.
+#
+#   cp models.yaml.example models.local.yaml
+#   ./scripts/model-use.sh muse-glimmer
+#   make model-use PRESET=muse-glimmer
+#
+# Prefer Qwen-class models for Hermes WebUI tool use. Llama 3.x via OpenRouter
+# is unreliable under the full agent prompt — see docs/hermes.md#model-suitability-agentic-tool-use.
+#
+muse-glimmer: lmstudio-community/muse-glimmer-30b
+qwen35: qwen/qwen3.6-35b-a3b

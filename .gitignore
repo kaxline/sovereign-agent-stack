@@ -26,6 +26,9 @@ opencode/opencode.local.json
 # Machine-specific mounts (contains local filesystem paths)
 docker-compose.override.yml
 
+# Local model presets (copy from models.yaml.example)
+models.local.yaml
+
 # Dev noise
 .DS_Store
 __pycache__/

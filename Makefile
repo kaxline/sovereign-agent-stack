@@ -1,6 +1,6 @@
 .PHONY: setup ensure-local up down logs ps restart clean doctor hermes-upgrade \
 	corpus-create corpus-use corpus-list corpus-ingest corpus-destroy \
-	project-init project-index project-index-check
+	project-init project-index project-index-check model-use
 
 setup:
 	./scripts/setup.sh
@@ -16,6 +16,26 @@ ensure-local:
 
 doctor:
 	./scripts/doctor.sh
+
+# Switch chat profile when LM Studio is configured (interactive menu if multiple models).
+#   make model-use FROM_LMSTUDIO=1 LIGHTRAG=same RESTART=1
+#   make model-use MODEL=lmstudio-community/muse-glimmer-30b RESTART=1
+#   make model-use PRESET=muse-glimmer
+#   make model-use FROM_LMSTUDIO=1 YES=1   # non-interactive: first chat model
+model-use:
+	@set --; \
+	[ -n "$(PRESET)" ] && set -- "$$@" --preset "$(PRESET)"; \
+	[ "$(FROM_LMSTUDIO)" = "1" ] && set -- "$$@" --from-lmstudio; \
+	[ "$(YES)" = "1" ] && set -- "$$@" -y; \
+	[ "$(LIGHTRAG)" = "same" ] && set -- "$$@" --lightrag same; \
+	[ "$(RESTART)" = "1" ] && set -- "$$@" --restart; \
+	[ -n "$(MODEL)" ] && set -- "$$@" "$(MODEL)"; \
+	if [ "$(FROM_LMSTUDIO)" != "1" ] && [ -z "$(MODEL)" ] && [ -z "$(PRESET)" ]; then \
+		echo "Usage: make model-use MODEL=<id> | PRESET=<name> | FROM_LMSTUDIO=1"; \
+		echo "  Optional: LIGHTRAG=same RESTART=1 YES=1"; \
+		exit 1; \
+	fi; \
+	./scripts/model-use.sh "$$@"
 
 up: ensure-local
 	docker compose up -d
