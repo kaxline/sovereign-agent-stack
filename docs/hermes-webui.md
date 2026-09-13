@@ -216,6 +216,8 @@ Confirm the tool card renders and the file resolves under `/opt/projects`. That 
 
 ## Troubleshooting
 
+**Chat UI keeps flickering / “popping” and the network tab fills with `/api/session` + `/api/session/stream`.** Subscribe recovery compared the tab’s `known_count` to a *cached* in-memory `message_count` that can lag behind the on-disk sidecar (for example after a cancel/replace). When the cache was ahead, every reconnect emitted `session-updated` and the client force-reloaded forever. This stack patches that on WebUI start (`patch-webui-persisted-count.py` via `hermeswebui-entrypoint.sh`) so the self-heal reads the disk sidecar like `/api/session` does. Recreate `hermes-webui` after pulling the fix; a hard refresh of the open tab clears any mid-loop client state.
+
 **First-run wizard says Hermes Agent is "Missing or partially importable".** Expected on a lean install. The wizard checks for `run_agent` inside the WebUI container, and gateway mode never has it. `HERMES_WEBUI_SKIP_ONBOARDING=1` (already set on the compose service) suppresses the wizard. Skip Provider setup, which would write credentials for a local agent that is not there. If an old tab still shows the modal after you recreate `hermes-webui`, reload it.
 
 **Every message fails with a 401 / "Gateway rejected the WebUI API key".** Usually a stale `API_SERVER_KEY` in `data/hermes/.env` (the default profile). WebUI reloads that file on startup and overwrites the key from `compose/hermes/browser.env`. Re-run bootstrap (it now strips the leftover) and recreate the WebUI:
