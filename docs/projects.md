@@ -1,8 +1,8 @@
 # Per-project working directories
 
-Hermes mounts `data/projects/` at `/opt/projects`. Each subdirectory is one body
-of work: source notes and agent drafts side by side. The outer repo gitignores
-the whole tree.
+Hermes mounts `$ASSISTANT_DATA_ROOT/projects/` at `/opt/projects`. Each
+subdirectory is one body of work: source notes and agent drafts side by side.
+Default root is `./data`; relocate with [User data directory](data-dir.md).
 
 This page is the **convention** for getting more reliable answers from smaller
 local models without stuffing every project into LightRAG.
@@ -12,7 +12,7 @@ local models without stuffing every project into LightRAG.
 ```bash
 # From the assistant repo root
 make project-init PROJECT=my-project
-# Edit data/projects/my-project/AGENTS.md
+# Edit $ASSISTANT_DATA_ROOT/projects/my-project/AGENTS.md
 # Add source markdown under notes/ (optional description: frontmatter)
 make project-index PROJECT=my-project
 ```
@@ -82,6 +82,7 @@ or other generated trees.
 
 ## Related
 
+- [User data directory](data-dir.md) — relocate projects off `./data`
 - [Hermes WebUI](hermes-webui.md) — workspace dropdown and prefill verification
 - [Hermes Agent](hermes.md) — mounts, sandbox, environment hint
 - [Memory](memory.md) — what belongs in `/opt/memory` instead of a project

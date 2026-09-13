@@ -10,13 +10,14 @@ Requires the **`rag`** compose profile (`./scripts/setup.sh --rag`).
 # Create a cold corpus (dirs + registry row; does not switch)
 make corpus-create SLUG=demo-a
 
-# Drop files into the inputs folder
-cp ~/notes/*.md data/inputs/demo-a/
+# Drop files into the inputs folder ($ASSISTANT_DATA_ROOT, default ./data)
+cp ~/notes/*.md "$ASSISTANT_DATA_ROOT/inputs/demo-a/"
+# or: cp ~/notes/*.md data/inputs/demo-a/   when using the default root
 
 # Make it hot (rewrites WORKSPACE, recreates LightRAG; recreates Hermes if slug changed)
 make corpus-use SLUG=demo-a
 
-# Ingest whatever is under data/inputs/<active>/
+# Ingest whatever is under inputs/<active>/
 make corpus-ingest
 
 # Chat: LightRAG WebUI, or Hermes with "Use LightRAG to …"
@@ -29,10 +30,12 @@ Same commands via `./scripts/corpus.sh <create|use|list|ingest|destroy> …`.
 
 | Path | Role |
 |---|---|
-| `data/inputs/<slug>/` | Drop zone for source files (MD, PDF, DOCX, TXT, …) |
-| `data/rag_storage/<slug>/` | LightRAG vectors / KV for that workspace |
-| `data/corpora/registry.json` | Slug metadata (embedding model/dim, created_at) |
+| `$ASSISTANT_DATA_ROOT/inputs/<slug>/` | Drop zone for source files (MD, PDF, DOCX, TXT, …) |
+| `$ASSISTANT_DATA_ROOT/rag_storage/<slug>/` | LightRAG vectors / KV for that workspace |
+| `$ASSISTANT_DATA_ROOT/corpora/registry.json` | Slug metadata (embedding model/dim, created_at) |
 | `.env` `WORKSPACE` | **Active** corpus LightRAG is serving |
+
+Default `ASSISTANT_DATA_ROOT` is `./data`. Relocate with [User data directory](data-dir.md).
 
 Neo4j stays shared. LightRAG isolates workspaces with a per-slug node label plus the storage dirs above. Do **not** set `NEO4J_WORKSPACE` or `POSTGRES_WORKSPACE` in `.env` — those overrides collapse every corpus into one namespace.
 
@@ -46,7 +49,7 @@ Neo4j stays shared. LightRAG isolates workspaces with a per-slug node label plus
 | `make corpus-ingest` | `POST /documents/scan` for the **active** corpus (optional `SLUG=` must match active) |
 | `make corpus-destroy SLUG=…` | Delete dirs + Neo4j label nodes + registry row; **refuses** if active |
 
-Existing installs: the first `list`/`create` **backfills** the current `WORKSPACE` into the registry if `data/inputs/<WORKSPACE>/` already exists.
+Existing installs: the first `list`/`create` **backfills** the current `WORKSPACE` into the registry if `$ASSISTANT_DATA_ROOT/inputs/<WORKSPACE>/` already exists.
 
 ## Switching
 

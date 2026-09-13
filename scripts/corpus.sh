@@ -5,8 +5,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+# shellcheck source=lib/data-root.sh
+source "${ROOT}/scripts/lib/data-root.sh"
 
-REGISTRY="$ROOT/data/corpora/registry.json"
+DATA_ROOT="$(resolve_data_root_path "")"
+REGISTRY="${DATA_ROOT}/corpora/registry.json"
 
 usage() {
   cat <<'EOF'
@@ -16,7 +19,7 @@ Commands:
   create <slug>     Create input + storage dirs and a registry row (does not switch)
   use <slug>        Make slug the hot WORKSPACE; recreate LightRAG (+ Hermes if changed)
   list              List corpora; mark the active WORKSPACE
-  ingest [slug]     Scan data/inputs/<slug> into the hot LightRAG (slug must be active)
+  ingest [slug]     Scan ASSISTANT_DATA_ROOT/inputs/<slug> into the hot LightRAG (slug must be active)
   destroy <slug>    Delete dirs, Neo4j label data, and registry row (not while active)
 
 Examples:
@@ -98,7 +101,7 @@ refuse_backend_workspace_overrides() {
 
 create_getting_started() {
   local workspace="$1"
-  local dest="$ROOT/data/inputs/${workspace}/getting-started.md"
+  local dest="${DATA_ROOT}/inputs/${workspace}/getting-started.md"
   [[ -f "$dest" ]] && return 0
   cat > "$dest" <<EOF
 # Getting started
@@ -118,18 +121,19 @@ EOF
 
 # Ensure registry exists; backfill current WORKSPACE if dirs exist but registry does not.
 ensure_registry() {
-  mkdir -p "$ROOT/data/corpora"
+  mkdir -p "${DATA_ROOT}/corpora"
   local out
-  out="$(python3 - "$REGISTRY" "$ROOT" <<'PY'
+  out="$(python3 - "$REGISTRY" "$DATA_ROOT" "$ROOT" <<'PY'
 import json, os, sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 registry_path = Path(sys.argv[1])
-root = Path(sys.argv[2])
+data_root = Path(sys.argv[2])
+repo_root = Path(sys.argv[3])
 
 def env_get(key, default=""):
-    env_file = root / ".env"
+    env_file = repo_root / ".env"
     if not env_file.is_file():
         return default
     for line in env_file.read_text().splitlines():
@@ -151,7 +155,7 @@ def load():
 data = load()
 slugs = {c.get("slug") for c in data["corpora"] if isinstance(c, dict)}
 workspace = env_get("WORKSPACE")
-inputs = root / "data" / "inputs"
+inputs = data_root / "inputs"
 if workspace and workspace not in slugs and (inputs / workspace).is_dir():
     data["corpora"].append({
         "slug": workspace,
@@ -251,7 +255,7 @@ PY
 
 corpus_dirs_exist() {
   local slug="$1"
-  [[ -d "$ROOT/data/inputs/${slug}" ]]
+  [[ -d "${DATA_ROOT}/inputs/${slug}" ]]
 }
 
 cmd_create() {
@@ -263,12 +267,12 @@ cmd_create() {
     log "Corpus '${slug}' already exists"
     return 0
   fi
-  mkdir -p "$ROOT/data/inputs/${slug}" "$ROOT/data/rag_storage/${slug}"
+  mkdir -p "${DATA_ROOT}/inputs/${slug}" "${DATA_ROOT}/rag_storage/${slug}"
   create_getting_started "$slug"
   registry_add "$slug"
   log "Created corpus '${slug}'"
-  log "  inputs:  data/inputs/${slug}/"
-  log "  storage: data/rag_storage/${slug}/"
+  log "  inputs:  ${DATA_ROOT}/inputs/${slug}/"
+  log "  storage: ${DATA_ROOT}/rag_storage/${slug}/"
   log "Not switched. Run: ./scripts/corpus.sh use ${slug}"
 }
 
@@ -276,12 +280,12 @@ cmd_list() {
   ensure_registry
   local active
   active="$(env_get WORKSPACE)"
-  python3 - "$REGISTRY" "$ROOT" "$active" <<'PY'
+  python3 - "$REGISTRY" "$DATA_ROOT" "$active" <<'PY'
 import json, sys
 from pathlib import Path
 
-registry_path, root, active = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
-inputs = root / "data" / "inputs"
+registry_path, data_root, active = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+inputs = data_root / "inputs"
 slugs = set()
 rows = {}
 if registry_path.is_file():
@@ -342,7 +346,7 @@ cmd_use() {
   ensure_registry
 
   if ! corpus_dirs_exist "$slug"; then
-    die "Corpus '${slug}' not found (missing data/inputs/${slug}/). Create it first."
+    die "Corpus '${slug}' not found (missing ${DATA_ROOT}/inputs/${slug}/). Create it first."
   fi
   if ! registry_has "$slug"; then
     log "Registry missing '${slug}' — adding from current embedding settings"
@@ -391,13 +395,13 @@ cmd_ingest() {
   if [[ "$slug" != "$active" ]]; then
     die "Corpus '${slug}' is not hot (active WORKSPACE=${active}). Run: ./scripts/corpus.sh use ${slug}"
   fi
-  corpus_dirs_exist "$slug" || die "Missing data/inputs/${slug}/"
+  corpus_dirs_exist "$slug" || die "Missing ${DATA_ROOT}/inputs/${slug}/"
 
   port="$(env_get PORT 9621)"
   key="$(env_get LIGHTRAG_API_KEY)"
   [[ -n "$key" ]] || die "LIGHTRAG_API_KEY is unset"
 
-  log "Scanning data/inputs/${slug}/ via LightRAG"
+  log "Scanning ${DATA_ROOT}/inputs/${slug}/ via LightRAG"
   resp="$(curl -sf -X POST -H "X-API-Key: ${key}" "http://127.0.0.1:${port}/documents/scan" || true)"
   if [[ -z "$resp" ]]; then
     die "Scan request failed (is LightRAG up? try: make corpus-use SLUG=${slug})"
@@ -474,8 +478,8 @@ cmd_destroy() {
   fi
 
   echo "This will permanently delete:"
-  echo "  data/inputs/${slug}/"
-  echo "  data/rag_storage/${slug}/"
+  echo "  ${DATA_ROOT}/inputs/${slug}/"
+  echo "  ${DATA_ROOT}/rag_storage/${slug}/"
   echo "  Neo4j nodes labeled :\`${slug}\`"
   echo "  registry entry for ${slug}"
   read -r -p "Type the slug '${slug}' to confirm: " confirm
@@ -483,7 +487,7 @@ cmd_destroy() {
     die "Aborted (confirmation did not match)"
   fi
 
-  rm -rf "$ROOT/data/inputs/${slug}" "$ROOT/data/rag_storage/${slug}"
+  rm -rf "${DATA_ROOT}/inputs/${slug}" "${DATA_ROOT}/rag_storage/${slug}"
   log "Removed input and storage directories"
 
   if docker compose ps --status running neo4j 2>/dev/null | grep -q neo4j; then

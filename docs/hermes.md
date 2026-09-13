@@ -275,7 +275,7 @@ people, decisions, preferences, and extra topic notes.
 
 | Host | Container | Mode | Contents |
 |---|---|---|---|
-| `./data/memory` | `/opt/memory` | read-write | Curated long-form notes (gitignored) |
+| `$ASSISTANT_DATA_ROOT/memory` | `/opt/memory` | read-write | Curated long-form notes |
 
 ```bash
 # files are created by setup.sh; then in a Hermes session:
@@ -332,7 +332,7 @@ Raw writing or chat samples belong on disk as a calibration corpus, not in the
 prompt:
 
 ```text
-data/voice/<name>/samples/   →   /opt/voice/<name>/samples/
+$ASSISTANT_DATA_ROOT/voice/<name>/samples/   →   /opt/voice/<name>/samples/
 ```
 
 That mount is already gitignored. Calibrate (or hand-write) a `STYLE.md`, then
@@ -359,8 +359,8 @@ This skill does **not** change how the agent talks in WebUI or dashboard chat �
 that is [SOUL.md](#conversational-tone-soulmd).
 
 ```bash
-mkdir -p data/voice/my-voice/samples
-cp ~/writing/*.md data/voice/my-voice/samples/
+mkdir -p "$ASSISTANT_DATA_ROOT/voice/my-voice/samples"
+cp ~/writing/*.md "$ASSISTANT_DATA_ROOT/voice/my-voice/samples/"
 docker compose up -d
 ```
 
@@ -371,7 +371,7 @@ Calibrate the my-voice writing voice.          # once, and after adding samples
 Write a 600-word post about pricing in the my-voice voice.
 ```
 
-Calibration writes `data/voice/my-voice/STYLE.md`, a distilled description of your style:
+Calibration writes `$ASSISTANT_DATA_ROOT/voice/my-voice/STYLE.md`, a distilled description of your style:
 sentence rhythm, punctuation habits, vocabulary, and a "never does" list. Read and edit it.
 Hand-correcting that file is the fastest way to improve output. Drafting then loads
 `STYLE.md` plus two to four exemplars named in its frontmatter, and finishes with a
@@ -385,7 +385,7 @@ Two mounts on the `hermes` service back all of this:
 | Host | Container | Mode | Contents |
 |---|---|---|---|
 | `./compose/hermes/skills` | `/opt/skills` | read-only | Repo-shipped skills (tracked in git) |
-| `./data/voice` | `/opt/voice` | read-write | Your writing corpora (gitignored) |
+| `$ASSISTANT_DATA_ROOT/voice` | `/opt/voice` | read-write | Your writing corpora |
 
 The skills mount is read-only on purpose. Hermes treats `skills.external_dirs` purely as a
 discovery path; it draws no write boundary there, so a writable directory is one the agent's
@@ -436,12 +436,13 @@ generated output side by side: a job search, a book, a client engagement, a rese
 
 | Host | Container | Mode | Contents |
 |---|---|---|---|
-| `./data/projects` | `/opt/projects` | read-write | Your per-project working directories (gitignored) |
+| `$ASSISTANT_DATA_ROOT/projects` | `/opt/projects` | read-write | Your per-project working directories |
 
-Each subdirectory is one project. `setup.sh` creates `data/projects/` and drops a `README.md`
+Each subdirectory is one project. `setup.sh` creates the projects dir and drops a `README.md`
 there. Scaffold a new project with `make project-init PROJECT=…`, keep a short `AGENTS.md`
 brief and an `INDEX.md` file map, and select the path as a WebUI workspace when you want the
-brief injected automatically. Full convention: [Projects](projects.md).
+brief injected automatically. Full convention: [Projects](projects.md). Relocate the host
+root with [User data directory](data-dir.md).
 
 ```bash
 make project-init PROJECT=my-project

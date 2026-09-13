@@ -14,6 +14,7 @@ Per-service setup, usage, and verification guides. See the [project README](../R
 | [Signal](signal.md) | `signal` (+ `core`) | Linked-device messaging, WebUI send, cron delivery |
 | [Hermes WebUI](hermes-webui.md) | `core` | Chat UI via lean browser gateway |
 | [Projects](projects.md) | `core` / Hermes | Per-project briefs (`AGENTS.md`), INDEX, WebUI workspace prefill |
+| [User data directory](data-dir.md) | host | Relocate projects / voice / memory / LightRAG inputs outside the repo |
 | [Writing in your voice](writing-voice.md) | `core` / Hermes | Drafting artifacts in your style (not chat tone) |
 | [Memory](memory.md) | `core` / Hermes | Built-in USER.md, session search, curated notes |
 | [Releasing](releasing.md) | maintainers | Thematic first-history commit playbook |

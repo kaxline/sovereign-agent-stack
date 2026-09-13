@@ -112,6 +112,7 @@ See [SECURITY.md](SECURITY.md).
 | [n8n workflows](docs/n8n.md) | Workflows that call the stack (with `automation`) |
 | [Writing voice](docs/writing-voice.md) | Drafting artifacts in your style (not chat tone) |
 | [Memory](docs/memory.md) | Built-in USER.md, session search, curated notes |
+| [User data directory](docs/data-dir.md) | Relocate projects / voice / memory / LightRAG inputs |
 | [Releasing](docs/releasing.md) | Thematic commit playbook for the first public history |
 
 ## Commands
@@ -122,8 +123,9 @@ make doctor
 make model-use MODEL=…          # or FROM_LMSTUDIO=1 (interactive menu), YES=1, PRESET=…
 make up / make down / make ps
 make logs
+make data-dir-show / data-dir-set DIR=… / data-dir-migrate DIR=…
 make hermes-upgrade AGENT=v… WEBUI=…
-make clean   # destroys volumes + data/
+make clean   # destroys volumes + repo ./data/ (not an external ASSISTANT_DATA_ROOT)
 ```
 
 ## Roadmap

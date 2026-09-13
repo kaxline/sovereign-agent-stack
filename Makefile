@@ -1,6 +1,22 @@
 .PHONY: setup ensure-local up down logs ps restart clean doctor hermes-upgrade \
 	corpus-create corpus-use corpus-list corpus-ingest corpus-destroy \
-	project-init project-index project-index-check model-use
+	project-init project-index project-index-check model-use \
+	data-dir-show data-dir-set data-dir-migrate
+
+# Resolve ASSISTANT_DATA_ROOT from .env (default ./data) to an absolute path.
+define resolve_data_root
+ROOT_DIR=$$(pwd); \
+DR=$$(grep -E '^ASSISTANT_DATA_ROOT=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'"); \
+DR=$${DR:-./data}; \
+case "$$DR" in \
+  "~") DR="$$HOME" ;; \
+  "~/"*) DR="$$HOME/$${DR#~/}" ;; \
+esac; \
+case "$$DR" in \
+  /*) DATA_ROOT="$$DR" ;; \
+  *) DATA_ROOT="$$ROOT_DIR/$${DR#./}" ;; \
+esac
+endef
 
 setup:
 	./scripts/setup.sh
@@ -16,6 +32,30 @@ ensure-local:
 
 doctor:
 	./scripts/doctor.sh
+
+# User content root (projects, voice, memory, inputs, rag_storage, corpora).
+# Hermes state stays at ./data/hermes. See docs/data-dir.md.
+#   make data-dir-show
+#   make data-dir-set DIR=~/AssistantData
+#   make data-dir-migrate DIR=~/AssistantData
+#   make data-dir-migrate FROM=./data DIR=~/AssistantData REMOVE_SOURCE=1
+data-dir-show:
+	./scripts/data-dir.sh show
+
+data-dir-set:
+	@test -n "$(DIR)" || (echo "Usage: make data-dir-set DIR=<path>"; exit 1)
+	./scripts/data-dir.sh set "$(DIR)"
+
+data-dir-migrate:
+	@test -n "$(DIR)" || (echo "Usage: make data-dir-migrate DIR=<to> [FROM=<from>] [REMOVE_SOURCE=1] [FORCE=1]"; exit 1)
+	@set --; \
+	[ "$(REMOVE_SOURCE)" = "1" ] && set -- "$$@" --remove-source; \
+	[ "$(FORCE)" = "1" ] && set -- "$$@" --force; \
+	if [ -n "$(FROM)" ]; then \
+	  ./scripts/data-dir.sh "$$@" migrate "$(FROM)" "$(DIR)"; \
+	else \
+	  ./scripts/data-dir.sh "$$@" migrate "$(DIR)"; \
+	fi
 
 # Switch chat profile when LM Studio is configured (interactive menu if multiple models).
 #   make model-use FROM_LMSTUDIO=1 LIGHTRAG=same RESTART=1
@@ -76,30 +116,33 @@ corpus-destroy:
 	@test -n "$(SLUG)" || (echo "Usage: make corpus-destroy SLUG=<slug>"; exit 1)
 	./scripts/corpus.sh destroy "$(SLUG)"
 
-# Per-project working dirs under data/projects/ (gitignored). See docs/projects.md.
+# Per-project working dirs under ASSISTANT_DATA_ROOT/projects/. See docs/projects.md.
 #   make project-init PROJECT=my-project
 #   make project-index PROJECT=my-project
 #   make project-index-check PROJECT=my-project
 project-init:
 	@test -n "$(PROJECT)" || (echo "Usage: make project-init PROJECT=<slug>"; exit 1)
-	@dest="data/projects/$(PROJECT)"; \
+	@$(resolve_data_root); \
+	dest="$$DATA_ROOT/projects/$(PROJECT)"; \
 	if [ -e "$$dest" ]; then \
 		echo "Refusing to overwrite existing $$dest"; \
 		exit 1; \
 	fi; \
-	mkdir -p data/projects; \
+	mkdir -p "$$DATA_ROOT/projects"; \
 	cp -R compose/hermes/project-template "$$dest"; \
 	echo "Created $$dest — edit AGENTS.md, then make project-index PROJECT=$(PROJECT)"
 
 project-index:
 	@test -n "$(PROJECT)" || (echo "Usage: make project-index PROJECT=<slug>"; exit 1)
-	@test -d "data/projects/$(PROJECT)" || (echo "Missing data/projects/$(PROJECT) — run make project-init first"; exit 1)
-	python3 scripts/project-index.py --root "data/projects/$(PROJECT)"
+	@$(resolve_data_root); \
+	test -d "$$DATA_ROOT/projects/$(PROJECT)" || (echo "Missing $$DATA_ROOT/projects/$(PROJECT) — run make project-init first"; exit 1); \
+	python3 scripts/project-index.py --root "$$DATA_ROOT/projects/$(PROJECT)"
 
 project-index-check:
 	@test -n "$(PROJECT)" || (echo "Usage: make project-index-check PROJECT=<slug>"; exit 1)
-	@test -d "data/projects/$(PROJECT)" || (echo "Missing data/projects/$(PROJECT)"; exit 1)
-	python3 scripts/project-index.py --root "data/projects/$(PROJECT)" --check
+	@$(resolve_data_root); \
+	test -d "$$DATA_ROOT/projects/$(PROJECT)" || (echo "Missing $$DATA_ROOT/projects/$(PROJECT)"; exit 1); \
+	python3 scripts/project-index.py --root "$$DATA_ROOT/projects/$(PROJECT)" --check
 
 # Upgrade Hermes and its WebUI together. The WebUI reads the agent's on-disk
 # state layout and is only tested against a matching agent, so bumping one alone
@@ -130,8 +173,17 @@ hermes-upgrade:
 	@echo "Upgraded. Now run the verification block in docs/hermes-webui.md —"
 	@echo "the tool filters and skills.external_dirs are what silently regress."
 
+# Removes Docker volumes and repo ./data (including hermes state).
+# Never deletes an ASSISTANT_DATA_ROOT that lives outside the repo.
 clean:
-	@echo "WARNING: This removes all Docker volumes and local data/ for this project."
+	@echo "WARNING: This removes Docker volumes and the repo ./data/ tree (incl. hermes)."
+	@$(resolve_data_root); \
+	REPO_DATA="$$(pwd)/data"; \
+	if [ "$$DATA_ROOT" != "$$REPO_DATA" ]; then \
+		echo "ASSISTANT_DATA_ROOT=$$DATA_ROOT will NOT be deleted."; \
+	else \
+		echo "ASSISTANT_DATA_ROOT is ./data — user content under it will be deleted with ./data/."; \
+	fi
 	@read -r -p "Type 'yes' to continue: " confirm; \
 	if [ "$$confirm" = yes ]; then \
 		docker compose down -v; \

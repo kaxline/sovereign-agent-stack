@@ -21,7 +21,7 @@ n8n follows patterns from the [n8n self-hosted AI starter kit](https://github.co
 
 4. Six starter workflows are auto-imported:
    - **LightRAG Query (Webhook)** — `POST /webhook/lightrag-query` with `{"question": "...", "mode": "mix"}`
-   - **LightRAG Scan Inputs** — triggers `/documents/scan` on `./data/inputs`
+   - **LightRAG Scan Inputs** — triggers `/documents/scan` on `$ASSISTANT_DATA_ROOT/inputs`
    - **Neo4j Explore Graph** — runs a label-count Cypher query via Neo4j HTTP API
    - **Web Search (Webhook)** — `POST /webhook/web-search` with `{"query": "..."}`
    - **Search and Query LightRAG (Webhook)** — web search + LightRAG query chain
@@ -111,7 +111,7 @@ No authentication required (internal instance). Set timeout to 600000 ms. Respon
 
 ## Shared files
 
-n8n mounts `./data/inputs` at `/data/shared` (read-only). Files for your workspace live under `data/inputs/<WORKSPACE>/` on the host. Use **Read/Write Files from Disk** or **Local File Trigger** nodes with paths under `/data/shared/<WORKSPACE>/`.
+n8n mounts `$ASSISTANT_DATA_ROOT/inputs` at `/data/shared` (read-only). Files for your workspace live under `$ASSISTANT_DATA_ROOT/inputs/<WORKSPACE>/` on the host. Use **Read/Write Files from Disk** or **Local File Trigger** nodes with paths under `/data/shared/<WORKSPACE>/`. See [User data directory](data-dir.md).
 
 Scan and query workflows always hit the **hot** LightRAG workspace (whatever `WORKSPACE` is in `.env`). To switch corpora from the host, use `make corpus-use SLUG=…` — see [Knowledge bases](knowledge-bases.md).
 

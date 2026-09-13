@@ -4,10 +4,13 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+# shellcheck source=lib/data-root.sh
+source "${ROOT}/scripts/lib/data-root.sh"
 
 WORKSPACE=""
 WEBUI_TITLE=""
 OPENCODE_WORKSPACE_HOST=""
+ASSISTANT_DATA_ROOT_ARG=""
 SETUP_OLLAMA=0
 SETUP_RAG=0
 SETUP_AUTOMATION=0
@@ -23,6 +26,8 @@ Options:
   --workspace SLUG          Knowledge-base slug (alphanumeric + hyphens)
   --title TITLE             LightRAG web UI title
   --opencode-workspace PATH Host path for OpenCode workspace mount
+  --data-root PATH          User content root (projects, voice, memory, inputs, …)
+                            Hermes state stays at ./data/hermes. See docs/data-dir.md
   --rag                     Enable knowledge graph (compose profile rag)
   --automation              Enable n8n + GPT Researcher (profile automation)
   --coding                  Enable OpenCode (profile coding)
@@ -37,6 +42,7 @@ Examples:
   ./scripts/setup.sh
   ./scripts/setup.sh --rag --automation --coding
   ./scripts/setup.sh --calendar
+  ./scripts/setup.sh --data-root ~/AssistantData
   ./scripts/setup.sh --ollama --non-interactive --workspace my-kb --title "My KB"
 EOF
 }
@@ -46,6 +52,7 @@ while [[ $# -gt 0 ]]; do
     --workspace) WORKSPACE="$2"; shift 2 ;;
     --title) WEBUI_TITLE="$2"; shift 2 ;;
     --opencode-workspace) OPENCODE_WORKSPACE_HOST="$2"; shift 2 ;;
+    --data-root) ASSISTANT_DATA_ROOT_ARG="$2"; shift 2 ;;
     --hermes) shift ;; # deprecated alias; core already includes Hermes
     --rag) SETUP_RAG=1; shift ;;
     --automation) SETUP_AUTOMATION=1; shift ;;
@@ -309,7 +316,7 @@ sync_searxng_secret() {
 
 create_getting_started() {
   local workspace="$1"
-  local dest="$ROOT/data/inputs/${workspace}/getting-started.md"
+  local dest="${DATA_ROOT}/inputs/${workspace}/getting-started.md"
   cat > "$dest" <<EOF
 # Getting started
 
@@ -326,19 +333,19 @@ EOF
 }
 
 create_voice_readme() {
-  local dest="$ROOT/data/voice/README.md"
-  cat > "$dest" <<'EOF'
+  local dest="${DATA_ROOT}/voice/README.md"
+  cat > "$dest" <<EOF
 # Writing voices
 
-Each subdirectory here is one writing voice. Hermes reads them at `/opt/voice`.
+Each subdirectory here is one writing voice. Hermes reads them at \`/opt/voice\`.
 Nothing in this directory is tracked by git.
 
 ## Setup
 
 1. Create a voice and drop in samples:
 
-       mkdir -p data/voice/my-voice/samples
-       cp ~/writing/*.md data/voice/my-voice/samples/
+       mkdir -p ${DATA_ROOT}/voice/my-voice/samples
+       cp ~/writing/*.md ${DATA_ROOT}/voice/my-voice/samples/
 
    Use finished writing you would be happy to publish again. Whatever lands
    here gets imitated, warts and all. Aim for 5 or more pieces of 500+ words.
@@ -348,7 +355,7 @@ Nothing in this directory is tracked by git.
 
        Calibrate the my-voice writing voice.
 
-   This writes `data/voice/my-voice/STYLE.md`. Read it. It is a normal markdown
+   This writes \`${DATA_ROOT}/voice/my-voice/STYLE.md\`. Read it. It is a normal markdown
    file, and editing it by hand improves results faster than anything else.
    The "Never does" section deserves the most attention.
 
@@ -358,7 +365,7 @@ Nothing in this directory is tracked by git.
 
 ## Layout
 
-    data/voice/
+    voice/
       my-voice/
         samples/      # your writing (you add these)
         STYLE.md      # produced by calibration; hand-editable
@@ -367,21 +374,22 @@ Nothing in this directory is tracked by git.
 ## Notes
 
 - Requires the Hermes profile. For the full step-by-step guide, including how to
-  pick a corpus and troubleshoot, see `docs/writing-voice.md`.
+  pick a corpus and troubleshoot, see \`docs/writing-voice.md\`.
 - This directory is for drafted artifacts ("write this post in my voice"). It
   does not change how Hermes talks in WebUI or dashboard chat. Chat tone is
-  `SOUL.md` on the profile that serves that surface — for the WebUI,
-  `data/hermes/profiles/browser/SOUL.md`. Distill samples into that file; do
+  \`SOUL.md\` on the profile that serves that surface — for the WebUI,
+  \`data/hermes/profiles/browser/SOUL.md\`. Distill samples into that file; do
   not paste this corpus into the prompt. Keep chat logs in a separate
-  subdirectory from essay/blog samples. See `docs/hermes.md`.
+  subdirectory from essay/blog samples. See \`docs/hermes.md\`.
 - Style matching is one of the harder tasks for a small local model. When drafts
   feel flat, try a larger drafting model before adding samples.
+- Relocate this tree with \`make data-dir-migrate\` — see \`docs/data-dir.md\`.
 EOF
   log "Wrote $dest"
 }
 
 create_projects_readme() {
-  local dest="$ROOT/data/projects/README.md"
+  local dest="${DATA_ROOT}/projects/README.md"
   cat > "$dest" <<'EOF'
 # Projects
 
@@ -429,6 +437,7 @@ LightRAG later, once a project outgrows reading files directly.
 - Requires the Hermes `core` profile.
 - Agents can write here. Review generated files before treating them as fact.
 - Full convention: `docs/projects.md` in the assistant repo.
+- Relocate with `make data-dir-migrate` — see `docs/data-dir.md`.
 EOF
   log "Wrote $dest"
 }
@@ -440,7 +449,7 @@ create_hermes_user_md() {
 
 Short identity and preferences injected into every Hermes session. Keep this
 file small (Hermes caps it around 1375 characters). Longer notes belong in
-`data/memory/`, not here.
+curated memory under ASSISTANT_DATA_ROOT/memory/, not here.
 
 Hand-edit freely. Empty sections stay empty until there is something true to
 write.
@@ -455,7 +464,7 @@ EOF
 }
 
 create_memory_readme() {
-  local dest="$ROOT/data/memory/README.md"
+  local dest="${DATA_ROOT}/memory/README.md"
   cat > "$dest" <<'EOF'
 # Curated memory
 
@@ -477,7 +486,7 @@ directory is for everything that outgrows that cap.
 
 ## Layout
 
-    data/memory/
+    memory/
       README.md         # this file (not memory)
       INDEX.md          # table of contents; hand-editable
       people.md
@@ -495,12 +504,13 @@ and the store starts citing its own output back to you as fact.
 - Requires the Hermes profile. For the routing (built-in vs files vs past
   chats vs LightRAG), see `docs/memory.md`.
 - Agents can write here. Review generated files before treating them as fact.
+- Relocate with `make data-dir-migrate` — see `docs/data-dir.md`.
 EOF
   log "Wrote $dest"
 }
 
 create_memory_index() {
-  local dest="$ROOT/data/memory/INDEX.md"
+  local dest="${DATA_ROOT}/memory/INDEX.md"
   cat > "$dest" <<'EOF'
 # Memory index
 
@@ -521,7 +531,7 @@ EOF
 }
 
 create_memory_people() {
-  local dest="$ROOT/data/memory/people.md"
+  local dest="${DATA_ROOT}/memory/people.md"
   cat > "$dest" <<'EOF'
 # People
 
@@ -531,7 +541,7 @@ EOF
 }
 
 create_memory_decisions() {
-  local dest="$ROOT/data/memory/decisions.md"
+  local dest="${DATA_ROOT}/memory/decisions.md"
   cat > "$dest" <<'EOF'
 # Decisions
 
@@ -542,7 +552,7 @@ EOF
 }
 
 create_memory_preferences() {
-  local dest="$ROOT/data/memory/preferences.md"
+  local dest="${DATA_ROOT}/memory/preferences.md"
   cat > "$dest" <<'EOF'
 # Preferences
 
@@ -632,44 +642,77 @@ validate_opencode_workspace "$OPENCODE_WORKSPACE_HOST"
 mkdir -p "$OPENCODE_WORKSPACE_HOST"
 upsert_env .env OPENCODE_WORKSPACE_HOST "$OPENCODE_WORKSPACE_HOST"
 
-# --- data/ tree ---
-# Bind-mount sources for the hermes service. Create them here; if Docker gets
-# there first it creates them owned by root, and Hermes can then write neither
-# calibration output, drafts, nor memory files. Profile parents exist so the
-# shared memories/ overlays in compose have somewhere to land.
-mkdir -p "data/inputs/${WORKSPACE}" "data/rag_storage/${WORKSPACE}" \
+# --- ASSISTANT_DATA_ROOT (user content) + ./data/hermes (agent state) ---
+# User trees are bind-mounted into Hermes/LightRAG. Create them here; if Docker
+# gets there first it creates them owned by root. Hermes state stays under the
+# repo's data/hermes regardless of ASSISTANT_DATA_ROOT.
+if [[ -n "$ASSISTANT_DATA_ROOT_ARG" ]]; then
+  DATA_ROOT="$ASSISTANT_DATA_ROOT_ARG"
+  if [[ "$DATA_ROOT" == "~" ]]; then
+    DATA_ROOT="$HOME"
+  elif [[ "$DATA_ROOT" == "~/"* ]]; then
+    DATA_ROOT="$HOME/${DATA_ROOT#~/}"
+  fi
+  if [[ "$DATA_ROOT" != /* ]]; then
+    DATA_ROOT="${ROOT}/${DATA_ROOT#./}"
+  fi
+  DATA_ROOT="${DATA_ROOT%/}"
+  if [[ -d "$DATA_ROOT" ]]; then
+    DATA_ROOT="$(cd "$DATA_ROOT" && pwd -P)"
+  else
+    mkdir -p "$DATA_ROOT"
+    DATA_ROOT="$(cd "$DATA_ROOT" && pwd -P)"
+  fi
+else
+  existing="$(data_root_env_get ASSISTANT_DATA_ROOT "")"
+  if [[ -n "$existing" && "$existing" != "./data" ]]; then
+    DATA_ROOT="$(resolve_data_root_path "$existing")"
+  else
+    DATA_ROOT="${ROOT}/data"
+  fi
+fi
+validate_data_root_path "$DATA_ROOT" || die "Invalid ASSISTANT_DATA_ROOT: $DATA_ROOT"
+# Prefer absolute path in .env when outside the default repo-relative ./data
+if [[ "$DATA_ROOT" == "${ROOT}/data" ]]; then
+  upsert_env .env ASSISTANT_DATA_ROOT "./data"
+else
+  upsert_env .env ASSISTANT_DATA_ROOT "$DATA_ROOT"
+fi
+
+mkdir -p "${DATA_ROOT}/inputs/${WORKSPACE}" "${DATA_ROOT}/rag_storage/${WORKSPACE}" \
+  "${DATA_ROOT}/voice" "${DATA_ROOT}/projects" "${DATA_ROOT}/memory/notes" \
+  "${DATA_ROOT}/corpora" \
   "data/hermes/memories" \
   "data/hermes/profiles/api-server" \
-  "data/hermes/profiles/browser" \
-  "data/voice" "data/projects" "data/memory/notes"
-if [[ ! -f "data/inputs/${WORKSPACE}/getting-started.md" ]]; then
+  "data/hermes/profiles/browser"
+if [[ ! -f "${DATA_ROOT}/inputs/${WORKSPACE}/getting-started.md" ]]; then
   create_getting_started "$WORKSPACE"
 fi
-if [[ ! -f "data/voice/README.md" ]]; then
+if [[ ! -f "${DATA_ROOT}/voice/README.md" ]]; then
   create_voice_readme
 fi
-if [[ ! -f "data/projects/README.md" ]]; then
+if [[ ! -f "${DATA_ROOT}/projects/README.md" ]]; then
   create_projects_readme
 fi
 if [[ ! -f "data/hermes/memories/USER.md" ]]; then
   create_hermes_user_md
 fi
-if [[ ! -f "data/memory/README.md" ]]; then
+if [[ ! -f "${DATA_ROOT}/memory/README.md" ]]; then
   create_memory_readme
 fi
-if [[ ! -f "data/memory/INDEX.md" ]]; then
+if [[ ! -f "${DATA_ROOT}/memory/INDEX.md" ]]; then
   create_memory_index
 fi
-if [[ ! -f "data/memory/people.md" ]]; then
+if [[ ! -f "${DATA_ROOT}/memory/people.md" ]]; then
   create_memory_people
 fi
-if [[ ! -f "data/memory/decisions.md" ]]; then
+if [[ ! -f "${DATA_ROOT}/memory/decisions.md" ]]; then
   create_memory_decisions
 fi
-if [[ ! -f "data/memory/preferences.md" ]]; then
+if [[ ! -f "${DATA_ROOT}/memory/preferences.md" ]]; then
   create_memory_preferences
 fi
-log "Created data/inputs/${WORKSPACE}/, data/rag_storage/${WORKSPACE}/, data/hermes/, data/voice/, data/projects/, and data/memory/"
+log "Created ${DATA_ROOT}/{inputs,rag_storage,voice,projects,memory,corpora} and data/hermes/"
 
 # --- Default profile: core (Hermes + WebUI + SearXNG) ---
 if ! grep -q '^COMPOSE_PROFILES=' .env 2>/dev/null; then
@@ -731,7 +774,9 @@ Setup complete.
 
   Workspace:  ${WORKSPACE}
   Profiles:   ${PROFILES_NOW}
-  Data:       data/inputs/${WORKSPACE}/
+  Data root:  ${DATA_ROOT}
+  Inputs:     ${DATA_ROOT}/inputs/${WORKSPACE}/
+  Hermes:     ${ROOT}/data/hermes/ (agent state; not relocated)
   OpenCode:   ${OPENCODE_WORKSPACE_HOST} (same path inside the container)
 
 Next steps:

@@ -7,8 +7,8 @@ fifth.
 | --- | --- | --- |
 | Built-in `memory` tool | Tiny durable facts injected into every session | `data/hermes/memories/USER.md` and `MEMORY.md` |
 | `session_search` | What you said in a past chat | that gateway's `state.db` (FTS, already enabled) |
-| Curated files | Long-form notes that will not fit the character cap | `data/memory/` → `/opt/memory` |
-| Living todos | Cross-session task list ("add to the todo list") | `data/projects/project-todo-list/README.md` → `/opt/projects/project-todo-list/README.md` |
+| Curated files | Long-form notes that will not fit the character cap | `$ASSISTANT_DATA_ROOT/memory/` → `/opt/memory` |
+| Living todos | Cross-session task list ("add to the todo list") | `$ASSISTANT_DATA_ROOT/projects/project-todo-list/README.md` → `/opt/projects/project-todo-list/README.md` |
 | LightRAG | Documents ingested as a knowledge base | the hot `WORKSPACE` (see [Knowledge bases](knowledge-bases.md)) |
 
 This page is the how-to for the curated files and how they sit next to the other
@@ -26,12 +26,13 @@ Curated notes live on the host and are visible to the agent through a bind mount
 
 | Host path | Container path | Tracked by git |
 | --- | --- | --- |
-| `data/memory/` | `/opt/memory` | No (`data/` is gitignored) |
+| `$ASSISTANT_DATA_ROOT/memory/` | `/opt/memory` | No (outside the repo, or under gitignored `data/`) |
 
 `setup.sh` creates the directory, a `README.md`, and empty `INDEX.md` /
-`people.md` / `decisions.md` / `preferences.md`. If Docker created `data/memory/`
-as root instead, Hermes cannot write there — fix ownership, or set `HERMES_UID`
-and `HERMES_GID` in `.env` to your own `id -u` / `id -g`.
+`people.md` / `decisions.md` / `preferences.md`. Relocate with
+[User data directory](data-dir.md). If Docker created the mount as root,
+Hermes cannot write there — fix ownership, or set `HERMES_UID` and `HERMES_GID`
+in `.env` to your own `id -u` / `id -g`.
 
 Built-in memory files are shared across the default, `api-server`, and `browser`
 profiles (compose overlays `data/hermes/memories/` onto each profile home). A

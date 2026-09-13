@@ -27,9 +27,10 @@ Your corpus lives on the host and is visible to the agent through a bind mount:
 
 | Host path | Container path | Tracked by git |
 | --- | --- | --- |
-| `data/voice/<name>/samples/` | `/opt/voice/<name>/samples/` | No (`data/` is gitignored) |
+| `$ASSISTANT_DATA_ROOT/voice/<name>/samples/` | `/opt/voice/<name>/samples/` | No |
 
-Nothing under `data/voice/` gets committed, so personal writing stays on your machine.
+Nothing under the voice tree gets committed. Relocate the whole user-data root
+with [User data directory](data-dir.md).
 
 ## Step 1: Choose your markdown files
 

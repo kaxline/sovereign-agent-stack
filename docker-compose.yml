@@ -60,8 +60,8 @@ services:
       - LLM_BINDING_HOST=${LIGHTRAG_LLM_BINDING_HOST:-http://host.docker.internal:1234/v1}
       - LLM_BINDING_API_KEY=${LIGHTRAG_LLM_BINDING_API_KEY:-local-llm}
     volumes:
-      - ./data/rag_storage:/app/data/rag_storage   # graph/vector/kv persistence
-      - ./data/inputs:/app/data/inputs             # drop files here to bulk-ingest
+      - ${ASSISTANT_DATA_ROOT:-./data}/rag_storage:/app/data/rag_storage   # graph/vector/kv persistence
+      - ${ASSISTANT_DATA_ROOT:-./data}/inputs:/app/data/inputs             # drop files here to bulk-ingest
     extra_hosts:
       # Lets the container reach a model server on the host
       # via the hostname host.docker.internal.
@@ -261,7 +261,7 @@ services:
       DOC_PATH: /usr/src/app/my-docs
     volumes:
       - gptr_outputs:/usr/src/app/outputs
-      - ./data/inputs:/usr/src/app/my-docs:ro
+      - ${ASSISTANT_DATA_ROOT:-./data}/inputs:/usr/src/app/my-docs:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -365,7 +365,7 @@ services:
     volumes:
       - n8n_storage:/home/node/.n8n
       - ./n8n/demo-data:/demo-data
-      - ./data/inputs:/data/shared:ro
+      - ${ASSISTANT_DATA_ROOT:-./data}/inputs:/data/shared:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -537,10 +537,11 @@ services:
   # Gateway: http://localhost:8642 (default profile; dashboard)
   # API:     http://localhost:8643/v1 (api-server profile; see compose/hermes/)
   # Dashboard: http://localhost:9119 (localhost-bound)
-  # Voice:   drop writing samples in data/voice/<name>/samples/ — see data/voice/README.md
-  # Projects: one working directory per project in data/projects/<name>/ — see data/projects/README.md
-  # Memory:  curated notes in data/memory/ — see data/memory/README.md
+  # Voice:   ASSISTANT_DATA_ROOT/voice/<name>/samples/ — see docs/writing-voice.md
+  # Projects: ASSISTANT_DATA_ROOT/projects/<name>/ — see docs/projects.md
+  # Memory:  ASSISTANT_DATA_ROOT/memory/ — see docs/memory.md
   #          MEMORY.md / USER.md are shared across profiles via memories/ overlays
+  # Data root: make data-dir-show / docs/data-dir.md (Hermes state stays in ./data/hermes)
   # ----------------------------------------------------------------------
   hermes-api-bootstrap:
     profiles: ["core"]
@@ -671,7 +672,8 @@ services:
         absolute paths to the file, search, and terminal tools; never resolve them
         relative to the working directory.
         Active knowledge base (LightRAG WORKSPACE): ${WORKSPACE}. Host inputs for
-        that corpus live under data/inputs/${WORKSPACE}/. For knowledge questions,
+        that corpus live under ASSISTANT_DATA_ROOT/inputs/${WORKSPACE}/ (the
+        inputs mount). For knowledge questions,
         prefer LightRAG query_document against this KB before web search; if the
         KB has nothing relevant, say so rather than inventing, then search only
         if the user wants broader context. For past conversations use session_search.
@@ -690,12 +692,12 @@ services:
       # Repo-shipped skills. Read-only, because Hermes draws no write boundary
       # around external skill dirs; the ro flag is what keeps skill_manage out.
       - ./compose/hermes/skills:/opt/skills:ro
-      # Writing-voice corpora (gitignored). Writable: calibration writes STYLE.md.
-      - ./data/voice:/opt/voice
-      # Per-project working directories (gitignored). Writable: agents draft here.
-      - ./data/projects:/opt/projects
-      # Curated long-form memory (gitignored). Writable: the working-memory skill.
-      - ./data/memory:/opt/memory
+      # Writing-voice corpora (under ASSISTANT_DATA_ROOT). Writable: calibration writes STYLE.md.
+      - ${ASSISTANT_DATA_ROOT:-./data}/voice:/opt/voice
+      # Per-project working directories (under ASSISTANT_DATA_ROOT). Writable: agents draft here.
+      - ${ASSISTANT_DATA_ROOT:-./data}/projects:/opt/projects
+      # Curated long-form memory (under ASSISTANT_DATA_ROOT). Writable: the working-memory skill.
+      - ${ASSISTANT_DATA_ROOT:-./data}/memory:/opt/memory
       # Relax intent-ack detection for browser/WebUI (LM Studio narration stalls).
       - ./compose/hermes/patch-intent-ack-continuation.py:/bootstrap/patch-intent-ack-continuation.py:ro
       - ./compose/hermes/03-patch-intent-ack.sh:/etc/cont-init.d/03-patch-intent-ack:ro
@@ -813,7 +815,7 @@ services:
       - HERMES_WEBUI_PREFILL_CONTEXT_MAX_CHARS=${HERMES_WEBUI_PREFILL_CONTEXT_MAX_CHARS:-8000}
       # Align the container user with the mounts; the entrypoint chowns its own
       # home and the workspace dir, so a mismatch here rewrites ownership of
-      # data/projects out from under the hermes container.
+      # ASSISTANT_DATA_ROOT/projects out from under the hermes container.
       - WANTED_UID=${HERMES_UID:-1000}
       - WANTED_GID=${HERMES_GID:-1000}
     volumes:
@@ -821,9 +823,9 @@ services:
       - ./data/hermes:/opt/data
       - ./compose/hermes/skills:/opt/skills:ro
       - ./compose/hermes/scripts/project-brief-prefill.py:/bootstrap/project-brief-prefill.py:ro
-      - ./data/projects:/opt/projects
-      - ./data/voice:/opt/voice
-      - ./data/memory:/opt/memory
+      - ${ASSISTANT_DATA_ROOT:-./data}/projects:/opt/projects
+      - ${ASSISTANT_DATA_ROOT:-./data}/voice:/opt/voice
+      - ${ASSISTANT_DATA_ROOT:-./data}/memory:/opt/memory
     deploy:
       resources:
         limits:

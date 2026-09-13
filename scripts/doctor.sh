@@ -104,6 +104,25 @@ if has_profile core; then
   fi
 fi
 
+# --- User data root ---
+_DR="$(env_get ASSISTANT_DATA_ROOT ./data)"
+if [[ "$_DR" != /* ]]; then
+  _DR_ABS="${ROOT}/${_DR#./}"
+else
+  _DR_ABS="$_DR"
+fi
+if [[ -d "$_DR_ABS" ]]; then
+  ok "ASSISTANT_DATA_ROOT=${_DR} (${_DR_ABS})"
+else
+  warn "ASSISTANT_DATA_ROOT=${_DR} missing — run: make data-dir-set DIR=${_DR}"
+fi
+if [[ -d "${ROOT}/data/hermes" ]]; then
+  ok "Hermes state at ./data/hermes"
+else
+  warn "./data/hermes missing — run ./scripts/setup.sh"
+fi
+unset _DR _DR_ABS
+
 # --- Ports (best-effort; skip if lsof unavailable) ---
 check_port() {
   local port="$1"
@@ -299,12 +318,17 @@ if has_profile rag; then
   echo
   echo "--- Knowledge corpus ---"
   WS="$(env_get WORKSPACE)"
+  DATA_ROOT="$(env_get ASSISTANT_DATA_ROOT ./data)"
+  # Resolve relative to repo root for existence checks
+  if [[ "$DATA_ROOT" != /* ]]; then
+    DATA_ROOT="${ROOT}/${DATA_ROOT#./}"
+  fi
   if [[ -n "$WS" ]]; then
     ok "active WORKSPACE=${WS}"
-    if [[ -d "data/inputs/${WS}" ]]; then
-      ok "data/inputs/${WS}/ exists"
+    if [[ -d "${DATA_ROOT}/inputs/${WS}" ]]; then
+      ok "${DATA_ROOT}/inputs/${WS}/ exists"
     else
-      warn "data/inputs/${WS}/ missing — run: make corpus-create SLUG=${WS}"
+      warn "${DATA_ROOT}/inputs/${WS}/ missing — run: make corpus-create SLUG=${WS}"
     fi
   else
     warn "WORKSPACE unset in .env"
@@ -317,7 +341,7 @@ if has_profile rag; then
   if [[ -n "$(env_get POSTGRES_WORKSPACE)" ]]; then
     bad "POSTGRES_WORKSPACE is set — unset it or workspace isolation collapses"
   fi
-  REG="data/corpora/registry.json"
+  REG="${DATA_ROOT}/corpora/registry.json"
   if [[ -f "$REG" && -n "$WS" ]]; then
     REG_DIM="$(python3 - "$REG" "$WS" <<'PY'
 import json, sys
