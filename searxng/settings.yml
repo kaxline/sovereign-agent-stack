@@ -10,6 +10,22 @@ search:
   formats:
     - html
     - json
+  # Defaults are 1h–15d; agent traffic trips CAPTCHA/429 and then stays empty.
+  # Shorter bans so working engines recover without a container restart.
+  suspended_times:
+    SearxEngineAccessDenied: 300
+    SearxEngineCaptcha: 600
+    SearxEngineTooManyRequests: 180
+    cf_SearxEngineCaptcha: 1800
+    cf_SearxEngineAccessDenied: 600
+    recaptcha_SearxEngineCaptcha: 1800
+
+# Default general set (brave / duckduckgo / google cse / startpage) is often
+# rate-limited from residential/datacenter IPs. Yep stays usable as a fallback
+# so JSON/MCP search does not return zero hits when those engines are suspended.
+engines:
+  - name: yep
+    disabled: false
 
 # When running with: docker compose --profile searxng-prod up -d
 # server:

@@ -37,6 +37,26 @@ OpenCode connects to `http://mcp-searxng:3000/mcp` (configured in `opencode/open
 
 `web_url_read` fetches a single known URL and returns it as markdown. That is the cheapest way to read a specific page, with no search step and no research agent involved. It does not execute JavaScript, and it blocks private/internal URLs.
 
+## Empty results / suspended engines
+
+Upstream engines (Brave, DuckDuckGo, Google CSE, Startpage) often CAPTCHA or rate-limit residential and datacenter IPs. SearXNG then marks them **Suspended** and default search returns `results: []` even though the API is healthy.
+
+This stack enables **Yep** as a general-search fallback and shortens `search.suspended_times` so bans clear faster. After changing `searxng/settings.yml`, re-sync the secret into the gitignored overlay and recreate:
+
+```bash
+./scripts/setup.sh   # or make ensure-local — refreshes settings.local.yml from the template
+docker compose up -d --force-recreate searxng
+```
+
+Check suspensions with:
+
+```bash
+curl -sS 'http://localhost:8080/search?q=ownCloud&format=json' \
+  | python3 -c 'import sys,json;d=json.load(sys.stdin);print(len(d.get("results",[])), d.get("unresponsive_engines"))'
+```
+
+A non-zero result count with some engines still listed as Suspended is fine — at least one engine answered.
+
 ## Optional rate limiting
 
 For production-style rate limiting, start with the Valkey profile and uncomment the `redis` / `limiter` block in `searxng/settings.local.yml`:
@@ -51,8 +71,12 @@ docker compose --profile searxng-prod up -d
 # SearXNG JSON API (must return results, not 403)
 curl 'http://localhost:8080/search?q=test&format=json'
 
-# MCP sidecar health
+# MCP sidecar health (loopback inside the container)
 docker compose exec mcp-searxng wget -qO- http://127.0.0.1:3000/health
+
+# Cross-container reachability (must succeed; needs MCP_HTTP_HOST=0.0.0.0)
+docker compose exec hermes python3 -c \
+  "import urllib.request; print(urllib.request.urlopen('http://mcp-searxng:3000/health', timeout=5).read().decode())"
 
 # Web search via n8n webhook (activate workflow first in UI)
 curl -X POST http://localhost:5678/webhook/web-search \

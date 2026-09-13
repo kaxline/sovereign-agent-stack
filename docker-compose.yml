@@ -205,6 +205,9 @@ services:
     environment:
       - SEARXNG_URL=http://searxng:8080
       - MCP_HTTP_PORT=3000
+      # Image default is 127.0.0.1 (breaking change from v1.2.1); other
+      # compose services (Hermes, OpenCode) need the Docker network interface.
+      - MCP_HTTP_HOST=0.0.0.0
     depends_on:
       searxng:
         condition: service_healthy
