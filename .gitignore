@@ -6,9 +6,6 @@ data/
 # Hermes bind-mount home (also covered by data/ above)
 data/hermes/
 
-# WIP — not part of public release
-src/
-
 # Secrets
 .env
 *.env

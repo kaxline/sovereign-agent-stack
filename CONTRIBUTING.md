@@ -29,7 +29,6 @@ See [README.md](README.md) and [docs/](docs/README.md).
 | `n8n/demo-data/` | Starter workflows (`credentials/*.json` is gitignored; setup regenerates it) |
 | `opencode/` | OpenCode config template (`opencode.local.json` is gitignored; put your model server there) |
 | `searxng/` | SearXNG template (`settings.local.yml` is gitignored) |
-| `src/` | **Not shipped** — private WIP, gitignored |
 | `data/` | **Not committed** — created by setup |
 
 ## Profiles
