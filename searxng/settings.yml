@@ -20,11 +20,27 @@ search:
     cf_SearxEngineAccessDenied: 600
     recaptcha_SearxEngineCaptcha: 1800
 
-# Default general set (brave / duckduckgo / google cse / startpage) is often
-# rate-limited from residential/datacenter IPs. Yep stays usable as a fallback
-# so JSON/MCP search does not return zero hits when those engines are suspended.
+# Keep default general search lean. Each query fans out to every enabled
+# engine from one IP; 6–8 parallel upstreams is what emptied results under
+# agent load. Prefer two survivors over many magnets.
+#
+# Disabled (CAPTCHA / 429 / 403 magnets in practice):
+#   duckduckgo, startpage, brave, yep, mojeek
+# Enabled:
+#   bing (independent fallback), google cse (stays via defaults; recovers
+#   after short 429 windows)
 engines:
+  - name: duckduckgo
+    disabled: true
+  - name: startpage
+    disabled: true
+  - name: brave
+    disabled: true
   - name: yep
+    disabled: true
+  - name: mojeek
+    disabled: true
+  - name: bing
     disabled: false
 
 # When running with: docker compose --profile searxng-prod up -d

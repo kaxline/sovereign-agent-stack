@@ -39,9 +39,16 @@ OpenCode connects to `http://mcp-searxng:3000/mcp` (configured in `opencode/open
 
 ## Empty results / suspended engines
 
-Upstream engines (Brave, DuckDuckGo, Google CSE, Startpage) often CAPTCHA or rate-limit residential and datacenter IPs. SearXNG then marks them **Suspended** and default search returns `results: []` even though the API is healthy.
+Upstream engines often CAPTCHA or rate-limit residential and datacenter IPs. SearXNG then marks them **Suspended** and default search returns `results: []` even though the API is healthy. One Hermes/MCP query fans out to **every enabled** general engine from a single IP, so parallel agent searches empty the pool quickly.
 
-This stack enables **Yep** as a general-search fallback and shortens `search.suspended_times` so bans clear faster. After changing `searxng/settings.yml`, re-sync the secret into the gitignored overlay and recreate:
+This stack keeps default general search lean:
+
+| Engine | Role |
+|---|---|
+| **Bing** + **Google CSE** | Enabled — primary general pair |
+| DuckDuckGo, Startpage, Brave, Yep, Mojeek | Disabled — frequent CAPTCHA / 429 / 403 magnets |
+
+`search.suspended_times` are shortened so bans clear without a container restart. After changing `searxng/settings.yml`, re-sync the secret into the gitignored overlay and recreate:
 
 ```bash
 ./scripts/setup.sh   # or make ensure-local — refreshes settings.local.yml from the template
@@ -52,10 +59,23 @@ Check suspensions with:
 
 ```bash
 curl -sS 'http://localhost:8080/search?q=ownCloud&format=json' \
-  | python3 -c 'import sys,json;d=json.load(sys.stdin);print(len(d.get("results",[])), d.get("unresponsive_engines"))'
+  | python3 -c 'import sys,json;d=json.load(sys.stdin);print(len(d.get("results",[])), d.get("unresponsive_engines")); print("engines", sorted({r.get("engine") for r in d.get("results",[])}))'
 ```
 
-A non-zero result count with some engines still listed as Suspended is fine — at least one engine answered.
+A non-zero result count with some engines still listed as Suspended is fine — at least one engine answered. Expect roughly **Bing and/or Google CSE** in the engine set, not six upstreams.
+
+## Agent routing (Hermes / WebUI)
+
+Reducing empty results is as much task routing as engine choice. Soft prompt guidance alone is not enough: with `SEARXNG_URL` set, Hermes auto-binds native `web_search` / `web_extract` to SearXNG, extract always fails (search-only), and models spray parallel native searches that empty upstream engines.
+
+This stack **disables the native `web` toolset** on Hermes profiles (via bootstrap `agent.disabled_toolsets: [todo, web]`) **and** rewrites hallucinated `web_search` / `web_extract` at dispatch to MCP SearXNG when args are mappable (cont-init patch) — schema-only disables are not enough because Hermes still executes invented tool names, and bare refusal caused multi-turn retry loops. Hermes also clears `SEARXNG_URL` so a missed call cannot auto-bind to SearXNG — MCP uses `SEARXNG_MCP_URL` instead. Supported paths:
+
+1. **LightRAG** (`query_document`) for KB questions first.
+2. **One** MCP `searxng_web_search` for a quick web fact — not several parallel query variants.
+3. **`web_url_read`** when the URL is already known (no search fan-out).
+4. **`gptr`** (`deep_research` / `quick_search`) for deep multi-step reports — not a spray of SearXNG calls.
+
+`HERMES_ENVIRONMENT_HINT` repeats that policy for every gateway. See [Hermes](hermes.md#optional-internal-integrations).
 
 ## Optional rate limiting
 
