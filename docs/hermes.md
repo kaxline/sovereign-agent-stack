@@ -197,7 +197,18 @@ mcp_servers:
       include: [deep_research, quick_search, write_report, get_research_sources]
 ```
 
-Ask Hermes to use LightRAG for Knowledge Base questions, for example: "Use LightRAG to summarize what is in my Knowledge Base." Prefer the KB before web search; if it is empty, say so. Use SearXNG for quick lookups and `web_url_read` to read a specific page; use `gptr` MCP for deep research. Avoid `deep_research` while LightRAG is indexing.
+Ask Hermes to use LightRAG for Knowledge Base questions, for example: "Use LightRAG to summarize what is in my Knowledge Base." Prefer the KB before web search; if it is empty, say so.
+
+**Web / research routing** (native `web_search` / `web_extract` are **disabled** via `agent.disabled_toolsets`. If a model invents those names anyway, dispatch **rewrites** them to MCP `searxng_web_search` / `web_url_read` when args are mappable — refusal alone caused retry loops on weaker tool-callers. Hermes does not inherit `SEARXNG_URL` — MCP uses `SEARXNG_MCP_URL`. `HERMES_ENVIRONMENT_HINT` reinforces the MCP path):
+
+| Need | Tool | Notes |
+|---|---|---|
+| Knowledge base | LightRAG `query_document` | Before any web search |
+| Quick web fact | MCP `searxng_web_search` | **At most one** call unless the user asks for deep research; do not fan out query variants in parallel |
+| Known URL | MCP `web_url_read` | No search fan-out; use this instead of native `web_extract` |
+| Deep multi-step report | `gptr` (`deep_research` / `quick_search`) | Not a spray of SearXNG queries; avoid while LightRAG is indexing |
+
+SearXNG itself is tuned to a lean Bing + Google CSE pair so each lookup hits fewer upstreams — see [SearXNG](searxng.md#empty-results--suspended-engines).
 
 Only one LightRAG workspace is hot at a time (`WORKSPACE` in `.env`). Create and switch corpora with `make corpus-*` — see [Knowledge bases](knowledge-bases.md).
 

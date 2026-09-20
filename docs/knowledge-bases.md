@@ -64,7 +64,7 @@ There is no cross-corpus query. n8n’s LightRAG scan/query workflows always hit
 ## Chat
 
 - **LightRAG WebUI** (`http://localhost:9621/webui/`): queries only the hot corpus.
-- **Hermes**: with `LIGHTRAG_MCP_ENABLED=1`, ask it to use LightRAG (e.g. “Use LightRAG to summarize my knowledge base”). Prefer `query_document` before web search; if the KB is empty, say so rather than inventing. SearXNG remains available when you want broader context.
+- **Hermes**: with `LIGHTRAG_MCP_ENABLED=1`, ask it to use LightRAG (e.g. “Use LightRAG to summarize my knowledge base”). Prefer `query_document` before web search; if the KB is empty, say so rather than inventing. For a quick external fact use one MCP `searxng_web_search` (not parallel variants); for deep research use `gptr`, not a spray of SearXNG calls — see [Hermes routing](hermes.md#optional-internal-integrations) and [SearXNG](searxng.md#agent-routing-hermes--webui).
 
 ## Embedding dimension
 

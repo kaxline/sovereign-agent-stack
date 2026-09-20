@@ -654,6 +654,11 @@ services:
       - HERMES_DASHBOARD_BASIC_AUTH_SECRET=${HERMES_DASHBOARD_AUTH_SECRET:?set HERMES_DASHBOARD_AUTH_SECRET in .env}
       # API server runs on the api-server profile (port 8643), not the default gateway.
       - API_SERVER_ENABLED=false
+      # .env sets SEARXNG_URL for n8n/GPTR. Hermes must NOT inherit it: native
+      # web_search auto-binds to SearXNG and still executes when the model
+      # hallucinates the tool after we disable the web toolset. MCP uses
+      # SEARXNG_MCP_URL instead.
+      - SEARXNG_URL=
       # The official image sets HERMES_WRITE_SAFE_ROOT=/opt/data. write_file and
       # patch then hard-block every other mount, even when the bind is rw, and
       # the agent invents /opt/data/projects (inside Hermes home) as a workaround.
@@ -680,6 +685,14 @@ services:
         prefer LightRAG query_document against this KB before web search; if the
         KB has nothing relevant, say so rather than inventing, then search only
         if the user wants broader context. For past conversations use session_search.
+        Web lookup routing (avoids emptying SearXNG via parallel upstream bans):
+        the native web_search/web_extract toolset is disabled on this stack — use
+        MCP searxng_web_search for one quick fact (at most one call unless the
+        user asks for deep research; do not fan out several query variants in
+        parallel). Hallucinated native web_* calls are rewritten to MCP when
+        possible. For a known URL use web_url_read (no search fan-out). For deep
+        multi-step reports use gptr deep_research / quick_search, not a spray of
+        SearXNG queries. Avoid deep_research while LightRAG is indexing.
         Short durable facts belong in the memory tool (USER.md / MEMORY.md);
         longer notes belong under /opt/memory.
         Living todos (cross-session task list) live at
@@ -719,6 +732,8 @@ services:
       - ./compose/hermes/text_tool_call_recovery.py:/bootstrap/text_tool_call_recovery.py:ro
       - ./compose/hermes/patch-text-tool-call-recovery.py:/bootstrap/patch-text-tool-call-recovery.py:ro
       - ./compose/hermes/patch-openrouter-empty-stream.py:/bootstrap/patch-openrouter-empty-stream.py:ro
+      - ./compose/hermes/patch-block-native-web-tools.py:/bootstrap/patch-block-native-web-tools.py:ro
+      - ./compose/hermes/patch-tool-call-flat-args.py:/bootstrap/patch-tool-call-flat-args.py:ro
       - ./compose/hermes/05-patch-tool-calling.sh:/etc/cont-init.d/05-patch-tool-calling:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"

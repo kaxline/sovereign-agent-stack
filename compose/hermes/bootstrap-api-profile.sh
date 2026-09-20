@@ -162,6 +162,68 @@ PY
   if [ -n "$_out" ]; then log "$_out"; fi
 }
 
+# Ensure each desired item appears in a YAML list, preserving any extra user
+# entries. Unlike set_yaml_list, a shorter current list is extended rather than
+# left alone with a warning — needed when we add new disabled toolsets over
+# time (e.g. todo -> todo+web) without wiping hand-edited extras.
+ensure_yaml_list_items() {
+  _cfg="$1"
+  _dotted="$2"
+  shift 2
+  _out="$(python3 - "$_cfg" "$_dotted" "$@" <<'PY'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, "/opt/hermes")
+import yaml
+from utils import atomic_yaml_write
+
+cfg_path, dotted = sys.argv[1], sys.argv[2]
+desired = sys.argv[3:]
+
+parent = Path(cfg_path).parent
+profile = parent.name if parent.parent.name == "profiles" else "default"
+label = f"{dotted} ({profile})"
+
+try:
+    with open(cfg_path) as fh:
+        config = yaml.safe_load(fh) or {}
+except FileNotFoundError:
+    print(f"ERROR: {cfg_path} not found")
+    raise SystemExit(1)
+
+parts = dotted.split(".")
+node = config
+for part in parts[:-1]:
+    child = node.get(part)
+    if not isinstance(child, dict):
+        child = {}
+        node[part] = child
+    node = child
+leaf = parts[-1]
+current = node.get(leaf)
+
+if not isinstance(current, list):
+    node[leaf] = list(desired)
+    atomic_yaml_write(cfg_path, config)
+    print(f"Setting {label}")
+elif all(item in current for item in desired):
+    print(f"{label} already includes {', '.join(desired)}")
+else:
+    merged = list(current)
+    added = []
+    for item in desired:
+        if item not in merged:
+            merged.append(item)
+            added.append(item)
+    node[leaf] = merged
+    atomic_yaml_write(cfg_path, config)
+    print(f"Adding {', '.join(added)} to {label}")
+PY
+)"
+  if [ -n "$_out" ]; then log "$_out"; fi
+}
+
 # `hermes config set` for one profile ("" selects the default profile).
 #
 # sh has no local variables, so every helper here prefixes its own to avoid
@@ -608,9 +670,15 @@ set_yaml_list "$(config_path_for "$PROFILE")" "platform_toolsets.api_server" "$A
 # "add to the todo list" as durable; the model then reports an empty list in the
 # next thread. Disable it on every profile this bootstrap touches so living
 # todos go through the living-todos skill + /opt/projects/project-todo-list.
-log "Disabling session-only todo toolset on default and '${PROFILE}' profiles"
-set_yaml_list "$(config_path_for "")" "agent.disabled_toolsets" "todo"
-set_yaml_list "$(config_path_for "$PROFILE")" "agent.disabled_toolsets" "todo"
+#
+# Also disable the native `web` toolset (web_search / web_extract). With
+# SEARXNG_URL set, Hermes auto-binds both to SearXNG: search works but extract
+# always fails ("search-only backend"), and models ignore soft routing and spray
+# parallel native web_search calls that empty upstream engines. MCP searxng
+# (searxng_web_search + web_url_read) is the supported path on this stack.
+log "Disabling session-only todo and native web toolsets on default and '${PROFILE}' profiles"
+ensure_yaml_list_items "$(config_path_for "")" "agent.disabled_toolsets" "todo" "web"
+ensure_yaml_list_items "$(config_path_for "$PROFILE")" "agent.disabled_toolsets" "todo" "web"
 
 log "Setting memory.nudge_interval=${PROFILE_MEMORY_NUDGE} on profile '${PROFILE}'"
 hermes_config_set "$PROFILE" "memory.nudge_interval" "$PROFILE_MEMORY_NUDGE"
