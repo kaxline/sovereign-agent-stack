@@ -1,4 +1,7 @@
 .PHONY: setup ensure-local up down logs ps restart clean doctor hermes-upgrade \
+	bootstrap-buzz buzz-cli-install hermes-buzz-employee \
+	buzz-relay-start buzz-relay-stop buzz-relay-status buzz-relay-logs buzz-relay-restart \
+	buzz-admin \
 	corpus-create corpus-use corpus-list corpus-ingest corpus-destroy \
 	project-init project-index project-index-check model-use \
 	data-dir-show data-dir-set data-dir-migrate
@@ -29,9 +32,61 @@ ensure-local:
 	@mkdir -p compose/caldav-mcp/accounts
 	@test -f compose/caldav-mcp/accounts/personal.env || (cp compose/caldav-mcp/account.env.example compose/caldav-mcp/accounts/personal.env && echo "Created compose/caldav-mcp/accounts/personal.env — set CALDAV_* credentials for calendar profile")
 	@./scripts/sync-signal-profile.sh
+	@./scripts/sync-buzz-profile.sh
 
 doctor:
 	./scripts/doctor.sh
+
+# Clone/setup local Buzz checkout, wire .env, start relay, install Hermes buzz CLI.
+#   make bootstrap-buzz
+bootstrap-buzz:
+	./scripts/bootstrap-buzz.sh
+
+# Install headless Buzz CLI into data/hermes/.local/bin (gitignored volume).
+buzz-cli-install:
+	./scripts/install-buzz-cli.sh
+
+# Create a local Buzz employee Hermes profile (data/hermes only — not committed).
+#   make hermes-buzz-employee PROFILE=software-engineer DISPLAY_NAME="Software Engineer"
+hermes-buzz-employee:
+	@test -n "$(PROFILE)" || (echo "Usage: make hermes-buzz-employee PROFILE=<slug> [DISPLAY_NAME=\"Name\"]"; exit 1)
+	./scripts/hermes-buzz-employee.sh "$(PROFILE)" "$(DISPLAY_NAME)"
+
+# Local Buzz community relay (host-side `just relay` from BUZZ_LOCAL_DIR_PATH).
+# Long-running; daemonized under data/hermes/.cache/buzz-relay/. See docs/buzz.md.
+buzz-relay-start:
+	./scripts/buzz-relay.sh start
+
+buzz-relay-stop:
+	./scripts/buzz-relay.sh stop
+
+buzz-relay-restart:
+	./scripts/buzz-relay.sh restart
+
+buzz-relay-status:
+	./scripts/buzz-relay.sh status
+
+buzz-relay-logs:
+	./scripts/buzz-relay.sh logs
+
+# Operator CLI from the Buzz checkout (BUZZ_LOCAL_DIR_PATH).
+# Prefer positional args (Make needs `--` before flags like --pubkey):
+#   make buzz-admin generate-key
+#   make buzz-admin -- add-member --pubkey npub1…
+# ARGS= still works: make buzz-admin ARGS='list-members'
+ifeq ($(firstword $(MAKECMDGOALS)),buzz-admin)
+  BUZZ_ADMIN_POS := $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
+  ifneq ($(BUZZ_ADMIN_POS),)
+    $(eval $(BUZZ_ADMIN_POS):;@:)
+  endif
+endif
+
+buzz-admin:
+	@if [ -n "$(BUZZ_ADMIN_POS)" ]; then \
+		./scripts/buzz-admin.sh $(BUZZ_ADMIN_POS); \
+	else \
+		./scripts/buzz-admin.sh $(ARGS); \
+	fi
 
 # User content root (projects, voice, memory, inputs, rag_storage, corpora).
 # Hermes state stays at ./data/hermes. See docs/data-dir.md.
@@ -147,7 +202,7 @@ project-index-check:
 # Upgrade Hermes and its WebUI together. The WebUI reads the agent's on-disk
 # state layout and is only tested against a matching agent, so bumping one alone
 # is the failure mode this target exists to prevent — pass both tags:
-#   make hermes-upgrade AGENT=v2026.9.1 WEBUI=0.53.12
+#   make hermes-upgrade AGENT=v2026.9.14 WEBUI=0.52.113
 # Re-runs both profile bootstraps afterwards, because a new agent may add config
 # keys the running profiles do not have yet.
 hermes-upgrade:

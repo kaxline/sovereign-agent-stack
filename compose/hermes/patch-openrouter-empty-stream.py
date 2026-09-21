@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 TARGET_AGENT = Path("/opt/hermes/run_agent.py")
+TARGET_CREDITS = Path("/opt/hermes/agent/rate_limit_credits.py")
 TARGET_HELPERS = Path("/opt/hermes/agent/chat_completion_helpers.py")
 
 MARKER_STATUS = "# assistant-stack: track OpenRouter cache status"
@@ -170,9 +171,21 @@ def _patch(path: Path, old: str, new: str, marker: str, label: str) -> None:
 
 
 def main() -> None:
-    _patch(TARGET_AGENT, STATUS_OLD, STATUS_NEW, MARKER_STATUS, "cache-status")
-    _patch(TARGET_HELPERS, RETRY_OLD, RETRY_NEW, MARKER_RETRY, "retry-bust")
-    _patch(TARGET_HELPERS, MSG_OLD, MSG_NEW, MARKER_MSG, "exhausted-msg")
+    # v2026.9+ moved cache-status logging into rate_limit_credits.py.
+    status_target = TARGET_CREDITS if TARGET_CREDITS.is_file() and STATUS_OLD in TARGET_CREDITS.read_text() else TARGET_AGENT
+    _patch(status_target, STATUS_OLD, STATUS_NEW, MARKER_STATUS, "cache-status")
+    if TARGET_HELPERS.is_file():
+        helpers = TARGET_HELPERS.read_text()
+        if RETRY_OLD in helpers or MARKER_RETRY in helpers:
+            _patch(TARGET_HELPERS, RETRY_OLD, RETRY_NEW, MARKER_RETRY, "retry-bust")
+        else:
+            print(f"[patch-openrouter-empty-stream] retry-bust: skip (snippet missing in {TARGET_HELPERS})")
+        if MSG_OLD in helpers or MARKER_MSG in helpers:
+            _patch(TARGET_HELPERS, MSG_OLD, MSG_NEW, MARKER_MSG, "exhausted-msg")
+        else:
+            print(f"[patch-openrouter-empty-stream] exhausted-msg: skip (snippet missing in {TARGET_HELPERS})")
+    else:
+        print(f"[patch-openrouter-empty-stream] helpers missing: {TARGET_HELPERS}")
 
 
 if __name__ == "__main__":

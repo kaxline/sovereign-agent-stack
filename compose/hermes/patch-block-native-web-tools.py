@@ -22,18 +22,16 @@ OLD_MARKERS = (
     "# assistant-stack: debug-53781c native web block",
 )
 
-NEEDLE = '''    # Coerce string arguments to their schema-declared types (e.g. "42"→42)
-    function_args = coerce_tool_args(function_name, function_args)
+NEEDLE = '''    function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
         function_args = {}
-    _tool_middleware_trace = list(tool_request_middleware_trace or [])
+    trace = list(tool_request_middleware_trace or [])
 '''
 
-PATCH = '''    # Coerce string arguments to their schema-declared types (e.g. "42"→42)
-    function_args = coerce_tool_args(function_name, function_args)
+PATCH = '''    function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
         function_args = {}
-    _tool_middleware_trace = list(tool_request_middleware_trace or [])
+    trace = list(tool_request_middleware_trace or [])
 
     # assistant-stack: rewrite native web tools to mcp
     # Hallucinated native web_* names are common with weaker tool-callers.
@@ -72,7 +70,7 @@ PATCH = '''    # Coerce string arguments to their schema-declared types (e.g. "4
                 skip_pre_tool_call_hook=skip_pre_tool_call_hook,
                 skip_tool_request_middleware=skip_tool_request_middleware,
                 skip_tool_execution_middleware=skip_tool_execution_middleware,
-                tool_request_middleware_trace=list(_tool_middleware_trace),
+                tool_request_middleware_trace=list(trace),
                 enabled_toolsets=enabled_toolsets,
                 disabled_toolsets=disabled_toolsets,
             )

@@ -490,6 +490,10 @@ caveat as `/opt/voice` applies.
 
 Optional messaging over Signal via compose-managed `signal-cli`. Setup, architecture, WebUI outbound, verification, and troubleshooting: **[Signal](signal.md)**.
 
+## Buzz
+
+Optional messaging over [Buzz](https://buzz.xyz) (native Hermes gateway platform). Employee identities are local Hermes profiles under `data/hermes/` (not committed). Start with `make bootstrap-buzz`, then `make hermes-buzz-employee`. Details: **[Buzz](buzz.md)**.
+
 ## Advanced options
 
 - **Terminal Docker sandbox** — mount `/var/run/docker.sock` and set `terminal.backend: docker` in Hermes `config.yaml` so shell commands run in an isolated container.

@@ -1,6 +1,6 @@
 #!/bin/sh
 # Relax intent-ack continuation for browser/WebUI (see patch-intent-ack-continuation.py).
-set -eu
+set -u
 if [ -f /bootstrap/patch-intent-ack-continuation.py ]; then
-  python3 /bootstrap/patch-intent-ack-continuation.py
+  python3 /bootstrap/patch-intent-ack-continuation.py || echo "warn: patch-intent-ack exited $?"
 fi

@@ -2,31 +2,20 @@
 # WebUI Signal: synthesize credentials when adapter disabled, restore
 # agent-callable send_message, make tool_search see visible core tools,
 # and fix cron delivery from WebUI (api_server origin + disabled adapter).
-set -eu
-if [ -f /bootstrap/patch-signal-send-disabled-adapter.py ]; then
-  python3 /bootstrap/patch-signal-send-disabled-adapter.py
-fi
-if [ -f /bootstrap/patch-reregister-send-message.py ]; then
-  python3 /bootstrap/patch-reregister-send-message.py
-fi
-if [ -f /bootstrap/patch-force-import-send-message.py ]; then
-  python3 /bootstrap/patch-force-import-send-message.py
-fi
-if [ -f /bootstrap/patch-ensure-send-message-tools.py ]; then
-  python3 /bootstrap/patch-ensure-send-message-tools.py
-fi
-if [ -f /bootstrap/patch-tool-search-visible.py ]; then
-  python3 /bootstrap/patch-tool-search-visible.py
-fi
-if [ -f /bootstrap/patch-cron-api-server-origin.py ]; then
-  python3 /bootstrap/patch-cron-api-server-origin.py
-fi
-if [ -f /bootstrap/patch-cron-signal-synthesize.py ]; then
-  python3 /bootstrap/patch-cron-signal-synthesize.py
-fi
-if [ -f /bootstrap/patch-cron-default-deliver-signal.py ]; then
-  python3 /bootstrap/patch-cron-default-deliver-signal.py
-fi
+# Individual patch scripts may skip on unknown Hermes shapes — continue so
+# later patches still run.
+set -u
+run_patch() {
+  script="$1"
+  if [ -f "$script" ]; then
+    python3 "$script" || echo "warn: $script exited $?"
+  fi
+}
+run_patch /bootstrap/patch-send-message-tool.py
+run_patch /bootstrap/patch-ensure-send-message-tools.py
+run_patch /bootstrap/patch-tool-search-visible.py
+run_patch /bootstrap/patch-cron-scheduler-delivery.py
+run_patch /bootstrap/patch-cron-default-deliver-signal.py
 
 # Drop stale discovery verdicts so the next gateway start re-scans AST.
 # A cached registers=False for send_message_tool.py skips the import entirely.

@@ -718,13 +718,11 @@ services:
       - ./compose/hermes/patch-intent-ack-continuation.py:/bootstrap/patch-intent-ack-continuation.py:ro
       - ./compose/hermes/03-patch-intent-ack.sh:/etc/cont-init.d/03-patch-intent-ack:ro
       # WebUI Signal send with browser adapter disabled (default owns SSE lock).
-      - ./compose/hermes/patch-signal-send-disabled-adapter.py:/bootstrap/patch-signal-send-disabled-adapter.py:ro
-      - ./compose/hermes/patch-reregister-send-message.py:/bootstrap/patch-reregister-send-message.py:ro
-      - ./compose/hermes/patch-force-import-send-message.py:/bootstrap/patch-force-import-send-message.py:ro
+      # Consolidated overlays: one writer per Hermes target where practical.
+      - ./compose/hermes/patch-send-message-tool.py:/bootstrap/patch-send-message-tool.py:ro
       - ./compose/hermes/patch-ensure-send-message-tools.py:/bootstrap/patch-ensure-send-message-tools.py:ro
       - ./compose/hermes/patch-tool-search-visible.py:/bootstrap/patch-tool-search-visible.py:ro
-      - ./compose/hermes/patch-cron-api-server-origin.py:/bootstrap/patch-cron-api-server-origin.py:ro
-      - ./compose/hermes/patch-cron-signal-synthesize.py:/bootstrap/patch-cron-signal-synthesize.py:ro
+      - ./compose/hermes/patch-cron-scheduler-delivery.py:/bootstrap/patch-cron-scheduler-delivery.py:ro
       - ./compose/hermes/patch-cron-default-deliver-signal.py:/bootstrap/patch-cron-default-deliver-signal.py:ro
       - ./compose/hermes/04-patch-signal-send.sh:/etc/cont-init.d/04-patch-signal-send:ro
       # Weak-model text tool-call recovery + OpenRouter empty-stream cache bust.
@@ -735,6 +733,9 @@ services:
       - ./compose/hermes/patch-block-native-web-tools.py:/bootstrap/patch-block-native-web-tools.py:ro
       - ./compose/hermes/patch-tool-call-flat-args.py:/bootstrap/patch-tool-call-flat-args.py:ro
       - ./compose/hermes/05-patch-tool-calling.sh:/etc/cont-init.d/05-patch-tool-calling:ro
+      # Buzz: keep ws://localhost:3000 community host, proxy to host relay.
+      - ./compose/hermes/buzz-localhost-proxy.py:/bootstrap/buzz-localhost-proxy.py:ro
+      - ./compose/hermes/06-buzz-localhost-proxy.sh:/etc/cont-init.d/06-buzz-localhost-proxy:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     shm_size: "1g"

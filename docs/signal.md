@@ -12,7 +12,7 @@ make ensure-local
 make up
 ```
 
-See also: [Hermes Agent](hermes.md) (gateways, WebUI, cron), [SECURITY.md](../SECURITY.md) (signal-cli has no HTTP auth — keep it compose-internal).
+See also: [Hermes Agent](hermes.md) (gateways, WebUI, cron), [Buzz](buzz.md) (Nostr workspace; no sidecar), [SECURITY.md](../SECURITY.md) (signal-cli has no HTTP auth — keep it compose-internal).
 
 ## Architecture
 
@@ -183,13 +183,11 @@ When Signal is enabled, doctor checks account, data dir, `COMPOSE_PROFILES`, `SI
 
 Applied at Hermes container start via `compose/hermes/04-patch-signal-send.sh`:
 
-- Synthesize Signal credentials when browser adapter is disabled (Weixin-style)
-- Re-register `send_message` as an agent tool
-- Force-import / ensure `send_message` in live tool definitions
-- Teach `tool_search` to surface already-visible core tools
-- Reject undeliverable cron origins (`api_server`) and fall back to home channels
-- Synthesize Signal config for cron delivery when browser adapter is disabled
-- Default WebUI cron jobs to `deliver: signal` when `SIGNAL_HOME_CHANNEL` is set
+- `patch-send-message-tool.py` — Signal env synth when browser adapter is disabled + re-register `send_message` / core toolset membership
+- `patch-ensure-send-message-tools.py` — force-import / ensure `send_message` in live tool definitions (stale discovery cache)
+- `patch-tool-search-visible.py` — teach `tool_search` to surface already-visible core tools
+- `patch-cron-scheduler-delivery.py` — reject undeliverable `api_server` origins + Signal env synth for cron delivery
+- `patch-cron-default-deliver-signal.py` — default WebUI cron jobs to `deliver: signal` when `SIGNAL_HOME_CHANNEL` is set
 
 After upgrading the Hermes image, verify WebUI send and cron delivery still work; patch snippets may need updating if upstream changes.
 

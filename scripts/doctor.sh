@@ -220,10 +220,18 @@ if [[ "$signal_enabled" -eq 1 ]]; then
   fi
   if docker info >/dev/null 2>&1; then
     if docker compose ps --status running hermes 2>/dev/null | grep -q hermes; then
-      if docker compose exec -T hermes grep -q 'assistant-stack: reject undeliverable cron origin' /opt/hermes/cron/scheduler.py 2>/dev/null \
-        && docker compose exec -T hermes grep -q 'assistant-stack: cron synthesize Signal' /opt/hermes/cron/scheduler.py 2>/dev/null \
-        && docker compose exec -T hermes grep -q 'assistant-stack: default WebUI cron deliver to signal' /opt/hermes/tools/cronjob_tools.py 2>/dev/null; then
-        ok "Hermes cron Signal patches applied"
+      if docker compose exec -T hermes grep -q 'assistant-stack: reject undeliverable cron origin' /opt/hermes/cron/scheduler_delivery.py 2>/dev/null \
+        || docker compose exec -T hermes grep -q 'assistant-stack: reject undeliverable cron origin' /opt/hermes/cron/scheduler.py 2>/dev/null; then
+        if docker compose exec -T hermes grep -q 'assistant-stack: cron synthesize Signal' /opt/hermes/cron/scheduler.py 2>/dev/null \
+          || docker compose exec -T hermes grep -q 'assistant-stack: cron synthesize Signal' /opt/hermes/cron/scheduler_delivery.py 2>/dev/null; then
+          if docker compose exec -T hermes grep -q 'assistant-stack: default WebUI cron deliver to signal' /opt/hermes/tools/cronjob_tools.py 2>/dev/null; then
+            ok "Hermes cron Signal patches applied"
+          else
+            warn "Hermes cron Signal patches missing — docker compose up -d --force-recreate hermes"
+          fi
+        else
+          warn "Hermes cron Signal patches missing — docker compose up -d --force-recreate hermes"
+        fi
       else
         warn "Hermes cron Signal patches missing — docker compose up -d --force-recreate hermes"
       fi
@@ -238,6 +246,91 @@ if [[ "$signal_enabled" -eq 1 ]]; then
       fi
     else
       warn "signal-cli not running — make up after ensure-local"
+    fi
+  fi
+fi
+
+# --- Buzz (optional; toggled by HERMES_BUZZ_ENABLED) ---
+buzz_enabled="$(env_get HERMES_BUZZ_ENABLED 0)"
+case "$(echo "$buzz_enabled" | tr '[:upper:]' '[:lower:]')" in
+  1|true|yes) buzz_enabled=1 ;;
+  *) buzz_enabled=0 ;;
+esac
+
+if [[ "$buzz_enabled" -eq 1 ]]; then
+  echo
+  echo "--- Buzz ---"
+  relay="$(env_get BUZZ_RELAY_URL)"
+  if [[ -n "$relay" ]]; then
+    ok "BUZZ_RELAY_URL is set"
+  else
+    warn "BUZZ_RELAY_URL is empty — set it in .env"
+  fi
+  local_buzz="$(env_get BUZZ_LOCAL_DIR_PATH)"
+  if [[ -n "$local_buzz" ]]; then
+    expanded_local="$local_buzz"
+    if [[ "$expanded_local" == "~" ]]; then
+      expanded_local="$HOME"
+    elif [[ "$expanded_local" == "~/"* ]]; then
+      expanded_local="$HOME/${expanded_local#~/}"
+    fi
+    if [[ -d "$expanded_local" ]]; then
+      ok "BUZZ_LOCAL_DIR_PATH is set"
+    else
+      warn "BUZZ_LOCAL_DIR_PATH is set but path missing — make bootstrap-buzz or fix .env"
+    fi
+    if ./scripts/buzz-relay.sh status 2>/dev/null | grep -q 'running'; then
+      ok "local Buzz relay is running (make buzz-relay-status)"
+    else
+      warn "local Buzz relay not running — make buzz-relay-start"
+    fi
+  else
+    warn "BUZZ_LOCAL_DIR_PATH unset — make bootstrap-buzz for a local relay (or use a hosted BUZZ_RELAY_URL)"
+  fi
+  if [[ -x data/hermes/.local/bin/buzz ]]; then
+    ok "Buzz CLI present at data/hermes/.local/bin/buzz"
+  else
+    bad "Buzz CLI missing — run make buzz-cli-install (or make bootstrap-buzz)"
+  fi
+  profiles_csv="$(env_get HERMES_BUZZ_PROFILES)"
+  profiles_csv="${profiles_csv// /}"
+  if [[ -z "$profiles_csv" ]]; then
+    warn "HERMES_BUZZ_PROFILES is empty — make hermes-buzz-employee PROFILE=<slug>"
+  else
+    ok "HERMES_BUZZ_PROFILES=${profiles_csv}"
+    IFS=',' read -r -a buzz_profiles <<< "$profiles_csv"
+    for name in "${buzz_profiles[@]}"; do
+      [[ -n "$name" ]] || continue
+      if [[ -d "data/hermes/profiles/${name}" ]]; then
+        ok "Buzz profile directory exists: data/hermes/profiles/${name}"
+        if [[ -f "data/hermes/profiles/${name}/.env" ]] \
+          && grep -q '^BUZZ_PRIVATE_KEY=' "data/hermes/profiles/${name}/.env" \
+          && ! grep -qE '^BUZZ_PRIVATE_KEY=(CHANGE_ME)?$' "data/hermes/profiles/${name}/.env"; then
+          ok "profile ${name} has BUZZ_PRIVATE_KEY set"
+        else
+          warn "profile ${name} needs a real BUZZ_PRIVATE_KEY — re-run: make hermes-buzz-employee PROFILE=${name}"
+        fi
+      else
+        bad "Buzz profile '${name}' missing — make hermes-buzz-employee PROFILE=${name}"
+      fi
+    done
+  fi
+  for reserved in browser api-server; do
+    cfg="data/hermes/profiles/${reserved}/config.yaml"
+    if [[ -f "$cfg" ]]; then
+      if grep -A5 'buzz:' "$cfg" 2>/dev/null | grep -q 'enabled: false'; then
+        ok "${reserved} profile has buzz disabled"
+      else
+        warn "${reserved} may enable Buzz — run make ensure-local"
+      fi
+    fi
+  done
+  if docker info >/dev/null 2>&1 \
+    && docker compose ps --status running hermes 2>/dev/null | grep -q hermes; then
+    if docker compose exec -T hermes buzz --help >/dev/null 2>&1; then
+      ok "hermes container can exec buzz"
+    else
+      warn "hermes cannot exec buzz — check make buzz-cli-install / arch match"
     fi
   fi
 fi

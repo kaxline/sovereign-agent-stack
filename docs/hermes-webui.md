@@ -151,15 +151,15 @@ Full convention (INDEX.md, `make project-*`, source vs drafts): [Projects](proje
 **Always upgrade both images together.** The WebUI reads the agent's on-disk state layout and imports agent modules directly, and the two are only tested against each other within a release window. Bumping one alone is the exact failure this setup guards against, which is why both tags sit adjacent in `.env` behind a single command:
 
 ```bash
-make hermes-upgrade AGENT=v2026.9.1 WEBUI=0.53.12
+make hermes-upgrade AGENT=v2026.9.14 WEBUI=0.52.113
 ```
 
 That rewrites both tags, pulls, re-runs both profile bootstraps (a new agent may add config keys the running profiles lack), and recreates both containers. Run the verification block below afterwards. Tool filters and `skills.external_dirs` are the two settings that regress without announcing it.
 
 Picking tags:
 
-- **Agent** — [Docker Hub tags](https://hub.docker.com/r/nousresearch/hermes-agent/tags), e.g. `v2026.8.3`.
-- **WebUI** — [GitHub releases](https://github.com/nesquena/hermes-webui/releases). Stable `vX.Y.Z` tags land roughly weekly; `exp-vX.Y.Z` prereleases land several times a day. Track stable, and watch out that the **image tag drops the leading `v`**: release `v0.52.106` is image `0.52.106`.
+- **Agent** — [Docker Hub tags](https://hub.docker.com/r/nousresearch/hermes-agent/tags), e.g. `v2026.9.14`.
+- **WebUI** — [GitHub releases](https://github.com/nesquena/hermes-webui/releases). Stable `vX.Y.Z` tags land roughly weekly; `exp-vX.Y.Z` prereleases land several times a day. Track stable, and watch out that the **image tag drops the leading `v`**: release `v0.52.113` is image `0.52.113`.
 
 Neither image should track `latest`. This stack ran `hermes-agent:latest` once, and the locally cached layer drifted to a build that no published tag pointed at anymore, which left "what version broke this" with no answer.
 
