@@ -35,7 +35,7 @@ docker compose run --rm --entrypoint /bin/sh n8n-import -c \
 
 OpenCode connects to `http://mcp-searxng:3000/mcp` (configured in `opencode/opencode.local.json`). Hermes is registered against the same sidecar on both its default and `api-server` profiles by [`compose/hermes/bootstrap-api-profile.sh`](../compose/hermes/bootstrap-api-profile.sh), filtered to `searxng_web_search` and `web_url_read`. MCP tools load when the agent invokes them during a session.
 
-`web_url_read` fetches a single known URL and returns it as markdown. That is the cheapest way to read a specific page, with no search step and no research agent involved. It does not execute JavaScript, and it blocks private/internal URLs.
+`web_url_read` fetches a single known URL and returns it as markdown. That is the cheapest way to read a specific page, with no search step and no research agent involved. It does not execute JavaScript, and it blocks private/internal URLs. Many publishers return 403 to this naive fetch; when that happens, prefer search snippets or the local browser tools rather than declaring search empty.
 
 ## Empty results / suspended engines
 
@@ -72,8 +72,8 @@ This stack **disables the native `web` toolset** on Hermes profiles (via bootstr
 
 1. **LightRAG** (`query_document`) for KB questions first.
 2. **One** MCP `searxng_web_search` for a quick web fact — not several parallel query variants.
-3. **`web_url_read`** when the URL is already known (no search fan-out).
-4. **`gptr`** (`deep_research` / `quick_search`) for deep multi-step reports — not a spray of SearXNG calls.
+3. **`web_url_read`** when the URL is already known (no search fan-out); if it 403s, use snippets or the local browser.
+4. **`gptr`** (`deep_research` / `quick_search`) for deep multi-step reports — only when the `automation` compose profile is running; otherwise stay on searxng + browser.
 
 `HERMES_ENVIRONMENT_HINT` repeats that policy for every gateway. See [Hermes](hermes.md#optional-internal-integrations).
 

@@ -205,7 +205,7 @@ Ask Hermes to use LightRAG for Knowledge Base questions, for example: "Use Light
 |---|---|---|
 | Knowledge base | LightRAG `query_document` | Before any web search |
 | Quick web fact | MCP `searxng_web_search` | **At most one** call unless the user asks for deep research; do not fan out query variants in parallel |
-| Known URL | MCP `web_url_read` | No search fan-out; use this instead of native `web_extract` |
+| Known URL | MCP `web_url_read` | No search fan-out; use this instead of native `web_extract`. On 403, use snippets or local browser. |
 | Deep multi-step report | `gptr` (`deep_research` / `quick_search`) | Not a spray of SearXNG queries; avoid while LightRAG is indexing |
 
 SearXNG itself is tuned to a lean Bing + Google CSE pair so each lookup hits fewer upstreams — see [SearXNG](searxng.md#empty-results--suspended-engines).

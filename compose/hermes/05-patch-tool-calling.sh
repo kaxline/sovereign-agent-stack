@@ -15,3 +15,5 @@ run_patch /bootstrap/patch-openrouter-empty-stream.py
 run_patch /bootstrap/patch-block-native-web-tools.py
 # Normalize tool_call shapes: flat siblings, nested name, short MCP aliases.
 run_patch /bootstrap/patch-tool-call-flat-args.py
+# Pin agent-browser + --no-install (pairs with 08-warmup-agent-browser).
+run_patch /bootstrap/patch-agent-browser-npx.py

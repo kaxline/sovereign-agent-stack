@@ -690,9 +690,13 @@ services:
         MCP searxng_web_search for one quick fact (at most one call unless the
         user asks for deep research; do not fan out several query variants in
         parallel). Hallucinated native web_* calls are rewritten to MCP when
-        possible. For a known URL use web_url_read (no search fan-out). For deep
-        multi-step reports use gptr deep_research / quick_search, not a spray of
-        SearXNG queries. Avoid deep_research while LightRAG is indexing.
+        possible. For a known URL use web_url_read (no search fan-out). If search
+        returns hits but a page fetch fails (403 / bot detection), quote from the
+        search snippets — do not report that SearXNG is empty. Prefer the local
+        browser tools when a real page body is required and web_url_read is
+        blocked. Deep multi-step reports need the automation compose profile
+        (gptr); if gptr tools are not listed, stay on searxng_web_search +
+        web_url_read / browser. Avoid deep_research while LightRAG is indexing.
         Short durable facts belong in the memory tool (USER.md / MEMORY.md);
         longer notes belong under /opt/memory.
         Living todos (cross-session task list) live at
@@ -732,7 +736,9 @@ services:
       - ./compose/hermes/patch-openrouter-empty-stream.py:/bootstrap/patch-openrouter-empty-stream.py:ro
       - ./compose/hermes/patch-block-native-web-tools.py:/bootstrap/patch-block-native-web-tools.py:ro
       - ./compose/hermes/patch-tool-call-flat-args.py:/bootstrap/patch-tool-call-flat-args.py:ro
+      - ./compose/hermes/patch-agent-browser-npx.py:/bootstrap/patch-agent-browser-npx.py:ro
       - ./compose/hermes/05-patch-tool-calling.sh:/etc/cont-init.d/05-patch-tool-calling:ro
+      - ./compose/hermes/08-warmup-agent-browser.sh:/etc/cont-init.d/08-warmup-agent-browser:ro
       # FS library: immediate /opt/projects children → projects.list / projects.tree.
       - ./compose/hermes/scripts/projects_library.py:/bootstrap/projects_library.py:ro
       - ./compose/hermes/patch-projects-library.py:/bootstrap/patch-projects-library.py:ro
