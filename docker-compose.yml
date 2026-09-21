@@ -733,6 +733,10 @@ services:
       - ./compose/hermes/patch-block-native-web-tools.py:/bootstrap/patch-block-native-web-tools.py:ro
       - ./compose/hermes/patch-tool-call-flat-args.py:/bootstrap/patch-tool-call-flat-args.py:ro
       - ./compose/hermes/05-patch-tool-calling.sh:/etc/cont-init.d/05-patch-tool-calling:ro
+      # FS library: immediate /opt/projects children → projects.list / projects.tree.
+      - ./compose/hermes/scripts/projects_library.py:/bootstrap/projects_library.py:ro
+      - ./compose/hermes/patch-projects-library.py:/bootstrap/patch-projects-library.py:ro
+      - ./compose/hermes/07-patch-projects-library.sh:/etc/cont-init.d/07-patch-projects-library:ro
       # Buzz: keep ws://localhost:3000 community host, proxy to host relay.
       - ./compose/hermes/buzz-localhost-proxy.py:/bootstrap/buzz-localhost-proxy.py:ro
       - ./compose/hermes/06-buzz-localhost-proxy.sh:/etc/cont-init.d/06-buzz-localhost-proxy:ro
@@ -849,6 +853,8 @@ services:
       - ./compose/hermes/scripts/project-brief-prefill.py:/bootstrap/project-brief-prefill.py:ro
       - ./compose/hermes/scripts/hermeswebui-entrypoint.sh:/bootstrap/hermeswebui-entrypoint.sh:ro
       - ./compose/hermes/scripts/patch-webui-persisted-count.py:/bootstrap/patch-webui-persisted-count.py:ro
+      - ./compose/hermes/scripts/projects_library.py:/bootstrap/projects_library.py:ro
+      - ./compose/hermes/scripts/patch-webui-projects-library.py:/bootstrap/patch-webui-projects-library.py:ro
       - ${ASSISTANT_DATA_ROOT:-./data}/projects:/opt/projects
       - ${ASSISTANT_DATA_ROOT:-./data}/voice:/opt/voice
       - ${ASSISTANT_DATA_ROOT:-./data}/memory:/opt/memory

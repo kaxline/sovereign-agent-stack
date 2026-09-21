@@ -144,7 +144,8 @@ Scaffold from the assistant repo root:
 
     make project-init PROJECT=my-project
 
-Select the project as a WebUI workspace, or name `/opt/projects/my-project` in a prompt.
+Select it in the WebUI workspace dropdown (library folders appear automatically),
+or name `/opt/projects/my-project` in a prompt.
 
 Full convention: docs/projects.md
 EOF

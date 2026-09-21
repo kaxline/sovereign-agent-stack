@@ -32,6 +32,6 @@ claims as fact.
    make project-index PROJECT=<name>
    ```
 
-4. In Hermes WebUI, add a workspace pointing at `/opt/projects/<name>`.
+4. In Hermes WebUI, select `/opt/projects/<name>` (library folders appear automatically).
 
 See `docs/projects.md` in the assistant repo.

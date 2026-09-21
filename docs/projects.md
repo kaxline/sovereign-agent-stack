@@ -1,24 +1,44 @@
 # Per-project working directories
 
 Hermes mounts `$ASSISTANT_DATA_ROOT/projects/` at `/opt/projects`. Each
-subdirectory is one body of work: source notes and agent drafts side by side.
-Default root is `./data`; relocate with [User data directory](data-dir.md).
+**immediate subdirectory** is a discoverable Project: source notes and agent
+drafts side by side. Default root is `./data`; relocate with
+[User data directory](data-dir.md).
 
 This page is the **convention** for getting more reliable answers from smaller
 local models without stuffing every project into LightRAG.
+
+## Three layers
+
+| Layer | Role |
+|---|---|
+| **FS library** | Immediate children of `projects/` (container: `/opt/projects/<slug>`). Source of truth for *existence*. Plain folders count — `AGENTS.md` is optional. |
+| **`projects.db` metadata** | Optional name, color, archive, multi-folder membership, `active_id`. Attaches when a row’s path matches a library folder. Not required before the agent can read/write the mount. |
+| **Git `discover_repos`** | Orthogonal desktop/repo scan (`.git` roots). Must not be the only way projects appear. |
+
+`make project-init` and plain `mkdir` under the projects root both show up via the
+same discovery. Dropping or creating a folder on the host is enough; no separate
+`projects.create` fiction for library membership.
+
+Clients that call Hermes `projects.list` / `projects.tree` (e.g. Boundary /
+`hermes serve`) and the WebUI workspace dropdown both merge the FS library on
+read. Selecting a synthetic library project via `projects.set_active` may lazily
+insert a DB row so `active_id` stays stable.
 
 ## Quick path
 
 ```bash
 # From the assistant repo root
 make project-init PROJECT=my-project
+# Or: mkdir -p "$ASSISTANT_DATA_ROOT/projects/my-project"
 # Edit $ASSISTANT_DATA_ROOT/projects/my-project/AGENTS.md
 # Add source markdown under notes/ (optional description: frontmatter)
 make project-index PROJECT=my-project
 ```
 
-In Hermes WebUI, add a workspace whose path is `/opt/projects/my-project`, then
-select it for chats that should load that brief.
+In Hermes WebUI, select the workspace `/opt/projects/my-project` (it appears
+automatically). Manually adding a workspace is only needed for paths **outside**
+the shared library root.
 
 ## What each file is for
 
@@ -64,6 +84,9 @@ directory is the project. Use the same filename so both paths stay in sync.
   the char budget deliberately.
 - The prefill script only reads files. Do not point the hook at anything that
   calls a model or the network.
+- Custom workspace **names** in `workspaces.json` (e.g. renaming `career` to
+  “Job Search”) are preserved across FS discovery. Deleted library folders drop
+  from the effective list on the next read even if a stale DB row remains.
 
 ## Makefile targets
 

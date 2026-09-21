@@ -410,7 +410,8 @@ give the project an `AGENTS.md` brief and keep source notes apart from drafts.
 
 Then either:
 
-- Select the project as a **WebUI workspace** (brief is injected automatically), or
+- Select `/opt/projects/my-project` in the **WebUI** workspace dropdown
+  (library folders appear automatically; brief is injected when selected), or
 - Name the path in a prompt: `Using the notes in /opt/projects/my-project, …`
 
 The mount is live, so files you add appear immediately. No Hermes restart

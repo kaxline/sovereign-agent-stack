@@ -133,7 +133,14 @@ Heavy optional extras (`edge-tts`, `psutil`, Office document parsers) are left u
 
 ## Project briefs (workspace → AGENTS.md)
 
-The workspace dropdown selects a path under `/opt/projects`. Gateway chat does **not** pass that path as the agent cwd, so Hermes’ native `AGENTS.md` loading does not run for browser turns.
+Immediate children of `/opt/projects` are discoverable workspaces (FS library).
+The dropdown merges those folders on read — no manual “add workspace” for a
+subdirectory under the shared projects mount. Custom names already saved in
+`workspaces.json` are kept. See [Projects](projects.md) for FS vs `projects.db`
+vs git discovery.
+
+Gateway chat does **not** pass the selected workspace as the agent cwd, so
+Hermes’ native `AGENTS.md` loading does not run for browser turns.
 
 Compose sets `HERMES_WEBUI_PREFILL_MESSAGES_SCRIPT` to
 `compose/hermes/scripts/project-brief-prefill.py`, which reads
@@ -209,7 +216,7 @@ Confirm the tool card renders and the file resolves under `/opt/projects`. That 
 ### Manual brief smoke (optional)
 
 1. `make project-init PROJECT=_scaffold-smoke` and put one distinctive sentence in its `AGENTS.md`.
-2. In the WebUI, add a workspace at `/opt/projects/_scaffold-smoke` and select it.
+2. In the WebUI, select `/opt/projects/_scaffold-smoke` (it appears via FS discovery).
 3. Ask what the project brief says; the reply should reflect that sentence (or check the turn’s `context_status` prefill fields in the network panel).
 4. Switch the workspace back to Home and send another turn — the brief should not apply.
 5. Remove `data/projects/_scaffold-smoke` when done.
