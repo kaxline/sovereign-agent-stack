@@ -257,6 +257,33 @@ case "$(echo "$buzz_enabled" | tr '[:upper:]' '[:lower:]')" in
   *) buzz_enabled=0 ;;
 esac
 
+# --- Independent agents registry (optional) ---
+if [[ -f data/hermes/agents/registry.json ]]; then
+  echo
+  echo "--- Independent agents ---"
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    if [[ -d "data/hermes/profiles/${name}" ]]; then
+      ok "agent '${name}' profile exists"
+    else
+      bad "registry lists '${name}' but data/hermes/profiles/${name} is missing"
+    fi
+  done < <(
+    python3 - <<'PY' 2>/dev/null || true
+import json
+from pathlib import Path
+path = Path("data/hermes/agents/registry.json")
+try:
+    data = json.loads(path.read_text())
+except Exception:
+    raise SystemExit(0)
+for a in data.get("agents", []):
+    if isinstance(a, dict) and a.get("name"):
+        print(a["name"])
+PY
+  )
+fi
+
 if [[ "$buzz_enabled" -eq 1 ]]; then
   echo
   echo "--- Buzz ---"
@@ -295,23 +322,44 @@ if [[ "$buzz_enabled" -eq 1 ]]; then
   profiles_csv="$(env_get HERMES_BUZZ_PROFILES)"
   profiles_csv="${profiles_csv// /}"
   if [[ -z "$profiles_csv" ]]; then
-    warn "HERMES_BUZZ_PROFILES is empty — make hermes-buzz-employee PROFILE=<slug>"
+    warn "HERMES_BUZZ_PROFILES is empty — make agent-create NAME=<slug> WITH=buzz"
   else
     ok "HERMES_BUZZ_PROFILES=${profiles_csv}"
     IFS=',' read -r -a buzz_profiles <<< "$profiles_csv"
     for name in "${buzz_profiles[@]}"; do
       [[ -n "$name" ]] || continue
       if [[ -d "data/hermes/profiles/${name}" ]]; then
-        ok "Buzz profile directory exists: data/hermes/profiles/${name}"
+        ok "Buzz agent directory exists: data/hermes/profiles/${name}"
         if [[ -f "data/hermes/profiles/${name}/.env" ]] \
           && grep -q '^BUZZ_PRIVATE_KEY=' "data/hermes/profiles/${name}/.env" \
           && ! grep -qE '^BUZZ_PRIVATE_KEY=(CHANGE_ME)?$' "data/hermes/profiles/${name}/.env"; then
           ok "profile ${name} has BUZZ_PRIVATE_KEY set"
         else
-          warn "profile ${name} needs a real BUZZ_PRIVATE_KEY — re-run: make hermes-buzz-employee PROFILE=${name}"
+          warn "profile ${name} needs a real BUZZ_PRIVATE_KEY — re-run: make agent-create NAME=${name} WITH=buzz"
+        fi
+        if [[ -f data/hermes/agents/registry.json ]]; then
+          if NAME="$name" python3 - <<'PY' 2>/dev/null
+import json, os, sys
+from pathlib import Path
+name = os.environ["NAME"]
+path = Path("data/hermes/agents/registry.json")
+try:
+    data = json.loads(path.read_text())
+except Exception:
+    sys.exit(1)
+for a in data.get("agents", []):
+    if isinstance(a, dict) and a.get("name") == name:
+        sys.exit(0)
+sys.exit(1)
+PY
+          then
+            ok "agent ${name} is in data/hermes/agents/registry.json"
+          else
+            warn "Buzz profile ${name} not in agent registry — make agent-create NAME=${name} (or ignore if legacy)"
+          fi
         fi
       else
-        bad "Buzz profile '${name}' missing — make hermes-buzz-employee PROFILE=${name}"
+        bad "Buzz agent '${name}' missing — make agent-create NAME=${name} WITH=buzz"
       fi
     done
   fi

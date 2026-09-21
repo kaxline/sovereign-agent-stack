@@ -1,5 +1,5 @@
 .PHONY: setup ensure-local up down logs ps restart clean doctor hermes-upgrade \
-	bootstrap-buzz buzz-cli-install hermes-buzz-employee \
+	bootstrap-buzz buzz-cli-install agent-create hermes-buzz-employee \
 	buzz-relay-start buzz-relay-stop buzz-relay-status buzz-relay-logs buzz-relay-restart \
 	buzz-admin \
 	corpus-create corpus-use corpus-list corpus-ingest corpus-destroy \
@@ -46,11 +46,19 @@ bootstrap-buzz:
 buzz-cli-install:
 	./scripts/install-buzz-cli.sh
 
-# Create a local Buzz employee Hermes profile (data/hermes only — not committed).
+# Create an independent Hermes agent (data/hermes only — not committed).
+#   make agent-create NAME=software-engineer DISPLAY_NAME="Software Engineer"
+#   make agent-create NAME=designer ROLE="UI/UX" WITH=buzz
+agent-create:
+	@test -n "$(NAME)" || (echo "Usage: make agent-create NAME=<slug> [DISPLAY_NAME=\"Name\"] [ROLE=\"…\"] [WITH=buzz]"; exit 1)
+	NAME="$(NAME)" DISPLAY_NAME="$(DISPLAY_NAME)" ROLE="$(ROLE)" WITH="$(WITH)" \
+		./scripts/agent-create.sh "$(NAME)" "$(DISPLAY_NAME)"
+
+# Compatibility: agent-create + Buzz attach (prefer make agent-create … WITH=buzz).
 #   make hermes-buzz-employee PROFILE=software-engineer DISPLAY_NAME="Software Engineer"
 hermes-buzz-employee:
-	@test -n "$(PROFILE)" || (echo "Usage: make hermes-buzz-employee PROFILE=<slug> [DISPLAY_NAME=\"Name\"]"; exit 1)
-	./scripts/hermes-buzz-employee.sh "$(PROFILE)" "$(DISPLAY_NAME)"
+	@test -n "$(PROFILE)$(NAME)" || (echo "Usage: make hermes-buzz-employee PROFILE=<slug> [DISPLAY_NAME=\"Name\"]"; exit 1)
+	./scripts/hermes-buzz-employee.sh "$(if $(PROFILE),$(PROFILE),$(NAME))" "$(DISPLAY_NAME)"
 
 # Local Buzz community relay (host-side `just relay` from BUZZ_LOCAL_DIR_PATH).
 # Long-running; daemonized under data/hermes/.cache/buzz-relay/. See docs/buzz.md.

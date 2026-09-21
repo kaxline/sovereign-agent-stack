@@ -112,6 +112,7 @@ See [SECURITY.md](SECURITY.md).
 | [n8n workflows](docs/n8n.md) | Workflows that call the stack (with `automation`) |
 | [Writing voice](docs/writing-voice.md) | Drafting artifacts in your style (not chat tone) |
 | [Memory](docs/memory.md) | Built-in USER.md, session search, curated notes |
+| [Independent agents](docs/agents.md) | Multi-role Hermes profiles, shared vs private memory |
 | [User data directory](docs/data-dir.md) | Relocate projects / voice / memory / LightRAG inputs |
 | [Releasing](docs/releasing.md) | Thematic commit playbook for the first public history |
 

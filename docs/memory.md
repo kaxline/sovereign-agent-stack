@@ -38,6 +38,12 @@ Built-in memory files are shared across the default, `api-server`, and `browser`
 profiles (compose overlays `data/hermes/memories/` onto each profile home). A
 fact saved in the WebUI is the same file the dashboard reads.
 
+**Independent agents** (`make agent-create`) keep their **own**
+`data/hermes/profiles/<name>/memories/` — they do **not** use that shared
+overlay. Their private facts stay private. They still share curated
+`/opt/memory` and `/opt/projects` with every other gateway. See
+[Independent agents](agents.md).
+
 `session_search` is **not** shared. Each gateway searches its own `state.db`.
 
 ## What belongs where
@@ -146,6 +152,12 @@ and the store starts citing its own output back to you as fact.
 | Todo list empty in a new WebUI chat | Hermes's built-in `todo` tool is session-only. This stack disables it and routes living todos to `/opt/projects/project-todo-list/README.md` via the `living-todos` skill. Re-run browser bootstrap and `docker compose restart hermes` if `agent.disabled_toolsets` no longer includes `todo`. |
 | `Write denied` / "read-only" on `/opt/memory` | `HERMES_WRITE_SAFE_ROOT` on `hermes` no longer lists `/opt/memory`. The image default is `/opt/data` only; `write_file` then refuses the mount even when it is rw. |
 | WebUI remembers something the dashboard does not | Built-in files should be shared. Check that compose overlays `data/hermes/memories` onto both profile `memories/` dirs (`docs/hermes.md` verification). |
-| `session_search` misses a chat you remember | Wrong profile. WebUI is `browser` (`data/hermes/profiles/browser/state.db`); dashboard/CLI is default (`data/hermes/state.db`). |
+| `session_search` misses a chat you remember | Wrong profile. WebUI is `browser` (`data/hermes/profiles/browser/state.db`); dashboard/CLI is default (`data/hermes/state.db`); independent agents each have `data/hermes/profiles/<name>/state.db`. |
 | USER.md / MEMORY.md stay empty | The local model has to call the `memory` tool. Ask "remember that…" explicitly. Background review on WebUI runs every 10 user turns on the `browser` profile (default/dashboard stay at 3). |
 | Facts from an n8n one-shot landed in USER.md | Unattended `api-server` sessions keep `nudge_interval` at 10 on purpose. Do not lower it. |
+
+## Related
+
+- [Independent agents](agents.md) — private vs project vs global for multi-agent setups
+- [Hermes Agent](hermes.md) — mounts and memory tool wiring
+- [Projects](projects.md) — shared project briefs

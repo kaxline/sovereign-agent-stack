@@ -12,7 +12,8 @@ Per-service setup, usage, and verification guides. See the [project README](../R
 | [Hermes Agent](hermes.md) | `core` | Gateway, dashboard, API, skills, MCP, [model suitability](hermes.md#model-suitability-agentic-tool-use), [chat tone](hermes.md#conversational-tone-soulmd) |
 | [Calendar](calendar.md) | `calendar` — `caldav-mcp` | CalDAV calendars (iCloud, Nextcloud, …), multi-account |
 | [Signal](signal.md) | `signal` (+ `core`) | Linked-device messaging, WebUI send, cron delivery |
-| [Buzz](buzz.md) | `core` (optional) | Native gateway ↔ Buzz.xyz; local employee profiles |
+| [Buzz](buzz.md) | `core` (optional) | Messaging transport for independent agents |
+| [Independent agents](agents.md) | `core` | Multi-role Hermes profiles, three memory tiers, registry |
 | [Hermes WebUI](hermes-webui.md) | `core` | Chat UI via lean browser gateway |
 | [Projects](projects.md) | `core` / Hermes | Per-project briefs (`AGENTS.md`), INDEX, WebUI workspace prefill |
 | [User data directory](data-dir.md) | host | Relocate projects / voice / memory / LightRAG inputs outside the repo |

@@ -110,7 +110,7 @@ PY
   fi
 }
 
-# Seed recommended Buzz gateway + display defaults for an employee profile.
+# Seed recommended Buzz gateway + display defaults for an agent profile.
 enable_buzz_on_profile_config() {
   local profile_name="$1"
   local relay_url="$2"
@@ -197,7 +197,7 @@ if [[ "$enabled" -eq 1 ]]; then
   profiles_csv="${profiles_csv// /}"
 
   if [[ -z "$profiles_csv" ]]; then
-    warn "HERMES_BUZZ_ENABLED=1 but HERMES_BUZZ_PROFILES is empty — create employees with make hermes-buzz-employee"
+    warn "HERMES_BUZZ_ENABLED=1 but HERMES_BUZZ_PROFILES is empty — create agents with: make agent-create NAME=<slug> WITH=buzz"
   fi
 
   if [[ -z "$relay" ]]; then
@@ -220,8 +220,26 @@ if [[ "$enabled" -eq 1 ]]; then
     esac
     profile_dir="data/hermes/profiles/${name}"
     if [[ ! -d "$profile_dir" ]]; then
-      warn "Buzz profile '${name}' not found at ${profile_dir} — create with: make hermes-buzz-employee PROFILE=${name}"
+      warn "Buzz profile '${name}' not found at ${profile_dir} — create with: make agent-create NAME=${name} WITH=buzz"
       continue
+    fi
+    if [[ -f data/hermes/agents/registry.json ]]; then
+      if ! NAME="$name" python3 - <<'PY' 2>/dev/null
+import json, os, sys
+from pathlib import Path
+name = os.environ["NAME"]
+try:
+    data = json.loads(Path("data/hermes/agents/registry.json").read_text())
+except Exception:
+    sys.exit(1)
+for a in data.get("agents", []):
+    if isinstance(a, dict) and a.get("name") == name:
+        sys.exit(0)
+sys.exit(1)
+PY
+      then
+        warn "Buzz profile '${name}' is not in data/hermes/agents/registry.json — make agent-create NAME=${name} (does not auto-create)"
+      fi
     fi
     mkdir -p "$profile_dir"
     touch "${profile_dir}/.env"
@@ -245,6 +263,6 @@ if [[ "$enabled" -eq 1 ]]; then
     log "Buzz seeded for profile '${name}'"
   done
 else
-  # When disabled, do not strip private keys from employee profiles — only note.
-  log "HERMES_BUZZ_ENABLED=0 — Buzz left disabled on browser/api-server; employee profiles unchanged"
+  # When disabled, do not strip private keys from agent profiles — only note.
+  log "HERMES_BUZZ_ENABLED=0 — Buzz left disabled on browser/api-server; agent profiles unchanged"
 fi

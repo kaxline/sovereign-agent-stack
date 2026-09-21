@@ -742,7 +742,7 @@ set_env_if_missing .env HERMES_SIGNAL_ENABLED 0
 set_env_if_missing .env SIGNAL_CLI_IMAGE "registry.gitlab.com/packaging/signal-cli/signal-cli-jre:v0-14-7-2"
 ./scripts/sync-signal-profile.sh
 
-# Buzz off by default; employee profiles are operator-local under data/hermes/.
+# Buzz off by default; independent agents are operator-local under data/hermes/.
 set_env_if_missing .env HERMES_BUZZ_ENABLED 0
 ./scripts/sync-buzz-profile.sh
 
@@ -802,7 +802,7 @@ Signal (optional): set HERMES_SIGNAL_ENABLED=1 and SIGNAL_ACCOUNT in .env,
 link signal-cli on the host, then re-run setup or make ensure-local. See docs/signal.md.
 
 Buzz (optional): set HERMES_BUZZ_ENABLED=1 and BUZZ_RELAY_URL, install the CLI
-with make bootstrap-buzz, create employees with make hermes-buzz-employee.
+with make bootstrap-buzz, create agents with make agent-create NAME=<slug> WITH=buzz.
 Profiles stay under data/hermes/ (not git). See docs/buzz.md.
 
 EOF

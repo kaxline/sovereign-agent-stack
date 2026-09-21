@@ -1,6 +1,6 @@
 #!/command/with-contenv bash
 # Start a localhost→host.docker.internal TCP proxy for the Buzz relay so
-# employee profiles can keep BUZZ_RELAY_URL=ws://localhost:3000 (community host
+# agent profiles can keep BUZZ_RELAY_URL=ws://localhost:3000 (community host
 # must match Desktop) while still reaching the host-side `just relay`.
 set -euo pipefail
 

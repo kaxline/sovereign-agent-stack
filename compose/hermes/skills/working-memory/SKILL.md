@@ -55,9 +55,33 @@ gets **both**: write the file *and* call `memory(target="user")`. Do not duplica
 the same paragraph into three stores.
 
 Each Hermes gateway searches **its own** `state.db`. WebUI chat is the `browser`
-profile; dashboard/CLI is the default profile; n8n is `api-server`. If
+profile; dashboard/CLI is the default profile; n8n is `api-server`; independent
+agents each have their own profile under `data/hermes/profiles/<name>/`. If
 `session_search` finds nothing, say which profile you searched rather than
 claiming the conversation never happened.
+
+## Multi-agent tiers
+
+Independent agents (`make agent-create`) share mounts but not private memory.
+Pick the tier that matches who should see the fact:
+
+| Tier | Where | Visibility |
+|---|---|---|
+| Private | This profile’s native `memory` tool + `session_search` | This agent only |
+| Project | `/opt/projects/<slug>/` (briefs, decisions, shared drafts) | All agents + human |
+| Global | `<store_path>` (`/opt/memory`) | All agents + human |
+
+- Standing prefs about the human that every agent should honor → global (and
+  optionally native `memory` on this profile).
+- Decisions or drafts for a body of work → project files, not this skill’s store
+  alone when siblings must collaborate.
+- Coaching, hypotheses, or DM residue → **private only**. Do **not** copy DM or
+  session transcript content into project or global stores unless the human
+  explicitly asks to share it.
+- Never read or write another profile’s `memories/` or `state.db`.
+
+After updating this skill on the host, recreate or restart Hermes so gateways
+reload skills (`docker compose restart hermes`).
 
 ## Layout
 

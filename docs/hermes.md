@@ -492,7 +492,7 @@ Optional messaging over Signal via compose-managed `signal-cli`. Setup, architec
 
 ## Buzz
 
-Optional messaging over [Buzz](https://buzz.xyz) (native Hermes gateway platform). Employee identities are local Hermes profiles under `data/hermes/` (not committed). Start with `make bootstrap-buzz`, then `make hermes-buzz-employee`. Details: **[Buzz](buzz.md)**.
+Optional messaging over [Buzz](https://buzz.xyz) (native Hermes gateway platform). Independent agents are local Hermes profiles under `data/hermes/` (not committed). Create with `make agent-create`; attach Buzz with `WITH=buzz` or `./scripts/agent-attach-buzz.sh`. Details: **[Independent agents](agents.md)** · **[Buzz](buzz.md)**.
 
 ## Advanced options
 
