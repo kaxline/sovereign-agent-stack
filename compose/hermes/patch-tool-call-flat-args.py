@@ -7,6 +7,10 @@ Fixes observed in WebUI sessions:
 2. Nested name — tool_call({arguments: {name, url}}) with no top-level name
 3. Short MCP aliases — tool_call({name: "web_url_read", ...}) instead of
    mcp__searxng__web_url_read (not deferrable under the short name)
+4. Stringified calls — tool_call({calls: "[{...}]"}) instead of a real array
+   (local models often JSON-encode the array as a string; upstream only
+   json.loads nested ``arguments``, so validation fails with
+   "calls must be a non-empty array")
 
 These are stack-wide compatibility shims: correct calls are unchanged.
 
@@ -14,11 +18,13 @@ Hermes v2026.9+ routes parsing through ``normalize_tool_call_entries``.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 TARGET = Path("/opt/hermes/tools/tool_search_validation.py")
 TARGET_LEGACY = Path("/opt/hermes/tools/tool_search.py")
 MARKER = "# assistant-stack: tool_call arg shape fixes"
+MARKER_STRING_CALLS = "# assistant-stack: tool_call stringified calls"
 
 STACK_ALIASES = '''
 _STACK_TOOL_ALIASES = {
@@ -26,6 +32,12 @@ _STACK_TOOL_ALIASES = {
     "web_extract": "mcp__searxng__web_url_read",
     "searxng_web_search": "mcp__searxng__searxng_web_search",
     "web_url_read": "mcp__searxng__web_url_read",
+    "coding_list_roots": "mcp__opencode__coding_list_roots",
+    "coding_start_task": "mcp__opencode__coding_start_task",
+    "coding_get_task_status": "mcp__opencode__coding_get_task_status",
+    "coding_wait_for_task": "mcp__opencode__coding_wait_for_task",
+    "coding_get_task_result": "mcp__opencode__coding_get_task_result",
+    "coding_continue_task": "mcp__opencode__coding_continue_task",
 }
 '''
 
@@ -78,35 +90,99 @@ NEW_LEGACY_SINGLE = '''        if not str(args.get("name") or "").strip():
         raw_calls = [{"name": args.get("name"), "arguments": _legacy_args}]
 '''
 
+OLD_CALLS_LIST_CHECK = '''    if isinstance(raw_calls, dict):
+        raw_calls = [raw_calls]
+    if not isinstance(raw_calls, list) or not raw_calls:
+        return [], "tool_call 'calls' must be a non-empty array of {name, arguments}"
+'''
+
+NEW_CALLS_LIST_CHECK = '''    # assistant-stack: tool_call stringified calls
+    if isinstance(raw_calls, str):
+        try:
+            raw_calls = json.loads(raw_calls)
+        except json.JSONDecodeError as e:
+            return [], f"tool_call 'calls' is not valid JSON: {e}"
+    if isinstance(raw_calls, dict):
+        raw_calls = [raw_calls]
+    if not isinstance(raw_calls, list) or not raw_calls:
+        return [], "tool_call 'calls' must be a non-empty array of {name, arguments}"
+'''
+
+_AGENT_LOG_RE = re.compile(
+    r"[ \t]*# #region agent log\n.*?[ \t]*# #endregion\n",
+    re.S,
+)
+
+
+def _ensure_coding_aliases(text: str) -> str:
+    if "coding_start_task" in text and "_STACK_TOOL_ALIASES" in text:
+        # Expand an older alias map that lacks coding_* entries.
+        old = '''_STACK_TOOL_ALIASES = {
+    "web_search": "mcp__searxng__searxng_web_search",
+    "web_extract": "mcp__searxng__web_url_read",
+    "searxng_web_search": "mcp__searxng__searxng_web_search",
+    "web_url_read": "mcp__searxng__web_url_read",
+}
+'''
+        if old in text:
+            return text.replace(old, STACK_ALIASES.lstrip("\n"), 1)
+        return text
+    return text
+
+
+def _strip_debug_ingest(text: str) -> str:
+    """Remove temporary debug-session POSTs left by earlier patch builds."""
+    return _AGENT_LOG_RE.sub("", text)
+
 
 def main() -> int:
-    if TARGET.is_file():
-        text = TARGET.read_text(encoding="utf-8")
-        if MARKER in text and "_STACK_TOOL_ALIASES" in text:
-            print(f"[patch-tool-call-flat-args] already applied ({TARGET})")
+    if not TARGET.is_file():
+        if TARGET_LEGACY.is_file():
+            print(f"[patch-tool-call-flat-args] skip: {TARGET} missing; legacy path not auto-applied")
             return 0
-        if OLD_APPEND not in text:
-            print(f"[patch-tool-call-flat-args] append needle missing in {TARGET}")
-            return 0
-        if "_STACK_TOOL_ALIASES" not in text:
-            # Insert aliases before the function.
-            anchor = "def normalize_tool_call_entries("
-            if anchor not in text:
-                print("[patch-tool-call-flat-args] normalize_tool_call_entries missing")
-                return 0
-            text = text.replace(anchor, STACK_ALIASES + "\n" + anchor, 1)
-        text = text.replace(OLD_APPEND, NEW_APPEND, 1)
-        if OLD_LEGACY_SINGLE in text:
-            text = text.replace(OLD_LEGACY_SINGLE, NEW_LEGACY_SINGLE, 1)
-        TARGET.write_text(text, encoding="utf-8")
-        print(f"[patch-tool-call-flat-args] patched {TARGET}")
+        print(f"[patch-tool-call-flat-args] skip missing {TARGET}")
         return 0
 
-    # Pre-v2026.9: patch resolve_underlying_call in tool_search.py (best-effort).
-    if TARGET_LEGACY.is_file():
-        print(f"[patch-tool-call-flat-args] skip: {TARGET} missing; legacy path not auto-applied")
-        return 0
-    print(f"[patch-tool-call-flat-args] skip missing {TARGET}")
+    text = TARGET.read_text(encoding="utf-8")
+    changed = False
+
+    cleaned = _strip_debug_ingest(text)
+    if cleaned != text:
+        text = cleaned
+        changed = True
+
+    if "_STACK_TOOL_ALIASES" not in text:
+        anchor = "def normalize_tool_call_entries("
+        if anchor not in text:
+            print("[patch-tool-call-flat-args] normalize_tool_call_entries missing")
+            return 0
+        text = text.replace(anchor, STACK_ALIASES + "\n" + anchor, 1)
+        changed = True
+    else:
+        new_text = _ensure_coding_aliases(text)
+        if new_text != text:
+            text = new_text
+            changed = True
+
+    if MARKER not in text and OLD_APPEND in text:
+        text = text.replace(OLD_APPEND, NEW_APPEND, 1)
+        changed = True
+    if OLD_LEGACY_SINGLE in text:
+        text = text.replace(OLD_LEGACY_SINGLE, NEW_LEGACY_SINGLE, 1)
+        changed = True
+
+    if MARKER_STRING_CALLS not in text:
+        if OLD_CALLS_LIST_CHECK not in text:
+            print("[patch-tool-call-flat-args] calls-list needle missing")
+        else:
+            text = text.replace(OLD_CALLS_LIST_CHECK, NEW_CALLS_LIST_CHECK, 1)
+            changed = True
+
+    if changed:
+        TARGET.write_text(text, encoding="utf-8")
+        print(f"[patch-tool-call-flat-args] patched {TARGET}")
+    else:
+        print(f"[patch-tool-call-flat-args] already applied ({TARGET})")
     return 0
 
 
