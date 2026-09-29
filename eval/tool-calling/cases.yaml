@@ -1,0 +1,139 @@
+# Tool-calling eval cases for the Hermes browser profile.
+# Every prompt embeds [eval:<id>] so WebUI paste and the scripted harness
+# write the same id into data/hermes/eval/traces.jsonl.
+#
+# Pass criteria are matched against tool_calls names (substring or exact).
+# See docs/tool-eval.md.
+
+cases:
+  - id: web-fact
+    gate: core
+    prompt: |
+      [eval:web-fact] What is today's featured article title on the English Wikipedia main page? Use one web search only; do not invent or use the system clock. Reply with the title only, one short sentence.
+    pass_any:
+      - searxng_web_search
+      - mcp__searxng__searxng_web_search
+    fail_if:
+      - outcome: text_only
+    fail_if_tools:
+      - terminal
+    max_chars: 4000
+    max_seconds: 180
+    notes: Pass if SearXNG search ran (or native web_search was rewritten). Fail on text-only, terminal clock substitution, or a runaway reply (max_chars/max_seconds).
+
+  - id: known-url
+    gate: core
+    prompt: |
+      [eval:known-url] Read https://example.com as markdown and quote the main heading. Do not search the web; fetch that URL directly.
+    pass_any:
+      - web_url_read
+      - mcp__searxng__web_url_read
+    fail_if_tools:
+      - searxng_web_search
+      - mcp__searxng__searxng_web_search
+    notes: Pass on web_url_read (or web_extract rewrite). Fail if it fans out to search.
+
+  - id: list-projects
+    gate: core
+    prompt: |
+      [eval:list-projects] List the immediate children of /opt/projects (names only). Use a file or terminal tool; do not guess.
+    pass_any:
+      - search_files
+      - terminal
+      - read_file
+      - execute_code
+    fail_if:
+      - outcome: text_only
+    notes: Pass if any listing tool dispatched. Fail on tool_turns=0 / text_only.
+
+  - id: remember
+    gate: core
+    prompt: |
+      [eval:remember] Remember that for tool-eval I prefer terse replies and the codeword is aurora-tool-eval. Store this as a durable preference.
+    pass_any:
+      - memory
+      - write_file
+      - patch
+    notes: Pass if memory tool or a write under /opt/memory. Soft-fail if only prose claims remember.
+
+  - id: session-search
+    gate: core
+    prompt: |
+      [eval:session-search] Search past sessions in this gateway for anything mentioning aurora-tool-eval or tool-eval. Report what you find or that nothing matched.
+    pass_any:
+      - session_search
+    fail_if:
+      - outcome: text_only
+    notes: Pass on session_search. Fail if text-only, or only tool_search then stop without session_search.
+
+  - id: no-tool
+    gate: core
+    prompt: |
+      [eval:no-tool] What is 2+2? Answer with only the number. Do not use any tools.
+    pass_none: true
+    notes: Negative control — pass when no tools fire.
+
+  - id: kb-inventory
+    gate: rag
+    prompt: |
+      [eval:kb-inventory] Using LightRAG, summarize what is in my active knowledge base in two sentences. Prefer the KB before any web search.
+    pass_any:
+      - query_document
+      - mcp__lightrag__query_document
+      - get_documents
+      - mcp__lightrag__get_documents
+      - get_graph_labels
+      - mcp__lightrag__get_graph_labels
+      - get_pipeline_status
+      - mcp__lightrag__get_pipeline_status
+      - check_lightrag_health
+      - mcp__lightrag__check_lightrag_health
+    fail_if:
+      - outcome: text_only
+    fail_if_tools:
+      - searxng_web_search
+      - mcp__searxng__searxng_web_search
+      - web_url_read
+      - mcp__searxng__web_url_read
+      - terminal
+    notes: Skipped unless rag profile / LIGHTRAG_MCP_ENABLED. Pass on any LightRAG read tool (catalog or query). Fail on web/terminal substitution.
+
+  - id: kb-query
+    gate: rag
+    prompt: |
+      [eval:kb-query] Using LightRAG, what does my knowledge base say about aurora-kb-eval? Answer from the KB only; do not search the web.
+    pass_any:
+      - query_document
+      - mcp__lightrag__query_document
+    fail_if:
+      - outcome: text_only
+    fail_if_tools:
+      - searxng_web_search
+      - mcp__searxng__searxng_web_search
+      - web_url_read
+      - mcp__searxng__web_url_read
+      - terminal
+    notes: Skipped unless rag profile. Harness inserts aurora-kb-eval via POST /documents/text and deletes it after. Pass on query_document. Inventory-only is missed_expected.
+
+  - id: coding-locate
+    gate: coding
+    prompt: |
+      [eval:coding-locate] Look in opencode-smoke for the greet function and quote its current stub. Do not invent /opt/projects/opencode-smoke; do not implement or edit anything.
+    pass_any:
+      - coding_list_roots
+      - mcp__opencode__coding_list_roots
+    fail_if:
+      - outcome: text_only
+    notes: Skipped unless coding profile + smoke fixture (make opencode-smoke-fixture). Pass on coding_list_roots. Scorer sees tool names only — invented /opt/projects/<guess> is a follow-on if traces gain args.
+
+  - id: coding-delegate
+    gate: coding
+    prompt: |
+      [eval:coding-delegate] In the opencode-smoke repo under the coding workspace, implement greet(name: str) -> str returning Hello, {name}!, and run tests until they pass. Delegate to the coding agent; do not edit the repo with write_file or patch yourself.
+    pass_any:
+      - coding_start_task
+      - mcp__opencode__coding_start_task
+    fail_if_tools:
+      - write_file
+      - patch
+    notes: Skipped unless coding profile + smoke fixture. Pass on coding_start_task.
