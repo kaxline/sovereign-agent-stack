@@ -33,7 +33,7 @@ is injected when this skill loads — use that value, not a hardcoded path.
 
 Do **not** use this skill for:
 
-- Documents and knowledge-base lookup — that is LightRAG (`query_document`)
+- Documents and knowledge-base lookup — that is LightRAG (`query_document` for content, `get_documents` for catalog)
 - "What did we talk about last Tuesday?" — that is `session_search`
 - Writing in the user's prose style — that is `write-in-voice`
 - Project working files (drafts, source material) — that is `/opt/projects`
@@ -47,7 +47,7 @@ Do **not** use this skill for:
 |---|---|---|
 | Tiny durable facts (name, timezone, a standing preference) | Native `memory` tool → `USER.md` / `MEMORY.md` | Injected into every session; cap is ~1375 / ~2200 characters |
 | What was said in a past chat | `session_search` | FTS over that gateway's `state.db`; do not grep sqlite yourself |
-| Documents, notes ingested as a corpus | LightRAG `query_document` | GraphRAG over the hot `WORKSPACE` |
+| Documents, notes ingested as a corpus | LightRAG `query_document` (content) / `get_documents` (catalog) | GraphRAG over the hot `WORKSPACE` |
 | Everything that will not fit the cap | Files under `<store_path>` | User-owned, hand-editable markdown |
 
 A preference or identity fact that also belongs in the prompt-injected profile

@@ -13,7 +13,6 @@ path) so known_count and persisted_count stay apples-to-apples.
 """
 from __future__ import annotations
 
-import re
 import sys
 from pathlib import Path
 
@@ -59,21 +58,11 @@ NEW = '''    try:
         )
         return None'''
 
-_AGENT_LOG_RE = re.compile(
-    r"\n        # #region agent log\n.*?        # #endregion\n",
-    re.S,
-)
-
-
 def patch(path: Path) -> str:
     if not path.is_file():
         return f"skip missing {path}"
     text = path.read_text()
     if MARKER in text:
-        cleaned, n = _AGENT_LOG_RE.subn("\n", text, count=1)
-        if n:
-            path.write_text(cleaned)
-            return f"stripped debug instrumentation from {path}"
         return f"already patched {path}"
     if OLD not in text:
         return f"pattern not found in {path} (upstream changed?)"

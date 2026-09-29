@@ -151,7 +151,7 @@ Compose sets `HERMES_WEBUI_PREFILL_MESSAGES_SCRIPT` to
 `last_workspace.txt` is global for the WebUI profile — not per tab. Prefer one
 workspace at a time when testing briefs.
 
-Full convention (INDEX.md, `make project-*`, source vs drafts): [Projects](projects.md).
+Full convention (`sources.yaml`, INDEX.md, context roots, `make project-*`): [Projects](projects.md).
 
 ## Upgrading
 
@@ -162,6 +162,8 @@ make hermes-upgrade AGENT=v2026.9.14 WEBUI=0.52.113
 ```
 
 That rewrites both tags, pulls, re-runs both profile bootstraps (a new agent may add config keys the running profiles lack), and recreates both containers. Run the verification block below afterwards. Tool filters and `skills.external_dirs` are the two settings that regress without announcing it.
+
+The stack's minimum / compose-default pair is documented in [Hermes Agent — Image pins](hermes.md#image-pins-minimum-agent-tag) (`v2026.9.14` + `0.52.113`). Keep `.env`, compose fallbacks, and that section aligned when you bump.
 
 Picking tags:
 
@@ -243,12 +245,13 @@ Also confirm `HERMES_WEBUI_GATEWAY_API_KEY` in `compose/hermes/browser.env` matc
 
 **Replies stop mid-thought ("Let me search…") with no tool card.** Common with local Qwen models on LM Studio: the model narrates the next step but returns `finish_reason=stop` without calling tools. The `browser` profile enables `agent.intent_ack_continuation=true` so Hermes nudges those turns to continue. Re-apply after bootstrap changes:
 
-
 ```bash
 docker compose run --rm hermes-browser-bootstrap && docker compose restart hermes
 ```
 
 Confirm with `docker compose exec hermes hermes -p browser config get agent.intent_ack_continuation` → `true`.
+
+To measure whether tool use is improving (new chats, paste cases with `[eval:…]` tags), see **[Tool-calling eval](tool-eval.md)** (`make tool-eval-reset` / WebUI paste / `make tool-eval-score`).
 
 **Assistant prints `search_files(...)` or `<function/name=...>` instead of running tools.** Weak OpenRouter models (especially Llama 3.x) under the full Hermes prompt. This stack recovers those mimics at container start (`05-patch-tool-calling`); if recovery is missing, recreate `hermes` so cont-init re-applies. Prefer a Qwen-class model — see [Model suitability](hermes.md#model-suitability-agentic-tool-use).
 

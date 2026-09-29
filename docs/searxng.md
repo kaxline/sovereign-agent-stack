@@ -70,7 +70,7 @@ Reducing empty results is as much task routing as engine choice. Soft prompt gui
 
 This stack **disables the native `web` toolset** on Hermes profiles (via bootstrap `agent.disabled_toolsets: [todo, web]`) **and** rewrites hallucinated `web_search` / `web_extract` at dispatch to MCP SearXNG when args are mappable (cont-init patch) — schema-only disables are not enough because Hermes still executes invented tool names, and bare refusal caused multi-turn retry loops. Hermes also clears `SEARXNG_URL` so a missed call cannot auto-bind to SearXNG — MCP uses `SEARXNG_MCP_URL` instead. Supported paths:
 
-1. **LightRAG** (`query_document`) for KB questions first.
+1. **LightRAG** first for KB questions (`query_document` for content, `get_documents` for catalog) — before web search.
 2. **One** MCP `searxng_web_search` for a quick web fact — not several parallel query variants.
 3. **`web_url_read`** when the URL is already known (no search fan-out); if it 403s, use snippets or the local browser.
 4. **`gptr`** (`deep_research` / `quick_search`) for deep multi-step reports — only when the `automation` compose profile is running; otherwise stay on searxng + browser.

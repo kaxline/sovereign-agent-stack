@@ -4,7 +4,7 @@
 
 Persistent AI gateway with a web dashboard, an OpenAI-compatible API, skills, and memory. Ships in the default **`core`** profile.
 
-[Hermes Agent](https://github.com/NousResearch/hermes-agent) runs as a persistent AI gateway with a web dashboard. It divides the work with OpenCode: Hermes takes messaging integrations and general agent workflows (skills, memory, scheduled jobs), while OpenCode sticks to coding in an isolated sandbox (`coding` profile).
+[Hermes Agent](https://github.com/NousResearch/hermes-agent) runs as a persistent AI gateway with a web dashboard. It divides the work with OpenCode: Hermes takes messaging integrations and general agent workflows (skills, memory, scheduled jobs), while OpenCode sticks to coding in an isolated sandbox (`coding` profile). With `coding` enabled, Hermes can also **delegate** coding jobs to OpenCode via `opencode-mcp` (`coding_*` tools) so the user stays in Hermes — see [OpenCode — Hermes delegation](opencode.md#hermes-delegation).
 
 ## Enabling Hermes
 
@@ -43,6 +43,25 @@ You can combine profiles (`COMPOSE_PROFILES=core,rag,searxng-prod` or `--profile
 5. Chat UI is included on `core`: see [docs/hermes-webui.md](hermes-webui.md) (`http://localhost:8787`).
 
 **Migrating from root `.env` API settings:** if you previously set `API_SERVER_ENABLED`, `API_SERVER_HOST`, or `API_SERVER_KEY` in `.env`, remove those lines and move `API_SERVER_KEY` into `compose/hermes/api-server.env`. The default profile no longer exposes an API on port 8642.
+
+## Image pins (minimum agent tag)
+
+This stack pins Hermes Agent and Hermes WebUI together. The same values live in `.env.example` and as the compose `${…:-…}` fallbacks in `docker-compose.yml`:
+
+| Image | Minimum / default tag |
+|---|---|
+| `nousresearch/hermes-agent` | **`v2026.9.14`** |
+| `ghcr.io/nesquena/hermes-webui` | **`0.52.113`** |
+
+Bump both with `make hermes-upgrade AGENT=… WEBUI=…` — never one at a time. Details: [Hermes WebUI — Upgrading](hermes-webui.md#upgrading).
+
+Dashboard JSON-RPC clients (for example Boundary over the gateway WebSocket) can rely on this agent tag for:
+
+- `timestamp` and `row_id` on `session.history` / `session.resume` transcript rows
+- `prompt.submit` truncation: `truncate_before_row_id` (preferred), `truncate_before_message_id`, or `truncate_before_user_ordinal`, with `confirm_truncate`; result may include `survivor_row_id_map`
+- `session.branch` (fork a live session into a stored child) and `parent_session_id` on `session.create` / session list rows
+
+Named agent profiles take the same methods via the optional `profile` parameter. Older installs without these `.env` lines now get the same defaults from compose.
 
 ## API server profile (`api-server`)
 
@@ -136,6 +155,8 @@ Prefer Qwen-class (or other known-good agentic) models for folder listing, MCP, 
 |---|---|
 | `compose/hermes/patch-text-tool-call-recovery.py` | Recovers Python/XML tool mimicry into real `tool_calls` before dispatch |
 | `compose/hermes/patch-openrouter-empty-stream.py` | On `EmptyStreamError` after an OpenRouter cache HIT, sends `X-OpenRouter-Cache-Clear` and surfaces a clearer error |
+| `compose/hermes/patch-tool-eval-trace.py` | JSONL turn traces for [tool-calling eval](tool-eval.md) (`data/hermes/eval/traces.jsonl`); unwraps `tool_call` inner names; records `content_len` after the text phase |
+| `compose/hermes/patch-tool-search-always-include.py` | Honors `tools.tool_search.always_include` so stacked MCP pins stay eager |
 
 If OpenRouter empty streams persist with caching enabled, set `HERMES_OPENROUTER_CACHE=0` in the Hermes environment (or `openrouter.response_cache: false` in config). Recreate the `hermes` container after changing overlays or those env values.
 
@@ -151,6 +172,7 @@ From inside the Hermes container, other stack services are reachable by compose 
 | lightrag-mcp | `http://lightrag-mcp:8000/mcp` | MCP tools for LightRAG Knowledge Base queries |
 | mcp-searxng | `http://mcp-searxng:3000/mcp` | MCP tools: `searxng_web_search`, `web_url_read` (read one URL as markdown) |
 | caldav-mcp | `http://caldav-mcp:8080/mcp` | CalDAV calendars; one Hermes MCP entry per account (`calendar` profile) |
+| opencode-mcp (SSE) | `http://opencode-mcp:8000/sse` | Coding delegation: `coding_*` tools (`coding` profile) |
 | LightRAG | `http://lightrag:9621/query` | Header Auth: `X-API-Key: $LIGHTRAG_API_KEY` |
 | n8n | `http://n8n:5678` | Workflows can call Hermes API at `http://hermes:8643/v1` |
 
@@ -163,8 +185,9 @@ The `hermes-api-bootstrap` service registers these for you. Each one sets indivi
 | `lightrag` | `api-server` / `browser` | `query_document`, `get_documents`, `get_pipeline_status`, `get_graph_labels`, `check_lightrag_health` | `LIGHTRAG_MCP_ENABLED=1` (`rag` profile; setup `--rag`) |
 | `searxng` | default + `api-server` / `browser` | `searxng_web_search`, `web_url_read` | Always (on `core`) |
 | `caldav-<slug>` | default + `api-server` / `browser` | Full 14 on default/browser; 8 read-only on `api-server` | `CALDAV_MCP_ENABLED=1` (`calendar` profile; setup `--calendar`) |
+| `opencode` | default + `browser` only | `coding_list_roots`, `coding_start_task`, `coding_get_task_status`, `coding_wait_for_task`, `coding_get_task_result`, `coding_continue_task` | `OPENCODE_MCP_ENABLED=1` (`coding` profile; setup `--coding`) |
 
-These filters serve different purposes. LightRAG's and CalDAV's on `api-server` are **safety boundaries**: mutating tools do not belong in unattended n8n sessions. The web filters just keep the tool count down, since both of those servers are read-only against the public internet.
+These filters serve different purposes. LightRAG's and CalDAV's on `api-server` are **safety boundaries**: mutating tools do not belong in unattended n8n sessions. OpenCode coding tools are also mutating and are **never** registered on `api-server`. The web filters just keep the tool count down, since both of those servers are read-only against the public internet.
 
 CalDAV accounts live in `compose/caldav-mcp/accounts/<slug>.env`. Bootstrap copies each into Hermes MCP headers (`X-Caldav-*`) against the shared `caldav-mcp` sidecar. See [Calendar](calendar.md).
 
@@ -197,16 +220,22 @@ mcp_servers:
       include: [deep_research, quick_search, write_report, get_research_sources]
 ```
 
-Ask Hermes to use LightRAG for Knowledge Base questions, for example: "Use LightRAG to summarize what is in my Knowledge Base." Prefer the KB before web search; if it is empty, say so.
+Ask Hermes to use LightRAG for Knowledge Base questions. Catalog / empty-check
+prompts (“summarize what is in my Knowledge Base”) may use `get_documents` or
+`get_graph_labels`. Content questions (“what does the KB say about X?”) should
+call `query_document`. Prefer the KB before web search; if it is empty, say so.
 
 **Web / research routing** (native `web_search` / `web_extract` are **disabled** via `agent.disabled_toolsets`. If a model invents those names anyway, dispatch **rewrites** them to MCP `searxng_web_search` / `web_url_read` when args are mappable — refusal alone caused retry loops on weaker tool-callers. Hermes does not inherit `SEARXNG_URL` — MCP uses `SEARXNG_MCP_URL`. `HERMES_ENVIRONMENT_HINT` reinforces the MCP path):
 
 | Need | Tool | Notes |
 |---|---|---|
-| Knowledge base | LightRAG `query_document` | Before any web search |
+| Knowledge base content | LightRAG `query_document` | Before any web search |
+| Knowledge base catalog / empty / pipeline | LightRAG `get_documents` / `get_pipeline_status` | Health check only after a LightRAG call fails |
 | Quick web fact | MCP `searxng_web_search` | **At most one** call unless the user asks for deep research; do not fan out query variants in parallel |
 | Known URL | MCP `web_url_read` | No search fan-out; use this instead of native `web_extract`. On 403, use snippets or local browser. |
 | Deep multi-step report | `gptr` (`deep_research` / `quick_search`) | Not a spray of SearXNG queries; avoid while LightRAG is indexing |
+| Locate / diagnose a named repo | `coding_list_roots` then search the **host** path | Use the `delegate-coding` skill. Do not invent `/opt/projects/<guess>` when that slug is not an immediate child of `/opt/projects` — see [OpenCode](opencode.md#hermes-delegation) |
+| Implement / refactor / tests in a repo | `coding_*` (OpenCode MCP) | Use the `delegate-coding` skill; path must be under a coding root — see [OpenCode](opencode.md#hermes-delegation) |
 
 SearXNG itself is tuned to a lean Bing + Google CSE pair so each lookup hits fewer upstreams — see [SearXNG](searxng.md#empty-results--suspended-engines).
 
@@ -240,6 +269,12 @@ fires on 1–2 turn chats. Bootstrap now sets:
 | default (dashboard / CLI) | 3 | interactive; review can fire on short chats |
 | `browser` (WebUI) | 10 | local LM Studio has one slot; avoid turn-3/6 background review racing chat |
 | `api-server` | 10 | unattended n8n one-shots must not distill themselves into USER.md |
+
+Skill-library auto-review is **off** on interactive profiles (`skills.creation_nudge_interval=0` on default and `browser`). A finished or halted turn used to fork `bg-review` (“update the skill library”) and could hold the LLM stream for hours. Create skills explicitly; memory review stays on. Hermes CLI may warn that `skills.creation_nudge_interval` is unrecognized — `agent_init` still reads it; `0` stops automatic skill-library forks.
+
+Hermes LLM HTTP calls (foreground and background) use `HERMES_API_TIMEOUT` (default **180s**) and `HERMES_API_CALL_STALE_TIMEOUT` (default **90s**) on the `hermes` service. Local endpoints skip implicit stale detection unless the stale value is set.
+
+Set `TZ` in `.env` (IANA name, e.g. `America/Los_Angeles`) so container `date` and “Conversation started” agree. Compose defaults to UTC.
 
 `flush_min_turns` is dead config in this agent tag. `memory.provider` stays empty
 (built-in only; no Honcho / Mem0).
@@ -448,6 +483,7 @@ generated output side by side: a job search, a book, a client engagement, a rese
 | Host | Container | Mode | Contents |
 |---|---|---|---|
 | `$ASSISTANT_DATA_ROOT/projects` | `/opt/projects` | read-write | Your per-project working directories |
+| Host path in `CONTEXT_EXTRA_ROOTS` | same host path | read-only | Extra project file-context dirs (`make context-root-add`) |
 
 Each subdirectory is one project. `setup.sh` creates the projects dir and drops a `README.md`
 there. Scaffold a new project with `make project-init PROJECT=…`, keep a short `AGENTS.md`
@@ -457,14 +493,19 @@ root with [User data directory](data-dir.md).
 
 ```bash
 make project-init PROJECT=my-project
+# optional extra host notes: edit sources.yaml, then
+# make context-root-add DIR=/absolute/path && docker compose up -d --force-recreate hermes
 make project-index PROJECT=my-project
 ```
 
 You can still reference a path in a prompt: `Using the notes in /opt/projects/my-project, draft ...`
 
 You do not have to name the path every time. `HERMES_ENVIRONMENT_HINT` on the `hermes`
-service describes the mount layout in the system prompt, so "the career project" resolves to
-`/opt/projects/career` on its own. Do not drop that hint. Hermes probes its environment at
+service describes the mount layout in the system prompt, so an **existing**
+projects-library slug ("the career project") resolves to `/opt/projects/career`.
+A name that is not an immediate child of `/opt/projects` is a coding-root
+lookup (`coding_list_roots` + host path), not an invented
+`/opt/projects/<guess>`. Do not drop that hint. Hermes probes its environment at
 prompt-build time and reports only `/opt/data` as both home and working directory, so without
 it the agent builds paths like `/opt/data/projects`, gets `Path not found`, and concludes the
 folder does not exist even though the mount is perfectly healthy. Keep `/opt/projects` and
@@ -474,11 +515,12 @@ The hint is not enough by itself. The official image sets `HERMES_WRITE_SAFE_ROO
 so `write_file` and `patch` hard-block `/opt/projects` (and `/opt/voice`, `/opt/memory`) even
 when the bind is read-write. The agent then treats that as "read-only" and writes under
 `/opt/data/projects`, which lands in `data/hermes/` mixed with Hermes state. Compose
-overrides the sandbox to `/opt/data:/opt/projects:/opt/voice:/opt/memory`. Keep `/opt/data`
-first so cron, memories, and profile state still write. Add any new writable bind to that
-list; do not add `/opt/skills`. Recreate the container after changing it — a restart does
-not pick up a new env value. Do not remount projects at `/opt/data/projects`, and do not
-ask the agent to remember that path: the hint will keep sending it to `/opt/projects`.
+overrides the sandbox to `/opt/data:/opt/projects:/opt/voice:/opt/memory` plus coding
+roots. Keep `/opt/data` first so cron, memories, and profile state still write. Add any
+new writable bind to that list; do not add `/opt/skills` or `CONTEXT_EXTRA_ROOTS`
+(those notes mounts stay read-only). Recreate the container after changing it — a restart
+does not pick up a new env value. Do not remount projects at `/opt/data/projects`, and do
+not ask the agent to remember that path: the hint will keep sending it to `/opt/projects`.
 
 The mount is live, so added files appear immediately and no restart is needed. Hermes can
 write here, so keep source material you wrote in different subdirectories from drafts the
@@ -551,11 +593,19 @@ docker compose exec hermes ls /opt/skills/working-memory
 # Whether the skill is actually discovered. This is the one to trust.
 docker compose exec hermes hermes skills list | grep write-in-voice
 docker compose exec hermes hermes skills list | grep working-memory
+docker compose exec hermes hermes skills list | grep delegate-coding
 
 # Memory nudge: interactive profiles at 3, api-server at 10.
 docker compose exec hermes hermes config get memory.nudge_interval
 docker compose exec hermes hermes -p browser config get memory.nudge_interval
 docker compose exec hermes hermes -p api-server config get memory.nudge_interval
+
+# Skill-library auto-review off on interactive (memory review stays on).
+docker compose exec hermes hermes config get skills.creation_nudge_interval
+docker compose exec hermes hermes -p browser config get skills.creation_nudge_interval
+
+# Clock + LLM timeouts
+docker compose exec hermes printenv TZ HERMES_API_TIMEOUT HERMES_API_CALL_STALE_TIMEOUT
 
 # Shared built-in memory: all three paths are the same host dir.
 docker compose exec hermes ls /opt/data/memories
@@ -565,10 +615,22 @@ docker compose exec hermes sh -c 'ls -id /opt/data/memories /opt/data/profiles/a
 docker compose exec hermes ls /opt/data/SOUL.md /opt/data/profiles/browser/SOUL.md /opt/data/profiles/api-server/SOUL.md
 
 # Tool-calling overlays (cont-init). After recreate, logs should show both patches.
-docker compose logs hermes 2>&1 | grep -E 'patch-text-tool-call-recovery|patch-openrouter-empty-stream' | tail -5
+docker compose logs hermes 2>&1 | grep -E 'patch-text-tool-call-recovery|patch-openrouter-empty-stream|patch-tool-eval-trace|patch-tool-search-always-include' | tail -5
 docker compose exec hermes test -f /opt/hermes/agent/text_tool_call_recovery.py && echo "text recovery helper ok"
+docker compose exec hermes test -f /opt/hermes/agent/tool_eval_trace.py && echo "tool-eval tracer ok"
 docker compose exec hermes grep -F 'assistant-stack: text-mimicked tool-call recovery' /opt/hermes/agent/conversation_loop.py >/dev/null && echo "text recovery call site ok"
+docker compose exec hermes grep -F 'assistant-stack: tool-eval turn trace' /opt/hermes/agent/conversation_loop.py >/dev/null && echo "tool-eval call site ok"
 docker compose exec hermes grep -F 'assistant-stack: bust OpenRouter cache on empty stream' /opt/hermes/agent/chat_completion_helpers.py >/dev/null && echo "empty-stream cache bust ok"
+
+# Stack MCP tools stay listed in always_include (docs / doctor).
+# Hermes v2026.9+ makes session_search eager via tools.tool_search.defer
+# (explicit list = curated default minus session_search). A stack overlay
+# honors always_include so MCP pins (SearXNG, LightRAG, coding_*) stay visible.
+docker compose exec hermes hermes -p browser config get tools.tool_search.always_include
+docker compose exec hermes hermes -p browser config get tools.tool_search.defer
+docker compose exec hermes grep -F 'assistant-stack: honor always_include' /opt/hermes/tools/tool_search.py >/dev/null && echo "always_include overlay ok"
+# always_include: session_search, searxng_web_search / mcp__searxng__*, coding_* when coding is on.
+# defer: must not list session_search.
 
 # Mount flags: /opt/skills must be ro; voice, projects, and memory must be rw
 docker compose exec hermes sh -c 'grep -E " /opt/(skills|voice|projects|memory) " /proc/mounts'

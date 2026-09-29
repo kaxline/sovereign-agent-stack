@@ -121,7 +121,248 @@ if [[ -d "${ROOT}/data/hermes" ]]; then
 else
   warn "./data/hermes missing — run ./scripts/setup.sh"
 fi
-unset _DR _DR_ABS
+
+# --- Project file context ---
+echo
+echo "--- Project file context ---"
+_PROJ="${_DR_ABS}/projects"
+_CODING_PRIMARY="$(env_get OPENCODE_WORKSPACE_HOST)"
+_CODING_EXTRA="$(env_get CODING_EXTRA_ROOTS)"
+_CONTEXT_EXTRA="$(env_get CONTEXT_EXTRA_ROOTS)"
+if [[ ! -d "$_PROJ" ]]; then
+  warn "projects dir missing (${_PROJ})"
+else
+  ok "projects dir ${_PROJ}"
+  _any_project=0
+  shopt -s nullglob
+  for _child in "$_PROJ"/*; do
+    [[ -d "$_child" ]] || continue
+    _any_project=1
+    _slug="$(basename "$_child")"
+    if [[ -f "${_child}/INDEX.md" || -f "${_child}/sources.yaml" ]]; then
+      if python3 "${ROOT}/scripts/project-index.py" --root "$_child" --check >/dev/null 2>&1; then
+        ok "INDEX fresh: ${_slug}"
+      else
+        _idx_err="$(python3 "${ROOT}/scripts/project-index.py" --root "$_child" --check 2>&1 | tr '\n' ' ' || true)"
+        warn "INDEX stale or invalid (${_slug}) — run: make project-index PROJECT=${_slug}"
+        [[ -n "$_idx_err" ]] && warn "  ${_idx_err}"
+      fi
+    fi
+  done
+  shopt -u nullglob
+  if [[ "$_any_project" -eq 0 ]]; then
+    ok "no library projects yet"
+  fi
+  while IFS=$'\t' read -r _lvl _msg || [[ -n "${_lvl:-}" ]]; do
+    [[ -n "$_lvl" ]] || continue
+    if [[ "$_lvl" == "OK" ]]; then
+      ok "$_msg"
+    else
+      warn "$_msg"
+    fi
+  done < <(
+    python3 "${ROOT}/scripts/lib/project_sources.py" doctor-visibility \
+      "$_PROJ" "${_CODING_PRIMARY}" "${_CODING_EXTRA}" "${_CONTEXT_EXTRA}" \
+      || true
+  )
+fi
+unset _DR _DR_ABS _PROJ _CODING_PRIMARY _CODING_EXTRA _CONTEXT_EXTRA \
+  _any_project _child _slug _idx_err _lvl _msg
+
+# --- Tool-search pins (browser / default) ---
+# always_include is written by bootstrap; a stack overlay makes it live for
+# MCP pins. tools.tool_search.defer is the Hermes v2026.9+ knob for core
+# tools (session_search must not be on it).
+# Parse YAML lists without PyYAML so a missing host package cannot false-OK.
+if has_profile core; then
+  echo
+  echo "--- Tool-search pins ---"
+  yaml_list_has() {
+    python3 - "$1" "$2" "$3" <<'PY'
+import sys
+from pathlib import Path
+
+cfg, dotted, want = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+text = cfg.read_text()
+parts = dotted.split(".")
+lines = text.splitlines()
+idx = 0
+min_indent = 0
+for part in parts:
+    found = False
+    while idx < len(lines):
+        line = lines[idx]
+        stripped = line.lstrip(" ")
+        indent = len(line) - len(stripped)
+        if stripped.startswith("#") or not stripped:
+            idx += 1
+            continue
+        if indent < min_indent:
+            break
+        if indent == min_indent and stripped.startswith(part + ":"):
+            found = True
+            idx += 1
+            min_indent = indent + 2
+            break
+        idx += 1
+    if not found:
+        raise SystemExit(1)
+while idx < len(lines):
+    line = lines[idx]
+    stripped = line.lstrip(" ")
+    indent = len(line) - len(stripped)
+    if stripped.startswith("#") or not stripped:
+        idx += 1
+        continue
+    if indent < min_indent:
+        break
+    if stripped.startswith("- "):
+        item = stripped[2:].strip().strip("'\"")
+        if item == want:
+            raise SystemExit(0)
+    idx += 1
+raise SystemExit(1)
+PY
+  }
+  check_always_include() {
+    local cfg="$1"
+    local label="$2"
+    shift 2
+    if [[ ! -f "$cfg" ]]; then
+      warn "${label} config missing (${cfg}) — run hermes-browser-bootstrap"
+      return 0
+    fi
+    local missing=()
+    local want
+    for want in "$@"; do
+      if ! yaml_list_has "$cfg" "tools.tool_search.always_include" "$want"; then
+        missing+=("$want")
+      fi
+    done
+    if [[ ${#missing[@]} -eq 0 ]]; then
+      ok "${label} tools.tool_search.always_include has SearXNG + session_search"
+    else
+      warn "${label} always_include missing: ${missing[*]} — re-run hermes-api-bootstrap / hermes-browser-bootstrap"
+    fi
+  }
+  check_always_include "data/hermes/profiles/browser/config.yaml" "browser" \
+    session_search searxng_web_search mcp__searxng__searxng_web_search \
+    web_url_read mcp__searxng__web_url_read
+  check_always_include "data/hermes/config.yaml" "default" \
+    session_search searxng_web_search mcp__searxng__searxng_web_search
+  check_session_search_undeferred() {
+    local cfg="$1"
+    local label="$2"
+    if [[ ! -f "$cfg" ]]; then
+      return 0
+    fi
+    if yaml_list_has "$cfg" "tools.tool_search.defer" "session_search"; then
+      warn "${label} tools.tool_search.defer still lists session_search — re-run hermes-*-bootstrap"
+      return 0
+    fi
+    if python3 - "$cfg" <<'PY'
+import sys
+from pathlib import Path
+text = Path(sys.argv[1]).read_text()
+in_tool_search = False
+min_indent = 0
+for line in text.splitlines():
+    stripped = line.lstrip(" ")
+    indent = len(line) - len(stripped)
+    if stripped.startswith("tool_search:"):
+        in_tool_search = True
+        min_indent = indent + 2
+        continue
+    if in_tool_search:
+        if stripped and indent < min_indent and not stripped.startswith("#"):
+            break
+        if stripped.startswith("defer:"):
+            raise SystemExit(0)
+raise SystemExit(1)
+PY
+    then
+      ok "${label} tools.tool_search.defer omits session_search"
+    else
+      warn "${label} tools.tool_search.defer unset (curated default defers session_search) — re-run hermes-*-bootstrap"
+    fi
+  }
+  check_session_search_undeferred "data/hermes/profiles/browser/config.yaml" "browser"
+  check_session_search_undeferred "data/hermes/config.yaml" "default"
+  if has_profile coding; then
+    case "$(echo "$(env_get OPENCODE_MCP_ENABLED 0)" | tr '[:upper:]' '[:lower:]')" in
+      1|true|yes)
+        if [[ -f data/hermes/profiles/browser/config.yaml ]]; then
+          if yaml_list_has "data/hermes/profiles/browser/config.yaml" \
+            "tools.tool_search.always_include" "coding_start_task" \
+            || yaml_list_has "data/hermes/profiles/browser/config.yaml" \
+            "tools.tool_search.always_include" "mcp__opencode__coding_start_task"; then
+            ok "browser always_include has OpenCode coding_* pins"
+          else
+            warn "browser always_include missing coding_* — re-run hermes-browser-bootstrap with OPENCODE_MCP_ENABLED=1"
+          fi
+        fi
+        ;;
+    esac
+  fi
+  if has_profile rag; then
+    case "$(echo "$(env_get LIGHTRAG_MCP_ENABLED 0)" | tr '[:upper:]' '[:lower:]')" in
+      1|true|yes)
+        if [[ -f data/hermes/profiles/browser/config.yaml ]]; then
+          _lr_missing=()
+          for _lr_want in query_document get_documents; do
+            if ! yaml_list_has "data/hermes/profiles/browser/config.yaml" \
+              "tools.tool_search.always_include" "${_lr_want}" \
+              && ! yaml_list_has "data/hermes/profiles/browser/config.yaml" \
+              "tools.tool_search.always_include" "mcp__lightrag__${_lr_want}"; then
+              _lr_missing+=("${_lr_want}")
+            fi
+          done
+          if [[ ${#_lr_missing[@]} -eq 0 ]]; then
+            ok "browser always_include has LightRAG query_document + get_documents pins"
+          else
+            warn "browser always_include missing LightRAG ${_lr_missing[*]} — re-run hermes-browser-bootstrap with LIGHTRAG_MCP_ENABLED=1"
+          fi
+          unset _lr_missing _lr_want
+        fi
+        ;;
+    esac
+  fi
+  if docker compose version >/dev/null 2>&1 \
+    && docker compose ps --status running hermes 2>/dev/null | grep -q hermes; then
+    if docker compose exec -T hermes python3 - <<'PY'
+import sys
+sys.path.insert(0, "/opt/hermes")
+from tools.tool_search import load_config_readonly
+raise SystemExit(1 if "session_search" in load_config_readonly().effective_defer_tools else 0)
+PY
+    then
+      ok "runtime tool_search does not defer session_search"
+    else
+      warn "runtime tool_search still defers session_search — recreate hermes after bootstrap"
+    fi
+    if docker compose exec -T hermes python3 - <<'PY'
+import sys
+sys.path.insert(0, "/opt/hermes")
+from pathlib import Path
+from tools.tool_search import is_deferrable_tool_name, load_config_readonly
+
+text = Path("/opt/hermes/tools/tool_search.py").read_text()
+if "assistant-stack: honor always_include" not in text:
+    raise SystemExit(2)
+cfg = load_config_readonly()
+pins = getattr(cfg, "always_include", frozenset()) or frozenset()
+want = "mcp__searxng__searxng_web_search"
+if want not in pins:
+    raise SystemExit(3)
+raise SystemExit(1 if is_deferrable_tool_name(want, cfg.effective_defer_tools) else 0)
+PY
+    then
+      ok "runtime always_include keeps SearXNG eager"
+    else
+      warn "runtime still defers SearXNG — recreate hermes after bootstrap (always_include overlay)"
+    fi
+  fi
+fi
 
 # --- Ports (best-effort; skip if lsof unavailable) ---
 check_port() {
@@ -153,6 +394,16 @@ if has_profile automation; then
 fi
 if has_profile coding; then
   check_port "$(env_get OPENCODE_PORT 4096)" "OpenCode"
+  mcp_en="$(env_get OPENCODE_MCP_ENABLED 0)"
+  case "$(echo "$mcp_en" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes) ok "OPENCODE_MCP_ENABLED is on (Hermes coding_* delegation)" ;;
+    *) warn "coding profile on but OPENCODE_MCP_ENABLED is not 1 — Hermes will not register coding_* tools" ;;
+  esac
+  if docker compose ps --status running --services 2>/dev/null | grep -qx opencode-mcp; then
+    ok "opencode-mcp container is running"
+  else
+    warn "opencode-mcp is not running (start with coding profile: docker compose up -d opencode-mcp)"
+  fi
 fi
 if has_profile ollama; then
   check_port "$(env_get OLLAMA_HOST_PORT 11434)" "Ollama"

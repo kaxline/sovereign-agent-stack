@@ -8,14 +8,15 @@ Per-service setup, usage, and verification guides. See the [project README](../R
 | [GPT Researcher](gpt-researcher.md) | `automation` — `gpt-researcher`, `gptr-mcp` | Multi-step web research and reports |
 | [n8n workflows](n8n.md) | `automation` | Starter workflows and HTTP patterns |
 | [Knowledge bases](knowledge-bases.md) | `rag` — LightRAG + Neo4j | Corpora, ingest, hot-workspace switching |
-| [OpenCode](opencode.md) | `coding` | Isolated coding agent |
+| [OpenCode](opencode.md) | `coding` | Coding agent + Hermes `coding_*` delegation |
 | [Hermes Agent](hermes.md) | `core` | Gateway, dashboard, API, skills, MCP, [model suitability](hermes.md#model-suitability-agentic-tool-use), [chat tone](hermes.md#conversational-tone-soulmd) |
 | [Calendar](calendar.md) | `calendar` — `caldav-mcp` | CalDAV calendars (iCloud, Nextcloud, …), multi-account |
 | [Signal](signal.md) | `signal` (+ `core`) | Linked-device messaging, WebUI send, cron delivery |
 | [Buzz](buzz.md) | `core` (optional) | Messaging transport for independent agents |
 | [Independent agents](agents.md) | `core` | Multi-role Hermes profiles, three memory tiers, registry |
 | [Hermes WebUI](hermes-webui.md) | `core` | Chat UI via lean browser gateway |
-| [Projects](projects.md) | `core` / Hermes | Per-project briefs (`AGENTS.md`), INDEX, WebUI workspace prefill |
+| [Tool-calling eval](tool-eval.md) | `core` | Prompt pack + JSONL traces to score WebUI tool use |
+| [Projects](projects.md) | `core` / Hermes | Briefs, `sources.yaml`, INDEX, context roots, WebUI prefill |
 | [User data directory](data-dir.md) | host | Relocate projects / voice / memory / LightRAG inputs outside the repo |
 | [Writing in your voice](writing-voice.md) | `core` / Hermes | Drafting artifacts in your style (not chat tone) |
 | [Memory](memory.md) | `core` / Hermes | Built-in USER.md, session search, curated notes |

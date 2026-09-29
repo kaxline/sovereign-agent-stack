@@ -64,7 +64,7 @@ There is no cross-corpus query. n8n’s LightRAG scan/query workflows always hit
 ## Chat
 
 - **LightRAG WebUI** (`http://localhost:9621/webui/`): queries only the hot corpus.
-- **Hermes**: with `LIGHTRAG_MCP_ENABLED=1`, ask it to use LightRAG (e.g. “Use LightRAG to summarize my knowledge base”). Prefer `query_document` before web search; if the KB is empty, say so rather than inventing. For a quick external fact use one MCP `searxng_web_search` (not parallel variants); for deep research use `gptr`, not a spray of SearXNG calls — see [Hermes routing](hermes.md#optional-internal-integrations) and [SearXNG](searxng.md#agent-routing-hermes--webui).
+- **Hermes**: with `LIGHTRAG_MCP_ENABLED=1`, ask it to use LightRAG (e.g. “Use LightRAG to summarize my knowledge base” for catalog, or “what does the KB say about X?” for content). Prefer LightRAG before web search (`query_document` for content, `get_documents` for catalog / empty); if the KB is empty, say so rather than inventing. For a quick external fact use one MCP `searxng_web_search` (not parallel variants); for deep research use `gptr`, not a spray of SearXNG calls — see [Hermes routing](hermes.md#optional-internal-integrations) and [SearXNG](searxng.md#agent-routing-hermes--webui).
 
 ## Embedding dimension
 
@@ -80,6 +80,7 @@ make corpus-destroy SLUG=old-corpus
 
 ## Related
 
+- [Projects](projects.md) — file context (`INDEX.md` + two files) before you graduate a tree to ingest
 - [n8n workflows](n8n.md) — scan/query HTTP patterns against the hot workspace
 - [Hermes Agent](hermes.md) — LightRAG MCP allowlist and “use LightRAG…” prompting
 - [Hermes WebUI](hermes-webui.md) — chat UI
