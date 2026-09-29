@@ -1,6 +1,12 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "model": "local/your-chat-model",
+  "permission": {
+    "*": "allow",
+    "question": "deny",
+    "external_directory": "allow",
+    "doom_loop": "allow"
+  },
   "mcp": {
     "searxng": {
       "type": "remote",

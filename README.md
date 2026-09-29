@@ -69,7 +69,7 @@ flowchart TB
 | **`rag`** | LightRAG + Neo4j knowledge graph + MCP sidecar |
 | **`calendar`** | CalDAV calendars via caldav-mcp (multi-account) |
 | **`automation`** | n8n + Postgres + GPT Researcher |
-| **`coding`** | OpenCode AI coding agent |
+| **`coding`** | OpenCode AI coding agent + Hermes coding delegation (opencode-mcp) |
 | **`ollama`** | Bundled Ollama + demo model pull |
 
 Examples:
@@ -109,6 +109,7 @@ See [SECURITY.md](SECURITY.md).
 | [Calendar](docs/calendar.md) | CalDAV calendars via caldav-mcp (`calendar`) |
 | [Hermes WebUI](docs/hermes-webui.md) | Chat UI + lean gateway mode |
 | [Knowledge bases](docs/knowledge-bases.md) | Corpora, ingest, hot-workspace switching (`rag`) |
+| [Projects](docs/projects.md) | Briefs, `sources.yaml`, INDEX, context roots |
 | [n8n workflows](docs/n8n.md) | Workflows that call the stack (with `automation`) |
 | [Writing voice](docs/writing-voice.md) | Drafting artifacts in your style (not chat tone) |
 | [Memory](docs/memory.md) | Built-in USER.md, session search, curated notes |

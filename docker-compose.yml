@@ -388,6 +388,43 @@ services:
         required: false
 
   # ----------------------------------------------------------------------
+  # opencode-mcp — MCP bridge so Hermes can delegate coding to OpenCode
+  # Profile: coding
+  # MCP:     http://opencode-mcp:8000/sse   (compose-internal only)
+  # ----------------------------------------------------------------------
+  opencode-mcp:
+    profiles: ["coding"]
+    container_name: opencode-mcp
+    build:
+      context: ./compose/opencode-mcp
+    image: assistant-opencode-mcp:local
+    environment:
+      - OPENCODE_BASE_URL=${OPENCODE_BASE_URL:-http://opencode:4096}
+      - OPENCODE_SERVER_USERNAME=${OPENCODE_SERVER_USERNAME:-opencode}
+      - OPENCODE_SERVER_PASSWORD=${OPENCODE_SERVER_PASSWORD:?set OPENCODE_SERVER_PASSWORD in .env}
+      - OPENCODE_WORKSPACE_HOST=${OPENCODE_WORKSPACE_HOST:?set OPENCODE_WORKSPACE_HOST in .env}
+      - CODING_EXTRA_ROOTS=${CODING_EXTRA_ROOTS:-}
+      - MCP_TRANSPORT=sse
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=8000
+      - TASK_DEFAULT_TIMEOUT_SEC=${OPENCODE_MCP_TASK_TIMEOUT:-600}
+    volumes:
+      # Host coding root so completion checks can read greet.py after edits.
+      - ${OPENCODE_WORKSPACE_HOST}:${OPENCODE_WORKSPACE_HOST}:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      opencode:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8000/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 6
+      start_period: 20s
+    restart: unless-stopped
+
+  # ----------------------------------------------------------------------
   # OpenCode — AI coding agent (web UI + OpenAPI server)
   # Profile: coding
   # UI/API:  http://localhost:4096   (HTTP basic auth from .env)
@@ -548,7 +585,7 @@ services:
   # ----------------------------------------------------------------------
   hermes-api-bootstrap:
     profiles: ["core"]
-    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v2026.8.3}
+    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v2026.9.14}
     restart: "no"
     user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
     env_file:
@@ -556,6 +593,7 @@ services:
     environment:
       - HERMES_UID=${HERMES_UID:-1000}
       - HERMES_GID=${HERMES_GID:-1000}
+      - TZ=${TZ:-UTC}
       - HERMES_API_PROFILE_NAME=${HERMES_API_PROFILE_NAME:-api-server}
       - HERMES_API_MAX_TURNS=${HERMES_API_MAX_TURNS:-20}
       - HERMES_API_SERVER_PORT=${HERMES_API_SERVER_PORT:-8643}
@@ -571,6 +609,11 @@ services:
       - CALDAV_MCP_TIMEOUT=${CALDAV_MCP_TIMEOUT:-60}
       - CALDAV_MCP_CONNECT_TIMEOUT=${CALDAV_MCP_CONNECT_TIMEOUT:-30}
       - CALDAV_MCP_ACCOUNTS_DIR=/bootstrap/caldav-accounts
+      # OpenCode coding MCP (coding profile); registered on default + browser only.
+      - OPENCODE_MCP_URL=${OPENCODE_MCP_URL:-http://opencode-mcp:8000/sse}
+      - OPENCODE_MCP_ENABLED=${OPENCODE_MCP_ENABLED:-0}
+      - OPENCODE_MCP_TIMEOUT=${OPENCODE_MCP_TIMEOUT:-600}
+      - OPENCODE_MCP_CONNECT_TIMEOUT=${OPENCODE_MCP_CONNECT_TIMEOUT:-30}
     volumes:
       - ./data/hermes:/opt/data
       - ./compose/hermes/api-server.env:/bootstrap/api-server.env:ro
@@ -587,7 +630,7 @@ services:
   # at http://hermes:8644.
   hermes-browser-bootstrap:
     profiles: ["core"]
-    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v2026.8.3}
+    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v2026.9.14}
     restart: "no"
     user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
     env_file:
@@ -595,6 +638,7 @@ services:
     environment:
       - HERMES_UID=${HERMES_UID:-1000}
       - HERMES_GID=${HERMES_GID:-1000}
+      - TZ=${TZ:-UTC}
       - HERMES_API_PROFILE_NAME=${HERMES_BROWSER_PROFILE_NAME:-browser}
       # Interactive chat: a human is watching and can interrupt, and the tight
       # unattended cap would only truncate useful work mid-task.
@@ -616,6 +660,10 @@ services:
       - CALDAV_MCP_TIMEOUT=${CALDAV_MCP_TIMEOUT:-60}
       - CALDAV_MCP_CONNECT_TIMEOUT=${CALDAV_MCP_CONNECT_TIMEOUT:-30}
       - CALDAV_MCP_ACCOUNTS_DIR=/bootstrap/caldav-accounts
+      - OPENCODE_MCP_URL=${OPENCODE_MCP_URL:-http://opencode-mcp:8000/sse}
+      - OPENCODE_MCP_ENABLED=${OPENCODE_MCP_ENABLED:-0}
+      - OPENCODE_MCP_TIMEOUT=${OPENCODE_MCP_TIMEOUT:-600}
+      - OPENCODE_MCP_CONNECT_TIMEOUT=${OPENCODE_MCP_CONNECT_TIMEOUT:-30}
     volumes:
       - ./data/hermes:/opt/data
       - ./compose/hermes/browser.env:/bootstrap/browser.env:ro
@@ -630,7 +678,7 @@ services:
   hermes:
     profiles: ["core"]
     container_name: hermes
-    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v2026.8.3}
+    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v2026.9.14}
     restart: unless-stopped
     command: ["gateway", "run"]
     ports:
@@ -642,6 +690,11 @@ services:
     environment:
       - HERMES_UID=${HERMES_UID:-1000}
       - HERMES_GID=${HERMES_GID:-1000}
+      - TZ=${TZ:-UTC}
+      # Bound every Hermes LLM call (foreground + bg-review). Local endpoints
+      # skip implicit stale detection unless the stale timeout is explicit.
+      - HERMES_API_TIMEOUT=${HERMES_API_TIMEOUT:-180}
+      - HERMES_API_CALL_STALE_TIMEOUT=${HERMES_API_CALL_STALE_TIMEOUT:-90}
       - HERMES_DASHBOARD=1
       # The dashboard always binds 0.0.0.0 inside the container (host ports are
       # localhost-only), and since agent 0.20.0 a non-loopback bind engages an
@@ -664,7 +717,9 @@ services:
       # the agent invents /opt/data/projects (inside Hermes home) as a workaround.
       # Keep /opt/data first so cron, memories, and profile state still write.
       # Add any new writable bind here; do not add /opt/skills (that mount is ro).
-      - HERMES_WRITE_SAFE_ROOT=/opt/data:/opt/projects:/opt/voice:/opt/memory
+      # Coding roots: primary OPENCODE_WORKSPACE_HOST plus optional CODING_EXTRA_ROOTS
+      # (colon-prefixed, e.g. :/Users/you/other-repo) from make coding-root-add.
+      - HERMES_WRITE_SAFE_ROOT=/opt/data:/opt/projects:/opt/voice:/opt/memory:${OPENCODE_WORKSPACE_HOST}${CODING_EXTRA_ROOTS:-}
       # The environment probe reports /opt/data as both home and cwd, and hands
       # the agent no other path. Left at that, it builds every path for the
       # user's own files under /opt/data (e.g. /opt/data/projects) and reports
@@ -675,16 +730,43 @@ services:
         that no path under /opt/data can reach: /opt/projects (per-project working
         directories, read-write), /opt/voice (writing-voice corpora, read-write),
         /opt/memory (curated long-form notes, read-write), and /opt/skills
-        (repo-shipped skills, read-only). A named project or 'the projects dir'
-        means /opt/projects/<name>, for example /opt/projects/career. Pass these
-        absolute paths to the file, search, and terminal tools; never resolve them
-        relative to the working directory.
+        (repo-shipped skills, read-only). A projects-library slug that is an
+        immediate child of /opt/projects maps to /opt/projects/<slug> (for
+        example /opt/projects/career). If the name is not an immediate child,
+        do not invent /opt/projects/<name> — call coding_list_roots and use
+        the host absolute path. Locate / look in X / diagnose an error in a
+        named repo is a coding-root read, not a notes-project read. If
+        search_files returns Path not found plus similar paths, use those
+        paths or clarify once; do not retry the same missing path. Do not
+        grep /opt/hermes, /opt/data, or container runtime unless the user is
+        debugging Hermes. Pass these absolute paths to the file, search, and
+        terminal tools; never resolve them relative to the working directory.
+        Coding roots (host absolute paths, shared with the coding agent): primary
+        ${OPENCODE_WORKSPACE_HOST}, plus any extras from CODING_EXTRA_ROOTS.
+        HARD RULE: for implement/refactor/fix/test work in a git repo under a
+        coding root, your FIRST mutating action must be the MCP tool
+        coding_start_task (names may be prefixed mcp__opencode__coding_*).
+        Do NOT use write_file, patch, or terminal to edit source or drive a
+        local fix loop under a coding root — that bypasses the coding agent.
+        After coding_start_task, only coding_wait_for_task /
+        coding_get_task_status / coding_get_task_result / coding_continue_task.
+        If a path is outside coding roots, ask the user to grant access and tell
+        them to run: make coding-root-add DIR=<absolute-path>
+        then recreate hermes/opencode/opencode-mcp after they confirm.
+        Context roots (host absolute paths, read-only notes — not coding
+        targets and not writable): ${CONTEXT_EXTRA_ROOTS:-none}. Open INDEX.md
+        paths exactly as written. Do not prefix /opt/projects onto absolute
+        host paths. If a listed extra-root path is missing, ask the user to
+        run: make context-root-add DIR=<absolute-path>
+        then recreate hermes after they confirm.
         Active knowledge base (LightRAG WORKSPACE): ${WORKSPACE}. Host inputs for
         that corpus live under ASSISTANT_DATA_ROOT/inputs/${WORKSPACE}/ (the
-        inputs mount). For knowledge questions,
-        prefer LightRAG query_document against this KB before web search; if the
-        KB has nothing relevant, say so rather than inventing, then search only
-        if the user wants broader context. For past conversations use session_search.
+        inputs mount). For knowledge questions stay on LightRAG before web
+        search: query_document for what the corpus says or a content summary;
+        get_documents or get_pipeline_status for what is indexed, empty, or
+        ingest state; check_lightrag_health only if a LightRAG call failed. If
+        the KB has nothing relevant, say so rather than inventing, then search
+        only if the user wants broader context. For past conversations use session_search.
         Web lookup routing (avoids emptying SearXNG via parallel upstream bans):
         the native web_search/web_extract toolset is disabled on this stack — use
         MCP searxng_web_search for one quick fact (at most one call unless the
@@ -697,11 +779,16 @@ services:
         blocked. Deep multi-step reports need the automation compose profile
         (gptr); if gptr tools are not listed, stay on searxng_web_search +
         web_url_read / browser. Avoid deep_research while LightRAG is indexing.
+        After a web search or URL read, answer in a few sentences. Do not emit
+        fetch scripts, urllib, or 'let me call tool X' as prose — call the tool
+        or stop.
         Short durable facts belong in the memory tool (USER.md / MEMORY.md);
         longer notes belong under /opt/memory.
         Living todos (cross-session task list) live at
         /opt/projects/project-todo-list/README.md — read and edit that file;
-        do not use the session-only todo tool for the user's todo list."
+        do not use the session-only todo tool for the user's todo list.
+        Container local time (TZ) is authoritative for today and Conversation
+        started; do not convert from UTC unless asked."
     volumes:
       - ./data/hermes:/opt/data
       # Share MEMORY.md / USER.md across default, api-server, and browser.
@@ -718,6 +805,9 @@ services:
       - ${ASSISTANT_DATA_ROOT:-./data}/projects:/opt/projects
       # Curated long-form memory (under ASSISTANT_DATA_ROOT). Writable: the working-memory skill.
       - ${ASSISTANT_DATA_ROOT:-./data}/memory:/opt/memory
+      # Shared coding root (same absolute host path as OpenCode). Extra roots are
+      # added via docker-compose.override.yml by make coding-root-add.
+      - ${OPENCODE_WORKSPACE_HOST}:${OPENCODE_WORKSPACE_HOST}
       # Relax intent-ack detection for browser/WebUI (LM Studio narration stalls).
       - ./compose/hermes/patch-intent-ack-continuation.py:/bootstrap/patch-intent-ack-continuation.py:ro
       - ./compose/hermes/03-patch-intent-ack.sh:/etc/cont-init.d/03-patch-intent-ack:ro
@@ -726,6 +816,7 @@ services:
       - ./compose/hermes/patch-send-message-tool.py:/bootstrap/patch-send-message-tool.py:ro
       - ./compose/hermes/patch-ensure-send-message-tools.py:/bootstrap/patch-ensure-send-message-tools.py:ro
       - ./compose/hermes/patch-tool-search-visible.py:/bootstrap/patch-tool-search-visible.py:ro
+      - ./compose/hermes/patch-tool-search-always-include.py:/bootstrap/patch-tool-search-always-include.py:ro
       - ./compose/hermes/patch-cron-scheduler-delivery.py:/bootstrap/patch-cron-scheduler-delivery.py:ro
       - ./compose/hermes/patch-cron-default-deliver-signal.py:/bootstrap/patch-cron-default-deliver-signal.py:ro
       - ./compose/hermes/04-patch-signal-send.sh:/etc/cont-init.d/04-patch-signal-send:ro
@@ -736,6 +827,8 @@ services:
       - ./compose/hermes/patch-openrouter-empty-stream.py:/bootstrap/patch-openrouter-empty-stream.py:ro
       - ./compose/hermes/patch-block-native-web-tools.py:/bootstrap/patch-block-native-web-tools.py:ro
       - ./compose/hermes/patch-tool-call-flat-args.py:/bootstrap/patch-tool-call-flat-args.py:ro
+      - ./compose/hermes/tool_eval_trace.py:/bootstrap/tool_eval_trace.py:ro
+      - ./compose/hermes/patch-tool-eval-trace.py:/bootstrap/patch-tool-eval-trace.py:ro
       - ./compose/hermes/patch-agent-browser-npx.py:/bootstrap/patch-agent-browser-npx.py:ro
       - ./compose/hermes/05-patch-tool-calling.sh:/etc/cont-init.d/05-patch-tool-calling:ro
       - ./compose/hermes/08-warmup-agent-browser.sh:/etc/cont-init.d/08-warmup-agent-browser:ro
@@ -775,6 +868,10 @@ services:
       caldav-mcp:
         condition: service_healthy
         required: false
+      # Optional: only present when the `coding` profile is enabled.
+      opencode-mcp:
+        condition: service_healthy
+        required: false
       # Optional: only present when the `signal` profile is enabled.
       signal-cli:
         condition: service_healthy
@@ -801,7 +898,7 @@ services:
   hermes-webui:
     profiles: ["core"]
     container_name: hermes-webui
-    image: ghcr.io/nesquena/hermes-webui:${HERMES_WEBUI_IMAGE_TAG:-0.52.106}
+    image: ghcr.io/nesquena/hermes-webui:${HERMES_WEBUI_IMAGE_TAG:-0.52.113}
     restart: unless-stopped
     # Stock init rsyncs /apptoo → /app then starts server.py. Our wrapper
     # patches persisted_message_count_for_session on the runtime tree first so

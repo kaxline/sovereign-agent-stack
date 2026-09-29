@@ -36,6 +36,10 @@ CALDAV_MCP_TIMEOUT="${CALDAV_MCP_TIMEOUT:-60}"
 CALDAV_MCP_CONNECT_TIMEOUT="${CALDAV_MCP_CONNECT_TIMEOUT:-30}"
 CALDAV_MCP_ENABLED="${CALDAV_MCP_ENABLED:-0}"
 CALDAV_MCP_ACCOUNTS_DIR="${CALDAV_MCP_ACCOUNTS_DIR:-/bootstrap/caldav-accounts}"
+OPENCODE_MCP_URL="${OPENCODE_MCP_URL:-http://opencode-mcp:8000/sse}"
+OPENCODE_MCP_TIMEOUT="${OPENCODE_MCP_TIMEOUT:-600}"
+OPENCODE_MCP_CONNECT_TIMEOUT="${OPENCODE_MCP_CONNECT_TIMEOUT:-30}"
+OPENCODE_MCP_ENABLED="${OPENCODE_MCP_ENABLED:-0}"
 
 PROFILE_DIR="${HERMES_HOME}/profiles/${PROFILE}"
 PROFILE_ENV="${PROFILE_DIR}/.env"
@@ -203,11 +207,14 @@ for part in parts[:-1]:
 leaf = parts[-1]
 current = node.get(leaf)
 
-if not isinstance(current, list):
-    node[leaf] = list(desired)
-    atomic_yaml_write(cfg_path, config)
-    print(f"Setting {label}")
-elif all(item in current for item in desired):
+# Missing or non-list (scalar from `hermes config set`, stringified JSON)
+# must merge into desired, not replace the whole key. Replacing is how
+# a late OpenCode pin can leave only coding_* in always_include.
+if isinstance(current, str) and current.strip():
+    current = [current]
+elif not isinstance(current, list):
+    current = []
+if all(item in current for item in desired):
     print(f"{label} already includes {', '.join(desired)}")
 else:
     merged = list(current)
@@ -218,7 +225,7 @@ else:
             added.append(item)
     node[leaf] = merged
     atomic_yaml_write(cfg_path, config)
-    print(f"Adding {', '.join(added)} to {label}")
+    print(f"{'Setting' if not current else 'Adding ' + ', '.join(added) + ' to'} {label}")
 PY
 )"
   if [ -n "$_out" ]; then log "$_out"; fi
@@ -236,6 +243,143 @@ hermes_config_set() {
     hermes -p "$_hcs_profile" config set "$_hcs_key" "$_hcs_value"
   else
     hermes config set "$_hcs_key" "$_hcs_value"
+  fi
+}
+
+# Keep named tools in the model-visible schema when tool_search is active.
+# Local models often describe-then-stop on deferred MCP tools; pinning avoids
+# the tool_search → tool_describe → tool_call three-step for stack paths we
+# actually route to (SearXNG, LightRAG, CalDAV, OpenCode, session_search).
+#
+# Usage: pin_tool_search_always_include <profile> <tool-name...>
+pin_tool_search_always_include() {
+  _ptai_profile="$1"
+  shift
+  [ "$#" -gt 0 ] || return 0
+  log "Pinning tools in tools.tool_search.always_include for '${_ptai_profile:-default}'"
+  ensure_yaml_list_items "$(config_path_for "$_ptai_profile")" \
+    "tools.tool_search.always_include" "$@"
+}
+
+# Pin both short tool names and mcp__<server_key>__<tool> forms.
+# Usage: pin_mcp_tools <profile> <server_key> <tool...>
+pin_mcp_tools() {
+  _pmt_profile="$1"
+  _pmt_key="$2"
+  shift 2
+  [ "$#" -gt 0 ] || return 0
+  _pmt_args=""
+  for _pmt_t in "$@"; do
+    _pmt_args="${_pmt_args} ${_pmt_t} mcp__${_pmt_key}__${_pmt_t}"
+  done
+  # shellcheck disable=SC2086
+  pin_tool_search_always_include "$_pmt_profile" $_pmt_args
+}
+
+# Hermes v2026.9+ ignores tools.tool_search.always_include for MCP tools
+# (toolset mcp-* always defers). The stack overlay
+# patch-tool-search-always-include.py honors that list so SearXNG / LightRAG /
+# OpenCode pins stay in the model-visible schema. tools.tool_search.defer is
+# still the live knob for core tools: unset = curated default (includes
+# session_search); an explicit list replaces that default wholesale;
+# [] = defer no core tools.
+#
+# Usage: undefer_session_search <profile>
+undefer_session_search() {
+  _uss_profile="$1"
+  log "Removing session_search from tools.tool_search.defer on '${_uss_profile:-default}'"
+  _out="$(python3 - "$(config_path_for "$_uss_profile")" <<'PY'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, "/opt/hermes")
+import yaml
+from utils import atomic_yaml_write
+
+cfg_path = Path(sys.argv[1])
+parent = cfg_path.parent
+profile = parent.name if parent.parent.name == "profiles" else "default"
+label = f"tools.tool_search.defer ({profile})"
+
+try:
+    from tools.tool_search import _DEFAULT_DEFERRED_TOOLS
+    curated = set(_DEFAULT_DEFERRED_TOOLS)
+except Exception:
+    curated = {
+        "computer_use", "session_search", "image_generate",
+        "todo_list", "process_manage", "cronjob_manage",
+        "drive_preview", "gui_tour", "desktop_preview", "annotate_preview",
+        "show_tip", "setup_mcp", "desktop_project", "close_terminal",
+        "apply_layout", "read_terminal", "read_window_below", "focus_pane",
+    }
+
+try:
+    with open(cfg_path) as fh:
+        config = yaml.safe_load(fh) or {}
+except FileNotFoundError:
+    print(f"ERROR: {cfg_path} not found")
+    raise SystemExit(1)
+
+tools = config.get("tools")
+if not isinstance(tools, dict):
+    tools = {}
+    config["tools"] = tools
+ts = tools.get("tool_search")
+if not isinstance(ts, dict):
+    ts = {}
+    tools["tool_search"] = ts
+current = ts.get("defer")
+
+if current == []:
+    print(f"{label} is [] (no core tools deferred) — session_search already eager")
+    raise SystemExit(0)
+
+if isinstance(current, list):
+    next_list = [n for n in current if n != "session_search"]
+    if next_list == current:
+        print(f"{label} already omits session_search")
+        raise SystemExit(0)
+    ts["defer"] = next_list
+    atomic_yaml_write(cfg_path, config)
+    print(f"Removed session_search from {label}")
+    raise SystemExit(0)
+
+# Unset / scalar: write curated default minus session_search.
+ts["defer"] = sorted(curated - {"session_search"})
+atomic_yaml_write(cfg_path, config)
+print(f"Set {label} to curated default minus session_search")
+PY
+)"
+  if [ -n "$_out" ]; then log "$_out"; fi
+}
+
+# Re-pin the canonical eager set for a profile after every hermes config set.
+# Incremental pin_mcp_tools calls can still lose items if a write races; this
+# heals the list in one merge at the end of bootstrap.
+#
+# Usage: reconcile_stack_eager_tools <profile>
+reconcile_stack_eager_tools() {
+  _rst_profile="$1"
+  _rst_args="session_search web_url_read searxng_web_search mcp__searxng__web_url_read mcp__searxng__searxng_web_search"
+  case "$LIGHTRAG_MCP_ENABLED" in
+    1|true|TRUE|yes|YES)
+      if [ -n "$_rst_profile" ]; then
+        _rst_args="${_rst_args} query_document get_documents get_pipeline_status get_graph_labels check_lightrag_health mcp__lightrag__query_document mcp__lightrag__get_documents mcp__lightrag__get_pipeline_status mcp__lightrag__get_graph_labels mcp__lightrag__check_lightrag_health"
+      fi
+      ;;
+  esac
+  case "$OPENCODE_MCP_ENABLED" in
+    1|true|TRUE|yes|YES)
+      if [ "$_rst_profile" != "api-server" ]; then
+        _rst_args="${_rst_args} coding_list_roots coding_start_task coding_get_task_status coding_wait_for_task coding_get_task_result coding_continue_task mcp__opencode__coding_list_roots mcp__opencode__coding_start_task mcp__opencode__coding_get_task_status mcp__opencode__coding_wait_for_task mcp__opencode__coding_get_task_result mcp__opencode__coding_continue_task"
+      fi
+      ;;
+  esac
+  log "Reconciling tools.tool_search.always_include for '${_rst_profile:-default}'"
+  # shellcheck disable=SC2086
+  pin_tool_search_always_include "$_rst_profile" $_rst_args
+  if [ -z "$_rst_profile" ] || [ "$_rst_profile" = "browser" ] || [ "$API_TOOLSET" = "hermes-cli" ]; then
+    undefer_session_search "$_rst_profile"
   fi
 }
 
@@ -334,6 +478,37 @@ register_web_mcp_servers() {
   register_mcp_server "$_rwms_profile" searxng SearXNG \
     "$SEARXNG_MCP_URL" "$SEARXNG_MCP_TIMEOUT" "$SEARXNG_MCP_CONNECT_TIMEOUT" \
     web_url_read searxng_web_search
+  pin_mcp_tools "$_rwms_profile" searxng web_url_read searxng_web_search
+}
+
+# OpenCode coding delegation (coding compose profile). Mutating — never on
+# api-server. Register on the default (dashboard/CLI) profile and on browser.
+register_opencode_mcp_servers() {
+  _roms_profile="$1"
+  case "$OPENCODE_MCP_ENABLED" in
+    1|true|TRUE|yes|YES) ;;
+    *)
+      log "Skipping OpenCode MCP registration (OPENCODE_MCP_ENABLED=${OPENCODE_MCP_ENABLED})"
+      return 0
+      ;;
+  esac
+  # Unattended n8n must not get write access to coding roots.
+  if [ "$_roms_profile" = "api-server" ]; then
+    log "Skipping OpenCode MCP on api-server profile (mutating coding tools)"
+    return 0
+  fi
+  register_mcp_server "$_roms_profile" opencode OpenCode \
+    "$OPENCODE_MCP_URL" "$OPENCODE_MCP_TIMEOUT" "$OPENCODE_MCP_CONNECT_TIMEOUT" \
+    coding_list_roots coding_start_task coding_get_task_status \
+    coding_wait_for_task coding_get_task_result coding_continue_task
+  hermes_config_set "$_roms_profile" "mcp_servers.opencode.transport" "sse"
+  # MCP tools are deferred behind tool_describe/tool_call when the schema budget
+  # is tight. WebUI smoke showed the model describing coding_start_task then
+  # stopping (finish_reason=stop) without invoking it. Pin the coding tools so
+  # they stay in the model-visible tool list.
+  pin_mcp_tools "$_roms_profile" opencode \
+    coding_list_roots coding_start_task coding_get_task_status \
+    coding_wait_for_task coding_get_task_result coding_continue_task
 }
 
 # Register one CalDAV account as mcp_servers.caldav-<slug> with X-Caldav-* headers.
@@ -397,9 +572,10 @@ print(f"Wrote mcp_servers.{key} ({len(tools)} tools)" if tools else f"Wrote mcp_
 PY
 )"
   if [ -n "$_out" ]; then log "$_out"; fi
+  if [ "$#" -gt 0 ]; then
+    pin_mcp_tools "$_rca_profile" "$_rca_key" "$@"
+  fi
 }
-
-# Drop mcp_servers.caldav-* keys that no longer have a matching accounts/<slug>.env.
 # Usage: reconcile_caldav_accounts <profile> <slug...>
 reconcile_caldav_accounts() {
   _rec_profile="$1"
@@ -585,6 +761,19 @@ hermes_config_set "" "memory.nudge_interval" "$INTERACTIVE_MEMORY_NUDGE"
 # reading whether or not the API server profile is ever configured.
 register_web_mcp_servers ""
 register_caldav_mcp_servers ""
+register_opencode_mcp_servers ""
+
+# session_search is on Hermes' curated tool_search.defer list. Pin + undefer
+# on default before the api-server.env gate so a missing env file cannot
+# leave MCP pins without recall.
+pin_tool_search_always_include "" session_search
+undefer_session_search ""
+
+# Auto skill-library review after a finished (or halted) turn forks bg-review
+# and can hold the LLM stream for hours. Interactive users create skills
+# explicitly; memory review stays on via memory.nudge_interval.
+log "Setting skills.creation_nudge_interval=0 on default profile"
+hermes_config_set "" "skills.creation_nudge_interval" "0"
 
 if [ ! -f "$SOURCE_ENV" ]; then
   env_name="$(basename "$SOURCE_ENV")"
@@ -680,6 +869,13 @@ log "Disabling session-only todo and native web toolsets on default and '${PROFI
 ensure_yaml_list_items "$(config_path_for "")" "agent.disabled_toolsets" "todo" "web"
 ensure_yaml_list_items "$(config_path_for "$PROFILE")" "agent.disabled_toolsets" "todo" "web"
 
+if [ "$API_TOOLSET" = "hermes-cli" ] || [ "$PROFILE" = "browser" ]; then
+  pin_tool_search_always_include "$PROFILE" session_search
+  undefer_session_search "$PROFILE"
+  log "Setting skills.creation_nudge_interval=0 on profile '${PROFILE}'"
+  hermes_config_set "$PROFILE" "skills.creation_nudge_interval" "0"
+fi
+
 log "Setting memory.nudge_interval=${PROFILE_MEMORY_NUDGE} on profile '${PROFILE}'"
 hermes_config_set "$PROFILE" "memory.nudge_interval" "$PROFILE_MEMORY_NUDGE"
 
@@ -691,6 +887,14 @@ hermes_config_set "$PROFILE" "memory.nudge_interval" "$PROFILE_MEMORY_NUDGE"
 if [ "$API_TOOLSET" = "hermes-cli" ]; then
   log "Enabling agent.intent_ack_continuation=true on profile '${PROFILE}'"
   hermes_config_set "$PROFILE" "agent.intent_ack_continuation" "true"
+fi
+
+# Cap browser/WebUI completions so a local model cannot dump a 250k
+# "let me fetch this URL" narration after a successful tool. 1024 tokens
+# is enough for a featured-article title and list-projects / remember.
+if [ "$PROFILE" = "browser" ]; then
+  log "Setting model.max_tokens=1024 on browser (cap runaway final answers)"
+  hermes_config_set "$PROFILE" "model.max_tokens" "1024"
 fi
 
 # Register LightRAG MCP as read-oriented Knowledge Base access for API sessions.
@@ -711,6 +915,8 @@ case "$LIGHTRAG_MCP_ENABLED" in
     # which would hand this profile all 17 tools through the back door and leave
     # the allowlist above meaning nothing.
     drop_unfiltered_mcp_duplicate "$PROFILE" lightrag lightrag-mcp "$LIGHTRAG_MCP_URL"
+    pin_mcp_tools "$PROFILE" lightrag \
+      query_document get_documents get_pipeline_status get_graph_labels check_lightrag_health
     ;;
   *)
     log "Skipping LightRAG MCP registration (LIGHTRAG_MCP_ENABLED=${LIGHTRAG_MCP_ENABLED})"
@@ -721,6 +927,11 @@ esac
 # own config.yaml, so the earlier registration does not reach API sessions.
 register_web_mcp_servers "$PROFILE"
 register_caldav_mcp_servers "$PROFILE"
+register_opencode_mcp_servers "$PROFILE"
+
+# Heal always_include + defer after every hermes config set / MCP register.
+reconcile_stack_eager_tools ""
+reconcile_stack_eager_tools "$PROFILE"
 
 # --- Mark gateway for autostart (s6 reconciler in main hermes container) ---
 # `hermes gateway start` is a no-op inside Docker ("Service start is not

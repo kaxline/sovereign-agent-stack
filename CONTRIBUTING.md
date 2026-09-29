@@ -28,6 +28,7 @@ See [README.md](README.md) and [docs/](docs/README.md).
 | `compose/` | Build contexts and Hermes bootstrap |
 | `n8n/demo-data/` | Starter workflows (`credentials/*.json` is gitignored; setup regenerates it) |
 | `opencode/` | OpenCode config template (`opencode.local.json` is gitignored; put your model server there) |
+| `compose/opencode-mcp/` | Thin MCP bridge so Hermes can delegate coding to OpenCode |
 | `searxng/` | SearXNG template (`settings.local.yml` is gitignored) |
 | `data/` | **Not committed** — created by setup |
 
@@ -52,7 +53,7 @@ docker compose run --rm --entrypoint /bin/sh n8n-import -c \
 - Keep changes focused; match existing compose and shell style.
 - Do not commit secrets or local overlays listed in `.gitignore`.
 - Update README / `docs/` when you add env vars or services.
-- CI runs `docker compose config` across profile combos, shellcheck, and hadolint.
+- CI runs `docker compose config` across profile combos, `scripts/test-project-sources.py`, shellcheck, and hadolint.
 
 ## First public history
 
