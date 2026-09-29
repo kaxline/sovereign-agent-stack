@@ -14,6 +14,7 @@ run_patch() {
 run_patch /bootstrap/patch-send-message-tool.py
 run_patch /bootstrap/patch-ensure-send-message-tools.py
 run_patch /bootstrap/patch-tool-search-visible.py
+run_patch /bootstrap/patch-tool-search-always-include.py
 run_patch /bootstrap/patch-cron-scheduler-delivery.py
 run_patch /bootstrap/patch-cron-default-deliver-signal.py
 
