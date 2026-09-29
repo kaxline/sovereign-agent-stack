@@ -15,10 +15,14 @@ One or two sentences: what this body of work is for, and what “good” looks l
 
 ## How to retrieve
 
-1. Read `INDEX.md` for a one-line map of source files.
-2. Open only the files that match the question.
-3. Prefer source notes over anything under `drafts/`.
-4. If `INDEX.md` looks wrong or incomplete, list the directory and read files directly.
+1. Read `INDEX.md` for a one-line map of source files (grouped by source id).
+2. Open matching files using the path **exactly as written**. Do not prefix
+   `/opt/projects` onto paths that are already absolute.
+3. Extra source roots are read-only notes; write drafts under this project.
+4. Prefer source notes over anything under `drafts/`.
+5. If `INDEX.md` looks wrong or incomplete, list the project directory and read
+   files directly. Extra roots need `make context-root-add` plus a Hermes recreate
+   before they are visible.
 
 ## Out of scope
 

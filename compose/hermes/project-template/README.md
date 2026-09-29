@@ -8,6 +8,7 @@ Working directory for one body of work. Hermes sees it at
 | Path | Role |
 |---|---|
 | `AGENTS.md` | Short brief injected when this project is the WebUI workspace |
+| `sources.yaml` | Hand-edited extra directories (optional; default is this folder) |
 | `INDEX.md` | File map — regenerate with `make project-index` |
 | `notes/` | Source material you wrote |
 | `drafts/` | Agent-generated output (never treat as evidence) |

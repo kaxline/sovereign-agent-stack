@@ -1,10 +1,16 @@
 # Machine-specific overrides. Copy to docker-compose.override.yml (gitignored);
 # Compose loads that file automatically alongside docker-compose.yml.
 #
-# OpenCode has full read/write access to everything under OPENCODE_WORKSPACE_HOST.
-# When that path is a parent folder holding many projects, mount a blank file over
-# each secret so the agent sees an empty file instead of live credentials. The
-# mount is read-only, so the agent cannot overwrite the real file either.
+# OpenCode and Hermes share coding roots. The primary root is
+# OPENCODE_WORKSPACE_HOST (mounted in docker-compose.yml). Extra roots added via
+# `make coding-root-add DIR=...` append matching volume lines under both
+# services.hermes and services.opencode below.
+#
+# OpenCode (and Hermes, for the same paths) have full read/write access to
+# everything under each coding root. When a root is a parent folder holding many
+# projects, mount a blank file over each secret so the agent sees an empty file
+# instead of live credentials. The mount is read-only, so the agent cannot
+# overwrite the real file either.
 #
 # Destination paths must be absolute and must match the host path exactly, since
 # the code is mounted at its own path inside the container.
@@ -24,3 +30,14 @@ services:
       - ./compose/opencode/blank:/Users/you/code/assistant/data/hermes/.env:ro
       - ./compose/opencode/blank:/Users/you/code/assistant/data/hermes/profiles/api-server/.env:ro
       - ./compose/opencode/blank:/Users/you/code/my-project/.env:ro
+  # Extra coding roots (example — usually written by make coding-root-add):
+  # hermes:
+  #   volumes:
+  #     - /Users/you/other-repo:/Users/you/other-repo
+  # opencode:
+  #   volumes:
+  #     - /Users/you/other-repo:/Users/you/other-repo
+  # Extra context roots (Hermes read-only — make context-root-add):
+  # hermes:
+  #   volumes:
+  #     - /Users/you/Notes/this-project:/Users/you/Notes/this-project:ro

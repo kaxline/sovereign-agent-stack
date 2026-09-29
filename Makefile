@@ -3,8 +3,12 @@
 	buzz-relay-start buzz-relay-stop buzz-relay-status buzz-relay-logs buzz-relay-restart \
 	buzz-admin \
 	corpus-create corpus-use corpus-list corpus-ingest corpus-destroy \
-	project-init project-index project-index-check model-use \
-	data-dir-show data-dir-set data-dir-migrate
+	project-init project-index project-index-check project-sources-test model-use \
+	data-dir-show data-dir-set data-dir-migrate \
+	coding-root-list coding-root-add \
+	context-root-list context-root-add opencode-smoke-fixture \
+	kb-eval-fixture kb-eval-fixture-remove \
+	tool-eval-reset tool-eval-run tool-eval-score tool-eval-list
 
 # Resolve ASSISTANT_DATA_ROOT from .env (default ./data) to an absolute path.
 define resolve_data_root
@@ -206,6 +210,54 @@ project-index-check:
 	@$(resolve_data_root); \
 	test -d "$$DATA_ROOT/projects/$(PROJECT)" || (echo "Missing $$DATA_ROOT/projects/$(PROJECT)"; exit 1); \
 	python3 scripts/project-index.py --root "$$DATA_ROOT/projects/$(PROJECT)" --check
+
+project-sources-test:
+	python3 scripts/test-project-sources.py
+
+# Shared coding roots (Hermes + OpenCode). See docs/opencode.md.
+#   make coding-root-list
+#   make coding-root-add DIR=/absolute/path/to/repo
+coding-root-list:
+	./scripts/coding-root.sh list
+
+coding-root-add:
+	@test -n "$(DIR)" || (echo "Usage: make coding-root-add DIR=/absolute/path"; exit 1)
+	./scripts/coding-root.sh add "$(DIR)"
+
+# Read-only context roots (Hermes only — notes Hermes can open, not coding targets).
+#   make context-root-list
+#   make context-root-add DIR=/absolute/path/to/notes
+context-root-list:
+	./scripts/context-root.sh list
+
+context-root-add:
+	@test -n "$(DIR)" || (echo "Usage: make context-root-add DIR=/absolute/path"; exit 1)
+	./scripts/context-root.sh add "$(DIR)"
+
+# Disposable greet+pytest repo under OPENCODE_WORKSPACE_HOST for delegation smoke tests.
+opencode-smoke-fixture:
+	./scripts/opencode-smoke-fixture.sh
+
+# Temporary LightRAG text insert for kb-query (POST /documents/text, then delete).
+kb-eval-fixture:
+	./scripts/kb-eval-fixture.sh install
+
+kb-eval-fixture-remove:
+	./scripts/kb-eval-fixture.sh remove
+
+# Tool-calling eval against the Hermes browser profile (see docs/tool-eval.md).
+# CASE=web-fact|all  — scripted twin of WebUI paste cases.
+tool-eval-reset:
+	./scripts/tool-eval.sh reset
+
+tool-eval-list:
+	./scripts/tool-eval.sh list
+
+tool-eval-run:
+	./scripts/tool-eval.sh run "$(or $(CASE),all)"
+
+tool-eval-score:
+	./scripts/tool-eval.sh score
 
 # Upgrade Hermes and its WebUI together. The WebUI reads the agent's on-disk
 # state layout and is only tested against a matching agent, so bumping one alone

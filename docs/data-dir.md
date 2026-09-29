@@ -18,7 +18,8 @@ without destroying projects and notes that live outside the repo.
 | `$ASSISTANT_DATA_ROOT/rag_storage/` | LightRAG vector/KV persistence |
 | `$ASSISTANT_DATA_ROOT/corpora/` | Corpus registry (`registry.json`) |
 | `./data/hermes/` | Hermes config, sessions, USER.md / MEMORY.md, WebUI state |
-| `OPENCODE_WORKSPACE_HOST` | OpenCode code mount (separate; see [opencode.md](opencode.md)) |
+| `OPENCODE_WORKSPACE_HOST` | Primary coding root for OpenCode + Hermes (see [opencode.md](opencode.md)) |
+| `CONTEXT_EXTRA_ROOTS` | Extra Hermes read-only notes mounts (see [projects.md](projects.md#extra-source-directories)) |
 | `SIGNAL_CLI_DATA_DIR` | Signal session store (separate; see [signal.md](signal.md)) |
 
 Default `ASSISTANT_DATA_ROOT` is `./data` (same tree as Hermes state, for
@@ -80,7 +81,7 @@ under it is deleted with the tree — migrate out first.
 
 ## Related
 
-- [Projects](projects.md) — `AGENTS.md`, INDEX, WebUI workspaces
+- [Projects](projects.md) — `AGENTS.md`, `sources.yaml`, INDEX, context roots
 - [Memory](memory.md) — curated notes vs Hermes USER.md
 - [Writing voice](writing-voice.md) — voice corpora
 - [Knowledge bases](knowledge-bases.md) — inputs / rag_storage / corpora

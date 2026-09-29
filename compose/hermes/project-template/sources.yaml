@@ -1,0 +1,16 @@
+# Hand-edited source registry. INDEX.md is generated — do not edit the tables.
+# Extra host directories must be visible to Hermes (read-only):
+#   make context-root-add DIR=/absolute/path
+#   docker compose up -d --force-recreate hermes
+# retrieval: files (implemented) | lightrag | both (reserved; indexer refuses)
+version: 1
+sources:
+  - id: project
+    path: .
+    retrieval: files
+    include: ["**/*.md", "**/*.txt"]
+  # - id: notes-vault
+  #   path: /Users/you/Notes/this-project
+  #   retrieval: files
+  #   include: ["**/*.md"]
+  #   exclude: [".obsidian/**"]

@@ -25,6 +25,10 @@ jobs:
           sed -i 's/^SEARXNG_SECRET=.*/SEARXNG_SECRET=ci-searxng-secret/' .env
           sed -i 's|^OPENCODE_WORKSPACE_HOST=.*|OPENCODE_WORKSPACE_HOST=/tmp/opencode-workspace|' .env
           mkdir -p /tmp/opencode-workspace
+          # coding MCP off unless profile includes coding; compose still interpolates these.
+          grep -q '^OPENCODE_MCP_ENABLED=' .env || echo 'OPENCODE_MCP_ENABLED=0' >> .env
+          grep -q '^CODING_EXTRA_ROOTS=' .env || echo 'CODING_EXTRA_ROOTS=' >> .env
+          grep -q '^CONTEXT_EXTRA_ROOTS=' .env || echo 'CONTEXT_EXTRA_ROOTS=' >> .env
           cp searxng/settings.yml searxng/settings.local.yml
           cp opencode/opencode.json opencode/opencode.local.json
           cp compose/hermes/api-server.env.example compose/hermes/api-server.env
@@ -53,6 +57,13 @@ jobs:
             echo "=== COMPOSE_PROFILES=$profiles ==="
             COMPOSE_PROFILES="$profiles" docker compose config -q
           done
+
+  project-sources:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Project source registry (stdlib)
+        run: python3 scripts/test-project-sources.py
 
   shellcheck:
     runs-on: ubuntu-latest

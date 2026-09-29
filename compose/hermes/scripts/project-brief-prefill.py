@@ -21,7 +21,7 @@ HOME_WORKSPACE = "/opt/projects"
 DEFAULT_STATE_DIR = "/opt/data/webui"
 DEFAULT_MAX_CHARS = 8000
 MANIFEST_NAME = ".index-manifest.json"
-SKIP_NAMES = frozenset({"AGENTS.md", "INDEX.md", "README.md", MANIFEST_NAME})
+SKIP_NAMES = frozenset({"AGENTS.md", "INDEX.md", "README.md", "sources.yaml", MANIFEST_NAME})
 SKIP_DIR_NAMES = frozenset({"templates", "applications", "artifacts", "drafts"})
 
 
@@ -58,6 +58,11 @@ def _resolve_workspace(raw: str) -> Path | None:
     return Path(workspace).expanduser().resolve()
 
 
+def _is_project_local_path(path: str) -> bool:
+    """Host-absolute INDEX paths live on extra roots this container cannot see."""
+    return bool(path) and not path.startswith("/")
+
+
 def _file_entry(path: Path, root: Path) -> dict:
     st = path.stat()
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -69,7 +74,8 @@ def _file_entry(path: Path, root: Path) -> dict:
     }
 
 
-def _iter_source_markdown(root: Path) -> list[Path]:
+def _iter_project_local_markdown(root: Path) -> list[Path]:
+    """Walk only this project folder. Extra sources.yaml roots are host-side."""
     files: list[Path] = []
     for path in sorted(root.rglob("*.md")):
         if not path.is_file():
@@ -83,7 +89,11 @@ def _iter_source_markdown(root: Path) -> list[Path]:
 
 
 def _index_is_stale(root: Path) -> bool | None:
-    """Return True/False when a manifest exists; None when there is nothing to check."""
+    """Stale-check project-local INDEX rows only.
+
+    hermes-webui does not mount CONTEXT_EXTRA_ROOTS. Extra-root freshness is
+    `make project-index-check` / doctor on the host.
+    """
     manifest_path = root / MANIFEST_NAME
     index_path = root / "INDEX.md"
     if not manifest_path.is_file() or not index_path.is_file():
@@ -96,16 +106,19 @@ def _index_is_stale(root: Path) -> bool | None:
     if not isinstance(recorded, list):
         return True
 
+    recorded_local = [
+        item
+        for item in recorded
+        if isinstance(item, dict) and _is_project_local_path(str(item.get("path") or ""))
+    ]
     current = {}
-    for path in _iter_source_markdown(root):
+    for path in _iter_project_local_markdown(root):
         entry = _file_entry(path, root)
         current[entry["path"]] = entry
 
-    if len(recorded) != len(current):
+    if len(recorded_local) != len(current):
         return True
-    for item in recorded:
-        if not isinstance(item, dict):
-            return True
+    for item in recorded_local:
         key = item.get("path")
         if key not in current:
             return True
@@ -162,8 +175,10 @@ def main() -> int:
     if stale is True:
         body = (
             f"{body}\n\n"
-            "Note: INDEX.md is out of date relative to the project files; "
-            "read source files directly rather than trusting the index."
+            "Note: INDEX.md may be out of date relative to files under this "
+            "project folder; read source files directly rather than trusting "
+            "the index. Extra source roots (absolute paths in INDEX.md) are "
+            "not checked here."
         )
 
     limit = _max_chars()

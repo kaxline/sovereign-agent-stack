@@ -196,6 +196,20 @@ ensure_opencode_local_config() {
   if [[ ! -f "$local_cfg" ]]; then
     cp "$base" "$local_cfg"
     log "Created opencode/opencode.local.json from opencode.json (edit provider/model for your server)"
+  else
+    # Merge headless permission defaults from the template without clobbering
+    # provider/model settings the operator already tuned.
+    python3 - "$base" "$local_cfg" <<'PY' && log "Ensured permission block in opencode.local.json" || true
+import json, sys
+from pathlib import Path
+base = json.loads(Path(sys.argv[1]).read_text())
+local_path = Path(sys.argv[2])
+local = json.loads(local_path.read_text())
+perm = base.get("permission")
+if perm and local.get("permission") != perm:
+    local["permission"] = perm
+    local_path.write_text(json.dumps(local, indent=2) + "\n")
+PY
   fi
 }
 
@@ -225,6 +239,10 @@ setup_automation_profile() {
 setup_coding_profile() {
   append_compose_profile coding
   ensure_opencode_local_config
+  upsert_env .env OPENCODE_MCP_ENABLED 1
+  set_env_if_missing .env CODING_EXTRA_ROOTS ""
+  set_env_if_missing .env CONTEXT_EXTRA_ROOTS ""
+  log "Enabled OpenCode MCP registration (OPENCODE_MCP_ENABLED=1)"
 }
 
 # Zero-config demo path: Ollama in Docker + small chat/embed models.
@@ -422,6 +440,7 @@ required.
 | File | Role |
 | --- | --- |
 | `AGENTS.md` | Short always-on brief while this project is the WebUI workspace |
+| `sources.yaml` | Extra host directories to index (optional; default is this folder) |
 | `INDEX.md` | One-line map of source files — `make project-index PROJECT=my-project` |
 | Source notes | Put a `description:` field in YAML frontmatter for a better index |
 | `drafts/` / `applications/` / `artifacts/` | Generated output; skipped by the indexer |
@@ -736,6 +755,11 @@ set_env_if_missing .env LIGHTRAG_MCP_ENABLED 0
 
 # CalDAV MCP stays off until calendar is enabled.
 set_env_if_missing .env CALDAV_MCP_ENABLED 0
+
+# OpenCode MCP stays off until coding is enabled.
+set_env_if_missing .env OPENCODE_MCP_ENABLED 0
+set_env_if_missing .env CODING_EXTRA_ROOTS ""
+set_env_if_missing .env CONTEXT_EXTRA_ROOTS ""
 
 # Signal daemon off by default; sync profile + data/hermes/.env from the toggle.
 set_env_if_missing .env HERMES_SIGNAL_ENABLED 0
