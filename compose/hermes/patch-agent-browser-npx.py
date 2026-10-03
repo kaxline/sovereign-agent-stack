@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Pin agent-browser npx to a concrete version and use --no-install after warmup.
+"""Pin agent-browser npx to a concrete version and use --no-install.
 
-Cold `npx -y agent-browser@^0.26.0` reifies on the Docker bind-mounted npm cache
-and hits npm ECOMPROMISED ("Lock compromised"). Cont-init 08 warms the cache;
-this patch refuses implicit registry fetches at tool time.
+The primary CLI is the overlay install from cont-init 08 (on PATH, off the
+data/hermes bind mount). This patch is the fallback when that binary is
+absent: cold `npx -y agent-browser@^0.26.0` reifies on the Docker bind-mounted
+npm cache and hits npm ECOMPROMISED ("Lock compromised").
 """
 from __future__ import annotations
 
@@ -46,8 +47,18 @@ def patch_argv() -> None:
         print(f"skip: {SESSION} missing")
         return
     text = SESSION.read_text()
+    old_comment = (
+        "# Cont-init 08-warmup-agent-browser must have populated the npx cache."
+    )
+    new_comment = (
+        "# Overlay install on PATH is primary; this npx argv is the fallback."
+    )
     if "assistant-stack: pin agent-browser" in text and "--no-install" in text:
-        print(f"ok: {SESSION} already patched")
+        if old_comment in text:
+            SESSION.write_text(text.replace(old_comment, new_comment, 1))
+            print(f"patched: {SESSION} comment")
+        else:
+            print(f"ok: {SESSION} already patched")
         return
     old = (
         '        return [_npx_bin, "--ignore-scripts", "--prefer-offline", "-y", '
@@ -55,7 +66,7 @@ def patch_argv() -> None:
     )
     new = (
         "        # assistant-stack: pin agent-browser npx --no-install\n"
-        "        # Cont-init 08-warmup-agent-browser must have populated the npx cache.\n"
+        f"        {new_comment}\n"
         '        return [_npx_bin, "--no-install", "--ignore-scripts", '
         '"--prefer-offline", _bt.AGENT_BROWSER_NPX_SPEC]'
     )

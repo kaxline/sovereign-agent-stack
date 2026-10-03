@@ -288,6 +288,41 @@ PY
   }
   check_session_search_undeferred "data/hermes/profiles/browser/config.yaml" "browser"
   check_session_search_undeferred "data/hermes/config.yaml" "default"
+  check_intent_ack_default() {
+    local cfg="data/hermes/config.yaml"
+    if [[ ! -f "$cfg" ]]; then
+      warn "default config missing (${cfg}) — re-run hermes-api-bootstrap / hermes-browser-bootstrap"
+      return 0
+    fi
+    if python3 - "$cfg" <<'PY'
+import sys
+from pathlib import Path
+text = Path(sys.argv[1]).read_text()
+in_agent = False
+min_indent = 0
+for line in text.splitlines():
+    stripped = line.lstrip(" ")
+    indent = len(line) - len(stripped)
+    if stripped.startswith("agent:"):
+        in_agent = True
+        min_indent = indent + 2
+        continue
+    if not in_agent:
+        continue
+    if stripped and indent < min_indent and not stripped.startswith("#"):
+        break
+    if stripped.startswith("intent_ack_continuation:"):
+        val = stripped.split(":", 1)[1].strip().strip("'\"")
+        raise SystemExit(0 if val.lower() in ("true", "yes", "on", "always") else 1)
+raise SystemExit(1)
+PY
+    then
+      ok "default agent.intent_ack_continuation is on"
+    else
+      warn "default agent.intent_ack_continuation is off — re-run hermes-api-bootstrap / hermes-browser-bootstrap"
+    fi
+  }
+  check_intent_ack_default
   if has_profile coding; then
     case "$(echo "$(env_get OPENCODE_MCP_ENABLED 0)" | tr '[:upper:]' '[:lower:]')" in
       1|true|yes)
@@ -361,6 +396,22 @@ PY
     else
       warn "runtime still defers SearXNG — recreate hermes after bootstrap (always_include overlay)"
     fi
+  fi
+fi
+
+# --- Browser CLI ---
+# agent-browser must live on the container filesystem. A 644 copy under
+# data/hermes (virtiofs) fails exec with EACCES; reinstalling Chromium does not
+# fix that. Cont-init 08 installs the CLI on container start.
+if has_profile core \
+  && docker compose version >/dev/null 2>&1 \
+  && docker compose ps --status running hermes 2>/dev/null | grep -q hermes; then
+  echo
+  echo "--- Browser CLI ---"
+  if docker compose exec -T -u hermes hermes agent-browser --version >/dev/null 2>&1; then
+    ok "hermes user can exec agent-browser"
+  else
+    warn "agent-browser is not executable in the hermes container — docker compose restart hermes (do not reinstall Chromium)"
   fi
 fi
 
@@ -652,6 +703,7 @@ if [[ "$caldav_enabled" == "1" || "$caldav_enabled" == "true" || "$caldav_enable
   fi
   accounts_dir="compose/caldav-mcp/accounts"
   valid_accounts=0
+  caldav_ready_slugs=()
   if [[ -d "$accounts_dir" ]]; then
     for acc in "$accounts_dir"/*.env; do
       [[ -f "$acc" ]] || continue
@@ -670,12 +722,87 @@ if [[ "$caldav_enabled" == "1" || "$caldav_enabled" == "true" || "$caldav_enable
       fi
       ok "CalDAV account ${slug} looks filled in"
       valid_accounts=$((valid_accounts + 1))
+      caldav_ready_slugs+=("$slug")
     done
   fi
   if [[ "$valid_accounts" -eq 0 ]]; then
     bad "No valid CalDAV accounts in ${accounts_dir}/ — copy account.env.example to accounts/<slug>.env"
   else
     ok "${valid_accounts} CalDAV account file(s) ready"
+  fi
+  if [[ ${#caldav_ready_slugs[@]} -gt 0 && -f compose/hermes/bootstrap-api-profile.sh ]]; then
+    # shellcheck disable=SC1090
+    eval "$(sed -n '/^caldav_password_env_key() {/,/^}/p' compose/hermes/bootstrap-api-profile.sh)"
+    for slug in "${caldav_ready_slugs[@]}"; do
+      key="$(caldav_password_env_key "$slug")"
+      ref="\${${key}}"
+      check_caldav_profile_ref() {
+        local label="$1" cfg="$2" envfile="$3" header="" rc=0
+        [[ -f "$cfg" ]] || return 0
+        header="$(python3 - "$cfg" "$slug" <<'PY'
+import sys
+path, slug = sys.argv[1], sys.argv[2]
+target = f"caldav-{slug}"
+in_server = False
+server_indent = None
+try:
+    lines = open(path, encoding="utf-8").read().splitlines()
+except OSError:
+    sys.exit(2)
+for line in lines:
+    stripped = line.lstrip(" ")
+    if not in_server:
+        if stripped.startswith(target + ":") and stripped.split(":", 1)[0].strip() == target:
+            in_server = True
+            server_indent = len(line) - len(stripped)
+        continue
+    if not line.strip():
+        continue
+    indent = len(line) - len(line.lstrip(" "))
+    if indent <= server_indent:
+        break
+    body = line.strip()
+    prefix = "X-Caldav-Password:"
+    if body.startswith(prefix):
+        value = body[len(prefix):].strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        sys.stdout.write(value)
+        sys.exit(0)
+sys.exit(3)
+PY
+)" || rc=$?
+        case "$rc" in
+          0)
+            if [[ "$header" == "$ref" ]]; then
+              if [[ -f "$envfile" ]] && grep -q "^${key}=" "$envfile"; then
+                ok "caldav-${slug} password on ${label} is a profile env reference"
+              else
+                bad "caldav-${slug} header references ${key} but ${envfile} does not set it"
+              fi
+            else
+              warn "caldav-${slug} X-Caldav-Password in ${cfg} is not \${${key}} — re-run hermes-api-bootstrap and hermes-browser-bootstrap"
+            fi
+            ;;
+          2) ;;
+          3)
+            warn "caldav-${slug} in ${cfg} has no X-Caldav-Password reference — re-run hermes-api-bootstrap and hermes-browser-bootstrap"
+            ;;
+          *)
+            warn "could not read CalDAV headers in ${cfg}"
+            ;;
+        esac
+      }
+      check_caldav_profile_ref default \
+        data/hermes/config.yaml \
+        data/hermes/.env
+      check_caldav_profile_ref api-server \
+        data/hermes/profiles/api-server/config.yaml \
+        data/hermes/profiles/api-server/.env
+      check_caldav_profile_ref browser \
+        data/hermes/profiles/browser/config.yaml \
+        data/hermes/profiles/browser/.env
+    done
   fi
   if docker info >/dev/null 2>&1; then
     if docker compose ps --status running caldav-mcp 2>/dev/null | grep -q caldav-mcp; then
@@ -771,6 +898,221 @@ if [[ -f .env ]] && docker compose version >/dev/null 2>&1; then
   else
     bad "docker compose config failed — check .env and local overlay files"
   fi
+  if python3 scripts/test-compose-env-allowlist.py; then
+    ok "compose service env allowlists"
+  else
+    bad "compose service env allowlists"
+  fi
+  if python3 scripts/test-terminal-backend-compose.py; then
+    ok "terminal backend compose layouts"
+  else
+    bad "terminal backend compose layouts"
+  fi
+fi
+
+terminal_backend="$(env_get HERMES_TERMINAL_BACKEND ssh)"
+case "$terminal_backend" in
+  ssh|local)
+    ok "HERMES_TERMINAL_BACKEND=${terminal_backend}"
+    ;;
+  *)
+    bad "HERMES_TERMINAL_BACKEND must be ssh or local (got ${terminal_backend})"
+    terminal_backend=""
+    ;;
+esac
+
+if [[ "$terminal_backend" == "ssh" ]]; then
+  if [[ -f compose/hermes/worker/ssh/id_ed25519 && -f compose/hermes/worker/ssh/id_ed25519.pub ]]; then
+    ok "hermes-worker SSH key present"
+  else
+    warn "hermes-worker SSH key missing — run ./scripts/setup.sh"
+  fi
+elif [[ "$terminal_backend" == "local" ]]; then
+  ok "local terminal backend does not use the worker key"
+fi
+
+# Profile config.yaml must match the env var or the shell runs in the wrong place.
+if [[ -n "$terminal_backend" ]]; then
+  backend_mismatch="$(python3 - "$terminal_backend" <<'PY'
+import sys
+from pathlib import Path
+
+want = sys.argv[1]
+paths = [Path("data/hermes/config.yaml")]
+profiles = Path("data/hermes/profiles")
+if profiles.is_dir():
+    paths.extend(sorted(profiles.glob("*/config.yaml")))
+
+def backend(path: Path):
+    in_terminal = False
+    for line in path.read_text(errors="replace").splitlines():
+        if line.startswith("terminal:"):
+            in_terminal = True
+            continue
+        if in_terminal:
+            if line and not line.startswith(" "):
+                break
+            stripped = line.strip()
+            if stripped.startswith("backend:"):
+                return stripped.split(":", 1)[1].strip().strip("'\"")
+    return ""
+
+bad = []
+saw = False
+for path in paths:
+    if not path.is_file():
+        continue
+    saw = True
+    got = backend(path)
+    if got != want:
+        label = "default" if path.parent.name == "hermes" else path.parent.name
+        bad.append(f"{label} terminal.backend is {got or 'unset'}")
+if not saw:
+    print("NOCONFIG")
+else:
+    print("\n".join(bad))
+PY
+)"
+  if [[ "$backend_mismatch" == "NOCONFIG" ]]; then
+    :
+  elif [[ -n "$backend_mismatch" ]]; then
+    warn "Hermes terminal backend does not match HERMES_TERMINAL_BACKEND=${terminal_backend}"
+    warn "  re-run hermes-api-bootstrap and hermes-browser-bootstrap, then recreate hermes"
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && warn "  ${line}"
+    done <<< "$backend_mismatch"
+  else
+    ok "Hermes profiles match HERMES_TERMINAL_BACKEND=${terminal_backend}"
+  fi
+fi
+
+# ssh: extra host binds on hermes undo the secret split.
+# local: those binds belong on hermes; a leftover hermes-worker block breaks compose.
+if [[ -f docker-compose.override.yml && -n "$terminal_backend" ]]; then
+  if [[ "$terminal_backend" == "ssh" ]]; then
+    leftover="$(python3 - docker-compose.override.yml <<'PY'
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text()
+lines = text.splitlines()
+in_hermes = False
+found = []
+for line in lines:
+    stripped = line.strip()
+    if line.startswith("  ") and not line.startswith("    ") and stripped.endswith(":"):
+        in_hermes = stripped == "hermes:"
+        continue
+    if not in_hermes or stripped.startswith("#"):
+        continue
+    if not stripped.startswith("- "):
+        continue
+    spec = stripped[2:].strip().strip("'\"")
+    src = spec.split(":", 1)[0]
+    if src.startswith("/"):
+        found.append(src)
+print("\n".join(found))
+PY
+)"
+    if [[ -n "$leftover" ]]; then
+      warn "docker-compose.override.yml still mounts a host path on hermes; run make ensure-local"
+      while IFS= read -r path; do
+        [[ -n "$path" ]] && warn "  leftover hermes mount: $path"
+      done <<< "$leftover"
+    else
+      ok "no leftover host-path mounts on hermes"
+    fi
+  else
+    worker_mounts="$(python3 - docker-compose.override.yml <<'PY'
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text()
+lines = text.splitlines()
+in_worker = False
+found = []
+for line in lines:
+    stripped = line.strip()
+    if line.startswith("  ") and not line.startswith("    ") and stripped.endswith(":"):
+        in_worker = stripped == "hermes-worker:"
+        continue
+    if not in_worker or stripped.startswith("#"):
+        continue
+    if stripped.startswith("- "):
+        found.append(stripped[2:].strip().strip("'\""))
+print("\n".join(found))
+PY
+)"
+    if [[ -n "$worker_mounts" ]]; then
+      warn "docker-compose.override.yml still mounts paths on hermes-worker; run make ensure-local"
+      while IFS= read -r path; do
+        [[ -n "$path" ]] && warn "  leftover hermes-worker mount: $path"
+      done <<< "$worker_mounts"
+    else
+      ok "no leftover hermes-worker mounts in local mode"
+    fi
+  fi
+fi
+
+# Clients must call llm-proxy. A profile still pointing at the model server
+# keeps the real key in Hermes config or OpenCode's local file.
+PROXY_URL="http://llm-proxy:4000/v1"
+proxy_mismatch="$(python3 - "$PROXY_URL" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+want = sys.argv[1]
+bad = []
+
+def base_url(path: Path):
+    in_model = False
+    for line in path.read_text(errors="replace").splitlines():
+        stripped = line.strip()
+        if line.startswith("model:") or stripped == "model:":
+            in_model = True
+            continue
+        if in_model and line and not line.startswith(" ") and not line.startswith("\t"):
+            in_model = False
+        if not in_model or not stripped.startswith("base_url:"):
+            continue
+        value = stripped.split(":", 1)[1].strip().strip("'\"")
+        return value
+    return None
+
+configs = [Path("data/hermes/config.yaml")]
+profiles = Path("data/hermes/profiles")
+if profiles.is_dir():
+    configs.extend(sorted(profiles.glob("*/config.yaml")))
+for cfg in configs:
+    if not cfg.is_file():
+        continue
+    found = base_url(cfg)
+    if found != want:
+        bad.append(f"hermes {cfg}")
+
+local = Path("opencode/opencode.local.json")
+if local.is_file():
+    try:
+        data = json.loads(local.read_text())
+    except json.JSONDecodeError:
+        bad.append("opencode/opencode.local.json")
+    else:
+        for name, block in (data.get("provider") or {}).items():
+            options = block.get("options") if isinstance(block, dict) else None
+            url = options.get("baseURL") if isinstance(options, dict) else None
+            if url != want:
+                bad.append(f"opencode provider {name}")
+print("\n".join(bad))
+PY
+)"
+if [[ -n "$proxy_mismatch" ]]; then
+  warn "a model client is not pointed at ${PROXY_URL}"
+  while IFS= read -r item; do
+    [[ -n "$item" ]] && warn "  ${item}"
+  done <<< "$proxy_mismatch"
+else
+  ok "model clients point at llm-proxy"
 fi
 
 # --- Model server reachability from inside a container ---

@@ -2,7 +2,8 @@
 # Manage read-only context roots for Hermes file context (not OpenCode).
 #
 # Extra roots: colon-prefixed entries in CONTEXT_EXTRA_ROOTS (.env) plus matching
-# read-only bind mounts under services.hermes in docker-compose.override.yml
+# read-only bind mounts under the terminal service (hermes-worker, or hermes when
+# HERMES_TERMINAL_BACKEND=local) in docker-compose.override.yml
 # (gitignored). Paths already covered by OPENCODE_WORKSPACE_HOST or
 # CODING_EXTRA_ROOTS are treated as visible (writable — coding-root wins).
 set -euo pipefail
@@ -109,21 +110,32 @@ ensure_override() {
   fi
 }
 
-# Ensure a read-only volume line exists under services.hermes.volumes.
+terminal_service() {
+  local backend
+  backend="$(env_get HERMES_TERMINAL_BACKEND ssh)"
+  case "$backend" in
+    ssh) printf '%s\n' hermes-worker ;;
+    local) printf '%s\n' hermes ;;
+    *) die "HERMES_TERMINAL_BACKEND must be ssh or local (got ${backend})" ;;
+  esac
+}
+
+# Ensure a read-only volume line exists under the terminal service.
 ensure_hermes_ro_mount() {
   local mount_path="$1"
-  local tmp
+  local service tmp
+  service="$(terminal_service)"
   tmp="$(mktemp)"
 
-  python3 - "$OVERRIDE" "$mount_path" "$tmp" <<'PY'
+  python3 - "$OVERRIDE" "$service" "$mount_path" "$tmp" <<'PY'
 import sys
 from pathlib import Path
 
 src = Path(sys.argv[1])
-mount_path = sys.argv[2]
-out = Path(sys.argv[3])
+service = sys.argv[2]
+mount_path = sys.argv[3]
+out = Path(sys.argv[4])
 entry = f"      - {mount_path}:{mount_path}:ro"
-service = "hermes"
 
 text = src.read_text() if src.exists() else "services:\n"
 if "services:" not in text:
@@ -262,8 +274,8 @@ cmd_add() {
   echo "Added context root: $path"
   echo "CONTEXT_EXTRA_ROOTS=$extras"
   echo
-  echo "Recreate Hermes so the new read-only bind applies:"
-  echo "  docker compose up -d --force-recreate hermes"
+  echo "Recreate the terminal backend so the new read-only bind applies:"
+  echo "  docker compose up -d --force-recreate $(terminal_service)"
   echo "  # or: make down && make up"
   echo
   echo "Then declare the path in the project's sources.yaml and run:"
@@ -275,7 +287,7 @@ usage() {
 Usage: $0 <list|add DIR>
 
   list          Show Hermes context roots (read-only notes mounts)
-  add DIR       Mount an absolute directory into Hermes read-only
+  add DIR       Mount an absolute directory into the terminal backend read-only
 
 EOF
 }

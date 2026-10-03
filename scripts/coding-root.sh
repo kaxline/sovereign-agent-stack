@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Manage shared coding roots for Hermes + OpenCode.
 #
-# Primary root: OPENCODE_WORKSPACE_HOST (always mounted on both services).
+# Primary root: OPENCODE_WORKSPACE_HOST (mounted on the terminal backend and opencode).
 # Extra roots: colon-prefixed entries in CODING_EXTRA_ROOTS (.env) plus matching
-# bind mounts under services.hermes and services.opencode in
+# bind mounts under the terminal service (hermes-worker, or hermes when
+# HERMES_TERMINAL_BACKEND=local) and services.opencode in
 # docker-compose.override.yml (gitignored).
 set -euo pipefail
 
@@ -170,10 +171,20 @@ PY
   mv "$tmp" "$OVERRIDE"
 }
 
+terminal_service() {
+  local backend
+  backend="$(env_get HERMES_TERMINAL_BACKEND ssh)"
+  case "$backend" in
+    ssh) printf '%s\n' hermes-worker ;;
+    local) printf '%s\n' hermes ;;
+    *) die "HERMES_TERMINAL_BACKEND must be ssh or local (got ${backend})" ;;
+  esac
+}
+
 ensure_override_mount() {
   local path="$1"
   ensure_override
-  ensure_service_mount hermes "$path"
+  ensure_service_mount "$(terminal_service)" "$path"
   ensure_service_mount opencode "$path"
 }
 
@@ -237,7 +248,7 @@ cmd_add() {
   echo "CODING_EXTRA_ROOTS=$extras"
   echo
   echo "Recreate containers so the new bind mounts apply:"
-  echo "  docker compose up -d --force-recreate hermes opencode opencode-mcp"
+  echo "  docker compose up -d --force-recreate $(terminal_service) opencode opencode-mcp"
   echo "  # or: make down && make up"
   echo
   echo "If this tree has .env / credential files, shadow them (see docs/opencode.md):"

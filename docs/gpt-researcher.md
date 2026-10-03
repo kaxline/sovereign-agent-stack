@@ -4,7 +4,7 @@
 
 Autonomous multi-step web research that writes structured reports, backed by SearXNG and your local model server.
 
-[GPT Researcher](https://github.com/assafelovic/gpt-researcher) performs autonomous multi-step web research and writes structured reports. Retrieval goes through your existing **SearXNG** instance, and LLM calls go to your **model server** (via `OPENAI_BASE_URL` / `host.docker.internal`), the same one LightRAG, OpenCode, and Hermes use.
+[GPT Researcher](https://github.com/assafelovic/gpt-researcher) performs autonomous multi-step web research and writes structured reports. Retrieval goes through your existing **SearXNG** instance. LLM calls go to `llm-proxy` (`OPENAI_BASE_URL=http://llm-proxy:4000/v1`, `OPENAI_API_KEY=local-llm`). The proxy forwards them to `LLM_BINDING_HOST` with the real key. GPT Researcher has one base URL, so its embeddings use that chat route. LightRAG can split chat and embeddings on the proxy.
 
 Two containers share the stack:
 
@@ -24,7 +24,7 @@ Quick search (`mcp-searxng` / SearXNG JSON) and deep research (`gptr-mcp` / GPT 
 
 ## Resource sharing
 
-LightRAG, OpenCode, Hermes, and GPT Researcher typically share one host model endpoint (`OPENAI_BASE_URL`, often `http://host.docker.internal:1234/v1`). Deep research fires off many parallel LLM requests, so the defaults in `.env.example` (`GPTR_MAX_SCRAPER_WORKERS=2`, `GPTR_DEEP_RESEARCH_CONCURRENCY=1`, and friends) are tuned to keep load manageable on a 16 GB machine. Avoid running deep research while LightRAG is indexing or Hermes has active subagents.
+LightRAG, OpenCode, Hermes, and GPT Researcher share `llm-proxy`, which forwards to the host model endpoint (`LLM_BINDING_HOST`, often `http://host.docker.internal:1234/v1`). Deep research fires off many parallel LLM requests, so the defaults in `.env.example` (`GPTR_MAX_SCRAPER_WORKERS=2`, `GPTR_DEEP_RESEARCH_CONCURRENCY=1`, and friends) are tuned to keep load manageable on a 16 GB machine. Avoid running deep research while LightRAG is indexing or Hermes has active subagents.
 
 ## n8n usage
 

@@ -11,7 +11,7 @@ Isolated AI coding agent with a browser UI and an OpenAPI server, backed by your
 # COMPOSE_PROFILES=core,coding
 ```
 
-It uses your local OpenAI-compatible model server (or Ollama) via `host.docker.internal`. Setup copies tracked `opencode/opencode.json` to gitignored `opencode.local.json` (compose mounts the local file). Edit the local overlay to set your provider id, `baseURL`, and model ids — the tracked template uses placeholders only.
+It calls `llm-proxy` (`http://llm-proxy:4000/v1`) with the placeholder `local-llm`. The proxy holds `LLM_BINDING_API_KEY` and forwards to `LLM_BINDING_HOST`. Setup copies tracked `opencode/opencode.json` to gitignored `opencode.local.json` (compose mounts the local file) and points every provider `baseURL` and `apiKey` at the proxy. Edit the local overlay for the provider id and model ids. The tracked template stays a placeholder.
 
 ## First-time setup
 
@@ -25,8 +25,8 @@ It uses your local OpenAI-compatible model server (or Ollama) via `host.docker.i
 If you use [LM Studio](https://lmstudio.ai) on the host:
 
 1. Enable **Serve on Local Network** and note the port (often `1234`).
-2. In `opencode.local.json`, point the `local` provider `baseURL` at `http://host.docker.internal:1234/v1` and list the model id LM Studio shows (OpenCode model ref is `local/<model-id>`).
-3. Keep `LLM_MODEL` / `OPENAI_BASE_URL` in `.env` aligned with the same server.
+2. Set `LLM_BINDING_HOST` in `.env` to `http://host.docker.internal:1234/v1` (the proxy forwards there). In `opencode.local.json`, list the model id LM Studio shows (OpenCode model ref is `local/<model-id>`). Leave `baseURL` at `http://llm-proxy:4000/v1` and `apiKey` at `local-llm`.
+3. Keep `LLM_MODEL` in `.env` aligned with that model id.
 
 ## Host workspace
 
@@ -146,7 +146,8 @@ Hermes and OpenCode share the same absolute host paths:
 make coding-root-list
 make coding-root-add DIR=/absolute/path/to/repo
 # then recreate so binds apply:
-docker compose up -d --force-recreate hermes opencode opencode-mcp
+docker compose up -d --force-recreate hermes-worker opencode opencode-mcp
+# recreate hermes instead of hermes-worker when HERMES_TERMINAL_BACKEND=local
 ```
 
 If the user asks to work outside those roots, Hermes should ask them to confirm access and give them `make coding-root-add DIR=...` — it does not remount Docker itself.

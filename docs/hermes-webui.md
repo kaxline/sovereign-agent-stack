@@ -249,7 +249,7 @@ Also confirm `HERMES_WEBUI_GATEWAY_API_KEY` in `compose/hermes/browser.env` matc
 docker compose run --rm hermes-browser-bootstrap && docker compose restart hermes
 ```
 
-Confirm with `docker compose exec hermes hermes -p browser config get agent.intent_ack_continuation` → `true`.
+Confirm with `docker compose exec hermes hermes -p browser config get agent.intent_ack_continuation` → `true`. The default profile (Boundary, dashboard, CLI) enables the same continuation; confirm with `docker compose exec hermes hermes config get agent.intent_ack_continuation` → `true` after bootstrap.
 
 To measure whether tool use is improving (new chats, paste cases with `[eval:…]` tags), see **[Tool-calling eval](tool-eval.md)** (`make tool-eval-reset` / WebUI paste / `make tool-eval-score`).
 

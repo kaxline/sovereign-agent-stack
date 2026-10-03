@@ -34,6 +34,7 @@ the same id in the trace file.
 | `web-fact` | core | `searxng_web_search` (or native web rewrite); not `terminal`; `max_chars` 4000 / `max_seconds` 180 |
 | `known-url` | core | `web_url_read`, not search fan-out |
 | `list-projects` | core | `search_files` / `terminal` / … (any listing tool) |
+| `write-file` | core | `write_file` / `patch` / `terminal`, and `/tmp/assistant-tool-eval-write.txt` contains `aurora-tool-eval-write` |
 | `remember` | core | `memory` or write under `/opt/memory` |
 | `session-search` | core | `session_search` (not `tool_search` then stop) |
 | `no-tool` | core | no tools (negative control) |
@@ -48,6 +49,14 @@ harness inserts one text document (`POST /documents/text`, file source
 `aurora-kb-eval.md`), runs the case, then deletes it
 (`DELETE /documents/delete_document`). Nothing is scanned into `inputs/` and
 the leftover file from an older fixture copy is removed if present.
+
+`write-file` is the mutation gate. The scripted harness deletes
+`/tmp/assistant-tool-eval-write.txt` inside the `hermes` container before the
+request. Score reads those bytes back: tools plus a match pass, tools without
+the bytes are `file_missing`, and a container that cannot be read is
+`file_unverified`. A prose "file written" with no tool stays `text_only`.
+A single trailing newline still counts as a match. For a WebUI paste, delete
+that path in the container first so a leftover cannot satisfy the byte check.
 
 WebUI paste needs the same wrap by hand:
 
@@ -124,6 +133,8 @@ Score prints a one-line reason when a case fails:
 | `not_run` | SKIP — no JSONL and no last-run (case was not attempted) |
 | `too_long` | An assistant turn exceeded the case `max_chars` |
 | `too_slow` | Session span (first–last trace `ts`, else last-run `duration_s`) exceeded `max_seconds` |
+| `file_missing` | Expected write tool ran, but `expect_file` bytes do not match `expect_content` |
+| `file_unverified` | `expect_file` case was attempted and the container file could not be read |
 | `recovered` / `rewritten` | Pass notes — text recovery or native-web rewrite helped |
 
 Iterate one mitigation at a time after you have traces. Phase 2 levers (only if

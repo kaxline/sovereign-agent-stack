@@ -44,6 +44,10 @@ You can combine profiles (`COMPOSE_PROFILES=core,rag,searxng-prod` or `--profile
 
 **Migrating from root `.env` API settings:** if you previously set `API_SERVER_ENABLED`, `API_SERVER_HOST`, or `API_SERVER_KEY` in `.env`, remove those lines and move `API_SERVER_KEY` into `compose/hermes/api-server.env`. The default profile no longer exposes an API on port 8642.
 
+The `hermes` container does not load the root `.env`. Its environment is an allowlist: dashboard basic auth, API timeouts, timezone, the write root, and `HERMES_BUZZ_ENABLED` / `BUZZ_RELAY_URL` for the Buzz localhost proxy. Postgres, n8n, Neo4j, OpenCode, LightRAG, and model keys stay on the services that use them. `SEARXNG_URL` is set empty so native web search cannot bind. Signal and Buzz private keys stay in `data/hermes/` profile env files. The dashboard password is still visible inside this container, because the dashboard runs in the same process environment as the agent.
+
+Host ports for Hermes, the WebUI, LightRAG, Neo4j, n8n, and OpenCode are published on `127.0.0.1`. After changing the allowlist, recreate the containers so they drop the old environment: `docker compose up -d --force-recreate`.
+
 ## Image pins (minimum agent tag)
 
 This stack pins Hermes Agent and Hermes WebUI together. The same values live in `.env.example` and as the compose `${…:-…}` fallbacks in `docker-compose.yml`:
@@ -62,6 +66,21 @@ Dashboard JSON-RPC clients (for example Boundary over the gateway WebSocket) can
 - `session.branch` (fork a live session into a stored child) and `parent_session_id` on `session.create` / session list rows
 
 Named agent profiles take the same methods via the optional `profile` parameter. Older installs without these `.env` lines now get the same defaults from compose.
+
+This stack also overlays a **per-session history budget** on that agent tag. It is not an upstream Hermes API. `session.create` and `session.resume` take `history_budget`, a positive integer of tokens. The default is no budget: omit the field on create, or send `null`, and Hermes compacts only against the model window, as today. On resume, omitting the field keeps the stored budget and `null` clears it. `0`, negatives, or non-integers are an RPC error (`4028`) that does not change the session. There is no profile config key: a personality profile also runs side chats, and a profile cap would shrink those too.
+
+The budget is a prompt window. Older rows stay in `session.history`. When the history that would be sent exceeds the budget, Hermes keeps a newest-first tail and may prepend a compression summary of the excluded prefix. The summary counts toward the budget. The system prompt, memory, and tool definitions do not. Two cases can report `history_tokens` above the budget: the newest user message is always sent, and an assistant tool call is never split from its tool results.
+
+Once the overlay is running, `session.context_breakdown` and `message.complete` always include:
+
+| Field | Meaning |
+|---|---|
+| `history_budget` | The session budget, or `null` when unset |
+| `history_tokens` | Tokens of history sent (verbatim tail plus summary) |
+| `history_first_row_id` | First transcript row included verbatim |
+| `history_summarised` | `true` when rows before that point are represented by a summary |
+
+`history_budget: null` means no horizon. `session.context_breakdown` is the cut for the **next** reply, including on open. `message.complete` is the cut **that turn actually sent**. Draw a line only when `history_budget` is a number and either `history_summarised` is true or `history_first_row_id` is not the first row of `session.history`.
 
 ## API server profile (`api-server`)
 
@@ -109,19 +128,21 @@ For long-running jobs, use `POST /v1/runs` and `POST /v1/runs/{run_id}/stop` to 
 
 ## Local LLM config
 
-After setup, configure the model in the dashboard or in `data/hermes/config.yaml` to point at the same OpenAI-compatible server as LightRAG and OpenCode:
+Hermes does not hold the model key. Bootstrap sets every profile to the stack proxy:
 
 ```yaml
 model:
   provider: custom
   model: your-chat-model   # match LLM_MODEL in .env
-  base_url: http://host.docker.internal:1234/v1
-  api_key: "local-llm"     # any non-empty string for most local servers
+  base_url: http://llm-proxy:4000/v1
+  api_key: "local-llm"     # placeholder; the real key stays on llm-proxy
 ```
+
+`llm-proxy` reads `LLM_BINDING_HOST` and `LLM_BINDING_API_KEY` from the host `.env` and replaces the placeholder. LightRAG's own model uses `/lightrag/v1` on the same proxy. Embeddings use `/embed/v1`. The inference port is not published. A loopback admin API (`127.0.0.1:4001`, `POST /admin/upstreams`) can replace those upstreams in memory; a restart loads `.env` again. Nothing from that request is written to disk.
 
 ### Example: LM Studio
 
-Enable **Serve on Local Network**, then set `model` to the id LM Studio serves and `base_url` to `http://host.docker.internal:<port>/v1`.
+Enable **Serve on Local Network**, then set `LLM_BINDING_HOST` in `.env` to `http://host.docker.internal:<port>/v1` and `LLM_BINDING_API_KEY` to the server's key (any non-empty string for a local server). Leave Hermes on `http://llm-proxy:4000/v1`.
 
 To switch models often, load the model in LM Studio and run:
 
@@ -154,6 +175,7 @@ Prefer Qwen-class (or other known-good agentic) models for folder listing, MCP, 
 | Overlay | What it does |
 |---|---|
 | `compose/hermes/patch-text-tool-call-recovery.py` | Recovers Python/XML tool mimicry into real `tool_calls` before dispatch |
+| `compose/hermes/patch-fabricated-result.py` | Continues a stop turn that claims a write or `<result>` with no tool call, and does not store that claim |
 | `compose/hermes/patch-openrouter-empty-stream.py` | On `EmptyStreamError` after an OpenRouter cache HIT, sends `X-OpenRouter-Cache-Clear` and surfaces a clearer error |
 | `compose/hermes/patch-tool-eval-trace.py` | JSONL turn traces for [tool-calling eval](tool-eval.md) (`data/hermes/eval/traces.jsonl`); unwraps `tool_call` inner names; records `content_len` after the text phase |
 | `compose/hermes/patch-tool-search-always-include.py` | Honors `tools.tool_search.always_include` so stacked MCP pins stay eager |
@@ -189,7 +211,7 @@ The `hermes-api-bootstrap` service registers these for you. Each one sets indivi
 
 These filters serve different purposes. LightRAG's and CalDAV's on `api-server` are **safety boundaries**: mutating tools do not belong in unattended n8n sessions. OpenCode coding tools are also mutating and are **never** registered on `api-server`. The web filters just keep the tool count down, since both of those servers are read-only against the public internet.
 
-CalDAV accounts live in `compose/caldav-mcp/accounts/<slug>.env`. Bootstrap copies each into Hermes MCP headers (`X-Caldav-*`) against the shared `caldav-mcp` sidecar. See [Calendar](calendar.md).
+CalDAV accounts live in `compose/caldav-mcp/accounts/<slug>.env`. Bootstrap registers each against the shared `caldav-mcp` sidecar. URL and username stay in the MCP headers. The password header is `${CALDAV_<SLUG>_PASSWORD}`, and the secret is copied into that profile's `.env` for Hermes to expand at connect time. Re-run both bootstraps after changing accounts. See [Calendar](calendar.md).
 
 Either way the filter must be a YAML list. A stringified `'["a","b"]'` gets misread as a one-element allowlist that no tool name matches, and zero tools get registered without any complaint. See the verification commands below.
 
@@ -321,7 +343,7 @@ people, decisions, preferences, and extra topic notes.
 
 | Host | Container | Mode | Contents |
 |---|---|---|---|
-| `$ASSISTANT_DATA_ROOT/memory` | `/opt/memory` | read-write | Curated long-form notes |
+| `$ASSISTANT_DATA_ROOT/memory` | terminal backend `/opt/memory` | read-write | Curated long-form notes |
 
 ```bash
 # files are created by setup.sh; then in a Hermes session:
@@ -426,12 +448,12 @@ Hand-correcting that file is the fastest way to improve output. Drafting then lo
 [How to generate text in your voice](writing-voice.md) walks through the whole process:
 choosing a corpus, calibrating, editing `STYLE.md`, and troubleshooting.
 
-Two mounts on the `hermes` service back all of this:
+Two mounts back all of this. Skills stay on `hermes` (and on the worker, read-only, when the terminal backend is ssh) so the process can load them. Voice files live on the terminal backend, where `write_file` runs:
 
 | Host | Container | Mode | Contents |
 |---|---|---|---|
-| `./compose/hermes/skills` | `/opt/skills` | read-only | Repo-shipped skills (tracked in git) |
-| `$ASSISTANT_DATA_ROOT/voice` | `/opt/voice` | read-write | Your writing corpora |
+| `./compose/hermes/skills` | `/opt/skills` on `hermes` and, in ssh mode, the worker | read-only | Repo-shipped skills (tracked in git) |
+| `$ASSISTANT_DATA_ROOT/voice` | terminal backend `/opt/voice` | read-write | Your writing corpora |
 
 The skills mount is read-only on purpose. Hermes treats `skills.external_dirs` purely as a
 discovery path; it draws no write boundary there, so a writable directory is one the agent's
@@ -469,21 +491,64 @@ Notes:
   with `docker compose restart hermes`.
 - The drafting model sets the ceiling on output quality. Style matching is hard for small
   local models, and swapping in a bigger one usually beats piling on more samples.
-- If Hermes cannot write into `/opt/voice`, check two things. The official image sets
-  `HERMES_WRITE_SAFE_ROOT=/opt/data`, so `write_file` / `patch` refuse `/opt/voice` unless
-  compose lists it (this stack does). If the sandbox is already correct, the host directory
-  is probably owned by root because Docker created it instead of `setup.sh`. Fix ownership,
-  or set `HERMES_UID` and `HERMES_GID` in `.env` to your own `id -u` / `id -g`.
+- If Hermes cannot write into `/opt/voice`, check two things. `HERMES_WRITE_SAFE_ROOT`
+  must list `/opt/voice` (this stack does) or `write_file` / `patch` refuse the path even
+  though the write runs on the SSH worker. If the sandbox is already correct, the host
+  directory is probably owned by root because Docker created it instead of `setup.sh`. Fix
+  ownership, or set `HERMES_UID` and `HERMES_GID` in `.env` to your own `id -u` / `id -g`.
+
+## SSH worker
+
+`HERMES_TERMINAL_BACKEND` chooses where `terminal`, `read_file`, `write_file`, `search_files`, and `execute_code` run. The default is `ssh`. Unset means ssh, so an existing `.env` keeps the worker.
+
+With `ssh`, those tools run on `hermes-worker`, a second container with sshd and no secrets. Bootstrap sets `terminal.backend` to `ssh` on the default profile, on the profile that bootstrap owns, and on every other directory under `data/hermes/profiles/`. New profiles cloned from default inherit it. `terminal.env_passthrough` is removed so the agent environment is not forwarded. The worker's sshd has `AcceptEnv none`. Bootstrap also sets `bot_desktop.placement` to `gateway`. Hermes's `auto` placement can otherwise start the browser on the worker, which has no Node or browser. Browser tools stay in `hermes`, next to the `agent-browser` install.
+
+The worker image includes bash, GNU tar, python3, git, and ripgrep. Hermes runs each remote command with `bash -l`, and its session snapshot uses `tar --no-overwrite-dir`, which BusyBox tar does not support. `execute_code` needs python3 on the backend. `search_files` prefers `rg`.
+
+`setup.sh` generates an ed25519 key under gitignored `compose/hermes/worker/ssh/` if it is missing. The private key is mounted read-only into `hermes` at `/opt/hermes-ssh/id_ed25519` (not under `/opt/data`). A startup script copies it to `/var/lib/hermes-worker-key/id_ed25519` with mode 600, which is the path `terminal.ssh_key` uses. The public key is the worker's `authorized_keys`. The worker has no host port and no `env_file`.
+
+The worker mounts projects, voice, and memory read-write, the coding workspace at the same host path, and `/opt/skills` read-only. It does not mount `data/hermes`. MCP clients and the memory tool stay in `hermes`. `hermes-webui` keeps its own project, voice, and memory mounts so the picker and AGENTS.md prefill still read the host tree.
+
+`/opt/projects` stays mounted **read-only** on `hermes` so `projects.list` and `projects.tree` can see the directory from inside the Hermes process. Writes to that path go through the worker, which has the same host directory read-write.
+
+`make coding-root-add` and `make context-root-add` attach extra binds to `hermes-worker` (and OpenCode, for coding roots). `make ensure-local` moves roots listed in `CODING_EXTRA_ROOTS` and `CONTEXT_EXTRA_ROOTS` onto that service. `make doctor` warns when an absolute host path is still mounted on `hermes`.
+
+After pulling this change, create the key if setup has not, then recreate so the mounts and the SSH config take effect:
+
+```bash
+./scripts/setup.sh
+docker compose run --rm hermes-api-bootstrap
+docker compose run --rm hermes-browser-bootstrap
+docker compose up -d --force-recreate hermes-worker hermes
+```
+
+A working split looks like this: `terminal` `hostname` is `hermes-worker`, and a `write_file` under `/opt/projects` shows up on the host even though that mount is read-only inside `hermes`.
+
+### Local escape hatch
+
+`HERMES_TERMINAL_BACKEND=local` is for debugging, or for a machine that cannot run the extra container. Compose does not start `hermes-worker`, and `hermes` does not wait for it. Projects, voice, memory, and the coding workspace mount read-write on `hermes`. Bootstrap sets `terminal.backend` to `local`, removes leftover `terminal.ssh_*` keys, and sets `bot_desktop.placement` back to `auto`.
+
+That puts the shell in the container that holds the dashboard password and profile secrets. Switch back to `ssh` when you are done.
+
+```bash
+# edit .env: HERMES_TERMINAL_BACKEND=local
+make ensure-local
+docker compose run --rm hermes-api-bootstrap
+docker compose run --rm hermes-browser-bootstrap
+docker compose up -d --force-recreate --remove-orphans hermes
+```
+
+`--remove-orphans` stops a worker left over from ssh mode. `make ensure-local` moves extra coding and context binds onto `hermes` and drops an empty `hermes-worker` block from `docker-compose.override.yml`, which would otherwise invent a service with no image.
 
 ## Per-project working directories
 
-A third mount gives Hermes somewhere to keep bodies of work that need reference material and
+The worker gives Hermes somewhere to keep bodies of work that need reference material and
 generated output side by side: a job search, a book, a client engagement, a research topic.
 
-| Host | Container | Mode | Contents |
+| Host | Where | Mode | Contents |
 |---|---|---|---|
-| `$ASSISTANT_DATA_ROOT/projects` | `/opt/projects` | read-write | Your per-project working directories |
-| Host path in `CONTEXT_EXTRA_ROOTS` | same host path | read-only | Extra project file-context dirs (`make context-root-add`) |
+| `$ASSISTANT_DATA_ROOT/projects` | ssh: worker `/opt/projects` (read-write) and `hermes` `/opt/projects` (read-only, for `projects.list`). local: `hermes` `/opt/projects` read-write | split | Your per-project working directories |
+| Host path in `CONTEXT_EXTRA_ROOTS` | terminal backend, same host path | read-only | Extra project file-context dirs (`make context-root-add`) |
 
 Each subdirectory is one project. `setup.sh` creates the projects dir and drops a `README.md`
 there. Scaffold a new project with `make project-init PROJECT=…`, keep a short `AGENTS.md`
@@ -494,7 +559,8 @@ root with [User data directory](data-dir.md).
 ```bash
 make project-init PROJECT=my-project
 # optional extra host notes: edit sources.yaml, then
-# make context-root-add DIR=/absolute/path && docker compose up -d --force-recreate hermes
+# make context-root-add DIR=/absolute/path && docker compose up -d --force-recreate hermes-worker
+# (recreate hermes instead when HERMES_TERMINAL_BACKEND=local)
 make project-index PROJECT=my-project
 ```
 
@@ -513,12 +579,12 @@ folder does not exist even though the mount is perfectly healthy. Keep `/opt/pro
 
 The hint is not enough by itself. The official image sets `HERMES_WRITE_SAFE_ROOT=/opt/data`,
 so `write_file` and `patch` hard-block `/opt/projects` (and `/opt/voice`, `/opt/memory`) even
-when the bind is read-write. The agent then treats that as "read-only" and writes under
-`/opt/data/projects`, which lands in `data/hermes/` mixed with Hermes state. Compose
-overrides the sandbox to `/opt/data:/opt/projects:/opt/voice:/opt/memory` plus coding
+when the SSH worker has the directory read-write. The agent then treats that as "read-only"
+and writes under `/opt/data/projects`, which lands in `data/hermes/` mixed with Hermes state.
+Compose overrides the sandbox to `/opt/data:/opt/projects:/opt/voice:/opt/memory` plus coding
 roots. Keep `/opt/data` first so cron, memories, and profile state still write. Add any
-new writable bind to that list; do not add `/opt/skills` or `CONTEXT_EXTRA_ROOTS`
-(those notes mounts stay read-only). Recreate the container after changing it — a restart
+new writable worker path to that list; do not add `/opt/skills` or `CONTEXT_EXTRA_ROOTS`
+(those notes mounts stay read-only). Recreate `hermes` after changing it — a restart
 does not pick up a new env value. Do not remount projects at `/opt/data/projects`, and do
 not ask the agent to remember that path: the hint will keep sending it to `/opt/projects`.
 
@@ -535,6 +601,21 @@ Optional messaging over Signal via compose-managed `signal-cli`. Setup, architec
 ## Buzz
 
 Optional messaging over [Buzz](https://buzz.xyz) (native Hermes gateway platform). Independent agents are local Hermes profiles under `data/hermes/` (not committed). Create with `make agent-create`; attach Buzz with `WITH=buzz` or `./scripts/agent-attach-buzz.sh`. Details: **[Independent agents](agents.md)** · **[Buzz](buzz.md)**.
+
+## Browser tools
+
+Local browser tools run the `agent-browser` CLI plus the Chromium build shipped in the image (`/opt/hermes/.playwright`). On container start, cont-init installs that CLI under `/opt/hermes` and links it onto `PATH`. That path is the container filesystem. The copy npm would otherwise leave under `data/hermes` sits on a Docker Desktop bind mount, where the native `agent-browser-linux-*` binary is mode `644`. `access()` on that mount reports the file executable, so the CLI never chmods it, and launching the browser fails with `EACCES`.
+
+`hermes tools` → Browser Automation does not fix this once Chromium is already in the image. That menu only installs Chromium when it is missing, and in Docker it skips the install when the image already contains it.
+
+If a chat reports that error, restart so the boot install runs again, then confirm the CLI actually executes:
+
+```bash
+docker compose restart hermes
+docker compose exec -u hermes hermes agent-browser --version
+```
+
+`./scripts/doctor.sh` runs the same probe when the `hermes` container is up.
 
 ## Advanced options
 
@@ -615,10 +696,12 @@ docker compose exec hermes sh -c 'ls -id /opt/data/memories /opt/data/profiles/a
 docker compose exec hermes ls /opt/data/SOUL.md /opt/data/profiles/browser/SOUL.md /opt/data/profiles/api-server/SOUL.md
 
 # Tool-calling overlays (cont-init). After recreate, logs should show both patches.
-docker compose logs hermes 2>&1 | grep -E 'patch-text-tool-call-recovery|patch-openrouter-empty-stream|patch-tool-eval-trace|patch-tool-search-always-include' | tail -5
+docker compose logs hermes 2>&1 | grep -E 'patch-text-tool-call-recovery|patch-fabricated-result|patch-openrouter-empty-stream|patch-tool-eval-trace|patch-tool-search-always-include' | tail -5
 docker compose exec hermes test -f /opt/hermes/agent/text_tool_call_recovery.py && echo "text recovery helper ok"
+docker compose exec hermes test -f /opt/hermes/agent/fabricated_result.py && echo "fabricated-result helper ok"
 docker compose exec hermes test -f /opt/hermes/agent/tool_eval_trace.py && echo "tool-eval tracer ok"
 docker compose exec hermes grep -F 'assistant-stack: text-mimicked tool-call recovery' /opt/hermes/agent/conversation_loop.py >/dev/null && echo "text recovery call site ok"
+docker compose exec hermes grep -F 'assistant-stack: fabricated result without a tool call' /opt/hermes/agent/turn_final_response.py >/dev/null && echo "fabricated-result call site ok"
 docker compose exec hermes grep -F 'assistant-stack: tool-eval turn trace' /opt/hermes/agent/conversation_loop.py >/dev/null && echo "tool-eval call site ok"
 docker compose exec hermes grep -F 'assistant-stack: bust OpenRouter cache on empty stream' /opt/hermes/agent/chat_completion_helpers.py >/dev/null && echo "empty-stream cache bust ok"
 
@@ -632,16 +715,20 @@ docker compose exec hermes grep -F 'assistant-stack: honor always_include' /opt/
 # always_include: session_search, searxng_web_search / mcp__searxng__*, coding_* when coding is on.
 # defer: must not list session_search.
 
-# Mount flags: /opt/skills must be ro; voice, projects, and memory must be rw
-docker compose exec hermes sh -c 'grep -E " /opt/(skills|voice|projects|memory) " /proc/mounts'
+# ssh backend. On hermes: /opt/skills and /opt/projects are read-only. Voice and memory are not mounted.
+docker compose exec hermes sh -c 'grep -E " /opt/(skills|projects) " /proc/mounts'
 
-# File-tool write sandbox. Image default is /opt/data only; extra mounts must
-# be listed or write_file/patch refuse them even when the bind is rw.
+# On the worker: voice, projects, and memory are read-write; skills are read-only.
+# Skip these when HERMES_TERMINAL_BACKEND=local; those paths are on hermes instead.
+docker compose exec hermes-worker sh -c 'grep -E " /opt/(skills|voice|projects|memory) " /proc/mounts'
+
+# File-tool write sandbox. Image default is /opt/data only; worker paths must
+# be listed or write_file/patch refuse them even when the worker bind is rw.
 docker compose exec hermes printenv HERMES_WRITE_SAFE_ROOT
 
-# Effective permissions for the user Hermes actually runs as
+# Effective permissions for the user the worker runs as
 for d in /opt/voice /opt/projects /opt/memory /opt/skills; do
-  docker compose exec --user hermes hermes \
+  docker compose exec --user hermes hermes-worker \
     sh -c "test -w $d && echo '$d WRITABLE' || echo '$d NOT-WRITABLE'"
 done
 ```

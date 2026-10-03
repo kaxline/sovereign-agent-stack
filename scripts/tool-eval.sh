@@ -155,6 +155,27 @@ raise SystemExit(2)
 PY
 }
 
+case_field() {
+  local cid="$1"
+  local field="$2"
+  python3 - "$CASES_LOADER" "$CASES_FILE" "$cid" "$field" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]).parent))
+from tool_eval_cases import load_cases
+data = load_cases(sys.argv[2])
+cid, field = sys.argv[3], sys.argv[4]
+for c in data.get("cases") or []:
+    if c.get("id") == cid:
+        val = c.get(field)
+        if val is None:
+            raise SystemExit(0)
+        print(val)
+        raise SystemExit(0)
+raise SystemExit(0)
+PY
+}
+
 hermes_running() {
   docker compose ps --status running --services 2>/dev/null | grep -qx hermes
 }
@@ -172,6 +193,12 @@ run_one() {
   if ! hermes_running; then
     echo "hermes container is not running — make up first" >&2
     return 1
+  fi
+
+  local expect_file
+  expect_file="$(case_field "$cid" expect_file)"
+  if [[ -n "$expect_file" ]]; then
+    docker compose exec -T hermes rm -f "$expect_file"
   fi
 
   echo "=== run ${cid} ==="
@@ -381,6 +408,28 @@ def as_num(val):
     except (TypeError, ValueError):
         return None
 
+def expect_file_status(path: str, expected: str):
+    """ok, missing, or unverified. One trailing newline still matches."""
+    import subprocess
+    try:
+        proc = subprocess.run(
+            ["docker", "compose", "exec", "-T", "hermes", "cat", path],
+            capture_output=True,
+            timeout=30,
+        )
+    except Exception:
+        return "unverified"
+    err = proc.stderr.decode("utf-8", errors="replace")
+    out = proc.stdout.decode("utf-8", errors="replace")
+    if proc.returncode != 0:
+        if "No such file" in err or "No such file" in out:
+            return "missing"
+        return "unverified"
+    norm = out.replace("\r\n", "\n")
+    if norm.endswith("\n"):
+        norm = norm[:-1]
+    return "ok" if norm == expected else "missing"
+
 def name_matches(haystack, needle: str) -> bool:
     n = needle.lower()
     for h in haystack:
@@ -452,6 +501,14 @@ for c in cases:
         cap_seconds = as_num(c.get("max_seconds"))
         too_long = cap_chars is not None and max_content > cap_chars
         too_slow = cap_seconds is not None and duration_s is not None and duration_s > cap_seconds
+        expect_path = c.get("expect_file") or ""
+        expect_body = c.get("expect_content")
+        file_status = None
+        if expect_path:
+            file_status = expect_file_status(
+                str(expect_path),
+                "" if expect_body is None else str(expect_body),
+            )
         if bad_tool:
             result = "FAIL"
             reason = "wrong_tool"
@@ -464,6 +521,12 @@ for c in cases:
         elif too_slow:
             result = "FAIL"
             reason = "too_slow"
+        elif file_status == "unverified":
+            result = "FAIL"
+            reason = "file_unverified"
+        elif hit and file_status == "missing":
+            result = "FAIL"
+            reason = "file_missing"
         elif hit:
             result = "PASS"
             if recovered:

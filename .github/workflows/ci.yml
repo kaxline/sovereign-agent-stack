@@ -23,6 +23,7 @@ jobs:
           sed -i 's/^HERMES_DASHBOARD_PASSWORD=.*/HERMES_DASHBOARD_PASSWORD=ci-dashboard-pass/' .env
           sed -i 's/^HERMES_DASHBOARD_AUTH_SECRET=.*/HERMES_DASHBOARD_AUTH_SECRET=0123456789abcdef0123456789abcdef/' .env
           sed -i 's/^SEARXNG_SECRET=.*/SEARXNG_SECRET=ci-searxng-secret/' .env
+          sed -i 's/^LLM_PROXY_ADMIN_TOKEN=.*/LLM_PROXY_ADMIN_TOKEN=ci-llm-proxy-admin-token/' .env
           sed -i 's|^OPENCODE_WORKSPACE_HOST=.*|OPENCODE_WORKSPACE_HOST=/tmp/opencode-workspace|' .env
           mkdir -p /tmp/opencode-workspace
           # coding MCP off unless profile includes coding; compose still interpolates these.
@@ -43,6 +44,8 @@ jobs:
           # Non-placeholder so bootstrap would accept the file if run; compose config only needs the path present.
           sed -i 's/^CALDAV_USERNAME=.*/CALDAV_USERNAME=ci@example.com/' compose/caldav-mcp/accounts/personal.env
           sed -i 's/^CALDAV_PASSWORD=.*/CALDAV_PASSWORD=ci-caldav-app-password/' compose/caldav-mcp/accounts/personal.env
+          mkdir -p compose/hermes/worker/ssh
+          ssh-keygen -t ed25519 -f compose/hermes/worker/ssh/id_ed25519 -N "" -C ci-hermes-worker
       - name: Validate compose configs
         run: |
           set -e
@@ -57,6 +60,10 @@ jobs:
             echo "=== COMPOSE_PROFILES=$profiles ==="
             COMPOSE_PROFILES="$profiles" docker compose config -q
           done
+          python3 scripts/test-compose-env-allowlist.py
+          echo "=== HERMES_TERMINAL_BACKEND=local ==="
+          HERMES_TERMINAL_BACKEND=local COMPOSE_PROFILES=core docker compose config -q
+          python3 scripts/test-terminal-backend-compose.py
 
   project-sources:
     runs-on: ubuntu-latest
@@ -64,6 +71,16 @@ jobs:
       - uses: actions/checkout@v4
       - name: Project source registry (stdlib)
         run: python3 scripts/test-project-sources.py
+      - name: Fabricated result detector (stdlib)
+        run: python3 scripts/test-fabricated-result.py
+      - name: History budget window (stdlib)
+        run: python3 scripts/test-history-budget.py
+      - name: CalDAV password env key
+        run: sh scripts/test-caldav-password-ref.sh
+      - name: LLM proxy routes
+        run: python3 scripts/test-llm-proxy.py
+      - name: Terminal backend override sync
+        run: python3 scripts/test-terminal-backend-sync.py
 
   shellcheck:
     runs-on: ubuntu-latest
@@ -75,6 +92,7 @@ jobs:
         run: |
           shellcheck -x -e SC1090,SC1091 scripts/*.sh
           shellcheck -s sh -e SC1090,SC1091 compose/hermes/bootstrap-api-profile.sh
+          shellcheck -s sh -e SC1090,SC1091 compose/hermes/08-warmup-agent-browser.sh
           shellcheck -s sh -e SC1090,SC1091 n8n/import-demo-data.sh || true
 
   hadolint:

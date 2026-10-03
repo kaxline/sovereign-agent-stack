@@ -1,0 +1,44 @@
+# Selected by HERMES_TERMINAL_BACKEND=ssh (the default).
+# Paths are relative to the repo root (include project_directory).
+
+services:
+  # Shell and file tools run here. No host port, no env_file, no secrets.
+  # Hermes talks to it over the compose network as terminal.backend ssh.
+  hermes-worker:
+    profiles: ["core"]
+    container_name: hermes-worker
+    hostname: hermes-worker
+    build:
+      context: ./compose/hermes/worker
+    image: assistant-hermes-worker:local
+    restart: unless-stopped
+    environment:
+      - HERMES_UID=${HERMES_UID:-1000}
+      - HERMES_GID=${HERMES_GID:-1000}
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ./compose/hermes/worker/ssh/id_ed25519.pub:/etc/hermes-worker/authorized_keys:ro
+      - ${ASSISTANT_DATA_ROOT:-./data}/projects:/opt/projects
+      - ${ASSISTANT_DATA_ROOT:-./data}/voice:/opt/voice
+      - ${ASSISTANT_DATA_ROOT:-./data}/memory:/opt/memory
+      - ${OPENCODE_WORKSPACE_HOST}:${OPENCODE_WORKSPACE_HOST}
+      - ./compose/hermes/skills:/opt/skills:ro
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "22"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 3s
+
+  hermes:
+    depends_on:
+      hermes-worker:
+        condition: service_healthy
+    volumes:
+      # projects.list / projects.tree read this directory in-process. Writes go
+      # through the SSH worker, which mounts the same host path read-write.
+      - ${ASSISTANT_DATA_ROOT:-./data}/projects:/opt/projects:ro
+      # Private key for terminal.backend ssh. Not under /opt/data, not on the
+      # write-safe root. cont-init copies it to a mode-600 file the process owns.
+      - ./compose/hermes/worker/ssh/id_ed25519:/opt/hermes-ssh/id_ed25519:ro
+      - ./compose/hermes/09-install-worker-key.sh:/etc/cont-init.d/09-install-worker-key:ro

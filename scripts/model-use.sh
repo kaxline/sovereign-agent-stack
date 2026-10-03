@@ -188,8 +188,19 @@ if model_id not in models:
     short = model_id.rsplit("/", 1)[-1]
     models[model_id] = {"name": short}
 
+proxy = "http://llm-proxy:4000/v1"
+for block in providers.values():
+    if not isinstance(block, dict):
+        continue
+    options = block.get("options")
+    if not isinstance(options, dict):
+        options = {}
+        block["options"] = options
+    options["baseURL"] = proxy
+    options["apiKey"] = "local-llm"
+
 path.write_text(json.dumps(cfg, indent=2) + "\n")
-print(f"OpenCode: model={cfg['model']}")
+print(f"OpenCode: model={cfg['model']} baseURL={proxy}")
 PY
   log "OpenCode default model updated"
 }
@@ -269,10 +280,10 @@ fi
 require_cmd docker
 require_cmd python3
 
-BASE_URL="$(env_get LLM_BINDING_HOST http://host.docker.internal:1234/v1)"
-API_KEY="$(env_get LLM_BINDING_API_KEY local-llm)"
-# Hermes config set stores scalars verbatim; strip inline comments from .env values.
-API_KEY="${API_KEY%%[[:space:]]#*}"
+# Hermes and OpenCode talk to the proxy. The real host and key stay in .env
+# for llm-proxy. Do not copy them into profile config.
+BASE_URL="http://llm-proxy:4000/v1"
+API_KEY="local-llm"
 
 log "Switching stack to: ${MODEL}"
 update_env_models

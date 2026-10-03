@@ -23,7 +23,7 @@ In WebUI: *What's on my personal calendar today?*
 |---|---|
 | `caldav-mcp` | Streamable HTTP MCP at `http://caldav-mcp:8080/mcp` (compose-internal only) |
 | `compose/caldav-mcp/accounts/<slug>.env` | Per-account `CALDAV_URL` / `USERNAME` / `PASSWORD` |
-| Hermes bootstrap | Registers `mcp_servers.caldav-<slug>` with `X-Caldav-*` headers |
+| Hermes bootstrap | Registers `mcp_servers.caldav-<slug>`. URL and username are literal headers. The password header is `${CALDAV_<SLUG>_PASSWORD}`, and the secret is written to that profile's `.env` |
 
 Upstream: [gelse/caldav-mcp](https://github.com/gelse/caldav-mcp). Credentials are **not** baked into the sidecar; each Hermes MCP entry sends account headers on every call.
 
@@ -73,8 +73,10 @@ Create/update/delete stay off the unattended API profile on purpose (same idea a
 
 ## Security
 
-- Account files under `compose/caldav-mcp/accounts/*.env` are gitignored (`*.env`).
-- Bootstrap copies credentials into Hermes `data/hermes/**/config.yaml` as MCP headers (also under gitignored `data/`). Treat that tree like a password store.
+- Account files under `compose/caldav-mcp/accounts/*.env` are gitignored (`*.env`). They stay the source of truth.
+- Bootstrap stores `X-Caldav-Password: ${CALDAV_<SLUG>_PASSWORD}` in Hermes config (`personal` becomes `CALDAV_PERSONAL_PASSWORD`, `work-cal` becomes `CALDAV_WORK_CAL_PASSWORD`). The password itself is written to `data/hermes/.env` and to each named profile's `.env`. Hermes expands the reference when it connects. This image sends an unset name as the literal placeholder, so the env key has to be there.
+- The password still lives under gitignored `data/hermes/`. Treat that tree like a password store. Config dumps and `hermes config` do not include it.
+- After this change, or after editing an account, re-run both bootstraps below so existing configs drop a literal password.
 - No host port publish for `caldav-mcp`.
 - Do not commit account files or paste app passwords into tracked docs.
 

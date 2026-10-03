@@ -84,7 +84,8 @@ Path rules in the generated INDEX:
 
 ```bash
 make context-root-add DIR=/Users/you/Notes/this-project
-docker compose up -d --force-recreate hermes
+docker compose up -d --force-recreate hermes-worker
+# recreate hermes instead when HERMES_TERMINAL_BACKEND=local
 make project-index PROJECT=my-project
 ```
 

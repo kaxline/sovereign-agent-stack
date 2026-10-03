@@ -1,7 +1,14 @@
+# Terminal backend. ssh (default) adds hermes-worker and keeps workspace mounts
+# off this file's hermes service. local puts those mounts on hermes and does
+# not define the worker. Paths inside the fragment stay relative to the repo.
+include:
+  - path: ./compose/hermes/terminal-${HERMES_TERMINAL_BACKEND:-ssh}.yml
+    project_directory: .
+
 x-n8n: &service-n8n
   image: ${N8N_IMAGE:-n8nio/n8n:1.107.4}
-  env_file:
-    - .env
+  # Allowlist. The root .env stays on the host for Compose interpolation and
+  # is not mounted into the container.
   environment:
     - DB_TYPE=postgresdb
     - DB_POSTGRESDB_HOST=postgres
@@ -10,8 +17,8 @@ x-n8n: &service-n8n
     - DB_POSTGRESDB_DATABASE=${POSTGRES_DB}
     - N8N_DIAGNOSTICS_ENABLED=false
     - N8N_PERSONALIZATION_ENABLED=false
-    - N8N_ENCRYPTION_KEY
-    - N8N_USER_MANAGEMENT_JWT_SECRET
+    - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:?set N8N_ENCRYPTION_KEY in .env}
+    - N8N_USER_MANAGEMENT_JWT_SECRET=${N8N_USER_MANAGEMENT_JWT_SECRET:?set N8N_USER_MANAGEMENT_JWT_SECRET in .env}
     - N8N_DEFAULT_BINARY_DATA_MODE=filesystem
     - LIGHTRAG_URL=http://lightrag:9621
     - NEO4J_HTTP_URL=http://neo4j:7474
@@ -21,8 +28,9 @@ x-n8n: &service-n8n
 x-gptr: &gptr-env
   RETRIEVER: searx
   SEARX_URL: http://searxng:8080/
-  OPENAI_API_KEY: ${LLM_BINDING_API_KEY:-local-llm}
-  OPENAI_BASE_URL: ${OPENAI_BASE_URL:-http://host.docker.internal:1234/v1}
+  # Placeholder only. The real key stays on llm-proxy.
+  OPENAI_API_KEY: local-llm
+  OPENAI_BASE_URL: http://llm-proxy:4000/v1
   FAST_LLM: openai:${LLM_MODEL}
   SMART_LLM: openai:${LLM_MODEL}
   STRATEGIC_LLM: openai:${LLM_MODEL}
@@ -35,6 +43,43 @@ x-gptr: &gptr-env
   LOGGING_LEVEL: INFO
 
 services:
+  # ----------------------------------------------------------------------
+  # llm-proxy — OpenAI-compatible front for the model keys
+  # Profile: core
+  # Inference is compose-internal only (:4000). The admin listener is
+  # published on loopback so a later Boundary caller can push keys that
+  # stay in memory. Clients use the placeholder local-llm.
+  # ----------------------------------------------------------------------
+  llm-proxy:
+    profiles: ["core"]
+    container_name: llm-proxy
+    build:
+      context: ./compose/llm-proxy
+    image: assistant-llm-proxy:local
+    restart: unless-stopped
+    environment:
+      - LLM_BINDING_HOST=${LLM_BINDING_HOST:-http://host.docker.internal:1234/v1}
+      - LLM_BINDING_API_KEY=${LLM_BINDING_API_KEY:-}
+      - LIGHTRAG_LLM_BINDING_HOST=${LIGHTRAG_LLM_BINDING_HOST:-}
+      - LIGHTRAG_LLM_BINDING_API_KEY=${LIGHTRAG_LLM_BINDING_API_KEY:-}
+      - EMBEDDING_BINDING_HOST=${EMBEDDING_BINDING_HOST:-http://host.docker.internal:1234/v1}
+      - EMBEDDING_BINDING_API_KEY=${EMBEDDING_BINDING_API_KEY:-}
+      - LLM_PROXY_ADMIN_TOKEN=${LLM_PROXY_ADMIN_TOKEN:?set LLM_PROXY_ADMIN_TOKEN in .env}
+      - LLM_PROXY_PORT=4000
+      - LLM_PROXY_ADMIN_PORT=4001
+      - LLM_TIMEOUT=${LLM_TIMEOUT:-600}
+    ports:
+      # Admin only. Inference stays on the compose network.
+      - "127.0.0.1:${LLM_PROXY_ADMIN_PORT:-4001}:4001"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+
   # ----------------------------------------------------------------------
   # LightRAG API server + Web UI (document upload, graph view, retrieval)
   # Profile: rag
@@ -50,23 +95,42 @@ services:
         LIGHTRAG_BASE_IMAGE: ${LIGHTRAG_BASE_IMAGE:-ghcr.io/hkuds/lightrag:v1.4.9.3}
     image: assistant-lightrag:local
     ports:
-      - "${PORT:-9621}:9621"
-    env_file:
-      - .env
+      - "127.0.0.1:${PORT:-9621}:9621"
+    # Allowlist of what LightRAG reads. Optional storage backends stay unset
+    # so an empty string does not override the image default.
     environment:
-      # Keep LightRAG model selection independent from the rest of the stack.
+      - HOST=${HOST:-0.0.0.0}
+      - PORT=${PORT:-9621}
+      - WORKSPACE=${WORKSPACE:-my-kb}
+      - "WEBUI_TITLE=${WEBUI_TITLE:-My Knowledge Base}"
+      - "WEBUI_DESCRIPTION=${WEBUI_DESCRIPTION:-Local GraphRAG knowledge base}"
+      # Model calls go to llm-proxy. The real upstreams stay in .env for the
+      # proxy. Native Ollama (no /v1) sets LIGHTRAG_LLM_CLIENT_HOST and
+      # EMBEDDING_CLIENT_HOST so those bindings skip the proxy.
       - LLM_BINDING=${LIGHTRAG_LLM_BINDING:-openai}
       - LLM_MODEL=${LIGHTRAG_LLM_MODEL:-your-extraction-model}
-      - LLM_BINDING_HOST=${LIGHTRAG_LLM_BINDING_HOST:-http://host.docker.internal:1234/v1}
-      - LLM_BINDING_API_KEY=${LIGHTRAG_LLM_BINDING_API_KEY:-local-llm}
+      - LLM_BINDING_HOST=${LIGHTRAG_LLM_CLIENT_HOST:-http://llm-proxy:4000/lightrag/v1}
+      - LLM_BINDING_API_KEY=local-llm
+      - LLM_TIMEOUT=${LLM_TIMEOUT:-600}
+      - MAX_ASYNC=${MAX_ASYNC:-1}
+      - OPENAI_LLM_MAX_TOKENS=${OPENAI_LLM_MAX_TOKENS:-9000}
+      - EMBEDDING_BINDING=${EMBEDDING_BINDING:-openai}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-your-embedding-model}
+      - EMBEDDING_DIM=${EMBEDDING_DIM:-768}
+      - EMBEDDING_BINDING_HOST=${EMBEDDING_CLIENT_HOST:-http://llm-proxy:4000/embed/v1}
+      - EMBEDDING_BINDING_API_KEY=local-llm
+      - LIGHTRAG_GRAPH_STORAGE=${LIGHTRAG_GRAPH_STORAGE:-Neo4JStorage}
+      - NEO4J_URI=${NEO4J_URI:-bolt://neo4j:7687}
+      - NEO4J_USERNAME=${NEO4J_USERNAME:-neo4j}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:?set NEO4J_PASSWORD in .env}
+      - LIGHTRAG_API_KEY=${LIGHTRAG_API_KEY:?set LIGHTRAG_API_KEY in .env}
+      - "WHITELIST_PATHS=${WHITELIST_PATHS:-/health,/api/*}"
     volumes:
       - ${ASSISTANT_DATA_ROOT:-./data}/rag_storage:/app/data/rag_storage   # graph/vector/kv persistence
       - ${ASSISTANT_DATA_ROOT:-./data}/inputs:/app/data/inputs             # drop files here to bulk-ingest
-    extra_hosts:
-      # Lets the container reach a model server on the host
-      # via the hostname host.docker.internal.
-      - "host.docker.internal:host-gateway"
     depends_on:
+      llm-proxy:
+        condition: service_healthy
       neo4j:
         condition: service_healthy
     healthcheck:
@@ -89,8 +153,6 @@ services:
     build:
       context: ./compose/lightrag-mcp
     restart: unless-stopped
-    env_file:
-      - .env
     environment:
       - LIGHTRAG_MCP_PORT=${LIGHTRAG_MCP_PORT:-8000}
       - LIGHTRAG_MCP_PATH=${LIGHTRAG_MCP_PATH:-/mcp}
@@ -130,8 +192,8 @@ services:
     container_name: lightrag-neo4j
     image: ${NEO4J_IMAGE:-neo4j:5.26-community}
     ports:
-      - "7474:7474"   # HTTP browser UI
-      - "7687:7687"   # Bolt protocol
+      - "127.0.0.1:7474:7474"   # HTTP browser UI
+      - "127.0.0.1:7687:7687"   # Bolt protocol
     environment:
       - NEO4J_AUTH=${NEO4J_USERNAME:-neo4j}/${NEO4J_PASSWORD}
       - NEO4J_PLUGINS=["apoc"]                 # auto-installs APOC (LightRAG needs it)
@@ -248,7 +310,7 @@ services:
   # GPT Researcher — deep web research API (n8n/Hermes REST)
   # Profile: automation
   # API:     http://localhost:8000/report/   (localhost-bound)
-  # Uses SearXNG for retrieval; LLM via host.docker.internal (OPENAI_BASE_URL)
+  # Uses SearXNG for retrieval; LLM via llm-proxy (OPENAI_BASE_URL)
   # ----------------------------------------------------------------------
   gpt-researcher:
     profiles: ["automation"]
@@ -257,17 +319,15 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:${GPTR_PORT:-8000}:8000"
-    env_file:
-      - .env
     environment:
       <<: *gptr-env
       DOC_PATH: /usr/src/app/my-docs
     volumes:
       - gptr_outputs:/usr/src/app/outputs
       - ${ASSISTANT_DATA_ROOT:-./data}/inputs:/usr/src/app/my-docs:ro
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     depends_on:
+      llm-proxy:
+        condition: service_healthy
       searxng:
         condition: service_healthy
         required: false
@@ -290,15 +350,13 @@ services:
     build:
       context: ./compose/gptr-mcp
     restart: unless-stopped
-    env_file:
-      - .env
     environment:
       <<: *gptr-env
       MCP_TRANSPORT: sse
       DOCKER_CONTAINER: "true"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     depends_on:
+      llm-proxy:
+        condition: service_healthy
       searxng:
         condition: service_healthy
         required: false
@@ -358,13 +416,19 @@ services:
     container_name: n8n
     restart: unless-stopped
     ports:
-      - "5678:5678"
+      - "127.0.0.1:5678:5678"
+    # This list replaces the anchor environment, so the secrets and the
+    # workflow URL are repeated here. The anchor still feeds n8n-import.
     environment:
       - N8N_HOST=localhost
       - N8N_PORT=5678
       - N8N_PROTOCOL=http
       - WEBHOOK_URL=http://localhost:5678/
       - N8N_RESTRICT_FILE_ACCESS_TO=/data/shared
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:?set N8N_ENCRYPTION_KEY in .env}
+      - N8N_USER_MANAGEMENT_JWT_SECRET=${N8N_USER_MANAGEMENT_JWT_SECRET:?set N8N_USER_MANAGEMENT_JWT_SECRET in .env}
+      - N8N_DEFAULT_BINARY_DATA_MODE=${N8N_DEFAULT_BINARY_DATA_MODE:-filesystem}
+      - GPTR_URL=${GPTR_URL:-http://gpt-researcher:8000}
     volumes:
       - n8n_storage:/home/node/.n8n
       - ./n8n/demo-data:/demo-data
@@ -442,13 +506,11 @@ services:
     image: assistant-opencode:local
     command: ["web", "--hostname", "0.0.0.0", "--port", "4096"]
     ports:
-      - "${OPENCODE_PORT:-4096}:4096"
-    env_file:
-      - .env
+      - "127.0.0.1:${OPENCODE_PORT:-4096}:4096"
     environment:
       - OPENCODE_CONFIG=/etc/opencode/opencode.json
-      - OPENCODE_SERVER_USERNAME
-      - OPENCODE_SERVER_PASSWORD
+      - OPENCODE_SERVER_USERNAME=${OPENCODE_SERVER_USERNAME:-opencode}
+      - OPENCODE_SERVER_PASSWORD=${OPENCODE_SERVER_PASSWORD:?set OPENCODE_SERVER_PASSWORD in .env}
     # Mounted at its own host path so paths in the UI match paths in your terminal.
     working_dir: ${OPENCODE_WORKSPACE_HOST}
     volumes:
@@ -457,9 +519,9 @@ services:
       - ${OPENCODE_WORKSPACE_HOST}:${OPENCODE_WORKSPACE_HOST}
       # opencode.local.json is written by setup (gitignored). Run make ensure-local first.
       - ./opencode/opencode.local.json:/etc/opencode/opencode.json:ro
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     depends_on:
+      llm-proxy:
+        condition: service_healthy
       mcp-searxng:
         condition: service_healthy
         required: false
@@ -588,12 +650,11 @@ services:
     image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v2026.9.14}
     restart: "no"
     user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
-    env_file:
-      - .env
     environment:
       - HERMES_UID=${HERMES_UID:-1000}
       - HERMES_GID=${HERMES_GID:-1000}
       - TZ=${TZ:-UTC}
+      - HERMES_TERMINAL_BACKEND=${HERMES_TERMINAL_BACKEND:-ssh}
       - HERMES_API_PROFILE_NAME=${HERMES_API_PROFILE_NAME:-api-server}
       - HERMES_API_MAX_TURNS=${HERMES_API_MAX_TURNS:-20}
       - HERMES_API_SERVER_PORT=${HERMES_API_SERVER_PORT:-8643}
@@ -633,12 +694,11 @@ services:
     image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v2026.9.14}
     restart: "no"
     user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
-    env_file:
-      - .env
     environment:
       - HERMES_UID=${HERMES_UID:-1000}
       - HERMES_GID=${HERMES_GID:-1000}
       - TZ=${TZ:-UTC}
+      - HERMES_TERMINAL_BACKEND=${HERMES_TERMINAL_BACKEND:-ssh}
       - HERMES_API_PROFILE_NAME=${HERMES_BROWSER_PROFILE_NAME:-browser}
       # Interactive chat: a human is watching and can interrupt, and the tight
       # unattended cap would only truncate useful work mid-task.
@@ -675,6 +735,9 @@ services:
     entrypoint: /bin/sh
     command: /bootstrap/bootstrap-api-profile.sh
 
+  # hermes-worker, its depends_on, and the workspace mounts are in
+  # compose/hermes/terminal-ssh.yml or terminal-local.yml.
+
   hermes:
     profiles: ["core"]
     container_name: hermes
@@ -685,12 +748,15 @@ services:
       - "127.0.0.1:${HERMES_GATEWAY_PORT:-8642}:8642"
       - "127.0.0.1:${HERMES_API_SERVER_PORT:-8643}:8643"
       - "127.0.0.1:${HERMES_DASHBOARD_PORT:-9119}:9119"
-    env_file:
-      - .env
+    # Allowlist. Do not mount the root .env: this process can run a shell.
+    # Dashboard auth stays because the dashboard shares the container.
     environment:
       - HERMES_UID=${HERMES_UID:-1000}
       - HERMES_GID=${HERMES_GID:-1000}
       - TZ=${TZ:-UTC}
+      # Buzz localhost proxy (cont-init). Private keys stay in profile .env files.
+      - HERMES_BUZZ_ENABLED=${HERMES_BUZZ_ENABLED:-0}
+      - BUZZ_RELAY_URL=${BUZZ_RELAY_URL:-}
       # Bound every Hermes LLM call (foreground + bg-review). Local endpoints
       # skip implicit stale detection unless the stale timeout is explicit.
       - HERMES_API_TIMEOUT=${HERMES_API_TIMEOUT:-180}
@@ -713,10 +779,9 @@ services:
       # SEARXNG_MCP_URL instead.
       - SEARXNG_URL=
       # The official image sets HERMES_WRITE_SAFE_ROOT=/opt/data. write_file and
-      # patch then hard-block every other mount, even when the bind is rw, and
-      # the agent invents /opt/data/projects (inside Hermes home) as a workaround.
-      # Keep /opt/data first so cron, memories, and profile state still write.
-      # Add any new writable bind here; do not add /opt/skills (that mount is ro).
+      # patch then hard-block every other path, even when the shell is on the
+      # SSH worker. Keep the worker paths listed so remote writes are allowed.
+      # Do not add /opt/skills (read-only) or the SSH private key.
       # Coding roots: primary OPENCODE_WORKSPACE_HOST plus optional CODING_EXTRA_ROOTS
       # (colon-prefixed, e.g. :/Users/you/other-repo) from make coding-root-add.
       - HERMES_WRITE_SAFE_ROOT=/opt/data:/opt/projects:/opt/voice:/opt/memory:${OPENCODE_WORKSPACE_HOST}${CODING_EXTRA_ROOTS:-}
@@ -752,13 +817,16 @@ services:
         coding_get_task_status / coding_get_task_result / coding_continue_task.
         If a path is outside coding roots, ask the user to grant access and tell
         them to run: make coding-root-add DIR=<absolute-path>
-        then recreate hermes/opencode/opencode-mcp after they confirm.
+        then recreate the container that mounts that path (hermes-worker when
+        the terminal backend is ssh, hermes when it is local) along with
+        opencode/opencode-mcp after they confirm.
         Context roots (host absolute paths, read-only notes — not coding
         targets and not writable): ${CONTEXT_EXTRA_ROOTS:-none}. Open INDEX.md
         paths exactly as written. Do not prefix /opt/projects onto absolute
         host paths. If a listed extra-root path is missing, ask the user to
         run: make context-root-add DIR=<absolute-path>
-        then recreate hermes after they confirm.
+        then recreate the container that mounts that path (hermes-worker when
+        the terminal backend is ssh, hermes when it is local) after they confirm.
         Active knowledge base (LightRAG WORKSPACE): ${WORKSPACE}. Host inputs for
         that corpus live under ASSISTANT_DATA_ROOT/inputs/${WORKSPACE}/ (the
         inputs mount). For knowledge questions stay on LightRAG before web
@@ -798,16 +866,10 @@ services:
       - ./data/hermes/memories:/opt/data/profiles/browser/memories
       # Repo-shipped skills. Read-only, because Hermes draws no write boundary
       # around external skill dirs; the ro flag is what keeps skill_manage out.
+      # The worker has the same tree so a remote read_file of a skill works.
+      # Workspace mounts (projects, voice, memory, coding root) and the SSH
+      # worker key are added by the terminal backend fragment.
       - ./compose/hermes/skills:/opt/skills:ro
-      # Writing-voice corpora (under ASSISTANT_DATA_ROOT). Writable: calibration writes STYLE.md.
-      - ${ASSISTANT_DATA_ROOT:-./data}/voice:/opt/voice
-      # Per-project working directories (under ASSISTANT_DATA_ROOT). Writable: agents draft here.
-      - ${ASSISTANT_DATA_ROOT:-./data}/projects:/opt/projects
-      # Curated long-form memory (under ASSISTANT_DATA_ROOT). Writable: the working-memory skill.
-      - ${ASSISTANT_DATA_ROOT:-./data}/memory:/opt/memory
-      # Shared coding root (same absolute host path as OpenCode). Extra roots are
-      # added via docker-compose.override.yml by make coding-root-add.
-      - ${OPENCODE_WORKSPACE_HOST}:${OPENCODE_WORKSPACE_HOST}
       # Relax intent-ack detection for browser/WebUI (LM Studio narration stalls).
       - ./compose/hermes/patch-intent-ack-continuation.py:/bootstrap/patch-intent-ack-continuation.py:ro
       - ./compose/hermes/03-patch-intent-ack.sh:/etc/cont-init.d/03-patch-intent-ack:ro
@@ -824,12 +886,18 @@ services:
       # Compatibility overlays — Hermes upstream closed content promotion (#29115).
       - ./compose/hermes/text_tool_call_recovery.py:/bootstrap/text_tool_call_recovery.py:ro
       - ./compose/hermes/patch-text-tool-call-recovery.py:/bootstrap/patch-text-tool-call-recovery.py:ro
+      - ./compose/hermes/fabricated_result.py:/bootstrap/fabricated_result.py:ro
+      - ./compose/hermes/patch-fabricated-result.py:/bootstrap/patch-fabricated-result.py:ro
       - ./compose/hermes/patch-openrouter-empty-stream.py:/bootstrap/patch-openrouter-empty-stream.py:ro
       - ./compose/hermes/patch-block-native-web-tools.py:/bootstrap/patch-block-native-web-tools.py:ro
       - ./compose/hermes/patch-tool-call-flat-args.py:/bootstrap/patch-tool-call-flat-args.py:ro
       - ./compose/hermes/tool_eval_trace.py:/bootstrap/tool_eval_trace.py:ro
       - ./compose/hermes/patch-tool-eval-trace.py:/bootstrap/patch-tool-eval-trace.py:ro
       - ./compose/hermes/patch-agent-browser-npx.py:/bootstrap/patch-agent-browser-npx.py:ro
+      - ./compose/hermes/patch-browser-exec-hint.py:/bootstrap/patch-browser-exec-hint.py:ro
+      - ./compose/hermes/history_budget.py:/bootstrap/history_budget.py:ro
+      - ./compose/hermes/history_budget_hook.py:/bootstrap/history_budget_hook.py:ro
+      - ./compose/hermes/patch-history-budget.py:/bootstrap/patch-history-budget.py:ro
       - ./compose/hermes/05-patch-tool-calling.sh:/etc/cont-init.d/05-patch-tool-calling:ro
       - ./compose/hermes/08-warmup-agent-browser.sh:/etc/cont-init.d/08-warmup-agent-browser:ro
       # FS library: immediate /opt/projects children → projects.list / projects.tree.
@@ -857,6 +925,8 @@ services:
       # hermes boots or its gateway stays down until the next restart.
       hermes-browser-bootstrap:
         condition: service_completed_successfully
+      llm-proxy:
+        condition: service_healthy
       # Optional: only present when the `rag` profile is enabled.
       lightrag-mcp:
         condition: service_healthy

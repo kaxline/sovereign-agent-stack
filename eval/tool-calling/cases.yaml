@@ -46,6 +46,20 @@ cases:
       - outcome: text_only
     notes: Pass if any listing tool dispatched. Fail on tool_turns=0 / text_only.
 
+  - id: write-file
+    gate: core
+    prompt: |
+      [eval:write-file] Create the file /tmp/assistant-tool-eval-write.txt with exactly the contents aurora-tool-eval-write and nothing else. Use a file tool. Do not claim the file exists unless a tool wrote it.
+    pass_any:
+      - write_file
+      - patch
+      - terminal
+    fail_if:
+      - outcome: text_only
+    expect_file: /tmp/assistant-tool-eval-write.txt
+    expect_content: aurora-tool-eval-write
+    notes: Pass only if a write tool ran and the file bytes match. Prose success with no tool is text_only.
+
   - id: remember
     gate: core
     prompt: |

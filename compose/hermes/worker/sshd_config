@@ -1,0 +1,16 @@
+Port 22
+ListenAddress 0.0.0.0
+
+HostKey /etc/ssh/ssh_host_ed25519_key
+HostKey /etc/ssh/ssh_host_rsa_key
+
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+AuthenticationMethods publickey
+AuthorizedKeysFile /etc/hermes-worker/authorized_keys
+AllowUsers hermes
+AcceptEnv none
+PidFile /run/sshd.pid
+Subsystem sftp internal-sftp

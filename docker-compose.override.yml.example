@@ -2,11 +2,14 @@
 # Compose loads that file automatically alongside docker-compose.yml.
 #
 # OpenCode and Hermes share coding roots. The primary root is
-# OPENCODE_WORKSPACE_HOST (mounted in docker-compose.yml). Extra roots added via
-# `make coding-root-add DIR=...` append matching volume lines under both
-# services.hermes and services.opencode below.
+# OPENCODE_WORKSPACE_HOST (mounted in the terminal backend fragment). Extra
+# roots added via `make coding-root-add DIR=...` append matching volume lines
+# under the terminal service and services.opencode below. With
+# HERMES_TERMINAL_BACKEND=ssh (the default) that service is hermes-worker.
+# With local, it is hermes. make ensure-local moves existing extra-root binds
+# when the value changes. Do not add coding or context binds to the other one.
 #
-# OpenCode (and Hermes, for the same paths) have full read/write access to
+# OpenCode and the terminal backend have full read/write access to
 # everything under each coding root. When a root is a parent folder holding many
 # projects, mount a blank file over each secret so the agent sees an empty file
 # instead of live credentials. The mount is read-only, so the agent cannot
@@ -31,13 +34,13 @@ services:
       - ./compose/opencode/blank:/Users/you/code/assistant/data/hermes/profiles/api-server/.env:ro
       - ./compose/opencode/blank:/Users/you/code/my-project/.env:ro
   # Extra coding roots (example — usually written by make coding-root-add):
-  # hermes:
+  # hermes-worker:
   #   volumes:
   #     - /Users/you/other-repo:/Users/you/other-repo
   # opencode:
   #   volumes:
   #     - /Users/you/other-repo:/Users/you/other-repo
-  # Extra context roots (Hermes read-only — make context-root-add):
-  # hermes:
+  # Extra context roots (worker read-only — make context-root-add):
+  # hermes-worker:
   #   volumes:
   #     - /Users/you/Notes/this-project:/Users/you/Notes/this-project:ro

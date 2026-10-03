@@ -206,11 +206,33 @@ base = json.loads(Path(sys.argv[1]).read_text())
 local_path = Path(sys.argv[2])
 local = json.loads(local_path.read_text())
 perm = base.get("permission")
+changed = False
 if perm and local.get("permission") != perm:
     local["permission"] = perm
+    changed = True
+if changed:
     local_path.write_text(json.dumps(local, indent=2) + "\n")
 PY
   fi
+  python3 - "$local_cfg" <<'PY'
+import json, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+cfg = json.loads(path.read_text())
+proxy = "http://llm-proxy:4000/v1"
+providers = cfg.get("provider") or {}
+for block in providers.values():
+    if not isinstance(block, dict):
+        continue
+    options = block.get("options")
+    if not isinstance(options, dict):
+        options = {}
+        block["options"] = options
+    options["baseURL"] = proxy
+    options["apiKey"] = "local-llm"
+path.write_text(json.dumps(cfg, indent=2) + "\n")
+PY
+  log "Pointed OpenCode providers at llm-proxy"
 }
 
 setup_rag_profile() {
@@ -269,6 +291,11 @@ setup_ollama_profile() {
   upsert_env .env EMBEDDING_BINDING_HOST http://ollama:11434
   upsert_env .env EMBEDDING_BINDING_API_KEY ""
 
+  # Native Ollama has no /v1, so LightRAG talks to it directly. Hermes,
+  # OpenCode, and GPT Researcher still use the proxy, which adds /v1.
+  upsert_env .env LIGHTRAG_LLM_CLIENT_HOST http://ollama:11434
+  upsert_env .env EMBEDDING_CLIENT_HOST http://ollama:11434
+
   upsert_env .env OPENAI_BASE_URL http://ollama:11434/v1
   upsert_env .env OPENAI_API_KEY ollama
   upsert_env .env FAST_LLM openai:qwen2.5:7b-instruct
@@ -277,6 +304,23 @@ setup_ollama_profile() {
   upsert_env .env EMBEDDING openai:nomic-embed-text
 
   log "Pointed LLM/embedding bindings at in-compose Ollama (http://ollama:11434)"
+}
+
+# ed25519 key for terminal.backend ssh. The private key is mounted only into
+# hermes. The public key is the worker's authorized_keys. Not a secret of the
+# host .env, and never written into the worker environment.
+ensure_hermes_worker_key() {
+  local dir="$ROOT/compose/hermes/worker/ssh"
+  local key="$dir/id_ed25519"
+  mkdir -p "$dir"
+  if [[ ! -f "$key" ]]; then
+    ssh-keygen -t ed25519 -f "$key" -N "" -C hermes-worker
+    log "Created hermes-worker SSH key"
+  else
+    log "Keeping existing hermes-worker SSH key"
+  fi
+  chmod 600 "$key"
+  chmod 644 "${key}.pub"
 }
 
 ensure_hermes_env_files() {
@@ -637,6 +681,7 @@ set_env_if_placeholder .env N8N_USER_MANAGEMENT_JWT_SECRET "$(rand_hex 16)"
 # which takes the hermes healthcheck down with it.
 set_env_if_placeholder .env HERMES_DASHBOARD_PASSWORD "$(rand_hex 16)"
 set_env_if_placeholder .env HERMES_DASHBOARD_AUTH_SECRET "$(rand_hex 32)"
+set_env_if_placeholder .env LLM_PROXY_ADMIN_TOKEN "$(rand_hex 32)"
 
 SEARXNG_SECRET="$(grep '^SEARXNG_SECRET=' .env | head -1 | cut -d= -f2- || true)"
 if [[ -z "$SEARXNG_SECRET" || "$SEARXNG_SECRET" == change-me* ]]; then
@@ -748,6 +793,7 @@ fi
 
 # Hermes env files are required bind-mount sources for the core profile.
 ensure_hermes_env_files
+ensure_hermes_worker_key
 ensure_opencode_local_config
 
 # LightRAG MCP stays off until rag is enabled (avoids connect timeouts on core-only).
@@ -760,6 +806,7 @@ set_env_if_missing .env CALDAV_MCP_ENABLED 0
 set_env_if_missing .env OPENCODE_MCP_ENABLED 0
 set_env_if_missing .env CODING_EXTRA_ROOTS ""
 set_env_if_missing .env CONTEXT_EXTRA_ROOTS ""
+set_env_if_missing .env HERMES_TERMINAL_BACKEND ssh
 
 # Signal daemon off by default; sync profile + data/hermes/.env from the toggle.
 set_env_if_missing .env HERMES_SIGNAL_ENABLED 0
@@ -769,6 +816,7 @@ set_env_if_missing .env SIGNAL_CLI_IMAGE "registry.gitlab.com/packaging/signal-c
 # Buzz off by default; independent agents are operator-local under data/hermes/.
 set_env_if_missing .env HERMES_BUZZ_ENABLED 0
 ./scripts/sync-buzz-profile.sh
+./scripts/sync-terminal-backend.sh
 
 # --- Optional profiles ---
 if [[ "$SETUP_RAG" -eq 1 ]]; then

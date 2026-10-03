@@ -246,6 +246,160 @@ hermes_config_set() {
   fi
 }
 
+# bot_desktop.placement=auto can start the browser on the SSH backend, which
+# has no Node or browser. gateway keeps it in this container. If the CLI
+# rejects the key, write the YAML and continue.
+set_bot_desktop_placement() {
+  _sbdp_profile="$1"
+  _sbdp_value="$2"
+  if hermes_config_set "$_sbdp_profile" bot_desktop.placement "$_sbdp_value"; then
+    return 0
+  fi
+  log "hermes config set rejected bot_desktop.placement; writing YAML for '${_sbdp_profile:-default}'"
+  _sbdp_cfg="$(config_path_for "$_sbdp_profile")"
+  if [ ! -f "$_sbdp_cfg" ]; then
+    log "No config at ${_sbdp_cfg}; bot_desktop.placement was not written"
+    return 0
+  fi
+  python3 - "$_sbdp_cfg" "$_sbdp_value" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+from utils import atomic_yaml_write
+
+path = Path(sys.argv[1])
+value = sys.argv[2]
+data = yaml.safe_load(path.read_text()) or {}
+bot = data.get("bot_desktop")
+if not isinstance(bot, dict):
+    bot = {}
+if bot.get("placement") == value:
+    print(f"bot_desktop.placement already {value}")
+else:
+    bot["placement"] = value
+    data["bot_desktop"] = bot
+    atomic_yaml_write(path, data)
+    print(f"set bot_desktop.placement={value}")
+PY
+}
+
+# Point shell and file tools at hermes-worker. The private key mount is
+# read-only; cont-init copies it to this path with mode 600. Unset
+# env_passthrough so the agent environment cannot ride along with ssh.
+configure_terminal_ssh() {
+  _cts_profile="$1"
+  log "Terminal backend ssh for profile '${_cts_profile:-default}'"
+  hermes_config_set "$_cts_profile" terminal.backend ssh
+  hermes_config_set "$_cts_profile" terminal.ssh_host hermes-worker
+  hermes_config_set "$_cts_profile" terminal.ssh_user hermes
+  hermes_config_set "$_cts_profile" terminal.ssh_port 22
+  hermes_config_set "$_cts_profile" terminal.ssh_key /var/lib/hermes-worker-key/id_ed25519
+  hermes_config_set "$_cts_profile" terminal.cwd /opt/projects
+  set_bot_desktop_placement "$_cts_profile" gateway
+  _cts_cfg="$(config_path_for "$_cts_profile")"
+  if [ -f "$_cts_cfg" ]; then
+    python3 - "$_cts_cfg" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+from utils import atomic_yaml_write
+
+path = Path(sys.argv[1])
+data = yaml.safe_load(path.read_text()) or {}
+terminal = data.get("terminal")
+if isinstance(terminal, dict) and "env_passthrough" in terminal:
+    terminal.pop("env_passthrough", None)
+    data["terminal"] = terminal
+    atomic_yaml_write(path, data)
+    print("unset terminal.env_passthrough")
+PY
+  fi
+}
+
+# Escape hatch. Drop leftover ssh keys so a previous ssh profile cannot
+# keep sending the shell to a worker this mode does not start.
+configure_terminal_local() {
+  _ctl_profile="$1"
+  log "Terminal backend local for profile '${_ctl_profile:-default}'"
+  hermes_config_set "$_ctl_profile" terminal.backend local
+  set_bot_desktop_placement "$_ctl_profile" auto
+  _ctl_cfg="$(config_path_for "$_ctl_profile")"
+  if [ -f "$_ctl_cfg" ]; then
+    python3 - "$_ctl_cfg" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+from utils import atomic_yaml_write
+
+path = Path(sys.argv[1])
+data = yaml.safe_load(path.read_text()) or {}
+terminal = data.get("terminal")
+if not isinstance(terminal, dict):
+    raise SystemExit(0)
+removed = []
+for key in ("ssh_host", "ssh_user", "ssh_port", "ssh_key", "env_passthrough"):
+    if key in terminal:
+        terminal.pop(key, None)
+        removed.append(key)
+if removed:
+    data["terminal"] = terminal
+    atomic_yaml_write(path, data)
+    print("unset " + ", ".join("terminal." + key for key in removed))
+PY
+  fi
+}
+
+apply_terminal_backend_all_profiles() {
+  _atb_backend="${HERMES_TERMINAL_BACKEND:-ssh}"
+  case "$_atb_backend" in
+    ssh) _atb_fn=configure_terminal_ssh ;;
+    local) _atb_fn=configure_terminal_local ;;
+    *)
+      log "HERMES_TERMINAL_BACKEND must be ssh or local (got ${_atb_backend})"
+      exit 1
+      ;;
+  esac
+  "$_atb_fn" ""
+  if [ -n "$PROFILE" ]; then
+    "$_atb_fn" "$PROFILE"
+  fi
+  if [ -d "${HERMES_HOME}/profiles" ]; then
+    for _atb_dir in "${HERMES_HOME}/profiles"/*; do
+      [ -d "$_atb_dir" ] || continue
+      _atb_name="$(basename "$_atb_dir")"
+      [ "$_atb_name" = "$PROFILE" ] && continue
+      "$_atb_fn" "$_atb_name"
+    done
+  fi
+}
+
+# Model calls go to llm-proxy. The placeholder is not a secret. The real
+# key stays on the proxy. Same profile sweep as the SSH backend.
+configure_model_proxy() {
+  _cmp_profile="$1"
+  log "Model proxy for profile '${_cmp_profile:-default}'"
+  hermes_config_set "$_cmp_profile" model.base_url http://llm-proxy:4000/v1
+  hermes_config_set "$_cmp_profile" model.api_key local-llm
+}
+
+apply_model_proxy_all_profiles() {
+  configure_model_proxy ""
+  if [ -n "$PROFILE" ]; then
+    configure_model_proxy "$PROFILE"
+  fi
+  if [ -d "${HERMES_HOME}/profiles" ]; then
+    for _amp_dir in "${HERMES_HOME}/profiles"/*; do
+      [ -d "$_amp_dir" ] || continue
+      _amp_name="$(basename "$_amp_dir")"
+      [ "$_amp_name" = "$PROFILE" ] && continue
+      configure_model_proxy "$_amp_name"
+    done
+  fi
+}
+
 # Keep named tools in the model-visible schema when tool_search is active.
 # Local models often describe-then-stop on deferred MCP tools; pinning avoids
 # the tool_search → tool_describe → tool_call three-step for stack paths we
@@ -511,30 +665,48 @@ register_opencode_mcp_servers() {
     coding_wait_for_task coding_get_task_result coding_continue_task
 }
 
+# Slug personal -> CALDAV_PERSONAL_PASSWORD. Hyphens become underscores.
+caldav_password_env_key() {
+  _cpek_slug="$1"
+  _cpek_name="$(printf '%s' "$_cpek_slug" | tr '[:lower:]-' '[:upper:]_')"
+  printf 'CALDAV_%s_PASSWORD' "$_cpek_name"
+}
+
+# Default profile secrets live in HERMES_HOME/.env. Named profiles do not
+# inherit that file, so each registration writes its own copy.
+caldav_profile_env_file() {
+  if [ -z "$1" ]; then
+    printf '%s\n' "$DEFAULT_ENV"
+  else
+    printf '%s/profiles/%s/.env\n' "$HERMES_HOME" "$1"
+  fi
+}
+
 # Register one CalDAV account as mcp_servers.caldav-<slug> with X-Caldav-* headers.
 # hermes config set cannot write nested header maps, so this uses atomic_yaml_write.
+# The password argument is a ${CALDAV_<SLUG>_PASSWORD} reference, not the secret.
 #
-# Usage: register_caldav_account <profile> <slug> <url> <username> <password> <timeout> <connect_timeout> [tool...]
+# Usage: register_caldav_account <profile> <slug> <url> <username> <password-ref> <timeout> <connect_timeout> [tool...]
 register_caldav_account() {
   _rca_profile="$1"
   _rca_slug="$2"
   _rca_url="$3"
   _rca_user="$4"
-  _rca_pass="$5"
+  _rca_pass_ref="$5"
   _rca_timeout="$6"
   _rca_connect="$7"
   shift 7
   _rca_key="caldav-${_rca_slug}"
   _rca_cfg="$(config_path_for "$_rca_profile")"
   log "Registering CalDAV MCP server '${_rca_key}' for profile '${_rca_profile:-default}'"
-  _out="$(python3 - "$_rca_cfg" "$_rca_key" "$CALDAV_MCP_URL" "$_rca_url" "$_rca_user" "$_rca_pass" \
+  _out="$(python3 - "$_rca_cfg" "$_rca_key" "$CALDAV_MCP_URL" "$_rca_url" "$_rca_user" "$_rca_pass_ref" \
     "$_rca_timeout" "$_rca_connect" "$@" <<'PY'
 import sys
 sys.path.insert(0, "/opt/hermes")
 import yaml
 from utils import atomic_yaml_write
 
-cfg_path, key, mcp_url, caldav_url, username, password, timeout, connect_timeout = sys.argv[1:9]
+cfg_path, key, mcp_url, caldav_url, username, password_ref, timeout, connect_timeout = sys.argv[1:9]
 tools = sys.argv[9:]
 
 try:
@@ -558,7 +730,7 @@ entry["connect_timeout"] = int(connect_timeout) if str(connect_timeout).isdigit(
 entry["headers"] = {
     "X-Caldav-Url": caldav_url,
     "X-Caldav-Username": username,
-    "X-Caldav-Password": password,
+    "X-Caldav-Password": password_ref,
 }
 if tools:
     tools_block = entry.get("tools")
@@ -608,14 +780,31 @@ for key in list(servers):
     if key in keep_keys:
         continue
     del servers[key]
-    removed.append(key)
+    removed.append(key[len("caldav-"):])
 
 if removed:
     atomic_yaml_write(cfg_path, config)
-    print("Removed stale CalDAV MCP entries: " + ", ".join(sorted(removed)))
+    print("Removed stale CalDAV MCP entries: " + ", ".join("caldav-" + s for s in sorted(removed)))
+    for slug in sorted(removed):
+        print("REMOVED_SLUG " + slug)
 PY
 )"
-  if [ -n "$_out" ]; then log "$_out"; fi
+  if [ -n "$_out" ]; then
+    _rec_env="$(caldav_profile_env_file "$_rec_profile")"
+    printf '%s\n' "$_out" | while IFS= read -r _rec_line; do
+      case "$_rec_line" in
+        REMOVED_SLUG\ *)
+          _rec_slug="${_rec_line#REMOVED_SLUG }"
+          _rec_key="$(caldav_password_env_key "$_rec_slug")"
+          remove_env_key "$_rec_env" "$_rec_key"
+          log "Removed ${_rec_key} from ${_rec_env}"
+          ;;
+        *)
+          log "$_rec_line"
+          ;;
+      esac
+    done
+  fi
 }
 
 # Discover compose/caldav-mcp/accounts/*.env and register each as caldav-<slug>.
@@ -724,8 +913,13 @@ register_caldav_mcp_servers() {
         ;;
     esac
 
+    _rcms_env_key="$(caldav_password_env_key "$_rcms_slug")"
+    _rcms_pass_ref="\${${_rcms_env_key}}"
+    _rcms_env_file="$(caldav_profile_env_file "$_rcms_profile")"
+    mkdir -p "$(dirname "$_rcms_env_file")"
+    upsert_env "$_rcms_env_file" "$_rcms_env_key" "$_rcms_pass"
     register_caldav_account "$_rcms_profile" "$_rcms_slug" \
-      "$_rcms_url" "$_rcms_user" "$_rcms_pass" \
+      "$_rcms_url" "$_rcms_user" "$_rcms_pass_ref" \
       "$CALDAV_MCP_TIMEOUT" "$CALDAV_MCP_CONNECT_TIMEOUT" "$@"
     _rcms_slugs="${_rcms_slugs} ${_rcms_slug}"
     _rcms_count=$((_rcms_count + 1))
@@ -755,6 +949,12 @@ set_yaml_list "$(config_path_for "")" "skills.external_dirs" "$SKILLS_EXTERNAL_D
 
 log "Setting memory.nudge_interval=${INTERACTIVE_MEMORY_NUDGE} on default profile"
 hermes_config_set "" "memory.nudge_interval" "$INTERACTIVE_MEMORY_NUDGE"
+
+# Narrated intent ("I'll …") with finish_reason=stop and no tool call.
+# Browser sets this on its own profile. Default serves Boundary, the
+# dashboard, and the CLI. Leave api-server alone (unattended turn cap).
+log "Setting agent.intent_ack_continuation=true on default profile"
+hermes_config_set "" "agent.intent_ack_continuation" "true"
 
 # --- Register web-reading MCP servers (default profile) ---
 # Same rationale as the skills registration: dashboard and CLI sessions get URL
@@ -971,6 +1171,9 @@ else:
 PY
   fi
 fi
+
+apply_terminal_backend_all_profiles
+apply_model_proxy_all_profiles
 
 log "Done: profile=${PROFILE} port=${API_PORT} max_turns=${MAX_TURNS} toolset=${API_TOOLSET}"
 log "API URL (host): http://localhost:${API_PORT}/v1"
