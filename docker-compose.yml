@@ -70,6 +70,9 @@ services:
       - LIGHTRAG_LLM_BINDING_API_KEY_FILE=${LIGHTRAG_LLM_BINDING_API_KEY_FILE:-}
       - EMBEDDING_BINDING_API_KEY_FILE=${EMBEDDING_BINDING_API_KEY_FILE:-}
       - LLM_PROXY_ADMIN_TOKEN=${LLM_PROXY_ADMIN_TOKEN:?set LLM_PROXY_ADMIN_TOKEN in .env}
+      # Routes (chat,lightrag,embed) that answer 503 until an admin push
+      # names them. For a downstream app that starts the proxy keyless.
+      - LLM_PROXY_AWAIT_PUSH=${LLM_PROXY_AWAIT_PUSH:-}
       - LLM_PROXY_PORT=4000
       - LLM_PROXY_ADMIN_PORT=4001
       - LLM_TIMEOUT=${LLM_TIMEOUT:-600}

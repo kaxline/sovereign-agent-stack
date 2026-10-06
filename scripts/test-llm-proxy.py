@@ -12,6 +12,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -329,6 +330,85 @@ def test_slow_headers_still_502(proxy) -> None:
         inference.shutdown()
 
 
+def test_admin_view_reports_restart(proxy) -> None:
+    table = proxy.Table(proxy.Route("", ""), proxy.Route("", ""), proxy.Route("", ""))
+    view = table.public_view()
+    assert set(view) == {"chat", "lightrag", "embed", "proxy"}
+    assert view["chat"] == {"url": "", "api_key_set": False, "pushed": False}
+    assert view["proxy"]["boot_id"] and isinstance(view["proxy"]["started_at"], int)
+    # An empty key still counts as pushed: a local server needs none.
+    table.update({"chat": {"url": "http://lmstudio.example/v1", "api_key": ""}})
+    view = table.public_view()
+    assert view["chat"]["pushed"] is True and view["chat"]["api_key_set"] is False
+    assert view["lightrag"]["pushed"] is False
+    other = proxy.Table(proxy.Route("", ""), proxy.Route("", ""), proxy.Route("", ""))
+    assert other.public_view()["proxy"]["boot_id"] != view["proxy"]["boot_id"]
+
+
+def test_await_push_env(proxy) -> None:
+    saved = dict(os.environ)
+    try:
+        os.environ["LLM_PROXY_AWAIT_PUSH"] = " Chat, lightrag ,bogus,"
+        assert proxy.await_push_routes() == ("chat", "lightrag")
+        os.environ["LLM_PROXY_AWAIT_PUSH"] = ""
+        assert proxy.await_push_routes() == ()
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+
+
+def test_await_push(proxy) -> None:
+    seen = []
+
+    class Upstream(BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):
+            return
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", "0") or "0"))
+            seen.append(self.headers.get("Authorization"))
+            payload = b"{}"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    upstream = serve(Upstream)
+    url = f"http://127.0.0.1:{upstream.server_address[1]}/v1"
+    table = proxy.Table(proxy.Route("", ""), proxy.Route("", ""), proxy.Route(url, ""), ("chat",))
+    proxy.InferenceHandler.table = table
+    proxy.InferenceHandler.upstream_timeout = 5
+    proxy.InferenceHandler.stream_idle_timeout = 5
+    inference = serve(proxy.InferenceHandler)
+    base = f"http://127.0.0.1:{inference.server_address[1]}"
+
+    def post(path: str) -> tuple[int, bytes]:
+        req = Request(base + path, data=b"{}", headers={"Authorization": "Bearer local-llm"}, method="POST")
+        try:
+            with urlopen(req, timeout=5) as resp:
+                return resp.status, resp.read()
+        except HTTPError as exc:
+            return exc.code, exc.read()
+
+    try:
+        # Health stays green with no keys and a route waiting for a push.
+        with urlopen(base + "/health", timeout=5) as resp:
+            assert resp.status == 200
+        status, body = post("/v1/chat/completions")
+        assert status == 503, status
+        assert b"route chat" in body and b"admin" in body
+        assert seen == []
+        # An unlisted route with an empty key is a local server, as before.
+        status, _ = post("/embed/v1/embeddings")
+        assert status == 200 and seen == [None]
+        table.update({"chat": {"url": url, "api_key": "pushed-secret"}})
+        status, _ = post("/v1/chat/completions")
+        assert status == 200 and seen[-1] == "Bearer pushed-secret"
+    finally:
+        upstream.shutdown()
+        inference.shutdown()
+
+
 def main() -> None:
     proxy = load_proxy()
     test_routes(proxy)
@@ -339,6 +419,9 @@ def main() -> None:
     test_stall_after_headers_drops_connection(proxy)
     test_client_leaving_closes_upstream(proxy)
     test_slow_headers_still_502(proxy)
+    test_admin_view_reports_restart(proxy)
+    test_await_push_env(proxy)
+    test_await_push(proxy)
     with tempfile.TemporaryDirectory() as tmp:
         test_key_files(proxy, Path(tmp))
     print("OK llm proxy")

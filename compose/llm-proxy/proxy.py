@@ -17,6 +17,13 @@ the body once headers are out. Either failure after headers drops the client
 connection, so the client sees a dead stream instead of a quiet one. A client
 that hangs up closes the upstream request too, so a single-slot model server
 stops working on a request nobody is reading.
+
+A downstream app may start the proxy with no keys and push them through the
+admin API. LLM_PROXY_AWAIT_PUSH lists routes (e.g. chat,lightrag) that answer
+503 until an admin POST names them, instead of reaching the upstream without
+a key. Unlisted routes keep the usual meaning of an empty key: a local server
+that needs none. GET /admin/upstreams reports a per-process boot_id so the
+admin client can tell the proxy restarted and push again.
 """
 
 from __future__ import annotations
@@ -30,6 +37,7 @@ import socket
 import sys
 import threading
 import time
+import uuid
 from http.client import HTTPConnection, HTTPSConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit, urlunsplit
@@ -62,14 +70,28 @@ class Route:
         self.api_key = api_key
 
 
+ROUTES = ("chat", "lightrag", "embed")
+
+
 class Table:
     """In-memory upstreams. Admin updates replace fields; they are not saved."""
 
-    def __init__(self, chat: Route, lightrag: Route, embed: Route) -> None:
+    def __init__(self, chat: Route, lightrag: Route, embed: Route, await_push: tuple[str, ...] = ()) -> None:
         self._lock = threading.Lock()
         self.chat = chat
         self.lightrag = lightrag
         self.embed = embed
+        self.await_push = frozenset(await_push)
+        # Routes named in an admin POST since this process started.
+        self.pushed: set[str] = set()
+        # Changes on every start, so an admin client can spot a restart.
+        self.boot_id = uuid.uuid4().hex
+        self.started_at = int(time.time())
+
+    def waiting(self, name: str) -> bool:
+        """True while a route listed in LLM_PROXY_AWAIT_PUSH has had no push."""
+        with self._lock:
+            return name in self.await_push and name not in self.pushed
 
     def route_for(self, name: str) -> Route:
         with self._lock:
@@ -99,10 +121,11 @@ class Table:
 
     def update(self, payload: dict) -> None:
         with self._lock:
-            for name in ("chat", "lightrag", "embed"):
+            for name in ROUTES:
                 item = payload.get(name)
                 if not isinstance(item, dict):
                     continue
+                self.pushed.add(name)
                 route = getattr(self, name)
                 if "url" in item and item["url"] is not None:
                     route.url = str(item["url"]).strip()
@@ -111,10 +134,16 @@ class Table:
 
     def public_view(self) -> dict:
         with self._lock:
-            return {
-                name: {"url": getattr(self, name).url, "api_key_set": bool(getattr(self, name).api_key)}
-                for name in ("chat", "lightrag", "embed")
+            view: dict = {
+                name: {
+                    "url": getattr(self, name).url,
+                    "api_key_set": bool(getattr(self, name).api_key),
+                    "pushed": name in self.pushed,
+                }
+                for name in ROUTES
             }
+            view["proxy"] = {"boot_id": self.boot_id, "started_at": self.started_at}
+            return view
 
 
 def join_upstream(upstream: str, remainder: str, query: str) -> str | None:
@@ -174,12 +203,25 @@ def initial_key(name: str) -> str:
     return os.environ.get(f"{ENV_PREFIXES[name]}_API_KEY", "")
 
 
+def await_push_routes() -> tuple[str, ...]:
+    names = []
+    for raw in os.environ.get("LLM_PROXY_AWAIT_PUSH", "").split(","):
+        name = raw.strip().lower()
+        if not name:
+            continue
+        if name not in ROUTES:
+            sys.stderr.write("llm-proxy: LLM_PROXY_AWAIT_PUSH: unknown route %r ignored\n" % name)
+            continue
+        names.append(name)
+    return tuple(names)
+
+
 def load_table() -> Table:
     routes = {
         name: Route(os.environ.get(f"{prefix}_HOST", ""), initial_key(name))
         for name, prefix in ENV_PREFIXES.items()
     }
-    return Table(routes["chat"], routes["lightrag"], routes["embed"])
+    return Table(routes["chat"], routes["lightrag"], routes["embed"], await_push_routes())
 
 
 def reload_key_files(table: Table) -> list[str]:
@@ -330,7 +372,16 @@ class InferenceHandler(BaseHTTPRequestHandler):
         if matched is None:
             self._text(404, "not found\n")
             return
-        target, api_key, _name = matched
+        target, api_key, name = matched
+        if self.table.waiting(name):
+            # The request body is not read, so do not reuse the connection.
+            self.close_connection = True
+            self._text(
+                503,
+                "llm-proxy: no upstream for route %s yet; the admin client pushes it "
+                "(POST /admin/upstreams)\n" % name,
+            )
+            return
         if not target:
             self._text(502, "upstream is not configured\n")
             return
@@ -495,6 +546,11 @@ def main() -> None:
         sys.stderr.write("llm-proxy: SIGHUP reloaded key files: %s\n" % (", ".join(reloaded) or "none"))
 
     signal.signal(signal.SIGHUP, on_hup)
+
+    if table.await_push:
+        sys.stderr.write(
+            "llm-proxy: waiting for an admin push on: %s\n" % ", ".join(sorted(table.await_push))
+        )
 
     threading.Thread(target=admin.serve_forever, daemon=True).start()
     sys.stderr.write("llm-proxy inference :%s admin :%s\n" % (infer_port, admin_port))
