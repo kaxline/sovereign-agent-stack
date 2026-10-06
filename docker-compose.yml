@@ -775,8 +775,8 @@ services:
       - API_SERVER_ENABLED=false
       # browser-harness (browser_exec) control sockets. The default is under
       # $HOME, i.e. data/hermes (virtiofs), where a socket left by an earlier
-      # container cannot be reused or unlinked (EOPNOTSUPP) and the session
-      # stays broken. /tmp is the container filesystem. SHARED keeps the
+      # container has failed with EOPNOTSUPP and left the session broken until
+      # it was removed on the host. /tmp is the container filesystem. SHARED keeps the
       # bu-<session> names so default and named sessions do not collide.
       # Logs and screenshots (BH_TMP_DIR) are plain files and stay put.
       - BH_RUNTIME_DIR=/tmp/browser-harness

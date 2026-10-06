@@ -414,8 +414,8 @@ if has_profile core \
     warn "agent-browser is not executable in the hermes container — docker compose restart hermes (do not reinstall Chromium)"
   fi
   # browser-harness control sockets must stay off virtiofs too. A socket left
-  # under data/hermes by an earlier container cannot be reused or unlinked from
-  # inside the next one (EOPNOTSUPP), so every browser_exec for that session fails.
+  # under data/hermes by an earlier container has failed with EOPNOTSUPP in the
+  # next one, and then every browser_exec for that session fails.
   _bh_runtime="$(docker compose exec -T -u hermes hermes printenv BH_RUNTIME_DIR 2>/dev/null || true)"
   if [[ "$_bh_runtime" == /tmp/* ]]; then
     ok "browser-harness runtime dir is ${_bh_runtime} (container filesystem)"
