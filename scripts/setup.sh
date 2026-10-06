@@ -298,13 +298,6 @@ setup_ollama_profile() {
   upsert_env .env LIGHTRAG_LLM_CLIENT_HOST http://ollama:11434
   upsert_env .env EMBEDDING_CLIENT_HOST http://ollama:11434
 
-  upsert_env .env OPENAI_BASE_URL http://ollama:11434/v1
-  upsert_env .env OPENAI_API_KEY ollama
-  upsert_env .env FAST_LLM openai:qwen2.5:7b-instruct
-  upsert_env .env SMART_LLM openai:qwen2.5:7b-instruct
-  upsert_env .env STRATEGIC_LLM openai:qwen2.5:7b-instruct
-  upsert_env .env EMBEDDING openai:nomic-embed-text
-
   log "Pointed LLM/embedding bindings at in-compose Ollama (http://ollama:11434)"
 }
 

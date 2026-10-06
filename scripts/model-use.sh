@@ -216,15 +216,6 @@ update_env_models() {
     upsert_env .env LIGHTRAG_LLM_MODEL "$MODEL"
     log ".env LIGHTRAG_LLM_MODEL=${MODEL} (was: ${prev:-<unset>})"
   fi
-
-  # Keep explicit GPT Researcher overrides in sync when present.
-  local gptr_prefix="openai:${MODEL}"
-  if grep -q '^FAST_LLM=' .env 2>/dev/null; then
-    upsert_env .env FAST_LLM "$gptr_prefix"
-    upsert_env .env SMART_LLM "$gptr_prefix"
-    upsert_env .env STRATEGIC_LLM "$gptr_prefix"
-    log ".env FAST/SMART/STRATEGIC_LLM synced"
-  fi
 }
 
 while [[ $# -gt 0 ]]; do
