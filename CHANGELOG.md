@@ -16,6 +16,15 @@ the stack under another app.
 | `HERMES_STREAM_RETRIES` | `1` | Hermes reconnects per failed stream (was Hermes' default, 2) |
 | `HERMES_PROXY_STALE_TIMEOUT` | 300 local / 180 cloud | `agent.local_stream_stale_timeout` on every bootstrapped profile (was 900) |
 | `HERMES_BROWSER_AUTO_TITLE` | `auto` | WebUI auto-titling: off for a local upstream, on for a cloud one |
+| `LLM_PROXY_AWAIT_PUSH` | empty | llm-proxy routes that answer 503 until an admin push names them |
+
+### Removed `.env` keys
+
+`setup.sh --ollama` no longer writes `OPENAI_BASE_URL`, `OPENAI_API_KEY`,
+`FAST_LLM`, `SMART_LLM`, `STRATEGIC_LLM` or `EMBEDDING`, and `.env.example`
+no longer lists them. Compose sets them for `gpt-researcher` from `LLM_MODEL`
+and `EMBEDDING_MODEL` and never read them from `.env`. You can delete them
+from an existing `.env`.
 
 ### Behaviour changes
 
@@ -31,6 +40,16 @@ These change defaults. Set the keys above to get the old behaviour back.
 
 ### Changes
 
+- **llm-proxy** admin responses (`GET`/`POST /admin/upstreams`) gain a
+  per-route `pushed` flag and a top-level `proxy` object with `boot_id` and
+  `started_at`. `boot_id` changes on every start, so an admin client can tell
+  the proxy restarted. Existing fields are unchanged.
+- **llm-proxy** can hold routes until an admin client pushes them
+  (`LLM_PROXY_AWAIT_PUSH`). A held route answers `503` with the reason
+  instead of reaching the upstream without a key. Off by default.
+- **docs/extending.md** documents starting the proxy with no key, the admin
+  API as a stable interface, and the Hermes settings a downstream app should
+  keep if it writes profile config itself.
 - **llm-proxy** forwards each upstream chunk as it arrives. It used to hold
   small SSE events until 8 KB had collected, so a slow model looked stalled.
 - **llm-proxy** drops the client connection when the upstream fails after the
