@@ -88,12 +88,9 @@ services:
   lightrag:
     profiles: ["rag"]
     container_name: ${CONTAINER_PREFIX:-}lightrag
-    # Local image patches OpenAI-compat response_format (json_object → json_schema).
-    build:
-      context: ./compose/lightrag
-      args:
-        LIGHTRAG_BASE_IMAGE: ${LIGHTRAG_BASE_IMAGE:-ghcr.io/hkuds/lightrag:v1.4.9.3}
-    image: ${IMAGE_PREFIX:-assistant}-lightrag:local
+    # Published image, unpatched. LIGHTRAG_BASE_IMAGE is the old name, kept so
+    # an existing .env still pins the same tag.
+    image: ${LIGHTRAG_IMAGE:-${LIGHTRAG_BASE_IMAGE:-ghcr.io/hkuds/lightrag:v1.4.9.3}}
     ports:
       - "127.0.0.1:${PORT:-9621}:9621"
     # Allowlist of what LightRAG reads. Optional storage backends stay unset
