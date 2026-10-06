@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -78,6 +79,35 @@ def test_admin_stays_in_memory(proxy, tmp: Path) -> None:
     assert before == after
 
 
+def test_key_files(proxy, tmp: Path) -> None:
+    key_path = tmp / "chat_key"
+    key_path.write_text("from-file\n")
+    saved = dict(os.environ)
+    try:
+        os.environ["LLM_BINDING_HOST"] = "http://chat.example/v1"
+        os.environ["LLM_BINDING_API_KEY"] = "from-env"
+        os.environ["LLM_BINDING_API_KEY_FILE"] = str(key_path)
+        os.environ["EMBEDDING_BINDING_HOST"] = "http://embed.example/v1"
+        os.environ["EMBEDDING_BINDING_API_KEY"] = "embed-env"
+        os.environ.pop("EMBEDDING_BINDING_API_KEY_FILE", None)
+        table = proxy.load_table()
+        # The file wins over the environment, trailing newline stripped.
+        assert table.match("/v1/models")[1] == "from-file"
+        # A pushed key on a route without a file survives a reload.
+        table.update({"embed": {"api_key": "embed-pushed"}})
+        key_path.write_text("rotated")
+        assert proxy.reload_key_files(table) == ["chat"]
+        assert table.match("/v1/models")[1] == "rotated"
+        assert table.match("/embed/v1/embeddings")[1] == "embed-pushed"
+        # An unreadable file keeps the last good key.
+        key_path.unlink()
+        assert proxy.reload_key_files(table) == []
+        assert table.match("/v1/models")[1] == "rotated"
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+
+
 def test_round_trip(proxy) -> None:
     seen = {}
 
@@ -135,6 +165,8 @@ def main() -> None:
     test_authorization(proxy)
     test_admin_stays_in_memory(proxy, Path(os.getcwd()))
     test_round_trip(proxy)
+    with tempfile.TemporaryDirectory() as tmp:
+        test_key_files(proxy, Path(tmp))
     print("OK llm proxy")
 
 

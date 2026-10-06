@@ -4,6 +4,12 @@
 Clients send a placeholder. This process replaces Authorization and streams
 the upstream response. Nothing here is written to disk. The admin listener
 updates the in-memory table only; a restart loads the environment again.
+
+Each key can come from a file instead of the environment: set
+LLM_BINDING_API_KEY_FILE (and the LIGHTRAG_/EMBEDDING_ equivalents) to a path
+such as /run/secrets/llm_key. SIGHUP or POST /admin/reload re-reads those
+files, so a key can rotate without recreating the container and never shows
+up in docker inspect.
 """
 
 from __future__ import annotations
@@ -11,6 +17,7 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import signal
 import sys
 import threading
 from http.client import HTTPConnection, HTTPSConnection
@@ -129,18 +136,58 @@ def join_upstream(upstream: str, remainder: str, query: str) -> str | None:
     return urlunsplit((parsed.scheme, host, path, query, ""))
 
 
+# Route name -> environment prefix for <prefix>_HOST and <prefix>_API_KEY[_FILE].
+ENV_PREFIXES = {
+    "chat": "LLM_BINDING",
+    "lightrag": "LIGHTRAG_LLM_BINDING",
+    "embed": "EMBEDDING_BINDING",
+}
+
+
+def key_file(name: str) -> str:
+    return os.environ.get(f"{ENV_PREFIXES[name]}_API_KEY_FILE", "").strip()
+
+
+def read_key_file(path: str) -> str | None:
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError as exc:
+        sys.stderr.write("llm-proxy: cannot read key file %s: %s\n" % (path, exc.strerror))
+        return None
+
+
+def initial_key(name: str) -> str:
+    path = key_file(name)
+    if path:
+        return read_key_file(path) or ""
+    return os.environ.get(f"{ENV_PREFIXES[name]}_API_KEY", "")
+
+
 def load_table() -> Table:
-    return Table(
-        Route(os.environ.get("LLM_BINDING_HOST", ""), os.environ.get("LLM_BINDING_API_KEY", "")),
-        Route(
-            os.environ.get("LIGHTRAG_LLM_BINDING_HOST", ""),
-            os.environ.get("LIGHTRAG_LLM_BINDING_API_KEY", ""),
-        ),
-        Route(
-            os.environ.get("EMBEDDING_BINDING_HOST", ""),
-            os.environ.get("EMBEDDING_BINDING_API_KEY", ""),
-        ),
-    )
+    routes = {
+        name: Route(os.environ.get(f"{prefix}_HOST", ""), initial_key(name))
+        for name, prefix in ENV_PREFIXES.items()
+    }
+    return Table(routes["chat"], routes["lightrag"], routes["embed"])
+
+
+def reload_key_files(table: Table) -> list[str]:
+    """Re-read every route whose key comes from a file. Returns the routes reloaded.
+
+    Routes without a *_FILE keep their current key, including one pushed
+    through the admin API. An unreadable file also keeps the current key, so
+    a non-atomic replace does not drop requests mid-rotation.
+    """
+    payload = {}
+    for name in ENV_PREFIXES:
+        path = key_file(name)
+        if path:
+            key = read_key_file(path)
+            if key is not None:
+                payload[name] = {"api_key": key}
+    table.update(payload)
+    return sorted(payload)
 
 
 def outbound_headers(inbound: list[tuple[str, str]], api_key: str) -> list[tuple[str, str]]:
@@ -286,6 +333,10 @@ class AdminHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         if not self._authorized():
             return
+        if urlsplit(self.path).path == "/admin/reload":
+            reloaded = reload_key_files(self.table)
+            self._json(200, {"reloaded": reloaded, "upstreams": self.table.public_view()})
+            return
         if urlsplit(self.path).path != "/admin/upstreams":
             self._json(404, {"error": "not found"})
             return
@@ -340,6 +391,12 @@ def main() -> None:
     admin.daemon_threads = True
     AdminHandler.table = table
     AdminHandler.token = token
+
+    def on_hup(signum, frame) -> None:
+        reloaded = reload_key_files(table)
+        sys.stderr.write("llm-proxy: SIGHUP reloaded key files: %s\n" % (", ".join(reloaded) or "none"))
+
+    signal.signal(signal.SIGHUP, on_hup)
 
     threading.Thread(target=admin.serve_forever, daemon=True).start()
     sys.stderr.write("llm-proxy inference :%s admin :%s\n" % (infer_port, admin_port))

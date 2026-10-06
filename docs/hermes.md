@@ -138,7 +138,7 @@ model:
   api_key: "local-llm"     # placeholder; the real key stays on llm-proxy
 ```
 
-`llm-proxy` reads `LLM_BINDING_HOST` and `LLM_BINDING_API_KEY` from the host `.env` and replaces the placeholder. LightRAG's own model uses `/lightrag/v1` on the same proxy. Embeddings use `/embed/v1`. The inference port is not published. A loopback admin API (`127.0.0.1:4001`, `POST /admin/upstreams`) can replace those upstreams in memory; a restart loads `.env` again. Nothing from that request is written to disk.
+`llm-proxy` reads `LLM_BINDING_HOST` and `LLM_BINDING_API_KEY` from the host `.env` and replaces the placeholder. LightRAG's own model uses `/lightrag/v1` on the same proxy. Embeddings use `/embed/v1`. The inference port is not published. A loopback admin API (`127.0.0.1:4001`, `POST /admin/upstreams`) can replace those upstreams in memory; a restart loads `.env` again. Nothing from that request is written to disk. To keep a key out of `.env` and `docker inspect`, set `LLM_BINDING_API_KEY_FILE` (or the `LIGHTRAG_`/`EMBEDDING_` equivalent) to a mounted file; `docker compose kill -s HUP llm-proxy` or `POST /admin/reload` re-reads it without a recreate.
 
 ### Example: LM Studio
 
