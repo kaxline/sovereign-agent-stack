@@ -6,6 +6,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 # shellcheck source=lib/data-root.sh
 source "${ROOT}/scripts/lib/data-root.sh"
+# shellcheck source=lib/python.sh
+source "${ROOT}/scripts/lib/python.sh"
 
 WORKSPACE=""
 WEBUI_TITLE=""
@@ -631,6 +633,7 @@ require_cmd docker
 require_cmd openssl
 docker compose version >/dev/null 2>&1 || die "docker compose is not available"
 require_cmd node
+require_python3
 
 if ! docker info >/dev/null 2>&1; then
   die "Docker daemon is not running"

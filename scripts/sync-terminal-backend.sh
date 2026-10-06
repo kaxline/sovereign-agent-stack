@@ -13,6 +13,8 @@ cd "$ROOT"
 
 # shellcheck source=lib/env.sh
 source "$SCRIPT_DIR/lib/env.sh"
+# shellcheck source=lib/python.sh
+source "$SCRIPT_DIR/lib/python.sh"
 
 log() { printf '==> %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -36,6 +38,8 @@ esac
 coding="$(env_get CODING_EXTRA_ROOTS)"
 context="$(env_get CONTEXT_EXTRA_ROOTS)"
 override="$ROOT/docker-compose.override.yml"
+
+require_python3
 
 python3 - "$override" "$backend" "$coding" "$context" <<'PY'
 import sys

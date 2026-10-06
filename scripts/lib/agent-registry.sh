@@ -7,6 +7,10 @@
 
 : "${ROOT:?ROOT must be set before sourcing agent-registry.sh}"
 
+# shellcheck source=python.sh
+source "${ROOT}/scripts/lib/python.sh"
+require_python3
+
 AGENT_REGISTRY_DIR="${ROOT}/data/hermes/agents"
 AGENT_REGISTRY_FILE="${AGENT_REGISTRY_DIR}/registry.json"
 
