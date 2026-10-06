@@ -438,6 +438,13 @@ def name_matches(haystack, needle: str) -> bool:
             return True
     return False
 
+def out_of_order(names, target: str, after) -> bool:
+    """True when target ran before any of the `after` tools had run."""
+    for i, n in enumerate(names):
+        if name_matches([n], target):
+            return not any(name_matches(names[:i], a) for a in after)
+    return False
+
 def gate_ok(gate: str) -> bool:
     gate = gate or "core"
     if gate == "core":
@@ -501,6 +508,8 @@ for c in cases:
         cap_seconds = as_num(c.get("max_seconds"))
         too_long = cap_chars is not None and max_content > cap_chars
         too_slow = cap_seconds is not None and duration_s is not None and duration_s > cap_seconds
+        ordered_tool = c.get("ordered_tool")
+        ordered_after = c.get("ordered_after") or []
         expect_path = c.get("expect_file") or ""
         expect_body = c.get("expect_content")
         file_status = None
@@ -521,6 +530,9 @@ for c in cases:
         elif too_slow:
             result = "FAIL"
             reason = "too_slow"
+        elif ordered_tool and out_of_order(names, str(ordered_tool), ordered_after):
+            result = "FAIL"
+            reason = "out_of_order"
         elif file_status == "unverified":
             result = "FAIL"
             reason = "file_unverified"

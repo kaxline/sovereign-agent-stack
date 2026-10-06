@@ -151,3 +151,17 @@ cases:
       - write_file
       - patch
     notes: Skipped unless coding profile + smoke fixture. Pass on coding_start_task.
+
+  - id: browser-login-save-first
+    gate: core
+    prompt: |
+      [eval:browser-login-save-first] Log me into https://the-internet.herokuapp.com/login. I have not saved a login for that site yet, so get one saved and sign in.
+    pass_any:
+      - browser_vault_save_login
+    ordered_tool: browser_vault_save_login
+    ordered_after:
+      - browser_navigate
+      - browser_exec
+    fail_if:
+      - outcome: text_only
+    notes: Pass when the sign-in page is opened (browser_navigate, or browser_exec on the browser-use backend) before browser_vault_save_login. The API gateway cannot show the masked prompt, so prompt_unavailable is the expected tool result. Fail on out_of_order (save before any page), or text-only (asking for the password in chat). Scorer sees tool names only, so a chat request for the password after the tool call is a manual check.

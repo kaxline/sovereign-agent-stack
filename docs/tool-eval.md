@@ -42,6 +42,7 @@ the same id in the trace file.
 | `kb-query` | rag | LightRAG `query_document` (harness inserts/deletes a temporary `aurora-kb-eval` doc) |
 | `coding-locate` | coding | `coding_list_roots` (use `make opencode-smoke-fixture` first); fail if text-only |
 | `coding-delegate` | coding | `coding_start_task` (use `make opencode-smoke-fixture` first) |
+| `browser-login-save-first` | core | `browser_vault_save_login`, only after `browser_navigate` / `browser_exec` opened the page (`ordered_tool` / `ordered_after`) |
 
 `kb-inventory` accepts any LightRAG read tool — catalog prompts against an empty
 KB are not a `query_document` miss. `kb-query` is the content gate. The scripted
@@ -134,6 +135,7 @@ Score prints a one-line reason when a case fails:
 | `too_long` | An assistant turn exceeded the case `max_chars` |
 | `too_slow` | Session span (first–last trace `ts`, else last-run `duration_s`) exceeded `max_seconds` |
 | `file_missing` | Expected write tool ran, but `expect_file` bytes do not match `expect_content` |
+| `out_of_order` | `ordered_tool` ran before any `ordered_after` tool had run |
 | `file_unverified` | `expect_file` case was attempted and the container file could not be read |
 | `recovered` / `rewritten` | Pass notes — text recovery or native-web rewrite helped |
 
