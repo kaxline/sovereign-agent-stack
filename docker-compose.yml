@@ -73,6 +73,9 @@ services:
       - LLM_PROXY_PORT=4000
       - LLM_PROXY_ADMIN_PORT=4001
       - LLM_TIMEOUT=${LLM_TIMEOUT:-600}
+      # Longest silent gap in a streamed body before the proxy drops it.
+      # Empty means LLM_TIMEOUT.
+      - LLM_STREAM_IDLE_TIMEOUT=${LLM_STREAM_IDLE_TIMEOUT:-}
     ports:
       # Admin only. Inference stays on the compose network.
       - "127.0.0.1:${LLM_PROXY_ADMIN_PORT:-4001}:4001"

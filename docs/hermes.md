@@ -140,6 +140,8 @@ model:
 
 `llm-proxy` reads `LLM_BINDING_HOST` and `LLM_BINDING_API_KEY` from the host `.env` and replaces the placeholder. LightRAG's own model uses `/lightrag/v1` on the same proxy. Embeddings use `/embed/v1`. The inference port is not published. A loopback admin API (`127.0.0.1:4001`, `POST /admin/upstreams`) can replace those upstreams in memory; a restart loads `.env` again. Nothing from that request is written to disk. To keep a key out of `.env` and `docker inspect`, set `LLM_BINDING_API_KEY_FILE` (or the `LIGHTRAG_`/`EMBEDDING_` equivalent) to a mounted file; `docker compose kill -s HUP llm-proxy` or `POST /admin/reload` re-reads it without a recreate.
 
+The proxy forwards each streamed chunk as it arrives. `LLM_TIMEOUT` (default 600s) bounds the wait for the upstream's first response, which includes prompt prefill. Once a reply is streaming, `LLM_STREAM_IDLE_TIMEOUT` (default: `LLM_TIMEOUT`) bounds a silent gap; past it the proxy drops the connection, so Hermes sees a failed stream instead of waiting on a quiet one. When a client disconnects, the proxy closes the upstream request too, so a model server that runs one request at a time does not keep working on it.
+
 ### Example: LM Studio
 
 Enable **Serve on Local Network**, then set `LLM_BINDING_HOST` in `.env` to `http://host.docker.internal:<port>/v1` and `LLM_BINDING_API_KEY` to the server's key (any non-empty string for a local server). Leave Hermes on `http://llm-proxy:4000/v1`.

@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Route selection, Authorization replacement, and in-memory admin updates."""
+"""Route selection, Authorization replacement, admin updates, and stream handling."""
 
 from __future__ import annotations
 
 import importlib.util
 import json
 import os
+import socket
 import tempfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.request import Request, urlopen
@@ -138,7 +140,8 @@ def test_round_trip(proxy) -> None:
         proxy.Route(f"http://127.0.0.1:{port}/v1", "embed-secret"),
     )
     proxy.InferenceHandler.table = table
-    proxy.InferenceHandler.timeout = 5
+    proxy.InferenceHandler.upstream_timeout = 5
+    proxy.InferenceHandler.stream_idle_timeout = 5
     inference = ThreadingHTTPServer(("127.0.0.1", 0), proxy.InferenceHandler)
     infer_port = inference.server_address[1]
     threading.Thread(target=inference.serve_forever, daemon=True).start()
@@ -159,12 +162,183 @@ def test_round_trip(proxy) -> None:
     inference.shutdown()
 
 
+class QuietServer(ThreadingHTTPServer):
+    # Dropped connections are the point of these tests; skip the tracebacks.
+    def handle_error(self, request, client_address):
+        return
+
+
+def serve(handler_cls) -> ThreadingHTTPServer:
+    server = QuietServer(("127.0.0.1", 0), handler_cls)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def start_proxy(proxy, upstream_port: int, upstream_timeout: float, idle_timeout: float) -> ThreadingHTTPServer:
+    proxy.InferenceHandler.table = proxy.Table(
+        proxy.Route(f"http://127.0.0.1:{upstream_port}/v1", ""),
+        proxy.Route("", ""),
+        proxy.Route("", ""),
+    )
+    proxy.InferenceHandler.upstream_timeout = upstream_timeout
+    proxy.InferenceHandler.stream_idle_timeout = idle_timeout
+    return serve(proxy.InferenceHandler)
+
+
+def open_stream(port: int) -> socket.socket:
+    sock = socket.create_connection(("127.0.0.1", port))
+    sock.sendall(b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\n{}")
+    return sock
+
+
+def read_until(sock: socket.socket, needle: bytes, timeout: float) -> bytes:
+    """Read until needle shows up, EOF, or timeout. Returns what arrived."""
+    sock.settimeout(timeout)
+    data = b""
+    deadline = time.monotonic() + timeout
+    while needle not in data and time.monotonic() < deadline:
+        try:
+            part = sock.recv(65536)
+        except socket.timeout:
+            break
+        if not part:
+            break
+        data += part
+    return data
+
+
+class ChunkedUpstream(BaseHTTPRequestHandler):
+    """Sends one SSE event, then waits on ``release`` before finishing."""
+
+    protocol_version = "HTTP/1.1"
+    release = threading.Event()
+
+    def log_message(self, fmt, *args):
+        return
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length", "0") or "0"))
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+        event = b'data: {"tok":0}\n\n'
+        self.wfile.write(b"%x\r\n%s\r\n" % (len(event), event))
+        self.wfile.flush()
+        if self.release.wait(5):
+            self.wfile.write(b"0\r\n\r\n")
+            self.wfile.flush()
+
+
+def test_streams_each_chunk(proxy) -> None:
+    # A small event must reach the client while the upstream is still open.
+    ChunkedUpstream.release = threading.Event()
+    upstream = serve(ChunkedUpstream)
+    inference = start_proxy(proxy, upstream.server_address[1], 5, 5)
+    sock = open_stream(inference.server_address[1])
+    try:
+        first = read_until(sock, b'"tok":0', 2)
+        assert b'"tok":0' in first, first
+        ChunkedUpstream.release.set()
+        rest = read_until(sock, b"0\r\n\r\n", 2)
+        assert (first + rest).endswith(b"0\r\n\r\n")
+    finally:
+        sock.close()
+        upstream.shutdown()
+        inference.shutdown()
+
+
+def test_stall_after_headers_drops_connection(proxy) -> None:
+    # Headers are out, then the upstream goes quiet. The client must get EOF
+    # with no terminating chunk and no 502 written into the body.
+    ChunkedUpstream.release = threading.Event()
+    upstream = serve(ChunkedUpstream)
+    inference = start_proxy(proxy, upstream.server_address[1], 5, 0.5)
+    sock = open_stream(inference.server_address[1])
+    try:
+        began = time.monotonic()
+        data = read_until(sock, b"\x00never", 3)
+        elapsed = time.monotonic() - began
+        assert elapsed < 2.5, "proxy kept a stalled stream open for %.1fs" % elapsed
+        assert b'"tok":0' in data
+        assert b"502" not in data and b"upstream request failed" not in data
+        assert not data.endswith(b"0\r\n\r\n")
+    finally:
+        ChunkedUpstream.release.set()
+        sock.close()
+        upstream.shutdown()
+        inference.shutdown()
+
+
+def test_client_leaving_closes_upstream(proxy) -> None:
+    # The client hangs up during prefill (no headers yet). The upstream
+    # request must be closed, not left running until LLM_TIMEOUT.
+    closed = threading.Event()
+
+    class Prefill(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, fmt, *args):
+            return
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", "0") or "0"))
+            self.connection.settimeout(5)
+            try:
+                if self.connection.recv(1, socket.MSG_PEEK) == b"":
+                    closed.set()
+            except OSError:
+                closed.set()
+            self.close_connection = True
+
+    upstream = serve(Prefill)
+    inference = start_proxy(proxy, upstream.server_address[1], 30, 30)
+    sock = open_stream(inference.server_address[1])
+    try:
+        time.sleep(0.3)
+        sock.close()
+        assert closed.wait(3), "upstream request stayed open after the client left"
+    finally:
+        upstream.shutdown()
+        inference.shutdown()
+
+
+def test_slow_headers_still_502(proxy) -> None:
+    # Before headers, a timeout is still reported as a plain 502.
+    class Slow(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, fmt, *args):
+            return
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", "0") or "0"))
+            time.sleep(2)
+            self.close_connection = True
+
+    upstream = serve(Slow)
+    inference = start_proxy(proxy, upstream.server_address[1], 0.5, 0.5)
+    sock = open_stream(inference.server_address[1])
+    try:
+        data = read_until(sock, b"upstream request failed", 3)
+        assert data.startswith(b"HTTP/1.1 502"), data
+    finally:
+        sock.close()
+        upstream.shutdown()
+        inference.shutdown()
+
+
 def main() -> None:
     proxy = load_proxy()
     test_routes(proxy)
     test_authorization(proxy)
     test_admin_stays_in_memory(proxy, Path(os.getcwd()))
     test_round_trip(proxy)
+    test_streams_each_chunk(proxy)
+    test_stall_after_headers_drops_connection(proxy)
+    test_client_leaving_closes_upstream(proxy)
+    test_slow_headers_still_502(proxy)
     with tempfile.TemporaryDirectory() as tmp:
         test_key_files(proxy, Path(tmp))
     print("OK llm proxy")

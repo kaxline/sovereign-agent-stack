@@ -6,6 +6,25 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
+## Unreleased
+
+### New optional `.env` keys
+
+| Key | Default | Purpose |
+|---|---|---|
+| `LLM_STREAM_IDLE_TIMEOUT` | `LLM_TIMEOUT` | Longest silent gap in a streamed reply before llm-proxy drops it |
+
+### Changes
+
+- **llm-proxy** forwards each upstream chunk as it arrives. It used to hold
+  small SSE events until 8 KB had collected, so a slow model looked stalled.
+- **llm-proxy** drops the client connection when the upstream fails after the
+  reply has started. It used to write a `502` status line into the middle of
+  the chunked body. Failures before the reply starts are still a plain `502`.
+- **llm-proxy** closes the upstream request when the client disconnects, even
+  during prefill when nothing is being written. A dropped request no longer
+  keeps a model server that runs one request at a time busy.
+
 ## v0.2.0 — 2026-10-06
 
 ### Upgrade steps

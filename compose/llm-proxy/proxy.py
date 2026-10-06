@@ -10,6 +10,13 @@ LLM_BINDING_API_KEY_FILE (and the LIGHTRAG_/EMBEDDING_ equivalents) to a path
 such as /run/secrets/llm_key. SIGHUP or POST /admin/reload re-reads those
 files, so a key can rotate without recreating the container and never shows
 up in docker inspect.
+
+LLM_TIMEOUT bounds the wait for upstream response headers, which covers
+prompt prefill. LLM_STREAM_IDLE_TIMEOUT (default: LLM_TIMEOUT) bounds a gap in
+the body once headers are out. Either failure after headers drops the client
+connection, so the client sees a dead stream instead of a quiet one. A client
+that hangs up closes the upstream request too, so a single-slot model server
+stops working on a request nobody is reading.
 """
 
 from __future__ import annotations
@@ -17,9 +24,12 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import select
 import signal
+import socket
 import sys
 import threading
+import time
 from http.client import HTTPConnection, HTTPSConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit, urlunsplit
@@ -222,9 +232,66 @@ def _request_path(url: str) -> str:
     return path
 
 
+class ClientWatcher:
+    """Close the upstream socket when the client hangs up.
+
+    While the model is prefilling, or between tokens, nothing is written to the
+    client, so a write error cannot reveal that it left. This polls the client
+    socket for EOF and shuts the upstream socket down, which unblocks the
+    handler's read and drops the upstream request.
+    """
+
+    POLL = 0.25
+
+    def __init__(self, client: socket.socket, upstream: socket.socket | None) -> None:
+        self._client = client
+        self._upstream = upstream
+        self._lock = threading.Lock()
+        self._stopped = False
+        self.client_gone = False
+        if upstream is not None:
+            threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self) -> None:
+        while True:
+            with self._lock:
+                if self._stopped:
+                    return
+            try:
+                readable, _, _ = select.select([self._client], [], [], self.POLL)
+                if not readable:
+                    continue
+                data = self._client.recv(1, socket.MSG_PEEK)
+            except (OSError, ValueError):
+                data = b""
+            if data:
+                # A pipelined request, not a hang-up. It cannot be told apart
+                # from here without consuming it, so stop watching.
+                return
+            with self._lock:
+                if self._stopped:
+                    return
+                self.client_gone = True
+                try:
+                    self._upstream.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+            return
+
+    def stop(self) -> None:
+        with self._lock:
+            self._stopped = True
+
+
 class InferenceHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     table: Table
+    # Wait for upstream response headers (covers prefill).
+    upstream_timeout: float = 600
+    # Longest gap between upstream body bytes once headers are out.
+    stream_idle_timeout: float = 600
+    # StreamRequestHandler's own attribute: the inbound socket timeout, which
+    # closes idle keep-alive connections and stalled request bodies.
     timeout: float = 600
 
     def log_message(self, fmt: str, *args) -> None:
@@ -270,8 +337,11 @@ class InferenceHandler(BaseHTTPRequestHandler):
         body = self._read_body()
         headers = outbound_headers(list(self.headers.items()), api_key)
         conn = None
+        watcher = None
+        started = False
+        began = time.monotonic()
         try:
-            conn = _connection(target, self.timeout)
+            conn = _connection(target, self.upstream_timeout)
             conn.putrequest(self.command, _request_path(target), skip_host=True, skip_accept_encoding=True)
             for key, value in headers:
                 conn.putheader(key, value)
@@ -279,7 +349,13 @@ class InferenceHandler(BaseHTTPRequestHandler):
             if body:
                 conn.putheader("Content-Length", str(len(body)))
             conn.endheaders(body if body else None)
+            # Keep our own reference: getresponse() drops conn.sock when the
+            # upstream will close, but the response still reads from it.
+            upstream_sock = conn.sock
+            watcher = ClientWatcher(self.connection, upstream_sock)
             resp = conn.getresponse()
+            if upstream_sock is not None:
+                upstream_sock.settimeout(self.stream_idle_timeout)
             self.send_response(resp.status)
             for key, value in resp.headers.items():
                 if key.lower() in HOP:
@@ -287,21 +363,40 @@ class InferenceHandler(BaseHTTPRequestHandler):
                 self.send_header(key, value)
             self.send_header("Transfer-Encoding", "chunked")
             self.end_headers()
+            started = True
             while True:
-                chunk = resp.read(8192)
+                # read1 returns what has arrived. read(n) would hold small SSE
+                # events until n bytes collect, which looks like a stall.
+                chunk = resp.read1(65536)
                 if not chunk:
                     break
                 self.wfile.write(b"%x\r\n%s\r\n" % (len(chunk), chunk))
                 self.wfile.flush()
+            if watcher.client_gone:
+                raise ConnectionError("client closed")
             self.wfile.write(b"0\r\n\r\n")
             self.wfile.flush()
-        except Exception:
-            if not self.wfile.closed:
+        except Exception as exc:
+            gone = watcher is not None and watcher.client_gone
+            elapsed = time.monotonic() - began
+            path = self.path.split("?", 1)[0]
+            if gone:
+                sys.stderr.write("llm-proxy: client left %s after %.0fs; closed upstream\n" % (path, elapsed))
+            else:
+                sys.stderr.write("llm-proxy: upstream %s failed after %.0fs: %s\n" % (path, elapsed, type(exc).__name__))
+            if started or gone:
+                # Headers are already out (or nobody is listening). A 502 now
+                # would land inside the chunked body. Drop the connection so
+                # the client sees a dead stream.
+                self.close_connection = True
+            else:
                 try:
                     self._text(502, "upstream request failed\n")
                 except Exception:
-                    pass
+                    self.close_connection = True
         finally:
+            if watcher is not None:
+                watcher.stop()
             if conn is not None:
                 conn.close()
 
@@ -376,6 +471,7 @@ class AdminHandler(BaseHTTPRequestHandler):
 def main() -> None:
     table = load_table()
     timeout = float(os.environ.get("LLM_TIMEOUT", "600") or "600")
+    idle_timeout = float(os.environ.get("LLM_STREAM_IDLE_TIMEOUT", "") or timeout)
     infer_port = int(os.environ.get("LLM_PROXY_PORT", "4000"))
     admin_port = int(os.environ.get("LLM_PROXY_ADMIN_PORT", "4001"))
     token = os.environ.get("LLM_PROXY_ADMIN_TOKEN", "")
@@ -383,6 +479,8 @@ def main() -> None:
     inference = ThreadingHTTPServer(("0.0.0.0", infer_port), InferenceHandler)
     inference.daemon_threads = True
     InferenceHandler.table = table
+    InferenceHandler.upstream_timeout = timeout
+    InferenceHandler.stream_idle_timeout = idle_timeout
     InferenceHandler.timeout = timeout
 
     # Listen on all interfaces so Docker can publish the port. Compose binds
