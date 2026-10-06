@@ -133,6 +133,31 @@ if [[ ! -d "$_PROJ" ]]; then
   warn "projects dir missing (${_PROJ})"
 else
   ok "projects dir ${_PROJ}"
+  # Under ssh, hermes mounts the projects dir read-only. Docker cannot create a
+  # mount point inside a read-only mount, so a nested bind such as
+  # /opt/projects/<slug> needs <projects dir>/<slug> to exist on the host.
+  if [[ "$(env_get HERMES_TERMINAL_BACKEND ssh)" == "ssh" ]]; then
+    _nested_missing="$(docker compose config --format json 2>/dev/null | python3 -c '
+import json, sys
+from pathlib import Path
+try:
+    cfg = json.load(sys.stdin)
+except ValueError:
+    sys.exit(0)
+proj = Path(sys.argv[1])
+for vol in cfg.get("services", {}).get("hermes", {}).get("volumes", []):
+    target = vol.get("target", "")
+    if vol.get("type") == "bind" and target.startswith("/opt/projects/"):
+        rel = target[len("/opt/projects/"):]
+        if not (proj / rel).is_dir():
+            print(f"{target} needs {proj / rel}")
+' "$_PROJ" || true)"
+    if [[ -n "$_nested_missing" ]]; then
+      while IFS= read -r line; do
+        [[ -n "$line" ]] && bad "nested project bind on read-only /opt/projects: ${line} (mkdir -p it)"
+      done <<< "$_nested_missing"
+    fi
+  fi
   _any_project=0
   shopt -s nullglob
   for _child in "$_PROJ"/*; do

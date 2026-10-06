@@ -92,6 +92,13 @@ make project-index PROJECT=my-project
 Do not use `$ASSISTANT_DATA_ROOT/projects/...` in `sources.yaml` for in-project
 files — that host path is not visible inside the container.
 
+Prefer a context root over binding a host folder at `/opt/projects/<slug>`.
+Under `HERMES_TERMINAL_BACKEND=ssh`, Hermes mounts `/opt/projects` read-only,
+and Docker cannot create a mount point inside a read-only mount. A nested bind
+fails to start unless `$ASSISTANT_DATA_ROOT/projects/<slug>` already exists on
+the host. `make doctor` flags a missing one. See
+[Extending the stack](extending.md#nested-binds-under-optprojects).
+
 `retrieval: files` (default) means the agent reads `INDEX.md` then opens named
 files. `lightrag` and `both` are reserved; the indexer refuses them until ingest
 routing exists. Unknown values are also refused.

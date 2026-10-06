@@ -20,4 +20,5 @@ Per-service setup, usage, and verification guides. See the [project README](../R
 | [User data directory](data-dir.md) | host | Relocate projects / voice / memory / LightRAG inputs outside the repo |
 | [Writing in your voice](writing-voice.md) | `core` / Hermes | Drafting artifacts in your style (not chat tone) |
 | [Memory](memory.md) | `core` / Hermes | Built-in USER.md, session search, curated notes |
-| [Releasing](releasing.md) | maintainers | Thematic first-history commit playbook |
+| [Extending the stack](extending.md) | downstream | Second copies, overlay mounts, worker mounts, model key rotation |
+| [Releasing](releasing.md) | maintainers | Version tags and the changelog |
