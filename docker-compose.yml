@@ -774,10 +774,12 @@ services:
       # API server runs on the api-server profile (port 8643), not the default gateway.
       - API_SERVER_ENABLED=false
       # browser-harness (browser_exec) control sockets. The default is under
-      # $HOME, i.e. data/hermes (virtiofs), where a socket left by an earlier
-      # container has failed with EOPNOTSUPP and left the session broken until
-      # it was removed on the host. /tmp is the container filesystem. SHARED keeps the
-      # bu-<session> names so default and named sessions do not collide.
+      # $HOME, i.e. data/hermes (virtiofs). A socket there that outlives a
+      # Docker VM restart (Docker Desktop quit/crash, Mac reboot) fails with
+      # EOPNOTSUPP on connect and unlink, and the session stays broken until
+      # it is removed on the host. /tmp is the container filesystem. SHARED
+      # keeps the bu-<session> names so default and named sessions do not
+      # collide.
       # Logs and screenshots (BH_TMP_DIR) are plain files and stay put.
       - BH_RUNTIME_DIR=/tmp/browser-harness
       - BH_RUNTIME_DIR_SHARED=1
