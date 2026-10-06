@@ -57,9 +57,10 @@ log "Starting neo4j service"
 docker compose up -d neo4j
 
 log "Waiting for healthcheck"
+neo4j_id="$(docker compose ps -q neo4j)"
 healthy=0
 for _ in $(seq 1 24); do
-  status="$(docker inspect lightrag-neo4j --format '{{.State.Health.Status}}' 2>/dev/null || echo starting)"
+  status="$(docker inspect "$neo4j_id" --format '{{.State.Health.Status}}' 2>/dev/null || echo starting)"
   if [[ "$status" == "healthy" ]]; then
     healthy=1
     break
@@ -70,5 +71,5 @@ done
 if [[ "$healthy" -eq 1 ]]; then
   log "Neo4j is healthy"
 else
-  die "Neo4j started but healthcheck did not pass — run: docker inspect lightrag-neo4j --format '{{json .State.Health}}'"
+  die "Neo4j started but healthcheck did not pass — run: docker compose ps neo4j; docker inspect $neo4j_id --format '{{json .State.Health}}'"
 fi

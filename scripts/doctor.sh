@@ -451,10 +451,10 @@ if has_profile core; then
 fi
 if has_profile rag; then
   check_port "$(env_get PORT 9621)" "LightRAG"
-  check_port 7474 "Neo4j browser"
+  check_port "$(env_get NEO4J_HTTP_HOST_PORT 7474)" "Neo4j browser"
 fi
 if has_profile automation; then
-  check_port 5678 "n8n"
+  check_port "$(env_get N8N_HOST_PORT 5678)" "n8n"
   check_port "$(env_get GPTR_PORT 8000)" "GPT Researcher"
 fi
 if has_profile coding; then

@@ -6,11 +6,11 @@ services:
   # Hermes talks to it over the compose network as terminal.backend ssh.
   hermes-worker:
     profiles: ["core"]
-    container_name: hermes-worker
+    container_name: ${CONTAINER_PREFIX:-}hermes-worker
     hostname: hermes-worker
     build:
       context: ./compose/hermes/worker
-    image: assistant-hermes-worker:local
+    image: ${IMAGE_PREFIX:-assistant}-hermes-worker:local
     restart: unless-stopped
     environment:
       - HERMES_UID=${HERMES_UID:-1000}

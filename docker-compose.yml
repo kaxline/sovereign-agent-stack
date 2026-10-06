@@ -52,10 +52,10 @@ services:
   # ----------------------------------------------------------------------
   llm-proxy:
     profiles: ["core"]
-    container_name: llm-proxy
+    container_name: ${CONTAINER_PREFIX:-}llm-proxy
     build:
       context: ./compose/llm-proxy
-    image: assistant-llm-proxy:local
+    image: ${IMAGE_PREFIX:-assistant}-llm-proxy:local
     restart: unless-stopped
     environment:
       - LLM_BINDING_HOST=${LLM_BINDING_HOST:-http://host.docker.internal:1234/v1}
@@ -87,13 +87,13 @@ services:
   # ----------------------------------------------------------------------
   lightrag:
     profiles: ["rag"]
-    container_name: lightrag
+    container_name: ${CONTAINER_PREFIX:-}lightrag
     # Local image patches OpenAI-compat response_format (json_object → json_schema).
     build:
       context: ./compose/lightrag
       args:
         LIGHTRAG_BASE_IMAGE: ${LIGHTRAG_BASE_IMAGE:-ghcr.io/hkuds/lightrag:v1.4.9.3}
-    image: assistant-lightrag:local
+    image: ${IMAGE_PREFIX:-assistant}-lightrag:local
     ports:
       - "127.0.0.1:${PORT:-9621}:9621"
     # Allowlist of what LightRAG reads. Optional storage backends stay unset
@@ -149,7 +149,7 @@ services:
   # ----------------------------------------------------------------------
   lightrag-mcp:
     profiles: ["rag"]
-    container_name: lightrag-mcp
+    container_name: ${CONTAINER_PREFIX:-}lightrag-mcp
     build:
       context: ./compose/lightrag-mcp
     restart: unless-stopped
@@ -189,11 +189,11 @@ services:
   # ----------------------------------------------------------------------
   neo4j:
     profiles: ["rag"]
-    container_name: lightrag-neo4j
+    container_name: ${CONTAINER_PREFIX:-}lightrag-neo4j
     image: ${NEO4J_IMAGE:-neo4j:5.26-community}
     ports:
-      - "127.0.0.1:7474:7474"   # HTTP browser UI
-      - "127.0.0.1:7687:7687"   # Bolt protocol
+      - "127.0.0.1:${NEO4J_HTTP_HOST_PORT:-7474}:7474"   # HTTP browser UI
+      - "127.0.0.1:${NEO4J_BOLT_HOST_PORT:-7687}:7687"   # Bolt protocol
     environment:
       - NEO4J_AUTH=${NEO4J_USERNAME:-neo4j}/${NEO4J_PASSWORD}
       - NEO4J_PLUGINS=["apoc"]                 # auto-installs APOC (LightRAG needs it)
@@ -221,7 +221,7 @@ services:
   # Activate with: docker compose --profile searxng-prod up -d
   # ----------------------------------------------------------------------
   valkey:
-    container_name: searxng-valkey
+    container_name: ${CONTAINER_PREFIX:-}searxng-valkey
     profiles: ["searxng-prod"]
     image: docker.io/valkey/valkey:7-alpine
     command: valkey-server --save 30 1 --loglevel warning
@@ -236,7 +236,7 @@ services:
   # ----------------------------------------------------------------------
   searxng:
     profiles: ["core"]
-    container_name: searxng
+    container_name: ${CONTAINER_PREFIX:-}searxng
     image: ${SEARXNG_IMAGE:-docker.io/searxng/searxng:2026.8.11-e8e710e42}
     restart: unless-stopped
     ports:
@@ -261,7 +261,7 @@ services:
   # ----------------------------------------------------------------------
   mcp-searxng:
     profiles: ["core"]
-    container_name: mcp-searxng
+    container_name: ${CONTAINER_PREFIX:-}mcp-searxng
     image: ${MCP_SEARXNG_IMAGE:-isokoliuk/mcp-searxng:1.15.0}
     restart: unless-stopped
     environment:
@@ -289,7 +289,7 @@ services:
   # ----------------------------------------------------------------------
   caldav-mcp:
     profiles: ["calendar"]
-    container_name: caldav-mcp
+    container_name: ${CONTAINER_PREFIX:-}caldav-mcp
     image: ${CALDAV_MCP_IMAGE:-ghcr.io/gelse/caldav-mcp:v0.1.0}
     restart: unless-stopped
     environment:
@@ -314,7 +314,7 @@ services:
   # ----------------------------------------------------------------------
   gpt-researcher:
     profiles: ["automation"]
-    container_name: gpt-researcher
+    container_name: ${CONTAINER_PREFIX:-}gpt-researcher
     image: ${GPTR_IMAGE:-gptresearcher/gpt-researcher:0.8.1}
     restart: unless-stopped
     ports:
@@ -346,7 +346,7 @@ services:
   # ----------------------------------------------------------------------
   gptr-mcp:
     profiles: ["automation"]
-    container_name: gptr-mcp
+    container_name: ${CONTAINER_PREFIX:-}gptr-mcp
     build:
       context: ./compose/gptr-mcp
     restart: unless-stopped
@@ -373,7 +373,7 @@ services:
   # ----------------------------------------------------------------------
   postgres:
     profiles: ["automation"]
-    container_name: n8n-postgres
+    container_name: ${CONTAINER_PREFIX:-}n8n-postgres
     image: ${POSTGRES_IMAGE:-postgres:16-alpine}
     restart: unless-stopped
     environment:
@@ -395,7 +395,7 @@ services:
   n8n-import:
     <<: *service-n8n
     profiles: ["automation"]
-    container_name: n8n-import
+    container_name: ${CONTAINER_PREFIX:-}n8n-import
     entrypoint: /bin/sh
     command: /scripts/import-demo-data.sh
     volumes:
@@ -413,17 +413,17 @@ services:
   n8n:
     <<: *service-n8n
     profiles: ["automation"]
-    container_name: n8n
+    container_name: ${CONTAINER_PREFIX:-}n8n
     restart: unless-stopped
     ports:
-      - "127.0.0.1:5678:5678"
+      - "127.0.0.1:${N8N_HOST_PORT:-5678}:5678"
     # This list replaces the anchor environment, so the secrets and the
     # workflow URL are repeated here. The anchor still feeds n8n-import.
     environment:
       - N8N_HOST=localhost
       - N8N_PORT=5678
       - N8N_PROTOCOL=http
-      - WEBHOOK_URL=http://localhost:5678/
+      - WEBHOOK_URL=http://localhost:${N8N_HOST_PORT:-5678}/
       - N8N_RESTRICT_FILE_ACCESS_TO=/data/shared
       - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:?set N8N_ENCRYPTION_KEY in .env}
       - N8N_USER_MANAGEMENT_JWT_SECRET=${N8N_USER_MANAGEMENT_JWT_SECRET:?set N8N_USER_MANAGEMENT_JWT_SECRET in .env}
@@ -458,10 +458,10 @@ services:
   # ----------------------------------------------------------------------
   opencode-mcp:
     profiles: ["coding"]
-    container_name: opencode-mcp
+    container_name: ${CONTAINER_PREFIX:-}opencode-mcp
     build:
       context: ./compose/opencode-mcp
-    image: assistant-opencode-mcp:local
+    image: ${IMAGE_PREFIX:-assistant}-opencode-mcp:local
     environment:
       - OPENCODE_BASE_URL=${OPENCODE_BASE_URL:-http://opencode:4096}
       - OPENCODE_SERVER_USERNAME=${OPENCODE_SERVER_USERNAME:-opencode}
@@ -498,12 +498,12 @@ services:
   # ----------------------------------------------------------------------
   opencode:
     profiles: ["coding"]
-    container_name: opencode
+    container_name: ${CONTAINER_PREFIX:-}opencode
     # Local image adds git. Upstream ships none, which breaks worktree detection
     # and collapses every directory into the single `global` project.
     build:
       context: ./compose/opencode
-    image: assistant-opencode:local
+    image: ${IMAGE_PREFIX:-assistant}-opencode:local
     command: ["web", "--hostname", "0.0.0.0", "--port", "4096"]
     ports:
       - "127.0.0.1:${OPENCODE_PORT:-4096}:4096"
@@ -545,7 +545,7 @@ services:
   # ----------------------------------------------------------------------
   ollama:
     profiles: ["ollama"]
-    container_name: ollama
+    container_name: ${CONTAINER_PREFIX:-}ollama
     image: ${OLLAMA_IMAGE:-ollama/ollama:0.11.11}
     restart: unless-stopped
     ports:
@@ -564,7 +564,7 @@ services:
   ollama-pull:
     profiles: ["ollama"]
     image: ${OLLAMA_IMAGE:-ollama/ollama:0.11.11}
-    container_name: ollama-pull
+    container_name: ${CONTAINER_PREFIX:-}ollama-pull
     restart: "no"
     environment:
       - OLLAMA_HOST=http://ollama:11434
@@ -595,7 +595,7 @@ services:
   # ----------------------------------------------------------------------
   signal-cli:
     profiles: ["signal"]
-    container_name: signal-cli
+    container_name: ${CONTAINER_PREFIX:-}signal-cli
     image: ${SIGNAL_CLI_IMAGE:-registry.gitlab.com/packaging/signal-cli/signal-cli-jre:v0-14-7-2}
     restart: unless-stopped
     # Match the Mac/Linux user that owns SIGNAL_CLI_DATA_DIR.
@@ -740,7 +740,7 @@ services:
 
   hermes:
     profiles: ["core"]
-    container_name: hermes
+    container_name: ${CONTAINER_PREFIX:-}hermes
     image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v2026.9.14}
     restart: unless-stopped
     command: ["gateway", "run"]
@@ -977,7 +977,7 @@ services:
   # ----------------------------------------------------------------------
   hermes-webui:
     profiles: ["core"]
-    container_name: hermes-webui
+    container_name: ${CONTAINER_PREFIX:-}hermes-webui
     image: ghcr.io/nesquena/hermes-webui:${HERMES_WEBUI_IMAGE_TAG:-0.52.113}
     restart: unless-stopped
     # Stock init rsyncs /apptoo → /app then starts server.py. Our wrapper
