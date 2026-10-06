@@ -414,12 +414,14 @@ apply_terminal_backend_all_profiles() {
 }
 
 # Model calls go to llm-proxy. The placeholder is not a secret. The real
-# key stays on the proxy. Same profile sweep as the SSH backend.
+# key stays on the proxy. Same profile sweep as the SSH backend. Every
+# profile on the proxy also gets the stale-stream timeout sized below.
 configure_model_proxy() {
   _cmp_profile="$1"
   log "Model proxy for profile '${_cmp_profile:-default}'"
   hermes_config_set "$_cmp_profile" model.base_url http://llm-proxy:4000/v1
   hermes_config_set "$_cmp_profile" model.api_key local-llm
+  hermes_config_set "$_cmp_profile" agent.local_stream_stale_timeout "$STALE_TIMEOUT"
 }
 
 apply_model_proxy_all_profiles() {
@@ -1145,9 +1147,8 @@ else
   STALE_DEFAULT=180
 fi
 STALE_TIMEOUT="${PROXY_STALE_TIMEOUT:-$STALE_DEFAULT}"
-log "Setting agent.local_stream_stale_timeout=${STALE_TIMEOUT} on default and '${PROFILE}' profiles (${UPSTREAM_KIND} upstream)"
-hermes_config_set "" "agent.local_stream_stale_timeout" "$STALE_TIMEOUT"
-hermes_config_set "$PROFILE" "agent.local_stream_stale_timeout" "$STALE_TIMEOUT"
+# Applied to every profile by apply_model_proxy_all_profiles at the end.
+log "Stale-stream timeout ${STALE_TIMEOUT}s for every profile (${UPSTREAM_KIND} upstream)"
 
 # Auto-title starts with the user's turn and uses the same model. A local
 # server that runs one request at a time serves the title first, and the

@@ -22,9 +22,9 @@ the stack under another app.
 These change defaults. Set the keys above to get the old behaviour back.
 
 - Hermes reconnects a failed stream once instead of twice.
-- Bootstrap sets `agent.local_stream_stale_timeout` on the default profile and
-  the profile it bootstraps (`api-server`, `browser`), sized from
-  `LLM_BINDING_HOST`. Upstreams pushed later through the admin API are not
+- Bootstrap sets `agent.local_stream_stale_timeout` on every Hermes profile
+  that it points at llm-proxy (default, `api-server`, `browser`, and any
+  custom profile), sized from `LLM_BINDING_HOST`. Upstreams pushed later through the admin API are not
   seen; re-run the bootstraps after changing it.
 - With a local upstream, the `browser` profile stops auto-titling sessions.
   The title call used the same model and ran ahead of the reply.
