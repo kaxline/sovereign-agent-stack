@@ -617,6 +617,22 @@ docker compose exec -u hermes hermes agent-browser --version
 
 `./scripts/doctor.sh` runs the same probe when the `hermes` container is up.
 
+`browser_exec` runs browser-harness, which keeps one control socket per session (`bu-default.sock`, `bu-<name>.sock`). Its default location is `$HOME/.config/browser-harness/runtime`, which for the `hermes` user is under `data/hermes`. On that mount, a socket left by an earlier container can be neither reused nor deleted from inside the next one, so every call for that session fails with `[Errno 95] Operation not supported: '…/bu-default.sock'`. The `hermes` service sets `BH_RUNTIME_DIR=/tmp/browser-harness` (with `BH_RUNTIME_DIR_SHARED=1` so session names stay in the filenames), which is the container filesystem. Logs and screenshots stay under `data/hermes/home/.config/browser-harness/tmp`.
+
+The agent cannot clear a stuck socket itself: its terminal runs on `hermes-worker`, which does not mount `data/hermes`. If the error appears, check that the variable is set, recreate the container, and remove any sockets still on the host:
+
+```bash
+docker compose exec -u hermes hermes printenv BH_RUNTIME_DIR
+docker compose up -d hermes
+rm -f data/hermes/home/.config/browser-harness/runtime/*.sock data/hermes/home/.config/browser-harness/runtime/*.pid
+```
+
+`./scripts/doctor.sh` checks the variable and warns about leftover sockets.
+
+### Saving logins
+
+`browser_vault_save_login` saves a login for the origin of the page that is open, so the sign-in page has to be open first; otherwise it returns "Open the site's login page first". The repo skill `browser-login` (`compose/hermes/skills/browser-login/`) gives the order: open the sign-in page, check `browser_vault_list`, fill a saved login or call `browser_vault_save_login`, and never ask for a password in chat. The tool-eval case `browser-login-save-first` checks that a model follows it.
+
 ## Advanced options
 
 - **Terminal Docker sandbox** — mount `/var/run/docker.sock` and set `terminal.backend: docker` in Hermes `config.yaml` so shell commands run in an isolated container.

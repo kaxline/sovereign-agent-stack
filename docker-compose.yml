@@ -773,6 +773,14 @@ services:
       - HERMES_DASHBOARD_BASIC_AUTH_SECRET=${HERMES_DASHBOARD_AUTH_SECRET:?set HERMES_DASHBOARD_AUTH_SECRET in .env}
       # API server runs on the api-server profile (port 8643), not the default gateway.
       - API_SERVER_ENABLED=false
+      # browser-harness (browser_exec) control sockets. The default is under
+      # $HOME, i.e. data/hermes (virtiofs), where a socket left by an earlier
+      # container cannot be reused or unlinked (EOPNOTSUPP) and the session
+      # stays broken. /tmp is the container filesystem. SHARED keeps the
+      # bu-<session> names so default and named sessions do not collide.
+      # Logs and screenshots (BH_TMP_DIR) are plain files and stay put.
+      - BH_RUNTIME_DIR=/tmp/browser-harness
+      - BH_RUNTIME_DIR_SHARED=1
       # .env sets SEARXNG_URL for n8n/GPTR. Hermes must NOT inherit it: native
       # web_search auto-binds to SearXNG and still executes when the model
       # hallucinates the tool after we disable the web toolset. MCP uses
