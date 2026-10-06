@@ -631,6 +631,7 @@ EOF
 # --- Preflight ---
 require_cmd docker
 require_cmd openssl
+require_cmd ssh-keygen
 docker compose version >/dev/null 2>&1 || die "docker compose is not available"
 require_cmd node
 require_python3
