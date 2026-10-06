@@ -7,6 +7,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# shellcheck source=lib/hermes-yaml.sh
+source "${ROOT}/scripts/lib/hermes-yaml.sh"
+# shellcheck source=lib/python.sh
+source "${ROOT}/scripts/lib/python.sh"
+require_python3
+
 log() { printf '==> %s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -83,31 +89,7 @@ disable_buzz_on_profile() {
   local cfg="data/hermes/profiles/${profile_name}/config.yaml"
   [[ -f "$cfg" ]] || return 0
 
-  if docker compose ps hermes --status running -q 2>/dev/null | grep -q .; then
-    docker compose exec -T hermes python3 - "$profile_name" <<'PY'
-import sys
-from pathlib import Path
-import yaml
-name = sys.argv[1]
-path = Path(f"/opt/data/profiles/{name}/config.yaml")
-if not path.is_file():
-    raise SystemExit(0)
-data = yaml.safe_load(path.read_text()) or {}
-platforms = data.setdefault("platforms", {})
-buzz = platforms.setdefault("buzz", {})
-if buzz.get("enabled") is not False:
-    buzz["enabled"] = False
-    platforms["buzz"] = buzz
-    data["platforms"] = platforms
-    path.write_text(yaml.safe_dump(data, sort_keys=False, default_flow_style=False))
-    print(f"pinned platforms.buzz.enabled=false on {name}")
-else:
-    print(f"platforms.buzz.enabled already false on {name}")
-PY
-  elif ! grep -qF 'sync-buzz-profile.sh — stack profile' "$cfg"; then
-    printf '\n# sync-buzz-profile.sh — stack profile must not own a Buzz identity.\nplatforms:\n  buzz:\n    enabled: false\n' >> "$cfg"
-    log "Appended platforms.buzz.enabled=false to ${profile_name} config.yaml"
-  fi
+  hermes_set_platform_disabled "$profile_name" buzz
 }
 
 # Seed recommended Buzz gateway + display defaults for an agent profile.
@@ -117,8 +99,7 @@ enable_buzz_on_profile_config() {
   local cfg="data/hermes/profiles/${profile_name}/config.yaml"
   [[ -f "$cfg" ]] || return 0
 
-  if docker compose ps hermes --status running -q 2>/dev/null | grep -q .; then
-    docker compose exec -T hermes python3 - "$profile_name" "$relay_url" <<'PY'
+  hermes_python "$profile_name" "$relay_url" <<'PY'
 import sys
 from pathlib import Path
 import yaml
@@ -165,9 +146,6 @@ data["display"] = display
 path.write_text(yaml.safe_dump(data, sort_keys=False, default_flow_style=False))
 print(f"enabled gateway.platforms.buzz on {name} allow_all_users=true")
 PY
-  else
-    warn "hermes not running — seeded .env only for ${profile_name}; start hermes and re-run make ensure-local to write config.yaml defaults"
-  fi
 }
 
 clear_seeded_buzz_env() {
@@ -224,7 +202,7 @@ if [[ "$enabled" -eq 1 ]]; then
       continue
     fi
     if [[ -f data/hermes/agents/registry.json ]]; then
-      if ! NAME="$name" python3 - <<'PY' 2>/dev/null
+      if ! NAME="$name" python3 - <<'PY'
 import json, os, sys
 from pathlib import Path
 name = os.environ["NAME"]

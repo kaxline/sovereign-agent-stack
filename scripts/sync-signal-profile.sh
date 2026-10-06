@@ -6,6 +6,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# shellcheck source=lib/hermes-yaml.sh
+source "${ROOT}/scripts/lib/hermes-yaml.sh"
+
 log() { printf '==> %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
@@ -167,28 +170,7 @@ if [[ "$enabled" -eq 1 ]]; then
     seed_hermes_signal_env "data/hermes/profiles/browser/.env"
     browser_cfg="data/hermes/profiles/browser/config.yaml"
     if [[ -f "$browser_cfg" ]]; then
-      # Prefer in-container PyYAML when hermes is up; otherwise a minimal append.
-      if docker compose ps hermes --status running -q 2>/dev/null | grep -q .; then
-        docker compose exec -T hermes python3 - <<'PY'
-from pathlib import Path
-import yaml
-path = Path("/opt/data/profiles/browser/config.yaml")
-data = yaml.safe_load(path.read_text()) or {}
-platforms = data.setdefault("platforms", {})
-signal = platforms.setdefault("signal", {})
-if signal.get("enabled") is not False:
-    signal["enabled"] = False
-    platforms["signal"] = signal
-    data["platforms"] = platforms
-    path.write_text(yaml.safe_dump(data, sort_keys=False, default_flow_style=False))
-    print("pinned platforms.signal.enabled=false")
-else:
-    print("platforms.signal.enabled already false")
-PY
-      elif ! grep -qF 'sync-signal-profile.sh — WebUI send' "$browser_cfg"; then
-        printf '\n# sync-signal-profile.sh — WebUI send uses env; default gateway owns SSE.\nplatforms:\n  signal:\n    enabled: false\n' >> "$browser_cfg"
-        log "Appended platforms.signal.enabled=false to browser config.yaml"
-      fi
+      hermes_set_platform_disabled browser signal
     fi
     log "Seeded Signal credentials in browser profile (adapter disabled for WebUI)"
   fi
