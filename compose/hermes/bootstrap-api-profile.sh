@@ -40,6 +40,13 @@ OPENCODE_MCP_URL="${OPENCODE_MCP_URL:-http://opencode-mcp:8000/sse}"
 OPENCODE_MCP_TIMEOUT="${OPENCODE_MCP_TIMEOUT:-600}"
 OPENCODE_MCP_CONNECT_TIMEOUT="${OPENCODE_MCP_CONNECT_TIMEOUT:-30}"
 OPENCODE_MCP_ENABLED="${OPENCODE_MCP_ENABLED:-0}"
+# llm-proxy's real upstream. Only used to tell a local model server from a
+# cloud API; the key never reaches this container.
+LLM_BINDING_HOST="${LLM_BINDING_HOST:-http://host.docker.internal:1234/v1}"
+# Empty = 300s for a local upstream, 180s for a cloud one.
+PROXY_STALE_TIMEOUT="${HERMES_PROXY_STALE_TIMEOUT:-}"
+# auto = off for a local upstream, on for a cloud one. 0/1 force it.
+BROWSER_AUTO_TITLE="${HERMES_BROWSER_AUTO_TITLE:-auto}"
 
 PROFILE_DIR="${HERMES_HOME}/profiles/${PROFILE}"
 PROFILE_ENV="${PROFILE_DIR}/.env"
@@ -229,6 +236,36 @@ else:
 PY
 )"
   if [ -n "$_out" ]; then log "$_out"; fi
+}
+
+# True when a URL points at a model server on this machine or LAN. Mirrors
+# Hermes' is_local_endpoint, plus host.docker.internal.
+upstream_is_local() {
+  python3 - "$1" <<'PY'
+import ipaddress
+import sys
+from urllib.parse import urlsplit
+
+host = (urlsplit(sys.argv[1]).hostname or "").lower()
+local = (
+    not host
+    or host == "localhost"
+    or "." not in host
+    or host.endswith((".local", ".internal", ".lan", ".home.arpa"))
+)
+if not local:
+    try:
+        addr = ipaddress.ip_address(host)
+        local = (
+            addr.is_private
+            or addr.is_loopback
+            or addr.is_link_local
+            or (addr.version == 4 and addr in ipaddress.ip_network("100.64.0.0/10"))
+        )
+    except ValueError:
+        pass
+sys.exit(0 if local else 1)
+PY
 }
 
 # `hermes config set` for one profile ("" selects the default profile).
@@ -1095,6 +1132,34 @@ fi
 if [ "$PROFILE" = "browser" ]; then
   log "Setting model.max_tokens=1024 on browser (cap runaway final answers)"
   hermes_config_set "$PROFILE" "model.max_tokens" "1024"
+fi
+
+# Hermes treats the dotless llm-proxy host as local whatever sits behind it,
+# so every profile gets agent.local_stream_stale_timeout (900s by default)
+# even for a cloud model. Size it for the real upstream instead.
+if upstream_is_local "$LLM_BINDING_HOST"; then
+  UPSTREAM_KIND=local
+  STALE_DEFAULT=300
+else
+  UPSTREAM_KIND=cloud
+  STALE_DEFAULT=180
+fi
+STALE_TIMEOUT="${PROXY_STALE_TIMEOUT:-$STALE_DEFAULT}"
+log "Setting agent.local_stream_stale_timeout=${STALE_TIMEOUT} on default and '${PROFILE}' profiles (${UPSTREAM_KIND} upstream)"
+hermes_config_set "" "agent.local_stream_stale_timeout" "$STALE_TIMEOUT"
+hermes_config_set "$PROFILE" "agent.local_stream_stale_timeout" "$STALE_TIMEOUT"
+
+# Auto-title starts with the user's turn and uses the same model. A local
+# server that runs one request at a time serves the title first, and the
+# reply waits behind it.
+if [ "$PROFILE" = "browser" ]; then
+  case "$BROWSER_AUTO_TITLE" in
+    1|true|TRUE|yes|YES) TITLE_ENABLED=true ;;
+    0|false|FALSE|no|NO) TITLE_ENABLED=false ;;
+    *) if [ "$UPSTREAM_KIND" = local ]; then TITLE_ENABLED=false; else TITLE_ENABLED=true; fi ;;
+  esac
+  log "Setting auxiliary.title_generation.enabled=${TITLE_ENABLED} on browser (${UPSTREAM_KIND} upstream)"
+  hermes_config_set "$PROFILE" "auxiliary.title_generation.enabled" "$TITLE_ENABLED"
 fi
 
 # Register LightRAG MCP as read-oriented Knowledge Base access for API sessions.

@@ -680,6 +680,9 @@ services:
       - OPENCODE_MCP_ENABLED=${OPENCODE_MCP_ENABLED:-0}
       - OPENCODE_MCP_TIMEOUT=${OPENCODE_MCP_TIMEOUT:-600}
       - OPENCODE_MCP_CONNECT_TIMEOUT=${OPENCODE_MCP_CONNECT_TIMEOUT:-30}
+      # Upstream URL only (no key), to size the stale-stream timeout.
+      - LLM_BINDING_HOST=${LLM_BINDING_HOST:-http://host.docker.internal:1234/v1}
+      - HERMES_PROXY_STALE_TIMEOUT=${HERMES_PROXY_STALE_TIMEOUT:-}
     volumes:
       - ./data/hermes:/opt/data
       - ./compose/hermes/api-server.env:/bootstrap/api-server.env:ro
@@ -729,6 +732,11 @@ services:
       - OPENCODE_MCP_ENABLED=${OPENCODE_MCP_ENABLED:-0}
       - OPENCODE_MCP_TIMEOUT=${OPENCODE_MCP_TIMEOUT:-600}
       - OPENCODE_MCP_CONNECT_TIMEOUT=${OPENCODE_MCP_CONNECT_TIMEOUT:-30}
+      # Upstream URL only (no key), to size the stale-stream timeout and
+      # decide whether auto-title may compete with the reply.
+      - LLM_BINDING_HOST=${LLM_BINDING_HOST:-http://host.docker.internal:1234/v1}
+      - HERMES_PROXY_STALE_TIMEOUT=${HERMES_PROXY_STALE_TIMEOUT:-}
+      - HERMES_BROWSER_AUTO_TITLE=${HERMES_BROWSER_AUTO_TITLE:-auto}
     volumes:
       - ./data/hermes:/opt/data
       - ./compose/hermes/browser.env:/bootstrap/browser.env:ro
@@ -766,6 +774,10 @@ services:
       # skip implicit stale detection unless the stale timeout is explicit.
       - HERMES_API_TIMEOUT=${HERMES_API_TIMEOUT:-180}
       - HERMES_API_CALL_STALE_TIMEOUT=${HERMES_API_CALL_STALE_TIMEOUT:-90}
+      # One reconnect per stream, not two. llm-proxy is the next hop, so a
+      # failed stream is an upstream failure, and each retry waits out the
+      # full read timeout again.
+      - HERMES_STREAM_RETRIES=${HERMES_STREAM_RETRIES:-1}
       - HERMES_DASHBOARD=1
       # The dashboard always binds 0.0.0.0 inside the container (host ports are
       # localhost-only), and since agent 0.20.0 a non-loopback bind engages an

@@ -13,6 +13,21 @@ the stack under another app.
 | Key | Default | Purpose |
 |---|---|---|
 | `LLM_STREAM_IDLE_TIMEOUT` | `LLM_TIMEOUT` | Longest silent gap in a streamed reply before llm-proxy drops it |
+| `HERMES_STREAM_RETRIES` | `1` | Hermes reconnects per failed stream (was Hermes' default, 2) |
+| `HERMES_PROXY_STALE_TIMEOUT` | 300 local / 180 cloud | `agent.local_stream_stale_timeout` on every bootstrapped profile (was 900) |
+| `HERMES_BROWSER_AUTO_TITLE` | `auto` | WebUI auto-titling: off for a local upstream, on for a cloud one |
+
+### Behaviour changes
+
+These change defaults. Set the keys above to get the old behaviour back.
+
+- Hermes reconnects a failed stream once instead of twice.
+- Bootstrap sets `agent.local_stream_stale_timeout` on the default profile and
+  the profile it bootstraps (`api-server`, `browser`), sized from
+  `LLM_BINDING_HOST`. Upstreams pushed later through the admin API are not
+  seen; re-run the bootstraps after changing it.
+- With a local upstream, the `browser` profile stops auto-titling sessions.
+  The title call used the same model and ran ahead of the reply.
 
 ### Changes
 

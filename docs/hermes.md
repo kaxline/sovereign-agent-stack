@@ -142,6 +142,8 @@ model:
 
 The proxy forwards each streamed chunk as it arrives. `LLM_TIMEOUT` (default 600s) bounds the wait for the upstream's first response, which includes prompt prefill. Once a reply is streaming, `LLM_STREAM_IDLE_TIMEOUT` (default: `LLM_TIMEOUT`) bounds a silent gap; past it the proxy drops the connection, so Hermes sees a failed stream instead of waiting on a quiet one. When a client disconnects, the proxy closes the upstream request too, so a model server that runs one request at a time does not keep working on it.
 
+Hermes treats the dotless `llm-proxy` host as a local server whatever is behind it. Bootstrap therefore sizes `agent.local_stream_stale_timeout` from `LLM_BINDING_HOST`: 300s for a local server, 180s for a cloud API (`HERMES_PROXY_STALE_TIMEOUT` overrides it). For a local upstream it also turns off WebUI auto-titling, because the title request would run before the reply on a server that handles one request at a time (`HERMES_BROWSER_AUTO_TITLE=1` keeps it). `HERMES_STREAM_RETRIES` defaults to 1 reconnect. An upstream pushed later through the admin API is not seen by bootstrap; re-run both Hermes bootstraps after changing `LLM_BINDING_HOST`.
+
 ### Example: LM Studio
 
 Enable **Serve on Local Network**, then set `LLM_BINDING_HOST` in `.env` to `http://host.docker.internal:<port>/v1` and `LLM_BINDING_API_KEY` to the server's key (any non-empty string for a local server). Leave Hermes on `http://llm-proxy:4000/v1`.
