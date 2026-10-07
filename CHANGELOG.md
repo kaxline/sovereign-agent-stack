@@ -25,9 +25,32 @@ the stack under another app.
 - **Hermes**: a `browser_exec` result gains a `hint` field when the code
   imported the browser helpers from a module that does not exist, or ran and
   printed nothing. Results that print output are unchanged.
-- **Hermes**: the `browser-login` skill (1.1.0) covers the browser-use
+- **Hermes**: the `browser-login` skill (1.2.0) covers the browser-use
   backend, where `browser_exec` and the vault tools are the only browser
-  tools, with working sign-in code.
+  tools, with working sign-in code. It lists the form's inputs before typing,
+  and says what to do when a login was saved from a page without the form.
+- **Hermes**: when `browser_vault_save_login` stores a login but the page has
+  no form to fill, its `next` now says to open the sign-in form and call
+  `browser_vault_fill` with the returned handle.
+- **Hermes**: a reply that asks the user for a password in chat is re-prompted
+  toward the vault tools instead of shown (at most twice per turn, shared
+  with the fabricated-result check).
+- **Gateway contract**: `session.create` and `session.resume` declare
+  `history_budget`, and `message.complete` / `session.context_breakdown`
+  declare `history_budget`, `history_tokens`, `history_first_row_id` and
+  `history_summarised`. Hermes v2026.9 refused `history_budget` with `4000`
+  and logged a contract warning for the reply fields.
+
+### Behaviour changes
+
+- **`history_budget` takes effect.** On v2026.9.14 the gateway refused it, so
+  a client that retries without it (Boundary does) ran every session with no
+  budget. Sessions that ask for a budget now get a windowed prompt and the
+  `history_*` horizon fields.
+- **`browser_exec` prints a trailing expression.** Code that ends in a bare
+  expression (`js(...)`, `page_info()`) returns its value when it is not
+  `None`, as a Python prompt does. Code ending in `print(...)` or a statement
+  is unchanged.
 
 ## v0.3.0 — 2026-10-06
 

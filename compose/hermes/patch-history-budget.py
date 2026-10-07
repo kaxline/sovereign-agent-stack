@@ -4,6 +4,10 @@
 Compatibility overlay (not upstream). Copies history_budget.py and
 history_budget_hook.py into the agent package and patches the request
 path so a session budget windows the prompt without archiving older rows.
+
+Also declares the new fields on the gateway wire contract (v2026.9+), whose
+params models reject unknown keys with 4000: without that, session.create and
+session.resume refuse history_budget and clients fall back to no budget.
 """
 from __future__ import annotations
 
@@ -40,9 +44,54 @@ def _replace(path: Path, old: str, new: str, *, label: str, done: str) -> None:
     print(f"[patch-history-budget] patched {label}")
 
 
+_CONTRACT_FIELDS = (
+    "    history_budget: int | None = None  # assistant-stack: history budget\n"
+    "    history_tokens: int | None = None\n"
+    "    history_first_row_id: int | None = None\n"
+    "    history_summarised: bool | None = None\n"
+)
+_BUDGET_PARAM = "    history_budget: int | None = None  # assistant-stack: history budget\n"
+_RESUME_DOC = (
+    '    """``session_id`` is the STORED id (or an exact title); '
+    "the reply's ``session_id`` is the runtime id.\"\"\"\n"
+)
+
+
+def _patch_contracts() -> None:
+    contracts = GATEWAY / "contracts"
+    if not (contracts / "sessions.py").is_file():
+        print("[patch-history-budget] skip contracts (pre-v2026.9 gateway)")
+        return
+    create = "class SessionCreateParams(ProfileParams):\n    cols: int | None = None\n"
+    _replace(
+        contracts / "sessions.py", create, create + _BUDGET_PARAM,
+        label="session.create contract", done=create + _BUDGET_PARAM,
+    )
+    resume = "class SessionResumeParams(SessionParams):\n" + _RESUME_DOC + "\n    cols: int | None = None\n"
+    _replace(
+        contracts / "sessions.py", resume, resume + _BUDGET_PARAM,
+        label="session.resume contract", done=resume + _BUDGET_PARAM,
+    )
+    breakdown = "    context_source: str\n    model: str\n"
+    breakdown_tail = '\n\nmethod("session.context_breakdown"'
+    _replace(
+        contracts / "sessions.py", breakdown + breakdown_tail,
+        breakdown + _CONTRACT_FIELDS + breakdown_tail,
+        label="session.context_breakdown contract", done=breakdown + _CONTRACT_FIELDS,
+    )
+    complete = "    partial: bool | None = None\n"
+    complete_tail = '\n\nevent("message.complete"'
+    _replace(
+        contracts / "events.py", complete + complete_tail,
+        complete + _CONTRACT_FIELDS + complete_tail,
+        label="message.complete contract", done=complete + _CONTRACT_FIELDS,
+    )
+
+
 def main() -> None:
     _install("history_budget.py")
     _install("history_budget_hook.py")
+    _patch_contracts()
 
     _replace(
         GATEWAY / "methods_session.py",

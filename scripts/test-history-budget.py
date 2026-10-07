@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Stdlib checks for the per-session history window (no Hermes import)."""
+"""Checks for the per-session history window.
+
+Host part is stdlib-only. With the pinned Hermes image present (or --image),
+the patch is applied in the image and the gateway wire contract is checked:
+session.create / session.resume must accept history_budget (v2026.9 answered
+4000), and the history_* reply fields must validate.
+"""
 
 from __future__ import annotations
 
@@ -8,8 +14,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "compose" / "hermes"))
+sys.path.insert(0, str(ROOT / "scripts" / "lib"))
 
 import history_budget as hb  # noqa: E402
+import hermes_image  # noqa: E402
 
 
 def fail(msg: str) -> None:
@@ -175,6 +183,36 @@ def test_fit_tokens_tightens_the_ceiling() -> None:
     expect(window.report["history_tokens"] <= 3, "the sent tail fits the tighter ceiling")
 
 
+IMAGE_DRIVER = r'''
+import subprocess
+import sys
+
+out = subprocess.run([sys.executable, "/bootstrap/patch-history-budget.py"], capture_output=True, text=True)
+if out.returncode != 0:
+    raise SystemExit(f"FAIL patch: {out.stdout}{out.stderr}")
+for label in ("session.create", "session.resume", "session.context_breakdown", "message.complete"):
+    assert f"patched {label} contract" in out.stdout, out.stdout
+
+sys.path.insert(0, "/opt/hermes")
+from tui_gateway.contracts import events, registry, sessions
+
+params, problem = registry.validate_params(registry.METHODS["session.create"], {"history_budget": 20000})
+assert problem is None, problem
+params, problem = registry.validate_params(
+    registry.METHODS["session.resume"], {"session_id": "x", "history_budget": None})
+assert problem is None, problem
+params, problem = registry.validate_params(registry.METHODS["session.create"], {"history_budgett": 1})
+assert problem is not None, "unknown keys are still refused"
+
+fields = dict(history_budget=20000, history_tokens=1234, history_first_row_id=42, history_summarised=True)
+events.MessageCompletePayload.model_validate({"text": "hi", **fields})
+sessions.SessionContextBreakdownResult.model_validate(dict(
+    categories=[], context_max=1, context_percent=0, context_used=0, estimated_total=0,
+    context_estimated=False, context_source="x", model="m", **fields))
+print("image ok")
+'''
+
+
 def main() -> None:
     test_coerce()
     test_no_budget_is_unchanged()
@@ -186,6 +224,7 @@ def main() -> None:
     test_stale_summary_is_not_injected()
     test_fit_tokens_tightens_the_ceiling()
     print("ok")
+    hermes_image.maybe_run(IMAGE_DRIVER)
 
 
 if __name__ == "__main__":
