@@ -6,12 +6,15 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
-## Unreleased
+## v0.3.1 — 2026-10-07
 
 ### Upgrade steps
 
-1. `docker compose up -d --force-recreate hermes` so cont-init applies the
-   new overlay. No `.env` changes.
+1. Re-run `./scripts/setup.sh` over the existing `.env` and `data/`. No
+   `.env` changes.
+2. `docker compose up -d`. The `hermes` service gains three read-only
+   `/bootstrap` mounts, so compose recreates it and cont-init applies the new
+   overlays.
 
 ### Changes
 
