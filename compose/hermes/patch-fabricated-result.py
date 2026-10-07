@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Reject stop turns that claim a tool result without calling a tool.
+"""Reject stop turns that claim a tool result without calling a tool, or
+that ask the user for a password in chat.
 
 Compatibility overlay (not for Hermes upstream). Copies fabricated_result.py
 into /opt/hermes/agent/ and:
 
 - continues the turn from turn_final_response.py (max 2) with an ephemeral
-  placeholder, so the fabricated claim is not stored as the assistant reply
+  placeholder, so the fabricated claim or password request is not stored as
+  the assistant reply
 - skips those rows in session_persistence.py
 - treats the nudge as synthetic in context_compressor.py
 """
@@ -39,45 +41,43 @@ OLD_GENUINE = """    # Genuine turn end (no dropped-tool-call mismatch): clear s
 """
 
 NEW_GENUINE = """    # assistant-stack: fabricated result without a tool call
-    # A stop turn that claims a write (or any <result>) with zero tool_calls
-    # must not become the durable answer. Keep a placeholder plus a nudge in
-    # memory only, then continue. Cap at 2 so a model that keeps narrating
-    # can still end the turn.
+    # A stop turn that claims a write (or any <result>) with zero tool_calls,
+    # or asks the user for a password in chat, must not become the durable
+    # answer. Keep a placeholder plus a nudge in memory only, then continue.
+    # Cap at 2 so a model that keeps doing it can still end the turn.
     if (
         not getattr(assistant_message, "tool_calls", None)
         and getattr(agent, "_fabricated_result_nudges", 0) < 2
     ):
         try:
-            from agent.fabricated_result import (
-                FABRICATED_RESULT_NUDGE,
-                PLACEHOLDER_CONTENT,
-                claims_unexecuted_result,
-            )
+            from agent.fabricated_result import turn_end_nudge
 
-            _fake_claim = claims_unexecuted_result(
+            _turn_end_nudge = turn_end_nudge(
                 final_response or "",
                 has_tool_calls=False,
             )
         except Exception:
             logger.debug("fabricated-result check failed", exc_info=True)
-            _fake_claim = False
-        if _fake_claim:
+            _turn_end_nudge = None
+        if _turn_end_nudge:
+            _placeholder_content, _nudge_content = _turn_end_nudge
             agent._fabricated_result_nudges = (
                 getattr(agent, "_fabricated_result_nudges", 0) + 1
             )
             logger.info(
-                "Claimed a tool result with no tool call — re-prompting (%d/2)",
+                "%s — re-prompting (%d/2)",
+                _placeholder_content.rstrip("."),
                 agent._fabricated_result_nudges,
             )
             agent._emit_status(
-                "↻ Claimed a result without calling a tool — "
+                f"↻ {_placeholder_content.rstrip('.')} — "
                 f"re-prompting ({agent._fabricated_result_nudges}/2)"
             )
             placeholder = dict(final_msg) if isinstance(final_msg, dict) else {
                 "role": "assistant",
             }
             placeholder["role"] = "assistant"
-            placeholder["content"] = PLACEHOLDER_CONTENT
+            placeholder["content"] = _placeholder_content
             placeholder["_fabricated_result_nudge"] = True
             for _key in (
                 "reasoning",
@@ -93,7 +93,7 @@ NEW_GENUINE = """    # assistant-stack: fabricated result without a tool call
             append_message(messages, placeholder)
             append_message(messages, {
                 "role": "user",
-                "content": FABRICATED_RESULT_NUDGE,
+                "content": _nudge_content,
                 "_fabricated_result_nudge": True,
             })
             agent._session_messages = messages
@@ -132,13 +132,13 @@ NEW_COMPRESS = """        from agent.conversation_loop import (
             _EMPTY_TOOL_RESPONSE_NUDGE, _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX, _LENGTH_CONTINUATION_NETWORK_STUB,
             _LENGTH_CONTINUATION_OUTPUT_LIMIT,
         )
-        from agent.fabricated_result import FABRICATED_RESULT_NUDGE
+        from agent.fabricated_result import FABRICATED_RESULT_NUDGE, SECRET_REQUEST_NUDGE
         return text in {
             COMPRESSION_CONTINUATION_USER_CONTENT, _LEGACY_COMPRESSION_CONTINUATION_USER_CONTENT,
             MAX_ITERATIONS_SUMMARY_REQUEST, _CODEX_INCOMPLETE_NUDGE, _CODEX_ACK_CONTINUATION_NUDGE,
             _DROPPED_TOOLCALL_NUDGE_CONTENT, _EMPTY_TOOL_RESPONSE_NUDGE, _LENGTH_CONTINUATION_NETWORK_STUB,
             _LENGTH_CONTINUATION_OUTPUT_LIMIT,
-            FABRICATED_RESULT_NUDGE,
+            FABRICATED_RESULT_NUDGE, SECRET_REQUEST_NUDGE,
         } or text.startswith((
 """
 

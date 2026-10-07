@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Checks for browser_exec result hints.
+"""Checks for browser_exec result hints, expression echo and the vault save next step.
 
 Host part is stdlib-only (no Hermes import). With --image (or when Docker and
 the pinned Hermes image are present and --host-only is not given), the patch
@@ -10,19 +10,17 @@ with the CLI subprocess stubbed, using the calls from session
 
 from __future__ import annotations
 
-import os
-import shutil
-import subprocess
+import json
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 HERMES_DIR = ROOT / "compose" / "hermes"
 sys.path.insert(0, str(HERMES_DIR))
+sys.path.insert(0, str(ROOT / "scripts" / "lib"))
 
 import browser_exec_hints as bh  # noqa: E402
-
-DEFAULT_TAG = "v2026.9.14"
+import hermes_image  # noqa: E402
 
 # Calls and stderr from the LinkedIn login session (20261007_030737_5f92c8).
 SESSION_IMPORT_CODE = """# Navigate to LinkedIn and check vault for saved logins
@@ -91,6 +89,59 @@ def test_other_failure() -> None:
     )
 
 
+def run_echo(code: str, **helpers) -> str:
+    """Execute echoed code with stub helpers; return what it printed."""
+    import contextlib
+    import io
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        exec(bh.echo_last_expression(code), dict(helpers))
+    return out.getvalue()
+
+
+def test_echo_session_js() -> None:
+    # Session 20261007_041748_5394c0 ended several calls on an unprinted js(...).
+    code = "# Let's try a simpler JS approach to find the form\njs(\"document.title\")"
+    expect(
+        run_echo(code, js=lambda e: "LinkedIn Login") == "LinkedIn Login\n",
+        "a trailing js(...) should print its value",
+    )
+    expect(
+        bh.echo_last_expression(code).startswith("# Let's try"),
+        "the step-label comment stays first",
+    )
+
+
+def test_echo_multiline() -> None:
+    code = "inputs = 2\njs(\n    'x'  # comment\n)\n# trailing comment\n"
+    expect(run_echo(code, js=lambda e: [e] * 2) == "['x', 'x']\n", "multi-line call echoes")
+
+
+def test_echo_none_is_silent() -> None:
+    expect(run_echo("fill_input('#a', 'b')", fill_input=lambda s, v: None) == "", "None prints nothing")
+
+
+def test_echo_leaves_code_alone() -> None:
+    for code in (
+        "print(page_info())",
+        "x = js('1')",
+        "for i in range(2):\n    js('x')",
+        "a = 1; js('x')",
+        "def f(:\n",
+        "'just a string'",
+        "",
+    ):
+        expect(bh.echo_last_expression(code) == code, f"unchanged: {code!r}")
+
+
+def test_save_next() -> None:
+    expect(bh.save_login_next("vault_x", True) == bh.SAVE_FILLED_NEXT, "filled keeps upstream text")
+    text = bh.save_login_next("vault_b47b899a7fe7", False)
+    expect("browser_vault_fill" in text and "'vault_b47b899a7fe7'" in text, f"unfilled next: {text}")
+    expect("Never ask the user for the password" in text, "unfilled next forbids asking")
+
+
 # Runs inside the Hermes image with compose/hermes mounted at /bootstrap.
 IMAGE_DRIVER = r'''
 import json
@@ -107,6 +158,8 @@ def run(script):
 first = run("/bootstrap/patch-browser-exec-hint.py")
 assert "patched: result hints" in first, first
 assert "patched: EACCES hint" in first, first
+assert "patched: expression echo" in first, first
+assert "patched: vault save next step" in first, first
 again = run("/bootstrap/patch-browser-exec-hint.py")
 assert "ok: result hints already patched" in again, again
 assert "patched" not in again.replace("already patched", ""), again
@@ -121,7 +174,11 @@ bu._route_backend = lambda *a, **k: None
 bu._attach_vault_supervisor = lambda *a, **k: None
 bu._workspace_dir = lambda task_id: None
 bu._find_screenshot = lambda *a, **k: None
-bu._run_cli_killing_process_group = lambda cmd, code, env, timeout: SimpleNamespace(**proc)
+sent = {}
+def fake_cli(cmd, code, env, timeout):
+    sent["code"] = code
+    return SimpleNamespace(**proc)
+bu._run_cli_killing_process_group = fake_cli
 
 def call(code, returncode, stdout, stderr):
     proc.update(returncode=returncode, stdout=stdout, stderr=stderr)
@@ -135,33 +192,30 @@ r = call("page_info()", 0, "", "")
 assert "print(" in r.get("hint", ""), r
 r = call("print(page_info())", 0, "url: https://www.linkedin.com/login\n", "")
 assert "hint" not in r, r
+assert sent["code"] == "print(page_info())", sent
+call('js("document.title")', 0, "LinkedIn Login\n", "")
+assert "print(" in sent["code"] and 'js("document.title")' in sent["code"], sent
+
+# browser_vault_save_login on a page with no form: the session's case.
+import agent.vault_backends.unlock as unlock
+import agent.vault_store as store
+import tools.browser_vault_tool as vt
+vt._focus_bound_origin = lambda *a, **k: None
+vt._current_page_origin = lambda task_id: "https://www.linkedin.com"
+unlock.can_prompt_here = lambda: True
+unlock.get_save_login_prompt_callback = lambda: (lambda origin, host: {"identifier": "keith@axline.io", "password": "x"})
+store.get_vault_store = lambda: SimpleNamespace(add_item=lambda *a, **k: SimpleNamespace(id="vault_b47b899a7fe7"))
+for fill_ok in (False, True):
+    vt.browser_vault_fill = lambda handle, task_id=None, ok=fill_ok: json.dumps(
+        {"success": ok} if ok else {"success": False, "error": "No login form fields were found on the current page."})
+    r = json.loads(vt.browser_vault_save_login("LinkedIn", task_id="t"))
+    assert r["success"] and r["handle"] == "vault_b47b899a7fe7", r
+    if fill_ok:
+        assert r["next"].startswith("Type the identifier"), r
+    else:
+        assert "browser_vault_fill" in r["next"] and "vault_b47b899a7fe7" in r["next"], r
 print("image ok")
 '''
-
-
-def run_image_checks(tag: str) -> None:
-    import json
-
-    image = f"nousresearch/hermes-agent:{tag}"
-    cmd = [
-        "docker", "run", "--rm", "-i", "--entrypoint", "/opt/hermes/.venv/bin/python",
-        "-v", f"{HERMES_DIR}:/bootstrap:ro", image, "-c", IMAGE_DRIVER,
-    ]
-    payload = json.dumps({"import_code": SESSION_IMPORT_CODE, "import_stderr": SESSION_IMPORT_STDERR})
-    out = subprocess.run(cmd, input=payload, capture_output=True, text=True)
-    if out.returncode != 0 or "image ok" not in out.stdout:
-        fail(f"image checks ({image}):\n{out.stdout}{out.stderr}")
-    print(f"image ok ({image})")
-
-
-def image_available(tag: str) -> bool:
-    if not shutil.which("docker"):
-        return False
-    probe = subprocess.run(
-        ["docker", "image", "inspect", f"nousresearch/hermes-agent:{tag}"],
-        capture_output=True,
-    )
-    return probe.returncode == 0
 
 
 def main() -> None:
@@ -171,17 +225,15 @@ def main() -> None:
     test_session_bare_expression()
     test_printed_output()
     test_other_failure()
+    test_echo_session_js()
+    test_echo_multiline()
+    test_echo_none_is_silent()
+    test_echo_leaves_code_alone()
+    test_save_next()
     print("ok")
 
-    args = sys.argv[1:]
-    if "--host-only" in args:
-        return
-    tag = os.environ.get("HERMES_AGENT_IMAGE_TAG", DEFAULT_TAG)
-    if "--image" in args or image_available(tag):
-        run_image_checks(tag)
-    else:
-        print(f"skip image checks (nousresearch/hermes-agent:{tag} not present)")
-
+    payload = json.dumps({"import_code": SESSION_IMPORT_CODE, "import_stderr": SESSION_IMPORT_STDERR})
+    hermes_image.maybe_run(IMAGE_DRIVER, stdin=payload)
 
 if __name__ == "__main__":
     main()

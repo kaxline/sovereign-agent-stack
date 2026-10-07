@@ -5,8 +5,13 @@
   reinstall hint. EACCES on agent-browser-linux-* is a mode bit on the CLI
   binary, and the Browser Automation menu no-ops once Chromium is in the image.
 - A result gains a ``hint`` when the code imported the pre-defined helpers
-  from a module that does not exist, or ran and printed nothing (see
-  browser_exec_hints.py). Copies that helper into /opt/hermes/tools/.
+  from a module that does not exist, or ran and printed nothing.
+- A trailing bare expression (``js(...)``, ``page_info()``) is printed, as a
+  Python prompt does, so its value comes back.
+- browser_vault_save_login's ``next`` names browser_vault_fill and the handle
+  when the save could not fill the page (no login form open).
+
+The logic lives in browser_exec_hints.py, copied into /opt/hermes/tools/.
 """
 from __future__ import annotations
 
@@ -18,6 +23,9 @@ MARKER = "# assistant-stack: agent-browser EACCES is not a Chromium install"
 HELPER_SRC = Path("/bootstrap/browser_exec_hints.py")
 HELPER_DST = Path("/opt/hermes/tools/browser_exec_hints.py")
 MARKER_RESULT = "# assistant-stack: browser_exec result hints"
+MARKER_ECHO = "# assistant-stack: print a trailing browser_exec expression"
+VAULT_TARGET = Path("/opt/hermes/tools/browser_vault_tool.py")
+MARKER_SAVE_NEXT = "# assistant-stack: vault save next step"
 
 OLD = (
     "    if not cdp:\n"
@@ -68,15 +76,52 @@ NEW_RESULT = (
     "    screenshot = _find_screenshot(proc.stdout, started)\n"
 )
 
+OLD_ECHO = (
+    "    timeout = _clamp_timeout(timeout_s)\n"
+    "    started = time.time()\n"
+)
 
-def _apply(text: str, old: str, new: str, marker: str, label: str) -> str:
+NEW_ECHO = (
+    "    # assistant-stack: print a trailing browser_exec expression\n"
+    "    try:\n"
+    "        from tools.browser_exec_hints import echo_last_expression\n"
+    "        code = echo_last_expression(code)\n"
+    "    except Exception:\n"
+    "        logger.debug(\"browser_exec echo failed\", exc_info=True)\n"
+    "    timeout = _clamp_timeout(timeout_s)\n"
+    "    started = time.time()\n"
+)
+
+OLD_SAVE_NEXT = (
+    "    filled = json.loads(browser_vault_fill(meta.id, task_id=effective_task_id))\n"
+    "    return json.dumps({\"success\": True, \"handle\": meta.id, \"origin\": origin, \"identifier\": identifier,\n"
+    "                       \"identifier_type\": id_type, \"fill\": filled,\n"
+    "                       \"next\": \"Type the identifier into the username field if the form has one, then submit.\"},\n"
+)
+
+NEW_SAVE_NEXT = (
+    "    filled = json.loads(browser_vault_fill(meta.id, task_id=effective_task_id))\n"
+    "    # assistant-stack: vault save next step\n"
+    "    _save_next = \"Type the identifier into the username field if the form has one, then submit.\"\n"
+    "    try:\n"
+    "        from tools.browser_exec_hints import save_login_next\n"
+    "        _save_next = save_login_next(meta.id, bool(filled.get(\"success\")))\n"
+    "    except Exception:\n"
+    "        logger.debug(\"vault save next-step hint failed\", exc_info=True)\n"
+    "    return json.dumps({\"success\": True, \"handle\": meta.id, \"origin\": origin, \"identifier\": identifier,\n"
+    "                       \"identifier_type\": id_type, \"fill\": filled,\n"
+    "                       \"next\": _save_next},\n"
+)
+
+
+def _apply(text: str, old: str, new: str, marker: str, label: str, path: Path = TARGET) -> str:
     if marker in text:
         print(f"ok: {label} already patched")
         return text
     if old not in text:
-        print(f"warn: {label} needle missing in {TARGET}")
+        print(f"warn: {label} needle missing in {path}")
         return text
-    print(f"patched: {label} in {TARGET}")
+    print(f"patched: {label} in {path}")
     return text.replace(old, new, 1)
 
 
@@ -92,8 +137,17 @@ def main() -> None:
     text = TARGET.read_text()
     patched = _apply(text, OLD, NEW, MARKER, "EACCES hint")
     patched = _apply(patched, OLD_RESULT, NEW_RESULT, MARKER_RESULT, "result hints")
+    patched = _apply(patched, OLD_ECHO, NEW_ECHO, MARKER_ECHO, "expression echo")
     if patched != text:
         TARGET.write_text(patched)
+    if VAULT_TARGET.exists():
+        vault = VAULT_TARGET.read_text()
+        vault_patched = _apply(vault, OLD_SAVE_NEXT, NEW_SAVE_NEXT, MARKER_SAVE_NEXT,
+                               "vault save next step", VAULT_TARGET)
+        if vault_patched != vault:
+            VAULT_TARGET.write_text(vault_patched)
+    else:
+        print(f"skip: {VAULT_TARGET} missing")
 
 
 if __name__ == "__main__":

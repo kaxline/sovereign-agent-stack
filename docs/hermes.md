@@ -179,9 +179,9 @@ Prefer Qwen-class (or other known-good agentic) models for folder listing, MCP, 
 | Overlay | What it does |
 |---|---|
 | `compose/hermes/patch-text-tool-call-recovery.py` | Recovers Python/XML tool mimicry into real `tool_calls` before dispatch |
-| `compose/hermes/patch-fabricated-result.py` | Continues a stop turn that claims a write or `<result>` with no tool call, and does not store that claim |
+| `compose/hermes/patch-fabricated-result.py` | Continues a stop turn that claims a write or `<result>` with no tool call, or asks the user for a password in chat, and does not store that reply |
 | `compose/hermes/patch-reasoning-only-tool-markup.py` | Re-prompts a reply that is only reasoning ending in a malformed tool call (`</parameter></function></tool_call>`), instead of showing that reasoning as the answer (Hermes v2026.9+ promotes it; v2026.8 re-prompted) |
-| `compose/hermes/patch-browser-exec-hint.py` | Adds a `hint` to a `browser_exec` result when the code imported the pre-defined helpers (e.g. `from browser_helpers import …`) or printed nothing, and drops the Chromium-reinstall advice when agent-browser hits EACCES |
+| `compose/hermes/patch-browser-exec-hint.py` | Adds a `hint` to a `browser_exec` result when the code imported the pre-defined helpers (e.g. `from browser_helpers import …`) or printed nothing; prints a trailing bare expression's value; points `browser_vault_save_login`'s `next` at `browser_vault_fill` when the save could not fill the page; drops the Chromium-reinstall advice when agent-browser hits EACCES |
 | `compose/hermes/patch-openrouter-empty-stream.py` | On `EmptyStreamError` after an OpenRouter cache HIT, sends `X-OpenRouter-Cache-Clear` and surfaces a clearer error |
 | `compose/hermes/patch-tool-eval-trace.py` | JSONL turn traces for [tool-calling eval](tool-eval.md) (`data/hermes/eval/traces.jsonl`); unwraps `tool_call` inner names; records `content_len` after the text phase |
 | `compose/hermes/patch-tool-search-always-include.py` | Honors `tools.tool_search.always_include` so stacked MCP pins stay eager |

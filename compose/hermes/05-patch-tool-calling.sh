@@ -10,7 +10,8 @@ run_patch() {
   fi
 }
 run_patch /bootstrap/patch-text-tool-call-recovery.py
-# Stop turns that claim a write (or any <result>) without calling a tool.
+# Stop turns that claim a write (or any <result>) without calling a tool, or
+# ask the user for a password in chat.
 run_patch /bootstrap/patch-fabricated-result.py
 # Re-prompt a reasoning-only stop that holds a malformed tool call.
 run_patch /bootstrap/patch-reasoning-only-tool-markup.py
@@ -24,7 +25,8 @@ run_patch /bootstrap/patch-tool-eval-trace.py
 # Pin agent-browser + --no-install (fallback when 08's PATH install is absent).
 run_patch /bootstrap/patch-agent-browser-npx.py
 # EACCES on the agent-browser binary is not a missing Chromium install; result
-# hints for a bad helper import or code that printed nothing.
+# hints for a bad helper import or code that printed nothing; print a trailing
+# expression; vault save next step names browser_vault_fill.
 run_patch /bootstrap/patch-browser-exec-hint.py
 # Per-session history budget for DM threads (request window; transcript stays).
 run_patch /bootstrap/patch-history-budget.py
