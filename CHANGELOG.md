@@ -6,7 +6,18 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
-## Unreleased
+## v0.3.0 — 2026-10-06
+
+### Upgrade steps
+
+1. Re-run `./scripts/setup.sh` over the existing `.env` and `data/`.
+2. `docker compose up -d --build llm-proxy`. The proxy code is baked into the
+   locally built `${IMAGE_PREFIX}-llm-proxy:local` image, so a plain `up -d`
+   keeps the old proxy.
+3. `docker compose up -d`. The Hermes bootstraps run again and set the new
+   stale-stream timeout and auto-title settings on every profile.
+4. Optional: delete `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `FAST_LLM`,
+   `SMART_LLM`, `STRATEGIC_LLM` and `EMBEDDING` from `.env` (see below).
 
 ### New optional `.env` keys
 
