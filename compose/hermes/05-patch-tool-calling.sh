@@ -12,6 +12,8 @@ run_patch() {
 run_patch /bootstrap/patch-text-tool-call-recovery.py
 # Stop turns that claim a write (or any <result>) without calling a tool.
 run_patch /bootstrap/patch-fabricated-result.py
+# Re-prompt a reasoning-only stop that holds a malformed tool call.
+run_patch /bootstrap/patch-reasoning-only-tool-markup.py
 run_patch /bootstrap/patch-openrouter-empty-stream.py
 # Rewrite hallucinated native web_search/web_extract → MCP SearXNG.
 run_patch /bootstrap/patch-block-native-web-tools.py

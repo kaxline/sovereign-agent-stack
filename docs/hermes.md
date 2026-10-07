@@ -180,6 +180,7 @@ Prefer Qwen-class (or other known-good agentic) models for folder listing, MCP, 
 |---|---|
 | `compose/hermes/patch-text-tool-call-recovery.py` | Recovers Python/XML tool mimicry into real `tool_calls` before dispatch |
 | `compose/hermes/patch-fabricated-result.py` | Continues a stop turn that claims a write or `<result>` with no tool call, and does not store that claim |
+| `compose/hermes/patch-reasoning-only-tool-markup.py` | Re-prompts a reply that is only reasoning ending in a malformed tool call (`</parameter></function></tool_call>`), instead of showing that reasoning as the answer (Hermes v2026.9+ promotes it; v2026.8 re-prompted) |
 | `compose/hermes/patch-openrouter-empty-stream.py` | On `EmptyStreamError` after an OpenRouter cache HIT, sends `X-OpenRouter-Cache-Clear` and surfaces a clearer error |
 | `compose/hermes/patch-tool-eval-trace.py` | JSONL turn traces for [tool-calling eval](tool-eval.md) (`data/hermes/eval/traces.jsonl`); unwraps `tool_call` inner names; records `content_len` after the text phase |
 | `compose/hermes/patch-tool-search-always-include.py` | Honors `tools.tool_search.always_include` so stacked MCP pins stay eager |
@@ -722,6 +723,7 @@ docker compose exec hermes test -f /opt/hermes/agent/fabricated_result.py && ech
 docker compose exec hermes test -f /opt/hermes/agent/tool_eval_trace.py && echo "tool-eval tracer ok"
 docker compose exec hermes grep -F 'assistant-stack: text-mimicked tool-call recovery' /opt/hermes/agent/conversation_loop.py >/dev/null && echo "text recovery call site ok"
 docker compose exec hermes grep -F 'assistant-stack: fabricated result without a tool call' /opt/hermes/agent/turn_final_response.py >/dev/null && echo "fabricated-result call site ok"
+docker compose exec hermes grep -F 'assistant-stack: hold reasoning-only promotion on tool-call markup' /opt/hermes/agent/turn_final_response.py >/dev/null && echo "reasoning-only markup hold ok"
 docker compose exec hermes grep -F 'assistant-stack: tool-eval turn trace' /opt/hermes/agent/conversation_loop.py >/dev/null && echo "tool-eval call site ok"
 docker compose exec hermes grep -F 'assistant-stack: bust OpenRouter cache on empty stream' /opt/hermes/agent/chat_completion_helpers.py >/dev/null && echo "empty-stream cache bust ok"
 

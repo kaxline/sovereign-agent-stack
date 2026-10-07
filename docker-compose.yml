@@ -918,6 +918,8 @@ services:
       - ./compose/hermes/patch-text-tool-call-recovery.py:/bootstrap/patch-text-tool-call-recovery.py:ro
       - ./compose/hermes/fabricated_result.py:/bootstrap/fabricated_result.py:ro
       - ./compose/hermes/patch-fabricated-result.py:/bootstrap/patch-fabricated-result.py:ro
+      - ./compose/hermes/reasoning_only_guard.py:/bootstrap/reasoning_only_guard.py:ro
+      - ./compose/hermes/patch-reasoning-only-tool-markup.py:/bootstrap/patch-reasoning-only-tool-markup.py:ro
       - ./compose/hermes/patch-openrouter-empty-stream.py:/bootstrap/patch-openrouter-empty-stream.py:ro
       - ./compose/hermes/patch-block-native-web-tools.py:/bootstrap/patch-block-native-web-tools.py:ro
       - ./compose/hermes/patch-tool-call-flat-args.py:/bootstrap/patch-tool-call-flat-args.py:ro

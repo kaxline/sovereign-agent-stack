@@ -6,6 +6,23 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
+## Unreleased
+
+### Upgrade steps
+
+1. `docker compose up -d --force-recreate hermes` so cont-init applies the
+   new overlay. No `.env` changes.
+
+### Changes
+
+- **Hermes**: a reply that is only reasoning and contains a malformed tool
+  call (often just `</parameter></function></tool_call>`) is re-prompted
+  instead of shown as the answer. Hermes v2026.9 started showing such
+  reasoning as the final reply, and v2026.8 re-prompted. A model that keeps
+  doing it is re-prompted at most twice per turn, then Hermes behaves as
+  before. Reasoning-only replies without tool-call tags are unchanged. See
+  `compose/hermes/patch-reasoning-only-tool-markup.py`.
+
 ## v0.3.0 — 2026-10-06
 
 ### Upgrade steps
