@@ -22,6 +22,12 @@ the stack under another app.
   doing it is re-prompted at most twice per turn, then Hermes behaves as
   before. Reasoning-only replies without tool-call tags are unchanged. See
   `compose/hermes/patch-reasoning-only-tool-markup.py`.
+- **Hermes**: a `browser_exec` result gains a `hint` field when the code
+  imported the browser helpers from a module that does not exist, or ran and
+  printed nothing. Results that print output are unchanged.
+- **Hermes**: the `browser-login` skill (1.1.0) covers the browser-use
+  backend, where `browser_exec` and the vault tools are the only browser
+  tools, with working sign-in code.
 
 ## v0.3.0 — 2026-10-06
 

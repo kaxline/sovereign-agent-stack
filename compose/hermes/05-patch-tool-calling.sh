@@ -23,7 +23,8 @@ run_patch /bootstrap/patch-tool-call-flat-args.py
 run_patch /bootstrap/patch-tool-eval-trace.py
 # Pin agent-browser + --no-install (fallback when 08's PATH install is absent).
 run_patch /bootstrap/patch-agent-browser-npx.py
-# EACCES on the agent-browser binary is not a missing Chromium install.
+# EACCES on the agent-browser binary is not a missing Chromium install; result
+# hints for a bad helper import or code that printed nothing.
 run_patch /bootstrap/patch-browser-exec-hint.py
 # Per-session history budget for DM threads (request window; transcript stays).
 run_patch /bootstrap/patch-history-budget.py

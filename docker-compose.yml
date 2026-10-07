@@ -927,6 +927,7 @@ services:
       - ./compose/hermes/patch-tool-eval-trace.py:/bootstrap/patch-tool-eval-trace.py:ro
       - ./compose/hermes/patch-agent-browser-npx.py:/bootstrap/patch-agent-browser-npx.py:ro
       - ./compose/hermes/patch-browser-exec-hint.py:/bootstrap/patch-browser-exec-hint.py:ro
+      - ./compose/hermes/browser_exec_hints.py:/bootstrap/browser_exec_hints.py:ro
       - ./compose/hermes/history_budget.py:/bootstrap/history_budget.py:ro
       - ./compose/hermes/history_budget_hook.py:/bootstrap/history_budget_hook.py:ro
       - ./compose/hermes/patch-history-budget.py:/bootstrap/patch-history-budget.py:ro

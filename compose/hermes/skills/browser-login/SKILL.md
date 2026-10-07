@@ -1,7 +1,7 @@
 ---
 name: browser-login
 description: "Sign in to a website in the local browser. Use for 'log me into…', 'sign in to…', 'save my login for…', or any page that shows a username/password form. Covers the order of the browser_vault_* tools and why the sign-in page must be open first."
-version: 1.0.0
+version: 1.1.0
 author: assistant stack (repo-shipped)
 license: MIT
 platforms: [linux, macos, windows]
@@ -26,12 +26,28 @@ page open there is no origin, so `browser_vault_save_login` and
 - "Save my login for X"
 - A task reaches a page with a password field
 
+## Which browser tools you have
+
+- **`browser_exec` only** (browser-use backend): every page action is Python in
+  `browser_exec`. The helpers (`new_tab`, `goto_url`, `wait_for_load`,
+  `page_info`, `js`, `fill_input`) are already defined. Do not import them.
+  Only `print(...)` output comes back.
+- **`browser_navigate`, `browser_snapshot`, `browser_click`, …**: use those.
+
 ## Steps
 
-1. **Open the sign-in page.** `browser_navigate` to the site's login URL
-   (`browser_exec` on the browser-use backend). If you only know the home page,
-   open it and click through to "Sign in". Confirm a password field is on the
-   page (`browser_snapshot`) before going on.
+1. **Open the sign-in page** at the site's login URL. If you only know the home
+   page, open it and click through to "Sign in". Confirm a password field is on
+   the page before going on.
+   - `browser_exec`:
+     ```python
+     # Opening the sign-in page
+     new_tab("https://www.linkedin.com/login")
+     wait_for_load()
+     print(page_info())
+     print(js("!!document.querySelector('input[type=password]')"))
+     ```
+   - Otherwise `browser_navigate`, then `browser_snapshot`.
 2. **Look for a saved login.** `browser_vault_list`. If it reports a locked
    backend, `browser_vault_unlock` with that backend's name.
 3. **Fill or save.**
@@ -39,7 +55,8 @@ page open there is no origin, so `browser_vault_save_login` and
    - None exists: `browser_vault_save_login` (optional `label`). The user enters
      the login in a masked prompt; Hermes stores it and fills the password.
 4. **Finish the form.** Type the identifier the tool returned into the username
-   field if the form has one, then submit (`browser_click` / `browser_press`).
+   field if the form has one, then submit: `fill_input` and a `js(...)` click in
+   `browser_exec`, or `browser_type` / `browser_click` / `browser_press`.
 5. **One-time code.** If the site then asks for a code, call
    `browser_vault_enter_code` with the handle you just used.
 
@@ -53,6 +70,10 @@ page open there is no origin, so `browser_vault_save_login` and
 
 ## Pitfalls
 
+- **`from browser_helpers import …`** or any other import of the helpers. That
+  module does not exist; the call fails. Call `new_tab(...)` directly.
+- **`page_info()` without `print`.** The result comes back empty and tells you
+  nothing. Print everything you need to read.
 - **Calling `browser_vault_save_login` before any page is open.** It fails, and
   is the most common mistake.
 - **Asking for the password in chat.** Never. Not "what's your password?", not
