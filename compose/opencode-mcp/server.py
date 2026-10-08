@@ -31,6 +31,15 @@ OPENCODE_USER = os.environ.get("OPENCODE_SERVER_USERNAME", "opencode")
 OPENCODE_PASS = os.environ.get("OPENCODE_SERVER_PASSWORD", "")
 PRIMARY_ROOT = os.environ.get("OPENCODE_WORKSPACE_HOST", "").rstrip("/")
 EXTRA_ROOTS_RAW = os.environ.get("CODING_EXTRA_ROOTS", "")
+# Set when an embedding app grants coding roots itself (a UI prompt instead of
+# make coding-root-add). Changes only the needs_access hint text.
+ROOTS_APP_MANAGED = os.environ.get("CODING_ROOTS_APP_MANAGED", "").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+# Hermes-visible paths that are the same folder as a host path, e.g. a project
+# folder bound at /opt/projects/<slug> and at its host path. Format:
+# "/opt/projects/foo=/Users/you/code/foo;/opt/projects/bar=/srv/bar".
+PATH_ALIASES_RAW = os.environ.get("CODING_PATH_ALIASES", "")
 TASK_DEFAULT_TIMEOUT = int(os.environ.get("TASK_DEFAULT_TIMEOUT_SEC", "600"))
 POLL_INTERVAL_SEC = float(os.environ.get("TASK_POLL_INTERVAL_SEC", "2.0"))
 
@@ -56,6 +65,41 @@ def _normalize_directory(directory: str) -> str:
     return directory.rstrip("/") if directory else directory
 
 
+def _parse_path_aliases(raw: str) -> Dict[str, str]:
+    aliases: Dict[str, str] = {}
+    for entry in raw.split(";"):
+        alias, sep, host = entry.partition("=")
+        alias = _normalize_directory(alias.strip())
+        host = _normalize_directory(host.strip())
+        if not sep or not alias.startswith("/") or not host.startswith("/"):
+            if entry.strip():
+                logger.warning("ignoring malformed CODING_PATH_ALIASES entry: %r", entry)
+            continue
+        aliases[alias] = host
+    return aliases
+
+
+_PATH_ALIASES = _parse_path_aliases(PATH_ALIASES_RAW)
+
+
+def _path_aliases() -> Dict[str, str]:
+    return dict(_PATH_ALIASES)
+
+
+def _resolve_alias(directory: str) -> str:
+    """Map a path under an alias (or the alias itself) to its host path."""
+    directory = _normalize_directory(directory)
+    if not directory:
+        return directory
+    # Longest alias first so a nested alias wins over its parent.
+    for alias, host in sorted(_path_aliases().items(), key=lambda kv: -len(kv[0])):
+        if directory == alias:
+            return host
+        if directory.startswith(alias + "/"):
+            return host + directory[len(alias):]
+    return directory
+
+
 def _path_allowed(directory: str) -> bool:
     directory = _normalize_directory(directory)
     if not directory or not directory.startswith("/"):
@@ -73,13 +117,23 @@ def _needs_access_payload(directory: str) -> Dict[str, Any]:
         "needs_access": True,
         "path": directory,
         "roots": _coding_roots(),
-        "hint": (
-            f"Path {directory!r} is outside the coding roots. Ask the user to grant "
-            f"access, then have them run: make coding-root-add DIR={directory} "
-            f"(or the nearest parent they want to share), recreate hermes/opencode/"
-            f"opencode-mcp, and retry."
-        ),
+        "hint": _needs_access_hint(directory),
     }
+
+
+def _needs_access_hint(directory: str) -> str:
+    if ROOTS_APP_MANAGED:
+        return (
+            f"The app will ask the user to grant access to {directory}. Stop and "
+            f"wait for the user; don't suggest commands."
+        )
+    return (
+        f"Path {directory!r} is outside the coding roots. Ask the user to grant "
+        f"access, then have them run: make coding-root-add DIR={directory} "
+        f"(or the nearest parent they want to share), recreate opencode, "
+        f"opencode-mcp and hermes-worker (hermes when the terminal backend is "
+        f"local), and retry."
+    )
 
 
 def _client() -> httpx.Client:
@@ -333,8 +387,12 @@ def _start_worker(task_id: str) -> None:
 
 @mcp.tool()
 def coding_list_roots() -> Dict[str, Any]:
-    """List absolute filesystem roots where coding tasks are allowed."""
-    out = {"ok": True, "roots": _coding_roots()}
+    """List absolute filesystem roots where coding tasks are allowed.
+
+    aliases maps Hermes-visible folders (e.g. /opt/projects/<slug>) to the host
+    path they share; coding_start_task accepts either form.
+    """
+    out = {"ok": True, "roots": _coding_roots(), "aliases": _path_aliases()}
     return out
 
 
@@ -345,9 +403,10 @@ def coding_start_task(directory: str, prompt: str) -> Dict[str, Any]:
 
     directory must be an absolute path under a coding root. Returns a task_id
     to poll with coding_wait_for_task / coding_get_task_status.
-    If the path is outside coding roots, returns needs_access=true instead.
+    A folder listed in coding_list_roots aliases is translated to its host
+    path. If the path is outside coding roots, returns needs_access=true instead.
     """
-    directory = _normalize_directory(directory)
+    directory = _resolve_alias(directory)
     if not prompt or not prompt.strip():
         return {"ok": False, "error": "prompt is required"}
     if not _path_allowed(directory):
