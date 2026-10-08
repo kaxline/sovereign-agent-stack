@@ -248,6 +248,8 @@ mcp_servers:
       include: [deep_research, quick_search, write_report, get_research_sources]
 ```
 
+A server that goes away for minutes at a time, such as one inside a desktop app, needs a shorter parked retry and a way to wake it. See [MCP servers your app hosts](extending.md#mcp-servers-your-app-hosts).
+
 Ask Hermes to use LightRAG for Knowledge Base questions. Catalog / empty-check
 prompts (“summarize what is in my Knowledge Base”) may use `get_documents` or
 `get_graph_labels`. Content questions (“what does the KB say about X?”) should

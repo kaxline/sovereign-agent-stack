@@ -10,8 +10,8 @@ the stack under another app.
 
 ### Upgrade steps
 
-1. `docker compose up -d`. The `hermes` system prompt and the `opencode-mcp`
-   environment change, so compose recreates both.
+1. `docker compose up -d`. The `hermes` system prompt and mounts and the
+   `opencode-mcp` environment change, so compose recreates both.
 
 ### New optional `.env` keys
 
@@ -39,6 +39,15 @@ the stack under another app.
   hint. When the hint says the app will ask, the model names the folder in
   one sentence and ends the turn. It uses the alias pairs for "this project"
   instead of matching folder names against the roots.
+- **Hermes**: `POST /v1/mcp/servers/{name}/reconnect` on the API server
+  (8643, API key) wakes a parked MCP server in every profile within about a
+  second. It returns `202`, or `404` when no profile configures the name. It
+  never restarts a connected server. See
+  [docs/extending.md](docs/extending.md#mcp-servers-your-app-hosts).
+- **Hermes**: `mcp_servers.<name>.parked_retry_interval` (seconds, floor 10)
+  sets how often a parked server is tried again. Unset keeps Hermes' 300 s.
+  An app that hosts its own MCP server should set it, and
+  `keepalive_interval`, to about 15.
 
 ## v0.3.1 — 2026-10-07
 

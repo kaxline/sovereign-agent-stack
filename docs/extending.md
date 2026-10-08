@@ -215,3 +215,47 @@ writes Hermes profile config, keep it consistent with what bootstrap sets:
   unset. Forcing them on helps some chatty models but makes weaker or
   quantized ones fake tool calls in text more often
   ([hermes.md](hermes.md)).
+
+## MCP servers your app hosts
+
+If your app serves tools to Hermes from its own MCP server, Hermes loses that
+server whenever the app closes. After 5 failed reconnects it parks the server:
+it drops the tools and tries again only every 300 s. Without the settings
+below, the tools can be missing for up to 5 minutes after the app comes back.
+
+Set these on the server in every profile that lists it
+(`mcp_servers.<name>` in `data/hermes/config.yaml` and
+`data/hermes/profiles/<profile>/config.yaml`):
+
+| Key | Suggested | Effect |
+|---|---|---|
+| `keepalive_interval` | `15` | Hermes setting (default 180, floor 5). A session counts as healthy after one interval. Until then a single drop parks the server again. Also notices the app closing sooner |
+| `parked_retry_interval` | `15` | Stack overlay (default 300, floor 10). How often a parked server is tried again |
+| `connect_timeout` | leave at 60 | Must outlast Hermes' first 3 attempts (several seconds against a closed port). A shorter value abandons a server that is down when Hermes starts, instead of parking it, and a wake cannot reach it |
+
+To bring the tools back at once, call this after your server is listening:
+
+```bash
+curl -X POST -H "Authorization: Bearer $API_SERVER_KEY" \
+  http://localhost:8643/v1/mcp/servers/<name>/reconnect
+```
+
+Use the `api-server` profile's key (`compose/hermes/api-server.env`). The call
+reaches every profile, including the default one, which has no API server of
+its own. The tools return within about a second.
+
+| Status | Meaning |
+|---|---|
+| `202` | `{"server", "profiles", "status": "wake_requested"}`. `profiles` lists every profile whose config names the server |
+| `404` | No profile configures that name |
+| `400` | The name is not `[A-Za-z0-9][A-Za-z0-9_.-]*` (at most 128 characters) |
+| `401` | Missing or wrong key |
+
+The call only wakes parked connections and never restarts a connected one, so
+calling it on every launch is safe. A request stays live for 30 s, so a server
+still on its last retries when you call is woken as soon as it parks. Each
+connection acts on a request once. If your server was not listening yet, it
+parks again: call again, or let `parked_retry_interval` pick it up.
+
+This is an overlay on the pinned Hermes image (`patch-mcp-wake.py`). The route,
+key and response fields stay stable across pin moves. Changes are additive.
