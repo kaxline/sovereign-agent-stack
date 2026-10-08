@@ -955,6 +955,11 @@ services:
       # Buzz: keep ws://localhost:3000 community host, proxy to host relay.
       - ./compose/hermes/buzz-localhost-proxy.py:/bootstrap/buzz-localhost-proxy.py:ro
       - ./compose/hermes/06-buzz-localhost-proxy.sh:/etc/cont-init.d/06-buzz-localhost-proxy:ro
+      # Wake parked MCP servers (POST /v1/mcp/servers/{name}/reconnect) and
+      # mcp_servers.<name>.parked_retry_interval. See docs/extending.md.
+      - ./compose/hermes/mcp_wake.py:/bootstrap/mcp_wake.py:ro
+      - ./compose/hermes/patch-mcp-wake.py:/bootstrap/patch-mcp-wake.py:ro
+      - ./compose/hermes/10-patch-mcp-wake.sh:/etc/cont-init.d/10-patch-mcp-wake:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     shm_size: "1g"
