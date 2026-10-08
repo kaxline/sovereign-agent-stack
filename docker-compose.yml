@@ -809,6 +809,9 @@ services:
       # Logs and screenshots (BH_TMP_DIR) are plain files and stay put.
       - BH_RUNTIME_DIR=/tmp/browser-harness
       - BH_RUNTIME_DIR_SHARED=1
+      # One uv cache for every profile (uvx browser-use), on a native volume:
+      # under each profile's HOME it sat on virtiofs and a warm run took ~57 s.
+      - UV_CACHE_DIR=/opt/uv-cache
       # .env sets SEARXNG_URL for n8n/GPTR. Hermes must NOT inherit it: native
       # web_search auto-binds to SearXNG and still executes when the model
       # hallucinates the tool after we disable the web toolset. MCP uses
@@ -960,6 +963,10 @@ services:
       - ./compose/hermes/mcp_wake.py:/bootstrap/mcp_wake.py:ro
       - ./compose/hermes/patch-mcp-wake.py:/bootstrap/patch-mcp-wake.py:ro
       - ./compose/hermes/10-patch-mcp-wake.sh:/etc/cont-init.d/10-patch-mcp-wake:ro
+      # Shared uv cache (UV_CACHE_DIR above). HERMES_UV_CACHE_DIR may name a
+      # host path instead; keep it off virtiofs if speed matters.
+      - ${HERMES_UV_CACHE_DIR:-hermes_uv_cache}:/opt/uv-cache
+      - ./compose/hermes/11-warmup-uv-cache.sh:/etc/cont-init.d/11-warmup-uv-cache:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     shm_size: "1g"
@@ -1110,3 +1117,4 @@ volumes:
   valkey_data:
   gptr_outputs:
   ollama_data:
+  hermes_uv_cache:

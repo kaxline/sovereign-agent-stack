@@ -11,7 +11,11 @@ the stack under another app.
 ### Upgrade steps
 
 1. `docker compose up -d`. The `hermes` system prompt and mounts and the
-   `opencode-mcp` environment change, so compose recreates both.
+   `opencode-mcp` environment change, so compose recreates both. Compose
+   creates the `hermes_uv_cache` volume.
+2. Optional: delete the old per-profile uv caches, which nothing reads any
+   more (several hundred MB each):
+   `rm -rf data/hermes/home/.cache/uv data/hermes/profiles/*/home/.cache/uv`.
 
 ### New optional `.env` keys
 
@@ -19,6 +23,7 @@ the stack under another app.
 |---|---|---|
 | `CODING_ROOTS_APP_MANAGED` | empty | `1`: the `needs_access` hint says the app will ask for access instead of naming `make coding-root-add` |
 | `CONTEXT_ROOTS_APP_MANAGED` | empty | `1`: the Hermes prompt says the app will ask for a missing context root instead of naming `make context-root-add` |
+| `HERMES_UV_CACHE_DIR` | `hermes_uv_cache` | Host path to use for the shared uv cache instead of the named volume |
 | `CODING_PATH_ALIASES` | empty | `;`-separated `hermes-path=host-path` pairs for project folders that are also host folders |
 
 ### Changes
@@ -48,6 +53,11 @@ the stack under another app.
   sets how often a parked server is tried again. Unset keeps Hermes' 300 s.
   An app that hosts its own MCP server should set it, and
   `keepalive_interval`, to about 15.
+- **Hermes**: every profile shares one uv cache on the new `hermes_uv_cache`
+  volume (`UV_CACHE_DIR=/opt/uv-cache`), and a start-up script warms it with
+  browser-use in the background. `browser_exec` ran the browser-use CLI with
+  `uvx` from a cache under each profile's home on `data/hermes`, which took
+  about a minute per call on Docker Desktop. It now takes about a second.
 
 ## v0.3.1 — 2026-10-07
 

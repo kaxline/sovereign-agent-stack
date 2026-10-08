@@ -60,6 +60,7 @@ These container paths are stable. They change only with a note in the changelog:
 | `hermes`, `hermes-webui` | `/opt/projects` | Project library (read-only on `hermes` under ssh) |
 | `hermes-worker`, `hermes-webui` | `/opt/projects`, `/opt/voice`, `/opt/memory` | Projects, voice samples, curated memory |
 | `hermes`, `hermes-worker` | `/opt/skills` | Bundled skills (read-only) |
+| `hermes` | `/opt/uv-cache` | Shared uv cache (`UV_CACHE_DIR`), named volume `hermes_uv_cache`; `HERMES_UV_CACHE_DIR` swaps in a host path |
 | `lightrag` | `/app/data/inputs`, `/app/data/rag_storage` | Corpus inputs and index |
 
 Most data paths also follow `ASSISTANT_DATA_ROOT` ([data-dir.md](data-dir.md)),
