@@ -65,7 +65,8 @@ When they ask to **look in** a named repo, **find** an error string, or
 ## Coding roots
 
 Call `coding_list_roots` if unsure. Paths are host absolute paths (for example
-`/Users/you/code/my-app`). Do not invent `/opt/...` aliases for coding roots.
+`/Users/you/code/my-app`). Do not invent `/opt/...` paths for coding roots;
+the only `/opt/projects` paths that work are the listed pairs below.
 
 **Project folders.** A project at `/opt/projects/<slug>` may also be a host
 folder. The system prompt lists those pairs (Hermes path=host path), and
