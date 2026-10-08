@@ -6,6 +6,40 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
+## Unreleased
+
+### Upgrade steps
+
+1. `docker compose up -d`. The `hermes` system prompt and the `opencode-mcp`
+   environment change, so compose recreates both.
+
+### New optional `.env` keys
+
+| Key | Default | Purpose |
+|---|---|---|
+| `CODING_ROOTS_APP_MANAGED` | empty | `1`: the `needs_access` hint says the app will ask for access instead of naming `make coding-root-add` |
+| `CONTEXT_ROOTS_APP_MANAGED` | empty | `1`: the Hermes prompt says the app will ask for a missing context root instead of naming `make context-root-add` |
+| `CODING_PATH_ALIASES` | empty | `;`-separated `hermes-path=host-path` pairs for project folders that are also host folders |
+
+### Changes
+
+- **opencode-mcp**: `coding_start_task` translates a path listed in
+  `CODING_PATH_ALIASES` (or a path under it) to its host path before
+  checking the roots, and `coding_list_roots` returns the pairs as `aliases`.
+  An alias does not grant access. See
+  [docs/opencode.md](docs/opencode.md#project-folder-aliases).
+- **opencode-mcp**: the default `needs_access` hint names `hermes-worker`
+  (or `hermes` on the local backend) as the container to recreate, instead
+  of `hermes`.
+- **Hermes**: the system prompt no longer repeats the `make coding-root-add`
+  steps. It tells the model to follow the `needs_access` hint, so the hint is
+  the one source for that text. It lists the alias pairs when
+  `CODING_PATH_ALIASES` is set.
+- **Hermes**: the `delegate-coding` skill (1.3.0) follows the `needs_access`
+  hint. When the hint says the app will ask, the model names the folder in
+  one sentence and ends the turn. It uses the alias pairs for "this project"
+  instead of matching folder names against the roots.
+
 ## v0.3.1 — 2026-10-07
 
 ### Upgrade steps

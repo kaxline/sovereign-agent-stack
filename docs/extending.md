@@ -94,6 +94,26 @@ mkdir -p "${ASSISTANT_DATA_ROOT:-./data}/projects/<slug>"
 root (`make context-root-add`) avoids the nested bind entirely and is the
 better fit for a folder that lives elsewhere on disk.
 
+If the same folder is also mounted at its host path as a coding root, list
+the pair in `CODING_PATH_ALIASES` so Hermes can delegate coding work in that
+project without guessing the host path. See
+[OpenCode](opencode.md#project-folder-aliases).
+
+### App-managed roots
+
+An app that adds coding or context roots from its own UI should set these in
+its `.env`, so Hermes does not tell users to run `make` targets they cannot
+run:
+
+| Key | Effect when `1` |
+|---|---|
+| `CODING_ROOTS_APP_MANAGED` | The `needs_access` hint from `coding_start_task` says the app will ask the user to grant access to the path. Hermes names the folder and ends the turn. |
+| `CONTEXT_ROOTS_APP_MANAGED` | The Hermes system prompt says the app will ask when a context root is missing, instead of naming `make context-root-add`. |
+
+Both are empty by default, and a developer stack keeps the `make` text. The
+`needs_access` result still carries `path` and `roots` for the app to build
+its prompt from. Recreate `opencode-mcp` and `hermes` after changing them.
+
 ## Model keys
 
 `llm-proxy` holds the real upstream keys. Clients send the placeholder
