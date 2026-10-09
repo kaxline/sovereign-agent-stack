@@ -156,7 +156,7 @@ To switch models often, load the model in LM Studio and run:
 # or: make model-use FROM_LMSTUDIO=1 LIGHTRAG=same RESTART=1
 ```
 
-The script updates both `model.default` and `model.model` in each Hermes profile.
+`LLM_MODEL` in `.env` is the stack's one model setting. GPT Researcher reads it through compose; Hermes and OpenCode keep the id in their own config, so the script copies it there: `model.default` and `model.model` in every Hermes profile (one container run for all of them), and the OpenCode default. A profile whose `model.base_url` is not `llm-proxy` has its own upstream and keeps its model. After editing `LLM_MODEL` by hand, run `make model-sync` (add `RESTART=1` to recreate services) to copy it out again.
 
 Presets: copy `models.yaml.example` to `models.local.yaml`, then `make model-use PRESET=muse-glimmer`.
 

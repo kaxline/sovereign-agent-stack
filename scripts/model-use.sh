@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# Point the stack at a chat model (LM Studio, Ollama, etc.) in one shot:
-# .env, Hermes profiles, and optionally OpenCode.
+# Point the stack at a chat model (LM Studio, Ollama, etc.) in one shot.
+# LLM_MODEL in .env is the stack's model; this writes it there and copies it
+# to the places that cannot read .env: Hermes profiles and OpenCode.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 # shellcheck source=lib/env.sh
 source "$ROOT/scripts/lib/env.sh"
+# shellcheck source=lib/hermes-yaml.sh
+source "$ROOT/scripts/lib/hermes-yaml.sh"
 
 MODEL=""
 FROM_LMSTUDIO=0
@@ -14,10 +17,12 @@ LIGHTRAG_MODE=""
 RESTART=0
 EXPLICIT_PRESET=0
 NON_INTERACTIVE=0
+SYNC=0
 
 usage() {
   cat <<'EOF'
 Usage: ./scripts/model-use.sh [options] [MODEL_ID | PRESET]
+       ./scripts/model-use.sh --sync [--restart]
 
 Switch the stack's chat model across .env and Hermes (and OpenCode when the
 coding profile is enabled). Load the model on your host server first (e.g. LM
@@ -30,6 +35,8 @@ Options:
                       non-embedding model
   --non-interactive   Same as --yes
   --preset NAME       Resolve NAME from models.local.yaml or models.yaml
+  --sync              Re-apply LLM_MODEL from .env to every Hermes profile and
+                      OpenCode (after editing .env by hand or adding a profile)
   --lightrag same     Also set LIGHTRAG_LLM_MODEL to the chat model (useful when
                       LM Studio serves one model at a time)
   --restart           Recreate compose services and restart Hermes
@@ -41,6 +48,7 @@ Examples:
   ./scripts/model-use.sh --from-lmstudio -y   # auto-pick first chat model
   ./scripts/model-use.sh muse-glimmer         # preset from models.local.yaml
   make model-use FROM_LMSTUDIO=1 RESTART=1
+  make model-sync
 
 Presets: copy models.yaml.example to models.local.yaml and add your aliases.
 EOF
@@ -118,42 +126,46 @@ pick_lmstudio_model() {
   fi
 }
 
-hermes_runner() {
-  if docker compose ps hermes --status running -q 2>/dev/null | grep -q .; then
-    docker compose exec -T hermes hermes "$@"
-  else
-    docker compose run --rm --no-deps -T hermes hermes "$@"
-  fi
-}
+# Every Hermes profile in one container run. `hermes config set` costs about
+# a second of CLI start-up per key, which added up to 15+ calls per switch.
+# A profile whose model.base_url points somewhere other than llm-proxy has its
+# own upstream and keeps its model.
+update_hermes_profiles() {
+  [[ -f data/hermes/config.yaml ]] || { log "Skipping Hermes (no data/hermes/config.yaml)"; return 0; }
+  hermes_python "$MODEL" "$BASE_URL" "$API_KEY" <<'PY'
+import contextlib
+import io
+import sys
+from pathlib import Path
 
-hermes_profile_config_path() {
-  local profile="$1"
-  if [[ -z "$profile" ]]; then
-    printf '%s' "data/hermes/config.yaml"
-  else
-    printf '%s' "data/hermes/profiles/${profile}/config.yaml"
-  fi
-}
+from hermes_cli.config import load_config, set_config_value
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
-update_hermes_profile() {
-  local profile="$1"
-  local label="$2"
-  local cfg
-  cfg="$(hermes_profile_config_path "$profile")"
-  if [[ ! -f "$cfg" ]]; then
-    log "Skipping Hermes profile '${label}' (no ${cfg})"
-    return 0
-  fi
-
-  local args=()
-  [[ -n "$profile" ]] && args=(-p "$profile")
-
-  log "Hermes ${label}: default=${MODEL} model=${MODEL}"
-  hermes_runner "${args[@]}" config set model.provider custom
-  hermes_runner "${args[@]}" config set model.default "$MODEL"
-  hermes_runner "${args[@]}" config set model.model "$MODEL"
-  hermes_runner "${args[@]}" config set model.base_url "$BASE_URL"
-  hermes_runner "${args[@]}" config set model.api_key "$API_KEY"
+model, base_url, api_key = sys.argv[1:4]
+root = Path("/opt/data")
+homes = [root] + sorted(p.parent for p in root.glob("profiles/*/config.yaml"))
+for home in homes:
+    label = "default" if home == root else home.name
+    token = set_hermes_home_override(home)
+    try:
+        current = (load_config().get("model") or {})
+        current_url = current.get("base_url") if isinstance(current, dict) else None
+        if current_url and current_url.rstrip("/") != base_url:
+            print(f"[model-use] Hermes {label}: kept {current.get('default')} (base_url {current_url})")
+            continue
+        with contextlib.redirect_stdout(io.StringIO()):
+            for key, value in (
+                ("model.provider", "custom"),
+                ("model.default", model),
+                ("model.model", model),
+                ("model.base_url", base_url),
+                ("model.api_key", api_key),
+            ):
+                set_config_value(key, value)
+        print(f"[model-use] Hermes {label}: {model}")
+    finally:
+        reset_hermes_home_override(token)
+PY
 }
 
 update_opencode() {
@@ -233,6 +245,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --restart) RESTART=1; shift ;;
+    --sync) SYNC=1; shift ;;
     -h|--help) usage; exit 0 ;;
     --) shift; break ;;
     -*) die "Unknown option: $1 (try --help)" ;;
@@ -253,6 +266,12 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ "$SYNC" -eq 1 ]]; then
+  [[ -z "$MODEL" && "$FROM_LMSTUDIO" -eq 0 ]] || die "--sync takes no model; it uses LLM_MODEL from .env"
+  MODEL="$(env_get LLM_MODEL)"
+  [[ -n "$MODEL" ]] || die "--sync: LLM_MODEL is not set in .env"
+fi
 
 # No model id: offer LM Studio picker when that is the configured binding.
 if [[ -z "$MODEL" && "$FROM_LMSTUDIO" -eq 0 ]] && using_lmstudio; then
@@ -278,9 +297,7 @@ API_KEY="local-llm"
 
 log "Switching stack to: ${MODEL}"
 update_env_models
-update_hermes_profile "" "default"
-update_hermes_profile browser "browser"
-update_hermes_profile api-server "api-server"
+update_hermes_profiles
 update_opencode
 
 if [[ "$RESTART" -eq 1 ]]; then

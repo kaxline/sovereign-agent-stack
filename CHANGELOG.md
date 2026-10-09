@@ -58,6 +58,15 @@ the stack under another app.
   browser-use in the background. `browser_exec` ran the browser-use CLI with
   `uvx` from a cache under each profile's home on `data/hermes`, which took
   about a minute per call on Docker Desktop. It now takes about a second.
+- **model-use**: writes every Hermes profile in one container run instead
+  of 15 `hermes config set` calls, so a switch takes a couple of seconds.
+  It now updates every profile under `data/hermes/profiles/`, not only the
+  default, `browser` and `api-server`, so profiles from `make agent-create`
+  follow the stack model. A profile whose `model.base_url` is not
+  `llm-proxy` keeps its model.
+- **model-sync**: `make model-sync` (`scripts/model-use.sh --sync`) copies
+  `LLM_MODEL` from `.env` to Hermes and OpenCode, for when `.env` was edited
+  by hand.
 
 ## v0.3.1 — 2026-10-07
 
