@@ -5,6 +5,7 @@
 	corpus-create corpus-use corpus-list corpus-ingest corpus-destroy \
 	project-init project-index project-index-check project-sources-test model-use \
 	data-dir-show data-dir-set data-dir-migrate \
+	db-backup db-service-add db-psql \
 	coding-root-list coding-root-add \
 	context-root-list context-root-add opencode-smoke-fixture \
 	kb-eval-fixture kb-eval-fixture-remove \
@@ -34,6 +35,7 @@ ensure-local:
 	@test -f compose/hermes/api-server.env || (cp compose/hermes/api-server.env.example compose/hermes/api-server.env && echo "Created compose/hermes/api-server.env — set API_SERVER_KEY")
 	@test -f compose/hermes/browser.env || (cp compose/hermes/browser.env.example compose/hermes/browser.env && echo "Created compose/hermes/browser.env — set API_SERVER_KEY")
 	@mkdir -p compose/caldav-mcp/accounts
+	@mkdir -p compose/postgres/services
 	@test -f compose/caldav-mcp/accounts/personal.env || (cp compose/caldav-mcp/account.env.example compose/caldav-mcp/accounts/personal.env && echo "Created compose/caldav-mcp/accounts/personal.env — set CALDAV_* credentials for calendar profile")
 	@./scripts/sync-signal-profile.sh
 	@./scripts/sync-buzz-profile.sh
@@ -100,6 +102,20 @@ buzz-admin:
 	else \
 		./scripts/buzz-admin.sh $(ARGS); \
 	fi
+
+# Shared Postgres (db profile). See docs/database.md.
+#   make db-backup                       pg_dump into DB_BACKUP_DIR
+#   make db-service-add NAME=<slug>      register an integration's schema + role
+#   make db-psql                         admin psql shell
+db-backup:
+	./scripts/db.sh backup
+
+db-service-add:
+	@test -n "$(NAME)" || (echo "Usage: make db-service-add NAME=<slug>"; exit 1)
+	./scripts/db.sh service-add "$(NAME)"
+
+db-psql:
+	./scripts/db.sh psql
 
 # User content root (projects, voice, memory, inputs, rag_storage, corpora).
 # Hermes state stays at ./data/hermes. See docs/data-dir.md.

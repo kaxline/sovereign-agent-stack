@@ -871,6 +871,110 @@ PY
   fi
 fi
 
+# --- Shared database (db) ---
+sql_enabled="$(env_get SQL_MCP_ENABLED 0)"
+case "$sql_enabled" in 1|true|TRUE|yes|YES) sql_on=1 ;; *) sql_on=0 ;; esac
+db_running=0
+if docker info >/dev/null 2>&1 \
+  && docker compose ps --status running postgres-db 2>/dev/null | grep -q postgres-db; then
+  db_running=1
+fi
+if has_profile db || [[ "$sql_on" -eq 1 || "$db_running" -eq 1 ]]; then
+  echo
+  echo "--- Shared database ---"
+  if has_profile db; then
+    ok "COMPOSE_PROFILES includes db"
+  elif [[ "$sql_on" -eq 1 ]]; then
+    bad "SQL_MCP_ENABLED=1 but 'db' not in COMPOSE_PROFILES — run ./scripts/setup.sh --db"
+  fi
+  if [[ "$sql_on" -eq 1 ]]; then
+    ok "SQL_MCP_ENABLED=1"
+  else
+    warn "SQL_MCP_ENABLED is not 1 — Postgres runs, but Hermes gets no SQL tools"
+  fi
+  for key in DB_ADMIN_PASSWORD DB_AGENT_RO_PASSWORD DB_AGENT_RW_PASSWORD; do
+    val="$(env_get "$key")"
+    if [[ -z "$val" || "$val" == change-me* ]]; then
+      bad "${key} is unset — run ./scripts/setup.sh"
+    elif [[ ! "$val" =~ ^[A-Za-z0-9._~-]+$ ]]; then
+      warn "${key} has characters that need URL escaping in DATABASE_URI — use hex (openssl rand -hex 24)"
+    else
+      ok "${key} is set"
+    fi
+  done
+  db_dir="$(env_get DB_DATA_DIR ./data/postgres)"
+  case "$db_dir" in
+    *"Mobile Documents"*|*Dropbox*|*OneDrive*|*"Google Drive"*)
+      warn "DB_DATA_DIR (${db_dir}) looks like a synced folder — Postgres files can corrupt there"
+      ;;
+  esac
+  for svc in compose/postgres/services/*.env; do
+    [[ -f "$svc" ]] || continue
+    slug="$(basename "$svc" .env)"
+    if [[ ! "$slug" =~ ^[a-z][a-z0-9_]{0,57}$ ]] || [[ "$slug" == agent || "$slug" == public ]]; then
+      warn "compose/postgres/services/${slug}.env: invalid slug — db-provision skips it"
+    elif ! grep -qE '^DB_SERVICE_PASSWORD=.+' "$svc"; then
+      warn "compose/postgres/services/${slug}.env: DB_SERVICE_PASSWORD is empty — db-provision skips it"
+    else
+      ok "service schema ${slug} registered"
+    fi
+  done
+  if grep -qs 'sql-mcp-rw' data/hermes/profiles/api-server/config.yaml; then
+    bad "api-server profile has an MCP entry for sql-mcp-rw — re-run hermes-api-bootstrap (unattended sessions must stay read-only)"
+  fi
+  if [[ "$sql_on" -eq 1 ]]; then
+    for pair in "default:data/hermes/config.yaml:sql-mcp-rw" \
+      "api-server:data/hermes/profiles/api-server/config.yaml:sql-mcp-ro" \
+      "browser:data/hermes/profiles/browser/config.yaml:sql-mcp-rw"; do
+      IFS=':' read -r label cfg want <<< "$pair"
+      [[ -f "$cfg" ]] || continue
+      if grep -q "$want" "$cfg"; then
+        ok "Hermes ${label} profile registers ${want}"
+      else
+        warn "Hermes ${label} profile has no ${want} MCP entry — re-run hermes-api-bootstrap and hermes-browser-bootstrap"
+      fi
+    done
+  fi
+  if docker info >/dev/null 2>&1; then
+    if [[ "$db_running" -eq 1 ]]; then
+      ok "postgres-db container is running"
+      provision="$(docker compose ps -a --format '{{.State}} {{.ExitCode}}' db-provision 2>/dev/null | head -1)"
+      case "$provision" in
+        "exited 0") ok "db-provision completed" ;;
+        "") warn "db-provision has not run — make up" ;;
+        *) bad "db-provision state: ${provision} — docker compose logs db-provision" ;;
+      esac
+      db_name="$(env_get DB_NAME assistant)"
+      # Grants, not session defaults: force a read/write transaction and roll back.
+      probe() {
+        local role="$1" pass="$2"
+        printf 'BEGIN READ WRITE;\nCREATE TABLE agent.__doctor_probe (i int);\nROLLBACK;\n' \
+          | PGPASSWORD="$pass" docker compose exec -T -e PGPASSWORD postgres-db \
+            psql -X -q -v ON_ERROR_STOP=1 -h 127.0.0.1 -U "$role" -d "$db_name" >/dev/null 2>&1
+      }
+      if probe agent_ro "$(env_get DB_AGENT_RO_PASSWORD)"; then
+        bad "agent_ro can create tables in schema agent — check docker compose logs db-provision"
+      else
+        ok "agent_ro is denied writes"
+      fi
+      if probe agent_rw "$(env_get DB_AGENT_RW_PASSWORD)"; then
+        ok "agent_rw can write in schema agent"
+      else
+        warn "agent_rw cannot create in schema agent (or cannot log in) — check db-provision"
+      fi
+    elif has_profile db; then
+      warn "postgres-db not running — make up with db in COMPOSE_PROFILES"
+    fi
+    for svc in sql-mcp-ro sql-mcp-rw; do
+      if docker compose ps --status running "$svc" 2>/dev/null | grep -q "$svc"; then
+        ok "${svc} container is running"
+      elif [[ "$sql_on" -eq 1 ]]; then
+        warn "${svc} not running — Hermes SQL tools will fail to connect"
+      fi
+    done
+  fi
+fi
+
 # --- Knowledge corpus (rag) ---
 if has_profile rag; then
   echo

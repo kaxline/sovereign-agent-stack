@@ -18,6 +18,7 @@ SETUP_RAG=0
 SETUP_AUTOMATION=0
 SETUP_CODING=0
 SETUP_CALENDAR=0
+SETUP_DB=0
 NON_INTERACTIVE=0
 
 usage() {
@@ -34,6 +35,7 @@ Options:
   --automation              Enable n8n + GPT Researcher (profile automation)
   --coding                  Enable OpenCode (profile coding)
   --calendar                Enable CalDAV calendar MCP (profile calendar)
+  --db                      Enable shared Postgres + SQL MCP for Hermes (profile db)
   --ollama                  Bundle Ollama in Docker + demo model pulls (profile ollama)
   --hermes                  Deprecated alias; core already includes Hermes
   --non-interactive         Fail if required values are missing
@@ -44,6 +46,7 @@ Examples:
   ./scripts/setup.sh
   ./scripts/setup.sh --rag --automation --coding
   ./scripts/setup.sh --calendar
+  ./scripts/setup.sh --db
   ./scripts/setup.sh --data-root ~/AssistantData
   ./scripts/setup.sh --ollama --non-interactive --workspace my-kb --title "My KB"
 EOF
@@ -60,6 +63,7 @@ while [[ $# -gt 0 ]]; do
     --automation) SETUP_AUTOMATION=1; shift ;;
     --coding) SETUP_CODING=1; shift ;;
     --calendar) SETUP_CALENDAR=1; shift ;;
+    --db) SETUP_DB=1; shift ;;
     --ollama) SETUP_OLLAMA=1; shift ;;
     --non-interactive) NON_INTERACTIVE=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -254,6 +258,18 @@ setup_calendar_profile() {
   log "Enabled CalDAV MCP registration (CALDAV_MCP_ENABLED=1)"
   log "Add more accounts: cp compose/caldav-mcp/account.env.example compose/caldav-mcp/accounts/<name>.env"
   log "Then: docker compose run --rm hermes-api-bootstrap && docker compose run --rm hermes-browser-bootstrap && docker compose restart hermes"
+}
+
+# Shared Postgres + SQL MCP. The secrets are generated for every install (see
+# Secrets below), so this only turns the profile and the registration on.
+setup_db_profile() {
+  append_compose_profile db
+  upsert_env .env SQL_MCP_ENABLED 1
+  local db_dir
+  db_dir="$(resolve_data_root_path "$(data_root_env_get DB_DATA_DIR ./data/postgres)")"
+  mkdir -p "$db_dir"
+  log "Enabled shared Postgres (data: ${db_dir}) and SQL MCP registration (SQL_MCP_ENABLED=1)"
+  log "Register an integration's schema: make db-service-add NAME=<slug>. See docs/database.md"
 }
 
 setup_automation_profile() {
@@ -679,6 +695,11 @@ set_env_if_placeholder .env N8N_USER_MANAGEMENT_JWT_SECRET "$(rand_hex 16)"
 set_env_if_placeholder .env HERMES_DASHBOARD_PASSWORD "$(rand_hex 16)"
 set_env_if_placeholder .env HERMES_DASHBOARD_AUTH_SECRET "$(rand_hex 32)"
 set_env_if_placeholder .env LLM_PROXY_ADMIN_TOKEN "$(rand_hex 32)"
+# Shared Postgres (db profile). Hex, so they drop into connection URLs as-is.
+# Generated whether or not db is on, like POSTGRES_PASSWORD for n8n.
+set_env_if_placeholder .env DB_ADMIN_PASSWORD "$(rand_hex 24)"
+set_env_if_placeholder .env DB_AGENT_RO_PASSWORD "$(rand_hex 24)"
+set_env_if_placeholder .env DB_AGENT_RW_PASSWORD "$(rand_hex 24)"
 
 SEARXNG_SECRET="$(grep '^SEARXNG_SECRET=' .env | head -1 | cut -d= -f2- || true)"
 if [[ -z "$SEARXNG_SECRET" || "$SEARXNG_SECRET" == change-me* ]]; then
@@ -799,6 +820,11 @@ set_env_if_missing .env LIGHTRAG_MCP_ENABLED 0
 # CalDAV MCP stays off until calendar is enabled.
 set_env_if_missing .env CALDAV_MCP_ENABLED 0
 
+# SQL MCP stays off until db is enabled. The services dir is a bind-mount
+# source for db-provision; create it before Docker does (root-owned on Linux).
+set_env_if_missing .env SQL_MCP_ENABLED 0
+mkdir -p compose/postgres/services
+
 # OpenCode MCP stays off until coding is enabled.
 set_env_if_missing .env OPENCODE_MCP_ENABLED 0
 set_env_if_missing .env CODING_EXTRA_ROOTS ""
@@ -827,6 +853,9 @@ if [[ "$SETUP_CODING" -eq 1 ]]; then
 fi
 if [[ "$SETUP_CALENDAR" -eq 1 ]]; then
   setup_calendar_profile
+fi
+if [[ "$SETUP_DB" -eq 1 ]]; then
+  setup_db_profile
 fi
 if [[ "$SETUP_OLLAMA" -eq 1 ]]; then
   setup_ollama_profile
@@ -865,6 +894,7 @@ Optional profiles (re-run setup with flags, or edit COMPOSE_PROFILES):
   --automation    n8n + GPT Researcher
   --coding        OpenCode
   --calendar      CalDAV calendars (iCloud, Nextcloud, …) via caldav-mcp
+  --db            Shared Postgres + SQL MCP for Hermes (docs/database.md)
   --ollama        Bundled Ollama + demo model pull
 
 Signal (optional): set HERMES_SIGNAL_ENABLED=1 and SIGNAL_ACCOUNT in .env,
