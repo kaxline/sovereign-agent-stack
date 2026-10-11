@@ -426,7 +426,7 @@ services:
   #   agent      agent_rw writes, agent_ro reads
   #   <slug>     svc_<slug> writes (compose/postgres/services/<slug>.env)
   # Not n8n's database: that is `postgres` above (automation profile).
-  # No host port. Data: DB_DATA_DIR (default ./data/postgres). docs/database.md
+  # No host port. Data: DB_DATA_DIR (default ./data/db). docs/database.md
   # ----------------------------------------------------------------------
   postgres-db:
     profiles: *db-profiles
@@ -443,7 +443,7 @@ services:
     volumes:
       # Postgres 18 images keep PGDATA in a versioned subdirectory
       # (18/docker), so a later major upgrade can sit beside it.
-      - ${DB_DATA_DIR:-./data/postgres}:/var/lib/postgresql
+      - ${DB_DATA_DIR:-./data/db}:/var/lib/postgresql
     networks: [db]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d ${DB_NAME:-assistant}"]

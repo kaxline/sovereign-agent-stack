@@ -266,7 +266,7 @@ setup_db_profile() {
   append_compose_profile db
   upsert_env .env SQL_MCP_ENABLED 1
   local db_dir
-  db_dir="$(resolve_data_root_path "$(data_root_env_get DB_DATA_DIR ./data/postgres)")"
+  db_dir="$(resolve_data_root_path "$(data_root_env_get DB_DATA_DIR ./data/db)")"
   mkdir -p "$db_dir"
   log "Enabled shared Postgres (data: ${db_dir}) and SQL MCP registration (SQL_MCP_ENABLED=1)"
   log "Register an integration's schema: make db-service-add NAME=<slug>. See docs/database.md"

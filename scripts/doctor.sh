@@ -902,7 +902,7 @@ if has_profile db || [[ "$sql_on" -eq 1 || "$db_running" -eq 1 ]]; then
       ok "${key} is set"
     fi
   done
-  db_dir="$(env_get DB_DATA_DIR ./data/postgres)"
+  db_dir="$(env_get DB_DATA_DIR ./data/db)"
   case "$db_dir" in
     *"Mobile Documents"*|*Dropbox*|*OneDrive*|*"Google Drive"*)
       warn "DB_DATA_DIR (${db_dir}) looks like a synced folder — Postgres files can corrupt there"

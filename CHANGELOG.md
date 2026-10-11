@@ -57,8 +57,8 @@ Only with `db` enabled. `setup.sh` fills all three for every install.
 | `CODING_PATH_ALIASES` | empty | `;`-separated `hermes-path=host-path` pairs for project folders that are also host folders |
 | `SQL_MCP_ENABLED` | `0` | `1` registers the shared-database SQL MCP on Hermes. `setup.sh --db` sets it |
 | `DB_NAME` | `assistant` | Shared database name (`db` profile) |
-| `DB_DATA_DIR` | `./data/postgres` | Shared Postgres bind mount |
-| `DB_BACKUP_DIR` | `./data/postgres-backups` | `make db-backup` output |
+| `DB_DATA_DIR` | `./data/db` | Shared Postgres bind mount |
+| `DB_BACKUP_DIR` | `./data/db-backups` | `make db-backup` output |
 | `DB_IMAGE` | `postgres:18-alpine` | Shared Postgres image |
 | `SQL_MCP_IMAGE` | `crystaldba/postgres-mcp:0.3.0` | SQL MCP sidecar image |
 | `SQL_MCP_RO_URL` / `SQL_MCP_RW_URL` | `http://sql-mcp-{ro,rw}:8000/sse` | Endpoints the bootstrap registers |

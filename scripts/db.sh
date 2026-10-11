@@ -16,7 +16,7 @@ Usage: ./scripts/db.sh <command> [args]
 
 Commands:
   backup              pg_dump the shared database (custom format) into
-                      DB_BACKUP_DIR (default ./data/postgres-backups)
+                      DB_BACKUP_DIR (default ./data/db-backups)
   service-add <slug>  Register an integration: writes
                       compose/postgres/services/<slug>.env with a generated
                       password and DATABASE_URL. db-provision creates role
@@ -45,7 +45,7 @@ require_running() {
 cmd_backup() {
   require_running
   local dir name stamp out
-  dir="$(resolve_data_root_path "$(data_root_env_get DB_BACKUP_DIR ./data/postgres-backups)")"
+  dir="$(resolve_data_root_path "$(data_root_env_get DB_BACKUP_DIR ./data/db-backups)")"
   name="$(db_name)"
   stamp="$(date +%Y%m%d-%H%M%S)"
   mkdir -p "$dir"
