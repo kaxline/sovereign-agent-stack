@@ -64,6 +64,7 @@ jobs:
           echo "=== HERMES_TERMINAL_BACKEND=local ==="
           HERMES_TERMINAL_BACKEND=local COMPOSE_PROFILES=core docker compose config -q
           python3 scripts/test-terminal-backend-compose.py
+          python3 scripts/test-root-access-hint.py
 
   project-sources:
     runs-on: ubuntu-latest
@@ -75,12 +76,16 @@ jobs:
         run: python3 scripts/test-fabricated-result.py
       - name: History budget window (stdlib)
         run: python3 scripts/test-history-budget.py
+      - name: MCP wake and parked retry interval (stdlib)
+        run: python3 scripts/test-mcp-wake.py
       - name: CalDAV password env key
         run: sh scripts/test-caldav-password-ref.sh
       - name: LLM proxy routes
         run: python3 scripts/test-llm-proxy.py
       - name: Terminal backend override sync
         run: python3 scripts/test-terminal-backend-sync.py
+      - name: OpenCode MCP roots and aliases (stdlib)
+        run: python3 scripts/test-opencode-mcp-roots.py
 
   shellcheck:
     runs-on: ubuntu-latest

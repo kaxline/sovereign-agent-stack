@@ -3,7 +3,7 @@
 	buzz-relay-start buzz-relay-stop buzz-relay-status buzz-relay-logs buzz-relay-restart \
 	buzz-admin \
 	corpus-create corpus-use corpus-list corpus-ingest corpus-destroy \
-	project-init project-index project-index-check project-sources-test model-use \
+	project-init project-index project-index-check project-sources-test model-use model-sync \
 	data-dir-show data-dir-set data-dir-migrate \
 	db-backup db-service-add db-psql \
 	coding-root-list coding-root-add \
@@ -160,6 +160,11 @@ model-use:
 		exit 1; \
 	fi; \
 	./scripts/model-use.sh "$$@"
+
+# Re-apply LLM_MODEL from .env to every Hermes profile and OpenCode.
+#   make model-sync RESTART=1
+model-sync:
+	@if [ "$(RESTART)" = "1" ]; then ./scripts/model-use.sh --sync --restart; else ./scripts/model-use.sh --sync; fi
 
 up: ensure-local
 	docker compose up -d

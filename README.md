@@ -125,6 +125,7 @@ See [SECURITY.md](SECURITY.md).
 make setup / ./scripts/setup.sh
 make doctor
 make model-use MODEL=…          # or FROM_LMSTUDIO=1 (interactive menu), YES=1, PRESET=…
+make model-sync                 # re-apply LLM_MODEL from .env to Hermes and OpenCode
 make up / make down / make ps
 make logs
 make data-dir-show / data-dir-set DIR=… / data-dir-migrate DIR=…

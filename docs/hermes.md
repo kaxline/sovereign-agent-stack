@@ -156,7 +156,7 @@ To switch models often, load the model in LM Studio and run:
 # or: make model-use FROM_LMSTUDIO=1 LIGHTRAG=same RESTART=1
 ```
 
-The script updates both `model.default` and `model.model` in each Hermes profile.
+`LLM_MODEL` in `.env` is the stack's one model setting. GPT Researcher reads it through compose; Hermes and OpenCode keep the id in their own config, so the script copies it there: `model.default` and `model.model` in every Hermes profile (one container run for all of them), and the OpenCode default. A profile whose `model.base_url` is not `llm-proxy` has its own upstream and keeps its model. After editing `LLM_MODEL` by hand, run `make model-sync` (add `RESTART=1` to recreate services) to copy it out again.
 
 Presets: copy `models.yaml.example` to `models.local.yaml`, then `make model-use PRESET=muse-glimmer`.
 
@@ -249,6 +249,8 @@ mcp_servers:
     tools:
       include: [deep_research, quick_search, write_report, get_research_sources]
 ```
+
+A server that goes away for minutes at a time, such as one inside a desktop app, needs a shorter parked retry and a way to wake it. See [MCP servers your app hosts](extending.md#mcp-servers-your-app-hosts).
 
 Ask Hermes to use LightRAG for Knowledge Base questions. Catalog / empty-check
 prompts (“summarize what is in my Knowledge Base”) may use `get_documents` or
@@ -637,6 +639,8 @@ rm -f data/hermes/home/.config/browser-harness/runtime/*.sock data/hermes/home/.
 ```
 
 `./scripts/doctor.sh` checks the variable and warns about leftover sockets.
+
+`browser_exec` starts the browser-use CLI with `uvx browser-use`, which runs it from uv's cache. By default that cache sits under each profile's `HOME`, so every profile kept its own copy on the `data/hermes` mount, and on Docker Desktop one call took about a minute even with the cache warm. The `hermes` service sets `UV_CACHE_DIR=/opt/uv-cache`, a named volume (`hermes_uv_cache`) shared by every profile, where a warm call takes about a second. At start, `11-warmup-uv-cache` fetches browser-use into it in the background, so only the first start after creating the volume downloads it (about 40 s). `HERMES_UV_CACHE_DIR` mounts a host path there instead.
 
 ### Saving logins
 

@@ -150,7 +150,19 @@ docker compose up -d --force-recreate hermes-worker opencode opencode-mcp
 # recreate hermes instead of hermes-worker when HERMES_TERMINAL_BACKEND=local
 ```
 
-If the user asks to work outside those roots, Hermes should ask them to confirm access and give them `make coding-root-add DIR=...` — it does not remount Docker itself.
+If the user asks to work outside those roots, `coding_start_task` returns `needs_access: true` with a `hint`. Hermes follows the hint: it asks the user to confirm access and gives them `make coding-root-add DIR=...` and the containers to recreate. It does not remount Docker itself.
+
+An app that embeds the stack and grants roots in its own UI sets `CODING_ROOTS_APP_MANAGED=1`. The hint then says the app will ask the user to grant access to the path, and Hermes names the folder in one sentence and ends the turn without suggesting commands. `CONTEXT_ROOTS_APP_MANAGED=1` does the same for missing context roots. See [Extending the stack](extending.md#app-managed-roots).
+
+### Project folder aliases
+
+A project folder can be visible to Hermes at `/opt/projects/<slug>` and also be a host folder under a coding root. `CODING_PATH_ALIASES` lists those pairs, separated by `;`:
+
+```bash
+CODING_PATH_ALIASES=/opt/projects/foo=/Users/you/code/foo;/opt/projects/bar=/srv/bar
+```
+
+`coding_start_task` translates an aliased path, or any path under it, to the host path before checking the roots, so Hermes can pass the project's own path. `coding_list_roots` returns the pairs as `aliases`, and the Hermes system prompt lists them when set. An alias does not grant access: the host path must still be under a coding root. Malformed entries are logged and ignored. Recreate `opencode-mcp` and `hermes` after changing it.
 
 **Not the same as context roots.** `CONTEXT_EXTRA_ROOTS` (`make context-root-add`) mounts notes into Hermes **read-only** and does not grant OpenCode or write-sandbox access. Use coding roots for git repos you want the coding agent to edit; use context roots for vaults the project INDEX should open. See [Projects](projects.md#extra-source-directories).
 

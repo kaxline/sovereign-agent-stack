@@ -12,13 +12,18 @@ the stack under another app.
 
 1. Re-run `./scripts/setup.sh` over the existing `.env` and `data/`. It adds
    `SQL_MCP_ENABLED=0` and generates the three `DB_*_PASSWORD` keys. Nothing
-   starts until you opt in with `--db`.
-2. `docker compose up -d`. `hermes` joins a new internal `db` network beside
-   `default`, so compose recreates it once even with `db` off. An override
-   that sets `networks:` on `hermes` must keep `default` and `db`.
-3. To use the database: `./scripts/setup.sh --db`, `make up`, re-run
-   `hermes-api-bootstrap` and `hermes-browser-bootstrap`, restart `hermes`.
-   See [docs/database.md](docs/database.md).
+   new starts until you opt in with `--db`.
+2. `docker compose up -d`. The `hermes` system prompt, mounts, and networks
+   (it joins a new internal `db` network beside `default`, even with `db`
+   off) and the `opencode-mcp` environment change, so compose recreates both.
+   Compose creates the `hermes_uv_cache` volume and the `db` network. An
+   override that sets `networks:` on `hermes` must keep `default` and `db`.
+3. Optional: delete the old per-profile uv caches, which nothing reads any
+   more (several hundred MB each):
+   `rm -rf data/hermes/home/.cache/uv data/hermes/profiles/*/home/.cache/uv`.
+4. Optional, to use the shared database: `./scripts/setup.sh --db`, `make up`,
+   re-run `hermes-api-bootstrap` and `hermes-browser-bootstrap`, restart
+   `hermes`. See [docs/database.md](docs/database.md).
 
 ### New services
 
@@ -44,15 +49,62 @@ Only with `db` enabled. `setup.sh` fills all three for every install.
 
 ### New optional `.env` keys
 
-- `SQL_MCP_ENABLED=0`. `setup.sh --db` sets it to `1`.
-- `DB_NAME=assistant`, `DB_DATA_DIR=./data/postgres`,
-  `DB_BACKUP_DIR=./data/postgres-backups`.
-- `DB_IMAGE=postgres:18-alpine`, `SQL_MCP_IMAGE=crystaldba/postgres-mcp:0.3.0`.
-- `SQL_MCP_RO_URL`, `SQL_MCP_RW_URL`, `SQL_MCP_TIMEOUT=60`,
-  `SQL_MCP_CONNECT_TIMEOUT=30`.
+| Key | Default | Purpose |
+|---|---|---|
+| `CODING_ROOTS_APP_MANAGED` | empty | `1`: the `needs_access` hint says the app will ask for access instead of naming `make coding-root-add` |
+| `CONTEXT_ROOTS_APP_MANAGED` | empty | `1`: the Hermes prompt says the app will ask for a missing context root instead of naming `make context-root-add` |
+| `HERMES_UV_CACHE_DIR` | `hermes_uv_cache` | Host path to use for the shared uv cache instead of the named volume |
+| `CODING_PATH_ALIASES` | empty | `;`-separated `hermes-path=host-path` pairs for project folders that are also host folders |
+| `SQL_MCP_ENABLED` | `0` | `1` registers the shared-database SQL MCP on Hermes. `setup.sh --db` sets it |
+| `DB_NAME` | `assistant` | Shared database name (`db` profile) |
+| `DB_DATA_DIR` | `./data/postgres` | Shared Postgres bind mount |
+| `DB_BACKUP_DIR` | `./data/postgres-backups` | `make db-backup` output |
+| `DB_IMAGE` | `postgres:18-alpine` | Shared Postgres image |
+| `SQL_MCP_IMAGE` | `crystaldba/postgres-mcp:0.3.0` | SQL MCP sidecar image |
+| `SQL_MCP_RO_URL` / `SQL_MCP_RW_URL` | `http://sql-mcp-{ro,rw}:8000/sse` | Endpoints the bootstrap registers |
+| `SQL_MCP_TIMEOUT` / `SQL_MCP_CONNECT_TIMEOUT` | `60` / `30` | Hermes MCP timeouts for `sql` |
 
 ### Changes
 
+- **opencode-mcp**: `coding_start_task` translates a path listed in
+  `CODING_PATH_ALIASES` (or a path under it) to its host path before
+  checking the roots, and `coding_list_roots` returns the pairs as `aliases`.
+  An alias does not grant access. See
+  [docs/opencode.md](docs/opencode.md#project-folder-aliases).
+- **opencode-mcp**: the default `needs_access` hint names `hermes-worker`
+  (or `hermes` on the local backend) as the container to recreate, instead
+  of `hermes`.
+- **Hermes**: the system prompt no longer repeats the `make coding-root-add`
+  steps. It tells the model to follow the `needs_access` hint, so the hint is
+  the one source for that text. It lists the alias pairs when
+  `CODING_PATH_ALIASES` is set.
+- **Hermes**: the `delegate-coding` skill (1.3.0) follows the `needs_access`
+  hint. When the hint says the app will ask, the model names the folder in
+  one sentence and ends the turn. It uses the alias pairs for "this project"
+  instead of matching folder names against the roots.
+- **Hermes**: `POST /v1/mcp/servers/{name}/reconnect` on the API server
+  (8643, API key) wakes a parked MCP server in every profile within about a
+  second. It returns `202`, or `404` when no profile configures the name. It
+  never restarts a connected server. See
+  [docs/extending.md](docs/extending.md#mcp-servers-your-app-hosts).
+- **Hermes**: `mcp_servers.<name>.parked_retry_interval` (seconds, floor 10)
+  sets how often a parked server is tried again. Unset keeps Hermes' 300 s.
+  An app that hosts its own MCP server should set it, and
+  `keepalive_interval`, to about 15.
+- **Hermes**: every profile shares one uv cache on the new `hermes_uv_cache`
+  volume (`UV_CACHE_DIR=/opt/uv-cache`), and a start-up script warms it with
+  browser-use in the background. `browser_exec` ran the browser-use CLI with
+  `uvx` from a cache under each profile's home on `data/hermes`, which took
+  about a minute per call on Docker Desktop. It now takes about a second.
+- **model-use**: writes every Hermes profile in one container run instead
+  of 15 `hermes config set` calls, so a switch takes a couple of seconds.
+  It now updates every profile under `data/hermes/profiles/`, not only the
+  default, `browser` and `api-server`, so profiles from `make agent-create`
+  follow the stack model. A profile whose `model.base_url` is not
+  `llm-proxy` keeps its model.
+- **model-sync**: `make model-sync` (`scripts/model-use.sh --sync`) copies
+  `LLM_MODEL` from `.env` to Hermes and OpenCode, for when `.env` was edited
+  by hand.
 - **Database**: grants enforce the boundaries. `agent_ro` reads every schema.
   `agent_rw` also creates and writes in schema `agent`. Each integration's
   `svc_<slug>` role (`make db-service-add NAME=<slug>`) owns and migrates only

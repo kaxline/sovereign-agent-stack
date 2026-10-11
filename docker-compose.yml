@@ -581,6 +581,12 @@ services:
       - OPENCODE_SERVER_PASSWORD=${OPENCODE_SERVER_PASSWORD:?set OPENCODE_SERVER_PASSWORD in .env}
       - OPENCODE_WORKSPACE_HOST=${OPENCODE_WORKSPACE_HOST:?set OPENCODE_WORKSPACE_HOST in .env}
       - CODING_EXTRA_ROOTS=${CODING_EXTRA_ROOTS:-}
+      # Set to 1 when an embedding app grants roots itself (needs_access hint
+      # says the app will ask instead of naming make coding-root-add).
+      - CODING_ROOTS_APP_MANAGED=${CODING_ROOTS_APP_MANAGED:-}
+      # Hermes path=host path pairs, ;-separated. coding_start_task accepts
+      # either side. See docs/opencode.md#path-aliases.
+      - CODING_PATH_ALIASES=${CODING_PATH_ALIASES:-}
       - MCP_TRANSPORT=sse
       - MCP_HOST=0.0.0.0
       - MCP_PORT=8000
@@ -920,6 +926,9 @@ services:
       # Logs and screenshots (BH_TMP_DIR) are plain files and stay put.
       - BH_RUNTIME_DIR=/tmp/browser-harness
       - BH_RUNTIME_DIR_SHARED=1
+      # One uv cache for every profile (uvx browser-use), on a native volume:
+      # under each profile's HOME it sat on virtiofs and a warm run took ~57 s.
+      - UV_CACHE_DIR=/opt/uv-cache
       # .env sets SEARXNG_URL for n8n/GPTR. Hermes must NOT inherit it: native
       # web_search auto-binds to SearXNG and still executes when the model
       # hallucinates the tool after we disable the web toolset. MCP uses
@@ -937,6 +946,10 @@ services:
       # user's own files under /opt/data (e.g. /opt/data/projects) and reports
       # the mounts below as missing. Covers both gateways in this container, so
       # there is no need to repeat it per profile.
+      # The context-root sentence switches on CONTEXT_ROOTS_APP_MANAGED. Compose
+      # has no if/else: ${V:+x} renders only when V is set, and ${V:-y} renders
+      # y when V is unset but V's own value when set. The set branch therefore
+      # wraps that value: "(CONTEXT_ROOTS_APP_MANAGED=1)".
       - "HERMES_ENVIRONMENT_HINT=Mount layout: /opt/data holds Hermes' own config
         and state, not the user's work. The user's material lives on separate mounts
         that no path under /opt/data can reach: /opt/projects (per-project working
@@ -954,7 +967,11 @@ services:
         debugging Hermes. Pass these absolute paths to the file, search, and
         terminal tools; never resolve them relative to the working directory.
         Coding roots (host absolute paths, shared with the coding agent): primary
-        ${OPENCODE_WORKSPACE_HOST}, plus any extras from CODING_EXTRA_ROOTS.
+        ${OPENCODE_WORKSPACE_HOST}, plus any extras from CODING_EXTRA_ROOTS.${CODING_PATH_ALIASES:+
+        Project folders that are also host folders (Hermes path=host path):
+        ${CODING_PATH_ALIASES}. For coding work in such a project, pass either
+        path to coding_start_task; prefer this mapping over matching folder
+        names against coding_list_roots.}
         HARD RULE: for implement/refactor/fix/test work in a git repo under a
         coding root, your FIRST mutating action must be the MCP tool
         coding_start_task (names may be prefixed mcp__opencode__coding_*).
@@ -962,18 +979,19 @@ services:
         local fix loop under a coding root — that bypasses the coding agent.
         After coding_start_task, only coding_wait_for_task /
         coding_get_task_status / coding_get_task_result / coding_continue_task.
-        If a path is outside coding roots, ask the user to grant access and tell
-        them to run: make coding-root-add DIR=<absolute-path>
-        then recreate the container that mounts that path (hermes-worker when
-        the terminal backend is ssh, hermes when it is local) along with
-        opencode/opencode-mcp after they confirm.
+        If coding_start_task returns needs_access, follow the hint in that
+        result exactly.
         Context roots (host absolute paths, read-only notes — not coding
         targets and not writable): ${CONTEXT_EXTRA_ROOTS:-none}. Open INDEX.md
         paths exactly as written. Do not prefix /opt/projects onto absolute
-        host paths. If a listed extra-root path is missing, ask the user to
-        run: make context-root-add DIR=<absolute-path>
+        host paths. If a listed extra-root path is missing, ${CONTEXT_ROOTS_APP_MANAGED:+the
+        app will ask the user to grant access to it (CONTEXT_ROOTS_APP_MANAGED=}${CONTEXT_ROOTS_APP_MANAGED:-ask
+        the user to run: make context-root-add DIR=<absolute-path>
         then recreate the container that mounts that path (hermes-worker when
-        the terminal backend is ssh, hermes when it is local) after they confirm.
+        the terminal backend is ssh, hermes when it is local) after they
+        confirm.}${CONTEXT_ROOTS_APP_MANAGED:+). Tell the user in one sentence
+        which folder you need and why, then stop and wait; don't suggest
+        commands.}
         Active knowledge base (LightRAG WORKSPACE): ${WORKSPACE}. Host inputs for
         that corpus live under ASSISTANT_DATA_ROOT/inputs/${WORKSPACE}/ (the
         inputs mount). For knowledge questions stay on LightRAG before web
@@ -1057,6 +1075,15 @@ services:
       # Buzz: keep ws://localhost:3000 community host, proxy to host relay.
       - ./compose/hermes/buzz-localhost-proxy.py:/bootstrap/buzz-localhost-proxy.py:ro
       - ./compose/hermes/06-buzz-localhost-proxy.sh:/etc/cont-init.d/06-buzz-localhost-proxy:ro
+      # Wake parked MCP servers (POST /v1/mcp/servers/{name}/reconnect) and
+      # mcp_servers.<name>.parked_retry_interval. See docs/extending.md.
+      - ./compose/hermes/mcp_wake.py:/bootstrap/mcp_wake.py:ro
+      - ./compose/hermes/patch-mcp-wake.py:/bootstrap/patch-mcp-wake.py:ro
+      - ./compose/hermes/10-patch-mcp-wake.sh:/etc/cont-init.d/10-patch-mcp-wake:ro
+      # Shared uv cache (UV_CACHE_DIR above). HERMES_UV_CACHE_DIR may name a
+      # host path instead; keep it off virtiofs if speed matters.
+      - ${HERMES_UV_CACHE_DIR:-hermes_uv_cache}:/opt/uv-cache
+      - ./compose/hermes/11-warmup-uv-cache.sh:/etc/cont-init.d/11-warmup-uv-cache:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     shm_size: "1g"
@@ -1224,3 +1251,4 @@ volumes:
   valkey_data:
   gptr_outputs:
   ollama_data:
+  hermes_uv_cache:

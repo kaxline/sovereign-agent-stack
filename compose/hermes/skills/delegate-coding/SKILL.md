@@ -1,7 +1,7 @@
 ---
 name: delegate-coding
 description: "REQUIRED for implement/refactor/fix/test under a coding root, and for locate/diagnose of a named repo (look in X, find an error string). Mutating work: coding_start_task. Locate: coding_list_roots then search the host path — never invent /opt/projects/<name>."
-version: 1.2.0
+version: 1.3.0
 author: assistant stack (repo-shipped)
 license: MIT
 platforms: [linux, macos, windows]
@@ -65,7 +65,16 @@ When they ask to **look in** a named repo, **find** an error string, or
 ## Coding roots
 
 Call `coding_list_roots` if unsure. Paths are host absolute paths (for example
-`/Users/you/code/my-app`). Do not invent `/opt/...` aliases for coding roots.
+`/Users/you/code/my-app`). Do not invent `/opt/...` paths for coding roots;
+the only `/opt/projects` paths that work are the listed pairs below.
+
+**Project folders.** A project at `/opt/projects/<slug>` may also be a host
+folder. The system prompt lists those pairs (Hermes path=host path), and
+`coding_list_roots` returns them as `aliases`. For "run the tests in this
+project" and similar, pass the project's listed path to `coding_start_task`
+(either side of the pair works). Use the mapping; do not guess the host path
+by matching folder names against `roots`. A `/opt/projects` path that is not
+listed there is not a coding target.
 
 ## Locate / diagnose (read-only)
 
@@ -91,11 +100,14 @@ Call `coding_list_roots` if unsure. Paths are host absolute paths (for example
 
 ## Access outside coding roots
 
-If `coding_start_task` returns `needs_access: true`:
+If `coding_start_task` returns `needs_access: true`, follow its `hint`:
 
-1. Ask the user to grant access (plain language; no Docker jargon unless asked).
-2. After they confirm, give: `make coding-root-add DIR=<absolute-path>`
-3. Tell them to recreate hermes/opencode/opencode-mcp, then retry `coding_start_task`.
+- **The hint says the app will ask:** tell the user in one sentence which
+  folder you need access to and why, then end the turn. No commands and no
+  retries in that turn.
+- **Otherwise:** ask the user to grant access (plain language; no Docker
+  jargon unless asked). After they confirm, give the command and the
+  containers to recreate from the hint, then retry `coding_start_task`.
 
 ## Reporting
 
