@@ -25,6 +25,29 @@ x-n8n: &service-n8n
     - SEARXNG_URL=http://searxng:8080
     - GPTR_URL=http://gpt-researcher:8000
 
+# Profiles that start the shared Postgres (postgres-db, db-provision, and the
+# two SQL MCP sidecars). An integration that keeps data there appends its own
+# profile here, e.g. ["db", "<integration>"], so enabling it starts the
+# database too. See docs/database.md.
+x-db-profiles: &db-profiles ["db"]
+
+x-sql-mcp: &service-sql-mcp
+  profiles: *db-profiles
+  image: ${SQL_MCP_IMAGE:-crystaldba/postgres-mcp:0.3.0}
+  restart: unless-stopped
+  # db only: no internet egress, unreachable from hermes-worker and the
+  # other services on the default network.
+  networks: [db]
+  depends_on:
+    db-provision:
+      condition: service_completed_successfully
+  healthcheck:
+    test: ["CMD-SHELL", "python -c \"import socket; s=socket.create_connection(('127.0.0.1',8000),5); s.close()\""]
+    interval: 15s
+    timeout: 5s
+    retries: 6
+    start_period: 15s
+
 x-gptr: &gptr-env
   RETRIEVER: searx
   SEARX_URL: http://searxng:8080/
@@ -397,6 +420,88 @@ services:
       retries: 10
 
   # ----------------------------------------------------------------------
+  # postgres-db — shared Postgres for integrations and the agent
+  # Profile: db (plus any integration profile added to x-db-profiles)
+  # One database (DB_NAME, default assistant), one schema per owner:
+  #   agent      agent_rw writes, agent_ro reads
+  #   <slug>     svc_<slug> writes (compose/postgres/services/<slug>.env)
+  # Not n8n's database: that is `postgres` above (automation profile).
+  # No host port. Data: DB_DATA_DIR (default ./data/postgres). docs/database.md
+  # ----------------------------------------------------------------------
+  postgres-db:
+    profiles: *db-profiles
+    container_name: ${CONTAINER_PREFIX:-}postgres-db
+    image: ${DB_IMAGE:-postgres:18-alpine}
+    restart: unless-stopped
+    # Empty DB_ADMIN_PASSWORD makes the image refuse to initialise, which is
+    # the intended failure. No ${VAR:?} here: compose interpolates this
+    # service even when the db profile is off.
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=${DB_ADMIN_PASSWORD:-}
+      - POSTGRES_DB=${DB_NAME:-assistant}
+    volumes:
+      # Postgres 18 images keep PGDATA in a versioned subdirectory
+      # (18/docker), so a later major upgrade can sit beside it.
+      - ${DB_DATA_DIR:-./data/postgres}:/var/lib/postgresql
+    networks: [db]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d ${DB_NAME:-assistant}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  # One-shot role/schema reconciliation; re-runs on every up. See
+  # compose/postgres/provision.sh.
+  db-provision:
+    profiles: *db-profiles
+    container_name: ${CONTAINER_PREFIX:-}db-provision
+    image: ${DB_IMAGE:-postgres:18-alpine}
+    restart: "no"
+    environment:
+      - PGHOST=postgres-db
+      - PGUSER=postgres
+      - PGPASSWORD=${DB_ADMIN_PASSWORD:-}
+      - PGDATABASE=${DB_NAME:-assistant}
+      - DB_AGENT_RO_PASSWORD=${DB_AGENT_RO_PASSWORD:-}
+      - DB_AGENT_RW_PASSWORD=${DB_AGENT_RW_PASSWORD:-}
+    volumes:
+      - ./compose/postgres/provision.sh:/provision.sh:ro
+      - ./compose/postgres/services:/services:ro
+    networks: [db]
+    entrypoint: ["/bin/sh", "/provision.sh"]
+    depends_on:
+      postgres-db:
+        condition: service_healthy
+
+  # ----------------------------------------------------------------------
+  # sql-mcp-ro / sql-mcp-rw — SQL MCP for Hermes (postgres-mcp)
+  # Profile: db
+  # MCP:     http://sql-mcp-ro:8000/sse  (agent_ro, restricted mode)
+  #          http://sql-mcp-rw:8000/sse  (agent_rw, unrestricted mode)
+  # db network only. Hermes registers ro on api-server, rw on default and
+  # browser (SQL_MCP_ENABLED=1). Upstream: https://github.com/crystaldba/postgres-mcp
+  # ----------------------------------------------------------------------
+  sql-mcp-ro:
+    <<: *service-sql-mcp
+    container_name: ${CONTAINER_PREFIX:-}sql-mcp-ro
+    environment:
+      # Generated passwords are hex, so they need no URL escaping.
+      - DATABASE_URI=postgresql://agent_ro:${DB_AGENT_RO_PASSWORD:-}@postgres-db:5432/${DB_NAME:-assistant}
+    # restricted = read-only transaction, COMMIT/ROLLBACK rejected, time limit.
+    # A second guard; agent_ro's grants already deny every write.
+    command: ["--access-mode=restricted", "--transport=sse", "--sse-host=0.0.0.0", "--sse-port=8000"]
+
+  sql-mcp-rw:
+    <<: *service-sql-mcp
+    container_name: ${CONTAINER_PREFIX:-}sql-mcp-rw
+    environment:
+      - DATABASE_URI=postgresql://agent_rw:${DB_AGENT_RW_PASSWORD:-}@postgres-db:5432/${DB_NAME:-assistant}
+    # Writes are bounded by agent_rw's grants: CREATE/DML in schema agent only.
+    command: ["--access-mode=unrestricted", "--transport=sse", "--sse-host=0.0.0.0", "--sse-port=8000"]
+
+  # ----------------------------------------------------------------------
   # n8n-import — one-shot seed of demo credentials + workflows (starter-kit pattern)
   # Profile: automation
   # ----------------------------------------------------------------------
@@ -683,6 +788,12 @@ services:
       - OPENCODE_MCP_ENABLED=${OPENCODE_MCP_ENABLED:-0}
       - OPENCODE_MCP_TIMEOUT=${OPENCODE_MCP_TIMEOUT:-600}
       - OPENCODE_MCP_CONNECT_TIMEOUT=${OPENCODE_MCP_CONNECT_TIMEOUT:-30}
+      # SQL MCP (db profile): ro on api-server, rw on default + browser.
+      - SQL_MCP_ENABLED=${SQL_MCP_ENABLED:-0}
+      - SQL_MCP_RO_URL=${SQL_MCP_RO_URL:-http://sql-mcp-ro:8000/sse}
+      - SQL_MCP_RW_URL=${SQL_MCP_RW_URL:-http://sql-mcp-rw:8000/sse}
+      - SQL_MCP_TIMEOUT=${SQL_MCP_TIMEOUT:-60}
+      - SQL_MCP_CONNECT_TIMEOUT=${SQL_MCP_CONNECT_TIMEOUT:-30}
       # Upstream URL only (no key), to size the stale-stream timeout.
       - LLM_BINDING_HOST=${LLM_BINDING_HOST:-http://host.docker.internal:1234/v1}
       - HERMES_PROXY_STALE_TIMEOUT=${HERMES_PROXY_STALE_TIMEOUT:-}
@@ -735,6 +846,12 @@ services:
       - OPENCODE_MCP_ENABLED=${OPENCODE_MCP_ENABLED:-0}
       - OPENCODE_MCP_TIMEOUT=${OPENCODE_MCP_TIMEOUT:-600}
       - OPENCODE_MCP_CONNECT_TIMEOUT=${OPENCODE_MCP_CONNECT_TIMEOUT:-30}
+      # SQL MCP (db profile): ro on api-server, rw on default + browser.
+      - SQL_MCP_ENABLED=${SQL_MCP_ENABLED:-0}
+      - SQL_MCP_RO_URL=${SQL_MCP_RO_URL:-http://sql-mcp-ro:8000/sse}
+      - SQL_MCP_RW_URL=${SQL_MCP_RW_URL:-http://sql-mcp-rw:8000/sse}
+      - SQL_MCP_TIMEOUT=${SQL_MCP_TIMEOUT:-60}
+      - SQL_MCP_CONNECT_TIMEOUT=${SQL_MCP_CONNECT_TIMEOUT:-30}
       # Upstream URL only (no key), to size the stale-stream timeout and
       # decide whether auto-title may compete with the reply.
       - LLM_BINDING_HOST=${LLM_BINDING_HOST:-http://host.docker.internal:1234/v1}
@@ -979,6 +1096,17 @@ services:
       signal-cli:
         condition: service_healthy
         required: false
+      # Optional: only present when the `db` profile is enabled.
+      sql-mcp-ro:
+        condition: service_healthy
+        required: false
+      sql-mcp-rw:
+        condition: service_healthy
+        required: false
+    # db is internal and holds only the shared Postgres and its SQL MCP
+    # sidecars. hermes is the one default-network service that joins it, so
+    # hermes-worker (the agent's shell) cannot reach either.
+    networks: [default, db]
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://127.0.0.1:9119/ >/dev/null || exit 1"]
       interval: 30s
@@ -1079,6 +1207,12 @@ services:
       timeout: 10s
       retries: 6
       start_period: 60s
+
+networks:
+  # Internal: no route off the host. Members: postgres-db, db-provision,
+  # sql-mcp-ro, sql-mcp-rw, hermes, and any integration that stores data.
+  db:
+    internal: true
 
 volumes:
   neo4j_data:

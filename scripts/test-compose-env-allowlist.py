@@ -16,12 +16,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 # Every profile that publishes a service we want to see in one config.
-PROFILES = "core,rag,calendar,automation,coding,ollama,searxng-prod"
+PROFILES = "core,rag,calendar,automation,coding,ollama,searxng-prod,db"
 
 # Secret-bearing environment keys, and the services allowed to carry them.
 # An empty set means the key must not appear on any service.
 SECRET_KEYS = {
-    "POSTGRES_PASSWORD": {"postgres"},
+    "POSTGRES_PASSWORD": {"postgres", "postgres-db"},
+    "DB_ADMIN_PASSWORD": set(),
+    "PGPASSWORD": {"db-provision"},
+    "DB_AGENT_RO_PASSWORD": {"db-provision"},
+    "DB_AGENT_RW_PASSWORD": {"db-provision"},
+    "DATABASE_URI": {"sql-mcp-ro", "sql-mcp-rw"},
     "DB_POSTGRESDB_PASSWORD": {"n8n-import"},
     "N8N_ENCRYPTION_KEY": {"n8n", "n8n-import"},
     "N8N_USER_MANAGEMENT_JWT_SECRET": {"n8n", "n8n-import"},
@@ -75,6 +80,10 @@ REQUIRED = {
         "LLM_PROXY_ADMIN_TOKEN",
     },
     "postgres": {"POSTGRES_PASSWORD"},
+    "postgres-db": {"POSTGRES_PASSWORD"},
+    "db-provision": {"PGPASSWORD", "DB_AGENT_RO_PASSWORD", "DB_AGENT_RW_PASSWORD"},
+    "sql-mcp-ro": {"DATABASE_URI"},
+    "sql-mcp-rw": {"DATABASE_URI"},
     "hermes-webui": {"API_SERVER_KEY"},
 }
 
@@ -210,10 +219,44 @@ def check_loopback(services: dict) -> list[str]:
     return errors
 
 
+# The shared Postgres and its SQL MCP sidecars live on the internal db network
+# only, publish nothing, and hermes is the sole bridge from the default network.
+DB_ONLY = {"postgres-db", "db-provision", "sql-mcp-ro", "sql-mcp-rw"}
+
+
+def check_db_network(services: dict, networks: dict) -> list[str]:
+    errors = []
+    db_net = next((net for key, net in networks.items() if key == "db"), None)
+    if not db_net:
+        return ["network db missing from compose config"]
+    if not db_net.get("internal"):
+        errors.append("network db must be internal")
+    for name in sorted(DB_ONLY):
+        service = services.get(name)
+        if not service:
+            errors.append(f"service {name} missing from compose config")
+            continue
+        if service.get("ports"):
+            errors.append(f"{name} publishes a host port")
+        nets = set(service.get("networks") or {})
+        if nets != {"db"}:
+            errors.append(f"{name} networks are {sorted(nets)}, want ['db']")
+    hermes_nets = set((services.get("hermes") or {}).get("networks") or {})
+    if "db" not in hermes_nets or "default" not in hermes_nets:
+        errors.append(f"hermes networks are {sorted(hermes_nets)}, want default + db")
+    for name, service in services.items():
+        if name in DB_ONLY or name == "hermes":
+            continue
+        if "db" in set(service.get("networks") or {}):
+            errors.append(f"{name} joins the db network; add it to DB_ONLY on purpose")
+    return errors
+
+
 def main() -> None:
     config = load_config()
     services = config.get("services") or {}
     errors = check_secrets(services) + check_worker(services) + check_proxy(services) + check_loopback(services)
+    errors += check_db_network(services, config.get("networks") or {})
     if errors:
         for err in errors:
             fail(err)
