@@ -62,6 +62,10 @@ REVOKE ALL ON SCHEMA agent FROM PUBLIC;
 GRANT USAGE, CREATE ON SCHEMA agent TO agent_rw;
 GRANT USAGE ON SCHEMA agent TO agent_ro;
 GRANT SELECT ON ALL TABLES IN SCHEMA agent TO agent_ro;
+-- Re-assert the read-only side every run, so a hand grant does not linger.
+REVOKE CREATE ON SCHEMA agent FROM agent_ro;
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER
+  ON ALL TABLES IN SCHEMA agent FROM agent_ro;
 ALTER DEFAULT PRIVILEGES FOR ROLE agent_rw IN SCHEMA agent GRANT SELECT ON TABLES TO agent_ro;
 COMMENT ON SCHEMA agent IS
   'Scratch and derived tables the assistant created itself (agent_rw). Not a source of record.';
@@ -154,6 +158,10 @@ ALTER SCHEMA :"schema" OWNER TO :"role";
 REVOKE ALL ON SCHEMA :"schema" FROM PUBLIC;
 GRANT USAGE ON SCHEMA :"schema" TO agent_ro, agent_rw;
 GRANT SELECT ON ALL TABLES IN SCHEMA :"schema" TO agent_ro, agent_rw;
+-- Agents only read service data, whatever was granted by hand since.
+REVOKE CREATE ON SCHEMA :"schema" FROM agent_ro, agent_rw;
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER
+  ON ALL TABLES IN SCHEMA :"schema" FROM agent_ro, agent_rw;
 ALTER DEFAULT PRIVILEGES FOR ROLE :"role" IN SCHEMA :"schema"
   GRANT SELECT ON TABLES TO agent_ro, agent_rw;
 SQL
