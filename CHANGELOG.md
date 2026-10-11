@@ -6,6 +6,33 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
+## Unreleased
+
+### Upgrade steps
+
+1. `docker compose up -d`. Two new overlay files are mounted into `hermes`,
+   so compose recreates it.
+2. Dashboard clients that send `profile` on `prompt.submit`: make sure it
+   names the session's own profile, or drop it. A different profile used to
+   be ignored silently and is now an error (see Changes).
+
+### Changes
+
+- **Hermes gateway (overlay)**: `session.create`, `session.resume` and
+  `prompt.submit` take an optional `context` string. Session context is added
+  to the system prompt. Turn context is added to that turn's model input. The
+  user's message and `session.history` stay as typed. Errors are `4080`
+  (invalid), `4082` (a turn is running) and `4083` (isolated compute-host
+  turns). Clients that leave the field out see no change. See
+  [docs/hermes.md](docs/hermes.md#client-context).
+- **Hermes gateway (overlay)**: `prompt.submit` with a `profile` that differs
+  from the session's profile now fails with `4081` and
+  `data.session_profile`. It used to be accepted and ignored: the turn ran on
+  the session's profile. A matching or omitted `profile` behaves as before.
+- **Docs**: [docs/hermes.md](docs/hermes.md#platform-hints) documents
+  `agent.platform_hints.<source>` for clients whose `source` has no built-in
+  hint, and corrects the claim that `profile` works per turn.
+
 ## v0.3.2 — 2026-10-11
 
 ### Upgrade steps
