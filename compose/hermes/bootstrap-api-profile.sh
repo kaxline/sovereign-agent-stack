@@ -40,6 +40,14 @@ OPENCODE_MCP_URL="${OPENCODE_MCP_URL:-http://opencode-mcp:8000/sse}"
 OPENCODE_MCP_TIMEOUT="${OPENCODE_MCP_TIMEOUT:-600}"
 OPENCODE_MCP_CONNECT_TIMEOUT="${OPENCODE_MCP_CONNECT_TIMEOUT:-30}"
 OPENCODE_MCP_ENABLED="${OPENCODE_MCP_ENABLED:-0}"
+SQL_MCP_ENABLED="${SQL_MCP_ENABLED:-0}"
+SQL_MCP_RO_URL="${SQL_MCP_RO_URL:-http://sql-mcp-ro:8000/sse}"
+SQL_MCP_RW_URL="${SQL_MCP_RW_URL:-http://sql-mcp-rw:8000/sse}"
+SQL_MCP_TIMEOUT="${SQL_MCP_TIMEOUT:-60}"
+SQL_MCP_CONNECT_TIMEOUT="${SQL_MCP_CONNECT_TIMEOUT:-30}"
+# postgres-mcp also ships index/health/top-query analysers; the agent needs
+# none of them to read or keep data.
+SQL_MCP_TOOLS="list_schemas list_objects get_object_details execute_sql explain_query"
 # llm-proxy's real upstream. Only used to tell a local model server from a
 # cloud API; the key never reaches this container.
 LLM_BINDING_HOST="${LLM_BINDING_HOST:-http://host.docker.internal:1234/v1}"
@@ -561,6 +569,13 @@ reconcile_stack_eager_tools() {
       fi
       ;;
   esac
+  case "$SQL_MCP_ENABLED" in
+    1|true|TRUE|yes|YES)
+      for _rst_t in $SQL_MCP_TOOLS; do
+        _rst_args="${_rst_args} ${_rst_t} mcp__sql__${_rst_t}"
+      done
+      ;;
+  esac
   case "$OPENCODE_MCP_ENABLED" in
     1|true|TRUE|yes|YES)
       if [ "$_rst_profile" != "api-server" ]; then
@@ -702,6 +717,88 @@ register_opencode_mcp_servers() {
   pin_mcp_tools "$_roms_profile" opencode \
     coding_list_roots coding_start_task coding_get_task_status \
     coding_wait_for_task coding_get_task_result coding_continue_task
+}
+
+# Remove MCP server entries on one profile whose URL matches <url>, except
+# <keep-key>. Unlike drop_unfiltered_mcp_duplicate this ignores tool filters:
+# for the SQL endpoints the boundary is the database role behind the URL, so a
+# filtered entry pointing at the read/write sidecar is still read/write.
+#
+# Usage: drop_mcp_entries_for_url <profile> <keep-key> <url>
+drop_mcp_entries_for_url() {
+  _out="$(python3 - "$(config_path_for "$1")" "$2" "$3" <<'PY'
+import sys
+sys.path.insert(0, "/opt/hermes")
+import yaml
+from utils import atomic_yaml_write
+
+cfg_path, keep_key, url = sys.argv[1:4]
+
+try:
+    with open(cfg_path) as fh:
+        config = yaml.safe_load(fh) or {}
+except FileNotFoundError:
+    raise SystemExit(0)
+
+servers = config.get("mcp_servers")
+if not isinstance(servers, dict):
+    raise SystemExit(0)
+
+target = url.rstrip("/")
+removed = [
+    key for key, entry in servers.items()
+    if key != keep_key
+    and isinstance(entry, dict)
+    and str(entry.get("url", "")).rstrip("/") == target
+]
+for key in removed:
+    del servers[key]
+if removed:
+    atomic_yaml_write(cfg_path, config)
+    print(f"Removed MCP server(s) {', '.join(sorted(removed))} pointing at {url}")
+PY
+)"
+  if [ -n "$_out" ]; then log "$_out"; fi
+}
+
+# Shared Postgres SQL MCP (db compose profile), registered as mcp_servers.sql.
+# api-server gets the agent_ro sidecar (read everything, write nothing);
+# default and browser get agent_rw (same reads, plus CREATE/DML in schema
+# agent). Same read/write split as CalDAV, but Postgres grants enforce it
+# rather than a tool allowlist.
+#
+# Profiles are cloned from default, so api-server starts with default's rw
+# entry. Re-registering the sql key moves it to ro, and any other entry that
+# still points at the rw URL (a hand-added copy under another key) is dropped.
+register_sql_mcp_servers() {
+  _rsms_profile="$1"
+  case "$SQL_MCP_ENABLED" in
+    1|true|TRUE|yes|YES) ;;
+    *)
+      log "Skipping SQL MCP registration (SQL_MCP_ENABLED=${SQL_MCP_ENABLED})"
+      # Undo an earlier registration. With db off nothing answers at these
+      # URLs, and every session would wait out connect_timeout on them.
+      drop_mcp_entries_for_url "$_rsms_profile" "" "$SQL_MCP_RO_URL"
+      drop_mcp_entries_for_url "$_rsms_profile" "" "$SQL_MCP_RW_URL"
+      return 0
+      ;;
+  esac
+  if [ "$_rsms_profile" = "api-server" ]; then
+    _rsms_url="$SQL_MCP_RO_URL"
+    _rsms_display="SQL (read-only, agent_ro)"
+  else
+    _rsms_url="$SQL_MCP_RW_URL"
+    _rsms_display="SQL (agent_rw)"
+  fi
+  # shellcheck disable=SC2086
+  register_mcp_server "$_rsms_profile" sql "$_rsms_display" \
+    "$_rsms_url" "$SQL_MCP_TIMEOUT" "$SQL_MCP_CONNECT_TIMEOUT" $SQL_MCP_TOOLS
+  hermes_config_set "$_rsms_profile" "mcp_servers.sql.transport" "sse"
+  if [ "$_rsms_profile" = "api-server" ]; then
+    drop_mcp_entries_for_url "$_rsms_profile" sql "$SQL_MCP_RW_URL"
+  fi
+  # shellcheck disable=SC2086
+  pin_mcp_tools "$_rsms_profile" sql $SQL_MCP_TOOLS
 }
 
 # Slug personal -> CALDAV_PERSONAL_PASSWORD. Hyphens become underscores.
@@ -1001,6 +1098,7 @@ hermes_config_set "" "agent.intent_ack_continuation" "true"
 register_web_mcp_servers ""
 register_caldav_mcp_servers ""
 register_opencode_mcp_servers ""
+register_sql_mcp_servers ""
 
 # session_search is on Hermes' curated tool_search.defer list. Pin + undefer
 # on default before the api-server.env gate so a missing env file cannot
@@ -1194,6 +1292,7 @@ esac
 register_web_mcp_servers "$PROFILE"
 register_caldav_mcp_servers "$PROFILE"
 register_opencode_mcp_servers "$PROFILE"
+register_sql_mcp_servers "$PROFILE"
 
 # Heal always_include + defer after every hermes config set / MCP register.
 reconcile_stack_eager_tools ""
