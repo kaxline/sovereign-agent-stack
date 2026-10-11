@@ -30,3 +30,6 @@ run_patch /bootstrap/patch-agent-browser-npx.py
 run_patch /bootstrap/patch-browser-exec-hint.py
 # Per-session history budget for DM threads (request window; transcript stays).
 run_patch /bootstrap/patch-history-budget.py
+# Client-supplied session/turn context; refuse a prompt.submit profile that
+# differs from the session's (dashboard /api/ws).
+run_patch /bootstrap/patch-client-context.py

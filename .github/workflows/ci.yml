@@ -76,6 +76,8 @@ jobs:
         run: python3 scripts/test-fabricated-result.py
       - name: History budget window (stdlib)
         run: python3 scripts/test-history-budget.py
+      - name: Client context and prompt profile check (stdlib)
+        run: python3 scripts/test-client-context.py
       - name: MCP wake and parked retry interval (stdlib)
         run: python3 scripts/test-mcp-wake.py
       - name: CalDAV password env key
