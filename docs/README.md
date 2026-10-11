@@ -11,6 +11,7 @@ Per-service setup, usage, and verification guides. See the [project README](../R
 | [OpenCode](opencode.md) | `coding` | Coding agent + Hermes `coding_*` delegation |
 | [Hermes Agent](hermes.md) | `core` | Gateway, dashboard, API, skills, MCP, [model suitability](hermes.md#model-suitability-agentic-tool-use), [chat tone](hermes.md#conversational-tone-soulmd) |
 | [Calendar](calendar.md) | `calendar` — `caldav-mcp` | CalDAV calendars (iCloud, Nextcloud, …), multi-account |
+| [Shared database](database.md) | `db` — `postgres-db`, `sql-mcp-ro`, `sql-mcp-rw` | Schema per integration, agent roles, SQL MCP, backups |
 | [Signal](signal.md) | `signal` (+ `core`) | Linked-device messaging, WebUI send, cron delivery |
 | [Buzz](buzz.md) | `core` (optional) | Messaging transport for independent agents |
 | [Independent agents](agents.md) | `core` | Multi-role Hermes profiles, three memory tiers, registry |

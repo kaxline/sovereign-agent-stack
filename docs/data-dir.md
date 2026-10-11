@@ -18,6 +18,7 @@ without destroying projects and notes that live outside the repo.
 | `$ASSISTANT_DATA_ROOT/rag_storage/` | LightRAG vector/KV persistence |
 | `$ASSISTANT_DATA_ROOT/corpora/` | Corpus registry (`registry.json`) |
 | `./data/hermes/` | Hermes config, sessions, USER.md / MEMORY.md, WebUI state |
+| `DB_DATA_DIR` (default `./data/postgres`) | Shared Postgres cluster, `db` profile. Not moved by `data-dir-migrate`; see [database.md](database.md#storage) |
 | `OPENCODE_WORKSPACE_HOST` | Primary coding root for OpenCode + Hermes (see [opencode.md](opencode.md)) |
 | `CONTEXT_EXTRA_ROOTS` | Extra Hermes read-only notes mounts (see [projects.md](projects.md#extra-source-directories)) |
 | `SIGNAL_CLI_DATA_DIR` | Signal session store (separate; see [signal.md](signal.md)) |

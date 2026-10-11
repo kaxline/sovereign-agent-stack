@@ -19,6 +19,8 @@ This is a **local development** stack. It is not hardened for internet-facing de
 | GPT Researcher | `127.0.0.1:8000` | None (loopback-only) |
 | llm-proxy inference | compose-internal `:4000` | Placeholder `local-llm`; real keys stay on this service |
 | llm-proxy admin | `127.0.0.1:4001` | Bearer `LLM_PROXY_ADMIN_TOKEN`; updates stay in memory |
+| postgres-db (optional) | compose-internal `:5432` on the internal `db` network | Per-role passwords (`DB_*_PASSWORD`); no host publish |
+| sql-mcp-ro / sql-mcp-rw (optional) | compose-internal `:8000` on the internal `db` network | None at the MCP layer; Postgres roles `agent_ro` / `agent_rw` bound what each can do |
 | caldav-mcp (optional) | compose-internal `:8080` | Per-request CalDAV credentials from Hermes MCP headers; no host publish |
 | signal-cli (optional) | compose-internal `:8080` | None — HTTP JSON-RPC has no auth; keep unpublished |
 
@@ -33,13 +35,15 @@ If you discover a security issue in this repository, please open a private advis
 **Do not:**
 
 - Expose n8n, SearXNG, GPT Researcher, or Hermes to the public internet without authentication and rate limiting.
-- Commit `.env`, `compose/hermes/api-server.env`, `compose/hermes/browser.env`, `compose/caldav-mcp/accounts/*.env`, `n8n/demo-data/credentials/*.json`, `searxng/settings.local.yml`, `opencode/opencode.local.json`, `docker-compose.override.yml`, or anything under `data/`.
+- Commit `.env`, `compose/hermes/api-server.env`, `compose/hermes/browser.env`, `compose/caldav-mcp/accounts/*.env`, `compose/postgres/services/*.env`, `n8n/demo-data/credentials/*.json`, `searxng/settings.local.yml`, `opencode/opencode.local.json`, `docker-compose.override.yml`, or anything under `data/`.
 - Reuse one `API_SERVER_KEY` across Hermes profiles. Keys are scoped per profile and a shared key fails closed, so give `compose/hermes/api-server.env` and `compose/hermes/browser.env` distinct values.
 - Point `OPENCODE_WORKSPACE_HOST` at `$HOME` or `/` — OpenCode and Hermes have full read/write access to coding roots.
 - Use `make coding-root-add DIR=...` to grant broad parents lightly; prefer the specific repo path. Never add `/` or `$HOME` alone (the script refuses those).
 - Use `make context-root-add DIR=...` the same way: read-only notes mounts still expose everything under that path to Hermes. Never add `/` or `$HOME` alone.
 - Publish the signal-cli HTTP port to the LAN. The daemon has no authentication; anyone who can reach it can send as your linked Signal account. This stack keeps it compose-internal only.
 - Publish the caldav-mcp HTTP port. Calendar credentials travel as MCP headers from Hermes; keep the sidecar compose-internal.
+- Publish `postgres-db` or the `sql-mcp-*` ports, or attach other services to the `db` network without a reason. The SQL MCP sidecars have no authentication of their own; network membership is what keeps them Hermes-only. If you must reach Postgres from the host, bind `127.0.0.1` in `docker-compose.override.yml`.
+- Put `DB_DATA_DIR` in a cloud-synced folder.
 
 **Do:**
 
@@ -53,6 +57,7 @@ If you discover a security issue in this repository, please open a private advis
 - Set a strong `HERMES_DASHBOARD_PASSWORD`. As of agent 0.20.0 the dashboard will not bind a non-loopback interface without an auth provider, so basic auth has to be there for the healthcheck to pass. Move to OAuth (`hermes dashboard register`) if Hermes is reachable beyond localhost.
 - Keep the Hermes LightRAG MCP allowlist as a security boundary for unattended API sessions (five read-oriented tools). The bootstrap drops unfiltered clone duplicates so nothing routes around it.
 - Keep the Hermes CalDAV MCP allowlist as a security boundary for unattended API sessions (eight read-oriented tools). Account passwords live in gitignored `compose/caldav-mcp/accounts/*.env`. Bootstrap writes `${CALDAV_<SLUG>_PASSWORD}` into the MCP headers and the secret into each profile's `.env` under `data/hermes/`. The password is still in that tree — treat it like a password store — but config dumps no longer include it. See [docs/calendar.md](docs/calendar.md).
+- Keep the shared database's boundaries in Postgres grants. `agent_ro` (Hermes `api-server`) can only `SELECT`; `agent_rw` (dashboard, WebUI) can also create and write in schema `agent`; each integration's `svc_<slug>` role writes only its own schema. `db-provision` re-asserts these on every start, the bootstrap keeps `api-server` off `sql-mcp-rw`, and `make doctor` probes that `agent_ro` is denied writes. The `db` network is internal and excludes `hermes-worker`, so the agent's shell cannot reach Postgres or the sidecars. This split bounds what the model's SQL tool can do. It is not a sandbox against code running inside the `hermes` container, which is on the `db` network (same caveat as the CalDAV credentials in `data/hermes`). Service passwords live in gitignored `compose/postgres/services/*.env`; `make db-backup` dumps are mode 600 and contain your data. See [docs/database.md](docs/database.md).
 - Keep OpenCode / `coding_*` MCP **off** the Hermes `api-server` profile. Coding tools mutate host repos; they are registered only on default + browser when `OPENCODE_MCP_ENABLED=1`.
 - Enable SearXNG rate limiting (`--profile searxng-prod`) if the instance is shared on a LAN.
 - Treat `SIGNAL_CLI_DATA_DIR` (linked session data) like a password, and keep `SIGNAL_ALLOWED_USERS` tight when Signal is enabled.

@@ -6,6 +6,68 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
+## Unreleased
+
+### Upgrade steps
+
+1. Re-run `./scripts/setup.sh` over the existing `.env` and `data/`. It adds
+   `SQL_MCP_ENABLED=0` and generates the three `DB_*_PASSWORD` keys. Nothing
+   starts until you opt in with `--db`.
+2. `docker compose up -d`. `hermes` joins a new internal `db` network beside
+   `default`, so compose recreates it once even with `db` off. An override
+   that sets `networks:` on `hermes` must keep `default` and `db`.
+3. To use the database: `./scripts/setup.sh --db`, `make up`, re-run
+   `hermes-api-bootstrap` and `hermes-browser-bootstrap`, restart `hermes`.
+   See [docs/database.md](docs/database.md).
+
+### New services
+
+All in the new **`db`** profile, off by default. They are separate from n8n's
+`postgres` (`automation`), which is unchanged.
+
+- `postgres-db`: shared Postgres 18 with one database and a schema per owner.
+  No host port.
+- `db-provision`: one-shot role, schema, and grant reconciliation on every
+  `up`.
+- `sql-mcp-ro` / `sql-mcp-rw`: [postgres-mcp](https://github.com/crystaldba/postgres-mcp)
+  0.3.0 as `agent_ro` (restricted mode) and `agent_rw`. Hermes registers ro on
+  `api-server` and rw on the default and `browser` profiles.
+
+### Required `.env` keys
+
+Only with `db` enabled. `setup.sh` fills all three for every install.
+
+- `DB_ADMIN_PASSWORD`, `DB_AGENT_RO_PASSWORD`, `DB_AGENT_RW_PASSWORD`. If
+  they are empty, `postgres-db` refuses to initialise and `db-provision`
+  exits non-zero. Compose does not fail on them, because it parses the
+  service with the profile off.
+
+### New optional `.env` keys
+
+- `SQL_MCP_ENABLED=0`. `setup.sh --db` sets it to `1`.
+- `DB_NAME=assistant`, `DB_DATA_DIR=./data/postgres`,
+  `DB_BACKUP_DIR=./data/postgres-backups`.
+- `DB_IMAGE=postgres:18-alpine`, `SQL_MCP_IMAGE=crystaldba/postgres-mcp:0.3.0`.
+- `SQL_MCP_RO_URL`, `SQL_MCP_RW_URL`, `SQL_MCP_TIMEOUT=60`,
+  `SQL_MCP_CONNECT_TIMEOUT=30`.
+
+### Changes
+
+- **Database**: grants enforce the boundaries. `agent_ro` reads every schema.
+  `agent_rw` also creates and writes in schema `agent`. Each integration's
+  `svc_<slug>` role (`make db-service-add NAME=<slug>`) owns and migrates only
+  its own schema. `public.data_catalog` lists every schema, table, and column
+  with its `COMMENT ON` text.
+- **Hermes**: new `database` skill. `mcp_servers.sql` exposes five tools
+  (`list_schemas`, `list_objects`, `get_object_details`, `execute_sql`,
+  `explain_query`). With `SQL_MCP_ENABLED=0` the bootstrap removes earlier
+  `sql` registrations.
+- **Make**: `db-backup` (`pg_dump -Fc`, mode 600), `db-service-add`,
+  `db-psql`. `make doctor` gains a shared-database section, including a probe
+  that `agent_ro` cannot write.
+- **Compose**: an `x-db-profiles` anchor lists the profiles that start the
+  database. An integration appends its own profile there.
+
 ## v0.3.1 — 2026-10-07
 
 ### Upgrade steps

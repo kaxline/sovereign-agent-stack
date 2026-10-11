@@ -222,6 +222,9 @@ def check_loopback(services: dict) -> list[str]:
 # The shared Postgres and its SQL MCP sidecars live on the internal db network
 # only, publish nothing, and hermes is the sole bridge from the default network.
 DB_ONLY = {"postgres-db", "db-provision", "sql-mcp-ro", "sql-mcp-rw"}
+# Services on both default and db. An integration that stores data and needs
+# the internet goes here; one that needs neither goes in DB_ONLY.
+DB_BRIDGES = {"hermes"}
 
 
 def check_db_network(services: dict, networks: dict) -> list[str]:
@@ -241,14 +244,15 @@ def check_db_network(services: dict, networks: dict) -> list[str]:
         nets = set(service.get("networks") or {})
         if nets != {"db"}:
             errors.append(f"{name} networks are {sorted(nets)}, want ['db']")
-    hermes_nets = set((services.get("hermes") or {}).get("networks") or {})
-    if "db" not in hermes_nets or "default" not in hermes_nets:
-        errors.append(f"hermes networks are {sorted(hermes_nets)}, want default + db")
+    for name in sorted(DB_BRIDGES):
+        nets = set((services.get(name) or {}).get("networks") or {})
+        if nets != {"default", "db"}:
+            errors.append(f"{name} networks are {sorted(nets)}, want ['db', 'default']")
     for name, service in services.items():
-        if name in DB_ONLY or name == "hermes":
+        if name in DB_ONLY or name in DB_BRIDGES:
             continue
         if "db" in set(service.get("networks") or {}):
-            errors.append(f"{name} joins the db network; add it to DB_ONLY on purpose")
+            errors.append(f"{name} joins the db network; add it to DB_ONLY or DB_BRIDGES on purpose")
     return errors
 
 

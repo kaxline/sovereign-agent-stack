@@ -70,6 +70,7 @@ flowchart TB
 | **`calendar`** | CalDAV calendars via caldav-mcp (multi-account) |
 | **`automation`** | n8n + Postgres + GPT Researcher |
 | **`coding`** | OpenCode AI coding agent + Hermes coding delegation (opencode-mcp) |
+| **`db`** | Shared Postgres for integrations and the agent + SQL MCP (read-only on the API profile) |
 | **`ollama`** | Bundled Ollama + demo model pull |
 
 Examples:
@@ -107,6 +108,7 @@ See [SECURITY.md](SECURITY.md).
 | [docs/](docs/README.md) | Per-service guides |
 | [Hermes](docs/hermes.md) | Agent gateway, skills, MCP |
 | [Calendar](docs/calendar.md) | CalDAV calendars via caldav-mcp (`calendar`) |
+| [Shared database](docs/database.md) | Postgres schema-per-integration + SQL MCP (`db`) |
 | [Hermes WebUI](docs/hermes-webui.md) | Chat UI + lean gateway mode |
 | [Knowledge bases](docs/knowledge-bases.md) | Corpora, ingest, hot-workspace switching (`rag`) |
 | [Projects](docs/projects.md) | Briefs, `sources.yaml`, INDEX, context roots |
