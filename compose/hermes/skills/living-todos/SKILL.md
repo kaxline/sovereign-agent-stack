@@ -1,7 +1,7 @@
 ---
 name: living-todos
 description: "Manage the user's durable, cross-session todo / to-do / task list. Use for 'add to the todo list', 'what's on our todo list', 'mark X done', priorities, or any request to persist tasks across chats. Uses Vikunja (tasks_list, tasks_create) when those tools are available, otherwise a markdown file. Do NOT use the session-only `todo` tool for these."
-version: 1.1.0
+version: 1.2.0
 author: assistant stack (repo-shipped)
 license: MIT
 platforms: [linux, macos, windows]
@@ -89,6 +89,23 @@ Filters use Vikunja's filter language: `done = false && priority >= 3`,
 Unattended API sessions get a read-only token: `tasks_create` and
 `tasks_update` are not in the tool list there. Say the list could not be
 changed from this session instead of falling back to the markdown file.
+
+### Kanban buckets
+
+Buckets live on a project's kanban view, not on the project itself, so
+`projects_read` does not show them. Reach them through `find_action` then
+`do_action`:
+
+1. `project_views_list` with `project: <id>`; pick the view whose
+   `view_kind` is `kanban`.
+2. `project_view_buckets_tasks_list` with `project` and `view` to see each
+   bucket with its tasks, or `buckets_list` for the buckets alone.
+3. To move a task: `task_bucket_update` with `project`, `view`, `bucket` and
+   `task_id`. Moving into the view's done bucket marks the task done.
+4. `buckets_create` / `buckets_update` / `buckets_delete` add, rename or
+   remove columns. Ask before deleting a bucket.
+
+Read-only sessions can list views and buckets but not change them.
 
 ### Other tools
 
