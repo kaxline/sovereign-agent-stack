@@ -104,6 +104,10 @@ Only with `todo` enabled.
   from the session's profile now fails with `4081` and
   `data.session_profile`. It used to be accepted and ignored: the turn ran on
   the session's profile. A matching or omitted `profile` behaves as before.
+- **Docs**: [docs/email.md](docs/email.md) records the design for giving Hermes
+  read access to Apple Mail's local store. Nothing reads mail yet.
+  `scripts/make-synthetic-mail.py` writes a fake Mail store for developing
+  the reader, and `make synthetic-mail-test` checks it.
 - **Docs**: [docs/hermes.md](docs/hermes.md#platform-hints) documents
   `agent.platform_hints.<source>` for clients whose `source` has no built-in
   hint, and corrects the claim that `profile` works per turn.

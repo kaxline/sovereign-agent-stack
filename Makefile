@@ -3,7 +3,7 @@
 	buzz-relay-start buzz-relay-stop buzz-relay-status buzz-relay-logs buzz-relay-restart \
 	buzz-admin \
 	corpus-create corpus-use corpus-list corpus-ingest corpus-destroy \
-	project-init project-index project-index-check project-sources-test model-use model-sync \
+	project-init project-index project-index-check project-sources-test synthetic-mail-test model-use model-sync \
 	data-dir-show data-dir-set data-dir-migrate \
 	db-backup db-service-add db-psql todo-init todo-open \
 	coding-root-list coding-root-add \
@@ -245,6 +245,10 @@ project-index-check:
 
 project-sources-test:
 	python3 scripts/test-project-sources.py
+
+# Fake Apple Mail store for mail-reader tests. See docs/email.md.
+synthetic-mail-test:
+	python3 scripts/test-synthetic-mail.py
 
 # Shared coding roots (Hermes + OpenCode). See docs/opencode.md.
 #   make coding-root-list
