@@ -47,6 +47,10 @@ flowchart TB
   subgraph calendar [calendar profile]
     CaldavMcp[caldav-mcp]
   end
+  subgraph todo [todo profile]
+    Vikunja[vikunja]
+    PgDb[postgres-db]
+  end
   subgraph tools [automation / coding]
     N8n[n8n]
     OpenCode[opencode]
@@ -58,6 +62,8 @@ flowchart TB
   Hermes --> McpSearx
   Hermes --> LragMcp
   Hermes --> CaldavMcp
+  Hermes --> Vikunja
+  Vikunja --> PgDb
   WebUI --> Hermes
 ```
 
@@ -71,6 +77,7 @@ flowchart TB
 | **`automation`** | n8n + Postgres + GPT Researcher |
 | **`coding`** | OpenCode AI coding agent + Hermes coding delegation (opencode-mcp) |
 | **`db`** | Shared Postgres for integrations and the agent + SQL MCP (read-only on the API profile) |
+| **`todo`** | Vikunja todo lists (web app + built-in MCP), stored in the shared Postgres |
 | **`ollama`** | Bundled Ollama + demo model pull |
 
 Examples:
@@ -86,6 +93,7 @@ Examples:
 - **Localhost binds** for SearXNG, GPT Researcher, and the Hermes dashboard/API/WebUI. Nothing is LAN-exposed by default.
 - **Hermes LightRAG MCP allowlist:** unattended API sessions get five read-oriented tools out of seventeen, and the bootstrap **drops unfiltered clone duplicates** so a `--clone`d profile cannot route around the allowlist.
 - **Hermes CalDAV MCP allowlist:** unattended API sessions get read-only calendar tools; create/update/delete stay on dashboard and WebUI. Account credentials live in gitignored `compose/caldav-mcp/accounts/*.env` and are copied into Hermes MCP headers under `data/hermes/`.
+- **Vikunja token scopes:** unattended API sessions get a read-only Vikunja token (11 list/read tools); the dashboard and WebUI get read/write. Vikunja enforces the scopes itself, and its sign-up form is off.
 - **Per-profile API keys** for the Hermes `api-server` and `browser` gateways. Sharing one key fails closed.
 - **OpenCode secret shadowing:** mount `compose/opencode/blank` over project `.env` files via gitignored `docker-compose.override.yml`.
 - Setup writes secrets into **gitignored** overlays (`searxng/settings.local.yml`, Hermes `*.env`) and leaves tracked templates alone.
@@ -109,6 +117,7 @@ See [SECURITY.md](SECURITY.md).
 | [Hermes](docs/hermes.md) | Agent gateway, skills, MCP |
 | [Calendar](docs/calendar.md) | CalDAV calendars via caldav-mcp (`calendar`) |
 | [Shared database](docs/database.md) | Postgres schema-per-integration + SQL MCP (`db`) |
+| [Todo lists](docs/todo.md) | Vikunja web app + MCP (`todo`) |
 | [Hermes WebUI](docs/hermes-webui.md) | Chat UI + lean gateway mode |
 | [Knowledge bases](docs/knowledge-bases.md) | Corpora, ingest, hot-workspace switching (`rag`) |
 | [Projects](docs/projects.md) | Briefs, `sources.yaml`, INDEX, context roots |

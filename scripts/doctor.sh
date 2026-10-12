@@ -498,6 +498,9 @@ fi
 if has_profile ollama; then
   check_port "$(env_get OLLAMA_HOST_PORT 11434)" "Ollama"
 fi
+if has_profile todo; then
+  check_port "$(env_get VIKUNJA_PORT 3456)" "Vikunja"
+fi
 
 # --- Signal (optional; toggled by HERMES_SIGNAL_ENABLED) ---
 signal_enabled="$(env_get HERMES_SIGNAL_ENABLED 0)"
@@ -886,10 +889,12 @@ if has_profile db || [[ "$sql_on" -eq 1 || "$db_running" -eq 1 ]]; then
     ok "COMPOSE_PROFILES includes db"
   elif [[ "$sql_on" -eq 1 ]]; then
     bad "SQL_MCP_ENABLED=1 but 'db' not in COMPOSE_PROFILES — run ./scripts/setup.sh --db"
+  elif has_profile todo; then
+    ok "shared Postgres started by the todo profile"
   fi
   if [[ "$sql_on" -eq 1 ]]; then
     ok "SQL_MCP_ENABLED=1"
-  else
+  elif has_profile db; then
     warn "SQL_MCP_ENABLED is not 1 — Postgres runs, but Hermes gets no SQL tools"
   fi
   for key in DB_ADMIN_PASSWORD DB_AGENT_RO_PASSWORD DB_AGENT_RW_PASSWORD; do
@@ -962,8 +967,8 @@ if has_profile db || [[ "$sql_on" -eq 1 || "$db_running" -eq 1 ]]; then
       else
         warn "agent_rw cannot create in schema agent (or cannot log in) — check db-provision"
       fi
-    elif has_profile db; then
-      warn "postgres-db not running — make up with db in COMPOSE_PROFILES"
+    elif has_profile db || has_profile todo; then
+      warn "postgres-db not running — make up with db or todo in COMPOSE_PROFILES"
     fi
     for svc in sql-mcp-ro sql-mcp-rw; do
       if docker compose ps --status running "$svc" 2>/dev/null | grep -q "$svc"; then
@@ -972,6 +977,70 @@ if has_profile db || [[ "$sql_on" -eq 1 || "$db_running" -eq 1 ]]; then
         warn "${svc} not running — Hermes SQL tools will fail to connect"
       fi
     done
+  fi
+fi
+
+# --- Todo lists (Vikunja) ---
+vikunja_enabled="$(env_get VIKUNJA_MCP_ENABLED 0)"
+case "$vikunja_enabled" in 1|true|TRUE|yes|YES) vikunja_on=1 ;; *) vikunja_on=0 ;; esac
+if has_profile todo || [[ "$vikunja_on" -eq 1 ]]; then
+  echo
+  echo "--- Todo lists (Vikunja) ---"
+  if has_profile todo; then
+    ok "COMPOSE_PROFILES includes todo"
+  else
+    bad "VIKUNJA_MCP_ENABLED=1 but 'todo' not in COMPOSE_PROFILES — run ./scripts/setup.sh --todo"
+  fi
+  vk_secret="$(env_get VIKUNJA_SECRET)"
+  if [[ -z "$vk_secret" || "$vk_secret" == change-me* ]]; then
+    bad "VIKUNJA_SECRET is unset — run ./scripts/setup.sh (otherwise every restart logs you out)"
+  else
+    ok "VIKUNJA_SECRET is set"
+  fi
+  vk_svc="compose/postgres/services/vikunja.env"
+  if [[ ! -f "$vk_svc" ]]; then
+    bad "${vk_svc} missing — run ./scripts/todo.sh prepare (or setup.sh --todo)"
+  elif ! grep -qE '^VIKUNJA_DATABASE_PASSWORD=.+' "$vk_svc"; then
+    bad "${vk_svc} has no VIKUNJA_DATABASE_PASSWORD — run ./scripts/todo.sh prepare"
+  else
+    ok "${vk_svc} has the database login"
+  fi
+  if [[ "$vikunja_on" -eq 1 ]]; then
+    ok "VIKUNJA_MCP_ENABLED=1"
+  else
+    warn "todo profile on but VIKUNJA_MCP_ENABLED is not 1 — Hermes will not register the Vikunja tools"
+  fi
+  if [[ -n "$(env_get VIKUNJA_MCP_TOKEN_RW)" && -n "$(env_get VIKUNJA_MCP_TOKEN_RO)" ]]; then
+    ok "Vikunja MCP tokens are set"
+    for pair in "default:data/hermes/config.yaml:data/hermes/.env" \
+      "api-server:data/hermes/profiles/api-server/config.yaml:data/hermes/profiles/api-server/.env" \
+      "browser:data/hermes/profiles/browser/config.yaml:data/hermes/profiles/browser/.env"; do
+      IFS=':' read -r label cfg envfile <<< "$pair"
+      [[ -f "$cfg" ]] || continue
+      if grep -q 'VIKUNJA_MCP_TOKEN' "$cfg" && grep -qE '^VIKUNJA_MCP_TOKEN=.+' "$envfile" 2>/dev/null; then
+        ok "Hermes ${label} profile registers vikunja"
+      else
+        warn "Hermes ${label} profile has no vikunja MCP entry — re-run hermes-api-bootstrap and hermes-browser-bootstrap"
+      fi
+    done
+    # The read-only token must be the one api-server holds.
+    if grep -qs "^VIKUNJA_MCP_TOKEN=$(env_get VIKUNJA_MCP_TOKEN_RW)\$" data/hermes/profiles/api-server/.env; then
+      bad "api-server holds the read/write Vikunja token — re-run hermes-api-bootstrap (unattended sessions must stay read-only)"
+    fi
+  else
+    warn "Vikunja MCP tokens not set — after make up, run make todo-init"
+  fi
+  if docker info >/dev/null 2>&1; then
+    if docker compose ps --status running vikunja 2>/dev/null | grep -q vikunja; then
+      ok "vikunja container is running"
+      if curl -sf "http://127.0.0.1:$(env_get VIKUNJA_PORT 3456)/api/v1/info" >/dev/null 2>&1; then
+        ok "Vikunja answers on :$(env_get VIKUNJA_PORT 3456)"
+      else
+        warn "Vikunja does not answer on :$(env_get VIKUNJA_PORT 3456) — docker compose logs vikunja"
+      fi
+    elif has_profile todo; then
+      warn "vikunja not running — make up with todo in COMPOSE_PROFILES"
+    fi
   fi
 fi
 

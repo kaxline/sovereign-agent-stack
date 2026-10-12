@@ -8,7 +8,7 @@ fifth.
 | Built-in `memory` tool | Tiny durable facts injected into every session | `data/hermes/memories/USER.md` and `MEMORY.md` |
 | `session_search` | What you said in a past chat | that gateway's `state.db` (FTS, already enabled) |
 | Curated files | Long-form notes that will not fit the character cap | `$ASSISTANT_DATA_ROOT/memory/` → `/opt/memory` |
-| Living todos | Cross-session task list ("add to the todo list") | `$ASSISTANT_DATA_ROOT/projects/project-todo-list/README.md` → `/opt/projects/project-todo-list/README.md` |
+| Living todos | Cross-session task list ("add to the todo list") | Vikunja with the `todo` profile ([todo.md](todo.md)); otherwise `$ASSISTANT_DATA_ROOT/projects/project-todo-list/README.md` → `/opt/projects/project-todo-list/README.md` |
 | LightRAG | Documents ingested as a knowledge base | the hot `WORKSPACE` (see [Knowledge bases](knowledge-bases.md)) |
 
 This page is the how-to for the curated files and how they sit next to the other
@@ -68,8 +68,9 @@ transcript into `notes/` duplicates it and goes stale.
 **Leave in LightRAG** documents you ingested as a corpus. Curated memory is not
 a second knowledge base.
 
-**Put living todos** in `data/projects/project-todo-list/README.md` via the
-`living-todos` skill. Hermes's built-in `todo` tool is session-only and is
+**Put living todos** in Vikunja when the `todo` profile is on
+([todo.md](todo.md)), otherwise in `data/projects/project-todo-list/README.md`,
+via the `living-todos` skill. Hermes's built-in `todo` tool is session-only and is
 disabled in this stack so new WebUI chats do not see an empty list.
 
 ## Remember
@@ -149,7 +150,7 @@ and the store starts citing its own output back to you as fact.
 | Skill never loads | Skills are read at startup. Restart with `docker compose restart hermes`, then `docker compose exec hermes hermes skills list \| grep working-memory`. |
 | `Path not found` for `/opt/memory` | `HERMES_ENVIRONMENT_HINT` on the `hermes` service no longer lists `/opt/memory`. The environment probe reports `/opt/data` as home, so the agent invents `/opt/data/memory`. |
 | Agent cannot write | Host dir owned by root because Docker created it. Re-run `./scripts/setup.sh` or fix ownership. |
-| Todo list empty in a new WebUI chat | Hermes's built-in `todo` tool is session-only. This stack disables it and routes living todos to `/opt/projects/project-todo-list/README.md` via the `living-todos` skill. Re-run browser bootstrap and `docker compose restart hermes` if `agent.disabled_toolsets` no longer includes `todo`. |
+| Todo list empty in a new WebUI chat | Hermes's built-in `todo` tool is session-only. This stack disables it and routes living todos to Vikunja (`todo` profile) or `/opt/projects/project-todo-list/README.md` via the `living-todos` skill. Re-run browser bootstrap and `docker compose restart hermes` if `agent.disabled_toolsets` no longer includes `todo`. |
 | `Write denied` / "read-only" on `/opt/memory` | `HERMES_WRITE_SAFE_ROOT` on `hermes` no longer lists `/opt/memory`. The image default is `/opt/data` only; `write_file` then refuses the mount even when it is rw. |
 | WebUI remembers something the dashboard does not | Built-in files should be shared. Check that compose overlays `data/hermes/memories` onto both profile `memories/` dirs (`docs/hermes.md` verification). |
 | `session_search` misses a chat you remember | Wrong profile. WebUI is `browser` (`data/hermes/profiles/browser/state.db`); dashboard/CLI is default (`data/hermes/state.db`); independent agents each have `data/hermes/profiles/<name>/state.db`. |

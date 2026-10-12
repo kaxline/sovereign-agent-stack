@@ -5,7 +5,7 @@
 	corpus-create corpus-use corpus-list corpus-ingest corpus-destroy \
 	project-init project-index project-index-check project-sources-test model-use model-sync \
 	data-dir-show data-dir-set data-dir-migrate \
-	db-backup db-service-add db-psql \
+	db-backup db-service-add db-psql todo-init \
 	coding-root-list coding-root-add \
 	context-root-list context-root-add opencode-smoke-fixture \
 	kb-eval-fixture kb-eval-fixture-remove \
@@ -37,6 +37,9 @@ ensure-local:
 	@mkdir -p compose/caldav-mcp/accounts
 	@mkdir -p compose/postgres/services
 	@test -f compose/caldav-mcp/accounts/personal.env || (cp compose/caldav-mcp/account.env.example compose/caldav-mcp/accounts/personal.env && echo "Created compose/caldav-mcp/accounts/personal.env — set CALDAV_* credentials for calendar profile")
+	@case ",$$(grep -E '^COMPOSE_PROFILES=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'\'')," in \
+	  *,todo,*) ./scripts/todo.sh prepare >/dev/null ;; \
+	esac
 	@./scripts/sync-signal-profile.sh
 	@./scripts/sync-buzz-profile.sh
 	@./scripts/sync-terminal-backend.sh
@@ -116,6 +119,11 @@ db-service-add:
 
 db-psql:
 	./scripts/db.sh psql
+
+# Vikunja todo lists (todo profile). See docs/todo.md.
+#   make todo-init     create the account (if needed) and the Hermes MCP tokens
+todo-init:
+	./scripts/todo.sh init
 
 # User content root (projects, voice, memory, inputs, rag_storage, corpora).
 # Hermes state stays at ./data/hermes. See docs/data-dir.md.

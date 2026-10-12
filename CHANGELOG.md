@@ -6,6 +6,69 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
+## Unreleased
+
+### Upgrade steps
+
+1. Re-run `./scripts/setup.sh` over the existing `.env` and `data/`. It adds
+   `VIKUNJA_MCP_ENABLED=0` and generates `VIKUNJA_SECRET`. Nothing new starts
+   until you opt in with `--todo`.
+2. `docker compose up -d`. The `hermes` system prompt (one sentence on where
+   living todos live) and both bootstrap services' environments change, so
+   compose recreates `hermes`.
+3. Optional, for todo lists: `./scripts/setup.sh --todo`, `make up`,
+   `make todo-init`, re-run `hermes-api-bootstrap` and
+   `hermes-browser-bootstrap`, restart `hermes`. See [docs/todo.md](docs/todo.md).
+
+### New services
+
+- `vikunja` (new **`todo`** profile, off by default): [Vikunja](https://vikunja.io)
+  2.7.0 (AGPL-3.0) web app on `127.0.0.1:3456` with its built-in MCP server.
+  It joins `default` and the internal `db` network and keeps its data in
+  schema `vikunja` of the shared Postgres. `todo` is added to
+  `x-db-profiles`, so it starts `postgres-db`, `db-provision`, and the SQL MCP
+  sidecars too. The SQL MCP is still registered only with `SQL_MCP_ENABLED=1`.
+
+### Required `.env` keys
+
+Only with `todo` enabled.
+
+- `VIKUNJA_SECRET`: `setup.sh` generates it for every install. If it is empty,
+  Vikunja picks a new one each start and everyone is logged out.
+- `VIKUNJA_MCP_TOKEN_RW` and `VIKUNJA_MCP_TOKEN_RO`: written by
+  `make todo-init`. Without them the bootstrap logs a warning and registers
+  nothing.
+
+### New optional `.env` keys
+
+| Key | Default | Purpose |
+|---|---|---|
+| `VIKUNJA_MCP_ENABLED` | `0` | `1` registers `mcp_servers.vikunja` on Hermes. `setup.sh --todo` sets it |
+| `VIKUNJA_PORT` | `3456` | Loopback host port for the web UI |
+| `VIKUNJA_PUBLIC_URL` | `http://localhost:${VIKUNJA_PORT}/` | Base URL in Vikunja's links and MCP page |
+| `VIKUNJA_ENABLE_REGISTRATION` | `false` | Allow sign-up from the web UI |
+| `VIKUNJA_FILES_DIR` | `./data/vikunja/files` | Attachments bind mount |
+| `VIKUNJA_IMAGE` | `vikunja/vikunja:2.7.0` | Vikunja image (MCP needs 2.7.0+) |
+| `VIKUNJA_MCP_URL` | `http://vikunja:3456/api/v2/mcp` | Endpoint the bootstrap registers |
+| `VIKUNJA_MCP_TIMEOUT` / `VIKUNJA_MCP_CONNECT_TIMEOUT` | `60` / `30` | Hermes MCP timeouts for `vikunja` |
+
+### Changes
+
+- **Hermes bootstrap**: registers `mcp_servers.vikunja` with an
+  `Authorization: Bearer ${VIKUNJA_MCP_TOKEN}` header. The read-only token goes
+  to `api-server`, the read/write token to default and `browser`, each into
+  that profile's `.env`. With the profile off or the token missing, it removes
+  the entry and the token.
+- **`living-todos` skill**: uses the Vikunja tools when they are listed, and
+  the markdown file otherwise. The Hermes system prompt says the same.
+- **`make todo-init`** (`scripts/todo.sh`): creates the Vikunja account from
+  the CLI and mints both tokens. Re-running it rotates them.
+- **`make ensure-local` / `make up`**: with `todo` in `COMPOSE_PROFILES`,
+  writes `compose/postgres/services/vikunja.env` if it is missing.
+- **`make doctor`**: a todo section (profile, secret, database login, tokens,
+  per-profile registration, `api-server` not holding the read/write token,
+  container and HTTP health) and a port check for 3456.
+
 ## v0.3.2 — 2026-10-11
 
 ### Upgrade steps

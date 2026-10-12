@@ -4,7 +4,9 @@ Opt-in Postgres for structured data: rows that integrations sync in, and tables
 the agent keeps for itself. Hermes queries it through a SQL MCP server. Reads
 span every schema, and writes are confined by database grants.
 
-Requires the **`db`** compose profile (`./scripts/setup.sh --db`). This is
+Requires the **`db`** compose profile (`./scripts/setup.sh --db`). The
+`todo` profile ([Vikunja](todo.md)) starts the same database for its own
+schema, with or without `db`. This is
 **not** n8n's database. That one is the `postgres` service (container
 `n8n-postgres`, `automation` profile), and it is unchanged.
 

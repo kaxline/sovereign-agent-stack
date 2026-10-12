@@ -29,7 +29,7 @@ x-n8n: &service-n8n
 # two SQL MCP sidecars). An integration that keeps data there appends its own
 # profile here, e.g. ["db", "<integration>"], so enabling it starts the
 # database too. See docs/database.md.
-x-db-profiles: &db-profiles ["db"]
+x-db-profiles: &db-profiles ["db", "todo"]
 
 x-sql-mcp: &service-sql-mcp
   profiles: *db-profiles
@@ -334,6 +334,62 @@ services:
       test: ["CMD-SHELL", "python -c \"import socket; s=socket.create_connection(('127.0.0.1',8080),5); s.close()\""]
       interval: 15s
       timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  # ----------------------------------------------------------------------
+  # vikunja — todo lists with a built-in MCP server
+  # Profile: todo (also starts the shared Postgres via x-db-profiles)
+  # Web UI:  http://localhost:3456   (localhost-bound)
+  # MCP:     http://vikunja:3456/api/v2/mcp   (Streamable HTTP, bearer token)
+  # Data:    schema `vikunja` in the shared Postgres (role svc_vikunja,
+  #          compose/postgres/services/vikunja.env); attachments in
+  #          VIKUNJA_FILES_DIR (default ./data/vikunja/files).
+  # Tokens:  make todo-init creates the account and both MCP tokens. See docs/todo.md
+  # Upstream: https://github.com/go-vikunja/vikunja (AGPL-3.0)
+  # ----------------------------------------------------------------------
+  vikunja:
+    profiles: ["todo"]
+    container_name: ${CONTAINER_PREFIX:-}vikunja
+    image: ${VIKUNJA_IMAGE:-vikunja/vikunja:2.7.0}
+    restart: unless-stopped
+    user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
+    ports:
+      - "127.0.0.1:${VIKUNJA_PORT:-3456}:3456"
+    # Allowlist. VIKUNJA_DATABASE_PASSWORD comes from the env_file below, which
+    # make todo-init / setup --todo write next to DB_SERVICE_PASSWORD.
+    # Empty VIKUNJA_SECRET makes Vikunja pick a random one per start, which
+    # logs everyone out on restart; setup.sh generates it for every install.
+    environment:
+      - VIKUNJA_SERVICE_PUBLICURL=${VIKUNJA_PUBLIC_URL:-http://localhost:${VIKUNJA_PORT:-3456}/}
+      - VIKUNJA_SERVICE_SECRET=${VIKUNJA_SECRET:-}
+      # make todo-init creates the account from the CLI, so the sign-up form
+      # stays off unless asked for.
+      - VIKUNJA_SERVICE_ENABLEREGISTRATION=${VIKUNJA_ENABLE_REGISTRATION:-false}
+      - VIKUNJA_SERVICE_TIMEZONE=${TZ:-UTC}
+      - VIKUNJA_DATABASE_TYPE=postgres
+      - VIKUNJA_DATABASE_HOST=postgres-db
+      - VIKUNJA_DATABASE_USER=svc_vikunja
+      - VIKUNJA_DATABASE_DATABASE=${DB_NAME:-assistant}
+      # Pins search_path; the role owns this schema and can create nothing else.
+      - VIKUNJA_DATABASE_SCHEMA=vikunja
+      - VIKUNJA_DATABASE_SSLMODE=disable
+    env_file:
+      # Compose parses this service with the profile off, so the file may be absent.
+      - path: ./compose/postgres/services/vikunja.env
+        required: false
+    volumes:
+      - ${VIKUNJA_FILES_DIR:-./data/vikunja/files}:/app/vikunja/files
+    # default: host port and the web UI. db: its schema in the shared Postgres.
+    networks: [default, db]
+    depends_on:
+      db-provision:
+        condition: service_completed_successfully
+    healthcheck:
+      # The image has no shell; the binary ships its own probe.
+      test: ["CMD", "/app/vikunja/vikunja", "healthcheck"]
+      interval: 30s
+      timeout: 10s
       retries: 6
       start_period: 20s
 
@@ -800,6 +856,13 @@ services:
       - SQL_MCP_RW_URL=${SQL_MCP_RW_URL:-http://sql-mcp-rw:8000/sse}
       - SQL_MCP_TIMEOUT=${SQL_MCP_TIMEOUT:-60}
       - SQL_MCP_CONNECT_TIMEOUT=${SQL_MCP_CONNECT_TIMEOUT:-30}
+      # Vikunja MCP (todo profile): read-only token here, read/write on default + browser.
+      - VIKUNJA_MCP_ENABLED=${VIKUNJA_MCP_ENABLED:-0}
+      - VIKUNJA_MCP_URL=${VIKUNJA_MCP_URL:-http://vikunja:3456/api/v2/mcp}
+      - VIKUNJA_MCP_TIMEOUT=${VIKUNJA_MCP_TIMEOUT:-60}
+      - VIKUNJA_MCP_CONNECT_TIMEOUT=${VIKUNJA_MCP_CONNECT_TIMEOUT:-30}
+      - VIKUNJA_MCP_TOKEN_RO=${VIKUNJA_MCP_TOKEN_RO:-}
+      - VIKUNJA_MCP_TOKEN_RW=${VIKUNJA_MCP_TOKEN_RW:-}
       # Upstream URL only (no key), to size the stale-stream timeout.
       - LLM_BINDING_HOST=${LLM_BINDING_HOST:-http://host.docker.internal:1234/v1}
       - HERMES_PROXY_STALE_TIMEOUT=${HERMES_PROXY_STALE_TIMEOUT:-}
@@ -858,6 +921,12 @@ services:
       - SQL_MCP_RW_URL=${SQL_MCP_RW_URL:-http://sql-mcp-rw:8000/sse}
       - SQL_MCP_TIMEOUT=${SQL_MCP_TIMEOUT:-60}
       - SQL_MCP_CONNECT_TIMEOUT=${SQL_MCP_CONNECT_TIMEOUT:-30}
+      - VIKUNJA_MCP_ENABLED=${VIKUNJA_MCP_ENABLED:-0}
+      - VIKUNJA_MCP_URL=${VIKUNJA_MCP_URL:-http://vikunja:3456/api/v2/mcp}
+      - VIKUNJA_MCP_TIMEOUT=${VIKUNJA_MCP_TIMEOUT:-60}
+      - VIKUNJA_MCP_CONNECT_TIMEOUT=${VIKUNJA_MCP_CONNECT_TIMEOUT:-30}
+      - VIKUNJA_MCP_TOKEN_RO=${VIKUNJA_MCP_TOKEN_RO:-}
+      - VIKUNJA_MCP_TOKEN_RW=${VIKUNJA_MCP_TOKEN_RW:-}
       # Upstream URL only (no key), to size the stale-stream timeout and
       # decide whether auto-title may compete with the reply.
       - LLM_BINDING_HOST=${LLM_BINDING_HOST:-http://host.docker.internal:1234/v1}
@@ -1017,9 +1086,11 @@ services:
         or stop.
         Short durable facts belong in the memory tool (USER.md / MEMORY.md);
         longer notes belong under /opt/memory.
-        Living todos (cross-session task list) live at
-        /opt/projects/project-todo-list/README.md — read and edit that file;
-        do not use the session-only todo tool for the user's todo list.
+        Living todos (cross-session task list) live in Vikunja when its tools
+        (tasks_list, tasks_create, mcp__vikunja__*) are available — use those;
+        otherwise they live at /opt/projects/project-todo-list/README.md — read
+        and edit that file. Either way, do not use the session-only todo tool
+        for the user's todo list.
         Container local time (TZ) is authoritative for today and Conversation
         started; do not convert from UTC unless asked."
     volumes:
@@ -1128,6 +1199,10 @@ services:
         condition: service_healthy
         required: false
       sql-mcp-rw:
+        condition: service_healthy
+        required: false
+      # Optional: only present when the `todo` profile is enabled.
+      vikunja:
         condition: service_healthy
         required: false
     # db is internal and holds only the shared Postgres and its SQL MCP
