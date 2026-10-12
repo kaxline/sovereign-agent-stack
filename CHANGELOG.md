@@ -27,11 +27,15 @@ the stack under another app.
 ### New services
 
 - `vikunja` (new **`todo`** profile, off by default): [Vikunja](https://vikunja.io)
-  2.7.0 (AGPL-3.0) web app on `127.0.0.1:3456` with its built-in MCP server.
-  It joins `default` and the internal `db` network and keeps its data in
+  2.7.0 (AGPL-3.0) with its built-in MCP server. No host port. It joins
+  `default` and the internal `db` network and keeps its data in
   schema `vikunja` of the shared Postgres. `todo` is added to
   `x-db-profiles`, so it starts `postgres-db`, `db-provision`, and the SQL MCP
   sidecars too. The SQL MCP is still registered only with `SQL_MCP_ENABLED=1`.
+- `vikunja-proxy` (`todo` profile): `nginx:1.29.1-alpine` on `127.0.0.1:3456`
+  in front of `vikunja`. Passes everything through and serves `/login-local`,
+  which signs the browser in as the stack-managed account. About 4 MiB of RAM,
+  capped at half a CPU.
 
 ### Required `.env` keys
 
@@ -42,6 +46,8 @@ Only with `todo` enabled.
 - `VIKUNJA_MCP_TOKEN_RW` and `VIKUNJA_MCP_TOKEN_RO`: written by
   `make todo-init`. Without them the bootstrap logs a warning and registers
   nothing.
+- `VIKUNJA_USERNAME` and `VIKUNJA_PASSWORD`: written by `make todo-init`.
+  Without them `/login-local` shows an error and asks you to run it.
 
 ### New optional `.env` keys
 
@@ -51,6 +57,8 @@ Only with `todo` enabled.
 | `VIKUNJA_PORT` | `3456` | Loopback host port for the web UI |
 | `VIKUNJA_PUBLIC_URL` | `http://localhost:${VIKUNJA_PORT}/` | Base URL in Vikunja's links and MCP page |
 | `VIKUNJA_ENABLE_REGISTRATION` | `false` | Allow sign-up from the web UI |
+| `VIKUNJA_SESSION_TTL` | `315360000` | Sign-in lifetime in seconds (10 years) |
+| `VIKUNJA_PROXY_IMAGE` | `nginx:1.29.1-alpine` | `vikunja-proxy` image |
 | `VIKUNJA_FILES_DIR` | `./data/vikunja/files` | Attachments bind mount |
 | `VIKUNJA_IMAGE` | `vikunja/vikunja:2.7.0` | Vikunja image (MCP needs 2.7.0+) |
 | `VIKUNJA_MCP_URL` | `http://vikunja:3456/api/v2/mcp` | Endpoint the bootstrap registers |
@@ -65,8 +73,12 @@ Only with `todo` enabled.
   the entry and the token.
 - **`living-todos` skill**: uses the Vikunja tools when they are listed, and
   the markdown file otherwise. The Hermes system prompt says the same.
-- **`make todo-init`** (`scripts/todo.sh`): creates the Vikunja account from
-  the CLI and mints both tokens. Re-running it rotates them.
+- **`make todo-init`** (`scripts/todo.sh`): asks nothing. It creates the
+  Vikunja account (or adopts the only existing one) with a generated password
+  kept in `.env`, mints both tokens, and recreates `vikunja-proxy`.
+  Re-running it rotates the tokens. An adopted account's old password stops
+  working.
+- **`make todo-open`**: opens `http://localhost:3456/login-local`, signed in.
 - **`make ensure-local` / `make up`**: with `todo` in `COMPOSE_PROFILES`,
   writes `compose/postgres/services/vikunja.env` if it is missing.
 - **`make doctor`**: a todo section (profile, secret, database login, tokens,

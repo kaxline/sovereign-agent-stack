@@ -5,7 +5,7 @@
 	corpus-create corpus-use corpus-list corpus-ingest corpus-destroy \
 	project-init project-index project-index-check project-sources-test model-use model-sync \
 	data-dir-show data-dir-set data-dir-migrate \
-	db-backup db-service-add db-psql todo-init \
+	db-backup db-service-add db-psql todo-init todo-open \
 	coding-root-list coding-root-add \
 	context-root-list context-root-add opencode-smoke-fixture \
 	kb-eval-fixture kb-eval-fixture-remove \
@@ -119,9 +119,13 @@ db-psql:
 	./scripts/db.sh psql
 
 # Vikunja todo lists (todo profile). See docs/todo.md.
-#   make todo-init     create the account (if needed) and the Hermes MCP tokens
+#   make todo-init     account with a generated password + the Hermes MCP tokens
+#   make todo-open     open the web app, signed in
 todo-init:
 	./scripts/todo.sh init
+
+todo-open:
+	@./scripts/todo.sh open
 
 # User content root (projects, voice, memory, inputs, rag_storage, corpora).
 # Hermes state stays at ./data/hermes. See docs/data-dir.md.

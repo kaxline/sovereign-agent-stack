@@ -93,7 +93,7 @@ Examples:
 - **Localhost binds** for SearXNG, GPT Researcher, and the Hermes dashboard/API/WebUI. Nothing is LAN-exposed by default.
 - **Hermes LightRAG MCP allowlist:** unattended API sessions get five read-oriented tools out of seventeen, and the bootstrap **drops unfiltered clone duplicates** so a `--clone`d profile cannot route around the allowlist.
 - **Hermes CalDAV MCP allowlist:** unattended API sessions get read-only calendar tools; create/update/delete stay on dashboard and WebUI. Account credentials live in gitignored `compose/caldav-mcp/accounts/*.env` and are copied into Hermes MCP headers under `data/hermes/`.
-- **Vikunja token scopes:** unattended API sessions get a read-only Vikunja token (11 list/read tools); the dashboard and WebUI get read/write. Vikunja enforces the scopes itself, and its sign-up form is off.
+- **Vikunja token scopes:** unattended API sessions get a read-only Vikunja token (11 list/read tools); the dashboard and WebUI get read/write. Vikunja enforces the scopes itself. The web app needs no password: a loopback-only proxy signs you in (`make todo-open`).
 - **Per-profile API keys** for the Hermes `api-server` and `browser` gateways. Sharing one key fails closed.
 - **OpenCode secret shadowing:** mount `compose/opencode/blank` over project `.env` files via gitignored `docker-compose.override.yml`.
 - Setup writes secrets into **gitignored** overlays (`searxng/settings.local.yml`, Hermes `*.env`) and leaves tracked templates alone.

@@ -1,0 +1,58 @@
+# Loopback front for Vikunja (todo profile). Passes everything through and adds
+# /login-local, which signs the browser in with the stack-managed account so
+# nobody has to keep a password. See docs/todo.md.
+#
+# The nginx image runs envsubst on this file at start, replacing only the
+# ${VIKUNJA_*} variables the container defines; nginx's own $variables stay.
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen 8080;
+    # Match Vikunja's own attachment limit (files.maxsize, 20MB) with headroom.
+    client_max_body_size 64m;
+
+    location / {
+        proxy_pass http://vikunja:3456;
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # /api/v1/ws (live updates)
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_read_timeout 1h;
+    }
+
+    # Only plain localhost names, so a DNS-rebinding page (evil.example
+    # resolving to 127.0.0.1) cannot load these as its own origin.
+    location = /login-local {
+        if ($host !~* ^(localhost|127\.0\.0\.1|\[::1\])$) { return 403; }
+        default_type text/html;
+        add_header Cache-Control "no-store" always;
+        add_header X-Frame-Options "DENY" always;
+        alias /usr/share/nginx/html/login-local.html;
+    }
+
+    # Mints a session for the managed account. The password stays here; the
+    # browser only receives the login response.
+    location = /login-local/session {
+        if ($host !~* ^(localhost|127\.0\.0\.1|\[::1\])$) { return 403; }
+        # Same-origin fetches only: no other page may read this response.
+        if ($http_sec_fetch_site !~ ^(same-origin|)$) { return 403; }
+        limit_except GET { deny all; }
+        proxy_method POST;
+        proxy_pass http://vikunja:3456/api/v1/login;
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header Content-Type application/json;
+        proxy_set_header Origin "";
+        proxy_pass_request_body off;
+        proxy_set_body '{"username":"${VIKUNJA_USERNAME}","password":"${VIKUNJA_PASSWORD}","long_token":true}';
+        proxy_hide_header Access-Control-Allow-Origin;
+        proxy_hide_header Access-Control-Allow-Credentials;
+    }
+}
