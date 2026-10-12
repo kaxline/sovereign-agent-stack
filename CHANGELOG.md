@@ -14,11 +14,15 @@ the stack under another app.
    `VIKUNJA_MCP_ENABLED=0` and generates `VIKUNJA_SECRET`. Nothing new starts
    until you opt in with `--todo`.
 2. `docker compose up -d`. The `hermes` system prompt (one sentence on where
-   living todos live) and both bootstrap services' environments change, so
-   compose recreates `hermes`.
+   living todos live), both bootstrap services' environments, four new
+   overlay mounts and `HERMES_TURN_HEARTBEAT_S` change, so compose recreates
+   `hermes`.
 3. Optional, for todo lists: `./scripts/setup.sh --todo`, `make up`,
    `make todo-init`, re-run `hermes-api-bootstrap` and
    `hermes-browser-bootstrap`, restart `hermes`. See [docs/todo.md](docs/todo.md).
+4. Dashboard clients that send `profile` on `prompt.submit`: make sure it
+   names the session's own profile, or drop it. A different profile used to
+   be ignored silently and is now an error (see Changes).
 
 ### New services
 
@@ -68,6 +72,29 @@ Only with `todo` enabled.
 - **`make doctor`**: a todo section (profile, secret, database login, tokens,
   per-profile registration, `api-server` not holding the read/write token,
   container and HTTP health) and a port check for 3456.
+- **Hermes gateway (overlay)**: while a turn runs, the gateway sends a
+  `turn.heartbeat` event every 30 s (`HERMES_TURN_HEARTBEAT_S`, `0` for off)
+  with `status`, `turn_started_at` and `idle_s`, and never after
+  `message.complete`. New `session.live_status` returns one session's
+  `status`, `running`, `turn_started_at` and `idle_s` by `session_id` or
+  `session_key`, without a database read; a session that is not live answers
+  `idle`. `gateway.capabilities` advertises both. Clients that ignore them see
+  no change. See [docs/hermes.md](docs/hermes.md#turn-liveness).
+- **Hermes gateway (overlay)**: `session.create`, `session.resume` and
+  `prompt.submit` take an optional `context` string. Session context is added
+  to the system prompt. Turn context is added to that turn's model input. The
+  user's message and `session.history` stay as typed. Errors are `4080`
+  (invalid), `4082` (a turn is running) and `4083` (isolated compute-host
+  turns). `gateway.capabilities` advertises `client_context` and
+  `prompt_profile_check`. Clients that leave the field out see no change. See
+  [docs/hermes.md](docs/hermes.md#client-context).
+- **Hermes gateway (overlay)**: `prompt.submit` with a `profile` that differs
+  from the session's profile now fails with `4081` and
+  `data.session_profile`. It used to be accepted and ignored: the turn ran on
+  the session's profile. A matching or omitted `profile` behaves as before.
+- **Docs**: [docs/hermes.md](docs/hermes.md#platform-hints) documents
+  `agent.platform_hints.<source>` for clients whose `source` has no built-in
+  hint, and corrects the claim that `profile` works per turn.
 
 ## v0.3.2 — 2026-10-11
 

@@ -65,7 +65,7 @@ Dashboard JSON-RPC clients (for example Boundary over the gateway WebSocket) can
 - `prompt.submit` truncation: `truncate_before_row_id` (preferred), `truncate_before_message_id`, or `truncate_before_user_ordinal`, with `confirm_truncate`; result may include `survivor_row_id_map`
 - `session.branch` (fork a live session into a stored child) and `parent_session_id` on `session.create` / session list rows
 
-Named agent profiles take the same methods via the optional `profile` parameter. Older installs without these `.env` lines now get the same defaults from compose.
+For named agent profiles, the optional `profile` parameter picks the profile on `session.create`, `session.resume`, `session.history` and session lists. It does not switch profiles per turn. A session's profile (SOUL, memory and `state.db`) is fixed when the session is created or resumed. With this stack's overlay (below), `prompt.submit` accepts `profile` only when it names that same profile; any other profile is an RPC error (`4081`, with `data.session_profile`) and nothing runs. A room with several agents needs one session per agent profile. Older installs without these `.env` lines now get the same defaults from compose.
 
 This stack also overlays a **per-session history budget** on that agent tag. It is not an upstream Hermes API. `session.create` and `session.resume` take `history_budget`, a positive integer of tokens. The default is no budget: omit the field on create, or send `null`, and Hermes compacts only against the model window, as today. On resume, omitting the field keeps the stored budget and `null` clears it. `0`, negatives, or non-integers are an RPC error (`4028`) that does not change the session. There is no profile config key: a personality profile also runs side chats, and a profile cap would shrink those too.
 
@@ -81,6 +81,59 @@ Once the overlay is running, `session.context_breakdown` and `message.complete` 
 | `history_summarised` | `true` when rows before that point are represented by a summary |
 
 `history_budget: null` means no horizon. `session.context_breakdown` is the cut for the **next** reply, including on open. `message.complete` is the cut **that turn actually sent**. Draw a line only when `history_budget` is a number and either `history_summarised` is true or `history_first_row_id` is not the first row of `session.history`.
+
+### Client context
+
+A second overlay lets a dashboard client tell the agent where a conversation is happening, such as a room's name, its members, or which member is answering, without putting that in the user's message. It is not an upstream Hermes API. Clients that leave it out see no change.
+
+| Where | Field | Effect |
+|---|---|---|
+| `session.create`, `session.resume` | `context` (string or `null`) | **Session context.** Added to the system prompt on every turn, under a `Client Session Context` heading. Not stored. On resume, omitting the field keeps the live session's value and `null` or an empty string clears it. A session rebuilt after a gateway restart has none until the client sends it again. |
+| `prompt.submit` | `context` (string) | **Turn context.** Added to that turn's model input after the user's text, under a `Client Turn Context` heading. It never appears in `session.history`. |
+
+Both headings come with a line telling the model to treat names and labels in the block as untrusted metadata. Turn context uses the same channel as Hermes' own per-turn notes. It is stored in the user row's `api_content` sidecar in `state.db` and sent again on later turns, which keeps the prompt cache warm and means the model still knows who was addressed earlier. Use session context for anything that holds for the whole conversation, because changing it changes the system prompt and costs one prompt-cache miss.
+
+Errors (the session is not changed):
+
+| Code | When |
+|---|---|
+| `4080` | `context` is not a string or `null`, or is longer than 16,000 characters |
+| `4081` | `prompt.submit` names a different `profile` from the session's (see above) |
+| `4082` | `prompt.submit` with `context` while a turn is running. Context cannot be queued, steered or redirected, so resubmit after `message.complete`, or check [`session.live_status`](#turn-liveness) first and send once it reports `running: false`. |
+| `4083` | Context on a session whose turns run in an isolated compute-host worker (`dashboard.turn_isolation`, off by default) |
+
+`gateway.capabilities` adds `client_context: true` and `prompt_profile_check: true` when this overlay is installed. Check them before sending `context`, so the same client still works against an unpatched gateway, which answers an unknown `context` field with `4000`.
+
+#### Platform hints
+
+Hermes adds a short platform hint to the system prompt based on the session's `source`. It has built-in hints for `cli`, `tui`, `desktop`, the messaging platforms and a few others. Any other `source`, such as Boundary's `boundary`, gets no hint by default. A client can describe itself with `agent.platform_hints.<source>` in the `config.yaml` of each profile that serves it:
+
+```yaml
+agent:
+  platform_hints:
+    boundary: >-
+      You are chatting inside the Boundary desktop app. Replies render as Markdown.
+```
+
+A bare string is appended to the built-in hint, or used on its own when there is none. `{replace: "..."}` swaps out a built-in hint and `{append: "..."}` adds to it. Each profile reads its own `config.yaml` (`data/hermes/config.yaml` for the default profile, `data/hermes/profiles/<name>/config.yaml` for the others), so set the hint in every profile the client uses. For text that changes between sessions, use session context instead.
+
+### Turn liveness
+
+Another overlay lets a dashboard client tell a slow turn from a lost one without polling. It is not an upstream Hermes API. Upstream sends `session.usage` only when token counts change, so a single slow model call, such as a local model reading a long prompt, can be silent on the wire for minutes.
+
+**`turn.heartbeat`** is an event sent every `HERMES_TURN_HEARTBEAT_S` seconds (default `30`, `0` turns it off) while a session's turn runs, whatever else is streaming. It comes from the same thread as `session.usage`, which the turn stops before `message.complete`, so none arrives after the turn ends. The frame's `session_id` is the gateway session id, as on every event. The payload has no transcript content:
+
+| Field | Meaning |
+|---|---|
+| `running` | Always `true` |
+| `status` | `working`, or `waiting` while an approval or clarify prompt is open |
+| `turn_started_at` | Epoch seconds the turn started |
+| `idle_s` | Seconds since the agent last recorded activity (an API wait, a stream chunk, tool progress), or `null` when unknown. Hermes aborts a turn whose activity clock stays idle for `agent.turn_liveness.timeout_s` (600 s by default) and then sends the usual completion. |
+| `interval_s` | The heartbeat interval. A client can treat roughly two missed intervals as a lost stream. |
+
+**`session.live_status`** returns one session's live state from memory: no database read, no title, no preview. Params: `session_id` (gateway id) and/or `session_key` (stored id), and optional `profile`. Without `profile` a session in any profile matches, as in `session.active_list`. With it, only that profile's sessions do, and an unknown profile is `4064`. The result is `{session_id, session_key, status, running, turn_started_at, idle_s}`. `status` uses the same values as `session.active_list` items. A session that is not live (closed, reaped, or never opened in this process) answers `status: "idle"`, `running: false` and `null`s, never an error. Sending neither id is `4006`.
+
+**`gateway.capabilities`** adds `turn_heartbeat` (bool), `turn_heartbeat_s` (seconds) and `session_live_status: true`. Check them before relying on either feature, so the same client still works against an unpatched gateway.
 
 ## API server profile (`api-server`)
 
