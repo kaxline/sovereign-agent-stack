@@ -196,6 +196,19 @@ assert "per_session_exclusive_submit" in caps
 registry.check_result(registry.METHODS["gateway.capabilities"], caps)
 os.environ["HERMES_TURN_HEARTBEAT_S"] = "0"
 assert call("gateway.capabilities", {})["result"]["turn_heartbeat"] is False
+
+# Another overlay that extended the capabilities result first keeps its field.
+from tui_gateway.contracts import liveness as live_contracts
+from agent import gateway_liveness as installed_gl
+class OtherOverlayCaps(live_contracts.GatewayCapabilitiesResult):
+    other_overlay: bool
+saved_caps = registry.METHODS["gateway.capabilities"]
+registry.METHODS["gateway.capabilities"] = registry.MethodContract(
+    saved_caps.name, saved_caps.params, OtherOverlayCaps, saved_caps.doc)
+installed_gl.declare_contracts(None)
+fields = registry.METHODS["gateway.capabilities"].result.model_fields
+assert "other_overlay" in fields and "turn_heartbeat" in fields, sorted(fields)
+registry.METHODS["gateway.capabilities"] = saved_caps
 # Importing the gateway points sys.stdout at stderr (stdout is its JSON-RPC channel).
 os.write(1, b"image ok\n")
 '''

@@ -101,7 +101,7 @@ def find_session(server: Any, params: dict) -> tuple[str, dict] | None:
 
 
 def declare_contracts(server: Any) -> None:
-    from tui_gateway.contracts import base, liveness, registry, sessions
+    from tui_gateway.contracts import base, registry, sessions
 
     class SessionLiveStatusParams(base.Params):
         session_id: str | None = None
@@ -125,11 +125,6 @@ def declare_contracts(server: Any) -> None:
         idle_s: float | None
         interval_s: float
 
-    class GatewayCapabilitiesResult(liveness.GatewayCapabilitiesResult):
-        turn_heartbeat: bool
-        turn_heartbeat_s: float
-        session_live_status: bool
-
     if METHOD not in registry.METHODS:
         registry.method(
             METHOD, params=SessionLiveStatusParams, result=SessionLiveStatusResult,
@@ -138,8 +133,15 @@ def declare_contracts(server: Any) -> None:
         registry.event(
             EVENT, TurnHeartbeatPayload,
             doc="Sent at a fixed interval while a turn runs, never after message.complete (stack overlay).")
+    # Extend whatever result is registered now: other overlays add capabilities too, and the
+    # result model refuses fields it does not declare.
     caps = registry.METHODS["gateway.capabilities"]
-    if caps.result is liveness.GatewayCapabilitiesResult:
+    if "turn_heartbeat" not in caps.result.model_fields:
+        class GatewayCapabilitiesResult(caps.result):
+            turn_heartbeat: bool
+            turn_heartbeat_s: float
+            session_live_status: bool
+
         registry.METHODS[caps.name] = registry.MethodContract(caps.name, caps.params, GatewayCapabilitiesResult, caps.doc)
 
 
