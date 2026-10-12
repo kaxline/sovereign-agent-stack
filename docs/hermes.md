@@ -99,8 +99,10 @@ Errors (the session is not changed):
 |---|---|
 | `4080` | `context` is not a string or `null`, or is longer than 16,000 characters |
 | `4081` | `prompt.submit` names a different `profile` from the session's (see above) |
-| `4082` | `prompt.submit` with `context` while a turn is running. Context cannot be queued, steered or redirected, so resubmit after `message.complete`. |
+| `4082` | `prompt.submit` with `context` while a turn is running. Context cannot be queued, steered or redirected, so resubmit after `message.complete`, or check [`session.live_status`](#turn-liveness) first and send once it reports `running: false`. |
 | `4083` | Context on a session whose turns run in an isolated compute-host worker (`dashboard.turn_isolation`, off by default) |
+
+`gateway.capabilities` adds `client_context: true` and `prompt_profile_check: true` when this overlay is installed. Check them before sending `context`, so the same client still works against an unpatched gateway, which answers an unknown `context` field with `4000`.
 
 #### Platform hints
 

@@ -16,13 +16,16 @@ message:
 from the session's. The session's profile is fixed at create/resume; a turn
 cannot switch SOUL and memory.
 
-``install(server)`` wraps the registered handlers and the turn-input step on
-the live ``tui_gateway.server`` module, so no handler body is edited.
+``gateway.capabilities`` advertises ``client_context`` and
+``prompt_profile_check``.
+
+``install(server)`` declares the new contract fields, wraps the registered
+handlers and the turn-input step on the live ``tui_gateway.server`` module, so
+no upstream file other than the server.py install tail is edited.
 """
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
@@ -86,15 +89,6 @@ def compose_ephemeral(agent: Any, block: str) -> None:
     agent._client_context_base = base
     agent.ephemeral_system_prompt = composed or None
     agent._client_context_composed = composed
-
-
-def _norm_home(home: Any) -> Path | None:
-    if not home:
-        return None
-    try:
-        return Path(home).resolve()
-    except Exception:
-        return Path(str(home))
 
 
 def _is_ok(response: Any) -> bool:
@@ -166,9 +160,7 @@ def wrap_prompt_submit(server: Any, orig: Callable) -> Callable:
         requested = str(params.get("profile") or "").strip()
         if requested and not internal:
             # Unknown profile raises ProfileUnavailableError; handle_request maps it to 4064.
-            want = _norm_home(server._profile_home(requested))
-            have = _norm_home(session.get("profile_home"))
-            if want != have:
+            if not server._live_profile_matches(session, server._profile_home(requested)):
                 current = _session_profile_name(server, session)
                 return server._err(
                     rid, PROFILE_MISMATCH,
@@ -230,13 +222,52 @@ def wrap_prepare_turn_input(orig: Callable) -> Callable:
     return prepare
 
 
+CONTEXT_METHODS = ("session.create", "session.resume", "prompt.submit")
+CAPABILITIES = {"client_context": True, "prompt_profile_check": True}
+
+
+def declare_contracts() -> None:
+    """Add ``context`` to the three params models and the capability flags to the
+    capabilities result. Each extends whatever is registered now, because other
+    overlays (history budget, gateway liveness) extend the same contracts."""
+    from pydantic import create_model
+    from tui_gateway.contracts import registry
+
+    for name in CONTEXT_METHODS:
+        contract = registry.METHODS[name]
+        if "context" not in contract.params.model_fields:
+            params = create_model(
+                contract.params.__name__, __base__=contract.params, __module__=__name__,
+                context=(str | None, None))
+            registry.METHODS[name] = registry.MethodContract(name, params, contract.result, contract.doc)
+    caps = registry.METHODS["gateway.capabilities"]
+    if not set(CAPABILITIES) <= set(caps.result.model_fields):
+        result = create_model(
+            caps.result.__name__, __base__=caps.result, __module__=__name__,
+            **{key: (bool, ...) for key in CAPABILITIES})
+        registry.METHODS[caps.name] = registry.MethodContract(caps.name, caps.params, result, caps.doc)
+
+
+def wrap_capabilities(handler: Callable) -> Callable:
+    def caps(rid, params: dict) -> dict:
+        response = handler(rid, params)
+        if _is_ok(response):
+            response["result"].update(CAPABILITIES)
+        return response
+
+    caps.__wrapped__ = handler
+    return caps
+
+
 def install(server: Any) -> None:
     if getattr(server, "_client_context_installed", False):
         return
+    declare_contracts()
     methods = server._methods
     for name in ("session.create", "session.resume"):
         methods[name] = wrap_session_open(server, methods[name])
     methods["prompt.submit"] = wrap_prompt_submit(server, methods["prompt.submit"])
+    server.register_method("gateway.capabilities", wrap_capabilities(methods["gateway.capabilities"]))
     # Split modules are rebound onto the server namespace, so _run_prompt_submit
     # resolves _prepare_turn_input here at call time.
     server._prepare_turn_input = wrap_prepare_turn_input(server._prepare_turn_input)

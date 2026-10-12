@@ -32,7 +32,8 @@ the stack under another app.
   to the system prompt. Turn context is added to that turn's model input. The
   user's message and `session.history` stay as typed. Errors are `4080`
   (invalid), `4082` (a turn is running) and `4083` (isolated compute-host
-  turns). Clients that leave the field out see no change. See
+  turns). `gateway.capabilities` advertises `client_context` and
+  `prompt_profile_check`. Clients that leave the field out see no change. See
   [docs/hermes.md](docs/hermes.md#client-context).
 - **Hermes gateway (overlay)**: `prompt.submit` with a `profile` that differs
   from the session's profile now fails with `4081` and

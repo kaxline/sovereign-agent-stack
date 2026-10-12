@@ -2,8 +2,9 @@
 """Checks for client context and the prompt.submit profile check.
 
 Host part is stdlib-only. With the pinned Hermes image present (or --image),
-both gateway overlays are applied in the image (twice, for idempotency), the
-wire contract must accept ``context``, and the wrapped handlers are driven
+the gateway overlays are applied in the image in container order (twice, for
+idempotency), the wire contract must accept ``context``, capabilities from
+every overlay must validate together, and the wrapped handlers are driven
 against fake session records.
 """
 
@@ -82,12 +83,16 @@ home = "/tmp/hermes-home"
 os.makedirs(home + "/profiles/other", exist_ok=True)
 os.environ["HERMES_HOME"] = home
 
-for patch in ("patch-history-budget.py", "patch-client-context.py") * 2:
+# Same order as 05-patch-tool-calling.sh.
+for patch in ("patch-history-budget.py", "patch-client-context.py", "patch-gateway-liveness.py") * 2:
     out = subprocess.run([sys.executable, "/bootstrap/" + patch], capture_output=True, text=True)
     if out.returncode != 0:
         raise SystemExit(f"FAIL {patch}: {out.stdout}{out.stderr}")
-src = open("/opt/hermes/tui_gateway/contracts/sessions.py").read()
-assert src.count("assistant-stack: client context") == 2, "one field each on create and resume"
+for name in ("sessions.py", "prompt_voice.py"):
+    src = open("/opt/hermes/tui_gateway/contracts/" + name).read()
+    assert "client context" not in src, "contract files stay untouched"
+src = open("/opt/hermes/tui_gateway/server.py").read()
+assert src.count("# assistant-stack: client context") == 1, "one install block"
 
 sys.path.insert(0, "/opt/hermes")
 from tui_gateway.contracts import registry
@@ -103,6 +108,15 @@ for name, params in (
     assert problem is None, (name, problem)
 _, problem = registry.validate_params(registry.METHODS["prompt.submit"], {"session_id": "x", "contxt": "a"})
 assert problem is not None, "unknown keys are still refused"
+_, problem = registry.validate_params(registry.METHODS["session.create"], {"history_budget": 1000, "context": "a"})
+assert problem is None, "history_budget survives the redeclared create contract"
+
+caps = server.handle_request({"id": 0, "method": "gateway.capabilities", "params": {}})["result"]
+assert caps["client_context"] is True and caps["prompt_profile_check"] is True, caps
+assert "turn_heartbeat" in caps and "session_live_status" in caps, "gateway liveness fields kept"
+fields = registry.METHODS["gateway.capabilities"].result.model_fields
+assert {"client_context", "prompt_profile_check", "turn_heartbeat", "session_live_status"} <= set(fields)
+registry.METHODS["gateway.capabilities"].result.model_validate(caps)  # raises; check_result may only log
 
 assert server._client_context_installed
 assert server._run_prompt_submit.__globals__["_prepare_turn_input"] is server._prepare_turn_input
