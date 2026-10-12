@@ -1010,6 +1010,11 @@ if has_profile todo || [[ "$vikunja_on" -eq 1 ]]; then
   else
     warn "todo profile on but VIKUNJA_MCP_ENABLED is not 1 — Hermes will not register the Vikunja tools"
   fi
+  if [[ -n "$(env_get VIKUNJA_USERNAME)" && -n "$(env_get VIKUNJA_PASSWORD)" ]]; then
+    ok "managed Vikunja account '$(env_get VIKUNJA_USERNAME)' is set (used by /login-local)"
+  else
+    warn "VIKUNJA_USERNAME / VIKUNJA_PASSWORD not set — after make up, run make todo-init"
+  fi
   if [[ -n "$(env_get VIKUNJA_MCP_TOKEN_RW)" && -n "$(env_get VIKUNJA_MCP_TOKEN_RO)" ]]; then
     ok "Vikunja MCP tokens are set"
     for pair in "default:data/hermes/config.yaml:data/hermes/.env" \
@@ -1033,10 +1038,20 @@ if has_profile todo || [[ "$vikunja_on" -eq 1 ]]; then
   if docker info >/dev/null 2>&1; then
     if docker compose ps --status running vikunja 2>/dev/null | grep -q vikunja; then
       ok "vikunja container is running"
+      if docker compose ps --status running vikunja-proxy 2>/dev/null | grep -q vikunja-proxy; then
+        ok "vikunja-proxy container is running"
+      else
+        warn "vikunja-proxy not running — make up (it publishes the web UI)"
+      fi
       if curl -sf "http://127.0.0.1:$(env_get VIKUNJA_PORT 3456)/api/v1/info" >/dev/null 2>&1; then
         ok "Vikunja answers on :$(env_get VIKUNJA_PORT 3456)"
       else
-        warn "Vikunja does not answer on :$(env_get VIKUNJA_PORT 3456) — docker compose logs vikunja"
+        warn "Vikunja does not answer on :$(env_get VIKUNJA_PORT 3456) — docker compose logs vikunja vikunja-proxy"
+      fi
+      if curl -sf "http://localhost:$(env_get VIKUNJA_PORT 3456)/login-local" >/dev/null 2>&1; then
+        ok "sign-in page: http://localhost:$(env_get VIKUNJA_PORT 3456)/login-local"
+      else
+        warn "/login-local is not served — docker compose logs vikunja-proxy"
       fi
     elif has_profile todo; then
       warn "vikunja not running — make up with todo in COMPOSE_PROFILES"

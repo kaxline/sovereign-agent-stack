@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Signing in…</title>
+<style>
+  body { font: 16px/1.5 system-ui, sans-serif; margin: 0; display: grid;
+         place-items: center; min-height: 100vh; color: #333; background: #f5f7fa; }
+  @media (prefers-color-scheme: dark) { body { color: #ddd; background: #1a1c20; } }
+  main { max-width: 32rem; padding: 1rem; }
+  code { font-size: .9em; }
+</style>
+</head>
+<body>
+<main>
+  <p id="status">Signing in to your todo lists…</p>
+</main>
+<script>
+(async () => {
+  const status = document.getElementById('status');
+  // A browser that signed in before still holds Vikunja's refresh cookie
+  // (HttpOnly, years long). Renew from it, so a bookmark does not open a new
+  // Vikunja session on every visit.
+  async function token(url, init) {
+    const resp = await fetch(url, { credentials: 'include', cache: 'no-store', ...init });
+    if (!resp.ok) return null;
+    return (await resp.json()).token || null;
+  }
+  try {
+    let jwt = await token('/api/v1/user/token/refresh', { method: 'POST' });
+    if (!jwt) jwt = await token('/login-local/session');
+    if (!jwt) throw new Error('sign-in was refused');
+    // Where Vikunja's web app keeps its session.
+    localStorage.setItem('token', jwt);
+    location.replace('/');
+  } catch (err) {
+    status.innerHTML = 'Automatic sign-in failed (' + String(err.message).replace(/[<>&]/g, '') +
+      '). Run <code>make todo-init</code> in the stack folder, then reload this page.';
+  }
+})();
+</script>
+</body>
+</html>

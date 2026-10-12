@@ -340,7 +340,7 @@ services:
   # ----------------------------------------------------------------------
   # vikunja — todo lists with a built-in MCP server
   # Profile: todo (also starts the shared Postgres via x-db-profiles)
-  # Web UI:  http://localhost:3456   (localhost-bound)
+  # Web UI:  http://localhost:3456/login-local   (via vikunja-proxy below)
   # MCP:     http://vikunja:3456/api/v2/mcp   (Streamable HTTP, bearer token)
   # Data:    schema `vikunja` in the shared Postgres (role svc_vikunja,
   #          compose/postgres/services/vikunja.env); attachments in
@@ -354,8 +354,7 @@ services:
     image: ${VIKUNJA_IMAGE:-vikunja/vikunja:2.7.0}
     restart: unless-stopped
     user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
-    ports:
-      - "127.0.0.1:${VIKUNJA_PORT:-3456}:3456"
+    # No host port: vikunja-proxy publishes the web UI.
     # Allowlist. VIKUNJA_DATABASE_PASSWORD comes from the env_file below, which
     # make todo-init / setup --todo write next to DB_SERVICE_PASSWORD.
     # Empty VIKUNJA_SECRET makes Vikunja pick a random one per start, which
@@ -366,6 +365,9 @@ services:
       # make todo-init creates the account from the CLI, so the sign-up form
       # stays off unless asked for.
       - VIKUNJA_SERVICE_ENABLEREGISTRATION=${VIKUNJA_ENABLE_REGISTRATION:-false}
+      # "Stay logged in" lifetime. /login-local asks for a long session, so a
+      # browser signed in once stays signed in. Default 10 years.
+      - VIKUNJA_SERVICE_JWTTTLLONG=${VIKUNJA_SESSION_TTL:-315360000}
       - VIKUNJA_SERVICE_TIMEZONE=${TZ:-UTC}
       - VIKUNJA_DATABASE_TYPE=postgres
       - VIKUNJA_DATABASE_HOST=postgres-db
@@ -380,7 +382,7 @@ services:
         required: false
     volumes:
       - ${VIKUNJA_FILES_DIR:-./data/vikunja/files}:/app/vikunja/files
-    # default: host port and the web UI. db: its schema in the shared Postgres.
+    # default: vikunja-proxy and hermes. db: its schema in the shared Postgres.
     networks: [default, db]
     depends_on:
       db-provision:
@@ -392,6 +394,39 @@ services:
       timeout: 10s
       retries: 6
       start_period: 20s
+
+  # Loopback front for vikunja. Passes everything through and serves
+  # /login-local, which signs the browser in with the account make todo-init
+  # manages (VIKUNJA_USERNAME / VIKUNJA_PASSWORD), so there is no password to
+  # keep. Anyone who can reach 127.0.0.1:3456 gets in. compose/vikunja-proxy/
+  vikunja-proxy:
+    profiles: ["todo"]
+    container_name: ${CONTAINER_PREFIX:-}vikunja-proxy
+    image: ${VIKUNJA_PROXY_IMAGE:-nginx:1.29.1-alpine}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${VIKUNJA_PORT:-3456}:8080"
+    environment:
+      - VIKUNJA_USERNAME=${VIKUNJA_USERNAME:-}
+      - VIKUNJA_PASSWORD=${VIKUNJA_PASSWORD:-}
+      # Render only these into the template; nginx's own $variables stay.
+      - NGINX_ENVSUBST_FILTER=^VIKUNJA_
+      # One worker per allowed CPU (the cpus cap below), not one per host core.
+      - NGINX_ENTRYPOINT_WORKER_PROCESSES_AUTOTUNE=1
+    # One user on loopback: half a CPU and one worker are plenty (~3 MiB RAM).
+    cpus: 0.5
+    volumes:
+      - ./compose/vikunja-proxy/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./compose/vikunja-proxy/login-local.html:/usr/share/nginx/html/login-local.html:ro
+    depends_on:
+      vikunja:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/api/v1/info || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
 
   # ----------------------------------------------------------------------
   # GPT Researcher — deep web research API (n8n/Hermes REST)

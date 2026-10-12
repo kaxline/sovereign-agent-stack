@@ -33,6 +33,8 @@ SECRET_KEYS = {
     "VIKUNJA_DATABASE_PASSWORD": {"vikunja"},
     "VIKUNJA_SECRET": set(),
     "VIKUNJA_SERVICE_SECRET": {"vikunja"},
+    # The managed account's password; only the /login-local proxy needs it.
+    "VIKUNJA_PASSWORD": {"vikunja-proxy"},
     # Bootstrap copies each token into one profile's .env; hermes reads it there.
     "VIKUNJA_MCP_TOKEN_RO": {"hermes-api-bootstrap", "hermes-browser-bootstrap"},
     "VIKUNJA_MCP_TOKEN_RW": {"hermes-api-bootstrap", "hermes-browser-bootstrap"},
@@ -95,6 +97,7 @@ REQUIRED = {
     "sql-mcp-rw": {"DATABASE_URI"},
     "hermes-webui": {"API_SERVER_KEY"},
     "vikunja": {"VIKUNJA_SERVICE_SECRET"},
+    "vikunja-proxy": {"VIKUNJA_PASSWORD"},
 }
 
 # Clients may carry these names only when the value is the placeholder.
