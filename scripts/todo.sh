@@ -25,6 +25,8 @@ Commands:
   prepare   Register Vikunja's schema in the shared Postgres
             (compose/postgres/services/vikunja.env) and create the files
             directory. setup.sh --todo runs this.
+  ensure    prepare, but only when todo is in COMPOSE_PROFILES and quietly.
+            make ensure-local (and so make up) runs this.
   init      With the stack up: create the Vikunja account if it does not
             exist, then mint the MCP tokens Hermes uses (read/write for the
             dashboard and WebUI, read-only for the API profile) and write
@@ -58,6 +60,11 @@ cmd_prepare() {
   files_dir="$(resolve_data_root_path "$(env_get VIKUNJA_FILES_DIR ./data/vikunja/files)")"
   mkdir -p "$files_dir"
   log "Vikunja attachments: ${files_dir}"
+}
+
+cmd_ensure() {
+  has_compose_profile todo || return 0
+  cmd_prepare >/dev/null
 }
 
 require_running() {
@@ -213,6 +220,7 @@ EOF
 
 case "${1:-}" in
   prepare) cmd_prepare ;;
+  ensure) cmd_ensure ;;
   init) cmd_init ;;
   -h|--help|"") usage ;;
   *) usage >&2; exit 1 ;;

@@ -37,9 +37,7 @@ ensure-local:
 	@mkdir -p compose/caldav-mcp/accounts
 	@mkdir -p compose/postgres/services
 	@test -f compose/caldav-mcp/accounts/personal.env || (cp compose/caldav-mcp/account.env.example compose/caldav-mcp/accounts/personal.env && echo "Created compose/caldav-mcp/accounts/personal.env — set CALDAV_* credentials for calendar profile")
-	@case ",$$(grep -E '^COMPOSE_PROFILES=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'\'')," in \
-	  *,todo,*) ./scripts/todo.sh prepare >/dev/null ;; \
-	esac
+	@./scripts/todo.sh ensure
 	@./scripts/sync-signal-profile.sh
 	@./scripts/sync-buzz-profile.sh
 	@./scripts/sync-terminal-backend.sh
