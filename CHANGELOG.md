@@ -10,14 +10,23 @@ the stack under another app.
 
 ### Upgrade steps
 
-1. `docker compose up -d`. Two new overlay files are mounted into `hermes`,
-   so compose recreates it.
+1. `docker compose up -d`. Four new overlay files are mounted into `hermes`
+   and it gets `HERMES_TURN_HEARTBEAT_S`, so compose recreates it. No `.env`
+   change is needed.
 2. Dashboard clients that send `profile` on `prompt.submit`: make sure it
    names the session's own profile, or drop it. A different profile used to
    be ignored silently and is now an error (see Changes).
 
 ### Changes
 
+- **Hermes gateway (overlay)**: while a turn runs, the gateway sends a
+  `turn.heartbeat` event every 30 s (`HERMES_TURN_HEARTBEAT_S`, `0` for off)
+  with `status`, `turn_started_at` and `idle_s`, and never after
+  `message.complete`. New `session.live_status` returns one session's
+  `status`, `running`, `turn_started_at` and `idle_s` by `session_id` or
+  `session_key`, without a database read; a session that is not live answers
+  `idle`. `gateway.capabilities` advertises both. Clients that ignore them see
+  no change. See [docs/hermes.md](docs/hermes.md#turn-liveness).
 - **Hermes gateway (overlay)**: `session.create`, `session.resume` and
   `prompt.submit` take an optional `context` string. Session context is added
   to the system prompt. Turn context is added to that turn's model input. The

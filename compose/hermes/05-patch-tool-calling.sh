@@ -33,3 +33,6 @@ run_patch /bootstrap/patch-history-budget.py
 # Client-supplied session/turn context; refuse a prompt.submit profile that
 # differs from the session's (dashboard /api/ws).
 run_patch /bootstrap/patch-client-context.py
+# Turn heartbeat while a turn runs, and a one-session live status query
+# (dashboard /api/ws).
+run_patch /bootstrap/patch-gateway-liveness.py

@@ -904,6 +904,8 @@ services:
       # failed stream is an upstream failure, and each retry waits out the
       # full read timeout again.
       - HERMES_STREAM_RETRIES=${HERMES_STREAM_RETRIES:-1}
+      # Gateway turn.heartbeat interval while a turn runs (0 = off).
+      - HERMES_TURN_HEARTBEAT_S=${HERMES_TURN_HEARTBEAT_S:-30}
       - HERMES_DASHBOARD=1
       # The dashboard always binds 0.0.0.0 inside the container (host ports are
       # localhost-only), and since agent 0.20.0 a non-loopback bind engages an
@@ -1068,6 +1070,8 @@ services:
       - ./compose/hermes/patch-history-budget.py:/bootstrap/patch-history-budget.py:ro
       - ./compose/hermes/client_context.py:/bootstrap/client_context.py:ro
       - ./compose/hermes/patch-client-context.py:/bootstrap/patch-client-context.py:ro
+      - ./compose/hermes/gateway_liveness.py:/bootstrap/gateway_liveness.py:ro
+      - ./compose/hermes/patch-gateway-liveness.py:/bootstrap/patch-gateway-liveness.py:ro
       - ./compose/hermes/05-patch-tool-calling.sh:/etc/cont-init.d/05-patch-tool-calling:ro
       - ./compose/hermes/08-warmup-agent-browser.sh:/etc/cont-init.d/08-warmup-agent-browser:ro
       # FS library: immediate /opt/projects children → projects.list / projects.tree.

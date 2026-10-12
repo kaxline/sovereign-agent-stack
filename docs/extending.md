@@ -217,6 +217,16 @@ writes Hermes profile config, keep it consistent with what bootstrap sets:
   quantized ones fake tool calls in text more often
   ([hermes.md](hermes.md)).
 
+## Gateway turn liveness
+
+A client on the dashboard gateway WebSocket can watch a running turn with the
+`turn.heartbeat` event and ask about one session with `session.live_status`.
+`gateway.capabilities` says whether both are on. Fields and semantics are in
+[hermes.md](hermes.md#turn-liveness).
+
+This is an overlay on the pinned Hermes image (`patch-gateway-liveness.py`). The
+event, method and fields stay stable across pin moves. Changes are additive.
+
 ## MCP servers your app hosts
 
 If your app serves tools to Hermes from its own MCP server, Hermes loses that
