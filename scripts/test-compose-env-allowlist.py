@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 # Every profile that publishes a service we want to see in one config.
-PROFILES = "core,rag,calendar,automation,coding,ollama,searxng-prod,db"
+PROFILES = "core,rag,calendar,automation,coding,ollama,searxng-prod,db,todo"
 
 # Secret-bearing environment keys, and the services allowed to carry them.
 # An empty set means the key must not appear on any service.
@@ -27,6 +27,15 @@ SECRET_KEYS = {
     "DB_AGENT_RO_PASSWORD": {"db-provision"},
     "DB_AGENT_RW_PASSWORD": {"db-provision"},
     "DATABASE_URI": {"sql-mcp-ro", "sql-mcp-rw"},
+    # From compose/postgres/services/vikunja.env (env_file) when it exists.
+    "DB_SERVICE_PASSWORD": {"vikunja"},
+    "DATABASE_URL": {"vikunja"},
+    "VIKUNJA_DATABASE_PASSWORD": {"vikunja"},
+    "VIKUNJA_SECRET": set(),
+    "VIKUNJA_SERVICE_SECRET": {"vikunja"},
+    # Bootstrap copies each token into one profile's .env; hermes reads it there.
+    "VIKUNJA_MCP_TOKEN_RO": {"hermes-api-bootstrap", "hermes-browser-bootstrap"},
+    "VIKUNJA_MCP_TOKEN_RW": {"hermes-api-bootstrap", "hermes-browser-bootstrap"},
     "DB_POSTGRESDB_PASSWORD": {"n8n-import"},
     "N8N_ENCRYPTION_KEY": {"n8n", "n8n-import"},
     "N8N_USER_MANAGEMENT_JWT_SECRET": {"n8n", "n8n-import"},
@@ -85,6 +94,7 @@ REQUIRED = {
     "sql-mcp-ro": {"DATABASE_URI"},
     "sql-mcp-rw": {"DATABASE_URI"},
     "hermes-webui": {"API_SERVER_KEY"},
+    "vikunja": {"VIKUNJA_SERVICE_SECRET"},
 }
 
 # Clients may carry these names only when the value is the placeholder.
@@ -224,7 +234,7 @@ def check_loopback(services: dict) -> list[str]:
 DB_ONLY = {"postgres-db", "db-provision", "sql-mcp-ro", "sql-mcp-rw"}
 # Services on both default and db. An integration that stores data and needs
 # the internet goes here; one that needs neither goes in DB_ONLY.
-DB_BRIDGES = {"hermes"}
+DB_BRIDGES = {"hermes", "vikunja"}
 
 
 def check_db_network(services: dict, networks: dict) -> list[str]:

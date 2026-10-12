@@ -335,7 +335,7 @@ Six places a fact can live. They are not interchangeable.
 | Native `memory` tool | Tiny durable facts (identity, standing prefs) injected every session | `USER.md` ~1375 chars, `MEMORY.md` ~2200 chars |
 | `session_search` | What was said in a past chat | FTS over **that gateway's** `state.db` |
 | `working-memory` skill | Long-form notes that will not fit the cap | files under `/opt/memory` |
-| `living-todos` skill | Cross-session task list | `/opt/projects/project-todo-list/README.md` |
+| `living-todos` skill | Cross-session task list | Vikunja with the `todo` profile ([todo.md](todo.md)), else `/opt/projects/project-todo-list/README.md` |
 | `database` skill | Structured rows: integration data, tables the agent keeps | shared Postgres, schema `agent` for its own (`db` profile) |
 | LightRAG | Ingested documents | the hot `WORKSPACE` |
 

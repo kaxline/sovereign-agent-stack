@@ -48,6 +48,16 @@ SQL_MCP_CONNECT_TIMEOUT="${SQL_MCP_CONNECT_TIMEOUT:-30}"
 # postgres-mcp also ships index/health/top-query analysers; the agent needs
 # none of them to read or keep data.
 SQL_MCP_TOOLS="list_schemas list_objects get_object_details execute_sql explain_query"
+VIKUNJA_MCP_ENABLED="${VIKUNJA_MCP_ENABLED:-0}"
+VIKUNJA_MCP_URL="${VIKUNJA_MCP_URL:-http://vikunja:3456/api/v2/mcp}"
+VIKUNJA_MCP_TIMEOUT="${VIKUNJA_MCP_TIMEOUT:-60}"
+VIKUNJA_MCP_CONNECT_TIMEOUT="${VIKUNJA_MCP_CONNECT_TIMEOUT:-30}"
+VIKUNJA_MCP_TOKEN_RO="${VIKUNJA_MCP_TOKEN_RO:-}"
+VIKUNJA_MCP_TOKEN_RW="${VIKUNJA_MCP_TOKEN_RW:-}"
+# Vikunja serves ~26 tools and filters them by the token's scopes. Pin only the
+# everyday ones; the rest stay reachable through tool search.
+VIKUNJA_MCP_PIN_RO="tasks_list tasks_read projects_list"
+VIKUNJA_MCP_PIN_RW="tasks_list tasks_read tasks_create tasks_update projects_list"
 # llm-proxy's real upstream. Only used to tell a local model server from a
 # cloud API; the key never reaches this container.
 LLM_BINDING_HOST="${LLM_BINDING_HOST:-http://host.docker.internal:1234/v1}"
@@ -576,6 +586,11 @@ reconcile_stack_eager_tools() {
       done
       ;;
   esac
+  if vikunja_mcp_token_for "$_rst_profile" >/dev/null; then
+    for _rst_t in $(vikunja_mcp_pins_for "$_rst_profile"); do
+      _rst_args="${_rst_args} ${_rst_t} mcp__vikunja__${_rst_t}"
+    done
+  fi
   case "$OPENCODE_MCP_ENABLED" in
     1|true|TRUE|yes|YES)
       if [ "$_rst_profile" != "api-server" ]; then
@@ -799,6 +814,106 @@ register_sql_mcp_servers() {
   fi
   # shellcheck disable=SC2086
   pin_mcp_tools "$_rsms_profile" sql $SQL_MCP_TOOLS
+}
+
+# Vikunja token for a profile: read-only on api-server, read/write elsewhere.
+# Prints nothing and fails when the todo profile is off or the token is unset.
+vikunja_mcp_token_for() {
+  case "$VIKUNJA_MCP_ENABLED" in
+    1|true|TRUE|yes|YES) ;;
+    *) return 1 ;;
+  esac
+  if [ "$1" = "api-server" ]; then
+    _vmt_token="$VIKUNJA_MCP_TOKEN_RO"
+  else
+    _vmt_token="$VIKUNJA_MCP_TOKEN_RW"
+  fi
+  [ -n "$_vmt_token" ] || return 1
+  printf '%s\n' "$_vmt_token"
+}
+
+vikunja_mcp_pins_for() {
+  if [ "$1" = "api-server" ]; then
+    printf '%s\n' "$VIKUNJA_MCP_PIN_RO"
+  else
+    printf '%s\n' "$VIKUNJA_MCP_PIN_RW"
+  fi
+}
+
+# Vikunja todo lists (todo compose profile), registered as mcp_servers.vikunja.
+# The boundary is the token's scopes, which Vikunja enforces server-side (tools
+# outside them are neither listed nor callable), so no tools.include here.
+# make todo-init mints both tokens: api-server gets the read-only one, default
+# and browser the read/write one. Same split as SQL and CalDAV.
+#
+# The token goes into the profile's .env as VIKUNJA_MCP_TOKEN, and config.yaml
+# holds only the ${VIKUNJA_MCP_TOKEN} reference. Hermes resolves it per profile.
+register_vikunja_mcp_servers() {
+  _rvms_profile="$1"
+  _rvms_env="$(caldav_profile_env_file "$_rvms_profile")"
+  if ! _rvms_token="$(vikunja_mcp_token_for "$_rvms_profile")"; then
+    case "$VIKUNJA_MCP_ENABLED" in
+      1|true|TRUE|yes|YES)
+        log "WARNING: VIKUNJA_MCP_ENABLED=1 but no token for '${_rvms_profile:-default}' - run make todo-init"
+        ;;
+      *)
+        log "Skipping Vikunja MCP registration (VIKUNJA_MCP_ENABLED=${VIKUNJA_MCP_ENABLED})"
+        ;;
+    esac
+    # Undo an earlier registration so sessions do not wait out connect_timeout.
+    drop_mcp_entries_for_url "$_rvms_profile" "" "$VIKUNJA_MCP_URL"
+    remove_env_key "$_rvms_env" VIKUNJA_MCP_TOKEN
+    return 0
+  fi
+  mkdir -p "$(dirname "$_rvms_env")"
+  upsert_env "$_rvms_env" VIKUNJA_MCP_TOKEN "$_rvms_token"
+  log "Registering Vikunja MCP server for profile '${_rvms_profile:-default}' at ${VIKUNJA_MCP_URL}"
+  # hermes config set cannot write a header map.
+  _out="$(python3 - "$(config_path_for "$_rvms_profile")" "$VIKUNJA_MCP_URL" \
+    "$VIKUNJA_MCP_TIMEOUT" "$VIKUNJA_MCP_CONNECT_TIMEOUT" <<'PY'
+import sys
+sys.path.insert(0, "/opt/hermes")
+import yaml
+from utils import atomic_yaml_write
+
+cfg_path, url, timeout, connect_timeout = sys.argv[1:5]
+
+try:
+    with open(cfg_path) as fh:
+        config = yaml.safe_load(fh) or {}
+except FileNotFoundError:
+    print(f"ERROR: {cfg_path} not found")
+    raise SystemExit(1)
+
+servers = config.get("mcp_servers")
+if not isinstance(servers, dict):
+    servers = {}
+    config["mcp_servers"] = servers
+entry = servers.get("vikunja")
+if not isinstance(entry, dict):
+    entry = {}
+entry["url"] = url
+entry["timeout"] = int(timeout) if str(timeout).isdigit() else timeout
+entry["connect_timeout"] = int(connect_timeout) if str(connect_timeout).isdigit() else connect_timeout
+headers = entry.get("headers")
+if not isinstance(headers, dict):
+    headers = {}
+headers["Authorization"] = "Bearer ${VIKUNJA_MCP_TOKEN}"
+entry["headers"] = headers
+servers["vikunja"] = entry
+atomic_yaml_write(cfg_path, config)
+print("Wrote mcp_servers.vikunja")
+PY
+)"
+  if [ -n "$_out" ]; then log "$_out"; fi
+  # The clone carries default's entry. Here only the key changes (same
+  # reference, read-only token in this profile's .env), but a hand-added copy
+  # under another key could still carry a read/write token.
+  if [ "$_rvms_profile" = "api-server" ]; then
+    drop_mcp_entries_for_url "$_rvms_profile" vikunja "$VIKUNJA_MCP_URL"
+  fi
+  # shellcheck disable=SC2046
+  pin_mcp_tools "$_rvms_profile" vikunja $(vikunja_mcp_pins_for "$_rvms_profile")
 }
 
 # Slug personal -> CALDAV_PERSONAL_PASSWORD. Hyphens become underscores.
@@ -1099,6 +1214,7 @@ register_web_mcp_servers ""
 register_caldav_mcp_servers ""
 register_opencode_mcp_servers ""
 register_sql_mcp_servers ""
+register_vikunja_mcp_servers ""
 
 # session_search is on Hermes' curated tool_search.defer list. Pin + undefer
 # on default before the api-server.env gate so a missing env file cannot
@@ -1195,7 +1311,8 @@ set_yaml_list "$(config_path_for "$PROFILE")" "platform_toolsets.api_server" "$A
 # The built-in `todo` toolset is in-memory per chat session. WebUI users treat
 # "add to the todo list" as durable; the model then reports an empty list in the
 # next thread. Disable it on every profile this bootstrap touches so living
-# todos go through the living-todos skill + /opt/projects/project-todo-list.
+# todos go through the living-todos skill (Vikunja when the todo profile is on,
+# else /opt/projects/project-todo-list).
 #
 # Also disable the native `web` toolset (web_search / web_extract). With
 # SEARXNG_URL set, Hermes auto-binds both to SearXNG: search works but extract
@@ -1293,6 +1410,7 @@ register_web_mcp_servers "$PROFILE"
 register_caldav_mcp_servers "$PROFILE"
 register_opencode_mcp_servers "$PROFILE"
 register_sql_mcp_servers "$PROFILE"
+register_vikunja_mcp_servers "$PROFILE"
 
 # Heal always_include + defer after every hermes config set / MCP register.
 reconcile_stack_eager_tools ""
