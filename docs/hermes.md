@@ -82,6 +82,24 @@ Once the overlay is running, `session.context_breakdown` and `message.complete` 
 
 `history_budget: null` means no horizon. `session.context_breakdown` is the cut for the **next** reply, including on open. `message.complete` is the cut **that turn actually sent**. Draw a line only when `history_budget` is a number and either `history_summarised` is true or `history_first_row_id` is not the first row of `session.history`.
 
+### Turn liveness
+
+Another overlay lets a dashboard client tell a slow turn from a lost one without polling. It is not an upstream Hermes API. Upstream sends `session.usage` only when token counts change, so a single slow model call, such as a local model reading a long prompt, can be silent on the wire for minutes.
+
+**`turn.heartbeat`** is an event sent every `HERMES_TURN_HEARTBEAT_S` seconds (default `30`, `0` turns it off) while a session's turn runs, whatever else is streaming. It comes from the same thread as `session.usage`, which the turn stops before `message.complete`, so none arrives after the turn ends. The frame's `session_id` is the gateway session id, as on every event. The payload has no transcript content:
+
+| Field | Meaning |
+|---|---|
+| `running` | Always `true` |
+| `status` | `working`, or `waiting` while an approval or clarify prompt is open |
+| `turn_started_at` | Epoch seconds the turn started |
+| `idle_s` | Seconds since the agent last recorded activity (an API wait, a stream chunk, tool progress), or `null` when unknown. Hermes aborts a turn whose activity clock stays idle for `agent.turn_liveness.timeout_s` (600 s by default) and then sends the usual completion. |
+| `interval_s` | The heartbeat interval. A client can treat roughly two missed intervals as a lost stream. |
+
+**`session.live_status`** returns one session's live state from memory: no database read, no title, no preview. Params: `session_id` (gateway id) and/or `session_key` (stored id), and optional `profile`. Without `profile` a session in any profile matches, as in `session.active_list`. With it, only that profile's sessions do, and an unknown profile is `4064`. The result is `{session_id, session_key, status, running, turn_started_at, idle_s}`. `status` uses the same values as `session.active_list` items. A session that is not live (closed, reaped, or never opened in this process) answers `status: "idle"`, `running: false` and `null`s, never an error. Sending neither id is `4006`.
+
+**`gateway.capabilities`** adds `turn_heartbeat` (bool), `turn_heartbeat_s` (seconds) and `session_live_status: true`. Check them before relying on either feature, so the same client still works against an unpatched gateway.
+
 ## API server profile (`api-server`)
 
 A one-shot `hermes-api-bootstrap` service runs ahead of the main Hermes container, creating or updating an isolated **`api-server`** profile with:

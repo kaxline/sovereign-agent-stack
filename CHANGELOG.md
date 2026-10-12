@@ -6,6 +6,25 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
+## Unreleased
+
+### Upgrade steps
+
+1. `docker compose up -d`. Two new overlay files are mounted into `hermes`
+   and it gets `HERMES_TURN_HEARTBEAT_S`, so compose recreates it. No `.env`
+   change is needed.
+
+### Changes
+
+- **Hermes gateway (overlay)**: while a turn runs, the gateway sends a
+  `turn.heartbeat` event every 30 s (`HERMES_TURN_HEARTBEAT_S`, `0` for off)
+  with `status`, `turn_started_at` and `idle_s`, and never after
+  `message.complete`. New `session.live_status` returns one session's
+  `status`, `running`, `turn_started_at` and `idle_s` by `session_id` or
+  `session_key`, without a database read; a session that is not live answers
+  `idle`. `gateway.capabilities` advertises both. Clients that ignore them see
+  no change. See [docs/hermes.md](docs/hermes.md#turn-liveness).
+
 ## v0.3.2 — 2026-10-11
 
 ### Upgrade steps

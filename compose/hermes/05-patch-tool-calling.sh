@@ -30,3 +30,6 @@ run_patch /bootstrap/patch-agent-browser-npx.py
 run_patch /bootstrap/patch-browser-exec-hint.py
 # Per-session history budget for DM threads (request window; transcript stays).
 run_patch /bootstrap/patch-history-budget.py
+# Turn heartbeat while a turn runs, and a one-session live status query
+# (dashboard /api/ws).
+run_patch /bootstrap/patch-gateway-liveness.py
