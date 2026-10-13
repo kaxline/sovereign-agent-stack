@@ -155,26 +155,39 @@ chat.db ──(Full Disk Access, read-only)──▶ messages helper (host, sign
   (e.g. notify you on Signal). A stranger's text must not be able to steer a
   session that holds write tools.
 
-### Sharing the Full Disk Access helper with mail
+### Full Disk Access, and sharing the helper with mail
 
-The email design already calls for "one narrow program" with Full Disk
-Access, and lists packaging it as a follow-up: the mail indexer currently
-runs under the shared `python3`. Messages should use **the same helper**:
+Mail no longer needs Full Disk Access by default. Since the
+[2026-10-13 decision](email.md#decision-2026-10-13), the mail indexer reads
+through Mail.app scripting (Automation → Mail), and reading Mail's files is an
+opt-in fast mode (`source = "store"`). That mode's own signed executable is
+still a follow-up.
 
-- One signed binary, one TCC entry, one LaunchAgent, with a subcommand or
-  module per source (`mail index`, `messages watch`). Each source reads only
-  its own config and writes only to its own `data/` folder.
-- One grant versus two doesn't change what can be reached. Full Disk
-  Access is all-or-nothing, and any program that holds it can read both
-  stores. What keeps the setup safe is that the program holding it is small,
-  pinned and reviewed, so one well-kept helper beats two.
-- The helper becomes a long-running LaunchAgent, because messages need a
-  watcher. Mail indexing can run on a timer inside it.
-- Mail can join without a rewrite: the helper runs the existing Python
-  indexer as its child, so the indexer inherits access for that run only.
-  It must check the script's hash before running it. Otherwise anything that
-  can edit the repo gets Full Disk Access on the next run. Porting the mail
-  indexer into the binary later removes that check.
+Messages has no equivalent. Messages.app's scripting dictionary can send
+messages and list chats, but it doesn't expose message history, and no other
+supported API does. Reading messages therefore needs Full Disk Access, which
+makes it the only part of the stack that needs it by default. So:
+
+- **Reading messages is opt-in,** behind its own compose profile and off by
+  default. The setup docs say plainly that it needs Full Disk Access and that
+  the permission can't be scoped: the helper could read Mail, browser history
+  and every other app's data.
+- **The messages helper is the signed executable mail's store mode is
+  waiting for.** Someone who opts in to both runs one helper, with a
+  subcommand per source (`messages watch`, `mail index`), one TCC entry and
+  one LaunchAgent. Each source reads only its own config and writes only to
+  its own `data/` folder. Full Disk Access is all-or-nothing, so one grant
+  reaches no more than two would. What keeps it safe is that the program
+  holding it is small, pinned and reviewed.
+- **Mail's store mode can join without a rewrite.** The helper runs the
+  existing Python indexer as its child, so the indexer inherits access for
+  that run only. The helper must check the script's hash first. Otherwise
+  anything that can edit the repo gets Full Disk Access on the next run.
+  Porting the store reader into the binary later removes that check.
+- **Watch Apple's planned changes.** Apple said on 2026-10-02 that it will make
+  Full Disk Access harder to grant. If a future macOS stops granting it to a
+  self-signed helper, this design needs a Developer ID-signed, notarised
+  build.
 
 TCC details to confirm in a spike on macOS 26:
 
@@ -260,7 +273,10 @@ messages-send MCP (container) ──loopback + token──▶ messages-send (hos
 
 ### Phases
 
-1. **Drafts only.** The agent writes a draft. You copy it and send it yourself.
+1. **Drafts only.** The agent writes a draft and you send it yourself. If
+   Messages on macOS 26 honours the `body` field of an `sms:` link, the
+   draft can open as a prefilled compose window for you to send, which plays
+   the part Mail's drafts do for email (unverified).
 2. **Approved sends.** Allowlisted chats, each send approved by a one-time
    code over Signal or a WebUI button, with delivery confirmed by the
    watcher.
