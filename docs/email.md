@@ -100,7 +100,7 @@ The resulting design:
 
 | Part | Default | Opt-in |
 |---|---|---|
-| Read source | Mail.app via JXA (Automation → Mail) feeding the scoped index (`source = "script"`, built) | Option B with Full Disk Access (`source = "store"`, built; its own signed executable is a follow-up) |
+| Read source | Mail.app via JXA (Automation → Mail) feeding the scoped index (`source = "script"`, built) | Option B with Full Disk Access (`source = "store"`, built), granted to the reader app only |
 | What Hermes sees | The same index through the read-only mail MCP | Same |
 | Sending ([drafts](#drafts), built) | A separate helper creates a draft or opens a Mail compose window; the user clicks Send | Autonomous sending only from an agent-owned address, with a recipient allowlist and rate limit |
 
@@ -187,10 +187,10 @@ Mail store ──(Full Disk Access, read-only)──▶ mail-indexer (host)
                                                 Hermes
 ```
 
-- **One narrow program holds the permission.** That program should be the
-  indexer, not a terminal, `python3`, `node` or the container runtime. Today
-  it runs from a terminal, so the terminal holds the permission; packaging it
-  as its own executable is a follow-up. With the store source it opens the
+- **One narrow program holds the permission.** That program is the indexer's
+  own app ([macOS apps](#macos-apps)), not a terminal, `python3`, `node` or the
+  container runtime. Run from a terminal while developing, the terminal holds
+  it instead. With the store source it opens the
   Envelope Index read-only from a snapshot copy (database plus `-wal`). It
   works out the schema with `PRAGMA table_info` and refuses to run on a
   layout it doesn't recognise. It finds message files by globbing, because
@@ -336,9 +336,10 @@ checks the assumptions. Report counts and timings, not messages.
    Settings > Privacy & Security > Automation. Exit code 5 means a call to
    Mail failed or timed out, and the error gives the Apple event code.
 
-The Automation permission belongs to the app the indexer runs from (your
-terminal), so anything run from that terminal can control Mail. Packaging the
-indexer as its own app is a follow-up.
+Run from a terminal, the Automation permission belongs to the terminal, so
+anything run from it can control Mail. That's fine for this first check; for
+everyday use, install the reader app ([macOS apps](#macos-apps)) and allow it
+instead.
 
 **Store source:**
 
@@ -350,8 +351,8 @@ indexer as its own app is a follow-up.
 
 macOS grants Full Disk Access per program. Running the indexer with the shared
 `python3` means granting that interpreter access, and with it every Python
-script on the machine. Packaging the indexer as its own executable is a
-follow-up.
+script on the machine. Grant it to the reader app instead
+([macOS apps](#macos-apps)).
 
 ## mail-mcp
 
@@ -467,15 +468,71 @@ It runs as `HERMES_UID:HERMES_GID`, which on Linux must own the `0700` folder.
 Point the helper at the same folder: `make mail-drafts` uses
 `MAIL_DRAFTS_DIR` (default `./data/mail-drafts`).
 
-**Shared permission.** Until the reader and the helper are packaged as
-separate apps, both use the Automation permission of the terminal they run
-from. They're kept apart in code, mounts and MCP servers, but not yet by
-macOS.
+**Separate permission.** Installed as its own app
+([macOS apps](#macos-apps)), the drafts helper holds its own Automation
+permission, apart from the reader's. Run from a terminal with
+`make mail-drafts`, it uses the terminal's.
 
 **First real run.** The JXA that builds drafts is tested only against the
 fake Mail. Try it with a draft to yourself first: ask Hermes for one, run
 `make mail-drafts`, and check that it appears in Mail's Drafts with the right
 recipients and that nothing was sent. Then try a reply.
+
+## macOS apps
+
+macOS gives permissions to the program that's responsible for a process. Run
+from a terminal, that's the terminal, so a grant covers everything you run
+there. To keep grants narrow, each helper ships as its own small app:
+
+| App | Bundle id | Runs | Permissions it asks for |
+|---|---|---|---|
+| Assistant Mail Reader | `local.assistant.mail-reader` | the indexer, every 15 minutes | Automation → Mail; Full Disk Access only if you use `source = "store"` |
+| Assistant Mail Drafts | `local.assistant.mail-drafts` | the drafts helper, continuously | Automation → Mail |
+
+Each app is a compiled launcher (`macos/mail-apps/Launcher.swift`) plus only
+its own helper's scripts, sealed by its code signature. The reader app
+doesn't contain the drafts code and the drafts app doesn't contain the
+reader's. A changed script breaks the signature, so editing the repository
+can't change what a granted app does. The launcher runs the scripts with
+`python -I -B` and a minimal environment (no `PYTHONPATH`, no user site,
+no bytecode written into the bundle). The apps have no Dock icon.
+
+```bash
+make mail-apps        # build both into build/mail-apps (needs swiftc and Python 3.11+)
+macos/mail-apps/install.sh reader --config "$PWD/mail-index.toml"
+macos/mail-apps/install.sh drafts --dir "$PWD/data/mail-drafts"
+```
+
+`install.sh` copies the app to `~/Applications` and loads a LaunchAgent
+(`~/Library/LaunchAgents/local.assistant.mail-<name>.plist`) that runs it:
+the reader every `--interval` seconds (default 900), the drafts helper
+continuously (`--open` and `--max-per-hour` pass through). Because launchd
+starts the app, macOS asks on the app's behalf: allow it to control Mail,
+and, if the repository is under Documents, to read that folder. Logs, which
+hold counts only, go to `~/Library/Logs/assistant-mail/`. Add `--dry-run` to
+see the agent's plist without installing anything, and
+`install.sh uninstall reader` (or `drafts`) to remove one. Run the agent
+now with `launchctl kickstart gui/$(id -u)/local.assistant.mail-reader`.
+
+Build settings:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MAIL_APPS_PYTHON` | `python3` on `PATH` | Interpreter the launcher runs. The build records the path the interpreter reports, which for Homebrew survives patch upgrades |
+| `MAIL_APPS_SIGN_IDENTITY` | `-` (ad hoc) | Signing identity. macOS ties grants to the signature, so with ad hoc signing each rebuild asks again. A stable identity (a free Apple Development certificate is enough) keeps them |
+| `MAIL_APPS_BUNDLE_PREFIX` | `local.assistant` | Bundle id and launchd label prefix. Set the same value for `install.sh` |
+| `MAIL_APPS_DIR` | `~/Applications` | Where `install.sh` puts the apps |
+
+`make mail-apps-test` builds both apps into a temporary folder, checks their
+ids, signatures, entitlements and contents, checks that a changed script
+breaks the seal, and runs the bundled reader against a synthetic store and
+the drafts helper over an empty queue. It installs nothing and never reaches
+Mail.
+
+**First real run.** After installing the reader, kickstart it and check its
+log for counts, and that System Settings > Privacy & Security > Automation
+lists *Assistant Mail Reader* under Mail. Your terminal no longer needs that
+permission; you can turn it off there.
 
 ## Synthetic mail store
 

@@ -164,6 +164,15 @@ Only with `todo` enabled.
   only. `make mail-drafts`, `make mail-drafts-watch`,
   `make mail-drafts-doctor`, `make mail-drafts-test`; `make doctor` gets a
   drafts section.
+- **Mail helper apps** (macOS, opt-in): `make mail-apps` builds
+  *Assistant Mail Reader* and *Assistant Mail Drafts*, each a small signed
+  app carrying only its own helper's scripts, so each holds its own
+  Automation permission (and Full Disk Access only for the reader, only with
+  `source = "store"`) instead of your terminal or `python3`.
+  `macos/mail-apps/install.sh` copies one to `~/Applications` and loads a
+  LaunchAgent: the reader every 15 minutes, the drafts helper continuously.
+  Needs `swiftc` and Python 3.11+. `make mail-apps-test`. Build output goes
+  to the gitignored `build/`.
 - **Docs**: [docs/email.md](docs/email.md) records the design for giving Hermes
   read access to Apple Mail, why scripting Mail.app is the default over Full
   Disk Access, and a survey of existing Apple Mail MCP servers.
