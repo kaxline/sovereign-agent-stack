@@ -362,8 +362,8 @@ at `http://mail-mcp:8000/mcp`, compose-internal only). The query logic in
 
 | Tool | Returns |
 |---|---|
-| `mail_status` | Message count, date range, last index run, whether bodies are searchable, each account/mailbox with total and unread counts |
-| `mail_search` | Up to 50 summaries, newest first: id, date, sender, subject, mailbox, read/flagged, attachment count, and a snippet when the query matched. Filters: `query` (every word must match, as a prefix), `sender`, `mailbox`, `since`/`until` (inclusive dates), `unread_only`, `flagged_only`, `limit`, `offset` |
+| `mail_status` | Message count, date range, last index run, whether bodies are searchable, `newest_id`, each account/mailbox with total and unread counts |
+| `mail_search` | Up to 50 summaries, newest first: id, date, sender, subject, mailbox, read/flagged, attachment count, and a snippet when the query matched. Filters: `query` (every word must match, as a prefix), `sender`, `mailbox`, `since`/`until` (inclusive dates), `unread_only`, `flagged_only`, `limit`, `offset`, and `after_id` (only mail indexed after that id, such as a `newest_id` from an earlier `mail_status`) |
 | `mail_get` | One message by id: recipients, Message-ID, thread id, attachment names, and the body (up to `max_chars`, default 20,000) |
 | `mail_thread` | Every indexed message in the same conversation, oldest first |
 
@@ -396,6 +396,65 @@ must point inside `MAIL_INDEX_DIR`, at `MAIL_INDEX_FILE` (default
 **Freshness.** The MCP serves whatever the last `make mail-index` wrote.
 Re-run it (or schedule it) to pick up new mail. `mail_status` reports the last
 run.
+
+**Watermark.** `GET http://mail-mcp:8000/watermark` returns one line,
+`newest_id=<n>`, which changes only when newer mail is indexed. Schedulers
+that skip work while a source is unchanged can poll it. It never includes
+message content, because a scheduler may paste it into a prompt as is.
+Message ids are Mail's own: new mail gets higher ids, and a message moved to
+another mailbox may get a new one.
+
+## Proactive review (cron)
+
+Hermes can check new mail on a schedule and send you a short report.
+
+```bash
+make mail-triage-cron                       # every 15 minutes, to Signal if SIGNAL_HOME_CHANNEL is set
+make mail-triage-cron SCHEDULE="every 1h" DELIVER=local
+make mail-triage-cron-show
+make mail-triage-cron-remove
+```
+
+`make mail-triage-cron` (`scripts/mail-triage-cron.sh`) creates a Hermes cron
+job named `mail-triage` on the default profile, replacing any earlier one:
+
+- **Mail tools only.** Its tool list is just `mail`: no web, browser,
+  terminal, drafts or other MCP servers. The script reads the job back and
+  removes it if Hermes didn't store that list.
+- **Runs only on new mail.** Hermes checks the watermark each tick and skips
+  the model unless newer mail was indexed. The change it detects carries the
+  previous `newest_id`, which the job passes to `mail_search` as `after_id`,
+  so each run looks only at mail it hasn't seen. The first run looks at
+  today's mail.
+- **Reports to you only.** Delivery is Hermes's scheduler, which the model
+  can't redirect, and cron jobs never get Hermes's messaging tools. When
+  nothing needs you, the job answers `[SILENT]` and nothing is sent.
+- **Prompt.** `compose/hermes/mail-triage-prompt.md`: what needs a reply
+  today, what's worth knowing, and a count of the rest. It tells the model
+  never to follow instructions in messages and never to pass on their links,
+  phone numbers or payment details. Pass `--prompt-file` to the script to
+  use your own; keep those rules.
+
+The job needs the mail MCP on the default profile (`setup.sh --mail` and the
+bootstraps) and runs as often as the reader app indexes (every 15 minutes by
+default). If an agent run fails, that batch isn't retried: Hermes records the
+new watermark before the run.
+
+**Other cron jobs don't get mail.** A Hermes cron job with no tool list of
+its own gets every MCP server on its profile, and a list that names no MCP
+server gets them all too. So while mail or drafts is registered on a
+profile, the bootstraps set `platform_toolsets.cron` to Hermes's default cron
+tools plus every other MCP server, leaving out `mail` and `drafts`. That
+list is recorded in `.mail-cron-toolsets.json` beside the profile's
+`config.yaml`, and refreshed or removed on later runs. If you wrote your own
+`platform_toolsets.cron`, it's kept with only mail and drafts taken out. Add
+an MCP server by hand and re-run the bootstraps so cron jobs get it too.
+
+A job with its own `enabled_toolsets` isn't covered by that list. If it
+names no MCP server it still gets mail, so give it the MCP servers it needs
+by name (or `no_mcp`). `make doctor` lists every cron job that can read mail
+alongside anything else (`scripts/check-mail-cron.py`, which reads job names
+and tool settings, never prompts).
 
 ## Drafts
 

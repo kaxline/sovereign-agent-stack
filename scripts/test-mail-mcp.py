@@ -91,6 +91,36 @@ def test_status(index: Path) -> None:
     inbox = next(b for b in s["mailboxes"] if b["account"] == PERSONAL and b["mailbox"] == "INBOX")
     expect(inbox["messages"] == 7 and inbox["unread"] == 3, f"INBOX counts: {inbox}")
     expect(s["oldest"].startswith("2026-10-0") and s["last_indexed"], "dates are ISO strings")
+    expect(s["newest_id"] == 23458, f"newest_id is the highest indexed id: {s['newest_id']}")
+
+
+def test_new_mail(tmp: Path, index: Path) -> None:
+    db = mq.connect(index)
+    try:
+        mark = mq.watermark(db)
+        expect(mark == "newest_id=23458\n", f"watermark: {mark!r}")
+        expect(mq.watermark(db) == mark, "watermark is stable while nothing changes")
+        newer = ids(mq.search(db, "", after_id=1205, limit=50))
+        expect(newer == [23458, 23457, 23456], f"after_id keeps only higher ids: {newer}")
+        expect(ids(mq.search(db, "", after_id=23458)) == [], "nothing after the newest id")
+        expect(ids(mq.search(db, "lease", after_id=1204)) == [1205], "after_id combines with a query")
+        for bad in (-1, "5", True):
+            try:
+                mq.search(db, "", after_id=bad)
+            except mq.BadRequest:
+                continue
+            fail(f"bad after_id accepted: {bad!r}")
+    finally:
+        db.close()
+    for spec in sm.SPECS:
+        expect(spec.subject not in mark and spec.sender[1] not in mark, "watermark holds no content")
+    empty = tmp / "empty" / "index.sqlite"
+    fresh = mi.open_index(empty)
+    fresh.commit()
+    fresh.close()
+    db = mq.connect(empty)
+    expect(mq.watermark(db) == "newest_id=0\n", "empty index watermark")
+    db.close()
 
 
 def test_search(index: Path) -> None:
@@ -186,6 +216,7 @@ def main() -> int:
         test_read_only(index)
         test_status(index)
         test_search(index)
+        test_new_mail(tmp, index)
         test_get_and_thread(index)
         test_marker_spoofing(tmp, index)
         test_without_bodies(build_index(tmp, bodies=False))

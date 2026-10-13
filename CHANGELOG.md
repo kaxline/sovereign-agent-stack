@@ -32,6 +32,10 @@ the stack under another app.
    re-run both bootstrap services, restart `hermes`, and keep
    `make mail-drafts-watch` running on the host. Re-running setup without
    `--mail-drafts` adds `MAIL_DRAFTS_ENABLED=0` and starts nothing.
+7. With mail or drafts enabled: re-run both bootstrap services and recreate
+   `hermes`, then `make doctor`. Cron jobs without their own tool list stop
+   getting the mail tools; doctor lists any job that still can read mail
+   alongside other tools.
 
 ### New services
 
@@ -178,6 +182,23 @@ Only with `todo` enabled.
   LaunchAgent: the reader every 15 minutes, the drafts helper continuously.
   Needs `swiftc` and Python 3.11+. `make mail-apps-test`. Build output goes
   to the gitignored `build/`.
+- **Mail MCP**: `mail_search` takes `after_id`, `mail_status` reports
+  `newest_id`, and `GET /watermark` returns `newest_id=<n>`, which changes
+  only when newer mail is indexed and holds no message content.
+- **Mail triage cron** (opt-in): `make mail-triage-cron` creates a
+  `mail-triage` Hermes cron job on the default profile with the mail tools
+  only, which runs only when newer mail is indexed (`--monitor-url` on the
+  watermark) and reports to Signal when `SIGNAL_HOME_CHANNEL` is set.
+  `make mail-triage-cron-show`, `make mail-triage-cron-remove`,
+  `make mail-cron-test`. See [docs/email.md](docs/email.md#proactive-review-cron).
+- **Hermes bootstrap**: while mail or drafts is registered on a profile, the
+  bootstraps set `platform_toolsets.cron` to `hermes-cron` plus every other
+  MCP server, so cron jobs without their own tool list no longer get the mail
+  tools. They keep everything else. A `platform_toolsets.cron` you wrote is
+  kept, minus mail and drafts. The list is removed again when mail and drafts
+  are both off. MCP servers added by hand reach cron jobs after the next
+  bootstrap run. `make doctor` flags any cron job that can read mail
+  alongside other tools.
 - **Docs**: [docs/email.md](docs/email.md) records the design for giving Hermes
   read access to Apple Mail, why scripting Mail.app is the default over Full
   Disk Access, and a survey of existing Apple Mail MCP servers.

@@ -111,9 +111,9 @@ def _wrap_body(body: str | None, max_chars: int) -> tuple[str | None, bool]:
 
 def status(db: sqlite3.Connection) -> dict:
     meta = {r["key"]: r["value"] for r in db.execute("SELECT key, value FROM meta")}
-    total, lo, hi, with_body = db.execute(
+    total, lo, hi, with_body, newest_id = db.execute(
         "SELECT COUNT(*), MIN(date_received), MAX(date_received),"
-        " SUM(body IS NOT NULL) FROM messages").fetchone()
+        " SUM(body IS NOT NULL), MAX(rowid) FROM messages").fetchone()
     boxes = [
         {"account": r["account"], "mailbox": r["mailbox"], "messages": r["n"], "unread": r["unread"]}
         for r in db.execute("SELECT account, mailbox, COUNT(*) AS n, SUM(1 - is_read) AS unread"
@@ -126,17 +126,31 @@ def status(db: sqlite3.Connection) -> dict:
         "oldest": _iso(lo),
         "newest": _iso(hi),
         "last_indexed": _iso(int(last_run)) if last_run else None,
+        "newest_id": newest_id,
         "mailboxes": boxes,
     }
+
+
+def watermark(db: sqlite3.Connection) -> str:
+    """One stable line that changes only when newer mail is indexed.
+
+    For schedulers that skip work while it's unchanged (Hermes cron
+    --monitor-url). Holds no message content, because a scheduler may paste
+    it straight into a prompt. Ids are Mail's: new mail gets higher ones.
+    """
+    newest_id = db.execute("SELECT MAX(rowid) FROM messages").fetchone()[0]
+    return f"newest_id={newest_id or 0}\n"
 
 
 def search(db: sqlite3.Connection, query: str = "", *, sender: str | None = None,
            mailbox: str | None = None, since: str | None = None, until: str | None = None,
            unread_only: bool = False, flagged_only: bool = False, limit: int = 20,
-           offset: int = 0) -> dict:
+           offset: int = 0, after_id: int | None = None) -> dict:
     limit = _limit(limit)
     if not isinstance(offset, int) or offset < 0:
         raise BadRequest("offset must be zero or more")
+    if after_id is not None and (not isinstance(after_id, int) or isinstance(after_id, bool) or after_id < 0):
+        raise BadRequest("after_id must be zero or more (a newest_id from mail_status)")
     where, args = [], []
     match = fts_query(query)
     select = "m.*"
@@ -162,6 +176,9 @@ def search(db: sqlite3.Connection, query: str = "", *, sender: str | None = None
         where.append("m.is_read = 0")
     if flagged_only:
         where.append("m.is_flagged = 1")
+    if after_id is not None:
+        where.append("m.rowid > ?")
+        args.append(after_id)
     sql = (f"SELECT {select} FROM messages m {joins}"
            f"{' WHERE ' + ' AND '.join(where) if where else ''}"
            " ORDER BY m.date_received DESC, m.rowid DESC LIMIT ? OFFSET ?")
