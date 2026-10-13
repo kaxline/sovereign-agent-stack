@@ -5,7 +5,7 @@
 	corpus-create corpus-use corpus-list corpus-ingest corpus-destroy \
 	project-init project-index project-index-check project-sources-test synthetic-mail-test \
 	mail-index mail-index-doctor mail-index-mailboxes mail-index-test mail-script-test mail-mcp-test \
-	mail-drafts mail-drafts-watch mail-drafts-doctor mail-drafts-test model-use model-sync \
+	mail-drafts mail-drafts-watch mail-drafts-doctor mail-drafts-test mail-apps mail-apps-test model-use model-sync \
 	data-dir-show data-dir-set data-dir-migrate \
 	db-backup db-service-add db-psql todo-init todo-open \
 	coding-root-list coding-root-add \
@@ -288,6 +288,14 @@ mail-drafts-doctor:
 mail-drafts-test:
 	python3 scripts/test-mail-drafts.py
 	sh scripts/test-mail-drafts-registration.sh
+
+# macOS apps that hold the mail permissions instead of your terminal. Build
+# here; install with macos/mail-apps/install.sh (see docs/email.md).
+mail-apps:
+	macos/mail-apps/build.sh
+
+mail-apps-test:
+	python3 scripts/test-mail-apps.py
 
 # Read-only mail MCP: query layer against a synthetic index, and which profiles get it.
 mail-mcp-test:
