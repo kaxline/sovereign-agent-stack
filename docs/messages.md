@@ -4,7 +4,8 @@
 records how Hermes should answer questions about iMessage and SMS history,
 and hear about new messages, by reading Messages.app's local database. It
 also records which open-source projects were evaluated and why none of them
-is adopted as-is. Research is as of October 2026.
+is adopted as-is. Research is as of October 2026. Only
+[the synthetic store](#synthetic-message-store) exists so far.
 
 ## Goals
 
@@ -198,7 +199,7 @@ TCC details to confirm in a spike on macOS 26:
 
 ### Phases
 
-1. **Synthetic store.** Generate a fake `chat.db` under `synthetic-messages/`:
+1. **Synthetic store** (done, see [below](#synthetic-message-store)). Generate a fake `chat.db` under `synthetic-messages/`:
    `attributedBody` blobs, long messages, group chats, reactions, edits,
    unsends, attachments, the join race, a prompt-injection message. Add a
    fake contacts database too.
@@ -282,6 +283,67 @@ messages-send MCP (container) ──loopback + token──▶ messages-send (hos
    watcher.
 3. **Trusted chats** (optional). Sending without per-message approval to a
    short list of chats you name, still rate-limited and still logged.
+
+## Synthetic message store
+
+`scripts/lib/synthetic_messages.py` writes a fake Messages store with 28
+made-up messages in five chats, plus a fake Contacts database:
+
+```
+<out>/Messages/chat.db                          WAL mode, subset of tables and columns
+<out>/Messages/Attachments/<xx>/<nn>/<guid>/…   attachment files
+<out>/AddressBook/Sources/<uuid>/AddressBook-v22.abcddb
+<out>/manifest.json                             what was generated, for test assertions
+```
+
+It covers:
+
+- bodies only in `attributedBody`, in both `text` and `attributedBody`, and
+  only in `text` (old rows)
+- bodies long enough to need two-byte and four-byte lengths in the archive,
+  non-BMP emoji, accents and Hebrew
+- a 1:1 chat over a phone number, one over email, an SMS chat with a sender
+  not in Contacts, a named group and an unnamed group
+- reactions (a heart, an emoji reaction and a reaction taken back), a
+  threaded reply, a mention, a link preview and a message sent with an
+  effect
+- an edited message with its history in `message_summary_info`, an unsent
+  message, a message in Recently Deleted, and a failed send
+- an image attachment, an audio message, and an attachment row whose file
+  is gone
+- group events: a rename, a member added and a member removed
+- a message that tries prompt injection on the assistant
+- Contacts entries with phone numbers in several formats, a nickname, and a
+  contact who isn't in any chat
+
+`attributedBody` blobs come from `scripts/lib/typedstream.py`, which writes
+NSAttributedString archives that match Foundation's NSArchiver byte for byte.
+The tests check that against archives Foundation produced, and on macOS with
+`swiftc` they also decode every body with Foundation's NSUnarchiver.
+
+Attachment `filename` values keep Messages' `~/Library/Messages/Attachments/…`
+form. A reader has to map that prefix onto its configured attachment root and
+must never expand `~`.
+
+```bash
+python3 scripts/make-synthetic-messages.py /tmp/synthetic-messages/store
+make synthetic-messages-test
+```
+
+The output path must contain `synthetic-messages`. The generator refuses
+anything under `~/Library`. It only uses `example.com`, `example.org` and
+`example.net` addresses, and phone numbers in the fictional 555-0100 to 0199
+range. Output is reproducible, apart from SQLite's page layout.
+
+For watcher tests, `append()` adds a message to an existing store the way
+Messages would. `append(..., join=False)` followed by `add_join()`
+reproduces the moment when a new row has no chat yet.
+
+The schema is modelled on public descriptions and open-source readers, and
+isn't authoritative. Some values are best guesses and are marked as such in
+the code: the failed-send error code, the `message_summary_info` keys and the
+Recently Deleted date. A reader that passes against this store still has to
+probe the real schema at runtime.
 
 ## Rules for contributors
 
