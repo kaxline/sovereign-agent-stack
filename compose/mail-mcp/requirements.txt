@@ -1,0 +1,2 @@
+# Read-only mail MCP. Query logic (mail_query.py) is standard library only.
+mcp==1.30.0

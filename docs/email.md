@@ -1,10 +1,27 @@
 # Email from Apple Mail (design)
 
-**Status: indexer only.** This page records how Hermes should get read access
-to email by reading Apple Mail's local store instead of logging in to a mail
-server. [The indexer](#indexer) and [the synthetic store](#synthetic-mail-store)
-exist. The MCP that serves the index to Hermes does not yet, so Hermes can't
-read mail.
+Read-only email for Hermes, from Apple Mail's local store instead of a login
+to a mail server. A [host-side indexer](#indexer) builds a scoped index, and
+the [`mail-mcp`](#mail-mcp) sidecar serves it to Hermes. Both have been tested
+only against [the synthetic store](#synthetic-mail-store); see
+[First run on real mail](#first-run-on-real-mail).
+
+Requires the **`mail`** compose profile (`./scripts/setup.sh --mail`).
+
+## Quick path
+
+```bash
+./scripts/setup.sh --mail          # profile, MAIL_MCP_ENABLED=1, mail-index.toml, data/mail (0700)
+make mail-index-mailboxes          # account ids and mailbox names for mail-index.toml
+make mail-index-doctor             # counts only; check before the first run
+make mail-index                    # build or update the index (re-run to refresh)
+make up
+docker compose run --rm hermes-api-bootstrap
+docker compose run --rm hermes-browser-bootstrap
+docker compose restart hermes
+```
+
+In WebUI: *Any unread mail from Priya this week?*
 
 ## Goals
 
@@ -169,6 +186,49 @@ macOS grants Full Disk Access per program. Running the indexer with the shared
 `python3` means granting that interpreter access, and with it every Python
 script on the machine. Packaging the indexer as its own executable is a
 follow-up.
+
+## mail-mcp
+
+`compose/mail-mcp` is a small Python server (`mcp==1.30.0`, streamable HTTP
+at `http://mail-mcp:8000/mcp`, compose-internal only). The query logic in
+`mail_query.py` uses only the standard library.
+
+| Tool | Returns |
+|---|---|
+| `mail_status` | Message count, date range, last index run, whether bodies are searchable, each account/mailbox with total and unread counts |
+| `mail_search` | Up to 50 summaries, newest first: id, date, sender, subject, mailbox, read/flagged, attachment count, and a snippet when the query matched. Filters: `query` (every word must match, as a prefix), `sender`, `mailbox`, `since`/`until` (inclusive dates), `unread_only`, `flagged_only`, `limit`, `offset` |
+| `mail_get` | One message by id: recipients, Message-ID, thread id, attachment names, and the body (up to `max_chars`, default 20,000) |
+| `mail_thread` | Every indexed message in the same conversation, oldest first |
+
+There are no tools that send, move, delete or flag mail, and the index is
+opened read-only on a read-only mount.
+
+**Untrusted content.** Every result carries a `notice` telling the model that
+subjects, names, snippets and bodies are third-party text to report on, never
+instructions. Bodies come between `<<<EMAIL BODY (untrusted)>>>` and
+`<<<END EMAIL BODY>>>` markers, and any copy of a marker inside a message is
+removed first, so a message can't fake the end of its body. Free-text queries
+are reduced to quoted words, so a query can't inject FTS syntax.
+
+**Which profiles get it.** The bootstrap registers `mcp_servers.mail` with a
+four-tool allowlist on the default (dashboard, CLI) and `browser` (WebUI)
+profiles. It never registers it on `api-server`. Unattended sessions there
+run without anyone watching, and mail is the easiest place for a stranger to
+plant instructions. Because profiles are cloned from default, the bootstrap
+removes any entry pointing at `mail-mcp` from `api-server`, and from every
+profile when `MAIL_MCP_ENABLED` isn't `1`.
+
+**Container.** It mounts only `MAIL_INDEX_DIR` (default `./data/mail`),
+read-only. The root filesystem is read-only too, all capabilities are
+dropped, and `no-new-privileges` is set. It runs as `HERMES_UID:HERMES_GID`.
+On Linux that uid must own the `0700` index folder. Docker Desktop for Mac
+doesn't enforce ownership across the mount. The indexer's `index` setting
+must point inside `MAIL_INDEX_DIR`, at `MAIL_INDEX_FILE` (default
+`index.sqlite`). The example config already does.
+
+**Freshness.** The MCP serves whatever the last `make mail-index` wrote.
+Re-run it (or schedule it) to pick up new mail. `mail_status` reports the last
+run.
 
 ## Synthetic mail store
 

@@ -338,6 +338,39 @@ services:
       start_period: 20s
 
   # ----------------------------------------------------------------------
+  # mail-mcp — read-only MCP over the host-built mail index (docs/email.md)
+  # Profile: mail
+  # MCP:     http://mail-mcp:8000/mcp   (compose-internal only)
+  # Mounts only the index folder, read-only. Never the Mail store itself.
+  # ----------------------------------------------------------------------
+  mail-mcp:
+    profiles: ["mail"]
+    container_name: ${CONTAINER_PREFIX:-}mail-mcp
+    build:
+      context: ./compose/mail-mcp
+    image: ${IMAGE_PREFIX:-assistant}-mail-mcp:local
+    restart: unless-stopped
+    # Same uid as the host user that owns the 0700 index folder.
+    user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+    environment:
+      - MAIL_INDEX_PATH=/data/mail/${MAIL_INDEX_FILE:-index.sqlite}
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=8000
+    volumes:
+      - ${MAIL_INDEX_DIR:-./data/mail}:/data/mail:ro
+    # No host ports — compose-internal only.
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  # ----------------------------------------------------------------------
   # vikunja — todo lists with a built-in MCP server
   # Profile: todo (also starts the shared Postgres via x-db-profiles)
   # Web UI:  http://localhost:3456/login-local   (via vikunja-proxy below)
@@ -898,6 +931,11 @@ services:
       - VIKUNJA_MCP_CONNECT_TIMEOUT=${VIKUNJA_MCP_CONNECT_TIMEOUT:-30}
       - VIKUNJA_MCP_TOKEN_RO=${VIKUNJA_MCP_TOKEN_RO:-}
       - VIKUNJA_MCP_TOKEN_RW=${VIKUNJA_MCP_TOKEN_RW:-}
+      # Mail MCP (mail profile): default + browser only, never api-server.
+      - MAIL_MCP_ENABLED=${MAIL_MCP_ENABLED:-0}
+      - MAIL_MCP_URL=${MAIL_MCP_URL:-http://mail-mcp:8000/mcp}
+      - MAIL_MCP_TIMEOUT=${MAIL_MCP_TIMEOUT:-60}
+      - MAIL_MCP_CONNECT_TIMEOUT=${MAIL_MCP_CONNECT_TIMEOUT:-30}
       # Upstream URL only (no key), to size the stale-stream timeout.
       - LLM_BINDING_HOST=${LLM_BINDING_HOST:-http://host.docker.internal:1234/v1}
       - HERMES_PROXY_STALE_TIMEOUT=${HERMES_PROXY_STALE_TIMEOUT:-}
@@ -962,6 +1000,11 @@ services:
       - VIKUNJA_MCP_CONNECT_TIMEOUT=${VIKUNJA_MCP_CONNECT_TIMEOUT:-30}
       - VIKUNJA_MCP_TOKEN_RO=${VIKUNJA_MCP_TOKEN_RO:-}
       - VIKUNJA_MCP_TOKEN_RW=${VIKUNJA_MCP_TOKEN_RW:-}
+      # Mail MCP (mail profile): default + browser only, never api-server.
+      - MAIL_MCP_ENABLED=${MAIL_MCP_ENABLED:-0}
+      - MAIL_MCP_URL=${MAIL_MCP_URL:-http://mail-mcp:8000/mcp}
+      - MAIL_MCP_TIMEOUT=${MAIL_MCP_TIMEOUT:-60}
+      - MAIL_MCP_CONNECT_TIMEOUT=${MAIL_MCP_CONNECT_TIMEOUT:-30}
       # Upstream URL only (no key), to size the stale-stream timeout and
       # decide whether auto-title may compete with the reply.
       - LLM_BINDING_HOST=${LLM_BINDING_HOST:-http://host.docker.internal:1234/v1}
