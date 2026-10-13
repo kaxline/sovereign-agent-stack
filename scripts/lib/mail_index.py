@@ -34,6 +34,7 @@ from typing import Iterator
 from urllib.parse import unquote, urlsplit
 
 INDEX_SCHEMA_VERSION = 1
+SAVE_EVERY = 50  # messages fetched between commits, so a long first run can resume
 SOURCES = ("script", "store")
 META_DB = "Envelope Index"
 MESSAGE_SUFFIXES = (".partial.emlx", ".emlx")
@@ -688,6 +689,9 @@ def run(config: Config, *, now: float | None = None, source=None) -> RunStats:
             erased = True
             db.execute("DELETE FROM messages")
             db.execute("DELETE FROM messages_fts")
+        # Record the source now, so a run cut short after the wipe resumes
+        # instead of wiping its own progress next time.
+        db.execute("INSERT OR REPLACE INTO meta VALUES ('source', ?)", (source.name,))
 
         existing = {r[0]: (r[1], r[2]) for r in
                     db.execute("SELECT rowid, flags, body_indexed FROM messages")}
@@ -714,7 +718,11 @@ def run(config: Config, *, now: float | None = None, source=None) -> RunStats:
         # Oldest first, so a reply finds the thread its parent already joined.
         to_fetch.sort(key=lambda r: r.date_received)
 
-        for row, result in source.fetch(to_fetch):
+        # Save removals and flag changes, then every SAVE_EVERY messages. A run
+        # that stops early (sleep, Mail quitting, a timeout) keeps what it
+        # saved, and the next run fetches only what's still missing.
+        db.commit()
+        for done, (row, result) in enumerate(source.fetch(to_fetch), start=1):
             parsed = result if isinstance(result, ParsedMessage) else None
             if result == MISSING:
                 stats.missing_files += 1
@@ -746,9 +754,10 @@ def run(config: Config, *, now: float | None = None, source=None) -> RunStats:
                 stats.updated += 1
             else:
                 stats.added += 1
+            if done % SAVE_EVERY == 0:
+                db.commit()
 
         db.execute("INSERT OR REPLACE INTO meta VALUES ('scope', ?)", (fingerprint,))
-        db.execute("INSERT OR REPLACE INTO meta VALUES ('source', ?)", (source.name,))
         db.execute("INSERT OR REPLACE INTO meta VALUES ('bodies', ?)", (str(int(config.bodies)),))
         db.execute("INSERT OR REPLACE INTO meta VALUES ('last_run', ?)",
                    (str(int(now if now is not None else time.time())),))

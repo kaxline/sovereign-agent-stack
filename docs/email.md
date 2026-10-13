@@ -333,7 +333,10 @@ Drive, and exclude it from backups.
 **Size and speed.** With `bodies` on, expect the index to be roughly twice
 the size of the plain text it holds, because the search index keeps its own
 copy. The first run fetches every in-scope body; later runs fetch only new
-messages. With the script source, every run also asks Mail for a summary of
+messages. Progress is saved every 50 messages, so a first run cut short by
+sleep, Mail quitting or a timeout picks up where it stopped next time. The
+reader app's 15-minute schedule doesn't start a second copy while one is
+still running. With the script source, every run also asks Mail for a summary of
 every message in each in-scope mailbox, which is how it spots new, removed
 and re-flagged mail. On a large mailbox, check `make mail-index-doctor`
 before widening the scope: `seconds_message_summaries` is the cost every run

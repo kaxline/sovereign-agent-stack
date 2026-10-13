@@ -324,12 +324,65 @@ def test_deleted_text_is_gone(env: Env) -> None:
         mi.fts_secure_delete = real
 
 
+class Interrupted(Exception):
+    pass
+
+
+class StopsEarly:
+    """Wraps a source so its fetch stops after `limit` messages, like a run cut short."""
+
+    def __init__(self, inner, limit: int, name: str | None = None) -> None:
+        self.inner, self.limit = inner, limit
+        self.name = name or inner.name
+
+    def rows(self):
+        return self.inner.rows()
+
+    def fetch(self, rows):
+        for i, item in enumerate(self.inner.fetch(rows)):
+            if i == self.limit:
+                raise Interrupted()
+            yield item
+
+
+def test_resumes_after_interruption(env: Env) -> None:
+    store, _ = env.store()
+    cfg = mi.load_config(env.config(store, {PERSONAL: ["*"], WORK: ["*"]}, bodies=True))
+    real_every = mi.SAVE_EVERY
+    mi.SAVE_EVERY = 2
+    try:
+        try:
+            mi.run(cfg, source=StopsEarly(mi.StoreSource(cfg), limit=5))
+        except Interrupted:
+            pass
+        else:
+            fail("the wrapped run should stop early")
+        saved = set(indexed(cfg))
+        expect(len(saved) == 4, f"saved in batches of 2 before stopping: {len(saved)}")
+        stats = mi.run(cfg)
+        total = set(indexed(cfg))
+        expect(stats.added == len(total) - 4 and stats.removed == 0, f"resume fetches only the rest: {stats}")
+        expect(saved < total and stats.in_scope == len(total), "nothing lost or duplicated")
+
+        # Cut short right after a source switch: the next run must not wipe its own progress.
+        try:
+            mi.run(cfg, source=StopsEarly(mi.StoreSource(cfg), limit=3, name="script"))
+        except Interrupted:
+            pass
+        expect(len(indexed(cfg)) == 2, "the switch wiped the old rows and saved one batch")
+        stats = mi.run(cfg, source=StopsEarly(mi.StoreSource(cfg), limit=10**6, name="script"))
+        expect(stats.removed == 0 and stats.added == len(total) - 2, f"resumed after the switch: {stats}")
+    finally:
+        mi.SAVE_EVERY = real_every
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as d:
         env = Env(Path(d))
         for test in (test_config_validation, test_scope, test_since, test_headers_bodies_and_search,
                      test_incremental, test_reads_uncheckpointed_wal, test_missing_file_keeps_metadata,
-                     test_unrecognised_layout, test_cli_prints_counts_only, test_deleted_text_is_gone):
+                     test_unrecognised_layout, test_cli_prints_counts_only, test_deleted_text_is_gone,
+                     test_resumes_after_interruption):
             test(env)
     print("OK mail indexer")
     return 0

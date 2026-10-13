@@ -208,6 +208,8 @@ Only with `todo` enabled.
   the file at once. It's compacted once for older indexes, after removals on
   older SQLite, and when over a quarter of it is free space. `run` reports
   `compacted`.
+- **Mail indexer**: saves progress every 50 messages, so a long first run
+  that's cut short resumes on the next run instead of starting over.
 - **Docs**: [docs/email.md](docs/email.md) records the design for giving Hermes
   read access to Apple Mail, why scripting Mail.app is the default over Full
   Disk Access, and a survey of existing Apple Mail MCP servers.
