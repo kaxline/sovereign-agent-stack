@@ -12,7 +12,9 @@ is adopted as-is. Research is as of October 2026.
   window) and answer questions about them.
 - Hermes learns about a new message in those conversations within a few
   seconds, without polling from a chat turn.
-- Nothing in the stack can send, react, mark read, edit or delete.
+- The reader can't send, react, mark read, edit or delete. Sending is a
+  [separate, opt-in service](#sending-separate-service) with its own
+  permission.
 - Nothing can read conversations you didn't scope in, and no container
   mounts the Messages folder.
 - Contributors, and any coding agent they use, never need real messages to
@@ -196,6 +198,75 @@ TCC details to confirm in a spike on macOS 26:
 5. **First real run** (the owner runs it): `doctor` counts only, then the
    watcher.
 
+## Sending (separate service)
+
+Sending is optional, off by default, and built as its own service beside
+the reader, not inside it. The reader and the sender share the index and the
+watcher, but they don't share a binary, a permission or an MCP.
+
+### Why it's separate
+
+- **Different permission.** The only workable way to send is AppleScript
+  asking Messages.app to send, which needs the **Automation → Messages**
+  permission. The private-API route (IMCore injection) needs SIP disabled
+  and is out of scope. If one binary held both Full Disk Access and
+  Automation, any bug in it could read everything and send as you. Split,
+  the reader can't send and the sender can't read history.
+- **Different callers.** Read tools can be given to unattended,
+  webhook-started sessions. Send tools go only to sessions you're actively
+  in (WebUI), through the per-profile allowlists the stack already uses.
+- **Separate off switch.** Turning sending off leaves reading untouched.
+
+The sender resolves chats and recipients from the index, so it needs no Full
+Disk Access. It confirms delivery through the watcher.
+
+### Shape
+
+```
+Hermes (interactive profile)
+   │ draft_message / send_draft
+   ▼
+messages-send MCP (container) ──loopback + token──▶ messages-send (host, Automation only)
+   │                                                     │ osascript: send text to chat id
+   │ approval code (out of band, e.g. Signal)            ▼
+   └──────────────── you ─────────────────────────  Messages.app
+                                                         │ new outgoing row in chat.db
+                              messages helper (watcher) ◀┘ confirms delivery or failure
+```
+
+- **`messages-send` host binary.** Signed, started by launchd, with Automation
+  permission only. Its one job is to send this text to this chat id. It
+  refuses a chat that isn't on the allowlist unless the request carries a
+  valid approval code. It listens only on the loopback address and requires a
+  token. Containers can't run `osascript`, so it has to run on the host.
+- **`messages-send` MCP.** Separate from the read MCP. Tools:
+  `draft_message`, `list_drafts` and `send_draft`. It's enabled only on
+  interactive profiles, and off unless you turn it on.
+
+### Pitfalls and mitigations
+
+| Pitfall | Mitigation |
+|---|---|
+| **Prompt-injection exfiltration.** An incoming text tells the agent to forward your history to a stranger. An agent that can both read untrusted messages and send will do it | Sessions started by a message event never get send tools. Sends outside the allowlist need your approval. The approval arrives on a channel the agent can't forge: a one-time code you send back on Signal, or a WebUI button. The agent never sees the code |
+| **Wrong recipient.** Two contacts share a name, or a reply goes to a whole group | Send only to a chat id or exact handle taken from the index, never to a free-text name. Ambiguity is an error, not a guess. Group chats always need approval. The draft shows the resolved name and number |
+| **Silent failure.** `osascript` reports success when the message fails, when Messages is signed out, or when it falls back to SMS | The watcher confirms each send: an outgoing row appears in that chat, and its error and delivered fields are checked. The result is reported as success, failure or timeout. No automatic retry without that check |
+| **Duplicate sends** on retries or re-run turns | An idempotency key per draft, and each approved draft is sent at most once. A send log in `data/messages/` keeps ids, recipient, time and outcome, without the text |
+| **Reply loops.** The agent's own sent message shows up in `chat.db` and triggers a new event | The watcher never raises events for outgoing (`is_from_me`) rows. Rate limits per recipient and per day |
+| **It's your identity.** Recipients can't tell the agent wrote it | Recipient allowlist, length cap, quiet hours and a dry-run mode. The first phase is drafts only: the agent writes and you send |
+| **AppleScript quirks.** iMessage vs SMS selection, new conversations needing an account and participant, attachments blocked by Messages' sandbox, behaviour changing between macOS releases | The first version sends text only, to existing chats. Attachments are a later, separately tested feature. Tests pin behaviour with a mocked `osascript`. A synthetic send self-test runs after macOS updates |
+| **Automation prompts and stale grants.** The prompt goes to the responsible process, and grants go stale after upgrades | A signed binary started by launchd. Confirm which process gets the grant in the same macOS 26 spike as the reader |
+| **Reaching the host from a container** | Check that Docker Desktop can reach a loopback-only host service through `host.docker.internal` before relying on it |
+| **Edit, unsend, tapbacks, typing indicators** | Need the private API with SIP off. Not supported |
+
+### Phases
+
+1. **Drafts only.** The agent writes a draft. You copy it and send it yourself.
+2. **Approved sends.** Allowlisted chats, each send approved by a one-time
+   code over Signal or a WebUI button, with delivery confirmed by the
+   watcher.
+3. **Trusted chats** (optional). Sending without per-message approval to a
+   short list of chats you name, still rate-limited and still logged.
+
 ## Rules for contributors
 
 - **Never use real messages or contacts as fixtures,** not even "anonymised".
@@ -207,8 +278,12 @@ TCC details to confirm in a spike on macOS 26:
   opening a real `chat.db`, schema included. If a bug only shows up on real
   data, the person who owns the messages extracts a minimal case and rewrites
   it as a synthetic one.
-- **No send path.** Don't link send, AppleScript or IMCore code into the
-  helper or the MCP.
+- **No send path in the reader.** Don't link send, AppleScript or IMCore
+  code into the helper or the read MCP. Sending lives only in
+  [its own service](#sending-separate-service).
+- **Test sending against a mocked `osascript`.** Never send to a real
+  contact from a test, and never send to real contacts on the owner's
+  behalf while developing.
 - **Keep coding agents out of real messages.** Block them from
   `~/Library/Messages` and related stores with their own permission rules,
   and don't grant Full Disk Access to the terminal they run in.
