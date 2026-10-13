@@ -2,10 +2,16 @@
 
 Messages.app stores most message text in `message.attributedBody` as an
 NSAttributedString archived this way. The writer covers the classes Messages
-uses there (NSAttributedString, NSString, NSDictionary, NSNumber) and matches
-Foundation's NSArchiver byte for byte for them; scripts/test-synthetic-messages.py
-checks that against archives Foundation produced. The reader is a small
-generic decoder for tests: it walks any archive built from those classes.
+uses there (NSAttributedString, NSString, NSDictionary, NSNumber and their
+mutable forms) and matches Foundation's NSArchiver byte for byte for them;
+tests/test-synthetic-messages.py checks that against archives Foundation
+produced.
+
+Two readers: read_attributed_string() is strict and raises on anything it
+doesn't know (tests use it), and decode_body() is what a message reader
+should use. Its text always comes first in the archive, so decode_body()
+returns the text even when an attribute uses a class it can't parse, and says
+the runs are incomplete.
 
 Format notes (from public write-ups and open-source decoders):
 
@@ -34,6 +40,9 @@ _CLASSES = {
     "NSString": [("NSString", 1), ("NSObject", 0)],
     "NSDictionary": [("NSDictionary", 0), ("NSObject", 0)],
     "NSNumber": [("NSNumber", 0), ("NSValue", 0), ("NSObject", 0)],
+    "NSMutableAttributedString": [("NSMutableAttributedString", 0), ("NSAttributedString", 0),
+                                  ("NSObject", 0)],
+    "NSMutableString": [("NSMutableString", 1), ("NSString", 1), ("NSObject", 0)],
 }
 
 
@@ -108,12 +117,12 @@ class _Writer:
         self.leaves[key] = self.objects
         return False
 
-    def string(self, text: str) -> None:
+    def string(self, text: str, cls: str = "NSString") -> None:
         self.shared(b"@")
         if self.leaf(("s", text)):
             return
         self.new_object()
-        self.cls(_CLASSES["NSString"])
+        self.cls(_CLASSES[cls])
         data = text.encode("utf-8")
         self.shared(b"+")
         self.int(len(data))
@@ -148,8 +157,11 @@ class _Writer:
         self.out.append(END)
 
 
-def archive_attributed_string(text: str, runs: list[tuple[int, Attrs]]) -> bytes:
-    """Archive text with attribute runs [(length in UTF-16 units, attrs), ...]."""
+def archive_attributed_string(text: str, runs: list[tuple[int, Attrs]], *, mutable: bool = False) -> bytes:
+    """Archive text with attribute runs [(length in UTF-16 units, attrs), ...].
+
+    mutable=True archives an NSMutableAttributedString holding an
+    NSMutableString, which Messages also writes."""
     if sum(length for length, _ in runs) != utf16_len(text):
         raise ValueError("run lengths must add up to the text's UTF-16 length")
     w = _Writer()
@@ -157,8 +169,8 @@ def archive_attributed_string(text: str, runs: list[tuple[int, Attrs]]) -> bytes
     w.int(SYSTEM_VERSION)
     w.shared(b"@")
     w.new_object()
-    w.cls(_CLASSES["NSAttributedString"])
-    w.string(text)
+    w.cls(_CLASSES["NSMutableAttributedString" if mutable else "NSAttributedString"])
+    w.string(text, "NSMutableString" if mutable else "NSString")
     for ordinal, (length, attrs) in enumerate(runs, start=1):
         w.shared(b"iI")
         w.int(ordinal)
@@ -168,7 +180,7 @@ def archive_attributed_string(text: str, runs: list[tuple[int, Attrs]]) -> bytes
     return bytes(w.out)
 
 
-# --- Reader (tests only) ----------------------------------------------------
+# --- Readers ----------------------------------------------------------------
 
 
 class _Reader:
@@ -284,3 +296,59 @@ def read_attributed_string(data: bytes) -> tuple[str, list[tuple[int, dict]]]:
     if not (isinstance(value, tuple) and isinstance(value[0], str)):
         raise ValueError("root is not an NSAttributedString")
     return value  # type: ignore[return-value]
+
+
+class UnsupportedArchive(ValueError):
+    """The archive isn't an NSAttributedString this reader can get text from."""
+
+
+@dataclass
+class Body:
+    text: str
+    runs: list[tuple[int, dict]]
+    complete: bool  # False when an attribute used a class the reader doesn't parse
+
+    def attribute_values(self, key: str) -> list:
+        return [a[key] for _, a in self.runs if key in a]
+
+
+def decode_body(data: bytes) -> Body:
+    """Text and (as far as possible) attribute runs from an attributedBody blob.
+
+    Raises UnsupportedArchive when there is no text to recover. Never raises
+    for attributes: runs stop at the first one it can't parse."""
+    r = _Reader(data)
+    try:
+        if r.raw(13) != b"\x04\x0bstreamtyped" or r.int() != SYSTEM_VERSION or r.shared() != b"@":
+            raise UnsupportedArchive("not a typedstream object archive")
+        if r.byte() != NEW:
+            raise UnsupportedArchive("root object missing")
+        r.objects.append(None)
+        chain = r.cls()
+        if not chain or chain[0] not in ("NSAttributedString", "NSMutableAttributedString"):
+            raise UnsupportedArchive(f"root is {chain[0] if chain else 'nil'}, not an attributed string")
+        if r.shared() != b"@":
+            raise UnsupportedArchive("attributed string has no text object")
+        text = r.obj()
+    except UnsupportedArchive:
+        raise
+    except (IndexError, AssertionError, ValueError, UnicodeDecodeError, struct.error, AttributeError) as exc:
+        raise UnsupportedArchive(f"malformed archive: {exc}") from None
+    if not isinstance(text, str):
+        raise UnsupportedArchive("attributed string text is not a string")
+    runs: list[tuple[int, dict]] = []
+    try:
+        while r.data[r.pos] != END:
+            if r.shared() != b"iI":
+                return Body(text, runs, False)
+            r.int()
+            length = r.int()
+            if r.shared() != b"@":
+                return Body(text, runs, False)
+            attrs = r.obj()
+            if not isinstance(attrs, dict):
+                return Body(text, runs, False)
+            runs.append((length, attrs))
+    except (IndexError, AssertionError, ValueError, UnicodeDecodeError, struct.error, TypeError, AttributeError):
+        return Body(text, runs, False)
+    return Body(text, runs, True)

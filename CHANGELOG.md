@@ -204,10 +204,18 @@ Only with `todo` enabled.
   Disk Access, and a survey of existing Apple Mail MCP servers.
   `scripts/make-synthetic-mail.py` writes a fake Mail store for developing
   the reader, and `make synthetic-mail-test` checks it.
-- **Tests**: `scripts/make-synthetic-messages.py` writes a fake Messages.app
+- **iMessage indexer** (host-side, not wired into Hermes yet): `imessage/`
+  holds a self-contained, stdlib-only reader for Messages.app history.
+  `make messages-index` reads `chat.db` read-only into a scoped SQLite + FTS
+  index; `make messages-index-doctor` and `make messages-index-chats` help
+  write `messages-index.toml` (gitignored; template in
+  `imessage/messages-index.toml.example`). It needs Full Disk Access and has
+  been tested only against synthetic data. `make messages-index-test` runs
+  its tests. See [imessage/README.md](imessage/README.md).
+- **Tests**: `imessage/make-synthetic-messages.py` writes a fake Messages.app
   store (`chat.db`, attachments, Contacts) for developing the iMessage reader,
   and `make synthetic-messages-test` checks it. See
-  [docs/messages.md](docs/messages.md#synthetic-message-store).
+  [imessage/README.md](imessage/README.md#synthetic-store).
 - **Docs**: [docs/messages.md](docs/messages.md) records the design for giving
   Hermes read access to iMessage history and new-message events, and the
   open-source readers evaluated for it. Nothing reads messages yet.

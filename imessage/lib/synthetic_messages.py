@@ -14,7 +14,8 @@ best guesses that are marked as such.
     <root>/manifest.json                            what was generated, for assertions
 
 `message.attributedBody` holds NSAttributedString archives that match
-Foundation's NSArchiver byte for byte (see typedstream.py). Attachment
+Foundation's NSArchiver byte for byte (see typedstream.py), some with the
+mutable classes Messages also writes. Attachment
 `filename` values keep Messages' `~/Library/Messages/Attachments/...` form,
 so a reader has to map that prefix onto its configured attachment root and
 must never expand `~`.
@@ -178,6 +179,7 @@ class Spec:
     balloon: str | None = None
     expressive: str | None = None
     error: int = 0
+    mutable: bool = False  # archive as NSMutableAttributedString
     note: str = ""
 
     @property
@@ -208,7 +210,8 @@ SPECS: list[Spec] = [
     Spec("alex-lunch", "alex", None, "2026-10-05T16:15:00+00:00", "Lunch Thursday?",
          body="both", note="from me, both text and attributedBody"),
     Spec("alex-sure", "alex", "alex", "2026-10-05T16:17:00+00:00",
-         "Sure — noon at the usual place \U0001F35C", note="attributedBody only, non-BMP emoji"),
+         "Sure — noon at the usual place \U0001F35C", mutable=True,
+         note="attributedBody only (mutable archive classes), non-BMP emoji"),
     Spec("alex-love", "alex", "alex", "2026-10-05T16:18:00+00:00",
          "Loved “Lunch Thursday?”", reaction=("alex-lunch", "love"), note="reaction"),
     Spec("alex-edit", "alex", None, "2026-10-05T16:20:00+00:00", "See you at 12:15",
@@ -249,7 +252,8 @@ SPECS: list[Spec] = [
     Spec("garden-mention", "garden", "jordan", "2026-10-01T17:05:00+00:00",
          "Hey Sam, can you bring the seed trays?", mention=("Sam", ME_EMAIL), note="mentions me"),
     Spec("garden-rtl", "garden", "maria", "2026-10-01T17:06:00+00:00",
-         "¡Hola! שלום \U0001F331", note="accents, Hebrew and emoji"),
+         "¡Hola! שלום \U0001F331", mutable=True,
+         note="accents, Hebrew and emoji (mutable archive classes)"),
     Spec("garden-voice", "garden", None, "2026-10-01T17:08:00+00:00", audio=True,
          attachments=[Attachment("Audio Message.caf", "audio/x-caf", "com.apple.coreaudio-format", FAKE)],
          note="audio message from me"),
@@ -302,15 +306,15 @@ def archive(spec: Spec, text: str) -> bytes:
                              PART: ts.Int32(i), WRITING_DIRECTION: ts.Int32(-1)}))
         if spec.text:
             runs.append((ts.utf16_len(spec.text), {PART: ts.Int32(len(spec.attachments))}))
-        return ts.archive_attributed_string(text, runs)
+        return ts.archive_attributed_string(text, runs, mutable=spec.mutable)
     if spec.mention:
         word, handle = spec.mention
         start = text.index(word)
         before, after = text[:start], text[start + len(word):]
         runs = [(ts.utf16_len(s), a) for s, a in
                 ((before, part), (word, {MENTION: handle, **part}), (after, part)) if s]
-        return ts.archive_attributed_string(text, runs)
-    return ts.archive_attributed_string(text, [(ts.utf16_len(text), part)])
+        return ts.archive_attributed_string(text, runs, mutable=spec.mutable)
+    return ts.archive_attributed_string(text, [(ts.utf16_len(text), part)], mutable=spec.mutable)
 
 
 def summary_info(spec: Spec) -> bytes | None:
