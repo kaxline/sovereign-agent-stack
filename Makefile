@@ -3,7 +3,7 @@
 	buzz-relay-start buzz-relay-stop buzz-relay-status buzz-relay-logs buzz-relay-restart \
 	buzz-admin \
 	corpus-create corpus-use corpus-list corpus-ingest corpus-destroy \
-	project-init project-index project-index-check project-sources-test synthetic-mail-test \
+	project-init project-index project-index-check project-sources-test synthetic-mail-test synthetic-messages-test \
 	mail-index mail-index-doctor mail-index-mailboxes mail-index-test mail-script-test mail-mcp-test \
 	mail-drafts mail-drafts-watch mail-drafts-doctor mail-drafts-test mail-apps mail-apps-test model-use model-sync \
 	data-dir-show data-dir-set data-dir-migrate \
@@ -251,6 +251,10 @@ project-sources-test:
 # Fake Apple Mail store for mail-reader tests. See docs/email.md.
 synthetic-mail-test:
 	python3 scripts/test-synthetic-mail.py
+
+# Fake Messages.app store for message-reader tests. See docs/messages.md.
+synthetic-messages-test:
+	python3 scripts/test-synthetic-messages.py
 
 # Apple Mail indexer (host-side). Reads through Mail.app by default; set
 # source = "store" in the config to read Mail's files instead. See docs/email.md.
