@@ -495,6 +495,7 @@ class RunStats:
     missing_files: int = 0
     unreadable: int = 0
     accounts_missing: list[str] = field(default_factory=list)
+    compacted: bool = False
 
     def as_dict(self) -> dict:
         return dict(self.__dict__)
@@ -507,9 +508,16 @@ def open_index(path: Path) -> sqlite3.Connection:
     except PermissionError:
         pass
     new = not path.exists()
+    # VACUUM writes a scratch copy of the index. Keep it beside the index, in
+    # the same 0700 folder you exclude from backups, not in the system temp
+    # folder. (Store snapshots stay in system temp: this folder is mounted into
+    # mail-mcp, and a snapshot covers every account, not just your scope.)
+    os.environ["SQLITE_TMPDIR"] = str(path.parent)
     db = sqlite3.connect(path)
     if new:
         os.chmod(path, 0o600)
+    # Overwrite deleted rows with zeros instead of leaving them in free pages.
+    db.execute("PRAGMA secure_delete = ON")
     db.executescript(INDEX_SCHEMA)
     version = db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
     if version and int(version[0]) != INDEX_SCHEMA_VERSION:
@@ -517,6 +525,33 @@ def open_index(path: Path) -> sqlite3.Connection:
         raise LayoutError(f"index schema {version[0]} is not {INDEX_SCHEMA_VERSION}; delete {path} and re-run")
     db.execute("INSERT OR REPLACE INTO meta VALUES ('schema_version', ?)", (str(INDEX_SCHEMA_VERSION),))
     return db
+
+
+def fts_secure_delete(db: sqlite3.Connection) -> bool:
+    """Make FTS5 drop a deleted message's words from the search index at once.
+
+    Needs SQLite 3.42 or newer, both here and wherever the index is read. On
+    older SQLite, compact() merges the index instead, which drops them too.
+    """
+    try:
+        db.execute("INSERT INTO messages_fts(messages_fts, rank) VALUES('secure-delete', 1)")
+        return True
+    except sqlite3.OperationalError:
+        return False
+
+
+def compact(db: sqlite3.Connection, *, fts_secure: bool) -> None:
+    """Merge the full-text index and rewrite the file without free pages.
+
+    Day to day, secure_delete and FTS5 secure-delete already overwrite text
+    as it's deleted, so this runs only when that isn't enough (see run()).
+    Neither can reach copies an SSD or a backup already holds; FileVault and
+    backup exclusions cover those.
+    """
+    if not fts_secure:
+        db.execute("INSERT INTO messages_fts(messages_fts) VALUES('optimize')")
+        db.commit()
+    db.execute("VACUUM")
 
 
 def _fts_put(db: sqlite3.Connection, rowid: int, subject, from_addr, from_name, to, cc, body) -> None:
@@ -637,6 +672,11 @@ def run(config: Config, *, now: float | None = None, source=None) -> RunStats:
 
     db = open_index(config.index)
     try:
+        fts_secure = fts_secure_delete(db)
+        # Indexes written before secure delete was turned on may hold old text
+        # in free pages, so they're compacted once.
+        first_scrub = db.execute("SELECT 1 FROM meta WHERE key = 'scrubbed'").fetchone() is None
+        erased = False  # text was deleted or blanked this run
         fingerprint = config.scope_fingerprint()
         # Message ids and flag words differ between sources, so switching
         # source rebuilds the index. Indexes from before `source` existed
@@ -645,6 +685,7 @@ def run(config: Config, *, now: float | None = None, source=None) -> RunStats:
         has_rows = db.execute("SELECT 1 FROM messages LIMIT 1").fetchone() is not None
         if has_rows and (built_from[0] if built_from else "store") != source.name:
             stats.removed += db.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+            erased = True
             db.execute("DELETE FROM messages")
             db.execute("DELETE FROM messages_fts")
 
@@ -655,11 +696,14 @@ def run(config: Config, *, now: float | None = None, source=None) -> RunStats:
             db.execute("DELETE FROM messages WHERE rowid = ?", (rowid,))
             db.execute("DELETE FROM messages_fts WHERE rowid = ?", (rowid,))
             stats.removed += 1
+            erased = True
 
         to_fetch = []
         for row in rows:
             prior = existing.get(row.rowid)
             needs_file = prior is None or (config.bodies and not prior[1]) or (not config.bodies and prior[1])
+            if prior is not None and prior[1] and not config.bodies:
+                erased = True  # this message's body is about to be blanked
             if prior is not None and not needs_file:
                 if prior[0] != row.flags:
                     db.execute("UPDATE messages SET flags=?, is_read=?, is_flagged=?, mailbox=? WHERE rowid=?",
@@ -709,6 +753,15 @@ def run(config: Config, *, now: float | None = None, source=None) -> RunStats:
         db.execute("INSERT OR REPLACE INTO meta VALUES ('last_run', ?)",
                    (str(int(now if now is not None else time.time())),))
         db.commit()
+        free, pages = (db.execute(f"PRAGMA {p}").fetchone()[0] for p in ("freelist_count", "page_count"))
+        # Without FTS5 secure-delete, a removed message's words stay in the
+        # search index until it's merged. Past a quarter free, give the space back.
+        if first_scrub or (erased and not fts_secure) or (pages and free / pages > 0.25):
+            compact(db, fts_secure=fts_secure)
+            db.execute("INSERT OR REPLACE INTO meta VALUES ('scrubbed', ?)",
+                       (str(int(now if now is not None else time.time())),))
+            db.commit()
+            stats.compacted = True
     finally:
         db.close()
     return stats

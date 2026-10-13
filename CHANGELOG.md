@@ -202,6 +202,12 @@ Only with `todo` enabled.
   are both off. MCP servers added by hand reach cron jobs after the next
   bootstrap run. `make doctor` flags any cron job that can read mail
   alongside other tools.
+- **Mail indexer**: deleted text is overwritten. The index turns on SQLite's
+  `secure_delete` and FTS5's `secure-delete` (SQLite 3.42+), so a message
+  that leaves scope, or a body blanked by turning `bodies` off, is gone from
+  the file at once. It's compacted once for older indexes, after removals on
+  older SQLite, and when over a quarter of it is free space. `run` reports
+  `compacted`.
 - **Docs**: [docs/email.md](docs/email.md) records the design for giving Hermes
   read access to Apple Mail, why scripting Mail.app is the default over Full
   Disk Access, and a survey of existing Apple Mail MCP servers.
