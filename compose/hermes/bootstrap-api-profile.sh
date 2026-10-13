@@ -998,6 +998,80 @@ register_mail_drafts_mcp_servers() {
   pin_mcp_tools "$_rmdm_profile" drafts $MAIL_DRAFTS_MCP_TOOLS
 }
 
+# Keep the mail tools away from cron jobs that didn't ask for them.
+#
+# Cron runs unattended, and a job without its own tool list gets every MCP
+# server, mail included, next to web search, the browser and a shell. While
+# mail or drafts is registered on a profile, pin platform_toolsets.cron to
+# Hermes's default cron tools plus every other MCP server. A job that names
+# mail in its own enabled_toolsets (make mail-triage-cron) still gets it.
+#
+# A list we wrote is recorded in .mail-cron-toolsets.json next to config.yaml,
+# so it can be refreshed or removed later. A list you wrote yourself is kept;
+# only mail and drafts are taken out of it.
+fence_mail_from_cron() {
+  _fmc_cfg="$(config_path_for "$1")"
+  [ -f "$_fmc_cfg" ] || return 0
+  _out="$(python3 - "$_fmc_cfg" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, "/opt/hermes")
+import yaml
+from utils import atomic_yaml_write
+
+MAIL_URLS = ("mail-mcp:8000", "mail-drafts-mcp:8000")
+cfg_path = Path(sys.argv[1])
+state_path = cfg_path.parent / ".mail-cron-toolsets.json"
+profile = cfg_path.parent.name if cfg_path.parent.parent.name == "profiles" else "default"
+
+config = yaml.safe_load(cfg_path.read_text()) or {}
+servers = config.get("mcp_servers") or {}
+enabled = {str(n) for n, s in servers.items()
+           if isinstance(s, dict) and str(s.get("enabled", True)).lower() not in ("false", "no", "off", "0")}
+mail = {n for n in enabled if any(u in str(servers[n].get("url", "")) for u in MAIL_URLS)}
+platform = config.get("platform_toolsets")
+platform = platform if isinstance(platform, dict) else {}
+current = platform.get("cron")
+try:
+    managed = json.loads(state_path.read_text()) == current
+except (OSError, ValueError):
+    managed = False
+others = sorted(enabled - mail) or ["no_mcp"]
+
+if not mail:
+    if managed and current is not None:
+        platform.pop("cron", None)
+        config["platform_toolsets"] = platform
+        atomic_yaml_write(str(cfg_path), config)
+        state_path.unlink(missing_ok=True)
+        print(f"removed the cron tool list added for mail ({profile})")
+    raise SystemExit(0)
+
+if current is None or managed:
+    desired = ["hermes-cron"] + others
+else:
+    desired = [t for t in current if t not in mail]
+    if not set(desired) & (enabled | {"no_mcp"}):
+        # A list naming no MCP server gets all of them, mail included.
+        desired += others
+if desired == current:
+    print(f"cron jobs on {profile} already can't reach mail unless they ask")
+    raise SystemExit(0)
+platform["cron"] = desired
+config["platform_toolsets"] = platform
+atomic_yaml_write(str(cfg_path), config)
+if current is None or managed:
+    state_path.write_text(json.dumps(desired))
+    print(f"pinned platform_toolsets.cron on {profile} without mail: {', '.join(desired)}")
+else:
+    print(f"took mail out of your platform_toolsets.cron on {profile}")
+PY
+)"
+  if [ -n "$_out" ]; then log "$_out"; fi
+}
+
 # Slug personal -> CALDAV_PERSONAL_PASSWORD. Hyphens become underscores.
 caldav_password_env_key() {
   _cpek_slug="$1"
@@ -1540,6 +1614,9 @@ else:
 PY
   fi
 fi
+
+fence_mail_from_cron ""
+fence_mail_from_cron "$PROFILE"
 
 apply_terminal_backend_all_profiles
 apply_model_proxy_all_profiles

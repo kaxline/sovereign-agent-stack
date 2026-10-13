@@ -1105,6 +1105,15 @@ if has_profile mail || [[ "$mail_on" -eq 1 ]]; then
   if grep -qs 'mail-mcp:8000' data/hermes/profiles/api-server/config.yaml; then
     bad "api-server registers the mail MCP — re-run hermes-api-bootstrap (unattended sessions must not read mail)"
   fi
+  # Cron runs unattended: a job that can read mail should have nothing else.
+  if mail_cron="$(python3 scripts/check-mail-cron.py --hermes-home data/hermes 2>&1)"; then
+    ok "no cron job can read mail alongside other tools"
+  else
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && bad "$line"
+    done <<< "$mail_cron"
+    bad "  re-run hermes-api-bootstrap and hermes-browser-bootstrap (keeps mail away from cron jobs that don't ask for it); give jobs with their own tool list one without mail. See docs/email.md"
+  fi
   if docker info >/dev/null 2>&1; then
     if docker compose ps --status running mail-mcp 2>/dev/null | grep -q mail-mcp; then
       ok "mail-mcp container is running"

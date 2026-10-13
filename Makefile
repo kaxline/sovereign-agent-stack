@@ -5,7 +5,8 @@
 	corpus-create corpus-use corpus-list corpus-ingest corpus-destroy \
 	project-init project-index project-index-check project-sources-test synthetic-mail-test synthetic-messages-test \
 	mail-index mail-index-doctor mail-index-mailboxes mail-index-test mail-script-test mail-mcp-test \
-	mail-drafts mail-drafts-watch mail-drafts-doctor mail-drafts-test mail-apps mail-apps-test model-use model-sync \
+	mail-drafts mail-drafts-watch mail-drafts-doctor mail-drafts-test mail-apps mail-apps-test \
+	mail-triage-cron mail-triage-cron-show mail-triage-cron-remove mail-cron-test model-use model-sync \
 	data-dir-show data-dir-set data-dir-migrate \
 	db-backup db-service-add db-psql todo-init todo-open \
 	coding-root-list coding-root-add \
@@ -300,6 +301,21 @@ mail-apps:
 
 mail-apps-test:
 	python3 scripts/test-mail-apps.py
+
+# Hermes cron job that reports new mail: mail tools only, runs only when newer
+# mail was indexed, delivers to Signal when set up. See docs/email.md.
+#   make mail-triage-cron [SCHEDULE="every 15m"] [DELIVER=signal]
+mail-triage-cron:
+	scripts/mail-triage-cron.sh create $(if $(SCHEDULE),--schedule "$(SCHEDULE)") $(if $(DELIVER),--deliver "$(DELIVER)")
+
+mail-triage-cron-show:
+	scripts/mail-triage-cron.sh show
+
+mail-triage-cron-remove:
+	scripts/mail-triage-cron.sh remove
+
+mail-cron-test:
+	python3 scripts/test-mail-cron.py
 
 # Read-only mail MCP: query layer against a synthetic index, and which profiles get it.
 mail-mcp-test:
