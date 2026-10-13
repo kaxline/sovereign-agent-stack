@@ -49,7 +49,7 @@ class Env:
     def config(self, store: Path, accounts: dict[str, list[str]], *, since="2026-01-01",
                bodies=False, attachments=False, index: Path | None = None) -> Path:
         index = index or self.tmp / f"index-{self.n}" / "mail.sqlite"
-        lines = [f'store = "{store}"', f'index = "{index}"', f"since = {since}",
+        lines = ['source = "store"', f'store = "{store}"', f'index = "{index}"', f"since = {since}",
                  f"bodies = {str(bodies).lower()}", f"attachments = {str(attachments).lower()}"]
         for acct, boxes in accounts.items():
             lines += ["", "[[accounts]]", f'id = "{acct}"', f"mailboxes = {json.dumps(boxes)}"]
@@ -79,13 +79,19 @@ def store_db(store: Path) -> sqlite3.Connection:
 
 def test_config_validation(env: Env) -> None:
     store, _ = env.store()
+    acct = '[[accounts]]\nid="A"\nmailboxes=["INBOX"]\n'
+    head = f'source = "store"\nstore = "{store}"\n'
     cases = {
-        "missing store": 'index = "/tmp/x.sqlite"\nsince = 2026-01-01\n[[accounts]]\nid="A"\nmailboxes=["INBOX"]\n',
-        "no accounts": f'store = "{store}"\nindex = "{env.tmp}/i.sqlite"\nsince = 2026-01-01\n',
-        "index in store": f'store = "{store}"\nindex = "{store}/i.sqlite"\nsince = 2026-01-01\n[[accounts]]\nid="A"\nmailboxes=["INBOX"]\n',
-        "no since": f'store = "{store}"\nindex = "{env.tmp}/i.sqlite"\n[[accounts]]\nid="A"\nmailboxes=["INBOX"]\n',
-        "unknown key": f'store = "{store}"\nindex = "{env.tmp}/i.sqlite"\nsince = 2026-01-01\ndefault_store = true\n[[accounts]]\nid="A"\nmailboxes=["INBOX"]\n',
-        "empty mailboxes": f'store = "{store}"\nindex = "{env.tmp}/i.sqlite"\nsince = 2026-01-01\n[[accounts]]\nid="A"\nmailboxes=[]\n',
+        "missing store": 'source = "store"\nindex = "/tmp/x.sqlite"\nsince = 2026-01-01\n' + acct,
+        "no accounts": f'{head}index = "{env.tmp}/i.sqlite"\nsince = 2026-01-01\n',
+        "index in store": f'{head}index = "{store}/i.sqlite"\nsince = 2026-01-01\n' + acct,
+        "no since": f'{head}index = "{env.tmp}/i.sqlite"\n' + acct,
+        "unknown key": f'{head}index = "{env.tmp}/i.sqlite"\nsince = 2026-01-01\ndefault_store = true\n' + acct,
+        "empty mailboxes": f'{head}index = "{env.tmp}/i.sqlite"\nsince = 2026-01-01\n[[accounts]]\nid="A"\nmailboxes=[]\n',
+        "store without source": f'store = "{store}"\nindex = "{env.tmp}/i.sqlite"\nsince = 2026-01-01\n' + acct,
+        "store with script source": f'source = "script"\nstore = "{store}"\nindex = "{env.tmp}/i.sqlite"\nsince = 2026-01-01\n' + acct,
+        "unknown source": f'source = "imap"\nindex = "{env.tmp}/i.sqlite"\nsince = 2026-01-01\n' + acct,
+        "bad timeout": f'index = "{env.tmp}/i.sqlite"\nsince = 2026-01-01\nscript_timeout = 0\n' + acct,
     }
     for name, text in cases.items():
         path = env.tmp / "bad.toml"

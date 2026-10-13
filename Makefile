@@ -4,7 +4,7 @@
 	buzz-admin \
 	corpus-create corpus-use corpus-list corpus-ingest corpus-destroy \
 	project-init project-index project-index-check project-sources-test synthetic-mail-test \
-	mail-index mail-index-doctor mail-index-mailboxes mail-index-test mail-mcp-test model-use model-sync \
+	mail-index mail-index-doctor mail-index-mailboxes mail-index-test mail-script-test mail-mcp-test model-use model-sync \
 	data-dir-show data-dir-set data-dir-migrate \
 	db-backup db-service-add db-psql todo-init todo-open \
 	coding-root-list coding-root-add \
@@ -251,7 +251,8 @@ project-sources-test:
 synthetic-mail-test:
 	python3 scripts/test-synthetic-mail.py
 
-# Apple Mail indexer (host-side). See docs/email.md.
+# Apple Mail indexer (host-side). Reads through Mail.app by default; set
+# source = "store" in the config to read Mail's files instead. See docs/email.md.
 #   cp mail-index.toml.example mail-index.toml   # then fill it in
 #   make mail-index-doctor && make mail-index
 MAIL_INDEX_CONFIG ?= mail-index.toml
@@ -266,6 +267,10 @@ mail-index-mailboxes:
 
 mail-index-test:
 	python3 scripts/test-mail-indexer.py
+
+# Mail.app scripting source, run under Node against a fake Mail (needs node).
+mail-script-test:
+	python3 scripts/test-mail-script.py
 
 # Read-only mail MCP: query layer against a synthetic index, and which profiles get it.
 mail-mcp-test:

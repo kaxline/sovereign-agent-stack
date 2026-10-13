@@ -122,10 +122,15 @@ Only with `todo` enabled.
 - **Mail indexer** (host-side, opt-in): `scripts/mail-index.py` indexes the
   accounts, mailboxes and date window named in a `mail-index.toml` config
   (copy `mail-index.toml.example`) into a local SQLite file with full-text
-  search. It reads a snapshot of Mail's metadata, never writes to the store,
-  has no default store path and prints counts only. Bodies and attachment
-  names are separate opt-ins. `make mail-index`, `make mail-index-doctor`,
-  `make mail-index-mailboxes`, `make mail-index-test`. See
+  search. By default it reads through Mail.app scripting, which needs the
+  Automation permission for Mail and not Full Disk Access. With
+  `source = "store"` it reads a snapshot of Mail's files instead, which is
+  faster but needs Full Disk Access and a `store` path (there's no default).
+  It never writes to Mail and prints counts and timings only. Bodies and
+  attachment names are separate opt-ins. Exit code 4 means macOS refused the
+  permission; 5 means a call to Mail failed or timed out. `make mail-index`,
+  `make mail-index-doctor`, `make mail-index-mailboxes`,
+  `make mail-index-test`, `make mail-script-test` (needs node). See
   [docs/email.md](docs/email.md).
 - **Mail MCP** (`mail` profile): `mail_status`, `mail_search`, `mail_get` and
   `mail_thread` over the index. Every result carries a notice that message
@@ -136,7 +141,8 @@ Only with `todo` enabled.
   folder mode, per-profile registration, `api-server` not registered).
   `make mail-mcp-test`.
 - **Docs**: [docs/email.md](docs/email.md) records the design for giving Hermes
-  read access to Apple Mail's local store.
+  read access to Apple Mail, why scripting Mail.app is the default over Full
+  Disk Access, and a survey of existing Apple Mail MCP servers.
   `scripts/make-synthetic-mail.py` writes a fake Mail store for developing
   the reader, and `make synthetic-mail-test` checks it.
 - **Docs**: [docs/hermes.md](docs/hermes.md#platform-hints) documents

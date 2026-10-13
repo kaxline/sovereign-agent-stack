@@ -2,22 +2,23 @@
 
 Read-only email for Hermes, through Apple Mail instead of a login to a mail
 server. A [host-side indexer](#indexer) builds a scoped index, and
-the [`mail-mcp`](#mail-mcp) sidecar serves it to Hermes. Both have been tested
-only against [the synthetic store](#synthetic-mail-store); see
-[First run on real mail](#first-run-on-real-mail).
+the [`mail-mcp`](#mail-mcp) sidecar serves it to Hermes. By default the
+indexer asks Mail.app through scripting, which needs only the Automation
+permission for Mail. Reading Mail's files directly is an opt-in fast mode
+that needs Full Disk Access (see [Decision](#decision-2026-10-13)).
+
+Everything has been tested only against synthetic mail: a fake Mail.app for
+the scripting source and [a synthetic store](#synthetic-mail-store) for the
+file source. See [First run on real mail](#first-run-on-real-mail).
+Sending isn't built yet; when it is, it will only create drafts that you send
+from Mail.
 
 Requires the **`mail`** compose profile (`./scripts/setup.sh --mail`).
 
-On 2026-10-13 we changed the plan (see [Decision](#decision-2026-10-13)).
-The default source becomes Mail.app scripting, which needs only the
-Automation permission for Mail. Reading Mail's files with Full Disk Access
-becomes an opt-in fast mode. Sending goes through drafts that the user sends
-from Mail.
-
 ## Quick path
 
-Today the only indexer reads Mail's files and needs Full Disk Access. The
-Mail.app scripting source is being built and will replace it as the default.
+The first `make mail-index-mailboxes` makes macOS ask whether your terminal
+may control Mail. Mail opens if it isn't running.
 
 ```bash
 ./scripts/setup.sh --mail          # profile, MAIL_MCP_ENABLED=1, mail-index.toml, data/mail (0700)
@@ -98,9 +99,9 @@ The resulting design:
 
 | Part | Default | Opt-in |
 |---|---|---|
-| Read source | Mail.app via JXA (Automation → Mail) feeding the scoped index | Option B indexer with Full Disk Access, as its own signed executable |
+| Read source | Mail.app via JXA (Automation → Mail) feeding the scoped index (`source = "script"`, built) | Option B with Full Disk Access (`source = "store"`, built; its own signed executable is a follow-up) |
 | What Hermes sees | The same index through the read-only mail MCP | Same |
-| Sending | A separate helper creates a draft or opens a Mail compose window; the user clicks Send | Autonomous sending only from an agent-owned address, with a recipient allowlist and rate limit |
+| Sending (not built) | A separate helper creates a draft or opens a Mail compose window; the user clicks Send | Autonomous sending only from an agent-owned address, with a recipient allowlist and rate limit |
 
 - **The index makes scripting fast enough.** Live AppleScript queries are slow
   on large mailboxes. Benchmarks on a 73K-message store measured 50-message
@@ -168,9 +169,11 @@ Ideas worth borrowing:
 - Pacing attachment calls, because Mail drops attachments under fast IPC
   (PsychQuant).
 
-## Original design (now the opt-in fast mode)
+## Design
 
-Option **B**, run by a small host-side helper:
+Both sources feed the same index, and everything after the index is the
+same. The diagram shows option **B**, the store source; the script source
+swaps the first arrow for Automation → Mail.app:
 
 ```
 Mail store ──(Full Disk Access, read-only)──▶ mail-indexer (host)
@@ -183,16 +186,22 @@ Mail store ──(Full Disk Access, read-only)──▶ mail-indexer (host)
                                                 Hermes
 ```
 
-- **One narrow program gets Full Disk Access.** That program is the indexer,
-  not a terminal, `python3`, `node` or the container runtime. It opens the
+- **One narrow program holds the permission.** That program should be the
+  indexer, not a terminal, `python3`, `node` or the container runtime. Today
+  it runs from a terminal, so the terminal holds the permission; packaging it
+  as its own executable is a follow-up. With the store source it opens the
   Envelope Index read-only from a snapshot copy (database plus `-wal`). It
   works out the schema with `PRAGMA table_info` and refuses to run on a
   layout it doesn't recognise. It finds message files by globbing, because
   folder layouts shift between releases.
-- **Scope is explicit, with no defaults.** The store path, the accounts, the
-  mailboxes and the date window all come from configuration, and nothing is
-  indexed until they're set. Bodies and attachments are separate opt-ins.
-  Junk and Trash are excluded unless listed.
+- **The scripting code only reads.** `scripts/lib/mail_script.js` reads
+  properties and nothing else. A test fails if it gains a send, move,
+  delete, compose or similar call.
+- **Scope is explicit, with no defaults.** The accounts, the mailboxes and
+  the date window (and, for the store source, the store path) all come from
+  configuration, and nothing is indexed until they're set. Bodies and
+  attachments are separate opt-ins. Junk and Trash are excluded unless
+  listed.
 - **Hermes sees the index, never the store.** The index lives in the
   gitignored `data/` tree (see [User data directory](data-dir.md)) and is
   served through a read-only MCP with narrow tools: search, get one message,
@@ -200,22 +209,20 @@ Mail store ──(Full Disk Access, read-only)──▶ mail-indexer (host)
 - **Mail content is untrusted input.** Messages can carry instructions aimed
   at the agent. Tool results mark message text as quoted data, and the MCP
   has no send, move or delete tools.
-- **Incremental.** The indexer tracks the highest `ROWID` per mailbox and
-  each message's flags, so later runs pick up only new or changed messages.
-
-Option **C** is now the default read source (see
-[Decision](#decision-2026-10-13)). Actions such as mark read or move would be
-a separate, opt-in tool.
+- **Incremental.** The indexer compares the message ids and flags it already
+  has with what the source lists, so later runs fetch only new messages.
+  Actions such as mark read or move would be a separate, opt-in tool.
 
 ## Indexer
 
-`scripts/mail-index.py` (library: `scripts/lib/mail_index.py`) runs on the
-host. Python 3.11 or newer, standard library only.
+`scripts/mail-index.py` runs on the host. Python 3.11 or newer, standard
+library only. The library is `scripts/lib/mail_index.py`, with the scripting
+source in `mail_script.py` and `mail_script.js`.
 
 ```bash
-cp mail-index.toml.example mail-index.toml   # gitignored; fill in store, since, accounts
+cp mail-index.toml.example mail-index.toml   # gitignored; fill in since and accounts
 make mail-index-mailboxes                     # account ids and mailbox names, to write the config
-make mail-index-doctor                        # checks the store and scope; counts only
+make mail-index-doctor                        # checks the source and scope; counts and timings only
 make mail-index                               # build or update the index
 ```
 
@@ -226,13 +233,15 @@ to point at a different config.
 
 | Key | Required | Meaning |
 |---|---|---|
-| `store` | yes | The folder holding Mail's `V<n>/` directory. No default |
+| `source` | no, `"script"` | `"script"` asks Mail.app (Automation permission). `"store"` reads Mail's files (Full Disk Access) |
+| `store` | with `source = "store"` only | The folder holding Mail's `V<n>/` directory. No default. Setting it without `source = "store"` is an error, so a config can't switch source by accident |
 | `index` | yes | The index file to write. Must be outside the store. Keep it in the data tree |
 | `since` | yes | Only messages received on or after this date |
-| `[[accounts]]` | yes, at least one | `id` (account folder UUID) and `mailboxes` |
-| `bodies` | no, `false` | Store message bodies (HTML converted to text) for search |
+| `[[accounts]]` | yes, at least one | `id` (from `make mail-index-mailboxes`) and `mailboxes` |
+| `bodies` | no, `false` | Store message bodies for search. The script source takes Mail's plain-text rendering; the store source converts HTML to text |
 | `attachments` | no, `false` | Store attachment names, types and sizes. Contents are never copied |
 | `max_body_chars` | no, `100000` | Longest body kept per message |
+| `script_timeout` | no, `600` | Seconds to wait for each call to Mail (script source) |
 
 `mailboxes` entries are exact names (`INBOX`, `Projects/Alpha`) or glob
 patterns (`*`, `Clients/*`). Patterns skip Junk and Trash folders (Junk,
@@ -241,6 +250,25 @@ A pattern matches a mailbox, not its children, so `Projects` doesn't include
 `Projects/Alpha`.
 
 ### What a run does
+
+With the **script source** (default):
+
+1. Lists each in-scope account's mailboxes through Mail.app, walking nested
+   mailboxes from their parent.
+2. For each mailbox in scope, fetches every message's id and received date
+   in one call per property, then subject, sender, read, flagged, deleted
+   and Message-ID the same way. Asking for a property across the whole
+   mailbox is far faster than asking each message or using a `whose`
+   clause. If the message list changes between those calls, it starts the
+   mailbox again so the values stay lined up.
+3. Keeps messages received on or after `since` that aren't marked deleted.
+4. For new messages only, in batches of 50, fetches the raw headers, plus
+   Mail's plain-text body when `bodies` is on and attachment names, types and
+   sizes when `attachments` is on. If Mail can't produce a message, it is
+   still indexed from its summary.
+5. Updates the index the same way as the store source (step 5 below).
+
+With the **store source** (`source = "store"`):
 
 1. Copies the metadata database and its `-wal` / `-shm` files to a private
    temporary folder, so Mail's live file is never opened, and runs SQLite's
@@ -261,28 +289,61 @@ A pattern matches a mailbox, not its children, so `Projects` doesn't include
 
 `run` prints counts as JSON (`in_scope`, `added`, `updated`, `removed`,
 `missing_files`, `unreadable`, `accounts_missing`) and never message content.
-`doctor` prints the version folder, which optional columns exist, whether
-dates look like Unix seconds, and how many messages and files are in scope.
+For the script source, `missing_files` counts messages Mail listed but
+couldn't produce.
+
+`doctor` never prints message content either. For the script source it
+prints how many mailboxes and messages are in scope, the seconds spent
+listing mailboxes and summaries, and the seconds per message to fetch
+details for a sample of 20. For the store source it prints the version
+folder, which optional columns exist, whether dates look like Unix seconds,
+and how many messages and files are in scope.
 
 ### The index
 
 One SQLite file, owner-only (`0600`, folder `0700`). Table `messages` is keyed
-by the store's message `ROWID` and holds the account, mailbox, Message-ID,
+by Mail's message id (the store's `ROWID`, which scripting reports as the
+message `id`) and holds the account, mailbox, Message-ID,
 thread id, dates, sender, recipients (JSON), subject, flags, the optional
 body and attachment list. `messages_fts` is an FTS5 table over subject,
 sender, recipients and body, with diacritics folded. `meta` records the
-schema version, a fingerprint of the scope and the last run time. If the
-schema version changes, delete the index and re-run.
+schema version, the source, a fingerprint of the scope and the last run time.
+If the schema version changes, delete the index and re-run. Switching
+`source` empties the index on the next run and rebuilds it, because flags and
+thread ids come out differently.
+
+Threads use Mail's conversation id when the store source has it. Otherwise a
+message joins the thread of an indexed message it replies to (`In-Reply-To`
+or `References`), and starts its own thread if there is none.
 
 ### First run on real mail
 
-The indexer is tested only against the synthetic store, and Apple's format is
-undocumented, so the first real run checks the assumptions:
+Both sources are tested only against synthetic mail, so the first real run
+checks the assumptions. Report counts and timings, not messages.
+
+**Script source:**
+
+1. Run `make mail-index-mailboxes` and allow your terminal to control Mail
+   when macOS asks. Check that each account and nested mailbox appears once,
+   with plausible counts. The fake Mail can't confirm how real Mail lists
+   nested mailboxes.
+2. Fill in `mail-index.toml` and run `make mail-index-doctor`.
+   `accounts_missing` should be empty, `details_readable` should equal
+   `details_sampled`, and the timings show how long a full run will take.
+   Start with a short `since` window on a large mailbox.
+3. Exit code 4 means macOS refused Automation access: allow it under System
+   Settings > Privacy & Security > Automation. Exit code 5 means a call to
+   Mail failed or timed out, and the error gives the Apple event code.
+
+The Automation permission belongs to the app the indexer runs from (your
+terminal), so anything run from that terminal can control Mail. Packaging the
+indexer as its own app is a follow-up.
+
+**Store source:**
 
 1. Run `make mail-index-doctor`. `dates_look_like_unix_seconds` should be
    `true` and `message_files_found` should equal `messages_in_scope`. If not,
-   the store's layout differs from the synthetic one. Report the counts, not
-   messages.
+   the store's layout differs from the synthetic one.
 2. Exit code 3 means the metadata layout wasn't recognised, and the error
    names the missing columns. Exit code 4 means macOS denied access.
 
@@ -361,6 +422,19 @@ The output path must contain `synthetic-mail`. The generator refuses
 anything under `~/Library` and uses only `example.com`, `example.org` and
 `example.net` addresses. Output is byte-for-byte reproducible, except for the
 SQLite file's page layout.
+
+The same specs also feed a fake Mail.app for the script source.
+`synthetic_mail.script_fixture()` turns them into accounts, nested mailboxes
+and messages, and `scripts/lib/fake_mail_app.js` serves that model to
+`mail_script.js` under Node, the way JXA does: callable element collections,
+batch property calls and `byId`. It can also refuse Automation access, list
+nested mailboxes at the top level, and add a message partway through a
+listing. Account ids and message ids match the synthetic store, so the
+tests check that both sources index the same messages the same way.
+
+```bash
+make mail-script-test   # needs node; nothing here runs osascript
+```
 
 The fake schema is modelled on public descriptions and isn't authoritative. A
 reader that passes against it still has to probe the real schema at runtime,

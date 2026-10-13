@@ -22,12 +22,13 @@ import email.policy
 import hashlib
 import json
 import plistlib
+import re
 import sqlite3
 import uuid
 from dataclasses import asdict, dataclass, field
 from email.headerregistry import Address
 from email.message import EmailMessage
-from email.utils import parsedate_to_datetime
+from email.utils import formataddr, parsedate_to_datetime
 from pathlib import Path
 
 POLICY = email.policy.default.clone(linesep="\n")
@@ -438,3 +439,53 @@ def build(root: Path, specs: list[Spec] = SPECS) -> dict:
     db.close()
     (root / "manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
     return manifest
+
+
+def _plain(spec: Spec) -> str:
+    """Roughly what Mail's scripting `content` gives: the text, or the HTML's text."""
+    if spec.text is not None:
+        return spec.text
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", spec.html or "")).strip()
+
+
+def script_message(spec: Spec) -> dict:
+    """One message as fake_mail_app.js serves it through Mail.app scripting."""
+    _check_spec(spec)
+    raw = build_message(spec).as_bytes(policy=POLICY)
+    headers = raw.split(b"\n\n", 1)[0].decode("ascii")
+    attachments = []
+    if spec.attachment:
+        name, mime, data = spec.attachment
+        attachments.append({"name": name, "mime": mime, "size": len(data)})
+    return {
+        "id": spec.rowid, "received": spec.epoch, "sent": spec.epoch,
+        "subject": spec.subject, "sender": formataddr(spec.sender),
+        "read": bool(spec.flags & FLAG_READ), "flagged": bool(spec.flags & FLAG_FLAGGED),
+        "deleted": bool(spec.flags & FLAG_DELETED), "message_id": spec.message_id,
+        "headers": headers + "\n", "content": _plain(spec), "attachments": attachments,
+    }
+
+
+def script_fixture(specs: list[Spec] = SPECS) -> dict:
+    """The specs as a fake Mail.app scripting model, for fake_mail_app.js.
+
+    Accounts keep the store's ids and message ids match store rowids, so tests
+    can compare the two sources directly.
+    """
+    accounts = []
+    for key, account in ACCOUNTS.items():
+        tree: list[dict] = []
+        for spec in specs:
+            if spec.account != key:
+                continue
+            level = tree
+            node = None
+            for part in spec.mailbox.split("/"):
+                node = next((n for n in level if n["name"] == part), None)
+                if node is None:
+                    node = {"name": part, "children": [], "messages": []}
+                    level.append(node)
+                level = node["children"]
+            node["messages"].append(script_message(spec))
+        accounts.append({"id": account.id, "name": key.title(), "mailboxes": tree})
+    return {"accounts": accounts}

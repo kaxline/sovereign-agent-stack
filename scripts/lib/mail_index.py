@@ -1,9 +1,11 @@
-"""Index a scoped slice of an Apple Mail store into a local SQLite file.
+"""Index a scoped slice of Apple Mail into a local SQLite file.
 
-The indexer reads Mail's metadata database from a snapshot copy, keeps only
-the accounts, mailboxes and date window named in the config, reads message
-headers (and bodies, if enabled) from the message files, and writes a
-standalone index with full-text search. It never writes to the store.
+Two sources feed the same index. The default, `script` (mail_script.py),
+asks Mail.app through scripting and needs only the Automation permission for
+Mail. The opt-in `store` source (StoreSource below) reads Mail's metadata
+database from a snapshot copy and the message files, which needs Full Disk
+Access but is much faster. Either way only the accounts, mailboxes and date
+window named in the config are indexed, and nothing is ever written to Mail.
 
 Nothing here has a default store path: the config must name it. Output from
 run() is counts only, never message content. See docs/email.md.
@@ -28,9 +30,11 @@ from datetime import date, datetime, timezone
 from email.message import EmailMessage
 from html.parser import HTMLParser
 from pathlib import Path
+from typing import Iterator
 from urllib.parse import unquote, urlsplit
 
 INDEX_SCHEMA_VERSION = 1
+SOURCES = ("script", "store")
 META_DB = "Envelope Index"
 MESSAGE_SUFFIXES = (".partial.emlx", ".emlx")
 # Left out of a "*" mailbox pattern; list them by name to include them.
@@ -61,16 +65,18 @@ class AccountScope:
 
 @dataclass
 class Config:
-    store: Path
+    store: Path | None
     index: Path
     since: date
     accounts: list[AccountScope]
     bodies: bool = False
     attachments: bool = False
     max_body_chars: int = 100_000
+    source: str = "script"
+    script_timeout: int = 600
 
     def scope_fingerprint(self) -> str:
-        data = {"store": str(self.store), "since": self.since.isoformat(),
+        data = {"source": self.source, "store": str(self.store), "since": self.since.isoformat(),
                 "accounts": [[a.id.upper(), sorted(a.mailboxes)] for a in self.accounts]}
         return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()[:16]
 
@@ -91,14 +97,23 @@ def load_config(path: Path) -> Config:
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"config is not valid TOML: {exc}") from None
     base = path.resolve().parent
-    unknown = set(raw) - {"store", "index", "since", "bodies", "attachments",
-                          "max_body_chars", "accounts"}
+    unknown = set(raw) - {"source", "store", "index", "since", "bodies", "attachments",
+                          "max_body_chars", "script_timeout", "accounts"}
     if unknown:
         raise ConfigError(f"unknown config keys: {', '.join(sorted(unknown))}")
 
-    store = _path(raw.get("store"), "store", base)
+    source = raw.get("source", "script")
+    if source not in SOURCES:
+        raise ConfigError("`source` must be \"script\" (Mail.app, the default) or \"store\" (Mail's files)")
+    has_store = isinstance(raw.get("store"), str) and raw["store"].strip()
+    if source == "script" and has_store:
+        if "source" not in raw:
+            raise ConfigError("`store` is set but `source` isn't; add source = \"store\" to read"
+                              " Mail's files (Full Disk Access), or remove `store` to use Mail.app")
+        raise ConfigError("`store` is only used with source = \"store\"; remove it")
+    store = _path(raw.get("store"), "store", base) if source == "store" else None
     index = _path(raw.get("index"), "index", base)
-    if index == store or store in index.parents:
+    if store is not None and (index == store or store in index.parents):
         raise ConfigError("`index` must be outside the Mail store")
 
     since = raw.get("since")
@@ -127,10 +142,18 @@ def load_config(path: Path) -> Config:
             raise ConfigError(f"`{key}` must be true or false")
         return value
 
-    max_chars = raw.get("max_body_chars", 100_000)
-    if not isinstance(max_chars, int) or max_chars <= 0:
-        raise ConfigError("`max_body_chars` must be a positive integer")
-    return Config(store, index, since, accounts, flag("bodies"), flag("attachments"), max_chars)
+    def positive(key: str, default: int) -> int:
+        value = raw.get(key, default)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ConfigError(f"`{key}` must be a positive integer")
+        return value
+
+    return Config(store, index, since, accounts, flag("bodies"), flag("attachments"),
+                  positive("max_body_chars", 100_000), source, positive("script_timeout", 600))
+
+
+def since_epoch(day: date) -> int:
+    return int(datetime.combine(day, datetime.min.time(), timezone.utc).timestamp())
 
 
 # --------------------------------------------------------------------------- store layout
@@ -275,7 +298,7 @@ def read_metadata(meta_path: Path, config: Config) -> tuple[list[MetaRow], dict]
         else:
             select += ["NULL", "NULL"]
 
-        since = int(datetime.combine(config.since, datetime.min.time(), timezone.utc).timestamp())
+        since = since_epoch(config.since)
         sql = (f"SELECT {', '.join(select)} FROM messages m {' '.join(joins)}"
                " WHERE m.date_received >= ?")
         wanted = {a.id.upper(): a.mailboxes for a in config.accounts}
@@ -386,7 +409,6 @@ def _ids(value) -> list[str]:
 
 def parse_message(path: Path, *, bodies: bool, attachments: bool, max_chars: int) -> ParsedMessage:
     msg = read_message_file(path)
-    sender = _addresses(msg, "From")
     body = None
     if bodies:
         part = msg.get_body(preferencelist=("plain", "html"))
@@ -409,6 +431,12 @@ def parse_message(path: Path, *, bodies: bool, attachments: bool, max_chars: int
                     size = None
             atts.append({"name": part.get_filename(), "mime": part.get_content_type(),
                          "size": int(size) if size is not None else None})
+    return parsed_from_message(msg, body=body, attachments=atts)
+
+
+def parsed_from_message(msg: EmailMessage, *, body: str | None, attachments: list[dict]) -> ParsedMessage:
+    """Headers from msg; body and attachments as the source worked them out."""
+    sender = _addresses(msg, "From")
     ids = _ids(msg.get("Message-ID"))
     return ParsedMessage(
         message_id=ids[0] if ids else None,
@@ -419,7 +447,7 @@ def parse_message(path: Path, *, bodies: bool, attachments: bool, max_chars: int
         to=[a for a, _ in _addresses(msg, "To")],
         cc=[a for a, _ in _addresses(msg, "Cc")],
         subject=str(msg["Subject"]) if msg["Subject"] is not None else None,
-        body=body, attachments=atts,
+        body=body, attachments=attachments,
     )
 
 
@@ -500,29 +528,126 @@ def _fts_put(db: sqlite3.Connection, rowid: int, subject, from_addr, from_name, 
     )
 
 
-def _thread_id(row: MetaRow, parsed: ParsedMessage | None) -> str | None:
+def _thread_id(db: sqlite3.Connection, row: MetaRow, parsed: ParsedMessage | None) -> str | None:
     if row.conversation_id is not None:
         return f"c{row.conversation_id}"
+    if parsed:
+        # Join the thread of any indexed message this one replies to. Not every
+        # client sends the whole References chain, so the first id alone can't
+        # be trusted to name the root.
+        for ref in [parsed.in_reply_to, *reversed(parsed.references)]:
+            if ref:
+                hit = db.execute("SELECT thread_id FROM messages WHERE message_id = ? AND thread_id IS NOT NULL",
+                                 (ref,)).fetchone()
+                if hit:
+                    return hit[0]
     if parsed and (parsed.references or parsed.in_reply_to or parsed.message_id):
         root = (parsed.references or [parsed.in_reply_to or parsed.message_id])[0]
         return "m" + hashlib.sha1(root.encode()).hexdigest()[:16]
     return None
 
 
-def run(config: Config, *, now: float | None = None) -> RunStats:
+# --------------------------------------------------------------------------- sources
+
+MISSING = "missing"        # fetch result: the source has no such message
+UNREADABLE = "unreadable"  # fetch result: the message couldn't be parsed
+
+
+class StoreSource:
+    """Mail's files: the metadata database (from a snapshot) and message files.
+
+    Needs Full Disk Access for the program running the indexer. Fast, but it
+    depends on an undocumented layout, so it probes the schema at runtime.
+    """
+
+    name = "store"
+
+    def __init__(self, config: Config) -> None:
+        self.config = config
+        self.version_dir = find_version_dir(config.store)
+        self._files: dict[tuple[str, str], dict[int, Path]] = {}
+
+    def rows(self) -> tuple[list[MetaRow], dict]:
+        with tempfile.TemporaryDirectory(prefix="mail-index-") as tmp:
+            os.chmod(tmp, 0o700)
+            meta_path = snapshot_metadata(self.version_dir, Path(tmp))
+            return read_metadata(meta_path, self.config)
+
+    def fetch(self, rows: list[MetaRow]) -> Iterator[tuple[MetaRow, object]]:
+        for row in rows:
+            key = (row.account, row.mailbox)
+            if key not in self._files:
+                self._files[key] = message_files(self.version_dir, row.account, row.mailbox)
+            path = self._files[key].get(row.rowid)
+            if path is None:
+                yield row, MISSING
+                continue
+            try:
+                yield row, parse_message(path, bodies=self.config.bodies, attachments=self.config.attachments,
+                                         max_chars=self.config.max_body_chars)
+            except Exception:
+                yield row, UNREADABLE
+
+    def doctor(self) -> dict:
+        version_dir = self.version_dir
+        with tempfile.TemporaryDirectory(prefix="mail-index-") as tmp:
+            os.chmod(tmp, 0o700)
+            meta_path = snapshot_metadata(version_dir, Path(tmp))
+            db = sqlite3.connect(meta_path)
+            try:
+                cols = probe_columns(db)
+                lo, hi = db.execute("SELECT MIN(date_received), MAX(date_received) FROM messages").fetchone()
+            finally:
+                db.close()
+            rows, info = read_metadata(meta_path, self.config)
+        by_box: dict[tuple[str, str], set[int]] = {}
+        for r in rows:
+            by_box.setdefault((r.account, r.mailbox), set()).add(r.rowid)
+        found = sum(len(ids & message_files(version_dir, acct, box).keys())
+                    for (acct, box), ids in by_box.items())
+        plausible = lo is not None and 946684800 <= lo <= hi <= time.time() + 86400 * 2
+        return {
+            "source": "store",
+            "version_dir": version_dir.name,
+            "optional_columns": {t: sorted(c) for t, c in cols.items() if t in OPTIONAL},
+            "dates_look_like_unix_seconds": plausible,
+            "messages_in_scope": len(rows),
+            "mailboxes_in_scope": len(by_box),
+            "message_files_found": found,
+            "accounts_missing": info["accounts_missing"],
+        }
+
+
+def open_source(config: Config, runner=None):
+    """The configured source. `runner` replaces osascript for the script source (tests)."""
+    if config.source == "store":
+        return StoreSource(config)
+    import mail_script
+    return mail_script.ScriptSource(config, runner)
+
+
+# --------------------------------------------------------------------------- run
+
+def run(config: Config, *, now: float | None = None, source=None) -> RunStats:
     stats = RunStats()
-    version_dir = find_version_dir(config.store)
-    with tempfile.TemporaryDirectory(prefix="mail-index-") as tmp:
-        os.chmod(tmp, 0o700)
-        meta_path = snapshot_metadata(version_dir, Path(tmp))
-        rows, info = read_metadata(meta_path, config)
+    source = source or open_source(config)
+    rows, info = source.rows()
     stats.accounts_missing = info["accounts_missing"]
     stats.in_scope = len(rows)
 
-    files: dict[tuple[str, str], dict[int, Path]] = {}
     db = open_index(config.index)
     try:
         fingerprint = config.scope_fingerprint()
+        # Message ids and flag words differ between sources, so switching
+        # source rebuilds the index. Indexes from before `source` existed
+        # were built from the store.
+        built_from = db.execute("SELECT value FROM meta WHERE key='source'").fetchone()
+        has_rows = db.execute("SELECT 1 FROM messages LIMIT 1").fetchone() is not None
+        if has_rows and (built_from[0] if built_from else "store") != source.name:
+            stats.removed += db.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+            db.execute("DELETE FROM messages")
+            db.execute("DELETE FROM messages_fts")
+
         existing = {r[0]: (r[1], r[2]) for r in
                     db.execute("SELECT rowid, flags, body_indexed FROM messages")}
         keep = {r.rowid for r in rows}
@@ -531,6 +656,7 @@ def run(config: Config, *, now: float | None = None) -> RunStats:
             db.execute("DELETE FROM messages_fts WHERE rowid = ?", (rowid,))
             stats.removed += 1
 
+        to_fetch = []
         for row in rows:
             prior = existing.get(row.rowid)
             needs_file = prior is None or (config.bodies and not prior[1]) or (not config.bodies and prior[1])
@@ -540,21 +666,16 @@ def run(config: Config, *, now: float | None = None) -> RunStats:
                                (row.flags, int(row.read), int(row.flagged), row.mailbox, row.rowid))
                     stats.updated += 1
                 continue
+            to_fetch.append(row)
+        # Oldest first, so a reply finds the thread its parent already joined.
+        to_fetch.sort(key=lambda r: r.date_received)
 
-            key = (row.account, row.mailbox)
-            if key not in files:
-                files[key] = message_files(version_dir, row.account, row.mailbox)
-            path = files[key].get(row.rowid)
-            parsed = None
-            if path is None:
+        for row, result in source.fetch(to_fetch):
+            parsed = result if isinstance(result, ParsedMessage) else None
+            if result == MISSING:
                 stats.missing_files += 1
-            else:
-                try:
-                    parsed = parse_message(path, bodies=config.bodies, attachments=config.attachments,
-                                           max_chars=config.max_body_chars)
-                except Exception:
-                    stats.unreadable += 1
-
+            elif result == UNREADABLE:
+                stats.unreadable += 1
             subject = (parsed.subject if parsed and parsed.subject is not None else row.subject)
             from_addr = (parsed.from_addr if parsed and parsed.from_addr else row.sender)
             from_name = (parsed.from_name if parsed and parsed.from_name else row.sender_name)
@@ -570,19 +691,20 @@ def run(config: Config, *, now: float | None = None) -> RunStats:
                  parsed.message_id if parsed else None,
                  parsed.in_reply_to if parsed else None,
                  json.dumps(parsed.references if parsed else []),
-                 _thread_id(row, parsed), row.date_received, row.date_sent,
+                 _thread_id(db, row, parsed), row.date_received, row.date_sent,
                  from_addr, from_name, json.dumps(to), json.dumps(cc), subject,
                  row.flags, int(row.read), int(row.flagged), body,
                  int(config.bodies and parsed is not None),
                  json.dumps(parsed.attachments) if parsed and config.attachments else None),
             )
             _fts_put(db, row.rowid, subject, from_addr, from_name, to, cc, body)
-            if prior is None:
-                stats.added += 1
-            else:
+            if row.rowid in existing:
                 stats.updated += 1
+            else:
+                stats.added += 1
 
         db.execute("INSERT OR REPLACE INTO meta VALUES ('scope', ?)", (fingerprint,))
+        db.execute("INSERT OR REPLACE INTO meta VALUES ('source', ?)", (source.name,))
         db.execute("INSERT OR REPLACE INTO meta VALUES ('bodies', ?)", (str(int(config.bodies)),))
         db.execute("INSERT OR REPLACE INTO meta VALUES ('last_run', ?)",
                    (str(int(now if now is not None else time.time())),))
@@ -592,31 +714,6 @@ def run(config: Config, *, now: float | None = None) -> RunStats:
     return stats
 
 
-def doctor(config: Config) -> dict:
-    """Check that the store and config line up. Returns counts and booleans only."""
-    version_dir = find_version_dir(config.store)
-    with tempfile.TemporaryDirectory(prefix="mail-index-") as tmp:
-        os.chmod(tmp, 0o700)
-        meta_path = snapshot_metadata(version_dir, Path(tmp))
-        db = sqlite3.connect(meta_path)
-        try:
-            cols = probe_columns(db)
-            lo, hi = db.execute("SELECT MIN(date_received), MAX(date_received) FROM messages").fetchone()
-        finally:
-            db.close()
-        rows, info = read_metadata(meta_path, config)
-    by_box: dict[tuple[str, str], set[int]] = {}
-    for r in rows:
-        by_box.setdefault((r.account, r.mailbox), set()).add(r.rowid)
-    found = sum(len(ids & message_files(version_dir, acct, box).keys())
-                for (acct, box), ids in by_box.items())
-    plausible = lo is not None and 946684800 <= lo <= hi <= time.time() + 86400 * 2
-    return {
-        "version_dir": version_dir.name,
-        "optional_columns": {t: sorted(c) for t, c in cols.items() if t in OPTIONAL},
-        "dates_look_like_unix_seconds": plausible,
-        "messages_in_scope": len(rows),
-        "mailboxes_in_scope": len(by_box),
-        "message_files_found": found,
-        "accounts_missing": info["accounts_missing"],
-    }
+def doctor(config: Config, *, source=None) -> dict:
+    """Check that the source and config line up. Returns counts, timings and booleans only."""
+    return (source or open_source(config)).doctor()

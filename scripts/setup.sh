@@ -301,7 +301,7 @@ setup_mail_profile() {
   chmod 700 "$index_dir"
   if [[ ! -f mail-index.toml ]]; then
     cp mail-index.toml.example mail-index.toml
-    log "Created mail-index.toml — set store, since and accounts (make mail-index-mailboxes lists them)"
+    log "Created mail-index.toml — set since and accounts (make mail-index-mailboxes lists them; macOS asks to let it control Mail)"
   fi
   log "Enabled the mail MCP (profile mail, index folder ${index_dir})"
   log "Then: make mail-index-doctor && make mail-index && make up, and re-run both hermes-*-bootstrap services. See docs/email.md"
