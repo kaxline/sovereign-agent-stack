@@ -1059,6 +1059,58 @@ if has_profile todo || [[ "$vikunja_on" -eq 1 ]]; then
   fi
 fi
 
+# --- Mail (read-only MCP over the host-built index) ---
+mail_enabled="$(env_get MAIL_MCP_ENABLED 0)"
+case "$mail_enabled" in 1|true|TRUE|yes|YES) mail_on=1 ;; *) mail_on=0 ;; esac
+if has_profile mail || [[ "$mail_on" -eq 1 ]]; then
+  echo
+  echo "--- Mail ---"
+  if has_profile mail; then
+    ok "COMPOSE_PROFILES includes mail"
+  else
+    bad "MAIL_MCP_ENABLED=1 but 'mail' not in COMPOSE_PROFILES — run ./scripts/setup.sh --mail"
+  fi
+  if [[ "$mail_on" -eq 1 ]]; then
+    ok "MAIL_MCP_ENABLED=1"
+  else
+    warn "mail profile on but MAIL_MCP_ENABLED is not 1 — Hermes will not register the mail tools"
+  fi
+  # Existence and permissions only; doctor never opens the index.
+  mail_dir="$(env_get MAIL_INDEX_DIR ./data/mail)"
+  mail_index="${mail_dir%/}/$(env_get MAIL_INDEX_FILE index.sqlite)"
+  if [[ -f "$mail_index" ]]; then
+    ok "mail index exists (${mail_index})"
+    mail_mode="$(stat -f '%Lp' "$mail_dir" 2>/dev/null || stat -c '%a' "$mail_dir" 2>/dev/null || echo '?')"
+    if [[ "$mail_mode" == "700" ]]; then
+      ok "${mail_dir} is owner-only"
+    else
+      warn "${mail_dir} is mode ${mail_mode}, expected 700 — chmod 700 ${mail_dir}"
+    fi
+  else
+    warn "no mail index at ${mail_index} — fill in mail-index.toml, then make mail-index-doctor && make mail-index"
+  fi
+  [[ -f mail-index.toml ]] || warn "mail-index.toml missing — cp mail-index.toml.example mail-index.toml"
+  for pair in "default:data/hermes/config.yaml" "browser:data/hermes/profiles/browser/config.yaml"; do
+    IFS=':' read -r label cfg <<< "$pair"
+    [[ -f "$cfg" ]] || continue
+    if grep -q 'mail-mcp:8000' "$cfg"; then
+      ok "Hermes ${label} profile registers the mail MCP"
+    elif [[ "$mail_on" -eq 1 ]]; then
+      warn "Hermes ${label} profile has no mail MCP entry — re-run hermes-api-bootstrap and hermes-browser-bootstrap"
+    fi
+  done
+  if grep -qs 'mail-mcp:8000' data/hermes/profiles/api-server/config.yaml; then
+    bad "api-server registers the mail MCP — re-run hermes-api-bootstrap (unattended sessions must not read mail)"
+  fi
+  if docker info >/dev/null 2>&1; then
+    if docker compose ps --status running mail-mcp 2>/dev/null | grep -q mail-mcp; then
+      ok "mail-mcp container is running"
+    elif has_profile mail; then
+      warn "mail-mcp not running — make up with mail in COMPOSE_PROFILES"
+    fi
+  fi
+fi
+
 # --- Knowledge corpus (rag) ---
 if has_profile rag; then
   echo

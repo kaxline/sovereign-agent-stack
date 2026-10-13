@@ -20,6 +20,7 @@ SETUP_CODING=0
 SETUP_CALENDAR=0
 SETUP_DB=0
 SETUP_TODO=0
+SETUP_MAIL=0
 NON_INTERACTIVE=0
 
 usage() {
@@ -38,6 +39,7 @@ Options:
   --calendar                Enable CalDAV calendar MCP (profile calendar)
   --db                      Enable shared Postgres + SQL MCP for Hermes (profile db)
   --todo                    Enable Vikunja todo lists + MCP (profile todo; starts the shared Postgres)
+  --mail                    Enable the read-only mail MCP over a host-built Apple Mail index (profile mail)
   --ollama                  Bundle Ollama in Docker + demo model pulls (profile ollama)
   --hermes                  Deprecated alias; core already includes Hermes
   --non-interactive         Fail if required values are missing
@@ -50,6 +52,7 @@ Examples:
   ./scripts/setup.sh --calendar
   ./scripts/setup.sh --db
   ./scripts/setup.sh --todo
+  ./scripts/setup.sh --mail
   ./scripts/setup.sh --data-root ~/AssistantData
   ./scripts/setup.sh --ollama --non-interactive --workspace my-kb --title "My KB"
 EOF
@@ -68,6 +71,7 @@ while [[ $# -gt 0 ]]; do
     --calendar) SETUP_CALENDAR=1; shift ;;
     --db) SETUP_DB=1; shift ;;
     --todo) SETUP_TODO=1; shift ;;
+    --mail) SETUP_MAIL=1; shift ;;
     --ollama) SETUP_OLLAMA=1; shift ;;
     --non-interactive) NON_INTERACTIVE=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -284,6 +288,23 @@ setup_todo_profile() {
   ./scripts/todo.sh prepare
   upsert_env .env VIKUNJA_MCP_ENABLED 1
   log "Enabled Vikunja (todo profile). After make up: make todo-init (account + MCP tokens). See docs/todo.md"
+}
+
+# Read-only mail MCP. The index is built on the host by make mail-index, which
+# needs a filled-in mail-index.toml; nothing here touches the Mail store.
+setup_mail_profile() {
+  append_compose_profile mail
+  upsert_env .env MAIL_MCP_ENABLED 1
+  local index_dir
+  index_dir="$(resolve_data_root_path "$(data_root_env_get MAIL_INDEX_DIR ./data/mail)")"
+  mkdir -p "$index_dir"
+  chmod 700 "$index_dir"
+  if [[ ! -f mail-index.toml ]]; then
+    cp mail-index.toml.example mail-index.toml
+    log "Created mail-index.toml — set store, since and accounts (make mail-index-mailboxes lists them)"
+  fi
+  log "Enabled the mail MCP (profile mail, index folder ${index_dir})"
+  log "Then: make mail-index-doctor && make mail-index && make up, and re-run both hermes-*-bootstrap services. See docs/email.md"
 }
 
 setup_automation_profile() {
@@ -845,6 +866,9 @@ mkdir -p compose/postgres/services
 # Vikunja MCP stays off until todo is enabled and make todo-init has run.
 set_env_if_missing .env VIKUNJA_MCP_ENABLED 0
 
+# Mail MCP stays off until mail is enabled.
+set_env_if_missing .env MAIL_MCP_ENABLED 0
+
 # OpenCode MCP stays off until coding is enabled.
 set_env_if_missing .env OPENCODE_MCP_ENABLED 0
 set_env_if_missing .env CODING_EXTRA_ROOTS ""
@@ -879,6 +903,9 @@ if [[ "$SETUP_DB" -eq 1 ]]; then
 fi
 if [[ "$SETUP_TODO" -eq 1 ]]; then
   setup_todo_profile
+fi
+if [[ "$SETUP_MAIL" -eq 1 ]]; then
+  setup_mail_profile
 fi
 if [[ "$SETUP_OLLAMA" -eq 1 ]]; then
   setup_ollama_profile
@@ -919,6 +946,7 @@ Optional profiles (re-run setup with flags, or edit COMPOSE_PROFILES):
   --calendar      CalDAV calendars (iCloud, Nextcloud, …) via caldav-mcp
   --db            Shared Postgres + SQL MCP for Hermes (docs/database.md)
   --todo          Vikunja todo lists + MCP, then make todo-init (docs/todo.md)
+  --mail          Read-only search over your Apple Mail, indexed on the host (docs/email.md)
   --ollama        Bundled Ollama + demo model pull
 
 Signal (optional): set HERMES_SIGNAL_ENABLED=1 and SIGNAL_ACCOUNT in .env,

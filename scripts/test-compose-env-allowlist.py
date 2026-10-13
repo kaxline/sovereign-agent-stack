@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 # Every profile that publishes a service we want to see in one config.
-PROFILES = "core,rag,calendar,automation,coding,ollama,searxng-prod,db,todo"
+PROFILES = "core,rag,calendar,automation,coding,ollama,searxng-prod,db,todo,mail"
 
 # Secret-bearing environment keys, and the services allowed to carry them.
 # An empty set means the key must not appear on any service.

@@ -58,6 +58,11 @@ VIKUNJA_MCP_TOKEN_RW="${VIKUNJA_MCP_TOKEN_RW:-}"
 # everyday ones; the rest stay reachable through tool search.
 VIKUNJA_MCP_PIN_RO="tasks_list tasks_read projects_list"
 VIKUNJA_MCP_PIN_RW="tasks_list tasks_read tasks_create tasks_update projects_list"
+MAIL_MCP_ENABLED="${MAIL_MCP_ENABLED:-0}"
+MAIL_MCP_URL="${MAIL_MCP_URL:-http://mail-mcp:8000/mcp}"
+MAIL_MCP_TIMEOUT="${MAIL_MCP_TIMEOUT:-60}"
+MAIL_MCP_CONNECT_TIMEOUT="${MAIL_MCP_CONNECT_TIMEOUT:-30}"
+MAIL_MCP_TOOLS="mail_status mail_search mail_get mail_thread"
 # llm-proxy's real upstream. Only used to tell a local model server from a
 # cloud API; the key never reaches this container.
 LLM_BINDING_HOST="${LLM_BINDING_HOST:-http://host.docker.internal:1234/v1}"
@@ -591,6 +596,15 @@ reconcile_stack_eager_tools() {
       _rst_args="${_rst_args} ${_rst_t} mcp__vikunja__${_rst_t}"
     done
   fi
+  case "$MAIL_MCP_ENABLED" in
+    1|true|TRUE|yes|YES)
+      if [ "$_rst_profile" != "api-server" ]; then
+        for _rst_t in $MAIL_MCP_TOOLS; do
+          _rst_args="${_rst_args} ${_rst_t} mcp__mail__${_rst_t}"
+        done
+      fi
+      ;;
+  esac
   case "$OPENCODE_MCP_ENABLED" in
     1|true|TRUE|yes|YES)
       if [ "$_rst_profile" != "api-server" ]; then
@@ -916,6 +930,33 @@ PY
   pin_mcp_tools "$_rvms_profile" vikunja $(vikunja_mcp_pins_for "$_rvms_profile")
 }
 
+# Read-only mail index (mail compose profile), registered as mcp_servers.mail
+# on the interactive profiles only. Mail is the easiest place for a stranger
+# to plant instructions, so unattended api-server sessions never get it, not
+# even read-only. api-server is cloned from default, so the inherited entry
+# (and any hand-added copy pointing at the same URL) is removed there.
+register_mail_mcp_servers() {
+  _rmms_profile="$1"
+  case "$MAIL_MCP_ENABLED" in
+    1|true|TRUE|yes|YES) ;;
+    *)
+      log "Skipping mail MCP registration (MAIL_MCP_ENABLED=${MAIL_MCP_ENABLED})"
+      drop_mcp_entries_for_url "$_rmms_profile" "" "$MAIL_MCP_URL"
+      return 0
+      ;;
+  esac
+  if [ "$_rmms_profile" = "api-server" ]; then
+    log "Skipping mail MCP on api-server profile (unattended sessions)"
+    drop_mcp_entries_for_url "$_rmms_profile" "" "$MAIL_MCP_URL"
+    return 0
+  fi
+  # shellcheck disable=SC2086
+  register_mcp_server "$_rmms_profile" mail "Mail (read-only)" \
+    "$MAIL_MCP_URL" "$MAIL_MCP_TIMEOUT" "$MAIL_MCP_CONNECT_TIMEOUT" $MAIL_MCP_TOOLS
+  # shellcheck disable=SC2086
+  pin_mcp_tools "$_rmms_profile" mail $MAIL_MCP_TOOLS
+}
+
 # Slug personal -> CALDAV_PERSONAL_PASSWORD. Hyphens become underscores.
 caldav_password_env_key() {
   _cpek_slug="$1"
@@ -1215,6 +1256,7 @@ register_caldav_mcp_servers ""
 register_opencode_mcp_servers ""
 register_sql_mcp_servers ""
 register_vikunja_mcp_servers ""
+register_mail_mcp_servers ""
 
 # session_search is on Hermes' curated tool_search.defer list. Pin + undefer
 # on default before the api-server.env gate so a missing env file cannot
@@ -1411,6 +1453,7 @@ register_caldav_mcp_servers "$PROFILE"
 register_opencode_mcp_servers "$PROFILE"
 register_sql_mcp_servers "$PROFILE"
 register_vikunja_mcp_servers "$PROFILE"
+register_mail_mcp_servers "$PROFILE"
 
 # Heal always_include + defer after every hermes config set / MCP register.
 reconcile_stack_eager_tools ""

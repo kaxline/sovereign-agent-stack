@@ -23,6 +23,11 @@ the stack under another app.
 4. Dashboard clients that send `profile` on `prompt.submit`: make sure it
    names the session's own profile, or drop it. A different profile used to
    be ignored silently and is now an error (see Changes).
+5. Optional, for mail: `./scripts/setup.sh --mail`, fill in
+   `mail-index.toml`, `make mail-index-doctor`, `make mail-index`, `make up`,
+   re-run `hermes-api-bootstrap` and `hermes-browser-bootstrap`, restart
+   `hermes`. See [docs/email.md](docs/email.md). Re-running setup without
+   `--mail` adds `MAIL_MCP_ENABLED=0` and starts nothing.
 
 ### New services
 
@@ -36,6 +41,11 @@ the stack under another app.
   in front of `vikunja`. Passes everything through and serves `/login-local`,
   which signs the browser in as the stack-managed account. About 4 MiB of RAM,
   capped at half a CPU.
+- `mail-mcp` (new **`mail`** profile, off by default): read-only MCP over
+  the host-built mail index, built locally from `compose/mail-mcp`
+  (`python:3.11-slim`, `mcp==1.30.0`). No host port. Mounts only
+  `MAIL_INDEX_DIR`, read-only, with a read-only root filesystem, all
+  capabilities dropped and `no-new-privileges`. Runs as `HERMES_UID:HERMES_GID`.
 
 ### Required `.env` keys
 
@@ -63,6 +73,11 @@ Only with `todo` enabled.
 | `VIKUNJA_IMAGE` | `vikunja/vikunja:2.7.0` | Vikunja image (MCP needs 2.7.0+) |
 | `VIKUNJA_MCP_URL` | `http://vikunja:3456/api/v2/mcp` | Endpoint the bootstrap registers |
 | `VIKUNJA_MCP_TIMEOUT` / `VIKUNJA_MCP_CONNECT_TIMEOUT` | `60` / `30` | Hermes MCP timeouts for `vikunja` |
+| `MAIL_MCP_ENABLED` | `0` | `1` registers `mcp_servers.mail` on the default and browser profiles. `setup.sh --mail` sets it |
+| `MAIL_INDEX_DIR` | `./data/mail` | Host folder holding the index; mounted read-only into `mail-mcp` |
+| `MAIL_INDEX_FILE` | `index.sqlite` | Index file name inside `MAIL_INDEX_DIR` |
+| `MAIL_MCP_URL` | `http://mail-mcp:8000/mcp` | Endpoint the bootstrap registers |
+| `MAIL_MCP_TIMEOUT` / `MAIL_MCP_CONNECT_TIMEOUT` | `60` / `30` | Hermes MCP timeouts for `mail` |
 
 ### Changes
 
@@ -110,8 +125,16 @@ Only with `todo` enabled.
   search. It reads a snapshot of Mail's metadata, never writes to the store,
   has no default store path and prints counts only. Bodies and attachment
   names are separate opt-ins. `make mail-index`, `make mail-index-doctor`,
-  `make mail-index-mailboxes`, `make mail-index-test`. Hermes can't read the
-  index yet. See [docs/email.md](docs/email.md).
+  `make mail-index-mailboxes`, `make mail-index-test`. See
+  [docs/email.md](docs/email.md).
+- **Mail MCP** (`mail` profile): `mail_status`, `mail_search`, `mail_get` and
+  `mail_thread` over the index. Every result carries a notice that message
+  text is untrusted, and bodies come between markers that a message can't
+  forge. Registered on the default and browser profiles only. With the
+  profile off, or on `api-server`, the bootstrap removes any entry pointing
+  at it. `make doctor` gets a mail section (profile, flag, index present,
+  folder mode, per-profile registration, `api-server` not registered).
+  `make mail-mcp-test`.
 - **Docs**: [docs/email.md](docs/email.md) records the design for giving Hermes
   read access to Apple Mail's local store.
   `scripts/make-synthetic-mail.py` writes a fake Mail store for developing
