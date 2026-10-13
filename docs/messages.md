@@ -1,6 +1,6 @@
 # Messages from iMessage (design)
 
-**Status: indexer only.** Hermes can't read messages yet. This page records
+**Status: host side built.** Hermes can't read messages yet. This page records
 how Hermes should answer questions about iMessage and SMS history, and hear
 about new messages, by reading Messages.app's local database. It also records
 which open-source projects were evaluated and why none of them is adopted
@@ -8,8 +8,9 @@ as-is. Research is as of October 2026.
 
 The code lives in [`imessage/`](../imessage/README.md), which is
 self-contained so it can become its own repository. So far it has a
-synthetic store and the indexer, both tested only against synthetic data.
-There's no watcher, MCP or app packaging yet.
+synthetic store, the indexer, the watcher with new-message events, and the
+sealed macOS app that holds Full Disk Access. All of it is tested only
+against synthetic data. There's no MCP or Hermes wiring yet.
 
 ## Goals
 
@@ -92,6 +93,20 @@ takes HMAC-signed POSTs with timestamp replay protection, has per-route rate
 limits and an idempotency cache, and can either run a prompt template or fire
 an existing cron job with the event as context. A new-message event should
 arrive that way.
+
+The watcher signs its POSTs the way that gateway's generic V2 check expects
+(`X-Webhook-Signature-V2` over `"<timestamp>.<body>"`, `X-Request-ID` for
+duplicates, `type: "messages.new"` for route filters). One thing to settle
+when wiring it in: the gateway listens inside the `hermes` container, and
+its port isn't published to the host, where the watcher runs. Two ways
+through:
+
+- **A loopback-only published port** for the webhook route, like the
+  Vikunja loopback proxy. The watcher POSTs to `http://127.0.0.1:<port>`.
+- **The watcher's outbox folder** plus a small forwarder in the messages MCP
+  container that signs each file and POSTs it to `http://hermes:<port>`
+  in-network. Nothing new is published, which matches the mail drafts
+  queue.
 
 The built-in BlueBubbles adapter is not an option. It needs a BlueBubbles
 server, which sends messages and opens the database read-write.
@@ -224,9 +239,10 @@ real data either):
 2. **Helper: index** (done). Scoped, read-only, incremental indexing with
    `doctor` and `chats`, tested against the synthetic store. See
    [imessage/README.md](../imessage/README.md#indexer).
-3. **Helper: watch, events and app.** Watcher, edit pass, signed webhook
-   events, and the sealed app with its LaunchAgent. Test it by appending rows
-   to the synthetic store.
+3. **Helper: watch, events and app** (done). Watcher, edit pass, signed
+   webhook and outbox events, and the sealed app with its LaunchAgent,
+   tested by appending rows to the synthetic store. See
+   [imessage/README.md](../imessage/README.md#watcher).
 4. **MCP and Hermes wiring.** Container, tools, the unattended allowlist, a
    webhook route and a profile, and a CHANGELOG entry.
 5. **First real run** (the owner runs it): `doctor` counts only, then the

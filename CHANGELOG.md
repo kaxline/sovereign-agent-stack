@@ -223,6 +223,15 @@ Only with `todo` enabled.
   `imessage/messages-index.toml.example`). It needs Full Disk Access and has
   been tested only against synthetic data. `make messages-index-test` runs
   its tests. See [imessage/README.md](imessage/README.md).
+- **iMessage watcher and app** (host-side, not wired into Hermes yet):
+  `make messages-watch` keeps the index current and, with a `[notify]`
+  table, raises metadata-only new-message events to an outbox folder or a
+  signed HTTP endpoint (Hermes generic-webhook HMAC V2). `make messages-app`
+  builds *Assistant Messages Reader*, a sealed macOS app that holds Full Disk
+  Access instead of your terminal, and `imessage/macos/install.sh` loads a
+  LaunchAgent that runs the watcher. New host requirement only if you use
+  it: grant the app Full Disk Access. Tests: `make messages-watch-test`,
+  `make messages-app-test`.
 - **Tests**: `imessage/make-synthetic-messages.py` writes a fake Messages.app
   store (`chat.db`, attachments, Contacts) for developing the iMessage reader,
   and `make synthetic-messages-test` checks it. See

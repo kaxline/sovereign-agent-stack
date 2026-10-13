@@ -5,6 +5,7 @@
 	corpus-create corpus-use corpus-list corpus-ingest corpus-destroy \
 	project-init project-index project-index-check project-sources-test synthetic-mail-test synthetic-messages-test \
 	messages-index messages-index-doctor messages-index-chats messages-index-test \
+	messages-watch messages-notify-test messages-watch-test messages-app messages-app-test \
 	mail-index mail-index-doctor mail-index-mailboxes mail-index-test mail-script-test mail-mcp-test \
 	mail-drafts mail-drafts-watch mail-drafts-doctor mail-drafts-test mail-apps mail-apps-test \
 	mail-triage-cron mail-triage-cron-show mail-triage-cron-remove mail-cron-test model-use model-sync \
@@ -282,6 +283,24 @@ messages-index-chats:
 
 messages-index-test:
 	python3 imessage/tests/test-messages-index.py
+
+# Messages watcher: keeps the index current and raises new-message events as
+# the config's [notify] table says. Runs until stopped. See imessage/README.md.
+messages-watch:
+	python3 imessage/messages-index.py --config "$(MESSAGES_INDEX_CONFIG)" watch
+
+messages-notify-test:
+	python3 imessage/messages-index.py --config "$(MESSAGES_INDEX_CONFIG)" notify-test
+
+messages-watch-test:
+	python3 imessage/tests/test-messages-watch.py
+
+# Messages reader app (macOS): holds Full Disk Access instead of your terminal.
+messages-app:
+	imessage/macos/build.sh
+
+messages-app-test:
+	python3 imessage/tests/test-messages-app.py
 
 # Apple Mail indexer (host-side). Reads through Mail.app by default; set
 # source = "store" in the config to read Mail's files instead. See docs/email.md.

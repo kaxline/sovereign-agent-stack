@@ -33,3 +33,32 @@ attachments = false
 
 # Longest message body kept, in characters.
 max_body_chars = 20000
+
+# The watcher (`watch` command, or the app's LaunchAgent). Defaults shown.
+[watch]
+# Each wake re-reads messages from this many recent hours, where edits,
+# unsends and late chat links happen.
+window_hours = 2
+# A full pass over the whole scope this often.
+full_every_minutes = 60
+# Check for changes this often even if no file event arrived.
+poll_seconds = 5
+debounce_ms = 250
+# Where the watcher keeps its cursor. Default: next to the index.
+# state = ""
+
+# New-message events. Leave this table out for no events. Events say which
+# chat got how many messages from whom, never what they say.
+# [notify]
+# Which indexed chats raise events (ids or patterns).
+# chats = ["iMessage;-;*"]
+# A folder that gets one JSON file per event.
+# outbox = "data/messages/events"
+# Or an HTTP endpoint, signed with HMAC-SHA256 like Hermes' generic webhooks.
+# Must be https unless it points at this machine.
+# url = "http://127.0.0.1:8650/webhooks/messages"
+# secret_file = "data/messages/notify.secret"
+# Messages older than this when they're first seen don't raise events.
+# max_age_minutes = 10
+# Hold events during these local hours and send one per chat afterwards.
+# quiet_hours = "22:00-07:00"

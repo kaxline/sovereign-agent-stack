@@ -109,7 +109,8 @@ def load_config(path: Path) -> Config:
         raise ConfigError(f"config is not valid TOML: {exc}") from None
     base = path.resolve().parent
     unknown = set(raw) - {"store", "index", "since", "chats", "exclude", "contacts", "attachments",
-                          "attachments_root", "max_body_chars"}
+                          "attachments_root", "max_body_chars",
+                          "watch", "notify"}  # tables read by messages_watch.py
     if unknown:
         raise ConfigError(f"unknown config keys: {', '.join(sorted(unknown))}")
 
@@ -397,39 +398,56 @@ class RunStats:
     attributes_incomplete: int = 0
     decode_failed_used_text: int = 0
     empty_bodies: int = 0
+    max_rowid: int = 0  # highest message ROWID in the store when the run started
+    added_ids: list[int] = field(default_factory=list)  # index ids of rows added (not printed)
 
     def as_dict(self) -> dict:
-        return dict(self.__dict__)
+        return {k: v for k, v in self.__dict__.items() if k != "added_ids"}
 
 
-def _message_select(cols: dict[str, set[str]]) -> str:
+def _message_select(cols: dict[str, set[str]], incremental: bool = False) -> str:
+    """Rows of one chat. Blobs are left out (only their lengths), so unchanged
+    rows cost little; _blobs() fetches them for rows that need decoding."""
     m = lambda name: _col(cols, "message", "m", name)  # noqa: E731
+    length = lambda name: (f"length(m.{name}) AS {name}_len" if name.lower() in cols["message"]  # noqa: E731
+                           else f"NULL AS {name}_len")
     fields = ["m.ROWID", "m.guid", "m.date", "m.is_from_me", "m.handle_id", "m.text",
-              m("attributedBody"), m("service"), m("is_read"), m("date_read"), m("date_edited"),
+              length("attributedBody"), m("service"), m("is_read"), m("date_read"), m("date_edited"),
               m("date_retracted"), m("error"), m("item_type"), m("group_action_type"),
               m("other_handle"), m("group_title"), m("associated_message_guid"),
               m("associated_message_type"), m("associated_message_emoji"),
               m("thread_originator_guid"), m("reply_to_guid"), m("cache_has_attachments"),
-              m("message_summary_info"), m("is_audio_message"), m("expressive_send_style_id")]
+              length("message_summary_info"), m("is_audio_message"), m("expressive_send_style_id")]
     recoverable = ("EXISTS (SELECT 1 FROM chat_recoverable_message_join r WHERE r.message_id = m.ROWID)"
                    if "chat_recoverable_message_join" in cols else "0")
+    # Incremental runs (the watcher) read only rows added since a ROWID cursor
+    # plus a recent window by date, where edits, unsends and late joins happen.
+    recent = " AND (m.ROWID > ? OR m.date >= ? OR (m.date < ? AND m.date >= ?))" if incremental else ""
     return (f"SELECT {', '.join(fields)}, j.chat_id, {recoverable} AS recently_deleted"
             " FROM message m JOIN chat_message_join j ON j.message_id = m.ROWID"
-            " WHERE j.chat_id = ? AND (m.date >= ? OR (m.date < ? AND m.date >= ?))"
+            f" WHERE j.chat_id = ? AND (m.date >= ? OR (m.date < ? AND m.date >= ?)){recent}"
             " ORDER BY m.ROWID")
 
 
-COLUMNS = ["rowid", "guid", "date", "is_from_me", "handle_id", "text", "attributedBody", "service",
+COLUMNS = ["rowid", "guid", "date", "is_from_me", "handle_id", "text", "attributedBody_len", "service",
            "is_read", "date_read", "date_edited", "date_retracted", "error", "item_type",
            "group_action_type", "other_handle", "group_title", "associated_message_guid",
            "associated_message_type", "associated_message_emoji", "thread_originator_guid",
-           "reply_to_guid", "cache_has_attachments", "message_summary_info", "is_audio_message",
+           "reply_to_guid", "cache_has_attachments", "message_summary_info_len", "is_audio_message",
            "expressive_send_style_id", "chat_id", "recently_deleted"]
+
+
+def _blobs(db: sqlite3.Connection, cols: dict[str, set[str]], rowid: int) -> tuple[bytes | None, bytes | None]:
+    """attributedBody and message_summary_info for one row."""
+    row = db.execute(f"SELECT {_col(cols, 'message', 'm', 'attributedBody')},"
+                     f" {_col(cols, 'message', 'm', 'message_summary_info')} FROM message m WHERE m.ROWID = ?",
+                     (rowid,)).fetchone()
+    return (row[0], row[1]) if row else (None, None)
 
 
 def _fingerprint(r: dict, sender_name: str | None, scope: str) -> str:
     parts = [r["date_edited"], r["date_retracted"], r["is_read"], r["date_read"], r["error"],
-             len(r["attributedBody"] or b""), len(r["text"] or ""), r["item_type"],
+             r["attributedBody_len"] or 0, len(r["text"] or ""), r["item_type"],
              r["associated_message_type"], sender_name, r["cache_has_attachments"], scope]
     return hashlib.sha256(repr(parts).encode()).hexdigest()[:20]
 
@@ -480,8 +498,16 @@ def attachment_on_disk(filename: str | None, config: Config) -> bool:
     return config.attachments_root in target.parents and target.is_file()
 
 
-def run(config: Config) -> RunStats:
-    """Build or update the index. Returns counts only."""
+def run(config: Config, *, after_rowid: int | None = None, window_start: int | None = None) -> RunStats:
+    """Build or update the index. Returns counts only.
+
+    With after_rowid and window_start (Unix seconds) the run is incremental,
+    as the watcher uses it: it reads rows added after that ROWID plus rows
+    dated on or after window_start, and removes only indexed rows from that
+    window. A full run (the default) reads and reconciles the whole scope."""
+    incremental = after_rowid is not None
+    if incremental and window_start is None:
+        raise ValueError("an incremental run needs window_start")
     stats = RunStats()
     names = load_contacts(config.contacts)
     src = open_store(config)
@@ -493,14 +519,20 @@ def run(config: Config) -> RunStats:
         stats.chats_in_scope = len(chats)
         since_ns, since_s = since_bounds(config.since)
         scope = config.scope_fingerprint()
-        select = _message_select(cols)
+        select = _message_select(cols, incremental)
+        stats.max_rowid = src.execute("SELECT IFNULL(MAX(ROWID), 0) FROM message").fetchone()[0]
+        extra: tuple = ()
+        if incremental:
+            win_ns = (window_start - APPLE_EPOCH) * 1_000_000_000
+            extra = (after_rowid, win_ns, NS_THRESHOLD, window_start - APPLE_EPOCH)
 
         def name_of(handle: str | None) -> str | None:
             return names.get(handle_key(handle)) if handle else None
 
         idx = open_index(config.index)
         try:
-            existing = {g: (i, fp) for i, g, fp in idx.execute("SELECT id, guid, fingerprint FROM messages")}
+            existing = {g: (i, fp, d, rid) for i, g, fp, d, rid in
+                        idx.execute("SELECT id, guid, fingerprint, date, source_rowid FROM messages")}
             seen_messages: set[str] = set()
             seen_reactions: set[str] = set()
             idx.execute("DELETE FROM chats")
@@ -511,7 +543,7 @@ def run(config: Config) -> RunStats:
                              json.dumps(participants, ensure_ascii=False)))
                 chat_text = " ".join(filter(None, [chat.display_name] +
                                             [p["name"] or p["handle"] for p in participants]))
-                if "chat_recoverable_message_join" in cols:
+                if "chat_recoverable_message_join" in cols and not incremental:
                     # Recently Deleted rows usually lose their chat_message_join row, so the
                     # query below never sees them; count them here.
                     stats.recently_deleted_skipped += src.execute(
@@ -519,7 +551,7 @@ def run(config: Config) -> RunStats:
                         " WHERE r.chat_id = ? AND NOT EXISTS (SELECT 1 FROM chat_message_join j"
                         " WHERE j.message_id = m.ROWID) AND (m.date >= ? OR (m.date < ? AND m.date >= ?))",
                         (chat.rowid, since_ns, NS_THRESHOLD, since_s)).fetchone()[0]
-                for raw in src.execute(select, (chat.rowid, since_ns, NS_THRESHOLD, since_s)).fetchall():
+                for raw in src.execute(select, (chat.rowid, since_ns, NS_THRESHOLD, since_s) + extra).fetchall():
                     r = dict(zip(COLUMNS, raw))
                     if r["guid"] in seen_messages or r["guid"] in seen_reactions:
                         continue  # the same message joined to two chats
@@ -571,15 +603,20 @@ def run(config: Config) -> RunStats:
                             " attachment_count, attachments, fingerprint)"
                             " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", values).lastrowid
                         stats.added += 1
+                        stats.added_ids.append(message_id)
                     idx.execute("INSERT INTO messages_fts (rowid, body, sender_text, chat_text) VALUES (?,?,?,?)",
                                 (message_id, row["body"] or "",
                                  "me" if from_me else " ".join(filter(None, [sender_name, sender])), chat_text))
-            for guid, (message_id, _) in existing.items():
-                if guid not in seen_messages:
+            for guid, (message_id, _, msg_date, source_rowid) in existing.items():
+                if guid in seen_messages:
+                    continue
+                # An incremental run only saw new rows and the recent window.
+                if not incremental or msg_date >= window_start or source_rowid > after_rowid:
                     idx.execute("DELETE FROM messages WHERE id = ?", (message_id,))
                     idx.execute("DELETE FROM messages_fts WHERE rowid = ?", (message_id,))
                     stats.removed += 1
-            stale = [g for (g,) in idx.execute("SELECT guid FROM reactions") if g not in seen_reactions]
+            stale = [g for g, d in idx.execute("SELECT guid, date FROM reactions")
+                     if g not in seen_reactions and (not incremental or d >= window_start)]
             idx.executemany("DELETE FROM reactions WHERE guid = ?", [(g,) for g in stale])
             idx.execute("INSERT OR REPLACE INTO meta VALUES ('scope', ?)", (scope,))
             idx.execute("INSERT OR REPLACE INTO meta VALUES ('last_run', ?)",
@@ -610,9 +647,11 @@ def _build_row(src, cols, r: dict, chat: ChatRow, sender: str, sender_name: str 
         stats.unsent += 1
         return row
     text = None
-    if r["attributedBody"]:
+    blob, summary = (_blobs(src, cols, r["rowid"]) if r["attributedBody_len"] or r["message_summary_info_len"]
+                     else (None, None))
+    if blob:
         try:
-            body = ts.decode_body(r["attributedBody"])
+            body = ts.decode_body(blob)
             text = body.text
             stats.attributed_body_decoded += 1
             if not body.complete:
@@ -637,7 +676,7 @@ def _build_row(src, cols, r: dict, chat: ChatRow, sender: str, sender_name: str 
         stats.empty_bodies += 1
     row["body"] = text or None
     if r["date_edited"]:
-        row["edited"], row["edit_count"] = 1, max(1, edit_count(r["message_summary_info"]))
+        row["edited"], row["edit_count"] = 1, max(1, edit_count(summary))
         stats.edited += 1
     return row
 
@@ -676,11 +715,11 @@ def doctor(config: Config) -> dict:
             for raw in src.execute(select, (chat.rowid, since_ns, NS_THRESHOLD, since_s)):
                 r = dict(zip(COLUMNS, raw))
                 in_scope += 1
-                if r["attributedBody"]:
+                if r["attributedBody_len"]:
                     if not r["text"]:
                         attributed_only += 1
                     try:
-                        ts.decode_body(r["attributedBody"])
+                        ts.decode_body(_blobs(src, cols, r["rowid"])[0] or b"")
                         decoded += 1
                     except ts.UnsupportedArchive:
                         failed += 1
