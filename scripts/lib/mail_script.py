@@ -14,54 +14,22 @@ from __future__ import annotations
 
 import email
 import email.policy
-import json
-import re
-import subprocess
 import time
 from email.utils import parseaddr
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import Iterator
 
 import mail_index as mi
+from jxa import AutomationDenied, Runner, ScriptError, command_runner  # noqa: F401  (re-exported)
+import jxa
 
 SCRIPT = Path(__file__).with_name("mail_script.js")
 BATCH = 50          # messages per details call
 DOCTOR_SAMPLE = 20  # messages timed by doctor
 
-Runner = Callable[[dict], dict]
-
-
-class AutomationDenied(PermissionError):
-    """macOS refused to let this process control Mail."""
-
-
-class ScriptError(RuntimeError):
-    pass
-
-
-def command_runner(argv: list[str], timeout: int) -> Runner:
-    """Run argv + [request JSON] and parse stdout as JSON, mapping osascript errors."""
-    def call(request: dict) -> dict:
-        try:
-            proc = subprocess.run([*argv, json.dumps(request)],
-                                  capture_output=True, text=True, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            raise ScriptError(f"Mail didn't answer `{request['command']}` within {timeout}s;"
-                              " raise script_timeout or narrow the scope") from None
-        if proc.returncode != 0:
-            # osascript errors end with an Apple event code such as (-1743).
-            # Report the code only: the text can echo what the script was reading.
-            codes = re.findall(r"\((-?\d+)\)", proc.stderr)
-            if "-1743" in codes:
-                raise AutomationDenied()
-            code = codes[-1] if codes else "unknown"
-            raise ScriptError(f"Mail script `{request['command']}` failed (error {code})")
-        return json.loads(proc.stdout)
-    return call
-
 
 def osascript_runner(timeout: int) -> Runner:
-    return command_runner(["osascript", "-l", "JavaScript", str(SCRIPT)], timeout)
+    return jxa.osascript_runner(SCRIPT, timeout)
 
 
 def _sender(value: str | None) -> tuple[str | None, str | None]:

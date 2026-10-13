@@ -487,5 +487,6 @@ def script_fixture(specs: list[Spec] = SPECS) -> dict:
                     level.append(node)
                 level = node["children"]
             node["messages"].append(script_message(spec))
-        accounts.append({"id": account.id, "name": key.title(), "mailboxes": tree})
+        accounts.append({"id": account.id, "name": key.title(), "mailboxes": tree,
+                         "email_addresses": [account.me[1]]})
     return {"accounts": accounts}

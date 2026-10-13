@@ -12,7 +12,7 @@ Per-service setup, usage, and verification guides. See the [project README](../R
 | [Hermes Agent](hermes.md) | `core` | Gateway, dashboard, API, skills, MCP, [model suitability](hermes.md#model-suitability-agentic-tool-use), [chat tone](hermes.md#conversational-tone-soulmd) |
 | [Calendar](calendar.md) | `calendar` — `caldav-mcp` | CalDAV calendars (iCloud, Nextcloud, …), multi-account |
 | [Shared database](database.md) | `db` — `postgres-db`, `sql-mcp-ro`, `sql-mcp-rw` | Schema per integration, agent roles, SQL MCP, backups |
-| [Email from Apple Mail](email.md) | `mail` — `mail-mcp` (+ host indexer) | Read-only search over Apple Mail, indexed on the host; design and synthetic test store |
+| [Email from Apple Mail](email.md) | `mail` — `mail-mcp` (+ host indexer); `mail-drafts` — `mail-drafts-mcp` (+ host helper) | Search over Apple Mail, indexed on the host, and drafts saved to Mail for you to send; design and synthetic tests |
 | [Messages from iMessage](messages.md) | design (not shipped) | Local chat.db reader, watcher and MCP design; projects evaluated |
 | [Todo lists](todo.md) | `todo` — `vikunja` (+ shared Postgres) | Vikunja web app + MCP, read-only token for unattended sessions |
 | [Signal](signal.md) | `signal` (+ `core`) | Linked-device messaging, WebUI send, cron delivery |

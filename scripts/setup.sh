@@ -21,6 +21,7 @@ SETUP_CALENDAR=0
 SETUP_DB=0
 SETUP_TODO=0
 SETUP_MAIL=0
+SETUP_MAIL_DRAFTS=0
 NON_INTERACTIVE=0
 
 usage() {
@@ -40,6 +41,7 @@ Options:
   --db                      Enable shared Postgres + SQL MCP for Hermes (profile db)
   --todo                    Enable Vikunja todo lists + MCP (profile todo; starts the shared Postgres)
   --mail                    Enable the read-only mail MCP over a host-built Apple Mail index (profile mail)
+  --mail-drafts             Let Hermes queue email drafts that a host helper saves to Mail's Drafts; never sends (profile mail-drafts)
   --ollama                  Bundle Ollama in Docker + demo model pulls (profile ollama)
   --hermes                  Deprecated alias; core already includes Hermes
   --non-interactive         Fail if required values are missing
@@ -72,6 +74,7 @@ while [[ $# -gt 0 ]]; do
     --db) SETUP_DB=1; shift ;;
     --todo) SETUP_TODO=1; shift ;;
     --mail) SETUP_MAIL=1; shift ;;
+    --mail-drafts) SETUP_MAIL_DRAFTS=1; shift ;;
     --ollama) SETUP_OLLAMA=1; shift ;;
     --non-interactive) NON_INTERACTIVE=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -288,6 +291,19 @@ setup_todo_profile() {
   ./scripts/todo.sh prepare
   upsert_env .env VIKUNJA_MCP_ENABLED 1
   log "Enabled Vikunja (todo profile). After make up: make todo-init (account + MCP tokens). See docs/todo.md"
+}
+
+# Draft-only mail MCP. Requests queue in MAIL_DRAFTS_DIR; make mail-drafts (or
+# mail-drafts-watch) on the host saves them to Mail's Drafts. Nothing sends.
+setup_mail_drafts_profile() {
+  append_compose_profile mail-drafts
+  upsert_env .env MAIL_DRAFTS_ENABLED 1
+  local drafts_dir
+  drafts_dir="$(resolve_data_root_path "$(data_root_env_get MAIL_DRAFTS_DIR ./data/mail-drafts)")"
+  mkdir -p "$drafts_dir"
+  chmod 700 "$drafts_dir"
+  log "Enabled mail drafts (profile mail-drafts, folder ${drafts_dir}). Drafts are never sent for you"
+  log "Then: make up, re-run both hermes-*-bootstrap services, and run make mail-drafts-watch on the host. See docs/email.md"
 }
 
 # Read-only mail MCP. The index is built on the host by make mail-index, which
@@ -868,6 +884,7 @@ set_env_if_missing .env VIKUNJA_MCP_ENABLED 0
 
 # Mail MCP stays off until mail is enabled.
 set_env_if_missing .env MAIL_MCP_ENABLED 0
+set_env_if_missing .env MAIL_DRAFTS_ENABLED 0
 
 # OpenCode MCP stays off until coding is enabled.
 set_env_if_missing .env OPENCODE_MCP_ENABLED 0
@@ -903,6 +920,9 @@ if [[ "$SETUP_DB" -eq 1 ]]; then
 fi
 if [[ "$SETUP_TODO" -eq 1 ]]; then
   setup_todo_profile
+fi
+if [[ "$SETUP_MAIL_DRAFTS" -eq 1 ]]; then
+  setup_mail_drafts_profile
 fi
 if [[ "$SETUP_MAIL" -eq 1 ]]; then
   setup_mail_profile
@@ -947,6 +967,7 @@ Optional profiles (re-run setup with flags, or edit COMPOSE_PROFILES):
   --db            Shared Postgres + SQL MCP for Hermes (docs/database.md)
   --todo          Vikunja todo lists + MCP, then make todo-init (docs/todo.md)
   --mail          Read-only search over your Apple Mail, indexed on the host (docs/email.md)
+  --mail-drafts   Hermes drafts email into Mail's Drafts for you to send (docs/email.md)
   --ollama        Bundled Ollama + demo model pull
 
 Signal (optional): set HERMES_SIGNAL_ENABLED=1 and SIGNAL_ACCOUNT in .env,
