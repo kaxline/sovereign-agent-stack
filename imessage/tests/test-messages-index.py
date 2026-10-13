@@ -231,6 +231,9 @@ def test_incremental(tmp: Path) -> None:
     expect(row["body"] == "Running 10 min late" and row["edited"] == 1, "edited body and flag")
     hits = rows(index, "SELECT COUNT(*) AS n FROM messages_fts WHERE messages_fts MATCH '\"10 min\"'")
     expect(hits[0]["n"] == 1, "full-text index follows the edit")
+    raw = index.read_bytes()
+    expect(b"Running 5 min late" not in raw, "the pre-edit text is overwritten in the index file")
+    expect(rows(index, "SELECT value FROM meta WHERE key = 'scrubbed'"), "the index records its first compaction")
 
     # Narrow the scope: 1:1 chats only, minus the SMS one.
     narrow = mi.load_config(write_config(tmp / "narrow.toml", root / "Messages", index,
