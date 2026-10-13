@@ -48,6 +48,7 @@ function collection(items, key, onBatch) {
         return function (id) { return items.find(function (i) { return i[key]() === id; }) || missing(); };
       }
       if (typeof prop !== 'string') return undefined;
+      if (/^[0-9]+$/.test(prop)) return items[Number(prop)] || missing();
       return function () {
         const out = items.map(function (item) {
           if (typeof item[prop] !== 'function') throw appleError("Can't get property.", -1728);

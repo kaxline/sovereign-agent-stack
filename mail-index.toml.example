@@ -33,8 +33,10 @@ max_body_chars = 100000
 
 # One block per account. Get ids and mailbox names from:
 #   python3 scripts/mail-index.py --config mail-index.toml mailboxes
-# Mailboxes are exact names ("INBOX", "Projects/Alpha") or patterns ("*",
-# "Clients/*"). Patterns skip Junk and Trash folders; name them to include.
+# Mailboxes are exact names ("INBOX", "Projects/Alpha") or patterns: "*" is
+# one level ("*" = every top-level mailbox, "Clients/*" = directly under
+# Clients), "**" is any depth ("Clients/**"). Exact names are faster with the
+# script source. Patterns skip Junk and Trash folders; name them to include.
 [[accounts]]
 id = "00000000-0000-0000-0000-000000000000"
 mailboxes = ["INBOX"]

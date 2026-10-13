@@ -124,6 +124,15 @@ def test_scope(env: Env) -> None:
     cfg = mi.load_config(env.config(store, {WORK: ["Projects/Alpha"]}))
     mi.run(cfg)
     expect(set(indexed(cfg)) == {202}, "nested mailbox only, not the parent account INBOX")
+    cfg = mi.load_config(env.config(store, {WORK: ["*"]}))
+    mi.run(cfg)
+    expect(set(indexed(cfg)) == {201}, "* stays at the top level")
+    cfg = mi.load_config(env.config(store, {WORK: ["**"]}))
+    mi.run(cfg)
+    expect(set(indexed(cfg)) == {201, 202}, "** reaches nested mailboxes")
+    cfg = mi.load_config(env.config(store, {WORK: ["INBOX", "Nope", "Projects/Nope"]}))
+    stats = mi.run(cfg)
+    expect(stats.mailboxes_missing == 2 and set(indexed(cfg)) == {201}, f"missing names counted: {stats}")
     version_dir = mi.find_version_dir(store)
     expect(mi.message_files(version_dir, WORK, "Projects") == {}, "scanning a parent skips child mailboxes")
     expect(set(mi.message_files(version_dir, WORK, "Projects/Alpha")) == {202}, "child mailbox files")
@@ -257,9 +266,10 @@ def test_cli_prints_counts_only(env: Env) -> None:
         for text in (m["subject"], m["from"], m["message_id"]):
             expect(text not in joined, f"CLI output leaked message content ({m['rowid']})")
     result = json.loads(outputs[0].strip())
-    expect(result["added"] == 11, f"run counts: {result}")
+    # "*" is one level: the work account's nested Projects/Alpha (202) isn't included.
+    expect(result["added"] == 10, f"run counts: {result}")
     report = json.loads(outputs[1].strip())
-    expect(report["dates_look_like_unix_seconds"] and report["message_files_found"] == 11, f"doctor: {report}")
+    expect(report["dates_look_like_unix_seconds"] and report["message_files_found"] == 10, f"doctor: {report}")
     index = mi.load_config(config).index
     expect(stat.S_IMODE(index.stat().st_mode) == 0o600, "index file is owner-only")
     expect(stat.S_IMODE(index.parent.stat().st_mode) == 0o700, "index folder is owner-only")

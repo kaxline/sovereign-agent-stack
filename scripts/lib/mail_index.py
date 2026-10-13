@@ -180,7 +180,23 @@ def parse_mailbox_url(url: str) -> tuple[str, str] | None:
     return parts.netloc, unquote(parts.path.lstrip("/"))
 
 
+def is_literal(pattern: str) -> bool:
+    """True for an exact mailbox name, False for a pattern with * ? or [."""
+    return not any(c in pattern for c in "*?[")
+
+
+def _glob(pattern: list[str], path: list[str]) -> bool:
+    """Match one "/" level per pattern part; a "**" part matches any number of levels."""
+    if not pattern:
+        return not path
+    if pattern[0] == "**":
+        return any(_glob(pattern[1:], path[i:]) for i in range(len(path) + 1))
+    return bool(path) and fnmatch.fnmatchcase(path[0], pattern[0]) and _glob(pattern[1:], path[1:])
+
+
 def mailbox_selected(path: str, patterns: list[str]) -> bool:
+    """Exact names (case-insensitive), or patterns where * stays within one level
+    and ** spans any number. Patterns skip Junk and Trash; name them to include."""
     lowered = path.lower()
     leaf = lowered.rsplit("/", 1)[-1]
     for pattern in patterns:
@@ -188,7 +204,8 @@ def mailbox_selected(path: str, patterns: list[str]) -> bool:
             return True
     if leaf in EXCLUDED_BY_DEFAULT:
         return False
-    return any(fnmatch.fnmatchcase(lowered, p.lower()) for p in patterns)
+    parts = lowered.split("/")
+    return any(_glob(p.lower().split("/"), parts) for p in patterns if not is_literal(p))
 
 
 def message_files(version_dir: Path, account: str, mailbox: str) -> dict[int, Path]:
@@ -327,7 +344,12 @@ def read_metadata(meta_path: Path, config: Config) -> tuple[list[MetaRow], dict]
                 flagged=bool(flagged) if flagged is not None else bool(flags & FLAG_FLAGGED),
                 deleted=False, conversation_id=int(conv) if conv is not None else None,
             ))
-        info = {"accounts_missing": sorted(set(wanted) - seen_accounts)}
+        known = {(acct.upper(), box.lower()) for acct, box in
+                 filter(None, (parse_mailbox_url(r[0] or "") for r in db.execute("SELECT url FROM mailboxes")))}
+        missing_accounts = set(wanted) - seen_accounts - {acct for acct, _ in known}
+        boxes_missing = sum(1 for acct, patterns in wanted.items() if acct not in missing_accounts
+                            for p in patterns if is_literal(p) and (acct, p.lower()) not in known)
+        info = {"accounts_missing": sorted(missing_accounts), "mailboxes_missing": boxes_missing}
         return rows, info
     finally:
         db.close()
@@ -496,6 +518,7 @@ class RunStats:
     missing_files: int = 0
     unreadable: int = 0
     accounts_missing: list[str] = field(default_factory=list)
+    mailboxes_missing: int = 0
     compacted: bool = False
 
     def as_dict(self) -> dict:
@@ -651,6 +674,7 @@ class StoreSource:
             "mailboxes_in_scope": len(by_box),
             "message_files_found": found,
             "accounts_missing": info["accounts_missing"],
+            "mailboxes_missing": info["mailboxes_missing"],
         }
 
 
@@ -669,6 +693,7 @@ def run(config: Config, *, now: float | None = None, source=None) -> RunStats:
     source = source or open_source(config)
     rows, info = source.rows()
     stats.accounts_missing = info["accounts_missing"]
+    stats.mailboxes_missing = info.get("mailboxes_missing", 0)
     stats.in_scope = len(rows)
 
     db = open_index(config.index)
