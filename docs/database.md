@@ -15,9 +15,7 @@ schema, with or without `db`. This is
 ```bash
 ./scripts/setup.sh --db
 make up
-docker compose run --rm hermes-api-bootstrap
-docker compose run --rm hermes-browser-bootstrap
-docker compose restart hermes
+make hermes-reload
 make doctor
 ```
 
@@ -216,7 +214,7 @@ password is fixed at first initialisation. Change it with `ALTER ROLE postgres
 PASSWORD ...` in `make db-psql` before editing `.env`.
 
 To turn the feature off, set `SQL_MCP_ENABLED=0`, remove `db` from
-`COMPOSE_PROFILES`, and re-run both Hermes bootstraps. They remove the `sql`
+`COMPOSE_PROFILES`, and run `make hermes-reload`. The bootstraps remove the `sql`
 entries. The data stays in `DB_DATA_DIR`.
 
 ## Troubleshooting

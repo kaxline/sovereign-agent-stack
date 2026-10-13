@@ -190,9 +190,7 @@ To check locate routing (bare repo name, not `/opt/projects/<guess>`), ask Herme
 After enabling coding or changing MCP registration:
 
 ```bash
-docker compose run --rm hermes-api-bootstrap
-docker compose run --rm hermes-browser-bootstrap
-docker compose restart hermes
+make hermes-reload
 docker compose exec hermes hermes mcp list
 docker compose exec hermes hermes -p browser mcp list
 docker compose exec hermes hermes -p api-server mcp list   # must NOT list opencode

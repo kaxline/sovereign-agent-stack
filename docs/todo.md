@@ -14,9 +14,7 @@ starts the shared Postgres too, and does not need `--db`.
 ./scripts/setup.sh --todo
 make up
 make todo-init        # account with a generated password + Hermes' two tokens
-docker compose run --rm hermes-api-bootstrap
-docker compose run --rm hermes-browser-bootstrap
-docker compose restart hermes
+make hermes-reload
 make doctor
 make todo-open        # the web app, already signed in
 ```
@@ -128,9 +126,9 @@ clear for anyone debugging.
 
 `make todo-init` is safe to re-run. It deletes the tokens it made before
 (titles `assistant-hermes-rw` and `assistant-hermes-ro`), mints new ones, and
-updates `.env`. Re-run both bootstraps and restart `hermes` afterwards.
+updates `.env`. Run `make hermes-reload` afterwards.
 
-- **Rotate:** `make todo-init`, then the three commands it prints.
+- **Rotate:** `make todo-init`, then `make hermes-reload`.
 - **Use another account:** set `VIKUNJA_USERNAME=<name>` in `.env`, clear
   `VIKUNJA_PASSWORD`, and run `make todo-init`. It creates that account, or
   gives an existing one a generated password.
@@ -180,7 +178,7 @@ Attachments are files under `VIKUNJA_FILES_DIR`; copy that directory too.
 ## Turning it off
 
 Remove `todo` from `COMPOSE_PROFILES`, set `VIKUNJA_MCP_ENABLED=0`, re-run
-both bootstraps, and restart `hermes`. The bootstrap drops the `todos` MCP
+`make hermes-reload`. The bootstrap drops the `todos` MCP
 entry and the token from each profile. The schema and its data stay in
 Postgres until you drop them ([database.md](database.md#adding-an-integration)).
 
@@ -190,7 +188,7 @@ Postgres until you drop them ([database.md](database.md#adding-an-integration)).
 |---|---|
 | `vikunja` restarts with `permission denied` on `/app/vikunja/files` | The files directory must belong to `HERMES_UID`:`HERMES_GID`. `./scripts/todo.sh prepare` creates it, and Docker creates it as root if it gets there first |
 | `vikunja` logs `password authentication failed for user "svc_vikunja"` | `docker compose run --rm db-provision`, then `docker compose restart vikunja`. `make doctor` checks `services/vikunja.env` |
-| Hermes reports a 401 from `todos` | The token was revoked or rotated. Run `make todo-init` again, then both bootstraps |
+| Hermes reports a 401 from `todos` | The token was revoked or rotated. Run `make todo-init` again, then `make hermes-reload` |
 | Hermes still writes the markdown file | `todos` is missing from `hermes mcp list` for that profile. Re-run the bootstrap for that profile and restart `hermes` |
 | Logged out after every restart | `VIKUNJA_SECRET` is empty. Re-run `./scripts/setup.sh` |
 | `/login-local` says automatic sign-in failed | `make todo-init` has not run, or `.env` changed since. Run it again; it recreates `vikunja-proxy` |

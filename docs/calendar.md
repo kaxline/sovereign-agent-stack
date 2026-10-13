@@ -10,9 +10,7 @@ Requires the **`calendar`** compose profile (`./scripts/setup.sh --calendar`).
 ./scripts/setup.sh --calendar
 # Edit compose/caldav-mcp/accounts/personal.env (iCloud: app-specific password)
 make up
-docker compose run --rm hermes-api-bootstrap
-docker compose run --rm hermes-browser-bootstrap
-docker compose restart hermes
+make hermes-reload
 ```
 
 In WebUI: *What's on my personal calendar today?*
@@ -31,10 +29,8 @@ Upstream: [gelse/caldav-mcp](https://github.com/gelse/caldav-mcp). Credentials a
 
 ```bash
 cp compose/caldav-mcp/account.env.example compose/caldav-mcp/accounts/work.env
-# Edit work.env, then re-run both bootstraps and restart hermes
-docker compose run --rm hermes-api-bootstrap
-docker compose run --rm hermes-browser-bootstrap
-docker compose restart hermes
+# Edit work.env, then: make hermes-reload
+make hermes-reload
 ```
 
 Slug = filename without `.env` (lowercase letters, digits, hyphens). Hermes names the server `caldav-personal`, `caldav-work`, and so on. Ask for a specific account by name (“check my **work** calendar”).
@@ -76,7 +72,7 @@ Create/update/delete stay off the unattended API profile on purpose (same idea a
 - Account files under `compose/caldav-mcp/accounts/*.env` are gitignored (`*.env`). They stay the source of truth.
 - Bootstrap stores `X-Caldav-Password: ${CALDAV_<SLUG>_PASSWORD}` in Hermes config (`personal` becomes `CALDAV_PERSONAL_PASSWORD`, `work-cal` becomes `CALDAV_WORK_CAL_PASSWORD`). The password itself is written to `data/hermes/.env` and to each named profile's `.env`. Hermes expands the reference when it connects. This image sends an unset name as the literal placeholder, so the env key has to be there.
 - The password still lives under gitignored `data/hermes/`. Treat that tree like a password store. Config dumps and `hermes config` do not include it.
-- After this change, or after editing an account, re-run both bootstraps below so existing configs drop a literal password.
+- After this change, or after editing an account, run `make hermes-reload` so existing configs drop a literal password.
 - No host port publish for `caldav-mcp`.
 - Do not commit account files or paste app passwords into tracked docs.
 
@@ -94,9 +90,7 @@ Expect `caldav-<slug>` on each profile; api-server should show the shorter tool 
 After changing accounts or enabling the profile, re-run bootstrap (it is a one-shot and does not run on every `up`):
 
 ```bash
-docker compose run --rm hermes-api-bootstrap
-docker compose run --rm hermes-browser-bootstrap
-docker compose restart hermes
+make hermes-reload
 ```
 
 ## Related

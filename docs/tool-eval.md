@@ -10,9 +10,7 @@ small prompt pack so we can see whether mitigations improve real WebUI behavior.
    (`always_include` plus `tools.tool_search.defer` without `session_search`):
 
 ```bash
-docker compose run --rm hermes-api-bootstrap
-docker compose run --rm hermes-browser-bootstrap
-docker compose up -d --force-recreate hermes
+make hermes-reload
 ```
 
 3. Confirm pins: `make doctor` should report SearXNG + `session_search` on
