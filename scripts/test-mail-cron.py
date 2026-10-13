@@ -96,6 +96,17 @@ def main() -> int:
         flow = SERVERS + "platform_toolsets:\n  cron: [web]\n"
         expect(flagged(home(tmp, "g", flow, [{"name": "x"}])) == {"x"},
                "a cron list naming no MCP server still gets mail")
+        messages = SERVERS + "  messages:\n    url: http://messages-mcp:8000/mcp\n"
+        got = flagged(home(tmp, "h", messages, [
+            {"name": "messages only", "enabled_toolsets": ["messages"]},
+            {"name": "messages and mail", "enabled_toolsets": ["messages", "mail"]},
+            {"name": "messages and web", "enabled_toolsets": ["messages", "web"]},
+            {"name": "messages and searxng", "enabled_toolsets": ["messages", "searxng"]},
+        ]))
+        expect(got == {"messages and web", "messages and searxng"}, f"messages is fenced like mail: {got}")
+        only_messages = messages.replace("mail-mcp:8000", "elsewhere:1")
+        line = cmc.check(home(tmp, "i", only_messages, [{"name": "no list"}]))[0]
+        expect("can read messages alongside" in line, f"the warning names messages: {line}")
         expect(cmc.cron_list(tmp / "e" / "config.yaml") == ["hermes-cron", "searxng"], "block list parsed")
         expect(cmc.cron_list(tmp / "a" / "config.yaml") is None, "no cron list")
 

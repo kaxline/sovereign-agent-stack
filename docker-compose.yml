@@ -405,6 +405,48 @@ services:
       start_period: 15s
 
   # ----------------------------------------------------------------------
+  # messages-mcp — read-only MCP over the host-built Messages index, plus the
+  # forwarder for the host watcher's new-message events (docs/messages.md)
+  # Profile: messages
+  # MCP:     http://messages-mcp:8000/mcp   (compose-internal only)
+  # Mounts the index folder read-only and the events folder (the watcher's
+  # outbox; the forwarder deletes delivered events and keeps the triage
+  # cursor there). Never the Messages folder itself. Forwards events to the
+  # default profile's webhook route inside the compose network.
+  # ----------------------------------------------------------------------
+  messages-mcp:
+    profiles: ["messages"]
+    container_name: ${CONTAINER_PREFIX:-}messages-mcp
+    build:
+      context: ./imessage
+      dockerfile: mcp/Dockerfile
+    image: ${IMAGE_PREFIX:-assistant}-messages-mcp:local
+    restart: unless-stopped
+    # Same uid as the host user that owns the 0700 index and events folders.
+    user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+    environment:
+      - MESSAGES_INDEX_PATH=/data/messages/${MESSAGES_INDEX_FILE:-index.sqlite}
+      - MESSAGES_EVENTS_DIR=/data/messages-events
+      - MESSAGES_WEBHOOK_URL=http://hermes:${MESSAGES_WEBHOOK_PORT:-8646}/webhooks/messages
+      - MESSAGES_WEBHOOK_SECRET=${MESSAGES_WEBHOOK_SECRET:-}
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=8000
+    volumes:
+      - ${MESSAGES_INDEX_DIR:-./data/messages}:/data/messages:ro
+      - ${MESSAGES_EVENTS_DIR:-./data/messages-events}:/data/messages-events
+    # No host ports — compose-internal only.
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  # ----------------------------------------------------------------------
   # vikunja — todo lists with a built-in MCP server
   # Profile: todo (also starts the shared Postgres via x-db-profiles)
   # Web UI:  http://localhost:3456/login-local   (via vikunja-proxy below)
@@ -975,6 +1017,14 @@ services:
       - MAIL_DRAFTS_MCP_URL=${MAIL_DRAFTS_MCP_URL:-http://mail-drafts-mcp:8000/mcp}
       - MAIL_DRAFTS_MCP_TIMEOUT=${MAIL_DRAFTS_MCP_TIMEOUT:-60}
       - MAIL_DRAFTS_MCP_CONNECT_TIMEOUT=${MAIL_DRAFTS_MCP_CONNECT_TIMEOUT:-30}
+      # Messages MCP (messages profile): default + browser only, never api-server.
+      - MESSAGES_MCP_ENABLED=${MESSAGES_MCP_ENABLED:-0}
+      - MESSAGES_MCP_URL=${MESSAGES_MCP_URL:-http://messages-mcp:8000/mcp}
+      - MESSAGES_MCP_TIMEOUT=${MESSAGES_MCP_TIMEOUT:-60}
+      - MESSAGES_MCP_CONNECT_TIMEOUT=${MESSAGES_MCP_CONNECT_TIMEOUT:-30}
+      # The default profile's webhook route for new-message events checks this.
+      - MESSAGES_WEBHOOK_SECRET=${MESSAGES_WEBHOOK_SECRET:-}
+      - MESSAGES_WEBHOOK_PORT=${MESSAGES_WEBHOOK_PORT:-8646}
       # Upstream URL only (no key), to size the stale-stream timeout.
       - LLM_BINDING_HOST=${LLM_BINDING_HOST:-http://host.docker.internal:1234/v1}
       - HERMES_PROXY_STALE_TIMEOUT=${HERMES_PROXY_STALE_TIMEOUT:-}
@@ -1049,6 +1099,14 @@ services:
       - MAIL_DRAFTS_MCP_URL=${MAIL_DRAFTS_MCP_URL:-http://mail-drafts-mcp:8000/mcp}
       - MAIL_DRAFTS_MCP_TIMEOUT=${MAIL_DRAFTS_MCP_TIMEOUT:-60}
       - MAIL_DRAFTS_MCP_CONNECT_TIMEOUT=${MAIL_DRAFTS_MCP_CONNECT_TIMEOUT:-30}
+      # Messages MCP (messages profile): default + browser only, never api-server.
+      - MESSAGES_MCP_ENABLED=${MESSAGES_MCP_ENABLED:-0}
+      - MESSAGES_MCP_URL=${MESSAGES_MCP_URL:-http://messages-mcp:8000/mcp}
+      - MESSAGES_MCP_TIMEOUT=${MESSAGES_MCP_TIMEOUT:-60}
+      - MESSAGES_MCP_CONNECT_TIMEOUT=${MESSAGES_MCP_CONNECT_TIMEOUT:-30}
+      # The default profile's webhook route for new-message events checks this.
+      - MESSAGES_WEBHOOK_SECRET=${MESSAGES_WEBHOOK_SECRET:-}
+      - MESSAGES_WEBHOOK_PORT=${MESSAGES_WEBHOOK_PORT:-8646}
       # Upstream URL only (no key), to size the stale-stream timeout and
       # decide whether auto-title may compete with the reply.
       - LLM_BINDING_HOST=${LLM_BINDING_HOST:-http://host.docker.internal:1234/v1}

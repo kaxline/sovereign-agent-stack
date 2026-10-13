@@ -36,6 +36,14 @@ the stack under another app.
    `hermes`, then `make doctor`. Cron jobs without their own tool list stop
    getting the mail tools; doctor lists any job that still can read mail
    alongside other tools.
+8. Optional, for iMessage/SMS: `./scripts/setup.sh --messages`, fill in
+   `messages-index.toml`, build and install the reader app
+   (`imessage/macos/build.sh`, `imessage/macos/install.sh --config …`) and
+   grant it Full Disk Access, `make up`, `make hermes-reload`,
+   `make messages-triage-cron`. See [docs/messages.md](docs/messages.md).
+   Re-running setup without `--messages` adds `MESSAGES_MCP_ENABLED=0` and
+   starts nothing. With messages off, the bootstraps remove any `messages`
+   webhook route they added.
 
 ### New services
 
@@ -60,6 +68,14 @@ the stack under another app.
   queues requests in `MAIL_DRAFTS_DIR`; it doesn't mount the mail index and
   can't send. No host port, read-only root filesystem, all capabilities
   dropped, `no-new-privileges`, runs as `HERMES_UID:HERMES_GID`.
+- `messages-mcp` (new **`messages`** profile, off by default): read-only MCP
+  over the host-built Messages index plus a forwarder for the host watcher's
+  new-message events, built locally from `imessage/` (`python:3.11-slim`,
+  `mcp==1.30.0`). Mounts `MESSAGES_INDEX_DIR` read-only and
+  `MESSAGES_EVENTS_DIR`. No host port, read-only root filesystem, all
+  capabilities dropped, `no-new-privileges`, runs as `HERMES_UID:HERMES_GID`.
+  Forwards events to the default profile's webhook listener on
+  `MESSAGES_WEBHOOK_PORT` inside the compose network.
 
 ### Required `.env` keys
 
@@ -96,8 +112,25 @@ Only with `todo` enabled.
 | `MAIL_DRAFTS_DIR` | `./data/mail-drafts` | Host folder for queued requests and their status; mounted into `mail-drafts-mcp` |
 | `MAIL_DRAFTS_MCP_URL` | `http://mail-drafts-mcp:8000/mcp` | Endpoint the bootstrap registers |
 | `MAIL_DRAFTS_MCP_TIMEOUT` / `MAIL_DRAFTS_MCP_CONNECT_TIMEOUT` | `60` / `30` | Hermes MCP timeouts for `drafts` |
+| `MESSAGES_MCP_ENABLED` | `0` | `1` registers `mcp_servers.messages` on the default and browser profiles and the `messages` webhook route on default. `setup.sh --messages` sets it |
+| `MESSAGES_INDEX_DIR` / `MESSAGES_INDEX_FILE` | `./data/messages` / `index.sqlite` | Host index; mounted read-only into `messages-mcp` |
+| `MESSAGES_EVENTS_DIR` | `./data/messages-events` | The host watcher's outbox; mounted into `messages-mcp` |
+| `MESSAGES_WEBHOOK_SECRET` | empty; `setup.sh --messages` generates it | Shared by the forwarder and the webhook route. Empty turns new-message alerts off |
+| `MESSAGES_WEBHOOK_PORT` | `8646` | Default profile's webhook listener inside the `hermes` container (not published) |
+| `MESSAGES_MCP_URL` | `http://messages-mcp:8000/mcp` | Endpoint the bootstrap registers |
+| `MESSAGES_MCP_TIMEOUT` / `MESSAGES_MCP_CONNECT_TIMEOUT` | `60` / `30` | Hermes MCP timeouts for `messages` |
 
 ### Changes
+
+- **Messages MCP and alerts**: the bootstraps register `mcp_servers.messages`
+  on the default and `browser` profiles, never `api-server`.
+  `messages_triage_batch` is listed only on default. With
+  `MESSAGES_WEBHOOK_SECRET` set, they enable the default profile's webhook
+  platform (only if it was off, recorded in `.messages-webhook.json`) with a
+  `messages` route that fires the `messages-triage` cron job. Routes you added
+  are kept. `make messages-triage-cron` creates that job with the messages
+  tools only. The cron fence and `make doctor`'s cron check now cover
+  `messages` as well as mail.
 
 - **Hermes bootstrap**: registers `mcp_servers.todos` (named for what users
   call it; an earlier `mcp_servers.vikunja` entry is removed) with an

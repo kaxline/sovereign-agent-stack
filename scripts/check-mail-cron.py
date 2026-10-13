@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Warn about Hermes cron jobs that can read mail alongside other tools.
+"""Warn about Hermes cron jobs that can read mail or messages alongside other tools.
 
     python3 scripts/check-mail-cron.py [--hermes-home data/hermes]
 
 Cron runs unattended. A job that can read mail (untrusted text) and also
 reach the web, a browser, a shell or another MCP server could be steered by a
-message into leaking mail. Only a mail-only allowlist is safe; see
-docs/email.md. This mirrors Hermes's rule for a job's tools: with no
+message into leaking mail. The same goes for iMessage history (the messages
+MCP). Only an allowlist of mail and/or messages alone is safe; see
+docs/email.md and docs/messages.md. This mirrors Hermes's rule for a job's tools: with no
 `enabled_toolsets`, or with an allowlist that names no MCP server, a job gets
 every enabled MCP server, mail included. A job with no list of its own uses
 `platform_toolsets.cron` when the profile has one (the bootstrap writes one
@@ -25,8 +26,10 @@ import re
 import sys
 from pathlib import Path
 
-MAIL_URL = "mail-mcp:8000"
-SAFE_NATIVE: set[str] = set()  # native toolsets allowed beside mail: none
+# MCP servers that serve other people's text. A job may read any of them, but
+# nothing else beside them.
+READERS = {"mail-mcp:8000": "mail", "messages-mcp:8000": "messages"}
+SAFE_NATIVE: set[str] = set()  # native toolsets allowed beside them: none
 
 
 def mcp_servers(config: Path) -> dict[str, dict]:
@@ -121,7 +124,8 @@ def check(home: Path) -> list[str]:
     for label, path in profiles:
         servers = mcp_servers(path / "config.yaml")
         enabled_mcp = {n for n, s in servers.items() if s["enabled"]}
-        mail = {n for n in enabled_mcp if MAIL_URL in servers[n]["url"]}
+        kind = {n: k for n in enabled_mcp for url, k in READERS.items() if url in servers[n]["url"]}
+        mail = set(kind)
         if not mail:
             continue
         platform = cron_list(path / "config.yaml")
@@ -143,7 +147,8 @@ def check(home: Path) -> list[str]:
                 others += sorted(native - SAFE_NATIVE)
             if others:
                 paused = "" if job.get("enabled", True) else " (paused)"
-                problems.append(f"{label}: cron job {job.get('id')} '{job.get('name')}'{paused} can read mail"
+                reads = " and ".join(sorted({kind[n] for n in mcp & mail}))
+                problems.append(f"{label}: cron job {job.get('id')} '{job.get('name')}'{paused} can read {reads}"
                                 f" alongside {', '.join(others)}")
     return problems
 

@@ -4,8 +4,8 @@ Read-only access to your Messages.app history on macOS, for a local AI
 assistant. A host-side indexer reads Messages' database and writes the chats
 you choose to a small SQLite index with full-text search. A watcher keeps the
 index current and raises an event when new messages arrive. An MCP server
-(not built yet) will serve the index to the assistant. Nothing here can send,
-react, mark read, edit or delete messages.
+serves the index to the assistant and can forward those events to it.
+Nothing here can send, react, mark read, edit or delete messages.
 
 This folder is self-contained: Python 3.11+ standard library only, with no
 imports from the rest of the repository, so it can move to its own repository.
@@ -18,7 +18,7 @@ wires it in are in [docs/messages.md](../docs/messages.md).
 | [Indexer](#indexer) | Built. Tested only against the synthetic store |
 | [Watcher and new-message events](#watcher) | Built. Tested only against the synthetic store |
 | [macOS app](#macos-app) (its own Full Disk Access grant) | Built. Not yet run with a real grant |
-| Read-only MCP | Not built |
+| [Read-only MCP and event forwarder](#mcp-server) | Built. Tested against the synthetic store and in its container |
 
 ```
 imessage/
@@ -28,8 +28,10 @@ imessage/
   lib/messages_index.py          indexer
   lib/messages_watch.py          watcher and events
   lib/typedstream.py             reads and writes attributedBody archives
+  lib/webhook.py                 signed webhook POSTs (watcher and forwarder)
   lib/synthetic_messages.py      fake store generator
   macos/                         app launcher, build and install scripts
+  mcp/                           read-only MCP server, outbox forwarder, Dockerfile
   tests/                         stdlib test scripts
 ```
 
@@ -238,6 +240,63 @@ is undocumented, so the first real run checks the assumptions:
 2. Exit code 3 names the missing columns. Exit code 4 means macOS denied
    access.
 
+## MCP server
+
+```bash
+docker build -f imessage/mcp/Dockerfile -t messages-mcp imessage
+docker run --rm --read-only --cap-drop ALL --tmpfs /tmp -u "$(id -u):$(id -g)" \
+  -v "$PWD/data/messages:/data/messages:ro" -v "$PWD/data/messages-events:/data/messages-events" \
+  -p 127.0.0.1:8000:8000 messages-mcp
+```
+
+It serves MCP over streamable HTTP at `/mcp`. It reads the index read-only and
+has no tool that sends, reacts, marks read, edits or deletes. Every result
+that carries message text includes a notice that the text is untrusted, and
+wraps each message between `<<<MESSAGE TEXT (untrusted)>>>` markers. Marker
+text inside a message is stripped, so a message can't close its wrapper early.
+
+| Tool | Does |
+|---|---|
+| `messages_status` | Message and chat counts, unread count, date range, newest id, last index run |
+| `messages_chats` | Conversations, most recent first, with participants and unread counts. `query` matches a chat name or participant |
+| `messages_search` | Words in the text, sender or chat name; filters for chat, sender, dates, unread, sent by me. Texts shortened |
+| `messages_conversation` | One chat, oldest first, with reactions, edits and attachments; pages back and forward by id |
+| `messages_get` | One message in full with a few messages of context |
+| `messages_triage_batch` | For a triage job: incoming messages in the watched chats that no earlier call returned. Moves a cursor past them |
+
+`chat` arguments take a chat id or a name to look one up by. An ambiguous
+name is refused with a pointer to `messages_chats`.
+
+**Triage cursor.** `messages_triage_batch` keeps its cursor in
+`<events dir>/.triage.json`. It covers the chats named in the watcher's
+`notify.chats`, which the watcher records in the index. Its first call starts
+24 hours back. `GET /watermark` returns the newest unreported message id, or
+`none`. It's content-free, for a scheduler that should run the triage job
+only when something is pending.
+
+**Forwarder.** With `MESSAGES_WEBHOOK_URL` and `MESSAGES_WEBHOOK_SECRET` (or
+`_SECRET_FILE`) set, the server also forwards the watcher's outbox
+(`MESSAGES_EVENTS_DIR`) to that webhook, signed as in [Events](#events). That
+way a receiver in the same container network never needs a port published
+on the host.
+
+- **Strict checks.** Each file is checked strictly (type, id, chat id
+  format, counts, field lengths) and rebuilt from the fields an event may
+  have. Anything else is deleted and counted, never forwarded.
+- **Delivery.** Delivered files are deleted. A failure blocks the rest, so
+  events stay in order, and retries back off up to a minute. Files older
+  than a day are dropped.
+- **Health.** `GET /health` shows the totals.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MESSAGES_INDEX_PATH` | `/data/messages/index.sqlite` | The index |
+| `MESSAGES_EVENTS_DIR` | `/data/messages-events` | The watcher's outbox, and the triage cursor |
+| `MESSAGES_TRIAGE_STATE` | `<events dir>/.triage.json` | The triage cursor file |
+| `MESSAGES_WEBHOOK_URL` | unset | Forward events here |
+| `MESSAGES_WEBHOOK_SECRET` / `_FILE` | unset | Shared HMAC secret, at least 16 bytes |
+| `MCP_HOST`, `MCP_PORT` | `0.0.0.0`, `8000` | Listener |
+
 ## Synthetic store
 
 `lib/synthetic_messages.py` writes a fake Messages store with 28 made-up
@@ -305,6 +364,8 @@ python3 imessage/tests/test-synthetic-messages.py   # generator and typedstream 
 python3 imessage/tests/test-messages-index.py       # indexer against the synthetic store
 python3 imessage/tests/test-messages-watch.py       # watcher: events, quiet hours, retries, live kqueue loop
 python3 imessage/tests/test-messages-app.py         # builds the app, checks its seal, runs it (macOS)
+python3 imessage/tests/test-messages-mcp.py         # MCP query layer, triage cursor, forwarder
+python3 imessage/tests/test-messages-mcp-container.py   # the MCP container, locked down (Docker)
 ```
 
 ## Rules for contributors

@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 # Every profile that publishes a service we want to see in one config.
-PROFILES = "core,rag,calendar,automation,coding,ollama,searxng-prod,db,todo,mail,mail-drafts"
+PROFILES = "core,rag,calendar,automation,coding,ollama,searxng-prod,db,todo,mail,mail-drafts,messages"
 
 # Secret-bearing environment keys, and the services allowed to carry them.
 # An empty set means the key must not appear on any service.
@@ -38,6 +38,7 @@ SECRET_KEYS = {
     # Bootstrap copies each token into one profile's .env; hermes reads it there.
     "VIKUNJA_MCP_TOKEN_RO": {"hermes-api-bootstrap", "hermes-browser-bootstrap"},
     "VIKUNJA_MCP_TOKEN_RW": {"hermes-api-bootstrap", "hermes-browser-bootstrap"},
+    "MESSAGES_WEBHOOK_SECRET": {"messages-mcp", "hermes-api-bootstrap", "hermes-browser-bootstrap"},
     "DB_POSTGRESDB_PASSWORD": {"n8n-import"},
     "N8N_ENCRYPTION_KEY": {"n8n", "n8n-import"},
     "N8N_USER_MANAGEMENT_JWT_SECRET": {"n8n", "n8n-import"},

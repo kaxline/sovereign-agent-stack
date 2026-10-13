@@ -22,6 +22,7 @@ SETUP_DB=0
 SETUP_TODO=0
 SETUP_MAIL=0
 SETUP_MAIL_DRAFTS=0
+SETUP_MESSAGES=0
 NON_INTERACTIVE=0
 
 usage() {
@@ -42,6 +43,7 @@ Options:
   --todo                    Enable Vikunja todo lists + MCP (profile todo; starts the shared Postgres)
   --mail                    Enable the read-only mail MCP over a host-built Apple Mail index (profile mail)
   --mail-drafts             Let Hermes queue email drafts that a host helper saves to Mail's Drafts; never sends (profile mail-drafts)
+  --messages                Enable the read-only Messages (iMessage/SMS) MCP over a host-built index, with new-message alerts (profile messages)
   --ollama                  Bundle Ollama in Docker + demo model pulls (profile ollama)
   --hermes                  Deprecated alias; core already includes Hermes
   --non-interactive         Fail if required values are missing
@@ -75,6 +77,7 @@ while [[ $# -gt 0 ]]; do
     --todo) SETUP_TODO=1; shift ;;
     --mail) SETUP_MAIL=1; shift ;;
     --mail-drafts) SETUP_MAIL_DRAFTS=1; shift ;;
+    --messages) SETUP_MESSAGES=1; shift ;;
     --ollama) SETUP_OLLAMA=1; shift ;;
     --non-interactive) NON_INTERACTIVE=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -304,6 +307,33 @@ setup_mail_drafts_profile() {
   chmod 700 "$drafts_dir"
   log "Enabled mail drafts (profile mail-drafts, folder ${drafts_dir}). Drafts are never sent for you"
   log "Then: make up, re-run both hermes-*-bootstrap services, and run make mail-drafts-watch on the host. See docs/email.md"
+}
+
+# Read-only Messages MCP. The index is built on the host by the Messages
+# reader app (or make messages-index), which needs Full Disk Access and a
+# filled-in messages-index.toml; nothing here touches the Messages folder. The
+# watcher writes new-message events to MESSAGES_EVENTS_DIR, and messages-mcp
+# forwards them to the default profile's webhook route, signed with
+# MESSAGES_WEBHOOK_SECRET.
+setup_messages_profile() {
+  append_compose_profile messages
+  upsert_env .env MESSAGES_MCP_ENABLED 1
+  set_env_if_placeholder .env MESSAGES_WEBHOOK_SECRET "$(rand_hex 32)"
+  local index_dir events_dir
+  index_dir="$(resolve_data_root_path "$(data_root_env_get MESSAGES_INDEX_DIR ./data/messages)")"
+  events_dir="$(resolve_data_root_path "$(data_root_env_get MESSAGES_EVENTS_DIR ./data/messages-events)")"
+  mkdir -p "$index_dir" "$events_dir"
+  chmod 700 "$index_dir" "$events_dir"
+  if [[ ! -f messages-index.toml ]]; then
+    {
+      sed -e "s|^index = .*|index = \"${index_dir}/index.sqlite\"|" imessage/messages-index.toml.example
+      printf '\n# Added by setup.sh --messages: events go to the folder messages-mcp forwards from.\n'
+      printf '[notify]\nchats = ["*;-;*"]\noutbox = "%s"\n' "$events_dir"
+    } > messages-index.toml
+    log "Created messages-index.toml — set store, since and chats (make messages-index-chats lists them)"
+  fi
+  log "Enabled the Messages MCP (profile messages, index ${index_dir}, events ${events_dir})"
+  log "Then: build and install the reader app, grant it Full Disk Access, make up, make hermes-reload, make messages-triage-cron. See docs/messages.md"
 }
 
 # Read-only mail MCP. The index is built on the host by make mail-index, which
@@ -885,6 +915,7 @@ set_env_if_missing .env VIKUNJA_MCP_ENABLED 0
 # Mail MCP stays off until mail is enabled.
 set_env_if_missing .env MAIL_MCP_ENABLED 0
 set_env_if_missing .env MAIL_DRAFTS_ENABLED 0
+set_env_if_missing .env MESSAGES_MCP_ENABLED 0
 
 # OpenCode MCP stays off until coding is enabled.
 set_env_if_missing .env OPENCODE_MCP_ENABLED 0
@@ -923,6 +954,9 @@ if [[ "$SETUP_TODO" -eq 1 ]]; then
 fi
 if [[ "$SETUP_MAIL_DRAFTS" -eq 1 ]]; then
   setup_mail_drafts_profile
+fi
+if [[ "$SETUP_MESSAGES" -eq 1 ]]; then
+  setup_messages_profile
 fi
 if [[ "$SETUP_MAIL" -eq 1 ]]; then
   setup_mail_profile
@@ -968,6 +1002,7 @@ Optional profiles (re-run setup with flags, or edit COMPOSE_PROFILES):
   --todo          Vikunja todo lists + MCP, then make todo-init (docs/todo.md)
   --mail          Read-only search over your Apple Mail, indexed on the host (docs/email.md)
   --mail-drafts   Hermes drafts email into Mail's Drafts for you to send (docs/email.md)
+  --messages      Read-only iMessage/SMS history and new-message alerts, indexed on the host (docs/messages.md)
   --ollama        Bundled Ollama + demo model pull
 
 Signal (optional): set HERMES_SIGNAL_ENABLED=1 and SIGNAL_ACCOUNT in .env,
