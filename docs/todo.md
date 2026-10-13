@@ -189,3 +189,33 @@ web app is a client of the same REST API, which any other UI can use:
   origin (a desktop app's custom scheme, say) has to be listed in Vikunja's
   `cors.origins`, which this stack does not set yet
 - CalDAV tasks (VTODO) at `/dav/` for clients that speak it
+
+## License
+
+Vikunja is licensed [AGPL-3.0-or-later](https://github.com/go-vikunja/vikunja/blob/main/LICENSE).
+This stack runs the unmodified upstream image (`VIKUNJA_IMAGE`, default
+`vikunja/vikunja:2.7.0`), which Docker pulls from Docker Hub. Its source is the
+matching tag at <https://github.com/go-vikunja/vikunja>. The repo's own files
+for this profile are MIT, like the rest of the repo, because they are separate
+programs that only use Vikunja's HTTP API:
+`compose/vikunja-proxy/`, `scripts/todo.sh`, and the bootstrap, skill, and
+doctor changes.
+
+Two rules keep it that way (see [CONTRIBUTING.md](../CONTRIBUTING.md#third-party-code)):
+
+- **Don't patch Vikunja.** No overlay files mounted into the `vikunja`
+  container, no rebuilt image. A modified Vikunja that people use over a
+  network must offer its source under AGPL §13, and the patch files would be
+  AGPL rather than MIT. Change behaviour from outside, through the API or the
+  proxy.
+- **Don't copy Vikunja source** (Go or frontend code) into this repo. Using its
+  API, endpoint names, and documented settings is fine.
+
+Anyone who ships the Vikunja image or binary themselves (an installer that
+bundles it, or a mirrored registry) is distributing AGPL software. They must
+include its license and point to the matching source. Pulling it from upstream
+at run time, as this stack does, needs neither. The AGPL covers Vikunja only,
+not a separate app that uses its API.
+
+The Vikunja name and logo belong to the Vikunja project. Refer to it by name;
+don't present it as part of this stack.
