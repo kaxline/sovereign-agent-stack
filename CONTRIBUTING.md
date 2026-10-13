@@ -55,6 +55,23 @@ docker compose run --rm --entrypoint /bin/sh n8n-import -c \
 - Update README / `docs/` when you add env vars or services.
 - CI runs `docker compose config` across profile combos, `scripts/test-project-sources.py`, shellcheck, and hadolint.
 
+## Third-party code
+
+The repo is MIT. Optional services are separate upstream images under their
+own licenses, some of them copyleft (Vikunja in the `todo` profile is
+AGPL-3.0). Keep that boundary:
+
+- Integrate through APIs, MCP, and configuration. Don't vendor or copy a
+  service's source into this repo.
+- Don't patch AGPL services (Vikunja). No mounted overlay files and no rebuilt
+  images. A patched AGPL service must offer its modified source to its network
+  users, and the patch would not be MIT. The Hermes overlays under
+  `compose/hermes/` are a different case: Hermes is MIT.
+- When you add a service, name its license and upstream source in the compose
+  comment and its doc, as `vikunja` does.
+
+See [docs/todo.md](docs/todo.md#license).
+
 ## First public history
 
 If you are cutting the first GitHub release from a finished working tree, follow [docs/releasing.md](docs/releasing.md) so the commits tell the engineering story instead of collapsing into one squash.

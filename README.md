@@ -150,3 +150,10 @@ make clean   # destroys volumes + repo ./data/ (not an external ASSISTANT_DATA_R
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+The MIT license covers this repository's own files. The services it starts are
+upstream images pulled at run time under their own licenses; none is copied
+into or redistributed with this repo. For example, the optional `todo` profile
+runs [Vikunja](https://github.com/go-vikunja/vikunja), which is AGPL-3.0, from
+the unmodified `vikunja/vikunja` image. The stack talks to it only over its
+HTTP API and does not patch it. See [docs/todo.md](docs/todo.md#license).
