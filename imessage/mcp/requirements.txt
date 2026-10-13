@@ -1,0 +1,2 @@
+# Read-only Messages MCP. Query logic and the forwarder are standard library only.
+mcp==1.30.0

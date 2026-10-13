@@ -412,6 +412,16 @@ def compact(db: sqlite3.Connection, *, fts_secure: bool) -> None:
 COMMIT_EVERY = 500  # changed rows between commits, so an interrupted first run can resume
 
 
+def set_meta(index: Path, key: str, value: str) -> None:
+    """Record a setting in the index for readers (the MCP)."""
+    db = open_index(index)
+    try:
+        db.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (key, value))
+        db.commit()
+    finally:
+        db.close()
+
+
 @dataclass
 class RunStats:
     chats_in_scope: int = 0

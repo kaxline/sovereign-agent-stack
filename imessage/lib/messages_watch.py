@@ -20,8 +20,6 @@ Nothing here writes to the Messages folder. Logs are counts only.
 from __future__ import annotations
 
 import fnmatch
-import hashlib
-import hmac
 import ipaddress
 import json
 import os
@@ -30,9 +28,7 @@ import sqlite3
 import threading
 import time
 import tomllib
-import urllib.error
 import urllib.parse
-import urllib.request
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -40,6 +36,7 @@ from pathlib import Path
 from typing import Callable
 
 import messages_index as mi
+from webhook import post_event, sign  # noqa: F401  (re-exported for callers)
 
 STATE_VERSION = 1
 EVENT_TYPE = "messages.new"
@@ -226,27 +223,6 @@ def in_quiet_hours(quiet: tuple[int, int] | None, now: float) -> bool:
 # --- Sinks -------------------------------------------------------------------------
 
 
-def sign(secret: bytes, timestamp: str, body: bytes) -> str:
-    return hmac.new(secret, timestamp.encode() + b"." + body, hashlib.sha256).hexdigest()
-
-
-def post_event(url: str, secret: bytes, event: dict, timeout: float = 5.0) -> bool:
-    body = json.dumps(event, separators=(",", ":"), ensure_ascii=False).encode()
-    timestamp = str(int(time.time()))
-    request = urllib.request.Request(url, data=body, method="POST", headers={
-        "Content-Type": "application/json",
-        "X-Webhook-Timestamp": timestamp,
-        "X-Webhook-Signature-V2": sign(secret, timestamp, body),
-        "X-Request-ID": event["id"],
-        "User-Agent": "imessage-watch/1",
-    })
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return 200 <= response.status < 300
-    except (urllib.error.URLError, TimeoutError, OSError):
-        return False
-
-
 def write_outbox(outbox: Path, event: dict) -> None:
     outbox.mkdir(parents=True, exist_ok=True)
     try:
@@ -399,6 +375,9 @@ class Watcher:
                            window_start=int(now - self.watch.window_hours * 3600))
         st["cursor"], st["scope"] = stats.max_rowid, scope
         result = SyncResult("full" if full else "incremental", stats.added, stats.updated, stats.removed)
+        if full:
+            # Readers (the MCP's triage batch) cover the same chats that raise events.
+            mi.set_meta(self.config.index, "notify_chats", json.dumps(self.notify.chats if self.notify else []))
 
         if self.notify is not None:
             # The first run indexes history; only messages that arrive after it notify.
