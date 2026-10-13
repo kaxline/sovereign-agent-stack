@@ -1,14 +1,23 @@
 # Email from Apple Mail (design)
 
-Read-only email for Hermes, from Apple Mail's local store instead of a login
-to a mail server. A [host-side indexer](#indexer) builds a scoped index, and
+Read-only email for Hermes, through Apple Mail instead of a login to a mail
+server. A [host-side indexer](#indexer) builds a scoped index, and
 the [`mail-mcp`](#mail-mcp) sidecar serves it to Hermes. Both have been tested
 only against [the synthetic store](#synthetic-mail-store); see
 [First run on real mail](#first-run-on-real-mail).
 
 Requires the **`mail`** compose profile (`./scripts/setup.sh --mail`).
 
+On 2026-10-13 we changed the plan (see [Decision](#decision-2026-10-13)).
+The default source becomes Mail.app scripting, which needs only the
+Automation permission for Mail. Reading Mail's files with Full Disk Access
+becomes an opt-in fast mode. Sending goes through drafts that the user sends
+from Mail.
+
 ## Quick path
+
+Today the only indexer reads Mail's files and needs Full Disk Access. The
+Mail.app scripting source is being built and will replace it as the default.
 
 ```bash
 ./scripts/setup.sh --mail          # profile, MAIL_MCP_ENABLED=1, mail-index.toml, data/mail (0700)
@@ -65,7 +74,101 @@ readers. macOS only lets processes with **Full Disk Access** read the folder.
 | E. Mail rule hand-off | A Mail rule runs a script that copies matching new mail to a folder | Only mail you route leaves Mail | New mail only; per-machine setup |
 | F. Skip Mail.app | Sync over IMAP into a Maildir (`mbsync`) and index it (`notmuch`) | Documented formats; works off macOS | Not "local Mail"; needs credentials and another copy of the mailbox |
 
-## Recommended design
+## Decision (2026-10-13)
+
+The original design below (option B) needs Full Disk Access. We've kept it
+as an opt-in fast mode and made Mail.app scripting the default, for these
+reasons:
+
+- **Full Disk Access can't be scoped.** Granting it to read Mail also exposes
+  Messages, browser history and every other app's data. On 2026-10-02 Apple
+  said it will make the permission harder to grant, citing AI agents, with no
+  date given ([MacRumors](https://macrumors.com/2026/10/02/apple-announces-macos-full-disk-access-changes)).
+  That's a hard prompt to put in front of people installing the stack.
+- **Reading isn't where the risk is.** An agent that reads an inbox already
+  holds private data and untrusted content. Prompt injection does damage
+  when it can also send ([the lethal trifecta](https://simonwillison.net/2025/jun/16/the-lethal-trifecta/)).
+  How sending is gated matters more than whether reading uses IMAP or files.
+- **Scripting Mail.app needs no credentials.** It works for every account
+  configured in Mail, and the permission covers Mail only. It isn't
+  read-only: whatever holds it can also send and delete. So only the helper
+  holds it, never the agent.
+
+The resulting design:
+
+| Part | Default | Opt-in |
+|---|---|---|
+| Read source | Mail.app via JXA (Automation → Mail) feeding the scoped index | Option B indexer with Full Disk Access, as its own signed executable |
+| What Hermes sees | The same index through the read-only mail MCP | Same |
+| Sending | A separate helper creates a draft or opens a Mail compose window; the user clicks Send | Autonomous sending only from an agent-owned address, with a recipient allowlist and rate limit |
+
+- **The index makes scripting fast enough.** Live AppleScript queries are slow
+  on large mailboxes. Benchmarks on a 73K-message store measured 50-message
+  batch fetches at about 1.2 s, and `whose body contains` timed out
+  ([imdinu benchmarks](https://imdinu.github.io/apple-mail-mcp/benchmarks/)).
+  A background indexer working through a date window can live with that.
+  Interactive search runs against our FTS index, never against Mail.
+- **Drafts are the approval screen.** The user reviews the real message in
+  Mail's compose window (recipients, body, attachments), not a summary the
+  model wrote. Drafts saved to the account sync, so they can be sent from
+  a phone too.
+- **Keep reading and sending apart.** The send helper has no read tools and
+  no Full Disk Access. The read helper and the mail MCP have no send tools.
+  The Messages tooling follows the same split.
+- **Real runs stay with the mailbox owner.** Driving Mail.app is live access
+  to real mail, so a coding agent can't test it. The helper ships with a
+  `doctor` mode that prints counts and timings only, for the owner to run.
+
+### Prior art
+
+We surveyed Apple Mail MCP servers on 2026-10-13. Stats are from the GitHub
+and package-registry APIs on that day.
+
+| Project | Stars | Commits since Jul 13 | Contributors | License | Reads via | Full Disk Access | Send |
+|---|---|---|---|---|---|---|---|
+| [sweetrb/apple-mail-mcp](https://github.com/sweetrb/apple-mail-mcp) (npm `apple-mail-mcp`, ~21K downloads/month) | 91 | 100+ | 14 | MIT | AppleScript; optional IMAP (`EXAMINE`) | Contacts search only | Direct send by default; drafts optional |
+| [patrickfreyer/apple-mail-mcp](https://github.com/patrickfreyer/apple-mail-mcp) (PyPI `mcp-apple-mail`) | 227 | 4 | 12 | MIT | AppleScript | No | Direct send; `--read-only` leaves drafts |
+| [imdinu/apple-mail-mcp](https://github.com/imdinu/apple-mail-mcp) (PyPI `apple-mail-mcp`, ~1.3K/month) | 71 | 12 | 5 | GPL-3.0 | Envelope Index + `.emlx` + FTS5; JXA fallback | Yes, for the index | None (read-only) |
+| [parasxos/apple-mail-mcp](https://github.com/parasxos/apple-mail-mcp) (PyPI `apple-mailbox-mcp`) | 32 | 100+ | 1 | MIT | Mail's SQLite + body FTS | Yes | SMTP or SSH sendmail; read-only env flag |
+| [s-morgan-jeffries/apple-mail-fast-mcp](https://github.com/s-morgan-jeffries/apple-mail-fast-mcp) | 105 | 19 | 8 | MIT | AppleScript; optional IMAP via app password | No | Drafts; `send_now` behind an MCP elicitation prompt |
+| [PsychQuant/che-apple-mail-mcp](https://github.com/PsychQuant/che-apple-mail-mcp) | 10 | 100+ | 1 | MIT | SQLite with AppleScript fallback | For the fast path | Direct send; drafts |
+| [like-a-freedom/rusty_apple_mail_mcp](https://github.com/like-a-freedom/rusty_apple_mail_mcp) | 9 | 32 | 2 | none | Envelope Index + `.emlx` | Yes | None (read-only) |
+
+[supermemoryai/apple-mcp](https://github.com/supermemoryai/apple-mcp) (3.1K
+stars) included Mail but has been archived since 2025-08.
+
+What we found:
+
+- **Nobody ships our combination.** The fast servers all need Full Disk
+  Access. The servers that avoid it query Mail live and time out on big
+  mailboxes. None builds a scoped index from scripting, and none defaults to
+  drafts with no send path.
+- **Scoping is thin.** Most expose every account. Defaults like
+  `APPLE_MAIL_DEFAULT_ACCOUNT` set a preference, not a boundary. None has
+  required account, mailbox and date-window scope.
+- **None treats message text as untrusted** beyond escaping AppleScript
+  input. Our quoted-data marking has no precedent to borrow.
+- **Sustainability is uneven.** The two most active projects with
+  Full Disk Access paths (parasxos, PsychQuant) each have a single maintainer.
+  imdinu is GPL-3.0, which constrains embedding it in this MIT-licensed stack.
+
+We won't adopt any of them as a dependency: each would mean
+turning off most of its tools and adding the scoping and send split we need.
+Ideas worth borrowing:
+
+- `EXAMINE` plus `BODY.PEEK[]` for any read-only IMAP path, so nothing is
+  marked read (sweetrb).
+- JXA batch property fetches (`messages.subject()` and similar over a range)
+  instead of per-message calls or `whose` clauses (imdinu 0.3).
+- Saving drafts by writing an `.eml` and opening it in Mail, since HTML in
+  AppleScript `content` often arrives as literal markup (patrickfreyer).
+- A `doctor` command that names each failing permission with its fix
+  (parasxos, sweetrb), and MCP `readOnlyHint` and `destructiveHint`
+  annotations on every tool (s-morgan-jeffries).
+- Pacing attachment calls, because Mail drops attachments under fast IPC
+  (PsychQuant).
+
+## Original design (now the opt-in fast mode)
 
 Option **B**, run by a small host-side helper:
 
@@ -100,8 +203,9 @@ Mail store ──(Full Disk Access, read-only)──▶ mail-indexer (host)
 - **Incremental.** The indexer tracks the highest `ROWID` per mailbox and
   each message's flags, so later runs pick up only new or changed messages.
 
-Option **C** stays in reserve for actions (mark read, move), which need
-Mail's cooperation and would be a separate, opt-in tool.
+Option **C** is now the default read source (see
+[Decision](#decision-2026-10-13)). Actions such as mark read or move would be
+a separate, opt-in tool.
 
 ## Indexer
 
