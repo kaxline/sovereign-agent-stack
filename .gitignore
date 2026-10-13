@@ -29,6 +29,8 @@ models.local.yaml
 
 # Mail indexer config (copy from mail-index.toml.example; names your mail store)
 mail-index.toml
+# Messages indexer config (copy from imessage/messages-index.toml.example)
+messages-index.toml
 
 # Dev noise
 .DS_Store

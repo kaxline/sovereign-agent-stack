@@ -19,7 +19,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-LIB = Path(__file__).resolve().parent / "lib"
+LIB = Path(__file__).resolve().parent.parent / "lib"
 if str(LIB) not in sys.path:
     sys.path.insert(0, str(LIB))
 
@@ -41,6 +41,14 @@ GOLDEN_MENTION = bytes.fromhex(
     "848484084e534e756d626572008484074e5356616c7565009484012a849999008686970204928498"
     "9902928496961c5f5f6b494d4d656e74696f6e436f6e6669726d65644d656e74696f6e8692849696"
     "10616c6578406578616d706c652e636f6d869299929a8697030992849899019299929a8686")
+
+GOLDEN_MUTABLE = bytes.fromhex(
+    "040b73747265616d747970656481e803840140848484194e534d757461626c6541747472696275746564"
+    "537472696e67008484124e5341747472696275746564537472696e67008484084e534f626a656374"
+    "0085928484840f4e534d757461626c65537472696e67018484084e53537472696e67019584012b05"
+    "68656c6c6f86840269490105928484840c4e5344696374696f6e617279009584016901928498981d"
+    "5f5f6b494d4d657373616765506172744174747269627574654e616d658692848484084e534e756d"
+    "626572008484074e5356616c7565009584012a849b9b00868686")
 
 SWIFT_DECODER = r"""
 import Foundation
@@ -88,6 +96,19 @@ def test_typedstream_golden() -> None:
     mine = ts.archive_attributed_string(text, [(6, part), (4, mention), (ts.utf16_len(text) - 10, part)])
     expect(mine == GOLDEN_MENTION, "three runs with a mention must match Foundation's bytes")
     expect(ts.read_attributed_string(GOLDEN_MENTION)[0] == text, "reader must decode Foundation's archive")
+    expect(ts.archive_attributed_string("hello", [(5, part)], mutable=True) == GOLDEN_MUTABLE,
+           "mutable classes must match Foundation's bytes")
+    body = ts.decode_body(GOLDEN_MUTABLE)
+    expect(body.text == "hello" and body.complete, "decode_body reads the mutable archive")
+    # An attribute value of a class the reader doesn't parse: text survives, runs stop.
+    body = ts.decode_body(GOLDEN_HELLO.replace(b"NSNumber", b"NSWidget"))
+    expect(body.text == "hello" and not body.complete, "decode_body keeps text past an unknown class")
+    for bad in (b"", b"not an archive", GOLDEN_HELLO[:40]):
+        try:
+            ts.decode_body(bad)
+        except ts.UnsupportedArchive:
+            continue
+        fail(f"decode_body must refuse {bad[:20]!r}")
     for n in (127, 128, 32767, 32768):  # one-byte, two-byte and four-byte lengths
         s = "z" * n
         expect(ts.read_attributed_string(ts.archive_attributed_string(s, [(n, part)]))[0] == s,

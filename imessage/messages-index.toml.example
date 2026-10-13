@@ -1,0 +1,35 @@
+# Messages indexer config. Copy to messages-index.toml (gitignored) and fill it in.
+# See imessage/README.md. Nothing is indexed until store, since and chats are set.
+# Relative paths are relative to this file.
+
+# The folder that holds chat.db: the Messages folder in your Library.
+# Left empty on purpose: the indexer has no default.
+store = ""
+
+# Where the index is written. Keep it outside the Messages folder.
+index = "data/messages/index.sqlite"
+
+# Only messages sent or received on or after this date.
+since = 2026-01-01
+
+# Chats to index: ids from the `chats` command, or patterns.
+#   "*;-;*"            every 1:1 chat
+#   "iMessage;+;*"     every iMessage group
+#   "*"                everything (think twice)
+chats = []
+
+# Chats to leave out even when a pattern above matches them.
+exclude = []
+
+# Optional: the folder holding Contacts' AddressBook-v22.abcddb files (the
+# AddressBook folder in your Library's Application Support), to put names on
+# phone numbers and addresses. Leave empty to show handles only.
+contacts = ""
+
+# List attachment names, types and sizes. Attachment contents are never copied.
+attachments = false
+# Where attachment files live, if not <store>/Attachments.
+# attachments_root = ""
+
+# Longest message body kept, in characters.
+max_body_chars = 20000

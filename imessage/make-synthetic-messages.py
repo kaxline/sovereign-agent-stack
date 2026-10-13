@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Write a fake Messages.app store for developing message readers. See docs/messages.md.
+"""Write a fake Messages.app store for developing message readers. See imessage/README.md.
 
-    python3 scripts/make-synthetic-messages.py /tmp/synthetic-messages/store
+    python3 imessage/make-synthetic-messages.py /tmp/synthetic-messages/store
 
 The output directory must not exist and its path must contain
 `synthetic-messages`. Point a reader at <out>/Messages the way it would point

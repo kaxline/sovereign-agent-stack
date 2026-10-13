@@ -4,6 +4,7 @@
 	buzz-admin \
 	corpus-create corpus-use corpus-list corpus-ingest corpus-destroy \
 	project-init project-index project-index-check project-sources-test synthetic-mail-test synthetic-messages-test \
+	messages-index messages-index-doctor messages-index-chats messages-index-test \
 	mail-index mail-index-doctor mail-index-mailboxes mail-index-test mail-script-test mail-mcp-test \
 	mail-drafts mail-drafts-watch mail-drafts-doctor mail-drafts-test mail-apps mail-apps-test \
 	mail-triage-cron mail-triage-cron-show mail-triage-cron-remove mail-cron-test model-use model-sync \
@@ -253,9 +254,25 @@ project-sources-test:
 synthetic-mail-test:
 	python3 scripts/test-synthetic-mail.py
 
-# Fake Messages.app store for message-reader tests. See docs/messages.md.
+# Fake Messages.app store for message-reader tests. See imessage/README.md.
 synthetic-messages-test:
-	python3 scripts/test-synthetic-messages.py
+	python3 imessage/tests/test-synthetic-messages.py
+
+# Messages indexer (host-side, needs Full Disk Access). Reads chat.db
+# read-only into a scoped index. See imessage/README.md.
+#   cp imessage/messages-index.toml.example messages-index.toml   # then fill it in
+MESSAGES_INDEX_CONFIG ?= messages-index.toml
+messages-index:
+	python3 imessage/messages-index.py --config "$(MESSAGES_INDEX_CONFIG)" run
+
+messages-index-doctor:
+	python3 imessage/messages-index.py --config "$(MESSAGES_INDEX_CONFIG)" doctor
+
+messages-index-chats:
+	python3 imessage/messages-index.py --config "$(MESSAGES_INDEX_CONFIG)" chats
+
+messages-index-test:
+	python3 imessage/tests/test-messages-index.py
 
 # Apple Mail indexer (host-side). Reads through Mail.app by default; set
 # source = "store" in the config to read Mail's files instead. See docs/email.md.

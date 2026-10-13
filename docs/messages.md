@@ -1,11 +1,15 @@
 # Messages from iMessage (design)
 
-**Status: design only.** Nothing in the stack reads messages yet. This page
-records how Hermes should answer questions about iMessage and SMS history,
-and hear about new messages, by reading Messages.app's local database. It
-also records which open-source projects were evaluated and why none of them
-is adopted as-is. Research is as of October 2026. Only
-[the synthetic store](#synthetic-message-store) exists so far.
+**Status: indexer only.** Hermes can't read messages yet. This page records
+how Hermes should answer questions about iMessage and SMS history, and hear
+about new messages, by reading Messages.app's local database. It also records
+which open-source projects were evaluated and why none of them is adopted
+as-is. Research is as of October 2026.
+
+The code lives in [`imessage/`](../imessage/README.md), which is
+self-contained so it can become its own repository. So far it has a
+synthetic store and the indexer, both tested only against synthetic data.
+There's no watcher, MCP or app packaging yet.
 
 ## Goals
 
@@ -109,31 +113,39 @@ chat.db ──(Full Disk Access, read-only)──▶ messages helper (host, sign
 
 ### The helper
 
-- **A small signed native binary, written in Swift, holds the Full Disk
-  Access grant.** Not `node`, `python3`, a terminal or the container runtime.
-  Granting an interpreter access hands it to every script that interpreter
-  runs. Swift gives native kqueue, code signing and Apple's own typedstream
-  decoder.
+- **A small signed app holds the Full Disk Access grant,** packaged the way
+  the [mail apps](email.md#macos-apps) are: a compiled launcher plus the
+  helper's own Python scripts, sealed by the app's code signature and started
+  by launchd. Not `node`, `python3`, a terminal or the container runtime:
+  granting an interpreter access hands it to every script that interpreter
+  runs. The first plan was a Swift binary. The mail apps showed that a
+  sealed bundle gives the same narrow grant while keeping the helper in
+  stdlib Python, testable against the synthetic store, and in one language
+  with the rest of `imessage/`.
 - **Watcher: port openclaw/imsg's `MessageWatcher` design** (MIT, with
-  attribution): kqueue on `chat.db`, `-wal`, `-shm` and the folder; a 250 ms
-  debounce; a 5 s fallback poll; re-attach when a file's inode changes; a
-  persisted `ROWID` cursor; retry rows that have no chat yet. Copy only the
-  watcher and query code, not the `IMsgCore` module, so that no send or
-  AppleScript code is linked into a binary with Full Disk Access.
+  attribution) to Python's `select.kqueue`: kqueue on `chat.db`, `-wal`,
+  `-shm` and the folder; a 250 ms debounce; a 5 s fallback poll; re-attach
+  when a file's inode changes; a persisted `ROWID` cursor; retry rows that
+  have no chat yet. None of imsg's send or AppleScript code comes along.
 - **Edits and unsends: add BlueBubbles' second pass.** On each wake,
   re-query a recent window (by the indexed `date`) and compare
   `date_edited`, `date_retracted`, `date_read` and `date_delivered` against
   the index.
-- **Decoder: `NSUnarchiver` first**, with a length-aware byte scanner as a
-  fallback. Count fallbacks and failures in `doctor` output.
+- **Decoder: our own typedstream reader** (`imessage/lib/typedstream.py`).
+  The text always comes first in the archive, so it returns the text even
+  when an attribute uses a class it doesn't parse. Its writer matches
+  Foundation byte for byte, and the tests decode every synthetic body with
+  Foundation's `NSUnarchiver` as a cross-check. `doctor` counts failures.
 - **Read-only and careful with WAL.** Open with `mode=ro` and a 5 s busy
   timeout. Run each wake in a fresh read transaction, never hold one open,
-  and never checkpoint. A reader that checkpoints becomes a second writer
+  and never checkpoint. When there's no `-wal` or `-shm` file (Messages
+  closed), open as immutable, because a read-only connection would otherwise
+  create those files in the Messages folder. A reader that checkpoints becomes a second writer
   (see the 2026 SQLite WAL-reset bug, fixed in 3.51.3). Probe columns with
   `PRAGMA table_info` and stop on a layout it doesn't recognise, as the mail
   indexer does.
-- **Scope is explicit, with no defaults.** The store path, the chats (by
-  chat GUID, or "all 1:1 chats with saved contacts"), the `since` date and
+- **Scope is explicit, with no defaults.** The store path, the chats (chat
+  ids or patterns such as `"*;-;*"` for every 1:1 chat), the `since` date and
   whether attachment names are kept all come from configuration. Nothing is
   indexed until they're set. Attachment contents are never copied.
 - **Events carry metadata only:** chat id, contact display name, message
@@ -173,40 +185,48 @@ makes it the only part of the stack that needs it by default. So:
   default. The setup docs say plainly that it needs Full Disk Access and that
   the permission can't be scoped: the helper could read Mail, browser history
   and every other app's data.
-- **The messages helper is the signed executable mail's store mode is
-  waiting for.** Someone who opts in to both runs one helper, with a
-  subcommand per source (`messages watch`, `mail index`), one TCC entry and
-  one LaunchAgent. Each source reads only its own config and writes only to
-  its own `data/` folder. Full Disk Access is all-or-nothing, so one grant
-  reaches no more than two would. What keeps it safe is that the program
-  holding it is small, pinned and reviewed.
-- **Mail's store mode can join without a rewrite.** The helper runs the
-  existing Python indexer as its child, so the indexer inherits access for
-  that run only. The helper must check the script's hash first. Otherwise
-  anything that can edit the repo gets Full Disk Access on the next run.
-  Porting the store reader into the binary later removes that check.
+- **Its own app, not the mail reader app.** The first plan was to share one
+  helper with mail's store mode. Mail has since shipped its own sealed app
+  (`Assistant Mail Reader`), which asks for Full Disk Access only in store
+  mode. Messages gets a separate app with the same launcher pattern, so:
+  - it can move to its own repository without taking mail code along
+  - each app contains only its own scripts
+  - someone who reads mail through scripting never grants Full Disk Access
+    to anything mail-related
+
+  Two apps holding Full Disk Access reach no more than one would. What keeps
+  either safe is that its contents are small, sealed and reviewed.
+- **No script hash check needed.** The mail apps answered the "anything that
+  can edit the repo gets Full Disk Access" worry: the scripts live inside the
+  signed bundle, so editing the repository can't change what a granted app
+  runs.
 - **Watch Apple's planned changes.** Apple said on 2026-10-02 that it will make
   Full Disk Access harder to grant. If a future macOS stops granting it to a
   self-signed helper, this design needs a Developer ID-signed, notarised
   build.
 
-TCC details to confirm in a spike on macOS 26:
+TCC details to confirm on the first real run, for both projects (the mail
+apps rely on the same assumptions, and their store mode hasn't been tried on
+real data either):
 
-- A plain binary started by launchd is its own responsible process, so the
-  grant goes to that binary. Confirm with `launchctl procinfo <pid>`.
-- A child process inherits access from it.
-- How re-signing an upgraded binary affects a grant that has gone stale.
+- An app started by launchd is the responsible process, so Full Disk Access
+  granted to the app covers the Python child it starts. Confirm with
+  `launchctl procinfo <pid>`.
+- With ad hoc signing every rebuild asks again. A stable signing identity
+  keeps the grant across rebuilds.
 
 ### Phases
 
-1. **Synthetic store** (done, see [below](#synthetic-message-store)). Generate a fake `chat.db` under `synthetic-messages/`:
-   `attributedBody` blobs, long messages, group chats, reactions, edits,
-   unsends, attachments, the join race, a prompt-injection message. Add a
-   fake contacts database too.
-2. **Helper: index.** Scoped, read-only, one-shot indexing with `doctor`,
-   tested against the synthetic store.
-3. **Helper: watch and events.** Watcher, edit pass, signed webhook events.
-   Test it by appending rows to the synthetic store.
+1. **Synthetic store** (done). A fake `chat.db` under `synthetic-messages/`
+   with `attributedBody` blobs, long messages, group chats, reactions, edits,
+   unsends, attachments, the join race, a prompt-injection message, and a
+   fake contacts database. See [imessage/README.md](../imessage/README.md#synthetic-store).
+2. **Helper: index** (done). Scoped, read-only, incremental indexing with
+   `doctor` and `chats`, tested against the synthetic store. See
+   [imessage/README.md](../imessage/README.md#indexer).
+3. **Helper: watch, events and app.** Watcher, edit pass, signed webhook
+   events, and the sealed app with its LaunchAgent. Test it by appending rows
+   to the synthetic store.
 4. **MCP and Hermes wiring.** Container, tools, the unattended allowlist, a
    webhook route and a profile, and a CHANGELOG entry.
 5. **First real run** (the owner runs it): `doctor` counts only, then the
@@ -240,7 +260,7 @@ Disk Access. It confirms delivery through the watcher.
 Hermes (interactive profile)
    │ draft_message / send_draft
    ▼
-messages-send MCP (container) ──loopback + token──▶ messages-send (host, Automation only)
+messages-send MCP (container) ──▶ queue folder ──▶ messages-send app (host, Automation only)
    │                                                     │ osascript: send text to chat id
    │ approval code (out of band, e.g. Signal)            ▼
    └──────────────── you ─────────────────────────  Messages.app
@@ -248,11 +268,16 @@ messages-send MCP (container) ──loopback + token──▶ messages-send (hos
                               messages helper (watcher) ◀┘ confirms delivery or failure
 ```
 
-- **`messages-send` host binary.** Signed, started by launchd, with Automation
-  permission only. Its one job is to send this text to this chat id. It
-  refuses a chat that isn't on the allowlist unless the request carries a
-  valid approval code. It listens only on the loopback address and requires a
-  token. Containers can't run `osascript`, so it has to run on the host.
+- **`messages-send` host app.** Sealed and started by launchd like the mail
+  apps, with Automation permission only. Its one job is to send this text to
+  this chat id. It refuses a chat that isn't on the allowlist unless the
+  request carries a valid approval code. Containers can't run `osascript`,
+  so it has to run on the host.
+- **A queue folder, not a network port,** as [mail drafts](email.md#drafts)
+  does it. The MCP writes each request to a shared folder. The host app
+  checks it again before acting, writes a status file without the text, and
+  deletes the request. The container mounts only that folder, so there's no
+  listener to secure and no token to manage.
 - **`messages-send` MCP.** Separate from the read MCP. Tools:
   `draft_message`, `list_drafts` and `send_draft`. It's enabled only on
   interactive profiles, and off unless you turn it on.
@@ -269,7 +294,6 @@ messages-send MCP (container) ──loopback + token──▶ messages-send (hos
 | **It's your identity.** Recipients can't tell the agent wrote it | Recipient allowlist, length cap, quiet hours and a dry-run mode. The first phase is drafts only: the agent writes and you send |
 | **AppleScript quirks.** iMessage vs SMS selection, new conversations needing an account and participant, attachments blocked by Messages' sandbox, behaviour changing between macOS releases | The first version sends text only, to existing chats. Attachments are a later, separately tested feature. Tests pin behaviour with a mocked `osascript`. A synthetic send self-test runs after macOS updates |
 | **Automation prompts and stale grants.** The prompt goes to the responsible process, and grants go stale after upgrades | A signed binary started by launchd. Confirm which process gets the grant in the same macOS 26 spike as the reader |
-| **Reaching the host from a container** | Check that Docker Desktop can reach a loopback-only host service through `host.docker.internal` before relying on it |
 | **Edit, unsend, tapbacks, typing indicators** | Need the private API with SIP off. Not supported |
 
 ### Phases
@@ -283,67 +307,6 @@ messages-send MCP (container) ──loopback + token──▶ messages-send (hos
    watcher.
 3. **Trusted chats** (optional). Sending without per-message approval to a
    short list of chats you name, still rate-limited and still logged.
-
-## Synthetic message store
-
-`scripts/lib/synthetic_messages.py` writes a fake Messages store with 28
-made-up messages in five chats, plus a fake Contacts database:
-
-```
-<out>/Messages/chat.db                          WAL mode, subset of tables and columns
-<out>/Messages/Attachments/<xx>/<nn>/<guid>/…   attachment files
-<out>/AddressBook/Sources/<uuid>/AddressBook-v22.abcddb
-<out>/manifest.json                             what was generated, for test assertions
-```
-
-It covers:
-
-- bodies only in `attributedBody`, in both `text` and `attributedBody`, and
-  only in `text` (old rows)
-- bodies long enough to need two-byte and four-byte lengths in the archive,
-  non-BMP emoji, accents and Hebrew
-- a 1:1 chat over a phone number, one over email, an SMS chat with a sender
-  not in Contacts, a named group and an unnamed group
-- reactions (a heart, an emoji reaction and a reaction taken back), a
-  threaded reply, a mention, a link preview and a message sent with an
-  effect
-- an edited message with its history in `message_summary_info`, an unsent
-  message, a message in Recently Deleted, and a failed send
-- an image attachment, an audio message, and an attachment row whose file
-  is gone
-- group events: a rename, a member added and a member removed
-- a message that tries prompt injection on the assistant
-- Contacts entries with phone numbers in several formats, a nickname, and a
-  contact who isn't in any chat
-
-`attributedBody` blobs come from `scripts/lib/typedstream.py`, which writes
-NSAttributedString archives that match Foundation's NSArchiver byte for byte.
-The tests check that against archives Foundation produced, and on macOS with
-`swiftc` they also decode every body with Foundation's NSUnarchiver.
-
-Attachment `filename` values keep Messages' `~/Library/Messages/Attachments/…`
-form. A reader has to map that prefix onto its configured attachment root and
-must never expand `~`.
-
-```bash
-python3 scripts/make-synthetic-messages.py /tmp/synthetic-messages/store
-make synthetic-messages-test
-```
-
-The output path must contain `synthetic-messages`. The generator refuses
-anything under `~/Library`. It only uses `example.com`, `example.org` and
-`example.net` addresses, and phone numbers in the fictional 555-0100 to 0199
-range. Output is reproducible, apart from SQLite's page layout.
-
-For watcher tests, `append()` adds a message to an existing store the way
-Messages would. `append(..., join=False)` followed by `add_join()`
-reproduces the moment when a new row has no chat yet.
-
-The schema is modelled on public descriptions and open-source readers, and
-isn't authoritative. Some values are best guesses and are marked as such in
-the code: the failed-send error code, the `message_summary_info` keys and the
-Recently Deleted date. A reader that passes against this store still has to
-probe the real schema at runtime.
 
 ## Rules for contributors
 
