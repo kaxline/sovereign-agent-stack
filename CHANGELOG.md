@@ -116,6 +116,9 @@ Only with `todo` enabled.
   renames and deletes buckets and moves tasks between them. Tokens minted
   before this change have no bucket access; re-run `make todo-init`, both
   bootstrap services, and restart `hermes`.
+- **`make hermes-reload`**: runs both Hermes profile bootstraps and recreates
+  `hermes`, the three steps most config changes need. `make hermes-upgrade`
+  uses it, and the docs, `make doctor` hints, and `make todo-init` point to it.
 - **`make todo-open`**: opens `http://localhost:3456/login-local`, signed in.
 - **`make ensure-local` / `make up`**: with `todo` in `COMPOSE_PROFILES`,
   writes `compose/postgres/services/vikunja.env` if it is missing.

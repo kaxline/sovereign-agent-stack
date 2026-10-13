@@ -249,10 +249,8 @@ PY
 Open your todo lists (signed in): make todo-open
   or http://localhost:$(env_get VIKUNJA_PORT 3456)/login-local
 
-Register the tokens with Hermes:
-  docker compose run --rm hermes-api-bootstrap
-  docker compose run --rm hermes-browser-bootstrap
-  docker compose restart hermes
+Register the tokens with Hermes (about two minutes):
+  make hermes-reload
 EOF
 }
 

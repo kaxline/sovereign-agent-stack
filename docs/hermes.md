@@ -195,7 +195,7 @@ model:
 
 The proxy forwards each streamed chunk as it arrives. `LLM_TIMEOUT` (default 600s) bounds the wait for the upstream's first response, which includes prompt prefill. Once a reply is streaming, `LLM_STREAM_IDLE_TIMEOUT` (default: `LLM_TIMEOUT`) bounds a silent gap; past it the proxy drops the connection, so Hermes sees a failed stream instead of waiting on a quiet one. When a client disconnects, the proxy closes the upstream request too, so a model server that runs one request at a time does not keep working on it.
 
-Hermes treats the dotless `llm-proxy` host as a local server whatever is behind it. Bootstrap therefore sets `agent.local_stream_stale_timeout` on every profile, sized from `LLM_BINDING_HOST`: 300s for a local server, 180s for a cloud API (`HERMES_PROXY_STALE_TIMEOUT` overrides it). For a local upstream it also turns off WebUI auto-titling, because the title request would run before the reply on a server that handles one request at a time (`HERMES_BROWSER_AUTO_TITLE=1` keeps it). `HERMES_STREAM_RETRIES` defaults to 1 reconnect. An upstream pushed later through the admin API is not seen by bootstrap; re-run both Hermes bootstraps after changing `LLM_BINDING_HOST`.
+Hermes treats the dotless `llm-proxy` host as a local server whatever is behind it. Bootstrap therefore sets `agent.local_stream_stale_timeout` on every profile, sized from `LLM_BINDING_HOST`: 300s for a local server, 180s for a cloud API (`HERMES_PROXY_STALE_TIMEOUT` overrides it). For a local upstream it also turns off WebUI auto-titling, because the title request would run before the reply on a server that handles one request at a time (`HERMES_BROWSER_AUTO_TITLE=1` keeps it). `HERMES_STREAM_RETRIES` defaults to 1 reconnect. An upstream pushed later through the admin API is not seen by bootstrap; run `make hermes-reload` after changing `LLM_BINDING_HOST`.
 
 ### Example: LM Studio
 
@@ -272,7 +272,7 @@ The `hermes-api-bootstrap` service registers these for you. Each one sets indivi
 
 These filters serve different purposes. LightRAG's and CalDAV's on `api-server` are **safety boundaries**: mutating tools do not belong in unattended n8n sessions. OpenCode coding tools are also mutating and are **never** registered on `api-server`. The `sql` entry draws its boundary in Postgres instead: the same five tools everywhere, but `api-server` connects as a role that can only read (see [Shared database](database.md)). The web filters just keep the tool count down, since both of those servers are read-only against the public internet.
 
-CalDAV accounts live in `compose/caldav-mcp/accounts/<slug>.env`. Bootstrap registers each against the shared `caldav-mcp` sidecar. URL and username stay in the MCP headers. The password header is `${CALDAV_<SLUG>_PASSWORD}`, and the secret is copied into that profile's `.env` for Hermes to expand at connect time. Re-run both bootstraps after changing accounts. See [Calendar](calendar.md).
+CalDAV accounts live in `compose/caldav-mcp/accounts/<slug>.env`. Bootstrap registers each against the shared `caldav-mcp` sidecar. URL and username stay in the MCP headers. The password header is `${CALDAV_<SLUG>_PASSWORD}`, and the secret is copied into that profile's `.env` for Hermes to expand at connect time. Run `make hermes-reload` after changing accounts. See [Calendar](calendar.md).
 
 Either way the filter must be a YAML list. A stringified `'["a","b"]'` gets misread as a one-element allowlist that no tool name matches, and zero tools get registered without any complaint. See the verification commands below.
 
@@ -280,12 +280,10 @@ Either way the filter must be a YAML list. A stringified `'["a","b"]'` gets misr
 
 The `lightrag-mcp` image pins `lightrag_mcp==0.1.1` and patches its generated client to send LightRAG auth as `X-API-Key`, which is what current LightRAG servers expect.
 
-The bootstrap is a one-shot container and does not re-run on every `up`. After changing any of this, re-run both profile bootstraps:
+The bootstrap is a one-shot container and does not re-run on every `up`. After changing any of this, re-run both profile bootstraps and recreate `hermes`:
 
 ```bash
-docker compose run --rm hermes-api-bootstrap
-docker compose run --rm hermes-browser-bootstrap
-docker compose restart hermes
+make hermes-reload
 ```
 
 ### Adding more by hand

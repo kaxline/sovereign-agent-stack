@@ -1,4 +1,4 @@
-.PHONY: setup ensure-local up down logs ps restart clean doctor hermes-upgrade \
+.PHONY: setup ensure-local up down logs ps restart clean doctor hermes-upgrade hermes-reload \
 	bootstrap-buzz buzz-cli-install agent-create hermes-buzz-employee \
 	buzz-relay-start buzz-relay-stop buzz-relay-status buzz-relay-logs buzz-relay-restart \
 	buzz-admin \
@@ -194,6 +194,15 @@ ps:
 
 restart:
 	docker compose restart hermes hermes-webui
+
+# Re-apply Hermes config after changing .env, MCP tokens or servers, skills, or
+# the compose file: both profile bootstraps, then recreate hermes so every
+# profile reloads its config and the system prompt. Takes about two minutes.
+#   make hermes-reload
+hermes-reload: ensure-local
+	docker compose run --rm hermes-api-bootstrap
+	docker compose run --rm --no-deps hermes-browser-bootstrap
+	docker compose up -d --no-deps --force-recreate hermes
 
 # Corpus lifecycle (requires rag profile). One hot WORKSPACE at a time.
 #   make corpus-create SLUG=demo-a
@@ -406,9 +415,8 @@ hermes-upgrade:
 	    p.write_text(t)'
 	@grep -E '^HERMES_(AGENT|WEBUI)_IMAGE_TAG=' .env
 	docker compose pull hermes hermes-webui
-	docker compose run --rm hermes-api-bootstrap
-	docker compose run --rm hermes-browser-bootstrap
-	docker compose up -d hermes hermes-webui
+	$(MAKE) hermes-reload
+	docker compose up -d hermes-webui
 	@echo
 	@echo "Upgraded. Now run the verification block in docs/hermes-webui.md —"
 	@echo "the tool filters and skills.external_dirs are what silently regress."

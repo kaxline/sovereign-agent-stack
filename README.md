@@ -138,6 +138,7 @@ make model-sync                 # re-apply LLM_MODEL from .env to Hermes and Ope
 make up / make down / make ps
 make logs
 make data-dir-show / data-dir-set DIR=… / data-dir-migrate DIR=…
+make hermes-reload             # re-apply Hermes config (both bootstraps + recreate hermes)
 make hermes-upgrade AGENT=v… WEBUI=…
 make clean   # destroys volumes + repo ./data/ (not an external ASSISTANT_DATA_ROOT)
 ```

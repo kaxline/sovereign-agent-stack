@@ -27,9 +27,7 @@ make mail-index-mailboxes          # account ids and mailbox names for mail-inde
 make mail-index-doctor             # counts only; check before the first run
 make mail-index                    # build or update the index (re-run to refresh)
 make up
-docker compose run --rm hermes-api-bootstrap
-docker compose run --rm hermes-browser-bootstrap
-docker compose restart hermes
+make hermes-reload
 ```
 
 In WebUI: *Any unread mail from Priya this week?*
@@ -472,9 +470,7 @@ Hermes ──mail_draft_create──▶ mail-drafts-mcp (container) ──▶ MA
 ```bash
 ./scripts/setup.sh --mail-drafts   # profile, MAIL_DRAFTS_ENABLED=1, data/mail-drafts (0700)
 make up
-docker compose run --rm hermes-api-bootstrap
-docker compose run --rm hermes-browser-bootstrap
-docker compose restart hermes
+make hermes-reload
 make mail-drafts-doctor            # counts only; macOS asks to let your terminal control Mail
 make mail-drafts-watch             # keep running: saves queued drafts every 30 s
 ```

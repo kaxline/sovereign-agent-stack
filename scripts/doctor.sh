@@ -267,7 +267,7 @@ PY
     if [[ ${#missing[@]} -eq 0 ]]; then
       ok "${label} tools.tool_search.always_include has SearXNG + session_search"
     else
-      warn "${label} always_include missing: ${missing[*]} — re-run hermes-api-bootstrap / hermes-browser-bootstrap"
+      warn "${label} always_include missing: ${missing[*]} — run make hermes-reload"
     fi
   }
   check_always_include "data/hermes/profiles/browser/config.yaml" "browser" \
@@ -316,7 +316,7 @@ PY
   check_intent_ack_default() {
     local cfg="data/hermes/config.yaml"
     if [[ ! -f "$cfg" ]]; then
-      warn "default config missing (${cfg}) — re-run hermes-api-bootstrap / hermes-browser-bootstrap"
+      warn "default config missing (${cfg}) — run make hermes-reload"
       return 0
     fi
     if python3 - "$cfg" <<'PY'
@@ -344,7 +344,7 @@ PY
     then
       ok "default agent.intent_ack_continuation is on"
     else
-      warn "default agent.intent_ack_continuation is off — re-run hermes-api-bootstrap / hermes-browser-bootstrap"
+      warn "default agent.intent_ack_continuation is off — run make hermes-reload"
     fi
   }
   check_intent_ack_default
@@ -823,12 +823,12 @@ PY
                 bad "caldav-${slug} header references ${key} but ${envfile} does not set it"
               fi
             else
-              warn "caldav-${slug} X-Caldav-Password in ${cfg} is not \${${key}} — re-run hermes-api-bootstrap and hermes-browser-bootstrap"
+              warn "caldav-${slug} X-Caldav-Password in ${cfg} is not \${${key}} — run make hermes-reload"
             fi
             ;;
           2) ;;
           3)
-            warn "caldav-${slug} in ${cfg} has no X-Caldav-Password reference — re-run hermes-api-bootstrap and hermes-browser-bootstrap"
+            warn "caldav-${slug} in ${cfg} has no X-Caldav-Password reference — run make hermes-reload"
             ;;
           *)
             warn "could not read CalDAV headers in ${cfg}"
@@ -862,13 +862,13 @@ PY
         if docker compose exec -T hermes hermes mcp list 2>/dev/null | grep -q "caldav-${slug}"; then
           ok "Hermes default profile has mcp caldav-${slug}"
         else
-          warn "Hermes missing caldav-${slug} — re-run hermes-api-bootstrap after filling credentials"
+          warn "Hermes missing caldav-${slug} — run make hermes-reload after filling credentials"
         fi
       done
       if docker compose exec -T hermes hermes -p api-server mcp list 2>/dev/null | grep -q 'caldav-'; then
         ok "api-server profile has at least one caldav-* MCP entry"
       else
-        warn "api-server has no caldav-* MCP — re-run hermes-api-bootstrap"
+        warn "api-server has no caldav-* MCP — run make hermes-reload"
       fi
     fi
   fi
@@ -925,7 +925,7 @@ if has_profile db || [[ "$sql_on" -eq 1 || "$db_running" -eq 1 ]]; then
     fi
   done
   if grep -qs 'sql-mcp-rw' data/hermes/profiles/api-server/config.yaml; then
-    bad "api-server profile has an MCP entry for sql-mcp-rw — re-run hermes-api-bootstrap (unattended sessions must stay read-only)"
+    bad "api-server profile has an MCP entry for sql-mcp-rw — run make hermes-reload (unattended sessions must stay read-only)"
   fi
   if [[ "$sql_on" -eq 1 ]]; then
     for pair in "default:data/hermes/config.yaml:sql-mcp-rw" \
@@ -936,7 +936,7 @@ if has_profile db || [[ "$sql_on" -eq 1 || "$db_running" -eq 1 ]]; then
       if grep -q "$want" "$cfg"; then
         ok "Hermes ${label} profile registers ${want}"
       else
-        warn "Hermes ${label} profile has no ${want} MCP entry — re-run hermes-api-bootstrap and hermes-browser-bootstrap"
+        warn "Hermes ${label} profile has no ${want} MCP entry — run make hermes-reload"
       fi
     done
   fi
@@ -1026,14 +1026,14 @@ if has_profile todo || [[ "$vikunja_on" -eq 1 ]]; then
         && grep -qE '^VIKUNJA_MCP_TOKEN=.+' "$envfile" 2>/dev/null; then
         ok "Hermes ${label} profile registers the todos MCP server"
       elif grep -qE '^  vikunja:' "$cfg"; then
-        warn "Hermes ${label} profile still uses the old mcp_servers.vikunja key — re-run hermes-api-bootstrap and hermes-browser-bootstrap"
+        warn "Hermes ${label} profile still uses the old mcp_servers.vikunja key — run make hermes-reload"
       else
-        warn "Hermes ${label} profile has no todos MCP entry — re-run hermes-api-bootstrap and hermes-browser-bootstrap"
+        warn "Hermes ${label} profile has no todos MCP entry — run make hermes-reload"
       fi
     done
     # The read-only token must be the one api-server holds.
     if grep -qs "^VIKUNJA_MCP_TOKEN=$(env_get VIKUNJA_MCP_TOKEN_RW)\$" data/hermes/profiles/api-server/.env; then
-      bad "api-server holds the read/write Vikunja token — re-run hermes-api-bootstrap (unattended sessions must stay read-only)"
+      bad "api-server holds the read/write Vikunja token — run make hermes-reload (unattended sessions must stay read-only)"
     fi
   else
     warn "Vikunja MCP tokens not set — after make up, run make todo-init"
@@ -1099,11 +1099,11 @@ if has_profile mail || [[ "$mail_on" -eq 1 ]]; then
     if grep -q 'mail-mcp:8000' "$cfg"; then
       ok "Hermes ${label} profile registers the mail MCP"
     elif [[ "$mail_on" -eq 1 ]]; then
-      warn "Hermes ${label} profile has no mail MCP entry — re-run hermes-api-bootstrap and hermes-browser-bootstrap"
+      warn "Hermes ${label} profile has no mail MCP entry — run make hermes-reload"
     fi
   done
   if grep -qs 'mail-mcp:8000' data/hermes/profiles/api-server/config.yaml; then
-    bad "api-server registers the mail MCP — re-run hermes-api-bootstrap (unattended sessions must not read mail)"
+    bad "api-server registers the mail MCP — run make hermes-reload (unattended sessions must not read mail)"
   fi
   # Cron runs unattended: a job that can read mail should have nothing else.
   if mail_cron="$(python3 scripts/check-mail-cron.py --hermes-home data/hermes 2>&1)"; then
@@ -1153,7 +1153,7 @@ if has_profile mail-drafts || [[ "$drafts_on" -eq 1 ]]; then
     warn "${drafts_dir} missing — run ./scripts/setup.sh --mail-drafts"
   fi
   if grep -qs 'mail-drafts-mcp:8000' data/hermes/profiles/api-server/config.yaml; then
-    bad "api-server registers the mail drafts MCP — re-run hermes-api-bootstrap"
+    bad "api-server registers the mail drafts MCP — run make hermes-reload"
   fi
   if docker info >/dev/null 2>&1; then
     if docker compose ps --status running mail-drafts-mcp 2>/dev/null | grep -q mail-drafts-mcp; then
@@ -1309,7 +1309,7 @@ PY
     :
   elif [[ -n "$backend_mismatch" ]]; then
     warn "Hermes terminal backend does not match HERMES_TERMINAL_BACKEND=${terminal_backend}"
-    warn "  re-run hermes-api-bootstrap and hermes-browser-bootstrap, then recreate hermes"
+    warn "  run make hermes-reload"
     while IFS= read -r line; do
       [[ -n "$line" ]] && warn "  ${line}"
     done <<< "$backend_mismatch"

@@ -268,7 +268,7 @@ setup_calendar_profile() {
   fi
   log "Enabled CalDAV MCP registration (CALDAV_MCP_ENABLED=1)"
   log "Add more accounts: cp compose/caldav-mcp/account.env.example compose/caldav-mcp/accounts/<name>.env"
-  log "Then: docker compose run --rm hermes-api-bootstrap && docker compose run --rm hermes-browser-bootstrap && docker compose restart hermes"
+  log "Then: make hermes-reload"
 }
 
 # Shared Postgres + SQL MCP. The secrets are generated for every install (see
