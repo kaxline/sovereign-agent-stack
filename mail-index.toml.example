@@ -1,0 +1,28 @@
+# Mail indexer config. Copy to mail-index.toml (gitignored) and fill it in.
+# See docs/email.md. Nothing is indexed until store, since and at least one
+# account with mailboxes are set. Relative paths are relative to this file.
+
+# The folder that holds Mail's V<n>/ directory, usually Library/Mail in your
+# home folder. Left empty on purpose: the indexer has no default.
+store = ""
+
+# Where the index is written. Keep it in the gitignored data tree.
+index = "data/mail/index.sqlite"
+
+# Only messages received on or after this date.
+since = 2026-01-01
+
+# Store message bodies (plain text, HTML converted to text) for search.
+bodies = false
+# Store attachment names, types and sizes. Attachment contents are never copied.
+attachments = false
+# Longest body kept per message, in characters.
+max_body_chars = 100000
+
+# One block per account. Get ids and mailbox names from:
+#   python3 scripts/mail-index.py --config mail-index.toml mailboxes
+# Mailboxes are exact names ("INBOX", "Projects/Alpha") or patterns ("*",
+# "Clients/*"). Patterns skip Junk and Trash folders; name them to include.
+[[accounts]]
+id = "00000000-0000-0000-0000-000000000000"
+mailboxes = ["INBOX"]
