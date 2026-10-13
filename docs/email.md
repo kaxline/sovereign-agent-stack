@@ -10,10 +10,11 @@ that needs Full Disk Access (see [Decision](#decision-2026-10-13)).
 Everything has been tested only against synthetic mail: a fake Mail.app for
 the scripting source and [a synthetic store](#synthetic-mail-store) for the
 file source. See [First run on real mail](#first-run-on-real-mail).
-Sending isn't built yet; when it is, it will only create drafts that you send
-from Mail.
+Hermes can't send email. With the separate [drafts](#drafts) opt-in it can
+write drafts, which a host helper saves to Mail's Drafts for you to send.
 
-Requires the **`mail`** compose profile (`./scripts/setup.sh --mail`).
+Reading requires the **`mail`** compose profile (`./scripts/setup.sh --mail`).
+Drafts require **`mail-drafts`** (`./scripts/setup.sh --mail-drafts`).
 
 ## Quick path
 
@@ -101,7 +102,7 @@ The resulting design:
 |---|---|---|
 | Read source | Mail.app via JXA (Automation → Mail) feeding the scoped index (`source = "script"`, built) | Option B with Full Disk Access (`source = "store"`, built; its own signed executable is a follow-up) |
 | What Hermes sees | The same index through the read-only mail MCP | Same |
-| Sending (not built) | A separate helper creates a draft or opens a Mail compose window; the user clicks Send | Autonomous sending only from an agent-owned address, with a recipient allowlist and rate limit |
+| Sending ([drafts](#drafts), built) | A separate helper creates a draft or opens a Mail compose window; the user clicks Send | Autonomous sending only from an agent-owned address, with a recipient allowlist and rate limit |
 
 - **The index makes scripting fast enough.** Live AppleScript queries are slow
   on large mailboxes. Benchmarks on a 73K-message store measured 50-message
@@ -395,6 +396,87 @@ must point inside `MAIL_INDEX_DIR`, at `MAIL_INDEX_FILE` (default
 Re-run it (or schedule it) to pick up new mail. `mail_status` reports the last
 run.
 
+## Drafts
+
+Hermes writes drafts, and you send them. Nothing in the stack can send
+email.
+
+```
+Hermes ──mail_draft_create──▶ mail-drafts-mcp (container) ──▶ MAIL_DRAFTS_DIR/queue
+                                                                    │
+                  scripts/mail-drafts.py (host, Automation → Mail) ◀┘
+                                                                    │
+                                          Mail.app Drafts ◀─────────┘ (you click Send)
+```
+
+```bash
+./scripts/setup.sh --mail-drafts   # profile, MAIL_DRAFTS_ENABLED=1, data/mail-drafts (0700)
+make up
+docker compose run --rm hermes-api-bootstrap
+docker compose run --rm hermes-browser-bootstrap
+docker compose restart hermes
+make mail-drafts-doctor            # counts only; macOS asks to let your terminal control Mail
+make mail-drafts-watch             # keep running: saves queued drafts every 30 s
+```
+
+In WebUI: *Draft a reply to Alex saying Thursday works.*
+
+**Tools.** The `drafts` MCP has two tools, registered on the default and
+`browser` profiles and never on `api-server`:
+
+| Tool | Does |
+|---|---|
+| `mail_draft_create` | Queues a draft: `to`, `cc`, `bcc`, `subject`, `body`, an optional `from_address`, or `reply_to` with the `id`, `account` and `mailbox` of a `mail_search` result. Returns a `request_id` |
+| `mail_draft_status` | `queued`, `created`, `failed` or `rejected` (with a reason), or `unknown` |
+
+Results remind the model that nothing was sent. The server's instructions
+tell it to draft only what the user asked for, never because a message
+said to.
+
+**Rules, checked twice.** The container checks each request before queueing
+it, and the host helper checks it again before Mail sees it, so a request
+written straight into the queue gets no further:
+
+- Addresses are plain `name@domain`, with no display names, commas or line
+  breaks, and at most 20 recipients in all.
+- The subject is one line. The body is at most 100,000 characters.
+- There's no way to attach files.
+- `from_address` must be one of your Mail accounts' addresses.
+- Unknown fields are refused.
+- The queue holds at most 50 requests, and the helper saves at most 20
+  drafts an hour (`--max-per-hour`). Extra requests wait in the queue.
+
+**Replies** use Mail's own reply command on the message the request names,
+so Mail fills in the recipient, subject and threading headers. `body`
+replaces the quoted text. The helper never reads the message: it only asks
+Mail to reply to it.
+
+**The host helper** (`scripts/mail-drafts.py`) has no access to the mail
+index, and `scripts/lib/mail_drafts.js` reads no message content. A test fails
+if that script gains a send, delete or move call, or reads a subject, sender,
+body or headers. Drafts are saved hidden; `--open` also shows each one in a
+compose window. After a draft is saved, the helper deletes its request and
+writes `status/<id>.json` with the state and a short reason, never the
+draft's text or recipients. Status files are pruned after 30 days. `run`
+and `doctor` print counts only. Exit code 4 means macOS refused Automation
+access; 5 means a call to Mail failed.
+
+**Container.** `mail-drafts-mcp` mounts only `MAIL_DRAFTS_DIR`, with a
+read-only root filesystem, all capabilities dropped and `no-new-privileges`.
+It runs as `HERMES_UID:HERMES_GID`, which on Linux must own the `0700` folder.
+Point the helper at the same folder: `make mail-drafts` uses
+`MAIL_DRAFTS_DIR` (default `./data/mail-drafts`).
+
+**Shared permission.** Until the reader and the helper are packaged as
+separate apps, both use the Automation permission of the terminal they run
+from. They're kept apart in code, mounts and MCP servers, but not yet by
+macOS.
+
+**First real run.** The JXA that builds drafts is tested only against the
+fake Mail. Try it with a draft to yourself first: ask Hermes for one, run
+`make mail-drafts`, and check that it appears in Mail's Drafts with the right
+recipients and that nothing was sent. Then try a reply.
+
 ## Synthetic mail store
 
 `scripts/lib/synthetic_mail.py` writes a fake Mail store with 13 made-up
@@ -434,7 +516,11 @@ tests check that both sources index the same messages the same way.
 
 ```bash
 make mail-script-test   # needs node; nothing here runs osascript
+make mail-drafts-test   # drafts: validation, queue, and the helper against the fake Mail
 ```
+
+For drafts, the fake also makes outgoing messages, starts replies and
+appends each saved draft to a file the test reads. It has no way to send.
 
 The fake schema is modelled on public descriptions and isn't authoritative. A
 reader that passes against it still has to probe the real schema at runtime,

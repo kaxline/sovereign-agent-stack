@@ -1,0 +1,2 @@
+# Draft-only mail MCP. Queue logic (drafts.py) is standard library only.
+mcp==1.30.0

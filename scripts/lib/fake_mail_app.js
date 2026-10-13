@@ -1,7 +1,7 @@
-// A fake Mail.app scripting model, for testing mail_script.js under Node
-// without touching real mail. Tests only.
+// A fake Mail.app scripting model, for testing mail_script.js and
+// mail_drafts.js under Node without touching real mail. Tests only.
 //
-//   node fake_mail_app.js <fixture.json> <mail_script.js> '<request json>'
+//   node fake_mail_app.js <fixture.json> <script.js> '<request json>'
 //
 // The fixture comes from synthetic_mail.script_fixture(). It mimics the parts
 // of JXA the reader uses: element collections that are callable, answer
@@ -15,6 +15,9 @@
 //   arrive: {account, path, message}
 //                          add a message to that mailbox after the first
 //                          dateReceived batch, to check the reader re-reads
+//   drafts_out: path       each saved outgoing message is appended there as
+//                          a JSON line; there is no way to send one
+//   fail_save: true        saving an outgoing message fails with -10000
 
 'use strict';
 
@@ -80,10 +83,36 @@ function buildMessage(m) {
   };
 }
 
+function recipients() {
+  const items = [];
+  return {items: items, push(r) { items.push(r.address); }};
+}
+
+// An outgoing message as JXA makes it: plain settable properties, recipient
+// lists that take pushes, and save(). Saving appends it to drafts_out.
+function outgoing(fixture, outgoingList, props, reply) {
+  const msg = {
+    subject: props.subject || '', content: props.content || '', visible: !!props.visible, sender: null,
+    toRecipients: recipients(), ccRecipients: recipients(), bccRecipients: recipients(),
+    save() {
+      if (fixture.fail_save) throw appleError('Mail got an error saving the message.', -10000);
+      if (!reply && outgoingList.indexOf(msg) < 0) throw appleError("Can't save a message that wasn't made.", -10000);
+      fs.appendFileSync(fixture.drafts_out, JSON.stringify({
+        subject: msg.subject, content: msg.content, visible: msg.visible, sender: msg.sender,
+        to: (reply ? reply.to : []).concat(msg.toRecipients.items), cc: msg.ccRecipients.items,
+        bcc: msg.bccRecipients.items, reply_to: reply ? reply.id : null,
+        reply_all: reply ? reply.all : null,
+      }) + '\n');
+    },
+  };
+  return msg;
+}
+
 function buildApp(fixture) {
   const accounts = [];
   for (const a of fixture.accounts) {
-    const account = {id: () => a.id, name: () => a.name, class: () => 'imapAccount'};
+    const account = {id: () => a.id, name: () => a.name, class: () => 'imapAccount',
+                     emailAddresses: () => (a.email_addresses || []).slice()};
     const all = [];
     function buildBox(node, parent, prefix) {
       const path = prefix ? prefix + '/' + node.name : node.name;
@@ -110,7 +139,24 @@ function buildApp(fixture) {
     account.mailboxes = collection(fixture.flatten ? all : top, 'name');
     accounts.push(account);
   }
-  return {accounts: collection(accounts, 'id')};
+  const outgoingList = [];
+  return {
+    accounts: collection(accounts, 'id'),
+    outgoingMessages: {push(m) { outgoingList.push(m); }},
+    OutgoingMessage(props) { return outgoing(fixture, outgoingList, props || {}, null); },
+    ToRecipient(props) { return {address: props.address}; },
+    CcRecipient(props) { return {address: props.address}; },
+    BccRecipient(props) { return {address: props.address}; },
+    reply(original, opts) {
+      const id = original.id();
+      const sender = /<([^>]+)>/.exec(original.sender());
+      const subject = original.subject();
+      return outgoing(fixture, outgoingList, {
+        subject: /^re:/i.test(subject) ? subject : 'Re: ' + subject,
+        content: '\n\n> (quoted original)', visible: !!(opts && opts.openingWindow),
+      }, {id: id, all: !!(opts && opts.replyToAll), to: sender ? [sender[1]] : []});
+    },
+  };
 }
 
 function main() {

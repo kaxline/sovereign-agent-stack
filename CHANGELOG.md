@@ -28,6 +28,10 @@ the stack under another app.
    re-run `hermes-api-bootstrap` and `hermes-browser-bootstrap`, restart
    `hermes`. See [docs/email.md](docs/email.md). Re-running setup without
    `--mail` adds `MAIL_MCP_ENABLED=0` and starts nothing.
+6. Optional, for email drafts: `./scripts/setup.sh --mail-drafts`, `make up`,
+   re-run both bootstrap services, restart `hermes`, and keep
+   `make mail-drafts-watch` running on the host. Re-running setup without
+   `--mail-drafts` adds `MAIL_DRAFTS_ENABLED=0` and starts nothing.
 
 ### New services
 
@@ -46,6 +50,12 @@ the stack under another app.
   (`python:3.11-slim`, `mcp==1.30.0`). No host port. Mounts only
   `MAIL_INDEX_DIR`, read-only, with a read-only root filesystem, all
   capabilities dropped and `no-new-privileges`. Runs as `HERMES_UID:HERMES_GID`.
+- `mail-drafts-mcp` (new **`mail-drafts`** profile, off by default): MCP with
+  `mail_draft_create` and `mail_draft_status`, built locally from
+  `compose/mail-drafts-mcp` (`python:3.11-slim`, `mcp==1.30.0`). It only
+  queues requests in `MAIL_DRAFTS_DIR`; it doesn't mount the mail index and
+  can't send. No host port, read-only root filesystem, all capabilities
+  dropped, `no-new-privileges`, runs as `HERMES_UID:HERMES_GID`.
 
 ### Required `.env` keys
 
@@ -78,6 +88,10 @@ Only with `todo` enabled.
 | `MAIL_INDEX_FILE` | `index.sqlite` | Index file name inside `MAIL_INDEX_DIR` |
 | `MAIL_MCP_URL` | `http://mail-mcp:8000/mcp` | Endpoint the bootstrap registers |
 | `MAIL_MCP_TIMEOUT` / `MAIL_MCP_CONNECT_TIMEOUT` | `60` / `30` | Hermes MCP timeouts for `mail` |
+| `MAIL_DRAFTS_ENABLED` | `0` | `1` registers `mcp_servers.drafts` on the default and browser profiles. `setup.sh --mail-drafts` sets it |
+| `MAIL_DRAFTS_DIR` | `./data/mail-drafts` | Host folder for queued requests and their status; mounted into `mail-drafts-mcp` |
+| `MAIL_DRAFTS_MCP_URL` | `http://mail-drafts-mcp:8000/mcp` | Endpoint the bootstrap registers |
+| `MAIL_DRAFTS_MCP_TIMEOUT` / `MAIL_DRAFTS_MCP_CONNECT_TIMEOUT` | `60` / `30` | Hermes MCP timeouts for `drafts` |
 
 ### Changes
 
@@ -140,6 +154,16 @@ Only with `todo` enabled.
   at it. `make doctor` gets a mail section (profile, flag, index present,
   folder mode, per-profile registration, `api-server` not registered).
   `make mail-mcp-test`.
+- **Mail drafts** (`mail-drafts` profile): Hermes can queue email drafts, and
+  `scripts/mail-drafts.py` on the host saves them to Mail's Drafts through
+  scripting. Nothing is ever sent; you send drafts from Mail. Replies thread
+  through Mail's own reply. Requests are checked twice (in the container and
+  on the host): plain addresses only, at most 20 recipients, one-line
+  subjects, no attachments, a sender only from your own Mail accounts, and
+  at most 20 drafts an hour. Registered on the default and browser profiles
+  only. `make mail-drafts`, `make mail-drafts-watch`,
+  `make mail-drafts-doctor`, `make mail-drafts-test`; `make doctor` gets a
+  drafts section.
 - **Docs**: [docs/email.md](docs/email.md) records the design for giving Hermes
   read access to Apple Mail, why scripting Mail.app is the default over Full
   Disk Access, and a survey of existing Apple Mail MCP servers.

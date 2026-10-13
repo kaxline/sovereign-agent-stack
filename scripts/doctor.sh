@@ -1111,6 +1111,47 @@ if has_profile mail || [[ "$mail_on" -eq 1 ]]; then
   fi
 fi
 
+# --- Mail drafts (queue for the host helper; never sends) ---
+drafts_enabled="$(env_get MAIL_DRAFTS_ENABLED 0)"
+case "$drafts_enabled" in 1|true|TRUE|yes|YES) drafts_on=1 ;; *) drafts_on=0 ;; esac
+if has_profile mail-drafts || [[ "$drafts_on" -eq 1 ]]; then
+  echo
+  echo "--- Mail drafts ---"
+  if has_profile mail-drafts; then
+    ok "COMPOSE_PROFILES includes mail-drafts"
+  else
+    bad "MAIL_DRAFTS_ENABLED=1 but 'mail-drafts' not in COMPOSE_PROFILES — run ./scripts/setup.sh --mail-drafts"
+  fi
+  [[ "$drafts_on" -eq 1 ]] || warn "mail-drafts profile on but MAIL_DRAFTS_ENABLED is not 1 — Hermes will not register the draft tools"
+  drafts_dir="$(env_get MAIL_DRAFTS_DIR ./data/mail-drafts)"
+  if [[ -d "$drafts_dir" ]]; then
+    drafts_mode="$(stat -f '%Lp' "$drafts_dir" 2>/dev/null || stat -c '%a' "$drafts_dir" 2>/dev/null || echo '?')"
+    if [[ "$drafts_mode" == "700" ]]; then
+      ok "${drafts_dir} is owner-only"
+    else
+      warn "${drafts_dir} is mode ${drafts_mode}, expected 700 — chmod 700 ${drafts_dir}"
+    fi
+    drafts_pending="$(find "${drafts_dir}/queue" -maxdepth 1 -name '*.json' 2>/dev/null | wc -l | tr -d ' ')"
+    if [[ "${drafts_pending:-0}" -gt 0 ]]; then
+      warn "${drafts_pending} draft(s) waiting — run make mail-drafts (or keep make mail-drafts-watch running)"
+    else
+      ok "no drafts waiting"
+    fi
+  else
+    warn "${drafts_dir} missing — run ./scripts/setup.sh --mail-drafts"
+  fi
+  if grep -qs 'mail-drafts-mcp:8000' data/hermes/profiles/api-server/config.yaml; then
+    bad "api-server registers the mail drafts MCP — re-run hermes-api-bootstrap"
+  fi
+  if docker info >/dev/null 2>&1; then
+    if docker compose ps --status running mail-drafts-mcp 2>/dev/null | grep -q mail-drafts-mcp; then
+      ok "mail-drafts-mcp container is running"
+    elif has_profile mail-drafts; then
+      warn "mail-drafts-mcp not running — make up with mail-drafts in COMPOSE_PROFILES"
+    fi
+  fi
+fi
+
 # --- Knowledge corpus (rag) ---
 if has_profile rag; then
   echo

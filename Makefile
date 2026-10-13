@@ -4,7 +4,8 @@
 	buzz-admin \
 	corpus-create corpus-use corpus-list corpus-ingest corpus-destroy \
 	project-init project-index project-index-check project-sources-test synthetic-mail-test \
-	mail-index mail-index-doctor mail-index-mailboxes mail-index-test mail-script-test mail-mcp-test model-use model-sync \
+	mail-index mail-index-doctor mail-index-mailboxes mail-index-test mail-script-test mail-mcp-test \
+	mail-drafts mail-drafts-watch mail-drafts-doctor mail-drafts-test model-use model-sync \
 	data-dir-show data-dir-set data-dir-migrate \
 	db-backup db-service-add db-psql todo-init todo-open \
 	coding-root-list coding-root-add \
@@ -271,6 +272,22 @@ mail-index-test:
 # Mail.app scripting source, run under Node against a fake Mail (needs node).
 mail-script-test:
 	python3 scripts/test-mail-script.py
+
+# Mail drafts (host-side): saves drafts queued by mail-drafts-mcp to Mail's
+# Drafts. Never sends. See docs/email.md.
+MAIL_DRAFTS_DIR ?= ./data/mail-drafts
+mail-drafts:
+	python3 scripts/mail-drafts.py --dir "$(MAIL_DRAFTS_DIR)" run
+
+mail-drafts-watch:
+	python3 scripts/mail-drafts.py --dir "$(MAIL_DRAFTS_DIR)" watch
+
+mail-drafts-doctor:
+	python3 scripts/mail-drafts.py --dir "$(MAIL_DRAFTS_DIR)" doctor
+
+mail-drafts-test:
+	python3 scripts/test-mail-drafts.py
+	sh scripts/test-mail-drafts-registration.sh
 
 # Read-only mail MCP: query layer against a synthetic index, and which profiles get it.
 mail-mcp-test:
