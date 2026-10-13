@@ -270,12 +270,119 @@ def test_cli_prints_counts_only(env: Env) -> None:
     expect(proc.returncode == 2, "no config means no run")
 
 
+def file_bytes(index: Path) -> bytes:
+    """The index file and any journal or WAL beside it."""
+    return b"".join(p.read_bytes() for p in index.parent.glob(index.name + "*"))
+
+
+def fts_terms(index: Path) -> set[str]:
+    db = sqlite3.connect(index)
+    db.execute("CREATE VIRTUAL TABLE temp.vocab USING fts5vocab(main, messages_fts, row)")
+    terms = {r[0] for r in db.execute("SELECT term FROM temp.vocab")}
+    db.close()
+    return terms
+
+
+def test_deleted_text_is_gone(env: Env) -> None:
+    # "frost" is only in the body of 1204 (Archive); "noon" only in the body of 101 (INBOX).
+    store, _ = env.store()
+    index = env.tmp / f"scrub-{env.n}" / "mail.sqlite"
+    both = mi.load_config(env.config(store, {PERSONAL: ["INBOX", "Archive"]}, bodies=True, index=index))
+    first = mi.run(both)
+    expect(first.compacted, "a new index is compacted once")
+    expect(b"frost" in file_bytes(index) and "frost" in fts_terms(index), "test words are there to begin with")
+    expect(not mi.run(both).compacted, "no compaction when nothing was removed")
+
+    inbox = mi.load_config(env.config(store, {PERSONAL: ["INBOX"]}, bodies=True, index=index))
+    stats = mi.run(inbox)
+    expect(stats.removed == 1, f"one message left scope: {stats}")
+    expect(b"frost" not in file_bytes(index), "a removed message's body is gone from the file")
+    expect("frost" not in fts_terms(index), "and from the search index")
+    expect(b"noon" in file_bytes(index), "kept messages keep their bodies")
+
+    mi.run(mi.load_config(env.config(store, {PERSONAL: ["INBOX"]}, bodies=False, index=index)))
+    expect(b"noon" not in file_bytes(index) and "noon" not in fts_terms(index), "blanked bodies are gone")
+    expect(not list(index.parent.glob("etilqs_*")), "no scratch files left in the index folder")
+
+    db = sqlite3.connect(index)
+    db.execute("DELETE FROM meta WHERE key = 'scrubbed'")
+    db.commit()
+    db.close()
+    expect(mi.run(mi.load_config(env.config(store, {PERSONAL: ["INBOX"]}, index=index))).compacted,
+           "an index from before secure delete is compacted once")
+
+    # SQLite without FTS5 secure-delete: removals are merged out and compacted instead.
+    real = mi.fts_secure_delete
+    mi.fts_secure_delete = lambda db: False
+    try:
+        old = env.tmp / f"scrub-old-{env.n}" / "mail.sqlite"
+        mi.run(mi.load_config(env.config(store, {PERSONAL: ["INBOX", "Archive"]}, bodies=True, index=old)))
+        stats = mi.run(mi.load_config(env.config(store, {PERSONAL: ["INBOX"]}, bodies=True, index=old)))
+        expect(stats.compacted, f"older SQLite compacts after a removal: {stats}")
+        expect(b"frost" not in file_bytes(old) and "frost" not in fts_terms(old), "and the text is gone")
+    finally:
+        mi.fts_secure_delete = real
+
+
+class Interrupted(Exception):
+    pass
+
+
+class StopsEarly:
+    """Wraps a source so its fetch stops after `limit` messages, like a run cut short."""
+
+    def __init__(self, inner, limit: int, name: str | None = None) -> None:
+        self.inner, self.limit = inner, limit
+        self.name = name or inner.name
+
+    def rows(self):
+        return self.inner.rows()
+
+    def fetch(self, rows):
+        for i, item in enumerate(self.inner.fetch(rows)):
+            if i == self.limit:
+                raise Interrupted()
+            yield item
+
+
+def test_resumes_after_interruption(env: Env) -> None:
+    store, _ = env.store()
+    cfg = mi.load_config(env.config(store, {PERSONAL: ["*"], WORK: ["*"]}, bodies=True))
+    real_every = mi.SAVE_EVERY
+    mi.SAVE_EVERY = 2
+    try:
+        try:
+            mi.run(cfg, source=StopsEarly(mi.StoreSource(cfg), limit=5))
+        except Interrupted:
+            pass
+        else:
+            fail("the wrapped run should stop early")
+        saved = set(indexed(cfg))
+        expect(len(saved) == 4, f"saved in batches of 2 before stopping: {len(saved)}")
+        stats = mi.run(cfg)
+        total = set(indexed(cfg))
+        expect(stats.added == len(total) - 4 and stats.removed == 0, f"resume fetches only the rest: {stats}")
+        expect(saved < total and stats.in_scope == len(total), "nothing lost or duplicated")
+
+        # Cut short right after a source switch: the next run must not wipe its own progress.
+        try:
+            mi.run(cfg, source=StopsEarly(mi.StoreSource(cfg), limit=3, name="script"))
+        except Interrupted:
+            pass
+        expect(len(indexed(cfg)) == 2, "the switch wiped the old rows and saved one batch")
+        stats = mi.run(cfg, source=StopsEarly(mi.StoreSource(cfg), limit=10**6, name="script"))
+        expect(stats.removed == 0 and stats.added == len(total) - 2, f"resumed after the switch: {stats}")
+    finally:
+        mi.SAVE_EVERY = real_every
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as d:
         env = Env(Path(d))
         for test in (test_config_validation, test_scope, test_since, test_headers_bodies_and_search,
                      test_incremental, test_reads_uncheckpointed_wal, test_missing_file_keeps_metadata,
-                     test_unrecognised_layout, test_cli_prints_counts_only):
+                     test_unrecognised_layout, test_cli_prints_counts_only, test_deleted_text_is_gone,
+                     test_resumes_after_interruption):
             test(env)
     print("OK mail indexer")
     return 0

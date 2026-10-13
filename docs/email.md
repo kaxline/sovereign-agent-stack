@@ -287,7 +287,8 @@ With the **store source** (`source = "store"`):
    re-reading the file. Turning `bodies` on or off re-reads every file once.
 
 `run` prints counts as JSON (`in_scope`, `added`, `updated`, `removed`,
-`missing_files`, `unreadable`, `accounts_missing`) and never message content.
+`missing_files`, `unreadable`, `accounts_missing`, `compacted`) and never
+message content.
 For the script source, `missing_files` counts messages Mail listed but
 couldn't produce.
 
@@ -310,6 +311,37 @@ schema version, the source, a fingerprint of the scope and the last run time.
 If the schema version changes, delete the index and re-run. Switching
 `source` empties the index on the next run and rebuilds it, because flags and
 thread ids come out differently.
+
+**Deleted text is overwritten.** When a message leaves scope, or its body is
+blanked because you turned `bodies` off, its text is overwritten in the
+file, not just unlinked. SQLite's `secure_delete` zeroes the freed space, and
+FTS5's `secure-delete` option drops the message's words from the search
+index straight away (it needs SQLite 3.42 or newer, both for the indexer and
+in `mail-mcp`). The index is also compacted (`VACUUM`) when that isn't
+enough:
+
+- once for an index written before this was added;
+- after removals, on SQLite too old for FTS5 `secure-delete`, merging the
+  search index first;
+- when more than a quarter of the file is free space.
+
+`VACUUM`'s scratch copy is written beside the index, not in the system temp
+folder. None of this can reach copies already in a backup, iCloud or the
+SSD's spare blocks. Use FileVault, keep the index folder out of iCloud
+Drive, and exclude it from backups.
+
+**Size and speed.** With `bodies` on, expect the index to be roughly twice
+the size of the plain text it holds, because the search index keeps its own
+copy. The first run fetches every in-scope body; later runs fetch only new
+messages. Progress is saved every 50 messages, so a first run cut short by
+sleep, Mail quitting or a timeout picks up where it stopped next time. The
+reader app's 15-minute schedule doesn't start a second copy while one is
+still running. With the script source, every run also asks Mail for a summary of
+every message in each in-scope mailbox, which is how it spots new, removed
+and re-flagged mail. On a large mailbox, check `make mail-index-doctor`
+before widening the scope: `seconds_message_summaries` is the cost every run
+pays, and `seconds_per_message_details` times the number of messages is the
+first run's cost.
 
 Threads use Mail's conversation id when the store source has it. Otherwise a
 message joins the thread of an indexed message it replies to (`In-Reply-To`
