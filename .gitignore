@@ -27,6 +27,9 @@ docker-compose.override.yml
 # Local model presets (copy from models.yaml.example)
 models.local.yaml
 
+# Mail indexer config (copy from mail-index.toml.example; names your mail store)
+mail-index.toml
+
 # Dev noise
 .DS_Store
 __pycache__/

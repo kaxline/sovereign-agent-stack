@@ -1,10 +1,10 @@
 # Email from Apple Mail (design)
 
-**Status: design only.** Nothing in the stack reads mail yet. This page
-records how Hermes should get read access to email by reading Apple Mail's
-local store instead of logging in to a mail server, and the fake store the
-reader will be developed against. Only
-[the synthetic store](#synthetic-mail-store) exists so far.
+**Status: indexer only.** This page records how Hermes should get read access
+to email by reading Apple Mail's local store instead of logging in to a mail
+server. [The indexer](#indexer) and [the synthetic store](#synthetic-mail-store)
+exist. The MCP that serves the index to Hermes does not yet, so Hermes can't
+read mail.
 
 ## Goals
 
@@ -85,6 +85,90 @@ Mail store ──(Full Disk Access, read-only)──▶ mail-indexer (host)
 
 Option **C** stays in reserve for actions (mark read, move), which need
 Mail's cooperation and would be a separate, opt-in tool.
+
+## Indexer
+
+`scripts/mail-index.py` (library: `scripts/lib/mail_index.py`) runs on the
+host. Python 3.11 or newer, standard library only.
+
+```bash
+cp mail-index.toml.example mail-index.toml   # gitignored; fill in store, since, accounts
+make mail-index-mailboxes                     # account ids and mailbox names, to write the config
+make mail-index-doctor                        # checks the store and scope; counts only
+make mail-index                               # build or update the index
+```
+
+Use `MAIL_INDEX_CONFIG=path` with make, or `--config path` with the script,
+to point at a different config.
+
+### Config
+
+| Key | Required | Meaning |
+|---|---|---|
+| `store` | yes | The folder holding Mail's `V<n>/` directory. No default |
+| `index` | yes | The index file to write. Must be outside the store. Keep it in the data tree |
+| `since` | yes | Only messages received on or after this date |
+| `[[accounts]]` | yes, at least one | `id` (account folder UUID) and `mailboxes` |
+| `bodies` | no, `false` | Store message bodies (HTML converted to text) for search |
+| `attachments` | no, `false` | Store attachment names, types and sizes. Contents are never copied |
+| `max_body_chars` | no, `100000` | Longest body kept per message |
+
+`mailboxes` entries are exact names (`INBOX`, `Projects/Alpha`) or glob
+patterns (`*`, `Clients/*`). Patterns skip Junk and Trash folders (Junk,
+Spam, Trash, Deleted Messages, Deleted Items, Bin); name one to include it.
+A pattern matches a mailbox, not its children, so `Projects` doesn't include
+`Projects/Alpha`.
+
+### What a run does
+
+1. Copies the metadata database and its `-wal` / `-shm` files to a private
+   temporary folder, so Mail's live file is never opened, and runs SQLite's
+   quick integrity check on the copy.
+2. Probes the copy's columns. It stops with exit code 3, without touching the
+   index, if the `messages` and `mailboxes` columns it needs are missing.
+   Other columns (subjects, senders, flags, conversation ids) are used when
+   present.
+3. Keeps rows in scope: listed accounts and mailboxes, received on or after
+   `since`, not deleted.
+4. Reads headers from each new message's file (Message-ID, threading,
+   recipients, decoded subject and sender), and the body when `bodies` is on.
+   It searches only the mailbox's own folder, not child mailboxes. If a file
+   is missing or unreadable, the message is still indexed from the database.
+5. Updates the index incrementally. New messages are added. Messages that
+   left scope or the store are removed. A flag change updates the row without
+   re-reading the file. Turning `bodies` on or off re-reads every file once.
+
+`run` prints counts as JSON (`in_scope`, `added`, `updated`, `removed`,
+`missing_files`, `unreadable`, `accounts_missing`) and never message content.
+`doctor` prints the version folder, which optional columns exist, whether
+dates look like Unix seconds, and how many messages and files are in scope.
+
+### The index
+
+One SQLite file, owner-only (`0600`, folder `0700`). Table `messages` is keyed
+by the store's message `ROWID` and holds the account, mailbox, Message-ID,
+thread id, dates, sender, recipients (JSON), subject, flags, the optional
+body and attachment list. `messages_fts` is an FTS5 table over subject,
+sender, recipients and body, with diacritics folded. `meta` records the
+schema version, a fingerprint of the scope and the last run time. If the
+schema version changes, delete the index and re-run.
+
+### First run on real mail
+
+The indexer is tested only against the synthetic store, and Apple's format is
+undocumented, so the first real run checks the assumptions:
+
+1. Run `make mail-index-doctor`. `dates_look_like_unix_seconds` should be
+   `true` and `message_files_found` should equal `messages_in_scope`. If not,
+   the store's layout differs from the synthetic one. Report the counts, not
+   messages.
+2. Exit code 3 means the metadata layout wasn't recognised, and the error
+   names the missing columns. Exit code 4 means macOS denied access.
+
+macOS grants Full Disk Access per program. Running the indexer with the shared
+`python3` means granting that interpreter access, and with it every Python
+script on the machine. Packaging the indexer as its own executable is a
+follow-up.
 
 ## Synthetic mail store
 

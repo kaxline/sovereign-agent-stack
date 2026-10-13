@@ -104,8 +104,16 @@ Only with `todo` enabled.
   from the session's profile now fails with `4081` and
   `data.session_profile`. It used to be accepted and ignored: the turn ran on
   the session's profile. A matching or omitted `profile` behaves as before.
+- **Mail indexer** (host-side, opt-in): `scripts/mail-index.py` indexes the
+  accounts, mailboxes and date window named in a `mail-index.toml` config
+  (copy `mail-index.toml.example`) into a local SQLite file with full-text
+  search. It reads a snapshot of Mail's metadata, never writes to the store,
+  has no default store path and prints counts only. Bodies and attachment
+  names are separate opt-ins. `make mail-index`, `make mail-index-doctor`,
+  `make mail-index-mailboxes`, `make mail-index-test`. Hermes can't read the
+  index yet. See [docs/email.md](docs/email.md).
 - **Docs**: [docs/email.md](docs/email.md) records the design for giving Hermes
-  read access to Apple Mail's local store. Nothing reads mail yet.
+  read access to Apple Mail's local store.
   `scripts/make-synthetic-mail.py` writes a fake Mail store for developing
   the reader, and `make synthetic-mail-test` checks it.
 - **Docs**: [docs/hermes.md](docs/hermes.md#platform-hints) documents

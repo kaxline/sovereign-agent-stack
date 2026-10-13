@@ -3,7 +3,8 @@
 	buzz-relay-start buzz-relay-stop buzz-relay-status buzz-relay-logs buzz-relay-restart \
 	buzz-admin \
 	corpus-create corpus-use corpus-list corpus-ingest corpus-destroy \
-	project-init project-index project-index-check project-sources-test synthetic-mail-test model-use model-sync \
+	project-init project-index project-index-check project-sources-test synthetic-mail-test \
+	mail-index mail-index-doctor mail-index-mailboxes mail-index-test model-use model-sync \
 	data-dir-show data-dir-set data-dir-migrate \
 	db-backup db-service-add db-psql todo-init todo-open \
 	coding-root-list coding-root-add \
@@ -249,6 +250,22 @@ project-sources-test:
 # Fake Apple Mail store for mail-reader tests. See docs/email.md.
 synthetic-mail-test:
 	python3 scripts/test-synthetic-mail.py
+
+# Apple Mail indexer (host-side). See docs/email.md.
+#   cp mail-index.toml.example mail-index.toml   # then fill it in
+#   make mail-index-doctor && make mail-index
+MAIL_INDEX_CONFIG ?= mail-index.toml
+mail-index:
+	python3 scripts/mail-index.py --config "$(MAIL_INDEX_CONFIG)" run
+
+mail-index-doctor:
+	python3 scripts/mail-index.py --config "$(MAIL_INDEX_CONFIG)" doctor
+
+mail-index-mailboxes:
+	python3 scripts/mail-index.py --config "$(MAIL_INDEX_CONFIG)" mailboxes
+
+mail-index-test:
+	python3 scripts/test-mail-indexer.py
 
 # Shared coding roots (Hermes + OpenCode). See docs/opencode.md.
 #   make coding-root-list
