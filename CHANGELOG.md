@@ -145,6 +145,9 @@ Only with `todo` enabled.
   Disk Access, and a survey of existing Apple Mail MCP servers.
   `scripts/make-synthetic-mail.py` writes a fake Mail store for developing
   the reader, and `make synthetic-mail-test` checks it.
+- **Docs**: [docs/messages.md](docs/messages.md) records the design for giving
+  Hermes read access to iMessage history and new-message events, and the
+  open-source readers evaluated for it. Nothing reads messages yet.
 - **Docs**: [docs/hermes.md](docs/hermes.md#platform-hints) documents
   `agent.platform_hints.<source>` for clients whose `source` has no built-in
   hint, and corrects the claim that `profile` works per turn.
