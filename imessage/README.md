@@ -2,8 +2,9 @@
 
 Read-only access to your Messages.app history on macOS, for a local AI
 assistant. A host-side indexer reads Messages' database and writes the chats
-you choose to a small SQLite index with full-text search. An MCP server (not
-built yet) will serve that index to the assistant. Nothing here can send,
+you choose to a small SQLite index with full-text search. A watcher keeps the
+index current and raises an event when new messages arrive. An MCP server
+(not built yet) will serve the index to the assistant. Nothing here can send,
 react, mark read, edit or delete messages.
 
 This folder is self-contained: Python 3.11+ standard library only, with no
@@ -15,18 +16,20 @@ wires it in are in [docs/messages.md](../docs/messages.md).
 |---|---|
 | [Synthetic store](#synthetic-store) | Built. A fake Messages store for development and tests |
 | [Indexer](#indexer) | Built. Tested only against the synthetic store |
-| Watcher and new-message events | Not built |
+| [Watcher and new-message events](#watcher) | Built. Tested only against the synthetic store |
+| [macOS app](#macos-app) (its own Full Disk Access grant) | Built. Not yet run with a real grant |
 | Read-only MCP | Not built |
-| macOS app packaging (own Full Disk Access grant) | Not built |
 
 ```
 imessage/
-  messages-index.py              indexer CLI: run, doctor, chats
+  messages-index.py              CLI: run, doctor, chats, watch, notify-test
   messages-index.toml.example    config template
   make-synthetic-messages.py     writes a fake store
   lib/messages_index.py          indexer
+  lib/messages_watch.py          watcher and events
   lib/typedstream.py             reads and writes attributedBody archives
   lib/synthetic_messages.py      fake store generator
+  macos/                         app launcher, build and install scripts
   tests/                         stdlib test scripts
 ```
 
@@ -109,8 +112,119 @@ If the schema version changes, delete the index and re-run.
 Reading `chat.db` needs Full Disk Access for the program that runs the
 indexer. Full Disk Access can't be narrowed: whatever holds it can read every
 app's data. Run from a terminal, the grant belongs to the terminal and
-covers everything you run there. Packaging the indexer as its own small app,
-so the grant belongs to that app only, is the next step.
+covers everything you run there. For everyday use, install the
+[app](#macos-app) and grant it instead.
+
+## Watcher
+
+```bash
+python3 imessage/messages-index.py --config messages-index.toml watch         # runs until stopped
+python3 imessage/messages-index.py --config messages-index.toml notify-test   # one test event
+```
+
+`watch` keeps the index current and, with a `[notify]` table, raises an
+event when new messages arrive. It's what the app's LaunchAgent runs.
+
+- **Noticing changes.** It watches `chat.db`, its `-wal` and `-shm` files and
+  the Messages folder with kqueue, waits `debounce_ms` for a burst of writes
+  to settle, and checks again every `poll_seconds` in case an event was
+  missed. When Messages replaces a file (the WAL is deleted and recreated as
+  it opens and closes), the watcher re-attaches. The design follows
+  [openclaw/imsg](https://github.com/openclaw/imsg)'s watcher (MIT). On
+  systems without kqueue it polls.
+- **Updating the index.** Each wake runs an incremental pass: rows added
+  after a `ROWID` cursor, plus messages from the last `window_hours`, where
+  edits, unsends and late chat links happen. Rows that haven't changed cost
+  a fingerprint check; message bodies are read only for new or changed
+  rows. A full pass runs at start, when the scope changes, and every
+  `full_every_minutes`. The cursor lives in a state file next to the index
+  (`<index>.watch.json`, owner-only), so a restart doesn't repeat events.
+- **Errors.** If macOS denies access (no Full Disk Access yet) or the
+  database layout isn't recognised, the watcher logs it and tries again a
+  minute later instead of exiting.
+
+| `[watch]` key | Default | Meaning |
+|---|---|---|
+| `window_hours` | `2` | How far back each wake re-reads |
+| `full_every_minutes` | `60` | How often a full pass runs |
+| `poll_seconds` | `5` | Fallback check interval |
+| `debounce_ms` | `250` | Wait for writes to settle |
+| `state` | next to the index | The watcher's state file |
+
+### Events
+
+An event says that new messages arrived in a chat, never what they say:
+
+```json
+{"type": "messages.new", "id": "6f1c…", "created_at": "2026-10-13T16:20:05+00:00",
+ "chat": {"id": "iMessage;-;+14155550101", "name": "Alex Chen", "is_group": false},
+ "count": 2, "senders": ["Alex Chen"], "message_ids": [131, 132],
+ "latest_at": "2026-10-13T16:20:03+00:00"}
+```
+
+`message_ids` are index ids, for looking the messages up through the MCP.
+Only incoming messages (not yours, not reactions or group events) in
+`notify.chats` count, and only if they're at most `max_age_minutes` old when
+first seen, so a first run over your history or an iCloud backfill doesn't
+raise a flood. The very first watcher run raises nothing. One wake produces
+at most one event per chat.
+
+| `[notify]` key | Required | Meaning |
+|---|---|---|
+| `chats` | yes | Which indexed chats raise events (ids or patterns) |
+| `outbox` | one of these | A folder that gets one JSON file per event (`0600`, folder `0700`) |
+| `url` | one of these | An endpoint that gets each event as a signed POST. Must be `https` unless it's on this machine |
+| `secret_file` | with `url` | The shared HMAC secret, at least 16 bytes |
+| `max_age_minutes` | no, `10` | Older messages don't raise events |
+| `quiet_hours` | no | Local hours like `"22:00-07:00"`. Events are held and sent afterwards, merged into one per chat |
+
+The POST is signed the way [Hermes](https://github.com/NousResearch/hermes-agent)
+generic webhooks expect: `X-Webhook-Signature-V2` is the hex HMAC-SHA256 of
+`"<X-Webhook-Timestamp>.<body>"`, and `X-Request-ID` carries the event id so
+the receiver can drop duplicates. A failed POST is retried on each wake for
+an hour, then dropped and counted. The outbox copy is written once.
+
+Logs are one JSON line of counts per wake that changed something (`added`,
+`updated`, `removed`, `events`, `delivered`, `held`, `pending`, `dropped`).
+
+## macOS app
+
+```bash
+imessage/macos/build.sh                                         # into imessage/build (needs swiftc, Python 3.11+)
+imessage/macos/install.sh --config "$PWD/messages-index.toml"   # app to ~/Applications, LaunchAgent runs `watch`
+```
+
+Then add the app in System Settings > Privacy & Security > Full Disk Access.
+macOS doesn't ask for Full Disk Access the way it asks for other
+permissions. Until you add the app, its log shows "permission denied" once a
+minute.
+
+The app, *Assistant Messages Reader*, is a compiled launcher
+(`macos/Launcher.swift`) plus only the indexer and watcher scripts, sealed by
+its code signature. It holds no send code and asks for no Apple events.
+Because launchd starts the app, macOS attributes its file access to the app,
+not to your terminal or a shared `python3`. A changed script breaks the
+signature, so editing the repository can't change what a granted app does.
+The launcher runs the scripts with `python -I -B` and a minimal environment.
+
+`install.sh` copies the app to `~/Applications` and loads a LaunchAgent
+(`~/Library/LaunchAgents/local.assistant.messages-reader.plist`) that keeps
+`watch` running. `--interval 900` runs `run` every 15 minutes instead, with
+no events. Logs (counts only) go to `~/Library/Logs/assistant-messages/`.
+Add `--dry-run` to print the agent's plist without installing anything, and
+`install.sh uninstall` to remove it.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MESSAGES_APP_PYTHON` | `python3` on `PATH` | Interpreter the launcher runs |
+| `MESSAGES_APP_SIGN_IDENTITY` | `-` (ad hoc) | Signing identity. macOS ties the grant to the signature, so with ad hoc signing each rebuild needs Full Disk Access again. A stable identity (a free Apple Development certificate is enough) keeps it |
+| `MESSAGES_APP_BUNDLE_PREFIX` | `local.assistant` | Bundle id and launchd label prefix. Set the same value for `install.sh` |
+| `MESSAGES_APP_DIR` | `~/Applications` | Where `install.sh` puts the app |
+
+**First real run.** After installing and granting the app, check its log
+for a line of counts, and that `launchctl procinfo $(pgrep -f
+assistant-messages-reader | head -1)` names the app as the responsible
+process. Your terminal doesn't need Full Disk Access for any of this.
 
 ### First run on real messages
 
@@ -189,6 +303,8 @@ probe the real schema at runtime.
 ```bash
 python3 imessage/tests/test-synthetic-messages.py   # generator and typedstream writer
 python3 imessage/tests/test-messages-index.py       # indexer against the synthetic store
+python3 imessage/tests/test-messages-watch.py       # watcher: events, quiet hours, retries, live kqueue loop
+python3 imessage/tests/test-messages-app.py         # builds the app, checks its seal, runs it (macOS)
 ```
 
 ## Rules for contributors
