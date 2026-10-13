@@ -1,7 +1,7 @@
 ---
 name: living-todos
-description: "Manage the user's durable, cross-session todo / to-do / task list. Use for 'add to the todo list', 'what's on our todo list', 'mark X done', priorities, or any request to persist tasks across chats. Uses Vikunja (tasks_list, tasks_create) when those tools are available, otherwise a markdown file. Do NOT use the session-only `todo` tool for these."
-version: 1.2.0
+description: "Manage the user's durable, cross-session todo / to-do / task list. Use for 'add to the todo list', 'what's on our todo list', 'mark X done', priorities, or any request to persist tasks across chats. Uses the todo app's tools (tasks_list, tasks_create; mcp__todos__*) when they are available, otherwise a markdown file. Do NOT use the session-only `todo` tool for these."
+version: 1.3.0
 author: assistant stack (repo-shipped)
 license: MIT
 platforms: [linux, macos, windows]
@@ -24,10 +24,10 @@ chat only — never use it for "add/list/complete my todos".
 
 ## Pick the backend first
 
-- **Vikunja** — when the Vikunja MCP tools are in your tool list
-  (`tasks_list`, `tasks_create`, `projects_list`, possibly named
-  `mcp__vikunja__tasks_list` and so on). The list lives there; do not also
-  write the markdown file. See [Vikunja](#vikunja) below.
+- **Todo app** — when the todo tools are in your tool list (`tasks_list`,
+  `tasks_create`, `projects_list`, possibly named `mcp__todos__tasks_list` and
+  so on). The list lives there; do not also write the markdown file. See
+  [Todo app](#todo-app) below.
 - **Markdown file** — otherwise. The file is `todos.list_path` (default
   `/opt/projects/project-todo-list/README.md`). Use the resolved config value
   when present. See [Markdown file](#markdown-file) below.
@@ -46,7 +46,23 @@ Do **not** use this skill for:
 - Durable facts about the user — that is `working-memory` / the `memory` tool
 - Past chat recall — that is `session_search`
 
-## Vikunja
+## Talking about it
+
+To the user this is just **their todo list** (or "your todos"). Say "I added it
+to your todo list", not "I created a task in Vikunja" or "via the todos MCP".
+Don't mention tool names, MCP, tokens, or the engine.
+
+The todo app runs on Vikunja, an open-source task manager. Name it only when it
+helps the user: they ask what powers the list or where it lives, they see the
+Vikunja logo in the web app and ask about it, or an error message names it.
+The web app is at `http://localhost:3456/login-local` (the user can also run
+`make todo-open`).
+
+The tools use the app's own words: projects are the user's **lists**, and
+buckets are the **columns** on a list's board. Use the user's words when you
+reply.
+
+## Todo app
 
 Tasks belong to projects. Every account starts with an `Inbox` project; use it
 unless the user names another one.
@@ -60,7 +76,7 @@ unless the user names another one.
    Mention due dates and high priorities. If there are none, say the list is
    empty; do not invent tasks.
 
-Filters use Vikunja's filter language: `done = false && priority >= 3`,
+Filters use the todo app's filter language: `done = false && priority >= 3`,
 `due_date < now+7d`, `title like '%dentist%'`, `project = 4` (a numeric id from
 `projects_list`, not a name). See https://vikunja.io/docs/filters.
 
@@ -138,9 +154,9 @@ reachable through `find_action` then `do_action`.
 2. Mark the matching item `- [x]` or remove it if the user asked to delete.
 3. Write back. Confirm what changed.
 
-## Moving the markdown list into Vikunja
+## Moving the markdown list into the todo app
 
-Only when the user asks. Read the file, create one Vikunja task per open
+Only when the user asks. Read the file, create one task per open
 `- [ ]` item (Critical → priority 4, High → 3, Medium → 2, Low → 1), then
 tell the user how many were created and leave the file in place for them to
 archive.
@@ -149,7 +165,7 @@ archive.
 
 - **Session `todo` tool.** Empty in every new chat. Using it is the bug this
   skill exists to prevent.
-- **Two lists.** With Vikunja available, do not also write the markdown file;
+- **Two lists.** With the todo app available, do not also write the markdown file;
   the user would end up with two lists that disagree.
 - **Wrong path.** Not `/opt/data/projects/…`, not `yachtcopter/TODO.md`, not
   `PROJECT_TODO_LIST.md` unless that file exists. Only `<list_path>` under

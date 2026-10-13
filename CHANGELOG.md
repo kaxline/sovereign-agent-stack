@@ -73,7 +73,7 @@ Only with `todo` enabled.
 
 | Key | Default | Purpose |
 |---|---|---|
-| `VIKUNJA_MCP_ENABLED` | `0` | `1` registers `mcp_servers.vikunja` on Hermes. `setup.sh --todo` sets it |
+| `VIKUNJA_MCP_ENABLED` | `0` | `1` registers `mcp_servers.todos` on Hermes. `setup.sh --todo` sets it |
 | `VIKUNJA_PORT` | `3456` | Loopback host port for the web UI |
 | `VIKUNJA_PUBLIC_URL` | `http://localhost:${VIKUNJA_PORT}/` | Base URL in Vikunja's links and MCP page |
 | `VIKUNJA_ENABLE_REGISTRATION` | `false` | Allow sign-up from the web UI |
@@ -95,7 +95,8 @@ Only with `todo` enabled.
 
 ### Changes
 
-- **Hermes bootstrap**: registers `mcp_servers.vikunja` with an
+- **Hermes bootstrap**: registers `mcp_servers.todos` (named for what users
+  call it; an earlier `mcp_servers.vikunja` entry is removed) with an
   `Authorization: Bearer ${VIKUNJA_MCP_TOKEN}` header. The read-only token goes
   to `api-server`, the read/write token to default and `browser`, each into
   that profile's `.env`. With the profile off or the token missing, it removes

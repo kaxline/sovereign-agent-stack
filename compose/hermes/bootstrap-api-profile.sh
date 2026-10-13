@@ -56,6 +56,10 @@ VIKUNJA_MCP_TOKEN_RO="${VIKUNJA_MCP_TOKEN_RO:-}"
 VIKUNJA_MCP_TOKEN_RW="${VIKUNJA_MCP_TOKEN_RW:-}"
 # Vikunja serves ~26 tools and filters them by the token's scopes. Pin only the
 # everyday ones; the rest stay reachable through tool search.
+# Hermes server key. Users talk about "todos", so the agent's tools are named
+# mcp__todos__* rather than after the engine. Not "todo": Hermes aliases each MCP
+# server name to its toolset, and "todo" is the built-in toolset disabled below.
+VIKUNJA_MCP_KEY="todos"
 VIKUNJA_MCP_PIN_RO="tasks_list tasks_read projects_list"
 VIKUNJA_MCP_PIN_RW="tasks_list tasks_read tasks_create tasks_update projects_list"
 MAIL_MCP_ENABLED="${MAIL_MCP_ENABLED:-0}"
@@ -598,7 +602,7 @@ reconcile_stack_eager_tools() {
   esac
   if vikunja_mcp_token_for "$_rst_profile" >/dev/null; then
     for _rst_t in $(vikunja_mcp_pins_for "$_rst_profile"); do
-      _rst_args="${_rst_args} ${_rst_t} mcp__vikunja__${_rst_t}"
+      _rst_args="${_rst_args} ${_rst_t} mcp__${VIKUNJA_MCP_KEY}__${_rst_t}"
     done
   fi
   case "$MAIL_MCP_ENABLED" in
@@ -868,7 +872,9 @@ vikunja_mcp_pins_for() {
   fi
 }
 
-# Vikunja todo lists (todo compose profile), registered as mcp_servers.vikunja.
+# Vikunja todo lists (todo compose profile), registered as mcp_servers.todos
+# (VIKUNJA_MCP_KEY). Before that key existed it was mcp_servers.vikunja; the
+# same-URL cleanup below removes that entry.
 # The boundary is the token's scopes, which Vikunja enforces server-side (tools
 # outside them are neither listed nor callable), so no tools.include here.
 # make todo-init mints both tokens: api-server gets the read-only one, default
@@ -895,16 +901,16 @@ register_vikunja_mcp_servers() {
   fi
   mkdir -p "$(dirname "$_rvms_env")"
   upsert_env "$_rvms_env" VIKUNJA_MCP_TOKEN "$_rvms_token"
-  log "Registering Vikunja MCP server for profile '${_rvms_profile:-default}' at ${VIKUNJA_MCP_URL}"
+  log "Registering todo lists (Vikunja) MCP server '${VIKUNJA_MCP_KEY}' for profile '${_rvms_profile:-default}' at ${VIKUNJA_MCP_URL}"
   # hermes config set cannot write a header map.
-  _out="$(python3 - "$(config_path_for "$_rvms_profile")" "$VIKUNJA_MCP_URL" \
+  _out="$(python3 - "$(config_path_for "$_rvms_profile")" "$VIKUNJA_MCP_KEY" "$VIKUNJA_MCP_URL" \
     "$VIKUNJA_MCP_TIMEOUT" "$VIKUNJA_MCP_CONNECT_TIMEOUT" <<'PY'
 import sys
 sys.path.insert(0, "/opt/hermes")
 import yaml
 from utils import atomic_yaml_write
 
-cfg_path, url, timeout, connect_timeout = sys.argv[1:5]
+cfg_path, key, url, timeout, connect_timeout = sys.argv[1:6]
 
 try:
     with open(cfg_path) as fh:
@@ -917,7 +923,7 @@ servers = config.get("mcp_servers")
 if not isinstance(servers, dict):
     servers = {}
     config["mcp_servers"] = servers
-entry = servers.get("vikunja")
+entry = servers.get(key)
 if not isinstance(entry, dict):
     entry = {}
 entry["url"] = url
@@ -928,20 +934,17 @@ if not isinstance(headers, dict):
     headers = {}
 headers["Authorization"] = "Bearer ${VIKUNJA_MCP_TOKEN}"
 entry["headers"] = headers
-servers["vikunja"] = entry
+servers[key] = entry
 atomic_yaml_write(cfg_path, config)
-print("Wrote mcp_servers.vikunja")
+print(f"Wrote mcp_servers.{key}")
 PY
 )"
   if [ -n "$_out" ]; then log "$_out"; fi
-  # The clone carries default's entry. Here only the key changes (same
-  # reference, read-only token in this profile's .env), but a hand-added copy
-  # under another key could still carry a read/write token.
-  if [ "$_rvms_profile" = "api-server" ]; then
-    drop_mcp_entries_for_url "$_rvms_profile" vikunja "$VIKUNJA_MCP_URL"
-  fi
+  # One entry per profile: drops the pre-rename mcp_servers.vikunja, and on
+  # api-server any hand-added copy that could carry a read/write token.
+  drop_mcp_entries_for_url "$_rvms_profile" "$VIKUNJA_MCP_KEY" "$VIKUNJA_MCP_URL"
   # shellcheck disable=SC2046
-  pin_mcp_tools "$_rvms_profile" vikunja $(vikunja_mcp_pins_for "$_rvms_profile")
+  pin_mcp_tools "$_rvms_profile" "$VIKUNJA_MCP_KEY" $(vikunja_mcp_pins_for "$_rvms_profile")
 }
 
 # Read-only mail index (mail compose profile), registered as mcp_servers.mail

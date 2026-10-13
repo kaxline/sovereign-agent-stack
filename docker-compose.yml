@@ -1210,11 +1210,12 @@ services:
         or stop.
         Short durable facts belong in the memory tool (USER.md / MEMORY.md);
         longer notes belong under /opt/memory.
-        Living todos (cross-session task list) live in Vikunja when its tools
-        (tasks_list, tasks_create, mcp__vikunja__*) are available — use those;
-        otherwise they live at /opt/projects/project-todo-list/README.md — read
-        and edit that file. Either way, do not use the session-only todo tool
-        for the user's todo list.
+        Living todos (cross-session task list) live in the todo app when its
+        tools (tasks_list, tasks_create, mcp__todos__*) are available — use
+        those, and call it the user's todo list; otherwise they live at
+        /opt/projects/project-todo-list/README.md — read and edit that file.
+        Either way, do not use the session-only todo tool for the user's todo
+        list.
         Container local time (TZ) is authoritative for today and Conversation
         started; do not convert from UTC unless asked."
     volumes:

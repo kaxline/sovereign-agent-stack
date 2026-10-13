@@ -36,7 +36,7 @@ which signs the browser in and keeps it signed in; bookmark it. In WebUI:
 | Schema `vikunja` | Owned by role `svc_vikunja` in the shared database. `compose/postgres/services/vikunja.env` holds its login (gitignored, written by `setup.sh --todo`) |
 | `VIKUNJA_FILES_DIR` | Task attachments, default `./data/vikunja/files` |
 | `make todo-init` | Creates the account (or adopts the only existing one) with a generated password, mints two API tokens, and writes all of it to `.env` |
-| Hermes bootstrap | Registers `mcp_servers.vikunja` when `VIKUNJA_MCP_ENABLED=1` and the profile's token is set |
+| Hermes bootstrap | Registers `mcp_servers.todos` when `VIKUNJA_MCP_ENABLED=1` and the profile's token is set. The key is named for what users call it; tools show up as `mcp__todos__tasks_list` and so on |
 | `living-todos` skill | Routes "add to my todo list" to Vikunja when its tools are present, and to the markdown file otherwise (`compose/hermes/skills/living-todos/`) |
 
 ### Two tokens, enforced by Vikunja
@@ -62,7 +62,7 @@ Bootstrap writes each token into that profile's `.env` under `data/hermes/` as
 
 ```yaml
 mcp_servers:
-  vikunja:
+  todos:
     url: http://vikunja:3456/api/v2/mcp
     headers:
       Authorization: Bearer ${VIKUNJA_MCP_TOKEN}
@@ -105,6 +105,24 @@ todo-init` replaces its password with a generated one, and the old password
 stops working. With several accounts, set `VIKUNJA_USERNAME` in `.env` to pick
 one. The normal sign-in form at `/login` still works if you want to read the
 password from `.env`.
+
+### What users see
+
+Users and the agent call it their **todo list**. The engine's name stays out
+of the way:
+
+- Hermes' tools are `mcp__todos__*`, and the `living-todos` skill tells the
+  agent to say "your todo list", to call Vikunja's projects "lists" and its
+  buckets "columns", and to name Vikunja only when the user asks what powers it.
+- Commands and the profile are `todo`: `setup.sh --todo`, `make todo-init`,
+  `make todo-open`.
+- The web app keeps Vikunja's own name and logo. Rebranding it would mean
+  modifying an AGPL program and presenting it as something it isn't (see
+  [License](#license)), so the stack doesn't.
+
+The `VIKUNJA_*` settings, the `vikunja` container, and its schema keep the
+engine's name. They're internal, and naming them after the engine keeps them
+clear for anyone debugging.
 
 ## Tokens
 
@@ -162,7 +180,7 @@ Attachments are files under `VIKUNJA_FILES_DIR`; copy that directory too.
 ## Turning it off
 
 Remove `todo` from `COMPOSE_PROFILES`, set `VIKUNJA_MCP_ENABLED=0`, re-run
-both bootstraps, and restart `hermes`. The bootstrap drops the `vikunja` MCP
+both bootstraps, and restart `hermes`. The bootstrap drops the `todos` MCP
 entry and the token from each profile. The schema and its data stay in
 Postgres until you drop them ([database.md](database.md#adding-an-integration)).
 
@@ -172,8 +190,8 @@ Postgres until you drop them ([database.md](database.md#adding-an-integration)).
 |---|---|
 | `vikunja` restarts with `permission denied` on `/app/vikunja/files` | The files directory must belong to `HERMES_UID`:`HERMES_GID`. `./scripts/todo.sh prepare` creates it, and Docker creates it as root if it gets there first |
 | `vikunja` logs `password authentication failed for user "svc_vikunja"` | `docker compose run --rm db-provision`, then `docker compose restart vikunja`. `make doctor` checks `services/vikunja.env` |
-| Hermes reports a 401 from `vikunja` | The token was revoked or rotated. Run `make todo-init` again, then both bootstraps |
-| Hermes still writes the markdown file | `vikunja` is missing from `hermes mcp list` for that profile. Re-run the bootstrap for that profile and restart `hermes` |
+| Hermes reports a 401 from `todos` | The token was revoked or rotated. Run `make todo-init` again, then both bootstraps |
+| Hermes still writes the markdown file | `todos` is missing from `hermes mcp list` for that profile. Re-run the bootstrap for that profile and restart `hermes` |
 | Logged out after every restart | `VIKUNJA_SECRET` is empty. Re-run `./scripts/setup.sh` |
 | `/login-local` says automatic sign-in failed | `make todo-init` has not run, or `.env` changed since. Run it again; it recreates `vikunja-proxy` |
 | `/login-local` returns 403 | Open it as `localhost` or `127.0.0.1`, not another host name |

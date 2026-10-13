@@ -1022,10 +1022,13 @@ if has_profile todo || [[ "$vikunja_on" -eq 1 ]]; then
       "browser:data/hermes/profiles/browser/config.yaml:data/hermes/profiles/browser/.env"; do
       IFS=':' read -r label cfg envfile <<< "$pair"
       [[ -f "$cfg" ]] || continue
-      if grep -q 'VIKUNJA_MCP_TOKEN' "$cfg" && grep -qE '^VIKUNJA_MCP_TOKEN=.+' "$envfile" 2>/dev/null; then
-        ok "Hermes ${label} profile registers vikunja"
+      if grep -qE '^  todos:' "$cfg" && grep -q 'VIKUNJA_MCP_TOKEN' "$cfg" \
+        && grep -qE '^VIKUNJA_MCP_TOKEN=.+' "$envfile" 2>/dev/null; then
+        ok "Hermes ${label} profile registers the todos MCP server"
+      elif grep -qE '^  vikunja:' "$cfg"; then
+        warn "Hermes ${label} profile still uses the old mcp_servers.vikunja key — re-run hermes-api-bootstrap and hermes-browser-bootstrap"
       else
-        warn "Hermes ${label} profile has no vikunja MCP entry — re-run hermes-api-bootstrap and hermes-browser-bootstrap"
+        warn "Hermes ${label} profile has no todos MCP entry — re-run hermes-api-bootstrap and hermes-browser-bootstrap"
       fi
     done
     # The read-only token must be the one api-server holds.
