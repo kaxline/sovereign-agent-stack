@@ -37,7 +37,7 @@ def build_index(tmp: Path, *, bodies: bool) -> Path:
     index = tmp / f"index-{int(bodies)}" / "index.sqlite"
     config = tmp / f"config-{int(bodies)}.toml"
     config.write_text(
-        f'store = "{store}"\nindex = "{index}"\nsince = 2026-01-01\n'
+        f'source = "store"\nstore = "{store}"\nindex = "{index}"\nsince = 2026-01-01\n'
         f"bodies = {str(bodies).lower()}\nattachments = true\n"
         f'[[accounts]]\nid = "{PERSONAL}"\nmailboxes = ["*"]\n'
         f'[[accounts]]\nid = "{WORK}"\nmailboxes = ["*"]\n'

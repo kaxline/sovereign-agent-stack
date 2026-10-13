@@ -1,10 +1,19 @@
 # Mail indexer config. Copy to mail-index.toml (gitignored) and fill it in.
-# See docs/email.md. Nothing is indexed until store, since and at least one
-# account with mailboxes are set. Relative paths are relative to this file.
+# See docs/email.md. Nothing is indexed until since and at least one account
+# with mailboxes are set. Relative paths are relative to this file.
 
-# The folder that holds Mail's V<n>/ directory, usually Library/Mail in your
-# home folder. Left empty on purpose: the indexer has no default.
-store = ""
+# Where mail comes from:
+#   "script" (default)  asks Mail.app through scripting. Needs the Automation
+#                       permission for Mail, not Full Disk Access. Mail opens
+#                       if it isn't running.
+#   "store"             reads Mail's files directly. Much faster on big
+#                       mailboxes, but needs Full Disk Access and `store`.
+# Switching source rebuilds the index on the next run.
+source = "script"
+
+# Only with source = "store": the folder that holds Mail's V<n>/ directory,
+# usually Library/Mail in your home folder. There is no default.
+# store = ""
 
 # Where the index is written. Keep it in the gitignored data tree.
 index = "data/mail/index.sqlite"
@@ -18,6 +27,9 @@ bodies = false
 attachments = false
 # Longest body kept per message, in characters.
 max_body_chars = 100000
+
+# Only with source = "script": seconds to wait for each call to Mail.
+# script_timeout = 600
 
 # One block per account. Get ids and mailbox names from:
 #   python3 scripts/mail-index.py --config mail-index.toml mailboxes
