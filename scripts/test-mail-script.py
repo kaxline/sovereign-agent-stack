@@ -159,6 +159,39 @@ def test_scope(env: Env) -> None:
            f"unknown account reported: {stats}")
 
 
+def test_lookups(env: Env) -> None:
+    runner, _, _ = env.fake()
+    calls: list[str] = []
+
+    def recording(request: dict) -> dict:
+        calls.append(request["command"])
+        return runner(request)
+
+    cfg = env.config({PERSONAL: ["inbox", "Nope"], WORK: ["projects/alpha", "Projects/Nope"]})
+    stats = run(cfg, recording)
+    expect("mailboxes" not in calls, f"exact names skip the full mailbox listing: {calls}")
+    rows = indexed(cfg)
+    expect(set(rows) >= {101, 202} and 1204 not in rows, f"looked up by path: {sorted(rows)}")
+    expect(rows[101]["mailbox"] == "INBOX" and rows[202]["mailbox"] == "Projects/Alpha",
+           "stored with Mail's own spelling")
+    expect(stats.mailboxes_missing == 2, f"missing names counted: {stats}")
+
+    calls.clear()
+    stats = run(env.config({WORK: ["*"]}), recording)
+    expect(calls.count("mailboxes") == 1, f"a pattern lists that account once: {calls}")
+
+    stats = run(env.config({"00000000-0000-0000-0000-000000000000": ["INBOX"]}), runner)
+    expect(stats.accounts_missing == ["00000000-0000-0000-0000-000000000000"] and stats.mailboxes_missing == 0,
+           f"an unknown account isn't also counted as missing mailboxes: {stats}")
+
+    fixture = sm.script_fixture()
+    fixture["flatten"] = True
+    flat, _, _ = env.fake(fixture)
+    cfg = env.config({WORK: ["Projects/Alpha", "INBOX"]})
+    run(cfg, flat)
+    expect(set(indexed(cfg)) == {201, 202}, "path lookups work when Mail lists nested mailboxes at the top")
+
+
 def test_content(env: Env) -> None:
     runner, _, _ = env.fake()
     cfg = env.config({PERSONAL: ["INBOX", "Archive"]}, bodies=True, attachments=True)
@@ -294,6 +327,7 @@ def main() -> int:
         env = Env(Path(tmp))
         test_mailboxes(env)
         test_scope(env)
+        test_lookups(env)
         test_content(env)
         test_incremental(env)
         test_mail_changing_during_list(env)

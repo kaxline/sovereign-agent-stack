@@ -39,8 +39,8 @@ def build_index(tmp: Path, *, bodies: bool) -> Path:
     config.write_text(
         f'source = "store"\nstore = "{store}"\nindex = "{index}"\nsince = 2026-01-01\n'
         f"bodies = {str(bodies).lower()}\nattachments = true\n"
-        f'[[accounts]]\nid = "{PERSONAL}"\nmailboxes = ["*"]\n'
-        f'[[accounts]]\nid = "{WORK}"\nmailboxes = ["*"]\n'
+        f'[[accounts]]\nid = "{PERSONAL}"\nmailboxes = ["**"]\n'
+        f'[[accounts]]\nid = "{WORK}"\nmailboxes = ["**"]\n'
     )
     mi.run(mi.load_config(config))
     return index

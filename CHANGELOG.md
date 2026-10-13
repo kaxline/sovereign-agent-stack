@@ -208,6 +208,16 @@ Only with `todo` enabled.
   the file at once. It's compacted once for older indexes, after removals on
   older SQLite, and when over a quarter of it is free space. `run` reports
   `compacted`.
+- **Mail indexer**: in `mailboxes` patterns, `*` now matches within one
+  level and `**` matches any depth. `*` used to match nested mailboxes too,
+  so a config using `*` or `Name/*` may index fewer mailboxes; use `**` to
+  keep them. `run` and `doctor` report `mailboxes_missing` for exact names
+  that weren't found.
+- **Mail indexer (script source)**: mailboxes are looked up by path instead
+  of walking the account's whole mailbox tree for every lookup, and accounts
+  whose `mailboxes` are all exact names aren't listed at all. On accounts
+  with many mailboxes this removes tens of seconds per run and per batch of
+  50 messages. The drafts helper's reply lookup gets the same change.
 - **Mail indexer**: saves progress every 50 messages, so a long first run
   that's cut short resumes on the next run instead of starting over.
 - **Docs**: [docs/email.md](docs/email.md) records the design for giving Hermes

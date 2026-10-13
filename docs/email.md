@@ -242,11 +242,27 @@ to point at a different config.
 | `max_body_chars` | no, `100000` | Longest body kept per message |
 | `script_timeout` | no, `600` | Seconds to wait for each call to Mail (script source) |
 
-`mailboxes` entries are exact names (`INBOX`, `Projects/Alpha`) or glob
-patterns (`*`, `Clients/*`). Patterns skip Junk and Trash folders (Junk,
-Spam, Trash, Deleted Messages, Deleted Items, Bin); name one to include it.
-A pattern matches a mailbox, not its children, so `Projects` doesn't include
-`Projects/Alpha`.
+`mailboxes` entries are exact names (`INBOX`, `Projects/Alpha`, matched
+ignoring case) or patterns. In a pattern, `*` matches within one level and
+`**` matches any number of levels:
+
+| Entry | Matches |
+|---|---|
+| `Projects` | `Projects` only, not `Projects/Alpha` |
+| `*` | every top-level mailbox |
+| `Clients/*` | mailboxes directly under `Clients` |
+| `Clients/**` | `Clients` and everything under it |
+| `**` | every mailbox |
+
+Patterns skip Junk and Trash folders (Junk, Spam, Trash, Deleted Messages,
+Deleted Items, Bin); name one to include it.
+
+Prefer exact names with the script source. An account whose entries are all
+exact names is never listed in full: each mailbox is looked up by its path.
+An account with a pattern has its whole mailbox tree walked on every run,
+which can take tens of seconds on accounts with many mailboxes or labels.
+`run` and `doctor` count exact names that weren't found as
+`mailboxes_missing`.
 
 ### What a run does
 
@@ -287,8 +303,8 @@ With the **store source** (`source = "store"`):
    re-reading the file. Turning `bodies` on or off re-reads every file once.
 
 `run` prints counts as JSON (`in_scope`, `added`, `updated`, `removed`,
-`missing_files`, `unreadable`, `accounts_missing`, `compacted`) and never
-message content.
+`missing_files`, `unreadable`, `accounts_missing`, `mailboxes_missing`,
+`compacted`) and never message content.
 For the script source, `missing_files` counts messages Mail listed but
 couldn't produce.
 

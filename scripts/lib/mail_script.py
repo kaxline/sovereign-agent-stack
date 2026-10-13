@@ -66,21 +66,44 @@ class ScriptSource:
         return self.runner(request)["accounts"]
 
     def scoped_boxes(self) -> tuple[list[dict], list[str]]:
-        wanted = {a.id.upper(): a.mailboxes for a in self.config.accounts}
-        found = self.mailboxes(counts=False, accounts=list(wanted))
-        seen = {a["id"].upper() for a in found}
-        boxes = [{"account": a["id"], "path": b["path"]}
-                 for a in found for b in a["mailboxes"]
-                 if mi.mailbox_selected(b["path"], wanted[a["id"].upper()])]
-        return boxes, sorted(set(wanted) - seen)
+        """Mailboxes to read, and accounts the listing didn't find.
+
+        An account whose mailboxes are all exact names isn't listed at all:
+        its names go straight to `list`, which looks each one up by path. Only
+        accounts with a pattern pay for walking their whole mailbox tree.
+        """
+        boxes: list[dict] = []
+        patterned: dict[str, list[str]] = {}
+        for scope in self.config.accounts:
+            if all(mi.is_literal(p) for p in scope.mailboxes):
+                boxes += [{"account": scope.id, "path": p} for p in scope.mailboxes]
+            else:
+                patterned[scope.id.upper()] = scope.mailboxes
+        missing: set[str] = set()
+        if patterned:
+            found = self.mailboxes(counts=False, accounts=list(patterned))
+            missing = set(patterned) - {a["id"].upper() for a in found}
+            boxes += [{"account": a["id"], "path": b["path"]}
+                      for a in found for b in a["mailboxes"]
+                      if mi.mailbox_selected(b["path"], patterned[a["id"].upper()])]
+        return boxes, sorted(missing)
 
     def rows(self, scoped: tuple[list[dict], list[str]] | None = None) -> tuple[list[mi.MetaRow], dict]:
         boxes, missing = scoped or self.scoped_boxes()
+        missing = set(missing)
         rows: list[mi.MetaRow] = []
+        boxes_missing = 0
+        boxes_found = 0
         if boxes:
             since = mi.since_epoch(self.config.since)
             listing = self.runner({"command": "list", "since": since, "boxes": boxes})
+            missing |= {a.upper() for a in listing.get("accounts_missing", [])}
             for box in listing["boxes"]:
+                if not box.get("found", True):
+                    if box["account"].upper() not in missing:
+                        boxes_missing += 1
+                    continue
+                boxes_found += 1
                 for m in box["messages"]:
                     if m.get("deleted"):
                         continue
@@ -94,7 +117,8 @@ class ScriptSource:
                         read=bool(m.get("read")), flagged=bool(m.get("flagged")), deleted=False,
                         conversation_id=None,
                     ))
-        return rows, {"accounts_missing": missing}
+        return rows, {"accounts_missing": sorted(missing), "mailboxes_missing": boxes_missing,
+                      "mailboxes_found": boxes_found}
 
     def fetch(self, rows: list[mi.MetaRow]) -> Iterator[tuple[mi.MetaRow, object]]:
         by_box: dict[tuple[str, str], list[mi.MetaRow]] = {}
@@ -128,7 +152,7 @@ class ScriptSource:
         start = time.monotonic()
         boxes, missing = self.scoped_boxes()
         listed = time.monotonic()
-        rows, _ = self.rows((boxes, missing))
+        rows, info = self.rows((boxes, missing))
         summarised = time.monotonic()
         sample = rows[:DOCTOR_SAMPLE]
         results = list(self.fetch(sample))
@@ -136,8 +160,9 @@ class ScriptSource:
         ok = sum(1 for _, r in results if isinstance(r, mi.ParsedMessage))
         return {
             "source": "script",
-            "accounts_missing": missing,
-            "mailboxes_in_scope": len(boxes),
+            "accounts_missing": info["accounts_missing"],
+            "mailboxes_in_scope": info["mailboxes_found"],
+            "mailboxes_missing": info["mailboxes_missing"],
             "messages_in_scope": len(rows),
             "seconds_mailbox_listing": round(listed - start, 2),
             "seconds_message_summaries": round(summarised - listed, 2),
