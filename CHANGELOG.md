@@ -106,7 +106,11 @@ Only with `todo` enabled.
   Vikunja account (or adopts the only existing one) with a generated password
   kept in `.env`, mints both tokens, and recreates `vikunja-proxy`.
   Re-running it rotates the tokens. An adopted account's old password stops
-  working.
+  working. Both tokens add kanban on top of Vikunja's *Typed* preset: both
+  read project views and buckets, and the read/write token also creates,
+  renames and deletes buckets and moves tasks between them. Tokens minted
+  before this change have no bucket access; re-run `make todo-init`, both
+  bootstrap services, and restart `hermes`.
 - **`make todo-open`**: opens `http://localhost:3456/login-local`, signed in.
 - **`make ensure-local` / `make up`**: with `todo` in `COMPOSE_PROFILES`,
   writes `compose/postgres/services/vikunja.env` if it is missing.

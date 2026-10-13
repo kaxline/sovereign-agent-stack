@@ -43,8 +43,8 @@ which signs the browser in and keeps it signed in; bookmark it. In WebUI:
 
 | Hermes profile | Used by | Token | Tools |
 |---|---|---|---|
-| `api-server` | unattended API / n8n / Boundary | `VIKUNJA_MCP_TOKEN_RO` | 11: list and read tasks, projects, labels, comments, assignees |
-| default | dashboard, CLI | `VIKUNJA_MCP_TOKEN_RW` | 26: the above plus create, update, delete |
+| `api-server` | unattended API / n8n / Boundary | `VIKUNJA_MCP_TOKEN_RO` | 11: list and read tasks, projects, labels, comments, assignees; kanban views and buckets via `find_action` |
+| default | dashboard, CLI | `VIKUNJA_MCP_TOKEN_RW` | 26: the above plus create, update, delete; also create, rename and delete buckets and move tasks between them |
 | `browser` | Hermes WebUI | `VIKUNJA_MCP_TOKEN_RW` | same as default |
 
 Vikunja filters the tool list by the token's scopes and refuses any call
@@ -52,7 +52,10 @@ outside them, including through its `find_action` / `do_action` meta-tools.
 So the boundary sits in Vikunja, and Hermes needs no tool allowlist. The
 read/write token gets the same scopes as the *Typed* preset on Vikunja's
 Settings → MCP page (tasks, projects, labels, comments, assignees, user
-search). It has no access to account settings, webhooks, sharing, or teams.
+search), plus kanban: reading project views, and reading and writing their
+buckets (`buckets_*`, `task_bucket_update`). The read-only token gets the read
+half of each. Neither can create, change or delete views. Neither has access
+to account settings, webhooks, sharing, or teams.
 
 Bootstrap writes each token into that profile's `.env` under `data/hermes/` as
 `VIKUNJA_MCP_TOKEN`. `config.yaml` carries only the reference:

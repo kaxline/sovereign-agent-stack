@@ -198,6 +198,16 @@ for group, actions in typed.items():
     reads = [a for a in actions if a in ("read_all", "read_one")]
     if reads:
         ro[group] = reads
+# The preset leaves out kanban: project views and their buckets. Both tokens
+# read them; the read/write one also creates, renames and deletes buckets and
+# moves tasks between them. Views themselves stay read-only on both.
+bucket_reads = ["views_buckets", "views_buckets_tasks_get"]
+bucket_writes = ["views_buckets_put", "views_buckets_post", "views_buckets_delete", "views_buckets_tasks"]
+for perms, extra in ((rw, bucket_reads + bucket_writes), (ro, bucket_reads)):
+    projects = perms.setdefault("projects", [])
+    projects.extend(a for a in extra if a not in projects)
+    perms["projects_views"] = ["read_all", "read_one"]
+    perms["projects_views_tasks"] = ["read_all"]
 rw["mcp"] = ["access"]
 ro["mcp"] = ["access"]
 
