@@ -6,7 +6,7 @@
 	project-init project-index project-index-check project-sources-test synthetic-mail-test synthetic-messages-test \
 	messages-index messages-index-doctor messages-index-chats messages-index-test \
 	messages-watch messages-notify-test messages-watch-test messages-app messages-app-test \
-	mail-index mail-index-doctor mail-index-mailboxes mail-index-test mail-script-test mail-mcp-test \
+	mail-index mail-index-doctor mail-index-mailboxes mail-index-test mail-script-test mail-imap-test mail-mcp-test \
 	mail-drafts mail-drafts-watch mail-drafts-doctor mail-drafts-test mail-apps mail-apps-test \
 	mail-triage-cron mail-triage-cron-show mail-triage-cron-remove mail-cron-test model-use model-sync \
 	data-dir-show data-dir-set data-dir-migrate \
@@ -322,6 +322,11 @@ mail-index-test:
 # Mail.app scripting source, run under Node against a fake Mail (needs node).
 mail-script-test:
 	python3 scripts/test-mail-script.py
+
+# IMAP source and drafts against a throwaway GreenMail server in Docker
+# (synthetic mail only; skipped when Docker isn't running).
+mail-imap-test:
+	python3 scripts/test-mail-imap.py
 
 # Mail drafts (host-side): saves drafts queued by mail-drafts-mcp to Mail's
 # Drafts. Never sends. See docs/email.md.

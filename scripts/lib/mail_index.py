@@ -479,7 +479,8 @@ def parse_email(msg: EmailMessage, *, bodies: bool, attachments: bool, max_chars
                 content = ""
             if part.get_content_subtype() == "html":
                 content = html_to_text(content)
-            body = content.strip()[:max_chars]
+            # IMAP servers send CRLF; files on disk usually hold LF. Store one form.
+            body = content.replace("\r\n", "\n").strip()[:max_chars]
     atts = []
     if attachments:
         for part in msg.iter_attachments():
