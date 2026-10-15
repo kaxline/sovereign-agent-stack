@@ -43,6 +43,13 @@ the stack under another app.
    limits (the proxy is a locally built image), then re-run both bootstrap
    services so every profile gets `model.max_tokens`. Profiles your app
    creates later need it written too (docs/extending.md).
+9. With mail enabled, for the mail index's schema 2: first
+   `docker compose up -d --build mail-mcp` (the new image reads schema 1 and
+   2; the old one refuses 2), then `make mail-apps` and reinstall the reader
+   (and drafts) app, then run `make mail-index` once. The run upgrades the
+   index in place: ids are kept and nothing is fetched again, so
+   `mail-triage` carries on where it was. Drafts requests queued before the
+   upgrade still work.
 
 ### New services
 
@@ -244,6 +251,27 @@ only for silence). Set the keys above to `0` to get the old behaviour back.
   50 messages. The drafts helper's reply lookup gets the same change.
 - **Mail indexer**: saves progress every 50 messages, so a long first run
   that's cut short resumes on the next run instead of starting over.
+- **Mail providers**: sources are now chosen per account
+  (`[[accounts]] source = …`), and one index can mix them. See
+  [docs/email.md](docs/email.md#providers).
+  - Index schema 2 numbers messages itself, counting up and never reusing
+    an id, and keeps each source's own id as `source_id`. `newest_id` and
+    `after_id` now mean "indexed after" across every account. Results gain a
+    `reply_ref`, which `mail_draft_create` takes as `reply_to`; the older
+    `{id, account, mailbox}` form still works.
+  - New `imap` source (opt-in): reads an IMAP account with `EXAMINE` and
+    `BODY.PEEK[]`, so nothing on the server changes. The password lives in
+    the Keychain (`macos/mail-apps/install.sh password <id>`) and the mail
+    apps' launcher hands it to the helper on stdin; terminal runs use
+    `password_env`. Proton works through Proton Mail Bridge.
+  - Drafts for IMAP accounts are appended to the account's Drafts folder
+    (`mail-drafts.py --config`, `--no-mail-app` without Mail.app). Still no
+    way to send.
+  - Message bodies are stored with LF line endings whatever the source.
+  - `make mail-imap-test` checks the IMAP source and drafts against a
+    throwaway GreenMail server (`greenmail/standalone:2.1.3`, pulled from
+    Docker Hub on first run) loaded with the synthetic mail. It's skipped
+    when Docker isn't running.
 - **Docs**: [docs/email.md](docs/email.md) records the design for giving Hermes
   read access to Apple Mail, why scripting Mail.app is the default over Full
   Disk Access, and a survey of existing Apple Mail MCP servers.
