@@ -59,16 +59,19 @@ class Env:
 
 
 def indexed(config: mi.Config) -> dict[int, sqlite3.Row]:
+    """Indexed rows keyed by Mail's id (the source id), as the specs number them."""
     db = sqlite3.connect(config.index)
     db.row_factory = sqlite3.Row
-    rows = {r["rowid"]: r for r in db.execute("SELECT * FROM messages")}
+    rows = {int(r["source_id"]): r for r in db.execute("SELECT * FROM messages")}
     db.close()
     return rows
 
 
 def search(config: mi.Config, query: str) -> set[int]:
     db = sqlite3.connect(config.index)
-    hits = {r[0] for r in db.execute("SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?", (query,))}
+    hits = {int(r[0]) for r in db.execute(
+        "SELECT m.source_id FROM messages_fts f JOIN messages m ON m.rowid = f.rowid"
+        " WHERE messages_fts MATCH ?", (query,))}
     db.close()
     return hits
 
@@ -90,7 +93,10 @@ def test_config_validation(env: Env) -> None:
         "empty mailboxes": f'{head}index = "{env.tmp}/i.sqlite"\nsince = 2026-01-01\n[[accounts]]\nid="A"\nmailboxes=[]\n',
         "store without source": f'store = "{store}"\nindex = "{env.tmp}/i.sqlite"\nsince = 2026-01-01\n' + acct,
         "store with script source": f'source = "script"\nstore = "{store}"\nindex = "{env.tmp}/i.sqlite"\nsince = 2026-01-01\n' + acct,
-        "unknown source": f'source = "imap"\nindex = "{env.tmp}/i.sqlite"\nsince = 2026-01-01\n' + acct,
+        "unknown source": f'source = "pop"\nindex = "{env.tmp}/i.sqlite"\nsince = 2026-01-01\n' + acct,
+        "imap without host": f'source = "imap"\nindex = "{env.tmp}/i.sqlite"\nsince = 2026-01-01\n' + acct,
+        "imap key on a Mail account": f'index = "{env.tmp}/i.sqlite"\nsince = 2026-01-01\n' + acct + 'host = "x"\n',
+        "duplicate account": f'index = "{env.tmp}/i.sqlite"\nsince = 2026-01-01\n' + acct + acct,
         "bad timeout": f'index = "{env.tmp}/i.sqlite"\nsince = 2026-01-01\nscript_timeout = 0\n' + acct,
     }
     for name, text in cases.items():
@@ -386,13 +392,86 @@ def test_resumes_after_interruption(env: Env) -> None:
         mi.SAVE_EVERY = real_every
 
 
+V1_MESSAGES = """
+CREATE TABLE messages (
+    rowid INTEGER PRIMARY KEY, account TEXT NOT NULL, mailbox TEXT NOT NULL, message_id TEXT,
+    in_reply_to TEXT, refs TEXT, thread_id TEXT, date_received INTEGER NOT NULL, date_sent INTEGER,
+    from_addr TEXT, from_name TEXT, to_addrs TEXT, cc_addrs TEXT, subject TEXT, flags INTEGER NOT NULL,
+    is_read INTEGER NOT NULL, is_flagged INTEGER NOT NULL, body TEXT, body_indexed INTEGER NOT NULL DEFAULT 0,
+    attachments TEXT);
+CREATE INDEX messages_date ON messages(date_received);
+"""
+
+
+def test_ids_count_up(env: Env) -> None:
+    store, _ = env.store()
+    cfg = mi.load_config(env.config(store, {PERSONAL: ["INBOX"]}))
+    mi.run(cfg)
+    first = {sid: r["rowid"] for sid, r in indexed(cfg).items()}
+    expect(sorted(first.values()) == list(range(1, len(first) + 1)), f"the index numbers its own ids: {first}")
+    by_date = sorted(first, key=lambda sid: indexed(cfg)[sid]["date_received"])
+    expect([first[s] for s in by_date] == sorted(first.values()), "a first run numbers oldest first")
+    # Widen the scope: the new messages get higher ids than anything before,
+    # even though Mail numbered some of them lower.
+    cfg = mi.load_config(env.config(store, {PERSONAL: ["INBOX", "Archive", "Sent Messages"]},
+                                    index=cfg.index))
+    mi.run(cfg)
+    after = {sid: r["rowid"] for sid, r in indexed(cfg).items()}
+    expect(all(after[s] == first[s] for s in first), "existing messages keep their ids")
+    added = set(after) - set(first)
+    expect(added == {1204, 106} and min(after[s] for s in added) > max(first.values()),
+           f"new mail gets higher ids: {after}")
+    # Narrow it again and widen it back: a removed message never gets its old id back.
+    top = max(after.values())
+    cfg = mi.load_config(env.config(store, {PERSONAL: ["INBOX"]}, index=cfg.index))
+    mi.run(cfg)
+    cfg = mi.load_config(env.config(store, {PERSONAL: ["INBOX", "Archive"]}, index=cfg.index))
+    mi.run(cfg)
+    expect(indexed(cfg)[1204]["rowid"] > top, "ids are never reused")
+
+
+def test_upgrade_from_schema_1(env: Env) -> None:
+    store, _ = env.store()
+    cfg = mi.load_config(env.config(store, {PERSONAL: ["INBOX"]}, bodies=True))
+    mi.run(cfg)
+    # Rewrite the index the way schema 1 stored it: Mail's ROWID as the id.
+    db = sqlite3.connect(cfg.index)
+    rows = db.execute(f"SELECT CAST(source_id AS INTEGER), {mi.MESSAGE_COLUMNS} FROM messages").fetchall()
+    fts = db.execute("SELECT m.source_id, f.subject, f.from_text, f.to_text, f.body FROM messages_fts f"
+                     " JOIN messages m ON m.rowid = f.rowid").fetchall()
+    db.executescript("DROP TABLE messages; DELETE FROM sqlite_sequence;" + V1_MESSAGES)
+    db.execute("DELETE FROM messages_fts")
+    marks = ",".join("?" * (len(rows[0])))
+    db.executemany(f"INSERT INTO messages (rowid, {mi.MESSAGE_COLUMNS}) VALUES ({marks})", rows)
+    db.executemany("INSERT INTO messages_fts (rowid, subject, from_text, to_text, body) VALUES (?,?,?,?,?)",
+                   [(int(r[0]), *r[1:]) for r in fts])
+    db.execute("UPDATE meta SET value = '1' WHERE key = 'schema_version'")
+    db.execute("DELETE FROM meta WHERE key = 'sources'")
+    db.execute("INSERT OR REPLACE INTO meta VALUES ('source', 'store')")
+    db.commit()
+    db.close()
+
+    stats = mi.run(cfg)
+    expect(stats.added == 0 and stats.removed == 0, f"upgrade fetches nothing again: {stats}")
+    got = indexed(cfg)
+    expect(all(r["rowid"] == sid for sid, r in got.items()), "every message keeps its schema 1 id")
+    expect(search(cfg, "garlic") == set() and search(cfg, "lunch") == {101, 102, 103}, "search still works")
+    cfg = mi.load_config(env.config(store, {PERSONAL: ["INBOX", "Archive"]}, bodies=True, index=cfg.index))
+    mi.run(cfg)
+    expect(indexed(cfg)[1204]["rowid"] > max(got), "new ids count on from the highest schema 1 id")
+    db = sqlite3.connect(cfg.index)
+    version = db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
+    db.close()
+    expect(version == str(mi.INDEX_SCHEMA_VERSION), "schema version recorded")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as d:
         env = Env(Path(d))
         for test in (test_config_validation, test_scope, test_since, test_headers_bodies_and_search,
                      test_incremental, test_reads_uncheckpointed_wal, test_missing_file_keeps_metadata,
                      test_unrecognised_layout, test_cli_prints_counts_only, test_deleted_text_is_gone,
-                     test_resumes_after_interruption):
+                     test_resumes_after_interruption, test_ids_count_up, test_upgrade_from_schema_1):
             test(env)
     print("OK mail indexer")
     return 0

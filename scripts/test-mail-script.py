@@ -72,14 +72,16 @@ def run(config: mi.Config, runner: ms.Runner) -> mi.RunStats:
 def indexed(config: mi.Config) -> dict[int, sqlite3.Row]:
     db = sqlite3.connect(config.index)
     db.row_factory = sqlite3.Row
-    rows = {r["rowid"]: r for r in db.execute("SELECT * FROM messages")}
+    rows = {int(r["source_id"]): r for r in db.execute("SELECT * FROM messages")}
     db.close()
     return rows
 
 
 def search(config: mi.Config, query: str) -> set[int]:
     db = sqlite3.connect(config.index)
-    hits = {r[0] for r in db.execute("SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?", (query,))}
+    hits = {int(r[0]) for r in db.execute(
+        "SELECT m.source_id FROM messages_fts f JOIN messages m ON m.rowid = f.rowid"
+        " WHERE messages_fts MATCH ?", (query,))}
     db.close()
     return hits
 
