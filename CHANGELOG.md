@@ -32,8 +32,11 @@ the stack under another app.
    re-run both bootstrap services, restart `hermes`, and keep
    `make mail-drafts-watch` running on the host. Re-running setup without
    `--mail-drafts` adds `MAIL_DRAFTS_ENABLED=0` and starts nothing.
-7. With mail or drafts enabled: re-run both bootstrap services and recreate
-   `hermes`, then `make doctor`. Cron jobs without their own tool list stop
+7. With mail or drafts enabled: rebuild the locally built mail images, since
+   `make up` doesn't rebuild them: `docker compose up -d --build mail-mcp`
+   (and `mail-drafts-mcp` with drafts). An old `mail-mcp` has no
+   `/watermark`, and `mail-triage` then fails on every tick. Then re-run both
+   bootstrap services and recreate `hermes`, then `make doctor`. Cron jobs without their own tool list stop
    getting the mail tools; doctor lists any job that still can read mail
    alongside other tools.
 
