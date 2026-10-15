@@ -13,6 +13,11 @@ file source. See [First run on real mail](#first-run-on-real-mail).
 Hermes can't send email. With the separate [drafts](#drafts) opt-in it can
 write drafts, which a host helper saves to Mail's Drafts for you to send.
 
+Accounts that Mail.app doesn't have, or machines without it, can use the
+optional [IMAP source](#imap-source) instead. It sits behind the same scope,
+index and read-only MCP, and keeps the password away from the agent. See
+[Providers](#providers) for how sources plug in.
+
 Reading requires the **`mail`** compose profile (`./scripts/setup.sh --mail`).
 Drafts require **`mail-drafts`** (`./scripts/setup.sh --mail-drafts`).
 
@@ -167,6 +172,200 @@ Ideas worth borrowing:
   annotations on every tool (s-morgan-jeffries).
 - Pacing attachment calls, because Mail drops attachments under fast IPC
   (PsychQuant).
+
+## Providers
+
+Decided 2026-10-15. Mail can come from more than one kind of account: Mail.app,
+an IMAP server, Proton through Bridge, and later Gmail or Microsoft 365. Each
+kind is an adapter behind one core, so the agent sees one set of mail tools
+and every account gets the same limits:
+
+```
+read adapters ──▶ indexer core ──▶ index ──▶ mail MCP ──▶ Hermes
+(script, store,     scope, ids,
+ imap, …)           threads, scrubbing
+
+outbox adapters ◀── drafts helper core ◀── queue ◀── drafts MCP ◀── Hermes
+(Mail.app, imap)    checks, rate limit,
+                    routing by account
+```
+
+**The core holds the rules; adapters only talk to a provider.** The scope
+filter (accounts, mailboxes, date window, Junk and Trash), index ids,
+threading, the overwriting of deleted text, the untrusted-content markers, the
+draft checks, the rate limit and the profile and cron fences are written once.
+An adapter that forgets one can't weaken it.
+
+We chose this over one MCP server per provider because:
+
+- the agent gets one search across accounts and one way to reply, instead of
+  a different tool set per account;
+- the rules can't drift apart between providers, and the fences only need to
+  know about `mail` and `drafts`;
+- moving an account to another provider changes no tools, prompts or cron
+  jobs;
+- one synthetic test suite checks every adapter the same way.
+
+### Read adapters
+
+An adapter implements four calls. The `script` source
+(`scripts/lib/mail_script.py`) is the reference.
+
+| Call | Returns |
+|---|---|
+| `rows()` | A summary of every message in the in-scope mailboxes: source id, account, mailbox, received and sent dates, subject, sender, read and flagged. Also `accounts_missing` and `mailboxes_missing` |
+| `fetch(rows)` | For each row, the parsed headers (plus body and attachment list when turned on), or `missing` or `unreadable` |
+| `doctor()` | Counts, timings and booleans only |
+| `mailboxes()` | Account ids and mailbox paths, for writing the config |
+
+An adapter never changes the account. Each one has a test that fails if its
+code gains a call that writes, moves, flags or deletes (as `mail_script.js`
+already does). Mailbox paths always use `/`, whatever separator the provider
+uses, so the same patterns work everywhere.
+
+| | `script` | `store` | `imap` | `gmail` (planned) | `graph` (planned) |
+|---|---|---|---|---|---|
+| Reaches | Accounts in Mail.app | Accounts in Mail.app | One IMAP account, Proton through Bridge | One Google account | One Microsoft 365 or Outlook.com account |
+| Read-only by | Our script only reads | Read-only snapshot | `EXAMINE` and `BODY.PEEK[]` | `gmail.readonly` scope | `Mail.Read` scope |
+| Credential | Automation → Mail | Full Disk Access | Password or app password, in the Keychain | OAuth token | OAuth token |
+| Junk and Trash found by | Name | Name | `SPECIAL-USE` flags, then name | System labels | Well-known folders |
+| Mailboxes | Folders | Folders | Folders | Labels (one message, many labels) | Folders |
+| Source id | Mail's message id | Mail's message id | `UIDVALIDITY.UID` | Message id | Immutable id |
+
+For IMAP and the planned providers, credentials are the hard part. An IMAP
+password, or a Gmail or Microsoft app password, opens the whole account: it
+can read, delete and send. Fastmail's app passwords bundle IMAP and SMTP too.
+So the read-only limit comes from our code, not the credential, and the
+credential stays where the agent can't reach it ([below](#imap-source)).
+Gmail and Microsoft Graph do offer narrow OAuth scopes, which is the main
+reason to build those adapters instead of using IMAP for them.
+
+### Index ids
+
+The index assigns its own message ids (schema 2). Before, it used Mail's
+message ids, which only mean something inside one Mail store.
+
+- `id` counts up as messages are indexed and is never reused, so
+  `newest_id` and `after_id` mean "indexed after" across every account.
+  Schedulers keep working unchanged.
+- Each row also keeps the adapter's `source_id`. `(account, mailbox,
+  source_id)` is unique.
+- Upgrading a schema 1 index keeps every message's id (its old Mail id) and
+  carries on counting from the highest one, so nothing is fetched again and
+  a cron job's last `after_id` stays valid.
+- Search and read results carry a `reply_ref` naming the account, mailbox
+  and source id. The drafts MCP takes it as `reply_to`, so the drafts helper
+  can find the original without reading the index. The old
+  `{id, account, mailbox}` form still works for Mail.app accounts.
+
+### Outbox adapters
+
+The drafts helper picks an outbox by account:
+
+| Outbox | Saves drafts by | Replies |
+|---|---|---|
+| Mail.app (default) | Mail's scripting, as today | Mail's reply command; the helper reads nothing |
+| `imap` | `APPEND` to the account's Drafts folder, flagged `\Draft` | Reads the original's Message-ID, References, From, Reply-To and Subject headers, never its body, to address and thread the reply |
+
+A draft saved over IMAP shows up in every client signed in to that account,
+including phones, and you send it from there. Nothing in the stack sends. An
+autonomous sender stays a separate, later opt-in: SMTP from an address the
+agent owns, with a recipient allowlist and a rate limit, using its own
+credential.
+
+### Planned: Gmail and Microsoft 365
+
+Not built. Notes for whoever builds them:
+
+- **Gmail.** `gmail.readonly` for reading, with the History API for changes.
+  It's a restricted scope: an app we publish needs Google's security review,
+  and a personal Google Cloud project left in testing mode makes sign-ins
+  expire every 7 days. For drafts, `gmail.compose` can also send drafts, so
+  drafts need the same care as sending. A message can carry several labels;
+  the index stores it once per selected label, as it would a copy in two
+  folders.
+- **Microsoft Graph.** `Mail.Read` for reading, with delta queries for
+  changes. Saving drafts needs `Mail.ReadWrite`, which can also delete, so
+  the drafts outbox would hold that token on its own, apart from the reader.
+- Both use an OAuth sign-in in a browser, run by the helper app, with the
+  refresh token in the Keychain.
+
+## IMAP source
+
+Optional. For accounts that Mail.app doesn't have, machines without Mail.app,
+or Proton through Bridge.
+
+```toml
+[[accounts]]
+id = "work"                 # your name for the account; appears in results
+source = "imap"
+host = "imap.example.com"
+port = 993                  # 993 with TLS (default), 143 with STARTTLS
+security = "tls"            # "tls" (default) or "starttls"
+user = "you@example.com"
+address = "you@example.com" # From address for drafts; more under addresses = [...]
+mailboxes = ["INBOX", "Projects/**"]
+# password_env = "WORK_IMAP_PASSWORD"   # instead of the Keychain; terminal runs only
+```
+
+`source` defaults to the top-level `source` (itself `"script"` by default),
+so existing configs keep working and one config can mix Mail.app and IMAP
+accounts.
+
+**What a run does.** For each in-scope mailbox, the indexer opens it with
+`EXAMINE`, which the server treats as read-only for that session, and asks
+for the messages received since `since`. It fetches flags, dates, sizes and
+summary headers for all of them, and the full message only for new ones,
+with `BODY.PEEK[]` so nothing is marked read. Messages flagged `\Deleted` are
+skipped. If a mailbox's `UIDVALIDITY` changes, its messages are re-indexed
+under new ids. Junk and Trash are found by the server's `SPECIAL-USE` flags
+and then by name, and mailbox names are decoded from IMAP's modified UTF-7.
+
+**Password.** The password lives in the Keychain, as a generic password with
+service `local.assistant.mail-imap` (the bundle prefix, then `.mail-imap`) and
+the account `id`. The reader and drafts apps' launcher reads it and hands it
+to the helper through a pipe, so it never appears in a config file, `.env`,
+compose file, environment variable, log or container. You add it yourself:
+
+```bash
+macos/mail-apps/install.sh password work   # prompts for the password; nothing is echoed
+```
+
+That marks the two mail apps as allowed to read it. Any other program that
+asks makes macOS ask you first. Use an app password where your provider
+offers one, so you can revoke it on its own.
+
+Run from a terminal while developing, there's no launcher, so set
+`password_env` and export that variable for the run. Don't keep it in a
+shell profile.
+
+**What this doesn't protect.** The password opens the whole account, so
+the limits come from our code and from keeping the password out of the
+agent's reach:
+
+- The reader's IMAP code only reads. A test fails if it gains `STORE`,
+  `COPY`, `MOVE`, `EXPUNGE`, `DELETE`, `APPEND` or `SELECT`.
+- The drafts helper's IMAP code only appends to the Drafts folder and
+  reads the reply headers above. A test fails if it gains anything else.
+- Hermes never gets the password, the IMAP host or a network path that
+  needs them. The mail MCP still reads only the index.
+
+**Proton.** Run Proton Mail Bridge (a paid Proton plan) and point an account
+at it: `host = "127.0.0.1"`, `port = 1143`, `security = "starttls"`, the
+Bridge password as the password, and `tls_ca` set to the certificate Bridge
+exports, since it signs its own. The indexer runs on the host, so it reaches
+Bridge on localhost.
+
+**Other ways in.** Hermes has its own email paths that would sidestep this:
+its email gateway (`EMAIL_*` settings), and any bundled mail-client skill
+that runs from the terminal tool. Both give the agent the password. Don't
+turn them on for an account you index here.
+
+**Testing.** `make mail-imap-test` starts a throwaway GreenMail IMAP server in
+Docker, loads the synthetic messages into it, and checks that the IMAP source
+indexes them the same way as the other sources, that nothing on the server
+changed, and that drafts land in Drafts. It skips when Docker isn't running.
+No real account is ever used.
 
 ## Design
 
