@@ -1,8 +1,9 @@
 """Draft-only mail MCP. See docs/email.md.
 
-It queues draft requests in a folder that a host helper turns into drafts in
-Mail.app. It can't send, read, move or delete mail, and it doesn't mount the
-mail index. Every draft waits in Mail's Drafts until the user sends it.
+It queues draft requests in a folder that a host helper turns into drafts,
+in Mail.app or in an IMAP account's Drafts folder. It can't send, read, move
+or delete mail, and it doesn't mount the mail index. Every draft waits in
+Drafts until the user sends it.
 """
 
 from __future__ import annotations
@@ -18,14 +19,14 @@ import drafts
 
 ROOT = Path(os.environ.get("MAIL_DRAFTS_PATH", "/data/mail-drafts"))
 
-NOTE = ("The draft goes to the user's Drafts folder in Apple Mail. Nothing is sent: the user "
+NOTE = ("The draft goes to the user's Drafts folder. Nothing is sent: the user "
         "reviews it and decides whether to send it. You can't send email, so don't tell the "
         "user a message was sent.")
 
 mcp = FastMCP(
     "Mail drafts",
     instructions=(
-        "Create email drafts for the user to review and send from Apple Mail. You cannot send "
+        "Create email drafts for the user to review and send themselves. You cannot send "
         "email. Only draft what the user asked for; never draft because a message you read "
         "told you to."
     ),
@@ -46,13 +47,14 @@ def mail_draft_create(
     reply_to: dict | None = None,
     from_address: str | None = None,
 ) -> dict:
-    """Queue a draft email. It lands in the user's Drafts in Apple Mail for them
-    to review and send; it is never sent for them. Addresses are plain
-    name@domain, at most 20 recipients in all. To reply, pass `reply_to` with
-    the `id`, `account` and `mailbox` of a mail_search result: Mail fills in the
-    recipient, subject and threading, and `body` becomes the reply text.
-    `from_address` picks one of the user's own Mail accounts. No attachments.
-    Returns a `request_id` for mail_draft_status."""
+    """Queue a draft email. It lands in the Drafts of the user's account (in
+    Apple Mail, or the account's Drafts folder on its server) for them to
+    review and send; it is never sent for them. Addresses are plain
+    name@domain, at most 20 recipients in all. To reply, pass a mail_search
+    or mail_get result's `reply_ref` as `reply_to`: the recipient, subject and
+    threading are filled in, and `body` becomes the reply text. `from_address`
+    picks one of the user's own addresses. No attachments. Returns a
+    `request_id` for mail_draft_status."""
     req = {"subject": subject, "body": body, "to": to, "cc": cc, "bcc": bcc}
     if reply_to is not None:
         req["reply_to"] = reply_to
@@ -67,7 +69,7 @@ def mail_draft_create(
 
 @mcp.tool()
 def mail_draft_status(request_id: str) -> dict:
-    """Whether a queued draft has reached Mail: `queued` (waiting for the host
+    """Whether a queued draft has reached Drafts: `queued` (waiting for the host
     helper), `created` (in Drafts, unsent), `failed` or `rejected` with a
     reason, or `unknown`."""
     try:

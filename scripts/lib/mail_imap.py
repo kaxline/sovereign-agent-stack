@@ -5,217 +5,42 @@ EXAMINE (read-only for the session, enforced by the server), lists the
 messages received since the config's `since` date, and fetches messages with
 BODY.PEEK[] so nothing is marked read. ReadOnlyImap below is the only way this
 module talks to the server, and it refuses every command that could change
-the account.
+the account. scripts/test-mail-imap.py fails if this file gains a write.
 
-The password comes from the Keychain through the mail apps' launcher, or, for
-terminal runs, from the environment variable the account's `password_env`
-names (see mail_credentials.py). It never comes from the config file.
-
-Shared with the drafts outbox (mail_imap_drafts.py): account settings,
-connecting, logging in, modified UTF-7 mailbox names and LIST parsing.
+Settings, connecting and mailbox names are shared with the drafts outbox in
+mail_imap_conn.py.
 """
 
 from __future__ import annotations
 
-import base64
 import email
 import email.policy
-import imaplib
-import ipaddress
 import re
-import socket
-import ssl
 import time
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parseaddr, parsedate_to_datetime
 from pathlib import Path
 from typing import Iterator
 
-import mail_credentials
 import mail_index as mi
+from mail_imap_conn import (AuthFailed, Connection, ImapError, Mailbox, Refused,  # noqa: F401  (re-exported)
+                            decode_mutf7, encode_mutf7, fetch_items, flags_of, parse_list, quote, uid_of)
+import mail_imap_conn
 
-SECURITY = ("tls", "starttls", "plain")
-DEFAULT_PORT = {"tls": 993, "starttls": 143, "plain": 143}
-ACCOUNT_KEYS = {"id", "mailboxes", "source", "host", "port", "security", "user", "address", "addresses",
-                "password_env", "tls_ca", "timeout"}
 SUMMARY_BATCH = 500   # messages per summary FETCH
 DETAILS_BATCH = 25    # messages per full FETCH
 DOCTOR_SAMPLE = 20
 # Special-use mailboxes left out of patterns (name one to include it). \All
 # and \Flagged are virtual: they hold copies of mail from other mailboxes.
 EXCLUDED_SPECIAL_USE = {"\\junk", "\\trash", "\\all", "\\flagged"}
-_ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]*")
-
-
-class ImapError(RuntimeError):
-    """The server refused something or the connection failed."""
-
-
-class AuthFailed(ImapError):
-    """The server rejected the user name and password."""
-
-
-class Refused(RuntimeError):
-    """This code asked for something it must never do. Always a bug."""
-
-
-# --------------------------------------------------------------------------- config
-
-def is_loopback(host: str) -> bool:
-    if host.lower() in ("localhost", "localhost."):
-        return True
-    try:
-        return ipaddress.ip_address(host.strip("[]")).is_loopback
-    except ValueError:
-        return False
-
-
-def _address(value, where: str) -> str:
-    _, addr = parseaddr(value if isinstance(value, str) else "")
-    if not addr or "@" not in addr or addr != value.strip():
-        raise mi.ConfigError(f"{where}: {value!r} isn't a plain name@domain address")
-    return addr
 
 
 def account_settings(item: dict, base: Path, *, where: str) -> dict:
-    """The IMAP keys of one [[accounts]] entry, checked. Raises ConfigError."""
-    unknown = set(item) - ACCOUNT_KEYS
-    if unknown:
-        raise mi.ConfigError(f"{where}: unknown keys for an imap account: {', '.join(sorted(unknown))}")
-    host = item.get("host")
-    if not isinstance(host, str) or not host.strip() or any(c.isspace() for c in host.strip()):
-        raise mi.ConfigError(f"{where}: an imap account needs `host`")
-    host = host.strip()
-    security = item.get("security", "tls")
-    if security not in SECURITY:
-        raise mi.ConfigError(f"{where}: `security` must be \"tls\" (the default) or \"starttls\"")
-    if security == "plain" and not is_loopback(host):
-        raise mi.ConfigError(f"{where}: security = \"plain\" is only allowed for a server on this machine"
-                             " (localhost); use \"tls\" or \"starttls\"")
-    port = item.get("port", DEFAULT_PORT[security])
-    if not isinstance(port, int) or isinstance(port, bool) or not 0 < port < 65536:
-        raise mi.ConfigError(f"{where}: `port` must be a port number")
-    user = item.get("user")
-    if not isinstance(user, str) or not user.strip():
-        raise mi.ConfigError(f"{where}: an imap account needs `user`")
-    addresses = []
-    if "address" in item:
-        addresses.append(_address(item["address"], f"{where}.address"))
-    extra = item.get("addresses", [])
-    if not isinstance(extra, list):
-        raise mi.ConfigError(f"{where}: `addresses` must be a list")
-    addresses += [_address(a, f"{where}.addresses") for a in extra]
-    password_env = item.get("password_env")
-    if password_env is not None and (not isinstance(password_env, str) or not _ENV_NAME.fullmatch(password_env)):
-        raise mi.ConfigError(f"{where}: `password_env` must be an environment variable name like WORK_IMAP_PASSWORD")
-    tls_ca = mi._path(item["tls_ca"], f"{where}.tls_ca", base) if "tls_ca" in item else None
-    timeout = item.get("timeout", 60)
-    if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout <= 0:
-        raise mi.ConfigError(f"{where}: `timeout` must be a positive number of seconds")
-    return {"host": host, "port": port, "security": security, "user": user.strip(),
-            "addresses": list(dict.fromkeys(a.lower() for a in addresses)),
-            "password_env": password_env, "tls_ca": str(tls_ca) if tls_ca else None, "timeout": timeout}
-
-
-# --------------------------------------------------------------------------- mailbox names
-
-def decode_mutf7(name: str) -> str:
-    """IMAP's modified UTF-7 (RFC 3501 5.1.3) to text."""
-    out, i = [], 0
-    while i < len(name):
-        if name[i] == "&":
-            end = name.find("-", i)
-            if end == -1:
-                raise ValueError("unterminated shift in mailbox name")
-            chunk = name[i + 1:end]
-            if not chunk:
-                out.append("&")
-            else:
-                b64 = chunk.replace(",", "/")
-                b64 += "=" * (-len(b64) % 4)
-                out.append(base64.b64decode(b64).decode("utf-16-be"))
-            i = end + 1
-        else:
-            out.append(name[i])
-            i += 1
-    return "".join(out)
-
-
-def encode_mutf7(text: str) -> str:
-    out, pending = [], []
-
-    def flush() -> None:
-        if pending:
-            raw = "".join(pending).encode("utf-16-be")
-            out.append("&" + base64.b64encode(raw).decode().rstrip("=").replace("/", ",") + "-")
-            pending.clear()
-
-    for ch in text:
-        if 0x20 <= ord(ch) <= 0x7E:
-            flush()
-            out.append("&-" if ch == "&" else ch)
-        else:
-            pending.append(ch)
-    flush()
-    return "".join(out)
-
-
-def quote(name: str) -> str:
-    """A mailbox name as an IMAP quoted string."""
-    return '"' + name.replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-
-@dataclass
-class Mailbox:
-    path: str           # "/"-separated, decoded
-    raw: str            # the server's encoded name
-    flags: set[str]     # lowercased, e.g. {"\\hasnochildren", "\\junk"}
-
-    @property
-    def selectable(self) -> bool:
-        return not ({"\\noselect", "\\nonexistent"} & self.flags)
-
-    @property
-    def special(self) -> set[str]:
-        return self.flags & {"\\junk", "\\trash", "\\all", "\\flagged", "\\drafts", "\\sent", "\\archive"}
-
-
-_LIST = re.compile(rb'\((?P<flags>[^)]*)\)\s+(?P<delim>NIL|"(?:[^"\\]|\\.)*")\s+(?P<name>.*)', re.S)
-
-
-def _unquote(raw: bytes) -> bytes:
-    raw = raw.strip()
-    if raw.startswith(b'"') and raw.endswith(b'"'):
-        return re.sub(rb"\\(.)", rb"\1", raw[1:-1])
-    return raw
-
-
-def parse_list(data: list) -> list[Mailbox]:
-    """Mailboxes from imaplib's LIST response, with literal names joined back up."""
-    boxes = []
-    for item in data:
-        if item is None:
-            continue
-        if isinstance(item, tuple):  # {n} literal: (b'(\\Flags) "/" {n}', b'name')
-            head, literal = item[0], item[1]
-            m = _LIST.match(head)
-            name_raw = literal
-        else:
-            m = _LIST.match(item)
-            name_raw = _unquote(m.group("name")) if m else b""
-        if not m:
-            continue
-        delim = _unquote(m.group("delim")).decode() if m.group("delim") != b"NIL" else ""
-        raw = name_raw.decode("ascii", "replace")
-        try:
-            decoded = decode_mutf7(raw)
-        except (ValueError, UnicodeDecodeError):
-            decoded = raw
-        path = "/".join(decoded.split(delim)) if delim and delim != "/" else decoded
-        flags = {f.lower() for f in m.group("flags").decode("ascii", "replace").split()}
-        boxes.append(Mailbox(path=path, raw=raw, flags=flags))
-    return boxes
+    """For mail_index.load_config: the IMAP keys of one account, checked."""
+    try:
+        return mail_imap_conn.account_settings(item, base, where=where)
+    except mail_imap_conn.ConfigError as exc:
+        raise mi.ConfigError(str(exc)) from None
 
 
 def in_scope(box: Mailbox, patterns: list[str]) -> bool:
@@ -229,74 +54,6 @@ def in_scope(box: Mailbox, patterns: list[str]) -> bool:
     if box.flags & EXCLUDED_SPECIAL_USE:
         return False
     return mi.mailbox_selected(box.path, patterns)
-
-
-# --------------------------------------------------------------------------- connection
-
-class Connection:
-    """Connects and logs in. Subclasses decide which commands are allowed."""
-
-    def __init__(self, account_id: str, settings: dict) -> None:
-        self.account_id = account_id
-        self.settings = settings
-        self.capabilities: set[str] = set()
-        self._imap: imaplib.IMAP4 | None = None
-
-    def _context(self) -> ssl.SSLContext:
-        ctx = ssl.create_default_context(cafile=self.settings.get("tls_ca"))
-        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-        return ctx
-
-    def open(self) -> "Connection":
-        s = self.settings
-        try:
-            if s["security"] == "tls":
-                imap = imaplib.IMAP4_SSL(s["host"], s["port"], ssl_context=self._context(), timeout=s["timeout"])
-            else:
-                imap = imaplib.IMAP4(s["host"], s["port"], timeout=s["timeout"])
-                if s["security"] == "starttls":
-                    imap.starttls(ssl_context=self._context())
-        except (OSError, socket.timeout, ssl.SSLError, imaplib.IMAP4.error) as exc:
-            raise ImapError(f"{self.account_id}: can't connect to {s['host']}:{s['port']}"
-                            f" ({type(exc).__name__}: {exc})") from None
-        password = mail_credentials.password(self.account_id, s.get("password_env"))
-        try:
-            imap.login(s["user"], password)
-        except imaplib.IMAP4.error:
-            try:
-                imap.shutdown()
-            except OSError:
-                pass
-            raise AuthFailed(f"{self.account_id}: the server rejected the user name or password") from None
-        finally:
-            del password
-        self._imap = imap
-        self.capabilities = {c.upper() for c in imap.capabilities}
-        return self
-
-    def close(self) -> None:
-        if self._imap is not None:
-            try:
-                self._imap.logout()
-            except (OSError, imaplib.IMAP4.error):
-                pass
-            self._imap = None
-
-    def __enter__(self):
-        return self.open()
-
-    def __exit__(self, *exc) -> None:
-        self.close()
-
-    def _check(self, typ: str, data, what: str):
-        if typ != "OK":
-            detail = data[0].decode("utf-8", "replace") if data and isinstance(data[0], bytes) else ""
-            raise ImapError(f"{self.account_id}: {what} failed: {detail[:200]}")
-        return data
-
-    def list_mailboxes(self) -> list[Mailbox]:
-        return parse_list(self._check(*self._imap.list(), "LIST"))
-
 
 class ReadOnlyImap(Connection):
     """The reader's view of the server: LIST, STATUS, EXAMINE, UID SEARCH and
@@ -351,26 +108,6 @@ def internaldate(meta: bytes) -> int | None:
     return int(dt.timestamp()) - offset
 
 
-def fetch_items(data: list) -> Iterator[tuple[bytes, bytes | None]]:
-    """(metadata, literal) pairs from a FETCH response. Items without a body
-    literal come back as plain bytes."""
-    for item in data:
-        if isinstance(item, tuple):
-            yield item[0], item[1]
-        elif isinstance(item, bytes) and re.match(rb"\d+ \(", item):
-            yield item, None
-
-
-def _uid(meta: bytes) -> int | None:
-    m = re.search(rb"\bUID (\d+)", meta)
-    return int(m.group(1)) if m else None
-
-
-def _flags(meta: bytes) -> set[str]:
-    m = re.search(rb"FLAGS \(([^)]*)\)", meta)
-    return {f.lower() for f in m.group(1).decode("ascii", "replace").split()} if m else set()
-
-
 # --------------------------------------------------------------------------- source
 
 class ImapSource:
@@ -404,7 +141,7 @@ class ImapSource:
             chunk = uids[start:start + SUMMARY_BATCH]
             data = conn.uid_fetch(chunk, "(UID FLAGS INTERNALDATE BODY.PEEK[HEADER.FIELDS (DATE FROM SUBJECT)])")
             for meta, literal in fetch_items(data):
-                uid, flags, received = _uid(meta), _flags(meta), internaldate(meta)
+                uid, flags, received = uid_of(meta), flags_of(meta), internaldate(meta)
                 if uid is None or received is None or "\\deleted" in flags:
                     continue
                 # SEARCH SINCE works on whole days in the server's time zone; trim to the exact cutoff.
@@ -466,7 +203,7 @@ class ImapSource:
                         chunk = uids[start:start + DETAILS_BATCH]
                         got: dict[int, bytes] = {}
                         for meta, literal in fetch_items(conn.uid_fetch(chunk, items)):
-                            uid = _uid(meta)
+                            uid = uid_of(meta)
                             if uid is not None and literal is not None:
                                 got[uid] = literal
                         for uid in chunk:

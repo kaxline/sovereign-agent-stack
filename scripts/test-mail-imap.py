@@ -9,6 +9,8 @@ the server, its users and their passwords exist only for this run.
 
 from __future__ import annotations
 
+import email
+import email.policy
 import imaplib
 import json
 import os
@@ -134,6 +136,29 @@ def test_reader_source_reads_only() -> None:
     for line in code.splitlines():
         if ".select(" in line:
             expect("readonly=True" in line, f"SELECT without readonly=True: {line.strip()}")
+
+
+def imap_calls(path: Path) -> set[str]:
+    """Every imaplib method a module calls on its connection (self._imap.x / imap.x)."""
+    return set(re.findall(r"\b(?:self\._imap|imap)\.(\w+)\(", path.read_text()))
+
+
+def test_shared_and_drafts_code() -> None:
+    calls = imap_calls(LIB / "mail_imap_conn.py")
+    expect(calls <= {"list", "login", "logout", "starttls", "shutdown"}, f"shared IMAP code gained {calls}")
+    code = (LIB / "mail_imap_drafts.py").read_text()
+    calls = imap_calls(LIB / "mail_imap_drafts.py")
+    expect(calls <= {"select", "response", "uid", "append"}, f"drafts IMAP code gained {calls}")
+    for m in re.finditer(r"\._imap\.uid\(\s*['\"](\w+)['\"],\s*\w+,\s*(\w+)", code):
+        expect(m.group(1) == "FETCH" and m.group(2) == "REPLY_HEADERS", f"drafts UID {m.group(0)}")
+    expect(re.search(r'REPLY_HEADERS = "\(UID BODY\.PEEK\[HEADER\.FIELDS \([A-Z -]+\)\]\)"', code),
+           "drafts fetch only named headers, with PEEK")
+    for line in code.splitlines():
+        if ".select(" in line:
+            expect("readonly=True" in line, f"drafts SELECT without readonly=True: {line.strip()}")
+        if ".append(" in line and "_imap" in line:
+            expect("box.raw" in line, "drafts append only to the Drafts box")
+    expect("smtplib" not in code and "smtplib" not in (LIB / "mail_drafts.py").read_text(), "no SMTP anywhere")
     for m in re.finditer(r"\._imap\.uid\(\s*['\"](\w+)", code):
         expect(m.group(1) in ("SEARCH", "FETCH"), f"UID {m.group(1)} in the reader")
 
@@ -225,8 +250,8 @@ def server_state(port: int) -> dict:
             typ, data = conn.uid("FETCH", "1:*", "(UID FLAGS)")
             for meta, _ in mail_imap.fetch_items(data or []):
                 if meta and b"UID" in meta:
-                    flags = mail_imap._flags(meta) - {"\\recent"}
-                    state[(account, box.path, mail_imap._uid(meta))] = sorted(flags)
+                    flags = mail_imap.flags_of(meta) - {"\\recent"}
+                    state[(account, box.path, mail_imap.uid_of(meta))] = sorted(flags)
         conn.logout()
     return state
 
@@ -371,17 +396,83 @@ def test_end_to_end(tmp: Path, port: int) -> None:
            f"mailboxes lists IMAP mailboxes with counts: {listing}")
 
 
+def test_drafts(tmp: Path, port: int) -> None:
+    """IMAP drafts: new and reply drafts land in Drafts, flagged \\Draft;
+    nothing else on the server changes."""
+    sys.path.insert(0, str(HERE.parent / "compose" / "mail-drafts-mcp"))
+    sys.path.insert(0, str(HERE.parent / "compose" / "mail-mcp"))
+    import drafts
+    import mail_drafts
+    import mail_imap_conn
+    import mail_query as mq
+
+    conn = admin(port, "personal")
+    conn.create("Drafts")
+    conn.logout()
+    before = server_state(port)
+
+    accounts = mail_imap_conn.imap_accounts(tmp / "imap.toml")
+    expect(set(accounts) == {"PERSONAL", "WORK"}, f"drafts helper finds the IMAP accounts: {set(accounts)}")
+    db = mq.connect(tmp / "imap" / "index.sqlite")
+    hit = mq.search(db, "lease", sender="priya")["results"][0]
+    db.close()
+    root = tmp / "drafts"
+    me = USERS["personal"]
+    new_id = drafts.enqueue(root, {"to": ["alex.chen@example.com"], "subject": "Saturday", "body": "See you then.",
+                                   "from": me})
+    reply_id = drafts.enqueue(root, {"reply_to": hit["reply_ref"], "body": "Signed and attached."})
+    stranger = drafts.enqueue(root, {"to": ["alex.chen@example.com"], "subject": "x", "body": "x",
+                                     "from": "someone.else@example.com"})
+    gone = drafts.enqueue(root, {"reply_to": {**hit["reply_ref"], "source_id": "1.999999"}, "body": "x"})
+    helper = mail_drafts.Helper(root, imap_accounts=accounts, mail_app=False)
+    stats = helper.process()
+    expect((stats.created, stats.rejected, stats.failed) == (2, 1, 1), f"drafts stats: {stats}")
+    expect(drafts.read_status(root, stranger)["reason"] == "from_not_an_account", "unknown sender rejected")
+    expect(drafts.read_status(root, gone)["reason"] == "reply_message_not_found", "missing original fails")
+    for rid in (new_id, reply_id, stranger, gone):
+        text = (root / "status" / f"{rid}.json").read_text()
+        expect("alex.chen" not in text and "Saturday" not in text, "status files hold no recipients or text")
+
+    conn = admin(port, "personal")
+    conn.select("Drafts", readonly=True)
+    _, data = conn.uid("FETCH", "1:*", "(UID FLAGS BODY.PEEK[])")
+    saved = {}
+    for meta, raw in mail_imap_conn.fetch_items(data):
+        msg = email.message_from_bytes(raw, policy=email.policy.default)
+        saved[str(msg["Subject"])] = (mail_imap_conn.flags_of(meta), msg)
+    conn.logout()
+    expect(set(saved) == {"Saturday", f"Re: {hit['subject']}"}, f"drafts saved: {sorted(saved)}")
+    flags, msg = saved["Saturday"]
+    expect("\\draft" in flags and str(msg["From"]) == me and str(msg["To"]) == "alex.chen@example.com",
+           f"new draft: {flags} {msg['From']} {msg['To']}")
+    flags, msg = saved[f"Re: {hit['subject']}"]
+    original = f"<synthetic-1205@example.net>"
+    expect(str(msg["In-Reply-To"]) == original and original in str(msg["References"]), "reply is threaded")
+    expect(hit["from"]["address"] in str(msg["To"]), f"reply goes to the original sender: {msg['To']}")
+    expect(msg.get_content().strip() == "Signed and attached.", "reply body is the request's body only")
+
+    after = server_state(port)
+    outside = {k: v for k, v in after.items() if k[1] != "Drafts"}
+    expect(outside == {k: v for k, v in before.items() if k[1] != "Drafts"},
+           "drafts changed nothing outside Drafts (the original isn't marked read or answered)")
+    report = helper.doctor()
+    expect(report["imap_accounts"][0]["drafts_mailbox_found"] and "sender_addresses" not in report,
+           f"drafts doctor: {report}")
+
+
 def main() -> int:
     test_mutf7()
     test_parse_list()
     test_config()
     test_reader_refuses_writes()
     test_reader_source_reads_only()
+    test_shared_and_drafts_code()
     if not docker_ok():
         print("OK mail IMAP (unit checks only: Docker isn't running, GreenMail checks skipped)")
         return 0
     with tempfile.TemporaryDirectory() as d, greenmail() as port:
         test_end_to_end(Path(d), port)
+        test_drafts(Path(d), port)
     print("OK mail IMAP source")
     return 0
 
