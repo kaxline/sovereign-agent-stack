@@ -1117,6 +1117,13 @@ if has_profile mail || [[ "$mail_on" -eq 1 ]]; then
   if docker info >/dev/null 2>&1; then
     if docker compose ps --status running mail-mcp 2>/dev/null | grep -q mail-mcp; then
       ok "mail-mcp container is running"
+      # mail-mcp is built locally and `make up` doesn't rebuild it, so code
+      # changes can sit unused. The watermark route is the newest addition.
+      if docker compose exec -T hermes python3 -c 'import urllib.request as u; u.urlopen("http://mail-mcp:8000/watermark", timeout=10)' >/dev/null 2>&1; then
+        ok "mail-mcp answers /watermark (image is current)"
+      else
+        bad "mail-mcp has no /watermark route — its image is out of date; run: docker compose up -d --build mail-mcp"
+      fi
     elif has_profile mail; then
       warn "mail-mcp not running — make up with mail in COMPOSE_PROFILES"
     fi

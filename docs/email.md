@@ -482,7 +482,11 @@ job named `mail-triage` on the default profile, replacing any earlier one:
   use your own; keep those rules.
 
 The job needs the mail MCP on the default profile (`setup.sh --mail` and the
-bootstraps) and runs as often as the reader app indexes (every 15 minutes by
+bootstraps) and a current `mail-mcp` image. `mail-mcp` is built locally and
+`make up` doesn't rebuild it, so after pulling changes run
+`docker compose up -d --build mail-mcp`. The script refuses to create the job
+if Hermes can't reach `/watermark`, and `make doctor` flags an image without
+it. The job runs as often as the reader app indexes (every 15 minutes by
 default). If an agent run fails, that batch isn't retried: Hermes records the
 new watermark before the run.
 
