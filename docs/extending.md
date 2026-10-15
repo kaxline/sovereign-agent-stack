@@ -212,6 +212,21 @@ writes Hermes profile config, keep it consistent with what bootstrap sets:
   180 for a cloud one, judged from `LLM_BINDING_HOST` in `.env`. It cannot
   see an upstream pushed through the admin API, so either write the upstream
   URL (not the key) to `LLM_BINDING_HOST` too, or set this yourself.
+- `model.max_tokens`: bootstrap writes 16384 (`HERMES_MAX_TOKENS`) where a
+  profile has none. llm-proxy adds the same default to requests that arrive
+  without one (`LLM_DEFAULT_MAX_TOKENS`), so a runaway generation stops
+  either way, but setting it in the profile lets Hermes size its own retries.
+- `model.context_length`: Hermes cannot read the window from a placeholder
+  model name and falls back to 256k. Set it to the context length the model
+  server actually loads, so compression starts in time.
+- **Profiles your app creates after bootstrap** get none of the settings
+  above. Write them yourself, or re-run both bootstrap services after
+  creating the profile.
+- **Kanban tasks**: Hermes has no board-wide runtime cap, and a worker keeps
+  heartbeating during a long model call, so the dispatcher sees it as
+  healthy. Set `max_runtime_seconds` on every task a local model runs. When
+  the dispatcher kills the worker, llm-proxy closes the upstream request, so
+  the model server stops too.
 - Leave `agent.tool_use_enforcement` at `auto` and `agent.execution_guidance`
   unset. Forcing them on helps some chatty models but makes weaker or
   quantized ones fake tool calls in text more often

@@ -330,6 +330,106 @@ def test_slow_headers_still_502(proxy) -> None:
         inference.shutdown()
 
 
+def test_default_max_tokens(proxy) -> None:
+    add = proxy.with_default_max_tokens
+    chat = b'{"model":"m","stream":true}'
+    assert json.loads(add(chat, "/v1/chat/completions", "chat", 16384)) == {
+        "model": "m", "stream": True, "max_tokens": 16384,
+    }
+    assert json.loads(add(b'{"prompt":"p"}', "/lightrag/v1/completions", "lightrag", 8))["max_tokens"] == 8
+    assert json.loads(add(b'{"input":"i"}', "/v1/responses", "chat", 8)) == {"input": "i", "max_output_tokens": 8}
+    # A request that set its own limit keeps it, whichever field it used.
+    for own in (b'{"max_tokens":50}', b'{"max_completion_tokens":50}', b'{"max_output_tokens":50}'):
+        assert add(own, "/v1/chat/completions", "chat", 16384) == own
+    # An explicit null is no limit at all.
+    assert json.loads(add(b'{"max_tokens":null}', "/v1/chat/completions", "chat", 9))["max_tokens"] == 9
+    # Off, other paths, embeddings and bodies that are not a JSON object pass through.
+    assert add(chat, "/v1/chat/completions", "chat", 0) == chat
+    assert add(chat, "/v1/models", "chat", 16384) == chat
+    assert add(chat, "/embed/v1/completions", "embed", 16384) == chat
+    for raw in (b"", b"not json", b"[1,2]", b"\xff\xfe"):
+        assert add(raw, "/v1/chat/completions", "chat", 16384) == raw
+
+
+def test_default_max_tokens_reaches_upstream(proxy) -> None:
+    seen = {}
+
+    class Upstream(BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):
+            return
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            seen["body"] = self.rfile.read(length)
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+    upstream = serve(Upstream)
+    inference = start_proxy(proxy, upstream.server_address[1], 5, 5)
+    proxy.InferenceHandler.default_max_tokens = 123
+    try:
+        req = Request(
+            f"http://127.0.0.1:{inference.server_address[1]}/v1/chat/completions",
+            data=b'{"model":"m"}',
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(req, timeout=5) as resp:
+            resp.read()
+        assert json.loads(seen["body"]) == {"model": "m", "max_tokens": 123}
+    finally:
+        proxy.InferenceHandler.default_max_tokens = 0
+        upstream.shutdown()
+        inference.shutdown()
+
+
+def test_stream_max_seconds_drops_endless_stream(proxy) -> None:
+    # The upstream never goes quiet, so only the total limit can end it.
+    stop = threading.Event()
+
+    class Endless(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, fmt, *args):
+            return
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", "0") or "0"))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            event = b'data: {"tok":1}\n\n'
+            try:
+                while not stop.is_set():
+                    self.wfile.write(b"%x\r\n%s\r\n" % (len(event), event))
+                    self.wfile.flush()
+                    time.sleep(0.05)
+            except OSError:
+                pass
+            self.close_connection = True
+
+    upstream = serve(Endless)
+    inference = start_proxy(proxy, upstream.server_address[1], 5, 5)
+    proxy.InferenceHandler.stream_max_seconds = 1
+    sock = open_stream(inference.server_address[1])
+    try:
+        began = time.monotonic()
+        data = read_until(sock, b"\x00never", 4)
+        elapsed = time.monotonic() - began
+        assert 0.8 < elapsed < 3, "endless stream ran %.1fs against a 1s limit" % elapsed
+        assert b'"tok":1' in data
+        assert not data.endswith(b"0\r\n\r\n")
+    finally:
+        proxy.InferenceHandler.stream_max_seconds = 0
+        stop.set()
+        sock.close()
+        upstream.shutdown()
+        inference.shutdown()
+
+
 def test_admin_view_reports_restart(proxy) -> None:
     table = proxy.Table(proxy.Route("", ""), proxy.Route("", ""), proxy.Route("", ""))
     view = table.public_view()
@@ -419,6 +519,9 @@ def main() -> None:
     test_stall_after_headers_drops_connection(proxy)
     test_client_leaving_closes_upstream(proxy)
     test_slow_headers_still_502(proxy)
+    test_default_max_tokens(proxy)
+    test_default_max_tokens_reaches_upstream(proxy)
+    test_stream_max_seconds_drops_endless_stream(proxy)
     test_admin_view_reports_restart(proxy)
     test_await_push_env(proxy)
     test_await_push(proxy)
