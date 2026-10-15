@@ -2,10 +2,16 @@
 # Install a mail helper app and its launchd agent. See docs/email.md.
 #
 #   macos/mail-apps/install.sh reader --config /abs/mail-index.toml [--interval 900]
-#   macos/mail-apps/install.sh drafts --dir /abs/data/mail-drafts [--open] [--max-per-hour 20]
+#   macos/mail-apps/install.sh drafts --dir /abs/data/mail-drafts [--config /abs/mail-index.toml] [--no-mail-app] [--open] [--max-per-hour 20]
+#   macos/mail-apps/install.sh password <account-id>
 #   macos/mail-apps/install.sh uninstall reader|drafts
 #
 # Add --dry-run to print the agent's plist instead of installing anything.
+#
+# `password` stores an IMAP account's password in your login Keychain for the
+# two mail apps, prompting for it (nothing is echoed or saved anywhere else).
+# Install the apps first: the Keychain item trusts those copies. Run it again
+# to change the password, or after rebuilding ad hoc signed apps.
 #
 # Copies the built app (build/mail-apps, from build.sh) to MAIL_APPS_DIR
 # (default ~/Applications) and loads a LaunchAgent that runs it: the reader
@@ -26,6 +32,23 @@ usage() { sed -n '3,7p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 [[ $# -ge 1 ]] || usage
 action="$1"; shift
+
+if [[ "$action" == "password" ]]; then
+  [[ $# -eq 1 && "$1" =~ ^[A-Za-z0-9._@-]+$ ]] || die "password takes one account id, as in mail-index.toml"
+  service="${PREFIX}.mail-imap"
+  trusted=()
+  for app in "Assistant Mail Reader" "Assistant Mail Drafts"; do
+    [[ -d "${APPS}/${app}.app" ]] && trusted+=(-T "${APPS}/${app}.app")
+  done
+  [[ ${#trusted[@]} -gt 0 ]] || die "install the reader or drafts app first, so the password can trust it"
+  printf 'Password for IMAP account "%s" (an app password, if your provider offers them).\n' "$1"
+  # -U updates an existing item. -w last, with no value, makes security prompt
+  # for the password, so it's never in an argument or your shell history.
+  security add-generic-password -U -s "$service" -a "$1" -l "Assistant mail: $1" "${trusted[@]}" -w
+  printf 'saved to the Keychain as %s / %s\n' "$service" "$1"
+  exit 0
+fi
+
 uninstall=0
 if [[ "$action" == "uninstall" ]]; then
   uninstall=1
@@ -51,13 +74,14 @@ if [[ "$uninstall" -eq 1 ]]; then
   exit 0
 fi
 
-config="" dir="" interval=900 open=0 max_per_hour=20 dry_run=0
+config="" dir="" interval=900 open=0 no_mail_app=0 max_per_hour=20 dry_run=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --config) config="${2:-}"; shift 2 ;;
     --dir) dir="${2:-}"; shift 2 ;;
     --interval) interval="${2:-}"; shift 2 ;;
     --open) open=1; shift ;;
+    --no-mail-app) no_mail_app=1; shift ;;
     --max-per-hour) max_per_hour="${2:-}"; shift 2 ;;
     --dry-run) dry_run=1; shift ;;
     *) usage ;;
@@ -75,6 +99,11 @@ else
   [[ "$dir" == /* && -d "$dir" ]] || die "--dir must be the absolute path of the drafts folder (MAIL_DRAFTS_DIR)"
   [[ "$max_per_hour" =~ ^[0-9]+$ && "$max_per_hour" -ge 1 ]] || die "--max-per-hour must be a positive number"
   args+=(--dir "$dir" --max-per-hour "$max_per_hour")
+  if [[ -n "$config" ]]; then
+    [[ "$config" == /* && -f "$config" ]] || die "--config must be the absolute path of an existing mail-index.toml"
+    args+=(--config "$config")
+  fi
+  [[ "$no_mail_app" -eq 1 ]] && { [[ -n "$config" ]] || die "--no-mail-app needs --config"; args+=(--no-mail-app); }
   [[ "$open" -eq 1 ]] && args+=(--open)
   args+=(watch)
   schedule="  <key>KeepAlive</key><true/>"

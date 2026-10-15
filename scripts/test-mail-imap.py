@@ -138,6 +138,20 @@ def test_reader_source_reads_only() -> None:
             expect("readonly=True" in line, f"SELECT without readonly=True: {line.strip()}")
 
 
+def test_credentials_handoff() -> None:
+    """The launcher writes {account: password} to stdin and sets MAIL_CREDENTIALS_FD=0."""
+    probe = ("import sys; sys.path.insert(0, sys.argv[1]); import mail_credentials as mc, os\n"
+             "print(mc.password('Work', None) == 'pw-1', 'MAIL_CREDENTIALS_FD' not in os.environ)\n"
+             "try:\n    mc.password('other', None)\nexcept mc.MissingPassword as e:\n    print('missing', 'pw-1' not in str(e))\n")
+    out = subprocess.run([sys.executable, "-I", "-c", probe, str(LIB)], input='{"work": "pw-1"}',
+                         capture_output=True, text=True, env={"MAIL_CREDENTIALS_FD": "0", "PATH": "/usr/bin"})
+    expect(out.stdout.split() == ["True", "True", "missing", "True"],
+           f"password handoff over stdin: {out.stdout!r} {out.stderr!r}")
+    out = subprocess.run([sys.executable, "-I", "-c", probe, str(LIB)], input="", capture_output=True, text=True,
+                         env={"PATH": "/usr/bin"})
+    expect("MissingPassword" in out.stderr or "Error" in out.stderr, "no launcher, no password_env: refused")
+
+
 def imap_calls(path: Path) -> set[str]:
     """Every imaplib method a module calls on its connection (self._imap.x / imap.x)."""
     return set(re.findall(r"\b(?:self\._imap|imap)\.(\w+)\(", path.read_text()))
@@ -467,6 +481,7 @@ def main() -> int:
     test_reader_refuses_writes()
     test_reader_source_reads_only()
     test_shared_and_drafts_code()
+    test_credentials_handoff()
     if not docker_ok():
         print("OK mail IMAP (unit checks only: Docker isn't running, GreenMail checks skipped)")
         return 0
