@@ -77,6 +77,8 @@ MAIL_DRAFTS_MCP_TOOLS="mail_draft_create mail_draft_status"
 LLM_BINDING_HOST="${LLM_BINDING_HOST:-http://host.docker.internal:1234/v1}"
 # Empty = 300s for a local upstream, 180s for a cloud one.
 PROXY_STALE_TIMEOUT="${HERMES_PROXY_STALE_TIMEOUT:-}"
+# model.max_tokens for every profile on the proxy that has none. 0 = leave unset.
+MODEL_MAX_TOKENS="${HERMES_MAX_TOKENS:-16384}"
 # auto = off for a local upstream, on for a cloud one. 0/1 force it.
 BROWSER_AUTO_TITLE="${HERMES_BROWSER_AUTO_TITLE:-auto}"
 
@@ -315,6 +317,24 @@ hermes_config_set() {
   fi
 }
 
+# True when a profile's config.yaml has a non-null value at a dotted key.
+config_has_value() {
+  python3 - "$(config_path_for "$1")" "$2" <<'PY'
+import sys
+
+import yaml
+
+try:
+    with open(sys.argv[1]) as fh:
+        node = yaml.safe_load(fh) or {}
+except FileNotFoundError:
+    raise SystemExit(1)
+for part in sys.argv[2].split("."):
+    node = node.get(part) if isinstance(node, dict) else None
+raise SystemExit(0 if node is not None else 1)
+PY
+}
+
 # bot_desktop.placement=auto can start the browser on the SSH backend, which
 # has no Node or browser. gateway keeps it in this container. If the CLI
 # rejects the key, write the YAML and continue.
@@ -447,13 +467,21 @@ apply_terminal_backend_all_profiles() {
 
 # Model calls go to llm-proxy. The placeholder is not a secret. The real
 # key stays on the proxy. Same profile sweep as the SSH backend. Every
-# profile on the proxy also gets the stale-stream timeout sized below.
+# profile on the proxy also gets the stale-stream timeout sized below, and an
+# output cap unless it already has one (browser keeps its 1024).
 configure_model_proxy() {
   _cmp_profile="$1"
   log "Model proxy for profile '${_cmp_profile:-default}'"
   hermes_config_set "$_cmp_profile" model.base_url http://llm-proxy:4000/v1
   hermes_config_set "$_cmp_profile" model.api_key local-llm
   hermes_config_set "$_cmp_profile" agent.local_stream_stale_timeout "$STALE_TIMEOUT"
+  if [ "$MODEL_MAX_TOKENS" != "0" ]; then
+    if config_has_value "$_cmp_profile" model.max_tokens; then
+      log "model.max_tokens already set on '${_cmp_profile:-default}'; keeping it"
+    else
+      hermes_config_set "$_cmp_profile" model.max_tokens "$MODEL_MAX_TOKENS"
+    fi
+  fi
 }
 
 apply_model_proxy_all_profiles() {
@@ -1510,8 +1538,8 @@ if [ "$PROFILE" = "browser" ]; then
 fi
 
 # Hermes treats the dotless llm-proxy host as local whatever sits behind it,
-# so every profile gets agent.local_stream_stale_timeout (900s by default)
-# even for a cloud model. Size it for the real upstream instead.
+# so Hermes gives every profile its local stale-stream timeout (900s) even
+# for a cloud model. Size it for the real upstream instead.
 if upstream_is_local "$LLM_BINDING_HOST"; then
   UPSTREAM_KIND=local
   STALE_DEFAULT=300

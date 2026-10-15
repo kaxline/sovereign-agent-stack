@@ -39,6 +39,10 @@ the stack under another app.
    bootstrap services and recreate `hermes`, then `make doctor`. Cron jobs without their own tool list stop
    getting the mail tools; doctor lists any job that still can read mail
    alongside other tools.
+8. `docker compose up -d --build llm-proxy` for the new output and total-time
+   limits (the proxy is a locally built image), then re-run both bootstrap
+   services so every profile gets `model.max_tokens`. Profiles your app
+   creates later need it written too (docs/extending.md).
 
 ### New services
 
@@ -99,6 +103,23 @@ Only with `todo` enabled.
 | `MAIL_DRAFTS_DIR` | `./data/mail-drafts` | Host folder for queued requests and their status; mounted into `mail-drafts-mcp` |
 | `MAIL_DRAFTS_MCP_URL` | `http://mail-drafts-mcp:8000/mcp` | Endpoint the bootstrap registers |
 | `MAIL_DRAFTS_MCP_TIMEOUT` / `MAIL_DRAFTS_MCP_CONNECT_TIMEOUT` | `60` / `30` | Hermes MCP timeouts for `drafts` |
+| `LLM_DEFAULT_MAX_TOKENS` | `16384` | llm-proxy adds `max_tokens` to chat/completions requests that set no output limit. `0` = off |
+| `LLM_STREAM_MAX_SECONDS` | `3600` | Longest one llm-proxy request may take, start to finish. `0` = no limit |
+| `HERMES_MAX_TOKENS` | `16384` | `model.max_tokens` bootstrap writes to proxy profiles that have none. `0` = write nothing |
+
+### Behaviour changes
+
+These change defaults, to stop a model that never stops generating (a local
+model ran one reply for 13 hours with no `max_tokens`; every timeout watched
+only for silence). Set the keys above to `0` to get the old behaviour back.
+
+- llm-proxy adds `max_tokens: 16384` to generation requests on the chat and
+  LightRAG routes that set none of `max_tokens`, `max_completion_tokens` or
+  `max_output_tokens`. A request with its own limit is unchanged.
+- llm-proxy drops any request still running after 3600s, the same way as an
+  idle stream (dead connection, upstream closed).
+- Bootstrap sets `model.max_tokens=16384` on every proxy profile that has no
+  value. Existing values, including `browser`'s 1024, are kept.
 
 ### Changes
 

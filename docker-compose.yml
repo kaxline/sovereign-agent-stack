@@ -102,6 +102,10 @@ services:
       # Longest silent gap in a streamed body before the proxy drops it.
       # Empty means LLM_TIMEOUT.
       - LLM_STREAM_IDLE_TIMEOUT=${LLM_STREAM_IDLE_TIMEOUT:-}
+      # Longest one request may take, start to finish. 0 = no limit.
+      - LLM_STREAM_MAX_SECONDS=${LLM_STREAM_MAX_SECONDS:-3600}
+      # max_tokens added to chat/completions requests that set no limit. 0 = off.
+      - LLM_DEFAULT_MAX_TOKENS=${LLM_DEFAULT_MAX_TOKENS:-16384}
     ports:
       # Admin only. Inference stays on the compose network.
       - "127.0.0.1:${LLM_PROXY_ADMIN_PORT:-4001}:4001"
@@ -978,6 +982,7 @@ services:
       # Upstream URL only (no key), to size the stale-stream timeout.
       - LLM_BINDING_HOST=${LLM_BINDING_HOST:-http://host.docker.internal:1234/v1}
       - HERMES_PROXY_STALE_TIMEOUT=${HERMES_PROXY_STALE_TIMEOUT:-}
+      - HERMES_MAX_TOKENS=${HERMES_MAX_TOKENS:-16384}
     volumes:
       - ./data/hermes:/opt/data
       - ./compose/hermes/api-server.env:/bootstrap/api-server.env:ro
@@ -1053,6 +1058,7 @@ services:
       # decide whether auto-title may compete with the reply.
       - LLM_BINDING_HOST=${LLM_BINDING_HOST:-http://host.docker.internal:1234/v1}
       - HERMES_PROXY_STALE_TIMEOUT=${HERMES_PROXY_STALE_TIMEOUT:-}
+      - HERMES_MAX_TOKENS=${HERMES_MAX_TOKENS:-16384}
       - HERMES_BROWSER_AUTO_TITLE=${HERMES_BROWSER_AUTO_TITLE:-auto}
     volumes:
       - ./data/hermes:/opt/data

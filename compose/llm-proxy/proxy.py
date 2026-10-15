@@ -18,6 +18,13 @@ connection, so the client sees a dead stream instead of a quiet one. A client
 that hangs up closes the upstream request too, so a single-slot model server
 stops working on a request nobody is reading.
 
+Both of those watch for silence, so a model that never stops producing tokens
+trips neither. Two limits cover that case. LLM_DEFAULT_MAX_TOKENS (default
+16384) adds max_tokens to a chat or completions request that sets no output
+limit of its own. LLM_STREAM_MAX_SECONDS (default 3600) bounds one request
+from start to finish, and is dropped the same way as an idle stream. 0 turns
+either off.
+
 A downstream app may start the proxy with no keys and push them through the
 admin API. LLM_PROXY_AWAIT_PUSH lists routes (e.g. chat,lightrag) that answer
 503 until an admin POST names them, instead of reaching the upstream without
@@ -242,6 +249,47 @@ def reload_key_files(table: Table) -> list[str]:
     return sorted(payload)
 
 
+# Request fields that already limit the output. Any one of them, set, means
+# the client chose its own cap.
+OUTPUT_CAP_FIELDS = ("max_tokens", "max_completion_tokens", "max_output_tokens")
+# Routes that serve generations. Embeddings have no output to cap.
+GENERATION_ROUTES = ("chat", "lightrag")
+
+
+def with_default_max_tokens(body: bytes, path: str, route: str, limit: int) -> bytes:
+    """Add max_tokens to a generation request that sets no output limit.
+
+    Covers /chat/completions and /completions (max_tokens) and /responses
+    (max_output_tokens). Anything else, including a body that is not a JSON
+    object, passes through unchanged.
+    """
+    if limit <= 0 or not body or route not in GENERATION_ROUTES:
+        return body
+    path = urlsplit(path).path.rstrip("/")
+    if path.endswith("/completions"):
+        field = "max_tokens"
+    elif path.endswith("/responses"):
+        field = "max_output_tokens"
+    else:
+        return body
+    try:
+        payload = json.loads(body)
+    except (UnicodeDecodeError, ValueError):
+        return body
+    if not isinstance(payload, dict):
+        return body
+    if any(payload.get(name) is not None for name in OUTPUT_CAP_FIELDS):
+        return body
+    payload[field] = limit
+    return json.dumps(payload, separators=(",", ":")).encode()
+
+
+def env_number(name: str, default: float) -> float:
+    """Read a number from the environment; empty means the default."""
+    raw = os.environ.get(name, "").strip()
+    return float(raw) if raw else default
+
+
 def outbound_headers(inbound: list[tuple[str, str]], api_key: str) -> list[tuple[str, str]]:
     """Copy request headers. A configured key replaces Authorization.
 
@@ -332,6 +380,10 @@ class InferenceHandler(BaseHTTPRequestHandler):
     upstream_timeout: float = 600
     # Longest gap between upstream body bytes once headers are out.
     stream_idle_timeout: float = 600
+    # Longest one request may take, start to finish. 0 means no limit.
+    stream_max_seconds: float = 0
+    # max_tokens added to generation requests that set no limit. 0 means none.
+    default_max_tokens: int = 0
     # StreamRequestHandler's own attribute: the inbound socket timeout, which
     # closes idle keep-alive connections and stalled request bodies.
     timeout: float = 600
@@ -386,6 +438,8 @@ class InferenceHandler(BaseHTTPRequestHandler):
             self._text(502, "upstream is not configured\n")
             return
         body = self._read_body()
+        if self.command == "POST":
+            body = with_default_max_tokens(body, self.path, name, self.default_max_tokens)
         headers = outbound_headers(list(self.headers.items()), api_key)
         conn = None
         watcher = None
@@ -415,7 +469,16 @@ class InferenceHandler(BaseHTTPRequestHandler):
             self.send_header("Transfer-Encoding", "chunked")
             self.end_headers()
             started = True
+            deadline = began + self.stream_max_seconds if self.stream_max_seconds > 0 else None
             while True:
+                if deadline is not None:
+                    # A model that never goes quiet never trips the idle
+                    # timeout, so the total limit shortens each wait instead.
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError("stream exceeded LLM_STREAM_MAX_SECONDS")
+                    if upstream_sock is not None:
+                        upstream_sock.settimeout(min(self.stream_idle_timeout, remaining))
                 # read1 returns what has arrived. read(n) would hold small SSE
                 # events until n bytes collect, which looks like a stall.
                 chunk = resp.read1(65536)
@@ -433,6 +496,11 @@ class InferenceHandler(BaseHTTPRequestHandler):
             path = self.path.split("?", 1)[0]
             if gone:
                 sys.stderr.write("llm-proxy: client left %s after %.0fs; closed upstream\n" % (path, elapsed))
+            elif started and self.stream_max_seconds > 0 and elapsed >= self.stream_max_seconds:
+                sys.stderr.write(
+                    "llm-proxy: upstream %s ran past LLM_STREAM_MAX_SECONDS (%.0fs); dropped\n"
+                    % (path, self.stream_max_seconds)
+                )
             else:
                 sys.stderr.write("llm-proxy: upstream %s failed after %.0fs: %s\n" % (path, elapsed, type(exc).__name__))
             if started or gone:
@@ -523,6 +591,8 @@ def main() -> None:
     table = load_table()
     timeout = float(os.environ.get("LLM_TIMEOUT", "600") or "600")
     idle_timeout = float(os.environ.get("LLM_STREAM_IDLE_TIMEOUT", "") or timeout)
+    stream_max = env_number("LLM_STREAM_MAX_SECONDS", 3600)
+    default_max_tokens = int(env_number("LLM_DEFAULT_MAX_TOKENS", 16384))
     infer_port = int(os.environ.get("LLM_PROXY_PORT", "4000"))
     admin_port = int(os.environ.get("LLM_PROXY_ADMIN_PORT", "4001"))
     token = os.environ.get("LLM_PROXY_ADMIN_TOKEN", "")
@@ -532,6 +602,8 @@ def main() -> None:
     InferenceHandler.table = table
     InferenceHandler.upstream_timeout = timeout
     InferenceHandler.stream_idle_timeout = idle_timeout
+    InferenceHandler.stream_max_seconds = stream_max
+    InferenceHandler.default_max_tokens = default_max_tokens
     InferenceHandler.timeout = timeout
 
     # Listen on all interfaces so Docker can publish the port. Compose binds
@@ -554,6 +626,10 @@ def main() -> None:
 
     threading.Thread(target=admin.serve_forever, daemon=True).start()
     sys.stderr.write("llm-proxy inference :%s admin :%s\n" % (infer_port, admin_port))
+    sys.stderr.write(
+        "llm-proxy: default max_tokens %s, stream limit %s\n"
+        % (default_max_tokens or "off", "%.0fs" % stream_max if stream_max > 0 else "off")
+    )
     inference.serve_forever()
 
 
