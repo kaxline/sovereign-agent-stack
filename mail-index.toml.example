@@ -8,7 +8,9 @@
 #                       if it isn't running.
 #   "store"             reads Mail's files directly. Much faster on big
 #                       mailboxes, but needs Full Disk Access and `store`.
-# Switching source rebuilds the index on the next run.
+#   "imap"              reads an IMAP server; see the example account below.
+# An account can name its own source instead. Moving an account to another
+# source re-indexes that account on the next run.
 source = "script"
 
 # Only with source = "store": the folder that holds Mail's V<n>/ directory,
@@ -40,3 +42,21 @@ max_body_chars = 100000
 [[accounts]]
 id = "00000000-0000-0000-0000-000000000000"
 mailboxes = ["INBOX"]
+
+# An IMAP account (optional; any number, alongside Mail.app accounts). The id
+# is your own name for it. Nothing on the server is changed. The password is
+# never written here: add it to the Keychain with
+#   macos/mail-apps/install.sh password work
+# or, for terminal runs, name an environment variable in password_env.
+# Proton: host = "127.0.0.1", port = 1143, security = "starttls" and tls_ca
+# pointing at the certificate Proton Mail Bridge exports. See docs/email.md.
+# [[accounts]]
+# id = "work"
+# source = "imap"
+# host = "imap.example.com"
+# port = 993
+# security = "tls"
+# user = "you@example.com"
+# address = "you@example.com"
+# mailboxes = ["INBOX"]
+# password_env = "WORK_IMAP_PASSWORD"

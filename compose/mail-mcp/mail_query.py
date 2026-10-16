@@ -13,7 +13,9 @@ import sqlite3
 from datetime import date, datetime, time, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = "1"
+# 2 adds the index's own ids and source_id. 1 still reads, so a new image
+# works against an index the host hasn't upgraded yet.
+SCHEMA_VERSIONS = ("1", "2")
 MAX_LIMIT = 50
 DEFAULT_BODY_CHARS = 20_000
 MAX_BODY_CHARS = 100_000
@@ -47,7 +49,7 @@ def connect(path: Path) -> sqlite3.Connection:
     except sqlite3.DatabaseError:
         db.close()
         raise IndexUnavailable("the mail index is unreadable") from None
-    if not row or row[0] != SCHEMA_VERSION:
+    if not row or row[0] not in SCHEMA_VERSIONS:
         db.close()
         raise IndexUnavailable("the mail index has an unexpected schema version; rebuild it")
     return db
@@ -95,6 +97,10 @@ def _summary(row: sqlite3.Row) -> dict:
         "read": bool(row["is_read"]),
         "flagged": bool(row["is_flagged"]),
         "attachments": len(attachments),
+        # Pass this as reply_to to mail_draft_create. It names the message the
+        # way its account does, so the drafts helper never needs the index.
+        "reply_ref": {"account": row["account"], "mailbox": row["mailbox"],
+                      "source_id": row["source_id"] if "source_id" in row.keys() else str(row["rowid"])},
     }
     if "snippet" in row.keys() and row["snippet"]:
         item["snippet"] = row["snippet"]
@@ -136,7 +142,8 @@ def watermark(db: sqlite3.Connection) -> str:
 
     For schedulers that skip work while it's unchanged (Hermes cron
     --monitor-url). Holds no message content, because a scheduler may paste
-    it straight into a prompt. Ids are Mail's: new mail gets higher ones.
+    it straight into a prompt. Ids are the index's own and count up as mail
+    is indexed, across every account.
     """
     newest_id = db.execute("SELECT MAX(rowid) FROM messages").fetchone()[0]
     return f"newest_id={newest_id or 0}\n"

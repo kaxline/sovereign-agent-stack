@@ -110,7 +110,7 @@ class ScriptSource:
                     addr, name = _sender(m.get("sender"))
                     flags = (mi.FLAG_READ if m.get("read") else 0) | (mi.FLAG_FLAGGED if m.get("flagged") else 0)
                     rows.append(mi.MetaRow(
-                        rowid=int(m["id"]), account=box["account"], mailbox=box["path"],
+                        source_id=str(int(m["id"])), account=box["account"], mailbox=box["path"],
                         date_received=int(m["received"]),
                         date_sent=int(m["sent"]) if m.get("sent") is not None else None,
                         subject=m.get("subject"), sender=addr, sender_name=name, flags=flags,
@@ -129,12 +129,12 @@ class ScriptSource:
                 chunk = group[start:start + BATCH]
                 reply = self.runner({
                     "command": "details", "account": account, "path": path,
-                    "ids": [r.rowid for r in chunk], "body": self.config.bodies,
+                    "ids": [int(r.source_id) for r in chunk], "body": self.config.bodies,
                     "attachments": self.config.attachments, "max_chars": self.config.max_body_chars,
                 })
                 items = {int(m["id"]): m for m in reply.get("messages", [])}
                 for row in chunk:
-                    item = items.get(row.rowid)
+                    item = items.get(int(row.source_id))
                     if item is None or item.get("error") == "missing":
                         yield row, mi.MISSING
                     elif item.get("error"):

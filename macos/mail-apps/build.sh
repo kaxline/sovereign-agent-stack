@@ -54,7 +54,8 @@ make_app() {
   for pair in "$@"; do
     cp "${ROOT}/${pair%%:*}" "${app}/Contents/Resources/scripts/${pair#*:}"
   done
-  printf '{"python": "%s", "entry": "%s"}\n' "$PYTHON" "$entry" > "${app}/Contents/Resources/launcher.json"
+  printf '{"python": "%s", "entry": "%s", "keychain_service": "%s"}\n' "$PYTHON" "$entry" "${PREFIX}.mail-imap" \
+    > "${app}/Contents/Resources/launcher.json"
   cat > "${app}/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -85,13 +86,19 @@ make_app "Assistant Mail Reader" mail-reader assistant-mail-reader mail-index.py
   scripts/lib/mail_index.py:lib/mail_index.py \
   scripts/lib/mail_script.py:lib/mail_script.py \
   scripts/lib/mail_script.js:lib/mail_script.js \
+  scripts/lib/mail_imap.py:lib/mail_imap.py \
+  scripts/lib/mail_imap_conn.py:lib/mail_imap_conn.py \
+  scripts/lib/mail_credentials.py:lib/mail_credentials.py \
   scripts/lib/jxa.py:lib/jxa.py
 
 make_app "Assistant Mail Drafts" mail-drafts assistant-mail-drafts mail-drafts.py \
-  "Saves drafts your assistant wrote to Mail's Drafts for you to review. It never sends mail." \
+  "Saves drafts your assistant wrote to your Drafts for you to review. It never sends mail." \
   scripts/mail-drafts.py:mail-drafts.py \
   scripts/lib/mail_drafts.py:lib/mail_drafts.py \
   scripts/lib/mail_drafts.js:lib/mail_drafts.js \
+  scripts/lib/mail_imap_drafts.py:lib/mail_imap_drafts.py \
+  scripts/lib/mail_imap_conn.py:lib/mail_imap_conn.py \
+  scripts/lib/mail_credentials.py:lib/mail_credentials.py \
   scripts/lib/jxa.py:lib/jxa.py \
   compose/mail-drafts-mcp/drafts.py:lib/drafts.py
 

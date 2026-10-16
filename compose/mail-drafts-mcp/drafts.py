@@ -30,6 +30,7 @@ _ADDRESS = re.compile(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-
                       r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _ID = re.compile(r"[0-9a-f]{32}")
+_SOURCE_ID = re.compile(r"[A-Za-z0-9._:-]{1,200}")  # Mail's id, or IMAP's UIDVALIDITY.UID
 
 
 class BadRequest(ValueError):
@@ -69,6 +70,32 @@ def _text(value, field: str, limit: int, *, single_line: bool) -> str:
     return value
 
 
+def _reply_to(value) -> dict:
+    """The message to reply to, as {account, mailbox, source_id}.
+
+    Takes a result's `reply_ref` ({account, mailbox, source_id}), or the older
+    {id, account, mailbox} form, where id is Mail.app's message id.
+    """
+    if not isinstance(value, dict) or set(value) not in ({"account", "mailbox", "source_id"},
+                                                         {"id", "account", "mailbox"}):
+        raise BadRequest("`reply_to` must be the `reply_ref` of a mail_search or mail_get result")
+    if "id" in value:
+        rid = value["id"]
+        if not isinstance(rid, int) or isinstance(rid, bool) or rid <= 0:
+            raise BadRequest("`reply_to.id` must be a positive integer")
+        source_id = str(rid)
+    else:
+        source_id = value["source_id"]
+        if not isinstance(source_id, str) or not _SOURCE_ID.fullmatch(source_id):
+            raise BadRequest("`reply_to.source_id` must be the value from a result's reply_ref")
+    clean = {"account": _text(value["account"], "reply_to.account", MAX_FIELD_CHARS, single_line=True),
+             "mailbox": _text(value["mailbox"], "reply_to.mailbox", MAX_FIELD_CHARS, single_line=True),
+             "source_id": source_id}
+    if not clean["account"] or not clean["mailbox"]:
+        raise BadRequest("`reply_to.account` and `reply_to.mailbox` can't be empty")
+    return clean
+
+
 def validate(req: dict) -> dict:
     """A clean copy of a draft request, or BadRequest. Unknown keys are refused."""
     if not isinstance(req, dict):
@@ -84,16 +111,7 @@ def validate(req: dict) -> dict:
         raise BadRequest(f"at most {MAX_RECIPIENTS} recipients in all")
     reply_to = req.get("reply_to")
     if reply_to is not None:
-        if not isinstance(reply_to, dict) or set(reply_to) != {"id", "account", "mailbox"}:
-            raise BadRequest("`reply_to` needs exactly id, account and mailbox from a mail_search result")
-        rid = reply_to["id"]
-        if not isinstance(rid, int) or isinstance(rid, bool) or rid <= 0:
-            raise BadRequest("`reply_to.id` must be a positive integer")
-        reply_to = {"id": rid,
-                    "account": _text(reply_to["account"], "reply_to.account", MAX_FIELD_CHARS, single_line=True),
-                    "mailbox": _text(reply_to["mailbox"], "reply_to.mailbox", MAX_FIELD_CHARS, single_line=True)}
-        if not reply_to["account"] or not reply_to["mailbox"]:
-            raise BadRequest("`reply_to.account` and `reply_to.mailbox` can't be empty")
+        reply_to = _reply_to(reply_to)
     elif not to:
         raise BadRequest("`to` needs at least one address (or use reply_to)")
     sender = req.get("from")

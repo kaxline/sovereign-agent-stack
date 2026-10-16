@@ -13,6 +13,11 @@ file source. See [First run on real mail](#first-run-on-real-mail).
 Hermes can't send email. With the separate [drafts](#drafts) opt-in it can
 write drafts, which a host helper saves to Mail's Drafts for you to send.
 
+Accounts that Mail.app doesn't have, or machines without it, can use the
+optional [IMAP source](#imap-source) instead. It sits behind the same scope,
+index and read-only MCP, and keeps the password away from the agent. See
+[Providers](#providers) for how sources plug in.
+
 Reading requires the **`mail`** compose profile (`./scripts/setup.sh --mail`).
 Drafts require **`mail-drafts`** (`./scripts/setup.sh --mail-drafts`).
 
@@ -36,6 +41,7 @@ In WebUI: *Any unread mail from Priya this week?*
 
 - Hermes can search and read the mail you choose (accounts, mailboxes, a date
   window) without IMAP credentials or another copy of your mailbox online.
+  Where IMAP is the only way in, the agent still never holds the password.
 - Nothing in the stack can read mail you didn't scope in, and no container
   mounts the Mail folder.
 - Contributors, and any coding agent they use, never need real mail to build
@@ -168,6 +174,223 @@ Ideas worth borrowing:
 - Pacing attachment calls, because Mail drops attachments under fast IPC
   (PsychQuant).
 
+## Providers
+
+Decided 2026-10-15. Mail can come from more than one kind of account: Mail.app,
+an IMAP server, Proton through Bridge, and later Gmail or Microsoft 365. Each
+kind is an adapter behind one core, so the agent sees one set of mail tools
+and every account gets the same limits:
+
+```
+read adapters ──▶ indexer core ──▶ index ──▶ mail MCP ──▶ Hermes
+(script, store,     scope, ids,
+ imap, …)           threads, scrubbing
+
+outbox adapters ◀── drafts helper core ◀── queue ◀── drafts MCP ◀── Hermes
+(Mail.app, imap)    checks, rate limit,
+                    routing by account
+```
+
+**The core holds the rules; adapters only talk to a provider.** The scope
+filter (accounts, mailboxes, date window, Junk and Trash), index ids,
+threading, the overwriting of deleted text, the untrusted-content markers, the
+draft checks, the rate limit and the profile and cron fences are written once.
+An adapter that forgets one can't weaken it.
+
+We chose this over one MCP server per provider because:
+
+- the agent gets one search across accounts and one way to reply, instead of
+  a different tool set per account;
+- the rules can't drift apart between providers, and the fences only need to
+  know about `mail` and `drafts`;
+- moving an account to another provider changes no tools, prompts or cron
+  jobs;
+- one synthetic test suite checks every adapter the same way.
+
+### Read adapters
+
+An adapter implements four calls. The `script` source
+(`scripts/lib/mail_script.py`) is the reference.
+
+| Call | Returns |
+|---|---|
+| `rows()` | A summary of every message in the in-scope mailboxes: source id, account, mailbox, received and sent dates, subject, sender, read and flagged. Also `accounts_missing` and `mailboxes_missing` |
+| `fetch(rows)` | For each row, the parsed headers (plus body and attachment list when turned on), or `missing` or `unreadable` |
+| `doctor()` | Counts, timings and booleans only |
+| `mailboxes()` | Account ids and mailbox paths, for writing the config |
+
+An adapter never changes the account. Each one has a test that fails if its
+code gains a call that writes, moves, flags or deletes (as `mail_script.js`
+already does). Mailbox paths always use `/`, whatever separator the provider
+uses, so the same patterns work everywhere.
+
+| | `script` | `store` | `imap` | `gmail` (planned) | `graph` (planned) |
+|---|---|---|---|---|---|
+| Reaches | Accounts in Mail.app | Accounts in Mail.app | One IMAP account, Proton through Bridge | One Google account | One Microsoft 365 or Outlook.com account |
+| Read-only by | Our script only reads | Read-only snapshot | `EXAMINE` and `BODY.PEEK[]` | `gmail.readonly` scope | `Mail.Read` scope |
+| Credential | Automation → Mail | Full Disk Access | Password or app password, in the Keychain | OAuth token | OAuth token |
+| Junk and Trash found by | Name | Name | `SPECIAL-USE` flags, then name | System labels | Well-known folders |
+| Mailboxes | Folders | Folders | Folders | Labels (one message, many labels) | Folders |
+| Source id | Mail's message id | Mail's message id | `UIDVALIDITY.UID` | Message id | Immutable id |
+
+For IMAP and the planned providers, credentials are the hard part. An IMAP
+password, or a Gmail or Microsoft app password, opens the whole account: it
+can read, delete and send. Fastmail's app passwords bundle IMAP and SMTP too.
+So the read-only limit comes from our code, not the credential, and the
+credential stays where the agent can't reach it ([below](#imap-source)).
+Gmail and Microsoft Graph do offer narrow OAuth scopes, which is the main
+reason to build those adapters instead of using IMAP for them.
+
+### Index ids
+
+The index assigns its own message ids (schema 2). Before, it used Mail's
+message ids, which only mean something inside one Mail store.
+
+- `id` counts up as messages are indexed and is never reused, so
+  `newest_id` and `after_id` mean "indexed after" across every account.
+  Schedulers keep working unchanged.
+- Each row also keeps the adapter's `source_id`. `(account, mailbox,
+  source_id)` is unique.
+- Upgrading a schema 1 index keeps every message's id (its old Mail id) and
+  carries on counting from the highest one, so nothing is fetched again and
+  a cron job's last `after_id` stays valid.
+- Search and read results carry a `reply_ref` naming the account, mailbox
+  and source id. The drafts MCP takes it as `reply_to`, so the drafts helper
+  can find the original without reading the index. The old
+  `{id, account, mailbox}` form still works for Mail.app accounts.
+
+### Outbox adapters
+
+The drafts helper picks an outbox by account:
+
+| Outbox | Saves drafts by | Replies |
+|---|---|---|
+| Mail.app (default) | Mail's scripting, as today | Mail's reply command; the helper reads nothing |
+| `imap` | `APPEND` to the account's Drafts folder, flagged `\Draft` | Reads the original's Message-ID, References, From, Reply-To and Subject headers, never its body, to address and thread the reply |
+
+A draft saved over IMAP shows up in every client signed in to that account,
+including phones, and you send it from there. Nothing in the stack sends. An
+autonomous sender stays a separate, later opt-in: SMTP from an address the
+agent owns, with a recipient allowlist and a rate limit, using its own
+credential.
+
+### Planned: Gmail and Microsoft 365
+
+Not built. Notes for whoever builds them:
+
+- **Gmail.** `gmail.readonly` for reading, with the History API for changes.
+  It's a restricted scope: an app we publish needs Google's security review,
+  and a personal Google Cloud project left in testing mode makes sign-ins
+  expire every 7 days. For drafts, `gmail.compose` can also send drafts, so
+  drafts need the same care as sending. A message can carry several labels;
+  the index stores it once per selected label, as it would a copy in two
+  folders.
+- **Microsoft Graph.** `Mail.Read` for reading, with delta queries for
+  changes. Saving drafts needs `Mail.ReadWrite`, which can also delete, so
+  the drafts outbox would hold that token on its own, apart from the reader.
+- Both use an OAuth sign-in in a browser, run by the helper app, with the
+  refresh token in the Keychain.
+
+## IMAP source
+
+Optional. For accounts that Mail.app doesn't have, machines without Mail.app,
+or Proton through Bridge.
+
+```toml
+[[accounts]]
+id = "work"                 # your name for the account; appears in results
+source = "imap"
+host = "imap.example.com"
+port = 993                  # 993 with TLS (default), 143 with STARTTLS
+security = "tls"            # "tls" (default) or "starttls"
+user = "you@example.com"
+address = "you@example.com" # From address for drafts; more under addresses = [...]
+mailboxes = ["INBOX", "Projects/**"]
+# password_env = "WORK_IMAP_PASSWORD"   # instead of the Keychain; terminal runs only
+# drafts_mailbox = "Drafts"             # if the server doesn't mark its Drafts folder
+# tls_ca = "~/certs/bridge.pem"         # a server that signs its own certificate
+```
+
+`source` defaults to the top-level `source` (itself `"script"` by default),
+so existing configs keep working and one config can mix Mail.app and IMAP
+accounts. `make mail-index-mailboxes` lists each IMAP account's mailboxes
+with message counts and their special-use flags. `security = "plain"` (no
+TLS) is accepted only for a server on this machine, such as a test server.
+There's no setting for the password itself.
+
+**What a run does.** For each in-scope mailbox, the indexer opens it with
+`EXAMINE`, which the server treats as read-only for that session, and asks
+for the messages received since `since`. It fetches flags, dates, sizes and
+summary headers for all of them, and the full message only for new ones,
+with `BODY.PEEK[]` so nothing is marked read. Messages flagged `\Deleted` are
+skipped. If a mailbox's `UIDVALIDITY` changes, its messages are re-indexed
+under new ids. Junk and Trash are found by the server's `SPECIAL-USE` flags
+and then by name, and mailbox names are decoded from IMAP's modified UTF-7.
+
+**Password.** The password lives in the Keychain, as a generic password with
+service `local.assistant.mail-imap` (the bundle prefix, then `.mail-imap`) and
+the account `id`. Install the apps first, then add it yourself:
+
+```bash
+macos/mail-apps/install.sh password work   # prompts for the password; nothing is echoed
+```
+
+The Keychain item trusts only the two installed mail apps; any other program
+that asks for it makes macOS ask you first. When an app starts, its launcher
+reads the items and writes them to the helper's stdin as JSON (setting
+`MAIL_CREDENTIALS_FD=0`), so the password never appears in a config file,
+`.env`, compose file, argument, environment variable, log or container. With
+ad hoc signing (the default), each rebuild changes the apps' signature, so
+macOS asks again; re-run `install.sh password` after a rebuild, or sign with
+a stable identity. Use an app password where your provider offers one, so
+you can revoke it on its own.
+
+Run from a terminal while developing, there's no launcher, so set
+`password_env` and export that variable for the run. Don't keep it in a
+shell profile.
+
+**What this doesn't protect.** The password opens the whole account, so
+the limits come from our code and from keeping the password out of the
+agent's reach:
+
+- The reader (`scripts/lib/mail_imap.py`) only reads: `LIST`, `STATUS`,
+  `EXAMINE`, `UID SEARCH` and `UID FETCH` with `BODY.PEEK`. Its connection
+  class has no other commands, refuses any other `FETCH` items, and a test
+  fails if the file gains a write.
+- The drafts outbox (`scripts/lib/mail_imap_drafts.py`) only appends to the
+  Drafts folder and reads the reply headers above. A test fails if it gains
+  anything else. Neither has SMTP.
+- The shared code (`mail_imap_conn.py`) only logs in and lists mailboxes.
+  The reader app doesn't bundle the drafts outbox, and the drafts app
+  doesn't bundle the reader.
+- Hermes never gets the password, the IMAP host or a network path that
+  needs them. The mail MCP still reads only the index.
+
+**First real run.** Everything is tested only against GreenMail. To try a
+real account: add the password, run `make mail-index-doctor` with that
+account in the config, and check `accounts[].details_readable` equals
+`details_sampled`. `server_special_use` says whether Junk and Trash can be
+found by flag; if it's `false`, check `make mail-index-mailboxes` and name
+mailboxes exactly. Exit code 4 means the server refused the login or no
+password was found, and 5 means the server couldn't be reached.
+
+**Proton.** Run Proton Mail Bridge (a paid Proton plan) and point an account
+at it: `host = "127.0.0.1"`, `port = 1143`, `security = "starttls"`, the
+Bridge password as the password, and `tls_ca` set to the certificate Bridge
+exports, since it signs its own. The indexer runs on the host, so it reaches
+Bridge on localhost.
+
+**Other ways in.** Hermes has its own email paths that would sidestep this:
+its email gateway (`EMAIL_*` settings), and any bundled mail-client skill
+that runs from the terminal tool. Both give the agent the password. Don't
+turn them on for an account you index here.
+
+**Testing.** `make mail-imap-test` starts a throwaway GreenMail IMAP server in
+Docker, loads the synthetic messages into it, and checks that the IMAP source
+indexes them the same way as the other sources, that nothing on the server
+changed, and that drafts land in Drafts. It skips when Docker isn't running.
+No real account is ever used.
+
 ## Design
 
 Both sources feed the same index, and everything after the index is the
@@ -232,11 +455,11 @@ to point at a different config.
 
 | Key | Required | Meaning |
 |---|---|---|
-| `source` | no, `"script"` | `"script"` asks Mail.app (Automation permission). `"store"` reads Mail's files (Full Disk Access) |
-| `store` | with `source = "store"` only | The folder holding Mail's `V<n>/` directory. No default. Setting it without `source = "store"` is an error, so a config can't switch source by accident |
+| `source` | no, `"script"` | The source for accounts that don't name their own. `"script"` asks Mail.app (Automation permission). `"store"` reads Mail's files (Full Disk Access). `"imap"` reads an IMAP server ([IMAP source](#imap-source)) |
+| `store` | with a `"store"` account only | The folder holding Mail's `V<n>/` directory. No default. Setting it with no account using the store is an error, so a config can't switch source by accident |
 | `index` | yes | The index file to write. Must be outside the store. Keep it in the data tree |
 | `since` | yes | Only messages received on or after this date |
-| `[[accounts]]` | yes, at least one | `id` (from `make mail-index-mailboxes`) and `mailboxes` |
+| `[[accounts]]` | yes, at least one | `id` (from `make mail-index-mailboxes` for Mail.app accounts; your own name for IMAP ones) and `mailboxes`. Optional `source`; IMAP accounts take the keys under [IMAP source](#imap-source). Ids must be unique |
 | `bodies` | no, `false` | Store message bodies for search. The script source takes Mail's plain-text rendering; the store source converts HTML to text |
 | `attachments` | no, `false` | Store attachment names, types and sizes. Contents are never copied |
 | `max_body_chars` | no, `100000` | Longest body kept per message |
@@ -318,15 +541,17 @@ and how many messages and files are in scope.
 ### The index
 
 One SQLite file, owner-only (`0600`, folder `0700`). Table `messages` is keyed
-by Mail's message id (the store's `ROWID`, which scripting reports as the
-message `id`) and holds the account, mailbox, Message-ID,
+by the index's own id ([Index ids](#index-ids)), and also holds the source's
+id for the message (`source_id`: Mail's message id for the script and store
+sources, `UIDVALIDITY.UID` for IMAP), the account, mailbox, Message-ID,
 thread id, dates, sender, recipients (JSON), subject, flags, the optional
 body and attachment list. `messages_fts` is an FTS5 table over subject,
 sender, recipients and body, with diacritics folded. `meta` records the
-schema version, the source, a fingerprint of the scope and the last run time.
-If the schema version changes, delete the index and re-run. Switching
-`source` empties the index on the next run and rebuilds it, because flags and
-thread ids come out differently.
+schema version, each account's source, a fingerprint of the scope and the
+last run time. A schema 1 index is upgraded in place on the next run; for
+any other schema change, delete the index and re-run. Moving an account to
+another source empties that account's rows on the next run and indexes it
+again, because ids, flags and thread ids come out differently.
 
 **Deleted text is overwritten.** When a message leaves scope, or its body is
 blanked because you turned `bodies` off, its text is overwritten in the
@@ -409,7 +634,7 @@ at `http://mail-mcp:8000/mcp`, compose-internal only). The query logic in
 | Tool | Returns |
 |---|---|
 | `mail_status` | Message count, date range, last index run, whether bodies are searchable, `newest_id`, each account/mailbox with total and unread counts |
-| `mail_search` | Up to 50 summaries, newest first: id, date, sender, subject, mailbox, read/flagged, attachment count, and a snippet when the query matched. Filters: `query` (every word must match, as a prefix), `sender`, `mailbox`, `since`/`until` (inclusive dates), `unread_only`, `flagged_only`, `limit`, `offset`, and `after_id` (only mail indexed after that id, such as a `newest_id` from an earlier `mail_status`) |
+| `mail_search` | Up to 50 summaries, newest first: id, date, sender, subject, account, mailbox, read/flagged, attachment count, a `reply_ref` for drafts, and a snippet when the query matched. Filters: `query` (every word must match, as a prefix), `sender`, `mailbox`, `since`/`until` (inclusive dates), `unread_only`, `flagged_only`, `limit`, `offset`, and `after_id` (only mail indexed after that id, such as a `newest_id` from an earlier `mail_status`) |
 | `mail_get` | One message by id: recipients, Message-ID, thread id, attachment names, and the body (up to `max_chars`, default 20,000) |
 | `mail_thread` | Every indexed message in the same conversation, oldest first |
 
@@ -447,8 +672,9 @@ run.
 `newest_id=<n>`, which changes only when newer mail is indexed. Schedulers
 that skip work while a source is unchanged can poll it. It never includes
 message content, because a scheduler may paste it into a prompt as is.
-Message ids are Mail's own: new mail gets higher ids, and a message moved to
-another mailbox may get a new one.
+Message ids are the index's own: they count up as mail is indexed, across
+every account, and are never reused. A message moved to another mailbox
+gets a new one.
 
 ## Proactive review (cron)
 
@@ -534,7 +760,7 @@ In WebUI: *Draft a reply to Alex saying Thursday works.*
 
 | Tool | Does |
 |---|---|
-| `mail_draft_create` | Queues a draft: `to`, `cc`, `bcc`, `subject`, `body`, an optional `from_address`, or `reply_to` with the `id`, `account` and `mailbox` of a `mail_search` result. Returns a `request_id` |
+| `mail_draft_create` | Queues a draft: `to`, `cc`, `bcc`, `subject`, `body`, an optional `from_address`, or `reply_to` with the `reply_ref` of a `mail_search` or `mail_get` result (the older `{id, account, mailbox}` form still works for Mail.app accounts). Returns a `request_id` |
 | `mail_draft_status` | `queued`, `created`, `failed` or `rejected` (with a reason), or `unknown` |
 
 Results remind the model that nothing was sent. The server's instructions
@@ -549,7 +775,8 @@ written straight into the queue gets no further:
   breaks, and at most 20 recipients in all.
 - The subject is one line. The body is at most 100,000 characters.
 - There's no way to attach files.
-- `from_address` must be one of your Mail accounts' addresses.
+- `from_address` must be one of your Mail accounts' addresses, or an
+  `address`/`addresses` entry of an IMAP account in the config.
 - Unknown fields are refused.
 - The queue holds at most 50 requests, and the helper saves at most 20
   drafts an hour (`--max-per-hour`). Extra requests wait in the queue.
@@ -558,6 +785,20 @@ written straight into the queue gets no further:
 so Mail fills in the recipient, subject and threading headers. `body`
 replaces the quoted text. The helper never reads the message: it only asks
 Mail to reply to it.
+
+**IMAP accounts.** Pass the indexer config with `--config` (or
+`MAIL_INDEX_CONFIG`), and drafts for its `source = "imap"` accounts are
+appended to the account's Drafts folder instead (found by its `\Drafts`
+flag, then by name, or set `drafts_mailbox`). The helper picks the account
+from `reply_to`'s account, then from `from_address`. A draft with neither
+goes to Mail.app, or to the only IMAP account when `--no-mail-app` is set
+(for machines without Mail.app). An IMAP reply reads the original's
+Message-ID, References, From, Reply-To and Subject headers, never its body,
+and goes to its Reply-To or From address with `Re:` before the subject. The
+original isn't marked read or answered. The password comes from the
+Keychain as for the [IMAP source](#imap-source). IMAP failures are recorded
+as `failed` with `imap_login_refused`, `imap_password_missing`,
+`imap_unreachable`, `drafts_mailbox_not_found` or `reply_message_not_found`.
 
 **The host helper** (`scripts/mail-drafts.py`) has no access to the mail
 index, and `scripts/lib/mail_drafts.js` reads no message content. A test fails
@@ -593,8 +834,8 @@ there. To keep grants narrow, each helper ships as its own small app:
 
 | App | Bundle id | Runs | Permissions it asks for |
 |---|---|---|---|
-| Assistant Mail Reader | `local.assistant.mail-reader` | the indexer, every 15 minutes | Automation → Mail; Full Disk Access only if you use `source = "store"` |
-| Assistant Mail Drafts | `local.assistant.mail-drafts` | the drafts helper, continuously | Automation → Mail |
+| Assistant Mail Reader | `local.assistant.mail-reader` | the indexer, every 15 minutes | Automation → Mail; Full Disk Access only if you use `source = "store"`; the Keychain items you add for IMAP accounts |
+| Assistant Mail Drafts | `local.assistant.mail-drafts` | the drafts helper, continuously | Automation → Mail (unless `--no-mail-app`); the same Keychain items |
 
 Each app is a compiled launcher (`macos/mail-apps/Launcher.swift`) plus only
 its own helper's scripts, sealed by its code signature. The reader app
@@ -608,12 +849,14 @@ no bytecode written into the bundle). The apps have no Dock icon.
 make mail-apps        # build both into build/mail-apps (needs swiftc and Python 3.11+)
 macos/mail-apps/install.sh reader --config "$PWD/mail-index.toml"
 macos/mail-apps/install.sh drafts --dir "$PWD/data/mail-drafts"
+macos/mail-apps/install.sh password work   # only for IMAP accounts, once per account
 ```
 
 `install.sh` copies the app to `~/Applications` and loads a LaunchAgent
 (`~/Library/LaunchAgents/local.assistant.mail-<name>.plist`) that runs it:
 the reader every `--interval` seconds (default 900), the drafts helper
-continuously (`--open` and `--max-per-hour` pass through). Because launchd
+continuously (`--open`, `--max-per-hour`, `--config` and `--no-mail-app`
+pass through; give the drafts app `--config` for IMAP drafts). Because launchd
 starts the app, macOS asks on the app's behalf: allow it to control Mail,
 and, if the repository is under Documents, to read that folder. Logs, which
 hold counts only, go to `~/Library/Logs/assistant-mail/`. Add `--dry-run` to
