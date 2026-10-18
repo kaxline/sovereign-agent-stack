@@ -9,11 +9,14 @@ EOPNOTSUPP. The answer never comes, so each standalone profile gateway
 decides it must replace the default gateway, refuses (it cannot prove that
 PID is its own), and s6 restarts it in a loop.
 
-With HERMES_CONTROL_SOCKET_IN_TMP=1 the server binds Hermes' own temp-dir
-fallback (/tmp/hermes-gw-<hash>.sock, written to $HERMES_HOME/gateway.sock.path)
-and clients follow that pointer, the path Hermes already uses when the home
-path is too long for sun_path. Every gateway, the dashboard and `hermes` CLI
-calls share the container's /tmp, so they all reach each other.
+With HERMES_CONTROL_SOCKET_IN_TMP=1 the server binds /tmp/hermes-gw-<hash>.sock,
+writes that path to $HERMES_HOME/gateway.sock.path, and clients follow the
+pointer: Hermes' own fallback for a home path too long for sun_path, except that
+the directory is always /tmp. Hermes' fallback uses tempfile.gettempdir(), and
+gateway processes point TMPDIR at $HERMES_HOME/cache/scratch, which is virtiofs
+too. Stale socket files there (left by a Docker VM restart) cannot even be
+unlinked, which is what broke the direct path. Every gateway, the dashboard
+and `hermes` CLI calls share the container's /tmp, so they all reach each other.
 """
 from __future__ import annotations
 
@@ -30,7 +33,7 @@ SERVER_OLD = '''    direct = Path(home) / _SOCKET_FILENAME
 '''
 SERVER_NEW = f'''    direct = Path(home) / _SOCKET_FILENAME
     if _assistant_socket_in_tmp():  {MARKER}
-        return _fallback_socket_path(home), Path(home) / _POINTER_FILENAME
+        return _assistant_tmp_socket_path(home), Path(home) / _POINTER_FILENAME
     return (direct, None) if _fits_sun_path(direct) else (_fallback_socket_path(home), Path(home) / _POINTER_FILENAME)
 '''
 
@@ -47,6 +50,11 @@ HELPER_ANCHOR = "def resolve_server_socket_path("
 HELPER = f'''def _assistant_socket_in_tmp() -> bool:  {MARKER}
     """HERMES_CONTROL_SOCKET_IN_TMP=1: $HERMES_HOME cannot hold a connectable socket."""
     return os.environ.get("HERMES_CONTROL_SOCKET_IN_TMP", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _assistant_tmp_socket_path(home: Path) -> Path:
+    """/tmp, not tempfile.gettempdir(): gateways point TMPDIR under $HERMES_HOME (virtiofs)."""
+    return Path("/tmp") / f"hermes-gw-{{_home_hash(home)}}.sock"
 
 
 '''
