@@ -54,6 +54,14 @@ the stack under another app.
     that is already in `.env`, so update any of `VIKUNJA_PROXY_IMAGE`,
     `SIGNAL_CLI_IMAGE` and `CALDAV_MCP_IMAGE` you have set, or delete the
     line to take the new default. Then `docker compose up -d`.
+11. With `rag` enabled, LightRAG moves from v1.4.9.3 to v1.5.7 (update
+    `LIGHTRAG_IMAGE` if it is in `.env`). Back up `rag_storage` and the
+    `neo4j_data` volume first. On a Linux host the new entrypoint runs
+    `chown -R 1000:1000` on the mounted `rag_storage` and `inputs` before
+    dropping to uid 1000, so those host directories change owner. To keep
+    them owned by your uid, set `user:` on `lightrag` in an override; the
+    entrypoint then skips the chown, and the directories must be writable by
+    that uid.
 
 ### New services
 
@@ -143,6 +151,22 @@ only for silence). Set the keys above to `0` to get the old behaviour back.
   `v`), so that pin never pulled. Upstream publishes linux/amd64 only, so on
   Apple Silicon the `calendar` profile needs
   `DOCKER_DEFAULT_PLATFORM=linux/amd64` or a `platform:` override.
+- **LightRAG** v1.4.9.3 → v1.5.7, for the advisories fixed in 1.5.3–1.5.7
+  (guest-token auth bypass, Cypher injection, upload path traversal). The
+  server runs as uid 1000 instead of root. Without an API key, `/health`
+  now returns only status fields (`status`, `core_version`,
+  `pipeline_busy` and the like); `configuration`, queue and worker details
+  need `X-API-Key`. The compose healthcheck and the `check_lightrag_health`
+  MCP tool still pass. Entity and relation deletes moved from
+  `/documents/delete_entity` and `/documents/delete_relation` to
+  `/graph/entity/delete` and `/graph/relation/delete`.
+- **lightrag-mcp**: `delete_by_entities`, `delete_by_doc_ids`,
+  `create_entities`, `edit_entities`, `create_relations`, `edit_relations`
+  and `merge_entities` call routes LightRAG does not serve (`/entities/…`,
+  `/relations/…`, `/merge`, `DELETE /documents/{id}`), on v1.4.9.3 and
+  v1.5.7 alike. LightRAG answers 404 and lightrag_mcp 0.1.1 reports
+  `"status": "success"` with a `null` result. Queries, inserts, uploads,
+  document listing and health work.
 - **Hermes bootstrap**: registers `mcp_servers.todos` (named for what users
   call it; an earlier `mcp_servers.vikunja` entry is removed) with an
   `Authorization: Bearer ${VIKUNJA_MCP_TOKEN}` header. The read-only token goes

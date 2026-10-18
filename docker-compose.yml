@@ -128,7 +128,7 @@ services:
     container_name: ${CONTAINER_PREFIX:-}lightrag
     # Published image, unpatched. LIGHTRAG_BASE_IMAGE is the old name, kept so
     # an existing .env still pins the same tag.
-    image: ${LIGHTRAG_IMAGE:-${LIGHTRAG_BASE_IMAGE:-ghcr.io/hkuds/lightrag:v1.4.9.3}}
+    image: ${LIGHTRAG_IMAGE:-${LIGHTRAG_BASE_IMAGE:-ghcr.io/hkuds/lightrag:v1.5.7}}
     ports:
       - "127.0.0.1:${PORT:-9621}:9621"
     # Allowlist of what LightRAG reads. Optional storage backends stay unset
