@@ -7,8 +7,8 @@ span every schema, and writes are confined by database grants.
 Requires the **`db`** compose profile (`./scripts/setup.sh --db`). The
 `todo` profile ([Vikunja](todo.md)) starts the same database for its own
 schema, with or without `db`. This is
-**not** n8n's database. That one is the `postgres` service (container
-`n8n-postgres`, `automation` profile), and it is unchanged.
+**not** n8n's database; n8n stores its data in SQLite (see
+[n8n](n8n.md#where-n8n-stores-data)).
 
 ## Quick path
 
@@ -182,9 +182,9 @@ gitignored with the rest of `data/`). Like `./data/hermes`, it does **not**
 move with `ASSISTANT_DATA_ROOT` or `make data-dir-migrate`. Do not put it in an
 iCloud, Dropbox, OneDrive, or Google Drive folder. Sync clients corrupt a live
 Postgres cluster. `make doctor` warns when the path looks like one. Keep it
-apart from the directory n8n's `postgres` service uses (a downstream override
-may bind that at `data/postgres`). The two clusters run different major
-versions and must not share a directory.
+apart from the directory the deprecated n8n `postgres` service used (a
+downstream override may bind that at `data/postgres`). The two clusters run
+different major versions and must not share a directory.
 
 Postgres 18 images keep the cluster in a versioned subdirectory
 (`data/db/18/docker`). A future major upgrade means a dump and restore:

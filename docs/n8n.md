@@ -9,7 +9,24 @@ Workflow automation with starter workflows and credentials pre-imported for Ligh
 # COMPOSE_PROFILES=core,rag,automation
 ```
 
-n8n follows patterns from the [n8n self-hosted AI starter kit](https://github.com/n8n-io/self-hosted-ai-starter-kit): Postgres for n8n metadata, a one-shot `n8n-import` container, and demo data under `n8n/demo-data/`. Ollama and Qdrant are left out by default, since LightRAG owns RAG here (`rag` profile) and inference runs on your model server or the `ollama` profile.
+n8n follows patterns from the [n8n self-hosted AI starter kit](https://github.com/n8n-io/self-hosted-ai-starter-kit): a one-shot `n8n-import` container and demo data under `n8n/demo-data/`. Unlike the starter kit, n8n stores its data in SQLite, not Postgres. Ollama and Qdrant are left out by default, since LightRAG owns RAG here (`rag` profile) and inference runs on your model server or the `ollama` profile.
+
+## Where n8n stores data
+
+Workflows, credentials, the owner account and execution history live in SQLite at `/home/node/.n8n/database.sqlite` on the `n8n_storage` volume, next to the `config` file that holds the instance's encryption key. `n8n` and `n8n-import` both mount that volume and set `DB_TYPE=sqlite`. A compose overlay that binds `/home/node/.n8n` somewhere else must do it for both services.
+
+`n8n-import` runs before `n8n` on every `up`. It imports the demo credentials and workflows only when `database.sqlite` does not exist yet, and otherwise exits without opening the database, so it never touches a store a running n8n holds.
+
+Back up the volume with n8n stopped, since copying a SQLite file mid-write can give a corrupt copy:
+
+```bash
+docker compose stop n8n
+docker run --rm -v assistant_n8n_storage:/from:ro -v "$PWD":/to alpine \
+  tar czf /to/n8n_storage.tgz -C /from .
+docker compose up -d n8n
+```
+
+The volume name is `<compose project>_n8n_storage`; check it with `docker volume ls`.
 
 ## First-time n8n setup
 
@@ -43,12 +60,39 @@ If you change `LIGHTRAG_API_KEY`, `NEO4J_PASSWORD`, or `N8N_ENCRYPTION_KEY` afte
 export $(grep -E '^(N8N_ENCRYPTION_KEY|LIGHTRAG_API_KEY|NEO4J_PASSWORD|NEO4J_USERNAME)=' .env | xargs)
 node scripts/generate-n8n-credentials.js
 
-# Re-import credentials (only needed if n8n DB already exists)
-docker compose run --rm --entrypoint /bin/sh n8n-import -c \
+# Re-import credentials into the existing database, with n8n stopped
+docker compose stop n8n
+docker compose run --rm --no-deps --entrypoint /bin/sh n8n-import -c \
   'n8n import:credentials --separate --input=/demo-data/credentials'
+docker compose up -d n8n
 ```
 
+`N8N_ENCRYPTION_KEY` has to match the key in `/home/node/.n8n/config` on the volume. n8n 2.x refuses to start when they differ ("Mismatching encryption keys"). 1.x starts with the `.env` key and then can't decrypt credentials saved under the other one.
+
 Alternatively, create credentials manually in the n8n UI and re-attach them to the starter workflows.
+
+## Upgrading an existing install
+
+Releases up to v0.3.2 defined a Postgres service for n8n, but n8n never used it: the `n8n` service's environment list replaced the shared one, so it never got the `DB_*` settings and ran on SQLite all along. `n8n-import` did get them and seeded the demo data into Postgres, where n8n never saw it. Your workflows, credentials and owner account are in SQLite, so the upgrade leaves them where they are.
+
+After moving to this release and running `docker compose up -d`, remove the old Postgres container. Its volume holds only the demo data `n8n-import` put there:
+
+```bash
+docker compose --profile n8n-postgres-legacy rm -sf postgres
+docker volume rm assistant_postgres_storage   # optional
+```
+
+Downstream overlays: bind `n8n-import`'s `/home/node/.n8n` to the same place as n8n's, and drop any override of the `postgres` service. The service is kept, under a profile nothing enables, only so those overrides still parse; it will be removed in a later release.
+
+An existing install never got the starter workflows in n8n. To add them (IDs that already exist are overwritten):
+
+```bash
+./scripts/setup.sh            # regenerates n8n/demo-data/credentials
+docker compose stop n8n
+docker compose run --rm --no-deps --entrypoint /bin/sh n8n-import -c \
+  'n8n import:credentials --separate --input=/demo-data/credentials && n8n import:workflow --separate --input=/demo-data/workflows'
+docker compose up -d n8n
+```
 
 ## HTTP Request patterns
 
@@ -121,7 +165,8 @@ Scan and query workflows always hit the **hot** LightRAG workspace (whatever `WO
 # Stack healthy
 docker compose ps
 
-# n8n-import succeeded (first run only)
+# n8n-import seeded the database (first run), or printed
+# "n8n database exists, skipping import"
 docker compose logs n8n-import
 
 # LightRAG auth

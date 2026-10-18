@@ -561,7 +561,7 @@ services:
   # in SQLite on n8n_storage. No profile starts it. It stays defined so
   # downstream overlays that override it still parse, and so the old
   # postgres_storage data can be inspected with --profile n8n-postgres-legacy.
-  # Will be removed in a later release. docs/n8n.md#upgrading-from-v031
+  # Will be removed in a later release. docs/n8n.md#upgrading-an-existing-install
   # ----------------------------------------------------------------------
   postgres:
     profiles: ["n8n-postgres-legacy"]

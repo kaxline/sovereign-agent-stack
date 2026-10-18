@@ -74,7 +74,7 @@ flowchart TB
 | **`core`** (default) | Hermes agent, Hermes WebUI, SearXNG, mcp-searxng |
 | **`rag`** | LightRAG + Neo4j knowledge graph + MCP sidecar |
 | **`calendar`** | CalDAV calendars via caldav-mcp (multi-account) |
-| **`automation`** | n8n + Postgres + GPT Researcher |
+| **`automation`** | n8n + GPT Researcher |
 | **`coding`** | OpenCode AI coding agent + Hermes coding delegation (opencode-mcp) |
 | **`db`** | Shared Postgres for integrations and the agent + SQL MCP (read-only on the API profile) |
 | **`todo`** | Vikunja todo lists (web app + built-in MCP), stored in the shared Postgres |
