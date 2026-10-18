@@ -1369,9 +1369,9 @@ services:
     image: ghcr.io/nesquena/hermes-webui:${HERMES_WEBUI_IMAGE_TAG:-0.52.113}
     restart: unless-stopped
     # Stock init rsyncs /apptoo → /app then starts server.py. Our wrapper
-    # patches persisted_message_count_for_session on the runtime tree first so
-    # session-stream self-heal cannot loop on a stale SESSIONS cache count.
-    # See compose/hermes/scripts/patch-webui-persisted-count.py.
+    # patches load_workspaces on the runtime tree first so /opt/projects
+    # children show up as workspaces.
+    # See compose/hermes/scripts/patch-webui-projects-library.py.
     entrypoint: ["/bin/bash", "/bootstrap/hermeswebui-entrypoint.sh"]
     ports:
       - "127.0.0.1:${HERMES_WEBUI_PORT:-8787}:8787"
@@ -1423,7 +1423,6 @@ services:
       - ./compose/hermes/skills:/opt/skills:ro
       - ./compose/hermes/scripts/project-brief-prefill.py:/bootstrap/project-brief-prefill.py:ro
       - ./compose/hermes/scripts/hermeswebui-entrypoint.sh:/bootstrap/hermeswebui-entrypoint.sh:ro
-      - ./compose/hermes/scripts/patch-webui-persisted-count.py:/bootstrap/patch-webui-persisted-count.py:ro
       - ./compose/hermes/scripts/projects_library.py:/bootstrap/projects_library.py:ro
       - ./compose/hermes/scripts/patch-webui-projects-library.py:/bootstrap/patch-webui-projects-library.py:ro
       - ${ASSISTANT_DATA_ROOT:-./data}/projects:/opt/projects
