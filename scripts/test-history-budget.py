@@ -2,9 +2,10 @@
 """Checks for the per-session history window.
 
 Host part is stdlib-only. With the pinned Hermes image present (or --image),
-the patch is applied in the image and the gateway wire contract is checked:
-session.create / session.resume must accept history_budget (v2026.9 answered
-4000), and the history_* reply fields must validate.
+the patch is applied in the image (twice, for idempotency) and the gateway
+wire contract is checked: session.create / session.resume must accept
+history_budget (v2026.9 answered 4000), invalid values answer 4028, and the
+history_* fields must validate and appear on session.context_breakdown.
 """
 
 from __future__ import annotations
@@ -184,18 +185,30 @@ def test_fit_tokens_tightens_the_ceiling() -> None:
 
 
 IMAGE_DRIVER = r'''
+import os
 import subprocess
 import sys
+import threading
 
-out = subprocess.run([sys.executable, "/bootstrap/patch-history-budget.py"], capture_output=True, text=True)
-if out.returncode != 0:
-    raise SystemExit(f"FAIL patch: {out.stdout}{out.stderr}")
-for label in ("session.create", "session.resume", "session.context_breakdown", "message.complete"):
-    assert f"patched {label} contract" in out.stdout, out.stdout
+os.makedirs("/tmp/hermes-home", exist_ok=True)
+os.environ["HERMES_HOME"] = "/tmp/hermes-home"
+
+for _ in range(2):
+    out = subprocess.run([sys.executable, "/bootstrap/patch-history-budget.py"], capture_output=True, text=True)
+    if out.returncode != 0:
+        raise SystemExit(f"FAIL patch: {out.stdout}{out.stderr}")
+assert "already applied (server install)" in out.stdout, out.stdout
+for name in ("sessions.py", "events.py"):
+    src = open("/opt/hermes/tui_gateway/contracts/" + name).read()
+    assert "history_budget" not in src, "contract files stay untouched"
+src = open("/opt/hermes/tui_gateway/server.py").read()
+assert src.count("# assistant-stack: history budget install") == 1, "one install block"
 
 sys.path.insert(0, "/opt/hermes")
-from tui_gateway.contracts import events, registry, sessions
+from tui_gateway.contracts import registry
+from tui_gateway import server
 
+assert server._history_budget_installed
 params, problem = registry.validate_params(registry.METHODS["session.create"], {"history_budget": 20000})
 assert problem is None, problem
 params, problem = registry.validate_params(
@@ -205,11 +218,28 @@ params, problem = registry.validate_params(registry.METHODS["session.create"], {
 assert problem is not None, "unknown keys are still refused"
 
 fields = dict(history_budget=20000, history_tokens=1234, history_first_row_id=42, history_summarised=True)
-events.MessageCompletePayload.model_validate({"text": "hi", **fields})
-sessions.SessionContextBreakdownResult.model_validate(dict(
+registry.EVENTS["message.complete"].payload.model_validate({"text": "hi", **fields})
+registry.METHODS["session.context_breakdown"].result.model_validate(dict(
     categories=[], context_max=1, context_percent=0, context_used=0, estimated_total=0,
     context_estimated=False, context_source="x", model="m", **fields))
-print("image ok")
+
+def code(response):
+    return (response.get("error") or {}).get("code")
+
+for bad in (0, -5, "8192", 1.5):
+    resp = server.handle_request({"id": 1, "method": "session.create", "params": {"history_budget": bad}})
+    assert code(resp) == 4028, (bad, resp)
+
+# Breakdown before the agent builds still carries the report.
+server._sessions["hb1"] = {"agent": None, "history": [], "history_lock": threading.Lock(),
+                           "history_budget": 5000, "session_key": "hb1"}
+resp = server.handle_request({"id": 2, "method": "session.context_breakdown", "params": {"session_id": "hb1"}})
+result = resp.get("result")
+assert isinstance(result, dict), resp
+assert result["history_budget"] == 5000 and result["history_summarised"] is False, result
+assert {"history_tokens", "history_first_row_id"} <= set(result), result
+registry.METHODS["session.context_breakdown"].result.model_validate(result)
+os.write(1, b"image ok\n")  # importing the gateway points sys.stdout at stderr
 '''
 
 

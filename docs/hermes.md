@@ -54,10 +54,22 @@ This stack pins Hermes Agent and Hermes WebUI together. The same values live in 
 
 | Image | Minimum / default tag |
 |---|---|
-| `nousresearch/hermes-agent` | **`v2026.9.14`** |
-| `ghcr.io/nesquena/hermes-webui` | **`0.52.113`** |
+| `nousresearch/hermes-agent` | **`v0.22.2`** |
+| `ghcr.io/nesquena/hermes-webui` | **`0.52.458`** |
 
 Bump both with `make hermes-upgrade AGENT=… WEBUI=…` — never one at a time. Details: [Hermes WebUI — Upgrading](hermes-webui.md#upgrading).
+
+Hermes Agent switched from calendar tags (`v2026.9.14`) to semver (`v0.21.6`, `v0.22.0`, …) after September 2026. A semver tag is newer than every calendar tag, so compare versions by release date, not by string order. The overlays in this stack are anchored to `v0.22.2` and do not apply to calendar-tagged images.
+
+### One gateway per profile
+
+Hermes v0.22 runs one gateway per container that serves every profile, and moves each profile's API server onto the default listener at `/p/<profile>/`. This stack keeps the old layout instead: one gateway process per profile, with the `api-server` profile on port 8643 and `browser` on 8644, because Boundary and the WebUI call those ports. `compose/hermes/019-pin-profile-gateways.sh` runs before the image's profile reconciler on every start and writes `gateway.standalone: true` into each named profile's `config.yaml` where the key is unset. A profile that ran a gateway before still starts one, and a profile that never did stays idle.
+
+Upstream calls `gateway.standalone` a temporary compatibility setting that will be removed. When that happens the stack has to move to the multiplexed layout, which changes the API URLs that Boundary and the WebUI use. To try the multiplexed layout now, set `HERMES_PIN_STANDALONE_GATEWAYS=0` in `.env` and remove `gateway.standalone` from the profiles' `config.yaml`.
+
+### Session pruning
+
+Hermes deletes ended sessions that have been inactive for `sessions.retention_days` (90) when it starts, because `sessions.auto_prune` defaults to `true`. The same cont-init script writes `sessions.auto_prune: false` into the default profile and every named profile where the key is unset, so `session_search` and the WebUI keep all history. A value you set by hand is left alone. `HERMES_PIN_SESSIONS_KEEP=0` turns the pin off for new profiles.
 
 Dashboard JSON-RPC clients (for example Boundary over the gateway WebSocket) can rely on this agent tag for:
 
@@ -235,11 +247,11 @@ Prefer Qwen-class (or other known-good agentic) models for folder listing, MCP, 
 |---|---|
 | `compose/hermes/patch-text-tool-call-recovery.py` | Recovers Python/XML tool mimicry into real `tool_calls` before dispatch |
 | `compose/hermes/patch-fabricated-result.py` | Continues a stop turn that claims a write or `<result>` with no tool call, or asks the user for a password in chat, and does not store that reply |
-| `compose/hermes/patch-reasoning-only-tool-markup.py` | Re-prompts a reply that is only reasoning ending in a malformed tool call (`</parameter></function></tool_call>`), instead of showing that reasoning as the answer (Hermes v2026.9+ promotes it; v2026.8 re-prompted) |
 | `compose/hermes/patch-browser-exec-hint.py` | Adds a `hint` to a `browser_exec` result when the code imported the pre-defined helpers (e.g. `from browser_helpers import …`) or printed nothing; prints a trailing bare expression's value; points `browser_vault_save_login`'s `next` at `browser_vault_fill` when the save could not fill the page; drops the Chromium-reinstall advice when agent-browser hits EACCES |
-| `compose/hermes/patch-openrouter-empty-stream.py` | On `EmptyStreamError` after an OpenRouter cache HIT, sends `X-OpenRouter-Cache-Clear` and surfaces a clearer error |
 | `compose/hermes/patch-tool-eval-trace.py` | JSONL turn traces for [tool-calling eval](tool-eval.md) (`data/hermes/eval/traces.jsonl`); unwraps `tool_call` inner names; records `content_len` after the text phase |
 | `compose/hermes/patch-tool-search-always-include.py` | Honors `tools.tool_search.always_include` so stacked MCP pins stay eager |
+
+Hermes v0.22 no longer shows a reasoning-only reply as the answer on this stack's route (a custom provider behind llm-proxy); it re-prompts instead. `scripts/test-reasoning-promotion-gate.py --image` checks that on each bump.
 
 If OpenRouter empty streams persist with caching enabled, set `HERMES_OPENROUTER_CACHE=0` in the Hermes environment (or `openrouter.response_cache: false` in config). Recreate the `hermes` container after changing overlays or those env values.
 
@@ -778,15 +790,21 @@ docker compose exec hermes sh -c 'ls -id /opt/data/memories /opt/data/profiles/a
 docker compose exec hermes ls /opt/data/SOUL.md /opt/data/profiles/browser/SOUL.md /opt/data/profiles/api-server/SOUL.md
 
 # Tool-calling overlays (cont-init). After recreate, logs should show both patches.
-docker compose logs hermes 2>&1 | grep -E 'patch-text-tool-call-recovery|patch-fabricated-result|patch-openrouter-empty-stream|patch-tool-eval-trace|patch-tool-search-always-include' | tail -5
+docker compose logs hermes 2>&1 | grep -E 'patch-text-tool-call-recovery|patch-fabricated-result|patch-tool-eval-trace|patch-tool-search-always-include' | tail -5
 docker compose exec hermes test -f /opt/hermes/agent/text_tool_call_recovery.py && echo "text recovery helper ok"
 docker compose exec hermes test -f /opt/hermes/agent/fabricated_result.py && echo "fabricated-result helper ok"
 docker compose exec hermes test -f /opt/hermes/agent/tool_eval_trace.py && echo "tool-eval tracer ok"
 docker compose exec hermes grep -F 'assistant-stack: text-mimicked tool-call recovery' /opt/hermes/agent/conversation_loop.py >/dev/null && echo "text recovery call site ok"
 docker compose exec hermes grep -F 'assistant-stack: fabricated result without a tool call' /opt/hermes/agent/turn_final_response.py >/dev/null && echo "fabricated-result call site ok"
-docker compose exec hermes grep -F 'assistant-stack: hold reasoning-only promotion on tool-call markup' /opt/hermes/agent/turn_final_response.py >/dev/null && echo "reasoning-only markup hold ok"
 docker compose exec hermes grep -F 'assistant-stack: tool-eval turn trace' /opt/hermes/agent/conversation_loop.py >/dev/null && echo "tool-eval call site ok"
-docker compose exec hermes grep -F 'assistant-stack: bust OpenRouter cache on empty stream' /opt/hermes/agent/chat_completion_helpers.py >/dev/null && echo "empty-stream cache bust ok"
+
+# Per-profile gateways and kept sessions (019-pin-profile-gateways).
+# Expect true / false; three gateway processes (default, api-server, browser).
+docker compose logs hermes 2>&1 | grep -F '[019-pin-profile-gateways]' | tail -5
+docker compose exec hermes hermes -p browser config get gateway.standalone
+docker compose exec hermes hermes -p browser config get sessions.auto_prune
+docker compose exec hermes hermes config get sessions.auto_prune
+docker compose exec hermes tail -6 /opt/data/logs/container-boot.log
 
 # Stack MCP tools stay listed in always_include (docs / doctor).
 # Hermes v2026.9+ makes session_search eager via tools.tool_search.defer

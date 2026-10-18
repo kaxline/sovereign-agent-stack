@@ -92,11 +92,14 @@ with socket.socket() as s:
 # keepalive 5 s notices the server quitting; parked probe 120 s, so only a wake revives in time.
 server_cfg = {"url": f"http://127.0.0.1:{port}/mcp", "connect_timeout": 30, "timeout": 5,
               "keepalive_interval": 5, "parked_retry_interval": 120}
-import yaml
-(root / "config.yaml").write_text(yaml.safe_dump({"mcp_servers": {"wake-test": server_cfg}}))
+try:  # Hermes v0.22 has ruamel behind hermes_yaml and no PyYAML
+    from hermes_yaml import safe_dump as yaml_dump
+except ImportError:
+    from yaml import safe_dump as yaml_dump
+(root / "config.yaml").write_text(yaml_dump({"mcp_servers": {"wake-test": server_cfg}}))
 for profile, servers in (("api-server", {"wake-test": server_cfg}), ("browser", {})):
     (root / "profiles" / profile).mkdir(parents=True)
-    (root / "profiles" / profile / "config.yaml").write_text(yaml.safe_dump({"mcp_servers": servers}))
+    (root / "profiles" / profile / "config.yaml").write_text(yaml_dump({"mcp_servers": servers}))
 
 from tools import mcp_wake
 assert mcp_wake.hermes_root() == root, mcp_wake.hermes_root()

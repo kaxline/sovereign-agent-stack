@@ -16,7 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 HERMES_DIR = ROOT / "compose" / "hermes"
-DEFAULT_TAG = "v2026.9.14"
+DEFAULT_TAG = "v0.22.2"
 
 
 # Prelude for drivers that call finish_text_response with a bare AIAgent.
@@ -58,6 +58,12 @@ def make_agent(holds):
     agent._emit_status = lambda *a, **k: None
     return agent
 
+# Hermes v0.22 added required keyword-only arguments to finish_text_response.
+import inspect as _inspect
+_DRIVE_EXTRA_KWARGS = {}
+if "effective_task_id" in _inspect.signature(finish_text_response).parameters:
+    _DRIVE_EXTRA_KWARGS["effective_task_id"] = "turn-driver"
+
 def drive(holds, reasoning, content=""):
     agent = make_agent(holds)
     msg = SimpleNamespace(
@@ -81,6 +87,7 @@ def drive(holds, reasoning, content=""):
             final_response=content, _turn_exit_reason=None, _preflight_compression_blocked=False,
             codex_ack_continuations=0, truncated_response_parts=[], length_continue_retries=0,
             _pending_verification_response=None, _pending_verification_response_previewed=False,
+            **_DRIVE_EXTRA_KWARGS,
         )
     except Exception as exc:  # later stop gates need more agent; promotion already ran
         err = exc

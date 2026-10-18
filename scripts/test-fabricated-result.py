@@ -158,14 +158,14 @@ IMAGE_PATCHES = r'''
 import subprocess
 import sys
 
-for script in ("/bootstrap/patch-fabricated-result.py", "/bootstrap/patch-reasoning-only-tool-markup.py"):
+for script in ("/bootstrap/patch-fabricated-result.py",):
     out = subprocess.run([sys.executable, script], capture_output=True, text=True)
     if out.returncode != 0:
         raise SystemExit(f"FAIL {script}: {out.stdout}{out.stderr}")
 '''
 
 IMAGE_CHECKS = r'''
-from agent.fabricated_result import SECRET_PLACEHOLDER, SECRET_REQUEST_NUDGE
+from agent.fabricated_result import FABRICATED_RESULT_NUDGE, SECRET_PLACEHOLDER, SECRET_REQUEST_NUDGE
 from agent.context_compressor import ContextCompressor
 
 # The session's final reply: re-prompted with the vault nudge, not kept.
@@ -184,8 +184,9 @@ agent, msg, messages, verdict, err = drive(0, "", content="Signed in. Your feed 
 assert not any(m.get("_fabricated_result_nudge") for m in messages), messages[-2:]
 
 # The compressor treats the nudge as synthetic.
-src = open("/opt/hermes/agent/context_compressor.py").read()
-assert "SECRET_REQUEST_NUDGE" in src
+for nudge in (FABRICATED_RESULT_NUDGE, SECRET_REQUEST_NUDGE):
+    assert ContextCompressor._is_synthetic_compression_user_turn({"role": "user", "content": nudge})
+assert not ContextCompressor._is_synthetic_compression_user_turn({"role": "user", "content": "Hi"})
 print("image ok")
 '''
 

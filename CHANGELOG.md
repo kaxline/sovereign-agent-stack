@@ -50,6 +50,14 @@ the stack under another app.
    index in place: ids are kept and nothing is fetched again, so
    `mail-triage` carries on where it was. Drafts requests queued before the
    upgrade still work.
+10. Hermes Agent v0.22.2 and WebUI 0.52.458 (from v2026.9.14 and 0.52.113).
+    `setup.sh` does not change image tags in an existing `.env`, and the
+    overlays no longer apply to calendar-tagged agent images, so a `.env`
+    left on `v2026.9.14` starts without them (`make doctor` fails on it).
+    Back up `data/hermes` first (with `hermes` stopped). Then run `make hermes-upgrade AGENT=v0.22.2 WEBUI=0.52.458` (pulls both
+    images, re-runs both bootstraps, recreates `hermes` and `hermes-webui`)
+    and the verification block in [docs/hermes-webui.md](docs/hermes-webui.md#verification).
+    An app that sets its own image tags must move both together.
 
 ### New services
 
@@ -113,6 +121,8 @@ Only with `todo` enabled.
 | `LLM_DEFAULT_MAX_TOKENS` | `16384` | llm-proxy adds `max_tokens` to chat/completions requests that set no output limit. `0` = off |
 | `LLM_STREAM_MAX_SECONDS` | `3600` | Longest one llm-proxy request may take, start to finish. `0` = no limit |
 | `HERMES_MAX_TOKENS` | `16384` | `model.max_tokens` bootstrap writes to proxy profiles that have none. `0` = write nothing |
+| `HERMES_PIN_STANDALONE_GATEWAYS` | `1` | `0` stops writing `gateway.standalone: true` into named profiles at `hermes` start (see Behaviour changes) |
+| `HERMES_PIN_SESSIONS_KEEP` | `1` | `0` stops writing `sessions.auto_prune: false` into profiles at `hermes` start |
 
 ### Behaviour changes
 
@@ -128,8 +138,55 @@ only for silence). Set the keys above to `0` to get the old behaviour back.
 - Bootstrap sets `model.max_tokens=16384` on every proxy profile that has no
   value. Existing values, including `browser`'s 1024, are kept.
 
+Hermes v0.22 changes two defaults that this stack sets back:
+
+- **One gateway per profile.** v0.22 runs a single gateway that serves every
+  profile and moves each profile's API server to `/p/<profile>/` on the
+  default listener. The new cont-init `019-pin-profile-gateways` writes
+  `gateway.standalone: true` into each named profile's `config.yaml` where the
+  key is unset, before the image's reconciler runs. `api-server` stays on 8643
+  and `browser` on 8644, a profile that ran a gateway still runs its own, and
+  a profile that never ran one stays idle. Upstream marks `gateway.standalone`
+  as temporary; see [docs/hermes.md](docs/hermes.md#one-gateway-per-profile).
+- **Sessions are kept.** v0.22 deletes ended sessions inactive for 90 days on
+  startup (`sessions.auto_prune: true`). The same script writes
+  `sessions.auto_prune: false` into every profile where the key is unset. The
+  `api-server` and `browser` profiles already had it; the default profile and
+  agent profiles such as Buzz employees did not, and pruned under v2026.9.14
+  too. A value set by hand is kept.
+
 ### Changes
 
+- **Hermes v0.22.2 / WebUI 0.52.458**: Hermes Agent tags moved from calendar
+  versions (`v2026.9.14`) to semver (`v0.21.6`, `v0.22.0`, `v0.22.2`). A semver
+  tag is newer than every calendar tag. The overlays were re-anchored to
+  v0.22.2:
+  - Re-anchored: `patch-fabricated-result`, `patch-history-budget`,
+    `patch-mcp-wake`, `patch-send-message-tool`, `patch-tool-search-visible`,
+    `patch-tool-search-always-include`, and the WebUI
+    `patch-webui-projects-library` (now wraps `load_workspaces` instead of
+    rewriting it). `history_budget` now declares its contract fields at
+    install time like the client-context overlay; its wire contract and
+    error code `4028` are unchanged. The `POST /v1/mcp/servers/{name}/reconnect`
+    contract is unchanged; `mcp_wake.py` reads YAML through `hermes_yaml`,
+    because the v0.22 image has no PyYAML and the endpoint would otherwise
+    fail on every call. `tool_search` no longer reports curated-deferred core
+    tools (`cronjob_manage`, `todo_list`, `session_search`) as already active.
+  - Dropped, covered upstream: `patch-reasoning-only-tool-markup` (v0.22
+    promotes reasoning to the answer only on trusted routes; this stack's
+    llm-proxy route re-prompts, checked by
+    `scripts/test-reasoning-promotion-gate.py`),
+    `patch-cron-default-deliver-signal` (v0.22 delivers a WebUI cron job with
+    no origin to the Signal home channel), `patch-agent-browser-npx` (v0.22
+    has no npx path; `08-warmup-agent-browser` still installs the CLI),
+    `patch-webui-persisted-count` (fixed in WebUI #7672).
+  - Dropped, dead: `patch-openrouter-empty-stream`. Its retry and message
+    edits had not applied since v2026.9.
+  - The bootstrap scripts, `sync-buzz-profile.sh` and
+    `scripts/lib/hermes-yaml.sh` fall back to `hermes_yaml` when PyYAML is
+    missing, as it is in v0.22.
+  - `make doctor` fails when `HERMES_AGENT_IMAGE_TAG` is a calendar tag, and no
+    longer looks for the cron-default-deliver marker.
 - **Hermes bootstrap**: registers `mcp_servers.todos` (named for what users
   call it; an earlier `mcp_servers.vikunja` entry is removed) with an
   `Authorization: Bearer ${VIKUNJA_MCP_TOKEN}` header. The read-only token goes

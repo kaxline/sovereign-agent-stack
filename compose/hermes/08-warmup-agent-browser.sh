@@ -4,7 +4,12 @@
 # The native binary under data/hermes (a Docker Desktop virtiofs bind mount)
 # is mode 644. access() on that mount reports it executable, so the CLI's
 # own chmod never runs and exec returns EACCES. /opt/hermes is not that mount.
-# Hermes resolves agent-browser on PATH before npx; /opt/hermes/bin is first.
+#
+# Hermes looks for agent-browser in its package-manager store, then on PATH
+# (/opt/hermes/bin is first), and has no npx fallback. The image does not ship
+# it, and the hermes user cannot lazy-install it into the root-owned store
+# under /opt/hermes/tools, so this install is the only working CLI. Keep the
+# version equal to agent-browser in the image's pm/lock.json.
 set -u
 
 SPEC="${AGENT_BROWSER_NPX_SPEC:-agent-browser@0.26.0}"
@@ -59,7 +64,7 @@ mkdir -p "$LOCK_DIR"
   fi
   log "Installing $SPEC under $PREFIX"
   if ! install_cli; then
-    log "WARN: agent-browser stays on the npx fallback until install succeeds"
+    log "WARN: browser tools stay unavailable until the install succeeds"
     exit 0
   fi
   if ! link_cli; then
