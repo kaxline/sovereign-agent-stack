@@ -69,7 +69,7 @@ curl -X POST http://localhost:8000/report/ \
   -H "Content-Type: application/json" \
   -d '{"task":"What is SearXNG?","report_type":"research_report","report_source":"web","generate_in_background":false}'
 
-# Deep research via n8n webhook (activate workflow first in UI)
+# Deep research via n8n webhook (publish the workflow in the UI first)
 curl -X POST http://localhost:5678/webhook/deep-research \
   -H "Content-Type: application/json" \
   -d '{"query": "What is GPT Researcher?"}'

@@ -62,6 +62,22 @@ the stack under another app.
     them owned by your uid, set `user:` on `lightrag` in an override; the
     entrypoint then skips the chown, and the directories must be writable by
     that uid.
+12. With `automation` enabled, n8n moves from 1.107.4 to 2.43.7 (update
+    `N8N_IMAGE` if it is in `.env`). n8n migrates its database on first
+    start and the migration only goes forward, so back it up before moving
+    the pin. The `n8n` service is not given the `DB_*` settings, so n8n
+    keeps its workflows and credentials in SQLite in the `n8n_storage`
+    volume, next to the `config` file that holds its encryption key; the
+    `postgres` service only holds what `n8n-import` seeded. Copy the whole
+    directory:
+
+    ```bash
+    docker compose --profile automation stop n8n
+    docker compose --profile automation cp n8n:/home/node/.n8n ./n8n-before-2.43.7
+    ```
+
+    Then `docker compose up -d`. Workflows you imported yourself that read
+    `$env` stop working (see Behaviour changes).
 
 ### New services
 
@@ -139,6 +155,10 @@ only for silence). Set the keys above to `0` to get the old behaviour back.
   idle stream (dead connection, upstream closed).
 - Bootstrap sets `model.max_tokens=16384` on every proxy profile that has no
   value. Existing values, including `browser`'s 1024, are kept.
+- **n8n 2.x blocks `$env` in workflow expressions** by default
+  (`N8N_BLOCK_ENV_ACCESS_IN_NODE=true`), and this stack leaves it on. A
+  `GPTR_URL` set in `.env` no longer reaches n8n; edit the URL in the
+  workflow instead.
 
 ### Changes
 
@@ -167,6 +187,12 @@ only for silence). Set the keys above to `0` to get the old behaviour back.
   v1.5.7 alike. LightRAG answers 404 and lightrag_mcp 0.1.1 reports
   `"status": "success"` with a `null` result. Queries, inserts, uploads,
   document listing and health work.
+- **n8n** 1.107.4 → 2.43.7, past the advisories filed against 1.107.4.
+  The bundled `WfGptrResearch01` workflow calls
+  `http://gpt-researcher:8000/report/` directly instead of
+  `{{ $env.GPTR_URL }}`, and `GPTR_URL` is no longer passed to `n8n` or
+  listed in `.env.example`. n8n 2.x calls the workflow toggle **Publish**
+  instead of **Activate**; the docs say publish.
 - **Hermes bootstrap**: registers `mcp_servers.todos` (named for what users
   call it; an earlier `mcp_servers.vikunja` entry is removed) with an
   `Authorization: Bearer ${VIKUNJA_MCP_TOKEN}` header. The read-only token goes

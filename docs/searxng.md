@@ -98,7 +98,7 @@ docker compose exec mcp-searxng wget -qO- http://127.0.0.1:3000/health
 docker compose exec hermes python3 -c \
   "import urllib.request; print(urllib.request.urlopen('http://mcp-searxng:3000/health', timeout=5).read().decode())"
 
-# Web search via n8n webhook (activate workflow first in UI)
+# Web search via n8n webhook (publish the workflow in the UI first)
 curl -X POST http://localhost:5678/webhook/web-search \
   -H "Content-Type: application/json" \
   -d '{"query": "LightRAG knowledge graph"}'

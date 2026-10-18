@@ -6,7 +6,7 @@ include:
     project_directory: .
 
 x-n8n: &service-n8n
-  image: ${N8N_IMAGE:-n8nio/n8n:1.107.4}
+  image: ${N8N_IMAGE:-n8nio/n8n:2.43.7}
   # Allowlist. The root .env stays on the host for Compose interpolation and
   # is not mounted into the container.
   environment:
@@ -23,7 +23,6 @@ x-n8n: &service-n8n
     - LIGHTRAG_URL=http://lightrag:9621
     - NEO4J_HTTP_URL=http://neo4j:7474
     - SEARXNG_URL=http://searxng:8080
-    - GPTR_URL=http://gpt-researcher:8000
 
 # Profiles that start the shared Postgres (postgres-db, db-provision, and the
 # two SQL MCP sidecars). An integration that keeps data there appends its own
@@ -692,8 +691,8 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:${N8N_HOST_PORT:-5678}:5678"
-    # This list replaces the anchor environment, so the secrets and the
-    # workflow URL are repeated here. The anchor still feeds n8n-import.
+    # This list replaces the anchor environment, so the secrets are repeated
+    # here. The anchor still feeds n8n-import.
     environment:
       - N8N_HOST=localhost
       - N8N_PORT=5678
@@ -703,7 +702,6 @@ services:
       - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:?set N8N_ENCRYPTION_KEY in .env}
       - N8N_USER_MANAGEMENT_JWT_SECRET=${N8N_USER_MANAGEMENT_JWT_SECRET:?set N8N_USER_MANAGEMENT_JWT_SECRET in .env}
       - N8N_DEFAULT_BINARY_DATA_MODE=${N8N_DEFAULT_BINARY_DATA_MODE:-filesystem}
-      - GPTR_URL=${GPTR_URL:-http://gpt-researcher:8000}
     volumes:
       - n8n_storage:/home/node/.n8n
       - ./n8n/demo-data:/demo-data

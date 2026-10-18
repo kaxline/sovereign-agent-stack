@@ -68,7 +68,7 @@ WORKER_ENV = {"HERMES_UID", "HERMES_GID", "TZ"}
 # Keys that must still be present after the allowlist, so a drop is caught.
 REQUIRED = {
     "lightrag": {"NEO4J_PASSWORD", "LIGHTRAG_API_KEY"},
-    "n8n": {"N8N_ENCRYPTION_KEY", "N8N_USER_MANAGEMENT_JWT_SECRET", "GPTR_URL"},
+    "n8n": {"N8N_ENCRYPTION_KEY", "N8N_USER_MANAGEMENT_JWT_SECRET"},
     "n8n-import": {
         "N8N_ENCRYPTION_KEY",
         "N8N_USER_MANAGEMENT_JWT_SECRET",
