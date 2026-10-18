@@ -52,18 +52,21 @@ _INTERVAL = "_assistant_mcp_wake.parked_retry_interval(self._config, _core._PARK
 
 
 def _patch_server_run() -> None:
-    wait = "        outcome = await self._wait_for_reconnect_or_shutdown(timeout=_core._PARKED_RETRY_INTERVAL)\n"
+    # MCPServerRunMixin._park: the timed wait inside its ``while True`` loop.
+    wait = ("            outcome = await self._wait_for_reconnect_or_shutdown(\n"
+            "                timeout=_core._PARKED_RETRY_INTERVAL)\n")
     _edit(ROOT / "tools" / "mcp_tool_server_run.py", "parked retry interval", [
         ("from tools import mcp_tool_sampling as _sampling\n",
          "from tools import mcp_tool_sampling as _sampling\n"
          f"from tools import mcp_wake as _assistant_mcp_wake  {MARKER}\n", 1),
         # The wait itself: per-server interval, parked flag for the wake watcher.
         (wait,
-         f"        self._assistant_parked = True  {MARKER}\n"
-         "        try:\n"
-         f"            outcome = await self._wait_for_reconnect_or_shutdown(timeout={_INTERVAL})\n"
-         "        finally:\n"
-         "            self._assistant_parked = False\n", 1),
+         f"            self._assistant_parked = True  {MARKER}\n"
+         "            try:\n"
+         "                outcome = await self._wait_for_reconnect_or_shutdown(\n"
+         f"                    timeout={_INTERVAL})\n"
+         "            finally:\n"
+         "                self._assistant_parked = False\n", 1),
         # The three "will self-probe every %ds" warnings.
         ("_core._PARKED_RETRY_INTERVAL, type(root).__name__, root)",
          f"{_INTERVAL}, type(root).__name__, root)", 2),
@@ -84,12 +87,12 @@ def _patch_loop() -> None:
 
 def _patch_api_server() -> None:
     route = '            ("GET", "/v1/toolsets", self._handle_toolsets),\n'
-    table = "    def _http_route_table(self) -> List[tuple]:\n"
+    table = "    def _http_route_table(self) -> list[tuple]:\n"
     handler = (
         f"    @_require_auth  {MARKER}\n"
         '    async def _handle_mcp_reconnect(self, request: "web.Request") -> "web.Response":\n'
-        '        """POST /v1/mcp/servers/{name}/reconnect: wake a parked MCP server in every gateway\n'
-        '        process (202), or 404 when no profile configures it. See tools/mcp_wake.py."""\n'
+        '        """POST /v1/mcp/servers/{name}/reconnect: wake a parked MCP server for every profile\n'
+        '        and process (202), or 404 when no profile configures it. See tools/mcp_wake.py."""\n'
         "        from tools import mcp_wake\n"
         '        body, status = mcp_wake.handle_reconnect(request.match_info.get("name", ""))\n'
         "        return web.json_response(body, status=status)\n\n"

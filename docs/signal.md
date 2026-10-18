@@ -187,7 +187,8 @@ Applied at Hermes container start via `compose/hermes/04-patch-signal-send.sh`:
 - `patch-ensure-send-message-tools.py` — force-import / ensure `send_message` in live tool definitions (stale discovery cache)
 - `patch-tool-search-visible.py` — teach `tool_search` to surface already-visible core tools
 - `patch-cron-scheduler-delivery.py` — reject undeliverable `api_server` origins + Signal env synth for cron delivery
-- `patch-cron-default-deliver-signal.py` — default WebUI cron jobs to `deliver: signal` when `SIGNAL_HOME_CHANNEL` is set
+
+Hermes v0.22 stamps no origin on a cron job created from the WebUI, and delivers `deliver: origin` without an origin to the first platform with a home channel, which is Signal when `SIGNAL_HOME_CHANNEL` is set. That replaced `patch-cron-default-deliver-signal.py`.
 
 After upgrading the Hermes image, verify WebUI send and cron delivery still work; patch snippets may need updating if upstream changes.
 

@@ -102,6 +102,12 @@ if has_profile core; then
   else
     ok "HERMES_DASHBOARD_PASSWORD is set"
   fi
+  # The overlays are anchored to semver agent tags (v0.22.2+). A calendar tag
+  # left in .env from before that boots with every overlay skipped.
+  agent_tag="$(env_get HERMES_AGENT_IMAGE_TAG)"
+  if [[ "$agent_tag" =~ ^v20[0-9][0-9]\. ]]; then
+    bad "HERMES_AGENT_IMAGE_TAG=${agent_tag} predates the overlays — make hermes-upgrade AGENT=v0.22.2 WEBUI=0.52.458"
+  fi
 fi
 
 # --- User data root ---
@@ -568,11 +574,7 @@ if [[ "$signal_enabled" -eq 1 ]]; then
         || docker compose exec -T hermes grep -q 'assistant-stack: reject undeliverable cron origin' /opt/hermes/cron/scheduler.py 2>/dev/null; then
         if docker compose exec -T hermes grep -q 'assistant-stack: cron synthesize Signal' /opt/hermes/cron/scheduler.py 2>/dev/null \
           || docker compose exec -T hermes grep -q 'assistant-stack: cron synthesize Signal' /opt/hermes/cron/scheduler_delivery.py 2>/dev/null; then
-          if docker compose exec -T hermes grep -q 'assistant-stack: default WebUI cron deliver to signal' /opt/hermes/tools/cronjob_tools.py 2>/dev/null; then
-            ok "Hermes cron Signal patches applied"
-          else
-            warn "Hermes cron Signal patches missing — docker compose up -d --force-recreate hermes"
-          fi
+          ok "Hermes cron Signal patches applied"
         else
           warn "Hermes cron Signal patches missing — docker compose up -d --force-recreate hermes"
         fi

@@ -2,12 +2,16 @@
 
 Loaded from the patched Hermes tree. The pure window lives in
 ``history_budget`` so it can be tested without importing Hermes.
+
+``install(server)`` runs from the tui_gateway/server.py tail. It declares the
+budget fields on the wire contracts and wraps ``session.context_breakdown``
+on the live server module, so those two need no text anchors.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from agent.history_budget import (
     HistoryWindow,
@@ -312,3 +316,82 @@ def _positive(value: Any) -> bool:
 
 def _positive_or_none(value: Any) -> Optional[int]:
     return value if _positive(value) else None
+
+
+# ── gateway install ───────────────────────────────────────────────────────────
+
+BUDGET_METHODS = ("session.create", "session.resume")
+REPORT_FIELDS = ("history_budget", "history_tokens", "history_first_row_id", "history_summarised")
+
+
+def declare_contracts() -> None:
+    """Add ``history_budget`` to the create/resume params and the report fields to the
+    ``session.context_breakdown`` result and ``message.complete`` payload. Each extends
+    whatever is registered now, because other overlays extend the same contracts."""
+    from pydantic import create_model
+    from tui_gateway.contracts import registry
+
+    report = {
+        "history_budget": (int | None, None),
+        "history_tokens": (int | None, None),
+        "history_first_row_id": (int | None, None),
+        "history_summarised": (bool | None, None),
+    }
+    for name in BUDGET_METHODS:
+        contract = registry.METHODS[name]
+        if "history_budget" not in contract.params.model_fields:
+            params = create_model(
+                contract.params.__name__, __base__=contract.params, __module__=__name__,
+                history_budget=(int | None, None))
+            registry.METHODS[name] = registry.MethodContract(name, params, contract.result, contract.doc)
+    breakdown = registry.METHODS["session.context_breakdown"]
+    if not set(REPORT_FIELDS) <= set(breakdown.result.model_fields):
+        result = create_model(
+            breakdown.result.__name__, __base__=breakdown.result, __module__=__name__, **report)
+        registry.METHODS[breakdown.name] = registry.MethodContract(
+            breakdown.name, breakdown.params, result, breakdown.doc)
+    complete = registry.EVENTS["message.complete"]
+    if not set(REPORT_FIELDS) <= set(complete.payload.model_fields):
+        payload = create_model(
+            complete.payload.__name__, __base__=complete.payload, __module__=__name__, **report)
+        registry.EVENTS[complete.name] = registry.EventContract(complete.name, payload, complete.doc)
+
+
+def _breakdown_report(session: Any) -> dict:
+    if not isinstance(session, dict):
+        return empty_report(None)
+    try:
+        lock = session.get("history_lock")
+        if lock is not None:
+            with lock:
+                history = list(session.get("history") or [])
+        else:
+            history = list(session.get("history") or [])
+        return breakdown_fields(session, session.get("agent"), history)
+    except Exception:
+        logger.debug("history budget breakdown failed", exc_info=True)
+        return empty_report(None)
+
+
+def wrap_context_breakdown(server: Any, orig: Callable) -> Callable:
+    """Add the next-reply cut to every successful ``session.context_breakdown`` result."""
+
+    def handler(rid, params: dict) -> dict:
+        response = orig(rid, params)
+        result = response.get("result") if isinstance(response, dict) else None
+        if isinstance(result, dict):
+            sid = (params.get("session_id") if isinstance(params, dict) else None) or ""
+            result.update(_breakdown_report(server._sessions.get(sid)))
+        return response
+
+    handler.__wrapped__ = orig
+    return handler
+
+
+def install(server: Any) -> None:
+    if getattr(server, "_history_budget_installed", False):
+        return
+    declare_contracts()
+    name = "session.context_breakdown"
+    server.register_method(name, wrap_context_breakdown(server, server._methods[name]))
+    server._history_budget_installed = True

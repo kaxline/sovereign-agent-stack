@@ -11,13 +11,16 @@ and probes again only every 300 s. Two additions:
 - ``POST /v1/mcp/servers/{name}/reconnect`` asks every gateway process to
   revive its parked connection now.
 
-Each profile is its own ``hermes -p <name> gateway run`` process, and the
-default profile has no API server. So the endpoint writes
-``<hermes root>/mcp-wake/<name>``, and a watcher thread in every process with
-an MCP loop polls that directory. A request stays live for WAKE_WINDOW_SECONDS
-so a server that parks shortly after it is still woken. Each connection takes a
-given request once, and only while parked: a connected session is never torn
-down.
+From Hermes v0.22 one gateway process serves every profile and keeps all of
+their MCP connections in one ledger, keyed ``(profile scope, name)``. Other
+processes can still hold their own MCP connections: a profile left standalone
+(``gateway.standalone``, or a multiplex preflight blocker), ``hermes chat``,
+cron runs. So the endpoint writes ``<hermes root>/mcp-wake/<name>``, and a
+watcher thread in every process with an MCP loop polls that directory; in the
+multiplexed gateway that one watcher wakes the connection of every profile. A
+request stays live for WAKE_WINDOW_SECONDS so a server that parks shortly
+after it is still woken. Each connection takes a given request once, and only
+while parked: a connected session is never torn down.
 """
 from __future__ import annotations
 
@@ -67,10 +70,16 @@ def wake_dir(root: Optional[Path] = None) -> Path:
     return (root or hermes_root()) / WAKE_DIR_NAME
 
 
+def _load_yaml(path: Path) -> Any:
+    try:  # Hermes v0.22 ships ruamel behind hermes_yaml and no PyYAML.
+        from hermes_yaml import safe_load
+    except ImportError:
+        from yaml import safe_load
+    return safe_load(path.read_text())
+
+
 def configured_profiles(name: str, root: Optional[Path] = None) -> list[str]:
     """Profiles whose config.yaml lists *name* under ``mcp_servers``."""
-    import yaml
-
     root = root or hermes_root()
     homes = [("default", root)]
     profiles = root / "profiles"
@@ -80,8 +89,8 @@ def configured_profiles(name: str, root: Optional[Path] = None) -> list[str]:
     found = []
     for profile, home in homes:
         try:
-            config = yaml.safe_load((home / "config.yaml").read_text()) or {}
-        except (OSError, yaml.YAMLError):
+            config = _load_yaml(home / "config.yaml") or {}
+        except Exception:  # noqa: BLE001 - missing or unparsable config: not configured here
             continue
         servers = config.get("mcp_servers") if isinstance(config, dict) else None
         if isinstance(servers, dict) and name in servers:
