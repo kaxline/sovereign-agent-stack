@@ -181,6 +181,17 @@ n8n's store:
   Postgres had no workflows, and n8n never saw the result. A fresh install
   now gets the six starter workflows and both demo credentials in n8n.
 
+n8n's environment:
+
+- **n8n no longer sends diagnostics or shows the personalization survey.**
+  The `n8n` service now merges the `x-n8n` anchor's environment instead of
+  replacing it, so it gets `N8N_DIAGNOSTICS_ENABLED=false` and
+  `N8N_PERSONALIZATION_ENABLED=false`, which only `n8n-import` had before.
+  n8n also gets `LIGHTRAG_URL`, `NEO4J_HTTP_URL` and `SEARXNG_URL` for
+  workflows to read. `docker compose up -d` recreates `n8n`. To turn
+  diagnostics back on, set `N8N_DIAGNOSTICS_ENABLED: "true"` on `n8n` in a
+  compose override file.
+
 ### Changes
 
 - **n8n**: `n8n` and `n8n-import` set `DB_TYPE=sqlite` and both mount

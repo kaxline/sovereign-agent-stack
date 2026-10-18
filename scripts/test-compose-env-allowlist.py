@@ -269,6 +269,17 @@ def check_db_network(services: dict, networks: dict) -> list[str]:
 # exists" check looks somewhere n8n never reads.
 N8N_HOME = "/home/node/.n8n"
 
+# Keys from the x-n8n anchor that both services must keep. A service-level
+# environment list replaces the anchor's, which once sent n8n's diagnostics
+# to n8n and dropped the workflow URLs.
+N8N_SHARED_ENV = {
+    "N8N_DIAGNOSTICS_ENABLED": "false",
+    "N8N_PERSONALIZATION_ENABLED": "false",
+    "LIGHTRAG_URL": "http://lightrag:9621",
+    "NEO4J_HTTP_URL": "http://neo4j:7474",
+    "SEARXNG_URL": "http://searxng:8080",
+}
+
 
 def n8n_home_source(service: dict) -> str | None:
     for vol in service.get("volumes") or []:
@@ -290,6 +301,9 @@ def check_n8n_store(services: dict) -> list[str]:
             errors.append(f"{name} DB_TYPE is {env.get('DB_TYPE')!r}, want 'sqlite'")
         for key in sorted(k for k in env if k.startswith("DB_POSTGRESDB_")):
             errors.append(f"{name} environment includes {key}")
+        for key, want in sorted(N8N_SHARED_ENV.items()):
+            if env.get(key) != want:
+                errors.append(f"{name} {key} is {env.get(key)!r}, want {want!r}")
         sources[name] = n8n_home_source(service)
         if not sources[name]:
             errors.append(f"{name} does not mount {N8N_HOME}")

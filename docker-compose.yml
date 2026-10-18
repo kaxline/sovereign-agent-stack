@@ -8,18 +8,19 @@ include:
 x-n8n: &service-n8n
   image: ${N8N_IMAGE:-n8nio/n8n:1.107.4}
   # Allowlist. The root .env stays on the host for Compose interpolation and
-  # is not mounted into the container.
-  environment:
-    - DB_TYPE=sqlite
-    - N8N_DIAGNOSTICS_ENABLED=false
-    - N8N_PERSONALIZATION_ENABLED=false
-    - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:?set N8N_ENCRYPTION_KEY in .env}
-    - N8N_USER_MANAGEMENT_JWT_SECRET=${N8N_USER_MANAGEMENT_JWT_SECRET:?set N8N_USER_MANAGEMENT_JWT_SECRET in .env}
-    - N8N_DEFAULT_BINARY_DATA_MODE=filesystem
-    - LIGHTRAG_URL=http://lightrag:9621
-    - NEO4J_HTTP_URL=http://neo4j:7474
-    - SEARXNG_URL=http://searxng:8080
-    - GPTR_URL=http://gpt-researcher:8000
+  # is not mounted into the container. A mapping, so a service that adds keys
+  # merges it with `<<: *n8n-env` instead of replacing it.
+  environment: &n8n-env
+    DB_TYPE: sqlite
+    N8N_DIAGNOSTICS_ENABLED: "false"
+    N8N_PERSONALIZATION_ENABLED: "false"
+    N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?set N8N_ENCRYPTION_KEY in .env}
+    N8N_USER_MANAGEMENT_JWT_SECRET: ${N8N_USER_MANAGEMENT_JWT_SECRET:?set N8N_USER_MANAGEMENT_JWT_SECRET in .env}
+    N8N_DEFAULT_BINARY_DATA_MODE: filesystem
+    LIGHTRAG_URL: http://lightrag:9621
+    NEO4J_HTTP_URL: http://neo4j:7474
+    SEARXNG_URL: http://searxng:8080
+    GPTR_URL: http://gpt-researcher:8000
 
 # Profiles that start the shared Postgres (postgres-db, db-provision, and the
 # two SQL MCP sidecars). An integration that keeps data there appends its own
@@ -692,19 +693,17 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:${N8N_HOST_PORT:-5678}:5678"
-    # This list replaces the anchor environment, so the store, the secrets
-    # and the workflow URL are repeated here. The anchor still feeds n8n-import.
+    # Merges the anchor environment; keys here add to it or override it.
+    # Don't turn this back into a list: a list replaces the anchor's keys.
     environment:
-      - DB_TYPE=sqlite
-      - N8N_HOST=localhost
-      - N8N_PORT=5678
-      - N8N_PROTOCOL=http
-      - WEBHOOK_URL=http://localhost:${N8N_HOST_PORT:-5678}/
-      - N8N_RESTRICT_FILE_ACCESS_TO=/data/shared
-      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:?set N8N_ENCRYPTION_KEY in .env}
-      - N8N_USER_MANAGEMENT_JWT_SECRET=${N8N_USER_MANAGEMENT_JWT_SECRET:?set N8N_USER_MANAGEMENT_JWT_SECRET in .env}
-      - N8N_DEFAULT_BINARY_DATA_MODE=${N8N_DEFAULT_BINARY_DATA_MODE:-filesystem}
-      - GPTR_URL=${GPTR_URL:-http://gpt-researcher:8000}
+      <<: *n8n-env
+      N8N_HOST: localhost
+      N8N_PORT: "5678"
+      N8N_PROTOCOL: http
+      WEBHOOK_URL: http://localhost:${N8N_HOST_PORT:-5678}/
+      N8N_RESTRICT_FILE_ACCESS_TO: /data/shared
+      N8N_DEFAULT_BINARY_DATA_MODE: ${N8N_DEFAULT_BINARY_DATA_MODE:-filesystem}
+      GPTR_URL: ${GPTR_URL:-http://gpt-researcher:8000}
     volumes:
       - n8n_storage:/home/node/.n8n
       - ./n8n/demo-data:/demo-data
