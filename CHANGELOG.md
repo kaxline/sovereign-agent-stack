@@ -50,6 +50,10 @@ the stack under another app.
    index in place: ids are kept and nothing is fetched again, so
    `mail-triage` carries on where it was. Drafts requests queued before the
    upgrade still work.
+10. Image pins moved (see Changes). `setup.sh` never rewrites an image key
+    that is already in `.env`, so update any of `VIKUNJA_PROXY_IMAGE`,
+    `SIGNAL_CLI_IMAGE` and `CALDAV_MCP_IMAGE` you have set, or delete the
+    line to take the new default. Then `docker compose up -d`.
 
 ### New services
 
@@ -130,6 +134,15 @@ only for silence). Set the keys above to `0` to get the old behaviour back.
 
 ### Changes
 
+- **Image pins**: security and client-age bumps. `vikunja-proxy` moves from
+  `nginx:1.29.1-alpine` (an end-of-life mainline release) to
+  `nginx:1.30.6-alpine`. `signal-cli` moves from `signal-cli-jre:v0-14-7-2`
+  to `v0-14-9-2`, ahead of Signal retiring older clients; the linked account
+  store is read as before. `caldav-mcp` moves to `ghcr.io/gelse/caldav-mcp:0.1.1`.
+  The old default, `v0.1.0`, is not a published tag (upstream tags have no
+  `v`), so that pin never pulled. Upstream publishes linux/amd64 only, so on
+  Apple Silicon the `calendar` profile needs
+  `DOCKER_DEFAULT_PLATFORM=linux/amd64` or a `platform:` override.
 - **Hermes bootstrap**: registers `mcp_servers.todos` (named for what users
   call it; an earlier `mcp_servers.vikunja` entry is removed) with an
   `Authorization: Bearer ${VIKUNJA_MCP_TOKEN}` header. The read-only token goes

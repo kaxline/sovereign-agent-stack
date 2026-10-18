@@ -325,7 +325,7 @@ services:
   caldav-mcp:
     profiles: ["calendar"]
     container_name: ${CONTAINER_PREFIX:-}caldav-mcp
-    image: ${CALDAV_MCP_IMAGE:-ghcr.io/gelse/caldav-mcp:v0.1.0}
+    image: ${CALDAV_MCP_IMAGE:-ghcr.io/gelse/caldav-mcp:0.1.1}
     restart: unless-stopped
     environment:
       - CALDAV_MCP_PORT=8080
@@ -473,7 +473,7 @@ services:
   vikunja-proxy:
     profiles: ["todo"]
     container_name: ${CONTAINER_PREFIX:-}vikunja-proxy
-    image: ${VIKUNJA_PROXY_IMAGE:-nginx:1.29.1-alpine}
+    image: ${VIKUNJA_PROXY_IMAGE:-nginx:1.30.6-alpine}
     restart: unless-stopped
     ports:
       - "127.0.0.1:${VIKUNJA_PORT:-3456}:8080"
@@ -877,7 +877,7 @@ services:
   signal-cli:
     profiles: ["signal"]
     container_name: ${CONTAINER_PREFIX:-}signal-cli
-    image: ${SIGNAL_CLI_IMAGE:-registry.gitlab.com/packaging/signal-cli/signal-cli-jre:v0-14-7-2}
+    image: ${SIGNAL_CLI_IMAGE:-registry.gitlab.com/packaging/signal-cli/signal-cli-jre:v0-14-9-2}
     restart: unless-stopped
     # Match the Mac/Linux user that owns SIGNAL_CLI_DATA_DIR.
     # scripts/sync-signal-profile.sh sets these from `id -u` / `id -g` when enabling.
