@@ -160,7 +160,12 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, "/opt/hermes")
-import yaml
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import sys as _sys
+    _sys.path.insert(0, "/opt/hermes")
+    import hermes_yaml as yaml
 from utils import atomic_yaml_write
 
 cfg_path, dotted = sys.argv[1], sys.argv[2]
@@ -220,7 +225,12 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, "/opt/hermes")
-import yaml
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import sys as _sys
+    _sys.path.insert(0, "/opt/hermes")
+    import hermes_yaml as yaml
 from utils import atomic_yaml_write
 
 cfg_path, dotted = sys.argv[1], sys.argv[2]
@@ -322,7 +332,12 @@ config_has_value() {
   python3 - "$(config_path_for "$1")" "$2" <<'PY'
 import sys
 
-import yaml
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import sys as _sys
+    _sys.path.insert(0, "/opt/hermes")
+    import hermes_yaml as yaml
 
 try:
     with open(sys.argv[1]) as fh:
@@ -354,7 +369,12 @@ set_bot_desktop_placement() {
 import sys
 from pathlib import Path
 
-import yaml
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import sys as _sys
+    _sys.path.insert(0, "/opt/hermes")
+    import hermes_yaml as yaml
 from utils import atomic_yaml_write
 
 path = Path(sys.argv[1])
@@ -392,7 +412,12 @@ configure_terminal_ssh() {
 import sys
 from pathlib import Path
 
-import yaml
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import sys as _sys
+    _sys.path.insert(0, "/opt/hermes")
+    import hermes_yaml as yaml
 from utils import atomic_yaml_write
 
 path = Path(sys.argv[1])
@@ -420,7 +445,12 @@ configure_terminal_local() {
 import sys
 from pathlib import Path
 
-import yaml
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import sys as _sys
+    _sys.path.insert(0, "/opt/hermes")
+    import hermes_yaml as yaml
 from utils import atomic_yaml_write
 
 path = Path(sys.argv[1])
@@ -546,7 +576,12 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, "/opt/hermes")
-import yaml
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import sys as _sys
+    _sys.path.insert(0, "/opt/hermes")
+    import hermes_yaml as yaml
 from utils import atomic_yaml_write
 
 cfg_path = Path(sys.argv[1])
@@ -712,7 +747,12 @@ drop_unfiltered_mcp_duplicate() {
   _out="$(python3 - "$(config_path_for "$_dup_profile")" "$2" "$3" "$4" <<'PY'
 import sys
 sys.path.insert(0, "/opt/hermes")
-import yaml
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import sys as _sys
+    _sys.path.insert(0, "/opt/hermes")
+    import hermes_yaml as yaml
 from utils import atomic_yaml_write
 
 cfg_path, keep_key, drop_key, url = sys.argv[1:5]
@@ -804,7 +844,12 @@ drop_mcp_entries_for_url() {
   _out="$(python3 - "$(config_path_for "$1")" "$2" "$3" <<'PY'
 import sys
 sys.path.insert(0, "/opt/hermes")
-import yaml
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import sys as _sys
+    _sys.path.insert(0, "/opt/hermes")
+    import hermes_yaml as yaml
 from utils import atomic_yaml_write
 
 cfg_path, keep_key, url = sys.argv[1:4]
@@ -935,7 +980,12 @@ register_vikunja_mcp_servers() {
     "$VIKUNJA_MCP_TIMEOUT" "$VIKUNJA_MCP_CONNECT_TIMEOUT" <<'PY'
 import sys
 sys.path.insert(0, "/opt/hermes")
-import yaml
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import sys as _sys
+    _sys.path.insert(0, "/opt/hermes")
+    import hermes_yaml as yaml
 from utils import atomic_yaml_write
 
 cfg_path, key, url, timeout, connect_timeout = sys.argv[1:6]
@@ -1046,7 +1096,12 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, "/opt/hermes")
-import yaml
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import sys as _sys
+    _sys.path.insert(0, "/opt/hermes")
+    import hermes_yaml as yaml
 from utils import atomic_yaml_write
 
 MAIL_URLS = ("mail-mcp:8000", "mail-drafts-mcp:8000")
@@ -1138,7 +1193,12 @@ register_caldav_account() {
     "$_rca_timeout" "$_rca_connect" "$@" <<'PY'
 import sys
 sys.path.insert(0, "/opt/hermes")
-import yaml
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import sys as _sys
+    _sys.path.insert(0, "/opt/hermes")
+    import hermes_yaml as yaml
 from utils import atomic_yaml_write
 
 cfg_path, key, mcp_url, caldav_url, username, password_ref, timeout, connect_timeout = sys.argv[1:9]
@@ -1191,7 +1251,12 @@ reconcile_caldav_accounts() {
   _out="$(python3 - "$_rec_cfg" "$@" <<'PY'
 import sys
 sys.path.insert(0, "/opt/hermes")
-import yaml
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import sys as _sys
+    _sys.path.insert(0, "/opt/hermes")
+    import hermes_yaml as yaml
 from utils import atomic_yaml_write
 
 cfg_path = sys.argv[1]
@@ -1625,7 +1690,12 @@ if [ "$PROFILE" = "browser" ]; then
 import sys
 from pathlib import Path
 
-import yaml
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import sys as _sys
+    _sys.path.insert(0, "/opt/hermes")
+    import hermes_yaml as yaml
 
 path = Path(sys.argv[1])
 data = yaml.safe_load(path.read_text()) or {}

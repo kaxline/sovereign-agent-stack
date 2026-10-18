@@ -102,7 +102,12 @@ enable_buzz_on_profile_config() {
   hermes_python "$profile_name" "$relay_url" <<'PY'
 import sys
 from pathlib import Path
-import yaml
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import sys as _sys
+    _sys.path.insert(0, "/opt/hermes")
+    import hermes_yaml as yaml
 name, relay = sys.argv[1], sys.argv[2]
 path = Path(f"/opt/data/profiles/{name}/config.yaml")
 if not path.is_file():
