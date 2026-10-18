@@ -31,3 +31,6 @@ run_patch /bootstrap/patch-client-context.py
 # Turn heartbeat while a turn runs, and a one-session live status query
 # (dashboard /api/ws).
 run_patch /bootstrap/patch-gateway-liveness.py
+# Gateway control socket on /tmp: data/hermes (virtiofs) cannot hold a
+# connectable Unix socket, and v0.22 gateways coordinate through it.
+run_patch /bootstrap/patch-control-socket-tmp.py

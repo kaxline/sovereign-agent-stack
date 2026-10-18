@@ -182,6 +182,10 @@ Hermes v0.22 changes two defaults that this stack sets back:
     `patch-webui-persisted-count` (fixed in WebUI #7672).
   - Dropped, dead: `patch-openrouter-empty-stream`. Its retry and message
     edits had not applied since v2026.9.
+  - New overlay `patch-control-socket-tmp` (with `HERMES_CONTROL_SOCKET_IN_TMP=1`
+    on `hermes`) binds the v0.22 gateway control socket on `/tmp`. On
+    `data/hermes` (virtiofs) the socket cannot be connected to, and every
+    per-profile gateway restarted in a loop.
   - The bootstrap scripts, `sync-buzz-profile.sh` and
     `scripts/lib/hermes-yaml.sh` fall back to `hermes_yaml` when PyYAML is
     missing, as it is in v0.22.
