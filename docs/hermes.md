@@ -65,6 +65,8 @@ Hermes Agent switched from calendar tags (`v2026.9.14`) to semver (`v0.21.6`, `v
 
 Hermes v0.22 runs one gateway per container that serves every profile, and moves each profile's API server onto the default listener at `/p/<profile>/`. This stack keeps the old layout instead: one gateway process per profile, with the `api-server` profile on port 8643 and `browser` on 8644, because Boundary and the WebUI call those ports. `compose/hermes/019-pin-profile-gateways.sh` runs before the image's profile reconciler on every start and writes `gateway.standalone: true` into each named profile's `config.yaml` where the key is unset. A profile that ran a gateway before still starts one, and a profile that never did stays idle.
 
+v0.22 gateways also find each other through a control socket at `$HERMES_HOME/gateway.sock`. `data/hermes` is a virtiofs mount on Docker Desktop, where connecting to a Unix socket fails, so each profile gateway restarted in a loop trying to replace the default one. `patch-control-socket-tmp.py` with `HERMES_CONTROL_SOCKET_IN_TMP=1` (set on the `hermes` service) binds those sockets on the container's `/tmp` instead, and leaves a `gateway.sock.path` pointer in each home.
+
 Upstream calls `gateway.standalone` a temporary compatibility setting that will be removed. When that happens the stack has to move to the multiplexed layout, which changes the API URLs that Boundary and the WebUI use. To try the multiplexed layout now, set `HERMES_PIN_STANDALONE_GATEWAYS=0` in `.env` and remove `gateway.standalone` from the profiles' `config.yaml`.
 
 ### Session pruning

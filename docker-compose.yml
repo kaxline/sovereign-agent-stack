@@ -1129,6 +1129,10 @@ services:
       # Logs and screenshots (BH_TMP_DIR) are plain files and stay put.
       - BH_RUNTIME_DIR=/tmp/browser-harness
       - BH_RUNTIME_DIR_SHARED=1
+      # Same problem for the gateway control socket that Hermes v0.22 gateways
+      # use to find each other: bind it on /tmp instead of data/hermes. See
+      # compose/hermes/patch-control-socket-tmp.py.
+      - HERMES_CONTROL_SOCKET_IN_TMP=1
       # One uv cache for every profile (uvx browser-use), on a native volume:
       # under each profile's HOME it sat on virtiofs and a warm run took ~57 s.
       - UV_CACHE_DIR=/opt/uv-cache
@@ -1271,6 +1275,7 @@ services:
       - ./compose/hermes/patch-client-context.py:/bootstrap/patch-client-context.py:ro
       - ./compose/hermes/gateway_liveness.py:/bootstrap/gateway_liveness.py:ro
       - ./compose/hermes/patch-gateway-liveness.py:/bootstrap/patch-gateway-liveness.py:ro
+      - ./compose/hermes/patch-control-socket-tmp.py:/bootstrap/patch-control-socket-tmp.py:ro
       - ./compose/hermes/05-patch-tool-calling.sh:/etc/cont-init.d/05-patch-tool-calling:ro
       - ./compose/hermes/08-warmup-agent-browser.sh:/etc/cont-init.d/08-warmup-agent-browser:ro
       # FS library: immediate /opt/projects children → projects.list / projects.tree.
