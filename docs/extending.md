@@ -242,6 +242,31 @@ A client on the dashboard gateway WebSocket can watch a running turn with the
 This is an overlay on the pinned Hermes image (`patch-gateway-liveness.py`). The
 event, method and fields stay stable across pin moves. Changes are additive.
 
+## Keys a new profile leaves out
+
+`profiles.create` on the gateway mirrors the launch profile's `.env` into the
+new profile by default (`mirror_credentials`), minus channel bot tokens. That
+gives it a model, and also every password saved for an MCP server, such as the
+bootstrap's `CALDAV_<SLUG>_PASSWORD` keys and anything stored with
+`mcp.servers.set_api_key`.
+
+Pass `mirror_exclude`, a list of glob patterns matched case-sensitively against
+key names, to leave keys out:
+
+```json
+{"name": "researcher", "mirror_credentials": true,
+ "mirror_exclude": ["BOUNDARY_CALENDAR_*", "CALDAV_*_PASSWORD"]}
+```
+
+Matching assignments are removed after the channel strip. Comments and other
+keys stay as they were. `mirrored.env_excluded` in the result lists the keys
+removed, by name only. If the filter fails, including on a value that is not a
+list of strings, the new `.env` is emptied and `mirrored.env` is `false`. The
+patterns apply only to the mirrored `.env`, not to `clone_from` copies.
+
+This is an overlay on the pinned Hermes image (`patch-mirror-exclude.py`). The
+param and result field stay stable across pin moves.
+
 ## MCP servers your app hosts
 
 If your app serves tools to Hermes from its own MCP server, Hermes loses that

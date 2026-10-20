@@ -378,6 +378,7 @@ mail-mcp-test:
 calendar-test:
 	sh scripts/test-caldav-password-ref.sh
 	python3 scripts/test-caldav-foreign-entries.py
+	python3 scripts/test-mirror-exclude.py
 
 # Shared coding roots (Hermes + OpenCode). See docs/opencode.md.
 #   make coding-root-list
