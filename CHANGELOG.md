@@ -6,7 +6,7 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
-## Unreleased
+## v0.3.3 — 2026-10-20
 
 ### Upgrade steps
 
