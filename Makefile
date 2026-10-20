@@ -9,6 +9,7 @@
 	mail-index mail-index-doctor mail-index-mailboxes mail-index-test mail-script-test mail-imap-test mail-mcp-test \
 	mail-drafts mail-drafts-watch mail-drafts-doctor mail-drafts-test mail-apps mail-apps-test \
 	mail-triage-cron mail-triage-cron-show mail-triage-cron-remove mail-cron-test model-use model-sync \
+	calendar-test \
 	data-dir-show data-dir-set data-dir-migrate \
 	db-backup db-service-add db-psql todo-init todo-open \
 	coding-root-list coding-root-add \
@@ -371,6 +372,12 @@ mail-cron-test:
 mail-mcp-test:
 	python3 scripts/test-mail-mcp.py
 	sh scripts/test-mail-mcp-registration.sh
+
+# CalDAV bootstrap and the calendar overlays. The image checks need the pinned
+# Hermes image and skip without it.
+calendar-test:
+	sh scripts/test-caldav-password-ref.sh
+	python3 scripts/test-caldav-foreign-entries.py
 
 # Shared coding roots (Hermes + OpenCode). See docs/opencode.md.
 #   make coding-root-list

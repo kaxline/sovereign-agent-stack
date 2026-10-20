@@ -37,6 +37,16 @@ Slug = filename without `.env` (lowercase letters, digits, hyphens). Hermes name
 
 Removing an account: delete the `.env` file and re-run bootstrap (stale `caldav-*` keys are dropped).
 
+## Calendars registered by other clients
+
+An app that runs this stack can register calendars through the Hermes gateway instead of account files: `mcp.servers.add` with the `caldav-mcp` URL and `X-Caldav-*` headers, `mcp.servers.set_api_key` for the password, then `reload.mcp`. No bootstrap run or restart is needed, and only the profiles the app registers on get the entry and the password. Boundary does this, naming entries `calendar-<slug>` with `BOUNDARY_CALENDAR_<SLUG>_PASSWORD` keys.
+
+Use any prefix except `caldav-`. The bootstrap owns `caldav-*` entries: it rewrites them from the account files and removes any whose file is gone, together with its `CALDAV_<SLUG>_PASSWORD` key. It leaves every other entry and key alone, including entries at the same `caldav-mcp` URL, and with `CALDAV_MCP_ENABLED` unset it touches no CalDAV entry at all. `make calendar-test` checks both cases. The sidecar still needs the `calendar` profile running.
+
+Set `trust: untrusted` on these entries. caldav-mcp marks its 8 query tools `readOnlyHint: true` and its 6 changes `false`, so Hermes asks before every change and never before a read.
+
+The bootstrap creates `api-server` by cloning the default profile, once, when it doesn't exist yet. A gateway-registered entry on the default profile at that moment is copied without the read-only allowlist and without its password key, since named profiles have their own `.env`. Its calls then fail to authenticate. Remove it from `api-server` with `mcp.servers.remove`.
+
 ## Providers
 
 One MCP implementation covers all CalDAV servers. Only URL and auth change.
