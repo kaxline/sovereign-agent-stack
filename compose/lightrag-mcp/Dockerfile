@@ -7,6 +7,8 @@ ENV PYTHONUNBUFFERED=1
 # LightRAG v1.5 expects API key auth as X-API-Key. The pinned MCP package
 # defaults to Authorization: Bearer, so patch the generated client in-place.
 # mcp 2.x dropped mcp.server.fastmcp; pin 1.x for lightrag_mcp 0.1.1.
+# get_documents_paginated.py points get_documents at /documents/paginated.
+COPY get_documents_paginated.py /tmp/get_documents_paginated.py
 RUN pip install --no-cache-dir "lightrag_mcp==${LIGHTRAG_MCP_VERSION}" "mcp>=1.6.0,<2" \
     && python - <<'PY'
 from pathlib import Path
@@ -18,6 +20,11 @@ source = source.replace(
     "AuthenticatedClient(base_url=base_url, token=api_key, prefix=\"\", auth_header_name=\"X-API-Key\", verify_ssl=False)",
 )
 client_path.write_text(source)
+
+docs_path = client_path.parent / "client/light_rag_server_api_client/api/documents/documents_documents_get.py"
+docs_source = docs_path.read_text()
+assert '"url": "/documents",' in docs_source, "documents_documents_get.py changed upstream"
+docs_path.write_text(docs_source + Path("/tmp/get_documents_paginated.py").read_text())
 PY
 
 EXPOSE 8000

@@ -111,7 +111,8 @@ Use Header Auth with `X-API-Key`, and set the node timeout to 600000 ms. Queries
 | Operation | Method | Path |
 |---|---|---|
 | Health check | GET | `/health` |
-| List documents | GET | `/documents` |
+| List documents | POST | `/documents/paginated`, body `{"page": 1, "page_size": 200}` (10–200 per page) |
+| Count documents by status | GET | `/documents/status_counts` |
 | Ingest text | POST | `/documents/text` |
 | Scan inputs dir | POST | `/documents/scan` |
 | Track ingest job | GET | `/documents/track_status/{track_id}` |
