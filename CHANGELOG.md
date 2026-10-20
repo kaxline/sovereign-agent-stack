@@ -59,9 +59,11 @@ the stack under another app.
     and the verification block in [docs/hermes-webui.md](docs/hermes-webui.md#verification).
     An app that sets its own image tags must move both together.
 11. Image pins moved (see Changes). `setup.sh` never rewrites an image key
-    that is already in `.env`, so update any of `VIKUNJA_PROXY_IMAGE`,
-    `SIGNAL_CLI_IMAGE` and `CALDAV_MCP_IMAGE` you have set, or delete the
-    line to take the new default. Then `docker compose up -d`.
+    that is already in `.env`, so update `VIKUNJA_PROXY_IMAGE` or
+    `SIGNAL_CLI_IMAGE` if you have set them, or delete the line to take the
+    new default. Delete `CALDAV_MCP_IMAGE`: `caldav-mcp` is now built from
+    source (see Changes), and an override that sets `platform: linux/amd64`
+    on it can go. Then `docker compose up -d`.
 12. With `rag` enabled, LightRAG moves from v1.4.9.3 to v1.5.7 (update
     `LIGHTRAG_IMAGE` if it is in `.env`). Back up `rag_storage` and the
     `neo4j_data` volume first. On a Linux host the new entrypoint runs
@@ -272,11 +274,15 @@ n8n's environment:
   `nginx:1.29.1-alpine` (an end-of-life mainline release) to
   `nginx:1.30.6-alpine`. `signal-cli` moves from `signal-cli-jre:v0-14-7-2`
   to `v0-14-9-2`, ahead of Signal retiring older clients; the linked account
-  store is read as before. `caldav-mcp` moves to `ghcr.io/gelse/caldav-mcp:0.1.1`.
-  The old default, `v0.1.0`, is not a published tag (upstream tags have no
-  `v`), so that pin never pulled. Upstream publishes linux/amd64 only, so on
-  Apple Silicon the `calendar` profile needs
-  `DOCKER_DEFAULT_PLATFORM=linux/amd64` or a `platform:` override.
+  store is read as before.
+- **caldav-mcp** 0.1.1, built locally. Compose builds upstream's v0.1.1
+  commit with upstream's Dockerfile and tags it
+  `${IMAGE_PREFIX:-assistant}-caldav-mcp:0.1.1`, so the `calendar` profile
+  runs natively on Apple Silicon. Upstream publishes linux/amd64 only. The
+  old default, `ghcr.io/gelse/caldav-mcp:v0.1.0`, is not a published tag
+  (upstream tags have no `v`), so that pin never pulled. `CALDAV_MCP_IMAGE`
+  is no longer read. The first `up` with `calendar` fetches the source from
+  GitHub.
 - **LightRAG** v1.4.9.3 → v1.5.7, for the advisories fixed in 1.5.3–1.5.7
   (guest-token auth bypass, Cypher injection, upload path traversal). The
   server runs as uid 1000 instead of root. Without an API key, `/health`
