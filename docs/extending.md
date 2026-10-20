@@ -319,6 +319,36 @@ running task. Like `kanban_unblock`, dispatcher-spawned workers don't see
 either. These are an overlay (`patch-kanban-edit.py`); the fields, tool names
 and arguments stay stable across pin moves.
 
+### Telling the session that filed a task
+
+A dashboard session that calls `kanban_create` is subscribed to that task.
+When the task completes, blocks, gives up, crashes or times out, the session
+gets the event as a turn once it is idle, so the agent can act on it. A
+`gave_up` turn reads, for a workspace error:
+
+```text
+✖ @default Kanban t_5727c92a gave up: it can't start until its workspace or configuration changes
+Error: workspace: task t_5727c92a has workspace_kind=worktree but no workspace_path, ...
+To repair it: kanban_update(task_id='t_5727c92a', workspace_kind='scratch'), then kanban_unblock(task_id='t_5727c92a').
+```
+
+Other give-ups say how many attempts failed and point to `kanban_show`,
+`kanban_unblock` and `kanban_archive`. Only a profile with the `kanban` toolset
+has those tools.
+
+Turns run only while the session is open in the gateway with its agent built:
+after `session.create`, or `session.resume` without `lazy`. While it isn't,
+events wait, and the next resume delivers each one once. After the user
+presses Stop, they wait for the user's next prompt. The stack never opens a
+session by itself, so to have the agent repair a task without the owner,
+resume the filing session (the task's `session_id`, with its `profile`) when
+`/events` shows a `gave_up` for it. The resume can stay out of view.
+
+Context compression gives a session a new key, and Hermes keys these
+subscriptions on the old one. An overlay (`patch-kanban-wake.py`) lets the
+session claim them under its new key, so tasks filed before a compression
+still reach it. Without it, those events are not delivered.
+
 ## Keys a new profile leaves out
 
 `profiles.create` on the gateway mirrors the launch profile's `.env` into the

@@ -6,6 +6,22 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
+## Unreleased
+
+### Upgrade steps
+
+1. `docker compose up -d`. Two new overlay mounts on `hermes`
+   (`kanban_wake.py`, `patch-kanban-wake.py`), so compose recreates it.
+
+### Changes
+
+- **Hermes gateway (overlay)**: a dashboard session claims the kanban events
+  of tasks it filed before a context compression rotated its key. They used
+  to wait forever, even across resumes. The `gave_up` notification, which is
+  also the turn that wakes the filing session, says whether a retry can help,
+  carries up to 500 characters of the error and names the tools that repair
+  the task. See [docs/extending.md](docs/extending.md#telling-the-session-that-filed-a-task).
+
 ## v0.3.3 — 2026-10-20
 
 ### Upgrade steps
