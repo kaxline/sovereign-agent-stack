@@ -83,6 +83,8 @@ jobs:
         run: python3 scripts/test-gateway-liveness.py
       - name: MCP wake and parked retry interval (stdlib)
         run: python3 scripts/test-mcp-wake.py
+      - name: Cron delivery error check (stdlib)
+        run: python3 scripts/test-cron-delivery-errors.py
       - name: CalDAV password env key
         run: sh scripts/test-caldav-password-ref.sh
       - name: Vikunja token per profile
