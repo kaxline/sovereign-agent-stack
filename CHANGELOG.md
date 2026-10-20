@@ -98,8 +98,8 @@ the stack under another app.
     seeded; delete it when you no longer want it. Existing installs never
     got the starter workflows in n8n; to add them, see
     [docs/n8n.md](docs/n8n.md#upgrading-an-existing-install).
-15. `docker compose up -d` recreates `hermes` for the two kanban overlays
-    (five mounts and `HERMES_KANBAN_GUARDS`). A client that files kanban
+15. `docker compose up -d` recreates `hermes` for the three kanban overlays
+    (seven mounts and `HERMES_KANBAN_GUARDS`). A client that files kanban
     tasks with `workspace_kind="worktree"` or `"dir"` should be ready for
     `kanban_create` and `POST /tasks` to refuse them (see Behaviour changes).
 
@@ -371,6 +371,12 @@ restores upstream behaviour):
   `kanban_archive` (refuses a running task) sit beside `kanban_unblock` in
   the `kanban` toolset. Clients that don't send the fields see no change. See
   [docs/extending.md](docs/extending.md#changing-a-tasks-workspace).
+- **Hermes gateway (overlay)**: a dashboard session claims the kanban events
+  of tasks it filed before a context compression rotated its key. They used
+  to wait forever, even across resumes. The `gave_up` notification, which is
+  also the turn that wakes the filing session, says whether a retry can help,
+  carries up to 500 characters of the error and names the tools that repair
+  the task. See [docs/extending.md](docs/extending.md#telling-the-session-that-filed-a-task).
 - **Hermes gateway (overlay)**: while a turn runs, the gateway sends a
   `turn.heartbeat` event every 30 s (`HERMES_TURN_HEARTBEAT_S`, `0` for off)
   with `status`, `turn_started_at` and `idle_s`, and never after

@@ -1294,11 +1294,14 @@ services:
       - ./compose/hermes/11-warmup-uv-cache.sh:/etc/cont-init.d/11-warmup-uv-cache:ro
       # Kanban: refuse unbuildable workspaces at filing, give up on final
       # workspace errors, comment on the creator task; change a task's workspace
-      # in place, kanban_update / kanban_archive. See docs/extending.md.
+      # in place, kanban_update / kanban_archive; wake dashboard sessions after
+      # compression. See docs/extending.md.
       - ./compose/hermes/kanban_guards.py:/bootstrap/kanban_guards.py:ro
       - ./compose/hermes/patch-kanban-guards.py:/bootstrap/patch-kanban-guards.py:ro
       - ./compose/hermes/kanban_edit.py:/bootstrap/kanban_edit.py:ro
       - ./compose/hermes/patch-kanban-edit.py:/bootstrap/patch-kanban-edit.py:ro
+      - ./compose/hermes/kanban_wake.py:/bootstrap/kanban_wake.py:ro
+      - ./compose/hermes/patch-kanban-wake.py:/bootstrap/patch-kanban-wake.py:ro
       - ./compose/hermes/12-patch-kanban-guards.sh:/etc/cont-init.d/12-patch-kanban-guards:ro
       # Per-profile gateways and kept sessions on Hermes v0.22+. Runs before the
       # image's 02-reconcile-profiles. See the script header.
