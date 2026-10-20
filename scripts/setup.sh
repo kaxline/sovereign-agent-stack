@@ -894,7 +894,7 @@ set_env_if_missing .env HERMES_TERMINAL_BACKEND ssh
 
 # Signal daemon off by default; sync profile + data/hermes/.env from the toggle.
 set_env_if_missing .env HERMES_SIGNAL_ENABLED 0
-set_env_if_missing .env SIGNAL_CLI_IMAGE "registry.gitlab.com/packaging/signal-cli/signal-cli-jre:v0-14-7-2"
+set_env_if_missing .env SIGNAL_CLI_IMAGE "registry.gitlab.com/packaging/signal-cli/signal-cli-jre:v0-14-9-2"
 ./scripts/sync-signal-profile.sh
 
 # Buzz off by default; independent agents are operator-local under data/hermes/.

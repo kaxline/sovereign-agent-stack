@@ -58,6 +58,34 @@ the stack under another app.
     images, re-runs both bootstraps, recreates `hermes` and `hermes-webui`)
     and the verification block in [docs/hermes-webui.md](docs/hermes-webui.md#verification).
     An app that sets its own image tags must move both together.
+11. Image pins moved (see Changes). `setup.sh` never rewrites an image key
+    that is already in `.env`, so update any of `VIKUNJA_PROXY_IMAGE`,
+    `SIGNAL_CLI_IMAGE` and `CALDAV_MCP_IMAGE` you have set, or delete the
+    line to take the new default. Then `docker compose up -d`.
+12. With `rag` enabled, LightRAG moves from v1.4.9.3 to v1.5.7 (update
+    `LIGHTRAG_IMAGE` if it is in `.env`). Back up `rag_storage` and the
+    `neo4j_data` volume first. On a Linux host the new entrypoint runs
+    `chown -R 1000:1000` on the mounted `rag_storage` and `inputs` before
+    dropping to uid 1000, so those host directories change owner. To keep
+    them owned by your uid, set `user:` on `lightrag` in an override; the
+    entrypoint then skips the chown, and the directories must be writable by
+    that uid.
+13. With `automation` enabled, n8n moves from 1.107.4 to 2.43.7 (update
+    `N8N_IMAGE` if it is in `.env`). n8n migrates its database on first
+    start and the migration only goes forward, so back it up before moving
+    the pin. The `n8n` service is not given the `DB_*` settings, so n8n
+    keeps its workflows and credentials in SQLite in the `n8n_storage`
+    volume, next to the `config` file that holds its encryption key; the
+    `postgres` service only holds what `n8n-import` seeded. Copy the whole
+    directory:
+
+    ```bash
+    docker compose --profile automation stop n8n
+    docker compose --profile automation cp n8n:/home/node/.n8n ./n8n-before-2.43.7
+    ```
+
+    Then `docker compose up -d`. Workflows you imported yourself that read
+    `$env` stop working (see Behaviour changes).
 
 ### New services
 
@@ -137,6 +165,10 @@ only for silence). Set the keys above to `0` to get the old behaviour back.
   idle stream (dead connection, upstream closed).
 - Bootstrap sets `model.max_tokens=16384` on every proxy profile that has no
   value. Existing values, including `browser`'s 1024, are kept.
+- **n8n 2.x blocks `$env` in workflow expressions** by default
+  (`N8N_BLOCK_ENV_ACCESS_IN_NODE=true`), and this stack leaves it on. A
+  `GPTR_URL` set in `.env` no longer reaches n8n; edit the URL in the
+  workflow instead.
 
 Hermes v0.22 changes two defaults that this stack sets back:
 
@@ -191,6 +223,37 @@ Hermes v0.22 changes two defaults that this stack sets back:
     missing, as it is in v0.22.
   - `make doctor` fails when `HERMES_AGENT_IMAGE_TAG` is a calendar tag, and no
     longer looks for the cron-default-deliver marker.
+- **Image pins**: security and client-age bumps. `vikunja-proxy` moves from
+  `nginx:1.29.1-alpine` (an end-of-life mainline release) to
+  `nginx:1.30.6-alpine`. `signal-cli` moves from `signal-cli-jre:v0-14-7-2`
+  to `v0-14-9-2`, ahead of Signal retiring older clients; the linked account
+  store is read as before. `caldav-mcp` moves to `ghcr.io/gelse/caldav-mcp:0.1.1`.
+  The old default, `v0.1.0`, is not a published tag (upstream tags have no
+  `v`), so that pin never pulled. Upstream publishes linux/amd64 only, so on
+  Apple Silicon the `calendar` profile needs
+  `DOCKER_DEFAULT_PLATFORM=linux/amd64` or a `platform:` override.
+- **LightRAG** v1.4.9.3 → v1.5.7, for the advisories fixed in 1.5.3–1.5.7
+  (guest-token auth bypass, Cypher injection, upload path traversal). The
+  server runs as uid 1000 instead of root. Without an API key, `/health`
+  now returns only status fields (`status`, `core_version`,
+  `pipeline_busy` and the like); `configuration`, queue and worker details
+  need `X-API-Key`. The compose healthcheck and the `check_lightrag_health`
+  MCP tool still pass. Entity and relation deletes moved from
+  `/documents/delete_entity` and `/documents/delete_relation` to
+  `/graph/entity/delete` and `/graph/relation/delete`.
+- **lightrag-mcp**: `delete_by_entities`, `delete_by_doc_ids`,
+  `create_entities`, `edit_entities`, `create_relations`, `edit_relations`
+  and `merge_entities` call routes LightRAG does not serve (`/entities/…`,
+  `/relations/…`, `/merge`, `DELETE /documents/{id}`), on v1.4.9.3 and
+  v1.5.7 alike. LightRAG answers 404 and lightrag_mcp 0.1.1 reports
+  `"status": "success"` with a `null` result. Queries, inserts, uploads,
+  document listing and health work.
+- **n8n** 1.107.4 → 2.43.7, past the advisories filed against 1.107.4.
+  The bundled `WfGptrResearch01` workflow calls
+  `http://gpt-researcher:8000/report/` directly instead of
+  `{{ $env.GPTR_URL }}`, and `GPTR_URL` is no longer passed to `n8n` or
+  listed in `.env.example`. n8n 2.x calls the workflow toggle **Publish**
+  instead of **Activate**; the docs say publish.
 - **Hermes bootstrap**: registers `mcp_servers.todos` (named for what users
   call it; an earlier `mcp_servers.vikunja` entry is removed) with an
   `Authorization: Bearer ${VIKUNJA_MCP_TOKEN}` header. The read-only token goes

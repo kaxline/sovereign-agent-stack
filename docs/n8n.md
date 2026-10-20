@@ -133,7 +133,7 @@ curl -u neo4j:$NEO4J_PASSWORD \
   -d '{"statements":[{"statement":"RETURN 1"}]}' \
   http://localhost:7474/db/neo4j/tx/commit
 
-# LightRAG query via n8n webhook (activate workflow first in UI)
+# LightRAG query via n8n webhook (publish the workflow in the UI first)
 curl -X POST http://localhost:5678/webhook/lightrag-query \
   -H "Content-Type: application/json" \
   -d '{"question": "Summarize my knowledge base", "mode": "mix"}'
