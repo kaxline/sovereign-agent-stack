@@ -242,6 +242,45 @@ A client on the dashboard gateway WebSocket can watch a running turn with the
 This is an overlay on the pinned Hermes image (`patch-gateway-liveness.py`). The
 event, method and fields stay stable across pin moves. Changes are additive.
 
+## Kanban workspaces
+
+The dispatcher builds a task's workspace in the `hermes` container. With the
+default `HERMES_TERMINAL_BACKEND=ssh`, `/opt/projects` is read-only there and
+your coding roots aren't mounted, so a `worktree` task on one of those repos
+can't start, and neither can a task linked to a project whose repo is there.
+File such tasks with `workspace_kind="scratch"`; the worker's terminal runs
+on `hermes-worker`, where those repos are writable.
+
+An overlay (`patch-kanban-guards.py`) checks this when a task is filed.
+`kanban_create` returns an error and `POST /tasks` returns 400, with the
+reason and the fix in the message, for example:
+
+```text
+workspace_kind='worktree' needs a workspace_path or a project, and board 'default' has no default_workdir. Pass workspace_kind='scratch', or a project or path in a git repo this container can write to.
+```
+
+A task filed before the overlay, or whose repo changed after filing, still
+fails when the dispatcher claims it. If the error can't heal (no path, a path
+that isn't absolute or isn't in a git repo, or a repo the container can't
+write to), the task is blocked on that first claim and the `gave_up` event's
+payload has:
+
+| Field | Value |
+|---|---|
+| `trigger_outcome` | `spawn_failed` |
+| `error` | `workspace: ` followed by the reason |
+| `sticky` | `true`: only an unblock releases it |
+| `retryable` | `false` |
+
+A give-up for a revoked credential or missing model (`trigger_outcome`
+`crashed`, `terminal_provider: true`) also has `retryable: false`. Other
+give-ups leave `retryable` out; treat a missing key as retryable. When the
+task was filed by another task's worker, the creator task also gets a comment
+from `kanban-dispatcher` that names the task and its error.
+
+`HERMES_KANBAN_GUARDS=0` turns all of this off. The error text, payload fields
+and comment author stay stable across pin moves. Changes are additive.
+
 ## MCP servers your app hosts
 
 If your app serves tools to Hermes from its own MCP server, Hermes loses that
