@@ -267,6 +267,38 @@ patterns apply only to the mirrored `.env`, not to `clone_from` copies.
 This is an overlay on the pinned Hermes image (`patch-mirror-exclude.py`). The
 param and result field stay stable across pin moves.
 
+## MCP approvals for untrusted servers
+
+Hermes asks before a tool on a `trust: untrusted` MCP server runs, unless the
+server annotates the tool `readOnlyHint: true`. The `approval` request for that
+prompt, and its replay in `approval.pending`, carry the call:
+
+```json
+{"request_id": "…", "command": "MCP tool 'caldav_create_event' on UNTRUSTED server 'calendar-personal' wants to run with {…}. …",
+ "pattern_key": "mcp_elicitation", "choices": ["once", "deny"],
+ "mcp": {"server": "calendar-personal", "tool": "caldav_create_event",
+         "arguments": {"summary": "Call with Jordan", "start": "2026-10-23T11:00:00",
+                       "end": "2026-10-23T11:30:00", "calendar_name": "Work"},
+         "tool_call_id": "call_…"}}
+```
+
+`tool` is the server's own tool name. `tool_call_id` is the `tool_id` the
+call's `tool.start` event carried, or `null` when Hermes had none. The
+arguments are redacted before they are stored. Values under a
+credential-looking key (`password`, `token`, `api_key`, `authorization` and the
+like) become `[REDACTED]`. Every string goes through Hermes' secret redaction,
+as command previews do. Strings are capped at 500 characters, lists and
+objects at 50 entries, and nesting at 4 levels. The same summary, capped at 400
+characters, goes into `command`. Two different calls therefore get separate
+prompts, where identical text used to make the second wait on the first and
+take its answer.
+
+These prompts offer only `once` and `deny`. `session` and `always` were
+accepted as a single approval and never remembered.
+
+This is an overlay on the pinned Hermes image (`patch-mcp-trust-details.py`).
+The `mcp` fields stay stable across pin moves. Changes are additive.
+
 ## MCP servers your app hosts
 
 If your app serves tools to Hermes from its own MCP server, Hermes loses that

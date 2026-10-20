@@ -14,7 +14,7 @@ the stack under another app.
    `VIKUNJA_MCP_ENABLED=0` and generates `VIKUNJA_SECRET`. Nothing new starts
    until you opt in with `--todo`.
 2. `docker compose up -d`. The `hermes` system prompt (one sentence on where
-   living todos live), both bootstrap services' environments, four new
+   living todos live), both bootstrap services' environments, seven new
    overlay mounts and `HERMES_TURN_HEARTBEAT_S` change, so compose recreates
    `hermes`.
 3. Optional, for todo lists: `./scripts/setup.sh --todo`, `make up`,
@@ -226,6 +226,27 @@ n8n's environment:
 
 ### Changes
 
+- **MCP trust approvals show the call** (`patch-mcp-trust-details.py`). When
+  a write-capable tool on a `trust: untrusted` server asks for approval, the
+  approval entry carries `mcp: {server, tool, arguments, tool_call_id}`, and
+  the prompt text adds a one-line argument summary. Arguments are redacted
+  and capped before they are stored, since `approval.pending` replays the
+  entry as stored. Such approvals offer only `once` and `deny`: the gate
+  accepted `session` and `always` as a single approval and remembered
+  neither. Two different calls to one tool no longer share a prompt. With
+  identical text, the second used to wait on the first and adopt its deny.
+  See [docs/extending.md](docs/extending.md#mcp-approvals-for-untrusted-servers).
+- **`profiles.create` takes `mirror_exclude`** (`patch-mirror-exclude.py`),
+  glob patterns for keys the mirrored `.env` leaves out, so an agent created
+  without calendar access holds no CalDAV password. Without it, nothing
+  changes. See [docs/extending.md](docs/extending.md#keys-a-new-profile-leaves-out).
+- **Gateway-registered calendars** are a supported path. The bootstrap
+  removes only `caldav-*` entries, so calendars an app registers through
+  the gateway under another prefix keep their entry and `.env` key on every
+  bootstrap run. Documented in
+  [docs/calendar.md](docs/calendar.md#calendars-registered-by-other-clients).
+  `make calendar-test` runs the CalDAV bootstrap checks and both overlay
+  tests.
 - **n8n**: `n8n` and `n8n-import` set `DB_TYPE=sqlite` and both mount
   `n8n_storage` at `/home/node/.n8n`. `n8n-import` no longer depends on
   `postgres`, and checks for the database file instead of running

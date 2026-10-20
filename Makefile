@@ -379,6 +379,7 @@ calendar-test:
 	sh scripts/test-caldav-password-ref.sh
 	python3 scripts/test-caldav-foreign-entries.py
 	python3 scripts/test-mirror-exclude.py
+	python3 scripts/test-mcp-trust-details.py
 
 # Shared coding roots (Hermes + OpenCode). See docs/opencode.md.
 #   make coding-root-list

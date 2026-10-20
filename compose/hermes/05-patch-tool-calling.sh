@@ -37,3 +37,6 @@ run_patch /bootstrap/patch-control-socket-tmp.py
 # profiles.create mirror_exclude: keys a mirrored .env leaves out, so an agent
 # without calendar access never holds the password (docs/calendar.md).
 run_patch /bootstrap/patch-mirror-exclude.py
+# MCP trust-gate approvals carry the call's redacted arguments and tool call id,
+# and offer only once/deny (docs/extending.md).
+run_patch /bootstrap/patch-mcp-trust-details.py
