@@ -97,6 +97,10 @@ the stack under another app.
     seeded; delete it when you no longer want it. Existing installs never
     got the starter workflows in n8n; to add them, see
     [docs/n8n.md](docs/n8n.md#upgrading-an-existing-install).
+15. `docker compose up -d` recreates `hermes` for the kanban guards overlay
+    (three mounts and `HERMES_KANBAN_GUARDS`). A client that files kanban
+    tasks with `workspace_kind="worktree"` or `"dir"` should be ready for
+    `kanban_create` and `POST /tasks` to refuse them (see Behaviour changes).
 
 ### New services
 
@@ -162,6 +166,7 @@ Only with `todo` enabled.
 | `HERMES_MAX_TOKENS` | `16384` | `model.max_tokens` bootstrap writes to proxy profiles that have none. `0` = write nothing |
 | `HERMES_PIN_STANDALONE_GATEWAYS` | `1` | `0` stops writing `gateway.standalone: true` into named profiles at `hermes` start (see Behaviour changes) |
 | `HERMES_PIN_SESSIONS_KEEP` | `1` | `0` stops writing `sessions.auto_prune: false` into profiles at `hermes` start |
+| `HERMES_KANBAN_GUARDS` | `1` | `0` turns off the kanban guards overlay: no workspace check at filing, the two-strike limit for every workspace error, no creator comment |
 
 ### Behaviour changes
 
@@ -221,6 +226,29 @@ n8n's environment:
   workflows to read. `docker compose up -d` recreates `n8n`. To turn
   diagnostics back on, set `N8N_DIAGNOSTICS_ENABLED: "true"` on `n8n` in a
   compose override file.
+
+Kanban workspaces (overlay, `patch-kanban-guards.py`; `HERMES_KANBAN_GUARDS=0`
+restores upstream behaviour):
+
+- **Filing refuses a workspace the dispatcher can't build.** `create_task`
+  now runs the spawn-time workspace checks once the project is resolved, so
+  `kanban_create` returns a tool error and the dashboard's `POST /tasks` a
+  400, and no task is filed. It refuses `worktree` with no path, no project
+  and no board `default_workdir`; a path that isn't absolute or isn't in a
+  git repo; and a repo, target or git dir this container can't write to. It
+  refuses `dir` with no path, or one under a directory it can't write to.
+  With the SSH terminal backend `/opt/projects` is read-only in `hermes`, so
+  `worktree` tasks on those repos, including tasks linked to a project
+  there, are now refused when filed instead of giving up later. `scratch` is unchanged.
+- **A workspace error that can't heal gives up on the first claim.** A
+  missing path, a path that isn't absolute or isn't in a git repo, or a
+  repo the container can't write to blocks the task straight away. The block is sticky, so only an unblock releases
+  it. The `gave_up` payload has `"retryable": false`, as does the give-up
+  for a revoked credential or missing model (`terminal_provider`). Other
+  give-ups have no `retryable` key and still use the failure limit.
+- **A give-up comments on the creator task.** When a task filed by another
+  task's worker gives up, the creator task gets a comment from
+  `kanban-dispatcher` naming the task and its error.
 
 ### Changes
 

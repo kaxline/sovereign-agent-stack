@@ -1099,6 +1099,8 @@ services:
       - HERMES_STREAM_RETRIES=${HERMES_STREAM_RETRIES:-1}
       # Gateway turn.heartbeat interval while a turn runs (0 = off).
       - HERMES_TURN_HEARTBEAT_S=${HERMES_TURN_HEARTBEAT_S:-30}
+      # Kanban guards overlay (patch-kanban-guards.py); 0 = upstream behaviour.
+      - HERMES_KANBAN_GUARDS=${HERMES_KANBAN_GUARDS:-1}
       # Opt-outs for compose/hermes/019-pin-profile-gateways.sh: 0 stops pinning
       # gateway.standalone / sessions.auto_prune where those keys are unset.
       - HERMES_PIN_STANDALONE_GATEWAYS=${HERMES_PIN_STANDALONE_GATEWAYS:-1}
@@ -1290,6 +1292,11 @@ services:
       # host path instead; keep it off virtiofs if speed matters.
       - ${HERMES_UV_CACHE_DIR:-hermes_uv_cache}:/opt/uv-cache
       - ./compose/hermes/11-warmup-uv-cache.sh:/etc/cont-init.d/11-warmup-uv-cache:ro
+      # Kanban: refuse unbuildable workspaces at filing, give up on final
+      # workspace errors, comment on the creator task. See docs/extending.md.
+      - ./compose/hermes/kanban_guards.py:/bootstrap/kanban_guards.py:ro
+      - ./compose/hermes/patch-kanban-guards.py:/bootstrap/patch-kanban-guards.py:ro
+      - ./compose/hermes/12-patch-kanban-guards.sh:/etc/cont-init.d/12-patch-kanban-guards:ro
       # Per-profile gateways and kept sessions on Hermes v0.22+. Runs before the
       # image's 02-reconcile-profiles. See the script header.
       - ./compose/hermes/019-pin-profile-gateways.sh:/etc/cont-init.d/019-pin-profile-gateways:ro
