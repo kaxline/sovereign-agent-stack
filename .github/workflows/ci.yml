@@ -75,6 +75,8 @@ jobs:
         run: python3 scripts/test-fabricated-result.py
       - name: History budget window (stdlib)
         run: python3 scripts/test-history-budget.py
+      - name: Cron delivery error check (stdlib)
+        run: python3 scripts/test-cron-delivery-errors.py
       - name: CalDAV password env key
         run: sh scripts/test-caldav-password-ref.sh
       - name: LLM proxy routes

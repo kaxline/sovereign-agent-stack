@@ -555,9 +555,11 @@ if [[ "$signal_enabled" -eq 1 ]]; then
     warn "browser profile missing Signal credentials — run make ensure-local"
   fi
   browser_jobs="data/hermes/profiles/browser/cron/jobs.json"
-  if [[ -f "$browser_jobs" ]] && grep -q 'last_delivery_error' "$browser_jobs" \
-    && grep -qE 'api_server|not send\(\)' "$browser_jobs" 2>/dev/null; then
-    warn "browser cron jobs have api_server delivery errors — recreate hermes and re-run jobs"
+  if [[ -f "$browser_jobs" ]]; then
+    _cron_err_jobs="$(python3 -I "${ROOT}/scripts/lib/cron_delivery_errors.py" "$browser_jobs" | tr '\n' ' ')"
+    if [[ -n "${_cron_err_jobs// /}" ]]; then
+      warn "browser cron jobs have api_server delivery errors (${_cron_err_jobs% }) — recreate hermes and re-run jobs"
+    fi
   fi
   if docker info >/dev/null 2>&1; then
     if docker compose ps --status running hermes 2>/dev/null | grep -q hermes; then
