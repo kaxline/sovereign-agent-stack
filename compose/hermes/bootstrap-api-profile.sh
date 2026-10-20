@@ -1243,6 +1243,14 @@ PY
     pin_mcp_tools "$_rca_profile" "$_rca_key" "$@"
   fi
 }
+# Drop caldav-* entries whose account file is gone, and their password key.
+#
+# Only caldav-* entries are ours. Clients register their own CalDAV entries
+# through the Hermes gateway (mcp.servers.add) under another prefix, at the
+# same caldav-mcp URL: Boundary uses calendar-<slug> with BOUNDARY_CALENDAR_*
+# keys (docs/calendar.md). Never match by URL here, as drop_mcp_entries_for_url
+# does for other services: every one of those entries would go with ours.
+#
 # Usage: reconcile_caldav_accounts <profile> <slug...>
 reconcile_caldav_accounts() {
   _rec_profile="$1"
@@ -1309,6 +1317,8 @@ PY
 
 # Discover compose/caldav-mcp/accounts/*.env and register each as caldav-<slug>.
 # api-server gets the read-only allowlist; default and browser get all tools.
+# With CALDAV_MCP_ENABLED unset this touches nothing, including entries other
+# clients registered (see reconcile_caldav_accounts).
 register_caldav_mcp_servers() {
   _rcms_profile="$1"
   case "$CALDAV_MCP_ENABLED" in

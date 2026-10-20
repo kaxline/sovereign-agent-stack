@@ -317,11 +317,16 @@ services:
   # MCP:     http://caldav-mcp:8080/mcp   (compose-internal only)
   # Upstream: https://github.com/gelse/caldav-mcp
   # Accounts: compose/caldav-mcp/accounts/<slug>.env (registered by bootstrap)
+  # Built from upstream's v0.1.1 commit with upstream's Dockerfile: the
+  # published ghcr image is linux/amd64 only, and a local build is native on
+  # Apple Silicon. Moving versions means changing the commit and the tag below.
   # ----------------------------------------------------------------------
   caldav-mcp:
     profiles: ["calendar"]
     container_name: ${CONTAINER_PREFIX:-}caldav-mcp
-    image: ${CALDAV_MCP_IMAGE:-ghcr.io/gelse/caldav-mcp:0.1.1}
+    build:
+      context: https://github.com/gelse/caldav-mcp.git#ce880c5ed93f1435b4f63f33afb584b3ffea2815
+    image: ${IMAGE_PREFIX:-assistant}-caldav-mcp:0.1.1
     restart: unless-stopped
     environment:
       - CALDAV_MCP_PORT=8080
@@ -1274,6 +1279,9 @@ services:
       - ./compose/hermes/gateway_liveness.py:/bootstrap/gateway_liveness.py:ro
       - ./compose/hermes/patch-gateway-liveness.py:/bootstrap/patch-gateway-liveness.py:ro
       - ./compose/hermes/patch-control-socket-tmp.py:/bootstrap/patch-control-socket-tmp.py:ro
+      - ./compose/hermes/patch-mirror-exclude.py:/bootstrap/patch-mirror-exclude.py:ro
+      - ./compose/hermes/mcp_trust_details.py:/bootstrap/mcp_trust_details.py:ro
+      - ./compose/hermes/patch-mcp-trust-details.py:/bootstrap/patch-mcp-trust-details.py:ro
       - ./compose/hermes/05-patch-tool-calling.sh:/etc/cont-init.d/05-patch-tool-calling:ro
       - ./compose/hermes/08-warmup-agent-browser.sh:/etc/cont-init.d/08-warmup-agent-browser:ro
       # FS library: immediate /opt/projects children → projects.list / projects.tree.
