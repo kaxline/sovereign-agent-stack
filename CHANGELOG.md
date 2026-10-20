@@ -97,8 +97,8 @@ the stack under another app.
     seeded; delete it when you no longer want it. Existing installs never
     got the starter workflows in n8n; to add them, see
     [docs/n8n.md](docs/n8n.md#upgrading-an-existing-install).
-15. `docker compose up -d` recreates `hermes` for the kanban guards overlay
-    (three mounts and `HERMES_KANBAN_GUARDS`). A client that files kanban
+15. `docker compose up -d` recreates `hermes` for the two kanban overlays
+    (five mounts and `HERMES_KANBAN_GUARDS`). A client that files kanban
     tasks with `workspace_kind="worktree"` or `"dir"` should be ready for
     `kanban_create` and `POST /tasks` to refuse them (see Behaviour changes).
 
@@ -353,6 +353,15 @@ restores upstream behaviour):
 - **`make doctor`**: a todo section (profile, secret, database login, tokens,
   per-profile registration, `api-server` not holding the read/write token,
   container and HTTP health) and a port check for 3456.
+- **Hermes kanban (overlay)**: `PATCH /tasks/{id}` takes `workspace_kind`,
+  `workspace_path`, `clear_workspace_path` and `project_id` while the task
+  isn't running (409 while it runs, 400 for a workspace that can't be built,
+  and then none of the PATCH is applied). The task keeps its id, runs,
+  comments and links, and an `edited` event records the old and new values.
+  New orchestrator-only tools `kanban_update` (the same change) and
+  `kanban_archive` (refuses a running task) sit beside `kanban_unblock` in
+  the `kanban` toolset. Clients that don't send the fields see no change. See
+  [docs/extending.md](docs/extending.md#changing-a-tasks-workspace).
 - **Hermes gateway (overlay)**: while a turn runs, the gateway sends a
   `turn.heartbeat` event every 30 s (`HERMES_TURN_HEARTBEAT_S`, `0` for off)
   with `status`, `turn_started_at` and `idle_s`, and never after

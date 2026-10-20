@@ -281,6 +281,44 @@ from `kanban-dispatcher` that names the task and its error.
 `HERMES_KANBAN_GUARDS=0` turns all of this off. The error text, payload fields
 and comment author stay stable across pin moves. Changes are additive.
 
+### Changing a task's workspace
+
+A task that isn't running can get a new workspace without being filed again,
+so it keeps its id, runs, comments, attachments and links. Send any of these
+on `PATCH /tasks/{id}`:
+
+| Field | Effect |
+|---|---|
+| `workspace_kind` | `scratch`, `dir` or `worktree`. A new kind drops the stored `workspace_path` unless the PATCH sets one; `scratch` also drops the project link unless the PATCH sets `project_id` |
+| `workspace_path` | Absolute path for `dir` or `worktree` |
+| `clear_workspace_path` | `true` clears the path. Not together with `workspace_path` |
+| `project_id` | Project id or slug; its repo becomes the worktree. `""` unlinks |
+
+The new workspace is checked the way filing checks it. The workspace step
+runs before the rest of the PATCH, so a refused change applies none of it.
+
+| Status | Meaning |
+|---|---|
+| `200` | Changed, or nothing to change. An `edited` event has `fields`, `from` and `to` |
+| `400` | The workspace can't be built, the project is unknown, or both path fields were sent |
+| `404` | Unknown task |
+| `409` | The task is running |
+
+A blocked task stays blocked. Unblock it in the same PATCH (`"status":
+"ready"`) or after it. To rerun a task that gave up on its worktree in a
+scratch workspace, the body is:
+
+```json
+{"workspace_kind": "scratch", "status": "ready"}
+```
+
+Orchestrator profiles (the `kanban` toolset named in the profile) get
+`kanban_update`, which takes `task_id`, `workspace_kind`, `workspace_path` and
+`project_id` (`""` clears the last two), and `kanban_archive`, which refuses a
+running task. Like `kanban_unblock`, dispatcher-spawned workers don't see
+either. These are an overlay (`patch-kanban-edit.py`); the fields, tool names
+and arguments stay stable across pin moves.
+
 ## MCP servers your app hosts
 
 If your app serves tools to Hermes from its own MCP server, Hermes loses that
