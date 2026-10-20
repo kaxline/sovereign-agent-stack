@@ -69,7 +69,8 @@ the stack under another app.
     dropping to uid 1000, so those host directories change owner. To keep
     them owned by your uid, set `user:` on `lightrag` in an override; the
     entrypoint then skips the chown, and the directories must be writable by
-    that uid.
+    that uid. Rebuild `lightrag-mcp` too (`docker compose up -d --build
+    lightrag-mcp`); without it `get_documents` gets a 405 from v1.5.7.
 13. With `automation` enabled, n8n moves from 1.107.4 to 2.43.7 (update
     `N8N_IMAGE` if it is in `.env`). n8n migrates its database on first
     start and the migration only goes forward, so back it up before moving
@@ -319,8 +320,16 @@ restores upstream behaviour):
   and `merge_entities` call routes LightRAG does not serve (`/entities/…`,
   `/relations/…`, `/merge`, `DELETE /documents/{id}`), on v1.4.9.3 and
   v1.5.7 alike. LightRAG answers 404 and lightrag_mcp 0.1.1 reports
-  `"status": "success"` with a `null` result. Queries, inserts, uploads,
-  document listing and health work.
+  `"status": "success"` with a `null` result. `insert_document` gets a 400
+  from `POST /documents/text` on v1.5.7 and also reports `"status":
+  "success"`, with `"None"` as the result. Queries, uploads and health work.
+- **lightrag-mcp**: LightRAG v1.5 no longer serves `GET /documents` (405),
+  so the image patches `get_documents` to page through
+  `POST /documents/paginated`. The tool name and its output,
+  `{"statuses": {"<status>": [doc, ...]}}`, are unchanged. Documents carry
+  v1.5's fields (`track_id`, `error_msg`, with `error` copied from it), and
+  statuses include v1.5's `parsing` and `analyzing`. Rebuild with
+  `docker compose up -d --build lightrag-mcp`.
 - **n8n** 1.107.4 → 2.43.7, past the advisories filed against 1.107.4.
   The bundled `WfGptrResearch01` workflow calls
   `http://gpt-researcher:8000/report/` directly instead of
