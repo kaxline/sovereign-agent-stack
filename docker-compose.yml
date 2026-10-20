@@ -8,21 +8,18 @@ include:
 x-n8n: &service-n8n
   image: ${N8N_IMAGE:-n8nio/n8n:2.43.7}
   # Allowlist. The root .env stays on the host for Compose interpolation and
-  # is not mounted into the container.
-  environment:
-    - DB_TYPE=postgresdb
-    - DB_POSTGRESDB_HOST=postgres
-    - DB_POSTGRESDB_USER=${POSTGRES_USER}
-    - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
-    - DB_POSTGRESDB_DATABASE=${POSTGRES_DB}
-    - N8N_DIAGNOSTICS_ENABLED=false
-    - N8N_PERSONALIZATION_ENABLED=false
-    - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:?set N8N_ENCRYPTION_KEY in .env}
-    - N8N_USER_MANAGEMENT_JWT_SECRET=${N8N_USER_MANAGEMENT_JWT_SECRET:?set N8N_USER_MANAGEMENT_JWT_SECRET in .env}
-    - N8N_DEFAULT_BINARY_DATA_MODE=filesystem
-    - LIGHTRAG_URL=http://lightrag:9621
-    - NEO4J_HTTP_URL=http://neo4j:7474
-    - SEARXNG_URL=http://searxng:8080
+  # is not mounted into the container. A mapping, so a service that adds keys
+  # merges it with `<<: *n8n-env` instead of replacing it.
+  environment: &n8n-env
+    DB_TYPE: sqlite
+    N8N_DIAGNOSTICS_ENABLED: "false"
+    N8N_PERSONALIZATION_ENABLED: "false"
+    N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?set N8N_ENCRYPTION_KEY in .env}
+    N8N_USER_MANAGEMENT_JWT_SECRET: ${N8N_USER_MANAGEMENT_JWT_SECRET:?set N8N_USER_MANAGEMENT_JWT_SECRET in .env}
+    N8N_DEFAULT_BINARY_DATA_MODE: filesystem
+    LIGHTRAG_URL: http://lightrag:9621
+    NEO4J_HTTP_URL: http://neo4j:7474
+    SEARXNG_URL: http://searxng:8080
 
 # Profiles that start the shared Postgres (postgres-db, db-provision, and the
 # two SQL MCP sidecars). An integration that keeps data there appends its own
@@ -560,11 +557,14 @@ services:
       start_period: 40s
 
   # ----------------------------------------------------------------------
-  # Postgres — n8n metadata store (workflows, credentials, execution history)
-  # Profile: automation
+  # postgres — deprecated. n8n never read it: n8n has always stored its data
+  # in SQLite on n8n_storage. No profile starts it. It stays defined so
+  # downstream overlays that override it still parse, and so the old
+  # postgres_storage data can be inspected with --profile n8n-postgres-legacy.
+  # Will be removed in a later release. docs/n8n.md#upgrading-an-existing-install
   # ----------------------------------------------------------------------
   postgres:
-    profiles: ["automation"]
+    profiles: ["n8n-postgres-legacy"]
     container_name: ${CONTAINER_PREFIX:-}n8n-postgres
     image: ${POSTGRES_IMAGE:-postgres:16-alpine}
     restart: unless-stopped
@@ -575,7 +575,7 @@ services:
     volumes:
       - postgres_storage:/var/lib/postgresql/data
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -h localhost -U ${POSTGRES_USER} -d ${POSTGRES_DB}']
+      test: ['CMD-SHELL', 'pg_isready -h localhost -U ${POSTGRES_USER:-n8n} -d ${POSTGRES_DB:-n8n}']
       interval: 5s
       timeout: 5s
       retries: 10
@@ -586,7 +586,7 @@ services:
   # One database (DB_NAME, default assistant), one schema per owner:
   #   agent      agent_rw writes, agent_ro reads
   #   <slug>     svc_<slug> writes (compose/postgres/services/<slug>.env)
-  # Not n8n's database: that is `postgres` above (automation profile).
+  # Not n8n's database: n8n uses SQLite on n8n_storage.
   # No host port. Data: DB_DATA_DIR (default ./data/db). docs/database.md
   # ----------------------------------------------------------------------
   postgres-db:
@@ -665,6 +665,9 @@ services:
   # ----------------------------------------------------------------------
   # n8n-import — one-shot seed of demo credentials + workflows (starter-kit pattern)
   # Profile: automation
+  # Seeds only when n8n's SQLite database does not exist yet, so it never
+  # opens a database a running n8n holds. It must mount the same
+  # /home/node/.n8n as n8n; an overlay that rebinds one must rebind both.
   # ----------------------------------------------------------------------
   n8n-import:
     <<: *service-n8n
@@ -673,11 +676,9 @@ services:
     entrypoint: /bin/sh
     command: /scripts/import-demo-data.sh
     volumes:
+      - n8n_storage:/home/node/.n8n
       - ./n8n/demo-data:/demo-data
       - ./n8n/import-demo-data.sh:/scripts/import-demo-data.sh:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
 
   # ----------------------------------------------------------------------
   # n8n — workflow automation UI
@@ -691,24 +692,21 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:${N8N_HOST_PORT:-5678}:5678"
-    # This list replaces the anchor environment, so the secrets are repeated
-    # here. The anchor still feeds n8n-import.
+    # Merges the anchor environment; keys here add to it or override it.
+    # Don't turn this back into a list: a list replaces the anchor's keys.
     environment:
-      - N8N_HOST=localhost
-      - N8N_PORT=5678
-      - N8N_PROTOCOL=http
-      - WEBHOOK_URL=http://localhost:${N8N_HOST_PORT:-5678}/
-      - N8N_RESTRICT_FILE_ACCESS_TO=/data/shared
-      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:?set N8N_ENCRYPTION_KEY in .env}
-      - N8N_USER_MANAGEMENT_JWT_SECRET=${N8N_USER_MANAGEMENT_JWT_SECRET:?set N8N_USER_MANAGEMENT_JWT_SECRET in .env}
-      - N8N_DEFAULT_BINARY_DATA_MODE=${N8N_DEFAULT_BINARY_DATA_MODE:-filesystem}
+      <<: *n8n-env
+      N8N_HOST: localhost
+      N8N_PORT: "5678"
+      N8N_PROTOCOL: http
+      WEBHOOK_URL: http://localhost:${N8N_HOST_PORT:-5678}/
+      N8N_RESTRICT_FILE_ACCESS_TO: /data/shared
+      N8N_DEFAULT_BINARY_DATA_MODE: ${N8N_DEFAULT_BINARY_DATA_MODE:-filesystem}
     volumes:
       - n8n_storage:/home/node/.n8n
       - ./n8n/demo-data:/demo-data
       - ${ASSISTANT_DATA_ROOT:-./data}/inputs:/data/shared:ro
     depends_on:
-      postgres:
-        condition: service_healthy
       n8n-import:
         condition: service_completed_successfully
       neo4j:

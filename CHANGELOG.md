@@ -73,11 +73,9 @@ the stack under another app.
 13. With `automation` enabled, n8n moves from 1.107.4 to 2.43.7 (update
     `N8N_IMAGE` if it is in `.env`). n8n migrates its database on first
     start and the migration only goes forward, so back it up before moving
-    the pin. The `n8n` service is not given the `DB_*` settings, so n8n
-    keeps its workflows and credentials in SQLite in the `n8n_storage`
-    volume, next to the `config` file that holds its encryption key; the
-    `postgres` service only holds what `n8n-import` seeded. Copy the whole
-    directory:
+    the pin. n8n keeps its workflows and credentials in SQLite in the
+    `n8n_storage` volume, next to the `config` file that holds its
+    encryption key (see item 14). Copy the whole directory:
 
     ```bash
     docker compose --profile automation stop n8n
@@ -86,6 +84,19 @@ the stack under another app.
 
     Then `docker compose up -d`. Workflows you imported yourself that read
     `$env` stop working (see Behaviour changes).
+14. With `automation`, n8n's store does not move. n8n has always kept its
+    workflows, credentials and owner account in SQLite on `n8n_storage`,
+    and still does. Before `docker compose up -d`, an overlay that binds n8n's
+    `/home/node/.n8n` elsewhere must bind `n8n-import`'s to the same
+    place, or `n8n-import` checks and seeds a store n8n never reads. Drop
+    any override of the `postgres` service once your installs are on this
+    release; it is deprecated and will be removed. After `up`, remove the
+    old container with
+    `docker compose --profile n8n-postgres-legacy rm -sf postgres`. Its
+    `postgres_storage` volume holds only the demo data `n8n-import`
+    seeded; delete it when you no longer want it. Existing installs never
+    got the starter workflows in n8n; to add them, see
+    [docs/n8n.md](docs/n8n.md#upgrading-an-existing-install).
 
 ### New services
 
@@ -187,8 +198,42 @@ Hermes v0.22 changes two defaults that this stack sets back:
   agent profiles such as Buzz employees did not, and pruned under v2026.9.14
   too. A value set by hand is kept.
 
+n8n's store:
+
+- **n8n's Postgres is no longer started.** The `postgres` service (container
+  `n8n-postgres`) moves from the `automation` profile to
+  `n8n-postgres-legacy`. n8n never read it: the `n8n` service's environment
+  list replaced the `x-n8n` anchor's, so the `DB_*` settings only reached
+  `n8n-import`. `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` and
+  `POSTGRES_IMAGE` are only used by that legacy service.
+- **`n8n-import` seeds n8n's SQLite store**, and only when
+  `database.sqlite` does not exist yet. It used to seed Postgres whenever
+  Postgres had no workflows, and n8n never saw the result. A fresh install
+  now gets the six starter workflows and both demo credentials in n8n.
+
+n8n's environment:
+
+- **n8n no longer sends diagnostics or shows the personalization survey.**
+  The `n8n` service now merges the `x-n8n` anchor's environment instead of
+  replacing it, so it gets `N8N_DIAGNOSTICS_ENABLED=false` and
+  `N8N_PERSONALIZATION_ENABLED=false`, which only `n8n-import` had before.
+  n8n also gets `LIGHTRAG_URL`, `NEO4J_HTTP_URL` and `SEARXNG_URL` for
+  workflows to read. `docker compose up -d` recreates `n8n`. To turn
+  diagnostics back on, set `N8N_DIAGNOSTICS_ENABLED: "true"` on `n8n` in a
+  compose override file.
+
 ### Changes
 
+- **n8n**: `n8n` and `n8n-import` set `DB_TYPE=sqlite` and both mount
+  `n8n_storage` at `/home/node/.n8n`. `n8n-import` no longer depends on
+  `postgres`, and checks for the database file instead of running
+  `n8n list:workflow`, so a `docker compose up` that restarts it next to a
+  running n8n never opens the live database.
+- **n8n**: `scripts/generate-n8n-credentials.js` writes credentials n8n can
+  decrypt. It base64-encoded the OpenSSL envelope in pieces, and n8n
+  rejected both demo credentials with "Decrypted credentials data is not
+  valid JSON". Re-run `./scripts/setup.sh` (or the script) to regenerate
+  them.
 - **Hermes v0.22.2 / WebUI 0.52.458**: Hermes Agent tags moved from calendar
   versions (`v2026.9.14`) to semver (`v0.21.6`, `v0.22.0`, `v0.22.2`). A semver
   tag is newer than every calendar tag. The overlays were re-anchored to

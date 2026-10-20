@@ -38,7 +38,8 @@ SECRET_KEYS = {
     # Bootstrap copies each token into one profile's .env; hermes reads it there.
     "VIKUNJA_MCP_TOKEN_RO": {"hermes-api-bootstrap", "hermes-browser-bootstrap"},
     "VIKUNJA_MCP_TOKEN_RW": {"hermes-api-bootstrap", "hermes-browser-bootstrap"},
-    "DB_POSTGRESDB_PASSWORD": {"n8n-import"},
+    # n8n stores its data in SQLite; no service gets n8n Postgres settings.
+    "DB_POSTGRESDB_PASSWORD": set(),
     "N8N_ENCRYPTION_KEY": {"n8n", "n8n-import"},
     "N8N_USER_MANAGEMENT_JWT_SECRET": {"n8n", "n8n-import"},
     "NEO4J_PASSWORD": {"lightrag"},
@@ -69,11 +70,7 @@ WORKER_ENV = {"HERMES_UID", "HERMES_GID", "TZ"}
 REQUIRED = {
     "lightrag": {"NEO4J_PASSWORD", "LIGHTRAG_API_KEY"},
     "n8n": {"N8N_ENCRYPTION_KEY", "N8N_USER_MANAGEMENT_JWT_SECRET"},
-    "n8n-import": {
-        "N8N_ENCRYPTION_KEY",
-        "N8N_USER_MANAGEMENT_JWT_SECRET",
-        "DB_POSTGRESDB_PASSWORD",
-    },
+    "n8n-import": {"N8N_ENCRYPTION_KEY", "N8N_USER_MANAGEMENT_JWT_SECRET"},
     "hermes": {
         "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD",
         "HERMES_DASHBOARD_BASIC_AUTH_SECRET",
@@ -90,7 +87,6 @@ REQUIRED = {
         "EMBEDDING_BINDING_API_KEY",
         "LLM_PROXY_ADMIN_TOKEN",
     },
-    "postgres": {"POSTGRES_PASSWORD"},
     "postgres-db": {"POSTGRES_PASSWORD"},
     "db-provision": {"PGPASSWORD", "DB_AGENT_RO_PASSWORD", "DB_AGENT_RW_PASSWORD"},
     "sql-mcp-ro": {"DATABASE_URI"},
@@ -269,11 +265,61 @@ def check_db_network(services: dict, networks: dict) -> list[str]:
     return errors
 
 
+# n8n and n8n-import must read one SQLite store, or the import's "database
+# exists" check looks somewhere n8n never reads.
+N8N_HOME = "/home/node/.n8n"
+
+# Keys from the x-n8n anchor that both services must keep. A service-level
+# environment list replaces the anchor's, which once sent n8n's diagnostics
+# to n8n and dropped the workflow URLs.
+N8N_SHARED_ENV = {
+    "N8N_DIAGNOSTICS_ENABLED": "false",
+    "N8N_PERSONALIZATION_ENABLED": "false",
+    "LIGHTRAG_URL": "http://lightrag:9621",
+    "NEO4J_HTTP_URL": "http://neo4j:7474",
+    "SEARXNG_URL": "http://searxng:8080",
+}
+
+
+def n8n_home_source(service: dict) -> str | None:
+    for vol in service.get("volumes") or []:
+        if isinstance(vol, dict) and vol.get("target") == N8N_HOME:
+            return vol.get("source")
+    return None
+
+
+def check_n8n_store(services: dict) -> list[str]:
+    errors = []
+    sources = {}
+    for name in ("n8n", "n8n-import"):
+        service = services.get(name)
+        if not service:
+            errors.append(f"service {name} missing from compose config")
+            continue
+        env = env_map(service)
+        if env.get("DB_TYPE") != "sqlite":
+            errors.append(f"{name} DB_TYPE is {env.get('DB_TYPE')!r}, want 'sqlite'")
+        for key in sorted(k for k in env if k.startswith("DB_POSTGRESDB_")):
+            errors.append(f"{name} environment includes {key}")
+        for key, want in sorted(N8N_SHARED_ENV.items()):
+            if env.get(key) != want:
+                errors.append(f"{name} {key} is {env.get(key)!r}, want {want!r}")
+        sources[name] = n8n_home_source(service)
+        if not sources[name]:
+            errors.append(f"{name} does not mount {N8N_HOME}")
+    if len(set(sources.values())) > 1:
+        errors.append(f"n8n and n8n-import mount different {N8N_HOME}: {sources}")
+    if "postgres" in services:
+        errors.append("deprecated n8n postgres service starts with the default profiles")
+    return errors
+
+
 def main() -> None:
     config = load_config()
     services = config.get("services") or {}
     errors = check_secrets(services) + check_worker(services) + check_proxy(services) + check_loopback(services)
     errors += check_db_network(services, config.get("networks") or {})
+    errors += check_n8n_store(services)
     if errors:
         for err in errors:
             fail(err)
