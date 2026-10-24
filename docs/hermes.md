@@ -54,8 +54,8 @@ This stack pins Hermes Agent and Hermes WebUI together. The same values live in 
 
 | Image | Minimum / default tag |
 |---|---|
-| `nousresearch/hermes-agent` | **`v0.22.2`** |
-| `ghcr.io/nesquena/hermes-webui` | **`0.52.458`** |
+| `nousresearch/hermes-agent` | **`v0.22.5`** |
+| `ghcr.io/nesquena/hermes-webui` | **`0.52.492`** |
 
 Bump both with `make hermes-upgrade AGENT=… WEBUI=…` — never one at a time. Details: [Hermes WebUI — Upgrading](hermes-webui.md#upgrading).
 

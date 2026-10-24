@@ -929,7 +929,7 @@ services:
   # ----------------------------------------------------------------------
   hermes-api-bootstrap:
     profiles: ["core"]
-    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v0.22.2}
+    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v0.22.5}
     restart: "no"
     user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
     environment:
@@ -1000,7 +1000,7 @@ services:
   # at http://hermes:8644.
   hermes-browser-bootstrap:
     profiles: ["core"]
-    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v0.22.2}
+    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v0.22.5}
     restart: "no"
     user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
     environment:
@@ -1078,7 +1078,7 @@ services:
   hermes:
     profiles: ["core"]
     container_name: ${CONTAINER_PREFIX:-}hermes
-    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v0.22.2}
+    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v0.22.5}
     restart: unless-stopped
     command: ["gateway", "run"]
     ports:
@@ -1392,7 +1392,7 @@ services:
   hermes-webui:
     profiles: ["core"]
     container_name: ${CONTAINER_PREFIX:-}hermes-webui
-    image: ghcr.io/nesquena/hermes-webui:${HERMES_WEBUI_IMAGE_TAG:-0.52.458}
+    image: ghcr.io/nesquena/hermes-webui:${HERMES_WEBUI_IMAGE_TAG:-0.52.492}
     restart: unless-stopped
     # Stock init rsyncs /apptoo → /app then starts server.py. Our wrapper
     # patches load_workspaces on the runtime tree first so /opt/projects

@@ -12,7 +12,7 @@ hermes_python() {
   if [[ -z "$tag" && -f .env ]]; then
     tag="$(grep -E '^HERMES_AGENT_IMAGE_TAG=' .env 2>/dev/null | head -1 | cut -d= -f2- || true)"
   fi
-  tag="${tag:-v0.22.2}"
+  tag="${tag:-v0.22.5}"
   docker run --rm -i \
     --user "$(id -u):$(id -g)" \
     -v "$(pwd)/data/hermes:/opt/data" \

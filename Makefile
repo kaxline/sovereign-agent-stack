@@ -429,7 +429,7 @@ tool-eval-score:
 # Upgrade Hermes and its WebUI together. The WebUI reads the agent's on-disk
 # state layout and is only tested against a matching agent, so bumping one alone
 # is the failure mode this target exists to prevent — pass both tags:
-#   make hermes-upgrade AGENT=v0.22.2 WEBUI=0.52.458
+#   make hermes-upgrade AGENT=v0.22.5 WEBUI=0.52.492
 # Re-runs both profile bootstraps afterwards, because a new agent may add config
 # keys the running profiles do not have yet.
 hermes-upgrade:

@@ -158,17 +158,17 @@ Full convention (`sources.yaml`, INDEX.md, context roots, `make project-*`): [Pr
 **Always upgrade both images together.** The WebUI reads the agent's on-disk state layout and imports agent modules directly, and the two are only tested against each other within a release window. Bumping one alone is the exact failure this setup guards against, which is why both tags sit adjacent in `.env` behind a single command:
 
 ```bash
-make hermes-upgrade AGENT=v0.22.2 WEBUI=0.52.458
+make hermes-upgrade AGENT=v0.22.5 WEBUI=0.52.492
 ```
 
 That rewrites both tags, pulls, re-runs both profile bootstraps (a new agent may add config keys the running profiles lack), and recreates both containers. Run the verification block below afterwards. Tool filters and `skills.external_dirs` are the two settings that regress without announcing it.
 
-The stack's minimum / compose-default pair is documented in [Hermes Agent — Image pins](hermes.md#image-pins-minimum-agent-tag) (`v0.22.2` + `0.52.458`). Keep `.env`, compose fallbacks, and that section aligned when you bump.
+The stack's minimum / compose-default pair is documented in [Hermes Agent — Image pins](hermes.md#image-pins-minimum-agent-tag) (`v0.22.5` + `0.52.492`). Keep `.env`, compose fallbacks, and that section aligned when you bump.
 
 Picking tags:
 
-- **Agent** — [Docker Hub tags](https://hub.docker.com/r/nousresearch/hermes-agent/tags), e.g. `v0.22.2`. Tags were calendar-based (`v2026.9.14`) until September 2026 and are semver since; see [Image pins](hermes.md#image-pins-minimum-agent-tag).
-- **WebUI** — [GitHub releases](https://github.com/nesquena/hermes-webui/releases). Stable `vX.Y.Z` tags land roughly weekly; `exp-vX.Y.Z` prereleases land several times a day. Track stable, and watch out that the **image tag drops the leading `v`**: release `v0.52.458` is image `0.52.458`.
+- **Agent** — [Docker Hub tags](https://hub.docker.com/r/nousresearch/hermes-agent/tags), e.g. `v0.22.5`. Tags were calendar-based (`v2026.9.14`) until September 2026 and are semver since; see [Image pins](hermes.md#image-pins-minimum-agent-tag).
+- **WebUI** — [GitHub releases](https://github.com/nesquena/hermes-webui/releases). Stable `vX.Y.Z` tags land roughly weekly; `exp-vX.Y.Z` prereleases land several times a day. Track stable, and watch out that the **image tag drops the leading `v`**: release `v0.52.492` is image `0.52.492`.
 
 Neither image should track `latest`. This stack ran `hermes-agent:latest` once, and the locally cached layer drifted to a build that no published tag pointed at anymore, which left "what version broke this" with no answer.
 
