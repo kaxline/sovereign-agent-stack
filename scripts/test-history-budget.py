@@ -209,6 +209,8 @@ from tui_gateway.contracts import registry
 from tui_gateway import server
 
 assert server._history_budget_installed
+import inspect
+assert "stamp_agent_budget(" in inspect.getsource(server._make_agent), "agent build stamps the budget"
 params, problem = registry.validate_params(registry.METHODS["session.create"], {"history_budget": 20000})
 assert problem is None, problem
 params, problem = registry.validate_params(
