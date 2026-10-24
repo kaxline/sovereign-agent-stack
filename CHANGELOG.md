@@ -18,6 +18,10 @@ the stack under another app.
    and the verification block in
    [docs/hermes-webui.md](docs/hermes-webui.md#verification). An app that
    sets its own image tags must move both together.
+3. With the default ssh terminal backend: `docker compose build hermes-worker`,
+   then `docker compose up -d --force-recreate hermes-worker hermes`. The
+   rebuilt worker has new SSH host keys, and `hermes` adds them to its
+   `known_hosts` only when it starts.
 
 ### Changes
 
@@ -50,6 +54,20 @@ the stack under another app.
   also the turn that wakes the filing session, says whether a retry can help,
   carries up to 500 characters of the error and names the tools that repair
   the task. See [docs/extending.md](docs/extending.md#telling-the-session-that-filed-a-task).
+- **mcp-searxng** 1.15.0 → 2.7.0. Hermes and OpenCode connect, list the same
+  four tools and run `searxng_web_search` and `web_url_read` unchanged. A
+  client of your own that posts to `http://mcp-searxng:3000/mcp` must now send
+  `Content-Type: application/json` (otherwise HTTP 415), and a sessionless
+  request must also send `MCP-Protocol-Version`.
+- **SearXNG** 2026.8.11-e8e710e42 → 2026.10.24-ef0ec03da. The existing
+  `searxng/settings.local.yml` works as is.
+- **Ollama** (`ollama` profile) 0.11.11 → 0.40.11. `ollama-pull`, `/api/embed`,
+  `/api/chat` and `/v1/chat/completions` behave as before on freshly pulled
+  models. The arm64 image is 4.3 GB.
+- **hermes-worker** base image alpine:3.21 → 3.24. The worker now has
+  Python 3.14 (was 3.12), git 2.54, OpenSSH 10.3 and ripgrep 15.1, so
+  `execute_code` runs on Python 3.14. `bash -l`, GNU tar `--no-overwrite-dir`,
+  env persistence between commands and key login from `hermes` work as before.
 
 ## v0.3.3 — 2026-10-20
 

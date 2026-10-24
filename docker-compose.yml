@@ -268,7 +268,7 @@ services:
   searxng:
     profiles: ["core"]
     container_name: ${CONTAINER_PREFIX:-}searxng
-    image: ${SEARXNG_IMAGE:-docker.io/searxng/searxng:2026.8.11-e8e710e42}
+    image: ${SEARXNG_IMAGE:-docker.io/searxng/searxng:2026.10.24-ef0ec03da}
     restart: unless-stopped
     ports:
       - "127.0.0.1:${SEARXNG_PORT:-8080}:8080"
@@ -293,7 +293,7 @@ services:
   mcp-searxng:
     profiles: ["core"]
     container_name: ${CONTAINER_PREFIX:-}mcp-searxng
-    image: ${MCP_SEARXNG_IMAGE:-isokoliuk/mcp-searxng:1.15.0}
+    image: ${MCP_SEARXNG_IMAGE:-isokoliuk/mcp-searxng:2.7.0}
     restart: unless-stopped
     environment:
       - SEARXNG_URL=http://searxng:8080
@@ -828,7 +828,7 @@ services:
   ollama:
     profiles: ["ollama"]
     container_name: ${CONTAINER_PREFIX:-}ollama
-    image: ${OLLAMA_IMAGE:-ollama/ollama:0.11.11}
+    image: ${OLLAMA_IMAGE:-ollama/ollama:0.40.11}
     restart: unless-stopped
     ports:
       - "127.0.0.1:${OLLAMA_HOST_PORT:-11434}:11434"
@@ -845,7 +845,7 @@ services:
   #   docker compose --profile ollama run --rm ollama-pull
   ollama-pull:
     profiles: ["ollama"]
-    image: ${OLLAMA_IMAGE:-ollama/ollama:0.11.11}
+    image: ${OLLAMA_IMAGE:-ollama/ollama:0.40.11}
     container_name: ${CONTAINER_PREFIX:-}ollama-pull
     restart: "no"
     environment:

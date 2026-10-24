@@ -1,4 +1,4 @@
-FROM alpine:3.21
+FROM alpine:3.24
 
 # bash: Hermes runs remote commands with bash -l.
 # tar: Hermes snapshots with GNU tar (--no-overwrite-dir); BusyBox tar cannot.
