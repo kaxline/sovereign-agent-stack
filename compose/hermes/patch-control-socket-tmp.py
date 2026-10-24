@@ -17,6 +17,12 @@ gateway processes point TMPDIR at $HERMES_HOME/cache/scratch, which is virtiofs
 too. Stale socket files there (left by a Docker VM restart) cannot even be
 unlinked, which is what broke the direct path. Every gateway, the dashboard
 and `hermes` CLI calls share the container's /tmp, so they all reach each other.
+
+v0.22.3 changed the fallback layout to <dir>/hermes-gw-<hash>/control.sock: the
+server creates that directory 0700 and refuses a socket whose parent is not
+private, and gateway_runtime_discovery (used by gateway --replace and the
+session runtime) accepts a pointer only to that leaf. The /tmp path follows the
+same layout, and discovery skips $HERMES_HOME/gateway.sock like the client does.
 """
 from __future__ import annotations
 
@@ -25,6 +31,7 @@ from pathlib import Path
 
 ROOT = Path(os.environ.get("HERMES_ROOT", "/opt/hermes"))
 TARGET = ROOT / "gateway" / "control_socket.py"
+DISCOVERY = ROOT / "hermes_cli" / "gateway_runtime_discovery.py"
 MARKER = "# assistant-stack: control socket in tmp"
 TAG = "[patch-control-socket-tmp]"
 
@@ -54,25 +61,47 @@ HELPER = f'''def _assistant_socket_in_tmp() -> bool:  {MARKER}
 
 def _assistant_tmp_socket_path(home: Path) -> Path:
     """/tmp, not tempfile.gettempdir(): gateways point TMPDIR under $HERMES_HOME (virtiofs)."""
-    return Path("/tmp") / f"hermes-gw-{{_home_hash(home)}}.sock"
+    return Path("/tmp") / f"hermes-gw-{{_home_hash(home)}}" / "control.sock"
 
 
 '''
 
 
-def main() -> None:
-    text = TARGET.read_text()
+DISCOVERY_OLD = '''    direct = home / "gateway.sock"
+    if os.path.lexists(direct):
+'''
+DISCOVERY_NEW = f'''    direct = home / "gateway.sock"
+    from gateway.control_socket import _assistant_socket_in_tmp  {MARKER}
+    if os.path.lexists(direct) and not _assistant_socket_in_tmp():
+'''
+
+
+def _patch(path: Path, edits: list[tuple[str, str, str]]) -> None:
+    text = path.read_text()
     if MARKER in text:
-        print(f"{TAG} already applied ({TARGET})")
+        print(f"{TAG} already applied ({path})")
         return
-    for old, label in ((SERVER_OLD, "server path"), (CLIENT_OLD, "client path"), (HELPER_ANCHOR, "helper anchor")):
-        if text.count(old) != 1:
-            raise SystemExit(f"{TAG} expected 1 x {label} in {TARGET}, found {text.count(old)}. "
-                             "Hermes image may have changed — update this patch.")
-    text = text.replace(SERVER_OLD, SERVER_NEW).replace(CLIENT_OLD, CLIENT_NEW)
-    text = text.replace(HELPER_ANCHOR, HELPER + HELPER_ANCHOR)
-    TARGET.write_text(text)
-    print(f"{TAG} patched {TARGET}")
+    for old, new, label in edits:
+        text = text.replace(old, new)
+    path.write_text(text)
+    print(f"{TAG} patched {path}")
+
+
+def main() -> None:
+    socket_edits = [(SERVER_OLD, SERVER_NEW, "server path"), (CLIENT_OLD, CLIENT_NEW, "client path"),
+                    (HELPER_ANCHOR, HELPER + HELPER_ANCHOR, "helper anchor")]
+    discovery_edits = [(DISCOVERY_OLD, DISCOVERY_NEW, "discovery direct path")]
+    # Check both targets before touching either, so a moved anchor leaves Hermes as shipped.
+    for path, edits in ((TARGET, socket_edits), (DISCOVERY, discovery_edits)):
+        text = path.read_text()
+        if MARKER in text:
+            continue
+        for old, _, label in edits:
+            if text.count(old) != 1:
+                raise SystemExit(f"{TAG} expected 1 x {label} in {path}, found {text.count(old)}. "
+                                 "Hermes image may have changed — update this patch.")
+    _patch(TARGET, socket_edits)
+    _patch(DISCOVERY, discovery_edits)
 
 
 if __name__ == "__main__":

@@ -59,19 +59,19 @@ This stack pins Hermes Agent and Hermes WebUI together. The same values live in 
 
 Bump both with `make hermes-upgrade AGENT=… WEBUI=…` — never one at a time. Details: [Hermes WebUI — Upgrading](hermes-webui.md#upgrading).
 
-Hermes Agent switched from calendar tags (`v2026.9.14`) to semver (`v0.21.6`, `v0.22.0`, …) after September 2026. A semver tag is newer than every calendar tag, so compare versions by release date, not by string order. The overlays in this stack are anchored to `v0.22.2` and do not apply to calendar-tagged images.
+Hermes Agent switched from calendar tags (`v2026.9.14`) to semver (`v0.21.6`, `v0.22.0`, …) after September 2026. A semver tag is newer than every calendar tag, so compare versions by release date, not by string order. The overlays in this stack are anchored to `v0.22.5` and do not apply to calendar-tagged images.
 
 ### One gateway per profile
 
 Hermes v0.22 runs one gateway per container that serves every profile, and moves each profile's API server onto the default listener at `/p/<profile>/`. This stack keeps the old layout instead: one gateway process per profile, with the `api-server` profile on port 8643 and `browser` on 8644, because Boundary and the WebUI call those ports. `compose/hermes/019-pin-profile-gateways.sh` runs before the image's profile reconciler on every start and writes `gateway.standalone: true` into each named profile's `config.yaml` where the key is unset. A profile that ran a gateway before still starts one, and a profile that never did stays idle.
 
-v0.22 gateways also find each other through a control socket at `$HERMES_HOME/gateway.sock`. `data/hermes` is a virtiofs mount on Docker Desktop, where connecting to a Unix socket fails, so each profile gateway restarted in a loop trying to replace the default one. `patch-control-socket-tmp.py` with `HERMES_CONTROL_SOCKET_IN_TMP=1` (set on the `hermes` service) binds those sockets on the container's `/tmp` instead, and leaves a `gateway.sock.path` pointer in each home.
+v0.22 gateways also find each other through a control socket at `$HERMES_HOME/gateway.sock`. `data/hermes` is a virtiofs mount on Docker Desktop, where connecting to a Unix socket fails, so each profile gateway restarted in a loop trying to replace the default one. `patch-control-socket-tmp.py` with `HERMES_CONTROL_SOCKET_IN_TMP=1` (set on the `hermes` service) binds those sockets at `/tmp/hermes-gw-<hash>/control.sock` in the container instead, and leaves a `gateway.sock.path` pointer in each home. Since v0.22.3 the gateway refuses a socket whose directory is not private (0700, owned by the gateway user), and `gateway run --replace` accepts a pointer only to that `hermes-gw-<hash>/control.sock` layout.
 
 Upstream calls `gateway.standalone` a temporary compatibility setting that will be removed. When that happens the stack has to move to the multiplexed layout, which changes the API URLs that Boundary and the WebUI use. To try the multiplexed layout now, set `HERMES_PIN_STANDALONE_GATEWAYS=0` in `.env` and remove `gateway.standalone` from the profiles' `config.yaml`.
 
 ### Session pruning
 
-Hermes deletes ended sessions that have been inactive for `sessions.retention_days` (90) when it starts, because `sessions.auto_prune` defaults to `true`. The same cont-init script writes `sessions.auto_prune: false` into the default profile and every named profile where the key is unset, so `session_search` and the WebUI keep all history. A value you set by hand is left alone. `HERMES_PIN_SESSIONS_KEEP=0` turns the pin off for new profiles.
+With `sessions.auto_prune: true`, Hermes deletes ended sessions that have been inactive for `sessions.retention_days` (90) when it starts. The default was `true` up to v0.22.2 and is `false` from v0.22.3, which instead asks once when the disk is low until the key is written. The same cont-init script writes `sessions.auto_prune: false` into the default profile and every named profile where the key is unset, so `session_search` and the WebUI keep all history. A value you set by hand is left alone. `HERMES_PIN_SESSIONS_KEEP=0` turns the pin off for new profiles.
 
 Dashboard JSON-RPC clients (for example Boundary over the gateway WebSocket) can rely on this agent tag for:
 
