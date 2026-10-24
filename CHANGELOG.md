@@ -26,6 +26,8 @@ the stack under another app.
   client of your own that posts to `http://mcp-searxng:3000/mcp` must now send
   `Content-Type: application/json` (otherwise HTTP 415), and a sessionless
   request must also send `MCP-Protocol-Version`.
+- **SearXNG** 2026.8.11-e8e710e42 → 2026.10.24-ef0ec03da. The existing
+  `searxng/settings.local.yml` works as is.
 
 ## v0.3.3 — 2026-10-20
 
