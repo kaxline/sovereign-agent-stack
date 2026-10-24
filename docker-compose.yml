@@ -293,7 +293,7 @@ services:
   mcp-searxng:
     profiles: ["core"]
     container_name: ${CONTAINER_PREFIX:-}mcp-searxng
-    image: ${MCP_SEARXNG_IMAGE:-isokoliuk/mcp-searxng:1.15.0}
+    image: ${MCP_SEARXNG_IMAGE:-isokoliuk/mcp-searxng:2.7.0}
     restart: unless-stopped
     environment:
       - SEARXNG_URL=http://searxng:8080

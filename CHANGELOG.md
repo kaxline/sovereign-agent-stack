@@ -21,6 +21,11 @@ the stack under another app.
   also the turn that wakes the filing session, says whether a retry can help,
   carries up to 500 characters of the error and names the tools that repair
   the task. See [docs/extending.md](docs/extending.md#telling-the-session-that-filed-a-task).
+- **mcp-searxng** 1.15.0 → 2.7.0. Hermes and OpenCode connect, list the same
+  four tools and run `searxng_web_search` and `web_url_read` unchanged. A
+  client of your own that posts to `http://mcp-searxng:3000/mcp` must now send
+  `Content-Type: application/json` (otherwise HTTP 415), and a sessionless
+  request must also send `MCP-Protocol-Version`.
 
 ## v0.3.3 — 2026-10-20
 
