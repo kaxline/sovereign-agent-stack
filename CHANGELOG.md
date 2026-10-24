@@ -12,6 +12,10 @@ the stack under another app.
 
 1. `docker compose up -d`. Two new overlay mounts on `hermes`
    (`kanban_wake.py`, `patch-kanban-wake.py`), so compose recreates it.
+2. With the default ssh terminal backend: `docker compose build hermes-worker`,
+   then `docker compose up -d --force-recreate hermes-worker hermes`. The
+   rebuilt worker has new SSH host keys, and `hermes` adds them to its
+   `known_hosts` only when it starts.
 
 ### Changes
 
@@ -31,6 +35,10 @@ the stack under another app.
 - **Ollama** (`ollama` profile) 0.11.11 → 0.40.11. `ollama-pull`, `/api/embed`,
   `/api/chat` and `/v1/chat/completions` behave as before on freshly pulled
   models. The arm64 image is 4.3 GB.
+- **hermes-worker** base image alpine:3.21 → 3.24. The worker now has
+  Python 3.14 (was 3.12), git 2.54, OpenSSH 10.3 and ripgrep 15.1, so
+  `execute_code` runs on Python 3.14. `bash -l`, GNU tar `--no-overwrite-dir`,
+  env persistence between commands and key login from `hermes` work as before.
 
 ## v0.3.3 — 2026-10-20
 
