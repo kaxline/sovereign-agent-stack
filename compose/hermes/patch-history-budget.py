@@ -264,8 +264,11 @@ def _(rid, params: dict) -> dict:
         label="model_config",
         done='model_config["history_budget"]',
     )
+    # v0.22.3 moved _make_agent into tui_gateway/agent_factory.py; bind_module
+    # rebinds it against server.py globals, so logger and _get_db still resolve.
+    factory = GATEWAY / "agent_factory.py"
     _replace(
-        GATEWAY / "server.py",
+        factory if factory.is_file() else GATEWAY / "server.py",
         '''        agent._pending_fallback_notice = fallback_notice
     return agent
 ''',

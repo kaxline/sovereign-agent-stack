@@ -102,11 +102,11 @@ if has_profile core; then
   else
     ok "HERMES_DASHBOARD_PASSWORD is set"
   fi
-  # The overlays are anchored to semver agent tags (v0.22.2+). A calendar tag
+  # The overlays are anchored to semver agent tags (v0.22.5+). A calendar tag
   # left in .env from before that boots with every overlay skipped.
   agent_tag="$(env_get HERMES_AGENT_IMAGE_TAG)"
   if [[ "$agent_tag" =~ ^v20[0-9][0-9]\. ]]; then
-    bad "HERMES_AGENT_IMAGE_TAG=${agent_tag} predates the overlays — make hermes-upgrade AGENT=v0.22.2 WEBUI=0.52.458"
+    bad "HERMES_AGENT_IMAGE_TAG=${agent_tag} predates the overlays — make hermes-upgrade AGENT=v0.22.5 WEBUI=0.52.492"
   fi
 fi
 

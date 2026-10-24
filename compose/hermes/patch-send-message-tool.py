@@ -151,9 +151,9 @@ registry.register(
 
 '''
 
-NOTE = '''from tools.registry import tool_error
-
-# NOTE: ``send_message`` is intentionally NOT registered as an agent-callable model tool
+# v0.22.3 put _SLACK_USER_ID_RE between the tool_error import and this note, so
+# anchor on the note alone; REGISTER_BLOCK imports registry itself.
+NOTE = '''# NOTE: ``send_message`` is intentionally NOT registered as an agent-callable model tool
 # (the agent must not fire cross-platform messages on its own); cron delivery, the
 # ``hermes send`` CLI, the kanban notifier and the opt-in MCP server import the helpers.
 

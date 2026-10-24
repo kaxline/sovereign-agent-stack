@@ -115,7 +115,7 @@ approval.register_gateway_notify(SK, notify)
 def gate(tool, args, call_id):
     set_current_session_key(SK)  # contextvars: a new thread starts without it
     set_current_observability_context(tool_call_id=call_id)
-    return h._trust_gate_check("calendar-test", tool, args)
+    return h._trust_gate_check("calendar-test", tool, args=args)
 
 ARGS = {"summary": "Call with Jordan", "start": "2026-10-23T11:00:00", "end": "2026-10-23T11:30:00",
         "calendar_name": "Work", "password": "synthetic-pass"}
@@ -173,7 +173,7 @@ assert gate("caldav_list_calendars", {}, "call-3") is None and not seen
 # The handler hands its arguments to the gate.
 got = []
 real = h._trust_gate_check
-h._trust_gate_check = lambda s, t, a=None: got.append((s, t, a)) or "blocked"
+h._trust_gate_check = lambda s, t, booked=None, *, args=None: got.append((s, t, args)) or "blocked"
 try:
     handler = h._make_tool_handler("calendar-test", "caldav_create_event", 5)
     assert "blocked" in handler({"summary": "X"})

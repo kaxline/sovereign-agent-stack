@@ -12,9 +12,38 @@ the stack under another app.
 
 1. `docker compose up -d`. Two new overlay mounts on `hermes`
    (`kanban_wake.py`, `patch-kanban-wake.py`), so compose recreates it.
+2. Hermes Agent v0.22.5 and WebUI 0.52.492 (from v0.22.2 and 0.52.458).
+   The overlays no longer apply to v0.22.2. Back up `data/hermes` with
+   `hermes` stopped, then run `make hermes-upgrade AGENT=v0.22.5 WEBUI=0.52.492`
+   and the verification block in
+   [docs/hermes-webui.md](docs/hermes-webui.md#verification). An app that
+   sets its own image tags must move both together.
 
 ### Changes
 
+- **Hermes v0.22.5 / WebUI 0.52.492**: WebUI 0.52.492 fixes pressing Enter on
+  **Deny**, **Allow session** or **Always allow** in a tool approval, which ran
+  **Allow once**. Overlay changes for v0.22.5:
+  - `patch-history-budget`: the agent-build hook moved with `_make_agent` to
+    `tui_gateway/agent_factory.py`. The `history_budget` wire contract and
+    error `4028` are unchanged.
+  - `patch-mcp-trust-details`: upstream moved the trust-gate prompt into
+    `_ask_for_call` and added per-chat spend limits. Arguments still reach
+    the approval entry under `mcp`; a spend-limit prompt now carries them
+    too, and the summary in the prompt text follows the spend-limit notice.
+  - `patch-send-message-tool`: the agent-callable `send_message` was skipped
+    on v0.22.5 because its anchor moved. It registers again, and
+    `scripts/test-send-message-tool.py` fails if any part of the patch skips.
+  - `patch-control-socket-tmp`: v0.22.3 refuses a control socket whose
+    directory is not private and accepts a pointer only to
+    `hermes-gw-<hash>/control.sock`. The socket moved to
+    `/tmp/hermes-gw-<hash>/control.sock`, and `gateway run --replace`
+    discovery skips `$HERMES_HOME/gateway.sock` as the client already did.
+    `scripts/test-hermes-topology.py` checks this and the
+    `019-pin-profile-gateways` pins.
+  - `sessions.auto_prune` now defaults to `false` upstream. The
+    `019-pin-profile-gateways` pin still writes `false`, which also keeps
+    upstream's low-disk prune prompt from appearing.
 - **Hermes gateway (overlay)**: a dashboard session claims the kanban events
   of tasks it filed before a context compression rotated its key. They used
   to wait forever, even across resumes. The `gave_up` notification, which is
