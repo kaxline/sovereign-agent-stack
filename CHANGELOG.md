@@ -28,6 +28,9 @@ the stack under another app.
   request must also send `MCP-Protocol-Version`.
 - **SearXNG** 2026.8.11-e8e710e42 → 2026.10.24-ef0ec03da. The existing
   `searxng/settings.local.yml` works as is.
+- **Ollama** (`ollama` profile) 0.11.11 → 0.40.11. `ollama-pull`, `/api/embed`,
+  `/api/chat` and `/v1/chat/completions` behave as before on freshly pulled
+  models. The arm64 image is 4.3 GB.
 
 ## v0.3.3 — 2026-10-20
 

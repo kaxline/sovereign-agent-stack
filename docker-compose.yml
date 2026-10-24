@@ -828,7 +828,7 @@ services:
   ollama:
     profiles: ["ollama"]
     container_name: ${CONTAINER_PREFIX:-}ollama
-    image: ${OLLAMA_IMAGE:-ollama/ollama:0.11.11}
+    image: ${OLLAMA_IMAGE:-ollama/ollama:0.40.11}
     restart: unless-stopped
     ports:
       - "127.0.0.1:${OLLAMA_HOST_PORT:-11434}:11434"
@@ -845,7 +845,7 @@ services:
   #   docker compose --profile ollama run --rm ollama-pull
   ollama-pull:
     profiles: ["ollama"]
-    image: ${OLLAMA_IMAGE:-ollama/ollama:0.11.11}
+    image: ${OLLAMA_IMAGE:-ollama/ollama:0.40.11}
     container_name: ${CONTAINER_PREFIX:-}ollama-pull
     restart: "no"
     environment:
