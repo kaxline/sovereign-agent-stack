@@ -1120,6 +1120,9 @@ services:
       - HERMES_DASHBOARD_BASIC_AUTH_USERNAME=${HERMES_DASHBOARD_USER:-admin}
       - HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=${HERMES_DASHBOARD_PASSWORD:?set HERMES_DASHBOARD_PASSWORD in .env}
       - HERMES_DASHBOARD_BASIC_AUTH_SECRET=${HERMES_DASHBOARD_AUTH_SECRET:?set HERMES_DASHBOARD_AUTH_SECRET in .env}
+      # One-time sign-in links at /auth/handoff (patch-dashboard-handoff.py).
+      # Empty turns the route off (404).
+      - HERMES_DASHBOARD_HANDOFF_SECRET=${HERMES_DASHBOARD_HANDOFF_SECRET:-}
       # API server runs on the api-server profile (port 8643), not the default gateway.
       - API_SERVER_ENABLED=false
       # browser-harness (browser_exec) control sockets. The default is under
@@ -1311,6 +1314,12 @@ services:
       - ./compose/hermes/kanban_wake.py:/bootstrap/kanban_wake.py:ro
       - ./compose/hermes/patch-kanban-wake.py:/bootstrap/patch-kanban-wake.py:ro
       - ./compose/hermes/12-patch-kanban-guards.sh:/etc/cont-init.d/12-patch-kanban-guards:ro
+      # Kanban task links (?task=, ?board=), ?embed=1 without the dashboard
+      # shell, and one-time sign-in links (/auth/handoff). See docs/extending.md.
+      - ./compose/hermes/patch-dashboard-board.py:/bootstrap/patch-dashboard-board.py:ro
+      - ./compose/hermes/dashboard_handoff.py:/bootstrap/dashboard_handoff.py:ro
+      - ./compose/hermes/patch-dashboard-handoff.py:/bootstrap/patch-dashboard-handoff.py:ro
+      - ./compose/hermes/13-patch-dashboard.sh:/etc/cont-init.d/13-patch-dashboard:ro
       # Per-profile gateways and kept sessions on Hermes v0.22+. Runs before the
       # image's 02-reconcile-profiles. See the script header.
       - ./compose/hermes/019-pin-profile-gateways.sh:/etc/cont-init.d/019-pin-profile-gateways:ro

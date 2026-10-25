@@ -6,6 +6,36 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
+## Unreleased
+
+### Upgrade steps
+
+1. `./scripts/setup.sh` to generate `HERMES_DASHBOARD_HANDOFF_SECRET`.
+2. `docker compose up -d`. Four new mounts and one new environment variable
+   on `hermes`, so compose recreates it.
+
+### New optional `.env` keys
+
+- `HERMES_DASHBOARD_HANDOFF_SECRET` (default empty): signs one-time sign-in
+  links for the dashboard. `setup.sh` fills it in. Empty keeps
+  `/auth/handoff` off (404).
+
+### Changes
+
+- **Dashboard sign-in links**: `GET /auth/handoff?code=…` signs a browser in
+  from a single-use code that expires within 60 seconds, HMAC-signed with
+  `HERMES_DASHBOARD_HANDOFF_SECRET`, and redirects to the code's `next`.
+  Password sign-in at `/login` is unchanged. `make dashboard-open NEXT=/kanban`
+  mints a link from `.env` and opens it. Code format and redirects are in
+  [docs/extending.md](docs/extending.md#sign-in-links).
+- **Kanban task links**: `/kanban?task=<id>[&board=<slug>]` opens that task's
+  drawer and scrolls its card into view.
+- **Dashboard without its navigation**: `?embed=1` hides the dashboard's
+  sidebar and headers for the rest of the tab, until `?embed=0`.
+- All three are overlays on Hermes v0.22.5 (`patch-dashboard-board.py`,
+  `patch-dashboard-handoff.py`, cont-init `13-patch-dashboard`), checked by
+  `scripts/test-dashboard-handoff.py`.
+
 ## v0.3.4 — 2026-10-25
 
 ### Upgrade steps

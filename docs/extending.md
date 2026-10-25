@@ -349,6 +349,81 @@ subscriptions on the old one. An overlay (`patch-kanban-wake.py`) lets the
 session claim them under its new key, so tasks filed before a compression
 still reach it. Without it, those events are not delivered.
 
+## Dashboard links
+
+Three overlays let an app send the user to the dashboard's board: a one-time
+sign-in link, a link to one task, and a mode without the dashboard's own
+navigation. The URLs, parameters and code format stay stable across pin
+moves. Changes are additive.
+
+### Sign-in links
+
+`GET /auth/handoff?code=<code>` exchanges a code for a dashboard session and
+redirects to the code's `next` path (`patch-dashboard-handoff.py`). The
+session is the one a password sign-in gets from the `basic` provider, so it
+refreshes and survives a restart the same way. The app never sends the
+dashboard password, and no page sees it.
+
+The code is signed with `HERMES_DASHBOARD_HANDOFF_SECRET` from `.env`, which
+`setup.sh` generates. Read it the way you read `HERMES_DASHBOARD_PASSWORD`.
+Without it, or with a value under 32 characters, the route answers 404.
+
+```text
+code      = <payload>.<signature>
+payload   = base64url(JSON {"v": 1, "nonce": <16-128 chars>, "exp": <unix seconds>, "next": <path>})
+signature = base64url(HMAC-SHA256(key = secret as UTF-8 bytes, message = payload as ASCII))
+```
+
+Both parts are base64url without `=` padding. `exp` is at most 60 seconds
+ahead (5 seconds of clock difference are allowed). Each nonce is accepted once.
+In Node:
+
+```js
+const b64 = (buf) => Buffer.from(buf).toString("base64url");
+const payload = b64(JSON.stringify({
+  v: 1, nonce: crypto.randomBytes(18).toString("base64url"),
+  exp: Math.floor(Date.now() / 1000) + 30, next: "/kanban?task=t_5727c92a",
+}));
+const code = `${payload}.${b64(crypto.createHmac("sha256", secret).update(payload).digest())}`;
+const url = `${dashboard}/auth/handoff?code=${encodeURIComponent(code)}`;
+```
+
+| Code | Redirect |
+|---|---|
+| Valid | `next`, signed in. `next` goes through the same check as a password sign-in: a path on the dashboard outside `/login`, `/auth/` and `/api/`, else `/` |
+| Used or expired | `/login?next=<next>` |
+| Bad signature, malformed, or `exp` too far ahead | `/login` |
+
+Responses carry `Cache-Control: no-store` and `Referrer-Policy: no-referrer`.
+The code appears in the dashboard's access log, which is why it works once.
+`make dashboard-open NEXT=/kanban` mints one from `.env` and opens it.
+
+An app that loads the board in its own window can skip the link: sign in from
+the main process with `POST /auth/password-login` and copy the session cookies
+into that window's session.
+
+### Task links
+
+`/kanban?task=<id>` opens the board with that task's drawer open and its card
+scrolled into view (`patch-dashboard-board.py`). Add `&board=<slug>` for a
+task on a board other than the one the dashboard last showed; the dashboard
+keeps its remembered board. An archived task opens too. An unknown id opens
+the board as usual and drops `task` from the URL, as closing the drawer does.
+
+### Without the dashboard's navigation
+
+`?embed=1` on any dashboard URL hides the sidebar, the mobile header and the
+page header. It lasts for the tab (`sessionStorage`), across navigation and
+reloads, until `?embed=0`. Banners such as the memory-pressure warning stay.
+The board's own controls, drawer and drag-and-drop are unchanged. Every link
+the board renders that leaves it (a comment's links, the docs link) already
+has `target="_blank"`.
+
+Hiding the navigation doesn't limit what the session can reach. An app that
+shows only the board should refuse navigation away from `/kanban` in that
+window (`will-navigate` and `setWindowOpenHandler` in Electron) and open those
+URLs in the system browser.
+
 ## Keys a new profile leaves out
 
 `profiles.create` on the gateway mirrors the launch profile's `.env` into the
