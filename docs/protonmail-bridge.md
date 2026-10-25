@@ -20,6 +20,23 @@ Or per command: `docker compose --profile mail up -d`
 
 Combine with other profiles: `COMPOSE_PROFILES=core,mail` in `.env`.
 
+## Build Bridge locally
+
+The published `shenxn/protonmail-bridge:build` image stopped at Bridge 3.19.0: upstream's
+build has failed since 3.22, which needs libfido2. `compose/protonmail-bridge/build/` is
+upstream's `build/Dockerfile`, `entrypoint.sh` and `gpgparams` at commit 5874fde, with the
+libfido2/libcbor packages added, a `golang:1.26-trixie` builder (Bridge 3.27 needs Go 1.26)
+and `debian:trixie-slim` at runtime. The entrypoint and the `/root` volume layout are
+upstream's, so an existing volume works with it.
+
+```bash
+docker build --build-arg version=v3.27.1 -t assistant-protonmail-bridge:3.27.1 compose/protonmail-bridge/build
+```
+
+Set `PROTON_BRIDGE_IMAGE=assistant-protonmail-bridge:3.27.1` in `.env`. Bridge upgrades its
+vault on first start and an older Bridge may not read it, so back up the
+`assistant_protonmail_bridge` volume before the first start on a new version.
+
 ## n8n IMAP settings
 
 The **Proton Mail (Bridge)** credential is auto-generated after init. If you create it manually:
