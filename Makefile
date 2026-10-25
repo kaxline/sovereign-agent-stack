@@ -11,7 +11,7 @@
 	mail-triage-cron mail-triage-cron-show mail-triage-cron-remove mail-cron-test model-use model-sync \
 	calendar-test \
 	data-dir-show data-dir-set data-dir-migrate \
-	db-backup db-service-add db-psql todo-init todo-open \
+	db-backup db-service-add db-psql todo-init todo-open dashboard-open \
 	coding-root-list coding-root-add \
 	context-root-list context-root-add opencode-smoke-fixture \
 	kb-eval-fixture kb-eval-fixture-remove \
@@ -132,6 +132,12 @@ todo-init:
 
 todo-open:
 	@./scripts/todo.sh open
+
+# Hermes dashboard, signed in through a one-time link. See docs/hermes.md.
+#   make dashboard-open
+#   make dashboard-open NEXT=/kanban
+dashboard-open:
+	@./scripts/dashboard-open.py "$(or $(NEXT),/)"
 
 # User content root (projects, voice, memory, inputs, rag_storage, corpora).
 # Hermes state stays at ./data/hermes. See docs/data-dir.md.
