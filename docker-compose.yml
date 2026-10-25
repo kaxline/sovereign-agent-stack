@@ -1281,6 +1281,8 @@ services:
       - ./compose/hermes/patch-client-context.py:/bootstrap/patch-client-context.py:ro
       - ./compose/hermes/gateway_liveness.py:/bootstrap/gateway_liveness.py:ro
       - ./compose/hermes/patch-gateway-liveness.py:/bootstrap/patch-gateway-liveness.py:ro
+      - ./compose/hermes/turn_speaker.py:/bootstrap/turn_speaker.py:ro
+      - ./compose/hermes/patch-turn-speaker.py:/bootstrap/patch-turn-speaker.py:ro
       - ./compose/hermes/patch-control-socket-tmp.py:/bootstrap/patch-control-socket-tmp.py:ro
       - ./compose/hermes/patch-mirror-exclude.py:/bootstrap/patch-mirror-exclude.py:ro
       - ./compose/hermes/mcp_trust_details.py:/bootstrap/mcp_trust_details.py:ro
