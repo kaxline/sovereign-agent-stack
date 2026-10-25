@@ -10,8 +10,10 @@ the stack under another app.
 
 ### Upgrade steps
 
-1. `docker compose up -d`. Two new overlay mounts on `hermes`
-   (`kanban_wake.py`, `patch-kanban-wake.py`), so compose recreates it.
+1. `docker compose up -d`. Three new mounts on `hermes` (`kanban_wake.py`,
+   `patch-kanban-wake.py`, `005-remap-hermes-uid`), so compose recreates it.
+   With this release the recreated container finishes setup on its first
+   boot; no `docker compose restart hermes` is needed afterwards.
 2. Hermes Agent v0.22.5 and WebUI 0.52.492 (from v0.22.2 and 0.52.458).
    The overlays no longer apply to v0.22.2. Back up `data/hermes` with
    `hermes` stopped, then run `make hermes-upgrade AGENT=v0.22.5 WEBUI=0.52.492`
@@ -48,6 +50,16 @@ the stack under another app.
   - `sessions.auto_prune` now defaults to `false` upstream. The
     `019-pin-profile-gateways` pin still writes `false`, which also keeps
     upstream's low-disk prune prompt from appearing.
+- **Hermes first boot**: a newly created `hermes` container stopped its
+  setup halfway. The image's `01-hermes-setup` runs
+  `usermod -u "$HERMES_UID" hermes`, which updates `/etc/passwd` and then fails
+  (exit 12) chowning the home directory, the `data/hermes` bind on Docker
+  Desktop. The script stops there, so the hermes group stayed 10000 and
+  `API_SERVER_KEY` generation and the skills sync were skipped until a restart.
+  Every pin move that recreates the container hit this. A new cont-init,
+  `005-remap-hermes-uid`, sets the uid and gid before `01-hermes-setup` by
+  editing `/etc/passwd` and running `groupmod`, so `usermod` is never called.
+  Nothing under `data/hermes` is chowned; ownership on the host is unchanged.
 - **Hermes gateway (overlay)**: a dashboard session claims the kanban events
   of tasks it filed before a context compression rotated its key. They used
   to wait forever, even across resumes. The `gave_up` notification, which is

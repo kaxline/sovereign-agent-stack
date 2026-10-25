@@ -791,6 +791,11 @@ docker compose exec hermes sh -c 'ls -id /opt/data/memories /opt/data/profiles/a
 # Conversational tone: each profile has its own SOUL.md (not shared).
 docker compose exec hermes ls /opt/data/SOUL.md /opt/data/profiles/browser/SOUL.md /opt/data/profiles/api-server/SOUL.md
 
+# First-boot setup (005-remap-hermes-uid). Expect "01-hermes-setup exited 0"
+# and HERMES_UID:HERMES_GID, also on a freshly created container.
+docker compose logs hermes 2>&1 | grep -E '005-remap-hermes-uid|01-hermes-setup exited'
+docker compose exec hermes id hermes
+
 # Tool-calling overlays (cont-init). After recreate, logs should show both patches.
 docker compose logs hermes 2>&1 | grep -E 'patch-text-tool-call-recovery|patch-fabricated-result|patch-tool-eval-trace|patch-tool-search-always-include' | tail -5
 docker compose exec hermes test -f /opt/hermes/agent/text_tool_call_recovery.py && echo "text recovery helper ok"

@@ -1314,6 +1314,10 @@ services:
       # Per-profile gateways and kept sessions on Hermes v0.22+. Runs before the
       # image's 02-reconcile-profiles. See the script header.
       - ./compose/hermes/019-pin-profile-gateways.sh:/etc/cont-init.d/019-pin-profile-gateways:ro
+      # UID/GID remap without usermod's home-tree chown, which fails on the
+      # virtiofs bind and aborts the image's 01-hermes-setup on a fresh
+      # container. See the script header.
+      - ./compose/hermes/005-remap-hermes-uid.sh:/etc/cont-init.d/005-remap-hermes-uid:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     shm_size: "1g"
