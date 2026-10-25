@@ -31,6 +31,9 @@ run_patch /bootstrap/patch-client-context.py
 # Turn heartbeat while a turn runs, and a one-session live status query
 # (dashboard /api/ws).
 run_patch /bootstrap/patch-gateway-liveness.py
+# Speaker names on a prompt.submit turn's assistant rows, labelled for the
+# model on later turns (dashboard /api/ws).
+run_patch /bootstrap/patch-turn-speaker.py
 # Gateway control socket on /tmp: data/hermes (virtiofs) cannot hold a
 # connectable Unix socket, and v0.22 gateways coordinate through it.
 run_patch /bootstrap/patch-control-socket-tmp.py

@@ -47,7 +47,7 @@ os.environ["HERMES_HOME"] = home
 
 # Gateway overlays (05-patch-tool-calling.sh), then kanban (12-patch-kanban-guards.sh).
 for patch in (
-    "patch-history-budget.py", "patch-client-context.py", "patch-gateway-liveness.py",
+    "patch-history-budget.py", "patch-client-context.py", "patch-gateway-liveness.py", "patch-turn-speaker.py",
     "patch-kanban-guards.py", "patch-kanban-edit.py", "patch-kanban-wake.py",
 ):
     out = subprocess.run([sys.executable, "/bootstrap/" + patch], capture_output=True, text=True)

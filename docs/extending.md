@@ -242,6 +242,18 @@ A client on the dashboard gateway WebSocket can watch a running turn with the
 This is an overlay on the pinned Hermes image (`patch-gateway-liveness.py`). The
 event, method and fields stay stable across pin moves. Changes are additive.
 
+## Speaker names
+
+`speaker` on `prompt.submit` names the agent answering a turn in a session
+several agents share. Its assistant rows carry `display_metadata.speaker` in
+`session.history`, and later turns show the model who wrote each reply.
+`gateway.capabilities` reports `turn_speaker`. Fields, labels and error codes
+are in [hermes.md](hermes.md#speaker-names).
+
+This is an overlay on the pinned Hermes image (`patch-turn-speaker.py`). The
+field, the `display_metadata.speaker` shape, the error codes and the capability
+stay stable across pin moves. Changes are additive.
+
 ## Kanban workspaces
 
 The dispatcher builds a task's workspace in the `hermes` container. With the

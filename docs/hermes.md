@@ -131,6 +131,29 @@ agent:
 
 A bare string is appended to the built-in hint, or used on its own when there is none. `{replace: "..."}` swaps out a built-in hint and `{append: "..."}` adds to it. Each profile reads its own `config.yaml` (`data/hermes/config.yaml` for the default profile, `data/hermes/profiles/<name>/config.yaml` for the others), so set the hint in every profile the client uses. For text that changes between sessions, use session context instead.
 
+### Speaker names
+
+An overlay lets a client run several agents in one session and name who answers each turn. It is not an upstream Hermes API. Upstream's turn `author` labels only the user side of a turn, for memory, and a client can't set it on `prompt.submit` (`4124`).
+
+`speaker` on `prompt.submit` is `{id, display_name}`. Either field may be left out, but not both. Each is a string, cleaned like upstream's turn authors (control characters dropped, 200 characters at most), with `[` and `]` turned into `(` and `)`. `null` or omitting the field means no speaker.
+
+What a turn with a speaker changes:
+
+- **History:** each assistant row with text that the turn writes gets `display_metadata.speaker` (the cleaned object), which `session.history` returns. Rows from turns without a speaker have none.
+- **Model input on later turns:** those rows are sent to the model with a first line `[speaker: Ada (ada)]` (display name, then id when it differs; one of them when only one is set). The label is written to the row's `api_content` sidecar in `state.db` when the row is first stored, so every later request sends the same bytes, after a resume too, and the prompt cache holds. `session.history` text doesn't include it. Assistant messages that only call tools carry no label.
+- **That turn's input:** a note under a `Speaker` heading, sent through the same per-turn channel as turn context, names the speaker and tells the model about the labels.
+- **Copied labels:** if the model starts its reply with a `[speaker: ...]` line anyway, that line is removed from the stored row. The live `message.delta` stream isn't changed.
+
+Errors (the session is not changed):
+
+| Code | When |
+|---|---|
+| `4084` | `speaker` is not an object or `null`, has a field other than `id` and `display_name`, has a non-string field, or has nothing left after cleaning |
+| `4085` | `speaker` while a turn is running. A speaker cannot be queued, steered or redirected. Resubmit after `message.complete`. |
+| `4086` | `speaker` on a session whose turns run in an isolated compute-host worker |
+
+`gateway.capabilities` adds `turn_speaker: true` when this overlay is installed. Check it before sending `speaker`, because an unpatched gateway answers the unknown field with `4000`.
+
 ### Turn liveness
 
 Another overlay lets a dashboard client tell a slow turn from a lost one without polling. It is not an upstream Hermes API. Upstream sends `session.usage` only when token counts change, so a single slow model call, such as a local model reading a long prompt, can be silent on the wire for minutes.

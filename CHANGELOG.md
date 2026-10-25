@@ -11,7 +11,7 @@ the stack under another app.
 ### Upgrade steps
 
 1. `./scripts/setup.sh` to generate `HERMES_DASHBOARD_HANDOFF_SECRET`.
-2. `docker compose up -d`. Four new mounts and one new environment variable
+2. `docker compose up -d`. Six new mounts and one new environment variable
    on `hermes`, so compose recreates it.
 
 ### New optional `.env` keys
@@ -35,6 +35,16 @@ the stack under another app.
 - All three are overlays on Hermes v0.22.5 (`patch-dashboard-board.py`,
   `patch-dashboard-handoff.py`, cont-init `13-patch-dashboard`), checked by
   `scripts/test-dashboard-handoff.py`.
+- **Speaker names**: `speaker` (`{id, display_name}`) on `prompt.submit`
+  names who answers a turn. Its assistant rows carry
+  `display_metadata.speaker` in `session.history`, and later turns send those
+  rows to the model with a `[speaker: …]` first line. Refused while a turn
+  runs (`4085`). `gateway.capabilities` reports `turn_speaker`. An overlay on
+  Hermes v0.22.5 (`patch-turn-speaker.py`), checked by
+  `scripts/test-turn-speaker.py`. Details are in
+  [docs/hermes.md](docs/hermes.md#speaker-names).
+- `scripts/test-hosted-rooms.py` checks that upstream hosted rooms
+  (`groups.*`) run each member in its own profile.
 
 ## v0.3.4 — 2026-10-25
 
