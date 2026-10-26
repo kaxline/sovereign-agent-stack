@@ -13,6 +13,8 @@ session.
 - `data/hermes/eval/traces.jsonl` and any other trace or export that stores turns
 - Any transcript Hermes serves: the API or WebUI session endpoints, `hermes` CLI commands that
   print sessions, the `session_search` tool, and chat history the Boundary app fetches or caches
+- The search gate's cache (`gate.sqlite3` in the `search_gate_data` volume), which holds
+  every query agents searched for and its results
 - Message bodies that show up in logs, debug dumps or screenshots
 
 ## The rule

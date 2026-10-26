@@ -46,7 +46,7 @@ x-sql-mcp: &service-sql-mcp
 
 x-gptr: &gptr-env
   RETRIEVER: searx
-  SEARX_URL: http://searxng:8080/
+  SEARX_URL: ${WEB_SEARCH_URL:-http://searxng:8080}/
   # Placeholder only. The real key stays on llm-proxy.
   OPENAI_API_KEY: local-llm
   OPENAI_BASE_URL: http://llm-proxy:4000/v1
@@ -286,6 +286,40 @@ services:
       start_period: 20s
 
   # ----------------------------------------------------------------------
+  # search-gate — paces searches to one SearXNG engine at a time
+  # Profile: search-gate (opt-in; also set WEB_SEARCH_URL, see docs/searxng.md)
+  # API:     http://search-gate:8080   (compose-internal only)
+  # Vendored from lead-gen; local changes are listed in search_gate.py.
+  # ----------------------------------------------------------------------
+  search-gate:
+    profiles: ["search-gate"]
+    container_name: ${CONTAINER_PREFIX:-}search-gate
+    build:
+      context: ./compose/search-gate
+    image: ${IMAGE_PREFIX:-assistant}-search-gate:local
+    restart: unless-stopped
+    environment:
+      - SEARXNG_URL=http://searxng:8080
+      - SEARCH_GATE_ENGINES=${SEARCH_GATE_ENGINES:-bing:10,google cse:20}
+      - SEARCH_GATE_MAX_WAIT=${SEARCH_GATE_MAX_WAIT:-15}
+      - SEARCH_GATE_TTL=${SEARCH_GATE_TTL:-86400}
+      - SEARCH_GATE_EMPTY_TTL=${SEARCH_GATE_EMPTY_TTL:-3600}
+      - SEARCH_GATE_DB=/data/gate.sqlite3
+      - SEARCH_GATE_PORT=8080
+    volumes:
+      # Cached queries come from chat; treat this volume as session content
+      - search_gate_data:/data
+    depends_on:
+      searxng:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+  # ----------------------------------------------------------------------
   # mcp-searxng — MCP adapter for OpenCode / Hermes web search
   # Profile: core
   # MCP:     http://mcp-searxng:3000/mcp   (compose-internal only)
@@ -296,7 +330,10 @@ services:
     image: ${MCP_SEARXNG_IMAGE:-isokoliuk/mcp-searxng:2.7.0}
     restart: unless-stopped
     environment:
-      - SEARXNG_URL=http://searxng:8080
+      - SEARXNG_URL=${WEB_SEARCH_URL:-http://searxng:8080}
+      # Above the gate's SEARCH_GATE_MAX_WAIT, so a held search is answered
+      # by the gate rather than cut off here. Image default is 10000.
+      - SEARXNG_TIMEOUT_MS=${SEARXNG_TIMEOUT_MS:-20000}
       - MCP_HTTP_PORT=3000
       # Image default is 127.0.0.1 (breaking change from v1.2.1); other
       # compose services (Hermes, OpenCode) need the Docker network interface.
@@ -304,6 +341,9 @@ services:
     depends_on:
       searxng:
         condition: service_healthy
+      search-gate:
+        condition: service_healthy
+        required: false
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/health || exit 1"]
       interval: 15s
@@ -525,6 +565,9 @@ services:
       searxng:
         condition: service_healthy
         required: false
+      search-gate:
+        condition: service_healthy
+        required: false
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8000/ >/dev/null || exit 1"]
       interval: 30s
@@ -552,6 +595,9 @@ services:
       llm-proxy:
         condition: service_healthy
       searxng:
+        condition: service_healthy
+        required: false
+      search-gate:
         condition: service_healthy
         required: false
     healthcheck:
@@ -1499,6 +1545,7 @@ volumes:
   opencode_config:
   opencode_data:
   valkey_data:
+  search_gate_data:
   gptr_outputs:
   ollama_data:
   hermes_uv_cache:
