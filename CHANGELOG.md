@@ -6,7 +6,7 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
-## Unreleased
+## v0.3.5 — 2026-10-26
 
 ### Upgrade steps
 
@@ -14,6 +14,18 @@ the stack under another app.
 2. `docker compose up -d`. Six new mounts and one new environment variable
    on `hermes`, so compose recreates it. `mcp-searxng` is recreated too, for
    its new `SEARXNG_TIMEOUT_MS`.
+
+### New services
+
+- `search-gate` (profile `search-gate`, opt-in): a proxy in front of SearXNG
+  that sends each query to one engine, paces each engine, moves a query to
+  the next engine when one blocks, and caches results in the
+  `search_gate_data` volume. A search that waits longer than
+  `SEARCH_GATE_MAX_WAIT` gets no results and a `search-gate` entry in
+  `unresponsive_engines`, and runs later for the cache. Off by default:
+  clients keep calling `searxng` until `WEB_SEARCH_URL` points at the gate.
+  Vendored from lead-gen, checked by `scripts/test-search-gate.py`. Details
+  are in [docs/searxng.md](docs/searxng.md#search-gate).
 
 ### New optional `.env` keys
 
@@ -56,15 +68,6 @@ the stack under another app.
   [docs/hermes.md](docs/hermes.md#speaker-names).
 - `scripts/test-hosted-rooms.py` checks that upstream hosted rooms
   (`groups.*`) run each member in its own profile.
-- **Search gate** (opt-in profile `search-gate`): a proxy in front of SearXNG
-  that sends each query to one engine, paces each engine, moves a query to
-  the next engine when one blocks, and caches results in the
-  `search_gate_data` volume. A search that waits longer than
-  `SEARCH_GATE_MAX_WAIT` gets no results and a `search-gate` entry in
-  `unresponsive_engines`, and runs later for the cache. Off by default:
-  clients keep calling `searxng` until `WEB_SEARCH_URL` points at the gate.
-  Vendored from lead-gen, checked by `scripts/test-search-gate.py`. Details
-  are in [docs/searxng.md](docs/searxng.md#search-gate).
 - **Compose before v5**: `docker compose` on Compose 2.x failed with
   `services.hermes conflicts with imported resource` since v0.1.0. The hermes
   side of each terminal backend moved from `compose/hermes/terminal-*.yml` to
