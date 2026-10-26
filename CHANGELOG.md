@@ -12,13 +12,24 @@ the stack under another app.
 
 1. `./scripts/setup.sh` to generate `HERMES_DASHBOARD_HANDOFF_SECRET`.
 2. `docker compose up -d`. Six new mounts and one new environment variable
-   on `hermes`, so compose recreates it.
+   on `hermes`, so compose recreates it. `mcp-searxng` is recreated too, for
+   its new `SEARXNG_TIMEOUT_MS`.
 
 ### New optional `.env` keys
 
 - `HERMES_DASHBOARD_HANDOFF_SECRET` (default empty): signs one-time sign-in
   links for the dashboard. `setup.sh` fills it in. Empty keeps
   `/auth/handoff` off (404).
+- `WEB_SEARCH_URL` (default `http://searxng:8080`): the SearXNG-compatible
+  base URL that `mcp-searxng`, `gpt-researcher` and `gptr-mcp` search
+  through. Set it to `http://search-gate:8080` together with the
+  `search-gate` profile.
+- `SEARCH_GATE_ENGINES` (default `bing:10,google cse:20`),
+  `SEARCH_GATE_MAX_WAIT` (default `15`), `SEARCH_GATE_TTL` (default `86400`)
+  and `SEARCH_GATE_EMPTY_TTL` (default `3600`): the search gate's engines and
+  pacing, how long a search waits, and cache lifetimes.
+- `SEARXNG_TIMEOUT_MS` (default `20000`, image default `10000`): how long
+  `mcp-searxng` waits for a search.
 
 ### Changes
 
@@ -45,6 +56,15 @@ the stack under another app.
   [docs/hermes.md](docs/hermes.md#speaker-names).
 - `scripts/test-hosted-rooms.py` checks that upstream hosted rooms
   (`groups.*`) run each member in its own profile.
+- **Search gate** (opt-in profile `search-gate`): a proxy in front of SearXNG
+  that sends each query to one engine, paces each engine, moves a query to
+  the next engine when one blocks, and caches results in the
+  `search_gate_data` volume. A search that waits longer than
+  `SEARCH_GATE_MAX_WAIT` gets no results and a `search-gate` entry in
+  `unresponsive_engines`, and runs later for the cache. Off by default:
+  clients keep calling `searxng` until `WEB_SEARCH_URL` points at the gate.
+  Vendored from lead-gen, checked by `scripts/test-search-gate.py`. Details
+  are in [docs/searxng.md](docs/searxng.md#search-gate).
 
 ## v0.3.4 — 2026-10-25
 

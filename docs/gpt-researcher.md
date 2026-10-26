@@ -19,7 +19,7 @@ Quick search (`mcp-searxng` / SearXNG JSON) and deep research (`gptr-mcp` / GPT 
 
 1. Copy the GPT Researcher block from `.env.example` into `.env` (or rely on defaults wired in `docker-compose.yml`).
 2. Ensure `LLM_MODEL` and `EMBEDDING_MODEL` match what your model server is serving — GPT Researcher reads them via the `x-gptr` compose anchor.
-3. GPT Researcher uses `SEARX_URL` (not `SEARXNG_URL`) — already set to `http://searxng:8080/` in compose.
+3. GPT Researcher uses `SEARX_URL` (not `SEARXNG_URL`). Compose sets it from `WEB_SEARCH_URL`, which defaults to `http://searxng:8080`; point that at the [search gate](searxng.md#search-gate) to pace research queries.
 4. Start the stack: `docker compose up -d` (first run builds `gptr-mcp`).
 
 ## Resource sharing
