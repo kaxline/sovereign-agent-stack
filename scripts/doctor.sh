@@ -355,7 +355,7 @@ PY
   }
   check_intent_ack_default
   if has_profile coding; then
-    case "$(echo "$(env_get OPENCODE_MCP_ENABLED 0)" | tr '[:upper:]' '[:lower:]')" in
+    case "$(env_get OPENCODE_MCP_ENABLED 0 | tr '[:upper:]' '[:lower:]')" in
       1|true|yes)
         if [[ -f data/hermes/profiles/browser/config.yaml ]]; then
           if yaml_list_has "data/hermes/profiles/browser/config.yaml" \
@@ -371,7 +371,7 @@ PY
     esac
   fi
   if has_profile rag; then
-    case "$(echo "$(env_get LIGHTRAG_MCP_ENABLED 0)" | tr '[:upper:]' '[:lower:]')" in
+    case "$(env_get LIGHTRAG_MCP_ENABLED 0 | tr '[:upper:]' '[:lower:]')" in
       1|true|yes)
         if [[ -f data/hermes/profiles/browser/config.yaml ]]; then
           _lr_missing=()
@@ -646,8 +646,8 @@ if [[ "$buzz_enabled" -eq 1 ]]; then
     expanded_local="$local_buzz"
     if [[ "$expanded_local" == "~" ]]; then
       expanded_local="$HOME"
-    elif [[ "$expanded_local" == "~/"* ]]; then
-      expanded_local="$HOME/${expanded_local#~/}"
+    elif [[ "$expanded_local" == \~/* ]]; then
+      expanded_local="$HOME/${expanded_local#\~/}"
     fi
     if [[ -d "$expanded_local" ]]; then
       ok "BUZZ_LOCAL_DIR_PATH is set"
