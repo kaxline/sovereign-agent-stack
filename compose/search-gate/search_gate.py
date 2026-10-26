@@ -1,8 +1,14 @@
 """
-A pacing proxy in front of SearXNG, so batches of searches don't get us blocked.
+A pacing proxy in front of SearXNG, so bursts of searches don't get us blocked.
 
-SearXNG sends every query to every enabled engine at once, and GPT Researcher sends
-five to eight queries per report in parallel. From one IP that trips CAPTCHAs, 429s
+Vendored from lead-gen (lead_gen/research/search_gate.py at 85cb2b5). Changes here:
+pageno, time_range, language and safesearch are forwarded and are part of the cache
+key; a /search that waits too long gets an empty SearXNG answer naming the gate
+instead of a 503; cache lifetimes come from the environment; the defaults suit
+interactive agents (short wait, one-day cache, this stack's engines).
+
+SearXNG sends every query to every enabled engine at once, and agents and GPT
+Researcher send several queries in parallel. From one IP that trips CAPTCHAs, 429s
 and Cloudflare blocks within a few dozen queries. The gate takes any number of
 searches and sends them on one at a time per engine:
 
@@ -11,11 +17,14 @@ searches and sends them on one at a time per engine:
 - An engine SearXNG reports as unresponsive (CAPTCHA, 403, 429, timeout) cools down,
   for twice as long after each failure in a row, and the query moves to another
   engine. A query every engine failed on is answered with no results.
-- Results are cached in SQLite by normalized query, and identical queries waiting at
-  the same time share one search.
+- Results are cached in SQLite by normalized query and forwarded parameters, and
+  identical queries waiting at the same time share one search.
 - ``GET /search`` answers like SearXNG and waits for its turn, up to
-  SEARCH_GATE_MAX_WAIT seconds, then returns 503 with the query still queued. Its
-  result is cached when it runs, so asking again later returns it at once.
+  SEARCH_GATE_MAX_WAIT seconds. After that it answers with no results and a
+  ``search-gate`` entry in ``unresponsive_engines``, with the query still queued.
+  Its result is cached when it runs, so asking again later returns it at once.
+  Other SearXNG parameters (categories, engines) are ignored: the gate picks the
+  engine.
 - ``POST /queue`` with ``{"queries": [...]}`` queues searches without waiting, behind
   any waiting ``/search``. The queue is kept in SQLite, so a restart resumes it.
 - ``GET /status`` shows the queue, each engine's state and the cache size.
@@ -27,13 +36,14 @@ Configuration, all from the environment:
 
     SEARXNG_URL               SearXNG's base URL (http://searxng:8080)
     SEARCH_GATE_ENGINES       name:interval[:daily cap], comma-separated, in order of
-                              preference ("yandex:15:600,google cse:40:200")
+                              preference ("bing:10,google cse:20")
     SEARCH_GATE_DB            the SQLite file for the cache and queue
-    SEARCH_GATE_MAX_WAIT      seconds a /search waits for its turn (600)
+    SEARCH_GATE_MAX_WAIT      seconds a /search waits for its turn (15)
+    SEARCH_GATE_TTL           seconds a result list stays cached (86400)
+    SEARCH_GATE_EMPTY_TTL     seconds an empty answer stays cached (3600)
     SEARCH_GATE_PORT          the port to listen on (8080)
 
-Run it with ``python -m lead_gen.research.search_gate``. It needs only the standard
-library, so it runs in the Django image without Django.
+Run it with ``python search_gate.py``. It needs only the standard library.
 """
 
 from __future__ import annotations
@@ -65,11 +75,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_ENGINES = "yandex:15:600,google cse:40:200,yep:20:400"
-# A result list stays good for weeks; an engine that answered with nothing may just
-# have had a bad day.
-TTL_RESULTS_S = 14 * 24 * 3600
-TTL_EMPTY_S = 24 * 3600
+DEFAULT_ENGINES = "bing:10,google cse:20"
+DEFAULT_MAX_WAIT_S = 15.0
+# Agents ask about current events, so results go stale within days; an engine that
+# answered with nothing may just have had a bad hour.
+TTL_RESULTS_S = 24 * 3600
+TTL_EMPTY_S = 3600
+# SearXNG parameters passed on, with the values that mean "not set"
+FORWARDED = {"pageno": "1", "time_range": "", "language": "all", "safesearch": ""}
 COOL_DOWN_S = 600
 MAX_COOL_DOWN_S = 6 * 3600
 # Intervals vary by this share either way, so requests don't arrive on a beat
@@ -131,6 +144,7 @@ class Job:
     query: str
     priority: int
     added: float
+    params: dict[str, str] = field(default_factory=dict)
     tried: set[str] = field(default_factory=set)
     running: bool = False
     done: threading.Event = field(default_factory=threading.Event)
@@ -152,11 +166,26 @@ def normalize(query: str) -> str:
     return re.sub(r"\s+", " ", query).strip().casefold()
 
 
-def searxng_fetch(base_url: str) -> Callable[[str, str], dict]:
-    """A fetch(query, engine) that asks SearXNG with only that engine."""
+def forwarded(params: dict[str, str]) -> dict[str, str]:
+    """The parameters worth passing on: forwarded ones not left at their default."""
+    return {
+        name: value
+        for name, value in sorted(params.items())
+        if name in FORWARDED and value and value != FORWARDED[name]
+    }
 
-    def fetch(query: str, engine: str) -> dict:
-        params = {"q": query, "format": "json", "engines": engine}
+
+def cache_key(query: str, params: dict[str, str]) -> str:
+    """The normalized query, followed by any forwarded parameters."""
+    key = normalize(query)
+    return f"{key}\x1f{urllib.parse.urlencode(params)}" if params else key
+
+
+def searxng_fetch(base_url: str) -> Callable[[str, str, dict[str, str]], dict]:
+    """A fetch(query, engine, params) that asks SearXNG with only that engine."""
+
+    def fetch(query: str, engine: str, extra: dict[str, str]) -> dict:
+        params = extra | {"q": query, "format": "json", "engines": engine}
         url = f"{base_url.rstrip('/')}/search?" + urllib.parse.urlencode(params)
         with urllib.request.urlopen(url, timeout=FETCH_TIMEOUT_S) as response:  # noqa: S310
             return json.load(response)
@@ -167,7 +196,14 @@ def searxng_fetch(base_url: str) -> Callable[[str, str], dict]:
 class Store:
     """The result cache and the bulk queue, in one SQLite file."""
 
-    def __init__(self, path: Path | str) -> None:
+    def __init__(
+        self,
+        path: Path | str,
+        *,
+        ttl: float = TTL_RESULTS_S,
+        empty_ttl: float = TTL_EMPTY_S,
+    ) -> None:
+        self.ttl, self.empty_ttl = ttl, empty_ttl
         if str(path) != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(str(path), check_same_thread=False)
@@ -198,7 +234,7 @@ class Store:
         return json.loads(row[0]) if row else None
 
     def put(self, key: str, payload: dict, engine: str) -> None:
-        ttl = TTL_RESULTS_S if payload.get("results") else TTL_EMPTY_S
+        ttl = self.ttl if payload.get("results") else self.empty_ttl
         now = time.time()
         with self._lock, self._db:
             self._db.execute(
@@ -282,7 +318,7 @@ class Gate:
     def __init__(  # noqa: PLR0913
         self,
         engines: list[Engine],
-        fetch: Callable[[str, str], dict],
+        fetch: Callable[[str, str, dict[str, str]], dict],
         store: Store,
         *,
         clock: Callable[[], float] = time.monotonic,
@@ -312,13 +348,19 @@ class Gate:
         self._thread.join()
         self._pool.shutdown(wait=True)
 
-    def search(self, query: str, wait: float) -> dict | None:
+    def search(
+        self,
+        query: str,
+        wait: float,
+        params: dict[str, str] | None = None,
+    ) -> dict | None:
         """The results for query, from the cache or after its turn; None when its turn
         didn't come within wait seconds (it stays queued)."""
-        key = normalize(query)
+        params = forwarded(params or {})
+        key = cache_key(query, params)
         if (cached := self.store.get(key)) is not None:
             return cached | {"gate": {"cached": True}}
-        job = self._submit(key, query, SYNC)
+        job = self._submit(key, query, SYNC, params)
         if not job.done.wait(wait):
             return None
         return job.result
@@ -368,11 +410,17 @@ class Gate:
             "engines": engines,
         }
 
-    def _submit(self, key: str, query: str, priority: int) -> Job:
+    def _submit(
+        self,
+        key: str,
+        query: str,
+        priority: int,
+        params: dict[str, str] | None = None,
+    ) -> Job:
         with self._cond:
             job = self.jobs.get(key)
             if job is None:
-                job = Job(key, query, priority, self.clock())
+                job = Job(key, query, priority, self.clock(), params or {})
                 self.jobs[key] = job
             else:
                 # A /search for a query already queued in bulk moves it ahead
@@ -424,7 +472,7 @@ class Gate:
 
     def _run(self, job: Job, engine: Engine) -> None:
         try:
-            payload = self.fetch(job.query, engine.name)
+            payload = self.fetch(job.query, engine.name, job.params)
             error = next(
                 (
                     reason
@@ -548,11 +596,16 @@ class Handler(BaseHTTPRequestHandler):
             if not query.strip():
                 self._send(HTTPStatus.BAD_REQUEST, {"error": "q is required"})
                 return
-            result = self.gate.search(query, self.max_wait)
+            extra = {name: values[0] for name, values in params.items()}
+            result = self.gate.search(query, self.max_wait, extra)
             if result is None:
+                # An empty answer rather than a 503, so SearXNG clients show the
+                # reason (mcp-searxng reports it as a degraded search) instead of
+                # failing the call
+                why = "busy: the search is queued; ask again in a minute or two"
                 self._send(
-                    HTTPStatus.SERVICE_UNAVAILABLE,
-                    {"error": "still queued; ask again later", "query": query},
+                    HTTPStatus.OK,
+                    _empty(query, why) | {"gate": {"queued": True}},
                     {"Retry-After": "60"},
                 )
             else:
@@ -567,7 +620,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             queries = [str(q) for q in body["queries"]]
-        except KeyError, TypeError, ValueError:
+        except (KeyError, TypeError, ValueError):
             self._send(
                 HTTPStatus.BAD_REQUEST,
                 {"error": 'send {"queries": ["...", ...]}'},
@@ -602,10 +655,16 @@ def serve() -> None:
     gate = Gate(
         parse_engines(os.environ.get("SEARCH_GATE_ENGINES") or DEFAULT_ENGINES),
         searxng_fetch(os.environ.get("SEARXNG_URL") or "http://searxng:8080"),
-        Store(os.environ.get("SEARCH_GATE_DB") or "data/search-gate/gate.sqlite3"),
+        Store(
+            os.environ.get("SEARCH_GATE_DB") or "data/search-gate/gate.sqlite3",
+            ttl=float(os.environ.get("SEARCH_GATE_TTL") or TTL_RESULTS_S),
+            empty_ttl=float(os.environ.get("SEARCH_GATE_EMPTY_TTL") or TTL_EMPTY_S),
+        ),
     )
     Handler.gate = gate
-    Handler.max_wait = float(os.environ.get("SEARCH_GATE_MAX_WAIT") or 600)
+    Handler.max_wait = float(
+        os.environ.get("SEARCH_GATE_MAX_WAIT") or DEFAULT_MAX_WAIT_S,
+    )
     port = int(os.environ.get("SEARCH_GATE_PORT") or 8080)
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)  # noqa: S104
     server.daemon_threads = True
