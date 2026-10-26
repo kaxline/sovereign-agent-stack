@@ -68,8 +68,8 @@ expand_user_path() {
   [[ -n "$raw" ]] || die "path required"
   if [[ "$raw" == "~" ]]; then
     raw="$HOME"
-  elif [[ "$raw" == "~/"* ]]; then
-    raw="$HOME/${raw#~/}"
+  elif [[ "$raw" == \~/* ]]; then
+    raw="$HOME/${raw#\~/}"
   fi
   if [[ "$raw" != /* ]]; then
     raw="${ROOT}/${raw#./}"
@@ -352,7 +352,7 @@ cmd_migrate() {
     log "Removing source user dirs under $from (hermes untouched)"
     for name in "${USER_DATA_SUBDIRS[@]}"; do
       if [[ -d "$from/$name" ]]; then
-        rm -rf "$from/$name"
+        rm -rf "${from:?}/${name:?}"
         log "removed $from/$name"
       fi
     done

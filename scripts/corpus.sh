@@ -323,10 +323,10 @@ PY
 }
 
 wait_lightrag_healthy() {
-  local port key i
+  local port key
   port="$(env_get PORT 9621)"
   key="$(env_get LIGHTRAG_API_KEY)"
-  for i in $(seq 1 60); do
+  for _ in $(seq 1 60); do
     if curl -sf -H "X-API-Key: ${key}" "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
       log "LightRAG healthy on :${port}"
       return 0
@@ -383,7 +383,7 @@ cmd_use() {
 
 cmd_ingest() {
   local slug="${1:-}"
-  local active port key resp track_id status i
+  local active port key resp track_id status
   require_rag_profile
   refuse_backend_workspace_overrides
   active="$(env_get WORKSPACE)"
@@ -415,7 +415,7 @@ cmd_ingest() {
   fi
 
   log "Polling track_status/${track_id}"
-  for i in $(seq 1 180); do
+  for _ in $(seq 1 180); do
     status="$(curl -sf -H "X-API-Key: ${key}" "http://127.0.0.1:${port}/documents/track_status/${track_id}" 2>/dev/null || true)"
     if [[ -z "$status" ]]; then
       sleep 2
@@ -465,7 +465,7 @@ PY
 
 cmd_destroy() {
   local slug="${1:-}"
-  local active confirm user neo_user neo_pass
+  local active confirm neo_user neo_pass
   [[ -n "$slug" ]] || die "Usage: ./scripts/corpus.sh destroy <slug>"
   validate_slug "$slug"
   ensure_registry

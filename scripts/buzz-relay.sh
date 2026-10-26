@@ -83,8 +83,8 @@ expand_user_path() {
   [[ -n "$raw" ]] || return 1
   if [[ "$raw" == "~" ]]; then
     raw="$HOME"
-  elif [[ "$raw" == "~/"* ]]; then
-    raw="$HOME/${raw#~/}"
+  elif [[ "$raw" == \~/* ]]; then
+    raw="$HOME/${raw#\~/}"
   fi
   if [[ "$raw" != /* ]]; then
     raw="${ROOT}/${raw#./}"
@@ -224,8 +224,7 @@ cmd_stop() {
 
   log "stopping pid ${pid}"
   signal_tree TERM "$pid"
-  local i
-  for i in 1 2 3 4 5 6 7 8 9 10; do
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
     if ! is_alive "$pid"; then
       break
     fi

@@ -216,7 +216,7 @@ ensure_opencode_local_config() {
   else
     # Merge headless permission defaults from the template without clobbering
     # provider/model settings the operator already tuned.
-    python3 - "$base" "$local_cfg" <<'PY' && log "Ensured permission block in opencode.local.json" || true
+    if python3 - "$base" "$local_cfg" <<'PY'
 import json, sys
 from pathlib import Path
 base = json.loads(Path(sys.argv[1]).read_text())
@@ -230,6 +230,9 @@ if perm and local.get("permission") != perm:
 if changed:
     local_path.write_text(json.dumps(local, indent=2) + "\n")
 PY
+    then
+      log "Ensured permission block in opencode.local.json"
+    fi
   fi
   python3 - "$local_cfg" <<'PY'
 import json, sys
@@ -788,8 +791,8 @@ if [[ -n "$ASSISTANT_DATA_ROOT_ARG" ]]; then
   DATA_ROOT="$ASSISTANT_DATA_ROOT_ARG"
   if [[ "$DATA_ROOT" == "~" ]]; then
     DATA_ROOT="$HOME"
-  elif [[ "$DATA_ROOT" == "~/"* ]]; then
-    DATA_ROOT="$HOME/${DATA_ROOT#~/}"
+  elif [[ "$DATA_ROOT" == \~/* ]]; then
+    DATA_ROOT="$HOME/${DATA_ROOT#\~/}"
   fi
   if [[ "$DATA_ROOT" != /* ]]; then
     DATA_ROOT="${ROOT}/${DATA_ROOT#./}"

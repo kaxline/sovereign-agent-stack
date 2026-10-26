@@ -1,6 +1,7 @@
 # Terminal backend. ssh (default) adds hermes-worker and keeps workspace mounts
-# off this file's hermes service. local puts those mounts on hermes and does
-# not define the worker. Paths inside the fragment stay relative to the repo.
+# off hermes. local puts those mounts on hermes and does not define the worker.
+# The hermes half of each backend is in docker-compose.hermes-terminal.yml.
+# Paths inside the fragment stay relative to the repo.
 include:
   - path: ./compose/hermes/terminal-${HERMES_TERMINAL_BACKEND:-ssh}.yml
     project_directory: .
@@ -1118,10 +1119,13 @@ services:
     entrypoint: /bin/sh
     command: /bootstrap/bootstrap-api-profile.sh
 
-  # hermes-worker, its depends_on, and the workspace mounts are in
-  # compose/hermes/terminal-ssh.yml or terminal-local.yml.
+  # hermes-worker is in compose/hermes/terminal-ssh.yml. The worker
+  # depends_on and the workspace mounts come from extends below.
 
   hermes:
+    extends:
+      file: ./docker-compose.hermes-terminal.yml
+      service: hermes-${HERMES_TERMINAL_BACKEND:-ssh}
     profiles: ["core"]
     container_name: ${CONTAINER_PREFIX:-}hermes
     image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v0.22.5}

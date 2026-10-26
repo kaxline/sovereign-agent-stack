@@ -79,8 +79,8 @@ expand_user_path() {
   [[ -n "$raw" ]] || return 1
   if [[ "$raw" == "~" ]]; then
     raw="$HOME"
-  elif [[ "$raw" == "~/"* ]]; then
-    raw="$HOME/${raw#~/}"
+  elif [[ "$raw" == \~/* ]]; then
+    raw="$HOME/${raw#\~/}"
   fi
   if [[ "$raw" != /* ]]; then
     raw="${ROOT}/${raw#./}"
