@@ -65,6 +65,18 @@ the stack under another app.
   clients keep calling `searxng` until `WEB_SEARCH_URL` points at the gate.
   Vendored from lead-gen, checked by `scripts/test-search-gate.py`. Details
   are in [docs/searxng.md](docs/searxng.md#search-gate).
+- **Compose before v5**: `docker compose` on Compose 2.x failed with
+  `services.hermes conflicts with imported resource` since v0.1.0. The hermes
+  side of each terminal backend moved from `compose/hermes/terminal-*.yml` to
+  `docker-compose.hermes-terminal.yml`, which `hermes` extends; the fragments
+  keep only `hermes-worker`. The resolved config is unchanged, so nothing is
+  recreated.
+- **OpenCode image**: `compose/opencode` builds from OpenCode 1.17.6 instead
+  of `latest`. An install that built from a newer `latest` moves back to
+  1.17.6 on its next build unless it passes `--build-arg OPENCODE_VERSION=…`.
+- **`~/` paths**: `setup.sh --data-root ~/…`, `data-dir.sh`, `doctor.sh` and
+  the Buzz scripts turned `~/foo` into `$HOME/~/foo`. They now expand it to
+  `$HOME/foo`.
 
 ## v0.3.4 — 2026-10-25
 
