@@ -56,7 +56,7 @@ jobs:
             "core,todo" \
             "core,rag,automation,coding" \
             "core,ollama" \
-            "core,rag,calendar,automation,coding,ollama,searxng-prod,db,todo"
+            "core,rag,calendar,automation,coding,ollama,searxng-prod,search-gate,db,todo"
           do
             echo "=== COMPOSE_PROFILES=$profiles ==="
             COMPOSE_PROFILES="$profiles" docker compose config -q

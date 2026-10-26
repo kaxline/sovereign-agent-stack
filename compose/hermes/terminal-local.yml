@@ -1,11 +1,4 @@
-# Selected by HERMES_TERMINAL_BACKEND=local.
-# Escape hatch: no worker, and the workspace mounts live on hermes read-write.
-# Paths are relative to the repo root (include project_directory).
+# Included when HERMES_TERMINAL_BACKEND=local. This backend adds no services;
+# its mounts on hermes are hermes-local in docker-compose.hermes-terminal.yml.
 
-services:
-  hermes:
-    volumes:
-      - ${ASSISTANT_DATA_ROOT:-./data}/projects:/opt/projects
-      - ${ASSISTANT_DATA_ROOT:-./data}/voice:/opt/voice
-      - ${ASSISTANT_DATA_ROOT:-./data}/memory:/opt/memory
-      - ${OPENCODE_WORKSPACE_HOST}:${OPENCODE_WORKSPACE_HOST}
+services: {}
