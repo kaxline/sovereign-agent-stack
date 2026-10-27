@@ -1,16 +1,119 @@
-# Messages from iMessage (design)
+# Messages from iMessage
 
-**Status: host side built.** Hermes can't read messages yet. This page records
-how Hermes should answer questions about iMessage and SMS history, and hear
-about new messages, by reading Messages.app's local database. It also records
-which open-source projects were evaluated and why none of them is adopted
-as-is. Research is as of October 2026.
+Read-only iMessage and SMS history for Hermes, and a heads-up when new
+messages arrive. Hermes reads your Mac's own Messages database, not a login
+anywhere. A host-side app indexes the chats you choose. The
+**`messages-mcp`** sidecar serves that index to Hermes. New messages fire a
+triage cron job that has the messages tools and nothing else. Nothing in the
+stack can send, react, mark read, edit or delete messages.
 
-The code lives in [`imessage/`](../imessage/README.md), which is
-self-contained so it can become its own repository. So far it has a
-synthetic store, the indexer, the watcher with new-message events, and the
-sealed macOS app that holds Full Disk Access. All of it is tested only
-against synthetic data. There's no MCP or Hermes wiring yet.
+Everything has been tested only against synthetic data (see
+[First real run](#first-real-run)). The code lives in
+[`imessage/`](../imessage/README.md), which is self-contained so it can become
+its own repository. Its README covers the indexer, watcher, app and MCP in
+detail. This page covers how the stack wires them in, the design behind them,
+and the projects they were compared with (research as of October 2026).
+
+Requires the **`messages`** compose profile (`./scripts/setup.sh --messages`).
+
+## Quick path
+
+```bash
+./scripts/setup.sh --messages      # profile, MESSAGES_MCP_ENABLED=1, webhook secret, data folders (0700), messages-index.toml
+# Fill in messages-index.toml: store (your Messages folder), since, chats. Then build and install the reader app:
+imessage/macos/build.sh
+imessage/macos/install.sh --config "$PWD/messages-index.toml"
+# System Settings > Privacy & Security > Full Disk Access > + > ~/Applications/Assistant Messages Reader.app
+make up
+make hermes-reload
+make messages-triage-cron          # the job new messages fire; reports to Signal when SIGNAL_HOME_CHANNEL is set
+make doctor                        # the Messages section
+```
+
+To pick chat ids for the config, `make messages-index-chats` lists them. It
+reads Messages' database, so it needs Full Disk Access too. Run it from a
+terminal that has the grant, or skip it and use patterns like `"*;-;*"`.
+
+In WebUI: *What did Priya say about the lease?*
+
+## How it fits together
+
+```
+Messages' database ──(Full Disk Access, read-only)──▶ Assistant Messages Reader.app (host, LaunchAgent)
+                                                         │ index (scoped)         │ new-message events (metadata only)
+                                                         ▼                        ▼
+                                       data/messages/index.sqlite     data/messages-events/*.json
+                                                         │ (read-only mount)      │
+                                          messages-mcp (container) ◀──────────────┘ forwarder: check, sign, POST
+                                         │ MCP tools                 │ http://hermes:8646/webhooks/messages
+                                         ▼                           ▼
+                               Hermes: default + browser    default profile webhook route
+                               profiles (never api-server)  → fires the messages-triage cron job
+                                                              (messages tools only) → report to Signal
+```
+
+- **The app** (`imessage/macos`) is the only thing with Full Disk Access. It
+  keeps the index current and writes an event file when new messages arrive
+  in the chats listed in `[notify]`. Events say which chat, how many and from
+  whom, never what the messages say.
+- **`messages-mcp`** mounts the index read-only and the events folder. It
+  serves five read tools to the default and `browser` profiles, plus
+  `messages_triage_batch` on the default profile only, where the triage job
+  runs. Its forwarder checks each event file strictly, signs it with
+  `MESSAGES_WEBHOOK_SECRET`, and POSTs it inside the compose network. No
+  port is published.
+- **The webhook route** (`messages`, on the default profile, port 8646 inside
+  the container) fires the `messages-triage` cron job. The route's prompt
+  carries only the message count, because anyone in a group can set its name.
+  The bootstraps write the route and keep any routes you added. The
+  container's own gateway serves the default profile under both
+  `HERMES_GATEWAY_TOPOLOGY` settings, so the listener and the route work the
+  same in `standalone` and `multiplex` ([Gateway topology](hermes.md#gateway-topology)).
+- **The triage job** (`make messages-triage-cron`) has the messages tools and
+  nothing else, so a message that tries to steer it has nowhere to send
+  anything. Its report goes where its `deliver` says (Signal by default when
+  set up), which the model can't change. It answers `[SILENT]` when nothing
+  needs you.
+- **Nothing gets lost.** Hermes skips an event run if the job is already
+  running. `messages_triage_batch` keeps its own cursor, so the next run picks
+  up whatever an earlier run didn't see. The job's schedule (every 30 minutes)
+  is a safety net: Hermes checks the MCP's content-free `/watermark` and runs
+  the model only if something is still unreported. While event runs keep up,
+  the watermark stays at `none` and scheduled ticks cost nothing.
+- **Other cron jobs don't get messages.** The bootstraps' cron fence (shared
+  with mail) keeps `messages` out of `platform_toolsets.cron`, and `make
+  doctor` flags any cron job that can read messages alongside other tools.
+
+### Settings
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MESSAGES_MCP_ENABLED` | `0` | Register the messages MCP and the webhook route |
+| `MESSAGES_INDEX_DIR` / `MESSAGES_INDEX_FILE` | `./data/messages` / `index.sqlite` | Where the app writes the index; mounted read-only |
+| `MESSAGES_EVENTS_DIR` | `./data/messages-events` | The watcher's outbox; set the same folder as `notify.outbox` |
+| `MESSAGES_WEBHOOK_SECRET` | generated by setup | Shared by the forwarder and the webhook route. Empty turns alerts off |
+| `MESSAGES_WEBHOOK_PORT` | `8646` | The default profile's webhook listener inside the hermes container |
+
+On Linux, `HERMES_UID`/`HERMES_GID` must own both folders. Messages is
+macOS-only, so in practice this stack runs on a Mac.
+
+### First real run
+
+Everything above has run only against the synthetic store, a throwaway
+Hermes config and the container in isolation. The first real run checks the
+rest. Report counts, not messages:
+
+1. `make messages-index-doctor` from a terminal with Full Disk Access, or
+   the app's log after you grant it. `dates_look_like_nanoseconds` should be
+   `true` and `attributed_body_failed` should be `0` or close to it.
+2. `launchctl procinfo $(pgrep -f assistant-messages-reader | head -1)`
+   should name the app as the responsible process.
+3. `make doctor`: the Messages section should be all green.
+4. Have someone text you in a watched chat. Within seconds the triage job
+   should run, and its report should reach Signal. If nothing arrives,
+   check for event files waiting in `data/messages-events`
+   (doctor warns about old ones) and `docker compose logs messages-mcp`
+   (counts only).
 
 ## Goals
 
@@ -96,17 +199,21 @@ arrive that way.
 
 The watcher signs its POSTs the way that gateway's generic V2 check expects
 (`X-Webhook-Signature-V2` over `"<timestamp>.<body>"`, `X-Request-ID` for
-duplicates, `type: "messages.new"` for route filters). One thing to settle
-when wiring it in: the gateway listens inside the `hermes` container, and
-its port isn't published to the host, where the watcher runs. Two ways
-through:
+duplicates, `type: "messages.new"` for route filters). The gateway listens
+inside the `hermes` container, and its port isn't published to the host,
+where the watcher runs. Two ways through were considered:
 
 - **A loopback-only published port** for the webhook route, like the
   Vikunja loopback proxy. The watcher POSTs to `http://127.0.0.1:<port>`.
 - **The watcher's outbox folder** plus a small forwarder in the messages MCP
   container that signs each file and POSTs it to `http://hermes:<port>`
-  in-network. Nothing new is published, which matches the mail drafts
-  queue.
+  in-network.
+
+The stack uses the outbox. It publishes nothing new, keeps the secret inside
+the compose network, keeps events on disk while Hermes is down, and matches
+the mail drafts queue. It costs about a second of delay. The watcher's
+direct HTTP output stays available for people using `imessage/` with their
+own receiver.
 
 The built-in BlueBubbles adapter is not an option. It needs a BlueBubbles
 server, which sends messages and opens the database read-write.
@@ -243,10 +350,10 @@ real data either):
    webhook and outbox events, and the sealed app with its LaunchAgent,
    tested by appending rows to the synthetic store. See
    [imessage/README.md](../imessage/README.md#watcher).
-4. **MCP and Hermes wiring.** Container, tools, the unattended allowlist, a
-   webhook route and a profile, and a CHANGELOG entry.
-5. **First real run** (the owner runs it): `doctor` counts only, then the
-   watcher.
+4. **MCP and Hermes wiring** (done). `messages-mcp` with its forwarder, the
+   `messages` profile, registration on the default and browser profiles, the
+   webhook route and the triage job. See [How it fits together](#how-it-fits-together).
+5. **First real run** (the owner runs it). See [First real run](#first-real-run).
 
 ## Sending (separate service)
 

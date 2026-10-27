@@ -75,7 +75,7 @@ def main() -> int:
         launcher = json.loads((app / "Contents" / "Resources" / "launcher.json").read_text())
         expect(Path(launcher["python"]).is_absolute(), "launcher records an absolute Python")
         expect(scripts(app) == {"messages-index.py", "lib/messages_index.py", "lib/messages_watch.py",
-                                "lib/typedstream.py"}, f"contents: {scripts(app)}")
+                                "lib/typedstream.py", "lib/webhook.py"}, f"contents: {scripts(app)}")
         for path in (app / "Contents" / "Resources" / "scripts").rglob("*.py"):
             expect("osascript" not in path.read_text(), f"{path.name}: no scripting code in the reader")
 

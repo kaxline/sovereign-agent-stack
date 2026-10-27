@@ -370,9 +370,15 @@ def open_index(path: Path) -> sqlite3.Connection:
     except PermissionError:
         pass
     new = not path.exists()
+    # VACUUM writes a scratch copy of the index; keep it in the index's own 0700
+    # folder rather than the system temp folder.
+    os.environ["SQLITE_TMPDIR"] = str(path.parent)
     db = sqlite3.connect(path)
     if new:
         os.chmod(path, 0o600)
+    # Overwrite deleted rows (unsent messages, rows that left the scope) with
+    # zeros instead of leaving their text in free pages.
+    db.execute("PRAGMA secure_delete = ON")
     db.executescript(INDEX_SCHEMA)
     version = db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
     if version and int(version[0]) != INDEX_SCHEMA_VERSION:
@@ -380,6 +386,40 @@ def open_index(path: Path) -> sqlite3.Connection:
         raise LayoutError(f"index schema {version[0]} is not {INDEX_SCHEMA_VERSION}; delete {path} and re-run")
     db.execute("INSERT OR REPLACE INTO meta VALUES ('schema_version', ?)", (str(INDEX_SCHEMA_VERSION),))
     return db
+
+
+def fts_secure_delete(db: sqlite3.Connection) -> bool:
+    """Make FTS5 drop a deleted message's words from the search index at once
+    (SQLite 3.42+). On older SQLite, compact() merges the index instead."""
+    try:
+        db.execute("INSERT INTO messages_fts(messages_fts, rank) VALUES('secure-delete', 1)")
+        return True
+    except sqlite3.OperationalError:
+        return False
+
+
+def compact(db: sqlite3.Connection, *, fts_secure: bool) -> None:
+    """Merge the full-text index and rewrite the file without free pages. Day to
+    day, secure delete already overwrites text as it goes; this runs only when
+    that isn't enough (see run()). It can't reach copies an SSD or a backup
+    already holds; FileVault and backup exclusions cover those."""
+    if not fts_secure:
+        db.execute("INSERT INTO messages_fts(messages_fts) VALUES('optimize')")
+        db.commit()
+    db.execute("VACUUM")
+
+
+COMMIT_EVERY = 500  # changed rows between commits, so an interrupted first run can resume
+
+
+def set_meta(index: Path, key: str, value: str) -> None:
+    """Record a setting in the index for readers (the MCP)."""
+    db = open_index(index)
+    try:
+        db.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (key, value))
+        db.commit()
+    finally:
+        db.close()
 
 
 @dataclass
@@ -531,6 +571,10 @@ def run(config: Config, *, after_rowid: int | None = None, window_start: int | N
 
         idx = open_index(config.index)
         try:
+            fts_secure = fts_secure_delete(idx)
+            # Indexes written before secure delete was on may hold old text in free pages.
+            first_scrub = idx.execute("SELECT 1 FROM meta WHERE key = 'scrubbed'").fetchone() is None
+            changes = 0
             existing = {g: (i, fp, d, rid) for i, g, fp, d, rid in
                         idx.execute("SELECT id, guid, fingerprint, date, source_rowid FROM messages")}
             seen_messages: set[str] = set()
@@ -607,6 +651,9 @@ def run(config: Config, *, after_rowid: int | None = None, window_start: int | N
                     idx.execute("INSERT INTO messages_fts (rowid, body, sender_text, chat_text) VALUES (?,?,?,?)",
                                 (message_id, row["body"] or "",
                                  "me" if from_me else " ".join(filter(None, [sender_name, sender])), chat_text))
+                    changes += 1
+                    if changes % COMMIT_EVERY == 0:
+                        idx.commit()
             for guid, (message_id, _, msg_date, source_rowid) in existing.items():
                 if guid in seen_messages:
                     continue
@@ -623,6 +670,15 @@ def run(config: Config, *, after_rowid: int | None = None, window_start: int | N
                         (datetime.now(timezone.utc).isoformat(timespec="seconds"),))
             idx.execute("INSERT OR REPLACE INTO meta VALUES ('attachments_listed', ?)", (str(int(config.attachments)),))
             idx.commit()
+            erased = bool(stats.removed or stats.updated)
+            free, pages = (idx.execute(f"PRAGMA {p}").fetchone()[0] for p in ("freelist_count", "page_count"))
+            # Without FTS5 secure-delete, removed words stay in the search index until
+            # it's merged. Past a quarter free, give the space back.
+            if first_scrub or (erased and not fts_secure) or (pages and free / pages > 0.25):
+                compact(idx, fts_secure=fts_secure)
+                idx.execute("INSERT OR REPLACE INTO meta VALUES ('scrubbed', ?)",
+                            (datetime.now(timezone.utc).isoformat(timespec="seconds"),))
+                idx.commit()
         finally:
             idx.close()
     finally:

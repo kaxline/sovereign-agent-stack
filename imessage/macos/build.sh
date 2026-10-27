@@ -52,7 +52,7 @@ rm -rf "$app"
 mkdir -p "${app}/Contents/MacOS" "${app}/Contents/Resources/scripts/lib"
 cp "${WORK}/launcher" "${app}/Contents/MacOS/${EXE}"
 cp "${SRC}/messages-index.py" "${app}/Contents/Resources/scripts/messages-index.py"
-for lib in messages_index.py messages_watch.py typedstream.py; do
+for lib in messages_index.py messages_watch.py typedstream.py webhook.py; do
   cp "${SRC}/lib/${lib}" "${app}/Contents/Resources/scripts/lib/${lib}"
 done
 printf '{"python": "%s", "entry": "%s"}\n' "$PYTHON" "messages-index.py" > "${app}/Contents/Resources/launcher.json"

@@ -72,6 +72,17 @@ MAIL_DRAFTS_MCP_URL="${MAIL_DRAFTS_MCP_URL:-http://mail-drafts-mcp:8000/mcp}"
 MAIL_DRAFTS_MCP_TIMEOUT="${MAIL_DRAFTS_MCP_TIMEOUT:-60}"
 MAIL_DRAFTS_MCP_CONNECT_TIMEOUT="${MAIL_DRAFTS_MCP_CONNECT_TIMEOUT:-30}"
 MAIL_DRAFTS_MCP_TOOLS="mail_draft_create mail_draft_status"
+MESSAGES_MCP_ENABLED="${MESSAGES_MCP_ENABLED:-0}"
+MESSAGES_MCP_URL="${MESSAGES_MCP_URL:-http://messages-mcp:8000/mcp}"
+MESSAGES_MCP_TIMEOUT="${MESSAGES_MCP_TIMEOUT:-60}"
+MESSAGES_MCP_CONNECT_TIMEOUT="${MESSAGES_MCP_CONNECT_TIMEOUT:-30}"
+MESSAGES_MCP_TOOLS="messages_status messages_chats messages_search messages_conversation messages_get"
+# messages_triage_batch moves the triage cursor, so only the default profile,
+# where the messages-triage cron job runs, registers it, and it isn't pinned.
+MESSAGES_TRIAGE_TOOL="messages_triage_batch"
+# Shared with messages-mcp's forwarder; the webhook route checks it.
+MESSAGES_WEBHOOK_SECRET="${MESSAGES_WEBHOOK_SECRET:-}"
+MESSAGES_WEBHOOK_PORT="${MESSAGES_WEBHOOK_PORT:-8646}"
 # llm-proxy's real upstream. Only used to tell a local model server from a
 # cloud API; the key never reaches this container.
 LLM_BINDING_HOST="${LLM_BINDING_HOST:-http://host.docker.internal:1234/v1}"
@@ -686,6 +697,15 @@ reconcile_stack_eager_tools() {
       fi
       ;;
   esac
+  case "$MESSAGES_MCP_ENABLED" in
+    1|true|TRUE|yes|YES)
+      if [ "$_rst_profile" != "api-server" ]; then
+        for _rst_t in $MESSAGES_MCP_TOOLS; do
+          _rst_args="${_rst_args} ${_rst_t} mcp__messages__${_rst_t}"
+        done
+      fi
+      ;;
+  esac
   case "$OPENCODE_MCP_ENABLED" in
     1|true|TRUE|yes|YES)
       if [ "$_rst_profile" != "api-server" ]; then
@@ -1076,17 +1096,138 @@ register_mail_drafts_mcp_servers() {
   pin_mcp_tools "$_rmdm_profile" drafts $MAIL_DRAFTS_MCP_TOOLS
 }
 
-# Keep the mail tools away from cron jobs that didn't ask for them.
+# Read-only Messages index (messages compose profile), registered as
+# mcp_servers.messages on the interactive profiles only, like mail: a stranger
+# can text you, so unattended api-server sessions never get it. The default
+# profile also gets messages_triage_batch for the messages-triage cron job.
+register_messages_mcp_servers() {
+  _rmsg_profile="$1"
+  case "$MESSAGES_MCP_ENABLED" in
+    1|true|TRUE|yes|YES) ;;
+    *)
+      log "Skipping messages MCP registration (MESSAGES_MCP_ENABLED=${MESSAGES_MCP_ENABLED})"
+      drop_mcp_entries_for_url "$_rmsg_profile" "" "$MESSAGES_MCP_URL"
+      return 0
+      ;;
+  esac
+  if [ "$_rmsg_profile" = "api-server" ]; then
+    log "Skipping messages MCP on api-server profile (unattended sessions)"
+    drop_mcp_entries_for_url "$_rmsg_profile" "" "$MESSAGES_MCP_URL"
+    return 0
+  fi
+  _rmsg_tools="$MESSAGES_MCP_TOOLS"
+  if [ -z "$_rmsg_profile" ]; then
+    _rmsg_tools="${_rmsg_tools} ${MESSAGES_TRIAGE_TOOL}"
+  fi
+  # shellcheck disable=SC2086
+  register_mcp_server "$_rmsg_profile" messages "Messages (read-only)" \
+    "$MESSAGES_MCP_URL" "$MESSAGES_MCP_TIMEOUT" "$MESSAGES_MCP_CONNECT_TIMEOUT" $_rmsg_tools
+  # shellcheck disable=SC2086
+  pin_mcp_tools "$_rmsg_profile" messages $MESSAGES_MCP_TOOLS
+}
+
+# New-message events reach Hermes as signed POSTs from messages-mcp's
+# forwarder to a webhook route on the default profile, which fires the
+# messages-triage cron job (make messages-triage-cron). The route's prompt
+# carries only the message count: chat and sender names can be set by other
+# people. The listener stays inside the compose network; no port is published.
+#
+# Only the `messages` route is ours. Routes you added are kept. If we turned
+# the webhook platform on, that's recorded in .messages-webhook.json beside
+# config.yaml, and it's turned off again when the route goes and nothing else
+# uses it.
+configure_messages_webhook() {
+  _cmw_cfg="$(config_path_for "")"
+  [ -f "$_cmw_cfg" ] || return 0
+  _cmw_on=0
+  case "$MESSAGES_MCP_ENABLED" in
+    1|true|TRUE|yes|YES) [ -n "$MESSAGES_WEBHOOK_SECRET" ] && _cmw_on=1 ;;
+  esac
+  _out="$(MESSAGES_WEBHOOK_SECRET="$MESSAGES_WEBHOOK_SECRET" python3 - "$_cmw_cfg" "$_cmw_on" "$MESSAGES_WEBHOOK_PORT" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, "/opt/hermes")
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import hermes_yaml as yaml
+from utils import atomic_yaml_write
+
+cfg_path, on, port = Path(sys.argv[1]), sys.argv[2] == "1", int(sys.argv[3])
+state_path = cfg_path.parent / ".messages-webhook.json"
+PROMPT = ("{count} new iMessage/SMS message(s) arrived in a chat you watch. Call messages_triage_batch "
+          "once and report as your instructions say.")
+
+config = yaml.safe_load(cfg_path.read_text()) or {}
+platforms = config.get("platforms") if isinstance(config.get("platforms"), dict) else {}
+webhook = platforms.get("webhook") if isinstance(platforms.get("webhook"), dict) else {}
+extra = webhook.get("extra") if isinstance(webhook.get("extra"), dict) else {}
+routes = extra.get("routes") if isinstance(extra.get("routes"), dict) else {}
+try:
+    state = json.loads(state_path.read_text())
+except (OSError, ValueError):
+    state = {}
+
+if on:
+    route = {"secret": os.environ["MESSAGES_WEBHOOK_SECRET"], "events": ["messages.new"],
+             "cron_job": "messages-triage", "prompt": PROMPT}
+    changed = routes.get("messages") != route
+    routes["messages"] = route
+    if webhook.get("enabled") is not True:
+        webhook["enabled"] = True
+        state["enabled_platform"] = True
+        changed = True
+    if "port" not in extra and "port" not in webhook:
+        extra["port"] = port
+        extra.setdefault("host", "0.0.0.0")
+        changed = True
+    elif int(extra.get("port", webhook.get("port"))) != port:
+        print(f"WARNING: platforms.webhook already uses port {extra.get('port', webhook.get('port'))}; "
+              f"set MESSAGES_WEBHOOK_PORT to match so messages-mcp can reach it")
+    if not changed:
+        print("messages webhook route already set")
+        raise SystemExit(0)
+    extra["routes"] = routes
+    webhook["extra"] = extra
+    platforms["webhook"] = webhook
+    config["platforms"] = platforms
+    atomic_yaml_write(str(cfg_path), config)
+    state_path.write_text(json.dumps(state))
+    print(f"set the messages webhook route (port {extra.get('port', webhook.get('port'))}, fires messages-triage)")
+else:
+    if "messages" not in routes and not state:
+        raise SystemExit(0)
+    routes.pop("messages", None)
+    if state.get("enabled_platform") and not routes:
+        platforms.pop("webhook", None)
+    else:
+        extra["routes"] = routes
+        webhook["extra"] = extra
+        platforms["webhook"] = webhook
+    config["platforms"] = platforms
+    atomic_yaml_write(str(cfg_path), config)
+    state_path.unlink(missing_ok=True)
+    print("removed the messages webhook route")
+PY
+)"
+  if [ -n "$_out" ]; then log "$_out"; fi
+}
+
+# Keep the mail and messages tools away from cron jobs that didn't ask for them.
 #
 # Cron runs unattended, and a job without its own tool list gets every MCP
-# server, mail included, next to web search, the browser and a shell. While
-# mail or drafts is registered on a profile, pin platform_toolsets.cron to
-# Hermes's default cron tools plus every other MCP server. A job that names
-# mail in its own enabled_toolsets (make mail-triage-cron) still gets it.
+# server, mail and messages included, next to web search, the browser and a
+# shell. While one of them is registered on a profile, pin
+# platform_toolsets.cron to Hermes's default cron tools plus every other MCP
+# server. A job that names mail or messages in its own enabled_toolsets (make
+# mail-triage-cron, make messages-triage-cron) still gets it.
 #
 # A list we wrote is recorded in .mail-cron-toolsets.json next to config.yaml,
 # so it can be refreshed or removed later. A list you wrote yourself is kept;
-# only mail and drafts are taken out of it.
+# only mail, drafts and messages are taken out of it.
 fence_mail_from_cron() {
   _fmc_cfg="$(config_path_for "$1")"
   [ -f "$_fmc_cfg" ] || return 0
@@ -1104,7 +1245,7 @@ except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
     import hermes_yaml as yaml
 from utils import atomic_yaml_write
 
-MAIL_URLS = ("mail-mcp:8000", "mail-drafts-mcp:8000")
+MAIL_URLS = ("mail-mcp:8000", "mail-drafts-mcp:8000", "messages-mcp:8000")
 cfg_path = Path(sys.argv[1])
 state_path = cfg_path.parent / ".mail-cron-toolsets.json"
 profile = cfg_path.parent.name if cfg_path.parent.parent.name == "profiles" else "default"
@@ -1140,16 +1281,16 @@ else:
         # A list naming no MCP server gets all of them, mail included.
         desired += others
 if desired == current:
-    print(f"cron jobs on {profile} already can't reach mail unless they ask")
+    print(f"cron jobs on {profile} already can't reach mail or messages unless they ask")
     raise SystemExit(0)
 platform["cron"] = desired
 config["platform_toolsets"] = platform
 atomic_yaml_write(str(cfg_path), config)
 if current is None or managed:
     state_path.write_text(json.dumps(desired))
-    print(f"pinned platform_toolsets.cron on {profile} without mail: {', '.join(desired)}")
+    print(f"pinned platform_toolsets.cron on {profile} without mail or messages: {', '.join(desired)}")
 else:
-    print(f"took mail out of your platform_toolsets.cron on {profile}")
+    print(f"took mail and messages out of your platform_toolsets.cron on {profile}")
 PY
 )"
   if [ -n "$_out" ]; then log "$_out"; fi
@@ -1476,6 +1617,7 @@ register_sql_mcp_servers ""
 register_vikunja_mcp_servers ""
 register_mail_mcp_servers ""
 register_mail_drafts_mcp_servers ""
+register_messages_mcp_servers ""
 
 # session_search is on Hermes' curated tool_search.defer list. Pin + undefer
 # on default before the api-server.env gate so a missing env file cannot
@@ -1698,6 +1840,7 @@ register_sql_mcp_servers "$PROFILE"
 register_vikunja_mcp_servers "$PROFILE"
 register_mail_mcp_servers "$PROFILE"
 register_mail_drafts_mcp_servers "$PROFILE"
+register_messages_mcp_servers "$PROFILE"
 
 # Heal always_include + defer after every hermes config set / MCP register.
 reconcile_stack_eager_tools ""
@@ -1749,6 +1892,7 @@ fi
 
 fence_mail_from_cron ""
 fence_mail_from_cron "$PROFILE"
+configure_messages_webhook
 
 apply_terminal_backend_all_profiles
 apply_model_proxy_all_profiles

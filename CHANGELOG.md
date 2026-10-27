@@ -14,6 +14,25 @@ the stack under another app.
    environment variables, and both profile bootstraps get the topology
    variables, so compose recreates them. The topology stays `standalone`, so
    ports and processes are as before.
+2. Optional, for iMessage/SMS: `./scripts/setup.sh --messages`, fill in
+   `messages-index.toml`, build and install the reader app
+   (`imessage/macos/build.sh`, `imessage/macos/install.sh --config …`) and
+   grant it Full Disk Access, `make up`, `make hermes-reload`,
+   `make messages-triage-cron`. See [docs/messages.md](docs/messages.md).
+   Re-running setup without `--messages` adds `MESSAGES_MCP_ENABLED=0` and
+   starts nothing. With messages off, the bootstraps remove any `messages`
+   webhook route they added.
+
+### New services
+
+- `messages-mcp` (new **`messages`** profile, off by default): read-only MCP
+  over the host-built Messages index plus a forwarder for the host watcher's
+  new-message events, built locally from `imessage/` (`python:3.11-slim`,
+  `mcp==1.30.0`). Mounts `MESSAGES_INDEX_DIR` read-only and
+  `MESSAGES_EVENTS_DIR`. No host port, read-only root filesystem, all
+  capabilities dropped, `no-new-privileges`, runs as `HERMES_UID:HERMES_GID`.
+  Forwards events to the default profile's webhook listener on
+  `MESSAGES_WEBHOOK_PORT` inside the compose network.
 
 ### New optional `.env` keys
 
@@ -22,9 +41,39 @@ the stack under another app.
   `./scripts/gateway-topology.sh multiplex|standalone`, which backs up
   `data/hermes` first. Unset, `HERMES_PIN_STANDALONE_GATEWAYS=0` still means
   `multiplex`.
+- `MESSAGES_MCP_ENABLED` (default `0`): `1` registers `mcp_servers.messages`
+  on the default and browser profiles and the `messages` webhook route on
+  default. `setup.sh --messages` sets it.
+- `MESSAGES_INDEX_DIR` / `MESSAGES_INDEX_FILE` (default `./data/messages` /
+  `index.sqlite`): the host index, mounted read-only into `messages-mcp`.
+- `MESSAGES_EVENTS_DIR` (default `./data/messages-events`): the host
+  watcher's outbox, mounted into `messages-mcp`.
+- `MESSAGES_WEBHOOK_SECRET` (default empty; `setup.sh --messages` generates
+  it): shared by the forwarder and the webhook route. Empty turns new-message
+  alerts off.
+- `MESSAGES_WEBHOOK_PORT` (default `8646`): the default profile's webhook
+  listener inside the `hermes` container (not published).
+- `MESSAGES_MCP_URL` (default `http://messages-mcp:8000/mcp`),
+  `MESSAGES_MCP_TIMEOUT` / `MESSAGES_MCP_CONNECT_TIMEOUT` (default `60` /
+  `30`): endpoint and Hermes MCP timeouts for `messages`.
 
 ### Changes
 
+- **Messages MCP and alerts**: the bootstraps register `mcp_servers.messages`
+  on the default and `browser` profiles, never `api-server`.
+  `messages_triage_batch` is listed only on default. With
+  `MESSAGES_WEBHOOK_SECRET` set, they enable the default profile's webhook
+  platform (only if it was off, recorded in `.messages-webhook.json`) with a
+  `messages` route that fires the `messages-triage` cron job. Routes you added
+  are kept. The route works under both gateway topologies: the default
+  profile's gateway opens the webhook listener in `standalone`, and the one
+  multiplexed gateway does in `multiplex`. `make messages-triage-cron`
+  creates that job with the messages tools only. The cron fence and
+  `make doctor`'s cron check now cover `messages` as well as mail.
+- **iMessage indexer**: deleted rows (unsent messages, chats that left the
+  scope) are overwritten in the index file and dropped from the full-text
+  index, and long runs commit every 500 changed rows so an interrupted first
+  run resumes.
 - **Multiplexed gateway, opt-in.** Under `multiplex` the API of each profile
   is at `http://localhost:8642/p/<profile>/v1`, with that profile's own key.
   Port 8643 (api-server) and the in-network 8644 (browser) keep working

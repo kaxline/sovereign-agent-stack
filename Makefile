@@ -9,6 +9,7 @@
 	mail-index mail-index-doctor mail-index-mailboxes mail-index-test mail-script-test mail-imap-test mail-mcp-test \
 	mail-drafts mail-drafts-watch mail-drafts-doctor mail-drafts-test mail-apps mail-apps-test \
 	mail-triage-cron mail-triage-cron-show mail-triage-cron-remove mail-cron-test model-use model-sync \
+	messages-mcp-test messages-triage-cron messages-triage-cron-show messages-triage-cron-remove \
 	calendar-test \
 	data-dir-show data-dir-set data-dir-migrate \
 	db-backup db-service-add db-psql todo-init todo-open dashboard-open \
@@ -378,6 +379,27 @@ mail-cron-test:
 mail-mcp-test:
 	python3 scripts/test-mail-mcp.py
 	sh scripts/test-mail-mcp-registration.sh
+
+# Read-only Messages MCP: query layer, triage cursor and forwarder against a
+# synthetic index; which profiles get it; the webhook route (needs the hermes
+# container); and the container itself (needs Docker). See docs/messages.md.
+messages-mcp-test:
+	python3 imessage/tests/test-messages-mcp.py
+	sh scripts/test-messages-mcp-registration.sh
+	python3 scripts/test-messages-webhook-config.py
+	python3 imessage/tests/test-messages-mcp-container.py
+
+# Hermes cron job that reports new messages: messages tools only, fired by
+# new-message events and checked on a schedule, delivers to Signal when set up.
+#   make messages-triage-cron [SCHEDULE="every 30m"] [DELIVER=signal]
+messages-triage-cron:
+	scripts/messages-triage-cron.sh create $(if $(SCHEDULE),--schedule "$(SCHEDULE)") $(if $(DELIVER),--deliver "$(DELIVER)")
+
+messages-triage-cron-show:
+	scripts/messages-triage-cron.sh show
+
+messages-triage-cron-remove:
+	scripts/messages-triage-cron.sh remove
 
 # CalDAV bootstrap and the calendar overlays. The image checks need the pinned
 # Hermes image and skip without it.

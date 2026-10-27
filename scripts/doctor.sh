@@ -1200,6 +1200,103 @@ if has_profile mail || [[ "$mail_on" -eq 1 ]]; then
   fi
 fi
 
+# --- Messages (read-only MCP over the host-built index, new-message alerts) ---
+messages_enabled="$(env_get MESSAGES_MCP_ENABLED 0)"
+case "$messages_enabled" in 1|true|TRUE|yes|YES) messages_on=1 ;; *) messages_on=0 ;; esac
+if has_profile messages || [[ "$messages_on" -eq 1 ]]; then
+  echo
+  echo "--- Messages ---"
+  if has_profile messages; then
+    ok "COMPOSE_PROFILES includes messages"
+  else
+    bad "MESSAGES_MCP_ENABLED=1 but 'messages' not in COMPOSE_PROFILES — run ./scripts/setup.sh --messages"
+  fi
+  if [[ "$messages_on" -eq 1 ]]; then
+    ok "MESSAGES_MCP_ENABLED=1"
+  else
+    warn "messages profile on but MESSAGES_MCP_ENABLED is not 1 — Hermes will not register the messages tools"
+  fi
+  # Existence and permissions only; doctor never opens the index or reads events.
+  msg_dir="$(env_get MESSAGES_INDEX_DIR ./data/messages)"
+  msg_index="${msg_dir%/}/$(env_get MESSAGES_INDEX_FILE index.sqlite)"
+  msg_events="$(env_get MESSAGES_EVENTS_DIR ./data/messages-events)"
+  if [[ -f "$msg_index" ]]; then
+    ok "messages index exists (${msg_index})"
+  else
+    warn "no messages index at ${msg_index} — fill in messages-index.toml, install the reader app and grant it Full Disk Access (docs/messages.md)"
+  fi
+  for d in "$msg_dir" "$msg_events"; do
+    [[ -d "$d" ]] || { warn "${d} missing — run ./scripts/setup.sh --messages"; continue; }
+    mode="$(stat -f '%Lp' "$d" 2>/dev/null || stat -c '%a' "$d" 2>/dev/null || echo '?')"
+    if [[ "$mode" == "700" ]]; then
+      ok "${d} is owner-only"
+    else
+      warn "${d} is mode ${mode}, expected 700 — chmod 700 ${d}"
+    fi
+  done
+  if [[ -d "$msg_events" ]]; then
+    waiting="$(find "$msg_events" -maxdepth 1 -name '*.json' ! -name '.*' -mmin +5 2>/dev/null | wc -l | tr -d ' ')"
+    if [[ "$waiting" -gt 0 ]]; then
+      warn "${waiting} new-message event(s) older than 5 minutes are waiting in ${msg_events} — is messages-mcp running and the webhook route set?"
+    fi
+  fi
+  [[ -f messages-index.toml ]] || warn "messages-index.toml missing — ./scripts/setup.sh --messages creates it"
+  [[ -n "$(env_get MESSAGES_WEBHOOK_SECRET '')" ]] || warn "MESSAGES_WEBHOOK_SECRET is empty — new-message alerts are off; re-run ./scripts/setup.sh --messages"
+  for pair in "default:data/hermes/config.yaml" "browser:data/hermes/profiles/browser/config.yaml"; do
+    IFS=':' read -r label cfg <<< "$pair"
+    [[ -f "$cfg" ]] || continue
+    if grep -q 'messages-mcp:8000' "$cfg"; then
+      ok "Hermes ${label} profile registers the messages MCP"
+    elif [[ "$messages_on" -eq 1 ]]; then
+      warn "Hermes ${label} profile has no messages MCP entry — run make hermes-reload"
+    fi
+  done
+  if grep -qs 'messages-mcp:8000' data/hermes/profiles/api-server/config.yaml; then
+    bad "api-server registers the messages MCP — run make hermes-reload (unattended sessions must not read messages)"
+  fi
+  # Cron runs unattended: a job that can read messages should have nothing else.
+  # The mail section runs the same check when mail is on.
+  if ! { has_profile mail || [[ "$mail_on" -eq 1 ]]; }; then
+    if msg_cron="$(python3 scripts/check-mail-cron.py --hermes-home data/hermes 2>&1)"; then
+      ok "no cron job can read messages alongside other tools"
+    else
+      while IFS= read -r line; do
+        [[ -n "$line" ]] && bad "$line"
+      done <<< "$msg_cron"
+      bad "  run make hermes-reload (keeps messages away from cron jobs that don't ask for it); give jobs with their own tool list one without messages. See docs/messages.md"
+    fi
+  fi
+  if grep -qs 'messages_triage_batch' data/hermes/profiles/browser/config.yaml; then
+    bad "the browser profile lists messages_triage_batch — run make hermes-reload (only the triage job may move its cursor)"
+  fi
+  if [[ "$messages_on" -eq 1 && -n "$(env_get MESSAGES_WEBHOOK_SECRET '')" ]]; then
+    if grep -qs 'cron_job: messages-triage' data/hermes/config.yaml; then
+      ok "default profile has the messages webhook route"
+    else
+      warn "default profile has no messages webhook route — run make hermes-reload"
+    fi
+  fi
+  if grep -qs '"name": "messages-triage"' data/hermes/cron/jobs.json; then
+    ok "messages-triage cron job exists"
+  elif [[ "$messages_on" -eq 1 ]]; then
+    warn "no messages-triage cron job — make messages-triage-cron (alerts have nothing to run until then)"
+  fi
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    if launchctl list 2>/dev/null | grep -q "$(env_get MESSAGES_APP_BUNDLE_PREFIX local.assistant).messages-reader"; then
+      ok "Messages reader app's LaunchAgent is loaded"
+    else
+      warn "Messages reader app isn't installed — imessage/macos/build.sh && imessage/macos/install.sh --config \"\$PWD/messages-index.toml\""
+    fi
+  fi
+  if docker info >/dev/null 2>&1; then
+    if docker compose ps --status running messages-mcp 2>/dev/null | grep -q messages-mcp; then
+      ok "messages-mcp container is running"
+    elif has_profile messages; then
+      warn "messages-mcp not running — make up with messages in COMPOSE_PROFILES"
+    fi
+  fi
+fi
+
 # --- Mail drafts (queue for the host helper; never sends) ---
 drafts_enabled="$(env_get MAIL_DRAFTS_ENABLED 0)"
 case "$drafts_enabled" in 1|true|TRUE|yes|YES) drafts_on=1 ;; *) drafts_on=0 ;; esac
