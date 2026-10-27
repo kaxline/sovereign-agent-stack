@@ -1,4 +1,4 @@
-.PHONY: setup ensure-local up down logs ps restart clean doctor hermes-upgrade hermes-reload \
+.PHONY: setup ensure-local up down logs ps restart clean doctor hermes-upgrade hermes-reload gateway-preflight \
 	bootstrap-buzz buzz-cli-install agent-create hermes-buzz-employee \
 	buzz-relay-start buzz-relay-stop buzz-relay-status buzz-relay-logs buzz-relay-restart \
 	buzz-admin \
@@ -431,6 +431,11 @@ tool-eval-run:
 
 tool-eval-score:
 	./scripts/tool-eval.sh score
+
+# Hermes' multiplex migration preflight, run against a throwaway copy of the
+# Hermes home with gateway.standalone removed. Changes nothing.
+gateway-preflight:
+	./scripts/gateway-preflight.sh
 
 # Upgrade Hermes and its WebUI together. The WebUI reads the agent's on-disk
 # state layout and is only tested against a matching agent, so bumping one alone
