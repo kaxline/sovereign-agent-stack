@@ -5,7 +5,8 @@ The patch skips softly when an anchor moves, so a Hermes bump can silently drop
 the agent-callable send_message tool. With the image present (or --image), the
 patch is applied twice: the first run must patch all three parts, the second
 must find them applied. Then send_message must be registered, sit in the
-hermes-cli toolset, and Signal must be synthesized from SIGNAL_* env.
+hermes-cli toolset, and Signal must be synthesized from SIGNAL_* env, with a profile's secret
+scope winning over the process env.
 """
 
 from __future__ import annotations
@@ -45,6 +46,16 @@ assert "send_message" in toolsets.resolve_toolset("hermes-cli"), "core toolsets 
 pconfig = smt._signal_env_pconfig()
 assert pconfig.extra == {"http_url": "http://signal.example:8080", "account": "+15550100"}, pconfig.extra
 assert pconfig.home_channel.chat_id == "+15550101", pconfig.home_channel
+
+# A profile's own .env wins over the process env, so a multiplexed gateway
+# never hands one profile's turn the launch profile's Signal account.
+from agent.secret_scope import reset_secret_scope, set_secret_scope
+token = set_secret_scope({"SIGNAL_HTTP_URL": "http://signal-b.example:8080", "SIGNAL_ACCOUNT": "+15550102"})
+try:
+    scoped = smt._signal_env_pconfig()
+finally:
+    reset_secret_scope(token)
+assert scoped.extra == {"http_url": "http://signal-b.example:8080", "account": "+15550102"}, scoped.extra
 os.write(1, b"image ok\n")
 '''
 

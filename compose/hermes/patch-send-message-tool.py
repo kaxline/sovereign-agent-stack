@@ -50,12 +50,8 @@ SIGNAL_HELPER = '''def _weixin_env_pconfig():
 def _signal_env_pconfig():
     """Synthesize a Signal PlatformConfig from env when adapter is disabled."""
     # assistant-stack: synthesize Signal from env when adapter disabled
-    signal_url = (
-        os.getenv("SIGNAL_HTTP_URL", "") or get_secret("SIGNAL_HTTP_URL", "")
-    ).strip()
-    signal_account = (
-        os.getenv("SIGNAL_ACCOUNT", "") or get_secret("SIGNAL_ACCOUNT", "")
-    ).strip()
+    signal_url = get_secret("SIGNAL_HTTP_URL", "").strip()
+    signal_account = get_secret("SIGNAL_ACCOUNT", "").strip()
     if not (signal_url and signal_account):
         return None
     from gateway.config import HomeChannel, PlatformConfig
@@ -63,15 +59,13 @@ def _signal_env_pconfig():
         enabled=True,
         extra={"http_url": signal_url, "account": signal_account},
     )
-    signal_home = (
-        os.getenv("SIGNAL_HOME_CHANNEL", "") or get_secret("SIGNAL_HOME_CHANNEL", "")
-    ).strip()
+    signal_home = get_secret("SIGNAL_HOME_CHANNEL", "").strip()
     if signal_home:
         from gateway.config import Platform
         pconfig.home_channel = HomeChannel(
             platform=Platform.SIGNAL,
             chat_id=signal_home,
-            name=os.getenv("SIGNAL_HOME_CHANNEL_NAME", "Home"),
+            name=get_secret("SIGNAL_HOME_CHANNEL_NAME", "") or "Home",
         )
     return pconfig
 
