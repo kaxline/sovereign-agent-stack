@@ -41,6 +41,7 @@ import toolsets
 
 entry = registry.get_entry("send_message")
 assert entry is not None and entry.toolset == "send_message", entry
+assert "target='signal'" in entry.schema["description"], "the schema tells the model Signal works"
 assert "send_message" in toolsets.resolve_toolset("hermes-cli"), "core toolsets include send_message"
 
 # api_server runs keep only configurable toolsets when they expand hermes-cli,

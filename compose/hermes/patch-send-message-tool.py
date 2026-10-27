@@ -99,7 +99,11 @@ SEND_MESSAGE_SCHEMA = {
         "(not just a bare platform name), call send_message(action='list') FIRST to see "
         "available targets, then send to the correct one.\\n"
         "If the user just says a platform name like 'send to telegram', send directly "
-        "to the home channel without listing first."
+        "to the home channel without listing first.\\n"
+        "Signal: when the user asks for a Signal message, call this with target='signal' "
+        "(their Signal home channel) even if Signal is not among the connected platforms "
+        "for this chat; delivery is set up separately. Don't suggest another platform "
+        "unless the call fails."
     ),
     "parameters": {
         "type": "object",
