@@ -8,10 +8,40 @@ the stack under another app.
 
 ## Unreleased
 
+### Upgrade steps
+
+1. `docker compose up -d`. `hermes` gets three new mounts and new
+   environment variables, and both profile bootstraps get the topology
+   variables, so compose recreates them. The topology stays `standalone`, so
+   ports and processes are as before.
+
+### New optional `.env` keys
+
+- `HERMES_GATEWAY_TOPOLOGY` (default `standalone`): `multiplex` runs one
+  Hermes gateway for every profile, as upstream intends. Switch with
+  `./scripts/gateway-topology.sh multiplex|standalone`, which backs up
+  `data/hermes` first. Unset, `HERMES_PIN_STANDALONE_GATEWAYS=0` still means
+  `multiplex`.
+
 ### Changes
 
+- **Multiplexed gateway, opt-in.** Under `multiplex` the API of each profile
+  is at `http://localhost:8642/p/<profile>/v1`, with that profile's own key.
+  Port 8643 (api-server) and the in-network 8644 (browser) keep working
+  through `gateway-compat-proxy`, an s6 service in `hermes` that streams
+  responses and passes WebSocket upgrades through, so Boundary, n8n and the
+  WebUI need no change. The default profile gets its own `API_SERVER_KEY` in
+  `data/hermes/.env`, and named profiles that never ran a gateway are parked
+  once. Hermes rejects profile keys under 16 characters on `/p/<profile>/`;
+  `make doctor` checks both. Details in
+  [docs/hermes.md](docs/hermes.md#gateway-topology); the new base URL for apps
+  is in [docs/extending.md](docs/extending.md#api-base-urls).
+- `POST /v1/mcp/servers/{name}/reconnect` wakes parked connections in the
+  answering process at once and adds `woken` (their count) to the 202 body.
+- `make gateway-preflight` runs Hermes' multiplex migration preflight against
+  a temporary copy of the Hermes home and changes nothing.
 - `make hermes-upgrade` refuses an agent tag that no longer supports
-  `gateway.standalone` while `HERMES_PIN_STANDALONE_GATEWAYS` is on. On such
+  `gateway.standalone` while the topology is `standalone`. On such
   an image ports 8643 and 8644 would stop answering.
 - The WebUI's `send_message` reads `SIGNAL_*` from the calling profile's
   `.env` before the container environment. No change today, since both hold
@@ -360,7 +390,7 @@ Hermes v0.22 changes two defaults that this stack sets back:
   key is unset, before the image's reconciler runs. `api-server` stays on 8643
   and `browser` on 8644, a profile that ran a gateway still runs its own, and
   a profile that never ran one stays idle. Upstream marks `gateway.standalone`
-  as temporary; see [docs/hermes.md](docs/hermes.md#one-gateway-per-profile).
+  as temporary; see [docs/hermes.md](docs/hermes.md#gateway-topology).
 - **Sessions are kept.** v0.22 deletes ended sessions inactive for 90 days on
   startup (`sessions.auto_prune: true`). The same script writes
   `sessions.auto_prune: false` into every profile where the key is unset. The
