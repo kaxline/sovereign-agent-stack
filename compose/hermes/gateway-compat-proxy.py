@@ -95,10 +95,15 @@ def make_app(upstream: str, profile: str, session_box: dict) -> web.Application:
                                       headers=_forward_headers(up.headers))
             if up.headers.get("Content-Length") and "chunked" not in up.headers.get("Transfer-Encoding", ""):
                 resp.content_length = int(up.headers["Content-Length"])
-            await resp.prepare(request)
-            async for chunk in up.content.iter_any():
-                await resp.write(chunk)
-            await resp.write_eof()
+            try:
+                await resp.prepare(request)
+                async for chunk in up.content.iter_any():
+                    await resp.write(chunk)
+                await resp.write_eof()
+            except ConnectionResetError:
+                # The client gave up first (a probe timeout, a closed tab); closing the
+                # upstream response below is all there is to do.
+                log.debug("client closed %s %s before the response finished", request.method, request.path)
             return resp
 
     app = web.Application(client_max_size=0)

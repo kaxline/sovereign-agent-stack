@@ -1582,9 +1582,16 @@ remove_env_key "$DEFAULT_ENV" "HERMES_MAX_ITERATIONS"
 # search loops. Interactive profiles pass HERMES_API_TOOLSET=hermes-cli to get
 # those back; clarify turns an ambiguous browser request into a question instead
 # of a guess, and there is a human present to answer it.
+# Since v0.22, api_server runs keep only the configurable toolsets when they
+# expand hermes-cli, which drops send_message (patch-send-message-tool.py
+# registers it under its own toolset). Name it explicitly so WebUI turns can
+# still deliver to Signal.
 log "Setting agent.max_turns=${MAX_TURNS} and ${API_TOOLSET} toolset for api_server platform"
 hermes -p "$PROFILE" config set "agent.max_turns" "$MAX_TURNS"
 set_yaml_list "$(config_path_for "$PROFILE")" "platform_toolsets.api_server" "$API_TOOLSET"
+if [ "$API_TOOLSET" = hermes-cli ]; then
+  ensure_yaml_list_items "$(config_path_for "$PROFILE")" "platform_toolsets.api_server" send_message
+fi
 
 # The built-in `todo` toolset is in-memory per chat session. WebUI users treat
 # "add to the todo list" as durable; the model then reports an empty list in the
