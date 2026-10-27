@@ -460,6 +460,71 @@ if has_profile core \
   unset _bh_runtime _bh_stale
 fi
 
+# --- Gateway topology (HERMES_GATEWAY_TOPOLOGY) ---
+if has_profile core; then
+  echo "--- Gateway topology ---"
+  # shellcheck source=lib/env.sh
+  source "$ROOT/scripts/lib/env.sh"
+  topology="$(gateway_topology)"
+  ok "topology: ${topology}"
+  # The WebUI's _reload_dotenv copies API_SERVER_KEY from data/hermes/.env,
+  # which holds the default profile's key under multiplex; this one wins.
+  if grep -qE '^HERMES_WEBUI_GATEWAY_API_KEY=.+' compose/hermes/browser.env 2>/dev/null; then
+    ok "browser.env sets HERMES_WEBUI_GATEWAY_API_KEY"
+  else
+    bad "browser.env has no HERMES_WEBUI_GATEWAY_API_KEY — re-run ./scripts/setup.sh"
+  fi
+  for _env in compose/hermes/api-server.env compose/hermes/browser.env; do
+    _key="$(grep -E '^API_SERVER_KEY=' "$_env" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+    if [[ ${#_key} -ge 16 ]]; then
+      ok "${_env##*/} API_SERVER_KEY has 16+ characters"
+    else
+      bad "${_env##*/} API_SERVER_KEY is shorter than 16 characters; Hermes rejects it on /p/<profile>/"
+    fi
+  done
+  unset _env _key
+  if [[ "$topology" == multiplex ]]; then
+    _pinned="$(grep -lE '^[[:space:]]+standalone:[[:space:]]*true' data/hermes/profiles/*/config.yaml 2>/dev/null || true)"
+    if [[ -n "$_pinned" ]]; then
+      warn "profiles still pinned gateway.standalone: true ($(echo "$_pinned" | awk -F/ '{print $(NF-1)}' | xargs)) — ./scripts/gateway-topology.sh multiplex"
+    else
+      ok "no profile pinned gateway.standalone: true"
+    fi
+    unset _pinned
+    if docker compose ps --status running hermes 2>/dev/null | grep -q hermes; then
+      _browser_port="$(env_get HERMES_BROWSER_API_PORT 8644)"
+      for _check in "8642/health:default listener" "8642/p/api-server/health:api-server at /p/api-server" \
+        "8642/p/browser/health:browser at /p/browser" "8643/health:compat proxy 8643 -> api-server" \
+        "${_browser_port}/health:compat proxy ${_browser_port} -> browser"; do
+        _path="${_check%%:*}"
+        if docker compose exec -T hermes /opt/hermes/.venv/bin/python -c \
+          "import urllib.request as u; u.urlopen('http://127.0.0.1:${_path}', timeout=5)" >/dev/null 2>&1; then
+          ok "${_check#*:} answers"
+        else
+          bad "${_check#*:} does not answer (127.0.0.1:${_path} in hermes)"
+        fi
+      done
+      unset _browser_port _check _path
+    fi
+  fi
+  if [[ "$(env_get HERMES_SIGNAL_ENABLED 0)" =~ ^(1|true|yes)$ ]] \
+    && docker compose ps --status running hermes 2>/dev/null | grep -q hermes; then
+    # Two Signal adapters in one gateway process fight over the account lock.
+    if docker compose exec -T hermes /opt/hermes/.venv/bin/python - <<'PY' >/dev/null 2>&1
+import sys
+sys.path.insert(0, "/opt/hermes")
+from hermes_cli.config import read_user_config_raw
+cfg = read_user_config_raw("/opt/data/profiles/browser/config.yaml")
+raise SystemExit(0 if ((cfg.get("platforms") or {}).get("signal") or {}).get("enabled") is False else 1)
+PY
+    then
+      ok "browser profile keeps platforms.signal.enabled: false"
+    else
+      bad "browser profile does not disable Signal — re-run ./scripts/sync-signal-profile.sh"
+    fi
+  fi
+fi
+
 # --- Ports (best-effort; skip if lsof unavailable) ---
 check_port() {
   local port="$1"

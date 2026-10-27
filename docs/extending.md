@@ -232,6 +232,17 @@ writes Hermes profile config, keep it consistent with what bootstrap sets:
   quantized ones fake tool calls in text more often
   ([hermes.md](hermes.md)).
 
+## API base URLs
+
+`http://localhost:8643/v1` (api-server profile) works under either
+[gateway topology](hermes.md#gateway-topology). Under
+`HERMES_GATEWAY_TOPOLOGY=multiplex`, the same API is also at
+`http://localhost:8642/p/api-server/v1`, with the same key; 8643 forwards
+there. Upstream Hermes is moving to the multiplexed layout and will drop the
+per-profile listeners, so an app can move its base URL to the `/p/api-server`
+form once its install runs `multiplex`. 8643 stays until a release announced
+here removes it. The dashboard's `/api/ws` on 9119 does not change.
+
 ## Gateway turn liveness
 
 A client on the dashboard gateway WebSocket can watch a running turn with the
@@ -518,12 +529,15 @@ curl -X POST -H "Authorization: Bearer $API_SERVER_KEY" \
 ```
 
 Use the `api-server` profile's key (`compose/hermes/api-server.env`). The call
-reaches every profile, including the default one, which has no API server of
-its own. The tools return within about a second.
+reaches every profile that configures the server, including the default one,
+whatever the [gateway topology](hermes.md#gateway-topology). Under
+`multiplex` the same call also works at
+`http://localhost:8642/p/api-server/v1/mcp/servers/<name>/reconnect`. The
+tools return within about a second.
 
 | Status | Meaning |
 |---|---|
-| `202` | `{"server", "profiles", "status": "wake_requested"}`. `profiles` lists every profile whose config names the server |
+| `202` | `{"server", "profiles", "status": "wake_requested", "woken"}`. `profiles` lists every profile whose config names the server. `woken` counts the parked connections the answering gateway process woke at once; other processes wake theirs within a second |
 | `404` | No profile configures that name |
 | `400` | The name is not `[A-Za-z0-9][A-Za-z0-9_.-]*` (at most 128 characters) |
 | `401` | Missing or wrong key |

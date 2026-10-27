@@ -42,7 +42,7 @@ You can combine profiles (`COMPOSE_PROFILES=core,rag,searxng-prod` or `--profile
 
 5. Chat UI is included on `core`: see [docs/hermes-webui.md](hermes-webui.md) (`http://localhost:8787`).
 
-**Migrating from root `.env` API settings:** if you previously set `API_SERVER_ENABLED`, `API_SERVER_HOST`, or `API_SERVER_KEY` in `.env`, remove those lines and move `API_SERVER_KEY` into `compose/hermes/api-server.env`. The default profile no longer exposes an API on port 8642.
+**Migrating from root `.env` API settings:** if you previously set `API_SERVER_ENABLED`, `API_SERVER_HOST`, or `API_SERVER_KEY` in `.env`, remove those lines and move `API_SERVER_KEY` into `compose/hermes/api-server.env`. The default profile exposes an API on port 8642 only under `HERMES_GATEWAY_TOPOLOGY=multiplex` ([Gateway topology](#gateway-topology)).
 
 The `hermes` container does not load the root `.env`. Its environment is an allowlist: dashboard basic auth, API timeouts, timezone, the write root, and `HERMES_BUZZ_ENABLED` / `BUZZ_RELAY_URL` for the Buzz localhost proxy. Postgres, n8n, Neo4j, OpenCode, LightRAG, and model keys stay on the services that use them. `SEARXNG_URL` is set empty so native web search cannot bind. Signal and Buzz private keys stay in `data/hermes/` profile env files. The dashboard password is still visible inside this container, because the dashboard runs in the same process environment as the agent.
 
@@ -61,13 +61,27 @@ Bump both with `make hermes-upgrade AGENT=… WEBUI=…` — never one at a time
 
 Hermes Agent switched from calendar tags (`v2026.9.14`) to semver (`v0.21.6`, `v0.22.0`, …) after September 2026. A semver tag is newer than every calendar tag, so compare versions by release date, not by string order. The overlays in this stack are anchored to `v0.22.5` and do not apply to calendar-tagged images.
 
-### One gateway per profile
+### Gateway topology
 
-Hermes v0.22 runs one gateway per container that serves every profile, and moves each profile's API server onto the default listener at `/p/<profile>/`. This stack keeps the old layout instead: one gateway process per profile, with the `api-server` profile on port 8643 and `browser` on 8644, because Boundary and the WebUI call those ports. `compose/hermes/019-pin-profile-gateways.sh` runs before the image's profile reconciler on every start and writes `gateway.standalone: true` into each named profile's `config.yaml` where the key is unset. A profile that ran a gateway before still starts one, and a profile that never did stays idle.
+Hermes v0.22 runs one gateway per container that serves every profile, and moves each profile's API server onto the default listener at `/p/<profile>/`. `HERMES_GATEWAY_TOPOLOGY` in `.env` picks the layout. Both keep Boundary's documented ports.
+
+| | `standalone` (default) | `multiplex` |
+|---|---|---|
+| Gateway processes | one per profile that ran one before | one for all profiles |
+| api-server | own listener on 8643 | `:8642/p/api-server/`, and 8643 through `gateway-compat-proxy` |
+| browser (WebUI) | own listener on 8644 | `:8642/p/browser/`, and 8644 through `gateway-compat-proxy` |
+| Default profile API | none | `:8642/v1`, with its own `API_SERVER_KEY` in `data/hermes/.env` |
+| Profiles that never ran a gateway | idle | parked once (`gateway.parked`) |
+
+`compose/hermes/019-pin-profile-gateways.sh` runs before the image's profile reconciler on every start. Under `standalone` it writes `gateway.standalone: true` into each named profile's `config.yaml` where the key is unset, so a profile that ran a gateway before still starts one and a profile that never did stays idle. Upstream calls `gateway.standalone` a temporary compatibility setting that will be removed.
+
+Under `multiplex` it writes no pins. It generates `API_SERVER_KEY` in `data/hermes/.env` if missing, because the default profile owns the only listener and Hermes opens it only with a key. It parks each named profile with no `running` gateway state (writes `gateway.parked`, as `hermes -p <name> gateway stop` does) and records it in `data/hermes/gateway_topology.json`, so a profile you later start with `hermes -p <name> gateway start` is not parked again. The default key reaches the default profile's full toolset, so treat it like the dashboard password. `gateway-compat-proxy` (an s6 service in the `hermes` container, `compose/hermes/gateway-compat-proxy.py`) forwards 8643 to `/p/api-server/` and 8644 to `/p/browser/`, streaming responses and passing `Authorization` and WebSocket upgrades through. Each profile's key works only on its own prefix, and Hermes rejects a profile key shorter than 16 characters there. The WebUI, n8n and `tool-eval.sh` keep their URLs. Under `standalone` the proxy's slot stays down.
+
+Switch with `./scripts/gateway-topology.sh multiplex` (or `standalone`). It clones `data/hermes` to `data/hermes.bak-<time>`, stops `hermes` and `hermes-webui`, sets `gateway.standalone` to `false` (or `true`) on every named profile, writes `HERMES_GATEWAY_TOPOLOGY` to `.env`, and starts both again. `make doctor` then checks the listener, both prefixes and both proxy ports. Before switching, `make gateway-preflight` runs Hermes' migration preflight (`hermes gateway migrate --multiplex --dry-run`) against a temporary copy of the Hermes home with `gateway.standalone` removed, and prints its plan and any blockers without changing the live home. Don't run `hermes gateway migrate` without `--dry-run`: it uninstalls the per-profile gateways and has no rollback.
+
+`make hermes-upgrade` runs `scripts/check-hermes-standalone.sh` and refuses an agent tag without `gateway.standalone` while the topology is `standalone`, since on such an image 8643 and 8644 would stop answering. `HERMES_PIN_STANDALONE_GATEWAYS=0`, the older setting, means `multiplex` when `HERMES_GATEWAY_TOPOLOGY` is unset.
 
 v0.22 gateways also find each other through a control socket at `$HERMES_HOME/gateway.sock`. `data/hermes` is a virtiofs mount on Docker Desktop, where connecting to a Unix socket fails, so each profile gateway restarted in a loop trying to replace the default one. `patch-control-socket-tmp.py` with `HERMES_CONTROL_SOCKET_IN_TMP=1` (set on the `hermes` service) binds those sockets at `/tmp/hermes-gw-<hash>/control.sock` in the container instead, and leaves a `gateway.sock.path` pointer in each home. Since v0.22.3 the gateway refuses a socket whose directory is not private (0700, owned by the gateway user), and `gateway run --replace` accepts a pointer only to that `hermes-gw-<hash>/control.sock` layout.
-
-Upstream calls `gateway.standalone` a temporary compatibility setting that will be removed. When that happens the stack has to move to the multiplexed layout, which changes the API URLs that Boundary and the WebUI use. Until then, `make hermes-upgrade` runs `scripts/check-hermes-standalone.sh` and refuses an agent tag without `gateway.standalone` while `HERMES_PIN_STANDALONE_GATEWAYS` is on. `make gateway-preflight` runs Hermes' migration preflight (`hermes gateway migrate --multiplex --dry-run`) against a temporary copy of the Hermes home with `gateway.standalone` removed, and prints its plan and any blockers without changing the live home. To try the multiplexed layout now, set `HERMES_PIN_STANDALONE_GATEWAYS=0` in `.env` and remove `gateway.standalone` from the profiles' `config.yaml`.
 
 ### Session pruning
 
@@ -181,7 +195,7 @@ A one-shot `hermes-api-bootstrap` service runs ahead of the main Hermes containe
 | Port | **8643** (`HERMES_API_SERVER_PORT`) |
 | Max tool turns | **20** (`HERMES_API_MAX_TURNS`) |
 | Tools | **`hermes-api-server`** (aligned with dashboard chat; no interactive-only tools) |
-| Default profile API | **disabled** (dashboard/gateway on 8642 only) |
+| Default profile API | none under `standalone`; `:8642/v1` under `multiplex` ([Gateway topology](#gateway-topology)) |
 
 | Endpoint | URL |
 |---|---|
@@ -750,8 +764,8 @@ curl -sf http://localhost:9119/ >/dev/null && echo "dashboard ok"
 # LightRAG MCP sidecar is internal-only; requires the `rag` profile.
 docker compose exec lightrag-mcp python -c "import socket; s = socket.create_connection(('127.0.0.1', 8000), 5); s.close(); print('lightrag-mcp ok')"
 
-# Default profile: no API on 8642
-curl -sf http://localhost:8642/health || echo "expected: no API on default port"
+# Default profile: no API on 8642 under standalone; the shared listener under multiplex
+curl -sf http://localhost:8642/health || echo "expected under standalone: no API on 8642"
 
 # API profile on 8643 (set API_SERVER_KEY from compose/hermes/api-server.env)
 curl -sf http://localhost:8643/health && echo "api-server health ok"

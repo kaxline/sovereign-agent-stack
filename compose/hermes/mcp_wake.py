@@ -20,7 +20,9 @@ watcher thread in every process with an MCP loop polls that directory; in the
 multiplexed gateway that one watcher wakes the connection of every profile. A
 request stays live for WAKE_WINDOW_SECONDS so a server that parks shortly
 after it is still woken. Each connection takes a given request once, and only
-while parked: a connected session is never torn down.
+while parked: a connected session is never torn down. The process that serves
+the endpoint also wakes its own connections at once, without waiting for its
+watcher, and reports how many in ``woken``.
 """
 from __future__ import annotations
 
@@ -98,13 +100,23 @@ def configured_profiles(name: str, root: Optional[Path] = None) -> list[str]:
     return found
 
 
-def request_wake(name: str, root: Optional[Path] = None) -> None:
-    """Record a wake request for *name*; watchers compare the file's mtime."""
+def request_wake(name: str, root: Optional[Path] = None) -> int:
+    """Record a wake request for *name*; watchers compare the file's mtime, returned here."""
     directory = wake_dir(root)
     directory.mkdir(parents=True, exist_ok=True)
     tmp = directory / f".{name}.{os.getpid()}.tmp"
     tmp.write_text(f"{time.time():.3f}\n")
     os.replace(tmp, directory / name)
+    return (directory / name).stat().st_mtime_ns
+
+
+def _wake_here(name: str, request_ns: int) -> int:
+    """Wake this process's parked connections now; 0 when it has no MCP loop."""
+    try:
+        return wake_parked(name, request_ns)
+    except Exception:  # noqa: BLE001 - the file request still reaches every watcher
+        logger.debug("MCP server '%s': in-process wake failed", name, exc_info=True)
+        return 0
 
 
 def handle_reconnect(name: str, root: Optional[Path] = None) -> tuple[dict, int]:
@@ -116,9 +128,10 @@ def handle_reconnect(name: str, root: Optional[Path] = None) -> tuple[dict, int]
     if not profiles:
         return {"error": {"message": f"MCP server '{name}' is not configured in any profile",
                           "type": "invalid_request_error", "code": "mcp_server_not_found"}}, 404
-    request_wake(name, root)
-    logger.info("MCP server '%s': wake requested for profiles %s", name, ", ".join(profiles))
-    return {"server": name, "profiles": profiles, "status": "wake_requested"}, 202
+    woken = _wake_here(name, request_wake(name, root))
+    logger.info("MCP server '%s': wake requested for profiles %s (%d woken here)",
+                name, ", ".join(profiles), woken)
+    return {"server": name, "profiles": profiles, "status": "wake_requested", "woken": woken}, 202
 
 
 def wake_parked(name: str, request_ns: int) -> int:

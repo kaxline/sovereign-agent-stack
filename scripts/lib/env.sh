@@ -47,3 +47,20 @@ has_compose_profile() {
   profiles_csv="$(env_get COMPOSE_PROFILES core)"
   [[ ",${profiles_csv}," == *",${profile},"* ]]
 }
+
+# Gateway topology: HERMES_GATEWAY_TOPOLOGY (standalone|multiplex) from the
+# environment or .env; unset, HERMES_PIN_STANDALONE_GATEWAYS=0 means multiplex.
+# Same rule as compose/hermes/019-pin-profile-gateways.sh.
+gateway_topology() {
+  local t pin
+  t="${HERMES_GATEWAY_TOPOLOGY:-$(env_get HERMES_GATEWAY_TOPOLOGY)}"
+  t="$(printf '%s' "$t" | tr '[:upper:]' '[:lower:]')"
+  case "$t" in
+    standalone | multiplex) echo "$t"; return ;;
+  esac
+  pin="${HERMES_PIN_STANDALONE_GATEWAYS:-$(env_get HERMES_PIN_STANDALONE_GATEWAYS 1)}"
+  case "$(printf '%s' "$pin" | tr '[:upper:]' '[:lower:]')" in
+    0 | false | no | off) echo multiplex ;;
+    *) echo standalone ;;
+  esac
+}
