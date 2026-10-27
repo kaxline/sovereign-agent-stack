@@ -15,6 +15,8 @@
 #   MAIL_APPS_SIGN_IDENTITY  codesign identity (default: - for ad hoc). macOS
 #                            keys permissions to the signature, so with ad hoc
 #                            signing every rebuild asks for them again.
+#   MAIL_APPS_KEYCHAIN       a keychain file the launcher searches instead of
+#                            your search list (default: unset). For tests.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -22,6 +24,10 @@ HERE="${ROOT}/macos/mail-apps"
 OUT="${1:-${ROOT}/build/mail-apps}"
 PREFIX="${MAIL_APPS_BUNDLE_PREFIX:-local.assistant}"
 IDENTITY="${MAIL_APPS_SIGN_IDENTITY:--}"
+KEYCHAIN="${MAIL_APPS_KEYCHAIN:-}"
+[[ -z "$KEYCHAIN" || "$KEYCHAIN" == /* ]] || { printf 'build: MAIL_APPS_KEYCHAIN must be an absolute path\n' >&2; exit 1; }
+KEYCHAIN_ARGS=()
+[[ -n "$KEYCHAIN" ]] && KEYCHAIN_ARGS=(keychain "$KEYCHAIN")
 VERSION="$(git -C "$ROOT" describe --tags --always --dirty 2>/dev/null || echo dev)"
 
 die() { printf 'build: %s\n' "$1" >&2; exit 1; }
@@ -54,7 +60,9 @@ make_app() {
   for pair in "$@"; do
     cp "${ROOT}/${pair%%:*}" "${app}/Contents/Resources/scripts/${pair#*:}"
   done
-  printf '{"python": "%s", "entry": "%s", "keychain_service": "%s"}\n' "$PYTHON" "$entry" "${PREFIX}.mail-imap" \
+  "$PYTHON" -I -c 'import json, sys; print(json.dumps(dict(zip(sys.argv[1::2], sys.argv[2::2]))))' \
+    python "$PYTHON" entry "$entry" keychain_service "${PREFIX}.mail-imap" \
+    ${KEYCHAIN_ARGS[@]+"${KEYCHAIN_ARGS[@]}"} \
     > "${app}/Contents/Resources/launcher.json"
   cat > "${app}/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

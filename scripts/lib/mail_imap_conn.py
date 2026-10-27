@@ -1,8 +1,8 @@
 """What the IMAP reader and the IMAP drafts outbox share. See docs/email.md.
 
 Account settings, connecting and logging in, modified UTF-7 mailbox names,
-LIST and FETCH parsing. It sends no command of its own beyond LOGIN, LIST
-and LOGOUT: the reader (mail_imap.ReadOnlyImap) and the outbox
+LIST and FETCH parsing. It sends no command of its own beyond STARTTLS,
+LOGIN or AUTHENTICATE PLAIN, LIST and LOGOUT: the reader (mail_imap.ReadOnlyImap) and the outbox
 (mail_imap_drafts.DraftsImap) each add only the commands they need. The
 reader and drafts apps each bundle this file and their own module, never the
 other's.
@@ -290,20 +290,49 @@ class Connection:
         except (OSError, socket.timeout, ssl.SSLError, imaplib.IMAP4.error) as exc:
             raise ImapError(f"{self.account_id}: can't connect to {s['host']}:{s['port']}"
                             f" ({type(exc).__name__}: {exc})") from None
-        password = mail_credentials.password(self.account_id, s.get("password_env"))
         try:
-            imap.login(s["user"], password)
+            password = mail_credentials.password(self.account_id, s.get("password_env"))
+        except mail_credentials.MissingPassword:
+            self._shutdown(imap)
+            raise
+        try:
+            self._login(imap, s["user"], password)
+        except AuthFailed:
+            self._shutdown(imap)
+            raise
         except imaplib.IMAP4.error:
-            try:
-                imap.shutdown()
-            except OSError:
-                pass
+            self._shutdown(imap)
             raise AuthFailed(f"{self.account_id}: the server rejected the user name or password") from None
         finally:
             del password
         self._imap = imap
         self.capabilities = {c.upper() for c in imap.capabilities}
         return self
+
+    def _login(self, imap: imaplib.IMAP4, user: str, password: str) -> None:
+        """AUTHENTICATE PLAIN when the server offers it (it carries UTF-8),
+        else LOGIN. Never both: a second try after a refusal counts as
+        another failed login. Raises AuthFailed or imaplib.IMAP4.error."""
+        caps = {c.upper() for c in imap.capabilities}
+        if "AUTH=PLAIN" in caps:
+            token = b"\0" + user.encode() + b"\0" + password.encode()
+            imap.authenticate("PLAIN", lambda _challenge: token)
+            return
+        if "LOGINDISABLED" in caps:
+            raise AuthFailed(f"{self.account_id}: the server accepts neither LOGIN nor AUTHENTICATE PLAIN"
+                             " on this connection")
+        try:
+            imap.login(user, password)
+        except UnicodeEncodeError:
+            raise AuthFailed(f"{self.account_id}: the user name or password has non-ASCII characters,"
+                             " which LOGIN can't carry, and the server doesn't offer AUTHENTICATE PLAIN") from None
+
+    @staticmethod
+    def _shutdown(imap: imaplib.IMAP4) -> None:
+        try:
+            imap.shutdown()
+        except OSError:
+            pass
 
     def close(self) -> None:
         if self._imap is not None:

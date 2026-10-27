@@ -349,6 +349,12 @@ Run from a terminal while developing, there's no launcher, so set
 `password_env` and export that variable for the run. Don't keep it in a
 shell profile.
 
+**Login.** If the server offers `AUTHENTICATE PLAIN`, the helpers use it,
+which carries non-ASCII passwords; otherwise they use `LOGIN`. They never
+try one after the other fails, since each try counts against the account.
+With `security = "starttls"`, a server that doesn't offer STARTTLS is
+refused before anything is sent.
+
 **What this doesn't protect.** The password opens the whole account, so
 the limits come from our code and from keeping the password out of the
 agent's reach:
@@ -366,8 +372,12 @@ agent's reach:
 - Hermes never gets the password, the IMAP host or a network path that
   needs them. The mail MCP still reads only the index.
 
-**First real run.** Everything is tested only against GreenMail. To try a
-real account: add the password, run `make mail-index-doctor` with that
+**First real run.** Everything is tested only against synthetic servers:
+GreenMail, in the clear and over TLS with a certificate made for the test,
+and a small fake server for STARTTLS and the login methods. The Keychain
+handoff is tested through both apps with a throwaway keychain file, so the
+`install.sh password` prompt and your login keychain are left for your first
+run. To try a real account: add the password, run `make mail-index-doctor` with that
 account in the config, and check `accounts[].details_readable` equals
 `details_sampled`. `server_special_use` says whether Junk and Trash can be
 found by flag; if it's `false`, check `make mail-index-mailboxes` and name
@@ -388,8 +398,22 @@ turn them on for an account you index here.
 **Testing.** `make mail-imap-test` starts a throwaway GreenMail IMAP server in
 Docker, loads the synthetic messages into it, and checks that the IMAP source
 indexes them the same way as the other sources, that nothing on the server
-changed, and that drafts land in Drafts. It skips when Docker isn't running.
-No real account is ever used.
+changed, and that drafts land in Drafts. It also:
+
+- makes a CA and server certificate with `openssl` and checks that indexing
+  over IMAPS with `tls_ca` gives the same index, and that without `tls_ca`
+  the run exits 5;
+- checks STARTTLS, `AUTHENTICATE PLAIN`, `LOGIN` and `LOGINDISABLED`
+  against a fake server in the test, including that no credentials are sent
+  before TLS starts;
+- on macOS, builds both apps with `MAIL_APPS_KEYCHAIN` pointing at a
+  keychain file it creates and deletes, stores the test passwords there
+  trusting only those apps, and runs the reader and the drafts helper with
+  no `password_env`. It checks that your keychain search list is unchanged.
+
+The GreenMail parts skip when Docker isn't running, the certificate parts
+without `openssl`, and the app part off macOS or without `swiftc`. No real
+account is ever used.
 
 ## Design
 
@@ -872,6 +896,7 @@ Build settings:
 | `MAIL_APPS_SIGN_IDENTITY` | `-` (ad hoc) | Signing identity. macOS ties grants to the signature, so with ad hoc signing each rebuild asks again. A stable identity (a free Apple Development certificate is enough) keeps them |
 | `MAIL_APPS_BUNDLE_PREFIX` | `local.assistant` | Bundle id and launchd label prefix. Set the same value for `install.sh` |
 | `MAIL_APPS_DIR` | `~/Applications` | Where `install.sh` puts the apps |
+| `MAIL_APPS_KEYCHAIN` | unset | A keychain file the launcher searches instead of your keychain search list. For tests; `install.sh password` doesn't use it |
 
 `make mail-apps-test` builds both apps into a temporary folder, checks their
 ids, signatures, entitlements and contents, checks that a changed script

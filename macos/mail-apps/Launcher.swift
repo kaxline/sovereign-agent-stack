@@ -12,30 +12,44 @@
 // object, with MAIL_CREDENTIALS_FD=0 in its environment. The Keychain checks
 // this app's signature, so the passwords reach only the helpers you
 // installed, and never appear in a file, an argument or the environment.
+// launcher.json can name a keychain file (`keychain`, from MAIL_APPS_KEYCHAIN
+// at build time) to search instead of your keychain search list; the tests
+// use it with a throwaway keychain.
 
 import Foundation
 import Security
 
-func keychainPasswords(service: String) -> [String: String] {
-    let list: [String: Any] = [
+func keychainPasswords(service: String, keychainPath: String?) -> [String: String] {
+    var scope: [String: Any] = [:]
+    if let path = keychainPath {
+        var keychain: SecKeychain?
+        // SecKeychainOpen is deprecated but is the only way to search one
+        // keychain file; it doesn't add the file to the search list.
+        guard SecKeychainOpen(path, &keychain) == errSecSuccess, let keychain else {
+            FileHandle.standardError.write(Data("launcher: can't open the keychain named in launcher.json\n".utf8))
+            return [:]
+        }
+        scope[kSecMatchSearchList as String] = [keychain]
+    }
+    let list: [String: Any] = scope.merging([
         kSecClass as String: kSecClassGenericPassword,
         kSecAttrService as String: service,
         kSecMatchLimit as String: kSecMatchLimitAll,
         kSecReturnAttributes as String: true,
-    ]
+    ]) { $1 }
     var found: CFTypeRef?
     guard SecItemCopyMatching(list as CFDictionary, &found) == errSecSuccess,
           let items = found as? [[String: Any]] else { return [:] }
     var out: [String: String] = [:]
     for item in items {
         guard let account = item[kSecAttrAccount as String] as? String else { continue }
-        let one: [String: Any] = [
+        let one: [String: Any] = scope.merging([
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecMatchLimit as String: kSecMatchLimitOne,
             kSecReturnData as String: true,
-        ]
+        ]) { $1 }
         var data: CFTypeRef?
         if SecItemCopyMatching(one as CFDictionary, &data) == errSecSuccess,
            let bytes = data as? Data, let password = String(data: bytes, encoding: .utf8) {
@@ -68,7 +82,8 @@ var environment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "en_US.UTF-8
 if let home = ProcessInfo.processInfo.environment["HOME"] { environment["HOME"] = home }
 var credentials: Data? = nil
 if let service = config["keychain_service"], !service.isEmpty {
-    let passwords = keychainPasswords(service: service)
+    let keychainPath = config["keychain"].flatMap { $0.isEmpty ? nil : $0 }
+    let passwords = keychainPasswords(service: service, keychainPath: keychainPath)
     if !passwords.isEmpty, let json = try? JSONSerialization.data(withJSONObject: passwords) {
         credentials = json
         environment["MAIL_CREDENTIALS_FD"] = "0"

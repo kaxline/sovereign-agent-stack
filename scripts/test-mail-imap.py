@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 """Checks for the IMAP source, against synthetic mail only. See docs/email.md.
 
-Unit checks run everywhere. The end-to-end checks start a throwaway GreenMail
-server in Docker, load the synthetic specs into it, and index it. They're
-skipped (with a note) when Docker isn't running. No real account is used:
-the server, its users and their passwords exist only for this run.
+Unit checks run everywhere. A small fake IMAP server in this file checks
+STARTTLS and the login methods (LOGIN, AUTHENTICATE PLAIN, LOGINDISABLED).
+The end-to-end checks start a throwaway GreenMail server in Docker, load the
+synthetic specs into it, and index it, in the clear and over TLS with a
+certificate made for this run. They're skipped (with a note) when Docker
+isn't running. On macOS with swiftc, the mail apps are built against a
+throwaway keychain file to check the Keychain handoff. No real account or
+keychain is used: the servers, users, passwords and certificates exist only
+for this run.
 """
 
 from __future__ import annotations
@@ -12,14 +17,19 @@ from __future__ import annotations
 import email
 import email.policy
 import imaplib
+import base64
 import json
 import os
 import re
+import secrets
+import shutil
 import socket
+import ssl
 import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -30,7 +40,9 @@ LIB = HERE / "lib"
 if str(LIB) not in sys.path:
     sys.path.insert(0, str(LIB))
 
+import mail_credentials  # noqa: E402
 import mail_imap  # noqa: E402
+import mail_imap_conn  # noqa: E402
 import mail_index as mi  # noqa: E402
 import synthetic_mail as sm  # noqa: E402
 
@@ -38,6 +50,7 @@ IMAGE = "greenmail/standalone:2.1.3"
 PASSWORD = "synthetic-pw"  # a throwaway user on a throwaway server
 USERS = {"personal": sm.ME[1], "work": sm.WORK_ME[1]}
 PASSWORD_ENV = "SYNTHETIC_IMAP_PASSWORD"
+KEYSTORE_PASSWORD = "synthetic-keystore"
 
 
 def fail(msg: str) -> None:
@@ -159,7 +172,8 @@ def imap_calls(path: Path) -> set[str]:
 
 def test_shared_and_drafts_code() -> None:
     calls = imap_calls(LIB / "mail_imap_conn.py")
-    expect(calls <= {"list", "login", "logout", "starttls", "shutdown"}, f"shared IMAP code gained {calls}")
+    expect(calls <= {"authenticate", "list", "login", "logout", "starttls", "shutdown"},
+           f"shared IMAP code gained {calls}")
     code = (LIB / "mail_imap_drafts.py").read_text()
     calls = imap_calls(LIB / "mail_imap_drafts.py")
     expect(calls <= {"select", "response", "uid", "append"}, f"drafts IMAP code gained {calls}")
@@ -177,6 +191,170 @@ def test_shared_and_drafts_code() -> None:
         expect(m.group(1) in ("SEARCH", "FETCH"), f"UID {m.group(1)} in the reader")
 
 
+# --------------------------------------------------------------------------- certificates
+
+def make_certs(out: Path) -> Path | None:
+    """A throwaway CA and a server certificate for localhost and 127.0.0.1:
+    ca.pem, server.pem, server.key, and server.p12 for GreenMail. None
+    (checks skipped) without the openssl command."""
+    openssl = shutil.which("openssl")
+    if not openssl:
+        return None
+    out.mkdir(parents=True, exist_ok=True)
+
+    def run(*args: str) -> None:
+        subprocess.run([openssl, *args], check=True, capture_output=True, cwd=out)
+
+    run("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", "ca.key", "-out", "ca.pem", "-days", "2",
+        "-subj", "/CN=Synthetic Test CA", "-addext", "basicConstraints=critical,CA:TRUE",
+        "-addext", "keyUsage=critical,keyCertSign,cRLSign")
+    run("req", "-newkey", "rsa:2048", "-nodes", "-keyout", "server.key", "-out", "server.csr", "-subj", "/CN=localhost")
+    (out / "server.ext").write_text("basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\n"
+                                    "extendedKeyUsage=serverAuth\nsubjectAltName=DNS:localhost,IP:127.0.0.1\n"
+                                    "authorityKeyIdentifier=keyid\nsubjectKeyIdentifier=hash\n")
+    run("x509", "-req", "-in", "server.csr", "-CA", "ca.pem", "-CAkey", "ca.key", "-CAcreateserial", "-days", "2",
+        "-out", "server.pem", "-extfile", "server.ext")
+    run("pkcs12", "-export", "-in", "server.pem", "-inkey", "server.key", "-name", "greenmail",
+        "-out", "server.p12", "-passout", f"pass:{KEYSTORE_PASSWORD}")
+    for name in ("server.p12", "ca.pem"):
+        (out / name).chmod(0o644)  # GreenMail runs as another user in the container
+    return out
+
+
+# --------------------------------------------------------------------------- fake IMAP server
+
+class FakeImap:
+    """Just enough IMAP to check connecting and logging in: CAPABILITY,
+    STARTTLS, LOGIN, AUTHENTICATE PLAIN, LIST and LOGOUT. Records each
+    command with whether TLS was on when it arrived."""
+
+    def __init__(self, caps: str, *, tls_caps: str | None = None, certs: Path | None = None,
+                 user: str = "sam@example.com", password: str = "pw-1") -> None:
+        self.caps, self.tls_caps, self.user, self.password = caps, tls_caps, user, password
+        self.ctx = None
+        if certs:
+            self.ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+            self.ctx.load_cert_chain(certs / "server.pem", certs / "server.key")
+        self.log: list[tuple[bool, str]] = []
+        self.sock = socket.create_server(("127.0.0.1", 0))
+        self.port = self.sock.getsockname()[1]
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    def _serve(self) -> None:
+        conn, _ = self.sock.accept()
+        tls, caps = False, self.caps
+        f = conn.makefile("rwb")
+
+        def say(line: str) -> None:
+            f.write(line.encode() + b"\r\n")
+            f.flush()
+
+        say("* OK fake IMAP ready")
+        while line := f.readline():
+            tag, _, rest = line.decode().rstrip("\r\n").partition(" ")
+            cmd, _, args = rest.partition(" ")
+            cmd = cmd.upper()
+            self.log.append((tls, cmd))
+            if cmd == "CAPABILITY":
+                say(f"* CAPABILITY {caps}")
+                say(f"{tag} OK done")
+            elif cmd == "STARTTLS" and "STARTTLS" in caps.split() and self.ctx:
+                say(f"{tag} OK begin TLS")
+                try:
+                    conn = self.ctx.wrap_socket(conn, server_side=True)
+                except ssl.SSLError:  # the client refused our certificate
+                    break
+                f = conn.makefile("rwb")
+                tls, caps = True, self.tls_caps or self.caps
+            elif cmd == "LOGIN":
+                ok = "LOGINDISABLED" not in caps.split() and args == f'{self.user} "{self.password}"'
+                say(f"{tag} OK logged in" if ok else f"{tag} NO refused")
+            elif cmd == "AUTHENTICATE" and args.upper() == "PLAIN" and "AUTH=PLAIN" in caps.split():
+                say("+ ")
+                token = base64.b64decode(f.readline().strip())
+                ok = token == b"\0" + self.user.encode() + b"\0" + self.password.encode()
+                say(f"{tag} OK authenticated" if ok else f"{tag} NO refused")
+            elif cmd == "LIST":
+                say('* LIST (\\HasNoChildren) "/" "INBOX"')
+                say(f"{tag} OK done")
+            elif cmd == "LOGOUT":
+                say("* BYE")
+                say(f"{tag} OK bye")
+                break
+            else:
+                say(f"{tag} BAD not here")
+        conn.close()
+
+    def commands(self) -> list[tuple[bool, str]]:
+        return [c for c in self.log if c[1] != "CAPABILITY"]
+
+
+def fake_login(server: FakeImap, *, security: str = "plain", password: str = "pw-1", certs: Path | None = None):
+    """Open, LIST and close an account on `server`. Returns the mailboxes or the exception raised."""
+    item = {"id": "fake", "mailboxes": ["INBOX"], "source": "imap", "host": "127.0.0.1", "port": server.port,
+            "security": security, "user": "sam@example.com", "password_env": "FAKE_IMAP_PASSWORD", "timeout": 10}
+    if certs:
+        item["tls_ca"] = str(certs / "ca.pem")
+    settings = mail_imap_conn.account_settings(item, Path("/nonexistent"), where="fake")
+    os.environ["FAKE_IMAP_PASSWORD"] = password
+    try:
+        with mail_imap_conn.Connection("fake", settings) as conn:
+            return [b.path for b in conn.list_mailboxes()]
+    except (mail_imap_conn.ImapError, mail_credentials.MissingPassword) as exc:
+        return exc
+    finally:
+        del os.environ["FAKE_IMAP_PASSWORD"]
+
+
+def test_login_methods(certs: Path | None) -> None:
+    server = FakeImap("IMAP4rev1")
+    expect(fake_login(server) == ["INBOX"] and server.commands()[0] == (False, "LOGIN"), f"LOGIN: {server.log}")
+
+    server = FakeImap("IMAP4rev1 AUTH=PLAIN")
+    expect(fake_login(server) == ["INBOX"] and server.commands()[0] == (False, "AUTHENTICATE"),
+           f"AUTHENTICATE PLAIN when offered: {server.log}")
+
+    server = FakeImap("IMAP4rev1 AUTH=PLAIN", password="pässwörd-ü")
+    expect(fake_login(server, password="pässwörd-ü") == ["INBOX"], "AUTHENTICATE PLAIN carries a UTF-8 password")
+
+    server = FakeImap("IMAP4rev1 AUTH=PLAIN")
+    got = fake_login(server, password="wrong")
+    expect(isinstance(got, mail_imap_conn.AuthFailed) and "wrong" not in str(got), f"refused AUTHENTICATE: {got}")
+    expect([c for _, c in server.commands()].count("AUTHENTICATE") == 1 and (False, "LOGIN") not in server.log,
+           f"one login attempt, no LOGIN retry: {server.log}")
+
+    server = FakeImap("IMAP4rev1 LOGINDISABLED")
+    got = fake_login(server)
+    expect(isinstance(got, mail_imap_conn.AuthFailed) and "neither" in str(got), f"LOGINDISABLED: {got}")
+    expect(server.commands() == [], f"nothing sent when no login method is allowed: {server.log}")
+
+    server = FakeImap("IMAP4rev1", password="pässwörd")
+    got = fake_login(server, password="pässwörd")
+    expect(isinstance(got, mail_imap_conn.AuthFailed) and "non-ASCII" in str(got) and "pässwörd" not in str(got),
+           f"non-ASCII password over LOGIN: {got!r}")
+
+    if not certs:
+        print("note: openssl not found; STARTTLS checks skipped")
+        return
+    server = FakeImap("IMAP4rev1 STARTTLS LOGINDISABLED", tls_caps="IMAP4rev1 AUTH=PLAIN", certs=certs)
+    expect(fake_login(server, security="starttls", certs=certs) == ["INBOX"], f"STARTTLS login: {server.log}")
+    expect(server.commands()[0] == (False, "STARTTLS") and all(tls for tls, _ in server.commands()[1:]),
+           f"everything after STARTTLS is encrypted: {server.log}")
+    expect((True, "AUTHENTICATE") in server.log, "capabilities re-read after STARTTLS")
+
+    server = FakeImap("IMAP4rev1 LOGINDISABLED", certs=certs)
+    got = fake_login(server, security="starttls", certs=certs)
+    expect(isinstance(got, mail_imap_conn.ImapError) and not isinstance(got, mail_imap_conn.AuthFailed),
+           f"security = starttls refuses a server without STARTTLS: {got!r}")
+    expect(server.commands() == [], f"no credentials sent in the clear: {server.log}")
+
+    server = FakeImap("IMAP4rev1 STARTTLS", certs=certs)
+    got = fake_login(server, security="starttls")
+    expect(isinstance(got, mail_imap_conn.ImapError) and "CERTIFICATE_VERIFY_FAILED" in str(got),
+           f"STARTTLS checks the certificate: {got!r}")
+    expect((False, "LOGIN") not in server.log and (True, "LOGIN") not in server.log, "no login after a bad certificate")
+
+
 # --------------------------------------------------------------------------- GreenMail
 
 def docker_ok() -> bool:
@@ -187,16 +365,28 @@ def docker_ok() -> bool:
 
 
 @contextmanager
-def greenmail():
+def greenmail(certs: Path | None):
+    """GreenMail with IMAP on 3143 and, given certs, IMAPS on 3993 with that
+    certificate. Yields (imap port, imaps port or None)."""
     name = f"synthetic-mail-imap-{os.getpid()}"
     users = ",".join(f"{addr.split('@')[0]}:{PASSWORD}@{addr.split('@')[1]}" for addr in USERS.values())
     opts = (f"-Dgreenmail.setup.test.imap -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.users={users}"
             " -Dgreenmail.users.login=email")
-    subprocess.run(["docker", "run", "-d", "--rm", "--name", name, "-p", "127.0.0.1::3143",
+    args = ["-p", "127.0.0.1::3143"]
+    if certs:
+        opts += (" -Dgreenmail.setup.test.imaps -Dgreenmail.tls.keystore.file=/certs/server.p12"
+                 f" -Dgreenmail.tls.keystore.password={KEYSTORE_PASSWORD}")
+        args += ["-p", "127.0.0.1::3993", "-v", f"{certs}:/certs:ro"]
+    subprocess.run(["docker", "run", "-d", "--rm", "--name", name, *args,
                     "-e", f"GREENMAIL_OPTS={opts}", IMAGE], check=True, capture_output=True)
+
+    def host_port(inner: int) -> int:
+        return int(subprocess.run(["docker", "port", name, str(inner)], check=True, capture_output=True,
+                                  text=True).stdout.strip().splitlines()[0].rsplit(":", 1)[1])
+
     try:
-        port = int(subprocess.run(["docker", "port", name, "3143"], check=True, capture_output=True,
-                                  text=True).stdout.strip().rsplit(":", 1)[1])
+        port = host_port(3143)
+        tls_port = host_port(3993) if certs else None
         deadline = time.time() + 60
         while True:
             try:
@@ -206,7 +396,7 @@ def greenmail():
                 if time.time() > deadline:
                     fail("GreenMail didn't start")
                 time.sleep(0.5)
-        yield port
+        yield port, tls_port
     finally:
         subprocess.run(["docker", "stop", name], capture_output=True)
 
@@ -271,7 +461,8 @@ def server_state(port: int) -> dict:
 
 
 def write_config(tmp: Path, port: int, accounts: dict[str, list[str]], *, index: Path, name: str,
-                 bodies=True, attachments=True, store: Path | None = None) -> Path:
+                 bodies=True, attachments=True, store: Path | None = None, security: str = "plain",
+                 tls_ca: Path | None = None, password_env: bool = True) -> Path:
     lines = [f'index = "{index}"', "since = 2026-01-01", f"bodies = {str(bodies).lower()}",
              f"attachments = {str(attachments).lower()}"]
     if store:
@@ -281,8 +472,12 @@ def write_config(tmp: Path, port: int, accounts: dict[str, list[str]], *, index:
             lines += ["", "[[accounts]]", f'id = "{key[6:]}"', 'source = "store"', f"mailboxes = {json.dumps(boxes)}"]
             continue
         lines += ["", "[[accounts]]", f'id = "{key}"', 'source = "imap"', 'host = "127.0.0.1"', f"port = {port}",
-                  'security = "plain"', f'user = "{USERS[key]}"', f'address = "{USERS[key]}"',
-                  f'password_env = "{PASSWORD_ENV}"', f"mailboxes = {json.dumps(boxes)}"]
+                  f'security = "{security}"', f'user = "{USERS[key]}"', f'address = "{USERS[key]}"',
+                  f"mailboxes = {json.dumps(boxes)}"]
+        if password_env:
+            lines.append(f'password_env = "{PASSWORD_ENV}"')
+        if tls_ca:
+            lines.append(f'tls_ca = "{tls_ca}"')
     path = tmp / f"{name}.toml"
     path.write_text("\n".join(lines) + "\n")
     return path
@@ -474,6 +669,94 @@ def test_drafts(tmp: Path, port: int) -> None:
            f"drafts doctor: {report}")
 
 
+def test_tls(tmp: Path, tls_port: int, certs: Path) -> None:
+    """The same mail over IMAPS, checked against the certificate's CA."""
+    cfg = mi.load_config(write_config(tmp, tls_port, {"work": ["**"]}, index=tmp / "tls" / "index.sqlite",
+                                      name="tls", security="tls", tls_ca=certs / "ca.pem"))
+    stats = mi.run(cfg)
+    plain = {mid: r for mid, r in rows(tmp / "imap" / "index.sqlite").items() if r["account"] == "work"}
+    got = rows(cfg.index)
+    expect(stats.added == len(plain) > 0 and set(got) == set(plain), f"IMAPS indexes the same mail: {stats}")
+    for mid, r in got.items():
+        expect((r["subject"], r["body"]) == (plain[mid]["subject"], plain[mid]["body"]), f"{mid} over IMAPS")
+
+    write_config(tmp, tls_port, {"work": ["**"]}, index=tmp / "tls-noca" / "index.sqlite", name="tls-noca",
+                 security="tls")
+    out = subprocess.run([sys.executable, "-I", str(HERE / "mail-index.py"), "--config", str(tmp / "tls-noca.toml"),
+                          "run"], capture_output=True, text=True, env={**os.environ, PASSWORD_ENV: PASSWORD})
+    expect(out.returncode == 5 and "CERTIFICATE_VERIFY_FAILED" in out.stderr and PASSWORD not in out.stderr,
+           f"without tls_ca the self-signed server is refused: {out.returncode} {out.stderr}")
+
+
+def mac_build_ok() -> bool:
+    return sys.platform == "darwin" and shutil.which("swiftc") is not None and shutil.which("security") is not None
+
+
+def keychains() -> str:
+    return subprocess.run(["security", "list-keychains", "-d", "user"], capture_output=True, text=True).stdout
+
+
+def test_keychain_handoff(tmp: Path, port: int) -> None:
+    """Build both apps against a throwaway keychain file, store the synthetic
+    passwords there for those apps only, and run them with no password_env:
+    the reader indexes and the drafts app saves a draft with passwords that
+    reached them only through the launcher. Your keychains and search list
+    aren't touched."""
+    prefix = "test.synthetic"
+    keychain = tmp / "synthetic-keychain" / "mail-test.keychain-db"
+    keychain.parent.mkdir()
+    keychain_pw = secrets.token_hex(16)
+    search_list = keychains()
+    sec = ["security"]
+    subprocess.run([*sec, "create-keychain", "-p", keychain_pw, str(keychain)], check=True, capture_output=True)
+    try:
+        subprocess.run([*sec, "unlock-keychain", "-p", keychain_pw, str(keychain)], check=True, capture_output=True)
+        apps = tmp / "apps"
+        build = subprocess.run([str(HERE.parent / "macos" / "mail-apps" / "build.sh"), str(apps)], capture_output=True,
+                               text=True, env={**os.environ, "MAIL_APPS_KEYCHAIN": str(keychain),
+                                               "MAIL_APPS_BUNDLE_PREFIX": prefix})
+        expect(build.returncode == 0, f"build: {build.stderr[-500:]}")
+        reader, drafts_app = apps / "Assistant Mail Reader.app", apps / "Assistant Mail Drafts.app"
+        for account in USERS:
+            subprocess.run([*sec, "add-generic-password", "-U", "-s", f"{prefix}.mail-imap", "-a", account,
+                            "-l", f"Assistant mail: {account}", "-T", str(reader), "-T", str(drafts_app),
+                            "-w", PASSWORD, str(keychain)], check=True, capture_output=True)
+        expect(keychains() == search_list, "creating the test keychain left the search list alone")
+
+        cfg = write_config(tmp, port, {"personal": ["*"], "work": ["**"]}, index=tmp / "keychain" / "index.sqlite",
+                           name="keychain", password_env=False)
+        env = {k: v for k, v in os.environ.items() if k != PASSWORD_ENV}
+        out = subprocess.run([str(reader / "Contents" / "MacOS" / "assistant-mail-reader"), "--config", str(cfg),
+                              "run"], capture_output=True, text=True, env=env, timeout=120)
+        expect(out.returncode == 0, f"reader app with Keychain passwords: {out.returncode} {out.stderr}")
+        expect(PASSWORD not in out.stdout + out.stderr, "reader app output leaked the password")
+        expect({r["account"] for r in rows(tmp / "keychain" / "index.sqlite").values()} == {"personal", "work"},
+               "reader app logged in to both accounts")
+
+        sys.path.insert(0, str(HERE.parent / "compose" / "mail-drafts-mcp"))
+        import drafts
+        conn = admin(port, "work")
+        conn.create("Drafts")
+        conn.logout()
+        root = tmp / "keychain-drafts"
+        rid = drafts.enqueue(root, {"to": ["alex.chen@example.com"], "subject": "From the drafts app",
+                                    "body": "Saved with a Keychain password.", "from": USERS["work"]})
+        out = subprocess.run([str(drafts_app / "Contents" / "MacOS" / "assistant-mail-drafts"), "--dir", str(root),
+                              "--config", str(cfg), "--no-mail-app", "run"], capture_output=True, text=True,
+                             env=env, timeout=120)
+        status = drafts.read_status(root, rid)
+        expect(out.returncode == 0 and status["state"] == "created",
+               f"drafts app with Keychain passwords: {out.returncode} {status} {out.stderr}")
+        conn = admin(port, "work")
+        typ, data = conn.select("Drafts", readonly=True)
+        _, found = conn.uid("SEARCH", "SUBJECT", '"From the drafts app"')
+        conn.logout()
+        expect(typ == "OK" and found[0].split(), "the drafts app's draft is in work's Drafts")
+    finally:
+        subprocess.run([*sec, "delete-keychain", str(keychain)], capture_output=True)
+        expect(keychains() == search_list, "the keychain search list is as it was")
+
+
 def main() -> int:
     test_mutf7()
     test_parse_list()
@@ -482,12 +765,21 @@ def main() -> int:
     test_reader_source_reads_only()
     test_shared_and_drafts_code()
     test_credentials_handoff()
-    if not docker_ok():
-        print("OK mail IMAP (unit checks only: Docker isn't running, GreenMail checks skipped)")
-        return 0
-    with tempfile.TemporaryDirectory() as d, greenmail() as port:
-        test_end_to_end(Path(d), port)
-        test_drafts(Path(d), port)
+    with tempfile.TemporaryDirectory() as d:
+        certs = make_certs(Path(d) / "certs")
+        test_login_methods(certs)
+        if not docker_ok():
+            print("OK mail IMAP (unit checks only: Docker isn't running, GreenMail checks skipped)")
+            return 0
+        with greenmail(certs) as (port, tls_port):
+            test_end_to_end(Path(d), port)
+            test_drafts(Path(d), port)
+            if certs:
+                test_tls(Path(d), tls_port, certs)
+            if mac_build_ok():
+                test_keychain_handoff(Path(d), port)
+            else:
+                print("note: not macOS with swiftc; Keychain handoff checks skipped")
     print("OK mail IMAP source")
     return 0
 
