@@ -59,7 +59,9 @@ def main() -> int:
         return r.stdout.strip()
 
     def read() -> dict:
-        r = exec_in_hermes(["python3", "-c", "import json,sys,yaml;"
+        # Hermes v0.22+ has no PyYAML; hermes_yaml wraps ruamel, as in the bootstrap.
+        r = exec_in_hermes(["python3", "-c", "import json,sys; sys.path.insert(0, '/opt/hermes')\n"
+                            "try:\n    import yaml\nexcept ImportError:\n    import hermes_yaml as yaml\n"
                             f"print(json.dumps(yaml.safe_load(open('{work}/config.yaml'))))"])
         return json.loads(r.stdout)
 

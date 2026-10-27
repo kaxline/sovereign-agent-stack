@@ -65,7 +65,10 @@ Messages' database ──(Full Disk Access, read-only)──▶ Assistant Messag
 - **The webhook route** (`messages`, on the default profile, port 8646 inside
   the container) fires the `messages-triage` cron job. The route's prompt
   carries only the message count, because anyone in a group can set its name.
-  The bootstraps write the route and keep any routes you added.
+  The bootstraps write the route and keep any routes you added. The
+  container's own gateway serves the default profile under both
+  `HERMES_GATEWAY_TOPOLOGY` settings, so the listener and the route work the
+  same in `standalone` and `multiplex` ([Gateway topology](hermes.md#gateway-topology)).
 - **The triage job** (`make messages-triage-cron`) has the messages tools and
   nothing else, so a message that tries to steer it has nowhere to send
   anything. Its report goes where its `deliver` says (Signal by default when

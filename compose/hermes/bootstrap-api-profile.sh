@@ -1150,7 +1150,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, "/opt/hermes")
-import yaml
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import hermes_yaml as yaml
 from utils import atomic_yaml_write
 
 cfg_path, on, port = Path(sys.argv[1]), sys.argv[2] == "1", int(sys.argv[3])
