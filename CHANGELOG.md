@@ -45,6 +45,12 @@ the stack under another app.
 - WebUI turns can use `send_message` again (Signal delivery). Hermes v0.22
   dropped it from `hermes-cli` on `api_server`; the browser bootstrap now
   names it.
+  Its description now tells the model that `target='signal'` works even
+  though Signal is not a connected platform on the browser profile.
+- The ssh terminal backend works again. Hermes puts temp files, and with
+  them OpenSSH's ControlMaster socket, under `data/hermes/.../cache/scratch`,
+  where Docker Desktop's file sharing cannot create the socket. `hermes`
+  now sets `TMPDIR=/tmp`.
 - `make gateway-preflight` runs Hermes' multiplex migration preflight against
   a temporary copy of the Hermes home and changes nothing.
 - `make hermes-upgrade` refuses an agent tag that no longer supports

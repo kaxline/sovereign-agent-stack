@@ -1201,6 +1201,14 @@ services:
       # use to find each other: bind it on /tmp instead of data/hermes. See
       # compose/hermes/patch-control-socket-tmp.py.
       - HERMES_CONTROL_SOCKET_IN_TMP=1
+      # Hermes points TMPDIR/TMP/TEMP at $HERMES_HOME/cache/scratch (virtiofs)
+      # unless they are set. OpenSSH's ControlMaster socket for the ssh terminal
+      # backend lives there, and link() on virtiofs fails ("Bad file
+      # descriptor"), so every terminal call failed. Keep temp on the container
+      # filesystem like the sockets above.
+      - TMPDIR=/tmp
+      - TMP=/tmp
+      - TEMP=/tmp
       # One uv cache for every profile (uvx browser-use), on a native volume:
       # under each profile's HOME it sat on virtiofs and a warm run took ~57 s.
       - UV_CACHE_DIR=/opt/uv-cache
