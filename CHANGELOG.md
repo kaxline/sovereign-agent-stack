@@ -59,6 +59,15 @@ the stack under another app.
 
 ### Changes
 
+- **IMAP login**: the IMAP source and IMAP drafts use AUTHENTICATE PLAIN
+  when the server offers it, and LOGIN otherwise, never both on one
+  connection. Passwords with non-ASCII characters now work on servers that
+  offer AUTHENTICATE PLAIN. A server that disables LOGIN and doesn't offer
+  AUTHENTICATE PLAIN, or a non-ASCII password over LOGIN, fails as a refused
+  login (exit code 4, `imap_login_refused`) instead of crashing.
+  `make mail-imap-test` now also covers TLS with `tls_ca`, STARTTLS, and the
+  Keychain handoff through both mail apps, built against a throwaway keychain
+  file (`MAIL_APPS_KEYCHAIN`, for tests).
 - **Messages MCP and alerts**: the bootstraps register `mcp_servers.messages`
   on the default and `browser` profiles, never `api-server`.
   `messages_triage_batch` is listed only on default. With
