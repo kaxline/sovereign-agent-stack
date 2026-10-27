@@ -159,6 +159,8 @@ def wake_and_wait(phase):
     assert resp.status == 202, resp.status
     body = json.loads(resp.text)
     assert body["profiles"] == ["default", "api-server"], body
+    # This process holds the parked connection, so the endpoint wakes it itself.
+    assert body["woken"] == 1, body
     wait_for(lambda: "wake-test" in get_registered_mcp_server_names(), 15, f"tools after wake ({phase})")
     elapsed = time.monotonic() - started
     assert elapsed < 10, elapsed

@@ -987,6 +987,10 @@ services:
       - HERMES_API_PROFILE_NAME=${HERMES_API_PROFILE_NAME:-api-server}
       - HERMES_API_MAX_TURNS=${HERMES_API_MAX_TURNS:-20}
       - HERMES_API_SERVER_PORT=${HERMES_API_SERVER_PORT:-8643}
+      # Gateway topology (019-pin-profile-gateways.sh); decides what the default
+      # profile's .env keeps for its API server.
+      - HERMES_GATEWAY_TOPOLOGY=${HERMES_GATEWAY_TOPOLOGY:-}
+      - HERMES_PIN_STANDALONE_GATEWAYS=${HERMES_PIN_STANDALONE_GATEWAYS:-1}
       # Unattended one-shots must not distill themselves into USER.md.
       - HERMES_MEMORY_NUDGE_INTERVAL=${HERMES_API_MEMORY_NUDGE_INTERVAL:-10}
       # Web-reading MCP sidecar registered on both Hermes profiles.
@@ -1060,6 +1064,10 @@ services:
       # unattended cap would only truncate useful work mid-task.
       - HERMES_API_MAX_TURNS=${HERMES_BROWSER_MAX_TURNS:-60}
       - HERMES_API_SERVER_PORT=${HERMES_BROWSER_API_PORT:-8644}
+      # Gateway topology (019-pin-profile-gateways.sh); decides what the default
+      # profile's .env keeps for its API server.
+      - HERMES_GATEWAY_TOPOLOGY=${HERMES_GATEWAY_TOPOLOGY:-}
+      - HERMES_PIN_STANDALONE_GATEWAYS=${HERMES_PIN_STANDALONE_GATEWAYS:-1}
       # Interactive chat: background memory review every N user turns. Default 10
       # keeps a single local LM Studio slot free for foreground chat; the old
       # value of 3 fired on turn 3/6 and often raced the user's next message.
@@ -1156,9 +1164,15 @@ services:
       - HERMES_TURN_HEARTBEAT_S=${HERMES_TURN_HEARTBEAT_S:-30}
       # Kanban guards overlay (patch-kanban-guards.py); 0 = upstream behaviour.
       - HERMES_KANBAN_GUARDS=${HERMES_KANBAN_GUARDS:-1}
-      # Opt-outs for compose/hermes/019-pin-profile-gateways.sh: 0 stops pinning
-      # gateway.standalone / sessions.auto_prune where those keys are unset.
+      # standalone (default): one gateway per profile, api-server on 8643 and
+      # browser on 8644. multiplex: one gateway serves every profile at
+      # :8642/p/<profile>/, and gateway-compat-proxy keeps 8643/8644 answering.
+      # Unset, HERMES_PIN_STANDALONE_GATEWAYS=0 (older name) means multiplex.
+      # See compose/hermes/019-pin-profile-gateways.sh and docs/hermes.md.
+      - HERMES_GATEWAY_TOPOLOGY=${HERMES_GATEWAY_TOPOLOGY:-}
       - HERMES_PIN_STANDALONE_GATEWAYS=${HERMES_PIN_STANDALONE_GATEWAYS:-1}
+      - HERMES_COMPAT_PROXY_ROUTES=8643=api-server,${HERMES_BROWSER_API_PORT:-8644}=browser
+      # 0 stops 019 pinning sessions.auto_prune: false where the key is unset.
       - HERMES_PIN_SESSIONS_KEEP=${HERMES_PIN_SESSIONS_KEEP:-1}
       - HERMES_DASHBOARD=1
       # The dashboard always binds 0.0.0.0 inside the container (host ports are
@@ -1173,8 +1187,6 @@ services:
       # One-time sign-in links at /auth/handoff (patch-dashboard-handoff.py).
       # Empty turns the route off (404).
       - HERMES_DASHBOARD_HANDOFF_SECRET=${HERMES_DASHBOARD_HANDOFF_SECRET:-}
-      # API server runs on the api-server profile (port 8643), not the default gateway.
-      - API_SERVER_ENABLED=false
       # browser-harness (browser_exec) control sockets. The default is under
       # $HOME, i.e. data/hermes (virtiofs). A socket there that outlives a
       # Docker VM restart (Docker Desktop quit/crash, Mac reboot) fails with
@@ -1375,6 +1387,11 @@ services:
       # Per-profile gateways and kept sessions on Hermes v0.22+. Runs before the
       # image's 02-reconcile-profiles. See the script header.
       - ./compose/hermes/019-pin-profile-gateways.sh:/etc/cont-init.d/019-pin-profile-gateways:ro
+      # 8643/8644 -> :8642/p/<profile>/ under HERMES_GATEWAY_TOPOLOGY=multiplex;
+      # an s6 longrun that stays down under standalone.
+      - ./compose/hermes/gateway-compat-proxy.py:/bootstrap/gateway-compat-proxy.py:ro
+      - ./compose/hermes/s6/gateway-compat-proxy:/etc/s6-overlay/s6-rc.d/gateway-compat-proxy:ro
+      - ./compose/hermes/s6/user-contents/gateway-compat-proxy:/etc/s6-overlay/s6-rc.d/user/contents.d/gateway-compat-proxy:ro
       # UID/GID remap without usermod's home-tree chown, which fails on the
       # virtiofs bind and aborts the image's 01-hermes-setup on a fresh
       # container. See the script header.

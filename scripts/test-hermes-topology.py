@@ -54,7 +54,9 @@ env = {**os.environ, "HERMES_HOME": str(home)}
 for _ in range(2):
     out = subprocess.run([sys.executable, "-c", body], env=env, capture_output=True, text=True)
     assert out.returncode == 0, out.stdout + out.stderr
-assert out.stdout == "", "second run changes nothing: " + out.stdout
+assert out.stdout == "[019-pin-profile-gateways] topology: standalone\n", "second run changes nothing: " + out.stdout
+assert not list(home.glob("profiles/*/gateway.parked")), "standalone parks nothing"
+assert not (home / "gateway_topology.json").exists()
 
 from hermes_yaml import safe_load
 cfg = lambda p: safe_load((p / "config.yaml").read_text())

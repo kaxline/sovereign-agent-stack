@@ -1548,14 +1548,31 @@ upsert_env "$PROFILE_ENV" "API_SERVER_PORT" "$API_PORT"
 
 remove_env_key "$PROFILE_ENV" "HERMES_MAX_ITERATIONS"
 
-# --- Disable API server on default profile ---
+# --- Default profile's API server, per gateway topology ---
+# Same resolution as compose/hermes/019-pin-profile-gateways.sh.
+GATEWAY_TOPOLOGY="$(printf '%s' "${HERMES_GATEWAY_TOPOLOGY:-}" | tr '[:upper:]' '[:lower:]')"
+if [ -z "$GATEWAY_TOPOLOGY" ]; then
+  case "$(printf '%s' "${HERMES_PIN_STANDALONE_GATEWAYS:-1}" | tr '[:upper:]' '[:lower:]')" in
+    0|false|no|off) GATEWAY_TOPOLOGY=multiplex ;;
+    *) GATEWAY_TOPOLOGY=standalone ;;
+  esac
+fi
 touch "$DEFAULT_ENV"
-upsert_env "$DEFAULT_ENV" "API_SERVER_ENABLED" "false"
-# Drop any leftover default-profile API_SERVER_KEY. Hermes WebUI loads
-# HERMES_HOME/.env via _reload_dotenv and overwrites container env; a stale
-# key here replaces the browser.env credential and every WebUI turn 401s.
-remove_env_key "$DEFAULT_ENV" "API_SERVER_KEY"
-remove_env_key "$DEFAULT_ENV" "API_SERVER_HOST"
+if [ "$GATEWAY_TOPOLOGY" = multiplex ]; then
+  # The default listener (8642) serves every profile at /p/<profile>/ and
+  # needs a key of its own; 019-pin-profile-gateways generates it. The WebUI
+  # keeps working because it prefers HERMES_WEBUI_GATEWAY_API_KEY over the
+  # API_SERVER_KEY its _reload_dotenv reads from here.
+  remove_env_key "$DEFAULT_ENV" "API_SERVER_ENABLED"
+  upsert_env "$DEFAULT_ENV" "API_SERVER_HOST" "0.0.0.0"
+else
+  upsert_env "$DEFAULT_ENV" "API_SERVER_ENABLED" "false"
+  # Drop any leftover default-profile API_SERVER_KEY. Hermes WebUI loads
+  # HERMES_HOME/.env via _reload_dotenv and overwrites container env; a stale
+  # key here replaces the browser.env credential and every WebUI turn 401s.
+  remove_env_key "$DEFAULT_ENV" "API_SERVER_KEY"
+  remove_env_key "$DEFAULT_ENV" "API_SERVER_HOST"
+fi
 remove_env_key "$DEFAULT_ENV" "API_SERVER_PORT"
 remove_env_key "$DEFAULT_ENV" "HERMES_MAX_ITERATIONS"
 

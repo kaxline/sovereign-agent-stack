@@ -19,13 +19,11 @@ source "$ROOT/scripts/lib/env.sh"
 tag="${1:?usage: $0 <agent-tag>}"
 image="nousresearch/hermes-agent:${tag}"
 
-pin="${HERMES_PIN_STANDALONE_GATEWAYS:-$(env_get HERMES_PIN_STANDALONE_GATEWAYS 1)}"
-case "$(printf '%s' "$pin" | tr '[:upper:]' '[:lower:]')" in
-  0 | false | no | off)
-    echo "check-hermes-standalone: HERMES_PIN_STANDALONE_GATEWAYS=${pin}, skipped"
-    exit 0
-    ;;
-esac
+topology="$(gateway_topology)"
+if [ "$topology" = multiplex ]; then
+  echo "check-hermes-standalone: gateway topology is multiplex, skipped"
+  exit 0
+fi
 
 docker image inspect "$image" >/dev/null 2>&1 || docker pull "$image"
 
@@ -38,8 +36,9 @@ fi
 
 cat >&2 <<EOF
 check-hermes-standalone: ${tag} no longer has hermes_cli.profiles.profile_is_standalone,
-so gateway.standalone is gone. This stack still pins it (HERMES_PIN_STANDALONE_GATEWAYS),
+so gateway.standalone is gone. This stack still pins it (HERMES_GATEWAY_TOPOLOGY=standalone),
 and on this image ports 8643 and 8644 would stop answering. Move to the multiplexed
-gateway first (docs/hermes.md), or stay on the current tag.
+gateway first (./scripts/gateway-topology.sh multiplex, docs/hermes.md), or stay
+on the current tag.
 EOF
 exit 1
