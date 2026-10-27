@@ -68,6 +68,11 @@ the stack under another app.
   `make mail-imap-test` now also covers TLS with `tls_ca`, STARTTLS, and the
   Keychain handoff through both mail apps, built against a throwaway keychain
   file (`MAIL_APPS_KEYCHAIN`, for tests).
+- docs/email.md's first run on a real IMAP account now starts from a
+  terminal with `password_env`, then checks the Keychain password through
+  the installed reader app. Before, it had you run `make mail-index-doctor`
+  after storing the password in the Keychain, which a terminal run can't
+  read.
 - **Messages MCP and alerts**: the bootstraps register `mcp_servers.messages`
   on the default and `browser` profiles, never `api-server`.
   `messages_triage_batch` is listed only on default. With

@@ -377,12 +377,32 @@ GreenMail, in the clear and over TLS with a certificate made for the test,
 and a small fake server for STARTTLS and the login methods. The Keychain
 handoff is tested through both apps with a throwaway keychain file, so the
 `install.sh password` prompt and your login keychain are left for your first
-run. To try a real account: add the password, run `make mail-index-doctor` with that
-account in the config, and check `accounts[].details_readable` equals
-`details_sampled`. `server_special_use` says whether Junk and Trash can be
-found by flag; if it's `false`, check `make mail-index-mailboxes` and name
-mailboxes exactly. Exit code 4 means the server refused the login or no
-password was found, and 5 means the server couldn't be reached.
+run. Try a real account from a terminal first, then move the password to
+the Keychain. A terminal run has no launcher, so it never sees Keychain
+passwords.
+
+1. Add the account to `mail-index.toml` with `password_env`, say
+   `password_env = "WORK_IMAP_PASSWORD"`, and set the variable for this
+   shell only: `read -rs WORK_IMAP_PASSWORD && export WORK_IMAP_PASSWORD`.
+2. `make mail-index-mailboxes`, then set `mailboxes` from the listing.
+   `special_use` shows which folders the server flags as Junk, Trash and
+   so on.
+3. `make mail-index-doctor`. Check `accounts[].details_readable` equals
+   `details_sampled`. `server_special_use` says whether Junk and Trash can
+   be found by flag; if it's `false`, name mailboxes exactly.
+4. `make mail-index`, then `unset WORK_IMAP_PASSWORD`.
+5. Remove `password_env` from the config. Build and install the reader
+   ([macOS apps](#macos-apps)), then `macos/mail-apps/install.sh password
+   work`.
+6. `launchctl kickstart gui/$(id -u)/local.assistant.mail-reader`, then
+   read `~/Library/Logs/assistant-mail/mail-reader.log`. A run that worked
+   logs counts. A missing or refused password logs a `mail-index:` line
+   naming the account, and
+   `launchctl print gui/$(id -u)/local.assistant.mail-reader` shows
+   `last exit code = 4`.
+
+Exit code 4 means the server refused the login or no password was found,
+and 5 means the server couldn't be reached.
 
 **Proton.** Run Proton Mail Bridge (a paid Proton plan) and point an account
 at it: `host = "127.0.0.1"`, `port = 1143`, `security = "starttls"`, the
