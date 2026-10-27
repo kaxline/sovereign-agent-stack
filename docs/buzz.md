@@ -199,7 +199,7 @@ HERMES_BUZZ_ENABLED=0
 make ensure-local
 ```
 
-Agent profile directories and private keys are left in place under `data/hermes/`.
+`make ensure-local` (or `./scripts/sync-buzz-profile.sh`) then sets `platforms.buzz.enabled` and `gateway.platforms.buzz.enabled` to `false` on each profile in `HERMES_BUZZ_PROFILES`, so the gateway stops starting their Buzz adapters. Recreate `hermes` to apply. Agent profile directories and private keys stay under `data/hermes/`, and `HERMES_BUZZ_ENABLED=1` turns the adapters back on.
 
 ## Verify
 

@@ -38,6 +38,13 @@ the stack under another app.
   is in [docs/extending.md](docs/extending.md#api-base-urls).
 - `POST /v1/mcp/servers/{name}/reconnect` wakes parked connections in the
   answering process at once and adds `woken` (their count) to the 202 body.
+- `HERMES_BUZZ_ENABLED=0` now turns Buzz off on the `HERMES_BUZZ_PROFILES`
+  agent profiles too (keys kept). Before, their adapters kept running and
+  retrying an absent relay, which under `multiplex` shares the process with
+  every profile.
+- WebUI turns can use `send_message` again (Signal delivery). Hermes v0.22
+  dropped it from `hermes-cli` on `api_server`; the browser bootstrap now
+  names it.
 - `make gateway-preflight` runs Hermes' multiplex migration preflight against
   a temporary copy of the Hermes home and changes nothing.
 - `make hermes-upgrade` refuses an agent tag that no longer supports

@@ -153,6 +153,33 @@ print(f"enabled gateway.platforms.buzz on {name} allow_all_users=true")
 PY
 }
 
+# Turn Buzz off on an agent profile without touching its keys: both
+# enabled flags that enable_buzz_on_profile_config sets go to false, so the
+# gateway stops starting the adapter (and retrying an absent relay).
+disable_buzz_on_agent_profile() {
+  local profile_name="$1"
+  [[ -f "data/hermes/profiles/${profile_name}/config.yaml" ]] || return 0
+
+  hermes_python "$profile_name" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, "/opt/hermes")
+from hermes_cli.config import read_user_config_raw
+from utils import atomic_roundtrip_yaml_update
+
+name = sys.argv[1]
+path = Path(f"/opt/data/profiles/{name}/config.yaml")
+data = read_user_config_raw(path)
+changed = []
+for key, node in (("gateway.platforms.buzz.enabled", ((data.get("gateway") or {}).get("platforms") or {}).get("buzz")),
+                  ("platforms.buzz.enabled", (data.get("platforms") or {}).get("buzz"))):
+    if isinstance(node, dict) and node.get("enabled") is not False:
+        atomic_roundtrip_yaml_update(path, key, False)
+        changed.append(key)
+print(f"disabled {', '.join(changed)} on {name}" if changed else f"Buzz already off on {name}")
+PY
+}
+
 clear_seeded_buzz_env() {
   local hermes_env="$1"
   [[ -f "$hermes_env" ]] || return 0
@@ -246,6 +273,14 @@ PY
     log "Buzz seeded for profile '${name}'"
   done
 else
-  # When disabled, do not strip private keys from agent profiles — only note.
-  log "HERMES_BUZZ_ENABLED=0 — Buzz left disabled on browser/api-server; agent profiles unchanged"
+  # When disabled, turn the adapter off on the agent profiles but keep their
+  # private keys, so HERMES_BUZZ_ENABLED=1 brings them back as they were.
+  profiles_csv="$(env_get HERMES_BUZZ_PROFILES)"
+  IFS=',' read -r -a buzz_profiles <<< "${profiles_csv// /}"
+  for name in "${buzz_profiles[@]}"; do
+    [[ -n "$name" ]] || continue
+    out="$(disable_buzz_on_agent_profile "$name")"
+    [[ -z "$out" ]] || log "$out"
+  done
+  log "HERMES_BUZZ_ENABLED=0 — Buzz off on browser/api-server and HERMES_BUZZ_PROFILES; keys kept"
 fi
