@@ -43,6 +43,17 @@ entry = registry.get_entry("send_message")
 assert entry is not None and entry.toolset == "send_message", entry
 assert "send_message" in toolsets.resolve_toolset("hermes-cli"), "core toolsets include send_message"
 
+# api_server runs keep only configurable toolsets when they expand hermes-cli,
+# so send_message reaches a WebUI turn only when the bootstrap names it.
+from hermes_cli.tools_config import _get_platform_tools
+plain = _get_platform_tools({"platform_toolsets": {"api_server": ["hermes-cli"]}}, "api_server",
+                            include_default_mcp_servers=False)
+named = _get_platform_tools({"platform_toolsets": {"api_server": ["hermes-cli", "send_message"]}}, "api_server",
+                            include_default_mcp_servers=False)
+assert "send_message" in named, sorted(named)
+if "send_message" in plain:
+    print("note: hermes-cli keeps send_message on api_server again; the bootstrap entry is redundant")
+
 pconfig = smt._signal_env_pconfig()
 assert pconfig.extra == {"http_url": "http://signal.example:8080", "account": "+15550100"}, pconfig.extra
 assert pconfig.home_channel.chat_id == "+15550101", pconfig.home_channel

@@ -74,6 +74,10 @@ async def sse(request):
     await resp.write_eof()
     return resp
 
+async def slow(request):
+    await asyncio.sleep(1.5)
+    return web.json_response({"ok": True})
+
 async def ws(request):
     sock = web.WebSocketResponse()
     await sock.prepare(request)
@@ -86,6 +90,7 @@ async def main():
     up.router.add_route("*", "/p/api-server/v1/echo", echo)
     up.router.add_get("/p/api-server/v1/runs/r1/events", sse)
     up.router.add_get("/p/api-server/v1/browser-control/ws", ws)
+    up.router.add_get("/p/api-server/health/detailed", slow)
     runner = web.AppRunner(up)
     await runner.setup()
     await web.TCPSite(runner, "127.0.0.1", 18642).start()
@@ -109,6 +114,21 @@ async def main():
             await sock.send_str("ping")
             msg = await asyncio.wait_for(sock.receive(), 5)
             assert msg.data == "echo:ping", msg
+        # A client that gives up first (the WebUI's 2 s health probe) is not a proxy error.
+        import logging
+        errors = []
+        class Grab(logging.Handler):
+            def emit(self, record):
+                if record.levelno >= logging.ERROR:
+                    errors.append(record.getMessage())
+        logging.getLogger("aiohttp").addHandler(Grab())
+        try:
+            await s.get("http://127.0.0.1:18643/health/detailed", timeout=__import__("aiohttp").ClientTimeout(total=0.3))
+            raise SystemExit("FAIL slow request did not time out")
+        except asyncio.TimeoutError:
+            pass
+        await asyncio.sleep(1.8)
+        assert not errors, errors
         async with s.get("http://127.0.0.1:18644/health") as r:
             assert r.status == 502, r.status
             assert (await r.json())["error"]["code"] == "gateway_unreachable"
