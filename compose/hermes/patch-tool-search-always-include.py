@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Honor tools.tool_search.always_include when classifying deferrable tools.
 
-Hermes v2026.9+ ignores that list. MCP tools (toolset mcp-*) always defer, so
-the model must tool_search → tool_describe → tool_call even for stack pins
-(SearXNG, LightRAG, OpenCode). This overlay keeps always_include names in the
-model-visible schema.
+Hermes v2026.9+ (still v0.22) ignores that list. MCP tools (toolset mcp-*)
+always defer, so the model must tool_search → tool_describe → tool_call even
+for stack pins (SearXNG, LightRAG, OpenCode). This overlay keeps
+always_include names in the model-visible schema, including names on the
+curated default defer list (e.g. session_search).
 """
 from __future__ import annotations
 
@@ -23,36 +24,13 @@ NEW_FIELD = '''    # None = curated default; an explicit list replaces it wholes
     always_include: frozenset = frozenset()
 '''
 
-OLD_FROM_RAW = '''        defer_raw = raw.get("defer")
-        return cls(
-            enabled=_tri_state(raw.get("enabled", "auto")),
-            threshold_pct=max(0.0, min(100.0, _safe_float(raw.get("threshold_pct"), 5.0))),
-            search_default_limit=_clamped_int(
-                raw.get("search_default_limit"), 5, 1, max_search_limit),
-            max_search_limit=max_search_limit,
-            listing=_tri_state(raw.get("listing", "auto")),
-            listing_max_tokens=_clamped_int(raw.get("listing_max_tokens"), 4000, 200, 60000),
-            defer_tools=(frozenset(str(n).strip() for n in defer_raw if str(n).strip())
+OLD_FROM_RAW = '''            defer_tools=(frozenset(str(n).strip() for n in defer_raw if str(n).strip())
                          if isinstance(defer_raw, (list, tuple, set)) else None))
 '''
 
-NEW_FROM_RAW = '''        defer_raw = raw.get("defer")
-        include_raw = raw.get("always_include")
-        always_include = (
-            frozenset(str(n).strip() for n in include_raw if str(n).strip())
-            if isinstance(include_raw, (list, tuple, set)) else frozenset()
-        )
-        return cls(
-            enabled=_tri_state(raw.get("enabled", "auto")),
-            threshold_pct=max(0.0, min(100.0, _safe_float(raw.get("threshold_pct"), 5.0))),
-            search_default_limit=_clamped_int(
-                raw.get("search_default_limit"), 5, 1, max_search_limit),
-            max_search_limit=max_search_limit,
-            listing=_tri_state(raw.get("listing", "auto")),
-            listing_max_tokens=_clamped_int(raw.get("listing_max_tokens"), 4000, 200, 60000),
-            defer_tools=(frozenset(str(n).strip() for n in defer_raw if str(n).strip())
+NEW_FROM_RAW = '''            defer_tools=(frozenset(str(n).strip() for n in defer_raw if str(n).strip())
                          if isinstance(defer_raw, (list, tuple, set)) else None),
-            always_include=always_include)
+            always_include=_always_include_from_raw(raw.get("always_include")))
 '''
 
 OLD_IS_DEFERRABLE = '''    if name in BRIDGE_TOOL_NAMES:
@@ -71,6 +49,13 @@ NEW_IS_DEFERRABLE = '''    if name in BRIDGE_TOOL_NAMES:
 '''
 
 HELPER = '''
+def _always_include_from_raw(include_raw) -> frozenset:
+    """assistant-stack: parse tools.tool_search.always_include (list of names)."""
+    if not isinstance(include_raw, (list, tuple, set)):
+        return frozenset()
+    return frozenset(str(n).strip() for n in include_raw if str(n).strip())
+
+
 def _always_include_names() -> frozenset:
     """assistant-stack: tools.tool_search.always_include (MCP pins stay eager)."""
     try:

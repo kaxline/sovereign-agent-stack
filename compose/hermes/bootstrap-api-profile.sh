@@ -88,6 +88,8 @@ MESSAGES_WEBHOOK_PORT="${MESSAGES_WEBHOOK_PORT:-8646}"
 LLM_BINDING_HOST="${LLM_BINDING_HOST:-http://host.docker.internal:1234/v1}"
 # Empty = 300s for a local upstream, 180s for a cloud one.
 PROXY_STALE_TIMEOUT="${HERMES_PROXY_STALE_TIMEOUT:-}"
+# model.max_tokens for every profile on the proxy that has none. 0 = leave unset.
+MODEL_MAX_TOKENS="${HERMES_MAX_TOKENS:-16384}"
 # auto = off for a local upstream, on for a cloud one. 0/1 force it.
 BROWSER_AUTO_TITLE="${HERMES_BROWSER_AUTO_TITLE:-auto}"
 
@@ -169,7 +171,12 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, "/opt/hermes")
-import yaml
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import sys as _sys
+    _sys.path.insert(0, "/opt/hermes")
+    import hermes_yaml as yaml
 from utils import atomic_yaml_write
 
 cfg_path, dotted = sys.argv[1], sys.argv[2]
@@ -229,7 +236,12 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, "/opt/hermes")
-import yaml
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import sys as _sys
+    _sys.path.insert(0, "/opt/hermes")
+    import hermes_yaml as yaml
 from utils import atomic_yaml_write
 
 cfg_path, dotted = sys.argv[1], sys.argv[2]
@@ -326,6 +338,29 @@ hermes_config_set() {
   fi
 }
 
+# True when a profile's config.yaml has a non-null value at a dotted key.
+config_has_value() {
+  python3 - "$(config_path_for "$1")" "$2" <<'PY'
+import sys
+
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import sys as _sys
+    _sys.path.insert(0, "/opt/hermes")
+    import hermes_yaml as yaml
+
+try:
+    with open(sys.argv[1]) as fh:
+        node = yaml.safe_load(fh) or {}
+except FileNotFoundError:
+    raise SystemExit(1)
+for part in sys.argv[2].split("."):
+    node = node.get(part) if isinstance(node, dict) else None
+raise SystemExit(0 if node is not None else 1)
+PY
+}
+
 # bot_desktop.placement=auto can start the browser on the SSH backend, which
 # has no Node or browser. gateway keeps it in this container. If the CLI
 # rejects the key, write the YAML and continue.
@@ -345,7 +380,12 @@ set_bot_desktop_placement() {
 import sys
 from pathlib import Path
 
-import yaml
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import sys as _sys
+    _sys.path.insert(0, "/opt/hermes")
+    import hermes_yaml as yaml
 from utils import atomic_yaml_write
 
 path = Path(sys.argv[1])
@@ -383,7 +423,12 @@ configure_terminal_ssh() {
 import sys
 from pathlib import Path
 
-import yaml
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import sys as _sys
+    _sys.path.insert(0, "/opt/hermes")
+    import hermes_yaml as yaml
 from utils import atomic_yaml_write
 
 path = Path(sys.argv[1])
@@ -411,7 +456,12 @@ configure_terminal_local() {
 import sys
 from pathlib import Path
 
-import yaml
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import sys as _sys
+    _sys.path.insert(0, "/opt/hermes")
+    import hermes_yaml as yaml
 from utils import atomic_yaml_write
 
 path = Path(sys.argv[1])
@@ -458,13 +508,21 @@ apply_terminal_backend_all_profiles() {
 
 # Model calls go to llm-proxy. The placeholder is not a secret. The real
 # key stays on the proxy. Same profile sweep as the SSH backend. Every
-# profile on the proxy also gets the stale-stream timeout sized below.
+# profile on the proxy also gets the stale-stream timeout sized below, and an
+# output cap unless it already has one (browser keeps its 1024).
 configure_model_proxy() {
   _cmp_profile="$1"
   log "Model proxy for profile '${_cmp_profile:-default}'"
   hermes_config_set "$_cmp_profile" model.base_url http://llm-proxy:4000/v1
   hermes_config_set "$_cmp_profile" model.api_key local-llm
   hermes_config_set "$_cmp_profile" agent.local_stream_stale_timeout "$STALE_TIMEOUT"
+  if [ "$MODEL_MAX_TOKENS" != "0" ]; then
+    if config_has_value "$_cmp_profile" model.max_tokens; then
+      log "model.max_tokens already set on '${_cmp_profile:-default}'; keeping it"
+    else
+      hermes_config_set "$_cmp_profile" model.max_tokens "$MODEL_MAX_TOKENS"
+    fi
+  fi
 }
 
 apply_model_proxy_all_profiles() {
@@ -529,7 +587,12 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, "/opt/hermes")
-import yaml
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import sys as _sys
+    _sys.path.insert(0, "/opt/hermes")
+    import hermes_yaml as yaml
 from utils import atomic_yaml_write
 
 cfg_path = Path(sys.argv[1])
@@ -704,7 +767,12 @@ drop_unfiltered_mcp_duplicate() {
   _out="$(python3 - "$(config_path_for "$_dup_profile")" "$2" "$3" "$4" <<'PY'
 import sys
 sys.path.insert(0, "/opt/hermes")
-import yaml
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import sys as _sys
+    _sys.path.insert(0, "/opt/hermes")
+    import hermes_yaml as yaml
 from utils import atomic_yaml_write
 
 cfg_path, keep_key, drop_key, url = sys.argv[1:5]
@@ -796,7 +864,12 @@ drop_mcp_entries_for_url() {
   _out="$(python3 - "$(config_path_for "$1")" "$2" "$3" <<'PY'
 import sys
 sys.path.insert(0, "/opt/hermes")
-import yaml
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import sys as _sys
+    _sys.path.insert(0, "/opt/hermes")
+    import hermes_yaml as yaml
 from utils import atomic_yaml_write
 
 cfg_path, keep_key, url = sys.argv[1:4]
@@ -927,7 +1000,12 @@ register_vikunja_mcp_servers() {
     "$VIKUNJA_MCP_TIMEOUT" "$VIKUNJA_MCP_CONNECT_TIMEOUT" <<'PY'
 import sys
 sys.path.insert(0, "/opt/hermes")
-import yaml
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import sys as _sys
+    _sys.path.insert(0, "/opt/hermes")
+    import hermes_yaml as yaml
 from utils import atomic_yaml_write
 
 cfg_path, key, url, timeout, connect_timeout = sys.argv[1:6]
@@ -1156,7 +1234,12 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, "/opt/hermes")
-import yaml
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import sys as _sys
+    _sys.path.insert(0, "/opt/hermes")
+    import hermes_yaml as yaml
 from utils import atomic_yaml_write
 
 MAIL_URLS = ("mail-mcp:8000", "mail-drafts-mcp:8000", "messages-mcp:8000")
@@ -1248,7 +1331,12 @@ register_caldav_account() {
     "$_rca_timeout" "$_rca_connect" "$@" <<'PY'
 import sys
 sys.path.insert(0, "/opt/hermes")
-import yaml
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import sys as _sys
+    _sys.path.insert(0, "/opt/hermes")
+    import hermes_yaml as yaml
 from utils import atomic_yaml_write
 
 cfg_path, key, mcp_url, caldav_url, username, password_ref, timeout, connect_timeout = sys.argv[1:9]
@@ -1293,6 +1381,14 @@ PY
     pin_mcp_tools "$_rca_profile" "$_rca_key" "$@"
   fi
 }
+# Drop caldav-* entries whose account file is gone, and their password key.
+#
+# Only caldav-* entries are ours. Clients register their own CalDAV entries
+# through the Hermes gateway (mcp.servers.add) under another prefix, at the
+# same caldav-mcp URL: Boundary uses calendar-<slug> with BOUNDARY_CALENDAR_*
+# keys (docs/calendar.md). Never match by URL here, as drop_mcp_entries_for_url
+# does for other services: every one of those entries would go with ours.
+#
 # Usage: reconcile_caldav_accounts <profile> <slug...>
 reconcile_caldav_accounts() {
   _rec_profile="$1"
@@ -1301,7 +1397,12 @@ reconcile_caldav_accounts() {
   _out="$(python3 - "$_rec_cfg" "$@" <<'PY'
 import sys
 sys.path.insert(0, "/opt/hermes")
-import yaml
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import sys as _sys
+    _sys.path.insert(0, "/opt/hermes")
+    import hermes_yaml as yaml
 from utils import atomic_yaml_write
 
 cfg_path = sys.argv[1]
@@ -1354,6 +1455,8 @@ PY
 
 # Discover compose/caldav-mcp/accounts/*.env and register each as caldav-<slug>.
 # api-server gets the read-only allowlist; default and browser get all tools.
+# With CALDAV_MCP_ENABLED unset this touches nothing, including entries other
+# clients registered (see reconcile_caldav_accounts).
 register_caldav_mcp_servers() {
   _rcms_profile="$1"
   case "$CALDAV_MCP_ENABLED" in
@@ -1584,14 +1687,31 @@ upsert_env "$PROFILE_ENV" "API_SERVER_PORT" "$API_PORT"
 
 remove_env_key "$PROFILE_ENV" "HERMES_MAX_ITERATIONS"
 
-# --- Disable API server on default profile ---
+# --- Default profile's API server, per gateway topology ---
+# Same resolution as compose/hermes/019-pin-profile-gateways.sh.
+GATEWAY_TOPOLOGY="$(printf '%s' "${HERMES_GATEWAY_TOPOLOGY:-}" | tr '[:upper:]' '[:lower:]')"
+if [ -z "$GATEWAY_TOPOLOGY" ]; then
+  case "$(printf '%s' "${HERMES_PIN_STANDALONE_GATEWAYS:-1}" | tr '[:upper:]' '[:lower:]')" in
+    0|false|no|off) GATEWAY_TOPOLOGY=multiplex ;;
+    *) GATEWAY_TOPOLOGY=standalone ;;
+  esac
+fi
 touch "$DEFAULT_ENV"
-upsert_env "$DEFAULT_ENV" "API_SERVER_ENABLED" "false"
-# Drop any leftover default-profile API_SERVER_KEY. Hermes WebUI loads
-# HERMES_HOME/.env via _reload_dotenv and overwrites container env; a stale
-# key here replaces the browser.env credential and every WebUI turn 401s.
-remove_env_key "$DEFAULT_ENV" "API_SERVER_KEY"
-remove_env_key "$DEFAULT_ENV" "API_SERVER_HOST"
+if [ "$GATEWAY_TOPOLOGY" = multiplex ]; then
+  # The default listener (8642) serves every profile at /p/<profile>/ and
+  # needs a key of its own; 019-pin-profile-gateways generates it. The WebUI
+  # keeps working because it prefers HERMES_WEBUI_GATEWAY_API_KEY over the
+  # API_SERVER_KEY its _reload_dotenv reads from here.
+  remove_env_key "$DEFAULT_ENV" "API_SERVER_ENABLED"
+  upsert_env "$DEFAULT_ENV" "API_SERVER_HOST" "0.0.0.0"
+else
+  upsert_env "$DEFAULT_ENV" "API_SERVER_ENABLED" "false"
+  # Drop any leftover default-profile API_SERVER_KEY. Hermes WebUI loads
+  # HERMES_HOME/.env via _reload_dotenv and overwrites container env; a stale
+  # key here replaces the browser.env credential and every WebUI turn 401s.
+  remove_env_key "$DEFAULT_ENV" "API_SERVER_KEY"
+  remove_env_key "$DEFAULT_ENV" "API_SERVER_HOST"
+fi
 remove_env_key "$DEFAULT_ENV" "API_SERVER_PORT"
 remove_env_key "$DEFAULT_ENV" "HERMES_MAX_ITERATIONS"
 
@@ -1601,9 +1721,16 @@ remove_env_key "$DEFAULT_ENV" "HERMES_MAX_ITERATIONS"
 # search loops. Interactive profiles pass HERMES_API_TOOLSET=hermes-cli to get
 # those back; clarify turns an ambiguous browser request into a question instead
 # of a guess, and there is a human present to answer it.
+# Since v0.22, api_server runs keep only the configurable toolsets when they
+# expand hermes-cli, which drops send_message (patch-send-message-tool.py
+# registers it under its own toolset). Name it explicitly so WebUI turns can
+# still deliver to Signal.
 log "Setting agent.max_turns=${MAX_TURNS} and ${API_TOOLSET} toolset for api_server platform"
 hermes -p "$PROFILE" config set "agent.max_turns" "$MAX_TURNS"
 set_yaml_list "$(config_path_for "$PROFILE")" "platform_toolsets.api_server" "$API_TOOLSET"
+if [ "$API_TOOLSET" = hermes-cli ]; then
+  ensure_yaml_list_items "$(config_path_for "$PROFILE")" "platform_toolsets.api_server" send_message
+fi
 
 # The built-in `todo` toolset is in-memory per chat session. WebUI users treat
 # "add to the todo list" as durable; the model then reports an empty list in the
@@ -1649,8 +1776,8 @@ if [ "$PROFILE" = "browser" ]; then
 fi
 
 # Hermes treats the dotless llm-proxy host as local whatever sits behind it,
-# so every profile gets agent.local_stream_stale_timeout (900s by default)
-# even for a cloud model. Size it for the real upstream instead.
+# so Hermes gives every profile its local stale-stream timeout (900s) even
+# for a cloud model. Size it for the real upstream instead.
 if upstream_is_local "$LLM_BINDING_HOST"; then
   UPSTREAM_KIND=local
   STALE_DEFAULT=300
@@ -1737,7 +1864,12 @@ if [ "$PROFILE" = "browser" ]; then
 import sys
 from pathlib import Path
 
-import yaml
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import sys as _sys
+    _sys.path.insert(0, "/opt/hermes")
+    import hermes_yaml as yaml
 
 path = Path(sys.argv[1])
 data = yaml.safe_load(path.read_text()) or {}

@@ -1,29 +1,26 @@
 # Terminal backend. ssh (default) adds hermes-worker and keeps workspace mounts
-# off this file's hermes service. local puts those mounts on hermes and does
-# not define the worker. Paths inside the fragment stay relative to the repo.
+# off hermes. local puts those mounts on hermes and does not define the worker.
+# The hermes half of each backend is in docker-compose.hermes-terminal.yml.
+# Paths inside the fragment stay relative to the repo.
 include:
   - path: ./compose/hermes/terminal-${HERMES_TERMINAL_BACKEND:-ssh}.yml
     project_directory: .
 
 x-n8n: &service-n8n
-  image: ${N8N_IMAGE:-n8nio/n8n:1.107.4}
+  image: ${N8N_IMAGE:-n8nio/n8n:2.43.7}
   # Allowlist. The root .env stays on the host for Compose interpolation and
-  # is not mounted into the container.
-  environment:
-    - DB_TYPE=postgresdb
-    - DB_POSTGRESDB_HOST=postgres
-    - DB_POSTGRESDB_USER=${POSTGRES_USER}
-    - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
-    - DB_POSTGRESDB_DATABASE=${POSTGRES_DB}
-    - N8N_DIAGNOSTICS_ENABLED=false
-    - N8N_PERSONALIZATION_ENABLED=false
-    - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:?set N8N_ENCRYPTION_KEY in .env}
-    - N8N_USER_MANAGEMENT_JWT_SECRET=${N8N_USER_MANAGEMENT_JWT_SECRET:?set N8N_USER_MANAGEMENT_JWT_SECRET in .env}
-    - N8N_DEFAULT_BINARY_DATA_MODE=filesystem
-    - LIGHTRAG_URL=http://lightrag:9621
-    - NEO4J_HTTP_URL=http://neo4j:7474
-    - SEARXNG_URL=http://searxng:8080
-    - GPTR_URL=http://gpt-researcher:8000
+  # is not mounted into the container. A mapping, so a service that adds keys
+  # merges it with `<<: *n8n-env` instead of replacing it.
+  environment: &n8n-env
+    DB_TYPE: sqlite
+    N8N_DIAGNOSTICS_ENABLED: "false"
+    N8N_PERSONALIZATION_ENABLED: "false"
+    N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?set N8N_ENCRYPTION_KEY in .env}
+    N8N_USER_MANAGEMENT_JWT_SECRET: ${N8N_USER_MANAGEMENT_JWT_SECRET:?set N8N_USER_MANAGEMENT_JWT_SECRET in .env}
+    N8N_DEFAULT_BINARY_DATA_MODE: filesystem
+    LIGHTRAG_URL: http://lightrag:9621
+    NEO4J_HTTP_URL: http://neo4j:7474
+    SEARXNG_URL: http://searxng:8080
 
 # Profiles that start the shared Postgres (postgres-db, db-provision, and the
 # two SQL MCP sidecars). An integration that keeps data there appends its own
@@ -50,7 +47,7 @@ x-sql-mcp: &service-sql-mcp
 
 x-gptr: &gptr-env
   RETRIEVER: searx
-  SEARX_URL: http://searxng:8080/
+  SEARX_URL: ${WEB_SEARCH_URL:-http://searxng:8080}/
   # Placeholder only. The real key stays on llm-proxy.
   OPENAI_API_KEY: local-llm
   OPENAI_BASE_URL: http://llm-proxy:4000/v1
@@ -102,6 +99,10 @@ services:
       # Longest silent gap in a streamed body before the proxy drops it.
       # Empty means LLM_TIMEOUT.
       - LLM_STREAM_IDLE_TIMEOUT=${LLM_STREAM_IDLE_TIMEOUT:-}
+      # Longest one request may take, start to finish. 0 = no limit.
+      - LLM_STREAM_MAX_SECONDS=${LLM_STREAM_MAX_SECONDS:-3600}
+      # max_tokens added to chat/completions requests that set no limit. 0 = off.
+      - LLM_DEFAULT_MAX_TOKENS=${LLM_DEFAULT_MAX_TOKENS:-16384}
     ports:
       # Admin only. Inference stays on the compose network.
       - "127.0.0.1:${LLM_PROXY_ADMIN_PORT:-4001}:4001"
@@ -124,7 +125,7 @@ services:
     container_name: ${CONTAINER_PREFIX:-}lightrag
     # Published image, unpatched. LIGHTRAG_BASE_IMAGE is the old name, kept so
     # an existing .env still pins the same tag.
-    image: ${LIGHTRAG_IMAGE:-${LIGHTRAG_BASE_IMAGE:-ghcr.io/hkuds/lightrag:v1.4.9.3}}
+    image: ${LIGHTRAG_IMAGE:-${LIGHTRAG_BASE_IMAGE:-ghcr.io/hkuds/lightrag:v1.5.7}}
     ports:
       - "127.0.0.1:${PORT:-9621}:9621"
     # Allowlist of what LightRAG reads. Optional storage backends stay unset
@@ -268,7 +269,7 @@ services:
   searxng:
     profiles: ["core"]
     container_name: ${CONTAINER_PREFIX:-}searxng
-    image: ${SEARXNG_IMAGE:-docker.io/searxng/searxng:2026.8.11-e8e710e42}
+    image: ${SEARXNG_IMAGE:-docker.io/searxng/searxng:2026.10.24-ef0ec03da}
     restart: unless-stopped
     ports:
       - "127.0.0.1:${SEARXNG_PORT:-8080}:8080"
@@ -286,6 +287,40 @@ services:
       start_period: 20s
 
   # ----------------------------------------------------------------------
+  # search-gate — paces searches to one SearXNG engine at a time
+  # Profile: search-gate (opt-in; also set WEB_SEARCH_URL, see docs/searxng.md)
+  # API:     http://search-gate:8080   (compose-internal only)
+  # Vendored from lead-gen; local changes are listed in search_gate.py.
+  # ----------------------------------------------------------------------
+  search-gate:
+    profiles: ["search-gate"]
+    container_name: ${CONTAINER_PREFIX:-}search-gate
+    build:
+      context: ./compose/search-gate
+    image: ${IMAGE_PREFIX:-assistant}-search-gate:local
+    restart: unless-stopped
+    environment:
+      - SEARXNG_URL=http://searxng:8080
+      - SEARCH_GATE_ENGINES=${SEARCH_GATE_ENGINES:-bing:10,google cse:20}
+      - SEARCH_GATE_MAX_WAIT=${SEARCH_GATE_MAX_WAIT:-15}
+      - SEARCH_GATE_TTL=${SEARCH_GATE_TTL:-86400}
+      - SEARCH_GATE_EMPTY_TTL=${SEARCH_GATE_EMPTY_TTL:-3600}
+      - SEARCH_GATE_DB=/data/gate.sqlite3
+      - SEARCH_GATE_PORT=8080
+    volumes:
+      # Cached queries come from chat; treat this volume as session content
+      - search_gate_data:/data
+    depends_on:
+      searxng:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+  # ----------------------------------------------------------------------
   # mcp-searxng — MCP adapter for OpenCode / Hermes web search
   # Profile: core
   # MCP:     http://mcp-searxng:3000/mcp   (compose-internal only)
@@ -293,10 +328,13 @@ services:
   mcp-searxng:
     profiles: ["core"]
     container_name: ${CONTAINER_PREFIX:-}mcp-searxng
-    image: ${MCP_SEARXNG_IMAGE:-isokoliuk/mcp-searxng:1.15.0}
+    image: ${MCP_SEARXNG_IMAGE:-isokoliuk/mcp-searxng:2.7.0}
     restart: unless-stopped
     environment:
-      - SEARXNG_URL=http://searxng:8080
+      - SEARXNG_URL=${WEB_SEARCH_URL:-http://searxng:8080}
+      # Above the gate's SEARCH_GATE_MAX_WAIT, so a held search is answered
+      # by the gate rather than cut off here. Image default is 10000.
+      - SEARXNG_TIMEOUT_MS=${SEARXNG_TIMEOUT_MS:-20000}
       - MCP_HTTP_PORT=3000
       # Image default is 127.0.0.1 (breaking change from v1.2.1); other
       # compose services (Hermes, OpenCode) need the Docker network interface.
@@ -304,6 +342,9 @@ services:
     depends_on:
       searxng:
         condition: service_healthy
+      search-gate:
+        condition: service_healthy
+        required: false
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/health || exit 1"]
       interval: 15s
@@ -317,11 +358,16 @@ services:
   # MCP:     http://caldav-mcp:8080/mcp   (compose-internal only)
   # Upstream: https://github.com/gelse/caldav-mcp
   # Accounts: compose/caldav-mcp/accounts/<slug>.env (registered by bootstrap)
+  # Built from upstream's v0.1.1 commit with upstream's Dockerfile: the
+  # published ghcr image is linux/amd64 only, and a local build is native on
+  # Apple Silicon. Moving versions means changing the commit and the tag below.
   # ----------------------------------------------------------------------
   caldav-mcp:
     profiles: ["calendar"]
     container_name: ${CONTAINER_PREFIX:-}caldav-mcp
-    image: ${CALDAV_MCP_IMAGE:-ghcr.io/gelse/caldav-mcp:v0.1.0}
+    build:
+      context: https://github.com/gelse/caldav-mcp.git#ce880c5ed93f1435b4f63f33afb584b3ffea2815
+    image: ${IMAGE_PREFIX:-assistant}-caldav-mcp:0.1.1
     restart: unless-stopped
     environment:
       - CALDAV_MCP_PORT=8080
@@ -511,7 +557,7 @@ services:
   vikunja-proxy:
     profiles: ["todo"]
     container_name: ${CONTAINER_PREFIX:-}vikunja-proxy
-    image: ${VIKUNJA_PROXY_IMAGE:-nginx:1.29.1-alpine}
+    image: ${VIKUNJA_PROXY_IMAGE:-nginx:1.30.6-alpine}
     restart: unless-stopped
     ports:
       - "127.0.0.1:${VIKUNJA_PORT:-3456}:8080"
@@ -562,6 +608,9 @@ services:
       searxng:
         condition: service_healthy
         required: false
+      search-gate:
+        condition: service_healthy
+        required: false
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8000/ >/dev/null || exit 1"]
       interval: 30s
@@ -591,6 +640,9 @@ services:
       searxng:
         condition: service_healthy
         required: false
+      search-gate:
+        condition: service_healthy
+        required: false
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8000/health || exit 1"]
       interval: 30s
@@ -599,11 +651,14 @@ services:
       start_period: 40s
 
   # ----------------------------------------------------------------------
-  # Postgres — n8n metadata store (workflows, credentials, execution history)
-  # Profile: automation
+  # postgres — deprecated. n8n never read it: n8n has always stored its data
+  # in SQLite on n8n_storage. No profile starts it. It stays defined so
+  # downstream overlays that override it still parse, and so the old
+  # postgres_storage data can be inspected with --profile n8n-postgres-legacy.
+  # Will be removed in a later release. docs/n8n.md#upgrading-an-existing-install
   # ----------------------------------------------------------------------
   postgres:
-    profiles: ["automation"]
+    profiles: ["n8n-postgres-legacy"]
     container_name: ${CONTAINER_PREFIX:-}n8n-postgres
     image: ${POSTGRES_IMAGE:-postgres:16-alpine}
     restart: unless-stopped
@@ -614,7 +669,7 @@ services:
     volumes:
       - postgres_storage:/var/lib/postgresql/data
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -h localhost -U ${POSTGRES_USER} -d ${POSTGRES_DB}']
+      test: ['CMD-SHELL', 'pg_isready -h localhost -U ${POSTGRES_USER:-n8n} -d ${POSTGRES_DB:-n8n}']
       interval: 5s
       timeout: 5s
       retries: 10
@@ -625,7 +680,7 @@ services:
   # One database (DB_NAME, default assistant), one schema per owner:
   #   agent      agent_rw writes, agent_ro reads
   #   <slug>     svc_<slug> writes (compose/postgres/services/<slug>.env)
-  # Not n8n's database: that is `postgres` above (automation profile).
+  # Not n8n's database: n8n uses SQLite on n8n_storage.
   # No host port. Data: DB_DATA_DIR (default ./data/db). docs/database.md
   # ----------------------------------------------------------------------
   postgres-db:
@@ -704,6 +759,9 @@ services:
   # ----------------------------------------------------------------------
   # n8n-import — one-shot seed of demo credentials + workflows (starter-kit pattern)
   # Profile: automation
+  # Seeds only when n8n's SQLite database does not exist yet, so it never
+  # opens a database a running n8n holds. It must mount the same
+  # /home/node/.n8n as n8n; an overlay that rebinds one must rebind both.
   # ----------------------------------------------------------------------
   n8n-import:
     <<: *service-n8n
@@ -712,11 +770,9 @@ services:
     entrypoint: /bin/sh
     command: /scripts/import-demo-data.sh
     volumes:
+      - n8n_storage:/home/node/.n8n
       - ./n8n/demo-data:/demo-data
       - ./n8n/import-demo-data.sh:/scripts/import-demo-data.sh:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
 
   # ----------------------------------------------------------------------
   # n8n — workflow automation UI
@@ -730,25 +786,21 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:${N8N_HOST_PORT:-5678}:5678"
-    # This list replaces the anchor environment, so the secrets and the
-    # workflow URL are repeated here. The anchor still feeds n8n-import.
+    # Merges the anchor environment; keys here add to it or override it.
+    # Don't turn this back into a list: a list replaces the anchor's keys.
     environment:
-      - N8N_HOST=localhost
-      - N8N_PORT=5678
-      - N8N_PROTOCOL=http
-      - WEBHOOK_URL=http://localhost:${N8N_HOST_PORT:-5678}/
-      - N8N_RESTRICT_FILE_ACCESS_TO=/data/shared
-      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:?set N8N_ENCRYPTION_KEY in .env}
-      - N8N_USER_MANAGEMENT_JWT_SECRET=${N8N_USER_MANAGEMENT_JWT_SECRET:?set N8N_USER_MANAGEMENT_JWT_SECRET in .env}
-      - N8N_DEFAULT_BINARY_DATA_MODE=${N8N_DEFAULT_BINARY_DATA_MODE:-filesystem}
-      - GPTR_URL=${GPTR_URL:-http://gpt-researcher:8000}
+      <<: *n8n-env
+      N8N_HOST: localhost
+      N8N_PORT: "5678"
+      N8N_PROTOCOL: http
+      WEBHOOK_URL: http://localhost:${N8N_HOST_PORT:-5678}/
+      N8N_RESTRICT_FILE_ACCESS_TO: /data/shared
+      N8N_DEFAULT_BINARY_DATA_MODE: ${N8N_DEFAULT_BINARY_DATA_MODE:-filesystem}
     volumes:
       - n8n_storage:/home/node/.n8n
       - ./n8n/demo-data:/demo-data
       - ${ASSISTANT_DATA_ROOT:-./data}/inputs:/data/shared:ro
     depends_on:
-      postgres:
-        condition: service_healthy
       n8n-import:
         condition: service_completed_successfully
       neo4j:
@@ -865,7 +917,7 @@ services:
   ollama:
     profiles: ["ollama"]
     container_name: ${CONTAINER_PREFIX:-}ollama
-    image: ${OLLAMA_IMAGE:-ollama/ollama:0.11.11}
+    image: ${OLLAMA_IMAGE:-ollama/ollama:0.40.11}
     restart: unless-stopped
     ports:
       - "127.0.0.1:${OLLAMA_HOST_PORT:-11434}:11434"
@@ -882,7 +934,7 @@ services:
   #   docker compose --profile ollama run --rm ollama-pull
   ollama-pull:
     profiles: ["ollama"]
-    image: ${OLLAMA_IMAGE:-ollama/ollama:0.11.11}
+    image: ${OLLAMA_IMAGE:-ollama/ollama:0.40.11}
     container_name: ${CONTAINER_PREFIX:-}ollama-pull
     restart: "no"
     environment:
@@ -915,7 +967,7 @@ services:
   signal-cli:
     profiles: ["signal"]
     container_name: ${CONTAINER_PREFIX:-}signal-cli
-    image: ${SIGNAL_CLI_IMAGE:-registry.gitlab.com/packaging/signal-cli/signal-cli-jre:v0-14-7-2}
+    image: ${SIGNAL_CLI_IMAGE:-registry.gitlab.com/packaging/signal-cli/signal-cli-jre:v0-14-9-2}
     restart: unless-stopped
     # Match the Mac/Linux user that owns SIGNAL_CLI_DATA_DIR.
     # scripts/sync-signal-profile.sh sets these from `id -u` / `id -g` when enabling.
@@ -966,7 +1018,7 @@ services:
   # ----------------------------------------------------------------------
   hermes-api-bootstrap:
     profiles: ["core"]
-    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v2026.9.14}
+    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v0.22.5}
     restart: "no"
     user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
     environment:
@@ -977,6 +1029,10 @@ services:
       - HERMES_API_PROFILE_NAME=${HERMES_API_PROFILE_NAME:-api-server}
       - HERMES_API_MAX_TURNS=${HERMES_API_MAX_TURNS:-20}
       - HERMES_API_SERVER_PORT=${HERMES_API_SERVER_PORT:-8643}
+      # Gateway topology (019-pin-profile-gateways.sh); decides what the default
+      # profile's .env keeps for its API server.
+      - HERMES_GATEWAY_TOPOLOGY=${HERMES_GATEWAY_TOPOLOGY:-}
+      - HERMES_PIN_STANDALONE_GATEWAYS=${HERMES_PIN_STANDALONE_GATEWAYS:-1}
       # Unattended one-shots must not distill themselves into USER.md.
       - HERMES_MEMORY_NUDGE_INTERVAL=${HERMES_API_MEMORY_NUDGE_INTERVAL:-10}
       # Web-reading MCP sidecar registered on both Hermes profiles.
@@ -1028,6 +1084,7 @@ services:
       # Upstream URL only (no key), to size the stale-stream timeout.
       - LLM_BINDING_HOST=${LLM_BINDING_HOST:-http://host.docker.internal:1234/v1}
       - HERMES_PROXY_STALE_TIMEOUT=${HERMES_PROXY_STALE_TIMEOUT:-}
+      - HERMES_MAX_TOKENS=${HERMES_MAX_TOKENS:-16384}
     volumes:
       - ./data/hermes:/opt/data
       - ./compose/hermes/api-server.env:/bootstrap/api-server.env:ro
@@ -1044,7 +1101,7 @@ services:
   # at http://hermes:8644.
   hermes-browser-bootstrap:
     profiles: ["core"]
-    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v2026.9.14}
+    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v0.22.5}
     restart: "no"
     user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
     environment:
@@ -1057,6 +1114,10 @@ services:
       # unattended cap would only truncate useful work mid-task.
       - HERMES_API_MAX_TURNS=${HERMES_BROWSER_MAX_TURNS:-60}
       - HERMES_API_SERVER_PORT=${HERMES_BROWSER_API_PORT:-8644}
+      # Gateway topology (019-pin-profile-gateways.sh); decides what the default
+      # profile's .env keeps for its API server.
+      - HERMES_GATEWAY_TOPOLOGY=${HERMES_GATEWAY_TOPOLOGY:-}
+      - HERMES_PIN_STANDALONE_GATEWAYS=${HERMES_PIN_STANDALONE_GATEWAYS:-1}
       # Interactive chat: background memory review every N user turns. Default 10
       # keeps a single local LM Studio slot free for foreground chat; the old
       # value of 3 fired on turn 3/6 and often raced the user's next message.
@@ -1111,6 +1172,7 @@ services:
       # decide whether auto-title may compete with the reply.
       - LLM_BINDING_HOST=${LLM_BINDING_HOST:-http://host.docker.internal:1234/v1}
       - HERMES_PROXY_STALE_TIMEOUT=${HERMES_PROXY_STALE_TIMEOUT:-}
+      - HERMES_MAX_TOKENS=${HERMES_MAX_TOKENS:-16384}
       - HERMES_BROWSER_AUTO_TITLE=${HERMES_BROWSER_AUTO_TITLE:-auto}
     volumes:
       - ./data/hermes:/opt/data
@@ -1123,13 +1185,16 @@ services:
     entrypoint: /bin/sh
     command: /bootstrap/bootstrap-api-profile.sh
 
-  # hermes-worker, its depends_on, and the workspace mounts are in
-  # compose/hermes/terminal-ssh.yml or terminal-local.yml.
+  # hermes-worker is in compose/hermes/terminal-ssh.yml. The worker
+  # depends_on and the workspace mounts come from extends below.
 
   hermes:
+    extends:
+      file: ./docker-compose.hermes-terminal.yml
+      service: hermes-${HERMES_TERMINAL_BACKEND:-ssh}
     profiles: ["core"]
     container_name: ${CONTAINER_PREFIX:-}hermes
-    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v2026.9.14}
+    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v0.22.5}
     restart: unless-stopped
     command: ["gateway", "run"]
     ports:
@@ -1155,6 +1220,18 @@ services:
       - HERMES_STREAM_RETRIES=${HERMES_STREAM_RETRIES:-1}
       # Gateway turn.heartbeat interval while a turn runs (0 = off).
       - HERMES_TURN_HEARTBEAT_S=${HERMES_TURN_HEARTBEAT_S:-30}
+      # Kanban guards overlay (patch-kanban-guards.py); 0 = upstream behaviour.
+      - HERMES_KANBAN_GUARDS=${HERMES_KANBAN_GUARDS:-1}
+      # standalone (default): one gateway per profile, api-server on 8643 and
+      # browser on 8644. multiplex: one gateway serves every profile at
+      # :8642/p/<profile>/, and gateway-compat-proxy keeps 8643/8644 answering.
+      # Unset, HERMES_PIN_STANDALONE_GATEWAYS=0 (older name) means multiplex.
+      # See compose/hermes/019-pin-profile-gateways.sh and docs/hermes.md.
+      - HERMES_GATEWAY_TOPOLOGY=${HERMES_GATEWAY_TOPOLOGY:-}
+      - HERMES_PIN_STANDALONE_GATEWAYS=${HERMES_PIN_STANDALONE_GATEWAYS:-1}
+      - HERMES_COMPAT_PROXY_ROUTES=8643=api-server,${HERMES_BROWSER_API_PORT:-8644}=browser
+      # 0 stops 019 pinning sessions.auto_prune: false where the key is unset.
+      - HERMES_PIN_SESSIONS_KEEP=${HERMES_PIN_SESSIONS_KEEP:-1}
       - HERMES_DASHBOARD=1
       # The dashboard always binds 0.0.0.0 inside the container (host ports are
       # localhost-only), and since agent 0.20.0 a non-loopback bind engages an
@@ -1165,8 +1242,9 @@ services:
       - HERMES_DASHBOARD_BASIC_AUTH_USERNAME=${HERMES_DASHBOARD_USER:-admin}
       - HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=${HERMES_DASHBOARD_PASSWORD:?set HERMES_DASHBOARD_PASSWORD in .env}
       - HERMES_DASHBOARD_BASIC_AUTH_SECRET=${HERMES_DASHBOARD_AUTH_SECRET:?set HERMES_DASHBOARD_AUTH_SECRET in .env}
-      # API server runs on the api-server profile (port 8643), not the default gateway.
-      - API_SERVER_ENABLED=false
+      # One-time sign-in links at /auth/handoff (patch-dashboard-handoff.py).
+      # Empty turns the route off (404).
+      - HERMES_DASHBOARD_HANDOFF_SECRET=${HERMES_DASHBOARD_HANDOFF_SECRET:-}
       # browser-harness (browser_exec) control sockets. The default is under
       # $HOME, i.e. data/hermes (virtiofs). A socket there that outlives a
       # Docker VM restart (Docker Desktop quit/crash, Mac reboot) fails with
@@ -1177,6 +1255,18 @@ services:
       # Logs and screenshots (BH_TMP_DIR) are plain files and stay put.
       - BH_RUNTIME_DIR=/tmp/browser-harness
       - BH_RUNTIME_DIR_SHARED=1
+      # Same problem for the gateway control socket that Hermes v0.22 gateways
+      # use to find each other: bind it on /tmp instead of data/hermes. See
+      # compose/hermes/patch-control-socket-tmp.py.
+      - HERMES_CONTROL_SOCKET_IN_TMP=1
+      # Hermes points TMPDIR/TMP/TEMP at $HERMES_HOME/cache/scratch (virtiofs)
+      # unless they are set. OpenSSH's ControlMaster socket for the ssh terminal
+      # backend lives there, and link() on virtiofs fails ("Bad file
+      # descriptor"), so every terminal call failed. Keep temp on the container
+      # filesystem like the sockets above.
+      - TMPDIR=/tmp
+      - TMP=/tmp
+      - TEMP=/tmp
       # One uv cache for every profile (uvx browser-use), on a native volume:
       # under each profile's HOME it sat on virtiofs and a warm run took ~57 s.
       - UV_CACHE_DIR=/opt/uv-cache
@@ -1299,22 +1389,17 @@ services:
       - ./compose/hermes/patch-tool-search-visible.py:/bootstrap/patch-tool-search-visible.py:ro
       - ./compose/hermes/patch-tool-search-always-include.py:/bootstrap/patch-tool-search-always-include.py:ro
       - ./compose/hermes/patch-cron-scheduler-delivery.py:/bootstrap/patch-cron-scheduler-delivery.py:ro
-      - ./compose/hermes/patch-cron-default-deliver-signal.py:/bootstrap/patch-cron-default-deliver-signal.py:ro
       - ./compose/hermes/04-patch-signal-send.sh:/etc/cont-init.d/04-patch-signal-send:ro
-      # Weak-model text tool-call recovery + OpenRouter empty-stream cache bust.
+      # Weak-model text tool-call recovery.
       # Compatibility overlays — Hermes upstream closed content promotion (#29115).
       - ./compose/hermes/text_tool_call_recovery.py:/bootstrap/text_tool_call_recovery.py:ro
       - ./compose/hermes/patch-text-tool-call-recovery.py:/bootstrap/patch-text-tool-call-recovery.py:ro
       - ./compose/hermes/fabricated_result.py:/bootstrap/fabricated_result.py:ro
       - ./compose/hermes/patch-fabricated-result.py:/bootstrap/patch-fabricated-result.py:ro
-      - ./compose/hermes/reasoning_only_guard.py:/bootstrap/reasoning_only_guard.py:ro
-      - ./compose/hermes/patch-reasoning-only-tool-markup.py:/bootstrap/patch-reasoning-only-tool-markup.py:ro
-      - ./compose/hermes/patch-openrouter-empty-stream.py:/bootstrap/patch-openrouter-empty-stream.py:ro
       - ./compose/hermes/patch-block-native-web-tools.py:/bootstrap/patch-block-native-web-tools.py:ro
       - ./compose/hermes/patch-tool-call-flat-args.py:/bootstrap/patch-tool-call-flat-args.py:ro
       - ./compose/hermes/tool_eval_trace.py:/bootstrap/tool_eval_trace.py:ro
       - ./compose/hermes/patch-tool-eval-trace.py:/bootstrap/patch-tool-eval-trace.py:ro
-      - ./compose/hermes/patch-agent-browser-npx.py:/bootstrap/patch-agent-browser-npx.py:ro
       - ./compose/hermes/patch-browser-exec-hint.py:/bootstrap/patch-browser-exec-hint.py:ro
       - ./compose/hermes/browser_exec_hints.py:/bootstrap/browser_exec_hints.py:ro
       - ./compose/hermes/history_budget.py:/bootstrap/history_budget.py:ro
@@ -1324,6 +1409,12 @@ services:
       - ./compose/hermes/patch-client-context.py:/bootstrap/patch-client-context.py:ro
       - ./compose/hermes/gateway_liveness.py:/bootstrap/gateway_liveness.py:ro
       - ./compose/hermes/patch-gateway-liveness.py:/bootstrap/patch-gateway-liveness.py:ro
+      - ./compose/hermes/turn_speaker.py:/bootstrap/turn_speaker.py:ro
+      - ./compose/hermes/patch-turn-speaker.py:/bootstrap/patch-turn-speaker.py:ro
+      - ./compose/hermes/patch-control-socket-tmp.py:/bootstrap/patch-control-socket-tmp.py:ro
+      - ./compose/hermes/patch-mirror-exclude.py:/bootstrap/patch-mirror-exclude.py:ro
+      - ./compose/hermes/mcp_trust_details.py:/bootstrap/mcp_trust_details.py:ro
+      - ./compose/hermes/patch-mcp-trust-details.py:/bootstrap/patch-mcp-trust-details.py:ro
       - ./compose/hermes/05-patch-tool-calling.sh:/etc/cont-init.d/05-patch-tool-calling:ro
       - ./compose/hermes/08-warmup-agent-browser.sh:/etc/cont-init.d/08-warmup-agent-browser:ro
       # FS library: immediate /opt/projects children → projects.list / projects.tree.
@@ -1342,6 +1433,35 @@ services:
       # host path instead; keep it off virtiofs if speed matters.
       - ${HERMES_UV_CACHE_DIR:-hermes_uv_cache}:/opt/uv-cache
       - ./compose/hermes/11-warmup-uv-cache.sh:/etc/cont-init.d/11-warmup-uv-cache:ro
+      # Kanban: refuse unbuildable workspaces at filing, give up on final
+      # workspace errors, comment on the creator task; change a task's workspace
+      # in place, kanban_update / kanban_archive; wake dashboard sessions after
+      # compression. See docs/extending.md.
+      - ./compose/hermes/kanban_guards.py:/bootstrap/kanban_guards.py:ro
+      - ./compose/hermes/patch-kanban-guards.py:/bootstrap/patch-kanban-guards.py:ro
+      - ./compose/hermes/kanban_edit.py:/bootstrap/kanban_edit.py:ro
+      - ./compose/hermes/patch-kanban-edit.py:/bootstrap/patch-kanban-edit.py:ro
+      - ./compose/hermes/kanban_wake.py:/bootstrap/kanban_wake.py:ro
+      - ./compose/hermes/patch-kanban-wake.py:/bootstrap/patch-kanban-wake.py:ro
+      - ./compose/hermes/12-patch-kanban-guards.sh:/etc/cont-init.d/12-patch-kanban-guards:ro
+      # Kanban task links (?task=, ?board=), ?embed=1 without the dashboard
+      # shell, and one-time sign-in links (/auth/handoff). See docs/extending.md.
+      - ./compose/hermes/patch-dashboard-board.py:/bootstrap/patch-dashboard-board.py:ro
+      - ./compose/hermes/dashboard_handoff.py:/bootstrap/dashboard_handoff.py:ro
+      - ./compose/hermes/patch-dashboard-handoff.py:/bootstrap/patch-dashboard-handoff.py:ro
+      - ./compose/hermes/13-patch-dashboard.sh:/etc/cont-init.d/13-patch-dashboard:ro
+      # Per-profile gateways and kept sessions on Hermes v0.22+. Runs before the
+      # image's 02-reconcile-profiles. See the script header.
+      - ./compose/hermes/019-pin-profile-gateways.sh:/etc/cont-init.d/019-pin-profile-gateways:ro
+      # 8643/8644 -> :8642/p/<profile>/ under HERMES_GATEWAY_TOPOLOGY=multiplex;
+      # an s6 longrun that stays down under standalone.
+      - ./compose/hermes/gateway-compat-proxy.py:/bootstrap/gateway-compat-proxy.py:ro
+      - ./compose/hermes/s6/gateway-compat-proxy:/etc/s6-overlay/s6-rc.d/gateway-compat-proxy:ro
+      - ./compose/hermes/s6/user-contents/gateway-compat-proxy:/etc/s6-overlay/s6-rc.d/user/contents.d/gateway-compat-proxy:ro
+      # UID/GID remap without usermod's home-tree chown, which fails on the
+      # virtiofs bind and aborts the image's 01-hermes-setup on a fresh
+      # container. See the script header.
+      - ./compose/hermes/005-remap-hermes-uid.sh:/etc/cont-init.d/005-remap-hermes-uid:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     shm_size: "1g"
@@ -1351,6 +1471,8 @@ services:
           # Three supervised gateways now live here (default, api-server, and
           # browser for the WebUI). Each runs as its own Python process with its
           # own loaded toolset and MCP clients, and 2G left the third no room.
+          # Hermes v0.22 would fold them into one; 019-pin-profile-gateways
+          # keeps them apart.
           memory: 3G
     depends_on:
       hermes-api-bootstrap:
@@ -1418,12 +1540,12 @@ services:
   hermes-webui:
     profiles: ["core"]
     container_name: ${CONTAINER_PREFIX:-}hermes-webui
-    image: ghcr.io/nesquena/hermes-webui:${HERMES_WEBUI_IMAGE_TAG:-0.52.113}
+    image: ghcr.io/nesquena/hermes-webui:${HERMES_WEBUI_IMAGE_TAG:-0.52.492}
     restart: unless-stopped
     # Stock init rsyncs /apptoo → /app then starts server.py. Our wrapper
-    # patches persisted_message_count_for_session on the runtime tree first so
-    # session-stream self-heal cannot loop on a stale SESSIONS cache count.
-    # See compose/hermes/scripts/patch-webui-persisted-count.py.
+    # patches load_workspaces on the runtime tree first so /opt/projects
+    # children show up as workspaces.
+    # See compose/hermes/scripts/patch-webui-projects-library.py.
     entrypoint: ["/bin/bash", "/bootstrap/hermeswebui-entrypoint.sh"]
     ports:
       - "127.0.0.1:${HERMES_WEBUI_PORT:-8787}:8787"
@@ -1475,7 +1597,6 @@ services:
       - ./compose/hermes/skills:/opt/skills:ro
       - ./compose/hermes/scripts/project-brief-prefill.py:/bootstrap/project-brief-prefill.py:ro
       - ./compose/hermes/scripts/hermeswebui-entrypoint.sh:/bootstrap/hermeswebui-entrypoint.sh:ro
-      - ./compose/hermes/scripts/patch-webui-persisted-count.py:/bootstrap/patch-webui-persisted-count.py:ro
       - ./compose/hermes/scripts/projects_library.py:/bootstrap/projects_library.py:ro
       - ./compose/hermes/scripts/patch-webui-projects-library.py:/bootstrap/patch-webui-projects-library.py:ro
       - ${ASSISTANT_DATA_ROOT:-./data}/projects:/opt/projects
@@ -1511,6 +1632,7 @@ volumes:
   opencode_config:
   opencode_data:
   valkey_data:
+  search_gate_data:
   gptr_outputs:
   ollama_data:
   hermes_uv_cache:

@@ -56,7 +56,7 @@ jobs:
             "core,todo" \
             "core,rag,automation,coding" \
             "core,ollama" \
-            "core,rag,calendar,automation,coding,ollama,searxng-prod,db,todo"
+            "core,rag,calendar,automation,coding,ollama,searxng-prod,search-gate,db,todo"
           do
             echo "=== COMPOSE_PROFILES=$profiles ==="
             COMPOSE_PROFILES="$profiles" docker compose config -q
@@ -83,6 +83,10 @@ jobs:
         run: python3 scripts/test-gateway-liveness.py
       - name: MCP wake and parked retry interval (stdlib)
         run: python3 scripts/test-mcp-wake.py
+      - name: Gateway topology, multiplex and compat proxy (stdlib)
+        run: python3 scripts/test-gateway-multiplex.py
+      - name: Cron delivery error check (stdlib)
+        run: python3 scripts/test-cron-delivery-errors.py
       - name: CalDAV password env key
         run: sh scripts/test-caldav-password-ref.sh
       - name: Vikunja token per profile

@@ -1,0 +1,19 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# gateway-compat-proxy: keeps 8643 (api-server) and 8644 (browser) answering
+# when HERMES_GATEWAY_TOPOLOGY=multiplex folds them into the default listener.
+# Under standalone those profiles bind the ports themselves, so this exits 0
+# and ./finish exits 125, which leaves the slot down (same as the image's
+# dashboard service). See compose/hermes/gateway-compat-proxy.py.
+
+topology="$(printf '%s' "${HERMES_GATEWAY_TOPOLOGY:-}" | tr '[:upper:]' '[:lower:]')"
+if [ -z "$topology" ]; then
+    case "$(printf '%s' "${HERMES_PIN_STANDALONE_GATEWAYS:-1}" | tr '[:upper:]' '[:lower:]')" in
+        0|false|no|off) topology=multiplex ;;
+        *) topology=standalone ;;
+    esac
+fi
+[ "$topology" = multiplex ] || exit 0
+
+[ "$(id -u)" = 0 ] || exec /opt/hermes/.venv/bin/python /bootstrap/gateway-compat-proxy.py
+exec s6-setuidgid hermes /opt/hermes/.venv/bin/python /bootstrap/gateway-compat-proxy.py

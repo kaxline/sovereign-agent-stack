@@ -219,7 +219,7 @@ ensure_opencode_local_config() {
   else
     # Merge headless permission defaults from the template without clobbering
     # provider/model settings the operator already tuned.
-    python3 - "$base" "$local_cfg" <<'PY' && log "Ensured permission block in opencode.local.json" || true
+    if python3 - "$base" "$local_cfg" <<'PY'
 import json, sys
 from pathlib import Path
 base = json.loads(Path(sys.argv[1]).read_text())
@@ -233,6 +233,9 @@ if perm and local.get("permission") != perm:
 if changed:
     local_path.write_text(json.dumps(local, indent=2) + "\n")
 PY
+    then
+      log "Ensured permission block in opencode.local.json"
+    fi
   fi
   python3 - "$local_cfg" <<'PY'
 import json, sys
@@ -775,6 +778,7 @@ set_env_if_placeholder .env N8N_USER_MANAGEMENT_JWT_SECRET "$(rand_hex 16)"
 # which takes the hermes healthcheck down with it.
 set_env_if_placeholder .env HERMES_DASHBOARD_PASSWORD "$(rand_hex 16)"
 set_env_if_placeholder .env HERMES_DASHBOARD_AUTH_SECRET "$(rand_hex 32)"
+set_env_if_placeholder .env HERMES_DASHBOARD_HANDOFF_SECRET "$(rand_hex 32)"
 set_env_if_placeholder .env LLM_PROXY_ADMIN_TOKEN "$(rand_hex 32)"
 # Shared Postgres (db profile). Hex, so they drop into connection URLs as-is.
 # Generated whether or not db is on, like POSTGRES_PASSWORD for n8n.
@@ -817,8 +821,8 @@ if [[ -n "$ASSISTANT_DATA_ROOT_ARG" ]]; then
   DATA_ROOT="$ASSISTANT_DATA_ROOT_ARG"
   if [[ "$DATA_ROOT" == "~" ]]; then
     DATA_ROOT="$HOME"
-  elif [[ "$DATA_ROOT" == "~/"* ]]; then
-    DATA_ROOT="$HOME/${DATA_ROOT#~/}"
+  elif [[ "$DATA_ROOT" == \~/* ]]; then
+    DATA_ROOT="$HOME/${DATA_ROOT#\~/}"
   fi
   if [[ "$DATA_ROOT" != /* ]]; then
     DATA_ROOT="${ROOT}/${DATA_ROOT#./}"
@@ -925,7 +929,7 @@ set_env_if_missing .env HERMES_TERMINAL_BACKEND ssh
 
 # Signal daemon off by default; sync profile + data/hermes/.env from the toggle.
 set_env_if_missing .env HERMES_SIGNAL_ENABLED 0
-set_env_if_missing .env SIGNAL_CLI_IMAGE "registry.gitlab.com/packaging/signal-cli/signal-cli-jre:v0-14-7-2"
+set_env_if_missing .env SIGNAL_CLI_IMAGE "registry.gitlab.com/packaging/signal-cli/signal-cli-jre:v0-14-9-2"
 ./scripts/sync-signal-profile.sh
 
 # Buzz off by default; independent agents are operator-local under data/hermes/.

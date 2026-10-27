@@ -71,12 +71,17 @@ def main() -> int:
             expect("com.apple.security.automation.apple-events" in ent, f"{app.name} Apple events entitlement")
             launcher = json.loads((app / "Contents" / "Resources" / "launcher.json").read_text())
             expect(Path(launcher["python"]).is_absolute(), "launcher records an absolute Python")
+            expect(launcher["keychain_service"] == "local.assistant.mail-imap",
+                   f"launcher names the IMAP Keychain service: {launcher}")
         expect(len(ids) == 2, f"the apps need distinct bundle ids: {ids}")
 
-        expect(scripts(reader) == {"mail-index.py", "lib/mail_index.py", "lib/mail_script.py",
-                                   "lib/mail_script.js", "lib/jxa.py"}, f"reader contents: {scripts(reader)}")
-        expect(scripts(drafts) == {"mail-drafts.py", "lib/mail_drafts.py", "lib/mail_drafts.js",
-                                   "lib/jxa.py", "lib/drafts.py"}, f"drafts contents: {scripts(drafts)}")
+        shared = {"lib/jxa.py", "lib/mail_imap_conn.py", "lib/mail_credentials.py"}
+        expect(scripts(reader) == shared | {"mail-index.py", "lib/mail_index.py", "lib/mail_script.py",
+                                            "lib/mail_script.js", "lib/mail_imap.py"},
+               f"reader contents: {scripts(reader)}")
+        expect(scripts(drafts) == shared | {"mail-drafts.py", "lib/mail_drafts.py", "lib/mail_drafts.js",
+                                            "lib/drafts.py", "lib/mail_imap_drafts.py"},
+               f"drafts contents: {scripts(drafts)}")
 
         # Editing a sealed script breaks the signature, so a granted app can't be changed quietly.
         copy = tmp / "tampered.app"

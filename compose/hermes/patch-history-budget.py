@@ -5,9 +5,9 @@ Compatibility overlay (not upstream). Copies history_budget.py and
 history_budget_hook.py into the agent package and patches the request
 path so a session budget windows the prompt without archiving older rows.
 
-Also declares the new fields on the gateway wire contract (v2026.9+), whose
-params models reject unknown keys with 4000: without that, session.create and
-session.resume refuse history_budget and clients fall back to no budget.
+The wire contract fields (v2026.9+ params models refuse unknown keys with
+4000) and the session.context_breakdown fields are installed at runtime by
+history_budget_hook.install, from one call appended to tui_gateway/server.py.
 """
 from __future__ import annotations
 
@@ -44,63 +44,49 @@ def _replace(path: Path, old: str, new: str, *, label: str, done: str) -> None:
     print(f"[patch-history-budget] patched {label}")
 
 
-_CONTRACT_FIELDS = (
-    "    history_budget: int | None = None  # assistant-stack: history budget\n"
-    "    history_tokens: int | None = None\n"
-    "    history_first_row_id: int | None = None\n"
-    "    history_summarised: bool | None = None\n"
-)
-_BUDGET_PARAM = "    history_budget: int | None = None  # assistant-stack: history budget\n"
-_RESUME_DOC = (
-    '    """``session_id`` is the STORED id (or an exact title); '
-    "the reply's ``session_id`` is the runtime id.\"\"\"\n"
-)
+INSTALL_TAG = "# assistant-stack: history budget install"
+SERVER_TAIL = "_m.register(sys.modules[__name__])\ndel _m\n"
+INSTALL = f'''
+
+{INSTALL_TAG}
+try:
+    from agent.history_budget_hook import install as _history_budget_install
+    _history_budget_install(sys.modules[__name__])
+except Exception:
+    logger.exception("history budget overlay failed to install")
+'''
 
 
-def _patch_contracts() -> None:
-    contracts = GATEWAY / "contracts"
-    if not (contracts / "sessions.py").is_file():
-        print("[patch-history-budget] skip contracts (pre-v2026.9 gateway)")
+def _install_server_hook() -> None:
+    if not (GATEWAY / "contracts" / "registry.py").is_file():
+        raise SystemExit("[patch-history-budget] pre-v2026.9 gateway (no contracts); not supported")
+    server = GATEWAY / "server.py"
+    text = server.read_text()
+    if INSTALL_TAG in text:
+        print("[patch-history-budget] already applied (server install)")
         return
-    create = "class SessionCreateParams(ProfileParams):\n    cols: int | None = None\n"
-    _replace(
-        contracts / "sessions.py", create, create + _BUDGET_PARAM,
-        label="session.create contract", done=create + _BUDGET_PARAM,
-    )
-    resume = "class SessionResumeParams(SessionParams):\n" + _RESUME_DOC + "\n    cols: int | None = None\n"
-    _replace(
-        contracts / "sessions.py", resume, resume + _BUDGET_PARAM,
-        label="session.resume contract", done=resume + _BUDGET_PARAM,
-    )
-    breakdown = "    context_source: str\n    model: str\n"
-    breakdown_tail = '\n\nmethod("session.context_breakdown"'
-    _replace(
-        contracts / "sessions.py", breakdown + breakdown_tail,
-        breakdown + _CONTRACT_FIELDS + breakdown_tail,
-        label="session.context_breakdown contract", done=breakdown + _CONTRACT_FIELDS,
-    )
-    complete = "    partial: bool | None = None\n"
-    complete_tail = '\n\nevent("message.complete"'
-    _replace(
-        contracts / "events.py", complete + complete_tail,
-        complete + _CONTRACT_FIELDS + complete_tail,
-        label="message.complete contract", done=complete + _CONTRACT_FIELDS,
-    )
+    if SERVER_TAIL not in text:
+        raise SystemExit(
+            "[patch-history-budget] split-module registration loop missing in server.py. "
+            "Hermes image may have changed — update this patch."
+        )
+    server.write_text(text.rstrip("\n") + "\n" + INSTALL)
+    print("[patch-history-budget] patched server install")
 
 
 def main() -> None:
     _install("history_budget.py")
     _install("history_budget_hook.py")
-    _patch_contracts()
 
     _replace(
         GATEWAY / "methods_session.py",
-        '''@method("session.create")
-def _(rid, params: dict) -> dict:
-    (sid, source), key = _new_runtime_ids(params), _new_session_key()
+        '''def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> dict:
+    """``session.create``; ``copy_parent_history`` (``session.branch_stored``) reads the parent's
+    transcript server-side and omits it from the reply."""
 ''',
-        '''@method("session.create")
-def _(rid, params: dict) -> dict:
+        '''def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> dict:
+    """``session.create``; ``copy_parent_history`` (``session.branch_stored``) reads the parent's
+    transcript server-side and omits it from the reply."""
     # assistant-stack: history budget
     try:
         from agent.history_budget import coerce_history_budget
@@ -110,7 +96,6 @@ def _(rid, params: dict) -> dict:
         )
     except ValueError as exc:
         return _err(rid, 4028, str(exc))
-    (sid, source), key = _new_runtime_ids(params), _new_session_key()
 ''',
         label="session.create",
         done="coerce_history_budget(params.get(\"history_budget\"))",
@@ -127,20 +112,19 @@ def _(rid, params: dict) -> dict:
     )
     _replace(
         GATEWAY / "methods_session.py",
-        '''        return _deferred_session_record(
-            self.target, cols=self.cols, cwd=cwd, history=history, lease=None, source=source,
-            close_on_disconnect=_flag(self.params, "close_on_disconnect"),
-            profile_home=self.profile_home, explicit_cwd=bool(self.profile_resume_cwd), **extra)
+        '''                model_config.get("composer_override_profile") if overrides and overrides.get("model_override") else None))
+        return record
+
+    def claim(self, sid: str, record: dict) -> dict | None:
 ''',
-        '''        record = _deferred_session_record(
-            self.target, cols=self.cols, cwd=cwd, history=history, lease=None, source=source,
-            close_on_disconnect=_flag(self.params, "close_on_disconnect"),
-            profile_home=self.profile_home, explicit_cwd=bool(self.profile_resume_cwd), **extra)
+        '''                model_config.get("composer_override_profile") if overrides and overrides.get("model_override") else None))
         # assistant-stack: history budget
         record["history_budget"] = getattr(self, "history_budget", None)
         record["history_summary"] = getattr(self, "history_summary", None)
         record["history_summary_through_row_id"] = getattr(self, "history_summary_through_row_id", None)
         return record
+
+    def claim(self, sid: str, record: dict) -> dict | None:
 ''',
         label="session.resume record",
         done='record["history_budget"]',
@@ -167,13 +151,11 @@ def _(rid, params: dict) -> dict:
     )
     _replace(
         GATEWAY / "methods_session.py",
-        '''        with _session_resume_lock:
-            live = _find_live_session_by_key(ctx.target, ctx.profile_home)
+        '''            live = _find_live_session_by_key(ctx.target, ctx.profile_home)
         if live is not None:
             return _resume_reuse_live(ctx, *live)
 ''',
-        '''        with _session_resume_lock:
-            live = _find_live_session_by_key(ctx.target, ctx.profile_home)
+        '''            live = _find_live_session_by_key(ctx.target, ctx.profile_home)
         # assistant-stack: history budget
         if (budget_err := _apply_resume_history_budget(ctx, live)) is not None:
             return budget_err
@@ -262,77 +244,11 @@ def _(rid, params: dict) -> dict:
         done="def _apply_resume_history_budget",
     )
     _replace(
-        GATEWAY / "methods_session.py",
-        '''@_session_method("session.context_breakdown")
-def _(rid, params: dict, session: dict) -> dict:
-    if (agent := session.get("agent")) is None:
-        usage = _session_usage_snapshot(session) or _get_usage(None)
-        return _ok(rid, {
-            "categories": [], "context_max": usage.get("context_max", 0) or 0,
-            "context_percent": usage.get("context_percent", 0) or 0,
-            "context_used": usage.get("context_used", 0) or 0,
-            "estimated_total": 0,
-            "context_estimated": usage.get("context_estimated", False),
-            "context_source": usage.get("context_source", "provider_usage"),
-            "model": _metadata_mirror(session).get("model", "")})
-    with session["history_lock"]:
-        history = list(session.get("history", []))
-''',
-        '''def _attach_history_budget_fields(session, agent, history, payload):
-    """assistant-stack: history budget fields on session.context_breakdown."""
-    try:
-        from agent.history_budget_hook import breakdown_fields
-        payload.update(breakdown_fields(session, agent, history))
-    except Exception:
-        logger.debug("history budget breakdown failed", exc_info=True)
-        payload.update({
-            "history_budget": None, "history_tokens": None,
-            "history_first_row_id": None, "history_summarised": False})
-    return payload
-
-
-@_session_method("session.context_breakdown")
-def _(rid, params: dict, session: dict) -> dict:
-    with session["history_lock"]:
-        history = list(session.get("history") or [])
-    if (agent := session.get("agent")) is None:
-        usage = _session_usage_snapshot(session) or _get_usage(None)
-        payload = {
-            "categories": [], "context_max": usage.get("context_max", 0) or 0,
-            "context_percent": usage.get("context_percent", 0) or 0,
-            "context_used": usage.get("context_used", 0) or 0,
-            "estimated_total": 0,
-            "context_estimated": usage.get("context_estimated", False),
-            "context_source": usage.get("context_source", "provider_usage"),
-            "model": _metadata_mirror(session).get("model", "")}
-        return _ok(rid, _attach_history_budget_fields(session, None, history, payload))
-''',
-        label="context_breakdown preamble",
-        done="def _attach_history_budget_fields",
-    )
-    _replace(
-        GATEWAY / "methods_session.py",
-        '''        from agent.context_breakdown import compute_session_context_breakdown
-        return _ok(rid, compute_session_context_breakdown(agent, history))
-''',
-        '''        from agent.context_breakdown import compute_session_context_breakdown
-        payload = compute_session_context_breakdown(agent, history)
-        return _ok(rid, _attach_history_budget_fields(session, agent, history, payload))
-''',
-        label="context_breakdown result",
-        done="payload = compute_session_context_breakdown(agent, history)",
-    )
-    _replace(
         GATEWAY / "session_workdir.py",
-        '''    for flag in ("room_plumbing", "follow_profile_config"):
-        if session.get(flag):
-            model_config[flag] = True
-    return row_model, model_config
+        '''    from tools.approval_yolo import with_session_yolo  # a /yolo toggled before the row existed
+    return row_model, with_session_yolo(model_config, session.get("session_key") or "")
 ''',
-        '''    for flag in ("room_plumbing", "follow_profile_config"):
-        if session.get(flag):
-            model_config[flag] = True
-    # assistant-stack: history budget
+        '''    # assistant-stack: history budget
     budget = session.get("history_budget")
     if isinstance(budget, int) and not isinstance(budget, bool) and budget > 0:
         model_config["history_budget"] = budget
@@ -342,17 +258,21 @@ def _(rid, params: dict, session: dict) -> dict:
     through = session.get("history_summary_through_row_id")
     if isinstance(through, int) and not isinstance(through, bool):
         model_config["history_summary_through_row_id"] = through
-    return row_model, model_config
+    from tools.approval_yolo import with_session_yolo  # a /yolo toggled before the row existed
+    return row_model, with_session_yolo(model_config, session.get("session_key") or "")
 ''',
         label="model_config",
         done='model_config["history_budget"]',
     )
+    # v0.22.3 moved _make_agent into tui_gateway/agent_factory.py; bind_module
+    # rebinds it against server.py globals, so logger and _get_db still resolve.
+    factory = GATEWAY / "agent_factory.py"
     _replace(
-        GATEWAY / "server.py",
-        '''    agent._context_cwd_is_launch_artifact = bool(context_cwd_is_launch_artifact)
+        factory if factory.is_file() else GATEWAY / "server.py",
+        '''        agent._pending_fallback_notice = fallback_notice
     return agent
 ''',
-        '''    agent._context_cwd_is_launch_artifact = bool(context_cwd_is_launch_artifact)
+        '''        agent._pending_fallback_notice = fallback_notice
     # assistant-stack: history budget
     try:
         from agent.history_budget_hook import stamp_agent_budget
@@ -385,12 +305,11 @@ def _(rid, params: dict, session: dict) -> dict:
     )
     _replace(
         AGENT / "conversation_compression.py",
-        '''    session state after its caller has moved on.
-    """
-    attempt = _begin_compression_attempt(agent, force=force, defer_notification=defer_context_engine_notification)
+        '''    """
+    attempt = _begin_compression_attempt(
+        agent, force=force, defer_notification=defer_context_engine_notification, trigger=trigger,
 ''',
-        '''    session state after its caller has moved on.
-    """
+        '''    """
     # assistant-stack: history budget windows the request and must not archive rows.
     try:
         from agent.history_budget import agent_has_history_budget
@@ -398,7 +317,8 @@ def _(rid, params: dict, session: dict) -> dict:
             return messages, system_message
     except Exception:
         pass
-    attempt = _begin_compression_attempt(agent, force=force, defer_notification=defer_context_engine_notification)
+    attempt = _begin_compression_attempt(
+        agent, force=force, defer_notification=defer_context_engine_notification, trigger=trigger,
 ''',
         label="compress_context",
         done="agent_has_history_budget(agent)",
@@ -420,13 +340,13 @@ def _(rid, params: dict, session: dict) -> dict:
     )
     _replace(
         AGENT / "micro_compaction.py",
-        '''        summary and the originals."""
+        '''        (nothing written); the caller must then discard the pass. Any other outcome returns True."""
         session_db, session_id = getattr(self, "_session_db", None), getattr(self, "_session_id", "")
 ''',
-        '''        summary and the originals."""
+        '''        (nothing written); the caller must then discard the pass. Any other outcome returns True."""
         # assistant-stack: history budget — do not archive the stored transcript.
         if getattr(self, "_history_budget_blocks_archive", False):
-            return
+            return True
         session_db, session_id = getattr(self, "_session_db", None), getattr(self, "_session_id", "")
 ''',
         label="micro_compact db",
@@ -459,6 +379,8 @@ ContextCompressor.select_context = _history_budget_select_context
             )
         compressor.write_text(text + hook)
         print("[patch-history-budget] patched select_context")
+
+    _install_server_hook()
 
 
 if __name__ == "__main__":

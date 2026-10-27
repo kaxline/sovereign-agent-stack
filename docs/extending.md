@@ -212,10 +212,36 @@ writes Hermes profile config, keep it consistent with what bootstrap sets:
   180 for a cloud one, judged from `LLM_BINDING_HOST` in `.env`. It cannot
   see an upstream pushed through the admin API, so either write the upstream
   URL (not the key) to `LLM_BINDING_HOST` too, or set this yourself.
+- `model.max_tokens`: bootstrap writes 16384 (`HERMES_MAX_TOKENS`) where a
+  profile has none. llm-proxy adds the same default to requests that arrive
+  without one (`LLM_DEFAULT_MAX_TOKENS`), so a runaway generation stops
+  either way, but setting it in the profile lets Hermes size its own retries.
+- `model.context_length`: Hermes cannot read the window from a placeholder
+  model name and falls back to 256k. Set it to the context length the model
+  server actually loads, so compression starts in time.
+- **Profiles your app creates after bootstrap** get none of the settings
+  above. Write them yourself, or re-run both bootstrap services after
+  creating the profile.
+- **Kanban tasks**: Hermes has no board-wide runtime cap, and a worker keeps
+  heartbeating during a long model call, so the dispatcher sees it as
+  healthy. Set `max_runtime_seconds` on every task a local model runs. When
+  the dispatcher kills the worker, llm-proxy closes the upstream request, so
+  the model server stops too.
 - Leave `agent.tool_use_enforcement` at `auto` and `agent.execution_guidance`
   unset. Forcing them on helps some chatty models but makes weaker or
   quantized ones fake tool calls in text more often
   ([hermes.md](hermes.md)).
+
+## API base URLs
+
+`http://localhost:8643/v1` (api-server profile) works under either
+[gateway topology](hermes.md#gateway-topology). Under
+`HERMES_GATEWAY_TOPOLOGY=multiplex`, the same API is also at
+`http://localhost:8642/p/api-server/v1`, with the same key; 8643 forwards
+there. Upstream Hermes is moving to the multiplexed layout and will drop the
+per-profile listeners, so an app can move its base URL to the `/p/api-server`
+form once its install runs `multiplex`. 8643 stays until a release announced
+here removes it. The dashboard's `/api/ws` on 9119 does not change.
 
 ## Gateway turn liveness
 
@@ -226,6 +252,257 @@ A client on the dashboard gateway WebSocket can watch a running turn with the
 
 This is an overlay on the pinned Hermes image (`patch-gateway-liveness.py`). The
 event, method and fields stay stable across pin moves. Changes are additive.
+
+## Speaker names
+
+`speaker` on `prompt.submit` names the agent answering a turn in a session
+several agents share. Its assistant rows carry `display_metadata.speaker` in
+`session.history`, and later turns show the model who wrote each reply.
+`gateway.capabilities` reports `turn_speaker`. Fields, labels and error codes
+are in [hermes.md](hermes.md#speaker-names).
+
+This is an overlay on the pinned Hermes image (`patch-turn-speaker.py`). The
+field, the `display_metadata.speaker` shape, the error codes and the capability
+stay stable across pin moves. Changes are additive.
+
+## Kanban workspaces
+
+The dispatcher builds a task's workspace in the `hermes` container. With the
+default `HERMES_TERMINAL_BACKEND=ssh`, `/opt/projects` is read-only there and
+your coding roots aren't mounted, so a `worktree` task on one of those repos
+can't start, and neither can a task linked to a project whose repo is there.
+File such tasks with `workspace_kind="scratch"`; the worker's terminal runs
+on `hermes-worker`, where those repos are writable.
+
+An overlay (`patch-kanban-guards.py`) checks this when a task is filed.
+`kanban_create` returns an error and `POST /tasks` returns 400, with the
+reason and the fix in the message, for example:
+
+```text
+workspace_kind='worktree' needs a workspace_path or a project, and board 'default' has no default_workdir. Pass workspace_kind='scratch', or a project or path in a git repo this container can write to.
+```
+
+A task filed before the overlay, or whose repo changed after filing, still
+fails when the dispatcher claims it. If the error can't heal (no path, a path
+that isn't absolute or isn't in a git repo, or a repo the container can't
+write to), the task is blocked on that first claim and the `gave_up` event's
+payload has:
+
+| Field | Value |
+|---|---|
+| `trigger_outcome` | `spawn_failed` |
+| `error` | `workspace: ` followed by the reason |
+| `sticky` | `true`: only an unblock releases it |
+| `retryable` | `false` |
+
+A give-up for a revoked credential or missing model (`trigger_outcome`
+`crashed`, `terminal_provider: true`) also has `retryable: false`. Other
+give-ups leave `retryable` out; treat a missing key as retryable. When the
+task was filed by another task's worker, the creator task also gets a comment
+from `kanban-dispatcher` that names the task and its error.
+
+`HERMES_KANBAN_GUARDS=0` turns all of this off. The error text, payload fields
+and comment author stay stable across pin moves. Changes are additive.
+
+### Changing a task's workspace
+
+A task that isn't running can get a new workspace without being filed again,
+so it keeps its id, runs, comments, attachments and links. Send any of these
+on `PATCH /tasks/{id}`:
+
+| Field | Effect |
+|---|---|
+| `workspace_kind` | `scratch`, `dir` or `worktree`. A new kind drops the stored `workspace_path` unless the PATCH sets one; `scratch` also drops the project link unless the PATCH sets `project_id` |
+| `workspace_path` | Absolute path for `dir` or `worktree` |
+| `clear_workspace_path` | `true` clears the path. Not together with `workspace_path` |
+| `project_id` | Project id or slug; its repo becomes the worktree. `""` unlinks |
+
+The new workspace is checked the way filing checks it. The workspace step
+runs before the rest of the PATCH, so a refused change applies none of it.
+
+| Status | Meaning |
+|---|---|
+| `200` | Changed, or nothing to change. An `edited` event has `fields`, `from` and `to` |
+| `400` | The workspace can't be built, the project is unknown, or both path fields were sent |
+| `404` | Unknown task |
+| `409` | The task is running |
+
+A blocked task stays blocked. Unblock it in the same PATCH (`"status":
+"ready"`) or after it. To rerun a task that gave up on its worktree in a
+scratch workspace, the body is:
+
+```json
+{"workspace_kind": "scratch", "status": "ready"}
+```
+
+Orchestrator profiles (the `kanban` toolset named in the profile) get
+`kanban_update`, which takes `task_id`, `workspace_kind`, `workspace_path` and
+`project_id` (`""` clears the last two), and `kanban_archive`, which refuses a
+running task. Like `kanban_unblock`, dispatcher-spawned workers don't see
+either. These are an overlay (`patch-kanban-edit.py`); the fields, tool names
+and arguments stay stable across pin moves.
+
+### Telling the session that filed a task
+
+A dashboard session that calls `kanban_create` is subscribed to that task.
+When the task completes, blocks, gives up, crashes or times out, the session
+gets the event as a turn once it is idle, so the agent can act on it. A
+`gave_up` turn reads, for a workspace error:
+
+```text
+✖ @default Kanban t_5727c92a gave up: it can't start until its workspace or configuration changes
+Error: workspace: task t_5727c92a has workspace_kind=worktree but no workspace_path, ...
+To repair it: kanban_update(task_id='t_5727c92a', workspace_kind='scratch'), then kanban_unblock(task_id='t_5727c92a').
+```
+
+Other give-ups say how many attempts failed and point to `kanban_show`,
+`kanban_unblock` and `kanban_archive`. Only a profile with the `kanban` toolset
+has those tools.
+
+Turns run only while the session is open in the gateway with its agent built:
+after `session.create`, or `session.resume` without `lazy`. While it isn't,
+events wait, and the next resume delivers each one once. After the user
+presses Stop, they wait for the user's next prompt. The stack never opens a
+session by itself, so to have the agent repair a task without the owner,
+resume the filing session (the task's `session_id`, with its `profile`) when
+`/events` shows a `gave_up` for it. The resume can stay out of view.
+
+Context compression gives a session a new key, and Hermes keys these
+subscriptions on the old one. An overlay (`patch-kanban-wake.py`) lets the
+session claim them under its new key, so tasks filed before a compression
+still reach it. Without it, those events are not delivered.
+
+## Dashboard links
+
+Three overlays let an app send the user to the dashboard's board: a one-time
+sign-in link, a link to one task, and a mode without the dashboard's own
+navigation. The URLs, parameters and code format stay stable across pin
+moves. Changes are additive.
+
+### Sign-in links
+
+`GET /auth/handoff?code=<code>` exchanges a code for a dashboard session and
+redirects to the code's `next` path (`patch-dashboard-handoff.py`). The
+session is the one a password sign-in gets from the `basic` provider, so it
+refreshes and survives a restart the same way. The app never sends the
+dashboard password, and no page sees it.
+
+The code is signed with `HERMES_DASHBOARD_HANDOFF_SECRET` from `.env`, which
+`setup.sh` generates. Read it the way you read `HERMES_DASHBOARD_PASSWORD`.
+Without it, or with a value under 32 characters, the route answers 404.
+
+```text
+code      = <payload>.<signature>
+payload   = base64url(JSON {"v": 1, "nonce": <16-128 chars>, "exp": <unix seconds>, "next": <path>})
+signature = base64url(HMAC-SHA256(key = secret as UTF-8 bytes, message = payload as ASCII))
+```
+
+Both parts are base64url without `=` padding. `exp` is at most 60 seconds
+ahead (5 seconds of clock difference are allowed). Each nonce is accepted once.
+In Node:
+
+```js
+const b64 = (buf) => Buffer.from(buf).toString("base64url");
+const payload = b64(JSON.stringify({
+  v: 1, nonce: crypto.randomBytes(18).toString("base64url"),
+  exp: Math.floor(Date.now() / 1000) + 30, next: "/kanban?task=t_5727c92a",
+}));
+const code = `${payload}.${b64(crypto.createHmac("sha256", secret).update(payload).digest())}`;
+const url = `${dashboard}/auth/handoff?code=${encodeURIComponent(code)}`;
+```
+
+| Code | Redirect |
+|---|---|
+| Valid | `next`, signed in. `next` goes through the same check as a password sign-in: a path on the dashboard outside `/login`, `/auth/` and `/api/`, else `/` |
+| Used or expired | `/login?next=<next>` |
+| Bad signature, malformed, or `exp` too far ahead | `/login` |
+
+Responses carry `Cache-Control: no-store` and `Referrer-Policy: no-referrer`.
+The code appears in the dashboard's access log, which is why it works once.
+`make dashboard-open NEXT=/kanban` mints one from `.env` and opens it.
+
+An app that loads the board in its own window can skip the link: sign in from
+the main process with `POST /auth/password-login` and copy the session cookies
+into that window's session.
+
+### Task links
+
+`/kanban?task=<id>` opens the board with that task's drawer open and its card
+scrolled into view (`patch-dashboard-board.py`). Add `&board=<slug>` for a
+task on a board other than the one the dashboard last showed; the dashboard
+keeps its remembered board. An archived task opens too. An unknown id opens
+the board as usual and drops `task` from the URL, as closing the drawer does.
+
+### Without the dashboard's navigation
+
+`?embed=1` on any dashboard URL hides the sidebar, the mobile header and the
+page header. It lasts for the tab (`sessionStorage`), across navigation and
+reloads, until `?embed=0`. Banners such as the memory-pressure warning stay.
+The board's own controls, drawer and drag-and-drop are unchanged. Every link
+the board renders that leaves it (a comment's links, the docs link) already
+has `target="_blank"`.
+
+Hiding the navigation doesn't limit what the session can reach. An app that
+shows only the board should refuse navigation away from `/kanban` in that
+window (`will-navigate` and `setWindowOpenHandler` in Electron) and open those
+URLs in the system browser.
+
+## Keys a new profile leaves out
+
+`profiles.create` on the gateway mirrors the launch profile's `.env` into the
+new profile by default (`mirror_credentials`), minus channel bot tokens. That
+gives it a model, and also every password saved for an MCP server, such as the
+bootstrap's `CALDAV_<SLUG>_PASSWORD` keys and anything stored with
+`mcp.servers.set_api_key`.
+
+Pass `mirror_exclude`, a list of glob patterns matched case-sensitively against
+key names, to leave keys out:
+
+```json
+{"name": "researcher", "mirror_credentials": true,
+ "mirror_exclude": ["BOUNDARY_CALENDAR_*", "CALDAV_*_PASSWORD"]}
+```
+
+Matching assignments are removed after the channel strip. Comments and other
+keys stay as they were. `mirrored.env_excluded` in the result lists the keys
+removed, by name only. If the filter fails, including on a value that is not a
+list of strings, the new `.env` is emptied and `mirrored.env` is `false`. The
+patterns apply only to the mirrored `.env`, not to `clone_from` copies.
+
+This is an overlay on the pinned Hermes image (`patch-mirror-exclude.py`). The
+param and result field stay stable across pin moves.
+
+## MCP approvals for untrusted servers
+
+Hermes asks before a tool on a `trust: untrusted` MCP server runs, unless the
+server annotates the tool `readOnlyHint: true`. The `approval` request for that
+prompt, and its replay in `approval.pending`, carry the call:
+
+```json
+{"request_id": "…", "command": "MCP tool 'caldav_create_event' on UNTRUSTED server 'calendar-personal' wants to run with {…}. …",
+ "pattern_key": "mcp_elicitation", "choices": ["once", "deny"],
+ "mcp": {"server": "calendar-personal", "tool": "caldav_create_event",
+         "arguments": {"summary": "Call with Jordan", "start": "2026-10-23T11:00:00",
+                       "end": "2026-10-23T11:30:00", "calendar_name": "Work"},
+         "tool_call_id": "call_…"}}
+```
+
+`tool` is the server's own tool name. `tool_call_id` is the `tool_id` the
+call's `tool.start` event carried, or `null` when Hermes had none. The
+arguments are redacted before they are stored. Values under a
+credential-looking key (`password`, `token`, `api_key`, `authorization` and the
+like) become `[REDACTED]`. Every string goes through Hermes' secret redaction,
+as command previews do. Strings are capped at 500 characters, lists and
+objects at 50 entries, and nesting at 4 levels. The same summary, capped at 400
+characters, goes into `command`. Two different calls therefore get separate
+prompts, where identical text used to make the second wait on the first and
+take its answer.
+
+These prompts offer only `once` and `deny`. `session` and `always` were
+accepted as a single approval and never remembered.
+
+This is an overlay on the pinned Hermes image (`patch-mcp-trust-details.py`).
+The `mcp` fields stay stable across pin moves. Changes are additive.
 
 ## MCP servers your app hosts
 
@@ -252,12 +529,15 @@ curl -X POST -H "Authorization: Bearer $API_SERVER_KEY" \
 ```
 
 Use the `api-server` profile's key (`compose/hermes/api-server.env`). The call
-reaches every profile, including the default one, which has no API server of
-its own. The tools return within about a second.
+reaches every profile that configures the server, including the default one,
+whatever the [gateway topology](hermes.md#gateway-topology). Under
+`multiplex` the same call also works at
+`http://localhost:8642/p/api-server/v1/mcp/servers/<name>/reconnect`. The
+tools return within about a second.
 
 | Status | Meaning |
 |---|---|
-| `202` | `{"server", "profiles", "status": "wake_requested"}`. `profiles` lists every profile whose config names the server |
+| `202` | `{"server", "profiles", "status": "wake_requested", "woken"}`. `profiles` lists every profile whose config names the server. `woken` counts the parked connections the answering gateway process woke at once; other processes wake theirs within a second |
 | `404` | No profile configures that name |
 | `400` | The name is not `[A-Za-z0-9][A-Za-z0-9_.-]*` (at most 128 characters) |
 | `401` | Missing or wrong key |

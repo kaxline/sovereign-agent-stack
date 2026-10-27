@@ -101,8 +101,15 @@ def test_validation() -> None:
     rejects(GOOD | {"reply_to": {"id": 1, "account": "A", "mailbox": "IN\nBOX"}}, "newline in reply_to")
     rejects(GOOD | {"from": ["a@example.com", "b@example.com"]}, "two from addresses")
     rejects(GOOD | {"body": "x" * (drafts.MAX_BODY_CHARS + 1)}, "body too long")
+    rejects(GOOD | {"reply_to": {"source_id": "1 2", "account": "A", "mailbox": "INBOX"}}, "space in source_id")
+    rejects(GOOD | {"reply_to": {"source_id": 101, "account": "A", "mailbox": "INBOX"}}, "source_id as a number")
+    rejects(GOOD | {"reply_to": {"source_id": "1", "id": 1, "account": "A", "mailbox": "INBOX"}}, "both forms")
     reply = drafts.validate({"reply_to": {"id": 101, "account": PERSONAL, "mailbox": "INBOX"}, "body": "Yes!"})
     expect(reply["to"] == [] and reply["subject"] == "", "a reply needs no recipients or subject")
+    expect(reply["reply_to"] == {"account": PERSONAL, "mailbox": "INBOX", "source_id": "101"},
+           "the older {id, account, mailbox} form becomes a source_id")
+    ref = {"account": "work", "mailbox": "Projects/Alpha", "source_id": "1792068491.7"}
+    expect(drafts.validate({"reply_to": ref, "body": "x"})["reply_to"] == ref, "a result's reply_ref is accepted")
 
 
 def test_queue(env: Env) -> None:
@@ -156,12 +163,17 @@ def test_new_drafts(env: Env) -> None:
 
 def test_replies(env: Env) -> None:
     root, out, runner = env.setup()
-    ok = drafts.enqueue(root, {"reply_to": {"id": 101, "account": PERSONAL, "mailbox": "INBOX"},
+    # A mail_search result's reply_ref, as the agent passes it.
+    ok = drafts.enqueue(root, {"reply_to": {"account": PERSONAL, "mailbox": "INBOX", "source_id": "101"},
                                "body": "Thursday works.", "cc": ["priya@example.org"]})
+    imap_ref = drafts.enqueue(root, {"reply_to": {"account": PERSONAL, "mailbox": "INBOX", "source_id": "7.101"},
+                                     "body": "x"})
     gone = drafts.enqueue(root, {"reply_to": {"id": 424242, "account": PERSONAL, "mailbox": "INBOX"}, "body": "x"})
     nobox = drafts.enqueue(root, {"reply_to": {"id": 101, "account": PERSONAL, "mailbox": "Nope"}, "body": "x"})
     stats = md.Helper(root, runner=runner).process()
-    expect(stats.created == 1 and stats.failed == 2, f"reply stats {stats}")
+    expect(stats.created == 1 and stats.failed == 2 and stats.rejected == 1, f"reply stats {stats}")
+    expect(status(root, imap_ref)["reason"] == "reply_message_not_found",
+           "an IMAP-style id for an account that isn't IMAP never reaches Mail")
     got = saved(out)
     expect(len(got) == 1 and got[0]["reply_to"] == 101 and got[0]["reply_all"] is False, f"reply saved: {got}")
     expect(got[0]["to"] == ["alex.chen@example.com"] and got[0]["cc"] == ["priya@example.org"],

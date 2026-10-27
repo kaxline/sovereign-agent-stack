@@ -27,30 +27,39 @@ function isMailbox(obj) {
   try { return obj.class() === 'mailbox'; } catch (e) { return false; }
 }
 
-// Same walk as mail_script.js: nested mailboxes are reached from their parent.
+// Same lookup as mail_script.js: walk down the path, reading one level's
+// names per Apple event. Nested mailboxes Mail also lists at the top level
+// are told apart by their container.
 function findBox(Mail, accountId, path) {
+  const ids = Mail.accounts.id();
   let account = null;
-  for (const a of Mail.accounts()) {
-    if (String(a.id()).toUpperCase() === accountId.toUpperCase()) account = a;
+  for (let i = 0; i < ids.length; i++) {
+    if (String(ids[i]).toUpperCase() === accountId.toUpperCase()) account = Mail.accounts()[i];
   }
   if (account === null) return null;
-  const parts = path.split('/');
-  let level = account.mailboxes();
+  let level = account.mailboxes;
   let box = null;
-  for (let i = 0; i < parts.length; i++) {
-    box = null;
-    for (const candidate of level) {
-      if (candidate.name() !== parts[i]) continue;
-      if (i === 0) {
-        let parent = null;
-        try { parent = candidate.container(); } catch (e) { parent = null; }
-        if (parent !== null && isMailbox(parent)) continue;
+  const parts = path.split('/');
+  for (let d = 0; d < parts.length; d++) {
+    const names = level.name();
+    const boxes = level();
+    let hits = [];
+    for (let i = 0; i < names.length; i++) if (names[i] === parts[d]) hits.push(i);
+    if (hits.length === 0) {
+      for (let i = 0; i < names.length; i++) {
+        if (String(names[i]).toLowerCase() === parts[d].toLowerCase()) hits.push(i);
       }
-      box = candidate;
-      break;
     }
-    if (box === null) return null;
-    level = box.mailboxes();
+    if (d === 0 && hits.length > 1) {
+      hits = hits.filter(function (i) {
+        let parent = null;
+        try { parent = boxes[i].container(); } catch (e) { parent = null; }
+        return !(parent !== null && isMailbox(parent));
+      });
+    }
+    if (hits.length === 0) return null;
+    box = boxes[hits[0]];
+    level = box.mailboxes;
   }
   return box;
 }

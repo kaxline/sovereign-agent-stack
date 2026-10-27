@@ -69,7 +69,7 @@ NEW_GENUINE = """    # assistant-stack: fabricated result without a tool call
                 _placeholder_content.rstrip("."),
                 agent._fabricated_result_nudges,
             )
-            agent._emit_status(
+            agent._emit_diagnostic_status(
                 f"↻ {_placeholder_content.rstrip('.')} — "
                 f"re-prompting ({agent._fabricated_result_nudges}/2)"
             )
@@ -88,6 +88,7 @@ NEW_GENUINE = """    # assistant-stack: fabricated result without a tool call
                 "anthropic_content_blocks",
                 "bedrock_content_blocks",
                 "tool_calls",
+                "api_content",
             ):
                 placeholder.pop(_key, None)
             append_message(messages, placeholder)
@@ -115,33 +116,36 @@ NEW_PERSIST = """    "_dropped_toolcall_nudge",  # internal retry instruction; m
 """
 
 OLD_COMPRESS = """        from agent.conversation_loop import (
-            _CODEX_ACK_CONTINUATION_NUDGE, _CODEX_INCOMPLETE_NUDGE, _DROPPED_TOOLCALL_NUDGE_CONTENT,
-            _EMPTY_TOOL_RESPONSE_NUDGE, _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX, _LENGTH_CONTINUATION_NETWORK_STUB,
+            _CODEX_ACK_CONTINUATION_NUDGE, _CODEX_INCOMPLETE_NUDGE, _DEGENERATE_FINAL_NUDGE,
+            _DROPPED_TOOLCALL_NUDGE_CONTENT, _EMPTY_TOOL_RESPONSE_NUDGE, _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX,
+            _LEGACY_LENGTH_CONTINUATION_NETWORK_STUB, _LENGTH_CONTINUATION_NETWORK_STUB,
             _LENGTH_CONTINUATION_OUTPUT_LIMIT,
         )
         return text in {
             COMPRESSION_CONTINUATION_USER_CONTENT, _LEGACY_COMPRESSION_CONTINUATION_USER_CONTENT,
             MAX_ITERATIONS_SUMMARY_REQUEST, _CODEX_INCOMPLETE_NUDGE, _CODEX_ACK_CONTINUATION_NUDGE,
-            _DROPPED_TOOLCALL_NUDGE_CONTENT, _EMPTY_TOOL_RESPONSE_NUDGE, _LENGTH_CONTINUATION_NETWORK_STUB,
+            _DEGENERATE_FINAL_NUDGE, _DROPPED_TOOLCALL_NUDGE_CONTENT, _EMPTY_TOOL_RESPONSE_NUDGE,
+            _LENGTH_CONTINUATION_NETWORK_STUB, _LEGACY_LENGTH_CONTINUATION_NETWORK_STUB,
             _LENGTH_CONTINUATION_OUTPUT_LIMIT,
         } or text.startswith((
 """
 
 NEW_COMPRESS = """        from agent.conversation_loop import (
-            _CODEX_ACK_CONTINUATION_NUDGE, _CODEX_INCOMPLETE_NUDGE, _DROPPED_TOOLCALL_NUDGE_CONTENT,
-            _EMPTY_TOOL_RESPONSE_NUDGE, _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX, _LENGTH_CONTINUATION_NETWORK_STUB,
+            _CODEX_ACK_CONTINUATION_NUDGE, _CODEX_INCOMPLETE_NUDGE, _DEGENERATE_FINAL_NUDGE,
+            _DROPPED_TOOLCALL_NUDGE_CONTENT, _EMPTY_TOOL_RESPONSE_NUDGE, _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX,
+            _LEGACY_LENGTH_CONTINUATION_NETWORK_STUB, _LENGTH_CONTINUATION_NETWORK_STUB,
             _LENGTH_CONTINUATION_OUTPUT_LIMIT,
         )
         from agent.fabricated_result import FABRICATED_RESULT_NUDGE, SECRET_REQUEST_NUDGE
         return text in {
             COMPRESSION_CONTINUATION_USER_CONTENT, _LEGACY_COMPRESSION_CONTINUATION_USER_CONTENT,
             MAX_ITERATIONS_SUMMARY_REQUEST, _CODEX_INCOMPLETE_NUDGE, _CODEX_ACK_CONTINUATION_NUDGE,
-            _DROPPED_TOOLCALL_NUDGE_CONTENT, _EMPTY_TOOL_RESPONSE_NUDGE, _LENGTH_CONTINUATION_NETWORK_STUB,
+            _DEGENERATE_FINAL_NUDGE, _DROPPED_TOOLCALL_NUDGE_CONTENT, _EMPTY_TOOL_RESPONSE_NUDGE,
+            _LENGTH_CONTINUATION_NETWORK_STUB, _LEGACY_LENGTH_CONTINUATION_NETWORK_STUB,
             _LENGTH_CONTINUATION_OUTPUT_LIMIT,
             FABRICATED_RESULT_NUDGE, SECRET_REQUEST_NUDGE,
         } or text.startswith((
 """
-
 
 def main() -> None:
     if not HELPER_SRC.is_file():

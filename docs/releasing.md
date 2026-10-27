@@ -36,7 +36,7 @@ git log --oneline "$(git describe --tags --abbrev=0)"..HEAD
 ```
 
 ```bash
-git diff "$(git describe --tags --abbrev=0)" -- docker-compose.yml compose/hermes/terminal-ssh.yml .env.example scripts/setup.sh
+git diff "$(git describe --tags --abbrev=0)" -- docker-compose.yml docker-compose.hermes-terminal.yml compose/hermes/terminal-ssh.yml .env.example scripts/setup.sh
 ```
 
 ## Tag

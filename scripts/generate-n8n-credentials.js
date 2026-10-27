@@ -35,9 +35,10 @@ function encrypt(data) {
   const key = Buffer.concat([hash1, hash2]);
   const iv = hash3;
   const cipher = crypto.createCipheriv("aes-256-cbc", key, iv);
-  const encrypted =
-    cipher.update(data, "utf8", "base64") + cipher.final("base64");
-  return "U2FsdGVkX1" + salt.toString("base64") + encrypted;
+  const encrypted = Buffer.concat([cipher.update(data, "utf8"), cipher.final()]);
+  // OpenSSL/CryptoJS envelope: base64 of "Salted__" + salt + ciphertext as one
+  // buffer. Encoding the pieces separately misaligns the base64.
+  return Buffer.concat([Buffer.from("Salted__"), salt, encrypted]).toString("base64");
 }
 
 const outDir = path.join(__dirname, "..", "n8n", "demo-data", "credentials");

@@ -1,0 +1,30 @@
+# The hermes side of each terminal backend. docker-compose.yml's hermes
+# service extends hermes-${HERMES_TERMINAL_BACKEND}. Nothing includes this
+# file, so these entries are never services of their own.
+#
+# It sits at the repo root because paths in an extended file resolve against
+# that file's directory, and ASSISTANT_DATA_ROOT defaults to the relative
+# ./data. An include fragment can't carry these keys: Compose before v5
+# refuses a service defined both in an included file and in the main file.
+
+services:
+  hermes-ssh:
+    depends_on:
+      hermes-worker:
+        condition: service_healthy
+    volumes:
+      # projects.list / projects.tree read this directory in-process. Writes go
+      # through the SSH worker, which mounts the same host path read-write.
+      - ${ASSISTANT_DATA_ROOT:-./data}/projects:/opt/projects:ro
+      # Private key for terminal.backend ssh. Not under /opt/data, not on the
+      # write-safe root. cont-init copies it to a mode-600 file the process owns.
+      - ./compose/hermes/worker/ssh/id_ed25519:/opt/hermes-ssh/id_ed25519:ro
+      - ./compose/hermes/09-install-worker-key.sh:/etc/cont-init.d/09-install-worker-key:ro
+
+  # Escape hatch: no worker, and the workspace mounts live on hermes read-write.
+  hermes-local:
+    volumes:
+      - ${ASSISTANT_DATA_ROOT:-./data}/projects:/opt/projects
+      - ${ASSISTANT_DATA_ROOT:-./data}/voice:/opt/voice
+      - ${ASSISTANT_DATA_ROOT:-./data}/memory:/opt/memory
+      - ${OPENCODE_WORKSPACE_HOST}:${OPENCODE_WORKSPACE_HOST}

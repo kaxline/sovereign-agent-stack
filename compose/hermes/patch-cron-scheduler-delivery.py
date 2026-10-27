@@ -2,12 +2,12 @@
 """WebUI cron delivery overlays for scheduler_delivery.py (or legacy scheduler.py).
 
 1. Reject undeliverable cron origins (api_server) and fall back to home channels
-   (upstream #69304).
+   (upstream #69304). Redundant on Hermes v0.22+, whose _resolve_origin already
+   drops api_server origins (_NON_PUSH_ORIGIN_PLATFORMS); kept while it applies.
 2. Synthesize Signal PlatformConfig from SIGNAL_* env when the browser adapter
    is disabled (same outbound-only model as send_message_tool).
 
 Formerly patch-cron-api-server-origin.py + patch-cron-signal-synthesize.py.
-Default deliver=signal at job create time remains patch-cron-default-deliver-signal.py.
 """
 from __future__ import annotations
 

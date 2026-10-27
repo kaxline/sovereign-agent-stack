@@ -1,4 +1,4 @@
-.PHONY: setup ensure-local up down logs ps restart clean doctor hermes-upgrade hermes-reload \
+.PHONY: setup ensure-local up down logs ps restart clean doctor hermes-upgrade hermes-reload gateway-preflight \
 	bootstrap-buzz buzz-cli-install agent-create hermes-buzz-employee \
 	buzz-relay-start buzz-relay-stop buzz-relay-status buzz-relay-logs buzz-relay-restart \
 	buzz-admin \
@@ -6,12 +6,13 @@
 	project-init project-index project-index-check project-sources-test synthetic-mail-test synthetic-messages-test \
 	messages-index messages-index-doctor messages-index-chats messages-index-test \
 	messages-watch messages-notify-test messages-watch-test messages-app messages-app-test \
-	mail-index mail-index-doctor mail-index-mailboxes mail-index-test mail-script-test mail-mcp-test \
+	mail-index mail-index-doctor mail-index-mailboxes mail-index-test mail-script-test mail-imap-test mail-mcp-test \
 	mail-drafts mail-drafts-watch mail-drafts-doctor mail-drafts-test mail-apps mail-apps-test \
 	mail-triage-cron mail-triage-cron-show mail-triage-cron-remove mail-cron-test model-use model-sync \
 	messages-mcp-test messages-triage-cron messages-triage-cron-show messages-triage-cron-remove \
+	calendar-test \
 	data-dir-show data-dir-set data-dir-migrate \
-	db-backup db-service-add db-psql todo-init todo-open \
+	db-backup db-service-add db-psql todo-init todo-open dashboard-open \
 	coding-root-list coding-root-add \
 	context-root-list context-root-add opencode-smoke-fixture \
 	kb-eval-fixture kb-eval-fixture-remove \
@@ -132,6 +133,12 @@ todo-init:
 
 todo-open:
 	@./scripts/todo.sh open
+
+# Hermes dashboard, signed in through a one-time link. See docs/hermes.md.
+#   make dashboard-open
+#   make dashboard-open NEXT=/kanban
+dashboard-open:
+	@./scripts/dashboard-open.py "$(or $(NEXT),/)"
 
 # User content root (projects, voice, memory, inputs, rag_storage, corpora).
 # Hermes state stays at ./data/hermes. See docs/data-dir.md.
@@ -324,6 +331,11 @@ mail-index-test:
 mail-script-test:
 	python3 scripts/test-mail-script.py
 
+# IMAP source and drafts against a throwaway GreenMail server in Docker
+# (synthetic mail only; skipped when Docker isn't running).
+mail-imap-test:
+	python3 scripts/test-mail-imap.py
+
 # Mail drafts (host-side): saves drafts queued by mail-drafts-mcp to Mail's
 # Drafts. Never sends. See docs/email.md.
 MAIL_DRAFTS_DIR ?= ./data/mail-drafts
@@ -389,6 +401,14 @@ messages-triage-cron-show:
 messages-triage-cron-remove:
 	scripts/messages-triage-cron.sh remove
 
+# CalDAV bootstrap and the calendar overlays. The image checks need the pinned
+# Hermes image and skip without it.
+calendar-test:
+	sh scripts/test-caldav-password-ref.sh
+	python3 scripts/test-caldav-foreign-entries.py
+	python3 scripts/test-mirror-exclude.py
+	python3 scripts/test-mcp-trust-details.py
+
 # Shared coding roots (Hermes + OpenCode). See docs/opencode.md.
 #   make coding-root-list
 #   make coding-root-add DIR=/absolute/path/to/repo
@@ -434,12 +454,18 @@ tool-eval-run:
 tool-eval-score:
 	./scripts/tool-eval.sh score
 
+# Hermes' multiplex migration preflight, run against a throwaway copy of the
+# Hermes home with gateway.standalone removed. Changes nothing.
+gateway-preflight:
+	./scripts/gateway-preflight.sh
+
 # Upgrade Hermes and its WebUI together. The WebUI reads the agent's on-disk
 # state layout and is only tested against a matching agent, so bumping one alone
 # is the failure mode this target exists to prevent — pass both tags:
-#   make hermes-upgrade AGENT=v2026.9.14 WEBUI=0.52.113
+#   make hermes-upgrade AGENT=v0.22.5 WEBUI=0.52.492
 # Re-runs both profile bootstraps afterwards, because a new agent may add config
-# keys the running profiles do not have yet.
+# keys the running profiles do not have yet. Refuses an agent tag that dropped
+# gateway.standalone while the stack still pins it.
 hermes-upgrade:
 	@if [ -z "$(AGENT)" ] || [ -z "$(WEBUI)" ]; then \
 		echo "Usage: make hermes-upgrade AGENT=<agent-tag> WEBUI=<webui-tag>"; \
@@ -450,6 +476,7 @@ hermes-upgrade:
 		grep -E '^HERMES_(AGENT|WEBUI)_IMAGE_TAG=' .env; \
 		exit 1; \
 	fi
+	./scripts/check-hermes-standalone.sh "$(AGENT)"
 	@python3 -c 'import re,sys,pathlib; p=pathlib.Path(".env"); t=p.read_text(); \
 	    [t := re.sub(r"(?m)^%s=.*$$" % k, "%s=%s" % (k, v), t) for k, v in \
 	     (("HERMES_AGENT_IMAGE_TAG", "$(AGENT)"), ("HERMES_WEBUI_IMAGE_TAG", "$(WEBUI)"))]; \

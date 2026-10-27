@@ -102,6 +102,12 @@ if has_profile core; then
   else
     ok "HERMES_DASHBOARD_PASSWORD is set"
   fi
+  # The overlays are anchored to semver agent tags (v0.22.5+). A calendar tag
+  # left in .env from before that boots with every overlay skipped.
+  agent_tag="$(env_get HERMES_AGENT_IMAGE_TAG)"
+  if [[ "$agent_tag" =~ ^v20[0-9][0-9]\. ]]; then
+    bad "HERMES_AGENT_IMAGE_TAG=${agent_tag} predates the overlays — make hermes-upgrade AGENT=v0.22.5 WEBUI=0.52.492"
+  fi
 fi
 
 # --- User data root ---
@@ -349,7 +355,7 @@ PY
   }
   check_intent_ack_default
   if has_profile coding; then
-    case "$(echo "$(env_get OPENCODE_MCP_ENABLED 0)" | tr '[:upper:]' '[:lower:]')" in
+    case "$(env_get OPENCODE_MCP_ENABLED 0 | tr '[:upper:]' '[:lower:]')" in
       1|true|yes)
         if [[ -f data/hermes/profiles/browser/config.yaml ]]; then
           if yaml_list_has "data/hermes/profiles/browser/config.yaml" \
@@ -365,7 +371,7 @@ PY
     esac
   fi
   if has_profile rag; then
-    case "$(echo "$(env_get LIGHTRAG_MCP_ENABLED 0)" | tr '[:upper:]' '[:lower:]')" in
+    case "$(env_get LIGHTRAG_MCP_ENABLED 0 | tr '[:upper:]' '[:lower:]')" in
       1|true|yes)
         if [[ -f data/hermes/profiles/browser/config.yaml ]]; then
           _lr_missing=()
@@ -452,6 +458,72 @@ if has_profile core \
     warn "BH_RUNTIME_DIR is not under /tmp in the hermes container — browser_exec breaks after a restart; docker compose up -d hermes"
   fi
   unset _bh_runtime _bh_stale
+fi
+
+# --- Gateway topology (HERMES_GATEWAY_TOPOLOGY) ---
+if has_profile core; then
+  echo ""
+  echo "--- Gateway topology ---"
+  # shellcheck source=lib/env.sh
+  source "$ROOT/scripts/lib/env.sh"
+  topology="$(gateway_topology)"
+  ok "topology: ${topology}"
+  # The WebUI's _reload_dotenv copies API_SERVER_KEY from data/hermes/.env,
+  # which holds the default profile's key under multiplex; this one wins.
+  if grep -qE '^HERMES_WEBUI_GATEWAY_API_KEY=.+' compose/hermes/browser.env 2>/dev/null; then
+    ok "browser.env sets HERMES_WEBUI_GATEWAY_API_KEY"
+  else
+    bad "browser.env has no HERMES_WEBUI_GATEWAY_API_KEY — re-run ./scripts/setup.sh"
+  fi
+  for _env in compose/hermes/api-server.env compose/hermes/browser.env; do
+    _key="$(grep -E '^API_SERVER_KEY=' "$_env" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+    if [[ ${#_key} -ge 16 ]]; then
+      ok "${_env##*/} API_SERVER_KEY has 16+ characters"
+    else
+      bad "${_env##*/} API_SERVER_KEY is shorter than 16 characters; Hermes rejects it on /p/<profile>/"
+    fi
+  done
+  unset _env _key
+  if [[ "$topology" == multiplex ]]; then
+    _pinned="$(grep -lE '^[[:space:]]+standalone:[[:space:]]*true' data/hermes/profiles/*/config.yaml 2>/dev/null || true)"
+    if [[ -n "$_pinned" ]]; then
+      warn "profiles still pinned gateway.standalone: true ($(echo "$_pinned" | awk -F/ '{print $(NF-1)}' | xargs)) — ./scripts/gateway-topology.sh multiplex"
+    else
+      ok "no profile pinned gateway.standalone: true"
+    fi
+    unset _pinned
+    if docker compose ps --status running hermes 2>/dev/null | grep -q hermes; then
+      _browser_port="$(env_get HERMES_BROWSER_API_PORT 8644)"
+      for _check in "8642/health:default listener" "8642/p/api-server/health:api-server at /p/api-server" \
+        "8642/p/browser/health:browser at /p/browser" "8643/health:compat proxy 8643 -> api-server" \
+        "${_browser_port}/health:compat proxy ${_browser_port} -> browser"; do
+        _path="${_check%%:*}"
+        if docker compose exec -T hermes /opt/hermes/.venv/bin/python -c \
+          "import urllib.request as u; u.urlopen('http://127.0.0.1:${_path}', timeout=5)" >/dev/null 2>&1; then
+          ok "${_check#*:} answers"
+        else
+          bad "${_check#*:} does not answer (127.0.0.1:${_path} in hermes)"
+        fi
+      done
+      unset _browser_port _check _path
+    fi
+  fi
+  if [[ "$(env_get HERMES_SIGNAL_ENABLED 0)" =~ ^(1|true|yes)$ ]] \
+    && docker compose ps --status running hermes 2>/dev/null | grep -q hermes; then
+    # Two Signal adapters in one gateway process fight over the account lock.
+    if docker compose exec -T hermes /opt/hermes/.venv/bin/python - <<'PY' >/dev/null 2>&1
+import sys
+sys.path.insert(0, "/opt/hermes")
+from hermes_cli.config import read_user_config_raw
+cfg = read_user_config_raw("/opt/data/profiles/browser/config.yaml")
+raise SystemExit(0 if ((cfg.get("platforms") or {}).get("signal") or {}).get("enabled") is False else 1)
+PY
+    then
+      ok "browser profile keeps platforms.signal.enabled: false"
+    else
+      bad "browser profile does not disable Signal — re-run ./scripts/sync-signal-profile.sh"
+    fi
+  fi
 fi
 
 # --- Ports (best-effort; skip if lsof unavailable) ---
@@ -558,9 +630,11 @@ if [[ "$signal_enabled" -eq 1 ]]; then
     warn "browser profile missing Signal credentials — run make ensure-local"
   fi
   browser_jobs="data/hermes/profiles/browser/cron/jobs.json"
-  if [[ -f "$browser_jobs" ]] && grep -q 'last_delivery_error' "$browser_jobs" \
-    && grep -qE 'api_server|not send\(\)' "$browser_jobs" 2>/dev/null; then
-    warn "browser cron jobs have api_server delivery errors — recreate hermes and re-run jobs"
+  if [[ -f "$browser_jobs" ]]; then
+    _cron_err_jobs="$(python3 -I "${ROOT}/scripts/lib/cron_delivery_errors.py" "$browser_jobs" | tr '\n' ' ')"
+    if [[ -n "${_cron_err_jobs// /}" ]]; then
+      warn "browser cron jobs have api_server delivery errors (${_cron_err_jobs% }) — recreate hermes and re-run jobs"
+    fi
   fi
   if docker info >/dev/null 2>&1; then
     if docker compose ps --status running hermes 2>/dev/null | grep -q hermes; then
@@ -568,11 +642,7 @@ if [[ "$signal_enabled" -eq 1 ]]; then
         || docker compose exec -T hermes grep -q 'assistant-stack: reject undeliverable cron origin' /opt/hermes/cron/scheduler.py 2>/dev/null; then
         if docker compose exec -T hermes grep -q 'assistant-stack: cron synthesize Signal' /opt/hermes/cron/scheduler.py 2>/dev/null \
           || docker compose exec -T hermes grep -q 'assistant-stack: cron synthesize Signal' /opt/hermes/cron/scheduler_delivery.py 2>/dev/null; then
-          if docker compose exec -T hermes grep -q 'assistant-stack: default WebUI cron deliver to signal' /opt/hermes/tools/cronjob_tools.py 2>/dev/null; then
-            ok "Hermes cron Signal patches applied"
-          else
-            warn "Hermes cron Signal patches missing — docker compose up -d --force-recreate hermes"
-          fi
+          ok "Hermes cron Signal patches applied"
         else
           warn "Hermes cron Signal patches missing — docker compose up -d --force-recreate hermes"
         fi
@@ -642,8 +712,8 @@ if [[ "$buzz_enabled" -eq 1 ]]; then
     expanded_local="$local_buzz"
     if [[ "$expanded_local" == "~" ]]; then
       expanded_local="$HOME"
-    elif [[ "$expanded_local" == "~/"* ]]; then
-      expanded_local="$HOME/${expanded_local#~/}"
+    elif [[ "$expanded_local" == \~/* ]]; then
+      expanded_local="$HOME/${expanded_local#\~/}"
     fi
     if [[ -d "$expanded_local" ]]; then
       ok "BUZZ_LOCAL_DIR_PATH is set"
@@ -1117,6 +1187,13 @@ if has_profile mail || [[ "$mail_on" -eq 1 ]]; then
   if docker info >/dev/null 2>&1; then
     if docker compose ps --status running mail-mcp 2>/dev/null | grep -q mail-mcp; then
       ok "mail-mcp container is running"
+      # mail-mcp is built locally and `make up` doesn't rebuild it, so code
+      # changes can sit unused. The watermark route is the newest addition.
+      if docker compose exec -T hermes python3 -c 'import urllib.request as u; u.urlopen("http://mail-mcp:8000/watermark", timeout=10)' >/dev/null 2>&1; then
+        ok "mail-mcp answers /watermark (image is current)"
+      else
+        bad "mail-mcp has no /watermark route — its image is out of date; run: docker compose up -d --build mail-mcp"
+      fi
     elif has_profile mail; then
       warn "mail-mcp not running — make up with mail in COMPOSE_PROFILES"
     fi

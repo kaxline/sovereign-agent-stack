@@ -49,6 +49,12 @@ if [[ "$action" == "create" ]]; then
   fi
 fi
 docker compose ps --status running hermes 2>/dev/null | grep -q hermes || die "hermes isn't running; make up"
+if [[ "$action" == "create" ]]; then
+  # The job's monitor polls this route; an old mail-mcp image doesn't have it,
+  # and every tick would then fail and send a failure notice.
+  docker compose exec -T hermes python3 -c 'import urllib.request as u; u.urlopen("http://mail-mcp:8000/watermark", timeout=10)' >/dev/null 2>&1 \
+    || die "hermes can't reach http://mail-mcp:8000/watermark; rebuild mail-mcp with: docker compose up -d --build mail-mcp"
+fi
 
 request="$(python3 -c '
 import json, sys

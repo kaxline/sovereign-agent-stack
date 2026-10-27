@@ -1,7 +1,8 @@
 #!/bin/sh
 # WebUI Signal: synthesize credentials when adapter disabled, restore
 # agent-callable send_message, make tool_search see visible core tools,
-# and fix cron delivery from WebUI (api_server origin + disabled adapter).
+# and let cron deliver to Signal with the adapter disabled. WebUI (api_server)
+# jobs reach Signal through upstream's home-channel fallback (v0.22, #69304).
 # Individual patch scripts may skip on unknown Hermes shapes — continue so
 # later patches still run.
 set -u
@@ -16,7 +17,6 @@ run_patch /bootstrap/patch-ensure-send-message-tools.py
 run_patch /bootstrap/patch-tool-search-visible.py
 run_patch /bootstrap/patch-tool-search-always-include.py
 run_patch /bootstrap/patch-cron-scheduler-delivery.py
-run_patch /bootstrap/patch-cron-default-deliver-signal.py
 
 # Drop stale discovery verdicts so the next gateway start re-scans AST.
 # A cached registers=False for send_message_tool.py skips the import entirely.

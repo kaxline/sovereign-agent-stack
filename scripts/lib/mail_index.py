@@ -1,11 +1,17 @@
-"""Index a scoped slice of Apple Mail into a local SQLite file.
+"""Index a scoped slice of your mail into a local SQLite file.
 
-Two sources feed the same index. The default, `script` (mail_script.py),
-asks Mail.app through scripting and needs only the Automation permission for
-Mail. The opt-in `store` source (StoreSource below) reads Mail's metadata
-database from a snapshot copy and the message files, which needs Full Disk
-Access but is much faster. Either way only the accounts, mailboxes and date
-window named in the config are indexed, and nothing is ever written to Mail.
+Several read adapters ("sources") feed the same index, chosen per account.
+The default, `script` (mail_script.py), asks Mail.app through scripting and
+needs only the Automation permission for Mail. The opt-in `store` source
+(StoreSource below) reads Mail's metadata database from a snapshot copy and
+the message files, which needs Full Disk Access but is much faster. The
+`imap` source (mail_imap.py) reads an IMAP account without changing it.
+Whatever the source, only the accounts, mailboxes and date window named in
+the config are indexed, and nothing is ever written to the account.
+
+This module is the core: config, scope, the index and its ids. An adapter
+only lists and fetches messages (see "sources" below, and Providers in
+docs/email.md).
 
 Nothing here has a default store path: the config must name it. Output from
 run() is counts only, never message content. See docs/email.md.
@@ -25,7 +31,7 @@ import sqlite3
 import tempfile
 import time
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from email.message import EmailMessage
 from html.parser import HTMLParser
@@ -33,9 +39,9 @@ from pathlib import Path
 from typing import Iterator
 from urllib.parse import unquote, urlsplit
 
-INDEX_SCHEMA_VERSION = 1
+INDEX_SCHEMA_VERSION = 2
 SAVE_EVERY = 50  # messages fetched between commits, so a long first run can resume
-SOURCES = ("script", "store")
+SOURCES = ("script", "store", "imap")
 META_DB = "Envelope Index"
 MESSAGE_SUFFIXES = (".partial.emlx", ".emlx")
 # Left out of a "*" mailbox pattern; list them by name to include them.
@@ -62,6 +68,8 @@ class LayoutError(RuntimeError):
 class AccountScope:
     id: str
     mailboxes: list[str]
+    source: str = "script"
+    settings: dict = field(default_factory=dict)  # the adapter's own settings, e.g. an IMAP host
 
 
 @dataclass
@@ -78,7 +86,8 @@ class Config:
 
     def scope_fingerprint(self) -> str:
         data = {"source": self.source, "store": str(self.store), "since": self.since.isoformat(),
-                "accounts": [[a.id.upper(), sorted(a.mailboxes)] for a in self.accounts]}
+                "accounts": [[a.id.upper(), sorted(a.mailboxes)] + ([a.source] if a.source != self.source else [])
+                             for a in self.accounts]}
         return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()[:16]
 
 
@@ -105,14 +114,18 @@ def load_config(path: Path) -> Config:
 
     source = raw.get("source", "script")
     if source not in SOURCES:
-        raise ConfigError("`source` must be \"script\" (Mail.app, the default) or \"store\" (Mail's files)")
+        raise ConfigError("`source` must be \"script\" (Mail.app, the default), \"store\" (Mail's files)"
+                          " or \"imap\"")
+    raw_accounts = raw.get("accounts") or []
+    uses_store = (source == "store" and not raw_accounts) or any(
+        isinstance(item, dict) and item.get("source", source) == "store" for item in raw_accounts)
     has_store = isinstance(raw.get("store"), str) and raw["store"].strip()
-    if source == "script" and has_store:
+    if not uses_store and has_store:
         if "source" not in raw:
             raise ConfigError("`store` is set but `source` isn't; add source = \"store\" to read"
                               " Mail's files (Full Disk Access), or remove `store` to use Mail.app")
         raise ConfigError("`store` is only used with source = \"store\"; remove it")
-    store = _path(raw.get("store"), "store", base) if source == "store" else None
+    store = _path(raw.get("store"), "store", base) if uses_store else None
     index = _path(raw.get("index"), "index", base)
     if store is not None and (index == store or store in index.parents):
         raise ConfigError("`index` must be outside the Mail store")
@@ -127,15 +140,29 @@ def load_config(path: Path) -> Config:
         raise ConfigError("`since` is required, e.g. since = 2026-01-01")
 
     accounts = []
-    for i, item in enumerate(raw.get("accounts") or []):
-        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+    for i, item in enumerate(raw_accounts):
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not item["id"].strip():
             raise ConfigError(f"accounts[{i}] needs an `id`")
         boxes = item.get("mailboxes")
         if not boxes or not all(isinstance(b, str) and b for b in boxes):
             raise ConfigError(f"accounts[{i}] needs a non-empty `mailboxes` list")
-        accounts.append(AccountScope(item["id"].strip(), list(boxes)))
+        acct_source = item.get("source", source)
+        if acct_source not in SOURCES:
+            raise ConfigError(f"accounts[{i}]: `source` must be \"script\", \"store\" or \"imap\"")
+        settings: dict = {}
+        if acct_source == "imap":
+            import mail_imap
+            settings = mail_imap.account_settings(item, base, where=f"accounts[{i}]")
+        else:
+            extra = set(item) - {"id", "mailboxes", "source"}
+            if extra:
+                raise ConfigError(f"accounts[{i}]: unknown keys for a {acct_source} account:"
+                                  f" {', '.join(sorted(extra))}")
+        accounts.append(AccountScope(item["id"].strip(), list(boxes), acct_source, settings))
     if not accounts:
         raise ConfigError("list at least one [[accounts]] entry; nothing is indexed by default")
+    if len({a.id.upper() for a in accounts}) != len(accounts):
+        raise ConfigError("two [[accounts]] entries have the same `id`")
 
     def flag(key: str) -> bool:
         value = raw.get(key, False)
@@ -180,7 +207,23 @@ def parse_mailbox_url(url: str) -> tuple[str, str] | None:
     return parts.netloc, unquote(parts.path.lstrip("/"))
 
 
+def is_literal(pattern: str) -> bool:
+    """True for an exact mailbox name, False for a pattern with * ? or [."""
+    return not any(c in pattern for c in "*?[")
+
+
+def _glob(pattern: list[str], path: list[str]) -> bool:
+    """Match one "/" level per pattern part; a "**" part matches any number of levels."""
+    if not pattern:
+        return not path
+    if pattern[0] == "**":
+        return any(_glob(pattern[1:], path[i:]) for i in range(len(path) + 1))
+    return bool(path) and fnmatch.fnmatchcase(path[0], pattern[0]) and _glob(pattern[1:], path[1:])
+
+
 def mailbox_selected(path: str, patterns: list[str]) -> bool:
+    """Exact names (case-insensitive), or patterns where * stays within one level
+    and ** spans any number. Patterns skip Junk and Trash; name them to include."""
     lowered = path.lower()
     leaf = lowered.rsplit("/", 1)[-1]
     for pattern in patterns:
@@ -188,7 +231,8 @@ def mailbox_selected(path: str, patterns: list[str]) -> bool:
             return True
     if leaf in EXCLUDED_BY_DEFAULT:
         return False
-    return any(fnmatch.fnmatchcase(lowered, p.lower()) for p in patterns)
+    parts = lowered.split("/")
+    return any(_glob(p.lower().split("/"), parts) for p in patterns if not is_literal(p))
 
 
 def message_files(version_dir: Path, account: str, mailbox: str) -> dict[int, Path]:
@@ -230,7 +274,8 @@ OPTIONAL = {
 
 @dataclass
 class MetaRow:
-    rowid: int
+    """One message as an adapter lists it, before its file or details are fetched."""
+    source_id: str  # the adapter's id, unique within (account, mailbox); Mail's ROWID for script and store
     account: str
     mailbox: str
     date_received: int
@@ -320,14 +365,19 @@ def read_metadata(meta_path: Path, config: Config) -> tuple[list[MetaRow], dict]
             if is_deleted:
                 continue
             rows.append(MetaRow(
-                rowid=int(rowid), account=account, mailbox=mailbox, date_received=int(received),
+                source_id=str(int(rowid)), account=account, mailbox=mailbox, date_received=int(received),
                 date_sent=int(sent) if sent is not None else None,
                 subject=subject, sender=sender, sender_name=sender_name, flags=flags,
                 read=bool(read) if read is not None else bool(flags & FLAG_READ),
                 flagged=bool(flagged) if flagged is not None else bool(flags & FLAG_FLAGGED),
                 deleted=False, conversation_id=int(conv) if conv is not None else None,
             ))
-        info = {"accounts_missing": sorted(set(wanted) - seen_accounts)}
+        known = {(acct.upper(), box.lower()) for acct, box in
+                 filter(None, (parse_mailbox_url(r[0] or "") for r in db.execute("SELECT url FROM mailboxes")))}
+        missing_accounts = set(wanted) - seen_accounts - {acct for acct, _ in known}
+        boxes_missing = sum(1 for acct, patterns in wanted.items() if acct not in missing_accounts
+                            for p in patterns if is_literal(p) and (acct, p.lower()) not in known)
+        info = {"accounts_missing": sorted(missing_accounts), "mailboxes_missing": boxes_missing}
         return rows, info
     finally:
         db.close()
@@ -391,6 +441,12 @@ def read_message_file(path: Path) -> EmailMessage:
     return email.message_from_bytes(rest[:length], policy=email.policy.default)
 
 
+def parse_raw(raw: bytes, *, bodies: bool, attachments: bool, max_chars: int) -> ParsedMessage:
+    """A raw RFC 5322 message (or just its headers), as an adapter fetched it."""
+    return parse_email(email.message_from_bytes(raw, policy=email.policy.default),
+                       bodies=bodies, attachments=attachments, max_chars=max_chars)
+
+
 def _addresses(msg: EmailMessage, header: str) -> list[tuple[str, str]]:
     try:
         value = msg[header]
@@ -409,7 +465,10 @@ def _ids(value) -> list[str]:
 
 
 def parse_message(path: Path, *, bodies: bool, attachments: bool, max_chars: int) -> ParsedMessage:
-    msg = read_message_file(path)
+    return parse_email(read_message_file(path), bodies=bodies, attachments=attachments, max_chars=max_chars)
+
+
+def parse_email(msg: EmailMessage, *, bodies: bool, attachments: bool, max_chars: int) -> ParsedMessage:
     body = None
     if bodies:
         part = msg.get_body(preferencelist=("plain", "html"))
@@ -420,7 +479,8 @@ def parse_message(path: Path, *, bodies: bool, attachments: bool, max_chars: int
                 content = ""
             if part.get_content_subtype() == "html":
                 content = html_to_text(content)
-            body = content.strip()[:max_chars]
+            # IMAP servers send CRLF; files on disk usually hold LF. Store one form.
+            body = content.replace("\r\n", "\n").strip()[:max_chars]
     atts = []
     if attachments:
         for part in msg.iter_attachments():
@@ -454,10 +514,14 @@ def parsed_from_message(msg: EmailMessage, *, body: str | None, attachments: lis
 
 # --------------------------------------------------------------------------- index
 
-INDEX_SCHEMA = """
-CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+META_SCHEMA = "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);"
+# Schema 2. The index assigns its own ids, counting up and never reused, so
+# "indexed after id N" holds across every account and source. Schema 1 used
+# Mail's ROWID as the id; upgrading keeps those ids (see _upgrade_from_1).
+MESSAGES_TABLE = """
 CREATE TABLE IF NOT EXISTS messages (
-    rowid INTEGER PRIMARY KEY,          -- the store's message ROWID
+    rowid INTEGER PRIMARY KEY AUTOINCREMENT,  -- the index's own id
+    source_id TEXT NOT NULL,            -- the adapter's id, unique within account and mailbox
     account TEXT NOT NULL,
     mailbox TEXT NOT NULL,
     message_id TEXT,
@@ -478,6 +542,12 @@ CREATE TABLE IF NOT EXISTS messages (
     body_indexed INTEGER NOT NULL DEFAULT 0,
     attachments TEXT                    -- JSON list of {name, mime, size}, or NULL
 );
+"""
+MESSAGE_COLUMNS = ("account, mailbox, message_id, in_reply_to, refs, thread_id, date_received, date_sent,"
+                   " from_addr, from_name, to_addrs, cc_addrs, subject, flags, is_read, is_flagged, body,"
+                   " body_indexed, attachments")
+INDEX_SCHEMA = META_SCHEMA + MESSAGES_TABLE + """
+CREATE UNIQUE INDEX IF NOT EXISTS messages_source ON messages(account, mailbox, source_id);
 CREATE INDEX IF NOT EXISTS messages_date ON messages(date_received);
 CREATE INDEX IF NOT EXISTS messages_thread ON messages(thread_id);
 CREATE INDEX IF NOT EXISTS messages_message_id ON messages(message_id);
@@ -496,6 +566,7 @@ class RunStats:
     missing_files: int = 0
     unreadable: int = 0
     accounts_missing: list[str] = field(default_factory=list)
+    mailboxes_missing: int = 0
     compacted: bool = False
 
     def as_dict(self) -> dict:
@@ -519,13 +590,34 @@ def open_index(path: Path) -> sqlite3.Connection:
         os.chmod(path, 0o600)
     # Overwrite deleted rows with zeros instead of leaving them in free pages.
     db.execute("PRAGMA secure_delete = ON")
-    db.executescript(INDEX_SCHEMA)
+    db.executescript(META_SCHEMA)
     version = db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
-    if version and int(version[0]) != INDEX_SCHEMA_VERSION:
+    if version and int(version[0]) == 1:
+        _upgrade_from_1(db)
+    elif version and int(version[0]) != INDEX_SCHEMA_VERSION:
         db.close()
         raise LayoutError(f"index schema {version[0]} is not {INDEX_SCHEMA_VERSION}; delete {path} and re-run")
+    db.executescript(INDEX_SCHEMA)
     db.execute("INSERT OR REPLACE INTO meta VALUES ('schema_version', ?)", (str(INDEX_SCHEMA_VERSION),))
+    db.commit()
     return db
+
+
+def _upgrade_from_1(db: sqlite3.Connection) -> None:
+    """Schema 1 to 2 in place. Every message keeps its id (Mail's ROWID, which
+    becomes its source_id too), and new ids count on from the highest one, so
+    nothing is fetched again and a scheduler's last newest_id stays valid.
+    The search index is keyed by the same ids, so it's left as it is."""
+    db.execute("BEGIN")
+    db.execute("ALTER TABLE messages RENAME TO messages_v1")
+    for name in ("messages_date", "messages_thread", "messages_message_id"):
+        db.execute(f"DROP INDEX IF EXISTS {name}")
+    db.execute(MESSAGES_TABLE)
+    db.execute(f"INSERT INTO messages (rowid, source_id, {MESSAGE_COLUMNS})"
+               f" SELECT rowid, CAST(rowid AS TEXT), {MESSAGE_COLUMNS} FROM messages_v1")
+    db.execute("DROP TABLE messages_v1")
+    db.execute("INSERT OR REPLACE INTO meta VALUES ('schema_version', '2')")
+    db.commit()
 
 
 def fts_secure_delete(db: sqlite3.Connection) -> bool:
@@ -614,7 +706,7 @@ class StoreSource:
             key = (row.account, row.mailbox)
             if key not in self._files:
                 self._files[key] = message_files(self.version_dir, row.account, row.mailbox)
-            path = self._files[key].get(row.rowid)
+            path = self._files[key].get(int(row.source_id))
             if path is None:
                 yield row, MISSING
                 continue
@@ -638,7 +730,7 @@ class StoreSource:
             rows, info = read_metadata(meta_path, self.config)
         by_box: dict[tuple[str, str], set[int]] = {}
         for r in rows:
-            by_box.setdefault((r.account, r.mailbox), set()).add(r.rowid)
+            by_box.setdefault((r.account, r.mailbox), set()).add(int(r.source_id))
         found = sum(len(ids & message_files(version_dir, acct, box).keys())
                     for (acct, box), ids in by_box.items())
         plausible = lo is not None and 946684800 <= lo <= hi <= time.time() + 86400 * 2
@@ -651,24 +743,72 @@ class StoreSource:
             "mailboxes_in_scope": len(by_box),
             "message_files_found": found,
             "accounts_missing": info["accounts_missing"],
+            "mailboxes_missing": info["mailboxes_missing"],
         }
 
 
 def open_source(config: Config, runner=None):
-    """The configured source. `runner` replaces osascript for the script source (tests)."""
-    if config.source == "store":
+    """The adapter for config's accounts, which must all use one source.
+    `runner` replaces osascript for the script source (tests)."""
+    kinds = {a.source for a in config.accounts}
+    if len(kinds) != 1:
+        raise ConfigError("open_source() needs accounts that share one source; use open_sources()")
+    kind = kinds.pop()
+    if kind == "store":
         return StoreSource(config)
+    if kind == "imap":
+        import mail_imap
+        return mail_imap.ImapSource(config)
     import mail_script
     return mail_script.ScriptSource(config, runner)
 
 
+def open_sources(config: Config, runner=None) -> list:
+    """One adapter per source the config's accounts use, each seeing only its own accounts."""
+    out = []
+    for kind in dict.fromkeys(a.source for a in config.accounts):
+        part = replace(config, accounts=[a for a in config.accounts if a.source == kind])
+        out.append(open_source(part, runner))
+    return out
+
+
 # --------------------------------------------------------------------------- run
 
-def run(config: Config, *, now: float | None = None, source=None) -> RunStats:
+def _fetch_all(rows: list[MetaRow], owner: dict[str, object]) -> Iterator[tuple[MetaRow, object]]:
+    """Fetch rows through each one's own adapter, oldest first across all of them.
+
+    Each adapter gets its rows in one call, so it can batch. Results are
+    yielded in the order the adapters return them, adapter by adapter in
+    date order of their oldest row.
+    """
+    groups: dict[int, tuple[object, list[MetaRow]]] = {}
+    for row in rows:
+        src = owner[row.account.upper()]
+        groups.setdefault(id(src), (src, []))[1].append(row)
+    for src, group in groups.values():
+        yield from src.fetch(group)
+
+
+def run(config: Config, *, now: float | None = None, source=None, sources: list | None = None) -> RunStats:
+    """Bring the index up to date with every configured account.
+
+    `source` (one adapter for all accounts) or `sources` replace the
+    configured adapters, for tests."""
     stats = RunStats()
-    source = source or open_source(config)
-    rows, info = source.rows()
-    stats.accounts_missing = info["accounts_missing"]
+    sources = [source] if source is not None else (sources or open_sources(config))
+    owner: dict[str, object] = {}
+    rows: list[MetaRow] = []
+    for src in sources:
+        got, info = src.rows()
+        rows += got
+        stats.accounts_missing += info["accounts_missing"]
+        stats.mailboxes_missing += info.get("mailboxes_missing", 0)
+        names = {a.id.upper() for a in src.config.accounts} if hasattr(src, "config") else set()
+        for name in names or {a.id.upper() for a in config.accounts}:
+            owner[name] = src
+        for r in got:
+            owner.setdefault(r.account.upper(), src)
+    stats.accounts_missing = sorted(set(stats.accounts_missing))
     stats.in_scope = len(rows)
 
     db = open_index(config.index)
@@ -679,24 +819,34 @@ def run(config: Config, *, now: float | None = None, source=None) -> RunStats:
         first_scrub = db.execute("SELECT 1 FROM meta WHERE key = 'scrubbed'").fetchone() is None
         erased = False  # text was deleted or blanked this run
         fingerprint = config.scope_fingerprint()
-        # Message ids and flag words differ between sources, so switching
-        # source rebuilds the index. Indexes from before `source` existed
-        # were built from the store.
-        built_from = db.execute("SELECT value FROM meta WHERE key='source'").fetchone()
-        has_rows = db.execute("SELECT 1 FROM messages LIMIT 1").fetchone() is not None
-        if has_rows and (built_from[0] if built_from else "store") != source.name:
-            stats.removed += db.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-            erased = True
-            db.execute("DELETE FROM messages")
-            db.execute("DELETE FROM messages_fts")
-        # Record the source now, so a run cut short after the wipe resumes
-        # instead of wiping its own progress next time.
-        db.execute("INSERT OR REPLACE INTO meta VALUES ('source', ?)", (source.name,))
+        # Source ids and flag words differ between sources, so moving an
+        # account to another source re-indexes that account. Indexes from
+        # before per-account sources recorded one `source` for everything,
+        # and those from before `source` existed were built from the store.
+        recorded = db.execute("SELECT value FROM meta WHERE key='sources'").fetchone()
+        legacy = db.execute("SELECT value FROM meta WHERE key='source'").fetchone()
+        built_from: dict[str, str] = json.loads(recorded[0]) if recorded else {}
+        now_from = {name: getattr(src, "name", "script") for name, src in owner.items()}
+        for (account,) in db.execute("SELECT DISTINCT account FROM messages").fetchall():
+            before = built_from.get(account.upper(), legacy[0] if legacy else "store")
+            after = now_from.get(account.upper())
+            if after is not None and before != after:
+                ids = [r[0] for r in db.execute("SELECT rowid FROM messages WHERE account = ?", (account,))]
+                for rowid in ids:
+                    db.execute("DELETE FROM messages_fts WHERE rowid = ?", (rowid,))
+                db.execute("DELETE FROM messages WHERE account = ?", (account,))
+                stats.removed += len(ids)
+                erased = True
+        # Record sources now, so a run cut short after a wipe resumes instead
+        # of wiping its own progress next time.
+        db.execute("INSERT OR REPLACE INTO meta VALUES ('sources', ?)", (json.dumps(now_from, sort_keys=True),))
+        db.execute("DELETE FROM meta WHERE key = 'source'")
 
-        existing = {r[0]: (r[1], r[2]) for r in
-                    db.execute("SELECT rowid, flags, body_indexed FROM messages")}
-        keep = {r.rowid for r in rows}
-        for rowid in set(existing) - keep:
+        existing = {(r[1], r[2], r[3]): (r[0], r[4], r[5]) for r in
+                    db.execute("SELECT rowid, account, mailbox, source_id, flags, body_indexed FROM messages")}
+        keep = {(r.account, r.mailbox, r.source_id) for r in rows}
+        for key in set(existing) - keep:
+            rowid = existing.pop(key)[0]
             db.execute("DELETE FROM messages WHERE rowid = ?", (rowid,))
             db.execute("DELETE FROM messages_fts WHERE rowid = ?", (rowid,))
             stats.removed += 1
@@ -704,14 +854,14 @@ def run(config: Config, *, now: float | None = None, source=None) -> RunStats:
 
         to_fetch = []
         for row in rows:
-            prior = existing.get(row.rowid)
-            needs_file = prior is None or (config.bodies and not prior[1]) or (not config.bodies and prior[1])
-            if prior is not None and prior[1] and not config.bodies:
+            prior = existing.get((row.account, row.mailbox, row.source_id))
+            needs_file = prior is None or (config.bodies and not prior[2]) or (not config.bodies and prior[2])
+            if prior is not None and prior[2] and not config.bodies:
                 erased = True  # this message's body is about to be blanked
             if prior is not None and not needs_file:
-                if prior[0] != row.flags:
-                    db.execute("UPDATE messages SET flags=?, is_read=?, is_flagged=?, mailbox=? WHERE rowid=?",
-                               (row.flags, int(row.read), int(row.flagged), row.mailbox, row.rowid))
+                if prior[1] != row.flags:
+                    db.execute("UPDATE messages SET flags=?, is_read=?, is_flagged=? WHERE rowid=?",
+                               (row.flags, int(row.read), int(row.flagged), prior[0]))
                     stats.updated += 1
                 continue
             to_fetch.append(row)
@@ -722,7 +872,7 @@ def run(config: Config, *, now: float | None = None, source=None) -> RunStats:
         # that stops early (sleep, Mail quitting, a timeout) keeps what it
         # saved, and the next run fetches only what's still missing.
         db.commit()
-        for done, (row, result) in enumerate(source.fetch(to_fetch), start=1):
+        for done, (row, result) in enumerate(_fetch_all(to_fetch, owner), start=1):
             parsed = result if isinstance(result, ParsedMessage) else None
             if result == MISSING:
                 stats.missing_files += 1
@@ -734,26 +884,28 @@ def run(config: Config, *, now: float | None = None, source=None) -> RunStats:
             to = parsed.to if parsed else []
             cc = parsed.cc if parsed else []
             body = parsed.body if parsed else None
-            db.execute(
-                "INSERT OR REPLACE INTO messages (rowid, account, mailbox, message_id, in_reply_to, refs,"
-                " thread_id, date_received, date_sent, from_addr, from_name, to_addrs, cc_addrs, subject,"
-                " flags, is_read, is_flagged, body, body_indexed, attachments)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (row.rowid, row.account, row.mailbox,
-                 parsed.message_id if parsed else None,
-                 parsed.in_reply_to if parsed else None,
-                 json.dumps(parsed.references if parsed else []),
-                 _thread_id(db, row, parsed), row.date_received, row.date_sent,
-                 from_addr, from_name, json.dumps(to), json.dumps(cc), subject,
-                 row.flags, int(row.read), int(row.flagged), body,
-                 int(config.bodies and parsed is not None),
-                 json.dumps(parsed.attachments) if parsed and config.attachments else None),
-            )
-            _fts_put(db, row.rowid, subject, from_addr, from_name, to, cc, body)
-            if row.rowid in existing:
+            prior = existing.get((row.account, row.mailbox, row.source_id))
+            values = (row.account, row.mailbox,
+                      parsed.message_id if parsed else None,
+                      parsed.in_reply_to if parsed else None,
+                      json.dumps(parsed.references if parsed else []),
+                      _thread_id(db, row, parsed), row.date_received, row.date_sent,
+                      from_addr, from_name, json.dumps(to), json.dumps(cc), subject,
+                      row.flags, int(row.read), int(row.flagged), body,
+                      int(config.bodies and parsed is not None),
+                      json.dumps(parsed.attachments) if parsed and config.attachments else None)
+            marks = ",".join("?" * (len(values) + 1))
+            if prior is not None:
+                # Same id as before: a re-read (bodies turned on or off) isn't new mail.
+                rowid = prior[0]
+                db.execute(f"REPLACE INTO messages (rowid, source_id, {MESSAGE_COLUMNS}) VALUES (?,{marks})",
+                           (rowid, row.source_id, *values))
                 stats.updated += 1
             else:
+                rowid = db.execute(f"INSERT INTO messages (source_id, {MESSAGE_COLUMNS}) VALUES ({marks})",
+                                   (row.source_id, *values)).lastrowid
                 stats.added += 1
+            _fts_put(db, rowid, subject, from_addr, from_name, to, cc, body)
             if done % SAVE_EVERY == 0:
                 db.commit()
 
@@ -777,5 +929,11 @@ def run(config: Config, *, now: float | None = None, source=None) -> RunStats:
 
 
 def doctor(config: Config, *, source=None) -> dict:
-    """Check that the source and config line up. Returns counts, timings and booleans only."""
-    return (source or open_source(config)).doctor()
+    """Check that the sources and config line up. Returns counts, timings and booleans only.
+
+    With one source the report is that source's, as before; with several,
+    each source's report is listed under `sources`."""
+    if source is not None:
+        return source.doctor()
+    reports = [src.doctor() for src in open_sources(config)]
+    return reports[0] if len(reports) == 1 else {"sources": reports}

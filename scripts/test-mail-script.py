@@ -72,14 +72,16 @@ def run(config: mi.Config, runner: ms.Runner) -> mi.RunStats:
 def indexed(config: mi.Config) -> dict[int, sqlite3.Row]:
     db = sqlite3.connect(config.index)
     db.row_factory = sqlite3.Row
-    rows = {r["rowid"]: r for r in db.execute("SELECT * FROM messages")}
+    rows = {int(r["source_id"]): r for r in db.execute("SELECT * FROM messages")}
     db.close()
     return rows
 
 
 def search(config: mi.Config, query: str) -> set[int]:
     db = sqlite3.connect(config.index)
-    hits = {r[0] for r in db.execute("SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?", (query,))}
+    hits = {int(r[0]) for r in db.execute(
+        "SELECT m.source_id FROM messages_fts f JOIN messages m ON m.rowid = f.rowid"
+        " WHERE messages_fts MATCH ?", (query,))}
     db.close()
     return hits
 
@@ -157,6 +159,39 @@ def test_scope(env: Env) -> None:
     stats = run(cfg, runner)
     expect(stats.in_scope == 0 and stats.accounts_missing == ["00000000-0000-0000-0000-000000000000"],
            f"unknown account reported: {stats}")
+
+
+def test_lookups(env: Env) -> None:
+    runner, _, _ = env.fake()
+    calls: list[str] = []
+
+    def recording(request: dict) -> dict:
+        calls.append(request["command"])
+        return runner(request)
+
+    cfg = env.config({PERSONAL: ["inbox", "Nope"], WORK: ["projects/alpha", "Projects/Nope"]})
+    stats = run(cfg, recording)
+    expect("mailboxes" not in calls, f"exact names skip the full mailbox listing: {calls}")
+    rows = indexed(cfg)
+    expect(set(rows) >= {101, 202} and 1204 not in rows, f"looked up by path: {sorted(rows)}")
+    expect(rows[101]["mailbox"] == "INBOX" and rows[202]["mailbox"] == "Projects/Alpha",
+           "stored with Mail's own spelling")
+    expect(stats.mailboxes_missing == 2, f"missing names counted: {stats}")
+
+    calls.clear()
+    stats = run(env.config({WORK: ["*"]}), recording)
+    expect(calls.count("mailboxes") == 1, f"a pattern lists that account once: {calls}")
+
+    stats = run(env.config({"00000000-0000-0000-0000-000000000000": ["INBOX"]}), runner)
+    expect(stats.accounts_missing == ["00000000-0000-0000-0000-000000000000"] and stats.mailboxes_missing == 0,
+           f"an unknown account isn't also counted as missing mailboxes: {stats}")
+
+    fixture = sm.script_fixture()
+    fixture["flatten"] = True
+    flat, _, _ = env.fake(fixture)
+    cfg = env.config({WORK: ["Projects/Alpha", "INBOX"]})
+    run(cfg, flat)
+    expect(set(indexed(cfg)) == {201, 202}, "path lookups work when Mail lists nested mailboxes at the top")
 
 
 def test_content(env: Env) -> None:
@@ -294,6 +329,7 @@ def main() -> int:
         env = Env(Path(tmp))
         test_mailboxes(env)
         test_scope(env)
+        test_lookups(env)
         test_content(env)
         test_incremental(env)
         test_mail_changing_during_list(env)
