@@ -15,7 +15,9 @@ cd "$ROOT"
 # shellcheck source=lib/env.sh
 source "$ROOT/scripts/lib/env.sh"
 
-src="${1:-$(env_get ASSISTANT_DATA_ROOT ./data)/hermes}"
+# docker-compose.yml mounts ./data/hermes as /opt/data whatever
+# ASSISTANT_DATA_ROOT says; that setting moves user content, not Hermes state.
+src="${1:-data/hermes}"
 [ -f "$src/config.yaml" ] || { echo "gateway-preflight: no config.yaml in $src" >&2; exit 1; }
 image="nousresearch/hermes-agent:$(env_get HERMES_AGENT_IMAGE_TAG v0.22.5)"
 
