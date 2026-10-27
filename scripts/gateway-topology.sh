@@ -42,7 +42,7 @@ current="$(gateway_topology)"
 echo "gateway-topology: ${current} -> ${target}"
 
 if [ "$target" = standalone ]; then
-  ./scripts/check-hermes-standalone.sh "${image##*:}" || exit 1
+  HERMES_GATEWAY_TOPOLOGY=standalone ./scripts/check-hermes-standalone.sh "${image##*:}" || exit 1
 fi
 
 if [ "$backup" = 1 ]; then
@@ -61,7 +61,7 @@ fi
 
 standalone=false
 [ "$target" = standalone ] && standalone=true
-docker run --rm --init --network none --user "$(id -u):$(id -g)" \
+docker run --rm -i --init --network none --user "$(id -u):$(id -g)" \
   -v "$ROOT/$home:/opt/data" -e HERMES_HOME=/opt/data -e STANDALONE="$standalone" \
   --entrypoint /opt/hermes/.venv/bin/python "$image" - <<'PY'
 import os
