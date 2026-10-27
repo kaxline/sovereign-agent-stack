@@ -462,6 +462,7 @@ fi
 
 # --- Gateway topology (HERMES_GATEWAY_TOPOLOGY) ---
 if has_profile core; then
+  echo ""
   echo "--- Gateway topology ---"
   # shellcheck source=lib/env.sh
   source "$ROOT/scripts/lib/env.sh"
