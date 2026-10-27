@@ -437,7 +437,8 @@ tool-eval-score:
 # is the failure mode this target exists to prevent — pass both tags:
 #   make hermes-upgrade AGENT=v0.22.5 WEBUI=0.52.492
 # Re-runs both profile bootstraps afterwards, because a new agent may add config
-# keys the running profiles do not have yet.
+# keys the running profiles do not have yet. Refuses an agent tag that dropped
+# gateway.standalone while the stack still pins it.
 hermes-upgrade:
 	@if [ -z "$(AGENT)" ] || [ -z "$(WEBUI)" ]; then \
 		echo "Usage: make hermes-upgrade AGENT=<agent-tag> WEBUI=<webui-tag>"; \
@@ -448,6 +449,7 @@ hermes-upgrade:
 		grep -E '^HERMES_(AGENT|WEBUI)_IMAGE_TAG=' .env; \
 		exit 1; \
 	fi
+	./scripts/check-hermes-standalone.sh "$(AGENT)"
 	@python3 -c 'import re,sys,pathlib; p=pathlib.Path(".env"); t=p.read_text(); \
 	    [t := re.sub(r"(?m)^%s=.*$$" % k, "%s=%s" % (k, v), t) for k, v in \
 	     (("HERMES_AGENT_IMAGE_TAG", "$(AGENT)"), ("HERMES_WEBUI_IMAGE_TAG", "$(WEBUI)"))]; \

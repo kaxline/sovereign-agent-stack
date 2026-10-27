@@ -6,6 +6,18 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
+## Unreleased
+
+### Changes
+
+- `make hermes-upgrade` refuses an agent tag that no longer supports
+  `gateway.standalone` while `HERMES_PIN_STANDALONE_GATEWAYS` is on. On such
+  an image ports 8643 and 8644 would stop answering.
+- The WebUI's `send_message` reads `SIGNAL_*` from the calling profile's
+  `.env` before the container environment. No change today, since both hold
+  the same values; it keeps a multiplexed gateway from using another
+  profile's Signal account.
+
 ## v0.3.5 — 2026-10-26
 
 ### Upgrade steps
