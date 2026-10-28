@@ -6,7 +6,29 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
-## Unreleased
+## v0.3.6 — 2026-10-28
+
+### Not tested on a real install yet
+
+Each of these passes its automated tests but has not had a run on a live
+stack with real data. All three are opt-in; a stack that keeps the defaults
+is not affected.
+
+- **Boundary under `multiplex`.** WebUI chat, Signal delivery and the ssh
+  terminal have run under the multiplexed gateway. Not yet run: a chat over
+  the dashboard's `/api/ws` (9119), and `turn.heartbeat` /
+  `session.live_status` during a long turn. Known upstream issue under
+  `multiplex`: Hermes reads each profile's `.env` on the gateway's event loop
+  for every `/p/<profile>/` request, and on Docker Desktop's file sharing a
+  read sometimes takes one to several seconds. While one is pending, every
+  profile's API waits and the WebUI can report the agent as not responding.
+  `standalone` is not affected.
+- **Messages.** The indexer, reader app, MCP and alerts have run only
+  against a synthetic Messages store. Not yet run: the first real run in
+  [docs/messages.md](docs/messages.md#first-real-run), including a new
+  message reaching the webhook on 8646 under `multiplex`.
+- **IMAP login and TLS.** Tested against GreenMail only. Not yet run: the
+  first run on a real IMAP account in [docs/email.md](docs/email.md).
 
 ### Upgrade steps
 
