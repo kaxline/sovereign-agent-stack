@@ -434,7 +434,8 @@ def test_admin_view_reports_restart(proxy) -> None:
     table = proxy.Table(proxy.Route("", ""), proxy.Route("", ""), proxy.Route("", ""))
     view = table.public_view()
     assert set(view) == {"chat", "lightrag", "embed", "proxy"}
-    assert view["chat"] == {"url": "", "api_key_set": False, "pushed": False}
+    assert view["chat"] == {"url": "", "api_key_set": False, "pushed": False, "fallbacks": []}
+    assert "fallbacks" not in view["embed"]
     assert view["proxy"]["boot_id"] and isinstance(view["proxy"]["started_at"], int)
     # An empty key still counts as pushed: a local server needs none.
     table.update({"chat": {"url": "http://lmstudio.example/v1", "api_key": ""}})
@@ -509,6 +510,283 @@ def test_await_push(proxy) -> None:
         inference.shutdown()
 
 
+def free_port() -> int:
+    """A port with nothing listening, for a primary that is down."""
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    return port
+
+
+def recording_upstream(status: int = 200, headers: dict | None = None):
+    """An upstream that records each request and answers with ``status``."""
+    seen = []
+
+    class Upstream(BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):
+            return
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            seen.append({"authorization": self.headers.get("Authorization"), "body": self.rfile.read(length)})
+            payload = b'{"ok":true}'
+            self.send_response(status)
+            for key, value in (headers or {}).items():
+                self.send_header(key, value)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    return serve(Upstream), seen
+
+
+def start_chain(proxy, primary: str, fallbacks: list) -> ThreadingHTTPServer:
+    proxy.InferenceHandler.table = proxy.Table(
+        proxy.Route(primary, "primary-secret", proxy.parse_fallbacks("chat", fallbacks)),
+        proxy.Route("", ""),
+        proxy.Route("", ""),
+    )
+    proxy.InferenceHandler.upstream_timeout = 5
+    proxy.InferenceHandler.stream_idle_timeout = 5
+    proxy.InferenceHandler.connect_timeout = 2
+    return serve(proxy.InferenceHandler)
+
+
+def post_chat(port: int, path: str = "/v1/chat/completions") -> tuple[int, dict, bytes]:
+    req = Request(
+        f"http://127.0.0.1:{port}{path}",
+        data=b'{"model":"local-model"}',
+        headers={"Authorization": "Bearer local-llm", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlopen(req, timeout=10) as resp:
+            return resp.status, dict(resp.headers), resp.read()
+    except HTTPError as exc:
+        return exc.code, dict(exc.headers), exc.read()
+
+
+def test_fallback_when_primary_down(proxy) -> None:
+    upstream, seen = recording_upstream()
+    url = f"http://127.0.0.1:{upstream.server_address[1]}/v1"
+    inference = start_chain(
+        proxy, f"http://127.0.0.1:{free_port()}/v1", [{"url": url, "api_key": "cloud-secret", "model": "cloud-model"}]
+    )
+    try:
+        status, headers, _ = post_chat(inference.server_address[1])
+        assert status == 200, status
+        assert headers.get("X-LLM-Proxy-Upstream") == "chat;1", headers
+        assert seen[0]["authorization"] == "Bearer cloud-secret"
+        assert json.loads(seen[0]["body"])["model"] == "cloud-model"
+        # LightRAG with no upstream of its own uses the chat chain, fallbacks too.
+        status, headers, _ = post_chat(inference.server_address[1], "/lightrag/v1/chat/completions")
+        assert status == 200 and headers.get("X-LLM-Proxy-Upstream") == "lightrag;1", headers
+    finally:
+        upstream.shutdown()
+        inference.shutdown()
+
+
+def test_primary_serves_with_index_zero(proxy) -> None:
+    upstream, seen = recording_upstream()
+    url = f"http://127.0.0.1:{upstream.server_address[1]}/v1"
+    inference = start_chain(proxy, url, [{"url": f"http://127.0.0.1:{free_port()}/v1"}])
+    try:
+        status, headers, _ = post_chat(inference.server_address[1])
+        assert status == 200 and headers.get("X-LLM-Proxy-Upstream") == "chat;0", headers
+        # No model on the entry, and the primary never rewrites one.
+        assert json.loads(seen[0]["body"])["model"] == "local-model"
+        assert seen[0]["authorization"] == "Bearer primary-secret"
+    finally:
+        upstream.shutdown()
+        inference.shutdown()
+
+
+def test_fallback_on_retry_status(proxy) -> None:
+    busy, busy_seen = recording_upstream(503)
+    good, good_seen = recording_upstream()
+    inference = start_chain(
+        proxy,
+        f"http://127.0.0.1:{busy.server_address[1]}/v1",
+        [{"url": f"http://127.0.0.1:{good.server_address[1]}/v1"}],
+    )
+    try:
+        status, headers, body = post_chat(inference.server_address[1])
+        assert status == 200 and body == b'{"ok":true}', (status, body)
+        assert headers.get("X-LLM-Proxy-Upstream") == "chat;1"
+        assert len(busy_seen) == 1 and len(good_seen) == 1
+        # An empty fallback key is a local server: no key, no placeholder.
+        assert good_seen[0]["authorization"] is None
+    finally:
+        busy.shutdown()
+        good.shutdown()
+        inference.shutdown()
+
+
+def test_last_upstream_failure_passes_through(proxy) -> None:
+    # With nothing left to try, the client gets the last upstream's answer.
+    busy, _ = recording_upstream(429)
+    inference = start_chain(
+        proxy,
+        f"http://127.0.0.1:{free_port()}/v1",
+        [{"url": f"http://127.0.0.1:{busy.server_address[1]}/v1"}],
+    )
+    try:
+        status, headers, _ = post_chat(inference.server_address[1])
+        assert status == 429 and headers.get("X-LLM-Proxy-Upstream") == "chat;1", (status, headers)
+    finally:
+        busy.shutdown()
+        inference.shutdown()
+    # Every upstream down: the usual 502.
+    inference = start_chain(
+        proxy, f"http://127.0.0.1:{free_port()}/v1", [{"url": f"http://127.0.0.1:{free_port()}/v1"}]
+    )
+    try:
+        status, _, body = post_chat(inference.server_address[1])
+        assert status == 502 and b"upstream request failed" in body
+    finally:
+        inference.shutdown()
+
+
+def test_no_fallback_after_stream_starts(proxy) -> None:
+    calls = []
+
+    class Breaks(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, fmt, *args):
+            return
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", "0") or "0"))
+            calls.append(1)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            event = b"data: partial\n\n"
+            self.wfile.write(b"%x\r\n%s\r\n" % (len(event), event))
+            self.wfile.flush()
+            self.close_connection = True
+            self.connection.shutdown(socket.SHUT_RDWR)
+
+    primary = serve(Breaks)
+    fallback, fallback_seen = recording_upstream()
+    inference = start_chain(
+        proxy,
+        f"http://127.0.0.1:{primary.server_address[1]}/v1",
+        [{"url": f"http://127.0.0.1:{fallback.server_address[1]}/v1"}],
+    )
+    sock = open_stream(inference.server_address[1])
+    try:
+        data = read_until(sock, b"\x00never", 3)
+        assert data.startswith(b"HTTP/1.1 200") and b"chat;0" in data and b"partial" in data
+        assert not data.endswith(b"0\r\n\r\n")
+        assert calls == [1] and fallback_seen == []
+    finally:
+        sock.close()
+        primary.shutdown()
+        fallback.shutdown()
+        inference.shutdown()
+
+
+def test_upstream_served_header_passes_through(proxy) -> None:
+    upstream, _ = recording_upstream(headers={"X-LLM-Proxy-Upstream": "other-proxy;2"})
+    inference = start_chain(proxy, f"http://127.0.0.1:{upstream.server_address[1]}/v1", [])
+    try:
+        _, headers, _ = post_chat(inference.server_address[1])
+        assert headers.get("X-LLM-Proxy-Upstream") == "other-proxy;2", headers
+    finally:
+        upstream.shutdown()
+        inference.shutdown()
+
+
+def test_admin_fallbacks(proxy) -> None:
+    table = proxy.Table(proxy.Route("http://local.example/v1", ""), proxy.Route("", ""), proxy.Route("", ""))
+    table.update({"chat": {"fallbacks": [{"url": "https://cloud.example/api/v1", "api_key": "sk-cloud", "model": "m"}]}})
+    view = table.public_view()
+    assert view["chat"]["fallbacks"] == [{"url": "https://cloud.example/api/v1", "model": "m", "api_key_set": True}]
+    assert "sk-cloud" not in json.dumps(view)
+    # Leaving fallbacks out keeps them; [] clears them.
+    table.update({"chat": {"api_key": "k"}})
+    assert len(table.public_view()["chat"]["fallbacks"]) == 1
+    table.update({"chat": {"fallbacks": []}})
+    assert table.public_view()["chat"]["fallbacks"] == []
+    # A bad push changes nothing, keys included, and the error names no key.
+    for bad in (
+        {"embed": {"fallbacks": [{"url": "http://e.example/v1"}]}},
+        {"chat": {"api_key": "new", "fallbacks": [{"url": "ftp://x", "api_key": "sk-leak"}]}},
+        {"chat": {"fallbacks": {"url": "http://x.example/v1"}}},
+        {"lightrag": {"fallbacks": [{"url": "http://x.example/v1", "model": 3}]}},
+    ):
+        try:
+            table.update(bad)
+        except ValueError as exc:
+            assert "sk-leak" not in str(exc)
+        else:
+            raise AssertionError("accepted %r" % bad)
+    assert table.route_for("chat").api_key == "k"
+
+
+def test_admin_rejects_bad_fallbacks_over_http(proxy) -> None:
+    proxy.AdminHandler.table = proxy.Table(proxy.Route("", ""), proxy.Route("", ""), proxy.Route("", ""))
+    proxy.AdminHandler.token = "admin-token"
+    admin = serve(proxy.AdminHandler)
+    try:
+        req = Request(
+            f"http://127.0.0.1:{admin.server_address[1]}/admin/upstreams",
+            data=json.dumps({"embed": {"fallbacks": []}}).encode(),
+            headers={"Authorization": "Bearer admin-token"},
+            method="POST",
+        )
+        try:
+            urlopen(req, timeout=5)
+        except HTTPError as exc:
+            assert exc.code == 400 and b"embed" in exc.read()
+        else:
+            raise AssertionError("embed fallbacks accepted")
+    finally:
+        admin.shutdown()
+
+
+def test_fallbacks_file(proxy, tmp: Path) -> None:
+    saved = dict(os.environ)
+    path = tmp / "fallbacks.json"
+    try:
+        os.environ.clear()
+        os.environ["LLM_BINDING_HOST"] = "http://local.example/v1"
+        os.environ["LLM_PROXY_AWAIT_PUSH"] = "chat"
+        os.environ["LLM_PROXY_FALLBACKS_FILE"] = str(path)
+        path.write_text(json.dumps({"chat": [{"url": "https://a.example/v1", "api_key": "sk-a", "model": "a"}]}))
+        table = proxy.load_table()
+        assert table.route_for("chat").fallbacks[0].api_key == "sk-a"
+        path.write_text(json.dumps({"lightrag": [{"url": "https://b.example/v1"}]}))
+        assert proxy.reload_key_files(table) == ["chat.fallbacks", "lightrag.fallbacks"]
+        # The file is the whole list: chat is cleared, lightrag set.
+        assert table.public_view()["chat"]["fallbacks"] == []
+        assert table.public_view()["lightrag"]["fallbacks"][0]["url"] == "https://b.example/v1"
+        # Reloading fallbacks is not a push.
+        assert table.waiting("chat")
+        # A broken file keeps what is loaded.
+        path.write_text("{not json")
+        assert proxy.reload_key_files(table) == []
+        assert len(table.public_view()["lightrag"]["fallbacks"]) == 1
+        path.write_text(json.dumps({"embed": [{"url": "https://e.example/v1"}]}))
+        assert proxy.reload_key_files(table) == []
+        # A broken file at start means no fallbacks, not a crash.
+        assert proxy.load_table().route_for("chat").fallbacks == []
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+
+
+def test_with_model(proxy) -> None:
+    assert json.loads(proxy.with_model(b'{"model":"a","x":1}', "b")) == {"model": "b", "x": 1}
+    for raw in (b"", b"not json", b"[1]"):
+        assert proxy.with_model(raw, "b") == raw
+    assert proxy.with_model(b'{"model":"a"}', "") == b'{"model":"a"}'
+
+
 def main() -> None:
     proxy = load_proxy()
     test_routes(proxy)
@@ -523,6 +801,17 @@ def main() -> None:
     test_default_max_tokens_reaches_upstream(proxy)
     test_stream_max_seconds_drops_endless_stream(proxy)
     test_admin_view_reports_restart(proxy)
+    test_with_model(proxy)
+    test_admin_fallbacks(proxy)
+    test_admin_rejects_bad_fallbacks_over_http(proxy)
+    with tempfile.TemporaryDirectory() as tmp:
+        test_fallbacks_file(proxy, Path(tmp))
+    test_fallback_when_primary_down(proxy)
+    test_primary_serves_with_index_zero(proxy)
+    test_fallback_on_retry_status(proxy)
+    test_last_upstream_failure_passes_through(proxy)
+    test_no_fallback_after_stream_starts(proxy)
+    test_upstream_served_header_passes_through(proxy)
     test_await_push_env(proxy)
     test_await_push(proxy)
     with tempfile.TemporaryDirectory() as tmp:

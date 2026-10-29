@@ -31,6 +31,18 @@ admin API. LLM_PROXY_AWAIT_PUSH lists routes (e.g. chat,lightrag) that answer
 a key. Unlisted routes keep the usual meaning of an empty key: a local server
 that needs none. GET /admin/upstreams reports a per-process boot_id so the
 admin client can tell the proxy restarted and push again.
+
+The chat and lightrag routes can each carry an ordered list of fallback
+upstreams ({url, api_key, model?}), set by POST /admin/upstreams or by the JSON
+file at LLM_PROXY_FALLBACKS_FILE, which SIGHUP and /admin/reload re-read. The
+proxy moves to the next upstream when one cannot be connected to within
+LLM_CONNECT_TIMEOUT (default 10s; it applies only to an upstream with another
+after it) or answers 429, 500, 502, 503 or 504. It does
+not move on after a timeout waiting for headers, since that covers prefill, and
+never once the response has started. A fallback that names a model gets the
+request with that model. Every proxied response carries X-LLM-Proxy-Upstream:
+<route>;<index> (0 = primary) unless the upstream sent its own. The embed
+route has no fallbacks: another model's vectors would break the index.
 """
 
 from __future__ import annotations
@@ -71,13 +83,59 @@ PREFIXES = (
 )
 
 
-class Route:
-    def __init__(self, url: str, api_key: str) -> None:
+class Upstream:
+    """One fallback entry. ``model``, when set, replaces the request's model."""
+
+    def __init__(self, url: str, api_key: str = "", model: str = "") -> None:
         self.url = url
         self.api_key = api_key
+        self.model = model
+
+
+class Route:
+    def __init__(self, url: str, api_key: str, fallbacks: list[Upstream] | tuple = ()) -> None:
+        self.url = url
+        self.api_key = api_key
+        # Tried in order after the primary. See the module docstring.
+        self.fallbacks = list(fallbacks)
 
 
 ROUTES = ("chat", "lightrag", "embed")
+# Embeddings from another model would land in the same vector index and
+# break retrieval without an error, so embed has no fallbacks.
+FALLBACK_ROUTES = ("chat", "lightrag")
+# Statuses that move on to the next upstream. The response has not been
+# forwarded yet, so the client never sees the failed attempt.
+RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+# Names the route and the upstream index that served (0 = primary).
+SERVED_HEADER = "X-LLM-Proxy-Upstream"
+
+
+def parse_fallbacks(name: str, value) -> list[Upstream]:
+    """Validate a ``fallbacks`` list from the admin API or the fallbacks file.
+
+    Raises ValueError with a message that names the route and index only,
+    never a key.
+    """
+    if name not in FALLBACK_ROUTES:
+        raise ValueError("route %s takes no fallbacks" % name)
+    if not isinstance(value, list):
+        raise ValueError("%s.fallbacks must be a list" % name)
+    parsed = []
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise ValueError("%s.fallbacks[%d] must be an object" % (name, index))
+        url = str(item.get("url") or "").strip()
+        if join_upstream(url, "", "") is None:
+            raise ValueError("%s.fallbacks[%d].url must be an http(s) URL" % (name, index))
+        api_key = item.get("api_key")
+        model = item.get("model")
+        if api_key is not None and not isinstance(api_key, str):
+            raise ValueError("%s.fallbacks[%d].api_key must be a string" % (name, index))
+        if model is not None and not isinstance(model, str):
+            raise ValueError("%s.fallbacks[%d].model must be a string" % (name, index))
+        parsed.append(Upstream(url, api_key or "", (model or "").strip()))
+    return parsed
 
 
 class Table:
@@ -103,14 +161,27 @@ class Table:
     def route_for(self, name: str) -> Route:
         with self._lock:
             chosen = getattr(self, name)
-            # LightRAG falls back to the shared chat route when its own
-            # upstream was left unset.
+            # LightRAG falls back to the shared chat route, fallbacks
+            # included, when its own upstream was left unset.
             if name == "lightrag" and not chosen.url.strip():
-                return Route(self.chat.url, self.chat.api_key)
-            return Route(chosen.url, chosen.api_key)
+                chosen = self.chat
+            return Route(chosen.url, chosen.api_key, chosen.fallbacks)
 
     def match(self, path: str) -> tuple[str, str, str] | None:
-        """Return (forward_url, api_key, route_name) for an inference path."""
+        """Return (forward_url, api_key, route_name) for the primary upstream."""
+        found = self.chain(path)
+        if found is None:
+            return None
+        name, attempts = found
+        target, api_key, _ = attempts[0]
+        return target, api_key, name
+
+    def chain(self, path: str) -> tuple[str, list[tuple[str, str, str]]] | None:
+        """Return (route_name, [(forward_url, api_key, model), ...]) for a path.
+
+        The primary comes first, then each fallback. A forward_url is "" when
+        that upstream is not configured.
+        """
         split = urlsplit(path)
         raw = split.path or "/"
         name = None
@@ -123,10 +194,22 @@ class Table:
         if name is None:
             return None
         route = self.route_for(name)
-        target = join_upstream(route.url, remainder, split.query)
-        return target or "", route.api_key, name
+        attempts = [(join_upstream(route.url, remainder, split.query) or "", route.api_key, "")]
+        for fallback in route.fallbacks:
+            attempts.append((join_upstream(fallback.url, remainder, split.query) or "", fallback.api_key, fallback.model))
+        return name, attempts
 
     def update(self, payload: dict) -> None:
+        """Apply an admin push. Raises ValueError, changing nothing, on a bad ``fallbacks``.
+
+        ``fallbacks`` replaces the route's whole list; ``[]`` clears it and
+        leaving it out keeps the current one.
+        """
+        fallbacks = {}
+        for name in ROUTES:
+            item = payload.get(name)
+            if isinstance(item, dict) and item.get("fallbacks") is not None:
+                fallbacks[name] = parse_fallbacks(name, item["fallbacks"])
         with self._lock:
             for name in ROUTES:
                 item = payload.get(name)
@@ -138,17 +221,29 @@ class Table:
                     route.url = str(item["url"]).strip()
                 if "api_key" in item and item["api_key"] is not None:
                     route.api_key = str(item["api_key"])
+                if name in fallbacks:
+                    route.fallbacks = fallbacks[name]
+
+    def set_fallbacks(self, fallbacks: dict[str, list[Upstream]]) -> None:
+        """Replace every route's fallbacks; a route left out gets none.
+
+        Unlike update(), this does not count as a push, so a route waiting
+        under LLM_PROXY_AWAIT_PUSH keeps waiting.
+        """
+        with self._lock:
+            for name in FALLBACK_ROUTES:
+                getattr(self, name).fallbacks = list(fallbacks.get(name, ()))
 
     def public_view(self) -> dict:
         with self._lock:
-            view: dict = {
-                name: {
-                    "url": getattr(self, name).url,
-                    "api_key_set": bool(getattr(self, name).api_key),
-                    "pushed": name in self.pushed,
-                }
-                for name in ROUTES
-            }
+            view: dict = {}
+            for name in ROUTES:
+                route = getattr(self, name)
+                view[name] = {"url": route.url, "api_key_set": bool(route.api_key), "pushed": name in self.pushed}
+                if name in FALLBACK_ROUTES:
+                    view[name]["fallbacks"] = [
+                        {"url": f.url, "model": f.model, "api_key_set": bool(f.api_key)} for f in route.fallbacks
+                    ]
             view["proxy"] = {"boot_id": self.boot_id, "started_at": self.started_at}
             return view
 
@@ -223,30 +318,71 @@ def await_push_routes() -> tuple[str, ...]:
     return tuple(names)
 
 
+def fallbacks_file() -> str:
+    return os.environ.get("LLM_PROXY_FALLBACKS_FILE", "").strip()
+
+
+def read_fallbacks_file(path: str) -> dict[str, list[Upstream]] | None:
+    """Parse ``{"chat": [...], "lightrag": [...]}``. None when unreadable or invalid.
+
+    Errors name the file and the problem, never an entry's key.
+    """
+    try:
+        with open(path, encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except OSError as exc:
+        sys.stderr.write("llm-proxy: cannot read fallbacks file %s: %s\n" % (path, exc.strerror))
+        return None
+    except ValueError:
+        sys.stderr.write("llm-proxy: fallbacks file %s is not valid JSON\n" % path)
+        return None
+    if not isinstance(raw, dict):
+        sys.stderr.write("llm-proxy: fallbacks file %s must hold an object\n" % path)
+        return None
+    try:
+        return {name: parse_fallbacks(name, value) for name, value in raw.items()}
+    except ValueError as exc:
+        sys.stderr.write("llm-proxy: fallbacks file %s: %s\n" % (path, exc))
+        return None
+
+
 def load_table() -> Table:
     routes = {
         name: Route(os.environ.get(f"{prefix}_HOST", ""), initial_key(name))
         for name, prefix in ENV_PREFIXES.items()
     }
+    path = fallbacks_file()
+    if path:
+        for name, fallbacks in (read_fallbacks_file(path) or {}).items():
+            routes[name].fallbacks = fallbacks
     return Table(routes["chat"], routes["lightrag"], routes["embed"], await_push_routes())
 
 
 def reload_key_files(table: Table) -> list[str]:
-    """Re-read every route whose key comes from a file. Returns the routes reloaded.
+    """Re-read key files and the fallbacks file. Returns what was reloaded.
 
     Routes without a *_FILE keep their current key, including one pushed
     through the admin API. An unreadable file also keeps the current key, so
-    a non-atomic replace does not drop requests mid-rotation.
+    a non-atomic replace does not drop requests mid-rotation. The fallbacks
+    file works the same way: when it is set and parses, its lists replace
+    the current ones (``chat.fallbacks`` in the result); otherwise they stay.
     """
-    payload = {}
+    payload: dict = {}
+    reloaded = []
     for name in ENV_PREFIXES:
         path = key_file(name)
         if path:
             key = read_key_file(path)
             if key is not None:
                 payload[name] = {"api_key": key}
+                reloaded.append(name)
     table.update(payload)
-    return sorted(payload)
+    path = fallbacks_file()
+    parsed = read_fallbacks_file(path) if path else None
+    if parsed is not None:
+        table.set_fallbacks(parsed)
+        reloaded.extend(f"{name}.fallbacks" for name in FALLBACK_ROUTES)
+    return sorted(reloaded)
 
 
 # Request fields that already limit the output. Any one of them, set, means
@@ -281,6 +417,23 @@ def with_default_max_tokens(body: bytes, path: str, route: str, limit: int) -> b
     if any(payload.get(name) is not None for name in OUTPUT_CAP_FIELDS):
         return body
     payload[field] = limit
+    return json.dumps(payload, separators=(",", ":")).encode()
+
+
+def with_model(body: bytes, model: str) -> bytes:
+    """Set the request's ``model`` for a fallback that names one.
+
+    A body that is not a JSON object passes through unchanged.
+    """
+    if not model or not body:
+        return body
+    try:
+        payload = json.loads(body)
+    except (UnicodeDecodeError, ValueError):
+        return body
+    if not isinstance(payload, dict):
+        return body
+    payload["model"] = model
     return json.dumps(payload, separators=(",", ":")).encode()
 
 
@@ -388,9 +541,23 @@ class InferenceHandler(BaseHTTPRequestHandler):
     # closes idle keep-alive connections and stalled request bodies.
     timeout: float = 600
 
+    # Upper bound on opening the TCP (and TLS) connection to an upstream that
+    # has another after it, so a server that is down fails fast and the next
+    # is tried. The last upstream keeps upstream_timeout, as with no fallbacks.
+    connect_timeout: float = 10
+    # "<route>;<index>" once an upstream answers, for the request log line.
+    served: str = ""
+
     def log_message(self, fmt: str, *args) -> None:
         # Method and path only. Never the headers, which carry the key.
         sys.stderr.write("%s %s\n" % (self.command, self.path.split("?", 1)[0]))
+
+    def log_request(self, code="-", size="-") -> None:
+        # Status and the upstream that served, still no headers or body.
+        line = "%s %s %s" % (self.command, self.path.split("?", 1)[0], getattr(code, "value", code))
+        if self.served:
+            line += " upstream=" + self.served
+        sys.stderr.write(line + "\n")
 
     def do_GET(self) -> None:  # noqa: N802
         self._handle()
@@ -411,6 +578,7 @@ class InferenceHandler(BaseHTTPRequestHandler):
         return self.rfile.read(length)
 
     def _handle(self) -> None:
+        self.served = ""
         path = urlsplit(self.path).path
         if path == "/health":
             body = b"ok\n"
@@ -420,11 +588,11 @@ class InferenceHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        matched = self.table.match(self.path)
-        if matched is None:
+        found = self.table.chain(self.path)
+        if found is None:
             self._text(404, "not found\n")
             return
-        target, api_key, name = matched
+        name, chain = found
         if self.table.waiting(name):
             # The request body is not read, so do not reuse the connection.
             self.close_connection = True
@@ -434,38 +602,79 @@ class InferenceHandler(BaseHTTPRequestHandler):
                 "(POST /admin/upstreams)\n" % name,
             )
             return
-        if not target:
+        # Index stays the position in the configured chain (0 = primary),
+        # so an unset primary with a fallback still reports index 1.
+        attempts = [(index, *entry) for index, entry in enumerate(chain) if entry[0]]
+        if not attempts:
             self._text(502, "upstream is not configured\n")
             return
         body = self._read_body()
         if self.command == "POST":
             body = with_default_max_tokens(body, self.path, name, self.default_max_tokens)
-        headers = outbound_headers(list(self.headers.items()), api_key)
         conn = None
         watcher = None
         started = False
         began = time.monotonic()
         try:
-            conn = _connection(target, self.upstream_timeout)
-            conn.putrequest(self.command, _request_path(target), skip_host=True, skip_accept_encoding=True)
-            for key, value in headers:
-                conn.putheader(key, value)
-            conn.putheader("Host", urlsplit(target).netloc)
-            if body:
-                conn.putheader("Content-Length", str(len(body)))
-            conn.endheaders(body if body else None)
-            # Keep our own reference: getresponse() drops conn.sock when the
-            # upstream will close, but the response still reads from it.
-            upstream_sock = conn.sock
-            watcher = ClientWatcher(self.connection, upstream_sock)
-            resp = conn.getresponse()
+            for position, (index, target, api_key, model) in enumerate(attempts):
+                last = position == len(attempts) - 1
+                host = urlsplit(target).netloc
+                conn = _connection(target, self.upstream_timeout if last else self.connect_timeout)
+                try:
+                    conn.connect()
+                except OSError as exc:
+                    conn.close()
+                    conn = None
+                    if last:
+                        raise
+                    sys.stderr.write(
+                        "llm-proxy: %s upstream %d (%s) unreachable: %s; trying the next\n"
+                        % (name, index, host, type(exc).__name__)
+                    )
+                    continue
+                # Connected: from here the wait for headers covers prefill.
+                conn.sock.settimeout(self.upstream_timeout)
+                sent = with_model(body, model)
+                conn.putrequest(self.command, _request_path(target), skip_host=True, skip_accept_encoding=True)
+                for key, value in outbound_headers(list(self.headers.items()), api_key):
+                    conn.putheader(key, value)
+                conn.putheader("Host", host)
+                if sent:
+                    conn.putheader("Content-Length", str(len(sent)))
+                conn.endheaders(sent if sent else None)
+                # Keep our own reference: getresponse() drops conn.sock when the
+                # upstream will close, but the response still reads from it.
+                upstream_sock = conn.sock
+                watcher = ClientWatcher(self.connection, upstream_sock)
+                resp = conn.getresponse()
+                if resp.status in RETRY_STATUSES and not last:
+                    watcher.stop()
+                    if watcher.client_gone:
+                        raise ConnectionError("client closed")
+                    watcher = None
+                    conn.close()
+                    conn = None
+                    sys.stderr.write(
+                        "llm-proxy: %s upstream %d (%s) answered %d; trying the next\n"
+                        % (name, index, host, resp.status)
+                    )
+                    continue
+                break
             if upstream_sock is not None:
                 upstream_sock.settimeout(self.stream_idle_timeout)
+            self.served = "%s;%d" % (name, index)
             self.send_response(resp.status)
+            upstream_named = False
             for key, value in resp.headers.items():
                 if key.lower() in HOP:
                     continue
+                # An upstream that names its own source (another router or
+                # proxy) knows more than the index does, so keep its value.
+                if key.lower() == SERVED_HEADER.lower():
+                    upstream_named = True
                 self.send_header(key, value)
+            if not upstream_named:
+                self.send_header(SERVED_HEADER, self.served)
             self.send_header("Transfer-Encoding", "chunked")
             self.end_headers()
             started = True
@@ -564,7 +773,11 @@ class AdminHandler(BaseHTTPRequestHandler):
         if not isinstance(payload, dict):
             self._json(400, {"error": "expected an object"})
             return
-        self.table.update(payload)
+        try:
+            self.table.update(payload)
+        except ValueError as exc:
+            self._json(400, {"error": str(exc)})
+            return
         self._json(200, self.table.public_view())
 
     def _authorized(self) -> bool:
@@ -590,6 +803,7 @@ class AdminHandler(BaseHTTPRequestHandler):
 def main() -> None:
     table = load_table()
     timeout = float(os.environ.get("LLM_TIMEOUT", "600") or "600")
+    connect_timeout = env_number("LLM_CONNECT_TIMEOUT", 10)
     idle_timeout = float(os.environ.get("LLM_STREAM_IDLE_TIMEOUT", "") or timeout)
     stream_max = env_number("LLM_STREAM_MAX_SECONDS", 3600)
     default_max_tokens = int(env_number("LLM_DEFAULT_MAX_TOKENS", 16384))
@@ -601,6 +815,7 @@ def main() -> None:
     inference.daemon_threads = True
     InferenceHandler.table = table
     InferenceHandler.upstream_timeout = timeout
+    InferenceHandler.connect_timeout = connect_timeout
     InferenceHandler.stream_idle_timeout = idle_timeout
     InferenceHandler.stream_max_seconds = stream_max
     InferenceHandler.default_max_tokens = default_max_tokens
@@ -623,6 +838,11 @@ def main() -> None:
         sys.stderr.write(
             "llm-proxy: waiting for an admin push on: %s\n" % ", ".join(sorted(table.await_push))
         )
+
+    for name in FALLBACK_ROUTES:
+        count = len(getattr(table, name).fallbacks)
+        if count:
+            sys.stderr.write("llm-proxy: %s has %d fallback upstream(s)\n" % (name, count))
 
     threading.Thread(target=admin.serve_forever, daemon=True).start()
     sys.stderr.write("llm-proxy inference :%s admin :%s\n" % (infer_port, admin_port))
