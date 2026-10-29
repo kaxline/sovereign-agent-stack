@@ -6,6 +6,40 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
+## Unreleased
+
+### Upgrade steps
+
+1. `docker compose up -d --build llm-proxy`. The proxy code is baked into
+   its image. With no fallbacks configured, routing, timeouts and errors are
+   as before.
+
+### New optional `.env` keys
+
+- `LLM_PROXY_FALLBACKS_FILE` (default empty): container path of a JSON file
+  of fallback upstreams for `chat` and `lightrag`. See
+  [docs/extending.md](docs/extending.md#fallback-upstreams).
+- `LLM_CONNECT_TIMEOUT` (default `10`): longest wait to connect to an
+  upstream that has a fallback after it. The last upstream still waits up to
+  `LLM_TIMEOUT`.
+
+### Changes
+
+- **llm-proxy fallback upstreams**: `chat` and `lightrag` can each carry an
+  ordered `fallbacks` list of `{url, api_key, model?}`, set through
+  `POST /admin/upstreams` or `LLM_PROXY_FALLBACKS_FILE`. The proxy tries the
+  next one when an upstream is unreachable or answers 429, 500, 502, 503 or
+  504, never after a header timeout or once a response has started. `embed`
+  refuses fallbacks with a 400. `GET /admin/upstreams` gains a `fallbacks`
+  field on `chat` and `lightrag`, with `api_key_set` and no keys, and
+  `POST /admin/reload` lists `chat.fallbacks` and `lightrag.fallbacks` when
+  it re-read the file.
+- **llm-proxy** responses carry `X-LLM-Proxy-Upstream: <route>;<index>`
+  (0 = primary) unless the upstream sent that header itself. Request log
+  lines gain the status and serving upstream
+  (`POST /v1/chat/completions 200 upstream=chat;1`), and each attempt the
+  proxy moved past is logged with its host and reason.
+
 ## v0.3.6 — 2026-10-28
 
 ### Not tested on a real install yet

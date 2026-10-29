@@ -96,6 +96,11 @@ services:
       - LLM_PROXY_PORT=4000
       - LLM_PROXY_ADMIN_PORT=4001
       - LLM_TIMEOUT=${LLM_TIMEOUT:-600}
+      # Longest wait to open a connection; past it the next fallback is tried.
+      - LLM_CONNECT_TIMEOUT=${LLM_CONNECT_TIMEOUT:-10}
+      # Optional: container path of a JSON file of fallback upstreams for
+      # chat and lightrag, holding keys. See docs/extending.md.
+      - LLM_PROXY_FALLBACKS_FILE=${LLM_PROXY_FALLBACKS_FILE:-}
       # Longest silent gap in a streamed body before the proxy drops it.
       # Empty means LLM_TIMEOUT.
       - LLM_STREAM_IDLE_TIMEOUT=${LLM_STREAM_IDLE_TIMEOUT:-}

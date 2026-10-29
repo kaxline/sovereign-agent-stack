@@ -142,7 +142,7 @@ Every request needs `Authorization: Bearer $LLM_PROXY_ADMIN_TOKEN`.
 |---|---|
 | `GET /admin/upstreams` | Current table, without keys |
 | `POST /admin/upstreams` | Replace the fields you send, in memory only |
-| `POST /admin/reload` | Re-read key files; returns `{"reloaded": [...], "upstreams": {...}}` |
+| `POST /admin/reload` | Re-read key files and the fallbacks file; returns `{"reloaded": [...], "upstreams": {...}}` |
 
 The routes are `chat` (`/v1`), `lightrag` (`/lightrag/v1`) and `embed`
 (`/embed/v1`). A POST body names any of them, each with `url`, `api_key` or
@@ -157,8 +157,8 @@ touched:
 Both upstream requests return the table:
 
 ```json
-{"chat": {"url": "https://openrouter.ai/api/v1", "api_key_set": true, "pushed": true},
- "lightrag": {"url": "https://openrouter.ai/api/v1", "api_key_set": true, "pushed": true},
+{"chat": {"url": "https://openrouter.ai/api/v1", "api_key_set": true, "pushed": true, "fallbacks": []},
+ "lightrag": {"url": "https://openrouter.ai/api/v1", "api_key_set": true, "pushed": true, "fallbacks": []},
  "embed": {"url": "http://host.docker.internal:1234/v1", "api_key_set": false, "pushed": false},
  "proxy": {"boot_id": "9f2c...", "started_at": 1791331200}}
 ```
@@ -171,11 +171,62 @@ Both upstream requests return the table:
   because a local server legitimately has no key.
 - An empty `api_key` means the upstream needs none. The proxy then sends no
   `Authorization` header at all.
-- A `lightrag` route with an empty `url` uses the `chat` route.
+- A `lightrag` route with an empty `url` uses the `chat` route, fallbacks
+  included.
 
 These paths, route names and fields are a stable interface. New fields may be
 added. Removing or renaming one, or changing what it means, gets a changelog
 entry under a new release before it ships.
+
+### Fallback upstreams
+
+The `chat` and `lightrag` routes can each carry an ordered list of fallbacks,
+tried after the primary. The proxy moves to the next one when an upstream
+refuses the connection, cannot be reached within `LLM_CONNECT_TIMEOUT`
+(default 10s), or answers 429, 500, 502, 503 or 504. When the last one fails
+too, the client gets that failure: its status, or a 502 if it was unreachable.
+`LLM_CONNECT_TIMEOUT` applies only to an upstream with another after it. The
+last one, like a route with no fallbacks, can take up to `LLM_TIMEOUT` to
+connect.
+
+The proxy does not move on when an upstream accepts the connection and then
+sends no headers within `LLM_TIMEOUT`. That wait covers prompt prefill, so it
+runs out on a slow model as often as on a broken one. Once the response has
+started, nothing is retried, and a failure drops the stream as before.
+
+Each entry has `url`, and optionally `api_key` and `model`. An empty or
+missing key means the upstream needs none. With `model` set, the request's
+`model` is replaced for that upstream. Without it the client's model name is
+sent as is, which a different provider will usually reject with a 4xx, and a
+4xx is not retried. `embed` has no fallbacks: vectors from another embedding
+model would land in the same LightRAG index and break retrieval.
+
+Set them with the admin API or a file. In a POST, `fallbacks` replaces the
+route's whole list, `[]` clears it, and leaving it out keeps it. A bad list
+gets a 400 and changes nothing. `GET` shows each entry's `url`, `model` and
+`api_key_set`, never the key.
+
+```json
+{"chat": {"fallbacks": [{"url": "https://openrouter.ai/api/v1", "api_key": "sk-...",
+                         "model": "qwen/qwen3-32b"}]}}
+```
+
+`LLM_PROXY_FALLBACKS_FILE` names a container path to a JSON file of the same
+lists, `{"chat": [...], "lightrag": [...]}`. Mount it the way you would a key
+file. It is read at start, and again on SIGHUP and `POST /admin/reload`; a
+route the file leaves out then has no fallbacks. An unreadable or invalid
+file is logged and leaves the current lists in place (at start, none).
+Reloading the file is not a push, so it does not release a route waiting
+under `LLM_PROXY_AWAIT_PUSH`.
+
+Every proxied response carries `X-LLM-Proxy-Upstream: <route>;<index>`, where
+index 0 is the primary and 1 the first fallback. When the upstream sends that
+header itself, its value is forwarded instead. The proxy log shows the same on
+each request line (`POST /v1/chat/completions 200 upstream=chat;1`) and logs
+each attempt it moved past, with the upstream's host and the reason.
+
+A cloud fallback behind a local model sends prompts and context to that
+provider whenever the local server is down.
 
 ### Start without a key
 
