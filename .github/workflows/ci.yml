@@ -98,6 +98,15 @@ jobs:
       - name: OpenCode MCP roots and aliases (stdlib)
         run: python3 scripts/test-opencode-mcp-roots.py
 
+  bash32:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Host scripts under /bin/bash 3.2
+        env:
+          BASH32_REQUIRED: "1"
+        run: sh scripts/test-bash32.sh
+
   shellcheck:
     runs-on: ubuntu-latest
     steps:

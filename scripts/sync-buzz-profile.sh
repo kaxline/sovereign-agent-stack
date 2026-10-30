@@ -220,7 +220,7 @@ if [[ "$enabled" -eq 1 ]]; then
   fi
 
   IFS=',' read -r -a buzz_profiles <<< "$profiles_csv"
-  for name in "${buzz_profiles[@]}"; do
+  for name in ${buzz_profiles[@]+"${buzz_profiles[@]}"}; do
     [[ -n "$name" ]] || continue
     case "$name" in
       browser|api-server)
@@ -277,7 +277,7 @@ else
   # private keys, so HERMES_BUZZ_ENABLED=1 brings them back as they were.
   profiles_csv="$(env_get HERMES_BUZZ_PROFILES)"
   IFS=',' read -r -a buzz_profiles <<< "${profiles_csv// /}"
-  for name in "${buzz_profiles[@]}"; do
+  for name in ${buzz_profiles[@]+"${buzz_profiles[@]}"}; do
     [[ -n "$name" ]] || continue
     out="$(disable_buzz_on_agent_profile "$name")"
     [[ -z "$out" ]] || log "$out"

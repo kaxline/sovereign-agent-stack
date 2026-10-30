@@ -187,7 +187,7 @@ jwt = call("POST", "/api/v1/login", {
     "long_token": False,
 })["token"]
 
-# The server's own presets: "typed" is what the Settings → MCP page offers as
+# Presets from the server: "typed" is what the Settings → MCP page offers as
 # the everyday read/write set (tasks, projects, labels, comments, assignees).
 typed = (call("GET", "/api/v2/mcp/info", token=jwt).get("presets") or {}).get("typed") or {}
 if not typed.get("tasks"):

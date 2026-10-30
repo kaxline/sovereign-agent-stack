@@ -39,6 +39,12 @@ git log --oneline "$(git describe --tags --abbrev=0)"..HEAD
 git diff "$(git describe --tags --abbrev=0)" -- docker-compose.yml docker-compose.hermes-terminal.yml compose/hermes/terminal-ssh.yml .env.example scripts/setup.sh
 ```
 
+## Check
+
+Run `make bash32-test` on a Mac before tagging. It runs the host scripts under
+`/bin/bash` 3.2, which is what installs get without Homebrew's bash. Tests on
+a machine with a newer `bash` first on PATH pass scripts that fail there.
+
 ## Tag
 
 After the changelog commit is on `main`:

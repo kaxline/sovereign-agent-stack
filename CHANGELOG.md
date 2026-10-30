@@ -25,6 +25,13 @@ the stack under another app.
 
 ### Changes
 
+- **Host scripts run under macOS `/bin/bash` 3.2 again.** `setup.sh` failed in
+  `sync-buzz-profile.sh` from v0.3.6, and at the n8n credentials step because
+  bash 3.2 reads nothing from `source <(...)`. `todo.sh` has not parsed under
+  3.2 since v0.3.3, which stopped `make ensure-local`, `make up` and
+  `setup.sh --todo`. `make bash32-test` and a macOS CI job now cover these. An
+  install that set `HERMES_BUZZ_PROFILES=,` to work around the first failure
+  can drop it.
 - **llm-proxy fallback upstreams**: `chat` and `lightrag` can each carry an
   ordered `fallbacks` list of `{url, api_key, model?}`, set through
   `POST /admin/upstreams` or `LLM_PROXY_FALLBACKS_FILE`. The proxy tries the
