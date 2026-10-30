@@ -89,6 +89,8 @@ jobs:
         run: python3 scripts/test-cron-delivery-errors.py
       - name: CalDAV password env key
         run: sh scripts/test-caldav-password-ref.sh
+      - name: Buzz sync skipped when Buzz is not configured
+        run: sh scripts/test-buzz-sync-gate.sh
       - name: Vikunja token per profile
         run: sh scripts/test-vikunja-token-scope.sh
       - name: LLM proxy routes
@@ -97,6 +99,15 @@ jobs:
         run: python3 scripts/test-terminal-backend-sync.py
       - name: OpenCode MCP roots and aliases (stdlib)
         run: python3 scripts/test-opencode-mcp-roots.py
+
+  bash32:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Host scripts under /bin/bash 3.2
+        env:
+          BASH32_REQUIRED: "1"
+        run: sh scripts/test-bash32.sh
 
   shellcheck:
     runs-on: ubuntu-latest

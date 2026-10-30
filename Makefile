@@ -3,7 +3,7 @@
 	buzz-relay-start buzz-relay-stop buzz-relay-status buzz-relay-logs buzz-relay-restart \
 	buzz-admin \
 	corpus-create corpus-use corpus-list corpus-ingest corpus-destroy \
-	project-init project-index project-index-check project-sources-test synthetic-mail-test synthetic-messages-test \
+	project-init project-index project-index-check project-sources-test bash32-test synthetic-mail-test synthetic-messages-test \
 	messages-index messages-index-doctor messages-index-chats messages-index-test \
 	messages-watch messages-notify-test messages-watch-test messages-app messages-app-test \
 	mail-index mail-index-doctor mail-index-mailboxes mail-index-test mail-script-test mail-imap-test mail-mcp-test \
@@ -267,6 +267,10 @@ project-index-check:
 
 project-sources-test:
 	python3 scripts/test-project-sources.py
+
+# Host scripts under macOS /bin/bash 3.2. Skips where there is no bash 3.x.
+bash32-test:
+	sh scripts/test-bash32.sh
 
 # Fake Apple Mail store for mail-reader tests. See docs/email.md.
 synthetic-mail-test:

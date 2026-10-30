@@ -971,8 +971,8 @@ fi
 
 # --- n8n credentials (needed when automation is enabled later; cheap to always refresh) ---
 set -a
-# shellcheck disable=SC1091
-source <(grep -E '^(N8N_ENCRYPTION_KEY|LIGHTRAG_API_KEY|NEO4J_PASSWORD|NEO4J_USERNAME)=' .env | sed 's/^/export /')
+# eval, not source <(...): bash 3.2 sources nothing from a process substitution.
+eval "$(grep -E '^(N8N_ENCRYPTION_KEY|LIGHTRAG_API_KEY|NEO4J_PASSWORD|NEO4J_USERNAME)=' .env | sed 's/^/export /')"
 set +a
 node scripts/generate-n8n-credentials.js
 log "Regenerated n8n demo credentials"
