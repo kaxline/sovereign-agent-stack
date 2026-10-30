@@ -32,6 +32,11 @@ the stack under another app.
   `setup.sh --todo`. `make bash32-test` and a macOS CI job now cover these. An
   install that set `HERMES_BUZZ_PROFILES=,` to work around the first failure
   can drop it.
+- **`sync-buzz-profile.sh` does nothing on a stack that has not configured
+  Buzz**: with `HERMES_BUZZ_ENABLED` off and `HERMES_BUZZ_PROFILES` and
+  `BUZZ_RELAY_URL` empty, it no longer starts a Hermes container or writes
+  `platforms.buzz.enabled: false` to the `browser` and `api-server` configs.
+  Pins already written stay in place.
 - **llm-proxy fallback upstreams**: `chat` and `lightrag` can each carry an
   ordered `fallbacks` list of `{url, api_key, model?}`, set through
   `POST /admin/upstreams` or `LLM_PROXY_FALLBACKS_FILE`. The proxy tries the

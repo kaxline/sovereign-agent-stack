@@ -57,6 +57,9 @@ for enabled in 0 1; do
   check "sync-buzz-profile with HERMES_BUZZ_ENABLED=${enabled} and no profiles" \
     ./scripts/sync-buzz-profile.sh
 done
+printf 'HERMES_BUZZ_ENABLED=0\nBUZZ_RELAY_URL=ws://localhost:3000\n' > .env
+check "sync-buzz-profile with a relay URL and no profiles" \
+  ./scripts/sync-buzz-profile.sh
 rm -f .env
 
 check "setup.sh, default profiles" \

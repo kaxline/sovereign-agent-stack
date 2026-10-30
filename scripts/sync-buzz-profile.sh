@@ -197,6 +197,12 @@ case "$(echo "$enabled" | tr '[:upper:]' '[:lower:]')" in
   *) enabled=0 ;;
 esac
 
+# A stack that never configured Buzz has nothing to sync. Hermes's adapter needs
+# a relay URL and a private key before it connects, so no pin is needed either.
+if [[ "$enabled" -eq 0 && -z "$(env_get HERMES_BUZZ_PROFILES)" && -z "$(env_get BUZZ_RELAY_URL)" ]]; then
+  exit 0
+fi
+
 # Always keep stack gateways off Buzz (identity lock + WebUI/n8n roles).
 disable_buzz_on_profile browser
 disable_buzz_on_profile api-server

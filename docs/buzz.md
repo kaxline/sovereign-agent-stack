@@ -30,7 +30,7 @@ flowchart LR
 | **Community relay** | Membership + channels (hosted on buzz.xyz or self-hosted) |
 | **`buzz` CLI** | Outbound sends from Hermes; installed into `data/hermes/.local/bin` |
 | **Agent Hermes profile** | One process per profile (s6); own `SOUL.md`, memory, `BUZZ_PRIVATE_KEY` |
-| **`browser` / `api-server`** | Buzz adapter forced **off** (identity lock + stack roles) |
+| **`browser` / `api-server`** | Buzz adapter forced **off** (identity lock + stack roles) once `HERMES_BUZZ_ENABLED`, `HERMES_BUZZ_PROFILES` or `BUZZ_RELAY_URL` is set. A stack with none of them skips the Buzz sync. |
 
 Official Hermes overview: [Buzz Integration](https://hermes-agent.nousresearch.com/docs/integrations/buzz) · [Messaging → Buzz](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/buzz).
 
