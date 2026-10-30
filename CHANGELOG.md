@@ -6,7 +6,7 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
-## Unreleased
+## v0.3.7 — 2026-10-30
 
 ### Upgrade steps
 
@@ -31,7 +31,7 @@ the stack under another app.
   3.2 since v0.3.3, which stopped `make ensure-local`, `make up` and
   `setup.sh --todo`. `make bash32-test` and a macOS CI job now cover these. An
   install that set `HERMES_BUZZ_PROFILES=,` to work around the first failure
-  can drop it.
+  can drop it. These runs use a stub `docker`, not a live stack.
 - **`sync-buzz-profile.sh` does nothing on a stack that has not configured
   Buzz**: with `HERMES_BUZZ_ENABLED` off and `HERMES_BUZZ_PROFILES` and
   `BUZZ_RELAY_URL` empty, it no longer starts a Hermes container or writes
