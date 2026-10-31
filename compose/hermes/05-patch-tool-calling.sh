@@ -23,6 +23,8 @@ run_patch /bootstrap/patch-tool-eval-trace.py
 # hints for a bad helper import or code that printed nothing; print a trailing
 # expression; vault save next step names browser_vault_fill.
 run_patch /bootstrap/patch-browser-exec-hint.py
+# Tool-loop warnings outside the untrusted-data wrapper.
+run_patch /bootstrap/patch-tool-loop-notes.py
 # Per-session history budget for DM threads (request window; transcript stays).
 run_patch /bootstrap/patch-history-budget.py
 # Client-supplied session/turn context; refuse a prompt.submit profile that

@@ -6,6 +6,23 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
+## Unreleased
+
+### Behaviour changes
+
+- Bootstrap sets `tool_loop_guardrails.hard_stop_enabled=true` on every
+  profile. A turn now ends after 5 repeats of the same tool call or cycle of
+  calls, including on `api_server`, where Hermes defaults to warn-only. Set
+  `HERMES_TOOL_LOOP_HARD_STOP=false` to keep warn-only.
+- Tool-loop warnings now follow the `<untrusted_tool_result>` wrapper rather
+  than sitting inside it.
+
+### Upgrade steps
+
+1. `docker compose up -d --force-recreate hermes` and re-run the profile
+   bootstrap containers. Sessions with a cached agent keep their old setting
+   until the gateway restarts.
+
 ## v0.3.7 — 2026-10-30
 
 ### Upgrade steps

@@ -1090,6 +1090,7 @@ services:
       - LLM_BINDING_HOST=${LLM_BINDING_HOST:-http://host.docker.internal:1234/v1}
       - HERMES_PROXY_STALE_TIMEOUT=${HERMES_PROXY_STALE_TIMEOUT:-}
       - HERMES_MAX_TOKENS=${HERMES_MAX_TOKENS:-16384}
+      - HERMES_TOOL_LOOP_HARD_STOP=${HERMES_TOOL_LOOP_HARD_STOP:-true}
     volumes:
       - ./data/hermes:/opt/data
       - ./compose/hermes/api-server.env:/bootstrap/api-server.env:ro
@@ -1178,6 +1179,7 @@ services:
       - LLM_BINDING_HOST=${LLM_BINDING_HOST:-http://host.docker.internal:1234/v1}
       - HERMES_PROXY_STALE_TIMEOUT=${HERMES_PROXY_STALE_TIMEOUT:-}
       - HERMES_MAX_TOKENS=${HERMES_MAX_TOKENS:-16384}
+      - HERMES_TOOL_LOOP_HARD_STOP=${HERMES_TOOL_LOOP_HARD_STOP:-true}
       - HERMES_BROWSER_AUTO_TITLE=${HERMES_BROWSER_AUTO_TITLE:-auto}
     volumes:
       - ./data/hermes:/opt/data
@@ -1407,6 +1409,7 @@ services:
       - ./compose/hermes/patch-tool-eval-trace.py:/bootstrap/patch-tool-eval-trace.py:ro
       - ./compose/hermes/patch-browser-exec-hint.py:/bootstrap/patch-browser-exec-hint.py:ro
       - ./compose/hermes/browser_exec_hints.py:/bootstrap/browser_exec_hints.py:ro
+      - ./compose/hermes/patch-tool-loop-notes.py:/bootstrap/patch-tool-loop-notes.py:ro
       - ./compose/hermes/history_budget.py:/bootstrap/history_budget.py:ro
       - ./compose/hermes/history_budget_hook.py:/bootstrap/history_budget_hook.py:ro
       - ./compose/hermes/patch-history-budget.py:/bootstrap/patch-history-budget.py:ro

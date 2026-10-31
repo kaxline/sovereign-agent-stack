@@ -11,6 +11,7 @@ set -e
 HERMES_HOME="${HERMES_HOME:-/opt/data}"
 PROFILE="${HERMES_API_PROFILE_NAME:-api-server}"
 MAX_TURNS="${HERMES_API_MAX_TURNS:-20}"
+TOOL_LOOP_HARD_STOP="${HERMES_TOOL_LOOP_HARD_STOP:-true}"
 API_PORT="${HERMES_API_SERVER_PORT:-8643}"
 # hermes-api-server is hermes-cli minus the interactive-only tools. Interactive
 # front-ends (WebUI) want the full hermes-cli set back.
@@ -538,6 +539,20 @@ apply_model_proxy_all_profiles() {
       configure_model_proxy "$_amp_name"
     done
   fi
+}
+
+# Warn-only is the Hermes default on api_server, which treats the client as
+# someone able to stop a loop. A background turn has no such person.
+apply_tool_loop_hard_stop_all_profiles() {
+  log "Setting tool_loop_guardrails.hard_stop_enabled=${TOOL_LOOP_HARD_STOP} on every profile"
+  for _ths_profile in "" $(
+    [ -d "${HERMES_HOME}/profiles" ] && ls "${HERMES_HOME}/profiles"
+  ); do
+    if [ -n "$_ths_profile" ] && [ ! -d "${HERMES_HOME}/profiles/${_ths_profile}" ]; then
+      continue
+    fi
+    hermes_config_set "$_ths_profile" tool_loop_guardrails.hard_stop_enabled "$TOOL_LOOP_HARD_STOP"
+  done
 }
 
 # Keep named tools in the model-visible schema when tool_search is active.
@@ -1896,6 +1911,7 @@ configure_messages_webhook
 
 apply_terminal_backend_all_profiles
 apply_model_proxy_all_profiles
+apply_tool_loop_hard_stop_all_profiles
 
 log "Done: profile=${PROFILE} port=${API_PORT} max_turns=${MAX_TURNS} toolset=${API_TOOLSET}"
 log "API URL (host): http://localhost:${API_PORT}/v1"
