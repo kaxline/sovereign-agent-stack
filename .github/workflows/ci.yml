@@ -93,6 +93,8 @@ jobs:
         run: sh scripts/test-buzz-sync-gate.sh
       - name: Vikunja token per profile
         run: sh scripts/test-vikunja-token-scope.sh
+      - name: Bootstrap stamp and batched config writes
+        run: sh scripts/test-bootstrap-stamp.sh
       - name: LLM proxy routes
         run: python3 scripts/test-llm-proxy.py
       - name: Terminal backend override sync
