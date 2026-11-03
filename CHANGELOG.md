@@ -42,8 +42,9 @@ the stack under another app.
 - A server down at startup no longer costs every profile Hermes' 3 initial
   connect attempts. Once one profile has parked it after them, other profiles
   with the same name and target park it after one attempt for 120 s. On the
-  same stack, startup with Boundary's MCP server closed spent about 8 s on
-  it for each of three profiles; two of those waits go. See
+  same stack with Boundary's MCP server closed, startup discovery took 30 s
+  and now takes 9 s: the second and third profiles park it in about 0.3 s
+  instead of 8 s. `hermes` turns healthy 27 s after its container starts. See
   [docs/extending.md](docs/extending.md#mcp-servers-your-app-hosts).
 - The `neo4j` healthcheck reads its credentials from `NEO4J_AUTH` inside the
   container, so the password no longer appears in the probe command that
