@@ -230,6 +230,8 @@ A changed input, a config edited by hand or by Hermes, or a profile added or rem
 
 `docker compose up hermes` on its own does not start the sidecars; `docker compose up` does.
 
+Starting next to the rest of the stack makes slow disk work in the container slower. The image's `01-hermes-setup` runs `chown -R` over `data/hermes/profiles/` whenever anything there is not owned by hermes, which took 55 s during a full start. The stack's `007-profile-ownership` step runs first: it removes sockets left at `gateway.sock` and `home/.config/browser-harness/runtime/` (both now on `/tmp`) and chowns the few foreign files itself, so the walk does not run.
+
 For quick lookups via the API (n8n, curl, etc.), include a brief system message so the agent matches dashboard chat pacing. Hermes layers this on top of its core prompt (soft guidance — tools remain available):
 
 ```bash
