@@ -41,6 +41,21 @@ def test_parked_retry_interval() -> None:
     expect(interval({"parked_retry_interval": True}, 300) == 300.0, "a bool is not a number here")
 
 
+def test_peer_parked() -> None:
+    url = {"url": "http://host.docker.internal:62441/mcp", "timeout": 180}
+    expect(not mcp_wake.peer_parked("boundary", url), "nothing parked yet")
+    mcp_wake.note_initial_park("boundary", url)
+    expect(mcp_wake.peer_parked("boundary", dict(url, timeout=60)), "same name and URL share the park")
+    expect(not mcp_wake.peer_parked("boundary", {"url": "http://other:1/mcp"}), "another URL does not")
+    expect(not mcp_wake.peer_parked("other", url), "another name does not")
+    cmd = {"command": "npx", "args": ["srv"]}
+    mcp_wake.note_initial_park("stdio", cmd)
+    expect(mcp_wake.peer_parked("stdio", dict(cmd)), "same command and args share the park")
+    expect(not mcp_wake.peer_parked("stdio", {"command": "npx", "args": ["other"]}), "other args do not")
+    mcp_wake._peer_parks[("boundary", repr(url["url"]))] -= mcp_wake.PEER_PARK_WINDOW_SECONDS + 1
+    expect(not mcp_wake.peer_parked("boundary", url), "an old park has expired")
+
+
 def test_valid_name() -> None:
     for name in ("boundary", "caldav-work", "a.b_c", "x"):
         expect(mcp_wake.valid_name(name), f"{name!r} is a valid server name")
@@ -185,6 +200,27 @@ time.sleep(0.05)  # a new request needs a newer mtime than the first
 srv = serve()
 wake_and_wait("server quit")
 assert sum("woken from parked state by request" in r for r in records) == 2
+
+# C: a server down for two profiles runs the initial ladder once; the second profile parks
+# after one attempt.
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+with socket.socket() as s:
+    s.bind(("127.0.0.1", 0))
+    down_port = s.getsockname()[1]
+peer_cfg = {"url": f"http://127.0.0.1:{down_port}/mcp", "connect_timeout": 30, "timeout": 5}
+took = {}
+for profile in ("api-server", "browser"):
+    token = set_hermes_home_override(str(root / "profiles" / profile))
+    try:
+        started = time.monotonic()
+        register_mcp_servers({"peer-test": peer_cfg})
+        took[profile] = time.monotonic() - started
+    finally:
+        reset_hermes_home_override(token)
+assert sum("'peer-test' failed initial connection after" in r for r in records) == 1, records[-10:]
+assert sum("'peer-test' failed initial connection and another profile" in r for r in records) == 1, records[-10:]
+assert took["browser"] < 2 < took["api-server"], took
+print(f"peer park: {took['api-server']:.1f}s then {took['browser']:.1f}s")
 print("image ok")
 sys.stdout.flush()
 os._exit(0)  # skip MCP loop / uvicorn thread teardown
@@ -193,6 +229,7 @@ os._exit(0)  # skip MCP loop / uvicorn thread teardown
 
 def main() -> None:
     test_parked_retry_interval()
+    test_peer_parked()
     test_valid_name()
     print("ok")
     hermes_image.maybe_run(IMAGE_DRIVER)

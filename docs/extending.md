@@ -599,5 +599,13 @@ still on its last retries when you call is woken as soon as it parks. Each
 connection acts on a request once. If your server was not listening yet, it
 parks again: call again, or let `parked_retry_interval` pick it up.
 
+If your app is closed when Hermes starts, the gateway's startup discovery
+spends Hermes' 3 initial attempts (about 8 s) on your server for the first
+profile that lists it. Discovery runs one profile at a time, and the gateway
+serves no profile until it finishes. Every other profile that lists the same
+name and `url` (or `command` and `args`) in the next 120 s parks it after one
+failed attempt. They park the same way, so the reconnect call and
+`parked_retry_interval` revive all of them.
+
 This is an overlay on the pinned Hermes image (`patch-mcp-wake.py`). The route,
 key and response fields stay stable across pin moves. Changes are additive.

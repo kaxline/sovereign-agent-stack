@@ -23,6 +23,13 @@ after it is still woken. Each connection takes a given request once, and only
 while parked: a connected session is never torn down. The process that serves
 the endpoint also wakes its own connections at once, without waiting for its
 watcher, and reports how many in ``woken``.
+
+The multiplexed gateway runs startup discovery one profile at a time, and a
+server that is down costs each profile the full initial ladder (three retries
+with backoff, about 8 s) before it parks. Once one profile has parked a server
+that way, another profile's connection to the same name and target parks after
+its first failed attempt instead, for PEER_PARK_WINDOW_SECONDS. It parks the
+same way, so the timed probe and wake requests still revive it.
 """
 from __future__ import annotations
 
@@ -40,10 +47,14 @@ WAKE_DIR_NAME = "mcp-wake"
 MIN_PARKED_RETRY_SECONDS = 10.0
 POLL_SECONDS = 1.0
 WAKE_WINDOW_SECONDS = 30.0
+PEER_PARK_WINDOW_SECONDS = 120.0
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 _watcher_lock = threading.Lock()
 _watcher: Optional[threading.Thread] = None
+
+_peer_lock = threading.Lock()
+_peer_parks: dict[tuple[str, str], float] = {}
 
 
 def parked_retry_interval(config: Any, default: float) -> float:
@@ -57,6 +68,27 @@ def parked_retry_interval(config: Any, default: float) -> float:
         logger.warning("MCP parked_retry_interval %r is not a number; using %ss", raw, default)
         return float(default)
     return max(MIN_PARKED_RETRY_SECONDS, value)
+
+
+def _peer_key(name: str, config: Any) -> tuple[str, str]:
+    """A server's name and target (URL, or command and args); profiles sharing both share a fate."""
+    if not isinstance(config, dict):
+        return name, ""
+    target = config.get("url") or [config.get("command"), list(config.get("args") or [])]
+    return name, repr(target)
+
+
+def note_initial_park(name: str, config: Any) -> None:
+    """Record that *name* parked after the full initial-connect ladder in this process."""
+    with _peer_lock:
+        _peer_parks[_peer_key(name, config)] = time.monotonic()
+
+
+def peer_parked(name: str, config: Any) -> bool:
+    """True when another connection to the same server parked after its initial ladder lately."""
+    with _peer_lock:
+        parked_at = _peer_parks.get(_peer_key(name, config))
+    return parked_at is not None and time.monotonic() - parked_at < PEER_PARK_WINDOW_SECONDS
 
 
 def valid_name(name: str) -> bool:
