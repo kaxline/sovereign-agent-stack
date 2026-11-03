@@ -1486,7 +1486,7 @@ services:
       # virtiofs bind and aborts the image's 01-hermes-setup on a fresh
       # container. See the script header.
       - ./compose/hermes/005-remap-hermes-uid.sh:/etc/cont-init.d/005-remap-hermes-uid:ro
-      - ./compose/hermes/007-clear-stale-sockets.sh:/etc/cont-init.d/007-clear-stale-sockets:ro
+      - ./compose/hermes/007-profile-ownership.sh:/etc/cont-init.d/007-profile-ownership:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     shm_size: "1g"
