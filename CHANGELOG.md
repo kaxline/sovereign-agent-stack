@@ -46,6 +46,18 @@ the stack under another app.
   and now takes 9 s: the second and third profiles park it in about 0.3 s
   instead of 8 s. `hermes` turns healthy 27 s after its container starts. See
   [docs/extending.md](docs/extending.md#mcp-servers-your-app-hosts).
+- `hermes` no longer waits for its MCP sidecars to be healthy (Boundary CR
+  0019 R3). `lightrag-mcp`, `mcp-searxng`, `caldav-mcp`, `opencode-mcp`,
+  `sql-mcp-ro`, `sql-mcp-rw` and `vikunja` are gone from its `depends_on`;
+  waiting for `lightrag-mcp` held it back about 30 s behind neo4j and
+  lightrag. A sidecar still booting at startup parks and its tools come back
+  on the next parked probe. `docker compose up hermes` on its own no longer
+  starts the sidecars. See
+  [docs/hermes.md](docs/hermes.md#what-hermes-waits-for-at-start).
+- The bootstrap sets `parked_retry_interval` on every MCP entry that points
+  at a stack sidecar, a client's entry on the same URL included:
+  `MCP_PARKED_RETRY_INTERVAL`, default 15 s instead of Hermes' 300 s. An
+  empty value keeps Hermes' default.
 - The `neo4j` healthcheck reads its credentials from `NEO4J_AUTH` inside the
   container, so the password no longer appears in the probe command that
   `docker inspect` and `docker events` print. It is still in the container's

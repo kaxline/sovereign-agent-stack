@@ -78,6 +78,11 @@ MESSAGES_MCP_URL="${MESSAGES_MCP_URL:-http://messages-mcp:8000/mcp}"
 MESSAGES_MCP_TIMEOUT="${MESSAGES_MCP_TIMEOUT:-60}"
 MESSAGES_MCP_CONNECT_TIMEOUT="${MESSAGES_MCP_CONNECT_TIMEOUT:-30}"
 MESSAGES_MCP_TOOLS="messages_status messages_chats messages_search messages_conversation messages_get"
+# Probe interval for a parked stack MCP server (patch-mcp-wake.py; Hermes
+# default 300, floor 10). hermes starts without waiting for its MCP sidecars,
+# so one still booting parks and comes back on the next probe. Empty leaves
+# the Hermes default.
+MCP_PARKED_RETRY_INTERVAL="${MCP_PARKED_RETRY_INTERVAL-15}"
 # messages_triage_batch moves the triage cursor, so only the default profile,
 # where the messages-triage cron job runs, registers it, and it isn't pinned.
 MESSAGES_TRIAGE_TOOL="messages_triage_batch"
@@ -800,6 +805,48 @@ if isinstance(current, list):
 ts["defer"] = sorted(curated - {"session_search"})
 atomic_yaml_write(cfg_path, config)
 print(f"Set {label} to curated default minus session_search")
+PY
+)"
+  if [ -n "$_out" ]; then log "$_out"; fi
+}
+
+# Set parked_retry_interval on every MCP entry that points at a stack sidecar,
+# a client's entry on the same URL included (Boundary's calendar-<slug> on
+# caldav-mcp). Entries for other URLs, such as Boundary's own server, are left
+# alone.
+#
+# Usage: set_stack_mcp_parked_retry <profile>
+set_stack_mcp_parked_retry() {
+  [ -n "$MCP_PARKED_RETRY_INTERVAL" ] || return 0
+  _cfg="$(config_path_for "$1")"
+  [ -f "$_cfg" ] || return 0
+  _out="$(python3 - "$_cfg" "$MCP_PARKED_RETRY_INTERVAL" "$LIGHTRAG_MCP_URL" "$SEARXNG_MCP_URL" \
+    "$CALDAV_MCP_URL" "$OPENCODE_MCP_URL" "$SQL_MCP_RO_URL" "$SQL_MCP_RW_URL" "$VIKUNJA_MCP_URL" \
+    "$MAIL_MCP_URL" "$MAIL_DRAFTS_MCP_URL" "$MESSAGES_MCP_URL" <<'PY'
+import sys
+sys.path.insert(0, "/opt/hermes")
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import hermes_yaml as yaml
+from utils import atomic_yaml_write
+
+cfg_path, raw = sys.argv[1:3]
+urls = set(sys.argv[3:])
+interval = int(raw) if raw.isdigit() else raw
+with open(cfg_path) as fh:
+    config = yaml.safe_load(fh) or {}
+servers = config.get("mcp_servers")
+if not isinstance(servers, dict):
+    raise SystemExit(0)
+changed = [name for name, entry in servers.items()
+           if isinstance(entry, dict) and entry.get("url") in urls
+           and entry.get("parked_retry_interval") != interval]
+for name in changed:
+    servers[name]["parked_retry_interval"] = interval
+if changed:
+    atomic_yaml_write(cfg_path, config)
+    print(f"Set parked_retry_interval={interval} on {', '.join(sorted(changed))}")
 PY
 )"
   if [ -n "$_out" ]; then log "$_out"; fi
@@ -2021,8 +2068,10 @@ register_messages_mcp_servers "$PROFILE"
 # Heal always_include + defer after every hermes config set / MCP register.
 if is_true "$BOOTSTRAP_SHARED"; then
   reconcile_stack_eager_tools ""
+  set_stack_mcp_parked_retry ""
 fi
 reconcile_stack_eager_tools "$PROFILE"
+set_stack_mcp_parked_retry "$PROFILE"
 
 # Browser profile never owns the Signal SSE lock — default gateway does.
 # Pin adapter disabled at bootstrap so fresh installs work before a second
