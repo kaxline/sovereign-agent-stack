@@ -6,76 +6,87 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
-## Unreleased
-
-### Behaviour changes
-
-- Bootstrap sets `tool_loop_guardrails.hard_stop_enabled=true` on every
-  profile. A turn now ends after 5 repeats of the same tool call or cycle of
-  calls, including on `api_server`, where Hermes defaults to warn-only. Set
-  `HERMES_TOOL_LOOP_HARD_STOP=false` to keep warn-only.
-- Tool-loop warnings now follow the `<untrusted_tool_result>` wrapper rather
-  than sitting inside it.
-- The profile bootstraps skip their work when nothing has changed since the
-  last complete run, so a stack start no longer repeats them (Boundary CR
-  0019 R1). They compare their inputs and the config files they write with
-  stamps in `data/hermes/.bootstrap-stamps/`; any difference runs the full
-  bootstrap. `HERMES_BOOTSTRAP_FORCE=1` forces a run, and
-  `make hermes-reload` sets it. See
-  [docs/hermes.md](docs/hermes.md#when-the-bootstrap-runs).
-- A full bootstrap applies its `hermes config set` keys in batches in one
-  Python process instead of one CLI call per key: about 2 CLI calls per
-  launch instead of about 200 on a stack with five profiles. On that stack
-  with v0.22.5, the two bootstraps took 174s each before; a full run now
-  takes 20s and 13s, and a skipped run 0.5s each.
-- `hermes-browser-bootstrap` now configures the `browser` profile only.
-  `hermes-api-bootstrap`, which runs first, keeps the default profile and the
-  sweep over every profile. An overlay that runs the browser bootstrap on its
-  own should set `HERMES_BOOTSTRAP_SHARED=1` on it.
-- `hermes` turns healthy only once the api-server gateway answers
-  `/health` on 8643 as well as the dashboard on 9119. The gateway binds
-  after startup MCP discovery, so on a five-profile stack with an
-  unreachable MCP server the old check reported healthy about 27 s before
-  chats worked. `start_period` is now 180 s and `start_interval` 2 s on
-  `hermes`, and `start_interval` 2 s on `hermes-webui`, which needs Docker
-  Engine 25 or later.
-- A server down at startup no longer costs every profile Hermes' 3 initial
-  connect attempts. Once one profile has parked it after them, other profiles
-  with the same name and target park it after one attempt for 120 s. On the
-  same stack with Boundary's MCP server closed, startup discovery took 30 s
-  and now takes 9 s: the second and third profiles park it in about 0.3 s
-  instead of 8 s. `hermes` turns healthy 27 s after its container starts. See
-  [docs/extending.md](docs/extending.md#mcp-servers-your-app-hosts).
-- `hermes` no longer waits for its MCP sidecars to be healthy (Boundary CR
-  0019 R3). `lightrag-mcp`, `mcp-searxng`, `caldav-mcp`, `opencode-mcp`,
-  `sql-mcp-ro`, `sql-mcp-rw` and `vikunja` are gone from its `depends_on`;
-  waiting for `lightrag-mcp` held it back about 30 s behind neo4j and
-  lightrag. A sidecar still booting at startup parks and its tools come back
-  on the next parked probe. `docker compose up hermes` on its own no longer
-  starts the sidecars. See
-  [docs/hermes.md](docs/hermes.md#what-hermes-waits-for-at-start).
-- A new cont-init step, `007-profile-ownership`, runs before the image's
-  `01-hermes-setup`. It removes sockets left at `gateway.sock` and
-  `home/.config/browser-harness/runtime/*.sock` in `data/hermes` and each
-  profile, where nothing binds them since those sockets moved to `/tmp`, and
-  chowns the files under `profiles/` that are not hermes's. Either kind made
-  `01-hermes-setup` run `chown -R` over all of `profiles/` on every boot; a
-  root-owned socket also made it fail, so it never stopped. With hermes now
-  starting while the rest of the stack loads, that walk took 55 s.
-- The bootstrap sets `parked_retry_interval` on every MCP entry that points
-  at a stack sidecar, a client's entry on the same URL included:
-  `MCP_PARKED_RETRY_INTERVAL`, default 15 s instead of Hermes' 300 s. An
-  empty value keeps Hermes' default.
-- The `neo4j` healthcheck reads its credentials from `NEO4J_AUTH` inside the
-  container, so the password no longer appears in the probe command that
-  `docker inspect` and `docker events` print. It is still in the container's
-  environment.
+## v0.3.8 — 2026-11-03
 
 ### Upgrade steps
 
-1. `docker compose up -d --force-recreate hermes` and re-run the profile
-   bootstrap containers. Sessions with a cached agent keep their old setting
-   until the gateway restarts.
+1. `docker compose up -d`. It recreates `hermes` and both profile bootstraps.
+   The first start after upgrading runs the full bootstrap once (about 45 s);
+   later starts skip it. Sessions with a cached agent keep the old tool-loop
+   setting until the gateway restarts.
+2. An overlay that runs `hermes-browser-bootstrap` on its own should set
+   `HERMES_BOOTSTRAP_SHARED=1` on it, or the default profile and the other
+   profiles are no longer configured.
+3. Starting `hermes` alone with `docker compose up hermes` no longer starts
+   its MCP sidecars. Start them by name, or use `docker compose up`.
+
+### New optional `.env` keys
+
+- `MCP_PARKED_RETRY_INTERVAL` (default `15`): seconds between probes of a
+  parked stack MCP server. Empty keeps Hermes' 300 s.
+- `HERMES_BOOTSTRAP_FORCE` (default `0`): `1` runs the full bootstrap even
+  when nothing has changed. `make hermes-reload` sets it.
+
+### Host requirements
+
+- Docker Engine 25 or later, for `start_interval` on the `hermes` and
+  `hermes-webui` healthchecks.
+
+### Changes
+
+Startup (Boundary CR 0019). On a five-profile stack with Hermes v0.22.5,
+`hermes` used to start 31.6 s after `docker compose up`, behind both
+bootstraps and the neo4j, lightrag, lightrag-mcp chain. It now starts at
+8.2 s and turns healthy at 32.9 s, when the api-server gateway answers.
+
+- **The profile bootstraps skip their work when nothing has changed** since
+  the last complete run (R1). They compare their inputs and the config files
+  they write with stamps in `data/hermes/.bootstrap-stamps/`; any difference
+  runs the full bootstrap. See
+  [docs/hermes.md](docs/hermes.md#when-the-bootstrap-runs). A skipped run
+  takes 0.5 s.
+- **A full bootstrap batches its `hermes config set` keys** in one Python
+  process: about 2 CLI calls per launch instead of about 200. The two
+  bootstraps took 174 s each; a full run now takes 20 s and 13 s.
+- **`hermes-browser-bootstrap` configures the `browser` profile only.**
+  `hermes-api-bootstrap`, which runs first, keeps the default profile and the
+  sweep over every profile.
+- **`hermes` turns healthy only once the api-server gateway answers** `/health`
+  on 8643 as well as the dashboard on 9119. The gateway binds after startup
+  MCP discovery, and the old check reported healthy about 27 s before chats
+  worked.
+- **A server down at startup no longer costs every profile Hermes' 3 initial
+  connect attempts.** Once one profile has parked it after them, other
+  profiles with the same name and target park it after one attempt for
+  120 s. With Boundary's MCP server closed, startup discovery took 30 s and
+  now takes 9 s. See
+  [docs/extending.md](docs/extending.md#mcp-servers-your-app-hosts).
+- **`hermes` no longer waits for its MCP sidecars** (R3): `lightrag-mcp`,
+  `mcp-searxng`, `caldav-mcp`, `opencode-mcp`, `sql-mcp-ro`, `sql-mcp-rw` and
+  `vikunja` are gone from its `depends_on`. A sidecar still booting parks,
+  and the bootstrap now sets `parked_retry_interval` on every MCP entry that
+  points at a sidecar, so its tools return within about 15 s of it coming
+  up. See [docs/hermes.md](docs/hermes.md#what-hermes-waits-for-at-start).
+- **A new cont-init step, `007-profile-ownership`, runs before the image's
+  `01-hermes-setup`.** It removes sockets left at `gateway.sock` and
+  `home/.config/browser-harness/runtime/*.sock`, where nothing binds them
+  since those sockets moved to `/tmp`, and chowns the files under
+  `profiles/` that are not hermes's. Either kind made `01-hermes-setup` run
+  `chown -R` over all of `profiles/` on every boot, which took 55 s while the
+  rest of the stack was starting.
+
+Other changes:
+
+- **Tool loops stop on every profile.** The bootstrap sets
+  `tool_loop_guardrails.hard_stop_enabled=true`, so a turn ends after 5
+  repeats of the same tool call or cycle of calls, including on `api_server`,
+  where Hermes defaults to warn-only. Set `HERMES_TOOL_LOOP_HARD_STOP=false`
+  to keep warn-only. Tool-loop warnings now follow the
+  `<untrusted_tool_result>` wrapper rather than sitting inside it.
+- **The `neo4j` healthcheck reads its credentials from `NEO4J_AUTH`** inside
+  the container, so the password no longer appears in the probe command that
+  `docker inspect` and `docker events` print. It is still in the container's
+  environment.
 
 ## v0.3.7 — 2026-10-30
 
