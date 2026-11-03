@@ -95,6 +95,10 @@ jobs:
         run: sh scripts/test-vikunja-token-scope.sh
       - name: Bootstrap stamp and batched config writes
         run: sh scripts/test-bootstrap-stamp.sh
+      - name: Parked retry interval on stack MCP entries (skips without the image)
+        run: sh scripts/test-mcp-parked-retry.sh
+      - name: Profile ownership fixed before Hermes setup
+        run: sh scripts/test-profile-ownership.sh
       - name: LLM proxy routes
         run: python3 scripts/test-llm-proxy.py
       - name: Terminal backend override sync
@@ -122,6 +126,7 @@ jobs:
           shellcheck -x -e SC1090,SC1091 scripts/*.sh
           shellcheck -s sh -e SC1090,SC1091 compose/hermes/bootstrap-api-profile.sh
           shellcheck -s sh -e SC1090,SC1091 compose/hermes/08-warmup-agent-browser.sh
+          shellcheck -s sh compose/hermes/007-profile-ownership.sh
           shellcheck -s sh -e SC1090,SC1091 n8n/import-demo-data.sh || true
 
   hadolint:

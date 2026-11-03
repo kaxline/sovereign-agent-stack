@@ -1098,6 +1098,8 @@ services:
       - HERMES_PROXY_STALE_TIMEOUT=${HERMES_PROXY_STALE_TIMEOUT:-}
       - HERMES_MAX_TOKENS=${HERMES_MAX_TOKENS:-16384}
       - HERMES_TOOL_LOOP_HARD_STOP=${HERMES_TOOL_LOOP_HARD_STOP:-true}
+      # Probe interval for a parked stack MCP server; empty keeps Hermes' 300 s.
+      - MCP_PARKED_RETRY_INTERVAL=${MCP_PARKED_RETRY_INTERVAL-15}
     volumes:
       - ./data/hermes:/opt/data
       - ./compose/hermes/api-server.env:/bootstrap/api-server.env:ro
@@ -1192,6 +1194,8 @@ services:
       - HERMES_PROXY_STALE_TIMEOUT=${HERMES_PROXY_STALE_TIMEOUT:-}
       - HERMES_MAX_TOKENS=${HERMES_MAX_TOKENS:-16384}
       - HERMES_TOOL_LOOP_HARD_STOP=${HERMES_TOOL_LOOP_HARD_STOP:-true}
+      # Probe interval for a parked stack MCP server; empty keeps Hermes' 300 s.
+      - MCP_PARKED_RETRY_INTERVAL=${MCP_PARKED_RETRY_INTERVAL-15}
       - HERMES_BROWSER_AUTO_TITLE=${HERMES_BROWSER_AUTO_TITLE:-auto}
     volumes:
       - ./data/hermes:/opt/data
@@ -1482,6 +1486,7 @@ services:
       # virtiofs bind and aborts the image's 01-hermes-setup on a fresh
       # container. See the script header.
       - ./compose/hermes/005-remap-hermes-uid.sh:/etc/cont-init.d/005-remap-hermes-uid:ro
+      - ./compose/hermes/007-profile-ownership.sh:/etc/cont-init.d/007-profile-ownership:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     shm_size: "1g"
@@ -1504,36 +1509,18 @@ services:
         condition: service_completed_successfully
       llm-proxy:
         condition: service_healthy
-      # Optional: only present when the `rag` profile is enabled.
-      lightrag-mcp:
-        condition: service_healthy
-        required: false
-      mcp-searxng:
-        condition: service_healthy
-        required: false
-      # Optional: only present when the `calendar` profile is enabled.
-      caldav-mcp:
-        condition: service_healthy
-        required: false
-      # Optional: only present when the `coding` profile is enabled.
-      opencode-mcp:
-        condition: service_healthy
-        required: false
-      # Optional: only present when the `signal` profile is enabled.
+      # Optional: only present when the `signal` profile is enabled. The Signal
+      # adapter connects when the gateway starts.
       signal-cli:
         condition: service_healthy
         required: false
-      # Optional: only present when the `db` profile is enabled.
-      sql-mcp-ro:
-        condition: service_healthy
-        required: false
-      sql-mcp-rw:
-        condition: service_healthy
-        required: false
-      # Optional: only present when the `todo` profile is enabled.
-      vikunja:
-        condition: service_healthy
-        required: false
+      # No MCP sidecar is listed (lightrag-mcp, mcp-searxng, caldav-mcp,
+      # opencode-mcp, sql-mcp-*, vikunja, mail-mcp, messages-mcp). Waiting for
+      # lightrag-mcp alone held hermes back about 30 s behind neo4j and lightrag.
+      # A sidecar still booting when discovery runs parks, and its tools return
+      # on the next parked probe (MCP_PARKED_RETRY_INTERVAL, 15 s) once it is
+      # up. `docker compose up hermes` on its own no longer starts them; plain
+      # `docker compose up` does.
     # db is internal and holds only the shared Postgres and its SQL MCP
     # sidecars. hermes is the one default-network service that joins it, so
     # hermes-worker (the agent's shell) cannot reach either.

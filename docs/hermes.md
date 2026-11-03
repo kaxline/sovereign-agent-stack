@@ -224,6 +224,14 @@ A changed input, a config edited by hand or by Hermes, or a profile added or rem
 
 `hermes-api-bootstrap` configures the default profile and sweeps every profile. `hermes-browser-bootstrap` runs after it with `HERMES_BOOTSTRAP_SHARED=0` and configures only the `browser` profile.
 
+### What hermes waits for at start
+
+`hermes` starts once both bootstraps have finished and `hermes-worker` (ssh terminal backend), `llm-proxy` and `signal-cli` (with the `signal` profile) are healthy. It does not wait for its MCP sidecars: `lightrag-mcp`, `mcp-searxng`, `caldav-mcp`, `opencode-mcp`, `sql-mcp-ro`, `sql-mcp-rw`, `vikunja`, `mail-mcp`, `mail-drafts-mcp` and `messages-mcp`. One that is still booting when the gateway's startup discovery reaches it parks without its tools, and the next parked probe brings them back once it is up. The bootstrap sets that probe's interval on every MCP entry that points at a sidecar: `MCP_PARKED_RETRY_INTERVAL`, 15 s by default instead of Hermes' 300 s. An empty value keeps Hermes' default.
+
+`docker compose up hermes` on its own does not start the sidecars; `docker compose up` does.
+
+Starting next to the rest of the stack makes slow disk work in the container slower. The image's `01-hermes-setup` runs `chown -R` over `data/hermes/profiles/` whenever anything there is not owned by hermes, which took 55 s during a full start. The stack's `007-profile-ownership` step runs first: it removes sockets left at `gateway.sock` and `home/.config/browser-harness/runtime/` (both now on `/tmp`) and chowns the few foreign files itself, so the walk does not run.
+
 For quick lookups via the API (n8n, curl, etc.), include a brief system message so the agent matches dashboard chat pacing. Hermes layers this on top of its core prompt (soft guidance — tools remain available):
 
 ```bash
