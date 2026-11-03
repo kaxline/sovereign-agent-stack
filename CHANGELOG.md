@@ -54,6 +54,13 @@ the stack under another app.
   on the next parked probe. `docker compose up hermes` on its own no longer
   starts the sidecars. See
   [docs/hermes.md](docs/hermes.md#what-hermes-waits-for-at-start).
+- A new cont-init step, `007-clear-stale-sockets`, removes sockets left at
+  `gateway.sock` and `home/.config/browser-harness/runtime/*.sock` in
+  `data/hermes` and each profile, where nothing binds them since those
+  sockets moved to `/tmp`. A root-owned one there made the image's
+  `01-hermes-setup` run `chown -R` over `profiles/` on every boot, which
+  failed on the socket and so never stopped. With hermes now starting while
+  the rest of the stack loads, that walk took 55 s.
 - The bootstrap sets `parked_retry_interval` on every MCP entry that points
   at a stack sidecar, a client's entry on the same URL included:
   `MCP_PARKED_RETRY_INTERVAL`, default 15 s instead of Hermes' 300 s. An
