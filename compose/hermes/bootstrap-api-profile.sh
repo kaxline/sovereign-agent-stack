@@ -454,8 +454,10 @@ for line in Path(sys.argv[2]).read_text().splitlines():
         failed = True
     finally:
         reset_hermes_home_override(token)
+# stderr: a flush can run inside a helper whose stdout the caller captures.
 for profile, count in counts.items():
-    print(f"[hermes-api-bootstrap] Set {count} config key(s) on '{profile or 'default'}'")
+    print(f"[hermes-api-bootstrap] Set {count} config key(s) on '{profile or 'default'}'",
+          file=sys.stderr)
 raise SystemExit(1 if failed else 0)
 PY
   : > "$CONFIG_QUEUE"

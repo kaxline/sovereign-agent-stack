@@ -25,7 +25,9 @@ the stack under another app.
   [docs/hermes.md](docs/hermes.md#when-the-bootstrap-runs).
 - A full bootstrap applies its `hermes config set` keys in batches in one
   Python process instead of one CLI call per key: about 2 CLI calls per
-  launch instead of about 200 on a stack with five profiles.
+  launch instead of about 200 on a stack with five profiles. On that stack
+  with v0.22.5, the two bootstraps took 174s each before; a full run now
+  takes 20s and 13s, and a skipped run 0.5s each.
 - `hermes-browser-bootstrap` now configures the `browser` profile only.
   `hermes-api-bootstrap`, which runs first, keeps the default profile and the
   sweep over every profile. An overlay that runs the browser bootstrap on its
