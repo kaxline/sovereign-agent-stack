@@ -209,8 +209,8 @@ restart:
 # profile reloads its config and the system prompt. Takes about two minutes.
 #   make hermes-reload
 hermes-reload: ensure-local
-	docker compose run --rm hermes-api-bootstrap
-	docker compose run --rm --no-deps hermes-browser-bootstrap
+	docker compose run --rm -e HERMES_BOOTSTRAP_FORCE=1 hermes-api-bootstrap
+	docker compose run --rm --no-deps -e HERMES_BOOTSTRAP_FORCE=1 hermes-browser-bootstrap
 	docker compose up -d --no-deps --force-recreate hermes
 
 # Corpus lifecycle (requires rag profile). One hot WORKSPACE at a time.

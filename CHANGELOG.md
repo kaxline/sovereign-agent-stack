@@ -16,6 +16,22 @@ the stack under another app.
   `HERMES_TOOL_LOOP_HARD_STOP=false` to keep warn-only.
 - Tool-loop warnings now follow the `<untrusted_tool_result>` wrapper rather
   than sitting inside it.
+- The profile bootstraps skip their work when nothing has changed since the
+  last complete run, so a stack start no longer repeats them (Boundary CR
+  0019 R1). They compare their inputs and the config files they write with
+  stamps in `data/hermes/.bootstrap-stamps/`; any difference runs the full
+  bootstrap. `HERMES_BOOTSTRAP_FORCE=1` forces a run, and
+  `make hermes-reload` sets it. See
+  [docs/hermes.md](docs/hermes.md#when-the-bootstrap-runs).
+- A full bootstrap applies its `hermes config set` keys in batches in one
+  Python process instead of one CLI call per key: about 2 CLI calls per
+  launch instead of about 200 on a stack with five profiles. On that stack
+  with v0.22.5, the two bootstraps took 174s each before; a full run now
+  takes 20s and 13s, and a skipped run 0.5s each.
+- `hermes-browser-bootstrap` now configures the `browser` profile only.
+  `hermes-api-bootstrap`, which runs first, keeps the default profile and the
+  sweep over every profile. An overlay that runs the browser bootstrap on its
+  own should set `HERMES_BOOTSTRAP_SHARED=1` on it.
 
 ### Upgrade steps
 

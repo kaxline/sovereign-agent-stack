@@ -94,12 +94,95 @@ MODEL_MAX_TOKENS="${HERMES_MAX_TOKENS:-16384}"
 # auto = off for a local upstream, on for a cloud one. 0/1 force it.
 BROWSER_AUTO_TITLE="${HERMES_BROWSER_AUTO_TITLE:-auto}"
 
+# The default profile and the sweep over every profile come out the same from
+# either bootstrap, so only hermes-api-bootstrap runs them (1) and
+# hermes-browser-bootstrap, which runs after it, does its own profile (0).
+BOOTSTRAP_SHARED="${HERMES_BOOTSTRAP_SHARED:-1}"
+# 1 runs the bootstrap even when its stamp matches.
+BOOTSTRAP_FORCE="${HERMES_BOOTSTRAP_FORCE:-0}"
+
 PROFILE_DIR="${HERMES_HOME}/profiles/${PROFILE}"
 PROFILE_ENV="${PROFILE_DIR}/.env"
 DEFAULT_ENV="${HERMES_HOME}/.env"
+STAMP_DIR="${HERMES_HOME}/.bootstrap-stamps"
 
 log() {
   printf '[hermes-api-bootstrap] %s\n' "$1"
+}
+
+is_true() {
+  case "$1" in
+    1|true|TRUE|yes|YES) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+sha256_stdin() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | cut -d' ' -f1
+  else
+    command python3 -c 'import hashlib, sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())'
+  fi
+}
+
+# Skipping an unchanged run
+#
+# Compose starts exited one-shots again on every `up`, so without this the full
+# bootstrap runs on every stack start. A run is skipped when two hashes match
+# what the last complete run recorded:
+#
+# - inputs: this script, the profile's env file, the CalDAV accounts, the
+#   image, and every environment variable this container gets. One stamp per
+#   profile under STAMP_DIR.
+# - state: every file the bootstrap writes, in the default profile and every
+#   named profile. One stamp shared by both bootstraps, written by whichever
+#   ran last. A config edited by hand or by Hermes, or a profile added or
+#   removed, changes it, and the next start runs the full bootstrap again.
+#
+# gateway_state.json is left out of the state, since gateways rewrite it, and
+# it is written on every start, skipped or not.
+bootstrap_inputs_hash() {
+  {
+    echo "script"
+    cat "$0"
+    echo "source-env"
+    cat "$SOURCE_ENV"
+    echo "image ${HERMES_AGENT_IMAGE_TAG:-}"
+    cat /opt/hermes/pyproject.toml 2>/dev/null || true
+    echo "caldav"
+    for _bih_f in "$CALDAV_MCP_ACCOUNTS_DIR"/*; do
+      [ -f "$_bih_f" ] || continue
+      echo "$_bih_f"
+      cat "$_bih_f"
+    done
+    echo "env"
+    env | grep -v -e '^HOSTNAME=' -e '^PWD=' -e '^OLDPWD=' -e '^SHLVL=' -e '^_=' | LC_ALL=C sort
+  } | sha256_stdin
+}
+
+bootstrap_state_hash() {
+  {
+    for _bsh_home in "$HERMES_HOME" "$HERMES_HOME"/profiles/*; do
+      [ -d "$_bsh_home" ] || continue
+      echo "home ${_bsh_home}"
+      for _bsh_f in config.yaml .env .messages-webhook.json .mail-cron-toolsets.json; do
+        [ -f "${_bsh_home}/${_bsh_f}" ] || continue
+        echo "file ${_bsh_f}"
+        cat "${_bsh_home}/${_bsh_f}"
+      done
+    done
+  } | sha256_stdin
+}
+
+# `hermes gateway start` is a no-op inside Docker ("Service start is not
+# applicable inside a Docker container"). The s6 reconciler in the main hermes
+# container reads each profile's gateway_state.json and only auto-starts when
+# gateway_state is "running", so seed that file directly (same contract as
+# HERMES_GATEWAY_BOOTSTRAP_STATE).
+mark_gateway_running() {
+  log "Marking gateway for profile '${PROFILE}' as running (gateway_state.json)"
+  printf '{"gateway_state":"running"}\n' > "${PROFILE_DIR}/gateway_state.json"
+  chmod 644 "${PROFILE_DIR}/gateway_state.json" 2>/dev/null || true
 }
 
 # Replace a dotenv file from a temp path. Use cat+rm instead of mv: Docker Desktop
@@ -326,17 +409,63 @@ PY
 
 # `hermes config set` for one profile ("" selects the default profile).
 #
+# Each `hermes config set` costs about a second of CLI start-up, and a full run
+# sets around a hundred keys. So this only queues the key, and config_flush
+# applies the queue in one Python process through set_config_value, the
+# function the CLI calls (scripts/model-use.sh does the same). The python3
+# wrapper below flushes before any other helper reads or writes config.yaml,
+# which keeps every write in script order.
+#
 # sh has no local variables, so every helper here prefixes its own to avoid
 # clobbering a caller's: this one runs inside register_mcp_server's loop.
+CONFIG_QUEUE="$(mktemp)"
+trap 'rm -f "$CONFIG_QUEUE"' EXIT
 hermes_config_set() {
-  _hcs_profile="$1"
-  _hcs_key="$2"
-  _hcs_value="$3"
-  if [ -n "$_hcs_profile" ]; then
-    hermes -p "$_hcs_profile" config set "$_hcs_key" "$_hcs_value"
-  else
-    hermes config set "$_hcs_key" "$_hcs_value"
-  fi
+  printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$CONFIG_QUEUE"
+}
+
+# Apply queued keys. The queue is kept on failure, so the next flush retries
+# it and the final flush at the end of the script exits non-zero.
+config_flush() {
+  [ -s "$CONFIG_QUEUE" ] || return 0
+  command python3 - "$HERMES_HOME" "$CONFIG_QUEUE" <<'PY' || return 1
+import contextlib
+import io
+import sys
+from pathlib import Path
+
+sys.path.insert(0, "/opt/hermes")
+from hermes_cli.config import set_config_value
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+root = Path(sys.argv[1])
+counts = {}
+failed = False
+for line in Path(sys.argv[2]).read_text().splitlines():
+    profile, key, value = line.split("\t", 2)
+    token = set_hermes_home_override(root / "profiles" / profile if profile else root)
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            set_config_value(key, value)
+        counts[profile] = counts.get(profile, 0) + 1
+    except BaseException as exc:  # the CLI exits on a rejected key
+        print(f"[hermes-api-bootstrap] config set {key} failed on '{profile or 'default'}': {exc!r}",
+              file=sys.stderr)
+        failed = True
+    finally:
+        reset_hermes_home_override(token)
+# stderr: a flush can run inside a helper whose stdout the caller captures.
+for profile, count in counts.items():
+    print(f"[hermes-api-bootstrap] Set {count} config key(s) on '{profile or 'default'}'",
+          file=sys.stderr)
+raise SystemExit(1 if failed else 0)
+PY
+  : > "$CONFIG_QUEUE"
+}
+
+python3() {
+  config_flush || exit 1
+  command python3 "$@"
 }
 
 # True when a profile's config.yaml has a non-null value at a dotted key.
@@ -363,15 +492,11 @@ PY
 }
 
 # bot_desktop.placement=auto can start the browser on the SSH backend, which
-# has no Node or browser. gateway keeps it in this container. If the CLI
-# rejects the key, write the YAML and continue.
+# has no Node or browser. gateway keeps it in this container. Written as YAML
+# because some Hermes versions reject the key in `hermes config set`.
 set_bot_desktop_placement() {
   _sbdp_profile="$1"
   _sbdp_value="$2"
-  if hermes_config_set "$_sbdp_profile" bot_desktop.placement "$_sbdp_value"; then
-    return 0
-  fi
-  log "hermes config set rejected bot_desktop.placement; writing YAML for '${_sbdp_profile:-default}'"
   _sbdp_cfg="$(config_path_for "$_sbdp_profile")"
   if [ ! -f "$_sbdp_cfg" ]; then
     log "No config at ${_sbdp_cfg}; bot_desktop.placement was not written"
@@ -493,6 +618,10 @@ apply_terminal_backend_all_profiles() {
       exit 1
       ;;
   esac
+  if ! is_true "$BOOTSTRAP_SHARED"; then
+    "$_atb_fn" "$PROFILE"
+    return 0
+  fi
   "$_atb_fn" ""
   if [ -n "$PROFILE" ]; then
     "$_atb_fn" "$PROFILE"
@@ -527,6 +656,10 @@ configure_model_proxy() {
 }
 
 apply_model_proxy_all_profiles() {
+  if ! is_true "$BOOTSTRAP_SHARED"; then
+    configure_model_proxy "$PROFILE"
+    return 0
+  fi
   configure_model_proxy ""
   if [ -n "$PROFILE" ]; then
     configure_model_proxy "$PROFILE"
@@ -544,6 +677,11 @@ apply_model_proxy_all_profiles() {
 # Warn-only is the Hermes default on api_server, which treats the client as
 # someone able to stop a loop. A background turn has no such person.
 apply_tool_loop_hard_stop_all_profiles() {
+  if ! is_true "$BOOTSTRAP_SHARED"; then
+    log "Setting tool_loop_guardrails.hard_stop_enabled=${TOOL_LOOP_HARD_STOP} on profile '${PROFILE}'"
+    hermes_config_set "$PROFILE" tool_loop_guardrails.hard_stop_enabled "$TOOL_LOOP_HARD_STOP"
+    return 0
+  fi
   log "Setting tool_loop_guardrails.hard_stop_enabled=${TOOL_LOOP_HARD_STOP} on every profile"
   for _ths_profile in "" $(
     [ -d "${HERMES_HOME}/profiles" ] && ls "${HERMES_HOME}/profiles"
@@ -1608,43 +1746,60 @@ if [ ! -f "${HERMES_HOME}/config.yaml" ]; then
   exit 0
 fi
 
-# --- Register repo-shipped skills directory (default profile) ---
-# Runs before the api-server.env gate below so repo skills still load for users
-# who never set up the API server profile.
-set_yaml_list "$(config_path_for "")" "skills.external_dirs" "$SKILLS_EXTERNAL_DIR"
+# --- Skip an unchanged run (see "Skipping an unchanged run" above) ---
+if [ -f "$SOURCE_ENV" ]; then
+  INPUTS_HASH="$(bootstrap_inputs_hash)"
+  if is_true "$BOOTSTRAP_FORCE"; then
+    log "HERMES_BOOTSTRAP_FORCE is set; running the full bootstrap"
+  elif [ -d "$PROFILE_DIR" ] && [ "$INPUTS_HASH" = "$(cat "${STAMP_DIR}/${PROFILE}" 2>/dev/null)" ] \
+    && [ "$(bootstrap_state_hash)" = "$(cat "${STAMP_DIR}/state" 2>/dev/null)" ]; then
+    log "Inputs and config unchanged since the last run; skipping (HERMES_BOOTSTRAP_FORCE=1 runs it anyway)"
+    mark_gateway_running
+    exit 0
+  fi
+fi
+# A run that stops part way must not leave the old stamp behind.
+rm -f "${STAMP_DIR}/${PROFILE}"
 
-log "Setting memory.nudge_interval=${INTERACTIVE_MEMORY_NUDGE} on default profile"
-hermes_config_set "" "memory.nudge_interval" "$INTERACTIVE_MEMORY_NUDGE"
+if is_true "$BOOTSTRAP_SHARED"; then
+  # --- Register repo-shipped skills directory (default profile) ---
+  # Runs before the api-server.env gate below so repo skills still load for users
+  # who never set up the API server profile.
+  set_yaml_list "$(config_path_for "")" "skills.external_dirs" "$SKILLS_EXTERNAL_DIR"
 
-# Narrated intent ("I'll …") with finish_reason=stop and no tool call.
-# Browser sets this on its own profile. Default serves Boundary, the
-# dashboard, and the CLI. Leave api-server alone (unattended turn cap).
-log "Setting agent.intent_ack_continuation=true on default profile"
-hermes_config_set "" "agent.intent_ack_continuation" "true"
+  log "Setting memory.nudge_interval=${INTERACTIVE_MEMORY_NUDGE} on default profile"
+  hermes_config_set "" "memory.nudge_interval" "$INTERACTIVE_MEMORY_NUDGE"
 
-# --- Register web-reading MCP servers (default profile) ---
-# Same rationale as the skills registration: dashboard and CLI sessions get URL
-# reading whether or not the API server profile is ever configured.
-register_web_mcp_servers ""
-register_caldav_mcp_servers ""
-register_opencode_mcp_servers ""
-register_sql_mcp_servers ""
-register_vikunja_mcp_servers ""
-register_mail_mcp_servers ""
-register_mail_drafts_mcp_servers ""
-register_messages_mcp_servers ""
+  # Narrated intent ("I'll …") with finish_reason=stop and no tool call.
+  # Browser sets this on its own profile. Default serves Boundary, the
+  # dashboard, and the CLI. Leave api-server alone (unattended turn cap).
+  log "Setting agent.intent_ack_continuation=true on default profile"
+  hermes_config_set "" "agent.intent_ack_continuation" "true"
 
-# session_search is on Hermes' curated tool_search.defer list. Pin + undefer
-# on default before the api-server.env gate so a missing env file cannot
-# leave MCP pins without recall.
-pin_tool_search_always_include "" session_search
-undefer_session_search ""
+  # --- Register web-reading MCP servers (default profile) ---
+  # Same rationale as the skills registration: dashboard and CLI sessions get URL
+  # reading whether or not the API server profile is ever configured.
+  register_web_mcp_servers ""
+  register_caldav_mcp_servers ""
+  register_opencode_mcp_servers ""
+  register_sql_mcp_servers ""
+  register_vikunja_mcp_servers ""
+  register_mail_mcp_servers ""
+  register_mail_drafts_mcp_servers ""
+  register_messages_mcp_servers ""
 
-# Auto skill-library review after a finished (or halted) turn forks bg-review
-# and can hold the LLM stream for hours. Interactive users create skills
-# explicitly; memory review stays on via memory.nudge_interval.
-log "Setting skills.creation_nudge_interval=0 on default profile"
-hermes_config_set "" "skills.creation_nudge_interval" "0"
+  # session_search is on Hermes' curated tool_search.defer list. Pin + undefer
+  # on default before the api-server.env gate so a missing env file cannot
+  # leave MCP pins without recall.
+  pin_tool_search_always_include "" session_search
+  undefer_session_search ""
+
+  # Auto skill-library review after a finished (or halted) turn forks bg-review
+  # and can hold the LLM stream for hours. Interactive users create skills
+  # explicitly; memory review stays on via memory.nudge_interval.
+  log "Setting skills.creation_nudge_interval=0 on default profile"
+  hermes_config_set "" "skills.creation_nudge_interval" "0"
+fi
 
 if [ ! -f "$SOURCE_ENV" ]; then
   env_name="$(basename "$SOURCE_ENV")"
@@ -1653,6 +1808,8 @@ if [ ! -f "$SOURCE_ENV" ]; then
 fi
 
 # --- Create profile if missing ---
+# The clone copies the default profile's config, so apply its queued keys first.
+config_flush
 profile_list="$(hermes profile list 2>/dev/null || true)"
 case "$profile_list" in
   *"$PROFILE"*) log "Profile '${PROFILE}' already exists" ;;
@@ -1705,33 +1862,35 @@ upsert_env "$PROFILE_ENV" "API_SERVER_PORT" "$API_PORT"
 
 remove_env_key "$PROFILE_ENV" "HERMES_MAX_ITERATIONS"
 
-# --- Default profile's API server, per gateway topology ---
-# Same resolution as compose/hermes/019-pin-profile-gateways.sh.
-GATEWAY_TOPOLOGY="$(printf '%s' "${HERMES_GATEWAY_TOPOLOGY:-}" | tr '[:upper:]' '[:lower:]')"
-if [ -z "$GATEWAY_TOPOLOGY" ]; then
-  case "$(printf '%s' "${HERMES_PIN_STANDALONE_GATEWAYS:-1}" | tr '[:upper:]' '[:lower:]')" in
-    0|false|no|off) GATEWAY_TOPOLOGY=multiplex ;;
-    *) GATEWAY_TOPOLOGY=standalone ;;
-  esac
+if is_true "$BOOTSTRAP_SHARED"; then
+  # --- Default profile's API server, per gateway topology ---
+  # Same resolution as compose/hermes/019-pin-profile-gateways.sh.
+  GATEWAY_TOPOLOGY="$(printf '%s' "${HERMES_GATEWAY_TOPOLOGY:-}" | tr '[:upper:]' '[:lower:]')"
+  if [ -z "$GATEWAY_TOPOLOGY" ]; then
+    case "$(printf '%s' "${HERMES_PIN_STANDALONE_GATEWAYS:-1}" | tr '[:upper:]' '[:lower:]')" in
+      0|false|no|off) GATEWAY_TOPOLOGY=multiplex ;;
+      *) GATEWAY_TOPOLOGY=standalone ;;
+    esac
+  fi
+  touch "$DEFAULT_ENV"
+  if [ "$GATEWAY_TOPOLOGY" = multiplex ]; then
+    # The default listener (8642) serves every profile at /p/<profile>/ and
+    # needs a key of its own; 019-pin-profile-gateways generates it. The WebUI
+    # keeps working because it prefers HERMES_WEBUI_GATEWAY_API_KEY over the
+    # API_SERVER_KEY its _reload_dotenv reads from here.
+    remove_env_key "$DEFAULT_ENV" "API_SERVER_ENABLED"
+    upsert_env "$DEFAULT_ENV" "API_SERVER_HOST" "0.0.0.0"
+  else
+    upsert_env "$DEFAULT_ENV" "API_SERVER_ENABLED" "false"
+    # Drop any leftover default-profile API_SERVER_KEY. Hermes WebUI loads
+    # HERMES_HOME/.env via _reload_dotenv and overwrites container env; a stale
+    # key here replaces the browser.env credential and every WebUI turn 401s.
+    remove_env_key "$DEFAULT_ENV" "API_SERVER_KEY"
+    remove_env_key "$DEFAULT_ENV" "API_SERVER_HOST"
+  fi
+  remove_env_key "$DEFAULT_ENV" "API_SERVER_PORT"
+  remove_env_key "$DEFAULT_ENV" "HERMES_MAX_ITERATIONS"
 fi
-touch "$DEFAULT_ENV"
-if [ "$GATEWAY_TOPOLOGY" = multiplex ]; then
-  # The default listener (8642) serves every profile at /p/<profile>/ and
-  # needs a key of its own; 019-pin-profile-gateways generates it. The WebUI
-  # keeps working because it prefers HERMES_WEBUI_GATEWAY_API_KEY over the
-  # API_SERVER_KEY its _reload_dotenv reads from here.
-  remove_env_key "$DEFAULT_ENV" "API_SERVER_ENABLED"
-  upsert_env "$DEFAULT_ENV" "API_SERVER_HOST" "0.0.0.0"
-else
-  upsert_env "$DEFAULT_ENV" "API_SERVER_ENABLED" "false"
-  # Drop any leftover default-profile API_SERVER_KEY. Hermes WebUI loads
-  # HERMES_HOME/.env via _reload_dotenv and overwrites container env; a stale
-  # key here replaces the browser.env credential and every WebUI turn 401s.
-  remove_env_key "$DEFAULT_ENV" "API_SERVER_KEY"
-  remove_env_key "$DEFAULT_ENV" "API_SERVER_HOST"
-fi
-remove_env_key "$DEFAULT_ENV" "API_SERVER_PORT"
-remove_env_key "$DEFAULT_ENV" "HERMES_MAX_ITERATIONS"
 
 # --- Apply profile config ---
 # hermes-api-server matches dashboard chat (hermes-cli) minus the interactive-only
@@ -1744,7 +1903,7 @@ remove_env_key "$DEFAULT_ENV" "HERMES_MAX_ITERATIONS"
 # registers it under its own toolset). Name it explicitly so WebUI turns can
 # still deliver to Signal.
 log "Setting agent.max_turns=${MAX_TURNS} and ${API_TOOLSET} toolset for api_server platform"
-hermes -p "$PROFILE" config set "agent.max_turns" "$MAX_TURNS"
+hermes_config_set "$PROFILE" "agent.max_turns" "$MAX_TURNS"
 set_yaml_list "$(config_path_for "$PROFILE")" "platform_toolsets.api_server" "$API_TOOLSET"
 if [ "$API_TOOLSET" = hermes-cli ]; then
   ensure_yaml_list_items "$(config_path_for "$PROFILE")" "platform_toolsets.api_server" send_message
@@ -1761,8 +1920,10 @@ fi
 # always fails ("search-only backend"), and models ignore soft routing and spray
 # parallel native web_search calls that empty upstream engines. MCP searxng
 # (searxng_web_search + web_url_read) is the supported path on this stack.
-log "Disabling session-only todo and native web toolsets on default and '${PROFILE}' profiles"
-ensure_yaml_list_items "$(config_path_for "")" "agent.disabled_toolsets" "todo" "web"
+log "Disabling session-only todo and native web toolsets on '${PROFILE}'$(is_true "$BOOTSTRAP_SHARED" && echo ' and default')"
+if is_true "$BOOTSTRAP_SHARED"; then
+  ensure_yaml_list_items "$(config_path_for "")" "agent.disabled_toolsets" "todo" "web"
+fi
 ensure_yaml_list_items "$(config_path_for "$PROFILE")" "agent.disabled_toolsets" "todo" "web"
 
 if [ "$API_TOOLSET" = "hermes-cli" ] || [ "$PROFILE" = "browser" ]; then
@@ -1858,18 +2019,10 @@ register_mail_drafts_mcp_servers "$PROFILE"
 register_messages_mcp_servers "$PROFILE"
 
 # Heal always_include + defer after every hermes config set / MCP register.
-reconcile_stack_eager_tools ""
+if is_true "$BOOTSTRAP_SHARED"; then
+  reconcile_stack_eager_tools ""
+fi
 reconcile_stack_eager_tools "$PROFILE"
-
-# --- Mark gateway for autostart (s6 reconciler in main hermes container) ---
-# `hermes gateway start` is a no-op inside Docker ("Service start is not
-# applicable inside a Docker container"). The s6 reconciler reads each
-# profile's gateway_state.json and only auto-starts when gateway_state is
-# "running" — seed that file directly (same contract as HERMES_GATEWAY_BOOTSTRAP_STATE).
-GATEWAY_STATE_FILE="${PROFILE_DIR}/gateway_state.json"
-log "Marking gateway for profile '${PROFILE}' as running (gateway_state.json)"
-printf '{"gateway_state":"running"}\n' > "$GATEWAY_STATE_FILE"
-chmod 644 "$GATEWAY_STATE_FILE" 2>/dev/null || true
 
 # Browser profile never owns the Signal SSE lock — default gateway does.
 # Pin adapter disabled at bootstrap so fresh installs work before a second
@@ -1905,13 +2058,25 @@ PY
   fi
 fi
 
-fence_mail_from_cron ""
+if is_true "$BOOTSTRAP_SHARED"; then
+  fence_mail_from_cron ""
+  configure_messages_webhook
+fi
 fence_mail_from_cron "$PROFILE"
-configure_messages_webhook
 
 apply_terminal_backend_all_profiles
 apply_model_proxy_all_profiles
 apply_tool_loop_hard_stop_all_profiles
+config_flush || exit 1
+
+mark_gateway_running
+
+# Record this run for the next start (see "Skipping an unchanged run" above).
+if [ -n "${INPUTS_HASH:-}" ]; then
+  mkdir -p "$STAMP_DIR"
+  printf '%s\n' "$INPUTS_HASH" > "${STAMP_DIR}/${PROFILE}"
+  bootstrap_state_hash > "${STAMP_DIR}/state"
+fi
 
 log "Done: profile=${PROFILE} port=${API_PORT} max_turns=${MAX_TURNS} toolset=${API_TOOLSET}"
 log "API URL (host): http://localhost:${API_PORT}/v1"

@@ -204,12 +204,25 @@ A one-shot `hermes-api-bootstrap` service runs ahead of the main Hermes containe
 | Compose network (n8n) | `http://hermes:8643/v1` |
 | Auth | `Authorization: Bearer <API_SERVER_KEY>` from `compose/hermes/api-server.env` |
 
-Re-apply after changing `api-server.env` or `HERMES_API_MAX_TURNS` (one-shot containers do not re-run on every `up`):
+Re-apply after changing `api-server.env` or `HERMES_API_MAX_TURNS`:
 
 ```bash
 docker compose run --rm hermes-api-bootstrap
 docker compose restart hermes
 ```
+
+### When the bootstrap runs
+
+Compose starts both bootstrap containers again on every `docker compose up`, and `hermes` waits for them. A run is skipped in under a second when nothing has changed since the last complete run. The bootstrap compares two hashes with the stamps in `data/hermes/.bootstrap-stamps/`:
+
+| Hash | Covers |
+|---|---|
+| Inputs, one per profile | `bootstrap-api-profile.sh`, the profile's env file (`api-server.env` or `browser.env`), the CalDAV account files, `HERMES_AGENT_IMAGE_TAG` and the image's `pyproject.toml`, and every environment variable the container gets |
+| State, shared | `config.yaml`, `.env`, `.messages-webhook.json` and `.mail-cron-toolsets.json` in `data/hermes` and in every `data/hermes/profiles/<name>/` |
+
+A changed input, a config edited by hand or by Hermes, or a profile added or removed runs the full bootstrap. A skipped run still writes the profile's `gateway_state.json`, the only file written on every start. `HERMES_BOOTSTRAP_FORCE=1` runs the full bootstrap anyway, and `make hermes-reload` sets it.
+
+`hermes-api-bootstrap` configures the default profile and sweeps every profile. `hermes-browser-bootstrap` runs after it with `HERMES_BOOTSTRAP_SHARED=0` and configures only the `browser` profile.
 
 For quick lookups via the API (n8n, curl, etc.), include a brief system message so the agent matches dashboard chat pacing. Hermes layers this on top of its core prompt (soft guidance — tools remain available):
 
@@ -335,7 +348,7 @@ Either way the filter must be a YAML list. A stringified `'["a","b"]'` gets misr
 
 The `lightrag-mcp` image pins `lightrag_mcp==0.1.1` and patches its generated client to send LightRAG auth as `X-API-Key`, which is what current LightRAG servers expect.
 
-The bootstrap is a one-shot container and does not re-run on every `up`. After changing any of this, re-run both profile bootstraps and recreate `hermes`:
+After changing any of this, re-run both profile bootstraps and recreate `hermes`:
 
 ```bash
 make hermes-reload
