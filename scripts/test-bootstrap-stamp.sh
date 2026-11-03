@@ -107,8 +107,9 @@ grep -q '"running"' "${home}/profiles/api-server/gateway_state.json" || fail "ga
 rm -f "${home}/profiles/api-server/gateway_state.json"
 run api-server || fail "second api-server run exited non-zero"
 skipped || fail "unchanged run was not skipped: $(tail -5 "${tmp}/out")"
-[ "$(count hermes)" = 0 ] && [ "$(count flush)" = 0 ] && [ "$(count python3)" = 0 ] \
-  || fail "skipped run spawned: $(tr '\n' ';' < "${tmp}/spawns")"
+if ! { [ "$(count hermes)" = 0 ] && [ "$(count flush)" = 0 ] && [ "$(count python3)" = 0 ]; }; then
+  fail "skipped run spawned: $(tr '\n' ';' < "${tmp}/spawns")"
+fi
 grep -q '"running"' "${home}/profiles/api-server/gateway_state.json" || fail "skipped run did not mark the gateway"
 
 # The browser bootstrap touches its own profile only.
