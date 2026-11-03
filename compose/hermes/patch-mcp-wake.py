@@ -5,6 +5,8 @@ Compatibility overlay (not upstream). Copies mcp_wake.py into tools/ and:
 
 - reads ``mcp_servers.<name>.parked_retry_interval`` when a server parks
   (tools/mcp_tool_server_run.py), and marks the task parked while it waits;
+- parks a server after one failed initial attempt when another profile has
+  just parked it after the full initial ladder (same file);
 - starts the wake watcher with the MCP loop (tools/mcp_tool_loop.py);
 - adds ``POST /v1/mcp/servers/{name}/reconnect`` to the API server
   (gateway/platforms/api_server.py).
@@ -55,6 +57,8 @@ def _patch_server_run() -> None:
     # MCPServerRunMixin._park: the timed wait inside its ``while True`` loop.
     wait = ("            outcome = await self._wait_for_reconnect_or_shutdown(\n"
             "                timeout=_core._PARKED_RETRY_INTERVAL)\n")
+    ladder = ("        budget.initial_retries += 1\n"
+              "        if budget.initial_retries > _core._MAX_INITIAL_CONNECT_RETRIES:\n")
     _edit(ROOT / "tools" / "mcp_tool_server_run.py", "parked retry interval", [
         ("from tools import mcp_tool_sampling as _sampling\n",
          "from tools import mcp_tool_sampling as _sampling\n"
@@ -72,6 +76,17 @@ def _patch_server_run() -> None:
          f"{_INTERVAL}, type(root).__name__, root)", 2),
         ("self.name, _core._MAX_RECONNECT_RETRIES, _core._PARKED_RETRY_INTERVAL)\n",
          f"self.name, _core._MAX_RECONNECT_RETRIES, {_INTERVAL})\n", 1),
+        # _on_initial_connect_error: skip the ladder when another profile just ran it.
+        (ladder,
+         "        if budget.initial_retries == 0 and _assistant_mcp_wake.peer_parked(\n"
+         f"                self.name, self._config):  {MARKER}\n"
+         "            self._log_park(\n"
+         "                \"MCP server '%s' failed initial connection and another profile parked it after \"\n"
+         "                \"its retries, parking without retries (state: connecting → parked): %s: %s\",\n"
+         "                self.name, type(root).__name__, root)\n"
+         "            return await self._park_initial_failure(exc, \"after initial connection failures\", budget)\n"
+         + ladder
+         + "            _assistant_mcp_wake.note_initial_park(self.name, self._config)\n", 1),
     ])
 
 

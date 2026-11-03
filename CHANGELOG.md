@@ -32,6 +32,23 @@ the stack under another app.
   `hermes-api-bootstrap`, which runs first, keeps the default profile and the
   sweep over every profile. An overlay that runs the browser bootstrap on its
   own should set `HERMES_BOOTSTRAP_SHARED=1` on it.
+- `hermes` turns healthy only once the api-server gateway answers
+  `/health` on 8643 as well as the dashboard on 9119. The gateway binds
+  after startup MCP discovery, so on a five-profile stack with an
+  unreachable MCP server the old check reported healthy about 27 s before
+  chats worked. `start_period` is now 180 s and `start_interval` 2 s on
+  `hermes`, and `start_interval` 2 s on `hermes-webui`, which needs Docker
+  Engine 25 or later.
+- A server down at startup no longer costs every profile Hermes' 3 initial
+  connect attempts. Once one profile has parked it after them, other profiles
+  with the same name and target park it after one attempt for 120 s. On the
+  same stack, startup with Boundary's MCP server closed spent about 8 s on
+  it for each of three profiles; two of those waits go. See
+  [docs/extending.md](docs/extending.md#mcp-servers-your-app-hosts).
+- The `neo4j` healthcheck reads its credentials from `NEO4J_AUTH` inside the
+  container, so the password no longer appears in the probe command that
+  `docker inspect` and `docker events` print. It is still in the container's
+  environment.
 
 ### Upgrade steps
 
