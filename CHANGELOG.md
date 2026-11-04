@@ -6,14 +6,25 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
-## Unreleased
+## v0.3.9 — 2026-11-04
 
 ### Upgrade steps
 
-None. The first `make ensure-local`, `make up` or `setup.sh` after upgrading
-writes the new keys below without changing which profiles run. If a profile
-is in `COMPOSE_PROFILES` while its flag is `0`, it keeps running and the sync
-prints a warning naming the flag.
+1. `./scripts/setup.sh` (or `make ensure-local`), then `docker compose up -d`.
+   The sync writes the new keys below without changing which profiles run. If
+   a profile is in `COMPOSE_PROFILES` while its flag is `0`, it keeps running
+   and the sync prints a warning naming the flag.
+2. The first start runs the full bootstrap once, because both bootstraps get
+   new `GPTR_MCP_*` environment variables.
+3. An overlay that writes `COMPOSE_PROFILES` itself should set the matching
+   `*_ENABLED` flags too. To give Hermes deep research, set
+   `GPTR_MCP_ENABLED=1` before step 1.
+
+### New services
+
+- `research` profile: starts the existing `gptr-mcp` service alone, without
+  n8n or the `gpt-researcher` REST service, and publishes no port. Switched by
+  `GPTR_MCP_ENABLED`. `gptr-mcp` also stays in `automation`.
 
 ### New optional `.env` keys
 
@@ -48,6 +59,9 @@ see no change unless they set the flag. Both bootstraps get four new
 `GPTR_MCP_*` environment variables, so the first start after upgrading runs
 the full bootstrap once. See
 [docs/gpt-researcher.md](docs/gpt-researcher.md).
+
+CI: `scripts/test-bootstrap-stamp.sh` uses an if-block for the skipped-run
+spawn check, which CI's shellcheck flagged as SC2015 on v0.3.8. Test-only.
 
 ## v0.3.8 — 2026-11-03
 
