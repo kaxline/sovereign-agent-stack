@@ -6,21 +6,41 @@ Autonomous multi-step web research that writes structured reports, backed by Sea
 
 [GPT Researcher](https://github.com/assafelovic/gpt-researcher) performs autonomous multi-step web research and writes structured reports. Retrieval goes through your existing **SearXNG** instance. LLM calls go to `llm-proxy` (`OPENAI_BASE_URL=http://llm-proxy:4000/v1`, `OPENAI_API_KEY=local-llm`). The proxy forwards them to `LLM_BINDING_HOST` with the real key. GPT Researcher has one base URL, so its embeddings use that chat route. LightRAG can split chat and embeddings on the proxy.
 
-Two containers share the stack:
+Two containers run it, each in its own set of profiles:
 
-| Service | Role | Consumers |
-|---|---|---|
-| `gpt-researcher` | REST API on port 8000 | n8n, Hermes (HTTP) |
-| `gptr-mcp` | MCP sidecar (SSE, internal) | OpenCode, Hermes (MCP) |
+| Service | Role | Profiles | Consumers |
+|---|---|---|---|
+| `gpt-researcher` | REST API on 127.0.0.1:`GPTR_PORT` (8000) | `automation` | n8n |
+| `gptr-mcp` | MCP sidecar (SSE, internal, no published port) | `research`, `automation` | Hermes, OpenCode |
 
-Quick search (`mcp-searxng` / SearXNG JSON) and deep research (`gptr-mcp` / GPT Researcher REST) do different jobs, so keep both.
+`gptr-mcp` runs GPT Researcher in-process and does not call the REST service.
+
+Quick search (`mcp-searxng` / SearXNG JSON) and deep research (`gptr-mcp`) do different jobs, so keep both.
+
+## Turning it on for Hermes
+
+Set `GPTR_MCP_ENABLED=1` in `.env` and run `make up`, or run
+`./scripts/setup.sh --research`. The sync adds the `research` profile, which
+starts `gptr-mcp` without n8n, and both Hermes bootstraps register it as
+`mcp_servers.gptr` with five tools: `deep_research`, `quick_search`,
+`write_report`, `get_research_sources` and `get_research_context`. The first
+three are pinned so local models call them directly.
+
+The default profile (dashboard, CLI, Boundary) and the browser profile (WebUI)
+get the tools. The api-server profile does not, because one `deep_research`
+call sends dozens of requests to `llm-proxy` and the model server. Hermes waits
+up to `GPTR_MCP_TIMEOUT` seconds (900) for one call.
+
+`GPTR_MCP_ENABLED=0` removes the profile again, if the sync added it, and the
+next bootstrap drops the `gptr` entries. With `automation` on and the flag at
+`0`, `gptr-mcp` still runs for OpenCode and n8n, but Hermes doesn't register it.
 
 ## Configuration
 
 1. Copy the GPT Researcher block from `.env.example` into `.env` (or rely on defaults wired in `docker-compose.yml`).
 2. Ensure `LLM_MODEL` and `EMBEDDING_MODEL` match what your model server is serving — GPT Researcher reads them via the `x-gptr` compose anchor.
 3. GPT Researcher uses `SEARX_URL` (not `SEARXNG_URL`). Compose sets it from `WEB_SEARCH_URL`, which defaults to `http://searxng:8080`; point that at the [search gate](searxng.md#search-gate) to pace research queries.
-4. Start the stack: `docker compose up -d` (first run builds `gptr-mcp`).
+4. Start the stack: `make up` (first run builds `gptr-mcp`).
 
 ## Resource sharing
 

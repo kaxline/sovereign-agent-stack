@@ -67,10 +67,12 @@ check "setup.sh, default profiles" \
 rm -f .env
 check "setup.sh, optional profiles" \
   ./scripts/setup.sh --non-interactive --workspace demo \
-  --rag --automation --coding --calendar --db --todo
+  --rag --automation --research --coding --calendar --db --todo
 check "setup.sh again over the same .env" \
   ./scripts/setup.sh --non-interactive --workspace demo \
-  --rag --automation --coding --calendar --db --todo
+  --rag --automation --research --coding --calendar --db --todo
+check "setup.sh --research turns on the flag and profile" \
+  sh -c 'grep -qx "GPTR_MCP_ENABLED=1" .env && grep -E "^COMPOSE_PROFILES=" .env | grep -q ",research"'
 check "make ensure-local" make ensure-local
 check "sync-profiles tests" ./scripts/test-sync-profiles.sh
 

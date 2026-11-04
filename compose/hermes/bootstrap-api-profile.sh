@@ -78,6 +78,15 @@ MESSAGES_MCP_URL="${MESSAGES_MCP_URL:-http://messages-mcp:8000/mcp}"
 MESSAGES_MCP_TIMEOUT="${MESSAGES_MCP_TIMEOUT:-60}"
 MESSAGES_MCP_CONNECT_TIMEOUT="${MESSAGES_MCP_CONNECT_TIMEOUT:-30}"
 MESSAGES_MCP_TOOLS="messages_status messages_chats messages_search messages_conversation messages_get"
+GPTR_MCP_ENABLED="${GPTR_MCP_ENABLED:-0}"
+GPTR_MCP_URL="${GPTR_MCP_URL:-http://gptr-mcp:8000/sse}"
+# deep_research runs a multi-step crawl and many model calls in one tool call.
+GPTR_MCP_TIMEOUT="${GPTR_MCP_TIMEOUT:-900}"
+GPTR_MCP_CONNECT_TIMEOUT="${GPTR_MCP_CONNECT_TIMEOUT:-30}"
+GPTR_MCP_TOOLS="deep_research quick_search write_report get_research_sources get_research_context"
+# Pinned so local models call them instead of describing them; the follow-up
+# tools stay reachable through tool search.
+GPTR_MCP_PINS="deep_research quick_search write_report"
 # Probe interval for a parked stack MCP server (patch-mcp-wake.py; Hermes
 # default 300, floor 10). hermes starts without waiting for its MCP sidecars,
 # so one still booting parks and comes back on the next probe. Empty leaves
@@ -822,7 +831,7 @@ set_stack_mcp_parked_retry() {
   [ -f "$_cfg" ] || return 0
   _out="$(python3 - "$_cfg" "$MCP_PARKED_RETRY_INTERVAL" "$LIGHTRAG_MCP_URL" "$SEARXNG_MCP_URL" \
     "$CALDAV_MCP_URL" "$OPENCODE_MCP_URL" "$SQL_MCP_RO_URL" "$SQL_MCP_RW_URL" "$VIKUNJA_MCP_URL" \
-    "$MAIL_MCP_URL" "$MAIL_DRAFTS_MCP_URL" "$MESSAGES_MCP_URL" <<'PY'
+    "$MAIL_MCP_URL" "$MAIL_DRAFTS_MCP_URL" "$MESSAGES_MCP_URL" "$GPTR_MCP_URL" <<'PY'
 import sys
 sys.path.insert(0, "/opt/hermes")
 try:
@@ -902,6 +911,15 @@ reconcile_stack_eager_tools() {
       if [ "$_rst_profile" != "api-server" ]; then
         for _rst_t in $MESSAGES_MCP_TOOLS; do
           _rst_args="${_rst_args} ${_rst_t} mcp__messages__${_rst_t}"
+        done
+      fi
+      ;;
+  esac
+  case "$GPTR_MCP_ENABLED" in
+    1|true|TRUE|yes|YES)
+      if [ "$_rst_profile" != "api-server" ]; then
+        for _rst_t in $GPTR_MCP_PINS; do
+          _rst_args="${_rst_args} ${_rst_t} mcp__gptr__${_rst_t}"
         done
       fi
       ;;
@@ -1270,6 +1288,33 @@ register_mail_mcp_servers() {
     "$MAIL_MCP_URL" "$MAIL_MCP_TIMEOUT" "$MAIL_MCP_CONNECT_TIMEOUT" $MAIL_MCP_TOOLS
   # shellcheck disable=SC2086
   pin_mcp_tools "$_rmms_profile" mail $MAIL_MCP_TOOLS
+}
+
+# GPT Researcher MCP (research profile). Its tools only read the public web,
+# but one deep_research call sends dozens of requests to llm-proxy and the
+# model server, so unattended api-server sessions don't get it: a person asks
+# for a research report.
+register_gptr_mcp_servers() {
+  _rgms_profile="$1"
+  case "$GPTR_MCP_ENABLED" in
+    1|true|TRUE|yes|YES) ;;
+    *)
+      log "Skipping GPT Researcher MCP registration (GPTR_MCP_ENABLED=${GPTR_MCP_ENABLED})"
+      drop_mcp_entries_for_url "$_rgms_profile" "" "$GPTR_MCP_URL"
+      return 0
+      ;;
+  esac
+  if [ "$_rgms_profile" = "api-server" ]; then
+    log "Skipping GPT Researcher MCP on api-server profile (unattended sessions)"
+    drop_mcp_entries_for_url "$_rgms_profile" "" "$GPTR_MCP_URL"
+    return 0
+  fi
+  # shellcheck disable=SC2086
+  register_mcp_server "$_rgms_profile" gptr "GPT Researcher" \
+    "$GPTR_MCP_URL" "$GPTR_MCP_TIMEOUT" "$GPTR_MCP_CONNECT_TIMEOUT" $GPTR_MCP_TOOLS
+  hermes_config_set "$_rgms_profile" "mcp_servers.gptr.transport" "sse"
+  # shellcheck disable=SC2086
+  pin_mcp_tools "$_rgms_profile" gptr $GPTR_MCP_PINS
 }
 
 # Draft-only mail MCP: queues drafts the host helper saves in Mail. Like the
@@ -1834,6 +1879,7 @@ if is_true "$BOOTSTRAP_SHARED"; then
   register_mail_mcp_servers ""
   register_mail_drafts_mcp_servers ""
   register_messages_mcp_servers ""
+  register_gptr_mcp_servers ""
 
   # session_search is on Hermes' curated tool_search.defer list. Pin + undefer
   # on default before the api-server.env gate so a missing env file cannot
@@ -2064,6 +2110,7 @@ register_vikunja_mcp_servers "$PROFILE"
 register_mail_mcp_servers "$PROFILE"
 register_mail_drafts_mcp_servers "$PROFILE"
 register_messages_mcp_servers "$PROFILE"
+register_gptr_mcp_servers "$PROFILE"
 
 # Heal always_include + defer after every hermes config set / MCP register.
 if is_true "$BOOTSTRAP_SHARED"; then

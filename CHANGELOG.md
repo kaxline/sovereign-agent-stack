@@ -23,6 +23,9 @@ prints a warning naming the flag.
   `1` if its profile is already on and `0` otherwise.
 - `COMPOSE_PROFILES_MANAGED`: profiles the sync added from a flag. Written by
   the sync; an overlay should not set it.
+- `GPTR_MCP_ENABLED` (default `0`): `1` starts `gptr-mcp` through the new
+  `research` profile and registers it in Hermes. `GPTR_MCP_TIMEOUT` (default
+  `900`) is how long Hermes waits for one call.
 
 ### Changes
 
@@ -34,6 +37,17 @@ overlay's own) are left as they are. An overlay that writes `COMPOSE_PROFILES`
 itself should set the matching flags too, or a flag at `0` leaves the profile
 running with a warning on every sync. `make services` lists each flag and its
 profile's state, and `make up` prints the profiles it starts.
+
+GPT Researcher for Hermes. Hermes never registered `gptr-mcp` before, so chats
+had no deep research tools. The new `research` profile starts `gptr-mcp` alone
+(no n8n, no REST service, no published port), and `setup.sh --research` or
+`GPTR_MCP_ENABLED=1` turns it on. The bootstraps register `mcp_servers.gptr`
+on the default and browser profiles with five tools and drop it from
+api-server. `gptr-mcp` also stays in `automation`, so `automation` installs
+see no change unless they set the flag. Both bootstraps get four new
+`GPTR_MCP_*` environment variables, so the first start after upgrading runs
+the full bootstrap once. See
+[docs/gpt-researcher.md](docs/gpt-researcher.md).
 
 ## v0.3.8 — 2026-11-03
 
