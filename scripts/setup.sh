@@ -16,6 +16,7 @@ ASSISTANT_DATA_ROOT_ARG=""
 SETUP_OLLAMA=0
 SETUP_RAG=0
 SETUP_AUTOMATION=0
+SETUP_RESEARCH=0
 SETUP_CODING=0
 SETUP_CALENDAR=0
 SETUP_DB=0
@@ -37,6 +38,7 @@ Options:
                             Hermes state stays at ./data/hermes. See docs/data-dir.md
   --rag                     Enable knowledge graph (compose profile rag)
   --automation              Enable n8n + GPT Researcher (profile automation)
+  --research                Enable GPT Researcher deep research as Hermes tools, without n8n (profile research)
   --coding                  Enable OpenCode (profile coding)
   --calendar                Enable CalDAV calendar MCP (profile calendar)
   --db                      Enable shared Postgres + SQL MCP for Hermes (profile db)
@@ -71,6 +73,7 @@ while [[ $# -gt 0 ]]; do
     --hermes) shift ;; # deprecated alias; core already includes Hermes
     --rag) SETUP_RAG=1; shift ;;
     --automation) SETUP_AUTOMATION=1; shift ;;
+    --research) SETUP_RESEARCH=1; shift ;;
     --coding) SETUP_CODING=1; shift ;;
     --calendar) SETUP_CALENDAR=1; shift ;;
     --db) SETUP_DB=1; shift ;;
@@ -359,6 +362,14 @@ setup_mail_profile() {
 setup_automation_profile() {
   append_compose_profile automation
   upsert_env .env AUTOMATION_ENABLED 1
+}
+
+# gptr-mcp alone, registered as Hermes tools on the dashboard and WebUI
+# profiles. The REST service and n8n stay with --automation.
+setup_research_profile() {
+  append_compose_profile research
+  upsert_env .env GPTR_MCP_ENABLED 1
+  log "Enabled GPT Researcher MCP registration (GPTR_MCP_ENABLED=1). Then: make up. See docs/gpt-researcher.md"
 }
 
 setup_coding_profile() {
@@ -946,6 +957,9 @@ fi
 if [[ "$SETUP_AUTOMATION" -eq 1 ]]; then
   setup_automation_profile
 fi
+if [[ "$SETUP_RESEARCH" -eq 1 ]]; then
+  setup_research_profile
+fi
 if [[ "$SETUP_CODING" -eq 1 ]]; then
   setup_coding_profile
 fi
@@ -1006,6 +1020,7 @@ Optional profiles (re-run setup with a flag below, or set the service's
 *_ENABLED flag in .env and run make up; make services lists them):
   --rag           Knowledge graph (LightRAG + Neo4j)
   --automation    n8n + GPT Researcher
+  --research      GPT Researcher deep research tools for Hermes, without n8n (docs/gpt-researcher.md)
   --coding        OpenCode
   --calendar      CalDAV calendars (iCloud, Nextcloud, …) via caldav-mcp
   --db            Shared Postgres + SQL MCP for Hermes (docs/database.md)

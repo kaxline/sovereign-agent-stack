@@ -628,12 +628,14 @@ services:
 
   # ----------------------------------------------------------------------
   # gptr-mcp — MCP adapter for OpenCode/Hermes deep research
-  # Profile: automation
+  # Profiles: research (GPTR_MCP_ENABLED), automation
   # MCP:     http://gptr-mcp:8000/sse   (compose-internal only)
+  # Runs GPT Researcher in-process; it does not call the gpt-researcher
+  # REST service above, which only n8n uses.
   # Vendored from https://github.com/assafelovic/gptr-mcp
   # ----------------------------------------------------------------------
   gptr-mcp:
-    profiles: ["automation"]
+    profiles: ["research", "automation"]
     container_name: ${CONTAINER_PREFIX:-}gptr-mcp
     build:
       context: ./compose/gptr-mcp
@@ -1085,6 +1087,11 @@ services:
       - MAIL_DRAFTS_MCP_URL=${MAIL_DRAFTS_MCP_URL:-http://mail-drafts-mcp:8000/mcp}
       - MAIL_DRAFTS_MCP_TIMEOUT=${MAIL_DRAFTS_MCP_TIMEOUT:-60}
       - MAIL_DRAFTS_MCP_CONNECT_TIMEOUT=${MAIL_DRAFTS_MCP_CONNECT_TIMEOUT:-30}
+      # GPT Researcher MCP (research profile): default + browser only, never api-server.
+      - GPTR_MCP_ENABLED=${GPTR_MCP_ENABLED:-0}
+      - GPTR_MCP_URL=${GPTR_MCP_URL:-http://gptr-mcp:8000/sse}
+      - GPTR_MCP_TIMEOUT=${GPTR_MCP_TIMEOUT:-900}
+      - GPTR_MCP_CONNECT_TIMEOUT=${GPTR_MCP_CONNECT_TIMEOUT:-30}
       # Messages MCP (messages profile): default + browser only, never api-server.
       - MESSAGES_MCP_ENABLED=${MESSAGES_MCP_ENABLED:-0}
       - MESSAGES_MCP_URL=${MESSAGES_MCP_URL:-http://messages-mcp:8000/mcp}
@@ -1180,6 +1187,11 @@ services:
       - MAIL_DRAFTS_MCP_URL=${MAIL_DRAFTS_MCP_URL:-http://mail-drafts-mcp:8000/mcp}
       - MAIL_DRAFTS_MCP_TIMEOUT=${MAIL_DRAFTS_MCP_TIMEOUT:-60}
       - MAIL_DRAFTS_MCP_CONNECT_TIMEOUT=${MAIL_DRAFTS_MCP_CONNECT_TIMEOUT:-30}
+      # GPT Researcher MCP (research profile): default + browser only, never api-server.
+      - GPTR_MCP_ENABLED=${GPTR_MCP_ENABLED:-0}
+      - GPTR_MCP_URL=${GPTR_MCP_URL:-http://gptr-mcp:8000/sse}
+      - GPTR_MCP_TIMEOUT=${GPTR_MCP_TIMEOUT:-900}
+      - GPTR_MCP_CONNECT_TIMEOUT=${GPTR_MCP_CONNECT_TIMEOUT:-30}
       # Messages MCP (messages profile): default + browser only, never api-server.
       - MESSAGES_MCP_ENABLED=${MESSAGES_MCP_ENABLED:-0}
       - MESSAGES_MCP_URL=${MESSAGES_MCP_URL:-http://messages-mcp:8000/mcp}
@@ -1373,7 +1385,7 @@ services:
         returns hits but a page fetch fails (403 / bot detection), quote from the
         search snippets — do not report that SearXNG is empty. Prefer the local
         browser tools when a real page body is required and web_url_read is
-        blocked. Deep multi-step reports need the automation compose profile
+        blocked. Deep multi-step reports need the research compose profile
         (gptr); if gptr tools are not listed, stay on searxng_web_search +
         web_url_read / browser. Avoid deep_research while LightRAG is indexing.
         After a web search or URL read, answer in a few sentences. Do not emit

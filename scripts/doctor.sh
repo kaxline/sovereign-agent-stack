@@ -554,6 +554,24 @@ if has_profile automation; then
   check_port "$(env_get N8N_HOST_PORT 5678)" "n8n"
   check_port "$(env_get GPTR_PORT 8000)" "GPT Researcher"
 fi
+gptr_enabled="$(env_get GPTR_MCP_ENABLED 0)"
+case "$gptr_enabled" in 1|true|TRUE|yes|YES) gptr_on=1 ;; *) gptr_on=0 ;; esac
+if [[ "$gptr_on" -eq 1 ]]; then
+  if has_profile research; then
+    ok "GPTR_MCP_ENABLED=1 and COMPOSE_PROFILES includes research"
+  else
+    bad "GPTR_MCP_ENABLED=1 but 'research' not in COMPOSE_PROFILES — run make ensure-local"
+  fi
+  if docker info >/dev/null 2>&1; then
+    if docker compose ps --status running gptr-mcp 2>/dev/null | grep -q gptr-mcp; then
+      ok "gptr-mcp container is running"
+    else
+      warn "gptr-mcp not running — make up"
+    fi
+  fi
+elif has_profile research; then
+  warn "research profile on but GPTR_MCP_ENABLED is not 1 — Hermes will not register the GPT Researcher tools"
+fi
 if has_profile coding; then
   check_port "$(env_get OPENCODE_PORT 4096)" "OpenCode"
   mcp_en="$(env_get OPENCODE_MCP_ENABLED 0)"

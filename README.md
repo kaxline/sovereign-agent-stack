@@ -81,6 +81,7 @@ whether its profile is on.
 | **`rag`** | `LIGHTRAG_MCP_ENABLED` | LightRAG + Neo4j knowledge graph + MCP sidecar |
 | **`calendar`** | `CALDAV_MCP_ENABLED` | CalDAV calendars via caldav-mcp (multi-account) |
 | **`automation`** | `AUTOMATION_ENABLED` | n8n + GPT Researcher |
+| **`research`** | `GPTR_MCP_ENABLED` | GPT Researcher deep research as Hermes tools, without n8n ([docs/gpt-researcher.md](docs/gpt-researcher.md)) |
 | **`coding`** | `OPENCODE_MCP_ENABLED` | OpenCode AI coding agent + Hermes coding delegation (opencode-mcp) |
 | **`db`** | `SQL_MCP_ENABLED` | Shared Postgres for integrations and the agent + SQL MCP (read-only on the API profile) |
 | **`todo`** | `VIKUNJA_MCP_ENABLED` | Vikunja todo lists (web app + built-in MCP), stored in the shared Postgres |
