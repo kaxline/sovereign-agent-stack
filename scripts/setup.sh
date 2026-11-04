@@ -358,6 +358,7 @@ setup_mail_profile() {
 
 setup_automation_profile() {
   append_compose_profile automation
+  upsert_env .env AUTOMATION_ENABLED 1
 }
 
 setup_coding_profile() {
@@ -373,6 +374,7 @@ setup_coding_profile() {
 # Rewrites LLM_* / EMBEDDING_* to the in-compose ollama service.
 setup_ollama_profile() {
   append_compose_profile ollama
+  upsert_env .env OLLAMA_ENABLED 1
   set_env_if_missing .env OLLAMA_CHAT_MODEL qwen2.5:7b-instruct
   set_env_if_missing .env OLLAMA_EMBED_MODEL nomic-embed-text
   set_env_if_missing .env OLLAMA_HOST_PORT 11434
@@ -969,6 +971,9 @@ if [[ "$SETUP_OLLAMA" -eq 1 ]]; then
   setup_ollama_profile
 fi
 
+# COMPOSE_PROFILES follows the *_ENABLED flags from here on (README.md#profiles).
+./scripts/sync-profiles.sh
+
 # --- n8n credentials (needed when automation is enabled later; cheap to always refresh) ---
 set -a
 # eval, not source <(...): bash 3.2 sources nothing from a process substitution.
@@ -997,7 +1002,8 @@ Next steps:
   4. Open Hermes WebUI: http://localhost:8787
      Dashboard:         http://localhost:9119
 
-Optional profiles (re-run setup with flags, or edit COMPOSE_PROFILES):
+Optional profiles (re-run setup with a flag below, or set the service's
+*_ENABLED flag in .env and run make up; make services lists them):
   --rag           Knowledge graph (LightRAG + Neo4j)
   --automation    n8n + GPT Researcher
   --coding        OpenCode

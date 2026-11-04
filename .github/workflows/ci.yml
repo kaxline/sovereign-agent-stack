@@ -99,6 +99,8 @@ jobs:
         run: sh scripts/test-mcp-parked-retry.sh
       - name: Profile ownership fixed before Hermes setup
         run: sh scripts/test-profile-ownership.sh
+      - name: Compose profiles follow the *_ENABLED flags
+        run: bash scripts/test-sync-profiles.sh
       - name: LLM proxy routes
         run: python3 scripts/test-llm-proxy.py
       - name: Terminal backend override sync

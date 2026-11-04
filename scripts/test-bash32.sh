@@ -72,5 +72,6 @@ check "setup.sh again over the same .env" \
   ./scripts/setup.sh --non-interactive --workspace demo \
   --rag --automation --coding --calendar --db --todo
 check "make ensure-local" make ensure-local
+check "sync-profiles tests" ./scripts/test-sync-profiles.sh
 
 exit "$fail"

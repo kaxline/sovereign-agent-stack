@@ -6,6 +6,35 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
+## Unreleased
+
+### Upgrade steps
+
+None. The first `make ensure-local`, `make up` or `setup.sh` after upgrading
+writes the new keys below without changing which profiles run. If a profile
+is in `COMPOSE_PROFILES` while its flag is `0`, it keeps running and the sync
+prints a warning naming the flag.
+
+### New optional `.env` keys
+
+- `AUTOMATION_ENABLED`, `OLLAMA_ENABLED`, `SEARXNG_PROD_ENABLED`,
+  `SEARCH_GATE_ENABLED`: switches for the `automation`, `ollama`,
+  `searxng-prod` and `search-gate` profiles. When missing, each is written as
+  `1` if its profile is already on and `0` otherwise.
+- `COMPOSE_PROFILES_MANAGED`: profiles the sync added from a flag. Written by
+  the sync; an overlay should not set it.
+
+### Changes
+
+`COMPOSE_PROFILES` now follows the `*_ENABLED` flags. `scripts/sync-profiles.sh`
+runs from `make ensure-local` and at the end of `setup.sh`. A flag set to `1`
+adds its profile; a flag set to `0` removes the profile if the sync added or
+adopted it. Profiles without a flag (`core`, `n8n-postgres-legacy`, an
+overlay's own) are left as they are. An overlay that writes `COMPOSE_PROFILES`
+itself should set the matching flags too, or a flag at `0` leaves the profile
+running with a warning on every sync. `make services` lists each flag and its
+profile's state, and `make up` prints the profiles it starts.
+
 ## v0.3.8 — 2026-11-03
 
 ### Upgrade steps

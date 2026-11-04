@@ -68,14 +68,14 @@ A non-zero result count with some engines still listed as Suspended is fine — 
 
 The `search-gate` service is a proxy in front of SearXNG that changes the traffic itself, rather than waiting for SearXNG to suspend engines after they block. Each query goes to one engine (SearXNG's `engines` parameter), and each engine gets at most one request per interval, with ±30% jitter. When an engine answers with a CAPTCHA, 403, 429 or timeout, it rests for 10 minutes, doubling after each further failure up to 6 hours, and the query moves to the next engine. Results are cached in SQLite, and identical queries in flight share one search. It is [`compose/search-gate/search_gate.py`](../compose/search-gate/search_gate.py), standard library only, vendored from the lead-gen project with the changes listed at the top of the file.
 
-It is off by default. To route searches through it, add the profile and point clients at it in `.env`:
+It is off by default. To route searches through it, turn it on and point clients at it in `.env`:
 
 ```bash
-COMPOSE_PROFILES=core,search-gate
+SEARCH_GATE_ENABLED=1
 WEB_SEARCH_URL=http://search-gate:8080
 ```
 
-Then `docker compose up -d`. `WEB_SEARCH_URL` sets the base URL for `mcp-searxng` (Hermes and OpenCode) and for GPT Researcher and `gptr-mcp`. n8n's starter workflows still call `searxng` directly. If `WEB_SEARCH_URL` names the gate while its profile is off, searches fail.
+Then `make up`, which adds the `search-gate` profile. `WEB_SEARCH_URL` sets the base URL for `mcp-searxng` (Hermes and OpenCode) and for GPT Researcher and `gptr-mcp`. n8n's starter workflows still call `searxng` directly. If `WEB_SEARCH_URL` names the gate while its profile is off, searches fail.
 
 `GET /search` answers like SearXNG with an added `gate` field (`cached`, `engine`). It forwards `pageno`, `time_range`, `language` and `safesearch`, and the cache key includes them. It ignores `categories` and `engines`, since the gate picks the engine. A search waits for its turn for up to `SEARCH_GATE_MAX_WAIT` seconds (15). After that the gate answers with no results and a `search-gate` entry in `unresponsive_engines`, and the search stays queued. Hermes sees this as `Search Degraded: … search-gate (busy: the search is queued; ask again in a minute or two)`. Asking again after the search has run returns it from the cache. `mcp-searxng`'s `SEARXNG_TIMEOUT_MS` is 20000, so the gate's answer arrives before the MCP call gives up.
 
@@ -115,11 +115,7 @@ This stack **disables the native `web` toolset** on Hermes profiles (via bootstr
 
 ## Optional rate limiting
 
-For production-style rate limiting, start with the Valkey profile and uncomment the `redis` / `limiter` block in `searxng/settings.local.yml`:
-
-```bash
-docker compose --profile searxng-prod up -d
-```
+For production-style rate limiting, set `SEARXNG_PROD_ENABLED=1` in `.env` to start Valkey, uncomment the `redis` / `limiter` block in `searxng/settings.local.yml`, and run `make up`.
 
 ## Verification
 

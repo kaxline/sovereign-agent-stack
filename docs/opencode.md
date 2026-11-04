@@ -8,7 +8,7 @@ Isolated AI coding agent with a browser UI and an OpenAPI server, backed by your
 
 ```bash
 ./scripts/setup.sh --coding
-# COMPOSE_PROFILES=core,coding
+# or set OPENCODE_MCP_ENABLED=1 in .env, then make up
 ```
 
 It calls `llm-proxy` (`http://llm-proxy:4000/v1`) with the placeholder `local-llm`. The proxy holds `LLM_BINDING_API_KEY` and forwards to `LLM_BINDING_HOST`. Setup copies tracked `opencode/opencode.json` to gitignored `opencode.local.json` (compose mounts the local file) and points every provider `baseURL` and `apiKey` at the proxy. Edit the local overlay for the provider id and model ids. The tracked template stays a placeholder.
