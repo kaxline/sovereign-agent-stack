@@ -213,8 +213,8 @@ provisioner applies it and the sidecars restart with the new URI). The admin
 password is fixed at first initialisation. Change it with `ALTER ROLE postgres
 PASSWORD ...` in `make db-psql` before editing `.env`.
 
-To turn the feature off, set `SQL_MCP_ENABLED=0`, remove `db` from
-`COMPOSE_PROFILES`, and run `make hermes-reload`. The bootstraps remove the `sql`
+To turn the feature off, set `SQL_MCP_ENABLED=0`, then run `make ensure-local`
+(which removes the `db` profile) and `make hermes-reload`. The bootstraps remove the `sql`
 entries. The data stays in `DB_DATA_DIR`.
 
 ## Troubleshooting

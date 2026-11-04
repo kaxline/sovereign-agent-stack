@@ -6,7 +6,7 @@ Workflow automation with starter workflows and credentials pre-imported for Ligh
 
 ```bash
 ./scripts/setup.sh --rag --automation
-# COMPOSE_PROFILES=core,rag,automation
+# or set LIGHTRAG_MCP_ENABLED=1 and AUTOMATION_ENABLED=1 in .env, then make up
 ```
 
 n8n follows patterns from the [n8n self-hosted AI starter kit](https://github.com/n8n-io/self-hosted-ai-starter-kit): a one-shot `n8n-import` container and demo data under `n8n/demo-data/`. Unlike the starter kit, n8n stores its data in SQLite, not Postgres. Ollama and Qdrant are left out by default, since LightRAG owns RAG here (`rag` profile) and inference runs on your model server or the `ollama` profile.

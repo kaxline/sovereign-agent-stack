@@ -69,24 +69,38 @@ flowchart TB
 
 ## Profiles
 
-| Profile | What you get |
-|---|---|
-| **`core`** (default) | Hermes agent, Hermes WebUI, SearXNG, mcp-searxng |
-| **`rag`** | LightRAG + Neo4j knowledge graph + MCP sidecar |
-| **`calendar`** | CalDAV calendars via caldav-mcp (multi-account) |
-| **`automation`** | n8n + GPT Researcher |
-| **`coding`** | OpenCode AI coding agent + Hermes coding delegation (opencode-mcp) |
-| **`db`** | Shared Postgres for integrations and the agent + SQL MCP (read-only on the API profile) |
-| **`todo`** | Vikunja todo lists (web app + built-in MCP), stored in the shared Postgres |
-| **`ollama`** | Bundled Ollama + demo model pull |
+Each optional service has one switch in `.env`, its `*_ENABLED` flag. `make up`
+(through `make ensure-local`) adds the service's profile to `COMPOSE_PROFILES`
+when the flag is `1` and removes it when the flag is `0`, and Hermes registers
+the service's tools from the same flag. `make services` lists every flag and
+whether its profile is on.
 
-Examples:
+| Profile | Flag | What you get |
+|---|---|---|
+| **`core`** (default) | | Hermes agent, Hermes WebUI, SearXNG, mcp-searxng |
+| **`rag`** | `LIGHTRAG_MCP_ENABLED` | LightRAG + Neo4j knowledge graph + MCP sidecar |
+| **`calendar`** | `CALDAV_MCP_ENABLED` | CalDAV calendars via caldav-mcp (multi-account) |
+| **`automation`** | `AUTOMATION_ENABLED` | n8n + GPT Researcher |
+| **`coding`** | `OPENCODE_MCP_ENABLED` | OpenCode AI coding agent + Hermes coding delegation (opencode-mcp) |
+| **`db`** | `SQL_MCP_ENABLED` | Shared Postgres for integrations and the agent + SQL MCP (read-only on the API profile) |
+| **`todo`** | `VIKUNJA_MCP_ENABLED` | Vikunja todo lists (web app + built-in MCP), stored in the shared Postgres |
+| **`mail`** | `MAIL_MCP_ENABLED` | Read-only search over Apple Mail, indexed on the host |
+| **`mail-drafts`** | `MAIL_DRAFTS_ENABLED` | Hermes queues drafts for Mail's Drafts folder |
+| **`messages`** | `MESSAGES_MCP_ENABLED` | Read-only iMessage/SMS history, indexed on the host |
+| **`signal`** | `HERMES_SIGNAL_ENABLED` | signal-cli daemon for Hermes ([docs/signal.md](docs/signal.md)) |
+| **`ollama`** | `OLLAMA_ENABLED` | Bundled Ollama + demo model pull |
+| **`searxng-prod`** | `SEARXNG_PROD_ENABLED` | Valkey + rate limiting for SearXNG |
+| **`search-gate`** | `SEARCH_GATE_ENABLED` | One SearXNG engine at a time ([docs/searxng.md](docs/searxng.md#search-gate)) |
 
-```bash
-./scripts/setup.sh --rag --calendar --automation --coding
-# or edit .env:
-# COMPOSE_PROFILES=core,rag,calendar,automation,coding
-```
+`./scripts/setup.sh --rag --calendar` sets the flags and runs any first-time
+setup a service needs (secrets, config files), so use it the first time you
+turn a service on. After that, flip the flag and run `make up`.
+
+The sync removes a profile only if it added that profile itself, which it
+records in `COMPOSE_PROFILES_MANAGED`. A profile you wrote into
+`COMPOSE_PROFILES` by hand while its flag is `0` keeps running, and `make up`
+prints a warning until you set the flag or remove the profile. Profiles with no
+flag, such as `core` or one from your own override file, are never changed.
 
 ## Security model (what the extra wiring buys you)
 

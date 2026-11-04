@@ -806,7 +806,7 @@ if [[ "$caldav_enabled" == "1" || "$caldav_enabled" == "true" || "$caldav_enable
   if has_profile calendar; then
     ok "COMPOSE_PROFILES includes calendar"
   else
-    bad "CALDAV_MCP_ENABLED=1 but 'calendar' not in COMPOSE_PROFILES — run ./scripts/setup.sh --calendar"
+    bad "CALDAV_MCP_ENABLED=1 but 'calendar' not in COMPOSE_PROFILES — run make ensure-local"
   fi
   if [[ "$caldav_enabled" == "1" || "$caldav_enabled" == "true" || "$caldav_enabled" == "TRUE" || "$caldav_enabled" == "yes" ]]; then
     ok "CALDAV_MCP_ENABLED=1"
@@ -958,7 +958,7 @@ if has_profile db || [[ "$sql_on" -eq 1 || "$db_running" -eq 1 ]]; then
   if has_profile db; then
     ok "COMPOSE_PROFILES includes db"
   elif [[ "$sql_on" -eq 1 ]]; then
-    bad "SQL_MCP_ENABLED=1 but 'db' not in COMPOSE_PROFILES — run ./scripts/setup.sh --db"
+    bad "SQL_MCP_ENABLED=1 but 'db' not in COMPOSE_PROFILES — run make ensure-local"
   elif has_profile todo; then
     ok "shared Postgres started by the todo profile"
   fi
@@ -1059,7 +1059,7 @@ if has_profile todo || [[ "$vikunja_on" -eq 1 ]]; then
   if has_profile todo; then
     ok "COMPOSE_PROFILES includes todo"
   else
-    bad "VIKUNJA_MCP_ENABLED=1 but 'todo' not in COMPOSE_PROFILES — run ./scripts/setup.sh --todo"
+    bad "VIKUNJA_MCP_ENABLED=1 but 'todo' not in COMPOSE_PROFILES — run make ensure-local"
   fi
   vk_secret="$(env_get VIKUNJA_SECRET)"
   if [[ -z "$vk_secret" || "$vk_secret" == change-me* ]]; then
@@ -1141,7 +1141,7 @@ if has_profile mail || [[ "$mail_on" -eq 1 ]]; then
   if has_profile mail; then
     ok "COMPOSE_PROFILES includes mail"
   else
-    bad "MAIL_MCP_ENABLED=1 but 'mail' not in COMPOSE_PROFILES — run ./scripts/setup.sh --mail"
+    bad "MAIL_MCP_ENABLED=1 but 'mail' not in COMPOSE_PROFILES — run make ensure-local"
   fi
   if [[ "$mail_on" -eq 1 ]]; then
     ok "MAIL_MCP_ENABLED=1"
@@ -1209,7 +1209,7 @@ if has_profile messages || [[ "$messages_on" -eq 1 ]]; then
   if has_profile messages; then
     ok "COMPOSE_PROFILES includes messages"
   else
-    bad "MESSAGES_MCP_ENABLED=1 but 'messages' not in COMPOSE_PROFILES — run ./scripts/setup.sh --messages"
+    bad "MESSAGES_MCP_ENABLED=1 but 'messages' not in COMPOSE_PROFILES — run make ensure-local"
   fi
   if [[ "$messages_on" -eq 1 ]]; then
     ok "MESSAGES_MCP_ENABLED=1"
@@ -1306,7 +1306,7 @@ if has_profile mail-drafts || [[ "$drafts_on" -eq 1 ]]; then
   if has_profile mail-drafts; then
     ok "COMPOSE_PROFILES includes mail-drafts"
   else
-    bad "MAIL_DRAFTS_ENABLED=1 but 'mail-drafts' not in COMPOSE_PROFILES — run ./scripts/setup.sh --mail-drafts"
+    bad "MAIL_DRAFTS_ENABLED=1 but 'mail-drafts' not in COMPOSE_PROFILES — run make ensure-local"
   fi
   [[ "$drafts_on" -eq 1 ]] || warn "mail-drafts profile on but MAIL_DRAFTS_ENABLED is not 1 — Hermes will not register the draft tools"
   drafts_dir="$(env_get MAIL_DRAFTS_DIR ./data/mail-drafts)"

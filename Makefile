@@ -1,4 +1,4 @@
-.PHONY: setup ensure-local up down logs ps restart clean doctor hermes-upgrade hermes-reload gateway-preflight \
+.PHONY: setup ensure-local services up down logs ps restart clean doctor hermes-upgrade hermes-reload gateway-preflight \
 	bootstrap-buzz buzz-cli-install agent-create hermes-buzz-employee \
 	buzz-relay-start buzz-relay-stop buzz-relay-status buzz-relay-logs buzz-relay-restart \
 	buzz-admin \
@@ -48,6 +48,7 @@ ensure-local:
 	@./scripts/sync-signal-profile.sh
 	@./scripts/sync-buzz-profile.sh
 	@./scripts/sync-terminal-backend.sh
+	@./scripts/sync-profiles.sh
 
 doctor:
 	./scripts/doctor.sh
@@ -189,7 +190,12 @@ model-use:
 model-sync:
 	@if [ "$(RESTART)" = "1" ]; then ./scripts/model-use.sh --sync --restart; else ./scripts/model-use.sh --sync; fi
 
+# Each optional service's *_ENABLED flag and whether its profile is on.
+services:
+	@./scripts/sync-profiles.sh --list
+
 up: ensure-local
+	@echo "Profiles: $$(grep -E '^COMPOSE_PROFILES=' .env | head -1 | cut -d= -f2-)"
 	docker compose up -d
 
 down:
