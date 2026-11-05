@@ -1210,9 +1210,21 @@ if has_profile crm || [[ "$twenty_local" -eq 1 || "$twenty_mcp" -eq 1 ]]; then
       [[ "$slug" == .* ]] && continue
       twenty_count=$((twenty_count + 1))
       url="$(grep -E '^TWENTY_URL=' "$f" | head -1 | cut -d= -f2- | tr -d '"')"
-      key="$(grep -E '^TWENTY_KEY_RW=' "$f" | head -1 | cut -d= -f2- | tr -d '"')"
-      if [[ -z "$key" ]]; then
-        bad "crm-${slug}: ${f} has no TWENTY_KEY_RW — make crm-init finishes a local one; make crm-add FORCE=1 replaces a remote one"
+      rw="$(grep -E '^TWENTY_KEY_RW=' "$f" | head -1 | cut -d= -f2- | tr -d '"')"
+      ro="$(grep -E '^TWENTY_KEY_RO=' "$f" | head -1 | cut -d= -f2- | tr -d '"')"
+      access="$(grep -E '^TWENTY_ACCESS=' "$f" | head -1 | cut -d= -f2- | tr -d '"')"
+      access="${access:-write}"
+      key="$rw"
+      [[ "$access" == read ]] && key="$ro"
+      if [[ "$access" != read && "$access" != write ]]; then
+        bad "crm-${slug}: TWENTY_ACCESS=${access} in ${f}; use read or write"
+        continue
+      elif [[ -z "$key" ]]; then
+        if [[ -z "$rw$ro" ]]; then
+          bad "crm-${slug}: ${f} has no keys — make crm-init finishes a local one; make crm-add FORCE=1 replaces a remote one"
+        else
+          bad "crm-${slug}: TWENTY_ACCESS=${access} but ${f} has no $( [[ "$access" == read ]] && echo TWENTY_KEY_RO || echo TWENTY_KEY_RW ) — Hermes gets no entry for it"
+        fi
         continue
       fi
       # The local instance is checked through its host port; the key alone
@@ -1220,19 +1232,23 @@ if has_profile crm || [[ "$twenty_local" -eq 1 || "$twenty_mcp" -eq 1 ]]; then
       probe="${url%/}"
       [[ "$probe" == http://twenty-server:3000* ]] && probe="http://127.0.0.1:${twenty_port}"
       probe="${probe%/mcp}/mcp"
-      # The key goes in a header file, not argv, so ps never shows it.
-      hdr="$(mktemp)"
-      chmod 600 "$hdr"
-      printf 'Authorization: Bearer %s\nContent-Type: application/json\nAccept: application/json, text/event-stream\n' "$key" > "$hdr"
-      code="$(curl -s -o /dev/null -m 15 -w '%{http_code}' -H @"$hdr" -X POST "$probe" \
-        --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"doctor","version":"0"}}}' 2>/dev/null || true)"
-      rm -f "$hdr"
-      case "$code" in
-        200) ok "crm-${slug}: MCP answers with this key (${probe})" ;;
-        401 | 403) bad "crm-${slug}: Twenty rejects the read/write key — make crm-init ROTATE=1, or a new key with make crm-add --force" ;;
-        000) warn "crm-${slug}: no answer from ${probe}" ;;
-        *) warn "crm-${slug}: MCP answered HTTP ${code} at ${probe}" ;;
-      esac
+      for kind in RW RO; do
+        k="$rw"; [[ "$kind" == RO ]] && k="$ro"
+        [[ -n "$k" ]] || continue
+        # The key goes in a header file, not argv, so ps never shows it.
+        hdr="$(mktemp)"
+        chmod 600 "$hdr"
+        printf 'Authorization: Bearer %s\nContent-Type: application/json\nAccept: application/json, text/event-stream\n' "$k" > "$hdr"
+        code="$(curl -s -o /dev/null -m 15 -w '%{http_code}' -H @"$hdr" -X POST "$probe" \
+          --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"doctor","version":"0"}}}' 2>/dev/null || true)"
+        rm -f "$hdr"
+        case "$code" in
+          200) ok "crm-${slug}: MCP answers with TWENTY_KEY_${kind} (${probe})" ;;
+          401 | 403) bad "crm-${slug}: Twenty rejects TWENTY_KEY_${kind} — make crm-init ROTATE=1, or new keys with make crm-add FORCE=1" ;;
+          000) warn "crm-${slug}: no answer from ${probe}" ;;
+          *) warn "crm-${slug}: MCP answered HTTP ${code} at ${probe}" ;;
+        esac
+      done
       for pair in "default:data/hermes/config.yaml:data/hermes/.env" \
         "api-server:data/hermes/profiles/api-server/config.yaml:data/hermes/profiles/api-server/.env" \
         "browser:data/hermes/profiles/browser/config.yaml:data/hermes/profiles/browser/.env"; do
@@ -1245,7 +1261,7 @@ if has_profile crm || [[ "$twenty_local" -eq 1 || "$twenty_mcp" -eq 1 ]]; then
         fi
       done
       env_key="TWENTY_$(printf '%s' "$slug" | tr '[:lower:]-' '[:upper:]_')_KEY"
-      if grep -qsxF "${env_key}=${key}" data/hermes/profiles/api-server/.env; then
+      if [[ -n "$rw" ]] && grep -qsxF "${env_key}=${rw}" data/hermes/profiles/api-server/.env; then
         bad "api-server holds crm-${slug}'s read/write key — run make hermes-reload (unattended sessions must stay read-only)"
       fi
     done

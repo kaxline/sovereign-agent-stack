@@ -1342,8 +1342,9 @@ register_gptr_mcp_servers() {
 # Twenty CRM (crm profile, or a remote instance). One mcp_servers.crm-<slug>
 # per compose/twenty/workspaces/<slug>.env. The key, not the URL, selects the
 # workspace, so every entry points at the instance's bare /mcp. api-server gets
-# the workspace's read-only key, or no entry when there is none; default and
-# browser get the read/write key. Each key goes into the profile's .env as
+# the workspace's read-only key, or no entry when there is none. default and
+# browser get the read/write key, or the read-only one when the file says
+# TWENTY_ACCESS=read (Boundary's "look things up" choice). Each key goes into the profile's .env as
 # TWENTY_<SLUG>_KEY, and config.yaml holds only the reference. Roles in Twenty
 # are the boundary, so there is no tools.include. docs/crm.md
 
@@ -1353,12 +1354,13 @@ twenty_key_env_name() {
 }
 
 # Parse one workspace file without sourcing it. Sets _tw_url (with /mcp,
-# no trailing slash), _tw_ro and _tw_rw. Fails, with a warning naming the file
+# no trailing slash), _tw_ro, _tw_rw and _tw_access (default write). Fails, with a warning naming the file
 # but never a value, when the URL is missing or not http(s).
 twenty_read_workspace() {
   _tw_url=""
   _tw_ro=""
   _tw_rw=""
+  _tw_access="write"
   while IFS= read -r _tw_line || [ -n "$_tw_line" ]; do
     case "$_tw_line" in
       ''|'#'*) continue ;;
@@ -1373,6 +1375,7 @@ twenty_read_workspace() {
           TWENTY_URL) _tw_url="$_tw_v" ;;
           TWENTY_KEY_RO) _tw_ro="$_tw_v" ;;
           TWENTY_KEY_RW) _tw_rw="$_tw_v" ;;
+          TWENTY_ACCESS) _tw_access="${_tw_v:-write}" ;;
         esac
         ;;
     esac
@@ -1396,6 +1399,25 @@ twenty_read_workspace() {
   esac
 }
 
+# After twenty_read_workspace: the key <profile> gets, in _tw_key, or a
+# failure with the reason in _tw_why. api-server is read-only whatever
+# TWENTY_ACCESS says.
+twenty_key_for_profile() {
+  _tw_key=""
+  _tw_why=""
+  if [ "$1" = "api-server" ]; then
+    _tw_key="$_tw_ro"
+    [ -n "$_tw_key" ] || _tw_why="no TWENTY_KEY_RO"
+  else
+    case "$_tw_access" in
+      write) _tw_key="$_tw_rw"; [ -n "$_tw_key" ] || _tw_why="TWENTY_ACCESS=write but no TWENTY_KEY_RW" ;;
+      read) _tw_key="$_tw_ro"; [ -n "$_tw_key" ] || _tw_why="TWENTY_ACCESS=read but no TWENTY_KEY_RO" ;;
+      *) _tw_why="TWENTY_ACCESS must be read or write" ;;
+    esac
+  fi
+  [ -n "$_tw_key" ]
+}
+
 # Print one slug per line for each workspace that registers on <profile>:
 # a valid file with the key that profile uses.
 twenty_workspace_slugs() {
@@ -1411,11 +1433,7 @@ twenty_workspace_slugs() {
       .*|''|*[!a-z0-9-]*) continue ;;
     esac
     twenty_read_workspace "$_tws_file" 2>/dev/null >/dev/null || continue
-    if [ "$1" = "api-server" ]; then
-      [ -n "$_tw_ro" ] || continue
-    else
-      [ -n "$_tw_rw" ] || continue
-    fi
+    twenty_key_for_profile "$1" || continue
     printf '%s\n' "$_tws_slug"
   done
 }
@@ -1545,19 +1563,15 @@ register_twenty_mcp_servers() {
         ;;
     esac
     twenty_read_workspace "$_rtms_file" || continue
-    if [ "$_rtms_profile" = "api-server" ]; then
-      _rtms_key="$_tw_ro"
-      if [ -z "$_rtms_key" ]; then
-        log "Skipping Twenty workspace '${_rtms_slug}' on api-server (no TWENTY_KEY_RO)"
-        continue
+    if ! twenty_key_for_profile "$_rtms_profile"; then
+      if [ "$_rtms_profile" = "api-server" ]; then
+        log "Skipping Twenty workspace '${_rtms_slug}' on api-server (${_tw_why})"
+      else
+        log "WARNING: Skipping Twenty workspace '${_rtms_slug}' - ${_tw_why}"
       fi
-    else
-      _rtms_key="$_tw_rw"
-      if [ -z "$_rtms_key" ]; then
-        log "WARNING: Skipping Twenty workspace '${_rtms_slug}' - no TWENTY_KEY_RW"
-        continue
-      fi
+      continue
     fi
+    _rtms_key="$_tw_key"
     _rtms_env_key="$(twenty_key_env_name "$_rtms_slug")"
     mkdir -p "$(dirname "$_rtms_env")"
     upsert_env "$_rtms_env" "$_rtms_env_key" "$_rtms_key"

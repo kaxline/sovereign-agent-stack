@@ -6,7 +6,7 @@ set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 bootstrap="${ROOT}/compose/hermes/bootstrap-api-profile.sh"
 
-for fn in twenty_key_env_name twenty_read_workspace twenty_workspace_slugs register_twenty_mcp_servers; do
+for fn in twenty_key_env_name twenty_read_workspace twenty_key_for_profile twenty_workspace_slugs register_twenty_mcp_servers; do
   range="/^${fn}() {/,/^}/p"
   # shellcheck disable=SC1090
   eval "$(sed -n "$range" "$bootstrap")"
@@ -89,6 +89,36 @@ has "write:api-server:crm-main:http://twenty-server:3000/mcp:TWENTY_MAIN_KEY;" |
 if has "crm-remote"; then fail "api-server: remote has no read-only key, so no entry ($calls)"; fi
 if has "rw-secret"; then fail "api-server must never receive a read/write key ($calls)"; fi
 has "reconcile:api-server:main;" || fail "api-server: reconcile keeps only main, dropping any old crm-remote ($calls)"
+
+# TWENTY_ACCESS picks the interactive profiles' key; api-server stays read-only.
+cat > "$TWENTY_WORKSPACES_DIR/lookup.env" <<'EOF2'
+TWENTY_URL=http://twenty-server:3000
+TWENTY_ACCESS=read
+TWENTY_KEY_RO=ro-secret-lookup
+TWENTY_KEY_RW=rw-secret-lookup
+EOF2
+cat > "$TWENTY_WORKSPACES_DIR/rdonly.env" <<'EOF2'
+TWENTY_URL=http://twenty-server:3000
+TWENTY_ACCESS=read
+TWENTY_KEY_RW=rw-secret-rdonly
+EOF2
+cat > "$TWENTY_WORKSPACES_DIR/odd.env" <<'EOF2'
+TWENTY_URL=http://twenty-server:3000
+TWENTY_ACCESS=admin
+TWENTY_KEY_RW=rw-secret-odd
+TWENTY_KEY_RO=ro-secret-odd
+EOF2
+run browser
+has "upsert:env:browser:TWENTY_LOOKUP_KEY=ro-secret-lookup;" || fail "TWENTY_ACCESS=read gives browser the read-only key ($calls)"
+if has "rw-secret-lookup"; then fail "TWENTY_ACCESS=read must never hand out the read/write key"; fi
+if has "crm-rdonly"; then fail "TWENTY_ACCESS=read with no read-only key gives no entry ($calls)"; fi
+case "$logs" in *"rdonly"*TWENTY_KEY_RO*) ;; *) fail "the missing read-only key is warned about" ;; esac
+if has "crm-odd"; then fail "an unknown TWENTY_ACCESS gives no entry ($calls)"; fi
+case "$logs" in *"odd"*TWENTY_ACCESS*) ;; *) fail "an unknown TWENTY_ACCESS is warned about" ;; esac
+run api-server
+has "upsert:env:api-server:TWENTY_LOOKUP_KEY=ro-secret-lookup;" || fail "api-server keeps the read-only key with TWENTY_ACCESS=read"
+[ "$(twenty_workspace_slugs browser | tr '\n' ' ')" = "lookup main remote withmcp " ] || fail "browser slugs with TWENTY_ACCESS ($(twenty_workspace_slugs browser | tr '\n' ' '))"
+rm "$TWENTY_WORKSPACES_DIR/lookup.env" "$TWENTY_WORKSPACES_DIR/rdonly.env" "$TWENTY_WORKSPACES_DIR/odd.env"
 
 # Skipped files.
 run ""
