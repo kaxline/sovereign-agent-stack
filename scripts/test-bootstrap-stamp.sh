@@ -16,7 +16,7 @@ BOOTSTRAP_SH="${BOOTSTRAP_SH:-$(command -v dash || echo sh)}"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 home="${tmp}/home"
-mkdir -p "${tmp}/bin" "${tmp}/bootstrap" "${tmp}/caldav" \
+mkdir -p "${tmp}/bin" "${tmp}/bootstrap" "${tmp}/caldav" "${tmp}/twenty" \
   "${home}/profiles/api-server" "${home}/profiles/browser" "${home}/profiles/worker"
 printf 'model:\n  default: test\n' > "${home}/config.yaml"
 printf 'API_SERVER_KEY=api-key\n' > "${tmp}/bootstrap/api-server.env"
@@ -66,6 +66,7 @@ run() {
     HERMES_API_PROFILE_NAME="$_profile" \
     BOOTSTRAP_API_ENV="${tmp}/bootstrap/${_profile}.env" \
     CALDAV_MCP_ACCOUNTS_DIR="${tmp}/caldav" \
+    TWENTY_WORKSPACES_DIR="${tmp}/twenty" \
     HERMES_BOOTSTRAP_SHARED="$_shared" \
     HERMES_AGENT_IMAGE_TAG=v0.22.5 \
     "$@" \
@@ -135,6 +136,12 @@ printf 'API_SERVER_KEY=rotated\n' > "${tmp}/bootstrap/api-server.env"
 expect_full "changed api-server.env was skipped" api-server
 printf 'URL=https://dav.example.com\n' > "${tmp}/caldav/personal.env"
 expect_full "new CalDAV account was skipped" api-server
+printf 'TWENTY_URL=http://twenty-server:3000\nTWENTY_KEY_RW=a\n' > "${tmp}/twenty/main.env"
+expect_full "new Twenty workspace was skipped" api-server
+printf 'TWENTY_URL=http://twenty-server:3000\nTWENTY_KEY_RW=rotated\n' > "${tmp}/twenty/main.env"
+expect_full "rotated Twenty key was skipped" api-server
+rm "${tmp}/twenty/main.env"
+expect_full "removed Twenty workspace was skipped" api-server
 
 # Config changed outside the bootstrap, or a profile added: full run.
 expect_skip "api-server not skipped before the config edit" api-server

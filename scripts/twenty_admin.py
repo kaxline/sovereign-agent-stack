@@ -13,8 +13,8 @@ Environment:
   TWENTY_MULTIWORKSPACE   1 allows more than one local workspace
   TWENTY_WORKSPACES_DIR   compose/twenty/workspaces
   TWENTY_DATA_DIR         where .crm-init-done is written
-  TWENTY_GRANT_ADMIN_CMD  command (shell words) run with the owner email appended,
-                          after the account is created
+  TWENTY_GRANT_ADMIN_CMD  executable run as `<cmd> grant-admin <email>` on every run
+                          (the grant is idempotent)
 """
 
 from __future__ import annotations
@@ -23,7 +23,6 @@ import argparse
 import json
 import os
 import re
-import shlex
 import subprocess
 import sys
 import urllib.error
@@ -288,7 +287,9 @@ def cmd_init(args: argparse.Namespace) -> int:
     target = ws_dir / f"{slug}.env"
     multi = is_true(env.get("TWENTY_MULTIWORKSPACE"))
 
-    if target.exists() and not args.rotate:
+    existing = read_env_file(target) if target.exists() else {}
+    complete = bool(existing.get("TWENTY_KEY_RW") and existing.get("TWENTY_KEY_RO"))
+    if complete and not args.rotate:
         step(f"{slug}: workspace file exists, nothing to do (--rotate re-mints its keys)")
         return 0
     others = [s for s in local_workspaces(ws_dir) if s != slug]
@@ -311,19 +312,22 @@ def cmd_init(args: argparse.Namespace) -> int:
         agnostic, available = sign_in(tw, email, password)
     step(f"owner account: done ({'created' if created else 'signed in'} {email})")
 
-    if created and env.get("TWENTY_GRANT_ADMIN_CMD"):
+    if env.get("TWENTY_GRANT_ADMIN_CMD"):
+        # The owner creates further workspaces, which Twenty limits to server
+        # admins. Idempotent, so it runs every time and repairs a failed grant.
         step("server admin: running")
-        # The owner creates further workspaces, which Twenty limits to server admins.
-        subprocess.run([*shlex.split(env["TWENTY_GRANT_ADMIN_CMD"]), email], check=True,
+        subprocess.run([env["TWENTY_GRANT_ADMIN_CMD"], "grant-admin", email], check=True,
                        stdout=subprocess.DEVNULL)
         step("server admin: done")
 
     if target.exists():
-        current = read_env_file(target)
-        ws_id = current.get("TWENTY_WORKSPACE_ID", "")
-        ws_url = current.get("TWENTY_WORKSPACE_URL", "")
+        # A complete file being rotated, or a partial one left by a failed run.
+        ws_id = existing.get("TWENTY_WORKSPACE_ID", "")
+        ws_url = existing.get("TWENTY_WORKSPACE_URL", "")
         if not ws_id or not ws_url:
-            raise TwentyError(f"{target.name} has no TWENTY_WORKSPACE_ID or URL; it can't be rotated")
+            raise TwentyError(f"{target.name} has no TWENTY_WORKSPACE_ID or URL; move it aside and re-run")
+        if not complete:
+            step(f"{slug}: resuming a setup that stopped before its keys were written")
         if not available:
             agnostic, available = sign_in(tw, email, password)
         step(f"{slug}: signing in to the workspace")
@@ -332,6 +336,13 @@ def cmd_init(args: argparse.Namespace) -> int:
         step(f"{slug}: workspace: running")
         ws_id, access, ws_url = create_workspace(
             tw, agnostic, args.display_name or slug, slug if multi else None)
+        # Recorded at once, so a failure below resumes this workspace instead
+        # of creating another. Without keys, Hermes skips the file.
+        write_workspace_file(target, {
+            "TWENTY_URL": LOCAL_URL,
+            "TWENTY_WORKSPACE_URL": ws_url,
+            "TWENTY_WORKSPACE_ID": ws_id,
+        })
         step(f"{slug}: workspace: done ({ws_url})")
 
     step(f"{slug}: roles: running")
@@ -342,7 +353,8 @@ def cmd_init(args: argparse.Namespace) -> int:
     keys = {}
     for kind, role_id in (("ro", roles["ro"]), ("rw", roles["rw"])):
         name = ROLES[kind]["label"]
-        if args.rotate:
+        if existing:
+            # Rotation, or keys an interrupted run minted but never wrote down.
             revoke_keys_named(tw, access, name)
         keys[kind] = mint_key(tw, access, name, role_id)
     step(f"{slug}: keys: done")

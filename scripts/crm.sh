@@ -45,8 +45,10 @@ is_true() {
   esac
 }
 
+# A regex, not a glob: bash 3.2 bracket ranges follow the locale, where [a-z]
+# also matches uppercase letters.
 valid_slug() {
-  [[ -n "$1" && "$1" != *[!a-z0-9-]* ]]
+  [[ "$1" =~ ^[a-z0-9-]+$ ]]
 }
 
 # One value from a workspace file, without sourcing it.
@@ -152,7 +154,7 @@ cmd_init() {
   TWENTY_MULTIWORKSPACE="$(env_get TWENTY_MULTIWORKSPACE 0)" \
   TWENTY_WORKSPACES_DIR="$WS_DIR" \
   TWENTY_DATA_DIR="$(data_dir)" \
-  TWENTY_GRANT_ADMIN_CMD="${ROOT}/scripts/crm.sh grant-admin" \
+  TWENTY_GRANT_ADMIN_CMD="${ROOT}/scripts/crm.sh" \
     python3 -I "${ROOT}/scripts/twenty_admin.py" "${args[@]}"
 
   if ! is_true "$(env_get TWENTY_MCP_ENABLED 0)"; then

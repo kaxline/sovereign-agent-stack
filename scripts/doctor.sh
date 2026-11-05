@@ -1212,7 +1212,7 @@ if has_profile crm || [[ "$twenty_local" -eq 1 || "$twenty_mcp" -eq 1 ]]; then
       url="$(grep -E '^TWENTY_URL=' "$f" | head -1 | cut -d= -f2- | tr -d '"')"
       key="$(grep -E '^TWENTY_KEY_RW=' "$f" | head -1 | cut -d= -f2- | tr -d '"')"
       if [[ -z "$key" ]]; then
-        bad "crm-${slug}: ${f} has no TWENTY_KEY_RW"
+        bad "crm-${slug}: ${f} has no TWENTY_KEY_RW — make crm-init finishes a local one; make crm-add FORCE=1 replaces a remote one"
         continue
       fi
       # The local instance is checked through its host port; the key alone

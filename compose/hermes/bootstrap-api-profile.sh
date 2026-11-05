@@ -178,6 +178,13 @@ bootstrap_inputs_hash() {
       echo "$_bih_f"
       cat "$_bih_f"
     done
+    # A new, removed or re-keyed Twenty workspace changes what gets registered.
+    echo "twenty"
+    for _bih_f in "${TWENTY_WORKSPACES_DIR:-/bootstrap/twenty-workspaces}"/*.env; do
+      [ -f "$_bih_f" ] || continue
+      echo "$_bih_f"
+      cat "$_bih_f"
+    done
     echo "env"
     env | grep -v -e '^HOSTNAME=' -e '^PWD=' -e '^OLDPWD=' -e '^SHLVL=' -e '^_=' | LC_ALL=C sort
   } | sha256_stdin

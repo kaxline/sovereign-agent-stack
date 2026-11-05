@@ -35,6 +35,7 @@ class Stub:
         self.roles: list[dict] = []
         self.keys: list[dict] = []
         self.minted = 0
+        self.fail_once: str | None = None
         self.workspaces = 0
         self.upserts: list[dict] = []
 
@@ -42,6 +43,9 @@ class Stub:
         m = OP.match(query)
         op = m.group(1) if m else "?"
         self.ops.append(op)
+        if op == self.fail_once:
+            self.fail_once = None
+            return {"errors": [{"message": f"stub failure in {op}"}]}
         tokens = {"tokens": {"accessOrWorkspaceAgnosticToken": {"token": "agnostic-SECRET"}}}
         if op == "signUp":
             if self.sign_up_error:
@@ -125,7 +129,8 @@ class CrmInit(unittest.TestCase):
         self.data = self.tmp / "data"
         self.data.mkdir()
         self.hook_log = self.tmp / "grant.log"
-        hook = self.tmp / "grant.sh"
+        (self.tmp / "dir with space").mkdir()
+        hook = self.tmp / "dir with space" / "grant.sh"
         hook.write_text(f'#!/bin/sh\necho "$1 $2" >> "{self.hook_log}"\n')
         hook.chmod(0o755)
         self.hook = hook
@@ -145,7 +150,7 @@ class CrmInit(unittest.TestCase):
             "TWENTY_USERNAME": "owner@crm.localhost",
             "TWENTY_PASSWORD": password,
             "TWENTY_MULTIWORKSPACE": multi,
-            "TWENTY_GRANT_ADMIN_CMD": f"{self.hook} grant-admin",
+            "TWENTY_GRANT_ADMIN_CMD": str(self.hook),
         }
         proc = subprocess.run([sys.executable, "-I", str(ADMIN), "init", *args],
                               env=env, capture_output=True, text=True)
@@ -203,7 +208,44 @@ class CrmInit(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(self.stub.ops[:3], ["signUp", "signIn", "signUpInNewWorkspace"])
         self.assertEqual(self.stub.ops.count("signUp"), 1)
-        self.assertFalse(self.hook_log.exists(), "an existing owner is not granted admin again")
+        # The grant is idempotent and runs every time, so a failed first grant is repaired.
+        self.assertEqual(self.hook_log.read_text(), "grant-admin owner@crm.localhost\n")
+
+    def test_failure_after_workspace_creation_resumes(self):
+        self.stub.fail_once = "upsertObjectPermissions"
+        proc = self.run_init()
+        self.assertNotEqual(proc.returncode, 0)
+        partial = self.file("main")
+        self.assertEqual(partial["TWENTY_WORKSPACE_ID"], "ws1")
+        self.assertNotIn("TWENTY_KEY_RW", partial)
+        self.stub.sign_up_error = "User already exists"
+        proc = self.run_init()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.stub.ops.count("signUpInNewWorkspace"), 1)
+        done = self.file("main")
+        self.assertEqual(done["TWENTY_WORKSPACE_ID"], "ws1")
+        self.assertTrue(done["TWENTY_KEY_RW"].startswith("apikey-SECRET-"))
+
+    def test_partial_file_blocks_a_second_workspace_in_single_mode(self):
+        self.stub.fail_once = "createApiKey"
+        self.run_init()
+        self.stub.ops.clear()
+        proc = self.run_init("--slug", "sales")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(self.stub.ops, [])
+
+    def test_failed_grant_is_retried(self):
+        failing = self.tmp / "dir with space" / "fail.sh"
+        failing.write_text("#!/bin/sh\nexit 1\n")
+        failing.chmod(0o755)
+        good = self.hook
+        self.hook = failing
+        self.assertNotEqual(self.run_init().returncode, 0)
+        self.hook = good
+        self.stub.sign_up_error = "User already exists"
+        proc = self.run_init()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.hook_log.read_text(), "grant-admin owner@crm.localhost\n")
 
     def test_existing_slug_untouched(self):
         self.run_init()
@@ -260,11 +302,12 @@ class CrmInit(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0)
         self.assertEqual(self.stub.ops, [])
 
-    def test_graphql_error_fails_without_writing(self):
+    def test_graphql_error_leaves_no_keys(self):
         self.stub.roles = None  # getRoles answers null; ensure_roles must fail cleanly
         proc = self.run_init()
         self.assertNotEqual(proc.returncode, 0)
-        self.assertFalse((self.ws / "main.env").exists())
+        # Only the workspace's identity is kept, for the resume; Hermes skips a file without keys.
+        self.assertEqual(set(self.file("main")), {"TWENTY_URL", "TWENTY_WORKSPACE_URL", "TWENTY_WORKSPACE_ID"})
 
 
 if __name__ == "__main__":

@@ -44,6 +44,12 @@ TWENTY_KEY_RW=new-SECRET run add --slug hosted --url https://crm.example.com --f
 grep -qx 'TWENTY_KEY_RW=new-SECRET' "$f" || fail "--force writes the new key"
 if ! grep -q '^TWENTY_KEY_RO=$' "$f"; then fail "an omitted read-only key is stored empty"; fi
 if TWENTY_KEY_RW=x run add --slug Bad_1 --url https://crm.example.com; then fail "bad slug accepted"; fi
+# bash 3.2 bracket ranges follow the locale's collation, where [a-z] matches A-Y.
+for slug in Sales SALES; do
+  if LC_ALL=en_US.UTF-8 TWENTY_KEY_RW=x run add --slug "$slug" --url https://crm.example.com; then
+    fail "uppercase slug ${slug} accepted"
+  fi
+done
 if TWENTY_KEY_RW=x run add --slug ok --url crm.example.com; then fail "URL without http(s) accepted"; fi
 if run add --slug nokey --url https://crm.example.com; then fail "no key and no terminal must fail"; fi
 [ ! -e "$CRM_WORKSPACES_DIR/nokey.env" ] || fail "a failed add writes nothing"

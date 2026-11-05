@@ -825,8 +825,14 @@ set_env_if_placeholder .env VIKUNJA_SECRET "$(rand_hex 32)"
 # Twenty (crm profile), generated for every install like VIKUNJA_SECRET.
 # ENCRYPTION_KEY protects secrets stored in Twenty: never replaced once set.
 # The database password is hex because it goes unencoded into PG_DATABASE_URL.
-set_env_if_placeholder .env TWENTY_ENCRYPTION_KEY "$(openssl rand -base64 32)"
-set_env_if_placeholder .env TWENTY_DB_PASSWORD "$(rand_hex 32)"
+# Skipped when the secret comes from a file: a value as well would stop the
+# containers at start.
+if ! grep -qE '^TWENTY_ENCRYPTION_KEY_FILE=.+' .env 2>/dev/null; then
+  set_env_if_placeholder .env TWENTY_ENCRYPTION_KEY "$(openssl rand -base64 32)"
+fi
+if ! grep -qE '^TWENTY_DB_PASSWORD_FILE=.+' .env 2>/dev/null; then
+  set_env_if_placeholder .env TWENTY_DB_PASSWORD "$(rand_hex 32)"
+fi
 
 SEARXNG_SECRET="$(grep '^SEARXNG_SECRET=' .env | head -1 | cut -d= -f2- || true)"
 if [[ -z "$SEARXNG_SECRET" || "$SEARXNG_SECRET" == change-me* ]]; then

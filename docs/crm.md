@@ -45,7 +45,7 @@ containers start for a remote workspace.
 | `twenty-worker` | Background jobs. Same image, `yarn worker:prod`, no migrations |
 | `twenty-db` | Twenty's own Postgres 16, on the internal `crm` network |
 | `twenty-redis` | Twenty's queue and cache, `--maxmemory-policy noeviction`, on the `crm` network |
-| `compose/twenty/workspaces/<slug>.env` | One file per workspace, local or remote, mode 600, gitignored. `make crm-init` and `make crm-add` write them |
+| `compose/twenty/workspaces/<slug>.env` | One file per workspace, local or remote, mode 600, gitignored with everything else in that folder. `make crm-init` and `make crm-add` write them. A changed file makes the next start re-run the Hermes bootstrap |
 | Hermes bootstrap | Registers each file as `mcp_servers.crm-<slug>` when `TWENTY_MCP_ENABLED=1` |
 | `crm` skill | Tells Hermes how to pick a workspace and reach records (`compose/hermes/skills/crm/`) |
 
@@ -215,8 +215,12 @@ workspace only.
 - **`Password too weak`:** Twenty accepts passwords of 8 to 50 characters.
   `crm-init` checks this before it calls Twenty.
 - **`Workspace creation is restricted to admins`:** the owner isn't a server
-  admin. `crm-init` grants it when it creates the account. For an account
-  created another way, run `./scripts/crm.sh grant-admin <email>`.
+  admin. `crm-init` grants it on every run, so running it again fixes this.
+  For an account created another way, run `./scripts/crm.sh grant-admin <email>`.
+- **`crm-init` stopped partway:** run it again. Once Twenty has created the
+  workspace, its id is in the workspace file, so the next run picks up that
+  workspace, revokes any keys the failed run minted and mints new ones. Until
+  then the file has no keys, and Hermes skips it.
 - **`make doctor` says Twenty rejects a key:** the key was revoked or the
   workspace deleted. `make crm-init ROTATE=1` mints new keys for a local
   workspace. For a remote one, create new keys in Twenty and run
