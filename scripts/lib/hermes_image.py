@@ -16,7 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 HERMES_DIR = ROOT / "compose" / "hermes"
-DEFAULT_TAG = "v0.22.5"
+DEFAULT_TAG = "v0.22.7"
 
 
 # Prelude for drivers that call finish_text_response with a bare AIAgent.

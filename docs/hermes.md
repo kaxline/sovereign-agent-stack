@@ -54,12 +54,12 @@ This stack pins Hermes Agent and Hermes WebUI together. The same values live in 
 
 | Image | Minimum / default tag |
 |---|---|
-| `nousresearch/hermes-agent` | **`v0.22.5`** |
-| `ghcr.io/nesquena/hermes-webui` | **`0.52.492`** |
+| `nousresearch/hermes-agent` | **`v0.22.7`** |
+| `ghcr.io/nesquena/hermes-webui` | **`0.52.544`** |
 
 Bump both with `make hermes-upgrade AGENT=… WEBUI=…` — never one at a time. Details: [Hermes WebUI — Upgrading](hermes-webui.md#upgrading).
 
-Hermes Agent switched from calendar tags (`v2026.9.14`) to semver (`v0.21.6`, `v0.22.0`, …) after September 2026. A semver tag is newer than every calendar tag, so compare versions by release date, not by string order. The overlays in this stack are anchored to `v0.22.5` and do not apply to calendar-tagged images.
+Hermes Agent switched from calendar tags (`v2026.9.14`) to semver (`v0.21.6`, `v0.22.0`, …) after September 2026. A semver tag is newer than every calendar tag, so compare versions by release date, not by string order. The overlays in this stack are anchored to `v0.22.7` and do not apply to calendar-tagged images.
 
 ### Gateway topology
 
@@ -308,7 +308,7 @@ Prefer Qwen-class (or other known-good agentic) models for folder listing, MCP, 
 |---|---|
 | `compose/hermes/patch-text-tool-call-recovery.py` | Recovers Python/XML tool mimicry into real `tool_calls` before dispatch |
 | `compose/hermes/patch-fabricated-result.py` | Continues a stop turn that claims a write or `<result>` with no tool call, or asks the user for a password in chat, and does not store that reply |
-| `compose/hermes/patch-browser-exec-hint.py` | Adds a `hint` to a `browser_exec` result when the code imported the pre-defined helpers (e.g. `from browser_helpers import …`) or printed nothing; prints a trailing bare expression's value; points `browser_vault_save_login`'s `next` at `browser_vault_fill` when the save could not fill the page; drops the Chromium-reinstall advice when agent-browser hits EACCES |
+| `compose/hermes/patch-browser-exec-hint.py` | Adds a `hint` to a `browser_exec` result when the code imported the pre-defined helpers (e.g. `from browser_helpers import …`) or printed nothing; prints a trailing bare expression's value; points `browser_vault_save_login`'s `next` at `browser_vault_fill` when the save could not fill the page |
 | `compose/hermes/patch-tool-loop-notes.py` | Attaches tool-loop warnings and halt notices after the `<untrusted_tool_result>` wrapper, whose preamble tells the model not to follow directives inside it |
 | `compose/hermes/patch-tool-eval-trace.py` | JSONL turn traces for [tool-calling eval](tool-eval.md) (`data/hermes/eval/traces.jsonl`); unwraps `tool_call` inner names; records `content_len` after the text phase |
 | `compose/hermes/patch-tool-search-always-include.py` | Honors `tools.tool_search.always_include` so stacked MCP pins stay eager |
@@ -639,7 +639,7 @@ Notes:
 
 `HERMES_TERMINAL_BACKEND` chooses where `terminal`, `read_file`, `write_file`, `search_files`, and `execute_code` run. The default is `ssh`. Unset means ssh, so an existing `.env` keeps the worker.
 
-With `ssh`, those tools run on `hermes-worker`, a second container with sshd and no secrets. Bootstrap sets `terminal.backend` to `ssh` on the default profile, on the profile that bootstrap owns, and on every other directory under `data/hermes/profiles/`. New profiles cloned from default inherit it. `terminal.env_passthrough` is removed so the agent environment is not forwarded. The worker's sshd has `AcceptEnv none`. Bootstrap also sets `bot_desktop.placement` to `gateway`. Hermes's `auto` placement can otherwise start the browser on the worker, which has no Node or browser. Browser tools stay in `hermes`, next to the `agent-browser` install.
+With `ssh`, those tools run on `hermes-worker`, a second container with sshd and no secrets. Bootstrap sets `terminal.backend` to `ssh` on the default profile, on the profile that bootstrap owns, and on every other directory under `data/hermes/profiles/`. New profiles cloned from default inherit it. `terminal.env_passthrough` is removed so the agent environment is not forwarded. The worker's sshd has `AcceptEnv none`. Bootstrap also sets `bot_desktop.placement` to `gateway`. Hermes's `auto` placement can otherwise start the browser on the worker, which has no Node or browser. Browser tools stay in `hermes`, next to the image's Chromium.
 
 The worker image includes bash, GNU tar, python3, git, and ripgrep. Hermes runs each remote command with `bash -l`, and its session snapshot uses `tar --no-overwrite-dir`, which BusyBox tar does not support. `execute_code` needs python3 on the backend. `search_files` prefers `rg`.
 
@@ -742,18 +742,7 @@ Optional messaging over [Buzz](https://buzz.xyz) (native Hermes gateway platform
 
 ## Browser tools
 
-Local browser tools run the `agent-browser` CLI plus the Chromium build shipped in the image (`/opt/hermes/.playwright`). On container start, cont-init installs that CLI under `/opt/hermes` and links it onto `PATH`. That path is the container filesystem. The copy npm would otherwise leave under `data/hermes` sits on a Docker Desktop bind mount, where the native `agent-browser-linux-*` binary is mode `644`. `access()` on that mount reports the file executable, so the CLI never chmods it, and launching the browser fails with `EACCES`.
-
-`hermes tools` → Browser Automation does not fix this once Chromium is already in the image. That menu only installs Chromium when it is missing, and in Docker it skips the install when the image already contains it.
-
-If a chat reports that error, restart so the boot install runs again, then confirm the CLI actually executes:
-
-```bash
-docker compose restart hermes
-docker compose exec -u hermes hermes agent-browser --version
-```
-
-`./scripts/doctor.sh` runs the same probe when the `hermes` container is up.
+Since Hermes v0.22.7 the browser is `browser_exec` (Python run by browser-harness), plus `browser_cdp`, `browser_dialog` and the `browser_vault_*` tools. The older `browser_navigate`, `browser_snapshot`, `browser_click` and related tools and the `agent-browser` CLI are gone upstream. A local browser is the Chromium build shipped in the image under `/opt/hermes/tools`, which is the container filesystem, so it is executable without a boot-time install. `./scripts/doctor.sh` checks that the `hermes` user can run it.
 
 `browser_exec` runs browser-harness, which keeps one control socket per session (`bu-default.sock`, `bu-<name>.sock`). Its default location is `$HOME/.config/browser-harness/runtime`, which for the `hermes` user is under `data/hermes`. On that mount (virtiofs on Docker Desktop), a socket that outlives a Docker VM restart (quitting Docker Desktop, a crash, or a Mac reboot) becomes unreadable from inside the new VM: `ls -la` shows `s?????????`, and both connecting and deleting fail with `[Errno 95] Operation not supported: '…/bu-default.sock'`. Every call for that session then fails. macOS still sees a normal socket and can delete it. Recreating or restarting the container alone does not trigger this, but the stack keeps the sockets off the mount so that a VM restart can't either. The `hermes` service sets `BH_RUNTIME_DIR=/tmp/browser-harness` (with `BH_RUNTIME_DIR_SHARED=1` so session names stay in the filenames), which is the container filesystem. Logs and screenshots stay under `data/hermes/home/.config/browser-harness/tmp`.
 

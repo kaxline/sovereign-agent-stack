@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
 """Fix the hints browser_exec gives the model.
 
-- browser_exec wraps every local-browser startup failure with a Chromium
-  reinstall hint. EACCES on agent-browser-linux-* is a mode bit on the CLI
-  binary, and the Browser Automation menu no-ops once Chromium is in the image.
 - A result gains a ``hint`` when the code imported the pre-defined helpers
   from a module that does not exist, or ran and printed nothing.
 - A trailing bare expression (``js(...)``, ``page_info()``) is printed, as a
@@ -19,41 +16,12 @@ import shutil
 from pathlib import Path
 
 TARGET = Path("/opt/hermes/tools/browser_use_cli.py")
-MARKER = "# assistant-stack: agent-browser EACCES is not a Chromium install"
 HELPER_SRC = Path("/bootstrap/browser_exec_hints.py")
 HELPER_DST = Path("/opt/hermes/tools/browser_exec_hints.py")
 MARKER_RESULT = "# assistant-stack: browser_exec result hints"
 MARKER_ECHO = "# assistant-stack: print a trailing browser_exec expression"
 VAULT_TARGET = Path("/opt/hermes/tools/browser_vault_tool.py")
 MARKER_SAVE_NEXT = "# assistant-stack: vault save next step"
-
-OLD = (
-    "    if not cdp:\n"
-    "        return (f\"The local browser could not be started: "
-    "{(res or {}).get('error') or 'agent-browser returned no CDP endpoint'} \"\n"
-    "                \"Run `hermes tools` → Browser Automation to (re)install Chromium, "
-    "or switch backends.\")\n"
-)
-
-NEW = (
-    "    if not cdp:\n"
-    "        # assistant-stack: agent-browser EACCES is not a Chromium install\n"
-    "        _browser_err = (res or {}).get(\"error\") or "
-    "\"agent-browser returned no CDP endpoint\"\n"
-    "        if \"EACCES\" in _browser_err and \"agent-browser\" in _browser_err:\n"
-    "            _browser_hint = (\n"
-    "                \"The agent-browser CLI binary is not executable. \"\n"
-    "                \"Reinstalling Chromium will not fix this. \"\n"
-    "                \"Restart the hermes container so the boot install can place \"\n"
-    "                \"agent-browser on the container filesystem, then retry.\"\n"
-    "            )\n"
-    "        else:\n"
-    "            _browser_hint = (\n"
-    "                \"Run `hermes tools` → Browser Automation to (re)install Chromium, \"\n"
-    "                \"or switch backends.\"\n"
-    "            )\n"
-    "        return f\"The local browser could not be started: {_browser_err} {_browser_hint}\"\n"
-)
 
 OLD_RESULT = (
     "    if stderr:\n"
@@ -135,8 +103,7 @@ def main() -> None:
     else:
         print(f"warn: {HELPER_SRC} missing; result hints off")
     text = TARGET.read_text()
-    patched = _apply(text, OLD, NEW, MARKER, "EACCES hint")
-    patched = _apply(patched, OLD_RESULT, NEW_RESULT, MARKER_RESULT, "result hints")
+    patched = _apply(text, OLD_RESULT, NEW_RESULT, MARKER_RESULT, "result hints")
     patched = _apply(patched, OLD_ECHO, NEW_ECHO, MARKER_ECHO, "expression echo")
     if patched != text:
         TARGET.write_text(patched)
