@@ -228,6 +228,14 @@ each attempt it moved past, with the upstream's host and the reason.
 A cloud fallback behind a local model sends prompts and context to that
 provider whenever the local server is down.
 
+### Per-model request defaults
+
+`LLM_PROXY_MODEL_DEFAULTS_FILE` names a JSON file of request fields per model
+id, which the proxy adds to generation requests that leave them unset. Compose
+points it at `model-defaults/local.json`; an empty value turns it off.
+`GET /admin/model-defaults` shows what is loaded, and SIGHUP and
+`POST /admin/reload` re-read it. See [Model defaults](model-defaults.md).
+
 ### Start without a key
 
 A downstream app can keep every key out of `.env` and push it at runtime.

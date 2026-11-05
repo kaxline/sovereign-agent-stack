@@ -21,6 +21,19 @@ the stack under another app.
 
 ### Changes
 
+- **Per-model request defaults**: `llm-proxy` adds request fields per model id
+  from `model-defaults/local.json` (gitignored) to chat, completions and
+  responses requests that leave them unset. A tested Qwen3.6-35B-A3B example
+  ships in `model-defaults/examples/`; `make model-defaults-add
+  EXAMPLE=qwen3.6-35b-a3b` installs it. With no `local.json`, requests are
+  unchanged. Compose now mounts `./model-defaults` into `llm-proxy` and sets
+  `LLM_PROXY_MODEL_DEFAULTS_FILE`, so `docker compose up -d` recreates it; an
+  app with its own compose file can set the variable empty to keep the old
+  behavior. New `GET /admin/model-defaults`; `/admin/upstreams` is unchanged.
+  `LLM_DEFAULT_MAX_TOKENS` is now applied per upstream attempt, after the
+  model's fields, with the same result for requests that use no model
+  defaults. The SIGHUP log line reads `SIGHUP reloaded:` instead of
+  `SIGHUP reloaded key files:`. See [docs/model-defaults.md](docs/model-defaults.md).
 - **Browser tools**: Hermes v0.22.7 removed `browser_navigate`,
   `browser_snapshot`, `browser_click`, `browser_type`, `browser_press`,
   `browser_scroll`, `browser_back`, `browser_console`, `browser_get_images`,

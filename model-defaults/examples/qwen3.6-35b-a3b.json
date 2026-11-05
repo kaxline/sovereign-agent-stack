@@ -1,0 +1,12 @@
+{
+  "_about": "Qwen's recommended thinking-mode sampling for general tasks. Install with: make model-defaults-add EXAMPLE=qwen3.6-35b-a3b. See docs/model-defaults.md.",
+  "qwen/qwen3.6-35b-a3b": {
+    "_source": "https://huggingface.co/Qwen/Qwen3.6-35B-A3B, Best Practices: thinking mode, general tasks (read 2026-11-05)",
+    "_tested": "2026-11-05, LM Studio, 4-bit MLX build: the proxy adds these fields; temperature and top_k change the output; presence_penalty has no effect on this engine; top_p did not behave as applied; min_p 0 is off. See docs/model-defaults.md#qwen36-35b-a3b.",
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "min_p": 0.0,
+    "presence_penalty": 1.5
+  }
+}

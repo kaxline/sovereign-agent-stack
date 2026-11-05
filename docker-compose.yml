@@ -108,6 +108,13 @@ services:
       - LLM_STREAM_MAX_SECONDS=${LLM_STREAM_MAX_SECONDS:-3600}
       # max_tokens added to chat/completions requests that set no limit. 0 = off.
       - LLM_DEFAULT_MAX_TOKENS=${LLM_DEFAULT_MAX_TOKENS:-16384}
+      # Request fields per model id, from model-defaults/local.json (gitignored;
+      # missing = none). Empty turns it off. See docs/model-defaults.md.
+      - LLM_PROXY_MODEL_DEFAULTS_FILE=${LLM_PROXY_MODEL_DEFAULTS_FILE-/etc/llm-proxy/model-defaults/local.json}
+    volumes:
+      # The directory, not the file: a file mount would go stale when the file
+      # is replaced, and Docker would create a directory if it were missing.
+      - ./model-defaults:/etc/llm-proxy/model-defaults:ro
     ports:
       # Admin only. Inference stays on the compose network.
       - "127.0.0.1:${LLM_PROXY_ADMIN_PORT:-4001}:4001"
