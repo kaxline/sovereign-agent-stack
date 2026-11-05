@@ -434,6 +434,62 @@ def test_a_query_both_upstreams_fail_on_gets_no_results(gates):
     assert sorted(b.engine for b in gate.store.blocks()) == ["bing", "fallback:bing"]
 
 
+def test_a_blocked_engine_s_twin_stands_in_while_other_local_engines_work(gates):
+    local = FakeSearXNG(down={"google cse"})
+    remote = FakeSearXNG()
+    gate = gates(
+        [
+            Engine("bing", INTERVAL),
+            Engine("google cse", 0.01),
+            Engine("bing", 0.01, fallback=True),
+            Engine("google cse", 0.01, fallback=True),
+        ],
+        local,
+        fallback_fetch=remote,
+    )
+
+    results = [gate.search(q, 5) for q in ["a", "b", "c", "d"]]
+
+    used = {r["gate"]["engine"] for r in results}
+    assert used == {"bing", "fallback:google cse"}
+    # Local bing works, so its twin never runs
+    assert {e for _, _, e, _ in remote.calls} == {"google cse"}
+    assert gate.status()["fallback_active"] is True
+
+
+def test_a_fallback_engine_without_a_local_twin_waits_for_every_local_block(gates):
+    local = FakeSearXNG(down={"google cse"})
+    remote = FakeSearXNG()
+    gate = gates(
+        [
+            Engine("bing", 0.01),
+            Engine("google cse", 0.01),
+            Engine("brave", 0.01, fallback=True),
+        ],
+        local,
+        fallback_fetch=remote,
+    )
+
+    first = [gate.search(q, 5) for q in ["a", "b", "c"]]
+    local.down.add("bing")
+    time.sleep(0.05)
+    last = gate.search("d", 5)
+
+    assert remote.calls[0][1] == "d"
+    assert {r["gate"]["engine"] for r in first} == {"bing"}
+    assert last["gate"]["engine"] == "fallback:brave"
+
+
+def test_a_twin_still_stands_in_when_the_tried_local_engine_recovers():
+    gate = Gate.__new__(Gate)
+    gate.engines = [Engine("bing", 1), Engine("bing", 1, fallback=True)]
+    # Local bing failed on this query earlier, and its cool-down has since ended
+    eligible = Gate._eligible(gate, 100.0, sg._today(), {"bing"})
+
+    assert eligible(gate.engines[1]) is True
+    assert Gate._eligible(gate, 100.0, sg._today())(gate.engines[1]) is False
+
+
 def test_fallback_engines_need_a_fallback_fetch():
     try:
         Gate([Engine("bing", 1, fallback=True)], FakeSearXNG(), Store(":memory:"))

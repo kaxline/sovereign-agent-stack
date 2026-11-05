@@ -33,9 +33,11 @@ searches and sends them on one at a time per engine:
   lists them, so cool-downs and intervals can be set from how long blocks last.
 - With SEARCH_GATE_FALLBACK_URL set, a second SearXNG (on another IP) gets its own
   engines, named ``fallback:<engine>``, each paced, cooled and recorded on its own.
-  A query uses them only while every local engine it hasn't tried is cooling or used
-  up for the day; pacing alone never sends it there. When a local engine's cool-down
-  ends, the next query tries it again, and traffic goes back to local once it answers.
+  A fallback engine stands in for the local engine of the same name while that one
+  is cooling or used up for the day, alongside the local engines that still work;
+  one with no local twin is used only while no local engine is usable. Pacing alone
+  never sends a query to the fallback. When a local engine's cool-down ends, the
+  next query tries it again, and its twin stands down once it answers.
 
 Configuration, all from the environment:
 
@@ -446,13 +448,36 @@ class Gate:
         }
 
     def _fallback_active(self, now: float, today: str) -> bool:
-        """Whether a new query would go to the fallback: it has engines and no local
-        engine is usable now, apart from pacing."""
-        if not any(e.fallback for e in self.engines):
-            return False
-        return not any(
-            not e.fallback and self._usable(e, now, today) for e in self.engines
-        )
+        """Whether any fallback engine is standing in now."""
+        eligible = self._eligible(now, today)
+        return any(e.fallback and eligible(e) for e in self.engines)
+
+    def _eligible(
+        self,
+        now: float,
+        today: str,
+        tried: set[str] | frozenset[str] = frozenset(),
+    ) -> Callable[[Engine], bool]:
+        """Which engines may take a query now. Local engines always may. A fallback
+        engine may while its local twin isn't usable or was already tried for the
+        query, or, with no local twin, while no untried local engine is usable."""
+        local = {e.name for e in self.engines if not e.fallback}
+        usable = {
+            e.name
+            for e in self.engines
+            if not e.fallback
+            and e.label not in tried
+            and self._usable(e, now, today)
+        }
+
+        def eligible(engine: Engine) -> bool:
+            if not engine.fallback:
+                return True
+            if engine.name in local:
+                return engine.name not in usable
+            return not usable
+
+        return eligible
 
     @staticmethod
     def _usable(engine: Engine, now: float, today: str) -> bool:
@@ -506,14 +531,10 @@ class Gate:
             return None, 0.0
         now = self.clock()
         today = _today()
-        local = [e for e in untried if not e.fallback]
-        remote = [e for e in untried if e.fallback]
-        # The fallback is for blocks: while any untried local engine is usable, the
-        # query waits for it, even if a fallback engine is free sooner
-        if remote and not any(self._usable(e, now, today) for e in local):
-            untried = remote + local
-        else:
-            untried = local
+        # The fallback is for blocks: a local engine that is only paced keeps its
+        # twin out, even if the twin is free sooner
+        eligible = self._eligible(now, today, job.tried)
+        untried = [e for e in untried if eligible(e)]
         options = [
             (ready, i, e)
             for i, e in enumerate(untried)

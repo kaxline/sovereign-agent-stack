@@ -24,11 +24,13 @@ the stack under another app.
 
 ### New optional `.env` keys
 
-- `SEARCH_GATE_FALLBACK_URL` (default unset): a remote SearXNG on another IP
-  that the search gate uses only while every local engine is cooling down
-  after a block. `SEARCH_GATE_FALLBACK_ENGINES` (default: the local list)
-  picks its engines and `SEARCH_GATE_FALLBACK_AUTH` (`user:password`) sends
-  HTTP basic auth. Unset, the gate behaves as before. See
+- `SEARCH_GATE_FALLBACK_URL` (default unset): a remote SearXNG on another IP.
+  Each of its engines stands in for the local engine of the same name while
+  that one is cooling down after a block or used up for the day, alongside
+  the local engines that still work; one with no local twin is used only
+  while no local engine is usable. `SEARCH_GATE_FALLBACK_ENGINES` (default:
+  the local list) picks its engines and `SEARCH_GATE_FALLBACK_AUTH`
+  (`user:password`) sends HTTP basic auth. Unset, the gate behaves as before. See
   [docs/searxng.md](docs/searxng.md#fallback-instance).
 
 ### Changes
