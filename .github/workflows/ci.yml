@@ -64,6 +64,7 @@ jobs:
             COMPOSE_PROFILES="$profiles" docker compose config -q
           done
           python3 scripts/test-compose-env-allowlist.py
+          python3 scripts/test-twenty-compose-config.py
           echo "=== HERMES_TERMINAL_BACKEND=local ==="
           HERMES_TERMINAL_BACKEND=local COMPOSE_PROFILES=core docker compose config -q
           python3 scripts/test-terminal-backend-compose.py
@@ -107,6 +108,8 @@ jobs:
         run: sh scripts/test-gptr-mcp-registration.sh
       - name: Twenty CRM compose profile
         run: sh scripts/test-twenty-compose.sh
+      - name: Twenty secrets entrypoint
+        run: sh scripts/test-twenty-secrets.sh
       - name: LLM proxy routes
         run: python3 scripts/test-llm-proxy.py
       - name: Terminal backend override sync

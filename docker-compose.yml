@@ -609,7 +609,10 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:${TWENTY_PORT:-3000}:3000"
-    # The server migrates its database on start; the worker is told not to.
+    # Reads *_FILE secrets, then runs Twenty's entrypoint, which migrates the
+    # database on start (the worker is told not to).
+    entrypoint: ["/bin/sh", "/opt/stack/secrets-entrypoint.sh"]
+    command: ["node", "dist/main"]
     environment:
       - PG_DATABASE_URL=postgres://twenty:${TWENTY_DB_PASSWORD:-}@twenty-db:5432/twenty
       - REDIS_URL=redis://twenty-redis:6379
@@ -618,12 +621,18 @@ services:
       - SERVER_URL=http://localhost:${TWENTY_PORT:-3000}
       # Losing this key loses the secrets Twenty stores (docs/crm.md).
       - ENCRYPTION_KEY=${TWENTY_ENCRYPTION_KEY:-}
+      # With TWENTY_*_FILE set in .env, the values above are empty and the
+      # entrypoint reads the files (CR 0020 R8).
+      - TWENTY_ENCRYPTION_KEY_FILE=${TWENTY_ENCRYPTION_KEY_FILE:+/run/secrets/twenty_encryption_key}
+      - TWENTY_DB_PASSWORD_FILE=${TWENTY_DB_PASSWORD_FILE:+/run/secrets/twenty_db_password}
       # true/false, derived from TWENTY_MULTIWORKSPACE (0/1) by setup.sh and crm.sh.
       - IS_MULTIWORKSPACE_ENABLED=${TWENTY_MULTIWORKSPACE_BOOL:-false}
       - TELEMETRY_ENABLED=false
       - STORAGE_TYPE=local
     volumes:
       - ${TWENTY_DATA_DIR:-./data/twenty}/storage:/app/packages/twenty-server/.local-storage
+      - ./compose/twenty/secrets-entrypoint.sh:/opt/stack/secrets-entrypoint.sh:ro
+    secrets: [twenty_encryption_key, twenty_db_password]
     # default: hermes reaches the MCP. crm: Twenty's own database and Redis.
     networks: [default, crm]
     depends_on:
@@ -638,18 +647,29 @@ services:
       retries: 12
       # First start runs every migration.
       start_period: 120s
+    # Starting figures from an idle reading (850 MiB); docs/crm.md has the
+    # measurement under load.
+    deploy:
+      resources:
+        reservations:
+          memory: 1g
+        limits:
+          memory: 1536m
 
   twenty-worker:
     profiles: ["crm"]
     container_name: ${CONTAINER_PREFIX:-}twenty-worker
     image: ${TWENTY_IMAGE:-twentycrm/twenty:v2.55.0}
     restart: unless-stopped
+    entrypoint: ["/bin/sh", "/opt/stack/secrets-entrypoint.sh"]
     command: ["yarn", "worker:prod"]
     environment:
       - PG_DATABASE_URL=postgres://twenty:${TWENTY_DB_PASSWORD:-}@twenty-db:5432/twenty
       - REDIS_URL=redis://twenty-redis:6379
       - SERVER_URL=http://localhost:${TWENTY_PORT:-3000}
       - ENCRYPTION_KEY=${TWENTY_ENCRYPTION_KEY:-}
+      - TWENTY_ENCRYPTION_KEY_FILE=${TWENTY_ENCRYPTION_KEY_FILE:+/run/secrets/twenty_encryption_key}
+      - TWENTY_DB_PASSWORD_FILE=${TWENTY_DB_PASSWORD_FILE:+/run/secrets/twenty_db_password}
       - IS_MULTIWORKSPACE_ENABLED=${TWENTY_MULTIWORKSPACE_BOOL:-false}
       - TELEMETRY_ENABLED=false
       - STORAGE_TYPE=local
@@ -657,10 +677,26 @@ services:
       - DISABLE_CRON_JOBS_REGISTRATION=true
     volumes:
       - ${TWENTY_DATA_DIR:-./data/twenty}/storage:/app/packages/twenty-server/.local-storage
+      - ./compose/twenty/secrets-entrypoint.sh:/opt/stack/secrets-entrypoint.sh:ro
+    secrets: [twenty_encryption_key, twenty_db_password]
     networks: [default, crm]
     depends_on:
       twenty-server:
         condition: service_healthy
+    # The image has no worker probe; check the queue-worker process is up.
+    healthcheck:
+      # [q]: keeps the pattern from matching this check's own sh -c line.
+      test: ["CMD-SHELL", "pgrep -f '[q]ueue-worker' >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        reservations:
+          memory: 1g
+        limits:
+          memory: 1536m
 
   # Twenty pins Postgres 16 and creates schemas per workspace, so it gets its
   # own database rather than a schema in the shared postgres-db (18).
@@ -672,9 +708,12 @@ services:
     environment:
       - POSTGRES_USER=twenty
       - POSTGRES_PASSWORD=${TWENTY_DB_PASSWORD:-}
+      # Postgres reads the file itself and refuses both being set.
+      - POSTGRES_PASSWORD_FILE=${TWENTY_DB_PASSWORD_FILE:+/run/secrets/twenty_db_password}
       - POSTGRES_DB=twenty
     volumes:
       - ${TWENTY_DATA_DIR:-./data/twenty}/db:/var/lib/postgresql/data
+    secrets: [twenty_db_password]
     networks: [crm]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U twenty -d twenty"]
@@ -682,20 +721,33 @@ services:
       timeout: 5s
       retries: 12
       start_period: 10s
+    deploy:
+      resources:
+        reservations:
+          memory: 128m
+        limits:
+          memory: 512m
 
   twenty-redis:
     profiles: ["crm"]
     container_name: ${CONTAINER_PREFIX:-}twenty-redis
     image: ${TWENTY_REDIS_IMAGE:-redis:7.2-alpine}
     restart: unless-stopped
-    # Twenty's queue must not lose jobs to eviction.
-    command: ["redis-server", "--maxmemory-policy", "noeviction"]
+    # Twenty's queue must not lose jobs to eviction. With --maxmemory below
+    # the container limit, a full Redis refuses writes instead of being killed.
+    command: ["redis-server", "--maxmemory", "192mb", "--maxmemory-policy", "noeviction"]
     networks: [crm]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 12
+    deploy:
+      resources:
+        reservations:
+          memory: 32m
+        limits:
+          memory: 256m
 
   # ----------------------------------------------------------------------
   # GPT Researcher — deep web research API (n8n/Hermes REST)
@@ -1767,6 +1819,14 @@ networks:
   # twenty-worker.
   crm:
     internal: true
+
+# Twenty's secrets as files (CR 0020 R8). Unset, they point at an empty file
+# that nothing reads: the *_FILE variables inside the containers stay empty.
+secrets:
+  twenty_encryption_key:
+    file: ${TWENTY_ENCRYPTION_KEY_FILE:-./compose/twenty/no-secret}
+  twenty_db_password:
+    file: ${TWENTY_DB_PASSWORD_FILE:-./compose/twenty/no-secret}
 
 volumes:
   neo4j_data:
