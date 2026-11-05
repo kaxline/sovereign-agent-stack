@@ -61,6 +61,13 @@ the stack under another app.
   model's fields, with the same result for requests that use no model
   defaults. The SIGHUP log line reads `SIGHUP reloaded:` instead of
   `SIGHUP reloaded key files:`. See [docs/model-defaults.md](docs/model-defaults.md).
+- **Search query wording**: `HERMES_ENVIRONMENT_HINT` now tells the agent to
+  write `searxng_web_search` queries as 2-6 keywords instead of sentences, to
+  retry once with different keywords when results don't match, and not to
+  resend a query the search gate answered as busy. Hermes changes no query
+  itself, and long sentence-style queries got unrelated results from `bing`.
+  The hint is part of the `hermes` environment, so `docker compose up -d`
+  recreates `hermes`.
 - **Search gate status**: `GET /status` has a top-level `fallback_active`
   and an `upstream` (`local` or `fallback`) on each engine. Fallback engines
   are named `fallback:<engine>` in `/status`, `/blocks`, the `gate.engine`
