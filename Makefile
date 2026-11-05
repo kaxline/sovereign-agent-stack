@@ -49,6 +49,7 @@ ensure-local:
 	@./scripts/sync-buzz-profile.sh
 	@./scripts/sync-terminal-backend.sh
 	@./scripts/sync-profiles.sh
+	@./scripts/sync-n8n-credentials.sh
 
 doctor:
 	./scripts/doctor.sh

@@ -554,6 +554,21 @@ fi
 if has_profile automation; then
   check_port "$(env_get N8N_HOST_PORT 5678)" "n8n"
   check_port "$(env_get GPTR_PORT 8000)" "GPT Researcher"
+  # docker-compose.yml no longer requires these keys, so a missing one would
+  # only show up as n8n failing to decrypt its credentials.
+  for key in N8N_ENCRYPTION_KEY N8N_USER_MANAGEMENT_JWT_SECRET; do
+    val="$(env_get "$key")"
+    case "$val" in
+      "") bad "${key} is empty and automation is on — run ./scripts/setup.sh" ;;
+      change-me* | change_me* | n8n-local-*) warn "${key} is still the .env.example placeholder — run ./scripts/setup.sh" ;;
+      *) ok "${key} is set" ;;
+    esac
+  done
+  if compgen -G "n8n/demo-data/credentials/*.json" >/dev/null; then
+    ok "n8n demo credentials exist"
+  else
+    bad "n8n demo credentials missing — run make ensure-local"
+  fi
 fi
 gptr_enabled="$(env_get GPTR_MCP_ENABLED 0)"
 case "$gptr_enabled" in 1|true|TRUE|yes|YES) gptr_on=1 ;; *) gptr_on=0 ;; esac

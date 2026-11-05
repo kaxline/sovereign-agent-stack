@@ -739,7 +739,6 @@ require_cmd docker
 require_cmd openssl
 require_cmd ssh-keygen
 docker compose version >/dev/null 2>&1 || die "docker compose is not available"
-require_cmd node
 require_python3
 
 if ! docker info >/dev/null 2>&1; then
@@ -988,13 +987,9 @@ fi
 # COMPOSE_PROFILES follows the *_ENABLED flags from here on (README.md#profiles).
 ./scripts/sync-profiles.sh
 
-# --- n8n credentials (needed when automation is enabled later; cheap to always refresh) ---
-set -a
-# eval, not source <(...): bash 3.2 sources nothing from a process substitution.
-eval "$(grep -E '^(N8N_ENCRYPTION_KEY|LIGHTRAG_API_KEY|NEO4J_PASSWORD|NEO4J_USERNAME)=' .env | sed 's/^/export /')"
-set +a
-node scripts/generate-n8n-credentials.js
-log "Regenerated n8n demo credentials"
+# --- n8n credentials (automation only; make ensure-local writes them if
+# automation is turned on later) ---
+./scripts/sync-n8n-credentials.sh --force
 
 PROFILES_NOW="$(grep '^COMPOSE_PROFILES=' .env | head -1 | cut -d= -f2- || echo core)"
 

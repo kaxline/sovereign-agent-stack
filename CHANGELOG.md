@@ -21,6 +21,19 @@ the stack under another app.
 
 ### Changes
 
+- **n8n setup only runs with `automation`**: `docker-compose.yml` no
+  longer requires `N8N_ENCRYPTION_KEY` and `N8N_USER_MANAGEMENT_JWT_SECRET`.
+  Compose filled them in for every service, so a `.env` without them failed
+  every `docker compose` command, even with n8n off. `setup.sh` no longer
+  requires Node, and runs the n8n credentials generator only when
+  `automation` is on. The new `scripts/sync-n8n-credentials.sh` does that
+  step and runs from `make ensure-local` (and so `make up`). With
+  `automation` on, it writes the credentials if none exist and stops with an
+  error if either key or `LIGHTRAG_API_KEY` is empty. `make doctor` checks
+  both keys and the credential files when `automation` is on. Installs that
+  use n8n behave as before. An app that runs `docker compose` without `make
+  up` gets no error for a missing key; n8n then starts without the key the
+  demo credentials were encrypted with.
 - **Per-model request defaults**: `llm-proxy` adds request fields per model id
   from `model-defaults/local.json` (gitignored) to chat, completions and
   responses requests that leave them unset. A tested Qwen3.6-35B-A3B example
