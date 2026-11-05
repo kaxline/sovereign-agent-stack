@@ -67,13 +67,20 @@ check "setup.sh, default profiles" \
 rm -f .env
 check "setup.sh, optional profiles" \
   ./scripts/setup.sh --non-interactive --workspace demo \
-  --rag --automation --research --coding --calendar --db --todo
+  --rag --automation --research --coding --calendar --db --todo --crm
 check "setup.sh again over the same .env" \
   ./scripts/setup.sh --non-interactive --workspace demo \
-  --rag --automation --research --coding --calendar --db --todo
+  --rag --automation --research --coding --calendar --db --todo --crm
 check "setup.sh --research turns on the flag and profile" \
   sh -c 'grep -qx "GPTR_MCP_ENABLED=1" .env && grep -E "^COMPOSE_PROFILES=" .env | grep -q ",research"'
+check "setup.sh --crm turns on both Twenty flags and generates its secrets" \
+  sh -c 'grep -qx "TWENTY_LOCAL_ENABLED=1" .env && grep -qx "TWENTY_MCP_ENABLED=1" .env \
+    && grep -qx "TWENTY_MULTIWORKSPACE_BOOL=false" .env && grep -qE "^TWENTY_ENCRYPTION_KEY=.{40,}" .env \
+    && grep -qE "^TWENTY_DB_PASSWORD=[0-9a-f]{64}$" .env'
 check "make ensure-local" make ensure-local
+check "make ensure-local adds the crm profile and Twenty's data dirs" \
+  sh -c 'grep -E "^COMPOSE_PROFILES=" .env | grep -q "crm" && test -d data/twenty/db && test -d data/twenty/storage'
+check "crm.sh tests" ./scripts/test-crm-sh.sh
 check "sync-profiles tests" ./scripts/test-sync-profiles.sh
 
 exit "$fail"

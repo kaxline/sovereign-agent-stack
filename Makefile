@@ -13,6 +13,7 @@
 	calendar-test \
 	data-dir-show data-dir-set data-dir-migrate \
 	db-backup db-service-add db-psql todo-init todo-open dashboard-open \
+	crm-init crm-add crm-open crm-mode \
 	coding-root-list coding-root-add \
 	context-root-list context-root-add opencode-smoke-fixture \
 	kb-eval-fixture kb-eval-fixture-remove \
@@ -45,6 +46,7 @@ ensure-local:
 	@mkdir -p compose/postgres/services
 	@test -f compose/caldav-mcp/accounts/personal.env || (cp compose/caldav-mcp/account.env.example compose/caldav-mcp/accounts/personal.env && echo "Created compose/caldav-mcp/accounts/personal.env — set CALDAV_* credentials for calendar profile")
 	@./scripts/todo.sh ensure
+	@./scripts/crm.sh ensure
 	@./scripts/sync-signal-profile.sh
 	@./scripts/sync-buzz-profile.sh
 	@./scripts/sync-terminal-backend.sh
@@ -134,6 +136,25 @@ todo-init:
 
 todo-open:
 	@./scripts/todo.sh open
+
+# Twenty CRM (crm profile, or remote). See docs/crm.md.
+#   make crm-init [SLUG=main] [ROTATE=1]   local workspace + both Hermes keys
+#   make crm-add SLUG=name URL=https://... a workspace on a remote Twenty
+#   make crm-open [SLUG=name]              open a workspace in the browser
+#   make crm-mode MULTI=0|1                single- or multi-workspace local instance
+crm-init:
+	./scripts/crm.sh init $(if $(SLUG),--slug "$(SLUG)") $(if $(ROTATE),--rotate)
+
+crm-add:
+	@test -n "$(SLUG)" -a -n "$(URL)" || (echo "Usage: make crm-add SLUG=<slug> URL=https://crm.example.com"; exit 1)
+	./scripts/crm.sh add --slug "$(SLUG)" --url "$(URL)"
+
+crm-open:
+	@./scripts/crm.sh open $(if $(SLUG),--slug "$(SLUG)")
+
+crm-mode:
+	@test -n "$(MULTI)" || (echo "Usage: make crm-mode MULTI=0|1"; exit 1)
+	./scripts/crm.sh mode "$(MULTI)"
 
 # Hermes dashboard, signed in through a one-time link. See docs/hermes.md.
 #   make dashboard-open

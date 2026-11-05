@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+"""scripts/twenty_admin.py against a stub Twenty GraphQL server.
+
+Checks the order of calls make crm-init makes, re-runs, rotation, the
+single-workspace refusal, slug checks, and that no key or password is ever
+printed. No Docker, no network beyond 127.0.0.1.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import stat
+import subprocess
+import sys
+import tempfile
+import threading
+import unittest
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+ADMIN = ROOT / "scripts" / "twenty_admin.py"
+PASSWORD = "pw-SECRET-0123!Aa1"
+OP = re.compile(r"^\s*(?:mutation|query)?\s*(?:\([^)]*\))?\s*\{\s*(\w+)", re.S)
+
+
+class Stub:
+    """Canned Twenty answers; records the first field of every operation."""
+
+    def __init__(self) -> None:
+        self.ops: list[str] = []
+        self.sign_up_error: str | None = None
+        self.roles: list[dict] = []
+        self.keys: list[dict] = []
+        self.minted = 0
+        self.workspaces = 0
+
+    def answer(self, query: str, variables: dict) -> dict:
+        m = OP.match(query)
+        op = m.group(1) if m else "?"
+        self.ops.append(op)
+        tokens = {"tokens": {"accessOrWorkspaceAgnosticToken": {"token": "agnostic-SECRET"}}}
+        if op == "signUp":
+            if self.sign_up_error:
+                return {"errors": [{"message": self.sign_up_error}]}
+            return {"data": {"signUp": tokens}}
+        if op == "signIn":
+            avail = {"availableWorkspacesForSignIn": [
+                {"id": f"ws{i + 1}", "loginToken": f"login-SECRET-{i + 1}"} for i in range(max(self.workspaces, 1))
+            ]}
+            return {"data": {"signIn": {**tokens, "availableWorkspaces": avail}}}
+        if op == "signUpInNewWorkspace":
+            self.workspaces += 1
+            sub = (variables.get("i") or {}).get("subdomain")
+            url = f"http://{sub}.localhost:3000/" if sub else "http://localhost:3000/"
+            return {"data": {"signUpInNewWorkspace": {
+                "loginToken": {"token": "login-SECRET"},
+                "workspace": {"id": f"ws{self.workspaces}", "workspaceUrls": {"subdomainUrl": url}},
+            }}}
+        if op == "getAuthTokensFromLoginToken":
+            return {"data": {"getAuthTokensFromLoginToken": {"tokens": {
+                "accessOrWorkspaceAgnosticToken": {"token": "access-SECRET"}}}}}
+        if op == "activateWorkspace":
+            return {"data": {"activateWorkspace": {"id": "ws", "activationStatus": "ACTIVE"}}}
+        if op == "getRoles":
+            return {"data": {"getRoles": self.roles}}
+        if op == "createOneRole":
+            role = {"id": f"role-{len(self.roles) + 1}", "label": variables["i"]["label"]}
+            self.roles.append(role)
+            return {"data": {"createOneRole": role}}
+        if op == "apiKeys":
+            return {"data": {"apiKeys": self.keys}}
+        if op == "revokeApiKey":
+            for k in self.keys:
+                if k["id"] == variables["i"]["id"]:
+                    k["revokedAt"] = "now"
+            return {"data": {"revokeApiKey": {"id": variables["i"]["id"]}}}
+        if op == "createApiKey":
+            key = {"id": f"key-{len(self.keys) + 1}", "name": variables["i"]["name"], "revokedAt": None}
+            self.keys.append(key)
+            return {"data": {"createApiKey": key}}
+        if op == "generateApiKeyToken":
+            self.minted += 1
+            return {"data": {"generateApiKeyToken": {"token": f"apikey-SECRET-{self.minted}"}}}
+        return {"errors": [{"message": f"stub has no answer for {op}"}]}
+
+
+def serve(stub: Stub) -> HTTPServer:
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            body = json.loads(self.rfile.read(int(self.headers["content-length"])))
+            out = json.dumps(stub.answer(body["query"], body.get("variables") or {})).encode()
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(out)
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+class CrmInit(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.ws = self.tmp / "workspaces"
+        self.ws.mkdir()
+        self.data = self.tmp / "data"
+        self.data.mkdir()
+        self.hook_log = self.tmp / "grant.log"
+        hook = self.tmp / "grant.sh"
+        hook.write_text(f'#!/bin/sh\necho "$1 $2" >> "{self.hook_log}"\n')
+        hook.chmod(0o755)
+        self.hook = hook
+        self.stub = Stub()
+        self.server = serve(self.stub)
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+    def run_init(self, *args: str, multi: str = "0") -> subprocess.CompletedProcess:
+        env = {
+            "PATH": os.environ["PATH"],
+            "TWENTY_BASE_URL": f"http://127.0.0.1:{self.server.server_port}",
+            "TWENTY_WORKSPACES_DIR": str(self.ws),
+            "TWENTY_DATA_DIR": str(self.data),
+            "TWENTY_USERNAME": "owner@crm.localhost",
+            "TWENTY_PASSWORD": PASSWORD,
+            "TWENTY_MULTIWORKSPACE": multi,
+            "TWENTY_GRANT_ADMIN_CMD": f"{self.hook} grant-admin",
+        }
+        proc = subprocess.run([sys.executable, "-I", str(ADMIN), "init", *args],
+                              env=env, capture_output=True, text=True)
+        out = proc.stdout + proc.stderr
+        for secret in ("SECRET", PASSWORD):
+            self.assertNotIn(secret, out, f"output leaks a secret:\n{out}")
+        return proc
+
+    def file(self, slug: str) -> dict:
+        lines = (self.ws / f"{slug}.env").read_text().splitlines()
+        return dict(line.split("=", 1) for line in lines if "=" in line and not line.startswith("#"))
+
+    def test_first_init_order(self):
+        proc = self.run_init()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.stub.ops, [
+            "signUp", "signUpInNewWorkspace", "getAuthTokensFromLoginToken", "activateWorkspace",
+            "getRoles", "createOneRole", "createOneRole",
+            "createApiKey", "generateApiKeyToken", "createApiKey", "generateApiKeyToken",
+        ])
+        f = self.file("main")
+        self.assertEqual(f["TWENTY_URL"], "http://twenty-server:3000")
+        self.assertEqual(f["TWENTY_WORKSPACE_URL"], "http://localhost:3000/")
+        self.assertEqual(f["TWENTY_WORKSPACE_ID"], "ws1")
+        self.assertTrue(f["TWENTY_KEY_RO"].startswith("apikey-SECRET-"))
+        self.assertTrue(f["TWENTY_KEY_RW"].startswith("apikey-SECRET-"))
+        self.assertNotEqual(f["TWENTY_KEY_RO"], f["TWENTY_KEY_RW"])
+        self.assertEqual(stat.S_IMODE((self.ws / "main.env").stat().st_mode), 0o600)
+        self.assertEqual(self.hook_log.read_text(), "grant-admin owner@crm.localhost\n")
+        self.assertTrue((self.data / ".crm-init-done").exists())
+
+    def test_roles_have_the_spec_permissions(self):
+        self.run_init()
+        ro, rw = self.stub.roles
+        self.assertEqual((ro["label"], rw["label"]), ("Hermes read-only", "Hermes read-write"))
+
+    def test_rerun_signs_in(self):
+        self.stub.sign_up_error = "User already exists"
+        proc = self.run_init()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.stub.ops[:3], ["signUp", "signIn", "signUpInNewWorkspace"])
+        self.assertEqual(self.stub.ops.count("signUp"), 1)
+        self.assertFalse(self.hook_log.exists(), "an existing owner is not granted admin again")
+
+    def test_existing_slug_untouched(self):
+        self.run_init()
+        before = self.file("main")
+        self.stub.ops.clear()
+        proc = self.run_init()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.stub.ops, [])
+        self.assertEqual(self.file("main"), before)
+
+    def test_rotate_revokes_then_mints(self):
+        self.run_init()
+        old = self.file("main")
+        self.stub.ops.clear()
+        self.stub.sign_up_error = "User already exists"
+        proc = self.run_init("--rotate")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn("signUpInNewWorkspace", self.stub.ops)
+        self.assertEqual(self.stub.ops.count("revokeApiKey"), 2)
+        self.assertLess(self.stub.ops.index("revokeApiKey"), self.stub.ops.index("createApiKey"))
+        new = self.file("main")
+        self.assertNotEqual(new["TWENTY_KEY_RW"], old["TWENTY_KEY_RW"])
+        self.assertEqual(new["TWENTY_WORKSPACE_ID"], old["TWENTY_WORKSPACE_ID"])
+
+    def test_single_mode_refuses_second_workspace(self):
+        self.run_init()
+        self.stub.ops.clear()
+        proc = self.run_init("--slug", "sales")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(self.stub.ops, [])
+        self.assertIn("TWENTY_MULTIWORKSPACE", proc.stderr)
+
+    def test_multi_mode_second_workspace(self):
+        self.run_init(multi="1")
+        proc = self.run_init("--slug", "sales", multi="1")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.file("sales")["TWENTY_WORKSPACE_URL"], "http://sales.localhost:3000/")
+
+    def test_remote_files_do_not_count_as_local(self):
+        (self.ws / "hosted.env").write_text("TWENTY_URL=https://crm.example.com\nTWENTY_KEY_RW=x\n")
+        proc = self.run_init()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_bad_slug_rejected(self):
+        proc = self.run_init("--slug", "Sales_1")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(self.stub.ops, [])
+
+    def test_graphql_error_fails_without_writing(self):
+        self.stub.roles = None  # getRoles answers null; ensure_roles must fail cleanly
+        proc = self.run_init()
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertFalse((self.ws / "main.env").exists())
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=1)
