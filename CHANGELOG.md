@@ -38,6 +38,10 @@ the stack under another app.
   Changes a client sees: `command` carries Hermes' argument block instead of
   the one-line summary, and `choices` is `once`, `session`, `always`, `deny`
   (still `once`, `deny` past the spend limit).
+- **uv cache warmup**: v0.22.7 ships no `uvx` and runs browser-harness from
+  its own venv, so `11-warmup-uv-cache` only prepares the shared
+  `hermes_uv_cache` volume now and no longer logs a failed warmup.
+  `UV_CACHE_DIR` and `HERMES_UV_CACHE_DIR` are unchanged.
 - **Control socket**: v0.22.7 falls back to a temp-dir socket on its own when
   `$HERMES_HOME` refuses one, but through `tempfile.gettempdir()`, which is
   virtiofs here. `patch-control-socket-tmp` still binds under `/tmp`; only

@@ -756,7 +756,7 @@ rm -f data/hermes/home/.config/browser-harness/runtime/*.sock data/hermes/home/.
 
 `./scripts/doctor.sh` checks the variable and warns about leftover sockets.
 
-`browser_exec` starts the browser-use CLI with `uvx browser-use`, which runs it from uv's cache. By default that cache sits under each profile's `HOME`, so every profile kept its own copy on the `data/hermes` mount, and on Docker Desktop one call took about a minute even with the cache warm. The `hermes` service sets `UV_CACHE_DIR=/opt/uv-cache`, a named volume (`hermes_uv_cache`) shared by every profile, where a warm call takes about a second. At start, `11-warmup-uv-cache` fetches browser-use into it in the background, so only the first start after creating the volume downloads it (about 40 s). `HERMES_UV_CACHE_DIR` mounts a host path there instead.
+The `hermes` service sets `UV_CACHE_DIR=/opt/uv-cache`, a named volume (`hermes_uv_cache`) shared by every profile and by Hermes' package manager, so uv's cache stays off the `data/hermes` mount, where uv is slow on Docker Desktop. `11-warmup-uv-cache` makes the volume writable by the `hermes` user at start. Before Hermes v0.22.7 it also fetched browser-use into it for `browser_exec`; v0.22.7 runs browser-harness from its own venv. `HERMES_UV_CACHE_DIR` mounts a host path there instead.
 
 ### Saving logins
 
