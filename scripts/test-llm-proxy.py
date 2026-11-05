@@ -780,6 +780,140 @@ def test_fallbacks_file(proxy, tmp: Path) -> None:
         os.environ.update(saved)
 
 
+QWEN = {"temperature": 1.0, "top_k": 20, "presence_penalty": 1.5}
+
+
+def test_model_defaults_file(proxy, tmp: Path) -> None:
+    path = tmp / "model-defaults.json"
+    read = proxy.read_model_defaults_file
+    # Missing means none; notes (leading _) are dropped at both levels; ids are lowercased.
+    assert read(str(tmp / "absent.json")) == {}
+    path.write_text(json.dumps({
+        "_about": "notes",
+        "Qwen/Qwen3.6-35B-A3B": {"_source": "card", **QWEN},
+    }))
+    assert read(str(path)) == {"qwen/qwen3.6-35b-a3b": QWEN}
+    # Broken or invalid files return None so a reload keeps what is loaded.
+    for bad in ("{not json", "[1]", '{"m": 1}', '{"m": {"messages": []}}', '{"m": {"model": "x"}}',
+                '{"M": {}, "m": {}}'):
+        path.write_text(bad)
+        assert read(str(path)) is None, bad
+
+
+def test_with_model_defaults(proxy) -> None:
+    table = proxy.Table(proxy.Route("", ""), proxy.Route("", ""), proxy.Route("", ""))
+    table.set_model_defaults({"qwen": {**QWEN, "max_tokens": 32768}})
+    fill = lambda body, path="/v1/chat/completions", route="chat": json.loads(  # noqa: E731
+        proxy.with_model_defaults(body, path, route, table.defaults_for)
+    )
+    # Unset fields are filled; the model id matches case-insensitively.
+    assert fill(b'{"model":"Qwen"}') == {"model": "Qwen", **QWEN, "max_tokens": 32768}
+    # The request's own value wins; an explicit null counts as unset.
+    assert fill(b'{"model":"qwen","temperature":0.2,"top_k":null}')["temperature"] == 0.2
+    assert fill(b'{"model":"qwen","top_k":null}')["top_k"] == 20
+    # Any output cap the request sets keeps the model's cap out.
+    assert "max_tokens" not in fill(b'{"model":"qwen","max_completion_tokens":5}')
+    # completions, responses and the lightrag route are covered too.
+    assert fill(b'{"model":"qwen"}', "/lightrag/v1/completions", "lightrag")["top_k"] == 20
+    responses = fill(b'{"model":"qwen"}', "/v1/responses")
+    assert responses["top_k"] == 20 and "max_tokens" not in responses
+    # A cap only reaches the API that uses that field.
+    table.set_model_defaults({"qwen": {"max_output_tokens": 7}})
+    assert fill(b'{"model":"qwen"}', "/v1/responses")["max_output_tokens"] == 7
+    assert proxy.with_model_defaults(b'{"model":"qwen"}', "/v1/chat/completions", "chat",
+                                     table.defaults_for) == b'{"model":"qwen"}'
+    table.set_model_defaults({"qwen": {**QWEN, "max_tokens": 32768}})
+    # Other models, paths, routes and non-object bodies pass through byte for byte.
+    keep = proxy.with_model_defaults
+    for body, path, route in (
+        (b'{"model":"other"}', "/v1/chat/completions", "chat"),
+        (b'{"messages":[]}', "/v1/chat/completions", "chat"),
+        (b'{"model":"qwen"}', "/v1/models", "chat"),
+        (b'{"model":"qwen"}', "/embed/v1/completions", "embed"),
+        (b"not json", "/v1/chat/completions", "chat"),
+        (b"[1]", "/v1/chat/completions", "chat"),
+        (b"", "/v1/chat/completions", "chat"),
+    ):
+        assert keep(body, path, route, table.defaults_for) == body
+
+
+def test_model_defaults_reload(proxy, tmp: Path) -> None:
+    saved = dict(os.environ)
+    path = tmp / "model-defaults.json"
+    try:
+        os.environ.clear()
+        os.environ["LLM_PROXY_MODEL_DEFAULTS_FILE"] = str(path)
+        # No file at start: no defaults, no error.
+        table = proxy.load_table()
+        assert table.defaults_for("qwen") == {}
+        path.write_text(json.dumps({"qwen": QWEN}))
+        assert proxy.reload_key_files(table) == ["model_defaults"]
+        assert table.defaults_for("QWEN") == QWEN
+        assert table.model_defaults_view() == {"qwen": QWEN}
+        assert "model_defaults" not in table.public_view()
+        # A broken file keeps what is loaded.
+        path.write_text("{not json")
+        assert proxy.reload_key_files(table) == []
+        assert table.defaults_for("qwen") == QWEN
+        # Removing the file clears them.
+        path.unlink()
+        assert proxy.reload_key_files(table) == ["model_defaults"]
+        assert table.defaults_for("qwen") == {}
+        # Unset variable: the feature is off and reload reports nothing for it.
+        del os.environ["LLM_PROXY_MODEL_DEFAULTS_FILE"]
+        assert proxy.reload_key_files(table) == []
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+
+
+def test_admin_model_defaults_over_http(proxy) -> None:
+    proxy.AdminHandler.table = proxy.Table(proxy.Route("", ""), proxy.Route("", ""), proxy.Route("", ""))
+    proxy.AdminHandler.table.set_model_defaults({"qwen": QWEN})
+    proxy.AdminHandler.token = "admin-token"
+    admin = serve(proxy.AdminHandler)
+    url = f"http://127.0.0.1:{admin.server_address[1]}/admin/model-defaults"
+    try:
+        req = Request(url, headers={"Authorization": "Bearer admin-token"})
+        with urlopen(req, timeout=5) as resp:
+            assert json.loads(resp.read())["models"] == {"qwen": QWEN}
+        try:
+            urlopen(Request(url), timeout=5)
+        except HTTPError as exc:
+            assert exc.code == 401
+        else:
+            raise AssertionError("served without the admin token")
+    finally:
+        admin.shutdown()
+
+
+def test_model_defaults_reach_upstream(proxy) -> None:
+    """Each attempt gets the defaults of the model it is sent with."""
+    down = free_port()
+    upstream, seen = recording_upstream()
+    url = f"http://127.0.0.1:{upstream.server_address[1]}/v1"
+    inference = start_chain(proxy, url, [])
+    proxy.InferenceHandler.table.set_model_defaults({"local-model": QWEN, "fallback-model": {"top_k": 1}})
+    proxy.InferenceHandler.default_max_tokens = 99
+    try:
+        status, _, _ = post_chat(inference.server_address[1])
+        assert status == 200
+        assert json.loads(seen[-1]["body"]) == {"model": "local-model", **QWEN, "max_tokens": 99}
+    finally:
+        inference.shutdown()
+    # Primary down, fallback names another model: that model's defaults, not the primary's.
+    inference = start_chain(proxy, f"http://127.0.0.1:{down}/v1", [{"url": url, "model": "fallback-model"}])
+    proxy.InferenceHandler.table.set_model_defaults({"local-model": QWEN, "fallback-model": {"top_k": 1}})
+    try:
+        status, _, _ = post_chat(inference.server_address[1])
+        assert status == 200
+        assert json.loads(seen[-1]["body"]) == {"model": "fallback-model", "top_k": 1, "max_tokens": 99}
+    finally:
+        proxy.InferenceHandler.default_max_tokens = 0
+        upstream.shutdown()
+        inference.shutdown()
+
+
 def test_with_model(proxy) -> None:
     assert json.loads(proxy.with_model(b'{"model":"a","x":1}', "b")) == {"model": "b", "x": 1}
     for raw in (b"", b"not json", b"[1]"):
@@ -802,6 +936,13 @@ def main() -> None:
     test_stream_max_seconds_drops_endless_stream(proxy)
     test_admin_view_reports_restart(proxy)
     test_with_model(proxy)
+    test_with_model_defaults(proxy)
+    with tempfile.TemporaryDirectory() as tmp:
+        test_model_defaults_file(proxy, Path(tmp))
+    with tempfile.TemporaryDirectory() as tmp:
+        test_model_defaults_reload(proxy, Path(tmp))
+    test_admin_model_defaults_over_http(proxy)
+    test_model_defaults_reach_upstream(proxy)
     test_admin_fallbacks(proxy)
     test_admin_rejects_bad_fallbacks_over_http(proxy)
     with tempfile.TemporaryDirectory() as tmp:

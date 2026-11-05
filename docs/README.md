@@ -9,6 +9,7 @@ Per-service setup, usage, and verification guides. See the [project README](../R
 | [n8n workflows](n8n.md) | `automation` | Starter workflows and HTTP patterns |
 | [Knowledge bases](knowledge-bases.md) | `rag` — LightRAG + Neo4j | Corpora, ingest, hot-workspace switching |
 | [OpenCode](opencode.md) | `coding` | Coding agent + Hermes `coding_*` delegation |
+| [Model defaults](model-defaults.md) | `core` — `llm-proxy` | Per-model sampling settings, tested examples |
 | [Hermes Agent](hermes.md) | `core` | Gateway, dashboard, API, skills, MCP, [model suitability](hermes.md#model-suitability-agentic-tool-use), [chat tone](hermes.md#conversational-tone-soulmd) |
 | [Calendar](calendar.md) | `calendar` — `caldav-mcp` | CalDAV calendars (iCloud, Nextcloud, …), multi-account |
 | [Shared database](database.md) | `db` — `postgres-db`, `sql-mcp-ro`, `sql-mcp-rw` | Schema per integration, agent roles, SQL MCP, backups |

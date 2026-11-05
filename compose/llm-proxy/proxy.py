@@ -40,7 +40,11 @@ LLM_CONNECT_TIMEOUT (default 10s; it applies only to an upstream with another
 after it) or answers 429, 500, 502, 503 or 504. It does
 not move on after a timeout waiting for headers, since that covers prefill, and
 never once the response has started. A fallback that names a model gets the
-request with that model. Every proxied response carries X-LLM-Proxy-Upstream:
+request with that model. LLM_PROXY_MODEL_DEFAULTS_FILE names a JSON file of
+request fields per model id (sampling settings, say). The proxy adds the ones
+a chat, completions or responses request leaves unset, keyed by the model each
+attempt is sent with; SIGHUP and /admin/reload re-read it, and a missing file
+means none. Every proxied response carries X-LLM-Proxy-Upstream:
 <route>;<index> (0 = primary) unless the upstream sent its own. The embed
 route has no fallbacks: another model's vectors would break the index.
 """
@@ -152,6 +156,20 @@ class Table:
         # Changes on every start, so an admin client can spot a restart.
         self.boot_id = uuid.uuid4().hex
         self.started_at = int(time.time())
+        # Request fields per model id (lowercased), from LLM_PROXY_MODEL_DEFAULTS_FILE.
+        self.model_defaults: dict[str, dict] = {}
+
+    def set_model_defaults(self, defaults: dict[str, dict]) -> None:
+        """Replace the whole per-model table."""
+        with self._lock:
+            self.model_defaults = dict(defaults)
+
+    def defaults_for(self, model) -> dict:
+        """The fields configured for ``model``, or {} when it has none."""
+        if not isinstance(model, str):
+            return {}
+        with self._lock:
+            return self.model_defaults.get(model.strip().lower(), {})
 
     def waiting(self, name: str) -> bool:
         """True while a route listed in LLM_PROXY_AWAIT_PUSH has had no push."""
@@ -246,6 +264,10 @@ class Table:
                     ]
             view["proxy"] = {"boot_id": self.boot_id, "started_at": self.started_at}
             return view
+
+    def model_defaults_view(self) -> dict:
+        with self._lock:
+            return {model: dict(fields) for model, fields in self.model_defaults.items()}
 
 
 def join_upstream(upstream: str, remainder: str, query: str) -> str | None:
@@ -346,6 +368,58 @@ def read_fallbacks_file(path: str) -> dict[str, list[Upstream]] | None:
         return None
 
 
+def model_defaults_file() -> str:
+    return os.environ.get("LLM_PROXY_MODEL_DEFAULTS_FILE", "").strip()
+
+
+# Fields a model entry may not set: they are the request itself, not settings.
+MODEL_DEFAULTS_RESERVED = frozenset({"model", "messages", "prompt", "input"})
+
+
+def read_model_defaults_file(path: str) -> dict[str, dict] | None:
+    """Parse ``{"<model id>": {"<field>": <value>, ...}, ...}``.
+
+    Keys that start with ``_`` are notes, at the top level and inside an
+    entry, and are dropped. Model ids are matched case-insensitively, so they
+    are stored lowercased. A missing file means no defaults ({}); a file that
+    cannot be read or parsed returns None, so a reload keeps what is loaded.
+    """
+    try:
+        with open(path, encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        sys.stderr.write("llm-proxy: cannot read model defaults file %s: %s\n" % (path, exc.strerror))
+        return None
+    except ValueError:
+        sys.stderr.write("llm-proxy: model defaults file %s is not valid JSON\n" % path)
+        return None
+    if not isinstance(raw, dict):
+        sys.stderr.write("llm-proxy: model defaults file %s must hold an object\n" % path)
+        return None
+    parsed: dict[str, dict] = {}
+    for model, fields in raw.items():
+        if model.startswith("_"):
+            continue
+        if not isinstance(fields, dict):
+            sys.stderr.write("llm-proxy: model defaults file %s: %r must map to an object\n" % (path, model))
+            return None
+        kept = {name: value for name, value in fields.items() if not name.startswith("_")}
+        reserved = sorted(MODEL_DEFAULTS_RESERVED.intersection(kept))
+        if reserved:
+            sys.stderr.write(
+                "llm-proxy: model defaults file %s: %r may not set %s\n" % (path, model, ", ".join(reserved))
+            )
+            return None
+        key = model.strip().lower()
+        if key in parsed:
+            sys.stderr.write("llm-proxy: model defaults file %s: %r is listed twice\n" % (path, model))
+            return None
+        parsed[key] = kept
+    return parsed
+
+
 def load_table() -> Table:
     routes = {
         name: Route(os.environ.get(f"{prefix}_HOST", ""), initial_key(name))
@@ -355,7 +429,11 @@ def load_table() -> Table:
     if path:
         for name, fallbacks in (read_fallbacks_file(path) or {}).items():
             routes[name].fallbacks = fallbacks
-    return Table(routes["chat"], routes["lightrag"], routes["embed"], await_push_routes())
+    table = Table(routes["chat"], routes["lightrag"], routes["embed"], await_push_routes())
+    path = model_defaults_file()
+    if path:
+        table.set_model_defaults(read_model_defaults_file(path) or {})
+    return table
 
 
 def reload_key_files(table: Table) -> list[str]:
@@ -366,6 +444,8 @@ def reload_key_files(table: Table) -> list[str]:
     a non-atomic replace does not drop requests mid-rotation. The fallbacks
     file works the same way: when it is set and parses, its lists replace
     the current ones (``chat.fallbacks`` in the result); otherwise they stay.
+    So does the model defaults file (``model_defaults``); a missing one
+    clears the table.
     """
     payload: dict = {}
     reloaded = []
@@ -382,6 +462,11 @@ def reload_key_files(table: Table) -> list[str]:
     if parsed is not None:
         table.set_fallbacks(parsed)
         reloaded.extend(f"{name}.fallbacks" for name in FALLBACK_ROUTES)
+    path = model_defaults_file()
+    defaults = read_model_defaults_file(path) if path else None
+    if defaults is not None:
+        table.set_model_defaults(defaults)
+        reloaded.append("model_defaults")
     return sorted(reloaded)
 
 
@@ -417,6 +502,49 @@ def with_default_max_tokens(body: bytes, path: str, route: str, limit: int) -> b
     if any(payload.get(name) is not None for name in OUTPUT_CAP_FIELDS):
         return body
     payload[field] = limit
+    return json.dumps(payload, separators=(",", ":")).encode()
+
+
+def with_model_defaults(body: bytes, path: str, route: str, defaults_for) -> bytes:
+    """Fill in the fields configured for the request's model that it left unset.
+
+    ``defaults_for`` maps a model id to its fields (Table.defaults_for). A
+    field the request sets, other than to null, keeps the request's value.
+    An output cap is skipped when the request sets any of OUTPUT_CAP_FIELDS.
+    Only top-level fields are filled; a nested object the request sends is
+    not merged. Generation paths on generation routes only; anything else,
+    including a body that is not a JSON object, passes through unchanged.
+    """
+    if not body or route not in GENERATION_ROUTES:
+        return body
+    path = urlsplit(path).path.rstrip("/")
+    if path.endswith("/completions"):
+        own_cap = ("max_tokens", "max_completion_tokens")
+    elif path.endswith("/responses"):
+        own_cap = ("max_output_tokens",)
+    else:
+        return body
+    try:
+        payload = json.loads(body)
+    except (UnicodeDecodeError, ValueError):
+        return body
+    if not isinstance(payload, dict):
+        return body
+    defaults = defaults_for(payload.get("model"))
+    if not defaults:
+        return body
+    capped = any(payload.get(name) is not None for name in OUTPUT_CAP_FIELDS)
+    changed = False
+    for name, value in defaults.items():
+        if payload.get(name) is not None:
+            continue
+        # A cap goes only to the API that uses that field, and only uncapped.
+        if name in OUTPUT_CAP_FIELDS and (capped or name not in own_cap):
+            continue
+        payload[name] = value
+        changed = True
+    if not changed:
+        return body
     return json.dumps(payload, separators=(",", ":")).encode()
 
 
@@ -609,8 +737,6 @@ class InferenceHandler(BaseHTTPRequestHandler):
             self._text(502, "upstream is not configured\n")
             return
         body = self._read_body()
-        if self.command == "POST":
-            body = with_default_max_tokens(body, self.path, name, self.default_max_tokens)
         conn = None
         watcher = None
         started = False
@@ -635,6 +761,12 @@ class InferenceHandler(BaseHTTPRequestHandler):
                 # Connected: from here the wait for headers covers prefill.
                 conn.sock.settimeout(self.upstream_timeout)
                 sent = with_model(body, model)
+                if self.command == "POST":
+                    # Per attempt: a fallback that names another model gets
+                    # that model's defaults. The model's own fields come
+                    # first, so its output cap wins over the global one.
+                    sent = with_model_defaults(sent, self.path, name, self.table.defaults_for)
+                    sent = with_default_max_tokens(sent, self.path, name, self.default_max_tokens)
                 conn.putrequest(self.command, _request_path(target), skip_host=True, skip_accept_encoding=True)
                 for key, value in outbound_headers(list(self.headers.items()), api_key):
                     conn.putheader(key, value)
@@ -748,7 +880,11 @@ class AdminHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         if not self._authorized():
             return
-        if urlsplit(self.path).path != "/admin/upstreams":
+        path = urlsplit(self.path).path
+        if path == "/admin/model-defaults":
+            self._json(200, {"file": model_defaults_file(), "models": self.table.model_defaults_view()})
+            return
+        if path != "/admin/upstreams":
             self._json(404, {"error": "not found"})
             return
         self._json(200, self.table.public_view())
@@ -830,7 +966,7 @@ def main() -> None:
 
     def on_hup(signum, frame) -> None:
         reloaded = reload_key_files(table)
-        sys.stderr.write("llm-proxy: SIGHUP reloaded key files: %s\n" % (", ".join(reloaded) or "none"))
+        sys.stderr.write("llm-proxy: SIGHUP reloaded: %s\n" % (", ".join(reloaded) or "none"))
 
     signal.signal(signal.SIGHUP, on_hup)
 
@@ -843,6 +979,13 @@ def main() -> None:
         count = len(getattr(table, name).fallbacks)
         if count:
             sys.stderr.write("llm-proxy: %s has %d fallback upstream(s)\n" % (name, count))
+
+    path = model_defaults_file()
+    if path:
+        models = sorted(table.model_defaults)
+        sys.stderr.write(
+            "llm-proxy: model defaults from %s: %s\n" % (path, ", ".join(models) if models else "none")
+        )
 
     threading.Thread(target=admin.serve_forever, daemon=True).start()
     sys.stderr.write("llm-proxy inference :%s admin :%s\n" % (infer_port, admin_port))

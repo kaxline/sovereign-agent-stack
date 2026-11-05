@@ -288,6 +288,8 @@ To switch models often, load the model in LM Studio and run:
 
 Presets: copy `models.yaml.example` to `models.local.yaml`, then `make model-use PRESET=muse-glimmer`.
 
+Sampling settings per model (temperature, top_k and the like) live in `model-defaults/local.json` and follow the model id, so `model-use` needs no extra step. See [Model defaults](model-defaults.md).
+
 ### Model suitability (agentic tool use)
 
 Hermes WebUI sends a large system prompt plus the full tool schema (~20k input tokens). Models that work in a minimal OpenRouter “one tool” smoke test can still fail here.
