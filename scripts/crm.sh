@@ -131,14 +131,20 @@ cmd_init() {
   require_python3
   require_running
 
-  local username password
+  local username password password_file
   username="$(env_get TWENTY_USERNAME)"
   password="$(env_get TWENTY_PASSWORD)"
+  password_file="$(env_get TWENTY_PASSWORD_FILE)"
   if [[ -z "$username" ]]; then
     username="owner@crm.localhost"
     upsert_env "$ENV_PATH" TWENTY_USERNAME "$username"
   fi
-  if [[ -z "$password" ]]; then
+  if [[ -n "$password" && -n "$password_file" ]]; then
+    die "set TWENTY_PASSWORD or TWENTY_PASSWORD_FILE in .env, not both"
+  fi
+  # With TWENTY_PASSWORD_FILE, twenty_admin.py reads or generates the file and
+  # the password never goes into .env.
+  if [[ -z "$password" && -z "$password_file" ]]; then
     # Saved before any call, so a failed run signs in next time instead of
     # creating a second account. Twenty accepts 8 to 50 characters.
     password="$(openssl rand -hex 16)Aa1!"
@@ -151,6 +157,7 @@ cmd_init() {
   TWENTY_BASE_URL="http://127.0.0.1:$(env_get TWENTY_PORT 3000)" \
   TWENTY_USERNAME="$username" \
   TWENTY_PASSWORD="$password" \
+  TWENTY_PASSWORD_FILE="$password_file" \
   TWENTY_MULTIWORKSPACE="$(env_get TWENTY_MULTIWORKSPACE 0)" \
   TWENTY_WORKSPACES_DIR="$WS_DIR" \
   TWENTY_DATA_DIR="$(data_dir)" \
@@ -243,7 +250,9 @@ cmd_open() {
   url="$(ws_get "$file" TWENTY_WORKSPACE_URL)"
   [[ -n "$url" ]] || url="http://localhost:$(env_get TWENTY_PORT 3000)/"
   if [[ "$(ws_get "$file" TWENTY_URL)" == "$LOCAL_URL"* ]]; then
-    log "Sign in as $(env_get TWENTY_USERNAME owner@crm.localhost); the password is TWENTY_PASSWORD in .env"
+    local where="TWENTY_PASSWORD in .env"
+    [[ -n "$(env_get TWENTY_PASSWORD_FILE)" ]] && where="in $(env_get TWENTY_PASSWORD_FILE)"
+    log "Sign in as $(env_get TWENTY_USERNAME owner@crm.localhost); the password is ${where}"
   fi
   if command -v open >/dev/null 2>&1; then
     open "$url"

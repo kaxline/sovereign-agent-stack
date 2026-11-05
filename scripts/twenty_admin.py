@@ -9,7 +9,8 @@ step and never a key, token or password. See docs/crm.md.
 Environment:
   TWENTY_BASE_URL         where to reach the server from the host (http://127.0.0.1:3000)
   TWENTY_USERNAME         owner account email
-  TWENTY_PASSWORD         owner account password
+  TWENTY_PASSWORD         owner account password, or
+  TWENTY_PASSWORD_FILE    a file holding it; generated there (mode 600) when missing
   TWENTY_MULTIWORKSPACE   1 allows more than one local workspace
   TWENTY_WORKSPACES_DIR   compose/twenty/workspaces
   TWENTY_DATA_DIR         where .crm-init-done is written
@@ -23,6 +24,7 @@ import argparse
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import urllib.error
@@ -270,18 +272,43 @@ def is_true(value: str | None) -> bool:
     return (value or "").strip().lower() in ("1", "true", "yes", "on")
 
 
+def owner_password(env) -> tuple[str, str]:
+    """The owner password and where it is kept, for the summary line.
+
+    With TWENTY_PASSWORD_FILE set, the password lives only in that file: read
+    when present, generated (8 to 50 characters, Twenty's rule) when not.
+    """
+    value = env.get("TWENTY_PASSWORD", "")
+    file_name = env.get("TWENTY_PASSWORD_FILE", "")
+    if value and file_name:
+        raise TwentyError("set TWENTY_PASSWORD or TWENTY_PASSWORD_FILE, not both")
+    if not file_name:
+        return value, "TWENTY_PASSWORD in .env"
+    path = Path(file_name).expanduser()
+    if path.exists():
+        value = path.read_text().strip()
+        if not value:
+            raise TwentyError(f"TWENTY_PASSWORD_FILE ({path}) is empty")
+    else:
+        value = secrets.token_hex(16) + "Aa1!"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(value + "\n")
+        step(f"owner password: generated in {path}")
+    return value, str(path)
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     slug = args.slug
     if not SLUG.match(slug):
         raise TwentyError(f"slug '{slug}' must use lowercase letters, digits and hyphens")
     env = os.environ
     email = env.get("TWENTY_USERNAME", "")
-    password = env.get("TWENTY_PASSWORD", "")
-    if not email or not password:
-        raise TwentyError("TWENTY_USERNAME and TWENTY_PASSWORD must be set")
-    if not 8 <= len(password) <= 50:
-        # Twenty's own rule (PASSWORD_REGEX); it reports both cases as "Password too weak".
-        raise TwentyError("TWENTY_PASSWORD must be 8 to 50 characters")
+    if env.get("TWENTY_PASSWORD") and env.get("TWENTY_PASSWORD_FILE"):
+        raise TwentyError("set TWENTY_PASSWORD or TWENTY_PASSWORD_FILE, not both")
+    if not email or not (env.get("TWENTY_PASSWORD") or env.get("TWENTY_PASSWORD_FILE")):
+        raise TwentyError("TWENTY_USERNAME and TWENTY_PASSWORD (or TWENTY_PASSWORD_FILE) must be set")
     ws_dir = Path(env.get("TWENTY_WORKSPACES_DIR", "compose/twenty/workspaces"))
     ws_dir.mkdir(parents=True, exist_ok=True)
     target = ws_dir / f"{slug}.env"
@@ -299,6 +326,11 @@ def cmd_init(args: argparse.Namespace) -> int:
             "set TWENTY_MULTIWORKSPACE=1 with make crm-mode MULTI=1 first"
         )
 
+    # Resolved only once there is work to do, so a no-op run never creates the file.
+    password, password_where = owner_password(env)
+    if not 8 <= len(password) <= 50:
+        # Twenty's own rule (PASSWORD_REGEX); it reports both cases as "Password too weak".
+        raise TwentyError("TWENTY_PASSWORD must be 8 to 50 characters")
     tw = Twenty(env.get("TWENTY_BASE_URL", "http://127.0.0.1:3000"))
     step("owner account: running")
     created = False
@@ -370,6 +402,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     data_dir = Path(env.get("TWENTY_DATA_DIR", "data/twenty"))
     data_dir.mkdir(parents=True, exist_ok=True)
     (data_dir / ".crm-init-done").write_text(f"{slug}\n")
+    step(f"done: {ws_url} — sign in as {email}; the password is {password_where}")
     return 0
 
 

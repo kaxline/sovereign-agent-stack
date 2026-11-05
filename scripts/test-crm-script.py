@@ -38,6 +38,7 @@ class Stub:
         self.fail_once: str | None = None
         self.workspaces = 0
         self.upserts: list[dict] = []
+        self.passwords: list[str] = []
 
     def answer(self, query: str, variables: dict) -> dict:
         m = OP.match(query)
@@ -47,6 +48,8 @@ class Stub:
             self.fail_once = None
             return {"errors": [{"message": f"stub failure in {op}"}]}
         tokens = {"tokens": {"accessOrWorkspaceAgnosticToken": {"token": "agnostic-SECRET"}}}
+        if op in ("signUp", "signIn"):
+            self.passwords.append(variables.get("p"))
         if op == "signUp":
             if self.sign_up_error:
                 return {"errors": [{"message": self.sign_up_error}]}
@@ -141,7 +144,8 @@ class CrmInit(unittest.TestCase):
         self.server.shutdown()
         self.server.server_close()
 
-    def run_init(self, *args: str, multi: str = "0", password: str = PASSWORD) -> subprocess.CompletedProcess:
+    def run_init(self, *args: str, multi: str = "0", password: str = PASSWORD,
+                 password_file: str = "") -> subprocess.CompletedProcess:
         env = {
             "PATH": os.environ["PATH"],
             "TWENTY_BASE_URL": f"http://127.0.0.1:{self.server.server_port}",
@@ -152,10 +156,16 @@ class CrmInit(unittest.TestCase):
             "TWENTY_MULTIWORKSPACE": multi,
             "TWENTY_GRANT_ADMIN_CMD": str(self.hook),
         }
+        if password_file:
+            env["TWENTY_PASSWORD_FILE"] = password_file
         proc = subprocess.run([sys.executable, "-I", str(ADMIN), "init", *args],
                               env=env, capture_output=True, text=True)
         out = proc.stdout + proc.stderr
-        for secret in ("SECRET", PASSWORD):
+        self.last_out = out
+        secrets = ["SECRET", PASSWORD]
+        if password_file and Path(password_file).exists():
+            secrets.append(Path(password_file).read_text().strip())
+        for secret in secrets:
             self.assertNotIn(secret, out, f"output leaks a secret:\n{out}")
         return proc
 
@@ -295,6 +305,35 @@ class CrmInit(unittest.TestCase):
             proc = self.run_init(password=bad)
             self.assertNotEqual(proc.returncode, 0)
             self.assertIn("8 to 50", proc.stderr)
+        self.assertEqual(self.stub.ops, [])
+
+    def test_summary_names_url_user_and_where_the_password_is(self):
+        self.run_init()
+        last = self.last_out.strip().splitlines()[-1]
+        self.assertIn("http://localhost:3000/", last)
+        self.assertIn("owner@crm.localhost", last)
+        self.assertIn("TWENTY_PASSWORD in .env", last)
+
+    def test_password_file_is_generated_once_and_reused(self):
+        pw_file = self.tmp / "secrets" / "twenty-owner"
+        proc = self.run_init(password="", password_file=str(pw_file))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(stat.S_IMODE(pw_file.stat().st_mode), 0o600)
+        generated = pw_file.read_text().strip()
+        self.assertTrue(8 <= len(generated) <= 50)
+        self.assertEqual(self.stub.passwords, [generated])
+        self.assertIn(str(pw_file), self.last_out.strip().splitlines()[-1])
+        self.stub.sign_up_error = "User already exists"
+        self.run_init("--rotate", password="", password_file=str(pw_file))
+        self.assertEqual(pw_file.read_text().strip(), generated)
+        self.assertTrue(all(p == generated for p in self.stub.passwords))
+
+    def test_password_value_and_file_together_fail(self):
+        pw_file = self.tmp / "pw"
+        pw_file.write_text("file-password-123\n")
+        proc = self.run_init(password_file=str(pw_file))
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("TWENTY_PASSWORD_FILE", proc.stderr)
         self.assertEqual(self.stub.ops, [])
 
     def test_bad_slug_rejected(self):
