@@ -592,6 +592,112 @@ services:
       start_period: 10s
 
   # ----------------------------------------------------------------------
+  # Twenty — CRM (twenty-server, twenty-worker, twenty-db, twenty-redis)
+  # Profile: crm (TWENTY_LOCAL_ENABLED=1)
+  # Web UI:  http://localhost:3000   (localhost-bound; TWENTY_PORT)
+  #          multi-workspace: http://<slug>.localhost:3000
+  # MCP:     http://twenty-server:3000/mcp   (Streamable HTTP, API key bearer)
+  # Data:    TWENTY_DATA_DIR (default ./data/twenty): db/ and storage/
+  # Keys:    make crm-init creates the account, workspace and both Hermes keys.
+  #          Remote instances need no containers. See docs/crm.md
+  # Upstream: https://github.com/twentyhq/twenty (AGPL-3.0, some files commercial)
+  # ----------------------------------------------------------------------
+  twenty-server:
+    profiles: ["crm"]
+    container_name: ${CONTAINER_PREFIX:-}twenty-server
+    image: ${TWENTY_IMAGE:-twentycrm/twenty:v2.55.0}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${TWENTY_PORT:-3000}:3000"
+    # The server migrates its database on start; the worker is told not to.
+    environment:
+      - PG_DATABASE_URL=postgres://twenty:${TWENTY_DB_PASSWORD:-}@twenty-db:5432/twenty
+      - REDIS_URL=redis://twenty-redis:6379
+      # Must match the URL the browser uses. Hermes calls twenty-server:3000
+      # with an API key, which selects its workspace whatever the Host header.
+      - SERVER_URL=http://localhost:${TWENTY_PORT:-3000}
+      # Losing this key loses the secrets Twenty stores (docs/crm.md).
+      - ENCRYPTION_KEY=${TWENTY_ENCRYPTION_KEY:-}
+      # true/false, derived from TWENTY_MULTIWORKSPACE (0/1) by setup.sh and crm.sh.
+      - IS_MULTIWORKSPACE_ENABLED=${TWENTY_MULTIWORKSPACE_BOOL:-false}
+      - TELEMETRY_ENABLED=false
+      - STORAGE_TYPE=local
+    volumes:
+      - ${TWENTY_DATA_DIR:-./data/twenty}/storage:/app/packages/twenty-server/.local-storage
+    # default: hermes reaches the MCP. crm: Twenty's own database and Redis.
+    networks: [default, crm]
+    depends_on:
+      twenty-db:
+        condition: service_healthy
+      twenty-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://localhost:3000/healthz >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      # First start runs every migration.
+      start_period: 120s
+
+  twenty-worker:
+    profiles: ["crm"]
+    container_name: ${CONTAINER_PREFIX:-}twenty-worker
+    image: ${TWENTY_IMAGE:-twentycrm/twenty:v2.55.0}
+    restart: unless-stopped
+    command: ["yarn", "worker:prod"]
+    environment:
+      - PG_DATABASE_URL=postgres://twenty:${TWENTY_DB_PASSWORD:-}@twenty-db:5432/twenty
+      - REDIS_URL=redis://twenty-redis:6379
+      - SERVER_URL=http://localhost:${TWENTY_PORT:-3000}
+      - ENCRYPTION_KEY=${TWENTY_ENCRYPTION_KEY:-}
+      - IS_MULTIWORKSPACE_ENABLED=${TWENTY_MULTIWORKSPACE_BOOL:-false}
+      - TELEMETRY_ENABLED=false
+      - STORAGE_TYPE=local
+      - DISABLE_DB_MIGRATIONS=true
+      - DISABLE_CRON_JOBS_REGISTRATION=true
+    volumes:
+      - ${TWENTY_DATA_DIR:-./data/twenty}/storage:/app/packages/twenty-server/.local-storage
+    networks: [default, crm]
+    depends_on:
+      twenty-server:
+        condition: service_healthy
+
+  # Twenty pins Postgres 16 and creates schemas per workspace, so it gets its
+  # own database rather than a schema in the shared postgres-db (18).
+  twenty-db:
+    profiles: ["crm"]
+    container_name: ${CONTAINER_PREFIX:-}twenty-db
+    image: ${TWENTY_DB_IMAGE:-postgres:16-alpine}
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=twenty
+      - POSTGRES_PASSWORD=${TWENTY_DB_PASSWORD:-}
+      - POSTGRES_DB=twenty
+    volumes:
+      - ${TWENTY_DATA_DIR:-./data/twenty}/db:/var/lib/postgresql/data
+    networks: [crm]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U twenty -d twenty"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  twenty-redis:
+    profiles: ["crm"]
+    container_name: ${CONTAINER_PREFIX:-}twenty-redis
+    image: ${TWENTY_REDIS_IMAGE:-redis:7.2-alpine}
+    restart: unless-stopped
+    # Twenty's queue must not lose jobs to eviction.
+    command: ["redis-server", "--maxmemory-policy", "noeviction"]
+    networks: [crm]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  # ----------------------------------------------------------------------
   # GPT Researcher — deep web research API (n8n/Hermes REST)
   # Profile: automation
   # API:     http://localhost:8000/report/   (localhost-bound)
@@ -1059,6 +1165,9 @@ services:
       - CALDAV_MCP_TIMEOUT=${CALDAV_MCP_TIMEOUT:-60}
       - CALDAV_MCP_CONNECT_TIMEOUT=${CALDAV_MCP_CONNECT_TIMEOUT:-30}
       - CALDAV_MCP_ACCOUNTS_DIR=/bootstrap/caldav-accounts
+      # Twenty CRM: one MCP entry per workspace file (local or remote). docs/crm.md
+      - TWENTY_MCP_ENABLED=${TWENTY_MCP_ENABLED:-0}
+      - TWENTY_WORKSPACES_DIR=/bootstrap/twenty-workspaces
       # OpenCode coding MCP (coding profile); registered on default + browser only.
       - OPENCODE_MCP_URL=${OPENCODE_MCP_URL:-http://opencode-mcp:8000/sse}
       - OPENCODE_MCP_ENABLED=${OPENCODE_MCP_ENABLED:-0}
@@ -1112,6 +1221,7 @@ services:
       - ./compose/hermes/api-server.env:/bootstrap/api-server.env:ro
       - ./compose/hermes/bootstrap-api-profile.sh:/bootstrap/bootstrap-api-profile.sh:ro
       - ./compose/caldav-mcp/accounts:/bootstrap/caldav-accounts:ro
+      - ./compose/twenty/workspaces:/bootstrap/twenty-workspaces:ro
     entrypoint: /bin/sh
     command: /bootstrap/bootstrap-api-profile.sh
 
@@ -1161,6 +1271,9 @@ services:
       - CALDAV_MCP_TIMEOUT=${CALDAV_MCP_TIMEOUT:-60}
       - CALDAV_MCP_CONNECT_TIMEOUT=${CALDAV_MCP_CONNECT_TIMEOUT:-30}
       - CALDAV_MCP_ACCOUNTS_DIR=/bootstrap/caldav-accounts
+      # Twenty CRM: one MCP entry per workspace file (local or remote). docs/crm.md
+      - TWENTY_MCP_ENABLED=${TWENTY_MCP_ENABLED:-0}
+      - TWENTY_WORKSPACES_DIR=/bootstrap/twenty-workspaces
       - OPENCODE_MCP_URL=${OPENCODE_MCP_URL:-http://opencode-mcp:8000/sse}
       - OPENCODE_MCP_ENABLED=${OPENCODE_MCP_ENABLED:-0}
       - OPENCODE_MCP_TIMEOUT=${OPENCODE_MCP_TIMEOUT:-600}
@@ -1214,6 +1327,7 @@ services:
       - ./compose/hermes/browser.env:/bootstrap/browser.env:ro
       - ./compose/hermes/bootstrap-api-profile.sh:/bootstrap/bootstrap-api-profile.sh:ro
       - ./compose/caldav-mcp/accounts:/bootstrap/caldav-accounts:ro
+      - ./compose/twenty/workspaces:/bootstrap/twenty-workspaces:ro
     depends_on:
       hermes-api-bootstrap:
         condition: service_completed_successfully
@@ -1648,6 +1762,10 @@ networks:
   # Internal: no route off the host. Members: postgres-db, db-provision,
   # sql-mcp-ro, sql-mcp-rw, hermes, and any integration that stores data.
   db:
+    internal: true
+  # Internal: Twenty's database and Redis, reached only by twenty-server and
+  # twenty-worker.
+  crm:
     internal: true
 
 volumes:

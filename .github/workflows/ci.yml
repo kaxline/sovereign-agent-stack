@@ -57,7 +57,8 @@ jobs:
             "core,rag,automation,coding" \
             "core,ollama" \
             "core,research" \
-            "core,rag,calendar,automation,coding,ollama,searxng-prod,search-gate,db,todo"
+            "core,crm" \
+            "core,rag,calendar,automation,coding,ollama,searxng-prod,search-gate,db,todo,crm"
           do
             echo "=== COMPOSE_PROFILES=$profiles ==="
             COMPOSE_PROFILES="$profiles" docker compose config -q
@@ -104,6 +105,8 @@ jobs:
         run: bash scripts/test-sync-profiles.sh
       - name: GPT Researcher MCP registration
         run: sh scripts/test-gptr-mcp-registration.sh
+      - name: Twenty CRM compose profile
+        run: sh scripts/test-twenty-compose.sh
       - name: LLM proxy routes
         run: python3 scripts/test-llm-proxy.py
       - name: Terminal backend override sync
