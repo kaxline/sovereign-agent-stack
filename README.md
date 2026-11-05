@@ -85,6 +85,7 @@ whether its profile is on.
 | **`coding`** | `OPENCODE_MCP_ENABLED` | OpenCode AI coding agent + Hermes coding delegation (opencode-mcp) |
 | **`db`** | `SQL_MCP_ENABLED` | Shared Postgres for integrations and the agent + SQL MCP (read-only on the API profile) |
 | **`todo`** | `VIKUNJA_MCP_ENABLED` | Vikunja todo lists (web app + built-in MCP), stored in the shared Postgres |
+| **`crm`** | `TWENTY_LOCAL_ENABLED` | Local Twenty CRM (web app + built-in MCP), about 1.8 GiB of RAM. Remote Twenty workspaces need only `TWENTY_MCP_ENABLED` ([docs/crm.md](docs/crm.md)) |
 | **`mail`** | `MAIL_MCP_ENABLED` | Read-only search over Apple Mail, indexed on the host |
 | **`mail-drafts`** | `MAIL_DRAFTS_ENABLED` | Hermes queues drafts for Mail's Drafts folder |
 | **`messages`** | `MESSAGES_MCP_ENABLED` | Read-only iMessage/SMS history, indexed on the host |
@@ -133,6 +134,7 @@ See [SECURITY.md](SECURITY.md).
 | [Calendar](docs/calendar.md) | CalDAV calendars via caldav-mcp (`calendar`) |
 | [Shared database](docs/database.md) | Postgres schema-per-integration + SQL MCP (`db`) |
 | [Todo lists](docs/todo.md) | Vikunja web app + MCP (`todo`) |
+| [CRM](docs/crm.md) | Twenty, local (`crm`) or remote, + MCP |
 | [Hermes WebUI](docs/hermes-webui.md) | Chat UI + lean gateway mode |
 | [Knowledge bases](docs/knowledge-bases.md) | Corpora, ingest, hot-workspace switching (`rag`) |
 | [Projects](docs/projects.md) | Briefs, `sources.yaml`, INDEX, context roots |
@@ -173,3 +175,6 @@ into or redistributed with this repo. For example, the optional `todo` profile
 runs [Vikunja](https://github.com/go-vikunja/vikunja), which is AGPL-3.0, from
 the unmodified `vikunja/vikunja` image. The stack talks to it only over its
 HTTP API and does not patch it. See [docs/todo.md](docs/todo.md#license).
+The optional `crm` profile runs [Twenty](https://github.com/twentyhq/twenty)
+the same way: AGPL-3.0 with some commercially licensed files, pulled unmodified
+as `twentycrm/twenty`. See [docs/crm.md](docs/crm.md#license).

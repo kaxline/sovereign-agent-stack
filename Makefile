@@ -139,7 +139,7 @@ todo-open:
 
 # Twenty CRM (crm profile, or remote). See docs/crm.md.
 #   make crm-init [SLUG=main] [ROTATE=1]   local workspace + both Hermes keys
-#   make crm-add SLUG=name URL=https://... a workspace on a remote Twenty
+#   make crm-add SLUG=name URL=https://... [FORCE=1]  a workspace on a remote Twenty
 #   make crm-open [SLUG=name]              open a workspace in the browser
 #   make crm-mode MULTI=0|1                single- or multi-workspace local instance
 crm-init:
@@ -147,7 +147,7 @@ crm-init:
 
 crm-add:
 	@test -n "$(SLUG)" -a -n "$(URL)" || (echo "Usage: make crm-add SLUG=<slug> URL=https://crm.example.com"; exit 1)
-	./scripts/crm.sh add --slug "$(SLUG)" --url "$(URL)"
+	./scripts/crm.sh add --slug "$(SLUG)" --url "$(URL)" $(if $(FORCE),--force)
 
 crm-open:
 	@./scripts/crm.sh open $(if $(SLUG),--slug "$(SLUG)")
