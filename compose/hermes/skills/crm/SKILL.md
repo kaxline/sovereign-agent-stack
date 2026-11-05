@@ -37,8 +37,11 @@ three of them:
 3. `execute_tool` with `toolName` and `arguments` runs one.
 
 `find_many_*` fails without `select`: pass the fields you want, for example
-`"select": ["id", "name", "emails"]`, plus a `filter` and a small `limit`.
-Search before creating, so you don't add a person or company twice.
+`"select": ["id", "name", "emails"]`, and a small `limit` (at most 100).
+Filters are field names at the top level of `arguments`, not under a
+`filter` key: `"name": {"lastName": {"eq": "Example"}}`, combined with
+`and`, `or` and `not`. Search before creating, so you don't add a person or
+company twice.
 
 `list_object_metadata_names` names the objects in this workspace, custom
 ones included. `search_help_center` answers how-to questions about Twenty itself.

@@ -647,14 +647,14 @@ services:
       retries: 12
       # First start runs every migration.
       start_period: 120s
-    # Starting figures from an idle reading (850 MiB); docs/crm.md has the
-    # measurement under load.
+    # Measured on v2.55 (docs/crm.md#memory): 850 MiB idle and at peak under
+    # a 5,000-record import and an MCP burst. Limit about 1.25x the peak.
     deploy:
       resources:
         reservations:
           memory: 1g
         limits:
-          memory: 1536m
+          memory: 1152m
 
   twenty-worker:
     profiles: ["crm"]
@@ -691,12 +691,13 @@ services:
       timeout: 5s
       retries: 3
       start_period: 60s
+    # Measured peak 870 MiB (docs/crm.md#memory).
     deploy:
       resources:
         reservations:
           memory: 1g
         limits:
-          memory: 1536m
+          memory: 1152m
 
   # Twenty pins Postgres 16 and creates schemas per workspace, so it gets its
   # own database rather than a schema in the shared postgres-db (18).
@@ -721,12 +722,13 @@ services:
       timeout: 5s
       retries: 12
       start_period: 10s
+    # Measured peak 120 MiB with 5,000 people (docs/crm.md#memory).
     deploy:
       resources:
         reservations:
           memory: 128m
         limits:
-          memory: 512m
+          memory: 256m
 
   twenty-redis:
     profiles: ["crm"]
@@ -735,7 +737,7 @@ services:
     restart: unless-stopped
     # Twenty's queue must not lose jobs to eviction. With --maxmemory below
     # the container limit, a full Redis refuses writes instead of being killed.
-    command: ["redis-server", "--maxmemory", "192mb", "--maxmemory-policy", "noeviction"]
+    command: ["redis-server", "--maxmemory", "96mb", "--maxmemory-policy", "noeviction"]
     networks: [crm]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -747,7 +749,8 @@ services:
         reservations:
           memory: 32m
         limits:
-          memory: 256m
+          # Measured peak 28 MiB; --maxmemory above stays under this.
+          memory: 128m
 
   # ----------------------------------------------------------------------
   # GPT Researcher — deep web research API (n8n/Hermes REST)

@@ -50,7 +50,9 @@ def env_of(service: dict) -> dict:
     return dict(item.split("=", 1) if "=" in item else (item, "") for item in raw)
 
 
-cfg = config()
+# Value mode, whatever the local .env says.
+cfg = config({"TWENTY_ENCRYPTION_KEY_FILE": "", "TWENTY_DB_PASSWORD_FILE": "",
+              "TWENTY_ENCRYPTION_KEY": "k", "TWENTY_DB_PASSWORD": "p"})
 services = cfg.get("services", {})
 for name in SERVICES:
     svc = services.get(name)
@@ -77,6 +79,23 @@ if "pgrep -f '[q]ueue-worker'" not in worker_test:
 redis_cmd = " ".join(services.get("twenty-redis", {}).get("command") or [])
 if "--maxmemory-policy noeviction" not in redis_cmd or "--maxmemory " not in redis_cmd:
     fail("twenty-redis runs with --maxmemory and --maxmemory-policy noeviction")
+else:
+    # Redis must refuse writes before the container limit kills it.
+    words = redis_cmd.split()
+    raw = words[words.index("--maxmemory") + 1].lower()
+    units = {"kb": 1024, "mb": MIB, "gb": 1024 * MIB}
+    maxmem = int(raw[:-2]) * units[raw[-2:]] if raw[-2:] in units else int(raw)
+    limit = memory_bytes(services["twenty-redis"]["deploy"]["resources"]["limits"]["memory"])
+    if not maxmem < limit * 0.8:
+        fail("twenty-redis --maxmemory must stay under 80% of its container limit")
+
+# Limits measured under load on v2.55 (docs/crm.md), about 1.25x the peak.
+EXPECTED_LIMITS = {"twenty-server": 1152 * MIB, "twenty-worker": 1152 * MIB,
+                   "twenty-db": 256 * MIB, "twenty-redis": 128 * MIB}
+for name, want in EXPECTED_LIMITS.items():
+    got = ((services.get(name, {}).get("deploy") or {}).get("resources") or {}).get("limits", {}).get("memory")
+    if got is None or memory_bytes(got) != want:
+        fail(f"{name}: memory limit is {want // MIB}m (measured, docs/crm.md)")
 
 # Value mode (default): no *_FILE paths reach the containers.
 for name in ("twenty-server", "twenty-worker"):
