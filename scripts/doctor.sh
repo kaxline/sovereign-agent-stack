@@ -102,11 +102,11 @@ if has_profile core; then
   else
     ok "HERMES_DASHBOARD_PASSWORD is set"
   fi
-  # The overlays are anchored to semver agent tags (v0.22.5+). A calendar tag
+  # The overlays are anchored to semver agent tags (v0.22.7+). A calendar tag
   # left in .env from before that boots with every overlay skipped.
   agent_tag="$(env_get HERMES_AGENT_IMAGE_TAG)"
   if [[ "$agent_tag" =~ ^v20[0-9][0-9]\. ]]; then
-    bad "HERMES_AGENT_IMAGE_TAG=${agent_tag} predates the overlays — make hermes-upgrade AGENT=v0.22.5 WEBUI=0.52.492"
+    bad "HERMES_AGENT_IMAGE_TAG=${agent_tag} predates the overlays — make hermes-upgrade AGENT=v0.22.7 WEBUI=0.52.544"
   fi
 fi
 
@@ -430,19 +430,20 @@ PY
   fi
 fi
 
-# --- Browser CLI ---
-# agent-browser must live on the container filesystem. A 644 copy under
-# data/hermes (virtiofs) fails exec with EACCES; reinstalling Chromium does not
-# fix that. Cont-init 08 installs the CLI on container start.
+# --- Browser ---
+# browser_exec drives the Chromium build shipped in the image under
+# /opt/hermes/tools. A volume mounted over that directory hides it.
 if has_profile core \
   && docker compose version >/dev/null 2>&1 \
   && docker compose ps --status running hermes 2>/dev/null | grep -q hermes; then
   echo
-  echo "--- Browser CLI ---"
-  if docker compose exec -T -u hermes hermes agent-browser --version >/dev/null 2>&1; then
-    ok "hermes user can exec agent-browser"
+  echo "--- Browser ---"
+  if docker compose exec -T -u hermes hermes /opt/hermes/.venv/bin/python -c \
+    'import os, sys; sys.path.insert(0, "/opt/hermes"); from hermes_cli.browser_runtime import chromium_executable; p = chromium_executable(); sys.exit(0 if p and os.access(p, os.X_OK) else 1)' \
+    >/dev/null 2>&1; then
+    ok "hermes user can exec the image's Chromium"
   else
-    warn "agent-browser is not executable in the hermes container — docker compose restart hermes (do not reinstall Chromium)"
+    warn "the image's Chromium is missing or not executable in the hermes container — check for a volume over /opt/hermes/tools, then recreate hermes"
   fi
   # browser-harness control sockets must stay off virtiofs too. A socket left
   # under data/hermes across a Docker VM restart fails with EOPNOTSUPP on connect
@@ -553,6 +554,21 @@ fi
 if has_profile automation; then
   check_port "$(env_get N8N_HOST_PORT 5678)" "n8n"
   check_port "$(env_get GPTR_PORT 8000)" "GPT Researcher"
+  # docker-compose.yml no longer requires these keys, so a missing one would
+  # only show up as n8n failing to decrypt its credentials.
+  for key in N8N_ENCRYPTION_KEY N8N_USER_MANAGEMENT_JWT_SECRET; do
+    val="$(env_get "$key")"
+    case "$val" in
+      "") bad "${key} is empty and automation is on — run ./scripts/setup.sh" ;;
+      change-me* | change_me* | n8n-local-*) warn "${key} is still the .env.example placeholder — run ./scripts/setup.sh" ;;
+      *) ok "${key} is set" ;;
+    esac
+  done
+  if compgen -G "n8n/demo-data/credentials/*.json" >/dev/null; then
+    ok "n8n demo credentials exist"
+  else
+    bad "n8n demo credentials missing — run make ensure-local"
+  fi
 fi
 gptr_enabled="$(env_get GPTR_MCP_ENABLED 0)"
 case "$gptr_enabled" in 1|true|TRUE|yes|YES) gptr_on=1 ;; *) gptr_on=0 ;; esac

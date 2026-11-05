@@ -19,9 +19,8 @@ run_patch /bootstrap/patch-block-native-web-tools.py
 run_patch /bootstrap/patch-tool-call-flat-args.py
 # JSONL turn traces for tool-calling evals (after recovery + web rewrite).
 run_patch /bootstrap/patch-tool-eval-trace.py
-# EACCES on the agent-browser binary is not a missing Chromium install; result
-# hints for a bad helper import or code that printed nothing; print a trailing
-# expression; vault save next step names browser_vault_fill.
+# Result hints for a bad helper import or code that printed nothing; print a
+# trailing expression; vault save next step names browser_vault_fill.
 run_patch /bootstrap/patch-browser-exec-hint.py
 # Tool-loop warnings outside the untrusted-data wrapper.
 run_patch /bootstrap/patch-tool-loop-notes.py

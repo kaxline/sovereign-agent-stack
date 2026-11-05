@@ -1,4 +1,4 @@
-.PHONY: setup ensure-local services up down logs ps restart clean doctor hermes-upgrade hermes-reload gateway-preflight \
+.PHONY: setup ensure-local services model-defaults model-defaults-add model-defaults-reload up down logs ps restart clean doctor hermes-upgrade hermes-reload gateway-preflight \
 	bootstrap-buzz buzz-cli-install agent-create hermes-buzz-employee \
 	buzz-relay-start buzz-relay-stop buzz-relay-status buzz-relay-logs buzz-relay-restart \
 	buzz-admin \
@@ -51,6 +51,7 @@ ensure-local:
 	@./scripts/sync-buzz-profile.sh
 	@./scripts/sync-terminal-backend.sh
 	@./scripts/sync-profiles.sh
+	@./scripts/sync-n8n-credentials.sh
 
 doctor:
 	./scripts/doctor.sh
@@ -215,6 +216,26 @@ model-use:
 #   make model-sync RESTART=1
 model-sync:
 	@if [ "$(RESTART)" = "1" ]; then ./scripts/model-use.sh --sync --restart; else ./scripts/model-use.sh --sync; fi
+
+# Per-model request defaults for llm-proxy (docs/model-defaults.md).
+#   make model-defaults                          # list examples and local.json
+#   make model-defaults-add EXAMPLE=qwen3.6-35b-a3b [REPLACE=1]
+model-defaults:
+	@./scripts/model-defaults.py list
+
+model-defaults-add:
+	@[ -n "$(EXAMPLE)" ] || { echo "Usage: make model-defaults-add EXAMPLE=<name> [REPLACE=1]"; exit 1; }
+	@set -- add "$(EXAMPLE)"; [ "$(REPLACE)" = "1" ] && set -- "$$@" --replace; \
+	./scripts/model-defaults.py "$$@"
+	@$(MAKE) --no-print-directory model-defaults-reload
+
+# Re-read model-defaults/local.json without restarting llm-proxy.
+model-defaults-reload:
+	@if [ -n "$$(docker compose ps -q llm-proxy 2>/dev/null)" ]; then \
+		docker compose kill -s HUP llm-proxy >/dev/null && echo "[model-defaults] llm-proxy reloaded"; \
+	else \
+		echo "[model-defaults] llm-proxy is not running; it reads the file when it starts"; \
+	fi
 
 # Each optional service's *_ENABLED flag and whether its profile is on.
 services:
@@ -498,7 +519,7 @@ gateway-preflight:
 # Upgrade Hermes and its WebUI together. The WebUI reads the agent's on-disk
 # state layout and is only tested against a matching agent, so bumping one alone
 # is the failure mode this target exists to prevent — pass both tags:
-#   make hermes-upgrade AGENT=v0.22.5 WEBUI=0.52.492
+#   make hermes-upgrade AGENT=v0.22.7 WEBUI=0.52.544
 # Re-runs both profile bootstraps afterwards, because a new agent may add config
 # keys the running profiles do not have yet. Refuses an agent tag that dropped
 # gateway.standalone while the stack still pins it.

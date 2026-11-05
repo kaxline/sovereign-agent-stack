@@ -131,6 +131,7 @@ See [SECURITY.md](SECURITY.md).
 |---|---|
 | [docs/](docs/README.md) | Per-service guides |
 | [Hermes](docs/hermes.md) | Agent gateway, skills, MCP |
+| [Model defaults](docs/model-defaults.md) | Per-model sampling settings added by `llm-proxy` |
 | [Calendar](docs/calendar.md) | CalDAV calendars via caldav-mcp (`calendar`) |
 | [Shared database](docs/database.md) | Postgres schema-per-integration + SQL MCP (`db`) |
 | [Todo lists](docs/todo.md) | Vikunja web app + MCP (`todo`) |
@@ -152,6 +153,7 @@ make setup / ./scripts/setup.sh
 make doctor
 make model-use MODEL=…          # or FROM_LMSTUDIO=1 (interactive menu), YES=1, PRESET=…
 make model-sync                 # re-apply LLM_MODEL from .env to Hermes and OpenCode
+make model-defaults-add EXAMPLE=…  # per-model sampling settings (docs/model-defaults.md)
 make up / make down / make ps
 make logs
 make data-dir-show / data-dir-set DIR=… / data-dir-migrate DIR=…

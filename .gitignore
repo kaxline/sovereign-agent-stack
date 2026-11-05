@@ -29,6 +29,9 @@ docker-compose.override.yml
 
 # Local model presets (copy from models.yaml.example)
 models.local.yaml
+# llm-proxy per-model request defaults (see docs/model-defaults.md)
+model-defaults/local.json
+model-defaults/.local-*.json
 
 # Internal notes and correspondence (change-request replies, plans). Local only.
 /docs/private/

@@ -11,12 +11,16 @@ x-n8n: &service-n8n
   # Allowlist. The root .env stays on the host for Compose interpolation and
   # is not mounted into the container. A mapping, so a service that adds keys
   # merges it with `<<: *n8n-env` instead of replacing it.
+  # Compose interpolates every service, including ones whose profile is off,
+  # so a `:?` here would make these keys mandatory on installs without n8n.
+  # scripts/sync-n8n-credentials.sh (make ensure-local) refuses to go on when
+  # automation is on and either key is empty, and make doctor checks them.
   environment: &n8n-env
     DB_TYPE: sqlite
     N8N_DIAGNOSTICS_ENABLED: "false"
     N8N_PERSONALIZATION_ENABLED: "false"
-    N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?set N8N_ENCRYPTION_KEY in .env}
-    N8N_USER_MANAGEMENT_JWT_SECRET: ${N8N_USER_MANAGEMENT_JWT_SECRET:?set N8N_USER_MANAGEMENT_JWT_SECRET in .env}
+    N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:-}
+    N8N_USER_MANAGEMENT_JWT_SECRET: ${N8N_USER_MANAGEMENT_JWT_SECRET:-}
     N8N_DEFAULT_BINARY_DATA_MODE: filesystem
     LIGHTRAG_URL: http://lightrag:9621
     NEO4J_HTTP_URL: http://neo4j:7474
@@ -108,6 +112,13 @@ services:
       - LLM_STREAM_MAX_SECONDS=${LLM_STREAM_MAX_SECONDS:-3600}
       # max_tokens added to chat/completions requests that set no limit. 0 = off.
       - LLM_DEFAULT_MAX_TOKENS=${LLM_DEFAULT_MAX_TOKENS:-16384}
+      # Request fields per model id, from model-defaults/local.json (gitignored;
+      # missing = none). Empty turns it off. See docs/model-defaults.md.
+      - LLM_PROXY_MODEL_DEFAULTS_FILE=${LLM_PROXY_MODEL_DEFAULTS_FILE-/etc/llm-proxy/model-defaults/local.json}
+    volumes:
+      # The directory, not the file: a file mount would go stale when the file
+      # is replaced, and Docker would create a directory if it were missing.
+      - ./model-defaults:/etc/llm-proxy/model-defaults:ro
     ports:
       # Admin only. Inference stays on the compose network.
       - "127.0.0.1:${LLM_PROXY_ADMIN_PORT:-4001}:4001"
@@ -315,6 +326,10 @@ services:
       - SEARCH_GATE_EMPTY_TTL=${SEARCH_GATE_EMPTY_TTL:-3600}
       - SEARCH_GATE_DB=/data/gate.sqlite3
       - SEARCH_GATE_PORT=8080
+      # Optional remote SearXNG for while local engines are blocked
+      - SEARCH_GATE_FALLBACK_URL=${SEARCH_GATE_FALLBACK_URL:-}
+      - SEARCH_GATE_FALLBACK_ENGINES=${SEARCH_GATE_FALLBACK_ENGINES:-}
+      - SEARCH_GATE_FALLBACK_AUTH=${SEARCH_GATE_FALLBACK_AUTH:-}
     volumes:
       # Cached queries come from chat; treat this volume as session content
       - search_gate_data:/data
@@ -1189,7 +1204,7 @@ services:
   # ----------------------------------------------------------------------
   hermes-api-bootstrap:
     profiles: ["core"]
-    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v0.22.5}
+    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v0.22.7}
     restart: "no"
     user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
     environment:
@@ -1201,7 +1216,7 @@ services:
       - HERMES_API_MAX_TURNS=${HERMES_API_MAX_TURNS:-20}
       - HERMES_API_SERVER_PORT=${HERMES_API_SERVER_PORT:-8643}
       # Part of the bootstrap's stamp: a new image runs the full bootstrap.
-      - HERMES_AGENT_IMAGE_TAG=${HERMES_AGENT_IMAGE_TAG:-v0.22.5}
+      - HERMES_AGENT_IMAGE_TAG=${HERMES_AGENT_IMAGE_TAG:-v0.22.7}
       # 1 runs the full bootstrap even when nothing changed.
       - HERMES_BOOTSTRAP_FORCE=${HERMES_BOOTSTRAP_FORCE:-0}
       # Gateway topology (019-pin-profile-gateways.sh); decides what the default
@@ -1288,7 +1303,7 @@ services:
   # at http://hermes:8644.
   hermes-browser-bootstrap:
     profiles: ["core"]
-    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v0.22.5}
+    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v0.22.7}
     restart: "no"
     user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
     environment:
@@ -1301,7 +1316,7 @@ services:
       # unattended cap would only truncate useful work mid-task.
       - HERMES_API_MAX_TURNS=${HERMES_BROWSER_MAX_TURNS:-60}
       - HERMES_API_SERVER_PORT=${HERMES_BROWSER_API_PORT:-8644}
-      - HERMES_AGENT_IMAGE_TAG=${HERMES_AGENT_IMAGE_TAG:-v0.22.5}
+      - HERMES_AGENT_IMAGE_TAG=${HERMES_AGENT_IMAGE_TAG:-v0.22.7}
       - HERMES_BOOTSTRAP_FORCE=${HERMES_BOOTSTRAP_FORCE:-0}
       # hermes-api-bootstrap has already set up the default profile and every
       # other profile; this run does the browser profile only.
@@ -1398,7 +1413,7 @@ services:
       service: hermes-${HERMES_TERMINAL_BACKEND:-ssh}
     profiles: ["core"]
     container_name: ${CONTAINER_PREFIX:-}hermes
-    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v0.22.5}
+    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v0.22.7}
     restart: unless-stopped
     command: ["gateway", "run"]
     ports:
@@ -1550,7 +1565,13 @@ services:
         MCP searxng_web_search for one quick fact (at most one call unless the
         user asks for deep research; do not fan out several query variants in
         parallel). Hallucinated native web_* calls are rewritten to MCP when
-        possible. For a known URL use web_url_read (no search fan-out). If search
+        possible. For a known URL use web_url_read (no search fan-out). Write
+        each searxng_web_search query as 2-6 keywords (names, terms, a year),
+        not a sentence and not the user's wording. If the results don't match
+        the question, search once more with different keywords, then answer
+        from what you have. If a result says search-gate is busy, don't send
+        the same query again; go on with what you have or tell the user search
+        is busy. If search
         returns hits but a page fetch fails (403 / bot detection), quote from the
         search snippets — do not report that SearXNG is empty. Prefer the local
         browser tools when a real page body is required and web_url_read is
@@ -1621,7 +1642,6 @@ services:
       - ./compose/hermes/mcp_trust_details.py:/bootstrap/mcp_trust_details.py:ro
       - ./compose/hermes/patch-mcp-trust-details.py:/bootstrap/patch-mcp-trust-details.py:ro
       - ./compose/hermes/05-patch-tool-calling.sh:/etc/cont-init.d/05-patch-tool-calling:ro
-      - ./compose/hermes/08-warmup-agent-browser.sh:/etc/cont-init.d/08-warmup-agent-browser:ro
       # FS library: immediate /opt/projects children → projects.list / projects.tree.
       - ./compose/hermes/scripts/projects_library.py:/bootstrap/projects_library.py:ro
       - ./compose/hermes/patch-projects-library.py:/bootstrap/patch-projects-library.py:ro
@@ -1734,7 +1754,7 @@ services:
   hermes-webui:
     profiles: ["core"]
     container_name: ${CONTAINER_PREFIX:-}hermes-webui
-    image: ghcr.io/nesquena/hermes-webui:${HERMES_WEBUI_IMAGE_TAG:-0.52.492}
+    image: ghcr.io/nesquena/hermes-webui:${HERMES_WEBUI_IMAGE_TAG:-0.52.544}
     restart: unless-stopped
     # Stock init rsyncs /apptoo → /app then starts server.py. Our wrapper
     # patches load_workspaces on the runtime tree first so /opt/projects

@@ -5,8 +5,9 @@ Host part is stdlib-only: redaction and caps in mcp_trust_details.py. With the
 pinned Hermes image present (or --image), the patch is applied twice
 (idempotent), then a write on an untrusted server goes through the real gateway
 approval queue: the notify payload, the approval.pending replay and the
-client-facing request all carry the redacted arguments and the tool call id,
-two different calls are not coalesced, and reads still never ask.
+client-facing request all carry the redacted arguments and the tool call id
+without displacing upstream's keys or choices, two different calls are not
+coalesced, a session answer is remembered, and reads still never ask.
 """
 
 from __future__ import annotations
@@ -61,13 +62,11 @@ def test_redaction() -> None:
     expect(len(big["s"]) == mtd.STRING_CAP and big["s"].endswith("…"), "strings are capped")
     expect(len(big["l"]) == mtd.ITEMS_CAP + 1 and big["l"][-1] == "… 30 more", "lists are capped")
 
-    summary, fields = mtd.approval_details("calendar-personal", "caldav_create_event", args, "call-1", mask)
-    expect("hunter2" not in summary and "sk-synthetic" not in summary, "summary is redacted")
-    expect(len(mtd.approval_details("s", "t", {"s": "x" * 2000}, "", mask)[0]) == mtd.SUMMARY_CAP, "summary capped")
-    expect(fields["mcp"] == {"server": "calendar-personal", "tool": "caldav_create_event",
-                             "arguments": out, "tool_call_id": "call-1"}, fields)
-    expect(fields["allow_session"] is False and fields["allow_permanent"] is False, "only once/deny offered")
-    expect(mtd.approval_details("s", "t", None, "", mask)[1]["mcp"]["arguments"] == {}, "no args is {}")
+    fields = mtd.approval_details("calendar-personal", "caldav_create_event", args, "call-1", mask)
+    expect(fields == {"mcp": {"server": "calendar-personal", "tool": "caldav_create_event",
+                              "arguments": out, "tool_call_id": "call-1"}}, fields)
+    expect(mtd.approval_details("s", "t", None, "", mask)["mcp"]["arguments"] == {}, "no args is {}")
+    expect(mtd.approval_details("s", "t", {}, "", mask)["mcp"]["tool_call_id"] is None, "missing id is null")
 
 
 IMAGE_DRIVER = r'''
@@ -132,15 +131,16 @@ assert mcp["arguments"]["password"] == "[REDACTED]", mcp
 assert "synthetic-pass" not in repr(data), "no secret anywhere in the entry"
 assert "Call with Jordan" in data["command"], data["command"]
 assert data["pattern_key"] == "mcp_elicitation", "details never replace the entry's own keys"
+assert data["allow_session"] is True and data["allow_permanent"] is True, "upstream's scope keys win"
 
 # approval.pending replays the stored entry, arguments included.
 pending = replayed[-1]
 assert len(pending) == 1 and pending[0]["mcp"] == mcp, pending
 PendingApproval.model_validate(pending[0])
 
-# The client-facing request: only once/deny, valid under the contract.
+# The client-facing request keeps upstream's choices and is valid under the contract.
 payload = server._approval_request_payload(data)
-assert payload["choices"] == ["once", "deny"], payload["choices"]
+assert payload["choices"] == ["once", "session", "always", "deny"], payload["choices"]
 assert payload["mcp"] == mcp
 # _emit_approval_request adds the session id when it sends the request.
 registry.SERVER_REQUESTS["approval"].params.model_validate({**payload, "session_id": "sid"})
@@ -166,6 +166,13 @@ assert results == [None, None], results
 assert sorted(d["mcp"]["arguments"]["summary"] for d in seen) == ["A", "B"], seen
 assert max(len(r) for r in replayed) == 2, replayed
 
+# A session answer is remembered for that tool: the next call does not ask.
+seen.clear()
+answers.append("session")
+assert gate("caldav_update_event", {"uid": "evt-2"}, "call-4") is None
+assert len(seen) == 1 and seen[0]["mcp"]["tool"] == "caldav_update_event", seen
+assert gate("caldav_update_event", {"uid": "evt-3"}, "call-5") is None and len(seen) == 1, seen
+
 # Reads never ask.
 seen.clear()
 assert gate("caldav_list_calendars", {}, "call-3") is None and not seen
@@ -173,7 +180,7 @@ assert gate("caldav_list_calendars", {}, "call-3") is None and not seen
 # The handler hands its arguments to the gate.
 got = []
 real = h._trust_gate_check
-h._trust_gate_check = lambda s, t, booked=None, *, args=None: got.append((s, t, args)) or "blocked"
+h._trust_gate_check = lambda s, t, booked=None, args=None: got.append((s, t, args)) or "blocked"
 try:
     handler = h._make_tool_handler("calendar-test", "caldav_create_event", 5)
     assert "blocked" in handler({"summary": "X"})

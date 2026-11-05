@@ -10,12 +10,23 @@ the stack under another app.
 
 ### Upgrade steps
 
-1. `./scripts/setup.sh` (or `make ensure-local`), then `docker compose up -d`.
+1. Hermes Agent v0.22.7 and WebUI 0.52.544 (from v0.22.5 and 0.52.492). The
+   overlays no longer apply to v0.22.5. Back up `data/hermes` with `hermes`
+   stopped, then run `make hermes-upgrade AGENT=v0.22.7 WEBUI=0.52.544` and
+   the verification block in
+   [docs/hermes-webui.md](docs/hermes-webui.md#verification). An app that
+   sets its own image tags must move both together.
+2. `docker compose up -d`. The `08-warmup-agent-browser` mount is gone from
+   `hermes`, so compose recreates it.
+3. With the `search-gate` profile on, `docker compose up -d --build
+   search-gate`. The gate's code is baked into its image, and `make up`
+   doesn't rebuild it.
+4. `./scripts/setup.sh` (or `make ensure-local`), then `docker compose up -d`.
    Nothing new starts: the Twenty flags are written as `0`. The first start
    runs the full bootstrap once, because both bootstraps get new
    `TWENTY_*` environment variables and a new read-only mount,
    `compose/twenty/workspaces`.
-2. To run Twenty locally: `./scripts/setup.sh --crm`, `make up`,
+5. To run Twenty locally: `./scripts/setup.sh --crm`, `make up`,
    `make crm-init`, `make hermes-reload`. To connect a Twenty you already
    run: `make crm-add SLUG=name URL=https://…`, then `make hermes-reload`.
 
@@ -29,6 +40,15 @@ the stack under another app.
   limit measured under load and a healthcheck.
 
 ### New optional `.env` keys
+
+- `SEARCH_GATE_FALLBACK_URL` (default unset): a remote SearXNG on another IP.
+  Each of its engines stands in for the local engine of the same name while
+  that one is cooling down after a block or used up for the day, alongside
+  the local engines that still work; one with no local twin is used only
+  while no local engine is usable. `SEARCH_GATE_FALLBACK_ENGINES` (default:
+  the local list) picks its engines and `SEARCH_GATE_FALLBACK_AUTH`
+  (`user:password`) sends HTTP basic auth. Unset, the gate behaves as before. See
+  [docs/searxng.md](docs/searxng.md#fallback-instance).
 
 - `TWENTY_LOCAL_ENABLED`, `TWENTY_MCP_ENABLED`, `TWENTY_MULTIWORKSPACE`
   (default `0`), and `TWENTY_MULTIWORKSPACE_BOOL`, derived from the last one.
@@ -44,19 +64,82 @@ the stack under another app.
 
 ### Changes
 
-Twenty CRM for Hermes. Each workspace, local or remote, is one file in
-`compose/twenty/workspaces/` and one MCP server in Hermes, `crm-<slug>`.
-`api-server` gets the workspace's read-only key or no entry at all; the
-dashboard and WebUI profiles get the read/write key. `make crm-init` creates
-the local owner account, workspace, two roles and two keys without prompts.
-On Twenty v2.55 the role-wide setting left junction objects such as
-`noteTarget` writable, so the read-only role also gets an explicit read-only
-permission on every object. `make crm-mode MULTI=1` switches the local
-instance to one workspace per subdomain (`<slug>.localhost`). `make crm-add`
-checks each remote key over MCP before saving it and asks nothing when the
-keys are in the environment; `make crm-remove` forgets a workspace. A new `crm`
-skill tells Hermes how to reach records, and `make doctor` checks each
-workspace's key over MCP. See [docs/crm.md](docs/crm.md).
+- **n8n setup only runs with `automation`**: `docker-compose.yml` no
+  longer requires `N8N_ENCRYPTION_KEY` and `N8N_USER_MANAGEMENT_JWT_SECRET`.
+  Compose filled them in for every service, so a `.env` without them failed
+  every `docker compose` command, even with n8n off. `setup.sh` no longer
+  requires Node, and runs the n8n credentials generator only when
+  `automation` is on. The new `scripts/sync-n8n-credentials.sh` does that
+  step and runs from `make ensure-local` (and so `make up`). With
+  `automation` on, it writes the credentials if none exist and stops with an
+  error if either key or `LIGHTRAG_API_KEY` is empty. `make doctor` checks
+  both keys and the credential files when `automation` is on. Installs that
+  use n8n behave as before. An app that runs `docker compose` without `make
+  up` gets no error for a missing key; n8n then starts without the key the
+  demo credentials were encrypted with.
+- **Per-model request defaults**: `llm-proxy` adds request fields per model id
+  from `model-defaults/local.json` (gitignored) to chat, completions and
+  responses requests that leave them unset. A tested Qwen3.6-35B-A3B example
+  ships in `model-defaults/examples/`; `make model-defaults-add
+  EXAMPLE=qwen3.6-35b-a3b` installs it. With no `local.json`, requests are
+  unchanged. Compose now mounts `./model-defaults` into `llm-proxy` and sets
+  `LLM_PROXY_MODEL_DEFAULTS_FILE`, so `docker compose up -d` recreates it; an
+  app with its own compose file can set the variable empty to keep the old
+  behavior. New `GET /admin/model-defaults`; `/admin/upstreams` is unchanged.
+  `LLM_DEFAULT_MAX_TOKENS` is now applied per upstream attempt, after the
+  model's fields, with the same result for requests that use no model
+  defaults. The SIGHUP log line reads `SIGHUP reloaded:` instead of
+  `SIGHUP reloaded key files:`. See [docs/model-defaults.md](docs/model-defaults.md).
+- **Search query wording**: `HERMES_ENVIRONMENT_HINT` now tells the agent to
+  write `searxng_web_search` queries as 2-6 keywords instead of sentences, to
+  retry once with different keywords when results don't match, and not to
+  resend a query the search gate answered as busy. Hermes changes no query
+  itself, and long sentence-style queries got unrelated results from `bing`.
+  The hint is part of the `hermes` environment, so `docker compose up -d`
+  recreates `hermes`.
+- **Search gate status**: `GET /status` has a top-level `fallback_active`
+  and an `upstream` (`local` or `fallback`) on each engine. Fallback engines
+  are named `fallback:<engine>` in `/status`, `/blocks`, the `gate.engine`
+  field of results and the log.
+- **Browser tools**: Hermes v0.22.7 removed `browser_navigate`,
+  `browser_snapshot`, `browser_click`, `browser_type`, `browser_press`,
+  `browser_scroll`, `browser_back`, `browser_console`, `browser_get_images`,
+  `browser_vision` and the `agent-browser` CLI. `browser_exec` drives the
+  Chromium build now shipped in the image under `/opt/hermes/tools`. The
+  boot-time agent-browser install, its doctor check and the EACCES hint in
+  `patch-browser-exec-hint` are removed; `doctor.sh` checks that the `hermes`
+  user can run the image's Chromium instead. The `browser-login` skill
+  (1.3.0) and the `browser-login-save-first` eval case use `browser_exec`
+  only.
+- **MCP trust-gate approvals**: v0.22.7 adds its own redacted argument block
+  to the prompt and remembers `session` / `always` answers per server and
+  tool. `patch-mcp-trust-details` now adds only the `mcp` field, which stays
+  as documented in [docs/extending.md](docs/extending.md#mcp-approvals-for-untrusted-servers).
+  Changes a client sees: `command` carries Hermes' argument block instead of
+  the one-line summary, and `choices` is `once`, `session`, `always`, `deny`
+  (still `once`, `deny` past the spend limit).
+- **uv cache warmup**: v0.22.7 ships no `uvx` and runs browser-harness from
+  its own venv, so `11-warmup-uv-cache` only prepares the shared
+  `hermes_uv_cache` volume now and no longer logs a failed warmup.
+  `UV_CACHE_DIR` and `HERMES_UV_CACHE_DIR` are unchanged.
+- **Control socket**: v0.22.7 falls back to a temp-dir socket on its own when
+  `$HERMES_HOME` refuses one, but through `tempfile.gettempdir()`, which is
+  virtiofs here. `patch-control-socket-tmp` still binds under `/tmp`; only
+  its client-path anchor moved.
+
+- **Twenty CRM**: Each workspace, local or remote, is one file in
+  `compose/twenty/workspaces/` and one MCP server in Hermes, `crm-<slug>`.
+  `api-server` gets the workspace's read-only key or no entry at all; the
+  dashboard and WebUI profiles get the read/write key. `make crm-init` creates
+  the local owner account, workspace, two roles and two keys without prompts.
+  On Twenty v2.55 the role-wide setting left junction objects such as
+  `noteTarget` writable, so the read-only role also gets an explicit read-only
+  permission on every object. `make crm-mode MULTI=1` switches the local
+  instance to one workspace per subdomain (`<slug>.localhost`). `make crm-add`
+  checks each remote key over MCP before saving it and asks nothing when the
+  keys are in the environment; `make crm-remove` forgets a workspace. A new `crm`
+  skill tells Hermes how to reach records, and `make doctor` checks each
+  workspace's key over MCP. See [docs/crm.md](docs/crm.md).
 
 ## v0.3.9 — 2026-11-04
 

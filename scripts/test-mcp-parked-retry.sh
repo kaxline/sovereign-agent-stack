@@ -7,7 +7,7 @@ set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 bootstrap="${ROOT}/compose/hermes/bootstrap-api-profile.sh"
-image="nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v0.22.5}"
+image="nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v0.22.7}"
 
 if ! docker image inspect "$image" >/dev/null 2>&1; then
   printf 'skip MCP parked retry (%s not present)\n' "$image"

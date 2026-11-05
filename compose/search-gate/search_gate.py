@@ -31,6 +31,13 @@ searches and sends them on one at a time per engine:
 - Each block is recorded, from the failure that started it to the first search the
   engine answers again, and logged as it starts, continues and ends. ``GET /blocks``
   lists them, so cool-downs and intervals can be set from how long blocks last.
+- With SEARCH_GATE_FALLBACK_URL set, a second SearXNG (on another IP) gets its own
+  engines, named ``fallback:<engine>``, each paced, cooled and recorded on its own.
+  A fallback engine stands in for the local engine of the same name while that one
+  is cooling or used up for the day, alongside the local engines that still work;
+  one with no local twin is used only while no local engine is usable. Pacing alone
+  never sends a query to the fallback. When a local engine's cool-down ends, the
+  next query tries it again, and its twin stands down once it answers.
 
 Configuration, all from the environment:
 
@@ -42,12 +49,19 @@ Configuration, all from the environment:
     SEARCH_GATE_TTL           seconds a result list stays cached (86400)
     SEARCH_GATE_EMPTY_TTL     seconds an empty answer stays cached (3600)
     SEARCH_GATE_PORT          the port to listen on (8080)
+    SEARCH_GATE_FALLBACK_URL  a remote SearXNG's base URL, used while local engines
+                              are blocked (unset: no fallback)
+    SEARCH_GATE_FALLBACK_ENGINES
+                              the fallback's engines, same format (default: the
+                              local list)
+    SEARCH_GATE_FALLBACK_AUTH user:password for HTTP basic auth on the fallback
 
 Run it with ``python search_gate.py``. It needs only the standard library.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -103,6 +117,13 @@ class Engine:
     used_today: int = 0
     day: str = ""
     last_error: str | None = None
+    # Searched through the fallback SearXNG rather than the local one
+    fallback: bool = False
+
+    @property
+    def label(self) -> str:
+        """The name the gate tracks it by: blocks, status, tried engines."""
+        return f"fallback:{self.name}" if self.fallback else self.name
 
     def ready_at(self, now: float, today: str) -> float | None:
         """When this engine may search next, or None when it's used up for today."""
@@ -151,14 +172,14 @@ class Job:
     result: dict | None = None
 
 
-def parse_engines(spec: str) -> list[Engine]:
+def parse_engines(spec: str, *, fallback: bool = False) -> list[Engine]:
     engines = []
     for item in spec.split(","):
         if not item.strip():
             continue
         parts = [p.strip() for p in item.split(":")]
         cap = int(parts[2]) if len(parts) > 2 and parts[2] else None  # noqa: PLR2004
-        engines.append(Engine(parts[0], float(parts[1]), cap))
+        engines.append(Engine(parts[0], float(parts[1]), cap, fallback=fallback))
     return engines
 
 
@@ -181,13 +202,21 @@ def cache_key(query: str, params: dict[str, str]) -> str:
     return f"{key}\x1f{urllib.parse.urlencode(params)}" if params else key
 
 
-def searxng_fetch(base_url: str) -> Callable[[str, str, dict[str, str]], dict]:
-    """A fetch(query, engine, params) that asks SearXNG with only that engine."""
+def searxng_fetch(
+    base_url: str,
+    auth: str | None = None,
+) -> Callable[[str, str, dict[str, str]], dict]:
+    """A fetch(query, engine, params) that asks SearXNG with only that engine;
+    auth is user:password for HTTP basic auth."""
+    headers = {}
+    if auth:
+        headers["Authorization"] = "Basic " + base64.b64encode(auth.encode()).decode()
 
     def fetch(query: str, engine: str, extra: dict[str, str]) -> dict:
         params = extra | {"q": query, "format": "json", "engines": engine}
         url = f"{base_url.rstrip('/')}/search?" + urllib.parse.urlencode(params)
-        with urllib.request.urlopen(url, timeout=FETCH_TIMEOUT_S) as response:  # noqa: S310
+        request = urllib.request.Request(url, headers=headers)  # noqa: S310
+        with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_S) as response:  # noqa: S310
             return json.load(response)
 
     return fetch
@@ -324,9 +353,14 @@ class Gate:
         clock: Callable[[], float] = time.monotonic,
         wall: Callable[[], float] = time.time,
         jitter: float = JITTER,
+        fallback_fetch: Callable[[str, str, dict[str, str]], dict] | None = None,
     ) -> None:
+        if fallback_fetch is None and any(e.fallback for e in engines):
+            msg = "fallback engines need a fallback_fetch"
+            raise ValueError(msg)
         self.engines = engines
         self.fetch = fetch
+        self.fallback_fetch = fallback_fetch
         self.store = store
         self.clock = clock
         self.wall = wall
@@ -385,9 +419,11 @@ class Gate:
         today = _today()
         with self._cond:
             waiting = list(self.jobs.values())
+            fallback_active = self._fallback_active(now, today)
             engines = [
                 {
-                    "name": e.name,
+                    "name": e.label,
+                    "upstream": "fallback" if e.fallback else "local",
                     "interval_s": e.interval,
                     "daily_cap": e.daily_cap,
                     "used_today": e.used_today if e.day == today else 0,
@@ -407,8 +443,46 @@ class Gate:
             "queued": sum(j.priority == BULK for j in waiting),
             "searched": self.searched,
             "cached": self.store.cached(),
+            "fallback_active": fallback_active,
             "engines": engines,
         }
+
+    def _fallback_active(self, now: float, today: str) -> bool:
+        """Whether any fallback engine is standing in now."""
+        eligible = self._eligible(now, today)
+        return any(e.fallback and eligible(e) for e in self.engines)
+
+    def _eligible(
+        self,
+        now: float,
+        today: str,
+        tried: set[str] | frozenset[str] = frozenset(),
+    ) -> Callable[[Engine], bool]:
+        """Which engines may take a query now. Local engines always may. A fallback
+        engine may while its local twin isn't usable or was already tried for the
+        query, or, with no local twin, while no untried local engine is usable."""
+        local = {e.name for e in self.engines if not e.fallback}
+        usable = {
+            e.name
+            for e in self.engines
+            if not e.fallback
+            and e.label not in tried
+            and self._usable(e, now, today)
+        }
+
+        def eligible(engine: Engine) -> bool:
+            if not engine.fallback:
+                return True
+            if engine.name in local:
+                return engine.name not in usable
+            return not usable
+
+        return eligible
+
+    @staticmethod
+    def _usable(engine: Engine, now: float, today: str) -> bool:
+        """Not cooling and not used up for today; it may still be waiting its interval."""
+        return engine.ready_at(now, today) is not None and engine.cooling_until <= now
 
     def _submit(
         self,
@@ -438,7 +512,7 @@ class Gate:
                     self._cond.wait(timeout=delay)
                     continue
                 job, engine = picked
-                job.tried.add(engine.name)
+                job.tried.add(engine.label)
                 job.running = True
                 engine.used_today += 1
                 spread = 1 + random.uniform(-self.jitter, self.jitter)  # noqa: S311
@@ -451,12 +525,16 @@ class Gate:
         if not waiting:
             return None, None
         job = min(waiting, key=lambda j: (j.priority, j.added))
-        untried = [e for e in self.engines if e.name not in job.tried]
+        untried = [e for e in self.engines if e.label not in job.tried]
         if not untried:
             self._finish(job, _empty(job.query, "every engine failed on it"))
             return None, 0.0
         now = self.clock()
         today = _today()
+        # The fallback is for blocks: a local engine that is only paced keeps its
+        # twin out, even if the twin is free sooner
+        eligible = self._eligible(now, today, job.tried)
+        untried = [e for e in untried if eligible(e)]
         options = [
             (ready, i, e)
             for i, e in enumerate(untried)
@@ -471,8 +549,9 @@ class Gate:
         return (job, engine), None
 
     def _run(self, job: Job, engine: Engine) -> None:
+        fetch = self.fallback_fetch if engine.fallback else self.fetch
         try:
-            payload = self.fetch(job.query, engine.name, job.params)
+            payload = fetch(job.query, engine.name, job.params)
             error = next(
                 (
                     reason
@@ -492,11 +571,11 @@ class Gate:
                 engine.last_error = error
                 cool = min(COOL_DOWN_S * 2 ** (engine.failures - 1), MAX_COOL_DOWN_S)
                 engine.cooling_until = self.clock() + cool
-                block = self.store.block_failed(engine.name, error, self.wall())
+                block = self.store.block_failed(engine.label, error, self.wall())
                 if block.checks == 1:
                     logger.warning(
                         "%s blocked (%s); resting %s",
-                        engine.name,
+                        engine.label,
                         error,
                         _span(cool),
                     )
@@ -504,7 +583,7 @@ class Gate:
                     logger.warning(
                         "%s still blocked after %s failed checks over %s (%s); "
                         "resting %s",
-                        engine.name,
+                        engine.label,
                         block.checks,
                         _span(block.last_failed - block.started),
                         error,
@@ -514,16 +593,16 @@ class Gate:
                 job.running = False
                 self._cond.notify_all()
                 return
-        if (block := self.store.block_ended(engine.name, self.wall())) is not None:
+        if (block := self.store.block_ended(engine.label, self.wall())) is not None:
             logger.warning(
                 "%s answering again: blocked for between %s and %s, %s failed checks",
-                engine.name,
+                engine.label,
                 _span(block.last_failed - block.started),
                 _span(block.recovered - block.started),
                 block.checks,
             )
-        self.store.put(job.key, payload, engine.name)
-        payload = payload | {"gate": {"cached": False, "engine": engine.name}}
+        self.store.put(job.key, payload, engine.label)
+        payload = payload | {"gate": {"cached": False, "engine": engine.label}}
         with self._cond:
             self._finish(job, payload)
 
@@ -652,14 +731,26 @@ def serve() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     # Each waiting /search holds a thread; small stacks let a thousand wait
     threading.stack_size(512 * 1024)
+    engines_spec = os.environ.get("SEARCH_GATE_ENGINES") or DEFAULT_ENGINES
+    engines = parse_engines(engines_spec)
+    fallback_url = os.environ.get("SEARCH_GATE_FALLBACK_URL") or ""
+    fallback_fetch = None
+    if fallback_url:
+        fallback_spec = os.environ.get("SEARCH_GATE_FALLBACK_ENGINES") or engines_spec
+        engines += parse_engines(fallback_spec, fallback=True)
+        fallback_fetch = searxng_fetch(
+            fallback_url,
+            os.environ.get("SEARCH_GATE_FALLBACK_AUTH") or None,
+        )
     gate = Gate(
-        parse_engines(os.environ.get("SEARCH_GATE_ENGINES") or DEFAULT_ENGINES),
+        engines,
         searxng_fetch(os.environ.get("SEARXNG_URL") or "http://searxng:8080"),
         Store(
             os.environ.get("SEARCH_GATE_DB") or "data/search-gate/gate.sqlite3",
             ttl=float(os.environ.get("SEARCH_GATE_TTL") or TTL_RESULTS_S),
             empty_ttl=float(os.environ.get("SEARCH_GATE_EMPTY_TTL") or TTL_EMPTY_S),
         ),
+        fallback_fetch=fallback_fetch,
     )
     Handler.gate = gate
     Handler.max_wait = float(
@@ -671,7 +762,7 @@ def serve() -> None:
     logger.info(
         "search gate on :%s, engines %s",
         port,
-        ", ".join(f"{e.name} every {e.interval:g}s" for e in gate.engines),
+        ", ".join(f"{e.label} every {e.interval:g}s" for e in gate.engines),
     )
     server.serve_forever()
 

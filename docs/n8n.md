@@ -46,7 +46,7 @@ The volume name is `<compose project>_n8n_storage`; check it with `docker volume
 
 ## Credentials
 
-Encrypted credential JSON under `n8n/demo-data/credentials/` is **gitignored** and created locally by `./scripts/setup.sh` (or `node scripts/generate-n8n-credentials.js`). The files are encrypted with `N8N_ENCRYPTION_KEY` so they line up with your `.env` secrets. Never commit them.
+Encrypted credential JSON under `n8n/demo-data/credentials/` is **gitignored** and created locally by `scripts/sync-n8n-credentials.sh`, which needs Node on the host. `./scripts/setup.sh` rewrites the files when `automation` is on, and `make up` writes them if `automation` is on and none exist yet. With `automation` off, neither runs Node. The files are encrypted with `N8N_ENCRYPTION_KEY` so they line up with your `.env` secrets. Never commit them.
 
 | Credential | Type | Matches `.env` key |
 |---|---|---|
