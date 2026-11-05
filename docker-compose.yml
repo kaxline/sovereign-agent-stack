@@ -1396,7 +1396,13 @@ services:
         MCP searxng_web_search for one quick fact (at most one call unless the
         user asks for deep research; do not fan out several query variants in
         parallel). Hallucinated native web_* calls are rewritten to MCP when
-        possible. For a known URL use web_url_read (no search fan-out). If search
+        possible. For a known URL use web_url_read (no search fan-out). Write
+        each searxng_web_search query as 2-6 keywords (names, terms, a year),
+        not a sentence and not the user's wording. If the results don't match
+        the question, search once more with different keywords, then answer
+        from what you have. If a result says search-gate is busy, don't send
+        the same query again; go on with what you have or tell the user search
+        is busy. If search
         returns hits but a page fetch fails (403 / bot detection), quote from the
         search snippets — do not report that SearXNG is empty. Prefer the local
         browser tools when a real page body is required and web_url_read is
