@@ -472,7 +472,7 @@ gateway-preflight:
 # Upgrade Hermes and its WebUI together. The WebUI reads the agent's on-disk
 # state layout and is only tested against a matching agent, so bumping one alone
 # is the failure mode this target exists to prevent — pass both tags:
-#   make hermes-upgrade AGENT=v0.22.5 WEBUI=0.52.492
+#   make hermes-upgrade AGENT=v0.22.7 WEBUI=0.52.544
 # Re-runs both profile bootstraps afterwards, because a new agent may add config
 # keys the running profiles do not have yet. Refuses an agent tag that dropped
 # gateway.standalone while the stack still pins it.

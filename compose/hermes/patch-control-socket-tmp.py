@@ -23,6 +23,11 @@ server creates that directory 0700 and refuses a socket whose parent is not
 private, and gateway_runtime_discovery (used by gateway --replace and the
 session runtime) accepts a pointer only to that leaf. The /tmp path follows the
 same layout, and discovery skips $HERMES_HOME/gateway.sock like the client does.
+
+v0.22.7 falls back to the temp-dir socket itself when bind() in $HERMES_HOME
+fails with EOPNOTSUPP, and treats a failed control-socket start as fatal. That
+fallback still uses tempfile.gettempdir(), which is virtiofs here, so this
+overlay is still needed.
 """
 from __future__ import annotations
 
@@ -45,12 +50,14 @@ SERVER_NEW = f'''    direct = Path(home) / _SOCKET_FILENAME
 '''
 
 CLIENT_OLD = '''    direct = Path(home) / _SOCKET_FILENAME
-    if direct.exists():
-        return direct
+    with contextlib.suppress(OSError):  # an un-stat-able stale inode (#123761) is absent, not an error
+        if direct.exists():
+            return direct
 '''
 CLIENT_NEW = f'''    direct = Path(home) / _SOCKET_FILENAME
-    if direct.exists() and not _assistant_socket_in_tmp():  {MARKER}
-        return direct
+    with contextlib.suppress(OSError):  # an un-stat-able stale inode (#123761) is absent, not an error
+        if direct.exists() and not _assistant_socket_in_tmp():  {MARKER}
+            return direct
 '''
 
 HELPER_ANCHOR = "def resolve_server_socket_path("

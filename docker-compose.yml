@@ -1028,7 +1028,7 @@ services:
   # ----------------------------------------------------------------------
   hermes-api-bootstrap:
     profiles: ["core"]
-    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v0.22.5}
+    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v0.22.7}
     restart: "no"
     user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
     environment:
@@ -1040,7 +1040,7 @@ services:
       - HERMES_API_MAX_TURNS=${HERMES_API_MAX_TURNS:-20}
       - HERMES_API_SERVER_PORT=${HERMES_API_SERVER_PORT:-8643}
       # Part of the bootstrap's stamp: a new image runs the full bootstrap.
-      - HERMES_AGENT_IMAGE_TAG=${HERMES_AGENT_IMAGE_TAG:-v0.22.5}
+      - HERMES_AGENT_IMAGE_TAG=${HERMES_AGENT_IMAGE_TAG:-v0.22.7}
       # 1 runs the full bootstrap even when nothing changed.
       - HERMES_BOOTSTRAP_FORCE=${HERMES_BOOTSTRAP_FORCE:-0}
       # Gateway topology (019-pin-profile-gateways.sh); decides what the default
@@ -1123,7 +1123,7 @@ services:
   # at http://hermes:8644.
   hermes-browser-bootstrap:
     profiles: ["core"]
-    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v0.22.5}
+    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v0.22.7}
     restart: "no"
     user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
     environment:
@@ -1136,7 +1136,7 @@ services:
       # unattended cap would only truncate useful work mid-task.
       - HERMES_API_MAX_TURNS=${HERMES_BROWSER_MAX_TURNS:-60}
       - HERMES_API_SERVER_PORT=${HERMES_BROWSER_API_PORT:-8644}
-      - HERMES_AGENT_IMAGE_TAG=${HERMES_AGENT_IMAGE_TAG:-v0.22.5}
+      - HERMES_AGENT_IMAGE_TAG=${HERMES_AGENT_IMAGE_TAG:-v0.22.7}
       - HERMES_BOOTSTRAP_FORCE=${HERMES_BOOTSTRAP_FORCE:-0}
       # hermes-api-bootstrap has already set up the default profile and every
       # other profile; this run does the browser profile only.
@@ -1229,7 +1229,7 @@ services:
       service: hermes-${HERMES_TERMINAL_BACKEND:-ssh}
     profiles: ["core"]
     container_name: ${CONTAINER_PREFIX:-}hermes
-    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v0.22.5}
+    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v0.22.7}
     restart: unless-stopped
     command: ["gateway", "run"]
     ports:
@@ -1452,7 +1452,6 @@ services:
       - ./compose/hermes/mcp_trust_details.py:/bootstrap/mcp_trust_details.py:ro
       - ./compose/hermes/patch-mcp-trust-details.py:/bootstrap/patch-mcp-trust-details.py:ro
       - ./compose/hermes/05-patch-tool-calling.sh:/etc/cont-init.d/05-patch-tool-calling:ro
-      - ./compose/hermes/08-warmup-agent-browser.sh:/etc/cont-init.d/08-warmup-agent-browser:ro
       # FS library: immediate /opt/projects children → projects.list / projects.tree.
       - ./compose/hermes/scripts/projects_library.py:/bootstrap/projects_library.py:ro
       - ./compose/hermes/patch-projects-library.py:/bootstrap/patch-projects-library.py:ro
@@ -1565,7 +1564,7 @@ services:
   hermes-webui:
     profiles: ["core"]
     container_name: ${CONTAINER_PREFIX:-}hermes-webui
-    image: ghcr.io/nesquena/hermes-webui:${HERMES_WEBUI_IMAGE_TAG:-0.52.492}
+    image: ghcr.io/nesquena/hermes-webui:${HERMES_WEBUI_IMAGE_TAG:-0.52.544}
     restart: unless-stopped
     # Stock init rsyncs /apptoo → /app then starts server.py. Our wrapper
     # patches load_workspaces on the runtime tree first so /opt/projects

@@ -130,7 +130,6 @@ jobs:
         run: |
           shellcheck -x -e SC1090,SC1091 scripts/*.sh
           shellcheck -s sh -e SC1090,SC1091 compose/hermes/bootstrap-api-profile.sh
-          shellcheck -s sh -e SC1090,SC1091 compose/hermes/08-warmup-agent-browser.sh
           shellcheck -s sh compose/hermes/007-profile-ownership.sh
           shellcheck -s sh -e SC1090,SC1091 n8n/import-demo-data.sh || true
 

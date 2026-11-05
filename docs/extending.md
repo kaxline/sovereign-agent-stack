@@ -530,8 +530,8 @@ server annotates the tool `readOnlyHint: true`. The `approval` request for that
 prompt, and its replay in `approval.pending`, carry the call:
 
 ```json
-{"request_id": "…", "command": "MCP tool 'caldav_create_event' on UNTRUSTED server 'calendar-personal' wants to run with {…}. …",
- "pattern_key": "mcp_elicitation", "choices": ["once", "deny"],
+{"request_id": "…", "command": "MCP tool 'caldav_create_event' on UNTRUSTED server 'calendar-personal' wants to run. …\n\nArguments:\n{…}",
+ "pattern_key": "mcp_elicitation", "choices": ["once", "session", "always", "deny"],
  "mcp": {"server": "calendar-personal", "tool": "caldav_create_event",
          "arguments": {"summary": "Call with Jordan", "start": "2026-10-23T11:00:00",
                        "end": "2026-10-23T11:30:00", "calendar_name": "Work"},
@@ -544,13 +544,14 @@ arguments are redacted before they are stored. Values under a
 credential-looking key (`password`, `token`, `api_key`, `authorization` and the
 like) become `[REDACTED]`. Every string goes through Hermes' secret redaction,
 as command previews do. Strings are capped at 500 characters, lists and
-objects at 50 entries, and nesting at 4 levels. The same summary, capped at 400
-characters, goes into `command`. Two different calls therefore get separate
-prompts, where identical text used to make the second wait on the first and
-take its answer.
+objects at 50 entries, and nesting at 4 levels.
 
-These prompts offer only `once` and `deny`. `session` and `always` were
-accepted as a single approval and never remembered.
+Since Hermes v0.22.7, `command` ends with Hermes' own redacted argument block,
+so two different calls get separate prompts. The prompt offers `once`,
+`session`, `always` and `deny`. A `session` or `always` answer is remembered for
+that server and tool, and later calls to it do not ask. A call that goes past
+the chat's spend limit, and a prompt only about the spend limit, offer `once`
+and `deny`.
 
 This is an overlay on the pinned Hermes image (`patch-mcp-trust-details.py`).
 The `mcp` fields stay stable across pin moves. Changes are additive.

@@ -1,7 +1,7 @@
 ---
 name: browser-login
 description: "Sign in to a website in the local browser. Use for 'log me into…', 'sign in to…', 'save my login for…', or any page that shows a username/password form. Covers the order of the browser_vault_* tools and why the sign-in page must be open first."
-version: 1.2.0
+version: 1.3.0
 author: assistant stack (repo-shipped)
 license: MIT
 platforms: [linux, macos, windows]
@@ -26,13 +26,11 @@ page open there is no origin, so `browser_vault_save_login` and
 - "Save my login for X"
 - A task reaches a page with a password field
 
-## Which browser tools you have
+## Driving the page
 
-- **`browser_exec` only** (browser-use backend): every page action is Python in
-  `browser_exec`. The helpers (`new_tab`, `goto_url`, `wait_for_load`,
-  `page_info`, `js`, `fill_input`) are already defined. Do not import them.
-  Only `print(...)` output comes back.
-- **`browser_navigate`, `browser_snapshot`, `browser_click`, …**: use those.
+Every page action is Python in `browser_exec`. The helpers (`new_tab`,
+`goto_url`, `wait_for_load`, `page_info`, `js`, `fill_input`) are already
+defined. Do not import them. Only `print(...)` output comes back.
 
 ## Steps
 
@@ -40,16 +38,14 @@ page open there is no origin, so `browser_vault_save_login` and
    only know the home page, open it and click through to "Sign in". Then list
    the form's inputs, so you type into fields that exist instead of guessing
    selectors like `#username`.
-   - `browser_exec`:
-     ```python
-     # Opening the sign-in page
-     new_tab("https://www.linkedin.com/login")
-     wait_for_load()
-     print(page_info())
-     print(js("JSON.stringify([...document.querySelectorAll('input')].map(i => ({type: i.type, name: i.name, id: i.id, autocomplete: i.autocomplete})))"))
-     ```
-     A password input in that list means the form is open.
-   - Otherwise `browser_navigate`, then `browser_snapshot`.
+   ```python
+   # Opening the sign-in page
+   new_tab("https://www.linkedin.com/login")
+   wait_for_load()
+   print(page_info())
+   print(js("JSON.stringify([...document.querySelectorAll('input')].map(i => ({type: i.type, name: i.name, id: i.id, autocomplete: i.autocomplete})))"))
+   ```
+   A password input in that list means the form is open.
 2. **Look for a saved login.** `browser_vault_list`. If it reports a locked
    backend, `browser_vault_unlock` with that backend's name.
 3. **Fill or save.**
@@ -60,9 +56,8 @@ page open there is no origin, so `browser_vault_save_login` and
      page had no form. Open the sign-in form, then `browser_vault_fill` with
      the `handle` from the save result. Do not save again.
 4. **Finish the form.** Type the identifier the tool returned into the username
-   field from step 1's list, if the form has one, then submit: `fill_input` and
-   a `js(...)` click in `browser_exec`, or `browser_type` / `browser_click` /
-   `browser_press`.
+   field from step 1's list, if the form has one, then submit with
+   `fill_input` and a `js(...)` click in `browser_exec`.
 5. **One-time code.** If the site then asks for a code, call
    `browser_vault_enter_code` with the handle you just used.
 
@@ -87,8 +82,8 @@ page open there is no origin, so `browser_vault_save_login` and
   `browser_vault_fill` with the handle.
 - **Asking for the password in chat.** Never. Not "what's your password?", not
   "paste it here". Call `browser_vault_save_login` instead.
-- **Typing a password with `browser_type`.** Never, even one the user wrote in
-  chat. Tell them it was not used and route through the vault.
+- **Typing a password with `fill_input` or `js(...)`.** Never, even one the
+  user wrote in chat. Tell them it was not used and route through the vault.
 - **Navigating, then stopping to ask the user how to proceed.** If the sign-in
   page is open and nothing is saved, call `browser_vault_save_login`. Do not
   stop to ask first.

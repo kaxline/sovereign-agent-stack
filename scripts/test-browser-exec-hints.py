@@ -157,7 +157,6 @@ def run(script):
 
 first = run("/bootstrap/patch-browser-exec-hint.py")
 assert "patched: result hints" in first, first
-assert "patched: EACCES hint" in first, first
 assert "patched: expression echo" in first, first
 assert "patched: vault save next step" in first, first
 again = run("/bootstrap/patch-browser-exec-hint.py")

@@ -6,6 +6,43 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
+## Unreleased
+
+### Upgrade steps
+
+1. Hermes Agent v0.22.7 and WebUI 0.52.544 (from v0.22.5 and 0.52.492). The
+   overlays no longer apply to v0.22.5. Back up `data/hermes` with `hermes`
+   stopped, then run `make hermes-upgrade AGENT=v0.22.7 WEBUI=0.52.544` and
+   the verification block in
+   [docs/hermes-webui.md](docs/hermes-webui.md#verification). An app that
+   sets its own image tags must move both together.
+2. `docker compose up -d`. The `08-warmup-agent-browser` mount is gone from
+   `hermes`, so compose recreates it.
+
+### Changes
+
+- **Browser tools**: Hermes v0.22.7 removed `browser_navigate`,
+  `browser_snapshot`, `browser_click`, `browser_type`, `browser_press`,
+  `browser_scroll`, `browser_back`, `browser_console`, `browser_get_images`,
+  `browser_vision` and the `agent-browser` CLI. `browser_exec` drives the
+  Chromium build now shipped in the image under `/opt/hermes/tools`. The
+  boot-time agent-browser install, its doctor check and the EACCES hint in
+  `patch-browser-exec-hint` are removed; `doctor.sh` checks that the `hermes`
+  user can run the image's Chromium instead. The `browser-login` skill
+  (1.3.0) and the `browser-login-save-first` eval case use `browser_exec`
+  only.
+- **MCP trust-gate approvals**: v0.22.7 adds its own redacted argument block
+  to the prompt and remembers `session` / `always` answers per server and
+  tool. `patch-mcp-trust-details` now adds only the `mcp` field, which stays
+  as documented in [docs/extending.md](docs/extending.md#mcp-approvals-for-untrusted-servers).
+  Changes a client sees: `command` carries Hermes' argument block instead of
+  the one-line summary, and `choices` is `once`, `session`, `always`, `deny`
+  (still `once`, `deny` past the spend limit).
+- **Control socket**: v0.22.7 falls back to a temp-dir socket on its own when
+  `$HERMES_HOME` refuses one, but through `tempfile.gettempdir()`, which is
+  virtiofs here. `patch-control-socket-tmp` still binds under `/tmp`; only
+  its client-path anchor moved.
+
 ## v0.3.9 — 2026-11-04
 
 ### Upgrade steps
