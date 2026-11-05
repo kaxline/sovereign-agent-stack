@@ -37,7 +37,10 @@ the stack under another app.
   `TWENTY_DB_PASSWORD_FILE` read them from files instead, so they don't show
   in `docker inspect`.
 - `TWENTY_PORT`, `TWENTY_IMAGE`, `TWENTY_DATA_DIR`, and `TWENTY_USERNAME` /
-  `TWENTY_PASSWORD` (written by `make crm-init`).
+  `TWENTY_PASSWORD` (written by `make crm-init`). `TWENTY_PASSWORD_FILE` keeps
+  the owner password in a file instead of `.env`.
+- In workspace files, `TWENTY_ACCESS=read|write` (default `write`) picks the
+  key the dashboard and WebUI profiles get. `api-server` is always read-only.
 
 ### Changes
 
@@ -49,7 +52,9 @@ the local owner account, workspace, two roles and two keys without prompts.
 On Twenty v2.55 the role-wide setting left junction objects such as
 `noteTarget` writable, so the read-only role also gets an explicit read-only
 permission on every object. `make crm-mode MULTI=1` switches the local
-instance to one workspace per subdomain (`<slug>.localhost`). A new `crm`
+instance to one workspace per subdomain (`<slug>.localhost`). `make crm-add`
+checks each remote key over MCP before saving it and asks nothing when the
+keys are in the environment; `make crm-remove` forgets a workspace. A new `crm`
 skill tells Hermes how to reach records, and `make doctor` checks each
 workspace's key over MCP. See [docs/crm.md](docs/crm.md).
 
