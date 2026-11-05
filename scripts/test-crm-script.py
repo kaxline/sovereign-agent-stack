@@ -36,6 +36,7 @@ class Stub:
         self.keys: list[dict] = []
         self.minted = 0
         self.workspaces = 0
+        self.upserts: list[dict] = []
 
     def answer(self, query: str, variables: dict) -> dict:
         m = OP.match(query)
@@ -70,6 +71,17 @@ class Stub:
             role = {"id": f"role-{len(self.roles) + 1}", "label": variables["i"]["label"]}
             self.roles.append(role)
             return {"data": {"createOneRole": role}}
+        if op == "objects":
+            return {"data": {"objects": {"edges": [
+                {"node": {"id": "obj-person", "nameSingular": "person", "isUIReadOnly": False, "isActive": True}},
+                {"node": {"id": "obj-notetarget", "nameSingular": "noteTarget", "isUIReadOnly": False, "isActive": True}},
+                {"node": {"id": "obj-agentturn", "nameSingular": "agentTurn", "isUIReadOnly": True, "isActive": True}},
+                {"node": {"id": "obj-old", "nameSingular": "old", "isUIReadOnly": False, "isActive": False}},
+            ]}}}
+        if op == "upsertObjectPermissions":
+            self.upserts.append(variables["i"])
+            return {"data": {"upsertObjectPermissions": [
+                {"objectMetadataId": o["objectMetadataId"]} for o in variables["i"]["objectPermissions"]]}}
         if op == "apiKeys":
             return {"data": {"apiKeys": self.keys}}
         if op == "revokeApiKey":
@@ -124,14 +136,14 @@ class CrmInit(unittest.TestCase):
         self.server.shutdown()
         self.server.server_close()
 
-    def run_init(self, *args: str, multi: str = "0") -> subprocess.CompletedProcess:
+    def run_init(self, *args: str, multi: str = "0", password: str = PASSWORD) -> subprocess.CompletedProcess:
         env = {
             "PATH": os.environ["PATH"],
             "TWENTY_BASE_URL": f"http://127.0.0.1:{self.server.server_port}",
             "TWENTY_WORKSPACES_DIR": str(self.ws),
             "TWENTY_DATA_DIR": str(self.data),
             "TWENTY_USERNAME": "owner@crm.localhost",
-            "TWENTY_PASSWORD": PASSWORD,
+            "TWENTY_PASSWORD": password,
             "TWENTY_MULTIWORKSPACE": multi,
             "TWENTY_GRANT_ADMIN_CMD": f"{self.hook} grant-admin",
         }
@@ -151,7 +163,7 @@ class CrmInit(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(self.stub.ops, [
             "signUp", "signUpInNewWorkspace", "getAuthTokensFromLoginToken", "activateWorkspace",
-            "getRoles", "createOneRole", "createOneRole",
+            "getRoles", "createOneRole", "createOneRole", "objects", "upsertObjectPermissions",
             "createApiKey", "generateApiKeyToken", "createApiKey", "generateApiKeyToken",
         ])
         f = self.file("main")
@@ -169,6 +181,21 @@ class CrmInit(unittest.TestCase):
         self.run_init()
         ro, rw = self.stub.roles
         self.assertEqual((ro["label"], rw["label"]), ("Hermes read-only", "Hermes read-write"))
+
+    def test_read_only_role_denies_writes_object_by_object(self):
+        # Twenty v2.55 lets a role without canUpdateAllObjectRecords still write
+        # junction objects (noteTarget, attachment...) unless each object carries
+        # its own permission. It refuses permissions on isUIReadOnly objects.
+        self.run_init()
+        self.assertEqual(len(self.stub.upserts), 1)
+        upsert = self.stub.upserts[0]
+        self.assertEqual(upsert["roleId"], self.stub.roles[0]["id"])  # read-only, never read-write
+        perms = {p["objectMetadataId"]: p for p in upsert["objectPermissions"]}
+        self.assertEqual(set(perms), {"obj-person", "obj-notetarget"})
+        for p in perms.values():
+            self.assertEqual((p["canReadObjectRecords"], p["canUpdateObjectRecords"],
+                              p["canSoftDeleteObjectRecords"], p["canDestroyObjectRecords"]),
+                             (True, False, False, False))
 
     def test_rerun_signs_in(self):
         self.stub.sign_up_error = "User already exists"
@@ -219,6 +246,14 @@ class CrmInit(unittest.TestCase):
         (self.ws / "hosted.env").write_text("TWENTY_URL=https://crm.example.com\nTWENTY_KEY_RW=x\n")
         proc = self.run_init()
         self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_password_outside_twentys_limits_fails_before_any_call(self):
+        # Twenty v2.55 accepts 8 to 50 characters and answers "Password too weak" otherwise.
+        for bad in ("short1!", "x" * 51):
+            proc = self.run_init(password=bad)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("8 to 50", proc.stderr)
+        self.assertEqual(self.stub.ops, [])
 
     def test_bad_slug_rejected(self):
         proc = self.run_init("--slug", "Sales_1")

@@ -138,8 +138,8 @@ cmd_init() {
   fi
   if [[ -z "$password" ]]; then
     # Saved before any call, so a failed run signs in next time instead of
-    # creating a second account. The suffix covers Twenty's character classes.
-    password="$(openssl rand -hex 24)Aa1!"
+    # creating a second account. Twenty accepts 8 to 50 characters.
+    password="$(openssl rand -hex 16)Aa1!"
     upsert_env "$ENV_PATH" TWENTY_PASSWORD "$password"
     log "Generated the owner password (TWENTY_PASSWORD in .env)"
   fi

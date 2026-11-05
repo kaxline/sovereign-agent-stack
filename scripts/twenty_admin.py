@@ -183,6 +183,34 @@ def ensure_roles(tw: Twenty, access: str) -> dict[str, str]:
     return ids
 
 
+def deny_writes_per_object(tw: Twenty, access: str, role_id: str) -> int:
+    """Give the read-only role an explicit read-only permission on every object.
+
+    Twenty v2.55 lets a role without canUpdateAllObjectRecords still create
+    junction and system records (noteTarget, taskTarget, attachment, ...).
+    A per-object permission closes that. Twenty refuses one on isUIReadOnly
+    objects, which have no write tools anyway. Each call replaces the role's
+    whole set, so everything goes in one call. New objects need a re-run
+    (make crm-init ROTATE=1).
+    """
+    d = tw.gql("query { objects(paging: { first: 1000 }) { edges { node { id isUIReadOnly isActive } } } }",
+               token=access)
+    edges = ((d.get("objects") or {}).get("edges")) or []
+    perms = [
+        {"objectMetadataId": e["node"]["id"], "canReadObjectRecords": True, "canUpdateObjectRecords": False,
+         "canSoftDeleteObjectRecords": False, "canDestroyObjectRecords": False}
+        for e in edges
+        if isinstance(e, dict) and isinstance(e.get("node"), dict)
+        and e["node"].get("isActive") and not e["node"].get("isUIReadOnly")
+    ]
+    if not perms:
+        raise TwentyError("unexpected answer from Twenty (no objects to restrict)")
+    tw.gql("mutation($i: UpsertObjectPermissionsInput!) { "
+           "upsertObjectPermissions(upsertObjectPermissionsInput: $i) { objectMetadataId } }",
+           {"i": {"roleId": role_id, "objectPermissions": perms}}, token=access)
+    return len(perms)
+
+
 def revoke_keys_named(tw: Twenty, access: str, name: str) -> int:
     d = tw.gql("query { apiKeys { id name revokedAt } }", token=access)
     count = 0
@@ -252,6 +280,9 @@ def cmd_init(args: argparse.Namespace) -> int:
     password = env.get("TWENTY_PASSWORD", "")
     if not email or not password:
         raise TwentyError("TWENTY_USERNAME and TWENTY_PASSWORD must be set")
+    if not 8 <= len(password) <= 50:
+        # Twenty's own rule (PASSWORD_REGEX); it reports both cases as "Password too weak".
+        raise TwentyError("TWENTY_PASSWORD must be 8 to 50 characters")
     ws_dir = Path(env.get("TWENTY_WORKSPACES_DIR", "compose/twenty/workspaces"))
     ws_dir.mkdir(parents=True, exist_ok=True)
     target = ws_dir / f"{slug}.env"
@@ -305,7 +336,8 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     step(f"{slug}: roles: running")
     roles = ensure_roles(tw, access)
-    step(f"{slug}: roles: done")
+    restricted = deny_writes_per_object(tw, access, roles["ro"])
+    step(f"{slug}: roles: done (read-only on {restricted} objects)")
     step(f"{slug}: keys: running")
     keys = {}
     for kind, role_id in (("ro", roles["ro"]), ("rw", roles["rw"])):
