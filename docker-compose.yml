@@ -11,12 +11,16 @@ x-n8n: &service-n8n
   # Allowlist. The root .env stays on the host for Compose interpolation and
   # is not mounted into the container. A mapping, so a service that adds keys
   # merges it with `<<: *n8n-env` instead of replacing it.
+  # Compose interpolates every service, including ones whose profile is off,
+  # so a `:?` here would make these keys mandatory on installs without n8n.
+  # scripts/sync-n8n-credentials.sh (make ensure-local) refuses to go on when
+  # automation is on and either key is empty, and make doctor checks them.
   environment: &n8n-env
     DB_TYPE: sqlite
     N8N_DIAGNOSTICS_ENABLED: "false"
     N8N_PERSONALIZATION_ENABLED: "false"
-    N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?set N8N_ENCRYPTION_KEY in .env}
-    N8N_USER_MANAGEMENT_JWT_SECRET: ${N8N_USER_MANAGEMENT_JWT_SECRET:?set N8N_USER_MANAGEMENT_JWT_SECRET in .env}
+    N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:-}
+    N8N_USER_MANAGEMENT_JWT_SECRET: ${N8N_USER_MANAGEMENT_JWT_SECRET:-}
     N8N_DEFAULT_BINARY_DATA_MODE: filesystem
     LIGHTRAG_URL: http://lightrag:9621
     NEO4J_HTTP_URL: http://neo4j:7474
