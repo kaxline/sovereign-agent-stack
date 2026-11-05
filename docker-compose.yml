@@ -322,6 +322,10 @@ services:
       - SEARCH_GATE_EMPTY_TTL=${SEARCH_GATE_EMPTY_TTL:-3600}
       - SEARCH_GATE_DB=/data/gate.sqlite3
       - SEARCH_GATE_PORT=8080
+      # Optional remote SearXNG for while local engines are blocked
+      - SEARCH_GATE_FALLBACK_URL=${SEARCH_GATE_FALLBACK_URL:-}
+      - SEARCH_GATE_FALLBACK_ENGINES=${SEARCH_GATE_FALLBACK_ENGINES:-}
+      - SEARCH_GATE_FALLBACK_AUTH=${SEARCH_GATE_FALLBACK_AUTH:-}
     volumes:
       # Cached queries come from chat; treat this volume as session content
       - search_gate_data:/data

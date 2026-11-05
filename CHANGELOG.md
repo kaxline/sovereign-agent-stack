@@ -18,6 +18,18 @@ the stack under another app.
    sets its own image tags must move both together.
 2. `docker compose up -d`. The `08-warmup-agent-browser` mount is gone from
    `hermes`, so compose recreates it.
+3. With the `search-gate` profile on, `docker compose up -d --build
+   search-gate`. The gate's code is baked into its image, and `make up`
+   doesn't rebuild it.
+
+### New optional `.env` keys
+
+- `SEARCH_GATE_FALLBACK_URL` (default unset): a remote SearXNG on another IP
+  that the search gate uses only while every local engine is cooling down
+  after a block. `SEARCH_GATE_FALLBACK_ENGINES` (default: the local list)
+  picks its engines and `SEARCH_GATE_FALLBACK_AUTH` (`user:password`) sends
+  HTTP basic auth. Unset, the gate behaves as before. See
+  [docs/searxng.md](docs/searxng.md#fallback-instance).
 
 ### Changes
 
@@ -34,6 +46,10 @@ the stack under another app.
   model's fields, with the same result for requests that use no model
   defaults. The SIGHUP log line reads `SIGHUP reloaded:` instead of
   `SIGHUP reloaded key files:`. See [docs/model-defaults.md](docs/model-defaults.md).
+- **Search gate status**: `GET /status` has a top-level `fallback_active`
+  and an `upstream` (`local` or `fallback`) on each engine. Fallback engines
+  are named `fallback:<engine>` in `/status`, `/blocks`, the `gate.engine`
+  field of results and the log.
 - **Browser tools**: Hermes v0.22.7 removed `browser_navigate`,
   `browser_snapshot`, `browser_click`, `browser_type`, `browser_press`,
   `browser_scroll`, `browser_back`, `browser_console`, `browser_get_images`,

@@ -52,6 +52,7 @@ SECRET_KEYS = {
     "HERMES_DASHBOARD_BASIC_AUTH_SECRET": {"hermes"},
     "HERMES_DASHBOARD_HANDOFF_SECRET": {"hermes"},
     "SEARXNG_SECRET": set(),
+    "SEARCH_GATE_FALLBACK_AUTH": {"search-gate"},
     "BUZZ_OPERATOR_PRIVATE_KEY": set(),
     "API_SERVER_KEY": {"hermes-webui"},
     "LLM_BINDING_API_KEY": {"llm-proxy", "lightrag"},

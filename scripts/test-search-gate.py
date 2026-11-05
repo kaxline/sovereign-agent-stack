@@ -66,8 +66,14 @@ class Gates:
     def __init__(self) -> None:
         self.made: list = []
 
-    def __call__(self, engines, fetch, store=None):
-        gate = Gate(engines, fetch, store or Store(":memory:"), jitter=0)
+    def __call__(self, engines, fetch, store=None, fallback_fetch=None):
+        gate = Gate(
+            engines,
+            fetch,
+            store or Store(":memory:"),
+            jitter=0,
+            fallback_fetch=fallback_fetch,
+        )
         self.made.append(gate)
         return gate
 
@@ -344,6 +350,128 @@ def test_a_block_is_recorded_from_first_failure_to_recovery(gates):
     assert records.messages[0].startswith("bing blocked (CAPTCHA)")
     assert records.messages[1].startswith("bing still blocked after 2 failed checks")
     assert records.messages[2].startswith("bing answering again")
+
+
+def test_the_fallback_waits_while_local_engines_are_only_paced(gates):
+    local, remote = FakeSearXNG(), FakeSearXNG()
+    gate = gates(
+        [Engine("bing", INTERVAL), Engine("bing", 0.01, fallback=True)],
+        local,
+        fallback_fetch=remote,
+    )
+
+    results = search_all(gate, ["a", "b", "c"])
+
+    assert len(local.calls) == 3
+    assert remote.calls == []
+    assert {r["gate"]["engine"] for r in results.values()} == {"bing"}
+    assert gate.status()["fallback_active"] is False
+
+
+def test_a_blocked_local_engine_sends_queries_to_the_fallback(gates):
+    local, remote = FakeSearXNG(down={"bing"}), FakeSearXNG()
+    gate = gates(
+        [Engine("bing", 0.01), Engine("bing", 0.01, fallback=True)],
+        local,
+        fallback_fetch=remote,
+    )
+
+    first = gate.search("a", 5)
+    second = gate.search("b", 5)
+
+    assert first["gate"]["engine"] == "fallback:bing"
+    assert first["results"]
+    # Local bing is cooling, so b goes straight to the fallback
+    assert [q for _, q, _, _ in local.calls] == ["a"]
+    assert [q for _, q, _, _ in remote.calls] == ["a", "b"]
+    assert second["gate"]["engine"] == "fallback:bing"
+    status = gate.status()
+    assert status["fallback_active"] is True
+    assert [(e["name"], e["upstream"]) for e in status["engines"]] == [
+        ("bing", "local"),
+        ("fallback:bing", "fallback"),
+    ]
+
+
+def test_traffic_returns_to_local_when_its_cool_down_ends(gates):
+    cool_down = sg.COOL_DOWN_S
+    sg.COOL_DOWN_S = 0.05
+    try:
+        local, remote = FakeSearXNG(down={"bing"}), FakeSearXNG()
+        gate = gates(
+            [Engine("bing", 0.01), Engine("bing", 0.01, fallback=True)],
+            local,
+            fallback_fetch=remote,
+        )
+        assert gate.search("a", 5)["gate"]["engine"] == "fallback:bing"
+        local.down.clear()
+        time.sleep(0.1)
+        back = gate.search("b", 5)
+    finally:
+        sg.COOL_DOWN_S = cool_down
+
+    assert back["gate"]["engine"] == "bing"
+    assert [q for _, q, _, _ in remote.calls] == ["a"]
+    [block] = gate.store.blocks()
+    assert block.engine == "bing"
+    assert block.recovered is not None
+    assert gate.status()["fallback_active"] is False
+
+
+def test_a_query_both_upstreams_fail_on_gets_no_results(gates):
+    local, remote = FakeSearXNG(down={"bing"}), FakeSearXNG(down={"bing"})
+    gate = gates(
+        [Engine("bing", 0.01), Engine("bing", 0.01, fallback=True)],
+        local,
+        fallback_fetch=remote,
+    )
+
+    result = gate.search("a", 5)
+
+    assert result["results"] == []
+    assert result["unresponsive_engines"][0][0] == "search-gate"
+    # Each upstream keeps its own block record
+    assert sorted(b.engine for b in gate.store.blocks()) == ["bing", "fallback:bing"]
+
+
+def test_fallback_engines_need_a_fallback_fetch():
+    try:
+        Gate([Engine("bing", 1, fallback=True)], FakeSearXNG(), Store(":memory:"))
+    except ValueError:
+        return
+    raise AssertionError("expected ValueError")
+
+
+def test_the_fallback_fetch_sends_basic_auth():
+    seen = {}
+
+    class Upstream(sg.BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen["auth"] = self.headers.get("Authorization")
+            seen["path"] = self.path
+            data = json.dumps({"results": [], "unresponsive_engines": []}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Upstream)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}/"
+        sg.searxng_fetch(base, auth="user:secret")("acme", "bing", {})
+        with_auth = seen.pop("auth")
+        sg.searxng_fetch(base)("acme", "bing", {})
+        without_auth = seen.pop("auth")
+    finally:
+        server.shutdown()
+
+    assert with_auth == "Basic dXNlcjpzZWNyZXQ="
+    assert without_auth is None
+    assert seen["path"].startswith("/search?")
 
 
 def main() -> None:

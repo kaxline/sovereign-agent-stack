@@ -85,6 +85,9 @@ Then `make up`, which adds the `search-gate` profile. `WEB_SEARCH_URL` sets the 
 | `SEARCH_GATE_MAX_WAIT` | `15` | Seconds a search waits before the busy answer. Keep it below `SEARXNG_TIMEOUT_MS`. |
 | `SEARCH_GATE_TTL` | `86400` | Seconds a result list stays cached. |
 | `SEARCH_GATE_EMPTY_TTL` | `3600` | Seconds an empty answer stays cached. An answer every engine failed on is never cached. |
+| `SEARCH_GATE_FALLBACK_URL` | unset | Base URL of a remote SearXNG used while local engines are blocked ([Fallback instance](#fallback-instance)). |
+| `SEARCH_GATE_FALLBACK_ENGINES` | `SEARCH_GATE_ENGINES` | The fallback's engines, same format. |
+| `SEARCH_GATE_FALLBACK_AUTH` | unset | `user:password` for HTTP basic auth on the fallback. |
 
 At the default intervals the gate runs about 9 searches a minute. Of four searches sent at once, two run immediately, one runs about 10 s later and one gets the busy answer. A GPT Researcher report that sends more queries than that loses some sources on its first run and finds them in the cache on a rerun.
 
@@ -97,6 +100,25 @@ docker compose exec search-gate wget -qO- http://127.0.0.1:8080/status
 The cache, in the `search_gate_data` volume, holds every query asked and its results. Queries come from chat, so treat the volume like Hermes session content. The request log records only the method and path.
 
 Pacing state (cool-downs, daily counts) is in memory, so a restart clears it. Run one gate per egress IP; two would each pace on their own and double the rate.
+
+### Fallback instance
+
+When search engines block this machine's IP, the gate can send queries to a second SearXNG on another IP until a local engine answers again. Set its base URL in `.env` and rebuild the gate:
+
+```bash
+SEARCH_GATE_FALLBACK_URL=https://searx.example.com
+SEARCH_GATE_FALLBACK_AUTH=user:password
+```
+
+```bash
+docker compose up -d --build search-gate
+```
+
+The gate adds one engine per entry in `SEARCH_GATE_FALLBACK_ENGINES` (default: the `SEARCH_GATE_ENGINES` list), named `fallback:<engine>`. Each has its own interval, daily cap, cool-down and block records, so a block on one IP never rests an engine on the other. A query goes to the fallback only when every local engine it hasn't tried yet is cooling down or used up for the day. A local engine that is only waiting out its interval keeps the query local. When a local engine's cool-down ends, the next query tries it, and once it answers, queries stay local again. No separate health check runs. Because cool-downs double up to 6 hours, a long block can keep traffic on the fallback for up to 6 hours after the local IP is usable again.
+
+The remote instance must answer `format=json` (`search.formats` in its `settings.yml` must include `json`) and have the listed engines enabled. Most public instances refuse JSON or block automated clients, so run your own, for example on a small VPS, behind a reverse proxy with basic auth. `SEARCH_GATE_FALLBACK_AUTH` is sent as an `Authorization: Basic` header on every request to it, so use an `https://` URL.
+
+While the fallback is serving, queries leave this machine and can end up in the remote host's logs. `GET /status` shows `"fallback_active": true` then, and each engine's `upstream` is `local` or `fallback`.
 
 `scripts/test-search-gate.py` runs the gate against a fake SearXNG in about four seconds.
 
