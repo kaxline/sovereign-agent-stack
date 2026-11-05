@@ -27,6 +27,9 @@ Usage: scripts/crm.sh <command> [options]
   add --slug S --url URL [--force]
         A workspace on a remote Twenty. Keys come from TWENTY_KEY_RW and
         TWENTY_KEY_RO, or are asked for (hidden) when run in a terminal.
+        TWENTY_ACCESS=read gives Hermes chats the read-only key. Each key is
+        checked with an MCP initialize; nothing is written if one fails.
+  remove --slug S   Delete a workspace file (make hermes-reload drops it)
   open [--slug S]   Open a workspace in the browser
   mode 0|1          Single- (0) or multi-workspace (1) local instance
   ensure            Create data dirs and sync flags (run by make ensure-local)
@@ -171,6 +174,18 @@ cmd_init() {
   log "Next: make hermes-reload, then ask Hermes about your CRM. make crm-open opens it."
 }
 
+# HTTP status of an MCP initialize with one key. The key goes to curl in a
+# header file, not argv, so ps never shows it.
+mcp_status() {
+  local hdr code
+  hdr="$(umask 077 && mktemp)"
+  printf 'Authorization: Bearer %s\nContent-Type: application/json\nAccept: application/json, text/event-stream\n' "$2" > "$hdr"
+  code="$(curl -s -o /dev/null -m 20 -w '%{http_code}' -H @"$hdr" -X POST "${1}/mcp" \
+    --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"crm.sh","version":"0"}}}' 2>/dev/null || true)"
+  rm -f "$hdr"
+  printf '%s' "${code:-000}"
+}
+
 cmd_add() {
   local slug="" url="" force=""
   while [[ $# -gt 0 ]]; do
@@ -188,24 +203,49 @@ cmd_add() {
   esac
   while [[ "$url" == */ ]]; do url="${url%/}"; done
   url="${url%/mcp}"
+  local access="${TWENTY_ACCESS:-write}"
+  case "$access" in
+    read | write) ;;
+    *) die "TWENTY_ACCESS must be read or write" ;;
+  esac
   local file="${WS_DIR}/${slug}.env"
   if [[ -e "$file" && -z "$force" ]]; then
-    die "${file#"${ROOT}"/} exists; pass --force to replace it"
+    die "${file#"${ROOT}"/} exists; pass --force (make crm-add FORCE=1) to replace it"
   fi
 
+  # With the keys in the environment nothing is asked, so addon.sh can call this.
   local rw="${TWENTY_KEY_RW:-}" ro="${TWENTY_KEY_RO:-}"
-  if [[ -z "$rw" ]]; then
-    [[ -t 0 ]] || die "set TWENTY_KEY_RW (no terminal to ask in)"
-    printf 'Read/write API key for %s: ' "$slug" >&2
+  if [[ -z "$rw" && -z "${TWENTY_KEY_RW+x}" && -t 0 ]]; then
+    printf 'Read/write API key for %s%s: ' "$slug" "$( [[ "$access" == read ]] && echo ' (Enter to skip)')" >&2
     IFS= read -rs rw
     printf '\n' >&2
-    [[ -n "$rw" ]] || die "a read/write key is required"
   fi
-  if [[ -z "${TWENTY_KEY_RO+x}" && -t 0 ]]; then
-    printf 'Read-only API key (Enter to keep this CRM off unattended runs): ' >&2
+  if [[ -z "$ro" && -z "${TWENTY_KEY_RO+x}" && -t 0 ]]; then
+    printf 'Read-only API key%s: ' "$( [[ "$access" == write ]] && echo ' (Enter to keep this CRM off unattended runs)')" >&2
     IFS= read -rs ro
     printf '\n' >&2
   fi
+  if [[ "$access" == write && -z "$rw" ]]; then
+    [[ -t 0 ]] || die "set TWENTY_KEY_RW (no terminal to ask in)"
+    die "a read/write key is required with TWENTY_ACCESS=write"
+  fi
+  if [[ "$access" == read && -z "$ro" ]]; then
+    die "TWENTY_ACCESS=read needs TWENTY_KEY_RO"
+  fi
+
+  # Check every key before writing anything.
+  local kind key code
+  for kind in RW RO; do
+    key="$rw"; [[ "$kind" == RO ]] && key="$ro"
+    [[ -n "$key" ]] || continue
+    code="$(mcp_status "$url" "$key")"
+    case "$code" in
+      200) log "TWENTY_KEY_${kind}: Twenty accepts it" ;;
+      000) die "no answer from ${url}/mcp — check the URL; nothing written" ;;
+      401 | 403) die "Twenty rejects TWENTY_KEY_${kind} (HTTP ${code}); nothing written" ;;
+      *) die "${url}/mcp answered HTTP ${code} for TWENTY_KEY_${kind}; nothing written" ;;
+    esac
+  done
 
   mkdir -p "$WS_DIR"
   local tmp
@@ -213,7 +253,8 @@ cmd_add() {
   {
     printf '# Written by make crm-add. Hermes registers it as mcp_servers.crm-%s. See docs/crm.md.\n' "$slug"
     printf 'TWENTY_URL=%s\n' "$url"
-    printf 'TWENTY_WORKSPACE_URL=%s/\n' "$url"
+    printf 'TWENTY_WORKSPACE_URL=%s\n' "${TWENTY_WORKSPACE_URL:-${url}/}"
+    printf 'TWENTY_ACCESS=%s\n' "$access"
     printf 'TWENTY_KEY_RW=%s\n' "$rw"
     printf 'TWENTY_KEY_RO=%s\n' "$ro"
   } > "$tmp"
@@ -225,6 +266,27 @@ cmd_add() {
     log "Set TWENTY_MCP_ENABLED=1"
   fi
   log "Next: make hermes-reload"
+}
+
+cmd_remove() {
+  local slug=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --slug) slug="${2:-}"; shift 2 ;;
+      *) die "unknown option for remove: $1" ;;
+    esac
+  done
+  valid_slug "$slug" || die "--slug must use lowercase letters, digits and hyphens"
+  local file="${WS_DIR}/${slug}.env"
+  [[ -f "$file" ]] || die "no workspace '${slug}' in ${WS_DIR#"${ROOT}"/}"
+  local url
+  url="$(ws_get "$file" TWENTY_URL)"
+  rm -f "$file"
+  log "Removed ${file#"${ROOT}"/}"
+  if [[ "${url%/}" == "$LOCAL_URL" ]]; then
+    log "The workspace and its keys still exist in Twenty; delete them there if you're done with them"
+  fi
+  log "Next: make hermes-reload (drops crm-${slug} from Hermes)"
 }
 
 cmd_open() {
@@ -323,6 +385,7 @@ cmd_ensure() {
 case "${1:-}" in
   init) shift; cmd_init "$@" ;;
   add) shift; cmd_add "$@" ;;
+  remove) shift; cmd_remove "$@" ;;
   open) shift; cmd_open "$@" ;;
   mode) shift; cmd_mode "$@" ;;
   ensure) cmd_ensure ;;
