@@ -110,6 +110,8 @@ jobs:
         run: sh scripts/test-twenty-compose.sh
       - name: Twenty secrets entrypoint
         run: sh scripts/test-twenty-secrets.sh
+      - name: Twenty CRM MCP registration
+        run: sh scripts/test-twenty-registration.sh
       - name: LLM proxy routes
         run: python3 scripts/test-llm-proxy.py
       - name: Terminal backend override sync
