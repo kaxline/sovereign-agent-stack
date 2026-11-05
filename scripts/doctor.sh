@@ -1209,10 +1209,10 @@ if has_profile crm || [[ "$twenty_local" -eq 1 || "$twenty_mcp" -eq 1 ]]; then
       slug="$(basename "$f" .env)"
       [[ "$slug" == .* ]] && continue
       twenty_count=$((twenty_count + 1))
-      url="$(grep -E '^TWENTY_URL=' "$f" | head -1 | cut -d= -f2- | tr -d '"')"
-      rw="$(grep -E '^TWENTY_KEY_RW=' "$f" | head -1 | cut -d= -f2- | tr -d '"')"
-      ro="$(grep -E '^TWENTY_KEY_RO=' "$f" | head -1 | cut -d= -f2- | tr -d '"')"
-      access="$(grep -E '^TWENTY_ACCESS=' "$f" | head -1 | cut -d= -f2- | tr -d '"')"
+      url="$(grep -E '^TWENTY_URL=' "$f" | head -1 | cut -d= -f2- | tr -d '"' || true)"
+      rw="$(grep -E '^TWENTY_KEY_RW=' "$f" | head -1 | cut -d= -f2- | tr -d '"' || true)"
+      ro="$(grep -E '^TWENTY_KEY_RO=' "$f" | head -1 | cut -d= -f2- | tr -d '"' || true)"
+      access="$(grep -E '^TWENTY_ACCESS=' "$f" | head -1 | cut -d= -f2- | tr -d '"' || true)"
       access="${access:-write}"
       key="$rw"
       [[ "$access" == read ]] && key="$ro"
