@@ -28,7 +28,10 @@ search:
 #   duckduckgo, startpage, brave, yep, mojeek
 # Enabled:
 #   bing (independent fallback), google cse (stays via defaults; recovers
-#   after short 429 windows)
+#   after short 429 windows), naver (answers English queries; better than
+#   bing on full-sentence queries)
+# Off by default and left off: fireball (Cloudflare JS challenge) and yahoo
+# (drops TLS handshakes from Python clients).
 engines:
   - name: duckduckgo
     disabled: true
@@ -41,6 +44,8 @@ engines:
   - name: mojeek
     disabled: true
   - name: bing
+    disabled: false
+  - name: naver
     disabled: false
 
 # When running with: docker compose --profile searxng-prod up -d

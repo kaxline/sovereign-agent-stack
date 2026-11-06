@@ -45,8 +45,9 @@ This stack keeps default general search lean:
 
 | Engine | Role |
 |---|---|
-| **Bing** + **Google CSE** | Enabled — primary general pair |
+| **Bing**, **Google CSE**, **Naver** | Enabled |
 | DuckDuckGo, Startpage, Brave, Yep, Mojeek | Disabled — frequent CAPTCHA / 429 / 403 magnets |
+| Fireball, Yahoo | Off by default and left off. Fireball answers with a Cloudflare JS challenge; Yahoo drops TLS handshakes from Python clients. Tested 2026-11-05. |
 
 `search.suspended_times` are shortened so bans clear without a container restart. After changing `searxng/settings.yml`, re-sync the secret into the gitignored overlay and recreate:
 
@@ -62,7 +63,7 @@ curl -sS 'http://localhost:8080/search?q=ownCloud&format=json' \
   | python3 -c 'import sys,json;d=json.load(sys.stdin);print(len(d.get("results",[])), d.get("unresponsive_engines")); print("engines", sorted({r.get("engine") for r in d.get("results",[])}))'
 ```
 
-A non-zero result count with some engines still listed as Suspended is fine — at least one engine answered. Expect roughly **Bing and/or Google CSE** in the engine set, not six upstreams.
+A non-zero result count with some engines still listed as Suspended is fine — at least one engine answered. Expect some of **Bing, Google CSE and Naver** in the engine set, not six upstreams.
 
 ## Search gate
 
@@ -81,7 +82,7 @@ Then `make up`, which adds the `search-gate` profile. `WEB_SEARCH_URL` sets the 
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `SEARCH_GATE_ENGINES` | `bing:10,google cse:20` | `name:interval_s[:daily_cap]`, comma-separated, in order of preference. Each engine must be enabled in SearXNG. |
+| `SEARCH_GATE_ENGINES` | `bing:10,google cse:20,naver:20` | `name:interval_s[:daily_cap]`, comma-separated, in order of preference. Each engine must be enabled in SearXNG. |
 | `SEARCH_GATE_MAX_WAIT` | `15` | Seconds a search waits before the busy answer. Keep it below `SEARXNG_TIMEOUT_MS`. |
 | `SEARCH_GATE_TTL` | `86400` | Seconds a result list stays cached. |
 | `SEARCH_GATE_EMPTY_TTL` | `3600` | Seconds an empty answer stays cached. An answer every engine failed on is never cached. |
@@ -89,7 +90,7 @@ Then `make up`, which adds the `search-gate` profile. `WEB_SEARCH_URL` sets the 
 | `SEARCH_GATE_FALLBACK_ENGINES` | `SEARCH_GATE_ENGINES` | The fallback's engines, same format. |
 | `SEARCH_GATE_FALLBACK_AUTH` | unset | `user:password` for HTTP basic auth on the fallback. |
 
-At the default intervals the gate runs about 9 searches a minute. Of four searches sent at once, two run immediately, one runs about 10 s later and one gets the busy answer. A GPT Researcher report that sends more queries than that loses some sources on its first run and finds them in the cache on a rerun.
+At the default intervals the gate runs about 12 searches a minute. Of five searches sent at once, three run immediately, one runs about 10 s later and one gets the busy answer. A GPT Researcher report that sends more queries than that loses some sources on its first run and finds them in the cache on a rerun.
 
 `GET /status` shows queue counts, the cache size and, per engine, usage today, cool-down left, consecutive failures, the last error and median block lengths. `GET /blocks` lists each recorded block, from its first failure to the engine's next answer. Use these to tune intervals from observed blocks. From inside the compose network:
 
