@@ -221,6 +221,59 @@ def test_bad_mode_is_private() -> None:
     expect(r == err("boom") and calls == ["searxng"], (r, calls))
 
 
+def test_overlay_is_wired() -> None:
+    runner = (ROOT / "compose" / "hermes" / "05-patch-tool-calling.sh").read_text()
+    line = "run_patch /bootstrap/patch-web-search-mode.py"
+    expect(line in runner, "cont-init runs the patch")
+    expect(runner.index(line) > runner.index("run_patch /bootstrap/patch-blocked-fetch-hint.py"),
+           "runs after the blocked-fetch hint it imports")
+    compose = (ROOT / "docker-compose.yml").read_text()
+    for name in ("web_search_mode.py", "patch-web-search-mode.py"):
+        expect(f"./compose/hermes/{name}:/bootstrap/{name}:ro" in compose, f"{name} is mounted")
+    expect("- HERMES_WEB_SEARCH_MODE=${HERMES_WEB_SEARCH_MODE:-private}" in compose, "env reaches hermes")
+
+
+IMAGE_DRIVER = r'''
+import json, os, shutil, subprocess, sys, tempfile
+for _ in range(2):
+    out = subprocess.run([sys.executable, "/bootstrap/patch-web-search-mode.py"], capture_output=True, text=True)
+    assert out.returncode == 0, out.stdout + out.stderr
+assert "already applied" in out.stdout, out.stdout
+src = open("/opt/hermes/tools/mcp_tool_handlers.py").read()
+assert src.count("# assistant-stack: web search mode") == 1
+
+sys.path.insert(0, "/opt/hermes")
+from tools import mcp_tool_handlers as h
+wrapped = h._make_tool_handler("searxng", "searxng_web_search", 5)
+plain = h._make_tool_handler("lightrag", "query_document", 5)
+assert "wrap_handler" in wrapped.__qualname__, wrapped.__qualname__
+assert plain.__qualname__ == "_make_tool_handler.<locals>._handler", plain.__qualname__
+
+import plugins.web.keyless_mcp as km
+km.search_with_failover = lambda name, query, limit: {
+    "success": True, "data": {"web": [{"title": "T", "url": "https://t.example.com", "description": "d"}]}}
+km.keyless_enabled = lambda: True
+os.environ["HERMES_WEB_SEARCH_MODE"] = "keyless"
+out = json.loads(wrapped({"query": "q"}))
+assert out["result"].startswith("Served by the keyless web tier (exa)."), out
+assert "URL: https://t.example.com" in out["result"], out
+
+from agent import web_search_mode as wsm
+refusal = wsm._url_refusal("http://10.0.0.5/admin")
+assert refusal and "private or internal" in refusal, refusal
+assert "API key" in (wsm._url_refusal("https://x.example.com/?api_key=sk-abcdefghijklmnopqrstuvwxyz0123456789") or "")
+
+tmp = tempfile.mkdtemp()
+os.makedirs(f"{tmp}/agent"); os.makedirs(f"{tmp}/tools")
+open(f"{tmp}/tools/mcp_tool_handlers.py", "w").write(src.replace("# assistant-stack: web search mode", "").replace(
+    "    return _wrap_web_search_mode(server_name, tool_name, _handler)\n", "    return _handlerX\n"))
+out = subprocess.run([sys.executable, "/bootstrap/patch-web-search-mode.py"], capture_output=True, text=True,
+                     env={**os.environ, "HERMES_ROOT": tmp})
+assert out.returncode != 0 and "expected code missing" in (out.stdout + out.stderr), out.stdout + out.stderr
+os.write(1, b"image ok\n")
+'''
+
+
 def main() -> None:
     test_current_mode()
     test_search_failed()
@@ -235,7 +288,9 @@ def main() -> None:
     test_guards()
     test_inner_raises()
     test_bad_mode_is_private()
+    test_overlay_is_wired()
     print("ok")
+    hermes_image.maybe_run(IMAGE_DRIVER)
 
 
 if __name__ == "__main__":
