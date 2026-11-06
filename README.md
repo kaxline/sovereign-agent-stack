@@ -79,6 +79,7 @@ whether its profile is on.
 |---|---|---|
 | **`core`** (default) | | Hermes agent, Hermes WebUI, SearXNG, mcp-searxng |
 | **`rag`** | `LIGHTRAG_MCP_ENABLED` | LightRAG + Neo4j knowledge graph + MCP sidecar |
+| **`neo4j`** | `NEO4J_ENABLED` | Neo4j alone, without LightRAG. `rag` starts it too |
 | **`calendar`** | `CALDAV_MCP_ENABLED` | CalDAV calendars via caldav-mcp (multi-account) |
 | **`automation`** | `AUTOMATION_ENABLED` | n8n + GPT Researcher |
 | **`research`** | `GPTR_MCP_ENABLED` | GPT Researcher deep research as Hermes tools, without n8n ([docs/gpt-researcher.md](docs/gpt-researcher.md)) |
