@@ -17,6 +17,8 @@ eval "$(grep -E '^TWENTY_(MCP_TIMEOUT|MCP_CONNECT_TIMEOUT|MCP_PINS)=' "$bootstra
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 TWENTY_WORKSPACES_DIR="$tmp/ws"
+# The real mkdir; the stub below only replaces it for the bootstrap functions.
+# shellcheck disable=SC2218
 mkdir -p "$TWENTY_WORKSPACES_DIR"
 
 calls=""

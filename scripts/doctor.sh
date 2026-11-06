@@ -1203,7 +1203,10 @@ if has_profile crm || [[ "$twenty_local" -eq 1 || "$twenty_mcp" -eq 1 ]]; then
     if docker info >/dev/null 2>&1; then
       for svc in twenty-server twenty-worker twenty-db twenty-redis; do
         cid="$(docker compose ps -q "$svc" 2>/dev/null || true)"
-        health="$( [[ -n "$cid" ]] && docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid" 2>/dev/null || true)"
+        health=""
+        if [[ -n "$cid" ]]; then
+          health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid" 2>/dev/null || true)"
+        fi
         case "$health" in
           healthy) ok "${svc} is healthy" ;;
           starting) warn "${svc} is starting (the first start runs Twenty's migrations)" ;;
