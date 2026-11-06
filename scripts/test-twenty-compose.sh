@@ -1,4 +1,6 @@
 #!/bin/sh
+# The grep patterns below match compose's literal ${...} text, so single quotes are intended.
+# shellcheck disable=SC2016
 # Shape of the crm profile (local Twenty) in docker-compose.yml, and the flag
 # that turns it on. See docs/crm.md.
 set -eu

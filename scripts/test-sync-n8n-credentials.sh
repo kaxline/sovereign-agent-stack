@@ -47,7 +47,10 @@ check() {
   fi
 }
 calls() { wc -l < "$STUB_LOG" | tr -d ' '; }
+# Called through check, which shellcheck can't see.
+# shellcheck disable=SC2329
 creds() { compgen -G "${tmp}/n8n/demo-data/credentials/*.json" >/dev/null; }
+# shellcheck disable=SC2329
 no_creds() { ! creds; }
 
 keys='N8N_ENCRYPTION_KEY=abc123\nN8N_USER_MANAGEMENT_JWT_SECRET=def456\nLIGHTRAG_API_KEY=lr_x\n'
@@ -67,7 +70,7 @@ check "missing key is named" grep -q N8N_ENCRYPTION_KEY "${tmp}/out"
 check "missing key does not run node" test "$(calls)" -eq 0
 
 # Automation on, keys set, no files yet: writes them with the .env key.
-printf "COMPOSE_PROFILES=core,automation\n${keys}" > "${tmp}/.env"
+printf "COMPOSE_PROFILES=core,automation\n%b" "$keys" > "${tmp}/.env"
 run
 check "first run exits 0" test "$status" -eq 0
 check "first run writes credentials" creds
