@@ -35,6 +35,19 @@ the stack under another app.
 
 ### Changes
 
+- **Turning LightRAG off removes its MCP entry** (CR 0022 R1): with
+  `LIGHTRAG_MCP_ENABLED=0`, the api-server and browser bootstraps now remove
+  every MCP entry pointing at `LIGHTRAG_MCP_URL`. That covers `lightrag` and
+  the unfiltered `lightrag-mcp` copy a profile cloned from default. Before,
+  both stayed in the config and Hermes kept retrying a server that wasn't
+  running. Other servers on the profile are kept. The flag is part of the
+  bootstrap's input hash, so changing it and starting the bootstrap services
+  is enough; `HERMES_BOOTSTRAP_FORCE` isn't needed. The default profile isn't
+  touched, since the bootstrap never registers LightRAG there. A
+  `lightrag-mcp` entry added there by hand stays until the user removes it.
+  Checked with the bootstrap functions in `nousresearch/hermes-agent:v0.22.7`
+  against configs holding both entries plus two other servers: both LightRAG
+  entries were removed on both profiles, and the other two stayed.
 - **The SSH worker key belongs to the remapped hermes user** (CR 0021 R1):
   `09-install-worker-key` read `HERMES_UID` under `#!/bin/sh`, where s6
   gives cont-init scripts no environment, so it always chowned the key and

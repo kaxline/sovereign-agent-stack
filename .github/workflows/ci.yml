@@ -122,6 +122,8 @@ jobs:
         run: bash scripts/test-sync-n8n-credentials.sh
       - name: GPT Researcher MCP registration
         run: sh scripts/test-gptr-mcp-registration.sh
+      - name: LightRAG MCP registration
+        run: sh scripts/test-lightrag-mcp-registration.sh
       - name: Twenty CRM compose profile
         run: sh scripts/test-twenty-compose.sh
       - name: Twenty secrets entrypoint

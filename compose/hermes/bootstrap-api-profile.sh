@@ -29,6 +29,7 @@ LIGHTRAG_MCP_URL="${LIGHTRAG_MCP_URL:-http://lightrag-mcp:8000/mcp}"
 LIGHTRAG_MCP_TIMEOUT="${LIGHTRAG_MCP_TIMEOUT:-120}"
 LIGHTRAG_MCP_CONNECT_TIMEOUT="${LIGHTRAG_MCP_CONNECT_TIMEOUT:-30}"
 LIGHTRAG_MCP_ENABLED="${LIGHTRAG_MCP_ENABLED:-0}"
+LIGHTRAG_MCP_TOOLS="query_document get_documents get_pipeline_status get_graph_labels check_lightrag_health"
 SEARXNG_MCP_URL="${SEARXNG_MCP_URL:-http://mcp-searxng:3000/mcp}"
 SEARXNG_MCP_TIMEOUT="${SEARXNG_MCP_TIMEOUT:-60}"
 SEARXNG_MCP_CONNECT_TIMEOUT="${SEARXNG_MCP_CONNECT_TIMEOUT:-30}"
@@ -1319,6 +1320,40 @@ register_mail_mcp_servers() {
   pin_mcp_tools "$_rmms_profile" mail $MAIL_MCP_TOOLS
 }
 
+# LightRAG MCP (rag profile) as read-oriented Knowledge Base access, on the
+# api-server and browser profiles. The default profile is the user's own
+# config, and bootstrap never registers LightRAG there.
+#
+# Treat the include list as a security boundary rather than a convenience. The
+# server exposes 17 tools, 12 of which mutate the knowledge graph (insert_*,
+# edit_*, and delete_by_doc_ids / delete_by_entities). Only the five
+# read-oriented ones belong on these profiles.
+#
+# With LIGHTRAG_MCP_ENABLED off, every entry pointing at the LightRAG URL is
+# removed, whatever its key, so a profile that once had LightRAG doesn't keep
+# retrying a server that is gone (CR 0022 R1).
+register_lightrag_mcp_servers() {
+  _rlms_profile="$1"
+  case "$LIGHTRAG_MCP_ENABLED" in
+    1|true|TRUE|yes|YES) ;;
+    *)
+      log "Skipping LightRAG MCP registration (LIGHTRAG_MCP_ENABLED=${LIGHTRAG_MCP_ENABLED})"
+      drop_mcp_entries_for_url "$_rlms_profile" "" "$LIGHTRAG_MCP_URL"
+      return 0
+      ;;
+  esac
+  # shellcheck disable=SC2086
+  register_mcp_server "$_rlms_profile" lightrag LightRAG \
+    "$LIGHTRAG_MCP_URL" "$LIGHTRAG_MCP_TIMEOUT" "$LIGHTRAG_MCP_CONNECT_TIMEOUT" $LIGHTRAG_MCP_TOOLS
+
+  # The clone inherits the default profile's own unfiltered LightRAG entry,
+  # which would hand this profile all 17 tools through the back door and leave
+  # the allowlist above meaning nothing.
+  drop_unfiltered_mcp_duplicate "$_rlms_profile" lightrag lightrag-mcp "$LIGHTRAG_MCP_URL"
+  # shellcheck disable=SC2086
+  pin_mcp_tools "$_rlms_profile" lightrag $LIGHTRAG_MCP_TOOLS
+}
+
 # GPT Researcher MCP (research profile). Its tools only read the public web,
 # but one deep_research call sends dozens of requests to llm-proxy and the
 # model server, so unattended api-server sessions don't get it: a person asks
@@ -2382,31 +2417,9 @@ if [ "$PROFILE" = "browser" ]; then
   hermes_config_set "$PROFILE" "auxiliary.title_generation.enabled" "$TITLE_ENABLED"
 fi
 
-# Register LightRAG MCP as read-oriented Knowledge Base access for API sessions.
-# Opt-in via LIGHTRAG_MCP_ENABLED (set when the `rag` compose profile is on).
-# Set individual keys so existing user-defined MCP servers are preserved.
-#
-# Treat the include list as a security boundary rather than a convenience. The
-# server exposes 17 tools, 12 of which mutate the knowledge graph (insert_*,
-# edit_*, and delete_by_doc_ids / delete_by_entities). Only the five
-# read-oriented ones belong in unattended API sessions.
-case "$LIGHTRAG_MCP_ENABLED" in
-  1|true|TRUE|yes|YES)
-    register_mcp_server "$PROFILE" lightrag LightRAG \
-      "$LIGHTRAG_MCP_URL" "$LIGHTRAG_MCP_TIMEOUT" "$LIGHTRAG_MCP_CONNECT_TIMEOUT" \
-      query_document get_documents get_pipeline_status get_graph_labels check_lightrag_health
-
-    # The clone inherits the default profile's own unfiltered LightRAG entry,
-    # which would hand this profile all 17 tools through the back door and leave
-    # the allowlist above meaning nothing.
-    drop_unfiltered_mcp_duplicate "$PROFILE" lightrag lightrag-mcp "$LIGHTRAG_MCP_URL"
-    pin_mcp_tools "$PROFILE" lightrag \
-      query_document get_documents get_pipeline_status get_graph_labels check_lightrag_health
-    ;;
-  *)
-    log "Skipping LightRAG MCP registration (LIGHTRAG_MCP_ENABLED=${LIGHTRAG_MCP_ENABLED})"
-    ;;
-esac
+# LightRAG goes on the profile this bootstrap manages, never on default. See
+# register_lightrag_mcp_servers.
+register_lightrag_mcp_servers "$PROFILE"
 
 # Same web-reading servers as the default profile above; profiles carry their
 # own config.yaml, so the earlier registration does not reach API sessions.
