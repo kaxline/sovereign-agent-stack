@@ -27,6 +27,9 @@ run_patch /bootstrap/patch-tool-loop-notes.py
 # Halt a turn that keeps re-running calls whose results it has already seen,
 # whatever the cycle length (upstream catches cycles of at most 4 calls).
 run_patch /bootstrap/patch-tool-loop-replay.py
+# While the searxng MCP server is paused (circuit breaker), say how to search
+# with browser_exec instead.
+run_patch /bootstrap/patch-searxng-pause-browser.py
 # Per-session history budget for DM threads (request window; transcript stays).
 run_patch /bootstrap/patch-history-budget.py
 # Client-supplied session/turn context; refuse a prompt.submit profile that
