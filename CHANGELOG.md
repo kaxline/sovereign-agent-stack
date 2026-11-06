@@ -8,8 +8,38 @@ the stack under another app.
 
 ## Unreleased
 
+### Upgrade steps
+
+1. With `automation` or `searxng-prod` on, `docker compose up -d`. `n8n` and
+   `valkey` get healthchecks, so compose recreates them.
+
+### Host requirements
+
+- **Removed: `python3` and `node`.** `setup.sh`, `crm.sh init` and `todo.sh
+  init` now need only bash, the base system's tools and the container
+  engine. Their Python runs in the pinned Hermes image as the calling user,
+  with the repo mounted at its own host path; the n8n credentials step runs
+  Node in the n8n image (`N8N_IMAGE`). The first run may pull the Hermes
+  image before `make up` does. An app that checked for `python3` or the
+  Command Line Tools before running setup can drop that check, and one that
+  stubbed `node` can drop the stub. `STACK_PYTHON=host` and `N8N_NODE=host`
+  use the host's tools instead. Other scripts, such as `make doctor`, still
+  need host `python3`. See [docs/extending.md](docs/extending.md#host-tools).
+  Checked by running `setup.sh --non-interactive --todo --crm`, `crm.sh init`
+  and `todo.sh init` on a fresh throwaway stack with `python3`, `node` and
+  `make` removed from `PATH`.
+
 ### Changes
 
+- **`crm.sh init` grants server admin between two passes**: the Twenty setup
+  container has no docker CLI, so `twenty_admin.py --owner-only` creates or
+  signs in to the owner, `crm.sh` runs the SQL grant, and a second pass signs
+  in again and does the rest. Both passes are safe to repeat, so a run that
+  stops partway resumes. `twenty_admin.py` still runs the grant itself when
+  `TWENTY_GRANT_ADMIN_CMD` is set.
+- **Healthchecks for `n8n` and `valkey`**: `n8n` answers `/healthz`, and
+  `valkey` answers `PING`. Every long-running service in an optional
+  profile now has one.
 - **A paused searxng server points Hermes at browser search**: after 3
   failed calls in a row, Hermes's MCP circuit breaker pauses a server for 60
   seconds and told the model only to "use a different approach". A turn kept
@@ -19,6 +49,10 @@ the stack under another app.
   to search on Bing with `browser_exec`, and not to call searxng tools until
   the pause ends. No `.env` change; `docker compose up -d` recreates
   `hermes` for the new mount.
+
+CI: runs `test-crm-sh.sh` and the new `test-no-host-python.sh`.
+`docs/releasing.md` adds a shellcheck 0.9.0 run, the version CI installs, after
+v0.3.10's lint-only CI failure. Test-only.
 
 ## v0.3.10 — 2026-11-05
 

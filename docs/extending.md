@@ -6,6 +6,26 @@ and which parts of `docker-compose.yml` it can rely on across upgrades.
 Pin a release tag, not a branch. [CHANGELOG.md](../CHANGELOG.md) lists each
 release's new services, required `.env` keys and new host requirements.
 
+## Host tools
+
+`scripts/setup.sh`, `scripts/crm.sh init` and `scripts/todo.sh init` need
+bash, the tools macOS and Linux ship in `/bin` and `/usr/bin` (`grep`, `sed`,
+`awk`, `curl`, `openssl`, `ssh-keygen`), and the container engine. They need
+no `python3`, `node` or `make` on the host: their Python runs in the pinned
+Hermes image, and the n8n credentials step runs Node in the n8n image. Both
+images are pulled anyway, so the first such step may spend a few minutes
+pulling. Run the scripts with `bash` directly, as the `make` targets do.
+
+Each container runs as the calling user, with the repo mounted at its own host
+path. `STACK_PYTHON=host` runs the host's `python3` instead and `N8N_NODE=host`
+the host's `node`, for development and tests. `scripts/test-no-host-python.sh`
+checks the first-run scripts for host `python3` and `node` calls, and runs the
+container path with them removed from `PATH`.
+
+Other scripts still use the host's `python3`: `make doctor`, `coding-root.sh`
+and `context-root.sh`, the mail and Messages tools, Buzz agent management, and
+the eval and corpus scripts.
+
 ## Run a second copy
 
 Docker container names and image tags are global. Set these in the copy's
