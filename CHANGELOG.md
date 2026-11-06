@@ -19,6 +19,15 @@ the stack under another app.
   to search on Bing with `browser_exec`, and not to call searxng tools until
   the pause ends. No `.env` change; `docker compose up -d` recreates
   `hermes` for the new mount.
+- **A refused page read points Hermes at the browser**: searxng's
+  `web_url_read` is a plain fetch, so bot-protected sites answer it with
+  403, 429 or a 503 challenge, and pages built with JavaScript come back
+  empty. A research turn kept retrying it and searching for other copies of
+  the same pages, and each refusal counted toward searxng's circuit breaker.
+  The new `patch-blocked-fetch-hint.py` overlay recognizes those results and
+  adds a note, outside the untrusted-data wrapper, to open the URL with
+  `browser_exec` and not to try to get past a CAPTCHA. No `.env` change;
+  `docker compose up -d` recreates `hermes` for the new mounts.
 - **Compaction keeps what tool results said**: Hermes pruned old tool
   results to one-line stubs (`[web_url_read] (11,104 chars result)`) before
   handing the window to the summarizer, so a research turn came out of
