@@ -1459,6 +1459,7 @@ services:
       - ./compose/hermes/patch-browser-exec-hint.py:/bootstrap/patch-browser-exec-hint.py:ro
       - ./compose/hermes/browser_exec_hints.py:/bootstrap/browser_exec_hints.py:ro
       - ./compose/hermes/patch-tool-loop-notes.py:/bootstrap/patch-tool-loop-notes.py:ro
+      - ./compose/hermes/patch-tool-loop-replay.py:/bootstrap/patch-tool-loop-replay.py:ro
       - ./compose/hermes/history_budget.py:/bootstrap/history_budget.py:ro
       - ./compose/hermes/history_budget_hook.py:/bootstrap/history_budget_hook.py:ro
       - ./compose/hermes/patch-history-budget.py:/bootstrap/patch-history-budget.py:ro

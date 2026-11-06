@@ -24,6 +24,9 @@ run_patch /bootstrap/patch-tool-eval-trace.py
 run_patch /bootstrap/patch-browser-exec-hint.py
 # Tool-loop warnings outside the untrusted-data wrapper.
 run_patch /bootstrap/patch-tool-loop-notes.py
+# Halt a turn that keeps re-running calls whose results it has already seen,
+# whatever the cycle length (upstream catches cycles of at most 4 calls).
+run_patch /bootstrap/patch-tool-loop-replay.py
 # Per-session history budget for DM threads (request window; transcript stays).
 run_patch /bootstrap/patch-history-budget.py
 # Client-supplied session/turn context; refuse a prompt.submit profile that

@@ -194,7 +194,7 @@ A one-shot `hermes-api-bootstrap` service runs ahead of the main Hermes containe
 |---|---|
 | Port | **8643** (`HERMES_API_SERVER_PORT`) |
 | Max tool turns | **20** (`HERMES_API_MAX_TURNS`) |
-| Tool-loop hard stop | **on** for every profile (`HERMES_TOOL_LOOP_HARD_STOP`): a turn ends after 5 repeats of the same call or call cycle |
+| Tool-loop hard stop | **on** for every profile (`HERMES_TOOL_LOOP_HARD_STOP`): a turn ends after 5 back-to-back repeats of the same call, 5 laps of an identical cycle of up to 4 calls, or the third time it re-runs one call and gets back a result it had already seen that turn (any cycle length; pollers exempt) |
 | Tools | **`hermes-api-server`** (aligned with dashboard chat; no interactive-only tools) |
 | Default profile API | none under `standalone`; `:8642/v1` under `multiplex` ([Gateway topology](#gateway-topology)) |
 
@@ -312,6 +312,7 @@ Prefer Qwen-class (or other known-good agentic) models for folder listing, MCP, 
 | `compose/hermes/patch-fabricated-result.py` | Continues a stop turn that claims a write or `<result>` with no tool call, or asks the user for a password in chat, and does not store that reply |
 | `compose/hermes/patch-browser-exec-hint.py` | Adds a `hint` to a `browser_exec` result when the code imported the pre-defined helpers (e.g. `from browser_helpers import …`) or printed nothing; prints a trailing bare expression's value; points `browser_vault_save_login`'s `next` at `browser_vault_fill` when the save could not fill the page |
 | `compose/hermes/patch-tool-loop-notes.py` | Attaches tool-loop warnings and halt notices after the `<untrusted_tool_result>` wrapper, whose preamble tells the model not to follow directives inside it |
+| `compose/hermes/patch-tool-loop-replay.py` | Counts, per turn, re-runs of a call (same tool and arguments) that return a result already seen; notes the second and, with the hard stop on, ends the turn on the third (`stale_replay_halt`). Upstream only catches back-to-back repeats and cycles of at most 4 calls. Test: `scripts/test-tool-loop-replay.py` |
 | `compose/hermes/patch-tool-eval-trace.py` | JSONL turn traces for [tool-calling eval](tool-eval.md) (`data/hermes/eval/traces.jsonl`); unwraps `tool_call` inner names; records `content_len` after the text phase |
 | `compose/hermes/patch-tool-search-always-include.py` | Honors `tools.tool_search.always_include` so stacked MCP pins stay eager |
 

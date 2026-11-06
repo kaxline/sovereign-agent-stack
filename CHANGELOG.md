@@ -35,6 +35,17 @@ the stack under another app.
 
 ### Changes
 
+- **Hermes stops turns that re-run calls for results they already have**: the
+  new `patch-tool-loop-replay.py` overlay counts, per turn, each call that
+  repeats an earlier call's tool and arguments and returns a result already
+  seen. The second adds a note to the result; with
+  `HERMES_TOOL_LOOP_HARD_STOP` on (the default), the third ends the turn with
+  `stale_replay_halt`. Upstream's guards missed a 9-call `browser_exec`
+  rotation that ran for about 30 minutes, because they only catch cycles of
+  up to 4 calls whose results match on every lap. Short alternating loops now
+  stop sooner too: an A,B,A,B loop with unchanged results halts on its
+  seventh call instead of its tenth. No `.env` change.
+
 - **n8n setup only runs with `automation`**: `docker-compose.yml` no
   longer requires `N8N_ENCRYPTION_KEY` and `N8N_USER_MANAGEMENT_JWT_SECRET`.
   Compose filled them in for every service, so a `.env` without them failed
