@@ -71,6 +71,7 @@ jobs:
           grep -v '^N8N_' .env > /tmp/no-n8n.env
           COMPOSE_PROFILES=core docker compose --env-file /tmp/no-n8n.env config -q
           python3 scripts/test-terminal-backend-compose.py
+          python3 scripts/test-cont-init-env.py
           python3 scripts/test-root-access-hint.py
 
   project-sources:
