@@ -45,6 +45,14 @@ Run `make bash32-test` on a Mac before tagging. It runs the host scripts under
 `/bin/bash` 3.2, which is what installs get without Homebrew's bash. Tests on
 a machine with a newer `bash` first on PATH pass scripts that fail there.
 
+Run shellcheck at the version CI installs from Ubuntu (0.9.0) too. Each
+version flags different things, so a newer local shellcheck can pass what CI
+fails:
+
+```bash
+docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:v0.9.0 -x -e SC1090,SC1091 scripts/*.sh
+```
+
 ## Tag
 
 After the changelog commit is on `main`:

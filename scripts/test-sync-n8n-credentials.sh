@@ -47,10 +47,10 @@ check() {
   fi
 }
 calls() { wc -l < "$STUB_LOG" | tr -d ' '; }
-# Called through check, which shellcheck can't see.
-# shellcheck disable=SC2329
+# Called through check, which shellcheck can't see (SC2317 before 0.10, SC2329 after).
+# shellcheck disable=SC2317,SC2329
 creds() { compgen -G "${tmp}/n8n/demo-data/credentials/*.json" >/dev/null; }
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 no_creds() { ! creds; }
 
 keys='N8N_ENCRYPTION_KEY=abc123\nN8N_USER_MANAGEMENT_JWT_SECRET=def456\nLIGHTRAG_API_KEY=lr_x\n'
