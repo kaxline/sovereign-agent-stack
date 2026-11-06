@@ -140,6 +140,22 @@ the stack under another app.
   keys are in the environment; `make crm-remove` forgets a workspace. A new `crm`
   skill tells Hermes how to reach records, and `make doctor` checks each
   workspace's key over MCP. See [docs/crm.md](docs/crm.md).
+- **New MCP servers without recreating Hermes** (CR 0020 R4, checked live
+  on v0.22.7): after the bootstrap services write a new `crm-main` entry,
+  the running Hermes connects it within about a second. A default-profile
+  session that was open before Twenty existed called a `crm-main` tool on
+  its next turn, with no restart and no `reload.mcp`. `reload.mcp` with
+  `confirm: true` answered `mcp_servers_unavailable` ("did not connect:
+  boundary") because another configured server, Boundary's, was down. The
+  error names those servers even when the new one connected, so a caller
+  should check `mcp.servers.status` for its own server instead of
+  treating the error as failure. `make hermes-reload`, which recreates
+  Hermes, still works.
+- **MCP tool pins for servers with a hyphen in their name**: Hermes names
+  tools `mcp__<server>__<tool>` with `-` turned into `_`, so pins for
+  `caldav-<slug>` and `crm-<slug>` servers never matched, and those tools
+  stayed behind tool search. They are now pinned under Hermes' names.
+  Removing a CRM workspace also removes its pins.
 
 ## v0.3.9 — 2026-11-04
 

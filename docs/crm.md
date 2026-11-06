@@ -111,6 +111,14 @@ new *system* object from a Twenty upgrade isn't covered until you run
 `make crm-init ROTATE=1`. For a remote instance, check what your read-only
 role can write before you trust it on unattended runs.
 
+### Picking up a new workspace
+
+`make hermes-reload` re-runs both bootstraps and recreates Hermes. On Hermes
+v0.22.7 the recreate isn't needed: running the bootstraps alone
+(`docker compose run --rm hermes-api-bootstrap` and `hermes-browser-bootstrap`)
+is enough. The running Hermes connects the new `crm-<slug>` server within
+about a second, and open chats can use it on their next turn.
+
 ### What Hermes sees
 
 Twenty's MCP lists seven tools however many objects the workspace has:
