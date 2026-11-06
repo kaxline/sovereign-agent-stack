@@ -225,7 +225,7 @@ ensure_opencode_local_config() {
   else
     # Merge headless permission defaults from the template without clobbering
     # provider/model settings the operator already tuned.
-    if python3 - "$base" "$local_cfg" <<'PY'
+    if stack_python - "$base" "$local_cfg" <<'PY'
 import json, sys
 from pathlib import Path
 base = json.loads(Path(sys.argv[1]).read_text())
@@ -243,7 +243,7 @@ PY
       log "Ensured permission block in opencode.local.json"
     fi
   fi
-  python3 - "$local_cfg" <<'PY'
+  stack_python - "$local_cfg" <<'PY'
 import json, sys
 from pathlib import Path
 path = Path(sys.argv[1])
@@ -760,7 +760,6 @@ require_cmd docker
 require_cmd openssl
 require_cmd ssh-keygen
 docker compose version >/dev/null 2>&1 || die "docker compose is not available"
-require_python3
 
 if ! docker info >/dev/null 2>&1; then
   die "Docker daemon is not running"

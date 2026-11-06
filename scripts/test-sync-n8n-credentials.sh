@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Tests for scripts/sync-n8n-credentials.sh against scratch .env files, with a
-# stub node on PATH that records each call.
+# stub docker on PATH that records each call (the generator runs in the n8n
+# image), and a stub node for N8N_NODE=host.
 #   scripts/test-sync-n8n-credentials.sh
 set -euo pipefail
 
@@ -9,19 +10,29 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "${tmp}/scripts/lib" "${tmp}/n8n/demo-data/credentials" "${tmp}/bin"
 cp "${ROOT}/scripts/sync-n8n-credentials.sh" "${tmp}/scripts/"
-cp "${ROOT}/scripts/lib/env.sh" "${tmp}/scripts/lib/"
+cp "${ROOT}/scripts/lib/env.sh" "${ROOT}/scripts/lib/python.sh" "${tmp}/scripts/lib/"
+# A one-line compose file: the literal ${...} is what compose_image_default reads.
+# shellcheck disable=SC2016
+printf '  image: ${N8N_IMAGE:-n8nio/n8n:9.9.9}\n' > "${tmp}/docker-compose.yml"
 
-# The stub stands in for generate-n8n-credentials.js: it logs the key it was
-# given and writes one credential file.
+# The stubs stand in for generate-n8n-credentials.js: each logs the key it was
+# given and writes one credential file. docker also logs its arguments.
+cat > "${tmp}/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+echo "${N8N_ENCRYPTION_KEY}" >> "${STUB_LOG}"
+echo "$*" > "${STUB_LOG}.args"
+echo '{}' > n8n/demo-data/credentials/stub.json
+EOF
 cat > "${tmp}/bin/node" <<'EOF'
 #!/usr/bin/env bash
 echo "${N8N_ENCRYPTION_KEY}" >> "${STUB_LOG}"
 echo '{}' > n8n/demo-data/credentials/stub.json
 EOF
-chmod +x "${tmp}/bin/node"
+chmod +x "${tmp}/bin/docker" "${tmp}/bin/node"
+mv "${tmp}/bin/node" "${tmp}/node"
 # PATH holds only these tools and the stub, so a real node on the runner
 # never stands in for it.
-for tool in bash env grep head cut dirname mktemp mv cat touch tr; do
+for tool in bash env grep head cut dirname mktemp mv cat touch tr id sed mkdir; do
   ln -s "$(command -v "$tool")" "${tmp}/bin/${tool}"
 done
 export STUB_LOG="${tmp}/node.log"
@@ -82,10 +93,20 @@ check "existing files are kept" test "$(calls)" -eq 0
 run --force
 check "--force rewrites" test "$(calls)" -eq 1
 
-# Automation on and Node missing: a clear error, not a command-not-found.
-rm -f "${tmp}/n8n/demo-data/credentials/"*.json "${tmp}/bin/node"
-run
-check "missing node fails" test "$status" -ne 0
-check "missing node says so" grep -q 'needs Node' "${tmp}/out"
+check "runs node in the compose default n8n image" grep -q -- '--entrypoint node n8nio/n8n:9.9.9 scripts/generate-n8n-credentials.js' "${STUB_LOG}.args"
+check "passes the keys by name, not value" grep -q -- '-e N8N_ENCRYPTION_KEY ' "${STUB_LOG}.args"
+check "keeps the key off the command line" bash -c "! grep -q abc123 '${STUB_LOG}.args'"
+printf 'N8N_IMAGE=n8nio/n8n:1.0.0\n' >> "${tmp}/.env"
+run --force
+check "N8N_IMAGE picks the image" grep -q -- '--entrypoint node n8nio/n8n:1.0.0 ' "${STUB_LOG}.args"
+
+# N8N_NODE=host: the host's node, and a clear error without one.
+rm -f "${tmp}/n8n/demo-data/credentials/"*.json
+N8N_NODE=host run
+check "N8N_NODE=host without node fails" test "$status" -ne 0
+check "N8N_NODE=host without node says so" grep -q 'needs Node' "${tmp}/out"
+mv "${tmp}/node" "${tmp}/bin/node"
+N8N_NODE=host run
+check "N8N_NODE=host runs the host node" test "$(calls)" -eq 1
 
 exit "$fail"

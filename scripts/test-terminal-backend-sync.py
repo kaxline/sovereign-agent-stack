@@ -33,6 +33,8 @@ def write_env(directory: Path, backend: str | None, coding: str, context: str) -
 def run_sync(directory: Path) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["SYNC_TERMINAL_ROOT"] = str(directory)
+    # The host python3 keeps this test off the Hermes image; test-stack-python.sh covers the container.
+    env.setdefault("STACK_PYTHON", "host")
     return subprocess.run(
         ["bash", str(SCRIPT)],
         cwd=directory,

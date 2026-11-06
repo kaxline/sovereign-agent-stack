@@ -131,7 +131,6 @@ cmd_init() {
     esac
   done
   valid_slug "$slug" || die "slug '${slug}' must use lowercase letters, digits and hyphens"
-  require_python3
   require_running
 
   local username password password_file
@@ -157,15 +156,38 @@ cmd_init() {
 
   local args=(init --slug "$slug" --display-name "${display:-$slug}")
   [[ -n "$rotate" ]] && args+=("$rotate")
-  TWENTY_BASE_URL="http://127.0.0.1:$(env_get TWENTY_PORT 3000)" \
-  TWENTY_USERNAME="$username" \
-  TWENTY_PASSWORD="$password" \
-  TWENTY_PASSWORD_FILE="$password_file" \
-  TWENTY_MULTIWORKSPACE="$(env_get TWENTY_MULTIWORKSPACE 0)" \
-  TWENTY_WORKSPACES_DIR="$WS_DIR" \
-  TWENTY_DATA_DIR="$(data_dir)" \
-  TWENTY_GRANT_ADMIN_CMD="${ROOT}/scripts/crm.sh" \
-    python3 -I "${ROOT}/scripts/twenty_admin.py" "${args[@]}"
+  # twenty_admin.py runs in the Hermes image on the crm network, so the host
+  # needs no python3. That container has no docker CLI, so the server-admin
+  # grant runs here, between a pass that only creates or signs in to the owner
+  # and the full one. Both passes are safe to repeat.
+  local base="http://twenty-server:3000" data
+  data="$(data_dir)"
+  local opts=(--network-of twenty-server --mount "$data" --mount "$WS_DIR")
+  if [[ -n "$password_file" ]]; then
+    [[ "$password_file" == /* ]] || password_file="${ROOT}/${password_file}"
+    opts+=(--mount "$(dirname "$password_file")")
+  fi
+  local name
+  for name in TWENTY_BASE_URL TWENTY_USERNAME TWENTY_PASSWORD TWENTY_PASSWORD_FILE \
+    TWENTY_MULTIWORKSPACE TWENTY_WORKSPACES_DIR TWENTY_DATA_DIR; do
+    opts+=(--env "$name")
+  done
+  [[ "${STACK_PYTHON:-}" == host ]] && base="http://127.0.0.1:$(env_get TWENTY_PORT 3000)"
+  crm_admin() {
+    TWENTY_BASE_URL="$base" \
+    TWENTY_USERNAME="$username" \
+    TWENTY_PASSWORD="$password" \
+    TWENTY_PASSWORD_FILE="$password_file" \
+    TWENTY_MULTIWORKSPACE="$(env_get TWENTY_MULTIWORKSPACE 0)" \
+    TWENTY_WORKSPACES_DIR="$WS_DIR" \
+    TWENTY_DATA_DIR="$data" \
+      stack_python "${opts[@]}" -I "${ROOT}/scripts/twenty_admin.py" "$@"
+  }
+  crm_admin "${args[@]}" --owner-only
+  printf '[crm] server admin: running\n'
+  cmd_grant_admin "$username" >/dev/null
+  printf '[crm] server admin: done\n'
+  crm_admin "${args[@]}"
 
   if ! is_true "$(env_get TWENTY_MCP_ENABLED 0)"; then
     upsert_env "$ENV_PATH" TWENTY_MCP_ENABLED 1
