@@ -6,7 +6,7 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
-## Unreleased
+## v0.3.10 — 2026-11-05
 
 ### Upgrade steps
 
@@ -148,7 +148,6 @@ the stack under another app.
   `$HERMES_HOME` refuses one, but through `tempfile.gettempdir()`, which is
   virtiofs here. `patch-control-socket-tmp` still binds under `/tmp`; only
   its client-path anchor moved.
-
 - **Twenty CRM**: Each workspace, local or remote, is one file in
   `compose/twenty/workspaces/` and one MCP server in Hermes, `crm-<slug>`.
   `api-server` gets the workspace's read-only key or no entry at all; the
@@ -178,6 +177,9 @@ the stack under another app.
   `caldav-<slug>` and `crm-<slug>` servers never matched, and those tools
   stayed behind tool search. They are now pinned under Hermes' names.
   Removing a CRM workspace also removes its pins.
+
+CI: `test-sync-n8n-credentials.sh` and `test-twenty-compose.sh` pass
+shellcheck (SC2016, SC2059, SC2329). Test-only.
 
 ## v0.3.9 — 2026-11-04
 
