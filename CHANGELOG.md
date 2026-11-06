@@ -8,6 +8,15 @@ the stack under another app.
 
 ## Unreleased
 
+### New optional `.env` keys
+
+- `HERMES_WEB_SEARCH_MODE`: `private` (default), `private-first`,
+  `keyless-first` or `keyless`. Chooses whether Hermes' `searxng_web_search`
+  and `web_url_read` are answered by SearXNG, by Hermes' keyless ring (Exa,
+  Parallel, Firecrawl, Keenable), or by one with the other as fallback. Unset
+  keeps today's behaviour. See
+  [docs/searxng.md](docs/searxng.md#search-modes).
+
 ### Upgrade steps
 
 1. With `automation` or `searxng-prod` on, `docker compose up -d`. `n8n` and

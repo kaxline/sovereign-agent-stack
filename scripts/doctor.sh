@@ -108,6 +108,11 @@ if has_profile core; then
   if [[ "$agent_tag" =~ ^v20[0-9][0-9]\. ]]; then
     bad "HERMES_AGENT_IMAGE_TAG=${agent_tag} predates the overlays — make hermes-upgrade AGENT=v0.22.7 WEBUI=0.52.544"
   fi
+  search_mode="$(env_get HERMES_WEB_SEARCH_MODE private | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+  case "$search_mode" in
+    private|private-first|keyless-first|keyless) ;;
+    *) warn "HERMES_WEB_SEARCH_MODE=${search_mode} is not private, private-first, keyless-first or keyless; Hermes uses private" ;;
+  esac
 fi
 
 # --- User data root ---
