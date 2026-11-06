@@ -91,11 +91,150 @@ def test_render() -> None:
     expect("whole page" in text and "0123456789" in text, text)
 
 
+EMPTY_WITH_ENGINES = res('No results found for "q".\n\n' + UNAVAILABLE.format("bing (CAPTCHA)"))
+CLEAN_EMPTY = res('No results found for "q".')
+PAUSE_ERR = err("MCP server 'searxng' is unreachable after 3 consecutive failures. Paused for 60 s.")
+SEARX_OK = res("Title: S\nDescription: from searxng\nURL: https://s.example.com")
+PAGE_OK = res("# Registry\n\n" + "plain fetch text " * 20)
+FETCH_403 = err("\U0001F6AB Website Error (403): Access blocked (bot detection or geo-restriction)")
+RING_OK = {"success": True, "data": {"web": [{"title": "R", "url": "https://r.example.com", "description": "ring"}]}}
+RING_EMPTY_OK = {"success": True, "data": {"web": []}}
+RING_FAIL = {"success": False, "error": "HTTP 429 (all keyless vendors unavailable: exa, parallel, firecrawl, keenable)"}
+EXTRACT_OK = {"url": "https://registry.example.com/x", "title": "Registry", "content": "ring page text"}
+EXTRACT_ERR = {"url": "https://registry.example.com/x", "title": "", "content": "", "error": "HTTP 403 from origin"}
+
+
+def run(mode, tool, args, inner_result, ring_result, enabled=True, refusal=None):
+    calls: list[str] = []
+
+    def inner(a, **kw):
+        calls.append("searxng")
+        if isinstance(inner_result, Exception):
+            raise inner_result
+        return inner_result
+
+    def ring_search(query, limit):
+        calls.append("ring")
+        return json.loads(json.dumps(ring_result))
+
+    def ring_extract(url):
+        calls.append("ring")
+        return dict(ring_result)
+
+    saved = {n: getattr(wsm, n) for n in ("_ring_search", "_ring_extract", "_ring_enabled", "_url_refusal")}
+    wsm._ring_search, wsm._ring_extract = ring_search, ring_extract
+    wsm._ring_enabled = lambda: enabled
+    wsm._url_refusal = lambda url: refusal
+    os.environ["HERMES_WEB_SEARCH_MODE"] = mode
+    try:
+        return wsm.wrap_handler("searxng", tool, inner)(dict(args)), calls
+    finally:
+        for n, f in saved.items():
+            setattr(wsm, n, f)
+        os.environ.pop("HERMES_WEB_SEARCH_MODE", None)
+
+
+def test_unwrapped_tools() -> None:
+    inner = lambda args, **kw: "x"  # noqa: E731
+    expect(wsm.wrap_handler("lightrag", "query_document", inner) is inner, "other server")
+    expect(wsm.wrap_handler("searxng", "searxng_get_info", inner) is inner, "other tool")
+
+
+def test_private_is_untouched() -> None:
+    r, calls = run("private", "searxng_web_search", {"query": "q"}, err("boom"), RING_OK)
+    expect(r == err("boom") and calls == ["searxng"], (r, calls))
+    r, calls = run("private", "web_url_read", {"url": "https://a.example.com"}, FETCH_403, EXTRACT_OK)
+    expect(r == FETCH_403 and calls == ["searxng"], (r, calls))
+
+
+def test_private_first_search() -> None:
+    r, calls = run("private-first", "searxng_web_search", {"query": "q"}, EMPTY_WITH_ENGINES, RING_OK)
+    expect(calls == ["searxng", "ring"] and "SearXNG was unavailable for this search" in r, r)
+    expect("URL: https://r.example.com" in json.loads(r)["result"], r)
+    r, calls = run("private-first", "searxng_web_search", {"query": "q"}, CLEAN_EMPTY, RING_OK)
+    expect(calls == ["searxng"] and r == CLEAN_EMPTY, "clean empty does not leak to the ring")
+    r, calls = run("private-first", "searxng_web_search", {"query": "q"}, SEARX_OK, RING_OK)
+    expect(calls == ["searxng"] and r == SEARX_OK, "searxng success is returned as is")
+    r, calls = run("private-first", "searxng_web_search", {"query": "q"}, PAUSE_ERR, RING_FAIL)
+    e = json.loads(r)["error"]
+    expect(e.startswith(json.loads(PAUSE_ERR)["error"]) and "(fallback via the keyless web tier also failed:" in e, r)
+
+
+def test_keyless_first_search() -> None:
+    r, calls = run("keyless-first", "searxng_web_search", {"query": "q"}, SEARX_OK, RING_FAIL)
+    expect(calls == ["ring", "searxng"] and "The keyless web tier was unavailable for this search" in r, r)
+    expect("URL: https://s.example.com" in json.loads(r)["result"], r)
+    r, calls = run("keyless-first", "searxng_web_search", {"query": "q"}, SEARX_OK, RING_EMPTY_OK)
+    expect(calls == ["ring"], "ring success with zero results is not a failure")
+    r, calls = run("keyless-first", "searxng_web_search", {"query": "q"}, PAUSE_ERR, RING_FAIL)
+    e = json.loads(r)["error"]
+    expect(e.startswith(RING_FAIL["error"]) and "(fallback via SearXNG also failed:" in e, r)
+
+
+def test_keyless_search() -> None:
+    r, calls = run("keyless", "searxng_web_search", {"query": "q"}, SEARX_OK, RING_OK)
+    expect(calls == ["ring"] and json.loads(r)["result"].startswith("Served by the keyless web tier (exa)."), r)
+    r, calls = run("keyless", "searxng_web_search", {"query": "q"}, SEARX_OK, RING_FAIL)
+    expect(calls == ["ring"] and "SearXNG is not used in this mode" in json.loads(r)["error"], r)
+
+
+def test_page_reads() -> None:
+    a = {"url": "https://registry.example.com/x"}
+    r, calls = run("private-first", "web_url_read", a, FETCH_403, EXTRACT_OK)
+    expect(calls == ["searxng", "ring"] and "Served by the keyless web tier." in r, r)
+    expect("SearXNG was unavailable for this page read" in r and "ring page text" in r, r)
+    r, calls = run("private-first", "web_url_read", a, PAGE_OK, EXTRACT_OK)
+    expect(calls == ["searxng"] and r == PAGE_OK, "good fetch is returned as is")
+    r, calls = run("keyless-first", "web_url_read", a, PAGE_OK, EXTRACT_ERR)
+    expect(calls == ["ring", "searxng"] and "plain fetch text" in r, (calls, r))
+    r, calls = run("keyless", "web_url_read", a, PAGE_OK, EXTRACT_ERR)
+    expect(calls == ["ring"] and "HTTP 403 from origin" in json.loads(r)["error"], r)
+    r, calls = run("keyless", "web_url_read", {"url": "file:///etc/passwd"}, PAGE_OK, EXTRACT_OK)
+    expect("ring" not in calls and r == PAGE_OK, "non-http URL never reaches the ring")
+    r, calls = run("private-first", "web_url_read", {}, FETCH_403, EXTRACT_OK)
+    expect(calls == ["searxng"], "no URL never reaches the ring")
+
+
+def test_guards() -> None:
+    refusal = err("Blocked: URL targets a private or internal network address")
+    r, calls = run("keyless", "web_url_read", {"url": "http://10.0.0.5/admin"}, PAGE_OK, EXTRACT_OK, refusal=refusal)
+    expect("ring" not in calls and "private or internal" in r, r)
+    r, calls = run("private-first", "web_url_read", {"url": "http://10.0.0.5/admin"}, FETCH_403, EXTRACT_OK,
+                   refusal=refusal)
+    expect(calls == ["searxng"] and "private or internal" in r, r)
+    r, calls = run("keyless", "searxng_web_search", {"query": "q"}, SEARX_OK, RING_OK, enabled=False)
+    expect("ring" not in calls and "keyless web tier disabled (web.keyless_fallback: false)" in r, r)
+
+
+def test_inner_raises() -> None:
+    r, calls = run("private-first", "searxng_web_search", {"query": "q"}, RuntimeError("down"), RING_OK)
+    expect(calls == ["searxng", "ring"] and "down" in r, (calls, r))
+    try:
+        run("private", "searxng_web_search", {"query": "q"}, RuntimeError("down"), RING_OK)
+        fail("private re-raises")
+    except RuntimeError:
+        pass
+
+
+def test_bad_mode_is_private() -> None:
+    r, calls = run("keyless-only", "searxng_web_search", {"query": "q"}, err("boom"), RING_OK)
+    expect(r == err("boom") and calls == ["searxng"], (r, calls))
+
+
 def main() -> None:
     test_current_mode()
     test_search_failed()
     test_fetch_failed()
     test_render()
+    test_unwrapped_tools()
+    test_private_is_untouched()
+    test_private_first_search()
+    test_keyless_first_search()
+    test_keyless_search()
+    test_page_reads()
+    test_guards()
+    test_inner_raises()
+    test_bad_mode_is_private()
     print("ok")
 
 

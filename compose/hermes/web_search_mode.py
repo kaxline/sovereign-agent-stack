@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 try:
     from agent.blocked_fetch_hint import hint_for
@@ -120,6 +120,158 @@ def render_search(resp: dict, args: Mapping[str, Any]) -> str:
     else:
         parts.append(f'No results found for "{args.get("query", "")}".')
     return _handler_json("\n\n".join(parts))
+
+
+SERVER = "searxng"
+SEARCH_TOOL_NAME = "searxng_web_search"
+READ_TOOL_NAME = "web_url_read"
+RING_START = "exa"  # first ring vendor; upstream's cursor decides the real order unless a vendor is pinned
+DEFAULT_LIMIT = 10
+DISABLED = "keyless web tier disabled (web.keyless_fallback: false)"
+SEARXNG_SIDE, RING_SIDE = "SearXNG", "the keyless web tier"
+
+
+def _tool_error(message: str) -> str:
+    try:
+        from tools.registry import tool_error
+    except ImportError:  # host tests
+        return json.dumps({"error": message})
+    return tool_error(message)
+
+
+# --- Seams (replaced by the host test) ------------------------------------------------------------
+def _ring_search(query: str, limit: int) -> dict:
+    from plugins.web.keyless_mcp import search_with_failover
+    return search_with_failover(RING_START, query, limit)
+
+
+def _ring_extract(url: str) -> dict:
+    from plugins.web.keyless_mcp import extract_with_failover
+    results = extract_with_failover(RING_START, [url])
+    return results[0] if results else {"url": url, "error": "keyless web tier returned no page"}
+
+
+def _ring_enabled() -> bool:
+    from plugins.web.keyless_mcp import keyless_enabled
+    return keyless_enabled()
+
+
+def _url_refusal(url: str) -> str | None:
+    """Upstream's refusal for a URL that must not leave the machine (secrets, private address), else None."""
+    from tools.web_tools_extract import _validate_extract_urls
+    blocked = _validate_extract_urls([url])[3]
+    if blocked is not None:
+        return blocked if isinstance(blocked, str) else json.dumps(blocked)
+    from tools.url_safety import is_safe_url
+    if not is_safe_url(url):
+        return _tool_error("Blocked: URL targets a private or internal network address")
+    return None
+
+
+# --- Wrapper --------------------------------------------------------------------------------------
+def _failure_text(result: Any) -> str:
+    data = _parsed(result)
+    if isinstance(data, dict) and "error" in data:
+        return str(data["error"])
+    return _result_text(result)
+
+
+def _with_note(result: str, note: str) -> str:
+    """``result`` (handler JSON) with ``note`` as its first paragraph, or a ``note`` key for JSON output."""
+    data = _parsed(result)
+    if not isinstance(data, dict) or not isinstance(data.get("result"), str):
+        return result
+    inner = _parsed(data["result"])
+    if isinstance(inner, dict):
+        inner["note"] = note
+        data["result"] = json.dumps(inner, ensure_ascii=False)
+    else:
+        data["result"] = f"{note}\n\n{data['result']}"
+    return json.dumps(data, ensure_ascii=False)
+
+
+def _with_fallback_failure(result: str, other_side: str, other_error: str) -> str:
+    suffix = f" (fallback via {other_side} also failed: {other_error})"
+    data = _parsed(result)
+    if isinstance(data, dict) and "error" in data:
+        return _tool_error(f"{data['error']}{suffix}")
+    if isinstance(data, dict) and isinstance(data.get("result"), str):
+        data["result"] += suffix
+        return json.dumps(data, ensure_ascii=False)
+    return result
+
+
+def _ring_url(args: Mapping[str, Any]) -> str | None:
+    from urllib.parse import urlsplit
+    url = args.get("url") if isinstance(args, Mapping) else None
+    if not isinstance(url, str):
+        return None
+    parts = urlsplit(url.strip())
+    return url.strip() if parts.scheme in ("http", "https") and parts.hostname else None
+
+
+def wrap_handler(server_name: str, tool_name: str, inner: Callable[..., Any]) -> Callable[..., Any]:
+    """``inner`` for every tool but the searxng server's search and page read, which follow the mode."""
+    if server_name != SERVER or tool_name not in (SEARCH_TOOL_NAME, READ_TOOL_NAME):
+        return inner
+    is_search = tool_name == SEARCH_TOOL_NAME
+    what = "search" if is_search else "page read"
+
+    def _private(args: dict, kwargs: dict) -> tuple[str, bool]:
+        try:
+            result = inner(args, **kwargs)
+        except Exception as exc:  # fallback modes only; private mode never gets here
+            logger.warning("searxng %s raised in %s: %s", tool_name, current_mode(), exc)
+            return _tool_error(f"{type(exc).__name__}: {exc}"), True
+        failed = search_failed(result) if is_search else fetch_failed(args, result)
+        return result, failed
+
+    def _ring(args: dict) -> tuple[str, bool]:
+        if not _ring_enabled():
+            return _tool_error(DISABLED), True
+        if is_search:
+            limit = args.get("num_results")
+            resp = _ring_search(str(args.get("query") or ""), int(limit) if limit else DEFAULT_LIMIT)
+            if not resp.get("success"):
+                return _tool_error(str(resp.get("error") or "keyless search failed")), True
+            resp.setdefault("data", {}).setdefault("served_by", RING_START)  # upstream omits it when unchanged
+            return render_search(resp, args), False
+        url = _ring_url(args) or ""
+        refusal = _url_refusal(url)
+        if refusal is not None:
+            return refusal, True
+        entry = _ring_extract(url)
+        if entry.get("error"):
+            return _tool_error(str(entry["error"])), True
+        return render_extract(entry, args), False
+
+    def _handler(args: dict, **kwargs: Any) -> Any:
+        mode = current_mode()
+        if mode == "private" or (not is_search and _ring_url(args) is None):
+            return inner(args, **kwargs)
+        if mode == "keyless":
+            result, failed = _ring(args)
+            if failed:
+                return _tool_error(f"{_failure_text(result)}. SearXNG is not used in this mode "
+                                   "(HERMES_WEB_SEARCH_MODE=keyless).")
+            return result
+        if mode == "private-first":
+            first, second, first_side, second_side = _private, _ring, SEARXNG_SIDE, RING_SIDE
+        else:
+            first, second, first_side, second_side = _ring, _private, RING_SIDE, SEARXNG_SIDE
+        a = (args, kwargs) if first is _private else (args,)
+        result, failed = first(*a)
+        if not failed:
+            return result
+        b = (args, kwargs) if second is _private else (args,)
+        other, other_failed = second(*b)
+        reason = _failure_text(result)[:200]
+        if not other_failed:
+            label = first_side[0].upper() + first_side[1:]
+            return _with_note(other, f"{label} was unavailable for this {what} ({reason}).")
+        return _with_fallback_failure(result, second_side, _failure_text(other))
+
+    return _handler
 
 
 def render_extract(entry: dict, args: Mapping[str, Any]) -> str:
