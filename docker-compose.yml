@@ -1630,6 +1630,7 @@ services:
       - ./compose/hermes/patch-tool-loop-notes.py:/bootstrap/patch-tool-loop-notes.py:ro
       - ./compose/hermes/patch-tool-loop-replay.py:/bootstrap/patch-tool-loop-replay.py:ro
       - ./compose/hermes/patch-searxng-pause-browser.py:/bootstrap/patch-searxng-pause-browser.py:ro
+      - ./compose/hermes/patch-browser-unresolvable-host.py:/bootstrap/patch-browser-unresolvable-host.py:ro
       - ./compose/hermes/history_budget.py:/bootstrap/history_budget.py:ro
       - ./compose/hermes/history_budget_hook.py:/bootstrap/history_budget_hook.py:ro
       - ./compose/hermes/patch-history-budget.py:/bootstrap/patch-history-budget.py:ro

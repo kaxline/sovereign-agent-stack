@@ -30,6 +30,9 @@ run_patch /bootstrap/patch-tool-loop-replay.py
 # While the searxng MCP server is paused (circuit breaker), say how to search
 # with browser_exec instead.
 run_patch /bootstrap/patch-searxng-pause-browser.py
+# A browser URL whose hostname doesn't resolve says so, instead of being
+# reported as a private address.
+run_patch /bootstrap/patch-browser-unresolvable-host.py
 # Per-session history budget for DM threads (request window; transcript stays).
 run_patch /bootstrap/patch-history-budget.py
 # Client-supplied session/turn context; refuse a prompt.submit profile that
