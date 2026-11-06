@@ -12,6 +12,10 @@ the stack under another app.
 
 1. With `automation` or `searxng-prod` on, `docker compose up -d`. `n8n` and
    `valkey` get healthchecks, so compose recreates them.
+2. On a host whose uid isn't 1000, `docker compose restart hermes` so the
+   worker key is copied again with the right owner. An app that chowns
+   `/var/lib/hermes-worker-key/id_ed25519` after each `up` (the CR 0021
+   fallback) can drop that step once it pins this release.
 
 ### Host requirements
 
@@ -31,6 +35,18 @@ the stack under another app.
 
 ### Changes
 
+- **The SSH worker key belongs to the remapped hermes user** (CR 0021 R1):
+  `09-install-worker-key` read `HERMES_UID` under `#!/bin/sh`, where s6
+  gives cont-init scripts no environment, so it always chowned the key and
+  `/opt/data/.ssh` to 1000:1000. With `HERMES_UID=501`, hermes then could
+  read neither the key nor `known_hosts`, and every terminal and file tool
+  call over ssh failed. The script now takes the owner from `id -u hermes`,
+  which stage2 and `005-remap-hermes-uid` have already set, and runs under
+  `with-contenv`. `11-warmup-uv-cache` also moves to `with-contenv`; its
+  `UV_CACHE_DIR` default matched compose, so nothing changed there. Checked
+  in throwaway containers with `HERMES_UID=501 HERMES_GID=20`: before, the
+  key was owned by `1000 1000` and ssh to a worker failed host-key
+  verification; after, it is owned by `501 20` and ssh exits 0.
 - **`crm.sh init` grants server admin between two passes**: the Twenty setup
   container has no docker CLI, so `twenty_admin.py --owner-only` creates or
   signs in to the owner, `crm.sh` runs the SQL grant, and a second pass signs
@@ -86,7 +102,10 @@ the stack under another app.
   source that failed. The stored transcript is unchanged. No `.env` change;
   `docker compose up -d` recreates `hermes` for the new mounts.
 
-CI: runs `test-crm-sh.sh` and the new `test-no-host-python.sh`.
+CI: runs `test-crm-sh.sh` and the new `test-no-host-python.sh`. The new
+`test-cont-init-env.py` (CR 0021 R2) fails when a script mounted into
+`/etc/cont-init.d` reads a variable its service's `environment` sets and
+doesn't start with `#!/command/with-contenv`; reverting R1 fails it.
 `docs/releasing.md` adds a shellcheck 0.9.0 run, the version CI installs, after
 v0.3.10's lint-only CI failure. Test-only.
 

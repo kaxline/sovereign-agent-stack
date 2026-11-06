@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/command/with-contenv sh
 # Shared uv cache on a named volume, owned by the hermes user.
 #
 # Each profile has its own HOME under data/hermes, so by default each kept its

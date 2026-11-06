@@ -1,14 +1,18 @@
-#!/bin/sh
+#!/command/with-contenv sh
 # OpenSSH refuses a private key that is not mode 600 and owned by the user
 # running ssh. The compose mount is read-only, so copy it to a path the
 # hermes user owns. That path is not under /opt/data.
+#
+# The owner comes from the hermes user, not HERMES_UID: the image's stage2
+# hook and cont-init 005 have already remapped hermes to HERMES_UID, and a
+# script without with-contenv sees no environment at all (CR 0021).
 set -eu
 
 src=/opt/hermes-ssh/id_ed25519
 dest_dir=/var/lib/hermes-worker-key
 dest="${dest_dir}/id_ed25519"
-uid="${HERMES_UID:-1000}"
-gid="${HERMES_GID:-1000}"
+uid="$(id -u hermes)"
+gid="$(id -g hermes)"
 
 if [ ! -f "$src" ]; then
   echo "[worker-key] missing ${src}; terminal ssh will fail until setup creates the key"
