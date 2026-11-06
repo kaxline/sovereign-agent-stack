@@ -49,10 +49,11 @@ the stack under another app.
   engine, and the gate's default `SEARCH_GATE_ENGINES` becomes
   `bing:10,google cse:20,naver:20`. In tests from one residential IP it
   answered every English query, and gave on-topic pages for full-sentence
-  queries where Bing didn't. Run `./scripts/setup.sh` (or `make
-  ensure-local`) to refresh `settings.local.yml`, then `docker compose up -d
-  --force-recreate searxng` and, with the gate on, `docker compose up -d
-  search-gate`. An app that mounts its own SearXNG settings without `naver`,
+  queries where Bing didn't. Run `./scripts/setup.sh` to rewrite
+  `settings.local.yml` from the template (`make ensure-local` only creates it
+  when missing), then `docker compose up -d --force-recreate searxng`. A
+  `.env` that sets `SEARCH_GATE_ENGINES` keeps its own list; add `naver:20`
+  to it, then `docker compose up -d search-gate`. An app that mounts its own SearXNG settings without `naver`,
   or a fallback instance without it when `SEARCH_GATE_FALLBACK_ENGINES` is
   unset, should set `SEARCH_GATE_ENGINES` to the old value; otherwise the
   gate cools `naver` down after each failure.

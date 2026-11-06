@@ -52,7 +52,7 @@ This stack keeps default general search lean:
 `search.suspended_times` are shortened so bans clear without a container restart. After changing `searxng/settings.yml`, re-sync the secret into the gitignored overlay and recreate:
 
 ```bash
-./scripts/setup.sh   # or make ensure-local — refreshes settings.local.yml from the template
+./scripts/setup.sh   # rewrites settings.local.yml from the template; make ensure-local only creates it when missing
 docker compose up -d --force-recreate searxng
 ```
 
