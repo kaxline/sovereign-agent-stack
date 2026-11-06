@@ -6,7 +6,7 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
-## Unreleased
+## v0.3.11 — 2026-11-06
 
 ### New optional `.env` keys
 
@@ -19,8 +19,9 @@ the stack under another app.
 
 ### Upgrade steps
 
-1. With `automation` or `searxng-prod` on, `docker compose up -d`. `n8n` and
-   `valkey` get healthchecks, so compose recreates them.
+1. `docker compose up -d`. It recreates `hermes` for the new overlay mounts
+   and reruns both bootstrap services. With `automation` or `searxng-prod`
+   on, it also recreates `n8n` and `valkey`, which get healthchecks.
 2. On a host whose uid isn't 1000, `docker compose restart hermes` so the
    worker key is copied again with the right owner. An app that chowns
    `/var/lib/hermes-worker-key/id_ed25519` after each `up` (the CR 0021
@@ -54,9 +55,12 @@ the stack under another app.
   is enough; `HERMES_BOOTSTRAP_FORCE` isn't needed. The default profile isn't
   touched, since the bootstrap never registers LightRAG there. A
   `lightrag-mcp` entry added there by hand stays until the user removes it.
-  Checked with the bootstrap functions in `nousresearch/hermes-agent:v0.22.7`
-  against configs holding both entries plus two other servers: both LightRAG
-  entries were removed on both profiles, and the other two stayed.
+  Checked on a throwaway stack with Hermes v0.22.7. Both bootstrap services
+  first ran with the flag on, and an unfiltered `lightrag-mcp` entry was then
+  added to each profile. A rerun with the flag off removed `lightrag` and
+  `lightrag-mcp` from both profiles and kept `boundary` and `searxng`.
+  Turning the flag back on without `HERMES_BOOTSTRAP_FORCE` registered
+  LightRAG again.
 - **The SSH worker key belongs to the remapped hermes user** (CR 0021 R1):
   `09-install-worker-key` read `HERMES_UID` under `#!/bin/sh`, where s6
   gives cont-init scripts no environment, so it always chowned the key and
