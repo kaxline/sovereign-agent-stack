@@ -87,6 +87,15 @@ GPTR_MCP_TOOLS="deep_research quick_search write_report get_research_sources get
 # Pinned so local models call them instead of describing them; the follow-up
 # tools stay reachable through tool search.
 GPTR_MCP_PINS="deep_research quick_search write_report"
+TWENTY_MCP_ENABLED="${TWENTY_MCP_ENABLED:-0}"
+TWENTY_WORKSPACES_DIR="${TWENTY_WORKSPACES_DIR:-/bootstrap/twenty-workspaces}"
+# The local instance; remote workspaces carry their own URL.
+TWENTY_LOCAL_MCP_URL="http://twenty-server:3000/mcp"
+TWENTY_MCP_TIMEOUT="${TWENTY_MCP_TIMEOUT:-60}"
+TWENTY_MCP_CONNECT_TIMEOUT="${TWENTY_MCP_CONNECT_TIMEOUT:-30}"
+# Twenty's MCP lists these seven whatever the workspace holds; the object
+# tools are reached through get_tool_catalog, learn_tools and execute_tool.
+TWENTY_MCP_PINS="get_tool_catalog learn_tools execute_tool list_object_metadata_names list_skills load_skills search_help_center"
 # Probe interval for a parked stack MCP server (patch-mcp-wake.py; Hermes
 # default 300, floor 10). hermes starts without waiting for its MCP sidecars,
 # so one still booting parks and comes back on the next probe. Empty leaves
@@ -165,6 +174,13 @@ bootstrap_inputs_hash() {
     cat /opt/hermes/pyproject.toml 2>/dev/null || true
     echo "caldav"
     for _bih_f in "$CALDAV_MCP_ACCOUNTS_DIR"/*; do
+      [ -f "$_bih_f" ] || continue
+      echo "$_bih_f"
+      cat "$_bih_f"
+    done
+    # A new, removed or re-keyed Twenty workspace changes what gets registered.
+    echo "twenty"
+    for _bih_f in "${TWENTY_WORKSPACES_DIR:-/bootstrap/twenty-workspaces}"/*.env; do
       [ -f "$_bih_f" ] || continue
       echo "$_bih_f"
       cat "$_bih_f"
@@ -724,6 +740,13 @@ pin_tool_search_always_include() {
 
 # Pin both short tool names and mcp__<server_key>__<tool> forms.
 # Usage: pin_mcp_tools <profile> <server_key> <tool...>
+# The name Hermes registers an MCP tool under: mcp__<server>__<tool>, with each
+# character outside [A-Za-z0-9_] replaced by _ (sanitize_mcp_name_component in
+# tools/mcp_tool_schema.py). crm-main's tools are mcp__crm_main__*.
+mcp_tool_name() {
+  printf 'mcp__%s__%s' "$(printf '%s' "$1" | sed 's/[^A-Za-z0-9_]/_/g')" "$(printf '%s' "$2" | sed 's/[^A-Za-z0-9_]/_/g')"
+}
+
 pin_mcp_tools() {
   _pmt_profile="$1"
   _pmt_key="$2"
@@ -731,7 +754,7 @@ pin_mcp_tools() {
   [ "$#" -gt 0 ] || return 0
   _pmt_args=""
   for _pmt_t in "$@"; do
-    _pmt_args="${_pmt_args} ${_pmt_t} mcp__${_pmt_key}__${_pmt_t}"
+    _pmt_args="${_pmt_args} ${_pmt_t} $(mcp_tool_name "$_pmt_key" "$_pmt_t")"
   done
   # shellcheck disable=SC2086
   pin_tool_search_always_include "$_pmt_profile" $_pmt_args
@@ -831,7 +854,8 @@ set_stack_mcp_parked_retry() {
   [ -f "$_cfg" ] || return 0
   _out="$(python3 - "$_cfg" "$MCP_PARKED_RETRY_INTERVAL" "$LIGHTRAG_MCP_URL" "$SEARXNG_MCP_URL" \
     "$CALDAV_MCP_URL" "$OPENCODE_MCP_URL" "$SQL_MCP_RO_URL" "$SQL_MCP_RW_URL" "$VIKUNJA_MCP_URL" \
-    "$MAIL_MCP_URL" "$MAIL_DRAFTS_MCP_URL" "$MESSAGES_MCP_URL" "$GPTR_MCP_URL" <<'PY'
+    "$MAIL_MCP_URL" "$MAIL_DRAFTS_MCP_URL" "$MESSAGES_MCP_URL" "$GPTR_MCP_URL" \
+    "$TWENTY_LOCAL_MCP_URL" <<'PY'
 import sys
 sys.path.insert(0, "/opt/hermes")
 try:
@@ -924,6 +948,11 @@ reconcile_stack_eager_tools() {
       fi
       ;;
   esac
+  for _rst_slug in $(twenty_workspace_slugs "$_rst_profile"); do
+    for _rst_t in $TWENTY_MCP_PINS; do
+      _rst_args="${_rst_args} ${_rst_t} $(mcp_tool_name "crm-${_rst_slug}" "$_rst_t")"
+    done
+  done
   case "$OPENCODE_MCP_ENABLED" in
     1|true|TRUE|yes|YES)
       if [ "$_rst_profile" != "api-server" ]; then
@@ -1315,6 +1344,284 @@ register_gptr_mcp_servers() {
   hermes_config_set "$_rgms_profile" "mcp_servers.gptr.transport" "sse"
   # shellcheck disable=SC2086
   pin_mcp_tools "$_rgms_profile" gptr $GPTR_MCP_PINS
+}
+
+# Twenty CRM (crm profile, or a remote instance). One mcp_servers.crm-<slug>
+# per compose/twenty/workspaces/<slug>.env. The key, not the URL, selects the
+# workspace, so every entry points at the instance's bare /mcp. api-server gets
+# the workspace's read-only key, or no entry when there is none. default and
+# browser get the read/write key, or the read-only one when the file says
+# TWENTY_ACCESS=read (Boundary's "look things up" choice). Each key goes into the profile's .env as
+# TWENTY_<SLUG>_KEY, and config.yaml holds only the reference. Roles in Twenty
+# are the boundary, so there is no tools.include. docs/crm.md
+
+# Slug sales-eu -> TWENTY_SALES_EU_KEY.
+twenty_key_env_name() {
+  printf 'TWENTY_%s_KEY' "$(printf '%s' "$1" | tr '[:lower:]-' '[:upper:]_')"
+}
+
+# Parse one workspace file without sourcing it. Sets _tw_url (with /mcp,
+# no trailing slash), _tw_ro, _tw_rw and _tw_access (default write). Fails, with a warning naming the file
+# but never a value, when the URL is missing or not http(s).
+twenty_read_workspace() {
+  _tw_url=""
+  _tw_ro=""
+  _tw_rw=""
+  _tw_access="write"
+  while IFS= read -r _tw_line || [ -n "$_tw_line" ]; do
+    case "$_tw_line" in
+      ''|'#'*) continue ;;
+      *=*)
+        _tw_k="${_tw_line%%=*}"
+        _tw_v="$(printf '%s' "${_tw_line#*=}" | tr -d '\r')"
+        case "$_tw_v" in
+          \"*\") _tw_v="${_tw_v#\"}"; _tw_v="${_tw_v%\"}" ;;
+          \'*\') _tw_v="${_tw_v#\'}"; _tw_v="${_tw_v%\'}" ;;
+        esac
+        case "$_tw_k" in
+          TWENTY_URL) _tw_url="$_tw_v" ;;
+          TWENTY_KEY_RO) _tw_ro="$_tw_v" ;;
+          TWENTY_KEY_RW) _tw_rw="$_tw_v" ;;
+          TWENTY_ACCESS) _tw_access="${_tw_v:-write}" ;;
+        esac
+        ;;
+    esac
+  done < "$1"
+  case "$_tw_url" in
+    http://*|https://*) ;;
+    *)
+      log "WARNING: Skipping Twenty workspace '$(basename "$1")' - TWENTY_URL must start with http:// or https://"
+      return 1
+      ;;
+  esac
+  while :; do
+    case "$_tw_url" in
+      */) _tw_url="${_tw_url%/}" ;;
+      *) break ;;
+    esac
+  done
+  case "$_tw_url" in
+    */mcp) ;;
+    *) _tw_url="${_tw_url}/mcp" ;;
+  esac
+}
+
+# After twenty_read_workspace: the key <profile> gets, in _tw_key, or a
+# failure with the reason in _tw_why. api-server is read-only whatever
+# TWENTY_ACCESS says.
+twenty_key_for_profile() {
+  _tw_key=""
+  _tw_why=""
+  if [ "$1" = "api-server" ]; then
+    _tw_key="$_tw_ro"
+    [ -n "$_tw_key" ] || _tw_why="no TWENTY_KEY_RO"
+  else
+    case "$_tw_access" in
+      write) _tw_key="$_tw_rw"; [ -n "$_tw_key" ] || _tw_why="TWENTY_ACCESS=write but no TWENTY_KEY_RW" ;;
+      read) _tw_key="$_tw_ro"; [ -n "$_tw_key" ] || _tw_why="TWENTY_ACCESS=read but no TWENTY_KEY_RO" ;;
+      *) _tw_why="TWENTY_ACCESS must be read or write" ;;
+    esac
+  fi
+  [ -n "$_tw_key" ]
+}
+
+# Print one slug per line for each workspace that registers on <profile>:
+# a valid file with the key that profile uses.
+twenty_workspace_slugs() {
+  case "$TWENTY_MCP_ENABLED" in
+    1|true|TRUE|yes|YES) ;;
+    *) return 0 ;;
+  esac
+  [ -d "$TWENTY_WORKSPACES_DIR" ] || return 0
+  for _tws_file in "$TWENTY_WORKSPACES_DIR"/*.env; do
+    [ -f "$_tws_file" ] || continue
+    _tws_slug="$(basename "$_tws_file" .env)"
+    case "$_tws_slug" in
+      .*|''|*[!a-z0-9-]*) continue ;;
+    esac
+    twenty_read_workspace "$_tws_file" 2>/dev/null >/dev/null || continue
+    twenty_key_for_profile "$1" || continue
+    printf '%s\n' "$_tws_slug"
+  done
+}
+
+# Write mcp_servers.<key> with a bearer-token header that references the
+# profile's env key. hermes config set cannot write a header map.
+#
+# Usage: write_twenty_mcp_entry <profile> <key> <url> <env-key>
+write_twenty_mcp_entry() {
+  _out="$(python3 - "$(config_path_for "$1")" "$2" "$3" "$4" \
+    "$TWENTY_MCP_TIMEOUT" "$TWENTY_MCP_CONNECT_TIMEOUT" <<'PY'
+import sys
+sys.path.insert(0, "/opt/hermes")
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import hermes_yaml as yaml
+from utils import atomic_yaml_write
+
+cfg_path, key, url, env_key, timeout, connect_timeout = sys.argv[1:7]
+try:
+    with open(cfg_path) as fh:
+        config = yaml.safe_load(fh) or {}
+except FileNotFoundError:
+    print(f"ERROR: {cfg_path} not found")
+    raise SystemExit(1)
+
+servers = config.get("mcp_servers")
+if not isinstance(servers, dict):
+    servers = {}
+    config["mcp_servers"] = servers
+entry = servers.get(key)
+if not isinstance(entry, dict):
+    entry = {}
+entry["url"] = url
+entry["timeout"] = int(timeout) if str(timeout).isdigit() else timeout
+entry["connect_timeout"] = int(connect_timeout) if str(connect_timeout).isdigit() else connect_timeout
+headers = entry.get("headers")
+if not isinstance(headers, dict):
+    headers = {}
+headers["Authorization"] = "Bearer ${" + env_key + "}"
+entry["headers"] = headers
+servers[key] = entry
+atomic_yaml_write(cfg_path, config)
+print(f"Wrote mcp_servers.{key}")
+PY
+)"
+  if [ -n "$_out" ]; then log "$_out"; fi
+}
+
+# Drop crm-* entries whose workspace file is gone or no longer registers on
+# this profile, their TWENTY_<SLUG>_KEY and their tool pins. With no crm-*
+# entry left, the bare Twenty tool names go from the pins too. Only crm-*
+# entries are ours; entries a client added under another name stay, even at
+# the same URL.
+#
+# Usage: reconcile_twenty_workspaces <profile> <slug...>
+reconcile_twenty_workspaces() {
+  _rtw_profile="$1"
+  shift
+  _out="$(TWENTY_MCP_PINS="$TWENTY_MCP_PINS" python3 - "$(config_path_for "$_rtw_profile")" "$@" <<'PY'
+import os
+import re
+import sys
+sys.path.insert(0, "/opt/hermes")
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import hermes_yaml as yaml
+from utils import atomic_yaml_write
+
+cfg_path = sys.argv[1]
+keep = {f"crm-{s}" for s in sys.argv[2:]}
+try:
+    with open(cfg_path) as fh:
+        config = yaml.safe_load(fh) or {}
+except FileNotFoundError:
+    raise SystemExit(0)
+servers = config.get("mcp_servers")
+if not isinstance(servers, dict):
+    raise SystemExit(0)
+removed = sorted(k for k in servers if k.startswith("crm-") and k not in keep)
+for key in removed:
+    del servers[key]
+
+# Pins of servers that are gone: mcp__crm_<slug>__* (Hermes' tool names) and
+# the mcp__crm-<slug>__* form earlier builds wrote, which never matched.
+kept_prefixes = tuple(p for s in keep for p in (
+    "mcp__" + re.sub(r"[^A-Za-z0-9_]", "_", s) + "__", f"mcp__{s}__"))
+any_left = any(k.startswith("crm-") for k in servers)
+bare = set(os.environ.get("TWENTY_MCP_PINS", "").split())
+unpinned = 0
+tool_search = ((config.get("tools") or {}).get("tool_search") or {})
+pins = tool_search.get("always_include")
+if isinstance(pins, list):
+    def stale(name):
+        if not isinstance(name, str):
+            return False
+        if name.startswith(("mcp__crm_", "mcp__crm-")):
+            return not name.startswith(kept_prefixes)
+        return not any_left and name in bare
+    kept_pins = [p for p in pins if not stale(p)]
+    unpinned = len(pins) - len(kept_pins)
+    tool_search["always_include"] = kept_pins
+
+if removed or unpinned:
+    atomic_yaml_write(cfg_path, config)
+if unpinned:
+    print(f"Removed {unpinned} stale Twenty tool pins")
+if removed:
+    print("Removed stale Twenty MCP entries: " + ", ".join(removed))
+    for key in removed:
+        print("REMOVED_SLUG " + key[len("crm-"):])
+PY
+)"
+  [ -n "$_out" ] || return 0
+  _rtw_env="$(caldav_profile_env_file "$_rtw_profile")"
+  printf '%s\n' "$_out" | while IFS= read -r _rtw_line; do
+    case "$_rtw_line" in
+      REMOVED_SLUG\ *)
+        remove_env_key "$_rtw_env" "$(twenty_key_env_name "${_rtw_line#REMOVED_SLUG }")"
+        ;;
+      *) log "$_rtw_line" ;;
+    esac
+  done
+}
+
+register_twenty_mcp_servers() {
+  _rtms_profile="$1"
+  case "$TWENTY_MCP_ENABLED" in
+    1|true|TRUE|yes|YES) ;;
+    *)
+      log "Skipping Twenty CRM MCP registration (TWENTY_MCP_ENABLED=${TWENTY_MCP_ENABLED})"
+      reconcile_twenty_workspaces "$_rtms_profile"
+      return 0
+      ;;
+  esac
+  if [ ! -d "$TWENTY_WORKSPACES_DIR" ]; then
+    log "WARNING: Twenty workspaces dir missing (${TWENTY_WORKSPACES_DIR}) - run ./scripts/setup.sh"
+    reconcile_twenty_workspaces "$_rtms_profile"
+    return 0
+  fi
+
+  _rtms_env="$(caldav_profile_env_file "$_rtms_profile")"
+  _rtms_slugs=""
+  for _rtms_file in "$TWENTY_WORKSPACES_DIR"/*.env; do
+    [ -f "$_rtms_file" ] || continue
+    _rtms_base="$(basename "$_rtms_file")"
+    _rtms_slug="${_rtms_base%.env}"
+    case "$_rtms_slug" in
+      .*) continue ;;
+      ''|*[!a-z0-9-]*)
+        log "WARNING: Skipping Twenty workspace '${_rtms_base}' - slug must match [a-z0-9-]+"
+        continue
+        ;;
+    esac
+    twenty_read_workspace "$_rtms_file" || continue
+    if ! twenty_key_for_profile "$_rtms_profile"; then
+      if [ "$_rtms_profile" = "api-server" ]; then
+        log "Skipping Twenty workspace '${_rtms_slug}' on api-server (${_tw_why})"
+      else
+        log "WARNING: Skipping Twenty workspace '${_rtms_slug}' - ${_tw_why}"
+      fi
+      continue
+    fi
+    _rtms_key="$_tw_key"
+    _rtms_env_key="$(twenty_key_env_name "$_rtms_slug")"
+    mkdir -p "$(dirname "$_rtms_env")"
+    upsert_env "$_rtms_env" "$_rtms_env_key" "$_rtms_key"
+    log "Registering Twenty CRM MCP server 'crm-${_rtms_slug}' for profile '${_rtms_profile:-default}' at ${_tw_url}"
+    write_twenty_mcp_entry "$_rtms_profile" "crm-${_rtms_slug}" "$_tw_url" "$_rtms_env_key"
+    # shellcheck disable=SC2086
+    pin_mcp_tools "$_rtms_profile" "crm-${_rtms_slug}" $TWENTY_MCP_PINS
+    _rtms_slugs="${_rtms_slugs} ${_rtms_slug}"
+  done
+  _rtms_key=""
+  # shellcheck disable=SC2086
+  reconcile_twenty_workspaces "$_rtms_profile" $_rtms_slugs
+  if [ -z "$_rtms_slugs" ]; then
+    log "WARNING: TWENTY_MCP_ENABLED=1 but no Twenty workspace registers on '${_rtms_profile:-default}' - run make crm-init or make crm-add"
+  fi
 }
 
 # Draft-only mail MCP: queues drafts the host helper saves in Mail. Like the
@@ -1880,6 +2187,7 @@ if is_true "$BOOTSTRAP_SHARED"; then
   register_mail_drafts_mcp_servers ""
   register_messages_mcp_servers ""
   register_gptr_mcp_servers ""
+  register_twenty_mcp_servers ""
 
   # session_search is on Hermes' curated tool_search.defer list. Pin + undefer
   # on default before the api-server.env gate so a missing env file cannot
@@ -2111,6 +2419,7 @@ register_mail_mcp_servers "$PROFILE"
 register_mail_drafts_mcp_servers "$PROFILE"
 register_messages_mcp_servers "$PROFILE"
 register_gptr_mcp_servers "$PROFILE"
+register_twenty_mcp_servers "$PROFILE"
 
 # Heal always_include + defer after every hermes config set / MCP register.
 if is_true "$BOOTSTRAP_SHARED"; then

@@ -16,12 +16,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 # Every profile that publishes a service we want to see in one config.
-PROFILES = "core,rag,calendar,automation,research,coding,ollama,searxng-prod,search-gate,db,todo,mail,mail-drafts,messages"
+PROFILES = "core,rag,calendar,automation,research,coding,ollama,searxng-prod,search-gate,db,todo,crm,mail,mail-drafts,messages"
 
 # Secret-bearing environment keys, and the services allowed to carry them.
 # An empty set means the key must not appear on any service.
 SECRET_KEYS = {
-    "POSTGRES_PASSWORD": {"postgres", "postgres-db"},
+    "POSTGRES_PASSWORD": {"postgres", "postgres-db", "twenty-db"},
     "DB_ADMIN_PASSWORD": set(),
     "PGPASSWORD": {"db-provision"},
     "DB_AGENT_RO_PASSWORD": {"db-provision"},
@@ -38,6 +38,13 @@ SECRET_KEYS = {
     # Bootstrap copies each token into one profile's .env; hermes reads it there.
     "VIKUNJA_MCP_TOKEN_RO": {"hermes-api-bootstrap", "hermes-browser-bootstrap"},
     "VIKUNJA_MCP_TOKEN_RW": {"hermes-api-bootstrap", "hermes-browser-bootstrap"},
+    # Twenty (crm profile). The stack-level names never reach a container;
+    # Twenty's own names carry them to the server and worker only.
+    "TWENTY_ENCRYPTION_KEY": set(),
+    "TWENTY_DB_PASSWORD": set(),
+    "TWENTY_PASSWORD": set(),
+    "ENCRYPTION_KEY": {"twenty-server", "twenty-worker"},
+    "PG_DATABASE_URL": {"twenty-server", "twenty-worker"},
     "MESSAGES_WEBHOOK_SECRET": {"messages-mcp", "hermes-api-bootstrap", "hermes-browser-bootstrap"},
     # n8n stores its data in SQLite; no service gets n8n Postgres settings.
     "DB_POSTGRESDB_PASSWORD": set(),
@@ -97,6 +104,9 @@ REQUIRED = {
     "hermes-webui": {"API_SERVER_KEY"},
     "vikunja": {"VIKUNJA_SERVICE_SECRET"},
     "vikunja-proxy": {"VIKUNJA_PASSWORD"},
+    "twenty-server": {"ENCRYPTION_KEY", "PG_DATABASE_URL"},
+    "twenty-worker": {"ENCRYPTION_KEY", "PG_DATABASE_URL"},
+    "twenty-db": {"POSTGRES_PASSWORD"},
 }
 
 # Clients may carry these names only when the value is the placeholder.

@@ -607,6 +607,9 @@ fi
 if has_profile todo; then
   check_port "$(env_get VIKUNJA_PORT 3456)" "Vikunja"
 fi
+if has_profile crm; then
+  check_port "$(env_get TWENTY_PORT 3000)" "Twenty CRM"
+fi
 
 # --- Signal (optional; toggled by HERMES_SIGNAL_ENABLED) ---
 signal_enabled="$(env_get HERMES_SIGNAL_ENABLED 0)"
@@ -1163,6 +1166,126 @@ if has_profile todo || [[ "$vikunja_on" -eq 1 ]]; then
     elif has_profile todo; then
       warn "vikunja not running — make up with todo in COMPOSE_PROFILES"
     fi
+  fi
+fi
+
+# --- CRM (Twenty) ---
+twenty_local="$(env_get TWENTY_LOCAL_ENABLED 0)"
+case "$twenty_local" in 1|true|TRUE|yes|YES) twenty_local=1 ;; *) twenty_local=0 ;; esac
+twenty_mcp="$(env_get TWENTY_MCP_ENABLED 0)"
+case "$twenty_mcp" in 1|true|TRUE|yes|YES) twenty_mcp=1 ;; *) twenty_mcp=0 ;; esac
+twenty_ws_dir="compose/twenty/workspaces"
+if has_profile crm || [[ "$twenty_local" -eq 1 || "$twenty_mcp" -eq 1 ]]; then
+  echo
+  echo "--- CRM (Twenty) ---"
+  twenty_port="$(env_get TWENTY_PORT 3000)"
+  if [[ "$twenty_local" -eq 1 ]]; then
+    if has_profile crm; then
+      ok "COMPOSE_PROFILES includes crm"
+    else
+      bad "TWENTY_LOCAL_ENABLED=1 but 'crm' not in COMPOSE_PROFILES — run make ensure-local"
+    fi
+    for pair in TWENTY_ENCRYPTION_KEY TWENTY_DB_PASSWORD; do
+      if [[ -n "$(env_get "$pair")" && -n "$(env_get "${pair}_FILE")" ]]; then
+        bad "${pair} and ${pair}_FILE are both set — keep one (the containers refuse to start)"
+      elif [[ -n "$(env_get "${pair}_FILE")" ]]; then
+        if [[ -s "$(env_get "${pair}_FILE")" ]]; then
+          ok "${pair} comes from a file"
+        else
+          bad "${pair}_FILE points at a missing or empty file"
+        fi
+      elif [[ -n "$(env_get "$pair")" ]]; then
+        ok "${pair} is set"
+      else
+        bad "${pair} is unset — run ./scripts/setup.sh"
+      fi
+    done
+    if docker info >/dev/null 2>&1; then
+      for svc in twenty-server twenty-worker twenty-db twenty-redis; do
+        cid="$(docker compose ps -q "$svc" 2>/dev/null || true)"
+        health="$( [[ -n "$cid" ]] && docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid" 2>/dev/null || true)"
+        case "$health" in
+          healthy) ok "${svc} is healthy" ;;
+          starting) warn "${svc} is starting (the first start runs Twenty's migrations)" ;;
+          "") warn "${svc} not running — make up" ;;
+          *) bad "${svc} is ${health} — docker compose logs ${svc}" ;;
+        esac
+      done
+    fi
+    if [[ ! -f "$(env_get TWENTY_DATA_DIR ./data/twenty)/.crm-init-done" ]]; then
+      warn "no local workspace yet — after make up, run make crm-init"
+    fi
+  fi
+
+  if [[ "$twenty_mcp" -eq 1 ]]; then
+    ok "TWENTY_MCP_ENABLED=1"
+    twenty_count=0
+    for f in "$twenty_ws_dir"/*.env; do
+      [[ -f "$f" ]] || continue
+      slug="$(basename "$f" .env)"
+      [[ "$slug" == .* ]] && continue
+      twenty_count=$((twenty_count + 1))
+      url="$(grep -E '^TWENTY_URL=' "$f" | head -1 | cut -d= -f2- | tr -d '"' || true)"
+      rw="$(grep -E '^TWENTY_KEY_RW=' "$f" | head -1 | cut -d= -f2- | tr -d '"' || true)"
+      ro="$(grep -E '^TWENTY_KEY_RO=' "$f" | head -1 | cut -d= -f2- | tr -d '"' || true)"
+      access="$(grep -E '^TWENTY_ACCESS=' "$f" | head -1 | cut -d= -f2- | tr -d '"' || true)"
+      access="${access:-write}"
+      key="$rw"
+      [[ "$access" == read ]] && key="$ro"
+      if [[ "$access" != read && "$access" != write ]]; then
+        bad "crm-${slug}: TWENTY_ACCESS=${access} in ${f}; use read or write"
+        continue
+      elif [[ -z "$key" ]]; then
+        if [[ -z "$rw$ro" ]]; then
+          bad "crm-${slug}: ${f} has no keys — make crm-init finishes a local one; make crm-add FORCE=1 replaces a remote one"
+        else
+          bad "crm-${slug}: TWENTY_ACCESS=${access} but ${f} has no $( [[ "$access" == read ]] && echo TWENTY_KEY_RO || echo TWENTY_KEY_RW ) — Hermes gets no entry for it"
+        fi
+        continue
+      fi
+      # The local instance is checked through its host port; the key alone
+      # selects the workspace, whatever the hostname.
+      probe="${url%/}"
+      [[ "$probe" == http://twenty-server:3000* ]] && probe="http://127.0.0.1:${twenty_port}"
+      probe="${probe%/mcp}/mcp"
+      for kind in RW RO; do
+        k="$rw"; [[ "$kind" == RO ]] && k="$ro"
+        [[ -n "$k" ]] || continue
+        # The key goes in a header file, not argv, so ps never shows it.
+        hdr="$(mktemp)"
+        chmod 600 "$hdr"
+        printf 'Authorization: Bearer %s\nContent-Type: application/json\nAccept: application/json, text/event-stream\n' "$k" > "$hdr"
+        code="$(curl -s -o /dev/null -m 15 -w '%{http_code}' -H @"$hdr" -X POST "$probe" \
+          --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"doctor","version":"0"}}}' 2>/dev/null || true)"
+        rm -f "$hdr"
+        case "$code" in
+          200) ok "crm-${slug}: MCP answers with TWENTY_KEY_${kind} (${probe})" ;;
+          401 | 403) bad "crm-${slug}: Twenty rejects TWENTY_KEY_${kind} — make crm-init ROTATE=1, or new keys with make crm-add FORCE=1" ;;
+          000) warn "crm-${slug}: no answer from ${probe}" ;;
+          *) warn "crm-${slug}: MCP answered HTTP ${code} at ${probe}" ;;
+        esac
+      done
+      for pair in "default:data/hermes/config.yaml:data/hermes/.env" \
+        "api-server:data/hermes/profiles/api-server/config.yaml:data/hermes/profiles/api-server/.env" \
+        "browser:data/hermes/profiles/browser/config.yaml:data/hermes/profiles/browser/.env"; do
+        IFS=':' read -r label cfg envfile <<< "$pair"
+        [[ -f "$cfg" ]] || continue
+        if grep -qE "^  crm-${slug}:" "$cfg"; then
+          ok "Hermes ${label} profile registers crm-${slug}"
+        elif [[ "$label" != api-server ]] || grep -qE '^TWENTY_KEY_RO=.+' "$f"; then
+          warn "Hermes ${label} profile has no crm-${slug} entry — run make hermes-reload"
+        fi
+      done
+      env_key="TWENTY_$(printf '%s' "$slug" | tr '[:lower:]-' '[:upper:]_')_KEY"
+      if [[ -n "$rw" ]] && grep -qsxF "${env_key}=${rw}" data/hermes/profiles/api-server/.env; then
+        bad "api-server holds crm-${slug}'s read/write key — run make hermes-reload (unattended sessions must stay read-only)"
+      fi
+    done
+    if [[ "$twenty_count" -eq 0 ]]; then
+      warn "no workspace files in ${twenty_ws_dir} — make crm-init (local) or make crm-add (remote)"
+    fi
+  elif [[ "$twenty_local" -eq 1 ]]; then
+    warn "crm profile on but TWENTY_MCP_ENABLED is not 1 — Hermes will not get the CRM tools"
   fi
 fi
 

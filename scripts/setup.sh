@@ -21,6 +21,7 @@ SETUP_CODING=0
 SETUP_CALENDAR=0
 SETUP_DB=0
 SETUP_TODO=0
+SETUP_CRM=0
 SETUP_MAIL=0
 SETUP_MAIL_DRAFTS=0
 SETUP_MESSAGES=0
@@ -43,6 +44,7 @@ Options:
   --calendar                Enable CalDAV calendar MCP (profile calendar)
   --db                      Enable shared Postgres + SQL MCP for Hermes (profile db)
   --todo                    Enable Vikunja todo lists + MCP (profile todo; starts the shared Postgres)
+  --crm                     Enable a local Twenty CRM + its MCP for Hermes (profile crm; about 1.8 GiB RAM)
   --mail                    Enable the read-only mail MCP over a host-built Apple Mail index (profile mail)
   --mail-drafts             Let Hermes queue email drafts that a host helper saves to Mail's Drafts; never sends (profile mail-drafts)
   --messages                Enable the read-only Messages (iMessage/SMS) MCP over a host-built index, with new-message alerts (profile messages)
@@ -78,6 +80,7 @@ while [[ $# -gt 0 ]]; do
     --calendar) SETUP_CALENDAR=1; shift ;;
     --db) SETUP_DB=1; shift ;;
     --todo) SETUP_TODO=1; shift ;;
+    --crm) SETUP_CRM=1; shift ;;
     --mail) SETUP_MAIL=1; shift ;;
     --mail-drafts) SETUP_MAIL_DRAFTS=1; shift ;;
     --messages) SETUP_MESSAGES=1; shift ;;
@@ -366,6 +369,24 @@ setup_automation_profile() {
 
 # gptr-mcp alone, registered as Hermes tools on the dashboard and WebUI
 # profiles. The REST service and n8n stay with --automation.
+# Local Twenty CRM. Workspaces and Hermes keys come from make crm-init after
+# make up; remote instances are added with make crm-add instead.
+setup_crm_profile() {
+  upsert_env .env TWENTY_LOCAL_ENABLED 1
+  upsert_env .env TWENTY_MCP_ENABLED 1
+  log "Enabled Twenty CRM (crm profile). After make up: make crm-init. See docs/crm.md"
+}
+
+# Twenty reads true/false; the stack's flag is 0/1 like every other.
+sync_twenty_multiworkspace_bool() {
+  local value
+  value="$(grep -E '^TWENTY_MULTIWORKSPACE=' .env 2>/dev/null | head -1 | cut -d= -f2- || true)"
+  case "$value" in
+    1|true|TRUE|yes|YES) upsert_env .env TWENTY_MULTIWORKSPACE_BOOL true ;;
+    *) upsert_env .env TWENTY_MULTIWORKSPACE_BOOL false ;;
+  esac
+}
+
 setup_research_profile() {
   append_compose_profile research
   upsert_env .env GPTR_MCP_ENABLED 1
@@ -800,6 +821,17 @@ set_env_if_placeholder .env DB_AGENT_RW_PASSWORD "$(rand_hex 24)"
 # Vikunja session signing key (todo profile). Generated for every install so
 # enabling todo later needs no extra step.
 set_env_if_placeholder .env VIKUNJA_SECRET "$(rand_hex 32)"
+# Twenty (crm profile), generated for every install like VIKUNJA_SECRET.
+# ENCRYPTION_KEY protects secrets stored in Twenty: never replaced once set.
+# The database password is hex because it goes unencoded into PG_DATABASE_URL.
+# Skipped when the secret comes from a file: a value as well would stop the
+# containers at start.
+if ! grep -qE '^TWENTY_ENCRYPTION_KEY_FILE=.+' .env 2>/dev/null; then
+  set_env_if_placeholder .env TWENTY_ENCRYPTION_KEY "$(openssl rand -base64 32)"
+fi
+if ! grep -qE '^TWENTY_DB_PASSWORD_FILE=.+' .env 2>/dev/null; then
+  set_env_if_placeholder .env TWENTY_DB_PASSWORD "$(rand_hex 32)"
+fi
 
 SEARXNG_SECRET="$(grep '^SEARXNG_SECRET=' .env | head -1 | cut -d= -f2- || true)"
 if [[ -z "$SEARXNG_SECRET" || "$SEARXNG_SECRET" == change-me* ]]; then
@@ -928,6 +960,13 @@ mkdir -p compose/postgres/services
 # Vikunja MCP stays off until todo is enabled and make todo-init has run.
 set_env_if_missing .env VIKUNJA_MCP_ENABLED 0
 
+# Twenty CRM stays off until crm is enabled (local) or a remote is added.
+# The workspaces dir is a bind-mount source for the Hermes bootstraps.
+set_env_if_missing .env TWENTY_LOCAL_ENABLED 0
+set_env_if_missing .env TWENTY_MCP_ENABLED 0
+set_env_if_missing .env TWENTY_MULTIWORKSPACE 0
+mkdir -p compose/twenty/workspaces
+
 # Mail MCP stays off until mail is enabled.
 set_env_if_missing .env MAIL_MCP_ENABLED 0
 set_env_if_missing .env MAIL_DRAFTS_ENABLED 0
@@ -971,6 +1010,10 @@ fi
 if [[ "$SETUP_TODO" -eq 1 ]]; then
   setup_todo_profile
 fi
+if [[ "$SETUP_CRM" -eq 1 ]]; then
+  setup_crm_profile
+fi
+sync_twenty_multiworkspace_bool
 if [[ "$SETUP_MAIL_DRAFTS" -eq 1 ]]; then
   setup_mail_drafts_profile
 fi
@@ -1020,6 +1063,7 @@ Optional profiles (re-run setup with a flag below, or set the service's
   --calendar      CalDAV calendars (iCloud, Nextcloud, …) via caldav-mcp
   --db            Shared Postgres + SQL MCP for Hermes (docs/database.md)
   --todo          Vikunja todo lists + MCP, then make todo-init (docs/todo.md)
+  --crm           Local Twenty CRM + MCP, then make crm-init (docs/crm.md)
   --mail          Read-only search over your Apple Mail, indexed on the host (docs/email.md)
   --mail-drafts   Hermes drafts email into Mail's Drafts for you to send (docs/email.md)
   --messages      Read-only iMessage/SMS history and new-message alerts, indexed on the host (docs/messages.md)

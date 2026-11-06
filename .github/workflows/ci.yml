@@ -57,12 +57,14 @@ jobs:
             "core,rag,automation,coding" \
             "core,ollama" \
             "core,research" \
-            "core,rag,calendar,automation,coding,ollama,searxng-prod,search-gate,db,todo"
+            "core,crm" \
+            "core,rag,calendar,automation,coding,ollama,searxng-prod,search-gate,db,todo,crm"
           do
             echo "=== COMPOSE_PROFILES=$profiles ==="
             COMPOSE_PROFILES="$profiles" docker compose config -q
           done
           python3 scripts/test-compose-env-allowlist.py
+          python3 scripts/test-twenty-compose-config.py
           echo "=== HERMES_TERMINAL_BACKEND=local ==="
           HERMES_TERMINAL_BACKEND=local COMPOSE_PROFILES=core docker compose config -q
           echo "=== core without the N8N_* keys ==="
@@ -111,6 +113,18 @@ jobs:
         run: bash scripts/test-sync-n8n-credentials.sh
       - name: GPT Researcher MCP registration
         run: sh scripts/test-gptr-mcp-registration.sh
+      - name: Twenty CRM compose profile
+        run: sh scripts/test-twenty-compose.sh
+      - name: Twenty secrets entrypoint
+        run: sh scripts/test-twenty-secrets.sh
+      - name: Twenty CRM MCP registration
+        run: sh scripts/test-twenty-registration.sh
+      - name: MCP pin names match Hermes' tool names
+        run: sh scripts/test-mcp-pin-names.sh
+      - name: Twenty workspace reconcile (Hermes image)
+        run: sh scripts/test-twenty-reconcile.sh
+      - name: Twenty workspace setup (stub server)
+        run: python3 scripts/test-crm-script.py
       - name: LLM proxy routes
         run: python3 scripts/test-llm-proxy.py
       - name: Terminal backend override sync
