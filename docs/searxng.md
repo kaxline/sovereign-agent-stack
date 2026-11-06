@@ -138,6 +138,31 @@ This stack **disables the native `web` toolset** on Hermes profiles (via bootstr
 
 `HERMES_ENVIRONMENT_HINT` repeats that policy for every gateway. See [Hermes](hermes.md#optional-internal-integrations).
 
+## Search modes
+
+`HERMES_WEB_SEARCH_MODE` in `.env` decides who answers Hermes' `searxng_web_search` and `web_url_read`. The other choice is Hermes' keyless ring: the anonymous free tiers of Exa, Parallel, Firecrawl and Keenable, which Hermes rotates between per request and fails over across when one rate-limits or refuses.
+
+| Value | `searxng_web_search` | `web_url_read` |
+|---|---|---|
+| `private` (default) | SearXNG only | plain fetch only |
+| `private-first` | SearXNG; on failure, the ring | plain fetch; on failure, ring extract |
+| `keyless-first` | the ring; if every vendor fails, SearXNG | ring extract; on failure, plain fetch |
+| `keyless` | the ring only | ring extract only |
+
+Set the value and recreate Hermes:
+
+```bash
+HERMES_WEB_SEARCH_MODE=private-first
+```
+
+```bash
+docker compose up -d hermes
+```
+
+A SearXNG search counts as failed when SearXNG is unavailable: the circuit-breaker pause, a connection, timeout or network error, SearXNG answering 403, 429 or 5xx, or no results with engines listed as unavailable, which includes the search gate's busy answer. A clean "no results" answer and an error about the tool's arguments are returned as is and never sent to the ring. A plain fetch counts as failed when it is refused (403, 429, 503), comes back empty because the page needs JavaScript, is a bot-check page, or times out. A page's own 404 or a hostname that doesn't resolve is not sent to the ring. A result served by the ring starts with `Served by the keyless web tier`, and one served by the fallback side also says why the first side was skipped. When both sides fail, the first side's error comes back with the fallback's error appended, so the pause hint and the blocked-fetch hint still point the agent at the browser.
+
+The keyless modes send search queries and page URLs taken from chat to Exa, Parallel, Firecrawl and Keenable, without an API key, from this machine's IP. URLs that point at private or internal addresses, or that carry what looks like an API key or token, are refused before they reach the ring. The search gate's pacing and cache apply only to the SearXNG side, and ring answers are not cached. Hermes' own `web.keyless_fallback: false` setting also turns the ring off, in every mode. The mode applies to Hermes only; OpenCode, GPT Researcher and n8n keep calling SearXNG. An unknown value behaves as `private`, and `make doctor` warns about it. Hermes loads the `.env` files under `data/hermes/` over the container's environment, so a `HERMES_WEB_SEARCH_MODE` line there wins over the root `.env`; keep the setting in the root `.env` only.
+
 ## Optional rate limiting
 
 For production-style rate limiting, set `SEARXNG_PROD_ENABLED=1` in `.env` to start Valkey, uncomment the `redis` / `limiter` block in `searxng/settings.local.yml`, and run `make up`.
