@@ -87,6 +87,8 @@ jobs:
         run: python3 scripts/test-searxng-pause-browser.py --host-only
       - name: Refused searxng page read points at the browser (stdlib)
         run: python3 scripts/test-blocked-fetch-hint.py --host-only
+      - name: Browser unresolvable host error wiring (stdlib)
+        run: python3 scripts/test-browser-unresolvable-host.py --host-only
       - name: History budget window (stdlib)
         run: python3 scripts/test-history-budget.py
       - name: Compaction summarizer reads tool results (stdlib)

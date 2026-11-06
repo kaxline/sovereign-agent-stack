@@ -33,6 +33,9 @@ run_patch /bootstrap/patch-searxng-pause-browser.py
 # When searxng's web_url_read is refused (403/429/503, empty JS page, bot
 # check), a note outside the untrusted wrapper says to open it in the browser.
 run_patch /bootstrap/patch-blocked-fetch-hint.py
+# A browser URL whose hostname doesn't resolve says so, instead of being
+# reported as a private address.
+run_patch /bootstrap/patch-browser-unresolvable-host.py
 # Per-session history budget for DM threads (request window; transcript stays).
 run_patch /bootstrap/patch-history-budget.py
 # Compaction summarizer reads full tool results (not prune stubs) and keeps

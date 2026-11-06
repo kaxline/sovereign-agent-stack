@@ -10,6 +10,15 @@ the stack under another app.
 
 ### Changes
 
+- **A browser URL that doesn't exist says so**: `browser_exec` blocks a URL
+  whose hostname has no DNS record, but reported it as "Blocked: URL targets a
+  private or internal address". A turn that guessed a nonexistent government
+  URL read that as the browser being restricted and went back to searxng. The
+  new `patch-browser-unresolvable-host.py` overlay names the hostname and says
+  the address is probably wrong. The URL is still blocked, and private
+  targets keep the old text. `docker compose up -d` recreates `hermes` for
+  the new mount.
+
 - **A paused searxng server points Hermes at browser search**: after 3
   failed calls in a row, Hermes's MCP circuit breaker pauses a server for 60
   seconds and told the model only to "use a different approach". A turn kept
