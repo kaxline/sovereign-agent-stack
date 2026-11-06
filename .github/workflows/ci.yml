@@ -117,6 +117,8 @@ jobs:
         run: sh scripts/test-twenty-secrets.sh
       - name: Twenty CRM MCP registration
         run: sh scripts/test-twenty-registration.sh
+      - name: MCP pin names match Hermes' tool names
+        run: sh scripts/test-mcp-pin-names.sh
       - name: Twenty workspace setup (stub server)
         run: python3 scripts/test-crm-script.py
       - name: LLM proxy routes

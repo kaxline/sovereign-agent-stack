@@ -740,6 +740,13 @@ pin_tool_search_always_include() {
 
 # Pin both short tool names and mcp__<server_key>__<tool> forms.
 # Usage: pin_mcp_tools <profile> <server_key> <tool...>
+# The name Hermes registers an MCP tool under: mcp__<server>__<tool>, with each
+# character outside [A-Za-z0-9_] replaced by _ (sanitize_mcp_name_component in
+# tools/mcp_tool_schema.py). crm-main's tools are mcp__crm_main__*.
+mcp_tool_name() {
+  printf 'mcp__%s__%s' "$(printf '%s' "$1" | sed 's/[^A-Za-z0-9_]/_/g')" "$(printf '%s' "$2" | sed 's/[^A-Za-z0-9_]/_/g')"
+}
+
 pin_mcp_tools() {
   _pmt_profile="$1"
   _pmt_key="$2"
@@ -747,7 +754,7 @@ pin_mcp_tools() {
   [ "$#" -gt 0 ] || return 0
   _pmt_args=""
   for _pmt_t in "$@"; do
-    _pmt_args="${_pmt_args} ${_pmt_t} mcp__${_pmt_key}__${_pmt_t}"
+    _pmt_args="${_pmt_args} ${_pmt_t} $(mcp_tool_name "$_pmt_key" "$_pmt_t")"
   done
   # shellcheck disable=SC2086
   pin_tool_search_always_include "$_pmt_profile" $_pmt_args
@@ -943,7 +950,7 @@ reconcile_stack_eager_tools() {
   esac
   for _rst_slug in $(twenty_workspace_slugs "$_rst_profile"); do
     for _rst_t in $TWENTY_MCP_PINS; do
-      _rst_args="${_rst_args} ${_rst_t} mcp__crm-${_rst_slug}__${_rst_t}"
+      _rst_args="${_rst_args} ${_rst_t} $(mcp_tool_name "crm-${_rst_slug}" "$_rst_t")"
     done
   done
   case "$OPENCODE_MCP_ENABLED" in
