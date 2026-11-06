@@ -7,7 +7,8 @@ environment, so a non-interactive caller can run it too. Prints one line per
 step and never a key, token or password. See docs/crm.md.
 
 Environment:
-  TWENTY_BASE_URL         where to reach the server from the host (http://127.0.0.1:3000)
+  TWENTY_BASE_URL         where to reach the server (http://127.0.0.1:3000 from the host,
+                          http://twenty-server:3000 on the crm network)
   TWENTY_USERNAME         owner account email
   TWENTY_PASSWORD         owner account password, or
   TWENTY_PASSWORD_FILE    a file holding it; generated there (mode 600) when missing
@@ -15,7 +16,9 @@ Environment:
   TWENTY_WORKSPACES_DIR   compose/twenty/workspaces
   TWENTY_DATA_DIR         where .crm-init-done is written
   TWENTY_GRANT_ADMIN_CMD  executable run as `<cmd> grant-admin <email>` on every run
-                          (the grant is idempotent)
+                          (the grant is idempotent). Unset, the caller grants it
+                          between an --owner-only run and a full one, as crm.sh
+                          does when this runs in a container
 """
 
 from __future__ import annotations
@@ -343,6 +346,9 @@ def cmd_init(args: argparse.Namespace) -> int:
             raise
         agnostic, available = sign_in(tw, email, password)
     step(f"owner account: done ({'created' if created else 'signed in'} {email})")
+    if args.owner_only:
+        # crm.sh grants server admin next, then runs init again, which signs in.
+        return 0
 
     if env.get("TWENTY_GRANT_ADMIN_CMD"):
         # The owner creates further workspaces, which Twenty limits to server
@@ -413,6 +419,8 @@ def main(argv: list[str] | None = None) -> int:
     p_init.add_argument("--slug", default="main")
     p_init.add_argument("--display-name", default="")
     p_init.add_argument("--rotate", action="store_true", help="revoke and re-mint the workspace's keys")
+    p_init.add_argument("--owner-only", action="store_true",
+                        help="stop after creating or signing in to the owner account")
     args = parser.parse_args(argv)
     try:
         return cmd_init(args)

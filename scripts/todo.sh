@@ -107,7 +107,6 @@ login_status() {
 }
 
 cmd_init() {
-  require_python3
   require_running
   local base
   base="http://127.0.0.1:$(env_get VIKUNJA_PORT 3456)"
@@ -151,10 +150,14 @@ cmd_init() {
   upsert_env .env VIKUNJA_PASSWORD "$password"
 
   # Log in, then mint the tokens. Python keeps the password and the tokens off
-  # argv and out of the shell's output.
-  local out
-  out="$(VK_BASE="$base" VK_USER="$username" VK_PASS="$password" \
-    VK_TITLE_RW="$TOKEN_TITLE_RW" VK_TITLE_RO="$TOKEN_TITLE_RO" python3 - <<'PY'
+  # argv and out of the shell's output. It runs in the Hermes image on
+  # Vikunja's network, so the host needs no python3.
+  local out api="http://vikunja-proxy:8080" netopt=(--network-of vikunja-proxy)
+  if [[ "${STACK_PYTHON:-}" == host ]]; then api="$base"; netopt=(); fi
+  out="$(VK_BASE="$api" VK_USER="$username" VK_PASS="$password" \
+    VK_TITLE_RW="$TOKEN_TITLE_RW" VK_TITLE_RO="$TOKEN_TITLE_RO" \
+    stack_python ${netopt[@]+"${netopt[@]}"} --env VK_BASE --env VK_USER --env VK_PASS \
+      --env VK_TITLE_RW --env VK_TITLE_RO - <<'PY'
 import json
 import os
 import sys

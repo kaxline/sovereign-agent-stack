@@ -11,7 +11,6 @@ cd "$ROOT"
 source "${ROOT}/scripts/lib/hermes-yaml.sh"
 # shellcheck source=lib/python.sh
 source "${ROOT}/scripts/lib/python.sh"
-require_python3
 
 log() { printf '==> %s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
@@ -240,7 +239,7 @@ if [[ "$enabled" -eq 1 ]]; then
       continue
     fi
     if [[ -f data/hermes/agents/registry.json ]]; then
-      if ! NAME="$name" python3 - <<'PY'
+      if ! NAME="$name" stack_python --env NAME - <<'PY'
 import json, os, sys
 from pathlib import Path
 name = os.environ["NAME"]

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Write n8n's demo credentials (n8n/demo-data/credentials/*.json) when the
 # automation profile is on. Does nothing when it is off, so installs without
-# n8n need neither Node nor the N8N_* keys.
+# n8n need neither the n8n image nor the N8N_* keys.
 #
 #   scripts/sync-n8n-credentials.sh           write them if none exist yet
 #   scripts/sync-n8n-credentials.sh --force   rewrite them (setup.sh, after
@@ -17,6 +17,8 @@ cd "$ROOT"
 
 # shellcheck source=lib/env.sh
 source "${ROOT}/scripts/lib/env.sh"
+# shellcheck source=lib/python.sh
+source "${ROOT}/scripts/lib/python.sh"
 
 log() { printf '==> %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -45,12 +47,25 @@ if [[ "$force" -eq 0 ]] && compgen -G "${CRED_DIR}/*.json" >/dev/null; then
   exit 0
 fi
 
-command -v node >/dev/null 2>&1 \
-  || die "automation is on and needs Node to write ${CRED_DIR}/*.json. Install Node, or set AUTOMATION_ENABLED=0."
+# Node from the n8n image, which automation pulls anyway, so the host needs
+# none. N8N_NODE=host uses the host's node instead (tests, development).
+run_node() {
+  if [[ "${N8N_NODE:-}" == host ]]; then
+    command -v node >/dev/null 2>&1 \
+      || die "N8N_NODE=host needs Node on PATH to write ${CRED_DIR}/*.json"
+    node "$@"
+    return
+  fi
+  local image
+  image="$(env_get N8N_IMAGE)"
+  stack_container --env N8N_ENCRYPTION_KEY --env LIGHTRAG_API_KEY \
+    --env NEO4J_PASSWORD --env NEO4J_USERNAME \
+    "${image:-$(compose_image_default N8N_IMAGE)}" node "$@"
+}
 
 N8N_ENCRYPTION_KEY="$(env_get N8N_ENCRYPTION_KEY)" \
 LIGHTRAG_API_KEY="$(env_get LIGHTRAG_API_KEY)" \
 NEO4J_PASSWORD="$(env_get NEO4J_PASSWORD)" \
 NEO4J_USERNAME="$(env_get NEO4J_USERNAME)" \
-  node scripts/generate-n8n-credentials.js
+  run_node scripts/generate-n8n-credentials.js
 log "Wrote n8n demo credentials to ${CRED_DIR}"

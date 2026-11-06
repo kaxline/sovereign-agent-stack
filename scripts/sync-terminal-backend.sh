@@ -39,9 +39,7 @@ coding="$(env_get CODING_EXTRA_ROOTS)"
 context="$(env_get CONTEXT_EXTRA_ROOTS)"
 override="$ROOT/docker-compose.override.yml"
 
-require_python3
-
-python3 - "$override" "$backend" "$coding" "$context" <<'PY'
+stack_python - "$override" "$backend" "$coding" "$context" <<'PY'
 import sys
 from pathlib import Path
 

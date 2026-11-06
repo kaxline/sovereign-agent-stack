@@ -120,6 +120,7 @@ See [SECURITY.md](SECURITY.md).
 ## Prerequisites
 
 - Docker Compose v2 (Linux, macOS, Windows/WSL2)
+- bash and the base system's tools. Setup needs no host `python3` or `node`; `make` runs the shortcuts in [Commands](#commands). See [docs/extending.md](docs/extending.md#host-tools)
 - A model server: any OpenAI-compatible API on the host (LM Studio, llama.cpp, vLLM, …), host Ollama, or the `ollama` profile
 
 > **#1 gotcha:** inside a container, `localhost` is the container. Reach the host as `host.docker.internal`. The host server must listen beyond localhost (LM Studio: **Serve on Local Network**; Ollama: `OLLAMA_HOST=0.0.0.0`).

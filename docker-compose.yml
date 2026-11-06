@@ -288,6 +288,12 @@ services:
     restart: unless-stopped
     volumes:
       - valkey_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli ping | grep -q PONG"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
 
   # ----------------------------------------------------------------------
   # SearXNG — local meta-search API (n8n HTTP, OpenCode via mcp-searxng)
@@ -995,6 +1001,13 @@ services:
       - n8n_storage:/home/node/.n8n
       - ./n8n/demo-data:/demo-data
       - ${ASSISTANT_DATA_ROOT:-./data}/inputs:/data/shared:ro
+    healthcheck:
+      # BusyBox wget is in the image; /healthz answers once the server listens.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5678/healthz >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
     depends_on:
       n8n-import:
         condition: service_completed_successfully

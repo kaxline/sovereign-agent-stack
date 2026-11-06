@@ -133,6 +133,10 @@ jobs:
         run: sh scripts/test-twenty-reconcile.sh
       - name: Twenty workspace setup (stub server)
         run: python3 scripts/test-crm-script.py
+      - name: crm.sh subcommands without a running stack
+        run: bash scripts/test-crm-sh.sh
+      - name: First run needs no host python3, node or make
+        run: bash scripts/test-no-host-python.sh
       - name: LLM proxy routes
         run: python3 scripts/test-llm-proxy.py
       - name: Terminal backend override sync
