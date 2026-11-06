@@ -320,7 +320,7 @@ services:
     restart: unless-stopped
     environment:
       - SEARXNG_URL=http://searxng:8080
-      - SEARCH_GATE_ENGINES=${SEARCH_GATE_ENGINES:-bing:10,google cse:20}
+      - SEARCH_GATE_ENGINES=${SEARCH_GATE_ENGINES:-bing:10,google cse:20,naver:20}
       - SEARCH_GATE_MAX_WAIT=${SEARCH_GATE_MAX_WAIT:-15}
       - SEARCH_GATE_TTL=${SEARCH_GATE_TTL:-86400}
       - SEARCH_GATE_EMPTY_TTL=${SEARCH_GATE_EMPTY_TTL:-3600}

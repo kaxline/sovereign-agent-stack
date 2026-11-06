@@ -43,7 +43,7 @@ Configuration, all from the environment:
 
     SEARXNG_URL               SearXNG's base URL (http://searxng:8080)
     SEARCH_GATE_ENGINES       name:interval[:daily cap], comma-separated, in order of
-                              preference ("bing:10,google cse:20")
+                              preference ("bing:10,google cse:20,naver:20")
     SEARCH_GATE_DB            the SQLite file for the cache and queue
     SEARCH_GATE_MAX_WAIT      seconds a /search waits for its turn (15)
     SEARCH_GATE_TTL           seconds a result list stays cached (86400)
@@ -89,7 +89,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_ENGINES = "bing:10,google cse:20"
+DEFAULT_ENGINES = "bing:10,google cse:20,naver:20"
 DEFAULT_MAX_WAIT_S = 15.0
 # Agents ask about current events, so results go stale within days; an engine that
 # answered with nothing may just have had a bad hour.
