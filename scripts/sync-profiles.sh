@@ -30,6 +30,7 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 # existing installs keep running what they run. seed=0: the flag predates this
 # script; a missing flag leaves the profile alone.
 SERVICES="LIGHTRAG_MCP_ENABLED rag 0
+NEO4J_ENABLED neo4j 0
 CALDAV_MCP_ENABLED calendar 0
 SQL_MCP_ENABLED db 0
 VIKUNJA_MCP_ENABLED todo 0
@@ -132,6 +133,20 @@ while read -r flag profile seed; do
 done <<< "$SERVICES"
 
 [[ -n "$profiles" ]] || profiles=core
+
+# Keys docker-compose.yml leaves optional so installs without these profiles
+# need not set them. Checked against the final profile list, so a profile
+# added by hand counts too. COMPOSE_PROFILES is left as it was on failure.
+missing=""
+if csv_has "$profiles" rag || csv_has "$profiles" neo4j; then
+  [[ -n "$(env_get NEO4J_PASSWORD)" ]] || missing="${missing} NEO4J_PASSWORD"
+fi
+if csv_has "$profiles" rag; then
+  [[ -n "$(env_get LIGHTRAG_API_KEY)" ]] || missing="${missing} LIGHTRAG_API_KEY"
+fi
+if [[ -n "$missing" ]]; then
+  die "rag or neo4j is on but${missing} not set in .env. Run ./scripts/setup.sh to generate them."
+fi
 
 if [[ "$profiles" != "$before_profiles" ]]; then
   upsert_env .env COMPOSE_PROFILES "$profiles"

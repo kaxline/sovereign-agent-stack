@@ -32,6 +32,11 @@ x-n8n: &service-n8n
 # database too. See docs/database.md.
 x-db-profiles: &db-profiles ["db", "todo"]
 
+# Profiles that start Neo4j. neo4j alone runs the graph store; rag needs it
+# for LightRAG's graph. Another integration that keeps a graph there appends
+# its own profile here.
+x-neo4j-profiles: &neo4j-profiles ["neo4j", "rag"]
+
 x-sql-mcp: &service-sql-mcp
   profiles: *db-profiles
   image: ${SQL_MCP_IMAGE:-crystaldba/postgres-mcp:0.3.0}
@@ -170,8 +175,12 @@ services:
       - LIGHTRAG_GRAPH_STORAGE=${LIGHTRAG_GRAPH_STORAGE:-Neo4JStorage}
       - NEO4J_URI=${NEO4J_URI:-bolt://neo4j:7687}
       - NEO4J_USERNAME=${NEO4J_USERNAME:-neo4j}
-      - NEO4J_PASSWORD=${NEO4J_PASSWORD:?set NEO4J_PASSWORD in .env}
-      - LIGHTRAG_API_KEY=${LIGHTRAG_API_KEY:?set LIGHTRAG_API_KEY in .env}
+      # No ${VAR:?} on these two: compose interpolates every service, so it
+      # would make them mandatory on installs without rag.
+      # scripts/sync-profiles.sh (make ensure-local) refuses to go on when
+      # rag or neo4j is on and a key they need is empty.
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-}
+      - LIGHTRAG_API_KEY=${LIGHTRAG_API_KEY:-}
       - "WHITELIST_PATHS=${WHITELIST_PATHS:-/health,/api/*}"
     volumes:
       - ${ASSISTANT_DATA_ROOT:-./data}/rag_storage:/app/data/rag_storage   # graph/vector/kv persistence
@@ -231,12 +240,12 @@ services:
 
   # ----------------------------------------------------------------------
   # Neo4j — the knowledge graph store
-  # Profile: rag
+  # Profiles: neo4j (on its own), rag (with LightRAG)
   # Browser: http://localhost:7474   (login with NEO4J_USERNAME / NEO4J_PASSWORD)
   # Bolt:    bolt://neo4j:7687        (used by LightRAG inside the compose network)
   # ----------------------------------------------------------------------
   neo4j:
-    profiles: ["rag"]
+    profiles: *neo4j-profiles
     container_name: ${CONTAINER_PREFIX:-}lightrag-neo4j
     image: ${NEO4J_IMAGE:-neo4j:5.26-community}
     ports:
@@ -1643,9 +1652,14 @@ services:
       - ./compose/hermes/patch-tool-loop-notes.py:/bootstrap/patch-tool-loop-notes.py:ro
       - ./compose/hermes/patch-tool-loop-replay.py:/bootstrap/patch-tool-loop-replay.py:ro
       - ./compose/hermes/patch-searxng-pause-browser.py:/bootstrap/patch-searxng-pause-browser.py:ro
+      - ./compose/hermes/blocked_fetch_hint.py:/bootstrap/blocked_fetch_hint.py:ro
+      - ./compose/hermes/patch-blocked-fetch-hint.py:/bootstrap/patch-blocked-fetch-hint.py:ro
+      - ./compose/hermes/patch-browser-unresolvable-host.py:/bootstrap/patch-browser-unresolvable-host.py:ro
       - ./compose/hermes/history_budget.py:/bootstrap/history_budget.py:ro
       - ./compose/hermes/history_budget_hook.py:/bootstrap/history_budget_hook.py:ro
       - ./compose/hermes/patch-history-budget.py:/bootstrap/patch-history-budget.py:ro
+      - ./compose/hermes/compaction_tool_facts.py:/bootstrap/compaction_tool_facts.py:ro
+      - ./compose/hermes/patch-compaction-tool-facts.py:/bootstrap/patch-compaction-tool-facts.py:ro
       - ./compose/hermes/client_context.py:/bootstrap/client_context.py:ro
       - ./compose/hermes/patch-client-context.py:/bootstrap/patch-client-context.py:ro
       - ./compose/hermes/gateway_liveness.py:/bootstrap/gateway_liveness.py:ro

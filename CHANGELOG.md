@@ -40,6 +40,24 @@ the stack under another app.
 - **Healthchecks for `n8n` and `valkey`**: `n8n` answers `/healthz`, and
   `valkey` answers `PING`. Every long-running service in an optional
   profile now has one.
+- **Neo4j has its own profile**: `NEO4J_ENABLED=1` (or `setup.sh --neo4j`)
+  starts Neo4j without LightRAG, under the new `neo4j` profile. `rag` still
+  starts Neo4j, so installs that run `rag` see no change. The container keeps
+  the name `lightrag-neo4j` and its volumes. `NEO4J_PASSWORD` and
+  `LIGHTRAG_API_KEY` are no longer required by `docker-compose.yml` on
+  installs without `rag` or `neo4j`. Instead, `make ensure-local` (and so
+  `make up`) stops with an error when either profile is on and a key it needs
+  is empty, and `make doctor` checks them. A downstream overlay that listed
+  `profiles: ["rag"]` on a service of its own that needs Neo4j can switch to
+  `neo4j`.
+- **A browser URL that doesn't exist says so**: `browser_exec` blocks a URL
+  whose hostname has no DNS record, but reported it as "Blocked: URL targets a
+  private or internal address". A turn that guessed a nonexistent government
+  URL read that as the browser being restricted and went back to searxng. The
+  new `patch-browser-unresolvable-host.py` overlay names the hostname and says
+  the address is probably wrong. The URL is still blocked, and private
+  targets keep the old text. `docker compose up -d` recreates `hermes` for
+  the new mount.
 - **A paused searxng server points Hermes at browser search**: after 3
   failed calls in a row, Hermes's MCP circuit breaker pauses a server for 60
   seconds and told the model only to "use a different approach". A turn kept
@@ -49,6 +67,24 @@ the stack under another app.
   to search on Bing with `browser_exec`, and not to call searxng tools until
   the pause ends. No `.env` change; `docker compose up -d` recreates
   `hermes` for the new mount.
+- **A refused page read points Hermes at the browser**: searxng's
+  `web_url_read` is a plain fetch, so bot-protected sites answer it with
+  403, 429 or a 503 challenge, and pages built with JavaScript come back
+  empty. A research turn kept retrying it and searching for other copies of
+  the same pages, and each refusal counted toward searxng's circuit breaker.
+  The new `patch-blocked-fetch-hint.py` overlay recognizes those results and
+  adds a note, outside the untrusted-data wrapper, to open the URL with
+  `browser_exec` and not to try to get past a CAPTCHA. No `.env` change;
+  `docker compose up -d` recreates `hermes` for the new mounts.
+- **Compaction keeps what tool results said**: Hermes pruned old tool
+  results to one-line stubs (`[web_url_read] (11,104 chars result)`) before
+  handing the window to the summarizer, so a research turn came out of
+  compaction with sizes but no facts and re-read the same pages. The new
+  `patch-compaction-tool-facts.py` overlay feeds the summarizer the original
+  bodies (newest first, up to 4,000 chars each and 60,000 in total) and adds
+  a `## Findings` section that lists each fact with its source URL and each
+  source that failed. The stored transcript is unchanged. No `.env` change;
+  `docker compose up -d` recreates `hermes` for the new mounts.
 
 CI: runs `test-crm-sh.sh` and the new `test-no-host-python.sh`.
 `docs/releasing.md` adds a shellcheck 0.9.0 run, the version CI installs, after

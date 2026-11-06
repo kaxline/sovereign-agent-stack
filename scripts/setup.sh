@@ -15,6 +15,7 @@ OPENCODE_WORKSPACE_HOST=""
 ASSISTANT_DATA_ROOT_ARG=""
 SETUP_OLLAMA=0
 SETUP_RAG=0
+SETUP_NEO4J=0
 SETUP_AUTOMATION=0
 SETUP_RESEARCH=0
 SETUP_CODING=0
@@ -37,7 +38,8 @@ Options:
   --opencode-workspace PATH Host path for OpenCode workspace mount
   --data-root PATH          User content root (projects, voice, memory, inputs, …)
                             Hermes state stays at ./data/hermes. See docs/data-dir.md
-  --rag                     Enable knowledge graph (compose profile rag)
+  --rag                     Enable knowledge graph (compose profile rag; starts Neo4j)
+  --neo4j                   Enable Neo4j alone, without LightRAG (profile neo4j)
   --automation              Enable n8n + GPT Researcher (profile automation)
   --research                Enable GPT Researcher deep research as Hermes tools, without n8n (profile research)
   --coding                  Enable OpenCode (profile coding)
@@ -74,6 +76,7 @@ while [[ $# -gt 0 ]]; do
     --data-root) ASSISTANT_DATA_ROOT_ARG="$2"; shift 2 ;;
     --hermes) shift ;; # deprecated alias; core already includes Hermes
     --rag) SETUP_RAG=1; shift ;;
+    --neo4j) SETUP_NEO4J=1; shift ;;
     --automation) SETUP_AUTOMATION=1; shift ;;
     --research) SETUP_RESEARCH=1; shift ;;
     --coding) SETUP_CODING=1; shift ;;
@@ -268,6 +271,12 @@ setup_rag_profile() {
   append_compose_profile rag
   upsert_env .env LIGHTRAG_MCP_ENABLED 1
   log "Enabled LightRAG MCP registration (LIGHTRAG_MCP_ENABLED=1)"
+}
+
+setup_neo4j_profile() {
+  append_compose_profile neo4j
+  upsert_env .env NEO4J_ENABLED 1
+  log "Enabled Neo4j (NEO4J_ENABLED=1)"
 }
 
 setup_calendar_profile() {
@@ -991,6 +1000,9 @@ set_env_if_missing .env HERMES_BUZZ_ENABLED 0
 if [[ "$SETUP_RAG" -eq 1 ]]; then
   setup_rag_profile
 fi
+if [[ "$SETUP_NEO4J" -eq 1 ]]; then
+  setup_neo4j_profile
+fi
 if [[ "$SETUP_AUTOMATION" -eq 1 ]]; then
   setup_automation_profile
 fi
@@ -1056,6 +1068,7 @@ Next steps:
 Optional profiles (re-run setup with a flag below, or set the service's
 *_ENABLED flag in .env and run make up; make services lists them):
   --rag           Knowledge graph (LightRAG + Neo4j)
+  --neo4j         Neo4j alone, without LightRAG
   --automation    n8n + GPT Researcher
   --research      GPT Researcher deep research tools for Hermes, without n8n (docs/gpt-researcher.md)
   --coding        OpenCode
