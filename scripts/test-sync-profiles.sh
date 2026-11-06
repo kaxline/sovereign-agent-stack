@@ -26,7 +26,8 @@ expect() {
 }
 
 # A flag set to 1 adds its profile and records it as managed.
-printf 'COMPOSE_PROFILES=core\nLIGHTRAG_MCP_ENABLED=1\nMAIL_MCP_ENABLED=0\n' > "${tmp}/.env"
+keys='NEO4J_PASSWORD=pw\nLIGHTRAG_API_KEY=lr\n'
+printf "COMPOSE_PROFILES=core\nLIGHTRAG_MCP_ENABLED=1\nMAIL_MCP_ENABLED=0\n${keys}" > "${tmp}/.env"
 sync
 expect "flag on adds profile" COMPOSE_PROFILES core,rag
 expect "flag on marks profile managed" COMPOSE_PROFILES_MANAGED rag
@@ -62,10 +63,42 @@ expect "missing OLLAMA_ENABLED seeded off" OLLAMA_ENABLED 0
 expect "seeding leaves profiles as they were" COMPOSE_PROFILES core,automation
 
 # A missing older flag leaves its profile alone.
-printf 'COMPOSE_PROFILES=core,rag\n' > "${tmp}/.env"
+printf "COMPOSE_PROFILES=core,rag\n${keys}" > "${tmp}/.env"
 sync
 expect "missing LIGHTRAG_MCP_ENABLED leaves rag" COMPOSE_PROFILES core,rag
 expect "missing older flag is not written" LIGHTRAG_MCP_ENABLED ""
+
+# NEO4J_ENABLED adds neo4j on its own and needs only the Neo4j password.
+printf 'COMPOSE_PROFILES=core\nNEO4J_ENABLED=1\nNEO4J_PASSWORD=pw\n' > "${tmp}/.env"
+sync
+expect "neo4j flag adds neo4j alone" COMPOSE_PROFILES core,neo4j
+
+# rag without its keys stops before COMPOSE_PROFILES changes.
+printf 'COMPOSE_PROFILES=core\nLIGHTRAG_MCP_ENABLED=1\n' > "${tmp}/.env"
+if sync; then
+  echo "FAIL: rag without keys fails"
+  fail=1
+elif grep -q "NEO4J_PASSWORD LIGHTRAG_API_KEY not set" "${tmp}/out"; then
+  echo "ok: rag without keys fails and names both"
+else
+  echo "FAIL: rag without keys names both"
+  sed 's/^/    /' "${tmp}/out"
+  fail=1
+fi
+expect "rag without keys leaves profiles" COMPOSE_PROFILES core
+
+# neo4j added by hand without a password fails too.
+printf 'COMPOSE_PROFILES=core,neo4j\nLIGHTRAG_API_KEY=lr\n' > "${tmp}/.env"
+if sync; then
+  echo "FAIL: hand-added neo4j without password fails"
+  fail=1
+elif grep -q "but NEO4J_PASSWORD not set" "${tmp}/out"; then
+  echo "ok: hand-added neo4j without password fails"
+else
+  echo "FAIL: hand-added neo4j without password names the key"
+  sed 's/^/    /' "${tmp}/out"
+  fail=1
+fi
 
 # Profiles without a flag are untouched, and order is kept.
 printf 'COMPOSE_PROFILES=signal,core,n8n-postgres-legacy,custom\nOPENCODE_MCP_ENABLED=yes\n' > "${tmp}/.env"
@@ -78,7 +111,7 @@ sync
 expect "legacy name and spaces cleaned" COMPOSE_PROFILES core
 
 # A second run over a synced .env changes nothing.
-printf 'COMPOSE_PROFILES=core\nLIGHTRAG_MCP_ENABLED=1\nSEARCH_GATE_ENABLED=1\n' > "${tmp}/.env"
+printf "COMPOSE_PROFILES=core\nLIGHTRAG_MCP_ENABLED=1\nSEARCH_GATE_ENABLED=1\n${keys}" > "${tmp}/.env"
 sync
 cp "${tmp}/.env" "${tmp}/.env.first"
 sync

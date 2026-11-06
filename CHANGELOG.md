@@ -10,6 +10,16 @@ the stack under another app.
 
 ### Changes
 
+- **Neo4j has its own profile**: `NEO4J_ENABLED=1` (or `setup.sh --neo4j`)
+  starts Neo4j without LightRAG, under the new `neo4j` profile. `rag` still
+  starts Neo4j, so installs that run `rag` see no change. The container keeps
+  the name `lightrag-neo4j` and its volumes. `NEO4J_PASSWORD` and
+  `LIGHTRAG_API_KEY` are no longer required by `docker-compose.yml` on
+  installs without `rag` or `neo4j`. Instead, `make ensure-local` (and so
+  `make up`) stops with an error when either profile is on and a key it needs
+  is empty, and `make doctor` checks them. A downstream overlay that listed
+  `profiles: ["rag"]` on a service of its own that needs Neo4j can switch to
+  `neo4j`.
 - **A browser URL that doesn't exist says so**: `browser_exec` blocks a URL
   whose hostname has no DNS record, but reported it as "Blocked: URL targets a
   private or internal address". A turn that guessed a nonexistent government

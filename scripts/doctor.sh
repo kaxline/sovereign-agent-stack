@@ -549,7 +549,21 @@ if has_profile core; then
 fi
 if has_profile rag; then
   check_port "$(env_get PORT 9621)" "LightRAG"
+fi
+if has_profile rag || has_profile neo4j; then
   check_port "$(env_get NEO4J_HTTP_HOST_PORT 7474)" "Neo4j browser"
+  # docker-compose.yml no longer requires these keys; make ensure-local
+  # refuses to start without them.
+  _graph_keys="NEO4J_PASSWORD"
+  has_profile rag && _graph_keys="${_graph_keys} LIGHTRAG_API_KEY"
+  for key in $_graph_keys; do
+    val="$(env_get "$key")"
+    case "$val" in
+      "") bad "${key} is empty and rag or neo4j is on — run ./scripts/setup.sh" ;;
+      change-me* | change_me*) warn "${key} is still the .env.example placeholder — run ./scripts/setup.sh" ;;
+      *) ok "${key} is set" ;;
+    esac
+  done
 fi
 if has_profile automation; then
   check_port "$(env_get N8N_HOST_PORT 5678)" "n8n"
