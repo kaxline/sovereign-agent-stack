@@ -27,7 +27,7 @@ expect() {
 
 # A flag set to 1 adds its profile and records it as managed.
 keys='NEO4J_PASSWORD=pw\nLIGHTRAG_API_KEY=lr\n'
-printf "COMPOSE_PROFILES=core\nLIGHTRAG_MCP_ENABLED=1\nMAIL_MCP_ENABLED=0\n${keys}" > "${tmp}/.env"
+printf "COMPOSE_PROFILES=core\nLIGHTRAG_MCP_ENABLED=1\nMAIL_MCP_ENABLED=0\n%b" "$keys" > "${tmp}/.env"
 sync
 expect "flag on adds profile" COMPOSE_PROFILES core,rag
 expect "flag on marks profile managed" COMPOSE_PROFILES_MANAGED rag
@@ -63,7 +63,7 @@ expect "missing OLLAMA_ENABLED seeded off" OLLAMA_ENABLED 0
 expect "seeding leaves profiles as they were" COMPOSE_PROFILES core,automation
 
 # A missing older flag leaves its profile alone.
-printf "COMPOSE_PROFILES=core,rag\n${keys}" > "${tmp}/.env"
+printf "COMPOSE_PROFILES=core,rag\n%b" "$keys" > "${tmp}/.env"
 sync
 expect "missing LIGHTRAG_MCP_ENABLED leaves rag" COMPOSE_PROFILES core,rag
 expect "missing older flag is not written" LIGHTRAG_MCP_ENABLED ""
@@ -111,7 +111,7 @@ sync
 expect "legacy name and spaces cleaned" COMPOSE_PROFILES core
 
 # A second run over a synced .env changes nothing.
-printf "COMPOSE_PROFILES=core\nLIGHTRAG_MCP_ENABLED=1\nSEARCH_GATE_ENABLED=1\n${keys}" > "${tmp}/.env"
+printf "COMPOSE_PROFILES=core\nLIGHTRAG_MCP_ENABLED=1\nSEARCH_GATE_ENABLED=1\n%b" "$keys" > "${tmp}/.env"
 sync
 cp "${tmp}/.env" "${tmp}/.env.first"
 sync
