@@ -30,8 +30,14 @@ run_patch /bootstrap/patch-tool-loop-replay.py
 # While the searxng MCP server is paused (circuit breaker), say how to search
 # with browser_exec instead.
 run_patch /bootstrap/patch-searxng-pause-browser.py
+# When searxng's web_url_read is refused (403/429/503, empty JS page, bot
+# check), a note outside the untrusted wrapper says to open it in the browser.
+run_patch /bootstrap/patch-blocked-fetch-hint.py
 # Per-session history budget for DM threads (request window; transcript stays).
 run_patch /bootstrap/patch-history-budget.py
+# Compaction summarizer reads full tool results (not prune stubs) and keeps
+# facts with their sources in a Findings section.
+run_patch /bootstrap/patch-compaction-tool-facts.py
 # Client-supplied session/turn context; refuse a prompt.submit profile that
 # differs from the session's (dashboard /api/ws).
 run_patch /bootstrap/patch-client-context.py

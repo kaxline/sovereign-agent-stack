@@ -85,8 +85,12 @@ jobs:
         run: python3 scripts/test-tool-loop-replay.py --host-only
       - name: Searxng pause points at browser search wiring (stdlib)
         run: python3 scripts/test-searxng-pause-browser.py --host-only
+      - name: Refused searxng page read points at the browser (stdlib)
+        run: python3 scripts/test-blocked-fetch-hint.py --host-only
       - name: History budget window (stdlib)
         run: python3 scripts/test-history-budget.py
+      - name: Compaction summarizer reads tool results (stdlib)
+        run: python3 scripts/test-compaction-tool-facts.py --host-only
       - name: Client context and prompt profile check (stdlib)
         run: python3 scripts/test-client-context.py
       - name: Turn heartbeat and session live status (stdlib)
