@@ -6,6 +6,20 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
+## Unreleased
+
+### Changes
+
+- **A paused searxng server points Hermes at browser search**: after 3
+  failed calls in a row, Hermes's MCP circuit breaker pauses a server for 60
+  seconds and told the model only to "use a different approach". A turn kept
+  calling `searxng_web_search` through the pause until
+  `same_tool_failure_halt` stopped it. The new
+  `patch-searxng-pause-browser.py` overlay adds to searxng's pause error how
+  to search on Bing with `browser_exec`, and not to call searxng tools until
+  the pause ends. No `.env` change; `docker compose up -d` recreates
+  `hermes` for the new mount.
+
 ## v0.3.10 — 2026-11-05
 
 ### Upgrade steps
