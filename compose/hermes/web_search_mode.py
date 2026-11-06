@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Any, Callable, Mapping
 
 try:
@@ -75,10 +76,26 @@ def _result_text(result: Any) -> str:
     return result if isinstance(result, str) else ""
 
 
+# Errors that mean SearXNG (or the MCP server in front of it) is unavailable. Argument errors and
+# configuration errors are not here: SearXNG is healthy, and sending the query out would only leak it.
+_MCP_DOWN = r"MCP server 'searxng'|transport is down|not connected"
+_SEARCH_UNAVAILABLE = re.compile(
+    _MCP_DOWN + r"|Connection Error|DNS Error|Timeout Error|Network Error|SearXNG Error \((?:403|429|5\d\d)\)"
+    r"|Search Degraded|SearXNG Response Error|SearXNG Data Error|^(?:Runtime|Timeout|Connection|OS)Error: ")
+# For a page read, the target's own 404 or missing hostname is the page's answer, not a block.
+_FETCH_UNAVAILABLE = re.compile(_MCP_DOWN + r"|Connection Error|Timeout Error|Network Error"
+                                r"|^(?:Runtime|Timeout|Connection|OS)Error: ")
+
+
+def _error_text(result: Any) -> str:
+    data = _parsed(result)
+    return str(data["error"]) if isinstance(data, dict) and "error" in data else ""
+
+
 def search_failed(result: Any) -> bool:
-    """A tool error, or no results while engines were unavailable (suspended, gate busy)."""
+    """SearXNG unavailable (breaker, transport, engines blocked, gate busy); not an argument error."""
     if is_tool_error(result):
-        return True
+        return bool(_SEARCH_UNAVAILABLE.search(_error_text(result)))
     text = _result_text(result)
     inner = _parsed(text)
     if isinstance(inner, dict) and "results" in inner:
@@ -88,12 +105,45 @@ def search_failed(result: Any) -> bool:
 
 
 def fetch_failed(args: Any, result: Any) -> bool:
-    """A tool error, or a page the blocked-fetch hint would flag (refused, empty JS page, bot check)."""
-    return is_tool_error(result) or hint_for(FETCH_TOOL, args, result) is not None
+    """A page the blocked-fetch hint would flag (refused, empty JS page, bot check), or the fetch path down."""
+    if hint_for(FETCH_TOOL, args, result) is not None:
+        return True
+    return is_tool_error(result) and bool(_FETCH_UNAVAILABLE.search(_error_text(result)))
+
+
+def _reason(result: Any) -> str:
+    """Why a side failed, in words that match none of the pause or blocked-fetch hints' patterns."""
+    error = _error_text(result)
+    text = error or _result_text(result)
+    status = re.search(r"Error \((\d{3})\)", text)
+    if re.search(_MCP_DOWN, text):
+        return "the searxng MCP server is paused or unreachable"
+    if status:
+        return f"HTTP {status.group(1)}"
+    if "Timeout" in text:
+        return "it timed out"
+    if "Connection Error" in text or "Network Error" in text:
+        return "a network error"
+    if "Search Degraded" in text or UNAVAILABLE_MARK in text:
+        return "its search engines were unavailable"
+    if "appears empty" in text:
+        return "the page came back empty, most likely because it needs JavaScript"
+    if re.match(r"\w+Error: ", error):
+        return "the searxng tool raised an error"
+    if not error:
+        return "it returned a bot-check page"
+    return "it failed"
 
 
 def _handler_json(text: str) -> str:
     return json.dumps({"result": text}, ensure_ascii=False)
+
+
+def _int(value: Any, default: int | None) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _set(args: Mapping[str, Any], names: tuple[str, ...]) -> list[str]:
@@ -227,11 +277,18 @@ def wrap_handler(server_name: str, tool_name: str, inner: Callable[..., Any]) ->
         return result, failed
 
     def _ring(args: dict) -> tuple[str, bool]:
+        try:
+            return _ring_call(args)
+        except Exception as exc:
+            logger.warning("keyless web tier %s raised: %s", tool_name, exc)
+            return _tool_error(f"keyless web tier error: {type(exc).__name__}: {exc}"), True
+
+    def _ring_call(args: dict) -> tuple[str, bool]:
         if not _ring_enabled():
             return _tool_error(DISABLED), True
         if is_search:
-            limit = args.get("num_results")
-            resp = _ring_search(str(args.get("query") or ""), int(limit) if limit else DEFAULT_LIMIT)
+            limit = min(max(_int(args.get("num_results"), DEFAULT_LIMIT) or DEFAULT_LIMIT, 1), 20)
+            resp = _ring_search(str(args.get("query") or ""), limit)
             if not resp.get("success"):
                 return _tool_error(str(resp.get("error") or "keyless search failed")), True
             resp.setdefault("data", {}).setdefault("served_by", RING_START)  # upstream omits it when unchanged
@@ -243,6 +300,8 @@ def wrap_handler(server_name: str, tool_name: str, inner: Callable[..., Any]) ->
         entry = _ring_extract(url)
         if entry.get("error"):
             return _tool_error(str(entry["error"])), True
+        if not str(entry.get("content") or "").strip():
+            return _tool_error("keyless web tier returned an empty page"), True
         return render_extract(entry, args), False
 
     def _handler(args: dict, **kwargs: Any) -> Any:
@@ -265,7 +324,7 @@ def wrap_handler(server_name: str, tool_name: str, inner: Callable[..., Any]) ->
             return result
         b = (args, kwargs) if second is _private else (args,)
         other, other_failed = second(*b)
-        reason = _failure_text(result)[:200]
+        reason = _reason(result) if first is _private else _failure_text(result)[:200]
         if not other_failed:
             label = first_side[0].upper() + first_side[1:]
             return _with_note(other, f"{label} was unavailable for this {what} ({reason}).")
@@ -277,9 +336,9 @@ def wrap_handler(server_name: str, tool_name: str, inner: Callable[..., Any]) ->
 def render_extract(entry: dict, args: Mapping[str, Any]) -> str:
     """Handler JSON for a successful ring page read, sliced like mcp-searxng's startChar/maxLength."""
     content = str(entry.get("content") or "")
-    start = max(int(args.get("startChar") or 0), 0)
-    length = args.get("maxLength")
-    content = content[start:start + int(length)] if length else content[start:]
+    start = max(_int(args.get("startChar"), 0) or 0, 0)
+    length = _int(args.get("maxLength"), None)
+    content = content[start:start + length] if length and length > 0 else content[start:]
     parts = ["Served by the keyless web tier."]
     if _set(args, READ_FILTERS):
         parts.append("The keyless web tier returned the whole page; section, paragraphRange and readHeadings "

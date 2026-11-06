@@ -208,7 +208,7 @@ def test_guards() -> None:
 
 def test_inner_raises() -> None:
     r, calls = run("private-first", "searxng_web_search", {"query": "q"}, RuntimeError("down"), RING_OK)
-    expect(calls == ["searxng", "ring"] and "down" in r, (calls, r))
+    expect(calls == ["searxng", "ring"] and "raised an error" in r, (calls, r))
     try:
         run("private", "searxng_web_search", {"query": "q"}, RuntimeError("down"), RING_OK)
         fail("private re-raises")
@@ -219,6 +219,70 @@ def test_inner_raises() -> None:
 def test_bad_mode_is_private() -> None:
     r, calls = run("keyless-only", "searxng_web_search", {"query": "q"}, err("boom"), RING_OK)
     expect(r == err("boom") and calls == ["searxng"], (r, calls))
+
+
+def test_fallback_note_does_not_retrigger_hints() -> None:
+    import blocked_fetch_hint as bfh
+    a = {"url": "https://registry.example.com/x"}
+    for failed in (FETCH_403, res("\U0001F4C4 Content Warning: Page fetched but appears empty after conversion "
+                                  "(https://registry.example.com/x). May contain only media or require JavaScript.")):
+        r, calls = run("private-first", "web_url_read", a, failed, EXTRACT_OK)
+        expect(calls == ["searxng", "ring"], calls)
+        expect(bfh.hint_for(wsm.FETCH_TOOL, a, r) is None, f"blocked-fetch hint fires on a rescued read: {r}")
+    r, _ = run("private-first", "web_url_read", a, FETCH_403, EXTRACT_OK)
+    expect("HTTP 403" in r, r)
+    pause = err("MCP server 'searxng' is unreachable after 3 consecutive failures. Search with browser_exec on Bing. "
+                "Don't call searxng tools again until the pause ends.")
+    r, _ = run("private-first", "searxng_web_search", {"query": "q"}, pause, RING_OK)
+    expect("browser_exec" not in r and "Don't call searxng" not in r, f"pause hint leaks into rescued search: {r}")
+    expect("paused or unreachable" in r, r)
+
+
+def test_ring_errors_fall_back() -> None:
+    def boom(*a, **k):
+        raise RuntimeError("vendor exploded")
+    saved, saved_enabled = wsm._ring_search, wsm._ring_enabled
+    wsm._ring_search, wsm._ring_enabled = boom, (lambda: True)
+    try:
+        os.environ["HERMES_WEB_SEARCH_MODE"] = "keyless-first"
+        r = wsm.wrap_handler("searxng", "searxng_web_search", lambda a, **k: SEARX_OK)({"query": "q"})
+        expect("URL: https://s.example.com" in r, f"ring exception skips the SearXNG fallback: {r}")
+    finally:
+        wsm._ring_search, wsm._ring_enabled = saved, saved_enabled
+        os.environ.pop("HERMES_WEB_SEARCH_MODE", None)
+    r, calls = run("keyless-first", "searxng_web_search", {"query": "q", "num_results": "ten"}, SEARX_OK, RING_OK)
+    expect(calls == ["ring"] and "URL: https://r.example.com" in r, f"bad num_results: {r}")
+    page = {"url": "https://a.example.com", "content": "0123456789"}
+    text = json.loads(wsm.render_extract(page, {"url": page["url"], "startChar": "x", "maxLength": "y"}))["result"]
+    expect(text.endswith("0123456789"), text)
+
+
+def test_empty_ring_page_falls_back() -> None:
+    a = {"url": "https://registry.example.com/x"}
+    empty = {"url": a["url"], "title": "", "content": "   "}
+    r, calls = run("keyless-first", "web_url_read", a, PAGE_OK, empty)
+    expect(calls == ["ring", "searxng"] and "plain fetch text" in r, (calls, r))
+
+
+def test_private_first_keeps_argument_errors_local() -> None:
+    for e in ("Invalid num_results: must be an integer between 1 and 20",
+              "\U0001F527 Configuration Error: time_range is not supported by engine bing"):
+        r, calls = run("private-first", "searxng_web_search", {"query": "q", "num_results": 25}, err(e), RING_OK)
+        expect(calls == ["searxng"], f"argument error sent to the ring: {e}")
+    for e in ("\U0001F310 Timeout Error: SearXNG is too slow to respond",
+              "\U0001F310 Connection Error: SearXNG is not responding (http://search-gate:8080)",
+              "\U0001F6AB SearXNG Error (502): Internal server error",
+              "\U0001F50D Search Degraded: No results for \"q\", and these engines failed: bing (CAPTCHA)."):
+        r, calls = run("private-first", "searxng_web_search", {"query": "q"}, err(e), RING_OK)
+        expect(calls == ["searxng", "ring"], f"unavailability not rescued: {e}")
+    a = {"url": "https://registry.example.com/x"}
+    for e in ("\U0001F6AB Website Error (404): Page not found",
+              "\U0001F310 DNS Error: Cannot resolve hostname \"registry.example.com\""):
+        r, calls = run("private-first", "web_url_read", a, err(e), EXTRACT_OK)
+        expect(calls == ["searxng"], f"page's own error sent to the ring: {e}")
+    r, calls = run("private-first", "web_url_read", a, err("\U0001F310 Timeout Error: registry.example.com took "
+                                                            "longer than 10000ms to respond"), EXTRACT_OK)
+    expect(calls == ["searxng", "ring"], "fetch timeout is rescued")
 
 
 def test_overlay_is_wired() -> None:
@@ -288,6 +352,10 @@ def main() -> None:
     test_guards()
     test_inner_raises()
     test_bad_mode_is_private()
+    test_fallback_note_does_not_retrigger_hints()
+    test_ring_errors_fall_back()
+    test_empty_ring_page_falls_back()
+    test_private_first_keeps_argument_errors_local()
     test_overlay_is_wired()
     print("ok")
     hermes_image.maybe_run(IMAGE_DRIVER)

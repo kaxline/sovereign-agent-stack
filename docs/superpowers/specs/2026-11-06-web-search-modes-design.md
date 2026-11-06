@@ -74,8 +74,11 @@ overlays see the same shape as an mcp-searxng answer.
 
 A SearXNG search counts as failed when any of these is true:
 
-- the handler result is a tool error (this includes the circuit-breaker pause and an unreachable
-  server);
+- the handler result is a tool error that says SearXNG is unavailable: the circuit-breaker pause, an
+  unreachable or disconnected MCP server, a connection, DNS, timeout or network error, SearXNG
+  answering 403, 429 or 5xx, `Search Degraded`, or a bad SearXNG response. Argument and configuration
+  errors (a bad `num_results` or `time_range`) are not failures: SearXNG is healthy, and sending the
+  query out would only leak it. (Revised after the final review.)
 - it holds no `URL:` result lines (text) or an empty `results` list (JSON) **and** names unavailable
   or unresponsive engines. This covers suspended engines and the search gate's busy answer.
 
@@ -94,15 +97,18 @@ return the rest of the page when they are absent. When
 page instead. The first line names the source, as for search.
 
 A plain fetch counts as failed when `blocked_fetch_hint.hint_for` would fire on it (a 403, 429 or
-503, an empty page that needs JavaScript, or a bot-check page) or when it is a tool error. Reusing
+503, an empty page that needs JavaScript, or a bot-check page), or on an unreachable MCP server or a
+connection, timeout or network error. The page's own 404 or a hostname that doesn't resolve is the
+page's answer and stays local. Reusing
 `hint_for` keeps one definition of "refused" for both overlays. A ring extract counts as failed when
 its entry carries an `error`.
 
 ### Fallback results
 
 When the fallback side succeeds, its result is returned with one added line naming why it was used,
-for example `SearXNG was unavailable for this search (<first 200 chars of its error>).` The
-blocked-fetch hint then does not fire, because the returned text no longer matches its checks.
+for example `SearXNG was unavailable for this search (the searxng MCP server is paused or unreachable).`
+When SearXNG is the failed side, the reason is a short paraphrase (`HTTP 403`, `it timed out`), never its
+raw text, so neither the pause hint nor the blocked-fetch hint fires on a result the fallback served.
 
 When both sides fail, the result is the first side's failure with
 ` (fallback via <the other side> also failed: <its error>)` appended. A tool error stays a tool
