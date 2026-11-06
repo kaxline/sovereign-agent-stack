@@ -1492,14 +1492,18 @@ PY
 }
 
 # Drop crm-* entries whose workspace file is gone or no longer registers on
-# this profile, and their TWENTY_<SLUG>_KEY. Only crm-* entries are ours;
-# entries a client added under another name stay, even at the same URL.
+# this profile, their TWENTY_<SLUG>_KEY and their tool pins. With no crm-*
+# entry left, the bare Twenty tool names go from the pins too. Only crm-*
+# entries are ours; entries a client added under another name stay, even at
+# the same URL.
 #
 # Usage: reconcile_twenty_workspaces <profile> <slug...>
 reconcile_twenty_workspaces() {
   _rtw_profile="$1"
   shift
-  _out="$(python3 - "$(config_path_for "$_rtw_profile")" "$@" <<'PY'
+  _out="$(TWENTY_MCP_PINS="$TWENTY_MCP_PINS" python3 - "$(config_path_for "$_rtw_profile")" "$@" <<'PY'
+import os
+import re
 import sys
 sys.path.insert(0, "/opt/hermes")
 try:
@@ -1521,8 +1525,32 @@ if not isinstance(servers, dict):
 removed = sorted(k for k in servers if k.startswith("crm-") and k not in keep)
 for key in removed:
     del servers[key]
-if removed:
+
+# Pins of servers that are gone: mcp__crm_<slug>__* (Hermes' tool names) and
+# the mcp__crm-<slug>__* form earlier builds wrote, which never matched.
+kept_prefixes = tuple(p for s in keep for p in (
+    "mcp__" + re.sub(r"[^A-Za-z0-9_]", "_", s) + "__", f"mcp__{s}__"))
+any_left = any(k.startswith("crm-") for k in servers)
+bare = set(os.environ.get("TWENTY_MCP_PINS", "").split())
+unpinned = 0
+tool_search = ((config.get("tools") or {}).get("tool_search") or {})
+pins = tool_search.get("always_include")
+if isinstance(pins, list):
+    def stale(name):
+        if not isinstance(name, str):
+            return False
+        if name.startswith(("mcp__crm_", "mcp__crm-")):
+            return not name.startswith(kept_prefixes)
+        return not any_left and name in bare
+    kept_pins = [p for p in pins if not stale(p)]
+    unpinned = len(pins) - len(kept_pins)
+    tool_search["always_include"] = kept_pins
+
+if removed or unpinned:
     atomic_yaml_write(cfg_path, config)
+if unpinned:
+    print(f"Removed {unpinned} stale Twenty tool pins")
+if removed:
     print("Removed stale Twenty MCP entries: " + ", ".join(removed))
     for key in removed:
         print("REMOVED_SLUG " + key[len("crm-"):])
