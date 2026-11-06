@@ -32,6 +32,9 @@ run_patch /bootstrap/patch-tool-loop-replay.py
 run_patch /bootstrap/patch-searxng-pause-browser.py
 # Per-session history budget for DM threads (request window; transcript stays).
 run_patch /bootstrap/patch-history-budget.py
+# Compaction summarizer reads full tool results (not prune stubs) and keeps
+# facts with their sources in a Findings section.
+run_patch /bootstrap/patch-compaction-tool-facts.py
 # Client-supplied session/turn context; refuse a prompt.submit profile that
 # differs from the session's (dashboard /api/ws).
 run_patch /bootstrap/patch-client-context.py

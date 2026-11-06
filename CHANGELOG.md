@@ -19,6 +19,15 @@ the stack under another app.
   to search on Bing with `browser_exec`, and not to call searxng tools until
   the pause ends. No `.env` change; `docker compose up -d` recreates
   `hermes` for the new mount.
+- **Compaction keeps what tool results said**: Hermes pruned old tool
+  results to one-line stubs (`[web_url_read] (11,104 chars result)`) before
+  handing the window to the summarizer, so a research turn came out of
+  compaction with sizes but no facts and re-read the same pages. The new
+  `patch-compaction-tool-facts.py` overlay feeds the summarizer the original
+  bodies (newest first, up to 4,000 chars each and 60,000 in total) and adds
+  a `## Findings` section that lists each fact with its source URL and each
+  source that failed. The stored transcript is unchanged. No `.env` change;
+  `docker compose up -d` recreates `hermes` for the new mounts.
 
 ## v0.3.10 — 2026-11-05
 

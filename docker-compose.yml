@@ -1633,6 +1633,8 @@ services:
       - ./compose/hermes/history_budget.py:/bootstrap/history_budget.py:ro
       - ./compose/hermes/history_budget_hook.py:/bootstrap/history_budget_hook.py:ro
       - ./compose/hermes/patch-history-budget.py:/bootstrap/patch-history-budget.py:ro
+      - ./compose/hermes/compaction_tool_facts.py:/bootstrap/compaction_tool_facts.py:ro
+      - ./compose/hermes/patch-compaction-tool-facts.py:/bootstrap/patch-compaction-tool-facts.py:ro
       - ./compose/hermes/client_context.py:/bootstrap/client_context.py:ro
       - ./compose/hermes/patch-client-context.py:/bootstrap/patch-client-context.py:ro
       - ./compose/hermes/gateway_liveness.py:/bootstrap/gateway_liveness.py:ro
