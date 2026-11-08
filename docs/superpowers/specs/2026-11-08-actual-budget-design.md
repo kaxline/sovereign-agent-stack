@@ -270,3 +270,123 @@ existing installs see no change.
 
 After an image bump, re-run the live check: a version mismatch between `@actual-app/api` and the
 server, or a renamed tool, breaks the add-on without failing any offline test.
+
+## Spike results
+
+Run 2026-11-08 on a throwaway stack: `actual-server`, the candidates and every `@actual-app/api`
+script ran in Docker containers on one scratch network, with made-up budgets only. Full commands
+and outputs are in `.superpowers/sdd/2026-11-08-actual-budget/task-1-report.md`.
+
+### S1: chosen server
+
+[giorgiobrullo/actual-mcp](https://github.com/giorgiobrullo/actual-mcp) at
+`0c73b0d727a1d32bb924ab323985fffc9f0944fb` (package version 1.15.1), MIT (copyright 2025 Stefan
+Stefanov, the upstream author). It passed all five criteria with `ACTUAL_SYNC_TTL_MS=0`.
+
+| Criterion | giorgiobrullo | agigante80 `2bf0987` | Type-zero-labs `f4aab60` |
+|---|---|---|---|
+| Streamable HTTP or SSE | pass | pass | fail: stdio only |
+| No write tool read-only | pass | pass | fail: no read-only mode |
+| Sync before read | pass, with `ACTUAL_SYNC_TTL_MS=0` | fail inside one MCP session | fail: downloads once (code reading) |
+| Credentials from env or file, not logged | pass | pass (env only) | env only, not logged |
+| License allows vendoring | MIT | MIT | MIT |
+
+agigante80 fails sync before read: on one open MCP session, a read after a write from the `rw`
+instance (confirmed on the server by a fresh download) returned the old balance. New sessions do
+see the change. Its pooled read path runs reads against the session's loaded copy without
+`api.sync()`, so it can't serve a long-lived Hermes connection.
+
+**Vendoring needs a patch.** At `0c73b0d`, `package.json` points `@actual-app/api` and
+`@actual-app/core` at `file:../actual/packages/...` (the author's local Actual fork), so the repo
+doesn't build alone. The spike replaced both with `26.11.0` from npm, dropped the lockfile, and
+built the repo's Dockerfile with `npm install`. The build passed, and the tools the spike called
+(`get-accounts`, `create-transaction`, `delete-transaction` on `ro`) worked. The other tools are
+unverified against npm `26.11.0`; per its commit message, `run-bank-sync` (out of scope here)
+expects a return value only the fork's API gives. The vendored copy has to carry that change and
+a regenerated lockfile.
+
+**Runtime contract**
+
+- Command: `node build/index.js --sse [--enable-write] [--enable-bearer] [--port N]`. `--sse`
+  starts the HTTP server. The name is misleading: it serves Streamable HTTP and legacy SSE.
+- Port: `3000` (default; `--port` changes it).
+- Transport `http`, path `/mcp` (`/` also works). Legacy SSE is on `/sse`. Both were tested.
+- Read-only: leave out `--enable-write`. `rw` adds it.
+- Auth: `--enable-bearer` with `BEARER_TOKEN` requires `Authorization: Bearer <token>` on `/mcp`
+  and `/sse` (401 without it). Without the flag the endpoints are open.
+- Env: `ACTUAL_SERVER_URL`, `ACTUAL_PASSWORD`, `ACTUAL_BUDGET_SYNC_ID`,
+  `ACTUAL_BUDGET_ENCRYPTION_PASSWORD`, `ACTUAL_DATA_DIR` (cache dir; default `~/.actual`), and
+  `ACTUAL_SYNC_TTL_MS`, which must be `0`. Its default of `60000` lets a read answer from a copy
+  up to a minute old. `ACTUAL_SESSION_TOKEN` replaces `ACTUAL_PASSWORD` for OpenID servers.
+- Always set `ACTUAL_BUDGET_SYNC_ID`. Without it the server opens the first budget it lists.
+- Secrets from a file: the server runs `dotenv` on `.env` in its working directory (`/app` in
+  the image). With the variables only in a file mounted at `/app/.env` (none in the container
+  environment), it opened the encrypted budget. So `budget.env` can be mounted read-only at
+  `/app/.env`, or delivered as a compose secret at that path, instead of going through `env_file`.
+- Logs: `docker logs` of all four test containers had no match for the server password,
+  encryption password or bearer token.
+- No `/health` endpoint (404) and no Docker `HEALTHCHECK`. The image runs as root. The budget
+  loads on the first tool call, not at startup, so a bad password shows only as a failed call.
+
+**Tools** (from `tools/list` on the two instances; `rw` lists 51, `ro` 18, and `ro` is a
+subset of `rw`).
+
+Read (18): `get-transactions`, `spending-by-category`, `monthly-summary`, `balance-history`,
+`budget-vs-actual`, `net-worth`, `category-trends`, `spending-by-payee`, `cash-flow`,
+`get-accounts`, `get-grouped-categories`, `get-payees`, `get-rules`, `get-custom-reports`,
+`get-dashboards`, `get-budget-months`, `get-budget-month`, `get-schedules`.
+
+Write (33): `add-dashboard-widget`, `batch-update-transactions`, `create-category`,
+`create-category-group`, `create-custom-report`, `create-dashboard-page`, `create-payee`,
+`create-rule`, `create-transaction`, `delete-category`, `delete-category-group`,
+`delete-custom-report`, `delete-dashboard-page`, `delete-payee`, `delete-rule`,
+`delete-transaction`, `hold-budget-for-next-month`, `import-transactions`, `merge-payees`,
+`organize-dashboard`, `remove-dashboard-widget`, `rename-dashboard-page`, `reset-budget-hold`,
+`run-bank-sync`, `set-budget-amount`, `set-budget-carryover`, `update-category`,
+`update-category-group`, `update-custom-report`, `update-dashboard-widget`, `update-payee`,
+`update-rule`, `update-transaction`.
+
+Calling `create-transaction` or `delete-transaction` on `ro` returns
+`Error: Unknown tool create-transaction` with `isError: true`. There is no tool that moves money
+between categories in one call. That takes two `set-budget-amount` calls.
+
+**Write propagation.** The `rw` instance returns from a write before the change reaches the
+server; the push happens a few seconds later. In one run a fresh download about 1 s after
+`create-transaction` returned didn't have the change yet; downloads at about 5 s and later did.
+A `ro` read right after an `rw` write can miss it. With `ACTUAL_SYNC_TTL_MS=0` the next read
+after the push sees it.
+
+**Wrong encryption password** (tool result, `isError: true`):
+
+- wrong password: `Error: Unable to decrypt file with this password. Please try again.`
+- no `ACTUAL_BUDGET_ENCRYPTION_PASSWORD`: `Error: File Spike Encrypted is encrypted. Please provide a password.`
+  (the budget's name is in the message)
+
+### Versions
+
+`actualbudget/actual-server:26.11.0` (digest
+`sha256:06cf186569cf58d93e12659ff1a517b65b5b0ebee7050a3991d4bd8a1d398da6`, also `latest` on
+2026-11-08) with `@actual-app/api` `26.11.0` and `@actual-app/core` `26.11.0`.
+
+### S2: headless setup
+
+Both steps work without the web app.
+
+- `GET /account/needs-bootstrap` returns
+  `{"status":"ok","data":{"bootstrapped":false,"loginMethod":"password",...}}` on a new server.
+- `POST /account/bootstrap` with `{"password":"..."}` sets the first password and returns
+  `{"status":"ok","data":{"token":"<uuid>"}}`. A second call returns
+  `{"status":"error","reason":"already-bootstrapped"}`.
+- `POST /account/login` with `{"loginMethod":"password","password":"..."}` returns
+  `{"status":"ok","data":{"token":"<uuid>"}}`, or `{"status":"error","reason":"invalid-password"}`.
+- `GET /sync/list-user-files` with header `X-ACTUAL-TOKEN: <token>` lists budgets: `data[]` with
+  `name`, `fileId`, `groupId`, `encryptKeyId` (null when not encrypted) and `deleted`. The
+  `groupId` is the Sync ID that goes in `ACTUAL_BUDGET_SYNC_ID`.
+- `api.runImport(name, fn)` creates a budget and uploads it to the server
+  (`api/finish-import` calls the upload). It removes the default expense categories and groups
+  first, so the budget starts with income categories only, plus whatever `fn` creates.
+  `budget.sh init` can create the budget itself, and the adopt-the-only-budget path is still
+  needed for remote servers.
+- Encryption can also be turned on headless: `api.internal.send('key-make', {password})` with
+  the budget loaded. The spike used this instead of the web app; the server then listed an
+  `encryptKeyId` for that budget. Whether the web app calls the same handler is unverified.
