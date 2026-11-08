@@ -266,6 +266,7 @@ through the vault tools, and none returns a secret.
 | `GET /accounts` | Each account's slug, mode, scope kind and state (`unlocked`, `locked`, `offline`, `error`) | metadata |
 | `GET /items` | Login items in scope across unlocked accounts | `[{handle, label, username, origins, has_totp}]` |
 | `POST /fill` `{handle, target_id, field}` | Fills the password (`field: "password"`) or the current TOTP code (`"totp"`) into the CDP target | `{filled, origin, redaction}` |
+| `POST /sync` | Runs `bw sync` on every unlocked account now | `{synced}` |
 | `POST /requests` `{account, site, reason}` | Records an access request (Access requests) | `{request_id}` |
 | `GET /requests` | Pending and recent requests | metadata |
 | `POST /release` `{handle}` | Stops serving an item at once and returns it to the user (Access requests) | `{released, returned}` |
@@ -364,7 +365,7 @@ This changes where a value comes from, not where it goes. Values Hermes needs to
 
 The agent cannot add an item to its own scope. Adding one grants the agent a credential, and a
 sentence like "move my LinkedIn login to the agent vault" can come from a web page, an email or a
-message the agent reads as easily as from the user. In `collection` mode the broker also holds no
+message the agent reads, not only from the user. In `collection` mode the broker also holds no
 key that could reach the item. So the agent asks, and the user approves where the model cannot
 write.
 
