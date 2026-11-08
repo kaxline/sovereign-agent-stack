@@ -395,6 +395,16 @@ touch "$STUB/timeout"
 rc=0; run check || rc=$?
 [ "$rc" = 4 ] || fail "check exits 4 on a timeout (got $rc)"
 rm -f "$STUB/timeout"
+printf 'ACTUAL_SERVER_URL=https://u:url-SECRET@budget.example.com\nACTUAL_PASSWORD=check-SECRET\nACTUAL_BUDGET_SYNC_ID=\n' > "$f"
+rc=0; run check || rc=$?
+[ "$rc" = 1 ] || fail "check exits 1 when the budget doesn't open (got $rc)"
+grep -q 'on https://\*\*\*@budget.example.com' "$out" || fail "check masks user:password@ in the URL ($(cat "$out"))"
+rm -f "$f"
+printf 'sync-a\tHousehold\nsync-b\tBusiness\n' > "$STUB/list.tsv"
+ACTUAL_PASSWORD=check-SECRET ACTUAL_BUDGET_ENCRYPTION_PASSWORD='' run add --url https://u:url-SECRET@budget.example.com \
+  && fail "add with two budgets must fail"
+grep -q '^\[budget\] ERROR: https://\*\*\*@budget.example.com has 2 budgets' "$out" || fail "add masks user:password@ in the URL ($(cat "$out"))"
+rm -f "$STUB/list.tsv"
 rm -f "$f" "$STUB/enc_pw"
 rc=0; run check || rc=$?
 [ "$rc" = 1 ] || fail "check with no file exits 1 (got $rc)"

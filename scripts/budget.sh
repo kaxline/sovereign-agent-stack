@@ -445,7 +445,7 @@ rotate_password() {
   local url old new resp
   url="$(file_get ACTUAL_SERVER_URL)"
   [[ "${url%/}" == "$LOCAL_URL" ]] \
-    || die "${BUDGET_REL} points at ${url}, not the local server; change that server's password there, then make budget-add FORCE=1"
+    || die "${BUDGET_REL} points at $(safe_url "$url"), not the local server; change that server's password there, then make budget-add FORCE=1"
   old="$(file_get ACTUAL_PASSWORD)"
   if ! login "$old"; then
     # A rotation that changed the server but didn't get to write the file.
@@ -491,7 +491,7 @@ cmd_add() {
 
   # With the values in the environment nothing is asked.
   local pw="${ACTUAL_PASSWORD:-}" sync="${ACTUAL_BUDGET_SYNC_ID:-}" enc="${ACTUAL_BUDGET_ENCRYPTION_PASSWORD:-}"
-  [[ -n "$pw" ]] || pw="$(ask 1 "Server password for ${url}")"
+  [[ -n "$pw" ]] || pw="$(ask 1 "Server password for $(safe_url "$url")")"
   if [[ -z "$pw" ]]; then
     [[ -t 0 ]] || die "set ACTUAL_PASSWORD (no terminal to ask in)"
     die "a server password is required"
@@ -514,15 +514,15 @@ cmd_add() {
       0) ;;
       3) refused_password ;;
       4) timed_out ;;
-      *) die "couldn't list the budgets on ${url}: $(admin_error); nothing written" ;;
+      *) die "couldn't list the budgets on $(safe_url "$url"): $(admin_error); nothing written" ;;
     esac
     list="$(printf '%s\n' "$list" | grep "$(printf '\t')" || true)"
     n="$(printf '%s' "$list" | grep -c . || true)"
     if [[ "$n" -eq 0 ]]; then
-      die "${url} has no budgets; create one in its web app first"
+      die "$(safe_url "$url") has no budgets; create one in its web app first"
     elif [[ "$n" -gt 1 ]]; then
       printf '%s\n' "$list" | awk -F'\t' '{ printf "  %s  %s\n", $1, $2 }' >&2
-      die "${url} has ${n} budgets; pick one with ACTUAL_BUDGET_SYNC_ID (make budget-add SYNC_ID=<sync id>)"
+      die "$(safe_url "$url") has ${n} budgets; pick one with ACTUAL_BUDGET_SYNC_ID (make budget-add SYNC_ID=<sync id>)"
     fi
     sync="$(printf '%s' "$list" | cut -f1)"
     log "Using the server's only budget, '$(printf '%s' "$list" | cut -f2-)'"
@@ -551,7 +551,7 @@ cmd_check() {
     2) log "Budget ${a_sync}: wrong or missing encryption password (ACTUAL_BUDGET_ENCRYPTION_PASSWORD)" >&2 ;;
     3) log "The server refused the server password (ACTUAL_PASSWORD)" >&2 ;;
     4) log "No answer from $(safe_url "$a_url") within ${ACTUAL_ADMIN_TIMEOUT_S:-45} s (ACTUAL_ADMIN_TIMEOUT_S)" >&2 ;;
-    *) log "Couldn't open budget ${a_sync} on ${a_url}: $(admin_error)" >&2; rc=1 ;;
+    *) log "Couldn't open budget ${a_sync} on $(safe_url "$a_url"): $(admin_error)" >&2; rc=1 ;;
   esac
   return "$rc"
 }
