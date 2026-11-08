@@ -145,6 +145,8 @@ for profile in "" api-server; do
   if has "TWENTY_MAIN_KEY"; then fail "${p}: local off writes no TWENTY_MAIN_KEY ($calls)"; fi
   case "$logs" in *"'main'"*"local instance is off"*) ;; *) fail "${p}: the local skip is logged ($logs)" ;; esac
 done
+# api-server had only main: nothing registers, and that's expected, not a crm-init prompt.
+case "$logs" in *crm-init*) fail "local off: no crm-init warning when only local workspaces were skipped ($logs)" ;; esac
 run ""
 has "write:default:crm-remote:" || fail "local off keeps the remote workspace ($calls)"
 has "reconcile:default:remote withmcp;" || fail "local off: reconcile drops crm-main ($calls)"

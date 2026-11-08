@@ -1635,6 +1635,7 @@ register_twenty_mcp_servers() {
 
   _rtms_env="$(caldav_profile_env_file "$_rtms_profile")"
   _rtms_slugs=""
+  _rtms_local_off=""
   for _rtms_file in "$TWENTY_WORKSPACES_DIR"/*.env; do
     [ -f "$_rtms_file" ] || continue
     _rtms_base="$(basename "$_rtms_file")"
@@ -1649,6 +1650,7 @@ register_twenty_mcp_servers() {
     twenty_read_workspace "$_rtms_file" || continue
     if twenty_local_off; then
       log "Skipping Twenty workspace '${_rtms_slug}' - the local instance is off (TWENTY_LOCAL_ENABLED=${TWENTY_LOCAL_ENABLED})"
+      _rtms_local_off=1
       continue
     fi
     if ! twenty_key_for_profile "$_rtms_profile"; then
@@ -1672,7 +1674,8 @@ register_twenty_mcp_servers() {
   _rtms_key=""
   # shellcheck disable=SC2086
   reconcile_twenty_workspaces "$_rtms_profile" $_rtms_slugs
-  if [ -z "$_rtms_slugs" ]; then
+  # Only local workspaces, all skipped while it's off: expected, not a fault.
+  if [ -z "$_rtms_slugs" ] && [ -z "$_rtms_local_off" ]; then
     log "WARNING: TWENTY_MCP_ENABLED=1 but no Twenty workspace registers on '${_rtms_profile:-default}' - run make crm-init or make crm-add"
   fi
 }
