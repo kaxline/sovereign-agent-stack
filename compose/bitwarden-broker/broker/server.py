@@ -57,7 +57,11 @@ MAX_DRAIN = 1 << 20
 FILL_TIMEOUT = 10.0
 DEFAULT_LISTEN = "127.0.0.1:8099"
 DEFAULT_SOCKET = "/run/bitwarden-sync/sync.sock"
-# Fill errors raised before anything was written: no redaction entry is returned for them.
+# Fill errors for which no setter ran in the page, so no redaction entry is returned.
+# Every other outcome returns one, write_unconfirmed and a timeout included. An entry
+# carries its HMAC key, so whoever reads the response can brute-force a short value
+# such as a TOTP code from it; the spec accepts that (Redaction). Leaving it out here
+# keeps a bad target id from handing out entries for any in-scope item.
 NOTHING_WRITTEN = (cdp.TARGET_NOT_FOUND, cdp.ORIGIN_MISMATCH, cdp.NO_FIELD)
 METHODS = ("GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS")
 _STATUS_CODES = {400: "bad_request", 404: "not_found", 405: "method_not_allowed", 408: "timeout",

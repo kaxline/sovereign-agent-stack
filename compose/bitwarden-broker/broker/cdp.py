@@ -8,7 +8,9 @@ with the value as a ``Runtime.callFunctionOn`` argument. The value is never part
 of an expression or function source. ``field="password"`` writes a password
 field; ``field="totp"`` writes a one-time code the way core's enter_code does.
 
-``FillResult.error`` is one of five fixed texts. Nothing from the page, from a
+``FillResult.error`` is one of six fixed texts. ``write_unconfirmed`` means a
+setter ran but the field was empty afterwards (a page handler cleared it, say),
+so the page may hold the value. Nothing from the page, from a
 CDP error, or the value reaches a result, an exception or a log line. The
 websocket code keeps to the asyncio ``websockets.connect`` API that Debian
 bookworm's websockets 10.4 has.
@@ -29,6 +31,7 @@ from .origins import normalize_origin
 TARGET_NOT_FOUND = "target_not_found"
 ORIGIN_MISMATCH = "origin_mismatch"
 NO_FIELD = "no_field"
+WRITE_UNCONFIRMED = "write_unconfirmed"
 PAGE_ERROR = "page_error"
 CDP_UNAVAILABLE = "cdp_unavailable"
 
@@ -67,7 +70,7 @@ _FILL_FUNCTION = """function (expectedOrigin, value) {
     if (setter && setter.set) { setter.set.call(el, value); } else { el.value = value; }
     el.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, inputType: "insertText" }));
     el.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
-    return { filled: el.value.length > 0 ? 1 : 0 };
+    return { filled: el.value.length > 0 ? 1 : 0, wrote: 1 };
   } catch (e) {
     // A page handler can throw with the value in its message; report only that the write failed.
     return { refused: "write_failed" };
@@ -139,11 +142,13 @@ _TOTP_FUNCTION = r"""function (expectedOrigin, value) {
   }
   if (writes.length === 0) return { filled: 0 };
   let filled = 0;
+  let wrote = 0;
   try {
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
     for (const [el, part] of writes) {
       el.focus();
       if (setter && setter.set) { setter.set.call(el, part); } else { el.value = part; }
+      wrote = 1;
       el.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, inputType: "insertText" }));
       el.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
       if (el.value.length > 0) filled += 1;
@@ -152,7 +157,7 @@ _TOTP_FUNCTION = r"""function (expectedOrigin, value) {
     // A page handler can throw with the code in its message; report only that the write failed.
     return { refused: "write_failed" };
   }
-  return { filled: filled > 0 ? 1 : 0 };
+  return { filled: filled > 0 ? 1 : 0, wrote };
 }"""
 
 FIELDS = {"password": _FILL_FUNCTION, "totp": _TOTP_FUNCTION}
@@ -287,7 +292,8 @@ async def _write(port, path, target_id, origin, value, budget, cleanup, function
         if outcome.get("refused") == "write_failed":
             raise _Fail(PAGE_ERROR)
         if outcome.get("filled") != 1:
-            raise _Fail(NO_FIELD)
+            # wrote: a setter ran, so the value may be in the page even though the field reads empty.
+            raise _Fail(WRITE_UNCONFIRMED if outcome.get("wrote") == 1 else NO_FIELD)
     finally:
         try:
             if session is not None:

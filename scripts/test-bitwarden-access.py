@@ -195,6 +195,20 @@ def test_release_paths() -> None:
         b.stop()
         b.expect_clean()
 
+    # R10: an item in two collections keeps the one outside the scope.
+    other = "0c0d0000-0000-4000-8000-00000000000d"
+    data = bt.vault_data()
+    next(i for i in data["items"] if i["id"] == item_id("C"))["collectionIds"] = [bt.COLLECTION, other]
+    with bt.broker_run(vault=data) as b:
+        b.add_account("org", scope=f"collection:{bt.COLLECTION}")
+        b.start(unlocked=["org"])
+        c = handle("org", "C")
+        expect(b.call("POST", "/release", {"handle": c}) == (200, {"released": True, "returned": True}), "two")
+        expect(vault_item(b, "C")["collectionIds"] == [other], f"collectionIds {vault_item(b, 'C')['collectionIds']}")
+        expect(c not in b.handles() and c not in denylist(b), "C served or still denylisted after release")
+        b.stop()
+        b.expect_clean()
+
     # The server refuses: not returned, still denylisted.
     with bt.broker_run(vault=bt.vault_data(refuse_edit="No rights to modify the collection.")) as b:
         b.add_account("personal")
@@ -237,6 +251,37 @@ def test_regrant_clears_denylist() -> None:
         edit_vault(b, "A", folderId=bt.FOLDER_AGENT)
         b.call("POST", "/sync", {})
         expect(a in b.handles(), "A is not listed after it was granted again")
+        b.stop()
+        b.expect_clean()
+
+
+def test_retry_after_user_moved_item() -> None:
+    """A failed release, then the user moves the item out of scope: the retry edits nothing."""
+    refuse = "No rights to modify the collection."
+    with bt.broker_run(vault=bt.vault_data(refuse_edit=refuse)) as b:
+        b.add_account("personal")
+        b.start(unlocked=["personal"])
+        a = handle("personal", "A")
+        expect(b.call("POST", "/release", {"handle": a})[1]["returned"] is False, "refused release")
+        edit_vault(b, "A", folderId=bt.FOLDER_OTHER)
+        edits = sum(e["argv"][:1] == ["edit"] for e in b.run.log_lines())
+        expect(b.call("POST", "/release", {"handle": a}) == (200, {"released": True, "returned": True}), "retry")
+        expect(sum(e["argv"][:1] == ["edit"] for e in b.run.log_lines()) == edits, "the retry ran bw edit")
+        expect(vault_item(b, "A")["folderId"] == bt.FOLDER_OTHER, "the retry moved the item again")
+        expect(a not in denylist(b) and a not in b.handles(), "the entry stays after the item left scope")
+        b.stop()
+        b.expect_clean()
+
+    with bt.broker_run(vault=bt.vault_data(refuse_edit=refuse)) as b:
+        b.add_account("org", scope=f"collection:{bt.COLLECTION}")
+        b.start(unlocked=["org"])
+        c = handle("org", "C")
+        expect(b.call("POST", "/release", {"handle": c})[1]["returned"] is False, "refused collection release")
+        edit_vault(b, "C", collectionIds=[])
+        edits = sum(e["argv"][:1] == ["edit"] for e in b.run.log_lines())
+        expect(b.call("POST", "/release", {"handle": c})[1]["returned"] is True, "collection retry")
+        expect(sum(e["argv"][:1] == ["edit"] for e in b.run.log_lines()) == edits, "the retry ran bw edit")
+        expect(c not in denylist(b), "the collection entry stays after the item left scope")
         b.stop()
         b.expect_clean()
 
@@ -291,6 +336,7 @@ def main() -> None:
     test_release_before_move()
     test_release_paths()
     test_regrant_clears_denylist()
+    test_retry_after_user_moved_item()
     test_sync_marks_requests_done()
     test_restart_keeps_requests_and_denylist()
     print("ok")

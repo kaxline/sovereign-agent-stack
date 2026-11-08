@@ -646,8 +646,8 @@ SESSION = "5E55104D"
 class FakeCdp:
     """A DevTools endpoint on one port: /json/list and /json/version over HTTP, CDP over websocket.
 
-    ``page`` picks what the fill function reports: ok, navigated, no_field, write_failed,
-    exception or hang. Before each real reply it sends an event and two decoy replies that
+    ``page`` picks what the fill function reports: ok, navigated, no_field, cleared (a setter
+    ran and a page handler emptied the field), write_failed, exception or hang. Before each real reply it sends an event and two decoy replies that
     claim success: one with the right id and another session, and a stale one with an older id.
     Runs in the Hermes image, which has websockets 15; the broker code itself keeps to 10.4.
     """
@@ -712,7 +712,8 @@ class FakeCdp:
                                              "exception": {"description": f"Error: rejected {values}"}},
                     }
                 else:
-                    outcome = {"ok": {"filled": 1}, "no_field": {"filled": 0},
+                    outcome = {"ok": {"filled": 1, "wrote": 1}, "no_field": {"filled": 0},
+                               "cleared": {"filled": 0, "wrote": 1},
                                "navigated": {"refused": "origin_changed"},
                                "write_failed": {"refused": "write_failed"}}[self.page]
                     reply["result"] = {"result": {"type": "object", "value": outcome}}
@@ -848,6 +849,15 @@ def test_no_field() -> None:
     expect_no_value([out, repr(result)], "no field")
 
 
+def test_write_unconfirmed() -> None:
+    with fake_cdp([{"id": TARGET, "url": LOGIN_URL}], page="cleared") as fake:
+        result, out = run_fill(fake)
+    expect(result == cdp.FillResult(False, "https://login.example.com", "write_unconfirmed"),
+           f"cleared result {result!r}")
+    expect_detached(fake, "cleared")
+    expect_no_value([out, repr(result)], "cleared")
+
+
 def test_write_failed() -> None:
     with fake_cdp([{"id": TARGET, "url": LOGIN_URL}], page="write_failed") as fake:
         result, out = run_fill(fake)
@@ -874,6 +884,7 @@ def run_cdp_tests() -> None:
     test_target_closed()
     test_no_value_in_errors()
     test_no_field()
+    test_write_unconfirmed()
     test_write_failed()
     test_fill_timeout()
 
@@ -1332,6 +1343,9 @@ globalThis.Event = Event;
 globalThis.InputEvent = InputEvent;
 globalThis.HTMLInputElement = class {};
 globalThis.getComputedStyle = (el) => ({ display: el.hidden ? "none" : "block", visibility: "visible" });
+// Only the two selectors the page functions use.
+const select = (list) => (sel) => sel === "*" ? list
+  : list.filter((e) => e.tagName === "INPUT" && sel === 'input[type="password"]' && e.type === "password");
 function build(spec, all) {
   const el = {
     tagName: spec.tag || "INPUT", type: spec.type ?? "text", autocomplete: spec.autocomplete || "",
@@ -1342,13 +1356,13 @@ function build(spec, all) {
     getClientRects() { return this.hidden ? [] : [1]; },
     getRootNode() { return document; },
     focus() { document.activeElement = this; },
-    dispatchEvent(e) { this.events.push(e.type); },
+    dispatchEvent(e) { this.events.push(e.type); if (spec.clearOnInput && e.type === "input") this.value = ""; },
   };
   all.push(el);
   if (spec.shadow) {
     const inner = [];
     spec.shadow.forEach((s) => build(s, inner));
-    el.shadowRoot = { querySelectorAll: () => inner, activeElement: null };
+    el.shadowRoot = { querySelectorAll: select(inner), activeElement: null };
   }
   return el;
 }
@@ -1357,12 +1371,12 @@ for (const c of cases) {
   const top = [];
   c.dom.forEach((s) => build(s, top));
   globalThis.window = { location: { origin: c.origin } };
-  globalThis.document = { querySelectorAll: () => top, activeElement: null, getElementById: () => null };
+  globalThis.document = { querySelectorAll: select(top), activeElement: null, getElementById: () => null };
   if (c.focus !== undefined) document.activeElement = top[c.focus];
   const fn = eval("(" + fnSource + ")");
   const result = fn("https://login.example.com", c.value);
   const flat = [];
-  (function walk(list) { for (const e of list) { flat.push(e); if (e.shadowRoot) walk(e.shadowRoot.querySelectorAll()); } })(top);
+  (function walk(list) { for (const e of list) { flat.push(e); if (e.shadowRoot) walk(e.shadowRoot.querySelectorAll("*")); } })(top);
   out.push({ result, values: flat.map((e) => e.value), events: flat.map((e) => e.events.join(",")) });
 }
 process.stdout.write(JSON.stringify(out));
@@ -1370,7 +1384,7 @@ process.stdout.write(JSON.stringify(out));
 
 
 def test_totp_page_write() -> None:
-    """The TOTP page function, run in node against a small DOM stand-in."""
+    """The TOTP and password page functions, run in node against a small DOM stand-in."""
     import shutil
     import subprocess
     node = shutil.which("node")
@@ -1396,18 +1410,36 @@ def test_totp_page_write() -> None:
         {"origin": origin, "value": "654321", "dom": [{"tag": "DIV", "type": "", "shadow": [
             {"autocomplete": "one-time-code"}]}]},
     ]
-    proc = subprocess.run([node, "-e", TOTP_JS_DRIVER], input=json.dumps([cdp._TOTP_FUNCTION, cases]),
-                          capture_output=True, text=True, timeout=60)
-    expect(proc.returncode == 0, f"node driver failed:\n{proc.stderr}")
-    got = json.loads(proc.stdout)
-    expect(got[0]["result"] == {"filled": 1} and got[0]["values"] == ["", "", "123456"], f"autocomplete: {got[0]}")
+    # A page handler that empties the field after the write: written, but not confirmed.
+    cases.append({"origin": origin, "value": "123456", "dom": [{"autocomplete": "one-time-code", "clearOnInput": True}]})
+
+    def run_node(function, case_list):
+        proc = subprocess.run([node, "-e", TOTP_JS_DRIVER], input=json.dumps([function, case_list]),
+                              capture_output=True, text=True, timeout=60)
+        expect(proc.returncode == 0, f"node driver failed:\n{proc.stderr}")
+        return json.loads(proc.stdout)
+
+    got = run_node(cdp._TOTP_FUNCTION, cases)
+    ok = {"filled": 1, "wrote": 1}
+    expect(got[0]["result"] == ok and got[0]["values"] == ["", "", "123456"], f"autocomplete: {got[0]}")
     expect(got[0]["events"][2] == "input,change", f"autocomplete events: {got[0]}")
-    expect(got[1]["result"] == {"filled": 1} and got[1]["values"] == ["", *"123456"], f"split boxes: {got[1]}")
+    expect(got[1]["result"] == ok and got[1]["values"] == ["", *"123456"], f"split boxes: {got[1]}")
     expect(all(e == "input,change" for e in got[1]["events"][1:]), f"split box events: {got[1]}")
-    expect(got[2]["result"] == {"filled": 1} and got[2]["values"] == ["", "123456"], f"focused: {got[2]}")
+    expect(got[2]["result"] == ok and got[2]["values"] == ["", "123456"], f"focused: {got[2]}")
     expect(got[3]["result"] == {"filled": 0} and got[3]["values"] == ["", ""], f"no field: {got[3]}")
     expect(got[4]["result"] == {"refused": "origin_changed"} and got[4]["values"] == [""], f"moved: {got[4]}")
-    expect(got[5]["result"] == {"filled": 1} and got[5]["values"] == ["", "654321"], f"shadow: {got[5]}")
+    expect(got[5]["result"] == ok and got[5]["values"] == ["", "654321"], f"shadow: {got[5]}")
+    expect(got[6]["result"] == {"filled": 0, "wrote": 1} and got[6]["values"] == [""], f"cleared: {got[6]}")
+
+    # The password function reports a cleared write the same way.
+    pw = run_node(cdp._FILL_FUNCTION, [
+        {"origin": origin, "value": "pw", "dom": [{"type": "password"}]},
+        {"origin": origin, "value": "pw", "dom": [{"type": "password", "clearOnInput": True}]},
+        {"origin": origin, "value": "pw", "dom": [{"type": "text"}]},
+    ])
+    expect(pw[0]["result"] == ok and pw[0]["values"] == ["pw"], f"password: {pw[0]}")
+    expect(pw[1]["result"] == {"filled": 0, "wrote": 1}, f"password cleared: {pw[1]}")
+    expect(pw[2]["result"] == {"filled": 0}, f"password no field: {pw[2]}")
 
 
 def test_api_fill_through_cdp() -> None:
@@ -1443,9 +1475,26 @@ def test_api_fill_through_cdp() -> None:
         b.expect_clean()
 
 
+def test_api_fill_write_unconfirmed() -> None:
+    """A page that empties the field after the write still gets a redaction entry back."""
+    from broker import digest_redaction
+    with broker_run() as b, fake_cdp([{"id": TARGET, "url": LOGIN_URL}], page="cleared") as fake:
+        b.add_account("personal")
+        b.start(unlocked=["personal"])
+        status, got = b.call("POST", "/fill", fill_body(handle("personal", "A"), port=fake.port))
+        expect(status == 200 and got["filled"] is False and got["error"] == "write_unconfirmed",
+               f"/fill on a cleared field: {status} {got}")
+        expect(got["redaction"] is not None
+               and digest_redaction.scrub(ITEM_PASSWORDS["A"], [got["redaction"]], "[R]") == "[R]",
+               "write_unconfirmed carries a redaction entry that scrubs the value")
+        b.stop()
+        b.expect_clean()
+
+
 def run_api_cdp_tests() -> None:
     """The /fill tests that need the fake DevTools server, so websockets. Run inside the Hermes image."""
     test_api_fill_through_cdp()
+    test_api_fill_write_unconfirmed()
 
 
 CDP_DRIVER = r"""

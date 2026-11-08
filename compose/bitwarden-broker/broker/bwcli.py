@@ -390,8 +390,12 @@ class Bw:
         """Take an item out of the account's scope; False if the scope is ``all`` or bw refuses.
 
         ``folder:``: the item's folder becomes none (``bw edit item`` with the item JSON on stdin).
-        ``collection:``: the item leaves every collection (``bw edit item-collections`` with ``[]``).
-        The item list is refreshed afterwards when that is possible.
+        ``collection:``: the item leaves the scope collection and keeps its others
+        (``bw edit item-collections`` with the remaining ids on stdin); it is unassigned only
+        when the scope collection was its only one.
+        The item is read first, and one already out of scope (moved by the user after a
+        failed release, say) gets no edit and counts as returned. The item list is refreshed
+        afterwards when that is possible.
         """
         kind = self.account.scope_kind
         if kind not in ("folder", "collection"):
@@ -408,16 +412,24 @@ class Bw:
                 if not isinstance(item, dict) or item.get("id") != item_id:
                     return False
                 if kind == "folder":
-                    item["folderId"] = None
-                    encoded = base64.b64encode(json.dumps(item).encode("utf-8")).decode("ascii")
-                    self._run(["edit", "item", item_id], self._session_env(), stdin=encoded)
+                    scope_ids = {f.get("id") for f in self._list("folders")
+                                 if isinstance(f, dict) and f.get("name") == self.account.scope_value}
+                    if item.get("folderId") in scope_ids:
+                        item["folderId"] = None
+                        encoded = base64.b64encode(json.dumps(item).encode("utf-8")).decode("ascii")
+                        self._run(["edit", "item", item_id], self._session_env(), stdin=encoded)
                 else:
-                    org = item.get("organizationId")
-                    if not isinstance(org, str) or not ID_RE.fullmatch(org):
+                    current = item.get("collectionIds")
+                    if not isinstance(current, list) or not all(isinstance(c, str) for c in current):
                         return False
-                    encoded = base64.b64encode(b"[]").decode("ascii")
-                    self._run(["edit", "item-collections", item_id, "--organizationid", org],
-                              self._session_env(), stdin=encoded)
+                    if self.account.scope_value in current:
+                        org = item.get("organizationId")
+                        if not isinstance(org, str) or not ID_RE.fullmatch(org):
+                            return False
+                        remaining = [c for c in current if c != self.account.scope_value]
+                        encoded = base64.b64encode(json.dumps(remaining).encode("utf-8")).decode("ascii")
+                        self._run(["edit", "item-collections", item_id, "--organizationid", org],
+                                  self._session_env(), stdin=encoded)
             except BwError:
                 return False
             finally:
