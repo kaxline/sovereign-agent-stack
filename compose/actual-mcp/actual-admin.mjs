@@ -9,6 +9,10 @@
 //   create <name>  Create a budget on the server and print its sync id.
 //   list           One "<sync id>\t<name>" line per budget that isn't deleted.
 //
+// Every command gives up after ACTUAL_ADMIN_TIMEOUT_S seconds (default 45),
+// prints "timeout" and exits 4, so a server that never answers can't hang
+// make doctor or budget.sh. A node timer, since macOS has no timeout(1).
+//
 // Credentials come from the environment only (ACTUAL_SERVER_URL,
 // ACTUAL_PASSWORD, ACTUAL_BUDGET_SYNC_ID, ACTUAL_BUDGET_ENCRYPTION_PASSWORD) and
 // are never printed: the API's own logging is silenced and error messages are
@@ -91,6 +95,16 @@ async function list() {
   await open();
   for (const b of await remoteBudgets()) out(`${b.groupId}\t${b.name}`);
 }
+
+const DEFAULT_TIMEOUT_S = 45;
+const timeoutS = Number(env.ACTUAL_ADMIN_TIMEOUT_S) > 0 ? Number(env.ACTUAL_ADMIN_TIMEOUT_S) : DEFAULT_TIMEOUT_S;
+// Covers the command and the shutdown after it; exits without waiting on either.
+setTimeout(() => {
+  out('timeout');
+  err(`no answer from the server within ${timeoutS} s`);
+  if (dataDir) rmSync(dataDir, { recursive: true, force: true });
+  process.exit(4);
+}, timeoutS * 1000);
 
 const [cmd, ...args] = process.argv.slice(2);
 const commands = { check, create: () => create(args[0]), list };

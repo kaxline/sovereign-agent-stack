@@ -90,6 +90,7 @@ for a in "$@"; do
 done
 [[ -n "$sub" ]] || exit 0
 printf 'run %s ACTUAL_SERVER_URL=%s ACTUAL_BUDGET_FILE=%s\n' "$sub" "${ACTUAL_SERVER_URL:-}" "${ACTUAL_BUDGET_FILE:-}" >> "$STUB/admin.log"
+if [[ -e "$STUB/timeout" ]]; then echo timeout; exit 4; fi
 if [[ -n "${ACTUAL_PASSWORD:-}" && -e "$STUB/server_pw" && "$ACTUAL_PASSWORD" != "$(cat "$STUB/server_pw")" ]]; then
   echo login; exit 3
 fi
@@ -218,6 +219,28 @@ fi
 { grep -q 'Household' "$out" && grep -q 'sync-b' "$out"; } || fail "add lists the budgets to choose from"
 [ ! -e "$f" ] || fail "an ambiguous add writes nothing"
 
+# The server never answers: actual-admin.mjs exits 4, and nothing is written.
+rm -f "$f"
+cp "$ENV_FILE" "$tmp/env-before"
+touch "$STUB/timeout"
+if ACTUAL_PASSWORD=right-SECRET ACTUAL_BUDGET_SYNC_ID=sync-1 ACTUAL_BUDGET_ENCRYPTION_PASSWORD='' \
+  run add --url https://budget.example.com; then
+  fail "add must fail when the check times out"
+fi
+grep -q 'no answer from https://budget.example.com within 45 s' "$out" || fail "a timeout names the server ($(cat "$out"))"
+[ ! -e "$f" ] || fail "a timed-out add writes nothing"
+cmp -s "$ENV_FILE" "$tmp/env-before" || fail "a timed-out add leaves .env alone"
+if ACTUAL_PASSWORD=right-SECRET ACTUAL_BUDGET_ENCRYPTION_PASSWORD='' run add --url https://budget.example.com; then
+  fail "add must fail when list times out"
+fi
+grep -q 'no answer from' "$out" || fail "a list timeout says so"
+ACTUAL_ADMIN_TIMEOUT_S=7 ACTUAL_PASSWORD=right-SECRET ACTUAL_BUDGET_SYNC_ID=sync-1 ACTUAL_BUDGET_ENCRYPTION_PASSWORD='' \
+  run add --url https://u:url-SECRET@budget.example.com && fail "add must fail on a timeout"
+grep -q 'within 7 s' "$out" || fail "the timeout message uses ACTUAL_ADMIN_TIMEOUT_S"
+grep -q 'https://\*\*\*@budget.example.com' "$out" || fail "the timeout message masks user:password@ in the URL"
+rm -f "$STUB/timeout"
+grep -q -- '-e ACTUAL_ADMIN_TIMEOUT_S' "$STUB/docker.argv" || fail "docker run passes ACTUAL_ADMIN_TIMEOUT_S by name"
+
 # Usage errors.
 run add && fail "add needs --url"
 ACTUAL_PASSWORD=x ACTUAL_BUDGET_SYNC_ID=y run add --url budget.example.com && fail "URL without http(s) accepted"
@@ -339,6 +362,16 @@ if STUB_UNAME=Linux STUB_UID=1001 ACTUAL_PASSWORD=srv-SECRET ACTUAL_BUDGET_SYNC_
   fail "init on Linux as uid 1001 must refuse"
 fi
 grep -q '1000' "$out" || fail "init's refusal names uid 1000"
+# A create that times out: init fails and writes nothing.
+reset
+touch "$STUB/timeout"
+run init && fail "init must fail when create times out"
+grep -q 'no answer from' "$out" || fail "init says the create timed out ($(cat "$out"))"
+[ ! -e "$f" ] || fail "a timed-out init writes no budget.env"
+grep -qx 'ACTUAL_MCP_ENABLED=0' "$ENV_FILE" || fail "a timed-out init leaves .env alone"
+rm -f "$STUB/timeout"
+pws="$pws $(cat "$STUB/server_pw")"
+
 run init --frob && fail "init rejects unknown options"
 rm -f "$f"
 run init --rotate && fail "init --rotate with no budget file must fail"
@@ -357,6 +390,11 @@ printf 'check-SECRET' > "$STUB/server_pw"
 printf 'enc-SECRET' > "$STUB/enc_pw"
 rc=0; run check || rc=$?
 [ "$rc" = 2 ] || fail "check exits 2 for a missing encryption password (got $rc)"
+rm -f "$STUB/enc_pw"
+touch "$STUB/timeout"
+rc=0; run check || rc=$?
+[ "$rc" = 4 ] || fail "check exits 4 on a timeout (got $rc)"
+rm -f "$STUB/timeout"
 rm -f "$f" "$STUB/enc_pw"
 rc=0; run check || rc=$?
 [ "$rc" = 1 ] || fail "check with no file exits 1 (got $rc)"
@@ -396,7 +434,7 @@ run remove && fail "remove with no budget file must fail"
 run frobnicate && fail "unknown subcommand must fail"
 
 # --- No password in any output, or in curl or docker argv ---
-for s in right-SECRET wrong-SECRET enc-SECRET bad-enc-SECRET srv-SECRET open-SECRET check-SECRET "$quoted" "$unstorable" line-SECRET $pws; do
+for s in right-SECRET wrong-SECRET enc-SECRET bad-enc-SECRET srv-SECRET open-SECRET check-SECRET url-SECRET "$quoted" "$unstorable" line-SECRET $pws; do
   for log in "$all" "$STUB/curl.argv" "$STUB/docker.argv"; do
     if grep -qF -- "$s" "$log"; then fail "${log##*/} contains a password"; fi
   done

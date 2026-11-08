@@ -41,7 +41,9 @@ Usage: scripts/budget.sh <command> [options]
         opens with them.
   check   Open the budget in budget.env with actual-admin.mjs. Exit 0 when it
           opens, 2 for a wrong or missing encryption password, 3 when the
-          server refuses the password, 1 otherwise. make doctor runs this.
+          server refuses the password, 4 when the server doesn't answer within
+          ACTUAL_ADMIN_TIMEOUT_S seconds (default 45), 1 otherwise. make doctor
+          runs this.
   open    Open the web app and copy the server password to the clipboard
   remove  Delete budget.env and set ACTUAL_MCP_ENABLED=0. Server data stays.
   access read|write
@@ -246,8 +248,10 @@ admin() {
   ACTUAL_BUDGET_FILE=./compose/actual/no-budget.env \
   ACTUAL_SERVER_URL="$a_url" ACTUAL_PASSWORD="$a_pw" \
   ACTUAL_BUDGET_SYNC_ID="$a_sync" ACTUAL_BUDGET_ENCRYPTION_PASSWORD="$a_enc" \
+  ACTUAL_ADMIN_TIMEOUT_S="${ACTUAL_ADMIN_TIMEOUT_S:-}" \
     docker compose run --rm --no-deps -T \
       -e ACTUAL_SERVER_URL -e ACTUAL_PASSWORD -e ACTUAL_BUDGET_SYNC_ID -e ACTUAL_BUDGET_ENCRYPTION_PASSWORD \
+      -e ACTUAL_ADMIN_TIMEOUT_S \
       --entrypoint node actual-mcp-rw /opt/actual-admin.mjs "$@"
 }
 
@@ -255,6 +259,17 @@ admin_error() {
   local msg
   msg="$(grep -v '^[[:space:]]*$' "${WORK}/admin.err" 2>/dev/null | tail -1 || true)"
   printf '%s' "${msg:-no details; docker compose logs may say more}"
+}
+
+# A URL for messages: any user:password@ in it is masked.
+safe_url() {
+  printf '%s' "$1" | sed -E 's#^([A-Za-z][A-Za-z0-9+.-]*://)[^/@]*@#\1***@#'
+}
+
+# actual-admin.mjs exits 4 when the server doesn't answer within
+# ACTUAL_ADMIN_TIMEOUT_S seconds (default 45).
+timed_out() {
+  die "no answer from $(safe_url "$a_url") within ${ACTUAL_ADMIN_TIMEOUT_S:-45} s (ACTUAL_ADMIN_TIMEOUT_S); nothing written"
 }
 
 refused_password() {
@@ -269,7 +284,8 @@ check_budget() {
     0) log "Budget ${a_sync} opens" ;;
     2) die "budget ${a_sync} didn't open: wrong or missing encryption password (ACTUAL_BUDGET_ENCRYPTION_PASSWORD); nothing written" ;;
     3) refused_password ;;
-    *) die "couldn't open budget ${a_sync} on ${a_url}: $(admin_error); nothing written" ;;
+    4) timed_out ;;
+    *) die "couldn't open budget ${a_sync} on $(safe_url "$a_url"): $(admin_error); nothing written" ;;
   esac
 }
 
@@ -401,6 +417,7 @@ cmd_init() {
     local rc=0 created
     a_url="$LOCAL_URL" a_pw="$pw" a_sync="" a_enc=""
     created="$(admin create Budget 2> "${WORK}/admin.err")" || rc=$?
+    [[ "$rc" -ne 4 ]] || timed_out
     [[ "$rc" -eq 0 ]] || die "couldn't create a budget: $(admin_error)"
     sync="$(printf '%s\n' "$created" | grep -v '^[[:space:]]*$' | tail -1)"
     [[ -n "$sync" ]] || die "creating a budget printed no sync id"
@@ -496,6 +513,7 @@ cmd_add() {
     case "$rc" in
       0) ;;
       3) refused_password ;;
+      4) timed_out ;;
       *) die "couldn't list the budgets on ${url}: $(admin_error); nothing written" ;;
     esac
     list="$(printf '%s\n' "$list" | grep "$(printf '\t')" || true)"
@@ -532,6 +550,7 @@ cmd_check() {
     0) log "Budget ${a_sync} opens" ;;
     2) log "Budget ${a_sync}: wrong or missing encryption password (ACTUAL_BUDGET_ENCRYPTION_PASSWORD)" >&2 ;;
     3) log "The server refused the server password (ACTUAL_PASSWORD)" >&2 ;;
+    4) log "No answer from $(safe_url "$a_url") within ${ACTUAL_ADMIN_TIMEOUT_S:-45} s (ACTUAL_ADMIN_TIMEOUT_S)" >&2 ;;
     *) log "Couldn't open budget ${a_sync} on ${a_url}: $(admin_error)" >&2; rc=1 ;;
   esac
   return "$rc"

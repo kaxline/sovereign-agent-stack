@@ -3,9 +3,12 @@
 # stub docker and stub uname/id. No real container, server or budget is used.
 #
 #   bash scripts/test-actual-doctor.sh
+#   ACTUAL_ADMIN_LIVE=1 bash scripts/test-actual-doctor.sh   # also runs actual-admin.mjs
+#     in the built image against an unroutable address, to see its timer fire
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REAL_DOCKER="$(command -v docker || true)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 export STUB="$tmp/stub"
@@ -182,11 +185,21 @@ setenv
 printf 'login\n' > "$STUB/check_word"; printf '3\n' > "$STUB/check_rc"
 doctor
 has "a refused password fails" "the server password changed"
-has "a refused password says what to run" "make budget-add"
+has "the remedy covers a remote server" "re-run make budget-add FORCE=1 (remote)"
+has "the remedy covers the local server" "make budget-remove and then make budget-init, which asks for it (local"
+has "the local remedy covers an encrypted budget" "export ACTUAL_BUDGET_ENCRYPTION_PASSWORD first if the budget is encrypted"
 printf 'encryption\n' > "$STUB/check_word"; printf '2\n' > "$STUB/check_rc"
 doctor
 has "a wrong encryption password fails" "ACTUAL_BUDGET_ENCRYPTION_PASSWORD"
 grep -F 'ACTUAL_BUDGET_ENCRYPTION_PASSWORD' "$out" | grep -q FAIL || fail "the encryption check is a FAIL"
+printf 'timeout\n' > "$STUB/check_word"; printf '4\n' > "$STUB/check_rc"
+doctor
+has "a timeout warns, naming the server" " WARN no answer from http://actual-server:5006 within 45 s"
+hasnt "a timeout is not a FAIL" " FAIL "
+budget_file https://user:url-SECRET@budget.example.com
+ACTUAL_ADMIN_TIMEOUT_S=3 doctor
+has "a timeout masks user:password@ and uses ACTUAL_ADMIN_TIMEOUT_S" "no answer from https://***@budget.example.com within 3 s"
+budget_file
 printf '1\n' > "$STUB/check_rc"; : > "$STUB/check_word"
 doctor
 has "another check failure warns" "couldn't open budget sync-1"
@@ -222,9 +235,25 @@ doctor
 has "a missing budget profile fails" "'budget' not in COMPOSE_PROFILES"
 
 # No password in any output.
-for s in pw-SECRET enc-SECRET; do
+for s in pw-SECRET enc-SECRET url-SECRET; do
   if grep -qF -- "$s" "$all"; then fail "doctor output contains a password"; fi
   if grep -qF -- "$s" "$STUB/docker.argv"; then fail "docker argv contains a password"; fi
 done
+
+# Opt-in: the real timer in actual-admin.mjs. 10.255.255.1 is unroutable, so
+# the connection hangs until ACTUAL_ADMIN_TIMEOUT_S=1 fires.
+if [[ "${ACTUAL_ADMIN_LIVE:-}" == 1 ]]; then
+  image="assistant-actual-mcp:local"
+  if [[ -z "$REAL_DOCKER" ]] || ! "$REAL_DOCKER" image inspect "$image" >/dev/null 2>&1; then
+    fail "ACTUAL_ADMIN_LIVE=1 needs docker and $image (make up builds it)"
+  fi
+  start=$SECONDS
+  rc=0
+  word="$(ACTUAL_SERVER_URL=http://10.255.255.1:5006 ACTUAL_PASSWORD=x ACTUAL_BUDGET_SYNC_ID=x ACTUAL_ADMIN_TIMEOUT_S=1 \
+    "$REAL_DOCKER" run --rm -e ACTUAL_SERVER_URL -e ACTUAL_PASSWORD -e ACTUAL_BUDGET_SYNC_ID -e ACTUAL_ADMIN_TIMEOUT_S \
+    --entrypoint node "$image" /opt/actual-admin.mjs check 2>/dev/null)" || rc=$?
+  [[ "$rc" == 4 && "$word" == timeout ]] || fail "live: expected timeout and exit 4, got '${word}' and ${rc}"
+  printf 'ok: live actual-admin.mjs timed out after 1 s (exit 4, %s s with container start)\n' "$((SECONDS - start))"
+fi
 
 printf 'OK doctor Actual block\n'

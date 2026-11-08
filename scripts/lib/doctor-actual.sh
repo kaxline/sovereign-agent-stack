@@ -20,6 +20,11 @@ actual_file_get() {
   printf '%s' "$v"
 }
 
+# A URL for messages: any user:password@ in it is masked.
+actual_safe_url() {
+  printf '%s' "$1" | sed -E 's#^([A-Za-z][A-Za-z0-9+.-]*://)[^/@]*@#\1***@#'
+}
+
 actual_file_mode() {
   stat -f %Lp "$1" 2>/dev/null || stat -c %a "$1" 2>/dev/null || echo unknown
 }
@@ -130,7 +135,7 @@ doctor_actual() {
       warn "${ref#./} points at the local actual-server but ACTUAL_LOCAL_ENABLED=0 — set it to 1, or make budget-add for a remote server"
     fi
   elif [[ -n "$url" ]]; then
-    ok "remote server: ${url}"
+    ok "remote server: $(actual_safe_url "$url")"
   fi
 
   docker info >/dev/null 2>&1 || return 0
@@ -157,7 +162,8 @@ doctor_actual() {
     case "$rc" in
       0) ok "budget ${sync} opens with the credentials in ${ref#./}" ;;
       2) bad "budget ${sync} doesn't open with ACTUAL_BUDGET_ENCRYPTION_PASSWORD (wrong, missing, or encryption was turned on, which also changes the sync id) — make budget-add FORCE=1" ;;
-      3) bad "the server password changed; re-run make budget-add FORCE=1 (remote), or make budget-remove and then make budget-init, which asks for it (local)" ;;
+      3) bad "the server password changed; re-run make budget-add FORCE=1 (remote), or make budget-remove and then make budget-init, which asks for it (local; export ACTUAL_BUDGET_ENCRYPTION_PASSWORD first if the budget is encrypted)" ;;
+      4) warn "no answer from $(actual_safe_url "$url") within ${ACTUAL_ADMIN_TIMEOUT_S:-45} s; the credential check was skipped (ACTUAL_ADMIN_TIMEOUT_S sets the limit)" ;;
       *) warn "couldn't open budget ${sync}: $(printf '%s' "$err" | grep -v '^[[:space:]]*$' | tail -1)" ;;
     esac
   fi
