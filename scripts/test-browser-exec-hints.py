@@ -171,7 +171,7 @@ def test_echo_leaves_code_alone() -> None:
 def test_save_next() -> None:
     expect(bh.save_login_next("vault_x", True) == bh.SAVE_FILLED_NEXT, "filled keeps upstream text")
     text = bh.save_login_next("vault_b47b899a7fe7", False)
-    expect("browser_vault_fill" in text and "'vault_b47b899a7fe7'" in text, f"unfilled next: {text}")
+    expect("action fill" in text and "browser_vault_fill" not in text and "'vault_b47b899a7fe7'" in text, f"unfilled next: {text}")
     expect("Never ask the user for the password" in text, "unfilled next forbids asking")
 
 
@@ -230,7 +230,7 @@ assert "fill_input" in r.get("hint", ""), r
 call('js("document.title")', 0, "LinkedIn Login\n", "")
 assert "print(" in sent["code"] and 'js("document.title")' in sent["code"], sent
 
-# browser_vault_save_login on a page with no form: the session's case.
+# browser_vault save_login on a page with no form: the session's case.
 import agent.vault_backends.unlock as unlock
 import agent.vault_store as store
 import tools.browser_vault_tool as vt
@@ -247,7 +247,7 @@ for fill_ok in (False, True):
     if fill_ok:
         assert r["next"].startswith("Type the identifier"), r
     else:
-        assert "browser_vault_fill" in r["next"] and "vault_b47b899a7fe7" in r["next"], r
+        assert "action fill" in r["next"] and "vault_b47b899a7fe7" in r["next"], r
 print("image ok")
 '''
 

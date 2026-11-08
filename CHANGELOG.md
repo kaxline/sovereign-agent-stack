@@ -17,6 +17,45 @@ the stack under another app.
 
 ### Changes
 
+- **`browser-signup` skill (CR 0024 R3)**: covers creating an account. The
+  model asks for the identifier and profile fields first, asks before
+  ticking terms boxes, calls `create_login` on the password step, uses
+  `enter_code` or asks the user for verification, stops at a CAPTCHA, and
+  uses `capture_secret` for a key the site shows. `browser-login` (1.5.0)
+  points to it. Three tool-eval cases check it, and the scorer gains
+  `allow_tools` for `pass_none` cases and `max_calls` (`browser_exec=4`).
+  With no `new-password` marks, `create_login` now picks the form that
+  looks most like a sign-up instead of the first form with a password field.
+- **`browser_vault` `capture_secret` and `vault.take` (CR 0024 R2)**: on a page
+  that shows a new API key, the model calls `browser_vault` with
+  `action: capture_secret`, a `name` and a `destination`. Hermes finds the
+  value itself and asks the viewer through a new `vault.capture_secret`
+  server request (`{origin, site, name, destination, last4, replaces,
+  capture_id}`; answer `"approve"` or `""`). `env` saves it to the profile
+  `.env`. `viewer` keeps it encrypted under `capture_id` until the client
+  calls the new `vault.take {id}` RPC, which returns `{name, origin, value}`
+  once. This replaces the CR's `secret.deliver` frame, which would have gone
+  to every attached viewer. The value is redacted from later tool output.
+  See "Capturing keys from a page" in `docs/hermes.md`.
+- **`browser_vault` `create_login` (CR 0024 R1)**: on a sign-up form, the
+  model calls `browser_vault` with `action: create_login` and the
+  `identifier` the user chose. Hermes asks the viewer through a new
+  `vault.create_login` server request (`{origin, site, identifier,
+  regenerate}`; answer `{"generate": true}`, `{"password": "..."}` or `""`),
+  generates a password from the fields' `minlength`, `maxlength`,
+  `passwordrules` and `pattern`, fills every new-password field of the form
+  and stores a `login` item for the page's origin. The password never
+  appears in the result. Calling it with the returned `handle` replaces the
+  password. A client that does not handle the request leaves the model waiting
+  180 seconds, then reports `save_declined`; Boundary should add its card
+  before moving its pin. See "Creating logins on sign-up forms" in `docs/hermes.md`.
+- **Vault guidance names the `browser_vault` actions**: the `browser-login`
+  skill (1.4.0), the save-login next step and the password-in-chat nudge
+  named `browser_vault_fill`, `browser_vault_save_login` and the other
+  `browser_vault_*` tools, which Hermes v0.22 replaced with one
+  `browser_vault` tool taking an `action`. They now name the actions. Eval
+  traces and `last-run.json` record vault calls as `browser_vault.<action>`,
+  and `browser-login-save-first` expects `browser_vault.save_login`.
 - **browser_exec hints at `.value` assignments**: when code sets an input's
   `.value` inside `js()` or `cdp()`, the result gains a `hint` saying React-style
   forms don't see the change and to use `fill_input` instead, reloading first if

@@ -1,7 +1,7 @@
 ---
 name: browser-login
-description: "Sign in to a website in the local browser. Use for 'log me into…', 'sign in to…', 'save my login for…', or any page that shows a username/password form. Covers the order of the browser_vault_* tools and why the sign-in page must be open first."
-version: 1.3.0
+description: "Sign in to a website in the local browser. Use for 'log me into…', 'sign in to…', 'save my login for…', or any page that shows a username/password form. Covers the order of the browser_vault actions and why the sign-in page must be open first."
+version: 1.5.0
 author: assistant stack (repo-shipped)
 license: MIT
 platforms: [linux, macos, windows]
@@ -13,18 +13,25 @@ metadata:
 
 # Browser login
 
-Passwords reach a page only through the `browser_vault_*` tools. You never see,
+Passwords reach a page only through the `browser_vault` tool. You never see,
 type, ask for, or accept a password, even if the user pastes one.
 
 The vault binds every login to the **origin of the page that is open**. With no
-page open there is no origin, so `browser_vault_save_login` and
-`browser_vault_fill` cannot work yet. Open the page first.
+page open there is no origin, so `save_login` and `fill` cannot work yet.
+Open the page first.
+
+`browser_vault` takes an `action` (`list`, `fill`, `save_login`, `enter_code`,
+`unlock`) plus that action's arguments, for example
+`browser_vault(action="fill", handle="vault_…")`. There are no separate
+`browser_vault_fill` or `browser_vault_save_login` tools.
 
 ## When to use this skill
 
 - "Log me into X" / "sign in to X" / "use my account on X"
 - "Save my login for X"
 - A task reaches a page with a password field
+
+Creating a new account is the `browser-signup` skill.
 
 ## Driving the page
 
@@ -46,20 +53,21 @@ defined. Do not import them. Only `print(...)` output comes back.
    print(js("JSON.stringify([...document.querySelectorAll('input')].map(i => ({type: i.type, name: i.name, id: i.id, autocomplete: i.autocomplete})))"))
    ```
    A password input in that list means the form is open.
-2. **Look for a saved login.** `browser_vault_list`. If it reports a locked
-   backend, `browser_vault_unlock` with that backend's name.
+2. **Look for a saved login.** `browser_vault` with `action="list"`. If it
+   reports a locked backend, call `action="unlock"` with `backend` set to that
+   backend's name.
 3. **Fill or save.**
-   - A login exists for this origin: `browser_vault_fill` with its handle.
-   - None exists: `browser_vault_save_login` (optional `label`). The user enters
+   - A login exists for this origin: `action="fill"` with its `handle`.
+   - None exists: `action="save_login"` (optional `label`). The user enters
      the login in a masked prompt; Hermes stores it and fills the password.
    - The save result's `fill.success` is false: the login **is** saved, but the
-     page had no form. Open the sign-in form, then `browser_vault_fill` with
-     the `handle` from the save result. Do not save again.
+     page had no form. Open the sign-in form, then `action="fill"` with the
+     `handle` from the save result. Do not save again.
 4. **Finish the form.** Type the identifier the tool returned into the username
    field from step 1's list, if the form has one, then submit with
    `fill_input` and a `js(...)` click in `browser_exec`.
 5. **One-time code.** If the site then asks for a code, call
-   `browser_vault_enter_code` with the handle you just used.
+   `action="enter_code"` with the handle you just used.
 
 ## Tool results
 
@@ -75,15 +83,18 @@ defined. Do not import them. Only `print(...)` output comes back.
   module does not exist; the call fails. Call `new_tab(...)` directly.
 - **`page_info()` without `print`.** The result comes back empty and tells you
   nothing. Print everything you need to read.
-- **Calling `browser_vault_save_login` before any page is open.** It fails, and
+- **Calling `save_login` before any page is open.** It fails, and
   is the most common mistake.
 - **Saving from a page without the form** (a home page). The login is stored
   but nothing is filled. Follow the result's `next`: open the form, then
-  `browser_vault_fill` with the handle.
+  `action="fill"` with the handle.
+- **Saving a login on a sign-up form.** A form that asks for a new password
+  (create, confirm) is a sign-up. Follow the `browser-signup` skill, which uses
+  `action="create_login"`, not `save_login`.
 - **Asking for the password in chat.** Never. Not "what's your password?", not
-  "paste it here". Call `browser_vault_save_login` instead.
+  "paste it here". Call `browser_vault` with `action="save_login"` instead.
 - **Typing a password with `fill_input` or `js(...)`.** Never, even one the
   user wrote in chat. Tell them it was not used and route through the vault.
 - **Navigating, then stopping to ask the user how to proceed.** If the sign-in
-  page is open and nothing is saved, call `browser_vault_save_login`. Do not
+  page is open and nothing is saved, call `action="save_login"`. Do not
   stop to ask first.

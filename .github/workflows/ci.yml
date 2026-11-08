@@ -82,6 +82,12 @@ jobs:
         run: python3 scripts/test-project-sources.py
       - name: Fabricated result detector (stdlib)
         run: python3 scripts/test-fabricated-result.py
+      - name: Vault create_login policy and field selection (stdlib)
+        run: python3 scripts/test-vault-create-login.py --host-only
+      - name: Vault capture_secret value detection and names (stdlib)
+        run: python3 scripts/test-vault-capture-secret.py --host-only
+      - name: Eval trace names vault actions (stdlib)
+        run: python3 scripts/test-tool-eval-trace.py
       - name: Stale-replay loop guard wiring (stdlib)
         run: python3 scripts/test-tool-loop-replay.py --host-only
       - name: Searxng pause points at browser search wiring (stdlib)
