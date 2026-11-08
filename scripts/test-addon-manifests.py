@@ -118,12 +118,34 @@ refused("sender from a community feed", packaged(variant(permissions__sends=True
 refused("host component from a community feed", {**packaged(BASE), "host": {"platform": "macos"}},
         "community", "host component")
 
+# A service map gives each access level its own service.
+SPLIT = json.loads((ROOT / "scripts" / "fixtures" / "addons" / "split" / "addon.json").read_text())
+check("the split fixture is valid", am.validate(SPLIT, "builtin") == [], str(am.validate(SPLIT, "builtin")))
+
+
+def split(**changes):
+    m = copy.deepcopy(SPLIT)
+    m.update(changes)
+    return m
+
+
+one = variant(mcp__service={"rw": "server"})
+check("a map with only rw is accepted", am.validate(one, "builtin") == [], str(am.validate(one, "builtin")))
+refused("a map naming an unknown service", variant(mcp__service={"rw": "nope"}), "builtin", "mcp.service")
+refused("a map with a bad access key", variant(mcp__service={"rx": "server"}), "builtin", "mcp.service")
+refused("a mapped service without a port",
+        split(services={"rw": {"compose": "split-rw"}, "ro": {"compose": "split-ro", "port": 9000}}),
+        "builtin", ".port is needed")
+refused("a profile at ro when the map has no ro", variant(mcp__service={"rw": "server"},
+                                                          mcp__profiles={"api-server": "ro"}),
+        "builtin", "no service for ro")
+
 # --- mcp-plan ---------------------------------------------------------------
 env = {"GPTR_MCP_ENABLED": "1"}
 plan = am.mcp_plan(ROOT / "addons", "browser", env)
 want = ("gptr|GPT Researcher|1|rw|http://gptr-mcp:8000/sse|900|30|sse|"
         "deep_research quick_search write_report get_research_sources get_research_context|"
-        "deep_research quick_search write_report")
+        "deep_research quick_search write_report|http://gptr-mcp:8000/sse")
 check("plan for browser with the flag on", want in plan, str(plan))
 plan = am.mcp_plan(ROOT / "addons", "api-server", env)
 check("plan leaves api-server without access", any(line.startswith("gptr|GPT Researcher|1||") for line in plan),
@@ -132,6 +154,16 @@ plan = am.mcp_plan(ROOT / "addons", "default",
                    {"GPTR_MCP_ENABLED": "0", "GPTR_MCP_URL": "http://elsewhere:9/sse", "GPTR_MCP_TIMEOUT": "60"})
 check("plan honours the env overrides and the flag off",
       any(line.startswith("gptr|GPT Researcher|0|rw|http://elsewhere:9/sse|60|30|") for line in plan), str(plan))
+
+with tempfile.TemporaryDirectory() as tmp:
+    (Path(tmp) / "split").mkdir()
+    (Path(tmp) / "split" / "addon.json").write_text(am.canonical(SPLIT))
+    ro_url, rw_url = "http://split-ro:9000/mcp", "http://split-rw:9000/mcp"
+    for prof, url in (("default", rw_url), ("browser", rw_url), ("api-server", ro_url), ("other", rw_url)):
+        got = am.mcp_plan(Path(tmp), prof, {"SPLIT_MCP_ENABLED": "1"})
+        check(f"split plan for {prof} picks {url[7:15]} and lists both URLs",
+              len(got) == 1 and got[0].split("|")[4] == url and got[0].split("|")[10] == f"{ro_url} {rw_url}",
+              str(got))
 
 with tempfile.TemporaryDirectory() as tmp:
     bad = Path(tmp) / "broken"
@@ -167,6 +199,9 @@ check("cron false fences the server by name and URL", got == (["gptr"], ["http:/
 got = fence_of({"gptr": am.canonical(variant(permissions__cron=None))},
                {**env, "GPTR_MCP_URL": "http://elsewhere:9/sse"})
 check("a missing cron field fences, at the overridden URL", got == (["gptr"], ["http://elsewhere:9/sse"]),
+      str(got))
+got = fence_of({"split": am.canonical(SPLIT)}, {})
+check("a service map fences every URL", got == (["split"], ["http://split-ro:9000/mcp", "http://split-rw:9000/mcp"]),
       str(got))
 broken = variant(permissions__cron=True, permissions__reads=["mail"])
 got = fence_of({"gptr": am.canonical(broken)}, env)
