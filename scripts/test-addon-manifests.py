@@ -118,6 +118,83 @@ refused("sender from a community feed", packaged(variant(permissions__sends=True
 refused("host component from a community feed", {**packaged(BASE), "host": {"platform": "macos"}},
         "community", "host component")
 
+# --- credentials and vaultBackend ---------------------------------------------
+VAULT = {"name": "bwbroker", "plugin": "compose/hermes/plugins/bwbroker",
+         "tools": ["bitwarden_request_access", "bitwarden_release_access"],
+         "profiles": {"default": "rw", "browser": "rw"}}
+
+
+def vault_manifest(**changes):
+    m = variant(id="io.github.kaxline.stack.bitwarden", title="Bitwarden",
+                builtin__flag="BITWARDEN_ENABLED", builtin__profile="bitwarden",
+                permissions__reads=["credentials"], permissions__cron=False, mcp=None,
+                vaultBackend=copy.deepcopy(VAULT))
+    m["services"] = {"broker": {"compose": "bwbroker", "port": 8099}}
+    for dotted, value in changes.items():
+        node = m
+        keys = dotted.split("__")
+        for k in keys[:-1]:
+            node = node[k]
+        if value is None:
+            node.pop(keys[-1], None)
+        else:
+            node[keys[-1]] = value
+    return m
+
+
+check("vault manifest is valid as built-in", am.validate(vault_manifest(), "builtin") == [],
+      str(am.validate(vault_manifest(), "builtin")))
+refused("credentials_cron_refused", vault_manifest(permissions__cron=True), "builtin",
+        "needs permissions.cron false")
+refused("credentials_api_server_refused",
+        vault_manifest(vaultBackend__profiles={"default": "rw", "api-server": "rw"}), "builtin",
+        "api-server")
+for reserved in ("vault", "op", "bw"):
+    refused(f"vault_backend_reserved_name {reserved}", vault_manifest(vaultBackend__name=reserved),
+            "builtin", "vaultBackend.name is reserved")
+refused("vault_backend_bad_name", vault_manifest(vaultBackend__name="Bad-Name"), "builtin",
+        "vaultBackend.name must")
+packaged_vault = vault_manifest(builtin=None)
+packaged_vault["services"] = {"broker": {"image": "ghcr.io/example/x@sha256:" + "a" * 64,
+                                         "port": 8099, "healthCheck": "/health"}}
+refused("vault_backend_community_refused", packaged_vault, "community",
+        "vaultBackend is refused unless the add-on is built-in or on the official feed")
+check("vaultBackend from the official feed is allowed",
+      am.validate(packaged_vault, "official") == [], str(am.validate(packaged_vault, "official")))
+refused("vault_backend_shape: missing plugin", vault_manifest(vaultBackend__plugin=None), "builtin",
+        "vaultBackend.plugin")
+refused("vault_backend_shape: plugin escapes", vault_manifest(vaultBackend__plugin="a/../x"),
+        "builtin", "vaultBackend.plugin")
+refused("vault_backend_shape: absolute plugin", vault_manifest(vaultBackend__plugin="/x/y"),
+        "builtin", "vaultBackend.plugin")
+refused("vault_backend_shape: tools not a list", vault_manifest(vaultBackend__tools="a b"),
+        "builtin", "vaultBackend.tools")
+refused("vault_backend_shape: bad profile value",
+        vault_manifest(vaultBackend__profiles={"default": "admin"}), "builtin", "ro or rw")
+refused("vaultBackend is not an object", vault_manifest(vaultBackend="x"), "builtin",
+        "vaultBackend must be an object")
+refused("vaultBackend without profiles", vault_manifest(vaultBackend__profiles={}), "builtin",
+        "vaultBackend.profiles")
+
+# --- vault-plan ---------------------------------------------------------------
+with tempfile.TemporaryDirectory() as tmp:
+    d = Path(tmp) / "bitwarden"
+    d.mkdir()
+    (d / "addon.json").write_text(am.canonical(vault_manifest()))
+    tail = "compose/hermes/plugins/bwbroker|bitwarden_request_access bitwarden_release_access"
+    plan = am.vault_plan(Path(tmp), "default", {"BITWARDEN_ENABLED": "1"})
+    check("vault_plan_lines", plan == [f"bwbroker|1|rw|{tail}"], str(plan))
+    plan = am.vault_plan(Path(tmp), "api-server", {"BITWARDEN_ENABLED": "1"})
+    check("vault plan leaves api-server without access", plan == [f"bwbroker|1||{tail}"], str(plan))
+    plan = am.vault_plan(Path(tmp), "default", {})
+    check("vault plan flag off", plan == [f"bwbroker|0|rw|{tail}"], str(plan))
+    check("mcp-plan ignores a vault-only add-on", am.mcp_plan(Path(tmp), "default", {}) == [])
+    (d / "addon.json").write_text(am.canonical(vault_manifest(vaultBackend__plugin="x|y")))
+    check("vault plan skips a value with a pipe", am.vault_plan(Path(tmp), "default", {}) == [])
+    (d / "addon.json").write_text("{broken")
+    check("vault plan skips invalid manifests", am.vault_plan(Path(tmp), "default", {}) == [])
+check("vault plan is empty for the repo's add-ons today", am.vault_plan(ROOT / "addons", "default", {}) == [])
+
 # --- mcp-plan ---------------------------------------------------------------
 env = {"GPTR_MCP_ENABLED": "1"}
 plan = am.mcp_plan(ROOT / "addons", "browser", env)
