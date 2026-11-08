@@ -155,7 +155,8 @@ An item with no `http` or `https` URI, or whose only URIs have match type "Never
 ### Unlock
 
 - `stored`: the broker logs in once and unlocks with the stored master password at start and after
-  any lock, so the vault works in every session, cron included where the profile allows it (below).
+  any lock, so the vault works in every session on the profiles the add-on is enabled for, with
+  no prompt. Those are `default` and `browser` in v1 (Manifest and profiles).
   The broker keeps the session key in its own memory and never writes it out.
 - `manual`: no master password is stored. `make vault-unlock SLUG=…` asks for it in a masked prompt
   on the host and passes it to the broker over `docker compose exec` stdin. The broker uses it for
@@ -414,23 +415,68 @@ again.
 
 ## Manifest and profiles
 
-`addons/bitwarden/addon.json`, a built-in add-on under the add-on manifest draft
-(`docs/private/addon-manifest-spec.md`):
+`addons/bitwarden/addon.json` is a built-in add-on, checked by the validator on main
+(`scripts/lib/addon_manifest.py`, 670ac9e) and by `scripts/test-addon-manifests.py`. The file is
+canonical JSON (`json.dumps(indent=2, ensure_ascii=False)` plus a newline), because
+`sync-profiles.sh` reads its `builtin` block with `sed` before there is a host `python3`.
 
-- `services`: `bitwarden-broker`; `vaultwarden` behind `settings.local`.
-- `mcp`: none. The add-on reaches Hermes through the plugin backend, so the manifest needs a
-  `vaultBackend` field (`{"name": "bwbroker", "plugin": "…", "profiles": {…}}`). This is a manifest
-  spec change; the generic path gets a contract test for it.
-- `instances`: the accounts, as Twenty's workspaces.
-- `permissions`: adds a personal-data class `credentials` to `reads`: built-in and official-feed
-  only, no `sends`. The draft spec requires every `reads` add-on to stay off `api-server` and out
-  of cron. `credentials` needs an exception, allowed only when the user sets
-  `BITWARDEN_UNATTENDED=1`, because filling a login is the reason to have the add-on in an
-  unattended job. This is a second change to the manifest spec, with its own contract-test case.
-  `egress: ["internet"]` for cloud and selfhosted.
-- `settings`: `profiles` (default `default` and `browser`; adding `api-server` or cron needs
-  `BITWARDEN_UNATTENDED=1`), `local` (bool), `sync_minutes`, `idle_lock_minutes`.
+### What validates today
+
+- `builtin`: `{"flag": "BITWARDEN_ENABLED", "profile": "bitwarden", "seed": false}`. `seed` is
+  false so a missing flag stays off.
+- `services`: `{"broker": {"compose": "bitwarden-broker", "port": 8099}}`. Images stay in
+  `docker-compose.yml`, as for every built-in.
+- `uses`: none. `mcp`: none.
+- `permissions`: `reads: ["credentials"]`, `sends: false`, `cron: false`, `exposesToAgent: false`,
+  `egress: ["internet"]`, `writes: ["external:bitwarden"]` (moves made by releases, and by
+  setup and `vault-grant` with the user's unlock).
+- `settings`: `sync_minutes` and `idle_lock_minutes` (`int`, min 0). No `choice` settings: mode,
+  scope and unlock are per-account values in the account files (Accounts), and the broker refuses
+  an account whose `BW_MODE`, `BW_SCOPE` or `BW_UNLOCK` is not one of the values listed there, the
+  same fail-closed rule the manifest spec sets for `choice`.
 - `hooks.backup`, `hooks.restore`: the local Vaultwarden and the secret files.
+
+### Changes the manifest code needs first
+
+Each is a change to the manifest spec and `addon_manifest.py`, with a case in
+`test-addon-manifests.py`, and lands before the Bitwarden manifest:
+
+1. **`credentials` in `READ_CLASSES`.** It takes the existing rules for every `reads` class with
+   no exception: `cron: false`, `sends: false`, and no `api-server` profile. Bitwarden v1
+   therefore stays off `api-server` and out of cron, and logins in unattended jobs are left for
+   later (Not in v1, below).
+2. **A `vaultBackend` block**, because the add-on reaches Hermes through a login-backend plugin,
+   not MCP: `{"name": "bwbroker", "plugin": "compose/hermes/bitwarden_broker_backend.py",
+   "tools": ["bitwarden_request_access", "bitwarden_release_access"], "profiles": {"default":
+   "rw", "browser": "rw"}}`. The validator gives `vaultBackend.profiles` the same `reads` check as
+   `mcp.profiles` (no `api-server`), refuses a `name` in a built-in backend's namespace (`vault`,
+   `op`, `bw`), and allows it for built-in and official sources only. The bootstraps get a second
+   plan next to the mcp-plan: install the plugin on the listed profiles, and write
+   `vault.bitwarden.enabled: false` on every profile whenever the add-on is enabled.
+
+### Shared with Twenty, undecided
+
+Twenty raises three questions the manifest spec records as open, and Bitwarden raises the same
+three. Whatever is decided for Twenty applies here, and until then Bitwarden does what Twenty does
+today:
+
+- **An optional service with its own flag.** `BITWARDEN_LOCAL_ENABLED` (profile `vault`) starts
+  Vaultwarden, as `TWENTY_LOCAL_ENABLED` starts the local Twenty, while the add-on's own flag
+  covers the broker and the remote accounts. Until the manifest can say so, `vaultwarden` is left
+  out of `services`, and its flag and profile are wired in `docker-compose.yml` and
+  `sync-profiles.sh` by hand, as Twenty's are.
+- **Instances as files.** Accounts are `compose/bitwarden/accounts/<slug>.env` files that
+  `vault.sh` writes, each with its own mode, as Twenty's workspace files are. `mcp.instances` is not
+  implemented and does not fit a non-MCP add-on, so the broker reads the directory itself.
+- **Add-on commands.** `vault.sh init`, `add`, `unlock`, `lock`, `sync`, `grant`, `requests` and
+  `remove` are commands Boundary calls, as it calls `crm.sh`. The manifest has no field for them.
+
+### Not in v1
+
+Logins in `api-server` sessions and cron jobs. They need a manifest field that names the flag
+lifting the `reads` rules for one class, a validator rule and a contract-test case, and a decision
+on whether `credentials` alone may use it. Until then, a scheduled job that has to sign in runs
+on the default profile from an interactive trigger.
 
 Environment, all defaulting to off so Boundary and existing installs see no change:
 
@@ -438,7 +484,6 @@ Environment, all defaulting to off so Boundary and existing installs see no chan
 |---|---|---|
 | `BITWARDEN_ENABLED` | `0` | Starts the broker (profile `bitwarden`) and registers the backend |
 | `BITWARDEN_LOCAL_ENABLED` | `0` | Starts Vaultwarden (profile `vault`) |
-| `BITWARDEN_UNATTENDED` | `0` | Allows the backend on `api-server` and in cron toolsets |
 | `BITWARDEN_SYNC_MINUTES` | `10` | `bw sync` interval |
 | `BITWARDEN_IDLE_LOCK_MINUTES` | `0` | Lock `manual` accounts after this long without a fill; 0 never |
 | `VAULTWARDEN_PORT` | `8222` | Host port, bound to `127.0.0.1` |
@@ -527,8 +572,10 @@ logins the user is willing to have used that way.
 - `scripts/test-bitwarden-secrets-sync.sh`: name mapping, unknown and duplicate names, mode 600,
   only changed files rewritten, no values printed.
 - `scripts/test-bitwarden-registration.sh`: bootstrap with the add-on off writes nothing; on, it
-  installs the plugin only on the configured profiles and keeps it off `api-server` without
-  `BITWARDEN_UNATTENDED=1`.
+  installs the plugin on `default` and `browser` only, never on `api-server` or in cron toolsets.
+- `scripts/test-addon-manifests.py` gains cases for the two manifest changes: `credentials` with
+  `cron: true` or an `api-server` profile refused, a `vaultBackend` with `api-server` refused, a
+  reserved backend name refused, and `addons/bitwarden/addon.json` valid and canonical.
 - Tool-eval: `browser-login-bitwarden`, a model reaching a sign-in page with a `bwbroker:` login
   listed fills it without asking for a password. `bitwarden-request-not-move`, the user asks the
   agent to move a login into its vault: the model calls `bitwarden_request_access` once and
