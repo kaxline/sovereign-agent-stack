@@ -9,6 +9,7 @@ trap 'rm -rf "$tmp"' EXIT
 mkdir -p "${tmp}/scripts/lib"
 cp "${ROOT}/scripts/sync-profiles.sh" "${tmp}/scripts/"
 cp "${ROOT}/scripts/lib/env.sh" "${tmp}/scripts/lib/"
+cp -R "${ROOT}/addons" "${tmp}/addons"
 
 fail=0
 get() { grep -E "^$1=" "${tmp}/.env" | head -1 | cut -d= -f2- || true; }
@@ -132,5 +133,37 @@ else
   cat "${tmp}/out"
   fail=1
 fi
+
+# Built-in add-on rows come from addons/*/addon.json. GPTR seeds from its
+# profile like the rows in SERVICES_CORE.
+printf 'COMPOSE_PROFILES=core,research\n' > "${tmp}/.env"
+sync
+expect "manifest row seeds its flag from a running profile" GPTR_MCP_ENABLED 1
+expect "manifest row marks its profile managed" COMPOSE_PROFILES_MANAGED research
+sed -i.bak 's/^GPTR_MCP_ENABLED=1/GPTR_MCP_ENABLED=0/' "${tmp}/.env"
+sync
+expect "manifest row removes its profile when off" COMPOSE_PROFILES core
+
+# A flag in both SERVICES_CORE and a manifest is refused.
+mkdir -p "${tmp}/addons/dup"
+sed 's/GPTR_MCP_ENABLED/OLLAMA_ENABLED/' "${ROOT}/addons/gptr/addon.json" > "${tmp}/addons/dup/addon.json"
+if ! sync && grep -q "flag listed twice.*OLLAMA_ENABLED" "${tmp}/out"; then
+  echo "ok: duplicate flag is refused"
+else
+  echo "FAIL: duplicate flag is refused"
+  cat "${tmp}/out"
+  fail=1
+fi
+# So is a manifest whose builtin block can't be read without python3.
+python_free_json='{"builtin": {"flag": "X_ENABLED", "profile": "x", "seed": true}}'
+printf '%s\n' "$python_free_json" > "${tmp}/addons/dup/addon.json"
+if ! sync && grep -q "no readable builtin block" "${tmp}/out"; then
+  echo "ok: non-canonical manifest is refused"
+else
+  echo "FAIL: non-canonical manifest is refused"
+  cat "${tmp}/out"
+  fail=1
+fi
+rm -rf "${tmp}/addons/dup"
 
 exit "$fail"

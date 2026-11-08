@@ -5,6 +5,7 @@
 #
 #   scripts/sync-profiles.sh          sync, printing what changed
 #   scripts/sync-profiles.sh --list   print each service's flag and state
+#   scripts/sync-profiles.sh --table  print the flag, profile and seed table
 #
 # A flag set to 1 adds its profile. A flag set to 0 removes the profile only if
 # this script added or adopted it, which it records in COMPOSE_PROFILES_MANAGED.
@@ -29,7 +30,11 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 # .env, it is written as 1 if the profile is already on and 0 otherwise, so
 # existing installs keep running what they run. seed=0: the flag predates this
 # script; a missing flag leaves the profile alone.
-SERVICES="LIGHTRAG_MCP_ENABLED rag 0
+#
+# Built-in add-ons (addons/<id>/addon.json) add their own rows from the
+# manifest's builtin block; this list keeps the services that have no
+# manifest yet. docs/private/addon-manifest-spec.md
+SERVICES_CORE="LIGHTRAG_MCP_ENABLED rag 0
 NEO4J_ENABLED neo4j 0
 CALDAV_MCP_ENABLED calendar 0
 SQL_MCP_ENABLED db 0
@@ -40,10 +45,44 @@ MESSAGES_MCP_ENABLED messages 0
 OPENCODE_MCP_ENABLED coding 0
 TWENTY_LOCAL_ENABLED crm 0
 AUTOMATION_ENABLED automation 1
-GPTR_MCP_ENABLED research 1
 OLLAMA_ENABLED ollama 1
 SEARXNG_PROD_ENABLED searxng-prod 1
 SEARCH_GATE_ENABLED search-gate 1"
+
+# One "flag profile seed" row per addons/*/addon.json. No python3 here (first
+# run, scripts/test-no-host-python.sh), so the builtin block is read with sed.
+# That relies on the canonical layout scripts/test-addon-manifests.py
+# enforces: the block opens with `  "builtin": {` and has one key per line.
+addon_rows() {
+  local manifest block flag profile seed
+  for manifest in "${ROOT}"/addons/*/addon.json; do
+    [[ -f "$manifest" ]] || continue
+    block="$(sed -n '/^  "builtin": {$/,/^  }/p' "$manifest")"
+    flag="$(printf '%s\n' "$block" | sed -n 's/^    "flag": "\([A-Z0-9_]*\)",*$/\1/p')"
+    profile="$(printf '%s\n' "$block" | sed -n 's/^    "profile": "\([a-z0-9-]*\)",*$/\1/p')"
+    seed="$(printf '%s\n' "$block" | sed -n 's/^    "seed": \([a-z]*\),*$/\1/p')"
+    case "$seed" in
+      true) seed=1 ;;
+      false) seed=0 ;;
+      *) seed="" ;;
+    esac
+    if [[ -z "$flag" || -z "$profile" || -z "$seed" ]]; then
+      die "${manifest#"${ROOT}/"} has no readable builtin block; run python3 scripts/test-addon-manifests.py"
+    fi
+    printf '%s %s %s\n' "$flag" "$profile" "$seed"
+  done
+}
+
+# A plain assignment, so a die inside addon_rows stops the script (set -e).
+ADDON_ROWS="$(addon_rows)"
+SERVICES="$(printf '%s\n%s\n' "$SERVICES_CORE" "$ADDON_ROWS" | sed '/^$/d')"
+dup="$(printf '%s\n' "$SERVICES" | cut -d' ' -f1 | sort | uniq -d | paste -sd, - || true)"
+[[ -z "$dup" ]] || die "flag listed twice (SERVICES_CORE and an add-on manifest?): ${dup}"
+
+if [[ "${1:-}" == "--table" ]]; then
+  printf '%s\n' "$SERVICES"
+  exit 0
+fi
 
 env_has() {
   grep -qE "^${1}=" .env 2>/dev/null
