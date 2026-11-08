@@ -30,9 +30,14 @@ grep -q '^register_addon_vault_backends() {' "$BOOTSTRAP" \
 grep -q 'addon_manifest.cron_fence_toolsets' "$BOOTSTRAP" \
   || fail "the cron fence must use addon_manifest.cron_fence_toolsets"
 # shellcheck disable=SC2016 # the literal compose line
-[ "$(grep -cF -- '- BITWARDEN_ENABLED=${BITWARDEN_ENABLED:-0}' "$COMPOSE")" = 2 ] \
-  || fail "both hermes-*-bootstrap services must receive BITWARDEN_ENABLED"
+[ "$(grep -cF -- '- BITWARDEN_ENABLED=${BITWARDEN_ENABLED:-0}' "$COMPOSE")" = 3 ] \
+  || fail "hermes and both hermes-*-bootstrap services must receive BITWARDEN_ENABLED"
 hermes_block="$(awk '/^  hermes:$/ {on=1; next} on && /^  [a-z0-9-]+:$/ {exit} on' "$COMPOSE")"
+# shellcheck disable=SC2016 # the literal compose line
+printf '%s\n' "$hermes_block" | grep -qF -- '- BITWARDEN_ENABLED=${BITWARDEN_ENABLED:-0}' \
+  || fail "hermes must receive BITWARDEN_ENABLED for the plugin install"
+head -1 "$INSTALL" | grep -qx '#!/command/with-contenv sh' \
+  || fail "the install step must run with-contenv to see BITWARDEN_ENABLED"
 for mount in \
   './compose/hermes/plugins/bwbroker:/bootstrap/plugins/bwbroker:ro' \
   './compose/hermes/bitwarden_broker_backend.py:/bootstrap/bitwarden_broker_backend.py:ro' \
@@ -146,7 +151,10 @@ run_all
 [ "$(tree)" = "$first" ] && echo "on-idempotent"
 
 # The hermes container's install step, then the plugin as Hermes loads it.
-sh /etc/cont-init.d/14-install-bwbroker-plugin
+mkdir -p /opt/hermes/plugins/bwbroker && touch /opt/hermes/plugins/bwbroker/plugin.yaml
+BITWARDEN_ENABLED=0 sh /etc/cont-init.d/14-install-bwbroker-plugin
+[ -e /opt/hermes/plugins/bwbroker ] || echo "bundled-absent-flag-off"
+BITWARDEN_ENABLED=1 sh /etc/cont-init.d/14-install-bwbroker-plugin
 [ -f /opt/hermes/plugins/bwbroker/bitwarden_broker_backend.py ] && echo "bundled-installed"
 for home in /h /h/profiles/browser /h/profiles/api-server; do
   HERMES_HOME="$home" python3 /w/runtime.py "$home"
@@ -322,6 +330,17 @@ finally:
     exit_cron_execution(token)
 check("listing returns after the cron turn", len(backend.list_items()) == 2)
 
+from agent.delegation_context import delegated_child_context
+token = enter_cron_execution({"id": "job-2", "name": "nightly"}, "exec-2", {"source": "builtin"})
+try:
+    with delegated_child_context():
+        check("a cron job's delegated child lists nothing", backend.list_items() == [])
+        check("a cron job's delegated child gets no metadata", backend.get_meta("bwbroker:work/1111") is None)
+finally:
+    exit_cron_execution(token)
+with delegated_child_context():
+    check("a chat's delegated child still lists items", len(backend.list_items()) == 2)
+
 state["mode"] = "html"
 check("a non-JSON reply lists nothing", backend.list_items() == [])
 check("a non-JSON reply gives no metadata", backend.get_meta("bwbroker:work/1111") is None)
@@ -398,7 +417,9 @@ expect 'on:default:onepassword=False' "other vault keys are kept"
 expect 'on:default:cron=hermes-cron,searxng' "the bitwarden toolset is taken out of a hand-written cron list"
 expect 'on:browser:cron=' "no cron list is pinned for the plugin alone"
 expect 'on-idempotent' "a second run changes nothing"
-expect 'bundled-installed' "the install step puts the plugin in Hermes's bundled dir"
+expect 'bundled-absent-flag-off' "the install step removes the plugin while the flag is off"
+expect 'bundled-installed' "the install step puts the plugin in Hermes's bundled dir while the flag is on"
+expect "ok: a cron job's delegated child lists nothing" "the delegated-child check ran"
 tools_on='bitwarden_request_access@bitwarden,bitwarden_release_access@bitwarden'
 for home in /h /h/profiles/browser; do
   expect "rt:$home:backends=bwbroker,local" "$home registers the bwbroker login backend"

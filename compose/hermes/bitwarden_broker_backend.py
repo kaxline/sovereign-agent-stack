@@ -75,8 +75,22 @@ def error_code(payload: Any) -> str:
 
 
 def in_cron_turn() -> bool:
-    from cron.execution_identity import current_cron_execution
-    return current_cron_execution() is not None
+    """True in a cron fire, including a delegate_task child that a cron job started.
+
+    current_cron_execution() reads None inside a delegated child, but the
+    child's thread runs in a copy of the job's context, so the ContextVar
+    behind it still holds the job. When that variable can't be found, a
+    delegated child counts as cron.
+    """
+    from agent.delegation_context import is_delegated_child_context
+    from cron import execution_identity
+
+    if execution_identity.current_cron_execution() is not None:
+        return True
+    if not is_delegated_child_context():
+        return False
+    current = getattr(execution_identity, "_CURRENT", None)
+    return current is None or current.get() is not None
 
 
 def item_meta(entry: Any) -> Optional[VaultItemMeta]:

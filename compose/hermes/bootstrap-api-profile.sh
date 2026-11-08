@@ -1415,10 +1415,11 @@ register_addon_mcp_servers() {
 }
 
 # Built-in add-ons with a vaultBackend block (addon_manifest.py vault-plan): a
-# login-backend plugin for Hermes's browser vault (Bitwarden's bwbroker). The
-# hermes container installs the plugin into Hermes's bundled plugins dir
-# (14-install-bwbroker-plugin.sh), since Hermes refuses a login backend from
-# $HERMES_HOME/plugins. This turns it on or off per profile.
+# login-backend plugin for Hermes's browser vault (Bitwarden's bwbroker). While
+# BITWARDEN_ENABLED is on, the hermes container installs the plugin into
+# Hermes's bundled plugins dir (14-install-bwbroker-plugin.sh), since Hermes
+# refuses a login backend from $HERMES_HOME/plugins. This turns it on or off
+# per profile.
 #
 # While the add-on's flag is on and the manifest lists the profile, the
 # plugin's name goes into plugins.enabled and vault.<name>.enabled is true.
@@ -1504,6 +1505,7 @@ for name, on, access, _plugin, _tools in plan:
             print(f"WARNING: plugins.disabled on {profile} lists {name}, so it stays off")
         backend = section(vault, name, True)
         if backend is None:
+            print(f"WARNING: vault.{name} on {profile} is not a mapping; replaced with enabled: true")
             vault[name] = backend = {}
         if backend.get("enabled") is not True:
             backend["enabled"] = True
@@ -1526,6 +1528,7 @@ if any(on == "1" for _n, on, *_rest in plan):
     else:
         bitwarden = section(vault, "bitwarden", True)
         if bitwarden is None:
+            print(f"WARNING: vault.bitwarden on {profile} is not a mapping; replaced with enabled: false")
             vault["bitwarden"] = bitwarden = {}
         if bitwarden.get("enabled") is not False:
             bitwarden["enabled"] = False

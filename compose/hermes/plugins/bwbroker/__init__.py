@@ -98,8 +98,7 @@ def release_access(args: dict, **_kwargs) -> str:
 
 
 def register(ctx) -> None:
-    ctx.register_login_backend(
-        broker.BrokerLoginBackend(in_cron=lambda: ctx.current_cron_execution() is not None))
+    ctx.register_login_backend(broker.BrokerLoginBackend())
     for schema, handler in ((REQUEST_SCHEMA, request_access), (RELEASE_SCHEMA, release_access)):
         ctx.register_tool(name=schema["name"], toolset=TOOLSET, schema=schema, handler=handler,
                           description=schema["description"])
