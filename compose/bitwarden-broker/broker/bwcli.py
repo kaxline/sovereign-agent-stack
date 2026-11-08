@@ -15,6 +15,10 @@ bw's stdout and stderr stay inside ``_exec`` and ``_run``. A failure raises
 ``BwError(error_class)``, whose text is the class name alone, with no chained
 exception (``__context__`` and ``__cause__`` are None).
 
+``return_item`` sends the edited item JSON, which holds the password, to bw on
+stdin rather than argv. ``secret_items`` is the one method that returns values;
+the server calls it only for the Unix socket.
+
 ``unlock()`` and ``sync()`` refresh a cached list of login-item metadata.
 ``cached_items()`` serves it without running bw, and the list stays until a new
 one replaces it or the account locks.
@@ -22,6 +26,7 @@ one replaces it or the account locks.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -153,6 +158,16 @@ class Bw:
             return []
         return [dict(i) for i in items]
 
+    def cached_ids(self) -> set[str] | None:
+        """Item ids in the last listing, or None when there is none (locked, or never listed).
+
+        Unlike ``cached_items``, this tells an empty scope apart from a missing listing.
+        """
+        items = self._items  # read before the state: a lock() in between leaves a valid old list
+        if self._state != "unlocked" or items is None:
+            return None
+        return {i["id"] for i in items}
+
     # Every helper below runs with self._lock held.
 
     def _read_secret(self, name: str) -> str:
@@ -169,7 +184,7 @@ class Bw:
             raise BwError("auth")
         return value
 
-    def _exec(self, args: list[str], secret_env: dict[str, str]) -> tuple[int, str, str]:
+    def _exec(self, args: list[str], secret_env: dict[str, str], stdin: str | None = None) -> tuple[int, str, str]:
         env = {k: v for k, v in os.environ.items() if k in ENV_ALLOW or k.startswith("LC_")}
         env.update(self.extra_env)
         env["BITWARDENCLI_APPDATA_DIR"] = str(self.data_dir)
@@ -179,8 +194,9 @@ class Bw:
         failure = None
         try:
             proc = subprocess.run(
-                [self.bw_path, *args], env=env, stdin=subprocess.DEVNULL, capture_output=True,
-                text=True, encoding="utf-8", errors="replace", timeout=TIMEOUT_SECONDS,
+                [self.bw_path, *args], env=env, capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=TIMEOUT_SECONDS,
+                **({"input": stdin} if stdin is not None else {"stdin": subprocess.DEVNULL}),
             )
         except subprocess.TimeoutExpired:
             failure = "network"
@@ -209,17 +225,19 @@ class Bw:
             self._state = "offline" if error_class in ("network", "rate_limited") else "error"
         return BwError(error_class)
 
-    def _run(self, args: list[str], secret_env: dict[str, str] | None = None, ok_if: tuple[str, ...] = ()) -> str:
+    def _run(self, args: list[str], secret_env: dict[str, str] | None = None, ok_if: tuple[str, ...] = (),
+             stdin: str | None = None) -> str:
         secret_env = secret_env if secret_env is not None else {}
         try:
             if self.retry_at is not None:
                 if time.monotonic() < self.retry_at:
                     raise self._fail("rate_limited")
                 self.retry_at = None
-            code, stdout, stderr = self._exec(args, secret_env)
+            code, stdout, stderr = self._exec(args, secret_env, stdin)
         finally:
             # The callers' dicts hold the client secret or master password.
             secret_env.clear()
+            stdin = None
         if code == 0 or (ok_if and any(p in stderr.lower() for p in ok_if)):
             return stdout
         error_class, wait = classify(stderr)
@@ -281,25 +299,26 @@ class Bw:
             raise self._fail("unknown")
         return data
 
+    def _scoped(self, kind: str, value: str | None) -> tuple[list, object]:
+        """Full item JSON (passwords included) listed for a scope, and a test on sanitized items."""
+        raw: list = []
+        if kind == "folder":
+            folder_ids = [f.get("id") for f in self._list("folders")
+                          if isinstance(f, dict) and f.get("name") == value and isinstance(f.get("id"), str)]
+            # Bitwarden allows several folders with one name; the scope covers all of them.
+            for fid in folder_ids:
+                raw.extend(self._list("items", ("--folderid", fid)))
+            return raw, lambda i: i["folderId"] in folder_ids
+        if kind == "collection":
+            return self._list("items", ("--collectionid", value)), lambda i: value in i["collectionIds"]
+        return self._list("items"), lambda i: True
+
     def _refresh(self) -> list[dict]:
         if self._session is None:
             raise self._fail("locked")
-        kind, value = self.account.scope_kind, self.account.scope_value
         raw: list = []
         try:
-            if kind == "folder":
-                folder_ids = [f.get("id") for f in self._list("folders")
-                              if isinstance(f, dict) and f.get("name") == value and isinstance(f.get("id"), str)]
-                # Bitwarden allows several folders with one name; the scope covers all of them.
-                for fid in folder_ids:
-                    raw.extend(self._list("items", ("--folderid", fid)))
-                keep = lambda i: i["folderId"] in folder_ids  # noqa: E731
-            elif kind == "collection":
-                raw = self._list("items", ("--collectionid", value))
-                keep = lambda i: value in i["collectionIds"]  # noqa: E731
-            else:
-                raw = self._list("items")
-                keep = lambda i: True  # noqa: E731
+            raw, keep = self._scoped(self.account.scope_kind, self.account.scope_value)
             items = [i for i in map(_sanitize, raw) if i is not None and i["type"] == 1 and keep(i)]
         finally:
             raw = None  # full item JSON, passwords included
@@ -366,3 +385,68 @@ class Bw:
     def get_totp(self, item_id: str) -> str:
         with self._lock:
             return self._get("totp", item_id).strip()
+
+    def return_item(self, item_id: str) -> bool:
+        """Take an item out of the account's scope; False if the scope is ``all`` or bw refuses.
+
+        ``folder:``: the item's folder becomes none (``bw edit item`` with the item JSON on stdin).
+        ``collection:``: the item leaves every collection (``bw edit item-collections`` with ``[]``).
+        The item list is refreshed afterwards when that is possible.
+        """
+        kind = self.account.scope_kind
+        if kind not in ("folder", "collection"):
+            return False
+        with self._lock:
+            item = encoded = None
+            try:
+                raw = self._get("item", item_id)
+                try:
+                    item = json.loads(raw)
+                except ValueError:
+                    item = None
+                raw = None
+                if not isinstance(item, dict) or item.get("id") != item_id:
+                    return False
+                if kind == "folder":
+                    item["folderId"] = None
+                    encoded = base64.b64encode(json.dumps(item).encode("utf-8")).decode("ascii")
+                    self._run(["edit", "item", item_id], self._session_env(), stdin=encoded)
+                else:
+                    org = item.get("organizationId")
+                    if not isinstance(org, str) or not ID_RE.fullmatch(org):
+                        return False
+                    encoded = base64.b64encode(b"[]").decode("ascii")
+                    self._run(["edit", "item-collections", item_id, "--organizationid", org],
+                              self._session_env(), stdin=encoded)
+            except BwError:
+                return False
+            finally:
+                item = encoded = None
+            try:
+                self._refresh()
+            except BwError:
+                pass
+            return True
+
+    def secret_items(self) -> list[tuple[str, str]]:
+        """``(name, password)`` for each login item in ``BW_SECRETS_ITEM_SCOPE``; [] when it is unset."""
+        scope = self.account.secrets_item_scope
+        if scope is None:
+            return []
+        with self._lock:
+            if self._session is None:
+                raise self._fail("locked")
+            raw: list = []
+            try:
+                raw, keep = self._scoped(*scope)
+                out = []
+                for item in raw:
+                    meta = _sanitize(item)
+                    if meta is None or meta["type"] != 1 or not keep(meta):
+                        continue
+                    password = (item.get("login") or {}).get("password")
+                    if isinstance(meta["name"], str) and meta["name"] and isinstance(password, str) and password:
+                        out.append((meta["name"], password))
+                return out
+            finally:
+                raw = None

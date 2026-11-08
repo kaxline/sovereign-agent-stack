@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Checks for the Bitwarden broker's accounts, bw wrapper and item listing.
+"""Checks for the Bitwarden broker: accounts, bw wrapper, item listing, CDP fill and the HTTP API.
 
 Stdlib only. Runs scripts/fixtures/fake-bw.py as the bw executable against a
 synthetic vault (example.com sites, generated passwords). Every test searches
@@ -9,6 +9,8 @@ writes for the run's synthetic secrets.
 The CDP fill tests need websockets for the fake DevTools server, so they run
 inside the pinned Hermes image (scripts/lib/hermes_image.py) with scripts/ and
 compose/bitwarden-broker/ mounted read-only, and skip when the image is absent.
+The API tests run ``python3 -m broker.server`` as a subprocess; scripts/test-bitwarden-access.py
+reuses their helpers for access requests and release.
 """
 
 from __future__ import annotations
@@ -966,11 +968,492 @@ def test_fill_bounded_by_timeout() -> None:
             expect_no_value([out.getvalue(), repr(got)], f"{name} drip {drip_path}")
 
 
+# --- Broker server ----------------------------------------------------------
+
+BROKER_PKG = ROOT / "compose" / "bitwarden-broker"
+CLIENT_ID = "user.00000000-0000-4000-8000-000000000001"
+STACK_FOLDER = "0f0d0000-0000-4000-8000-00000000000d"
+STACK_VALUE = "stack-" + secrets.token_urlsafe(18)
+BASE = 1_000_003
+
+
+def free_port() -> int:
+    import socket
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def handle(slug: str, name: str) -> str:
+    return f"bwbroker:{slug}/{item_id(name)}"
+
+
+def stack_vault(**extra) -> dict:
+    """vault_data plus a "Stack" folder holding one stack secret and one secure note."""
+    data = vault_data(**extra)
+    data["folders"].append({"id": STACK_FOLDER, "name": "Stack"})
+    data["items"].append({"object": "item", "id": "5555aaaa-0000-4000-8000-000000000000", "type": 1,
+                          "name": "llm-proxy/openai", "folderId": STACK_FOLDER, "collectionIds": [],
+                          "organizationId": None, "login": {"username": None, "password": STACK_VALUE,
+                                                            "totp": None, "uris": None}})
+    data["items"].append({"object": "item", "id": "5555bbbb-0000-4000-8000-000000000000", "type": 2,
+                          "name": "a note", "folderId": STACK_FOLDER, "collectionIds": [], "notes": "n"})
+    return data
+
+
+class Broker:
+    """``python3 -m broker.server`` in a subprocess, with the fake bw behind a wrapper script.
+
+    Every TCP response body is kept in ``bodies`` so a test can search them, and the
+    server's stdout and stderr go to ``broker-stderr.log`` under the run's temp dir,
+    which ``Run.expect_clean`` scans.
+    """
+
+    def __init__(self, run: Run, sync_minutes: str = "10", idle_minutes: str = "0", vault: dict | None = None):
+        self.run = run
+        if vault is not None:
+            run.vault_file.write_text(json.dumps(vault), encoding="utf-8")
+        self.accounts_dir = run.tmp / "accounts"
+        self.accounts_dir.mkdir(exist_ok=True)
+        self.socket = run.tmp / "sync" / "sync.sock"
+        self.stderr_path = run.tmp / "broker-stderr.log"
+        self.port = free_port()
+        self.bodies: list[str] = []
+        self.proc = None
+        wrapper = run.tmp / "bw-wrapper"
+        exports = "".join(f"export {k}='{v}'\n" for k, v in run.extra_env.items())
+        wrapper.write_text(f'#!/bin/sh\n{exports}exec "{sys.executable}" "{FAKE_BW}" "$@"\n', encoding="utf-8")
+        wrapper.chmod(0o755)
+        self.env = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "HOME": str(run.tmp),
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "BITWARDEN_ACCOUNTS_DIR": str(self.accounts_dir),
+            "BITWARDEN_DATA_DIR": str(run.tmp),
+            "BITWARDEN_SECRETS_DIR": str(run.secrets_root),
+            "BITWARDEN_SYNC_MINUTES": sync_minutes,
+            "BITWARDEN_IDLE_LOCK_MINUTES": idle_minutes,
+            "BITWARDEN_LISTEN": f"127.0.0.1:{self.port}",
+            "BITWARDEN_SYNC_SOCKET": str(self.socket),
+            "BITWARDEN_BW": str(wrapper),
+        }
+
+    def add_account(self, slug, scope="folder:Agent", unlock="stored", secrets_scope=None) -> None:
+        self.run.account(slug, scope=scope, unlock=unlock)
+        lines = ["BW_MODE=cloud", "BW_SERVER=https://vault.bitwarden.com", f"BW_SCOPE={scope}",
+                 f"BW_UNLOCK={unlock}", f"BW_CLIENTID={CLIENT_ID}"]
+        if secrets_scope:
+            lines.append(f"BW_SECRETS_ITEM_SCOPE={secrets_scope}")
+        path = self.accounts_dir / f"{slug}.env"
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        path.chmod(0o600)
+
+    def start(self, unlocked=(), expect_exit=False) -> None:
+        import subprocess
+        log = open(self.stderr_path, "a", encoding="utf-8")
+        self.proc = subprocess.Popen([sys.executable, "-m", "broker.server"], cwd=BROKER_PKG, env=self.env,
+                                     stdin=subprocess.DEVNULL, stdout=log, stderr=log)
+        log.close()
+        if expect_exit:
+            try:
+                code = self.proc.wait(10)
+            except subprocess.TimeoutExpired:
+                self.stop()
+                fail("broker kept running when it should have refused to start")
+            expect(code != 0, "broker exited 0 when it should have refused to start")
+            self.proc = None
+            return
+        self.wait_for(lambda: self.try_call("GET", "/health") is not None, "broker answered /health")
+        for slug in unlocked:
+            # The state turns unlocked before the first listing ends; every test scope has items.
+            self.wait_for(lambda: self.state(slug) == "unlocked"
+                          and any(h.startswith(f"bwbroker:{slug}/") for h in self.handles()), f"{slug} unlocked")
+
+    def stop(self) -> None:
+        import subprocess
+        if self.proc is None:
+            return
+        self.proc.terminate()
+        try:
+            self.proc.wait(10)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            self.proc.wait(10)
+            fail("broker did not stop on SIGTERM")
+        self.proc = None
+
+    def wait_for(self, predicate, msg: str, timeout: float = 15.0) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self.proc is not None and self.proc.poll() is not None:
+                fail(f"{msg}: broker exited with {self.proc.returncode}:\n{self.stderr()}")
+            if predicate():
+                return
+            time.sleep(0.05)
+        fail(f"timed out waiting: {msg}")
+
+    def try_call(self, method, path, body=None):
+        try:
+            return self.call(method, path, body)
+        except OSError:
+            return None
+
+    def call(self, method, path, body=None, raw: bytes | None = None, headers=None, timeout=30):
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=timeout)
+        try:
+            data = raw if raw is not None else (None if body is None else json.dumps(body).encode("utf-8"))
+            conn.request(method, path, body=data, headers={"Content-Type": "application/json", **(headers or {})})
+            resp = conn.getresponse()
+            text = resp.read().decode("utf-8", "replace")
+        finally:
+            conn.close()
+        self.bodies.append(text)
+        try:
+            return resp.status, json.loads(text) if text else None
+        except ValueError:
+            fail(f"{method} {path}: response is not JSON")
+
+    def sock_call(self, method, path, body=None):
+        from broker.unlock import UnixHTTPConnection
+        conn = UnixHTTPConnection(str(self.socket), timeout=30)
+        try:
+            data = None if body is None else json.dumps(body).encode("utf-8")
+            conn.request(method, path, body=data, headers={"Content-Type": "application/json"})
+            resp = conn.getresponse()
+            text = resp.read().decode("utf-8")
+        finally:
+            conn.close()
+        return resp.status, json.loads(text)
+
+    def state(self, slug: str) -> str | None:
+        got = self.try_call("GET", "/accounts")
+        if got is None or got[0] != 200:
+            return None
+        return next((a["state"] for a in got[1] if a["slug"] == slug), None)
+
+    def handles(self) -> list[str]:
+        status, items = self.call("GET", "/items")
+        expect(status == 200, f"/items {status}")
+        return [i["handle"] for i in items]
+
+    def stderr(self) -> str:
+        return self.stderr_path.read_text(encoding="utf-8") if self.stderr_path.exists() else ""
+
+    def expect_clean(self, extra_secrets=()) -> None:
+        expect("Traceback" not in self.stderr(), f"broker printed a traceback:\n{self.stderr()}")
+        self.run.expect_clean("\n".join(self.bodies), extra_secrets)
+
+
+@contextlib.contextmanager
+def broker_run(**kwargs):
+    with tempfile.TemporaryDirectory() as tmp:
+        run = Run(Path(tmp))
+        b = Broker(run, **kwargs)
+        try:
+            yield b
+        finally:
+            b.stop()
+
+
+def fill_body(h, field="password", base=BASE, port=None, target=TARGET) -> dict:
+    body = {"handle": h, "target_id": target, "port": port or free_port(), "field": field}
+    if base is not None:
+        body["base"] = base
+    return body
+
+
+def test_api_returns_no_values() -> None:
+    with broker_run(vault=stack_vault()) as b:
+        b.add_account("personal", secrets_scope="folder:Stack")
+        b.start(unlocked=["personal"])
+        a = handle("personal", "A")
+
+        status, accts = b.call("GET", "/accounts")
+        expect(status == 200 and accts == [{"slug": "personal", "mode": "cloud", "scope": "folder",
+                                            "state": "unlocked", "error_class": ""}], f"/accounts {accts}")
+        status, items = b.call("GET", "/items")
+        expect(status == 200 and sorted(i["handle"] for i in items) == [a, handle("personal", "E")], f"/items {items}")
+        expect(next(i for i in items if i["handle"] == a) == {
+            "handle": a, "label": "Item A", "username": "user-a@example.com",
+            "origins": ["https://login.example.com"], "has_totp": True}, "item A metadata")
+        status, health = b.call("GET", "/health")
+        expect(status == 200 and health["status"] == "ok", f"/health {health}")
+        expect(b.call("POST", "/sync", {}) == (200, {"synced": ["personal"]}), "/sync")
+        status, got = b.call("POST", "/requests", {"account": "personal", "site": "other.example.com",
+                                                    "reason": "to read the feed"})
+        expect(status == 200 and list(got) == ["request_id"], f"/requests POST {got}")
+        status, got = b.call("GET", "/requests")
+        expect(status == 200 and [r["site"] for r in got["pending"]] == ["other.example.com"], f"/requests {got}")
+
+        for field in ("password", "totp"):
+            status, got = b.call("POST", "/fill", fill_body(a, field))
+            expect(status == 200 and got["filled"] is False and got["error"] == "cdp_unavailable",
+                   f"/fill {field} on a closed port: {status} {got}")
+            # A write may have started before the timeout, so the digests come back.
+            expect(set(got["redaction"] or {}) == {"key", "base", "forms"} and got["redaction"]["base"] == BASE
+                   and got["redaction"]["forms"], f"{field} redaction")
+        argv = [line["argv"][:2] for line in b.run.log_lines()]
+        expect(["get", "password"] in argv and ["get", "totp"] in argv, "the broker fetched both values")
+
+        # Refusals: each is a fixed error code and fills nothing.
+        refusals = [
+            (fill_body(a, base=None), 400, "invalid_base"),
+            (fill_body(a, base=255), 400, "invalid_base"),
+            (fill_body(a, base=2**61 - 1), 400, "invalid_base"),
+            (fill_body(a, base="1000003"), 400, "invalid_base"),
+            (fill_body(a, base=True), 400, "invalid_base"),
+            (fill_body(a, field="username"), 400, "invalid_field"),
+            (fill_body(handle("personal", "E"), field="totp"), 400, "no_totp"),
+            (fill_body(handle("personal", "B")), 404, "unknown_handle"),
+            (fill_body("bwbroker:nobody/x"), 404, "unknown_handle"),
+            ({**fill_body(a), "extra": 1}, 400, "bad_request"),
+            ({**fill_body(a), "port": "9222"}, 400, "bad_request"),
+        ]
+        before = len(b.run.log_lines())
+        for body, want_status, want_error in refusals:
+            got = b.call("POST", "/fill", body)
+            expect(got == (want_status, {"error": want_error}), f"refusal {want_error}: {got}")
+        expect(len(b.run.log_lines()) == before, "a refused /fill ran bw")
+
+        expect(b.call("GET", "/secrets") == (404, {"error": "not_found"}), "TCP /secrets")
+        expect(b.call("POST", "/unlock", {"slug": "personal", "password": "x"}) == (404, {"error": "not_found"}),
+               "TCP /unlock")
+        expect(b.call("POST", "/lock", {"slug": "personal"}) == (404, {"error": "not_found"}), "TCP /lock")
+        expect(b.call("GET", "/nope") == (404, {"error": "not_found"}), "unknown route")
+        expect(b.call("GET", "/fill") == (405, {"error": "method_not_allowed"}), "GET /fill")
+        expect(b.call("DELETE", "/items") == (405, {"error": "method_not_allowed"}), "DELETE /items")
+        expect(b.call("POST", "/requests", raw=b"[1]") == (400, {"error": "bad_request"}), "a JSON list")
+        expect(b.call("POST", "/requests", raw=b'{"site": "a.example.com", "site": "b.example.com"}')
+               == (400, {"error": "bad_request"}), "a duplicate key")
+        expect(b.call("POST", "/requests", raw=b'{"site": NaN}') == (400, {"error": "bad_request"}), "NaN")
+        expect(b.call("POST", "/requests", raw=b"\xff") == (400, {"error": "bad_request"}), "not UTF-8")
+        expect(b.call("POST", "/requests", raw=b"x" * (64 * 1024 + 1)) == (413, {"error": "too_large"}),
+               "a body over 64 KiB")
+        expect(b.call("GET", "/items?debug=1")[0] == 200, "a query string is ignored")
+
+        expect(b.call("POST", "/release", {"handle": handle("personal", "E")})
+               == (200, {"released": True, "returned": True}), "/release")
+
+        stderr = b.stderr()
+        expect(f"POST /fill 200 {a}" in stderr, f"the access log names the handle:\n{stderr}")
+        expect("GET /nope" not in stderr and "debug" not in stderr, "the access log repeats an unknown path")
+        b.stop()
+        b.expect_clean(extra_secrets=[STACK_VALUE])
+
+
+def test_sync_socket_scope() -> None:
+    with broker_run(vault=stack_vault()) as b:
+        b.add_account("personal", secrets_scope="folder:Stack")
+        b.add_account("other")  # no BW_SECRETS_ITEM_SCOPE: serves no secrets
+        b.start(unlocked=["personal", "other"])
+        mode = stat.S_IMODE(b.socket.stat().st_mode)
+        expect(mode == 0o600, f"socket mode {oct(mode)}")
+        expect(b.sock_call("GET", "/secrets") == (200, [{"name": "llm-proxy/openai", "value": STACK_VALUE}]),
+               "the socket serves the Stack item only")
+        expect(b.call("GET", "/secrets") == (404, {"error": "not_found"}), "TCP /secrets")
+        expect(handle("personal", "A") in b.handles(), "the agent scope is unchanged")
+        expect(not any("5555" in h for h in b.handles()), "a stack secret is listed to the agent")
+        expect(b.sock_call("GET", "/items") == (404, {"error": "not_found"}), "the socket serves no TCP routes")
+        b.stop()
+        expect(not b.socket.exists(), "the socket is removed on stop")
+        b.expect_clean(extra_secrets=[STACK_VALUE])
+
+
+def unlock_cli(b: Broker, *args, stdin: str = ""):
+    import subprocess
+    env = {"PATH": b.env["PATH"], "PYTHONDONTWRITEBYTECODE": "1", "BITWARDEN_SYNC_SOCKET": str(b.socket)}
+    out = subprocess.run([sys.executable, "-m", "broker.unlock", *args], cwd=BROKER_PKG, env=env,
+                         input=stdin, capture_output=True, text=True, timeout=60)
+    b.bodies.append(out.stdout + out.stderr)
+    return out.returncode, out.stdout + out.stderr
+
+
+def test_unlock_over_socket() -> None:
+    with broker_run() as b:
+        b.add_account("manual", unlock="manual")
+        b.add_account("personal")
+        b.start(unlocked=["personal"])
+        expect(b.state("manual") == "locked", "a manual account starts locked")
+
+        code, out = unlock_cli(b, "manual", stdin=WRONG_PASSWORD + "\n")
+        expect(code == 2, f"wrong password exit {code}: {out}")
+        expect(b.state("manual") == "locked", f"after a wrong password: {b.state('manual')}")
+        code, out = unlock_cli(b, "nobody", stdin=MASTER + "\n")
+        expect(code == 3, f"unknown slug exit {code}")
+        code, out = unlock_cli(b, "personal", stdin=MASTER + "\n")
+        expect(code == 3, f"stored account exit {code}")
+        code, out = unlock_cli(b, "manual", stdin=MASTER + "\n")
+        expect(code == 0, f"unlock exit {code}: {out}")
+        expect(b.state("manual") == "unlocked", "unlocked over the socket")
+        expect(handle("manual", "A") in b.handles(), "a manual account's items are listed once unlocked")
+        code, out = unlock_cli(b, "--lock", "manual")
+        expect(code == 0 and b.state("manual") == "locked", f"lock exit {code}, state {b.state('manual')}")
+        expect(handle("manual", "A") not in b.handles(), "items vanish after lock")
+        code, out = unlock_cli(b, "--lock", "personal")
+        expect(code == 3, f"lock of a stored account exit {code}")
+        status, _ = b.sock_call("POST", "/unlock", {"slug": "manual"})
+        expect(status == 400, f"unlock with no password {status}")
+
+        for entry in b.run.log_lines():
+            expect(MASTER not in json.dumps(entry) and WRONG_PASSWORD not in json.dumps(entry), "password in bw argv")
+        b.stop()
+        code, out = unlock_cli(b, "manual", stdin=MASTER + "\n")
+        expect(code == 1, f"broker down exit {code}")
+        b.expect_clean()
+
+
+def test_sync_loop_and_idle_lock() -> None:
+    # 0.02 minutes is 1.2 s, so the loop runs a few times within the test.
+    with broker_run(sync_minutes="0.02", idle_minutes="0.02") as b:
+        b.add_account("personal")
+        b.add_account("manual", unlock="manual")
+        b.start(unlocked=["personal"])
+        b_handle = handle("personal", "B")
+        expect(b_handle not in b.handles(), "B starts out of scope")
+        data = json.loads(b.run.vault_file.read_text(encoding="utf-8"))
+        next(i for i in data["items"] if i["id"] == item_id("B"))["folderId"] = FOLDER_AGENT
+        b.run.vault_file.write_text(json.dumps(data), encoding="utf-8")
+        b.wait_for(lambda: b_handle in b.handles(), "the sync loop picks up B")
+
+        code, out = unlock_cli(b, "manual", stdin=MASTER + "\n")
+        expect(code == 0, f"unlock exit {code}")
+        b.wait_for(lambda: b.state("manual") == "locked", "the idle lock locks the manual account")
+        expect(b.state("personal") == "unlocked", "the idle lock leaves stored accounts alone")
+        b.stop()
+        b.expect_clean()
+
+
+TOTP_JS_DRIVER = r"""
+const [fnSource, cases] = JSON.parse(require("fs").readFileSync(0, "utf8"));
+class Event { constructor(type) { this.type = type; } }
+class InputEvent extends Event {}
+globalThis.Event = Event;
+globalThis.InputEvent = InputEvent;
+globalThis.HTMLInputElement = class {};
+globalThis.getComputedStyle = (el) => ({ display: el.hidden ? "none" : "block", visibility: "visible" });
+function build(spec, all) {
+  const el = {
+    tagName: spec.tag || "INPUT", type: spec.type ?? "text", autocomplete: spec.autocomplete || "",
+    name: spec.name || "", id: spec.id || "", maxLength: spec.maxLength || -1, disabled: false,
+    readOnly: false, hidden: !!spec.hidden, value: "", events: [], labels: [], form: spec.form ?? null,
+    attrs: spec.attrs || {}, children: [], shadowRoot: null,
+    getAttribute(n) { return this.attrs[n] ?? null; },
+    getClientRects() { return this.hidden ? [] : [1]; },
+    getRootNode() { return document; },
+    focus() { document.activeElement = this; },
+    dispatchEvent(e) { this.events.push(e.type); },
+  };
+  all.push(el);
+  if (spec.shadow) {
+    const inner = [];
+    spec.shadow.forEach((s) => build(s, inner));
+    el.shadowRoot = { querySelectorAll: () => inner, activeElement: null };
+  }
+  return el;
+}
+const out = [];
+for (const c of cases) {
+  const top = [];
+  c.dom.forEach((s) => build(s, top));
+  globalThis.window = { location: { origin: c.origin } };
+  globalThis.document = { querySelectorAll: () => top, activeElement: null, getElementById: () => null };
+  if (c.focus !== undefined) document.activeElement = top[c.focus];
+  const fn = eval("(" + fnSource + ")");
+  const result = fn("https://login.example.com", c.value);
+  const flat = [];
+  (function walk(list) { for (const e of list) { flat.push(e); if (e.shadowRoot) walk(e.shadowRoot.querySelectorAll()); } })(top);
+  out.push({ result, values: flat.map((e) => e.value), events: flat.map((e) => e.events.join(",")) });
+}
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+def test_totp_page_write() -> None:
+    """The TOTP page function, run in node against a small DOM stand-in."""
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if node is None:
+        print("skip test_totp_page_write (no node)")
+        return
+    origin = "https://login.example.com"
+    cases = [
+        # autocomplete=one-time-code wins over a field that only says "code" in its name.
+        {"origin": origin, "value": "123456", "dom": [
+            {"name": "email", "type": "email"}, {"name": "sms code"}, {"autocomplete": "one-time-code"}]},
+        # Six adjacent one-character boxes in one form: one character each.
+        {"origin": origin, "value": "123456", "dom": [
+            {"name": "username"}, *({"maxLength": 1, "form": "f", "attrs": {"aria-label": "otp digit"}}
+                                    for _ in range(6))]},
+        # No code field: the focused text input takes it.
+        {"origin": origin, "value": "123456", "focus": 1, "dom": [{"type": "search"}, {"name": "x"}]},
+        # Nothing to write into.
+        {"origin": origin, "value": "123456", "dom": [{"type": "checkbox"}, {"name": "x", "hidden": True}]},
+        # The page moved: nothing written.
+        {"origin": "https://evil.example.com", "value": "123456", "dom": [{"autocomplete": "one-time-code"}]},
+        # Inside a shadow root.
+        {"origin": origin, "value": "654321", "dom": [{"tag": "DIV", "type": "", "shadow": [
+            {"autocomplete": "one-time-code"}]}]},
+    ]
+    proc = subprocess.run([node, "-e", TOTP_JS_DRIVER], input=json.dumps([cdp._TOTP_FUNCTION, cases]),
+                          capture_output=True, text=True, timeout=60)
+    expect(proc.returncode == 0, f"node driver failed:\n{proc.stderr}")
+    got = json.loads(proc.stdout)
+    expect(got[0]["result"] == {"filled": 1} and got[0]["values"] == ["", "", "123456"], f"autocomplete: {got[0]}")
+    expect(got[0]["events"][2] == "input,change", f"autocomplete events: {got[0]}")
+    expect(got[1]["result"] == {"filled": 1} and got[1]["values"] == ["", *"123456"], f"split boxes: {got[1]}")
+    expect(all(e == "input,change" for e in got[1]["events"][1:]), f"split box events: {got[1]}")
+    expect(got[2]["result"] == {"filled": 1} and got[2]["values"] == ["", "123456"], f"focused: {got[2]}")
+    expect(got[3]["result"] == {"filled": 0} and got[3]["values"] == ["", ""], f"no field: {got[3]}")
+    expect(got[4]["result"] == {"refused": "origin_changed"} and got[4]["values"] == [""], f"moved: {got[4]}")
+    expect(got[5]["result"] == {"filled": 1} and got[5]["values"] == ["", "654321"], f"shadow: {got[5]}")
+
+
+def test_api_fill_through_cdp() -> None:
+    """/fill end to end: the fake DevTools server gets the value, the caller gets digests only."""
+    from broker import digest_redaction
+    with broker_run() as b, fake_cdp([{"id": TARGET, "url": LOGIN_URL}]) as fake:
+        b.add_account("personal")
+        b.start(unlocked=["personal"])
+        a = handle("personal", "A")
+        status, got = b.call("POST", "/fill", fill_body(a, port=fake.port))
+        expect(status == 200 and got["filled"] is True and got["origin"] == "https://login.example.com"
+               and got["error"] is None, f"/fill password: {status} {got}")
+        calls = [m for m in fake.messages if m.get("method") == "Runtime.callFunctionOn"]
+        expect([x.get("value") for x in calls[0]["params"]["arguments"]] == ["https://login.example.com",
+                                                                              ITEM_PASSWORDS["A"]],
+               "the password reached the page as an argument")
+        expect(got["redaction"]["base"] == BASE, "the redaction uses the caller's base")
+        scrubbed = digest_redaction.scrub(f"page said {ITEM_PASSWORDS['A']}!", [got["redaction"]], "[REDACTED]")
+        expect(scrubbed == "page said [REDACTED]!", f"the redaction entry scrubs the value: {scrubbed!r}")
+
+        status, got = b.call("POST", "/fill", fill_body(a, field="totp", port=fake.port))
+        expect(status == 200 and got["filled"] is True, f"/fill totp: {status} {got}")
+        calls = [m for m in fake.messages if m.get("method") == "Runtime.callFunctionOn"]
+        code = calls[-1]["params"]["arguments"][1]["value"]
+        expect(isinstance(code, str) and len(code) == 6 and code.isdigit(), "a TOTP code reached the page")
+        expect(calls[-1]["params"]["functionDeclaration"] == cdp._TOTP_FUNCTION, "the TOTP write function")
+        expect(digest_redaction.scrub(code, [got["redaction"]], "[R]") == "[R]", "the TOTP redaction scrubs the code")
+
+        status, got = b.call("POST", "/fill", fill_body(a, port=fake.port, target="0FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"))
+        expect(status == 200 and got == {"filled": False, "origin": "", "error": "target_not_found",
+                                         "redaction": None}, f"closed target: {got}")
+        b.stop()
+        b.expect_clean()
+
+
+def run_api_cdp_tests() -> None:
+    """The /fill tests that need the fake DevTools server, so websockets. Run inside the Hermes image."""
+    test_api_fill_through_cdp()
+
+
 CDP_DRIVER = r"""
 import runpy, sys
 sys.dont_write_bytecode = True
 ns = runpy.run_path("/work/scripts/test-bitwarden-broker.py", run_name="cdp_driver")
 ns["run_cdp_tests"]()
+ns["run_api_cdp_tests"]()
 print("image ok")
 """
 
@@ -991,6 +1474,11 @@ def main() -> None:
     test_fill_rejects_bad_arguments()
     test_fill_cdp_down()
     test_fill_bounded_by_timeout()
+    test_totp_page_write()
+    test_api_returns_no_values()
+    test_sync_socket_scope()
+    test_unlock_over_socket()
+    test_sync_loop_and_idle_lock()
     hermes_image.maybe_run(CDP_DRIVER, mounts=[
         (ROOT / "scripts", "/work/scripts"),
         (ROOT / "compose" / "bitwarden-broker", "/work/compose/bitwarden-broker"),

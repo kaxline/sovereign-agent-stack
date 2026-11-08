@@ -74,6 +74,10 @@ class Denylist:
         with self._lock:
             return handle in self._handles
 
+    def handles(self) -> list[str]:
+        with self._lock:
+            return sorted(self._handles)
+
     def add(self, handle: str) -> None:
         with self._lock:
             if handle not in self._handles:

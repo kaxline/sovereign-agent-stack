@@ -7,8 +7,9 @@ FAKE_BW_VAULT names a JSON file: ``items``, ``folders``, ``collections``,
 gets a 429), ``retry_after`` (seconds printed with the 429), ``stderr_prefix``
 (printed before every error, for Node warning lines), ``hang_sync`` (sync
 writes this text to stdout and stderr, then sleeps 30 s) and ``truncate_lists``
-(list output is cut short, so it is not valid JSON). Commands that write to the
-vault rewrite that file. Per-data-dir state (server, login,
+(list output is cut short, so it is not valid JSON), ``edit_gate`` (a path:
+edit waits until that file exists, up to 30 s) and ``refuse_edit`` (edit fails
+with this text). Commands that write to the vault rewrite that file. Per-data-dir state (server, login,
 session keys, server call count) lives in
 ``$BITWARDENCLI_APPDATA_DIR/fake-bw-state.json``.
 
@@ -273,6 +274,14 @@ def create_cmd(ctx, pos):
 def edit_cmd(ctx, pos):
     ctx.need_session()
     ctx.server_call()
+    gate = ctx.vault.get("edit_gate")
+    if gate:
+        deadline = time.monotonic() + 30
+        while not os.path.exists(gate) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        ctx = Ctx(ctx.opts)  # the test may have changed the vault while edit waited
+    if ctx.vault.get("refuse_edit"):
+        raise Fail(ctx.vault["refuse_edit"])
     if pos[1] == "item":
         obj = ctx.find("items", pos[2])
         obj.update({k: v for k, v in ctx.payload(pos, 3).items() if k != "id"})

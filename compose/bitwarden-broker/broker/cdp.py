@@ -5,7 +5,8 @@ itself, so the gateway never holds the value. ``fill`` reads ``/json/list`` on
 ``127.0.0.1:<port>``, refuses a target whose origin is not allowed, attaches to
 it through the browser websocket, and calls a function on the page's document
 with the value as a ``Runtime.callFunctionOn`` argument. The value is never part
-of an expression or function source.
+of an expression or function source. ``field="password"`` writes a password
+field; ``field="totp"`` writes a one-time code the way core's enter_code does.
 
 ``FillResult.error`` is one of five fixed texts. Nothing from the page, from a
 CDP error, or the value reaches a result, an exception or a log line. The
@@ -74,6 +75,89 @@ _FILL_FUNCTION = """function (expectedOrigin, value) {
 }"""
 
 
+# Called on the document with (expectedOrigin, code). Mirrors core's enter_code
+# (classify_otp_controls, build_otp_fills, build_fill_js in
+# agent/vault_login_classifier.py): collect inputs and selects through open
+# shadow roots, keep visible enabled inputs that take a code (autocomplete
+# one-time-code scores 100; a text, tel, number or password input whose name or
+# label says code, OTP, 2FA or verification scores 70). When there are exactly as
+# many maxlength=1 code boxes as characters, in one form and adjacent, each box
+# gets one character; otherwise the best-scoring field gets the whole code. With
+# no code field, the focused text input takes it.
+_TOTP_FUNCTION = r"""function (expectedOrigin, value) {
+  if (window.location.origin !== expectedOrigin) return { refused: "origin_changed" };
+  const elements = [];
+  const forms = [];
+  (function walk(root) {
+    for (const e of root.querySelectorAll("*")) {
+      if (e.tagName === "INPUT" || e.tagName === "SELECT") elements.push(e);
+      else if (e.tagName === "FORM") forms.push(e);
+      if (e.shadowRoot) walk(e.shadowRoot);
+    }
+  })(document);
+  const skipped = ["hidden", "submit", "button", "reset", "file", "image", "checkbox", "radio"];
+  const usable = (el) => {
+    if (el.tagName !== "INPUT" || el.disabled || el.readOnly || skipped.includes(el.type)) return false;
+    const style = getComputedStyle(el);
+    return style.display !== "none" && style.visibility !== "hidden" && el.getClientRects().length > 0;
+  };
+  const norm = (t) => String(t || "").normalize("NFKD").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const otp = /\b(?:one[\s-]?time|verification|security|auth(?:entication|enticator)?|2fa|two[\s-]?factor|mfa|totp|otp|passcode|sms)\b.*\b(?:code|pin|token)\b|\b(?:otp|totp|2fa|mfa|verification\s*code|passcode)\b/;
+  const textOf = (el) => {
+    const labels = el.labels ? Array.from(el.labels, (l) => l.textContent || "") : [];
+    const aria = (el.getAttribute("aria-labelledby") || "").split(/\s+/).filter(Boolean).map((id) => {
+      const r = el.getRootNode();
+      const n = (r && r.getElementById ? r.getElementById(id) : null) || document.getElementById(id);
+      return n ? (n.textContent || "") : "";
+    }).join(" ");
+    return [el.name, el.id, ...labels, el.getAttribute("aria-label") || "", aria,
+            el.getAttribute("placeholder") || "", el.getAttribute("title") || ""].join(" ");
+  };
+  const controls = [];
+  elements.forEach((el, index) => {
+    if (!usable(el)) return;
+    const tokens = String(el.autocomplete || "").toLowerCase().split(/\s+/);
+    let score = 0;
+    if (tokens.includes("one-time-code")) score = 100;
+    else if (["text", "tel", "number", "password", ""].includes(el.type) && otp.test(norm(textOf(el)))) score = 70;
+    if (score) controls.push({ el, index, score, form: el.form ? forms.indexOf(el.form) : -1 });
+  });
+  let writes = [];
+  const boxes = controls.filter((c) => c.el.maxLength === 1);
+  if (boxes.length > 0 && boxes.length === value.length && boxes.every((b) => b.form === boxes[0].form)
+      && boxes.every((b, i) => i === 0 || b.index - boxes[i - 1].index === 1)) {
+    writes = boxes.map((b, i) => [b.el, value[i]]);
+  } else if (controls.length > 0) {
+    const best = controls.reduce((a, b) => (b.score > a.score ? b : a));
+    writes = [[best.el, value]];
+  } else {
+    let active = document.activeElement;
+    while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
+    if (active && usable(active) && ["text", "tel", "number", "password", ""].includes(active.type)) {
+      writes = [[active, value]];
+    }
+  }
+  if (writes.length === 0) return { filled: 0 };
+  let filled = 0;
+  try {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+    for (const [el, part] of writes) {
+      el.focus();
+      if (setter && setter.set) { setter.set.call(el, part); } else { el.value = part; }
+      el.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, inputType: "insertText" }));
+      el.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+      if (el.value.length > 0) filled += 1;
+    }
+  } catch (e) {
+    // A page handler can throw with the code in its message; report only that the write failed.
+    return { refused: "write_failed" };
+  }
+  return { filled: filled > 0 ? 1 : 0 };
+}"""
+
+FIELDS = {"password": _FILL_FUNCTION, "totp": _TOTP_FUNCTION}
+
+
 @dataclass(frozen=True)
 class FillResult:
     filled: bool
@@ -89,13 +173,16 @@ class _Fail(Exception):
         self.code = code
 
 
-def fill(port: int, target_id: str, allowed_origins: tuple[str, ...], value: str, timeout: float = 10.0) -> FillResult:
-    """Fill the password field of ``target_id``. Call from a thread with no running event loop."""
-    return asyncio.run(fill_async(port, target_id, allowed_origins, value, timeout))
+def fill(port: int, target_id: str, allowed_origins: tuple[str, ...], value: str, timeout: float = 10.0,
+         field: str = "password") -> FillResult:
+    """Fill ``field`` ("password" or "totp") in ``target_id``. Call from a thread with no running event loop."""
+    return asyncio.run(fill_async(port, target_id, allowed_origins, value, timeout, field=field))
 
 
 async def fill_async(port: int, target_id: str, allowed_origins: tuple[str, ...], value: str,
-                     timeout: float = 10.0) -> FillResult:
+                     timeout: float = 10.0, field: str = "password") -> FillResult:
+    if field not in FIELDS:
+        raise ValueError('field must be "password" or "totp"')
     if not _valid_port(port):
         return FillResult(False, "", CDP_UNAVAILABLE)
     if not isinstance(target_id, str) or not _TARGET_ID.fullmatch(target_id):
@@ -117,7 +204,7 @@ async def fill_async(port: int, target_id: str, allowed_origins: tuple[str, ...]
     seen = {"origin": ""}
     code = None
     try:
-        await asyncio.wait_for(_fill(port, target_id, allowed, value, budget, cleanup, seen), budget)
+        await asyncio.wait_for(_fill(port, target_id, allowed, value, budget, cleanup, seen, FIELDS[field]), budget)
     except _Fail as exc:
         code = exc.code
     except asyncio.TimeoutError:
@@ -127,7 +214,7 @@ async def fill_async(port: int, target_id: str, allowed_origins: tuple[str, ...]
     return FillResult(code is None, seen["origin"], code)
 
 
-async def _fill(port, target_id, allowed, value, budget, cleanup, seen) -> None:
+async def _fill(port, target_id, allowed, value, budget, cleanup, seen, function) -> None:
     listing = await _get_json(port, "/json/list")
     target = None
     if isinstance(listing, list):
@@ -145,10 +232,10 @@ async def _fill(port, target_id, allowed, value, budget, cleanup, seen) -> None:
     path = urlsplit(ws_url).path if isinstance(ws_url, str) else ""
     if not _BROWSER_PATH.fullmatch(path):
         raise _Fail(CDP_UNAVAILABLE)
-    await _write(port, path, target_id, origin, value, budget, cleanup)
+    await _write(port, path, target_id, origin, value, budget, cleanup, function)
 
 
-async def _write(port, path, target_id, origin, value, budget, cleanup) -> None:
+async def _write(port, path, target_id, origin, value, budget, cleanup, function) -> None:
     try:
         import websockets
     except ImportError:
@@ -187,7 +274,7 @@ async def _write(port, path, target_id, origin, value, budget, cleanup) -> None:
 
         called = await conn.call("Runtime.callFunctionOn", {
             "objectId": object_id,
-            "functionDeclaration": _FILL_FUNCTION,
+            "functionDeclaration": function,
             "arguments": [{"value": origin}, {"value": value}],
             "returnByValue": True,
             "silent": True,
