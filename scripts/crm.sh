@@ -30,7 +30,13 @@ Usage: scripts/crm.sh <command> [options]
         TWENTY_ACCESS=read gives Hermes chats the read-only key. Each key is
         checked with an MCP initialize; nothing is written if one fails.
   remove --slug S   Delete a workspace file (make hermes-reload drops it)
-  open [--slug S]   Open a workspace in the browser
+  access --slug S read|write
+        What chats may do in a workspace: look things up (read) or make
+        changes (write). Sets TWENTY_ACCESS in its file; crm init keeps it.
+  open [--slug S]   Open a workspace in the browser, signed in when it's local
+  login-link [--slug S]
+        Local workspace: print a URL that signs a browser in as the owner,
+        good for 15 minutes. Only the URL goes to stdout.
   mode 0|1          Single- (0) or multi-workspace (1) local instance
   ensure            Create data dirs and sync flags (run by make ensure-local)
 
@@ -120,6 +126,33 @@ UPDATE core."user" SET "canAccessFullAdminPanel" = true, "canImpersonate" = true
 SQL
 }
 
+# Run twenty_admin.py in the Hermes image on the crm network, so the host
+# needs no python3. Reads the caller's username, password and password_file
+# (bash's dynamic scope); the values reach the container as environment, not
+# argv.
+crm_admin() {
+  local base="http://twenty-server:3000" data pf="$password_file" name
+  data="$(data_dir)"
+  local opts=(--network-of twenty-server --mount "$data" --mount "$WS_DIR")
+  if [[ -n "$pf" ]]; then
+    [[ "$pf" == /* ]] || pf="${ROOT}/${pf}"
+    opts+=(--mount "$(dirname "$pf")")
+  fi
+  for name in TWENTY_BASE_URL TWENTY_USERNAME TWENTY_PASSWORD TWENTY_PASSWORD_FILE \
+    TWENTY_MULTIWORKSPACE TWENTY_WORKSPACES_DIR TWENTY_DATA_DIR; do
+    opts+=(--env "$name")
+  done
+  [[ "${STACK_PYTHON:-}" == host ]] && base="http://127.0.0.1:$(env_get TWENTY_PORT 3000)"
+  TWENTY_BASE_URL="$base" \
+  TWENTY_USERNAME="$username" \
+  TWENTY_PASSWORD="$password" \
+  TWENTY_PASSWORD_FILE="$pf" \
+  TWENTY_MULTIWORKSPACE="$(env_get TWENTY_MULTIWORKSPACE 0)" \
+  TWENTY_WORKSPACES_DIR="$WS_DIR" \
+  TWENTY_DATA_DIR="$data" \
+    stack_python "${opts[@]}" -I "${ROOT}/scripts/twenty_admin.py" "$@"
+}
+
 cmd_init() {
   local slug="main" display="" rotate=""
   while [[ $# -gt 0 ]]; do
@@ -156,33 +189,9 @@ cmd_init() {
 
   local args=(init --slug "$slug" --display-name "${display:-$slug}")
   [[ -n "$rotate" ]] && args+=("$rotate")
-  # twenty_admin.py runs in the Hermes image on the crm network, so the host
-  # needs no python3. That container has no docker CLI, so the server-admin
-  # grant runs here, between a pass that only creates or signs in to the owner
-  # and the full one. Both passes are safe to repeat.
-  local base="http://twenty-server:3000" data
-  data="$(data_dir)"
-  local opts=(--network-of twenty-server --mount "$data" --mount "$WS_DIR")
-  if [[ -n "$password_file" ]]; then
-    [[ "$password_file" == /* ]] || password_file="${ROOT}/${password_file}"
-    opts+=(--mount "$(dirname "$password_file")")
-  fi
-  local name
-  for name in TWENTY_BASE_URL TWENTY_USERNAME TWENTY_PASSWORD TWENTY_PASSWORD_FILE \
-    TWENTY_MULTIWORKSPACE TWENTY_WORKSPACES_DIR TWENTY_DATA_DIR; do
-    opts+=(--env "$name")
-  done
-  [[ "${STACK_PYTHON:-}" == host ]] && base="http://127.0.0.1:$(env_get TWENTY_PORT 3000)"
-  crm_admin() {
-    TWENTY_BASE_URL="$base" \
-    TWENTY_USERNAME="$username" \
-    TWENTY_PASSWORD="$password" \
-    TWENTY_PASSWORD_FILE="$password_file" \
-    TWENTY_MULTIWORKSPACE="$(env_get TWENTY_MULTIWORKSPACE 0)" \
-    TWENTY_WORKSPACES_DIR="$WS_DIR" \
-    TWENTY_DATA_DIR="$data" \
-      stack_python "${opts[@]}" -I "${ROOT}/scripts/twenty_admin.py" "$@"
-  }
+  # The server-admin grant runs here, between a pass that only creates or
+  # signs in to the owner and the full one, because twenty_admin.py's
+  # container has no docker CLI. Both passes are safe to repeat.
   crm_admin "${args[@]}" --owner-only
   printf '[crm] server admin: running\n'
   cmd_grant_admin "$username" >/dev/null
@@ -311,6 +320,78 @@ cmd_remove() {
   log "Next: make hermes-reload (drops crm-${slug} from Hermes)"
 }
 
+cmd_access() {
+  local slug="" access=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --slug) slug="${2:-}"; shift 2 ;;
+      read | write) access="$1"; shift ;;
+      *) die "usage: crm.sh access --slug S read|write" ;;
+    esac
+  done
+  valid_slug "$slug" || die "--slug must use lowercase letters, digits and hyphens"
+  [[ -n "$access" ]] || die "usage: crm.sh access --slug S read|write"
+  local file="${WS_DIR}/${slug}.env"
+  [[ -f "$file" ]] || die "no workspace '${slug}' in ${WS_DIR#"${ROOT}"/}"
+  if [[ "$access" == read && -z "$(ws_get "$file" TWENTY_KEY_RO)" ]]; then
+    die "${slug} has no TWENTY_KEY_RO; read access needs one"
+  fi
+  if [[ "$access" == write && -z "$(ws_get "$file" TWENTY_KEY_RW)" ]]; then
+    die "${slug} has no TWENTY_KEY_RW; write access needs one"
+  fi
+  upsert_env "$file" TWENTY_ACCESS "$access"
+  chmod 600 "$file"
+  log "Set TWENTY_ACCESS=${access} for ${slug}"
+  log "Next: make hermes-reload"
+}
+
+# The slug open and login-link use without --slug: main, else the only
+# local workspace.
+default_slug() {
+  if [[ -f "${WS_DIR}/main.env" ]]; then
+    printf 'main'
+    return
+  fi
+  local all
+  all="$(local_slugs)"
+  [[ "$(printf '%s' "$all" | grep -c .)" -eq 1 ]] || die "several workspaces; pass SLUG=name"
+  printf '%s' "$all"
+}
+
+is_local_file() {
+  local url
+  url="$(ws_get "$1" TWENTY_URL)"
+  url="${url%/}"
+  [[ "$url" == "$LOCAL_URL" || "$url" == "${LOCAL_URL}/mcp" ]]
+}
+
+# Prints a URL that signs a browser in to a local workspace as the owner, and
+# nothing else on stdout. Twenty accepts it for LOGIN_TOKEN_EXPIRES_IN (15
+# minutes by default).
+cmd_login_link() {
+  local slug=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --slug) slug="${2:-}"; shift 2 ;;
+      *) die "unknown option for login-link: $1" ;;
+    esac
+  done
+  [[ -n "$slug" ]] || slug="$(default_slug)"
+  valid_slug "$slug" || die "--slug must use lowercase letters, digits and hyphens"
+  local file="${WS_DIR}/${slug}.env"
+  [[ -f "$file" ]] || die "no workspace '${slug}' — make crm-init"
+  is_local_file "$file" || die "'${slug}' isn't on the local instance; sign in on its own Twenty"
+  require_running >&2
+
+  local username password password_file
+  username="$(env_get TWENTY_USERNAME)"
+  password="$(env_get TWENTY_PASSWORD)"
+  password_file="$(env_get TWENTY_PASSWORD_FILE)"
+  [[ -n "$username" && -n "${password}${password_file}" ]] \
+    || die "no owner account in ${ENV_PATH} — make crm-init"
+  crm_admin login-link --slug "$slug"
+}
+
 cmd_open() {
   local slug=""
   while [[ $# -gt 0 ]]; do
@@ -319,24 +400,22 @@ cmd_open() {
       *) die "unknown option for open: $1" ;;
     esac
   done
-  if [[ -z "$slug" ]]; then
-    if [[ -f "${WS_DIR}/main.env" ]]; then
-      slug=main
-    else
-      local all
-      all="$(local_slugs)"
-      [[ "$(printf '%s' "$all" | grep -c .)" -eq 1 ]] || die "several workspaces; pass SLUG=name"
-      slug="$all"
-    fi
-  fi
+  [[ -n "$slug" ]] || slug="$(default_slug)"
   local file="${WS_DIR}/${slug}.env" url
   [[ -f "$file" ]] || die "no workspace '${slug}' — make crm-init or make crm-add"
   url="$(ws_get "$file" TWENTY_WORKSPACE_URL)"
   [[ -n "$url" ]] || url="http://localhost:$(env_get TWENTY_PORT 3000)/"
-  if [[ "$(ws_get "$file" TWENTY_URL)" == "$LOCAL_URL"* ]]; then
-    local where="TWENTY_PASSWORD in .env"
-    [[ -n "$(env_get TWENTY_PASSWORD_FILE)" ]] && where="in $(env_get TWENTY_PASSWORD_FILE)"
-    log "Sign in as $(env_get TWENTY_USERNAME owner@crm.localhost); the password is ${where}"
+  if is_local_file "$file"; then
+    local link
+    # Signed in when it works; otherwise the sign-in page and where the password is.
+    if link="$(cmd_login_link --slug "$slug" 2>/dev/null)" && [[ "$link" == http* ]]; then
+      url="$link"
+    else
+      local where="TWENTY_PASSWORD in .env"
+      [[ -n "$(env_get TWENTY_PASSWORD_FILE)" ]] && where="in $(env_get TWENTY_PASSWORD_FILE)"
+      log "Couldn't sign you in (./scripts/crm.sh login-link says why)"
+      log "Sign in as $(env_get TWENTY_USERNAME owner@crm.localhost); the password is ${where}"
+    fi
   fi
   if command -v open >/dev/null 2>&1; then
     open "$url"
@@ -408,6 +487,8 @@ case "${1:-}" in
   init) shift; cmd_init "$@" ;;
   add) shift; cmd_add "$@" ;;
   remove) shift; cmd_remove "$@" ;;
+  access) shift; cmd_access "$@" ;;
+  login-link) shift; cmd_login_link "$@" ;;
   open) shift; cmd_open "$@" ;;
   mode) shift; cmd_mode "$@" ;;
   ensure) cmd_ensure ;;

@@ -1252,6 +1252,14 @@ if has_profile crm || [[ "$twenty_local" -eq 1 || "$twenty_mcp" -eq 1 ]]; then
       ro="$(grep -E '^TWENTY_KEY_RO=' "$f" | head -1 | cut -d= -f2- | tr -d '"' || true)"
       access="$(grep -E '^TWENTY_ACCESS=' "$f" | head -1 | cut -d= -f2- | tr -d '"' || true)"
       access="${access:-write}"
+      if [[ "$twenty_local" -eq 0 && "${url%/}" =~ ^http://twenty-server:3000(/mcp)?$ ]]; then
+        if grep -qsE "^  crm-${slug}:" data/hermes/config.yaml; then
+          warn "crm-${slug}: the local instance is off but Hermes still registers it — run make hermes-reload"
+        else
+          ok "crm-${slug}: not registered while the local instance is off (TWENTY_LOCAL_ENABLED=0)"
+        fi
+        continue
+      fi
       key="$rw"
       [[ "$access" == read ]] && key="$ro"
       if [[ "$access" != read && "$access" != write ]]; then

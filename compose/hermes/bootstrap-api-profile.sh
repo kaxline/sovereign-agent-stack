@@ -92,6 +92,9 @@ TWENTY_MCP_ENABLED="${TWENTY_MCP_ENABLED:-0}"
 TWENTY_WORKSPACES_DIR="${TWENTY_WORKSPACES_DIR:-/bootstrap/twenty-workspaces}"
 # The local instance; remote workspaces carry their own URL.
 TWENTY_LOCAL_MCP_URL="http://twenty-server:3000/mcp"
+# 0 while the local instance is off: its workspaces aren't registered. Compose
+# passes the .env value (default 0); unset here keeps the old behaviour.
+TWENTY_LOCAL_ENABLED="${TWENTY_LOCAL_ENABLED:-1}"
 TWENTY_MCP_TIMEOUT="${TWENTY_MCP_TIMEOUT:-60}"
 TWENTY_MCP_CONNECT_TIMEOUT="${TWENTY_MCP_CONNECT_TIMEOUT:-30}"
 # Twenty's MCP lists these seven whatever the workspace holds; the object
@@ -1460,6 +1463,16 @@ twenty_key_for_profile() {
   [ -n "$_tw_key" ]
 }
 
+# After twenty_read_workspace: true when the file points at the local
+# instance and TWENTY_LOCAL_ENABLED is off, so there is no server to reach.
+twenty_local_off() {
+  [ "$_tw_url" = "$TWENTY_LOCAL_MCP_URL" ] || return 1
+  case "$TWENTY_LOCAL_ENABLED" in
+    1|true|TRUE|yes|YES|on|ON) return 1 ;;
+  esac
+  return 0
+}
+
 # Print one slug per line for each workspace that registers on <profile>:
 # a valid file with the key that profile uses.
 twenty_workspace_slugs() {
@@ -1475,6 +1488,7 @@ twenty_workspace_slugs() {
       .*|''|*[!a-z0-9-]*) continue ;;
     esac
     twenty_read_workspace "$_tws_file" 2>/dev/null >/dev/null || continue
+    twenty_local_off && continue
     twenty_key_for_profile "$1" || continue
     printf '%s\n' "$_tws_slug"
   done
@@ -1621,6 +1635,7 @@ register_twenty_mcp_servers() {
 
   _rtms_env="$(caldav_profile_env_file "$_rtms_profile")"
   _rtms_slugs=""
+  _rtms_local_off=""
   for _rtms_file in "$TWENTY_WORKSPACES_DIR"/*.env; do
     [ -f "$_rtms_file" ] || continue
     _rtms_base="$(basename "$_rtms_file")"
@@ -1633,6 +1648,11 @@ register_twenty_mcp_servers() {
         ;;
     esac
     twenty_read_workspace "$_rtms_file" || continue
+    if twenty_local_off; then
+      log "Skipping Twenty workspace '${_rtms_slug}' - the local instance is off (TWENTY_LOCAL_ENABLED=${TWENTY_LOCAL_ENABLED})"
+      _rtms_local_off=1
+      continue
+    fi
     if ! twenty_key_for_profile "$_rtms_profile"; then
       if [ "$_rtms_profile" = "api-server" ]; then
         log "Skipping Twenty workspace '${_rtms_slug}' on api-server (${_tw_why})"
@@ -1654,7 +1674,8 @@ register_twenty_mcp_servers() {
   _rtms_key=""
   # shellcheck disable=SC2086
   reconcile_twenty_workspaces "$_rtms_profile" $_rtms_slugs
-  if [ -z "$_rtms_slugs" ]; then
+  # Only local workspaces, all skipped while it's off: expected, not a fault.
+  if [ -z "$_rtms_slugs" ] && [ -z "$_rtms_local_off" ]; then
     log "WARNING: TWENTY_MCP_ENABLED=1 but no Twenty workspace registers on '${_rtms_profile:-default}' - run make crm-init or make crm-add"
   fi
 }

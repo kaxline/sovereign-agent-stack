@@ -101,6 +101,38 @@ if TWENTY_KEY_RW=good-x run add --slug ok --url crm.example.com; then fail "URL 
 if run add --slug nokey --url "$URL"; then fail "no key and no terminal must fail"; fi
 [ ! -e "$CRM_WORKSPACES_DIR/nokey.env" ] || fail "a failed add writes nothing"
 
+# access: sets TWENTY_ACCESS when the file holds the key it calls for.
+# hosted has an RW key and an empty RO key; lookup has only an RO key.
+run access --slug lookup write && fail "write access without TWENTY_KEY_RW must fail"
+grep -qx 'TWENTY_ACCESS=read' "$CRM_WORKSPACES_DIR/lookup.env" || fail "a refused access change leaves the file alone"
+run access --slug hosted read && fail "read access without TWENTY_KEY_RO must fail"
+run access --slug lookup read || fail "access read ($(cat "$out"))"
+printf 'TWENTY_URL=http://twenty-server:3000\nTWENTY_KEY_RW=rw-SECRET\nTWENTY_KEY_RO=ro-SECRET\n' > "$tmp/both.env"
+cp "$tmp/both.env" "$CRM_WORKSPACES_DIR/both.env"
+chmod 644 "$CRM_WORKSPACES_DIR/both.env"
+run access --slug both read || fail "access read adds the line ($(cat "$out"))"
+no_secret access
+grep -qx 'TWENTY_ACCESS=read' "$CRM_WORKSPACES_DIR/both.env" || fail "access read adds TWENTY_ACCESS=read"
+run access --slug both write || fail "access write ($(cat "$out"))"
+[ "$(grep -c '^TWENTY_ACCESS=' "$CRM_WORKSPACES_DIR/both.env")" = 1 ] || fail "access replaces the line, not adds one"
+grep -qx 'TWENTY_ACCESS=write' "$CRM_WORKSPACES_DIR/both.env" || fail "access write sets TWENTY_ACCESS=write"
+grep -qx 'TWENTY_KEY_RO=ro-SECRET' "$CRM_WORKSPACES_DIR/both.env" || fail "access keeps the keys"
+[ "$(stat -f %Lp "$CRM_WORKSPACES_DIR/both.env" 2>/dev/null || stat -c %a "$CRM_WORKSPACES_DIR/both.env")" = 600 ] \
+  || fail "access leaves the file mode 600"
+grep -q 'hermes-reload' "$out" || fail "access says to run make hermes-reload"
+run access --slug both admin && fail "access takes read or write"
+run access --slug missing read && fail "access on a missing workspace must fail"
+run access --slug both && fail "access needs read or write"
+rm "$CRM_WORKSPACES_DIR/both.env"
+
+# login-link: refused before any container runs for remote and unknown workspaces.
+"$crm" login-link --slug lookup < /dev/null > "$out" 2> "$tmp/err" && fail "login-link on a remote workspace must fail"
+[ ! -s "$out" ] || fail "a refused login-link prints nothing on stdout"
+grep -q 'local instance' "$tmp/err" || fail "login-link says the workspace isn't local"
+run login-link --slug missing && fail "login-link on a missing workspace must fail"
+run login-link --slug Bad_1 && fail "login-link checks the slug"
+run login-link --frob && fail "login-link rejects unknown options"
+
 # remove: deletes the file; unknown slugs fail.
 run remove --slug lookup || fail "remove ($(cat "$out"))"
 [ ! -e "$CRM_WORKSPACES_DIR/lookup.env" ] || fail "remove deletes the workspace file"

@@ -15,7 +15,7 @@ make up                 # the first start runs Twenty's migrations, about a minu
 make crm-init           # owner account, workspace "main", Hermes' two keys
 make hermes-reload
 make doctor
-make crm-open           # crm-init's last line says where the password is
+make crm-open           # opens the workspace signed in as the owner
 ```
 
 In WebUI: *Add Ada Example from Acme as a contact.* Then in a new chat:
@@ -82,6 +82,18 @@ instance's `/mcp`, whatever the workspace's own hostname.
 the key that `TWENTY_ACCESS` calls for is missing, that profile gets no entry
 for the workspace, and the bootstrap log and `make doctor` say why.
 
+To change it later, without the keys at hand:
+
+```bash
+make crm-access SLUG=main ACCESS=read   # or ACCESS=write
+make hermes-reload
+```
+
+`crm-access` refuses `read` when the file has no `TWENTY_KEY_RO`, and `write`
+when it has no `TWENTY_KEY_RW`. `make crm-init ROTATE=1` rewrites only the
+lines it owns (the URLs, the workspace id and the two keys), so the access
+setting and any other line survive a rotation.
+
 Bootstrap writes each key into that profile's `.env` under `data/hermes/` as
 `TWENTY_<SLUG>_KEY` (`crm-sales-eu` uses `TWENTY_SALES_EU_KEY`). `config.yaml`
 holds only the reference:
@@ -110,6 +122,18 @@ tools. A custom object you add later is covered by the role-wide setting. A
 new *system* object from a Twenty upgrade isn't covered until you run
 `make crm-init ROTATE=1`. For a remote instance, check what your read-only
 role can write before you trust it on unattended runs.
+
+### Signing in
+
+`make crm-open` opens a local workspace already signed in as the owner, since
+nobody chose that account's password. It runs `./scripts/crm.sh login-link`,
+which signs in to Twenty's API with the owner's password and prints one line,
+`<TWENTY_WORKSPACE_URL>verify?loginToken=<token>`. Nothing else goes to
+stdout, so another app can run it and open the URL itself. The token gives a
+browser an owner session, which includes server admin. Twenty accepts it for
+`LOGIN_TOKEN_EXPIRES_IN`, 15 minutes by default. `login-link` refuses remote
+workspaces; sign in on their own Twenty. When it fails, `crm-open` opens the
+sign-in page and says where the password is.
 
 ### Picking up a new workspace
 
@@ -180,7 +204,7 @@ If a container is killed for memory under heavier use, raise its limit in
 
 | Variable | Default | Effect |
 |---|---|---|
-| `TWENTY_LOCAL_ENABLED` | `0` | Starts the local instance (profile `crm`) |
+| `TWENTY_LOCAL_ENABLED` | `0` | Starts the local instance (profile `crm`). While `0`, Hermes gets no entry for local workspace files |
 | `TWENTY_MCP_ENABLED` | `0` | Registers every workspace file in Hermes. `crm-init` and `crm-add` set it to `1` |
 | `TWENTY_MULTIWORKSPACE` | `0` | Local instance: one workspace (`0`) or several on subdomains (`1`). Change it with `make crm-mode` |
 | `TWENTY_PORT` | `3000` | Host port on `127.0.0.1` |
@@ -224,7 +248,11 @@ and the local workspace files are worth keeping too, but can be recreated:
 ## Turning it off
 
 Set `TWENTY_LOCAL_ENABLED=0` and run `make up` to stop the local instance;
-its data stays in `TWENTY_DATA_DIR`. Set `TWENTY_MCP_ENABLED=0` and run
+its data stays in `TWENTY_DATA_DIR`. The bootstraps that `make up` reruns
+then drop the `crm-*` entries and keys of every workspace file pointing at
+`http://twenty-server:3000`, and keep the files. Remote workspaces stay
+registered, so moving to a hosted Twenty needs only `make crm-add` and this.
+Setting it back to `1` registers the local workspaces again. Set `TWENTY_MCP_ENABLED=0` and run
 `make hermes-reload` to remove every `crm-*` entry and key from Hermes.
 `make crm-remove SLUG=name` and `make hermes-reload` remove one workspace
 only.

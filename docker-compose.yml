@@ -1259,6 +1259,8 @@ services:
       - CALDAV_MCP_ACCOUNTS_DIR=/bootstrap/caldav-accounts
       # Twenty CRM: one MCP entry per workspace file (local or remote). docs/crm.md
       - TWENTY_MCP_ENABLED=${TWENTY_MCP_ENABLED:-0}
+      # 0: local workspace files aren't registered (no twenty-server to reach).
+      - TWENTY_LOCAL_ENABLED=${TWENTY_LOCAL_ENABLED:-0}
       - TWENTY_WORKSPACES_DIR=/bootstrap/twenty-workspaces
       # OpenCode coding MCP (coding profile); registered on default + browser only.
       - OPENCODE_MCP_URL=${OPENCODE_MCP_URL:-http://opencode-mcp:8000/sse}
@@ -1365,6 +1367,8 @@ services:
       - CALDAV_MCP_ACCOUNTS_DIR=/bootstrap/caldav-accounts
       # Twenty CRM: one MCP entry per workspace file (local or remote). docs/crm.md
       - TWENTY_MCP_ENABLED=${TWENTY_MCP_ENABLED:-0}
+      # 0: local workspace files aren't registered (no twenty-server to reach).
+      - TWENTY_LOCAL_ENABLED=${TWENTY_LOCAL_ENABLED:-0}
       - TWENTY_WORKSPACES_DIR=/bootstrap/twenty-workspaces
       - OPENCODE_MCP_URL=${OPENCODE_MCP_URL:-http://opencode-mcp:8000/sse}
       - OPENCODE_MCP_ENABLED=${OPENCODE_MCP_ENABLED:-0}
