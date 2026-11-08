@@ -14,6 +14,9 @@ the stack under another app.
    `TWENTY_LOCAL_ENABLED`, which changes their input hash, so they run in full
    once. They also mount `addons/` and `scripts/lib/addon_manifest.py`, so a
    checkout used as the compose project directory needs both.
+   The bootstrap environment now also carries `ACTUAL_MCP_ENABLED` and
+   `ACTUAL_ACCESS`, so the first `up` after upgrading re-runs both bootstraps
+   in full, even with the add-on off.
 
 ### Changes
 
