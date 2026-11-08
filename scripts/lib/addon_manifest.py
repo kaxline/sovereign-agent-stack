@@ -26,7 +26,9 @@ image's python3, mounted at /bootstrap/addon_manifest.py.
 
 cron_fence() lists the MCP server names and URLs the bootstrap's
 fence_mail_from_cron keeps out of platform_toolsets.cron: every add-on whose
-permissions.cron is not true. An invalid manifest is fenced by whatever MCP
+permissions.cron is not true. With cron "ro" the add-on's name is not fenced and
+only its URLs other than the ro service's are, so a cron job keeps the ro
+entry and loses the rw one. An invalid manifest is fenced by whatever MCP
 name it carries, so a broken manifest can't open cron.
 
 Policy follows docs/private/addon-manifest-spec.md (draft). `source` is
@@ -183,14 +185,16 @@ def validate(manifest, source: str = "builtin") -> list[str]:
         for w in perms.get("writes", []):
             if not w.startswith("external:"):
                 err(f"permissions.writes: {w!r} must be external:<what>")
-    for key in ("sends", "exposesToAgent", "cron"):
+    for key in ("sends", "exposesToAgent"):
         if key in perms and not isinstance(perms[key], bool):
             err(f"permissions.{key} must be true or false")
+    if "cron" in perms and not (isinstance(perms["cron"], bool) or perms["cron"] == "ro"):
+        err('permissions.cron must be true, false or "ro"')
     egress = perms.get("egress", [])
     if not _is_str_list(egress):
         err("permissions.egress must be a list")
     sends = perms.get("sends", False) is True
-    cron = perms.get("cron", False) is True
+    cron = perms.get("cron", False) in (True, "ro")
 
     if reads:
         if source == "community":
@@ -207,6 +211,9 @@ def validate(manifest, source: str = "builtin") -> list[str]:
     mcp = manifest.get("mcp")
     if mcp is not None:
         errors.extend(_validate_mcp(mcp, services, source, bool(reads)))
+        if perms.get("cron") == "ro" and not (
+                isinstance(mcp, dict) and isinstance(mcp.get("service"), dict) and "ro" in mcp["service"]):
+            err('permissions.cron "ro" needs a mcp.service map with an ro service: cron ro needs an ro service')
 
     settings = manifest.get("settings", {})
     if not isinstance(settings, dict):
@@ -357,10 +364,16 @@ def cron_fence(addons_dir: Path, environ=os.environ) -> tuple[list[str], list[st
                 names.append(name)
             continue
         mcp = manifest.get("mcp")
-        if not mcp or manifest.get("permissions", {}).get("cron") is True:
+        cron = manifest.get("permissions", {}).get("cron")
+        if not mcp or cron is True:
+            continue
+        mcp_urls = _mcp_urls(manifest, environ)
+        if cron == "ro":
+            # The ro service stays in cron; its other URLs (rw) are fenced.
+            urls.extend(u for level, u in mcp_urls.items() if level != "ro")
             continue
         names.append(mcp["name"])
-        urls.extend(_mcp_urls(manifest, environ).values())
+        urls.extend(mcp_urls.values())
     return sorted(set(names)), sorted(set(urls))
 
 

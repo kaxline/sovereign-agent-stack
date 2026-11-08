@@ -164,6 +164,17 @@ with tempfile.TemporaryDirectory() as tmp:
     line = am.mcp_plan(Path(tmp), "default", {"SPLIT_MCP_ENABLED": "1"})[0].split("|")
     check("SPLIT_ACCESS unset keeps rw", line[3] == "rw", str(line))
 
+# permissions.cron: true, false or "ro".
+check("cron ro with a service map that has ro is accepted", SPLIT["permissions"]["cron"] == "ro"
+      and am.validate(SPLIT, "builtin") == [], str(am.validate(SPLIT, "builtin")))
+refused("cron ro on an add-on that reads", split(permissions={**SPLIT["permissions"], "reads": ["mail"]}),
+        "builtin", "permissions.cron false")
+refused("cron ro with a string service", variant(permissions__cron="ro"), "builtin", "cron ro needs an ro service")
+refused("cron ro with a map that has no ro service",
+        split(mcp={**SPLIT["mcp"], "service": {"rw": "rw"}, "profiles": {"default": "rw"}}),
+        "builtin", "cron ro needs an ro service")
+refused("cron yes", variant(permissions__cron="yes"), "builtin", "permissions.cron")
+
 # --- mcp-plan ---------------------------------------------------------------
 env = {"GPTR_MCP_ENABLED": "1"}
 plan = am.mcp_plan(ROOT / "addons", "browser", env)
@@ -224,9 +235,12 @@ got = fence_of({"gptr": am.canonical(variant(permissions__cron=None))},
                {**env, "GPTR_MCP_URL": "http://elsewhere:9/sse"})
 check("a missing cron field fences, at the overridden URL", got == (["gptr"], ["http://elsewhere:9/sse"]),
       str(got))
+SPLIT_CRON_FALSE = split(permissions={**SPLIT["permissions"], "cron": False})
+got = fence_of({"split": am.canonical(SPLIT_CRON_FALSE)}, {})
+check("a service map with cron false fences every URL",
+      got == (["split"], ["http://split-ro:9000/mcp", "http://split-rw:9000/mcp"]), str(got))
 got = fence_of({"split": am.canonical(SPLIT)}, {})
-check("a service map fences every URL", got == (["split"], ["http://split-ro:9000/mcp", "http://split-rw:9000/mcp"]),
-      str(got))
+check("cron ro fences only the rw URL, and no name", got == ([], ["http://split-rw:9000/mcp"]), str(got))
 broken = variant(permissions__cron=True, permissions__reads=["mail"])
 got = fence_of({"gptr": am.canonical(broken)}, env)
 check("an invalid manifest is fenced by its MCP name", got[0] == ["gptr"], str(got))

@@ -59,6 +59,7 @@
   "permissions": {
     "reads": [],
     "writes": [],
-    "egress": []
+    "egress": [],
+    "cron": "ro"
   }
 }
