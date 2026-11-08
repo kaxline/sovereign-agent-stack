@@ -19,7 +19,9 @@ image's python3, mounted at /bootstrap/addon_manifest.py.
         when the profile gets no entry) and `all_urls` lists every URL the
         add-on can register, sorted, so the bootstrap can drop the ones this
         profile must not have. Invalid manifests are reported on stderr and
-        skipped. For a profile whose access is ro, tools and pins leave out
+        skipped. mcp.env.access names a variable that caps access: "read" turns
+        rw into ro, "write" or empty changes nothing, and any other value gives
+        the profile no entry. For a profile whose access is ro, tools and pins leave out
         the manifest's writeTools.
 
 cron_fence() lists the MCP server names and URLs the bootstrap's
@@ -293,9 +295,9 @@ def _validate_mcp(mcp, services: dict, source: str, reads: bool) -> list[str]:
     if env:
         if source != "builtin":
             err("mcp.env is for built-in add-ons only")
-        elif not isinstance(env, dict) or set(env) - {"url", "timeout", "connectTimeout"} \
+        elif not isinstance(env, dict) or set(env) - {"url", "timeout", "connectTimeout", "access"} \
                 or not all(isinstance(v, str) and ENV_RE.match(v) for v in env.values()):
-            err("mcp.env maps url, timeout and connectTimeout to env var names")
+            err("mcp.env maps url, timeout, connectTimeout and access to env var names")
     if mcp.get("instances") is not None:
         err("mcp.instances is not implemented yet")
     return errors
@@ -379,6 +381,13 @@ def mcp_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
         connect = environ.get(env.get("connectTimeout", ""), "") or str(mcp["connectTimeout"])
         enabled = "1" if truthy(environ.get(manifest["builtin"]["flag"])) else "0"
         access = mcp["profiles"].get(profile, "")
+        if "access" in env and access:
+            # Fail closed: only read, write or empty are known values.
+            cap = environ.get(env["access"], "")
+            if cap == "read":
+                access = "ro"
+            elif cap not in ("write", ""):
+                access = ""
         if "" in urls:
             url = urls[""]
         else:

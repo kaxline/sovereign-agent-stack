@@ -51,6 +51,9 @@
       "default": "rw",
       "browser": "rw",
       "api-server": "ro"
+    },
+    "env": {
+      "access": "SPLIT_ACCESS"
     }
   },
   "permissions": {

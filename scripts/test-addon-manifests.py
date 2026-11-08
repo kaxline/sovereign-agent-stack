@@ -140,6 +140,30 @@ refused("a profile at ro when the map has no ro", variant(mcp__service={"rw": "s
                                                           mcp__profiles={"api-server": "ro"}),
         "builtin", "no service for ro")
 
+check("env.access is accepted", am.validate(SPLIT, "builtin") == [], str(am.validate(SPLIT, "builtin")))
+refused("an unknown env key", split(mcp={**SPLIT["mcp"], "env": {"acess": "SPLIT_ACCESS"}}),
+        "builtin", "mcp.env")
+refused("env.access must be an env var name",
+        split(mcp={**SPLIT["mcp"], "env": {"access": "lower"}}), "builtin", "mcp.env")
+
+ACCESS_URL = {"read": "http://split-ro:9000/mcp", "write": "http://split-rw:9000/mcp",
+              "": "http://split-rw:9000/mcp", "Read": None, "ask": None, "readonly": None}
+with tempfile.TemporaryDirectory() as tmp:
+    (Path(tmp) / "split").mkdir()
+    (Path(tmp) / "split" / "addon.json").write_text(am.canonical(SPLIT))
+    for cap, want_url in ACCESS_URL.items():
+        for prof in ("default", "api-server"):
+            line = am.mcp_plan(Path(tmp), prof, {"SPLIT_MCP_ENABLED": "1", "SPLIT_ACCESS": cap})[0].split("|")
+            if want_url is None:
+                ok = line[3] == ""
+            elif prof == "api-server":
+                ok = line[3] == "ro"
+            else:
+                ok = line[3] == ("ro" if cap == "read" else "rw") and line[4] == want_url
+            check(f"SPLIT_ACCESS={cap!r} on {prof}: access {line[3]!r}", ok, str(line))
+    line = am.mcp_plan(Path(tmp), "default", {"SPLIT_MCP_ENABLED": "1"})[0].split("|")
+    check("SPLIT_ACCESS unset keeps rw", line[3] == "rw", str(line))
+
 # --- mcp-plan ---------------------------------------------------------------
 env = {"GPTR_MCP_ENABLED": "1"}
 plan = am.mcp_plan(ROOT / "addons", "browser", env)

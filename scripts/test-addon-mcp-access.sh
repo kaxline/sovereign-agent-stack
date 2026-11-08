@@ -62,6 +62,31 @@ for p in "" browser api-server; do
     || fail "flag off drops both URLs on ${p:-default} ($calls)"
 done
 
+# SPLIT_ACCESS caps the manifest's level. Unknown values fail closed.
+SPLIT_MCP_ENABLED=1
+export SPLIT_ACCESS=read
+run ""; got
+[ "$calls" = "drop:default:${RW};register:default:split:${RO}:get_a get_b;pin:default:get_a;" ] \
+  || fail "read caps default to the ro URL and read tools ($calls)"
+for v in write ""; do
+  export SPLIT_ACCESS="$v"
+  run ""; got
+  [ "$calls" = "drop:default:${RO};register:default:split:${RW}:${TOOLS};pin:default:get_a set_a;" ] \
+    || fail "SPLIT_ACCESS='$v' keeps rw ($calls)"
+done
+unset SPLIT_ACCESS
+run ""; got
+case "$calls" in "drop:default:${RO};register:default:split:${RW}:"*) ;; *) fail "unset keeps rw ($calls)" ;; esac
+for v in Read ask readonly; do
+  export SPLIT_ACCESS="$v"
+  for p in "" api-server; do
+    run "$p"; got
+    [ "$calls" = "drop:${p:-default}:${RO};drop:${p:-default}:${RW};" ] \
+      || fail "SPLIT_ACCESS=$v registers nothing on ${p:-default} ($calls)"
+  done
+done
+unset SPLIT_ACCESS
+
 # A profile the manifest leaves out gets no entry, and both URLs go.
 SPLIT_MCP_ENABLED=1
 run research; got
