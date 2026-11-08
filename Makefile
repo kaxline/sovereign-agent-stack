@@ -14,6 +14,7 @@
 	data-dir-show data-dir-set data-dir-migrate \
 	db-backup db-service-add db-psql todo-init todo-open dashboard-open \
 	crm-init crm-add crm-remove crm-access crm-open crm-mode \
+	budget-init budget-add budget-open budget-remove budget-access \
 	coding-root-list coding-root-add \
 	context-root-list context-root-add opencode-smoke-fixture \
 	kb-eval-fixture kb-eval-fixture-remove \
@@ -166,6 +167,29 @@ crm-open:
 crm-mode:
 	@test -n "$(MULTI)" || (echo "Usage: make crm-mode MULTI=0|1"; exit 1)
 	./scripts/crm.sh mode "$(MULTI)"
+
+# Actual Budget (budget and budget-local profiles, or remote). See docs/budget.md.
+#   make budget-init [SYNC_ID=id] [ROTATE=1]  local server: password, budget, budget.env
+#   make budget-add URL=https://... [SYNC_ID=id] [FORCE=1]  a budget on a remote server
+#   make budget-open                         open the web app, password on the clipboard
+#   make budget-remove                       forget the budget (file only; server data stays)
+#   make budget-access ACCESS=read           look things up only (write: make changes)
+budget-init:
+	$(if $(SYNC_ID),ACTUAL_BUDGET_SYNC_ID="$(SYNC_ID)") ./scripts/budget.sh init $(if $(ROTATE),--rotate)
+
+budget-add:
+	@test -n "$(URL)" || (echo "Usage: make budget-add URL=https://budget.example.com [SYNC_ID=id]"; exit 1)
+	$(if $(SYNC_ID),ACTUAL_BUDGET_SYNC_ID="$(SYNC_ID)") ./scripts/budget.sh add --url "$(URL)" $(if $(FORCE),--force)
+
+budget-open:
+	@./scripts/budget.sh open
+
+budget-remove:
+	./scripts/budget.sh remove
+
+budget-access:
+	@test -n "$(ACCESS)" || (echo "Usage: make budget-access ACCESS=read|write"; exit 1)
+	./scripts/budget.sh access "$(ACCESS)"
 
 # Hermes dashboard, signed in through a one-time link. See docs/hermes.md.
 #   make dashboard-open

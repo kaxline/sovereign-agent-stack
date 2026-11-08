@@ -67,12 +67,16 @@ check "setup.sh, default profiles" \
 rm -f .env
 check "setup.sh, optional profiles" \
   ./scripts/setup.sh --non-interactive --workspace demo \
-  --rag --automation --research --coding --calendar --db --todo --crm
+  --rag --automation --research --coding --calendar --db --todo --crm --budget
 check "setup.sh again over the same .env" \
   ./scripts/setup.sh --non-interactive --workspace demo \
-  --rag --automation --research --coding --calendar --db --todo --crm
+  --rag --automation --research --coding --calendar --db --todo --crm --budget
 check "setup.sh --research turns on the flag and profile" \
   sh -c 'grep -qx "GPTR_MCP_ENABLED=1" .env && grep -E "^COMPOSE_PROFILES=" .env | grep -q ",research"'
+check "setup.sh --budget turns on both Actual flags and profiles" \
+  sh -c 'grep -qx "ACTUAL_LOCAL_ENABLED=1" .env && grep -qx "ACTUAL_MCP_ENABLED=1" .env \
+    && grep -E "^COMPOSE_PROFILES=" .env | tr , "\n" | grep -qx budget-local \
+    && grep -E "^COMPOSE_PROFILES=" .env | tr , "\n" | grep -qx budget'
 check "setup.sh --crm turns on both Twenty flags and generates its secrets" \
   sh -c 'grep -qx "TWENTY_LOCAL_ENABLED=1" .env && grep -qx "TWENTY_MCP_ENABLED=1" .env \
     && grep -qx "TWENTY_MULTIWORKSPACE_BOOL=false" .env && grep -qE "^TWENTY_ENCRYPTION_KEY=.{40,}" .env \

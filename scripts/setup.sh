@@ -23,6 +23,7 @@ SETUP_CALENDAR=0
 SETUP_DB=0
 SETUP_TODO=0
 SETUP_CRM=0
+SETUP_BUDGET=0
 SETUP_MAIL=0
 SETUP_MAIL_DRAFTS=0
 SETUP_MESSAGES=0
@@ -47,6 +48,7 @@ Options:
   --db                      Enable shared Postgres + SQL MCP for Hermes (profile db)
   --todo                    Enable Vikunja todo lists + MCP (profile todo; starts the shared Postgres)
   --crm                     Enable a local Twenty CRM + its MCP for Hermes (profile crm; about 1.8 GiB RAM)
+  --budget                  Enable a local Actual Budget server + its MCP for Hermes (profiles budget-local, budget)
   --mail                    Enable the read-only mail MCP over a host-built Apple Mail index (profile mail)
   --mail-drafts             Let Hermes queue email drafts that a host helper saves to Mail's Drafts; never sends (profile mail-drafts)
   --messages                Enable the read-only Messages (iMessage/SMS) MCP over a host-built index, with new-message alerts (profile messages)
@@ -84,6 +86,7 @@ while [[ $# -gt 0 ]]; do
     --db) SETUP_DB=1; shift ;;
     --todo) SETUP_TODO=1; shift ;;
     --crm) SETUP_CRM=1; shift ;;
+    --budget) SETUP_BUDGET=1; shift ;;
     --mail) SETUP_MAIL=1; shift ;;
     --mail-drafts) SETUP_MAIL_DRAFTS=1; shift ;;
     --messages) SETUP_MESSAGES=1; shift ;;
@@ -384,6 +387,15 @@ setup_crm_profile() {
   upsert_env .env TWENTY_LOCAL_ENABLED 1
   upsert_env .env TWENTY_MCP_ENABLED 1
   log "Enabled Twenty CRM (crm profile). After make up: make crm-init. See docs/crm.md"
+}
+
+# Local Actual Budget server and its MCP servers. The server password, budget
+# and budget.env come from make budget-init after make up; a remote server is
+# added with make budget-add instead.
+setup_budget_profile() {
+  upsert_env .env ACTUAL_LOCAL_ENABLED 1
+  upsert_env .env ACTUAL_MCP_ENABLED 1
+  log "Enabled Actual Budget (budget-local and budget profiles). After make up: make budget-init. See docs/budget.md"
 }
 
 # Twenty reads true/false; the stack's flag is 0/1 like every other.
@@ -975,6 +987,10 @@ set_env_if_missing .env TWENTY_MCP_ENABLED 0
 set_env_if_missing .env TWENTY_MULTIWORKSPACE 0
 mkdir -p compose/twenty/workspaces
 
+# Actual Budget stays off until budget is enabled (local) or a remote is added.
+set_env_if_missing .env ACTUAL_LOCAL_ENABLED 0
+set_env_if_missing .env ACTUAL_MCP_ENABLED 0
+
 # Mail MCP stays off until mail is enabled.
 set_env_if_missing .env MAIL_MCP_ENABLED 0
 set_env_if_missing .env MAIL_DRAFTS_ENABLED 0
@@ -1023,6 +1039,9 @@ if [[ "$SETUP_TODO" -eq 1 ]]; then
 fi
 if [[ "$SETUP_CRM" -eq 1 ]]; then
   setup_crm_profile
+fi
+if [[ "$SETUP_BUDGET" -eq 1 ]]; then
+  setup_budget_profile
 fi
 sync_twenty_multiworkspace_bool
 if [[ "$SETUP_MAIL_DRAFTS" -eq 1 ]]; then
@@ -1076,6 +1095,7 @@ Optional profiles (re-run setup with a flag below, or set the service's
   --db            Shared Postgres + SQL MCP for Hermes (docs/database.md)
   --todo          Vikunja todo lists + MCP, then make todo-init (docs/todo.md)
   --crm           Local Twenty CRM + MCP, then make crm-init (docs/crm.md)
+  --budget        Local Actual Budget + MCP, then make budget-init (docs/budget.md)
   --mail          Read-only search over your Apple Mail, indexed on the host (docs/email.md)
   --mail-drafts   Hermes drafts email into Mail's Drafts for you to send (docs/email.md)
   --messages      Read-only iMessage/SMS history and new-message alerts, indexed on the host (docs/messages.md)

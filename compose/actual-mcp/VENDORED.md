@@ -19,6 +19,9 @@ twice: `actual-mcp-rw` with `--sse --enable-write` and `actual-mcp-ro` with `--s
   `npm install --package-lock-only --ignore-scripts` in `node:24-alpine` (node 24.22.2, npm 11.19.1).
 - `Dockerfile`: the release stage creates `/data` owned by `node` and switches to `USER node`.
   Upstream runs as root. `/data` is the budget cache (`ACTUAL_DATA_DIR`).
+- `actual-admin.mjs` (local addition, not from upstream): the `check`, `create` and `list` commands
+  `scripts/budget.sh` runs with `--entrypoint node`. The Dockerfile copies it to
+  `/opt/actual-admin.mjs`; it loads `@actual-app/api` from `/app/node_modules`.
 - Removed, as unused by the build or the image: `.github/`, `.vscode/`, `docs/`, `e2e/`,
   `vitest.e2e.config.ts`, `AGENTS.md`, `CLAUDE.md`, `CHANGELOG.md`, `cicd.md`,
   `release-please-config.json`, `.release-please-manifest.json`, `renovate.json`.
@@ -31,8 +34,8 @@ and `create-transaction` (rw).
 
 ## Updating
 
-Copy the new upstream commit over this directory, keeping this file, then reapply the changes
-above and regenerate the lockfile in a node container:
+Copy the new upstream commit over this directory, keeping this file and `actual-admin.mjs`, then
+reapply the changes above and regenerate the lockfile in a node container:
 
 ```bash
 docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD/compose/actual-mcp:/app" -w /app \

@@ -24,6 +24,8 @@ COPY --from=builder /app/package.json ./
 COPY --from=builder /app/package-lock.json ./
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/build ./build
+# Local addition: admin commands for scripts/budget.sh (check, create, list).
+COPY actual-admin.mjs /opt/actual-admin.mjs
 
 ENV NODE_ENV=production
 RUN TMPDIR=$(mktemp -d)
