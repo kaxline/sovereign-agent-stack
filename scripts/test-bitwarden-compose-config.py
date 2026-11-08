@@ -155,6 +155,22 @@ def check_tools(cfg: dict) -> None:
     vol = mount_at(sync, "/run/bitwarden-sync")
     if vol is None or vol.get("source") != SYNC_VOLUME:
         fail("bitwarden-secrets-sync mounts bitwarden_sync at /run/bitwarden-sync")
+    # Exactly the target folders, read-write; TWENTY_SECRETS_DIR unset here.
+    want = {
+        "/run/bitwarden-sync": SYNC_VOLUME,
+        "/targets/twenty-workspaces": str(ROOT / "compose/twenty/workspaces"),
+        "/targets/twenty-secrets": str(ROOT / "compose/twenty/no-secrets"),
+        "/targets/postgres-services": str(ROOT / "compose/postgres/services"),
+        "/targets/caldav-accounts": str(ROOT / "compose/caldav-mcp/accounts"),
+    }
+    got = {v.get("target"): str(v.get("source")) for v in mounts(sync)}
+    if got != want or len(mounts(sync)) != len(want) or len(sync.get("volumes") or []) != len(want):
+        fail(f"bitwarden-secrets-sync mounts {sorted(got.items())}, want {sorted(want.items())}")
+    for vol in mounts(sync):
+        if vol.get("read_only"):
+            fail(f"bitwarden-secrets-sync mounts {vol.get('target')} read-only, want read-write")
+    if sync.get("network_mode") != "none":
+        fail("bitwarden-secrets-sync must use network_mode: none")
     for name, service in services.items():
         if name in ("bitwarden-broker", "bitwarden-secrets-sync"):
             continue
