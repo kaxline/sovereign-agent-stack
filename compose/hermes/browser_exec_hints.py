@@ -4,8 +4,8 @@ Compatibility overlay for this stack. browser_exec runs `code` with the
 browser helpers already defined and returns stdout only. Weaker models
 import the helpers from a module that does not exist (``browser_helpers``)
 or end on ``js(...)`` / ``page_info()`` without printing it, get an empty
-result, and stall. browser_vault_save_login's upstream next step also says
-nothing about browser_vault_fill when the save could not fill the page.
+result, and stall. browser_vault save_login's upstream next step also says
+nothing about the fill action when the save could not fill the page.
 
 This module is stdlib-only so host tests can import it without Hermes.
 """
@@ -56,9 +56,9 @@ SAVE_FILLED_NEXT = "Type the identifier into the username field if the form has 
 SAVE_UNFILLED_NEXT = (
     "The login is saved, but this page has no login form, so the password was "
     "not filled. Open the site's sign-in form on this origin, type the "
-    "identifier into the username field, then call browser_vault_fill with "
-    "handle '{handle}' to fill the password, then submit. Never ask the user "
-    "for the password."
+    "identifier into the username field, then call browser_vault with action "
+    "fill and handle '{handle}' to fill the password, then submit. Never ask "
+    "the user for the password."
 )
 
 _ECHO_NAME = "_assistant_stack_value"
@@ -153,7 +153,7 @@ def echo_last_expression(code: str) -> str:
 
 
 def save_login_next(handle: str, filled: bool) -> str:
-    """Next step after browser_vault_save_login stored a login."""
+    """Next step after browser_vault save_login stored a login."""
     if filled:
         return SAVE_FILLED_NEXT
     return SAVE_UNFILLED_NEXT.format(handle=handle)

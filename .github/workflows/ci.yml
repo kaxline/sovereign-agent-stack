@@ -82,6 +82,8 @@ jobs:
         run: python3 scripts/test-project-sources.py
       - name: Fabricated result detector (stdlib)
         run: python3 scripts/test-fabricated-result.py
+      - name: Eval trace names vault actions (stdlib)
+        run: python3 scripts/test-tool-eval-trace.py
       - name: Stale-replay loop guard wiring (stdlib)
         run: python3 scripts/test-tool-loop-replay.py --host-only
       - name: Searxng pause points at browser search wiring (stdlib)

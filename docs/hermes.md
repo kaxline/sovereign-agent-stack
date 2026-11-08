@@ -768,7 +768,7 @@ The `hermes` service sets `UV_CACHE_DIR=/opt/uv-cache`, a named volume (`hermes_
 
 ### Saving logins
 
-`browser_vault_save_login` saves a login for the origin of the page that is open, so the sign-in page has to be open first; otherwise it returns "Open the site's login page first". The repo skill `browser-login` (`compose/hermes/skills/browser-login/`) gives the order: open the sign-in page, check `browser_vault_list`, fill a saved login or call `browser_vault_save_login`, and never ask for a password in chat. The tool-eval case `browser-login-save-first` checks that a model follows it.
+Since v0.22 the vault is one tool, `browser_vault`, with an `action` argument (`list`, `fill`, `save_login`, `enter_code`, `unlock`); the separate `browser_vault_*` tools are gone. `save_login` saves a login for the origin of the page that is open, so the sign-in page has to be open first; otherwise it returns "Open the site's login page first". The repo skill `browser-login` (`compose/hermes/skills/browser-login/`) gives the order: open the sign-in page, `list`, `fill` a saved login or `save_login`, and never ask for a password in chat. The tool-eval case `browser-login-save-first` checks that a model follows it; eval traces record vault calls as `browser_vault.<action>`.
 
 ## Advanced options
 

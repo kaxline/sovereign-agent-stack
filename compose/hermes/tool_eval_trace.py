@@ -37,6 +37,11 @@ _STACK_TOOL_ALIASES = {
     "coding_continue_task": "mcp__opencode__coding_continue_task",
 }
 
+# Tools that dispatch on an ``action`` argument record as ``<tool>.<action>``, so a case can
+# expect browser_vault.save_login rather than any vault call. A bare-name expectation still
+# matches, since score compares by substring.
+ACTION_TOOLS = frozenset({"browser_vault"})
+
 
 def extract_eval_id(text: str) -> Optional[str]:
     if not isinstance(text, str):
@@ -126,8 +131,17 @@ def _inner_tool_call_names(name: str, args: Any) -> list[str]:
         if not raw:
             continue
         key = str(raw).strip()
-        inner.append(_STACK_TOOL_ALIASES.get(key, key))
+        inner.append(qualified_name(_STACK_TOOL_ALIASES.get(key, key), call.get("arguments")))
     return inner
+
+
+def qualified_name(name: str, args: Any) -> str:
+    """``browser_vault`` with ``{"action": "fill"}`` → ``browser_vault.fill``; other tools unchanged."""
+    if name not in ACTION_TOOLS:
+        return name
+    parsed = _parse_jsonish(args)
+    action = parsed.get("action") if isinstance(parsed, dict) else None
+    return f"{name}.{str(action).strip()}" if action and str(action).strip() else name
 
 
 def tool_call_names(tool_calls: Any) -> list[str]:
@@ -138,7 +152,7 @@ def tool_call_names(tool_calls: Any) -> list[str]:
         name, args = _tc_name_and_args(tc)
         if not name:
             continue
-        names.append(name)
+        names.append(qualified_name(name, args))
         names.extend(_inner_tool_call_names(name, args))
     return names
 

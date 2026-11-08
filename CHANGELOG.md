@@ -17,6 +17,13 @@ the stack under another app.
 
 ### Changes
 
+- **Vault guidance names the `browser_vault` actions**: the `browser-login`
+  skill (1.4.0), the save-login next step and the password-in-chat nudge
+  named `browser_vault_fill`, `browser_vault_save_login` and the other
+  `browser_vault_*` tools, which Hermes v0.22 replaced with one
+  `browser_vault` tool taking an `action`. They now name the actions. Eval
+  traces and `last-run.json` record vault calls as `browser_vault.<action>`,
+  and `browser-login-save-first` expects `browser_vault.save_login`.
 - **browser_exec hints at `.value` assignments**: when code sets an input's
   `.value` inside `js()` or `cdp()`, the result gains a `hint` saying React-style
   forms don't see the change and to use `fill_input` instead, reloading first if

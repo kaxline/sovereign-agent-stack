@@ -270,6 +270,13 @@ if isinstance(data, dict):
         for tc in msg.get("tool_calls") or []:
             fn = (tc.get("function") or {}) if isinstance(tc, dict) else {}
             name = fn.get("name") or tc.get("name")
+            if name == "browser_vault":  # same <tool>.<action> naming as tool_eval_trace.py
+                try:
+                    args = json.loads(fn.get("arguments") or "{}")
+                except Exception:
+                    args = {}
+                action = str(args.get("action") or "").strip() if isinstance(args, dict) else ""
+                name = f"{name}.{action}" if action else name
             if name:
                 tools.append(name)
 

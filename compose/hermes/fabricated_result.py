@@ -24,6 +24,15 @@ SECRET_PLACEHOLDER = "Asked for a password in chat."
 
 SECRET_REQUEST_NUDGE = (
     "Do not ask the user for a password; they must never type one in chat. "
+    "Use the browser_vault tool: action list for a saved login, action fill "
+    "with its handle on the site's sign-in form, or action save_login on that "
+    "form when none is saved. If the vault cannot be used, say what failed and stop."
+)
+
+# The nudge before Hermes v0.22 folded the browser_vault_* tools into one browser_vault.
+# Histories saved then still hold it, and compaction must keep treating it as synthetic.
+LEGACY_SECRET_REQUEST_NUDGE = (
+    "Do not ask the user for a password; they must never type one in chat. "
     "Use the vault: browser_vault_list for a saved login, browser_vault_fill "
     "with its handle on the site's sign-in form, or browser_vault_save_login "
     "on that form when none is saved. If the vault cannot be used, say what "

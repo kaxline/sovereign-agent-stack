@@ -40,7 +40,7 @@ the same id in the trace file.
 | `kb-query` | rag | LightRAG `query_document` (harness inserts/deletes a temporary `aurora-kb-eval` doc) |
 | `coding-locate` | coding | `coding_list_roots` (use `make opencode-smoke-fixture` first); fail if text-only |
 | `coding-delegate` | coding | `coding_start_task` (use `make opencode-smoke-fixture` first) |
-| `browser-login-save-first` | core | `browser_vault_save_login`, only after `browser_exec` opened the page (`ordered_tool` / `ordered_after`) |
+| `browser-login-save-first` | core | `browser_vault.save_login` (the `browser_vault` tool with `action: save_login`), only after `browser_exec` opened the page (`ordered_tool` / `ordered_after`) |
 
 `kb-inventory` accepts any LightRAG read tool — catalog prompts against an empty
 KB are not a `query_document` miss. `kb-query` is the content gate. The scripted
