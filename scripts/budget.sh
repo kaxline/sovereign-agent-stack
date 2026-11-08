@@ -590,7 +590,8 @@ cmd_remove() {
   if [[ "${url%/}" == "$LOCAL_URL" ]]; then
     log "actual-server and its budgets are untouched (ACTUAL_DATA_DIR); ACTUAL_LOCAL_ENABLED is unchanged"
   fi
-  log "Next: make up, then make hermes-reload"
+  log "Next: make hermes-reload (drops budget from every profile), then"
+  log "  docker compose stop actual-mcp-rw actual-mcp-ro; running ones keep the old credentials until they stop"
 }
 
 cmd_access() {

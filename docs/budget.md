@@ -189,7 +189,18 @@ write tools.
 
 ## Turning it off
 
-`ACTUAL_MCP_ENABLED=0` and `make up` stop the MCP containers and drop the
-`budget` entry from every profile's `config.yaml` and cron list.
-`ACTUAL_LOCAL_ENABLED=0` stops `actual-server`; its data stays in
+Set `ACTUAL_MCP_ENABLED=0`, or run `make budget-remove`, then run
+`make hermes-reload`. That drops the `budget` entry from every profile's
+`config.yaml` and cron list.
+
+Compose leaves a removed profile's containers running, and `make up` doesn't
+stop them. Stop the MCP containers yourself:
+
+```bash
+docker compose stop actual-mcp-rw actual-mcp-ro
+```
+
+Until they stop, they keep serving the budget with the credentials from the
+file they mounted at start. With `ACTUAL_LOCAL_ENABLED=0`, stop the server the
+same way (`docker compose stop actual-server`); its data stays in
 `ACTUAL_DATA_DIR`.
