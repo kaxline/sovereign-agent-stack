@@ -74,25 +74,58 @@ require_docker() {
 file_get() {
   local v
   v="$(grep -E "^${1}=" "$BUDGET_FILE" 2>/dev/null | head -1 | cut -d= -f2- || true)"
-  if [[ "$v" == \'*\' || "$v" == \"*\" ]]; then
-    v="${v#?}"
-    v="${v%?}"
+  # dotenv drops one pair of matching quotes around a value, and nothing else.
+  if [[ ${#v} -ge 2 ]]; then
+    case "${v:0:1}" in
+      \' | \" | \`)
+        if [[ "${v: -1}" == "${v:0:1}" ]]; then
+          v="${v#?}"
+          v="${v%?}"
+        fi
+        ;;
+    esac
   fi
   printf '%s' "$v"
 }
 
-# A value as dotenv reads it back: bare when it's plain, quoted otherwise.
+# Prints a value encoded so dotenv 17 (the MCP server's .env loader) reads it
+# back unchanged; returns 1 when no encoding does. dotenv has no escapes: it
+# strips one pair of surrounding ' " or ` quotes, expands \n and \r only inside
+# "...", and in a bare value cuts at # and trims the ends.
 dotenv_value() {
-  local v="$1"
+  local v="$1" q first last
+  case "$v" in
+    *$'\n'* | *$'\r'*) return 1 ;;
+  esac
   if [[ "$v" =~ ^[A-Za-z0-9._~:/@+=,%-]*$ ]]; then
     printf '%s' "$v"
-  elif [[ "$v" != *\'* ]]; then
-    printf "'%s'" "$v"
-  elif [[ "$v" != *\"* && "$v" != *\\* ]]; then
-    printf '"%s"' "$v"
-  else
-    die "a value holds both kinds of quote, which budget.env can't store; nothing written"
+    return 0
   fi
+  for q in "'" '"' '`'; do
+    [[ "$v" == *"$q"* ]] && continue
+    if [[ "$q" == '"' && ( "$v" == *'\n'* || "$v" == *'\r'* ) ]]; then
+      continue
+    fi
+    printf '%s%s%s' "$q" "$v" "$q"
+    return 0
+  done
+  # All three quotes in it: bare, which dotenv keeps as is unless it has a #,
+  # space at either end, or the same quote at both ends.
+  if [[ "$v" == *'#'* || "$v" =~ ^[[:space:]] || "$v" =~ [[:space:]]$ ]]; then
+    return 1
+  fi
+  first="${v:0:1}"
+  last="${v: -1}"
+  if [[ "$first" == "$last" && ( "$first" == \' || "$first" == \" || "$first" == \` ) ]]; then
+    return 1
+  fi
+  printf '%s' "$v"
+}
+
+# Dies (in this shell) when budget.env couldn't hold a value.
+require_storable() { # name value
+  dotenv_value "$2" > /dev/null \
+    || die "${1} can't be stored in budget.env: it has a newline, or all of ' \" and \` along with a #, a space at either end or the same quote at both ends; nothing written"
 }
 
 json_escape() {
@@ -240,28 +273,37 @@ check_budget() {
 # --- budget.env ---
 
 write_budget_file() { # server-url web-url password sync-id encryption-password
+  local names="ACTUAL_SERVER_URL ACTUAL_WEB_URL ACTUAL_PASSWORD ACTUAL_BUDGET_SYNC_ID ACTUAL_BUDGET_ENCRYPTION_PASSWORD"
+  local body="# Written by scripts/budget.sh. The Actual MCP servers read it at /app/.env."$'\n'
+  local name value encoded
+  # Every value is encoded, and checked, before any file is touched.
+  for name in $names; do
+    value="$1"
+    shift
+    [[ "$name" == ACTUAL_BUDGET_ENCRYPTION_PASSWORD && -z "$value" ]] && continue
+    require_storable "$name" "$value"
+    encoded="$(dotenv_value "$value")" || die "couldn't encode ${name}; nothing written"
+    body="${body}${name}=${encoded}"$'\n'
+  done
+
   local dir tmpf
   dir="$(dirname "$BUDGET_FILE")"
-  mkdir -p "$dir"
-  tmpf="$(umask 077 && mktemp "${dir}/.budget.XXXXXX")"
-  {
-    printf '# Written by scripts/budget.sh. The Actual MCP servers read it at /app/.env.\n'
-    printf 'ACTUAL_SERVER_URL=%s\n' "$(dotenv_value "$1")"
-    printf 'ACTUAL_WEB_URL=%s\n' "$(dotenv_value "$2")"
-    printf 'ACTUAL_PASSWORD=%s\n' "$(dotenv_value "$3")"
-    printf 'ACTUAL_BUDGET_SYNC_ID=%s\n' "$(dotenv_value "$4")"
-    if [[ -n "$5" ]]; then
-      printf 'ACTUAL_BUDGET_ENCRYPTION_PASSWORD=%s\n' "$(dotenv_value "$5")"
-    fi
-  } > "$tmpf" || { rm -f "$tmpf"; die "couldn't write ${BUDGET_REL}"; }
-  chmod 600 "$tmpf"
+  mkdir -p "$dir" || die "couldn't create ${dir}; nothing written"
+  tmpf="$(umask 077 && mktemp "${dir}/.budget.XXXXXX")" || die "couldn't create a file in ${dir}; nothing written"
+  if ! printf '%s' "$body" > "$tmpf" || ! chmod 600 "$tmpf"; then
+    rm -f "$tmpf"
+    die "couldn't write ${BUDGET_REL}; nothing written"
+  fi
   if [[ -f "$BUDGET_FILE" ]]; then
     # In place: running containers hold the file's inode through their mount.
-    chmod 600 "$BUDGET_FILE"
-    cat "$tmpf" > "$BUDGET_FILE"
+    if ! chmod 600 "$BUDGET_FILE" || ! cat "$tmpf" > "$BUDGET_FILE"; then
+      rm -f "$tmpf"
+      die "couldn't write ${BUDGET_REL}"
+    fi
     rm -f "$tmpf"
-  else
-    mv "$tmpf" "$BUDGET_FILE"
+  elif ! mv "$tmpf" "$BUDGET_FILE"; then
+    rm -f "$tmpf"
+    die "couldn't write ${BUDGET_REL}; nothing written"
   fi
   log "Wrote ${BUDGET_REL} (mode 600)"
 }
@@ -302,6 +344,9 @@ cmd_init() {
     esac
   done
   require_uid
+  if [[ -n "$rotate" && ! -f "$BUDGET_FILE" ]]; then
+    die "no ${BUDGET_REL}, so there is no password to rotate; run make budget-init first"
+  fi
   if [[ -f "$BUDGET_FILE" && -z "$rotate" ]]; then
     log "${BUDGET_REL} exists; nothing to do (--rotate sets a new server password; make budget-remove starts over)"
     return 0
@@ -336,6 +381,7 @@ cmd_init() {
     [[ -n "$pw" ]] || pw="$(ask 1 "actual-server already has a password; enter it")"
     [[ -n "$pw" ]] || die "actual-server already has a password; export ACTUAL_PASSWORD or run this in a terminal"
   fi
+  require_storable ACTUAL_PASSWORD "$pw"
   login "$pw" || refused_password
 
   local files sync="" want="${ACTUAL_BUDGET_SYNC_ID:-}" n
@@ -436,6 +482,8 @@ cmd_add() {
   if [[ -z "$enc" && -z "${ACTUAL_BUDGET_ENCRYPTION_PASSWORD+x}" ]]; then
     enc="$(ask 1 "Encryption password (Enter if the budget isn't end-to-end encrypted)")"
   fi
+  require_storable ACTUAL_PASSWORD "$pw"
+  [[ -z "$enc" ]] || require_storable ACTUAL_BUDGET_ENCRYPTION_PASSWORD "$enc"
   require_docker
 
   a_url="$url" a_pw="$pw" a_sync="" a_enc=""

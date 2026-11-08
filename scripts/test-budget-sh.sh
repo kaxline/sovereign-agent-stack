@@ -234,6 +234,35 @@ grep -q '1000' "$out" || fail "the refusal says the container reads the file as 
 STUB_UNAME=Linux STUB_UID=1000 ACTUAL_PASSWORD=right-SECRET ACTUAL_BUDGET_SYNC_ID=sync-1 ACTUAL_BUDGET_ENCRYPTION_PASSWORD='' \
   run add --url https://budget.example.com || fail "add on Linux as uid 1000 ($(cat "$out"))"
 
+# Passwords with quotes. dotenv has no escapes, so budget.env picks a quote the
+# value doesn't contain, and refuses a value no encoding can carry.
+rm -f "$f"
+quoted="q'u\"o te-SECRET"
+printf '%s' "$quoted" > "$STUB/server_pw"
+ACTUAL_PASSWORD="$quoted" ACTUAL_BUDGET_SYNC_ID=sync-1 ACTUAL_BUDGET_ENCRYPTION_PASSWORD='' \
+  run add --url https://budget.example.com || fail "add with ' and \" in the password ($(cat "$out"))"
+grep -qxF "ACTUAL_PASSWORD=\`${quoted}\`" "$f" || fail "a password with ' and \" is stored in backticks"
+run open || fail "open with a quoted password ($(cat "$out"))"
+[ "$(cat "$STUB/clip")" = "$quoted" ] || fail "the quoted password reads back unchanged"
+rm -f "$f"
+cp "$ENV_FILE" "$tmp/env-before"
+unstorable="a'b\"c\`d#e-SECRET"
+printf '%s' "$unstorable" > "$STUB/server_pw"
+if ACTUAL_PASSWORD="$unstorable" ACTUAL_BUDGET_SYNC_ID=sync-1 ACTUAL_BUDGET_ENCRYPTION_PASSWORD='' \
+  run add --url https://budget.example.com; then
+  fail "a password budget.env can't hold must fail"
+fi
+grep -q 'ACTUAL_PASSWORD' "$out" || fail "the refusal names ACTUAL_PASSWORD ($(cat "$out"))"
+[ ! -e "$f" ] || fail "an unstorable password writes no budget.env"
+cmp -s "$ENV_FILE" "$tmp/env-before" || fail "an unstorable password leaves .env alone"
+if ACTUAL_PASSWORD=right-SECRET ACTUAL_BUDGET_SYNC_ID=sync-1 ACTUAL_BUDGET_ENCRYPTION_PASSWORD="$(printf 'two\nline-SECRET')" \
+  run add --url https://budget.example.com; then
+  fail "an unstorable encryption password must fail"
+fi
+grep -q 'ACTUAL_BUDGET_ENCRYPTION_PASSWORD' "$out" || fail "the refusal names the encryption password"
+[ ! -e "$f" ] || fail "an unstorable encryption password writes nothing"
+rm -f "$STUB/server_pw"
+
 # --- init ---
 # A new server with one budget: bootstrap with a generated password, adopt it.
 reset
@@ -311,6 +340,9 @@ if STUB_UNAME=Linux STUB_UID=1001 ACTUAL_PASSWORD=srv-SECRET ACTUAL_BUDGET_SYNC_
 fi
 grep -q '1000' "$out" || fail "init's refusal names uid 1000"
 run init --frob && fail "init rejects unknown options"
+rm -f "$f"
+run init --rotate && fail "init --rotate with no budget file must fail"
+grep -q 'make budget-init' "$out" || fail "--rotate with no file says to run make budget-init ($(cat "$out"))"
 
 # --- access ---
 reset
@@ -347,9 +379,9 @@ run remove && fail "remove with no budget file must fail"
 run frobnicate && fail "unknown subcommand must fail"
 
 # --- No password in any output, or in curl or docker argv ---
-for s in right-SECRET wrong-SECRET enc-SECRET bad-enc-SECRET srv-SECRET open-SECRET $pws; do
+for s in right-SECRET wrong-SECRET enc-SECRET bad-enc-SECRET srv-SECRET open-SECRET "$quoted" "$unstorable" line-SECRET $pws; do
   for log in "$all" "$STUB/curl.argv" "$STUB/docker.argv"; do
-    if grep -q -- "$s" "$log"; then fail "${log##*/} contains a password"; fi
+    if grep -qF -- "$s" "$log"; then fail "${log##*/} contains a password"; fi
   done
 done
 

@@ -58,7 +58,9 @@ async function open() {
 
 async function remoteBudgets() {
   const all = await api.getBudgets();
-  return all.filter((b) => b.state === 'remote' && b.groupId);
+  // getBudgets() already drops deleted remote files (remoteFileModel.toExternal returns null
+  // for them in @actual-app/api 26.11.0); the deleted check keeps that true if it changes.
+  return all.filter((b) => b.state === 'remote' && b.groupId && !b.deleted);
 }
 
 async function check() {
