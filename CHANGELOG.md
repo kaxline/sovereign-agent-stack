@@ -17,6 +17,11 @@ the stack under another app.
 
 ### Changes
 
+- **browser_exec hints at `.value` assignments**: when code sets an input's
+  `.value` inside `js()` or `cdp()`, the result gains a `hint` saying React-style
+  forms don't see the change and to use `fill_input` instead, reloading first if
+  the field was already set that way. Code that uses the native value setter
+  gets no hint.
 - **GPT Researcher is registered from a manifest**: `addons/gptr/addon.json`
   now holds its flag, profile, tools, pins and profile list, and
   `sync-profiles.sh` and both bootstraps read it instead of their own copies.

@@ -37,6 +37,19 @@ NO_OUTPUT_HINT = (
     "to read, e.g. print(page_info())."
 )
 
+VALUE_SET_HINT = (
+    "Setting an input's .value from js() changes what the page shows but not "
+    "the form state that React and similar frameworks keep, so their buttons "
+    "stay disabled and submits send empty fields. Fill fields with "
+    "fill_input(selector, text), which types real key events. If a field was "
+    "already set through .value, reload the page and fill it again with "
+    "fill_input."
+)
+
+# `el.value = x` but not `==`, `===`, `!==` or `+=`.
+_VALUE_SET_RE = re.compile(r"\.value\s*=(?!=)")
+_JS_CALL_RE = re.compile(r"\b(?:js|cdp)\s*\(")
+
 # Upstream text, kept for a fill that worked.
 SAVE_FILLED_NEXT = "Type the identifier into the username field if the form has one, then submit."
 
@@ -65,8 +78,27 @@ def _imports_helpers_from(code: str, module: str) -> bool:
     return False
 
 
+def sets_value_in_js(code: str) -> bool:
+    """True when ``code`` assigns an element's .value inside page JavaScript.
+
+    Code that uses the native value setter (the usual React workaround) is
+    left alone.
+    """
+    code = code or ""
+    if not _JS_CALL_RE.search(code) or "getOwnPropertyDescriptor" in code:
+        return False
+    return bool(_VALUE_SET_RE.search(code))
+
+
 def result_hint(code: str, exit_code: int, stdout: str, stderr: str) -> Optional[str]:
     """A one-line hint for the model, or None when the result needs none."""
+    hint = _base_hint(code, exit_code, stdout, stderr)
+    if exit_code == 0 and sets_value_in_js(code):
+        return f"{hint} {VALUE_SET_HINT}" if hint else VALUE_SET_HINT
+    return hint
+
+
+def _base_hint(code: str, exit_code: int, stdout: str, stderr: str) -> Optional[str]:
     if exit_code != 0:
         match = _MISSING_MODULE_RE.search(stderr or "")
         if not match:
