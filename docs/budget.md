@@ -1,0 +1,194 @@
+# Budget (Actual Budget)
+
+[Actual Budget](https://actualbudget.org) is an open-source budgeting app with
+a web UI and a sync server. Hermes reaches a budget file through two MCP
+servers built from a vendored copy of
+[giorgiobrullo/actual-mcp](https://github.com/giorgiobrullo/actual-mcp) (see
+`compose/actual-mcp/VENDORED.md`), so it reads and edits the same accounts,
+categories and transactions you see in Actual. Run an Actual server in this
+stack, connect one you already have, or both. The budget is financial data:
+read this page's [Where data lives](#where-data-lives) before backing up or
+sharing a checkout.
+
+The add-on is untested on a live stack so far; the checks that exist run
+against stubs (see [Testing](#testing)).
+
+## Two flags
+
+| Flag | Default | Effect |
+|---|---|---|
+| `ACTUAL_MCP_ENABLED` | `0` | Starts `actual-mcp-rw` and `actual-mcp-ro` (profile `budget`) and registers the `budget` MCP server in Hermes |
+| `ACTUAL_LOCAL_ENABLED` | `0` | Starts `actual-server` (profile `budget-local`) on `127.0.0.1:${ACTUAL_PORT:-5006}` |
+
+A remote Actual server needs only the first. A local one needs both.
+
+## Local quick path
+
+```bash
+./scripts/setup.sh --budget   # sets both flags
+make up
+make budget-init              # server password, a budget, compose/actual/budget.env
+make hermes-reload
+make doctor
+make budget-open              # opens the web app, copies the server password
+```
+
+`make budget-init` sets a generated password on a new server, creates a budget
+or adopts the server's only one (`SYNC_ID=` picks one of several), checks that
+it opens, writes the budget file, sets `ACTUAL_BUDGET_FILE` and
+`ACTUAL_MCP_ENABLED=1`, and recreates running MCP containers. It does nothing
+when the budget file exists; `ROTATE=1` sets a new server password instead.
+`make budget-open` copies the password with `pbcopy` and prints where it is on
+Linux.
+
+In WebUI: *Add a $12.50 coffee at Example Cafe to my checking account.* Then
+in a new chat: *What did I spend this month, by category?*
+
+## Remote quick path
+
+```bash
+make budget-add URL=https://budget.example.com   # asks for the password and sync id
+make hermes-reload
+```
+
+`budget-add` takes `ACTUAL_PASSWORD`, `ACTUAL_BUDGET_SYNC_ID` and
+`ACTUAL_BUDGET_ENCRYPTION_PASSWORD` from the environment, or asks for them
+(passwords hidden). With no sync id it uses the server's only budget. It opens
+the budget with those values and writes nothing if that fails. If the budget
+file exists it refuses unless `FORCE=1` is given.
+
+`make budget-remove` deletes the budget file and sets `ACTUAL_MCP_ENABLED=0`.
+Server data stays.
+
+## The budget file
+
+Credentials live in `compose/actual/budget.env`, mode 600, which `.env`
+points to with `ACTUAL_BUDGET_FILE`. Compose mounts it read-only at `/app/.env`
+in both MCP containers as a secret, and the server loads it with dotenv, so the
+passwords appear in neither `.env` nor `docker inspect` of the MCP containers.
+The file holds:
+
+```bash
+ACTUAL_SERVER_URL=http://actual-server:5006   # or the remote https:// URL
+ACTUAL_WEB_URL=http://localhost:5006/         # where make budget-open goes
+ACTUAL_PASSWORD=...
+ACTUAL_BUDGET_SYNC_ID=...                     # Settings > Advanced settings
+ACTUAL_BUDGET_ENCRYPTION_PASSWORD=...         # end-to-end encrypted budgets only
+```
+
+`compose/actual/budget.env.example` has the template. With `ACTUAL_BUDGET_FILE`
+empty, an empty placeholder is mounted and every tool call fails.
+
+On Linux the MCP containers run as uid 1000, so `budget.sh` refuses to write
+the file unless the host user is uid 1000. Nothing is written otherwise.
+
+`budget.sh` admin runs (`init`, `add`, `check`) start a short-lived
+`docker compose run` container and pass the credentials to it as environment
+variables. They are visible in `docker inspect` of that container while it
+runs.
+
+Turning on end-to-end encryption in Actual changes the budget's sync id. Run
+`make budget-add URL=... FORCE=1` again for a remote server, or, for the local
+one, `make budget-remove` then `make budget-init`.
+
+## Two instances
+
+| Hermes profile | Used by | Instance | Tools |
+|---|---|---|---|
+| default | dashboard, CLI, Boundary | `actual-mcp-rw`, or `actual-mcp-ro` with `ACTUAL_ACCESS=read` | the 50 tools in the manifest (18 read, 32 write), or the 18 reads |
+| `browser` | WebUI | same as default | same |
+| `api-server` | unattended API, n8n | `actual-mcp-ro` | the 18 reads |
+
+Both are the same image. The read-only instance starts without
+`--enable-write`, so the write tools aren't in its `tools/list`; a call to
+`create-transaction` there returns `Unknown tool`. The read/write instance adds
+the write tools. The manifest also lists the write tools in `writeTools`, so
+the bootstrap leaves them out of the `tools.include` of any profile that gets
+the read-only instance.
+
+`run-bank-sync` exists in the upstream server and isn't in the manifest's tool list, so Hermes isn't offered it.
+
+`ACTUAL_ACCESS` caps what chats may do:
+
+| Value | Effect |
+|---|---|
+| empty or `write` | The levels in the table above |
+| `read` | default and `browser` use the read-only instance |
+| anything else | No `budget` entry on any profile |
+
+`make budget-access ACCESS=read` sets it; run `make hermes-reload` afterwards.
+
+## Cron
+
+A cron job runs with its profile's `platform_toolsets.cron`, which names MCP
+servers, not tools. A read/write `budget` entry would hand a scheduled job
+every write tool, so the bootstraps keep it out of cron (the manifest sets
+`permissions.cron` to `"ro"`). A job that reads the budget, such as a weekly
+spending summary, goes on `api-server`, where `budget` is the read-only
+instance.
+
+## Networks
+
+The `budget` network holds `hermes`, `actual-server` and the two MCP
+containers, and nothing else. The MCP servers take requests without bearer
+auth, so network membership is the access control. The network isn't
+`internal`, because the MCP containers may need to reach a remote Actual
+server. `actual-server` is also on `default` for its published port.
+
+## Where data lives
+
+- The server's data directory, `ACTUAL_DATA_DIR` (default
+  `./data/actual/server`), holds the budget files and the server's own state. Back it up with the server stopped.
+- `actual_mcp_rw_cache` and `actual_mcp_ro_cache`, Docker volumes, each hold a
+  full copy of the budget that the MCP container downloaded. Treat them like
+  the data directory; `docker compose down -v` deletes them.
+- `compose/actual/budget.env` holds the credentials.
+
+## Limits and quirks
+
+- A read on the read-only instance within about 5 seconds of a write on the
+  read/write instance can miss it. The read/write instance returns before its
+  change reaches the server. Both instances run with `ACTUAL_SYNC_TTL_MS=0`, so
+  every read syncs first; the delay is the write's push.
+- No tool moves money between categories. It takes two `set-budget-amount`
+  calls, which the `budget` skill (`compose/hermes/skills/budget/`) asks
+  Hermes to confirm first.
+- `ACTUAL_ADMIN_TIMEOUT_S` (default 45) bounds each admin check. A server that
+  doesn't answer in time makes `actual-admin.mjs` exit 4; `make doctor` then
+  warns and skips the credential check, and `budget.sh` reports the timeout and
+  writes nothing.
+- The MCP containers load the budget on the first tool call, not at startup, so
+  a wrong password shows as a failed call. `make doctor` opens the budget with
+  the file's credentials to catch it.
+
+## Checks
+
+`make doctor` checks that the profiles are enabled, that the budget file exists
+and is mode 600, that the file points at a server that is running (it warns
+when it names `actual-server` and `ACTUAL_LOCAL_ENABLED=0`), that both MCP
+containers are healthy, that the budget opens with the file's credentials, that
+`actual-mcp-rw` answers `tools/list`, and that `actual-mcp-ro` lists no write
+tool.
+
+## Testing
+
+Offline, against stubs: `test-addon-manifests.py`, `test-actual-registration.sh`,
+`test-addon-mcp-access.sh`, `test-addon-cron-fence.sh`, `test-budget-sh.sh` and
+`test-actual-doctor.sh`. None of them starts Actual.
+
+## Image bumps
+
+The `actual-server` image (`ACTUAL_SERVER_IMAGE`, pinned by digest) and
+`@actual-app/api` in `compose/actual-mcp` are pinned together at 26.11.0. Bump
+them together. A version mismatch, or a renamed tool, breaks the add-on
+without failing any offline test, so re-run a live check after any bump: add a
+transaction from WebUI, ask for the month's spending, confirm a write through
+`api-server` fails, and set `ACTUAL_ACCESS=read` and confirm WebUI loses its
+write tools.
+
+## Turning it off
+
+`ACTUAL_MCP_ENABLED=0` and `make up` stop the MCP containers and drop the
+`budget` entry from every profile's `config.yaml` and cron list.
+`ACTUAL_LOCAL_ENABLED=0` stops `actual-server`; its data stays in
+`ACTUAL_DATA_DIR`.

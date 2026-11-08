@@ -17,6 +17,42 @@ the stack under another app.
 
 ### Changes
 
+- **Actual Budget add-on** (profiles `budget` and `budget-local`): Hermes
+  reads and edits an Actual Budget file through two MCP servers,
+  `actual-mcp-rw` and `actual-mcp-ro`, built from a vendored
+  giorgiobrullo/actual-mcp. `actual-server` runs locally or a remote server is
+  used. Setup is `./scripts/setup.sh --budget`, `make budget-init` (local) or
+  `make budget-add URL=...` (remote); `make budget-open`, `make budget-remove`
+  and `make budget-access ACCESS=read|write` do the rest, and `make doctor`
+  has a Budget block. A `budget` skill tells Hermes to look up ids, treat
+  amounts as cents and confirm deletes, bulk edits and category moves. The
+  read-only instance serves `api-server`; default and `browser` get the
+  read/write instance unless `ACTUAL_ACCESS=read`. A read/write entry is kept
+  out of cron. See [docs/budget.md](docs/budget.md). **The add-on has not been
+  checked on a live stack yet**; only the offline tests against stubs have
+  run. Both flags default to off, so existing installs see no change. Hermes
+  now joins the new `budget` network, so the next `up` recreates it.
+  - New `.env` keys, all optional: `ACTUAL_MCP_ENABLED`,
+    `ACTUAL_LOCAL_ENABLED`, `ACTUAL_ACCESS`, `ACTUAL_PORT`, `ACTUAL_DATA_DIR`,
+    `ACTUAL_BUDGET_FILE`, and `ACTUAL_SERVER_IMAGE` (commented out, pinned by
+    digest). `ACTUAL_ADMIN_TIMEOUT_S` is read from the environment and has no
+    line in `.env.example`.
+- **Manifest extensions** the Actual add-on needs (the format is still
+  experimental):
+  - `mcp.service` may be a map `{"ro": ..., "rw": ...}` that gives each
+    access level its own service. A map `mcp.service` ignores `mcp.env.url`.
+  - `mcp.writeTools` lists tools that `tools` and `pins` leave out for a
+    profile on the read-only service.
+  - `mcp.env.access` names a variable that caps access: `read` turns
+    read/write into read-only, `write` or empty changes nothing, any other
+    value gives the profile no entry.
+  - `permissions.cron` accepts `"ro"`: cron keeps the read-only entry and
+    loses the read/write one.
+- **`addon_manifest.py mcp-plan` has an 11th field**, `all_urls`: every URL
+  the add-on can register, space-separated and sorted, so the bootstrap can
+  drop the ones a profile must not have. A caller that splits the line on `|`
+  must accept the extra field.
+
 - **GPT Researcher is registered from a manifest**: `addons/gptr/addon.json`
   now holds its flag, profile, tools, pins and profile list, and
   `sync-profiles.sh` and both bootstraps read it instead of their own copies.
