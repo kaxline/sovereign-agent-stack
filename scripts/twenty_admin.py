@@ -3,8 +3,9 @@
 roles and two API keys, written to compose/twenty/workspaces/<slug>.env.
 
 Called by scripts/crm.sh (make crm-init). Every value comes from the
-environment, so a non-interactive caller can run it too. Prints one line per
-step and never a key, token or password. See docs/crm.md.
+environment, so a non-interactive caller can run it too. init prints one line
+per step and never a key, token or password. login-link prints only a sign-in
+URL on stdout, which carries a login token. See docs/crm.md.
 
 Environment:
   TWENTY_BASE_URL         where to reach the server (http://127.0.0.1:3000 from the host,
@@ -416,6 +417,46 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_login_link(args: argparse.Namespace) -> int:
+    """Print a URL that signs a browser in to a local workspace as the owner.
+
+    The URL is the only thing on stdout; progress and errors go to stderr. It
+    carries a login token that Twenty accepts until LOGIN_TOKEN_EXPIRES_IN
+    (15 minutes by default) runs out.
+    """
+    slug = args.slug
+    if not SLUG.match(slug):
+        raise TwentyError(f"slug '{slug}' must use lowercase letters, digits and hyphens")
+    env = os.environ
+    target = Path(env.get("TWENTY_WORKSPACES_DIR", "compose/twenty/workspaces")) / f"{slug}.env"
+    if not target.exists():
+        raise TwentyError(f"no workspace '{slug}' — make crm-init")
+    values = read_env_file(target)
+    if values.get("TWENTY_URL", "").rstrip("/") not in (LOCAL_URL, f"{LOCAL_URL}/mcp"):
+        raise TwentyError(f"'{slug}' isn't on the local instance; sign in on its own Twenty")
+    ws_id = values.get("TWENTY_WORKSPACE_ID", "")
+    ws_url = values.get("TWENTY_WORKSPACE_URL", "")
+    if not ws_id or not ws_url:
+        raise TwentyError(f"{target.name} has no TWENTY_WORKSPACE_ID or URL; run make crm-init")
+    email = env.get("TWENTY_USERNAME", "")
+    password_file = env.get("TWENTY_PASSWORD_FILE", "")
+    if password_file and not Path(password_file).expanduser().exists():
+        raise TwentyError(f"TWENTY_PASSWORD_FILE ({password_file}) doesn't exist; run make crm-init")
+    if not email or not (env.get("TWENTY_PASSWORD") or password_file):
+        raise TwentyError("TWENTY_USERNAME and TWENTY_PASSWORD (or TWENTY_PASSWORD_FILE) must be set")
+    password, _ = owner_password(env)
+    tw = Twenty(env.get("TWENTY_BASE_URL", "http://127.0.0.1:3000"))
+    print(f"[crm] {slug}: signing in as {email}", file=sys.stderr, flush=True)
+    _, available = sign_in(tw, email, password)
+    for ws in available:
+        if ws.get("id") == ws_id and ws.get("loginToken"):
+            if not ws_url.endswith("/"):
+                ws_url += "/"
+            print(f"{ws_url}verify?loginToken={ws['loginToken']}", flush=True)
+            return 0
+    raise TwentyError(f"the owner account can't enter workspace {ws_id}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -425,9 +466,11 @@ def main(argv: list[str] | None = None) -> int:
     p_init.add_argument("--rotate", action="store_true", help="revoke and re-mint the workspace's keys")
     p_init.add_argument("--owner-only", action="store_true",
                         help="stop after creating or signing in to the owner account")
+    p_link = sub.add_parser("login-link", help="print a sign-in URL for a local workspace")
+    p_link.add_argument("--slug", default="main")
     args = parser.parse_args(argv)
     try:
-        return cmd_init(args)
+        return cmd_login_link(args) if args.cmd == "login-link" else cmd_init(args)
     except (TwentyError, subprocess.CalledProcessError) as exc:
         print(f"[crm] ERROR: {exc}", file=sys.stderr)
         return 1

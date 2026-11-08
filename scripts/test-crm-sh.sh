@@ -125,6 +125,14 @@ run access --slug missing read && fail "access on a missing workspace must fail"
 run access --slug both && fail "access needs read or write"
 rm "$CRM_WORKSPACES_DIR/both.env"
 
+# login-link: refused before any container runs for remote and unknown workspaces.
+"$crm" login-link --slug lookup < /dev/null > "$out" 2> "$tmp/err" && fail "login-link on a remote workspace must fail"
+[ ! -s "$out" ] || fail "a refused login-link prints nothing on stdout"
+grep -q 'local instance' "$tmp/err" || fail "login-link says the workspace isn't local"
+run login-link --slug missing && fail "login-link on a missing workspace must fail"
+run login-link --slug Bad_1 && fail "login-link checks the slug"
+run login-link --frob && fail "login-link rejects unknown options"
+
 # remove: deletes the file; unknown slugs fail.
 run remove --slug lookup || fail "remove ($(cat "$out"))"
 [ ! -e "$CRM_WORKSPACES_DIR/lookup.env" ] || fail "remove deletes the workspace file"

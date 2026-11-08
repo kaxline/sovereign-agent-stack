@@ -293,6 +293,61 @@ class CrmInit(unittest.TestCase):
         self.assertEqual(path.read_text().count("TWENTY_ACCESS="), 1)
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
 
+    def run_link(self, *args: str, **extra: str) -> subprocess.CompletedProcess:
+        env = {
+            "PATH": os.environ["PATH"],
+            "TWENTY_BASE_URL": f"http://127.0.0.1:{self.server.server_port}",
+            "TWENTY_WORKSPACES_DIR": str(self.ws),
+            "TWENTY_USERNAME": "owner@crm.localhost",
+            "TWENTY_PASSWORD": PASSWORD,
+            **extra,
+        }
+        proc = subprocess.run([sys.executable, "-I", str(ADMIN), "login-link", *args],
+                              env=env, capture_output=True, text=True)
+        self.assertNotIn(PASSWORD, proc.stdout + proc.stderr)
+        self.assertNotIn("SECRET", proc.stderr, "the login token must stay off stderr")
+        return proc
+
+    def test_login_link_prints_only_the_workspace_url(self):
+        self.run_init(multi="1")
+        self.run_init("--slug", "sales", multi="1")
+        self.stub.ops.clear()
+        proc = self.run_link("--slug", "sales")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "http://sales.localhost:3000/verify?loginToken=login-SECRET-2\n")
+        self.assertEqual(self.stub.ops, ["signIn"])
+
+    def test_login_link_defaults_to_main(self):
+        self.run_init()
+        proc = self.run_link()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "http://localhost:3000/verify?loginToken=login-SECRET-1\n")
+
+    def test_login_link_refuses_remote_and_unknown_workspaces(self):
+        (self.ws / "hosted.env").write_text("TWENTY_URL=https://crm.example.com\nTWENTY_KEY_RW=x\n")
+        for slug, why in (("hosted", "local instance"), ("nope", "no workspace")):
+            proc = self.run_link("--slug", slug)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertEqual(proc.stdout, "")
+            self.assertIn(why, proc.stderr)
+        self.assertEqual(self.stub.ops, [])
+
+    def test_login_link_workspace_the_owner_cannot_enter(self):
+        self.run_init()
+        path = self.ws / "main.env"
+        path.write_text(path.read_text().replace("TWENTY_WORKSPACE_ID=ws1", "TWENTY_WORKSPACE_ID=other"))
+        proc = self.run_link()
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout, "")
+        self.assertIn("can't enter", proc.stderr)
+
+    def test_login_link_never_creates_a_password_file(self):
+        self.run_init()
+        missing = self.tmp / "pw"
+        proc = self.run_link(TWENTY_PASSWORD="", TWENTY_PASSWORD_FILE=str(missing))
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertFalse(missing.exists())
+
     def test_single_mode_refuses_second_workspace(self):
         self.run_init()
         self.stub.ops.clear()
