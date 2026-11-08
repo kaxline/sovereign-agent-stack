@@ -120,15 +120,25 @@ def _hosts(item: dict) -> list[tuple[str, str]]:
     return out
 
 
+def _is_ip(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
+
+
 def _matching_uri(item: dict, host: str) -> str | None:
+    # An IP address has no subdomains: 0.0.1 must not match 10.0.0.1.
+    subdomains = not _is_ip(host)
     for item_host, uri in _hosts(item):
-        if item_host == host or item_host.endswith("." + host):
+        if item_host == host or (subdomains and not _is_ip(item_host) and item_host.endswith("." + host)):
             return uri
     return None
 
 
 def match_items(items: list[dict], host: str) -> list:
-    """Items with a fill URI whose host is ``host`` or ends with ``.`` + ``host``."""
+    """Items with a fill URI whose host is ``host`` or ends with ``.`` + ``host`` (IP addresses: equal only)."""
     host = normalize_host(host)
     if host is None:
         return []
@@ -172,13 +182,23 @@ class UserBw:
         finally:
             out = None
 
-    def login(self, server: str, email: str, holder: list[str]) -> None:
-        """Log in with ``holder[0]``; raises BwError("auth") on a wrong password."""
-        if self._session is None:
-            try:
-                self.run(["config", "server", server])
-            except BwError:
-                pass  # a fresh data dir; login reports a real problem
+    def configure(self, server: str) -> None:
+        """Point bw at ``server`` and confirm with ``bw status``; SetupError otherwise.
+
+        bw's default server is vault.bitwarden.com, so logging in after a failed
+        config would send the email and password hash to a server nobody chose.
+        """
+        try:
+            self.run(["config", "server", server])
+        except BwError as exc:
+            raise SetupError(f"bw config server failed ({exc.error_class}); nothing was sent.") from None
+        status = self.json(["status"])
+        actual = status.get("serverUrl") if isinstance(status, dict) else None
+        if not isinstance(actual, str) or actual.rstrip("/") != server.rstrip("/"):
+            raise SetupError("bw is not pointed at the requested server after config; nothing was sent.")
+
+    def login(self, email: str, holder: list[str]) -> None:
+        """Log in with ``holder[0]``; raises BwError("auth") on a wrong password. Call ``configure`` first."""
         key = self.run(["login", email, "--passwordenv", "BW_PW", "--raw"], secret_env={"BW_PW": holder[0]}).strip()
         if not key:
             raise BwError("unknown")
@@ -226,10 +246,10 @@ class Run:
                                               "Authorization": f"Bearer {self.token}"})
         failure = None
         try:
-            with urllib.request.urlopen(req, timeout=API_TIMEOUT_SECONDS, context=vw_register.ssl_context()):
+            with vw_register.opener().open(req, timeout=API_TIMEOUT_SECONDS):
                 pass
         except urllib.error.HTTPError as exc:
-            failure = f"HTTP {exc.code}"
+            failure = "redirect refused" if 300 <= exc.code < 400 else f"HTTP {exc.code}"
             exc.close()
         except (urllib.error.URLError, OSError):
             failure = "unreachable"
@@ -387,6 +407,7 @@ class Run:
     def cmd_grant(self) -> int:
         target = self.target()
         items = self.items()
+        moved = 0
         if self.args.item:
             item = next((i for i in items if i["id"] == self.args.item), None)
             if item is None:
@@ -397,16 +418,22 @@ class Run:
                     raise SetupError(f'"{item["name"]}" has no URI for {self.args.site}; nothing moved.')
             if self.in_target(item, target):
                 print(f'"{item["name"]}" is already in {target.label}.')
-            elif not self.move(item, target):
+            elif self.move(item, target):
+                moved = 1
+            else:
                 return EXIT_FAILED
         else:
             site = self.args.site or input("Site to give the agent: ").strip()
             host = normalize_host(site)
-            if host is not None and not match_items([i for i in items if not self.in_target(i, target)], host):
+            if host is None:
+                print(f"{site!r} is not a host name.")
+                return EXIT_FAILED
+            if not match_items([i for i in items if not self.in_target(i, target)], host):
                 print(f"No login items for {host} outside {target.label}.")
                 return EXIT_FAILED
-            self.offer(items, target, site)
-        print("The broker marks a pending request for this site done on its next sync.")
+            moved = self.offer(items, target, site)
+        if moved:
+            print("The broker marks a pending request for this site done on its next sync.")
         return 0
 
     def cmd_create(self) -> int:
@@ -501,10 +528,17 @@ class Run:
                 if out and not out[-1].endswith("\n"):
                     out[-1] += ending
                 out.append(line + ending)
+            st = path.stat()
             fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+            owner_note = False
             try:
                 with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
                     f.write("".join(out))
+                    if (st.st_uid, st.st_gid) != (os.getuid(), os.getgid()):
+                        try:
+                            os.fchown(f.fileno(), st.st_uid, st.st_gid)
+                        except PermissionError:
+                            owner_note = True
                 os.chmod(tmp, 0o600)
                 os.replace(tmp, path)
             except BaseException:
@@ -514,6 +548,8 @@ class Run:
             print(f"Could not update {path.name}; set {line} in it.")
             return
         print(f"Set {line} in {path.name}.")
+        if owner_note:
+            print(f"Note: {path} now belongs to this container's user; its owner could not be kept.")
 
     def cmd_role(self) -> int:
         agent_email = self.args.agent_email or LOCAL_AGENT_EMAIL
@@ -586,6 +622,19 @@ def parse_args(argv: list[str]):
     return parser.parse_args(argv)
 
 
+def _is_loopback_url(server: str) -> bool:
+    try:
+        host = urlsplit(server).hostname or ""
+    except ValueError:
+        return False
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def _check_server(server: str) -> str | None:
     try:
         parts = urlsplit(server)
@@ -596,12 +645,8 @@ def _check_server(server: str) -> str | None:
         return None
     if parts.scheme == "https":
         return server.rstrip("/")
-    if parts.scheme == "http":
-        try:
-            if host == "localhost" or ipaddress.ip_address(host).is_loopback:
-                return server.rstrip("/")
-        except ValueError:
-            pass
+    if parts.scheme == "http" and _is_loopback_url(server):
+        return server.rstrip("/")
     return None
 
 
@@ -628,7 +673,7 @@ def preflight(args, account: Account) -> str | None:
     return None
 
 
-def ask_password(bw: UserBw, server: str, email: str) -> list[str]:
+def ask_password(bw: UserBw, email: str) -> list[str]:
     """Log bw in, three tries. Returns a one-element list holding the password, for the token call."""
     for _ in range(PASSWORD_TRIES):
         holder = [getpass.getpass(f"Master password for {email}: ")]
@@ -636,7 +681,7 @@ def ask_password(bw: UserBw, server: str, email: str) -> list[str]:
             print("No password entered.")
             continue
         try:
-            bw.login(server, email, holder)
+            bw.login(email, holder)
             return holder
         except BwError as exc:
             holder.clear()
@@ -658,19 +703,24 @@ def main(argv: list[str]) -> int:
     if args.server is None:
         print("--server must be an https:// URL.")
         return EXIT_FAILED
+    # Only a test serves a loopback URL from inside this container.
+    if args.server != account.server and not _is_loopback_url(args.server):
+        print(f"--server must match BW_SERVER in {account.path.name}.")
+        return EXIT_FAILED
     refusal = preflight(args, account)
     if refusal:
         print(refusal)
         return EXIT_FAILED
 
     needs_token = args.command == "role" or (args.command == "create" and account.scope_kind == "collection")
-    appdata = tempfile.mkdtemp(dir="/tmp", prefix="bitwarden-setup-")
-    bw = UserBw(os.environ.get("BITWARDEN_BW") or "bw", appdata)
-    previous = {sig: signal.signal(sig, _interrupt) for sig in (signal.SIGINT, signal.SIGTERM)}
     holder: list[str] = []
-    run = None
+    run = bw = appdata = None
+    previous = {sig: signal.signal(sig, _interrupt) for sig in (signal.SIGINT, signal.SIGTERM)}
     try:
-        holder = ask_password(bw, args.server, args.email)
+        appdata = tempfile.mkdtemp(dir="/tmp", prefix="bitwarden-setup-")
+        bw = UserBw(os.environ.get("BITWARDEN_BW") or "bw", appdata)
+        bw.configure(args.server)
+        holder = ask_password(bw, args.email)
         run = Run(args, account, bw)
         if needs_token:
             try:
@@ -698,9 +748,11 @@ def main(argv: list[str]) -> int:
         for sig in previous:
             signal.signal(sig, signal.SIG_IGN)
         try:
-            bw.close()
+            if bw is not None:
+                bw.close()
         finally:
-            shutil.rmtree(appdata, ignore_errors=True)
+            if appdata is not None:
+                shutil.rmtree(appdata, ignore_errors=True)
             for sig, handler in previous.items():
                 signal.signal(sig, handler)
 

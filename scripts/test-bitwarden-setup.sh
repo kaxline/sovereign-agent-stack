@@ -28,7 +28,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, unquote_plus
 
 ROOT, TMP = Path(sys.argv[1]), Path(sys.argv[2])
 SETUP = ROOT / "compose/bitwarden-broker/setup/setup.py"
@@ -79,9 +79,16 @@ class Api(http.server.BaseHTTPRequestHandler):
         body = self._body()
         st["calls"].append(("POST", self.path, body))
         if self.path == "/identity/accounts/prelogin":
-            return self._reply(200, {"kdf": 0, "kdfIterations": ITERATIONS})
+            return self._reply(200, st.get("prelogin") or {"kdf": 0, "kdfIterations": ITERATIONS})
         if self.path == "/identity/connect/token":
             form = {k: v[0] for k, v in parse_qs(body).items()}
+            st["token_scope"] = form.get("scope")
+            if st.get("redirect"):
+                self.send_response(307)
+                self.send_header("Location", f"{BASE}/redirected")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             if st["refuse"]:
                 return self._reply(400, {"error": "invalid_grant", "error_description": "new device verification"})
             ok = (form.get("grant_type") == "password" and form.get("username") == USER_EMAIL
@@ -102,6 +109,10 @@ class Api(http.server.BaseHTTPRequestHandler):
                                          "type": payload["type"], "organizationId": ORG})
             st["vault"].write_text(json.dumps(vault))
             return self._reply(200, {})
+        self._reply(404, {})
+
+    def do_GET(self):
+        self.server.st["calls"].append(("GET", self.path, ""))
         self._reply(404, {})
 
     def do_PUT(self):
@@ -203,7 +214,7 @@ def pty_run(argv, env, script, timeout=20.0):
 
 class Run:
     def __init__(self, name, cmd, account, vault, extra=(), script=None, slug="acct", refuse=False,
-                 server=BASE):
+                 server=BASE, redirect=False):
         self.name = name
         d = TMP / name
         (d / "accounts").mkdir(parents=True)
@@ -221,7 +232,7 @@ class Run:
         env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(d), "PYTHONDONTWRITEBYTECODE": "1",
                "BITWARDEN_ACCOUNTS_DIR": str(d / "accounts"), "BITWARDEN_BW": str(wrapper), "LANG": "C.UTF-8"}
         api.st = {"calls": [], "invites": [], "edits": [], "refuse": refuse, "vault": self.vault_file,
-                  "token_ok": None}
+                  "token_ok": None, "redirect": redirect}
         argv = [cmd, "--server", server, "--email", USER_EMAIL, "--slug", slug, *extra]
         self.code, self.out = pty_run(argv, env, script if script is not None else [("Master password", USER_PW)])
         self.api = api.st
@@ -233,6 +244,13 @@ class Run:
             if value in self.out or value in self.log_text:
                 fail(f"{name}: a password, token or item secret appears in output or bw argv")
                 break
+        good_hash = expected_hash(USER_EMAIL, USER_PW, ITERATIONS)
+        for method, path, body in self.api["calls"]:
+            texts = (body, unquote_plus(body))
+            if any(v in t for v in SECRET_VALUES for t in texts):
+                fail(f"{name}: a secret value was sent in {method} {path}")
+            if path != "/identity/connect/token" and any(good_hash in t for t in texts):
+                fail(f"{name}: the master password hash was sent in {method} {path}")
         for call in self.calls:
             if not (call["appdata"] or "").startswith(("/tmp/", "/private/tmp/")):
                 fail(f"{name}: bw ran with appdata outside /tmp: {call['appdata']}")
@@ -467,6 +485,68 @@ for sig in (signal.SIGINT, signal.SIGTERM):
     check(r.code == 130, f"{name}: exit {r.code}, want 130")
     check(any(a[:1] == ["login"] for a in r.argvs), f"{name}: never logged in")
     r.expect_lock_logout()
+
+# bw config server fails, or leaves bw on another server: exit 1 before the prompt, nothing sent.
+for knob in ("refuse_config", "ignore_config"):
+    v = with_collection(base_vault())
+    v[knob] = "Connection refused" if knob == "refuse_config" else True
+    r = Run(f"config-{knob}", "create", account("collection:c-agent", mode="selfhosted",
+                                                 server="https://vault.example.com"),
+            v, extra=("--agent-email", AGENT_EMAIL), script=[])
+    r.expect_code(1)
+    check("Master password" not in r.out, f"config-{knob}: asked for the password")
+    check(not r.cmds("login") and not r.api["calls"], f"config-{knob}: login or API call after a bad config")
+    check("nothing was sent" in r.out, f"config-{knob}: output\n{r.out}")
+    r.expect_lock_logout()
+
+# --server other than BW_SERVER (and not loopback): refused before bw runs.
+r = Run("server-mismatch", "create", account("folder:Agent"), base_vault(), server="https://other.example.com",
+        script=[])
+r.expect_code(1)
+check(not r.calls and "BW_SERVER" in r.out, f"server-mismatch: calls {r.argvs}\n{r.out}")
+
+# The token endpoint redirects: refused, the form is not re-sent, web vault steps follow.
+r = Run("token-redirect", "create", account("collection:c-placeholder", mode="selfhosted",
+                                           server="https://vault.example.com"),
+        base_vault(), extra=("--agent-email", AGENT_EMAIL, "--org", ORG), redirect=True)
+r.expect_code(0)
+check(not any(c[1] == "/redirected" for c in r.api["calls"]), "token-redirect: followed the redirect")
+check("redirect refused" in r.out and not r.api["invites"], f"token-redirect: output\n{r.out}")
+check(r.api.get("token_scope") == "api", f"token-redirect: token scope {r.api.get('token_scope')!r}")
+
+# grant --site that is not a host: exit 1. grant of an item already in scope: no "marks done" line.
+r = Run("grant-not-host", "grant", account("folder:Agent"),
+        dict(base_vault(), folders=[{"id": "f-agent", "name": "Agent"}]), extra=("--site", "not a host"))
+r.expect_code(1)
+check(not r.cmds("edit", "move") and "next sync" not in r.out, f"grant-not-host: output\n{r.out}")
+v = dict(base_vault(), folders=[{"id": "f-agent", "name": "Agent"}])
+v["items"][0]["folderId"] = "f-agent"
+r = Run("grant-already", "grant", account("folder:Agent"), v, extra=("--item", "i-li-www"))
+r.expect_code(0)
+check("already in" in r.out and "next sync" not in r.out, f"grant-already: output\n{r.out}")
+
+# Unit checks: IP literals match only exactly; prelogin KDF values.
+sys.path.insert(0, str(SETUP.parent))
+import importlib.util
+spec = importlib.util.spec_from_file_location("bw_setup", SETUP)
+mod = importlib.util.module_from_spec(spec)
+sys.modules["bw_setup"] = mod
+spec.loader.exec_module(mod)
+ip_items = [{"uris": [{"uri": "https://10.0.0.1/", "match": None}]},
+            {"uris": [{"uri": "https://192.168.0.1/", "match": None}]}]
+check(len(mod.match_items(ip_items, "10.0.0.1")) == 1, "ip: exact IP did not match")
+check(mod.match_items(ip_items, "0.0.1") == [] and mod.match_items(ip_items, "168.0.1") == [],
+      "ip: subdomain matching applied to an IP address")
+import vw_register
+for pre, want in (({"kdf": 1, "kdfIterations": 3}, "Argon2id"), ({"kdf": 7, "kdfIterations": 3}, "unknown KDF"),
+                  ({"kdfIterations": 3}, "unknown KDF")):
+    api.st = {"calls": [], "invites": [], "edits": [], "refuse": False, "prelogin": pre}
+    try:
+        vw_register.token(BASE, USER_EMAIL, USER_PW)
+        fail(f"kdf {pre}: token returned")
+    except vw_register.TokenError as exc:
+        check(want in str(exc), f"kdf {pre}: {exc}")
+    check(not any(c[1] == "/identity/connect/token" for c in api.st["calls"]), f"kdf {pre}: token request sent")
 
 api.shutdown()
 if failures:

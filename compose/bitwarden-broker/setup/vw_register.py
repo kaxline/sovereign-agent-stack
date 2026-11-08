@@ -24,6 +24,7 @@ import uuid
 
 TIMEOUT_SECONDS = 30
 KDF_PBKDF2 = 0
+KDF_ARGON2ID = 1
 DEVICE_TYPE_LINUX_CLI = "25"
 
 
@@ -52,16 +53,27 @@ def endpoints(base: str) -> tuple[str, str]:
     return _CLOUD.get(base, (f"{base}/identity", f"{base}/api"))
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Turns any redirect into an HTTPError, so a body or Authorization header is never sent twice."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def opener() -> urllib.request.OpenerDirector:
+    return urllib.request.build_opener(_NoRedirect, urllib.request.HTTPSHandler(context=ssl_context()))
+
+
 def _post(url: str, body: bytes, content_type: str) -> dict:
     req = urllib.request.Request(url, data=body, method="POST", headers={
         "Content-Type": content_type, "Accept": "application/json", "Device-Type": DEVICE_TYPE_LINUX_CLI})
     failure = None
     data = None
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS, context=ssl_context()) as resp:
+        with opener().open(req, timeout=TIMEOUT_SECONDS) as resp:
             data = json.loads(resp.read(1024 * 1024) or b"{}")
     except urllib.error.HTTPError as exc:
-        failure = f"refused (HTTP {exc.code})"
+        failure = "redirect refused" if 300 <= exc.code < 400 else f"refused (HTTP {exc.code})"
         exc.close()
     except (urllib.error.URLError, OSError, ValueError):
         failure = "unreachable or not JSON"
@@ -89,14 +101,16 @@ def token(base: str, email: str, password: str) -> str:
                 "application/json")
     kdf = pre.get("kdf", pre.get("Kdf"))
     iterations = pre.get("kdfIterations", pre.get("KdfIterations"))
-    if kdf != KDF_PBKDF2:
+    if kdf == KDF_ARGON2ID:
         raise TokenError("the account uses Argon2id, which this setup cannot compute")
+    if kdf != KDF_PBKDF2:
+        raise TokenError("prelogin reported an unknown KDF")
     if not isinstance(iterations, int) or iterations < 1:
         raise TokenError("prelogin returned no iteration count")
     form = {
         "grant_type": "password", "username": email,
         "password": master_password_hash(email, password, iterations),
-        "scope": "api offline_access", "client_id": "cli",
+        "scope": "api", "client_id": "cli",
         "deviceType": DEVICE_TYPE_LINUX_CLI, "deviceName": "linux",
         "deviceIdentifier": str(uuid.uuid4()),
     }

@@ -11,7 +11,9 @@ writes this text to stdout and stderr, then sleeps 30 s) and ``truncate_lists``
 edit waits until that file exists, up to 30 s) and ``refuse_edit`` (edit fails
 with this text), ``members`` (organization members for ``list org-members``),
 ``user_email`` and ``user_password`` (the account ``login <email> --passwordenv``
-signs in to, as bitwarden-setup does). Commands that write to the vault rewrite that file. Per-data-dir state (server, login,
+signs in to, as bitwarden-setup does), ``refuse_config`` (config server fails
+with this text) and ``ignore_config`` (config server succeeds but keeps the old
+server, so ``status`` shows it). Commands that write to the vault rewrite that file. Per-data-dir state (server, login,
 session keys, server call count) lives in
 ``$BITWARDENCLI_APPDATA_DIR/fake-bw-state.json``.
 
@@ -166,9 +168,20 @@ def totp(seed: str, now: float | None = None) -> str:
 def config_server(ctx, pos):
     if ctx.state["logged_in"]:
         raise Fail("Logout required before server config update.")
+    if ctx.vault.get("refuse_config"):
+        raise Fail(ctx.vault["refuse_config"])
+    if ctx.vault.get("ignore_config"):
+        return "Saved setting `config`."
     ctx.state["server"] = pos[2]
     ctx.save()
     return "Saved setting `config`."
+
+
+def status(ctx, pos):
+    sessions = ctx.state["sessions"]
+    key = ctx.opts.get("--session") or os.environ.get("BW_SESSION")
+    state = "unlocked" if key in sessions else ("locked" if ctx.state["logged_in"] else "unauthenticated")
+    return json.dumps({"serverUrl": ctx.state["server"], "status": state})
 
 
 def login(ctx, pos):
@@ -341,6 +354,7 @@ def confirm_cmd(ctx, pos):
 # (command, subcommand or None, minimum positional count) -> handler
 COMMANDS = {
     ("config", "server", 3): config_server,
+    ("status", None, 1): status,
     ("login", None, 1): login,
     ("unlock", None, 1): unlock,
     ("lock", None, 1): lock,
