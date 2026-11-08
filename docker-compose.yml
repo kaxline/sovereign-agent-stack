@@ -1667,6 +1667,8 @@ services:
       - ./compose/hermes/patch-searxng-pause-browser.py:/bootstrap/patch-searxng-pause-browser.py:ro
       - ./compose/hermes/blocked_fetch_hint.py:/bootstrap/blocked_fetch_hint.py:ro
       - ./compose/hermes/patch-blocked-fetch-hint.py:/bootstrap/patch-blocked-fetch-hint.py:ro
+      - ./compose/bitwarden-broker/broker/digest_redaction.py:/bootstrap/digest_redaction.py:ro
+      - ./compose/hermes/patch-digest-redaction.py:/bootstrap/patch-digest-redaction.py:ro
       - ./compose/hermes/web_search_mode.py:/bootstrap/web_search_mode.py:ro
       - ./compose/hermes/patch-web-search-mode.py:/bootstrap/patch-web-search-mode.py:ro
       - ./compose/hermes/patch-browser-unresolvable-host.py:/bootstrap/patch-browser-unresolvable-host.py:ro
