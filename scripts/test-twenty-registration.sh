@@ -6,13 +6,13 @@ set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 bootstrap="${ROOT}/compose/hermes/bootstrap-api-profile.sh"
 
-for fn in twenty_key_env_name twenty_read_workspace twenty_key_for_profile twenty_workspace_slugs register_twenty_mcp_servers; do
+for fn in twenty_key_env_name twenty_read_workspace twenty_key_for_profile twenty_local_off twenty_workspace_slugs register_twenty_mcp_servers; do
   range="/^${fn}() {/,/^}/p"
   # shellcheck disable=SC1090
   eval "$(sed -n "$range" "$bootstrap")"
   command -v "$fn" >/dev/null 2>&1 || { printf 'FAIL %s missing from bootstrap\n' "$fn" >&2; exit 1; }
 done
-eval "$(grep -E '^TWENTY_(MCP_TIMEOUT|MCP_CONNECT_TIMEOUT|MCP_PINS)=' "$bootstrap")"
+eval "$(grep -E '^TWENTY_(MCP_TIMEOUT|MCP_CONNECT_TIMEOUT|MCP_PINS|LOCAL_MCP_URL|LOCAL_ENABLED)=' "$bootstrap")"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -134,6 +134,25 @@ case "$logs" in *secret*) fail "log output must not contain a key" ;; esac
 # Slugs registered per profile, for the eager-tool pins.
 [ "$(twenty_workspace_slugs "" | tr '\n' ' ')" = "main remote withmcp " ] || fail "default slugs"
 [ "$(twenty_workspace_slugs api-server | tr '\n' ' ')" = "main " ] || fail "api-server slugs"
+
+# Local instance off (CR 0023 R2): local files skipped and dropped, remote kept.
+[ "$TWENTY_LOCAL_ENABLED" = 1 ] || fail "unset TWENTY_LOCAL_ENABLED keeps registering local workspaces"
+TWENTY_LOCAL_ENABLED=0
+for profile in "" api-server; do
+  run "$profile"
+  p="${profile:-default}"
+  if has "crm-main"; then fail "${p}: local off gives no crm-main ($calls)"; fi
+  if has "TWENTY_MAIN_KEY"; then fail "${p}: local off writes no TWENTY_MAIN_KEY ($calls)"; fi
+  case "$logs" in *"'main'"*"local instance is off"*) ;; *) fail "${p}: the local skip is logged ($logs)" ;; esac
+done
+run ""
+has "write:default:crm-remote:" || fail "local off keeps the remote workspace ($calls)"
+has "reconcile:default:remote withmcp;" || fail "local off: reconcile drops crm-main ($calls)"
+[ "$(twenty_workspace_slugs "" | tr '\n' ' ')" = "remote withmcp " ] || fail "local off: default slugs"
+[ -z "$(twenty_workspace_slugs api-server)" ] || fail "local off: no api-server slugs"
+TWENTY_LOCAL_ENABLED=1
+run ""
+has "write:default:crm-main:" || fail "local back on restores crm-main ($calls)"
 
 # Disabled: everything of ours goes.
 TWENTY_MCP_ENABLED=0

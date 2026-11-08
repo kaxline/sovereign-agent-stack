@@ -50,6 +50,8 @@ sed -n '/^networks:/,/^volumes:/p' "$compose" | grep -q '^  crm:' || fail "crm n
 
 [ "$(grep -cF -- '- TWENTY_MCP_ENABLED=${TWENTY_MCP_ENABLED:-0}' "$compose")" = 2 ] \
   || fail "both hermes-*-bootstrap services receive TWENTY_MCP_ENABLED"
+[ "$(grep -cF -- '- TWENTY_LOCAL_ENABLED=${TWENTY_LOCAL_ENABLED:-0}' "$compose")" = 2 ] \
+  || fail "both hermes-*-bootstrap services receive TWENTY_LOCAL_ENABLED"
 [ "$(grep -cF -- '- ./compose/twenty/workspaces:/bootstrap/twenty-workspaces:ro' "$compose")" = 2 ] \
   || fail "both hermes-*-bootstrap services mount the workspace files"
 
