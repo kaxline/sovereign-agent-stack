@@ -33,9 +33,17 @@ FAKE_BW = ROOT / "scripts" / "fixtures" / "fake-bw.py"
 MASTER = secrets.token_urlsafe(18)
 CLIENT_SECRET = secrets.token_urlsafe(24)
 WRONG_PASSWORD = "wrong-" + secrets.token_urlsafe(18)
-ITEM_PASSWORDS = {name: secrets.token_urlsafe(16) for name in "ABCDEFG"}
+ITEM_PASSWORDS = {name: secrets.token_urlsafe(16) for name in "ABCDEFGH"}
+ITEM_PASSWORDS["H"] += "\n"  # a password that really ends in a newline
+LEAKY_ENV = "leaky-" + secrets.token_urlsafe(18)
 TOTP_SEED = base64.b32encode(secrets.token_bytes(10)).decode("ascii")
-SECRETS = [MASTER, CLIENT_SECRET, WRONG_PASSWORD, TOTP_SEED, *ITEM_PASSWORDS.values()]
+SECRETS = [MASTER, CLIENT_SECRET, WRONG_PASSWORD, TOTP_SEED, LEAKY_ENV, *(v.strip() for v in ITEM_PASSWORDS.values())]
+BROKER_DIR = str(ROOT / "compose" / "bitwarden-broker" / "broker")
+NODE_WARNING = (
+    "(node:4014290) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. "
+    "Please use a userland alternative instead.\n"
+    "(Use `node --trace-deprecation ...` to show where the warning was created)\n"
+)
 
 FOLDER_AGENT = "0f0a0000-0000-4000-8000-00000000000a"
 FOLDER_OTHER = "0f0b0000-0000-4000-8000-00000000000b"
@@ -102,6 +110,7 @@ def vault_data(**extra) -> dict:
             ]),
             login_item("F", FOLDER_AGENT, kind=2),
             login_item("G", FOLDER_AGENT, uris=None),
+            login_item("H", FOLDER_OTHER, uris=[]),
         ],
         "rate_limit_after": None,
         "retry_after": None,
@@ -119,9 +128,10 @@ class Run:
         self.secrets_root = tmp / "secrets"
         self.vault_file = tmp / "vault.json"
         self.log_file = tmp / "fake-bw.log"
+        self.stderr_file = tmp / "fake-bw-stderr.log"
         self.vault_file.write_text(json.dumps(vault_data(**vault_extra)), encoding="utf-8")
-        os.environ["FAKE_BW_VAULT"] = str(self.vault_file)
-        os.environ["FAKE_BW_LOG"] = str(self.log_file)
+        self.extra_env = {"FAKE_BW_VAULT": str(self.vault_file), "FAKE_BW_LOG": str(self.log_file),
+                          "FAKE_BW_STDERR_LOG": str(self.stderr_file)}
         self.errors: list[str] = []
 
     def account(self, slug, scope="folder:Agent", unlock="stored", master=MASTER):
@@ -138,7 +148,10 @@ class Run:
         )
 
     def bw(self, account) -> bwcli.Bw:
-        return bwcli.Bw(account, self.data_root, self.secrets_root, bw_path=str(FAKE_BW))
+        return bwcli.Bw(account, self.data_root, self.secrets_root, bw_path=str(FAKE_BW), extra_env=self.extra_env)
+
+    def offered_stderr(self) -> str:
+        return self.stderr_file.read_text(encoding="utf-8") if self.stderr_file.exists() else ""
 
     def log_lines(self) -> list[dict]:
         if not self.log_file.exists():
@@ -149,6 +162,7 @@ class Run:
         self.errors.append(str(exc))
         self.errors.append(repr(exc))
         self.errors.append("".join(traceback.format_exception(exc)))
+        self.errors.append(reachable_text(exc))
 
     def expect_clean(self, extra_text: str = "", extra_secrets=()) -> None:
         texts = [extra_text, *self.errors]
@@ -157,11 +171,39 @@ class Run:
         for path in self.tmp.rglob("*"):
             # The fake's own state and vault stand in for Bitwarden's servers, and
             # secrets/ holds the inputs.
-            if path.is_file() and path.name not in ("vault.json", "fake-bw-state.json") and "secrets" not in path.parts:
+            if (path.is_file() and path.name not in ("vault.json", "fake-bw-state.json", "fake-bw-stderr.log")
+                    and "secrets" not in path.parts):
                 texts.append(path.read_text(encoding="utf-8", errors="replace"))
         blob = "\n".join(texts)
         for value in (*SECRETS, *extra_secrets):
             expect(value not in blob, "a synthetic secret appeared in captured output")
+
+
+def reachable_text(exc: BaseException) -> str:
+    """repr of everything a handler can reach from ``exc``: the chain, each exception's
+    attributes, and the locals of every broker frame in each traceback."""
+    out, seen, todo = [], set(), [exc]
+    while todo:
+        e = todo.pop()
+        if e is None or id(e) in seen:
+            continue
+        seen.add(id(e))
+        out.append(repr(e.args))
+        out.append(repr(vars(e)))
+        for attr in ("stdout", "stderr", "output", "doc"):
+            out.append(repr(getattr(e, attr, None)))
+        tb = e.__traceback__
+        while tb is not None:
+            frame = tb.tb_frame
+            if frame.f_code.co_filename.startswith(BROKER_DIR):
+                out.append(repr(dict(frame.f_locals)))
+            tb = tb.tb_next
+        todo.extend((e.__context__, e.__cause__))
+    return "\n".join(out)
+
+
+def expect_no_chain(exc: BaseException, msg: str) -> None:
+    expect(exc.__context__ is None and exc.__cause__ is None, f"{msg}: BwError has a chained exception")
 
 
 @contextlib.contextmanager
@@ -188,6 +230,7 @@ def expect_bw_error(run: Run, fn, error_class: str, msg: str) -> bwcli.BwError:
         run.record(exc)
         expect(exc.error_class == error_class, f"{msg}: got {exc.error_class}, want {error_class}")
         expect(str(exc) == error_class, f"{msg}: BwError text is only its class")
+        expect_no_chain(exc, msg)
         return exc
     fail(f"{msg}: no BwError")
 
@@ -228,6 +271,12 @@ def test_account_file_tolerance() -> None:
         write_env(d, "dup.env", good + "BW_MODE=local\n")
         write_env(d, "bad-scope.env", good + "BW_SCOPE=everything\n")
         write_env(d, "bad-secrets-scope.env", good + "BW_SECRETS_ITEM_SCOPE=all\n")
+        write_env(d, "bad-collection.env", good + "BW_SCOPE=collection:--organizationid\n")
+        write_env(d, "bad-secrets-collection.env", good + "BW_SECRETS_ITEM_SCOPE='collection:a b'\n")
+        write_env(d, "server-query.env", good.replace("BW_MODE=cloud", "BW_MODE=selfhosted").replace(
+            "https://vault.bitwarden.com", "https://vault.example.com/?next=x"))
+        write_env(d, "server-fragment.env", good.replace("BW_MODE=cloud", "BW_MODE=selfhosted").replace(
+            "https://vault.bitwarden.com", "https://vault.example.com/#x"))
         (d / "README").write_text("not an account\n", encoding="utf-8")
 
         loaded, errors = accounts.load_dir(d)
@@ -249,6 +298,8 @@ def test_account_file_tolerance() -> None:
             "auto.env": "BW_UNLOCK", "unknown.env": "BW_FOO", "bad_slug.env": "slug",
             "plain-http.env": "BW_SERVER", "wrong-cloud.env": "BW_SERVER", "noid.env": "BW_CLIENTID",
             "dup.env": "BW_MODE", "bad-scope.env": "BW_SCOPE", "bad-secrets-scope.env": "BW_SECRETS_ITEM_SCOPE",
+            "bad-collection.env": "BW_SCOPE", "bad-secrets-collection.env": "BW_SECRETS_ITEM_SCOPE",
+            "server-query.env": "BW_SERVER", "server-fragment.env": "BW_SERVER",
         }
         expect(len(errors) == len(want), f"{len(errors)} errors: {errors}")
         for name, key in want.items():
@@ -283,6 +334,21 @@ def test_normalize_origin() -> None:
 
 
 def test_bw_invocation() -> None:
+    planted = {"LEAKY_TOKEN": LEAKY_ENV, "BW_SESSION": LEAKY_ENV, "BW_PASSWORD": LEAKY_ENV,
+               "FAKE_BW_LOG": "/nonexistent/broker-env.log", "LC_ALL": "C.UTF-8"}
+    saved = {k: os.environ.get(k) for k in planted}
+    os.environ.update(planted)
+    try:
+        _test_bw_invocation()
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def _test_bw_invocation() -> None:
     with tempfile.TemporaryDirectory() as tmp, captured() as out:
         run = Run(Path(tmp))
         acct = run.account("personal")
@@ -291,9 +357,12 @@ def test_bw_invocation() -> None:
         bw.login()
         bw.unlock()
         expect(bw.state == "unlocked", f"state {bw.state}")
+        state = repr(vars(bw))
+        expect(MASTER not in state and CLIENT_SECRET not in state, "a credential is kept on the Bw object")
         bw.sync()
         password = bw.get_password(item_id("A"))
         expect(password == ITEM_PASSWORDS["A"], "get_password")
+        expect(bw.get_password(item_id("H")) == ITEM_PASSWORDS["H"], "get_password strips only bw's newline")
         code = bw.get_totp(item_id("A"))
         expect(len(code) == 6 and code.isdigit(), "get_totp")
         expect_bw_error(run, lambda: bw.get_totp(item_id("B")), "unknown", "no TOTP on item B")
@@ -308,7 +377,15 @@ def test_bw_invocation() -> None:
         unlock = next(line for line in lines if line["argv"][:1] == ["unlock"])
         expect(unlock["argv"] == ["unlock", "--passwordenv", "BW_PW", "--raw"], f"unlock argv {unlock['argv']}")
         expect(unlock["env"] == ["BW_PW"], f"unlock env {unlock['env']}")
+        allowed = bwcli.ENV_ALLOW | {"BITWARDENCLI_APPDATA_DIR", "BW_NOINTERACTION", "BW_CLIENTID",
+                                     "BW_CLIENTSECRET", "BW_PW", "BW_SESSION", *run.extra_env}
         for line in lines:
+            names = set(line["env_names"])
+            # The interpreter running the fake may add a few of its own (macOS adds __CF_USER_TEXT_ENCODING).
+            extra = {n for n in names - allowed if not n.startswith(("LC_", "__CF", "__PYVENV"))}
+            expect(not extra, f"bw saw variables outside the allowlist: {sorted(extra)}")
+            expect("LEAKY_TOKEN" not in names and "BW_PASSWORD" not in names, "broker env leaked into bw")
+            expect("LC_ALL" in names, "LC_* passed through")
             expect(line["appdata"] == str(run.data_root / "personal"), "per-account BITWARDENCLI_APPDATA_DIR")
             expect(line["nointeraction"], "BW_NOINTERACTION set")
             if line["argv"][:1] in (["sync"], ["get"], ["list"]):
@@ -316,12 +393,18 @@ def test_bw_invocation() -> None:
 
         session = bw._session
         expect(session and session not in run.log_file.read_text(encoding="utf-8"), "session key never logged")
+        twin = run.bw(acct)
+        expect(twin._lock is bw._lock, "two Bw objects for one account share a lock")
+        twin.lock()  # bw lock drops every session for this data dir, as bw does
+        bw.lock()
+        expect(session not in repr(vars(bw)), "session key kept after lock")
 
         # A second instance (broker restart) reuses the data dir: no second config, login is a no-op.
         before = len(lines)
         again = run.bw(acct)
         again.login()
         again.unlock()
+        expect({i["id"] for i in again.cached_items()} == {item_id(n) for n in "ADEG"}, "unlock lists the folder's logins")
         later = [line["argv"][:2] for line in run.log_lines()[before:]]
         expect(["config", "server"] not in later, f"config server ran again: {later}")
         expect(again.state == "unlocked", "restart unlocks again with the stored password")
@@ -344,6 +427,7 @@ def test_scope_filtering() -> None:
             bws[slug].login()
             bws[slug].unlock()
         v = vault.Vault(bws, vault.Denylist(run.tmp / "broker" / "denylist.json"))
+        calls = len(run.log_lines())
         got: dict[str, set] = {}
         for meta in v.items():
             got.setdefault(meta.account, set()).add(meta.item_id)
@@ -351,6 +435,9 @@ def test_scope_filtering() -> None:
         expect(got.get("coll") == {item_id("C")}, f"collection scope {got.get('coll')}")
         expect(got.get("every") == {item_id(n) for n in "ABCE"}, f"all scope {got.get('every')}")
         expect("nofolder" not in got, "missing folder lists nothing")
+        v.items()
+        v.get(f"bwbroker:folder/{item_id('A')}")
+        expect(len(run.log_lines()) == calls, "Vault.items() or get() ran bw")
 
         a = v.get(f"bwbroker:folder/{item_id('A')}")
         expect(a is not None and a.handle == f"bwbroker:folder/{item_id('A')}", "get by handle")
@@ -393,15 +480,18 @@ def test_no_uri_items_hidden() -> None:
 
 
 def test_429_backoff() -> None:
-    for retry_after, want in ((120, 120), (None, 60)):
+    for retry_after, want, good_syncs in ((120, 120, 1), (None, 60, 0)):
         with tempfile.TemporaryDirectory() as tmp, captured() as out:
-            run = Run(Path(tmp), rate_limit_after=1, retry_after=retry_after)
+            run = Run(Path(tmp), rate_limit_after=1 + good_syncs, retry_after=retry_after)
             bw = run.bw(run.account("personal"))
-            bw.login()  # the one allowed server call
+            bw.login()  # server call 1
             bw.unlock()
+            for _ in range(good_syncs):
+                bw.sync()
             v = vault.Vault({"personal": bw}, vault.Denylist(run.tmp / "denylist.json"))
             first = v.items()
             expect(len(first) == 2, f"listed {len(first)}")
+            cached = bw.cached_items()
             start = time.monotonic()
             expect_bw_error(run, bw.sync, "rate_limited", "429 on sync")
             expect(want - 5 <= bw.retry_at - start <= want + 1, f"retry_at {bw.retry_at - start:.0f}s, want {want}")
@@ -409,6 +499,7 @@ def test_429_backoff() -> None:
             expect_bw_error(run, bw.sync, "rate_limited", "sync during backoff")
             expect(len(run.log_lines()) == calls, "sync during backoff ran bw")
             expect(v.items() == first, "items served from the last list during backoff")
+            expect(bw.list_items() == cached, "list_items during backoff")
             expect(len(run.log_lines()) == calls, "listing during backoff ran bw")
             expect(bw.state == "unlocked" and bw.error_class == "rate_limited", f"{bw.state}/{bw.error_class}")
             run.expect_clean(out.getvalue())
@@ -420,6 +511,7 @@ def test_errors_carry_no_text() -> None:
         stored = run.bw(run.account("stored", master=WRONG_PASSWORD))
         stored.login()
         expect_bw_error(run, stored.unlock, "auth", "wrong stored password")
+        expect(WRONG_PASSWORD in run.offered_stderr(), "the fake did not put the password in its stderr")
         expect(stored.state == "error" and stored.error_class == "auth", f"{stored.state}/{stored.error_class}")
 
         manual = run.bw(run.account("manual", unlock="manual"))
@@ -429,7 +521,67 @@ def test_errors_carry_no_text() -> None:
         expect_bw_error(run, lambda: run.bw(run.account("nologin", unlock="manual")).sync(), "locked",
                         "sync before unlock")
         broken = bwcli.Bw(run.account("broken"), run.data_root, run.secrets_root, bw_path=str(run.tmp / "no-bw"))
+        try:
+            bwcli.Bw(run.account("bad-extra"), run.data_root, run.secrets_root, extra_env={"BW_PW": "x"})
+            fail("extra_env accepted a BW_* variable")
+        except ValueError:
+            pass
         expect_bw_error(run, broken.login, "unknown", "missing bw executable")
+        run.expect_clean(out.getvalue())
+
+
+def test_exception_context_holds_no_secrets() -> None:
+    with tempfile.TemporaryDirectory() as tmp, captured() as out:
+        run = Run(Path(tmp), hang_sync=WRONG_PASSWORD)
+        bw = run.bw(run.account("personal"))
+        bw.login()
+        bw.unlock()
+        old_timeout, bwcli.TIMEOUT_SECONDS = bwcli.TIMEOUT_SECONDS, 2
+        try:
+            exc = expect_bw_error(run, bw.sync, "network", "bw timing out")
+        finally:
+            bwcli.TIMEOUT_SECONDS = old_timeout
+        expect(WRONG_PASSWORD in run.offered_stderr(), "the fake did not write before hanging")
+        text = reachable_text(exc)
+        expect(WRONG_PASSWORD not in text, "timeout output reachable from BwError")
+        expect(bw._session not in text, "the timed-out call's session env reachable from BwError")
+        expect(bw.state == "unlocked" and len(bw.cached_items()) == 4, "a failed sync keeps the last list")
+
+        data = json.loads(run.vault_file.read_text(encoding="utf-8"))
+        data["truncate_lists"] = True
+        run.vault_file.write_text(json.dumps(data), encoding="utf-8")
+        exc = expect_bw_error(run, bw.list_items, "unknown", "truncated list JSON")
+        expect(ITEM_PASSWORDS["A"] not in reachable_text(exc), "bw list output reachable from BwError")
+
+        failed = run.bw(run.account("wrong", master=WRONG_PASSWORD))
+        failed.login()
+        exc = expect_bw_error(run, failed.unlock, "auth", "wrong password")
+        text = reachable_text(exc)
+        expect(WRONG_PASSWORD not in text and CLIENT_SECRET not in text, "a credential is reachable from BwError")
+        run.expect_clean(out.getvalue())
+
+
+def test_node_warning_noise() -> None:
+    expect(bwcli.classify(NODE_WARNING + "Not found.") == ("unknown", None), "PID read as a status code")
+    expect(bwcli.classify(NODE_WARNING + "Too Many Requests (429). Retry-After: 120") == ("rate_limited", 120), "429")
+    expect(bwcli.classify("Request failed with status code 429") == ("rate_limited", 60), "status code 429")
+    expect(bwcli.classify("Request failed with status code 401") == ("auth", None), "status code 401")
+    expect(bwcli.classify("connect ECONNREFUSED 10.0.0.1:443") == ("network", None), "network")
+    expect(bwcli.classify("Item 401 is locked in a drawer") == ("unknown", None), "bare words")
+    with tempfile.TemporaryDirectory() as tmp, captured() as out:
+        run = Run(Path(tmp), stderr_prefix=NODE_WARNING)
+        bw = run.bw(run.account("personal"))
+        bw.login()
+        bw.unlock()
+        expect_bw_error(run, lambda: bw.get_totp(item_id("B")), "unknown", "no TOTP behind a Node warning")
+        expect_bw_error(run, lambda: bw.get_password("ffffffff-0000-4000-8000-000000000000"), "unknown",
+                        "not found behind a Node warning")
+        expect("4014290" in run.offered_stderr(), "the fake did not print the warning")
+        expect(bw.state == "unlocked" and bw.error_class == "" and bw.retry_at is None, "account state changed")
+        expect(bw.get_password(item_id("A")) == ITEM_PASSWORDS["A"], "session kept")
+        manual = run.bw(run.account("manual", unlock="manual"))
+        manual.login()
+        expect_bw_error(run, lambda: manual.unlock(WRONG_PASSWORD), "auth", "wrong password behind a warning")
         run.expect_clean(out.getvalue())
 
 
@@ -482,6 +634,8 @@ def main() -> None:
     test_no_uri_items_hidden()
     test_429_backoff()
     test_errors_carry_no_text()
+    test_exception_context_holds_no_secrets()
+    test_node_warning_noise()
     test_manual_unlock_and_lock()
     test_denylist()
     print("ok")

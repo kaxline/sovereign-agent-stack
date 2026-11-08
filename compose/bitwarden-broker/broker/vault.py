@@ -4,7 +4,9 @@ A handle is ``bwbroker:<slug>/<item id>``. An item is listed only when it is a
 login with at least one http or https URI whose match type is not "Never"
 (``match: 5``); those URIs, normalized by ``origins.normalize_origin``, are its
 fill origins. Handles on the denylist are neither listed nor returned by
-``get``. A locked or failing account contributes no items.
+``get``. Items come from each account's cached list (``Bw.cached_items``), which
+``unlock()`` and ``sync()`` refresh, so listing never runs bw. A locked account
+contributes no items.
 """
 
 from __future__ import annotations
@@ -16,7 +18,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from .bwcli import Bw, BwError
+from .bwcli import Bw
 from .origins import normalize_origin
 
 HANDLE_PREFIX = "bwbroker:"
@@ -109,14 +111,10 @@ class Vault:
 
     def _account_items(self, slug: str) -> list[ItemMeta]:
         bw = self.bw_by_slug.get(slug)
-        if bw is None or bw.state != "unlocked":
-            return []
-        try:
-            raw = bw.list_items()
-        except BwError:
+        if bw is None:
             return []
         out = []
-        for item in raw:
+        for item in bw.cached_items():
             item_origins = fill_origins(item["uris"])
             if not item_origins:
                 continue

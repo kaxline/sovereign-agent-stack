@@ -20,6 +20,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 SLUG_RE = re.compile(r"[a-z0-9-]+")
+# Bitwarden item, folder and collection ids are GUIDs; this also keeps a flag-like value out of bw's argv.
+ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,63}")
 MODES = ("cloud", "selfhosted", "local")
 UNLOCKS = ("stored", "manual")
 CLOUD_SERVERS = ("https://vault.bitwarden.com", "https://vault.bitwarden.eu")
@@ -67,8 +69,11 @@ def _scope(value: str, allow_all: bool) -> tuple[str, str | None] | None:
     if value == "all":
         return ("all", None) if allow_all else None
     kind, sep, rest = value.partition(":")
-    if sep and kind in ("folder", "collection") and rest.strip():
-        return kind, rest.strip()
+    rest = rest.strip()
+    if not sep or not rest:
+        return None
+    if kind == "folder" or (kind == "collection" and ID_RE.fullmatch(rest)):
+        return kind, rest
     return None
 
 
@@ -79,6 +84,8 @@ def _server(mode: str, value: str) -> str | None:
     except ValueError:
         return None
     if parts.scheme != "https" or not parts.hostname or parts.username or parts.password:
+        return None
+    if parts.query or parts.fragment or "?" in server or "#" in server:
         return None
     if mode == "cloud" and server not in CLOUD_SERVERS:
         return None
@@ -125,7 +132,7 @@ def parse_file(path: Path) -> Account:
     server = _server(mode, values["BW_SERVER"])
     if server is None:
         allowed = {"cloud": " ".join(CLOUD_SERVERS), "local": LOCAL_SERVER}.get(mode, "an https:// URL")
-        raise AccountError(f"{name}: BW_SERVER: for mode {mode} must be {allowed}")
+        raise AccountError(f"{name}: BW_SERVER: for mode {mode} must be {allowed}, with no query or fragment")
     scope = _scope(values.get("BW_SCOPE") or DEFAULT_SCOPE, allow_all=True)
     if scope is None:
         raise AccountError(f"{name}: BW_SCOPE: must be folder:<name>, collection:<id> or all")

@@ -4,14 +4,20 @@
 FAKE_BW_VAULT names a JSON file: ``items``, ``folders``, ``collections``,
 ``master_password``, optional ``client_secret`` (checked on login when set),
 ``email``, ``rate_limit_after`` (server calls allowed before every further one
-gets a 429) and ``retry_after`` (seconds printed with the 429). Commands that
-write to the vault rewrite that file. Per-data-dir state (server, login,
+gets a 429), ``retry_after`` (seconds printed with the 429), ``stderr_prefix``
+(printed before every error, for Node warning lines), ``hang_sync`` (sync
+writes this text to stdout and stderr, then sleeps 30 s) and ``truncate_lists``
+(list output is cut short, so it is not valid JSON). Commands that write to the
+vault rewrite that file. Per-data-dir state (server, login,
 session keys, server call count) lives in
 ``$BITWARDENCLI_APPDATA_DIR/fake-bw-state.json``.
 
 FAKE_BW_LOG, when set, gets one JSON line per call: argv with session keys and
-encoded JSON masked, the names (never values) of the secret variables in the
-environment, the data dir, and whether BW_NOINTERACTION was set.
+encoded JSON masked, the names (never values) of the secret variables and of
+every variable in the environment, the data dir, and whether BW_NOINTERACTION
+was set. FAKE_BW_STDERR_LOG, when set, gets a copy of everything written to
+stderr, so a test can show a leak was really offered before checking it was
+dropped.
 
 Exit codes and stderr follow bw's shape: 0 and output on stdout, or 1 and a
 one-line message on stderr. A failed unlock echoes the password it was given
@@ -57,11 +63,20 @@ def log(argv: list[str]) -> None:
     entry = {
         "argv": masked,
         "env": sorted(k for k in SECRET_ENV if k in os.environ),
+        "env_names": sorted(os.environ),
         "appdata": os.environ.get("BITWARDENCLI_APPDATA_DIR"),
         "nointeraction": os.environ.get("BW_NOINTERACTION") == "true",
     }
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
+
+
+def emit_stderr(message: str) -> None:
+    sys.stderr.write(message)
+    sys.stderr.flush()
+    if os.environ.get("FAKE_BW_STDERR_LOG"):
+        with open(os.environ["FAKE_BW_STDERR_LOG"], "a", encoding="utf-8") as f:
+            f.write(message)
 
 
 def _is_encoded(arg: str) -> bool:
@@ -201,6 +216,11 @@ def logout(ctx, pos):
 def sync(ctx, pos):
     ctx.need_session()
     ctx.server_call()
+    if ctx.vault.get("hang_sync"):
+        sys.stdout.write(ctx.vault["hang_sync"] + "\n")
+        sys.stdout.flush()
+        emit_stderr(ctx.vault["hang_sync"] + "\n")
+        time.sleep(30)
     return "Syncing complete."
 
 
@@ -216,7 +236,7 @@ def list_cmd(ctx, pos):
         rows = [r for r in rows if coll in (r.get("collectionIds") or [])]
     if (org := ctx.opts.get("--organizationid")) is not None:
         rows = [r for r in rows if r.get("organizationId") == org]
-    return json.dumps(rows)
+    return json.dumps(rows)[:-3] if ctx.vault.get("truncate_lists") else json.dumps(rows)
 
 
 def get_cmd(ctx, pos):
@@ -318,7 +338,12 @@ def main(argv: list[str]) -> int:
             raise Fail(f"fake-bw: unsupported command {' '.join(pos[:2])}")
         out = handler(Ctx(opts), pos)
     except Fail as exc:
-        print(str(exc), file=sys.stderr)
+        prefix = ""
+        try:
+            prefix = json.loads(Path(os.environ["FAKE_BW_VAULT"]).read_text(encoding="utf-8")).get("stderr_prefix") or ""
+        except (KeyError, OSError, ValueError):
+            pass
+        emit_stderr(prefix + str(exc) + "\n")
         return 1
     if out:
         print(out)

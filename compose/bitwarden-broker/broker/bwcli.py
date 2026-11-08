@@ -1,16 +1,23 @@
 """The one place the broker runs the ``bw`` CLI.
 
-One ``Bw`` per account. Each has its own ``BITWARDENCLI_APPDATA_DIR`` under
-``data_root/<slug>/`` and one lock that every call takes, so an account's bw
-commands never overlap. Secrets reach bw only through the child environment
-built for that call (``BW_CLIENTID``/``BW_CLIENTSECRET`` for login, ``BW_PW``
-with ``--passwordenv BW_PW`` for unlock, ``BW_SESSION`` afterwards), never
-argv. The client secret and master password are read from
-``secrets_root/<slug>/`` at the moment of use and held only in locals. The
-session key lives on the instance and nowhere else.
+One ``Bw`` per account. Each account has its own ``BITWARDENCLI_APPDATA_DIR``
+under ``data_root/<slug>/`` and one lock, keyed on that directory, that every
+call takes, so an account's bw commands never overlap even across ``Bw``
+objects. Secrets reach bw only through the child environment built for that
+call (``BW_CLIENTID``/``BW_CLIENTSECRET`` for login, ``BW_PW`` with
+``--passwordenv BW_PW`` for unlock, ``BW_SESSION`` afterwards), never argv.
+The rest of that environment is an allowlist. The client secret and master
+password are read from ``secrets_root/<slug>/`` at the moment of use, and the
+dicts that carry them are cleared once bw exits, so a traceback's frames do not
+keep them. The session key lives on the instance and nowhere else.
 
-bw's stdout and stderr stay inside ``_exec``. A failure raises
-``BwError(error_class)``, whose text is the class name alone.
+bw's stdout and stderr stay inside ``_exec`` and ``_run``. A failure raises
+``BwError(error_class)``, whose text is the class name alone, with no chained
+exception (``__context__`` and ``__cause__`` are None).
+
+``unlock()`` and ``sync()`` refresh a cached list of login-item metadata.
+``cached_items()`` serves it without running bw, and the list stays until a new
+one replaces it or the account locks.
 """
 
 from __future__ import annotations
@@ -23,27 +30,44 @@ import threading
 import time
 from pathlib import Path
 
-from .accounts import Account
+from .accounts import ID_RE, Account
 
 ERROR_CLASSES = ("auth", "locked", "network", "rate_limited", "unknown")
 TIMEOUT_SECONDS = 120
 DEFAULT_RETRY_AFTER = 60
 MAX_RETRY_AFTER = 3600
 SERVER_MARKER = ".broker-server"
-_ITEM_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,63}")
+ENV_ALLOW = frozenset({
+    "PATH", "HOME", "LANG", "TZ", "NODE_EXTRA_CA_CERTS",
+    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
+})
 _RETRY_AFTER = re.compile(r"retry-after[\"']?\s*[:=]?\s*(\d+)")
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+# Node prints deprecation and experimental warnings, with its PID, before bw's own message.
+_NOISE = re.compile(r"^\s*(\(node:\d+\)|\(use `node|$)", re.IGNORECASE)
 
-# Checked in order against bw's lower-cased stderr.
-_PATTERNS = (
-    ("rate_limited", ("429", "too many requests", "rate limit")),
-    ("auth", ("invalid master password", "username or password is incorrect", "client_id or client_secret",
-              "invalid_client", "invalid_grant", "you are not logged in", "not logged in", "unauthorized",
-              "api key", "401")),
-    ("locked", ("vault is locked", "session key is invalid", "locked")),
-    ("network", ("econnrefused", "econnreset", "enotfound", "etimedout", "eai_again", "getaddrinfo",
-                 "fetch failed", "socket hang up", "network", "certificate", "self-signed", "self signed",
-                 "unable to verify")),
-)
+# Checked in order against bw's lower-cased stderr with the noise lines removed.
+_PATTERNS = tuple((cls, re.compile("|".join(parts))) for cls, parts in (
+    ("rate_limited", (r"too many requests", r"\b(?:status|http|code)\b\D{0,3}429\b", r"\b429\b\s*too many")),
+    ("auth", (r"invalid master password", r"username or password is incorrect",
+              r"client_id or client_secret is incorrect", r"\binvalid_client\b", r"\binvalid_grant\b",
+              r"you are not logged in", r"\b401\b\s*unauthorized", r"\bunauthorized\b\s*\(?401\b",
+              r"\b(?:status|http|code)\b\D{0,3}401\b")),
+    ("locked", (r"vault is locked", r"session key is invalid")),
+    ("network", (r"\b(?:econnrefused|econnreset|enotfound|etimedout|eai_again|ehostunreach|enetunreach)\b",
+                 r"\bgetaddrinfo\b", r"fetch failed", r"socket hang up",
+                 r"unable to verify the first certificate", r"self[- ]signed certificate",
+                 r"certificate has expired")),
+))
+
+_LOCKS: dict[str, threading.Lock] = {}
+_LOCKS_GUARD = threading.Lock()
+
+
+def _account_lock(data_dir: Path) -> threading.Lock:
+    key = os.path.realpath(data_dir)
+    with _LOCKS_GUARD:
+        return _LOCKS.setdefault(key, threading.Lock())
 
 
 class BwError(Exception):
@@ -54,19 +78,22 @@ class BwError(Exception):
         self.error_class = error_class
 
 
-def _classify(stderr: str) -> str:
-    text = stderr.lower()
-    for error_class, needles in _PATTERNS:
-        if any(n in text for n in needles):
-            return error_class
-    return "unknown"
+def _clean(stderr: str) -> str:
+    lines = _ANSI.sub("", stderr).lower().splitlines()
+    return "\n".join(line for line in lines if not _NOISE.match(line))
 
 
-def _retry_after(stderr: str) -> int:
-    match = _RETRY_AFTER.search(stderr.lower())
-    if not match:
-        return DEFAULT_RETRY_AFTER
-    return max(1, min(int(match.group(1)), MAX_RETRY_AFTER))
+def classify(stderr: str) -> tuple[str, int | None]:
+    """Return the error class for bw's stderr and, for a 429, the seconds to wait."""
+    text = _clean(stderr)
+    for error_class, pattern in _PATTERNS:
+        if pattern.search(text):
+            if error_class != "rate_limited":
+                return error_class, None
+            match = _RETRY_AFTER.search(text)
+            wait = int(match.group(1)) if match else DEFAULT_RETRY_AFTER
+            return error_class, max(1, min(wait, MAX_RETRY_AFTER))
+    return "unknown", None
 
 
 def _sanitize(item: dict) -> dict | None:
@@ -92,13 +119,19 @@ def _sanitize(item: dict) -> dict | None:
 
 
 class Bw:
-    def __init__(self, account: Account, data_root: Path, secrets_root: Path, bw_path: str = "bw"):
+    def __init__(self, account: Account, data_root: Path, secrets_root: Path, bw_path: str = "bw",
+                 extra_env: dict[str, str] | None = None):
+        """``extra_env`` adds non-secret variables to bw's environment (tests pass FAKE_BW_*)."""
+        extra_env = dict(extra_env or {})
+        if any(k.startswith("BW_") for k in extra_env):
+            raise ValueError("extra_env must not set BW_* variables")
         self.account = account
         self.data_dir = Path(data_root) / account.slug
         self.secrets_dir = Path(secrets_root) / account.slug
         self.bw_path = bw_path
+        self.extra_env = extra_env
         self.retry_at: float | None = None  # time.monotonic() before which no bw call runs
-        self._lock = threading.Lock()
+        self._lock = _account_lock(self.data_dir)
         self._session: str | None = None
         self._logged_in = False
         self._items: list[dict] | None = None
@@ -113,33 +146,52 @@ class Bw:
     def error_class(self) -> str:
         return self._error_class
 
+    def cached_items(self) -> list[dict]:
+        """The last listed items, without running bw or waiting for the lock; [] unless unlocked."""
+        items = self._items
+        if self._state != "unlocked" or items is None:
+            return []
+        return [dict(i) for i in items]
+
     # Every helper below runs with self._lock held.
 
     def _read_secret(self, name: str) -> str:
+        value = None
         try:
             value = (self.secrets_dir / name).read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
-            raise BwError("auth") from None
-        value = value[:-1] if value.endswith("\n") else value
-        value = value[:-1] if value.endswith("\r") else value
+            pass
+        if value is not None and value.endswith("\n"):
+            value = value[:-1]
+        if value is not None and value.endswith("\r"):
+            value = value[:-1]
         if not value:
             raise BwError("auth")
         return value
 
     def _exec(self, args: list[str], secret_env: dict[str, str]) -> tuple[int, str, str]:
-        env = {k: v for k, v in os.environ.items() if not k.startswith("BW_")}
+        env = {k: v for k, v in os.environ.items() if k in ENV_ALLOW or k.startswith("LC_")}
+        env.update(self.extra_env)
         env["BITWARDENCLI_APPDATA_DIR"] = str(self.data_dir)
         env["BW_NOINTERACTION"] = "true"
         env.update(secret_env)
+        proc = None
+        failure = None
         try:
             proc = subprocess.run(
                 [self.bw_path, *args], env=env, stdin=subprocess.DEVNULL, capture_output=True,
                 text=True, encoding="utf-8", errors="replace", timeout=TIMEOUT_SECONDS,
             )
         except subprocess.TimeoutExpired:
-            raise BwError("network") from None
+            failure = "network"
         except OSError:
-            raise BwError("unknown") from None
+            failure = "unknown"
+        finally:
+            env.clear()
+        # Raised here, outside the except blocks, so the BwError has no __context__
+        # (a TimeoutExpired carries bw's partial stdout and stderr).
+        if failure is not None:
+            raise BwError(failure)
         return proc.returncode, proc.stdout or "", proc.stderr or ""
 
     def _fail(self, error_class: str) -> BwError:
@@ -158,19 +210,22 @@ class Bw:
         return BwError(error_class)
 
     def _run(self, args: list[str], secret_env: dict[str, str] | None = None, ok_if: tuple[str, ...] = ()) -> str:
-        if self.retry_at is not None:
-            if time.monotonic() < self.retry_at:
-                raise self._fail("rate_limited")
-            self.retry_at = None
-        code, stdout, stderr = self._exec(args, secret_env or {})
-        if code == 0:
+        secret_env = secret_env if secret_env is not None else {}
+        try:
+            if self.retry_at is not None:
+                if time.monotonic() < self.retry_at:
+                    raise self._fail("rate_limited")
+                self.retry_at = None
+            code, stdout, stderr = self._exec(args, secret_env)
+        finally:
+            # The callers' dicts hold the client secret or master password.
+            secret_env.clear()
+        if code == 0 or (ok_if and any(p in stderr.lower() for p in ok_if)):
             return stdout
-        lowered = stderr.lower()
-        if any(p in lowered for p in ok_if):
-            return stdout
-        error_class = _classify(stderr)
-        if error_class == "rate_limited":
-            self.retry_at = time.monotonic() + _retry_after(stderr)
+        error_class, wait = classify(stderr)
+        stdout = stderr = None  # keep bw's text out of this frame before raising
+        if wait is not None:
+            self.retry_at = time.monotonic() + wait
         raise self._fail(error_class)
 
     def _session_env(self) -> dict[str, str]:
@@ -191,89 +246,53 @@ class Bw:
 
     def _login(self) -> None:
         self._configure()
-        client_secret = self._read_secret("client_secret")
-        env = {"BW_CLIENTID": self.account.client_id, "BW_CLIENTSECRET": client_secret}
-        del client_secret
+        env = {"BW_CLIENTID": self.account.client_id, "BW_CLIENTSECRET": self._read_secret("client_secret")}
         self._run(["login", "--apikey"], env, ok_if=("already logged in",))
         self._logged_in = True
 
     def _unlock(self, password: str | None) -> None:
-        if password is None:
-            if self.account.unlock != "stored":
+        try:
+            if password is None and self.account.unlock != "stored":
                 raise self._fail("locked")
-            password = self._read_secret("master_password")
-        if not self._logged_in:
-            self._login()
-        env = {"BW_PW": password}
-        del password
-        key = self._run(["unlock", "--passwordenv", "BW_PW", "--raw"], env).strip()
+            if not self._logged_in:
+                self._login()
+            env = {"BW_PW": password if password is not None else self._read_secret("master_password")}
+            password = None
+            key = self._run(["unlock", "--passwordenv", "BW_PW", "--raw"], env).strip()
+        finally:
+            password = None
         if not key:
             raise self._fail("unknown")
         self._session = key
-        self._items = None
+        key = None
         self._state = "unlocked"
         self._error_class = ""
-
-    # Public API: each method takes the account's lock once.
-
-    def login(self) -> None:
-        with self._lock:
-            self._login()
-
-    def unlock(self, password: str | None = None) -> None:
-        """Unlock with ``password``, or with the stored master password when it is None."""
-        with self._lock:
-            self._unlock(password)
-
-    def lock(self) -> None:
-        """Lock bw and forget the session key. The local state is locked even if bw fails."""
-        with self._lock:
-            session = self._session
-            self._session = None
-            self._items = None
-            self._state = "locked"
-            if session is not None:
-                try:
-                    self._run(["lock"], {"BW_SESSION": session})
-                except BwError:
-                    pass
-            self._state = "locked"
-
-    def sync(self) -> None:
-        with self._lock:
-            self._run(["sync"], self._session_env())
-            self._items = None
-            self._error_class = ""
+        self._refresh()
 
     def _list(self, what: str, extra: tuple[str, ...] = ()) -> list:
         out = self._run(["list", what, *extra], self._session_env())
+        data = None
         try:
             data = json.loads(out or "[]")
         except ValueError:
-            raise self._fail("unknown") from None
+            pass
+        out = None
         if not isinstance(data, list):
             raise self._fail("unknown")
         return data
 
-    def list_items(self) -> list[dict]:
-        """Login-item metadata within the account's scope, without passwords or TOTP seeds.
-
-        During a 429 backoff this returns the last list without running bw.
-        """
-        with self._lock:
-            if self._session is None:
-                raise self._fail("locked")
-            if self._items is not None and self.retry_at is not None and time.monotonic() < self.retry_at:
-                return [dict(i) for i in self._items]
-            kind, value = self.account.scope_kind, self.account.scope_value
+    def _refresh(self) -> list[dict]:
+        if self._session is None:
+            raise self._fail("locked")
+        kind, value = self.account.scope_kind, self.account.scope_value
+        raw: list = []
+        try:
             if kind == "folder":
                 folder_ids = [f.get("id") for f in self._list("folders")
                               if isinstance(f, dict) and f.get("name") == value and isinstance(f.get("id"), str)]
-                if not folder_ids:
-                    self._items = []
-                    return []
                 # Bitwarden allows several folders with one name; the scope covers all of them.
-                raw = [i for fid in folder_ids for i in self._list("items", ("--folderid", fid))]
+                for fid in folder_ids:
+                    raw.extend(self._list("items", ("--folderid", fid)))
                 keep = lambda i: i["folderId"] in folder_ids  # noqa: E731
             elif kind == "collection":
                 raw = self._list("items", ("--collectionid", value))
@@ -282,18 +301,67 @@ class Bw:
                 raw = self._list("items")
                 keep = lambda i: True  # noqa: E731
             items = [i for i in map(_sanitize, raw) if i is not None and i["type"] == 1 and keep(i)]
-            del raw
-            self._items = items
-            return [dict(i) for i in items]
+        finally:
+            raw = None  # full item JSON, passwords included
+        self._items = items
+        return [dict(i) for i in items]
+
+    # Public API: each method takes the account's lock once.
+
+    def login(self) -> None:
+        with self._lock:
+            self._login()
+
+    def unlock(self, password: str | None = None) -> None:
+        """Unlock with ``password``, or with the stored master password when it is None, then list items."""
+        try:
+            with self._lock:
+                self._unlock(password)
+        finally:
+            password = None
+
+    def lock(self) -> None:
+        """Lock bw and forget the session key and items. The account is locked even if bw fails."""
+        with self._lock:
+            env = {"BW_SESSION": self._session} if self._session is not None else None
+            self._session = None
+            self._items = None
+            if env is not None:
+                try:
+                    self._run(["lock"], env)
+                except BwError:
+                    pass
+            self._state = "locked"
+
+    def sync(self) -> None:
+        """Fetch from the server, then refresh the item list. On failure the last list stays."""
+        with self._lock:
+            self._run(["sync"], self._session_env())
+            self._error_class = ""
+            self._refresh()
+
+    def list_items(self) -> list[dict]:
+        """List login-item metadata within the account's scope, without passwords or TOTP seeds.
+
+        During a 429 backoff this returns the last list without running bw.
+        """
+        with self._lock:
+            if self._session is None:
+                raise self._fail("locked")
+            if self._items is not None and self.retry_at is not None and time.monotonic() < self.retry_at:
+                return [dict(i) for i in self._items]
+            return self._refresh()
 
     def _get(self, what: str, item_id: str) -> str:
-        if not isinstance(item_id, str) or not _ITEM_ID.fullmatch(item_id):
+        if not isinstance(item_id, str) or not ID_RE.fullmatch(item_id):
             raise BwError("unknown")
         return self._run(["get", what, item_id], self._session_env())
 
     def get_password(self, item_id: str) -> str:
         with self._lock:
-            return self._get("password", item_id).rstrip("\r\n")
+            value = self._get("password", item_id)
+        # bw ends its output with one newline; anything before it belongs to the password.
+        return value[:-1] if value.endswith("\n") else value
 
     def get_totp(self, item_id: str) -> str:
         with self._lock:
