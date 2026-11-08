@@ -30,6 +30,9 @@ Usage: scripts/crm.sh <command> [options]
         TWENTY_ACCESS=read gives Hermes chats the read-only key. Each key is
         checked with an MCP initialize; nothing is written if one fails.
   remove --slug S   Delete a workspace file (make hermes-reload drops it)
+  access --slug S read|write
+        What chats may do in a workspace: look things up (read) or make
+        changes (write). Sets TWENTY_ACCESS in its file; crm init keeps it.
   open [--slug S]   Open a workspace in the browser
   mode 0|1          Single- (0) or multi-workspace (1) local instance
   ensure            Create data dirs and sync flags (run by make ensure-local)
@@ -311,6 +314,31 @@ cmd_remove() {
   log "Next: make hermes-reload (drops crm-${slug} from Hermes)"
 }
 
+cmd_access() {
+  local slug="" access=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --slug) slug="${2:-}"; shift 2 ;;
+      read | write) access="$1"; shift ;;
+      *) die "usage: crm.sh access --slug S read|write" ;;
+    esac
+  done
+  valid_slug "$slug" || die "--slug must use lowercase letters, digits and hyphens"
+  [[ -n "$access" ]] || die "usage: crm.sh access --slug S read|write"
+  local file="${WS_DIR}/${slug}.env"
+  [[ -f "$file" ]] || die "no workspace '${slug}' in ${WS_DIR#"${ROOT}"/}"
+  if [[ "$access" == read && -z "$(ws_get "$file" TWENTY_KEY_RO)" ]]; then
+    die "${slug} has no TWENTY_KEY_RO; read access needs one"
+  fi
+  if [[ "$access" == write && -z "$(ws_get "$file" TWENTY_KEY_RW)" ]]; then
+    die "${slug} has no TWENTY_KEY_RW; write access needs one"
+  fi
+  upsert_env "$file" TWENTY_ACCESS "$access"
+  chmod 600 "$file"
+  log "Set TWENTY_ACCESS=${access} for ${slug}"
+  log "Next: make hermes-reload"
+}
+
 cmd_open() {
   local slug=""
   while [[ $# -gt 0 ]]; do
@@ -408,6 +436,7 @@ case "${1:-}" in
   init) shift; cmd_init "$@" ;;
   add) shift; cmd_add "$@" ;;
   remove) shift; cmd_remove "$@" ;;
+  access) shift; cmd_access "$@" ;;
   open) shift; cmd_open "$@" ;;
   mode) shift; cmd_mode "$@" ;;
   ensure) cmd_ensure ;;

@@ -13,7 +13,7 @@
 	calendar-test \
 	data-dir-show data-dir-set data-dir-migrate \
 	db-backup db-service-add db-psql todo-init todo-open dashboard-open \
-	crm-init crm-add crm-remove crm-open crm-mode \
+	crm-init crm-add crm-remove crm-access crm-open crm-mode \
 	coding-root-list coding-root-add \
 	context-root-list context-root-add opencode-smoke-fixture \
 	kb-eval-fixture kb-eval-fixture-remove \
@@ -142,6 +142,7 @@ todo-open:
 #   make crm-init [SLUG=main] [ROTATE=1]   local workspace + both Hermes keys
 #   make crm-add SLUG=name URL=https://... [FORCE=1]  a workspace on a remote Twenty
 #   make crm-remove SLUG=name              forget a workspace (file only)
+#   make crm-access SLUG=name ACCESS=read  look things up only (write: make changes)
 #   make crm-open [SLUG=name]              open a workspace in the browser
 #   make crm-mode MULTI=0|1                single- or multi-workspace local instance
 crm-init:
@@ -154,6 +155,10 @@ crm-add:
 crm-remove:
 	@test -n "$(SLUG)" || (echo "Usage: make crm-remove SLUG=<slug>"; exit 1)
 	./scripts/crm.sh remove --slug "$(SLUG)"
+
+crm-access:
+	@test -n "$(SLUG)" -a -n "$(ACCESS)" || (echo "Usage: make crm-access SLUG=<slug> ACCESS=read|write"; exit 1)
+	./scripts/crm.sh access --slug "$(SLUG)" "$(ACCESS)"
 
 crm-open:
 	@./scripts/crm.sh open $(if $(SLUG),--slug "$(SLUG)")

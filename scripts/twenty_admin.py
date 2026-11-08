@@ -258,10 +258,14 @@ def local_workspaces(ws_dir: Path) -> list[str]:
 
 
 def write_workspace_file(path: Path, values: dict[str, str]) -> None:
+    """Write the keys init owns. Every other line already in the file
+    (TWENTY_ACCESS, say, set by crm.sh access) is kept after them."""
+    kept = {k: v for k, v in read_env_file(path).items() if k not in values} if path.exists() else {}
     lines = [
         "# Written by make crm-init. Hermes registers it as mcp_servers.crm-"
         f"{path.stem}. See docs/crm.md.",
         *(f"{k}={v}" for k, v in values.items()),
+        *(f"{k}={v}" for k, v in kept.items()),
     ]
     tmp = path.with_name(f".{path.name}.tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

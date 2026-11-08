@@ -280,6 +280,19 @@ class CrmInit(unittest.TestCase):
         self.assertNotEqual(new["TWENTY_KEY_RW"], old["TWENTY_KEY_RW"])
         self.assertEqual(new["TWENTY_WORKSPACE_ID"], old["TWENTY_WORKSPACE_ID"])
 
+    def test_rotate_keeps_lines_init_does_not_own(self):
+        self.run_init()
+        path = self.ws / "main.env"
+        path.write_text(path.read_text() + "TWENTY_ACCESS=read\nTWENTY_EXTRA=kept\n")
+        self.stub.sign_up_error = "User already exists"
+        proc = self.run_init("--rotate")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        new = self.file("main")
+        self.assertEqual(new["TWENTY_ACCESS"], "read")
+        self.assertEqual(new["TWENTY_EXTRA"], "kept")
+        self.assertEqual(path.read_text().count("TWENTY_ACCESS="), 1)
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+
     def test_single_mode_refuses_second_workspace(self):
         self.run_init()
         self.stub.ops.clear()
