@@ -108,8 +108,8 @@ for port in ports:
         errors.append(f"actual-server publishes {port.get('published')}:{port.get('target')}, want 5006:5006")
 if not any(v.get("target") == "/data" for v in server.get("volumes") or []):
     errors.append("actual-server does not mount /data")
-if set(server.get("networks") or {}) != {"default", "budget"}:
-    errors.append(f"actual-server networks are {sorted(server.get('networks') or {})}, want ['budget', 'default']")
+if set(server.get("networks") or {}) != {"budget"}:
+    errors.append(f"actual-server networks are {sorted(server.get('networks') or {})}, want ['budget']")
 
 for name, write in (("actual-mcp-rw", True), ("actual-mcp-ro", False)):
     svc = services[name]

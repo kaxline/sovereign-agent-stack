@@ -134,7 +134,7 @@ The `budget` network holds `hermes`, `actual-server` and the two MCP
 containers, and nothing else. The MCP servers take requests without bearer
 auth, so network membership is the access control. The network isn't
 `internal`, because the MCP containers may need to reach a remote Actual
-server. `actual-server` is also on `default` for its published port.
+server.
 
 ## Where data lives
 
