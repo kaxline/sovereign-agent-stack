@@ -89,12 +89,14 @@ Two flags, because a remote budget needs the MCP containers but not the server:
   `builtin.flag`.
 - `ACTUAL_LOCAL_ENABLED` starts profile `budget-local`. The manifest has room for only one flag
   (an open question in the manifest spec, the same one Twenty raises), so this one is a
-  hand-wired row in `SERVICES` in `scripts/sync-profiles.sh`. When the manifest grows optional
-  services, it moves there.
+  hand-wired row in `SERVICES_CORE` in `scripts/sync-profiles.sh`. The manifest-roadmap work is
+  settling how a manifest declares a second flag (Twenty's `TWENTY_LOCAL_ENABLED` and Bitwarden's
+  `BITWARDEN_LOCAL_ENABLED` need it too). The row moves to the manifest when that shape lands.
+  `sync-profiles.sh` refuses a flag listed in both places, so the move can't register it twice.
 
 ## Budget file
 
-`compose/actual/budget.env`, mode 600, gitignored with the rest of `compose/actual/` except an
+`compose/actual/budget.env`, mode 600, gitignored with the rest of `compose/actual/` except a
 `budget.env.example`:
 
 ```bash
@@ -150,25 +152,44 @@ Port, transport, path and tool names come from S1. `egress` is `internet` becaus
 budget is outside the stack. `name` is `budget`, so tools appear as `mcp__budget__<tool>`; it is
 not on the reserved list.
 
-Financial data is not a `permissions.reads` class. Adding a `finance` class would, under the
-current validator rules, force `cron: false` and no `api-server`, which contradicts the chosen
-exposure. This spec leaves `reads` empty and says so in the manifest's `description`. Whether
-`finance` should be a class with its own, looser rules is a question for the manifest spec.
+### Open decision: is budget data a `reads` class?
+
+Budget data is personal, so it arguably belongs in `permissions.reads` as `finance`. Today the
+validator gives every `reads` add-on `cron: false` and no `api-server`, which would rule out the
+read-only access chosen for unattended runs. Bitwarden needs the same exception for credentials,
+behind `BITWARDEN_UNATTENDED`. Both come down to one policy question for Keith: may a
+personal-data add-on reach cron and `api-server` read-only? Mail and Messages stay `cron: false`
+and off `api-server` whatever the answer.
+
+Until that is decided, this spec leaves `reads` empty, says in the manifest's `description` that
+the add-on holds financial data, and does not touch the `reads` rules in `addon_manifest.py`. Then:
+
+- **If yes**, the manifest work adds the exception, and this manifest gains `"reads": ["finance"]`
+  with no other change.
+- **If no**, `reads` becomes `["finance"]`, `api-server` leaves `mcp.profiles`, `cron` becomes
+  `false`, and extension 4 is dropped from this work.
 
 ## Core extensions
 
 All in `scripts/lib/addon_manifest.py`, `register_addon_mcp_servers` in
 `compose/hermes/bootstrap-api-profile.sh`, and `scripts/test-addon-manifests.py`. GPT Researcher's
-written config must stay byte-identical.
+written config must stay byte-identical, and `addons/gptr/addon.json` doesn't change. The
+Bitwarden work may change the same files, so each extension is its own small commit, separate
+from the Actual-specific ones.
 
 1. **A service per access level.** `mcp.service` may be a string (today) or an object mapping
-   `ro` and `rw` to service keys. `mcp-plan` picks the URL from the profile's access level.
-   `addon_mcp_urls` lists both URLs, so `drop_mcp_entries_for_url` and parked retry see both.
+   `ro` and `rw` to service keys, as the SQL MCP's `sql-mcp-ro` and `sql-mcp-rw` already work.
+   Each service the map names needs a `port`. `mcp-plan` picks the URL from the profile's access
+   level. `addon_mcp_urls` lists both URLs, so turning the flag off drops both entries and parked
+   retry sees both.
 2. **`writeTools` left out of `ro` profiles.** The manifest spec already says this; the code
    registers `tools` unchanged today. `mcp-plan` prints `tools` minus `writeTools`, and `pin` minus
    `writeTools`, for `ro`. For Actual this is a second boundary behind the read-only container.
-3. **An access cap from the environment.** `mcp.env.access` names an env var. When it is `read`,
-   `rw` profiles get `ro`. It never raises `ro` to `rw`. This is `TWENTY_ACCESS` for add-ons, and
+3. **An access cap from the environment.** `mcp.env.access` names an env var. It fails closed:
+   `read` turns `rw` profiles into `ro`; `write` or an empty value keeps the manifest's level;
+   any other value gives the profile no entry at all, never `rw` or `ro`, so a value added later
+   (Twenty may gain `ask`, CR 0023 R3) can't widen access on an older stack. It never raises `ro`
+   to `rw`. This is how the bootstrap already treats `TWENTY_ACCESS`, and it
    lets Boundary offer "look things up only". The bootstrap services get `ACTUAL_ACCESS` from the
    budget file through `env_file` with `required: false`, so a changed file re-runs the bootstrap
    as Twenty's workspace files do.
@@ -178,7 +199,8 @@ written config must stay byte-identical.
    matches mail and Messages by URL) to also drop an add-on's server from
    `platform_toolsets.cron` on profiles where it registered `rw`, with the same
    managed-state file, so a list the user wrote by hand is edited rather than replaced. The
-   validator treats `"ro"` like `true` for its personal-data rules.
+   validator accepts `"ro"` only when `permissions.reads` is empty; a `reads` add-on still needs
+   `false`, pending the open decision above.
 
 The validator rejects an object `mcp.service` whose keys aren't a subset of `ro`/`rw` or whose
 values aren't `services` keys, and a `profiles` level with no matching service.
