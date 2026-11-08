@@ -19,7 +19,8 @@ image's python3, mounted at /bootstrap/addon_manifest.py.
         when the profile gets no entry) and `all_urls` lists every URL the
         add-on can register, sorted, so the bootstrap can drop the ones this
         profile must not have. Invalid manifests are reported on stderr and
-        skipped.
+        skipped. For a profile whose access is ro, tools and pins leave out
+        the manifest's writeTools.
 
 cron_fence() lists the MCP server names and URLs the bootstrap's
 fence_mail_from_cron keeps out of platform_toolsets.cron: every add-on whose
@@ -382,8 +383,14 @@ def mcp_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
             url = urls[""]
         else:
             url = urls.get(access) or urls.get("rw") or urls["ro"]
+        tools, pins = mcp["tools"], mcp.get("pin", [])
+        if access == "ro":
+            # A read-only profile never sees a write tool, listed or pinned.
+            write = set(mcp.get("writeTools", []))
+            tools = [t for t in tools if t not in write]
+            pins = [t for t in pins if t not in write]
         fields = [mcp["name"], manifest["title"], enabled, access, url, timeout, connect,
-                  mcp["transport"], " ".join(mcp["tools"]), " ".join(mcp.get("pin", [])),
+                  mcp["transport"], " ".join(tools), " ".join(pins),
                   " ".join(sorted(set(urls.values())))]
         if any("|" in f or "\n" in f for f in fields):
             print(f"warning: skipping {path.parent.name}: a value contains | or a newline",

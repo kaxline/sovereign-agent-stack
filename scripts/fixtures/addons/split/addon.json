@@ -40,7 +40,10 @@
       "get_b",
       "set_a"
     ],
-    "pin": [],
+    "pin": [
+      "get_a",
+      "set_a"
+    ],
     "writeTools": [
       "set_a"
     ],

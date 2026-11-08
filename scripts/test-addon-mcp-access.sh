@@ -12,7 +12,7 @@ ADDONS_DIR="$(mktemp -d)"
 mkdir "${ADDONS_DIR}/split"
 cp "${ROOT}/scripts/fixtures/addons/split/addon.json" "${ADDONS_DIR}/split/addon.json"
 
-for fn in addon_mcp_plan addon_mcp_urls register_addon_mcp_servers mcp_tool_name; do
+for fn in addon_mcp_plan addon_mcp_pin_args addon_mcp_urls register_addon_mcp_servers mcp_tool_name; do
   range='/^'"${fn}"'() {/,/^}/p'
   # shellcheck disable=SC1090
   eval "$(sed -n "$range" "$bootstrap")"
@@ -40,14 +40,20 @@ TOOLS="get_a get_b set_a"
 
 export SPLIT_MCP_ENABLED=1
 run ""; got
-[ "$calls" = "drop:default:${RO};register:default:split:${RW}:${TOOLS};pin:default:;" ] \
+[ "$calls" = "drop:default:${RO};register:default:split:${RW}:${TOOLS};pin:default:get_a set_a;" ] \
   || fail "default registers the rw URL after dropping ro ($calls)"
 run browser; got
-[ "$calls" = "drop:browser:${RO};register:browser:split:${RW}:${TOOLS};pin:browser:;" ] \
+[ "$calls" = "drop:browser:${RO};register:browser:split:${RW}:${TOOLS};pin:browser:get_a set_a;" ] \
   || fail "browser registers the rw URL after dropping ro ($calls)"
 run api-server; got
-[ "$calls" = "drop:api-server:${RW};register:api-server:split:${RO}:${TOOLS};pin:api-server:;" ] \
+[ "$calls" = "drop:api-server:${RW};register:api-server:split:${RO}:get_a get_b;pin:api-server:get_a;" ] \
   || fail "api-server registers the ro URL after dropping rw ($calls)"
+
+# set_a is a writeTool: no pin args for it on api-server either.
+[ "$(addon_mcp_pin_args api-server)" = " get_a mcp__split__get_a" ] \
+  || fail "api-server pin args leave out set_a ($(addon_mcp_pin_args api-server))"
+[ "$(addon_mcp_pin_args default)" = " get_a mcp__split__get_a set_a mcp__split__set_a" ] \
+  || fail "default pin args keep set_a ($(addon_mcp_pin_args default))"
 
 SPLIT_MCP_ENABLED=0
 for p in "" browser api-server; do
