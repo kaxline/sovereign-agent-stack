@@ -9,7 +9,9 @@ gets a 429), ``retry_after`` (seconds printed with the 429), ``stderr_prefix``
 writes this text to stdout and stderr, then sleeps 30 s) and ``truncate_lists``
 (list output is cut short, so it is not valid JSON), ``edit_gate`` (a path:
 edit waits until that file exists, up to 30 s) and ``refuse_edit`` (edit fails
-with this text). Commands that write to the vault rewrite that file. Per-data-dir state (server, login,
+with this text), ``members`` (organization members for ``list org-members``),
+``user_email`` and ``user_password`` (the account ``login <email> --passwordenv``
+signs in to, as bitwarden-setup does). Commands that write to the vault rewrite that file. Per-data-dir state (server, login,
 session keys, server call count) lives in
 ``$BITWARDENCLI_APPDATA_DIR/fake-bw-state.json``.
 
@@ -170,10 +172,12 @@ def config_server(ctx, pos):
 
 
 def login(ctx, pos):
-    if ctx.opts.get("--apikey") is not True:
-        raise Fail("fake-bw: only --apikey login is implemented")
     if ctx.state["logged_in"]:
         raise Fail(f"You are already logged in as {ctx.vault.get('email', 'agent@example.com')}.")
+    if len(pos) >= 2 and isinstance(ctx.opts.get("--passwordenv"), str):
+        return password_login(ctx, pos)
+    if ctx.opts.get("--apikey") is not True:
+        raise Fail("fake-bw: only --apikey and <email> --passwordenv login are implemented")
     cid, csecret = os.environ.get("BW_CLIENTID"), os.environ.get("BW_CLIENTSECRET")
     if not cid or not csecret:
         raise Fail("fake-bw: BW_CLIENTID and BW_CLIENTSECRET are required with BW_NOINTERACTION")
@@ -183,6 +187,20 @@ def login(ctx, pos):
     ctx.state["logged_in"] = True
     ctx.save()
     return "You are logged in!"
+
+
+def password_login(ctx, pos):
+    password = os.environ.get(ctx.opts["--passwordenv"])
+    if password is None:
+        raise Fail("Master password is required.")
+    ctx.server_call()
+    if pos[1] != ctx.vault.get("user_email") or password != ctx.vault.get("user_password"):
+        raise Fail(f"Username or password is incorrect. Try again. (got {password})")
+    key = base64.b64encode(secrets.token_bytes(64)).decode("ascii")
+    ctx.state["logged_in"] = True
+    ctx.state["sessions"].append(key)
+    ctx.save()
+    return key if ctx.opts.get("--raw") else f'You are logged in!\n\nexport BW_SESSION="{key}"'
 
 
 def unlock(ctx, pos):
@@ -227,7 +245,8 @@ def sync(ctx, pos):
 
 def list_cmd(ctx, pos):
     ctx.need_session()
-    kind = {"items": "items", "folders": "folders", "org-collections": "collections"}.get(pos[1])
+    kind = {"items": "items", "folders": "folders", "org-collections": "collections", "collections": "collections",
+            "org-members": "members"}.get(pos[1])
     if kind is None:
         raise Fail("Unknown object.")
     rows = ctx.vault.get(kind, [])
@@ -242,6 +261,8 @@ def list_cmd(ctx, pos):
 
 def get_cmd(ctx, pos):
     ctx.need_session()
+    if pos[1] == "org-collection":
+        return json.dumps(ctx.find("collections", pos[2]))
     item = ctx.find("items", pos[2])
     login_data = item.get("login") or {}
     if pos[1] == "item":

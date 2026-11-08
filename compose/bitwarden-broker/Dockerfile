@@ -46,6 +46,7 @@ RUN groupadd --gid 10001 broker \
 COPY --chmod=0755 entrypoint.sh /app/entrypoint.sh
 COPY broker /app/broker
 COPY secrets_sync.py /app/secrets_sync.py
+COPY setup /app/setup
 
 # The root filesystem is read-only at run time; /tmp is a tmpfs.
 ENV HOME=/tmp PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1

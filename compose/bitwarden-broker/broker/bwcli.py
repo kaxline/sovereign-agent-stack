@@ -101,6 +101,41 @@ def classify(stderr: str) -> tuple[str, int | None]:
     return "unknown", None
 
 
+def run_bw(bw_path: str, data_dir: Path | str, args: list[str], secret_env: dict[str, str],
+           stdin: str | None = None, extra_env: dict[str, str] | None = None) -> tuple[int, str, str]:
+    """Run bw once with an allowlisted environment and return ``(code, stdout, stderr)``.
+
+    ``secret_env`` is merged last, and the child's environment dict is cleared
+    when bw exits. A timeout raises ``BwError("network")`` and a bw that cannot
+    start raises ``BwError("unknown")``, neither with a chained exception.
+    ``bitwarden-setup`` shares this runner for the user's temporary login.
+    """
+    env = {k: v for k, v in os.environ.items() if k in ENV_ALLOW or k.startswith("LC_")}
+    env.update(extra_env or {})
+    env["BITWARDENCLI_APPDATA_DIR"] = str(data_dir)
+    env["BW_NOINTERACTION"] = "true"
+    env.update(secret_env)
+    proc = None
+    failure = None
+    try:
+        proc = subprocess.run(
+            [bw_path, *args], env=env, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=TIMEOUT_SECONDS,
+            **({"input": stdin} if stdin is not None else {"stdin": subprocess.DEVNULL}),
+        )
+    except subprocess.TimeoutExpired:
+        failure = "network"
+    except OSError:
+        failure = "unknown"
+    finally:
+        env.clear()
+    # Raised here, outside the except blocks, so the BwError has no __context__
+    # (a TimeoutExpired carries bw's partial stdout and stderr).
+    if failure is not None:
+        raise BwError(failure)
+    return proc.returncode, proc.stdout or "", proc.stderr or ""
+
+
 def _sanitize(item: dict) -> dict | None:
     """Keep the metadata the broker lists; drop the password, TOTP seed, notes and fields."""
     if not isinstance(item, dict) or not isinstance(item.get("id"), str):
@@ -121,6 +156,9 @@ def _sanitize(item: dict) -> dict | None:
         "uris": uris,
         "has_totp": bool(login.get("totp")),
     }
+
+
+sanitize_item = _sanitize  # bitwarden-setup lists the user's items through it
 
 
 class Bw:
@@ -185,30 +223,7 @@ class Bw:
         return value
 
     def _exec(self, args: list[str], secret_env: dict[str, str], stdin: str | None = None) -> tuple[int, str, str]:
-        env = {k: v for k, v in os.environ.items() if k in ENV_ALLOW or k.startswith("LC_")}
-        env.update(self.extra_env)
-        env["BITWARDENCLI_APPDATA_DIR"] = str(self.data_dir)
-        env["BW_NOINTERACTION"] = "true"
-        env.update(secret_env)
-        proc = None
-        failure = None
-        try:
-            proc = subprocess.run(
-                [self.bw_path, *args], env=env, capture_output=True, text=True, encoding="utf-8",
-                errors="replace", timeout=TIMEOUT_SECONDS,
-                **({"input": stdin} if stdin is not None else {"stdin": subprocess.DEVNULL}),
-            )
-        except subprocess.TimeoutExpired:
-            failure = "network"
-        except OSError:
-            failure = "unknown"
-        finally:
-            env.clear()
-        # Raised here, outside the except blocks, so the BwError has no __context__
-        # (a TimeoutExpired carries bw's partial stdout and stderr).
-        if failure is not None:
-            raise BwError(failure)
-        return proc.returncode, proc.stdout or "", proc.stderr or ""
+        return run_bw(self.bw_path, self.data_dir, args, secret_env, stdin, self.extra_env)
 
     def _fail(self, error_class: str) -> BwError:
         # An "unknown" failure on an unlocked account is about one call (an item
