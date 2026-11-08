@@ -128,6 +128,8 @@ jobs:
         run: sh scripts/test-gptr-mcp-registration.sh
       - name: Add-on cron fence
         run: sh scripts/test-addon-cron-fence.sh --host-only
+      - name: Bitwarden plugin registration
+        run: sh scripts/test-bitwarden-registration.sh --host-only
       - name: LightRAG MCP registration
         run: sh scripts/test-lightrag-mcp-registration.sh
       - name: Twenty CRM compose profile

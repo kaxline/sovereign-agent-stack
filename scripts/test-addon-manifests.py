@@ -119,7 +119,7 @@ refused("host component from a community feed", {**packaged(BASE), "host": {"pla
         "community", "host component")
 
 # --- credentials and vaultBackend ---------------------------------------------
-VAULT = {"name": "bwbroker", "plugin": "compose/hermes/plugins/bwbroker",
+VAULT = {"name": "bwbroker", "plugin": "compose/hermes/plugins/bwbroker", "toolset": "bitwarden",
          "tools": ["bitwarden_request_access", "bitwarden_release_access"],
          "profiles": {"default": "rw", "browser": "rw"}}
 
@@ -167,6 +167,10 @@ refused("vault_backend_shape: plugin escapes", vault_manifest(vaultBackend__plug
         "builtin", "vaultBackend.plugin")
 refused("vault_backend_shape: absolute plugin", vault_manifest(vaultBackend__plugin="/x/y"),
         "builtin", "vaultBackend.plugin")
+refused("vault_backend_shape: missing toolset", vault_manifest(vaultBackend__toolset=None), "builtin",
+        "vaultBackend.toolset")
+refused("vault_backend_shape: bad toolset", vault_manifest(vaultBackend__toolset="Bit warden"), "builtin",
+        "vaultBackend.toolset")
 refused("vault_backend_shape: tools not a list", vault_manifest(vaultBackend__tools="a b"),
         "builtin", "vaultBackend.tools")
 refused("vault_backend_shape: bad profile value",
@@ -250,6 +254,26 @@ got = fence_of({"gptr": am.canonical(broken)}, env)
 check("an invalid manifest is fenced by its MCP name", got[0] == ["gptr"], str(got))
 got = fence_of({"gptr": json.dumps({"mcp": "nonsense"})}, env)
 check("a manifest with no readable MCP name fences nothing", got == ([], []), str(got))
+
+check("no plugin toolset is fenced for the repo's add-ons today", am.cron_fence_toolsets(ROOT / "addons") == [])
+
+
+def toolsets_of(manifests: dict[str, str]) -> list[tuple[str, str]]:
+    with tempfile.TemporaryDirectory() as tmp:
+        for name, text in manifests.items():
+            (Path(tmp) / name).mkdir()
+            (Path(tmp) / name / "addon.json").write_text(text)
+        return am.cron_fence_toolsets(Path(tmp))
+
+
+got = toolsets_of({"bitwarden": am.canonical(vault_manifest())})
+check("a vaultBackend with cron false fences its toolset", got == [("bwbroker", "bitwarden")], str(got))
+got = toolsets_of({"bitwarden": am.canonical(vault_manifest(permissions__reads=[], permissions__cron=True))})
+check("a vaultBackend with cron true is not fenced", got == [], str(got))
+got = toolsets_of({"bitwarden": am.canonical(vault_manifest(permissions__cron=True))})
+check("an invalid vault manifest is fenced by its toolset", got == [("bwbroker", "bitwarden")], str(got))
+got = toolsets_of({"gptr": am.canonical(variant(permissions__cron=False))})
+check("an MCP-only add-on has no plugin toolset to fence", got == [], str(got))
 
 # --- Built-in manifests against the repo ------------------------------------
 compose = (ROOT / "docker-compose.yml").read_text()

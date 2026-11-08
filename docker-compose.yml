@@ -1295,6 +1295,8 @@ services:
       - GPTR_MCP_URL=${GPTR_MCP_URL:-http://gptr-mcp:8000/sse}
       - GPTR_MCP_TIMEOUT=${GPTR_MCP_TIMEOUT:-900}
       - GPTR_MCP_CONNECT_TIMEOUT=${GPTR_MCP_CONNECT_TIMEOUT:-30}
+      # Bitwarden broker's login backend (bitwarden profile): default + browser only.
+      - BITWARDEN_ENABLED=${BITWARDEN_ENABLED:-0}
       # Messages MCP (messages profile): default + browser only, never api-server.
       - MESSAGES_MCP_ENABLED=${MESSAGES_MCP_ENABLED:-0}
       - MESSAGES_MCP_URL=${MESSAGES_MCP_URL:-http://messages-mcp:8000/mcp}
@@ -1404,6 +1406,8 @@ services:
       - GPTR_MCP_URL=${GPTR_MCP_URL:-http://gptr-mcp:8000/sse}
       - GPTR_MCP_TIMEOUT=${GPTR_MCP_TIMEOUT:-900}
       - GPTR_MCP_CONNECT_TIMEOUT=${GPTR_MCP_CONNECT_TIMEOUT:-30}
+      # Bitwarden broker's login backend (bitwarden profile): default + browser only.
+      - BITWARDEN_ENABLED=${BITWARDEN_ENABLED:-0}
       # Messages MCP (messages profile): default + browser only, never api-server.
       - MESSAGES_MCP_ENABLED=${MESSAGES_MCP_ENABLED:-0}
       - MESSAGES_MCP_URL=${MESSAGES_MCP_URL:-http://messages-mcp:8000/mcp}
@@ -1721,6 +1725,11 @@ services:
       - ./compose/hermes/dashboard_handoff.py:/bootstrap/dashboard_handoff.py:ro
       - ./compose/hermes/patch-dashboard-handoff.py:/bootstrap/patch-dashboard-handoff.py:ro
       - ./compose/hermes/13-patch-dashboard.sh:/etc/cont-init.d/13-patch-dashboard:ro
+      # Bitwarden broker's Hermes plugin, installed into Hermes's bundled plugins
+      # dir on every start; the bootstrap enables it per profile.
+      - ./compose/hermes/plugins/bwbroker:/bootstrap/plugins/bwbroker:ro
+      - ./compose/hermes/bitwarden_broker_backend.py:/bootstrap/bitwarden_broker_backend.py:ro
+      - ./compose/hermes/14-install-bwbroker-plugin.sh:/etc/cont-init.d/14-install-bwbroker-plugin:ro
       # Per-profile gateways and kept sessions on Hermes v0.22+. Runs before the
       # image's 02-reconcile-profiles. See the script header.
       - ./compose/hermes/019-pin-profile-gateways.sh:/etc/cont-init.d/019-pin-profile-gateways:ro

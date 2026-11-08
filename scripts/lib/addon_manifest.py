@@ -26,7 +26,8 @@ image's python3, mounted at /bootstrap/addon_manifest.py.
 cron_fence() lists the MCP server names and URLs the bootstrap's
 fence_mail_from_cron keeps out of platform_toolsets.cron: every add-on whose
 permissions.cron is not true. An invalid manifest is fenced by whatever MCP
-name it carries, so a broken manifest can't open cron.
+name it carries, so a broken manifest can't open cron. cron_fence_toolsets()
+does the same for the plugin toolsets of add-ons with a vaultBackend.
 
 Policy follows docs/private/addon-manifest-spec.md (draft). `source` is
 "builtin", "official" (a package from the official feed) or "community".
@@ -312,6 +313,9 @@ def _validate_vault_backend(vb, source: str, reads: bool) -> list[str]:
     if not (isinstance(plugin, str) and plugin and not plugin.startswith("/")
             and ".." not in plugin.split("/") and "\\" not in plugin):
         err("vaultBackend.plugin must be a relative directory path without ..")
+    toolset = vb.get("toolset")
+    if not (isinstance(toolset, str) and VAULT_NAME_RE.match(toolset)):
+        err("vaultBackend.toolset must name the plugin's toolset in lowercase letters, digits and _")
     tools = vb.get("tools")
     if not (_is_str_list(tools) and tools and all(TOOL_RE.match(t) for t in tools)):
         err("vaultBackend.tools must list the tools the plugin registers")
@@ -324,7 +328,7 @@ def _validate_vault_backend(vb, source: str, reads: bool) -> list[str]:
             err(f"vaultBackend.profiles.{prof} must be ro or rw")
     if reads and UNATTENDED_PROFILE in profiles:
         err(f"an add-on that reads personal data may not be on {UNATTENDED_PROFILE}")
-    extra = set(vb) - {"name", "plugin", "tools", "profiles"}
+    extra = set(vb) - {"name", "plugin", "toolset", "tools", "profiles"}
     if extra:
         err(f"vaultBackend has unknown fields: {', '.join(sorted(extra))}")
     return errors
@@ -380,6 +384,22 @@ def cron_fence(addons_dir: Path, environ=os.environ) -> tuple[list[str], list[st
         names.append(mcp["name"])
         urls.append(_mcp_url(manifest, environ))
     return sorted(set(names)), sorted(set(urls))
+
+
+def cron_fence_toolsets(addons_dir: Path) -> list[tuple[str, str]]:
+    """(vaultBackend.name, vaultBackend.toolset) for each add-on whose plugin toolset stays out of cron."""
+    out = set()
+    for path, manifest, parse_error in load_dir(addons_dir):
+        vb = manifest.get("vaultBackend") if isinstance(manifest, dict) else None
+        name = vb.get("name") if isinstance(vb, dict) else None
+        toolset = vb.get("toolset") if isinstance(vb, dict) else None
+        if not (isinstance(name, str) and name and isinstance(toolset, str) and toolset):
+            continue
+        valid = not check_builtin_file(path, manifest, parse_error)
+        if valid and manifest.get("permissions", {}).get("cron") is True:
+            continue
+        out.add((name, toolset))
+    return sorted(out)
 
 
 def mcp_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
