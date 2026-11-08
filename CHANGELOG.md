@@ -17,6 +17,17 @@ the stack under another app.
 
 ### Changes
 
+- **`browser_vault` `capture_secret` and `vault.take` (CR 0024 R2)**: on a page
+  that shows a new API key, the model calls `browser_vault` with
+  `action: capture_secret`, a `name` and a `destination`. Hermes finds the
+  value itself and asks the viewer through a new `vault.capture_secret`
+  server request (`{origin, site, name, destination, last4, replaces,
+  capture_id}`; answer `"approve"` or `""`). `env` saves it to the profile
+  `.env`. `viewer` keeps it encrypted under `capture_id` until the client
+  calls the new `vault.take {id}` RPC, which returns `{name, origin, value}`
+  once. This replaces the CR's `secret.deliver` frame, which would have gone
+  to every attached viewer. The value is redacted from later tool output.
+  See "Capturing keys from a page" in `docs/hermes.md`.
 - **`browser_vault` `create_login` (CR 0024 R1)**: on a sign-up form, the
   model calls `browser_vault` with `action: create_login` and the
   `identifier` the user chose. Hermes asks the viewer through a new
