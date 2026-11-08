@@ -65,6 +65,7 @@ jobs:
           done
           python3 scripts/test-compose-env-allowlist.py
           python3 scripts/test-twenty-compose-config.py
+          sh scripts/test-actual-compose.sh
           echo "=== HERMES_TERMINAL_BACKEND=local ==="
           HERMES_TERMINAL_BACKEND=local COMPOSE_PROFILES=core docker compose config -q
           echo "=== core without the N8N_* keys ==="

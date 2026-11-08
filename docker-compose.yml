@@ -788,7 +788,8 @@ services:
   #           budget (ACTUAL_MCP_ENABLED=1) for the two MCP servers
   # Web UI:  http://localhost:5006   (localhost-bound; ACTUAL_PORT)
   # MCP:     http://actual-mcp-rw:3000/mcp, http://actual-mcp-ro:3000/mcp
-  #          (Streamable HTTP, no auth; only hermes shares their network)
+  #          (Streamable HTTP, no auth; only hermes and actual-server share
+  #          their network)
   # Data:    ACTUAL_DATA_DIR (default ./data/actual/server) on the server; each
   #          MCP container keeps a full copy of the budget in its cache volume
   # Credentials: compose/actual/budget.env (ACTUAL_BUDGET_FILE in .env)
@@ -1858,8 +1859,8 @@ services:
       # `docker compose up` does.
     # db is internal and holds only the shared Postgres and its SQL MCP
     # sidecars. hermes is the one default-network service that joins it, so
-    # hermes-worker (the agent's shell) cannot reach either. budget works the
-    # same way for the Actual Budget MCP servers, which have no auth.
+    # hermes-worker (the agent's shell) cannot reach either. budget keeps the
+    # unauthenticated Actual Budget MCP servers off the default network.
     networks: [default, db, budget]
     # Healthy once the dashboard and the api-server gateway answer. The gateway
     # binds 8643 only after startup MCP discovery has finished for every
@@ -1977,10 +1978,10 @@ networks:
   # twenty-worker.
   crm:
     internal: true
-  # Internal: actual-mcp-rw and actual-mcp-ro, which take requests without
-  # auth, plus hermes and actual-server.
-  budget:
-    internal: true
+  # Dedicated to actual-mcp-rw and actual-mcp-ro, which take requests without
+  # auth, plus hermes and actual-server. Not internal: the MCP servers may
+  # need to reach a remote Actual server.
+  budget: {}
 
 # Twenty's secrets as files (CR 0020 R8). Unset, they point at an empty file
 # that nothing reads: the *_FILE variables inside the containers stay empty.

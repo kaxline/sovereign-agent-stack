@@ -150,18 +150,17 @@ secret = (cfg.get("secrets") or {}).get("actual_budget") or {}
 if not str(secret.get("file", "")).endswith("compose/actual/no-budget.env"):
     errors.append(f"secret actual_budget falls back to {secret.get('file')}, want compose/actual/no-budget.env")
 
+# budget is a plain bridge network so the MCP servers can reach a remote
+# Actual server. It stays dedicated: exactly these four services join it.
 budget = (cfg.get("networks") or {}).get("budget")
-if not budget:
+if budget is None:
     errors.append("network budget is not declared")
-elif not budget.get("internal"):
-    errors.append("network budget must be internal")
-if "budget" not in set(services.get("hermes", {}).get("networks") or {}):
-    errors.append("hermes is not on the budget network")
-for name, svc in services.items():
-    if name in ACTUAL or name == "hermes":
-        continue
-    if "budget" in set(svc.get("networks") or {}):
-        errors.append(f"{name} joins the budget network")
+elif budget.get("internal"):
+    errors.append("network budget must not be internal (remote Actual servers)")
+members = {n for n, svc in services.items() if "budget" in set(svc.get("networks") or {})}
+want = {"hermes", "actual-server", "actual-mcp-rw", "actual-mcp-ro"}
+if members != want:
+    errors.append(f"budget network members are {sorted(members)}, want {sorted(want)}")
 
 for name, svc in services.items():
     keys = {k for k in env_map(svc) if k.startswith("ACTUAL_")}
