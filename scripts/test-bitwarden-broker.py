@@ -5,6 +5,10 @@ Stdlib only. Runs scripts/fixtures/fake-bw.py as the bw executable against a
 synthetic vault (example.com sites, generated passwords). Every test searches
 the captured log records, exception text, fake-bw log and files the broker
 writes for the run's synthetic secrets.
+
+The CDP fill tests need websockets for the fake DevTools server, so they run
+inside the pinned Hermes image (scripts/lib/hermes_image.py) with scripts/ and
+compose/bitwarden-broker/ mounted read-only, and skip when the image is absent.
 """
 
 from __future__ import annotations
@@ -25,8 +29,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "compose" / "bitwarden-broker"))
+sys.path.insert(0, str(ROOT / "scripts" / "lib"))
 
-from broker import accounts, bwcli, origins, vault  # noqa: E402
+import hermes_image  # noqa: E402
+from broker import accounts, bwcli, cdp, origins, vault  # noqa: E402
 
 FAKE_BW = ROOT / "scripts" / "fixtures" / "fake-bw.py"
 
@@ -625,6 +631,272 @@ def test_denylist() -> None:
         run.expect_clean(out.getvalue())
 
 
+# --- CDP fill -------------------------------------------------------------
+
+CDP_TOKEN = secrets.token_urlsafe(16)
+# Review Focus 3 characters, so the JSON transport has to carry them intact.
+CDP_VALUE = f"pw+/%é{CDP_TOKEN}\nend"
+TARGET = "A1B2C3D4E5F60718293A4B5C6D7E8F90"
+LOGIN_URL = "https://login.example.com/session?next=/home"
+SESSION = "5E55104D"
+
+
+class FakeCdp:
+    """A DevTools endpoint on one port: /json/list and /json/version over HTTP, CDP over websocket.
+
+    ``page`` picks what the fill function reports: ok, navigated, no_field, exception or hang.
+    Runs in the Hermes image, which has websockets 15; the broker code itself keeps to 10.4.
+    """
+
+    def __init__(self, targets, page="ok"):
+        self.targets = targets
+        self.page = page
+        self.messages: list[dict] = []
+        self.connections = 0
+        self.port = 0
+        self.closed_on_attach = False
+
+    async def start(self):
+        import websockets
+        self.server = await websockets.serve(self.handle, "127.0.0.1", 0, process_request=self.http)
+        self.port = self.server.sockets[0].getsockname()[1]
+
+    def http(self, connection, request):
+        if request.path == "/json/list":
+            body = [{"id": t["id"], "type": t.get("type", "page"), "url": t["url"], "title": "Sign in",
+                     "webSocketDebuggerUrl": f"ws://127.0.0.1:{self.port}/devtools/page/{t['id']}"}
+                    for t in self.targets]
+        elif request.path == "/json/version":
+            # Chromium reports whatever host it was asked on; the broker must ignore it.
+            body = {"Browser": "HeadlessChrome/140.0.0.0",
+                    "webSocketDebuggerUrl": "ws://chromium.invalid:9222/devtools/browser/0f1e2d3c-4b5a-6978"}
+        else:
+            return None
+        return connection.respond(200, json.dumps(body))
+
+    async def handle(self, ws):
+        self.connections += 1
+        async for raw in ws:
+            msg = json.loads(raw)
+            self.messages.append(msg)
+            # An unrelated event before every reply: the client must match replies by id.
+            await ws.send(json.dumps({"method": "Target.targetInfoChanged", "params": {"targetInfo": {}}}))
+            reply = {"id": msg["id"]}
+            if msg.get("sessionId"):
+                reply["sessionId"] = msg["sessionId"]
+            method, params = msg.get("method"), msg.get("params", {})
+            if method == "Target.attachToTarget":
+                if not self.closed_on_attach and any(t["id"] == params.get("targetId") for t in self.targets):
+                    reply["result"] = {"sessionId": SESSION}
+                else:
+                    reply["error"] = {"code": -32602, "message": "No target with given id found"}
+            elif method == "Runtime.evaluate":
+                reply["result"] = {"result": {"type": "object", "className": "HTMLDocument", "objectId": "1.2.3"}}
+            elif method == "Runtime.callFunctionOn":
+                values = " ".join(str(a.get("value")) for a in params.get("arguments", []))
+                if self.page == "hang":
+                    continue
+                if self.page == "exception":
+                    reply["result"] = {
+                        "result": {"type": "object", "subtype": "error", "description": f"Error: rejected {values}"},
+                        "exceptionDetails": {"text": f"Uncaught Error: rejected {values}",
+                                             "exception": {"description": f"Error: rejected {values}"}},
+                    }
+                else:
+                    outcome = {"ok": {"filled": 1}, "no_field": {"filled": 0},
+                               "navigated": {"refused": "origin_changed"}}[self.page]
+                    reply["result"] = {"result": {"type": "object", "value": outcome}}
+            else:
+                reply["result"] = {}
+            await ws.send(json.dumps(reply))
+
+    def methods(self) -> list[str]:
+        return [m.get("method") for m in self.messages]
+
+
+@contextlib.contextmanager
+def fake_cdp(targets, page="ok"):
+    import asyncio
+    import threading
+
+    fake = FakeCdp(targets, page)
+    loop = asyncio.new_event_loop()
+    ready = threading.Event()
+
+    def serve():
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(fake.start())
+        ready.set()
+        loop.run_forever()
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    expect(ready.wait(10), "fake CDP server started")
+    try:
+        yield fake
+    finally:
+        async def stop():
+            fake.server.close()
+            await fake.server.wait_closed()
+        asyncio.run_coroutine_threadsafe(stop(), loop).result(10)
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(10)
+
+
+def expect_no_value(texts, msg: str) -> None:
+    expect(CDP_TOKEN not in "\n".join(texts), f"{msg}: the fill value appeared in captured output")
+
+
+def expect_detached(fake: FakeCdp, msg: str) -> None:
+    methods = fake.methods()
+    expect("Target.attachToTarget" in methods, f"{msg}: never attached")
+    detach = [m for m in fake.messages if m.get("method") == "Target.detachFromTarget"]
+    expect(len(detach) == 1 and detach[0].get("params", {}).get("sessionId") == SESSION,
+           f"{msg}: no detach of the attached session")
+    expect(methods[-1] == "Target.detachFromTarget", f"{msg}: detach is not the last command")
+
+
+def run_fill(fake, allowed=("https://login.example.com",), target=TARGET, timeout=10.0):
+    with captured() as out:
+        result = cdp.fill(fake.port, target, tuple(allowed), CDP_VALUE, timeout=timeout)
+    return result, out.getvalue()
+
+
+def test_fill_writes_value() -> None:
+    with fake_cdp([{"id": TARGET, "url": LOGIN_URL}]) as fake:
+        result, out = run_fill(fake, allowed=("https://LOGIN.example.com:443/", "https://other.example.com"))
+    expect(result == cdp.FillResult(filled=True, origin="https://login.example.com", error=None),
+           f"fill result {result!r}")
+    calls = [m for m in fake.messages if m.get("method") == "Runtime.callFunctionOn"]
+    expect(len(calls) == 1, "one callFunctionOn")
+    args = calls[0]["params"].get("arguments", [])
+    expect([a.get("value") for a in args] == ["https://login.example.com", CDP_VALUE],
+           "the expected origin and the value arrive as callFunctionOn arguments")
+    expect(calls[0]["params"].get("objectId") == "1.2.3", "called on the evaluated document")
+    attach = fake.messages[0]
+    expect(attach.get("method") == "Target.attachToTarget"
+           and attach["params"] == {"targetId": TARGET, "flatten": True}, "attaches flattened")
+    expect(all(m.get("sessionId") == SESSION for m in fake.messages
+               if m.get("method", "").startswith("Runtime.")), "Runtime commands use the session")
+    for m in fake.messages:
+        params = dict(m.get("params", {}))
+        for key in ("expression", "functionDeclaration"):
+            expect(CDP_TOKEN not in str(params.get(key, "")), f"value in {key}")
+        if m.get("method") == "Runtime.callFunctionOn":
+            params.pop("arguments", None)
+        expect_no_value([json.dumps({**m, "params": params}, ensure_ascii=False)], "a command outside the arguments")
+    expect_detached(fake, "fill")
+    expect_no_value([out, repr(result)], "fill")
+
+
+def test_origin_refused() -> None:
+    with fake_cdp([{"id": TARGET, "url": "https://evil.example.com/login"}]) as fake:
+        result, out = run_fill(fake)
+    expect(result == cdp.FillResult(filled=False, origin="https://evil.example.com", error="origin_mismatch"),
+           f"refused result {result!r}")
+    expect("Runtime.callFunctionOn" not in fake.methods(), "no callFunctionOn on a refused origin")
+    expect(fake.connections == 0, "no CDP websocket for a refused origin")
+    expect_no_value([out, repr(result)], "origin refused")
+
+
+def test_target_navigated() -> None:
+    with fake_cdp([{"id": TARGET, "url": LOGIN_URL}], page="navigated") as fake:
+        result, out = run_fill(fake)
+    expect(not result.filled and result.error == "origin_mismatch", f"navigated result {result!r}")
+    expect_detached(fake, "navigated")
+    expect_no_value([out, repr(result)], "navigated")
+
+
+def test_target_closed() -> None:
+    with fake_cdp([{"id": "0FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", "url": LOGIN_URL}]) as fake:
+        result, out = run_fill(fake)
+    expect(result == cdp.FillResult(filled=False, origin="", error="target_not_found"), f"closed result {result!r}")
+    expect(fake.connections == 0, "no CDP websocket for a missing target")
+    # Closed after /json/list was read: attach fails, and there is no session to detach.
+    with fake_cdp([{"id": TARGET, "url": LOGIN_URL}]) as fake:
+        fake.closed_on_attach = True
+        result, out2 = run_fill(fake)
+    expect(not result.filled and result.error == "target_not_found", f"closed-on-attach result {result!r}")
+    expect(fake.methods() == ["Target.attachToTarget"], f"only the attach was sent: {fake.methods()}")
+    expect_no_value([out, out2, repr(result)], "target closed")
+
+
+def test_no_value_in_errors() -> None:
+    with fake_cdp([{"id": TARGET, "url": LOGIN_URL}], page="exception") as fake:
+        result, out = run_fill(fake)
+    expect(result == cdp.FillResult(filled=False, origin="https://login.example.com", error="page_error"),
+           f"page exception result {result!r}")
+    expect_detached(fake, "page exception")
+    expect_no_value([out, repr(result), str(result.error)], "page exception")
+
+
+def test_no_field() -> None:
+    with fake_cdp([{"id": TARGET, "url": LOGIN_URL}], page="no_field") as fake:
+        result, out = run_fill(fake)
+    expect(not result.filled and result.error == "no_field", f"no field result {result!r}")
+    expect_detached(fake, "no field")
+    expect_no_value([out, repr(result)], "no field")
+
+
+def test_fill_timeout() -> None:
+    with fake_cdp([{"id": TARGET, "url": LOGIN_URL}], page="hang") as fake:
+        start = time.monotonic()
+        result, out = run_fill(fake, timeout=2.0)
+        elapsed = time.monotonic() - start
+    expect(not result.filled and result.error == "cdp_unavailable", f"timeout result {result!r}")
+    expect(elapsed < 2.5, f"fill took {elapsed:.2f}s with a 2s timeout")
+    expect_detached(fake, "timeout")
+    expect_no_value([out, repr(result)], "timeout")
+
+
+def run_cdp_tests() -> None:
+    """The fake-server tests. Run inside the Hermes image, which has websockets."""
+    test_fill_writes_value()
+    test_origin_refused()
+    test_target_navigated()
+    test_target_closed()
+    test_no_value_in_errors()
+    test_no_field()
+    test_fill_timeout()
+
+
+def test_fill_rejects_bad_arguments() -> None:
+    """Port and target id are checked before any I/O, so these need no server."""
+    def must_not_connect(*a, **k):
+        fail("fill did I/O before validating its arguments")
+    real = cdp._get_json
+    cdp._get_json = must_not_connect
+    try:
+        for port in (0, 65536, -1, "9222", True, 9222.0):
+            got = cdp.fill(port, TARGET, ("https://login.example.com",), CDP_VALUE)
+            expect(got == cdp.FillResult(False, "", "cdp_unavailable"), f"port {port!r}: {got!r}")
+        for target in ("", "A" * 65, "../json", "abc-def", "abc\n", None, 7):
+            got = cdp.fill(9222, target, ("https://login.example.com",), CDP_VALUE)
+            expect(got == cdp.FillResult(False, "", "target_not_found"), f"target {target!r}: {got!r}")
+    finally:
+        cdp._get_json = real
+
+
+def test_fill_cdp_down() -> None:
+    import socket
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    with captured() as out:
+        got = cdp.fill(port, TARGET, ("https://login.example.com",), CDP_VALUE, timeout=2.0)
+    expect(got == cdp.FillResult(False, "", "cdp_unavailable"), f"closed port: {got!r}")
+    expect_no_value([out.getvalue(), repr(got)], "closed port")
+
+
+CDP_DRIVER = r"""
+import runpy, sys
+sys.dont_write_bytecode = True
+ns = runpy.run_path("/work/scripts/test-bitwarden-broker.py", run_name="cdp_driver")
+ns["run_cdp_tests"]()
+print("image ok")
+"""
+
+
 def main() -> None:
     test_account_file_tolerance()
     test_normalize_origin()
@@ -638,6 +910,12 @@ def main() -> None:
     test_node_warning_noise()
     test_manual_unlock_and_lock()
     test_denylist()
+    test_fill_rejects_bad_arguments()
+    test_fill_cdp_down()
+    hermes_image.maybe_run(CDP_DRIVER, mounts=[
+        (ROOT / "scripts", "/work/scripts"),
+        (ROOT / "compose" / "bitwarden-broker", "/work/compose/bitwarden-broker"),
+    ])
     print("ok")
 
 

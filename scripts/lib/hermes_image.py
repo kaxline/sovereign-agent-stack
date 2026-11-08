@@ -110,12 +110,18 @@ def image_available(tag: str) -> bool:
     return probe.returncode == 0
 
 
-def run_driver(driver: str, stdin: str = "", tag: str = "") -> None:
-    """Run ``driver``; it must print "image ok" on success."""
+def run_driver(driver: str, stdin: str = "", tag: str = "", mounts=()) -> None:
+    """Run ``driver``; it must print "image ok" on success.
+
+    ``mounts`` adds read-only ``(host_path, container_path)`` bind mounts.
+    """
     image = f"nousresearch/hermes-agent:{tag or image_tag()}"
+    extra = []
+    for host, container in mounts:
+        extra += ["-v", f"{host}:{container}:ro"]
     cmd = [
         "docker", "run", "--rm", "-i", "--entrypoint", "/opt/hermes/.venv/bin/python",
-        "-v", f"{HERMES_DIR}:/bootstrap:ro", image, "-c", driver,
+        "-v", f"{HERMES_DIR}:/bootstrap:ro", *extra, image, "-c", driver,
     ]
     out = subprocess.run(cmd, input=stdin, capture_output=True, text=True)
     if out.returncode != 0 or "image ok" not in out.stdout:
@@ -124,12 +130,12 @@ def run_driver(driver: str, stdin: str = "", tag: str = "") -> None:
     print(f"image ok ({image})")
 
 
-def maybe_run(driver: str, stdin: str = "", argv: list[str] | None = None) -> None:
+def maybe_run(driver: str, stdin: str = "", argv: list[str] | None = None, mounts=()) -> None:
     args = sys.argv[1:] if argv is None else argv
     if "--host-only" in args:
         return
     tag = image_tag()
     if "--image" in args or image_available(tag):
-        run_driver(driver, stdin, tag)
+        run_driver(driver, stdin, tag, mounts)
     else:
         print(f"skip image checks (nousresearch/hermes-agent:{tag} not present)")
