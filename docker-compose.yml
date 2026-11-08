@@ -1675,6 +1675,7 @@ services:
       - ./compose/hermes/patch-blocked-fetch-hint.py:/bootstrap/patch-blocked-fetch-hint.py:ro
       - ./compose/bitwarden-broker/broker/digest_redaction.py:/bootstrap/digest_redaction.py:ro
       - ./compose/hermes/patch-digest-redaction.py:/bootstrap/patch-digest-redaction.py:ro
+      - ./compose/hermes/patch-bitwarden-broker-fill.py:/bootstrap/patch-bitwarden-broker-fill.py:ro
       - ./compose/hermes/web_search_mode.py:/bootstrap/web_search_mode.py:ro
       - ./compose/hermes/patch-web-search-mode.py:/bootstrap/patch-web-search-mode.py:ro
       - ./compose/hermes/patch-browser-unresolvable-host.py:/bootstrap/patch-browser-unresolvable-host.py:ro

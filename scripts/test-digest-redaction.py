@@ -248,13 +248,13 @@ assert redact.redact_registered_vault_values(text) == text, "nothing registered 
 base = redact.vault_redaction_base()
 assert base == redact.vault_redaction_base(), "one base per profile"
 other = base + 1 if base + 1 < 2**61 - 1 else base - 1
-redact.register_vault_redaction_digest(build_entry(value, other))  # wrong base: dropped
+assert redact.register_vault_redaction_digest(build_entry(value, other)) is False  # wrong base: dropped
 assert redact.redact_registered_vault_values(text) == text, "entry with another base dropped"
 entry = build_entry(value, base)
-redact.register_vault_redaction_digest(entry)
+assert redact.register_vault_redaction_digest(entry) is True
 entry["forms"].clear()  # the stored copy is the normalized one
-redact.register_vault_redaction_digest({"key": "junk"})  # dropped, no exception
-redact.register_vault_redaction_digest(None)
+assert redact.register_vault_redaction_digest({"key": "junk"}) is False  # dropped, no exception
+assert redact.register_vault_redaction_digest(None) is False
 assert redact.redact_registered_vault_values(text) == "field=«redacted-vault-secret»;", "base64 scrubbed"
 assert redact.redact_sensitive_text(text) == "field=«redacted-vault-secret»;", "through redact_sensitive_text"
 redact.clear_vault_redaction_values()

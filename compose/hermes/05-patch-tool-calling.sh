@@ -36,6 +36,9 @@ run_patch /bootstrap/patch-blocked-fetch-hint.py
 # Scrub values the Bitwarden broker filled, by digest: the gateway never
 # holds them (broker/digest_redaction.py).
 run_patch /bootstrap/patch-digest-redaction.py
+# Fills of bwbroker: handles go to the Bitwarden broker, which writes the page
+# itself; save_login is refused when Bitwarden is the only login source.
+run_patch /bootstrap/patch-bitwarden-broker-fill.py
 # HERMES_WEB_SEARCH_MODE: serve searxng search and page reads from SearXNG,
 # Hermes' keyless ring, or one with the other as fallback.
 run_patch /bootstrap/patch-web-search-mode.py
