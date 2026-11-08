@@ -15,6 +15,11 @@ image's python3, mounted at /bootstrap/addon_manifest.py.
         is rw, ro, or empty when the profile gets no entry. Tools and pins are
         space-separated. Invalid manifests are reported on stderr and skipped.
 
+cron_fence() lists the MCP server names and URLs the bootstrap's
+fence_mail_from_cron keeps out of platform_toolsets.cron: every add-on whose
+permissions.cron is not true. An invalid manifest is fenced by whatever MCP
+name it carries, so a broken manifest can't open cron.
+
 Policy follows docs/private/addon-manifest-spec.md (draft). `source` is
 "builtin", "official" (a package from the official feed) or "community".
 """
@@ -302,6 +307,30 @@ def truthy(value: str | None) -> bool:
     return (value or "").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _mcp_url(manifest: dict, environ) -> str:
+    mcp = manifest["mcp"]
+    svc = manifest["services"][mcp["service"]]
+    override = environ.get(mcp.get("env", {}).get("url", ""), "")
+    return override or f"http://{svc['compose']}:{svc['port']}{mcp['path']}"
+
+
+def cron_fence(addons_dir: Path, environ=os.environ) -> tuple[list[str], list[str]]:
+    names, urls = [], []
+    for path, manifest, parse_error in load_dir(addons_dir):
+        if check_builtin_file(path, manifest, parse_error):
+            mcp = manifest.get("mcp") if isinstance(manifest, dict) else None
+            name = mcp.get("name") if isinstance(mcp, dict) else None
+            if isinstance(name, str) and name:
+                names.append(name)
+            continue
+        mcp = manifest.get("mcp")
+        if not mcp or manifest.get("permissions", {}).get("cron") is True:
+            continue
+        names.append(mcp["name"])
+        urls.append(_mcp_url(manifest, environ))
+    return sorted(set(names)), sorted(set(urls))
+
+
 def mcp_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
     lines = []
     for path, manifest, parse_error in load_dir(addons_dir):
@@ -313,9 +342,8 @@ def mcp_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
         mcp = manifest.get("mcp")
         if not mcp:
             continue
-        svc = manifest["services"][mcp["service"]]
         env = mcp.get("env", {})
-        url = environ.get(env.get("url", ""), "") or f"http://{svc['compose']}:{svc['port']}{mcp['path']}"
+        url = _mcp_url(manifest, environ)
         timeout = environ.get(env.get("timeout", ""), "") or str(mcp["timeout"])
         connect = environ.get(env.get("connectTimeout", ""), "") or str(mcp["connectTimeout"])
         enabled = "1" if truthy(environ.get(manifest["builtin"]["flag"])) else "0"

@@ -149,6 +149,31 @@ with tempfile.TemporaryDirectory() as tmp:
     check("non-canonical layout is refused", any("canonical" in e for e in results["gptr"]))
     check("plan skips invalid manifests", am.mcp_plan(Path(tmp), "default", env) == [])
 
+# --- cron fence ---------------------------------------------------------------
+check("an add-on with cron true is not fenced", am.cron_fence(ROOT / "addons", env) == ([], []),
+      str(am.cron_fence(ROOT / "addons", env)))
+
+
+def fence_of(manifests: dict[str, str], environ) -> tuple[list[str], list[str]]:
+    with tempfile.TemporaryDirectory() as tmp:
+        for name, text in manifests.items():
+            (Path(tmp) / name).mkdir()
+            (Path(tmp) / name / "addon.json").write_text(text)
+        return am.cron_fence(Path(tmp), environ)
+
+
+got = fence_of({"gptr": am.canonical(variant(permissions__cron=False))}, env)
+check("cron false fences the server by name and URL", got == (["gptr"], ["http://gptr-mcp:8000/sse"]), str(got))
+got = fence_of({"gptr": am.canonical(variant(permissions__cron=None))},
+               {**env, "GPTR_MCP_URL": "http://elsewhere:9/sse"})
+check("a missing cron field fences, at the overridden URL", got == (["gptr"], ["http://elsewhere:9/sse"]),
+      str(got))
+broken = variant(permissions__cron=True, permissions__reads=["mail"])
+got = fence_of({"gptr": am.canonical(broken)}, env)
+check("an invalid manifest is fenced by its MCP name", got[0] == ["gptr"], str(got))
+got = fence_of({"gptr": json.dumps({"mcp": "nonsense"})}, env)
+check("a manifest with no readable MCP name fences nothing", got == ([], []), str(got))
+
 # --- Built-in manifests against the repo ------------------------------------
 compose = (ROOT / "docker-compose.yml").read_text()
 sync = ROOT / "scripts" / "sync-profiles.sh"

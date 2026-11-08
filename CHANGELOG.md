@@ -24,6 +24,11 @@ the stack under another app.
   and off), and `GPTR_MCP_URL`, `GPTR_MCP_TIMEOUT` and
   `GPTR_MCP_CONNECT_TIMEOUT` still override it. The manifest format is
   experimental. See [addons/README.md](addons/README.md).
+- **Add-ons stay out of cron unless their manifest allows it**: the cron
+  tool list that keeps mail and messages away from cron jobs now also leaves
+  out every add-on whose `permissions.cron` isn't `true`. GPT Researcher sets
+  it, so nothing changes for it. A job that names an add-on in its own
+  `enabled_toolsets` still gets it.
 
 - **`crm.sh access` changes a workspace's access** (CR 0023 R1):
   `./scripts/crm.sh access --slug S read|write` (`make crm-access`) sets

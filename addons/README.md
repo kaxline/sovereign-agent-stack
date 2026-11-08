@@ -29,3 +29,12 @@ It validates every manifest, including the personal-data rules (an add-on
 that reads mail or messages may not send, run in cron or register on
 `api-server`), and checks each one against `docker-compose.yml` and
 `sync-profiles.sh`.
+
+The bootstraps keep an add-on's MCP server out of cron jobs unless its
+manifest sets `permissions.cron` to `true`, using the same
+`platform_toolsets.cron` list that keeps mail and messages out (see
+[docs/email.md](../docs/email.md)). A missing field counts as `false`. A
+manifest that fails validation is still fenced by its `mcp.name`. If
+`addon_manifest.py` can't be loaded, the list written on the last run is
+kept. `sh scripts/test-addon-cron-fence.sh` runs the fence in the Hermes
+image.
