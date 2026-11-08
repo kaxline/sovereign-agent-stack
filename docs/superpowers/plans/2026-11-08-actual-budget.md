@@ -87,8 +87,9 @@ read and write, the `actual-server` image tag and matching `@actual-app/api` ver
   - api-server → registers `http://split-ro:9000/mcp`, preceded by a drop of the rw URL.
   - flag off, each profile → exactly `drop:<p>:http://split-ro:9000/mcp;drop:<p>:http://split-rw:9000/mcp;`.
   - `addon_mcp_urls default` prints both URLs.
+  - In `test-addon-manifests.py`: `cron_fence` on the fixture (still `cron` unset, which means false) returns both URLs and the name `split`. Without the fix it returns one URL, or crashes on the dict.
 - [ ] **Step 3:** Run `python3 scripts/test-addon-manifests.py` and `sh scripts/test-addon-mcp-access.sh` and see both fail.
-- [ ] **Step 4:** Implement. In `_validate_mcp`, accept the map form and check each key is in `ACCESS`, each value is a `services` key with a `port`, and each level in `profiles` has a service. In `mcp_plan`, resolve per access and append `all_urls`. In `register_addon_mcp_servers`, read the 11th field. When off or with no access, drop every URL in it. Otherwise drop every URL except field 5, then register. `addon_mcp_urls` reads field 11.
+- [ ] **Step 4:** Implement. Replace main's `_mcp_url(manifest, environ) -> str` with `_mcp_urls(manifest, environ) -> dict[str, str]`, mapping access level to URL. A string service gives `{"": url}`, honouring `mcp.env.url` as today. `cron_fence` (merged in 9e12194) fences every value, so a map add-on with `cron: false` fences both URLs. In `_validate_mcp`, accept the map form and check each key is in `ACCESS`, each value is a `services` key with a `port`, and each level in `profiles` has a service. In `mcp_plan`, resolve per access and append `all_urls`. In `register_addon_mcp_servers`, read the 11th field. When off or with no access, drop every URL in it. Otherwise drop every URL except field 5, then register. `addon_mcp_urls` reads field 11.
 - [ ] **Step 5:** Run both tests plus `sh scripts/test-gptr-mcp-registration.sh` and `sh scripts/test-mcp-parked-retry.sh`. All pass, and the gptr test is unmodified.
 - [ ] **Step 6: Commit** `git commit -m "Let an add-on map ro and rw to separate MCP services"`
 
@@ -125,31 +126,30 @@ read and write, the `actual-server` image tag and matching `@actual-app/api` ver
 
 ### Task 5: Core: read-only cron
 
+Builds on the cron fence merged to main in 9e12194: `addon_manifest.cron_fence(addons_dir, environ) -> (names, urls)`, which `fence_mail_from_cron` already loads from `$ADDON_MANIFEST_PY`. Don't add a second module or mount, and don't add a CLI subcommand.
+
 **Files:**
-- Create: `scripts/lib/cron_fence.py`, a pure function plus a CLI that the bootstrap calls; standard library only
-- Modify: `compose/hermes/bootstrap-api-profile.sh` (`fence_mail_from_cron` calls `cron_fence.py`; the heredoc's logic moves out)
-- Modify: `docker-compose.yml` (mount `./scripts/lib/cron_fence.py:/bootstrap/cron_fence.py:ro` on both `hermes-*-bootstrap`)
-- Modify: `scripts/lib/addon_manifest.py` (`permissions.cron` accepts `"ro"` only when `reads` is empty; new subcommand `cron-fence-urls`)
-- Create: `scripts/test-cron-fence.py`
-- Modify: `scripts/test-addon-manifests.py`, `.github/workflows/ci.yml`
+- Modify: `scripts/lib/addon_manifest.py`. `validate` accepts `permissions.cron` `true`, `false` or `"ro"`, with `"ro"` only when `permissions.reads` is empty. `cron_fence` handles `"ro"`.
+- Modify: `scripts/test-addon-manifests.py` (validator and `cron_fence` cases)
+- Modify: `scripts/test-addon-cron-fence.sh` (a `"ro"` case in the host wiring and in the v0.22.7-image run)
+- Modify: the `split` fixture from Task 2: `"permissions": {"cron": "ro"}`
 
 **Interfaces:**
-- Produces: `cron_fence.plan(servers: dict, current: list | None, managed: bool, fenced_urls: list[str]) -> tuple[list | None, str]` returns the new `platform_toolsets.cron` value (`None` means remove the key) and the log line. `MAIL_URLS` moves here unchanged and is always fenced.
-- Produces: `addon_manifest.py cron-fence-urls <addons-dir> <profile>` prints the URL of each add-on whose flag is on, whose `permissions.cron` is `"ro"`, and whose resolved access on `<profile>` is `rw`.
+- Consumes: Task 2's per-access URL resolution (the same helper `mcp_plan` uses for `all_urls`).
+- Produces: `cron_fence` signature unchanged. For an add-on with `cron: "ro"` it adds no name, and adds every URL in the add-on's `all_urls` except its `ro` URL. A string `mcp.service` with `cron: "ro"` adds nothing, because its one URL is the add-on's only URL and the validator ties `"ro"` to a map with an `ro` service. `cron: false` and invalid manifests behave exactly as on main.
 
-- [ ] **Step 1: Failing tests in `test-cron-fence.py`.** Write one case per branch of today's heredoc (no mail server; a managed list; a user list; a user list that would name no MCP server). Each must give the same output as now for mail-only input. Then add:
-  - a `budget` server at the fenced URL is left out of a new managed list.
-  - a user list naming `budget` loses it.
-  - `fenced_urls=[]` and no mail removes a previously managed list.
-- [ ] **Step 2: Failing tests in `test-addon-manifests.py`:**
-  - `cron: "ro"` with empty reads is accepted.
+- [ ] **Step 1: Failing tests in `test-addon-manifests.py`:**
+  - `cron: "ro"` with empty reads and a service map with an `ro` key is accepted.
   - `cron: "ro"` with `reads ["mail"]` is refused, needle `"permissions.cron false"`.
+  - `cron: "ro"` with a string `mcp.service` is refused, needle `"cron ro needs an ro service"`.
   - `cron: "yes"` is refused.
-  - `cron-fence-urls` on the fixture (with `"cron": "ro"`) prints the rw URL for default, and nothing for api-server or with `SPLIT_ACCESS=read`.
-- [ ] **Step 3:** Run both tests and see them fail.
-- [ ] **Step 4:** Implement. `fence_mail_from_cron` keeps its name and its state file `.mail-cron-toolsets.json`. It loads YAML as today, gets `fenced_urls` from `cron-fence-urls`, calls `cron_fence.plan`, and writes the result. Generalize the log text from "mail or messages" to "mail, messages or read/write add-ons" only when `fenced_urls` is non-empty, so mail-only output is unchanged.
-- [ ] **Step 5:** Run `test-cron-fence.py`, `test-addon-manifests.py`, `sh scripts/test-bootstrap-stamp.sh` and `python3 scripts/test-mail-cron.py`. All pass.
-- [ ] **Step 6: Commit** `git commit -m "Fence read/write add-ons out of cron when the manifest says cron ro"`
+  - `cron_fence` on the fixture returns `([], ["http://split-rw:9000/mcp"])`.
+  - with `cron: false` on the fixture, it returns `(["split"], [both URLs])`.
+- [ ] **Step 2: Failing case in `test-addon-cron-fence.sh`:** with a `"ro"` add-on registered as `split` at the ro URL on a profile, the cron list keeps `split`. Registered at the rw URL, the cron list loses it.
+- [ ] **Step 3:** Run both tests and see the new cases fail.
+- [ ] **Step 4:** Implement in `validate` and `cron_fence`. Don't touch the heredoc in `fence_mail_from_cron`, unless the URL match needs it. It already matches by URL, so it shouldn't.
+- [ ] **Step 5:** Run `python3 scripts/test-addon-manifests.py`, `sh scripts/test-addon-cron-fence.sh`, `sh scripts/test-gptr-mcp-registration.sh` and `sh scripts/test-bootstrap-stamp.sh`. All pass.
+- [ ] **Step 6: Commit** `git commit -m "Let an add-on's ro service stay in cron when its manifest says cron ro"`
 
 ### Task 6: Compose services, env keys and profile rows
 
