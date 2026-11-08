@@ -152,7 +152,7 @@ Port, transport, path and tool names come from S1. `egress` is `internet` becaus
 budget is outside the stack. `name` is `budget`, so tools appear as `mcp__budget__<tool>`; it is
 not on the reserved list.
 
-### Open decision: is budget data a `reads` class?
+### Is budget data a `reads` class?
 
 Budget data is personal, so it arguably belongs in `permissions.reads` as `finance`. Today the
 validator gives every `reads` add-on `cron: false` and no `api-server`, which would rule out the
@@ -161,13 +161,17 @@ behind `BITWARDEN_UNATTENDED`. Both come down to one policy question for Keith: 
 personal-data add-on reach cron and `api-server` read-only? Mail and Messages stay `cron: false`
 and off `api-server` whatever the answer.
 
-Until that is decided, this spec leaves `reads` empty, says in the manifest's `description` that
-the add-on holds financial data, and does not touch the `reads` rules in `addon_manifest.py`. Then:
+Decided 2026-11-08 (Keith, relayed by the manifest-roadmap session): strict for now, with a
+per-class allowance planned. For this work, `reads` stays empty, the manifest's `description`
+says the add-on holds financial data, the `reads` rules in `addon_manifest.py` stay as they are,
+and `cron: "ro"` is valid only while `reads` is empty.
 
-- **If yes**, the manifest work adds the exception, and this manifest gains `"reads": ["finance"]`
-  with no other change.
-- **If no**, `reads` becomes `["finance"]`, `api-server` leaves `mcp.profiles`, `cron` becomes
-  `false`, and extension 4 is dropped from this work.
+Follow-up: the manifest spec ("Unattended access to personal data" in
+`docs/private/addon-manifest-spec.md`) plans `finance` as a read class allowed read-only cron and
+`api-server`, while credentials, mail, messages and contacts are never unattended. It ships with a
+real cron fence, `writeTools` filtering in `mcp-plan` and an egress and delivery limit for
+unattended turns. When it lands, this manifest declares `"reads": ["finance"]`, and extensions 2
+and 4 here give way to that work's versions if it gets there first.
 
 ## Core extensions
 
@@ -200,7 +204,7 @@ from the Actual-specific ones.
    `platform_toolsets.cron` on profiles where it registered `rw`, with the same
    managed-state file, so a list the user wrote by hand is edited rather than replaced. The
    validator accepts `"ro"` only when `permissions.reads` is empty; a `reads` add-on still needs
-   `false`, pending the open decision above.
+   `false`, as decided above.
 
 The validator rejects an object `mcp.service` whose keys aren't a subset of `ro`/`rw` or whose
 values aren't `services` keys, and a `profiles` level with no matching service.
