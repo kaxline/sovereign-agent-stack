@@ -6,6 +6,41 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
+## Unreleased
+
+### Upgrade steps
+
+1. `docker compose up -d`. Both bootstrap services now receive
+   `TWENTY_LOCAL_ENABLED`, which changes their input hash, so they run in full
+   once.
+
+### Changes
+
+- **`crm.sh access` changes a workspace's access** (CR 0023 R1):
+  `./scripts/crm.sh access --slug S read|write` (`make crm-access`) sets
+  `TWENTY_ACCESS` in that workspace file. It refuses `read` when the file has
+  no `TWENTY_KEY_RO` and `write` when it has no `TWENTY_KEY_RW`, and works for
+  local and remote workspaces. `crm init --rotate` now rewrites only the lines
+  it owns (`TWENTY_URL`, `TWENTY_WORKSPACE_URL`, `TWENTY_WORKSPACE_ID` and the
+  two keys) and keeps every other line, so `TWENTY_ACCESS` survives a
+  rotation. An app that rewrote the access line after each `crm init` can
+  call `crm.sh access` instead and drop the rewrite.
+- **Local workspaces aren't registered while the local instance is off**
+  (CR 0023 R2): with `TWENTY_MCP_ENABLED=1` and `TWENTY_LOCAL_ENABLED=0`, both
+  bootstraps skip workspace files whose `TWENTY_URL` is
+  `http://twenty-server:3000` and drop their `crm-*` entries and keys. Remote
+  workspaces stay. `make doctor` reports the skip, and warns when a stale
+  entry is still registered. An app that renamed `main.env` to `main.env.off`
+  to turn the local instance off can drop the rename.
+- **`crm.sh login-link` and a signed-in `make crm-open`** (CR 0023 R4):
+  `./scripts/crm.sh login-link [--slug S]` signs in as the local owner and
+  prints `<TWENTY_WORKSPACE_URL>verify?loginToken=<token>` as the only line on
+  stdout, with progress and errors on stderr. Twenty accepts the token for 15
+  minutes (`LOGIN_TOKEN_EXPIRES_IN`). Remote workspaces are refused.
+  `make crm-open` uses it for local workspaces and falls back to the sign-in
+  page. An app that called `signIn` itself with the owner's password can run
+  this instead.
+
 ## v0.3.11 — 2026-11-06
 
 ### New optional `.env` keys
