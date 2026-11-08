@@ -13,9 +13,6 @@ tools/browser_vault_tool.py this:
   shapes the result like core's;
 - sends enter_code for a bwbroker: login with a TOTP key the same way with
   field "totp"; a login without one keeps core's ask-the-user path;
-- refuses save_login when bwbroker is the only login source besides the
-  always-on local vault, because the save prompt would pass the password
-  through the gateway;
 - adds a "bitwarden" entry to browser_vault_list naming locked accounts and
   make vault-unlock, or {"unavailable": true} when the broker does not answer.
 
@@ -69,15 +66,6 @@ CODE = (
     "            return _bwbroker_fill(handle, meta, origin, effective_task_id, field=\"totp\")\n"
 )
 
-SAVE_ANCHOR = (
-    "    vault bound to that origin, and fill the password at once. The values never enter the conversation.\"\"\"\n"
-)
-SAVE = (
-    f"    {MARKER} (save)\n"
-    "    if _bwbroker_only_source():\n"
-    "        return json.dumps({\"success\": False, \"error\": _BWBROKER_SAVE_REFUSED})\n"
-)
-
 LIST_ANCHOR = (
     "    if errors:\n"
     "        out[\"errors\"] = errors\n"
@@ -103,8 +91,6 @@ _BWBROKER_FILL_TIMEOUT = 30.0  # the broker's own CDP deadline is 10 s, after bw
 _BWBROKER_STATUS_TIMEOUT = 2.0
 _BWBROKER_MAX_REPLY = 1 << 20
 _BWBROKER_UNAVAILABLE = "Bitwarden is unavailable right now. Try again shortly, or ask the user to check make doctor."
-_BWBROKER_SAVE_REFUSED = ("Bitwarden logins are added in Bitwarden. Ask the user to add this login to the agent's "
-                          "folder or collection, or to approve a request: bitwarden_request_access.")
 _BWBROKER_OTHER = "Bitwarden could not fill this login. Try again shortly, or ask the user to check make doctor."
 _BWBROKER_ERRORS = {
     "target_not_found": "The tab closed before the fill ran. Nothing was written. Open the login page again and retry.",
@@ -298,16 +284,6 @@ def _bwbroker_fill(handle: str, meta: Any, page_origin: str, task_id: str, field
     return json.dumps(_bwbroker_refusal(_bwbroker_code(payload), handle, meta, found, field))
 
 
-def _bwbroker_only_source() -> bool:
-    """True when every enabled login backend other than the always-on local vault is bwbroker."""
-    try:
-        from agent.vault_backends import enabled_backends
-        names = [b.name for b in enabled_backends() if b.name != "local"]
-    except Exception:  # health: allow BLE001 -- unknown: core's save path runs
-        return False
-    return bool(names) and all(name == _BWBROKER_NAME for name in names)
-
-
 def _bwbroker_list_hint(out: dict[str, Any]) -> None:
     """Add ``bitwarden`` to a browser_vault_list result when the bwbroker backend is enabled. Never raises."""
     import re
@@ -358,7 +334,6 @@ ANCHORS = {
     "fill": FILL_ANCHOR,
     "meta none": META_NONE_ANCHOR,
     "enter_code": CODE_ANCHOR,
-    "save_login": SAVE_ANCHOR,
     "list": LIST_ANCHOR,
     "helpers": HELPERS_ANCHOR,
 }
@@ -382,7 +357,6 @@ def main() -> None:
     text = text.replace(FILL_ANCHOR, FILL + FILL_ANCHOR, 1)
     text = text.replace(META_NONE_ANCHOR, META_NONE + META_NONE_ANCHOR, 1)
     text = text.replace(CODE_ANCHOR, CODE + CODE_ANCHOR, 1)
-    text = text.replace(SAVE_ANCHOR, SAVE_ANCHOR + SAVE, 1)
     text = text.replace(LIST_ANCHOR, LIST, 1)
     text = text.replace(HELPERS_ANCHOR, HELPERS + HELPERS_ANCHOR, 1)
     target.write_text(text, encoding="utf-8")

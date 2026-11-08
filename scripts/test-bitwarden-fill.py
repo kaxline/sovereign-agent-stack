@@ -8,7 +8,7 @@ headless Chromium on a local login page and runs a stub broker on
 bwbroker: fill reaches the stub with the supervisor's target id and CDP port,
 that PluginLoginBackend.resolve_password never runs, that the redaction entry
 is registered, that a vault_ handle still takes core's path, the broker-down
-results, the TOTP routing and fallback, the save_login refusal, and that the
+results, the TOTP routing and fallback, an unpatched save_login, and that the
 broker's normalize_origin agrees with core's. Passwords are generated per run
 and must not appear in any tool result or log line.
 """
@@ -62,7 +62,7 @@ for script in ("/bootstrap/patch-digest-redaction.py", "/bootstrap/patch-bitward
     assert "already applied" in out.stdout, out.stdout
 src = open("/opt/hermes/tools/browser_vault_tool.py").read()
 assert src.count("# assistant-stack: bitwarden broker fill\n") == 1, "one helper block"
-assert src.count("# assistant-stack: bitwarden broker fill (") == 5, "five call sites"
+assert src.count("# assistant-stack: bitwarden broker fill (") == 4, "four call sites"
 
 sys.path.insert(0, "/opt/hermes")
 sys.path.insert(0, "/broker-src")
@@ -329,16 +329,14 @@ assert TOTP not in redact.redact_registered_vault_values(f"code {TOTP}"), "the c
 assert not resolve_calls
 redact.clear_vault_redaction_values()
 
-# --- test_save_refused ------------------------------------------------------
-REFUSED = {"success": False, "error": "Bitwarden logins are added in Bitwarden. Ask the user to add this login to "
-           "the agent's folder or collection, or to approve a request: bitwarden_request_access."}
-assert tool(bvt.browser_vault_save_login, task_id=TASK) == REFUSED
+# --- test_save_untouched ---------------------------------------------------
+# save_login writes to the local vault only, so the overlay leaves it as core wrote it.
+save_body = src[src.index("def browser_vault_save_login("):src.index("_TAB_PROBES[\"otp\"] = ")]
+assert "assistant-stack: bitwarden broker fill" not in save_body, "save_login is not patched"
+assert set(BACKENDS) and any(b.name == "bwbroker" for b in BACKENDS)
 unlock.get_save_login_prompt_callback = lambda: (lambda origin, host: None)
-set_backends(Local(), BW, OnePass())
-assert tool(bvt.browser_vault_save_login, task_id=TASK).get("error_type") == "save_declined", "1Password present: core"
-set_backends(Local())
-assert tool(bvt.browser_vault_save_login, task_id=TASK).get("error_type") == "save_declined", "local only: core"
-set_backends(Local(), BW)
+res = tool(bvt.browser_vault_save_login, task_id=TASK)
+assert res.get("error_type") == "save_declined", res
 
 # --- test_origin_normalization_matches_core ---------------------------------
 URLS = [
