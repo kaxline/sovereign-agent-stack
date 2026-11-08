@@ -21,10 +21,18 @@ their host paths, and only the file name is used here.
 
 A ``postgres/<role>`` value also replaces the password in ``DATABASE_URL`` and
 in any ``*_DATABASE_PASSWORD`` line that held the old ``DB_SERVICE_PASSWORD``,
-since those lines carry the same secret.
+since those lines carry the same secret. A file with no ``DB_SERVICE_PASSWORD``
+line is skipped.
+
+A value for a KEY=value file is refused when compose's env_file or a shell
+would read it back differently: ``$``, a backtick, ``\\``, quotes, ``#``,
+whitespace at either end, or a control character. The line keeps its quoting.
+The Twenty files take any value. Lone surrogates are refused everywhere.
 
 A file is rewritten only when a value differs, through a temp file in the same
-folder with the old file's mode, and never created. Output names files and
+folder, with mode 600 and the old owner where the container may set it (a
+note says when it could not). Symbolic links are skipped, and no file is ever
+created. Output names files and
 items, never values. Exit codes: 0 done, 1 the broker is unreachable, refused
 the call or sent a malformed response (nothing written), or a file could not be
 written; 3 a file Hermes reads changed (Twenty workspaces, CalDAV accounts),
@@ -41,6 +49,7 @@ import re
 import stat
 import sys
 import tempfile
+import unicodedata
 from pathlib import Path
 from typing import NamedTuple
 from urllib.parse import quote, unquote
@@ -76,6 +85,8 @@ RULES = (
 )
 KEY_LINE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=(.*)")
 DATABASE_URL = re.compile(r"(postgres(?:ql)?://[^:/@]+:)([^@]*)(@.*)")
+# Characters compose's env_file or a shell `source` would read differently.
+ENV_UNSAFE = set("$`\\'\"#")
 
 
 class Write(NamedTuple):
@@ -86,6 +97,10 @@ class Write(NamedTuple):
 
 class Malformed(Exception):
     pass
+
+
+class SkipFile(Exception):
+    """A file left alone; the message is the note, with no value in it."""
 
 
 def show(name: str) -> str:
@@ -140,8 +155,12 @@ def plan(items: list[dict], roots: dict[str, Path],
         if not value:
             problems.append(f"{show(name)}: empty value; skipped")
             continue
-        if "\0" in value or (key is not None and ("\n" in value or "\r" in value)):
-            problems.append(f"{show(name)}: the value has a character the file cannot hold; skipped")
+        if any(0xD800 <= ord(c) <= 0xDFFF for c in value):
+            problems.append(f"{show(name)}: the value is not valid Unicode; skipped")
+            continue
+        if key is not None and not env_safe(value):
+            problems.append(f"{show(name)}: the value has a character a KEY=value file cannot hold"
+                            " unchanged; skipped")
             continue
         path = roots[root] / template.format(match.group(1)) if template else roots[root]
         mapped[name] = Write(path, key, value)
@@ -153,6 +172,20 @@ def plan(items: list[dict], roots: dict[str, Path],
         else:
             writes.append(write)
     return writes, problems
+
+
+def env_safe(value: str) -> bool:
+    """True when compose env_file and shell sourcing both read the value back unchanged."""
+    return (value == value.strip()
+            and not any(c in ENV_UNSAFE or unicodedata.category(c) == "Cc" for c in value))
+
+
+def _requote(raw: str, value: str) -> str:
+    """The value in the quoting style of the line's old value (bare or quoted)."""
+    raw = raw.rstrip("\r")
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
+        return f"{raw[0]}{value}{raw[0]}"
+    return value
 
 
 def _value_of(raw: str) -> str:
@@ -170,6 +203,9 @@ def edit_env(text: str, edits: dict[str, str]) -> str:
             m = KEY_LINE.fullmatch(line.rstrip("\r"))
             if m and m.group(1) == "DB_SERVICE_PASSWORD":
                 old_pw = _value_of(m.group(2))
+        if old_pw is None:
+            # Appending it would leave the old password in DATABASE_URL.
+            raise SkipFile("no DB_SERVICE_PASSWORD line to update; skipped")
     lines = text.split("\n")
     seen = set()
     for i, line in enumerate(lines):
@@ -179,15 +215,16 @@ def edit_env(text: str, edits: dict[str, str]) -> str:
             continue
         key, raw = m.group(1), m.group(2)
         if key in edits:
-            lines[i] = f"{key}={edits[key]}{eol}"
+            lines[i] = f"{key}={_requote(raw, edits[key])}{eol}"
             seen.add(key)
         elif old_pw and "DB_SERVICE_PASSWORD" in edits:
             new_pw = edits["DB_SERVICE_PASSWORD"]
             url = DATABASE_URL.fullmatch(_value_of(raw)) if key == "DATABASE_URL" else None
             if url and unquote(url.group(2)) == old_pw:
-                lines[i] = f"{key}={url.group(1)}{quote(new_pw, safe='')}{url.group(3)}{eol}"
+                dsn = f"{url.group(1)}{quote(new_pw, safe='')}{url.group(3)}"
+                lines[i] = f"{key}={_requote(raw, dsn)}{eol}"
             elif key.endswith("_DATABASE_PASSWORD") and _value_of(raw) == old_pw:
-                lines[i] = f"{key}={new_pw}{eol}"
+                lines[i] = f"{key}={_requote(raw, new_pw)}{eol}"
     out = "\n".join(lines)
     missing = [k for k in edits if k not in seen]
     if missing:
@@ -198,10 +235,16 @@ def edit_env(text: str, edits: dict[str, str]) -> str:
     return out
 
 
-def replace_file(path: Path, data: bytes, mode: int) -> None:
+def replace_file(path: Path, data: bytes, uid: int, gid: int) -> bool:
+    """Replace the file atomically, mode 600. False when its owner could not be kept."""
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    owner_kept = True
     try:
-        os.fchmod(fd, mode)
+        os.fchmod(fd, 0o600)
+        try:
+            os.fchown(fd, uid, gid)
+        except PermissionError:
+            owner_kept = False
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)
             fh.flush()
@@ -221,22 +264,26 @@ def replace_file(path: Path, data: bytes, mode: int) -> None:
             os.close(dfd)
     except OSError:
         pass
+    return owner_kept
 
 
 def apply(writes: list[Write]) -> tuple[list[Path], list[tuple[Path, str]]]:
-    """Apply writes per file. Returns (changed paths, [(path, problem)])."""
+    """Apply writes per file. Returns (changed paths, [(path, note or problem)])."""
     by_path: dict[Path, list[Write]] = {}
     for w in writes:
         by_path.setdefault(w.path, []).append(w)
     changed, problems = [], []
     for path, group in by_path.items():
         try:
-            st = os.stat(path)
+            st = os.lstat(path)
         except FileNotFoundError:
             problems.append((path, "no such file; skipped"))
             continue
         except OSError as exc:
             problems.append((path, f"cannot read ({exc.strerror})"))
+            continue
+        if stat.S_ISLNK(st.st_mode):
+            problems.append((path, "a symbolic link; skipped"))
             continue
         if not stat.S_ISREG(st.st_mode):
             problems.append((path, "not a regular file; skipped"))
@@ -252,15 +299,21 @@ def apply(writes: list[Write]) -> tuple[list[Path], list[tuple[Path, str]]]:
         if group[0].key is None:
             new = group[0].value + ("\n" if old.endswith("\n") else "")
         else:
-            new = edit_env(old, {w.key: w.value for w in group})
+            try:
+                new = edit_env(old, {w.key: w.value for w in group})
+            except SkipFile as exc:
+                problems.append((path, str(exc)))
+                continue
         if new == old:
             continue
         try:
-            replace_file(path, new.encode("utf-8"), stat.S_IMODE(st.st_mode))
+            owner_kept = replace_file(path, new.encode("utf-8"), st.st_uid, st.st_gid)
         except OSError as exc:
             problems.append((path, f"could not write ({exc.strerror})"))
             continue
         changed.append(path)
+        if not owner_kept:
+            problems.append((path, "owner changed to the container user; noted"))
     return changed, problems
 
 
@@ -342,7 +395,7 @@ def main() -> int:
         print(f"changed {display(path, roots, shown)}")
     write_error = False
     for path, problem in failed:
-        is_error = not problem.endswith("skipped")
+        is_error = not problem.endswith(("skipped", "noted"))
         write_error = write_error or is_error
         print(f"{display(path, roots, shown)}: {problem}", file=sys.stderr if is_error else sys.stdout)
     if any(is_hermes_side(path, roots) for path in changed):

@@ -71,7 +71,17 @@ def serve(items):
             VALUES.add(item["value"])
 
 
-def run(extra_env=None, sock=SOCK):
+# Runs the script with os.fchown failing as it does for a non-root container user.
+EPERM_WRAPPER = (
+    "import errno, os, runpy, sys\n"
+    "def refuse(*args): raise PermissionError(errno.EPERM, 'Operation not permitted')\n"
+    "os.fchown = refuse\n"
+    "sys.path.insert(0, os.path.dirname(sys.argv[1]))\n"
+    "sys.argv = sys.argv[1:]\n"
+    "runpy.run_path(sys.argv[0], run_name='__main__')\n")
+
+
+def run(extra_env=None, sock=SOCK, eperm=False):
     env = {"PATH": os.environ["PATH"], "BITWARDEN_SYNC_SOCKET": str(sock),
            "BITWARDEN_SYNC_TARGETS": str(TARGETS),
            "TWENTY_SECRETS_DIR": HOST_SECRETS,
@@ -80,7 +90,8 @@ def run(extra_env=None, sock=SOCK):
     env.update(extra_env or {})
     for k in [k for k, v in env.items() if v is None]:
         del env[k]
-    proc = subprocess.run([sys.executable, str(SCRIPT)], env=env, capture_output=True, text=True)
+    argv = [sys.executable, "-c", EPERM_WRAPPER, str(SCRIPT)] if eperm else [sys.executable, str(SCRIPT)]
+    proc = subprocess.run(argv, env=env, capture_output=True, text=True)
     outputs.append(proc.stdout + proc.stderr)
     return proc.returncode, proc.stdout, proc.stderr
 
@@ -122,7 +133,7 @@ def seed():
           "CALDAV_URL=https://caldav.example.com/\r\nCALDAV_USERNAME=sam@example.com\r\n"
           f"CALDAV_PASSWORD={old['work']}\r\n# trailing comment\r\n")
     write("caldav-accounts/home.env",
-          "CALDAV_URL=https://caldav.example.com/\nCALDAV_USERNAME=kim@example.com")
+          "CALDAV_URL=https://caldav.example.com/\nCALDAV_USERNAME=kim@example.com", mode=0o644)
     return old
 
 
@@ -131,6 +142,9 @@ old = seed()
 new = {k: val(f"new-{k}") for k in ("ro", "rw", "enc", "db", "pg", "work", "home", "nofile")}
 new["pg"] = "p@ss/w:rd%" + secrets.token_hex(4)
 VALUES.add(new["pg"])
+# A whole-value file takes characters a KEY=value line cannot.
+new["db"] = new["db"] + ' $x #"\'\\ '
+VALUES.add(new["db"])
 items = [
     {"name": "twenty/main/key-ro", "value": new["ro"]},
     {"name": "twenty/main/key-rw", "value": new["rw"]},
@@ -159,9 +173,9 @@ got_changed = {line for line in out.splitlines() if line.startswith("changed ")}
 if got_changed != want_changed:
     fail(f"all rows: changed lines {sorted(got_changed)}, want {sorted(want_changed)}")
 if read("twenty-workspaces/main.env") != ("# Written by make crm-add.\nTWENTY_URL=https://crm.example.com\n"
-                                          f"TWENTY_ACCESS=write\nTWENTY_KEY_RW={new['rw']}\n"
+                                          f"TWENTY_ACCESS=write\nTWENTY_KEY_RW=\"{new['rw']}\"\n"
                                           f"TWENTY_KEY_RO={new['ro']}\n"):
-    fail("twenty workspace: key lines not replaced in place")
+    fail("twenty workspace: key lines not replaced in place with their quoting kept")
 if read("twenty-secrets/encryption_key") != new["enc"]:
     fail("twenty/encryption-key: want the value with no trailing newline")
 if read("twenty-secrets/db_password") != new["db"] + "\n":
@@ -224,6 +238,51 @@ if read("caldav-accounts/work.env") != before or "INJECTED" in read("caldav-acco
     fail("line break: the file was written")
 if "caldav/work" not in out + err:
     fail("line break: caldav/work not reported")
+
+# --- Values compose or a shell would read differently are refused -----------
+for label, suffix in (("dollar", "$HOME"), ("comment", " #c"), ("double quote", '"q'),
+                      ("single quote", "'q"), ("trailing space", " "), ("backslash", "\\n"),
+                      ("backtick", "`id`"), ("tab", "\tx")):
+    serve([{"name": "caldav/work", "value": val("unsafe") + suffix},
+           {"name": "postgres/vikunja", "value": val("unsafe") + suffix}])
+    pg_before = read("postgres-services/vikunja.env")
+    code, out, err = run()
+    if read("caldav-accounts/work.env") != before or read("postgres-services/vikunja.env") != pg_before:
+        fail(f"unsafe value ({label}): a file was written")
+    if code != 0 or "caldav/work" not in out or "postgres/vikunja" not in out or "changed " in out:
+        fail(f"unsafe value ({label}): exit {code}, out={out.splitlines()}, want 0 and both items noted")
+
+# --- Lone surrogates are refused before anything is written ------------------
+serve(b'[{"name": "twenty/encryption-key", "value": "syn-sur-\\ud800"}]')
+enc = read("twenty-secrets/encryption_key")
+code, out, err = run()
+if code != 0 or read("twenty-secrets/encryption_key") != enc or "twenty/encryption-key" not in out:
+    fail(f"lone surrogate: exit {code}, out={out.splitlines()}, err={err.strip()!r}, want 0, a note, no write")
+
+# --- Symbolic links are skipped -----------------------------------------------
+(TARGETS / "caldav-accounts/link.env").symlink_to("work.env")
+serve([{"name": "caldav/link", "value": val("link")}])
+code, out, err = run()
+if read("caldav-accounts/work.env") != before or "compose/caldav-mcp/accounts/link.env: a symbolic link" not in out:
+    fail(f"symlink: out={out.splitlines()}, want a note and the link target untouched")
+(TARGETS / "caldav-accounts/link.env").unlink()
+
+# --- No DB_SERVICE_PASSWORD line: skipped, not appended ----------------------
+nopw = write("postgres-services/nopw.env",
+             f"DATABASE_URL=postgresql://svc_nopw:{val('old-nopw')}@postgres-db:5432/assistant\n")
+nopw_before = nopw.read_bytes()
+serve([{"name": "postgres/nopw", "value": val("nopw")}])
+code, out, err = run()
+if nopw.read_bytes() != nopw_before or "compose/postgres/services/nopw.env: no DB_SERVICE_PASSWORD" not in out:
+    fail(f"no DB_SERVICE_PASSWORD: out={out.splitlines()}, want a note and no write")
+
+# --- Owner that cannot be kept is noted, and the write still lands ----------
+serve([{"name": "caldav/work", "value": val("owner")}])
+code, out, err = run(eperm=True)
+if code != 3 or "compose/caldav-mcp/accounts/work.env: owner changed to the container user" not in out:
+    fail(f"fchown EPERM: exit {code}, out={out.splitlines()}, err={err.strip()!r}, want 3 and the owner note")
+before = read("caldav-accounts/work.env")
+check_modes("after fchown EPERM")
 
 # --- Twenty file variables unset or outside TWENTY_SECRETS_DIR ---------------
 enc_before = read("twenty-secrets/encryption_key")
