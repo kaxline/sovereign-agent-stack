@@ -38,8 +38,8 @@ or adopts the server's only one (`SYNC_ID=` picks one of several), checks that
 it opens, writes the budget file, sets `ACTUAL_BUDGET_FILE` and
 `ACTUAL_MCP_ENABLED=1`, and recreates running MCP containers. It does nothing
 when the budget file exists; `ROTATE=1` sets a new server password instead.
-`make budget-open` copies the password with `pbcopy` and prints where it is on
-Linux.
+`make budget-open` copies the password with `pbcopy`, or, when `pbcopy` isn't available, prints
+where it is.
 
 In WebUI: *Add a $12.50 coffee at Example Cafe to my checking account.* Then
 in a new chat: *What did I spend this month, by category?*
@@ -57,7 +57,8 @@ make hermes-reload
 the budget with those values and writes nothing if that fails. If the budget
 file exists it refuses unless `FORCE=1` is given.
 
-`make budget-remove` deletes the budget file and sets `ACTUAL_MCP_ENABLED=0`.
+`make budget-remove` deletes the budget file, clears `ACTUAL_BUDGET_FILE` and
+sets `ACTUAL_MCP_ENABLED=0`.
 Server data stays.
 
 ## The budget file
