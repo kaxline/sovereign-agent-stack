@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import json
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -217,8 +218,11 @@ with tempfile.TemporaryDirectory() as tmp:
     check("plan skips invalid manifests", am.mcp_plan(Path(tmp), "default", env) == [])
 
 # --- cron fence ---------------------------------------------------------------
-check("an add-on with cron true is not fenced", am.cron_fence(ROOT / "addons", env) == ([], []),
-      str(am.cron_fence(ROOT / "addons", env)))
+with tempfile.TemporaryDirectory() as tmp:
+    (Path(tmp) / "gptr").mkdir()
+    shutil.copy(ROOT / "addons" / "gptr" / "addon.json", Path(tmp) / "gptr" / "addon.json")
+    check("an add-on with cron true is not fenced", am.cron_fence(Path(tmp), env) == ([], []),
+          str(am.cron_fence(Path(tmp), env)))
 
 
 def fence_of(manifests: dict[str, str], environ) -> tuple[list[str], list[str]]:

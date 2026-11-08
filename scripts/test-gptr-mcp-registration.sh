@@ -9,7 +9,10 @@ set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 bootstrap="${ROOT}/compose/hermes/bootstrap-api-profile.sh"
 compose="${ROOT}/docker-compose.yml"
-ADDONS_DIR="${ROOT}/addons"
+# Only GPT Researcher's manifest: other add-ons add their own drop calls.
+ADDONS_DIR="$(mktemp -d)"
+mkdir "${ADDONS_DIR}/gptr"
+cp "${ROOT}/addons/gptr/addon.json" "${ADDONS_DIR}/gptr/addon.json"
 ADDON_MANIFEST_PY="${ROOT}/scripts/lib/addon_manifest.py"
 
 # The range is built in a variable: macOS sh (bash 3.2) brace-expands
@@ -30,7 +33,7 @@ fail() {
 # The plan is read in a pipeline, so the stubs' record has to come back
 # through a file rather than the subshell's $calls.
 record="$(mktemp)"
-trap 'rm -f "$record"' EXIT
+trap 'rm -rf "$record" "$ADDONS_DIR"' EXIT
 run() {
   register_addon_mcp_servers "$1" > /dev/null
 }
@@ -88,7 +91,10 @@ GPTR_MCP_ENABLED=1
 run browser 2>/dev/null; got
 [ -z "$calls" ] || fail "a broken manifest registers nothing ($calls)"
 rm -rf "$broken"
-ADDONS_DIR="${ROOT}/addons"
+# Only GPT Researcher's manifest: other add-ons add their own drop calls.
+ADDONS_DIR="$(mktemp -d)"
+mkdir "${ADDONS_DIR}/gptr"
+cp "${ROOT}/addons/gptr/addon.json" "${ADDONS_DIR}/gptr/addon.json"
 
 # Compose: gptr-mcp starts with research or automation, the REST service only
 # with automation, and both bootstraps receive the flag.

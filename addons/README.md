@@ -4,8 +4,8 @@ Each directory holds the `addon.json` manifest of one optional service whose
 containers are already in `docker-compose.yml`. The directory is named after
 the last segment of the manifest's `id`. The format is experimental while the
 stack is in 0.3.x, and field names can change between patch releases, with a
-changelog entry. GPT Researcher (`gptr/`) is the only add-on so far; the other
-optional services are still wired by hand.
+changelog entry. GPT Researcher (`gptr/`) and Actual Budget (`actual/`) are the
+add-ons so far; the other optional services are still wired by hand.
 
 What reads a manifest:
 
