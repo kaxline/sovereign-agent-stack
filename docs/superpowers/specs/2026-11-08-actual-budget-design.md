@@ -105,7 +105,6 @@ ACTUAL_WEB_URL=http://localhost:5006/          # where make budget-open goes
 ACTUAL_PASSWORD=...
 ACTUAL_SYNC_ID=...
 ACTUAL_ENCRYPTION_PASSWORD=                    # only for an end-to-end encrypted budget
-ACTUAL_ACCESS=write                            # read | write, default write
 ```
 
 The passwords stay out of `.env`, `config.yaml` and the Hermes profiles' `.env` files, because
@@ -194,9 +193,9 @@ from the Actual-specific ones.
    any other value gives the profile no entry at all, never `rw` or `ro`, so a value added later
    (Twenty may gain `ask`, CR 0023 R3) can't widen access on an older stack. It never raises `ro`
    to `rw`. This is how the bootstrap already treats `TWENTY_ACCESS`, and it
-   lets Boundary offer "look things up only". The bootstrap services get `ACTUAL_ACCESS` from the
-   budget file through `env_file` with `required: false`, so a changed file re-runs the bootstrap
-   as Twenty's workspace files do.
+   lets Boundary offer "look things up only". `ACTUAL_ACCESS` lives in `.env`, not the budget file, and both bootstrap services receive it as
+   an environment variable, so they never see the Actual passwords. The bootstrap hashes its
+   environment, so a changed value re-runs it.
 
 4. **Read-only cron.** `permissions.cron` also accepts `"ro"`: cron may use the add-on only on
    profiles where its access is `ro`. The bootstrap generalizes `fence_mail_from_cron` (today it
