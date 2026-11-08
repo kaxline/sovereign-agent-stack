@@ -17,6 +17,18 @@ the stack under another app.
 
 ### Changes
 
+- **`browser_vault` `create_login` (CR 0024 R1)**: on a sign-up form, the
+  model calls `browser_vault` with `action: create_login` and the
+  `identifier` the user chose. Hermes asks the viewer through a new
+  `vault.create_login` server request (`{origin, site, identifier,
+  regenerate}`; answer `{"generate": true}`, `{"password": "..."}` or `""`),
+  generates a password from the fields' `minlength`, `maxlength`,
+  `passwordrules` and `pattern`, fills every new-password field of the form
+  and stores a `login` item for the page's origin. The password never
+  appears in the result. Calling it with the returned `handle` replaces the
+  password. A client that does not handle the request leaves the model waiting
+  180 seconds, then reports `save_declined`; Boundary should add its card
+  before moving its pin. See "Creating logins on sign-up forms" in `docs/hermes.md`.
 - **Vault guidance names the `browser_vault` actions**: the `browser-login`
   skill (1.4.0), the save-login next step and the password-in-chat nudge
   named `browser_vault_fill`, `browser_vault_save_login` and the other

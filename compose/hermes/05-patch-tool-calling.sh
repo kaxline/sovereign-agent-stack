@@ -22,6 +22,9 @@ run_patch /bootstrap/patch-tool-eval-trace.py
 # Result hints for a bad helper import or code that printed nothing; print a
 # trailing expression; vault save next step names the browser_vault fill action.
 run_patch /bootstrap/patch-browser-exec-hint.py
+# browser_vault action=create_login: a sign-up login with a generated password
+# the model never sees, approved through the vault.create_login request.
+run_patch /bootstrap/patch-vault-create-login.py
 # Tool-loop warnings outside the untrusted-data wrapper.
 run_patch /bootstrap/patch-tool-loop-notes.py
 # Halt a turn that keeps re-running calls whose results it has already seen,

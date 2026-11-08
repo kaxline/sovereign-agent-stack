@@ -86,6 +86,10 @@ defined. Do not import them. Only `print(...)` output comes back.
 - **Saving from a page without the form** (a home page). The login is stored
   but nothing is filled. Follow the result's `next`: open the form, then
   `action="fill"` with the handle.
+- **Saving a login on a sign-up form.** A form whose password fields are
+  `new-password` (create, confirm) is a sign-up: call `browser_vault` with
+  `action="create_login"` and the identifier the user chose, not
+  `save_login`.
 - **Asking for the password in chat.** Never. Not "what's your password?", not
   "paste it here". Call `browser_vault` with `action="save_login"` instead.
 - **Typing a password with `fill_input` or `js(...)`.** Never, even one the
