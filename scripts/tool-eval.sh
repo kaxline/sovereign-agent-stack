@@ -496,8 +496,22 @@ for c in cases:
 
     result = "FAIL"
     reason = ""
+    # max_calls: ["browser_exec=4"]: more calls of that tool than N fail the case (a model that keeps
+    # working a page it was meant to stop at).
+    over_calls = []
+    for spec in c.get("max_calls") or []:
+        tool, _, cap = str(spec).partition("=")
+        try:
+            cap_n = int(cap)
+        except ValueError:
+            continue
+        if sum(1 for n in names if name_matches([n], tool.strip())) > cap_n:
+            over_calls.append(tool.strip())
     if c.get("pass_none"):
-        if not uniq:
+        # allow_tools: calls that don't count as acting (loading a skill before asking the user).
+        allowed = c.get("allow_tools") or []
+        acting = [n for n in uniq if not any(name_matches([n], a) for a in allowed)]
+        if not acting:
             result = "PASS"
         else:
             reason = "unexpected_tools"
@@ -528,6 +542,9 @@ for c in cases:
         if bad_tool:
             result = "FAIL"
             reason = "wrong_tool"
+        elif over_calls:
+            result = "FAIL"
+            reason = "too_many_calls"
         elif bad_outcome or (not uniq and outcome in ("text_only", "no_trace")):
             result = "FAIL"
             reason = "text_only" if outcome == "text_only" else "no_trace"

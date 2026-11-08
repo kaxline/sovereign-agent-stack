@@ -106,6 +106,11 @@ def test_select_fields() -> None:
     expect(pick([control(1, "current-password", form=0), control(2, form=1), control(3, form=1)]) == [2, 3],
            "sign-up form beside a sign-in form")
     expect(pick([control(1, form=0), control(2, form=1)]) == [1], "first form only")
+    # ParaBank's register page: a sign-in box in the sidebar, then the registration form.
+    expect(pick([control(1, form=0, name="password"), control(2, form=1, name="customer.password"),
+                 control(3, form=1, name="repeatedPassword")]) == [2, 3], "sidebar sign-in before sign-up")
+    expect(pick([control(1, form=0, name="password"), control(2, form=1, label="Choose a password")]) == [2],
+           "sign-up wording breaks a tie")
     expect(pick([control(1, "one-time-code")]) == [], "otp")
 
 

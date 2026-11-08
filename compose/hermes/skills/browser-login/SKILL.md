@@ -1,7 +1,7 @@
 ---
 name: browser-login
 description: "Sign in to a website in the local browser. Use for 'log me into…', 'sign in to…', 'save my login for…', or any page that shows a username/password form. Covers the order of the browser_vault actions and why the sign-in page must be open first."
-version: 1.4.0
+version: 1.5.0
 author: assistant stack (repo-shipped)
 license: MIT
 platforms: [linux, macos, windows]
@@ -30,6 +30,8 @@ Open the page first.
 - "Log me into X" / "sign in to X" / "use my account on X"
 - "Save my login for X"
 - A task reaches a page with a password field
+
+Creating a new account is the `browser-signup` skill.
 
 ## Driving the page
 
@@ -86,10 +88,9 @@ defined. Do not import them. Only `print(...)` output comes back.
 - **Saving from a page without the form** (a home page). The login is stored
   but nothing is filled. Follow the result's `next`: open the form, then
   `action="fill"` with the handle.
-- **Saving a login on a sign-up form.** A form whose password fields are
-  `new-password` (create, confirm) is a sign-up: call `browser_vault` with
-  `action="create_login"` and the identifier the user chose, not
-  `save_login`.
+- **Saving a login on a sign-up form.** A form that asks for a new password
+  (create, confirm) is a sign-up. Follow the `browser-signup` skill, which uses
+  `action="create_login"`, not `save_login`.
 - **Asking for the password in chat.** Never. Not "what's your password?", not
   "paste it here". Call `browser_vault` with `action="save_login"` instead.
 - **Typing a password with `fill_input` or `js(...)`.** Never, even one the

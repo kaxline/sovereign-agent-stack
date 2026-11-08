@@ -17,6 +17,15 @@ the stack under another app.
 
 ### Changes
 
+- **`browser-signup` skill (CR 0024 R3)**: covers creating an account. The
+  model asks for the identifier and profile fields first, asks before
+  ticking terms boxes, calls `create_login` on the password step, uses
+  `enter_code` or asks the user for verification, stops at a CAPTCHA, and
+  uses `capture_secret` for a key the site shows. `browser-login` (1.5.0)
+  points to it. Three tool-eval cases check it, and the scorer gains
+  `allow_tools` for `pass_none` cases and `max_calls` (`browser_exec=4`).
+  With no `new-password` marks, `create_login` now picks the form that
+  looks most like a sign-up instead of the first form with a password field.
 - **`browser_vault` `capture_secret` and `vault.take` (CR 0024 R2)**: on a page
   that shows a new API key, the model calls `browser_vault` with
   `action: capture_secret`, a `name` and a `destination`. Hermes finds the

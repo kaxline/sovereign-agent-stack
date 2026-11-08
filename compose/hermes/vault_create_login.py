@@ -332,6 +332,9 @@ def build_fill_js(targets: list[int], value: str, expected_origin: str, nonce: s
 
 
 _RE_CURRENT = re.compile(r"\b(?:current|old|existing)\s*password\b")
+# Sign-up wording on a password field (names are lower-cased with separators turned into spaces, and
+# camelCase like repeatedPassword stays one word, so these match inside words).
+_RE_NEW = re.compile(r"new|create|choose|confirm|repeat|retype|verify|again")
 
 
 def _norm(text: str) -> str:
@@ -341,9 +344,11 @@ def _norm(text: str) -> str:
 def select_new_password_fields(controls: list[dict]) -> list[dict]:
     """The password inputs of one form that take a new password.
 
-    Fields marked ``autocomplete="new-password"`` when the page marks any; otherwise every visible
-    password input not marked or labelled as the current one. Restricted to the form of the first
-    match, so a sign-in form elsewhere on the page is left alone."""
+    Fields marked ``autocomplete="new-password"`` when the page marks any, in the form of the first
+    one. Otherwise the visible password inputs not marked or labelled as the current one, in the form
+    that looks most like a sign-up: two password fields (password and confirm) beat one, and sign-up
+    wording (create, confirm, repeat) breaks ties, so a sign-in box in the page header is left alone.
+    With nothing to tell forms apart, the first form wins."""
     fields = []
     for c in controls:
         if not isinstance(c, dict) or c.get("type") != "password":
@@ -353,12 +358,23 @@ def select_new_password_fields(controls: list[dict]) -> list[dict]:
             continue
         fields.append((c, tokens))
     marked = [c for c, tokens in fields if "new-password" in tokens]
-    targets = marked or [c for c, _ in fields
-                         if not _RE_CURRENT.search(_norm(f"{c.get('name', '')} {c.get('label', '')}"))]
-    if not targets:
-        return []
-    form = targets[0].get("formIndex")
-    return [c for c in targets if c.get("formIndex") == form]
+    if marked:
+        form = marked[0].get("formIndex")
+        return [c for c in marked if c.get("formIndex") == form]
+    unmarked = [c for c, _ in fields if not _RE_CURRENT.search(_norm(f"{c.get('name', '')} {c.get('label', '')}"))]
+    forms: dict[Any, list[dict]] = {}
+    for c in unmarked:
+        forms.setdefault(c.get("formIndex"), []).append(c)
+
+    def score(group: list[dict]) -> int:
+        text = " ".join(_norm(f"{c.get('name', '')} {c.get('label', '')}") for c in group)
+        return 2 * (len(group) >= 2) + bool(_RE_NEW.search(text))
+
+    best: list[dict] = []
+    for group in forms.values():  # insertion order = page order; strict > keeps the first on a tie
+        if not best or score(group) > score(best):
+            best = group
+    return best
 
 
 # ── the action ────────────────────────────────────────────────────────────────────────────────
