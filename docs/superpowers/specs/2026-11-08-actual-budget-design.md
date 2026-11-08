@@ -280,7 +280,7 @@ and outputs are in `.superpowers/sdd/2026-11-08-actual-budget/task-1-report.md`.
 ### S1: chosen server
 
 [giorgiobrullo/actual-mcp](https://github.com/giorgiobrullo/actual-mcp) at
-`0c73b0d727a1d32bb924ab323985fffc9f0944fb` (package version 1.15.1), MIT (copyright 2025 Stefan
+`0c73b0d727a1d32bb924ab323985fffc9f0944fb` (`version` 1.15.1 in its `package.json`), MIT (copyright 2025 Stefan
 Stefanov, the upstream author). It passed all five criteria with `ACTUAL_SYNC_TTL_MS=0`.
 
 | Criterion | giorgiobrullo | agigante80 `2bf0987` | Type-zero-labs `f4aab60` |
@@ -288,7 +288,7 @@ Stefanov, the upstream author). It passed all five criteria with `ACTUAL_SYNC_TT
 | Streamable HTTP or SSE | pass | pass | fail: stdio only |
 | No write tool read-only | pass | pass | fail: no read-only mode |
 | Sync before read | pass, with `ACTUAL_SYNC_TTL_MS=0` | fail inside one MCP session | fail: downloads once (code reading) |
-| Credentials from env or file, not logged | pass | pass (env only) | env only, not logged |
+| Credentials from env or file, not logged | pass | pass (env only) | env only; password not in stderr |
 | License allows vendoring | MIT | MIT | MIT |
 
 agigante80 fails sync before read: on one open MCP session, a read after a write from the `rw`
@@ -299,34 +299,42 @@ see the change. Its pooled read path runs reads against the session's loaded cop
 **Vendoring needs a patch.** At `0c73b0d`, `package.json` points `@actual-app/api` and
 `@actual-app/core` at `file:../actual/packages/...` (the author's local Actual fork), so the repo
 doesn't build alone. The spike replaced both with `26.11.0` from npm, dropped the lockfile, and
-built the repo's Dockerfile with `npm install`. The build passed, and the tools the spike called
-(`get-accounts`, `create-transaction`, `delete-transaction` on `ro`) worked. The other tools are
-unverified against npm `26.11.0`; per its commit message, `run-bank-sync` (out of scope here)
-expects a return value only the fork's API gives. The vendored copy has to carry that change and
+built the repo's Dockerfile with `npm install`. The build passed. Against npm `26.11.0`,
+`get-accounts` worked on `ro` and `rw` and `create-transaction` worked on `rw`; on `ro`,
+`create-transaction` and `delete-transaction` were refused as unknown tools, as intended. The
+other tools are unverified against npm `26.11.0`. The commit message of `0c73b0d` says
+`run-bank-sync` (out of scope here) now expects a return value from the fork's API. The vendored copy has to carry that change and
 a regenerated lockfile.
 
 **Runtime contract**
 
-- Command: `node build/index.js --sse [--enable-write] [--enable-bearer] [--port N]`. `--sse`
-  starts the HTTP server. The name is misleading: it serves Streamable HTTP and legacy SSE.
-- Port: `3000` (default; `--port` changes it).
-- Transport `http`, path `/mcp` (`/` also works). Legacy SSE is on `/sse`. Both were tested.
+- Command: `node build/index.js --sse [--enable-write] [--enable-bearer]`. `--sse` starts the
+  HTTP server. The name is misleading: it serves Streamable HTTP and legacy SSE.
+- Port: `3000`, the default (tested). A `--port N` flag exists (from code reading, untested).
+- Transport `http`, path `/mcp`, and legacy SSE on `/sse`; both tested. From code reading, `/`
+  serves Streamable HTTP too (untested).
 - Read-only: leave out `--enable-write`. `rw` adds it.
 - Auth: `--enable-bearer` with `BEARER_TOKEN` requires `Authorization: Bearer <token>` on `/mcp`
   and `/sse` (401 without it). Without the flag the endpoints are open.
 - Env: `ACTUAL_SERVER_URL`, `ACTUAL_PASSWORD`, `ACTUAL_BUDGET_SYNC_ID`,
   `ACTUAL_BUDGET_ENCRYPTION_PASSWORD`, `ACTUAL_DATA_DIR` (cache dir; default `~/.actual`), and
   `ACTUAL_SYNC_TTL_MS`, which must be `0`. Its default of `60000` lets a read answer from a copy
-  up to a minute old. `ACTUAL_SESSION_TOKEN` replaces `ACTUAL_PASSWORD` for OpenID servers.
-- Always set `ACTUAL_BUDGET_SYNC_ID`. Without it the server opens the first budget it lists.
+  up to a minute old. The `~/.actual` default and the 60000 default are from code reading.
+  From code reading and the README, `ACTUAL_SESSION_TOKEN` replaces `ACTUAL_PASSWORD` for OpenID
+  servers (untested).
+- Always set `ACTUAL_BUDGET_SYNC_ID`. From code reading (untested), without it the server opens
+  the first budget it lists.
 - Secrets from a file: the server runs `dotenv` on `.env` in its working directory (`/app` in
   the image). With the variables only in a file mounted at `/app/.env` (none in the container
   environment), it opened the encrypted budget. So `budget.env` can be mounted read-only at
   `/app/.env`, or delivered as a compose secret at that path, instead of going through `env_file`.
-- Logs: `docker logs` of all four test containers had no match for the server password,
-  encryption password or bearer token.
-- No `/health` endpoint (404) and no Docker `HEALTHCHECK`. The image runs as root. The budget
-  loads on the first tool call, not at startup, so a bad password shows only as a failed call.
+- Logs: `docker logs` of the three giorgiobrullo test containers (`rw`, `ro`, and the one that
+  opened the encrypted budget) had no match for the server password, encryption passwords or
+  bearer token.
+- No `/health` endpoint (`GET /health` returned 404) and no Docker `HEALTHCHECK` (`docker
+  inspect` shows none). The container runs as root (`id` gives uid 0). The budget loads on the
+  first tool call, not at startup (seen in the logs), so a bad password shows only as a failed
+  call.
 
 **Tools** (from `tools/list` on the two instances; `rw` lists 51, `ro` 18, and `ro` is a
 subset of `rw`).
@@ -347,7 +355,7 @@ Write (33): `add-dashboard-widget`, `batch-update-transactions`, `create-categor
 `update-rule`, `update-transaction`.
 
 Calling `create-transaction` or `delete-transaction` on `ro` returns
-`Error: Unknown tool create-transaction` with `isError: true`. There is no tool that moves money
+`Error: Unknown tool <name>` with `isError: true`. There is no tool that moves money
 between categories in one call. That takes two `set-budget-amount` calls.
 
 **Write propagation.** The `rw` instance returns from a write before the change reaches the
@@ -383,7 +391,9 @@ Both steps work without the web app.
   `name`, `fileId`, `groupId`, `encryptKeyId` (null when not encrypted) and `deleted`. The
   `groupId` is the Sync ID that goes in `ACTUAL_BUDGET_SYNC_ID`.
 - `api.runImport(name, fn)` creates a budget and uploads it to the server
-  (`api/finish-import` calls the upload). It removes the default expense categories and groups
+  (tested; the new budget appeared in `/sync/list-user-files`). From reading
+  `@actual-app/api`'s `dist/index.js` (not checked in the created budget), `api/finish-import`
+  calls the upload, and `api/start-import` deletes the default expense categories and groups
   first, so the budget starts with income categories only, plus whatever `fn` creates.
   `budget.sh init` can create the budget itself, and the adopt-the-only-budget path is still
   needed for remote servers.
