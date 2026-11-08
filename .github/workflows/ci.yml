@@ -58,6 +58,7 @@ jobs:
             "core,ollama" \
             "core,research" \
             "core,crm" \
+            "core,bitwarden" \
             "core,rag,calendar,automation,coding,ollama,searxng-prod,search-gate,db,todo,crm"
           do
             echo "=== COMPOSE_PROFILES=$profiles ==="
@@ -65,6 +66,7 @@ jobs:
           done
           python3 scripts/test-compose-env-allowlist.py
           python3 scripts/test-twenty-compose-config.py
+          python3 scripts/test-bitwarden-compose-config.py
           echo "=== HERMES_TERMINAL_BACKEND=local ==="
           HERMES_TERMINAL_BACKEND=local COMPOSE_PROFILES=core docker compose config -q
           echo "=== core without the N8N_* keys ==="

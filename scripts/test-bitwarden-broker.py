@@ -9,6 +9,7 @@ writes for the run's synthetic secrets.
 The CDP fill tests need websockets for the fake DevTools server, so they run
 inside the pinned Hermes image (scripts/lib/hermes_image.py) with scripts/ and
 compose/bitwarden-broker/ mounted read-only, and skip when the image is absent.
+BITWARDEN_TEST_IMAGE runs them in the broker image instead (Python 3.11, websockets 10.4).
 The API tests run ``python3 -m broker.server`` as a subprocess; scripts/test-bitwarden-access.py
 reuses their helpers for access requests and release.
 """
@@ -576,6 +577,13 @@ def test_node_warning_noise() -> None:
     expect(bwcli.classify("Request failed with status code 401") == ("auth", None), "status code 401")
     expect(bwcli.classify("connect ECONNREFUSED 10.0.0.1:443") == ("network", None), "network")
     expect(bwcli.classify("Item 401 is locked in a drawer") == ("unknown", None), "bare words")
+    # bw's first line when NODE_EXTRA_CA_CERTS names a missing file (no local CA yet).
+    ca_warning = ("Warning: Ignoring extra certs from `/secrets/local/tls/ca.crt`, load failed: "
+                  "error:80000002:system library::No such file or directory\n")
+    expect(bwcli.classify(ca_warning + "Not found.") == ("unknown", None), "missing CA warning read as an error")
+    expect(bwcli.classify(ca_warning + "Vault is locked.") == ("locked", None), "locked behind the CA warning")
+    expect(bwcli.classify(ca_warning + "Request failed with status code 401") == ("auth", None),
+           "401 behind the CA warning")
     with tempfile.TemporaryDirectory() as tmp, captured() as out:
         run = Run(Path(tmp), stderr_prefix=NODE_WARNING)
         bw = run.bw(run.account("personal"))
@@ -649,7 +657,8 @@ class FakeCdp:
     ``page`` picks what the fill function reports: ok, navigated, no_field, cleared (a setter
     ran and a page handler emptied the field), write_failed, exception or hang. Before each real reply it sends an event and two decoy replies that
     claim success: one with the right id and another session, and a stale one with an older id.
-    Runs in the Hermes image, which has websockets 15; the broker code itself keeps to 10.4.
+    Runs in the Hermes image (websockets 15) or, with BITWARDEN_TEST_IMAGE, in the broker image
+    (Debian's websockets 10.4), so it serves HTTP through either process_request signature.
     """
 
     def __init__(self, targets, page="ok"):
@@ -665,18 +674,24 @@ class FakeCdp:
         self.server = await websockets.serve(self.handle, "127.0.0.1", 0, process_request=self.http)
         self.port = self.server.sockets[0].getsockname()[1]
 
-    def http(self, connection, request):
-        if request.path == "/json/list":
+    def http(self, *args):
+        # websockets 13+ passes (connection, request); 10.4 to 12 pass (path, headers).
+        legacy = isinstance(args[0], str)
+        path = args[0] if legacy else args[1].path
+        if path == "/json/list":
             body = [{"id": t["id"], "type": t.get("type", "page"), "url": t["url"], "title": "Sign in",
                      "webSocketDebuggerUrl": f"ws://127.0.0.1:{self.port}/devtools/page/{t['id']}"}
                     for t in self.targets]
-        elif request.path == "/json/version":
+        elif path == "/json/version":
             # Chromium reports whatever host it was asked on; the broker must ignore it.
             body = {"Browser": "HeadlessChrome/140.0.0.0",
                     "webSocketDebuggerUrl": "ws://chromium.invalid:9222/devtools/browser/0f1e2d3c-4b5a-6978"}
         else:
             return None
-        return connection.respond(200, json.dumps(body))
+        if legacy:
+            from http import HTTPStatus
+            return HTTPStatus.OK, [("Content-Type", "application/json")], json.dumps(body).encode()
+        return args[0].respond(200, json.dumps(body))
 
     async def handle(self, ws):
         self.connections += 1
@@ -1528,10 +1543,17 @@ def main() -> None:
     test_sync_socket_scope()
     test_unlock_over_socket()
     test_sync_loop_and_idle_lock()
-    hermes_image.maybe_run(CDP_DRIVER, mounts=[
+    mounts = [
         (ROOT / "scripts", "/work/scripts"),
         (ROOT / "compose" / "bitwarden-broker", "/work/compose/bitwarden-broker"),
-    ])
+    ]
+    # BITWARDEN_TEST_IMAGE=assistant-bitwarden-broker:local runs the fill tests on
+    # the broker image's own Python and websockets instead of the Hermes image's.
+    broker_image = os.environ.get("BITWARDEN_TEST_IMAGE", "")
+    if broker_image:
+        hermes_image.run_driver(CDP_DRIVER, mounts=mounts, image=broker_image, python="python3")
+    else:
+        hermes_image.maybe_run(CDP_DRIVER, mounts=mounts)
     print("ok")
 
 

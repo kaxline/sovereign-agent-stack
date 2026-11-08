@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 # Every profile that publishes a service we want to see in one config.
-PROFILES = "core,rag,neo4j,calendar,automation,research,coding,ollama,searxng-prod,search-gate,db,todo,crm,mail,mail-drafts,messages"
+PROFILES = "core,rag,neo4j,calendar,automation,research,coding,ollama,searxng-prod,search-gate,db,todo,crm,mail,mail-drafts,messages,bitwarden,bitwarden-tools"
 
 # Secret-bearing environment keys, and the services allowed to carry them.
 # An empty set means the key must not appear on any service.
@@ -71,10 +71,28 @@ SECRET_KEYS = {
     "SIGNAL_ALLOWED_USERS": set(),
     "SIGNAL_HOME_CHANNEL": set(),
     "SIGNAL_HTTP_URL": set(),
+    # bw reads these from its environment; the broker hands them to bw only
+    # in the child process it starts, so no container carries them.
+    "BW_CLIENTID": set(),
+    "BW_CLIENTSECRET": set(),
+    "BW_PASSWORD": set(),
+    "BW_SESSION": set(),
 }
 
 # hermes-worker may carry only these. Any other key, including a secret, fails.
 WORKER_ENV = {"HERMES_UID", "HERMES_GID", "TZ"}
+
+# bitwarden-broker shares hermes' network namespace and may carry only these.
+BROKER_ENV = {
+    "BITWARDEN_ACCOUNTS_DIR",
+    "BITWARDEN_DATA_DIR",
+    "BITWARDEN_SECRETS_DIR",
+    "BITWARDEN_SYNC_MINUTES",
+    "BITWARDEN_IDLE_LOCK_MINUTES",
+    "BITWARDEN_LISTEN",
+    "BITWARDEN_SYNC_SOCKET",
+    "NODE_EXTRA_CA_CERTS",
+}
 
 # Keys that must still be present after the allowlist, so a drop is caught.
 REQUIRED = {
@@ -225,6 +243,18 @@ def check_worker(services: dict) -> list[str]:
     return errors
 
 
+def check_broker(services: dict) -> list[str]:
+    service = services.get("bitwarden-broker")
+    if not service:
+        return ["service bitwarden-broker missing from compose config"]
+    keys = set(env_map(service))
+    errors = [f"bitwarden-broker environment includes {key}" for key in sorted(keys - BROKER_ENV)]
+    errors += [f"bitwarden-broker environment is missing {key}" for key in sorted(BROKER_ENV - keys)]
+    if service.get("env_file"):
+        errors.append("bitwarden-broker reads an env_file")
+    return errors
+
+
 def check_loopback(services: dict) -> list[str]:
     errors = []
     for name, service in services.items():
@@ -244,9 +274,11 @@ def check_loopback(services: dict) -> list[str]:
 # The shared Postgres and its SQL MCP sidecars live on the internal db network
 # only, publish nothing, and hermes is the sole bridge from the default network.
 DB_ONLY = {"postgres-db", "db-provision", "sql-mcp-ro", "sql-mcp-rw"}
-# Services on both default and db. An integration that stores data and needs
-# the internet goes here; one that needs neither goes in DB_ONLY.
-DB_BRIDGES = {"hermes", "vikunja"}
+# Services on both default and db, with their full network list. An
+# integration that stores data and needs the internet goes here; one that
+# needs neither goes in DB_ONLY. hermes is also on vault, the internal network
+# the Bitwarden broker reaches the local Vaultwarden through.
+DB_BRIDGES = {"hermes": {"default", "db", "vault"}, "vikunja": {"default", "db"}}
 
 
 def check_db_network(services: dict, networks: dict) -> list[str]:
@@ -266,10 +298,10 @@ def check_db_network(services: dict, networks: dict) -> list[str]:
         nets = set(service.get("networks") or {})
         if nets != {"db"}:
             errors.append(f"{name} networks are {sorted(nets)}, want ['db']")
-    for name in sorted(DB_BRIDGES):
+    for name, want in sorted(DB_BRIDGES.items()):
         nets = set((services.get(name) or {}).get("networks") or {})
-        if nets != {"default", "db"}:
-            errors.append(f"{name} networks are {sorted(nets)}, want ['db', 'default']")
+        if nets != want:
+            errors.append(f"{name} networks are {sorted(nets)}, want {sorted(want)}")
     for name, service in services.items():
         if name in DB_ONLY or name in DB_BRIDGES:
             continue
@@ -331,6 +363,7 @@ def main() -> None:
     config = load_config()
     services = config.get("services") or {}
     errors = check_secrets(services) + check_worker(services) + check_proxy(services) + check_loopback(services)
+    errors += check_broker(services)
     errors += check_db_network(services, config.get("networks") or {})
     errors += check_n8n_store(services)
     if errors:
