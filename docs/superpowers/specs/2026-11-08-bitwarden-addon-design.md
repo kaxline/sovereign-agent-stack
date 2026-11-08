@@ -1,7 +1,7 @@
 # Bitwarden add-on
 
 Status: approved design, 2026-11-08, pending spec review. Branch `docs/bitwarden-addon-spec`.
-Two spikes (below) gate the implementation plan.
+Both spikes ran on 2026-11-08; see Spike results.
 
 ## Goal
 
@@ -51,8 +51,10 @@ Bitwarden Secrets Manager (`bws`), and Bitwarden's Agent Access SDK (preview, no
 `browser_exec` (`tools/browser_use_cli.py`) starts browser-harness as a subprocess in the `hermes`
 container, as the `hermes` user, with a scrubbed environment and no filesystem sandbox. Python the
 model writes therefore runs with the gateway's user, files and network. The Docker Desktop kernel
-(7.0.14-linuxkit) has no Yama module, so ordinary same-user ptrace rules apply. That code can likely
-read the gateway's memory through `/proc/<pid>/mem`; spike 1 confirms it.
+(7.0.14-linuxkit) has no Yama module, so ordinary same-user ptrace rules apply, and Hermes never
+marks its processes non-dumpable. Spike 1 confirmed that a `hermes`-user process with an empty
+environment, not related to the target, reads another `hermes`-user process's memory through
+`/proc/<pid>/mem` in the v0.22.7 image with Docker's default capabilities.
 
 So within `hermes`, upstream's in-memory session key, the `bw` data directory and any token file
 are all reachable by agent code. Upstream's `bws` source puts every secret it loads into the
@@ -107,18 +109,17 @@ the Hermes bootstrap.
 
 ```
 BW_MODE=cloud                  # cloud | selfhosted | local
-BW_SERVER=https://vault.bitwarden.com   # cloud: .com or vault.bitwarden.eu; selfhosted: any URL; local: http://vaultwarden:80
+BW_SERVER=https://vault.bitwarden.com   # cloud: .com or vault.bitwarden.eu; selfhosted: any HTTPS URL; local: https://vaultwarden.vault.internal
 BW_SCOPE=folder:Agent          # folder:<name> | collection:<id> | all
 BW_UNLOCK=stored               # stored | manual
-BW_CLIENTID=user.…             # personal API key, cloud and selfhosted
-BW_EMAIL=agent@vault.localhost # local only: signs in with email and master password
+BW_CLIENTID=user.…             # the agent account's personal API key, every mode
 BW_SECRETS_ITEM_SCOPE=folder:Stack secrets   # optional, see Stack secrets
 ```
 
 Credentials never go in this file. The API key's secret and, with `BW_UNLOCK=stored`, the master
 password go in `data/addons/bitwarden/secrets/<slug>/` (`client_secret`, `master_password`, mode
-600), mounted into the broker only. A `local` account has no API key; the broker signs in with
-`bw login <email> --passwordenv` once and keeps the resulting login in its data directory. The account's `bw` data directory is
+600), mounted into the broker only. `vault-init` fetches the `local` agent account's API key when it
+creates the account, so every mode signs in the same way. The account's `bw` data directory is
 `data/addons/bitwarden/bw/<slug>/`.
 
 ### Modes
@@ -177,21 +178,38 @@ vault. `vault-add` says so before writing it, and suggests `collection:` with a 
 browser treats `localhost` as a secure context, so the web vault's crypto works without TLS. Data
 lives in `data/addons/bitwarden/vaultwarden/`.
 
+`bw` refuses any server URL that is not HTTPS, loopback included; only its dev builds skip the
+check (spike 2). The host port therefore stays plain HTTP for the user's browser, and a
+`vaultwarden-tls` sidecar (the `nginx` image the stack already pins for `vikunja-proxy`) terminates
+TLS for the broker on the vault network as `https://vaultwarden.vault.internal`. `vault-init`
+generates a private CA and a server certificate for that name into
+`data/addons/bitwarden/secrets/local/tls/`; the broker and `bitwarden-setup` trust the CA through
+`NODE_EXTRA_CA_CERTS` and nothing else does. The user's own browser never sees this certificate, so
+the user installs no CA. Serving TLS from Vaultwarden itself (`ROCKET_TLS`) works for `bw` too, but
+would make the user trust the CA in macOS or click through a warning to reach the web vault.
+
 `make vault-init`, re-runnable:
 
 1. Starts Vaultwarden and waits for health.
-2. Creates the agent account `agent@vault.localhost` with a generated master password, through
-   Bitwarden's client-side registration (spike 2). Stores its credentials in
+2. Creates the agent account `agent@vault.localhost` with a generated master password: an admin
+   API invite (`POST /admin/invite`), then Bitwarden's client-side registration through
+   `/identity/accounts/register/send-verification-email` and `/register/finish`. With no SMTP
+   configured, the first call returns the verification token directly. Fetches the account's
+   personal API key (`POST /api/accounts/api-key`) and stores the key and master password in
    `data/addons/bitwarden/secrets/local/`.
-3. Signs the broker in as that account, creates the organization "Assistant" and the collections
-   "Agent" and "Stack secrets", and writes `compose/bitwarden/accounts/local.env` with
-   `BW_SCOPE=collection:<Agent id>` and `BW_UNLOCK=stored`.
-4. Invites the user's address (asked for, or `VAULT_OWNER_EMAIL`) to the organization through the
-   Vaultwarden admin API and prints the one-time sign-up link. The user chooses their own master
-   password in the web vault. The stack never generates, sees or stores it.
-5. Waits for the user to accept, then confirms them with `bw confirm org-member` as the agent
-   account and makes them an Owner. Exits with what to do next if the user has not accepted
-   within 10 minutes; a re-run picks up from here.
+3. Creates the organization "Assistant" with the collection "Agent" over the API
+   (`POST /api/organizations`; `bw` has no command for it), then signs the broker in and creates
+   "Stack secrets" with `bw create org-collection`. Writes `compose/bitwarden/accounts/local.env`
+   with `BW_SCOPE=collection:<Agent id>` and `BW_UNLOCK=stored`.
+4. Invites the user's address (asked for, or `VAULT_OWNER_EMAIL`) to the organization as an Owner
+   through the organization API (`POST /api/organizations/<id>/users/invite`; `bw` has no invite
+   command) and prints the web vault's sign-up address. With no SMTP, Vaultwarden records an
+   instance invitation for that address, so the user can register there although sign-ups are
+   off, and the membership is accepted when they do. The user chooses their own master password.
+   The stack never generates, sees or stores it.
+5. Waits for the user to register, then confirms them with `bw confirm org-member` as the agent
+   account. Exits with what to do next if the user has not registered within 10 minutes; a
+   re-run picks up from here.
 6. Runs `bitwarden-setup` (next section) with the user's unlock to change the agent account to
    the User role with access to the "Agent" collection (Manage) and "Stack secrets" (view) only.
    From then on the user owns the organization and Bitwarden, not the broker, enforces the agent's
@@ -225,9 +243,12 @@ What it creates, per mode:
 | `cloud` or `selfhosted`, `folder:` | The folder, with `bw create folder` | Nothing |
 | `cloud` or `selfhosted`, `collection:` | The collection in the user's organization, with `bw create org-collection`, and the agent member's access to it | Signing up the agent account (bitwarden.com requires email verification), and creating the organization if there is none |
 
-The user's account needs admin rights in the organization for the `collection:` row. Whether `bw`
-can invite a member and set its collection access, or whether that needs the organization's
-Public API key, is checked in spike 2. If neither works, setup prints the web vault steps.
+The user's account needs admin rights in the organization for the `collection:` row. `bw` has no
+invite or member-edit command; it sets collection access through the `users` list of
+`bw create org-collection` and `bw edit org-collection`. Setup invites the agent account with the
+organization API (`POST /api/organizations/<id>/users/invite`) under the user's borrowed login, as
+Local mode does, which spike 2 checked on Vaultwarden only. If bitwarden.com refuses it, setup
+prints the web vault steps.
 
 ### Seeding
 
@@ -312,9 +333,12 @@ gets the same routing with `field: "totp"`, falling back to core's ask-the-user 
 has no TOTP. `browser_vault_save_login` for a broker account is refused with a pointer to adding the
 item in Bitwarden, since the save prompt would pass the password through the gateway.
 
-The target id comes from the same `tools.browser_session` resolution core uses, so the broker
-writes into the tab the agent drove. Spike 1 checks that the broker can attach to that target while
-browser-harness holds its own CDP connection.
+The gateway's CDP supervisor keeps the attached page's session id, not its target id. The overlay
+calls `focus_page` for the item's origin as core does, then `Target.getTargetInfo` on that session
+for the target id and passes it with the CDP port from the task's `cdp_url`, so the broker writes
+into the tab the agent drove. Spike 1 showed a second container in the `hermes` network namespace
+attaching to that target and filling it while another CDP client held a session on the page, with
+that session unaffected.
 
 ### Redaction
 
@@ -405,10 +429,13 @@ alone, because narrowing access is safe whoever asks. The broker adds the handle
 its data directory and stops listing and filling it at once. Then it returns the item:
 
 - `folder:` scope: sets the item's folder to none.
-- `collection:` scope: moves the item from "Agent" to a "Returned" collection that setup creates
-  and gives only the user access to. Whether a member with Manage on "Agent" may assign a
-  collection it cannot see is checked in spike 2. If not, the item stays denylisted and in
-  "Agent", and `make vault-grant` lists it as waiting to be returned with the user's unlock.
+- `collection:` scope: removes the item from every collection. It stays in the organization as
+  an unassigned item, which only Owners and Admins see. Vaultwarden refuses to move it into a
+  collection the agent cannot write ("No rights to modify the collection", spike 2), so there is
+  no "Returned" collection. `make vault-grant` lists unassigned items so the user can file them.
+  Whether bitwarden.com allows the removal the same way is not yet checked; if it refuses, the
+  item stays denylisted and in "Agent", and `make vault-grant` lists it as waiting to be returned
+  with the user's unlock.
 
 The denylist entry is removed when the item leaves the agent's scope, or when the user grants it
 again.
@@ -503,29 +530,37 @@ Environment, all defaulting to off so Boundary and existing installs see no chan
 | More than 10 pending requests | Refusal naming the limit | `make vault-grant` lists the 10 |
 | `vault-grant` finds no matching item | | Says so; the request stays pending |
 | `bitwarden-setup` gets a wrong master password | | Masked prompt again, at most three times, then exits with nothing changed |
-| Spike 2 fails | | `vault-init` prints a second invite link and asks the user to sign up `agent@vault.localhost` with a password it shows once in the terminal, then continues from step 3 |
+| Agent account registration fails (a Vaultwarden release changes the API) | | `vault-init` prints the sign-up address and asks the user to register `agent@vault.localhost` with a password it shows once in the terminal, then continues from step 3 |
 
-## Spikes before planning
+## Spike results
 
-1. **Broker-side fill.** In a scratch stack: run a container with `network_mode: service:hermes`,
-   attach to browser-harness's Chromium over loopback CDP while `browser_exec` holds its session,
-   resolve the agent's current target id from `tools.browser_session`, and fill a test form on a
-   local page. Also confirm or rule out that a `browser_exec` subprocess can read the gateway's
-   memory through `/proc/<pid>/mem`, which decides how the threat section of `docs/bitwarden.md`
-   reads. If broker-side fill cannot work, stop and revisit: the fallback (broker returns the value
-   to the gateway) is no better than upstream's `bw:` backend against agent code in `hermes`.
-2. **Account registration on Vaultwarden.** Register `agent@vault.localhost` against Vaultwarden's
-   `/identity/accounts/register` with Bitwarden's client-side scheme (PBKDF2-SHA256 master key,
-   HKDF-stretched, protected symmetric key, RSA-2048 key pair), using a public client library or
-   Bitwarden's open-source client code as the reference. Then `bw login` and `bw unlock` as that
-   account. If it fails, use the manual fallback in Failure handling. The same spike checks the
-   organization steps against Vaultwarden, and against a throwaway bitwarden.com Free organization
-   where Vaultwarden behaves differently: whether `bw` can invite a member and set its collection
-   access, whether a new Owner can change the founding account to the User role (Local mode step
-   6), and whether a member with Manage on "Agent" can move an item into "Returned" without access
-   to it (Releasing). Each has a fallback already written into this spec.
+Both ran on 2026-11-08 in scratch containers with synthetic accounts and a local test page; nothing
+touched the running stack. The code was throwaway and is not kept.
 
-Both use synthetic logins on a local test page only.
+1. **Broker-side fill works.** In the `nousresearch/hermes-agent:v0.22.7` image, a stand-in for
+   browser-harness launched the image's Chromium (`--remote-debugging-port=0`) and held a CDP
+   session on a login page. A second container with `network_mode: container:<that one>` read the
+   target's URL from `/json/list`, checked its origin, attached with `Target.attachToTarget`
+   (flattened) and filled the password field; the first session then read the filled value's
+   length and kept working. The same image confirmed the `/proc/<pid>/mem` read described in
+   "Where agent code runs".
+2. **Vaultwarden 1.37.4 with `bw` 2026.10.1.** Passed: sign-ups off refuses an uninvited
+   registration; admin invite plus client-side registration (PBKDF2-SHA256 600,000 iterations,
+   HKDF-stretched key, type-2 protected key, RSA-2048 pair); `bw login` with the password and
+   with `--apikey` followed by `bw unlock --passwordenv`; organization creation over the API;
+   `bw create org-collection`; an organization invite to an unregistered address that the user
+   then registers from with no SMTP, landing as Accepted; `bw confirm org-member`; the new Owner
+   changing the founding account to User with Manage on "Agent" and view on "Stack secrets"; the
+   demoted account refused when it tries to edit the Owner and listing only the "Agent" item; and
+   `bw move` of a personal item into "Agent", which the agent then sees. Failed: `bw` refuses
+   plain-HTTP server URLs, so local mode gained the TLS sidecar; the demoted account moving an item
+   into a collection it cannot write, so releasing now removes the item from all collections
+   instead, which Vaultwarden allows.
+
+Not yet checked: the same organization steps on bitwarden.com. That needs a throwaway
+bitwarden.com account with a Free organization, which Keith creates; the spike script can then be
+pointed at it. Until then the `cloud` mode's release path keeps the fallback in Releasing. Also not
+checked: that an unassigned item shows in the Owner's web vault, which the plan's live check covers.
 
 ## Documentation
 
@@ -547,7 +582,10 @@ What `docs/bitwarden.md` states plainly: the agent drives the page the password 
 code it writes can read the field. Origin binding limits which pages that can happen on, and digest
 redaction removes the value and four encodings of it from what the model sees. It does not stop
 page script from sending the value elsewhere, so the agent's folder or collection should hold only
-logins the user is willing to have used that way.
+logins the user is willing to have used that way. The broker cannot tell browser-harness's Chromium
+from a CDP endpoint that agent code starts on the same loopback and that reports any URL it likes,
+so this exposure does not depend on the agent reaching the real site; the broker checks the origin
+to keep fills off the wrong page, not to keep the value from agent code.
 
 ## Testing
 
