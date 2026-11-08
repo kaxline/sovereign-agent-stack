@@ -783,6 +783,88 @@ services:
           memory: 128m
 
   # ----------------------------------------------------------------------
+  # Actual Budget — budgeting (actual-server, actual-mcp-rw, actual-mcp-ro)
+  # Profiles: budget-local (ACTUAL_LOCAL_ENABLED=1) for actual-server;
+  #           budget (ACTUAL_MCP_ENABLED=1) for the two MCP servers
+  # Web UI:  http://localhost:5006   (localhost-bound; ACTUAL_PORT)
+  # MCP:     http://actual-mcp-rw:3000/mcp, http://actual-mcp-ro:3000/mcp
+  #          (Streamable HTTP, no auth; only hermes shares their network)
+  # Data:    ACTUAL_DATA_DIR (default ./data/actual/server) on the server; each
+  #          MCP container keeps a full copy of the budget in its cache volume
+  # Credentials: compose/actual/budget.env (ACTUAL_BUDGET_FILE in .env)
+  # Upstream: https://github.com/actualbudget/actual (MIT)
+  # ----------------------------------------------------------------------
+  actual-server:
+    profiles: ["budget-local"]
+    container_name: ${CONTAINER_PREFIX:-}actual-server
+    image: ${ACTUAL_SERVER_IMAGE:-actualbudget/actual-server:26.11.0@sha256:06cf186569cf58d93e12659ff1a517b65b5b0ebee7050a3991d4bd8a1d398da6}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${ACTUAL_PORT:-5006}:5006"
+    volumes:
+      - ${ACTUAL_DATA_DIR:-./data/actual/server}:/data
+    # default: the published port. budget: the MCP servers reach it at
+    # http://actual-server:5006.
+    networks: [default, budget]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5006/health').then((r)=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  # Vendored from https://github.com/giorgiobrullo/actual-mcp (MIT); see
+  # compose/actual-mcp/VENDORED.md. Writes on. Credentials come from the
+  # budget file at /app/.env, which the server loads with dotenv, so they stay
+  # out of docker inspect. With no budget file it starts on an empty file and
+  # every tool call fails until one is set.
+  actual-mcp-rw:
+    profiles: ["budget"]
+    container_name: ${CONTAINER_PREFIX:-}actual-mcp-rw
+    image: ${IMAGE_PREFIX:-assistant}-actual-mcp:local
+    build:
+      context: ./compose/actual-mcp
+    restart: unless-stopped
+    command: ["--sse", "--enable-write"]
+    environment: &actual-mcp-env
+      # 0: sync with the server before every read. The default (60000) can
+      # answer from a copy up to a minute old.
+      ACTUAL_SYNC_TTL_MS: "0"
+      ACTUAL_DATA_DIR: /data
+    secrets:
+      - source: actual_budget
+        target: /app/.env
+    volumes:
+      - actual_mcp_rw_cache:/data
+    networks: [budget]
+    # No /health endpoint. Any HTTP answer on /mcp means the listener is up;
+    # the budget itself loads on the first tool call.
+    healthcheck: &actual-mcp-healthcheck
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/mcp',{signal:AbortSignal.timeout(4000)}).then(()=>process.exit(0),()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # Same image with writes off: its tools/list has only the 18 read tools.
+  actual-mcp-ro:
+    profiles: ["budget"]
+    container_name: ${CONTAINER_PREFIX:-}actual-mcp-ro
+    image: ${IMAGE_PREFIX:-assistant}-actual-mcp:local
+    build:
+      context: ./compose/actual-mcp
+    restart: unless-stopped
+    command: ["--sse"]
+    environment: *actual-mcp-env
+    secrets:
+      - source: actual_budget
+        target: /app/.env
+    volumes:
+      - actual_mcp_ro_cache:/data
+    networks: [budget]
+    healthcheck: *actual-mcp-healthcheck
+
+  # ----------------------------------------------------------------------
   # GPT Researcher — deep web research API (n8n/Hermes REST)
   # Profile: automation
   # API:     http://localhost:8000/report/   (localhost-bound)
@@ -1262,6 +1344,10 @@ services:
       # 0: local workspace files aren't registered (no twenty-server to reach).
       - TWENTY_LOCAL_ENABLED=${TWENTY_LOCAL_ENABLED:-0}
       - TWENTY_WORKSPACES_DIR=/bootstrap/twenty-workspaces
+      # Actual Budget MCP (budget profile). The flag and the access cap only;
+      # the budget's credentials never reach Hermes.
+      - ACTUAL_MCP_ENABLED=${ACTUAL_MCP_ENABLED:-0}
+      - ACTUAL_ACCESS=${ACTUAL_ACCESS:-}
       # OpenCode coding MCP (coding profile); registered on default + browser only.
       - OPENCODE_MCP_URL=${OPENCODE_MCP_URL:-http://opencode-mcp:8000/sse}
       - OPENCODE_MCP_ENABLED=${OPENCODE_MCP_ENABLED:-0}
@@ -1373,6 +1459,10 @@ services:
       # 0: local workspace files aren't registered (no twenty-server to reach).
       - TWENTY_LOCAL_ENABLED=${TWENTY_LOCAL_ENABLED:-0}
       - TWENTY_WORKSPACES_DIR=/bootstrap/twenty-workspaces
+      # Actual Budget MCP (budget profile). The flag and the access cap only;
+      # the budget's credentials never reach Hermes.
+      - ACTUAL_MCP_ENABLED=${ACTUAL_MCP_ENABLED:-0}
+      - ACTUAL_ACCESS=${ACTUAL_ACCESS:-}
       - OPENCODE_MCP_URL=${OPENCODE_MCP_URL:-http://opencode-mcp:8000/sse}
       - OPENCODE_MCP_ENABLED=${OPENCODE_MCP_ENABLED:-0}
       - OPENCODE_MCP_TIMEOUT=${OPENCODE_MCP_TIMEOUT:-600}
@@ -1768,8 +1858,9 @@ services:
       # `docker compose up` does.
     # db is internal and holds only the shared Postgres and its SQL MCP
     # sidecars. hermes is the one default-network service that joins it, so
-    # hermes-worker (the agent's shell) cannot reach either.
-    networks: [default, db]
+    # hermes-worker (the agent's shell) cannot reach either. budget works the
+    # same way for the Actual Budget MCP servers, which have no auth.
+    networks: [default, db, budget]
     # Healthy once the dashboard and the api-server gateway answer. The gateway
     # binds 8643 only after startup MCP discovery has finished for every
     # profile, so the dashboard alone turns healthy before chats can be served.
@@ -1886,6 +1977,10 @@ networks:
   # twenty-worker.
   crm:
     internal: true
+  # Internal: actual-mcp-rw and actual-mcp-ro, which take requests without
+  # auth, plus hermes and actual-server.
+  budget:
+    internal: true
 
 # Twenty's secrets as files (CR 0020 R8). Unset, they point at an empty file
 # that nothing reads: the *_FILE variables inside the containers stay empty.
@@ -1894,6 +1989,11 @@ secrets:
     file: ${TWENTY_ENCRYPTION_KEY_FILE:-./compose/twenty/no-secret}
   twenty_db_password:
     file: ${TWENTY_DB_PASSWORD_FILE:-./compose/twenty/no-secret}
+  # The Actual Budget MCP servers' budget file, mounted at /app/.env. Unset, it
+  # points at an empty placeholder, so a missing budget.env never makes Docker
+  # create a directory in its place.
+  actual_budget:
+    file: ${ACTUAL_BUDGET_FILE:-./compose/actual/no-budget.env}
 
 volumes:
   neo4j_data:
@@ -1905,5 +2005,8 @@ volumes:
   valkey_data:
   search_gate_data:
   gptr_outputs:
+  # Actual Budget MCP caches. Each holds a full copy of the budget.
+  actual_mcp_rw_cache:
+  actual_mcp_ro_cache:
   ollama_data:
   hermes_uv_cache:

@@ -1,0 +1,407 @@
+# Actual Budget MCP Server
+
+MCP server for integrating Actual Budget with Claude and other LLM assistants.
+
+> **Fork of [s-stefanov/actual-mcp](https://github.com/s-stefanov/actual-mcp).** It adds `batch-update-transactions`,
+> `get-schedules`, whole-transaction transfers in `update-transaction` (`transfer_account_id`), and `notes` /
+> `uncategorized` filters on `get-transactions`. See [Fork notes](#fork-notes) for building against a local Actual
+> checkout.
+
+## Overview
+
+The Actual Budget MCP Server allows you to interact with your personal financial data from [Actual Budget](https://actualbudget.com/) using natural language through LLMs. It exposes your accounts, transactions, and financial metrics through the Model Context Protocol (MCP).
+
+## Features
+
+### Resources
+
+- **Account Listings** - Browse all your accounts with their balances
+- **Account Details** - View detailed information about specific accounts
+- **Transaction History** - Access transaction data with complete details
+
+### Tools
+
+#### Transaction & Account Management
+
+- **`get-transactions`** - Retrieve and filter transactions by account, date, amount, category, payee, notes, or uncategorized status
+- **`create-transaction`** - Create a new transaction in an account with optional category, payee, and notes
+- **`update-transaction`** - Update an existing transaction with new category, payee, notes, or amount, or turn it into a transfer
+- **`batch-update-transactions`** - Apply up to 100 transaction updates in one call (bulk categorization, transfers)
+- **`get-schedules`** - List scheduled transactions with their amount, frequency, and next date
+- **`get-accounts`** - Retrieve a list of all accounts with their current balance and ID
+- **`balance-history`** - View account balance changes over time
+
+#### Reporting & Analytics
+
+- **`spending-by-category`** - Generate spending breakdowns categorized by type
+- **`monthly-summary`** - Get monthly income, expenses, and savings metrics
+- **`budget-vs-actual`** - Compare budgeted amounts against actual spending per category
+- **`net-worth`** - Track assets, liabilities, and net worth across all accounts over time
+- **`category-trends`** - See how spending in each category moves month over month, with trend direction
+- **`spending-by-payee`** - Rank payees by how much was spent with (or received from) each one
+- **`cash-flow`** - Report income, expenses, and net cash flow per month or week
+
+> The five tools above return JSON rather than markdown, so amounts stay machine-readable. Every amount is an integer number of cents, and each response carries an `amountsIn` field describing the sign conventions it uses.
+
+#### Custom Reports & Dashboards
+
+- **`get-custom-reports`** - Retrieve every saved custom report from the Reports section
+- **`create-custom-report`** - Create a saved custom report
+- **`update-custom-report`** - Update fields on a saved custom report, leaving the rest unchanged
+- **`delete-custom-report`** - Delete a saved custom report
+- **`get-dashboards`** - Retrieve every dashboard page and the widgets laid out on it
+- **`add-dashboard-widget`** - Add a widget to a dashboard page
+- **`update-dashboard-widget`** - Update a widget's configuration, position, or size
+- **`remove-dashboard-widget`** - Remove a widget from its page
+- **`organize-dashboard`** - Reposition and resize several widgets at once
+- **`create-dashboard-page`** / **`rename-dashboard-page`** / **`delete-dashboard-page`** - Manage dashboard pages
+
+#### Categories
+
+- **`get-grouped-categories`** - Retrieve a list of all category groups with their categories
+- **`create-category`** - Create a new category within a category group
+- **`update-category`** - Update an existing category's name or group
+- **`delete-category`** - Delete a category
+- **`create-category-group`** - Create a new category group
+- **`update-category-group`** - Update a category group's name
+- **`delete-category-group`** - Delete a category group
+
+#### Payees
+
+- **`get-payees`** - Retrieve a list of all payees with their details
+- **`create-payee`** - Create a new payee
+- **`update-payee`** - Update an existing payee's details
+- **`delete-payee`** - Delete a payee
+- **`merge-payees`** - Merge duplicate payees into a single target payee
+
+#### Rules
+
+- **`get-rules`** - Retrieve a list of all transaction rules
+- **`create-rule`** - Create a new transaction rule with conditions and actions
+- **`update-rule`** - Update an existing transaction rule
+- **`delete-rule`** - Delete a transaction rule
+
+### Prompts
+
+- **`financial-insights`** - Generate insights and recommendations based on your financial data
+- **`budget-review`** - Analyze your budget compliance and suggest adjustments
+
+## Installation
+
+### Prerequisites
+
+- [Node.js](https://nodejs.org/) (v16 or higher)
+- [Actual Budget](https://actualbudget.com/) installed and configured
+- [Claude Desktop](https://claude.ai/download) or another MCP-compatible client
+- [Docker Desktop](https://www.docker.com/products/docker-desktop) (optional)
+
+### Remote access
+
+Pull the latest docker image:
+
+```
+docker pull sstefanov/actual-mcp:latest
+```
+
+### Local setup
+
+1. Clone the repository:
+
+```bash
+git clone https://github.com/s-stefanov/actual-mcp.git
+cd actual-mcp
+```
+
+2. Install dependencies:
+
+```bash
+npm install
+```
+
+3. Build the server:
+
+```bash
+npm run build
+```
+
+4. Build the local docker image (optional):
+
+```bash
+docker build -t <local-image-name> .
+```
+
+5. Configure environment variables (optional):
+
+```bash
+# Path to your Actual Budget data directory (default: ~/.actual)
+export ACTUAL_DATA_DIR="/path/to/your/actual/data"
+
+# If using a remote Actual server
+export ACTUAL_SERVER_URL="https://your-actual-server.com"
+export ACTUAL_PASSWORD="your-password"
+
+# Specific budget to use (optional)
+export ACTUAL_BUDGET_SYNC_ID="your-budget-id"
+
+# How long downloaded data stays fresh before the server re-syncs, in ms
+# (default: 60000). Use 0 to sync before every call, or -1 to never sync.
+export ACTUAL_SYNC_TTL_MS="60000"
+
+# Actual's own sync logging goes to stdout, which breaks stdio MCP; it is off unless this is "true"
+export ACTUAL_VERBOSE="false"
+```
+
+Optional: separate encryption budget password
+
+If your Actual setup requires a different password to unlock the local/encrypted budget data than the server authentication password, you can set `ACTUAL_BUDGET_ENCRYPTION_PASSWORD` in addition to `ACTUAL_PASSWORD`.
+
+```bash
+# If server auth and encryption/unlock use different passwords
+export ACTUAL_BUDGET_ENCRYPTION_PASSWORD="your-encryption-password"
+```
+
+Optional: OpenID servers (session token auth)
+
+If your Actual server uses OpenID login (for example Google) with `ACTUAL_OPENID_ENFORCE=true`, password login is disabled, so `ACTUAL_PASSWORD` can't be used. Instead, sign in to Actual in a browser and pass the resulting session token. It takes precedence over `ACTUAL_PASSWORD`.
+
+```bash
+export ACTUAL_SERVER_URL="https://your-actual-server.com"
+export ACTUAL_SESSION_TOKEN="your-session-token"
+```
+
+To find the token, sign in to Actual in your browser, open DevTools, and go to **Application → IndexedDB → actual → asyncStorage**. The value of the `user-token` key is your session token. It's a UUID (e.g. `3f2b8c1e-9a4d-4e7b-8c2a-1d5e6f7a8b9c`), not a long JWT-style bearer token. You can check it with `curl -H "X-ACTUAL-TOKEN: <token>" https://your-actual-server.com/account/validate`, which should return `"validated": true`. Treat it like a password: it grants full access to your budgets. How long it stays valid depends on the server's `ACTUAL_TOKEN_EXPIRATION` setting. If it is invalid or expired, the MCP server still starts, but tool calls fail with `Authentication failed: invalid or expired session token`, because the server connects to Actual on the first request (`--test-resources` reports the error immediately). Sign in again, replace the token, and restart the MCP server.
+
+### Connection lifecycle
+
+The server keeps one shared Actual connection for its entire lifetime and serializes budget operations through it. Downloaded data is re-synced when it exceeds the `ACTUAL_SYNC_TTL_MS` freshness window. In both stdio and HTTP modes, SIGINT and SIGTERM drain in-flight work before the server shuts down. Actual is no longer initialized and shut down for each tool call.
+
+### Report semantics
+
+- Balances and balance histories are capped as of today; future-dated transactions are excluded, and the current-month balance-history row is partial.
+- Closed on-budget accounts remain included in historical reports; closed off-budget accounts stay excluded by default.
+- Monthly income follows Actual's income-group metadata. Refunds net against expenses, zero-activity months count in averages, and uncategorized transfer pairs are skipped.
+- The former Investments bucket is removed from monthly summaries.
+
+## Usage with Claude Desktop
+
+To use this server with Claude Desktop, add it to your Claude configuration:
+
+On MacOS:
+
+```bash
+code ~/Library/Application\ Support/Claude/claude_desktop_config.json
+```
+
+On Windows:
+
+```bash
+code %APPDATA%\Claude\claude_desktop_config.json
+```
+
+Add the following to your configuration...
+
+### a. Using Node.js (npx version):
+
+```json
+{
+  "mcpServers": {
+    "actualBudget": {
+      "command": "npx",
+      "args": ["-y", "actual-mcp", "--enable-write"],
+      "env": {
+        "ACTUAL_DATA_DIR": "path/to/your/data",
+        "ACTUAL_PASSWORD": "your-password",
+        "ACTUAL_SERVER_URL": "http://your-actual-server.com",
+        "ACTUAL_BUDGET_SYNC_ID": "your-budget-id"
+      }
+    }
+  }
+}
+
+### a. Using Node.js (local only):
+
+```json
+{
+  "mcpServers": {
+    "actualBudget": {
+      "command": "node",
+      "args": ["/path/to/your/clone/build/index.js", "--enable-write"],
+      "env": {
+        "ACTUAL_DATA_DIR": "path/to/your/data",
+        "ACTUAL_PASSWORD": "your-password",
+        "ACTUAL_SERVER_URL": "http://your-actual-server.com",
+        "ACTUAL_BUDGET_SYNC_ID": "your-budget-id"
+      }
+    }
+  }
+}
+```
+
+### b. Using Docker (local or remote images):
+
+```json
+{
+  "mcpServers": {
+    "actualBudget": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-v",
+        "/path/to/your/data:/data",
+        "-e",
+        "ACTUAL_PASSWORD=your-password",
+        "-e",
+        "ACTUAL_SERVER_URL=https://your-actual-server.com",
+        "-e",
+        "ACTUAL_BUDGET_SYNC_ID=your-budget-id",
+        "sstefanov/actual-mcp:latest",
+        "--enable-write"
+      ]
+    }
+  }
+}
+```
+
+After saving the configuration, restart Claude Desktop.
+
+> 💡 `ACTUAL_DATA_DIR` is optional if you're using `ACTUAL_SERVER_URL`.
+
+> 💡 Use `--enable-write` to enable write-access tools.
+
+## Running an SSE Server
+
+To expose the server over a port using Docker:
+
+```bash
+docker run -i --rm \
+  -p 3000:3000 \
+  -v "/path/to/your/data:/data" \
+  -e ACTUAL_PASSWORD="your-password" \
+  -e ACTUAL_SERVER_URL="http://your-actual-server.com" \
+  -e ACTUAL_BUDGET_SYNC_ID="your-budget-id" \
+  -e BEARER_TOKEN="your-bearer-token" \
+  sstefanov/actual-mcp:latest \
+  --sse --enable-write --enable-bearer
+```
+
+> ⚠️ Important: When using --enable-bearer, the BEARER_TOKEN environment variable must be set.  
+> 🔒 This is highly recommended if you're exposing your server via a public URL.
+
+## Example Queries
+
+Once connected, you can ask Claude questions like:
+
+- "What's my current account balance?"
+- "Show me my spending by category last month"
+- "How much did I spend on groceries in January?"
+- "What's my savings rate over the past 3 months?"
+- "Which categories am I overspending on this month?"
+- "How has my net worth changed over the past year?"
+- "Which payees do I spend the most with?"
+- "Is my grocery spending trending up or down?"
+- "Analyze my budget and suggest areas to improve"
+- "What custom reports do I have?"
+- "Add a net worth widget to my Spending Plan dashboard"
+- "Rearrange my dashboard so the cash flow card is full width at the top"
+
+## Usage with Codex CLI
+
+Example Codex configuration:
+
+In `~/.codex/config.toml`:
+```toml
+[mcp_servers.actual-budget]
+url = "http://localhost:3000"
+```
+
+Point Codex at the same port you pass to `npm start -- --sse --port <PORT>`.
+
+## Development
+
+For development with auto-rebuild:
+
+```bash
+npm run watch
+```
+
+### Testing the connection to Actual
+
+To verify the server can connect to your Actual Budget data:
+
+```bash
+node build/index.js --test-resources
+```
+
+### Debugging
+
+Since MCP servers communicate over stdio, debugging can be challenging. You can use the [MCP Inspector](https://github.com/modelcontextprotocol/inspector):
+
+```bash
+npx @modelcontextprotocol/inspector node build/index.js
+```
+
+### E2E validation gate
+
+The end-to-end test suite (`vitest.e2e.config.ts`) spins up a real Actual Budget server in a Docker container (via Testcontainers), seeds a budget, and drives it through a real MCP client over stdio to verify accounts, transactions, categories, payees, rules, and imports actually persist. It requires Docker to be running locally.
+
+In CI, the `e2e-test` job in `.github/workflows/pr-validation.yml` only runs on release-please PRs (branch prefix `release-please--`) or when a PR is given the `run-e2e` label — it does not run on every PR by default, since it needs Docker and takes longer than the standard checks.
+
+To run it locally:
+
+```bash
+npm run build && npm run test:e2e
+```
+
+Docker must be installed and running; the test suite pulls and starts the Actual server image automatically.
+
+## Project Structure
+
+- `index.ts` - Main server implementation
+- `types.ts` - Type definitions for API responses and parameters
+- `prompts.ts` - Prompt templates for LLM interactions
+- `utils.ts` - Helper functions for date formatting and more
+
+## Registry & Discovery
+
+`actual-mcp` is published to the [official MCP Registry](https://registry.modelcontextprotocol.io)
+as `io.github.s-stefanov/actual-mcp`. Registry metadata lives in
+[`server.json`](./server.json) and is published automatically on each release
+(see `.github/workflows/release-please.yml`).
+
+It advertises two transports on the npm package — `stdio` (default) and
+`streamable-http` (via the `--sse` flag). (A Docker image is also published,
+but is not yet listed as a registry package.)
+
+Post-release directory listings are tracked in
+[`docs/mcp-registry-checklist.md`](./docs/mcp-registry-checklist.md).
+
+## Fork notes
+
+`@actual-app/api` and `@actual-app/core` point at a sibling checkout of
+[giorgiobrullo/actual](https://github.com/giorgiobrullo/actual) (`file:../actual/packages/...`), so the MCP server runs the
+same loot-core as the deployed sync server: same migrations, and the fork's custom bank sync providers work through
+`run-bank-sync`.
+
+```bash
+# in ../actual (after rebasing or pulling)
+yarn install
+yarn workspace @actual-app/api build   # also regenerates loot-core's @types used for type-checking
+
+# in actual-mcp
+npm install
+npm run build
+```
+
+`tsconfig.json` maps `@actual-app/core/*` and loot-core's `#...` package imports to the generated `@types`, and
+`vitest.config.ts` aliases `@actual-app/api` to its built bundle, because the linked packages otherwise resolve to raw
+TypeScript sources. To use the published npm packages instead, set both dependencies back to a version number.
+
+## License
+
+MIT
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.

@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "outDir": "./build",
+    "rootDir": "./src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "declaration": true,
+    "declarationDir": "./build",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "types": ["vitest/globals", "node"],
+    "baseUrl": ".",
+    "paths": {
+      "@actual-app/api/models": ["node_modules/@actual-app/api/@types/models.d.ts"],
+      "@actual-app/core/types/models": ["node_modules/@actual-app/core/@types/src/types/models/index.d.ts"],
+      "@actual-app/core/types/models/import-transaction": [
+        "node_modules/@actual-app/core/@types/src/types/models/import-transaction.d.ts"
+      ],
+      "@actual-app/core/*": ["node_modules/@actual-app/core/@types/src/*.d.ts"],
+      "#*": ["node_modules/@actual-app/core/@types/src/*.d.ts", "node_modules/@actual-app/core/@types/src/*/index.d.ts"]
+    }
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "build"]
+}
