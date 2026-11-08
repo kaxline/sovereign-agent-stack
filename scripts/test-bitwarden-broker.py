@@ -644,7 +644,9 @@ SESSION = "5E55104D"
 class FakeCdp:
     """A DevTools endpoint on one port: /json/list and /json/version over HTTP, CDP over websocket.
 
-    ``page`` picks what the fill function reports: ok, navigated, no_field, exception or hang.
+    ``page`` picks what the fill function reports: ok, navigated, no_field, write_failed,
+    exception or hang. Before each real reply it sends an event and two decoy replies that
+    claim success: one with the right id and another session, and a stale one with an older id.
     Runs in the Hermes image, which has websockets 15; the broker code itself keeps to 10.4.
     """
 
@@ -681,6 +683,11 @@ class FakeCdp:
             self.messages.append(msg)
             # An unrelated event before every reply: the client must match replies by id.
             await ws.send(json.dumps({"method": "Target.targetInfoChanged", "params": {"targetInfo": {}}}))
+            decoy = {"sessionId": "DEC0Y", "result": {"type": "object", "objectId": "9.9.9", "value": {"filled": 1}}}
+            await ws.send(json.dumps({"id": msg["id"], "sessionId": "DEC0Y" if not msg.get("sessionId") else "0THER",
+                                      "result": decoy}))
+            await ws.send(json.dumps({"id": msg["id"] - 1, **({"sessionId": msg["sessionId"]} if msg.get("sessionId")
+                                      else {}), "result": decoy}))
             reply = {"id": msg["id"]}
             if msg.get("sessionId"):
                 reply["sessionId"] = msg["sessionId"]
@@ -704,7 +711,8 @@ class FakeCdp:
                     }
                 else:
                     outcome = {"ok": {"filled": 1}, "no_field": {"filled": 0},
-                               "navigated": {"refused": "origin_changed"}}[self.page]
+                               "navigated": {"refused": "origin_changed"},
+                               "write_failed": {"refused": "write_failed"}}[self.page]
                     reply["result"] = {"result": {"type": "object", "value": outcome}}
             else:
                 reply["result"] = {}
@@ -838,6 +846,13 @@ def test_no_field() -> None:
     expect_no_value([out, repr(result)], "no field")
 
 
+def test_write_failed() -> None:
+    with fake_cdp([{"id": TARGET, "url": LOGIN_URL}], page="write_failed") as fake:
+        result, out = run_fill(fake)
+    expect(not result.filled and result.error == "page_error", f"write failed result {result!r}")
+    expect_detached(fake, "write failed")
+
+
 def test_fill_timeout() -> None:
     with fake_cdp([{"id": TARGET, "url": LOGIN_URL}], page="hang") as fake:
         start = time.monotonic()
@@ -857,12 +872,13 @@ def run_cdp_tests() -> None:
     test_target_closed()
     test_no_value_in_errors()
     test_no_field()
+    test_write_failed()
     test_fill_timeout()
 
 
 def test_fill_rejects_bad_arguments() -> None:
     """Port and target id are checked before any I/O, so these need no server."""
-    def must_not_connect(*a, **k):
+    async def must_not_connect(*a, **k):
         fail("fill did I/O before validating its arguments")
     real = cdp._get_json
     cdp._get_json = must_not_connect
@@ -886,6 +902,68 @@ def test_fill_cdp_down() -> None:
         got = cdp.fill(port, TARGET, ("https://login.example.com",), CDP_VALUE, timeout=2.0)
     expect(got == cdp.FillResult(False, "", "cdp_unavailable"), f"closed port: {got!r}")
     expect_no_value([out.getvalue(), repr(got)], "closed port")
+
+
+@contextlib.contextmanager
+def drip_endpoint(drip_path: str):
+    """An HTTP endpoint on 127.0.0.1 that sends headers for ``drip_path`` and then one body byte
+    every 0.9 s; ``/json/list`` otherwise answers at once with the login target."""
+    import socket
+    import threading
+
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(8)
+    srv.settimeout(0.2)
+    stop = threading.Event()
+
+    def answer(conn):
+        with conn:
+            path = conn.recv(4096).split(b" ")[1].decode("ascii", "replace")
+            if path == drip_path:
+                conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n")
+                for _ in range(8):
+                    if stop.wait(0.9):
+                        return
+                    conn.sendall(b" ")
+            else:
+                body = json.dumps([{"id": TARGET, "type": "page", "url": LOGIN_URL}]).encode()
+                conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n%s" % (len(body), body))
+
+    def serve():
+        while not stop.is_set():
+            try:
+                conn, _ = srv.accept()
+            except OSError:
+                continue
+            threading.Thread(target=answer, args=(conn,), daemon=True).start()
+
+    threading.Thread(target=serve, daemon=True).start()
+    try:
+        yield srv.getsockname()[1]
+    finally:
+        stop.set()
+        srv.close()
+
+
+def test_fill_bounded_by_timeout() -> None:
+    """A slow body on either GET, through fill and fill_async, ends at the deadline."""
+    import asyncio
+    calls = {
+        "fill": lambda port: cdp.fill(port, TARGET, ("https://login.example.com",), CDP_VALUE, timeout=2.0),
+        "fill_async": lambda port: asyncio.run(
+            cdp.fill_async(port, TARGET, ("https://login.example.com",), CDP_VALUE, timeout=2.0)),
+    }
+    for drip_path in ("/json/list", "/json/version"):
+        for name, call in calls.items():
+            with drip_endpoint(drip_path) as port, captured() as out:
+                start = time.monotonic()
+                got = call(port)
+                elapsed = time.monotonic() - start
+            want_origin = "" if drip_path == "/json/list" else "https://login.example.com"
+            expect(got == cdp.FillResult(False, want_origin, "cdp_unavailable"), f"{name} drip {drip_path}: {got!r}")
+            expect(elapsed < 2.5, f"{name} drip {drip_path}: took {elapsed:.2f}s with a 2s timeout")
+            expect_no_value([out.getvalue(), repr(got)], f"{name} drip {drip_path}")
 
 
 CDP_DRIVER = r"""
@@ -912,6 +990,7 @@ def main() -> None:
     test_denylist()
     test_fill_rejects_bad_arguments()
     test_fill_cdp_down()
+    test_fill_bounded_by_timeout()
     hermes_image.maybe_run(CDP_DRIVER, mounts=[
         (ROOT / "scripts", "/work/scripts"),
         (ROOT / "compose" / "bitwarden-broker", "/work/compose/bitwarden-broker"),

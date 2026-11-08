@@ -16,7 +16,6 @@ bookworm's websockets 10.4 has.
 from __future__ import annotations
 
 import asyncio
-import http.client
 import json
 import logging
 import re
@@ -35,6 +34,7 @@ CDP_UNAVAILABLE = "cdp_unavailable"
 _TARGET_ID = re.compile(r"[A-Za-z0-9]{1,64}")
 _BROWSER_PATH = re.compile(r"/devtools/browser/[A-Za-z0-9-]{1,64}")
 _MAX_BODY = 4 << 20
+_MAX_HEADERS = 64 << 10
 _MAX_MESSAGE = 4 << 20
 
 # websockets logs frames at DEBUG, and a frame can hold the value.
@@ -60,12 +60,17 @@ _FILL_FUNCTION = """function (expectedOrigin, value) {
   while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
   const el = fields.includes(active) ? active : (fields.find((f) => f.getClientRects().length > 0) || fields[0]);
   if (!el) return { filled: 0 };
-  el.focus();
-  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
-  if (setter && setter.set) { setter.set.call(el, value); } else { el.value = value; }
-  el.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, inputType: "insertText" }));
-  el.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
-  return { filled: el.value.length > 0 ? 1 : 0 };
+  try {
+    el.focus();
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+    if (setter && setter.set) { setter.set.call(el, value); } else { el.value = value; }
+    el.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, inputType: "insertText" }));
+    el.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+    return { filled: el.value.length > 0 ? 1 : 0 };
+  } catch (e) {
+    // A page handler can throw with the value in its message; report only that the write failed.
+    return { refused: "write_failed" };
+  }
 }"""
 
 
@@ -103,9 +108,12 @@ async def fill_async(port: int, target_id: str, allowed_origins: tuple[str, ...]
         raise TypeError("allowed_origins must be a collection of origins, not one string")
     allowed = {o for o in (normalize_origin(a) for a in allowed_origins) if o}
 
-    # Detach and close each get a slice of the budget, so the whole call stays within ``timeout``.
+    # One deadline for the whole call. Every step, the two HTTP GETs included, runs on this
+    # task under one wait_for, so nothing outlives it. Detach and close each get a slice.
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
     cleanup = min(1.0, timeout / 5)
-    budget = timeout - 2 * cleanup
+    budget = deadline - 2 * cleanup - loop.time()
     seen = {"origin": ""}
     code = None
     try:
@@ -120,7 +128,7 @@ async def fill_async(port: int, target_id: str, allowed_origins: tuple[str, ...]
 
 
 async def _fill(port, target_id, allowed, value, budget, cleanup, seen) -> None:
-    listing = await asyncio.to_thread(_get_json, port, "/json/list", budget)
+    listing = await _get_json(port, "/json/list")
     target = None
     if isinstance(listing, list):
         target = next((t for t in listing if isinstance(t, dict) and t.get("id") == target_id
@@ -132,7 +140,7 @@ async def _fill(port, target_id, allowed, value, budget, cleanup, seen) -> None:
     if not origin or origin not in allowed:
         raise _Fail(ORIGIN_MISMATCH)
 
-    version = await asyncio.to_thread(_get_json, port, "/json/version", budget)
+    version = await _get_json(port, "/json/version")
     ws_url = version.get("webSocketDebuggerUrl") if isinstance(version, dict) else None
     path = urlsplit(ws_url).path if isinstance(ws_url, str) else ""
     if not _BROWSER_PATH.fullmatch(path):
@@ -189,18 +197,26 @@ async def _write(port, path, target_id, origin, value, budget, cleanup) -> None:
             raise _Fail(PAGE_ERROR)
         if outcome.get("refused") == "origin_changed":
             raise _Fail(ORIGIN_MISMATCH)
+        if outcome.get("refused") == "write_failed":
+            raise _Fail(PAGE_ERROR)
         if outcome.get("filled") != 1:
             raise _Fail(NO_FIELD)
     finally:
-        if session is not None:
-            try:
-                await asyncio.wait_for(conn.call("Target.detachFromTarget", {"sessionId": session}), cleanup)
-            except Exception:  # noqa: BLE001 - the session ends with the socket anyway
-                pass
         try:
-            await asyncio.wait_for(ws.close(), cleanup)
-        except Exception:  # noqa: BLE001
-            ws.transport.abort()
+            if session is not None:
+                try:
+                    await asyncio.wait_for(conn.call("Target.detachFromTarget", {"sessionId": session}), cleanup)
+                except Exception:  # noqa: BLE001 - the session ends with the socket anyway
+                    pass
+        finally:
+            try:
+                await asyncio.wait_for(ws.close(), cleanup)
+            except Exception:  # noqa: BLE001 - a close that fails or times out does not change the result
+                ws.transport.abort()
+            except BaseException:
+                # Cancelled again during cleanup: drop the connection, then let the cancel through.
+                ws.transport.abort()
+                raise
 
 
 def _result(reply: dict) -> dict:
@@ -239,24 +255,58 @@ class _Connection:
                 return reply
 
 
-def _get_json(port: int, path: str, timeout: float):
-    # http.client rather than urllib, which would follow a proxy from the environment.
-    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+async def _get_json(port: int, path: str):
+    """GET ``path`` from 127.0.0.1:<port> and parse the body as JSON.
+
+    asyncio streams rather than http.client in a thread: a thread cannot be cancelled, so a
+    slow endpoint could hold it past the deadline. No proxy from the environment applies.
+    """
+    reader = writer = None
     try:
-        conn.request("GET", path)
-        resp = conn.getresponse()
-        body = resp.read(_MAX_BODY + 1)
-        ok = resp.status == 200 and len(body) <= _MAX_BODY
-    except (OSError, http.client.HTTPException):
-        ok = False
+        reader, writer = await asyncio.open_connection("127.0.0.1", port, limit=_MAX_HEADERS)
+        writer.write(f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+                     .encode("ascii"))
+        await writer.drain()
+        head = await reader.readuntil(b"\r\n\r\n")
+        body = await _read_body(reader, head)
+    except (OSError, EOFError, asyncio.IncompleteReadError, asyncio.LimitOverrunError, ValueError):
+        body = None
     finally:
-        conn.close()
-    if not ok:
+        if writer is not None:
+            writer.transport.abort()
+    if body is None:
         raise _Fail(CDP_UNAVAILABLE)
     try:
         return json.loads(body)
     except ValueError:
         raise _Fail(CDP_UNAVAILABLE) from None
+
+
+async def _read_body(reader: asyncio.StreamReader, head: bytes) -> bytes | None:
+    """The body for a 200 response with Content-Length or read-to-close framing, capped at _MAX_BODY."""
+    lines = head.decode("latin-1").split("\r\n")
+    status = lines[0].split(" ")
+    if len(status) < 2 or not status[0].startswith("HTTP/1.") or status[1] != "200":
+        return None
+    headers = {}
+    for line in lines[1:]:
+        name, sep, val = line.partition(":")
+        if sep:
+            headers[name.strip().lower()] = val.strip()
+    if "transfer-encoding" in headers:
+        return None  # DevTools sends Content-Length; chunked framing is not needed
+    if "content-length" in headers:
+        length = int(headers["content-length"])
+        if not 0 <= length <= _MAX_BODY:
+            return None
+        return await reader.readexactly(length)
+    body = b""
+    while len(body) <= _MAX_BODY:
+        more = await reader.read(_MAX_BODY + 1 - len(body))
+        if not more:
+            return body
+        body += more
+    return None
 
 
 def _valid_port(port) -> bool:
