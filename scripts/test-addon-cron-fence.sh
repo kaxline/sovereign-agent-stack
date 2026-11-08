@@ -22,6 +22,16 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 grep -q '_out="$(python3 - "$_fmc_cfg" "$ADDON_MANIFEST_PY" "$ADDONS_DIR" <<' "$BOOTSTRAP" \
   || fail "fence_mail_from_cron must pass the add-on manifests to its python"
 grep -q 'addon_manifest.cron_fence' "$BOOTSTRAP" || fail "the fence must use addon_manifest.cron_fence"
+
+# cron "ro" on the split fixture: only its rw URL is fenced, and no name.
+python3 - <<'PY' || fail "cron ro must fence the rw URL only"
+import sys
+from pathlib import Path
+sys.path.insert(0, "scripts/lib")
+import addon_manifest as am
+got = am.cron_fence(Path("scripts/fixtures/addons"), {})
+assert got == ([], ["http://split-rw:9000/mcp"]), got
+PY
 echo "ok: host wiring"
 
 mode="${1:-}"
@@ -45,6 +55,8 @@ m = json.load(open("addons/gptr/addon.json"))
 m["permissions"]["cron"] = False
 open(sys.argv[1], "w").write(am.canonical(m))
 PY
+mkdir -p "$work/addons-ro/split"
+cp scripts/fixtures/addons/split/addon.json "$work/addons-ro/split/addon.json"
 sed -n '/^fence_mail_from_cron() {/,/^}/p' "$BOOTSTRAP" > "$work/fence.sh"
 cat > "$work/run.sh" <<'EOF'
 set -eu
@@ -55,6 +67,10 @@ seed() {
   rm -f /h/.mail-cron-toolsets.json
   printf 'mcp_servers:\n  gptr:\n    url: http://gptr-mcp:8000/sse\n  searxng:\n    url: http://searxng-mcp:8000/mcp\n' > /h/config.yaml
 }
+seed_split() {
+  rm -f /h/.mail-cron-toolsets.json
+  printf 'mcp_servers:\n  split:\n    url: %s\n  searxng:\n    url: http://searxng-mcp:8000/mcp\n' "$1" > /h/config.yaml
+}
 cron_list() { tr -d '\n ' < /h/config.yaml | sed -n 's/.*cron:\(.*\)/\1/p'; }
 
 ADDON_MANIFEST_PY=/bootstrap/addon_manifest.py
@@ -62,6 +78,11 @@ ADDONS_DIR=/bootstrap/addons; seed; fence_mail_from_cron ""
 echo "true:$(cron_list)"
 ADDONS_DIR=/w/addons-off; seed; fence_mail_from_cron ""
 echo "false:$(cron_list)"
+ADDONS_DIR=/w/addons-ro; seed_split http://split-ro:9000/mcp; fence_mail_from_cron ""
+echo "ro-at-ro:$(cron_list)"
+seed_split http://split-rw:9000/mcp; fence_mail_from_cron ""
+echo "ro-at-rw:$(cron_list)"
+ADDONS_DIR=/w/addons-off
 ADDON_MANIFEST_PY=/nope.py; fence_mail_from_cron "" >/dev/null
 echo "missing:$(cron_list)"
 ADDON_MANIFEST_PY=/bootstrap/addon_manifest.py; ADDONS_DIR=/bootstrap/addons; fence_mail_from_cron ""
@@ -76,6 +97,8 @@ out="$(docker run --rm --entrypoint /bin/sh \
 expect() { printf '%s\n' "$out" | grep -qx -- "$1" || fail "$2 (output: $out)"; }
 expect 'true:' "cron true leaves platform_toolsets.cron unset"
 expect 'false:-hermes-cron-searxng' "cron false pins a cron list without gptr"
+expect 'ro-at-ro:' "a cron ro add-on registered at its ro URL stays in cron"
+expect 'ro-at-rw:-hermes-cron-searxng' "a cron ro add-on registered at its rw URL is fenced"
 expect 'missing:-hermes-cron-searxng' "a missing module keeps the list it wrote"
 expect 'back:' "the list is removed once the manifest allows cron"
 echo "ok: image ($IMAGE)"

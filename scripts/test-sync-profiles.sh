@@ -74,6 +74,12 @@ printf 'COMPOSE_PROFILES=core\nNEO4J_ENABLED=1\nNEO4J_PASSWORD=pw\n' > "${tmp}/.
 sync
 expect "neo4j flag adds neo4j alone" COMPOSE_PROFILES core,neo4j
 
+# ACTUAL_LOCAL_ENABLED adds the local Actual server's profile.
+printf 'COMPOSE_PROFILES=core\nACTUAL_LOCAL_ENABLED=1\n' > "${tmp}/.env"
+sync
+expect "actual local flag adds budget-local" COMPOSE_PROFILES core,budget-local
+expect "actual local flag marks budget-local managed" COMPOSE_PROFILES_MANAGED budget-local
+
 # rag without its keys stops before COMPOSE_PROFILES changes.
 printf 'COMPOSE_PROFILES=core\nLIGHTRAG_MCP_ENABLED=1\n' > "${tmp}/.env"
 if sync; then

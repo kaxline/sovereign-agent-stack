@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The first run (setup.sh, then crm.sh init and todo.sh init) needs only bash,
+# The first run (setup.sh, then crm.sh, todo.sh and budget.sh init) needs only bash,
 # the base system's tools and the container engine: no python3, node or make
 # on the host. See CHANGELOG.md v0.3.11 and docs/extending.md.
 #
@@ -21,7 +21,7 @@ bad() { printf 'FAIL %s\n' "$*" >&2; fail=1; }
 
 FIRST_RUN="scripts/setup.sh scripts/sync-profiles.sh scripts/sync-signal-profile.sh
 scripts/sync-buzz-profile.sh scripts/sync-terminal-backend.sh scripts/sync-n8n-credentials.sh
-scripts/todo.sh scripts/crm.sh scripts/db.sh scripts/lib/env.sh scripts/lib/data-root.sh
+scripts/todo.sh scripts/crm.sh scripts/budget.sh scripts/db.sh scripts/lib/env.sh scripts/lib/data-root.sh
 scripts/lib/hermes-yaml.sh"
 
 # A command position (line start, after ; & | ( or a keyword, after VAR=value

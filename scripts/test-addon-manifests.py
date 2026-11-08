@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import json
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -118,12 +119,69 @@ refused("sender from a community feed", packaged(variant(permissions__sends=True
 refused("host component from a community feed", {**packaged(BASE), "host": {"platform": "macos"}},
         "community", "host component")
 
+# A service map gives each access level its own service.
+SPLIT = json.loads((ROOT / "scripts" / "fixtures" / "addons" / "split" / "addon.json").read_text())
+check("the split fixture is valid", am.validate(SPLIT, "builtin") == [], str(am.validate(SPLIT, "builtin")))
+
+
+def split(**changes):
+    m = copy.deepcopy(SPLIT)
+    m.update(changes)
+    return m
+
+
+one = variant(mcp__service={"rw": "server"})
+check("a map with only rw is accepted", am.validate(one, "builtin") == [], str(am.validate(one, "builtin")))
+refused("a map naming an unknown service", variant(mcp__service={"rw": "nope"}), "builtin", "mcp.service")
+refused("a map with a bad access key", variant(mcp__service={"rx": "server"}), "builtin", "mcp.service")
+refused("a mapped service without a port",
+        split(services={"rw": {"compose": "split-rw"}, "ro": {"compose": "split-ro", "port": 9000}}),
+        "builtin", ".port is needed")
+refused("a profile at ro when the map has no ro", variant(mcp__service={"rw": "server"},
+                                                          mcp__profiles={"api-server": "ro"}),
+        "builtin", "no service for ro")
+
+check("env.access is accepted", am.validate(SPLIT, "builtin") == [], str(am.validate(SPLIT, "builtin")))
+refused("an unknown env key", split(mcp={**SPLIT["mcp"], "env": {"acess": "SPLIT_ACCESS"}}),
+        "builtin", "mcp.env")
+refused("env.access must be an env var name",
+        split(mcp={**SPLIT["mcp"], "env": {"access": "lower"}}), "builtin", "mcp.env")
+
+ACCESS_URL = {"read": "http://split-ro:9000/mcp", "write": "http://split-rw:9000/mcp",
+              "": "http://split-rw:9000/mcp", "Read": None, "ask": None, "readonly": None}
+with tempfile.TemporaryDirectory() as tmp:
+    (Path(tmp) / "split").mkdir()
+    (Path(tmp) / "split" / "addon.json").write_text(am.canonical(SPLIT))
+    for cap, want_url in ACCESS_URL.items():
+        for prof in ("default", "api-server"):
+            line = am.mcp_plan(Path(tmp), prof, {"SPLIT_MCP_ENABLED": "1", "SPLIT_ACCESS": cap})[0].split("|")
+            if want_url is None:
+                ok = line[3] == ""
+            elif prof == "api-server":
+                ok = line[3] == "ro"
+            else:
+                ok = line[3] == ("ro" if cap == "read" else "rw") and line[4] == want_url
+            check(f"SPLIT_ACCESS={cap!r} on {prof}: access {line[3]!r}", ok, str(line))
+    line = am.mcp_plan(Path(tmp), "default", {"SPLIT_MCP_ENABLED": "1"})[0].split("|")
+    check("SPLIT_ACCESS unset keeps rw", line[3] == "rw", str(line))
+
+# permissions.cron: true, false or "ro".
+check("cron ro with a service map that has ro is accepted", SPLIT["permissions"]["cron"] == "ro"
+      and am.validate(SPLIT, "builtin") == [], str(am.validate(SPLIT, "builtin")))
+refused("cron ro on an add-on that reads", split(permissions={**SPLIT["permissions"], "reads": ["mail"]}),
+        "builtin", "permissions.cron false")
+refused("cron ro with a string service", variant(permissions__cron="ro"), "builtin", "cron ro needs an ro service")
+refused("cron ro with a map that has no ro service",
+        split(mcp={**SPLIT["mcp"], "service": {"rw": "rw"}, "profiles": {"default": "rw"}}),
+        "builtin", "cron ro needs an ro service")
+refused("cron yes", variant(permissions__cron="yes"), "builtin", "permissions.cron")
+
 # --- mcp-plan ---------------------------------------------------------------
 env = {"GPTR_MCP_ENABLED": "1"}
 plan = am.mcp_plan(ROOT / "addons", "browser", env)
 want = ("gptr|GPT Researcher|1|rw|http://gptr-mcp:8000/sse|900|30|sse|"
         "deep_research quick_search write_report get_research_sources get_research_context|"
-        "deep_research quick_search write_report")
+        "deep_research quick_search write_report|http://gptr-mcp:8000/sse")
 check("plan for browser with the flag on", want in plan, str(plan))
 plan = am.mcp_plan(ROOT / "addons", "api-server", env)
 check("plan leaves api-server without access", any(line.startswith("gptr|GPT Researcher|1||") for line in plan),
@@ -132,6 +190,16 @@ plan = am.mcp_plan(ROOT / "addons", "default",
                    {"GPTR_MCP_ENABLED": "0", "GPTR_MCP_URL": "http://elsewhere:9/sse", "GPTR_MCP_TIMEOUT": "60"})
 check("plan honours the env overrides and the flag off",
       any(line.startswith("gptr|GPT Researcher|0|rw|http://elsewhere:9/sse|60|30|") for line in plan), str(plan))
+
+with tempfile.TemporaryDirectory() as tmp:
+    (Path(tmp) / "split").mkdir()
+    (Path(tmp) / "split" / "addon.json").write_text(am.canonical(SPLIT))
+    ro_url, rw_url = "http://split-ro:9000/mcp", "http://split-rw:9000/mcp"
+    for prof, url in (("default", rw_url), ("browser", rw_url), ("api-server", ro_url), ("other", rw_url)):
+        got = am.mcp_plan(Path(tmp), prof, {"SPLIT_MCP_ENABLED": "1"})
+        check(f"split plan for {prof} picks {url[7:15]} and lists both URLs",
+              len(got) == 1 and got[0].split("|")[4] == url and got[0].split("|")[10] == f"{ro_url} {rw_url}",
+              str(got))
 
 with tempfile.TemporaryDirectory() as tmp:
     bad = Path(tmp) / "broken"
@@ -150,8 +218,11 @@ with tempfile.TemporaryDirectory() as tmp:
     check("plan skips invalid manifests", am.mcp_plan(Path(tmp), "default", env) == [])
 
 # --- cron fence ---------------------------------------------------------------
-check("an add-on with cron true is not fenced", am.cron_fence(ROOT / "addons", env) == ([], []),
-      str(am.cron_fence(ROOT / "addons", env)))
+with tempfile.TemporaryDirectory() as tmp:
+    (Path(tmp) / "gptr").mkdir()
+    shutil.copy(ROOT / "addons" / "gptr" / "addon.json", Path(tmp) / "gptr" / "addon.json")
+    check("an add-on with cron true is not fenced", am.cron_fence(Path(tmp), env) == ([], []),
+          str(am.cron_fence(Path(tmp), env)))
 
 
 def fence_of(manifests: dict[str, str], environ) -> tuple[list[str], list[str]]:
@@ -168,6 +239,12 @@ got = fence_of({"gptr": am.canonical(variant(permissions__cron=None))},
                {**env, "GPTR_MCP_URL": "http://elsewhere:9/sse"})
 check("a missing cron field fences, at the overridden URL", got == (["gptr"], ["http://elsewhere:9/sse"]),
       str(got))
+SPLIT_CRON_FALSE = split(permissions={**SPLIT["permissions"], "cron": False})
+got = fence_of({"split": am.canonical(SPLIT_CRON_FALSE)}, {})
+check("a service map with cron false fences every URL",
+      got == (["split"], ["http://split-ro:9000/mcp", "http://split-rw:9000/mcp"]), str(got))
+got = fence_of({"split": am.canonical(SPLIT)}, {})
+check("cron ro fences only the rw URL, and no name", got == ([], ["http://split-rw:9000/mcp"]), str(got))
 broken = variant(permissions__cron=True, permissions__reads=["mail"])
 got = fence_of({"gptr": am.canonical(broken)}, env)
 check("an invalid manifest is fenced by its MCP name", got[0] == ["gptr"], str(got))
