@@ -121,12 +121,18 @@ the read-only instance.
 
 ## Cron
 
-A cron job runs with its profile's `platform_toolsets.cron`, which names MCP
-servers, not tools. A read/write `budget` entry would hand a scheduled job
-every write tool, so the bootstraps keep it out of cron (the manifest sets
-`permissions.cron` to `"ro"`). A job that reads the budget, such as a weekly
-spending summary, goes on `api-server`, where `budget` is the read-only
-instance.
+A cron job with no tool list of its own runs with its profile's
+`platform_toolsets.cron`, which names MCP servers, not tools. A read/write
+`budget` entry would hand such a job every write tool, so the bootstraps keep
+it out of that list (the manifest sets `permissions.cron` to `"ro"`). A job
+that reads the budget, such as a weekly spending summary, goes on
+`api-server`, where `budget` is the read-only instance.
+
+The fence only edits `platform_toolsets.cron`, so a job with its own
+`enabled_toolsets` isn't covered. If that list names no MCP server, the job
+gets every MCP server on its profile, and a list that names `budget` gets it
+too. On default and `browser` that is the read/write instance. Give such jobs
+the MCP servers they need by name, or `no_mcp`.
 
 ## Networks
 
@@ -135,6 +141,10 @@ containers, and nothing else. The MCP servers take requests without bearer
 auth, so network membership is the access control. The network isn't
 `internal`, because the MCP containers may need to reach a remote Actual
 server.
+
+With `HERMES_TERMINAL_BACKEND=local` the agent's shell runs inside `hermes`,
+which is on `budget`, so any profile with a shell tool can reach
+`actual-mcp-rw` with curl.
 
 ## Where data lives
 
