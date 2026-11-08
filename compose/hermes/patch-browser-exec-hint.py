@@ -2,7 +2,8 @@
 """Fix the hints browser_exec gives the model.
 
 - A result gains a ``hint`` when the code imported the pre-defined helpers
-  from a module that does not exist, or ran and printed nothing.
+  from a module that does not exist, or ran and printed nothing, or when it set
+  an input's ``.value`` inside js(), which React-style forms do not see.
 - A trailing bare expression (``js(...)``, ``page_info()``) is printed, as a
   Python prompt does, so its value comes back.
 - browser_vault_save_login's ``next`` names browser_vault_fill and the handle
