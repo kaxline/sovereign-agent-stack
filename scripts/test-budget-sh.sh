@@ -344,6 +344,23 @@ rm -f "$f"
 run init --rotate && fail "init --rotate with no budget file must fail"
 grep -q 'make budget-init' "$out" || fail "--rotate with no file says to run make budget-init ($(cat "$out"))"
 
+# --- check (make doctor runs it) ---
+reset
+printf 'check-SECRET' > "$STUB/server_pw"
+printf 'ACTUAL_SERVER_URL=http://actual-server:5006\nACTUAL_PASSWORD=check-SECRET\nACTUAL_BUDGET_SYNC_ID=sync-c\n' > "$f"
+chmod 600 "$f"
+run check || fail "check on a good file ($(cat "$out"))"
+printf 'other' > "$STUB/server_pw"
+rc=0; run check || rc=$?
+[ "$rc" = 3 ] || fail "check exits 3 when the server refuses the password (got $rc)"
+printf 'check-SECRET' > "$STUB/server_pw"
+printf 'enc-SECRET' > "$STUB/enc_pw"
+rc=0; run check || rc=$?
+[ "$rc" = 2 ] || fail "check exits 2 for a missing encryption password (got $rc)"
+rm -f "$f" "$STUB/enc_pw"
+rc=0; run check || rc=$?
+[ "$rc" = 1 ] || fail "check with no file exits 1 (got $rc)"
+
 # --- access ---
 reset
 cp "$ENV_FILE" "$tmp/env-before"
@@ -379,7 +396,7 @@ run remove && fail "remove with no budget file must fail"
 run frobnicate && fail "unknown subcommand must fail"
 
 # --- No password in any output, or in curl or docker argv ---
-for s in right-SECRET wrong-SECRET enc-SECRET bad-enc-SECRET srv-SECRET open-SECRET "$quoted" "$unstorable" line-SECRET $pws; do
+for s in right-SECRET wrong-SECRET enc-SECRET bad-enc-SECRET srv-SECRET open-SECRET check-SECRET "$quoted" "$unstorable" line-SECRET $pws; do
   for log in "$all" "$STUB/curl.argv" "$STUB/docker.argv"; do
     if grep -qF -- "$s" "$log"; then fail "${log##*/} contains a password"; fi
   done

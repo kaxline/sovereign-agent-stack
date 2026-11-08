@@ -39,6 +39,9 @@ Usage: scripts/budget.sh <command> [options]
         are asked for in a terminal (passwords hidden). With no sync id the
         server's only budget is used. Nothing is written unless the budget
         opens with them.
+  check   Open the budget in budget.env with actual-admin.mjs. Exit 0 when it
+          opens, 2 for a wrong or missing encryption password, 3 when the
+          server refuses the password, 1 otherwise. make doctor runs this.
   open    Open the web app and copy the server password to the clipboard
   remove  Delete budget.env and set ACTUAL_MCP_ENABLED=0. Server data stays.
   access read|write
@@ -515,6 +518,25 @@ cmd_add() {
   log "Next: make up, then make hermes-reload"
 }
 
+cmd_check() {
+  [[ $# -eq 0 ]] || die "check takes no options"
+  [[ -f "$BUDGET_FILE" ]] || die "no ${BUDGET_REL}; make budget-init or make budget-add URL=..."
+  require_docker
+  a_url="$(file_get ACTUAL_SERVER_URL)"
+  a_pw="$(file_get ACTUAL_PASSWORD)"
+  a_sync="$(file_get ACTUAL_BUDGET_SYNC_ID)"
+  a_enc="$(file_get ACTUAL_BUDGET_ENCRYPTION_PASSWORD)"
+  local rc=0
+  admin check > /dev/null 2> "${WORK}/admin.err" || rc=$?
+  case "$rc" in
+    0) log "Budget ${a_sync} opens" ;;
+    2) log "Budget ${a_sync}: wrong or missing encryption password (ACTUAL_BUDGET_ENCRYPTION_PASSWORD)" >&2 ;;
+    3) log "The server refused the server password (ACTUAL_PASSWORD)" >&2 ;;
+    *) log "Couldn't open budget ${a_sync} on ${a_url}: $(admin_error)" >&2; rc=1 ;;
+  esac
+  return "$rc"
+}
+
 cmd_open() {
   [[ $# -eq 0 ]] || die "open takes no options"
   [[ -f "$BUDGET_FILE" ]] || die "no ${BUDGET_REL}; make budget-init or make budget-add URL=..."
@@ -566,6 +588,7 @@ cmd_access() {
 case "${1:-}" in
   init) shift; cmd_init "$@" ;;
   add) shift; cmd_add "$@" ;;
+  check) shift; cmd_check "$@" ;;
   open) shift; cmd_open "$@" ;;
   remove) shift; cmd_remove "$@" ;;
   access) shift; cmd_access "$@" ;;

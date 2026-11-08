@@ -149,6 +149,8 @@ jobs:
         run: bash scripts/test-crm-sh.sh
       - name: budget.sh subcommands against stubs
         run: bash scripts/test-budget-sh.sh
+      - name: make doctor Actual Budget block against stubs
+        run: bash scripts/test-actual-doctor.sh
       - name: First run needs no host python3, node or make
         run: bash scripts/test-no-host-python.sh
       - name: LLM proxy routes
