@@ -1,0 +1,70 @@
+{
+  "manifestVersion": 1,
+  "id": "io.github.kaxline.stack.gptr",
+  "version": "1.0.0",
+  "title": "GPT Researcher",
+  "tagline": "Researched reports from the web, written by the local model",
+  "description": "Runs GPT Researcher in-process behind an MCP server (gptr-mcp). deep_research crawls the web through the stack's search and sends dozens of model calls to llm-proxy, so it is offered to chats a person is watching and not to unattended api-server sessions. See docs/gpt-researcher.md.",
+  "publisher": {
+    "name": "sovereign-agent-stack",
+    "url": "https://github.com/kaxline/sovereign-agent-stack"
+  },
+  "minStackVersion": "0.3.12",
+  "builtin": {
+    "flag": "GPTR_MCP_ENABLED",
+    "profile": "research",
+    "seed": true
+  },
+  "services": {
+    "server": {
+      "compose": "gptr-mcp",
+      "port": 8000
+    }
+  },
+  "uses": [
+    "llm",
+    "search"
+  ],
+  "mcp": {
+    "service": "server",
+    "transport": "sse",
+    "path": "/sse",
+    "name": "gptr",
+    "timeout": 900,
+    "connectTimeout": 30,
+    "env": {
+      "url": "GPTR_MCP_URL",
+      "timeout": "GPTR_MCP_TIMEOUT",
+      "connectTimeout": "GPTR_MCP_CONNECT_TIMEOUT"
+    },
+    "tools": [
+      "deep_research",
+      "quick_search",
+      "write_report",
+      "get_research_sources",
+      "get_research_context"
+    ],
+    "pin": [
+      "deep_research",
+      "quick_search",
+      "write_report"
+    ],
+    "writeTools": [],
+    "profiles": {
+      "default": "rw",
+      "browser": "rw"
+    }
+  },
+  "permissions": {
+    "reads": [],
+    "writes": [],
+    "sends": false,
+    "egress": [
+      "llm-proxy",
+      "search",
+      "internet"
+    ],
+    "exposesToAgent": false,
+    "cron": true
+  }
+}

@@ -79,15 +79,9 @@ MESSAGES_MCP_URL="${MESSAGES_MCP_URL:-http://messages-mcp:8000/mcp}"
 MESSAGES_MCP_TIMEOUT="${MESSAGES_MCP_TIMEOUT:-60}"
 MESSAGES_MCP_CONNECT_TIMEOUT="${MESSAGES_MCP_CONNECT_TIMEOUT:-30}"
 MESSAGES_MCP_TOOLS="messages_status messages_chats messages_search messages_conversation messages_get"
-GPTR_MCP_ENABLED="${GPTR_MCP_ENABLED:-0}"
-GPTR_MCP_URL="${GPTR_MCP_URL:-http://gptr-mcp:8000/sse}"
-# deep_research runs a multi-step crawl and many model calls in one tool call.
-GPTR_MCP_TIMEOUT="${GPTR_MCP_TIMEOUT:-900}"
-GPTR_MCP_CONNECT_TIMEOUT="${GPTR_MCP_CONNECT_TIMEOUT:-30}"
-GPTR_MCP_TOOLS="deep_research quick_search write_report get_research_sources get_research_context"
-# Pinned so local models call them instead of describing them; the follow-up
-# tools stay reachable through tool search.
-GPTR_MCP_PINS="deep_research quick_search write_report"
+# Built-in add-ons (GPT Researcher so far) come from addons/<id>/addon.json.
+ADDONS_DIR="${ADDONS_DIR:-/bootstrap/addons}"
+ADDON_MANIFEST_PY="${ADDON_MANIFEST_PY:-/bootstrap/addon_manifest.py}"
 TWENTY_MCP_ENABLED="${TWENTY_MCP_ENABLED:-0}"
 TWENTY_WORKSPACES_DIR="${TWENTY_WORKSPACES_DIR:-/bootstrap/twenty-workspaces}"
 # The local instance; remote workspaces carry their own URL.
@@ -159,6 +153,7 @@ sha256_stdin() {
 # what the last complete run recorded:
 #
 # - inputs: this script, the profile's env file, the CalDAV accounts, the
+#   Twenty workspace files, the add-on manifests and their reader, the
 #   image, and every environment variable this container gets. One stamp per
 #   profile under STAMP_DIR.
 # - state: every file the bootstrap writes, in the default profile and every
@@ -185,6 +180,14 @@ bootstrap_inputs_hash() {
     # A new, removed or re-keyed Twenty workspace changes what gets registered.
     echo "twenty"
     for _bih_f in "${TWENTY_WORKSPACES_DIR:-/bootstrap/twenty-workspaces}"/*.env; do
+      [ -f "$_bih_f" ] || continue
+      echo "$_bih_f"
+      cat "$_bih_f"
+    done
+    # A changed add-on manifest, or reader, changes what gets registered.
+    echo "addons"
+    cat "$ADDON_MANIFEST_PY" 2>/dev/null || true
+    for _bih_f in "$ADDONS_DIR"/*/addon.json; do
       [ -f "$_bih_f" ] || continue
       echo "$_bih_f"
       cat "$_bih_f"
@@ -856,10 +859,12 @@ set_stack_mcp_parked_retry() {
   [ -n "$MCP_PARKED_RETRY_INTERVAL" ] || return 0
   _cfg="$(config_path_for "$1")"
   [ -f "$_cfg" ] || return 0
+  # One argument per add-on URL.
+  # shellcheck disable=SC2046
   _out="$(python3 - "$_cfg" "$MCP_PARKED_RETRY_INTERVAL" "$LIGHTRAG_MCP_URL" "$SEARXNG_MCP_URL" \
     "$CALDAV_MCP_URL" "$OPENCODE_MCP_URL" "$SQL_MCP_RO_URL" "$SQL_MCP_RW_URL" "$VIKUNJA_MCP_URL" \
-    "$MAIL_MCP_URL" "$MAIL_DRAFTS_MCP_URL" "$MESSAGES_MCP_URL" "$GPTR_MCP_URL" \
-    "$TWENTY_LOCAL_MCP_URL" <<'PY'
+    "$MAIL_MCP_URL" "$MAIL_DRAFTS_MCP_URL" "$MESSAGES_MCP_URL" \
+    "$TWENTY_LOCAL_MCP_URL" $(addon_mcp_urls "$1") <<'PY'
 import sys
 sys.path.insert(0, "/opt/hermes")
 try:
@@ -943,15 +948,7 @@ reconcile_stack_eager_tools() {
       fi
       ;;
   esac
-  case "$GPTR_MCP_ENABLED" in
-    1|true|TRUE|yes|YES)
-      if [ "$_rst_profile" != "api-server" ]; then
-        for _rst_t in $GPTR_MCP_PINS; do
-          _rst_args="${_rst_args} ${_rst_t} mcp__gptr__${_rst_t}"
-        done
-      fi
-      ;;
-  esac
+  _rst_args="${_rst_args} $(addon_mcp_pin_args "$_rst_profile")"
   for _rst_slug in $(twenty_workspace_slugs "$_rst_profile"); do
     for _rst_t in $TWENTY_MCP_PINS; do
       _rst_args="${_rst_args} ${_rst_t} $(mcp_tool_name "crm-${_rst_slug}" "$_rst_t")"
@@ -1357,31 +1354,64 @@ register_lightrag_mcp_servers() {
   pin_mcp_tools "$_rlms_profile" lightrag $LIGHTRAG_MCP_TOOLS
 }
 
-# GPT Researcher MCP (research profile). Its tools only read the public web,
-# but one deep_research call sends dozens of requests to llm-proxy and the
-# model server, so unattended api-server sessions don't get it: a person asks
-# for a research report.
-register_gptr_mcp_servers() {
-  _rgms_profile="$1"
-  case "$GPTR_MCP_ENABLED" in
-    1|true|TRUE|yes|YES) ;;
-    *)
-      log "Skipping GPT Researcher MCP registration (GPTR_MCP_ENABLED=${GPTR_MCP_ENABLED})"
-      drop_mcp_entries_for_url "$_rgms_profile" "" "$GPTR_MCP_URL"
-      return 0
-      ;;
-  esac
-  if [ "$_rgms_profile" = "api-server" ]; then
-    log "Skipping GPT Researcher MCP on api-server profile (unattended sessions)"
-    drop_mcp_entries_for_url "$_rgms_profile" "" "$GPTR_MCP_URL"
+# Built-in add-ons with an mcp block, from addons/*/addon.json
+# (scripts/lib/addon_manifest.py mcp-plan). Each line of the plan says whether
+# the add-on's flag is on and what access this profile gets; a profile the
+# manifest leaves out gets no entry, which is how GPT Researcher stays off
+# api-server. Invalid manifests are skipped with a warning on stderr.
+# The mcp-plan lines for <profile>, or nothing when there are no manifests.
+addon_mcp_plan() {
+  [ -d "$ADDONS_DIR" ] || return 0
+  python3 "$ADDON_MANIFEST_PY" mcp-plan "$ADDONS_DIR" "${1:-default}"
+}
+
+# Every add-on MCP URL, on or off, for set_stack_mcp_parked_retry.
+addon_mcp_urls() {
+  addon_mcp_plan "$1" 2>/dev/null | cut -d'|' -f5 || true
+}
+
+# "<tool> <mcp__name__tool> ..." for each add-on that registers on <profile>,
+# for reconcile_stack_eager_tools.
+addon_mcp_pin_args() {
+  addon_mcp_plan "$1" 2>/dev/null | while IFS='|' read -r _amp_name _amp_title _amp_on _amp_access \
+      _amp_url _amp_timeout _amp_connect _amp_transport _amp_tools _amp_pins; do
+    [ "$_amp_on" = 1 ] && [ -n "$_amp_access" ] || continue
+    for _amp_t in $_amp_pins; do
+      printf ' %s %s' "$_amp_t" "$(mcp_tool_name "$_amp_name" "$_amp_t")"
+    done
+  done
+  return 0
+}
+
+register_addon_mcp_servers() {
+  _ram_profile="$1"
+  [ -d "$ADDONS_DIR" ] || return 0
+  if ! _ram_plan="$(addon_mcp_plan "$_ram_profile")"; then
+    log "warning: could not read add-on manifests in ${ADDONS_DIR}; add-on MCP entries left as they were"
     return 0
   fi
-  # shellcheck disable=SC2086
-  register_mcp_server "$_rgms_profile" gptr "GPT Researcher" \
-    "$GPTR_MCP_URL" "$GPTR_MCP_TIMEOUT" "$GPTR_MCP_CONNECT_TIMEOUT" $GPTR_MCP_TOOLS
-  hermes_config_set "$_rgms_profile" "mcp_servers.gptr.transport" "sse"
-  # shellcheck disable=SC2086
-  pin_mcp_tools "$_rgms_profile" gptr $GPTR_MCP_PINS
+  [ -n "$_ram_plan" ] || return 0
+  printf '%s\n' "$_ram_plan" | while IFS='|' read -r _ram_name _ram_title _ram_on _ram_access \
+      _ram_url _ram_timeout _ram_connect _ram_transport _ram_tools _ram_pins; do
+    if [ "$_ram_on" != 1 ]; then
+      log "Skipping ${_ram_title} MCP registration (add-on flag is off)"
+      drop_mcp_entries_for_url "$_ram_profile" "" "$_ram_url"
+      continue
+    fi
+    if [ -z "$_ram_access" ]; then
+      log "Skipping ${_ram_title} MCP on '${_ram_profile:-default}' (not in the manifest's mcp.profiles)"
+      drop_mcp_entries_for_url "$_ram_profile" "" "$_ram_url"
+      continue
+    fi
+    # shellcheck disable=SC2086
+    register_mcp_server "$_ram_profile" "$_ram_name" "$_ram_title" \
+      "$_ram_url" "$_ram_timeout" "$_ram_connect" $_ram_tools
+    if [ "$_ram_transport" = sse ]; then
+      hermes_config_set "$_ram_profile" "mcp_servers.${_ram_name}.transport" "sse"
+    fi
+    # shellcheck disable=SC2086
+    pin_mcp_tools "$_ram_profile" "$_ram_name" $_ram_pins
+  done
 }
 
 # Twenty CRM (crm profile, or a remote instance). One mcp_servers.crm-<slug>
@@ -2242,7 +2272,7 @@ if is_true "$BOOTSTRAP_SHARED"; then
   register_mail_mcp_servers ""
   register_mail_drafts_mcp_servers ""
   register_messages_mcp_servers ""
-  register_gptr_mcp_servers ""
+  register_addon_mcp_servers ""
   register_twenty_mcp_servers ""
 
   # session_search is on Hermes' curated tool_search.defer list. Pin + undefer
@@ -2452,7 +2482,7 @@ register_vikunja_mcp_servers "$PROFILE"
 register_mail_mcp_servers "$PROFILE"
 register_mail_drafts_mcp_servers "$PROFILE"
 register_messages_mcp_servers "$PROFILE"
-register_gptr_mcp_servers "$PROFILE"
+register_addon_mcp_servers "$PROFILE"
 register_twenty_mcp_servers "$PROFILE"
 
 # Heal always_include + defer after every hermes config set / MCP register.

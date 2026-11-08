@@ -120,6 +120,8 @@ jobs:
         run: bash scripts/test-sync-profiles.sh
       - name: n8n credentials only with automation
         run: bash scripts/test-sync-n8n-credentials.sh
+      - name: Add-on manifests
+        run: python3 scripts/test-addon-manifests.py
       - name: GPT Researcher MCP registration
         run: sh scripts/test-gptr-mcp-registration.sh
       - name: LightRAG MCP registration

@@ -1316,6 +1316,9 @@ services:
       - ./compose/hermes/bootstrap-api-profile.sh:/bootstrap/bootstrap-api-profile.sh:ro
       - ./compose/caldav-mcp/accounts:/bootstrap/caldav-accounts:ro
       - ./compose/twenty/workspaces:/bootstrap/twenty-workspaces:ro
+      # Built-in add-on manifests and the reader for them (GPT Researcher so far).
+      - ./addons:/bootstrap/addons:ro
+      - ./scripts/lib/addon_manifest.py:/bootstrap/addon_manifest.py:ro
     entrypoint: /bin/sh
     command: /bootstrap/bootstrap-api-profile.sh
 
@@ -1424,6 +1427,9 @@ services:
       - ./compose/hermes/bootstrap-api-profile.sh:/bootstrap/bootstrap-api-profile.sh:ro
       - ./compose/caldav-mcp/accounts:/bootstrap/caldav-accounts:ro
       - ./compose/twenty/workspaces:/bootstrap/twenty-workspaces:ro
+      # Built-in add-on manifests and the reader for them (GPT Researcher so far).
+      - ./addons:/bootstrap/addons:ro
+      - ./scripts/lib/addon_manifest.py:/bootstrap/addon_manifest.py:ro
     depends_on:
       hermes-api-bootstrap:
         condition: service_completed_successfully

@@ -35,6 +35,11 @@ up to `GPTR_MCP_TIMEOUT` seconds (900) for one call.
 next bootstrap drops the `gptr` entries. With `automation` on and the flag at
 `0`, `gptr-mcp` still runs for OpenCode and n8n, but Hermes doesn't register it.
 
+The flag, profile, tools, pins and profile list come from
+[`addons/gptr/addon.json`](../addons/README.md), which both `sync-profiles.sh`
+and the bootstraps read. `GPTR_MCP_URL`, `GPTR_MCP_TIMEOUT` and
+`GPTR_MCP_CONNECT_TIMEOUT` still override the manifest's values.
+
 ## Configuration
 
 1. Copy the GPT Researcher block from `.env.example` into `.env` (or rely on defaults wired in `docker-compose.yml`).

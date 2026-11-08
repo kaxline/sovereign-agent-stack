@@ -12,9 +12,18 @@ the stack under another app.
 
 1. `docker compose up -d`. Both bootstrap services now receive
    `TWENTY_LOCAL_ENABLED`, which changes their input hash, so they run in full
-   once.
+   once. They also mount `addons/` and `scripts/lib/addon_manifest.py`, so a
+   checkout used as the compose project directory needs both.
 
 ### Changes
+
+- **GPT Researcher is registered from a manifest**: `addons/gptr/addon.json`
+  now holds its flag, profile, tools, pins and profile list, and
+  `sync-profiles.sh` and both bootstraps read it instead of their own copies.
+  The written config is unchanged (checked against v0.22.7 with the flag on
+  and off), and `GPTR_MCP_URL`, `GPTR_MCP_TIMEOUT` and
+  `GPTR_MCP_CONNECT_TIMEOUT` still override it. The manifest format is
+  experimental. See [addons/README.md](addons/README.md).
 
 - **`crm.sh access` changes a workspace's access** (CR 0023 R1):
   `./scripts/crm.sh access --slug S read|write` (`make crm-access`) sets
