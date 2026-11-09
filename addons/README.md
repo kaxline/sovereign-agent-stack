@@ -5,8 +5,8 @@ containers are already in `docker-compose.yml`. The directory is named after
 the last segment of the manifest's `id`. The format is experimental while the
 stack is in 0.3.x, and field names can change between patch releases, with a
 changelog entry. GPT Researcher (`gptr/`), Actual Budget (`actual/`),
-Bitwarden (`bitwarden/`) and LightRAG (`lightrag/`) are the add-ons so far; the
-other optional services are still wired by hand.
+Bitwarden (`bitwarden/`), LightRAG (`lightrag/`) and n8n (`n8n/`) are the
+add-ons so far; the other optional services are still wired by hand.
 
 What reads a manifest:
 
@@ -20,6 +20,9 @@ What reads a manifest:
 Optional fields beyond the basics, checked by `addon_manifest.py validate`
 except where noted:
 
+- `postInstallMessage`: a non-empty string of Markdown. `addon.sh list --json`
+  passes it through as `postInstallMessage`; nothing else reads it, and the
+  key is absent from the listing when the manifest has none.
 - `gates`: a list of `{flag, profile, seed}` for built-in add-ons, each one
   more flag-to-profile row after `builtin`, so a second flag can switch on
   part of an add-on. A gate flag must differ from `builtin.flag` and from the

@@ -120,6 +120,29 @@ the stack under another app.
   ignored and the defaults of 120 and 30 seconds applied. An install that
   set them now gets those values. See
   [docs/knowledge-bases.md](docs/knowledge-bases.md).
+- **n8n is a built-in add-on** (CR 0020 R10): `addons/n8n/addon.json`.
+  `scripts/addon.sh enable|disable n8n` sets `AUTOMATION_ENABLED` as before;
+  `enable` runs `n8n-import`, then starts `n8n` and `gpt-researcher`, and
+  `disable` stops those three. `gpt-researcher` belongs to n8n.
+  `disable n8n` leaves `gptr-mcp` running, since the GPT Researcher add-on
+  owns it. `remove n8n --delete-data` (or `disable n8n --purge`) deletes the
+  `n8n_storage` and `gptr_outputs` volumes, so the SQLite database with its
+  workflows, credentials and execution history is gone. Back up
+  `N8N_ENCRYPTION_KEY` with the volume. `n8n` appears in `addon.sh list`;
+  the `AUTOMATION_ENABLED` row left `sync-profiles.sh`'s table for the
+  manifest's `builtin` block. See [docs/n8n.md](docs/n8n.md).
+- **`n8n-import` generates the demo credentials itself.** On the first start
+  (no `database.sqlite` yet) it runs the generator in the n8n container from
+  `N8N_ENCRYPTION_KEY`, `LIGHTRAG_API_KEY`, `NEO4J_USERNAME` and
+  `NEO4J_PASSWORD`, and imports from `/tmp/n8n-credentials`. It no longer
+  reads `n8n/demo-data/credentials/` on the host, so enabling n8n needs no
+  host-side step. It exits 1 and names `N8N_ENCRYPTION_KEY` or
+  `LIGHTRAG_API_KEY` if either is empty. Only `n8n-import` gets the
+  LightRAG and Neo4j keys; the `n8n` service doesn't.
+- **`postInstallMessage` in `addon.sh list --json`** (additive): an object gets
+  the key `postInstallMessage` only when its manifest has a non-empty one
+  (n8n does). Other objects are unchanged. The validator now refuses a
+  `postInstallMessage` that is not a non-empty string.
 - **`mcp.unmanaged`** (experimental, built-in manifests only): a list of
   Hermes profile names on which bootstrap neither registers, drops nor pins
   the add-on's MCP entry. For a fixed entry, the parked-retry setting still

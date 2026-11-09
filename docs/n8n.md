@@ -11,6 +11,24 @@ Workflow automation with starter workflows and credentials pre-imported for Ligh
 
 n8n follows patterns from the [n8n self-hosted AI starter kit](https://github.com/n8n-io/self-hosted-ai-starter-kit): a one-shot `n8n-import` container and demo data under `n8n/demo-data/`. Unlike the starter kit, n8n stores its data in SQLite, not Postgres. Ollama and Qdrant are left out by default, since LightRAG owns RAG here (`rag` profile) and inference runs on your model server or the `ollama` profile.
 
+## Enable, disable and remove
+
+n8n is a built-in add-on (`addons/n8n/addon.json`), so `scripts/addon.sh` manages it. The flag stays `AUTOMATION_ENABLED` and the profile stays `automation`; an install that already set the flag keeps working unchanged.
+
+```bash
+./scripts/addon.sh enable n8n
+./scripts/addon.sh disable n8n
+./scripts/addon.sh remove n8n --delete-data
+```
+
+`enable` sets `AUTOMATION_ENABLED=1`, runs `n8n-import` to completion, then starts `n8n` and `gpt-researcher` and waits for them to be healthy. `gpt-researcher` is the REST service the Deep Research workflow calls, so it belongs to this add-on. `addon.sh list --json` carries the manifest's `postInstallMessage` (open `http://localhost:5678` and create the owner account) for a caller to show after install.
+
+`disable` sets the flag to 0 and stops `n8n`, `n8n-import` and `gpt-researcher`. It does not touch `gptr-mcp`, which belongs to the [GPT Researcher](gpt-researcher.md) add-on and keeps running. `n8n_storage` and `gptr_outputs` are kept, so a later `enable` finds the same workflows, credentials and owner account.
+
+`remove n8n --delete-data` refuses while n8n is enabled. It removes the three containers, then deletes the `n8n_storage` and `gptr_outputs` volumes and `data/addons/n8n`. The SQLite database goes with `n8n_storage`: every workflow, stored credential and execution record, and the owner account. The research reports in `gptr_outputs` go too. `disable n8n --purge` does the same in one step. There is no undo.
+
+`N8N_ENCRYPTION_KEY` encrypts the stored credentials, and the volume holds a copy in its `config` file. Back up the key with the volume: a restored volume without the key can't decrypt its credentials (see Credentials below for how n8n 1.x and 2.x react to a mismatch). `addon.sh list --json` lists the key under `backup.secrets`, and `N8N_USER_MANAGEMENT_JWT_SECRET` under `backup.recommended`.
+
 ## Where n8n stores data
 
 Workflows, credentials, the owner account and execution history live in SQLite at `/home/node/.n8n/database.sqlite` on the `n8n_storage` volume, next to the `config` file that holds the instance's encryption key. `n8n` and `n8n-import` both mount that volume and set `DB_TYPE=sqlite`. A compose overlay that binds `/home/node/.n8n` somewhere else must do it for both services.
