@@ -87,7 +87,8 @@ with tempfile.TemporaryDirectory() as tmp:
     check("listing carries instances.errors and backup",
           rx["errors"] == ["bad_access"] and rx["backup"] == {"secrets": ["A_B"]}, str((rx["errors"], rx["backup"])))
 
-PASSWORD = "p|w=\n'x\""
+# Shell- and env-hostile, but one line: instance secrets refuse CR and LF.
+PASSWORD = "p|w= 'x\"\\$(y)"
 
 with tempfile.TemporaryDirectory() as tmp:
     root = Path(tmp).resolve()
@@ -209,6 +210,15 @@ with tempfile.TemporaryDirectory() as tmp:
     raises("slug with trailing newline refused", st.InputError,
            lambda: st.apply_instance(MANIFEST, root, "work\n", {}), setting="slug")
     st.remove_instance(MANIFEST, root, ok31)
+    for label, ch in (("LF", "\n"), ("CR", "\r")):
+        raises(f"{label} in an instance secret refused, naming the setting", st.InputError,
+               lambda ch=ch: st.apply_instance(MANIFEST, root, "multi", {"host": "h", "password": f"top{ch}secret"}),
+               setting="password", secret="top")
+        raises(f"{label} in an instance secret refused by check_instance", st.InputError,
+               lambda ch=ch: st.check_instance(MANIFEST, {"host": "h", "mailboxes": ["INBOX"], "password": f"top{ch}secret"}),
+               setting="password", secret="top")
+    check("a refused multi-line secret writes nothing",
+          not (st.addon_dir(root, MANIFEST) / "instances" / "multi.json").exists())
 
     for label, ch in (("U+2028", "\u2028"), ("form feed", "\f"), ("U+0085", "\x85"), ("tab", "\t")):
         raises(f"{label} in a setting string refused", st.InputError,
@@ -266,6 +276,35 @@ with tempfile.TemporaryDirectory() as tmp:
     rc, err = cli_main(argv, RuntimeError("value s3cr3t-in-message"))
     check("another exception prints its type only, exit 1",
           rc == 1 and err == "error: RuntimeError\n", repr((rc, err)))
+
+# --- state.json ---------------------------------------------------------------
+with tempfile.TemporaryDirectory() as tmp:
+    check("state is {} before anything is recorded", st.state(FIXTURE, Path(tmp)) == {})
+    st.set_state(FIXTURE, Path(tmp), "init", {"version": "1.0.0", "at": "2026-11-09T00:00:00Z"})
+    st.set_state(FIXTURE, Path(tmp), "other", 1)
+    got = st.state(FIXTURE, Path(tmp))
+    check("set_state then state round-trips and keeps other keys",
+          got == {"init": {"version": "1.0.0", "at": "2026-11-09T00:00:00Z"}, "other": 1}, repr(got))
+    path = Path(tmp) / "addons" / "fixture" / "state.json"
+    check("state.json is 0600", (path.stat().st_mode & 0o777) == 0o600, oct(path.stat().st_mode))
+    check("no temp file is left behind",
+          sorted(p.name for p in path.parent.iterdir() if p.name.startswith(".")) == [])
+    for bad in ("[1]", "{broken"):
+        path.write_text(bad)
+        try:
+            st.state(FIXTURE, Path(tmp))
+            raised = False
+        except st.StateError:
+            raised = True
+        check(f"state raises on a corrupt state.json ({bad})", raised)
+        try:
+            st.set_state(FIXTURE, Path(tmp), "x", 1)
+            raised = False
+        except st.StateError:
+            raised = True
+        check("set_state refuses to overwrite a corrupt state.json",
+              raised and path.read_text() == bad)
+    check("slug is the public slug check", st.slug("work") == "work")
 
 if failures:
     print(f"{failures} failed")

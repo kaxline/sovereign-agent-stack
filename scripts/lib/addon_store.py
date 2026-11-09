@@ -6,6 +6,7 @@
     instances/<slug>.json non-secret instance values
     secrets/<name>        a top-level secret setting
     secrets/<slug>.<name> an instance's secret setting
+    state.json            what the lifecycle recorded, e.g. {"init": {"version", "at"}}
 
 Standard library only. Directories are 0700 and secret files 0600, set with
 explicit chmods. config/ is created with the add-on directory, so a service
@@ -69,6 +70,11 @@ def _slug(slug) -> str:
     return slug
 
 
+# The public name; apply_instance and remove_instance take a `slug` argument
+# that shadows it, so they call _slug.
+slug = _slug
+
+
 def _mkdir(path: Path) -> None:
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(path, 0o700)
@@ -97,6 +103,42 @@ def _write(path: Path, data: str, mode: int) -> None:
         except OSError:
             pass
         raise
+
+
+# --- state -------------------------------------------------------------------
+
+class StateError(RuntimeError):
+    """state.json exists but isn't a JSON object. Not repaired, so a write
+    can't drop the keys it holds."""
+
+
+def state(manifest: dict, data_root: Path) -> dict:
+    """data/addons/<id>/state.json as a dict; {} when the file is missing.
+    Raises StateError when it can't be read or isn't a JSON object."""
+    path = addon_dir(data_root, manifest) / "state.json"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except (OSError, UnicodeDecodeError):
+        raise StateError("state.json can't be read") from None
+    try:
+        v = json.loads(text)
+    except ValueError:
+        v = None
+    if not isinstance(v, dict):
+        raise StateError("state.json is not a JSON object; fix or remove it")
+    return v
+
+
+def set_state(manifest: dict, data_root: Path, key: str, value) -> None:
+    """Set one top-level key of state.json (mode 0600, written through a temp
+    file and os.replace)."""
+    d = addon_dir(data_root, manifest)
+    current = state(manifest, data_root)
+    current[key] = value
+    _mkdir_addon(d)
+    _write(d / "state.json", json.dumps(current, indent=2) + "\n", 0o600)
 
 
 # --- schema ------------------------------------------------------------------
@@ -274,10 +316,31 @@ def apply_settings(manifest: dict, data_root: Path, values: dict) -> dict[str, s
     return flags
 
 
+def _validated_instance(schema: dict, values) -> dict:
+    """_validated, plus: a secret value may not hold CR or LF. A hook's output
+    is redacted line by line, which can't match a value split across lines."""
+    clean = _validated(schema, values)
+    for name, value in clean.items():
+        if schema[name]["type"] == "secret" and isinstance(value, str) and ("\n" in value or "\r" in value):
+            raise InputError(f"{name}: a secret may not contain a line break", name)
+    return clean
+
+
+def check_instance(manifest: dict, values: dict) -> None:
+    """Raise InputError unless `values` is a complete new instance: every
+    setting known and well-typed, and every required one given. Writes
+    nothing; `connect` calls it before the hook sees the values."""
+    schema = _inst_schema(manifest)
+    clean = _validated_instance(schema, values)
+    for name, spec in schema.items():
+        if _required(spec) and name not in clean:
+            raise InputError(f"{name}: required for a new instance", name)
+
+
 def apply_instance(manifest: dict, data_root: Path, slug: str, values: dict) -> None:
     slug = _slug(slug)
     schema = _inst_schema(manifest)
-    clean = _validated(schema, values)
+    clean = _validated_instance(schema, values)
     d = addon_dir(data_root, manifest)
     plain = {k: v for k, v in clean.items() if schema[k]["type"] != "secret"}
     _mkdir_addon(d)
