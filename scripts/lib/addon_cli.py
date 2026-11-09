@@ -26,11 +26,17 @@ runs in the Hermes image through stack_python, so the host needs no python3.
         Exits 3 if a required setting is missing. Prints {"builtin": FLAG,
         "flags": {...}, "services": [...]}: builtin.flag at "1" plus the stored value of each
         bool setting whose flag is a gate, and every compose service, written
-        "service@FLAG" when it runs only while its gate flag is 1.
+        "service@FLAG" when it runs only while its gate flag is 1. Also
+        "oneshots", "recreate" (onToggle.recreate), "uses" (the compose
+        service of each `uses` name in USES_COMPOSE) and "mcp" (each mcp name,
+        "name@FLAG" when the entry has a gate).
     plan-disable SID
-        Prints {"flags": {...}, "services": [...], "volumes": [...]}: builtin.flag
+        Prints {"builtin": FLAG, "flags": {...}, "services": [...], "volumes": [...]}: builtin.flag
         and every gate flag at "0", every compose service, and the compose
-        volumes the manifest declares.
+        volumes the manifest declares, plus "recreate", "uses" and "mcp" as
+        plan-enable prints them.
+    toggle-script SID
+        Prints onToggle.script's argv, one item per line; nothing without one.
     plan-run SID COMMAND [--instance SLUG]
         Prints the compose service, then the command's argv, one per line, with
         `--account SLUG` appended when the command takes an instance.
@@ -108,6 +114,9 @@ import addon_store as store  # noqa: E402
 
 SID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*\Z")
 FLAG_VALUE = {"1", "0"}
+# Manifest `uses` names are abstract stack services. Only these have a compose
+# service that disable may stop when nothing else keeps it running.
+USES_COMPOSE = {"neo4j": "neo4j"}
 
 
 class Fail(Exception):
@@ -211,6 +220,28 @@ def cmd_check_instance(args) -> None:
     print("exists" if exists else "new")
 
 
+def _toggle_fields(manifest: dict) -> dict:
+    """onToggle's compose services, `uses` mapped to compose services, and the
+    mcp names ("name@FLAG" when the entry has a gate), for plan-enable and plan-disable."""
+    mcp = manifest.get("mcp", [])
+    entries = mcp if isinstance(mcp, list) else [mcp]
+    names = []
+    for entry in entries:
+        gate = entry.get("when", {}).get("gate")
+        names.append(f"{entry['name']}@{gate}" if gate else entry["name"])
+    return {"recreate": list(manifest.get("onToggle", {}).get("recreate", [])),
+            "uses": [USES_COMPOSE[u] for u in manifest.get("uses", []) if u in USES_COMPOSE],
+            "mcp": names}
+
+
+def cmd_toggle_script(args) -> None:
+    manifest = _manifest(args.addons_dir, args.sid)
+    argv = list(manifest.get("onToggle", {}).get("script", []))
+    _check_argv(argv, "onToggle.script")
+    for a in argv:
+        print(a)
+
+
 def cmd_plan_enable(args) -> None:
     manifest = _manifest(args.addons_dir, args.sid)
     missing = store.missing(manifest, args.data_root)
@@ -230,14 +261,16 @@ def cmd_plan_enable(args) -> None:
         gate = svc.get("when", {}).get("gate")
         (oneshots if svc.get("oneshot") else services).append(f"{name}@{gate}" if gate else name)
     _dump({"builtin": manifest["builtin"]["flag"], "flags": flags, "services": services,
-           "oneshots": oneshots})
+           "oneshots": oneshots, **_toggle_fields(manifest)})
 
 
 def cmd_plan_disable(args) -> None:
     manifest = _manifest(args.addons_dir, args.sid)
     flags = {f: "0" for f in [manifest["builtin"]["flag"], *_gate_flags(manifest)]}
     services = [_compose(manifest, key) for key in manifest["services"]]
-    _dump({"flags": flags, "services": services, "volumes": am.data_volumes(manifest)})
+    _dump({"builtin": manifest["builtin"]["flag"], "flags": flags, "services": services,
+           "volumes": am.data_volumes(manifest),
+           **_toggle_fields(manifest)})
 
 
 def _check_argv(argv: list[str], where: str) -> None:
@@ -550,6 +583,9 @@ def main(argv: list[str]) -> int:
         s = sub.add_parser(name)
         s.add_argument("sid")
         s.set_defaults(func=func)
+    s = sub.add_parser("toggle-script")
+    s.add_argument("sid")
+    s.set_defaults(func=cmd_toggle_script)
     s = sub.add_parser("plan-hook")
     s.add_argument("sid")
     s.add_argument("hook")

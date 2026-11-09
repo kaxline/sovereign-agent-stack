@@ -16,7 +16,7 @@ tmp="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$tmp"' EXIT
 root="${tmp}/stack"
 mkdir -p "${root}/scripts/lib" "${tmp}/bin" "${tmp}/out"
-cp "${REPO}/scripts/addon.sh" "${REPO}/scripts/sync-profiles.sh" "${REPO}/scripts/fixture-init.sh" "${REPO}/scripts/fixture-connect.sh" "${root}/scripts/" 2>/dev/null || true
+cp "${REPO}/scripts/addon.sh" "${REPO}/scripts/sync-profiles.sh" "${REPO}/scripts/fixture-init.sh" "${REPO}/scripts/fixture-connect.sh" "${REPO}/scripts/fixture-follow.sh" "${root}/scripts/" 2>/dev/null || true
 for f in env.sh data-root.sh python.sh addon-events.sh addon_cli.py addon_manifest.py addon_store.py; do
   cp "${REPO}/scripts/lib/${f}" "${root}/scripts/lib/" 2>/dev/null || true
 done
@@ -34,6 +34,8 @@ printf 'COMPOSE_PROJECT_NAME=fixtureproj\n' >> "${root}/.env"
 # DOCKER_FAIL_ONESHOT=1 makes `compose up --no-deps --exit-code-from` exit 1.
 # `compose ps -a --format json` prints the file PS_ANSWER names, if any.
 # `compose logs` prints one line naming the service.
+# `compose config --services` prints the file CONFIG_SERVICES names, if any.
+# DOCKER_FAIL_BOOTSTRAP=1 makes `compose run ... hermes-api-bootstrap` exit 1.
 cat > "${tmp}/bin/docker" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >> "${STUB_LOG}"
@@ -44,6 +46,13 @@ fi
 if [ "$1 $2 $3 $4" = "compose ps -a --format" ]; then
   [ -n "${PS_ANSWER:-}" ] && cat "$PS_ANSWER"
   exit 0
+fi
+if [ "$1 $2 $3" = "compose config --services" ]; then
+  [ -n "${CONFIG_SERVICES:-}" ] && cat "$CONFIG_SERVICES"
+  exit 0
+fi
+if [ "${DOCKER_FAIL_BOOTSTRAP:-0}" = 1 ] && [ "$1 $2" = "compose run" ]; then
+  case "$*" in *hermes-api-bootstrap*) echo "bootstrap failed"; exit 1 ;; esac
 fi
 if [ "$1 $2" = "compose logs" ]; then
   eval "last=\${$#}"
@@ -88,6 +97,15 @@ printf 'make %s\n' "$*" >> "${STUB_LOG}"
 exit 0
 EOF
 chmod +x "${tmp}/bin/docker" "${tmp}/bin/make"
+# scripts/vault.sh stub: logs its argv; VAULT_FAIL=1 makes it exit 1. The real
+# one lives in the repo and is never run here.
+cat > "${root}/scripts/vault.sh" <<'VAULT_EOF'
+#!/bin/sh
+printf 'vault.sh %s\n' "$*" >> "${STUB_LOG}"
+[ "${VAULT_FAIL:-0}" = 1 ] && { echo "reload-plugins failed"; exit 1; }
+exit 0
+VAULT_EOF
+chmod +x "${root}/scripts/vault.sh"
 
 # Guard: addon_cli.py runs in the Hermes container in production, which mounts
 # only the repo, the data root and ADDONS_DIR. A python3 shim fails any
@@ -171,6 +189,18 @@ expect_rc() {
 }
 envval() { grep -E "^$1=" "${root}/.env" | tail -1 | cut -d= -f2- || true; }
 logged() { grep -qF -- "$1" "$STUB_LOG"; }
+# reloaded: the log holds the forced bootstraps in order, then reload-plugins,
+# and no make, recreate or follow-hermes.
+reloaded() {
+  python3 -c 'import sys
+log = open(sys.argv[1]).read().splitlines()
+want = ["compose run --rm -e HERMES_BOOTSTRAP_FORCE=1 hermes-api-bootstrap",
+        "compose run --rm --no-deps -e HERMES_BOOTSTRAP_FORCE=1 hermes-browser-bootstrap",
+        "vault.sh reload-plugins"]
+at = [log.index(w) if w in log else -1 for w in want]
+sys.exit(0 if -1 not in at and at == sorted(at)
+         and not any(l.startswith("make") or "--force-recreate" in l or "follow-hermes" in l for l in log) else 1)' "$STUB_LOG"
+}
 
 if [ ! -f "${root}/scripts/addon.sh" ]; then
   echo "FAIL: scripts/addon.sh: not found"
@@ -231,7 +261,7 @@ else
   bad "enable records init in state.json"
 fi
 if logged "fixture-extra"; then bad "gated service stays off while its gate is 0"; else ok "gated service stays off while its gate is 0"; fi
-if logged "make hermes-reload"; then ok "enable reloads hermes"; else bad "enable reloads hermes"; fi
+if reloaded; then ok "enable reloads hermes with the bootstraps and reload-plugins"; else bad "enable reloads hermes with the bootstraps and reload-plugins"; cat "$STUB_LOG"; fi
 
 addon_in '{"extra": true}' configure fixture
 expect_rc "configure a gate setting" 0
@@ -292,7 +322,7 @@ else
   bad "disable sets the flag and gate flags to 0"
 fi
 if logged "compose stop fixture-worker fixture-extra"; then ok "disable stops every service"; else bad "disable stops every service"; cat "$STUB_LOG"; fi
-if logged "make hermes-reload"; then ok "disable reloads hermes"; else bad "disable reloads hermes"; fi
+if reloaded; then ok "disable reloads hermes with the bootstraps and reload-plugins"; else bad "disable reloads hermes with the bootstraps and reload-plugins"; cat "$STUB_LOG"; fi
 if [ -f "${root}/data/addons/fixture/secrets/token" ]; then ok "disable keeps the data"; else bad "disable keeps the data"; fi
 if logged "volume rm"; then bad "disable without --purge removes no volume"; else ok "disable without --purge removes no volume"; fi
 
@@ -427,7 +457,7 @@ r=0; json_ok "$out" "done" 'steps == [("flags","running"),("flags","done"),("sta
 check "a script hook's done line gives the account, once" "$r"
 r=0; json_ok "$out" "done" '[i for i, l in enumerate(lines) if l.get("message") == "creating budget"] == [[i for i, l in enumerate(lines) if l.get("step") == "init" and l.get("status") == "running"][0] + 1] and lines[[i for i, l in enumerate(lines) if l.get("message") == "creating budget"][0]]["step"] == "init"' || r=1
 check "the hook's progress line sits inside the init step with step set" "$r"
-if logged "compose run"; then bad "a script hook does not use compose run"; else ok "a script hook does not use compose run"; fi
+if logged "compose run --rm --no-deps -T"; then bad "a script hook does not use compose run"; else ok "a script hook does not use compose run"; fi
 addon disable hooked
 for mode in exit5 error; do
   rm -f "${root}/data/addons/hooked/state.json"
@@ -537,7 +567,7 @@ r=0; json_ok "$out" "done" 'any(l.get("message") == "checking login" and l["step
 check "connect relays the hook's progress line inside step check" "$r"
 if logged "fixture-connect connect --slug work --json"; then ok "connect runs the hook with --slug work --json"; else bad "connect runs the hook with --slug work --json"; cat "$STUB_LOG"; fi
 if [ -f "${HOOKED}/instances/work.json" ] && [ "$(cat "${HOOKED}/secrets/work.password" 2> /dev/null)" = s3cr3t-value ]; then ok "connect registers the instance"; else bad "connect registers the instance"; fi
-if logged "make hermes-reload"; then ok "connect reloads hermes"; else bad "connect reloads hermes"; fi
+if reloaded; then ok "connect reloads hermes without a recreate"; else bad "connect reloads hermes without a recreate"; cat "$STUB_LOG"; fi
 no_staging "a good connect"
 
 : > "$STUB_LOG"
@@ -792,6 +822,64 @@ if [ -d "${root}/data/addons/keep" ] && [ -f "${root}/.env" ]; then ok "a bad sh
 
 addon frobnicate fixture
 expect_rc "unknown subcommand exits 2" 2
+
+# Reload failures, onToggle, done.mcp and the stop of unused `uses` services.
+: > "$STUB_LOG"
+VAULT_FAIL=1 addon_json enable hooked --json
+unset VAULT_FAIL
+expect_rc "a failing reload-plugins exits 4" 4
+r=0; json_ok "$out" error 'last["error"] == "command_failed" and last["step"] == "reload" and last.get("rolledBack") is True' || r=1
+check "a failing reload-plugins is command_failed at step reload, rolled back" "$r"
+if [ "$(envval HOOKED_ADDON_ENABLED)" != 1 ]; then ok "a failing reload-plugins restores the flag"; else bad "a failing reload-plugins restores the flag"; fi
+
+: > "$STUB_LOG"
+DOCKER_FAIL_BOOTSTRAP=1 addon_json enable hooked --json
+unset DOCKER_FAIL_BOOTSTRAP
+expect_rc "a failing bootstrap exits 1" 1
+r=0; json_ok "$out" error 'last["error"] == "compose_failed" and last["step"] == "reload" and last.get("rolledBack") is True' || r=1
+check "a failing bootstrap is compose_failed at step reload" "$r"
+if logged "vault.sh"; then bad "a failing bootstrap skips reload-plugins"; else ok "a failing bootstrap skips reload-plugins"; fi
+
+: > "$STUB_LOG"
+addon_json enable toggled --json
+expect_rc "enable toggled" 0
+r=0; json_ok "$out" "done" 'last == {"phase":"done","id":"toggled","action":"enable","restart":["hermes"],"mcp":["toggled-mcp"]} and ("recreate","done") in steps' || r=1
+check "enable with onToggle recreates hermes and reports its mcp name" "$r"
+if logged "compose up -d --no-deps --force-recreate hermes" && logged "fixture-follow follow"; then
+  ok "the first enable recreates hermes and runs the onToggle script"
+else
+  bad "the first enable recreates hermes and runs the onToggle script"; cat "$STUB_LOG"
+fi
+if [ "$(grep -n 'force-recreate' "$STUB_LOG" | head -1 | cut -d: -f1)" -lt "$(grep -n 'vault.sh reload-plugins' "$STUB_LOG" | head -1 | cut -d: -f1)" ]; then
+  ok "the recreate runs before the reload"
+else
+  bad "the recreate runs before the reload"
+fi
+: > "$STUB_LOG"
+addon_json enable toggled --json
+r=0; json_ok "$out" "done" 'last["restart"] == [] and ("recreate","running") not in steps' || r=1
+check "a second enable while enabled recreates nothing" "$r"
+if logged "force-recreate" || logged "fixture-follow"; then bad "a second enable logs no recreate or script"; else ok "a second enable logs no recreate or script"; fi
+
+# uses: disable stops neo4j only when no active profile keeps it in the config.
+printf 'toggled-worker\nneo4j\n' > "${tmp}/services-with"
+printf 'toggled-worker\nhermes\n' > "${tmp}/services-without"
+: > "$STUB_LOG"
+CONFIG_SERVICES="${tmp}/services-with" addon_json disable toggled --json
+r=0; json_ok "$out" "done" 'last == {"phase":"done","id":"toggled","action":"disable","restart":["hermes"],"mcp":[]} and ("recreate","done") in steps' || r=1
+check "disable with onToggle recreates hermes and reports no mcp" "$r"
+if logged "compose stop neo4j"; then bad "disable leaves a uses service that config still lists"; else ok "disable leaves a uses service that config still lists"; fi
+if logged "compose stop toggled-worker"; then ok "disable stops the add-on's own service"; else bad "disable stops the add-on's own service"; fi
+addon enable toggled
+: > "$STUB_LOG"
+CONFIG_SERVICES="${tmp}/services-without" addon_json disable toggled --json
+if logged "compose stop neo4j"; then ok "disable stops a uses service that config no longer lists"; else bad "disable stops a uses service that config no longer lists"; cat "$STUB_LOG"; fi
+r=0; json_ok "$out" "done" 'any(l.get("step") == "stop" and l.get("target") == "neo4j" for l in lines)' || r=1
+check "the uses stop names its target" "$r"
+addon enable toggled
+: > "$STUB_LOG"
+addon disable fixture
+if logged "neo4j"; then bad "an add-on without uses stops no stack service"; else ok "an add-on without uses stops no stack service"; fi
 
 if [ "$fail" = 0 ]; then
   echo "all addon.sh checks passed"
