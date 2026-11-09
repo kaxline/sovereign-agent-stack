@@ -1136,6 +1136,32 @@ life_refused("instances.errors must be a list",
              life(instances={"name": "w", "settings": {"url": {"type": "url"}}, "errors": "a"}),
              "instances.errors")
 
+# transient instance secrets and optional instances
+TRANSIENT_INST = {"name": "w", "settings": {"url": {"type": "url"},
+                  "password": {"type": "secret", "transient": True}},
+                  "connect": CONNECT, "disconnect": CONNECT}
+check("a transient instance secret with a connect hook is valid",
+      life_errors(life(instances=TRANSIENT_INST)) == [], str(life_errors(life(instances=TRANSIENT_INST))))
+no_hooks = copy.deepcopy(TRANSIENT_INST)
+del no_hooks["connect"], no_hooks["disconnect"]
+life_refused("transient without instances.connect fails", life(instances=no_hooks), "instances.settings.password.transient")
+str_inst = copy.deepcopy(TRANSIENT_INST)
+str_inst["settings"]["url"]["transient"] = True
+life_refused("transient on a string setting fails", life(instances=str_inst), "instances.settings.url.transient")
+life_refused("transient on a top-level setting fails",
+             life(settings={"tok": {"type": "secret", "transient": True}}, instances=TRANSIENT_INST),
+             "settings.tok.transient")
+nb_inst = copy.deepcopy(TRANSIENT_INST)
+nb_inst["settings"]["password"]["transient"] = "yes"
+life_refused("transient must be a bool", life(instances=nb_inst), "instances.settings.password.transient")
+life_refused("transient is built-in only",
+             packaged(life(instances=TRANSIENT_INST)), "transient", "official")
+opt = {"name": "w", "settings": {"url": {"type": "url"}}, "optional": True}
+check("instances.optional true is valid", life_errors(life(instances=opt)) == [], str(life_errors(life(instances=opt))))
+life_refused("instances.optional must be a bool",
+             life(instances={**opt, "optional": "yes"}), "instances.optional")
+life_refused("instances.optional is built-in only", packaged(life(instances=opt)), "instances.optional", "official")
+
 for bad in ("../x", "/etc", "./data/../x", "./data", "./data/", "./data/unused",
             "./data/.", "./data//x", "./data/./", "./data/x/", "./data/./x", "./data/x/.."):
     life_refused(f"data.paths default {bad!r} fails", life(data={"paths": [{"default": bad}]}),
@@ -1237,6 +1263,29 @@ def volume_problems(manifest: dict, compose_text: str) -> list[str]:
             for v in am.data_volumes(manifest) if v not in declared]
 
 
+def volume_owner_problems(manifest: dict, compose_text: str) -> list[str]:
+    """Compose services outside the add-on that mount one of its data volumes."""
+    own = {svc["compose"] for svc in manifest["services"].values()}
+    top = re.split(r"^volumes:\n", compose_text, maxsplit=1, flags=re.M)[0]
+    problems = []
+    for m in re.finditer(r"^  ([A-Za-z0-9_-]+):\n(.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)", top, re.M | re.S):
+        if m.group(1) in own:
+            continue
+        for v in am.data_volumes(manifest):
+            if re.search(rf"^      - [\"']?{re.escape(v)}:", m.group(2), re.M):
+                problems.append(f"{m.group(1)} mounts {v}, which belongs to the add-on")
+    return problems
+
+
+own_svc = next(iter(volumed["services"].values()))["compose"]
+FIX_OWNED = (f"services:\n  {own_svc}:\n    volumes:\n      - gptr_outputs:/o\n  core:\n    image: x\n"
+             "volumes:\n  gptr_outputs:\n")
+check("volume ownership accepts the add-on's own service", volume_owner_problems(volumed, FIX_OWNED) == [],
+      str(volume_owner_problems(volumed, FIX_OWNED)))
+shared = FIX_OWNED.replace("image: x", "volumes:\n      - gptr_outputs:/o")
+check("volume ownership flags a core service that mounts the add-on's volume",
+      len(volume_owner_problems(volumed, shared)) == 1, str(volume_owner_problems(volumed, shared)))
+
 FIX_VOLUMES = "services:\n  x:\n    image: x\nvolumes:\n  gptr_outputs:\n  other:\n"
 check("volumes cross-check accepts a declared volume", volume_problems(volumed, FIX_VOLUMES) == [],
       str(volume_problems(volumed, FIX_VOLUMES)))
@@ -1296,6 +1345,8 @@ for path, manifest, parse_error in am.load_dir(ROOT / "addons"):
           "; ".join(mount_problems(sid, manifest, compose)))
     check(f"{sid}: services.*.volumes are declared in docker-compose.yml",
           not volume_problems(manifest, compose), "; ".join(volume_problems(manifest, compose)))
+    check(f"{sid}: data volumes are mounted only by its own compose services",
+          not volume_owner_problems(manifest, compose), "; ".join(volume_owner_problems(manifest, compose)))
     for g in manifest.get("gates", []):
         check(f"{sid}: sync-profiles maps gate {g['flag']} to {g['profile']}",
               [g["flag"], g["profile"], "1" if g["seed"] else "0"] in rows, table.stdout)

@@ -210,16 +210,69 @@ def _no_constant(name: str):
     raise ValueError(name)
 
 
-def cmd_list(args) -> None:
-    flags = _flags_arg(args.flags)
-    out = []
-    for path, manifest, errors in _load(args.addons_dir):
+def _compose_config() -> dict:
+    """Service figures from `docker compose config --format json` on stdin.
+    Empty or unreadable input gives no figures, with a warning for the latter."""
+    text = sys.stdin.buffer.read().decode("utf-8", "replace")
+    if not text.strip():
+        return {}
+    try:
+        return store.service_figures(json.loads(text))
+    except ValueError:
+        print("warning: compose config is not JSON; listing without image and memory figures", file=sys.stderr)
+        return {}
+
+
+def _listed(addons_dir: Path):
+    """(manifest) for each valid built-in, warning about the rest."""
+    for path, manifest, parse_error in _load(addons_dir):
+        errors = am.check_builtin_file(path, manifest, parse_error)
         if errors:
             print(f"warning: skipping {path.parent.name}: {errors[0]}", file=sys.stderr)
             continue
-        out.append(store.listing(manifest, args.data_root, flags))
+        yield manifest
+
+
+def _read_sizes(sizes_dir: Path, platform: str) -> dict:
+    """{image: download bytes} from the <n>.image / <n>.json pairs addon.sh
+    wrote to sizes_dir. An image without a readable manifest or platform match
+    is left out."""
+    sizes = {}
+    for ref_file in sorted(sizes_dir.glob("*.image")):
+        try:
+            image = ref_file.read_text().strip()
+            manifests = json.loads(ref_file.with_suffix(".json").read_text())
+        except (OSError, ValueError):
+            continue
+        size = store.image_size(manifests, platform)
+        if size is not None:
+            sizes[image] = size
+    return sizes
+
+
+def cmd_list(args) -> None:
+    flags = _flags_arg(args.flags)
+    services = _compose_config()
+    figures = {"services": services}
+    if args.sizes_dir is not None:
+        figures["sizes"] = _read_sizes(args.sizes_dir, args.platform)
+    out = [store.listing(m, args.data_root, flags, figures) for m in _listed(args.addons_dir)]
     out.sort(key=lambda a: a["shortId"])
     print(json.dumps(out, indent=2, ensure_ascii=False))
+
+
+def cmd_images(args) -> None:
+    """The distinct images of the built-in add-ons' compose services, one per
+    line, from `docker compose config --format json` on stdin."""
+    services = _compose_config()
+    seen = []
+    for manifest in _listed(args.addons_dir):
+        for spec in (manifest.get("services") or {}).values():
+            image = (services.get(spec.get("compose")) or {}).get("image") if isinstance(spec, dict) else None
+            if image and image not in seen and not image.startswith("-") and "\n" not in image:
+                seen.append(image)
+    for image in sorted(seen):
+        print(image)
 
 
 def cmd_configure(args) -> None:
@@ -246,7 +299,7 @@ def cmd_check_instance(args) -> None:
     slug = store.slug(args.slug)
     if not args.slug_only:
         store.check_instance(manifest, _stdin_object())
-    exists = slug in store._slugs(store.addon_dir(args.data_root, manifest))
+    exists = slug in store.slugs(store.addon_dir(args.data_root, manifest))
     print("exists" if exists else "new")
 
 
@@ -257,10 +310,8 @@ def _toggle_fields(manifest: dict) -> dict:
     entries = mcp if isinstance(mcp, list) else [mcp]
     names = []
     for entry in entries:
-        # An mcp.instances entry has no name of its own: connect and the init
-        # hook report the per-instance names.
-        if not isinstance(entry, dict) or "name" not in entry:
-            continue
+        if not (isinstance(entry, dict) and "name" in entry):
+            continue  # an `instances` entry is named per instance; only connect reports the names
         gate = entry.get("when", {}).get("gate")
         names.append(f"{entry['name']}@{gate}" if gate else entry["name"])
     return {"recreate": list(manifest.get("onToggle", {}).get("recreate", [])),
@@ -285,17 +336,25 @@ def cmd_plan_enable(args) -> None:
     flags = {manifest["builtin"]["flag"]: "1"}
     # A gate flag that a bool setting owns follows the stored setting, so
     # enabling after a disable (which zeroes every gate) restores it.
-    stored = store._stored(manifest, store.addon_dir(args.data_root, manifest))
+    stored = store.stored(manifest, store.addon_dir(args.data_root, manifest))
     for name, spec in manifest.get("settings", {}).items():
         if spec.get("type") == "bool" and spec.get("flag") in gates and name in stored:
             flags[spec["flag"]] = "1" if stored[name] else "0"
-    services, oneshots = [], []
+    services, oneshots, gated, mounts = [], [], [], []
     for key, svc in manifest["services"].items():
         name = _compose(manifest, key)
         gate = svc.get("when", {}).get("gate")
         (oneshots if svc.get("oneshot") else services).append(f"{name}@{gate}" if gate else name)
+        if gate:
+            gated.append(f"{name}@{gate}")
+        if svc.get("mounts"):
+            mounts.append(name)
+    if mounts:
+        store.prepare(manifest, args.data_root)
+    # `stop` lists the gated services and one-shots; addon.sh stops those
+    # whose gate is off once the flags are written.
     _dump({"builtin": manifest["builtin"]["flag"], "flags": flags, "services": services,
-           "oneshots": oneshots, **_toggle_fields(manifest)})
+           "oneshots": oneshots, "stop": gated, "mounts": mounts, **_toggle_fields(manifest)})
 
 
 def cmd_plan_disable(args) -> None:
@@ -324,7 +383,7 @@ def cmd_plan_run(args) -> None:
         if args.instance is None:
             raise Fail(f"{args.command} needs --instance")
         slug = store.slug(args.instance)
-        if slug not in store._slugs(store.addon_dir(args.data_root, manifest)):
+        if slug not in store.slugs(store.addon_dir(args.data_root, manifest)):
             raise Fail(f"no instance {slug!r}; configure it first")
         argv += ["--account", slug]
     elif args.instance is not None:
@@ -781,7 +840,11 @@ def main(argv: list[str]) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("list")
     s.add_argument("--flags", default="{}")
+    s.add_argument("--sizes-dir", type=Path)
+    s.add_argument("--platform", default="")
     s.set_defaults(func=cmd_list)
+    s = sub.add_parser("images")
+    s.set_defaults(func=cmd_images)
     s = sub.add_parser("configure")
     s.add_argument("sid")
     s.add_argument("--instance")

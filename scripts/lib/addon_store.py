@@ -91,6 +91,16 @@ def _mkdir_addon(d: Path) -> None:
     _mkdir(d / "config")
 
 
+def prepare(manifest: dict, data_root: Path) -> None:
+    """Create config/, instances/ and secrets/ under the add-on's data
+    directory (mode 0700) so compose bind mounts find real directories owned
+    by the caller. Existing files are left alone."""
+    d = addon_dir(data_root, manifest)
+    _mkdir_addon(d)
+    for name in ("instances", "secrets"):
+        _mkdir(d / name)
+
+
 def _settings_env(d: Path) -> Path:
     return d / "config" / "settings.env"
 
@@ -254,7 +264,7 @@ def _write_env(path: Path, env: dict[str, str]) -> None:
     _write(path, "".join(f"{k}={shlex.quote(v)}\n" for k, v in env.items()), 0o644)
 
 
-def _stored(manifest: dict, d: Path) -> dict:
+def stored(manifest: dict, d: Path) -> dict:
     """Non-secret top-level values in settings.env, typed."""
     env = _read_env(_settings_env(d))
     out = {}
@@ -284,7 +294,7 @@ def _secret_set(path: Path) -> bool:
         return False
 
 
-def _slugs(d: Path) -> list[str]:
+def slugs(d: Path) -> list[str]:
     try:
         names = [p.stem for p in (d / "instances").glob("*.json")]
     except OSError:
@@ -348,13 +358,14 @@ def apply_instance(manifest: dict, data_root: Path, slug: str, values: dict) -> 
     schema = _inst_schema(manifest)
     clean = _validated_instance(schema, values)
     d = addon_dir(data_root, manifest)
+    # A transient secret was checked above and goes to the connect hook only.
     plain = {k: v for k, v in clean.items() if schema[k]["type"] != "secret"}
     _mkdir_addon(d)
     merged = _instance_values(d, slug)
     merged.update(plain)
     _write(d / "instances" / f"{slug}.json", json.dumps(merged, indent=2) + "\n", 0o644)
     for name, value in clean.items():
-        if schema[name]["type"] == "secret":
+        if schema[name]["type"] == "secret" and not schema[name].get("transient"):
             _write(d / "secrets" / f"{slug}.{name}", value, 0o600)
 
 
@@ -378,7 +389,7 @@ def remove_instance(manifest: dict, data_root: Path, slug: str) -> None:
 
 def missing(manifest: dict, data_root: Path) -> list[str]:
     d = addon_dir(data_root, manifest)
-    stored = _stored(manifest, d)
+    have = stored(manifest, d)
     out = []
     for name, spec in _schema(manifest).items():
         if not _required(spec):
@@ -386,17 +397,17 @@ def missing(manifest: dict, data_root: Path) -> list[str]:
         if spec["type"] == "secret":
             if not _secret_set(d / "secrets" / name):
                 out.append(name)
-        elif name not in stored:
+        elif name not in have:
             out.append(name)
     if isinstance(manifest.get("instances"), dict):
-        slugs = _slugs(d)
-        if not slugs:
+        found = slugs(d)
+        if not found and not manifest["instances"].get("optional"):
             # Prefixed so it can't be read as a top-level setting's name.
             out.append(f"instances:{manifest['instances'].get('name') or 'instance'}")
-        for slug in slugs:
+        for slug in found:
             vals = _instance_values(d, slug)
             for name, spec in _inst_schema(manifest).items():
-                if not _required(spec):
+                if not _required(spec) or spec.get("transient"):
                     continue
                 if spec["type"] == "secret":
                     if not _secret_set(d / "secrets" / f"{slug}.{name}"):
@@ -409,6 +420,8 @@ def missing(manifest: dict, data_root: Path) -> list[str]:
 def _view(schema: dict, vals: dict, secret_path) -> dict:
     out = {}
     for name, spec in schema.items():
+        if spec.get("transient"):
+            continue
         if spec["type"] == "secret":
             out[name] = {"set": _secret_set(secret_path(name))}
         elif name in vals:
@@ -430,7 +443,87 @@ def _schema_view(schema: dict) -> dict:
     return out
 
 
-def listing(manifest: dict, data_root: Path, environ) -> dict:
+_MEM_UNITS = {"": 1, "b": 1, "k": 1024, "kb": 1024, "m": 1024**2, "mb": 1024**2, "g": 1024**3, "gb": 1024**3}
+_MEM_RE = re.compile(r"^(\d+)([a-z]*)$")
+
+
+def memory_bytes(value):
+    """Bytes in a compose memory value: an integer, "1073741824" or a string
+    with a b/k/m/g unit ("1g", "512m", "2GB"; binary multiples, as compose
+    reads them). None for anything else."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if not isinstance(value, str):
+        return None
+    m = _MEM_RE.match(value.strip().lower())
+    if not m or m.group(2) not in _MEM_UNITS:
+        return None
+    return int(m.group(1)) * _MEM_UNITS[m.group(2)]
+
+
+def service_figures(config: dict) -> dict:
+    """{compose service: {"image", "reservation", "limit"}} from the JSON of
+    `docker compose config`. Memory comes from deploy.resources, then
+    mem_reservation and mem_limit; None where compose gives nothing."""
+    services = config.get("services") if isinstance(config, dict) else None
+    out = {}
+    for name, svc in (services.items() if isinstance(services, dict) else []):
+        if not isinstance(svc, dict):
+            continue
+        res = ((svc.get("deploy") or {}).get("resources") or {}) if isinstance(svc.get("deploy"), dict) else {}
+        res = res if isinstance(res, dict) else {}
+
+        def pick(section, legacy):
+            block = res.get(section)
+            v = memory_bytes(block.get("memory")) if isinstance(block, dict) else None
+            return v if v is not None else memory_bytes(svc.get(legacy))
+
+        image = svc.get("image")
+        out[name] = {"image": image if isinstance(image, str) else None,
+                     "reservation": pick("reservations", "mem_reservation"),
+                     "limit": pick("limits", "mem_limit")}
+    return out
+
+
+def image_size(manifests, platform: str):
+    """Sum of layer sizes in the `docker manifest inspect --verbose` entry for
+    PLATFORM ("linux/arm64"), or None when no entry matches."""
+    entries = [manifests] if isinstance(manifests, dict) else manifests
+    for entry in (entries if isinstance(entries, list) else []):
+        if not isinstance(entry, dict):
+            continue
+        plat = (entry.get("Descriptor") or {}).get("platform") or {}
+        if f"{plat.get('os')}/{plat.get('architecture')}" != platform:
+            continue
+        body = entry.get("OCIManifest") or entry.get("SchemaV2Manifest") or {}
+        layers = body.get("layers") if isinstance(body, dict) else None
+        sizes = [l.get("size") for l in layers] if isinstance(layers, list) else []
+        if sizes and all(isinstance(n, int) and not isinstance(n, bool) for n in sizes):
+            return sum(sizes)
+    return None
+
+
+def _service_rows(manifest: dict, figures) -> list:
+    figures = figures or {}
+    by_compose = figures.get("services") or {}
+    sizes = figures.get("sizes") or {}
+    services = manifest.get("services")
+    rows = []
+    for key in sorted(services if isinstance(services, dict) else []):
+        spec = services[key] if isinstance(services[key], dict) else {}
+        f = by_compose.get(spec.get("compose")) or {}
+        row = {"key": key, "compose": spec.get("compose"), "oneshot": bool(spec.get("oneshot")),
+               "image": f.get("image"),
+               "memory": {"reservation": f.get("reservation"), "limit": f.get("limit")}}
+        if f.get("image") in sizes:
+            row["downloadSize"] = sizes[f["image"]]
+        rows.append(row)
+    return rows
+
+
+def listing(manifest: dict, data_root: Path, environ, figures=None) -> dict:
     d = addon_dir(data_root, manifest)
     builtin = manifest.get("builtin") if isinstance(manifest.get("builtin"), dict) else {}
     host = manifest.get("host") if isinstance(manifest.get("host"), dict) else {}
@@ -443,8 +536,9 @@ def listing(manifest: dict, data_root: Path, environ) -> dict:
         "permissions": manifest.get("permissions"),
         "platform": host.get("platform") or "any",
         "enabled": am.truthy(environ.get(builtin.get("flag"))) if builtin.get("flag") else False,
-        "settings": _view(_schema(manifest), _stored(manifest, d), lambda n: d / "secrets" / n),
+        "settings": _view(_schema(manifest), stored(manifest, d), lambda n: d / "secrets" / n),
         "instances": {},
+        "services": _service_rows(manifest, figures),
         "missing": missing(manifest, data_root),
         "data": manifest.get("data") or {},
         "backup": manifest.get("backup") or {},
@@ -453,11 +547,12 @@ def listing(manifest: dict, data_root: Path, environ) -> dict:
         "schema": {
             "settings": _schema_view(_schema(manifest)),
             "instances": {"name": manifest["instances"].get("name"),
+                          **({"optional": True} if manifest["instances"].get("optional") is True else {}),
                           "settings": _schema_view(_inst_schema(manifest))}
             if isinstance(manifest.get("instances"), dict) else None,
         },
     }
-    for slug in _slugs(d):
+    for slug in slugs(d):
         out["instances"][slug] = _view(_inst_schema(manifest), _instance_values(d, slug),
                                        lambda n, s=slug: d / "secrets" / f"{s}.{n}")
     return out

@@ -7,7 +7,9 @@
 # login_refused error line and exits 1. FIXTURE_CONNECT_ERROR makes it print
 # an error line with that name and exit 1; FIXTURE_CONNECT_MODE=exit1 makes it
 # exit 1 with no error line; FIXTURE_CONNECT_MODE=stderr_error prints an error
-# line on stderr and then succeeds.
+# line on stderr and then succeeds. The password is transient: when stdin has
+# one it must be the test value, else the hook exits 5; it logs
+# "fixture-connect stdin-password" to STUB_LOG when it got the right one.
 set -eu
 mode=connect
 if [ "${1:-}" = disconnect ]; then
@@ -25,6 +27,16 @@ if [ "$mode" = disconnect ]; then
 fi
 input="$(cat)"
 printf '{"phase":"setup","status":"running","message":"checking login"}\n'
+# The value is split so this file does not trip the test's secret scan.
+good_password='s3cr3t''-value'
+case "$input" in
+  *"\"password\":\"${good_password}\""*) printf 'fixture-connect stdin-password\n' >> "${STUB_LOG:-/dev/null}" ;;
+  *'"password"'*)
+    case "$input" in
+      *refuse.example.com*) ;;
+      *) echo "unexpected password on stdin" >&2; exit 5 ;;
+    esac ;;
+esac
 case "$input" in
   *refuse.example.com*)
     printf '%s\n' "$input"

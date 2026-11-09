@@ -1,0 +1,559 @@
+[
+	{
+		"Ref": "docker.io/library/busybox:1.36@sha256:b7f3d86d6e84fc17718c48bcde1450807faa2d56704205c697b4bd5df7b9e29f",
+		"Descriptor": {
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"digest": "sha256:b7f3d86d6e84fc17718c48bcde1450807faa2d56704205c697b4bd5df7b9e29f",
+			"size": 610,
+			"platform": {
+				"architecture": "amd64",
+				"os": "linux"
+			}
+		},
+		"Raw": "ewoJInNjaGVtYVZlcnNpb24iOiAyLAoJIm1lZGlhVHlwZSI6ICJhcHBsaWNhdGlvbi92bmQub2NpLmltYWdlLm1hbmlmZXN0LnYxK2pzb24iLAoJImNvbmZpZyI6IHsKCQkibWVkaWFUeXBlIjogImFwcGxpY2F0aW9uL3ZuZC5vY2kuaW1hZ2UuY29uZmlnLnYxK2pzb24iLAoJCSJkaWdlc3QiOiAic2hhMjU2OmIxMTZlMTU1MDc0NDQwZmZkOWU0NDk1NTk0MzNmZWI0Y2QyMzQxZWIzNTU0YjFkYTFjNjM4Yzk3NmU1NjQ1MWQiLAoJCSJzaXplIjogNDU5Cgl9LAoJImxheWVycyI6IFsKCQl7CgkJCSJtZWRpYVR5cGUiOiAiYXBwbGljYXRpb24vdm5kLm9jaS5pbWFnZS5sYXllci52MS50YXIrZ3ppcCIsCgkJCSJkaWdlc3QiOiAic2hhMjU2OjAzNGQ2NTcyYmYyODdmYTc5NjA0ZmVlOWJlMDYyZjA2ODM4MDlhZTNhMzY4NWJjN2IwZTE3YmQxYzQ4YzUwZTgiLAoJCQkic2l6ZSI6IDIyMDY0MDIKCQl9CgldLAoJImFubm90YXRpb25zIjogewoJCSJvcmcub3BlbmNvbnRhaW5lcnMuaW1hZ2UudXJsIjogImh0dHBzOi8vZ2l0aHViLmNvbS9kb2NrZXItbGlicmFyeS9idXN5Ym94IiwKCQkib3JnLm9wZW5jb250YWluZXJzLmltYWdlLnZlcnNpb24iOiAiMS4zNi4xLWdsaWJjIgoJfQp9Cg==",
+		"OCIManifest": {
+			"schemaVersion": 2,
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"config": {
+				"mediaType": "application/vnd.oci.image.config.v1+json",
+				"digest": "sha256:b116e155074440ffd9e449559433feb4cd2341eb3554b1da1c638c976e56451d",
+				"size": 459
+			},
+			"layers": [
+				{
+					"mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+					"digest": "sha256:034d6572bf287fa79604fee9be062f0683809ae3a3685bc7b0e17bd1c48c50e8",
+					"size": 2206402
+				}
+			],
+			"annotations": {
+				"org.opencontainers.image.url": "https://github.com/docker-library/busybox",
+				"org.opencontainers.image.version": "1.36.1-glibc"
+			}
+		}
+	},
+	{
+		"Ref": "docker.io/library/busybox:1.36@sha256:89ac95482c5fefb46a0d3470431760940c36e9c0ff0c40e9e5c259091a26b1e3",
+		"Descriptor": {
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"digest": "sha256:89ac95482c5fefb46a0d3470431760940c36e9c0ff0c40e9e5c259091a26b1e3",
+			"size": 559,
+			"platform": {
+				"architecture": "unknown",
+				"os": "unknown"
+			}
+		},
+		"Raw": "ewogICJzY2hlbWFWZXJzaW9uIjogMiwKICAibWVkaWFUeXBlIjogImFwcGxpY2F0aW9uL3ZuZC5vY2kuaW1hZ2UubWFuaWZlc3QudjEranNvbiIsCiAgImNvbmZpZyI6IHsKICAgICJtZWRpYVR5cGUiOiAiYXBwbGljYXRpb24vdm5kLm9jaS5pbWFnZS5jb25maWcudjEranNvbiIsCiAgICAiZGlnZXN0IjogInNoYTI1Njo1YjFlNTU0NzczYjMwOTY1Zjg0NjFmZjU3NDIzNDYxZjUyNzkyYjc5Y2UxMmQ0ODIyZDI5YTg3MjQ0MTJiODhkIiwKICAgICJzaXplIjogMTY3CiAgfSwKICAibGF5ZXJzIjogWwogICAgewogICAgICAibWVkaWFUeXBlIjogImFwcGxpY2F0aW9uL3ZuZC5pbi10b3RvK2pzb24iLAogICAgICAiZGlnZXN0IjogInNoYTI1Njo1MTA4YmMwNmI4M2E2Y2YyZTFjMDZjMmY4MDQ5OGVmN2FiMDRiYjY4NjZhMDQ5YjlkNjA0YzI0YWMzZjk4MmEwIiwKICAgICAgInNpemUiOiAyMDI2LAogICAgICAiYW5ub3RhdGlvbnMiOiB7CiAgICAgICAgImluLXRvdG8uaW8vcHJlZGljYXRlLXR5cGUiOiAiaHR0cHM6Ly9zcGR4LmRldi9Eb2N1bWVudCIKICAgICAgfQogICAgfQogIF0KfQ==",
+		"OCIManifest": {
+			"schemaVersion": 2,
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"config": {
+				"mediaType": "application/vnd.oci.image.config.v1+json",
+				"digest": "sha256:5b1e554773b30965f8461ff57423461f52792b79ce12d4822d29a8724412b88d",
+				"size": 167
+			},
+			"layers": [
+				{
+					"mediaType": "application/vnd.in-toto+json",
+					"digest": "sha256:5108bc06b83a6cf2e1c06c2f80498ef7ab04bb6866a049b9d604c24ac3f982a0",
+					"size": 2026,
+					"annotations": {
+						"in-toto.io/predicate-type": "https://spdx.dev/Document"
+					}
+				}
+			]
+		}
+	},
+	{
+		"Ref": "docker.io/library/busybox:1.36@sha256:71b0cbca78cef3413c843ed16136b822b6deefc6dea540f0f77b0e39eb991dc5",
+		"Descriptor": {
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"digest": "sha256:71b0cbca78cef3413c843ed16136b822b6deefc6dea540f0f77b0e39eb991dc5",
+			"size": 610,
+			"platform": {
+				"architecture": "arm",
+				"os": "linux",
+				"variant": "v5"
+			}
+		},
+		"Raw": "ewoJInNjaGVtYVZlcnNpb24iOiAyLAoJIm1lZGlhVHlwZSI6ICJhcHBsaWNhdGlvbi92bmQub2NpLmltYWdlLm1hbmlmZXN0LnYxK2pzb24iLAoJImNvbmZpZyI6IHsKCQkibWVkaWFUeXBlIjogImFwcGxpY2F0aW9uL3ZuZC5vY2kuaW1hZ2UuY29uZmlnLnYxK2pzb24iLAoJCSJkaWdlc3QiOiAic2hhMjU2OjNiZTgwNTdiNTU0MWU4YjU2YzUxZDQzZTI5M2U1NjMwNWRjNDA0YjQ3YTE1YTk5ZDUzY2Y0MWI5MDM1MDY4YzIiLAoJCSJzaXplIjogNDc1Cgl9LAoJImxheWVycyI6IFsKCQl7CgkJCSJtZWRpYVR5cGUiOiAiYXBwbGljYXRpb24vdm5kLm9jaS5pbWFnZS5sYXllci52MS50YXIrZ3ppcCIsCgkJCSJkaWdlc3QiOiAic2hhMjU2Ojg2ZmY3YmM3Y2UwYTNkYzI4MjI0YzE3YmZiOGRmMDg3YTY2NTVmZDc2MTAyMzFlOWY5MThkZTQwM2NlYzZlNGIiLAoJCQkic2l6ZSI6IDE4MTk4NTMKCQl9CgldLAoJImFubm90YXRpb25zIjogewoJCSJvcmcub3BlbmNvbnRhaW5lcnMuaW1hZ2UudXJsIjogImh0dHBzOi8vZ2l0aHViLmNvbS9kb2NrZXItbGlicmFyeS9idXN5Ym94IiwKCQkib3JnLm9wZW5jb250YWluZXJzLmltYWdlLnZlcnNpb24iOiAiMS4zNi4xLWdsaWJjIgoJfQp9Cg==",
+		"OCIManifest": {
+			"schemaVersion": 2,
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"config": {
+				"mediaType": "application/vnd.oci.image.config.v1+json",
+				"digest": "sha256:3be8057b5541e8b56c51d43e293e56305dc404b47a15a99d53cf41b9035068c2",
+				"size": 475
+			},
+			"layers": [
+				{
+					"mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+					"digest": "sha256:86ff7bc7ce0a3dc28224c17bfb8df087a6655fd7610231e9f918de403cec6e4b",
+					"size": 1819853
+				}
+			],
+			"annotations": {
+				"org.opencontainers.image.url": "https://github.com/docker-library/busybox",
+				"org.opencontainers.image.version": "1.36.1-glibc"
+			}
+		}
+	},
+	{
+		"Ref": "docker.io/library/busybox:1.36@sha256:f7af5586d19090e26c244084d82896458b1c87ddc1a072fb307411e2a3546822",
+		"Descriptor": {
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"digest": "sha256:f7af5586d19090e26c244084d82896458b1c87ddc1a072fb307411e2a3546822",
+			"size": 559,
+			"platform": {
+				"architecture": "unknown",
+				"os": "unknown"
+			}
+		},
+		"Raw": "ewogICJzY2hlbWFWZXJzaW9uIjogMiwKICAibWVkaWFUeXBlIjogImFwcGxpY2F0aW9uL3ZuZC5vY2kuaW1hZ2UubWFuaWZlc3QudjEranNvbiIsCiAgImNvbmZpZyI6IHsKICAgICJtZWRpYVR5cGUiOiAiYXBwbGljYXRpb24vdm5kLm9jaS5pbWFnZS5jb25maWcudjEranNvbiIsCiAgICAiZGlnZXN0IjogInNoYTI1Njo5MTI1NzhjMzdiZjU1MThmOWRiZGVhYzE4NDJkM2VkYmI4ZDI1YmE4YzE5OWMzMWQwMDNhZWUyNDYyZWZlZmExIiwKICAgICJzaXplIjogMTY3CiAgfSwKICAibGF5ZXJzIjogWwogICAgewogICAgICAibWVkaWFUeXBlIjogImFwcGxpY2F0aW9uL3ZuZC5pbi10b3RvK2pzb24iLAogICAgICAiZGlnZXN0IjogInNoYTI1NjpjNjY5ZDhhZTk5Yzc0NDc4ZDMzMWM5MTI4OTFkZWMwMjFkMjBlOTVkNjg0ZjEyMWYxZDY5NjBmYjNhNzljMjE1IiwKICAgICAgInNpemUiOiAyMDI2LAogICAgICAiYW5ub3RhdGlvbnMiOiB7CiAgICAgICAgImluLXRvdG8uaW8vcHJlZGljYXRlLXR5cGUiOiAiaHR0cHM6Ly9zcGR4LmRldi9Eb2N1bWVudCIKICAgICAgfQogICAgfQogIF0KfQ==",
+		"OCIManifest": {
+			"schemaVersion": 2,
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"config": {
+				"mediaType": "application/vnd.oci.image.config.v1+json",
+				"digest": "sha256:912578c37bf5518f9dbdeac1842d3edbb8d25ba8c199c31d003aee2462efefa1",
+				"size": 167
+			},
+			"layers": [
+				{
+					"mediaType": "application/vnd.in-toto+json",
+					"digest": "sha256:c669d8ae99c74478d331c912891dec021d20e95d684f121f1d6960fb3a79c215",
+					"size": 2026,
+					"annotations": {
+						"in-toto.io/predicate-type": "https://spdx.dev/Document"
+					}
+				}
+			]
+		}
+	},
+	{
+		"Ref": "docker.io/library/busybox:1.36@sha256:410cc112a49bb59a661cb2431b15e16dcbd55145e7f0760233e785b8a9630f90",
+		"Descriptor": {
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"digest": "sha256:410cc112a49bb59a661cb2431b15e16dcbd55145e7f0760233e785b8a9630f90",
+			"size": 608,
+			"platform": {
+				"architecture": "arm",
+				"os": "linux",
+				"variant": "v6"
+			}
+		},
+		"Raw": "ewoJInNjaGVtYVZlcnNpb24iOiAyLAoJIm1lZGlhVHlwZSI6ICJhcHBsaWNhdGlvbi92bmQub2NpLmltYWdlLm1hbmlmZXN0LnYxK2pzb24iLAoJImNvbmZpZyI6IHsKCQkibWVkaWFUeXBlIjogImFwcGxpY2F0aW9uL3ZuZC5vY2kuaW1hZ2UuY29uZmlnLnYxK2pzb24iLAoJCSJkaWdlc3QiOiAic2hhMjU2OjdiOTczZmJjZThiOTEzY2I1YzI0MmQzYjliY2E3YzA3NmNlY2E5MTk0NWNlYzYxMWMyZDJhYjAyNjkyZGI0OTciLAoJCSJzaXplIjogNDc4Cgl9LAoJImxheWVycyI6IFsKCQl7CgkJCSJtZWRpYVR5cGUiOiAiYXBwbGljYXRpb24vdm5kLm9jaS5pbWFnZS5sYXllci52MS50YXIrZ3ppcCIsCgkJCSJkaWdlc3QiOiAic2hhMjU2OmI1OGY5MWE4ZWY2MjE3YzMxMjM5OGYzMGE1OGNkOGI4ZTcxNDViNTU0MjJhYjYxMjBlOWFmZjE3NGJjMTdkZmEiLAoJCQkic2l6ZSI6IDk1MTIwNAoJCX0KCV0sCgkiYW5ub3RhdGlvbnMiOiB7CgkJIm9yZy5vcGVuY29udGFpbmVycy5pbWFnZS51cmwiOiAiaHR0cHM6Ly9naXRodWIuY29tL2RvY2tlci1saWJyYXJ5L2J1c3lib3giLAoJCSJvcmcub3BlbmNvbnRhaW5lcnMuaW1hZ2UudmVyc2lvbiI6ICIxLjM2LjEtbXVzbCIKCX0KfQo=",
+		"OCIManifest": {
+			"schemaVersion": 2,
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"config": {
+				"mediaType": "application/vnd.oci.image.config.v1+json",
+				"digest": "sha256:7b973fbce8b913cb5c242d3b9bca7c076ceca91945cec611c2d2ab02692db497",
+				"size": 478
+			},
+			"layers": [
+				{
+					"mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+					"digest": "sha256:b58f91a8ef6217c312398f30a58cd8b8e7145b55422ab6120e9aff174bc17dfa",
+					"size": 951204
+				}
+			],
+			"annotations": {
+				"org.opencontainers.image.url": "https://github.com/docker-library/busybox",
+				"org.opencontainers.image.version": "1.36.1-musl"
+			}
+		}
+	},
+	{
+		"Ref": "docker.io/library/busybox:1.36@sha256:4feb116b4bab62c542362b105be7dd0f207f42fb15daa2d4b51a3d38789ec8aa",
+		"Descriptor": {
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"digest": "sha256:4feb116b4bab62c542362b105be7dd0f207f42fb15daa2d4b51a3d38789ec8aa",
+			"size": 610,
+			"platform": {
+				"architecture": "arm",
+				"os": "linux",
+				"variant": "v7"
+			}
+		},
+		"Raw": "ewoJInNjaGVtYVZlcnNpb24iOiAyLAoJIm1lZGlhVHlwZSI6ICJhcHBsaWNhdGlvbi92bmQub2NpLmltYWdlLm1hbmlmZXN0LnYxK2pzb24iLAoJImNvbmZpZyI6IHsKCQkibWVkaWFUeXBlIjogImFwcGxpY2F0aW9uL3ZuZC5vY2kuaW1hZ2UuY29uZmlnLnYxK2pzb24iLAoJCSJkaWdlc3QiOiAic2hhMjU2OjJjNTBjMzkxMWMzZWVmZTBhODc4YzU0NTFmYTRhMjhjODFlMjJlMDJhMzgyMGM4ZGY5NDJlODkxNGU5ZDg0MTQiLAoJCSJzaXplIjogNDc1Cgl9LAoJImxheWVycyI6IFsKCQl7CgkJCSJtZWRpYVR5cGUiOiAiYXBwbGljYXRpb24vdm5kLm9jaS5pbWFnZS5sYXllci52MS50YXIrZ3ppcCIsCgkJCSJkaWdlc3QiOiAic2hhMjU2OjkxZjdmNmRhMTUwNjY4ZDJhNWM3NjA3NmM4MGQyOTI2NWFhOTU5MjBkZjc5OWUxM2Q5MmQ4NzNlZjNlZDQ2MDUiLAoJCQkic2l6ZSI6IDE1ODg2ODYKCQl9CgldLAoJImFubm90YXRpb25zIjogewoJCSJvcmcub3BlbmNvbnRhaW5lcnMuaW1hZ2UudXJsIjogImh0dHBzOi8vZ2l0aHViLmNvbS9kb2NrZXItbGlicmFyeS9idXN5Ym94IiwKCQkib3JnLm9wZW5jb250YWluZXJzLmltYWdlLnZlcnNpb24iOiAiMS4zNi4xLWdsaWJjIgoJfQp9Cg==",
+		"OCIManifest": {
+			"schemaVersion": 2,
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"config": {
+				"mediaType": "application/vnd.oci.image.config.v1+json",
+				"digest": "sha256:2c50c3911c3eefe0a878c5451fa4a28c81e22e02a3820c8df942e8914e9d8414",
+				"size": 475
+			},
+			"layers": [
+				{
+					"mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+					"digest": "sha256:91f7f6da150668d2a5c76076c80d29265aa95920df799e13d92d873ef3ed4605",
+					"size": 1588686
+				}
+			],
+			"annotations": {
+				"org.opencontainers.image.url": "https://github.com/docker-library/busybox",
+				"org.opencontainers.image.version": "1.36.1-glibc"
+			}
+		}
+	},
+	{
+		"Ref": "docker.io/library/busybox:1.36@sha256:be18d95c660d53685deecdc04d535b9f2f6347738a15d53b06d7ada77f7782e8",
+		"Descriptor": {
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"digest": "sha256:be18d95c660d53685deecdc04d535b9f2f6347738a15d53b06d7ada77f7782e8",
+			"size": 559,
+			"platform": {
+				"architecture": "unknown",
+				"os": "unknown"
+			}
+		},
+		"Raw": "ewogICJzY2hlbWFWZXJzaW9uIjogMiwKICAibWVkaWFUeXBlIjogImFwcGxpY2F0aW9uL3ZuZC5vY2kuaW1hZ2UubWFuaWZlc3QudjEranNvbiIsCiAgImNvbmZpZyI6IHsKICAgICJtZWRpYVR5cGUiOiAiYXBwbGljYXRpb24vdm5kLm9jaS5pbWFnZS5jb25maWcudjEranNvbiIsCiAgICAiZGlnZXN0IjogInNoYTI1Njo2Y2JjNGY0M2JjMWYyYjU4NGM3ODIwNzZkMjc0MjhlMTRiMTZiOTE1MjBkYmYyMTlkY2Y5MjY5MjhiNjFmZDA1IiwKICAgICJzaXplIjogMTY3CiAgfSwKICAibGF5ZXJzIjogWwogICAgewogICAgICAibWVkaWFUeXBlIjogImFwcGxpY2F0aW9uL3ZuZC5pbi10b3RvK2pzb24iLAogICAgICAiZGlnZXN0IjogInNoYTI1Njo5ZGVkYmJmZDgzZmRhNDQwMzNjNjFjZjhiMWU0MmY0OGJhMTQwZDQ3OWRmYmJiZGQwMWQ4MDEyNjEwMzE5ZDE1IiwKICAgICAgInNpemUiOiAyMDI2LAogICAgICAiYW5ub3RhdGlvbnMiOiB7CiAgICAgICAgImluLXRvdG8uaW8vcHJlZGljYXRlLXR5cGUiOiAiaHR0cHM6Ly9zcGR4LmRldi9Eb2N1bWVudCIKICAgICAgfQogICAgfQogIF0KfQ==",
+		"OCIManifest": {
+			"schemaVersion": 2,
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"config": {
+				"mediaType": "application/vnd.oci.image.config.v1+json",
+				"digest": "sha256:6cbc4f43bc1f2b584c782076d27428e14b16b91520dbf219dcf926928b61fd05",
+				"size": 167
+			},
+			"layers": [
+				{
+					"mediaType": "application/vnd.in-toto+json",
+					"digest": "sha256:9dedbbfd83fda44033c61cf8b1e42f48ba140d479dfbbbdd01d8012610319d15",
+					"size": 2026,
+					"annotations": {
+						"in-toto.io/predicate-type": "https://spdx.dev/Document"
+					}
+				}
+			]
+		}
+	},
+	{
+		"Ref": "docker.io/library/busybox:1.36@sha256:bd44eb136a95dcc8dc58995e43abc40a413f2e8e3d4a2aae6bccbe94686acb05",
+		"Descriptor": {
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"digest": "sha256:bd44eb136a95dcc8dc58995e43abc40a413f2e8e3d4a2aae6bccbe94686acb05",
+			"size": 610,
+			"platform": {
+				"architecture": "arm64",
+				"os": "linux",
+				"variant": "v8"
+			}
+		},
+		"Raw": "ewoJInNjaGVtYVZlcnNpb24iOiAyLAoJIm1lZGlhVHlwZSI6ICJhcHBsaWNhdGlvbi92bmQub2NpLmltYWdlLm1hbmlmZXN0LnYxK2pzb24iLAoJImNvbmZpZyI6IHsKCQkibWVkaWFUeXBlIjogImFwcGxpY2F0aW9uL3ZuZC5vY2kuaW1hZ2UuY29uZmlnLnYxK2pzb24iLAoJCSJkaWdlc3QiOiAic2hhMjU2OmI3Yzg3M2JkOTdiZGM5MDQ2ZmM4OTRlMGIyMTZjOGFlZjMxZTBkYjRjNWI3NjFmYjUzMDIyZTQwNTc3YWI2YzAiLAoJCSJzaXplIjogNDc3Cgl9LAoJImxheWVycyI6IFsKCQl7CgkJCSJtZWRpYVR5cGUiOiAiYXBwbGljYXRpb24vdm5kLm9jaS5pbWFnZS5sYXllci52MS50YXIrZ3ppcCIsCgkJCSJkaWdlc3QiOiAic2hhMjU2OjgyMWQ5ZGFmYjI2ZGM4ZTRhZmNlMjI3MzM2NjUyMGY0OWUzOGY4ZjY3OWE3MmZjNTEyZjJhODNlNjJmNDQyYjciLAoJCQkic2l6ZSI6IDE4OTYyNjUKCQl9CgldLAoJImFubm90YXRpb25zIjogewoJCSJvcmcub3BlbmNvbnRhaW5lcnMuaW1hZ2UudXJsIjogImh0dHBzOi8vZ2l0aHViLmNvbS9kb2NrZXItbGlicmFyeS9idXN5Ym94IiwKCQkib3JnLm9wZW5jb250YWluZXJzLmltYWdlLnZlcnNpb24iOiAiMS4zNi4xLWdsaWJjIgoJfQp9Cg==",
+		"OCIManifest": {
+			"schemaVersion": 2,
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"config": {
+				"mediaType": "application/vnd.oci.image.config.v1+json",
+				"digest": "sha256:b7c873bd97bdc9046fc894e0b216c8aef31e0db4c5b761fb53022e40577ab6c0",
+				"size": 477
+			},
+			"layers": [
+				{
+					"mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+					"digest": "sha256:821d9dafb26dc8e4afce2273366520f49e38f8f679a72fc512f2a83e62f442b7",
+					"size": 1896265
+				}
+			],
+			"annotations": {
+				"org.opencontainers.image.url": "https://github.com/docker-library/busybox",
+				"org.opencontainers.image.version": "1.36.1-glibc"
+			}
+		}
+	},
+	{
+		"Ref": "docker.io/library/busybox:1.36@sha256:f460228af1a366e38fde461b880629971d27e9c3b1d11d909cb6482fef7597ae",
+		"Descriptor": {
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"digest": "sha256:f460228af1a366e38fde461b880629971d27e9c3b1d11d909cb6482fef7597ae",
+			"size": 559,
+			"platform": {
+				"architecture": "unknown",
+				"os": "unknown"
+			}
+		},
+		"Raw": "ewogICJzY2hlbWFWZXJzaW9uIjogMiwKICAibWVkaWFUeXBlIjogImFwcGxpY2F0aW9uL3ZuZC5vY2kuaW1hZ2UubWFuaWZlc3QudjEranNvbiIsCiAgImNvbmZpZyI6IHsKICAgICJtZWRpYVR5cGUiOiAiYXBwbGljYXRpb24vdm5kLm9jaS5pbWFnZS5jb25maWcudjEranNvbiIsCiAgICAiZGlnZXN0IjogInNoYTI1NjozODRmMmIzM2U5NzJiNzdmMzc5NzNkMzVjMjU2MmEzOWJhZDQ2MTFkNDc5NzMzMGRiMGY2M2RhYWQ3MWQwNWM3IiwKICAgICJzaXplIjogMTY3CiAgfSwKICAibGF5ZXJzIjogWwogICAgewogICAgICAibWVkaWFUeXBlIjogImFwcGxpY2F0aW9uL3ZuZC5pbi10b3RvK2pzb24iLAogICAgICAiZGlnZXN0IjogInNoYTI1NjpmMDE1NTAxZGY5N2FjNGM5N2M1MWNmZTZjOGVkMjZkNWM1OTg2ZTY1YjQ5MWIxZmRkZDMwNTc2MzgxY2MwYWYwIiwKICAgICAgInNpemUiOiAyMDI2LAogICAgICAiYW5ub3RhdGlvbnMiOiB7CiAgICAgICAgImluLXRvdG8uaW8vcHJlZGljYXRlLXR5cGUiOiAiaHR0cHM6Ly9zcGR4LmRldi9Eb2N1bWVudCIKICAgICAgfQogICAgfQogIF0KfQ==",
+		"OCIManifest": {
+			"schemaVersion": 2,
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"config": {
+				"mediaType": "application/vnd.oci.image.config.v1+json",
+				"digest": "sha256:384f2b33e972b77f37973d35c2562a39bad4611d4797330db0f63daad71d05c7",
+				"size": 167
+			},
+			"layers": [
+				{
+					"mediaType": "application/vnd.in-toto+json",
+					"digest": "sha256:f015501df97ac4c97c51cfe6c8ed26d5c5986e65b491b1fddd30576381cc0af0",
+					"size": 2026,
+					"annotations": {
+						"in-toto.io/predicate-type": "https://spdx.dev/Document"
+					}
+				}
+			]
+		}
+	},
+	{
+		"Ref": "docker.io/library/busybox:1.36@sha256:d5f45b39573a582b66cc64866691322abdfeccc6d77a13194c7ab6b3915baaf6",
+		"Descriptor": {
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"digest": "sha256:d5f45b39573a582b66cc64866691322abdfeccc6d77a13194c7ab6b3915baaf6",
+			"size": 610,
+			"platform": {
+				"architecture": "386",
+				"os": "linux"
+			}
+		},
+		"Raw": "ewoJInNjaGVtYVZlcnNpb24iOiAyLAoJIm1lZGlhVHlwZSI6ICJhcHBsaWNhdGlvbi92bmQub2NpLmltYWdlLm1hbmlmZXN0LnYxK2pzb24iLAoJImNvbmZpZyI6IHsKCQkibWVkaWFUeXBlIjogImFwcGxpY2F0aW9uL3ZuZC5vY2kuaW1hZ2UuY29uZmlnLnYxK2pzb24iLAoJCSJkaWdlc3QiOiAic2hhMjU2OjkzMWJjYTY4ZGMzZGZhNjM2ZTAyNTg2MzFhYjJmYzRmYzdjMjM5N2U4MjkwOWZkNGUzY2IxNDBmZTkzMDFhOWYiLAoJCSJzaXplIjogNDU3Cgl9LAoJImxheWVycyI6IFsKCQl7CgkJCSJtZWRpYVR5cGUiOiAiYXBwbGljYXRpb24vdm5kLm9jaS5pbWFnZS5sYXllci52MS50YXIrZ3ppcCIsCgkJCSJkaWdlc3QiOiAic2hhMjU2OjZjOWNlMDhjNDFkMTdjMmQxMmVhNWQxNTVhYzNlY2M2Y2M4MWQyY2NkY2MzYWM1ZTY4ZGQ0NTM0NzQwNTQwZjkiLAoJCQkic2l6ZSI6IDIyODA5NjEKCQl9CgldLAoJImFubm90YXRpb25zIjogewoJCSJvcmcub3BlbmNvbnRhaW5lcnMuaW1hZ2UudXJsIjogImh0dHBzOi8vZ2l0aHViLmNvbS9kb2NrZXItbGlicmFyeS9idXN5Ym94IiwKCQkib3JnLm9wZW5jb250YWluZXJzLmltYWdlLnZlcnNpb24iOiAiMS4zNi4xLWdsaWJjIgoJfQp9Cg==",
+		"OCIManifest": {
+			"schemaVersion": 2,
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"config": {
+				"mediaType": "application/vnd.oci.image.config.v1+json",
+				"digest": "sha256:931bca68dc3dfa636e0258631ab2fc4fc7c2397e82909fd4e3cb140fe9301a9f",
+				"size": 457
+			},
+			"layers": [
+				{
+					"mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+					"digest": "sha256:6c9ce08c41d17c2d12ea5d155ac3ecc6cc81d2ccdcc3ac5e68dd4534740540f9",
+					"size": 2280961
+				}
+			],
+			"annotations": {
+				"org.opencontainers.image.url": "https://github.com/docker-library/busybox",
+				"org.opencontainers.image.version": "1.36.1-glibc"
+			}
+		}
+	},
+	{
+		"Ref": "docker.io/library/busybox:1.36@sha256:9be4ccb7c9eeca6ed282158e5e82b4dd56bde27046bb44b4aba653646a34e499",
+		"Descriptor": {
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"digest": "sha256:9be4ccb7c9eeca6ed282158e5e82b4dd56bde27046bb44b4aba653646a34e499",
+			"size": 559,
+			"platform": {
+				"architecture": "unknown",
+				"os": "unknown"
+			}
+		},
+		"Raw": "ewogICJzY2hlbWFWZXJzaW9uIjogMiwKICAibWVkaWFUeXBlIjogImFwcGxpY2F0aW9uL3ZuZC5vY2kuaW1hZ2UubWFuaWZlc3QudjEranNvbiIsCiAgImNvbmZpZyI6IHsKICAgICJtZWRpYVR5cGUiOiAiYXBwbGljYXRpb24vdm5kLm9jaS5pbWFnZS5jb25maWcudjEranNvbiIsCiAgICAiZGlnZXN0IjogInNoYTI1NjoxODVjYWYyOTBhMzkyOWRhZTA4NmI3MWQxODdiMzc3MmQ2Mzg5OWM4ZWI4NDYwMDc5N2QzZDBlNzAxMDU1M2YzIiwKICAgICJzaXplIjogMTY3CiAgfSwKICAibGF5ZXJzIjogWwogICAgewogICAgICAibWVkaWFUeXBlIjogImFwcGxpY2F0aW9uL3ZuZC5pbi10b3RvK2pzb24iLAogICAgICAiZGlnZXN0IjogInNoYTI1Njo2YjUzN2IxMDYzOWZlMzI0YWM0N2MyZDgxYWU2N2EyNWY5YTAwMTY5YWIyMDAxMTA1MTdmZjgxMjU2ZjA3YTk0IiwKICAgICAgInNpemUiOiAyMDI2LAogICAgICAiYW5ub3RhdGlvbnMiOiB7CiAgICAgICAgImluLXRvdG8uaW8vcHJlZGljYXRlLXR5cGUiOiAiaHR0cHM6Ly9zcGR4LmRldi9Eb2N1bWVudCIKICAgICAgfQogICAgfQogIF0KfQ==",
+		"OCIManifest": {
+			"schemaVersion": 2,
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"config": {
+				"mediaType": "application/vnd.oci.image.config.v1+json",
+				"digest": "sha256:185caf290a3929dae086b71d187b3772d63899c8eb84600797d3d0e7010553f3",
+				"size": 167
+			},
+			"layers": [
+				{
+					"mediaType": "application/vnd.in-toto+json",
+					"digest": "sha256:6b537b10639fe324ac47c2d81ae67a25f9a00169ab200110517ff81256f07a94",
+					"size": 2026,
+					"annotations": {
+						"in-toto.io/predicate-type": "https://spdx.dev/Document"
+					}
+				}
+			]
+		}
+	},
+	{
+		"Ref": "docker.io/library/busybox:1.36@sha256:3ed5c2b0c88ab2930e121111d667577a8a6e3033c70ef52ac5239e271d55ade5",
+		"Descriptor": {
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"digest": "sha256:3ed5c2b0c88ab2930e121111d667577a8a6e3033c70ef52ac5239e271d55ade5",
+			"size": 610,
+			"platform": {
+				"architecture": "ppc64le",
+				"os": "linux"
+			}
+		},
+		"Raw": "ewoJInNjaGVtYVZlcnNpb24iOiAyLAoJIm1lZGlhVHlwZSI6ICJhcHBsaWNhdGlvbi92bmQub2NpLmltYWdlLm1hbmlmZXN0LnYxK2pzb24iLAoJImNvbmZpZyI6IHsKCQkibWVkaWFUeXBlIjogImFwcGxpY2F0aW9uL3ZuZC5vY2kuaW1hZ2UuY29uZmlnLnYxK2pzb24iLAoJCSJkaWdlc3QiOiAic2hhMjU2OmE5ODcwODJiNzEwNDc1MTUyYmRjYTRjNjA0YzY1YjUzNWY4ZTAzOGQ1ODY0YTY4YzA2MDRmZDMxODRjY2RmOGYiLAoJCSJzaXplIjogNDYxCgl9LAoJImxheWVycyI6IFsKCQl7CgkJCSJtZWRpYVR5cGUiOiAiYXBwbGljYXRpb24vdm5kLm9jaS5pbWFnZS5sYXllci52MS50YXIrZ3ppcCIsCgkJCSJkaWdlc3QiOiAic2hhMjU2OjYyMzUzNGEyOGRkNGEyNzZkZGE4NzJkZmVkN2FhYTRkODUzYjEwODM1OTFjNWUxNGI2ZTZiNGM1NTFhYWU5MDAiLAoJCQkic2l6ZSI6IDI1MjEzOTQKCQl9CgldLAoJImFubm90YXRpb25zIjogewoJCSJvcmcub3BlbmNvbnRhaW5lcnMuaW1hZ2UudXJsIjogImh0dHBzOi8vZ2l0aHViLmNvbS9kb2NrZXItbGlicmFyeS9idXN5Ym94IiwKCQkib3JnLm9wZW5jb250YWluZXJzLmltYWdlLnZlcnNpb24iOiAiMS4zNi4xLWdsaWJjIgoJfQp9Cg==",
+		"OCIManifest": {
+			"schemaVersion": 2,
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"config": {
+				"mediaType": "application/vnd.oci.image.config.v1+json",
+				"digest": "sha256:a987082b710475152bdca4c604c65b535f8e038d5864a68c0604fd3184ccdf8f",
+				"size": 461
+			},
+			"layers": [
+				{
+					"mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+					"digest": "sha256:623534a28dd4a276dda872dfed7aaa4d853b1083591c5e14b6e6b4c551aae900",
+					"size": 2521394
+				}
+			],
+			"annotations": {
+				"org.opencontainers.image.url": "https://github.com/docker-library/busybox",
+				"org.opencontainers.image.version": "1.36.1-glibc"
+			}
+		}
+	},
+	{
+		"Ref": "docker.io/library/busybox:1.36@sha256:fa60eaf37ad328621044ff2b394d2e358eab4562e6d7071a555224df69653660",
+		"Descriptor": {
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"digest": "sha256:fa60eaf37ad328621044ff2b394d2e358eab4562e6d7071a555224df69653660",
+			"size": 559,
+			"platform": {
+				"architecture": "unknown",
+				"os": "unknown"
+			}
+		},
+		"Raw": "ewogICJzY2hlbWFWZXJzaW9uIjogMiwKICAibWVkaWFUeXBlIjogImFwcGxpY2F0aW9uL3ZuZC5vY2kuaW1hZ2UubWFuaWZlc3QudjEranNvbiIsCiAgImNvbmZpZyI6IHsKICAgICJtZWRpYVR5cGUiOiAiYXBwbGljYXRpb24vdm5kLm9jaS5pbWFnZS5jb25maWcudjEranNvbiIsCiAgICAiZGlnZXN0IjogInNoYTI1NjoyODg3MmZkZTA0NTZhZDkxM2EyYjViZWQzNDMyMDE5ZGIzYmIxNjM0OWFmZjc0ZmNiYTg1ZjJjMzVmNDU0NjA5IiwKICAgICJzaXplIjogMTY3CiAgfSwKICAibGF5ZXJzIjogWwogICAgewogICAgICAibWVkaWFUeXBlIjogImFwcGxpY2F0aW9uL3ZuZC5pbi10b3RvK2pzb24iLAogICAgICAiZGlnZXN0IjogInNoYTI1Njo5ZjYwYjM3ZGFjYWU4ZWI3OGU4N2E3Y2U3MDFkMDRjMGIwMjZkMmNjM2U5NWY5NGJlYTVhYzc4OTk3NDU4MTk5IiwKICAgICAgInNpemUiOiAzMjA0LAogICAgICAiYW5ub3RhdGlvbnMiOiB7CiAgICAgICAgImluLXRvdG8uaW8vcHJlZGljYXRlLXR5cGUiOiAiaHR0cHM6Ly9zcGR4LmRldi9Eb2N1bWVudCIKICAgICAgfQogICAgfQogIF0KfQ==",
+		"OCIManifest": {
+			"schemaVersion": 2,
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"config": {
+				"mediaType": "application/vnd.oci.image.config.v1+json",
+				"digest": "sha256:28872fde0456ad913a2b5bed3432019db3bb16349aff74fcba85f2c35f454609",
+				"size": 167
+			},
+			"layers": [
+				{
+					"mediaType": "application/vnd.in-toto+json",
+					"digest": "sha256:9f60b37dacae8eb78e87a7ce701d04c0b026d2cc3e95f94bea5ac78997458199",
+					"size": 3204,
+					"annotations": {
+						"in-toto.io/predicate-type": "https://spdx.dev/Document"
+					}
+				}
+			]
+		}
+	},
+	{
+		"Ref": "docker.io/library/busybox:1.36@sha256:64a79a5dfe6e2fa46b950eeee2077c475ae37dccf5e2ebc3fb021e5b6a169d22",
+		"Descriptor": {
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"digest": "sha256:64a79a5dfe6e2fa46b950eeee2077c475ae37dccf5e2ebc3fb021e5b6a169d22",
+			"size": 610,
+			"platform": {
+				"architecture": "riscv64",
+				"os": "linux"
+			}
+		},
+		"Raw": "ewoJInNjaGVtYVZlcnNpb24iOiAyLAoJIm1lZGlhVHlwZSI6ICJhcHBsaWNhdGlvbi92bmQub2NpLmltYWdlLm1hbmlmZXN0LnYxK2pzb24iLAoJImNvbmZpZyI6IHsKCQkibWVkaWFUeXBlIjogImFwcGxpY2F0aW9uL3ZuZC5vY2kuaW1hZ2UuY29uZmlnLnYxK2pzb24iLAoJCSJkaWdlc3QiOiAic2hhMjU2OmE2YjVhM2I4YTI0OWNjMzA4ODg4YTllYzM1NzI2ZmYyMWYyNDdlNjUxN2Q1OTAxNzY1OTAyYzgzZjM0ZDFhMWEiLAoJCSJzaXplIjogNDYxCgl9LAoJImxheWVycyI6IFsKCQl7CgkJCSJtZWRpYVR5cGUiOiAiYXBwbGljYXRpb24vdm5kLm9jaS5pbWFnZS5sYXllci52MS50YXIrZ3ppcCIsCgkJCSJkaWdlc3QiOiAic2hhMjU2OjA2NzFmNDk2YjM1YjQ4YjJiMDI0MWY2OWFhNjhhNWRlMjc3N2UyMTkxYWNiZWNhMDJiMjZjY2M4OWQxNGUyNTMiLAoJCQkic2l6ZSI6IDE5Mzg1MjEKCQl9CgldLAoJImFubm90YXRpb25zIjogewoJCSJvcmcub3BlbmNvbnRhaW5lcnMuaW1hZ2UudXJsIjogImh0dHBzOi8vZ2l0aHViLmNvbS9kb2NrZXItbGlicmFyeS9idXN5Ym94IiwKCQkib3JnLm9wZW5jb250YWluZXJzLmltYWdlLnZlcnNpb24iOiAiMS4zNi4xLWdsaWJjIgoJfQp9Cg==",
+		"OCIManifest": {
+			"schemaVersion": 2,
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"config": {
+				"mediaType": "application/vnd.oci.image.config.v1+json",
+				"digest": "sha256:a6b5a3b8a249cc308888a9ec35726ff21f247e6517d5901765902c83f34d1a1a",
+				"size": 461
+			},
+			"layers": [
+				{
+					"mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+					"digest": "sha256:0671f496b35b48b2b0241f69aa68a5de2777e2191acbeca02b26ccc89d14e253",
+					"size": 1938521
+				}
+			],
+			"annotations": {
+				"org.opencontainers.image.url": "https://github.com/docker-library/busybox",
+				"org.opencontainers.image.version": "1.36.1-glibc"
+			}
+		}
+	},
+	{
+		"Ref": "docker.io/library/busybox:1.36@sha256:440cb5d78e92bb08ebb4949beb8c8ba5982f981b5d203da58b6a66af39adb9d5",
+		"Descriptor": {
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"digest": "sha256:440cb5d78e92bb08ebb4949beb8c8ba5982f981b5d203da58b6a66af39adb9d5",
+			"size": 559,
+			"platform": {
+				"architecture": "unknown",
+				"os": "unknown"
+			}
+		},
+		"Raw": "ewogICJzY2hlbWFWZXJzaW9uIjogMiwKICAibWVkaWFUeXBlIjogImFwcGxpY2F0aW9uL3ZuZC5vY2kuaW1hZ2UubWFuaWZlc3QudjEranNvbiIsCiAgImNvbmZpZyI6IHsKICAgICJtZWRpYVR5cGUiOiAiYXBwbGljYXRpb24vdm5kLm9jaS5pbWFnZS5jb25maWcudjEranNvbiIsCiAgICAiZGlnZXN0IjogInNoYTI1NjozNTdmYWRkZTA3MGU5NmRiMTRjNmI5MWEyNDU5MDQwZDlmMTZhMjQ3YjcxOTkyYzRmN2Q1YTk0N2VkMTZjNjNhIiwKICAgICJzaXplIjogMTY3CiAgfSwKICAibGF5ZXJzIjogWwogICAgewogICAgICAibWVkaWFUeXBlIjogImFwcGxpY2F0aW9uL3ZuZC5pbi10b3RvK2pzb24iLAogICAgICAiZGlnZXN0IjogInNoYTI1Njo0ZDMwN2QzZDA2NjJmMzkwMTlkYmVkYTQ0NzNlN2FjOWZjZmY0YmVhNzYyMzVjNDU0ODNlNTljMmM0NGFkYTAyIiwKICAgICAgInNpemUiOiAyMDI2LAogICAgICAiYW5ub3RhdGlvbnMiOiB7CiAgICAgICAgImluLXRvdG8uaW8vcHJlZGljYXRlLXR5cGUiOiAiaHR0cHM6Ly9zcGR4LmRldi9Eb2N1bWVudCIKICAgICAgfQogICAgfQogIF0KfQ==",
+		"OCIManifest": {
+			"schemaVersion": 2,
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"config": {
+				"mediaType": "application/vnd.oci.image.config.v1+json",
+				"digest": "sha256:357fadde070e96db14c6b91a2459040d9f16a247b71992c4f7d5a947ed16c63a",
+				"size": 167
+			},
+			"layers": [
+				{
+					"mediaType": "application/vnd.in-toto+json",
+					"digest": "sha256:4d307d3d0662f39019dbeda4473e7ac9fcff4bea76235c45483e59c2c44ada02",
+					"size": 2026,
+					"annotations": {
+						"in-toto.io/predicate-type": "https://spdx.dev/Document"
+					}
+				}
+			]
+		}
+	},
+	{
+		"Ref": "docker.io/library/busybox:1.36@sha256:aa25235b35cf838a5060e286badfe8c35bfe64645145a7cadbe38d3d86bcbc0d",
+		"Descriptor": {
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"digest": "sha256:aa25235b35cf838a5060e286badfe8c35bfe64645145a7cadbe38d3d86bcbc0d",
+			"size": 610,
+			"platform": {
+				"architecture": "s390x",
+				"os": "linux"
+			}
+		},
+		"Raw": "ewoJInNjaGVtYVZlcnNpb24iOiAyLAoJIm1lZGlhVHlwZSI6ICJhcHBsaWNhdGlvbi92bmQub2NpLmltYWdlLm1hbmlmZXN0LnYxK2pzb24iLAoJImNvbmZpZyI6IHsKCQkibWVkaWFUeXBlIjogImFwcGxpY2F0aW9uL3ZuZC5vY2kuaW1hZ2UuY29uZmlnLnYxK2pzb24iLAoJCSJkaWdlc3QiOiAic2hhMjU2OjAxNjJkMzg4MjA3YWFjMjBlM2E3YTRmMzAwMDcxNzNjYzE5ZDk2MjY2MzkxNDBlM2M4N2IxN2E5NGEwOTYzMGIiLAoJCSJzaXplIjogNDU5Cgl9LAoJImxheWVycyI6IFsKCQl7CgkJCSJtZWRpYVR5cGUiOiAiYXBwbGljYXRpb24vdm5kLm9jaS5pbWFnZS5sYXllci52MS50YXIrZ3ppcCIsCgkJCSJkaWdlc3QiOiAic2hhMjU2OmZjZTU3MDgwZTZmZTk4NzM1YTYwMTI3ZWI3YmJjZDY4OWMyOGFjOGRjMDkyM2U3NjFiNzA4MjRmNDcxMjA3MTUiLAoJCQkic2l6ZSI6IDIwNDQwNTIKCQl9CgldLAoJImFubm90YXRpb25zIjogewoJCSJvcmcub3BlbmNvbnRhaW5lcnMuaW1hZ2UudXJsIjogImh0dHBzOi8vZ2l0aHViLmNvbS9kb2NrZXItbGlicmFyeS9idXN5Ym94IiwKCQkib3JnLm9wZW5jb250YWluZXJzLmltYWdlLnZlcnNpb24iOiAiMS4zNi4xLWdsaWJjIgoJfQp9Cg==",
+		"OCIManifest": {
+			"schemaVersion": 2,
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"config": {
+				"mediaType": "application/vnd.oci.image.config.v1+json",
+				"digest": "sha256:0162d388207aac20e3a7a4f30007173cc19d9626639140e3c87b17a94a09630b",
+				"size": 459
+			},
+			"layers": [
+				{
+					"mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+					"digest": "sha256:fce57080e6fe98735a60127eb7bbcd689c28ac8dc0923e761b70824f47120715",
+					"size": 2044052
+				}
+			],
+			"annotations": {
+				"org.opencontainers.image.url": "https://github.com/docker-library/busybox",
+				"org.opencontainers.image.version": "1.36.1-glibc"
+			}
+		}
+	},
+	{
+		"Ref": "docker.io/library/busybox:1.36@sha256:2142d777d166e724ca5a7c382fbd27cda3e7fa5cc8c104c034984b92691c513b",
+		"Descriptor": {
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"digest": "sha256:2142d777d166e724ca5a7c382fbd27cda3e7fa5cc8c104c034984b92691c513b",
+			"size": 559,
+			"platform": {
+				"architecture": "unknown",
+				"os": "unknown"
+			}
+		},
+		"Raw": "ewogICJzY2hlbWFWZXJzaW9uIjogMiwKICAibWVkaWFUeXBlIjogImFwcGxpY2F0aW9uL3ZuZC5vY2kuaW1hZ2UubWFuaWZlc3QudjEranNvbiIsCiAgImNvbmZpZyI6IHsKICAgICJtZWRpYVR5cGUiOiAiYXBwbGljYXRpb24vdm5kLm9jaS5pbWFnZS5jb25maWcudjEranNvbiIsCiAgICAiZGlnZXN0IjogInNoYTI1Njo1NmMwNzc1YzAwYjE5ZmZjMjQzNWViMDRmOTRlNTJjODA2MWQ5ZGYwNzFlODFmNWNhYmIyYzUzZjI4Yjg4YjU5IiwKICAgICJzaXplIjogMTY3CiAgfSwKICAibGF5ZXJzIjogWwogICAgewogICAgICAibWVkaWFUeXBlIjogImFwcGxpY2F0aW9uL3ZuZC5pbi10b3RvK2pzb24iLAogICAgICAiZGlnZXN0IjogInNoYTI1NjpjZmU2NDIwYzFkODhkMmVkNWFiNmM0NzBlZjI1NjkzNzc2N2U5OGE0MWNiZDMyMzQxODMyOTMzYmEwNzgwZmY5IiwKICAgICAgInNpemUiOiAyMDI2LAogICAgICAiYW5ub3RhdGlvbnMiOiB7CiAgICAgICAgImluLXRvdG8uaW8vcHJlZGljYXRlLXR5cGUiOiAiaHR0cHM6Ly9zcGR4LmRldi9Eb2N1bWVudCIKICAgICAgfQogICAgfQogIF0KfQ==",
+		"OCIManifest": {
+			"schemaVersion": 2,
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"config": {
+				"mediaType": "application/vnd.oci.image.config.v1+json",
+				"digest": "sha256:56c0775c00b19ffc2435eb04f94e52c8061d9df071e81f5cabb2c53f28b88b59",
+				"size": 167
+			},
+			"layers": [
+				{
+					"mediaType": "application/vnd.in-toto+json",
+					"digest": "sha256:cfe6420c1d88d2ed5ab6c470ef256937767e98a41cbd32341832933ba0780ff9",
+					"size": 2026,
+					"annotations": {
+						"in-toto.io/predicate-type": "https://spdx.dev/Document"
+					}
+				}
+			]
+		}
+	}
+]

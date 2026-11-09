@@ -328,6 +328,127 @@ with tempfile.TemporaryDirectory() as tmp:
     check("_mkdir's chmod failure is a PermissionError naming the directory and chown",
           got is not None and str(target) in got and "chown" in got, repr(got))
 
+with tempfile.TemporaryDirectory() as tmp:
+    d = Path(tmp) / "addons" / "fixture"
+    st.prepare(FIXTURE, Path(tmp))
+    modes = {n: (d / n).stat().st_mode & 0o777 for n in ("config", "instances", "secrets")}
+    check("prepare creates config, instances and secrets at 0700",
+          modes == {"config": 0o700, "instances": 0o700, "secrets": 0o700}, repr(modes))
+    (d / "secrets" / "x").write_text("keep")
+    os.chmod(d / "secrets" / "x", 0o640)
+    os.chmod(d / "secrets", 0o755)
+    st.prepare(FIXTURE, Path(tmp))
+    check("a second prepare keeps an existing secret and its mode",
+          (d / "secrets" / "x").read_text() == "keep" and (d / "secrets" / "x").stat().st_mode & 0o777 == 0o640)
+    check("public stored and slugs read the data directory",
+          st.stored(FIXTURE, d) == {} and st.slugs(d) == [])
+
+# Per-service figures: memory units, compose config parsing, listing.
+check("memory_bytes: '1g' and 1073741824 agree",
+      st.memory_bytes("1g") == 1073741824 and st.memory_bytes(1073741824) == 1073741824
+      and st.memory_bytes("1073741824") == 1073741824)
+check("memory_bytes: other units",
+      st.memory_bytes("512m") == 536870912 and st.memory_bytes("2GB") == 2147483648
+      and st.memory_bytes("64k") == 65536 and st.memory_bytes("10b") == 10)
+check("memory_bytes: junk, booleans and negatives give None",
+      all(st.memory_bytes(v) is None for v in (None, True, "lots", "", -5, "1.5g", [])))
+cfg = {"services": {
+    "a": {"image": "x:1", "deploy": {"resources": {"reservations": {"memory": "100"}, "limits": {"memory": "1g"}}},
+          "mem_limit": 5, "mem_reservation": 6},
+    "b": {"image": "y:2", "mem_limit": "512m", "mem_reservation": 7},
+    "c": {},
+}}
+fig = st.service_figures(cfg)
+check("service_figures prefers deploy.resources over mem_*",
+      fig["a"] == {"image": "x:1", "reservation": 100, "limit": 1073741824}, str(fig.get("a")))
+check("service_figures falls back to mem_limit and mem_reservation",
+      fig["b"] == {"image": "y:2", "reservation": 7, "limit": 536870912}, str(fig.get("b")))
+check("service_figures gives None for what compose leaves out",
+      fig["c"] == {"image": None, "reservation": None, "limit": None}, str(fig.get("c")))
+check("service_figures tolerates a config without services", st.service_figures({}) == {})
+with tempfile.TemporaryDirectory() as tmp:
+    bare = st.listing(FIXTURE, Path(tmp), {})
+    check("listing without figures lists services with null image and memory",
+          bare["services"][0] == {"key": "extra", "compose": "fixture-extra", "oneshot": False, "image": None,
+                                  "memory": {"reservation": None, "limit": None}}, str(bare.get("services")))
+    check("listing without figures has no downloadSize", all("downloadSize" not in s for s in bare["services"]))
+    withf = st.listing(FIXTURE, Path(tmp), {}, {"services": {"fixture-seed": {"image": "x:1", "reservation": 1, "limit": 2}},
+                                               "sizes": {"x:1": 99}})
+    seed = [s for s in withf["services"] if s["key"] == "seed"][0]
+    check("listing merges figures and downloadSize by image",
+          seed == {"key": "seed", "compose": "fixture-seed", "oneshot": True, "image": "x:1",
+                   "memory": {"reservation": 1, "limit": 2}, "downloadSize": 99}, str(seed))
+check("image_size sums layers for the platform",
+      st.image_size([{"Descriptor": {"platform": {"os": "linux", "architecture": "arm64"}},
+                      "OCIManifest": {"layers": [{"size": 3}, {"size": 4}]}},
+                     {"Descriptor": {"platform": {"os": "linux", "architecture": "amd64"}},
+                      "OCIManifest": {"layers": [{"size": 100}]}}], "linux/arm64") == 7)
+check("image_size is None when the platform is missing",
+      st.image_size([{"Descriptor": {"platform": {"os": "linux", "architecture": "amd64"}},
+                      "OCIManifest": {"layers": [{"size": 1}]}}], "linux/arm64") is None)
+check("image_size reads a single manifest object and SchemaV2Manifest",
+      st.image_size({"Descriptor": {"platform": {"os": "linux", "architecture": "arm64"}},
+                     "SchemaV2Manifest": {"layers": [{"size": 5}]}}, "linux/arm64") == 5)
+
+# --- transient instance secrets and optional instances ---------------------------
+TRANS = copy.deepcopy(MANIFEST)
+TRANS["instances"]["settings"]["password"] = {"type": "secret", "label": "Password", "transient": True}
+TRANS["instances"]["settings"]["mailboxes"]["optional"] = True
+TRANS["instances"]["connect"] = {"command": "seed-init"}
+TRANS["instances"]["disconnect"] = {"command": "seed-init"}
+with tempfile.TemporaryDirectory() as tmp:
+    root = Path(tmp).resolve()
+    d = st.addon_dir(root, TRANS)
+    st.apply_settings(TRANS, root, {"since": "2026-01-02"})
+    st.check_instance(TRANS, {"host": "h", "password": "tr4nsient"})
+    raises("check_instance still refuses a line break in a transient secret", st.InputError,
+           lambda: st.check_instance(TRANS, {"host": "h", "password": "a\nb"}), "password")
+    st.apply_instance(TRANS, root, "work", {"host": "h", "password": "tr4nsient"})
+    check("apply_instance writes no secret file for a transient setting",
+          not (d / "secrets" / "work.password").exists())
+    check("apply_instance writes no password key for a transient setting",
+          "password" not in json.loads((d / "instances" / "work.json").read_text()))
+    check("no file under the add-on dir holds the transient value",
+          not any("tr4nsient" in p.read_text(errors="replace") for p in d.rglob("*") if p.is_file()))
+    check("missing() never reports a transient setting",
+          not any("password" in m for m in st.missing(TRANS, root)), str(st.missing(TRANS, root)))
+    lst = st.listing(TRANS, root, {})
+    check("listing schema carries transient: true",
+          lst["schema"]["instances"]["settings"]["password"].get("transient") is True)
+    check("an instance view shows a transient setting neither set nor unset",
+          "password" not in lst["instances"]["work"] and lst["instances"]["work"]["host"] == "h",
+          str(lst["instances"]["work"]))
+    # A transient secret in a non-transient neighbour manifest stays a normal secret.
+    st.apply_instance(MANIFEST, root, "plain", {"password": "kept"})
+    check("a non-transient secret is still written", (st.addon_dir(root, MANIFEST) / "secrets" / "plain.password").exists())
+
+OPT = copy.deepcopy(MANIFEST)
+OPT["instances"]["optional"] = True
+with tempfile.TemporaryDirectory() as tmp:
+    root = Path(tmp).resolve()
+    st.apply_settings(OPT, root, {"since": "2026-01-02"})
+    check("optional instances: no instance, no instances: entry", st.missing(OPT, root) == [],
+          str(st.missing(OPT, root)))
+    st.apply_instance(OPT, root, "work", {"host": "h"})
+    check("optional instances: an existing instance still reports its missing settings",
+          st.missing(OPT, root) == ["work.mailboxes"], str(st.missing(OPT, root)))
+    check("listing carries instances.optional in the schema",
+          st.listing(OPT, root, {})["schema"]["instances"].get("optional") is True)
+    check("listing leaves optional out without the field",
+          "optional" not in st.listing(MANIFEST, root, {})["schema"]["instances"])
+with tempfile.TemporaryDirectory() as tmp:
+    check("without optional, no instance still reports instances:account",
+          st.missing(MANIFEST, Path(tmp)) == ["since", "instances:account"], str(st.missing(MANIFEST, Path(tmp))))
+
+# --- addon_cli: an mcp entry without a name (Twenty's `instances` entry) ----------
+NONAME = copy.deepcopy(MANIFEST)
+NONAME["mcp"] = [{"name": "named", "when": {"gate": "GPTR_EXTRA_ENABLED"}}, {"instances": {"from": "workspace"}}]
+check("_toggle_fields skips an mcp entry without a name",
+      addon_cli._toggle_fields(NONAME)["mcp"] == ["named@GPTR_EXTRA_ENABLED"],
+      str(addon_cli._toggle_fields(NONAME)["mcp"]))
+NONAME["mcp"] = {"instances": {"from": "workspace"}}
+check("_toggle_fields copes with a single nameless mcp object", addon_cli._toggle_fields(NONAME)["mcp"] == [])
+
 if failures:
     print(f"{failures} failed")
     sys.exit(1)

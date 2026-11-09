@@ -5,7 +5,7 @@
 # parsing and file work in the Hermes image (stack_python), so the host needs
 # only bash and the container engine.
 #
-#   scripts/addon.sh list --json
+#   scripts/addon.sh list --json [--sizes]
 #   scripts/addon.sh configure <short-id> [--instance <slug>] < values.json
 #   scripts/addon.sh configure <short-id> --instance <slug> --remove
 #   scripts/addon.sh enable <short-id> [--reinit] [--json]
@@ -557,9 +557,49 @@ EOF_HOOK
   [[ -z "$code" ]] || ev_fail "$code" "$step" "$msg" "$EV_LAST_LOG"
 }
 
+# cmd_list --json [--sizes]: the catalog. Image and memory figures come from
+# `docker compose --profile '*' config`, which reads every service and starts
+# nothing; when it fails the catalog prints without them and one warning goes
+# to stderr. --sizes also asks the registry for each image's manifest
+# (docker manifest inspect --verbose) to add downloadSize. list takes no lock.
 cmd_list() {
-  [[ "${1:-}" == "--json" && $# -eq 1 ]] || usage_error "list takes --json only"
-  cli list --flags "$(env_flags_json)" < /dev/null
+  local sizes=0 json=0 config="" platform="" dir="" images image n=0 args=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      --sizes) sizes=1; shift ;;
+      *) usage_error "list takes --json and --sizes only" ;;
+    esac
+  done
+  [[ "$json" == 1 ]] || usage_error "list takes --json and --sizes only"
+  if ! config="$(docker compose --profile '*' config --format json 2> /dev/null)"; then
+    config=""
+    printf 'warning: docker compose config failed; listing without image and memory figures\n' >&2
+  fi
+  if [[ "$sizes" == 1 && -n "$config" ]]; then
+    # Under the data root so the Hermes container, which mounts only the repo,
+    # the data root and the add-ons dir, can read it.
+    mkdir -p "${DATA_ROOT}/addons"
+    dir="$(mktemp -d "${DATA_ROOT}/addons/.sizes.XXXXXX")" || dir=""
+  fi
+  if [[ -n "$dir" ]]; then
+    # Expanded now: dir is local and gone when the EXIT trap runs.
+    trap "rm -rf '${dir}'" EXIT
+    platform="$(docker version --format '{{.Server.Os}}/{{.Server.Arch}}' 2> /dev/null)" || platform=""
+    if [[ -n "$platform" ]]; then
+      images="$(printf '%s' "$config" | cli images 2> /dev/null)" || images=""
+      while IFS= read -r image; do
+        [[ -n "$image" ]] || continue
+        n=$((n + 1))
+        printf '%s\n' "$image" > "${dir}/${n}.image"
+        docker manifest inspect --verbose "$image" > "${dir}/${n}.json" 2> /dev/null || rm -f "${dir}/${n}.image" "${dir}/${n}.json"
+      done <<< "$images"
+      args=(--sizes-dir "$dir" --platform "$platform")
+    else
+      printf 'warning: docker version failed; listing without download sizes\n' >&2
+    fi
+  fi
+  printf '%s' "$config" | cli list --flags "$(env_flags_json)" ${args[@]+"${args[@]}"}
 }
 
 cmd_configure() {
@@ -609,20 +649,42 @@ start_failed() {
   ev_fail compose_failed start "docker compose up failed for: $*" "$up_log"
 }
 
-# gated_names PLAN KEY: the compose names under KEY ("services" or "oneshots")
-# whose gate is on or that have no gate, one per line.
+# gated_names PLAN KEY [off]: the compose names under KEY ("services",
+# "oneshots", "mcp" or "stop") whose gate is on or that have no gate, one per
+# line. With "off", the names whose gate is off.
 gated_names() {
   local entry gate
   while IFS= read -r entry; do
     [[ -n "$entry" ]] || continue
     gate=""
     [[ "$entry" == *@* ]] && gate="${entry#*@}"
-    if [[ -z "$gate" ]] || gate_on "$1" "$gate"; then
+    if [[ "${3:-}" == off ]]; then
+      if [[ -n "$gate" ]] && ! gate_on "$1" "$gate"; then
+        printf '%s\n' "${entry%%@*}"
+      fi
+    elif [[ -z "$gate" ]] || gate_on "$1" "$gate"; then
       printf '%s\n' "${entry%%@*}"
     fi
   done <<EOF_ENTRIES
 $(json_list "$2" "$1")
 EOF_ENTRIES
+}
+
+# check_hermes_user PLAN: on Linux, the services that mount add-on directories
+# run as HERMES_UID:HERMES_GID, so those must be the caller's ids or the
+# mounts are unreadable. Runs before any flag is written.
+check_hermes_user() {
+  local kind flag want have
+  [[ -n "$(json_list mounts "$1")" ]] || return 0
+  [[ "$(uname -s)" == Linux ]] || return 0
+  for kind in UID GID; do
+    flag=-u
+    [[ "$kind" == UID ]] || flag=-g
+    want="$(env_get "HERMES_${kind}" 1000)"
+    have="$(id "$flag")"
+    [[ "$want" == "$have" ]] \
+      || ev_fail bad_input "" "HERMES_${kind} ${want} is not your user id ${have}; set HERMES_UID and HERMES_GID in .env" ""
+  done
 }
 
 cmd_enable() {
@@ -638,7 +700,8 @@ cmd_enable() {
   addon_lock
   cli_checked flags plan-enable "$sid"
   plan="$CLI_OUT"
-  local services=() oneshots=() list
+  check_hermes_user "$plan"
+  local services=() oneshots=() stops=() list
   list="$(gated_names "$plan" services)"
   [[ -z "$list" ]] || while IFS= read -r name; do services+=("$name"); done <<EOF_SERVICES
 $list
@@ -647,6 +710,10 @@ EOF_SERVICES
   [[ -z "$list" ]] || while IFS= read -r name; do oneshots+=("$name"); done <<EOF_ONESHOTS
 $list
 EOF_ONESHOTS
+  list="$(gated_names "$plan" stop off)"
+  [[ -z "$list" ]] || while IFS= read -r name; do stops+=("$name"); done <<EOF_STOPS
+$list
+EOF_STOPS
   pull_images ${services[@]+"${services[@]}"} ${oneshots[@]+"${oneshots[@]}"}
   rollback_record "$plan"
   CHANGED=0
@@ -661,6 +728,10 @@ EOF_ONESHOTS
   if [[ ${#services[@]} -gt 0 ]]; then
     run_step start "" docker compose up -d --wait "${services[@]}" \
       || start_failed ${oneshots[@]+"${oneshots[@]}"} "${services[@]}"
+  fi
+  if [[ ${#stops[@]} -gt 0 ]]; then
+    run_step stop "" docker compose stop "${stops[@]}" \
+      || ev_fail compose_failed stop "docker compose stop failed for: ${stops[*]}" "$EV_LAST_LOG"
   fi
   run_hook init "$sid" init ${reinit[@]+"${reinit[@]}"}
   toggle_recreate "$plan" "$sid"
