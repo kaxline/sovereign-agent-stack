@@ -73,9 +73,14 @@ admin() {
   shift 2
   local args=() e
   for e in "$@"; do args+=(-e "${e%%=*}"); done
-  env "$@" docker run --rm --network "$net" "${args[@]}" \
-    -e ACTUAL_ADMIN_TIMEOUT_S=20 \
-    --entrypoint node "$MCP_IMAGE" /opt/actual-admin.mjs "${CMD[@]}" >"$so" 2>"$se"
+  # export is a builtin, so the values never appear in a process's argv.
+  (
+    # shellcheck disable=SC2163  # each argument is a NAME=value assignment
+    export "$@"
+    docker run --rm --network "$net" "${args[@]}" \
+      -e ACTUAL_ADMIN_TIMEOUT_S=20 \
+      --entrypoint node "$MCP_IMAGE" /opt/actual-admin.mjs "${CMD[@]}" >"$so" 2>"$se"
+  )
 }
 
 run() { # run <name> <expect-exit> <expect-stdout> -- env... ; CMD set by caller
