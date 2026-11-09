@@ -30,6 +30,12 @@ except where noted:
   add-on, and each entry needs its own service: two entries may not name the
   same service key, directly or through a `{ro, rw}` map, because the
   bootstrap drops stale registrations by URL.
+  `unmanaged` (built-in add-ons only) is a list of Hermes profile names, for
+  example `["default"]`, that bootstrap leaves alone for that entry: it
+  registers, drops, pins and sets parked retry on none of them, so a server
+  the user added by hand on that profile at the same URL stays. The names
+  must be distinct and may not appear in `profiles`. An empty list behaves as
+  absent.
 - `services.<name>.when`: `{"gate": FLAG}`, so the service starts only while
   that gate flag is on. `mounts` maps `secrets`, `config` and `instances` to
   `ro` or `rw`; they mount the directories `data/addons/<short-id>/secrets`,

@@ -542,6 +542,15 @@ def _validate_mcp(mcp, services: dict, source: str, reads: bool,
             err(f"mcp.profiles.{prof} is {level}, but mcp.service has no service for {level}")
     if reads and UNATTENDED_PROFILE in profiles:
         err(f"an add-on that reads personal data may not be on {UNATTENDED_PROFILE}")
+    if "unmanaged" in mcp:
+        unmanaged = mcp["unmanaged"]
+        if source != "builtin":
+            err("mcp.unmanaged is for built-in add-ons only")
+        elif not (_is_str_list(unmanaged) and all(NAME_RE.match(n) for n in unmanaged)
+                  and len(set(unmanaged)) == len(unmanaged)):
+            err("mcp.unmanaged must be a list of distinct Hermes profile names")
+        elif set(unmanaged) & set(profiles):
+            err("mcp.unmanaged may not name a profile in mcp.profiles")
     env = mcp.get("env", {})
     if env:
         if source != "builtin":
@@ -692,6 +701,8 @@ def mcp_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
                 print(f"warning: skipping {path.parent.name}: {e}", file=sys.stderr)
             continue
         for mcp in mcp_entries(manifest):
+            if profile in mcp.get("unmanaged", []):
+                continue
             env = mcp.get("env", {})
             urls = _mcp_urls(manifest, mcp, environ)
             timeout = environ.get(env.get("timeout", ""), "") or str(mcp["timeout"])
