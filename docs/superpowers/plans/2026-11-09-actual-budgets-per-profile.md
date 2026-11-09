@@ -16,7 +16,7 @@
 
 ## Global Constraints
 
-- Output, in `--json` mode: stdout carries only JSON objects, one per line, each keyed on `phase`. The last line is `{"phase":"done",...}` or `{"phase":"error","error":<name>,"message":<one sentence>}`, and nothing follows it. Without `--json`, the existing `[budget]` log lines stay.
+- Output, in `--json` mode: stdout carries only JSON objects, one per line, each with a string `phase`. The last line is `{"phase":"done",...}` or `{"phase":"error","error":<name>,"message":<one sentence>}`, and nothing follows it. `addon.sh` parses only stdout and relays only objects with a string `phase`; stderr goes to its step log, so an error line written to stderr becomes `command_failed`. Human `error: ...` text goes to stderr in addition to the stdout line, never instead of it. Without `--json`, the existing `[budget]` log lines stay.
 - Error names: the shared `bad_slug`, `exists`, `not_found`, `login_refused`, `token_expired`, `no_access`, `timeout`, `server_unreachable`, and Actual's `unknown_profile`, `bad_access`, `encryption_password`. Never `bad_input`, `missing_settings`, `command_failed`, `compose_failed` or `busy`: those are `addon.sh`'s own.
 - Exit codes for `budget.sh` in `--json` mode: 0 for `done`; 2 for `bad_slug`, `unknown_profile`, `bad_access`, `not_found`; 4 for every other error name.
 - No secret (password, session token, encryption password, server password) in argv, an env var visible to `docker inspect`, any stdout or stderr line, a log, or a file outside `data/addons/actual/secrets/` (mode 600) and `compose/actual/budget.env`. Containers get credentials by name (`-e NAME`) as `budget.sh` does today.
