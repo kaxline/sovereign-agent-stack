@@ -77,7 +77,13 @@ slug = _slug
 
 def _mkdir(path: Path) -> None:
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(path, 0o700)
+    try:
+        os.chmod(path, 0o700)
+    except PermissionError as exc:
+        # Docker on Linux creates a missing bind-mount source owned by root.
+        raise PermissionError(
+            exc.errno, f"can't set {path} to 0700: another user (often root) owns it; "
+            f"run sudo chown -R \"$(id -u):$(id -g)\" '{path}'") from None
 
 
 def _mkdir_addon(d: Path) -> None:

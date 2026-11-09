@@ -239,4 +239,14 @@ for d in "$fresh/data/addons/twenty" "$fresh/data/addons/twenty/instances" "$fre
   [ "$(mode "$d")" = 700 ] || fail "${d#"$fresh"/} is 0700 ($(mode "$d"))"
 done
 
+# A store directory chmod can't change (Docker on Linux created it owned by
+# root): ensure warns with the fix and goes on, so make up isn't aborted.
+mkdir -p "$fresh/bin"
+printf '#!/bin/sh\necho "chmod: Operation not permitted" >&2\nexit 1\n' > "$fresh/bin/chmod"
+chmod +x "$fresh/bin/chmod"
+PATH="$fresh/bin:$PATH" ASSISTANT_DATA_ROOT="$fresh/data" CRM_WORKSPACES_DIR="$fresh/ws" run ensure \
+  || fail "ensure with a failing chmod must not abort ($(cat "$out" "$err"))"
+grep -q "$fresh/data/addons/twenty" "$err" || fail "the chmod warning names the store ($(cat "$err"))"
+grep -q 'chown' "$err" || fail "the chmod warning gives the chown fix"
+
 printf 'OK crm.sh migrate\n'

@@ -306,6 +306,28 @@ with tempfile.TemporaryDirectory() as tmp:
               raised and path.read_text() == bad)
     check("slug is the public slug check", st.slug("work") == "work")
 
+# _mkdir on a directory another user owns (Docker on Linux creates bind-mount
+# sources as root): chmod fails, and the error names the directory and chown.
+with tempfile.TemporaryDirectory() as tmp:
+    target = Path(tmp) / "addons" / "twenty" / "secrets"
+    real_chmod = os.chmod
+
+    def refuse_chmod(path, mode, *a, **kw):
+        if Path(path) == target:
+            raise PermissionError(1, "Operation not permitted", str(path))
+        return real_chmod(path, mode, *a, **kw)
+
+    os.chmod = refuse_chmod
+    try:
+        st._mkdir(target)
+        got = None
+    except PermissionError as e:
+        got = str(e)
+    finally:
+        os.chmod = real_chmod
+    check("_mkdir's chmod failure is a PermissionError naming the directory and chown",
+          got is not None and str(target) in got and "chown" in got, repr(got))
+
 if failures:
     print(f"{failures} failed")
     sys.exit(1)

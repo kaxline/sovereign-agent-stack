@@ -956,7 +956,11 @@ cmd_ensure() {
   # The Hermes bootstraps mount the store read-only; created here (0700, as
   # addon_store makes them) so Docker doesn't create them root-owned on Linux.
   mkdir -p "${STORE}/instances" "${STORE}/secrets"
-  chmod 700 "$STORE" "${STORE}/instances" "${STORE}/secrets"
+  # Not fatal: on a store Docker already created root-owned, make up goes on
+  # and the warning says how to fix it.
+  if ! chmod 700 "$STORE" "${STORE}/instances" "${STORE}/secrets" 2>/dev/null; then
+    warn "couldn't set ${STORE}, its instances and its secrets to 0700 (another user, often root, owns one); run sudo chown -R \"\$(id -u):\$(id -g)\" '${STORE}'"
+  fi
   sync_bool
   migrate_first
   is_true "$(env_get TWENTY_LOCAL_ENABLED 0)" || return 0
