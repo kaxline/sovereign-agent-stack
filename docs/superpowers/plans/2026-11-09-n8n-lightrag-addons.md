@@ -37,7 +37,7 @@ no remaining active profile starts, read from `docker compose config --services`
 The n8n tasks (6–8) need from plan 3: `data.volumes` / `data.paths`, `backup.secrets` /
 `backup.recommended`, `oneshot`, and `remove <id> --delete-data`. They ship in the same
 0.3.x patch as `addon.sh` items 1–6, which the CR 0020 reply draft targets together. Decided
-by Keith on 2026-11-09: 0.3.13 for both. If items 1–6 slip, n8n moves with them. Twenty's
+by Keith on 2026-11-09: 0.3.13 for both. If items 1–6 slip, n8n moves with them. Merge order: `fix/bwbroker-always-installed`, then plan 3 (its reload calls `vault.sh reload-plugins`), then Tasks 6–8. Twenty's
 manifest is not in this plan.
 
 ## Decisions
