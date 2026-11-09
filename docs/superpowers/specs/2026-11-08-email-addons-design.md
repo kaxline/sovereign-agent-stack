@@ -63,7 +63,7 @@ host source is a later decision, made after Keith's real-account check of both.
               email-indexer         email-outbox          hold passwords; egress network only;
                (writes index)      (APPEND drafts)        no network shared with Hermes
                         │               ▲
-            email_index volume    drafts queue (data/addons/email/drafts/)
+            email_index volume    email_drafts volume (drafts queue)
                         ▼ ro            │
                   email-mcp        email-drafts-mcp       no passwords; no internet;
                 (mail-mcp image) (mail-drafts-mcp image)  compose-internal only
@@ -127,8 +127,8 @@ its next pass.
 
 ### Passwords
 
-Each password is a file, `data/addons/email/secrets/<id>.password` (0600, owned by
-`HERMES_UID`). The `secrets/` directory is mounted read-only into `email-indexer` and
+Each password is a file, `data/addons/email/secrets/<id>.password` (0600, owned by the user
+who runs `addon.sh`, which on Linux must be `HERMES_UID`). The `secrets/` directory is mounted read-only into `email-indexer` and
 `email-outbox` only. `scripts/lib/mail_credentials.py` gains a third source, a directory named by
 `MAIL_CREDENTIALS_DIR`, beside the Keychain file descriptor and `password_env`. The config has no
 password field, as today.
@@ -167,7 +167,7 @@ open question about Twenty's two flags.
 
 ### Settings and instances
 
-- `settings` as in the manifest spec. Values go in `data/addons/<id>/settings.env`.
+- `settings` as in the manifest spec. Values go in `data/addons/<id>/config/settings.env`; services see the `config/` directory at `/run/addon/config`.
 - `instances: {"name": "accounts", "settings": {…}}` declares a per-instance settings schema.
   Each instance is `data/addons/<id>/instances/<slug>.json`. The slug matches
   `[a-z][a-z0-9-]{0,30}`.
