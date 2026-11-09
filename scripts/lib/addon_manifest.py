@@ -196,6 +196,9 @@ def validate(manifest, source: str = "builtin", repo=_AUTO) -> list[str]:
     for key in ("title", "tagline", "description"):
         if key in manifest and not (isinstance(manifest[key], str) and manifest[key].strip()):
             err(f"{key} must be a non-empty string")
+    if "postInstallMessage" in manifest and not (isinstance(manifest["postInstallMessage"], str)
+                                                 and manifest["postInstallMessage"].strip()):
+        err("postInstallMessage must be a non-empty string")
     pub = manifest.get("publisher")
     if "publisher" in manifest and not (isinstance(pub, dict) and isinstance(pub.get("name"), str)
                                         and isinstance(pub.get("url"), str)):

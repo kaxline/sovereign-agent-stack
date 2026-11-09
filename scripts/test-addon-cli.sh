@@ -1441,6 +1441,14 @@ fi
 if logged gptr-mcp; then bad "enable n8n never names gptr-mcp"; cat "$STUB_LOG"; else ok "enable n8n never names gptr-mcp"; fi
 if [ "$(envval AUTOMATION_ENABLED)" = 1 ]; then ok "enable n8n sets AUTOMATION_ENABLED=1"; else bad "enable n8n sets AUTOMATION_ENABLED=1"; fi
 
+addon_json list --json
+expect_rc "list --json over the real add-ons" 0
+if python3 -c 'import json,sys; a={x["shortId"]: x for x in json.load(open(sys.argv[1]))}; sys.exit(0 if a["n8n"].get("postInstallMessage") == "Open http://localhost:5678 and create the owner account." and "postInstallMessage" not in a["gptr"] else 1)' "$out"; then
+  ok "list --json carries n8n's postInstallMessage and none for an add-on without one"
+else
+  bad "list --json carries n8n's postInstallMessage and none for an add-on without one"
+fi
+
 # Disabling n8n stops its three containers and leaves gptr-mcp running.
 : > "$STUB_LOG"
 addon_json disable n8n --json
