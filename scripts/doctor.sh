@@ -1319,6 +1319,124 @@ if has_profile crm || [[ "$twenty_local" -eq 1 || "$twenty_mcp" -eq 1 ]]; then
   fi
 fi
 
+# --- Bitwarden (broker, account files, local Vaultwarden) ---
+bw_on="$(env_get BITWARDEN_ENABLED 0)"
+case "$bw_on" in 1|true|TRUE|yes|YES) bw_on=1 ;; *) bw_on=0 ;; esac
+bw_local="$(env_get BITWARDEN_LOCAL_ENABLED 0)"
+case "$bw_local" in 1|true|TRUE|yes|YES) bw_local=1 ;; *) bw_local=0 ;; esac
+bw_accounts="compose/bitwarden/accounts"
+bw_files=0
+for f in "$bw_accounts"/*.env; do [[ -f "$f" ]] && bw_files=$((bw_files + 1)); done
+# A KEY=value from an account file, as the broker reads it: CR, spaces and quotes dropped.
+bw_get() {
+  grep -E "^[[:space:]]*${2}[[:space:]]*=" "$1" 2>/dev/null | head -1 | cut -d= -f2- \
+    | tr -d '\r"'"'" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' || true
+}
+if [[ "$bw_on" -eq 1 || "$bw_local" -eq 1 || "$bw_files" -gt 0 ]]; then
+  echo
+  echo "--- Bitwarden ---"
+  bw_data="$(env_get BITWARDEN_HOST_DATA_DIR ./data/addons/bitwarden)"
+  case "$bw_data" in
+    "~") bw_data="$HOME" ;;
+    \~/*) bw_data="$HOME/${bw_data#\~/}" ;;
+    /*) ;;
+    *) bw_data="${ROOT}/${bw_data#./}" ;;
+  esac
+  # Docker turns a missing bind-mount source into an empty folder, which then
+  # stands where vault-init's file should go.
+  if [[ -d "${bw_data}/secrets/local/tls/ca.crt" ]]; then
+    bad "${bw_data}/secrets/local/tls/ca.crt is a folder (Docker made it for a missing file) — remove it, then make vault-init"
+  elif [[ "$bw_local" -eq 1 && ! -f "${bw_data}/secrets/local/tls/ca.crt" ]]; then
+    warn "no local CA certificate yet — make vault-init"
+  fi
+  for pair in "local/tls/server:server.crt server.key" "local/vaultwarden:admin_token.phc"; do
+    bw_dir="${pair%%:*}"
+    if [[ -e "${bw_data}/${bw_dir}" && ! -d "${bw_data}/${bw_dir}" ]]; then
+      bad "${bw_data}/${bw_dir} should be a folder — remove it, then make vault-init"
+      continue
+    fi
+    for f in ${pair#*:}; do
+      if [[ -d "${bw_data}/${bw_dir}/${f}" ]]; then
+        bad "${bw_data}/${bw_dir}/${f} is a folder (Docker made it for a missing file) — remove it, then make vault-init"
+      elif [[ "$bw_local" -eq 1 && -d "${bw_data}/${bw_dir}" && ! -f "${bw_data}/${bw_dir}/${f}" ]]; then
+        warn "${bw_dir}/${f} is missing — make vault-init writes it"
+      fi
+    done
+  done
+  if [[ "$bw_local" -eq 1 ]]; then
+    if has_profile vault; then
+      ok "COMPOSE_PROFILES includes vault"
+    else
+      bad "BITWARDEN_LOCAL_ENABLED=1 but 'vault' not in COMPOSE_PROFILES — run make ensure-local"
+    fi
+    if [[ -r "${bw_data}/local/state" ]]; then
+      bw_step="$(bw_get "${bw_data}/local/state" STEP)"
+      [[ "$bw_step" == role ]] || warn "make vault-init has not finished (last step: ${bw_step:-none}) — run it again"
+    fi
+  elif [[ -f "${bw_accounts}/local.env" ]]; then
+    ok "local account is offline while BITWARDEN_LOCAL_ENABLED=0 (note; its data stays)"
+  fi
+  for f in "$bw_accounts"/*.env; do
+    [[ -f "$f" ]] || continue
+    if [[ "$(bw_get "$f" BW_SCOPE)" == all ]]; then
+      warn "$(basename "$f" .env): BW_SCOPE=all lets the agent reach every item in that vault — use folder: or collection: (make vault-add FORCE=1)"
+    fi
+  done
+  if [[ "$bw_on" -eq 1 ]]; then
+    if docker info >/dev/null 2>&1; then
+      if [[ -z "$(docker compose --profile bitwarden ps --status running -q bitwarden-broker 2>/dev/null || true)" ]]; then
+        warn "bitwarden-broker not running — make up"
+      elif ! bw_rows="$(docker compose --profile bitwarden exec -T bitwarden-broker python3 -m broker.cli accounts 2>/dev/null)"; then
+        bad "Bitwarden broker does not answer /health — docker compose logs bitwarden-broker"
+      else
+        ok "Bitwarden broker answers /health"
+        bw_seen=" "
+        while IFS=$'\t' read -r bw_slug bw_mode bw_scope bw_state bw_class; do
+          [[ -n "$bw_slug" ]] || continue
+          if [[ "$bw_slug" == refused ]]; then
+            bad "the broker refused an account file: ${bw_mode}"
+            continue
+          fi
+          bw_seen="${bw_seen}${bw_slug} "
+          [[ "$bw_class" == "-" ]] && bw_class=""
+          case "$bw_state" in
+            unlocked) ok "${bw_slug}: unlocked (${bw_mode}, ${bw_scope} scope)" ;;
+            locked)
+              if [[ "$(bw_get "${bw_accounts}/${bw_slug}.env" BW_UNLOCK)" == manual ]]; then
+                warn "${bw_slug}: locked — make vault-unlock SLUG=${bw_slug}"
+              else
+                warn "${bw_slug}: locked${bw_class:+ (${bw_class})} — the stored unlock has not finished or failed"
+              fi
+              ;;
+            offline)
+              if [[ "$bw_slug" == local && "$bw_local" -eq 0 ]]; then
+                : # noted above, from the account file
+              else
+                warn "${bw_slug}: offline (${bw_class:-network}) — the broker cannot reach its server"
+              fi
+              ;;
+            error)
+              if [[ "$bw_class" == auth ]]; then
+                bad "${bw_slug}: error (auth) — Bitwarden refused the API key or master password; make vault-add SLUG=${bw_slug} FORCE=1"
+              else
+                bad "${bw_slug}: error (${bw_class:-unknown}) — docker compose logs bitwarden-broker"
+              fi
+              ;;
+            *) warn "${bw_slug}: ${bw_state}" ;;
+          esac
+        done <<< "$bw_rows"
+        for f in "$bw_accounts"/*.env; do
+          [[ -f "$f" ]] || continue
+          bw_slug="$(basename "$f" .env)"
+          [[ "$bw_seen" == *" ${bw_slug} "* ]] || warn "${bw_slug}: not loaded by the broker yet — make up restarts it"
+        done
+      fi
+    fi
+  elif [[ "$bw_files" -gt 0 ]]; then
+    warn "Bitwarden account files exist but BITWARDEN_ENABLED is not 1 — the broker is off"
+  fi
+fi
+
 # --- Mail (read-only MCP over the host-built index) ---
 mail_enabled="$(env_get MAIL_MCP_ENABLED 0)"
 case "$mail_enabled" in 1|true|TRUE|yes|YES) mail_on=1 ;; *) mail_on=0 ;; esac

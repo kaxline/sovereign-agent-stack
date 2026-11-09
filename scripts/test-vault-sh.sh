@@ -1,0 +1,336 @@
+#!/usr/bin/env bash
+# scripts/vault.sh with docker (and make) replaced by recording stubs on PATH.
+# Covers argument checks, add's files and modes, the scope all refusal,
+# passwords kept out of every argv and all output, requests --json, init's
+# order and resume from local/state, the make up hook, secrets-sync's exit
+# codes, and backup/restore (when the host has sqlite3). Bash 3.2 compatible;
+# needs no host python3.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+vault="${ROOT}/scripts/vault.sh"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+export ENV_FILE="$tmp/.env"
+export VAULT_ACCOUNTS_DIR="$tmp/accounts"
+export BITWARDEN_HOST_DATA_DIR="$tmp/data"
+export VAULT_BROKER_WAIT=0
+export STUB="$tmp/stub"
+export STUB_DATA="$BITWARDEN_HOST_DATA_DIR"
+mkdir -p "$tmp/bin" "$STUB"
+: > "$ENV_FILE"
+
+# docker: one log line per call; canned answers from files in $STUB.
+cat > "$tmp/bin/docker" <<'SH'
+#!/bin/sh
+printf '%s\n' "$*" >> "$STUB/log"
+rc_of() { if [ -f "$STUB/rc.$1" ]; then cat "$STUB/rc.$1"; else echo 0; fi; }
+case " $* " in
+  *" info "*) exit 0 ;;
+  *" ps "*bitwarden-broker*) [ -f "$STUB/broker-running" ] && echo cid-broker; exit 0 ;;
+  *" ps "*) exit 0 ;;
+  *" up "*)
+    if [ -d "$STUB_DATA/local/tls/server" ] && [ -d "$STUB_DATA/local/vaultwarden" ] \
+      && [ -d "$STUB_DATA/secrets/local/tls" ] && [ -d "$STUB_DATA/vaultwarden" ]; then
+      echo "stub: dirs ready at up" >> "$STUB/log"
+    fi
+    exit 0 ;;
+  *" broker.cli accounts "*) cat "$STUB/accounts" 2>/dev/null; exit "$(rc_of accounts)" ;;
+  *" broker.cli requests --json "*) cat "$STUB/requests.json"; exit 0 ;;
+  *" broker.cli requests --tsv "*) cat "$STUB/requests.tsv" 2>/dev/null; exit 0 ;;
+  *" broker.cli requests "*) echo "No pending access requests."; exit 0 ;;
+  *" broker.cli sync "*) echo "Synced: personal"; exit 0 ;;
+  *" broker.unlock "*)
+    got="$(cat)"
+    [ "$got" = "$(cat "$STUB/expect-password" 2>/dev/null)" ] && echo "stub: password on stdin" >> "$STUB/log"
+    exit "$(rc_of unlock)" ;;
+esac
+next=""
+for a in "$@"; do
+  if [ "$next" = 1 ]; then exit "$(rc_of "setup-$a")"; fi
+  [ "$a" = bitwarden-setup ] && next=1
+  [ "$a" = bitwarden-secrets-sync ] && exit "$(rc_of secrets-sync)"
+done
+exit 0
+SH
+cat > "$tmp/bin/make" <<'SH'
+#!/bin/sh
+printf 'make %s\n' "$*" >> "$STUB/log"
+SH
+chmod +x "$tmp/bin/docker" "$tmp/bin/make"
+export PATH="$tmp/bin:$PATH"
+
+fail() {
+  printf 'FAIL %s\n' "$1" >&2
+  [ -f "$out" ] && sed 's/^/  | /' "$out" >&2
+  exit 1
+}
+out="$tmp/out"
+run() { "$vault" "$@" < /dev/null > "$out" 2>&1; }
+# Runs with stdin from a string (the masked prompts read it).
+run_in() { local input="$1"; shift; printf '%s' "$input" | "$vault" "$@" > "$out" 2>&1; }
+reset_stub() { rm -f "$STUB"/*; }
+mode_of() { stat -f %Lp "$1" 2>/dev/null || stat -c %a "$1"; }
+logged() { grep -qF -- "$1" "$STUB/log" 2>/dev/null; }
+said() { grep -qF -- "$1" "$out"; }
+PW="syn-master-$$-Zq9"
+SECRET="syn-secret-$$-Kx4"
+no_secret() {
+  if grep -qF -e "$PW" -e "$SECRET" "$out" "$STUB/log" 2>/dev/null; then fail "$1: a password or secret reached argv or output"; fi
+}
+
+# --- Argument checks -------------------------------------------------------
+run frobnicate && fail "unknown subcommand must fail"
+said "Usage: scripts/vault.sh" || fail "unknown subcommand prints usage"
+run add --mode cloud && fail "add without --slug"
+said "--slug must use lowercase letters, digits and hyphens" || fail "add without --slug: message"
+run add --slug Bad_1 --mode cloud && fail "bad slug accepted"
+run add --slug personal && fail "add without --mode"
+said "--mode must be cloud or selfhosted" || fail "missing --mode: message"
+run add --slug personal --mode local && fail "add --mode local accepted"
+said "make vault-init" || fail "add --mode local points at make vault-init"
+run add --slug local --mode cloud && fail "add --slug local accepted"
+run add --slug personal --mode cloud --region mars && fail "bad region accepted"
+said "--region must be us or eu" || fail "bad region: message"
+run add --slug home --mode selfhosted && fail "selfhosted without --url"
+said "--url must be an https:// URL" || fail "selfhosted without --url: message"
+run add --slug home --mode selfhosted --url http://vault.example.com && fail "http URL accepted"
+run add --slug home --mode selfhosted --url 'https://vault.example.com/?x=1' && fail "URL with a query accepted"
+run add --slug personal --mode cloud --scope bogus && fail "bad scope accepted"
+said "--scope must be folder:<name>, collection:<id> or all" || fail "bad scope: message"
+run add --slug personal --mode cloud --scope 'collection:-x' && fail "collection id starting with - accepted"
+run add --slug personal --mode cloud --unlock auto && fail "bad unlock accepted"
+said "--unlock must be stored or manual" || fail "bad unlock: message"
+run add --slug personal --mode cloud --frob && fail "unknown add option accepted"
+run unlock && fail "unlock without --slug"
+run lock --slug Nope && fail "lock with a bad slug"
+run remove --slug local && fail "remove --slug local accepted"
+run restore && fail "restore without a directory"
+run backup && fail "backup without a directory"
+[ ! -e "$VAULT_ACCOUNTS_DIR/personal.env" ] || fail "a refused add wrote a file"
+[ ! -s "$STUB/log" ] || fail "argument checks ran docker: $(cat "$STUB/log")"
+
+# --- add: files, modes, no password in argv --------------------------------
+reset_stub
+run_in "user.syn-client"$'\n'"$SECRET"$'\n'"$PW"$'\n' add --slug personal --mode cloud --region eu \
+  || fail "add cloud eu"
+no_secret add
+f="$VAULT_ACCOUNTS_DIR/personal.env"
+[ -f "$f" ] || fail "add writes personal.env"
+[ "$(mode_of "$f")" = 600 ] || fail "account file is mode 600"
+grep -qx 'BW_MODE=cloud' "$f" || fail "BW_MODE"
+grep -qx 'BW_SERVER=https://vault.bitwarden.eu' "$f" || fail "REGION=eu picks vault.bitwarden.eu"
+grep -qx 'BW_SCOPE=folder:Agent' "$f" || fail "default scope folder:Agent"
+grep -qx 'BW_UNLOCK=stored' "$f" || fail "default unlock stored"
+grep -qx 'BW_CLIENTID=user.syn-client' "$f" || fail "client id"
+if grep -qF -e "$SECRET" -e "$PW" "$f"; then fail "a credential went into the account file"; fi
+s="$BITWARDEN_HOST_DATA_DIR/secrets/personal"
+[ "$(cat "$s/client_secret")" = "$SECRET" ] || fail "client_secret content"
+[ "$(cat "$s/master_password")" = "$PW" ] || fail "master_password content"
+[ "$(mode_of "$s/client_secret")" = 600 ] || fail "client_secret mode"
+[ "$(mode_of "$s/master_password")" = 600 ] || fail "master_password mode"
+[ "$(mode_of "$s")" = 700 ] || fail "secrets/<slug> is mode 700"
+said "opens the whole vault" || fail "stored with a folder: scope prints the Unlock warning"
+grep -qx 'BITWARDEN_ENABLED=1' "$ENV_FILE" || fail "add turns on BITWARDEN_ENABLED"
+said "bitwarden-setup" || fail "add says how to create and seed the folder"
+
+run_in "user.x"$'\n'"x"$'\n'"x"$'\n' add --slug personal --mode cloud && fail "add must not overwrite"
+said "--force" || fail "the overwrite refusal mentions --force"
+
+# manual unlock: no master_password; selfhosted URL kept without its slash.
+run_in "user.home"$'\n'"$SECRET"$'\n' add --slug home --mode selfhosted --url https://vault.example.com/ \
+  --scope collection:c-1a2b --unlock manual || fail "add selfhosted manual"
+no_secret "add manual"
+grep -qx 'BW_SERVER=https://vault.example.com' "$VAULT_ACCOUNTS_DIR/home.env" || fail "selfhosted URL"
+grep -qx 'BW_SCOPE=collection:c-1a2b' "$VAULT_ACCOUNTS_DIR/home.env" || fail "collection scope"
+grep -qx 'BW_UNLOCK=manual' "$VAULT_ACCOUNTS_DIR/home.env" || fail "manual unlock"
+[ ! -e "$BITWARDEN_HOST_DATA_DIR/secrets/home/master_password" ] || fail "manual unlock stores no master password"
+said "opens the whole vault" && fail "the warning is for stored folder: scopes only"
+
+# A folder name with " #" is quoted, so the broker's parser keeps it whole.
+run_in "user.y"$'\n'"$SECRET"$'\n' add --slug hashy --mode cloud --scope 'folder:Agent #2' --unlock manual \
+  || fail "add with # in the folder name"
+grep -qx 'BW_SCOPE="folder:Agent #2"' "$VAULT_ACCOUNTS_DIR/hashy.env" || fail "folder name with # quoted"
+
+# --scope all: refused unless SCOPE=all came in literally.
+run_in "user.z"$'\n'"$SECRET"$'\n' add --slug wide --mode cloud --scope all --unlock manual \
+  && fail "--scope all accepted without SCOPE=all"
+said "SCOPE=all" || fail "the all refusal names SCOPE=all"
+[ ! -e "$VAULT_ACCOUNTS_DIR/wide.env" ] || fail "a refused --scope all wrote a file"
+printf 'user.z\n%s\n' "$SECRET" | SCOPE=all "$vault" add --slug wide --mode cloud --scope all --unlock manual \
+  > "$out" 2>&1 || fail "--scope all with SCOPE=all"
+grep -qx 'BW_SCOPE=all' "$VAULT_ACCOUNTS_DIR/wide.env" || fail "scope all written"
+rm -f "$VAULT_ACCOUNTS_DIR/wide.env" "$VAULT_ACCOUNTS_DIR/hashy.env"
+
+# With the broker running, add restarts it and reads the account's state;
+# an auth error removes what add wrote.
+reset_stub
+touch "$STUB/broker-running"
+printf 'checked\tcloud\tfolder\tunlocked\t-\n' > "$STUB/accounts"
+run_in "user.c"$'\n'"$SECRET"$'\n'"$PW"$'\n' add --slug checked --mode cloud || fail "add with the broker up"
+logged "restart bitwarden-broker" || fail "add restarts the broker"
+said "checked: signed in" || fail "add reports the broker's unlock"
+no_secret "add checked"
+printf 'refused\tcloud\tfolder\terror\tauth\n' > "$STUB/accounts"
+run_in "user.r"$'\n'"$SECRET"$'\n'"$PW"$'\n' add --slug refused --mode cloud && fail "an auth error must fail add"
+said "auth" || fail "the auth failure names the error class"
+[ ! -e "$VAULT_ACCOUNTS_DIR/refused.env" ] || fail "an auth error keeps the account file"
+[ ! -e "$BITWARDEN_HOST_DATA_DIR/secrets/refused" ] || fail "an auth error keeps the secrets"
+rm -f "$VAULT_ACCOUNTS_DIR/checked.env"
+
+# --- unlock and lock ---------------------------------------------------------
+reset_stub
+run unlock --slug home && fail "unlock with the broker down must fail"
+said "not running" || fail "unlock says the broker is not running"
+touch "$STUB/broker-running"
+printf '%s' "$PW" > "$STUB/expect-password"
+run_in "$PW"$'\n' unlock --slug home || fail "unlock"
+logged "exec -T bitwarden-broker python3 -m broker.unlock home" || fail "unlock runs broker.unlock"
+logged "stub: password on stdin" || fail "unlock passes the password on stdin"
+no_secret unlock
+echo 2 > "$STUB/rc.unlock"
+run_in "wrong"$'\n' unlock --slug home && fail "a wrong password must fail"
+said "Wrong master password" || fail "wrong password message"
+run_in "$PW"$'\n' unlock --slug personal && fail "unlock of a stored account"
+said "stored" || fail "unlock of a stored account says why"
+run unlock --slug missing && fail "unlock of a missing account"
+rm -f "$STUB/rc.unlock"
+run lock --slug home || fail "lock"
+logged "broker.unlock --lock home" || fail "lock runs broker.unlock --lock"
+
+# --- requests, sync and grant -----------------------------------------------
+reset_stub
+touch "$STUB/broker-running"
+printf '{"pending": [{"request_id": "r1", "account": "personal", "site": "www.example.com", "reason": "sign in", "created": 1, "status": "pending", "done_at": null}], "recent": []}\n' \
+  > "$STUB/requests.json"
+"$vault" requests --json < /dev/null > "$tmp/req.json" 2> "$tmp/req.err" || fail "requests --json"
+cmp -s "$tmp/req.json" "$STUB/requests.json" || fail "requests --json adds to the broker's JSON"
+if command -v python3 >/dev/null 2>&1; then
+  python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$tmp/req.json" || fail "requests --json is not JSON"
+fi
+run requests || fail "requests"
+run sync || fail "sync"
+logged "broker.cli sync" || fail "sync calls the broker"
+run grant --site www.example.com --slug personal --email owner@example.com || fail "grant --site"
+logged "run --rm bitwarden-setup grant --slug personal --email owner@example.com --site www.example.com" \
+  || fail "grant runs bitwarden-setup grant"
+[ "$(grep -c 'broker.cli sync' "$STUB/log")" = 2 ] || fail "grant syncs the broker afterwards"
+printf 'r1\tpersonal\twww.example.com\tsign in\n' > "$STUB/requests.tsv"
+run grant && fail "grant with no --site and no terminal must fail"
+said "www.example.com" || fail "grant lists pending requests"
+said "--site" || fail "grant without a terminal says to pass --site"
+echo 1 > "$STUB/rc.setup-grant"
+run grant --site www.example.com --slug personal --email owner@example.com && fail "a failed grant must fail"
+said "stays pending" || fail "a failed grant says the request stays pending"
+
+# --- remove ------------------------------------------------------------------
+reset_stub
+run remove --slug home || fail "remove"
+[ ! -e "$VAULT_ACCOUNTS_DIR/home.env" ] || fail "remove deletes the account file"
+[ ! -e "$BITWARDEN_HOST_DATA_DIR/secrets/home" ] || fail "remove deletes the secrets"
+run remove --slug home && fail "removing a missing account must fail"
+
+# --- init: order, resume from local/state ------------------------------------
+reset_stub
+run init && fail "init without an owner and no terminal"
+said "VAULT_OWNER_EMAIL" || fail "init without an owner names VAULT_OWNER_EMAIL"
+reset_stub
+run init --owner owner@example.com || fail "init from scratch"
+for d in bw broker secrets/local/tls local/tls/server local/vaultwarden vaultwarden; do
+  [ -d "$BITWARDEN_HOST_DATA_DIR/$d" ] || fail "init creates $d"
+done
+[ "$(mode_of "$BITWARDEN_HOST_DATA_DIR/local")" = 700 ] || fail "local/ is mode 700"
+[ "$(mode_of "$BITWARDEN_HOST_DATA_DIR/secrets")" = 700 ] || fail "secrets/ is mode 700"
+order="$(grep -nE 'bitwarden-setup (tls|admin-token|local-init|role)|up -d|dirs ready' "$STUB/log" \
+  | sed -E 's/^[0-9]+://; s/.*bitwarden-setup ([a-z-]+).*/\1/; s/.* up -d.*/up/; s/stub: dirs ready at up/dirs/' | tr '\n' ' ')"
+[ "$order" = "tls admin-token up dirs local-init role " ] || fail "init order: ${order}"
+logged "local-init --owner owner@example.com --signup-url http://localhost:8222" || fail "local-init arguments"
+logged "role --slug local --email owner@example.com" || fail "role arguments"
+logged "--profile vault up -d --wait vaultwarden vaultwarden-tls" || fail "init starts the vault profile"
+grep -qx 'BITWARDEN_LOCAL_ENABLED=1' "$ENV_FILE" || fail "init sets BITWARDEN_LOCAL_ENABLED=1"
+said "only copy" || fail "init's closing message says the local Vaultwarden holds the only copy"
+
+# The owner has not registered yet: local-init exits 4, init stops before role.
+reset_stub
+echo 4 > "$STUB/rc.setup-local-init"
+run init --owner owner@example.com && fail "init must fail while the owner has not registered"
+logged "bitwarden-setup role" && fail "init ran role before the owner was confirmed"
+said "make vault-init again" || fail "init says to re-run"
+
+# Recorded step confirmed: no tls, admin-token or local-init; role with the recorded owner.
+reset_stub
+printf 'STEP=confirmed\nOWNER_EMAIL=owner@example.com\nORG_ID=org-1\n' > "$BITWARDEN_HOST_DATA_DIR/local/state"
+chmod 600 "$BITWARDEN_HOST_DATA_DIR/local/state"
+run init || fail "init resume at confirmed"
+logged "bitwarden-setup local-init" && fail "init re-ran local-init after confirmed"
+logged "bitwarden-setup tls" && fail "init re-ran tls after confirmed"
+logged "role --slug local --email owner@example.com" || fail "init resumes with role for the recorded owner"
+run init --owner other@example.com && fail "init with a different owner than recorded"
+said "owner@example.com" || fail "the owner mismatch names the recorded owner"
+
+# Recorded step role: nothing left to run.
+reset_stub
+printf 'STEP=role\nOWNER_EMAIL=owner@example.com\n' > "$BITWARDEN_HOST_DATA_DIR/local/state"
+run init || fail "init when done"
+logged "bitwarden-setup" && fail "init ran bitwarden-setup when every step was done"
+said "already set up" || fail "init says local mode is set up"
+
+# --- make up hook --------------------------------------------------------------
+reset_stub
+printf 'BW_MODE=local\nBW_SERVER=https://vaultwarden.vault.internal\nBW_SCOPE=collection:c-agent\nBW_UNLOCK=stored\nBW_CLIENTID=user.l\nBW_SECRETS_ITEM_SCOPE=collection:c-stack\n' \
+  > "$VAULT_ACCOUNTS_DIR/local.env"
+chmod 600 "$VAULT_ACCOUNTS_DIR/local.env"
+printf 'BITWARDEN_ENABLED=0\n' > "$ENV_FILE"
+run up-hook || fail "up-hook with BITWARDEN_ENABLED=0"
+[ ! -s "$out" ] || fail "up-hook prints nothing while BITWARDEN_ENABLED=0"
+[ ! -s "$STUB/log" ] || fail "up-hook runs docker while BITWARDEN_ENABLED=0"
+printf 'BITWARDEN_ENABLED=1\n' > "$ENV_FILE"
+touch "$STUB/broker-running"
+printf 'local\tlocal\tcollection\tlocked\t-\npersonal\tcloud\tfolder\tunlocked\t-\n' > "$STUB/accounts"
+run up-hook || fail "up-hook, locked"
+said "Bitwarden secrets sync skipped: local is locked" || fail "up-hook skip message"
+logged "bitwarden-secrets-sync" && fail "up-hook synced while the account was locked"
+printf 'local\tlocal\tcollection\tunlocked\t-\n' > "$STUB/accounts"
+run up-hook || fail "up-hook, unlocked"
+logged "run --rm -T bitwarden-secrets-sync" || fail "up-hook runs secrets-sync when unlocked"
+grep -A3 -E '^up:' "${ROOT}/Makefile" | grep -q 'vault.sh up-hook' || fail "make up calls vault.sh up-hook"
+
+# --- secrets-sync exit codes ---------------------------------------------------
+reset_stub
+echo 3 > "$STUB/rc.secrets-sync"
+run secrets-sync || fail "secrets-sync exit 3"
+logged "make" || fail "secrets-sync exit 3 runs make hermes-reload"
+grep -q 'hermes-reload' "$STUB/log" || fail "secrets-sync exit 3 runs hermes-reload"
+echo 1 > "$STUB/rc.secrets-sync"
+run secrets-sync && fail "secrets-sync exit 1 must fail"
+said "make up" || fail "secrets-sync exit 1 says to start the broker"
+
+# --- backup and restore --------------------------------------------------------
+if command -v sqlite3 >/dev/null 2>&1; then
+  reset_stub
+  vw="$BITWARDEN_HOST_DATA_DIR/vaultwarden"
+  mkdir -p "$vw/attachments/a1"
+  sqlite3 "$vw/db.sqlite3" 'CREATE TABLE t (v TEXT); INSERT INTO t VALUES ("syn-row");'
+  printf 'k' > "$vw/rsa_key.pem"; chmod 600 "$vw/rsa_key.pem"
+  printf 'att' > "$vw/attachments/a1/file"
+  run backup "$tmp/bk" || fail "backup"
+  [ "$(sqlite3 "$tmp/bk/vaultwarden/db.sqlite3" 'SELECT v FROM t')" = syn-row ] || fail "backup copies the database"
+  [ "$(mode_of "$tmp/bk/vaultwarden/rsa_key.pem")" = 600 ] || fail "backup keeps rsa_key modes"
+  [ -f "$tmp/bk/vaultwarden/attachments/a1/file" ] || fail "backup copies attachments"
+  [ "$(mode_of "$tmp/bk/secrets/personal/master_password")" = 600 ] || fail "backup keeps secret modes"
+  [ -f "$tmp/bk/local/state" ] || fail "backup copies local/"
+  [ -f "$tmp/bk/accounts/local.env" ] || fail "backup copies the account files"
+  run backup "$tmp/bk" && fail "backup into a non-empty directory"
+  run restore "$tmp/bk" && fail "restore over existing data without --force"
+  said "--force" || fail "the restore refusal mentions --force"
+  sqlite3 "$vw/db.sqlite3" 'DELETE FROM t'
+  rm -f "$BITWARDEN_HOST_DATA_DIR/secrets/personal/master_password"
+  run restore "$tmp/bk" --force || fail "restore --force"
+  [ "$(sqlite3 "$vw/db.sqlite3" 'SELECT v FROM t')" = syn-row ] || fail "restore puts the database back"
+  [ "$(mode_of "$BITWARDEN_HOST_DATA_DIR/secrets/personal/master_password")" = 600 ] || fail "restore keeps modes"
+else
+  echo "skip: backup and restore (no sqlite3)"
+fi
+
+printf 'OK vault.sh\n'

@@ -1350,6 +1350,52 @@ def test_unlock_over_socket() -> None:
         b.expect_clean()
 
 
+def broker_cli(b: Broker, *args):
+    import subprocess
+    env = {"PATH": b.env["PATH"], "PYTHONDONTWRITEBYTECODE": "1", "BITWARDEN_LISTEN": b.env["BITWARDEN_LISTEN"]}
+    out = subprocess.run([sys.executable, "-m", "broker.cli", *args], cwd=BROKER_PKG, env=env,
+                         capture_output=True, text=True, timeout=60)
+    b.bodies.append(out.stdout + out.stderr)
+    return out.returncode, out.stdout, out.stderr
+
+
+def test_cli_for_vault_sh() -> None:
+    with broker_run() as b:
+        b.add_account("personal")
+        b.add_account("manual", unlock="manual")
+        (b.accounts_dir / "broken.env").write_text("BW_MODE=cloud\n", encoding="utf-8")
+        b.start(unlocked=["personal"])
+        code, out, err = broker_cli(b, "accounts")
+        expect(code == 0, f"accounts exit {code}: {err}")
+        rows = [line.split("\t") for line in out.splitlines()]
+        expect(["manual", "cloud", "folder", "locked", "-"] in rows, f"accounts rows {rows}")
+        expect(["personal", "cloud", "folder", "unlocked", "-"] in rows, f"accounts rows {rows}")
+        expect(any(r[0] == "refused" and "broken.env" in r[1] for r in rows), f"refused file not listed: {rows}")
+
+        status, _ = b.call("POST", "/requests", {"site": "https://www.example.com/login", "account": "personal",
+                                                 "reason": "needs\tto sign in\nnow"})
+        expect(status == 200, f"POST /requests {status}")
+        code, out, err = broker_cli(b, "requests", "--json")
+        expect(code == 0, f"requests --json exit {code}: {err}")
+        data = json.loads(out)
+        expect([r["site"] for r in data["pending"]] == ["www.example.com"], f"requests --json {data}")
+        code, out, err = broker_cli(b, "requests", "--tsv")
+        fields = out.rstrip("\n").split("\t")
+        expect(code == 0 and len(out.splitlines()) == 1 and len(fields) == 4, f"requests --tsv {out!r}")
+        expect(fields[1:3] == ["personal", "www.example.com"], f"requests --tsv fields {fields}")
+        code, out, err = broker_cli(b, "requests")
+        expect(code == 0 and "www.example.com" in out and "agent's text" in out.lower(), f"requests text {out!r}")
+
+        code, out, err = broker_cli(b, "sync")
+        expect(code == 0 and "personal" in out, f"sync exit {code}: {out}{err}")
+        code, out, err = broker_cli(b, "items")
+        expect(code == 2, f"an unknown command exit {code}")
+        b.stop()
+        code, out, err = broker_cli(b, "accounts")
+        expect(code == 1 and "not reachable" in err, f"broker down exit {code}: {err}")
+        b.expect_clean()
+
+
 def test_sync_loop_and_idle_lock() -> None:
     # 0.02 minutes is 1.2 s, so the loop runs a few times within the test.
     with broker_run(sync_minutes="0.02", idle_minutes="0.02") as b:
@@ -1564,6 +1610,7 @@ def main() -> None:
     test_api_returns_no_values()
     test_sync_socket_scope()
     test_unlock_over_socket()
+    test_cli_for_vault_sh()
     test_sync_loop_and_idle_lock()
     mounts = [
         (ROOT / "scripts", "/work/scripts"),

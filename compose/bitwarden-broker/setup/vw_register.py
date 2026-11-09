@@ -330,6 +330,26 @@ def api_key(base: str, token: str, email: str, password: str) -> tuple[str, str]
     return f"user.{user_id}", secret
 
 
+def public_key(base: str, token: str) -> Keys:
+    """The token's account's public key, for ``create_org`` when ``register`` ran in an earlier run.
+
+    ``create_org`` wraps the organization key with the public key only, so
+    ``user_key`` is left empty.
+    """
+    user_id = _claims(token).get("sub")
+    if not isinstance(user_id, str) or not user_id:
+        raise VwError("the access token names no user", what="public key")
+    data = api(base, token, "GET", f"/users/{urllib.parse.quote(user_id, safe='')}/public-key")
+    value = data.get("publicKey") if isinstance(data, dict) else None
+    try:
+        der = base64.b64decode(value, validate=True) if isinstance(value, str) else b""
+    except ValueError:
+        der = b""
+    if not der:
+        raise VwError("no public key in the response", what="public key")
+    return Keys(user_key=b"", public_key=der)
+
+
 # Organizations
 
 def create_org(base: str, token: str, keys: Keys, name: str, first_collection: str) -> tuple[str, str]:

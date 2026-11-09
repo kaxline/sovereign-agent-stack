@@ -39,6 +39,26 @@ the broker never sees the admin token or the CA's key:
 Both keep files that exist and refuse a half-written set; ``--rotate``
 replaces everything.
 
+    setup.py local-init --owner EMAIL [--server URL] [--signup-url URL] [--wait SECONDS]
+
+``local-init``   Local mode steps 2 to 5, against the running local Vaultwarden.
+                 Registers agent@vault.localhost with a generated master password
+                 (kept in /secrets/local/master_password) after an admin invite,
+                 stores its API key in /secrets/local/client_secret, creates the
+                 organization "Assistant" with the collections "Agent" and "Stack
+                 secrets", writes /accounts/local.env, invites EMAIL as an Owner,
+                 then waits up to SECONDS (default 600) for that address to register
+                 at the sign-up URL and confirms it with ``bw confirm org-member``.
+                 Each finished step is recorded in /local/state (``STEP=`` plus the
+                 ids it made), so a re-run picks up after the last one. The run
+                 signs in to Vaultwarden once for the API and once for bw, because
+                 Vaultwarden allows 10 password logins a minute; on a 429 it waits
+                 BITWARDEN_RATE_LIMIT_WAIT seconds (default 60) and tries once more.
+                 Exits 4 when the owner has not registered in time.
+
+``role`` on the ``local`` account records ``STEP=role`` in /local/state once it
+succeeds after ``local-init``.
+
 The account file is ``$BITWARDEN_ACCOUNTS_DIR/<slug>.env``. ``--server`` is the
 user's server and defaults to the account's ``BW_SERVER``; it must be https,
 except plain http to a loopback address, which only a test can serve from
@@ -63,11 +83,13 @@ import getpass
 import ipaddress
 import json
 import os
+import re
 import secrets
 import shutil
 import signal
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -91,6 +113,17 @@ TYPE_USER = 2
 COMMANDS = ("create", "seed", "grant", "role", "list-unassigned")
 LOCAL_COMMANDS = ("tls", "admin-token")
 LOCAL_DIR = "/local"
+LOCAL_SERVER = "https://vaultwarden.vault.internal"
+LOCAL_ORG_NAME = "Assistant"
+LOCAL_SIGNUP_URL = "http://localhost:8222"
+LOCAL_STEPS = ("registered", "api_key", "org", "stack", "account_file", "invited", "confirmed", "role")
+STATE_KEYS = ("STEP", "CLIENT_ID", "ORG_ID", "AGENT_COLLECTION", "STACK_COLLECTION", "OWNER_EMAIL")
+STATE_FILE = "state"
+EXIT_WAITING = 4
+MEMBER_CONFIRMED = 2
+TYPE_OWNER = 0
+EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+")
+CLIENT_ID_RE = re.compile(r"user\.[A-Za-z0-9-]{1,64}")
 CA_COPY = "/secrets/local/tls/ca.crt"
 ADMIN_TOKEN_FILE = "admin_token"
 ADMIN_HASH_FILE = "vaultwarden/admin_token.phc"
@@ -791,9 +824,344 @@ def local_main(argv: list[str]) -> int:
     return 0
 
 
+# Local mode steps 2-5 (local-init)
+
+def read_state(local_dir: Path) -> dict[str, str]:
+    """``KEY=value`` pairs from ``local_dir/state``; {} when there is none."""
+    try:
+        text = (local_dir / STATE_FILE).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    state = {}
+    for line in text.splitlines():
+        key, sep, value = line.strip().partition("=")
+        if sep and key in STATE_KEYS:
+            state[key] = value.strip()
+    return state
+
+
+def write_state(local_dir: Path, state: dict[str, str]) -> None:
+    lines = []
+    for key in STATE_KEYS:
+        value = state.get(key)
+        if value:
+            if any(c in value for c in "\r\n"):
+                raise SetupError(f"{key} holds a line break; not recorded.")
+            lines.append(f"{key}={value}")
+    _write_secret(local_dir / STATE_FILE, "\n".join(lines))
+
+
+def mark_role_done(local_dir: Path) -> None:
+    """After ``role`` on the local account: STEP=role, but only once local-init got to confirmed."""
+    state = read_state(local_dir)
+    if state.get("STEP") == "confirmed":
+        state["STEP"] = "role"
+        write_state(local_dir, state)
+
+
+def _duration(seconds: float) -> str:
+    if seconds >= 120:
+        return f"{seconds / 60:g} minutes"
+    return f"{seconds:g} seconds"
+
+
+class RegistrationFailed(Exception):
+    pass
+
+
+class LocalInit:
+    """One local-init run. The agent's password, token and bw session stay on this object."""
+
+    def __init__(self, server: str, signup: str):
+        self.server = server
+        self.signup = signup
+        self.local_dir = Path(os.environ.get("BITWARDEN_LOCAL_DIR") or LOCAL_DIR)
+        self.secrets_dir = Path(os.environ.get("BITWARDEN_SECRETS_DIR") or "/secrets") / "local"
+        self.accounts_dir = Path(os.environ.get("BITWARDEN_ACCOUNTS_DIR") or "/accounts")
+        self.poll = float(os.environ.get("BITWARDEN_LOCAL_POLL_SECONDS") or 5)
+        self.limit_wait = float(os.environ.get("BITWARDEN_RATE_LIMIT_WAIT") or 60)
+        self.state = read_state(self.local_dir)
+        self.token: str | None = None
+        self.keys: vw_register.Keys | None = None
+        self.bw: UserBw | None = None
+        self.appdata: str | None = None
+
+    # State
+
+    def done(self, step: str) -> bool:
+        current = self.state.get("STEP")
+        return current in LOCAL_STEPS and LOCAL_STEPS.index(current) >= LOCAL_STEPS.index(step)
+
+    def record(self, step: str | None = None, **values: str) -> None:
+        for key, value in values.items():
+            pattern = {"OWNER_EMAIL": EMAIL_RE, "CLIENT_ID": CLIENT_ID_RE}.get(key, ID_RE)
+            if not isinstance(value, str) or not pattern.fullmatch(value):
+                raise SetupError(f"Vaultwarden returned an unusable {key.lower()}.")
+            self.state[key] = value
+        if step is not None and not self.done(step):
+            self.state["STEP"] = step
+        write_state(self.local_dir, self.state)
+
+    # Sign-ins, each at most once per run
+
+    def _once_more(self, what: str) -> None:
+        print(f"Vaultwarden's login rate limit was hit ({what}); waiting {_duration(self.limit_wait)} "
+              "and trying once more.")
+        time.sleep(self.limit_wait)
+
+    def get_token(self, password: str) -> str:
+        if self.token is None:
+            try:
+                self.token = vw_register.token(self.server, LOCAL_AGENT_EMAIL, password)
+            except vw_register.TokenError as exc:
+                if exc.status != 429:
+                    raise
+                self._once_more("API sign-in")
+                self.token = vw_register.token(self.server, LOCAL_AGENT_EMAIL, password)
+        return self.token
+
+    def bw_login(self, password: str) -> UserBw:
+        if self.bw is not None:
+            return self.bw
+        self.appdata = tempfile.mkdtemp(dir="/tmp", prefix="bitwarden-setup-")
+        self.bw = UserBw(os.environ.get("BITWARDEN_BW") or "bw", self.appdata)
+        self.bw.configure(self.server)
+        holder = [password]
+        try:
+            try:
+                self.bw.login(LOCAL_AGENT_EMAIL, holder)
+            except BwError as exc:
+                if exc.error_class != "rate_limited":
+                    raise
+                self._once_more("bw login")
+                self.bw.login(LOCAL_AGENT_EMAIL, holder)
+            self.bw.run(["sync"])
+        except BwError as exc:
+            raise SetupError(f"bw could not sign in as {LOCAL_AGENT_EMAIL} ({exc.error_class}).") from None
+        finally:
+            holder.clear()
+        return self.bw
+
+    def close(self) -> None:
+        self.token = None
+        try:
+            if self.bw is not None:
+                self.bw.close()
+        finally:
+            if self.appdata is not None:
+                shutil.rmtree(self.appdata, ignore_errors=True)
+
+    # Steps
+
+    def agent_password(self) -> str:
+        path = self.secrets_dir / "master_password"
+        try:
+            value = path.read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            value = ""
+        if not value:
+            value = secrets.token_urlsafe(32)
+            _write_secret(path, value)
+            print(f"Generated a master password for {LOCAL_AGENT_EMAIL} (secrets/local/master_password).")
+        return value
+
+    def register(self, password: str) -> None:
+        failure = None
+        try:
+            admin = (self.local_dir / ADMIN_TOKEN_FILE).read_text(encoding="utf-8").strip()
+        except OSError:
+            raise SetupError(f"No {ADMIN_TOKEN_FILE} in local/; setup.py admin-token writes it.") from None
+        try:
+            vw_register.admin_invite(self.server, admin, LOCAL_AGENT_EMAIL)
+            self.keys = vw_register.register(self.server, LOCAL_AGENT_EMAIL, password)
+        except vw_register.VwError as exc:
+            failure = str(exc)
+        finally:
+            admin = None
+        try:
+            self.get_token(password)
+        except vw_register.VwError as exc:
+            # Only a refused sign-in means the account is missing; a 429 or an
+            # unreachable server says nothing about the registration.
+            if failure is None or exc.status not in (400, 401):
+                raise
+            print(f"Could not register {LOCAL_AGENT_EMAIL} ({failure}).")
+            print(f"Register it in the web vault instead: open {self.signup}, choose Create account, and use "
+                  f"{LOCAL_AGENT_EMAIL} with the password in secrets/local/master_password under "
+                  "BITWARDEN_HOST_DATA_DIR (default data/addons/bitwarden). Then run make vault-init again.")
+            raise RegistrationFailed from None
+        if failure is not None:
+            print(f"{LOCAL_AGENT_EMAIL} is already registered; signed in to it.")
+        else:
+            print(f"Registered {LOCAL_AGENT_EMAIL}.")
+        self.record("registered")
+
+    def members(self, password: str) -> list[dict]:
+        path = f"/organizations/{self.state['ORG_ID']}/users"
+        try:
+            data = vw_register.api(self.server, self.get_token(password), "GET", path)
+        except vw_register.VwError as exc:
+            if exc.status != 401:
+                raise
+            self.token = None  # expired during the wait
+            data = vw_register.api(self.server, self.get_token(password), "GET", path)
+        rows = data.get("data") if isinstance(data, dict) else None
+        return [m for m in rows or [] if isinstance(m, dict)]
+
+    def member(self, password: str, email: str) -> dict | None:
+        return next((m for m in self.members(password) if str(m.get("email", "")).lower() == email), None)
+
+    def stack_collection(self, password: str) -> str:
+        bw = self.bw_login(password)
+        org = self.state["ORG_ID"]
+        rows = bw.json(["list", "collections", "--organizationid", org])
+        found = next((c for c in rows or [] if isinstance(c, dict) and c.get("name") == STACK_SECRETS
+                      and c.get("organizationId") == org and isinstance(c.get("id"), str)), None)
+        if found is not None:
+            return found["id"]
+        created = bw.json(["create", "org-collection", "--organizationid", org], stdin=_b64({
+            "organizationId": org, "name": STACK_SECRETS, "externalId": None, "groups": [], "users": []}))
+        cid = created.get("id") if isinstance(created, dict) else None
+        if not isinstance(cid, str):
+            raise SetupError("bw create org-collection returned no id.")
+        print(f'Created the collection "{STACK_SECRETS}".')
+        return cid
+
+    def write_account_file(self) -> None:
+        path = self.accounts_dir / "local.env"
+        if path.exists():
+            print(f"Kept {path.name}.")
+            return
+        _write_secret(path, "\n".join([
+            "# Written by make vault-init (bitwarden-setup local-init). See docs/bitwarden.md.",
+            "BW_MODE=local",
+            f"BW_SERVER={LOCAL_SERVER}",
+            f"BW_SCOPE=collection:{self.state['AGENT_COLLECTION']}",
+            "BW_UNLOCK=stored",
+            f"BW_CLIENTID={self.state['CLIENT_ID']}",
+            f"BW_SECRETS_ITEM_SCOPE=collection:{self.state['STACK_COLLECTION']}",
+        ]))
+        print(f"Wrote {path.name}.")
+
+    def run(self, owner: str, wait: float) -> int:
+        recorded = self.state.get("OWNER_EMAIL")
+        if recorded and recorded != owner:
+            raise SetupError(f"make vault-init already invited {recorded}. Run it with that address "
+                             f"(VAULT_OWNER_EMAIL={recorded}).")
+        if self.done("confirmed"):
+            print("Local mode steps 2 to 5 are already done.")
+            return 0
+        password = self.agent_password()
+        try:
+            if not self.done("registered"):
+                self.register(password)
+            if not self.done("api_key"):
+                client_id, secret = vw_register.api_key(self.server, self.get_token(password), LOCAL_AGENT_EMAIL,
+                                                        password)
+                try:
+                    _write_secret(self.secrets_dir / "client_secret", secret)
+                finally:
+                    secret = None
+                self.record("api_key", CLIENT_ID=client_id)
+                print(f"Stored the API key of {LOCAL_AGENT_EMAIL}.")
+            if not self.done("org"):
+                token = self.get_token(password)
+                keys = self.keys or vw_register.public_key(self.server, token)
+                org, coll = vw_register.create_org(self.server, token, keys, LOCAL_ORG_NAME, DEFAULT_COLLECTION)
+                self.record("org", ORG_ID=org, AGENT_COLLECTION=coll)
+                print(f'Created the organization "{LOCAL_ORG_NAME}" with the collection "{DEFAULT_COLLECTION}".')
+            if not self.done("stack"):
+                self.record("stack", STACK_COLLECTION=self.stack_collection(password))
+            if not self.done("account_file"):
+                self.write_account_file()
+                self.record("account_file")
+            if not self.done("invited"):
+                if self.member(password, owner) is None:
+                    vw_register.invite_member(self.server, self.get_token(password), self.state["ORG_ID"], owner,
+                                              TYPE_OWNER, [])
+                    print(f"Invited {owner} to the organization as an Owner.")
+                self.record("invited", OWNER_EMAIL=owner)
+            return self.confirm_owner(password, owner, wait)
+        except RegistrationFailed:
+            return EXIT_FAILED
+        finally:
+            password = None
+
+    def confirm_owner(self, password: str, owner: str, wait: float) -> int:
+        print(f"Now register {owner} in the web vault: open {self.signup}, choose Create account and use that "
+              "address. You choose its master password; the stack never sees or stores it. "
+              f"Waiting up to {_duration(wait)}.")
+        deadline = time.monotonic() + wait
+        while True:
+            m = self.member(password, owner)
+            status = m.get("status") if m else None
+            if status == MEMBER_CONFIRMED:
+                break
+            if status == MEMBER_ACCEPTED and isinstance(m.get("id"), str) and ID_RE.fullmatch(m["id"]):
+                bw = self.bw_login(password)
+                try:
+                    bw.run(["sync"])
+                    bw.run(["confirm", "org-member", m["id"], "--organizationid", self.state["ORG_ID"]])
+                except BwError as exc:
+                    raise SetupError(f"bw confirm org-member failed ({exc.error_class}).") from None
+                print(f"Confirmed {owner} in the organization.")
+                break
+            if time.monotonic() >= deadline:
+                print(f"{owner} has not registered yet. Register at {self.signup}, then run make vault-init "
+                      "again; it picks up from here.")
+                return EXIT_WAITING
+            time.sleep(self.poll)
+        self.record("confirmed")
+        return 0
+
+
+def local_init_main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="bitwarden-setup")
+    parser.add_argument("command", choices=("local-init",))
+    parser.add_argument("--owner", required=True)
+    parser.add_argument("--server")
+    parser.add_argument("--signup-url", default=LOCAL_SIGNUP_URL)
+    parser.add_argument("--wait", type=float, default=600.0)
+    args = parser.parse_args(argv)
+    owner = args.owner.strip().lower()
+    if not EMAIL_RE.fullmatch(owner):
+        print("--owner must be an email address.")
+        return EXIT_FAILED
+    server = _check_server(args.server or LOCAL_SERVER)
+    if server is None or (server != LOCAL_SERVER and not _is_loopback_url(server)):
+        print(f"--server must be {LOCAL_SERVER}.")
+        return EXIT_FAILED
+    run = LocalInit(server, args.signup_url)
+    previous = {sig: signal.signal(sig, _interrupt) for sig in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        return run.run(owner, max(args.wait, 0.0))
+    except SetupError as exc:
+        print(exc)
+    except vw_register.VwError as exc:
+        print(f"Vaultwarden refused a step ({exc}). make vault-init picks up from the last finished step.")
+    except OSError as exc:
+        print(f"Could not write a file ({exc.strerror or 'error'}).")
+    except EOFError:
+        print("\nNo input; stopped.")
+    except KeyboardInterrupt:
+        print("\nInterrupted.")
+        return EXIT_INTERRUPTED
+    finally:
+        for sig in previous:
+            signal.signal(sig, signal.SIG_IGN)
+        try:
+            run.close()
+        finally:
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
+    return EXIT_FAILED
+
+
 def main(argv: list[str]) -> int:
     if argv and argv[0] in LOCAL_COMMANDS:
         return local_main(argv)
+    if argv and argv[0] == "local-init":
+        return local_init_main(argv)
     args = parse_args(argv)
     accounts_dir = Path(os.environ.get("BITWARDEN_ACCOUNTS_DIR") or "/accounts")
     try:
@@ -830,7 +1198,15 @@ def main(argv: list[str]) -> int:
             except vw_register.TokenError as exc:
                 run.token_error = str(exc)
         holder.clear()
-        return getattr(run, "cmd_" + args.command.replace("-", "_"))()
+        code = getattr(run, "cmd_" + args.command.replace("-", "_"))()
+        if code == 0 and args.command == "role" and account.mode == "local":
+            local_dir = Path(os.environ.get("BITWARDEN_LOCAL_DIR") or LOCAL_DIR)
+            if local_dir.is_dir():
+                try:
+                    mark_role_done(local_dir)
+                except (OSError, SetupError):
+                    print("Could not record the finished step in local/state; make vault-init runs role again.")
+        return code
     except PasswordTriesExhausted:
         print(f"{PASSWORD_TRIES} tries failed. Nothing was changed.")
         return EXIT_PASSWORD

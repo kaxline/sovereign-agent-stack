@@ -525,6 +525,245 @@ r = Run("grant-already", "grant", account("folder:Agent"), v, extra=("--item", "
 r.expect_code(0)
 check("already in" in r.out and "next sync" not in r.out, f"grant-already: output\n{r.out}")
 
+# local-init: Local mode steps 2-5 against a fake Vaultwarden, re-run from local/state.
+try:
+    import cryptography  # noqa: F401  (vw_register's registration and organization crypto)
+    HAVE_CRYPTO = True
+except ImportError:
+    HAVE_CRYPTO = False
+    print("skip: local-init (host python3 has no cryptography)")
+
+LOCAL_AGENT = "agent@vault.localhost"
+LOCAL_OWNER = "owner@example.com"
+LOCAL_ORG = "org-local"
+ADMIN_TOKEN = f"syn-admin-{secrets.token_hex(8)}"
+AGENT_SECRET = f"syn-apikey-{secrets.token_hex(8)}"
+SECRET_VALUES.update({ADMIN_TOKEN, AGENT_SECRET})
+
+
+def jwt(claims):
+    enc = lambda obj: base64.urlsafe_b64encode(json.dumps(obj).encode()).decode().rstrip("=")
+    return f"{enc({'alg': 'none'})}.{enc(claims)}.sig"
+
+
+LOCAL_TOKEN = jwt({"sub": "uid-agent", "email": LOCAL_AGENT, "nonce": secrets.token_hex(8)})
+SECRET_VALUES.add(LOCAL_TOKEN)
+
+
+class LocalApi(http.server.BaseHTTPRequestHandler):
+    def _reply(self, code, obj, headers=()):
+        body = json.dumps(obj).encode()
+        self.send_response(code)
+        for k, v in headers:
+            self.send_header(k, v)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _authed(self):
+        return self.headers.get("Authorization") == f"Bearer {LOCAL_TOKEN}"
+
+    def _vault(self):
+        return json.loads(self.server.st["vault"].read_text())
+
+    def do_POST(self):
+        st = self.server.st
+        body = self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode()
+        st["calls"].append(("POST", self.path, body))
+        if self.path == "/admin":
+            ok = parse_qs(body).get("token") == [ADMIN_TOKEN]
+            return self._reply(303 if ok else 401, {}, [("Location", "/admin"), ("Set-Cookie", "VW_ADMIN=c1; Path=/admin")]
+                               if ok else [])
+        if self.path == "/admin/invite":
+            return self._reply(200 if self.headers.get("Cookie") == "VW_ADMIN=c1" else 401, {})
+        if self.path == "/identity/accounts/register/send-verification-email":
+            return self._reply(200, "verify-token")
+        if self.path == "/identity/accounts/register/finish":
+            if st.get("refuse_register"):
+                return self._reply(400, {"message": "changed API"})
+            payload = json.loads(body)
+            st["registered"][payload["email"]] = payload["masterPasswordHash"]
+            vault = self._vault()
+            vault["user_email"] = payload["email"]
+            vault["user_password"] = (st["secrets"] / "master_password").read_text().strip()
+            st["vault"].write_text(json.dumps(vault))
+            return self._reply(200, {})
+        if self.path == "/identity/accounts/prelogin":
+            return self._reply(200, {"kdf": 0, "kdfIterations": 600000})
+        if self.path == "/identity/connect/token":
+            if st.get("limit_once"):
+                st["limit_once"] = False
+                return self._reply(429, {"message": "Too many requests"})
+            form = {k: v[0] for k, v in parse_qs(body).items()}
+            if st["registered"].get(form.get("username")) != form.get("password"):
+                return self._reply(400, {"error": "invalid_grant"})
+            return self._reply(200, {"access_token": LOCAL_TOKEN, "token_type": "Bearer"})
+        if not self._authed():
+            return self._reply(401, {})
+        if self.path == "/api/accounts/api-key":
+            return self._reply(200, {"apiKey": AGENT_SECRET})
+        if self.path == "/api/organizations":
+            return self._reply(200, {"id": LOCAL_ORG})
+        if self.path == f"/api/organizations/{LOCAL_ORG}/users/invite":
+            payload = json.loads(body)
+            st["members"].extend({"id": "m-owner", "email": e, "status": 0, "type": payload["type"]}
+                                 for e in payload["emails"])
+            return self._reply(200, {})
+        self._reply(404, {})
+
+    def do_GET(self):
+        st = self.server.st
+        st["calls"].append(("GET", self.path, ""))
+        if not self._authed():
+            return self._reply(401, {})
+        if self.path == f"/api/organizations/{LOCAL_ORG}/collections":
+            return self._reply(200, {"data": [{"id": "c-agent"}]})
+        if self.path == "/api/users/uid-agent/public-key":
+            return self._reply(200, {"userId": "uid-agent", "publicKey": base64.b64encode(st["pub"]).decode()})
+        if self.path == f"/api/organizations/{LOCAL_ORG}/users":
+            st["polls"] += 1
+            confirmed = {c["id"] for c in self._vault().get("confirmed", [])}
+            for m in st["members"]:
+                if m["id"] in confirmed:
+                    m["status"] = 2
+                elif st["accept_after"] is not None and st["polls"] >= st["accept_after"]:
+                    m["status"] = max(m["status"], 1)
+            return self._reply(200, {"data": [{"id": "m-agent", "email": LOCAL_AGENT, "status": 2, "type": 0}]
+                                     + st["members"]})
+        self._reply(404, {})
+
+    def log_message(self, *args):
+        pass
+
+
+def local_run(st, d, extra=(), owner=LOCAL_OWNER):
+    wrapper = d / "bw"
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(d), "PYTHONDONTWRITEBYTECODE": "1",
+           "LANG": "C.UTF-8", "BITWARDEN_ACCOUNTS_DIR": str(d / "accounts"), "BITWARDEN_SECRETS_DIR": str(d / "secrets"),
+           "BITWARDEN_LOCAL_DIR": str(d / "local"), "BITWARDEN_BW": str(wrapper),
+           "BITWARDEN_LOCAL_POLL_SECONDS": "0.1", "BITWARDEN_RATE_LIMIT_WAIT": "0.2"}
+    argv = ["local-init", "--owner", owner, "--server", local_base, "--signup-url", "http://localhost:8222",
+            "--wait", "1", *extra]
+    code, text = pty_run(argv, env, [])
+    log_text = (d / "bw.log").read_text() if (d / "bw.log").exists() else ""
+    secret_list = SECRET_VALUES | {(d / "secrets/local/master_password").read_text().strip()
+                                   if (d / "secrets/local/master_password").exists() else USER_PW}
+    for value in secret_list:
+        if value in text or value in log_text:
+            fail("local-init: a password, token, API key or admin token appears in output or bw argv")
+            break
+    return code, text, [json.loads(line)["argv"] for line in log_text.splitlines()]
+
+
+def local_state(d):
+    path = d / "local/state"
+    rows = dict(line.split("=", 1) for line in path.read_text().splitlines() if "=" in line) if path.exists() else {}
+    return rows
+
+
+def count(st, path):
+    return sum(1 for c in st["calls"] if c[1] == path)
+
+
+if HAVE_CRYPTO:
+    local = http.server.ThreadingHTTPServer(("127.0.0.1", 0), LocalApi)
+    local.daemon_threads = True
+    threading.Thread(target=local.serve_forever, daemon=True).start()
+    local_base = f"http://127.0.0.1:{local.server_address[1]}"
+    d = TMP / "local-init"
+    for sub in ("accounts", "secrets/local", "local"):
+        (d / sub).mkdir(parents=True)
+    (d / "local/admin_token").write_text(ADMIN_TOKEN + "\n")
+    (d / "vault.json").write_text(json.dumps({"folders": [], "collections": [], "items": [], "members": []}))
+    (d / "bw").write_text(f"#!/bin/sh\nexport FAKE_BW_VAULT='{d / 'vault.json'}'\nexport FAKE_BW_LOG='{d / 'bw.log'}'\n"
+                          f"exec '{sys.executable}' '{FAKE_BW}' \"$@\"\n")
+    (d / "bw").chmod(0o755)
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    pub = rsa.generate_private_key(public_exponent=65537, key_size=2048).public_key().public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    local.st = {"calls": [], "registered": {}, "members": [], "polls": 0, "accept_after": None,
+                "vault": d / "vault.json", "secrets": d / "secrets/local", "pub": pub, "refuse_register": True}
+
+    # Registration refused and no token: exit 1, the sign-up fallback, no step recorded.
+    code, out, argvs = local_run(local.st, d)
+    check(code == 1, f"local-init refused registration: exit {code}\n{out}")
+    check(LOCAL_AGENT in out and "http://localhost:8222" in out and "master_password" in out,
+          f"local-init refused registration: no sign-up fallback\n{out}")
+    check(not local_state(d).get("STEP"), f"local-init refused registration: state {local_state(d)}")
+    pw_file = d / "secrets/local/master_password"
+    check(pw_file.exists() and oct(pw_file.stat().st_mode & 0o777) == "0o600", "local-init: master_password mode")
+    first_pw = pw_file.read_text() if pw_file.exists() else None
+    local.st["calls"].clear()  # the counts below are for the runs that follow
+
+    # Fresh run; one 429 on the token grant; the owner never registers within --wait.
+    local.st.update(refuse_register=False, limit_once=True)
+    code, out, argvs = local_run(local.st, d)
+    check(code == 4, f"local-init without the owner: exit {code}, want 4\n{out}")
+    check(pw_file.read_text() == first_pw, "local-init generated a second agent password")
+    state = local_state(d)
+    check(state.get("STEP") == "invited" and state.get("ORG_ID") == LOCAL_ORG and state.get("OWNER_EMAIL") == LOCAL_OWNER
+          and state.get("AGENT_COLLECTION") == "c-agent" and state.get("STACK_COLLECTION"),
+          f"local-init state after the invite: {state}")
+    check(oct((d / "local/state").stat().st_mode & 0o777) == "0o600", "local-init: state file mode")
+    check(count(local.st, "/identity/connect/token") == 2, "local-init: token grants (one 429, one retry)")
+    check("rate limit" in out.lower(), f"local-init: no note about the 429\n{out}")
+    check(count(local.st, "/admin/invite") == 1 and count(local.st, "/identity/accounts/register/finish") == 1,
+          "local-init: admin invite or registration count")
+    check(count(local.st, "/api/organizations") == 1, "local-init: organization created more than once")
+    check([m["email"] for m in local.st["members"]] == [LOCAL_OWNER] and local.st["members"][0]["type"] == 0,
+          f"local-init: owner invite {local.st['members']}")
+    check(sum(1 for a in argvs if a[:1] == ["login"]) == 1, f"local-init: bw logins {argvs}")
+    stack = [c for c in json.loads((d / "vault.json").read_text())["collections"] if c.get("name") == "Stack secrets"]
+    check(len(stack) == 1 and stack[0]["id"] == state.get("STACK_COLLECTION"), f"local-init: Stack secrets {stack}")
+    secret_file = d / "secrets/local/client_secret"
+    check(secret_file.read_text().strip() == AGENT_SECRET and oct(secret_file.stat().st_mode & 0o777) == "0o600",
+          "local-init: client_secret content or mode")
+    acct = d / "accounts/local.env"
+    lines = acct.read_text().splitlines() if acct.exists() else []
+    for want in ("BW_MODE=local", "BW_SERVER=https://vaultwarden.vault.internal", "BW_SCOPE=collection:c-agent",
+                 "BW_UNLOCK=stored", "BW_CLIENTID=user.uid-agent",
+                 f"BW_SECRETS_ITEM_SCOPE=collection:{state.get('STACK_COLLECTION')}"):
+        check(want in lines, f"local-init: local.env lacks {want}: {lines}")
+    check(acct.exists() and oct(acct.stat().st_mode & 0o777) == "0o600", "local-init: local.env mode")
+    check(LOCAL_OWNER in out and "http://localhost:8222" in out and "again" in out,
+          f"local-init: no sign-up address or re-run hint\n{out}")
+    check(argvs[-2:] == [["lock"], ["logout"]], f"local-init: bw not locked and logged out: {argvs[-2:]}")
+
+    # A different owner than recorded: refused before any call.
+    calls_before = len(local.st["calls"])
+    code, out, _ = local_run(local.st, d, owner="other@example.com")
+    check(code == 1 and LOCAL_OWNER in out and len(local.st["calls"]) == calls_before,
+          f"local-init other owner: exit {code}\n{out}")
+
+    # Re-run: the owner registers after two polls; confirmed with bw, nothing created twice.
+    local.st["accept_after"] = local.st["polls"] + 2
+    code, out, argvs = local_run(local.st, d)
+    check(code == 0, f"local-init resume: exit {code}\n{out}")
+    check(local_state(d).get("STEP") == "confirmed", f"local-init resume: state {local_state(d)}")
+    check(["confirm", "org-member", "m-owner", "--organizationid", LOCAL_ORG] in argvs,
+          f"local-init resume: no bw confirm in {argvs}")
+    check(count(local.st, "/identity/accounts/register/finish") == 1 and count(local.st, "/api/organizations") == 1
+          and len(local.st["members"]) == 1, "local-init resume: registered, created or invited again")
+    check(count(local.st, "/identity/connect/token") == 3, "local-init resume: more than one token grant")
+
+    # Recorded confirmed: nothing to do and no calls.
+    calls_before = len(local.st["calls"])
+    code, out, _ = local_run(local.st, d)
+    check(code == 0 and len(local.st["calls"]) == calls_before, f"local-init done: exit {code}, calls made\n{out}")
+
+    # Resume between registration and the organization: the public key comes from the server.
+    state_path = d / "local/state"
+    state_path.write_text("STEP=api_key\nCLIENT_ID=user.uid-agent\n")
+    (d / "accounts/local.env").unlink(missing_ok=True)
+    code, out, argvs = local_run(local.st, d)
+    check(code == 0, f"local-init resume before the organization: exit {code}\n{out}")
+    check(any(c[1] == "/api/users/uid-agent/public-key" for c in local.st["calls"]),
+          "local-init: no public key fetch when resuming before the organization")
+    check(count(local.st, "/api/organizations") == 2, "local-init: organization not created on resume")
+    local.shutdown()
+
 # Unit checks: IP literals match only exactly; prelogin KDF values.
 sys.path.insert(0, str(SETUP.parent))
 import importlib.util
@@ -532,6 +771,17 @@ spec = importlib.util.spec_from_file_location("bw_setup", SETUP)
 mod = importlib.util.module_from_spec(spec)
 sys.modules["bw_setup"] = mod
 spec.loader.exec_module(mod)
+import tempfile as _tf
+with _tf.TemporaryDirectory() as ld:
+    ld = Path(ld)
+    (ld / "state").write_text("STEP=confirmed\nORG_ID=org-1\n")
+    mod.mark_role_done(ld)
+    rows = (ld / "state").read_text().splitlines()
+    check("STEP=role" in rows and "ORG_ID=org-1" in rows, f"mark_role_done: state {rows}")
+    check(oct((ld / "state").stat().st_mode & 0o777) == "0o600", "mark_role_done: state mode")
+    (ld / "state").write_text("STEP=invited\n")
+    mod.mark_role_done(ld)
+    check((ld / "state").read_text().splitlines() == ["STEP=invited"], "mark_role_done moved STEP forward early")
 ip_items = [{"uris": [{"uri": "https://10.0.0.1/", "match": None}]},
             {"uris": [{"uri": "https://192.168.0.1/", "match": None}]}]
 check(len(mod.match_items(ip_items, "10.0.0.1")) == 1, "ip: exact IP did not match")
