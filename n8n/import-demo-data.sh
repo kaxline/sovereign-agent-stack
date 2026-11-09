@@ -13,5 +13,11 @@ if [ -e "$DB" ]; then
   exit 0
 fi
 
-n8n import:credentials --separate --input=/demo-data/credentials
+# The credentials are generated here, from this container's environment, so
+# enabling n8n needs no host-side step. Nothing under /demo-data/credentials
+# on the host is used. The generator exits 1 and names any key that is empty.
+CRED_DIR=/tmp/n8n-credentials
+N8N_CREDENTIALS_OUT="$CRED_DIR" node /scripts/generate-n8n-credentials.js
+n8n import:credentials --separate --input="$CRED_DIR"
+rm -rf "$CRED_DIR"
 n8n import:workflow --separate --input=/demo-data/workflows

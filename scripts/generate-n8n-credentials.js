@@ -5,6 +5,9 @@
  * Usage:
  *   N8N_ENCRYPTION_KEY=... LIGHTRAG_API_KEY=... NEO4J_PASSWORD=... \
  *     node scripts/generate-n8n-credentials.js
+ *
+ * N8N_CREDENTIALS_OUT sets the output directory (n8n-import uses it to write
+ * into the container's /tmp). Without it the files go to n8n/demo-data/credentials.
  */
 const crypto = require("crypto");
 const fs = require("fs");
@@ -15,10 +18,14 @@ const lightragApiKey = process.env.LIGHTRAG_API_KEY;
 const neo4jPassword = process.env.NEO4J_PASSWORD || "change-me-please";
 const neo4jUser = process.env.NEO4J_USERNAME || "neo4j";
 
-if (!encryptionKey || !lightragApiKey) {
-  console.error(
-    "Set N8N_ENCRYPTION_KEY and LIGHTRAG_API_KEY (and optionally NEO4J_PASSWORD)."
-  );
+const missing = [
+  ["N8N_ENCRYPTION_KEY", encryptionKey],
+  ["LIGHTRAG_API_KEY", lightragApiKey],
+]
+  .filter(([, value]) => !value)
+  .map(([name]) => name);
+if (missing.length > 0) {
+  console.error(`Set ${missing.join(" and ")} (NEO4J_PASSWORD is optional).`);
   process.exit(1);
 }
 
@@ -41,7 +48,10 @@ function encrypt(data) {
   return Buffer.concat([Buffer.from("Salted__"), salt, encrypted]).toString("base64");
 }
 
-const outDir = path.join(__dirname, "..", "n8n", "demo-data", "credentials");
+const outDir =
+  process.env.N8N_CREDENTIALS_OUT ||
+  path.join(__dirname, "..", "n8n", "demo-data", "credentials");
+fs.mkdirSync(outDir, { recursive: true });
 const now = new Date().toISOString();
 
 const files = [

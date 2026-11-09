@@ -15,7 +15,7 @@ n8n follows patterns from the [n8n self-hosted AI starter kit](https://github.co
 
 Workflows, credentials, the owner account and execution history live in SQLite at `/home/node/.n8n/database.sqlite` on the `n8n_storage` volume, next to the `config` file that holds the instance's encryption key. `n8n` and `n8n-import` both mount that volume and set `DB_TYPE=sqlite`. A compose overlay that binds `/home/node/.n8n` somewhere else must do it for both services.
 
-`n8n-import` runs before `n8n` on every `up`. It imports the demo credentials and workflows only when `database.sqlite` does not exist yet, and otherwise exits without opening the database, so it never touches a store a running n8n holds.
+`n8n-import` runs before `n8n` on every `up`. It generates the demo credentials inside the container from `N8N_ENCRYPTION_KEY`, `LIGHTRAG_API_KEY` and `NEO4J_*`, then imports them and the workflows, only when `database.sqlite` does not exist yet. If `N8N_ENCRYPTION_KEY` or `LIGHTRAG_API_KEY` is empty it exits 1 and names the key. When the database exists it exits without opening it, so it never touches a store a running n8n holds.
 
 Back up the volume with n8n stopped, since copying a SQLite file mid-write can give a corrupt copy:
 
@@ -46,7 +46,9 @@ The volume name is `<compose project>_n8n_storage`; check it with `docker volume
 
 ## Credentials
 
-Encrypted credential JSON under `n8n/demo-data/credentials/` is **gitignored** and created locally by `scripts/sync-n8n-credentials.sh`, which runs Node in the n8n image, so the host needs none (`N8N_NODE=host` uses the host's `node`). `./scripts/setup.sh` rewrites the files when `automation` is on, and `make up` writes them if `automation` is on and none exist yet. With `automation` off, neither runs. The files are encrypted with `N8N_ENCRYPTION_KEY` so they line up with your `.env` secrets. Never commit them.
+`n8n-import` does not read `n8n/demo-data/credentials/` on the host. It writes its own copy to `/tmp/n8n-credentials` in the container, so enabling n8n needs no host-side step.
+
+The host copy under `n8n/demo-data/credentials/` is **gitignored**, used for re-importing into an existing database (below), and created locally by `scripts/sync-n8n-credentials.sh`, which runs Node in the n8n image, so the host needs none (`N8N_NODE=host` uses the host's `node`). `./scripts/setup.sh` rewrites the files when `automation` is on, and `make up` writes them if `automation` is on and none exist yet. With `automation` off, neither runs. The files are encrypted with `N8N_ENCRYPTION_KEY` so they line up with your `.env` secrets. Never commit them.
 
 | Credential | Type | Matches `.env` key |
 |---|---|---|

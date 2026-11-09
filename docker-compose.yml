@@ -1054,10 +1054,18 @@ services:
     container_name: ${CONTAINER_PREFIX:-}n8n-import
     entrypoint: /bin/sh
     command: /scripts/import-demo-data.sh
+    # Only this one-shot gets the keys the credential generator encrypts;
+    # the n8n service never sees them.
+    environment:
+      <<: *n8n-env
+      LIGHTRAG_API_KEY: ${LIGHTRAG_API_KEY:-}
+      NEO4J_USERNAME: ${NEO4J_USERNAME:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-}
     volumes:
       - n8n_storage:/home/node/.n8n
       - ./n8n/demo-data:/demo-data
       - ./n8n/import-demo-data.sh:/scripts/import-demo-data.sh:ro
+      - ./scripts/generate-n8n-credentials.js:/scripts/generate-n8n-credentials.js:ro
 
   # ----------------------------------------------------------------------
   # n8n — workflow automation UI
