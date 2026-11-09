@@ -123,6 +123,11 @@ any server that is not HTTPS, so the broker and `bitwarden-setup` reach Vaultwar
 `https://vaultwarden.vault.internal` through `vaultwarden-tls`, an nginx sidecar, and trust the
 private CA through `NODE_EXTRA_CA_CERTS`. Your browser never sees that certificate.
 
+The server certificate is valid for 825 days and the CA for 10 years. To renew the server
+certificate, remove `server.crt` and `server.key` from `local/tls/server/`, run
+`docker compose --profile bitwarden-tools run --rm bitwarden-setup tls`, which issues a new pair from
+the existing CA, then `docker compose restart vaultwarden-tls`.
+
 Vaultwarden allows 10 password logins a minute from one client IP. `make vault-init` signs in once for the
 API and once for `bw`; on a 429 it waits a minute and tries once more. Re-running it several times
 in a row can still hit the limit; wait a minute.
@@ -194,7 +199,7 @@ and stops listing and filling it at once. Then it returns the item:
 - `collection:` scope: the item leaves the agent's collection and keeps any other collections it is
   in. When "Agent" was its only collection, it becomes an unassigned organization item, which only
   Owners and Admins see. List those with
-  `docker compose run --rm bitwarden-setup list-unassigned --slug <slug> --email <you>` and file them
+  `docker compose --profile bitwarden-tools run --rm bitwarden-setup list-unassigned --slug <slug> --email <you>` and file them
   in the web vault.
 
 The result's `returned` is false when Bitwarden refused the edit. The item then stays in the agent's

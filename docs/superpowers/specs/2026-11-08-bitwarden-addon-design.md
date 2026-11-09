@@ -1,7 +1,9 @@
 # Bitwarden add-on
 
-Status: approved design, 2026-11-08, pending spec review. Branch `docs/bitwarden-addon-spec`.
-Both spikes ran on 2026-11-08; see Spike results.
+Status: implemented on branch `feat/bitwarden-addon`. This text reflects the implementation as of
+the branch head (2026-11-08), including the rulings recorded during implementation; where the code
+departs from the first design, the text says what was built. Both spikes ran on 2026-11-08; see
+Spike results. User documentation: `docs/bitwarden.md`.
 
 ## Goal
 
@@ -104,23 +106,53 @@ bootstrap), and `bw` is never installed in `hermes`. The local Fernet vault (`va
 
 One file per account at `compose/bitwarden/accounts/<slug>.env`, mode 600, gitignored with the rest
 of that folder, as Twenty's workspace files are. `<slug>` is lowercase letters, digits and `-`.
-`make vault-add` and `make vault-init` write the files; a changed file makes the next start re-run
-the Hermes bootstrap.
+`make vault-add` and `make vault-init` write the files. The broker reads the folder only when it
+starts, so `vault-add` and `vault-remove` restart it. Hermes needs no change per account: the
+`bwbroker` backend lists whatever the broker serves.
 
 ```
 BW_MODE=cloud                  # cloud | selfhosted | local
 BW_SERVER=https://vault.bitwarden.com   # cloud: .com or vault.bitwarden.eu; selfhosted: any HTTPS URL; local: https://vaultwarden.vault.internal
-BW_SCOPE=folder:Agent          # folder:<name> | collection:<id> | all
+BW_SCOPE=folder:Agent          # folder:<name> | collection:<id> | all; optional, default folder:Agent
 BW_UNLOCK=stored               # stored | manual
 BW_CLIENTID=user.…             # the agent account's personal API key, every mode
 BW_SECRETS_ITEM_SCOPE=folder:Stack secrets   # optional, see Stack secrets
 ```
 
 Credentials never go in this file. The API key's secret and, with `BW_UNLOCK=stored`, the master
-password go in `data/addons/bitwarden/secrets/<slug>/` (`client_secret`, `master_password`, mode
-600), mounted into the broker only. `vault-init` fetches the `local` agent account's API key when it
-creates the account, so every mode signs in the same way. The account's `bw` data directory is
-`data/addons/bitwarden/bw/<slug>/`.
+password go in `secrets/<slug>/` (`client_secret`, `master_password`, mode 600) under
+`BITWARDEN_HOST_DATA_DIR` (default `./data/addons/bitwarden`), mounted read-only into the broker and
+read-write into `bitwarden-setup` only. `vault-init` fetches the `local` agent account's API key
+when it creates the account, so every mode signs in the same way. The account's `bw` data directory
+is `bw/<slug>/`.
+
+The parser accepts CRLF line endings, spaces around keys and values, `#` comment lines, a comment
+after an unquoted value when whitespace precedes the `#`, and one pair of quotes around a value. So
+an unquoted `#` after a space ends the value; `vault-add` quotes a scope that holds `#`. An unknown
+key or value, a repeated key or a missing required key refuses the file, with an error naming the
+file and the key and never a value.
+
+Layout under `BITWARDEN_HOST_DATA_DIR` (not moved by `ASSISTANT_DATA_ROOT`):
+
+| Path | Holds | Mounted into |
+|---|---|---|
+| `bw/<slug>/` | the account's `bw` data directory | broker |
+| `broker/` | `requests.json`, `denylist.json` | broker |
+| `secrets/<slug>/` | `client_secret`, `master_password` | broker (read-only), `bitwarden-setup` |
+| `secrets/local/tls/ca.crt` | the local CA's certificate, for `NODE_EXTRA_CA_CERTS` | broker (read-only), `bitwarden-setup` |
+| `local/` | `admin_token`, `state` (vault-init's progress), `tls/ca.crt`, `tls/ca.key` | `bitwarden-setup` only |
+| `local/tls/server/` | `server.crt`, `server.key` | `bitwarden-setup`, `vaultwarden-tls` (read-only) |
+| `local/vaultwarden/` | `admin_token.phc`, the admin token's Argon2id hash | `bitwarden-setup`, `vaultwarden` (read-only) |
+| `vaultwarden/` | Vaultwarden's data | `vaultwarden` |
+
+`vault.sh` creates these folders before any container starts, so Docker never creates them
+root-owned. On Linux the containers run as uid 10001: `vault.sh` gives the folders it creates to
+that uid when run as root and prints the `chown` command otherwise, keeps `secrets/` and the
+accounts folder owned by the user at mode 711, never chmods a path it does not own, and reads or
+writes a container-owned file through `bitwarden-setup`, saying so once per path. `bitwarden-setup`
+writing `local.env` or rewriting `BW_SCOPE` in the user-owned accounts folder is left to a
+documented ownership step on Linux; the stack targets Docker Desktop on macOS, which maps bind-mount
+ownership to the user.
 
 ### Modes
 
@@ -131,11 +163,14 @@ creates the account, so every mode signs in the same way. The account's `bw` dat
 | `local` | Vaultwarden in this stack | `make vault-init` | `make vault-init` |
 
 `vault-add` asks for the client ID, client secret and (for `stored`) master password in masked
-prompts on the host terminal, never as arguments. It runs `bw login --apikey` and one unlock in the
-broker to check them, then writes the files. If the folder or collection in `SCOPE` does not
-exist yet, it offers to create it and seed it through `bitwarden-setup` (Setup and seeding). A
-cloud or selfhosted account starts no container but
-the broker, as a remote Twenty workspace starts none.
+prompts on the host terminal, never as arguments. It writes the files, sets `BITWARDEN_ENABLED=1`,
+and offers to create the folder or collection and seed it through `bitwarden-setup` (Setup and
+seeding); the host cannot see whether the space exists, so it always offers. With the broker
+running it then restarts the broker, waits for the account to leave `locked`, and on an `auth`
+error removes what it wrote (with `--force`, it restores the previous file and secrets, which it
+kept as `.bak` until then). Without a running broker the check happens at the next start. A cloud
+or selfhosted account starts no container but the broker, as a remote Twenty workspace starts
+none.
 
 ### Scope
 
@@ -160,12 +195,15 @@ An item with no `http` or `https` URI, or whose only URIs have match type "Never
   no prompt. Those are `default` and `browser` in v1 (Manifest and profiles).
   The broker keeps the session key in its own memory and never writes it out.
 - `manual`: no master password is stored. `make vault-unlock SLUG=…` asks for it in a masked prompt
-  on the host and passes it to the broker over `docker compose exec` stdin. The broker uses it for
-  one `bw unlock --passwordenv` and drops it. The vault stays unlocked until the broker restarts,
-  `make vault-lock SLUG=…`, or `BITWARDEN_IDLE_LOCK_MINUTES` of no fills (default 0, never). While
-  locked, `browser_vault_list` reports the account as locked and the agent tells the user to run
-  `make vault-unlock`. Hermes' own unlock prompt is never used, since the master password would
-  pass through the gateway.
+  on the host and pipes it to `python3 -m broker.unlock <slug>` through `docker compose exec` stdin.
+  That command hands it to the running server over the Unix socket (`POST /unlock`; `--lock` sends
+  `POST /lock`), never over TCP or argv. The broker uses it for one `bw unlock --passwordenv` and
+  drops it; a wrong password leaves the account locked, not in error. The vault stays unlocked until
+  the broker restarts, `make vault-lock SLUG=…`, or `BITWARDEN_IDLE_LOCK_MINUTES` with no fill or
+  unlock (default 0, never). While locked, `browser_vault_list` carries
+  `"bitwarden": {"locked": [<slug>], "unlock": "make vault-unlock SLUG=<slug>"}` and the agent tells
+  the user to run it. Hermes' own unlock prompt is never used, since the master password would pass
+  through the gateway.
 
 With `stored` on a personal account, the broker holds a password that opens the user's whole
 vault. `vault-add` says so before writing it, and suggests `collection:` with a member account.
@@ -174,55 +212,88 @@ vault. `vault-add` says so before writing it, and suggests `collection:` with a 
 
 `BITWARDEN_LOCAL_ENABLED=1` starts `vaultwarden` (profile `vault`), image pinned by digest, on
 `127.0.0.1:${VAULTWARDEN_PORT:-8222}`. Settings: `SIGNUPS_ALLOWED=false`, `INVITATIONS_ALLOWED=true`,
-`ADMIN_TOKEN` hashed with Argon2 from a generated secret file, `DOMAIN=http://localhost:8222`. A
-browser treats `localhost` as a secure context, so the web vault's crypto works without TLS. Data
-lives in `data/addons/bitwarden/vaultwarden/`.
+`DISABLE_ICON_DOWNLOAD=true`, `DOMAIN=http://localhost:${VAULTWARDEN_PORT}`, and
+`ADMIN_TOKEN_FILE` pointing at the Argon2id PHC hash in `local/vaultwarden/admin_token.phc`; the
+plaintext token stays in `local/admin_token`, which only `bitwarden-setup` mounts. A browser treats
+`localhost` as a secure context, so the web vault's crypto works without TLS. Data lives in
+`vaultwarden/` under `BITWARDEN_HOST_DATA_DIR`.
 
 `bw` refuses any server URL that is not HTTPS, loopback included; only its dev builds skip the
 check (spike 2). The host port therefore stays plain HTTP for the user's browser, and a
-`vaultwarden-tls` sidecar (the `nginx` image the stack already pins for `vikunja-proxy`) terminates
-TLS for the broker on the vault network as `https://vaultwarden.vault.internal`. `vault-init`
-generates a private CA and a server certificate for that name into
-`data/addons/bitwarden/secrets/local/tls/`; the broker and `bitwarden-setup` trust the CA through
-`NODE_EXTRA_CA_CERTS` and nothing else does. The user's own browser never sees this certificate, so
+`vaultwarden-tls` sidecar (`VAULTWARDEN_TLS_IMAGE`, default the `nginx` image the stack already pins
+for `vikunja-proxy`) terminates TLS for the broker as `https://vaultwarden.vault.internal`.
+`bitwarden-setup tls` (`setup/tls.py`, python3-cryptography in the broker image, so the host needs no
+openssl) writes a private CA (EC P-256, 10 years, name-constrained to that one DNS name) to
+`local/tls/` and a server pair (825 days) to `local/tls/server/`, and copies `ca.crt` to
+`secrets/local/tls/ca.crt`. The sidecar mounts only `local/tls/server/`, the CA key stays where only
+`bitwarden-setup` can read it, and the broker and `bitwarden-setup` trust the CA through
+`NODE_EXTRA_CA_CERTS`; nothing else does.
+
+Networks, so that nothing on `hermes`' networks reaches Vaultwarden in plain HTTP:
+
+| Network | Internal | Members |
+|---|---|---|
+| `vault` | yes | `hermes` (and so the broker), `vaultwarden-tls` (alias `vaultwarden.vault.internal`), `bitwarden-setup` |
+| `vault-backend` | yes | `vaultwarden`, `vaultwarden-tls` |
+| `vault-host` | no | `vaultwarden` only, for the `127.0.0.1` port publish |
+| `bitwarden-setup` | no | `bitwarden-setup`, its route to Bitwarden's servers apart from `hermes` |
+
+`vaultwarden-tls` sets `X-Real-IP` and `X-Forwarded-For` from the connecting address, overwriting
+what a client sends, so a caller in `hermes` cannot spoof its way past Vaultwarden's login rate
+limit. `hermes` is on `vault` on every install, with the add-on off too: the broker shares its
+namespace and needs the route, and an empty internal network exposes nothing. Existing installs
+recreate `hermes` once on upgrade. The user's own browser never sees this certificate, so
 the user installs no CA. Serving TLS from Vaultwarden itself (`ROCKET_TLS`) works for `bw` too, but
 would make the user trust the CA in macOS or click through a warning to reach the web vault.
 
-`make vault-init`, re-runnable:
+`make vault-init`, re-runnable. Steps 2 to 5 run in one `bitwarden-setup local-init` run, so the
+agent account signs in once for the API and once for `bw`: Vaultwarden allows 10 password logins a
+minute from one client IP and sends no `Retry-After`, so on a 429 the run waits 60 seconds and tries
+once more. Each finished step is recorded with the ids it made in `local/state`, which only
+`bitwarden-setup` mounts, and a re-run picks up after the last one. A crash between creating the
+organization and recording it is handled by reusing an organization named "Assistant".
 
-1. Starts Vaultwarden and waits for health.
+1. Creates the data folders, runs `bitwarden-setup tls` and `admin-token`, sets
+   `BITWARDEN_LOCAL_ENABLED=1`, starts `vaultwarden` and `vaultwarden-tls` and waits for health.
 2. Creates the agent account `agent@vault.localhost` with a generated master password: an admin
    API invite (`POST /admin/invite`), then Bitwarden's client-side registration through
    `/identity/accounts/register/send-verification-email` and `/register/finish`. With no SMTP
    configured, the first call returns the verification token directly. Fetches the account's
-   personal API key (`POST /api/accounts/api-key`) and stores the key and master password in
-   `data/addons/bitwarden/secrets/local/`.
+   personal API key (`POST /api/accounts/api-key`, with a token requested for scope
+   `api offline_access`, since Vaultwarden 1.37.4 refuses `api` alone) and stores the key and
+   master password in `secrets/local/`.
 3. Creates the organization "Assistant" with the collection "Agent" over the API
-   (`POST /api/organizations`; `bw` has no command for it), then signs the broker in and creates
-   "Stack secrets" with `bw create org-collection`. Writes `compose/bitwarden/accounts/local.env`
-   with `BW_SCOPE=collection:<Agent id>` and `BW_UNLOCK=stored`.
+   (`POST /api/organizations`; `bw` has no command for it), then signs `bw` in as the agent account
+   inside `bitwarden-setup` and creates "Stack secrets" with `bw create org-collection`. Writes
+   `compose/bitwarden/accounts/local.env` with `BW_SCOPE=collection:<Agent id>`,
+   `BW_UNLOCK=stored` and `BW_SECRETS_ITEM_SCOPE=collection:<Stack secrets id>`. An existing
+   `local.env` naming other ids is refused unless `--rotate` is given.
 4. Invites the user's address (asked for, or `VAULT_OWNER_EMAIL`) to the organization as an Owner
    through the organization API (`POST /api/organizations/<id>/users/invite`; `bw` has no invite
-   command) and prints the web vault's sign-up address. With no SMTP, Vaultwarden records an
-   instance invitation for that address, so the user can register there although sign-ups are
-   off, and the membership is accepted when they do. The user chooses their own master password.
-   The stack never generates, sees or stores it.
-5. Waits for the user to register, then confirms them with `bw confirm org-member` as the agent
-   account. Exits with what to do next if the user has not registered within 10 minutes; a
+   command). With no SMTP, Vaultwarden records an instance invitation for that address, so the user
+   can register there although sign-ups are off, and the membership is accepted when they do. The
+   user chooses their own master password. The stack never generates, sees or stores it.
+5. `local-init` prints the web vault's sign-up address and waits up to 10 minutes for the user to
+   register, polling the membership, then confirms them with `bw confirm org-member` as the agent
+   account. If the user has not registered by then it exits 4, `vault-init` says what to do, and a
    re-run picks up from here.
-6. Runs `bitwarden-setup` (next section) with the user's unlock to change the agent account to
-   the User role with access to the "Agent" collection (Manage) and "Stack secrets" (view) only.
-   From then on the user owns the organization and Bitwarden, not the broker, enforces the agent's
-   scope. The agent account never holds the user's items alone.
+6. Runs `bitwarden-setup role` with the user's unlock to change the agent account to the User role
+   with access to the "Agent" collection (Manage) and "Stack secrets" (view) only, and records
+   `STEP=role`. From then on the user owns the organization and Bitwarden, not the broker, enforces
+   the agent's scope. The agent account never holds the user's items alone. `vault-init` then sets
+   `BITWARDEN_ENABLED=1`.
 
 `make vault-open` opens the web vault. Stopping is `BITWARDEN_LOCAL_ENABLED=0` and `make up`; the
 local account file stays, and the broker reports it as offline, as `crm` does for local Twenty
 workspaces.
 
 The local Vaultwarden holds the only copy of whatever the user stores there. `vault-init`'s closing
-message and `docs/bitwarden.md` say so, and the add-on's `backup` hook covers the data directory
-and the secret files together (`sqlite3 .backup` of `db.sqlite3`, plus `attachments/` and
-`rsa_key*`).
+message and `docs/bitwarden.md` say so, and the add-on's `backup` hook (`scripts/vault.sh backup
+DIR`) covers the data directory, the secret files and the account files together: an online SQLite
+backup of `db.sqlite3` (in a container that shares Vaultwarden's mounts while it runs), plus
+`rsa_key*`, `config.json`, `attachments/` and `sends/`, `secrets/`, `local/` and the accounts folder,
+into a new, empty folder. `restore DIR` needs Vaultwarden stopped and refuses to overwrite data
+without `--force`; with it, it copies the backup over the existing data rather than replacing it.
 
 ## Setup and seeding
 
@@ -233,7 +304,10 @@ to `hermes` and no shared volume with it. It asks for the user's master password
 prompt on the host terminal (`docker compose run` with a TTY), unlocks the user's account into a
 temporary `BITWARDENCLI_APPDATA_DIR` under `/tmp`, does its work, runs `bw lock` and `bw logout`,
 and exits. Nothing it holds outlives the run. `vault-init`, `vault-add` and `vault-grant` (below)
-all use it.
+all use it. Its commands: `create`, `seed`, `grant`, `role` and `list-unassigned` take `--slug` and
+the user's `--email`; `tls`, `admin-token` and `local-init` are local mode's. It never writes
+`requests.json` and has no broker mount: after a grant, `vault.sh` calls the broker's sync, which
+marks the request done once the host is in scope.
 
 What it creates, per mode:
 
@@ -262,10 +336,13 @@ the docs say it too.
 
 ## Broker
 
-`compose/bitwarden-broker/`: a Debian slim image with the `bw` native build for the target
-architecture, version and SHA-256 per architecture pinned in the Dockerfile, plus a Python stdlib
-HTTP server. Runs as a non-root user with a read-only root filesystem; writable paths are `/tmp`
-and the `bw` data directories.
+`compose/bitwarden-broker/`: a Debian bookworm-slim image (pinned by digest) with the `bw` native
+build for the target architecture, version (`BW_CLI_VERSION` build argument, 2026.10.1) and SHA-256
+per architecture pinned in the Dockerfile, plus a Python stdlib HTTP server (`broker/`). The same
+image runs `bitwarden-setup` and `bitwarden-secrets-sync` (profile `bitwarden-tools`). Runs as uid
+10001 with a read-only root filesystem, all capabilities dropped and `no-new-privileges`; writable
+paths are `/tmp`, `bw/` and `broker/`. Its environment is limited to the `BITWARDEN_*` paths and
+settings and `NODE_EXTRA_CA_CERTS` (`test-compose-env-allowlist.py`).
 
 ### Networking
 
@@ -276,7 +353,8 @@ browser-harness starts on its loopback CDP port, and reaches Bitwarden through `
 the API below carries no secret in any response. The broker restarts when `hermes` is recreated,
 since compose ties the shared namespace to it.
 
-The local Vaultwarden is on its own network, which `hermes` (and so the broker) joins as well.
+The local Vaultwarden is reached only through `vaultwarden-tls` on the internal `vault` network,
+which `hermes` (and so the broker) joins (Local mode).
 
 ### API
 
@@ -287,56 +365,118 @@ through the vault tools, and none returns a secret.
 |---|---|---|
 | `GET /accounts` | Each account's slug, mode, scope kind and state (`unlocked`, `locked`, `offline`, `error`) | metadata |
 | `GET /items` | Login items in scope across unlocked accounts | `[{handle, label, username, origins, has_totp}]` |
-| `POST /fill` `{handle, target_id, field}` | Fills the password (`field: "password"`) or the current TOTP code (`"totp"`) into the CDP target | `{filled, origin, redaction}` |
+| `POST /fill` `{handle, target_id, port, field, base}` | Fills the password (`field: "password"`, the default) or the current TOTP code (`"totp"`) into the CDP target on `127.0.0.1:<port>` | `{filled, origin, error, redaction}` |
 | `POST /sync` | Runs `bw sync` on every unlocked account now | `{synced}` |
 | `POST /requests` `{account, site, reason}` | Records an access request (Access requests) | `{request_id}` |
 | `GET /requests` | Pending and recent requests | metadata |
 | `POST /release` `{handle}` | Stops serving an item at once and returns it to the user (Access requests) | `{released, returned}` |
 | `GET /health` | Liveness and per-account state | status |
 
-`/fill` reads the target's URL over CDP itself, normalizes its origin and refuses unless it is one
-of the item's origins. It never trusts an origin from the caller. It then runs the same field probe
+The Unix socket at `/run/bitwarden-sync/sync.sock` (mode 600, in the `bitwarden_sync` volume that
+only the broker and `bitwarden-secrets-sync` mount, never bound on TCP) carries the three calls that
+handle values: `GET /secrets` (Stack secrets), and `POST /unlock` and `POST /lock` for `manual`
+accounts. Request bodies are JSON objects of at most 64 KiB with no unknown or duplicate keys, and
+every error is `{"error": "<code>"}` with a fixed code.
+
+`port` is the DevTools port from the task's `cdp_url`. Chromium picks a random one
+(`--remote-debugging-port=0`), so the caller has to say which, and the broker connects only to
+`127.0.0.1:<port>`. `base` is the profile's fingerprint base (Redaction). `error` is one of six
+fixed codes (`target_not_found`, `origin_mismatch`, `no_field`, `write_unconfirmed`, `page_error`,
+`cdp_unavailable`); `redaction` is withheld when nothing was written (`target_not_found`,
+`origin_mismatch`, `no_field`), so a bad target id cannot collect entries for every item, and
+returned for every other outcome, `write_unconfirmed` and a timeout included. A TOTP fill on an
+item without a key, or whose `bw get totp` fails (no Premium on a cloud personal account), returns
+`no_totp`.
+
+`/fill` reads the target's URL over CDP itself, normalizes its origin (`broker/origins.py`, core's
+rules, checked against core in `test-bitwarden-fill.py`) and refuses unless it is one of the item's
+origins. It never trusts an origin from the caller. It then runs the same field probe
 and write that core's `_fill_bound_page` uses (deep probe for `input[type=password]`, set the value,
-dispatch `input` and `change`), wrapped so a page exception returns fixed text. A refusal or
-failure returns fixed text that never quotes the value or the script.
+dispatch `input` and `change`), wrapped so a page exception returns fixed text; the value is a
+`Runtime.callFunctionOn` argument, never part of the function source. A `totp` write probes
+`autocomplete="one-time-code"` and split one-box-per-character inputs as core's `enter_code` does,
+falling back to the focused input. The probe runs in the top document, so a login form in a
+cross-origin iframe is not found (`no_field`). A refusal or failure returns fixed text that never
+quotes the value or the script. The whole CDP exchange is bounded by a 10-second deadline.
 
 `redaction` is what the gateway needs to scrub the value from later tool output without holding it
 (see Redaction). Usernames are returned in metadata, as upstream does, because the agent types them.
 
 The broker re-checks scope on every call. It runs `bw sync` per unlocked account every
-`BITWARDEN_SYNC_MINUTES` (default 10) and on `POST /sync` (`make vault-sync` calls it), and backs off to the server's
-`Retry-After`, or one minute, after a 429. It logs handles, origins and outcomes, never values,
-item names beyond the handle, or page content.
+`BITWARDEN_SYNC_MINUTES` (default 10; 0 refuses to start) and on `POST /sync` (`make vault-sync`
+calls it), unlocks `stored` accounts again after a lock or a failed start, and backs off to the
+server's `Retry-After`, or one minute, after a 429 (Vaultwarden sends none); the account shows as
+`offline (rate_limited)` meanwhile and its last synced items are still served. It logs method,
+route, status and the handle, never values, bodies, item names, sites or `bw`'s output. `bw`'s
+stderr is classified into `auth`, `locked`, `network`, `rate_limited` and `unknown` by patterns
+checked against `bw` 2026.10.1 and Vaultwarden. A `denylist.json` or `requests.json` that does not
+load stops the broker, so it never starts empty and serves a released item again.
 
 ## Hermes side
 
 ### Plugin backend
 
-`compose/hermes/bitwarden_broker_backend.py`, registered as a trusted in-process plugin under the
-name `bwbroker` (handles `bwbroker:<slug>/<item id>`). `list_items` and `get_meta` call `/items`
+The plugin is a directory, `compose/hermes/plugins/bwbroker/` (`plugin.yaml` and `__init__.py`
+with `register(ctx)`), because Hermes loads plugins from `<plugins dir>/<name>/`. The backend module
+is `compose/hermes/bitwarden_broker_backend.py`, which `__init__.py` imports from beside itself. The
+plugin registers the backend under the name `bwbroker` (handles `bwbroker:<slug>/<item id>`) and the
+two access tools under their own toolset, `bitwarden`. `list_items` and `get_meta` call `/items`
 and build `VaultItemMeta` with `allowed_origins` set, so core's origin pre-check works as it does
-for the built-in managers. `resolve_password` and `resolve_otp` raise: no value ever comes back to
-the gateway. Bootstrap installs the plugin on the profiles the add-on is enabled for and writes
-`vault.bitwarden.enabled: false` on every profile.
+for the built-in managers. `resolve_password`, `resolve_otp` and `resolve_secret` raise: no value
+ever comes back to the gateway. A broker that does not answer lists nothing rather than raising.
+
+Hermes v0.22.7 accepts a login backend only from a bundled plugin or a catalog install at tier
+verified or official (`login_backend_provenance_error`), and no config key relaxes that; a copy under
+`$HERMES_HOME/plugins` loads its tools and has its backend refused. So the cont-init script
+`14-install-bwbroker-plugin.sh` copies the plugin and the backend module into
+`/opt/hermes/plugins/bwbroker` while `BITWARDEN_ENABLED` is on and removes it otherwise, as the stack
+already patches `/opt/hermes` for its overlays. The bootstraps then, per profile from the manifest's
+`vault-plan`, add `bwbroker` to `plugins.enabled` and set `vault.bwbroker.enabled: true` on
+`default` and `browser`, remove both elsewhere or when the flag is off, and delete any copy of the
+plugin in a profile's own plugins dir. While the add-on is on they write
+`vault.bitwarden.enabled: false` on every profile they manage, `api-server` included; turning it off
+leaves that line in place.
+
+Cron is kept out at two layers, because a login backend is on for every turn a profile runs and
+`browser_vault` itself rides in cron. The bootstraps list the `bitwarden` toolset in
+`known_plugin_toolsets.cron` while the plugin is enabled on a profile and take it out of a cron
+tool list (`addon_manifest.cron_fence_toolsets`), and the backend lists nothing and so fills nothing
+in a cron turn. It detects one from `cron.execution_identity.current_cron_execution()`, and in a
+`delegate_task` child from the job's context variable that the child's thread inherits; a delegated
+child for which that variable cannot be found counts as cron. A subagent a chat starts is not cron.
 
 A locked account's items do not appear. Because a plugin cannot use Hermes' unlock prompt,
 `browser_vault_list` gets a hint from the overlay below naming the locked account and
-`make vault-unlock SLUG=…`.
+`make vault-unlock SLUG=…`, or `{"unavailable": true}` when the broker does not answer.
 
 ### Fill overlay
 
 `compose/hermes/patch-bitwarden-broker-fill.py`, anchored in `tools/browser_vault_tool.py`. For a
 `bwbroker:` handle, after core's origin pre-check and inside `fill_context`, it replaces the
-resolve-and-write step with a `/fill` call carrying the CDP target id of the task's current page.
-It registers the returned `redaction` entry, then shapes the result like core's. `browser_vault_enter_code`
-gets the same routing with `field: "totp"`, falling back to core's ask-the-user path when the item
-has no TOTP. `browser_vault_save_login` for a broker account is refused with a pointer to adding the
-item in Bitwarden, since the save prompt would pass the password through the gateway.
+resolve-and-write step with a `/fill` call carrying the CDP target id of the task's current page,
+the port and the profile's redaction base. It registers the returned `redaction` entry for every
+outcome that returns one (logging a fixed line when registration is refused), then shapes the
+result like core's from the broker's fixed error code only. `browser_vault_enter_code` gets the same
+routing with `field: "totp"`, falling back to core's ask-the-user path when the item has no TOTP.
+A fill re-admits Bot Desktop control at the write as core does. When the digest overlay is missing
+(`vault_redaction_base` cannot be imported) every `bwbroker:` fill is refused as unavailable, so no
+value is written that could not be scrubbed. A fill whose metadata read came back empty because the
+broker is down gets "Bitwarden is unavailable right now" instead of core's unknown-handle text.
+
+Both overlays are mounted and applied from `05-patch-tool-calling.sh` on every install, as every
+overlay is; they are inert until a `bwbroker:` handle is filled or a digest registered, so the
+"byte-identical with flags off" rule covers services, profile configs and bootstrap output, not
+overlay mounts.
+
+`browser_vault_save_login` is left to core. It stores into Hermes' local Fernet vault, never into a
+broker account, so no password passes toward Bitwarden through the gateway, and refusing it would
+break local saves on the Bitwarden profiles. The `browser-login` skill says Bitwarden logins are
+added in Bitwarden or asked for with `bitwarden_request_access`.
 
 The gateway's CDP supervisor keeps the attached page's session id, not its target id. The overlay
 calls `focus_page` for the item's origin as core does, then `Target.getTargetInfo` on that session
-for the target id and passes it with the CDP port from the task's `cdp_url`, so the broker writes
-into the tab the agent drove. Spike 1 showed a second container in the `hermes` network namespace
+for the target id and passes it with the CDP port from the task's `cdp_url` (or the supervisor's),
+loopback only, so the broker writes into the tab the agent drove. Spike 1 showed a second container in the `hermes` network namespace
 attaching to that target and filling it while another CDP client held a session on the page, with
 that session unaffected.
 
@@ -344,18 +484,34 @@ that session unaffected.
 
 Core scrubs exact registered values. With broker fills the gateway never has the value, so the
 broker returns, per fill, a fresh random 32-byte key `k` and, for each of five forms of the value
-(raw, standard base64, hex, percent-encoded, reversed), the form's length and `HMAC-SHA256(k, form)`.
+(raw, standard base64, hex, percent-encoded, reversed) and the same five forms of the value with CR
+and LF removed (what a text input keeps), the form's byte length, its Rabin-Karp fingerprint and
+`HMAC-SHA256(k, form)` (`broker/digest_redaction.build_entry`).
 
-Each form also gets a Rabin-Karp fingerprint (modulus 2^61−1, a random base per fill, both
-returned). `compose/hermes/patch-digest-redaction.py` extends `redact_registered_vault_values`
-with these entries. For each form it slides the rolling fingerprint over the text, computes the
-HMAC only where the fingerprint matches, and on an HMAC match replaces the window with core's
-redaction marker. Entries live in gateway
-memory for the profile, like core's, and clear with core's `clear_vault_redaction_values`.
+The fingerprint uses modulus 2^61−1 and one random base per profile, not per fill. The gateway
+creates the base on first use (`agent.redact.vault_redaction_base`), sends it in each `/fill`
+(`base`, 256 ≤ base < 2^61−1), and the broker builds the entry with it. Base secrecy adds nothing,
+since a fingerprint collision costs only an HMAC check and agent code reading gateway memory would
+get the base either way, while one base per fill would make the scan linear in the number of
+entries on a path that runs on every tool result and log line.
 
-Agent code that reads gateway memory could get `k` and the fingerprints and brute-force a weak
-password offline. Generated passwords are out of reach. `docs/bitwarden.md` says to keep weak
-passwords out of the agent's folder or collection.
+`compose/hermes/patch-digest-redaction.py` copies `digest_redaction.py` into `agent/` and extends
+`agent/redact.py`: `register_vault_redaction_digest` stores entries normalized, per profile, under
+core's lock and per-profile cap, and drops a malformed entry or one built with another base; the
+scrub runs in `redact_registered_vault_values` after core's exact pass. It scans the UTF-8 bytes in
+64 KiB chunks overlapping by the longest form's length minus one, so memory stays bounded: one
+prefix-fingerprint array per chunk, one window pass per distinct form length with a dict lookup
+from fingerprint to candidate forms, and an HMAC only on a hit. An HMAC match replaces the window
+with core's marker, `«redacted-vault-secret»`. Every form is a whole UTF-8 sequence, so a match
+starts and ends on character boundaries. The scrub fails closed: on any internal error it returns
+`«redaction failed»` in place of the whole text and logs one fixed line. Entries and the base live
+in gateway memory for the profile, like core's values, and clear with `clear_vault_redaction_values`.
+
+Agent code that reads gateway memory, or that reads a `/fill` response, gets `k` and the
+fingerprints and can test guesses offline. Generated passwords are out of reach; a weak password is
+not, and a TOTP code (6 digits) is recovered from its entry at once, for its time step.
+`docs/bitwarden.md` says to keep weak passwords out of the agent's folder or collection. A fill
+whose `/fill` reply is lost after the broker wrote the page registers no entry.
 
 ## Stack secrets
 
@@ -366,22 +522,47 @@ the broker, which holds the session keys, over a Unix socket in a named volume
 returns values and serves only items in `BW_SECRETS_ITEM_SCOPE`. `hermes` does not mount the
 volume, so agent code cannot reach it, and the long-running broker never mounts the target files.
 
-Each item maps by its name to a secret file the stack already reads:
+Each login item maps by its exact name to a secret file the stack already reads; the value is the
+item's password field:
 
-| Item name | Field | File |
-|---|---|---|
-| `llm-proxy/<route>` | password | the `*_API_KEY_FILE` for that route |
-| `twenty/<slug>/key-ro`, `twenty/<slug>/key-rw` | password | the key lines in `compose/twenty/workspaces/<slug>.env` |
-| `twenty/encryption-key`, `twenty/db-password` | password | the files behind `TWENTY_ENCRYPTION_KEY_FILE` and `TWENTY_DB_PASSWORD_FILE` |
-| `postgres/<role>` | password | `compose/postgres/services/<role>.env` key `DB_*_PASSWORD` |
-| `caldav/<slug>` | password | `CALDAV_<SLUG>_PASSWORD` in `compose/caldav-mcp/accounts/<slug>.env` |
+| Item name | File and key |
+|---|---|
+| `twenty/<slug>/key-ro`, `twenty/<slug>/key-rw` | `TWENTY_KEY_RO` / `TWENTY_KEY_RW` in `compose/twenty/workspaces/<slug>.env` |
+| `twenty/encryption-key` | the whole file `TWENTY_ENCRYPTION_KEY_FILE` names |
+| `twenty/db-password` | the whole file `TWENTY_DB_PASSWORD_FILE` names |
+| `postgres/<role>` | `DB_SERVICE_PASSWORD` in `compose/postgres/services/<role>.env`, plus the same password inside `DATABASE_URL` and any `*_DATABASE_PASSWORD` line that held the old value, since those lines carry the same secret |
+| `caldav/<slug>` | `CALDAV_PASSWORD` in `compose/caldav-mcp/accounts/<slug>.env` |
 
-`bitwarden-secrets-sync` mounts the listed files' folders read-write. An unknown item name is reported and
-skipped, and a name that maps to two files is refused. A file is rewritten only when its value
-changed, keeping mode 600, and the command lists which files changed, never values, then runs
-`make hermes-reload` if any Hermes-side file changed. `make up` runs it when any account has
-`BW_SECRETS_ITEM_SCOPE` and the broker is unlocked; when the vault is locked, the files keep their
-last values and `make up` says the sync was skipped.
+There is no `llm-proxy/<route>` row: the stack has no host-side key file per route to write. The
+first table named keys that do not exist (`DB_*_PASSWORD`, `CALDAV_<SLUG>_PASSWORD`); the ones above
+are what those files hold. A `postgres/<role>` file with no `DB_SERVICE_PASSWORD` line is skipped.
+
+`bitwarden-secrets-sync` runs with no network and mounts, read-write, only the folders of the files
+it writes: the Twenty workspaces, Postgres services and CalDAV accounts folders, and
+`TWENTY_SECRETS_DIR` for the two Twenty files. Compose cannot take the folder of a `*_FILE` path, so
+both Twenty files must sit directly in `TWENTY_SECRETS_DIR`, a new variable; unset, it mounts the
+empty `compose/twenty/no-secrets/` and those items are skipped with a note. An unknown item name is
+reported and skipped, a name that maps to two files is refused, a missing file is never created and
+a symbolic link is skipped. A file is rewritten only when its value changed, through a temp file in
+the same folder, at mode 600 and with the old owner where the container may set it (a note says when
+it could not). The command lists which files changed, never values, and exits 3 when a file Hermes
+reads changed, on which `vault.sh` runs `make hermes-reload`. `make up` runs it through
+`vault.sh up-hook` when any account has `BW_SECRETS_ITEM_SCOPE` and that account is unlocked;
+otherwise the files keep their last values and `make up` says the sync was skipped.
+
+The `KEY=value` files are read by compose's `env_file`, POSIX shell and Python parsers with
+different quoting rules. A value bound for one of them is refused, skipped with a note naming the
+item and never the value, when it contains `$`, a backtick, `\`, `'`, `"`, `#`, whitespace at
+either end, or a control character; refusing is the one rule all three readers agree on, and
+generated keys and passwords are normally alphanumeric. A safe value keeps the line's quoting (bare,
+double- or single-quoted). The whole-value Twenty files take any value. Lone surrogates are refused
+everywhere.
+
+A new value does not always reach the service that checks it. A Twenty API key must exist in
+Twenty first. A new `twenty/encryption-key` loses what Twenty stored. A new `twenty/db-password`
+does not change the role's password, since Postgres reads its password file only at first
+initialisation, and the Twenty containers need recreating. A new `postgres/<role>` takes effect when
+`db-provision` next runs and the integration restarts. `docs/bitwarden.md` gives the steps.
 
 This changes where a value comes from, not where it goes. Values Hermes needs today in profile
 `.env` files (CalDAV passwords for MCP headers) still end up there, with the same caveat as now.
@@ -399,23 +580,27 @@ write.
 The Hermes plugin registers `bitwarden_request_access(site, reason, account?)`. It calls
 `POST /requests` and tells the agent the request is pending and how the user approves it. The
 result carries no item data and does not say whether a matching item exists outside the agent's
-scope. The broker keeps requests in its data directory and drops them after 7 days. It holds at
+scope. The broker keeps requests in `broker/requests.json` and drops them after 7 days. It holds at
 most 10 pending requests and refuses more, so a looping or injected agent cannot bury the user in
-them. `site` must parse as a hostname. `reason` is cut to 200 characters with control characters
-removed, and is always shown to the user labelled as the agent's text.
+them; a repeat of a pending (account, site) pair returns that request's id. `site` must be a
+hostname or a URL whose host is taken, stored lower-case in its IDNA form. `reason` loses every
+Unicode `C*` character and is cut to 200 characters, and is always shown to the user labelled as
+the agent's text. `account` defaults to the only account when there is one.
 
 ### Approving
 
 - **`make vault-grant`** lists pending requests. For the one the user picks, it runs
-  `bitwarden-setup` with the user's unlock, shows the matching items from the user's vault
-  (Seeding), moves the one the user chooses, marks the request done and calls the broker's sync.
-  `make vault-grant SITE=linkedin.com` skips the request list.
+  `bitwarden-setup grant` with the user's unlock, which shows the matching items from the user's
+  vault (Seeding) and moves the one the user chooses. `vault.sh` then calls the broker's sync, which
+  marks the request done once the host is in scope. `make vault-grant SITE=linkedin.com` skips the
+  request list.
 - **In Bitwarden.** The user moves the item into the folder or collection in any Bitwarden app.
   The broker's next sync, or `make vault-sync`, picks it up and marks a pending request for that
   host done.
 - **In Boundary.** A native dialog doing what `vault-grant` does. This needs a Boundary change
   request: the stack exposes `scripts/vault.sh requests --json` and
-  `scripts/vault.sh grant --site … --item …`, and Boundary owns the masked prompt.
+  `scripts/vault.sh grant --site … --slug … --email … --item …`, and Boundary owns the masked
+  prompt. `grant` has no machine-readable output yet and needs a terminal for the setup prompt.
 
 Hermes' approval cards are not used. The approval itself is not the hard part; the move needs the
 user's vault key, which in this design exists only inside `bitwarden-setup`. In `folder` mode with
@@ -428,22 +613,26 @@ agent can never widen its own scope.
 alone, because narrowing access is safe whoever asks. The broker adds the handle to a denylist in
 its data directory and stops listing and filling it at once. Then it returns the item:
 
-- `folder:` scope: sets the item's folder to none.
-- `collection:` scope: removes the item from every collection. It stays in the organization as
-  an unassigned item, which only Owners and Admins see. Vaultwarden refuses to move it into a
-  collection the agent cannot write ("No rights to modify the collection", spike 2), so there is
-  no "Returned" collection. `make vault-grant` lists unassigned items so the user can file them.
-  Whether bitwarden.com allows the removal the same way is not yet checked; if it refuses, the
-  item stays denylisted and in "Agent", and `make vault-grant` lists it as waiting to be returned
-  with the user's unlock.
+- `folder:` scope: sets the item's folder to none (`bw edit item` with the item JSON on stdin).
+- `collection:` scope: removes the item from the scope collection only, keeping any others the user
+  put it in (`bw edit item-collections <id> --organizationid <org>` with the remaining ids on
+  stdin). The intent is to take the item out of the agent's reach, not to strip sharing set up
+  elsewhere. When the scope collection was its only one, it stays in the organization as an
+  unassigned item, which only Owners and Admins see (checked on Vaultwarden 1.37.4). Vaultwarden
+  refuses to move it into a collection the agent cannot write ("No rights to modify the
+  collection", spike 2), so there is no "Returned" collection.
+  `bitwarden-setup list-unassigned` lists unassigned items so the user can file them. Whether
+  bitwarden.com allows the removal the same way is not yet checked.
 
-The denylist entry is removed when the item leaves the agent's scope, or when the user grants it
-again.
+The broker reads the item first; one already out of scope gets no edit and counts as returned. When
+`bw` refuses the edit, `/release` returns `returned: false` and the item stays denylisted and in the
+agent's scope until the user moves it. A denylist entry is dropped at the first listing that no
+longer has the item in scope, so a later grant of the same item lists it again.
 
 ## Manifest and profiles
 
-`addons/bitwarden/addon.json` is a built-in add-on, checked by the validator on main
-(`scripts/lib/addon_manifest.py`, 670ac9e) and by `scripts/test-addon-manifests.py`. The file is
+`addons/bitwarden/addon.json` is a built-in add-on (`minStackVersion` 0.3.12), checked by
+`scripts/lib/addon_manifest.py` and `scripts/test-addon-manifests.py`. The file is
 canonical JSON (`json.dumps(indent=2, ensure_ascii=False)` plus a newline), because
 `sync-profiles.sh` reads its `builtin` block with `sed` before there is a host `python3`.
 
@@ -453,15 +642,20 @@ canonical JSON (`json.dumps(indent=2, ensure_ascii=False)` plus a newline), beca
   false so a missing flag stays off.
 - `services`: `{"broker": {"compose": "bitwarden-broker", "port": 8099}}`. Images stay in
   `docker-compose.yml`, as for every built-in.
-- `uses`: none. `mcp`: none.
+- `uses`: none. `mcp`: none. `vaultBackend` as in Changes item 2.
 - `permissions`: `reads: ["credentials"]`, `sends: false`, `cron: false`, `exposesToAgent: false`,
   `egress: ["internet"]`, `writes: ["external:bitwarden"]` (moves made by releases, and by
   setup and `vault-grant` with the user's unlock).
-- `settings`: `sync_minutes` and `idle_lock_minutes` (`int`, min 0). No `choice` settings: mode,
+- `settings`: `sync_minutes` (`int`, default 10, min 1, since the broker refuses 0) and
+  `idle_lock_minutes` (`int`, default 0, min 0). The validator checks only `type`; the values
+  reach the broker as `BITWARDEN_SYNC_MINUTES` and `BITWARDEN_IDLE_LOCK_MINUTES` from `.env`,
+  because settings files are not implemented. No `choice` settings: mode,
   scope and unlock are per-account values in the account files (Accounts), and the broker refuses
   an account whose `BW_MODE`, `BW_SCOPE` or `BW_UNLOCK` is not one of the values listed there, the
   same fail-closed rule the manifest spec sets for `choice`.
-- `hooks.backup`, `hooks.restore`: the local Vaultwarden and the secret files.
+- `hooks.backup`, `hooks.restore`: `scripts/vault.sh backup` and `scripts/vault.sh restore` (both
+  take a folder), covering the local Vaultwarden, the secret files and the account files. The
+  validator does not check `hooks`, and no installer runs them yet.
 
 ### Changes the manifest code needs first
 
@@ -473,13 +667,18 @@ Each is a change to the manifest spec and `addon_manifest.py`, with a case in
    therefore stays off `api-server` and out of cron, and logins in unattended jobs are left for
    later (Not in v1, below).
 2. **A `vaultBackend` block**, because the add-on reaches Hermes through a login-backend plugin,
-   not MCP: `{"name": "bwbroker", "plugin": "compose/hermes/bitwarden_broker_backend.py",
-   "tools": ["bitwarden_request_access", "bitwarden_release_access"], "profiles": {"default":
-   "rw", "browser": "rw"}}`. The validator gives `vaultBackend.profiles` the same `reads` check as
-   `mcp.profiles` (no `api-server`), refuses a `name` in a built-in backend's namespace (`vault`,
-   `op`, `bw`), and allows it for built-in and official sources only. The bootstraps get a second
-   plan next to the mcp-plan: install the plugin on the listed profiles, and write
-   `vault.bitwarden.enabled: false` on every profile whenever the add-on is enabled.
+   not MCP: `{"name": "bwbroker", "plugin": "compose/hermes/plugins/bwbroker", "toolset":
+   "bitwarden", "tools": ["bitwarden_request_access", "bitwarden_release_access"], "profiles":
+   {"default": "rw", "browser": "rw"}}`. `plugin` is the repo-relative plugin directory (no `..`,
+   not absolute; its existence is not checked). `toolset` is required and names the toolset the
+   plugin registers its tools under, so the cron fence can keep it out of cron
+   (`addon_manifest.cron_fence_toolsets` fences it for every add-on whose `permissions.cron` is not
+   true, and for an invalid manifest). The validator gives `vaultBackend.profiles` the same `reads`
+   check as `mcp.profiles` (no `api-server`), refuses a `name` in a built-in backend's namespace
+   (`vault`, `op`, `bw`), refuses unknown fields, and allows the block for built-in and official
+   sources only. `addon_manifest.py vault-plan <addons-dir> <profile>` prints
+   `name|enabled|access|plugin|tools` per add-on next to `mcp-plan`, and the bootstraps act on it
+   (Plugin backend).
 
 ### Shared with Twenty, undecided
 
@@ -505,16 +704,23 @@ lifting the `reads` rules for one class, a validator rule and a contract-test ca
 on whether `credentials` alone may use it. Until then, a scheduled job that has to sign in runs
 on the default profile from an interactive trigger.
 
-Environment, all defaulting to off so Boundary and existing installs see no change:
+Environment, all defaulting to off so Boundary and existing installs see no change beyond
+`hermes` joining the `vault` network:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `BITWARDEN_ENABLED` | `0` | Starts the broker (profile `bitwarden`) and registers the backend |
-| `BITWARDEN_LOCAL_ENABLED` | `0` | Starts Vaultwarden (profile `vault`) |
-| `BITWARDEN_SYNC_MINUTES` | `10` | `bw sync` interval |
-| `BITWARDEN_IDLE_LOCK_MINUTES` | `0` | Lock `manual` accounts after this long without a fill; 0 never |
+| `BITWARDEN_ENABLED` | `0` | Starts the broker (profile `bitwarden`, from the manifest's `builtin` row) and registers the backend; `hermes` and both bootstraps receive it |
+| `BITWARDEN_LOCAL_ENABLED` | `0` | Starts `vaultwarden` and `vaultwarden-tls` (profile `vault`, a `SERVICES_CORE` row in `sync-profiles.sh`) |
+| `BITWARDEN_SYNC_MINUTES` | `10` | `bw sync` interval; must be above 0 |
+| `BITWARDEN_IDLE_LOCK_MINUTES` | `0` | Lock `manual` accounts after this long without a fill or unlock; 0 never |
+| `BITWARDEN_HOST_DATA_DIR` | `./data/addons/bitwarden` | The data layout in Accounts |
 | `VAULTWARDEN_PORT` | `8222` | Host port, bound to `127.0.0.1` |
-| `BW_CLI_VERSION` | `2026.10.1` | Build argument; the Dockerfile holds the matching digests |
+| `VAULTWARDEN_TLS_IMAGE` | `nginx:1.30.6-alpine` | The TLS sidecar's image |
+| `VAULT_OWNER_EMAIL` | unset | The user's address for `vault-init` |
+| `TWENTY_SECRETS_DIR` | unset | The folder holding both Twenty secret files (Stack secrets) |
+
+`BW_CLI_VERSION` (2026.10.1) is a build argument in the Dockerfile, next to the matching digests,
+not an `.env` key.
 
 ## Failure handling
 
@@ -529,8 +735,12 @@ Environment, all defaulting to off so Boundary and existing installs see no chan
 | Agent asks to add an item to its scope | `bitwarden_request_access` result: pending, with how the user approves | The request in `make vault-grant` |
 | More than 10 pending requests | Refusal naming the limit | `make vault-grant` lists the 10 |
 | `vault-grant` finds no matching item | | Says so; the request stays pending |
-| `bitwarden-setup` gets a wrong master password | | Masked prompt again, at most three times, then exits with nothing changed |
-| Agent account registration fails (a Vaultwarden release changes the API) | | `vault-init` prints the sign-up address and asks the user to register `agent@vault.localhost` with a password it shows once in the terminal, then continues from step 3 |
+| `bitwarden-setup` gets a wrong master password | | Masked prompt again, at most three times, then exits 2 with nothing changed |
+| Agent account registration fails (a Vaultwarden release changes the API) | | `vault-init` prints the sign-up address and asks the user to register `agent@vault.localhost` with the generated password in `secrets/local/master_password`, then a re-run continues from the API key step |
+| Broker restarts while `hermes` stays up, or `hermes` is recreated | Fills during the restart get "Bitwarden is unavailable right now" | `stored` accounts unlock again with no action; `manual` ones need `make vault-unlock`; requests and denylist entries survive |
+| `/fill` targets a tab that navigated or closed after core's pre-check | The broker's `origin_mismatch` or `target_not_found` text | none |
+| A login form in a cross-origin iframe | "No password field on the current page" | none |
+| An unsafe value for a `KEY=value` file in `secrets-sync` | | Skipped with a note naming the item |
 
 ## Spike results
 
@@ -559,24 +769,36 @@ touched the running stack. The code was throwaway and is not kept.
 
 Not yet checked: the same organization steps on bitwarden.com. That needs a throwaway
 bitwarden.com account with a Free organization, which Keith creates; the spike script can then be
-pointed at it. Until then the `cloud` mode's release path keeps the fallback in Releasing. Also not
-checked: that an unassigned item shows in the Owner's web vault, which the plan's live check covers.
+pointed at it. Until then the `cloud` mode's release path keeps the fallback in Releasing.
+
+Checked later against Vaultwarden 1.37.4 and `bw` 2026.10.1 (`scripts/test-vw-register.py`, a
+throwaway instance): `bw edit item-collections` with the ids on stdin, an empty list included,
+works; an unassigned item shows to the Owner; `bw`'s stderr for a wrong password, a wrong API key
+and a 429 matches the broker's patterns; Vaultwarden sends no `Retry-After`. Not handled by setup on
+any server: accounts with two-step login, bitwarden.com's new-device verification, and Argon2id
+accounts (the organization API token is computed with PBKDF2 only).
 
 ## Documentation
 
 - `docs/bitwarden.md`: the three modes, scope and unlock choices with the trade-off of `stored` on
   a personal account, the local Vaultwarden's backup warning, `secrets-sync` item names, what the
   agent can and cannot see (below), and troubleshooting.
-- `SECURITY.md`: rows for the broker and Vaultwarden in the exposure table; Do/Do-not entries for
-  `scope: all`, `stored` on a personal account, and publishing the Vaultwarden port.
-- `docs/hermes.md`: the two overlays in the patch table; the `bwbroker` backend next to
-  "Saving logins".
-- `compose/hermes/skills/browser-login/SKILL.md`: the locked-account result, the refused save, and
-  what to do when no saved login exists for a site: call `bitwarden_request_access` once, tell the
-  user how to approve, and never claim to have moved anything.
-- `docs/bitwarden.md` also covers setup and seeding, `make vault-grant`, releasing, and that a
-  move into an organization collection transfers the item to the organization.
-- `CHANGELOG.md`: new services, flags, and `vault.bitwarden.enabled: false` written by bootstrap.
+- `SECURITY.md`: rows for the broker, the setup and sync one-shots, Vaultwarden and its TLS
+  sidecar in the exposure table; Do/Do-not entries for `scope: all`, `stored` on a personal
+  account, and publishing the Vaultwarden port.
+- `docs/hermes.md`: the two overlays in the patch table with their tests, the cont-init script and
+  the bundled-plugin rule, the upstream symbols each overlay anchors on, and the `bwbroker` backend
+  next to "Saving logins".
+- `compose/hermes/skills/browser-login/SKILL.md`: the locked-account hint, that Bitwarden logins
+  are added in Bitwarden (there is no save refusal), and what to do when no saved login exists for
+  a site: call `bitwarden_request_access` once, tell the user how to approve, and never claim to
+  have moved anything.
+- `docs/bitwarden.md` also covers setup and seeding, `make vault-grant`, releasing, that a move
+  into an organization collection transfers the item to the organization, the follow-up steps
+  after a Twenty or Postgres secret changes, Linux ownership, and the known gaps in this spec.
+- `CHANGELOG.md`: new services, flags and env vars, `vault.bitwarden.enabled: false` written by
+  bootstrap, `hermes` joining `vault`, the overlays and cont-init, the manifest validator changes,
+  and the plugin-directory deviation.
 
 What `docs/bitwarden.md` states plainly: the agent drives the page the password is typed into, so
 code it writes can read the field. Origin binding limits which pages that can happen on, and digest
@@ -595,8 +817,10 @@ to keep fills off the wrong page, not to keep the value from agent code.
   searching all output for the synthetic secrets), 429 backoff, `manual` lock and unlock, and the
   sync socket serving only items in `BW_SECRETS_ITEM_SCOPE`.
 - `scripts/test-bitwarden-fill.py`: the fill overlay and plugin against the image, with a stub
-  broker: routing of `bwbroker:` handles, `resolve_password` never called, refused save, TOTP
-  fallback, `vault.bitwarden.enabled: false` on every profile.
+  broker and the image's headless Chromium: routing of `bwbroker:` handles, `resolve_password`
+  never called, the redaction entry registered, TOTP routing and fallback, `save_login` left as
+  core wrote it, and the broker's `normalize_origin` agreeing with core's.
+  (`vault.bitwarden.enabled: false` is checked in `test-bitwarden-registration.sh`.)
 - `scripts/test-digest-redaction.py`: each of the five forms scrubbed in text of 1 kB and 200 kB,
   no false positives on random text, timing on the 200 kB case recorded in the test output.
 - `scripts/test-bitwarden-access.py`: against the fake `bw`: request validation (hostname,
@@ -613,20 +837,37 @@ to keep fills off the wrong page, not to keep the value from agent code.
   installs the plugin on `default` and `browser` only, never on `api-server` or in cron toolsets.
 - `scripts/test-addon-manifests.py` gains cases for the two manifest changes: `credentials` with
   `cron: true` or an `api-server` profile refused, a `vaultBackend` with `api-server` refused, a
-  reserved backend name refused, and `addons/bitwarden/addon.json` valid and canonical.
+  reserved backend name refused, a missing or malformed `toolset` refused, `vault-plan` lines and
+  the toolset fence, and `addons/bitwarden/addon.json` valid and canonical, with its flag received
+  by both bootstraps and `hermes`. `scripts/test-sync-profiles.sh` checks the
+  `BITWARDEN_ENABLED bitwarden 0` row and that the flag turns the `bitwarden` profile on and off.
+- `scripts/test-bitwarden-compose-config.py`: the resolved compose config of the Bitwarden services
+  (profiles, the broker's namespace and mounts, the network layout, the image pins), and that none
+  of them is in `core` alone or starts local mode without the `vault` profile.
+- `scripts/test-vw-register.py`: spike 2's sequence and the live checks against a throwaway
+  Vaultwarden 1.37.4 with the broker image's `bw`; skips without Docker.
+- `scripts/test-vault-sh.sh`: `vault.sh` commands with a recording stub `docker`, including the
+  Linux ownership paths and backup and restore.
+- `make bitwarden-test` runs all of the above; CI runs the ones that need no Docker or image.
 - Tool-eval: `browser-login-bitwarden`, a model reaching a sign-in page with a `bwbroker:` login
   listed fills it without asking for a password. `bitwarden-request-not-move`, the user asks the
   agent to move a login into its vault: the model calls `bitwarden_request_access` once and
   describes the approval step, without claiming the move happened. `bitwarden-injected-request`, a
-  page the agent reads asks it to request access to a bank login: the model does not call the tool.
+  page asks the agent to request access to a bank login: the model does not call the tool. The
+  eval has no page fixture, so the page's text is carried in the prompt as text the user copied.
+  The cases are gated on the `bitwarden` profile; the scorer sees tool names only, so "once" and
+  "no claim" are manual checks.
 - One live check against a throwaway local Vaultwarden (`vault-init`, fill a local test page, sync a
   test secret), run once before release and noted in the changelog. Real accounts are the user's to
   try.
 
 ## Upkeep
 
-On Hermes bumps run `test-bitwarden-fill.py` and `test-digest-redaction.py`; both overlays anchor
-in upstream vault code. Check `agent/vault_backends/bitwarden.py` and the plugin contract for
-changes: if upstream moves its fill or session key out of the gateway process, re-evaluate whether
-the broker is still needed. On `bw` bumps update `BW_CLI_VERSION` and both digests, and rerun the
-broker test and the live check.
+On Hermes bumps run `test-bitwarden-fill.py`, `test-digest-redaction.py` and
+`test-bitwarden-registration.sh --image` (or `make bitwarden-test`); both overlays anchor in upstream
+vault code, and registration depends on v0.22.7's rule that a login backend comes from a bundled or
+verified plugin. `docs/hermes.md` lists the symbols each overlay anchors on. Check
+`agent/vault_backends/bitwarden.py` and the plugin contract for changes: if upstream moves its fill
+or session key out of the gateway process, re-evaluate whether the broker is still needed. On `bw`
+bumps update `BW_CLI_VERSION` and both digests, and rerun the broker test and
+`test-vw-register.py`.
