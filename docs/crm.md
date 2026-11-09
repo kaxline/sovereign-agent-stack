@@ -157,9 +157,9 @@ Before stack 0.3.13, each workspace was a file,
 `compose/twenty/workspaces/<slug>.env`. `./scripts/crm.sh migrate` imports
 those files into the store and renames each to `<slug>.env.migrated`. `make
 ensure-local` runs it, and so do `crm.sh init`, `add`, `remove`, `access`,
-`login-link` and `open`. It keeps a
-workspace already in the store and leaves its file where it is, with a
-warning. It skips, with a message and without renaming:
+`login-link` and `open`. It keeps a workspace already in the store and leaves
+its file where it is, with a warning. It skips, with a message and without
+renaming:
 
 - a name that doesn't start with a letter or is longer than 31 characters;
 - a key that holds whitespace or a control character;

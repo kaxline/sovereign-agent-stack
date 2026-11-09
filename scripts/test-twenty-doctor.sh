@@ -147,6 +147,17 @@ has "scheme" "not an http(s) URL"
 has "quote" "a quote or backslash"
 has "access" "TWENTY_ACCESS must be read or write"
 
+# Valid files in the shapes migrate accepts: no "can't be" warning.
+rm -f "$tmp/work/compose/twenty/workspaces/"*.env
+printf 'TWENTY_URL="https://crm.example.com"\nTWENTY_KEY_RO="fake-q-ro"\n' > "$tmp/work/compose/twenty/workspaces/dq.env"
+printf "TWENTY_URL='https://crm.example.com'\nTWENTY_ACCESS='read'\n" > "$tmp/work/compose/twenty/workspaces/sq.env"
+printf 'TWENTY_URL=https://crm.example.com\r\nTWENTY_KEY_RW=fake-crlf-rw\r\nTWENTY_ACCESS=write\r\n' > "$tmp/work/compose/twenty/workspaces/crlf.env"
+doctor
+has "dq listed" "dq.env was not migrated"
+has "sq listed" "sq.env was not migrated"
+has "crlf listed" "crlf.env was not migrated"
+hasnt "valid files can migrate" "can't be"
+
 for k in "$KEY_RO" "$KEY_RW" fake-legacy-key; do
   if grep -qF -- "$k" "$all"; then fail "a key shows in the output"; fi
 done

@@ -8,42 +8,60 @@ twenty_json_get() {
   sed -n "s/.*\"${2}\": *\"\\([^\"]*\\)\".*/\\1/p" "$1" 2>/dev/null | head -1 || true
 }
 
-# Why a legacy workspace file cannot migrate, or nothing. Names the rule, never a value.
+# A value from a legacy workspace file, read as crm.sh's ws_get reads it: first
+# match, CR dropped, one pair of surrounding quotes stripped.
+twenty_ws_get() {
+  local v
+  v="$(grep -E "^${2}=" "$1" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r' || true)"
+  v="${v%\"}"; v="${v#\"}"
+  v="${v%\'}"; v="${v#\'}"
+  printf '%s' "$v"
+}
+
+# Why a legacy workspace file cannot migrate, or nothing. Mirrors the checks in
+# crm.sh migrate_workspaces (valid_slug, scheme, has_userinfo, key_ok, access,
+# json_safe), in the same order. Names the rule, never a value.
 twenty_unmigratable() {
-  local f="$1" slug url k line access
+  local f="$1" slug url access v name
   slug="$(basename "$f" .env)"
   if ! [[ "$slug" =~ ^[a-z][a-z0-9-]{0,30}$ ]]; then
     printf '%s' "the name must start with a letter and be at most 31 lowercase letters, digits and hyphens"
     return 0
   fi
-  while IFS= read -r line; do
-    k="${line#*=}"
-    k="${k%\"}"; k="${k#\"}"
-    if [[ "$k" == *[[:space:][:cntrl:]]* ]]; then
-      printf '%s' "a key holds whitespace or a control character"
-      return 0
-    fi
-  done < <(grep -E '^TWENTY_KEY_(RO|RW)=' "$f" 2>/dev/null || true)
-  url="$(grep -E '^TWENTY_URL=' "$f" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' || true)"
-  if [[ "$url" =~ ^[A-Za-z]+://[^/?#]*@ ]]; then
-    printf '%s' "the URL carries user:password@"
-    return 0
-  fi
+  url="$(twenty_ws_get "$f" TWENTY_URL)"
+  url="${url%/}"
   if ! [[ "$url" =~ ^https?:// ]]; then
     printf '%s' "TWENTY_URL is not an http(s) URL"
     return 0
   fi
-  if grep -E '^TWENTY_(URL|WORKSPACE_URL|WORKSPACE_ID|KEY_RO|KEY_RW)=' "$f" 2>/dev/null | cut -d= -f2- | grep -q "[\"'\\\\]"; then
-    printf '%s' "a value holds a quote or backslash"
+  if [[ "$url" =~ ^[A-Za-z]+://[^/?#]*@ ]]; then
+    printf '%s' "the URL carries user:password@"
     return 0
   fi
-  access="$(grep -E '^TWENTY_ACCESS=' "$f" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' || true)"
+  for name in TWENTY_KEY_RO TWENTY_KEY_RW; do
+    v="$(twenty_ws_get "$f" "$name")"
+    if [[ "$v" == *[[:space:][:cntrl:]]* ]]; then
+      printf '%s' "a key holds whitespace or a control character"
+      return 0
+    fi
+  done
+  access="$(twenty_ws_get "$f" TWENTY_ACCESS)"
   case "${access:-write}" in read | write) ;; *) printf '%s' "TWENTY_ACCESS must be read or write"; return 0 ;; esac
+  for name in TWENTY_URL TWENTY_WORKSPACE_URL TWENTY_WORKSPACE_ID TWENTY_KEY_RO TWENTY_KEY_RW; do
+    v="$(twenty_ws_get "$f" "$name")"
+    case "$v" in
+      *\"* | *\\*) printf '%s' "a value holds a quote or backslash"; return 0 ;;
+    esac
+    if [[ "$v" == *[[:cntrl:]]* ]]; then
+      printf '%s' "a value holds a control character"
+      return 0
+    fi
+  done
   return 0
 }
 
 doctor_twenty() {
-  local twenty_local twenty_mcp twenty_port data_root store f slug leftovers=0
+  local twenty_local twenty_mcp twenty_port data_root store f slug leftovers=0 pair
   twenty_local="$(env_get TWENTY_LOCAL_ENABLED 0)"
   case "$twenty_local" in 1 | true | TRUE | yes | YES) twenty_local=1 ;; *) twenty_local=0 ;; esac
   twenty_mcp="$(env_get TWENTY_MCP_ENABLED 0)"
@@ -82,7 +100,7 @@ doctor_twenty() {
     else
       bad "TWENTY_LOCAL_ENABLED=1 but 'crm' not in COMPOSE_PROFILES — run make ensure-local"
     fi
-        for pair in TWENTY_ENCRYPTION_KEY TWENTY_DB_PASSWORD; do
+    for pair in TWENTY_ENCRYPTION_KEY TWENTY_DB_PASSWORD; do
       if [[ -n "$(env_get "$pair")" && -n "$(env_get "${pair}_FILE")" ]]; then
         bad "${pair} and ${pair}_FILE are both set — keep one (the containers refuse to start)"
       elif [[ -n "$(env_get "${pair}_FILE")" ]]; then
@@ -120,7 +138,7 @@ doctor_twenty() {
 
   if [[ "$twenty_mcp" -eq 1 ]]; then
     ok "TWENTY_MCP_ENABLED=1"
-    local twenty_count=0 url access ro_f rw_f has_ro has_rw key kind k probe hdr code label cfg envfile env_key rw pair
+    local twenty_count=0 url access ro_f rw_f has_ro has_rw key kind k probe hdr code label cfg envfile env_key rw
     for f in "$store/instances"/*.json; do
       [[ -f "$f" ]] || continue
       slug="$(basename "$f" .json)"
