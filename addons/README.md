@@ -34,8 +34,9 @@ except where noted:
   `unmanaged` (built-in add-ons only) is a list of Hermes profile names, for
   example `["default"]`, that bootstrap leaves alone for that entry: it
   registers, drops or pins on none of them, so a server the user added by
-  hand on that profile at the same URL stays. Parked retry still applies to
-  an existing entry at the add-on's URL, on every profile. The names
+  hand on that profile at the same URL stays. For a fixed entry, parked retry
+  still applies to an existing entry at the add-on's URL, on every profile.
+  An `mcp.instances` entry gets no parked retry on an unmanaged profile. The names
   must be distinct and may not appear in `profiles`. An empty list behaves as
   absent.
 - `mcp.instances` (built-in add-ons only): an `mcp` entry that registers one

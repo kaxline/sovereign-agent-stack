@@ -14,14 +14,15 @@ the stack under another app.
   left its environment (see Changes). A caller that recreates `hermes`
   itself runs `./scripts/vault.sh follow-hermes` afterwards, as for any
   recreate.
-- Of the shipped manifests only Twenty's uses the new add-on manifest
-  fields (and LightRAG's, `mcp.unmanaged`); GPT Researcher, Actual and Bitwarden behave as before, apart from
-  the dropped keys at their URLs described next.
-- LightRAG's registration on the api-server and browser profiles is unchanged.
-  One change can remove a key you added: a hand-added MCP key on the default
+- Twenty and LightRAG use the new add-on manifest fields (LightRAG uses
+  `mcp.unmanaged`). GPT Researcher, Actual and Bitwarden behave as before,
+  except for the dropped keys at their URLs described next.
+- LightRAG's registration on the api-server and browser profiles is unchanged,
+  except that `LIGHTRAG_MCP_TIMEOUT` and `LIGHTRAG_MCP_CONNECT_TIMEOUT` set in
+  `.env` now take effect. One change can remove a key you added: a hand-added MCP key on the default
   profile (or on browser) at the GPT Researcher or Actual Budget URL is removed
   on the next bootstrap when that add-on is enabled, and the stack's own key
-  (`gptr`, `actual`) stays. Point your key at a different URL, or use the
+  (`gptr`, `budget`) stays. Point your key at a different URL, or use the
   stack's key. See "Other MCP keys at an add-on's URL are dropped" below.
 - Before tagging, run `scripts/addon.sh enable gptr --json` and
   `disable gptr --json` on a live stack. `addon.sh` calls
@@ -121,8 +122,10 @@ the stack under another app.
   [docs/knowledge-bases.md](docs/knowledge-bases.md).
 - **`mcp.unmanaged`** (experimental, built-in manifests only): a list of
   Hermes profile names on which bootstrap neither registers, drops nor pins
-  the add-on's MCP entry. The parked-retry setting still applies to an
-  existing entry at the add-on's URL on every profile, default included.
+  the add-on's MCP entry. For a fixed entry, the parked-retry setting still
+  applies to an existing entry at the add-on's URL on every profile, default
+  included. An `mcp.instances` entry has no fixed URL, so on an unmanaged
+  profile it gets no parked retry either.
 - **Other MCP keys at an add-on's URL are dropped**: after bootstrap registers
   an add-on's MCP server on a profile, it removes every other key at the same
   URL on that profile, whatever its tool filter. For LightRAG this removes an

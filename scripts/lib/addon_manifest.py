@@ -1000,8 +1000,9 @@ def dir_conflicts(loaded) -> dict[Path, list[str]]:
     """Errors that only show across the manifests of one addons dir, by path.
     The bootstrap drops every entry under an mcp.instances prefix that isn't a
     live instance, so an mcp.name under another add-on's prefix (or its own)
-    would be written and then removed on every start, and two prefixes where
-    one starts with the other would remove each other's entries. Read from
+    would be written and then removed on every start, two prefixes where
+    one starts with the other would remove each other's entries, and two
+    add-ons may not register the same MCP server name. Read from
     the raw manifests, so an invalid one still counts."""
     names, prefixes = [], []
     for path, manifest, _parse_error in loaded:
@@ -1013,6 +1014,15 @@ def dir_conflicts(loaded) -> dict[Path, list[str]]:
             if template:
                 prefixes.append((path, template.split("{slug}")[0]))
     out: dict[Path, list[str]] = {}
+    owners: dict[str, list[Path]] = {}
+    for path, name in names:
+        if path not in owners.setdefault(name, []):
+            owners[name].append(path)
+    for name, paths in sorted(owners.items()):
+        if len(paths) > 1:
+            msg = f"mcp.name {name!r} is used by more than one add-on: {', '.join(p.parent.name for p in paths)}"
+            for p in paths:
+                out.setdefault(p, []).append(msg)
     for path, name in names:
         for other, prefix in prefixes:
             if name.startswith(prefix):
@@ -1049,20 +1059,6 @@ def check_builtin_file(path: Path, manifest, parse_error: str | None) -> list[st
     if not errors and path.read_text(encoding="utf-8") != canonical(manifest):
         errors.append("not canonical JSON (json.dumps(indent=2) plus a newline)")
     return errors
-
-
-def check_dir(addons_dir: Path) -> list[str]:
-    """Rules across the set of built-in manifests: two add-ons may not
-    register the same MCP server name."""
-    owners: dict[str, list[str]] = {}
-    for path, manifest, _err in load_dir(addons_dir):
-        raw = manifest.get("mcp") if isinstance(manifest, dict) else None
-        names = {e["name"] for e in (raw if isinstance(raw, list) else [raw])
-                 if isinstance(e, dict) and isinstance(e.get("name"), str)}
-        for name in names:
-            owners.setdefault(name, []).append(path.parent.name)
-    return [f"mcp.name {name!r} is used by more than one add-on: {', '.join(dirs)}"
-            for name, dirs in sorted(owners.items()) if len(dirs) > 1]
 
 
 def truthy(value: str | None) -> bool:
@@ -1220,7 +1216,6 @@ def mcp_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
                 continue
             env = mcp.get("env", {})
             urls = _mcp_urls(manifest, mcp, environ)
-            managed.update(urls.values())
             timeout = environ.get(env.get("timeout", ""), "") or str(mcp["timeout"])
             connect = environ.get(env.get("connectTimeout", ""), "") or str(mcp["connectTimeout"])
             flag = mcp["when"]["gate"] if "when" in mcp else manifest["builtin"]["flag"]
@@ -1250,11 +1245,12 @@ def mcp_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
                 print(f"warning: skipping {path.parent.name}: a value contains | or a newline",
                       file=sys.stderr)
                 continue
+            managed.update(u.rstrip("/") for u in urls.values())
             lines.append("|".join(fields))
     # An invalid manifest's drop-only line must not undo a valid add-on's
     # registration at the same URL: leave out the URLs a valid manifest manages.
     for pos, name, title, urls in drops:
-        urls = [u for u in urls if u not in managed]
+        urls = [u for u in urls if u.rstrip("/") not in managed]
         if urls:
             fields = [name, title, "0", "", urls[0], "0", "0", "http", "", "", " ".join(urls)]
             if not any("|" in f or "\n" in f for f in fields):
@@ -1514,9 +1510,6 @@ def main(argv: list[str]) -> int:
             for e in errors:
                 print(f"{path}: {e}")
                 bad += 1
-        for e in check_dir(Path(argv[1])):
-            print(f"{argv[1]}: {e}")
-            bad += 1
         return 1 if bad else 0
     if len(argv) == 2 and argv[0] == "mcp-urls":
         for u in mcp_urls(Path(argv[1])):

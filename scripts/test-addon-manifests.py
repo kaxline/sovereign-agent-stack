@@ -399,6 +399,29 @@ for first, second in (("abad", "lightrag"), ("lightrag", "zbad")):
         check(f"shared URL, {first} before {second}: mcp_urls still lists it once",
               am.mcp_urls(Path(tmp), {}) == [LR_URL], str(am.mcp_urls(Path(tmp), {})))
 
+# A valid line skipped for a | in a value registers nothing, so it does not
+# protect the URL; a trailing slash does not hide a shared URL.
+def shared_dir(tmp, good_mcp, bad_mcp):
+    (Path(tmp) / "lightrag").mkdir()
+    (Path(tmp) / "lightrag" / "addon.json").write_text(am.canonical({**LR, "mcp": {**LR["mcp"], **good_mcp}}))
+    (Path(tmp) / "zbad").mkdir()  # not canonical, so invalid
+    (Path(tmp) / "zbad" / "addon.json").write_text(json.dumps({**LR, "id": "io.example.zbad",
+                                                              "mcp": {**LR["mcp"], "name": "bad-mcp", **bad_mcp}}))
+
+
+on = {"LIGHTRAG_MCP_ENABLED": "1"}
+with tempfile.TemporaryDirectory() as tmp:
+    shared_dir(tmp, {"title": "A|B"}, {})
+    errs = {p.parent.name: e for p, _m, e in am.checked_dir(Path(tmp))}
+    plan = [l.split("|") for l in am.mcp_plan(Path(tmp), "api-server", on)]
+    check("a valid line skipped for a pipe does not protect its URL",
+          errs["lightrag"] == [] and [r[0] for r in plan] == ["bad-mcp"], f"{errs} {plan}")
+with tempfile.TemporaryDirectory() as tmp:
+    shared_dir(tmp, {}, {"path": "/mcp/"})
+    plan = [l.split("|") for l in am.mcp_plan(Path(tmp), "api-server", on)]
+    check("a trailing slash on the invalid add-on's URL does not hide the shared URL",
+          [r[0] for r in plan] == ["lightrag"], str(plan))
+
 # --- one MCP name per add-on -------------------------------------------------------
 with tempfile.TemporaryDirectory() as tmp:
     for d in ("lightrag", "gptr"):
@@ -406,17 +429,25 @@ with tempfile.TemporaryDirectory() as tmp:
     (Path(tmp) / "lightrag" / "addon.json").write_text(am.canonical(LR))
     other = copy.deepcopy(BASE)
     (Path(tmp) / "gptr" / "addon.json").write_text(am.canonical(other))
-    check("distinct mcp names pass the directory check", am.check_dir(Path(tmp)) == [], str(am.check_dir(Path(tmp))))
+    def dir_errs(d):
+        return {p.parent.name: e for p, _m, e in am.checked_dir(d)}
+
+    check("distinct mcp names pass the directory check", dir_errs(Path(tmp)) == {"lightrag": [], "gptr": []},
+      str(dir_errs(Path(tmp))))
     other["mcp"]["name"] = "lightrag"
     (Path(tmp) / "gptr" / "addon.json").write_text(am.canonical(other))
-    errs = am.check_dir(Path(tmp))
-    check("two add-ons with one mcp name are refused",
-          len(errs) == 1 and "'lightrag'" in errs[0] and "gptr" in errs[0], str(errs))
+    errs = dir_errs(Path(tmp))
+    check("two add-ons with one mcp name are both refused",
+          all(len(errs[k]) == 1 and "'lightrag'" in errs[k][0] and "gptr" in errs[k][0] for k in errs)
+          and set(errs) == {"lightrag", "gptr"}, str(errs))
+    check("mcp-plan treats a name clash like any directory conflict: off lines only",
+          all(l.split("|")[2:4] == ["0", ""] for l in am.mcp_plan(Path(tmp), "api-server", {"LIGHTRAG_MCP_ENABLED": "1"})),
+          str(am.mcp_plan(Path(tmp), "api-server", {"LIGHTRAG_MCP_ENABLED": "1"})))
     rc = subprocess.run([sys.executable, str(ROOT / "scripts" / "lib" / "addon_manifest.py"), "validate", tmp],
                         capture_output=True, text=True)
     check("validate CLI reports the duplicate", rc.returncode == 1 and "more than one add-on" in rc.stdout, rc.stdout)
-check("the packaged add-ons have distinct mcp names", am.check_dir(ROOT / "addons") == [],
-      str(am.check_dir(ROOT / "addons")))
+check("the packaged add-ons have distinct mcp names",
+      all(not any("more than one add-on" in e for e in errs) for _p, _m, errs in am.checked_dir(ROOT / "addons")))
 
 # --- cron fence ---------------------------------------------------------------
 with tempfile.TemporaryDirectory() as tmp:
