@@ -55,12 +55,12 @@ def _launcher_passwords() -> dict[str, str]:
 
 def _directory_password(account_id: str) -> str | None:
     directory = os.environ.get(DIR_VARIABLE)
-    if not directory or not account_id or "/" in account_id or "\\" in account_id or account_id.startswith("."):
+    if not directory or not account_id or "/" in account_id or "\\" in account_id or "\0" in account_id or account_id.startswith("."):
         return None
     try:
         with open(os.path.join(directory, f"{account_id}.password"), encoding="utf-8", newline="") as f:
             return f.read()
-    except (OSError, UnicodeDecodeError):
+    except (OSError, ValueError):
         return None
 
 

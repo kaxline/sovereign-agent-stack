@@ -181,6 +181,23 @@ def test_credentials_dir() -> None:
                f"password from MAIL_CREDENTIALS_DIR: {out.stdout!r} {out.stderr!r}")
 
 
+def test_credentials_dir_traversal() -> None:
+    """Ids that would leave the credentials directory, or can't be paths, are refused."""
+    probe = ("import sys; sys.path.insert(0, sys.argv[1]); import mail_credentials as mc\n"
+             "for a in ('../x', 'sub/y', '.hidden', 'a\\0b'):\n"
+             "    try:\n        mc.password(a, None); print('leak')\n"
+             "    except mc.MissingPassword:\n        print('refused')\n")
+    with tempfile.TemporaryDirectory() as d:
+        base = Path(d) / "base"
+        (base / "sub").mkdir(parents=True)
+        (Path(d) / "x.password").write_text("outside")
+        (base / "sub" / "y.password").write_text("nested")
+        (base / ".hidden.password").write_text("hidden")
+        out = subprocess.run([sys.executable, "-I", "-c", probe, str(LIB)], capture_output=True, text=True,
+                             env={"MAIL_CREDENTIALS_DIR": str(base), "PATH": "/usr/bin"})
+        expect(out.stdout.split() == ["refused"] * 4, f"credentials dir traversal: {out.stdout!r} {out.stderr!r}")
+
+
 def imap_calls(path: Path) -> set[str]:
     """Every imaplib method a module calls on its connection (self._imap.x / imap.x)."""
     return set(re.findall(r"\b(?:self\._imap|imap)\.(\w+)\(", path.read_text()))
@@ -782,6 +799,7 @@ def main() -> int:
     test_shared_and_drafts_code()
     test_credentials_handoff()
     test_credentials_dir()
+    test_credentials_dir_traversal()
     with tempfile.TemporaryDirectory() as d:
         certs = make_certs(Path(d) / "certs")
         test_login_methods(certs)
