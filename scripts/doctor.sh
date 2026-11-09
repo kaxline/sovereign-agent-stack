@@ -1443,6 +1443,12 @@ if [[ "$bw_on" -eq 1 || "$bw_local" -eq 1 || "$bw_files" -gt 0 ]]; then
   fi
 fi
 
+# --- Budget (Actual) --- see scripts/lib/doctor-actual.sh. Prints nothing
+# unless ACTUAL_MCP_ENABLED=1.
+# shellcheck source=lib/doctor-actual.sh
+source "${ROOT}/scripts/lib/doctor-actual.sh"
+doctor_actual
+
 # --- Mail (read-only MCP over the host-built index) ---
 mail_enabled="$(env_get MAIL_MCP_ENABLED 0)"
 case "$mail_enabled" in 1|true|TRUE|yes|YES) mail_on=1 ;; *) mail_on=0 ;; esac

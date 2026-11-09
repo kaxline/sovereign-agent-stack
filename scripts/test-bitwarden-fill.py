@@ -36,11 +36,22 @@ def expect(cond: bool, msg: str) -> None:
         fail(msg)
 
 
+# The other overlays that edit tools/browser_vault_tool.py, in 05-patch-tool-calling.sh order.
+EARLIER_VAULT_OVERLAYS = ("/bootstrap/patch-browser-exec-hint.py", "/bootstrap/patch-vault-create-login.py",
+                          "/bootstrap/patch-vault-capture-secret.py")
+
+
 def test_overlay_is_wired() -> None:
     runner = (ROOT / "compose" / "hermes" / "05-patch-tool-calling.sh").read_text()
     expect("run_patch /bootstrap/patch-bitwarden-broker-fill.py" in runner, "cont-init runs the patch")
     expect(runner.index("patch-digest-redaction.py") < runner.index("patch-bitwarden-broker-fill.py"),
            "the fill overlay runs after the digest overlay")
+    # These also patch tools/browser_vault_tool.py and run first; the image driver applies them in this order.
+    for earlier in EARLIER_VAULT_OVERLAYS:
+        name = earlier.rsplit("/", 1)[1]
+        expect(f"run_patch {earlier}" in runner
+               and runner.index(name) < runner.index("patch-bitwarden-broker-fill.py"),
+               f"{name} runs before the fill overlay")
     compose = (ROOT / "docker-compose.yml").read_text()
     expect("./compose/hermes/patch-bitwarden-broker-fill.py:/bootstrap/patch-bitwarden-broker-fill.py:ro"
            in compose, "the patch is mounted")
@@ -55,6 +66,11 @@ import json, logging, os, secrets, socket, string, subprocess, sys, tempfile, th
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 env = dict(os.environ, DIGEST_REDACTION_BOOTSTRAP="/broker-src/broker")
+# The overlays 05-patch-tool-calling.sh runs before ours on the same file, so the anchors are
+# checked against the file as the container has it.
+for script in EARLIER_VAULT_OVERLAYS:
+    out = subprocess.run([sys.executable, script], capture_output=True, text=True, env=env)
+    assert out.returncode == 0 and "warn:" not in out.stdout, script + ": " + out.stdout + out.stderr
 for script in ("/bootstrap/patch-digest-redaction.py", "/bootstrap/patch-bitwarden-broker-fill.py"):
     for _ in range(2):
         out = subprocess.run([sys.executable, script], capture_output=True, text=True, env=env)
@@ -365,7 +381,8 @@ os.write(1, b"image ok\n")
 def main() -> None:
     test_overlay_is_wired()
     print("ok")
-    hermes_image.maybe_run(IMAGE_DRIVER, mounts=[(str(BROKER_SRC), "/broker-src")])
+    driver = f"EARLIER_VAULT_OVERLAYS = {EARLIER_VAULT_OVERLAYS!r}\n" + IMAGE_DRIVER
+    hermes_image.maybe_run(driver, mounts=[(str(BROKER_SRC), "/broker-src")])
 
 
 if __name__ == "__main__":

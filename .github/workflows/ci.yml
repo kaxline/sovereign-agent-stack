@@ -67,6 +67,7 @@ jobs:
           python3 scripts/test-compose-env-allowlist.py
           python3 scripts/test-twenty-compose-config.py
           python3 scripts/test-bitwarden-compose-config.py
+          sh scripts/test-actual-compose.sh
           echo "=== HERMES_TERMINAL_BACKEND=local ==="
           HERMES_TERMINAL_BACKEND=local COMPOSE_PROFILES=core docker compose config -q
           echo "=== core without the N8N_* keys ==="
@@ -84,6 +85,12 @@ jobs:
         run: python3 scripts/test-project-sources.py
       - name: Fabricated result detector (stdlib)
         run: python3 scripts/test-fabricated-result.py
+      - name: Vault create_login policy and field selection (stdlib)
+        run: python3 scripts/test-vault-create-login.py --host-only
+      - name: Vault capture_secret value detection and names (stdlib)
+        run: python3 scripts/test-vault-capture-secret.py --host-only
+      - name: Eval trace names vault actions (stdlib)
+        run: python3 scripts/test-tool-eval-trace.py
       - name: Stale-replay loop guard wiring (stdlib)
         run: python3 scripts/test-tool-loop-replay.py --host-only
       - name: Searxng pause points at browser search wiring (stdlib)
@@ -126,6 +133,10 @@ jobs:
         run: python3 scripts/test-addon-manifests.py
       - name: GPT Researcher MCP registration
         run: sh scripts/test-gptr-mcp-registration.sh
+      - name: Actual Budget MCP registration
+        run: sh scripts/test-actual-registration.sh
+      - name: Add-on MCP access levels
+        run: sh scripts/test-addon-mcp-access.sh
       - name: Add-on cron fence
         run: sh scripts/test-addon-cron-fence.sh --host-only
       - name: Bitwarden plugin registration
@@ -160,6 +171,10 @@ jobs:
         run: bash scripts/test-crm-sh.sh
       - name: vault.sh subcommands with a stub docker
         run: bash scripts/test-vault-sh.sh
+      - name: budget.sh subcommands against stubs
+        run: bash scripts/test-budget-sh.sh
+      - name: make doctor Actual Budget block against stubs
+        run: bash scripts/test-actual-doctor.sh
       - name: First run needs no host python3, node or make
         run: bash scripts/test-no-host-python.sh
       - name: LLM proxy routes

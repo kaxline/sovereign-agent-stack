@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 # Every profile that publishes a service we want to see in one config.
-PROFILES = "core,rag,neo4j,calendar,automation,research,coding,ollama,searxng-prod,search-gate,db,todo,crm,mail,mail-drafts,messages,bitwarden,bitwarden-tools"
+PROFILES = "core,rag,neo4j,calendar,automation,research,coding,ollama,searxng-prod,search-gate,db,todo,crm,mail,mail-drafts,messages,bitwarden,bitwarden-tools,budget,budget-local"
 
 # Secret-bearing environment keys, and the services allowed to carry them.
 # An empty set means the key must not appear on any service.
@@ -45,6 +45,12 @@ SECRET_KEYS = {
     "TWENTY_PASSWORD": set(),
     "ENCRYPTION_KEY": {"twenty-server", "twenty-worker"},
     "PG_DATABASE_URL": {"twenty-server", "twenty-worker"},
+    # Actual Budget. The MCP containers read these from compose/actual/budget.env
+    # mounted at /app/.env, so no service carries them in its environment.
+    "ACTUAL_PASSWORD": set(),
+    "ACTUAL_SESSION_TOKEN": set(),
+    "ACTUAL_BUDGET_ENCRYPTION_PASSWORD": set(),
+    "BEARER_TOKEN": set(),
     "MESSAGES_WEBHOOK_SECRET": {"messages-mcp", "hermes-api-bootstrap", "hermes-browser-bootstrap"},
     # n8n stores its data in SQLite; no service gets n8n Postgres settings.
     "DB_POSTGRESDB_PASSWORD": set(),
@@ -93,6 +99,16 @@ BROKER_ENV = {
     "BITWARDEN_SYNC_SOCKET",
     "NODE_EXTRA_CA_CERTS",
 }
+# Actual Budget services may carry only these keys. The MCP containers get
+# their credentials from the /app/.env file, never from the environment.
+ACTUAL_ENV = {
+    "actual-server": set(),
+    "actual-mcp-rw": {"ACTUAL_SYNC_TTL_MS", "ACTUAL_DATA_DIR"},
+    "actual-mcp-ro": {"ACTUAL_SYNC_TTL_MS", "ACTUAL_DATA_DIR"},
+}
+# The only ACTUAL_* keys any other service may carry.
+ACTUAL_BOOTSTRAP_KEYS = {"ACTUAL_MCP_ENABLED", "ACTUAL_ACCESS"}
+ACTUAL_BOOTSTRAPS = {"hermes-api-bootstrap", "hermes-browser-bootstrap"}
 
 # Keys that must still be present after the allowlist, so a drop is caught.
 REQUIRED = {
@@ -126,6 +142,10 @@ REQUIRED = {
     "twenty-server": {"ENCRYPTION_KEY", "PG_DATABASE_URL"},
     "twenty-worker": {"ENCRYPTION_KEY", "PG_DATABASE_URL"},
     "twenty-db": {"POSTGRES_PASSWORD"},
+    "actual-mcp-rw": {"ACTUAL_SYNC_TTL_MS", "ACTUAL_DATA_DIR"},
+    "actual-mcp-ro": {"ACTUAL_SYNC_TTL_MS", "ACTUAL_DATA_DIR"},
+    "hermes-api-bootstrap": {"ACTUAL_MCP_ENABLED", "ACTUAL_ACCESS"},
+    "hermes-browser-bootstrap": {"ACTUAL_MCP_ENABLED", "ACTUAL_ACCESS"},
 }
 
 # Clients may carry these names only when the value is the placeholder.
@@ -194,6 +214,27 @@ def check_secrets(services: dict) -> list[str]:
     hermes_env = env_map(services.get("hermes") or {})
     if "SEARXNG_URL" in hermes_env and hermes_env["SEARXNG_URL"] not in ("", None):
         errors.append("hermes SEARXNG_URL must be empty")
+    return errors
+
+
+def check_actual(services: dict) -> list[str]:
+    errors = []
+    for name, allowed in ACTUAL_ENV.items():
+        service = services.get(name)
+        if not service:
+            errors.append(f"service {name} missing from compose config")
+            continue
+        for key in sorted(set(env_map(service)) - allowed):
+            errors.append(f"{name} environment includes {key}")
+        if service.get("env_file"):
+            errors.append(f"{name} has an env_file; credentials go through /app/.env")
+    for name, service in services.items():
+        if name in ACTUAL_ENV:
+            continue
+        actual_keys = {k for k in env_map(service) if k.startswith("ACTUAL_")}
+        allowed = ACTUAL_BOOTSTRAP_KEYS if name in ACTUAL_BOOTSTRAPS else set()
+        for key in sorted(actual_keys - allowed):
+            errors.append(f"{name} environment includes {key}")
     return errors
 
 
@@ -275,11 +316,13 @@ def check_loopback(services: dict) -> list[str]:
 # The shared Postgres and its SQL MCP sidecars live on the internal db network
 # only, publish nothing, and hermes is the sole bridge from the default network.
 DB_ONLY = {"postgres-db", "db-provision", "sql-mcp-ro", "sql-mcp-rw"}
-# Services on both default and db, with their full network list. An
-# integration that stores data and needs the internet goes here; one that
-# needs neither goes in DB_ONLY. hermes is also on vault, the internal network
-# the Bitwarden broker reaches the local Vaultwarden through.
-DB_BRIDGES = {"hermes": {"default", "db", "vault"}, "vikunja": {"default", "db"}}
+# Services on both default and db. An integration that stores data and needs
+# the internet goes here; one that needs neither goes in DB_ONLY.
+DB_BRIDGES = {"hermes", "vikunja"}
+# Networks a DB_BRIDGES service joins besides default and db. hermes is on
+# vault, the internal network the Bitwarden broker reaches the local Vaultwarden
+# through, and on budget for the Actual Budget MCPs.
+BRIDGE_EXTRA_NETS = {"hermes": {"budget", "vault"}}
 
 
 def check_db_network(services: dict, networks: dict) -> list[str]:
@@ -299,8 +342,9 @@ def check_db_network(services: dict, networks: dict) -> list[str]:
         nets = set(service.get("networks") or {})
         if nets != {"db"}:
             errors.append(f"{name} networks are {sorted(nets)}, want ['db']")
-    for name, want in sorted(DB_BRIDGES.items()):
+    for name in sorted(DB_BRIDGES):
         nets = set((services.get(name) or {}).get("networks") or {})
+        want = {"default", "db"} | BRIDGE_EXTRA_NETS.get(name, set())
         if nets != want:
             errors.append(f"{name} networks are {sorted(nets)}, want {sorted(want)}")
     for name, service in services.items():
@@ -367,6 +411,7 @@ def main() -> None:
     errors += check_broker(services)
     errors += check_db_network(services, config.get("networks") or {})
     errors += check_n8n_store(services)
+    errors += check_actual(services)
     if errors:
         for err in errors:
             fail(err)

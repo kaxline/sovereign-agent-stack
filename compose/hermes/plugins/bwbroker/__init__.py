@@ -27,8 +27,8 @@ REQUEST_SCHEMA = {
     "description": (
         "Ask the user for a Bitwarden login you don't have, for a site you need to sign in to. "
         "Requesting never grants access by itself: the user approves outside this chat, and until then "
-        "the login does not appear in browser_vault_list. Tell the user you asked and what for. "
-        "Use this only when browser_vault_list has no login for the site."),
+        "the login does not appear in browser_vault action=list. Tell the user you asked and what for. "
+        "Use this only when browser_vault action=list has no login for the site."),
     "parameters": {
         "type": "object",
         "properties": {
@@ -53,7 +53,7 @@ RELEASE_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "handle": {"type": "string", "description": "The login's id from browser_vault_list (bwbroker:...)."},
+            "handle": {"type": "string", "description": "The login's id from browser_vault action=list (bwbroker:...)."},
         },
         "required": ["handle"],
     },

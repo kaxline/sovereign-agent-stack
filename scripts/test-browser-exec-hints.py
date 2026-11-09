@@ -89,6 +89,39 @@ def test_other_failure() -> None:
     )
 
 
+# Shape of the calls in session 20261108_112250_bfdb4d: a sign-up form whose
+# Continue button stayed disabled after fields were set through .value.
+VALUE_SET_CODE = """js(\"\"\"
+const inputs = document.querySelectorAll('input[type="password"]');
+inputs[0].value = 'example-pass';
+inputs[1].value = 'example-pass';
+\"\"\")
+"""
+
+
+def test_value_set_hint() -> None:
+    hint = bh.result_hint(VALUE_SET_CODE, 0, "None\n", "")
+    expect(hint == bh.VALUE_SET_HINT, f"value hint: {hint!r}")
+    one_line = "js(\"document.querySelector('#email').value='a@example.com'\")"
+    expect(bh.result_hint(one_line, 0, "", "") == f"{bh.NO_OUTPUT_HINT} {bh.VALUE_SET_HINT}",
+           "no-output and value hints combine")
+
+
+def test_value_set_no_hint() -> None:
+    for code in (
+        "print(js(\"document.querySelector('#a').value\"))",
+        "js(\"document.querySelector('#a').value === 'x'\")",
+        "js(\"document.querySelector('#a').value !== ''\")",
+        "js(\"document.querySelector('#a').value == 'x'\")",
+        "fill_input('#a', 'b')\nprint(js(\"document.querySelector('#a').value\"))",
+        "js(\"const s = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;"
+        " s.call(el, 'x'); el.value = el.value\")",
+        "opt.value = 3\nprint(opt)",
+    ):
+        expect(bh.result_hint(code, 0, "x\n", "") is None, f"no hint: {code!r}")
+    expect(bh.result_hint(VALUE_SET_CODE, 1, "", "Traceback") is None, "failed run gets no value hint")
+
+
 def run_echo(code: str, **helpers) -> str:
     """Execute echoed code with stub helpers; return what it printed."""
     import contextlib
@@ -138,7 +171,7 @@ def test_echo_leaves_code_alone() -> None:
 def test_save_next() -> None:
     expect(bh.save_login_next("vault_x", True) == bh.SAVE_FILLED_NEXT, "filled keeps upstream text")
     text = bh.save_login_next("vault_b47b899a7fe7", False)
-    expect("browser_vault_fill" in text and "'vault_b47b899a7fe7'" in text, f"unfilled next: {text}")
+    expect("action fill" in text and "browser_vault_fill" not in text and "'vault_b47b899a7fe7'" in text, f"unfilled next: {text}")
     expect("Never ask the user for the password" in text, "unfilled next forbids asking")
 
 
@@ -192,10 +225,12 @@ assert "print(" in r.get("hint", ""), r
 r = call("print(page_info())", 0, "url: https://www.linkedin.com/login\n", "")
 assert "hint" not in r, r
 assert sent["code"] == "print(page_info())", sent
+r = call("js(\"document.querySelector('#email').value = 'a@example.com'\")", 0, "", "")
+assert "fill_input" in r.get("hint", ""), r
 call('js("document.title")', 0, "LinkedIn Login\n", "")
 assert "print(" in sent["code"] and 'js("document.title")' in sent["code"], sent
 
-# browser_vault_save_login on a page with no form: the session's case.
+# browser_vault save_login on a page with no form: the session's case.
 import agent.vault_backends.unlock as unlock
 import agent.vault_store as store
 import tools.browser_vault_tool as vt
@@ -212,7 +247,7 @@ for fill_ok in (False, True):
     if fill_ok:
         assert r["next"].startswith("Type the identifier"), r
     else:
-        assert "browser_vault_fill" in r["next"] and "vault_b47b899a7fe7" in r["next"], r
+        assert "action fill" in r["next"] and "vault_b47b899a7fe7" in r["next"], r
 print("image ok")
 '''
 
@@ -224,6 +259,8 @@ def main() -> None:
     test_session_bare_expression()
     test_printed_output()
     test_other_failure()
+    test_value_set_hint()
+    test_value_set_no_hint()
     test_echo_session_js()
     test_echo_multiline()
     test_echo_none_is_silent()

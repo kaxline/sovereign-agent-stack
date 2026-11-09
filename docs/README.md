@@ -18,6 +18,7 @@ Per-service setup, usage, and verification guides. See the [project README](../R
 | [Todo lists](todo.md) | `todo` — `vikunja` (+ shared Postgres) | Vikunja web app + MCP, read-only token for unattended sessions |
 | [CRM](crm.md) | `crm` — `twenty-server`, `twenty-worker`, `twenty-db`, `twenty-redis`; or a remote Twenty | Twenty web app + MCP per workspace, single or multi-workspace, read-only key for unattended sessions |
 | [Bitwarden](bitwarden.md) | `bitwarden` — `bitwarden-broker`; `vault` — `vaultwarden`, `vaultwarden-tls` | Browser logins from Bitwarden cloud, self-hosted or a local Vaultwarden, filled by a broker; access requests; `make secrets-sync` |
+| [Budget](budget.md) | `budget` — `actual-mcp-rw`, `actual-mcp-ro`; `budget-local` — `actual-server`; or a remote Actual server | Actual Budget MCP with a read/write and a read-only instance, read-only access for unattended sessions |
 | [Signal](signal.md) | `signal` (+ `core`) | Linked-device messaging, WebUI send, cron delivery |
 | [Buzz](buzz.md) | `core` (optional) | Messaging transport for independent agents |
 | [Independent agents](agents.md) | `core` | Multi-role Hermes profiles, three memory tiers, registry |

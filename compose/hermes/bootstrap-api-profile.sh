@@ -1365,16 +1365,17 @@ addon_mcp_plan() {
   python3 "$ADDON_MANIFEST_PY" mcp-plan "$ADDONS_DIR" "${1:-default}"
 }
 
-# Every add-on MCP URL, on or off, for set_stack_mcp_parked_retry.
+# Every add-on MCP URL, on or off, one per line, for set_stack_mcp_parked_retry.
+# Field 11 of the plan holds all of an add-on's URLs, space-separated.
 addon_mcp_urls() {
-  addon_mcp_plan "$1" 2>/dev/null | cut -d'|' -f5 || true
+  addon_mcp_plan "$1" 2>/dev/null | cut -d'|' -f11 | tr ' ' '\n' | sed '/^$/d' || true
 }
 
 # "<tool> <mcp__name__tool> ..." for each add-on that registers on <profile>,
 # for reconcile_stack_eager_tools.
 addon_mcp_pin_args() {
   addon_mcp_plan "$1" 2>/dev/null | while IFS='|' read -r _amp_name _amp_title _amp_on _amp_access \
-      _amp_url _amp_timeout _amp_connect _amp_transport _amp_tools _amp_pins; do
+      _amp_url _amp_timeout _amp_connect _amp_transport _amp_tools _amp_pins _amp_all_urls; do
     [ "$_amp_on" = 1 ] && [ -n "$_amp_access" ] || continue
     for _amp_t in $_amp_pins; do
       printf ' %s %s' "$_amp_t" "$(mcp_tool_name "$_amp_name" "$_amp_t")"
@@ -1392,17 +1393,26 @@ register_addon_mcp_servers() {
   fi
   [ -n "$_ram_plan" ] || return 0
   printf '%s\n' "$_ram_plan" | while IFS='|' read -r _ram_name _ram_title _ram_on _ram_access \
-      _ram_url _ram_timeout _ram_connect _ram_transport _ram_tools _ram_pins; do
+      _ram_url _ram_timeout _ram_connect _ram_transport _ram_tools _ram_pins _ram_all_urls; do
     if [ "$_ram_on" != 1 ]; then
       log "Skipping ${_ram_title} MCP registration (add-on flag is off)"
-      drop_mcp_entries_for_url "$_ram_profile" "" "$_ram_url"
+      for _ram_u in $_ram_all_urls; do
+        drop_mcp_entries_for_url "$_ram_profile" "" "$_ram_u"
+      done
       continue
     fi
     if [ -z "$_ram_access" ]; then
       log "Skipping ${_ram_title} MCP on '${_ram_profile:-default}' (not in the manifest's mcp.profiles)"
-      drop_mcp_entries_for_url "$_ram_profile" "" "$_ram_url"
+      for _ram_u in $_ram_all_urls; do
+        drop_mcp_entries_for_url "$_ram_profile" "" "$_ram_u"
+      done
       continue
     fi
+    # An add-on with a service per access level has a second URL, which this
+    # profile must not keep.
+    for _ram_u in $_ram_all_urls; do
+      [ "$_ram_u" = "$_ram_url" ] || drop_mcp_entries_for_url "$_ram_profile" "" "$_ram_u"
+    done
     # shellcheck disable=SC2086
     register_mcp_server "$_ram_profile" "$_ram_name" "$_ram_title" \
       "$_ram_url" "$_ram_timeout" "$_ram_connect" $_ram_tools

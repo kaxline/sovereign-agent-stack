@@ -4,8 +4,8 @@ Compatibility overlay for this stack. browser_exec runs `code` with the
 browser helpers already defined and returns stdout only. Weaker models
 import the helpers from a module that does not exist (``browser_helpers``)
 or end on ``js(...)`` / ``page_info()`` without printing it, get an empty
-result, and stall. browser_vault_save_login's upstream next step also says
-nothing about browser_vault_fill when the save could not fill the page.
+result, and stall. browser_vault save_login's upstream next step also says
+nothing about the fill action when the save could not fill the page.
 
 This module is stdlib-only so host tests can import it without Hermes.
 """
@@ -37,15 +37,28 @@ NO_OUTPUT_HINT = (
     "to read, e.g. print(page_info())."
 )
 
+VALUE_SET_HINT = (
+    "Setting an input's .value from js() changes what the page shows but not "
+    "the form state that React and similar frameworks keep, so their buttons "
+    "stay disabled and submits send empty fields. Fill fields with "
+    "fill_input(selector, text), which types real key events. If a field was "
+    "already set through .value, reload the page and fill it again with "
+    "fill_input."
+)
+
+# `el.value = x` but not `==`, `===`, `!==` or `+=`.
+_VALUE_SET_RE = re.compile(r"\.value\s*=(?!=)")
+_JS_CALL_RE = re.compile(r"\b(?:js|cdp)\s*\(")
+
 # Upstream text, kept for a fill that worked.
 SAVE_FILLED_NEXT = "Type the identifier into the username field if the form has one, then submit."
 
 SAVE_UNFILLED_NEXT = (
     "The login is saved, but this page has no login form, so the password was "
     "not filled. Open the site's sign-in form on this origin, type the "
-    "identifier into the username field, then call browser_vault_fill with "
-    "handle '{handle}' to fill the password, then submit. Never ask the user "
-    "for the password."
+    "identifier into the username field, then call browser_vault with action "
+    "fill and handle '{handle}' to fill the password, then submit. Never ask "
+    "the user for the password."
 )
 
 _ECHO_NAME = "_assistant_stack_value"
@@ -65,8 +78,27 @@ def _imports_helpers_from(code: str, module: str) -> bool:
     return False
 
 
+def sets_value_in_js(code: str) -> bool:
+    """True when ``code`` assigns an element's .value inside page JavaScript.
+
+    Code that uses the native value setter (the usual React workaround) is
+    left alone.
+    """
+    code = code or ""
+    if not _JS_CALL_RE.search(code) or "getOwnPropertyDescriptor" in code:
+        return False
+    return bool(_VALUE_SET_RE.search(code))
+
+
 def result_hint(code: str, exit_code: int, stdout: str, stderr: str) -> Optional[str]:
     """A one-line hint for the model, or None when the result needs none."""
+    hint = _base_hint(code, exit_code, stdout, stderr)
+    if exit_code == 0 and sets_value_in_js(code):
+        return f"{hint} {VALUE_SET_HINT}" if hint else VALUE_SET_HINT
+    return hint
+
+
+def _base_hint(code: str, exit_code: int, stdout: str, stderr: str) -> Optional[str]:
     if exit_code != 0:
         match = _MISSING_MODULE_RE.search(stderr or "")
         if not match:
@@ -121,7 +153,7 @@ def echo_last_expression(code: str) -> str:
 
 
 def save_login_next(handle: str, filled: bool) -> str:
-    """Next step after browser_vault_save_login stored a login."""
+    """Next step after browser_vault save_login stored a login."""
     if filled:
         return SAVE_FILLED_NEXT
     return SAVE_UNFILLED_NEXT.format(handle=handle)

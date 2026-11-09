@@ -14,8 +14,12 @@ the stack under another app.
    `TWENTY_LOCAL_ENABLED`, which changes their input hash, so they run in full
    once. They also mount `addons/` and `scripts/lib/addon_manifest.py`, so a
    checkout used as the compose project directory needs both.
+   The bootstrap environment now also carries `ACTUAL_MCP_ENABLED` and
+   `ACTUAL_ACCESS`, so the first `up` after upgrading re-runs both bootstraps
+   in full, even with the add-on off.
 2. Expect `hermes` to be recreated once, with the Bitwarden add-on off. It
-   joins a new internal network, `vault`, on every install, and it and both
+   joins a new internal network, `vault`, on every install (and `budget`, for
+   the Actual Budget add-on), and it and both
    bootstrap services receive `BITWARDEN_ENABLED` (default `0`). The network
    is empty while local mode is off. The bootstrap script and the add-on
    manifests changed too, so both bootstraps run in full once. Nothing else
@@ -24,7 +28,9 @@ the stack under another app.
 
 ### New optional `.env` keys
 
-All default to off or to the values shown. See [docs/bitwarden.md](docs/bitwarden.md#settings).
+For the Bitwarden add-on; the Actual Budget keys are listed under its entry
+below. All default to off or to the values shown. See
+[docs/bitwarden.md](docs/bitwarden.md#settings).
 
 - `BITWARDEN_ENABLED=0`: starts `bitwarden-broker` (profile `bitwarden`, from
   `addons/bitwarden/addon.json`) and registers its login backend.
@@ -84,7 +90,7 @@ digests; it is not read from `.env`.
     `vault.bitwarden.enabled: false` in place. The plugin adds
     `bitwarden_request_access` and `bitwarden_release_access`; its backend
     lists nothing and refuses fills in cron turns, including `delegate_task`
-    children of a cron job. `browser_vault_save_login` still saves into
+    children of a cron job. `browser_vault` `save_login` still saves into
     Hermes' local vault on these profiles.
   - Two overlays, mounted and applied on every install and inert until the
     add-on fills something: `patch-digest-redaction.py` scrubs broker-filled
@@ -110,6 +116,89 @@ digests; it is not read from `.env`.
     (`scripts/test-vw-register.py`). The organization steps on bitwarden.com
     and setup for accounts with two-step login, new-device verification or
     Argon2id are not checked or handled. Linux hosts are not tested.
+  - The `browser-login` skill (1.6.0) tells the model to fill `bwbroker:`
+    handles like any other, to relay a locked account's `make vault-unlock`,
+    and to call `bitwarden_request_access` once when a login is in Bitwarden
+    but not in its scope.
+- **`browser-signup` skill (CR 0024 R3)**: covers creating an account. The
+  model asks for the identifier and profile fields first, asks before
+  ticking terms boxes, calls `create_login` on the password step, uses
+  `enter_code` or asks the user for verification, stops at a CAPTCHA, and
+  uses `capture_secret` for a key the site shows. `browser-login` (1.5.0)
+  points to it. Three tool-eval cases check it, and the scorer gains
+  `allow_tools` for `pass_none` cases and `max_calls` (`browser_exec=4`).
+  With no `new-password` marks, `create_login` now picks the form that
+  looks most like a sign-up instead of the first form with a password field.
+- **`browser_vault` `capture_secret` and `vault.take` (CR 0024 R2)**: on a page
+  that shows a new API key, the model calls `browser_vault` with
+  `action: capture_secret`, a `name` and a `destination`. Hermes finds the
+  value itself and asks the viewer through a new `vault.capture_secret`
+  server request (`{origin, site, name, destination, last4, replaces,
+  capture_id}`; answer `"approve"` or `""`). `env` saves it to the profile
+  `.env`. `viewer` keeps it encrypted under `capture_id` until the client
+  calls the new `vault.take {id}` RPC, which returns `{name, origin, value}`
+  once. This replaces the CR's `secret.deliver` frame, which would have gone
+  to every attached viewer. The value is redacted from later tool output.
+  See "Capturing keys from a page" in `docs/hermes.md`.
+- **`browser_vault` `create_login` (CR 0024 R1)**: on a sign-up form, the
+  model calls `browser_vault` with `action: create_login` and the
+  `identifier` the user chose. Hermes asks the viewer through a new
+  `vault.create_login` server request (`{origin, site, identifier,
+  regenerate}`; answer `{"generate": true}`, `{"password": "..."}` or `""`),
+  generates a password from the fields' `minlength`, `maxlength`,
+  `passwordrules` and `pattern`, fills every new-password field of the form
+  and stores a `login` item for the page's origin. The password never
+  appears in the result. Calling it with the returned `handle` replaces the
+  password. A client that does not handle the request leaves the model waiting
+  180 seconds, then reports `save_declined`; Boundary should add its card
+  before moving its pin. See "Creating logins on sign-up forms" in `docs/hermes.md`.
+- **Vault guidance names the `browser_vault` actions**: the `browser-login`
+  skill (1.4.0), the save-login next step and the password-in-chat nudge
+  named `browser_vault_fill`, `browser_vault_save_login` and the other
+  `browser_vault_*` tools, which Hermes v0.22 replaced with one
+  `browser_vault` tool taking an `action`. They now name the actions. Eval
+  traces and `last-run.json` record vault calls as `browser_vault.<action>`,
+  and `browser-login-save-first` expects `browser_vault.save_login`.
+- **browser_exec hints at `.value` assignments**: when code sets an input's
+  `.value` inside `js()` or `cdp()`, the result gains a `hint` saying React-style
+  forms don't see the change and to use `fill_input` instead, reloading first if
+  the field was already set that way. Code that uses the native value setter
+  gets no hint.
+- **Actual Budget add-on** (profiles `budget` and `budget-local`): Hermes
+  reads and edits an Actual Budget file through two MCP servers,
+  `actual-mcp-rw` and `actual-mcp-ro`, built from a vendored
+  giorgiobrullo/actual-mcp. `actual-server` runs locally or a remote server is
+  used. Setup is `./scripts/setup.sh --budget`, `make budget-init` (local) or
+  `make budget-add URL=...` (remote); `make budget-open`, `make budget-remove`
+  and `make budget-access ACCESS=read|write` do the rest, and `make doctor`
+  has a Budget block. A `budget` skill tells Hermes to look up ids, treat
+  amounts as cents and confirm deletes, bulk edits and category moves. The
+  read-only instance serves `api-server`; default and `browser` get the
+  read/write instance unless `ACTUAL_ACCESS=read`. A read/write entry is kept
+  out of cron. See [docs/budget.md](docs/budget.md). **The add-on has not been
+  checked on a live stack yet**; only the offline tests against stubs have
+  run. Both flags default to off, so existing installs see no change. Hermes
+  now joins the new `budget` network, so the next `up` recreates it.
+  - New `.env` keys, all optional: `ACTUAL_MCP_ENABLED`,
+    `ACTUAL_LOCAL_ENABLED`, `ACTUAL_ACCESS`, `ACTUAL_PORT`, `ACTUAL_DATA_DIR`,
+    `ACTUAL_BUDGET_FILE`, and `ACTUAL_SERVER_IMAGE` (commented out, pinned by
+    digest). `ACTUAL_ADMIN_TIMEOUT_S` is read from the environment and has no
+    line in `.env.example`.
+- **Manifest extensions** the Actual add-on needs (the format is still
+  experimental):
+  - `mcp.service` may be a map `{"ro": ..., "rw": ...}` that gives each
+    access level its own service. A map `mcp.service` ignores `mcp.env.url`.
+  - `mcp.writeTools` lists tools that `tools` and `pins` leave out for a
+    profile on the read-only service.
+  - `mcp.env.access` names a variable that caps access: `read` turns
+    read/write into read-only, `write` or empty changes nothing, any other
+    value gives the profile no entry.
+  - `permissions.cron` accepts `"ro"`: cron keeps the read-only entry and
+    loses the read/write one.
+- **`addon_manifest.py mcp-plan` has an 11th field**, `all_urls`: every URL
+  the add-on can register, space-separated and sorted, so the bootstrap can
+  drop the ones a profile must not have. A caller that splits the line on `|`
+  must accept the extra field.
 
 - **GPT Researcher is registered from a manifest**: `addons/gptr/addon.json`
   now holds its flag, profile, tools, pins and profile list, and

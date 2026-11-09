@@ -5,7 +5,7 @@ secrets from Bitwarden into the files the stack already reads. A sidecar, `bitwa
 each account's `bw` data, API key and session key, and writes passwords and one-time codes into the
 page itself. The Hermes gateway lists metadata only (handle, label, username, origins, whether the
 item has a TOTP key) and never holds a value. The agent keeps the `browser_vault_*` tools and the
-`browser-login` skill; Bitwarden logins appear in `browser_vault_list` with `bwbroker:` handles.
+`browser-login` skill; Bitwarden logins appear in `browser_vault` `list` with `bwbroker:` handles.
 
 The add-on is on the `default` and `browser` profiles only. It is never on `api-server`. Cron jobs
 get no Bitwarden logins and no fills; the two access tools stay out of cron's tool list unless a job
@@ -87,7 +87,7 @@ on one of them.
   and hands it to the broker over a Unix socket that only the broker and `bitwarden-secrets-sync`
   mount. The broker uses it for one `bw unlock` and drops it. The account stays unlocked until the
   broker restarts, `make vault-lock SLUG=…`, or `BITWARDEN_IDLE_LOCK_MINUTES` without a fill or
-  unlock (default 0, never). While it is locked its items are not listed, and `browser_vault_list`
+  unlock (default 0, never). While it is locked its items are not listed, and `browser_vault` `list`
   carries `"bitwarden": {"locked": ["<slug>"], "unlock": "make vault-unlock SLUG=<slug>"}`. The broker
   shares `hermes`' network namespace (`network_mode: service:hermes`), so compose is expected to
   restart it when `hermes` is recreated, and a manual account then needs unlocking again. That
@@ -179,7 +179,7 @@ outside the chat.
 
 ### Requesting
 
-When `browser_vault_list` has no login for a site, the agent calls
+When `browser_vault` `list` has no login for a site, the agent calls
 `bitwarden_request_access(site, reason, account?)`. The broker records the request in
 `broker/requests.json` and the result says it is pending and how you approve it. The result never
 says whether a matching item exists outside the agent's scope. `site` must be a hostname or a URL;
@@ -297,9 +297,9 @@ Other limits, as built:
   in its own `enabled_toolsets` still gets `bitwarden_request_access` and
   `bitwarden_release_access`; the backend still lists and fills nothing there. A subagent that a
   chat starts is not a cron turn and gets the logins as the chat does.
-- `browser_vault_save_login` saves into Hermes' own local vault, never into Bitwarden. Add Bitwarden
+- `browser_vault` `save_login` saves into Hermes' own local vault, never into Bitwarden. Add Bitwarden
   logins in Bitwarden, or have the agent ask with `bitwarden_request_access`.
-- On a cloud personal account `bw get totp` needs Premium. Without it, `browser_vault_enter_code`
+- On a cloud personal account `bw get totp` needs Premium. Without it, `browser_vault` `enter_code`
   answers that the login has no authenticator key, and the agent asks you for the code.
 - `make vault-init`, `vault-add` and `vault-grant` sign in to your own account with email and master
   password. Two-step login, bitwarden.com's new-device verification and accounts set to Argon2id are
@@ -378,7 +378,7 @@ and local mode's files.
 
 | Symptom | Cause and fix |
 |---|---|
-| `browser_vault_list` shows `"bitwarden": {"unavailable": true}`; fills say "Bitwarden is unavailable right now" | The broker is not answering. `make up`; `docker compose logs bitwarden-broker` |
+| `browser_vault` `list` shows `"bitwarden": {"unavailable": true}`; fills say "Bitwarden is unavailable right now" | The broker is not answering. `make up`; `docker compose logs bitwarden-broker` |
 | `"bitwarden": {"locked": [...]}` | A manual account is locked: `make vault-unlock SLUG=…` |
 | doctor: `<slug>: error (auth)` | Bitwarden refused the API key or master password: `make vault-add SLUG=… MODE=… FORCE=1` |
 | doctor: `<slug>: offline (rate_limited)` | Bitwarden answered 429. The broker waits 60 s (or the server's `Retry-After`) and keeps serving the last synced items |

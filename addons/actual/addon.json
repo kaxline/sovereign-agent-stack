@@ -1,0 +1,153 @@
+{
+  "manifestVersion": 1,
+  "id": "io.github.kaxline.stack.actual",
+  "version": "1.0.0",
+  "title": "Actual Budget",
+  "tagline": "Read and edit an Actual Budget file from chat",
+  "description": "Connects Hermes to a remote Actual Budget file through two MCP servers: actual-mcp-rw for chats a person is watching and actual-mcp-ro for api-server and cron. The budget is financial data. permissions.reads stays empty because the manifest's finance read class has not shipped; until it does, cron may use the read-only server and the write server is fenced out of cron. run-bank-sync is not exposed. See docs/budget.md.",
+  "publisher": {
+    "name": "sovereign-agent-stack",
+    "url": "https://github.com/kaxline/sovereign-agent-stack"
+  },
+  "minStackVersion": "0.3.12",
+  "builtin": {
+    "flag": "ACTUAL_MCP_ENABLED",
+    "profile": "budget",
+    "seed": false
+  },
+  "services": {
+    "rw": {
+      "compose": "actual-mcp-rw",
+      "port": 3000
+    },
+    "ro": {
+      "compose": "actual-mcp-ro",
+      "port": 3000
+    }
+  },
+  "mcp": {
+    "service": {
+      "rw": "rw",
+      "ro": "ro"
+    },
+    "transport": "http",
+    "path": "/mcp",
+    "name": "budget",
+    "timeout": 120,
+    "connectTimeout": 60,
+    "env": {
+      "access": "ACTUAL_ACCESS"
+    },
+    "tools": [
+      "get-transactions",
+      "spending-by-category",
+      "monthly-summary",
+      "balance-history",
+      "budget-vs-actual",
+      "net-worth",
+      "category-trends",
+      "spending-by-payee",
+      "cash-flow",
+      "get-accounts",
+      "get-grouped-categories",
+      "get-payees",
+      "get-rules",
+      "get-custom-reports",
+      "get-dashboards",
+      "get-budget-months",
+      "get-budget-month",
+      "get-schedules",
+      "add-dashboard-widget",
+      "batch-update-transactions",
+      "create-category",
+      "create-category-group",
+      "create-custom-report",
+      "create-dashboard-page",
+      "create-payee",
+      "create-rule",
+      "create-transaction",
+      "delete-category",
+      "delete-category-group",
+      "delete-custom-report",
+      "delete-dashboard-page",
+      "delete-payee",
+      "delete-rule",
+      "delete-transaction",
+      "hold-budget-for-next-month",
+      "import-transactions",
+      "merge-payees",
+      "organize-dashboard",
+      "remove-dashboard-widget",
+      "rename-dashboard-page",
+      "reset-budget-hold",
+      "set-budget-amount",
+      "set-budget-carryover",
+      "update-category",
+      "update-category-group",
+      "update-custom-report",
+      "update-dashboard-widget",
+      "update-payee",
+      "update-rule",
+      "update-transaction"
+    ],
+    "pin": [
+      "get-accounts",
+      "get-grouped-categories",
+      "get-transactions",
+      "monthly-summary",
+      "get-budget-month",
+      "get-payees"
+    ],
+    "writeTools": [
+      "add-dashboard-widget",
+      "batch-update-transactions",
+      "create-category",
+      "create-category-group",
+      "create-custom-report",
+      "create-dashboard-page",
+      "create-payee",
+      "create-rule",
+      "create-transaction",
+      "delete-category",
+      "delete-category-group",
+      "delete-custom-report",
+      "delete-dashboard-page",
+      "delete-payee",
+      "delete-rule",
+      "delete-transaction",
+      "hold-budget-for-next-month",
+      "import-transactions",
+      "merge-payees",
+      "organize-dashboard",
+      "remove-dashboard-widget",
+      "rename-dashboard-page",
+      "reset-budget-hold",
+      "set-budget-amount",
+      "set-budget-carryover",
+      "update-category",
+      "update-category-group",
+      "update-custom-report",
+      "update-dashboard-widget",
+      "update-payee",
+      "update-rule",
+      "update-transaction"
+    ],
+    "profiles": {
+      "default": "rw",
+      "browser": "rw",
+      "api-server": "ro"
+    }
+  },
+  "permissions": {
+    "reads": [],
+    "writes": [
+      "external:budget"
+    ],
+    "sends": false,
+    "egress": [
+      "internet"
+    ],
+    "exposesToAgent": false,
+    "cron": "ro"
+  }
+}
