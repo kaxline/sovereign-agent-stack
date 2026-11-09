@@ -30,6 +30,23 @@ as before.
   [docs/extending.md](docs/extending.md#add-ons-scriptsaddonsh). Field
   names may change between patch releases while the stack is in 0.3.x.
 
+### Fixes
+
+- **Actual Budget: ended sessions fail the call.** After the Actual server
+  password changed or the MCP server's session ended (deleted, or the user
+  disabled), `actual-mcp-rw` and `actual-mcp-ro` kept answering from their
+  loaded copy: reads were stale, and writes were reported as saved but never
+  reached the server. Now the sync before each call notices the ended
+  session and the call fails with `Actual session ended (<reason>): reconnect
+  with make budget-add FORCE=1 or make budget-init`, and nothing is written
+  locally; later calls fail with `Authentication failed: ...` until the
+  credential is replaced. Revoked access to the budget fails the same way.
+  An unreachable server still answers from the loaded copy, as before.
+  Verified against a throwaway `actual-server` 26.11.0 (deleted session and
+  password change), not on a live stack. A write in the few seconds between
+  a good sync and the background push can still miss the server if the
+  session ends in that window; it stays in the local cache.
+
 ## v0.3.12 — 2026-11-09
 
 ### Upgrade steps

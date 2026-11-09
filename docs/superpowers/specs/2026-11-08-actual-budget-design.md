@@ -607,14 +607,17 @@ a `make hermes-reload` does.
 
 ### Changes from the spike
 
-- **Fail on an ended session (replaces the launcher restart).** Patch `syncIfStale()` in the
-  vendored `connection.ts`: when `api.sync()` fails with code `token-expired` or
-  `file-access-not-allowed`, fail the call with an `isError` result that says the budget's session
-  ended or its access was removed, and keep the "continue with local data" path for network
-  errors only. With `ACTUAL_SYNC_TTL_MS=0` every call syncs first, so a write is refused before it
-  lands in the cache. This is a `src/` change, so VENDORED.md lists it. A launcher restart would
-  give the same error on the next call but drops every Mcp-Session-Id, which Hermes doesn't
-  recover from without a reload, and it would have to parse child stderr to know when.
+- **Fail on an ended session (replaces the launcher restart).** Done in the commit "Fail Actual
+  MCP calls when a sync shows the session ended" (fc0b5a8), shipped as a 0.3.x fix for the
+  single budget. `syncIfStale()` in the vendored `connection.ts` now fails the call when
+  `api.sync()` throws with code `token-expired`, `token-not-found`, `unauthorized`,
+  `invalid-password`, `file-access-not-allowed` or `budget-not-found`, shuts the API down and
+  re-runs init on the next call; other sync errors, network ones included, still continue with
+  local data. With `ACTUAL_SYNC_TTL_MS=0` every call syncs first, so a write is refused before it
+  lands in the cache (re-run live on both paths). VENDORED.md lists the change. A launcher
+  restart would give the same error on the next call but drops every Mcp-Session-Id, which
+  Hermes doesn't recover from without a reload, and it would have to parse child stderr to know
+  when. The remaining window is a write made between a good sync and the background push.
 - **`actual-admin.mjs check` learns tokens.** Init with `sessionToken` when `ACTUAL_SESSION_TOKEN`
   is set; print `login` and exit 3 for code `token-expired`; print `no_access` with a new exit
   code for `budget-not-found`. `budget.sh` maps exit 3 to `login_refused` in `connect` and to
