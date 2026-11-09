@@ -197,7 +197,12 @@ with tempfile.TemporaryDirectory() as tmp:
     check("vault plan skips a value with a pipe", am.vault_plan(Path(tmp), "default", {}) == [])
     (d / "addon.json").write_text("{broken")
     check("vault plan skips invalid manifests", am.vault_plan(Path(tmp), "default", {}) == [])
-check("vault plan is empty for the repo's add-ons today", am.vault_plan(ROOT / "addons", "default", {}) == [])
+repo_plan = am.vault_plan(ROOT / "addons", "default", {"BITWARDEN_ENABLED": "1"})
+check("vault plan for the repo's add-ons is the Bitwarden broker on default",
+      repo_plan == [f"bwbroker|1|rw|{tail}"], str(repo_plan))
+repo_plan = am.vault_plan(ROOT / "addons", "api-server", {})
+check("the repo's Bitwarden add-on has no api-server access and is off without its flag",
+      repo_plan == [f"bwbroker|0||{tail}"], str(repo_plan))
 
 # --- mcp-plan ---------------------------------------------------------------
 env = {"GPTR_MCP_ENABLED": "1"}
@@ -255,7 +260,9 @@ check("an invalid manifest is fenced by its MCP name", got[0] == ["gptr"], str(g
 got = fence_of({"gptr": json.dumps({"mcp": "nonsense"})}, env)
 check("a manifest with no readable MCP name fences nothing", got == ([], []), str(got))
 
-check("no plugin toolset is fenced for the repo's add-ons today", am.cron_fence_toolsets(ROOT / "addons") == [])
+check("the repo's Bitwarden toolset is fenced from cron",
+      am.cron_fence_toolsets(ROOT / "addons") == [("bwbroker", "bitwarden")],
+      str(am.cron_fence_toolsets(ROOT / "addons")))
 
 
 def toolsets_of(manifests: dict[str, str]) -> list[tuple[str, str]]:
@@ -311,6 +318,10 @@ for path, manifest, parse_error in am.load_dir(ROOT / "addons"):
         for var in [b["flag"], *manifest["mcp"].get("env", {}).values()]:
             n = len(re.findall(rf"^      - {var}=", compose, re.M))
             check(f"{sid}: both hermes-*-bootstrap services receive {var}", n == 2, f"found {n}")
+    if manifest.get("vaultBackend"):
+        # Both bootstraps read the flag for vault-plan; hermes reads it to install the plugin.
+        n = len(re.findall(rf"^      - {b['flag']}=", compose, re.M))
+        check(f"{sid}: both hermes-*-bootstrap services and hermes receive {b['flag']}", n == 3, f"found {n}")
 
 for svc in ("hermes-api-bootstrap", "hermes-browser-bootstrap"):
     block = service_block(svc)

@@ -144,6 +144,27 @@ sed -i.bak 's/^GPTR_MCP_ENABLED=1/GPTR_MCP_ENABLED=0/' "${tmp}/.env"
 sync
 expect "manifest row removes its profile when off" COMPOSE_PROFILES core
 
+# Bitwarden's row comes from addons/bitwarden/addon.json with seed false: a
+# missing flag stays unwritten, and BITWARDEN_ENABLED=1 turns on the broker's
+# profile. BITWARDEN_LOCAL_ENABLED (vault) is a SERVICES_CORE row.
+if "${tmp}/scripts/sync-profiles.sh" --table | grep -qx 'BITWARDEN_ENABLED bitwarden 0'; then
+  echo "ok: table has the BITWARDEN_ENABLED bitwarden 0 row"
+else
+  echo "FAIL: table has the BITWARDEN_ENABLED bitwarden 0 row"
+  "${tmp}/scripts/sync-profiles.sh" --table | sed 's/^/    /'
+  fail=1
+fi
+printf 'COMPOSE_PROFILES=core\n' > "${tmp}/.env"
+sync
+expect "missing BITWARDEN_ENABLED is not written" BITWARDEN_ENABLED ""
+expect "missing BITWARDEN_ENABLED leaves profiles alone" COMPOSE_PROFILES core
+printf 'COMPOSE_PROFILES=core\nBITWARDEN_ENABLED=1\nBITWARDEN_LOCAL_ENABLED=1\n' > "${tmp}/.env"
+sync
+expect "BITWARDEN_ENABLED=1 and BITWARDEN_LOCAL_ENABLED=1 add bitwarden and vault" COMPOSE_PROFILES core,vault,bitwarden
+sed -i.bak 's/^BITWARDEN_ENABLED=1/BITWARDEN_ENABLED=0/' "${tmp}/.env"
+sync
+expect "BITWARDEN_ENABLED=0 removes bitwarden only" COMPOSE_PROFILES core,vault
+
 # A flag in both SERVICES_CORE and a manifest is refused.
 mkdir -p "${tmp}/addons/dup"
 sed 's/GPTR_MCP_ENABLED/OLLAMA_ENABLED/' "${ROOT}/addons/gptr/addon.json" > "${tmp}/addons/dup/addon.json"

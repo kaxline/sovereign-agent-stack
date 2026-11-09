@@ -1,0 +1,70 @@
+{
+  "manifestVersion": 1,
+  "id": "io.github.kaxline.stack.bitwarden",
+  "version": "1.0.0",
+  "title": "Bitwarden",
+  "tagline": "Sign in to websites with logins kept in Bitwarden",
+  "description": "Runs a broker beside Hermes that holds each Bitwarden account's bw data and session key and writes passwords and one-time codes into the page itself, so the gateway lists only metadata and never holds a value. The agent reaches the items in one folder or collection; it asks for more with bitwarden_request_access, and the user approves outside the chat. Offered on the default and browser profiles, never on api-server or in cron. See docs/bitwarden.md.",
+  "publisher": {
+    "name": "sovereign-agent-stack",
+    "url": "https://github.com/kaxline/sovereign-agent-stack"
+  },
+  "minStackVersion": "0.3.12",
+  "builtin": {
+    "flag": "BITWARDEN_ENABLED",
+    "profile": "bitwarden",
+    "seed": false
+  },
+  "services": {
+    "broker": {
+      "compose": "bitwarden-broker",
+      "port": 8099
+    }
+  },
+  "uses": [],
+  "vaultBackend": {
+    "name": "bwbroker",
+    "plugin": "compose/hermes/plugins/bwbroker",
+    "toolset": "bitwarden",
+    "tools": [
+      "bitwarden_request_access",
+      "bitwarden_release_access"
+    ],
+    "profiles": {
+      "default": "rw",
+      "browser": "rw"
+    }
+  },
+  "permissions": {
+    "reads": [
+      "credentials"
+    ],
+    "writes": [
+      "external:bitwarden"
+    ],
+    "sends": false,
+    "egress": [
+      "internet"
+    ],
+    "exposesToAgent": false,
+    "cron": false
+  },
+  "settings": {
+    "sync_minutes": {
+      "type": "int",
+      "default": 10,
+      "min": 1,
+      "label": "Minutes between bw sync runs (BITWARDEN_SYNC_MINUTES)"
+    },
+    "idle_lock_minutes": {
+      "type": "int",
+      "default": 0,
+      "min": 0,
+      "label": "Lock manual accounts after this many minutes without a fill; 0 never (BITWARDEN_IDLE_LOCK_MINUTES)"
+    }
+  },
+  "hooks": {
+    "backup": "scripts/vault.sh backup",
+    "restore": "scripts/vault.sh restore"
+  }
+}
