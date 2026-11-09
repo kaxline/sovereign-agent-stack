@@ -80,13 +80,15 @@ with tempfile.TemporaryDirectory() as tmp:
     check("bool with flag returns the flag as 1", out == {"GPTR_EXTRA_ENABLED": "1"}, str(out))
     out = st.apply_settings(MANIFEST, root, {"drafts": False})
     check("bool with flag returns 0 when false", out == {"GPTR_EXTRA_ENABLED": "0"}, str(out))
-    env = (d / "settings.env").read_text()
+    env = (d / "config" / "settings.env").read_text()
     check("settings.env holds both keys", "ADDON_MAILER_INTERVAL=600" in env and "ADDON_MAILER_DRAFTS=" in env, env)
     st.apply_settings(MANIFEST, root, {"tags": ["a b", "c"], "motto": "it's fine"})
-    env = (d / "settings.env").read_text()
+    env = (d / "config" / "settings.env").read_text()
     check("list written as JSON, string quoted", "ADDON_MAILER_TAGS='[\"a b\", \"c\"]'" in env
           and "ADDON_MAILER_INTERVAL=600" in env, env)
     check("directory is 0700", stat.S_IMODE(d.stat().st_mode) == 0o700)
+    check("config directory is 0700", stat.S_IMODE((d / "config").stat().st_mode) == 0o700)
+    check("no settings.env at the add-on root", not (d / "settings.env").exists())
     check("no flag written to any file", "GPTR_EXTRA_ENABLED" not in env)
 
     st.apply_settings(MANIFEST, root, {"api": "tok-123"})
@@ -94,7 +96,7 @@ with tempfile.TemporaryDirectory() as tmp:
     check("top-level secret in secrets/<name> at 0600",
           f.read_text() == "tok-123" and stat.S_IMODE(f.stat().st_mode) == 0o600)
     check("secrets dir 0700", stat.S_IMODE(f.parent.stat().st_mode) == 0o700)
-    check("secret not in settings.env", "tok-123" not in (d / "settings.env").read_text())
+    check("secret not in settings.env", "tok-123" not in (d / "config" / "settings.env").read_text())
 
     st.apply_instance(MANIFEST, root, "work", {"host": "imap.example.com", "password": PASSWORD})
     st.apply_instance(MANIFEST, root, "work", {"user": "a@example.com"})
@@ -119,6 +121,20 @@ with tempfile.TemporaryDirectory() as tmp:
     check("listing bool is bool", lst["settings"]["drafts"] is False)
     check("listing omits unset setting without default", "mode" not in lst["settings"] and "since" not in lst["settings"])
     check("listing instance values", lst["instances"]["work"]["host"] == "imap.example.com")
+    want_schema = {"settings": MANIFEST["settings"],
+                   "instances": {"name": "account", "settings": MANIFEST["instances"]["settings"]}}
+    check("listing carries the settings schema", lst.get("schema") == want_schema, str(lst.get("schema")))
+    no_inst = copy.deepcopy(MANIFEST)
+    del no_inst["instances"]
+    check("schema instances is null without an instances block",
+          "instances" in st.listing(no_inst, root, {})["schema"]
+          and st.listing(no_inst, root, {})["schema"]["instances"] is None)
+    sneaky = copy.deepcopy(MANIFEST)
+    sneaky["settings"]["api"]["default"] = "tok-default"
+    check("schema never carries a secret's default",
+          "tok-default" not in json.dumps(st.listing(sneaky, root, {})["schema"]))
+    lst["schema"]["settings"]["since"]["label"] = "changed"
+    check("schema is a copy of the manifest", MANIFEST["settings"]["since"]["label"] == "Since")
     d2 = copy.deepcopy(MANIFEST)
     d2["host"] = {"platform": "darwin"}
     check("platform from host", st.listing(d2, root, {})["platform"] == "darwin")
@@ -132,7 +148,14 @@ with tempfile.TemporaryDirectory() as tmp:
     with tempfile.TemporaryDirectory() as tmp2:
         r2 = Path(tmp2)
         st.apply_settings(MANIFEST, r2, {"since": "2026-01-02"})
-        check("one instance is required", st.missing(MANIFEST, r2) == ["account"], str(st.missing(MANIFEST, r2)))
+        check("one instance is required", st.missing(MANIFEST, r2) == ["instances:account"],
+              str(st.missing(MANIFEST, r2)))
+    with tempfile.TemporaryDirectory() as tmp3:
+        r3 = Path(tmp3)
+        st.apply_instance(MANIFEST, r3, "home", {"host": "h"})
+        c = st.addon_dir(r3, MANIFEST) / "config"
+        check("the store creates config/ with the add-on directory",
+              c.is_dir() and stat.S_IMODE(c.stat().st_mode) == 0o700)
 
     raises("bad slug", st.InputError, lambda: st.apply_instance(MANIFEST, root, "Bad Slug", {}), setting="slug")
     raises("dotty slug", st.InputError, lambda: st.apply_instance(MANIFEST, root, "../x", {}), setting="slug")
@@ -190,6 +213,39 @@ with tempfile.TemporaryDirectory() as tmp:
     check("remove_instance deletes instance file", not (d / "instances" / "work.json").exists())
     check("remove_instance keeps top-level secret", (d / "secrets" / "api").exists())
     raises("remove bad slug", st.InputError, lambda: st.remove_instance(MANIFEST, root, "a/b"), setting="slug")
+
+# --- addon_cli.py: unexpected exceptions -----------------------------------------
+import contextlib  # noqa: E402
+import io  # noqa: E402
+
+import addon_cli  # noqa: E402
+
+
+def cli_main(argv, boom):
+    """Run addon_cli.main with store.listing raising `boom`; (rc, stderr)."""
+    real = addon_cli.store.listing
+
+    def fake(*_a, **_k):
+        raise boom
+    addon_cli.store.listing = fake
+    err = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            rc = addon_cli.main(argv)
+    finally:
+        addon_cli.store.listing = real
+    return rc, err.getvalue()
+
+
+with tempfile.TemporaryDirectory() as tmp:
+    argv = ["--addons-dir", str(ROOT / "addons"), "--data-root", tmp, "list"]
+    rc, err = cli_main(argv, PermissionError(13, "Permission denied", "/x/addons/gptr/secrets"))
+    check("an OSError is one error line with its type, exit 1",
+          rc == 1 and err == "error: PermissionError: [Errno 13] Permission denied: '/x/addons/gptr/secrets'\n",
+          repr((rc, err)))
+    rc, err = cli_main(argv, RuntimeError("value s3cr3t-in-message"))
+    check("another exception prints its type only, exit 1",
+          rc == 1 and err == "error: RuntimeError\n", repr((rc, err)))
 
 if failures:
     print(f"{failures} failed")

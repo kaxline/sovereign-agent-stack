@@ -8,10 +8,13 @@ runs in the Hermes image through stack_python, so the host needs no python3.
         A JSON array of addon_store.listing() objects, sorted by short id.
         JSON maps env flag names to "1" or "0" (addon.sh reads them from .env).
         A manifest that fails check_builtin_file is left out with a warning.
-    configure SID [--instance SLUG]
+    configure SID [--instance SLUG] [--flags JSON]
         Reads one JSON object on stdin and stores it with apply_settings, or
         apply_instance for SLUG. Prints {"flags": {FLAG: "1"|"0"}}, the .env
-        writes addon.sh makes (always {} for an instance).
+        writes addon.sh makes: the gate flags of bool settings given, only
+        while builtin.flag is 1 in --flags (the .env flags, as for list).
+        Always {} for an instance or a disabled add-on; plan-enable restores
+        gate flags from the stored settings.
     remove-instance SID SLUG
         Deletes the instance's file and secrets.
     plan-enable SID
@@ -31,7 +34,10 @@ runs in the Hermes image through stack_python, so the host needs no python3.
 
 Errors are one line, `error: <message>`, on stderr. Exit codes: 2 invalid
 input (unknown add-on, bad JSON, unknown or ill-typed setting), 3 a required
-setting is missing. Messages name a setting, never its value.
+setting is missing, 1 anything else. Messages name a setting, never its
+value. An unexpected exception prints `error: <type>: <message>` for an
+OSError (its message holds a path, not a value) and `error: <type>` for any
+other, whose message could hold one.
 """
 
 from __future__ import annotations
@@ -126,9 +132,12 @@ def cmd_list(args) -> None:
 
 def cmd_configure(args) -> None:
     manifest = _manifest(args.addons_dir, args.sid)
+    env_flags = _flags_arg(args.flags)
     values = _stdin_object()
     if args.instance is None:
         flags = store.apply_settings(manifest, args.data_root, values)
+        if env_flags.get(manifest["builtin"]["flag"]) != "1":
+            flags = {}
     else:
         store.apply_instance(manifest, args.data_root, args.instance, values)
         flags = {}
@@ -215,6 +224,7 @@ def main(argv: list[str]) -> int:
     s = sub.add_parser("configure")
     s.add_argument("sid")
     s.add_argument("--instance")
+    s.add_argument("--flags", default="{}")
     s.set_defaults(func=cmd_configure)
     s = sub.add_parser("remove-instance")
     s.add_argument("sid")
@@ -242,6 +252,10 @@ def main(argv: list[str]) -> int:
             msg = f"{exc.setting}: {msg}"
         print(f"error: {msg}", file=sys.stderr)
         return 2 if isinstance(exc, store.InputError) else 3
+    except Exception as exc:  # noqa: BLE001
+        detail = f": {exc}" if isinstance(exc, OSError) else ""
+        print(f"error: {type(exc).__name__}{detail}", file=sys.stderr)
+        return 1
     return 0
 
 

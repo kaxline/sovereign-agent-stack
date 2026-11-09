@@ -49,7 +49,10 @@ does the same for the plugin toolsets of add-ons with a vaultBackend.
 
 Settings (and the schema of `instances`, {name, settings}) take the types in
 SETTING_TYPES. A setting with neither `default` nor `optional: true` is
-required; a bool setting may name a `flag`. `services.<name>.mounts` and
+required; a secret setting may not have a default; a bool setting may name a
+`flag`, which must be a gate flag. Names that map to the same
+ADDON_<SHORT>_<NAME> key (differing only by case, - or _) are refused. Two
+`mcp` entries may not point at the same service. `services.<name>.mounts` and
 `commands` are checked as validate() describes them. A built-in service may
 list `volumes`, the compose volume names `scripts/addon.sh disable --purge`
 removes; scripts/test-addon-manifests.py checks they exist in docker-compose.yml.
@@ -88,7 +91,7 @@ SETTING_TYPES = {"string", "int", "bool", "choice", "port", "secret", "url", "pa
 # Setting names the stack fills in itself; a schema may not declare them.
 RESERVED_SETTINGS = {"slug"}
 # services.<name>.mounts keys and the fixed container path each one names.
-MOUNT_PATHS = {"secrets": "/run/addon/secrets", "config": "/run/addon/settings.env",
+MOUNT_PATHS = {"secrets": "/run/addon/secrets", "config": "/run/addon/config",
                "instances": "/run/addon/instances"}
 MOUNT_MODES = {"ro", "rw"}
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -296,14 +299,21 @@ def validate(manifest, source: str = "builtin") -> list[str]:
         names = [e["name"] for e in entries if isinstance(e, dict) and isinstance(e.get("name"), str)]
         if len(names) != len(set(names)):
             err("mcp names must be unique within an add-on")
+        # The bootstrap drops stale entries by URL, so two entries on one
+        # service would drop each other's live registration.
+        keys = [_mcp_service_keys(e) for e in entries]
+        for i in range(len(keys)):
+            for j in range(i + 1, len(keys)):
+                for shared in sorted(keys[i] & keys[j]):
+                    err(f"mcp entries {i} and {j} share service {shared!r}; each entry needs its own")
 
     vault = manifest.get("vaultBackend")
     if vault is not None:
         errors.extend(_validate_vault_backend(vault, source, bool(reads)))
 
+    # A setting's flag names a gate: configure must not be able to switch
+    # builtin.flag, which only enable and disable write.
     flags = set(gate_flags)
-    if isinstance(builtin, dict) and isinstance(builtin.get("flag"), str):
-        flags.add(builtin["flag"])
     settings = manifest.get("settings", {})
     if not isinstance(settings, dict):
         err("settings must be an object")
@@ -331,11 +341,7 @@ def validate(manifest, source: str = "builtin") -> list[str]:
 
     mcp_services: set[str] = set()
     for entry in mcp_entries(manifest) if isinstance(mcp, (dict, list)) else []:
-        svc = entry.get("service") if isinstance(entry, dict) else None
-        if isinstance(svc, str):
-            mcp_services.add(svc)
-        elif isinstance(svc, dict):
-            mcp_services.update(v for v in svc.values() if isinstance(v, str))
+        mcp_services |= _mcp_service_keys(entry)
     for name, svc in services.items():
         if not isinstance(svc, dict) or "mounts" not in svc:
             continue
@@ -385,10 +391,18 @@ def _validate_settings(settings: dict, *, source: str, reads: bool, flags: set[s
     errors: list[str] = []
     err = errors.append
     where = "instances.settings" if in_instance else "settings"
+    env_names: dict[str, str] = {}
     for name, s in settings.items():
         at = f"{where}.{name}"
         if name in RESERVED_SETTINGS:
             err(f"{at}: {name!r} is reserved")
+        # addon_store keys settings.env (and names secret files) by this form.
+        key = name.upper().replace("-", "_")
+        if key in env_names:
+            err(f"{at}: same settings.env key as {env_names[key]!r}; names may not differ only "
+                "by case, - or _")
+        else:
+            env_names[key] = name
         if not isinstance(s, dict) or not (isinstance(s.get("type"), str) and s["type"] in SETTING_TYPES):
             err(f"{at}.type must be one of {', '.join(sorted(SETTING_TYPES))}")
             continue
@@ -407,6 +421,8 @@ def _validate_settings(settings: dict, *, source: str, reads: bool, flags: set[s
             err(f"{at}: a path setting in an add-on that reads personal data may not have a default")
         if t == "secret" and source not in ("builtin", "official"):
             err(f"{at}: secret settings are refused unless the add-on is built-in or on the official feed")
+        if t == "secret" and "default" in s:
+            err(f"{at}: a secret setting may not have a default")
         if "default" in s and t != "choice" and not _default_fits(t, s["default"]):
             err(f"{at}.default does not match type {t}")
         if "flag" in s:
@@ -417,7 +433,7 @@ def _validate_settings(settings: dict, *, source: str, reads: bool, flags: set[s
             elif not (isinstance(s["flag"], str) and ENV_RE.match(s["flag"])):
                 err(f"{at}.flag must be an env var name")
             elif s["flag"] not in flags:
-                err(f"{at}.flag must be builtin.flag or a flag listed in gates")
+                err(f"{at}.flag must name a flag listed in gates")
     return errors
 
 
@@ -440,6 +456,17 @@ def _default_fits(t: str, value) -> bool:
             return False
         return True
     return True
+
+
+def _mcp_service_keys(entry) -> set[str]:
+    """The service keys an mcp entry points at: a string key, or the values
+    of an access-level map."""
+    svc = entry.get("service") if isinstance(entry, dict) else None
+    if isinstance(svc, str):
+        return {svc}
+    if isinstance(svc, dict):
+        return {v for v in svc.values() if isinstance(v, str)}
+    return set()
 
 
 def _validate_when(when, gate_flags: set[str], where: str) -> list[str]:

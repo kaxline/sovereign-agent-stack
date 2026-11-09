@@ -80,6 +80,27 @@ fi
 
 addon_in '{"interval": 600}' configure fixture
 expect_rc "configure top-level settings" 0
+if [ -f "${root}/data/addons/fixture/config/settings.env" ] && [ ! -e "${root}/data/addons/fixture/settings.env" ]; then
+  ok "settings.env is written under config/"
+else
+  bad "settings.env is written under config/"
+fi
+
+# usage_err ARGS...: addon.sh with stderr alone in err, exit code in $rc.
+usage_err() {
+  rc=0
+  "$BASH_UNDER_TEST" "${root}/scripts/addon.sh" "$@" < /dev/null > /dev/null 2> "${tmp}/err" || rc=$?
+}
+for args in "configure fixture --bogus" "list" "run fixture" "disable fixture --nope" "enable"; do
+  # shellcheck disable=SC2086
+  usage_err $args
+  first="$(head -n 1 "${tmp}/err")"
+  case "$first" in
+    "error: usage: "*) ok "usage error for '${args}' starts with error: usage:" ;;
+    *) bad "usage error for '${args}' starts with error: usage:: got '${first}'" ;;
+  esac
+  if [ "$rc" = 2 ]; then ok "usage error for '${args}' exits 2"; else bad "usage error for '${args}' exits 2: got ${rc}"; fi
+done
 
 addon_in '{"host":"h","password":"s3cr3t-value"}' configure fixture --instance work
 expect_rc "configure an instance" 0
@@ -120,6 +141,11 @@ if python3 -c 'import json,sys; a=json.load(open(sys.argv[1])); f=[x for x in a 
   ok "list shows the fixture enabled with its instance"
 else
   bad "list shows the fixture enabled with its instance"
+fi
+if python3 -c 'import json,sys; a=json.load(open(sys.argv[1])); f=[x for x in a if x["shortId"]=="fixture"][0]; m=json.load(open(sys.argv[2])); sys.exit(0 if f["schema"]=={"settings": m["settings"], "instances": m["instances"]} else 1)' "$out" "${ADDONS_DIR}/fixture/addon.json"; then
+  ok "list carries the fixture's settings schema"
+else
+  bad "list carries the fixture's settings schema"
 fi
 
 : > "$STUB_LOG"
@@ -162,6 +188,15 @@ if logged "make hermes-reload"; then ok "disable reloads hermes"; else bad "disa
 if [ -f "${root}/data/addons/fixture/secrets/token" ]; then ok "disable keeps the data"; else bad "disable keeps the data"; fi
 if logged "volume rm"; then bad "disable without --purge removes no volume"; else ok "disable without --purge removes no volume"; fi
 
+# configure while disabled stores a gate setting but leaves .env alone.
+addon_in '{"extra": true}' configure fixture
+expect_rc "configure a gate setting while disabled" 0
+if [ "$(envval FIXTURE_EXTRA_ENABLED)" = 0 ] && [ "$(envval FIXTURE_ADDON_ENABLED)" = 0 ]; then
+  ok "configure while disabled leaves the gate flags in .env"
+else
+  bad "configure while disabled leaves the gate flags in .env: extra=$(envval FIXTURE_EXTRA_ENABLED)"
+fi
+
 # Enabling again restores the gate from the stored setting.
 : > "$STUB_LOG"
 addon enable fixture
@@ -175,6 +210,19 @@ for f in "${root}/.env" "$STUB_LOG" "${tmp}"/out/*; do
   if grep -q -e s3cr3t-value -e tok3n-value "$f"; then bad "secret value appears in ${f#"${tmp}/"}"; fi
 done
 grep -r -q -e s3cr3t-value -e tok3n-value "${root}/.env" "$STUB_LOG" "${tmp}/out" || ok "no secret value in .env, stub logs or output"
+
+# A failure inside addon_cli.py is one error line, exit 1, no traceback.
+mkdir -p "${root}/data/addons/fixture/locked"
+: > "${root}/data/addons/fixture/locked/file"
+chmod 500 "${root}/data/addons/fixture/locked"
+addon disable fixture --purge
+chmod 700 "${root}/data/addons/fixture/locked"
+expect_rc "a purge that cannot delete exits 1" 1
+if grep -q '^error: PermissionError: ' "$out" && ! grep -q Traceback "$out"; then
+  ok "an unexpected failure is one error line"
+else
+  bad "an unexpected failure is one error line"; sed 's/^/    /' "$out"
+fi
 
 : > "$STUB_LOG"
 addon disable fixture --purge

@@ -13,14 +13,14 @@
 #
 # configure reads one JSON object on stdin. Secret values go only to
 # data/addons/<short-id>/secrets; bool settings with a flag write that flag to
-# .env. enable checks every required setting, sets builtin.flag=1 (and each
+# .env while the add-on is enabled. enable checks every required setting, sets builtin.flag=1 (and each
 # gate flag a stored setting owns), syncs COMPOSE_PROFILES, starts the
 # services whose gate is on and reloads Hermes. disable sets the flag and every
 # gate flag to 0, syncs, stops the services and reloads; --purge also deletes
 # data/addons/<short-id> and the compose volumes in services.*.volumes.
 #
-# Exit codes: 0 success, 2 invalid input, 3 a required setting is missing,
-# 4 the command failed in its container.
+# Exit codes: 0 success, 1 any other failure, 2 invalid input or usage,
+# 3 a required setting is missing, 4 run: docker compose run failed.
 #
 # ADDONS_DIR overrides addons/ (tests). STACK_PYTHON=host uses host python3.
 set -euo pipefail
@@ -36,14 +36,13 @@ source "${ROOT}/scripts/lib/data-root.sh"
 source "${ROOT}/scripts/lib/python.sh"
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
-# usage [CODE]: the synopsis from the header, on stderr unless CODE is 0.
-usage() {
-  if [[ "${1:-2}" == 0 ]]; then
-    sed -n '7,12s/^# *//p' "${BASH_SOURCE[0]}"
-  else
-    sed -n '7,12s/^# *//p' "${BASH_SOURCE[0]}" >&2
-  fi
-  exit "${1:-2}"
+# usage: the synopsis from the header, on stdout.
+usage() { sed -n '7,12s/^# *//p' "${BASH_SOURCE[0]}"; }
+# usage_error REASON: `error: usage: REASON` and the synopsis on stderr, exit 2.
+usage_error() {
+  printf 'error: usage: %s\n' "$1" >&2
+  usage >&2
+  exit 2
 }
 
 truthy() {
@@ -120,19 +119,19 @@ hermes_reload() {
 }
 
 cmd_list() {
-  [[ "${1:-}" == "--json" && $# -eq 1 ]] || usage
+  [[ "${1:-}" == "--json" && $# -eq 1 ]] || usage_error "list takes --json only"
   cli list --flags "$(env_flags_json)" < /dev/null
 }
 
 cmd_configure() {
-  local sid="${1:-}" instance="" remove=0 out rc=0
-  [[ -n "$sid" ]] || usage
+  local sid="${1:-}" instance="" remove=0 out rc=0 flags
+  [[ -n "$sid" ]] || usage_error "configure needs a short id"
   shift
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --instance) [[ $# -ge 2 ]] || usage; instance="$2"; shift 2 ;;
+      --instance) [[ $# -ge 2 ]] || usage_error "--instance needs a slug"; instance="$2"; shift 2 ;;
       --remove) remove=1; shift ;;
-      *) usage ;;
+      *) usage_error "configure: unknown option $1" ;;
     esac
   done
   if [[ "$remove" == 1 ]]; then
@@ -143,7 +142,10 @@ cmd_configure() {
   if [[ -n "$instance" ]]; then
     out="$(cli configure "$sid" --instance "$instance")" || rc=$?
   else
-    out="$(cli configure "$sid")" || rc=$?
+    # addon_cli returns gate flags only while builtin.flag is on in .env, so
+    # configure never switches on part of a disabled add-on.
+    flags="$(env_flags_json)"
+    out="$(cli configure "$sid" --flags "$flags")" || rc=$?
   fi
   [[ "$rc" == 0 ]] || exit "$rc"
   write_flags "$out"
@@ -151,7 +153,7 @@ cmd_configure() {
 
 cmd_enable() {
   local sid="${1:-}" plan rc=0 entry name gate
-  [[ -n "$sid" && $# -eq 1 ]] || usage
+  [[ -n "$sid" && $# -eq 1 ]] || usage_error "enable takes one short id"
   plan="$(cli plan-enable "$sid" < /dev/null)" || rc=$?
   [[ "$rc" == 0 ]] || exit "$rc"
   write_flags "$plan"
@@ -175,14 +177,14 @@ EOF_SERVICES
 
 cmd_disable() {
   local sid="${1:-}" purge=0 plan rc=0 line project vol
-  [[ -n "$sid" ]] || usage
+  [[ -n "$sid" ]] || usage_error "disable needs a short id"
   shift
   case "${1:-}" in
     "") ;;
     --purge) purge=1; shift ;;
-    *) usage ;;
+    *) usage_error "disable: unknown option $1" ;;
   esac
-  [[ $# -eq 0 ]] || usage
+  [[ $# -eq 0 ]] || usage_error "disable: too many arguments"
   plan="$(cli plan-disable "$sid" < /dev/null)" || rc=$?
   [[ "$rc" == 0 ]] || exit "$rc"
   write_flags "$plan"
@@ -219,15 +221,15 @@ EOF_VOLUMES
 
 cmd_run() {
   local sid="${1:-}" command="${2:-}" plan rc=0 line
-  [[ -n "$sid" && -n "$command" ]] || usage
+  [[ -n "$sid" && -n "$command" ]] || usage_error "run needs a short id and a command"
   shift 2
   local planargs=(plan-run "$sid" "$command")
   case "${1:-}" in
     "") ;;
-    --instance) [[ $# -eq 2 ]] || usage; planargs+=(--instance "$2"); shift 2 ;;
-    *) usage ;;
+    --instance) [[ $# -eq 2 ]] || usage_error "--instance needs one slug"; planargs+=(--instance "$2"); shift 2 ;;
+    *) usage_error "run: unknown option $1" ;;
   esac
-  [[ $# -eq 0 ]] || usage
+  [[ $# -eq 0 ]] || usage_error "run: too many arguments"
   plan="$(cli "${planargs[@]}" < /dev/null)" || rc=$?
   [[ "$rc" == 0 ]] || exit "$rc"
   local argv=()
@@ -240,7 +242,7 @@ EOF_ARGV
 }
 
 sub="${1:-}"
-[[ -n "$sub" ]] || usage
+[[ -n "$sub" ]] || usage_error "no command given"
 shift
 case "$sub" in
   list) cmd_list "$@" ;;
@@ -248,6 +250,6 @@ case "$sub" in
   enable) cmd_enable "$@" ;;
   disable) cmd_disable "$@" ;;
   run) cmd_run "$@" ;;
-  -h | --help | help) usage 0 ;;
+  -h | --help | help) usage ;;
   *) printf 'error: unknown command %s\n' "$sub" >&2; exit 2 ;;
 esac

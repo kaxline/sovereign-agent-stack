@@ -368,6 +368,8 @@ def two_entry(**changes):
     second = {**copy.deepcopy(m["mcp"]), "name": "gptr-extra", "title": "Extra",
               "when": {"gate": "GPTR_EXTRA_ENABLED"}}
     second.pop("env", None)
+    second["service"] = "extra"
+    m["services"]["extra"] = {"compose": "gptr-extra", "port": 8001}
     m["mcp"] = [first, second]
     return m
 
@@ -381,6 +383,12 @@ refused("gates on a packaged add-on", packaged(two_entry()), "official", "gates"
 two_dup = two_entry()
 two_dup["mcp"][1]["name"] = "gptr"
 refused("two entries share a name", two_dup, "builtin", "mcp names must be unique")
+two_shared = two_entry()
+two_shared["mcp"][1]["service"] = "server"
+refused("two entries share a service", two_shared, "builtin", "mcp entries 0 and 1 share service 'server'")
+two_shared["mcp"][1]["service"] = {"ro": "extra", "rw": "server"}
+refused("a service map overlapping another entry's service", two_shared, "builtin",
+        "mcp entries 0 and 1 share service 'server'")
 two_api = two_entry(permissions__reads=["messages"], permissions__cron=False)
 for entry in two_api["mcp"]:
     entry["profiles"] = {"default": "ro"}
@@ -433,11 +441,12 @@ def with_settings(settings, **changes):
 
 rich = variant(
     builtin__flag="GPTR_MCP_ENABLED",
+    gates=[{"flag": "GPTR_EXTRA_ENABLED", "profile": "research-extra", "seed": False}],
     settings={
         "count": {"type": "int", "default": 3, "label": "How many"},
         "tags": {"type": "list", "default": ["a", "b"]},
         "since": {"type": "date", "optional": True},
-        "enabled": {"type": "bool", "default": False, "flag": "GPTR_MCP_ENABLED"},
+        "extra": {"type": "bool", "default": False, "flag": "GPTR_EXTRA_ENABLED"},
         "token": {"type": "secret"},
     },
     instances={"name": "account", "settings": {
@@ -465,6 +474,24 @@ refused("flag only on bool", with_settings({"n": {"type": "int", "default": 1, "
 refused("flag must be a known flag",
         with_settings({"b": {"type": "bool", "default": True, "flag": "NOPE_ENABLED"}}),
         "builtin", "settings.b.flag")
+refused("a setting flag may not be builtin.flag",
+        with_settings({"b": {"type": "bool", "default": True, "flag": "GPTR_MCP_ENABLED"}}),
+        "builtin", "settings.b.flag must name a flag listed in gates")
+refused("a secret setting may not have a default", with_settings({"t": {"type": "secret", "default": "x"}}),
+        "builtin", "settings.t: a secret setting may not have a default")
+refused("an instance secret may not have a default",
+        variant(instances={"name": "acct", "settings": {"p": {"type": "secret", "default": ""}}}),
+        "builtin", "instances.settings.p: a secret setting may not have a default")
+refused("setting names that differ only by case collide",
+        with_settings({"api": {"type": "string"}, "API": {"type": "string"}}),
+        "builtin", "settings.API: same settings.env key as 'api'")
+refused("setting names that differ only by - and _ collide",
+        with_settings({"api-key": {"type": "string"}, "api_key": {"type": "string"}}),
+        "builtin", "settings.api_key: same settings.env key as 'api-key'")
+refused("instance setting names that collide",
+        variant(instances={"name": "acct", "settings": {"Host": {"type": "string"},
+                                                        "host": {"type": "string"}}}),
+        "builtin", "instances.settings.host: same settings.env key as 'Host'")
 refused("a setting may not be called slug", with_settings({"slug": {"type": "string"}}),
         "builtin", "reserved")
 refused("flag inside an instance",
@@ -566,7 +593,7 @@ def mount_problems(sid: str, manifest: dict, compose_text: str) -> list[str]:
                       compose_text, re.M | re.S)
         block = m.group(1) if m else ""
         lines = re.findall(r"^      - (\S*/addons/\S+:/run/addon/\S+)$", block, re.M)
-        want = [f"${{ASSISTANT_DATA_ROOT:-./data}}/addons/{sid}/{'settings.env' if k == 'config' else k}:{am.MOUNT_PATHS[k]}:{mode}"
+        want = [f"${{ASSISTANT_DATA_ROOT:-./data}}/addons/{sid}/{k}:{am.MOUNT_PATHS[k]}:{mode}"
                 for k, mode in mounts.items()]
         if sorted(lines) != sorted(want):
             problems.append(f"{name}: compose mounts {sorted(lines)}, manifest wants {sorted(want)}")
@@ -600,12 +627,14 @@ FIX_COMPOSE = """services:
     profiles: ["gptr"]
     volumes:
       - ${ASSISTANT_DATA_ROOT:-./data}/addons/gptr/secrets:/run/addon/secrets:ro
-      - ${ASSISTANT_DATA_ROOT:-./data}/addons/gptr/settings.env:/run/addon/settings.env:ro
+      - ${ASSISTANT_DATA_ROOT:-./data}/addons/gptr/config:/run/addon/config:ro
       - ${ASSISTANT_DATA_ROOT:-./data}/addons/gptr/instances:/run/addon/instances:rw
       - ./other:/other
   next:
     image: x
 """
+check("the config mount is the config directory", am.MOUNT_PATHS["config"] == "/run/addon/config",
+      str(am.MOUNT_PATHS))
 check("mounts cross-check accepts a matching compose service", mount_problems("gptr", rich, FIX_COMPOSE) == [],
       str(mount_problems("gptr", rich, FIX_COMPOSE)))
 check("mounts cross-check flags the bare ./data form",

@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """The add-on data directory: <data_root>/addons/<short-id>/.
 
-    settings.env          ADDON_<SHORT>_<NAME>=value, one per line (shlex-quoted;
+    config/settings.env   ADDON_<SHORT>_<NAME>=value, one per line (shlex-quoted;
                           lists as JSON; bools as 1/0), secrets excluded
     instances/<slug>.json non-secret instance values
     secrets/<name>        a top-level secret setting
     secrets/<slug>.<name> an instance's secret setting
 
 Standard library only. Directories are 0700 and secret files 0600, set with
-explicit chmods. Every file is written to a temp name in its own directory and
+explicit chmods. config/ is created with the add-on directory, so a service
+that mounts it finds a directory before the first configure. Every file is written to a temp name in its own directory and
 renamed. No exception message, and nothing listing() returns, holds a secret
 value; messages name the setting only.
 """
@@ -71,6 +72,15 @@ def _slug(slug) -> str:
 def _mkdir(path: Path) -> None:
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(path, 0o700)
+
+
+def _mkdir_addon(d: Path) -> None:
+    _mkdir(d)
+    _mkdir(d / "config")
+
+
+def _settings_env(d: Path) -> Path:
+    return d / "config" / "settings.env"
 
 
 def _write(path: Path, data: str, mode: int) -> None:
@@ -198,7 +208,7 @@ def _write_env(path: Path, env: dict[str, str]) -> None:
 
 def _stored(manifest: dict, d: Path) -> dict:
     """Non-secret top-level values in settings.env, typed."""
-    env = _read_env(d / "settings.env")
+    env = _read_env(_settings_env(d))
     out = {}
     for name, spec in _schema(manifest).items():
         if spec.get("type") == "secret" or not isinstance(spec, dict):
@@ -245,7 +255,7 @@ def apply_settings(manifest: dict, data_root: Path, values: dict) -> dict[str, s
         if schema[name]["type"] != "secret" and isinstance(value, str) and _has_line_break(value):
             raise InputError(f"{name}: control characters and line breaks are not allowed", name)
     d = addon_dir(data_root, manifest)
-    env = _read_env(d / "settings.env")
+    env = _read_env(_settings_env(d))
     flags: dict[str, str] = {}
     secrets: dict[str, str] = {}
     for name, value in clean.items():
@@ -256,9 +266,9 @@ def apply_settings(manifest: dict, data_root: Path, values: dict) -> dict[str, s
         env[_env_key(manifest, name)] = _env_text(spec, value)
         if spec["type"] == "bool" and spec.get("flag"):
             flags[spec["flag"]] = "1" if value else "0"
-    _mkdir(d)
+    _mkdir_addon(d)
     if env:
-        _write_env(d / "settings.env", env)
+        _write_env(_settings_env(d), env)
     for name, value in secrets.items():
         _write(d / "secrets" / name, value, 0o600)
     return flags
@@ -270,7 +280,7 @@ def apply_instance(manifest: dict, data_root: Path, slug: str, values: dict) -> 
     clean = _validated(schema, values)
     d = addon_dir(data_root, manifest)
     plain = {k: v for k, v in clean.items() if schema[k]["type"] != "secret"}
-    _mkdir(d)
+    _mkdir_addon(d)
     merged = _instance_values(d, slug)
     merged.update(plain)
     _write(d / "instances" / f"{slug}.json", json.dumps(merged, indent=2) + "\n", 0o644)
@@ -312,7 +322,8 @@ def missing(manifest: dict, data_root: Path) -> list[str]:
     if isinstance(manifest.get("instances"), dict):
         slugs = _slugs(d)
         if not slugs:
-            out.append(manifest["instances"].get("name") or "instance")
+            # Prefixed so it can't be read as a top-level setting's name.
+            out.append(f"instances:{manifest['instances'].get('name') or 'instance'}")
         for slug in slugs:
             vals = _instance_values(d, slug)
             for name, spec in _inst_schema(manifest).items():
@@ -338,6 +349,18 @@ def _view(schema: dict, vals: dict, secret_path) -> dict:
     return out
 
 
+def _schema_view(schema: dict) -> dict:
+    """A copy of a settings schema for listing(). A secret's default is
+    dropped (validate() refuses one anyway), so no secret value can reach it."""
+    out = {}
+    for name, spec in schema.items():
+        spec = json.loads(json.dumps(spec))
+        if isinstance(spec, dict) and spec.get("type") == "secret":
+            spec.pop("default", None)
+        out[name] = spec
+    return out
+
+
 def listing(manifest: dict, data_root: Path, environ) -> dict:
     d = addon_dir(data_root, manifest)
     builtin = manifest.get("builtin") if isinstance(manifest.get("builtin"), dict) else {}
@@ -353,6 +376,12 @@ def listing(manifest: dict, data_root: Path, environ) -> dict:
         "settings": _view(_schema(manifest), _stored(manifest, d), lambda n: d / "secrets" / n),
         "instances": {},
         "missing": missing(manifest, data_root),
+        "schema": {
+            "settings": _schema_view(_schema(manifest)),
+            "instances": {"name": manifest["instances"].get("name"),
+                          "settings": _schema_view(_inst_schema(manifest))}
+            if isinstance(manifest.get("instances"), dict) else None,
+        },
     }
     for slug in _slugs(d):
         out["instances"][slug] = _view(_inst_schema(manifest), _instance_values(d, slug),
