@@ -422,7 +422,8 @@ replace anything this spec or the 2026-11-09 research notes said about API keys:
 - Disabling a user ends their sessions.
 
 The vendored MCP server takes `ACTUAL_SESSION_TOKEN` in place of `ACTUAL_PASSWORD`, and the token
-wins when both are set (`src/integrations/actual/connection.ts`). That path has not been run.
+wins when both are set (`src/integrations/actual/connection.ts`). The spike ran that path (see
+Spike results (2026-11-09)).
 
 ### Design
 
@@ -483,8 +484,8 @@ come from argv.
 - They print JSON lines ending in `done` or `error`. The errors are `bad_slug`,
   `unknown_profile`, `bad_access`, `login_refused`, `token_expired`, `no_access`,
   `encryption_password`, `timeout`, `server_unreachable` and `exists`. `token_expired` means an
-  ended session, whether it ended by expiry, by a disabled user, or by a password change (if
-  26.11.0 ends sessions on a password change).
+  ended session, whether it ended by expiry, by a disabled user, by a password change, or by
+  turning OpenID on (the spike saw both end sessions).
 - `disconnect` removes the entries, the secret file and the cache. It leaves the budget on the
   server.
 
@@ -495,22 +496,161 @@ using generated tokens in mode-600 files. There is no open endpoint on the host.
 **Skill.** The `budget` skill learns the crm skill's rule: use the budget the user named, and ask
 when it's ambiguous.
 
-### Spike before building
+### Spike results (2026-11-09)
 
-- `ACTUAL_SESSION_TOKEN` opens a budget against 26.11.0. How do a bad token and a disabled
-  user's token fail (the error text and the `actual-admin.mjs` exit code)?
-- What a tool call does after the session behind an already-loaded budget ends: fail, or
-  answer from the loaded copy without saying so. Check both the password path and the token
-  path. If it answers silently, the launcher restarts that budget's process when its sync fails
-  with an ended session, so calls fail with a `token_expired` tool error.
-- Whether changing the server password ends sessions from earlier password sign-ins.
-- Whether a user without access to a budget can open it by sync id (expect `no_access`).
-- Path prefix on the vendored server, or a proxy to internal ports. Memory per child with a
-  realistic budget.
-- Whether Hermes v0.22.7 per-platform toolsets can keep `budget-<slug>-ro` out of chats while
-  cron keeps it.
-- The `Mcp-Session-Id` lifetime claim (until `DELETE` or restart, no idle expiry). It comes from
-  reading `src/index.ts`, and the spike runs it.
+Run on a throwaway stack: the pinned `actual-server` 26.11.0, the vendored `actual-mcp` image built
+from `compose/actual-mcp`, and `ghcr.io/navikt/mock-oauth2-server:2.1.10` as the OpenID provider,
+all in containers on one scratch network with made-up budgets ("Spike Big": 10 accounts, 2,015
+transactions; "Spike Other": 10 accounts, 20 transactions) and made-up users. Commands and outputs
+are in the spike report (scratchpad, not committed). "From code reading" marks what was read and
+not run.
+
+**Session token opens a budget.** An MCP child with `ACTUAL_SESSION_TOKEN` and no password listed
+its tools and answered `get-accounts`. A made-up token fails on the first tool call (the server
+starts fine and `tools/list` works) with `isError: true` and
+`Error: Authentication failed: invalid or expired session token` (API error code `token-expired`).
+The server answers a bad token on `/sync/list-user-files` with HTTP 401
+`{"status":"error","reason":"unauthorized","details":"token-not-found"}`. A disabled user's token and
+a deleted session get the same 401 and the same MCP error, so neither the server nor the API tells
+an ended session from a token that never worked. A session past `expires_at` gets
+`reason: token-expired` instead (from code reading).
+
+`actual-admin.mjs check` can't take a token today: with only `ACTUAL_SESSION_TOKEN` set it prints
+`login`, says `ACTUAL_PASSWORD is not set` on stderr and exits 3, for a good token and a bad one
+alike. A wrong password also gives `login` and exit 3; the right one exits 0. A sync id the
+credential can't see fails `downloadBudget` with code `budget-not-found`, which `check` reports as
+exit 1 with no word.
+
+**An ended session is silent.** On both paths the loaded child keeps answering from its copy and
+reports writes as done:
+
+- Token path, session row deleted: `get-accounts` and `get-transactions` answered normally;
+  `create-transaction` returned `"Successfully created transaction ok"`; a read afterwards showed
+  the new transaction; a fresh download 10 s later did not have it. Each call logs
+  `Failed to sync with Actual server, continuing with local data` with code `token-expired`.
+- Password path, after `POST /account/change-password`: the same results. The child signed in once
+  at start and never signs in again.
+- Access revoked while loaded (`DELETE /admin/access`, OpenID user): the same, with code
+  `file-access-not-allowed`.
+
+The cause is `syncIfStale()` in `src/integrations/actual/connection.ts`, which logs a failed sync
+and carries on by design. A restarted child fails every call with the error above
+(`Authentication failed: invalid-password` on the password path). The write made while the session
+was ended stays in the child's cache: a new child with a fresh token on the same cache directory
+pushed it to the server on its first call.
+
+**A password change ends earlier sessions.** After `change-password`, the token from an earlier
+`/account/login` got 401 `token-not-found` on `/sync/list-user-files`, the old password got
+`invalid-password`, and the new one signed in. The `sessions` table went from 4 password sessions
+to none: `changePassword` runs `DELETE FROM sessions WHERE auth_method = 'password'`, so it also
+ends the tokens `connect` stores after signing in with a password. The endpoint needs
+`currentPassword` as well as `password` (without it: 400 `invalid-current-password`). Turning
+OpenID on (`POST /openid/enable`) deleted every session, password and OpenID alike.
+
+**Access is enforced per budget.** With OpenID on (the mock provider, users `alice` and `bob`),
+`bob` with no `user_access` row got an empty `data: []` from `/sync/list-user-files`, 403
+`file-access-not-allowed` from `/sync/get-user-file-info` and `/sync/download-user-file` for the
+other budget's file id, and the MCP child with his token and that sync id failed with
+`Error: Budget "<sync id>" not found. Check the sync id of your budget in the Advanced section of
+the settings page.` (code `budget-not-found`). After an admin added his row, he saw only that
+budget and the child opened it. So `no_access` looks the same as a wrong sync id; a non-admin
+can't tell them apart. Disabling `bob` (`PATCH /admin/users`, `enabled: false`) deleted his
+session; his token then got 401 `token-not-found`, the MCP child got `Authentication failed:
+invalid or expired session token`, and a new OpenID login failed with 400 `openid-grant-failed`.
+OpenID sessions got `expires_at = -1`, since `token_expiration` defaults to `never`.
+
+**Path prefix: no; a proxy works.** The server's routes are fixed in `src/index.ts`: `/` and `/mcp`
+(Streamable HTTP), `/sse` and `/messages` (legacy SSE). The only option is `--port`. `POST` and
+`GET /big/mcp` returned 404. The connection is a process-wide singleton
+(`getActualConnection()`), so one process serves one budget. A 40-line Node launcher that started
+one child per budget file on `--port 4100`, `4101` and proxied `/<slug>/mcp` to the child's `/mcp`
+worked for `tools/list`, reads and writes through Streamable HTTP; an unknown slug got its 404.
+Memory per child (VmRSS / PSS from `/proc`):
+
+| | Spike Big (2,015 tx) | Spike Other (20 tx) | launcher | container (`docker stats`) |
+|---|---|---|---|---|
+| idle, budget not loaded | 138 MB / 87 MB | 138 MB / 87 MB | 64 MB | 181 MiB |
+| after `get-accounts`, `get-transactions` (2,000 rows), `spending-by-category`, `monthly-summary` | 171 MB / 113 MB | 155 MB / 97 MB | 67 MB | 225 MiB |
+
+The numbers held 30 s later. Each child's cache was 1.5 MB (Big) and 0.5 MB (Other).
+
+**Toolsets: yes, with a cost.** Boundary's chats run on the dashboard/TUI gateway, which builds its
+tools from `_get_platform_tools(cfg, "cli")` (`tui_gateway/agent_factory.py`); cron uses
+`_get_platform_tools(cfg, "cron")` (`cron/scheduler.py`), and the API server uses `"api_server"`.
+In `hermes_cli/tools_config.py`, `_merge_mcp_servers` treats MCP server names in a platform's list
+as an allowlist; a list naming none gets every enabled server. Run against a made-up config in
+the v0.22.7 image, this:
+
+```yaml
+platform_toolsets:
+  cli: [hermes-cli, budget-x, crm, vikunja, mail]
+  cron: [hermes-cron, budget-x-ro, crm, vikunja]
+```
+
+gave `cli` the servers `budget-x, crm, mail, vikunja` and `cron` `budget-x-ro, crm, vikunja`. The
+cost: once `cli` names one MCP server, every server the list leaves out is off in chats, including
+ones added later, so the bootstrap would have to own the whole `cli` list the way
+`fence_mail_from_cron` owns the cron list. From code reading, two paths skip it: the coding
+`focus` posture (`_posture_toolsets` returns every enabled MCP server), and a cron job with its
+own `enabled_toolsets` naming no MCP server, which gets every enabled server, `budget-<slug>`
+included (`_merge_mcp_into_per_job_toolsets`; the mail fence has the same gap). The picker keeps
+MCP names when it saves a list (`_save_platform_tools`).
+
+**Mcp-Session-Id lifetime.** A session answered `tools/list` after 6 minutes idle. `DELETE` with
+its id returned 200, and the id was then unknown. After `docker restart` the old id was unknown.
+An unknown, deleted or missing id gets HTTP 400 with
+`{"jsonrpc":"2.0","error":{"code":-32000,"message":"Bad Request: No valid session ID provided"},"id":null}`,
+not the 404 the MCP spec asks for. Hermes's `_is_session_expired_error` returns `False` for that
+message and `True` for `Session terminated`, which its MCP client (mcp 2.3.0) raises on a 404 for a
+known session id. So, from code reading, Hermes won't reconnect on its own after a child restarts;
+a `make hermes-reload` does.
+
+### Changes from the spike
+
+- **Fail on an ended session (replaces the launcher restart).** Done in fc0b5a8 and two fix rounds
+  after it, shipped as a 0.3.x fix for the single budget. `syncIfStale()` in the vendored
+  `connection.ts` now fails the call when `api.sync()` throws with code `token-expired`,
+  `token-not-found`, `unauthorized`, `invalid-password`, `file-access-not-allowed`,
+  `file-not-found`, `file-needs-upload`, `file-has-reset`, `file-has-new-key`, `file-key-mismatch`
+  or `file-old-version`, shuts the API down
+  and re-runs init on the next call; init failures with those codes or `budget-not-found` get the
+  same message. Other sync errors, network ones included, still continue with local data. With
+  `ACTUAL_SYNC_TTL_MS=0` every call syncs first, so a write is refused before it lands in the
+  cache (re-run live on both paths). The reconnect advice comes from `ACTUAL_RECONNECT_HINT`,
+  which the planned connect launcher is to set per budget; nothing sets it yet, so it names the
+  single-budget commands.
+  VENDORED.md lists the change. A launcher restart would give the same error on the next call
+  but drops every Mcp-Session-Id, which Hermes doesn't recover from without a reload, and it
+  would have to parse child stderr to know when. The remaining window is a write made between a
+  good sync and the background push.
+- **`actual-admin.mjs check` learns tokens.** Init with `sessionToken` when `ACTUAL_SESSION_TOKEN`
+  is set; print `login` and exit 3 for code `token-expired`; print `no_access` with a new exit
+  code for `budget-not-found`. `budget.sh` maps exit 3 to `login_refused` in `connect` and to
+  `token_expired` in `status`, since the server gives the same answer for both.
+- **`token_expired` covers a password change and turning OpenID on.** The "if 26.11.0 ends
+  sessions on a password change" hedge goes: it does, for every password sign-in, so after a
+  password change every connected budget on that server shows `token_expired` until it is
+  reconnected. Turning OpenID on ends every session. Revoked access shows as `no_access`. Both
+  go in the CR 0026 reply.
+- **Clear a budget's cache on `connect --force`,** as `disconnect` already does, so writes cached
+  under an ended session aren't pushed under the new credential.
+- **Proxy, not prefix.** The launcher is a small HTTP proxy to children on internal ports
+  (`--port`), one per row. It answers an unknown slug with 404 and rewrites a child's 400
+  `No valid session ID provided` to 404, so Hermes's client sees `Session terminated` and
+  reconnects (from code reading; not run against Hermes). Size the containers at about 90 MB PSS
+  per child idle and 115 MB for a budget of 2,000 transactions: `actual-mcp-ro` runs a child for
+  every row, `actual-mcp-rw` one per `write` row. The legacy `/mcp` stays a child of its own.
+- **Toolsets: leave `-ro` in chats for now.** Keeping it out works, but it means the bootstrap owns
+  `platform_toolsets.cli` on every profile with a `write` row, and any MCP server added outside
+  the bootstrap would vanish from chats there. The cost of skipping it is 18 read tools listed
+  twice in those chats. If that confuses the model, adopt the allowlist with the managed-state
+  file `fence_mail_from_cron` uses.
+- **Unknown session ids.** The existing plan (recreate the containers, then `make hermes-reload`)
+  stays required after every `connect`, `disconnect` and `access`.
+
+Unsettled: whether the web app's own sessions on an OpenID server use the provider's expiry when
+`token_expiration` is `openid-provider` (not set in the spike); how Hermes behaves end to end on a
+child restart behind the proxy (only its error classifier was run).
 
 ### Settled with Boundary (CR 0026, round 2)
 

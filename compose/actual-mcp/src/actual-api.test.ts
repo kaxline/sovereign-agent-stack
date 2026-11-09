@@ -8,10 +8,18 @@ vi.mock('@actual-app/api', () => ({
   shutdown: vi.fn(),
   getAccounts: vi.fn(),
   getAccountBalance: vi.fn(),
+  addTransactions: vi.fn(),
 }));
 
 import * as api from '@actual-app/api';
-import { getAccounts, getAccountBalance, getReports, initActualApi, shutdownActualApi } from './actual-api.js';
+import {
+  createTransaction,
+  getAccounts,
+  getAccountBalance,
+  getReports,
+  initActualApi,
+  shutdownActualApi,
+} from './actual-api.js';
 import { getActualConnection, resetActualConnectionForTests } from './integrations/actual/connection.js';
 
 describe('initActualApi syncing', () => {
@@ -127,5 +135,51 @@ describe('actual-api wrappers delegate through the connection', () => {
 
     expect(run).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledWith('report/get', undefined);
+  });
+});
+
+describe('writes after the session ends', () => {
+  const send = vi.fn();
+
+  beforeEach(() => {
+    resetActualConnectionForTests();
+    vi.clearAllMocks();
+    vi.mocked(api.init).mockResolvedValue({ send } as never);
+    vi.mocked(api.getBudgets).mockResolvedValue([{ id: 'budget-1', cloudFileId: 'cloud-1' }] as never);
+    vi.mocked(api.sync).mockResolvedValue(undefined as never);
+    vi.mocked(api.addTransactions).mockResolvedValue('ok' as never);
+    process.env.ACTUAL_SERVER_URL = 'https://example.invalid';
+    process.env.ACTUAL_PASSWORD = 'secret';
+    process.env.ACTUAL_SYNC_TTL_MS = '0';
+    vi.useFakeTimers();
+  });
+
+  afterEach(async () => {
+    vi.useRealTimers();
+    delete process.env.ACTUAL_SYNC_TTL_MS;
+    await shutdownActualApi();
+  });
+
+  const ended = (): Error =>
+    Object.assign(new Error('We had an unknown problem opening "budget-1".'), { code: 'token-expired' });
+
+  it('refuses createTransaction before it reaches the local copy', async () => {
+    await initActualApi();
+    vi.advanceTimersByTime(1);
+    vi.mocked(api.sync).mockRejectedValueOnce(ended());
+
+    await expect(createTransaction('acct-1', { date: '2026-11-01', amount: -100 } as never)).rejects.toThrow(
+      'Actual sign-in failed (token-expired). If it keeps failing'
+    );
+    expect(api.addTransactions).not.toHaveBeenCalled();
+  });
+
+  it('refuses a write that goes through the internal send path', async () => {
+    await initActualApi();
+    vi.advanceTimersByTime(1);
+    vi.mocked(api.sync).mockRejectedValueOnce(ended());
+
+    await expect(getReports()).rejects.toThrow('Actual sign-in failed (token-expired)');
+    expect(send).not.toHaveBeenCalled();
   });
 });
