@@ -587,6 +587,8 @@ LIFE_REPO = Path(tempfile.mkdtemp(prefix="addon-life-"))
     "      - ./data/other:/other\n"
     "      - ./data/par/child:/par\n"
     "      - ${TW_DIR:-./data/tw}/storage:/tw\n"
+    "      - ./data/twenty/storage:/twl\n"
+    "      - ${TW2_DIR:-./data/twenty}/storage:/twe\n"
     "volumes:\n  cache_a:\n")
 
 
@@ -703,6 +705,14 @@ check("a data.paths default that is the parent of a bind source passes",
       str(life_errors(life(data={"paths": [{"default": "./data/par"}]}))))
 life_refused("a parent match is on whole path segments",
              life(data={"paths": [{"default": "./data/pare"}]}), "data.paths")
+life_refused("./data/twen is not a parent of the literal source ./data/twenty/storage",
+             life(data={"paths": [{"default": "./data/twen"}]}), "data.paths")
+life_refused("./data/twen is not a parent of ${TW2_DIR:-./data/twenty}/storage",
+             life(data={"paths": [{"env": "TW2_DIR", "default": "./data/twen"}]}), "data.paths")
+check("./data/twenty is a parent of both twenty/storage sources",
+      life_errors(life(data={"paths": [{"default": "./data/twenty"},
+                                       {"env": "TW2_DIR", "default": "./data/twenty"}]})) == [],
+      str(life_errors(life(data={"paths": [{"default": "./data/twenty"}]}))))
 life_refused("a parent match through the env form needs the same env",
              life(data={"paths": [{"env": "OTHER_DIR", "default": "./data/tw"}]}), "data.paths")
 life_refused("data.paths env must be an env name",

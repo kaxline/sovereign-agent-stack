@@ -150,11 +150,11 @@ def validate(manifest, source: str = "builtin", repo=_AUTO) -> list[str]:
     """Return every problem with `manifest` for an add-on from `source`.
 
     `repo` is the repo root, for the checks that read it: a hook script must
-    exist, and a data path must be a bind-mount source in docker-compose.yml, or
-    the parent of one on whole path segments (`./data/twenty` for
-    `${V:-./data/twenty}/storage`). By
-    default it is the root this file sits in; with None, or where that root has
-    no docker-compose.yml, those two checks are skipped."""
+    exist, and a data path must be a bind-mount source in docker-compose.yml,
+    or the parent of one on whole path segments (`./data/twenty` for
+    `${V:-./data/twenty}/storage`). By default it is the root this file sits
+    in; with None, or where that root has no docker-compose.yml, those two
+    checks are skipped."""
     if repo is _AUTO:
         repo = _find_repo()
     if source not in SOURCES:
