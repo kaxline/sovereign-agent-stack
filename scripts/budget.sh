@@ -11,6 +11,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 # shellcheck source=lib/env.sh
 source "${ROOT}/scripts/lib/env.sh"
+# shellcheck source=lib/data-root.sh
+source "${ROOT}/scripts/lib/data-root.sh"
+# shellcheck source=lib/python.sh
+source "${ROOT}/scripts/lib/python.sh"
 
 ENV_PATH="${ENV_FILE:-.env}"
 DEFAULT_BUDGET_FILE="${ROOT}/compose/actual/budget.env"
@@ -44,6 +48,12 @@ Usage: scripts/budget.sh <command> [options]
           server refuses the password, 4 when the server doesn't answer within
           ACTUAL_ADMIN_TIMEOUT_S seconds (default 45), 1 otherwise. make doctor
           runs this.
+  budgets --json
+        The budgets a credential can open, as JSON lines on stdout: one
+        {"phase":"budget","sync_id":...,"name":...,"encrypted":...} each, then
+        {"phase":"done"}, or one {"phase":"error",...}. Reads a JSON object
+        on stdin: server ("local" or an http(s) URL) and session_token or
+        password (local falls back to its stored server password).
   open    Open the web app and copy the server password to the clipboard
   remove  Delete budget.env and set ACTUAL_MCP_ENABLED=0. Server data stays.
   access read|write
@@ -159,6 +169,7 @@ ask() {
 
 base=""
 token=""
+http_max=20
 
 # A request to the local server. A POST body comes on stdin, so passwords
 # never reach curl's argv; the session token goes in a header file.
@@ -167,9 +178,9 @@ http() {
   (umask 077 && printf 'Content-Type: application/json\n' > "$hdr")
   [[ -n "$token" ]] && printf 'X-ACTUAL-TOKEN: %s\n' "$token" >> "$hdr"
   if [[ "$1" == POST ]]; then
-    curl -s -m 20 -H @"$hdr" -X POST --data-binary @- "${base}${2}" || rc=$?
+    curl -s -m "$http_max" -H @"$hdr" -X POST --data-binary @- "${base}${2}" || rc=$?
   else
-    curl -s -m 20 -H @"$hdr" "${base}${2}" < /dev/null || rc=$?
+    curl -s -m "$http_max" -H @"$hdr" "${base}${2}" < /dev/null || rc=$?
   fi
   rm -f "$hdr"
   return "$rc"
@@ -189,14 +200,15 @@ login() {
   die "login failed: $(json_field "$resp" reason)"
 }
 
-# "<sync id>\t<name>" per budget in a /sync/list-user-files answer, leaving
+# "<sync id>\t<name>\t<1|0>" per budget (1: it has an encryption key) in a /sync/list-user-files answer, leaving
 # out deleted ones. A small JSON scanner, since the host may have no jq.
 parse_user_files() {
   awk '
     function flush() {
       if (val["groupId"] != "" && val["deleted"] != "1" && val["deleted"] != "true") {
         name = val["name"]; gsub(/[\t\r\n]/, " ", name)
-        print val["groupId"] "\t" name
+        enc = (val["encryptKeyId"] != "" && val["encryptKeyId"] != "null") ? 1 : 0
+        print val["groupId"] "\t" name "\t" enc
       }
       split("", val)
     }
@@ -212,6 +224,10 @@ parse_user_files() {
             if (d == "\\") {
               e = substr(s, j + 1, 1)
               if (e == "n" || e == "t" || e == "r") e = " "
+              if (e == "u") {
+                # Express escapes only control characters this way.
+                e = " "; j += 4
+              }
               str = str e; j += 2; continue
             }
             if (d == "\"") break
@@ -232,6 +248,168 @@ parse_user_files() {
         if (depth == 3) val[key] = tok
       }
     }'
+}
+
+# --- JSON lines (--json) ---
+
+JSON=0
+
+# json_str TEXT: TEXT as a JSON string. Control characters become spaces;
+# other characters, non-ASCII included, pass through.
+json_str() {
+  local s="$1"
+  s="$(printf '%s' "$s" | tr '\001-\037' ' ')"
+  printf '"%s"' "$(json_escape "$s")"
+}
+
+# emit_line JSON: one line on stdout in --json mode, nothing otherwise.
+emit_line() {
+  [[ "$JSON" == 1 ]] && printf '%s\n' "$1"
+  return 0
+}
+
+# emit_done [KEY JSON_VALUE]...: {"phase":"done",...}. VALUE is already JSON.
+# shellcheck disable=SC2120
+emit_done() {
+  local out='{"phase":"done"'
+  while [[ $# -ge 2 ]]; do
+    out="${out},$(json_str "$1"):$2"
+    shift 2
+  done
+  emit_line "${out}}"
+}
+
+# emit_error NAME MESSAGE: the error line on stdout, "error: MESSAGE" on
+# stderr, then exit: 2 for bad_slug, unknown_profile, bad_access, not_found;
+# 4 for the rest. Without --json it is today's "[budget] ERROR:" and exit 1.
+emit_error() {
+  if [[ "$JSON" != 1 ]]; then
+    die "$2"
+  fi
+  printf '{"phase":"error","error":%s,"message":%s}\n' "$(json_str "$1")" "$(json_str "$2")"
+  printf 'error: %s\n' "$2" >&2
+  case "$1" in
+    bad_slug | unknown_profile | bad_access | not_found) exit 2 ;;
+    *) exit 4 ;;
+  esac
+}
+
+# shellcheck disable=SC2034
+in_server="" in_sync_id="" in_profile="" in_access=""
+# shellcheck disable=SC2034
+in_session_token="" in_password="" in_encryption_password=""
+
+# read_input: one JSON object from stdin into the in_* variables. A missing
+# or non-string field is empty. The values come back shell-quoted by python,
+# never on an argv.
+read_input() {
+  local assigns
+  assigns="$(stack_python -c '
+import json, shlex, sys
+try:
+    d = json.load(sys.stdin)
+    if not isinstance(d, dict):
+        raise ValueError
+except ValueError:
+    sys.exit(3)
+for k in ("server", "sync_id", "profile", "access", "session_token", "password", "encryption_password"):
+    v = d.get(k)
+    print("in_%s=%s" % (k, shlex.quote(v if isinstance(v, str) else "")))
+')" || emit_error not_found "stdin is not a JSON object"
+  eval "$assigns"
+}
+
+# server_base SERVER: sets base (and local_pw for "local").
+local_pw=""
+server_base() {
+  case "$1" in
+    local)
+      base="http://127.0.0.1:$(env_get ACTUAL_PORT 5006)"
+      local root pwf
+      root="$(resolve_data_root_path "${BUDGET_DATA_ROOT:-}")"
+      validate_data_root_path "$root" 2> "${WORK}/root.err" \
+        || emit_error not_found "$(cat "${WORK}/root.err")"
+      pwf="${root}/addons/actual/secrets/server_password"
+      [[ -s "$pwf" ]] || emit_error not_found "the local server's password isn't stored (${pwf#"${root}"/} is missing)"
+      local_pw="$(cat "$pwf")"
+      ;;
+    http://?* | https://?*)
+      base="$1"
+      while [[ "$base" == */ ]]; do base="${base%/}"; done
+      ;;
+    *) emit_error server_unreachable "server must be an http(s) URL or local" ;;
+  esac
+}
+
+# api_call METHOD PATH [BODY on stdin]: the answer in api_resp, or the matching
+# error line when curl fails. Non-JSON answers are server_unreachable.
+api_resp=""
+api_call() {
+  local rc=0
+  http_max=45
+  api_resp="$(http "$1" "$2")" || rc=$?
+  http_max=20
+  case "$rc" in
+    0) ;;
+    28) emit_error timeout "$(safe_url "$base") didn't answer within 45 s" ;;
+    *) emit_error server_unreachable "no answer from $(safe_url "$base")" ;;
+  esac
+  case "$api_resp" in
+    "{"*) ;;
+    *) emit_error server_unreachable "$(safe_url "$base") didn't answer like an Actual server" ;;
+  esac
+}
+
+# sign_in: sets token from in_session_token, or from a password login
+# (in_password, else the local server's stored one).
+sign_in() {
+  local pw reason
+  if [[ -n "$in_session_token" ]]; then
+    token="$in_session_token"
+    return 0
+  fi
+  pw="$in_password"
+  [[ -n "$pw" ]] || pw="$local_pw"
+  [[ -n "$pw" ]] || emit_error login_refused "no password or session token given"
+  printf '{"loginMethod":"password","password":"%s"}' "$(json_escape "$pw")" > "${WORK}/login.json"
+  api_call POST /account/login < "${WORK}/login.json"
+  rm -f "${WORK}/login.json"
+  token="$(json_field "$api_resp" token)"
+  [[ -n "$token" ]] && return 0
+  reason="$(json_field "$api_resp" reason)"
+  case "$reason" in
+    invalid-password) emit_error login_refused "the server refused the password" ;;
+    token-not-found | token-expired) emit_error token_expired "the session token has expired" ;;
+    *) emit_error server_unreachable "sign-in failed: ${reason:-unexpected answer}" ;;
+  esac
+}
+
+cmd_budgets() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --json) JSON=1 ;;
+      *) die "usage: budget.sh budgets --json < input" ;;
+    esac
+  done
+  [[ "$JSON" == 1 ]] || die "usage: budget.sh budgets --json < input"
+  read_input
+  server_base "$in_server"
+  sign_in
+  api_call GET /sync/list-user-files
+  json_ok "$api_resp" || case "$(json_field "$api_resp" reason)" in
+    token-not-found | token-expired | unauthorized) emit_error token_expired "the session token has expired" ;;
+    *) emit_error server_unreachable "couldn't list the budgets: $(json_field "$api_resp" reason)" ;;
+  esac
+  local rows id name enc
+  rows="$(printf '%s' "$api_resp" | parse_user_files)"
+  while IFS=$'\t' read -r id name enc; do
+    [[ -n "$id" ]] || continue
+    emit_line "$(printf '{"phase":"budget","sync_id":%s,"name":%s,"encrypted":%s}' \
+      "$(json_str "$id")" "$(json_str "$name")" "$([[ "$enc" == 1 ]] && echo true || echo false)")"
+  done <<< "$rows"
+  # shellcheck disable=SC2119
+  emit_done
 }
 
 # --- actual-admin.mjs in the MCP image ---
@@ -423,7 +601,7 @@ cmd_init() {
     [[ -n "$sync" ]] || die "creating a budget printed no sync id"
   elif [[ "$n" -eq 1 ]]; then
     sync="$(printf '%s' "$files" | cut -f1)"
-    log "Adopting the existing budget '$(printf '%s' "$files" | cut -f2-)'"
+    log "Adopting the existing budget '$(printf '%s' "$files" | cut -f2)'"
   else
     printf '%s\n' "$files" | awk -F'\t' '{ printf "  %s  %s\n", $1, $2 }' >&2
     die "actual-server has ${n} budgets; pick one with make budget-init SYNC_ID=<sync id>"
@@ -612,6 +790,7 @@ case "${1:-}" in
   open) shift; cmd_open "$@" ;;
   remove) shift; cmd_remove "$@" ;;
   access) shift; cmd_access "$@" ;;
+  budgets) shift; cmd_budgets "$@" ;;
   -h | --help | help) usage ;;
   *) usage >&2; exit 1 ;;
 esac

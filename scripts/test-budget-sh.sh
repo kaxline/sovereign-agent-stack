@@ -38,6 +38,8 @@ for a in "$@"; do
 done
 printf '%s\n' "$*" >> "$STUB/curl.argv"
 [[ -e "$STUB/down" ]] && exit 7
+[[ -e "$STUB/curl_timeout" ]] && exit 28
+[[ -e "$STUB/html" ]] && { printf '<html><body>Welcome</body></html>'; exit 0; }
 body=""
 [[ "$stdin" == 1 ]] && body="$(cat)"
 field() { printf '%s' "$body" | sed -n "s/.*\"$1\":\"\\([^\"]*\\)\".*/\\1/p"; }
@@ -136,13 +138,27 @@ run() {
 }
 reset() {
   rm -f "$f"
-  (cd "$STUB" && rm -f server_pw files.json enc_pw list.tsv down admin.log opened clip)
+  (cd "$STUB" && rm -f server_pw files.json enc_pw list.tsv down html curl_timeout admin.log opened clip)
   printf 'COMPOSE_PROFILES=core\nACTUAL_MCP_ENABLED=0\nACTUAL_LOCAL_ENABLED=0\nACTUAL_BUDGET_FILE=\n' > "$ENV_FILE"
 }
 mode() { stat -f %Lp "$1" 2>/dev/null || stat -c %a "$1"; }
-budget_entry() { # groupId name [deleted]
-  printf '{"deleted":%s,"fileId":"file-%s","groupId":"%s","name":"%s","encryptKeyId":null,"owner":null,"usersWithAccess":[{"userId":"u","userName":"","displayName":"","owner":1}]}' \
+budget_entry() { # groupId name [deleted] [encryptKeyId]
+  local key=null
+  [[ -n "${4:-}" ]] && key="\"$4\""
+  printf '{"deleted":%s,"fileId":"file-%s","groupId":"%s","name":"%s","encryptKeyId":'"$key"',"owner":null,"usersWithAccess":[{"userId":"u","userName":"","displayName":"","owner":1}]}' \
     "${3:-0}" "$1" "$1" "$2"
+}
+# budgets_run INPUT: budget.sh budgets --json with INPUT on stdin; stdout in
+# $tmp/jout, stderr in $tmp/jerr, exit code in $brc.
+brc=0
+budgets_run() {
+  brc=0
+  printf '%s' "$1" | STACK_PYTHON=host BUDGET_DATA_ROOT="$tmp/data" "$budget" budgets --json > "$tmp/jout" 2> "$tmp/jerr" || brc=$?
+  cat "$tmp/jout" "$tmp/jerr" >> "$all"
+}
+jlines_ok() { python3 -c 'import json,sys; [json.loads(l) for l in sys.stdin]' < "$tmp/jout"; }
+jget() { # LINE FIELD
+  sed -n "${1}p" "$tmp/jout" | python3 -c 'import json,sys; v=json.load(sys.stdin)["'"$2"'"]; print(json.dumps(v) if isinstance(v,bool) else v)'
 }
 
 # --- add ---
@@ -408,6 +424,68 @@ rm -f "$STUB/list.tsv"
 rm -f "$f" "$STUB/enc_pw"
 rc=0; run check || rc=$?
 [ "$rc" = 1 ] || fail "check with no file exits 1 (got $rc)"
+
+# --- budgets ---
+reset
+printf 'right-SECRET' > "$STUB/server_pw"
+{ budget_entry sync-a 'Fam \"q\" \\ x\ty é'; printf ','; budget_entry sync-b Business 0 key-1; printf ','; budget_entry sync-gone Old 1; } > "$STUB/files.json"
+
+budgets_run '{"server":"https://budget.example.com","password":"right-SECRET"}'
+[ "$brc" = 0 ] || fail "budgets with the right password exits 0 (got $brc: $(cat "$tmp/jout" "$tmp/jerr"))"
+jlines_ok || fail "every budgets line is JSON ($(cat "$tmp/jout"))"
+[ "$(wc -l < "$tmp/jout" | tr -d ' ')" = 3 ] || fail "two budget lines and done ($(cat "$tmp/jout"))"
+[ "$(jget 1 phase)" = budget ] || fail "first line is a budget"
+[ "$(jget 1 sync_id)" = sync-a ] || fail "sync_id"
+[ "$(jget 1 name)" = 'Fam "q" \ x y é' ] || fail "the name round-trips ($(sed -n 1p "$tmp/jout"))"
+[ "$(jget 1 encrypted)" = false ] || fail "no encryptKeyId is encrypted:false"
+[ "$(jget 2 encrypted)" = true ] || fail "an encryptKeyId is encrypted:true"
+[ "$(jget 3 phase)" = "done" ] || fail "the last line is done"
+[ ! -s "$tmp/jerr" ] || fail "a good run writes nothing to stderr ($(cat "$tmp/jerr"))"
+
+budgets_run '{"server":"https://budget.example.com/","password":"wrong-SECRET"}'
+[ "$brc" = 4 ] || fail "a wrong password exits 4 (got $brc)"
+jlines_ok || fail "the error line is JSON"
+[ "$(wc -l < "$tmp/jout" | tr -d ' ')" = 1 ] || fail "a wrong password gives one line"
+[ "$(jget 1 error)" = login_refused ] || fail "a wrong password is login_refused ($(cat "$tmp/jout"))"
+grep -q '^error: ' "$tmp/jerr" || fail "the error text also goes to stderr"
+
+touch "$STUB/html"
+budgets_run '{"server":"https://budget.example.com","password":"right-SECRET"}'
+[ "$brc" = 4 ] && [ "$(jget 1 error)" = server_unreachable ] || fail "an <html> answer is server_unreachable ($(cat "$tmp/jout"))"
+rm -f "$STUB/html"
+
+touch "$STUB/down"
+budgets_run '{"server":"https://budget.example.com","password":"right-SECRET"}'
+[ "$brc" = 4 ] && [ "$(jget 1 error)" = server_unreachable ] || fail "a server that is down is server_unreachable ($(cat "$tmp/jout"))"
+rm -f "$STUB/down"
+
+touch "$STUB/curl_timeout"
+budgets_run '{"server":"https://budget.example.com","password":"right-SECRET"}'
+[ "$brc" = 4 ] && [ "$(jget 1 error)" = timeout ] || fail "curl's timeout is timeout ($(cat "$tmp/jout"))"
+rm -f "$STUB/curl_timeout"
+grep -q -- '-m 45' "$STUB/curl.argv" || fail "the budgets calls wait 45 s"
+
+# The local server signs in with the stored server password.
+mkdir -p "$tmp/data/addons/actual/secrets"
+printf 'right-SECRET' > "$tmp/data/addons/actual/secrets/server_password"
+budgets_run '{"server":"local"}'
+[ "$brc" = 0 ] && [ "$(jget 1 sync_id)" = sync-a ] || fail "local uses the stored server password ($(cat "$tmp/jout" "$tmp/jerr"))"
+grep -q 'http://127.0.0.1:5006/account/login' "$STUB/curl.argv" || fail "local talks to 127.0.0.1:5006"
+rm "$tmp/data/addons/actual/secrets/server_password"
+budgets_run '{"server":"local"}'
+[ "$brc" = 2 ] && [ "$(jget 1 error)" = not_found ] || fail "local without a stored password is not_found ($(cat "$tmp/jout"))"
+
+# A session token skips the login; a stale one is token_expired.
+budgets_run '{"server":"https://budget.example.com","session_token":"tok-1"}'
+[ "$brc" = 0 ] && [ "$(jget 3 phase)" = "done" ] || fail "a session token lists the budgets ($(cat "$tmp/jout" "$tmp/jerr"))"
+budgets_run '{"server":"https://budget.example.com","session_token":"tok-old"}'
+[ "$brc" = 4 ] && [ "$(jget 1 error)" = token_expired ] || fail "a stale token is token_expired ($(cat "$tmp/jout"))"
+
+budgets_run '{"server":"ftp://x","password":"right-SECRET"}'
+[ "$brc" = 4 ] && [ "$(jget 1 error)" = server_unreachable ] || fail "a non-http server is an error ($(cat "$tmp/jout"))"
+budgets_run 'not json'
+[ "$brc" = 2 ] && [ "$(jget 1 phase)" = error ] || fail "bad stdin is an error line ($(cat "$tmp/jout"))"
+grep -q 'budgets' <("$budget" --help) || fail "usage mentions budgets"
 
 # --- access ---
 reset
