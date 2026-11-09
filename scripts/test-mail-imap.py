@@ -397,14 +397,20 @@ def docker_ok() -> bool:
         return False
 
 
+def greenmail_opts() -> str:
+    """GREENMAIL_OPTS for plain IMAP on 3143 with the two synthetic users, who
+    log in with their address and PASSWORD. scripts/test-email-e2e.py uses it too."""
+    users = ",".join(f"{addr.split('@')[0]}:{PASSWORD}@{addr.split('@')[1]}" for addr in USERS.values())
+    return (f"-Dgreenmail.setup.test.imap -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.users={users}"
+            " -Dgreenmail.users.login=email")
+
+
 @contextmanager
 def greenmail(certs: Path | None):
     """GreenMail with IMAP on 3143 and, given certs, IMAPS on 3993 with that
     certificate. Yields (imap port, imaps port or None)."""
     name = f"synthetic-mail-imap-{os.getpid()}"
-    users = ",".join(f"{addr.split('@')[0]}:{PASSWORD}@{addr.split('@')[1]}" for addr in USERS.values())
-    opts = (f"-Dgreenmail.setup.test.imap -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.users={users}"
-            " -Dgreenmail.users.login=email")
+    opts = greenmail_opts()
     args = ["-p", "127.0.0.1::3143"]
     if certs:
         opts += (" -Dgreenmail.setup.test.imaps -Dgreenmail.tls.keystore.file=/certs/server.p12"

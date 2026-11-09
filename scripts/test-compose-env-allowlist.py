@@ -255,6 +255,8 @@ EMAIL_NETS = {
 }
 EMAIL_BOOTSTRAP_KEYS = {"EMAIL_ENABLED", "EMAIL_DRAFTS_ENABLED"}
 EMAIL_BOOTSTRAPS = {"hermes-api-bootstrap", "hermes-browser-bootstrap"}
+# The only services that may mount data/addons/email/secrets.
+EMAIL_SECRET_MOUNTERS = {"email-indexer", "email-outbox"}
 
 
 def check_email(services: dict, networks: dict) -> list[str]:
@@ -288,6 +290,11 @@ def check_email(services: dict, networks: dict) -> list[str]:
             errors.append(f"{name} joins email-egress, which only the email indexer and outbox may")
         if name not in EMAIL_ENV and name != "hermes" and "email" in nets:
             errors.append(f"{name} joins the email network")
+        if name not in EMAIL_SECRET_MOUNTERS:
+            for vol in service.get("volumes") or []:
+                source = vol.get("source", "") if isinstance(vol, dict) else str(vol).split(":", 1)[0]
+                if "addons/email/secrets" in source:
+                    errors.append(f"{name} mounts {source}; only email-indexer and email-outbox may")
         if name in EMAIL_ENV:
             continue
         keys = {k for k in env_map(service) if k.startswith("EMAIL_")}

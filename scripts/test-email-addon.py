@@ -186,6 +186,10 @@ with tempfile.TemporaryDirectory() as tmp:
     parsed = tomllib.loads(render(cfg, inst))
     check("a missing settings.env and no instances give zero accounts",
           parsed.get("accounts", []) == [] and parsed["bodies"] is False, str(parsed))
+    check("without since, only the mailbox listing gets a placeholder since",
+          "since" not in parsed
+          and str(tomllib.loads(ea.render(cfg, inst, index_path="/i", drafts_dir="/d", listing=True))["since"])
+          == ea.LISTING_SINCE, str(parsed))
 
     # The entry point: nothing configured, one pass, exit 0.
     run = root / "run"

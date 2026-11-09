@@ -111,13 +111,21 @@ def _value(slug: str, key: str, value) -> str:
     raise ValueError(f"{slug}: {key} has the wrong type")
 
 
-def render(config_dir: Path, instances_dir: Path, *, index_path: str, drafts_dir: str) -> str:
+# mail-index requires `since` even to list mailboxes, which the account form
+# does before the add-on's settings are saved. The listing reads no messages,
+# so any date serves.
+LISTING_SINCE = "1970-01-01"
+
+
+def render(config_dir: Path, instances_dir: Path, *, index_path: str, drafts_dir: str,
+           listing: bool = False) -> str:
     """TOML in mail-index.toml format. Never holds a password: the mail
     tools read those from MAIL_CREDENTIALS_DIR. drafts_dir is accepted for
-    symmetry with the outbox command and isn't part of the config."""
+    symmetry with the outbox command and isn't part of the config. With
+    listing (the mailboxes command), a missing since becomes LISTING_SINCE."""
     env = _setting_env(config_dir)
     lines = ['source = "imap"', f"index = {_q(index_path)}"]
-    since = env.get("ADDON_EMAIL_SINCE")
+    since = env.get("ADDON_EMAIL_SINCE") or (LISTING_SINCE if listing else None)
     if since:
         lines.append(f"since = {since}" if re.fullmatch(r"\d{4}-\d{2}-\d{2}", since, re.ASCII)
                      else f"since = {_q(since)}")
@@ -158,9 +166,10 @@ def _layout() -> dict:
     }
 
 
-def _render_to_file(lay: dict) -> bool:
+def _render_to_file(lay: dict, *, listing: bool = False) -> bool:
     """Write the config; True when it has at least one account."""
-    text = render(lay["config"], lay["instances"], index_path=lay["index"], drafts_dir=lay["drafts"])
+    text = render(lay["config"], lay["instances"], index_path=lay["index"], drafts_dir=lay["drafts"],
+                  listing=listing)
     tmp = lay["out"].with_name(lay["out"].name + ".new")
     tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, lay["out"])
@@ -296,7 +305,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "outbox":
         return run_outbox(lay, args.passes)
     try:
-        _render_to_file(lay)
+        _render_to_file(lay, listing=True)
     except (ValueError, OSError) as exc:
         print(f"email-addon: {exc}", file=sys.stderr)
         return 2

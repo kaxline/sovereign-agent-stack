@@ -6,7 +6,7 @@
 	project-init project-index project-index-check project-sources-test bash32-test synthetic-mail-test synthetic-messages-test \
 	messages-index messages-index-doctor messages-index-chats messages-index-test \
 	messages-watch messages-notify-test messages-watch-test messages-app messages-app-test \
-	mail-index mail-index-doctor mail-index-mailboxes mail-index-test mail-script-test mail-imap-test mail-mcp-test \
+	mail-index mail-index-doctor mail-index-mailboxes mail-index-test mail-script-test mail-imap-test email-test mail-mcp-test \
 	mail-drafts mail-drafts-watch mail-drafts-doctor mail-drafts-test mail-apps mail-apps-test \
 	mail-triage-cron mail-triage-cron-show mail-triage-cron-remove mail-cron-test model-use model-sync \
 	messages-mcp-test messages-triage-cron messages-triage-cron-show messages-triage-cron-remove \
@@ -519,6 +519,12 @@ mail-script-test:
 # (synthetic mail only; skipped when Docker isn't running).
 mail-imap-test:
 	python3 scripts/test-mail-imap.py
+
+# The email add-on end to end through scripts/addon.sh, against GreenMail, in a
+# throwaway compose project (email-e2e) with its own .env and data root.
+# Synthetic mail only; skipped when Docker isn't running.
+email-test:
+	python3 scripts/test-email-e2e.py
 
 # Mail drafts (host-side): saves drafts queued by mail-drafts-mcp to Mail's
 # Drafts. Never sends. See docs/email.md.
