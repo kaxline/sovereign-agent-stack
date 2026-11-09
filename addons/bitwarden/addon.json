@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "title": "Bitwarden",
   "tagline": "Sign in to websites with logins kept in Bitwarden",
-  "description": "Runs a broker beside Hermes that holds each Bitwarden account's bw data and session key and writes passwords and one-time codes into the page itself, so the gateway lists only metadata and never holds a value. The agent reaches the items in one folder or collection; it asks for more with bitwarden_request_access, and the user approves outside the chat. Offered on the default and browser profiles, never on api-server or in cron. See docs/bitwarden.md.",
+  "description": "Runs a broker beside Hermes that holds each Bitwarden account's bw data and session key and writes passwords and one-time codes into the page itself, so the gateway lists only metadata and never holds a value. The agent reaches the items in one folder or collection; it asks for more with bitwarden_request_access, and the user approves outside the chat. Offered on the default and browser profiles, never on api-server or in cron. These limits cover the vault tools; code the agent runs in hermes (browser_exec) can call the broker API on any profile and in cron. See docs/bitwarden.md.",
   "publisher": {
     "name": "sovereign-agent-stack",
     "url": "https://github.com/kaxline/sovereign-agent-stack"

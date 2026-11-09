@@ -445,6 +445,8 @@ tool list (`addon_manifest.cron_fence_toolsets`), and the backend lists nothing 
 in a cron turn. It detects one from `cron.execution_identity.current_cron_execution()`, and in a
 `delegate_task` child from the job's context variable that the child's thread inherits; a delegated
 child for which that variable cannot be found counts as cron. A subagent a chat starts is not cron.
+These limits, and the add-on's absence from `api-server`, cover the vault tools. Code the agent
+runs in `hermes` (`browser_exec`) can call the broker API on any profile and in cron.
 
 A locked account's items do not appear. Because a plugin cannot use Hermes' unlock prompt,
 `browser_vault_list` gets a hint from the overlay below naming the locked account and
@@ -486,7 +488,7 @@ that session unaffected.
 Core scrubs exact registered values. With broker fills the gateway never has the value, so the
 broker returns, per fill, a fresh random 32-byte key `k` and, for each of five forms of the value
 (raw, standard base64, hex, percent-encoded, reversed) and the same five forms of the value with CR
-and LF removed (what a text input keeps), the form's byte length, its Rabin-Karp fingerprint and
+and LF removed (what a text input keeps), the form's byte length, the low 20 bits of its Rabin-Karp fingerprint and
 `HMAC-SHA256(k, form)` (`broker/digest_redaction.build_entry`).
 
 The fingerprint uses modulus 2^61−1 and one random base per profile, not per fill. The gateway
@@ -509,8 +511,14 @@ starts and ends on character boundaries. The scrub fails closed: on any internal
 in gateway memory for the profile, like core's values, and clear with `clear_vault_redaction_values`.
 
 Agent code that reads gateway memory, or that reads a `/fill` response, gets `k` and the
-fingerprints and can test guesses offline. Generated passwords are out of reach; a weak password is
-not, and a TOTP code (6 digits) is recovered from its entry at once, for its time step.
+fingerprints and can test guesses offline, so a short or guessable value is recoverable, and a
+TOTP code (6 digits) is recovered from its entry at once, for its time step. Fingerprints are
+stored and compared as their low 20 bits (Ruling R28): a full fingerprint is linear in the value's
+bytes, and with the base in the entry the raw and reversed fingerprints let lattice reduction
+recover a random 12- or 16-character password. Two 20-bit fingerprints carry about 40 bits, so the
+entry alone does not determine a long random value. The scan computes each window's full rolling
+hash, looks up its low 20 bits, and confirms every hit with the HMAC; a false hit costs one HMAC
+per about 2^20 windows per form.
 `docs/bitwarden.md` says to keep weak passwords out of the agent's folder or collection. A fill
 whose `/fill` reply is lost after the broker wrote the page registers no entry.
 

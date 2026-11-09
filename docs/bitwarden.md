@@ -10,7 +10,9 @@ item has a TOTP key) and never holds a value. The agent keeps the `browser_vault
 The add-on is on the `default` and `browser` profiles only. It is never on `api-server`. Cron jobs
 get no Bitwarden logins and no fills; the two access tools stay out of cron's tool list unless a job
 names the `bitwarden` toolset in its own `enabled_toolsets` (see
-[What the agent can and cannot see](#what-the-agent-can-and-cannot-see)).
+[What the agent can and cannot see](#what-the-agent-can-and-cannot-see)). These limits cover the
+vault tools. Code the agent runs in `hermes` (`browser_exec`) can call the broker API on any
+profile and in cron.
 
 ## Accounts and modes
 
@@ -276,12 +278,16 @@ to keep the value from agent code.
 
 Redaction works without the value. For each fill the broker returns, for the raw value, its
 standard base64, hex, percent-encoded and reversed forms (and the same forms of the value with CR
-and LF removed), each form's length, a Rabin-Karp fingerprint and an HMAC-SHA256 under a fresh key.
+and LF removed), each form's length, the low 20 bits of its Rabin-Karp fingerprint and an
+HMAC-SHA256 under a fresh key.
 The gateway replaces any matching window in tool output with `«redacted-vault-secret»`, and replaces
 the whole text with `«redaction failed»` if the scrub itself fails. The entries live in gateway
-memory per profile and clear with Hermes' own vault redaction values. Whoever holds an entry can
-test guesses against it offline. A generated password is out of reach; a weak one is not, so keep
-weak passwords out of the agent's scope.
+memory per profile and clear with Hermes' own vault redaction values. Whoever holds an entry (code
+reading gateway memory, or any caller of the broker's `/fill`) can test guesses against its HMACs
+offline, so a short or guessable value is recoverable from it; keep such passwords out of the
+agent's scope. The fingerprints are truncated because a full one is linear in the value's bytes
+and, with the base in the entry, lets lattice reduction solve for a random password. At 20 bits
+the entry alone does not determine a long random value.
 
 Other limits, as built:
 
@@ -297,7 +303,9 @@ Other limits, as built:
   `delegate_task`. The `bitwarden` toolset is kept out of cron's tool list, but a job that names it
   in its own `enabled_toolsets` still gets `bitwarden_request_access` and
   `bitwarden_release_access`; the backend still lists and fills nothing there. A subagent that a
-  chat starts is not a cron turn and gets the logins as the chat does.
+  chat starts is not a cron turn and gets the logins as the chat does. These limits cover the vault
+  tools. Code the agent runs in `hermes` (`browser_exec`) can call the broker API on any profile
+  and in cron, `api-server` included.
 - `browser_vault` `save_login` saves into Hermes' own local vault, never into Bitwarden. Add Bitwarden
   logins in Bitwarden, or have the agent ask with `bitwarden_request_access`.
 - On a cloud personal account `bw get totp` needs Premium. Without it, `browser_vault` `enter_code`

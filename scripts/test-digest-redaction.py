@@ -82,6 +82,8 @@ def test_entry_shape() -> None:
     for form in entry["forms"]:
         expect(set(form) == {"len", "fp", "mac"}, f"form keys {set(form)}")
         expect(len(form["mac"]) == 64 and int(form["mac"], 16) >= 0, "hex mac")
+        expect(0 <= form["fp"] <= dr.FP_MASK, f"fingerprint truncated to {dr.FP_BITS} bits: {form['fp']}")
+    expect(dr.FP_MASK == 0xFFFFF, "20-bit fingerprints")
     # Both newline forms differ from the raw ones, so ten forms; identical ones are dropped.
     expect(len(dr.build_entry("a+\nb", BASE)["forms"]) == 10, "CR/LF-stripped forms added")
     expect(len(dr.build_entry("a+a", BASE)["forms"]) == 4, "raw and reversed of a palindrome de-duplicated")
@@ -105,6 +107,14 @@ def test_no_false_positives() -> None:
     text = filler(200 * 1024)
     entries = [dr.build_entry(password(), BASE) for _ in range(10)]
     expect(dr.scrub(text, entries, MARKER) == text, "random text unchanged")
+    # A fingerprint hit with the wrong bytes is refused by the HMAC: give an
+    # entry the truncated fingerprint of a window that is in the text.
+    window = text[5000:5016].encode()
+    decoy = dr.build_entry(password(16), BASE)
+    for form in decoy["forms"]:
+        if form["len"] == 16:
+            form["fp"] = dr.fingerprint(window, BASE) & dr.FP_MASK
+    expect(dr.scrub(text, [decoy], MARKER) == text, "fingerprint hit without an HMAC match leaves text")
 
 
 def test_unicode_and_newline_values() -> None:
@@ -125,7 +135,9 @@ def test_malformed_entries_ignored() -> None:
     good = dr.build_entry(value, BASE)
     junk = [None, 3, "x", {}, {"key": 1}, {"key": good["key"], "base": "7", "forms": []},
             {"key": "!!", "base": 300, "forms": [{"len": 3, "fp": 1, "mac": "zz"}]},
-            {"key": good["key"], "base": good["base"], "forms": [None, {"len": -1, "fp": 0, "mac": ""}]}]
+            {"key": good["key"], "base": good["base"], "forms": [None, {"len": -1, "fp": 0, "mac": ""}]},
+            {"key": good["key"], "base": good["base"],
+             "forms": [dict(good["forms"][0], fp=dr.FP_MASK + 1)]}]
     text = f"before {value} after"
     expect(dr.scrub(text, junk + [good], MARKER) == f"before {MARKER} after", "bad entries skipped")
     expect(dr.scrub(text, "not a list", MARKER) == text, "non-list entries")
@@ -208,9 +220,9 @@ def test_timing() -> None:
     full = [dr.build_entry(password(RNG.randint(12, 40)), BASE) for _ in range(64)]
     table = dr.build_table([dr.normalize_entry(e) for e in full])
     big, mid, short = filler(200 * 1024), filler(100 * 1024), filler(60)
-    print(f"timing: 200 kB, 10 entries: {timed(lambda: dr.scrub(big, ten, MARKER)):.0f} ms")
-    print(f"timing: 100 kB, 64 entries: {timed(lambda: dr.scrub_table(mid, BASE, table, MARKER)):.0f} ms")
-    print(f"timing: 60 chars, 64 entries: {timed(lambda: dr.scrub_table(short, BASE, table, MARKER), 200):.3f} ms per call")
+    print(f"timing ({dr.FP_BITS}-bit fingerprints): 200 kB, 10 entries: {timed(lambda: dr.scrub(big, ten, MARKER)):.0f} ms")
+    print(f"timing ({dr.FP_BITS}-bit fingerprints): 100 kB, 64 entries: {timed(lambda: dr.scrub_table(mid, BASE, table, MARKER)):.0f} ms")
+    print(f"timing ({dr.FP_BITS}-bit fingerprints): 60 chars, 64 entries: {timed(lambda: dr.scrub_table(short, BASE, table, MARKER), 200):.3f} ms per call")
 
 
 def test_overlay_is_wired() -> None:

@@ -4,11 +4,19 @@ The broker fills passwords into pages itself, so the Hermes gateway never holds
 them. For each fill the broker calls ``build_entry`` with the profile's
 Rabin-Karp base (the gateway creates it, one per profile): a fresh 32-byte HMAC
 key and, for each encoding of the value (and of its CR/LF-stripped form, which
-is what a text input keeps), the encoding's byte length, its fingerprint and
-its HMAC-SHA256. The gateway scrubs with ``scrub`` or, holding entries already
+is what a text input keeps), the encoding's byte length, the low FP_BITS bits
+of its fingerprint and its HMAC-SHA256. The gateway scrubs with ``scrub`` or, holding entries already
 normalized, with ``build_table`` and ``scrub_table``: one prefix-fingerprint
 pass over the UTF-8 bytes of the text, one window pass per distinct form
-length, and an HMAC only where a window's fingerprint is in the table.
+length, and an HMAC only where the low FP_BITS bits of a window's fingerprint are in
+the table.
+
+Fingerprints are truncated because a full one is linear in the value's bytes:
+with the base in the entry, the raw and reversed fingerprints together let
+lattice reduction recover a random password. Two 20-bit fingerprints carry
+about 40 bits, so the entry alone does not determine a long random value. The
+HMAC still lets whoever holds an entry test guesses offline, so a short or
+guessable value is recoverable from it.
 
 Every encoding is a whole UTF-8 sequence, so a matched window starts and ends
 on character boundaries and the result decodes cleanly.
@@ -29,6 +37,8 @@ from urllib.parse import quote
 
 FORMS = ("raw", "base64", "hex", "percent", "reversed")
 MODULUS = 2**61 - 1
+FP_BITS = 20
+FP_MASK = (1 << FP_BITS) - 1
 KEY_BYTES = 32
 CHUNK_BYTES = 64 * 1024
 FAILED = "«redaction failed»"
@@ -89,7 +99,7 @@ def build_entry(value: str, base: int) -> dict:
             seen.add(encoded)
             forms.append({
                 "len": len(encoded),
-                "fp": fingerprint(encoded, base),
+                "fp": fingerprint(encoded, base) & FP_MASK,
                 "mac": hmac.new(key, encoded, hashlib.sha256).hexdigest(),
             })
     return {"key": base64.b64encode(key).decode("ascii"), "base": base, "forms": forms}
@@ -117,7 +127,7 @@ def normalize_entry(entry) -> tuple | None:
             n, fp, mac = form["len"], form["fp"], form["mac"]
             if type(n) is not int or type(fp) is not int or not isinstance(mac, str):
                 return None
-            if n <= 0 or not 0 <= fp < MODULUS or len(mac) != 64:
+            if n <= 0 or not 0 <= fp <= FP_MASK or len(mac) != 64:
                 return None
             int(mac, 16)
             out.append((n, fp, mac.lower()))
@@ -136,13 +146,15 @@ def build_table(normalized) -> dict[int, dict[int, list[tuple[bytes, str]]]]:
 
 
 def _windows(prefix: list[int], n: int, count: int, shift: int):
-    """Fingerprints of the first ``count`` windows of length ``n``, computed in C."""
-    return map(int.__mod__, map(int.__sub__, prefix[n:n + count], map(shift.__mul__, prefix[:count])),
+    """Low FP_BITS bits of the fingerprints of the first ``count`` windows of
+    length ``n``, computed in C."""
+    full = map(int.__mod__, map(int.__sub__, prefix[n:n + count], map(shift.__mul__, prefix[:count])),
                repeat(MODULUS))
+    return map(FP_MASK.__and__, full)
 
 
 def _spans(data: bytes, base: int, table: dict) -> list[tuple[int, int]]:
-    """Byte spans of ``data`` whose fingerprint and HMAC match a form in ``table``.
+    """Byte spans of ``data`` whose truncated fingerprint and HMAC match a form in ``table``.
 
     Chunks of CHUNK_BYTES overlap by the longest form length minus one. A
     window is counted only in the chunk where it starts, so a match across a
