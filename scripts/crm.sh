@@ -415,6 +415,31 @@ to_phases() {
   done
 }
 
+# The MCP server names the bootstrap would register for the stored instances,
+# sorted, one per line. The rules (key present, local instances need
+# TWENTY_LOCAL_ENABLED) are addon_manifest.py's instances-plan; this takes the
+# names it marks on for the default and api-server profiles. The add-on's own
+# flag counts as on, since init turns it on. Key values never leave the plan.
+registered_mcp() {
+  local mounts=(--mount "$DATA_ROOT") profile
+  path_is_inside "$ADDONS" "$ROOT" || mounts+=(--mount "$ADDONS")
+  for profile in default api-server; do
+    TWENTY_MCP_ENABLED=1 TWENTY_LOCAL_ENABLED="$(env_get TWENTY_LOCAL_ENABLED 0)" \
+      stack_python "${mounts[@]}" --env TWENTY_MCP_ENABLED --env TWENTY_LOCAL_ENABLED \
+      -I "${ROOT}/scripts/lib/addon_manifest.py" instances-plan "$ADDONS" "${DATA_ROOT}/addons" "$profile" \
+      || die "can't work out which workspaces register"
+  done | awk -F'|' '$3 == "1" && $1 !~ /\*$/ { print $1 }' | sort -u
+}
+
+# registered_mcp as a JSON list body: "crm-a","crm-b".
+registered_mcp_json() {
+  local n out=""
+  while IFS= read -r n; do
+    [[ -n "$n" ]] && out="${out:+${out},}\"${n}\""
+  done < <(registered_mcp)
+  printf '%s' "$out"
+}
+
 cmd_init() {
   local slug="main" slug_given="" display="" rotate="" json=""
   while [[ $# -gt 0 ]]; do
@@ -433,7 +458,7 @@ cmd_init() {
   valid_slug "$slug" || die "slug '${slug}' must use lowercase letters, digits and hyphens"
   migrate_first
   if [[ -n "$json" ]] && ! is_true "$(env_get TWENTY_LOCAL_ENABLED 0)"; then
-    printf '{"phase":"done","message":"local instance off"}\n' >&3
+    printf '{"phase":"done","message":"local instance off","mcp":[%s]}\n' "$(registered_mcp_json)" >&3
     exit 0
   fi
   # addon.sh enable runs init without --slug. In single-workspace mode the
@@ -444,6 +469,9 @@ cmd_init() {
     if ! is_local_slug "$slug"; then
       local first
       first="$(local_slugs | head -1)"
+      # Several stored and none main: keep main, so twenty_admin.py refuses it
+      # as a second workspace instead of init picking one of them.
+      [[ "$(local_slugs | grep -c .)" -gt 1 ]] && first=""
       if [[ -n "$first" ]]; then
         slug="$first"
         log "Using the local workspace '${slug}'; single-workspace mode has one"
@@ -505,7 +533,7 @@ cmd_init() {
   fi
   log "Next: make hermes-reload, then ask Hermes about your CRM. make crm-open opens it."
   if [[ -n "$json" ]]; then
-    printf '{"phase":"done","account":"%s","mcp":["crm-%s"]}\n' "$slug" "$slug" >&3
+    printf '{"phase":"done","account":"%s","mcp":[%s]}\n' "$slug" "$(registered_mcp_json)" >&3
   fi
 }
 

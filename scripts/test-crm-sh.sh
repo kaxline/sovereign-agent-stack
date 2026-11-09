@@ -321,6 +321,62 @@ printf '%s' "$last" | grep -q '"account": *"acme"' || fail "init --json works on
 [ ! -e "$tmp/data-acme/addons/twenty/instances/main.json" ] || fail "init --json made no main beside acme"
 grep -q 'single-workspace mode has one' "$tmp/err" || fail "init --json says it took the stored local workspace"
 
+# init --json's done line lists crm-<slug> for every stored instance the
+# bootstrap would register: it has a key for its access, and a local one needs
+# TWENTY_LOCAL_ENABLED. Stored by migrating workspace files; a stub docker
+# reports twenty-server healthy, and complete keys mean init has nothing to do.
+mcp_of() { printf '%s' "$last" | python3 -I -c 'import json,sys; print(",".join(json.loads(sys.stdin.read())["mcp"]))'; }
+mk_ws() { # mk_ws DIR NAME URL: a workspace file with both keys
+  mkdir -p "$1"
+  printf 'TWENTY_URL=%s\nTWENTY_ACCESS=write\nTWENTY_KEY_RO=ro-SECRET\nTWENTY_KEY_RW=rw-SECRET\n' "$3" > "$1/$2.env"
+}
+mk_ws "$tmp/ws-two" main http://twenty-server:3000
+mk_ws "$tmp/ws-two" hosted https://crm.example.com
+d2="$tmp/data-two"
+mkdir -p "$d2"
+PATH="$tmp/dbin:$PATH" ENV_FILE="$tmp/acme.env" CRM_WORKSPACES_DIR="$tmp/ws-two" \
+  ASSISTANT_DATA_ROOT="$d2" hook "done" '' init --json
+[ "$(mcp_of)" = "crm-hosted,crm-main" ] || fail "init --json lists main and a migrated remote workspace: $last"
+printf '%s' "$last" | grep -q '"account": *"main"' || fail "init --json keeps account main: $last"
+# Local instance off: left out, remote ones still listed.
+cp "$ENV_FILE" "$tmp/off.env"
+printf 'TWENTY_LOCAL_ENABLED=0\n' >> "$tmp/off.env"
+ENV_FILE="$tmp/off.env" CRM_WORKSPACES_DIR="$tmp/ws-two" ASSISTANT_DATA_ROOT="$d2" \
+  hook "done" '' init --json
+printf '%s' "$last" | grep -q 'local instance off' || fail "init --json with local off says so: $last"
+[ "$(mcp_of)" = "crm-hosted" ] || fail "init --json with local off lists the remote instances: $last"
+# A remote instance with no key file left is left out.
+rm -f "$d2"/addons/twenty/secrets/hosted.key_ro "$d2"/addons/twenty/secrets/hosted.key_rw
+PATH="$tmp/dbin:$PATH" ENV_FILE="$tmp/acme.env" CRM_WORKSPACES_DIR="$tmp/ws-two" \
+  ASSISTANT_DATA_ROOT="$d2" hook "done" '' init --json
+[ "$(mcp_of)" = "crm-main" ] || fail "init --json leaves out an instance missing its key: $last"
+grep -rq SECRET "$out" "$tmp/err" && fail "init --json output holds a key"
+
+# Slug guard. Two local workspaces and no main, single-workspace mode: init
+# without --slug keeps main, so twenty_admin.py refuses it as a third.
+mk_ws "$tmp/ws-ab" a http://twenty-server:3000
+mk_ws "$tmp/ws-ab" b http://twenty-server:3000
+init_ab() { # init_ab ENVFILE ARGS...: init in a fresh copy of the a+b store
+  local envf="$1"; shift
+  rm -rf "$tmp/data-ab"; mkdir -p "$tmp/data-ab"
+  PATH="$tmp/dbin:$PATH" ENV_FILE="$envf" CRM_WORKSPACES_DIR="$tmp/ws-ab" ASSISTANT_DATA_ROOT="$tmp/data-ab" \
+    "$crm" init "$@" < /dev/null > "$out" 2> "$tmp/err" && rc=0 || rc=$?
+}
+init_ab "$tmp/acme.env" --json
+[ "$rc" != 0 ] || fail "init without --slug must refuse when two local workspaces and no main are stored"
+grep -q 'Using the local workspace' "$tmp/err" && fail "init picked one of two local workspaces"
+grep -q 'Single-workspace mode allows one' "$tmp/err" "$out" || fail "init without --slug keeps main and hits the one-workspace error"
+# An explicit --slug is never replaced by the stored workspace.
+init_ab "$tmp/acme.env" --slug other
+grep -q 'Using the local workspace' "$tmp/err" && fail "an explicit --slug was replaced"
+# Multi-workspace mode keeps main too.
+cp "$tmp/acme.env" "$tmp/multi.env"
+printf 'TWENTY_MULTIWORKSPACE=1\n' >> "$tmp/multi.env"
+init_ab "$tmp/multi.env"
+grep -q 'Using the local workspace' "$tmp/err" && fail "multi-workspace mode switched slug"
+grep -q 'Single-workspace mode allows one' "$tmp/err" "$out" && fail "multi-workspace mode hit the single-workspace error"
+true
+
 if run frobnicate; then fail "unknown subcommand must fail"; fi
 
 printf 'OK crm.sh\n'
