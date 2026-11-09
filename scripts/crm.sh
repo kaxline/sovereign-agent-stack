@@ -550,11 +550,11 @@ cmd_connect() {
   trap "rm -rf '$tmpd'" EXIT
   local parsed
   parsed="$(stack_python --mount "$tmpd" -I -c "$CONNECT_PY" "$tmpd")" \
-    || fail_with bad_input "couldn't read the values on stdin"
+    || fail_with bad_value "couldn't read the values on stdin"
   local name value url="" access="" local_="" has_ro="" has_rw=""
   while IFS="$(printf '\t')" read -r name value; do
     case "$name" in
-      error) fail_with bad_input "$value" ;;
+      error) fail_with bad_value "$value" ;;
       url) url="$value" ;;
       access) access="$value" ;;
       local) local_="$value" ;;
@@ -564,9 +564,9 @@ cmd_connect() {
   done <<EOF
 $parsed
 EOF
-  [[ "$url" != - && -n "$url" ]] || fail_with bad_input "url must be an http(s) URL"
-  [[ "$access" != - && -n "$access" ]] || fail_with bad_input "access must be read or write"
-  [[ "$local_" != bad ]] || fail_with bad_input "local must be true or false"
+  [[ "$url" != - && -n "$url" ]] || fail_with bad_value "url must be an http(s) URL"
+  [[ "$access" != - && -n "$access" ]] || fail_with bad_value "access must be read or write"
+  [[ "$local_" != bad ]] || fail_with bad_value "local must be true or false"
   [[ "$local_" == 1 ]] || local_=0
 
   url="$(norm_url "$url")"

@@ -268,9 +268,9 @@ CURL_CODE=000 CURL_EXIT=28 hook timeout '{"url":"https://crm.example.com","acces
 CURL_CODE=502 hook server_unreachable '{"url":"https://crm.example.com","access":"read","key_ro":"k-SECRET"}' connect --slug x --json
 grep -q 502 "$out" || fail "an unexpected HTTP code is named in the message"
 hook bad_slug '{"url":"https://crm.example.com","access":"read","key_ro":"k-SECRET"}' connect --slug Bad_1 --json
-hook bad_input '{"url":"https://crm.example.com","access":"read","key_ro":"k SECRET"}' connect --slug x --json
-hook bad_input '{"url":"https://crm.example.com","access":"write","key_rw":"k\tSECRET"}' connect --slug x --json
-hook bad_input '{"url":"https://u:pw-SECRET@crm.example.com","access":"read","key_ro":"k-SECRET"}' connect --slug x --json
+hook bad_value '{"url":"https://crm.example.com","access":"read","key_ro":"k SECRET"}' connect --slug x --json
+hook bad_value '{"url":"https://crm.example.com","access":"write","key_rw":"k\tSECRET"}' connect --slug x --json
+hook bad_value '{"url":"https://u:pw-SECRET@crm.example.com","access":"read","key_ro":"k-SECRET"}' connect --slug x --json
 [ -s "$CURL_LOG" ] && fail "a refused key or URL reaches curl"
 hook "done" '{"url":"https://crm.example.com","access":"write","key_rw":"k-SECRET","key_ro":"k2-SECRET"}' connect --slug x --json
 grep -q 'Authorization: Bearer k-SECRET' "$CURL_LOG.headers" || fail "the key goes to curl in a header file"

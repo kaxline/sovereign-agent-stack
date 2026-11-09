@@ -106,7 +106,8 @@
     "errors": [
       "local_mismatch",
       "local_off",
-      "missing_key"
+      "missing_key",
+      "bad_value"
     ]
   },
   "mcp": {
