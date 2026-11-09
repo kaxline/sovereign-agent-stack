@@ -18,12 +18,13 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 {
   grep -E '^(SEARXNG|CALDAV|OPENCODE|SQL|VIKUNJA|MAIL|MAIL_DRAFTS|MESSAGES)_MCP(_RO|_RW)?_URL=' "$bootstrap"
-  # LightRAG's URL comes from its manifest (addon_mcp_urls), not from a variable.
-  for fn in addon_mcp_urls set_stack_mcp_parked_retry; do
+  # LightRAG's URL comes from its manifest (addon_mcp_urls), not from a variable;
+  # instance URLs come from addon_instance_urls.
+  for fn in addon_mcp_urls addon_instances_plan addon_instance_urls set_stack_mcp_parked_retry; do
     range='/^'"${fn}"'() {/,/^}/p'
     sed -n "$range" "$bootstrap"
   done
-  printf 'ADDONS_DIR=/a\nADDON_MANIFEST_PY=/l/addon_manifest.py\n'
+  printf 'ADDONS_DIR=/a\nADDON_MANIFEST_PY=/l/addon_manifest.py\nADDON_DATA_DIR=/t/addon-data\n'
   cat <<'EOF'
 log() { printf '%s\n' "$1"; }
 config_path_for() { echo /t/config.yaml; }
@@ -47,6 +48,7 @@ mcp_servers:
   local-tool:
     command: npx
 EOF
+mkdir -p "${tmp}/addon-data"
 chmod -R a+rwX "$tmp"
 
 fail() {
