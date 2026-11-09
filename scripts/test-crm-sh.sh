@@ -297,6 +297,30 @@ hook bad_slug '' disconnect --slug Bad_1 --json
 hook "done" '' init --json
 printf '%s' "$last" | grep -q 'local instance off' || fail "init --json with the local instance off says so"
 
+# init --json (no --slug, as addon.sh enable runs it) in single-workspace mode
+# after migrating a pre-0.3.13 local workspace that isn't named main: it works
+# on that workspace (complete keys: nothing to do) instead of refusing main as
+# a second one. A stub docker reports twenty-server healthy.
+mkdir -p "$tmp/dbin" "$tmp/ws-acme" "$tmp/data-acme"
+cat > "$tmp/dbin/docker" <<'EOF'
+#!/bin/sh
+case "$*" in
+  "compose ps"*) echo stub-cid ;;
+  inspect*) echo healthy ;;
+esac
+exit 0
+EOF
+chmod +x "$tmp/dbin/docker"
+printf 'TWENTY_URL=http://twenty-server:3000\nTWENTY_ACCESS=write\nTWENTY_KEY_RO=ro-SECRET\nTWENTY_KEY_RW=rw-SECRET\n' > "$tmp/ws-acme/acme.env"
+cp "$LOCAL_ON" "$tmp/acme.env"
+printf 'TWENTY_USERNAME=owner@example.com\n' >> "$tmp/acme.env"
+PATH="$tmp/dbin:$PATH" ENV_FILE="$tmp/acme.env" CRM_WORKSPACES_DIR="$tmp/ws-acme" \
+  ASSISTANT_DATA_ROOT="$tmp/data-acme" hook "done" '' init --json
+printf '%s' "$last" | grep -q '"account": *"acme"' || fail "init --json works on the migrated local workspace: $last"
+[ -e "$tmp/data-acme/addons/twenty/instances/acme.json" ] || fail "init --json migrated acme"
+[ ! -e "$tmp/data-acme/addons/twenty/instances/main.json" ] || fail "init --json made no main beside acme"
+grep -q 'single-workspace mode has one' "$tmp/err" || fail "init --json says it took the stored local workspace"
+
 if run frobnicate; then fail "unknown subcommand must fail"; fi
 
 printf 'OK crm.sh\n'

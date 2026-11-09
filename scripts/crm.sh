@@ -33,7 +33,9 @@ Usage: scripts/crm.sh <command> [options]
 
   init [--slug S] [--display-name N] [--rotate] [--json]
         Local instance: owner account, workspace S (default main), the two
-        Hermes roles and keys, stored as Twenty add-on instance S.
+        Hermes roles and keys, stored as Twenty add-on instance S. Without
+        --slug in single-workspace mode, a stored local workspace under
+        another slug is the one init works on.
         Re-running for an existing slug does nothing unless --rotate is given.
         --json is addon.sh's init hook: JSON lines on stdout.
   add --slug S --url URL [--force]
@@ -414,10 +416,10 @@ to_phases() {
 }
 
 cmd_init() {
-  local slug="main" display="" rotate="" json=""
+  local slug="main" slug_given="" display="" rotate="" json=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --slug) slug="${2:-}"; shift 2 ;;
+      --slug) slug="${2:-}"; slug_given=1; shift 2 ;;
       --display-name) display="${2:-}"; shift 2 ;;
       --rotate) rotate="--rotate"; shift ;;
       --json) json=1; shift ;;
@@ -433,6 +435,20 @@ cmd_init() {
   if [[ -n "$json" ]] && ! is_true "$(env_get TWENTY_LOCAL_ENABLED 0)"; then
     printf '{"phase":"done","message":"local instance off"}\n' >&3
     exit 0
+  fi
+  # addon.sh enable runs init without --slug. In single-workspace mode the
+  # local instance holds one workspace, and one migrated from a pre-0.3.13
+  # file may have any slug; init with main would refuse it as a second one.
+  if [[ -z "$slug_given" ]] && ! is_true "$(env_get TWENTY_MULTIWORKSPACE 0)"; then
+    load_rows
+    if ! is_local_slug "$slug"; then
+      local first
+      first="$(local_slugs | head -1)"
+      if [[ -n "$first" ]]; then
+        slug="$first"
+        log "Using the local workspace '${slug}'; single-workspace mode has one"
+      fi
+    fi
   fi
   local left
   left="$(unmigrated_for_init "$slug")"
