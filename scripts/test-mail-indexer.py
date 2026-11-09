@@ -497,14 +497,16 @@ def test_run_loop(env: Env) -> None:
 
     # A source failure is reported and the loop goes on; a config error ends it.
     bad = env.tmp / "loop-bad.toml"
-    bad.write_text(config.read_text().replace('source = "store"', 'source = "imap"\nhost = "127.0.0.1"\nport = 1', 1))
-    proc = cli(bad, "run", "--every", "1", "--passes", "2")
+    bad.write_text(f'index = "{env.tmp}/loop-bad/mail.sqlite"\nsince = 2026-01-01\n\n[[accounts]]\n'
+                   'id = "x"\nmailboxes = ["INBOX"]\nsource = "imap"\nhost = "127.0.0.1"\nport = 1\n'
+                   'security = "plain"\nuser = "u@example.com"\npassword_env = "MAIL_INDEX_TEST_UNSET"\n')
+    env_wo = {k: v for k, v in os.environ.items() if k != "MAIL_INDEX_TEST_UNSET"}
+    proc = subprocess.run([sys.executable, "-I", str(HERE / "mail-index.py"), "--config", str(bad),
+                           "run", "--every", "1", "--passes", "2"], capture_output=True, text=True, env=env_wo)
     out = [json.loads(l) for l in proc.stdout.strip().splitlines()]
-    if proc.returncode == 2:
-        expect(out == [], f"config error prints no pass: {out}")
-    else:
-        expect(proc.returncode == 0 and len(out) == 2 and all("error" in o for o in out),
-               f"failed passes reported, loop continues: {proc.returncode} {out} {proc.stderr}")
+    expect(proc.returncode == 0 and out == [{"error": "5"}, {"error": "5"}],
+           f"failed passes reported, loop continues: {proc.returncode} {out} {proc.stderr}")
+    expect(proc.stderr.count("mail-index:") == 2, f"stderr: {proc.stderr}")
     gone = env.tmp / "does-not-exist.toml"
     proc = cli(gone, "run", "--every", "1", "--passes", "2")
     expect(proc.returncode == 2 and proc.stdout == "", f"config error exits: {proc.returncode}")
