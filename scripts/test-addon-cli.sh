@@ -38,12 +38,29 @@ printf 'COMPOSE_PROJECT_NAME=fixtureproj\n' >> "${root}/.env"
 # DOCKER_FAIL_RECREATE=1 makes `compose up ... --force-recreate` exit 1.
 # STUB_LS_DIR=DIR makes `compose up` log `ls: ` and the names in DIR.
 # DOCKER_FAIL_BOOTSTRAP=1 makes `compose run ... hermes-api-bootstrap` exit 1.
+# `compose --profile * config --format json` prints scripts/fixtures/compose-config.json;
+# DOCKER_FAIL_CONFIG=1 makes it exit 1. `manifest inspect --verbose` prints
+# scripts/fixtures/manifest-inspect-verbose.json. `version --format` prints STUB_PLATFORM
+# (default linux/arm64).
 cat > "${tmp}/bin/docker" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >> "${STUB_LOG}"
 if [ "$1 $2 $3 $4" = "compose up --no-deps --exit-code-from" ] && [ "${DOCKER_FAIL_ONESHOT:-0}" = 1 ]; then
   echo "seed failed: no such table"
   exit 1
+fi
+if [ "$1 $2 $3 $4 $5 $6" = "compose --profile * config --format json" ]; then
+  [ "${DOCKER_FAIL_CONFIG:-0}" = 1 ] && { echo "config failed" >&2; exit 1; }
+  cat "${FIXTURES}/compose-config.json"
+  exit 0
+fi
+if [ "$1 $2 $3" = "manifest inspect --verbose" ]; then
+  cat "${FIXTURES}/manifest-inspect-verbose.json"
+  exit 0
+fi
+if [ "$1" = version ]; then
+  echo "${STUB_PLATFORM:-linux/arm64}"
+  exit 0
 fi
 if [ "$1 $2 $3 $4" = "compose ps -a --format" ]; then
   [ -n "${PS_ANSWER:-}" ] && cat "$PS_ANSWER"
@@ -149,6 +166,7 @@ mkdir -p "${tmp}/hosttmp"
 export TMPDIR="${tmp}/hosttmp"
 export PATH="${tmp}/bin:${PATH}"
 export STACK_PYTHON=host
+export FIXTURES="${REPO}/scripts/fixtures"
 export ADDONS_DIR="${REPO}/scripts/fixtures/addons-cli"
 export STUB_LOG="${tmp}/stub.log"
 : > "$STUB_LOG"
@@ -296,6 +314,41 @@ if python3 -c 'import json,sys; a=json.load(open(sys.argv[1])); f=[x for x in a 
   ok "list carries the fixture's settings schema"
 else
   bad "list carries the fixture's settings schema"
+fi
+
+# Per-service figures: stdout is the catalog alone; warnings go to stderr.
+svc_expr='f=[x for x in json.load(open(sys.argv[1])) if x["shortId"]=="fixture"][0]; s={v["key"]: v for v in f["services"]}; '
+addon_json list --json
+expect_rc "list --json with services" 0
+if python3 -c "import json,sys; ${svc_expr}sys.exit(0 if s['worker']['image']=='busybox:1.36' and s['worker']['memory']=={'reservation':268435456,'limit':1073741824} and s['extra']['memory']=={'reservation':None,'limit':536870912} and s['seed']['oneshot'] is True and s['seed']['memory']=={'reservation':None,'limit':None} and all('downloadSize' not in v for v in s.values()) else 1)" "$out"; then
+  ok "list carries each service's image and memory, no downloadSize without --sizes"
+else
+  bad "list carries each service's image and memory, no downloadSize without --sizes"; cat "$out"
+fi
+if logged "manifest inspect"; then bad "list without --sizes does not inspect manifests"; else ok "list without --sizes does not inspect manifests"; fi
+: > "$STUB_LOG"
+addon_json list --json --sizes
+expect_rc "list --json --sizes" 0
+if python3 -c "import json,sys; ${svc_expr}sys.exit(0 if all(v['downloadSize']==1896265 for v in s.values()) else 1)" "$out"; then
+  ok "list --sizes adds downloadSize for the server's platform"
+else
+  bad "list --sizes adds downloadSize for the server's platform"; cat "$out" "$err"
+fi
+if [ "$(grep -c '^manifest inspect --verbose busybox:1.36$' "$STUB_LOG")" = 1 ]; then ok "list --sizes inspects each distinct image once"; else bad "list --sizes inspects each distinct image once"; cat "$STUB_LOG"; fi
+if ls "${root}/data/addons/" | grep -q '^\.sizes\.'; then bad "list --sizes removes its scratch directory"; else ok "list --sizes removes its scratch directory"; fi
+STUB_PLATFORM=linux/mips64 addon_json list --json --sizes
+expect_rc "list --sizes on a platform the manifest lacks" 0
+if python3 -c "import json,sys; ${svc_expr}sys.exit(0 if all('downloadSize' not in v for v in s.values()) else 1)" "$out"; then
+  ok "list --sizes leaves downloadSize out when the platform is not found"
+else
+  bad "list --sizes leaves downloadSize out when the platform is not found"
+fi
+DOCKER_FAIL_CONFIG=1 addon_json list --json
+expect_rc "list --json with compose config failing" 0
+if python3 -c "import json,sys; ${svc_expr}sys.exit(0 if s['worker']['image'] is None and s['worker']['memory']=={'reservation':None,'limit':None} else 1)" "$out" && [ "$(grep -c '^warning:' "$err")" = 1 ]; then
+  ok "list still prints the catalog with one warning when compose config fails"
+else
+  bad "list still prints the catalog with one warning when compose config fails"; cat "$out" "$err"
 fi
 
 : > "$STUB_LOG"

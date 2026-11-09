@@ -434,7 +434,87 @@ def _schema_view(schema: dict) -> dict:
     return out
 
 
-def listing(manifest: dict, data_root: Path, environ) -> dict:
+_MEM_UNITS = {"": 1, "b": 1, "k": 1024, "kb": 1024, "m": 1024**2, "mb": 1024**2, "g": 1024**3, "gb": 1024**3}
+_MEM_RE = re.compile(r"^(\d+)([a-z]*)$")
+
+
+def memory_bytes(value):
+    """Bytes in a compose memory value: an integer, "1073741824" or a string
+    with a b/k/m/g unit ("1g", "512m", "2GB"; binary multiples, as compose
+    reads them). None for anything else."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if not isinstance(value, str):
+        return None
+    m = _MEM_RE.match(value.strip().lower())
+    if not m or m.group(2) not in _MEM_UNITS:
+        return None
+    return int(m.group(1)) * _MEM_UNITS[m.group(2)]
+
+
+def service_figures(config: dict) -> dict:
+    """{compose service: {"image", "reservation", "limit"}} from the JSON of
+    `docker compose config`. Memory comes from deploy.resources, then
+    mem_reservation and mem_limit; None where compose gives nothing."""
+    services = config.get("services") if isinstance(config, dict) else None
+    out = {}
+    for name, svc in (services.items() if isinstance(services, dict) else []):
+        if not isinstance(svc, dict):
+            continue
+        res = ((svc.get("deploy") or {}).get("resources") or {}) if isinstance(svc.get("deploy"), dict) else {}
+        res = res if isinstance(res, dict) else {}
+
+        def pick(section, legacy):
+            block = res.get(section)
+            v = memory_bytes(block.get("memory")) if isinstance(block, dict) else None
+            return v if v is not None else memory_bytes(svc.get(legacy))
+
+        image = svc.get("image")
+        out[name] = {"image": image if isinstance(image, str) else None,
+                     "reservation": pick("reservations", "mem_reservation"),
+                     "limit": pick("limits", "mem_limit")}
+    return out
+
+
+def image_size(manifests, platform: str):
+    """Sum of layer sizes in the `docker manifest inspect --verbose` entry for
+    PLATFORM ("linux/arm64"), or None when no entry matches."""
+    entries = [manifests] if isinstance(manifests, dict) else manifests
+    for entry in (entries if isinstance(entries, list) else []):
+        if not isinstance(entry, dict):
+            continue
+        plat = (entry.get("Descriptor") or {}).get("platform") or {}
+        if f"{plat.get('os')}/{plat.get('architecture')}" != platform:
+            continue
+        body = entry.get("OCIManifest") or entry.get("SchemaV2Manifest") or {}
+        layers = body.get("layers") if isinstance(body, dict) else None
+        sizes = [l.get("size") for l in layers] if isinstance(layers, list) else []
+        if sizes and all(isinstance(n, int) and not isinstance(n, bool) for n in sizes):
+            return sum(sizes)
+    return None
+
+
+def _service_rows(manifest: dict, figures) -> list:
+    figures = figures or {}
+    by_compose = figures.get("services") or {}
+    sizes = figures.get("sizes") or {}
+    services = manifest.get("services")
+    rows = []
+    for key in sorted(services if isinstance(services, dict) else []):
+        spec = services[key] if isinstance(services[key], dict) else {}
+        f = by_compose.get(spec.get("compose")) or {}
+        row = {"key": key, "compose": spec.get("compose"), "oneshot": bool(spec.get("oneshot")),
+               "image": f.get("image"),
+               "memory": {"reservation": f.get("reservation"), "limit": f.get("limit")}}
+        if f.get("image") in sizes:
+            row["downloadSize"] = sizes[f["image"]]
+        rows.append(row)
+    return rows
+
+
+def listing(manifest: dict, data_root: Path, environ, figures=None) -> dict:
     d = addon_dir(data_root, manifest)
     builtin = manifest.get("builtin") if isinstance(manifest.get("builtin"), dict) else {}
     host = manifest.get("host") if isinstance(manifest.get("host"), dict) else {}
@@ -449,6 +529,7 @@ def listing(manifest: dict, data_root: Path, environ) -> dict:
         "enabled": am.truthy(environ.get(builtin.get("flag"))) if builtin.get("flag") else False,
         "settings": _view(_schema(manifest), stored(manifest, d), lambda n: d / "secrets" / n),
         "instances": {},
+        "services": _service_rows(manifest, figures),
         "missing": missing(manifest, data_root),
         "data": manifest.get("data") or {},
         "backup": manifest.get("backup") or {},

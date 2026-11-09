@@ -321,6 +321,53 @@ with tempfile.TemporaryDirectory() as tmp:
     check("public stored and slugs read the data directory",
           st.stored(FIXTURE, d) == {} and st.slugs(d) == [])
 
+# Per-service figures: memory units, compose config parsing, listing.
+check("memory_bytes: '1g' and 1073741824 agree",
+      st.memory_bytes("1g") == 1073741824 and st.memory_bytes(1073741824) == 1073741824
+      and st.memory_bytes("1073741824") == 1073741824)
+check("memory_bytes: other units",
+      st.memory_bytes("512m") == 536870912 and st.memory_bytes("2GB") == 2147483648
+      and st.memory_bytes("64k") == 65536 and st.memory_bytes("10b") == 10)
+check("memory_bytes: junk, booleans and negatives give None",
+      all(st.memory_bytes(v) is None for v in (None, True, "lots", "", -5, "1.5g", [])))
+cfg = {"services": {
+    "a": {"image": "x:1", "deploy": {"resources": {"reservations": {"memory": "100"}, "limits": {"memory": "1g"}}},
+          "mem_limit": 5, "mem_reservation": 6},
+    "b": {"image": "y:2", "mem_limit": "512m", "mem_reservation": 7},
+    "c": {},
+}}
+fig = st.service_figures(cfg)
+check("service_figures prefers deploy.resources over mem_*",
+      fig["a"] == {"image": "x:1", "reservation": 100, "limit": 1073741824}, str(fig.get("a")))
+check("service_figures falls back to mem_limit and mem_reservation",
+      fig["b"] == {"image": "y:2", "reservation": 7, "limit": 536870912}, str(fig.get("b")))
+check("service_figures gives None for what compose leaves out",
+      fig["c"] == {"image": None, "reservation": None, "limit": None}, str(fig.get("c")))
+check("service_figures tolerates a config without services", st.service_figures({}) == {})
+with tempfile.TemporaryDirectory() as tmp:
+    bare = st.listing(FIXTURE, Path(tmp), {})
+    check("listing without figures lists services with null image and memory",
+          bare["services"][0] == {"key": "extra", "compose": "fixture-extra", "oneshot": False, "image": None,
+                                  "memory": {"reservation": None, "limit": None}}, str(bare.get("services")))
+    check("listing without figures has no downloadSize", all("downloadSize" not in s for s in bare["services"]))
+    withf = st.listing(FIXTURE, Path(tmp), {}, {"services": {"fixture-seed": {"image": "x:1", "reservation": 1, "limit": 2}},
+                                               "sizes": {"x:1": 99}})
+    seed = [s for s in withf["services"] if s["key"] == "seed"][0]
+    check("listing merges figures and downloadSize by image",
+          seed == {"key": "seed", "compose": "fixture-seed", "oneshot": True, "image": "x:1",
+                   "memory": {"reservation": 1, "limit": 2}, "downloadSize": 99}, str(seed))
+check("image_size sums layers for the platform",
+      st.image_size([{"Descriptor": {"platform": {"os": "linux", "architecture": "arm64"}},
+                      "OCIManifest": {"layers": [{"size": 3}, {"size": 4}]}},
+                     {"Descriptor": {"platform": {"os": "linux", "architecture": "amd64"}},
+                      "OCIManifest": {"layers": [{"size": 100}]}}], "linux/arm64") == 7)
+check("image_size is None when the platform is missing",
+      st.image_size([{"Descriptor": {"platform": {"os": "linux", "architecture": "amd64"}},
+                      "OCIManifest": {"layers": [{"size": 1}]}}], "linux/arm64") is None)
+check("image_size reads a single manifest object and SchemaV2Manifest",
+      st.image_size({"Descriptor": {"platform": {"os": "linux", "architecture": "arm64"}},
+                     "SchemaV2Manifest": {"layers": [{"size": 5}]}}, "linux/arm64") == 5)
+
 if failures:
     print(f"{failures} failed")
     sys.exit(1)
