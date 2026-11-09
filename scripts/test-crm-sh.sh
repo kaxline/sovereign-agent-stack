@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # scripts/crm.sh subcommands that need no running stack: add (remote
-# workspaces), mode, and argument checks. Uses a temp .env and workspaces dir.
+# workspaces), access, remove, mode, the connect/disconnect hooks and argument
+# checks. Uses a temp .env, workspaces dir and data root, and host python3.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -8,9 +9,12 @@ crm="${ROOT}/scripts/crm.sh"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
+export STACK_PYTHON=host
 export ENV_FILE="$tmp/.env"
 export CRM_WORKSPACES_DIR="$tmp/ws"
-mkdir -p "$CRM_WORKSPACES_DIR"
+export ASSISTANT_DATA_ROOT="$tmp/data"
+mkdir -p "$CRM_WORKSPACES_DIR" "$ASSISTANT_DATA_ROOT"
+store="$ASSISTANT_DATA_ROOT/addons/twenty"
 printf 'TWENTY_MULTIWORKSPACE=0\nTWENTY_MULTIWORKSPACE_BOOL=false\nTWENTY_PORT=3000\n' > "$ENV_FILE"
 
 fail() {
@@ -25,6 +29,12 @@ run() {
 no_secret() {
   if grep -q 'SECRET' "$out"; then fail "$1: output contains a key"; fi
 }
+jget() {
+  python3 -I -c 'import json,sys; v=json.load(open(sys.argv[1])).get(sys.argv[2]); print(json.dumps(v))' "$1" "$2"
+}
+inst() { printf '%s/instances/%s.json' "$store" "$1"; }
+secret() { cat "$store/secrets/$1" 2>/dev/null || true; }
+mode_of() { stat -f %Lp "$1" 2>/dev/null || stat -c %a "$1"; }
 
 # A stub Twenty MCP: initialize answers 200 for keys starting "good-", 401 otherwise.
 cat > "$tmp/stub.py" <<'PY'
@@ -54,14 +64,18 @@ URL="http://127.0.0.1:$(cat "$tmp/port")"
 TWENTY_KEY_RW=good-rw-SECRET TWENTY_KEY_RO=good-ro-SECRET run add --slug hosted --url "$URL/" \
   || fail "add should succeed ($(cat "$out"))"
 no_secret add
-f="$CRM_WORKSPACES_DIR/hosted.env"
-[ -f "$f" ] || fail "add writes hosted.env"
-grep -qx "TWENTY_URL=$URL" "$f" || fail "add stores the URL without a trailing slash"
-grep -qx "TWENTY_WORKSPACE_URL=$URL/" "$f" || fail "add defaults the workspace URL to the instance"
-grep -qx 'TWENTY_KEY_RW=good-rw-SECRET' "$f" || fail "add stores the read/write key"
-grep -qx 'TWENTY_KEY_RO=good-ro-SECRET' "$f" || fail "add stores the read-only key"
-grep -qx 'TWENTY_ACCESS=write' "$f" || fail "add stores TWENTY_ACCESS=write by default"
-[ "$(stat -f %Lp "$f" 2>/dev/null || stat -c %a "$f")" = 600 ] || fail "workspace file is mode 600"
+f="$(inst hosted)"
+[ -f "$f" ] || fail "add stores instance hosted"
+grep -q 'crm-hosted' "$out" || fail "add names the crm-hosted entry"
+grep -q 'hermes-reload' "$out" || fail "add says to run make hermes-reload"
+[ "$(jget "$f" url)" = "\"$URL\"" ] || fail "add stores the URL without a trailing slash"
+[ "$(jget "$f" workspace_url)" = "\"$URL/\"" ] || fail "add defaults the workspace URL to the instance"
+[ "$(jget "$f" access)" = '"write"' ] || fail "add stores access write by default"
+[ "$(jget "$f" local)" = false ] || fail "add stores local false for a remote URL"
+[ "$(secret hosted.key_rw)" = good-rw-SECRET ] || fail "add stores the read/write key"
+[ "$(secret hosted.key_ro)" = good-ro-SECRET ] || fail "add stores the read-only key"
+[ "$(mode_of "$store/secrets/hosted.key_rw")" = 600 ] || fail "key files are mode 600"
+[ ! -e "$CRM_WORKSPACES_DIR/hosted.env" ] || fail "add writes no workspace file"
 
 # A key Twenty rejects: nothing written, and the error names the key.
 if TWENTY_KEY_RW=good-rw-SECRET TWENTY_KEY_RO=bad-ro-SECRET run add --slug rejected --url "$URL"; then
@@ -69,16 +83,18 @@ if TWENTY_KEY_RW=good-rw-SECRET TWENTY_KEY_RO=bad-ro-SECRET run add --slug rejec
 fi
 grep -q 'TWENTY_KEY_RO' "$out" || fail "the error names the rejected key"
 no_secret "rejected key"
-[ ! -e "$CRM_WORKSPACES_DIR/rejected.env" ] || fail "a rejected key writes nothing"
+[ ! -e "$(inst rejected)" ] || fail "a rejected key writes nothing"
 if TWENTY_KEY_RW=good-x run add --slug down --url http://127.0.0.1:9; then fail "an unreachable URL must fail"; fi
-[ ! -e "$CRM_WORKSPACES_DIR/down.env" ] || fail "an unreachable URL writes nothing"
+grep -q 'no answer from' "$out" || fail "an unreachable URL says no answer"
+[ ! -e "$(inst down)" ] || fail "an unreachable URL writes nothing"
 
 # TWENTY_ACCESS=read needs only the read-only key; the workspace URL can be given.
 TWENTY_ACCESS=read TWENTY_KEY_RO=good-ro-SECRET TWENTY_WORKSPACE_URL=https://acme.crm.example.com/ \
   run add --slug lookup --url "$URL" || fail "read access with only a read-only key ($(cat "$out"))"
-grep -qx 'TWENTY_ACCESS=read' "$CRM_WORKSPACES_DIR/lookup.env" || fail "add stores TWENTY_ACCESS=read"
-grep -qx 'TWENTY_WORKSPACE_URL=https://acme.crm.example.com/' "$CRM_WORKSPACES_DIR/lookup.env" \
+[ "$(jget "$(inst lookup)" access)" = '"read"' ] || fail "add stores access read"
+[ "$(jget "$(inst lookup)" workspace_url)" = '"https://acme.crm.example.com/"' ] \
   || fail "add stores the given workspace URL"
+[ ! -e "$store/secrets/lookup.key_rw" ] || fail "an omitted key writes no key file"
 if TWENTY_ACCESS=read TWENTY_KEY_RW=good-rw run add --slug noro --url "$URL"; then
   fail "read access without a read-only key must fail"
 fi
@@ -88,8 +104,8 @@ if TWENTY_ACCESS=admin TWENTY_KEY_RW=good-rw run add --slug odd --url "$URL"; th
 if TWENTY_KEY_RW=good-x run add --slug hosted --url "$URL"; then fail "add must not overwrite"; fi
 grep -q -- '--force' "$out" || fail "the refusal mentions --force"
 TWENTY_KEY_RW=good-new-SECRET run add --slug hosted --url "$URL" --force || fail "--force overwrites"
-grep -qx 'TWENTY_KEY_RW=good-new-SECRET' "$f" || fail "--force writes the new key"
-if ! grep -q '^TWENTY_KEY_RO=$' "$f"; then fail "an omitted read-only key is stored empty"; fi
+[ "$(secret hosted.key_rw)" = good-new-SECRET ] || fail "--force writes the new key"
+[ ! -e "$store/secrets/hosted.key_ro" ] || fail "--force drops a read-only key it wasn't given"
 if TWENTY_KEY_RW=good-x run add --slug Bad_1 --url "$URL"; then fail "bad slug accepted"; fi
 # bash 3.2 bracket ranges follow the locale's collation, where [a-z] matches A-Y.
 for slug in Sales SALES; do
@@ -99,31 +115,29 @@ for slug in Sales SALES; do
 done
 if TWENTY_KEY_RW=good-x run add --slug ok --url crm.example.com; then fail "URL without http(s) accepted"; fi
 if run add --slug nokey --url "$URL"; then fail "no key and no terminal must fail"; fi
-[ ! -e "$CRM_WORKSPACES_DIR/nokey.env" ] || fail "a failed add writes nothing"
+[ ! -e "$(inst nokey)" ] || fail "a failed add writes nothing"
 
-# access: sets TWENTY_ACCESS when the file holds the key it calls for.
-# hosted has an RW key and an empty RO key; lookup has only an RO key.
-run access --slug lookup write && fail "write access without TWENTY_KEY_RW must fail"
-grep -qx 'TWENTY_ACCESS=read' "$CRM_WORKSPACES_DIR/lookup.env" || fail "a refused access change leaves the file alone"
-run access --slug hosted read && fail "read access without TWENTY_KEY_RO must fail"
+# access: sets access when the instance holds the key it calls for.
+# hosted has only an RW key; lookup has only an RO key.
+run access --slug lookup write && fail "write access without a read/write key must fail"
+[ "$(jget "$(inst lookup)" access)" = '"read"' ] || fail "a refused access change leaves the instance alone"
+run access --slug hosted read && fail "read access without a read-only key must fail"
 run access --slug lookup read || fail "access read ($(cat "$out"))"
-printf 'TWENTY_URL=http://twenty-server:3000\nTWENTY_KEY_RW=rw-SECRET\nTWENTY_KEY_RO=ro-SECRET\n' > "$tmp/both.env"
-cp "$tmp/both.env" "$CRM_WORKSPACES_DIR/both.env"
-chmod 644 "$CRM_WORKSPACES_DIR/both.env"
-run access --slug both read || fail "access read adds the line ($(cat "$out"))"
+# A workspace file left from before 0.3.13 is migrated first.
+printf 'TWENTY_URL=http://twenty-server:3000\nTWENTY_KEY_RW=rw-SECRET\nTWENTY_KEY_RO=ro-SECRET\n' \
+  > "$CRM_WORKSPACES_DIR/both.env"
+run access --slug both read || fail "access read on a migrated file ($(cat "$out"))"
 no_secret access
-grep -qx 'TWENTY_ACCESS=read' "$CRM_WORKSPACES_DIR/both.env" || fail "access read adds TWENTY_ACCESS=read"
+grep -q 'Set TWENTY_ACCESS=read for both' "$out" || fail "access keeps its log line"
+[ "$(jget "$(inst both)" access)" = '"read"' ] || fail "access read stores read"
+[ -f "$CRM_WORKSPACES_DIR/both.env.migrated" ] || fail "access migrates the workspace file first"
 run access --slug both write || fail "access write ($(cat "$out"))"
-[ "$(grep -c '^TWENTY_ACCESS=' "$CRM_WORKSPACES_DIR/both.env")" = 1 ] || fail "access replaces the line, not adds one"
-grep -qx 'TWENTY_ACCESS=write' "$CRM_WORKSPACES_DIR/both.env" || fail "access write sets TWENTY_ACCESS=write"
-grep -qx 'TWENTY_KEY_RO=ro-SECRET' "$CRM_WORKSPACES_DIR/both.env" || fail "access keeps the keys"
-[ "$(stat -f %Lp "$CRM_WORKSPACES_DIR/both.env" 2>/dev/null || stat -c %a "$CRM_WORKSPACES_DIR/both.env")" = 600 ] \
-  || fail "access leaves the file mode 600"
+[ "$(jget "$(inst both)" access)" = '"write"' ] || fail "access write stores write"
+[ "$(secret both.key_ro)" = ro-SECRET ] || fail "access keeps the keys"
 grep -q 'hermes-reload' "$out" || fail "access says to run make hermes-reload"
 run access --slug both admin && fail "access takes read or write"
 run access --slug missing read && fail "access on a missing workspace must fail"
 run access --slug both && fail "access needs read or write"
-rm "$CRM_WORKSPACES_DIR/both.env"
 
 # login-link: refused before any container runs for remote and unknown workspaces.
 "$crm" login-link --slug lookup < /dev/null > "$out" 2> "$tmp/err" && fail "login-link on a remote workspace must fail"
@@ -133,12 +147,15 @@ run login-link --slug missing && fail "login-link on a missing workspace must fa
 run login-link --slug Bad_1 && fail "login-link checks the slug"
 run login-link --frob && fail "login-link rejects unknown options"
 
-# remove: deletes the file; unknown slugs fail.
+# remove: deletes the instance and its keys; unknown slugs fail.
 run remove --slug lookup || fail "remove ($(cat "$out"))"
-[ ! -e "$CRM_WORKSPACES_DIR/lookup.env" ] || fail "remove deletes the workspace file"
+[ ! -e "$(inst lookup)" ] || fail "remove deletes the instance"
+[ ! -e "$store/secrets/lookup.key_ro" ] || fail "remove deletes the instance's keys"
 grep -q 'hermes-reload' "$out" || fail "remove says to run make hermes-reload"
 if run remove --slug lookup; then fail "removing a missing workspace must fail"; fi
 if run remove --slug Bad_1; then fail "remove checks the slug"; fi
+run remove --slug both || fail "remove a local workspace ($(cat "$out"))"
+grep -q 'still exist in Twenty' "$out" || fail "removing a local workspace says it still exists in Twenty"
 
 # mode: flips both flags; refuses single mode with two local workspaces.
 run mode 1 || fail "mode 1 ($(cat "$out"))"
@@ -146,12 +163,93 @@ grep -qx 'TWENTY_MULTIWORKSPACE=1' "$ENV_FILE" || fail "mode 1 sets TWENTY_MULTI
 grep -qx 'TWENTY_MULTIWORKSPACE_BOOL=true' "$ENV_FILE" || fail "mode 1 sets TWENTY_MULTIWORKSPACE_BOOL=true"
 printf 'TWENTY_URL=http://twenty-server:3000\nTWENTY_KEY_RW=a\n' > "$CRM_WORKSPACES_DIR/main.env"
 printf 'TWENTY_URL=http://twenty-server:3000\nTWENTY_KEY_RW=b\n' > "$CRM_WORKSPACES_DIR/sales.env"
+run migrate || fail "migrate ($(cat "$out"))"
 if run mode 0; then fail "mode 0 with two local workspaces must be refused"; fi
 grep -qx 'TWENTY_MULTIWORKSPACE=1' "$ENV_FILE" || fail "a refused mode change leaves .env alone"
-rm "$CRM_WORKSPACES_DIR/sales.env"
+run remove --slug sales || fail "remove sales"
 run mode 0 || fail "mode 0 with one local workspace (plus a remote) ($(cat "$out"))"
 grep -qx 'TWENTY_MULTIWORKSPACE_BOOL=false' "$ENV_FILE" || fail "mode 0 sets TWENTY_MULTIWORKSPACE_BOOL=false"
 if run mode 2; then fail "mode takes 0 or 1"; fi
+
+# --- connect / disconnect hooks (addon.sh calls them; they store nothing) ---
+# A curl stub: answers CURL_CODE with exit CURL_EXIT, and logs its argv.
+mkdir -p "$tmp/bin"
+cat > "$tmp/bin/curl" <<'SH'
+#!/bin/sh
+printf '%s\n' "$@" >> "$CURL_LOG"
+for a in "$@"; do
+  case "$a" in @*) cat "${a#@}" >> "$CURL_LOG.headers" ;; esac
+done
+printf '%s' "${CURL_CODE:-200}"
+exit "${CURL_EXIT:-0}"
+SH
+chmod +x "$tmp/bin/curl"
+export CURL_LOG="$tmp/curl.log"
+before_store="$(cd "$store" && find . | sort)"
+hook() { # hook EXPECTED-LAST-PHASE-OR-ERROR JSON ARGS...
+  local want="$1" json="$2"
+  shift 2
+  : > "$CURL_LOG"
+  printf '%s' "$json" | PATH="$tmp/bin:$PATH" "$crm" "$@" > "$out" 2> "$tmp/err" && rc=0 || rc=$?
+  no_secret "$* ($want)"
+  grep -q SECRET "$tmp/err" && fail "$* ($want): stderr holds a key"
+  grep -q SECRET "$CURL_LOG" && fail "$* ($want): a key reached curl's argv"
+  # Only JSON lines on stdout; the last one says how it ended.
+  python3 -I -c '
+import json, sys
+lines = open(sys.argv[1]).read().splitlines()
+assert lines, "no output"
+for l in lines:
+    o = json.loads(l)
+    assert o["phase"] in ("setup", "done", "error"), l
+for l in lines[:-1]:
+    assert json.loads(l)["phase"] == "setup", l
+' "$out" || fail "$* ($want): stdout is not hook JSON lines: $(cat "$out")"
+  last="$(tail -1 "$out")"
+  case "$want" in
+    done) [ "$rc" = 0 ] || fail "$*: exit $rc for done ($(cat "$out" "$tmp/err"))"
+      printf '%s' "$last" | grep -q '"phase": *"done"' || fail "$*: want done, got $last" ;;
+    *) [ "$rc" != 0 ] || fail "$*: exit 0 for error $want"
+      printf '%s' "$last" | grep -q "\"error\": *\"$want\"" || fail "$*: want $want, got $last" ;;
+  esac
+}
+LOCAL_ON="$tmp/local-on.env"
+cp "$ENV_FILE" "$LOCAL_ON"
+printf 'TWENTY_LOCAL_ENABLED=1\n' >> "$LOCAL_ON"
+
+hook local_mismatch '{"url":"http://twenty-server:3000","access":"read","key_ro":"k-SECRET"}' connect --slug x --json
+hook local_mismatch '{"url":"https://crm.example.com","local":true,"access":"read","key_ro":"k-SECRET"}' connect --slug x --json
+hook local_off '{"url":"http://twenty-server:3000","local":true,"access":"read","key_ro":"k-SECRET"}' connect --slug x --json
+hook missing_key '{"url":"https://crm.example.com","access":"write","key_ro":"k-SECRET"}' connect --slug x --json
+hook missing_key '{"url":"https://crm.example.com","access":"read","key_rw":"k-SECRET"}' connect --slug x --json
+CURL_CODE=401 hook login_refused '{"url":"https://crm.example.com","access":"read","key_ro":"k-SECRET"}' connect --slug x --json
+CURL_CODE=000 CURL_EXIT=7 hook server_unreachable '{"url":"https://crm.example.com","access":"read","key_ro":"k-SECRET"}' connect --slug x --json
+CURL_CODE=403 hook no_access '{"url":"https://crm.example.com","access":"read","key_ro":"k-SECRET"}' connect --slug x --json
+CURL_CODE=000 CURL_EXIT=28 hook timeout '{"url":"https://crm.example.com","access":"read","key_ro":"k-SECRET"}' connect --slug x --json
+CURL_CODE=502 hook server_unreachable '{"url":"https://crm.example.com","access":"read","key_ro":"k-SECRET"}' connect --slug x --json
+grep -q 502 "$out" || fail "an unexpected HTTP code is named in the message"
+hook bad_slug '{"url":"https://crm.example.com","access":"read","key_ro":"k-SECRET"}' connect --slug Bad_1 --json
+hook "done" '{"url":"https://crm.example.com","access":"write","key_rw":"k-SECRET","key_ro":"k2-SECRET"}' connect --slug x --json
+grep -q 'Authorization: Bearer k-SECRET' "$CURL_LOG.headers" || fail "the key goes to curl in a header file"
+grep -q 'https://crm.example.com/mcp' "$CURL_LOG" || fail "connect checks <url>/mcp"
+[ "$(grep -c 'https://crm.example.com/mcp' "$CURL_LOG")" = 2 ] || fail "connect checks both keys"
+printf '%s' "$last" | grep -q '"account": *"x"' || fail "done carries account"
+printf '%s' "$last" | grep -q '"mcp": *\["crm-x"\]' || fail "done carries mcp"
+ENV_FILE="$LOCAL_ON" hook "done" '{"url":"http://twenty-server:3000","local":true,"access":"read","key_ro":"k-SECRET"}' connect --slug x --json
+grep -q 'http://127.0.0.1:3000/mcp' "$CURL_LOG" || fail "a local instance is checked on the published port"
+[ "$(cd "$store" && find . | sort)" = "$before_store" ] || fail "connect writes nothing to the store"
+[ ! -e "$CRM_WORKSPACES_DIR/x.env" ] || fail "connect writes no workspace file"
+
+hook "done" '' disconnect --slug hosted --json
+printf '%s' "$last" | grep -q 'still exist' && fail "a remote disconnect has no local note"
+hook "done" '' disconnect --slug main --json
+printf '%s' "$last" | grep -q 'still exist' || fail "a local disconnect notes the workspace still exists in Twenty"
+hook bad_slug '' disconnect --slug Bad_1 --json
+[ -e "$(inst main)" ] || fail "disconnect leaves the instance files to addon.sh"
+
+# init --json with the local instance off: done, nothing else.
+hook "done" '' init --json
+printf '%s' "$last" | grep -q 'local instance off' || fail "init --json with the local instance off says so"
 
 if run frobnicate; then fail "unknown subcommand must fail"; fi
 

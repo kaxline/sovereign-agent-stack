@@ -169,6 +169,8 @@ jobs:
         run: python3 scripts/test-crm-script.py
       - name: crm.sh subcommands without a running stack
         run: bash scripts/test-crm-sh.sh
+      - name: crm.sh migrate into the add-on instance store
+        run: bash scripts/test-crm-migrate.sh
       - name: vault.sh subcommands with a stub docker
         run: bash scripts/test-vault-sh.sh
       - name: budget.sh subcommands against stubs

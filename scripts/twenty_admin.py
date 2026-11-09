@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Set up a local Twenty workspace for Hermes: owner account, workspace, two
-roles and two API keys, written to compose/twenty/workspaces/<slug>.env.
+roles and two API keys, stored as an instance of the Twenty add-on
+(<data root>/addons/twenty/instances/<slug>.json, keys in secrets/).
 
 Called by scripts/crm.sh (make crm-init). Every value comes from the
 environment, so a non-interactive caller can run it too. init prints one line
 per step and never a key, token or password. login-link prints only a sign-in
-URL on stdout, which carries a login token. See docs/crm.md.
+URL on stdout, which carries a login token. list prints one line per stored
+workspace for crm.sh, without keys. See docs/crm.md.
 
 Environment:
   TWENTY_BASE_URL         where to reach the server (http://127.0.0.1:3000 from the host,
@@ -14,7 +16,8 @@ Environment:
   TWENTY_PASSWORD         owner account password, or
   TWENTY_PASSWORD_FILE    a file holding it; generated there (mode 600) when missing
   TWENTY_MULTIWORKSPACE   1 allows more than one local workspace
-  TWENTY_WORKSPACES_DIR   compose/twenty/workspaces
+  ADDONS_DATA_ROOT        the data root that holds addons/twenty/ (required)
+  ADDONS_DIR              the add-on manifests (default: addons/ next to scripts/)
   TWENTY_DATA_DIR         where .crm-init-done is written
   TWENTY_GRANT_ADMIN_CMD  executable run as `<cmd> grant-admin <email>` on every run
                           (the grant is idempotent). Unset, the caller grants it
@@ -35,9 +38,17 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+# addon_store lives in scripts/lib. Under -I the script's own directory isn't
+# on sys.path, so it's added from this file's location (the repo is mounted at
+# its host path when this runs in the Hermes image).
+SCRIPTS = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPTS / "lib"))
+import addon_store  # noqa: E402
+
 LOCAL_URL = "http://twenty-server:3000"
 KEY_EXPIRY = "2126-01-01T00:00:00Z"
-SLUG = re.compile(r"^[a-z0-9-]+$")
+SLUG = addon_store.SLUG_RE
+KEYS = ("key_ro", "key_rw")
 ROLES = {
     "ro": {
         "label": "Hermes read-only",
@@ -236,44 +247,50 @@ def mint_key(tw: Twenty, access: str, name: str, role_id: str) -> str:
     return _token(d, "generateApiKeyToken", "token")
 
 
-def read_env_file(path: Path) -> dict[str, str]:
-    out: dict[str, str] = {}
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        out[k.strip()] = v.strip().strip('"').strip("'")
-    return out
+class Workspaces:
+    """Twenty workspaces in the add-on instance store, read and written with
+    addon_store. Values use the manifest's instances.settings names; get()
+    adds key_ro and key_rw from secrets/ when they are set."""
 
+    def __init__(self, env) -> None:
+        root = env.get("ADDONS_DATA_ROOT", "")
+        if not root:
+            raise TwentyError("ADDONS_DATA_ROOT is not set")
+        addons = Path(env.get("ADDONS_DIR") or SCRIPTS.parent / "addons")
+        try:
+            self.manifest = json.loads((addons / "twenty" / "addon.json").read_text())
+        except (OSError, ValueError):
+            raise TwentyError(f"can't read {addons / 'twenty' / 'addon.json'}") from None
+        self.data_root = Path(root)
+        self.dir = addon_store.addon_dir(self.data_root, self.manifest)
 
-def local_workspaces(ws_dir: Path) -> list[str]:
-    """Slugs of workspace files that point at the local instance."""
-    slugs = []
-    for f in sorted(ws_dir.glob("*.env")):
-        if f.name.startswith("."):
-            continue
-        if read_env_file(f).get("TWENTY_URL", "").rstrip("/") in (LOCAL_URL, f"{LOCAL_URL}/mcp"):
-            slugs.append(f.stem)
-    return slugs
+    def slugs(self) -> list[str]:
+        return addon_store._slugs(self.dir)
 
+    def get(self, slug: str) -> dict | None:
+        if slug not in self.slugs():
+            return None
+        values = addon_store._instance_values(self.dir, slug)
+        for name in KEYS:
+            path = self.dir / "secrets" / f"{slug}.{name}"
+            try:
+                text = path.read_text()
+            except OSError:
+                continue
+            if text:
+                values[name] = text
+        return values
 
-def write_workspace_file(path: Path, values: dict[str, str]) -> None:
-    """Write the keys init owns. Every other line already in the file
-    (TWENTY_ACCESS, say, set by crm.sh access) is kept after them."""
-    kept = {k: v for k, v in read_env_file(path).items() if k not in values} if path.exists() else {}
-    lines = [
-        "# Written by make crm-init. Hermes registers it as mcp_servers.crm-"
-        f"{path.stem}. See docs/crm.md.",
-        *(f"{k}={v}" for k, v in values.items()),
-        *(f"{k}={v}" for k, v in kept.items()),
-    ]
-    tmp = path.with_name(f".{path.name}.tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as fh:
-        fh.write("\n".join(lines) + "\n")
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
+    def local(self) -> list[str]:
+        """Slugs of instances on the local instance."""
+        return [s for s in self.slugs() if (self.get(s) or {}).get("local") is True]
+
+    def write(self, slug: str, values: dict) -> None:
+        """Merge values into the instance; keys go to secrets/ (0600)."""
+        addon_store.apply_instance(self.manifest, self.data_root, slug, values)
+
+    def where(self, slug: str) -> Path:
+        return self.dir / "instances" / f"{slug}.json"
 
 
 def is_true(value: str | None) -> bool:
@@ -317,18 +334,17 @@ def cmd_init(args: argparse.Namespace) -> int:
         raise TwentyError("set TWENTY_PASSWORD or TWENTY_PASSWORD_FILE, not both")
     if not email or not (env.get("TWENTY_PASSWORD") or env.get("TWENTY_PASSWORD_FILE")):
         raise TwentyError("TWENTY_USERNAME and TWENTY_PASSWORD (or TWENTY_PASSWORD_FILE) must be set")
-    ws_dir = Path(env.get("TWENTY_WORKSPACES_DIR", "compose/twenty/workspaces"))
-    ws_dir.mkdir(parents=True, exist_ok=True)
-    target = ws_dir / f"{slug}.env"
+    store = Workspaces(env)
     multi = is_true(env.get("TWENTY_MULTIWORKSPACE"))
 
-    existing = read_env_file(target) if target.exists() else {}
-    complete = bool(existing.get("TWENTY_KEY_RW") and existing.get("TWENTY_KEY_RO"))
+    stored = store.get(slug)
+    existing = stored or {}
+    complete = bool(existing.get("key_rw") and existing.get("key_ro"))
     if complete and not args.rotate:
-        step(f"{slug}: workspace file exists, nothing to do (--rotate re-mints its keys)")
+        step(f"{slug}: workspace exists, nothing to do (--rotate re-mints its keys)")
         return 0
-    others = [s for s in local_workspaces(ws_dir) if s != slug]
-    if not target.exists() and others and not multi:
+    others = [s for s in store.local() if s != slug]
+    if stored is None and others and not multi:
         raise TwentyError(
             f"the local instance already has workspace '{others[0]}'. Single-workspace mode allows one; "
             "set TWENTY_MULTIWORKSPACE=1 with make crm-mode MULTI=1 first"
@@ -363,12 +379,13 @@ def cmd_init(args: argparse.Namespace) -> int:
                        stdout=subprocess.DEVNULL)
         step("server admin: done")
 
-    if target.exists():
-        # A complete file being rotated, or a partial one left by a failed run.
-        ws_id = existing.get("TWENTY_WORKSPACE_ID", "")
-        ws_url = existing.get("TWENTY_WORKSPACE_URL", "")
+    if stored is not None:
+        # A complete workspace being rotated, or a partial one left by a failed run.
+        ws_id = existing.get("workspace_id", "")
+        ws_url = existing.get("workspace_url", "")
         if not ws_id or not ws_url:
-            raise TwentyError(f"{target.name} has no TWENTY_WORKSPACE_ID or URL; move it aside and re-run")
+            raise TwentyError(f"{store.where(slug)} has no workspace_id or workspace_url; "
+                              f"remove it (crm.sh remove --slug {slug}) and re-run")
         if not complete:
             step(f"{slug}: resuming a setup that stopped before its keys were written")
         if not available:
@@ -380,11 +397,15 @@ def cmd_init(args: argparse.Namespace) -> int:
         ws_id, access, ws_url = create_workspace(
             tw, agnostic, args.display_name or slug, slug if multi else None)
         # Recorded at once, so a failure below resumes this workspace instead
-        # of creating another. Without keys, Hermes skips the file.
-        write_workspace_file(target, {
-            "TWENTY_URL": LOCAL_URL,
-            "TWENTY_WORKSPACE_URL": ws_url,
-            "TWENTY_WORKSPACE_ID": ws_id,
+        # of creating another. Without keys, the bootstrap skips the instance.
+        # access is set only here, so a later crm.sh access choice survives
+        # --rotate.
+        store.write(slug, {
+            "url": LOCAL_URL,
+            "local": True,
+            "access": "write",
+            "workspace_url": ws_url,
+            "workspace_id": ws_id,
         })
         step(f"{slug}: workspace: done ({ws_url})")
 
@@ -402,14 +423,15 @@ def cmd_init(args: argparse.Namespace) -> int:
         keys[kind] = mint_key(tw, access, name, role_id)
     step(f"{slug}: keys: done")
 
-    write_workspace_file(target, {
-        "TWENTY_URL": LOCAL_URL,
-        "TWENTY_WORKSPACE_URL": ws_url,
-        "TWENTY_WORKSPACE_ID": ws_id,
-        "TWENTY_KEY_RO": keys["ro"],
-        "TWENTY_KEY_RW": keys["rw"],
+    store.write(slug, {
+        "url": LOCAL_URL,
+        "local": True,
+        "workspace_url": ws_url,
+        "workspace_id": ws_id,
+        "key_ro": keys["ro"],
+        "key_rw": keys["rw"],
     })
-    step(f"{slug}: wrote {target}")
+    step(f"{slug}: wrote {store.where(slug)}")
     data_dir = Path(env.get("TWENTY_DATA_DIR", "data/twenty"))
     data_dir.mkdir(parents=True, exist_ok=True)
     (data_dir / ".crm-init-done").write_text(f"{slug}\n")
@@ -428,16 +450,16 @@ def cmd_login_link(args: argparse.Namespace) -> int:
     if not SLUG.match(slug):
         raise TwentyError(f"slug '{slug}' must use lowercase letters, digits and hyphens")
     env = os.environ
-    target = Path(env.get("TWENTY_WORKSPACES_DIR", "compose/twenty/workspaces")) / f"{slug}.env"
-    if not target.exists():
+    store = Workspaces(env)
+    values = store.get(slug)
+    if values is None:
         raise TwentyError(f"no workspace '{slug}' — make crm-init")
-    values = read_env_file(target)
-    if values.get("TWENTY_URL", "").rstrip("/") not in (LOCAL_URL, f"{LOCAL_URL}/mcp"):
+    if values.get("local") is not True:
         raise TwentyError(f"'{slug}' isn't on the local instance; sign in on its own Twenty")
-    ws_id = values.get("TWENTY_WORKSPACE_ID", "")
-    ws_url = values.get("TWENTY_WORKSPACE_URL", "")
+    ws_id = values.get("workspace_id", "")
+    ws_url = values.get("workspace_url", "")
     if not ws_id or not ws_url:
-        raise TwentyError(f"{target.name} has no TWENTY_WORKSPACE_ID or URL; run make crm-init")
+        raise TwentyError(f"{store.where(slug)} has no workspace_id or workspace_url; run make crm-init")
     email = env.get("TWENTY_USERNAME", "")
     password_file = env.get("TWENTY_PASSWORD_FILE", "")
     if password_file and not Path(password_file).expanduser().exists():
@@ -457,6 +479,30 @@ def cmd_login_link(args: argparse.Namespace) -> int:
     raise TwentyError(f"the owner account can't enter workspace {ws_id}")
 
 
+def _field(value) -> str:
+    """One tab-separated field: "-" when empty or unsafe for the shell's read."""
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if not isinstance(value, str) or not value or any(c.isspace() or ord(c) < 32 for c in value):
+        return "-"
+    return value
+
+
+def cmd_list(_args: argparse.Namespace) -> int:
+    """One line per workspace for crm.sh, tab-separated: slug, local (1/0),
+    access, url, workspace_url, workspace_id, has key_ro (1/0), has key_rw
+    (1/0). Empty values are "-". No key value is printed."""
+    store = Workspaces(os.environ)
+    for slug in store.slugs():
+        v = store.get(slug) or {}
+        print("\t".join([
+            slug, _field(v.get("local") is True), _field(v.get("access")), _field(v.get("url")),
+            _field(v.get("workspace_url")), _field(v.get("workspace_id")),
+            _field(bool(v.get("key_ro"))), _field(bool(v.get("key_rw"))),
+        ]))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -468,10 +514,12 @@ def main(argv: list[str] | None = None) -> int:
                         help="stop after creating or signing in to the owner account")
     p_link = sub.add_parser("login-link", help="print a sign-in URL for a local workspace")
     p_link.add_argument("--slug", default="main")
+    sub.add_parser("list", help="the stored workspaces, one tab-separated line each")
     args = parser.parse_args(argv)
+    run = {"login-link": cmd_login_link, "list": cmd_list}.get(args.cmd, cmd_init)
     try:
-        return cmd_login_link(args) if args.cmd == "login-link" else cmd_init(args)
-    except (TwentyError, subprocess.CalledProcessError) as exc:
+        return run(args)
+    except (TwentyError, addon_store.InputError, subprocess.CalledProcessError, OSError) as exc:
         print(f"[crm] ERROR: {exc}", file=sys.stderr)
         return 1
 
