@@ -3,10 +3,12 @@
 # with its data root outside it, host python3, and stub docker, make and curl.
 # enable succeeds with no workspace stored (the instances are optional) and
 # runs crm.sh init (local instance off), which migrates a legacy workspace
-# file; connect follows;
+# file, and its done line carries the init hook's mcp names and message;
+# connect follows;
 # connect and disconnect run crm.sh's hooks (a bad value or a local mismatch
 # comes back as crm.sh's error, a schema violation as addon.sh's bad_input);
-# remove --delete-data deletes the instance store and the local data dir, and
+# disconnect of a local instance carries the hook's "still exists in Twenty"
+# message; remove --delete-data deletes the instance store and the local data dir, and
 # is refused while Twenty is enabled. No fake key may appear in any output or
 # argv.
 #
@@ -151,6 +153,12 @@ expect_rc "enable with no workspace stored exits 0" 0
 t "enable ends with done after the init step" \
   json_ok "done" 'any(l.get("step") == "init" and l.get("status") == "done" for l in lines)'
 no_keys "enable"
+# The init hook's done line carries the mcp names crm.sh init reports (the
+# migrated instance) and its message; addon.sh copies both into enable's.
+t "enable's done lists crm-legacy, the name crm.sh init reports" \
+  json_ok "done" 'last.get("mcp") == ["crm-legacy"]'
+t "enable's done carries the init hook's message" \
+  json_ok "done" 'last.get("message") == "local instance off"'
 t "enable sets TWENTY_MCP_ENABLED=1" has_line '^TWENTY_MCP_ENABLED=1$' "${root}/.env"
 t "enable starts no service with TWENTY_LOCAL_ENABLED=0" lacks_line "compose up" "$STUB_LOG"
 t "init migrated legacy.env into the store" \
@@ -192,17 +200,12 @@ addon remove twenty --delete-data --json < /dev/null
 expect_rc "remove while enabled exits 2" 2
 t "remove while enabled is bad_input" json_ok error 'last.get("error") == "bad_input"'
 t "a refused remove keeps the instance store" test -d "$store"
-# addon.sh relays a hook's done account and mcp, not its message, and its step
-# logs are temporary, so the message is checked on crm.sh itself.
-out="${tmp}/out/init-direct"
-err="${out}.err"
-rc=0
-"$BASH_UNDER_TEST" "${root}/scripts/crm.sh" init --json < /dev/null > "$out" 2> "$err" || rc=$?
-expect_rc "crm.sh init --json exits 0" 0
-t "crm.sh init --json ends with done: local instance off" \
-  json_ok "done" 'last.get("message") == "local instance off"'
-no_keys "crm.sh init --json"
 t "state.json records init" json_file "${store}/state.json" '"init" in v'
+addon enable twenty --reinit --json < /dev/null
+expect_rc "enable --reinit exits 0" 0
+t "enable --reinit passes the init message and mcp through" \
+  json_ok "done" 'last.get("message") == "local instance off" and last.get("mcp") == ["crm-legacy", "crm-sales"]'
+no_keys "enable --reinit"
 
 # --- connect with a value crm.sh's hook refuses, and one addon.sh refuses ----------
 addon_in '{"url":"https://u:pw@crm.example.com","access":"read","local":false,"key_ro":"fake-refused-key"}' connect twenty --instance badvalue --json
@@ -228,6 +231,18 @@ t "disconnect ends with done" json_ok "done"
 no_keys "disconnect"
 t "disconnect removes the instance and its key" absent "${store}/instances/sales.json" "${store}/secrets/sales.key_ro"
 t "disconnect leaves the other instance" present "${store}/instances/legacy.json"
+
+# --- disconnect of a local instance: addon.sh passes the hook's message ------------
+sed 's/^TWENTY_LOCAL_ENABLED=.*/TWENTY_LOCAL_ENABLED=1/' "${root}/.env" > "${tmp}/env.local"
+cp "${root}/.env" "${tmp}/env.saved"
+cp "${tmp}/env.local" "${root}/.env"
+addon_in '{"url":"http://twenty-server:3000","access":"read","local":true,"key_ro":"fake-ro-key"}' connect twenty --instance home --json
+expect_rc "connect of the local instance exits 0" 0
+cp "${tmp}/env.saved" "${root}/.env"
+addon disconnect twenty --instance home --json < /dev/null
+expect_rc "disconnect of the local instance exits 0" 0
+t "disconnect of a local instance says it still exists in Twenty" \
+  json_ok "done" '"still exist" in last.get("message", "")'
 
 # --- disable, then remove --delete-data ---------------------------------------------
 # The local instance's data dir, which remove deletes with the store.
