@@ -14,8 +14,101 @@ the stack under another app.
    `TWENTY_LOCAL_ENABLED`, which changes their input hash, so they run in full
    once. They also mount `addons/` and `scripts/lib/addon_manifest.py`, so a
    checkout used as the compose project directory needs both.
+2. Expect `hermes` to be recreated once, with the Bitwarden add-on off. It
+   joins a new internal network, `vault`, on every install, and it and both
+   bootstrap services receive `BITWARDEN_ENABLED` (default `0`). The network
+   is empty while local mode is off. The bootstrap script and the add-on
+   manifests changed too, so both bootstraps run in full once. Nothing else
+   changes with the add-on off: no new service starts, and the bootstraps
+   write nothing for it.
+
+### New optional `.env` keys
+
+All default to off or to the values shown. See [docs/bitwarden.md](docs/bitwarden.md#settings).
+
+- `BITWARDEN_ENABLED=0`: starts `bitwarden-broker` (profile `bitwarden`, from
+  `addons/bitwarden/addon.json`) and registers its login backend.
+- `BITWARDEN_LOCAL_ENABLED=0`: starts `vaultwarden` and `vaultwarden-tls`
+  (profile `vault`, wired in `sync-profiles.sh` by hand as Twenty's is).
+- `BITWARDEN_SYNC_MINUTES=10`, `BITWARDEN_IDLE_LOCK_MINUTES=0`: the broker's
+  `bw sync` interval (must be above 0) and the idle lock for `manual`
+  accounts.
+- `BITWARDEN_HOST_DATA_DIR=./data/addons/bitwarden`: `bw/`, `broker/`,
+  `secrets/`, `local/` and `vaultwarden/`. Not moved by `ASSISTANT_DATA_ROOT`.
+- `VAULTWARDEN_PORT=8222` (bound to `127.0.0.1`), `VAULTWARDEN_TLS_IMAGE=nginx:1.30.6-alpine`.
+- `VAULT_OWNER_EMAIL`: your address for `make vault-init`.
+- `TWENTY_SECRETS_DIR`: the folder holding `TWENTY_ENCRYPTION_KEY_FILE` and
+  `TWENTY_DB_PASSWORD_FILE`, so `make secrets-sync` can write them. Unset, it
+  mounts the empty `compose/twenty/no-secrets/`.
+
+`BW_CLI_VERSION` (2026.10.1) is a build argument in
+`compose/bitwarden-broker/Dockerfile`, next to the per-architecture SHA-256
+digests; it is not read from `.env`.
 
 ### Changes
+
+- **Bitwarden add-on** (experimental): Hermes signs in to websites with
+  logins kept in Bitwarden cloud (US or EU), a self-hosted Bitwarden or
+  Vaultwarden, or a local Vaultwarden, and `make secrets-sync` writes stack
+  secrets from Bitwarden into the existing secret files. See
+  [docs/bitwarden.md](docs/bitwarden.md).
+  - New services. `bitwarden-broker` (profile `bitwarden`) runs `bw`, holds
+    every account's session key and fills pages over CDP itself. It shares
+    `hermes`' network namespace, listens on `127.0.0.1:8099` there and
+    restarts when `hermes` is recreated. `bitwarden-setup` and
+    `bitwarden-secrets-sync` (profile `bitwarden-tools`) are one-shots that
+    the `make vault-*` and `make secrets-sync` targets start. `vaultwarden`
+    (`vaultwarden/server:1.37.4`, pinned by digest) and `vaultwarden-tls`
+    (profile `vault`) are local mode. New networks `vault` (internal; `hermes`,
+    `vaultwarden-tls`, `bitwarden-setup`), `vault-backend` (internal),
+    `vault-host` and `bitwarden-setup`, and the volume `bitwarden_sync`. The
+    broker image builds from `compose/bitwarden-broker/` on first use.
+  - New commands: `make vault-init`, `vault-add`, `vault-unlock`, `vault-lock`,
+    `vault-sync`, `vault-requests`, `vault-grant`, `vault-remove`,
+    `vault-open` and `secrets-sync`, all through `scripts/vault.sh`, which also
+    has `requests --json`, `backup DIR` and `restore DIR`. `make up` now runs
+    `scripts/vault.sh up-hook` after `docker compose up -d`; it returns at
+    once while `BITWARDEN_ENABLED` is off. `make doctor` gains a Bitwarden
+    section when either flag is on or an account file exists.
+  - Hermes. With the flag on, the new cont-init
+    `14-install-bwbroker-plugin.sh` copies the `bwbroker` plugin into
+    `/opt/hermes/plugins/bwbroker` (removed again when the flag is off), and
+    both bootstraps add `bwbroker` to `plugins.enabled` and set
+    `vault.bwbroker.enabled: true` on `default` and `browser`, never
+    `api-server`. They write `vault.bitwarden.enabled: false` on every
+    profile they manage, `api-server` included, so Hermes' own `bw:` backend
+    stays off, and list the plugin's
+    `bitwarden` toolset in `known_plugin_toolsets.cron` so cron jobs don't get
+    it. Turning the flag off removes the plugin entries and leaves
+    `vault.bitwarden.enabled: false` in place. The plugin adds
+    `bitwarden_request_access` and `bitwarden_release_access`; its backend
+    lists nothing and refuses fills in cron turns, including `delegate_task`
+    children of a cron job. `browser_vault_save_login` still saves into
+    Hermes' local vault on these profiles.
+  - Two overlays, mounted and applied on every install and inert until the
+    add-on fills something: `patch-digest-redaction.py` scrubs broker-filled
+    values from model output by digest (raw, base64, hex, percent-encoded
+    and reversed forms), and `patch-bitwarden-broker-fill.py` routes fills and
+    `enter_code` of `bwbroker:` handles to the broker. `docker compose up -d`
+    recreates `hermes` for the new mounts.
+  - Manifests. `addon_manifest.py` accepts the `credentials` read class (with
+    the `reads` rules: `cron` false, `sends` false, no `api-server`) and a
+    `vaultBackend` block (`name`, `plugin`, `toolset`, `tools`, `profiles`;
+    built-in and official sources only; `vault`, `op` and `bw` reserved), and
+    has a `vault-plan` command next to `mcp-plan`. `cron_fence_toolsets` fences
+    a vault add-on's plugin toolset from cron. `addons/bitwarden/addon.json` is
+    the first manifest with a `vaultBackend`.
+  - Deviation from the design spec: the plugin is a directory,
+    `compose/hermes/plugins/bwbroker/` (`plugin.yaml` and `__init__.py`), with
+    the backend module `compose/hermes/bitwarden_broker_backend.py` copied
+    beside it, because Hermes loads plugins as directories and accepts a
+    login backend only from a bundled plugin. `vaultBackend.plugin` names the
+    directory.
+  - `compose/bitwarden/accounts/` is gitignored; account files are mode 600.
+  - Checked against a throwaway Vaultwarden 1.37.4 with `bw` 2026.10.1
+    (`scripts/test-vw-register.py`). The organization steps on bitwarden.com
+    and setup for accounts with two-step login, new-device verification or
+    Argon2id are not checked or handled. Linux hosts are not tested.
 
 - **GPT Researcher is registered from a manifest**: `addons/gptr/addon.json`
   now holds its flag, profile, tools, pins and profile list, and

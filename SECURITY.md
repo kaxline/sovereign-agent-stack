@@ -25,6 +25,11 @@ This is a **local development** stack. It is not hardened for internet-facing de
 | vikunja-proxy (optional) | `127.0.0.1:3456` | `/login-local` signs any local caller in as the managed account (by design); refuses non-localhost host names and cross-site fetches |
 | vikunja (optional) | compose-internal `:3456`; also on the internal `db` network | Vikunja accounts (sign-up off by default); MCP needs a scoped API token |
 | signal-cli (optional) | compose-internal `:8080` | None — HTTP JSON-RPC has no auth; keep unpublished |
+| bitwarden-broker (optional) | `127.0.0.1:8099` inside `hermes`' network namespace; Unix socket in the `bitwarden_sync` volume | None on TCP: no route returns a password, code or session key, and agent code in `hermes` can call it. The socket, which serves stack secrets and takes manual unlocks, is mounted only by the broker and `bitwarden-secrets-sync` |
+| bitwarden-setup (optional, one-shot) | no port; its own network plus the internal `vault` network | Your master password in a hidden prompt, held for one run; shares no network or volume with `hermes` |
+| bitwarden-secrets-sync (optional, one-shot) | no network (`network_mode: none`) | The broker's Unix socket; mounts only the folders of the files it writes |
+| vaultwarden (optional) | `127.0.0.1:8222` (`VAULTWARDEN_PORT`), plain HTTP; on the internal `vault-backend` network | Vaultwarden accounts, sign-ups off; admin page behind a generated token. `hermes` and the broker cannot reach it directly |
+| vaultwarden-tls (optional) | compose-internal `:443` as `vaultwarden.vault.internal` on the internal `vault` network | TLS from a private CA only the broker and `bitwarden-setup` trust; sets `X-Real-IP` from the connecting address so Vaultwarden's login rate limit can't be bypassed |
 
 ## Reporting vulnerabilities
 
@@ -37,7 +42,7 @@ If you discover a security issue in this repository, please open a private advis
 **Do not:**
 
 - Expose n8n, SearXNG, GPT Researcher, or Hermes to the public internet without authentication and rate limiting.
-- Commit `.env`, `compose/hermes/api-server.env`, `compose/hermes/browser.env`, `compose/caldav-mcp/accounts/*.env`, `compose/postgres/services/*.env` (includes Vikunja's database login), `n8n/demo-data/credentials/*.json`, `searxng/settings.local.yml`, `opencode/opencode.local.json`, `docker-compose.override.yml`, or anything under `data/`.
+- Commit `.env`, `compose/hermes/api-server.env`, `compose/hermes/browser.env`, `compose/caldav-mcp/accounts/*.env`, `compose/postgres/services/*.env` (includes Vikunja's database login), `compose/bitwarden/accounts/*.env`, `n8n/demo-data/credentials/*.json`, `searxng/settings.local.yml`, `opencode/opencode.local.json`, `docker-compose.override.yml`, or anything under `data/`.
 - Reuse one `API_SERVER_KEY` across Hermes profiles. Keys are scoped per profile and a shared key fails closed, so give `compose/hermes/api-server.env` and `compose/hermes/browser.env` distinct values.
 - Point `OPENCODE_WORKSPACE_HOST` at `$HOME` or `/` — OpenCode and Hermes have full read/write access to coding roots.
 - Use `make coding-root-add DIR=...` to grant broad parents lightly; prefer the specific repo path. Never add `/` or `$HOME` alone (the script refuses those).
@@ -46,6 +51,9 @@ If you discover a security issue in this repository, please open a private advis
 - Publish the caldav-mcp HTTP port. Calendar credentials travel as MCP headers from Hermes; keep the sidecar compose-internal.
 - Publish `postgres-db` or the `sql-mcp-*` ports, or attach other services to the `db` network without a reason. The SQL MCP sidecars have no authentication of their own; network membership is what keeps them Hermes-only. If you must reach Postgres from the host, bind `127.0.0.1` in `docker-compose.override.yml`.
 - Put `DB_DATA_DIR` in a cloud-synced folder.
+- Give a Bitwarden account `BW_SCOPE=all`. The agent can then fill every login in that vault, and code it runs in the browser can read each filled password. Keep the scope to one folder or collection (`make doctor` warns about `all`).
+- Use `BW_UNLOCK=stored` with your personal account's master password unless you accept that the broker holds the key to your whole vault; the `folder:` scope only limits what it lists and fills. Prefer `collection:` with a separate member account. See [docs/bitwarden.md](docs/bitwarden.md#unlock).
+- Publish the Vaultwarden port beyond `127.0.0.1`. The web vault is plain HTTP and holds the only copy of what you store in local mode.
 
 **Do:**
 
@@ -65,6 +73,7 @@ If you discover a security issue in this repository, please open a private advis
 - Keep OpenCode / `coding_*` MCP **off** the Hermes `api-server` profile. Coding tools mutate host repos; they are registered only on default + browser when `OPENCODE_MCP_ENABLED=1`.
 - Enable SearXNG rate limiting (`--profile searxng-prod`) if the instance is shared on a LAN.
 - Treat `SIGNAL_CLI_DATA_DIR` (linked session data) like a password, and keep `SIGNAL_ALLOWED_USERS` tight when Signal is enabled.
+- Keep only logins you are willing to have the agent use in its Bitwarden folder or collection, and keep weak passwords out of it. The broker writes the value into the page, which code the agent writes can read; origin binding and digest redaction keep it off the wrong pages and out of model output. Treat `data/addons/bitwarden/` (`BITWARDEN_HOST_DATA_DIR`) and `scripts/vault.sh backup` folders like a password store. See [docs/bitwarden.md](docs/bitwarden.md#what-the-agent-can-and-cannot-see).
 
 ## Dependency updates
 

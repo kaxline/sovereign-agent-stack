@@ -17,6 +17,7 @@ Per-service setup, usage, and verification guides. See the [project README](../R
 | [Messages from iMessage](messages.md) | `messages` — `messages-mcp` (+ host app) | iMessage/SMS history indexed on the host, read-only tools, alerts that fire a triage job; design and synthetic tests |
 | [Todo lists](todo.md) | `todo` — `vikunja` (+ shared Postgres) | Vikunja web app + MCP, read-only token for unattended sessions |
 | [CRM](crm.md) | `crm` — `twenty-server`, `twenty-worker`, `twenty-db`, `twenty-redis`; or a remote Twenty | Twenty web app + MCP per workspace, single or multi-workspace, read-only key for unattended sessions |
+| [Bitwarden](bitwarden.md) | `bitwarden` — `bitwarden-broker`; `vault` — `vaultwarden`, `vaultwarden-tls` | Browser logins from Bitwarden cloud, self-hosted or a local Vaultwarden, filled by a broker; access requests; `make secrets-sync` |
 | [Signal](signal.md) | `signal` (+ `core`) | Linked-device messaging, WebUI send, cron delivery |
 | [Buzz](buzz.md) | `core` (optional) | Messaging transport for independent agents |
 | [Independent agents](agents.md) | `core` | Multi-role Hermes profiles, three memory tiers, registry |

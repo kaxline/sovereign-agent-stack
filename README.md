@@ -90,6 +90,8 @@ whether its profile is on.
 | **`mail`** | `MAIL_MCP_ENABLED` | Read-only search over Apple Mail, indexed on the host |
 | **`mail-drafts`** | `MAIL_DRAFTS_ENABLED` | Hermes queues drafts for Mail's Drafts folder |
 | **`messages`** | `MESSAGES_MCP_ENABLED` | Read-only iMessage/SMS history, indexed on the host |
+| **`bitwarden`** | `BITWARDEN_ENABLED` | Browser sign-ins with logins from Bitwarden, filled by a broker so Hermes never holds the password ([docs/bitwarden.md](docs/bitwarden.md)) |
+| **`vault`** | `BITWARDEN_LOCAL_ENABLED` | A local Vaultwarden for the Bitwarden add-on, set up by `make vault-init` |
 | **`signal`** | `HERMES_SIGNAL_ENABLED` | signal-cli daemon for Hermes ([docs/signal.md](docs/signal.md)) |
 | **`ollama`** | `OLLAMA_ENABLED` | Bundled Ollama + demo model pull |
 | **`searxng-prod`** | `SEARXNG_PROD_ENABLED` | Valkey + rate limiting for SearXNG |
@@ -138,6 +140,7 @@ See [SECURITY.md](SECURITY.md).
 | [Shared database](docs/database.md) | Postgres schema-per-integration + SQL MCP (`db`) |
 | [Todo lists](docs/todo.md) | Vikunja web app + MCP (`todo`) |
 | [CRM](docs/crm.md) | Twenty, local (`crm`) or remote, + MCP |
+| [Bitwarden](docs/bitwarden.md) | Browser logins and stack secrets from Bitwarden (`bitwarden`, `vault`) |
 | [Hermes WebUI](docs/hermes-webui.md) | Chat UI + lean gateway mode |
 | [Knowledge bases](docs/knowledge-bases.md) | Corpora, ingest, hot-workspace switching (`rag`) |
 | [Projects](docs/projects.md) | Briefs, `sources.yaml`, INDEX, context roots |
