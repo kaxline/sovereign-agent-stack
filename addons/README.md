@@ -81,7 +81,11 @@ except where noted:
 - `instances`: `{name, settings}`, a settings schema stored once per instance
   slug. `flag` is not allowed inside it, and the name and default rules above
   apply. `addon.sh enable` also needs at least one instance, and reports
-  `instances:<name>` in `missing` until there is one.
+  `instances:<name>` in `missing` until there is one, unless the block sets
+  `optional: true` (built-in add-ons only). Then enable works with no
+  instance, and an existing instance still has to hold every required
+  setting. The schema in `addon.sh list` carries `optional`. Twenty sets it,
+  so it can be enabled before any workspace is connected.
 - `commands`: `{<name>: {service, instance, argv}}`. `addon.sh run` runs
   `argv` in the named service, and appends `--account <slug>` when `instance`
   is true. An add-on that reads personal data may not run a command in an MCP

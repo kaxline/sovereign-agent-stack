@@ -47,6 +47,12 @@ the stack under another app.
   which is what the stack did before 0.3.13 too: cron jobs keep the `crm-*`
   entries, and a job on the default profile uses a write workspace's
   read/write key.
+- **Twenty can be enabled before any workspace exists.** The manifest's
+  `instances` block sets `optional: true`, so `addon.sh enable twenty` no
+  longer stops with `missing_settings` / `instances:workspace`. Its init hook
+  still migrates leftover `compose/twenty/workspaces/*.env` files. The schema
+  in `addon.sh list` carries `instances.optional`, which Boundary can use to
+  stop requiring a workspace before the enable step.
 - **Twenty's hook error names** for Boundary: `crm.sh connect` ends with
   `local_mismatch`, `local_off`, `missing_key` or `bad_value` (listed in
   `instances.errors`), or with the shared names `bad_slug`, `login_refused`,

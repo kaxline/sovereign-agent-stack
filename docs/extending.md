@@ -663,7 +663,9 @@ a changelog entry.
 `instances` (slug to values), `missing` and `schema`. `missing` lists what
 `enable` would refuse on: a top-level setting by name, an instance setting
 as `<slug>.<name>`, and `instances:<name>` (the manifest's `instances.name`)
-when the add-on needs an instance and has none. A setting shows its stored
+when the add-on needs an instance and has none. An add-on whose `instances`
+block sets `optional: true` (built-in only; see
+[addons/README.md](../addons/README.md)) never reports `instances:<name>`. A setting shows its stored
 value, else its default, else is absent. A `secret` setting shows only
 `{"set": true}` or `{"set": false}`. A manifest that fails validation is left
 out with a warning on stderr.
