@@ -99,11 +99,16 @@ that reads mail or messages may not send, run in cron or register on
 `api-server`), and checks each one against `docker-compose.yml` and
 `sync-profiles.sh`.
 
-The bootstraps keep an add-on's MCP server out of cron jobs unless its
-manifest sets `permissions.cron` to `true`, using the same
+The bootstraps fence add-on MCP servers out of cron jobs with the same
 `platform_toolsets.cron` list that keeps mail and messages out (see
-[docs/email.md](../docs/email.md)). A missing field counts as `false`. A
-manifest that fails validation is still fenced by its `mcp.name`. If
+[docs/email.md](../docs/email.md)). `permissions.cron` decides what stays in
+cron: `true` keeps every entry, `mcp.instances` entries included; `"ro"`
+keeps the `ro` service of a `{ro, rw}` service map and fences the `rw` one,
+and keeps `mcp.instances` entries, which then carry the key of the profile
+the job runs on; `false` or a missing field fences them all. Twenty sets
+`true`, so a cron job on the default profile gets a write workspace's
+read/write key. A manifest that fails validation is still fenced by its
+`mcp.name` and by the name of each stored instance. If
 `addon_manifest.py` can't be loaded, the list written on the last run is
 kept. `sh scripts/test-addon-cron-fence.sh` runs the fence in the Hermes
 image.

@@ -29,7 +29,10 @@ the stack under another app.
   `access`, `local` and two secret keys, and the manifest's connect and
   disconnect hooks call `crm.sh connect` and `crm.sh disconnect`.
   `TWENTY_MCP_ENABLED=1` now also puts `crm-mcp` in `COMPOSE_PROFILES`; the
-  profile selects no service.
+  profile selects no service. The manifest declares `permissions.cron: true`,
+  which is what the stack did before 0.3.13 too: cron jobs keep the `crm-*`
+  entries, and a job on the default profile uses a write workspace's
+  read/write key.
 - **Workspaces moved out of `compose/twenty/workspaces/`** into the add-on
   store `data/addons/twenty/` (`instances/<slug>.json`,
   `secrets/<slug>.key_ro` and `.key_rw`). `crm.sh migrate` imports the old

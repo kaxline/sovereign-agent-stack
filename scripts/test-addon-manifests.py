@@ -848,13 +848,17 @@ with tempfile.TemporaryDirectory() as tmp:
     check("synthetic dir: the same prefix twice is an overlap",
           any("overlap" in e for e in conflicts.get(d / "twentyish" / "addon.json", [])), str(conflicts))
 
-# Cron: Twenty's cron "ro" keeps crm-* entries in cron, as before 0.3.13; with
-# cron false every instance's entry is fenced.
+# Cron: Twenty declares cron true, which is what it does: crm-* entries stay
+# in cron as before 0.3.13, and a job on default uses that profile's key (rw
+# for a write workspace). With cron false every instance's entry is fenced.
+TW_MANIFEST = json.loads((ROOT / "addons" / "twenty" / "addon.json").read_text())
+check("twenty declares permissions.cron true", TW_MANIFEST["permissions"]["cron"] is True,
+      repr(TW_MANIFEST["permissions"]["cron"]))
 with tempfile.TemporaryDirectory() as tmp:
     data = tw_store(Path(tmp), {"main": {"url": "http://twenty-server:3000", "access": "write"},
                                 "remote": {"url": "https://crm.example.com", "access": "read"}})
     got = am.cron_fence(ROOT / "addons", TW_ON, data)
-    check("twenty (cron ro): no crm-* name or instance URL is fenced",
+    check("twenty (cron true): no crm-* name or instance URL is fenced",
           not any(n.startswith("crm-") for n in got[0])
           and not any("twenty" in u or "example.com" in u for u in got[1]), str(got))
     addons = Path(tmp) / "addons"

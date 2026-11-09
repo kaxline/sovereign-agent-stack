@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "title": "Twenty CRM",
   "tagline": "Look up and edit CRM records from chat",
-  "description": "Connects Hermes to Twenty workspaces over MCP, one crm-<workspace> server per connected workspace. A workspace is the bundled local instance (twenty-server, twenty-worker, twenty-db, twenty-redis, switched on by TWENTY_LOCAL_ENABLED) or a remote Twenty reached by URL. Each workspace holds a read-only and a read-write API key; the workspace's access setting picks which one the default and browser profiles get, and api-server only ever gets the read-only key. Cron jobs are not fenced from crm-* and use the key of the profile they run on. writeTools is empty because Twenty's roles on the API key are the boundary. TWENTY_MCP_ENABLED switches the MCP registration and starts no service. See docs/crm.md.",
+  "description": "Connects Hermes to Twenty workspaces over MCP, one crm-<workspace> server per connected workspace. A workspace is the bundled local instance (twenty-server, twenty-worker, twenty-db, twenty-redis, switched on by TWENTY_LOCAL_ENABLED) or a remote Twenty reached by URL. Each workspace holds a read-only and a read-write API key; the workspace's access setting picks which one the default and browser profiles get, and mcp.profiles maps api-server to the read-only key. permissions.cron is true: cron jobs keep crm-* and use the key of the profile they run on, so a job on the default profile gets the read-write key of a write workspace. writeTools is empty because Twenty's roles on the API key are the boundary. TWENTY_MCP_ENABLED switches the MCP registration and starts no service. See docs/crm.md.",
   "publisher": {
     "name": "sovereign-agent-stack",
     "url": "https://github.com/kaxline/sovereign-agent-stack"
@@ -196,6 +196,6 @@
       "internet"
     ],
     "exposesToAgent": false,
-    "cron": "ro"
+    "cron": true
   }
 }

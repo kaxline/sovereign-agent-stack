@@ -1069,10 +1069,10 @@ def cron_fence(addons_dir: Path, environ=os.environ,
             continue
         for mcp in mcp_entries(manifest):
             if "instances" in mcp:
-                # cron "ro": the entries stay in cron, as Twenty's crm-* entries
-                # always have. A cron job gets the key of the profile it runs
-                # on (rw on default for a write instance); api-server gets
-                # only the ro key (instances_plan).
+                # cron "ro": the entries stay in cron. A cron job gets the key
+                # of the profile it runs on (rw on default for a write
+                # instance); a profile mapped to ro gets only the ro key
+                # (instances_plan).
                 if cron != "ro" and data_dir is not None:
                     template = mcp["instances"]["name"]
                     names.extend(template.replace("{slug}", s)
