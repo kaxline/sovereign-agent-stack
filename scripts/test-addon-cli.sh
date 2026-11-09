@@ -41,10 +41,12 @@ printf 'COMPOSE_PROJECT_NAME=fixtureproj\n' >> "${root}/.env"
 # `compose --profile * config --format json` prints scripts/fixtures/compose-config.json;
 # DOCKER_FAIL_CONFIG=1 makes it exit 1. `manifest inspect --verbose` prints
 # scripts/fixtures/manifest-inspect-verbose.json. `version --format` prints STUB_PLATFORM
-# (default linux/arm64).
+# (default linux/arm64). With STUB_ENV_LOG set, each call also appends one line there:
+# its argv, then COMPOSE_PROJECT_NAME and COMPOSE_PROFILES as the stub sees them.
 cat > "${tmp}/bin/docker" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >> "${STUB_LOG}"
+[ -n "${STUB_ENV_LOG:-}" ] && printf '%s | COMPOSE_PROJECT_NAME=%s COMPOSE_PROFILES=%s\n' "$*" "${COMPOSE_PROJECT_NAME-<unset>}" "${COMPOSE_PROFILES-<unset>}" >> "${STUB_ENV_LOG}"
 if [ "$1 $2 $3 $4" = "compose up --no-deps --exit-code-from" ] && [ "${DOCKER_FAIL_ONESHOT:-0}" = 1 ]; then
   echo "seed failed: no such table"
   exit 1
@@ -1316,6 +1318,34 @@ addon_in '{"extra": true}' configure fixture
 : > "$STUB_LOG"
 addon enable fixture
 if logged "compose stop"; then bad "enable stops nothing when the gate is on"; cat "$STUB_LOG"; else ok "enable stops nothing when the gate is on"; fi
+
+# The compose project and profiles reach every docker call as the caller set
+# them. sync-profiles.sh rewrites COMPOSE_PROFILES in .env, not in the caller's
+# environment, so the exported value stays. list --json alone adds --profile '*'.
+export STUB_ENV_LOG="${tmp}/env.log"
+: > "$STUB_ENV_LOG"
+: > "$STUB_LOG"
+export COMPOSE_PROJECT_NAME=callerproj COMPOSE_PROFILES=core,fixture
+addon_json enable fixture --json
+expect_rc "pass-through: enable" 0
+addon_json_in '{"host":"h","password":"pw-value"}' connect fixture --instance passthru --json
+expect_rc "pass-through: connect" 0
+addon_json disconnect fixture --instance passthru --json
+expect_rc "pass-through: disconnect" 0
+addon_json disable fixture --purge --json
+expect_rc "pass-through: disable --purge" 0
+addon_json list --json
+expect_rc "pass-through: list" 0
+unset COMPOSE_PROJECT_NAME COMPOSE_PROFILES
+unset STUB_ENV_LOG
+want_env=' | COMPOSE_PROJECT_NAME=callerproj COMPOSE_PROFILES=core,fixture'
+bad_env="$(grep -v -F -- "$want_env" "${tmp}/env.log" || true)"
+if [ -z "$bad_env" ] && [ -s "${tmp}/env.log" ]; then ok "every docker call sees the caller's COMPOSE_PROJECT_NAME and COMPOSE_PROFILES"; else bad "every docker call sees the caller's COMPOSE_PROJECT_NAME and COMPOSE_PROFILES"; printf '%s\n' "$bad_env"; fi
+for want in "compose run --rm -e HERMES_BOOTSTRAP_FORCE=1 hermes-api-bootstrap" "compose run --rm --no-deps -e HERMES_BOOTSTRAP_FORCE=1 hermes-browser-bootstrap"; do
+  if grep -qxF -- "${want}${want_env}" "${tmp}/env.log"; then ok "pass-through: ${want##* }"; else bad "pass-through: ${want##* }"; fi
+done
+if grep -qxF -- "compose --profile * config --format json${want_env}" "${tmp}/env.log"; then ok "list runs config with --profile '*' and the same environment"; else bad "list runs config with --profile '*' and the same environment"; fi
+if grep -qxF -- "volume rm callerproj_fixture_cache${want_env}" "${tmp}/env.log"; then ok "volume rm uses the caller's project name"; else bad "volume rm uses the caller's project name"; cat "${tmp}/env.log"; fi
 
 if [ "$fail" = 0 ]; then
   echo "all addon.sh checks passed"

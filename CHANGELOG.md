@@ -10,8 +10,10 @@ the stack under another app.
 
 ### Upgrade steps
 
-None. No shipped manifest uses the new fields, so existing installs behave
-as before.
+`addon.sh` calls `scripts/vault.sh reload-plugins`, which comes from the
+Bitwarden always-installed change (`fix/bwbroker-always-installed`). Release
+only with that change in. Before tagging, run `scripts/addon.sh enable gptr
+--json` and `disable gptr --json` on a live stack.
 
 ### Changes
 
@@ -29,6 +31,35 @@ as before.
   settings schema for building a settings form. See
   [docs/extending.md](docs/extending.md#add-ons-scriptsaddonsh). Field
   names may change between patch releases while the stack is in 0.3.x.
+
+- **`scripts/addon.sh` lifecycle** (experimental). New subcommands
+  `connect <id> --instance <slug>`, `disconnect` and `remove <id>
+  --delete-data`, plus `disable --purge`, `enable --reinit` and `--json` on
+  `enable`, `disable`, `connect`, `disconnect` and `remove`. With `--json`,
+  stdout is one JSON object per line (`pull`, `setup`, then one `done` or
+  `error`); `list --json [--sizes]` adds per-service image, memory in bytes
+  and download size. A lock (`data/addons/.lock`) makes a second change fail
+  with `busy`, and a failed `enable` restores the flags. `remove` keeps
+  paths outside `./data` and `ASSISTANT_DATA_ROOT`, stack data and paths
+  behind a symlink, and reports each as `kept`. `addon.sh` does not wait for
+  MCP servers: Boundary checks the names in the `done` line's `mcp` in
+  `mcp.servers.status`. See
+  [docs/extending.md](docs/extending.md#add-ons-scriptsaddonsh).
+- **Add-on manifest fields** (experimental): `services.<name>.oneshot`,
+  `hooks`, `instances.connect`, `instances.disconnect`, `instances.errors`,
+  `instances.optional`, `transient` on a secret instance setting (the value
+  goes to the connect hook and is never stored), `onToggle`, `data` and
+  `backup`. `services.<name>.volumes` becomes `data.volumes`; both are
+  accepted in this patch and the old form is refused from the next.
+- **Add-on reload.** `addon.sh` reloads Hermes by running both bootstraps
+  with `HERMES_BOOTSTRAP_FORCE=1` and then `scripts/vault.sh reload-plugins`.
+  It no longer recreates `hermes`, so plugin changes such as Bitwarden's tools
+  reach new sessions only. This needs the `reload-plugins` command from
+  `fix/bwbroker-always-installed`.
+- **Bitwarden's `backup` and `restore` hooks** moved from plain strings to
+  the `script` form (`{"script": ["scripts/vault.sh", "backup"]}`).
+- Boundary can move Actual Budget onto `addon.sh` once its manifest has
+  `hooks.init`, `instances.connect` and `data`.
 
 ### Fixes
 
