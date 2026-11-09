@@ -265,7 +265,7 @@ class Workspaces:
         self.dir = addon_store.addon_dir(self.data_root, self.manifest)
 
     def slugs(self) -> list[str]:
-        return addon_store._slugs(self.dir)
+        return addon_store.slugs(self.dir)
 
     def get(self, slug: str) -> dict | None:
         if slug not in self.slugs():
