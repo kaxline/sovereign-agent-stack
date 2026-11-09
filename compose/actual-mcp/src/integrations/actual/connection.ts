@@ -8,6 +8,41 @@ const DEFAULT_DATA_DIR: string = path.resolve(os.homedir() || '.', '.actual');
 const DEFAULT_SYNC_TTL_MS = 60_000;
 
 /**
+ * `code` values on an `api.sync()` error that mean this process can no longer reach the
+ * budget with its credential: the session ended (deleted, user disabled, server password
+ * changed), the password is wrong, or access to the budget was revoked or it is gone.
+ * Seen live against actual-server 26.11.0: `token-expired` (deleted session, password
+ * change) and `file-access-not-allowed` (revoked user_access). The rest are the other
+ * auth reasons loot-core can attach. Network codes (`network-failure`, `network`) are
+ * deliberately absent: an unreachable server keeps the offline behaviour.
+ */
+const SESSION_ENDED_CODES: ReadonlySet<string> = new Set([
+  'token-expired',
+  'token-not-found',
+  'unauthorized',
+  'invalid-password',
+  'file-access-not-allowed',
+  'budget-not-found',
+]);
+
+/** The session-ended code on an error from `api.sync()`, or null. Matches `error.code` only, never the message. */
+export function sessionEndedCode(error: unknown): string | null {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && SESSION_ENDED_CODES.has(code) ? code : null;
+}
+
+/** Thrown to the caller when a sync shows the budget's session has ended. Carries no credentials. */
+export class ActualSessionEndedError extends Error {
+  readonly code: string;
+
+  constructor(code: string) {
+    super(`Actual session ended (${code}): reconnect with make budget-add FORCE=1 or make budget-init`);
+    this.name = 'ActualSessionEndedError';
+    this.code = code;
+  }
+}
+
+/**
  * Build the `api.init()` config from environment variables.
  *
  * `ACTUAL_SESSION_TOKEN` takes precedence over `ACTUAL_PASSWORD`. A session token is
@@ -127,8 +162,17 @@ export class ActualConnection {
 
   /**
    * Pull remote changes into local data when the TTL has elapsed. Concurrent
-   * stale callers share one in-flight sync. A failed sync is logged, not thrown:
-   * answering from slightly stale data beats failing the call.
+   * stale callers share one in-flight sync.
+   *
+   * A sync that fails because the session ended or access was revoked
+   * (`sessionEndedCode`) closes the API, marks the connection failed and rejects,
+   * so the waiting operation never runs: no read answers from the stale copy and
+   * no write lands in the local cache. The next call re-runs init, which fails
+   * with the API's own `Authentication failed: ...` while the credential is dead.
+   *
+   * Any other failure, network errors included, is logged and the call continues
+   * with local data, as upstream does: answering from slightly stale data beats
+   * failing the call while the server is unreachable.
    */
   private syncIfStale(): Promise<void> {
     const ttl = this.syncTtlMs();
@@ -140,13 +184,45 @@ export class ActualConnection {
       .then(() => {
         this.lastSyncAt = Date.now();
       })
-      .catch((error: unknown) => {
-        console.error('Failed to sync with Actual server, continuing with local data:', error);
+      .catch(async (error: unknown) => {
+        const code = sessionEndedCode(error);
+        if (code === null) {
+          console.error('Failed to sync with Actual server, continuing with local data:', error);
+          return;
+        }
+        console.error(`Actual session ended (${code}); closing the budget so later calls re-initialize.`);
+        await this.closeAfterEndedSession();
+        throw new ActualSessionEndedError(code);
       })
       .finally(() => {
         this.inflightSync = null;
       });
     return this.inflightSync;
+  }
+
+  /**
+   * Release the API after a sync showed the session ended, and mark the connection
+   * failed so the next ensureReady() starts a fresh init.
+   *
+   * Runs inside the sync's promise chain, not through the queue: operations queued
+   * behind the sync are awaiting this same chain, so nothing touches the API while
+   * it shuts down, and a fresh init queued meanwhile runs only after them.
+   */
+  private async closeAfterEndedSession(): Promise<void> {
+    if (this.state === 'ready') {
+      this.state = 'failed';
+    }
+    this.inflightInit = null;
+    this.lastSyncAt = 0;
+    if (this.apiOpened) {
+      try {
+        await api.shutdown();
+      } catch (err) {
+        console.error('Error shutting down Actual Budget API after an ended session:', err);
+      }
+      this.apiOpened = false;
+      this.actualLib = null;
+    }
   }
 
   /**
