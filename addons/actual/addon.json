@@ -23,6 +23,13 @@
     "ro": {
       "compose": "actual-mcp-ro",
       "port": 3000
+    },
+    "server": {
+      "compose": "actual-server",
+      "port": 5006,
+      "when": {
+        "gate": "ACTUAL_LOCAL_ENABLED"
+      }
     }
   },
   "mcp": {
@@ -149,5 +156,97 @@
     ],
     "exposesToAgent": false,
     "cron": "ro"
+  },
+  "gates": [
+    {
+      "flag": "ACTUAL_LOCAL_ENABLED",
+      "profile": "budget-local",
+      "seed": false
+    }
+  ],
+  "settings": {
+    "local": {
+      "type": "bool",
+      "default": false,
+      "flag": "ACTUAL_LOCAL_ENABLED",
+      "label": "Bundled local Actual server"
+    }
+  },
+  "hooks": {
+    "init": {
+      "script": [
+        "scripts/budget.sh",
+        "init",
+        "--server-only"
+      ]
+    }
+  },
+  "data": {
+    "paths": [
+      {
+        "env": "ACTUAL_DATA_DIR",
+        "default": "./data/actual/server"
+      }
+    ],
+    "volumes": [
+      "actual_mcp_rw_cache",
+      "actual_mcp_ro_cache"
+    ]
+  },
+  "instances": {
+    "name": "budget",
+    "settings": {
+      "server": {
+        "type": "string",
+        "label": "Actual server URL, or local for the bundled server"
+      },
+      "sync_id": {
+        "type": "string",
+        "label": "Budget sync ID"
+      },
+      "profile": {
+        "type": "string",
+        "default": "default",
+        "label": "Hermes profile that gets the budget"
+      },
+      "access": {
+        "type": "string",
+        "default": "read",
+        "label": "What the agent may do (read or write)"
+      },
+      "session_token": {
+        "type": "secret",
+        "optional": true,
+        "label": "Session token"
+      },
+      "password": {
+        "type": "secret",
+        "optional": true,
+        "transient": true,
+        "label": "Server password (used once to sign in)"
+      },
+      "encryption_password": {
+        "type": "secret",
+        "optional": true,
+        "label": "Budget encryption password"
+      }
+    },
+    "connect": {
+      "script": [
+        "scripts/budget.sh",
+        "connect"
+      ]
+    },
+    "disconnect": {
+      "script": [
+        "scripts/budget.sh",
+        "disconnect"
+      ]
+    },
+    "errors": [
+      "bad_access",
+      "encryption_password",
+      "unknown_profile"
+    ]
   }
 }

@@ -14,8 +14,8 @@ fail() {
   exit 1
 }
 
-grep -q '^ACTUAL_LOCAL_ENABLED budget-local 0$' scripts/sync-profiles.sh \
-  || fail "sync-profiles.sh maps ACTUAL_LOCAL_ENABLED to budget-local"
+bash scripts/sync-profiles.sh --table | grep -qx 'ACTUAL_LOCAL_ENABLED budget-local 0' \
+  || fail "sync-profiles.sh maps ACTUAL_LOCAL_ENABLED to budget-local (the gate in addons/actual/addon.json)"
 
 for k in ACTUAL_MCP_ENABLED ACTUAL_LOCAL_ENABLED ACTUAL_ACCESS ACTUAL_PORT ACTUAL_DATA_DIR ACTUAL_SERVER_IMAGE ACTUAL_BUDGET_FILE; do
   grep -qE "^#? ?${k}=" .env.example || fail ".env.example documents ${k}"
