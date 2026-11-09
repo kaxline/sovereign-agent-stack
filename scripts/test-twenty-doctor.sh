@@ -124,6 +124,12 @@ has "bad slug reason" "must start with a letter"
 has "userinfo reason" "user:password@"
 has "whitespace reason" "a key holds whitespace"
 
+# Of a repeated key the last line counts: a bad last value is reported.
+rm -f "$tmp/work/compose/twenty/workspaces/"*.env
+printf 'TWENTY_URL=https://crm.example.com\nTWENTY_ACCESS=read\nTWENTY_ACCESS=admin\n' > "$tmp/work/compose/twenty/workspaces/dup.env"
+doctor
+has "last access counts" "TWENTY_ACCESS must be read or write"
+
 # Leftovers warn even with the MCP switch off.
 rm -f "$tmp/work/compose/twenty/workspaces/"*.env
 printf 'TWENTY_URL=https://crm.example.com\n' > "$tmp/work/compose/twenty/workspaces/x.env"
@@ -154,8 +160,14 @@ rm -f "$tmp/work/compose/twenty/workspaces/"*.env
 printf 'TWENTY_URL="https://crm.example.com"\nTWENTY_KEY_RO="fake-q-ro"\n' > "$tmp/work/compose/twenty/workspaces/dq.env"
 printf "TWENTY_URL='https://crm.example.com'\nTWENTY_ACCESS='read'\n" > "$tmp/work/compose/twenty/workspaces/sq.env"
 printf 'TWENTY_URL=https://crm.example.com\r\nTWENTY_KEY_RW=fake-crlf-rw\r\nTWENTY_ACCESS=write\r\n' > "$tmp/work/compose/twenty/workspaces/crlf.env"
+# Surrounding whitespace is trimmed and the last of a repeated key wins, as
+# crm.sh's ws_get reads the file.
+printf 'TWENTY_URL=https://crm.example.com\nTWENTY_KEY_RW=fake-trail-rw  \t\n' > "$tmp/work/compose/twenty/workspaces/trail.env"
+printf 'TWENTY_URL=https://crm.example.com\nTWENTY_ACCESS=admin\nTWENTY_ACCESS=read\n' > "$tmp/work/compose/twenty/workspaces/dup.env"
 doctor
 has "dq listed" "dq.env was not migrated"
+has "trail listed" "trail.env was not migrated"
+has "dup listed" "dup.env was not migrated"
 has "sq listed" "sq.env was not migrated"
 has "crlf listed" "crlf.env was not migrated"
 hasnt "valid files can migrate" "can't be"

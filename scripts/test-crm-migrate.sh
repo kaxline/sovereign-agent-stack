@@ -146,6 +146,19 @@ done
 [ "$(cat "$store/secrets/quoted.key_rw")" = q-SECRET ] || fail "single quotes are stripped from the key"
 rm "$ws/spacey.env" "$ws/tabby.env" "$ws/creds.env"
 
+# Whitespace around a value is trimmed (keys especially), and of a repeated
+# key the last line wins, as the old bootstrap read the file.
+printf 'TWENTY_URL=  https://trim.example.com/ \nTWENTY_KEY_RW=trim-rw-SECRET  \t\nTWENTY_KEY_RO=\t "trim-ro-SECRET" \n' > "$ws/trim.env"
+printf 'TWENTY_URL=https://first.example.com\nTWENTY_KEY_RW=first-rw-SECRET\nTWENTY_URL=https://dup.example.com\nTWENTY_KEY_RW=dup-rw-SECRET\n' > "$ws/dup.env"
+run migrate || fail "migrate trimmed and repeated values ($(cat "$out" "$err"))"
+no_secret "trim and dup"
+[ -f "$ws/trim.env.migrated" ] || fail "a key with surrounding whitespace migrates ($(cat "$err"))"
+[ "$(jget "$store/instances/trim.json" url)" = '"https://trim.example.com"' ] || fail "the URL is trimmed"
+[ "$(cat "$store/secrets/trim.key_rw")" = trim-rw-SECRET ] || fail "key_rw is trimmed"
+[ "$(cat "$store/secrets/trim.key_ro")" = trim-ro-SECRET ] || fail "key_ro is trimmed, then unquoted"
+[ "$(jget "$store/instances/dup.json" url)" = '"https://dup.example.com"' ] || fail "the last TWENTY_URL wins"
+[ "$(cat "$store/secrets/dup.key_rw")" = dup-rw-SECRET ] || fail "the last TWENTY_KEY_RW wins"
+
 # CRLF line endings (the old bootstrap accepted them), with quoted values.
 printf 'TWENTY_URL="https://crlf.example.com/"\r\nTWENTY_ACCESS=read\r\nTWENTY_KEY_RO=\x27crlf-ro-SECRET\x27\r\nTWENTY_KEY_RW="crlf-rw-SECRET"\r\n' > "$ws/crlf.env"
 run migrate || fail "migrate a CRLF file ($(cat "$out" "$err"))"

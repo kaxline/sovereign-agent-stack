@@ -8,11 +8,12 @@ twenty_json_get() {
   sed -n "s/.*\"${2}\": *\"\\([^\"]*\\)\".*/\\1/p" "$1" 2>/dev/null | head -1 || true
 }
 
-# A value from a legacy workspace file, read as crm.sh's ws_get reads it: first
-# match, CR dropped, one pair of surrounding quotes stripped.
+# A value from a legacy workspace file, read as crm.sh's ws_get reads it: last
+# match, CR and surrounding whitespace dropped, then one pair of quotes.
 twenty_ws_get() {
   local v
-  v="$(grep -E "^${2}=" "$1" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r' || true)"
+  v="$(grep -E "^${2}=" "$1" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '\r' \
+    | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' || true)"
   v="${v%\"}"; v="${v#\"}"
   v="${v%\'}"; v="${v#\'}"
   printf '%s' "$v"
@@ -138,7 +139,7 @@ doctor_twenty() {
 
   if [[ "$twenty_mcp" -eq 1 ]]; then
     ok "TWENTY_MCP_ENABLED=1"
-    local twenty_count=0 url access ro_f rw_f has_ro has_rw key kind k probe hdr code label cfg envfile env_key rw
+    local twenty_count=0 url access ro_f rw_f has_ro has_rw key kind k probe hdr code label cfg env_key rw
     for f in "$store/instances"/*.json; do
       [[ -f "$f" ]] || continue
       slug="$(basename "$f" .json)"
@@ -198,7 +199,7 @@ doctor_twenty() {
       for pair in "default:data/hermes/config.yaml:data/hermes/.env" \
         "api-server:data/hermes/profiles/api-server/config.yaml:data/hermes/profiles/api-server/.env" \
         "browser:data/hermes/profiles/browser/config.yaml:data/hermes/profiles/browser/.env"; do
-        IFS=':' read -r label cfg envfile <<< "$pair"
+        IFS=":" read -r label cfg _ <<< "$pair"
         [[ -f "$cfg" ]] || continue
         if grep -qE "^  crm-${slug}:" "$cfg"; then
           ok "Hermes ${label} profile registers crm-${slug}"

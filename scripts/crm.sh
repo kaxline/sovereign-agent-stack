@@ -152,10 +152,14 @@ norm_url() {
   printf '%s' "$url"
 }
 
-# One value from a workspace file, without sourcing it.
+# One value from a workspace file, without sourcing it, read as the old
+# bootstrap read it: the last matching line wins. CR and surrounding
+# whitespace go, then one pair of quotes. scripts/lib/doctor-twenty.sh's
+# twenty_ws_get mirrors this.
 ws_get() {
   local v
-  v="$(grep -E "^${2}=" "$1" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r' || true)"
+  v="$(grep -E "^${2}=" "$1" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '\r' \
+    | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' || true)"
   v="${v%\"}"; v="${v#\"}"
   v="${v%\'}"; v="${v#\'}"
   printf '%s' "$v"
