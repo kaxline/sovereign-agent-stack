@@ -41,7 +41,7 @@
 - Modify: `scripts/lib/addon_manifest.py` (`validate`), `scripts/lib/addon_store.py` (`listing`)
 - Modify: `scripts/test-addon-manifests.py`, `scripts/test-addon-store.py`
 - Modify: `scripts/fixtures/addons-cli/fixture/addon.json`: move `fixture_cache` to `data.volumes`; add a `oneshot` service `seed` (compose `fixture-seed`), `hooks.init: {"command": "seed-init"}` with a matching `commands.seed-init`, and `data.paths: [{"env": "FIXTURE_DATA_DIR", "default": "./data/fixture"}]`
-- Modify: `addons/bitwarden/addon.json` (`hooks` to the `script` form, `onToggle`)
+- Modify: `addons/bitwarden/addon.json` (`hooks` to the `script` form)
 
 **Interfaces:**
 - Produces, as manifest fields, with the shapes from the spec section "Lifecycle fields for `addon.sh`":
@@ -62,7 +62,7 @@
 Run: `python3 scripts/test-addon-manifests.py; python3 scripts/test-addon-store.py`
 Expected: FAIL on the new cases only.
 
-- [ ] **Step 3: Implement** the rules, `data_volumes`, `hook` and the `listing()` fields. Update the fixture as listed under Files, and make `plan-disable` read volumes through `data_volumes`. In `addons/bitwarden/addon.json`, convert both hooks and add `"onToggle": {"recreate": ["hermes"], "script": ["scripts/vault.sh", "follow-hermes"]}`, written with `canonical()`.
+- [ ] **Step 3: Implement** the rules, `data_volumes`, `hook` and the `listing()` fields. Update the fixture as listed under Files, and make `plan-disable` read volumes through `data_volumes`. In `addons/bitwarden/addon.json`, convert both hooks to the `script` form, written with `canonical()`. Bitwarden gets no `onToggle`: since R13 its plugin is always installed and `reload-plugins` (Task 6) replaces the recreate.
 - [ ] **Step 4: Run them and confirm they pass**
 
 Run: `make addon-test`
@@ -250,12 +250,12 @@ git commit -m "Add addon.sh connect and disconnect, which check a credential bef
 **Interfaces:**
 - Consumes: Task 1's `onToggle`; Task 2's `run_step`.
 - Produces:
-  - `reload_hermes`: step `reload` runs `docker compose run --rm -e HERMES_BOOTSTRAP_FORCE=1 hermes-api-bootstrap`, then `docker compose run --rm --no-deps -e HERMES_BOOTSTRAP_FORCE=1 hermes-browser-bootstrap`. A failure is `compose_failed`. No `make`, no `up hermes`.
+  - `reload_hermes`: step `reload` runs `docker compose run --rm -e HERMES_BOOTSTRAP_FORCE=1 hermes-api-bootstrap`, then `docker compose run --rm --no-deps -e HERMES_BOOTSTRAP_FORCE=1 hermes-browser-bootstrap`, then `./scripts/vault.sh reload-plugins` (R13, branch `fix/bwbroker-always-installed`: it sends Hermes' `reload-plugins` verb to profiles the bootstrap marked with `.addon-plugins-changed`, and is silent when none is marked or hermes is down). A bootstrap failure is `compose_failed`; a `reload-plugins` failure is `command_failed`. No `make`, no `up hermes`, and no `vault.sh follow-hermes` unless step `recreate` ran.
   - On `enable` and `disable` only, when the manifest has `onToggle` and the builtin flag changed value in this run: step `recreate` runs `docker compose up -d --no-deps --force-recreate <each recreate>`, then the `onToggle.script` argv from `$ROOT`, and `done` lists the recreated services in `restart`. `connect` and `disconnect` never recreate.
   - `done.mcp` on `enable` lists the `name` of each `mcp` entry whose gate is on; on `disable` it is `[]`.
   - `disable`, after the flags and `sync-profiles.sh`: for each name in the manifest's `uses`, if it isn't in `docker compose config --services` (which applies the active profiles), step `stop` with that target runs `docker compose stop <name>`. A service that no profile gates always appears in that list, so it is never stopped.
 
-- [ ] **Step 1: Write the failing tests.** Replace the `make hermes-reload` assertions with: the stub log has both bootstrap runs with `HERMES_BOOTSTRAP_FORCE=1`, no `make` line, and no `--force-recreate`. Add a `toggled` fixture with `onToggle: {"recreate": ["hermes"], "script": ["scripts/fixture-follow.sh", "follow"]}`: the first `enable` logs `compose up -d --no-deps --force-recreate hermes` and the script, and `done.restart` is `["hermes"]`; a second `enable` while enabled logs neither. For `uses`: give the fixture `"uses": ["neo4j"]`, make the stub answer `compose config --services` from a file, and check that `disable` stops `neo4j` when the list lacks it and leaves it when the list has it.
+- [ ] **Step 1: Write the failing tests.** Replace the `make hermes-reload` assertions with: the stub log has both bootstrap runs with `HERMES_BOOTSTRAP_FORCE=1` followed by a `vault.sh reload-plugins` call (a stub `scripts/vault.sh` in the scratch root logs its argv), no `make` line, no `--force-recreate` and no `follow-hermes`. A stub `reload-plugins` exiting 1 makes `enable --json` fail `command_failed` at step `reload` and roll back. Add a `toggled` fixture with `onToggle: {"recreate": ["hermes"], "script": ["scripts/fixture-follow.sh", "follow"]}`: the first `enable` logs `compose up -d --no-deps --force-recreate hermes` and the script, and `done.restart` is `["hermes"]`; a second `enable` while enabled logs neither. For `uses`: give the fixture `"uses": ["neo4j"]`, make the stub answer `compose config --services` from a file, and check that `disable` stops `neo4j` when the list lacks it and leaves it when the list has it.
 - [ ] **Step 2: Run and confirm they fail**
 
 Run: `sh scripts/test-addon-cli.sh`
@@ -398,7 +398,7 @@ git commit -m "Report image, memory and download size per add-on service in addo
 Run: `sh scripts/test-addon-cli.sh`
 Expected: exit 0.
 
-- [ ] **Step 3: Update the docs.** In `docs/extending.md`, document the JSON-lines contract (phases, step names, `done` and `error` fields, error codes and exit codes from Global Constraints), `connect`/`disconnect`, `remove --delete-data`, the lock, rollback, `list --json` figures and the new manifest fields. Say that `addon.sh` doesn't wait for MCP servers and that callers check `done.mcp` in `mcp.servers.status`. Update `addons/README.md`'s field list. Add `onToggle` and `services.<k>.oneshot` to `docs/private/addon-manifest-spec.md`'s lifecycle section only if its owner hasn't by then (it is gitignored; don't commit it). In `CHANGELOG.md` under Unreleased: the new subcommands and fields, `services.<k>.volumes` becoming `data.volumes` (still accepted in this patch), Bitwarden's hooks moving to the `script` form, the reload change (no `hermes` recreate except for Bitwarden), and a line saying Boundary can move Actual onto `addon.sh` once Actual's manifest has `hooks.init`, `instances.connect` and `data`.
+- [ ] **Step 3: Update the docs.** In `docs/extending.md`, document the JSON-lines contract (phases, step names, `done` and `error` fields, error codes and exit codes from Global Constraints), `connect`/`disconnect`, `remove --delete-data`, the lock, rollback, `list --json` figures and the new manifest fields. Say that `addon.sh` doesn't wait for MCP servers and that callers check `done.mcp` in `mcp.servers.status`. Update `addons/README.md`'s field list. Add `onToggle` and `services.<k>.oneshot` to `docs/private/addon-manifest-spec.md`'s lifecycle section only if its owner hasn't by then (it is gitignored; don't commit it). In `CHANGELOG.md` under Unreleased: the new subcommands and fields, `services.<k>.volumes` becoming `data.volumes` (still accepted in this patch), Bitwarden's hooks moving to the `script` form, the reload change (bootstraps plus `vault.sh reload-plugins`, no `hermes` recreate; plugin changes such as Bitwarden's tools reach new sessions only), and a line saying Boundary can move Actual onto `addon.sh` once Actual's manifest has `hooks.init`, `instances.connect` and `data`.
 - [ ] **Step 4: Run the full checks once**
 
 Run (in the background, through the test queue): `make addon-test && sh scripts/test-no-host-python.sh && python3 scripts/test-addon-manifests.py`
@@ -417,5 +417,5 @@ git commit -m "Test that addon.sh passes the compose project and profiles throug
 - `mcp.instances` (one MCP entry per instance, for Twenty) and `crm.sh migrate`. They live in the bootstraps and `crm.sh`, not in `addon.sh`, and need an owner. The validator's `mcp.instances` refusal stays until that work lands.
 - n8n's manifest and its `oneshot` `n8n-import` belong to the n8n plan (`docs/n8n-lightrag-addons-plan`).
 - Twenty's manifest, which needs `mcp.instances`.
-- If Keith takes R13 (always install the Bitwarden plugin), delete Bitwarden's `onToggle` in that change; nothing else here depends on it.
+- Keith took R13 (2026-11-09): the Bitwarden plugin is always installed, on branch `fix/bwbroker-always-installed`. Plan 3's reload calls `vault.sh reload-plugins` from that branch, so that branch merges to `main` before this one. `onToggle` stays as a generic field with no built-in user.
 - A live run. Before tagging 0.3.13, Keith runs `scripts/addon.sh enable gptr --json` and `disable gptr --json` on his stack; it runs the bootstraps but recreates nothing.
