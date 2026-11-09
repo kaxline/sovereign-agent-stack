@@ -79,6 +79,10 @@ key .hidden.key_rw rw-secret-dot
 printf '{}\n' > "${store}/instances/sample.json.example"
 instance ftp '{"url": "ftp://crm.example.com", "access": "write"}'
 key ftp.key_rw rw-secret-ftp
+instance withmcp '{"url": "https://crm.example.com/mcp", "access": "write"}'
+key withmcp.key_rw rw-secret-withmcp
+instance creds '{"url": "https://user:pw-secret-creds@crm.example.com", "access": "write"}'
+key creds.key_rw rw-secret-creds
 
 export TWENTY_MCP_ENABLED=1 TWENTY_LOCAL_ENABLED=1
 unset TWENTY_MCP_TIMEOUT TWENTY_MCP_CONNECT_TIMEOUT 2>/dev/null || true
@@ -91,7 +95,9 @@ for profile in "" browser; do
   has "pin:${p}:crm-main:${PINS};" || fail "${p}: crm-main pins the seven tools"
   has "upsert:env:${p}:CRM_REMOTE_KEY=rw-secret-remote;" || fail "${p}: remote gets its read/write key"
   has "write:${p}:crm-remote:https://crm.example.com/mcp:CRM_REMOTE_KEY:" || fail "${p}: trailing slash stripped ($calls)"
-  has "reconcile:${p}:${SPEC} crm-main crm-remote;" || fail "${p}: reconcile keeps crm-main crm-remote ($calls)"
+  has "write:${p}:crm-withmcp:https://crm.example.com/mcp:CRM_WITHMCP_KEY:" \
+    || fail "${p}: a URL already ending in /mcp is used as is ($calls)"
+  has "reconcile:${p}:${SPEC} crm-main crm-remote crm-withmcp;" || fail "${p}: reconcile keeps main remote withmcp ($calls)"
 done
 
 run api-server
@@ -128,10 +134,13 @@ if has "crm-odd:"; then fail "api-server: an unknown access gives no entry eithe
 rm "${store}/instances/lookup.json" "${store}/instances/rdonly.json" "${store}/instances/odd.json"
 
 # Skipped files.
-run ""
-for bad in Bad_Slug sample hidden .hidden ftp; do
+run "" 2> "$tmp/stderr"
+for bad in Bad_Slug sample hidden .hidden ftp creds; do
   if has "crm-${bad}:"; then fail "${bad} must be skipped ($calls)"; fi
 done
+grep -q 'Bad_Slug.json' "$tmp/stderr" || fail "a bad slug is warned about ($(cat "$tmp/stderr"))"
+logged "WARNING.*'crm-creds'.*user name or password" || fail "a URL with credentials is warned about ($logs)"
+if printf '%s' "$logs" | grep -q 'pw-secret'; then fail "the log must not echo a URL's password"; fi
 logged "WARNING.*'crm-ftp'.*http" || fail "a non-http URL is warned about ($logs)"
 case "$logs" in *-secret-*) fail "log output must not contain a key" ;; esac
 plan="$(env TWENTY_MCP_ENABLED=1 TWENTY_LOCAL_ENABLED=1 python3 "$ADDON_MANIFEST_PY" instances-plan "$ADDONS_DIR" "$ADDON_DATA_DIR" default 2>&1)"
@@ -143,7 +152,7 @@ case "$pins_default" in *" get_tool_catalog mcp__crm_main__get_tool_catalog"*) ;
 case "$pins_default" in *"mcp__crm_remote__search_help_center"*) ;; *) fail "default pins crm-remote" ;; esac
 case "$(addon_instance_pin_args api-server)" in *crm_remote*) fail "api-server does not pin crm-remote" ;; esac
 
-rm "${store}/instances/ftp.json"
+rm "${store}/instances/ftp.json" "${store}/instances/withmcp.json" "${store}/instances/creds.json"
 
 # Local instance off (CR 0023 R2): local instances skipped and dropped, remote kept.
 TWENTY_LOCAL_ENABLED=0

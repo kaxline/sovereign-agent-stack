@@ -66,7 +66,7 @@ tools:
       - mcp__crm-old__learn_tools
       - mcp__calendar_work__caldav_get_events
 EOF2
-  printf 'TWENTY_MAIN_KEY=a\nTWENTY_OLD_KEY=b\nCRM_OLD_KEY=c\nTWENTY_ENCRYPTION_KEY=d\nOTHER=1\n' > "${tmp}/.env"
+  printf 'TWENTY_MAIN_KEY=a\nTWENTY_OLD_KEY=b\nCRM_OLD_KEY=c\nTWENTY_GONE_KEY=e\nOTHER=1\n' > "${tmp}/.env"
   chmod -R a+rwX "$tmp"
 }
 
@@ -107,7 +107,7 @@ grep -q '^CRM_MAIN_KEY=rw-fake-main$' "${tmp}/.env" || fail "CRM_MAIN_KEY holds 
 grep -q '^CRM_OLD_KEY=' "${tmp}/.env" && fail "CRM_OLD_KEY removed"
 grep -q '^TWENTY_MAIN_KEY=' "${tmp}/.env" && fail "legacy TWENTY_MAIN_KEY removed"
 grep -q '^TWENTY_OLD_KEY=' "${tmp}/.env" && fail "legacy TWENTY_OLD_KEY removed"
-grep -q '^TWENTY_ENCRYPTION_KEY=d$' "${tmp}/.env" || fail "TWENTY_ENCRYPTION_KEY is not a workspace key and stays"
+grep -q '^TWENTY_GONE_KEY=e$' "${tmp}/.env" || fail "a legacy key with no crm-* entry is left alone"
 grep -q '^OTHER=1$' "${tmp}/.env" || fail "other keys kept"
 no_key_leaks "enabled"
 

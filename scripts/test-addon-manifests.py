@@ -602,7 +602,8 @@ FAKE_KEYS = {"main.key_ro": "ro-fake-main", "main.key_rw": "rw-fake-main",
              "remote.key_rw": "rw-fake-remote", "lookup.key_ro": "ro-fake-lookup",
              "lookup.key_rw": "rw-fake-lookup", "rdonly.key_rw": "rw-fake-rdonly",
              "odd.key_ro": "ro-fake-odd", "odd.key_rw": "rw-fake-odd",
-             "badkey.key_rw": "rw-fake\nline"}
+             "badkey.key_rw": "rw-fake\nline", "withmcp.key_rw": "rw-fake-withmcp",
+             "creds.key_rw": "rw-fake-creds"}
 
 
 def tw_store(tmp: Path, instances: dict) -> Path:
@@ -639,6 +640,8 @@ with tempfile.TemporaryDirectory() as tmp:
         "ftp": {"url": "ftp://crm.example.com", "access": "write"},
         "badkey": {"url": "https://badkey.example.com", "access": "write"},
         "Bad_Slug": {"url": "https://bad.example.com", "access": "write"},
+        "withmcp": {"url": "https://crm.example.com/mcp/", "access": "write"},
+        "creds": {"url": "https://user:pw@crm.example.com", "access": "write"},
     })
     (data / "twenty" / "instances" / ".hidden.json").write_text("{}")
     (data / "twenty" / "instances" / "sample.json.example").write_text("{}")
@@ -667,6 +670,13 @@ with tempfile.TemporaryDirectory() as tmp:
           o[2:3] == ["0"] and o[9].startswith("access ") and "admin" not in o[9], str(o))
     f = rows.get("crm-ftp", [])
     check("a non-http url is off", f[2:3] == ["0"] and f[9].startswith("url "), str(f))
+    w = rows.get("crm-withmcp", [])
+    check("a stored url already ending in /mcp is not doubled",
+          w[2:4] == ["1", "https://crm.example.com/mcp"], str(w))
+    c = rows.get("crm-creds", [])
+    check("a url with a user name or password is off, and the reason holds no URL",
+          c[2:4] == ["0", ""] and c[9].startswith("url ") and "example" not in c[9] and "pw" not in c[9], str(c))
+    check("instances-plan never prints a url's password", "pw@" not in out, out)
     b = rows.get("crm-badkey", [])
     check("a key holding a line break is off", b[2:3] == ["0"] and b[9].startswith("key "), str(b))
     check("bad slugs and hidden files get no line",
@@ -728,6 +738,68 @@ with tempfile.TemporaryDirectory() as tmp:
     lines = am.instances_plan(Path(tmp), Path(tmp) / "data", "default", TW_ON)
     check("an invalid instances manifest gives an off add-on line",
           [l.split("|")[:3] for l in lines] == [["crm-*", "twenty", "0"]], str(lines))
+
+# --- cross-manifest conflicts -------------------------------------------------
+check("real addons/ has no cross-manifest conflict", am.dir_conflicts(am.load_dir(ROOT / "addons")) == {},
+      str(am.dir_conflicts(am.load_dir(ROOT / "addons"))))
+
+
+def conflict_dir(tmp: Path, extra: dict) -> Path:
+    """Real addons/ plus extra {sid: manifest} in a scratch addons dir."""
+    d = tmp / "addons"
+    shutil.copytree(ROOT / "addons", d)
+    for sid, m in extra.items():
+        (d / sid).mkdir()
+        (d / sid / "addon.json").write_text(am.canonical(m))
+    return d
+
+
+crmx = copy.deepcopy(BASE)
+crmx["id"] = "io.example.crmx"
+crmx["mcp"]["name"] = "crm-x"
+check("crm-x alone is a valid manifest (crm- is not a core prefix)", am.validate(crmx, "builtin") == [],
+      str(am.validate(crmx, "builtin")))
+with tempfile.TemporaryDirectory() as tmp:
+    d = conflict_dir(Path(tmp), {"crmx": crmx})
+    errs = {p.parent.name: e for p, _m, e in am.checked_dir(d)}
+    check("an mcp.name under Twenty's instance prefix is refused",
+          any("crm-x" in e and "twenty" in e for e in errs["crmx"]), str(errs["crmx"]))
+    check("Twenty itself stays valid next to it", errs["twenty"] == [], str(errs["twenty"]))
+    plan = am.mcp_plan(d, "default", {"GPTR_MCP_ENABLED": "1"})
+    check("mcp-plan skips the conflicting add-on", not any(l.startswith("crm-x|") for l in plan), str(plan))
+    validate = subprocess.run([sys.executable, str(ROOT / "scripts/lib/addon_manifest.py"), "validate", str(d)],
+                              capture_output=True, text=True)
+    check("validate reports the conflict", validate.returncode == 1 and "crm-x" in validate.stdout,
+          validate.stdout)
+
+overlap = json.loads((ROOT / "addons" / "twenty" / "addon.json").read_text())
+overlap["id"] = "io.example.twentyish"
+overlap["mcp"]["instances"]["name"] = "crm-eu-{slug}"
+with tempfile.TemporaryDirectory() as tmp:
+    d = conflict_dir(Path(tmp), {"twentyish": overlap})
+    errs = {p.parent.name: e for p, _m, e in am.checked_dir(d)}
+    check("overlapping instance prefixes refuse both add-ons",
+          any("overlap" in e for e in errs["twentyish"]) and any("overlap" in e for e in errs["twenty"]),
+          str(errs))
+    lines = am.instances_plan(d, Path(tmp) / "data", "default", TW_ON)
+    check("instances-plan turns both off, so their entries are dropped",
+          sorted(l.split("|")[0] + ":" + l.split("|")[2] for l in lines) == ["crm-*:0", "crm-eu-*:0"], str(lines))
+
+with tempfile.TemporaryDirectory() as tmp:
+    d = Path(tmp)
+    for sid, m in (("crmx", crmx), ("twenty", json.loads((ROOT / "addons" / "twenty" / "addon.json").read_text()))):
+        (d / sid).mkdir()
+        (d / sid / "addon.json").write_text(am.canonical(m))
+    conflicts = am.dir_conflicts(am.load_dir(d))
+    check("synthetic dir: only the add-on with the name is refused",
+          sorted(p.parent.name for p in conflicts) == ["crmx"], str(conflicts))
+    same = json.loads((ROOT / "addons" / "twenty" / "addon.json").read_text())
+    same["id"] = "io.example.twentyish"
+    (d / "twentyish").mkdir()
+    (d / "twentyish" / "addon.json").write_text(am.canonical(same))
+    conflicts = am.dir_conflicts(am.load_dir(d))
+    check("synthetic dir: the same prefix twice is an overlap",
+          any("overlap" in e for e in conflicts.get(d / "twentyish" / "addon.json", [])), str(conflicts))
 
 # Cron: Twenty's cron "ro" keeps crm-* entries in cron, as before 0.3.13; with
 # cron false every instance's entry is fenced.

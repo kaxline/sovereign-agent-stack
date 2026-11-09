@@ -1636,8 +1636,8 @@ PY
 # entries under the prefixes are ours; entries a client added under another
 # name stay, even at the same URL.
 #
-# Before 0.3.13 a Twenty workspace's key was TWENTY_<SLUG>_KEY; that line is
-# removed for every crm-* entry, kept or dropped.
+# Twenty only: before 0.3.13 a workspace's key was TWENTY_<SLUG>_KEY; that
+# line is removed for every crm-* entry in the config, kept or dropped.
 #
 # Usage: reconcile_addon_instance_servers <profile> [<prefix>=<pin,pin...>]... [<name>]...
 reconcile_addon_instance_servers() {
@@ -1723,9 +1723,10 @@ PY
         remove_env_key "$_rais_env" "$(addon_instance_key_env "${_rais_line#REMOVED }")"
         ;;
       SEEN\ crm-*)
+        # Twenty only, for the 0.3.13 upgrade: a crm-* entry still in the
+        # config may have its key under the old name. A legacy key whose
+        # entry was already gone stays; there is no wider sweep.
         _rais_legacy="TWENTY_$(printf '%s' "${_rais_line#SEEN crm-}" | tr '[:lower:]-' '[:upper:]_')_KEY"
-        # Twenty's own secret, not a workspace key.
-        [ "$_rais_legacy" != TWENTY_ENCRYPTION_KEY ] || continue
         if grep -q "^${_rais_legacy}=" "$_rais_env" 2>/dev/null; then
           remove_env_key "$_rais_env" "$_rais_legacy"
         fi

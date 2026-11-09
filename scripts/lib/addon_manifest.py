@@ -45,9 +45,9 @@ every add-on whose permissions.cron is not true. With cron "ro" the add-on's nam
 only its URLs other than the ro service's are, so a cron job keeps the ro
 entry and loses the rw one. An invalid manifest is fenced by whatever MCP
 name it carries, so a broken manifest can't open cron. An mcp.instances entry
-is fenced by the name of each instance in the store, except with cron "ro",
-where the entries stay in cron (api-server, which has no cron of its own,
-gets only ro keys). cron_fence_toolsets()
+is fenced by the name of each instance in the store (<data_dir>/<add-on
+directory>), except with cron "ro", where the entries stay in cron with the
+key of the profile the job runs on; only api-server is held to the ro key. cron_fence_toolsets()
 does the same for the plugin toolsets of add-ons with a vaultBackend.
 
 Settings (and the schema of `instances`, {name, settings}) take the types in
@@ -344,7 +344,8 @@ def validate(manifest, source: str = "builtin", repo=_AUTO) -> list[str]:
             if perms.get("cron") == "ro" and not (
                     isinstance(entry, dict) and (
                         (isinstance(entry.get("service"), dict) and "ro" in entry["service"])
-                        # with mcp.instances, cron and api-server use the instance's ro key
+                        # with mcp.instances, api-server gets only the instance's ro key;
+                        # cron follows the profile it runs on
                         or (isinstance(entry.get("instances"), dict)
                             and isinstance(entry["instances"].get("auth"), dict)
                             and isinstance(entry["instances"]["auth"].get("secret"), dict)
@@ -955,6 +956,53 @@ def load_dir(addons_dir: Path) -> list[tuple[Path, object, str | None]]:
     return out
 
 
+def _raw_mcp_list(manifest) -> list:
+    raw = manifest.get("mcp") if isinstance(manifest, dict) else None
+    return raw if isinstance(raw, list) else [raw]
+
+
+def dir_conflicts(loaded) -> dict[Path, list[str]]:
+    """Errors that only show across the manifests of one addons dir, by path.
+    The bootstrap drops every entry under an mcp.instances prefix that isn't a
+    live instance, so an mcp.name under another add-on's prefix (or its own)
+    would be written and then removed on every start, and two prefixes where
+    one starts with the other would remove each other's entries. Read from
+    the raw manifests, so an invalid one still counts."""
+    names, prefixes = [], []
+    for path, manifest, _parse_error in loaded:
+        for entry in _raw_mcp_list(manifest):
+            name = entry.get("name") if isinstance(entry, dict) else None
+            if isinstance(name, str) and name:
+                names.append((path, name))
+            template = _raw_instance_template(entry)
+            if template:
+                prefixes.append((path, template.split("{slug}")[0]))
+    out: dict[Path, list[str]] = {}
+    for path, name in names:
+        for other, prefix in prefixes:
+            if name.startswith(prefix):
+                out.setdefault(path, []).append(
+                    f"mcp.name {name!r} starts with {other.parent.name}'s instance prefix {prefix!r}")
+    for i, (pa, a) in enumerate(prefixes):
+        for pb, b in prefixes[i + 1:]:
+            if a.startswith(b) or b.startswith(a):
+                msg = (f"instance prefix {a!r} ({pa.parent.name}) and {b!r} ({pb.parent.name}) "
+                       "overlap; one would drop the other's entries")
+                out.setdefault(pa, []).append(msg)
+                if pb != pa:
+                    out.setdefault(pb, []).append(msg)
+    return out
+
+
+def checked_dir(addons_dir: Path) -> list[tuple[Path, object, list[str]]]:
+    """(path, manifest or None, errors) for each addon.json: check_builtin_file
+    plus dir_conflicts. Every reader of a built-in addons dir uses this."""
+    loaded = load_dir(addons_dir)
+    conflicts = dir_conflicts(loaded)
+    return [(path, manifest, check_builtin_file(path, manifest, parse_error) + conflicts.get(path, []))
+            for path, manifest, parse_error in loaded]
+
+
 def check_builtin_file(path: Path, manifest, parse_error: str | None) -> list[str]:
     """validate() plus the repo-only rules: canonical layout, dir name."""
     if parse_error:
@@ -1000,8 +1048,8 @@ def cron_fence(addons_dir: Path, environ=os.environ,
     """data_dir holds each add-on's store (<data_dir>/<short id>/instances); an
     mcp.instances entry is fenced by the names of the instances found there."""
     names, urls = [], []
-    for path, manifest, parse_error in load_dir(addons_dir):
-        if check_builtin_file(path, manifest, parse_error):
+    for path, manifest, errors in checked_dir(addons_dir):
+        if errors:
             raw = manifest.get("mcp") if isinstance(manifest, dict) else None
             for entry in raw if isinstance(raw, list) else [raw]:
                 name = entry.get("name") if isinstance(entry, dict) else None
@@ -1018,11 +1066,13 @@ def cron_fence(addons_dir: Path, environ=os.environ,
         for mcp in mcp_entries(manifest):
             if "instances" in mcp:
                 # cron "ro": the entries stay in cron, as Twenty's crm-* entries
-                # always have; api-server gets only the ro key (instances_plan).
+                # always have. A cron job gets the key of the profile it runs
+                # on (rw on default for a write instance); api-server gets
+                # only the ro key (instances_plan).
                 if cron != "ro" and data_dir is not None:
                     template = mcp["instances"]["name"]
                     names.extend(template.replace("{slug}", s)
-                                 for s in _store_slugs(Path(data_dir) / short_id(manifest["id"]))[0])
+                                 for s in _store_slugs(Path(data_dir) / path.parent.name)[0])
                 continue
             mcp_urls = _mcp_urls(manifest, mcp, environ)
             if cron == "ro":
@@ -1037,13 +1087,13 @@ def cron_fence(addons_dir: Path, environ=os.environ,
 def cron_fence_toolsets(addons_dir: Path) -> list[tuple[str, str]]:
     """(vaultBackend.name, vaultBackend.toolset) for each add-on whose plugin toolset stays out of cron."""
     out = set()
-    for path, manifest, parse_error in load_dir(addons_dir):
+    for path, manifest, errors in checked_dir(addons_dir):
         vb = manifest.get("vaultBackend") if isinstance(manifest, dict) else None
         name = vb.get("name") if isinstance(vb, dict) else None
         toolset = vb.get("toolset") if isinstance(vb, dict) else None
         if not (isinstance(name, str) and name and isinstance(toolset, str) and toolset):
             continue
-        valid = not check_builtin_file(path, manifest, parse_error)
+        valid = not errors
         if valid and manifest.get("permissions", {}).get("cron") is True:
             continue
         out.add((name, toolset))
@@ -1052,8 +1102,7 @@ def cron_fence_toolsets(addons_dir: Path) -> list[tuple[str, str]]:
 
 def mcp_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
     lines = []
-    for path, manifest, parse_error in load_dir(addons_dir):
-        errors = check_builtin_file(path, manifest, parse_error)
+    for path, manifest, errors in checked_dir(addons_dir):
         if errors:
             for e in errors:
                 print(f"warning: skipping {path.parent.name}: {e}", file=sys.stderr)
@@ -1144,6 +1193,27 @@ def _instance_values(store: Path, slug: str, schema: dict) -> dict | None:
     return values
 
 
+def _fill_url(template: str, values: dict, schema: dict) -> str:
+    """Fill {setting:<name>} refs. A url setting loses trailing slashes, and
+    the literal text after its ref when it already ends with it, so a stored
+    https://crm.example.com/mcp in "{setting:url}/mcp" stays .../mcp."""
+    out, pos = [], 0
+    for m in SETTING_REF_RE.finditer(template):
+        out.append(template[pos:m.start()])
+        v = values.get(m.group(1), "")
+        v = "" if v is None else str(v)
+        if schema.get(m.group(1), {}).get("type") == "url":
+            v = v.rstrip("/")
+            nxt = SETTING_REF_RE.search(template, m.end())
+            after = template[m.end():nxt.start() if nxt else len(template)].rstrip("/")
+            if after and v.endswith(after):
+                v = v[:-len(after)]
+        out.append(v)
+        pos = m.end()
+    out.append(template[pos:])
+    return "".join(out)
+
+
 def _key_problem(path: Path) -> str:
     """Why the key file can't be used, or "". Never returns the value."""
     try:
@@ -1184,12 +1254,12 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
             return
         lines.append("|".join(fields))
 
-    for path, manifest, parse_error in load_dir(addons_dir):
+    for path, manifest, errors in checked_dir(addons_dir):
         sid_dir = path.parent.name
-        errors = check_builtin_file(path, manifest, parse_error)
         if errors:
-            raw = manifest.get("mcp") if isinstance(manifest, dict) else None
-            for entry in raw if isinstance(raw, list) else [raw]:
+            for e in errors:
+                print(f"warning: skipping {sid_dir}: {e}", file=sys.stderr)
+            for entry in _raw_mcp_list(manifest):
                 template = _raw_instance_template(entry)
                 if template:
                     pins = entry.get("pin") if isinstance(entry, dict) else None
@@ -1214,7 +1284,7 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
                   connect, " ".join(mcp.get("pin", [])), flag, "", ""], sid_dir)
 
             schema = manifest["instances"]["settings"]
-            store = data_dir / short_id(manifest["id"])
+            store = data_dir / sid_dir
             slugs, bad = _store_slugs(store)
             for f in bad:
                 print(f"warning: {sid_dir}: skipping instance file {f}: a slug is lowercase letters, "
@@ -1239,14 +1309,12 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
                     line("0", reason=f"file instances/{slug}.json is not a JSON object")
                     continue
 
-                def fill(m):
-                    v = values.get(m.group(1), "")
-                    v = "" if v is None else str(v)
-                    return v.rstrip("/") if schema.get(m.group(1), {}).get("type") == "url" else v
-
-                url = SETTING_REF_RE.sub(fill, inst["url"])
+                url = _fill_url(inst["url"], values, schema)
                 if not re.match(r"^https?://[^\s|]+\Z", url):
                     line("0", reason="url must start with http:// or https://")
+                    continue
+                if "@" in url.split("://", 1)[1].split("/", 1)[0]:
+                    line("0", reason="url must not carry a user name or password")
                     continue
                 if gate:
                     gated = values.get(gate["setting"])
@@ -1260,7 +1328,7 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
                     continue
                 use = "ro" if level == "ro" else INSTANCE_ACCESS_LEVELS[access]
                 secret = inst["auth"]["secret"][use]
-                keyfile = data_dir / short_id(manifest["id"]) / "secrets" / f"{slug}.{secret}"
+                keyfile = store / "secrets" / f"{slug}.{secret}"
                 problem = _key_problem(keyfile)
                 if problem:
                     why = (f"{access_setting} is {access}" if level == "rw"
@@ -1277,8 +1345,7 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
 
 def vault_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
     lines = []
-    for path, manifest, parse_error in load_dir(addons_dir):
-        errors = check_builtin_file(path, manifest, parse_error)
+    for path, manifest, errors in checked_dir(addons_dir):
         if errors:
             for e in errors:
                 print(f"warning: skipping {path.parent.name}: {e}", file=sys.stderr)
@@ -1300,8 +1367,8 @@ def vault_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
 def main(argv: list[str]) -> int:
     if len(argv) >= 2 and argv[0] == "validate":
         bad = 0
-        for path, manifest, parse_error in load_dir(Path(argv[1])):
-            for e in check_builtin_file(path, manifest, parse_error):
+        for path, manifest, errors in checked_dir(Path(argv[1])):
+            for e in errors:
                 print(f"{path}: {e}")
                 bad += 1
         return 1 if bad else 0

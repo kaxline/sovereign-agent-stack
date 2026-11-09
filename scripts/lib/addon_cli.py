@@ -7,7 +7,7 @@ runs in the Hermes image through stack_python, so the host needs no python3.
     list --flags JSON
         A JSON array of addon_store.listing() objects, sorted by short id.
         JSON maps env flag names to "1" or "0" (addon.sh reads them from .env).
-        A manifest that fails check_builtin_file is left out with a warning.
+        A manifest that fails check_builtin_file or am.dir_conflicts is left out with a warning.
     configure SID [--instance SLUG] [--flags JSON]
         Reads one JSON object on stdin and stores it with apply_settings, or
         apply_instance for SLUG. Prints {"flags": {FLAG: "1"|"0"}}, the .env
@@ -66,10 +66,9 @@ class Fail(Exception):
 def _manifest(addons_dir: Path, sid: str) -> dict:
     if not SID_RE.match(sid):
         raise Fail(f"unknown add-on {sid!r}")
-    for path, manifest, parse_error in am.load_dir(addons_dir):
+    for path, manifest, errors in am.checked_dir(addons_dir):
         if path.parent.name != sid:
             continue
-        errors = am.check_builtin_file(path, manifest, parse_error)
         if errors:
             raise Fail(f"{sid}: {errors[0]}")
         return manifest
@@ -120,8 +119,7 @@ def _no_constant(name: str):
 def cmd_list(args) -> None:
     flags = _flags_arg(args.flags)
     out = []
-    for path, manifest, parse_error in am.load_dir(args.addons_dir):
-        errors = am.check_builtin_file(path, manifest, parse_error)
+    for path, manifest, errors in am.checked_dir(args.addons_dir):
         if errors:
             print(f"warning: skipping {path.parent.name}: {errors[0]}", file=sys.stderr)
             continue
