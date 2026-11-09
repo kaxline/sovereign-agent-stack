@@ -238,7 +238,7 @@ export class ActualConnection {
           console.error('Failed to sync with Actual server, continuing with local data:', error);
           return;
         }
-        console.error(`Actual session ended (${code}); closing the budget so later calls re-initialize.`);
+        console.error(`Actual sync refused (${code}); closing the budget so later calls re-initialize.`);
         await this.closeAfterEndedSession();
         throw new ActualSessionEndedError(code, error);
       })
