@@ -31,14 +31,13 @@ These shape the build, so they are settled at plan approval. The first option of
 4. **`backup.recommended`.** Plan 3's validator takes env names only, so "the local workspace file" can't be listed. `data/addons/twenty/` is backed up as a unit, which covers it. The plan lists `["TWENTY_PASSWORD", "TWENTY_PASSWORD_FILE"]`.
 5. **Bitwarden secrets sync.** `compose/bitwarden-broker/secrets_sync.py` writes `twenty/<slug>/key-ro|key-rw` into `compose/twenty/workspaces/<slug>.env` and never creates files, so after migration it would skip those items silently. The plan retargets them to `data/addons/twenty/secrets/<slug>.key_ro|key_rw` (whole-file values, like the encryption key), with a compose mount change for `bitwarden-secrets-sync` (Task 5). Alternative: leave it and document the gap.
 
-## Open coordination with plan 3's session
+## Agreed with plan 3's session (2026-11-09)
 
-Sent 2026-11-09. The plan assumes these answers; Task 3 adjusts if any differ.
-
-- `crm.sh init` writes the local workspace with `addon_cli.py configure twenty --instance <slug>` (stdin), not `addon.sh`, because `enable` holds the lock while `init` runs.
-- `connect`'s staged stdin is stored unchanged, so the caller sends `local`. The hook only checks it (`local_mismatch`).
-- `addon.sh enable` has no pre-start hook point, so `migrate` runs from `crm.sh ensure` (which `make ensure-local` and `make up` run) and at the start of `crm.sh init`, `add`, `remove`, `access`, `login-link` and `open`.
-- The hook's `done` line is `{"phase":"done","account":"<slug>","mcp":["crm-<slug>"]}`.
+- `crm.sh init` writes the local workspace with `addon_cli.py configure twenty --instance <slug>` through `stack_python`, passing `--addons-dir` and `--data-root` with the data root mounted, as `addon.sh`'s `cli()` does. `addon_cli.py` takes no lock; calling `scripts/addon.sh` from inside a hook would fail with `busy`. Its stdin is one JSON object of `instances.settings` names to values, secrets included; unknown keys are `bad_input` (exit 2). That shape is fixed for 0.3.13.
+- The caller sends `local`. `crm.sh connect` refuses a mismatch with `local_mismatch`, listed in `instances.errors`, and `addon.sh` passes it through with exit 4.
+- `enable` runs flags, pull, start, `init` (once), reload, and nothing on every enable. `migrate` runs at the start of `crm.sh init` and every other `crm.sh` command, and in `crm.sh ensure` (`make ensure-local`, `make up`). On an existing install the first `addon.sh enable twenty` has no `init` record, so `init` runs and migrates. Residual gap: a stack upgraded and started with plain `docker compose up`, with no `crm.sh` call, registers no `crm-*` entries until one runs; `make doctor` warns. Plan 3's owner offered to propose running `hooks.upgrade` on enable when `state.json`'s `init.version` differs from the manifest version; that is Keith's call and not assumed here.
+- The hook gets `--slug <slug> --json` with the values on stdin, and its `done` line is `{"phase":"done","account":"<slug>","mcp":["crm-<slug>"]}`. `addon.sh` copies `account` and `mcp` into its own `done`, and relays earlier `phase` lines inside step `check`.
+- Secret instance settings land at `secrets/<slug>.key_ro` and `secrets/<slug>.key_rw` (0600), written by `addon.sh` at step `register` after the hook's check passes.
 
 ## Files
 
