@@ -420,7 +420,7 @@ git commit -m "Test that addon.sh passes the compose project and profiles throug
 - Keith took R13 (2026-11-09): the Bitwarden plugin is always installed, on branch `fix/bwbroker-always-installed`. Plan 3's reload calls `vault.sh reload-plugins` from that branch, so that branch merges to `main` before this one. `onToggle` stays as a generic field with no built-in user.
 - A live run. Before tagging 0.3.13, Keith runs `scripts/addon.sh enable gptr --json` and `disable gptr --json` on his stack; it runs the bootstraps but recreates nothing.
 
-### Task 11: Transient instance secrets
+### Task 11: Transient instance secrets and optional instances
 
 Added 2026-11-09 at the Actual session's request, with Keith's go-ahead. Runs after Task 9 and before Task 10, so the docs cover it. Boundary sends the Actual password on `connect`'s stdin; `budget.sh connect` signs in with it and stores only the session token it gets back (CR 0026), so `addon.sh` must not store the password.
 
@@ -434,8 +434,9 @@ Added 2026-11-09 at the Actual session's request, with Keith's go-ahead. Runs af
 - The connect hook gets it on stdin unchanged, and redaction (`cli redact`, `log-tail --redact`) covers it as a secret.
 - `apply_instance` (step `register`, and `configure --instance`) never writes it: no `secrets/<slug>.<name>` file and no key in `instances/<slug>.json`.
 - `missing()` never reports a transient setting. `listing()` shows it in the instance schema with `"transient": true`, and never as set or unset in an instance view.
+- `instances.optional: true` (a bool, built-in only; added at the Twenty session's request): `missing()` then leaves out the `instances:<name>` entry, so an add-on whose `init` hook creates its first instance (Twenty's local `main` workspace) can be enabled with none. `listing()` carries it in the instance schema.
 
-- [ ] **Step 1: Write the failing tests.** Validator: `transient` on a string setting, on a top-level setting, and in a manifest without `instances.connect` each fail; on an instance secret with a connect hook it passes. Store: `apply_instance` with a transient `password` writes neither `secrets/<slug>.password` nor a `password` key; `missing()` skips it; `listing()` carries `"transient": true` in the schema. CLI, with the `hooked` fixture's `password` made transient: a good connect passes the password to the hook (the fixture script checks it on stdin) and leaves no `secrets/work.password`; the end-of-file secret scan covers the new outputs.
+- [ ] **Step 1: Write the failing tests.** Validator: `instances.optional` must be a bool. Store: with `instances.optional: true` and no instance, `missing()` has no `instances:` entry; without it, the entry stays. Validator: `transient` on a string setting, on a top-level setting, and in a manifest without `instances.connect` each fail; on an instance secret with a connect hook it passes. Store: `apply_instance` with a transient `password` writes neither `secrets/<slug>.password` nor a `password` key; `missing()` skips it; `listing()` carries `"transient": true` in the schema. CLI, with the `hooked` fixture's `password` made transient: a good connect passes the password to the hook (the fixture script checks it on stdin) and leaves no `secrets/work.password`; the end-of-file secret scan covers the new outputs.
 - [ ] **Step 2: Run and confirm they fail**
 
 Run: `python3 scripts/test-addon-manifests.py; python3 scripts/test-addon-store.py; sh scripts/test-addon-cli.sh`
