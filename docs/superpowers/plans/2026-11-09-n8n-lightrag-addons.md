@@ -27,8 +27,8 @@ open.
   bootstrap never registers or drops LightRAG on default (the CR 0022 reply promises this). The
   generic path drops by URL on every profile a manifest leaves out, which would delete a
   hand-added `lightrag-mcp` entry on default. `mcp.unmanaged: ["default"]` keeps the old
-  behavior. The alternative, registering the five read tools on default too, is a behavior change
-  for Keith to choose, not part of this plan.
+  behavior. Keith decided on 2026-11-09 to keep it that way rather than register the five read
+  tools on default.
 - **The unfiltered-duplicate drop becomes generic.** After registering, bootstrap drops every
   other key pointing at the same URL on that profile. For LightRAG this is the security boundary
   (17 upstream tools, 12 of them write); for GPTR and Actual it removes stray copies.
