@@ -268,10 +268,10 @@ r=0; json_ok "$out" "done" "steps == ${ENABLE_STEPS} and last == {'phase':'done'
 check "enable --json prints flags, start and reload, then done" "$r"
 r=0; json_ok "$out" "done" '[l["service"] for l in lines if l["phase"] == "pull" and l.get("status") == "done"] == ["fixture-worker", "fixture-extra", "fixture-seed"]' || r=1
 check "enable --json prints a pull done line per service it starts" "$r"
-if [ "$(grep -n 'pull' "$STUB_LOG" | head -1 | cut -d: -f1)" = 1 ] && logged "compose --progress json pull --ignore-buildable fixture-worker"; then
-  ok "enable --json pulls before anything else"
+if [ "$(grep -n 'pull' "$STUB_LOG" | head -1 | cut -d: -f1)" = 1 ] && logged "compose --progress json pull --policy missing --ignore-buildable fixture-worker"; then
+  ok "enable --json pulls missing images before anything else"
 else
-  bad "enable --json pulls before anything else"; cat "$STUB_LOG"
+  bad "enable --json pulls missing images before anything else"; cat "$STUB_LOG"
 fi
 
 addon disable fixture
@@ -325,6 +325,14 @@ echo 999999 > "${lock}/pid"
 addon enable fixture
 expect_rc "a lock whose process is gone is taken over" 0
 if [ ! -e "$lock" ]; then ok "enable releases the lock"; else bad "enable releases the lock"; fi
+if ls -d "${lock}".* > /dev/null 2>&1; then bad "takeover leaves no stale copy"; else ok "takeover leaves no stale copy"; fi
+addon disable fixture
+mkdir "$lock"
+addon enable fixture
+expect_rc "a fresh lock with no pid file is busy" 1
+touch -t 202001010000 "$lock"
+addon enable fixture
+expect_rc "a lock with no pid file older than 10 seconds is taken over" 0
 addon disable fixture
 
 : > "$STUB_LOG"
@@ -345,6 +353,23 @@ fi
 r=0; json_ok "$out" error 'last["step"] == "start" and last.get("rolledBack") is True' || r=1
 check "SIGTERM ends with an error line" "$r"
 if [ -s "$SLEEP_PID" ] && ! kill -0 "$(cat "$SLEEP_PID")" 2>/dev/null; then ok "SIGTERM stops the running compose call"; else bad "SIGTERM stops the running compose call"; fi
+
+# json_str under the C locale: a cut never splits a UTF-8 sequence, and C1
+# controls are dropped as clean_line drops them.
+events_c() {
+  # shellcheck disable=SC2016 # expanded by the inner bash
+  env -u LC_ALL -u LC_CTYPE LANG= "$BASH_UNDER_TEST" -c '. "$1"; json_str "$2"' _ "${REPO}/scripts/lib/addon-events.sh" "$1"
+}
+long_e="a$(python3 -c 'print("\u00e9" * 600, end="")')"
+out="${tmp}/out/json-str"
+events_c "$long_e" > "$out" 2>&1 || true
+if python3 -c 'import json, sys; t = json.loads(open(sys.argv[1], "rb").read().decode("utf-8")); sys.exit(0 if t.startswith("a\u00e9") and set(t[1:]) == {"\u00e9"} and len(t.encode()) <= 500 else 1)' "$out" 2> /dev/null; then
+  ok "json_str cuts 600 x e-acute without splitting a UTF-8 sequence"
+else
+  bad "json_str cuts 600 x e-acute without splitting a UTF-8 sequence"
+fi
+events_c "$(printf 'x\302\205y\033z')" > "$out" 2>&1 || true
+if [ "$(cat "$out")" = '"xyz"' ]; then ok "json_str drops C1 and ASCII controls"; else bad "json_str drops C1 and ASCII controls"; sed 's/^/    /' "$out"; fi
 
 cli_host() { python3 "${REPO}/scripts/lib/addon_cli.py" --addons-dir "$ADDONS_DIR" --data-root "$tmp" "$@"; }
 out="${tmp}/out/pull-events"

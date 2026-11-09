@@ -153,24 +153,47 @@ cli_checked() {
 }
 
 # The lock: data/addons/.lock, made with mkdir (atomic), holding the owner's
-# PID in pid. A lock whose PID no longer runs is taken over. addon_unlock runs
-# from the EXIT trap and removes only a lock this process took.
+# PID in pid. addon_unlock runs from the EXIT trap and removes only a lock
+# this process took.
+#
+# A lock is stale when its pid names a process that no longer runs, or when it
+# has no pid and is older than 10 seconds (its owner died between mkdir and
+# writing pid). A stale lock is taken over by renaming it (only one caller's
+# rename succeeds), checking the renamed copy is the one judged stale, deleting
+# it and making a new one. If a faster caller replaced the lock in between,
+# the copy is put back and this caller is busy.
 LOCK_DIR=""
+lock_pid() { cat "${1}/pid" 2> /dev/null || true; }
+lock_age() {
+  local m
+  m="$(stat -c %Y "$1" 2> /dev/null || stat -f %m "$1" 2> /dev/null)" || return 1
+  [[ "$m" =~ ^[0-9]+$ ]] || return 1
+  echo $(($(date +%s) - m))
+}
+lock_stale() {
+  local pid="$2" age
+  if [[ "$pid" =~ ^[0-9]+$ ]]; then
+    if kill -0 "$pid" 2> /dev/null; then return 1; fi
+  elif [[ -z "$pid" && ! -e "${1}/pid" ]]; then
+    age="$(lock_age "$1")" && [[ "$age" -gt 10 ]]
+  else
+    return 1
+  fi
+}
 addon_lock() {
-  local dir="${DATA_ROOT}/addons/.lock" pid
+  local dir="${DATA_ROOT}/addons/.lock" pid moved
   mkdir -p "${DATA_ROOT}/addons"
   if ! mkdir "$dir" 2> /dev/null; then
-    pid="$(cat "${dir}/pid" 2> /dev/null || true)"
-    # Take over only a lock whose pid names a dead process and still names it
-    # on a second read, so a caller that took it over in between keeps it. No
-    # pid yet means the owner is between mkdir and writing it: busy.
-    if [[ "$pid" =~ ^[0-9]+$ ]] && ! kill -0 "$pid" 2> /dev/null \
-      && [[ "$(cat "${dir}/pid" 2> /dev/null || true)" == "$pid" ]]; then
-      rm -rf "$dir"
-      mkdir "$dir" 2> /dev/null || ev_fail busy "" "another add-on change is running" ""
-    else
-      ev_fail busy "" "another add-on change is running (pid ${pid:-unknown})" ""
+    pid="$(lock_pid "$dir")"
+    lock_stale "$dir" "$pid" || ev_fail busy "" "another add-on change is running (pid ${pid:-unknown})" ""
+    moved="${dir}.stale.$$"
+    mv "$dir" "$moved" 2> /dev/null || ev_fail busy "" "another add-on change is running" ""
+    if [[ "$(lock_pid "$moved")" != "$pid" ]]; then
+      mv "$moved" "$dir" 2> /dev/null || true
+      ev_fail busy "" "another add-on change is running" ""
     fi
+    rm -rf "$moved"
+    mkdir "$dir" 2> /dev/null || ev_fail busy "" "another add-on change is running" ""
   fi
   LOCK_DIR="$dir"
   printf '%s\n' "$$" > "${dir}/pid"
@@ -271,13 +294,15 @@ gate_on() {
 # pull_stream LOG SERVICES...: one compose pull per service, its output
 # appended to LOG and framed by marker objects so pull-events can name the
 # service. Compose 2.2x labels events with the service; newer versions label
-# them "Image <ref>". Images with a build section are left to `up`.
+# them "Image <ref>". Only missing images are pulled (enable isn't an upgrade,
+# and a machine offline or with a local-only image must still enable), and
+# images with a build section are left to `up`.
 pull_stream() {
   local log="$1" s
   shift
   for s in "$@"; do
     printf '{"addonPull":"start","service":"%s"}\n' "$s"
-    docker compose --progress json pull --ignore-buildable "$s" 2>&1 | tee -a "$log" || return 1
+    docker compose --progress json pull --policy missing --ignore-buildable "$s" 2>&1 | tee -a "$log" || return 1
     printf '{"addonPull":"done","service":"%s"}\n' "$s"
   done
 }

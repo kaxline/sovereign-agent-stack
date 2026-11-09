@@ -58,13 +58,36 @@ ev_log() {
   mktemp "${EV_TMP}/${1}.XXXXXX"
 }
 
-# json_str TEXT: TEXT as a JSON string literal. Tab becomes a space, other
-# ASCII control characters are dropped and the result is cut to 500
-# characters, as addon_cli.py clean_line does.
+# json_str TEXT: TEXT as a JSON string literal. Tab becomes a space, control
+# characters are dropped (ASCII 0x00-0x1F and 0x7F, and C1 U+0080-U+009F as
+# UTF-8), the same set addon_cli.py clean_line drops. The cut differs: bash
+# works on bytes here (LC_ALL=C, so the result doesn't depend on the caller's
+# locale), so the result is at most 500 bytes, not 500 characters, and a UTF-8
+# sequence the cut splits is dropped whole.
 json_str() {
-  local s
+  local LC_ALL=C s tail="" lead need
   s="$(printf '%s' "$1" | tr '\t' ' ' | tr -d '\000-\010\012-\037\177')"
-  s="${s:0:500}"
+  s="${s//$'\xc2'[$'\x80'-$'\x9f']/}"
+  if [[ ${#s} -gt 500 ]]; then
+    s="${s:0:500}"
+    # Up to three continuation bytes, then the lead byte they belong to.
+    while [[ ${#tail} -lt 3 && -n "$s" && "${s: -1}" == [$'\x80'-$'\xbf'] ]]; do
+      tail="${s: -1}${tail}"
+      s="${s%?}"
+    done
+    lead="${s: -1}"
+    case "$lead" in
+      [$'\xc0'-$'\xdf']) need=1 ;;
+      [$'\xe0'-$'\xef']) need=2 ;;
+      [$'\xf0'-$'\xf7']) need=3 ;;
+      *) need=-1 ;;
+    esac
+    if [[ "${#tail}" == "$need" ]]; then
+      s="${s}${tail}"
+    elif [[ "$need" != -1 ]]; then
+      s="${s%?}"
+    fi
+  fi
   s="${s//\\/\\\\}"
   s="${s//\"/\\\"}"
   printf '"%s"' "$s"

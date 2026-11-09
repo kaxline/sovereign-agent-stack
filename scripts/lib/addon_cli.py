@@ -230,7 +230,10 @@ LINE_SPLIT_RE = re.compile(r"\r\n|\r|\n")
 
 
 def clean_line(text: str) -> str:
-    """The rule for every addon.sh output string (json_str in addon-events.sh)."""
+    """The rule for every addon.sh output string. json_str in addon-events.sh
+    drops the same characters (category Cc: 0x00-0x1F, 0x7F, 0x80-0x9F) but
+    cuts at 500 bytes, keeping UTF-8 sequences whole, where this cuts at 500
+    characters."""
     text = text.replace("\t", " ")
     return "".join(c for c in text if unicodedata.category(c) != "Cc")[:LINE_MAX]
 
