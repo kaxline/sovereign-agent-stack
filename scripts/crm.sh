@@ -430,14 +430,14 @@ cmd_init() {
   fi
   valid_slug "$slug" || die "slug '${slug}' must use lowercase letters, digits and hyphens"
   migrate_first
+  if [[ -n "$json" ]] && ! is_true "$(env_get TWENTY_LOCAL_ENABLED 0)"; then
+    printf '{"phase":"done","message":"local instance off"}\n' >&3
+    exit 0
+  fi
   local left
   left="$(unmigrated_for_init "$slug")"
   if [[ -n "$left" ]]; then
     die "${left} isn't in ${STORE} yet, so init would create a new, empty workspace beside it. Fix what migrate reported above (make doctor says why) and run ./scripts/crm.sh migrate, then init again"
-  fi
-  if [[ -n "$json" ]] && ! is_true "$(env_get TWENTY_LOCAL_ENABLED 0)"; then
-    printf '{"phase":"done","message":"local instance off"}\n' >&3
-    exit 0
   fi
   DIE_ERROR=server_unreachable
   require_running
