@@ -56,8 +56,7 @@ _PATTERNS = tuple((cls, re.compile("|".join(parts))) for cls, parts in (
     # bw 2026.10.1 prints "Rate limit exceeded. Try again later." for Vaultwarden's 429, with no Retry-After.
     ("rate_limited", (r"too many requests", r"rate limit exceeded", r"\b(?:status|http|code)\b\D{0,3}429\b",
                       r"\b429\b\s*too many")),
-    # bw 2026.10.1's unlock with a wrong password: "Cryptography error, The decryption operation failed".
-    ("auth", (r"invalid master password", r"the decryption operation failed", r"username or password is incorrect",
+    ("auth", (r"invalid master password", r"username or password is incorrect",
               r"client_id or client_secret is incorrect", r"\bincorrect client_(?:id|secret)\b",
               r"\binvalid_client\b", r"\binvalid_grant\b",
               r"you are not logged in", r"\b401\b\s*unauthorized", r"\bunauthorized\b\s*\(?401\b",
@@ -68,6 +67,10 @@ _PATTERNS = tuple((cls, re.compile("|".join(parts))) for cls, parts in (
                  r"unable to verify the first certificate", r"self[- ]signed certificate",
                  r"certificate has expired")),
 ))
+
+# bw 2026.10.1's unlock with a wrong password: "Cryptography error, The decryption operation failed".
+# Any other command printing it has an item that does not decrypt, which is not an auth failure.
+_UNLOCK_AUTH = re.compile(r"the decryption operation failed")
 
 _LOCKS: dict[str, threading.Lock] = {}
 _LOCKS_GUARD = threading.Lock()
@@ -92,8 +95,11 @@ def _clean(stderr: str) -> str:
     return "\n".join(line for line in lines if not _NOISE.match(line))
 
 
-def classify(stderr: str) -> tuple[str, int | None]:
-    """Return the error class for bw's stderr and, for a 429, the seconds to wait."""
+def classify(stderr: str, unlock: bool = False) -> tuple[str, int | None]:
+    """Return the error class for bw's stderr and, for a 429, the seconds to wait.
+
+    ``unlock`` says the stderr is from ``bw unlock``, where a decryption failure means a wrong password.
+    """
     text = _clean(stderr)
     for error_class, pattern in _PATTERNS:
         if pattern.search(text):
@@ -102,6 +108,8 @@ def classify(stderr: str) -> tuple[str, int | None]:
             match = _RETRY_AFTER.search(text)
             wait = int(match.group(1)) if match else DEFAULT_RETRY_AFTER
             return error_class, max(1, min(wait, MAX_RETRY_AFTER))
+    if unlock and _UNLOCK_AUTH.search(text):
+        return "auth", None
     return "unknown", None
 
 
@@ -259,7 +267,7 @@ class Bw:
             stdin = None
         if code == 0 or (ok_if and any(p in stderr.lower() for p in ok_if)):
             return stdout
-        error_class, wait = classify(stderr)
+        error_class, wait = classify(stderr, unlock=args[:1] == ["unlock"])
         stdout = stderr = None  # keep bw's text out of this frame before raising
         if wait is not None:
             self.retry_at = time.monotonic() + wait

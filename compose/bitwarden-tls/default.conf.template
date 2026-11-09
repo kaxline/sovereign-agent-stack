@@ -31,12 +31,14 @@ server {
     resolver 127.0.0.11 valid=10s ipv6=off;
     set $vaultwarden http://vaultwarden:80;
 
+    # X-Real-IP and X-Forwarded-For are set from the connection, replacing what the
+    # client sent, so Vaultwarden's per-address login limit sees the real caller.
     location / {
         proxy_pass $vaultwarden;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
@@ -45,7 +47,7 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;

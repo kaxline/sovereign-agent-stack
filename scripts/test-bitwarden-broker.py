@@ -573,7 +573,6 @@ def test_exception_context_holds_no_secrets() -> None:
 def test_real_bw_stderr() -> None:
     """bw 2026.10.1's own text against Vaultwarden 1.37.4, from scripts/test-vw-register.py."""
     for text, want in (
-        ("Cryptography error, The decryption operation failed", ("auth", None)),  # bw unlock, wrong password
         ("Username or password is incorrect. Try again", ("auth", None)),  # bw login, wrong password
         ("Incorrect client_secret", ("auth", None)),  # bw login --apikey, wrong secret
         ("Rate limit exceeded. Try again later.", ("rate_limited", 60)),  # any 429; no Retry-After printed
@@ -585,6 +584,11 @@ def test_real_bw_stderr() -> None:
          "reason: unable to verify the first certificate", ("network", None)),
     ):
         expect(bwcli.classify(NODE_WARNING + text) == want, f"{text[:40]!r}: {bwcli.classify(text)}")
+    # bw unlock with a wrong password. Only unlock reads it as auth: elsewhere it means an item that
+    # does not decrypt, which must not lock the account.
+    decrypt = NODE_WARNING + "Cryptography error, The decryption operation failed"
+    expect(bwcli.classify(decrypt, unlock=True) == ("auth", None), "unlock decryption failure is not auth")
+    expect(bwcli.classify(decrypt) == ("unknown", None), "decryption failure outside unlock is not unknown")
 
 
 def test_node_warning_noise() -> None:

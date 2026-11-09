@@ -2000,6 +2000,9 @@ services:
     volumes:
       - ./compose/bitwarden/accounts:/accounts
       - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/secrets:/secrets
+      # Local mode's admin token and TLS material; no other service mounts this
+      # folder whole, and the broker none of it.
+      - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/local:/local
     networks: [bitwarden-setup, vault]
 
   # ----------------------------------------------------------------------
@@ -2008,7 +2011,11 @@ services:
   # Web vault: http://localhost:8222 (localhost-bound; VAULTWARDEN_PORT)
   # Broker:  https://vaultwarden.vault.internal through vaultwarden-tls
   # Data:    BITWARDEN_HOST_DATA_DIR/vaultwarden. make vault-init writes the
-  #          admin token, its hash and the TLS files under secrets/local/.
+  #          admin token, its hash and the TLS files under local/, which only
+  #          bitwarden-setup mounts whole, and the CA certificate to
+  #          secrets/local/tls/ca.crt for the broker.
+  # Networks: hermes and the broker reach it only through vaultwarden-tls
+  #          (vault-backend); vault-host carries the loopback port.
   # ----------------------------------------------------------------------
   vaultwarden:
     profiles: ["vault"]
@@ -2021,14 +2028,17 @@ services:
       - SIGNUPS_ALLOWED=false
       - INVITATIONS_ALLOWED=true
       - DOMAIN=http://localhost:${VAULTWARDEN_PORT:-8222}
-      # The Argon2id hash only; the plaintext stays in secrets/local/admin_token,
-      # which only bitwarden-setup mounts. Vaultwarden reads any setting from <NAME>_FILE.
+      - DISABLE_ICON_DOWNLOAD=true
+      # The Argon2id hash only; the plaintext stays in local/admin_token, which
+      # only bitwarden-setup mounts. Vaultwarden reads any setting from <NAME>_FILE.
       - ADMIN_TOKEN_FILE=/run/vaultwarden/admin_token.phc
+    security_opt:
+      - no-new-privileges:true
     volumes:
       - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/vaultwarden:/data
-      - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/secrets/local/vaultwarden:/run/vaultwarden:ro
-    # default carries the host port; vault is how vaultwarden-tls reaches it.
-    networks: [default, vault]
+      - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/local/vaultwarden:/run/vaultwarden:ro
+    # Not default or vault: nothing on hermes' networks reaches it in plain HTTP.
+    networks: [vault-backend, vault-host]
     healthcheck:
       test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:80/alive"]
       interval: 30s
@@ -2042,8 +2052,12 @@ services:
   vaultwarden-tls:
     profiles: ["vault"]
     container_name: ${CONTAINER_PREFIX:-}vaultwarden-tls
-    image: ${VIKUNJA_PROXY_IMAGE:-nginx:1.30.6-alpine}
+    image: ${VAULTWARDEN_TLS_IMAGE:-nginx:1.30.6-alpine}
     restart: unless-stopped
+    # nginx keeps its default capabilities: its master process starts as root
+    # to read the mode-600 server key, then the workers drop to the nginx user.
+    security_opt:
+      - no-new-privileges:true
     environment:
       # Matches no variable: the template has no ${...} of its own.
       - NGINX_ENVSUBST_FILTER=^VAULTWARDEN_TLS_
@@ -2051,12 +2065,13 @@ services:
     cpus: 0.5
     volumes:
       - ./compose/bitwarden-tls/default.conf.template:/etc/nginx/templates/default.conf.template:ro
-      # The server pair only; the CA's key stays out of this container.
-      - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/secrets/local/tls/server.crt:/etc/nginx/tls/server.crt:ro
-      - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/secrets/local/tls/server.key:/etc/nginx/tls/server.key:ro
+      # The folder holding only the server pair; the CA's key stays out of this
+      # container. A folder mount, so a missing file never becomes a directory.
+      - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/local/tls/server:/etc/nginx/tls:ro
     networks:
       vault:
         aliases: [vaultwarden.vault.internal]
+      vault-backend:
     depends_on:
       vaultwarden:
         condition: service_healthy
@@ -2080,6 +2095,11 @@ networks:
   # broker in hermes' namespace reaches vaultwarden-tls; so does bitwarden-setup.
   vault:
     internal: true
+  # Internal: vaultwarden and vaultwarden-tls only (Ruling R20).
+  vault-backend:
+    internal: true
+  # vaultwarden's loopback port publish; nothing else joins it.
+  vault-host:
   # bitwarden-setup's route to Bitwarden's servers, apart from hermes.
   bitwarden-setup:
 

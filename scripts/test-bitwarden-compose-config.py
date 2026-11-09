@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -194,10 +195,12 @@ def env_value(service: dict, key: str):
 
 def check_local(cfg: dict) -> None:
     services = cfg.get("services", {})
+    nets = cfg.get("networks") or {}
     vw, tls = services.get("vaultwarden"), services.get("vaultwarden-tls")
     if vw is None or tls is None:
         fail("vaultwarden and vaultwarden-tls belong to the vault profile")
         return
+    local = f"{ADDON_DATA}/local"
     if vw.get("image") != VAULTWARDEN_IMAGE:
         fail(f"vaultwarden image is {vw.get('image')!r}, want {VAULTWARDEN_IMAGE!r}")
     ports = vw.get("ports") or []
@@ -205,7 +208,7 @@ def check_local(cfg: dict) -> None:
     if ports != want_port:
         fail(f"vaultwarden ports are {ports!r}, want only 127.0.0.1:8222:80")
     for key, want in (("SIGNUPS_ALLOWED", "false"), ("INVITATIONS_ALLOWED", "true"),
-                      ("DOMAIN", "http://localhost:8222")):
+                      ("DOMAIN", "http://localhost:8222"), ("DISABLE_ICON_DOWNLOAD", "true")):
         if env_value(vw, key) != want:
             fail(f"vaultwarden {key} must be {want}")
     if env_value(vw, "ADMIN_TOKEN") is not None:
@@ -214,35 +217,54 @@ def check_local(cfg: dict) -> None:
     token_dir = str(Path(token_file or "/").parent)
     vol = mount_at(vw, token_dir)
     if not token_file or vol is None or not vol.get("read_only") \
-            or not str(vol.get("source", "")).endswith(f"{ADDON_DATA}/secrets/local/vaultwarden"):
-        fail("vaultwarden reads ADMIN_TOKEN_FILE from secrets/local/vaultwarden, mounted read-only")
+            or not str(vol.get("source", "")).endswith(f"{local}/vaultwarden"):
+        fail("vaultwarden reads ADMIN_TOKEN_FILE from local/vaultwarden, mounted read-only")
     vol = mount_at(vw, "/data")
     if vol is None or not str(vol.get("source", "")).endswith(f"{ADDON_DATA}/vaultwarden") or vol.get("read_only"):
         fail("vaultwarden keeps /data in data/addons/bitwarden/vaultwarden")
     if {v.get("target") for v in mounts(vw)} != {"/data", token_dir}:
         fail(f"vaultwarden mounts {sorted(v.get('target') for v in mounts(vw))}, want /data and the token folder")
-    if networks(vw) != {"default", "vault"}:
-        fail(f"vaultwarden networks are {sorted(networks(vw))}, want ['default', 'vault']")
+    for name, service in (("vaultwarden", vw), ("vaultwarden-tls", tls)):
+        if "no-new-privileges:true" not in (service.get("security_opt") or []):
+            fail(f"{name} needs no-new-privileges:true")
+
+    # Ruling R20: nothing on hermes' networks reaches vaultwarden except through the sidecar.
+    if networks(vw) != {"vault-backend", "vault-host"}:
+        fail(f"vaultwarden networks are {sorted(networks(vw))}, want ['vault-backend', 'vault-host']")
+    shared = networks(vw) & networks(services.get("hermes") or {})
+    if shared:
+        fail(f"vaultwarden shares {sorted(shared)} with hermes")
+    if not (nets.get("vault-backend") or {}).get("internal"):
+        fail("network vault-backend must be internal")
+    if (nets.get("vault-host") or {}).get("internal"):
+        fail("network vault-host carries the host port, so it is not internal")
+    for name, service in services.items():
+        joined = networks(service)
+        if "vault-host" in joined and name != "vaultwarden":
+            fail(f"{name} joins vault-host")
+        if "vault-backend" in joined and name not in LOCAL_SERVICES:
+            fail(f"{name} joins vault-backend")
     if "/alive" not in " ".join((vw.get("healthcheck") or {}).get("test") or []):
         fail("vaultwarden healthcheck must GET /alive")
 
     if tls.get("image") != "nginx:1.30.6-alpine":
         fail(f"vaultwarden-tls image is {tls.get('image')!r}, want the pinned nginx")
+    if "image: ${VAULTWARDEN_TLS_IMAGE:-nginx:1.30.6-alpine}" not in (ROOT / "docker-compose.yml").read_text():
+        fail("vaultwarden-tls image must be ${VAULTWARDEN_TLS_IMAGE:-nginx:1.30.6-alpine}")
     if tls.get("ports"):
         fail("vaultwarden-tls publishes a port")
-    if set(tls.get("networks") or {}) != {"vault"}:
-        fail(f"vaultwarden-tls networks are {sorted(networks(tls))}, want ['vault']")
+    if networks(tls) != {"vault", "vault-backend"}:
+        fail(f"vaultwarden-tls networks are {sorted(networks(tls))}, want ['vault', 'vault-backend']")
     aliases = ((tls.get("networks") or {}).get("vault") or {}).get("aliases") or []
     if LOCAL_NAME not in aliases:
         fail(f"vaultwarden-tls needs the alias {LOCAL_NAME} on vault")
     want = {
         "/etc/nginx/templates/default.conf.template": str(ROOT / "compose/bitwarden-tls/default.conf.template"),
-        "/etc/nginx/tls/server.crt": f"{ADDON_DATA}/secrets/local/tls/server.crt",
-        "/etc/nginx/tls/server.key": f"{ADDON_DATA}/secrets/local/tls/server.key",
+        "/etc/nginx/tls": f"{local}/tls/server",
     }
     got = {v.get("target"): str(v.get("source")) for v in mounts(tls)}
     if set(got) != set(want) or any(not got[t].endswith(src) for t, src in want.items()):
-        fail(f"vaultwarden-tls mounts {sorted(got)}, want the template, server.crt and server.key")
+        fail(f"vaultwarden-tls mounts {sorted(got.items())}, want the template and local/tls/server")
     for vol in mounts(tls):
         if not vol.get("read_only"):
             fail(f"vaultwarden-tls mounts {vol.get('target')} read-write")
@@ -250,11 +272,32 @@ def check_local(cfg: dict) -> None:
         fail("vaultwarden-tls must depend on vaultwarden")
     template = (ROOT / "compose/bitwarden-tls/default.conf.template").read_text(encoding="utf-8")
     for needle in ("listen 443 ssl", "proxy_pass", "http://vaultwarden:80", "/notifications/hub",
-                   "Upgrade", "/etc/nginx/tls/server.crt", "/etc/nginx/tls/server.key"):
+                   "Upgrade", "/etc/nginx/tls/server.crt", "/etc/nginx/tls/server.key",
+                   "proxy_set_header X-Real-IP $remote_addr;"):
         if needle not in template:
             fail(f"compose/bitwarden-tls/default.conf.template lacks {needle!r}")
+    forwarded = re.findall(r"proxy_set_header X-Forwarded-For (\S+);", template)
+    if not forwarded or set(forwarded) != {"$remote_addr"}:
+        fail(f"X-Forwarded-For must be $remote_addr, overwriting the client's, not {sorted(set(forwarded))}")
 
-    allowed = {"bitwarden-broker", "bitwarden-setup", *LOCAL_SERVICES}
+    # Local mode's secrets: the admin token, its hash and the CA key live under local/.
+    setup = services.get("bitwarden-setup") or {}
+    vol = mount_at(setup, "/local")
+    if vol is None or not str(vol.get("source", "")).endswith(local) or vol.get("read_only"):
+        fail("bitwarden-setup mounts local/ read-write at /local")
+    allowed_local = {"bitwarden-setup": local, "vaultwarden": f"{local}/vaultwarden",
+                     "vaultwarden-tls": f"{local}/tls/server"}
+    for name, service in services.items():
+        for v in mounts(service):
+            source = str(v.get("source", "")).rstrip("/")
+            if source.endswith(ADDON_DATA) or (local in source and not source.endswith(allowed_local.get(name, "\0"))):
+                fail(f"{name} mounts {source}")
+    broker = services.get("bitwarden-broker") or {}
+    for v in mounts(broker):
+        source = str(v.get("source", ""))
+        if "admin_token" in source or "ca.key" in source or local in source:
+            fail(f"bitwarden-broker mounts {source}, which exposes the admin token or the CA key")
+    allowed = {"bitwarden-broker", "bitwarden-setup"}
     for name, service in services.items():
         if name not in allowed and any(f"{ADDON_DATA}/secrets" in str(v.get("source", "")) for v in mounts(service)):
             fail(f"{name} mounts the Bitwarden secrets")

@@ -20,17 +20,21 @@ Commands:
                      ``--agent-email`` defaults to agent@vault.localhost for ``local``.
 ``list-unassigned``  Organization items in no collection, by name and URI host.
 
-Local-mode files, which need no account or password:
+Local-mode files, which need no account or password. They go to /local
+(``BITWARDEN_HOST_DATA_DIR/local``), which only bitwarden-setup mounts, so
+the broker never sees the admin token or the CA's key:
 
-    setup.py tls --dir DIR [--name NAME] [--rotate]
-    setup.py admin-token --dir DIR [--rotate]
+    setup.py tls [--dir DIR] [--ca-copy FILE] [--name NAME] [--rotate]
+    setup.py admin-token [--dir DIR] [--rotate]
 
-``tls``          Writes the private CA and the sidecar's server certificate
-                 (setup/tls.py) into DIR, normally /secrets/local/tls.
+``tls``          Writes the private CA to DIR (default /local/tls) and the
+                 sidecar's server pair to DIR/server/ (setup/tls.py), then
+                 copies ca.crt to FILE (default /secrets/local/tls/ca.crt),
+                 where the broker's NODE_EXTRA_CA_CERTS points.
 ``admin-token``  Writes a random Vaultwarden admin token to DIR/admin_token and
                  its Argon2id PHC hash, which Vaultwarden reads through
                  ADMIN_TOKEN_FILE, to DIR/vaultwarden/admin_token.phc. Both are
-                 mode 600. DIR is normally /secrets/local.
+                 mode 600. DIR defaults to /local.
 
 Both keep files that exist and refuse a half-written set; ``--rotate``
 replaces everything.
@@ -86,6 +90,8 @@ MEMBER_INVITED, MEMBER_ACCEPTED = 0, 1
 TYPE_USER = 2
 COMMANDS = ("create", "seed", "grant", "role", "list-unassigned")
 LOCAL_COMMANDS = ("tls", "admin-token")
+LOCAL_DIR = "/local"
+CA_COPY = "/secrets/local/tls/ca.crt"
 ADMIN_TOKEN_FILE = "admin_token"
 ADMIN_HASH_FILE = "vaultwarden/admin_token.phc"
 
@@ -182,7 +188,7 @@ class UserBw:
             stdin = None
         if code == 0:
             return out
-        error_class, _ = classify(err)
+        error_class, _ = classify(err, unlock=args[:1] == ["unlock"])
         out = err = None
         raise BwError(error_class)
 
@@ -713,7 +719,10 @@ def _write_secret(path: Path, value: str) -> None:
         os.chmod(tmp, 0o600)
         os.replace(tmp, path)
     except BaseException:
-        os.unlink(tmp)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
         raise
 
 
@@ -752,22 +761,27 @@ def make_admin_token(dir: Path, rotate: bool = False) -> str:
 def local_main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="bitwarden-setup")
     parser.add_argument("command", choices=LOCAL_COMMANDS)
-    parser.add_argument("--dir", required=True, type=Path)
+    parser.add_argument("--dir", type=Path)
+    parser.add_argument("--ca-copy", type=Path)
     parser.add_argument("--name")
     parser.add_argument("--rotate", action="store_true")
     args = parser.parse_args(argv)
     try:
         if args.command == "tls":
             import tls
+            tls_dir = args.dir or Path(LOCAL_DIR) / "tls"
+            ca_copy = args.ca_copy or Path(CA_COPY)
             try:
-                tls.make_local_tls(args.dir, args.name or tls.LOCAL_NAME, rotate=args.rotate)
+                tls.make_local_tls(tls_dir, args.name or tls.LOCAL_NAME, rotate=args.rotate)
+                tls.copy_ca(tls_dir, ca_copy)
             except tls.TlsError as exc:
                 raise SetupError(str(exc)) from None
-            print(f"TLS files for {args.name or tls.LOCAL_NAME} are in {args.dir}.")
+            print(f"TLS files for {args.name or tls.LOCAL_NAME} are in {tls_dir}; the CA certificate is "
+                  f"also at {ca_copy}.")
         else:
-            if args.name:
-                raise SetupError("--name applies to tls only.")
-            print(make_admin_token(args.dir, rotate=args.rotate))
+            if args.name or args.ca_copy:
+                raise SetupError("--name and --ca-copy apply to tls only.")
+            print(make_admin_token(args.dir or Path(LOCAL_DIR), rotate=args.rotate))
     except SetupError as exc:
         print(exc)
         return EXIT_FAILED

@@ -64,13 +64,15 @@ def host_main() -> int:
         return 0
     src = Path(os.environ.get("BITWARDEN_TEST_SRC") or BROKER_SRC).resolve()
     tag = secrets.token_hex(4)
-    net, vw, tls, gen, drv = (f"bwtest-{kind}-{tag}" for kind in ("net", "vw", "tls", "gen", "drv"))
+    net, back, vw, tls, gen, drv = (f"bwtest-{kind}-{tag}" for kind in ("net", "back", "vw", "tls", "gen", "drv"))
     image = os.environ.get("BITWARDEN_TEST_IMAGE") or f"bwtest-broker:{tag}"
     built = False
     tmp = Path(tempfile.mkdtemp(prefix="bwtest-vw-"))
-    local = tmp / "local"
-    local.mkdir(mode=0o777)
-    os.chmod(local, 0o777)  # the containers write here as uid 10001
+    # bitwarden-setup's /local and /secrets, as BITWARDEN_HOST_DATA_DIR/local and /secrets.
+    local, secrets_dir = tmp / "local", tmp / "secrets"
+    for d in (local, secrets_dir):
+        d.mkdir(mode=0o777)
+        os.chmod(d, 0o777)  # the containers write here as uid 10001
     (tmp / "vwdata").mkdir()
     synthetic = {
         "agent_pw": secrets.token_urlsafe(24),
@@ -89,7 +91,8 @@ def host_main() -> int:
 
     def broker_run(*args: str) -> subprocess.CompletedProcess:
         proc = docker("run", "--rm", "--name", gen, "--user", "10001:10001", "--read-only", "--tmpfs", "/tmp",
-                      "--entrypoint", "python3", "-v", f"{src}:/app:ro", "-v", f"{local}:/secrets/local",
+                      "--entrypoint", "python3", "-v", f"{src}:/app:ro", "-v", f"{local}:/local",
+                      "-v", f"{secrets_dir}:/secrets",
                       image, "/app/setup/setup.py", *args)
         output.append(proc.stdout + proc.stderr)
         return proc
@@ -102,16 +105,24 @@ def host_main() -> int:
                 return 1
             built = True
 
-        # TLS material and the admin token, as vault.sh init makes them.
-        for args in (("tls", "--dir", "/secrets/local/tls"), ("admin-token", "--dir", "/secrets/local")):
+        # TLS material and the admin token, as vault.sh init makes them, with setup.py's default folders.
+        for args in (("tls",), ("admin-token",)):
             proc = broker_run(*args)
             if proc.returncode != 0:
                 note(f"FAIL: setup.py {args[0]}: exit {proc.returncode}: {proc.stdout.strip()}")
                 return 1
             note(f"ok: setup.py {args[0]}")
-        files = {"tls/ca.crt": 0o644, "tls/ca.key": 0o600, "tls/server.crt": 0o644, "tls/server.key": 0o600,
-                 "admin_token": 0o600, "vaultwarden/admin_token.phc": 0o600}
-        modes = {name: (local / name).stat().st_mode & 0o777 for name in files if (local / name).exists()}
+        files = {"local/tls/ca.crt": 0o644, "local/tls/ca.key": 0o600, "local/tls/server/server.crt": 0o644,
+                 "local/tls/server/server.key": 0o600, "local/admin_token": 0o600,
+                 "local/vaultwarden/admin_token.phc": 0o600, "secrets/local/tls/ca.crt": 0o644}
+        modes = {name: (tmp / name).stat().st_mode & 0o777 for name in files if (tmp / name).exists()}
+        found = sorted(str(f.relative_to(tmp)) for d in (local, secrets_dir) for f in d.rglob("*") if f.is_file())
+        if found != sorted(files):
+            note(f"FAIL: setup wrote {found}, want {sorted(files)}")
+            failed = True
+        if (tmp / "secrets/local/tls/ca.crt").read_bytes() != (local / "tls/ca.crt").read_bytes():
+            note("FAIL: secrets/local/tls/ca.crt is not a copy of local/tls/ca.crt")
+            failed = True
         if modes != files:
             note(f"FAIL: file modes {sorted((k, oct(v)) for k, v in modes.items())}, want "
                  f"{sorted((k, oct(v)) for k, v in files.items())}")
@@ -122,34 +133,39 @@ def host_main() -> int:
         if not phc.startswith("$argon2id$"):
             note("FAIL: admin_token.phc is not an Argon2id PHC string")
             failed = True
-        before = {name: (local / name).read_bytes() for name in files}
-        for args in (("tls", "--dir", "/secrets/local/tls"), ("admin-token", "--dir", "/secrets/local")):
+        before = {name: (tmp / name).read_bytes() for name in files}
+        for args in (("tls",), ("admin-token",)):
             proc = broker_run(*args)
             if proc.returncode != 0:
                 note(f"FAIL: second setup.py {args[0]}: exit {proc.returncode}")
                 failed = True
-        if {name: (local / name).read_bytes() for name in files} != before:
+        if {name: (tmp / name).read_bytes() for name in files} != before:
             note("FAIL: a second tls or admin-token run changed the files")
             failed = True
         else:
             note("ok: a second tls and admin-token run keeps every file")
-        (local / "tls/server.key").rename(local / "tls/server.key.aside")
-        proc = broker_run("tls", "--dir", "/secrets/local/tls")
-        (local / "tls/server.key.aside").rename(local / "tls/server.key")
-        if proc.returncode == 0 or (local / "tls/server.crt").read_bytes() != before["tls/server.crt"]:
+        server = local / "tls/server"
+        (server / "server.key").rename(server / "server.key.aside")
+        proc = broker_run("tls")
+        (server / "server.key.aside").rename(server / "server.key")
+        if proc.returncode == 0 or (server / "server.crt").read_bytes() != before["local/tls/server/server.crt"]:
             note("FAIL: tls with server.key missing replaced server.crt instead of refusing")
             failed = True
         else:
             note("ok: tls refuses a half-present server pair")
         admin_token = (local / "admin_token").read_text(encoding="utf-8").strip()
 
-        proc = docker("network", "create", "--internal", net)
-        if proc.returncode != 0:
-            note(f"FAIL: docker network create: {proc.stderr.strip()}")
-            return 1
-        proc = docker("run", "-d", "--name", vw, "--network", net, "--network-alias", "vaultwarden",
+        # As in compose (Ruling R20): net stands for vault (the sidecar and the driver, which plays the
+        # broker and bitwarden-setup), back for vault-backend (vaultwarden and the sidecar).
+        for name in (net, back):
+            proc = docker("network", "create", "--internal", name)
+            if proc.returncode != 0:
+                note(f"FAIL: docker network create: {proc.stderr.strip()}")
+                return 1
+        proc = docker("run", "-d", "--name", vw, "--network", back, "--network-alias", "vaultwarden",
                       "-e", "SIGNUPS_ALLOWED=false", "-e", "INVITATIONS_ALLOWED=true",
-                      "-e", "DOMAIN=http://localhost:8222",
+                      "-e", "DOMAIN=http://localhost:8222", "-e", "DISABLE_ICON_DOWNLOAD=true",
+                      "--security-opt", "no-new-privileges:true",
                       # The one setting the vaultwarden service leaves at its default (10 password grants
                       # a minute per address): this sequence signs in more often, and check 4 spends the
                       # allowance on purpose.
@@ -161,12 +177,16 @@ def host_main() -> int:
             note(f"FAIL: start Vaultwarden: {proc.stderr.strip()}")
             return 1
         proc = docker("run", "-d", "--name", tls, "--network", net, "--network-alias", LOCAL_NAME,
+                      "--security-opt", "no-new-privileges:true",
                       "-e", "NGINX_ENVSUBST_FILTER=^VAULTWARDEN_TLS_",
                       "-v", f"{TEMPLATE}:/etc/nginx/templates/default.conf.template:ro",
-                      "-v", f"{local / 'tls/server.crt'}:/etc/nginx/tls/server.crt:ro",
-                      "-v", f"{local / 'tls/server.key'}:/etc/nginx/tls/server.key:ro", NGINX_IMAGE)
+                      "-v", f"{server}:/etc/nginx/tls:ro", NGINX_IMAGE)
         if proc.returncode != 0:
             note(f"FAIL: start the TLS sidecar: {proc.stderr.strip()}")
+            return 1
+        proc = docker("network", "connect", back, tls)
+        if proc.returncode != 0:
+            note(f"FAIL: connect the TLS sidecar to the backend network: {proc.stderr.strip()}")
             return 1
 
         try:
@@ -176,7 +196,7 @@ def host_main() -> int:
                  "-e", "HOME=/tmp", "-e", "NODE_EXTRA_CA_CERTS=/secrets/local/tls/ca.crt",
                  "-e", f"VW_TEST_SIDECAR={tls}",
                  "-v", f"{src}:/app:ro", "-v", f"{Path(__file__).resolve()}:/test/test-vw-register.py:ro",
-                 "-v", f"{local / 'tls/ca.crt'}:/secrets/local/tls/ca.crt:ro",
+                 "-v", f"{secrets_dir / 'local/tls/ca.crt'}:/secrets/local/tls/ca.crt:ro",
                  "-v", f"{local / 'admin_token'}:/secrets/local/admin_token:ro",
                  "-v", f"{tmp / 'synthetic.json'}:/test/synthetic.json:ro",
                  image, "/test/test-vw-register.py", "--inside"],
@@ -216,12 +236,20 @@ def host_main() -> int:
         logs = docker("logs", vw)
         output.append(logs.stdout + logs.stderr)
     finally:
-        for name in (drv, tls, vw, gen):
-            docker("rm", "-f", name)
-        docker("network", "rm", net)
+        # One try per call, so a failing removal never skips the others.
+        cleanup = [("rm", "-f", name) for name in (drv, tls, vw, gen)]
+        cleanup += [("network", "rm", name) for name in (net, back)]
         if built:
-            docker("image", "rm", image)
-        shutil.rmtree(tmp, ignore_errors=True)
+            cleanup.append(("image", "rm", image))
+        for args in cleanup:
+            try:
+                docker(*args, timeout=120)
+            except (OSError, subprocess.SubprocessError):
+                print(f"warning: docker {' '.join(args)} failed; remove it by that name")
+        try:
+            shutil.rmtree(tmp, ignore_errors=True)
+        except OSError:
+            pass
 
     text = "\n".join(output)
     leaked = [k for k, v in {**synthetic, "admin_token": admin_token}.items() if v and v in text]
@@ -397,6 +425,15 @@ def inside_main() -> int:
     try:
         step("the TLS sidecar serves Vaultwarden with the generated certificate", wait_alive)
         step("the certificate verifies only through NODE_EXTRA_CA_CERTS", untrusted_without_ca)
+
+        def no_plain_http():
+            try:
+                urllib.request.urlopen("http://vaultwarden:80/alive", timeout=10)
+            except (urllib.error.URLError, OSError) as exc:
+                return Detail(f"refused: {type(getattr(exc, 'reason', exc)).__name__}")
+            raise AssertionError("Vaultwarden answered plain HTTP on the vault network")
+
+        step("Ruling R20: vaultwarden:80 is not reachable from the vault network", no_plain_http)
 
         # --- Sign-ups off, admin invite, registration ------------------------
 
@@ -626,10 +663,13 @@ def inside_main() -> int:
         # --- Check 3: bw's real stderr through classify ----------------------
 
         def classified(label: str, want: str, args: list[str], appdata: str, env: dict | None = None,
-                       stdin: str | None = None):
+                       stdin: str | None = None, unlock: bool = False):
             def run():
                 code, _, err = bw(appdata, args, env, stdin)
-                got = classify(err)[0]
+                got = classify(err, unlock=unlock)[0]
+                if unlock:
+                    # The same text from any other command is not an auth failure.
+                    expect(classify(err)[0] == "unknown", f"{first_line(err)!r} outside unlock is not unknown")
                 st.setdefault("check3", []).append((label, got, first_line(err)))
                 expect(code != 0, "bw succeeded")
                 expect(got == want, f"classify gave {got!r} for {first_line(err)!r}, want {want!r}")
@@ -637,7 +677,7 @@ def inside_main() -> int:
             step(f"check 3: {label} classifies as {want}", run, fatal=False)
 
         classified("wrong master password on unlock", "auth", ["unlock", "--passwordenv", "BW_PW", "--raw"],
-                   agent_dir, {"BW_PW": "wrong-" + syn["agent_pw"]})
+                   agent_dir, {"BW_PW": "wrong-" + syn["agent_pw"]}, unlock=True)
         fresh = "/tmp/bw-fresh"
         bw_ok(fresh, ["config", "server", BASE])
         classified("wrong master password on login", "auth",
@@ -681,27 +721,33 @@ def inside_main() -> int:
 
         # --- Check 4: 429 and Retry-After ------------------------------------
 
+        def grant_status(spoof: str | None = None) -> tuple[int, str | None]:
+            """One password grant for a made-up account; ``(status, Retry-After)``."""
+            headers = {"Content-Type": "application/x-www-form-urlencoded"}
+            if spoof:
+                headers.update({"X-Real-IP": spoof, "X-Forwarded-For": spoof})
+            req = urllib.request.Request(
+                f"{BASE}/identity/connect/token", method="POST", headers=headers,
+                data=urllib.parse.urlencode({
+                    "grant_type": "password", "username": "nobody@example.com", "password": "eA==",
+                    "scope": "api offline_access", "client_id": "cli", "deviceType": "25",
+                    "deviceName": "linux", "deviceIdentifier": str(uuid.uuid4())}).encode())
+            try:
+                vw.opener().open(req, timeout=10).close()
+            except urllib.error.HTTPError as exc:
+                status, retry_after = exc.code, exc.headers.get("Retry-After")
+                exc.close()
+                return status, retry_after
+            return 200, None
+
         def rate_limit():
             # Vaultwarden limits password grants per client address; the sidecar passes the driver's in
             # X-Real-IP. Spend the allowance with a made-up account.
             seen, retry_after = 0, None
             for _ in range(LOGIN_BURST + 20):
-                req = urllib.request.Request(
-                    f"{BASE}/identity/connect/token", method="POST",
-                    data=urllib.parse.urlencode({
-                        "grant_type": "password", "username": "nobody@example.com", "password": "eA==",
-                        "scope": "api offline_access", "client_id": "cli", "deviceType": "25",
-                        "deviceName": "linux", "deviceIdentifier": str(uuid.uuid4())}).encode(),
-                    headers={"Content-Type": "application/x-www-form-urlencoded"})
-                try:
-                    vw.opener().open(req, timeout=10).close()
-                except urllib.error.HTTPError as exc:
-                    if exc.code == 429:
-                        seen = 429
-                        retry_after = exc.headers.get("Retry-After")
-                        exc.close()
-                        break
-                    exc.close()
+                seen, retry_after = grant_status()
+                if seen == 429:
+                    break
             expect(seen == 429, f"no 429 after {LOGIN_BURST + 20} password grants")
             bw_ok("/tmp/bw-429", ["config", "server", BASE])
             code, _, err = bw("/tmp/bw-429", ["login", OWNER_EMAIL, "--passwordenv", "BW_PW", "--raw"],
@@ -710,9 +756,18 @@ def inside_main() -> int:
             has_retry = "retry-after" in err.lower()
             expect(got == "rate_limited", f"classify gave {got!r} for {first_line(err)!r}")
             return Detail(f"server Retry-After header: {retry_after!r}; bw exit {code}; bw prints Retry-After: "
-                    f"{'yes' if has_retry else 'no'}; classify: {got}, wait {wait}; bw said: {first_line(err)}")
+                          f"{'yes' if has_retry else 'no'}; classify: {got}, wait {wait}; "
+                          f"bw said: {first_line(err)}")
 
         step("check 4: bw on a 429", rate_limit, fatal=False)
+
+        def spoofed():
+            status, _ = grant_status(spoof="203.0.113.9")
+            expect(status == 429, f"a spoofed X-Real-IP and X-Forwarded-For got HTTP {status}, want 429")
+            return Detail("still 429; the sidecar overwrites both headers")
+
+        step("Ruling R20: a client-set X-Real-IP does not escape the login limit", spoofed, fatal=False)
+
     except Abort:
         say("stopped: a required step failed")
 

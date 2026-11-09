@@ -1,10 +1,11 @@
 """TLS material for the local Vaultwarden's sidecar (Ruling R18).
 
-``make_local_tls(dir)`` writes a private CA (``ca.crt``, ``ca.key``) and a
-server certificate for ``vaultwarden.vault.internal`` signed by it
-(``server.crt``, ``server.key``). Keys are EC P-256. The CA is valid for 10
-years and the server certificate for 825 days. Keys are mode 600 and
-certificates mode 644.
+``make_local_tls(dir)`` writes a private CA (``ca.crt``, ``ca.key``) and,
+in ``dir/server/``, a server certificate for ``vaultwarden.vault.internal``
+signed by it (``server.crt``, ``server.key``). The sidecar mounts only
+``server/``. Keys are EC P-256. The CA is valid for 10 years, is limited by a
+critical name constraint to that one DNS name, and the server certificate is
+valid for 825 days. Keys are mode 600 and certificates mode 644.
 
 A second run changes nothing. A missing server pair is issued from the
 existing CA. A pair with one file missing is refused, since replacing the
@@ -22,6 +23,7 @@ LOCAL_NAME = "vaultwarden.vault.internal"
 CA_DAYS = 3650
 SERVER_DAYS = 825
 CA_CN = "Assistant local Vaultwarden CA"
+SERVER_DIR = "server"
 
 
 class TlsError(Exception):
@@ -66,13 +68,23 @@ def make_local_tls(dir: Path, name: str = LOCAL_NAME, rotate: bool = False) -> N
     from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
     dir = Path(dir)
-    dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    server_dir = dir / SERVER_DIR
+    for d in (dir, server_dir):
+        if d.exists() and not d.is_dir():
+            raise TlsError(f"{d} is not a folder.")
+        d.mkdir(parents=True, exist_ok=True, mode=0o700)
+    for f in ("ca.crt", "ca.key"):
+        if (dir / f).is_dir():
+            raise TlsError(f"{dir / f} is a folder; remove it and run again.")
+    for f in ("server.crt", "server.key"):
+        if (server_dir / f).is_dir():
+            raise TlsError(f"{server_dir / f} is a folder; remove it and run again.")
     keep_ca = _pair(dir, "ca", rotate)
-    keep_server = keep_ca and _pair(dir, "server", rotate)
+    keep_server = keep_ca and _pair(server_dir, "server", rotate)
     if keep_ca and keep_server:
         return
-    if not keep_ca and not rotate and ((dir / "server.crt").exists() or (dir / "server.key").exists()):
-        raise TlsError(f"{dir} has a server certificate but no CA; rotate to replace both.")
+    if not keep_ca and not rotate and ((server_dir / "server.crt").exists() or (server_dir / "server.key").exists()):
+        raise TlsError(f"{server_dir} has a server certificate but {dir} has no CA; rotate to replace both.")
 
     now = datetime.datetime.now(datetime.timezone.utc)
     pem = serialization.Encoding.PEM
@@ -98,6 +110,8 @@ def make_local_tls(dir: Path, name: str = LOCAL_NAME, rotate: bool = False) -> N
                                          key_encipherment=False, data_encipherment=False, key_agreement=False,
                                          key_cert_sign=True, crl_sign=True, encipher_only=False,
                                          decipher_only=False), critical=True)
+            .add_extension(x509.NameConstraints(permitted_subtrees=[x509.DNSName(name)], excluded_subtrees=None),
+                           critical=True)
             .add_extension(x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()), critical=False)
             .sign(ca_key, hashes.SHA256())
         )
@@ -125,5 +139,18 @@ def make_local_tls(dir: Path, name: str = LOCAL_NAME, rotate: bool = False) -> N
     if not keep_ca:
         _write(dir / "ca.key", key_bytes(ca_key), 0o600)
         _write(dir / "ca.crt", ca_cert.public_bytes(pem), 0o644)
-    _write(dir / "server.key", key_bytes(server_key), 0o600)
-    _write(dir / "server.crt", server_cert.public_bytes(pem), 0o644)
+    _write(server_dir / "server.key", key_bytes(server_key), 0o600)
+    _write(server_dir / "server.crt", server_cert.public_bytes(pem), 0o644)
+
+
+def copy_ca(dir: Path, dest: Path) -> bool:
+    """Copy ``dir/ca.crt`` to ``dest`` (mode 644) when it differs; True if it was written."""
+    data = (Path(dir) / "ca.crt").read_bytes()
+    dest = Path(dest)
+    if dest.is_dir():
+        raise TlsError(f"{dest} is a folder; remove it and run again.")
+    if dest.exists() and dest.read_bytes() == data:
+        return False
+    dest.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _write(dest, data, 0o644)
+    return True
