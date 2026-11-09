@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 # Every profile that publishes a service we want to see in one config.
-PROFILES = "core,rag,neo4j,calendar,automation,research,coding,ollama,searxng-prod,search-gate,db,todo,crm,mail,mail-drafts,messages,bitwarden,bitwarden-tools,budget,budget-local"
+PROFILES = "core,rag,neo4j,calendar,automation,research,coding,ollama,searxng-prod,search-gate,db,todo,crm,mail,mail-drafts,email,email-drafts,messages,bitwarden,bitwarden-tools,budget,budget-local"
 
 # Secret-bearing environment keys, and the services allowed to carry them.
 # An empty set means the key must not appear on any service.
@@ -237,6 +237,69 @@ def check_actual(services: dict) -> list[str]:
     return errors
 
 
+# The email add-on. The two MCP servers hold no password and sit on the
+# internal email network with hermes; the indexer and outbox hold the
+# passwords (as files under /run/addon/secrets, never in the environment) and
+# sit alone on email-egress.
+EMAIL_ENV = {
+    "email-indexer": set(),
+    "email-outbox": set(),
+    "email-mcp": {"MAIL_INDEX_PATH", "MCP_HOST", "MCP_PORT"},
+    "email-drafts-mcp": {"MAIL_DRAFTS_PATH", "MCP_HOST", "MCP_PORT"},
+}
+EMAIL_NETS = {
+    "email-indexer": {"email-egress"},
+    "email-outbox": {"email-egress"},
+    "email-mcp": {"email"},
+    "email-drafts-mcp": {"email"},
+}
+EMAIL_BOOTSTRAP_KEYS = {"EMAIL_ENABLED", "EMAIL_DRAFTS_ENABLED"}
+EMAIL_BOOTSTRAPS = {"hermes-api-bootstrap", "hermes-browser-bootstrap"}
+
+
+def check_email(services: dict, networks: dict) -> list[str]:
+    errors = []
+    email_net = networks.get("email")
+    if not email_net:
+        errors.append("network email missing from compose config")
+    elif not email_net.get("internal"):
+        errors.append("network email must be internal")
+    if "email-egress" not in networks:
+        errors.append("network email-egress missing from compose config")
+    for name, allowed in EMAIL_ENV.items():
+        service = services.get(name)
+        if not service:
+            errors.append(f"service {name} missing from compose config")
+            continue
+        for key in sorted(set(env_map(service)) - allowed):
+            errors.append(f"{name} environment includes {key}")
+        for key in sorted(allowed - set(env_map(service))):
+            errors.append(f"{name} environment is missing {key}")
+        if service.get("env_file"):
+            errors.append(f"{name} has an env_file")
+        if service.get("ports"):
+            errors.append(f"{name} publishes a host port")
+        nets = set(service.get("networks") or {})
+        if nets != EMAIL_NETS[name]:
+            errors.append(f"{name} networks are {sorted(nets)}, want {sorted(EMAIL_NETS[name])}")
+    for name, service in services.items():
+        nets = set(service.get("networks") or {})
+        if name not in EMAIL_ENV and "email-egress" in nets:
+            errors.append(f"{name} joins email-egress, which only the email indexer and outbox may")
+        if name not in EMAIL_ENV and name != "hermes" and "email" in nets:
+            errors.append(f"{name} joins the email network")
+        if name in EMAIL_ENV:
+            continue
+        keys = {k for k in env_map(service) if k.startswith("EMAIL_")}
+        allowed = EMAIL_BOOTSTRAP_KEYS if name in EMAIL_BOOTSTRAPS else set()
+        for key in sorted(keys - allowed):
+            errors.append(f"{name} environment includes {key}")
+        if name in EMAIL_BOOTSTRAPS:
+            for key in sorted(EMAIL_BOOTSTRAP_KEYS - keys):
+                errors.append(f"{name} environment is missing {key}")
+    return errors
+
+
 def check_proxy(services: dict) -> list[str]:
     errors = []
     service = services.get("llm-proxy")
@@ -320,8 +383,9 @@ DB_ONLY = {"postgres-db", "db-provision", "sql-mcp-ro", "sql-mcp-rw"}
 DB_BRIDGES = {"hermes", "vikunja"}
 # Networks a DB_BRIDGES service joins besides default and db. hermes is on
 # vault, the internal network the Bitwarden broker reaches the local Vaultwarden
-# through, and on budget for the Actual Budget MCPs.
-BRIDGE_EXTRA_NETS = {"hermes": {"budget", "vault"}}
+# through, on budget for the Actual Budget MCPs, and on email for email-mcp and
+# email-drafts-mcp.
+BRIDGE_EXTRA_NETS = {"hermes": {"budget", "email", "vault"}}
 
 
 def check_db_network(services: dict, networks: dict) -> list[str]:
@@ -411,6 +475,7 @@ def main() -> None:
     errors += check_db_network(services, config.get("networks") or {})
     errors += check_n8n_store(services)
     errors += check_actual(services)
+    errors += check_email(services, config.get("networks") or {})
     if errors:
         for err in errors:
             fail(err)
