@@ -43,6 +43,8 @@ printf '%s\n' "$*" >> "$STUB/curl.argv"
 body=""
 [[ "$stdin" == 1 ]] && body="$(cat)"
 field() { printf '%s' "$body" | sed -n "s/.*\"$1\":\"\\([^\"]*\\)\".*/\\1/p"; }
+# The login password, JSON-decoded (it may hold escapes).
+login_pw() { printf '%s' "$body" | python3 -c 'import json,sys; print(json.load(sys.stdin)["password"], end="")'; }
 authed() { [[ -n "$hdr" ]] && grep -q '^X-ACTUAL-TOKEN: tok-1' "$hdr"; }
 case "$url" in
   */account/needs-bootstrap)
@@ -56,7 +58,7 @@ case "$url" in
       printf '{"status":"ok","data":{"token":"tok-1"}}'
     fi ;;
   */account/login)
-    if [[ -e "$STUB/server_pw" && "$(field password)" == "$(cat "$STUB/server_pw")" ]]; then
+    if [[ -e "$STUB/server_pw" && "$(login_pw)" == "$(cat "$STUB/server_pw")" ]]; then
       printf '{"status":"ok","data":{"token":"tok-1"}}'
     else
       printf '{"status":"error","reason":"invalid-password"}'
@@ -474,6 +476,12 @@ grep -q 'http://127.0.0.1:5006/account/login' "$STUB/curl.argv" || fail "local t
 rm "$tmp/data/addons/actual/secrets/server_password"
 budgets_run '{"server":"local"}'
 [ "$brc" = 2 ] && [ "$(jget 1 error)" = not_found ] || fail "local without a stored password is not_found ($(cat "$tmp/jout"))"
+
+# A password with a tab, a newline and a quote still signs in.
+printf 'tab\there\nnl "q" \\ SECRET' > "$STUB/server_pw"
+budgets_run '{"server":"https://budget.example.com","password":"tab\there\nnl \"q\" \\ SECRET"}'
+[ "$brc" = 0 ] && [ "$(jget 3 phase)" = "done" ] || fail "a password with control characters signs in ($(cat "$tmp/jout" "$tmp/jerr"))"
+printf 'right-SECRET' > "$STUB/server_pw"
 
 # A session token skips the login; a stale one is token_expired.
 budgets_run '{"server":"https://budget.example.com","session_token":"tok-1"}'

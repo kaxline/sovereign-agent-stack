@@ -262,6 +262,26 @@ json_str() {
   printf '"%s"' "$(json_escape "$s")"
 }
 
+# json_escape_exact TEXT: TEXT escaped for inside a JSON string with every
+# character kept: control characters become \uXXXX (or \t, \n, \r).
+json_escape_exact() {
+  local s i c
+  s="$(json_escape "$1")"
+  if [[ "$s" == *[[:cntrl:]]* ]]; then
+    for i in $(seq 1 31); do
+      # shellcheck disable=SC2059
+      printf -v c "\\$(printf '%03o' "$i")"
+      case "$i" in
+        9) s="${s//"$c"/\\t}" ;;
+        10) s="${s//"$c"/\\n}" ;;
+        13) s="${s//"$c"/\\r}" ;;
+        *) s="${s//"$c"/$(printf '\\u%04x' "$i")}" ;;
+      esac
+    done
+  fi
+  printf '%s' "$s"
+}
+
 # emit_line JSON: one line on stdout in --json mode, nothing otherwise.
 emit_line() {
   [[ "$JSON" == 1 ]] && printf '%s\n' "$1"
@@ -341,13 +361,19 @@ server_base() {
   esac
 }
 
-# api_call METHOD PATH [BODY on stdin]: the answer in api_resp, or the matching
-# error line when curl fails. Non-JSON answers are server_unreachable.
+# api_call METHOD PATH: the answer in api_resp, or the matching error line
+# when curl fails. A POST sends api_body on curl's stdin. Non-JSON answers are server_unreachable.
 api_resp=""
+api_body=""
 api_call() {
   local rc=0
   http_max=45
-  api_resp="$(http "$1" "$2")" || rc=$?
+  if [[ "$1" == POST ]]; then
+    api_resp="$(printf '%s' "$api_body" | http POST "$2")" || rc=$?
+  else
+    api_resp="$(http "$1" "$2")" || rc=$?
+  fi
+  api_body=""
   http_max=20
   case "$rc" in
     0) ;;
@@ -371,9 +397,8 @@ sign_in() {
   pw="$in_password"
   [[ -n "$pw" ]] || pw="$local_pw"
   [[ -n "$pw" ]] || emit_error login_refused "no password or session token given"
-  printf '{"loginMethod":"password","password":"%s"}' "$(json_escape "$pw")" > "${WORK}/login.json"
-  api_call POST /account/login < "${WORK}/login.json"
-  rm -f "${WORK}/login.json"
+  api_body="$(printf '{"loginMethod":"password","password":"%s"}' "$(json_escape_exact "$pw")")"
+  api_call POST /account/login
   token="$(json_field "$api_resp" token)"
   [[ -n "$token" ]] && return 0
   reason="$(json_field "$api_resp" reason)"
