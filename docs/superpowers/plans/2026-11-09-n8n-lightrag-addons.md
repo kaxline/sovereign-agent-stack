@@ -27,7 +27,7 @@ The LightRAG tasks (1, 2, 4, 5) depend on nothing outside this plan and can ship
 patch. Without `addon.sh` plan 3, `disable lightrag` leaves Neo4j running; Task 5's Neo4j check
 waits for plan 3.
 
-`addon.sh` plan 3 (the IMAP/SMTP session, proposed for 0.3.13, not yet approved) rewrites
+`addon.sh` plan 3 (the IMAP/SMTP session, 8070cce on `docs/addon-lifecycle-plan`, for 0.3.13, not yet approved) rewrites
 `disable` and adds `remove <id> --delete-data`. It also takes two pieces this plan first had: a
 manifest service may set `"oneshot": true` (`enable` runs one-shots with `up --no-deps
 --exit-code-from` after `up -d --wait` on the rest; `remove` runs `rm -f` on every listed service,
@@ -36,8 +36,8 @@ no remaining active profile starts, read from `docker compose config --services`
 
 The n8n tasks (6–8) need from plan 3: `data.volumes` / `data.paths`, `backup.secrets` /
 `backup.recommended`, `oneshot`, and `remove <id> --delete-data`. They ship in the same
-0.3.x patch as `addon.sh` items 1–6, which the CR 0020 reply draft targets together. Proposed:
-0.3.13 for both, with n8n moving to whichever patch carries items 1–6 if that slips. Twenty's
+0.3.x patch as `addon.sh` items 1–6, which the CR 0020 reply draft targets together. Decided
+by Keith on 2026-11-09: 0.3.13 for both. If items 1–6 slip, n8n moves with them. Twenty's
 manifest is not in this plan.
 
 ## Decisions
@@ -235,7 +235,7 @@ The manifest (fields in this order, canonical layout):
 - Modify: `scripts/sync-profiles.sh` (remove the `AUTOMATION_ENABLED automation 1` row)
 - Test: `sh scripts/test-addon-cli.sh` (n8n fixture cases), `python3 scripts/test-addon-manifests.py`
 
-Manifest values: id `io.github.kaxline.stack.n8n`, title `n8n`, tagline `Workflow automation with starter workflows for LightRAG, Neo4j, search and GPT Researcher`, `minStackVersion` the patch from "Dependencies and target", `builtin` `{AUTOMATION_ENABLED, automation, seed: true}`, services `ui` → `n8n` port 5678, `import` → `n8n-import` with `"oneshot": true`, `research` → `gpt-researcher` port 8000, `uses: ["llm", "search"]`, `data: {"paths": [], "volumes": ["n8n_storage", "gptr_outputs"]}`, (`data.paths` entries are objects `{"env"?, "default"}` per plan 3; n8n has none, so the list stays empty), `backup: {"secrets": ["N8N_ENCRYPTION_KEY"], "recommended": ["N8N_USER_MANAGEMENT_JWT_SECRET"]}`, no `mcp`, no `init`, `permissions: {reads: [], writes: [], sends: false, egress: ["llm-proxy", "search", "internet"], exposesToAgent: false, cron: false}`, `postInstallMessage`: open `http://localhost:5678` and create the owner account. The description says n8n's workflows reach LightRAG and Neo4j when those are on, that no Hermes tool reaches n8n, and that `remove --delete-data` deletes workflows, credentials and execution history.
+Manifest values: id `io.github.kaxline.stack.n8n`, title `n8n`, tagline `Workflow automation with starter workflows for LightRAG, Neo4j, search and GPT Researcher`, `minStackVersion` `0.3.13`, `builtin` `{AUTOMATION_ENABLED, automation, seed: true}`, services `ui` → `n8n` port 5678, `import` → `n8n-import` with `"oneshot": true`, `research` → `gpt-researcher` port 8000, `uses: ["llm", "search"]`, `data: {"paths": [], "volumes": ["n8n_storage", "gptr_outputs"]}`, (`data.paths` entries are objects `{"env"?, "default"}` per plan 3; n8n has none, so the list stays empty), `backup: {"secrets": ["N8N_ENCRYPTION_KEY"], "recommended": ["N8N_USER_MANAGEMENT_JWT_SECRET"]}`, no `mcp`, no `init`, `permissions: {reads: [], writes: [], sends: false, egress: ["llm-proxy", "search", "internet"], exposesToAgent: false, cron: false}`, `postInstallMessage`: open `http://localhost:5678` and create the owner account. The description says n8n's workflows reach LightRAG and Neo4j when those are on, that no Hermes tool reaches n8n, and that `remove --delete-data` deletes workflows, credentials and execution history.
 
 - [ ] **Step 1 (record only):** Check how Compose 5.6.1 treats an exited one-shot in `docker compose up -d --wait` with a scratch compose file, and note the result in the commit message. No later step depends on it; plan 3's `oneshot` handling covers both outcomes.
 - [ ] **Step 2:** CLI tests with the stubbed `docker`: `enable n8n --json` runs `up -d --wait n8n gpt-researcher`, runs `n8n-import` as a one-shot, and never names `gptr-mcp`; `disable n8n --json` stops `n8n`, `n8n-import`, `gpt-researcher` and not `gptr-mcp` (R10 acceptance); `remove n8n --delete-data --json` removes the three containers, then `<project>_n8n_storage` and `<project>_gptr_outputs`, and prints one line per volume.
