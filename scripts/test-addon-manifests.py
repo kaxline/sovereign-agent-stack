@@ -503,6 +503,16 @@ refused("mcp.instances prefix collides with a core name", inst_manifest({"instan
         "builtin", "collides")
 refused("mcp.instances prefix collides with a core prefix", inst_manifest({"instances__name": "caldav-{slug}"}),
         "builtin", "collides")
+# The bootstrap drops every entry under an instance prefix that has no
+# instance, so a prefix that overlaps a core name or prefix in either
+# direction would drop core entries (sql, searxng, caldav-*).
+for bad_name in ("s{slug}", "sq{slug}", "searx{slug}", "cal{slug}", "caldav-x-{slug}",
+                 "mail{slug}", "messages-{slug}"):
+    refused(f"mcp.instances prefix overlapping a core name or prefix ({bad_name})",
+            inst_manifest({"instances__name": bad_name}), "builtin", "collides with a server core registers")
+check("mcp.instances prefix crm- is accepted", am.validate(inst_manifest(), "builtin") == [])
+check("mcp.instances prefix searx- is accepted (no core name starts with it)",
+      am.validate(inst_manifest({"instances__name": "searx-{slug}"}), "builtin") == [])
 refused("mcp.instances url naming an unknown setting",
         inst_manifest({"instances__url": "{setting:host}/mcp"}), "builtin", "mcp.instances.url")
 refused("mcp.instances url without a setting",
@@ -719,6 +729,43 @@ with tempfile.TemporaryDirectory() as tmp:
           str(rows))
     rows = plan_rows(data, "default", {**TW_ON, "TWENTY_MCP_TIMEOUT": "90"})
     check("TWENTY_MCP_TIMEOUT overrides the timeout", rows.get("crm-main", [""] * 7)[6] == "90")
+
+# Values of the wrong JSON type in an instance file: that instance is off with
+# a reason, the others still register, and nothing raises.
+with tempfile.TemporaryDirectory() as tmp:
+    FAKE_KEYS.update({"listacc.key_rw": "rw-fake-l", "dictacc.key_rw": "rw-fake-d",
+                      "strlocal.key_rw": "rw-fake-s", "listlocal.key_rw": "rw-fake-ll",
+                      "listurl.key_rw": "rw-fake-lu"})
+    data = tw_store(Path(tmp), {
+        "remote": {"url": "https://crm.example.com", "access": "write", "local": False},
+        "listacc": {"url": "https://crm.example.com", "access": ["write"]},
+        "dictacc": {"url": "https://crm.example.com", "access": {"write": 1}},
+        "strlocal": {"url": "http://twenty-server:3000", "access": "write", "local": "true"},
+        "listlocal": {"url": "http://twenty-server:3000", "access": "write", "local": [1]},
+        "listurl": {"url": ["https://crm.example.com"], "access": "write"},
+    })
+    try:
+        rows = plan_rows(data, "default", {"TWENTY_MCP_ENABLED": "1", "TWENTY_LOCAL_ENABLED": "0"})
+    except Exception as e:  # noqa: BLE001
+        rows = {}
+        check("instances-plan survives ill-typed instance values", False, f"{type(e).__name__}: {e}")
+    check("a good instance still registers beside ill-typed ones",
+          rows.get("crm-remote", ["", "", "0"])[2] == "1", str(rows.get("crm-remote")))
+    for slug in ("listacc", "dictacc"):
+        r = rows.get(f"crm-{slug}", [""] * 10)
+        check(f"access that isn't a string is off, reason access ({slug})",
+              r[2] == "0" and r[9].startswith("access "), str(r))
+    for slug in ("strlocal", "listlocal"):
+        r = rows.get(f"crm-{slug}", [""] * 10)
+        check(f"a gate setting that isn't a bool is off, reason gate ({slug})",
+              r[2] == "0" and r[9].startswith("gate "), str(r))
+    r = rows.get("crm-listurl", [""] * 10)
+    check("a url that isn't a string is off, reason url", r[2] == "0" and r[9].startswith("url "), str(r))
+    rows = plan_rows(data, "default", TW_ON)
+    for slug in ("strlocal", "listlocal"):
+        r = rows.get(f"crm-{slug}", [""] * 10)
+        check(f"a non-bool gate setting stays off with the gate flag on ({slug})",
+              r[2] == "0" and r[9].startswith("gate "), str(r))
 
 with tempfile.TemporaryDirectory() as tmp:
     rows = plan_rows(Path(tmp) / "missing", "default", TW_ON)

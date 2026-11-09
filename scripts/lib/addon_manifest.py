@@ -850,7 +850,11 @@ def _validate_mcp_instances(inst, source: str, instances, gate_flags: set[str],
             "after a prefix such as crm-")
     else:
         prefix = name.split("{slug}")[0]
-        if prefix.rstrip("-") in CORE_MCP_NAMES or prefix.startswith(CORE_MCP_PREFIXES):
+        # The bootstrap drops every entry whose name starts with the prefix and
+        # has no instance, so no core name or prefix may start with it either.
+        if (prefix.rstrip("-") in CORE_MCP_NAMES or prefix.startswith(CORE_MCP_PREFIXES)
+                or any(n.startswith(prefix) for n in CORE_MCP_NAMES)
+                or any(p.startswith(prefix) for p in CORE_MCP_PREFIXES)):
             err(f"mcp.instances.name prefix {prefix!r} collides with a server core registers")
 
     url = inst.get("url")
@@ -1201,7 +1205,9 @@ def _fill_url(template: str, values: dict, schema: dict) -> str:
     for m in SETTING_REF_RE.finditer(template):
         out.append(template[pos:m.start()])
         v = values.get(m.group(1), "")
-        v = "" if v is None else str(v)
+        # Only a string fills a ref; anything else leaves it empty, so the
+        # url check turns the instance off.
+        v = v if isinstance(v, str) else ""
         if schema.get(m.group(1), {}).get("type") == "url":
             v = v.rstrip("/")
             nxt = SETTING_REF_RE.search(template, m.end())
@@ -1318,12 +1324,14 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
                     continue
                 if gate:
                     gated = values.get(gate["setting"])
-                    gated = gated if isinstance(gated, bool) else truthy(str(gated))
+                    if not isinstance(gated, bool):
+                        line("0", url=url, reason=f"gate {gate['setting']} must be true or false")
+                        continue
                     if gated and not truthy(environ.get(gate["flag"])):
                         line("0", url=url, reason=f"gate {gate['setting']} is set and {gate['flag']} is off")
                         continue
                 access = values.get(access_setting)
-                if access not in INSTANCE_ACCESS_LEVELS:
+                if not isinstance(access, str) or access not in INSTANCE_ACCESS_LEVELS:
                     line("0", url=url, reason=f"access {access_setting} must be read or write")
                     continue
                 use = "ro" if level == "ro" else INSTANCE_ACCESS_LEVELS[access]
