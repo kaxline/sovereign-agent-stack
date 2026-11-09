@@ -1,4 +1,4 @@
-.PHONY: setup ensure-local services model-defaults model-defaults-add model-defaults-reload up down logs ps restart clean doctor hermes-upgrade hermes-reload gateway-preflight \
+.PHONY: setup ensure-local services model-defaults model-defaults-add model-defaults-reload up down logs ps restart clean doctor hermes-upgrade hermes-reload hermes-recreate gateway-preflight \
 	bootstrap-buzz buzz-cli-install agent-create hermes-buzz-employee \
 	buzz-relay-start buzz-relay-stop buzz-relay-status buzz-relay-logs buzz-relay-restart \
 	buzz-admin \
@@ -14,6 +14,8 @@
 	data-dir-show data-dir-set data-dir-migrate \
 	db-backup db-service-add db-psql todo-init todo-open dashboard-open \
 	crm-init crm-add crm-remove crm-access crm-open crm-mode \
+	vault-init vault-add vault-unlock vault-lock vault-sync vault-grant vault-requests vault-remove vault-open \
+	secrets-sync bitwarden-test \
 	budget-init budget-add budget-open budget-remove budget-access \
 	coding-root-list coding-root-add \
 	context-root-list context-root-add opencode-smoke-fixture \
@@ -168,6 +170,77 @@ crm-mode:
 	@test -n "$(MULTI)" || (echo "Usage: make crm-mode MULTI=0|1"; exit 1)
 	./scripts/crm.sh mode "$(MULTI)"
 
+# Bitwarden vault for browser sign-ins (bitwarden profile; vault for local mode). See docs/bitwarden.md.
+#   make vault-init [VAULT_OWNER_EMAIL=you@example.com]  local Vaultwarden, the agent account, you as Owner
+#   make vault-add SLUG=name MODE=cloud [REGION=eu] [SCOPE=folder:Agent] [UNLOCK=stored|manual] [FORCE=1]
+#   make vault-add SLUG=name MODE=selfhosted URL=https://... [SCOPE=collection:<id>]
+#                                          an account the broker signs in to; SCOPE=all also needs CONFIRM_SCOPE_ALL=1
+#   make vault-unlock SLUG=name            unlock a manual account (hidden prompt)
+#   make vault-lock SLUG=name              lock it again
+#   make vault-sync                        re-read every unlocked account now
+#   make vault-requests                    the agent's pending access requests
+#   make vault-grant [SITE=example.com] [SLUG=name]  move an item into the agent's scope
+#   make vault-remove SLUG=name            forget an account (file, secrets, bw data)
+#   make vault-open                        open the local web vault
+#   make secrets-sync                      write stack secrets from the vault into their files
+vault-init:
+	./scripts/vault.sh init $(if $(VAULT_OWNER_EMAIL),--owner "$(VAULT_OWNER_EMAIL)")
+
+vault-add:
+	@test -n "$(SLUG)" -a -n "$(MODE)" || (echo "Usage: make vault-add SLUG=<slug> MODE=cloud|selfhosted [REGION=eu] [URL=https://...] [SCOPE=...] [UNLOCK=stored|manual]"; exit 1)
+	./scripts/vault.sh add --slug "$(SLUG)" --mode "$(MODE)" $(if $(REGION),--region "$(REGION)") \
+		$(if $(URL),--url "$(URL)") $(if $(SCOPE),--scope "$(SCOPE)") $(if $(UNLOCK),--unlock "$(UNLOCK)") \
+		$(if $(FORCE),--force)
+
+vault-unlock:
+	@test -n "$(SLUG)" || (echo "Usage: make vault-unlock SLUG=<slug>"; exit 1)
+	@./scripts/vault.sh unlock --slug "$(SLUG)"
+
+vault-lock:
+	@test -n "$(SLUG)" || (echo "Usage: make vault-lock SLUG=<slug>"; exit 1)
+	@./scripts/vault.sh lock --slug "$(SLUG)"
+
+vault-sync:
+	@./scripts/vault.sh sync
+
+vault-requests:
+	@./scripts/vault.sh requests
+
+vault-grant:
+	@./scripts/vault.sh grant $(if $(SITE),--site "$(SITE)") $(if $(SLUG),--slug "$(SLUG)")
+
+vault-remove:
+	@test -n "$(SLUG)" || (echo "Usage: make vault-remove SLUG=<slug>"; exit 1)
+	./scripts/vault.sh remove --slug "$(SLUG)"
+
+vault-open:
+	@./scripts/vault.sh open
+
+secrets-sync:
+	@./scripts/vault.sh secrets-sync
+
+# Every Bitwarden add-on test. The image parts skip without the pinned Hermes
+# image; test-vw-register.py and the compose config check need Docker, and the
+# compose check a .env that satisfies interpolation. Runs all, then lists failures.
+BITWARDEN_TESTS = \
+	"python3 scripts/test-addon-manifests.py" \
+	"python3 scripts/test-digest-redaction.py" \
+	"python3 scripts/test-bitwarden-broker.py" \
+	"python3 scripts/test-bitwarden-access.py" \
+	"python3 scripts/test-bitwarden-fill.py" \
+	"sh scripts/test-bitwarden-registration.sh" \
+	"python3 scripts/test-bitwarden-compose-config.py" \
+	"sh scripts/test-bitwarden-secrets-sync.sh" \
+	"sh scripts/test-bitwarden-setup.sh" \
+	"bash scripts/test-vault-sh.sh" \
+	"python3 scripts/test-vw-register.py"
+bitwarden-test:
+	@failed=""; for t in $(BITWARDEN_TESTS); do \
+		echo "=== $$t"; $$t || failed="$$failed\n  $$t"; \
+	done; \
+	if [ -n "$$failed" ]; then printf 'FAILED:%b\n' "$$failed"; exit 1; fi; \
+	echo "all Bitwarden tests passed"
+
 # Actual Budget (budget and budget-local profiles, or remote). See docs/budget.md.
 #   make budget-init [SYNC_ID=id] [ROTATE=1]  local server: password, budget, budget.env
 #   make budget-add URL=https://... [SYNC_ID=id] [FORCE=1]  a budget on a remote server
@@ -272,7 +345,9 @@ services:
 
 up: ensure-local
 	@echo "Profiles: $$(grep -E '^COMPOSE_PROFILES=' .env | head -1 | cut -d= -f2-)"
+	@./scripts/vault.sh pre-up
 	docker compose up -d
+	@./scripts/vault.sh up-hook
 
 down:
 	docker compose down
@@ -283,8 +358,12 @@ logs:
 ps:
 	docker compose ps
 
+# Compose restarts bitwarden-broker with hermes (depends_on restart: true);
+# vault.sh follow-hermes repairs a broker left in a removed hermes namespace
+# and lists the manual accounts to unlock.
 restart:
-	docker compose restart hermes hermes-webui
+	@rc=0; docker compose restart hermes hermes-webui || rc=$$?; \
+	./scripts/vault.sh follow-hermes; exit $$rc
 
 # Re-apply Hermes config after changing .env, MCP tokens or servers, skills, or
 # the compose file: both profile bootstraps, then recreate hermes so every
@@ -294,6 +373,14 @@ hermes-reload: ensure-local
 	docker compose run --rm -e HERMES_BOOTSTRAP_FORCE=1 hermes-api-bootstrap
 	docker compose run --rm --no-deps -e HERMES_BOOTSTRAP_FORCE=1 hermes-browser-bootstrap
 	docker compose up -d --no-deps --force-recreate hermes
+	@./scripts/vault.sh follow-hermes
+
+# Recreate hermes alone, so s6 picks up new profiles and gateways, then move the
+# Bitwarden broker into its new network namespace. Runs no bootstrap.
+#   make hermes-recreate
+hermes-recreate: ensure-local
+	docker compose up -d --force-recreate hermes
+	@./scripts/vault.sh follow-hermes
 
 # Corpus lifecycle (requires rag profile). One hot WORKSPACE at a time.
 #   make corpus-create SLUG=demo-a

@@ -23,13 +23,22 @@ image's python3, mounted at /bootstrap/addon_manifest.py.
         rw into ro, "write" or empty changes nothing, and any other value gives
         the profile no entry. For a profile whose access is ro, tools and pins leave out
         the manifest's writeTools.
+    addon_manifest.py vault-plan <addons-dir> <profile>
+        For each add-on with a `vaultBackend` block, print one line the
+        bootstrap reads, fields separated by "|":
+        name|enabled|access|plugin|tools
+        `enabled` and `access` are as for mcp-plan. `plugin` is the repo-relative
+        directory of the Hermes plugin. Tools are space-separated. Invalid
+        manifests, and values containing | or a newline, are reported on stderr
+        and skipped.
 
 cron_fence() lists the MCP server names and URLs the bootstrap's
 fence_mail_from_cron keeps out of platform_toolsets.cron: every add-on whose
 permissions.cron is not true. With cron "ro" the add-on's name is not fenced and
 only its URLs other than the ro service's are, so a cron job keeps the ro
 entry and loses the rw one. An invalid manifest is fenced by whatever MCP
-name it carries, so a broken manifest can't open cron.
+name it carries, so a broken manifest can't open cron. cron_fence_toolsets()
+does the same for the plugin toolsets of add-ons with a vaultBackend.
 
 Policy follows docs/private/addon-manifest-spec.md (draft). `source` is
 "builtin", "official" (a package from the official feed) or "community".
@@ -53,8 +62,11 @@ CORE_MCP_NAMES = {
     "messages",
 }
 CORE_MCP_PREFIXES = ("caldav-", "crm-")
+# Names of the login backends core ships; an add-on's vaultBackend may not take one.
+CORE_VAULT_NAMES = {"vault", "op", "bw"}
 
-READ_CLASSES = {"mail", "messages", "contacts", "calendar", "projects", "memory", "sessions"}
+READ_CLASSES = {"mail", "messages", "contacts", "calendar", "projects", "memory", "sessions",
+                "credentials"}
 EGRESS_WORDS = {"llm-proxy", "search", "postgres", "internet"}
 STACK_SERVICES = {"llm", "search", "storage", "postgres", "neo4j", "redis", "secrets", "scheduler"}
 SETTING_TYPES = {"string", "int", "bool", "choice", "port", "secret", "url", "path"}
@@ -68,6 +80,7 @@ REQUIRED = ("manifestVersion", "id", "version", "title", "tagline", "description
 ID_RE = re.compile(r"^[a-z][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)+$")
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$")
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
+VAULT_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 TOOL_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 ENV_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 DIGEST_RE = re.compile(r"@sha256:[0-9a-f]{64}$")
@@ -215,6 +228,10 @@ def validate(manifest, source: str = "builtin") -> list[str]:
                 isinstance(mcp, dict) and isinstance(mcp.get("service"), dict) and "ro" in mcp["service"]):
             err('permissions.cron "ro" needs a mcp.service map with an ro service: cron ro needs an ro service')
 
+    vault = manifest.get("vaultBackend")
+    if vault is not None:
+        errors.extend(_validate_vault_backend(vault, source, bool(reads)))
+
     settings = manifest.get("settings", {})
     if not isinstance(settings, dict):
         err("settings must be an object")
@@ -310,6 +327,44 @@ def _validate_mcp(mcp, services: dict, source: str, reads: bool) -> list[str]:
     return errors
 
 
+def _validate_vault_backend(vb, source: str, reads: bool) -> list[str]:
+    errors: list[str] = []
+    err = errors.append
+    if source == "community":
+        err("vaultBackend is refused unless the add-on is built-in or on the official feed")
+    if not isinstance(vb, dict):
+        errors.append("vaultBackend must be an object")
+        return errors
+    name = vb.get("name")
+    if not (isinstance(name, str) and VAULT_NAME_RE.match(name)):
+        err("vaultBackend.name must be lowercase letters, digits and _")
+    elif name in CORE_VAULT_NAMES:
+        err(f"vaultBackend.name is reserved: {name!r} belongs to a backend core ships")
+    plugin = vb.get("plugin")
+    if not (isinstance(plugin, str) and plugin and not plugin.startswith("/")
+            and ".." not in plugin.split("/") and "\\" not in plugin):
+        err("vaultBackend.plugin must be a relative directory path without ..")
+    toolset = vb.get("toolset")
+    if not (isinstance(toolset, str) and VAULT_NAME_RE.match(toolset)):
+        err("vaultBackend.toolset must name the plugin's toolset in lowercase letters, digits and _")
+    tools = vb.get("tools")
+    if not (_is_str_list(tools) and tools and all(TOOL_RE.match(t) for t in tools)):
+        err("vaultBackend.tools must list the tools the plugin registers")
+    profiles = vb.get("profiles")
+    if not (isinstance(profiles, dict) and profiles):
+        err("vaultBackend.profiles must map at least one Hermes profile to ro or rw")
+        profiles = {}
+    for prof, level in profiles.items():
+        if level not in ACCESS:
+            err(f"vaultBackend.profiles.{prof} must be ro or rw")
+    if reads and UNATTENDED_PROFILE in profiles:
+        err(f"an add-on that reads personal data may not be on {UNATTENDED_PROFILE}")
+    extra = set(vb) - {"name", "plugin", "toolset", "tools", "profiles"}
+    if extra:
+        err(f"vaultBackend has unknown fields: {', '.join(sorted(extra))}")
+    return errors
+
+
 def load_dir(addons_dir: Path) -> list[tuple[Path, object, str | None]]:
     """(path, manifest or None, parse error or None) for each addon.json."""
     out = []
@@ -377,6 +432,22 @@ def cron_fence(addons_dir: Path, environ=os.environ) -> tuple[list[str], list[st
     return sorted(set(names)), sorted(set(urls))
 
 
+def cron_fence_toolsets(addons_dir: Path) -> list[tuple[str, str]]:
+    """(vaultBackend.name, vaultBackend.toolset) for each add-on whose plugin toolset stays out of cron."""
+    out = set()
+    for path, manifest, parse_error in load_dir(addons_dir):
+        vb = manifest.get("vaultBackend") if isinstance(manifest, dict) else None
+        name = vb.get("name") if isinstance(vb, dict) else None
+        toolset = vb.get("toolset") if isinstance(vb, dict) else None
+        if not (isinstance(name, str) and name and isinstance(toolset, str) and toolset):
+            continue
+        valid = not check_builtin_file(path, manifest, parse_error)
+        if valid and manifest.get("permissions", {}).get("cron") is True:
+            continue
+        out.add((name, toolset))
+    return sorted(out)
+
+
 def mcp_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
     lines = []
     for path, manifest, parse_error in load_dir(addons_dir):
@@ -422,6 +493,28 @@ def mcp_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
     return lines
 
 
+def vault_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
+    lines = []
+    for path, manifest, parse_error in load_dir(addons_dir):
+        errors = check_builtin_file(path, manifest, parse_error)
+        if errors:
+            for e in errors:
+                print(f"warning: skipping {path.parent.name}: {e}", file=sys.stderr)
+            continue
+        vb = manifest.get("vaultBackend")
+        if not vb:
+            continue
+        enabled = "1" if truthy(environ.get(manifest["builtin"]["flag"])) else "0"
+        fields = [vb["name"], enabled, vb["profiles"].get(profile, ""), vb["plugin"],
+                  " ".join(vb["tools"])]
+        if any("|" in f or "\n" in f for f in fields):
+            print(f"warning: skipping {path.parent.name}: a value contains | or a newline",
+                  file=sys.stderr)
+            continue
+        lines.append("|".join(fields))
+    return lines
+
+
 def main(argv: list[str]) -> int:
     if len(argv) >= 2 and argv[0] == "validate":
         bad = 0
@@ -432,6 +525,10 @@ def main(argv: list[str]) -> int:
         return 1 if bad else 0
     if len(argv) == 3 and argv[0] == "mcp-plan":
         for line in mcp_plan(Path(argv[1]), argv[2]):
+            print(line)
+        return 0
+    if len(argv) == 3 and argv[0] == "vault-plan":
+        for line in vault_plan(Path(argv[1]), argv[2]):
             print(line)
         return 0
     print(__doc__.strip(), file=sys.stderr)

@@ -93,7 +93,7 @@ Hermes reaches the daemon at `http://signal-cli:8080` on the compose network. Th
 On a **fresh install**, `make up` applies cont-init patches automatically. If you change Signal env on an **already-running** stack, recreate Hermes so both gateways reload dotenv:
 
 ```bash
-docker compose up -d --force-recreate hermes
+make hermes-recreate
 ```
 
 ### Disable
@@ -163,11 +163,11 @@ Cron jobs created from the CLI on the **default** profile also use `deliver: sig
 |---|---|---|
 | `signal-cli` unhealthy or HTTP check fails | Host daemon still running, or bad mount/UID | Stop host `signal-cli daemon`; check `SIGNAL_CLI_DATA_DIR` exists and `SIGNAL_CLI_UID`/`GID` match ownership; `make doctor` |
 | Inbound works, WebUI cannot send | Browser adapter disabled by design | Expected — outbound uses env + patches, not browser SSE; recreate Hermes after env changes |
-| Agent says “no send_message tool” | Stale tool schema or model only searched MCP catalog | `docker compose up -d --force-recreate hermes`; new WebUI chat; ask to call `send_message` directly (not only `tool_search`) |
+| Agent says “no send_message tool” | Stale tool schema or model only searched MCP catalog | `make hermes-recreate`; new WebUI chat; ask to call `send_message` directly (not only `tool_search`) |
 | Agent lists tools without `send_message` | Gateway started before patches or stale tool-discovery cache | Recreate Hermes (cont-init clears cache and applies patches) |
 | WebUI gateway dies after enabling Signal on browser profile | Both gateways held Signal SSE lock | Re-run `make ensure-local` — sync sets `platforms.signal.enabled: false` on browser |
 | Corrupted `.env` / sync error about `=` in channel | Two keys mashed on one line | Fix line breaks in `.env` (e.g. `SIGNAL_HOME_CHANNEL=…` must not run into `SIGNAL_CLI_DATA_DIR=…`) |
-| Cron fails with `api_server ... not send()` | WebUI origin cannot deliver; old image or missing patches | `docker compose up -d --force-recreate hermes`; re-run the job — delivery should land on Signal |
+| Cron fails with `api_server ... not send()` | WebUI origin cannot deliver; old image or missing patches | `make hermes-recreate`; re-run the job — delivery should land on Signal |
 | WebUI cron never delivers | Missing `SIGNAL_HOME_CHANNEL` or browser env not seeded | Set `SIGNAL_HOME_CHANNEL` in root `.env`; `make ensure-local`; recreate Hermes |
 | Empty body from `/api/v1/check` | Normal for some signal-cli versions | HTTP **200** is sufficient |
 

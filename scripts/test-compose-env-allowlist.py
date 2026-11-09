@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 # Every profile that publishes a service we want to see in one config.
-PROFILES = "core,rag,neo4j,calendar,automation,research,coding,ollama,searxng-prod,search-gate,db,todo,crm,mail,mail-drafts,messages,budget,budget-local"
+PROFILES = "core,rag,neo4j,calendar,automation,research,coding,ollama,searxng-prod,search-gate,db,todo,crm,mail,mail-drafts,messages,bitwarden,bitwarden-tools,budget,budget-local"
 
 # Secret-bearing environment keys, and the services allowed to carry them.
 # An empty set means the key must not appear on any service.
@@ -77,11 +77,28 @@ SECRET_KEYS = {
     "SIGNAL_ALLOWED_USERS": set(),
     "SIGNAL_HOME_CHANNEL": set(),
     "SIGNAL_HTTP_URL": set(),
+    # bw reads these from its environment; the broker hands them to bw only
+    # in the child process it starts, so no container carries them.
+    "BW_CLIENTID": set(),
+    "BW_CLIENTSECRET": set(),
+    "BW_PASSWORD": set(),
+    "BW_SESSION": set(),
 }
 
 # hermes-worker may carry only these. Any other key, including a secret, fails.
 WORKER_ENV = {"HERMES_UID", "HERMES_GID", "TZ"}
 
+# bitwarden-broker shares hermes' network namespace and may carry only these.
+BROKER_ENV = {
+    "BITWARDEN_ACCOUNTS_DIR",
+    "BITWARDEN_DATA_DIR",
+    "BITWARDEN_SECRETS_DIR",
+    "BITWARDEN_SYNC_MINUTES",
+    "BITWARDEN_IDLE_LOCK_MINUTES",
+    "BITWARDEN_LISTEN",
+    "BITWARDEN_SYNC_SOCKET",
+    "NODE_EXTRA_CA_CERTS",
+}
 # Actual Budget services may carry only these keys. The MCP containers get
 # their credentials from the /app/.env file, never from the environment.
 ACTUAL_ENV = {
@@ -102,6 +119,7 @@ REQUIRED = {
         "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD",
         "HERMES_DASHBOARD_BASIC_AUTH_SECRET",
         "HERMES_BUZZ_ENABLED",
+        "BITWARDEN_ENABLED",
         "SEARXNG_URL",
     },
     "opencode": {"OPENCODE_SERVER_PASSWORD"},
@@ -267,6 +285,18 @@ def check_worker(services: dict) -> list[str]:
     return errors
 
 
+def check_broker(services: dict) -> list[str]:
+    service = services.get("bitwarden-broker")
+    if not service:
+        return ["service bitwarden-broker missing from compose config"]
+    keys = set(env_map(service))
+    errors = [f"bitwarden-broker environment includes {key}" for key in sorted(keys - BROKER_ENV)]
+    errors += [f"bitwarden-broker environment is missing {key}" for key in sorted(BROKER_ENV - keys)]
+    if service.get("env_file"):
+        errors.append("bitwarden-broker reads an env_file")
+    return errors
+
+
 def check_loopback(services: dict) -> list[str]:
     errors = []
     for name, service in services.items():
@@ -289,8 +319,10 @@ DB_ONLY = {"postgres-db", "db-provision", "sql-mcp-ro", "sql-mcp-rw"}
 # Services on both default and db. An integration that stores data and needs
 # the internet goes here; one that needs neither goes in DB_ONLY.
 DB_BRIDGES = {"hermes", "vikunja"}
-# Networks a DB_BRIDGES service joins besides default and db.
-BRIDGE_EXTRA_NETS = {"hermes": {"budget"}}
+# Networks a DB_BRIDGES service joins besides default and db. hermes is on
+# vault, the internal network the Bitwarden broker reaches the local Vaultwarden
+# through, and on budget for the Actual Budget MCPs.
+BRIDGE_EXTRA_NETS = {"hermes": {"budget", "vault"}}
 
 
 def check_db_network(services: dict, networks: dict) -> list[str]:
@@ -376,6 +408,7 @@ def main() -> None:
     config = load_config()
     services = config.get("services") or {}
     errors = check_secrets(services) + check_worker(services) + check_proxy(services) + check_loopback(services)
+    errors += check_broker(services)
     errors += check_db_network(services, config.get("networks") or {})
     errors += check_n8n_store(services)
     errors += check_actual(services)

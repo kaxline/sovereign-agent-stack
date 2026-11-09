@@ -1376,7 +1376,7 @@ addon_mcp_urls() {
 addon_mcp_pin_args() {
   addon_mcp_plan "$1" 2>/dev/null | while IFS='|' read -r _amp_name _amp_title _amp_on _amp_access \
       _amp_url _amp_timeout _amp_connect _amp_transport _amp_tools _amp_pins _amp_all_urls; do
-    [ "$_amp_on" = 1 ] && [ -n "$_amp_access" ] || continue
+    { [ "$_amp_on" = 1 ] && [ -n "$_amp_access" ]; } || continue
     for _amp_t in $_amp_pins; do
       printf ' %s %s' "$_amp_t" "$(mcp_tool_name "$_amp_name" "$_amp_t")"
     done
@@ -1422,6 +1422,135 @@ register_addon_mcp_servers() {
     # shellcheck disable=SC2086
     pin_mcp_tools "$_ram_profile" "$_ram_name" $_ram_pins
   done
+}
+
+# Built-in add-ons with a vaultBackend block (addon_manifest.py vault-plan): a
+# login-backend plugin for Hermes's browser vault (Bitwarden's bwbroker). While
+# BITWARDEN_ENABLED is on, the hermes container installs the plugin into
+# Hermes's bundled plugins dir (14-install-bwbroker-plugin.sh), since Hermes
+# refuses a login backend from $HERMES_HOME/plugins. This turns it on or off
+# per profile.
+#
+# While the add-on's flag is on and the manifest lists the profile, the
+# plugin's name goes into plugins.enabled and vault.<name>.enabled is true.
+# Otherwise both are removed. A copy of the plugin in the profile's own
+# plugins dir is removed either way: it would shadow the bundled one and have
+# its backend refused. While any vault add-on is on, vault.bitwarden.enabled
+# is false, so core's own Bitwarden backend (the bw CLI) never lists logins
+# beside the broker's. The config is written only when something changes.
+addon_vault_plan() {
+  [ -d "$ADDONS_DIR" ] || return 0
+  python3 "$ADDON_MANIFEST_PY" vault-plan "$ADDONS_DIR" "${1:-default}"
+}
+
+register_addon_vault_backends() {
+  _rav_cfg="$(config_path_for "$1")"
+  [ -f "$_rav_cfg" ] || return 0
+  [ -d "$ADDONS_DIR" ] || return 0
+  if ! _rav_plan="$(addon_vault_plan "$1")"; then
+    log "warning: could not read add-on manifests in ${ADDONS_DIR}; add-on login backends left as they were"
+    return 0
+  fi
+  [ -n "$_rav_plan" ] || return 0
+  _out="$(python3 - "$_rav_cfg" "$_rav_plan" <<'PY'
+import shutil
+import sys
+from pathlib import Path
+
+sys.path.insert(0, "/opt/hermes")
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import sys as _sys
+    _sys.path.insert(0, "/opt/hermes")
+    import hermes_yaml as yaml
+from utils import atomic_yaml_write
+
+cfg_path = Path(sys.argv[1])
+plan = [line.split("|") for line in sys.argv[2].splitlines() if line.count("|") == 4]
+profile = cfg_path.parent.name if cfg_path.parent.parent.name == "profiles" else "default"
+config = yaml.safe_load(cfg_path.read_text()) or {}
+changes = []  # config edits
+removed = []  # stale plugin copies
+
+
+def section(parent, key, create):
+    """parent[key] as a dict: created when missing and create is set; None when it isn't a dict."""
+    value = parent.get(key)
+    if value is None and create:
+        value = parent[key] = {}
+    return value if isinstance(value, dict) else None
+
+
+def drop_if_empty(parent, key):
+    if parent.get(key) in ({}, []):
+        del parent[key]
+
+
+for name, on, access, _plugin, _tools in plan:
+    stale = cfg_path.parent / "plugins" / name
+    if stale.is_symlink() or stale.is_file():
+        stale.unlink()
+        removed.append(str(stale))
+    elif stale.is_dir():
+        shutil.rmtree(stale)
+        removed.append(str(stale))
+    plugins = section(config, "plugins", on == "1" and bool(access))
+    vault = section(config, "vault", on == "1" and bool(access))
+    if on == "1" and access:
+        if plugins is None or vault is None:
+            print(f"WARNING: plugins or vault in {cfg_path} is not a mapping; {name} not enabled on {profile}")
+            continue
+        enabled = plugins.get("enabled")
+        if enabled is None:
+            plugins["enabled"] = [name]
+            changes.append(f"enabled plugin {name}")
+        elif not isinstance(enabled, list):
+            print(f"WARNING: plugins.enabled on {profile} is not a list; {name} not enabled")
+        elif name not in enabled:
+            enabled.append(name)
+            changes.append(f"enabled plugin {name}")
+        disabled = plugins.get("disabled")
+        if isinstance(disabled, list) and name in disabled:
+            print(f"WARNING: plugins.disabled on {profile} lists {name}, so it stays off")
+        backend = section(vault, name, True)
+        if backend is None:
+            print(f"WARNING: vault.{name} on {profile} is not a mapping; replaced with enabled: true")
+            vault[name] = backend = {}
+        if backend.get("enabled") is not True:
+            backend["enabled"] = True
+            changes.append(f"vault.{name}.enabled=true")
+        continue
+    if plugins is not None and isinstance(plugins.get("enabled"), list) and name in plugins["enabled"]:
+        plugins["enabled"] = [p for p in plugins["enabled"] if p != name]
+        drop_if_empty(plugins, "enabled")
+        drop_if_empty(config, "plugins")
+        changes.append(f"took plugin {name} out of plugins.enabled")
+    if vault is not None and name in vault:
+        del vault[name]
+        drop_if_empty(config, "vault")
+        changes.append(f"removed vault.{name}")
+
+if any(on == "1" for _n, on, *_rest in plan):
+    vault = section(config, "vault", True)
+    if vault is None:
+        print(f"WARNING: vault in {cfg_path} is not a mapping; vault.bitwarden left as it was")
+    else:
+        bitwarden = section(vault, "bitwarden", True)
+        if bitwarden is None:
+            print(f"WARNING: vault.bitwarden on {profile} is not a mapping; replaced with enabled: false")
+            vault["bitwarden"] = bitwarden = {}
+        if bitwarden.get("enabled") is not False:
+            bitwarden["enabled"] = False
+            changes.append("vault.bitwarden.enabled=false")
+
+if changes:
+    atomic_yaml_write(str(cfg_path), config)
+if changes or removed:
+    print(f"add-on login backends on {profile}: {'; '.join(changes + ['removed ' + r for r in removed])}")
+PY
+)"
+  if [ -n "$_out" ]; then log "$_out"; fi
 }
 
 # Twenty CRM (crm profile, or a remote instance). One mcp_servers.crm-<slug>
@@ -1875,6 +2004,14 @@ PY
 # mail-triage-cron, make messages-triage-cron) still gets it. Add-ons are
 # matched by MCP name or URL (addon_manifest.cron_fence).
 #
+# Add-ons with a vaultBackend reach Hermes through a plugin, not MCP, and the
+# plugin's toolset (bitwarden) is on in cron by default. While the plugin is
+# enabled on a profile, the toolset is listed in known_plugin_toolsets.cron,
+# which turns it off there, and taken out of platform_toolsets.cron
+# (addon_manifest.cron_fence_toolsets). A job naming it in its own
+# enabled_toolsets still gets the tools; the backend lists no logins in a
+# cron turn either way.
+#
 # A list we wrote is recorded in .mail-cron-toolsets.json next to config.yaml,
 # so it can be refreshed or removed later. A list you wrote yourself is kept;
 # only the fenced servers are taken out of it.
@@ -1898,7 +2035,7 @@ from utils import atomic_yaml_write
 
 MAIL_URLS = ("mail-mcp:8000", "mail-drafts-mcp:8000", "messages-mcp:8000")
 cfg_path = Path(sys.argv[1])
-addon_names, addon_urls = set(), set()
+addon_names, addon_urls, addon_toolsets = set(), set(), []
 fence_known = True
 try:
     spec = importlib.util.spec_from_file_location("addon_manifest", sys.argv[2])
@@ -1906,6 +2043,7 @@ try:
     spec.loader.exec_module(addon_manifest)
     _names, _urls = addon_manifest.cron_fence(Path(sys.argv[3]))
     addon_names, addon_urls = set(_names), set(_urls)
+    addon_toolsets = addon_manifest.cron_fence_toolsets(Path(sys.argv[3]))
 except Exception as exc:  # no add-on is registered without the module either
     print(f"warning: add-on cron fence unavailable: {exc}")
     fence_known = False
@@ -1913,6 +2051,51 @@ state_path = cfg_path.parent / ".mail-cron-toolsets.json"
 profile = cfg_path.parent.name if cfg_path.parent.parent.name == "profiles" else "default"
 
 config = yaml.safe_load(cfg_path.read_text()) or {}
+notes = []
+dirty = False
+
+
+def finish(after=None):
+    if dirty:
+        atomic_yaml_write(str(cfg_path), config)
+    if after:
+        after()
+    for note in notes:
+        print(note)
+    raise SystemExit(0)
+
+
+def names(value):
+    return {str(v) for v in value} if isinstance(value, list) else set()
+
+
+# Hermes turns a plugin's toolset on for every platform, cron included, unless
+# known_plugin_toolsets.<platform> lists it and platform_toolsets.<platform>
+# doesn't. A fenced add-on's toolset goes into known_plugin_toolsets.cron while
+# its plugin is enabled on this profile, and comes out once it isn't.
+plugins_cfg = config.get("plugins") if isinstance(config.get("plugins"), dict) else {}
+on_plugins = names(plugins_cfg.get("enabled")) - names(plugins_cfg.get("disabled"))
+plugin_ts = {ts for name, ts in addon_toolsets if name in on_plugins}
+idle_ts = {ts for _name, ts in addon_toolsets} - plugin_ts
+known = config.get("known_plugin_toolsets")
+if plugin_ts and known is None:
+    known = config["known_plugin_toolsets"] = {}
+if isinstance(known, dict):
+    known_cron = known.get("cron") if isinstance(known.get("cron"), list) else []
+    want = [t for t in known_cron if t not in idle_ts] + sorted(plugin_ts - names(known_cron))
+    if want != known_cron:
+        if want:
+            known["cron"] = want
+        else:
+            known.pop("cron", None)
+        if not known:
+            config.pop("known_plugin_toolsets", None)
+        dirty = True
+        notes.append(f"plugin toolsets cron jobs on {profile} don't get unless they ask: {', '.join(want) or 'none'}")
+elif plugin_ts:
+    notes.append(f"WARNING: known_plugin_toolsets on {profile} is not a mapping; "
+                 f"{', '.join(sorted(plugin_ts))} not kept out of cron")
+
 servers = config.get("mcp_servers") or {}
 enabled = {str(n) for n, s in servers.items()
            if isinstance(s, dict) and str(s.get("enabled", True)).lower() not in ("false", "no", "off", "0")}
@@ -1927,40 +2110,47 @@ try:
 except (OSError, ValueError):
     managed = False
 others = sorted(enabled - mail) or ["no_mcp"]
+# A fenced plugin toolset named in a cron list would be on despite known_plugin_toolsets.
+listed_ts = plugin_ts & names(current)
 
 if not fence_known and managed and current is not None:
     # Without the manifests we can't tell which add-ons to fence; keep the
     # list we wrote last time rather than open cron to them.
-    print(f"kept platform_toolsets.cron on {profile} as it was")
-    raise SystemExit(0)
+    notes.append(f"kept platform_toolsets.cron on {profile} as it was")
+    finish()
 
 if not mail:
     if managed and current is not None:
         platform.pop("cron", None)
         config["platform_toolsets"] = platform
-        atomic_yaml_write(str(cfg_path), config)
-        state_path.unlink(missing_ok=True)
-        print(f"removed the cron tool list added for fenced servers ({profile})")
-    raise SystemExit(0)
+        dirty = True
+        notes.append(f"removed the cron tool list added for fenced servers ({profile})")
+        finish(lambda: state_path.unlink(missing_ok=True))
+    if listed_ts:
+        platform["cron"] = [t for t in current if str(t) not in listed_ts]
+        config["platform_toolsets"] = platform
+        dirty = True
+        notes.append(f"took {', '.join(sorted(listed_ts))} out of your platform_toolsets.cron on {profile}")
+    finish()
 
 if current is None or managed:
     desired = ["hermes-cron"] + others
 else:
-    desired = [t for t in current if t not in mail]
+    desired = [t for t in current if t not in mail and str(t) not in listed_ts]
     if not set(desired) & (enabled | {"no_mcp"}):
         # A list naming no MCP server gets all of them, mail included.
         desired += others
 if desired == current:
-    print(f"cron jobs on {profile} already can't reach {', '.join(sorted(mail))} unless they ask")
-    raise SystemExit(0)
+    notes.append(f"cron jobs on {profile} already can't reach {', '.join(sorted(mail))} unless they ask")
+    finish()
 platform["cron"] = desired
 config["platform_toolsets"] = platform
-atomic_yaml_write(str(cfg_path), config)
+dirty = True
 if current is None or managed:
-    state_path.write_text(json.dumps(desired))
-    print(f"pinned platform_toolsets.cron on {profile} without {', '.join(sorted(mail))}: {', '.join(desired)}")
-else:
-    print(f"took {', '.join(sorted(mail))} out of your platform_toolsets.cron on {profile}")
+    notes.append(f"pinned platform_toolsets.cron on {profile} without {', '.join(sorted(mail))}: {', '.join(desired)}")
+    finish(lambda: state_path.write_text(json.dumps(desired)))
+notes.append(f"took {', '.join(sorted(mail | listed_ts))} out of your platform_toolsets.cron on {profile}")
+finish()
 PY
 )"
   if [ -n "$_out" ]; then log "$_out"; fi
@@ -2305,6 +2495,7 @@ if is_true "$BOOTSTRAP_SHARED"; then
   register_mail_drafts_mcp_servers ""
   register_messages_mcp_servers ""
   register_addon_mcp_servers ""
+  register_addon_vault_backends ""
   register_twenty_mcp_servers ""
 
   # session_search is on Hermes' curated tool_search.defer list. Pin + undefer
@@ -2515,6 +2706,7 @@ register_mail_mcp_servers "$PROFILE"
 register_mail_drafts_mcp_servers "$PROFILE"
 register_messages_mcp_servers "$PROFILE"
 register_addon_mcp_servers "$PROFILE"
+register_addon_vault_backends "$PROFILE"
 register_twenty_mcp_servers "$PROFILE"
 
 # Heal always_include + defer after every hermes config set / MCP register.

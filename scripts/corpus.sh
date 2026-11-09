@@ -7,6 +7,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 # shellcheck source=lib/data-root.sh
 source "${ROOT}/scripts/lib/data-root.sh"
+# shellcheck source=lib/bitwarden.sh
+source "${ROOT}/scripts/lib/bitwarden.sh"
 
 DATA_ROOT="$(resolve_data_root_path "")"
 REGISTRY="${DATA_ROOT}/corpora/registry.json"
@@ -376,6 +378,7 @@ cmd_use() {
   else
     log "Switching WORKSPACE ${prev:-'(unset)'} -> ${slug}"
     docker compose up -d --force-recreate lightrag lightrag-mcp hermes
+    follow_hermes
   fi
   wait_lightrag_healthy
   log "active = ${slug}"

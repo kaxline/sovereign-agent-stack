@@ -169,7 +169,7 @@ Next steps:
   2. Create an agent with Buzz:
        make agent-create NAME=software-engineer DISPLAY_NAME="Software Engineer" WITH=buzz
   3. Recreate Hermes so s6 picks up the gateway:
-       docker compose up -d --force-recreate hermes
+       make hermes-recreate
 
 See docs/agents.md and docs/buzz.md.
 EOF

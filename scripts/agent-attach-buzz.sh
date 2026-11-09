@@ -615,7 +615,7 @@ Agent Buzz transport ready (local only — under data/hermes/, not git):
 
 Next steps:
   1. Recreate Hermes so s6 registers the gateway:
-       docker compose up -d --force-recreate hermes
+       make hermes-recreate
   2. @mention ${DISPLAY_NAME} in Buzz (channel: $(env_get BUZZ_DEFAULT_CHANNEL general))
 
 See docs/agents.md and docs/buzz.md.
@@ -633,7 +633,7 @@ Agent Buzz transport ready (local only — under data/hermes/, not git):
 
 Next steps:
   1. Recreate Hermes so s6 registers the gateway:
-       docker compose up -d --force-recreate hermes
+       make hermes-recreate
   2. For hosted communities: invite the profile pubkey in Desktop → Invites
   3. @mention ${DISPLAY_NAME} in Buzz
 
@@ -654,7 +654,7 @@ Next steps:
   1. make bootstrap-buzz   # if local Buzz is not set up yet
   2. Ensure BUZZ_PRIVATE_KEY is set in ${profile_dir}/.env
   3. Recreate Hermes:
-       docker compose up -d --force-recreate hermes
+       make hermes-recreate
   4. @mention ${DISPLAY_NAME} in Buzz
 
 See docs/agents.md and docs/buzz.md.

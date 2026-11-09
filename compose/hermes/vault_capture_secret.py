@@ -145,7 +145,12 @@ _SCAN_JS = """(() => {
     for (const r of roots) {
       let el = null;
       try { el = r.querySelector(selector); } catch (e) { return JSON.stringify({ error: "bad_selector" }); }
-      if (el) { out.push({ where: describe(el), value: String(valueOf(el) || "").trim() }); break; }
+      if (el) {
+        /* A field the user or a vault fill types into, as in the page scan below: never copied out. */
+        if (el.tagName === "INPUT" && el.type === "password" && !el.readOnly) return JSON.stringify({ error: "password_field" });
+        out.push({ where: describe(el), value: String(valueOf(el) || "").trim() });
+        break;
+      }
     }
     return JSON.stringify({ candidates: out });
   }
@@ -321,6 +326,9 @@ def browser_vault_capture_secret(name: str = "", destination: str = "", selector
         register_vault_redaction_value(c["value"])  # before anything can echo it
     if error_type == "bad_selector":
         return _err("That selector is not valid CSS.", "bad_selector")
+    if error_type == "password_field":
+        return _err("That selector is an editable password field, which holds a typed or filled password, not a "
+                    "key the site shows. capture_secret does not read it.", "password_field")
     if error_type:
         return _err("Could not read the page.", error_type)
     if not found:

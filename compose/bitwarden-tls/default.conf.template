@@ -1,0 +1,56 @@
+# TLS front for the local Vaultwarden on the vault network (profile vault), so
+# bw, which refuses plain-HTTP servers, reaches it as
+# https://vaultwarden.vault.internal. The certificate comes from
+# setup.py tls (make vault-init); only the broker and bitwarden-setup trust
+# its CA. The user's browser uses Vaultwarden's own port, 127.0.0.1:8222.
+#
+# The nginx image runs envsubst on this file at start. NGINX_ENVSUBST_FILTER
+# matches no variable, so nginx's own $variables stay as written.
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+# No query strings in the log: the notifications hub takes the access token as one.
+log_format vaultwarden_tls '$remote_addr [$time_local] "$request_method $uri" $status $body_bytes_sent';
+
+server {
+    listen 443 ssl;
+    server_name vaultwarden.vault.internal;
+    access_log /var/log/nginx/access.log vaultwarden_tls;
+
+    ssl_certificate /etc/nginx/tls/server.crt;
+    ssl_certificate_key /etc/nginx/tls/server.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    # Attachments go through here too.
+    client_max_body_size 128m;
+
+    # Docker's DNS, looked up per request, so a recreated vaultwarden is found at its new address.
+    resolver 127.0.0.11 valid=10s ipv6=off;
+    set $vaultwarden http://vaultwarden:80;
+
+    # X-Real-IP and X-Forwarded-For are set from the connection, replacing what the
+    # client sent, so Vaultwarden's per-address login limit sees the real caller.
+    location / {
+        proxy_pass $vaultwarden;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /notifications/hub {
+        proxy_pass $vaultwarden;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_read_timeout 1h;
+    }
+}

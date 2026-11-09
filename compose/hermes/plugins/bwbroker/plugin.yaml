@@ -1,0 +1,8 @@
+name: bwbroker
+version: 1.0.0
+description: "Bitwarden logins in the browser vault, through the stack's Bitwarden broker. Lists metadata only; the broker writes the password into the page itself. Adds tools to ask the user for a login and to give one back."
+author: sovereign-agent-stack
+kind: standalone
+provides_tools:
+  - bitwarden_request_access
+  - bitwarden_release_access

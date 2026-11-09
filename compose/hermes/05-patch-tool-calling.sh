@@ -39,6 +39,12 @@ run_patch /bootstrap/patch-searxng-pause-browser.py
 # When searxng's web_url_read is refused (403/429/503, empty JS page, bot
 # check), a note outside the untrusted wrapper says to open it in the browser.
 run_patch /bootstrap/patch-blocked-fetch-hint.py
+# Scrub values the Bitwarden broker filled, by digest: the gateway never
+# holds them (broker/digest_redaction.py).
+run_patch /bootstrap/patch-digest-redaction.py
+# Fills of bwbroker: handles go to the Bitwarden broker, which writes the page
+# itself, so the gateway never holds the value.
+run_patch /bootstrap/patch-bitwarden-broker-fill.py
 # HERMES_WEB_SEARCH_MODE: serve searxng search and page reads from SearXNG,
 # Hermes' keyless ring, or one with the other as fallback.
 run_patch /bootstrap/patch-web-search-mode.py

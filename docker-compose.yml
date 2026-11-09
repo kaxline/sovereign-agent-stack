@@ -1383,6 +1383,8 @@ services:
       - GPTR_MCP_URL=${GPTR_MCP_URL:-http://gptr-mcp:8000/sse}
       - GPTR_MCP_TIMEOUT=${GPTR_MCP_TIMEOUT:-900}
       - GPTR_MCP_CONNECT_TIMEOUT=${GPTR_MCP_CONNECT_TIMEOUT:-30}
+      # Bitwarden broker's login backend (bitwarden profile): default + browser only.
+      - BITWARDEN_ENABLED=${BITWARDEN_ENABLED:-0}
       # Messages MCP (messages profile): default + browser only, never api-server.
       - MESSAGES_MCP_ENABLED=${MESSAGES_MCP_ENABLED:-0}
       - MESSAGES_MCP_URL=${MESSAGES_MCP_URL:-http://messages-mcp:8000/mcp}
@@ -1496,6 +1498,8 @@ services:
       - GPTR_MCP_URL=${GPTR_MCP_URL:-http://gptr-mcp:8000/sse}
       - GPTR_MCP_TIMEOUT=${GPTR_MCP_TIMEOUT:-900}
       - GPTR_MCP_CONNECT_TIMEOUT=${GPTR_MCP_CONNECT_TIMEOUT:-30}
+      # Bitwarden broker's login backend (bitwarden profile): default + browser only.
+      - BITWARDEN_ENABLED=${BITWARDEN_ENABLED:-0}
       # Messages MCP (messages profile): default + browser only, never api-server.
       - MESSAGES_MCP_ENABLED=${MESSAGES_MCP_ENABLED:-0}
       - MESSAGES_MCP_URL=${MESSAGES_MCP_URL:-http://messages-mcp:8000/mcp}
@@ -1552,6 +1556,8 @@ services:
       - TZ=${TZ:-UTC}
       # Buzz localhost proxy (cont-init). Private keys stay in profile .env files.
       - HERMES_BUZZ_ENABLED=${HERMES_BUZZ_ENABLED:-0}
+      # Installs the Bitwarden broker's plugin (14-install-bwbroker-plugin.sh).
+      - BITWARDEN_ENABLED=${BITWARDEN_ENABLED:-0}
       - BUZZ_RELAY_URL=${BUZZ_RELAY_URL:-}
       # Bound every Hermes LLM call (foreground + bg-review). Local endpoints
       # skip implicit stale detection unless the stale timeout is explicit.
@@ -1763,6 +1769,9 @@ services:
       - ./compose/hermes/patch-searxng-pause-browser.py:/bootstrap/patch-searxng-pause-browser.py:ro
       - ./compose/hermes/blocked_fetch_hint.py:/bootstrap/blocked_fetch_hint.py:ro
       - ./compose/hermes/patch-blocked-fetch-hint.py:/bootstrap/patch-blocked-fetch-hint.py:ro
+      - ./compose/bitwarden-broker/broker/digest_redaction.py:/bootstrap/digest_redaction.py:ro
+      - ./compose/hermes/patch-digest-redaction.py:/bootstrap/patch-digest-redaction.py:ro
+      - ./compose/hermes/patch-bitwarden-broker-fill.py:/bootstrap/patch-bitwarden-broker-fill.py:ro
       - ./compose/hermes/web_search_mode.py:/bootstrap/web_search_mode.py:ro
       - ./compose/hermes/patch-web-search-mode.py:/bootstrap/patch-web-search-mode.py:ro
       - ./compose/hermes/patch-browser-unresolvable-host.py:/bootstrap/patch-browser-unresolvable-host.py:ro
@@ -1815,6 +1824,11 @@ services:
       - ./compose/hermes/dashboard_handoff.py:/bootstrap/dashboard_handoff.py:ro
       - ./compose/hermes/patch-dashboard-handoff.py:/bootstrap/patch-dashboard-handoff.py:ro
       - ./compose/hermes/13-patch-dashboard.sh:/etc/cont-init.d/13-patch-dashboard:ro
+      # Bitwarden broker's Hermes plugin, installed into Hermes's bundled plugins
+      # dir while BITWARDEN_ENABLED is on; the bootstrap enables it per profile.
+      - ./compose/hermes/plugins/bwbroker:/bootstrap/plugins/bwbroker:ro
+      - ./compose/hermes/bitwarden_broker_backend.py:/bootstrap/bitwarden_broker_backend.py:ro
+      - ./compose/hermes/14-install-bwbroker-plugin.sh:/etc/cont-init.d/14-install-bwbroker-plugin:ro
       # Per-profile gateways and kept sessions on Hermes v0.22+. Runs before the
       # image's 02-reconcile-profiles. See the script header.
       - ./compose/hermes/019-pin-profile-gateways.sh:/etc/cont-init.d/019-pin-profile-gateways:ro
@@ -1864,9 +1878,10 @@ services:
       # `docker compose up` does.
     # db is internal and holds only the shared Postgres and its SQL MCP
     # sidecars. hermes is the one default-network service that joins it, so
-    # hermes-worker (the agent's shell) cannot reach either. budget keeps the
-    # unauthenticated Actual Budget MCP servers off the default network.
-    networks: [default, db, budget]
+    # hermes-worker (the agent's shell) cannot reach either. vault is internal
+    # too and holds the local Vaultwarden for the Bitwarden broker. budget keeps
+    # the unauthenticated Actual Budget MCP servers off the default network.
+    networks: [default, db, vault, budget]
     # Healthy once the dashboard and the api-server gateway answer. The gateway
     # binds 8643 only after startup MCP discovery has finished for every
     # profile, so the dashboard alone turns healthy before chats can be served.
@@ -1974,6 +1989,206 @@ services:
       start_period: 60s
       start_interval: 2s
 
+  # ----------------------------------------------------------------------
+  # Bitwarden broker — vault access for browser sign-ins (docs/bitwarden.md)
+  # Profile: bitwarden (BITWARDEN_ENABLED=1)
+  # API:     http://127.0.0.1:8099 inside hermes' network namespace only
+  # Data:    BITWARDEN_HOST_DATA_DIR (default ./data/addons/bitwarden): bw/,
+  #          broker/ and secrets/. Accounts: compose/bitwarden/accounts/<slug>.env
+  # The image also runs bitwarden-setup and bitwarden-secrets-sync
+  # (profile bitwarden-tools, started by make targets only).
+  # ----------------------------------------------------------------------
+  bitwarden-broker:
+    profiles: ["bitwarden"]
+    container_name: ${CONTAINER_PREFIX:-}bitwarden-broker
+    build: &bitwarden-build
+      context: ./compose/bitwarden-broker
+    image: &bitwarden-image ${IMAGE_PREFIX:-assistant}-bitwarden-broker:local
+    restart: unless-stopped
+    # hermes' namespace and nothing else: the broker reaches Chromium's
+    # loopback CDP port, and hermes-worker cannot reach the broker. With
+    # depends_on restart, compose restarts the broker when it restarts hermes.
+    # It does not when hermes alone is recreated (up --force-recreate hermes):
+    # the broker keeps the removed container's namespace, and a restart then
+    # fails. Recover with docker compose --profile bitwarden up -d --no-deps
+    # bitwarden-broker, which make hermes-reload, make hermes-recreate and
+    # scripts/vault.sh follow-hermes run.
+    network_mode: "service:hermes"
+    depends_on:
+      hermes:
+        condition: service_started
+        restart: true
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - BITWARDEN_ACCOUNTS_DIR=/accounts
+      - BITWARDEN_DATA_DIR=/data
+      - BITWARDEN_SECRETS_DIR=/secrets
+      - BITWARDEN_SYNC_MINUTES=${BITWARDEN_SYNC_MINUTES:-10}
+      - BITWARDEN_IDLE_LOCK_MINUTES=${BITWARDEN_IDLE_LOCK_MINUTES:-0}
+      - BITWARDEN_LISTEN=127.0.0.1:8099
+      - BITWARDEN_SYNC_SOCKET=/run/bitwarden-sync/sync.sock
+      # The local Vaultwarden's CA, written by make vault-init. bw starts with
+      # a warning when the file is absent, so cloud accounts work without it.
+      - NODE_EXTRA_CA_CERTS=/secrets/local/tls/ca.crt
+    volumes:
+      - ./compose/bitwarden/accounts:/accounts:ro
+      - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/secrets:/secrets:ro
+      - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/bw:/data/bw
+      - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/broker:/data/broker
+      # The socket that returns values; only bitwarden-secrets-sync also mounts it.
+      - bitwarden_sync:/run/bitwarden-sync
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8099/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # One-shot: writes the stack's secret files from the broker's sync socket.
+  # make secrets-sync runs it. No network; the socket is its only channel.
+  bitwarden-secrets-sync:
+    profiles: ["bitwarden-tools"]
+    build: *bitwarden-build
+    image: *bitwarden-image
+    entrypoint: ["python3", "/app/secrets_sync.py"]
+    network_mode: none
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - BITWARDEN_SYNC_SOCKET=/run/bitwarden-sync/sync.sock
+      - BITWARDEN_SYNC_TARGETS=/targets
+      # Host paths; the sync uses only the file names, inside TWENTY_SECRETS_DIR.
+      - TWENTY_ENCRYPTION_KEY_FILE=${TWENTY_ENCRYPTION_KEY_FILE:-}
+      - TWENTY_DB_PASSWORD_FILE=${TWENTY_DB_PASSWORD_FILE:-}
+      - TWENTY_SECRETS_DIR=${TWENTY_SECRETS_DIR:-}
+    # The folders of the files it writes, and nothing else. Unset,
+    # TWENTY_SECRETS_DIR falls back to an empty folder the sync never writes.
+    volumes:
+      - bitwarden_sync:/run/bitwarden-sync
+      - ./compose/twenty/workspaces:/targets/twenty-workspaces
+      - ${TWENTY_SECRETS_DIR:-./compose/twenty/no-secrets}:/targets/twenty-secrets
+      - ./compose/postgres/services:/targets/postgres-services
+      - ./compose/caldav-mcp/accounts:/targets/caldav-accounts
+
+  # One-shot, interactive: unlocks the user's own account to create the
+  # agent's folder or collection and move items into it (make vault-init,
+  # vault-add, vault-grant). Shares only the internal vault network with
+  # hermes (its route to the local Vaultwarden), listens on no port, and
+  # shares no volume with it.
+  bitwarden-setup:
+    profiles: ["bitwarden-tools"]
+    build: *bitwarden-build
+    image: *bitwarden-image
+    entrypoint: ["python3", "/app/setup/setup.py"]
+    stdin_open: true
+    tty: true
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - BITWARDEN_ACCOUNTS_DIR=/accounts
+      - BITWARDEN_SECRETS_DIR=/secrets
+      - NODE_EXTRA_CA_CERTS=/secrets/local/tls/ca.crt
+    volumes:
+      - ./compose/bitwarden/accounts:/accounts
+      - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/secrets:/secrets
+      # Local mode's admin token and TLS material; no other service mounts this
+      # folder whole, and the broker none of it.
+      - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/local:/local
+    networks: [bitwarden-setup, vault]
+
+  # ----------------------------------------------------------------------
+  # Local Vaultwarden for the Bitwarden broker's local mode (docs/bitwarden.md)
+  # Profile: vault (BITWARDEN_LOCAL_ENABLED=1)
+  # Web vault: http://localhost:8222 (localhost-bound; VAULTWARDEN_PORT)
+  # Broker:  https://vaultwarden.vault.internal through vaultwarden-tls
+  # Data:    BITWARDEN_HOST_DATA_DIR/vaultwarden. make vault-init writes the
+  #          admin token, its hash and the TLS files under local/, which only
+  #          bitwarden-setup mounts whole, and the CA certificate to
+  #          secrets/local/tls/ca.crt for the broker.
+  # Networks: hermes and the broker reach it only through vaultwarden-tls
+  #          (vault-backend); vault-host carries the loopback port.
+  # ----------------------------------------------------------------------
+  vaultwarden:
+    profiles: ["vault"]
+    container_name: ${CONTAINER_PREFIX:-}vaultwarden
+    image: vaultwarden/server:1.37.4@sha256:efb3cde962015fcc036b2ea625242248611943b27212ebf4392841fb30fad055
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${VAULTWARDEN_PORT:-8222}:80"
+    environment:
+      - SIGNUPS_ALLOWED=false
+      - INVITATIONS_ALLOWED=true
+      - DOMAIN=http://localhost:${VAULTWARDEN_PORT:-8222}
+      - DISABLE_ICON_DOWNLOAD=true
+      # The Argon2id hash only; the plaintext stays in local/admin_token, which
+      # only bitwarden-setup mounts. Vaultwarden reads any setting from <NAME>_FILE.
+      - ADMIN_TOKEN_FILE=/run/vaultwarden/admin_token.phc
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/vaultwarden:/data
+      - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/local/vaultwarden:/run/vaultwarden:ro
+    # Not default or vault: nothing on hermes' networks reaches it in plain HTTP.
+    networks: [vault-backend, vault-host]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:80/alive"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+      start_interval: 2s
+
+  # TLS for the broker and bitwarden-setup: bw refuses plain-HTTP servers. No
+  # host port; the user's browser uses vaultwarden's own. compose/bitwarden-tls/
+  vaultwarden-tls:
+    profiles: ["vault"]
+    container_name: ${CONTAINER_PREFIX:-}vaultwarden-tls
+    image: ${VAULTWARDEN_TLS_IMAGE:-nginx:1.30.6-alpine}
+    restart: unless-stopped
+    # nginx keeps its default capabilities: its master process starts as root
+    # to read the mode-600 server key, then the workers drop to the nginx user.
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      # Matches no variable: the template has no ${...} of its own.
+      - NGINX_ENVSUBST_FILTER=^VAULTWARDEN_TLS_
+      - NGINX_ENTRYPOINT_WORKER_PROCESSES_AUTOTUNE=1
+    cpus: 0.5
+    volumes:
+      - ./compose/bitwarden-tls/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+      # The folder holding only the server pair; the CA's key stays out of this
+      # container. A folder mount, so a missing file never becomes a directory.
+      - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/local/tls/server:/etc/nginx/tls:ro
+    networks:
+      vault:
+        aliases: [vaultwarden.vault.internal]
+      vault-backend:
+    depends_on:
+      vaultwarden:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null --no-check-certificate https://127.0.0.1/alive || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
 networks:
   # Internal: no route off the host. Members: postgres-db, db-provision,
   # sql-mcp-ro, sql-mcp-rw, hermes, and any integration that stores data.
@@ -1983,6 +2198,17 @@ networks:
   # twenty-worker.
   crm:
     internal: true
+  # Internal: the local Vaultwarden (profile vault). hermes joins it, so the
+  # broker in hermes' namespace reaches vaultwarden-tls; so does bitwarden-setup.
+  vault:
+    internal: true
+  # Internal: vaultwarden and vaultwarden-tls only (Ruling R20).
+  vault-backend:
+    internal: true
+  # vaultwarden's loopback port publish; nothing else joins it.
+  vault-host:
+  # bitwarden-setup's route to Bitwarden's servers, apart from hermes.
+  bitwarden-setup:
   # Dedicated to actual-mcp-rw and actual-mcp-ro, which take requests without
   # auth, plus hermes and actual-server. Not internal: the MCP servers may
   # need to reach a remote Actual server.
@@ -2016,3 +2242,4 @@ volumes:
   actual_mcp_ro_cache:
   ollama_data:
   hermes_uv_cache:
+  bitwarden_sync:

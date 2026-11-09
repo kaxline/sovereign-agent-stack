@@ -10,6 +10,8 @@ cd "$ROOT"
 source "$ROOT/scripts/lib/env.sh"
 # shellcheck source=lib/hermes-yaml.sh
 source "$ROOT/scripts/lib/hermes-yaml.sh"
+# shellcheck source=lib/bitwarden.sh
+source "$ROOT/scripts/lib/bitwarden.sh"
 
 MODEL=""
 FROM_LMSTUDIO=0
@@ -306,6 +308,7 @@ if [[ "$RESTART" -eq 1 ]]; then
   if docker compose ps hermes -q 2>/dev/null | grep -q .; then
     log "Restarting Hermes…"
     docker compose restart hermes
+    follow_hermes
   fi
 fi
 
