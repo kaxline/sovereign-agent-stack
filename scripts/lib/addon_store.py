@@ -20,13 +20,14 @@ import os
 import re
 import shlex
 import tempfile
+import unicodedata
 from pathlib import Path
 
 import addon_manifest as am
 
-SLUG_RE = am.NAME_RE
+SLUG_RE = re.compile(r"^[a-z][a-z0-9-]{0,30}\Z")
 SETTING_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
-SHORT_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+SHORT_RE = re.compile(r"^[a-z0-9][a-z0-9-]*\Z")
 
 
 class InputError(ValueError):
@@ -117,7 +118,17 @@ def _check_value(name: str, spec: dict, value):
         ok = isinstance(value, str)
     if not ok:
         raise InputError(f"{name}: the value does not fit type {t}", name)
+    strings = [value] if isinstance(value, str) else (value if isinstance(value, list) else [])
+    for item in strings:
+        try:
+            item.encode("utf-8")
+        except UnicodeEncodeError:
+            raise InputError(f"{name}: the value is not valid UTF-8 text", name) from None
     return value
+
+
+def _has_line_break(text: str) -> bool:
+    return any(unicodedata.category(c) in ("Cc", "Zl", "Zp") for c in text)
 
 
 def _validated(schema: dict, values) -> dict:
@@ -167,7 +178,7 @@ def _env_value(spec: dict, text: str):
 def _read_env(path: Path) -> dict[str, str]:
     out: dict[str, str] = {}
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = path.read_text(encoding="utf-8").split("\n")
     except OSError:
         return out
     for line in lines:
@@ -231,8 +242,8 @@ def apply_settings(manifest: dict, data_root: Path, values: dict) -> dict[str, s
     schema = _schema(manifest)
     clean = _validated(schema, values)
     for name, value in clean.items():
-        if schema[name]["type"] != "secret" and isinstance(value, str) and ("\n" in value or "\r" in value):
-            raise InputError(f"{name}: line breaks are not allowed", name)
+        if schema[name]["type"] != "secret" and isinstance(value, str) and _has_line_break(value):
+            raise InputError(f"{name}: control characters and line breaks are not allowed", name)
     d = addon_dir(data_root, manifest)
     env = _read_env(d / "settings.env")
     flags: dict[str, str] = {}

@@ -159,6 +159,31 @@ with tempfile.TemporaryDirectory() as tmp:
     bad["id"] = "io.example.a/b"
     raises("slash id refused", st.InputError, lambda: st.addon_dir(root, bad))
 
+    ok31, bad32 = "a" + "b" * 30, "a" + "b" * 31
+    st.apply_instance(MANIFEST, root, ok31, {"host": "h"})
+    check("31-char slug accepted", ok31 in st.listing(MANIFEST, root, {})["instances"])
+    raises("32-char slug refused", st.InputError, lambda: st.apply_instance(MANIFEST, root, bad32, {}), setting="slug")
+    raises("slug with trailing newline refused", st.InputError,
+           lambda: st.apply_instance(MANIFEST, root, "work\n", {}), setting="slug")
+    st.remove_instance(MANIFEST, root, ok31)
+
+    for label, ch in (("U+2028", "\u2028"), ("form feed", "\f"), ("U+0085", "\x85"), ("tab", "\t")):
+        raises(f"{label} in a setting string refused", st.InputError,
+               lambda ch=ch: st.apply_settings(MANIFEST, root, {"motto": f"x{ch}ADDON_MAILER_INTERVAL=7 y"}),
+               setting="motto")
+    check("interval unchanged after injection attempts", st.listing(MANIFEST, root, {})["settings"]["interval"] == 600)
+
+    snap = sorted(str(p) for p in root.rglob("*"))
+    raises("lone surrogate in secret refused", st.InputError,
+           lambda: st.apply_instance(MANIFEST, root, "work", {"host": "ok", "password": "\ud800zz"}),
+           setting="password", secret="zz")
+    raises("lone surrogate in string refused", st.InputError,
+           lambda: st.apply_settings(MANIFEST, root, {"motto": "\ud800"}), setting="motto")
+    raises("lone surrogate in list refused", st.InputError,
+           lambda: st.apply_settings(MANIFEST, root, {"tags": ["\ud800"]}), setting="tags")
+    check("surrogate attempts wrote nothing", snap == sorted(str(p) for p in root.rglob("*"))
+          and json.loads((d / "instances" / "work.json").read_text())["host"] == "imap.example.com")
+
     st.remove_instance(MANIFEST, root, "work")
     left = [p.name for p in (d / "secrets").iterdir() if p.name.startswith("work.")]
     check("remove_instance clears work.* secrets", left == [], str(left))
