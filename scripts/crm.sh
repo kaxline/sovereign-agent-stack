@@ -155,7 +155,7 @@ norm_url() {
 # One value from a workspace file, without sourcing it.
 ws_get() {
   local v
-  v="$(grep -E "^${2}=" "$1" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+  v="$(grep -E "^${2}=" "$1" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r' || true)"
   v="${v%\"}"; v="${v#\"}"
   v="${v%\'}"; v="${v#\'}"
   printf '%s' "$v"

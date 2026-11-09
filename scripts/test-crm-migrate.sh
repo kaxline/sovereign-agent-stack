@@ -146,6 +146,17 @@ done
 [ "$(cat "$store/secrets/quoted.key_rw")" = q-SECRET ] || fail "single quotes are stripped from the key"
 rm "$ws/spacey.env" "$ws/tabby.env" "$ws/creds.env"
 
+# CRLF line endings (the old bootstrap accepted them), with quoted values.
+printf 'TWENTY_URL="https://crlf.example.com/"\r\nTWENTY_ACCESS=read\r\nTWENTY_KEY_RO=\x27crlf-ro-SECRET\x27\r\nTWENTY_KEY_RW="crlf-rw-SECRET"\r\n' > "$ws/crlf.env"
+run migrate || fail "migrate a CRLF file ($(cat "$out" "$err"))"
+no_secret "CRLF file"
+[ -f "$ws/crlf.env.migrated" ] || fail "a CRLF file migrates"
+c="$store/instances/crlf.json"
+[ "$(jget "$c" url)" = '"https://crlf.example.com"' ] || fail "CRLF url"
+[ "$(jget "$c" access)" = '"read"' ] || fail "CRLF access"
+[ "$(cat "$store/secrets/crlf.key_ro")" = crlf-ro-SECRET ] || fail "CRLF key_ro"
+[ "$(cat "$store/secrets/crlf.key_rw")" = crlf-rw-SECRET ] || fail "CRLF key_rw"
+
 # No files: no container (a docker that fails loudly), exit 0.
 empty="$tmp/empty"
 mkdir -p "$empty/bin" "$empty/ws"
