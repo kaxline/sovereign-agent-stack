@@ -119,6 +119,7 @@ describe('readRows', () => {
 });
 
 class FakeChild extends EventEmitter {
+  pid: number | undefined = 1;
   signals: string[] = [];
   kill(signal?: NodeJS.Signals): boolean {
     this.signals.push(signal ?? 'SIGTERM');
@@ -137,9 +138,10 @@ interface SpawnCall {
   child: FakeChild;
 }
 
-function fakeSpawn(): { spawn: SpawnFn; calls: SpawnCall[] } {
+function fakeSpawn(before?: (cwd: string) => void): { spawn: SpawnFn; calls: SpawnCall[] } {
   const calls: SpawnCall[] = [];
   const spawn: SpawnFn = (command, args, options) => {
+    before?.(String(options.cwd));
     const child = new FakeChild();
     calls.push({
       command,
@@ -178,10 +180,21 @@ describe('Children', () => {
     delete process.env.ACTUAL_PASSWORD;
   });
 
-  function make(write = false): { children: Children; calls: SpawnCall[] } {
-    const { spawn, calls } = fakeSpawn();
-    const children = new Children({ script: '/app/build/index.js', write, spawn, dataRoot, cwdRoot, log: () => {} });
-    return { children, calls };
+  function make(
+    write = false,
+    before?: (cwd: string) => void
+  ): { children: Children; calls: SpawnCall[]; lines: string[] } {
+    const { spawn, calls } = fakeSpawn(before);
+    const lines: string[] = [];
+    const children = new Children({
+      script: '/app/build/index.js',
+      write,
+      spawn,
+      dataRoot,
+      cwdRoot,
+      log: (line) => lines.push(line),
+    });
+    return { children, calls, lines };
   }
 
   it('spawns a new row once with its own env and an empty cwd', () => {
@@ -332,6 +345,99 @@ describe('Children', () => {
 
     expect(fs.existsSync(path.join(dataRoot, 'home'))).toBe(true);
     children.reconcile([row('home')]);
+    expect(calls).toHaveLength(2);
+  });
+
+  it('starts a row whose credentials changed while its crash restart was pending on a fresh cache', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-09T12:00:00Z'));
+    const { children, calls } = make();
+    children.reconcile([row('home', 'f1')]);
+    const dataDir = path.join(dataRoot, 'home');
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.writeFileSync(path.join(dataDir, 'cache'), 'old');
+
+    calls[0].child.exit(1);
+    children.reconcile([row('home', 'f1')]);
+    expect(calls).toHaveLength(1);
+    expect(fs.existsSync(dataDir)).toBe(true);
+
+    children.reconcile([row('home', 'f2', { token: 'token-new' })]);
+    expect(fs.existsSync(dataDir)).toBe(false);
+    expect(calls).toHaveLength(2);
+    expect(calls[1].env.ACTUAL_SESSION_TOKEN).toBe('token-new');
+    vi.advanceTimersByTime(120_000);
+    expect(calls).toHaveLength(2);
+
+    // The backoff was reset, so a crash of the new child restarts after 2 s.
+    calls[1].child.exit(1);
+    vi.advanceTimersByTime(2_000);
+    expect(calls).toHaveLength(3);
+  });
+
+  it('keeps reconciling other rows when one row has an unreadable token', () => {
+    const { children, calls, lines } = make();
+    writeRow('keep', { server: 'local', sync_id: 's1', profile: 'p1' }, 'tok-keep');
+    writeRow('gone', { server: 'local', sync_id: 's2', profile: 'p2' }, 'tok-gone');
+    children.reconcile(readRows(dir, false, () => {}));
+    expect(calls.map((c) => c.env.ACTUAL_SESSION_TOKEN)).toEqual(['tok-gone', 'tok-keep']);
+
+    fs.rmSync(path.join(dir, 'instances', 'gone.json'));
+    writeRow('broken', { server: 'local', sync_id: 's3', profile: 'p3' });
+    fs.mkdirSync(path.join(dir, 'secrets', 'broken.session_token'));
+    writeRow('fresh', { server: 'local', sync_id: 's4', profile: 'p4' }, 'tok-fresh');
+    const warnings: string[] = [];
+    const rows = readRows(dir, false, (line) => warnings.push(line));
+    children.reconcile(rows);
+
+    expect(rows.map((r) => r.slug)).toEqual(['fresh', 'keep']);
+    expect(warnings).toEqual(['actual-mcp launcher: skipping row broken: cannot read session token: EISDIR']);
+    expect(calls[0].child.signals).toEqual(['SIGTERM']);
+    expect(calls).toHaveLength(3);
+    expect(calls[2].env.ACTUAL_SESSION_TOKEN).toBe('tok-fresh');
+    expect(lines.some((l) => l.includes('tok-'))).toBe(false);
+  });
+
+  it('survives a spawn that throws: other rows start, the port is reused and the row retries', () => {
+    vi.useFakeTimers();
+    let fail = true;
+    const { children, calls, lines } = make(false, (cwd) => {
+      if (fail && cwd.endsWith('/bad')) throw Object.assign(new Error('spawn EAGAIN'), { code: 'EAGAIN' });
+    });
+
+    expect(() => children.reconcile([row('bad'), row('good')])).not.toThrow();
+    expect(calls.map((c) => c.args[3])).toEqual(['4100']);
+    expect(children.lookup('good')).toBe(4100);
+    expect(lines.some((l) => l.includes('bad') && l.includes('EAGAIN'))).toBe(true);
+
+    fail = false;
+    vi.advanceTimersByTime(2_000);
+    expect(calls).toHaveLength(2);
+    expect(children.lookup('bad')).toBe(4101);
+  });
+
+  it('survives a working directory that cannot be created', () => {
+    vi.useFakeTimers();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(cwdRoot, 'a file, not a directory');
+    const { children, calls, lines } = make();
+
+    expect(() => children.reconcile([row('home')])).not.toThrow();
+    expect(calls).toHaveLength(0);
+    expect(lines.some((l) => l.includes('home') && l.includes('could not start'))).toBe(true);
+  });
+
+  it('treats an error event from a process that never started as an exit', () => {
+    vi.useFakeTimers();
+    const { children, calls } = make();
+    children.reconcile([row('home')]);
+
+    calls[0].child.emit('error', Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' }));
+    expect(children.lookup('home')).toBe(4100);
+    calls[0].child.pid = undefined;
+    calls[0].child.emit('error', Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' }));
+    expect(children.lookup('home')).toBeUndefined();
+    vi.advanceTimersByTime(2_000);
     expect(calls).toHaveLength(2);
   });
 });

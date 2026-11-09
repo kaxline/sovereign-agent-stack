@@ -80,7 +80,7 @@ function poll(): void {
     });
     children.reconcile(rows);
   } catch (err) {
-    log(`actual-mcp launcher: could not read rows: ${(err as Error).message}`);
+    log(`actual-mcp launcher: could not read rows: ${(err as NodeJS.ErrnoException).code ?? 'error'}`);
   }
   lastWarnings = warnings;
 }

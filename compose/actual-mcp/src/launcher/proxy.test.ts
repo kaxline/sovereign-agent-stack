@@ -116,4 +116,57 @@ describe('createProxy', () => {
     }
     expect(rest).toBe('data: two\n\n');
   });
+
+  it('ends the client stream when the child dies mid-stream', async () => {
+    let die: () => void = () => {};
+    const child = http.createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write('data: one\n\n');
+      die = () => res.socket?.destroy();
+    });
+    const childPort = await listen(child);
+    const proxy = createProxy(() => childPort, undefined);
+    const port = await listen(proxy);
+
+    const res = await fetch(`http://127.0.0.1:${port}/a/mcp`, { headers: { accept: 'text/event-stream' } });
+    const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+    await reader.read();
+
+    die();
+    const outcome = await Promise.race([
+      (async () => {
+        try {
+          for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
+            // drain
+          }
+          return 'ended';
+        } catch {
+          return 'errored';
+        }
+      })(),
+      new Promise<string>((resolve) => setTimeout(() => resolve('hung'), 2_000)),
+    ]);
+    expect(outcome).not.toBe('hung');
+  });
+
+  it('closes the child side when the client hangs up', async () => {
+    let childClosed: () => void = () => {};
+    const closed = new Promise<void>((resolve) => (childClosed = resolve));
+    const child = http.createServer((req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write('data: one\n\n');
+      res.on('close', () => childClosed());
+    });
+    const childPort = await listen(child);
+    const port = await listen(createProxy(() => childPort, undefined));
+
+    const controller = new AbortController();
+    const res = await fetch(`http://127.0.0.1:${port}/a/mcp`, { signal: controller.signal });
+    await (res.body as ReadableStream<Uint8Array>).getReader().read();
+    controller.abort();
+
+    await expect(
+      Promise.race([closed.then(() => 'closed'), new Promise((r) => setTimeout(() => r('open'), 2_000))])
+    ).resolves.toBe('closed');
+  });
 });

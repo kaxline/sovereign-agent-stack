@@ -3,6 +3,7 @@
  * `/messages` go to the legacy child.
  */
 import http from 'node:http';
+import { pipeline } from 'node:stream';
 
 const LEGACY_PATHS = new Set(['/mcp', '/sse', '/messages']);
 const ROW_PATH_RE = /^\/([^/]+)\/mcp$/;
@@ -60,7 +61,11 @@ export function createProxy(lookup: (slug: string) => number | undefined, legacy
           res.writeHead(status, headers);
           // Reason: flush headers now so an SSE client sees the stream open before the first event.
           res.flushHeaders();
-          childRes.pipe(res);
+          // Reason: pipe() leaves res open when the child dies mid-stream, so an SSE client
+          // would wait forever; pipeline ends it with an error the client sees.
+          pipeline(childRes, res, (err) => {
+            if (err) res.destroy();
+          });
           return;
         }
         // Reason: the server answers an unknown MCP session id with 400; Hermes's client only
@@ -72,7 +77,9 @@ export function createProxy(lookup: (slug: string) => number | undefined, legacy
           res.writeHead(body.includes(UNKNOWN_SESSION) ? 404 : 400, headers);
           res.end(body);
         });
-        childRes.on('error', () => res.destroy());
+        childRes.on('close', () => {
+          if (!childRes.complete) res.destroy();
+        });
       }
     );
 

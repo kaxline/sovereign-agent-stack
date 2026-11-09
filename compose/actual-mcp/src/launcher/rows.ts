@@ -28,13 +28,25 @@ const stderrLine = (line: string): void => {
   process.stderr.write(`${line}\n`);
 };
 
+const errorCode = (err: unknown): string => (err as NodeJS.ErrnoException)?.code ?? 'error';
+
+/** A row file that exists but can't be read. Carries the error code only, never the message. */
+class RowReadError extends Error {
+  constructor(
+    readonly which: string,
+    readonly code: string
+  ) {
+    super(`cannot read ${which}: ${code}`);
+  }
+}
+
 /** Reads a file, or undefined when it doesn't exist. */
-function readOptional(file: string): { text: string; mtimeMs: number } | undefined {
+function readOptional(file: string, which: string): { text: string; mtimeMs: number } | undefined {
   try {
     return { text: fs.readFileSync(file, 'utf8'), mtimeMs: fs.statSync(file).mtimeMs };
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
-    throw err;
+    if (errorCode(err) === 'ENOENT') return undefined;
+    throw new RowReadError(which, errorCode(err));
   }
 }
 
@@ -68,67 +80,80 @@ export function readRows(dir: string, write: boolean, warn: (line: string) => vo
       skip('invalid slug');
       continue;
     }
-
-    const instance = readOptional(path.join(dir, 'instances', name));
-    if (!instance) continue;
-    let fields: Record<string, unknown>;
+    // Reason: one unreadable row must not stop the others from being reconciled.
     try {
-      const parsed: unknown = JSON.parse(instance.text);
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object');
-      fields = parsed as Record<string, unknown>;
-    } catch {
-      skip('instance file is not a JSON object');
-      continue;
+      const row = readRow(dir, slug, write, skip);
+      if (row) rows.push(row);
+    } catch (err) {
+      skip(err instanceof RowReadError ? err.message : `cannot read row: ${errorCode(err)}`);
     }
-
-    const access = fields.access ?? 'read';
-    if (access !== 'read' && access !== 'write') {
-      skip('access must be read or write');
-      continue;
-    }
-    if (write && access !== 'write') continue;
-
-    const server = fields.server;
-    const serverUrl = server === 'local' ? LOCAL_SERVER_URL : server;
-    if (typeof serverUrl !== 'string' || !isHttpUrl(serverUrl)) {
-      skip('server must be an http(s) URL or "local"');
-      continue;
-    }
-    if (typeof fields.sync_id !== 'string' || !fields.sync_id.trim()) {
-      skip('missing sync_id');
-      continue;
-    }
-
-    const tokenFile = readOptional(path.join(dir, 'secrets', `${slug}.session_token`));
-    const token = tokenFile?.text.trim();
-    if (!tokenFile || !token) {
-      skip('missing or empty session token');
-      continue;
-    }
-    const passwordFile = readOptional(path.join(dir, 'secrets', `${slug}.encryption_password`));
-    const encryptionPassword = passwordFile?.text.trim() || undefined;
-
-    const hash = createHash('sha256');
-    for (const file of [instance, tokenFile, passwordFile]) {
-      hash.update(file ? `${file.mtimeMs}\0${file.text.length}\0${file.text}\0` : 'absent\0');
-    }
-
-    rows.push({
-      slug,
-      serverUrl,
-      syncId: fields.sync_id.trim(),
-      token,
-      ...(encryptionPassword ? { encryptionPassword } : {}),
-      fingerprint: hash.digest('hex'),
-    });
   }
   return rows;
 }
 
+/** Reads one row with a valid slug, or undefined when it is skipped or filtered out. */
+function readRow(dir: string, slug: string, write: boolean, skip: (reason: string) => void): Row | undefined {
+  const instance = readOptional(path.join(dir, 'instances', `${slug}.json`), 'instance file');
+  if (!instance) return undefined;
+  let fields: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(instance.text);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object');
+    fields = parsed as Record<string, unknown>;
+  } catch {
+    skip('instance file is not a JSON object');
+    return undefined;
+  }
+
+  const access = fields.access ?? 'read';
+  if (access !== 'read' && access !== 'write') {
+    skip('access must be read or write');
+    return undefined;
+  }
+  if (write && access !== 'write') return undefined;
+
+  const server = fields.server;
+  const serverUrl = server === 'local' ? LOCAL_SERVER_URL : server;
+  if (typeof serverUrl !== 'string' || !isHttpUrl(serverUrl)) {
+    skip('server must be an http(s) URL or "local"');
+    return undefined;
+  }
+  if (typeof fields.sync_id !== 'string' || !fields.sync_id.trim()) {
+    skip('missing sync_id');
+    return undefined;
+  }
+
+  const tokenFile = readOptional(path.join(dir, 'secrets', `${slug}.session_token`), 'session token');
+  const token = tokenFile?.text.trim();
+  if (!tokenFile || !token) {
+    skip('missing or empty session token');
+    return undefined;
+  }
+  const passwordFile = readOptional(path.join(dir, 'secrets', `${slug}.encryption_password`), 'encryption password');
+  const encryptionPassword = passwordFile?.text.trim() || undefined;
+
+  const hash = createHash('sha256');
+  for (const file of [instance, tokenFile, passwordFile]) {
+    hash.update(file ? `${file.mtimeMs}\0${file.text.length}\0${file.text}\0` : 'absent\0');
+  }
+
+  return {
+    slug,
+    serverUrl,
+    syncId: fields.sync_id.trim(),
+    token,
+    ...(encryptionPassword ? { encryptionPassword } : {}),
+    fingerprint: hash.digest('hex'),
+  };
+}
+
 /** The part of a ChildProcess the supervisor uses, so tests can pass a fake. */
 export interface ChildHandle {
+  /** Undefined when the process never started. */
+  readonly pid?: number;
   kill(signal?: NodeJS.Signals): boolean;
   once(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): unknown;
+  on(event: 'error', listener: (err: Error) => void): unknown;
 }
 
 export type SpawnFn = (command: string, args: readonly string[], options: SpawnOptions) => ChildHandle;
@@ -185,6 +210,8 @@ interface Slot {
   running?: Running;
   restartTimer?: NodeJS.Timeout;
   lastRestartAt?: number;
+  /** Fingerprint of the row whose child exited on its own; its cache is kept for the restart. */
+  crashedFingerprint?: string;
 }
 
 /** Starts, stops and restarts one child server per row. */
@@ -274,11 +301,37 @@ export class Children {
       this.slots.delete(slug);
       return;
     }
-    if (!slot.restartTimer) this.start(slot, want);
+    if (slot.restartTimer) {
+      if (want.fingerprint === slot.crashedFingerprint) return;
+      // Reason: the kept cache belongs to the old credentials; a new token or password must
+      // start on a fresh download, or writes left in the old cache would be stranded.
+      this.log(`actual-mcp launcher: restarting ${slug} now (row changed while it was down)`);
+      clearTimeout(slot.restartTimer);
+      slot.restartTimer = undefined;
+      slot.lastRestartAt = undefined;
+      this.removeDataDir(slug);
+    }
+    slot.crashedFingerprint = undefined;
+    try {
+      this.start(slot, want);
+    } catch (err) {
+      this.scheduleRestart(slot, want, `could not start: ${errorCode(err)}`);
+    }
+  }
+
+  /** Restarts a row after 2 s, at most once a minute, keeping its cache. */
+  private scheduleRestart(slot: Slot, row: Row, reason: string): void {
+    const delay = restartDelay(slot.lastRestartAt, Date.now());
+    this.log(`actual-mcp launcher: ${row.slug} ${reason}, restarting in ${Math.ceil(delay / 1000)} s`);
+    slot.crashedFingerprint = row.fingerprint;
+    slot.restartTimer = setTimeout(() => {
+      slot.restartTimer = undefined;
+      slot.lastRestartAt = Date.now();
+      this.sync(row.slug);
+    }, delay);
   }
 
   private start(slot: Slot, row: Row): void {
-    const port = this.allocatePort();
     const cwd = path.join(this.cwdRoot, row.slug);
     // Reason: the server loads .env from its cwd; an empty one keeps the legacy budget's
     // credentials out of a row's child.
@@ -299,17 +352,27 @@ export class Children {
     });
     if (row.encryptionPassword) env.ACTUAL_BUDGET_ENCRYPTION_PASSWORD = row.encryptionPassword;
 
+    const port = this.allocatePort();
     const args = [this.options.script, '--sse', '--port', String(port)];
     if (this.options.write) args.push('--enable-write');
 
     this.log(`actual-mcp launcher: starting ${row.slug} on port ${port}`);
-    const child = this.spawn(process.execPath, args, { cwd, env, stdio: ['ignore', 'inherit', 'inherit'] });
+    let child: ChildHandle;
+    try {
+      child = this.spawn(process.execPath, args, { cwd, env, stdio: ['ignore', 'inherit', 'inherit'] });
+    } catch (err) {
+      this.usedPorts.delete(port);
+      throw err;
+    }
     let markExited: () => void = () => {};
     const exited = new Promise<void>((resolve) => (markExited = resolve));
     const running: Running = { row, port, child, exited, stopping: false, dropCache: true };
     slot.running = running;
 
-    child.once('exit', (code, signal) => {
+    let gone = false;
+    const onGone = (how: string): void => {
+      if (gone) return;
+      gone = true;
       this.usedPorts.delete(port);
       if (slot.running === running) slot.running = undefined;
       markExited();
@@ -319,15 +382,14 @@ export class Children {
         return;
       }
       if (this.shuttingDown) return;
-      const delay = restartDelay(slot.lastRestartAt, Date.now());
-      this.log(
-        `actual-mcp launcher: ${row.slug} exited (${signal ?? `code ${code}`}), restarting in ${Math.ceil(delay / 1000)} s`
-      );
-      slot.restartTimer = setTimeout(() => {
-        slot.restartTimer = undefined;
-        slot.lastRestartAt = Date.now();
-        this.sync(row.slug);
-      }, delay);
+      this.scheduleRestart(slot, row, `exited (${how})`);
+    };
+    child.once('exit', (code, signal) => onGone(signal ?? `code ${code}`));
+    // Reason: a failed spawn emits 'error' and no 'exit'; without a listener it would crash
+    // the launcher. A child that did start still reports its end through 'exit'.
+    child.on('error', (err) => {
+      this.log(`actual-mcp launcher: ${row.slug} process error: ${errorCode(err)}`);
+      if (child.pid === undefined) onGone(`spawn failed: ${errorCode(err)}`);
     });
   }
 
@@ -347,7 +409,7 @@ export class Children {
     try {
       fs.rmSync(path.join(this.dataRoot, slug), { recursive: true, force: true });
     } catch (err) {
-      this.log(`actual-mcp launcher: could not delete the cache of ${slug}: ${(err as Error).message}`);
+      this.log(`actual-mcp launcher: could not delete the cache of ${slug}: ${errorCode(err)}`);
     }
   }
 
