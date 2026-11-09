@@ -247,6 +247,7 @@ with tempfile.TemporaryDirectory() as tmp:
 # --- addon_cli.py: unexpected exceptions -----------------------------------------
 import contextlib  # noqa: E402
 import io  # noqa: E402
+from unittest import mock  # noqa: E402
 
 import addon_cli  # noqa: E402
 
@@ -259,8 +260,12 @@ def cli_main(argv, boom):
         raise boom
     addon_cli.store.listing = fake
     err = io.StringIO()
+    # list reads compose config on stdin; an empty one, so an open terminal or
+    # pipe on the real stdin can't block the run.
+    empty = io.TextIOWrapper(io.BytesIO(b""))
     try:
-        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch.object(sys, "stdin", empty):
             rc = addon_cli.main(argv)
     finally:
         addon_cli.store.listing = real
@@ -426,6 +431,41 @@ check("_toggle_fields skips an mcp entry without a name",
       str(addon_cli._toggle_fields(NONAME)["mcp"]))
 NONAME["mcp"] = {"instances": {"from": "workspace"}}
 check("_toggle_fields copes with a single nameless mcp object", addon_cli._toggle_fields(NONAME)["mcp"] == [])
+
+# --- addon_cli hook-events: which hook lines are relayed ----------------------------
+def hook_events(text: str):
+    """addon_cli hook-events on TEXT; (relayed objects, stderr lines)."""
+    out, err = io.StringIO(), io.StringIO()
+    stdin = io.TextIOWrapper(io.BytesIO(text.encode("utf-8")), encoding="utf-8")
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+            mock.patch.object(sys, "stdin", stdin):
+        addon_cli.main(["--addons-dir", str(ROOT / "addons"), "--data-root", "/nonexistent",
+                        "hook-events", "check"])
+    return [json.loads(x) for x in out.getvalue().splitlines()], err.getvalue().splitlines()
+
+
+long_text = "x" * 2000
+relayed, logged = hook_events("\n".join([
+    json.dumps({"phase": "setup", "step": "fake", "status": "running", "detail": "a\tb\x1b[31mc"}),
+    json.dumps({"phase": "pull", "service": "s", "status": long_text, "nested": {"k": "v\x07"}}),
+    json.dumps({"phase": "progress", "status": "x"}),
+    json.dumps({"phase": "done", "account": "a"}),
+    json.dumps({"phase": "error", "error": "timeout"}),
+    "plain text",
+]) + "\n")
+check("hook-events relays only setup and pull lines",
+      [r["phase"] for r in relayed] == ["setup", "pull"], repr(relayed))
+check("hook-events sets step to the caller's step, so a hook can't print a fake step",
+      all(r["step"] == "check" for r in relayed), repr(relayed))
+check("hook-events cleans string fields: tab to space, control characters dropped",
+      relayed and relayed[0]["detail"] == "a b[31mc", repr(relayed[:1]))
+check("hook-events cuts a long string field to 500 characters",
+      len(relayed) > 1 and relayed[1]["status"] == "x" * 500, str(len(relayed[1]["status"]) if len(relayed) > 1 else ""))
+check("hook-events cleans nested string fields",
+      len(relayed) > 1 and relayed[1]["nested"] == {"k": "v"}, repr(relayed[1:2]))
+check("hook-events sends other phases, done, error and plain text to the step log",
+      len(logged) == 4 and '"progress"' in logged[0] and '"done"' in logged[1]
+      and '"error"' in logged[2] and logged[3] == "plain text", repr(logged))
 
 if failures:
     print(f"{failures} failed")

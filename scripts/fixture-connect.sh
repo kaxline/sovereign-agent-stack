@@ -10,6 +10,7 @@
 # line on stderr and then succeeds. The password is transient: when stdin has
 # one it must be the test value, else the hook exits 5; it logs
 # "fixture-connect stdin-password" to STUB_LOG when it got the right one.
+# FIXTURE_DONE_EXTRA is added to either done line's object (e.g. ,"message":"x").
 set -eu
 mode=connect
 if [ "${1:-}" = disconnect ]; then
@@ -22,7 +23,7 @@ if [ "$*" != "--slug work --json" ]; then
   exit 3
 fi
 if [ "$mode" = disconnect ]; then
-  printf '{"phase":"done"}\n'
+  printf '{"phase":"done"%s}\n' "${FIXTURE_DONE_EXTRA:-}"
   exit 0
 fi
 input="$(cat)"
@@ -53,4 +54,4 @@ if [ -n "${FIXTURE_CONNECT_ERROR:-}" ]; then
   printf '{"phase":"error","error":"%s","message":"hook says no"}\n' "$FIXTURE_CONNECT_ERROR"
   exit 1
 fi
-printf '{"phase":"done","account":"work","mcp":["fixture-work"]}\n'
+printf '{"phase":"done","account":"work","mcp":["fixture-work"]%s}\n' "${FIXTURE_DONE_EXTRA:-}"

@@ -31,7 +31,6 @@ only with that change in. Before tagging, run `scripts/addon.sh enable gptr
   settings schema for building a settings form. See
   [docs/extending.md](docs/extending.md#add-ons-scriptsaddonsh). Field
   names may change between patch releases while the stack is in 0.3.x.
-
 - **`scripts/addon.sh` lifecycle** (experimental). New subcommands
   `connect <id> --instance <slug>`, `disconnect` and `remove <id>
   --delete-data`, plus `disable --purge`, `enable --reinit` and `--json` on
@@ -41,11 +40,24 @@ only with that change in. Before tagging, run `scripts/addon.sh enable gptr
   and download size. A lock (`data/addons/.lock`) makes a second change fail
   with `busy`, and a failed `enable` restores the flags. `remove` keeps
   paths outside `./data` and `ASSISTANT_DATA_ROOT`, stack data and paths
-  behind a symlink, and reports each as `kept`. `addon.sh` does not wait for
-  MCP servers: Boundary checks the names in the `done` line's `mcp` in
-  `mcp.servers.status`. See
+  behind a symlink, and reports each as `kept`. `disable --purge` does the
+  same work as `remove --delete-data` after disabling: it removes the
+  containers, the `data.volumes` volumes and the `data.paths` directories,
+  with the same `kept` rules. A `--purge` failure in step `delete` is
+  reported as `compose_failed` (exit 1) when `docker compose rm` or `docker
+  volume rm` fails, and as `command_failed` (exit 4) when deleting a path
+  fails. Every
+  `--json` run ends with exactly one `done` or `error` line, including an
+  invalid data root (`command_failed`, exit 1) and an unexpected exit
+  (`command_failed`, exit 4, after the rollback). A hook's relayed lines are
+  limited to `setup` and `pull`. The `init` hook's `mcp` names join
+  `enable`'s `done.mcp`, and a hook's `done` `message` (from `init`,
+  `connect` or `disconnect`) is copied to the run's `done` line. A locked run deletes any
+  `data/addons/.staging.*` file a killed `connect` left. `addon.sh` does not
+  wait for MCP servers: Boundary checks the names in the `done` line's `mcp`
+  in `mcp.servers.status`. See
   [docs/extending.md](docs/extending.md#add-ons-scriptsaddonsh).
-- **Add-on manifest fields** (experimental): `services.<name>.oneshot`,
+- **Add-on lifecycle manifest fields** (experimental): `services.<name>.oneshot`,
   `hooks`, `instances.connect`, `instances.disconnect`, `instances.errors`,
   `instances.optional`, `transient` on a secret instance setting (the value
   goes to the connect hook and is never stored), `onToggle`, `data` and

@@ -3,6 +3,7 @@
 # Prints a progress line and a done line that reports an account. FIXTURE_INIT_MODE
 # makes it fail instead: `exit5` exits 5, `error` prints an error line and exits 1
 # with the name in FIXTURE_INIT_ERROR; `error0` does the same and exits 0.
+# FIXTURE_DONE_EXTRA is added to the done line's object (e.g. ,"mcp":["a"]).
 set -eu
 printf '{"phase":"setup","status":"running","message":"creating %s"}\n' "${1:-nothing}"
 printf 'plain log line\n'
@@ -14,4 +15,4 @@ case "${FIXTURE_INIT_MODE:-}" in
     exit 1
     ;;
 esac
-printf '{"phase":"done","account":"main"}\n'
+printf '{"phase":"done","account":"main"%s}\n' "${FIXTURE_DONE_EXTRA:-}"

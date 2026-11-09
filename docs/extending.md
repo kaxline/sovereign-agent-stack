@@ -676,9 +676,10 @@ value, else its default, else is absent. A `secret` setting shows only
 out with a warning on stderr.
 
 `services` has one object per manifest service, sorted by key: `key`,
-`compose`, `oneshot`, `image` and `memory` (`{"reservation", "limit"}` in
-bytes), with `null` where compose gives no value, and `downloadSize` with
-`--sizes`. `image` and `memory` come from `docker compose --profile '*' config
+`compose`, `oneshot` (a service that runs to completion; built-in manifests
+only), `image` and `memory` (`{"reservation", "limit"}` in bytes), with
+`null` where compose gives no value, and `downloadSize` with `--sizes`.
+`image` and `memory` come from `docker compose --profile '*' config
 --format json`, which reads every service and starts nothing. Memory is taken
 from `deploy.resources`, then `mem_reservation` and `mem_limit`. If `config`
 fails, the catalog prints without those figures and one warning goes to
@@ -774,18 +775,23 @@ then the services), `stop` (gated services whose gate is off), `init`,
 run `check` (the hook), `register` (store or remove the instance) and `reload`.
 `remove` runs `delete`.
 
-
 `done`:
 
 ```json
-{"phase":"done","id":"<short id>","action":"enable","restart":["svc"],"mcp":["name"],"account":"<slug>"}
+{"phase":"done","id":"<short id>","action":"enable","restart":["svc"],"mcp":["name"],"account":"<slug>","message":"<text>"}
 ```
 
-`restart` lists the compose services `onToggle` recreated. `mcp` is the `name`
-of each manifest `mcp` entry whose gate is on (`enable`), or the names the
-`connect` hook reported. `account` appears only when a hook reported one.
+`restart` lists the compose services `onToggle` recreated. On `enable`, `mcp`
+is the `name` of each manifest `mcp` entry whose gate is on, followed by the
+names the `init` hook's `done` line reported in its `mcp`, each name once.
+On `connect` it is the names the `connect` hook reported. `account` appears
+only when a hook reported one. `message` appears only when the `init`,
+`connect` or `disconnect` hook's `done` line has a string `message`; it is
+cleaned like the strings in an `error` line, and on `connect` each staged
+secret value in it is `[redacted]`. An `enable` that skips a recorded `init`
+gets neither the hook's names nor its message.
 `addon.sh` does not wait for MCP servers. The caller waits until each name in
-`mcp` shows `done.mcp` in `mcp.servers.status`.
+`done.mcp` is up in `mcp.servers.status`.
 
 `error`:
 
@@ -805,7 +811,7 @@ are dropped, a tab becomes a space, and a log line is cut to 500 characters.
 | `missing_settings` | 3 | `enable` found required settings with no value |
 | `compose_failed` | 1 | A `docker compose` call failed (pull, start, stop, recreate, delete, a bootstrap) |
 | `busy` | 1 | Another change holds the lock |
-| `command_failed` | 4 | A hook, `onToggle.script`, `vault.sh reload-plugins` or `addon_cli.py` failed, or the run was signalled |
+| `command_failed` | 4 | A hook, `onToggle.script`, `vault.sh reload-plugins` or `addon_cli.py` failed, the run was signalled, or `addon.sh` exited unexpectedly (`enable` rolls back first). Exit 1 when the data root is invalid |
 | `exists`, `not_found` | 2 | `connect` on an existing slug, `disconnect` on an unknown one, detected by `addon.sh` |
 | a hook's own name | 4 | See [Hooks](#hooks) |
 
@@ -862,11 +868,12 @@ with `docker compose run --rm --no-deps -T`. `addon.sh` appends `--json`, and
 - `instances.optional: true` lets `enable` succeed with no instance, so
   `instances:<name>` never appears in `missing`.
 
-Only stdout is read. A hook prints JSON objects, one per line. An object with
-a string `phase` other than `done` and `error` is relayed inside the step.
-Its `done` line may carry `account` (a string) and `mcp` (a list of names)
-that go into the run's `done` line. Anything else on stdout, and all of
-stderr, goes to the step log. On `connect`, the staged secret values are
+Only stdout is read. A hook prints JSON objects, one per line. An object whose
+`phase` is `setup` or `pull` is relayed inside the step, with `step` set to
+that step and every string cleaned by the rule for `error` lines.
+Its `done` line may carry `account` (a string), `mcp` (a list of names) and
+`message` (a string) that go into the run's `done` line. Anything else on
+stdout, and all of stderr, goes to the step log. On `connect`, the staged secret values are
 replaced with `[redacted]` in the step log, `logTail` and relayed lines.
 
 A hook fails its step when it exits non-zero, or when it prints an `error`
@@ -913,4 +920,8 @@ the compose arguments is `list --json`, which adds `--profile '*'`.
 
 After `disable`, a compose service the manifest's `uses` maps to is stopped unless
 `docker compose config --services` still lists it. Only `neo4j` is mapped
-today.
+today. That command applies the active profiles, so `disable` decides from the
+caller's `COMPOSE_PROFILES` when it is exported, and from `.env` otherwise.
+**A caller must not export a stale `COMPOSE_PROFILES`**: one that still
+holds the profile `disable` just turned off keeps that service listed, and it
+is not stopped.

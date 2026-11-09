@@ -337,7 +337,7 @@ else
   bad "list --sizes adds downloadSize for the server's platform"; cat "$out" "$err"
 fi
 if [ "$(grep -c '^manifest inspect --verbose busybox:1.36$' "$STUB_LOG")" = 1 ]; then ok "list --sizes inspects each distinct image once"; else bad "list --sizes inspects each distinct image once"; cat "$STUB_LOG"; fi
-if ls "${root}/data/addons/" | grep -q '^\.sizes\.'; then bad "list --sizes removes its scratch directory"; else ok "list --sizes removes its scratch directory"; fi
+if [ -n "$(find "${root}/data/addons" -maxdepth 1 -name '.sizes.*')" ]; then bad "list --sizes removes its scratch directory"; else ok "list --sizes removes its scratch directory"; fi
 STUB_PLATFORM=linux/mips64 addon_json list --json --sizes
 expect_rc "list --sizes on a platform the manifest lacks" 0
 if python3 -c "import json,sys; ${svc_expr}sys.exit(0 if all('downloadSize' not in v for v in s.values()) else 1)" "$out"; then
@@ -1346,6 +1346,77 @@ for want in "compose run --rm -e HERMES_BOOTSTRAP_FORCE=1 hermes-api-bootstrap" 
 done
 if grep -qxF -- "compose --profile * config --format json${want_env}" "${tmp}/env.log"; then ok "list runs config with --profile '*' and the same environment"; else bad "list runs config with --profile '*' and the same environment"; fi
 if grep -qxF -- "volume rm callerproj_fixture_cache${want_env}" "${tmp}/env.log"; then ok "volume rm uses the caller's project name"; else bad "volume rm uses the caller's project name"; cat "${tmp}/env.log"; fi
+
+# Every --json run ends with one error line, even before ev_init's usual
+# failures. An invalid data root is command_failed and keeps exit 1.
+set_env ASSISTANT_DATA_ROOT "${root}/data/hermes"
+addon_json enable fixture --json
+expect_rc "an invalid data root exits 1" 1
+r=0; json_ok "$out" error 'len(lines) == 1 and last["error"] == "command_failed" and last["step"] is None and "data/hermes" in last["message"]' || r=1
+check "an invalid data root under --json is one command_failed error line" "$r"
+if grep -q '^error: ASSISTANT_DATA_ROOT must not be ./data/hermes' "$err"; then ok "an invalid data root names the problem on stderr"; else bad "an invalid data root names the problem on stderr"; sed 's/^/    /' "$err"; fi
+addon list --json
+expect_rc "list with an invalid data root still exits 1" 1
+unset_env ASSISTANT_DATA_ROOT
+
+# An unexpected exit (set -e) while enable's rollback is armed rolls back and
+# prints a command_failed error line. The mktemp stub fails the hook's raw log.
+cat > "${tmp}/bin/mktemp" <<'MKTEMP_EOF'
+#!/bin/sh
+if [ -n "${MKTEMP_FAIL:-}" ]; then
+  case "$*" in *"/${MKTEMP_FAIL}."*) exit 1 ;; esac
+fi
+exec /usr/bin/mktemp "$@"
+MKTEMP_EOF
+chmod +x "${tmp}/bin/mktemp"
+addon_in '{"token":"tok3n-value","interval":600}' configure fixture
+addon_in '{"host":"h","password":"s3cr3t-value"}' configure fixture --instance work
+addon disable fixture
+cp "${root}/.env" "${tmp}/env.before"
+export MKTEMP_FAIL=hook
+addon_json enable fixture --reinit --json
+expect_rc "an unexpected exit during enable exits 4" 4
+r=0; json_ok "$out" error 'last["error"] == "command_failed" and last.get("rolledBack") is True and [l["phase"] for l in lines].count("error") == 1' || r=1
+check "an unexpected exit during enable is one command_failed error line with rolledBack" "$r"
+if cmp -s "${root}/.env" "${tmp}/env.before"; then ok "an unexpected exit during enable restores .env"; else bad "an unexpected exit during enable restores .env"; diff "${tmp}/env.before" "${root}/.env" | sed 's/^/    /'; fi
+if [ ! -e "${root}/data/addons/.lock" ]; then ok "an unexpected exit releases the lock"; else bad "an unexpected exit releases the lock"; fi
+addon enable fixture --reinit
+expect_rc "an unexpected exit during enable without --json exits 4" 4
+if grep -q '^error: ' "$out" && ! grep -q '^{' "$out"; then ok "without --json the unexpected exit prints error: and no JSON"; else bad "without --json the unexpected exit prints error: and no JSON"; sed 's/^/    /' "$out"; fi
+unset MKTEMP_FAIL
+rm -f "${tmp}/bin/mktemp"
+
+# A staging file a killed connect left behind is removed by the next locked run.
+mkdir -p "${root}/data/addons"
+printf '{"password":"left-over"}' > "${root}/data/addons/.staging.Killed1"
+addon_json disconnect hooked --instance nobody --json
+expect_rc "a locked run with a left-over staging file" 2
+no_staging "a locked run (left-over staging file)"
+
+# A hook's done line: init's mcp names join enable's (each once, in order),
+# and a string message from init, connect or disconnect reaches the done line,
+# cleaned and redacted.
+# shellcheck disable=SC2089,SC2090 # literal JSON text the fixture hook prints
+export FIXTURE_DONE_EXTRA=',"mcp":["hooked-a","hooked-b","hooked-a"],"message":"created\tbudget\u001b[0m"'
+addon_json enable hooked --reinit --json
+unset FIXTURE_DONE_EXTRA
+expect_rc "enable with an init hook reporting mcp and message" 0
+r=0; json_ok "$out" "done" 'last["mcp"] == ["hooked-a","hooked-b"] and last["message"] == "created budget[0m" and last["account"] == "main"' || r=1
+check "enable's done line carries the init hook's mcp names once each and its cleaned message" "$r"
+# shellcheck disable=SC2089,SC2090 # literal JSON text the fixture hook prints
+export FIXTURE_DONE_EXTRA=',"message":"signed in with s3cr3t-value"'
+addon_json_in '{"host":"good.example.com","password":"s3cr3t-value"}' connect hooked --instance work --json
+unset FIXTURE_DONE_EXTRA
+expect_rc "connect with a hook message" 0
+r=0; json_ok "$out" "done" 'last["message"] == "signed in with [redacted]" and last["mcp"] == ["fixture-work"]' || r=1
+check "connect's done line carries the hook's message, redacted" "$r"
+# shellcheck disable=SC2089,SC2090 # literal JSON text the fixture hook prints
+export FIXTURE_DONE_EXTRA=',"message":"signed out"'
+addon_json disconnect hooked --instance work --json
+unset FIXTURE_DONE_EXTRA
+expect_rc "disconnect with a hook message" 0
+r=0; json_ok "$out" "done" 'last == {"phase":"done","id":"hooked","action":"disconnect","restart":[],"mcp":[],"message":"signed out"}' || r=1
+check "disconnect's done line carries the hook's message" "$r"
 
 if [ "$fail" = 0 ]; then
   echo "all addon.sh checks passed"

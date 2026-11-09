@@ -39,9 +39,9 @@ except where noted:
   `${ASSISTANT_DATA_ROOT:-./data}/addons/<short-id>/<name>`;
   `scripts/test-addon-manifests.py` checks this, `validate` does not. A
   service that mounts `secrets` may not be an `mcp` service.
-  `oneshot: true` marks a service that runs to completion: `addon.sh enable`
-  runs it with `up --exit-code-from` before the other services, and it may
-  not have `when` or be the `mcp` target. `volumes` is the old place for
+  `oneshot: true` (built-in only) marks a service that runs to completion:
+  `addon.sh enable` runs it with `up --exit-code-from` before the other
+  services, and it may not have `when` or be the `mcp` target. `volumes` is the old place for
   compose volume names; use `data.volumes`. Both are accepted in 0.3.13, and
   a manifest with both is refused.
 - `settings`: each setting has a `type` (`string`, `int`, `bool`, `choice`,
@@ -66,12 +66,11 @@ except where noted:
   `argv` in the named service, and appends `--account <slug>` when `instance`
   is true. An add-on that reads personal data may not run a command in an MCP
   service.
-
-- `hooks`: `init`, `upgrade`, `backup` and `restore`, each `{"script": [argv]}`
-  (`scripts/<name>.sh` plus arguments, run on the host) or `{"command": <name>}` (an entry
-  of `commands` with `instance: false`). `addon.sh` runs `init` on `enable`,
-  and `connect` and `disconnect` from `instances`; it doesn't run the others
-  yet.
+- `hooks`: `init`, `upgrade`, `backup` and `restore`, each
+  `{"script": [argv]}` (`scripts/<name>.sh` plus arguments, run on the host)
+  or `{"command": <name>}` (an entry of `commands` with `instance: false`).
+  `addon.sh` runs `init` on `enable`, and `connect` and `disconnect` from
+  `instances`; it doesn't run the others yet.
 - `onToggle`: `{"recreate": [<compose service>], "script"?: [argv]}`, built-in
   only. `enable` and `disable` recreate those services, then run the script,
   when the add-on's flag changes value. No built-in manifest uses it.

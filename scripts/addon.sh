@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck source-path=SCRIPTDIR
 # List, configure, enable, disable, connect, disconnect and run built-in add-ons
 # (addons/<id>/addon.json).
 # This is the interface Boundary calls; scripts/lib/addon_cli.py does the
@@ -69,10 +70,11 @@
 # COMPOSE_PROFILES and stops the services if the add-on was off, and its
 # error line has "rolledBack":true.
 #
-# Exit codes: 0 success, 1 compose_failed or busy, 2 bad_input (invalid input
-# or usage) and connect's exists and disconnect's not_found, 3
-# missing_settings, 4 command_failed (run: docker compose run failed;
-# addon_cli.py failed; SIGINT or SIGTERM) and every error a hook reports.
+# Exit codes: 0 success, 1 compose_failed, busy or an invalid data root
+# (command_failed), 2 bad_input (invalid input or usage) and connect's exists
+# and disconnect's not_found, 3 missing_settings, 4 command_failed (run:
+# docker compose run failed; addon_cli.py failed; SIGINT or SIGTERM; an
+# unexpected exit) and every error a hook reports.
 #
 # ADDONS_DIR overrides addons/ (tests). STACK_PYTHON=host uses host python3.
 set -euo pipefail
@@ -90,7 +92,7 @@ source "${ROOT}/scripts/lib/python.sh"
 source "${ROOT}/scripts/lib/addon-events.sh"
 
 # usage: the synopsis from the header, on stdout.
-usage() { sed -n '8,16s/^# *//p' "${BASH_SOURCE[0]}"; }
+usage() { sed -n '9,17s/^# *//p' "${BASH_SOURCE[0]}"; }
 # usage_error REASON: `error: usage: REASON` and the synopsis on stderr, exit 2.
 # In JSON mode, a bad_input error line instead.
 usage_error() {
@@ -108,8 +110,8 @@ truthy() {
 }
 
 ADDONS="${ADDONS_DIR:-${ROOT}/addons}"
+# Checked below, once --json is known.
 DATA_ROOT="$(resolve_data_root_path)"
-validate_data_root_path "$DATA_ROOT" || exit 1
 
 # cli ARGS...: addon_cli.py in the Hermes image with the data root (and an
 # add-ons dir outside the repo) mounted. stdin passes through.
@@ -307,6 +309,7 @@ addon_lock() {
   fi
   if ln -sn "$$" "$lock" 2> /dev/null; then
     LOCK_PATH="$lock"
+    clear_staging
     return 0
   fi
   pid="$(readlink "$lock" 2> /dev/null || true)"
@@ -325,6 +328,13 @@ addon_lock() {
   rmdir "$guard" 2> /dev/null || true
   LOCK_GUARD=""
   [[ "$took" == 1 ]] || lock_busy ""
+  clear_staging
+}
+# clear_staging: deletes data/addons/.staging.* left by a connect that was
+# killed before its EXIT trap ran. They hold plaintext values. Only the lock
+# holder calls it, so no other run owns one.
+clear_staging() {
+  rm -f "${DATA_ROOT}/addons"/.staging.*
 }
 addon_unlock() {
   if [[ -n "$LOCK_PATH" && "$(readlink "$LOCK_PATH" 2> /dev/null || true)" == "$$" ]]; then
@@ -336,12 +346,26 @@ addon_unlock() {
   fi
   LOCK_GUARD=""
 }
+# on_exit: the EXIT trap. A run that exits non-zero without an error line (a
+# `set -e` exit) while enable's rollback is armed, or in JSON mode, gets one
+# here: the rollback runs and the error is command_failed (exit 4).
 on_exit() {
+  local rc=$? fail=0
+  if [[ "$rc" != 0 && "$EV_ERRORED" != 1 && ( -n "$EV_ON_FAIL" || "$EV_JSON" == 1 ) ]]; then
+    fail=1
+    ev_error command_failed "$EV_STEP" "addon.sh stopped unexpectedly (exit ${rc})" "$EV_CUR_LOG"
+  fi
   if [[ -n "$STAGED" ]]; then
     rm -f "$STAGED"
   fi
+  if [[ -n "$SIZES_DIR" ]]; then
+    rm -rf "$SIZES_DIR"
+  fi
   addon_unlock
   ev_cleanup
+  if [[ "$fail" == 1 ]]; then
+    exit "$(ev_exit_status command_failed)"
+  fi
 }
 
 # apply_flags PLAN: writes the plan's flags to .env and syncs COMPOSE_PROFILES.
@@ -464,20 +488,20 @@ pull_pipe() {
 
 # Hooks. An init hook that succeeds is recorded (mark-init) inside its step.
 # run_hook STEP SID HOOK [plan-hook options]: runs the manifest's hook as
-# step STEP. Sets HOOK_RAN (1 when a hook ran), HOOK_ACCOUNT (the `account`
-# its `done` line reported, else empty) and HOOK_MCP (its `mcp` names,
-# comma-separated). The hook's stdin is HOOK_STDIN. Events and the result
+# step STEP. Sets HOOK_ACCOUNT (the `account`
+# its `done` line reported, else empty), HOOK_MCP (its `mcp` names,
+# comma-separated) and HOOK_MESSAGE (its `message`, cleaned, else empty). The hook's stdin is HOOK_STDIN. Events and the result
 # come from the hook's stdout only; its stderr goes to the step log and is
 # never parsed. With HOOK_REDACT set (a staged values file), stdout and stderr
 # each go through `cli redact` before anything stores or prints them. A hook that fails goes through
 # ev_fail, so the caller's rollback runs: its error line's name passes through
 # when it is a shared name or in instances.errors, any other name becomes
 # command_failed (addon_cli.py hook-result decides). In JSON mode the hook's
-# own JSON lines, other than done and error, are printed inside the step with
-# "step" set; everything else goes to the step log.
-HOOK_RAN=0
+# `setup` and `pull` lines are printed inside the step with "step" set and
+# their strings cleaned; everything else goes to the step log.
 HOOK_ACCOUNT=""
 HOOK_MCP=""
+HOOK_MESSAGE=""
 HOOK_STDIN=/dev/null
 HOOK_REDACT=""
 # hook_exec RAW SID HOOK KIND STEP ARGV...: KIND is `script` (run from ROOT) or
@@ -534,9 +558,9 @@ hook_events() {
 run_hook() {
   local step="$1" sid="$2" hook="$3" raw rc=0 line first="" kind="" argv=() out code msg
   shift 3
-  HOOK_RAN=0
   HOOK_ACCOUNT=""
   HOOK_MCP=""
+  HOOK_MESSAGE=""
   cli_checked "$step" plan-hook "$sid" "$hook" "$@"
   [[ -n "$CLI_OUT" ]] || return 0
   while IFS= read -r line; do
@@ -547,13 +571,13 @@ EOF_HOOK
   if [[ "$first" == script ]]; then kind=script; else kind="${first#service }"; fi
   raw="$(ev_log hook)"
   run_step "$step" "" hook_exec "$raw" "$sid" "$hook" "$kind" "$step" "${argv[@]}" || rc=$?
-  HOOK_RAN=1
   CLI_IN="$raw" cli_checked "$step" hook-result "$sid" "$rc"
   out="$CLI_OUT"
   code="$(printf '%s\n' "$out" | sed -n 1p)"
   msg="$(printf '%s\n' "$out" | sed -n 2p)"
   HOOK_ACCOUNT="$(printf '%s\n' "$out" | sed -n 3p)"
   HOOK_MCP="$(printf '%s\n' "$out" | sed -n 4p)"
+  HOOK_MESSAGE="$(printf '%s\n' "$out" | sed -n 5p)"
   [[ -z "$code" ]] || ev_fail "$code" "$step" "$msg" "$EV_LAST_LOG"
 }
 
@@ -562,6 +586,8 @@ EOF_HOOK
 # nothing; when it fails the catalog prints without them and one warning goes
 # to stderr. --sizes also asks the registry for each image's manifest
 # (docker manifest inspect --verbose) to add downloadSize. list takes no lock.
+# SIZES_DIR: list --sizes's scratch directory; on_exit removes it.
+SIZES_DIR=""
 cmd_list() {
   local sizes=0 json=0 config="" platform="" dir="" images image n=0 args=()
   while [[ $# -gt 0 ]]; do
@@ -580,11 +606,10 @@ cmd_list() {
     # Under the data root so the Hermes container, which mounts only the repo,
     # the data root and the add-ons dir, can read it.
     mkdir -p "${DATA_ROOT}/addons"
-    dir="$(mktemp -d "${DATA_ROOT}/addons/.sizes.XXXXXX")" || dir=""
+    SIZES_DIR="$(mktemp -d "${DATA_ROOT}/addons/.sizes.XXXXXX")" || SIZES_DIR=""
+    dir="$SIZES_DIR"
   fi
   if [[ -n "$dir" ]]; then
-    # Expanded now: dir is local and gone when the EXIT trap runs.
-    trap "rm -rf '${dir}'" EXIT
     platform="$(docker version --format '{{.Server.Os}}/{{.Server.Arch}}' 2> /dev/null)" || platform=""
     if [[ -n "$platform" ]]; then
       images="$(printf '%s' "$config" | cli images 2> /dev/null)" || images=""
@@ -737,8 +762,9 @@ EOF_STOPS
   toggle_recreate "$plan" "$sid"
   reload_step
   EV_ON_FAIL=""
-  mcp="$(gated_names "$plan" mcp | paste -sd, -)"
-  ev_done "$sid" enable "$RECREATED" "$mcp" "$HOOK_ACCOUNT"
+  # The manifest's gated names, then the init hook's, each once.
+  mcp="$({ gated_names "$plan" mcp; printf '%s\n' "$HOOK_MCP" | tr ',' '\n'; } | awk 'NF && !seen[$0]++' | paste -sd, -)"
+  ev_done "$sid" enable "$RECREATED" "$mcp" "$HOOK_ACCOUNT" "$HOOK_MESSAGE"
 }
 
 # stop_unused_uses PLAN: stops each compose service the manifest's `uses` maps
@@ -933,7 +959,7 @@ cmd_connect() {
   HOOK_REDACT=""
   CLI_IN="$STAGED" cli_step register configure "$sid" --instance "$slug"
   reload_step
-  ev_done "$sid" connect "" "$HOOK_MCP" "$HOOK_ACCOUNT"
+  ev_done "$sid" connect "" "$HOOK_MCP" "$HOOK_ACCOUNT" "$HOOK_MESSAGE"
 }
 
 cmd_disconnect() {
@@ -951,7 +977,7 @@ cmd_disconnect() {
   run_hook check "$sid" disconnect --slug "$slug"
   cli_step register remove-instance "$sid" "$slug"
   reload_step
-  ev_done "$sid" disconnect "" ""
+  ev_done "$sid" disconnect "" "" "" "$HOOK_MESSAGE"
 }
 
 cmd_run() {
@@ -996,6 +1022,14 @@ esac
 case "$sub" in
   configure | enable | disable | connect | disconnect | remove) ev_init "$json" ;;
 esac
+# An invalid data root is the stack's configuration, not the call's input:
+# command_failed, keeping the exit 1 it always had.
+if ! msg="$(validate_data_root_path "$DATA_ROOT" 2>&1)"; then
+  case "$sub" in
+    configure | enable | disable | connect | disconnect | remove) EV_EXIT=1; ev_fail command_failed "" "$msg" "" ;;
+    *) printf '%s\n' "$msg" >&2; exit 1 ;;
+  esac
+fi
 case "$sub" in
   list) cmd_list "$@" ;;
   configure) cmd_configure "$@" ;;
