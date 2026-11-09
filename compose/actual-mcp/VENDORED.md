@@ -36,11 +36,17 @@ twice: `actual-mcp-rw` with `--sse --enable-write` and `actual-mcp-ro` with `--s
 - `actual-admin.mjs` (local addition, not from upstream): the `check`, `create` and `list` commands
   `scripts/budget.sh` runs with `--entrypoint node`. The Dockerfile copies it to
   `/opt/actual-admin.mjs`; it loads `@actual-app/api` from `/app/node_modules`.
+- `src/launcher/` (local addition) and the Dockerfile `ENTRYPOINT`: the container runs
+  `build/launcher/main.js`, which listens on :3000 and runs `build/index.js` as children. The
+  budget in `/app/.env` keeps `/mcp`, `/sse` and `/messages`; each connected budget under
+  `ACTUAL_ROWS_DIR` (default `/budgets`) gets its own child behind `/<slug>/mcp`, with its cache
+  in `/data/rows/<slug>`. Children follow added, changed and removed rows every 2 s. An
+  unknown-session 400 from a child goes out as 404. Tests in `src/launcher/*.test.ts`.
 - Removed, as unused by the build or the image: `.github/`, `.vscode/`, `docs/`, `e2e/`,
   `vitest.e2e.config.ts`, `AGENTS.md`, `CLAUDE.md`, `CHANGELOG.md`, `cicd.md`,
   `release-please-config.json`, `.release-please-manifest.json`, `renovate.json`.
 
-Apart from `connection.ts` above, `src/` is unchanged. Upstream commit `0c73b0d` changed `run-bank-sync` to report the ids
+Apart from `connection.ts` and `src/launcher/` above, `src/` is unchanged. Upstream commit `0c73b0d` changed `run-bank-sync` to report the ids
 returned by `runBankSync` in the author's Actual fork. npm `26.11.0` declares the same return
 type (`Promise<SyncResponse>` in `@actual-app/api/@types/methods.d.ts`), so the build
 type-checks with no patch. That tool has not been run. The spike ran `get-accounts` (rw and ro)
