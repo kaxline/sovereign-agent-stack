@@ -521,6 +521,23 @@ reader_cmd["commands"]["sync"]["service"] = "worker"
 check("a reader's command may run in a non-MCP service", am.validate(reader_cmd, "builtin") == [],
       str(am.validate(reader_cmd, "builtin")))
 
+volumed = variant(services__server__volumes=["gptr_outputs"])
+check("services.<name>.volumes lists compose volume names", am.validate(volumed, "builtin") == [],
+      str(am.validate(volumed, "builtin")))
+refused("volumes must be a list", variant(services__server__volumes="gptr_outputs"), "builtin",
+        "services.server.volumes")
+refused("volumes may not be empty", variant(services__server__volumes=[]), "builtin",
+        "services.server.volumes")
+refused("volume names are compose names", variant(services__server__volumes=["../etc"]), "builtin",
+        "services.server.volumes")
+refused("volume names are strings", variant(services__server__volumes=[1]), "builtin",
+        "services.server.volumes")
+refused("volumes listed twice", variant(services__server__volumes=["a", "a"]), "builtin",
+        "services.server.volumes")
+packaged_vol = packaged(BASE)
+packaged_vol["services"]["server"]["volumes"] = ["gptr_outputs"]
+refused("only built-in add-ons name compose volumes", packaged_vol, "official", "services.server.volumes")
+
 # --- Built-in manifests against the repo ------------------------------------
 compose = (ROOT / "docker-compose.yml").read_text()
 sync = ROOT / "scripts" / "sync-profiles.sh"
@@ -554,6 +571,28 @@ def mount_problems(sid: str, manifest: dict, compose_text: str) -> list[str]:
         if sorted(lines) != sorted(want):
             problems.append(f"{name}: compose mounts {sorted(lines)}, manifest wants {sorted(want)}")
     return problems
+
+
+def compose_volumes(compose_text: str) -> set[str]:
+    """Names under the top-level volumes: key of a compose file."""
+    m = re.search(r"^volumes:\n(.*?)(?=^\S|\Z)", compose_text, re.M | re.S)
+    return set(re.findall(r"^  ([A-Za-z0-9][A-Za-z0-9_.-]*):", m.group(1), re.M)) if m else set()
+
+
+def volume_problems(manifest: dict, compose_text: str) -> list[str]:
+    declared = compose_volumes(compose_text)
+    return [f"{name}: volume {v} is not in docker-compose.yml's volumes"
+            for name, svc in manifest["services"].items() for v in svc.get("volumes", [])
+            if v not in declared]
+
+
+FIX_VOLUMES = "services:\n  x:\n    image: x\nvolumes:\n  gptr_outputs:\n  other:\n"
+check("volumes cross-check accepts a declared volume", volume_problems(volumed, FIX_VOLUMES) == [],
+      str(volume_problems(volumed, FIX_VOLUMES)))
+check("volumes cross-check flags an undeclared volume",
+      len(volume_problems(volumed, FIX_VOLUMES.replace("gptr_outputs", "renamed"))) == 1)
+check("volumes cross-check reads only the top-level volumes key",
+      len(volume_problems(volumed, "services:\n  x:\n    volumes:\n      - gptr_outputs:/x\n")) == 1)
 
 
 FIX_COMPOSE = """services:
@@ -597,6 +636,8 @@ for path, manifest, parse_error in am.load_dir(ROOT / "addons"):
         check(f"{sid}: {svc['compose']} is in the {b['profile']} profile", b["profile"] in listed, str(listed))
     check(f"{sid}: compose mounts match services.*.mounts", not mount_problems(sid, manifest, compose),
           "; ".join(mount_problems(sid, manifest, compose)))
+    check(f"{sid}: services.*.volumes are declared in docker-compose.yml",
+          not volume_problems(manifest, compose), "; ".join(volume_problems(manifest, compose)))
     for g in manifest.get("gates", []):
         check(f"{sid}: sync-profiles maps gate {g['flag']} to {g['profile']}",
               [g["flag"], g["profile"], "1" if g["seed"] else "0"] in rows, table.stdout)

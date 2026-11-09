@@ -15,7 +15,7 @@
 	db-backup db-service-add db-psql todo-init todo-open dashboard-open \
 	crm-init crm-add crm-remove crm-access crm-open crm-mode \
 	vault-init vault-add vault-unlock vault-lock vault-sync vault-grant vault-requests vault-remove vault-open \
-	secrets-sync bitwarden-test \
+	secrets-sync bitwarden-test addon-list addon-test \
 	budget-init budget-add budget-open budget-remove budget-access \
 	coding-root-list coding-root-add \
 	context-root-list context-root-add opencode-smoke-fixture \
@@ -240,6 +240,17 @@ bitwarden-test:
 	done; \
 	if [ -n "$$failed" ]; then printf 'FAILED:%b\n' "$$failed"; exit 1; fi; \
 	echo "all Bitwarden tests passed"
+
+# Built-in add-ons through scripts/addon.sh, the interface Boundary calls.
+#   make addon-list    every add-on with its settings, instances and missing values (JSON)
+#   make addon-test    the manifest, store and addon.sh tests
+addon-list:
+	@./scripts/addon.sh list --json
+
+addon-test:
+	python3 scripts/test-addon-manifests.py
+	python3 scripts/test-addon-store.py
+	sh scripts/test-addon-cli.sh
 
 # Actual Budget (budget and budget-local profiles, or remote). See docs/budget.md.
 #   make budget-init [SYNC_ID=id] [ROTATE=1]  local server: password, budget, budget.env

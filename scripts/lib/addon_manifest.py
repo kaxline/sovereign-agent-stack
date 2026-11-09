@@ -50,7 +50,9 @@ does the same for the plugin toolsets of add-ons with a vaultBackend.
 Settings (and the schema of `instances`, {name, settings}) take the types in
 SETTING_TYPES. A setting with neither `default` nor `optional: true` is
 required; a bool setting may name a `flag`. `services.<name>.mounts` and
-`commands` are checked as validate() describes them.
+`commands` are checked as validate() describes them. A built-in service may
+list `volumes`, the compose volume names `scripts/addon.sh disable --purge`
+removes; scripts/test-addon-manifests.py checks they exist in docker-compose.yml.
 
 Policy follows docs/private/addon-manifest-spec.md (draft). `source` is
 "builtin", "official" (a package from the official feed) or "community".
@@ -105,6 +107,7 @@ TOOL_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 ENV_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 DIGEST_RE = re.compile(r"@sha256:[0-9a-f]{64}$")
 PATH_RE = re.compile(r"^/[A-Za-z0-9._~/-]*$")
+COMPOSE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 
 
 def short_id(manifest_id: str) -> str:
@@ -220,6 +223,13 @@ def validate(manifest, source: str = "builtin") -> list[str]:
                 errors.extend(_validate_when(svc["when"], gate_flags, f"services.{name}.when"))
             if "port" in svc and not (isinstance(svc["port"], int) and 0 < svc["port"] < 65536):
                 err(f"services.{name}.port must be a port number")
+            if "volumes" in svc:
+                vols = svc["volumes"]
+                if source != "builtin":
+                    err(f"services.{name}.volumes: only built-in add-ons name compose volumes")
+                elif not (_is_str_list(vols) and vols and all(COMPOSE_NAME_RE.match(v) for v in vols)
+                          and len(set(vols)) == len(vols)):
+                    err(f"services.{name}.volumes must be a non-empty list of distinct compose volume names")
     else:
         services = {}
 

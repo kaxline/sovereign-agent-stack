@@ -1,0 +1,99 @@
+{
+  "manifestVersion": 1,
+  "id": "io.example.stack.fixture",
+  "version": "1.0.0",
+  "title": "Fixture",
+  "tagline": "Test add-on for scripts/test-addon-cli.sh",
+  "description": "Not a real add-on. scripts/test-addon-cli.sh configures, enables, runs and disables it against stub docker and make.",
+  "publisher": {
+    "name": "sovereign-agent-stack",
+    "url": "https://github.com/kaxline/sovereign-agent-stack"
+  },
+  "minStackVersion": "0.3.12",
+  "builtin": {
+    "flag": "FIXTURE_ADDON_ENABLED",
+    "profile": "fixture",
+    "seed": false
+  },
+  "gates": [
+    {
+      "flag": "FIXTURE_EXTRA_ENABLED",
+      "profile": "fixture-extra",
+      "seed": false
+    }
+  ],
+  "services": {
+    "worker": {
+      "compose": "fixture-worker",
+      "mounts": {
+        "secrets": "ro",
+        "config": "ro",
+        "instances": "ro"
+      },
+      "volumes": [
+        "fixture_cache"
+      ]
+    },
+    "extra": {
+      "compose": "fixture-extra",
+      "when": {
+        "gate": "FIXTURE_EXTRA_ENABLED"
+      }
+    }
+  },
+  "settings": {
+    "interval": {
+      "type": "int",
+      "label": "Sync interval in seconds"
+    },
+    "token": {
+      "type": "secret",
+      "label": "API token"
+    },
+    "extra": {
+      "type": "bool",
+      "label": "Run the extra service",
+      "default": false,
+      "flag": "FIXTURE_EXTRA_ENABLED"
+    }
+  },
+  "instances": {
+    "name": "account",
+    "settings": {
+      "host": {
+        "type": "string",
+        "label": "Host"
+      },
+      "password": {
+        "type": "secret",
+        "label": "Password"
+      }
+    }
+  },
+  "commands": {
+    "sync": {
+      "service": "worker",
+      "instance": true,
+      "argv": [
+        "fixture-sync",
+        "--once"
+      ]
+    },
+    "status": {
+      "service": "worker",
+      "instance": false,
+      "argv": [
+        "fixture-status",
+        "two words"
+      ]
+    }
+  },
+  "permissions": {
+    "reads": [],
+    "writes": [],
+    "sends": false,
+    "egress": [],
+    "exposesToAgent": false,
+    "cron": false
+  }
+}
