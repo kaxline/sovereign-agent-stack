@@ -33,8 +33,9 @@ except where noted:
   bootstrap drops stale registrations by URL.
   `unmanaged` (built-in add-ons only) is a list of Hermes profile names, for
   example `["default"]`, that bootstrap leaves alone for that entry: it
-  registers, drops, pins and sets parked retry on none of them, so a server
-  the user added by hand on that profile at the same URL stays. The names
+  registers, drops or pins on none of them, so a server the user added by
+  hand on that profile at the same URL stays. Parked retry still applies to
+  an existing entry at the add-on's URL, on every profile. The names
   must be distinct and may not appear in `profiles`. An empty list behaves as
   absent.
 - `services.<name>.when`: `{"gate": FLAG}`, so the service starts only while
