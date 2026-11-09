@@ -58,39 +58,98 @@ ev_log() {
   mktemp "${EV_TMP}/${1}.XXXXXX"
 }
 
-# json_str TEXT: TEXT as a JSON string literal. Tab becomes a space, control
-# characters are dropped (ASCII 0x00-0x1F and 0x7F, and C1 U+0080-U+009F as
-# UTF-8), the same set addon_cli.py clean_line drops. The cut differs: bash
-# works on bytes here (LC_ALL=C, so the result doesn't depend on the caller's
-# locale), so the result is at most 500 bytes, not 500 characters, and a UTF-8
-# sequence the cut splits is dropped whole.
+# json_str TEXT: TEXT as a JSON string literal, cleaned by the rule addon_cli.py
+# clean_line applies, in the same order: bytes that aren't valid UTF-8 become
+# U+FFFD (one per maximal invalid subpart, as Python's errors="replace"), tab
+# becomes a space, and control characters are dropped (ASCII 0x00-0x1F and
+# 0x7F, and C1 U+0080-U+009F). Two differences, both from working on bytes
+# (LC_ALL=C, so the result doesn't depend on the caller's locale): the result
+# is cut to at most 500 bytes, not 500 characters, never inside a UTF-8
+# sequence; and only the first 2000 bytes of TEXT are read, so the byte loop
+# stays cheap.
 json_str() {
-  local LC_ALL=C s tail="" lead need
-  s="$(printf '%s' "$1" | tr '\t' ' ' | tr -d '\000-\010\012-\037\177')"
+  local LC_ALL=C s="$1"
+  s="$(_ev_cut "$s" 2000)"
+  [[ "$s" == *[$'\x80'-$'\xff']* ]] && s="$(_ev_utf8_fix "$s")"
+  # local LC_ALL isn't exported; tr needs it too, or a UTF-8 locale's tr
+  # refuses invalid bytes.
+  s="$(printf '%s' "$s" | LC_ALL=C tr '\t' ' ' | LC_ALL=C tr -d '\000-\010\012-\037\177')"
   s="${s//$'\xc2'[$'\x80'-$'\x9f']/}"
-  if [[ ${#s} -gt 500 ]]; then
-    s="${s:0:500}"
-    # Up to three continuation bytes, then the lead byte they belong to.
-    while [[ ${#tail} -lt 3 && -n "$s" && "${s: -1}" == [$'\x80'-$'\xbf'] ]]; do
-      tail="${s: -1}${tail}"
-      s="${s%?}"
-    done
-    lead="${s: -1}"
-    case "$lead" in
-      [$'\xc0'-$'\xdf']) need=1 ;;
-      [$'\xe0'-$'\xef']) need=2 ;;
-      [$'\xf0'-$'\xf7']) need=3 ;;
-      *) need=-1 ;;
-    esac
-    if [[ "${#tail}" == "$need" ]]; then
-      s="${s}${tail}"
-    elif [[ "$need" != -1 ]]; then
-      s="${s%?}"
-    fi
-  fi
+  s="$(_ev_cut "$s" 500)"
   s="${s//\\/\\\\}"
   s="${s//\"/\\\"}"
   printf '"%s"' "$s"
+}
+
+# _ev_cut TEXT LIMIT: TEXT cut to LIMIT bytes, dropping a UTF-8 sequence the
+# cut splits. Call with LC_ALL=C.
+_ev_cut() {
+  local s="$1" tail="" need
+  if [[ ${#s} -le "$2" ]]; then
+    printf '%s' "$s"
+    return 0
+  fi
+  s="${s:0:$2}"
+  # Up to three continuation bytes, then the lead byte they belong to.
+  while [[ ${#tail} -lt 3 && -n "$s" && "${s: -1}" == [$'\x80'-$'\xbf'] ]]; do
+    tail="${s: -1}${tail}"
+    s="${s%?}"
+  done
+  case "${s: -1}" in
+    [$'\xc0'-$'\xdf']) need=1 ;;
+    [$'\xe0'-$'\xef']) need=2 ;;
+    [$'\xf0'-$'\xf7']) need=3 ;;
+    *) need=-1 ;;
+  esac
+  if [[ "${#tail}" == "$need" ]]; then
+    s="${s}${tail}"
+  elif [[ "$need" != -1 ]]; then
+    s="${s%?}"
+  fi
+  printf '%s' "$s"
+}
+
+# _ev_utf8_fix TEXT: TEXT with each maximal invalid UTF-8 subpart replaced by
+# U+FFFD (RFC 3629 ranges: no overlongs, surrogates or values past U+10FFFF).
+# Call with LC_ALL=C.
+_ev_utf8_fix() {
+  local s="$1" out="" i=0 n="${#1}" b need lo hi k ok
+  local fffd=$'\xef\xbf\xbd'
+  while [[ "$i" -lt "$n" ]]; do
+    b="${s:i:1}"
+    lo=$'\x80'
+    hi=$'\xbf'
+    case "$b" in
+      [$'\x01'-$'\x7f']) out="${out}${b}"; i=$((i + 1)); continue ;;
+      [$'\xc2'-$'\xdf']) need=1 ;;
+      $'\xe0') need=2; lo=$'\xa0' ;;
+      $'\xed') need=2; hi=$'\x9f' ;;
+      [$'\xe1'-$'\xef']) need=2 ;;
+      $'\xf0') need=3; lo=$'\x90' ;;
+      $'\xf4') need=3; hi=$'\x8f' ;;
+      [$'\xf1'-$'\xf3']) need=3 ;;
+      *) out="${out}${fffd}"; i=$((i + 1)); continue ;;
+    esac
+    k=1
+    ok=1
+    while [[ "$k" -le "$need" ]]; do
+      b="${s:i+k:1}"
+      if [[ "$k" == 1 ]]; then
+        [[ -n "$b" && ! "$b" < "$lo" && ! "$b" > "$hi" ]] || { ok=0; break; }
+      else
+        [[ "$b" == [$'\x80'-$'\xbf'] ]] || { ok=0; break; }
+      fi
+      k=$((k + 1))
+    done
+    if [[ "$ok" == 1 ]]; then
+      out="${out}${s:i:need+1}"
+      i=$((i + need + 1))
+    else
+      out="${out}${fffd}"
+      i=$((i + k))
+    fi
+  done
+  printf '%s' "$out"
 }
 
 # ev_json_array CSV: a JSON array of the non-empty items of CSV.

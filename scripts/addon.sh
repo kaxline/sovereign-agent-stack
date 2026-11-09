@@ -24,8 +24,8 @@
 # step, then one `done` or `error` line. Step output goes to stderr without
 # --json.
 #
-# configure, enable and disable hold data/addons/.lock while they run; a second
-# call fails with busy. A failed or interrupted enable writes the flags back as
+# configure, enable and disable hold data/addons/.lock (a symlink to their PID)
+# while they run; a second call fails with busy. A failed or interrupted enable writes the flags back as
 # they were, syncs COMPOSE_PROFILES and stops the services if the add-on was
 # off, and its error line has "rolledBack":true.
 #
@@ -152,55 +152,64 @@ cli_checked() {
   ev_fail "$code" "$step" "$msg" "$err"
 }
 
-# The lock: data/addons/.lock, made with mkdir (atomic), holding the owner's
-# PID in pid. addon_unlock runs from the EXIT trap and removes only a lock
-# this process took.
-#
-# A lock is stale when its pid names a process that no longer runs, or when it
-# has no pid and is older than 10 seconds (its owner died between mkdir and
-# writing pid). A stale lock is taken over by renaming it (only one caller's
-# rename succeeds), checking the renamed copy is the one judged stale, deleting
-# it and making a new one. If a faster caller replaced the lock in between,
-# the copy is put back and this caller is busy.
-LOCK_DIR=""
-lock_pid() { cat "${1}/pid" 2> /dev/null || true; }
-lock_age() {
+# The lock: data/addons/.lock, a symlink whose target is the owner's PID.
+# `ln -s` creates it and its PID in one atomic step, so a lock always names
+# its owner. A lock whose PID no longer runs is taken over under a guard
+# directory, data/addons/.lock.takeover: whoever makes the guard re-reads the
+# link, replaces it only if it still names the same dead PID, and removes the
+# guard. A guard older than 10 seconds belongs to a takeover that died and is
+# removed. Anything else (a live owner, a held guard, a link replaced in the
+# meantime) is busy. addon_unlock, from the EXIT trap, removes the link only
+# while it still names this process, and the guard if this process holds it.
+LOCK_PATH=""
+LOCK_GUARD=""
+# path_age PATH: seconds since PATH's mtime.
+path_age() {
   local m
   m="$(stat -c %Y "$1" 2> /dev/null || stat -f %m "$1" 2> /dev/null)" || return 1
   [[ "$m" =~ ^[0-9]+$ ]] || return 1
   echo $(($(date +%s) - m))
 }
-lock_stale() {
-  local pid="$2" age
-  if [[ "$pid" =~ ^[0-9]+$ ]]; then
-    if kill -0 "$pid" 2> /dev/null; then return 1; fi
-  elif [[ -z "$pid" && ! -e "${1}/pid" ]]; then
-    age="$(lock_age "$1")" && [[ "$age" -gt 10 ]]
-  else
-    return 1
-  fi
+lock_busy() {
+  ev_fail busy "" "another add-on change is running${1:+ (pid $1)}" ""
 }
 addon_lock() {
-  local dir="${DATA_ROOT}/addons/.lock" pid moved
+  local lock="${DATA_ROOT}/addons/.lock" guard="${DATA_ROOT}/addons/.lock.takeover" pid age took=0
   mkdir -p "${DATA_ROOT}/addons"
-  if ! mkdir "$dir" 2> /dev/null; then
-    pid="$(lock_pid "$dir")"
-    lock_stale "$dir" "$pid" || ev_fail busy "" "another add-on change is running (pid ${pid:-unknown})" ""
-    moved="${dir}.stale.$$"
-    mv "$dir" "$moved" 2> /dev/null || ev_fail busy "" "another add-on change is running" ""
-    if [[ "$(lock_pid "$moved")" != "$pid" ]]; then
-      mv "$moved" "$dir" 2> /dev/null || true
-      ev_fail busy "" "another add-on change is running" ""
-    fi
-    rm -rf "$moved"
-    mkdir "$dir" 2> /dev/null || ev_fail busy "" "another add-on change is running" ""
+  # ln -s onto a directory would create the link inside it.
+  if [[ -e "$lock" && ! -L "$lock" ]]; then
+    ev_fail busy "" "${lock} exists and is not a lock symlink; remove it if no add-on change is running" ""
   fi
-  LOCK_DIR="$dir"
-  printf '%s\n' "$$" > "${dir}/pid"
+  if ln -sn "$$" "$lock" 2> /dev/null; then
+    LOCK_PATH="$lock"
+    return 0
+  fi
+  pid="$(readlink "$lock" 2> /dev/null || true)"
+  [[ "$pid" =~ ^[0-9]+$ ]] || lock_busy "$pid"
+  kill -0 "$pid" 2> /dev/null && lock_busy "$pid"
+  if age="$(path_age "$guard")" && [[ "$age" -gt 10 ]]; then
+    rmdir "$guard" 2> /dev/null || true
+  fi
+  mkdir "$guard" 2> /dev/null || lock_busy ""
+  LOCK_GUARD="$guard"
+  if [[ "$(readlink "$lock" 2> /dev/null || true)" == "$pid" ]] && rm -f "$lock" \
+    && ln -sn "$$" "$lock" 2> /dev/null; then
+    took=1
+    LOCK_PATH="$lock"
+  fi
+  rmdir "$guard" 2> /dev/null || true
+  LOCK_GUARD=""
+  [[ "$took" == 1 ]] || lock_busy ""
 }
 addon_unlock() {
-  [[ -n "$LOCK_DIR" ]] && rm -rf "$LOCK_DIR"
-  LOCK_DIR=""
+  if [[ -n "$LOCK_PATH" && "$(readlink "$LOCK_PATH" 2> /dev/null || true)" == "$$" ]]; then
+    rm -f "$LOCK_PATH"
+  fi
+  LOCK_PATH=""
+  if [[ -n "$LOCK_GUARD" ]]; then
+    rmdir "$LOCK_GUARD" 2> /dev/null || true
+  fi
+  LOCK_GUARD=""
 }
 on_exit() {
   addon_unlock

@@ -27,10 +27,12 @@ printf 'COMPOSE_PROJECT_NAME=fixtureproj\n' >> "${root}/.env"
 # quote, a backslash, a 10,000-character line and an ANSI escape, then exit 1.
 # DOCKER_SLEEP_UP=1 makes `compose up` write its PID to SLEEP_PID and sleep.
 # DOCKER_FAIL_PULL=1 makes `compose --progress json pull` exit 1.
+# DOCKER_UP_DELAY=N makes `compose up` sleep N seconds first.
 cat > "${tmp}/bin/docker" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >> "${STUB_LOG}"
 if [ "$1 $2" = "compose up" ]; then
+  [ -n "${DOCKER_UP_DELAY:-}" ] && sleep "$DOCKER_UP_DELAY"
   if [ "${DOCKER_SLEEP_UP:-0}" = 1 ]; then
     echo $$ > "${SLEEP_PID}"
     exec sleep 30
@@ -308,31 +310,51 @@ check "a failed pull is compose_failed at step pull" "$r"
 if cmp -s "${root}/.env" "${tmp}/env.before" && ! logged "compose up"; then ok "a failed pull changes nothing"; else bad "a failed pull changes nothing"; cat "$STUB_LOG"; fi
 
 lock="${root}/data/addons/.lock"
-mkdir "$lock"
-echo $$ > "${lock}/pid"
+guard="${lock}.takeover"
+# lock_target: the PID the lock symlink names, or nothing.
+lock_target() { readlink "$lock" 2> /dev/null || true; }
+ln -s $$ "$lock"
 addon_json enable fixture --json
 expect_rc "enable while another change holds the lock exits 1" 1
 r=0; json_ok "$out" error 'last["error"] == "busy"' || r=1
 check "a held lock is busy" "$r"
-if cmp -s "${root}/.env" "${tmp}/env.before" && [ -f "${lock}/pid" ] && [ "$(cat "${lock}/pid")" = $$ ]; then
+if cmp -s "${root}/.env" "${tmp}/env.before" && [ "$(lock_target)" = $$ ]; then
   ok "busy leaves .env and the lock alone"
 else
   bad "busy leaves .env and the lock alone"
 fi
 addon_in '{"interval": 600}' configure fixture
 expect_rc "configure while the lock is held exits 1" 1
-echo 999999 > "${lock}/pid"
+rm -f "$lock"
+ln -s 999999 "$lock"
+mkdir "$guard"
 addon enable fixture
-expect_rc "a lock whose process is gone is taken over" 0
-if [ ! -e "$lock" ]; then ok "enable releases the lock"; else bad "enable releases the lock"; fi
-if ls -d "${lock}".* > /dev/null 2>&1; then bad "takeover leaves no stale copy"; else ok "takeover leaves no stale copy"; fi
+expect_rc "a dead owner's lock is busy while another takeover holds the guard" 1
+if [ "$(lock_target)" = 999999 ] && [ -d "$guard" ]; then ok "a held guard leaves the lock and guard alone"; else bad "a held guard leaves the lock and guard alone"; fi
+touch -t 202001010000 "$guard"
+addon enable fixture
+expect_rc "a guard older than 10 seconds is cleared and the dead owner's lock taken over" 0
+if [ ! -e "$lock" ] && [ ! -L "$lock" ] && [ ! -e "$guard" ]; then ok "enable releases the lock and the guard"; else bad "enable releases the lock and the guard"; find "${root}/data/addons" -maxdepth 1 | sed 's/^/    /'; fi
 addon disable fixture
-mkdir "$lock"
-addon enable fixture
-expect_rc "a fresh lock with no pid file is busy" 1
-touch -t 202001010000 "$lock"
-addon enable fixture
-expect_rc "a lock with no pid file older than 10 seconds is taken over" 0
+
+# Two takeovers of the same dead owner's lock at once: one gets past it, the
+# other is busy.
+ln -s 999999 "$lock"
+DOCKER_UP_DELAY=1; export DOCKER_UP_DELAY
+"$BASH_UNDER_TEST" "${root}/scripts/addon.sh" enable fixture < /dev/null > "${tmp}/out/race1" 2>&1 &
+p1=$!
+"$BASH_UNDER_TEST" "${root}/scripts/addon.sh" enable fixture < /dev/null > "${tmp}/out/race2" 2>&1 &
+p2=$!
+rc1=0; wait "$p1" || rc1=$?
+rc2=0; wait "$p2" || rc2=$?
+unset DOCKER_UP_DELAY
+if { [ "$rc1" = 0 ] && [ "$rc2" = 1 ] && grep -q 'another add-on change is running' "${tmp}/out/race2"; } \
+  || { [ "$rc1" = 1 ] && [ "$rc2" = 0 ] && grep -q 'another add-on change is running' "${tmp}/out/race1"; }; then
+  ok "of two concurrent takeovers one runs and the other is busy"
+else
+  bad "of two concurrent takeovers one runs and the other is busy: exits ${rc1} and ${rc2}"; sed 's/^/    /' "${tmp}/out/race1" "${tmp}/out/race2"
+fi
+if [ ! -L "$lock" ] && [ ! -e "$guard" ]; then ok "concurrent takeovers leave no lock or guard"; else bad "concurrent takeovers leave no lock or guard"; fi
 addon disable fixture
 
 : > "$STUB_LOG"
@@ -370,6 +392,12 @@ else
 fi
 events_c "$(printf 'x\302\205y\033z')" > "$out" 2>&1 || true
 if [ "$(cat "$out")" = '"xyz"' ]; then ok "json_str drops C1 and ASCII controls"; else bad "json_str drops C1 and ASCII controls"; sed 's/^/    /' "$out"; fi
+events_c "$(printf 'a\377b\303(c\355\240\200d\303\251')" > "$out" 2>&1 || true
+if python3 -c 'import json, sys; t = json.loads(open(sys.argv[1], "rb").read().decode("utf-8")); sys.exit(0 if t == "a\ufffdb\ufffd(c\ufffd\ufffd\ufffdd\u00e9" else 1)' "$out" 2> /dev/null; then
+  ok "json_str replaces invalid UTF-8 bytes with U+FFFD"
+else
+  bad "json_str replaces invalid UTF-8 bytes with U+FFFD"; sed 's/^/    /' "$out"
+fi
 
 cli_host() { python3 "${REPO}/scripts/lib/addon_cli.py" --addons-dir "$ADDONS_DIR" --data-root "$tmp" "$@"; }
 out="${tmp}/out/pull-events"

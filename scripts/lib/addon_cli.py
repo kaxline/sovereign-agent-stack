@@ -231,7 +231,8 @@ LINE_SPLIT_RE = re.compile(r"\r\n|\r|\n")
 
 def clean_line(text: str) -> str:
     """The rule for every addon.sh output string. json_str in addon-events.sh
-    drops the same characters (category Cc: 0x00-0x1F, 0x7F, 0x80-0x9F) but
+    drops the same characters (category Cc: 0x00-0x1F, 0x7F, 0x80-0x9F) and
+    replaces invalid UTF-8 the same way (errors="replace" in cmd_log_tail), but
     cuts at 500 bytes, keeping UTF-8 sequences whole, where this cuts at 500
     characters."""
     text = text.replace("\t", " ")
