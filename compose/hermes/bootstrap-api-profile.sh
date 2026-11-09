@@ -1416,6 +1416,9 @@ register_addon_mcp_servers() {
     # shellcheck disable=SC2086
     register_mcp_server "$_ram_profile" "$_ram_name" "$_ram_title" \
       "$_ram_url" "$_ram_timeout" "$_ram_connect" $_ram_tools
+    # A profile cloned from default can carry another key at this URL, with
+    # its own (unfiltered) tool list.
+    drop_mcp_entries_for_url "$_ram_profile" "$_ram_name" "$_ram_url"
     if [ "$_ram_transport" = sse ]; then
       hermes_config_set "$_ram_profile" "mcp_servers.${_ram_name}.transport" "sse"
     fi
