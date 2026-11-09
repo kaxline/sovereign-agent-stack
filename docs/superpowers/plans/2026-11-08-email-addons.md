@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.11 standard library, POSIX sh, Docker Compose, GreenMail `greenmail/standalone:2.1.3` for tests.
 
-**Spec:** `docs/superpowers/specs/2026-11-08-email-addons-design.md`. **Depends on:** `docs/superpowers/plans/2026-11-08-addon-manifest-path.md`, merged to `main` in 482601d. Where this plan and the spec disagree about the add-on data layout, follow the code on `main` and `docs/extending.md` ("Add-ons: scripts/addon.sh"); plan 1's review changed a few details after the spec was written, listed under Global Constraints.
+**Spec:** `docs/superpowers/specs/2026-11-08-email-addons-design.md`. **Depends on:** `docs/superpowers/plans/2026-11-08-addon-manifest-path.md`, merged to `main` in 482601d, and `docs/superpowers/plans/2026-11-09-addon-lifecycle.md` (plan 3), which took this plan's former Task 5 (mount sources, gated-off services, volume ownership, the Linux user check) and moved add-on volumes to `data.volumes`. Where this plan and the spec disagree about the add-on data layout, follow the code on `main` and `docs/extending.md` ("Add-ons: scripts/addon.sh"); plan 1's review changed a few details after the spec was written, listed under Global Constraints.
 
 ## Global Constraints
 
@@ -188,46 +188,7 @@ git add scripts/lib/email_addon.py compose/email-imap scripts/test-email-addon.p
 git commit -m "Add the email-imap image and its config renderer"
 ```
 
-### Task 5: `addon.sh` prepares mount sources, stops gated-off services and owns its volumes
-
-Plan 1 left four gaps that the `email` add-on is the first to hit. This task closes them in the generic code, before any `email` service exists.
-
-**Files:**
-- Modify: `scripts/lib/addon_store.py` (new public `prepare`), `scripts/lib/addon_cli.py` (`plan-enable`), `scripts/addon.sh` (`enable`)
-- Modify: `scripts/test-addon-manifests.py` (volume ownership cross-check), `scripts/test-addon-store.py`, `scripts/test-addon-cli.sh`
-- Modify: `docs/extending.md` (the `enable` paragraph)
-
-**Interfaces:**
-- Consumes: plan 1's `addon_store._mkdir_addon`, `cmd_plan_enable`, the `name@gate` service list it prints, and `addon.sh enable`.
-- Produces:
-  - `addon_store.prepare(manifest: dict, data_root: Path) -> None` creates `config/`, `instances/` and `secrets/` under `addon_dir` at `0700`, without touching existing files. It is called only when some service declares `mounts`. `plan-enable` calls it after the missing-settings check. `_stored` and `_slugs` become public as `stored` and `slugs`, since `addon_cli` uses them.
-  - `plan-enable` prints a `stop` list beside `services`: the add-on's gated services whose gate flag ends at `0`. `addon.sh enable` runs `docker compose stop` on that list after `up`, so turning `drafts` off and calling `enable` stops `email-outbox` and `email-drafts-mcp`. A non-empty `stop` failing is a `die` (exit 1), like `up`.
-  - `addon.sh enable` refuses (exit 1, `error: HERMES_UID <n> is not your user id <m>; set HERMES_UID and HERMES_GID in .env`) when `uname -s` is `Linux`, some service declares `mounts`, and `HERMES_UID` from `.env` (default `1000`) differs from `id -u`. The same check applies to `HERMES_GID` against `id -g`.
-  - `test-addon-manifests.py`: each name in any `services.<key>.volumes` is mounted in `docker-compose.yml` only by that add-on's compose services. Otherwise `--purge` could remove a volume another service uses.
-
-- [ ] **Step 1: Write the failing tests.**
-  - `test-addon-store.py`: `prepare` on an empty data root creates the three directories at `0700`. A second call leaves an existing `secrets/x` file and its mode alone.
-  - `test-addon-cli.sh`: with a fixture whose service declares `mounts` and has no required settings, `enable` before any `configure` leaves `config/`, `instances/` and `secrets/` in place before the stubbed `docker compose up` runs. Check that the stub logs `up` and the directories exist at that moment by having the stub record `ls` of the data dir. After `configure fixture {"extra": false}` on the enabled fixture, `enable` logs `stop` with the gated service. `HERMES_UID=4242` in `.env`, with `uname` stubbed to print `Linux`, makes `enable` exit 1 with `error: HERMES_UID`.
-  - `test-addon-manifests.py`: a fixture compose snippet where a core service also mounts the add-on's volume is reported as a problem.
-- [ ] **Step 2: Run them and confirm they fail**
-
-Run: `python3 scripts/test-addon-store.py; bash scripts/test-addon-cli.sh; python3 scripts/test-addon-manifests.py`
-Expected: FAIL on the new checks only.
-
-- [ ] **Step 3: Implement** the four changes above and update the `enable` paragraph in `docs/extending.md`.
-- [ ] **Step 4: Run them and confirm they pass**
-
-Run: `make addon-test && sh scripts/test-no-host-python.sh`
-Expected: exit 0.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add scripts/lib/addon_store.py scripts/lib/addon_cli.py scripts/addon.sh scripts/test-addon-manifests.py scripts/test-addon-store.py scripts/test-addon-cli.sh docs/extending.md
-git commit -m "Prepare add-on mount sources, stop gated-off services and check volume ownership"
-```
-
-### Task 6: `email` compose services, networks and manifest
+### Task 5: `email` compose services, networks and manifest
 
 **Files:**
 - Modify: `docker-compose.yml`: the four services, networks `email` (`internal: true`) and `email-egress` (`{}`), volumes `email_index` and `email_drafts`, `hermes` joins `email`, and `EMAIL_ENABLED`/`EMAIL_DRAFTS_ENABLED` in both `hermes-*-bootstrap` environments next to `GPTR_MCP_ENABLED`
@@ -251,10 +212,11 @@ git commit -m "Prepare add-on mount sources, stop gated-off services and check v
   - `builtin`: `{flag: EMAIL_ENABLED, profile: email, seed: false}`
   - `gates`: `[{flag: EMAIL_DRAFTS_ENABLED, profile: email-drafts, seed: false}]`
   - `services`:
-    - `indexer`: `{compose: email-indexer, mounts: {secrets: ro, config: ro, instances: ro}, volumes: ["email_index"]}`
+    - `indexer`: `{compose: email-indexer, mounts: {secrets: ro, config: ro, instances: ro}}`
     - `mcp`: `{compose: email-mcp, port: 8000}`
     - `drafts-mcp`: `{compose: email-drafts-mcp, port: 8000, when}`
-    - `outbox`: `{compose: email-outbox, mounts: {secrets: ro, config: ro, instances: ro}, volumes: ["email_drafts"], when}`. The drafts queue lives in this volume, so `disable` keeps it and `disable --purge` removes it with the index.
+    - `outbox`: `{compose: email-outbox, mounts: {secrets: ro, config: ro, instances: ro}, when}`.
+    - `data: {volumes: ["email_index", "email_drafts"]}`. The drafts queue lives in `email_drafts`, so `disable` keeps it and `disable --purge` removes it with the index.
   - `mcp`: entries `email` (title `Email (read-only)`) and `email-drafts` (title `Email drafts (no sending)`, `when` gate). Tools, pins and writeTools as in `email-local`, profiles `{default: rw, browser: rw}`, no `env` block.
   - `settings`:
     - `since`: date, required
@@ -270,7 +232,7 @@ git commit -m "Prepare add-on mount sources, stop gated-off services and check v
 
 - [ ] **Step 1: Write the failing tests.**
   - `scripts/test-email-registration.sh`: modelled on Task 3's rewritten tests. Off drops both URLs. On registers `email` on default and browser. `EMAIL_DRAFTS_ENABLED=1` adds `email-drafts`. api-server only ever drops.
-  - `test-addon-manifests.py` (already generic) must pass for `addons/email`, including the plan 1 checks that mounts match compose and that services holding secrets aren't MCP services, and Task 5's volume ownership check.
+  - `test-addon-manifests.py` (already generic) must pass for `addons/email`, including the plan 1 checks that mounts match compose and that services holding secrets aren't MCP services, and plan 3's volume ownership check.
 - [ ] **Step 2: Run them and confirm they fail**
 
 Run: `sh scripts/test-email-registration.sh; python3 scripts/test-addon-manifests.py`
@@ -289,7 +251,7 @@ git add docker-compose.yml addons/email scripts/test-compose-env-allowlist.py .e
 git commit -m "Add the email add-on: IMAP indexer, MCP, drafts and outbox services"
 ```
 
-### Task 7: `make email-test`, end to end on GreenMail
+### Task 6: `make email-test`, end to end on GreenMail
 
 **Files:**
 - Create: `scripts/test-email-e2e.py`
@@ -297,7 +259,7 @@ git commit -m "Add the email add-on: IMAP indexer, MCP, drafts and outbox servic
 - Modify: `Makefile` (`email-test`, added to `.PHONY`)
 
 **Interfaces:**
-- Consumes: `scripts/addon.sh` (plan 1 and Task 5), Tasks 4 and 6, and the GreenMail helpers.
+- Consumes: `scripts/addon.sh` (plans 1 and 3), Tasks 4 and 5, and the GreenMail helpers.
 - Produces: `make email-test`. It runs a throwaway compose project (`COMPOSE_PROJECT_NAME=email-e2e`, `ASSISTANT_DATA_ROOT` set to a temp dir, a temp `.env` copied from `.env.example`). GreenMail runs as container `greenmail` on that project's `email-egress` network. The test skips with a message when Docker isn't running, and always runs `docker compose down -v` for its project.
 
 - [ ] **Step 1: Write the test** `scripts/test-email-e2e.py`:
@@ -305,7 +267,7 @@ git commit -m "Add the email add-on: IMAP indexer, MCP, drafts and outbox servic
   - On the fresh data root, `addon.sh enable email` exits 3, and its error names `since` and `instances:accounts`.
   - Configure two instances (`work`, `home`) through `addon.sh configure email --instance …` with `host: greenmail`, `port: 3143`, `security: plain`, the GreenMail test passwords on stdin, and `mailboxes`.
   - `addon.sh run email mailboxes --instance work` lists `INBOX` with a count.
-  - Set `since` and `drafts: true`, `addon.sh enable email` (with `make hermes-reload` stubbed through `PATH`), and wait for the first pass in `docker compose logs email-indexer`.
+  - Set `since` and `drafts: true`, `addon.sh enable email` (after plan 3 `addon.sh` runs the two bootstraps with `docker compose run` instead of `make`, so the `email-e2e` compose file defines no-op `hermes-api-bootstrap` and `hermes-browser-bootstrap` services), and wait for the first pass in `docker compose logs email-indexer`.
   - Copy the index out of `email_index` with `docker compose cp`. Its rows match what `test-mail-imap.py` builds with the host IMAP source for the same accounts, by the same `rows()` comparison.
   - `server_state()` is unchanged after indexing.
   - Write a draft request and a reply request in the queue format `mail-drafts-mcp` writes (use `compose/mail-drafts-mcp/drafts.py` to build them), and `docker compose cp` them into `email-drafts-mcp:/data/mail-drafts`. Within 60 s both appear in each account's Drafts on GreenMail, and nothing appears in Sent.
@@ -330,7 +292,7 @@ git add scripts/test-email-e2e.py scripts/test-mail-imap.py Makefile
 git commit -m "Test the email add-on end to end against GreenMail"
 ```
 
-### Task 8: Docs, changelog and the real-account handoff
+### Task 7: Docs, changelog and the real-account handoff
 
 **Files:**
 - Modify: `docs/email.md`
@@ -345,8 +307,7 @@ git commit -m "Test the email add-on end to end against GreenMail"
 - [ ] **Step 2: CHANGELOG.** Under Unreleased:
   - `email-local` is a manifest only, with no install change.
   - New `email` add-on: services, the `email` and `email-egress` networks (hermes joins `email`), the `email_index` and `email_drafts` volumes, `EMAIL_ENABLED` and `EMAIL_DRAFTS_ENABLED`.
-  - `addon.sh enable` (Task 5) now creates the add-on's mount directories, stops gated services whose gate is off, and, on Linux, refuses when `HERMES_UID`/`HERMES_GID` differ from the user running it.
-  - "Not tested on a real account yet."
+    - "Not tested on a real account yet."
 - [ ] **Step 3: Write the real-account steps** in `docs/email.md` under "First real run" for `email`, for Keith to run himself: configure one account through `addon.sh` with the password on stdin (`read -rs`, then pipe a JSON payload built with `python3 -c`), `addon.sh run email mailboxes`, enable, then check `docker compose logs email-indexer` for counts. Ask only for counts and pass/fail.
 - [ ] **Step 4: Run the full suite once**
 
