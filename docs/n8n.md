@@ -23,7 +23,7 @@ n8n is a built-in add-on (`addons/n8n/addon.json`), so `scripts/addon.sh` manage
 
 `enable` sets `AUTOMATION_ENABLED=1`, runs `n8n-import` to completion, then starts `n8n` and `gpt-researcher` and waits for them to be healthy. `gpt-researcher` is the REST service the Deep Research workflow calls, so it belongs to this add-on. `addon.sh list --json` carries the manifest's `postInstallMessage` (open `http://localhost:5678` and create the owner account) for a caller to show after install.
 
-`disable` sets the flag to 0 and stops `n8n`, `n8n-import` and `gpt-researcher`. It does not touch `gptr-mcp`, which belongs to the [GPT Researcher](gpt-researcher.md) add-on and keeps running. `n8n_storage` and `gptr_outputs` are kept, so a later `enable` finds the same workflows, credentials and owner account.
+`disable` sets the flag to 0 and stops `n8n`, `n8n-import` and `gpt-researcher`. It does not touch `gptr-mcp`, which belongs to the [GPT Researcher](gpt-researcher.md) add-on and keeps running. With `GPTR_MCP_ENABLED=0` it stays up only until it is stopped or recreated, because once `automation` is off no active profile starts it; `scripts/addon.sh enable gptr` keeps it. `n8n_storage` and `gptr_outputs` are kept, so a later `enable` finds the same workflows, credentials and owner account.
 
 `remove n8n --delete-data` refuses while n8n is enabled. It removes the three containers, then deletes the `n8n_storage` and `gptr_outputs` volumes and `data/addons/n8n`. The SQLite database goes with `n8n_storage`: every workflow, stored credential and execution record, and the owner account. The research reports in `gptr_outputs` go too. `disable n8n --purge` does the same in one step. There is no undo.
 

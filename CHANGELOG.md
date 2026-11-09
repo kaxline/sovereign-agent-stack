@@ -125,7 +125,9 @@ the stack under another app.
   `enable` runs `n8n-import`, then starts `n8n` and `gpt-researcher`, and
   `disable` stops those three. `gpt-researcher` belongs to n8n.
   `disable n8n` leaves `gptr-mcp` running, since the GPT Researcher add-on
-  owns it. `remove n8n --delete-data` (or `disable n8n --purge`) deletes the
+  owns it. With `GPTR_MCP_ENABLED=0` it stays up only until it is
+  stopped or recreated, since `automation` was its last active profile;
+  `scripts/addon.sh enable gptr` keeps it. `remove n8n --delete-data` (or `disable n8n --purge`) deletes the
   `n8n_storage` and `gptr_outputs` volumes, so the SQLite database with its
   workflows, credentials and execution history is gone. Back up
   `N8N_ENCRYPTION_KEY` with the volume. `n8n` appears in `addon.sh list`;
