@@ -20,12 +20,15 @@ twice: `actual-mcp-rw` with `--sse --enable-write` and `actual-mcp-ro` with `--s
 - `Dockerfile`: the release stage creates `/data` owned by `node` and switches to `USER node`.
   Upstream runs as root. `/data` is the budget cache (`ACTUAL_DATA_DIR`).
 - `src/integrations/actual/connection.ts`: `syncIfStale()` no longer answers from the loaded copy
-  when a sync fails because the session ended. When `api.sync()` throws with `code`
-  `token-expired`, `token-not-found`, `unauthorized`, `invalid-password`,
-  `file-access-not-allowed` or `budget-not-found`, it shuts the API down, marks the connection
-  failed and fails the call with `Actual session ended (<code>): reconnect with make budget-add
-  FORCE=1 or make budget-init`; the next call re-runs init. Other sync errors, network ones
-  included, are logged and the call continues with local data, as upstream does. Tests in
+  when a sync shows the copy can't be kept in step with the server. When `api.sync()` throws
+  with `code` `token-expired`, `token-not-found`, `unauthorized` or `invalid-password` (session
+  ended), `file-access-not-allowed` (access removed), `file-not-found` (budget deleted) or
+  `file-has-reset`, `file-key-mismatch`, `file-old-version` (budget changed on the server), it
+  shuts the API down, marks the connection failed and fails the call with a message for that
+  group; the next call re-runs init. An init that fails with one of those codes, or with
+  `budget-not-found`, gets the same message. The reconnect advice in the messages comes from
+  `ACTUAL_RECONNECT_HINT`, defaulting to the single-budget commands. Other sync errors, network
+  ones included, are logged and the call continues with local data, as upstream does. Tests in
   `connection.test.ts` and `actual-api.test.ts`. Upstream logs and continues on every sync error,
   so after a password change or a deleted session, writes were reported as done and stayed in
   the local cache.

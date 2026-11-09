@@ -36,16 +36,20 @@ as before.
   password changed or the MCP server's session ended (deleted, or the user
   disabled), `actual-mcp-rw` and `actual-mcp-ro` kept answering from their
   loaded copy: reads were stale, and writes were reported as saved but never
-  reached the server. Now the sync before each call notices the ended
-  session and the call fails with `Actual session ended (<reason>): reconnect
-  with make budget-add FORCE=1 or make budget-init`, and nothing is written
-  locally; later calls fail with `Authentication failed: ...` until the
-  credential is replaced. Revoked access to the budget fails the same way.
-  An unreachable server still answers from the loaded copy, as before.
-  Verified against a throwaway `actual-server` 26.11.0 (deleted session and
-  password change), not on a live stack. A write in the few seconds between
-  a good sync and the background push can still miss the server if the
-  session ends in that window; it stays in the local cache.
+  reached the server. Now the sync before each call notices this, the call
+  fails, and nothing is written locally. The next call signs in again, so a
+  password install whose session merely expired recovers on its own; it keeps
+  failing only when the password changed, with `Actual session ended
+  (<reason>). The next call signs in again; if it keeps failing, reconnect it
+  with make budget-remove and make budget-init (local server) or make
+  budget-add URL=<server> FORCE=1 (remote server).` Removed access, a budget
+  deleted on the server, and a budget reset or re-keyed on the server fail
+  the same way, each with its own message. An unreachable server still
+  answers from the loaded copy, as before. Verified against a throwaway
+  `actual-server` 26.11.0 (deleted session and password change), not on a
+  live stack. A write in the few seconds between a good sync and the
+  background push can still miss the server if the session ends in that
+  window; it stays in the local cache.
 
 ## v0.3.12 — 2026-11-09
 
