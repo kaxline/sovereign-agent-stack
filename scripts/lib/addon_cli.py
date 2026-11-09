@@ -51,16 +51,17 @@ runs in the Hermes image through stack_python, so the host needs no python3.
         Records {"init": {"version": <manifest version>, "at": <UTC time>}}
         in data/addons/SID/state.json.
     hook-events STEP
-        Reads a hook's stdout. JSON objects with a string `phase` other than
-        `done` and `error` are printed with "step": STEP; every other line
-        goes to stderr.
+        Reads a hook's stdout. JSON objects whose `phase` is `setup` or
+        `pull` are printed with "step": STEP and every string in them through
+        clean_line; every other line goes to stderr.
     hook-result SID EXIT
         Reads a hook's whole stdout on stdin (not a file: the host's temp
-        directory isn't mounted where this runs) and prints four lines: an
+        directory isn't mounted where this runs) and prints five lines: an
         error code (empty on success), its message, the `account` of the
-        `done` line (empty when it has none) and the names in its `mcp` list,
+        `done` line (empty when it has none), the names in its `mcp` list,
         comma-separated (names that aren't lowercase letters, digits, _ and -
-        are left out). A hook's `error` name is kept
+        are left out), and its `message` through clean_line (empty when it
+        has none or the hook failed). A hook's `error` name is kept
         when it is a shared name or in instances.errors; any other name
         becomes command_failed with the name in the message. A non-zero
         EXIT without an `error` line is command_failed.
@@ -437,11 +438,28 @@ def _json_object(line: str):
     return obj if isinstance(obj, dict) else None
 
 
+# The hook line phases hook-events relays inside the step. done and error are
+# read from the raw output by hook-result.
+HOOK_RELAY_PHASES = ("setup", "pull")
+
+
+def _clean_strings(value):
+    """VALUE with every string in it, keys included, through clean_line."""
+    if isinstance(value, str):
+        return clean_line(value)
+    if isinstance(value, dict):
+        return {clean_line(k): _clean_strings(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_clean_strings(v) for v in value]
+    return value
+
+
 def cmd_hook_events(args) -> None:
     for line in sys.stdin:
         obj = _json_object(line)
         phase = obj.get("phase") if obj is not None else None
-        if isinstance(phase, str) and phase not in ("done", "error"):
+        if phase in HOOK_RELAY_PHASES:
+            obj = _clean_strings(obj)
             obj["step"] = args.step
             print(json.dumps(obj, separators=(",", ":")), flush=True)
         else:
@@ -474,7 +492,7 @@ def cmd_hook_result(args) -> None:
             done = obj
         elif obj is not None and obj.get("phase") == "error":
             error = obj
-    code = message = account = mcp = ""
+    code = message = account = mcp = note = ""
     if error is not None:
         code, message = hook_error(manifest, error.get("error"), error.get("message"))
     elif args.exit != 0:
@@ -483,7 +501,9 @@ def cmd_hook_result(args) -> None:
         account = clean_line(done["account"])
     if code == "" and done is not None and isinstance(done.get("mcp"), list):
         mcp = ",".join(n for n in done["mcp"] if isinstance(n, str) and MCP_NAME_RE.match(n))
-    for item in (code, message, account, mcp):
+    if code == "" and done is not None and isinstance(done.get("message"), str):
+        note = clean_line(done["message"])
+    for item in (code, message, account, mcp, note):
         print(item.replace("\n", " "))
 
 

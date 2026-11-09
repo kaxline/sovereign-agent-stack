@@ -19,6 +19,7 @@
 #                    sets it to its rollback while enable has flags to restore.
 #   EV_ROLLED_BACK   set to 1 by that function when it restored .env; ev_fail
 #                    then adds "rolledBack":true.
+#   EV_ERRORED       1 once an error line (or, in human mode, `error:`) is out.
 #   EV_EXIT          when set, the exit status ev_fail uses in place of the
 #                    code's own (addon.sh's own exists and not_found exit 2).
 #   EV_REDACT        a JSON object file under the data root (connect's staged
@@ -41,6 +42,7 @@ EV_CHILD=""
 EV_ON_FAIL=""
 EV_ROLLED_BACK=0
 EV_EXIT=""
+EV_ERRORED=0
 EV_REDACT=""
 EV_REDACT_SID=""
 
@@ -180,13 +182,15 @@ ev_step() {
   printf '{"phase":"setup","step":%s,"status":%s%s}\n' "$(json_str "$1")" "$(json_str "$2")" "$target" >&3
 }
 
-# ev_done ID ACTION RESTART_CSV MCP_CSV [ACCOUNT]: the done line.
+# ev_done ID ACTION RESTART_CSV MCP_CSV [ACCOUNT] [MESSAGE]: the done line.
+# An empty ACCOUNT or MESSAGE is left out.
 ev_done() {
   [[ "$EV_JSON" == 1 ]] || return 0
-  local account=""
-  [[ -n "${5:-}" ]] && account=",\"account\":$(json_str "$5")"
+  local extra=""
+  [[ -n "${5:-}" ]] && extra=",\"account\":$(json_str "$5")"
+  [[ -n "${6:-}" ]] && extra="${extra},\"message\":$(json_str "$6")"
   printf '{"phase":"done","id":%s,"action":%s,"restart":%s,"mcp":%s%s}\n' \
-    "$(json_str "$1")" "$(json_str "$2")" "$(ev_json_array "$3")" "$(ev_json_array "$4")" "$account" >&3
+    "$(json_str "$1")" "$(json_str "$2")" "$(ev_json_array "$3")" "$(ev_json_array "$4")" "$extra" >&3
 }
 
 # ev_exit_status CODE: the exit status for an error code. Codes other than
@@ -217,15 +221,25 @@ ev_log_tail() {
   esac
 }
 
-# ev_fail CODE STEP MESSAGE LOGFILE: runs EV_ON_FAIL, prints the error line
-# (JSON mode) and `error: MESSAGE` on stderr, and exits with CODE's status.
-# An empty STEP is null in the error line (a failure before any step, such as
-# busy or a usage error). LOGFILE may be empty. A non-empty EV_TARGET (the
-# compose service that failed) adds "target" to the error line.
+# ev_fail CODE STEP MESSAGE LOGFILE: ev_error CODE STEP MESSAGE LOGFILE, then
+# exits with CODE's status.
 ev_fail() {
+  ev_error "$@"
+  exit "$(ev_exit_status "$1")"
+}
+
+# ev_error CODE STEP MESSAGE LOGFILE: runs EV_ON_FAIL, prints the error line
+# (JSON mode) and `error: MESSAGE` on stderr, and sets EV_ERRORED to 1. An
+# empty STEP is null in the error line (a failure before any step, such as
+# busy or a usage error). LOGFILE may be empty. A non-empty EV_TARGET (the
+# compose service that failed) adds "target" to the error line. addon.sh's
+# EXIT trap calls it directly, as exit there would skip the rest of the trap.
+ev_error() {
   local code="$1" step="$2" message="$3" log="${4:-}" hook="$EV_ON_FAIL" tail="[]" stepjson=null extra=""
   trap '' INT TERM
   EV_ON_FAIL=""
+  # shellcheck disable=SC2034 # read by addon.sh's EXIT trap
+  EV_ERRORED=1
   [[ -n "$hook" ]] && "$hook"
   if [[ "$EV_JSON" == 1 ]]; then
     [[ -n "$log" && -s "$log" ]] && tail="$(ev_log_tail "$log")"
@@ -236,7 +250,6 @@ ev_fail() {
       "$(json_str "$code")" "$stepjson" "$(json_str "$message")" "$tail" "$extra" >&3 || true
   fi
   printf 'error: %s\n' "$message" >&4 || true
-  exit "$(ev_exit_status "$code")"
 }
 
 # ev_kill_tree PID: stops PID and every process under it, by PID. The whole

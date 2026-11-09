@@ -35,6 +35,10 @@ the stack under another app.
 3. With Bitwarden's `twenty/<slug>/key-ro` and `key-rw` items, run
    `make secrets-sync` after the migration; the items now update the files in
    `data/addons/twenty/secrets/`, not the old workspace files.
+`addon.sh` calls `scripts/vault.sh reload-plugins`, which comes from the
+Bitwarden always-installed change (`fix/bwbroker-always-installed`). Release
+only with that change in. Before tagging, run `scripts/addon.sh enable gptr
+--json` and `disable gptr --json` on a live stack.
 
 ### Changes
 
@@ -50,9 +54,7 @@ the stack under another app.
 - **Twenty can be enabled before any workspace exists.** The manifest's
   `instances` block sets `optional: true`, so `addon.sh enable twenty` no
   longer stops with `missing_settings` / `instances:workspace`. Its init hook
-  still migrates leftover `compose/twenty/workspaces/*.env` files. The schema
-  in `addon.sh list` carries `instances.optional`, which Boundary can use to
-  stop requiring a workspace before the enable step.
+  still migrates leftover `compose/twenty/workspaces/*.env` files.
 - **Twenty's hook error names** for Boundary: `crm.sh connect` ends with
   `local_mismatch`, `local_off`, `missing_key` or `bad_value` (listed in
   `instances.errors`), or with the shared names `bad_slug`, `login_refused`,
@@ -103,6 +105,47 @@ the stack under another app.
   settings schema for building a settings form. See
   [docs/extending.md](docs/extending.md#add-ons-scriptsaddonsh). Field
   names may change between patch releases while the stack is in 0.3.x.
+- **`scripts/addon.sh` lifecycle** (experimental). New subcommands
+  `connect <id> --instance <slug>`, `disconnect` and `remove <id>
+  --delete-data`, plus `disable --purge`, `enable --reinit` and `--json` on
+  `enable`, `disable`, `connect`, `disconnect` and `remove`. With `--json`,
+  stdout is one JSON object per line (`pull`, `setup`, then one `done` or
+  `error`); `list --json [--sizes]` adds per-service image, memory in bytes
+  and download size. A lock (`data/addons/.lock`) makes a second change fail
+  with `busy`, and a failed `enable` restores the flags. `remove` keeps
+  paths outside `./data` and `ASSISTANT_DATA_ROOT`, stack data and paths
+  behind a symlink, and reports each as `kept`. `disable --purge` does the
+  same work as `remove --delete-data` after disabling: it removes the
+  containers, the `data.volumes` volumes and the `data.paths` directories,
+  with the same `kept` rules. A `--purge` failure in step `delete` is
+  reported as `compose_failed` (exit 1) when `docker compose rm` or `docker
+  volume rm` fails, and as `command_failed` (exit 4) when deleting a path
+  fails. Every
+  `--json` run ends with exactly one `done` or `error` line, including an
+  invalid data root (`command_failed`, exit 1) and an unexpected exit
+  (`command_failed`, exit 4, after the rollback). A hook's relayed lines are
+  limited to `setup` and `pull`. The `init` hook's `mcp` names join
+  `enable`'s `done.mcp`, and a hook's `done` `message` (from `init`,
+  `connect` or `disconnect`) is copied to the run's `done` line. A locked run deletes any
+  `data/addons/.staging.*` file a killed `connect` left. `addon.sh` does not
+  wait for MCP servers: Boundary checks the names in the `done` line's `mcp`
+  in `mcp.servers.status`. See
+  [docs/extending.md](docs/extending.md#add-ons-scriptsaddonsh).
+- **Add-on lifecycle manifest fields** (experimental): `services.<name>.oneshot`,
+  `hooks`, `instances.connect`, `instances.disconnect`, `instances.errors`,
+  `instances.optional`, `transient` on a secret instance setting (the value
+  goes to the connect hook and is never stored), `onToggle`, `data` and
+  `backup`. `services.<name>.volumes` becomes `data.volumes`; both are
+  accepted in this patch and the old form is refused from the next.
+- **Add-on reload.** `addon.sh` reloads Hermes by running both bootstraps
+  with `HERMES_BOOTSTRAP_FORCE=1` and then `scripts/vault.sh reload-plugins`.
+  It no longer recreates `hermes`, so plugin changes such as Bitwarden's tools
+  reach new sessions only. This needs the `reload-plugins` command from
+  `fix/bwbroker-always-installed`.
+- **Bitwarden's `backup` and `restore` hooks** moved from plain strings to
+  the `script` form (`{"script": ["scripts/vault.sh", "backup"]}`).
+- Boundary can move Actual Budget onto `addon.sh` once its manifest has
+  `hooks.init`, `instances.connect` and `data`.
 
 ### Fixes
 

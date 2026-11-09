@@ -41,10 +41,12 @@ printf 'COMPOSE_PROJECT_NAME=fixtureproj\n' >> "${root}/.env"
 # `compose --profile * config --format json` prints scripts/fixtures/compose-config.json;
 # DOCKER_FAIL_CONFIG=1 makes it exit 1. `manifest inspect --verbose` prints
 # scripts/fixtures/manifest-inspect-verbose.json. `version --format` prints STUB_PLATFORM
-# (default linux/arm64).
+# (default linux/arm64). With STUB_ENV_LOG set, each call also appends one line there:
+# its argv, then COMPOSE_PROJECT_NAME and COMPOSE_PROFILES as the stub sees them.
 cat > "${tmp}/bin/docker" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >> "${STUB_LOG}"
+[ -n "${STUB_ENV_LOG:-}" ] && printf '%s | COMPOSE_PROJECT_NAME=%s COMPOSE_PROFILES=%s\n' "$*" "${COMPOSE_PROJECT_NAME-<unset>}" "${COMPOSE_PROFILES-<unset>}" >> "${STUB_ENV_LOG}"
 if [ "$1 $2 $3 $4" = "compose up --no-deps --exit-code-from" ] && [ "${DOCKER_FAIL_ONESHOT:-0}" = 1 ]; then
   echo "seed failed: no such table"
   exit 1
@@ -335,7 +337,7 @@ else
   bad "list --sizes adds downloadSize for the server's platform"; cat "$out" "$err"
 fi
 if [ "$(grep -c '^manifest inspect --verbose busybox:1.36$' "$STUB_LOG")" = 1 ]; then ok "list --sizes inspects each distinct image once"; else bad "list --sizes inspects each distinct image once"; cat "$STUB_LOG"; fi
-if ls "${root}/data/addons/" | grep -q '^\.sizes\.'; then bad "list --sizes removes its scratch directory"; else ok "list --sizes removes its scratch directory"; fi
+if [ -n "$(find "${root}/data/addons" -maxdepth 1 -name '.sizes.*')" ]; then bad "list --sizes removes its scratch directory"; else ok "list --sizes removes its scratch directory"; fi
 STUB_PLATFORM=linux/mips64 addon_json list --json --sizes
 expect_rc "list --sizes on a platform the manifest lacks" 0
 if python3 -c "import json,sys; ${svc_expr}sys.exit(0 if all('downloadSize' not in v for v in s.values()) else 1)" "$out"; then
@@ -1316,6 +1318,105 @@ addon_in '{"extra": true}' configure fixture
 : > "$STUB_LOG"
 addon enable fixture
 if logged "compose stop"; then bad "enable stops nothing when the gate is on"; cat "$STUB_LOG"; else ok "enable stops nothing when the gate is on"; fi
+
+# The compose project and profiles reach every docker call as the caller set
+# them. sync-profiles.sh rewrites COMPOSE_PROFILES in .env, not in the caller's
+# environment, so the exported value stays. list --json alone adds --profile '*'.
+export STUB_ENV_LOG="${tmp}/env.log"
+: > "$STUB_ENV_LOG"
+: > "$STUB_LOG"
+export COMPOSE_PROJECT_NAME=callerproj COMPOSE_PROFILES=core,fixture
+addon_json enable fixture --json
+expect_rc "pass-through: enable" 0
+addon_json_in '{"host":"h","password":"pw-value"}' connect fixture --instance passthru --json
+expect_rc "pass-through: connect" 0
+addon_json disconnect fixture --instance passthru --json
+expect_rc "pass-through: disconnect" 0
+addon_json disable fixture --purge --json
+expect_rc "pass-through: disable --purge" 0
+addon_json list --json
+expect_rc "pass-through: list" 0
+unset COMPOSE_PROJECT_NAME COMPOSE_PROFILES
+unset STUB_ENV_LOG
+want_env=' | COMPOSE_PROJECT_NAME=callerproj COMPOSE_PROFILES=core,fixture'
+bad_env="$(grep -v -F -- "$want_env" "${tmp}/env.log" || true)"
+if [ -z "$bad_env" ] && [ -s "${tmp}/env.log" ]; then ok "every docker call sees the caller's COMPOSE_PROJECT_NAME and COMPOSE_PROFILES"; else bad "every docker call sees the caller's COMPOSE_PROJECT_NAME and COMPOSE_PROFILES"; printf '%s\n' "$bad_env"; fi
+for want in "compose run --rm -e HERMES_BOOTSTRAP_FORCE=1 hermes-api-bootstrap" "compose run --rm --no-deps -e HERMES_BOOTSTRAP_FORCE=1 hermes-browser-bootstrap"; do
+  if grep -qxF -- "${want}${want_env}" "${tmp}/env.log"; then ok "pass-through: ${want##* }"; else bad "pass-through: ${want##* }"; fi
+done
+if grep -qxF -- "compose --profile * config --format json${want_env}" "${tmp}/env.log"; then ok "list runs config with --profile '*' and the same environment"; else bad "list runs config with --profile '*' and the same environment"; fi
+if grep -qxF -- "volume rm callerproj_fixture_cache${want_env}" "${tmp}/env.log"; then ok "volume rm uses the caller's project name"; else bad "volume rm uses the caller's project name"; cat "${tmp}/env.log"; fi
+
+# Every --json run ends with one error line, even before ev_init's usual
+# failures. An invalid data root is command_failed and keeps exit 1.
+set_env ASSISTANT_DATA_ROOT "${root}/data/hermes"
+addon_json enable fixture --json
+expect_rc "an invalid data root exits 1" 1
+r=0; json_ok "$out" error 'len(lines) == 1 and last["error"] == "command_failed" and last["step"] is None and "data/hermes" in last["message"]' || r=1
+check "an invalid data root under --json is one command_failed error line" "$r"
+if grep -q '^error: ASSISTANT_DATA_ROOT must not be ./data/hermes' "$err"; then ok "an invalid data root names the problem on stderr"; else bad "an invalid data root names the problem on stderr"; sed 's/^/    /' "$err"; fi
+addon list --json
+expect_rc "list with an invalid data root still exits 1" 1
+unset_env ASSISTANT_DATA_ROOT
+
+# An unexpected exit (set -e) while enable's rollback is armed rolls back and
+# prints a command_failed error line. The mktemp stub fails the hook's raw log.
+cat > "${tmp}/bin/mktemp" <<'MKTEMP_EOF'
+#!/bin/sh
+if [ -n "${MKTEMP_FAIL:-}" ]; then
+  case "$*" in *"/${MKTEMP_FAIL}."*) exit 1 ;; esac
+fi
+exec /usr/bin/mktemp "$@"
+MKTEMP_EOF
+chmod +x "${tmp}/bin/mktemp"
+addon_in '{"token":"tok3n-value","interval":600}' configure fixture
+addon_in '{"host":"h","password":"s3cr3t-value"}' configure fixture --instance work
+addon disable fixture
+cp "${root}/.env" "${tmp}/env.before"
+export MKTEMP_FAIL=hook
+addon_json enable fixture --reinit --json
+expect_rc "an unexpected exit during enable exits 4" 4
+r=0; json_ok "$out" error 'last["error"] == "command_failed" and last.get("rolledBack") is True and [l["phase"] for l in lines].count("error") == 1' || r=1
+check "an unexpected exit during enable is one command_failed error line with rolledBack" "$r"
+if cmp -s "${root}/.env" "${tmp}/env.before"; then ok "an unexpected exit during enable restores .env"; else bad "an unexpected exit during enable restores .env"; diff "${tmp}/env.before" "${root}/.env" | sed 's/^/    /'; fi
+if [ ! -e "${root}/data/addons/.lock" ]; then ok "an unexpected exit releases the lock"; else bad "an unexpected exit releases the lock"; fi
+addon enable fixture --reinit
+expect_rc "an unexpected exit during enable without --json exits 4" 4
+if grep -q '^error: ' "$out" && ! grep -q '^{' "$out"; then ok "without --json the unexpected exit prints error: and no JSON"; else bad "without --json the unexpected exit prints error: and no JSON"; sed 's/^/    /' "$out"; fi
+unset MKTEMP_FAIL
+rm -f "${tmp}/bin/mktemp"
+
+# A staging file a killed connect left behind is removed by the next locked run.
+mkdir -p "${root}/data/addons"
+printf '{"password":"left-over"}' > "${root}/data/addons/.staging.Killed1"
+addon_json disconnect hooked --instance nobody --json
+expect_rc "a locked run with a left-over staging file" 2
+no_staging "a locked run (left-over staging file)"
+
+# A hook's done line: init's mcp names join enable's (each once, in order),
+# and a string message from init, connect or disconnect reaches the done line,
+# cleaned and redacted.
+# shellcheck disable=SC2089,SC2090 # literal JSON text the fixture hook prints
+export FIXTURE_DONE_EXTRA=',"mcp":["hooked-a","hooked-b","hooked-a"],"message":"created\tbudget\u001b[0m"'
+addon_json enable hooked --reinit --json
+unset FIXTURE_DONE_EXTRA
+expect_rc "enable with an init hook reporting mcp and message" 0
+r=0; json_ok "$out" "done" 'last["mcp"] == ["hooked-a","hooked-b"] and last["message"] == "created budget[0m" and last["account"] == "main"' || r=1
+check "enable's done line carries the init hook's mcp names once each and its cleaned message" "$r"
+# shellcheck disable=SC2089,SC2090 # literal JSON text the fixture hook prints
+export FIXTURE_DONE_EXTRA=',"message":"signed in with s3cr3t-value"'
+addon_json_in '{"host":"good.example.com","password":"s3cr3t-value"}' connect hooked --instance work --json
+unset FIXTURE_DONE_EXTRA
+expect_rc "connect with a hook message" 0
+r=0; json_ok "$out" "done" 'last["message"] == "signed in with [redacted]" and last["mcp"] == ["fixture-work"]' || r=1
+check "connect's done line carries the hook's message, redacted" "$r"
+# shellcheck disable=SC2089,SC2090 # literal JSON text the fixture hook prints
+export FIXTURE_DONE_EXTRA=',"message":"signed out"'
+addon_json disconnect hooked --instance work --json
+unset FIXTURE_DONE_EXTRA
+expect_rc "disconnect with a hook message" 0
+r=0; json_ok "$out" "done" 'last == {"phase":"done","id":"hooked","action":"disconnect","restart":[],"mcp":[],"message":"signed out"}' || r=1
+check "disconnect's done line carries the hook's message" "$r"
 
 if [ "$fail" = 0 ]; then
   echo "all addon.sh checks passed"
