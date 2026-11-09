@@ -7,6 +7,10 @@ image's python3, mounted at /bootstrap/addon_manifest.py.
     addon_manifest.py validate <addons-dir>
         Check every manifest as a built-in add-on. Prints one line per problem
         and exits 1 if there are any.
+    addon_manifest.py mcp-urls <addons-dir>
+        Print every MCP URL of every valid built-in add-on, one per line,
+        whatever the flag, `profiles` or `unmanaged` say (mcp.env.url applies).
+        For tuning entries that already exist; registers nothing.
     addon_manifest.py mcp-plan <addons-dir> <profile>
         For each entry of each add-on's `mcp` block (one object, or a list of
         objects), print one line, in list order, that the bootstrap's
@@ -738,6 +742,18 @@ def mcp_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
     return lines
 
 
+def mcp_urls(addons_dir: Path, environ=os.environ) -> list[str]:
+    urls = []
+    for path, manifest, parse_error in load_dir(addons_dir):
+        if check_builtin_file(path, manifest, parse_error):
+            continue
+        for mcp in mcp_entries(manifest):
+            for u in sorted(set(_mcp_urls(manifest, mcp, environ).values())):
+                if u not in urls:
+                    urls.append(u)
+    return urls
+
+
 def vault_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
     lines = []
     for path, manifest, parse_error in load_dir(addons_dir):
@@ -768,6 +784,10 @@ def main(argv: list[str]) -> int:
                 print(f"{path}: {e}")
                 bad += 1
         return 1 if bad else 0
+    if len(argv) == 2 and argv[0] == "mcp-urls":
+        for u in mcp_urls(Path(argv[1])):
+            print(u)
+        return 0
     if len(argv) == 3 and argv[0] == "mcp-plan":
         for line in mcp_plan(Path(argv[1]), argv[2]):
             print(line)

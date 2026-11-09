@@ -253,6 +253,15 @@ refused("env.access must be an env var name",
 
 ACCESS_URL = {"read": "http://split-ro:9000/mcp", "write": "http://split-rw:9000/mcp",
               "": "http://split-rw:9000/mcp", "Read": None, "ask": None, "readonly": None}
+# --- mcp-urls: every URL, whatever profiles/unmanaged say ---------------------
+urls = am.mcp_urls(ROOT / "addons", {})
+check("mcp-urls lists LightRAG although default is unmanaged", "http://lightrag-mcp:8000/mcp" in urls, str(urls))
+check("mcp-urls lists both URLs of a split add-on",
+      {"http://actual-mcp-ro:3000/mcp", "http://actual-mcp-rw:3000/mcp"} <= set(urls), str(urls))
+urls = am.mcp_urls(ROOT / "addons", {"LIGHTRAG_MCP_URL": "http://x:1/mcp"})
+check("mcp-urls honours the env URL override",
+      "http://x:1/mcp" in urls and "http://lightrag-mcp:8000/mcp" not in urls, str(urls))
+
 with tempfile.TemporaryDirectory() as tmp:
     (Path(tmp) / "split").mkdir()
     (Path(tmp) / "split" / "addon.json").write_text(am.canonical(SPLIT))

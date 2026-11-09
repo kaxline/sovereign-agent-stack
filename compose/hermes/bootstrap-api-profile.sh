@@ -859,7 +859,7 @@ set_stack_mcp_parked_retry() {
   _out="$(python3 - "$_cfg" "$MCP_PARKED_RETRY_INTERVAL" "$SEARXNG_MCP_URL" \
     "$CALDAV_MCP_URL" "$OPENCODE_MCP_URL" "$SQL_MCP_RO_URL" "$SQL_MCP_RW_URL" "$VIKUNJA_MCP_URL" \
     "$MAIL_MCP_URL" "$MAIL_DRAFTS_MCP_URL" "$MESSAGES_MCP_URL" \
-    "$TWENTY_LOCAL_MCP_URL" $(addon_mcp_urls "$1") <<'PY'
+    "$TWENTY_LOCAL_MCP_URL" $(addon_mcp_urls) <<'PY'
 import sys
 sys.path.insert(0, "/opt/hermes")
 try:
@@ -1319,10 +1319,12 @@ addon_mcp_plan() {
   python3 "$ADDON_MANIFEST_PY" mcp-plan "$ADDONS_DIR" "${1:-default}"
 }
 
-# Every add-on MCP URL, on or off, one per line, for set_stack_mcp_parked_retry.
-# Field 11 of the plan holds all of an add-on's URLs, space-separated.
+# Every add-on MCP URL, on or off, on any profile (profiles and unmanaged are
+# ignored), one per line, for set_stack_mcp_parked_retry. That only tunes
+# entries that already exist, so it also reaches a user's own entry on default.
 addon_mcp_urls() {
-  addon_mcp_plan "$1" 2>/dev/null | cut -d'|' -f11 | tr ' ' '\n' | sed '/^$/d' || true
+  [ -d "$ADDONS_DIR" ] || return 0
+  python3 "$ADDON_MANIFEST_PY" mcp-urls "$ADDONS_DIR" 2>/dev/null || true
 }
 
 # "<tool> <mcp__name__tool> ..." for each add-on that registers on <profile>,
