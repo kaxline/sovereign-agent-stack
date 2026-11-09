@@ -331,7 +331,7 @@ def validate(manifest, source: str = "builtin") -> list[str]:
             continue
         mounts = svc["mounts"]
         if not (isinstance(mounts, dict) and mounts and set(mounts) <= set(MOUNT_PATHS)
-                and all(v in MOUNT_MODES for v in mounts.values())):
+                and all(isinstance(v, str) and v in MOUNT_MODES for v in mounts.values())):
             err(f"services.{name}.mounts must map secrets, config and/or instances to ro or rw")
         elif "secrets" in mounts and name in mcp_services:
             err(f"services.{name} holds secrets, so no mcp entry may point at it")
@@ -347,7 +347,7 @@ def validate(manifest, source: str = "builtin") -> list[str]:
             if not isinstance(cmd, dict):
                 err(f"commands.{cname} must be an object {{service, instance, argv}}")
                 continue
-            if cmd.get("service") not in services:
+            if not (isinstance(cmd.get("service"), str) and cmd["service"] in services):
                 err(f"commands.{cname}.service must name one of services")
             elif reads and cmd["service"] in mcp_services:
                 err(f"commands.{cname}: command runs in an MCP service, which an add-on "
@@ -379,7 +379,7 @@ def _validate_settings(settings: dict, *, source: str, reads: bool, flags: set[s
         at = f"{where}.{name}"
         if name in RESERVED_SETTINGS:
             err(f"{at}: {name!r} is reserved")
-        if not isinstance(s, dict) or s.get("type") not in SETTING_TYPES:
+        if not isinstance(s, dict) or not (isinstance(s.get("type"), str) and s["type"] in SETTING_TYPES):
             err(f"{at}.type must be one of {', '.join(sorted(SETTING_TYPES))}")
             continue
         t = s["type"]

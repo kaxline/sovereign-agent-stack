@@ -486,6 +486,16 @@ check("secret settings are allowed from the official feed",
       str(am.validate(packaged(variant(settings={"token": {"type": "secret"}})), "official")))
 
 refused("unknown mount key", variant(services__server__mounts={"logs": "ro"}), "builtin", "mounts")
+refused("mount mode as a list", variant(services__server__mounts={"config": ["ro"]}), "builtin", "mounts")
+refused("mount mode as a dict", variant(services__server__mounts={"config": {}}), "builtin", "mounts")
+refused("command service as a list",
+        variant(commands={"x": {"service": ["server"], "instance": False, "argv": ["a"]}}),
+        "builtin", "commands.x.service")
+refused("command service as a dict",
+        variant(commands={"x": {"service": {}, "instance": False, "argv": ["a"]}}),
+        "builtin", "commands.x.service")
+refused("setting type as a list", with_settings({"t": {"type": ["int"]}}), "builtin", "settings.t.type")
+refused("setting type as a dict", with_settings({"t": {"type": {}}}), "builtin", "settings.t.type")
 refused("bad mount mode", variant(services__server__mounts={"secrets": "wo"}), "builtin", "mounts")
 refused("an mcp service may not mount secrets", variant(services__server__mounts={"secrets": "ro"}),
         "builtin", "holds secrets")
@@ -538,8 +548,8 @@ def mount_problems(sid: str, manifest: dict, compose_text: str) -> list[str]:
         m = re.search(rf"^  {re.escape(svc['compose'])}:\n(.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)",
                       compose_text, re.M | re.S)
         block = m.group(1) if m else ""
-        lines = re.findall(r"^      - (\./data/addons/\S+:/run/addon/\S+)$", block, re.M)
-        want = [f"./data/addons/{sid}/{'settings.env' if k == 'config' else k}:{am.MOUNT_PATHS[k]}:{mode}"
+        lines = re.findall(r"^      - (\S*/addons/\S+:/run/addon/\S+)$", block, re.M)
+        want = [f"${{ASSISTANT_DATA_ROOT:-./data}}/addons/{sid}/{'settings.env' if k == 'config' else k}:{am.MOUNT_PATHS[k]}:{mode}"
                 for k, mode in mounts.items()]
         if sorted(lines) != sorted(want):
             problems.append(f"{name}: compose mounts {sorted(lines)}, manifest wants {sorted(want)}")
@@ -550,20 +560,22 @@ FIX_COMPOSE = """services:
   gptr-worker:
     profiles: ["gptr"]
     volumes:
-      - ./data/addons/gptr/secrets:/run/addon/secrets:ro
-      - ./data/addons/gptr/settings.env:/run/addon/settings.env:ro
-      - ./data/addons/gptr/instances:/run/addon/instances:rw
+      - ${ASSISTANT_DATA_ROOT:-./data}/addons/gptr/secrets:/run/addon/secrets:ro
+      - ${ASSISTANT_DATA_ROOT:-./data}/addons/gptr/settings.env:/run/addon/settings.env:ro
+      - ${ASSISTANT_DATA_ROOT:-./data}/addons/gptr/instances:/run/addon/instances:rw
       - ./other:/other
   next:
     image: x
 """
 check("mounts cross-check accepts a matching compose service", mount_problems("gptr", rich, FIX_COMPOSE) == [],
       str(mount_problems("gptr", rich, FIX_COMPOSE)))
+check("mounts cross-check flags the bare ./data form",
+      len(mount_problems("gptr", rich, FIX_COMPOSE.replace("${ASSISTANT_DATA_ROOT:-./data}", "./data"))) == 1)
 check("mounts cross-check flags a wrong mode",
       len(mount_problems("gptr", rich, FIX_COMPOSE.replace("instances:rw", "instances:ro"))) == 1)
 check("mounts cross-check flags a missing mount",
       len(mount_problems("gptr", rich, FIX_COMPOSE.replace(
-          "      - ./data/addons/gptr/secrets:/run/addon/secrets:ro\n", ""))) == 1)
+          "      - ${ASSISTANT_DATA_ROOT:-./data}/addons/gptr/secrets:/run/addon/secrets:ro\n", ""))) == 1)
 check("mounts cross-check flags a wrong source directory",
       len(mount_problems("gptr", rich, FIX_COMPOSE.replace("addons/gptr/secrets", "addons/other/secrets"))) == 1)
 
