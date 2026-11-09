@@ -69,8 +69,37 @@ curl -s -m 15 -H 'Content-Type: application/json' -H "$accept" "$@" -X POST "$u"
 SH
 }
 
+# The connected budgets (addons/actual/instances/*.json): one line each from
+# budget.sh status, which re-checks the stored credential. Its error lines
+# (no data root, say) print nothing; no rows is the normal case.
+actual_budget_rows() {
+  docker info >/dev/null 2>&1 || return 0
+  local lines line slug state
+  lines="$("${ROOT}/scripts/budget.sh" status --json 2>/dev/null || true)"
+  while IFS= read -r line; do
+    case "$line" in
+      '{"phase":"budget"'*) ;;
+      *) continue ;;
+    esac
+    slug="$(printf '%s' "$line" | sed -n 's/.*"slug":"\([^"]*\)".*/\1/p')"
+    state="$(printf '%s' "$line" | sed -n 's/.*"state":"\([^"]*\)".*/\1/p')"
+    if [[ "$state" == ok ]]; then
+      ok "budget-${slug}: ok"
+    else
+      warn "budget-${slug}: ${state} - make budget-add or reconnect it in Boundary"
+    fi
+  done <<EOF_ROWS
+${lines}
+EOF_ROWS
+}
+
 doctor_actual() {
   actual_is_true "$(env_get ACTUAL_MCP_ENABLED 0)" || return 0
+  actual_single_budget
+  actual_budget_rows
+}
+
+actual_single_budget() {
   local local_on=0
   actual_is_true "$(env_get ACTUAL_LOCAL_ENABLED 0)" && local_on=1
   echo

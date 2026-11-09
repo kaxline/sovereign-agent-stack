@@ -63,11 +63,20 @@ Usage: scripts/budget.sh <command> [options]
         any check fails. Prints {"phase":"done","account":...,"mcp":[...]}.
   disconnect --slug SLUG --json
         A hook addon.sh runs. Removes SLUG's files from that secrets folder.
+  status [--slug SLUG] --json
+        Opens each connected budget (addons/actual/instances/*.json) with its
+        stored session token. One {"phase":"budget","slug","profile","access",
+        "state"} line each, state ok, token_expired, no_access,
+        encryption_password, timeout, server_unreachable or bad_access, then
+        {"phase":"done"}. A bad state doesn't change the exit code.
   open    Open the web app and copy the server password to the clipboard
   remove  Delete budget.env and set ACTUAL_MCP_ENABLED=0. Server data stays.
   access read|write
         What chats may do with the budget: look things up (read) or make
         changes (write). Sets ACTUAL_ACCESS in .env.
+  access SLUG read|write [--json]
+        The same for one connected budget: saves it with addon.sh configure
+        and reloads Hermes. Prints {"phase":"done","mcp":[...]}.
 
 After init, add, remove or access: make up, then make hermes-reload
 EOF
@@ -481,8 +490,22 @@ write_secret() {
   mv -f "$t" "${sdir}/$1"
 }
 
+# admin_rc_name RC LOGIN_NAME: the error name for a nonzero exit of
+# actual-admin.mjs check. Exit 3 is whatever LOGIN_NAME says (connect:
+# login_refused or token_expired; status: token_expired). Anything not listed
+# is server_unreachable.
+admin_rc_name() {
+  case "$1" in
+    2) printf 'encryption_password' ;;
+    3) printf '%s' "$2" ;;
+    4) printf 'timeout' ;;
+    5) printf 'no_access' ;;
+    *) printf 'server_unreachable' ;;
+  esac
+}
+
 cmd_connect() {
-  local slug="" sdir="" rc=0 mcp
+  local slug="" sdir="" rc=0 mcp name
   hook_args connect "$@"
   read_input
   [[ -n "$in_profile" ]] || in_profile=default
@@ -501,19 +524,23 @@ cmd_connect() {
   a_pw="" a_token="$token" a_sync="$in_sync_id" a_enc="$in_encryption_password"
   admin check > /dev/null 2> "${WORK}/admin.err" || rc=$?
   a_token=""
-  case "$rc" in
-    0) ;;
-    2) emit_error encryption_password "the budget's encryption password is missing or wrong" ;;
-    3) if [[ -n "$in_session_token" ]]; then
-         emit_error token_expired "the session token has expired"
-       else
-         emit_error login_refused "the server refused the password"
-       fi ;;
-    4) emit_error timeout "$(safe_url "$a_url") didn't answer within ${ACTUAL_ADMIN_TIMEOUT_S:-45} s" ;;
-    5) emit_error no_access "this account can't open that budget" ;;
-    6) emit_error server_unreachable "no answer from $(safe_url "$a_url")" ;;
-    *) emit_error server_unreachable "opening the budget failed: $(admin_error)" ;;
-  esac
+  if [[ "$rc" != 0 ]]; then
+    local login_name=login_refused
+    [[ -z "$in_session_token" ]] || login_name=token_expired
+    name="$(admin_rc_name "$rc" "$login_name")"
+    case "$name" in
+      encryption_password) emit_error "$name" "the budget's encryption password is missing or wrong" ;;
+      login_refused) emit_error "$name" "the server refused the password" ;;
+      token_expired) emit_error "$name" "the session token has expired" ;;
+      timeout) emit_error "$name" "$(safe_url "$a_url") didn't answer within ${ACTUAL_ADMIN_TIMEOUT_S:-45} s" ;;
+      no_access) emit_error "$name" "this account can't open that budget" ;;
+      *) if [[ "$rc" == 6 ]]; then
+           emit_error "$name" "no answer from $(safe_url "$a_url")"
+         else
+           emit_error "$name" "opening the budget failed: $(admin_error)"
+         fi ;;
+    esac
+  fi
   mkdir -p "$sdir"
   write_secret "${slug}.session_token" "$token"
   if [[ -n "$in_encryption_password" ]]; then
@@ -901,7 +928,139 @@ cmd_remove() {
   log "  docker compose stop actual-mcp-rw actual-mcp-ro; running ones keep the old credentials until they stop"
 }
 
+# instances_dir: sets idir to <data root>/addons/actual/instances.
+instances_dir() {
+  secrets_dir
+  idir="${sdir%/secrets}/instances"
+}
+
+# status_row SLUG: one {"phase":"budget",...} line for the instance.
+status_row() {
+  local s="$1" assigns state rc=0 tf ef
+  local i_server="" i_sync="" i_profile="" i_access=""
+  assigns="$(stack_python --mount "$idir" -c '
+import json, shlex, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    if not isinstance(d, dict):
+        d = {}
+except (OSError, ValueError):
+    d = {}
+def val(k, missing):
+    v = d.get(k, missing)
+    return v if isinstance(v, str) else ""
+print("i_server=%s" % shlex.quote(val("server", "")))
+print("i_sync=%s" % shlex.quote(val("sync_id", "")))
+print("i_profile=%s" % shlex.quote(val("profile", "default")))
+print("i_access=%s" % shlex.quote(val("access", "read")))
+' "${idir}/${s}.json" 2> /dev/null)" || assigns=""
+  eval "$assigns"
+  tf="${sdir}/${s}.session_token"
+  ef="${sdir}/${s}.encryption_password"
+  case "$i_access" in
+    read | write) ;;
+    *) state=bad_access ;;
+  esac
+  if [[ -z "${state:-}" && ! -s "$tf" ]]; then
+    state=token_expired
+  fi
+  if [[ -z "${state:-}" ]]; then
+    case "$i_server" in
+      local) a_url="$LOCAL_URL" ;;
+      *) a_url="$i_server"; while [[ "$a_url" == */ ]]; do a_url="${a_url%/}"; done ;;
+    esac
+    a_pw="" a_token="$(cat "$tf")" a_sync="$i_sync" a_enc=""
+    [[ ! -s "$ef" ]] || a_enc="$(cat "$ef")"
+    admin check > /dev/null 2> "${WORK}/admin.err" < /dev/null || rc=$?
+    a_token="" a_enc=""
+    if [[ "$rc" == 0 ]]; then
+      state=ok
+    else
+      state="$(admin_rc_name "$rc" token_expired)"
+    fi
+  fi
+  emit_line "$(printf '{"phase":"budget","slug":%s,"profile":%s,"access":%s,"state":%s}' \
+    "$(json_str "$s")" "$(json_str "$i_profile")" "$(json_str "$i_access")" "$(json_str "$state")")"
+}
+
+cmd_status() {
+  local slug="" idir="" sdir="" f s
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) JSON=1 ;;
+      --slug) [[ $# -ge 2 ]] || die "usage: budget.sh status [--slug SLUG] --json"; slug="$2"; shift ;;
+      *) die "usage: budget.sh status [--slug SLUG] --json" ;;
+    esac
+    shift
+  done
+  [[ "$JSON" == 1 ]] || die "usage: budget.sh status [--slug SLUG] --json"
+  slug_check() { [[ "$1" =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]]; }
+  if [[ -n "$slug" ]]; then
+    slug_check "$slug" || emit_error bad_slug "slug must be 1-31 characters of a-z, 0-9 and -, not starting with -"
+  fi
+  instances_dir
+  if [[ -n "$slug" ]]; then
+    [[ -f "${idir}/${slug}.json" ]] || emit_error not_found "no budget connected as ${slug}"
+    status_row "$slug"
+  else
+    for f in "${idir}"/*.json; do
+      [[ -e "$f" ]] || continue
+      s="$(basename "$f" .json)"
+      slug_check "$s" || continue
+      status_row "$s"
+    done
+  fi
+  # shellcheck disable=SC2119
+  emit_done
+}
+
+# access SLUG read|write [--json]: one connected budget. addon.sh stores the
+# value; the Hermes reload is the one addon.sh makes after a configure.
+# BUDGET_ADDON_SH and BUDGET_VAULT_SH are test hooks.
+cmd_access_budget() {
+  local slug="" want="" arg n=0 idir="" sdir=""
+  for arg in "$@"; do
+    case "$arg" in
+      --json) JSON=1 ;;
+      *)
+        n=$((n + 1))
+        case "$n" in
+          1) slug="$arg" ;;
+          2) want="$arg" ;;
+          *) die "usage: budget.sh access SLUG read|write [--json]" ;;
+        esac
+        ;;
+    esac
+  done
+  [[ "$n" == 2 ]] || die "usage: budget.sh access SLUG read|write [--json]"
+  [[ "$slug" =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]] || emit_error bad_slug "slug must be 1-31 characters of a-z, 0-9 and -, not starting with -"
+  case "$want" in
+    read | write) ;;
+    *) emit_error bad_access "access must be read or write" ;;
+  esac
+  instances_dir
+  [[ -f "${idir}/${slug}.json" ]] || emit_error not_found "no budget connected as ${slug}"
+  printf '{"access":"%s"}' "$want" \
+    | "${BUDGET_ADDON_SH:-${ROOT}/scripts/addon.sh}" configure actual --instance "$slug" > /dev/null 2> "${WORK}/addon.err" \
+    || emit_error server_unreachable "couldn't save the access: $(grep -v '^[[:space:]]*$' "${WORK}/addon.err" | tail -1 || true)"
+  local rrc=0
+  docker compose run --rm -e HERMES_BOOTSTRAP_FORCE=1 hermes-api-bootstrap > /dev/null 2> "${WORK}/reload.err" < /dev/null || rrc=1
+  if [[ "$rrc" == 0 ]]; then
+    docker compose run --rm --no-deps -e HERMES_BOOTSTRAP_FORCE=1 hermes-browser-bootstrap > /dev/null 2>> "${WORK}/reload.err" < /dev/null || rrc=1
+  fi
+  [[ "$rrc" == 0 ]] \
+    || emit_error server_unreachable "saved the access, but a Hermes bootstrap failed: $(grep -v '^[[:space:]]*$' "${WORK}/reload.err" | tail -1 || true)"
+  "${BUDGET_VAULT_SH:-${ROOT}/scripts/vault.sh}" reload-plugins > /dev/null 2>&1 < /dev/null \
+    || log "WARNING: vault.sh reload-plugins failed; run make hermes-reload"
+  local mcp
+  mcp="$(json_str "budget-${slug}-ro")"
+  [[ "$want" == write ]] && mcp="${mcp},$(json_str "budget-${slug}")"
+  [[ "$JSON" == 1 ]] || log "Set access ${want} for ${slug}"
+  emit_done mcp "[${mcp}]"
+}
+
 cmd_access() {
+  [[ $# -le 1 ]] || { cmd_access_budget "$@"; return; }
   [[ $# -eq 1 ]] || die "usage: budget.sh access read|write"
   case "$1" in
     read | write) ;;
@@ -919,6 +1078,7 @@ case "${1:-}" in
   open) shift; cmd_open "$@" ;;
   remove) shift; cmd_remove "$@" ;;
   access) shift; cmd_access "$@" ;;
+  status) shift; cmd_status "$@" ;;
   budgets) shift; cmd_budgets "$@" ;;
   connect) shift; cmd_connect "$@" ;;
   disconnect) shift; cmd_disconnect "$@" ;;

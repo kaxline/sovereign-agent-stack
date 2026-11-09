@@ -596,6 +596,77 @@ disconnect_run Bad_Slug
 [ "$brc" = 2 ] && [ "$(jget 1 error)" = bad_slug ] || fail "disconnect bad slug"
 rm -f "$sec/other.session_token"
 
+# --- status ---
+idir="$tmp/data/addons/actual/instances"
+mkdir -p "$idir"
+rm -f "$sec"/*
+reset
+printf 'right-SECRET' > "$STUB/server_pw"
+inst() { # SLUG ACCESS [SERVER]
+  printf '{"server":"%s","sync_id":"sync-a","profile":"default","access":"%s"}' "${3:-https://budget.example.com}" "$2" > "$idir/$1.json"
+}
+status_run() { # [ARGS...]
+  brc=0
+  STACK_PYTHON=host BUDGET_DATA_ROOT="$tmp/data" "$budget" status "$@" --json < /dev/null > "$tmp/jout" 2> "$tmp/jerr" || brc=$?
+  cat "$tmp/jout" "$tmp/jerr" >> "$all"
+}
+inst main write
+inst second read
+printf 'tok-1' > "$sec/main.session_token"
+printf 'tok-old' > "$sec/second.session_token"
+status_run
+[ "$brc" = 0 ] || fail "status exits 0 ($(cat "$tmp/jout" "$tmp/jerr"))"
+jlines_ok || fail "every status line is JSON"
+[ "$(wc -l < "$tmp/jout" | tr -d ' ')" = 3 ] || fail "two budget lines and done ($(cat "$tmp/jout"))"
+grep -qx '{"phase":"budget","slug":"main","profile":"default","access":"write","state":"ok"}' "$tmp/jout" || fail "main is ok ($(cat "$tmp/jout"))"
+grep -qx '{"phase":"budget","slug":"second","profile":"default","access":"read","state":"token_expired"}' "$tmp/jout" || fail "second is token_expired ($(cat "$tmp/jout"))"
+[ "$(jget 3 phase)" = "done" ] || fail "status ends with done"
+grep -q -- '-e ACTUAL_SESSION_TOKEN' "$STUB/docker.argv" || fail "status passes the token by name"
+
+status_run --slug main
+[ "$brc" = 0 ] && [ "$(wc -l < "$tmp/jout" | tr -d ' ')" = 2 ] && [ "$(jget 1 state)" = ok ] || fail "status --slug main ($(cat "$tmp/jout"))"
+status_run --slug nope
+[ "$brc" = 2 ] && [ "$(jget 1 error)" = not_found ] || fail "status --slug nope is not_found ($(cat "$tmp/jout"))"
+status_run --slug Bad_Slug
+[ "$brc" = 2 ] && [ "$(jget 1 error)" = bad_slug ] || fail "status bad slug"
+
+# One state per exit code of check.
+state_for() { # RC
+  printf '%s' "$1" > "$STUB/admin_rc"
+  status_run --slug main
+  rm -f "$STUB/admin_rc"
+  [ "$brc" = 0 ] || fail "status exits 0 on a bad state ($1)"
+  jget 1 state
+}
+[ "$(state_for 2)" = encryption_password ] || fail "exit 2 is encryption_password"
+[ "$(state_for 3)" = token_expired ] || fail "exit 3 is token_expired"
+[ "$(state_for 4)" = timeout ] || fail "exit 4 is timeout"
+[ "$(state_for 5)" = no_access ] || fail "exit 5 is no_access"
+[ "$(state_for 6)" = server_unreachable ] || fail "exit 6 is server_unreachable"
+[ "$(state_for 1)" = server_unreachable ] || fail "exit 1 is server_unreachable"
+
+# bad stored access, no token file, an encryption password file, local.
+inst main admin
+status_run --slug main
+[ "$(jget 1 state)" = bad_access ] || fail "stored access admin is bad_access ($(cat "$tmp/jout"))"
+inst main read
+rm -f "$sec/main.session_token"
+status_run --slug main
+[ "$(jget 1 state)" = token_expired ] || fail "no token file is token_expired"
+printf 'tok-1' > "$sec/main.session_token"
+printf 'enc-SECRET' > "$sec/main.encryption_password"
+printf 'enc-SECRET' > "$STUB/enc_pw"
+status_run --slug main
+[ "$(jget 1 state)" = ok ] || fail "status passes the stored encryption password ($(cat "$tmp/jout"))"
+rm -f "$STUB/enc_pw" "$sec/main.encryption_password"
+inst main read local
+status_run --slug main
+tail -1 "$STUB/admin.log" | grep -q 'ACTUAL_SERVER_URL=http://actual-server:5006 ' || fail "a local row checks at the container URL"
+rm -f "$idir"/*.json "$sec"/*
+status_run
+[ "$brc" = 0 ] && [ "$(wc -l < "$tmp/jout" | tr -d ' ')" = 1 ] && [ "$(jget 1 phase)" = "done" ] || fail "no rows is just done ($(cat "$tmp/jout"))"
+grep -q 'status' <("$budget" --help) || fail "usage mentions status"
+
 # --- access ---
 reset
 cp "$ENV_FILE" "$tmp/env-before"
@@ -608,6 +679,51 @@ run access write || fail "access write"
 [ "$(grep -c '^ACTUAL_ACCESS=' "$ENV_FILE")" = 1 ] || fail "access replaces the line"
 grep -qx 'ACTUAL_ACCESS=write' "$ENV_FILE" || fail "access write sets ACTUAL_ACCESS=write"
 grep -q 'hermes-reload' "$out" || fail "access says to run make hermes-reload"
+
+# access SLUG read|write: addon.sh configure and the Hermes reload, stubbed.
+cat > "$tmp/bin/addon-stub" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$STUB/addon.argv"
+cat >> "$STUB/addon.stdin"
+printf '\n' >> "$STUB/addon.stdin"
+[[ ! -e "$STUB/addon_fail" ]] || { echo "configure refused" >&2; exit 3; }
+SH
+cat > "$tmp/bin/vault-stub" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$STUB/vault.argv"
+SH
+chmod +x "$tmp/bin/addon-stub" "$tmp/bin/vault-stub"
+access_run() { # ARGS...
+  brc=0
+  STACK_PYTHON=host BUDGET_DATA_ROOT="$tmp/data" BUDGET_ADDON_SH="$tmp/bin/addon-stub" BUDGET_VAULT_SH="$tmp/bin/vault-stub" \
+    "$budget" access "$@" < /dev/null > "$tmp/jout" 2> "$tmp/jerr" || brc=$?
+  cat "$tmp/jout" "$tmp/jerr" >> "$all"
+}
+rm -f "$STUB"/addon.argv "$STUB"/addon.stdin "$STUB"/vault.argv "$STUB"/addon_fail "$STUB/docker.argv"
+inst main read
+access_run main write --json
+[ "$brc" = 0 ] || fail "access main write ($(cat "$tmp/jout" "$tmp/jerr"))"
+grep -qx 'configure actual --instance main' "$STUB/addon.argv" || fail "access calls addon.sh configure ($(cat "$STUB/addon.argv"))"
+grep -qx '{"access":"write"}' "$STUB/addon.stdin" || fail "access sends the value on stdin"
+grep -q 'compose run --rm -e HERMES_BOOTSTRAP_FORCE=1 hermes-api-bootstrap' "$STUB/docker.argv" || fail "access runs the api bootstrap"
+grep -q 'compose run --rm --no-deps -e HERMES_BOOTSTRAP_FORCE=1 hermes-browser-bootstrap' "$STUB/docker.argv" || fail "access runs the browser bootstrap"
+grep -qx 'reload-plugins' "$STUB/vault.argv" || fail "access reloads the plugins"
+grep -qx '{"phase":"done","mcp":\["budget-main-ro","budget-main"\]}' "$tmp/jout" || fail "write lists both names ($(cat "$tmp/jout"))"
+access_run main read --json
+grep -qx '{"phase":"done","mcp":\["budget-main-ro"\]}' "$tmp/jout" || fail "read lists the -ro name ($(cat "$tmp/jout"))"
+: > "$STUB/addon.argv"
+access_run main sudo --json
+[ "$brc" = 2 ] && [ "$(jget 1 error)" = bad_access ] || fail "access main sudo is bad_access"
+access_run nope write --json
+[ "$brc" = 2 ] && [ "$(jget 1 error)" = not_found ] || fail "access nope write is not_found"
+access_run Bad_Slug write --json
+[ "$brc" = 2 ] && [ "$(jget 1 error)" = bad_slug ] || fail "access bad slug"
+[ ! -s "$STUB/addon.argv" ] || fail "refused access calls addon.sh not at all"
+touch "$STUB/addon_fail"
+access_run main write --json
+[ "$brc" = 4 ] && [ "$(jget 1 phase)" = error ] || fail "a configure failure is an error line ($(cat "$tmp/jout"))"
+rm -f "$STUB/addon_fail" "$idir"/*.json
+reset
 
 # --- open ---
 reset
