@@ -196,13 +196,16 @@ toggle_recreate() {
 $(json_list recreate "$plan")
 EOF_RECREATE
   [[ ${#names[@]} -gt 0 ]] || return 0
-  run_step recreate "" docker compose up -d --no-deps --force-recreate "${names[@]}" \
-    || ev_fail compose_failed recreate "docker compose up --force-recreate failed for: ${names[*]}" "$EV_LAST_LOG"
+  # Resolve the script first: a rejected argv must not come after the recreate.
   cli_checked recreate toggle-script "$sid"
   if [[ -n "$CLI_OUT" ]]; then
     while IFS= read -r line; do script+=("$line"); done <<EOF_SCRIPT
 $CLI_OUT
 EOF_SCRIPT
+  fi
+  run_step recreate "" docker compose up -d --no-deps --force-recreate "${names[@]}" \
+    || ev_fail compose_failed recreate "docker compose up --force-recreate failed for: ${names[*]}" "$EV_LAST_LOG"
+  if [[ ${#script[@]} -gt 0 ]]; then
     run_step recreate "" "${script[@]}" \
       || ev_fail command_failed recreate "${script[0]} failed" "$EV_LAST_LOG"
   fi
@@ -658,17 +661,20 @@ EOF_ONESHOTS
 # which applies the active profiles, still lists it. A service no profile gates
 # is always listed, so it is never stopped.
 stop_unused_uses() {
-  local names=() name active=""
+  local names=() name active="" cfg_log
   while IFS= read -r name; do
     [[ -n "$name" ]] && names+=("$name")
   done <<EOF_USES
 $(json_list uses "$1")
 EOF_USES
   [[ ${#names[@]} -gt 0 ]] || return 0
-  active="$(docker compose config --services 2> /dev/null)"     || ev_fail compose_failed stop "docker compose config --services failed" ""
+  cfg_log="$(ev_log config)"
+  active="$(docker compose config --services 2> "$cfg_log")" \
+    || ev_fail compose_failed stop "docker compose config --services failed" "$cfg_log"
   for name in "${names[@]}"; do
     if ! printf '%s\n' "$active" | grep -qx -- "$name"; then
-      run_step stop "$name" docker compose stop "$name"         || { EV_TARGET="$name"; ev_fail compose_failed stop "docker compose stop failed for: $name" "$EV_LAST_LOG"; }
+      run_step stop "$name" docker compose stop "$name" \
+        || { EV_TARGET="$name"; ev_fail compose_failed stop "docker compose stop failed for: $name" "$EV_LAST_LOG"; }
     fi
   done
 }

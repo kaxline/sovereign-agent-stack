@@ -35,6 +35,7 @@ printf 'COMPOSE_PROJECT_NAME=fixtureproj\n' >> "${root}/.env"
 # `compose ps -a --format json` prints the file PS_ANSWER names, if any.
 # `compose logs` prints one line naming the service.
 # `compose config --services` prints the file CONFIG_SERVICES names, if any.
+# DOCKER_FAIL_RECREATE=1 makes `compose up ... --force-recreate` exit 1.
 # DOCKER_FAIL_BOOTSTRAP=1 makes `compose run ... hermes-api-bootstrap` exit 1.
 cat > "${tmp}/bin/docker" <<'EOF'
 #!/bin/sh
@@ -58,6 +59,9 @@ if [ "$1 $2" = "compose logs" ]; then
   eval "last=\${$#}"
   echo "log line from $last"
   exit 0
+fi
+if [ "$1 $2" = "compose up" ] && [ "${DOCKER_FAIL_RECREATE:-0}" = 1 ]; then
+  case "$*" in *--force-recreate*) echo "recreate failed"; exit 1 ;; esac
 fi
 if [ "$1 $2" = "compose up" ]; then
   [ -n "${DOCKER_UP_DELAY:-}" ] && sleep "$DOCKER_UP_DELAY"
@@ -850,7 +854,9 @@ if logged "compose up -d --no-deps --force-recreate hermes" && logged "fixture-f
 else
   bad "the first enable recreates hermes and runs the onToggle script"; cat "$STUB_LOG"
 fi
-if [ "$(grep -n 'force-recreate' "$STUB_LOG" | head -1 | cut -d: -f1)" -lt "$(grep -n 'vault.sh reload-plugins' "$STUB_LOG" | head -1 | cut -d: -f1)" ]; then
+rec_at="$(grep -n 'force-recreate' "$STUB_LOG" | head -1 | cut -d: -f1 || true)"
+rel_at="$(grep -n 'vault.sh reload-plugins' "$STUB_LOG" | head -1 | cut -d: -f1 || true)"
+if [ -n "$rec_at" ] && [ -n "$rel_at" ] && [ "$rec_at" -lt "$rel_at" ]; then
   ok "the recreate runs before the reload"
 else
   bad "the recreate runs before the reload"
@@ -880,6 +886,41 @@ addon enable toggled
 : > "$STUB_LOG"
 addon disable fixture
 if logged "neo4j"; then bad "an add-on without uses stops no stack service"; else ok "an add-on without uses stops no stack service"; fi
+
+# Disabling an add-on that is already off recreates nothing.
+addon disable toggled
+: > "$STUB_LOG"
+addon_json disable toggled --json
+expect_rc "disable an already disabled toggled" 0
+r=0; json_ok "$out" "done" 'last["restart"] == [] and ("recreate","running") not in steps' || r=1
+check "disable while disabled recreates nothing" "$r"
+if logged "force-recreate" || logged "fixture-follow"; then bad "disable while disabled logs no recreate or script"; else ok "disable while disabled logs no recreate or script"; fi
+
+# Recreate failures roll the enable back.
+: > "$STUB_LOG"
+DOCKER_FAIL_RECREATE=1 addon_json enable toggled --json
+unset DOCKER_FAIL_RECREATE
+expect_rc "a failing recreate exits 1" 1
+r=0; json_ok "$out" error 'last["error"] == "compose_failed" and last["step"] == "recreate" and last.get("rolledBack") is True and "recreate failed" in last["logTail"]' || r=1
+check "a failing recreate is compose_failed at step recreate, rolled back" "$r"
+if [ "$(envval TOGGLED_ADDON_ENABLED)" != 1 ]; then ok "a failing recreate restores the flag"; else bad "a failing recreate restores the flag"; fi
+if logged "fixture-follow"; then bad "a failing recreate skips the script"; else ok "a failing recreate skips the script"; fi
+
+: > "$STUB_LOG"
+FIXTURE_FOLLOW_FAIL=1 addon_json enable toggled --json
+unset FIXTURE_FOLLOW_FAIL
+expect_rc "a failing onToggle script exits 4" 4
+r=0; json_ok "$out" error 'last["error"] == "command_failed" and last["step"] == "recreate" and last.get("rolledBack") is True' || r=1
+check "a failing onToggle script is command_failed at step recreate, rolled back" "$r"
+if [ "$(envval TOGGLED_ADDON_ENABLED)" != 1 ]; then ok "a failing onToggle script restores the flag"; else bad "a failing onToggle script restores the flag"; fi
+
+# A uses name with no compose mapping is never stopped.
+printf 'pguser-worker\n' > "${tmp}/services-none"
+addon enable pguser
+: > "$STUB_LOG"
+CONFIG_SERVICES="${tmp}/services-none" addon_json disable pguser --json
+expect_rc "disable pguser" 0
+if logged "compose stop pguser-worker" && ! logged "postgres"; then ok "an unmapped uses name is never stopped"; else bad "an unmapped uses name is never stopped"; cat "$STUB_LOG"; fi
 
 if [ "$fail" = 0 ]; then
   echo "all addon.sh checks passed"
