@@ -328,6 +328,11 @@ NEEDED = {
         "self._state_lock = threading.Lock()",
         "async def _cdp(self, method: str, params: Optional[dict[str, Any]] = None, *,\n"
         "                   session_id: Optional[str] = None,",
+        "self._loop: Optional[asyncio.AbstractEventLoop] = None",  # supervisor._loop
+        "self.cdp_url = cdp_url",  # supervisor.cdp_url
+    ),
+    "browser_session.py": (
+        "def session_for_task(task_id: Optional[str]) -> dict[str, Any]:",
     ),
 }
 ANCHORS = {
@@ -346,7 +351,8 @@ def main() -> None:
         print(f"{TAG} already applied")
         return
     sources = {"browser_vault_tool.py": text,
-               "browser_supervisor.py": (TOOLS / "browser_supervisor.py").read_text(encoding="utf-8")}
+               "browser_supervisor.py": (TOOLS / "browser_supervisor.py").read_text(encoding="utf-8"),
+               "browser_session.py": (TOOLS / "browser_session.py").read_text(encoding="utf-8")}
     missing = [f"{name}: {n.strip()}" for name, needed in NEEDED.items() for n in needed if n not in sources[name]]
     bad = [name for name, anchor in ANCHORS.items() if text.count(anchor) != 1]
     if missing or bad:

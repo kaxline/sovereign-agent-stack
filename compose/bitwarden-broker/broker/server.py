@@ -64,6 +64,10 @@ DEFAULT_SOCKET = "/run/bitwarden-sync/sync.sock"
 # keeps a bad target id from handing out entries for any in-scope item.
 NOTHING_WRITTEN = (cdp.TARGET_NOT_FOUND, cdp.ORIGIN_MISMATCH, cdp.NO_FIELD)
 METHODS = ("GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS")
+# POST /sync runs at most once at a time and at most once per this many
+# seconds (Config.sync_min_seconds); a call inside the interval gets the last
+# result back.
+SYNC_MIN_INTERVAL = 30.0
 _STATUS_CODES = {400: "bad_request", 404: "not_found", 405: "method_not_allowed", 408: "timeout",
                  413: "too_large", 414: "too_large", 431: "too_large", 501: "method_not_allowed"}
 
@@ -89,6 +93,7 @@ class Config:
     listen: tuple[str, int]
     socket_path: Path
     bw_path: str
+    sync_min_seconds: float = 30.0
 
     @classmethod
     def from_env(cls, env) -> Config:
@@ -106,7 +111,22 @@ class Config:
             listen=_listen(env.get("BITWARDEN_LISTEN") or DEFAULT_LISTEN),
             socket_path=Path(env.get("BITWARDEN_SYNC_SOCKET") or DEFAULT_SOCKET),
             bw_path=env.get("BITWARDEN_BW") or "bw",
+            # Test hook: scripts/test-bitwarden-*.py set 0 to sync back to back.
+            sync_min_seconds=_seconds(env, "BITWARDEN_SYNC_MIN_SECONDS", SYNC_MIN_INTERVAL),
         )
+
+
+def _seconds(env, name: str, default: float) -> float:
+    raw = (env.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        value = math.nan
+    if not math.isfinite(value) or value < 0:
+        raise ConfigError(f"{name} must be a number of seconds")
+    return value
 
 
 def _minutes(env, name: str, default: str, allow_zero: bool) -> float:
@@ -186,6 +206,9 @@ class Broker:
         self._activity: dict[str, float] = {}
         self._last_sync: dict[str, float] = {}
         self._unlocking = {slug: threading.Lock() for slug in self.bws}
+        self._syncing = {slug: threading.Lock() for slug in self.bws}  # one bw sync per account at a time
+        self._sync_call = threading.Lock()  # one POST /sync at a time
+        self._sync_result: tuple[float, dict] | None = None  # (monotonic end, result) of the last POST /sync
 
     # --- TCP routes ---------------------------------------------------------
 
@@ -245,10 +268,29 @@ class Broker:
             value = None
 
     def post_sync(self, body) -> dict:
+        """Sync every account now. A call while another runs gets ``{"synced": false,
+        "reason": "busy"}``; one within SYNC_MIN_INTERVAL of the last gets that result
+        with ``"reason": "recent"``. Accounts the sync loop is syncing are listed under ``busy``."""
         _fields(body)
-        synced = [slug for slug in sorted(self.bws) if self.sync_account(slug)]
-        self._mark_done()
-        return {"synced": synced}
+        if not self._sync_call.acquire(blocking=False):
+            return {"synced": False, "reason": "busy"}
+        try:
+            last = self._sync_result
+            if last is not None and time.monotonic() - last[0] < self.config.sync_min_seconds:
+                return dict(last[1], reason="recent")
+            synced, busy = [], []
+            for slug in sorted(self.bws):
+                done = self.sync_account(slug)
+                if done is None:
+                    busy.append(slug)
+                elif done:
+                    synced.append(slug)
+            self._mark_done()
+            result = {"synced": synced, "busy": busy} if busy else {"synced": synced}
+            self._sync_result = (time.monotonic(), result)
+            return result
+        finally:
+            self._sync_call.release()
 
     def post_requests(self, body) -> dict:
         _fields(body, required=("site",), optional=("account", "reason"))
@@ -364,7 +406,18 @@ class Broker:
         finally:
             guard.release()
 
-    def sync_account(self, slug: str) -> bool:
+    def sync_account(self, slug: str) -> bool | None:
+        """True when the account synced, False when it failed, None when another
+        sync of it is running."""
+        lock = self._syncing[slug]
+        if not lock.acquire(blocking=False):
+            return None
+        try:
+            return self._sync_account(slug)
+        finally:
+            lock.release()
+
+    def _sync_account(self, slug: str) -> bool:
         bw, account = self.bws[slug], self.accounts[slug]
         with self._guard:
             self._last_sync[slug] = time.monotonic()
@@ -477,6 +530,18 @@ class _Handler(BaseHTTPRequestHandler):
     timeout = 30  # seconds a client may take to send its request
     routes: dict = {}
 
+    def _check(self) -> None:
+        """Refuse a request before routing; the TCP handler adds its checks."""
+
+    def _drain(self) -> None:
+        """Read a small unread body so closing the connection does not reset it."""
+        try:
+            length = int(self.headers.get("Content-Length") or "0")
+        except ValueError:
+            return
+        if 0 < length <= MAX_DRAIN:
+            self.rfile.read(length)
+
     def _dispatch(self) -> None:
         self._route = self._handle = None
         try:
@@ -487,6 +552,11 @@ class _Handler(BaseHTTPRequestHandler):
         if route is not None:
             self._route = path
         try:
+            try:
+                self._check()
+            except HttpError:
+                self._drain()
+                raise
             if route is None:
                 raise HttpError(404, "not_found")
             name = route.get(self.command)
@@ -556,6 +626,26 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 class _TcpHandler(_Handler):
+    def _check(self) -> None:
+        """Only local clients that name the broker by its loopback address.
+
+        A web page cannot set these: a DNS-rebound name fails the Host check, a
+        browser sends Origin on cross-origin requests, and a form post cannot send
+        application/json. Agent code in hermes is not stopped by any of them.
+        """
+        port = self.server.server_address[1]
+        listen = self.server.broker.config.listen[0]
+        names = {"127.0.0.1", "localhost", f"[{listen}]" if ":" in listen else listen}
+        host = (self.headers.get("Host") or "").strip().lower()
+        if host not in {f"{name}:{port}" for name in names}:
+            raise HttpError(403, "bad_host")
+        if self.headers.get("Origin") is not None:
+            raise HttpError(403, "origin_refused")
+        if self.command == "POST":
+            ctype = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+            if ctype != "application/json":
+                raise HttpError(415, "unsupported_media_type")
+
     routes = {
         "/accounts": {"GET": "get_accounts"},
         "/items": {"GET": "get_items"},

@@ -369,15 +369,19 @@ which `hermes` (and so the broker) joins (Local mode).
 ### API
 
 JSON over HTTP on loopback, no authentication: every operation is one the agent can already ask for
-through the vault tools, and none returns a secret.
+through the vault tools, and none returns a secret. Against a web page in the agent's browser, the
+TCP port refuses a `Host` other than `127.0.0.1:<port>`, `localhost:<port>` or the configured listen
+address (403 `bad_host`, against DNS rebinding), any request carrying `Origin` (403
+`origin_refused`), and a POST whose `Content-Type` is not `application/json` (415
+`unsupported_media_type`).
 
 | Call | Does | Returns |
 |---|---|---|
 | `GET /accounts` | Each account's slug, mode, scope kind and state (`unlocked`, `locked`, `offline`, `error`) | metadata |
 | `GET /items` | Login items in scope across unlocked accounts | `[{handle, label, username, origins, has_totp}]` |
 | `POST /fill` `{handle, target_id, port, field, base}` | Fills the password (`field: "password"`, the default) or the current TOTP code (`"totp"`) into the CDP target on `127.0.0.1:<port>` | `{filled, origin, error, redaction}` |
-| `POST /sync` | Runs `bw sync` on every unlocked account now | `{synced}` |
-| `POST /requests` `{account, site, reason}` | Records an access request (Access requests) | `{request_id}` |
+| `POST /sync` | Runs `bw sync` on every unlocked account now. One call at a time (another gets `{synced: false, reason: "busy"}`), at most one per 30 s (a call inside that gets the last result with `reason: "recent"`); an account the sync loop is syncing is listed under `busy` | `{synced, busy?, reason?}` |
+| `POST /requests` `{account, site, reason}` | Records an access request (Access requests); a `site` with no dot is `invalid_site` | `{request_id}` |
 | `GET /requests` | Pending and recent requests | metadata |
 | `POST /release` `{handle}` | Stops serving an item at once and returns it to the user (Access requests) | `{released, returned}` |
 | `GET /health` | Liveness and per-account state | status |

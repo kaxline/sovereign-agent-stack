@@ -519,6 +519,12 @@ r = Run("grant-not-host", "grant", account("folder:Agent"),
         dict(base_vault(), folders=[{"id": "f-agent", "name": "Agent"}]), extra=("--site", "not a host"))
 r.expect_code(1)
 check(not r.cmds("edit", "move") and "next sync" not in r.out, f"grant-not-host: output\n{r.out}")
+# A single label would match every login under it (items match subdomains).
+for single in ("com", "localhost"):
+    r = Run(f"grant-single-{single}", "grant", account("folder:Agent"),
+            dict(base_vault(), folders=[{"id": "f-agent", "name": "Agent"}]), extra=("--site", single))
+    r.expect_code(1)
+    check(not r.cmds("edit", "move") and "is not a host name" in r.out, f"grant --site {single}: output\n{r.out}")
 v = dict(base_vault(), folders=[{"id": "f-agent", "name": "Agent"}])
 v["items"][0]["folderId"] = "f-agent"
 r = Run("grant-already", "grant", account("folder:Agent"), v, extra=("--item", "i-li-www"))

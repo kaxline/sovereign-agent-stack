@@ -152,7 +152,11 @@ def _b64(obj) -> str:
 # Matching
 
 def normalize_host(value: str) -> str | None:
-    """A host from what the user typed: a bare host, host:port or a URL. None if it is not one."""
+    """A host from what the user typed: a bare host, host:port or a URL. None if it is not one.
+
+    A host with no dot is refused: items match subdomains too, so "com" would
+    match every .com login.
+    """
     value = (value or "").strip().lower()
     if not value:
         return None
@@ -161,7 +165,7 @@ def normalize_host(value: str) -> str | None:
     except ValueError:
         return None
     host = (host or "").rstrip(".")
-    if not host or any(c.isspace() for c in host):
+    if not host or "." not in host or any(c.isspace() for c in host):
         return None
     try:
         return host.encode("idna").decode("ascii")

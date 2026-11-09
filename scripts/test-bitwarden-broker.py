@@ -1083,6 +1083,7 @@ class Broker:
             "BITWARDEN_LISTEN": f"127.0.0.1:{self.port}",
             "BITWARDEN_SYNC_SOCKET": str(self.socket),
             "BITWARDEN_BW": str(wrapper),
+            "BITWARDEN_SYNC_MIN_SECONDS": "0",  # test_sync_coalesced sets 30
         }
 
     def add_account(self, slug, scope="folder:Agent", unlock="stored", secrets_scope=None) -> None:
@@ -1589,6 +1590,68 @@ print("image ok")
 """
 
 
+def test_tcp_request_checks() -> None:
+    """Host must name the loopback address and port, no Origin, JSON on POST."""
+    with broker_run() as b:
+        b.add_account("personal")
+        b.start(unlocked=["personal"])
+        expect(b.call("GET", "/health", headers={"Host": f"localhost:{b.port}"})[0] == 200, "Host localhost:<port>")
+        for host in ("evil.example.com", f"evil.example.com:{b.port}", f"127.0.0.1:{b.port + 1}", "127.0.0.1"):
+            got = b.call("GET", "/items", headers={"Host": host})
+            expect(got == (403, {"error": "bad_host"}), f"Host {host!r}: {got}")
+        got = b.call("GET", "/items", headers={"Origin": "https://evil.example.com"})
+        expect(got == (403, {"error": "origin_refused"}), f"a request with Origin: {got}")
+        got = b.call("POST", "/requests", {"account": "personal", "site": "a.example.com"},
+                     headers={"Origin": "null"})
+        expect(got == (403, {"error": "origin_refused"}), f"a POST with Origin gets its answer: {got}")
+        for ctype in ("text/plain", "application/x-www-form-urlencoded", ""):
+            got = b.call("POST", "/requests", {"account": "personal", "site": "a.example.com"},
+                         headers={"Content-Type": ctype})
+            expect(got == (415, {"error": "unsupported_media_type"}), f"POST with Content-Type {ctype!r}: {got}")
+        got = b.call("POST", "/requests", {"account": "personal", "site": "a.example.com"},
+                     headers={"Content-Type": "application/json; charset=utf-8"})
+        expect(got[0] == 200, f"JSON with a charset parameter: {got}")
+        status, got = b.call("GET", "/requests")
+        expect([r["site"] for r in got["pending"]] == ["a.example.com"], f"refused POSTs stored nothing: {got}")
+        # The Hermes backend and the fill overlay send urllib requests built this way
+        # (bitwarden_broker_backend.call, _bwbroker_call); broker.cli is covered below.
+        import urllib.request
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        for base in (f"http://127.0.0.1:{b.port}", f"http://localhost:{b.port}"):
+            req = urllib.request.Request(base + "/requests", data=json.dumps(
+                {"account": "personal", "site": "b.example.com"}).encode(), method="POST",
+                headers={"Content-Type": "application/json"})
+            with opener.open(req, timeout=10) as resp:
+                expect(resp.status == 200 and "request_id" in json.loads(resp.read()), f"urllib POST via {base}")
+            with opener.open(urllib.request.Request(base + "/accounts", method="GET"), timeout=10) as resp:
+                expect(resp.status == 200, f"urllib GET via {base}")
+        b.expect_clean()
+
+
+def test_sync_coalesced() -> None:
+    """One POST /sync at a time, and none within SYNC_MIN_INTERVAL of the last."""
+    import threading
+    with broker_run() as b:
+        b.env["BITWARDEN_SYNC_MIN_SECONDS"] = "30"
+        b.add_account("personal")
+        b.start(unlocked=["personal"])
+        slow = vault_data(slow_sync=2)
+        b.run.vault_file.write_text(json.dumps(slow), encoding="utf-8")
+        first: list = []
+        worker = threading.Thread(target=lambda: first.append(b.call("POST", "/sync", {})))
+        worker.start()
+        time.sleep(0.5)
+        expect(b.call("POST", "/sync", {}) == (200, {"synced": False, "reason": "busy"}),
+               "a second /sync while one runs is refused as busy")
+        worker.join(30)
+        expect(first == [(200, {"synced": ["personal"]})], f"the first /sync: {first}")
+        started = time.monotonic()
+        got = b.call("POST", "/sync", {})
+        expect(got == (200, {"synced": ["personal"], "reason": "recent"}), f"a /sync within 30 s: {got}")
+        expect(time.monotonic() - started < 1.5, "a /sync within 30 s runs no bw sync")
+        b.expect_clean()
+
+
 def main() -> None:
     test_account_file_tolerance()
     test_normalize_origin()
@@ -1612,6 +1675,8 @@ def main() -> None:
     test_unlock_over_socket()
     test_cli_for_vault_sh()
     test_sync_loop_and_idle_lock()
+    test_tcp_request_checks()
+    test_sync_coalesced()
     mounts = [
         (ROOT / "scripts", "/work/scripts"),
         (ROOT / "compose" / "bitwarden-broker", "/work/compose/bitwarden-broker"),

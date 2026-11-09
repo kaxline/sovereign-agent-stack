@@ -103,8 +103,17 @@ def cmd_requests(form: str | None) -> None:
 
 
 def cmd_sync() -> None:
-    synced = _call("POST", "/sync").get("synced") or []
+    reply = _call("POST", "/sync")
+    if reply.get("reason") == "busy":
+        print("A sync is already running; try again when it ends.")
+        return
+    synced = reply.get("synced") or []
+    if reply.get("reason") == "recent":
+        print(f"The last sync ended under 30 s ago; its result: {', '.join(synced) or 'no account synced'}.")
+        return
     print(f"Synced: {', '.join(synced)}" if synced else "No account synced (all locked or failing).")
+    if reply.get("busy"):
+        print(f"Already syncing: {', '.join(reply['busy'])}")
 
 
 def main(argv: list[str]) -> int:

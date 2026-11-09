@@ -787,8 +787,13 @@ cmd_grant() {
   local args=(grant --slug "$slug" --email "$email" --site "$site")
   [[ -z "$item" ]] || args+=(--item "$item")
   setup_run "${args[@]}" || die "bitwarden-setup grant did not move anything; the request stays pending"
-  if broker_cli sync >/dev/null; then
-    log "The broker synced; a pending request for ${site} is done once the item is in scope"
+  local synced
+  if synced="$(broker_cli sync)"; then
+    case "$synced" in
+      "A sync is already running"* | "The last sync ended under 30 s ago"*)
+        log "The broker synced less than 30 s ago or is syncing now; make vault-sync in 30 s picks the item up" ;;
+      *) log "The broker synced; a pending request for ${site} is done once the item is in scope" ;;
+    esac
   else
     log "The broker did not sync; make vault-sync picks the item up"
   fi

@@ -60,7 +60,8 @@ def test_request_validation() -> None:
         path = Path(tmp) / "broker" / "requests.json"
         store = requests_store.Store(path, accounts=["personal"])
         for site in ("not a host!", "", "a..example.com", "-a.example.com", "x" * 64 + ".example.com",
-                     "user@example.com", "example.com/path", None, 7):
+                     "user@example.com", "example.com/path", None, 7, "com", "localhost",
+                     "https://intranet/login", "com."):
             expect_request_error(lambda: store.add("personal", site, "r"), "invalid_site", f"site {site!r}")
         expect_request_error(lambda: store.add("nobody", "example.com", "r"), "unknown_account", "account")
         reason = "\x1b[31m" + "é​\n\t" * 200
@@ -80,6 +81,8 @@ def test_request_validation() -> None:
         b.start(unlocked=["personal"])
         expect(b.call("POST", "/requests", {"account": "personal", "site": "not a host!", "reason": "x"})
                == (400, {"error": "invalid_site"}), "API invalid_site")
+        expect(b.call("POST", "/requests", {"account": "personal", "site": "com", "reason": "x"})
+               == (400, {"error": "invalid_site"}), "API invalid_site for a single label")
         expect(b.call("POST", "/requests", {"account": "nobody", "site": "example.com", "reason": "x"})
                == (400, {"error": "unknown_account"}), "API unknown_account")
         status, got = b.call("POST", "/requests", {"site": "news.example.com", "reason": "\x1b[31m" + "y" * 500})

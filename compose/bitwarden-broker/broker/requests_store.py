@@ -1,8 +1,9 @@
 """Access requests the agent files with ``POST /requests``, kept in ``requests.json``.
 
 A request names an account, a site and the agent's reason. ``site`` must be a
-hostname, or a URL whose host is taken; it is stored lower-case in its ASCII
-(IDNA) form. ``reason`` loses every Unicode category ``C*`` character and is
+hostname with at least one dot, or a URL whose host is taken; it is stored
+lower-case in its ASCII (IDNA) form. A single label ("com", "localhost") is
+refused: requests match subdomains, so it would cover every host under it. ``reason`` loses every Unicode category ``C*`` character and is
 cut to 200 characters. At most 10 requests are pending; a repeat of a pending
 (account, site) pair returns that request's id instead of adding one. Requests
 older than 7 days are dropped by ``expire``; the server runs it before each
@@ -42,7 +43,7 @@ class RequestError(ValueError):
 
 
 def normalize_site(site) -> str | None:
-    """The lower-case ASCII hostname in ``site``, or None if it is not one."""
+    """The lower-case ASCII hostname in ``site``, or None if it is not one or has no dot."""
     if not isinstance(site, str):
         return None
     value = site.strip()
@@ -62,7 +63,7 @@ def normalize_site(site) -> str | None:
         value = value.encode("idna").decode("ascii")
     except UnicodeError:
         return None
-    if not all(_LABEL.fullmatch(label) for label in value.split(".")):
+    if "." not in value or not all(_LABEL.fullmatch(label) for label in value.split(".")):
         return None
     return value
 

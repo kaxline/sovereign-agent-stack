@@ -190,7 +190,8 @@ outside the chat.
 When `browser_vault` `list` has no login for a site, the agent calls
 `bitwarden_request_access(site, reason, account?)`. The broker records the request in
 `broker/requests.json` and the result says it is pending and how you approve it. The result never
-says whether a matching item exists outside the agent's scope. `site` must be a hostname or a URL;
+says whether a matching item exists outside the agent's scope. `site` must be a hostname with at
+least one dot, or a URL with one (a single label such as `com` would cover every host under it);
 `reason` loses control characters and is cut to 200 characters, and you always see it labelled as
 the agent's text. A repeat of a pending request returns the same request. At most 10 requests are
 pending at a time, and requests are dropped after 7 days. `make vault-requests` lists them.
@@ -202,7 +203,9 @@ pending at a time, and requests are dropped after 7 days. `make vault-requests` 
   the request done once the item is in scope. `make vault-grant SITE=example.com` skips the list.
 - In Bitwarden: move the item into the folder or collection in any Bitwarden app. The broker's
   next sync (every `BITWARDEN_SYNC_MINUTES`, or `make vault-sync`) picks it up and marks a pending
-  request for that host done.
+  request for that host done. The broker runs one `make vault-sync` at a time and at most one every
+  30 s; a call inside that interval gets the last result back. `make vault-grant SITE=…` also takes
+  only a host with a dot.
 
 ### Releasing
 
@@ -297,7 +300,10 @@ the entry alone does not determine a long random value.
 Other limits, as built:
 
 - The broker's API on `127.0.0.1:8099` has no authentication. Agent code in `hermes` can call it,
-  which is why no route returns a value; `hermes-worker` and other containers cannot reach it.
+  which is why no route returns a value; `hermes-worker` and other containers cannot reach it. It
+  refuses a `Host` other than `127.0.0.1:8099` or `localhost:8099`, any request with an `Origin`
+  header, and a POST whose `Content-Type` is not `application/json`, so a web page in the agent's
+  browser cannot call it.
 - A TOTP fill's redaction entry is in the `/fill` response, so whoever gets that response can
   recover the 6-digit code from it by trying all of them. The code is valid only for its time step.
 - If the broker writes the page but its `/fill` reply is lost (a timeout), no redaction entry is

@@ -253,6 +253,8 @@ def sync(ctx, pos):
         sys.stdout.flush()
         emit_stderr(ctx.vault["hang_sync"] + "\n")
         time.sleep(30)
+    if ctx.vault.get("slow_sync"):
+        time.sleep(float(ctx.vault["slow_sync"]))
     return "Syncing complete."
 
 
