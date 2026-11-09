@@ -398,7 +398,7 @@ git commit -m "Report image, memory and download size per add-on service in addo
 Run: `sh scripts/test-addon-cli.sh`
 Expected: exit 0.
 
-- [ ] **Step 3: Update the docs.** In `docs/extending.md`, document the JSON-lines contract (phases, step names, `done` and `error` fields, error codes and exit codes from Global Constraints), `connect`/`disconnect`, `remove --delete-data`, the lock, rollback, `list --json` figures and the new manifest fields. Say that `addon.sh` doesn't wait for MCP servers and that callers check `done.mcp` in `mcp.servers.status`. Update `addons/README.md`'s field list. Add `onToggle` and `services.<k>.oneshot` to `docs/private/addon-manifest-spec.md`'s lifecycle section only if its owner hasn't by then (it is gitignored; don't commit it). In `CHANGELOG.md` under Unreleased: the new subcommands and fields, `services.<k>.volumes` becoming `data.volumes` (still accepted in this patch), Bitwarden's hooks moving to the `script` form, the reload change (bootstraps plus `vault.sh reload-plugins`, no `hermes` recreate; plugin changes such as Bitwarden's tools reach new sessions only), and a line saying Boundary can move Actual onto `addon.sh` once Actual's manifest has `hooks.init`, `instances.connect` and `data`.
+- [ ] **Step 3: Update the docs.** In `docs/extending.md`, document transient instance secrets (Task 11), the JSON-lines contract (phases, step names, `done` and `error` fields, error codes and exit codes from Global Constraints), `connect`/`disconnect`, `remove --delete-data`, the lock, rollback, `list --json` figures and the new manifest fields. Say that `addon.sh` doesn't wait for MCP servers and that callers check `done.mcp` in `mcp.servers.status`. Update `addons/README.md`'s field list. Add `onToggle` and `services.<k>.oneshot` to `docs/private/addon-manifest-spec.md`'s lifecycle section only if its owner hasn't by then (it is gitignored; don't commit it). In `CHANGELOG.md` under Unreleased: the new subcommands and fields, `services.<k>.volumes` becoming `data.volumes` (still accepted in this patch), Bitwarden's hooks moving to the `script` form, the reload change (bootstraps plus `vault.sh reload-plugins`, no `hermes` recreate; plugin changes such as Bitwarden's tools reach new sessions only), and a line saying Boundary can move Actual onto `addon.sh` once Actual's manifest has `hooks.init`, `instances.connect` and `data`.
 - [ ] **Step 4: Run the full checks once**
 
 Run (in the background, through the test queue): `make addon-test && sh scripts/test-no-host-python.sh && python3 scripts/test-addon-manifests.py`
@@ -419,3 +419,37 @@ git commit -m "Test that addon.sh passes the compose project and profiles throug
 - Twenty's manifest, which needs `mcp.instances`.
 - Keith took R13 (2026-11-09): the Bitwarden plugin is always installed, on branch `fix/bwbroker-always-installed`. Plan 3's reload calls `vault.sh reload-plugins` from that branch, so that branch merges to `main` before this one. `onToggle` stays as a generic field with no built-in user.
 - A live run. Before tagging 0.3.13, Keith runs `scripts/addon.sh enable gptr --json` and `disable gptr --json` on his stack; it runs the bootstraps but recreates nothing.
+
+### Task 11: Transient instance secrets
+
+Added 2026-11-09 at the Actual session's request, with Keith's go-ahead. Runs after Task 9 and before Task 10, so the docs cover it. Boundary sends the Actual password on `connect`'s stdin; `budget.sh connect` signs in with it and stores only the session token it gets back (CR 0026), so `addon.sh` must not store the password.
+
+**Files:**
+- Modify: `scripts/lib/addon_manifest.py` (`validate`), `scripts/lib/addon_store.py` (`apply_instance`, `missing`, `listing`)
+- Modify: `scripts/test-addon-manifests.py`, `scripts/test-addon-store.py`, `scripts/test-addon-cli.sh`, `scripts/fixtures/addons-cli/hooked/addon.json`
+
+**Interfaces:**
+- Manifest: `"transient": true` is allowed on an `instances.settings` entry of type `secret`, in a built-in manifest that has `instances.connect`. It is an error on any other type, outside `instances.settings`, or without a connect hook.
+- `check_instance` validates a transient setting like any other secret, CR/LF refusal included.
+- The connect hook gets it on stdin unchanged, and redaction (`cli redact`, `log-tail --redact`) covers it as a secret.
+- `apply_instance` (step `register`, and `configure --instance`) never writes it: no `secrets/<slug>.<name>` file and no key in `instances/<slug>.json`.
+- `missing()` never reports a transient setting. `listing()` shows it in the instance schema with `"transient": true`, and never as set or unset in an instance view.
+
+- [ ] **Step 1: Write the failing tests.** Validator: `transient` on a string setting, on a top-level setting, and in a manifest without `instances.connect` each fail; on an instance secret with a connect hook it passes. Store: `apply_instance` with a transient `password` writes neither `secrets/<slug>.password` nor a `password` key; `missing()` skips it; `listing()` carries `"transient": true` in the schema. CLI, with the `hooked` fixture's `password` made transient: a good connect passes the password to the hook (the fixture script checks it on stdin) and leaves no `secrets/work.password`; the end-of-file secret scan covers the new outputs.
+- [ ] **Step 2: Run and confirm they fail**
+
+Run: `python3 scripts/test-addon-manifests.py; python3 scripts/test-addon-store.py; sh scripts/test-addon-cli.sh`
+Expected: FAIL on the new cases only.
+
+- [ ] **Step 3: Implement** the validator rule and the store changes.
+- [ ] **Step 4: Run and confirm they pass**
+
+Run: `make addon-test`
+Expected: exit 0.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add scripts/lib/addon_manifest.py scripts/lib/addon_store.py scripts/test-addon-manifests.py scripts/test-addon-store.py scripts/test-addon-cli.sh scripts/fixtures/addons-cli
+git commit -m "Let an instance secret be transient: passed to the connect hook, never stored"
+```
