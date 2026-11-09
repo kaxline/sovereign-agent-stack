@@ -52,6 +52,8 @@ doctor() {
 }
 has() { grep -qF -- "$2" "$out" || fail "$1 (output: $(cat "$out"))"; }
 hasnt() { if grep -qF -- "$2" "$out"; then fail "$1 (output: $(cat "$out"))"; fi; }
+# setenv [LINE...]: .env with the base keys plus each LINE.
+# shellcheck disable=SC2120  # some calls pass no extra lines
 setenv() {
   { printf 'COMPOSE_PROFILES=core,crm-mcp\nTWENTY_MCP_ENABLED=1\nASSISTANT_DATA_ROOT=%s\n' "$tmp/data"; printf '%s\n' "$@"; } > "$tmp/work/.env"
 }
