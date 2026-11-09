@@ -135,6 +135,8 @@ jobs:
         run: sh scripts/test-gptr-mcp-registration.sh
       - name: Actual Budget MCP registration
         run: sh scripts/test-actual-registration.sh
+      - name: actual-admin.mjs against an Actual server
+        run: bash scripts/test-actual-admin.sh
       - name: Add-on MCP access levels
         run: sh scripts/test-addon-mcp-access.sh
       - name: Add-on cron fence
