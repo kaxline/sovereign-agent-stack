@@ -529,6 +529,16 @@ def test_unexpected_error_is_contained(env: Env) -> None:
     expect(proc.returncode == 1 and "Traceback" not in proc.stderr, f"single run exits 1: {proc.returncode} {proc.stderr!r}")
 
 
+def test_unreadable_config_ends_the_loop(env: Env) -> None:
+    for name, make in (("not-utf8.toml", lambda p: p.write_bytes(b"since = \xff\xfe\n")),
+                       ("a-directory.toml", lambda p: p.mkdir())):
+        path = env.tmp / name
+        make(path)
+        proc = cli(path, "run", "--every", "1", "--passes", "3")
+        expect(proc.returncode == 2 and proc.stdout == "", f"{name}: exit {proc.returncode} {proc.stdout!r}")
+        expect("mail-index: config:" in proc.stderr and "Traceback" not in proc.stderr, f"{name}: {proc.stderr!r}")
+
+
 def test_loop_stops_on_sigterm(env: Env) -> None:
     import signal
     import time
@@ -559,6 +569,7 @@ def main() -> int:
                      test_unrecognised_layout, test_cli_prints_counts_only, test_deleted_text_is_gone,
                      test_resumes_after_interruption, test_ids_count_up, test_upgrade_from_schema_1,
                      test_mailboxes_for_one_account, test_run_loop, test_unexpected_error_is_contained,
+                     test_unreadable_config_ends_the_loop,
                      test_loop_stops_on_sigterm):
             test(env)
     print("OK mail indexer")

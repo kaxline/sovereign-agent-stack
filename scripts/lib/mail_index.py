@@ -104,6 +104,10 @@ def load_config(path: Path) -> Config:
         raw = tomllib.loads(path.read_text())
     except FileNotFoundError:
         raise ConfigError(f"config not found: {path}") from None
+    except UnicodeDecodeError:
+        raise ConfigError(f"config is not valid UTF-8: {path}") from None
+    except OSError as exc:
+        raise ConfigError(f"config can't be read ({type(exc).__name__}): {path}") from None
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"config is not valid TOML: {exc}") from None
     base = path.resolve().parent
