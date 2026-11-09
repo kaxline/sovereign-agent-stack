@@ -585,6 +585,8 @@ LIFE_REPO = Path(tempfile.mkdtemp(prefix="addon-life-"))
     "      - ${FIXTURE_DATA_DIR:-./data/fixture}:/data\n"
     "      - ./data/plain:/plain:ro\n"
     "      - ./data/other:/other\n"
+    "      - ./data/par/child:/par\n"
+    "      - ${TW_DIR:-./data/tw}/storage:/tw\n"
     "volumes:\n  cache_a:\n")
 
 
@@ -691,9 +693,18 @@ life_refused("instances.errors must be a list",
              life(instances={"name": "w", "settings": {"url": {"type": "url"}}, "errors": "a"}),
              "instances.errors")
 
-for bad in ("../x", "/etc", "./data/../x", "./data", "./data/", "./data/unused"):
+for bad in ("../x", "/etc", "./data/../x", "./data", "./data/", "./data/unused",
+            "./data/.", "./data//x", "./data/./", "./data/x/", "./data/./x", "./data/x/.."):
     life_refused(f"data.paths default {bad!r} fails", life(data={"paths": [{"default": bad}]}),
                  "data.paths")
+check("a data.paths default that is the parent of a bind source passes",
+      life_errors(life(data={"paths": [{"default": "./data/plain"}, {"default": "./data/par"},
+                                       {"env": "TW_DIR", "default": "./data/tw"}]})) == [],
+      str(life_errors(life(data={"paths": [{"default": "./data/par"}]}))))
+life_refused("a parent match is on whole path segments",
+             life(data={"paths": [{"default": "./data/pare"}]}), "data.paths")
+life_refused("a parent match through the env form needs the same env",
+             life(data={"paths": [{"env": "OTHER_DIR", "default": "./data/tw"}]}), "data.paths")
 life_refused("data.paths env must be an env name",
              life(data={"paths": [{"env": "lower", "default": "./data/fixture"}]}), "data.paths")
 life_refused("data.paths env must match the compose file's variable",

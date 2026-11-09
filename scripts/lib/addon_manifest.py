@@ -113,7 +113,8 @@ PATH_RE = re.compile(r"^/[A-Za-z0-9._~/-]*$")
 COMPOSE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 HOOK_SCRIPT_RE = re.compile(r"^scripts/[a-z0-9-]+\.sh\Z")
 ERROR_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*\Z")
-DATA_PATH_RE = re.compile(r"^\./data/[^\s]+\Z")
+# ./data/ then one or more segments, none empty, "." or "..".
+DATA_PATH_RE = re.compile(r"^\./data(?:/(?!\.{1,2}(?:/|\Z))[^\s/]+)+\Z")
 # Error names every add-on's instance hooks share (spec, "instances.connect").
 SHARED_ERRORS = {"bad_slug", "exists", "not_found", "login_refused", "token_expired", "no_access",
                  "timeout", "server_unreachable"}
@@ -149,7 +150,9 @@ def validate(manifest, source: str = "builtin", repo=_AUTO) -> list[str]:
     """Return every problem with `manifest` for an add-on from `source`.
 
     `repo` is the repo root, for the checks that read it: a hook script must
-    exist, and a data path must be a bind mount in docker-compose.yml. By
+    exist, and a data path must be a bind-mount source in docker-compose.yml, or
+    the parent of one on whole path segments (`./data/twenty` for
+    `${V:-./data/twenty}/storage`). By
     default it is the root this file sits in; with None, or where that root has
     no docker-compose.yml, those two checks are skipped."""
     if repo is _AUTO:
@@ -566,10 +569,10 @@ def _validate_data(data, source: str, repo, old_volumes: bool) -> list[str]:
                     and ".." not in default.split("/")):
                 err(f"{at}.default must be ./data/<path> with no .. segment")
             elif bound is not None:
-                literal = default in bound
-                via_env = env is not None and f"${{{env}:-{default}}}" in bound
-                if not (literal or via_env):
-                    err(f"{at}.default {default!r} is not the source of a bind mount in docker-compose.yml")
+                forms = [default] + ([f"${{{env}:-{default}}}"] if env is not None else [])
+                if not any(b == f or b.startswith(f + "/") for b in bound for f in forms):
+                    err(f"{at}.default {default!r} is not a bind mount source, or the parent of one, "
+                        "in docker-compose.yml")
     return errors
 
 
