@@ -156,7 +156,8 @@ sign-in page and says where the password is.
 Before stack 0.3.13, each workspace was a file,
 `compose/twenty/workspaces/<slug>.env`. `./scripts/crm.sh migrate` imports
 those files into the store and renames each to `<slug>.env.migrated`. `make
-ensure-local` runs it, and so does every other `crm.sh` command. It keeps a
+ensure-local` runs it, and so do `crm.sh init`, `add`, `remove`, `access`,
+`login-link` and `open`. It keeps a
 workspace already in the store and leaves its file where it is, with a
 warning. It skips, with a message and without renaming:
 

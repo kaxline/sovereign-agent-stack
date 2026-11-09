@@ -10,7 +10,7 @@ twenty_json_get() {
 
 # Why a legacy workspace file cannot migrate, or nothing. Names the rule, never a value.
 twenty_unmigratable() {
-  local f="$1" slug url k line
+  local f="$1" slug url k line access
   slug="$(basename "$f" .env)"
   if ! [[ "$slug" =~ ^[a-z][a-z0-9-]{0,30}$ ]]; then
     printf '%s' "the name must start with a letter and be at most 31 lowercase letters, digits and hyphens"
@@ -29,6 +29,16 @@ twenty_unmigratable() {
     printf '%s' "the URL carries user:password@"
     return 0
   fi
+  if ! [[ "$url" =~ ^https?:// ]]; then
+    printf '%s' "TWENTY_URL is not an http(s) URL"
+    return 0
+  fi
+  if grep -E '^TWENTY_(URL|WORKSPACE_URL|WORKSPACE_ID|KEY_RO|KEY_RW)=' "$f" 2>/dev/null | cut -d= -f2- | grep -q "[\"'\\\\]"; then
+    printf '%s' "a value holds a quote or backslash"
+    return 0
+  fi
+  access="$(grep -E '^TWENTY_ACCESS=' "$f" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' || true)"
+  case "${access:-write}" in read | write) ;; *) printf '%s' "TWENTY_ACCESS must be read or write"; return 0 ;; esac
   return 0
 }
 
@@ -56,7 +66,9 @@ doctor_twenty() {
     [[ -f "$f" ]] || continue
     local why
     why="$(twenty_unmigratable "$f")"
-    if [[ -n "$why" ]]; then
+    if [[ -f "${store}/instances/$(basename "$f" .env).json" ]]; then
+      warn "${f}: ${store} already has this workspace, so migrate keeps the stored one and leaves the file. Delete the file once you've checked the store"
+    elif [[ -n "$why" ]]; then
       warn "${f} was not migrated to ${store}, and can't be: ${why}. Fix the file, then run ./scripts/crm.sh migrate"
     else
       warn "${f} was not migrated to ${store} — run ./scripts/crm.sh migrate"
@@ -70,8 +82,7 @@ doctor_twenty() {
     else
       bad "TWENTY_LOCAL_ENABLED=1 but 'crm' not in COMPOSE_PROFILES — run make ensure-local"
     fi
-    local pair
-    for pair in TWENTY_ENCRYPTION_KEY TWENTY_DB_PASSWORD; do
+        for pair in TWENTY_ENCRYPTION_KEY TWENTY_DB_PASSWORD; do
       if [[ -n "$(env_get "$pair")" && -n "$(env_get "${pair}_FILE")" ]]; then
         bad "${pair} and ${pair}_FILE are both set — keep one (the containers refuse to start)"
       elif [[ -n "$(env_get "${pair}_FILE")" ]]; then
@@ -109,7 +120,7 @@ doctor_twenty() {
 
   if [[ "$twenty_mcp" -eq 1 ]]; then
     ok "TWENTY_MCP_ENABLED=1"
-    local twenty_count=0 url access ro_f rw_f has_ro has_rw key kind k probe hdr code label cfg envfile env_key rw
+    local twenty_count=0 url access ro_f rw_f has_ro has_rw key kind k probe hdr code label cfg envfile env_key rw pair
     for f in "$store/instances"/*.json; do
       [[ -f "$f" ]] || continue
       slug="$(basename "$f" .json)"

@@ -130,6 +130,23 @@ sed -i.bak 's/TWENTY_MCP_ENABLED=1/TWENTY_MCP_ENABLED=0/' "$tmp/work/.env"
 doctor
 has "off but leftover" "was not migrated"
 
+# A leftover whose slug is already stored: migrate would keep the store.
+rm -f "$tmp/work/compose/twenty/workspaces/"*.env
+printf 'TWENTY_URL=https://crm.example.com\n' > "$tmp/work/compose/twenty/workspaces/main.env"
+setenv
+doctor
+has "already stored" "already has this workspace"
+hasnt "no migrate hint" "run ./scripts/crm.sh migrate"
+# Other skip causes.
+rm -f "$tmp/work/compose/twenty/workspaces/"*.env
+printf 'TWENTY_URL=ftp://crm.example.com\n' > "$tmp/work/compose/twenty/workspaces/a.env"
+printf 'TWENTY_URL=https://crm.example.com\nTWENTY_WORKSPACE_ID=a"b\n' > "$tmp/work/compose/twenty/workspaces/b.env"
+printf 'TWENTY_URL=https://crm.example.com\nTWENTY_ACCESS=admin\n' > "$tmp/work/compose/twenty/workspaces/c.env"
+doctor
+has "scheme" "not an http(s) URL"
+has "quote" "a quote or backslash"
+has "access" "TWENTY_ACCESS must be read or write"
+
 for k in "$KEY_RO" "$KEY_RW" fake-legacy-key; do
   if grep -qF -- "$k" "$all"; then fail "a key shows in the output"; fi
 done

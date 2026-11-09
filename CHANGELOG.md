@@ -33,8 +33,8 @@ the stack under another app.
 - **Workspaces moved out of `compose/twenty/workspaces/`** into the add-on
   store `data/addons/twenty/` (`instances/<slug>.json`,
   `secrets/<slug>.key_ro` and `.key_rw`). `crm.sh migrate` imports the old
-  files and renames them `.env.migrated`; `make ensure-local` and every
-  `crm.sh` command run it. `crm.sh add`, `remove` and `access` write the
+  files and renames them `.env.migrated`; `make ensure-local` and `crm.sh` `init`, `add`,
+  `remove`, `access`, `login-link` and `open` run it. `crm.sh add`, `remove` and `access` write the
   store. `compose/twenty/workspace.env.example` is the legacy format and only
   documents what `migrate` reads.
 - **Profile `.env` key names changed:** the Hermes bootstrap stores each
