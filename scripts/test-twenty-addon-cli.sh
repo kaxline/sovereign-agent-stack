@@ -1,8 +1,9 @@
 #!/bin/sh
 # scripts/addon.sh against the real addons/twenty manifest, in a scratch ROOT
 # with its data root outside it, host python3, and stub docker, make and curl.
-# enable is refused until a workspace is stored; after connect, enable runs
-# crm.sh init (local instance off), which migrates a legacy workspace file;
+# enable succeeds with no workspace stored (the instances are optional) and
+# runs crm.sh init (local instance off), which migrates a legacy workspace
+# file; connect follows;
 # connect and disconnect run crm.sh's hooks (a bad value or a local mismatch
 # comes back as crm.sh's error, a schema violation as addon.sh's bad_input);
 # remove --delete-data deletes the instance store and the local data dir, and
@@ -37,9 +38,8 @@ done
 cp -R "${REPO}/addons" "${root}/addons"
 cp "${REPO}/docker-compose.yml" "${root}/"
 # The env readers take a key's first line, so ASSISTANT_DATA_ROOT and
-# TWENTY_DATA_DIR replace
-# the example's ./data rather than being appended. TWENTY_LOCAL_ENABLED is 0
-# in the example.
+# TWENTY_DATA_DIR replace the example's ./data rather than being appended.
+# TWENTY_LOCAL_ENABLED is 0 in the example.
 grep -v -e '^ASSISTANT_DATA_ROOT=' -e '^TWENTY_DATA_DIR=' "${REPO}/.env.example" > "${root}/.env"
 {
   printf 'COMPOSE_PROJECT_NAME=twentytest\n'
@@ -143,15 +143,22 @@ present() { for p in "$@"; do [ -f "$p" ] || return 1; done; }
 json_file() { python3 -c "import json, sys; v = json.load(open(sys.argv[1])); sys.exit(0 if eval(sys.argv[2]) else 1)" "$1" "$2" 2> /dev/null; }
 ws="${root}/compose/twenty/workspaces"
 
-# --- enable before any workspace: missing_settings --------------------------------
-# store.missing wants one stored instance before enable; init, which creates
-# the local workspace and migrates legacy files, runs after that check.
+# --- enable first, with no workspace stored ----------------------------------------
+# Twenty's instances are optional, so enable succeeds. Its init hook runs
+# crm.sh init --json, which migrates the pre-0.3.13 legacy.env.
 addon enable twenty --json < /dev/null
-expect_rc "enable with no workspace exits 3" 3
-t "enable with no workspace is missing_settings instances:workspace" \
-  json_ok error 'last.get("error") == "missing_settings" and "instances:workspace" in last.get("message", "")'
-t "a refused enable leaves TWENTY_MCP_ENABLED off" lacks_line '^TWENTY_MCP_ENABLED=1$' "${root}/.env"
-t "a refused enable leaves legacy.env alone" present "${ws}/legacy.env"
+expect_rc "enable with no workspace stored exits 0" 0
+t "enable ends with done after the init step" \
+  json_ok "done" 'any(l.get("step") == "init" and l.get("status") == "done" for l in lines)'
+no_keys "enable"
+t "enable sets TWENTY_MCP_ENABLED=1" has_line '^TWENTY_MCP_ENABLED=1$' "${root}/.env"
+t "enable starts no service with TWENTY_LOCAL_ENABLED=0" lacks_line "compose up" "$STUB_LOG"
+t "init migrated legacy.env into the store" \
+  present "${store}/instances/legacy.json" "${store}/secrets/legacy.key_ro" "${store}/secrets/legacy.key_rw"
+t "legacy.env is renamed .env.migrated" present "${ws}/legacy.env.migrated"
+t "legacy.env is gone" absent "${ws}/legacy.env"
+t "the legacy instance keeps its url and access" \
+  json_file "${store}/instances/legacy.json" 'v["url"] == "https://legacy.example.com" and v["access"] == "read" and v["local"] is False'
 
 # --- connect sales: curl 200 ---------------------------------------------------
 CURL_CODE=200
@@ -180,13 +187,6 @@ no_keys "refused connect"
 t "a refused connect writes nothing" absent "${store}/instances/refused.json" "${store}/secrets/refused.key_ro"
 CURL_CODE=200
 
-# --- enable: init runs crm.sh init --json, which migrates legacy.env ----------
-addon enable twenty --json < /dev/null
-expect_rc "enable exits 0" 0
-t "enable ends with done after the init step" \
-  json_ok "done" 'any(l.get("step") == "init" and l.get("status") == "done" for l in lines)'
-no_keys "enable"
-
 # --- remove while enabled: refused ---------------------------------------------
 addon remove twenty --delete-data --json < /dev/null
 expect_rc "remove while enabled exits 2" 2
@@ -203,14 +203,6 @@ t "crm.sh init --json ends with done: local instance off" \
   json_ok "done" 'last.get("message") == "local instance off"'
 no_keys "crm.sh init --json"
 t "state.json records init" json_file "${store}/state.json" '"init" in v'
-t "enable sets TWENTY_MCP_ENABLED=1" has_line '^TWENTY_MCP_ENABLED=1$' "${root}/.env"
-t "enable starts no service with TWENTY_LOCAL_ENABLED=0" lacks_line "compose up" "$STUB_LOG"
-t "init migrated legacy.env into the store" \
-  present "${store}/instances/legacy.json" "${store}/secrets/legacy.key_ro" "${store}/secrets/legacy.key_rw"
-t "legacy.env is renamed .env.migrated" present "${ws}/legacy.env.migrated"
-t "legacy.env is gone" absent "${ws}/legacy.env"
-t "the legacy instance keeps its url and access" \
-  json_file "${store}/instances/legacy.json" 'v["url"] == "https://legacy.example.com" and v["access"] == "read" and v["local"] is False'
 
 # --- connect with a value crm.sh's hook refuses, and one addon.sh refuses ----------
 addon_in '{"url":"https://u:pw@crm.example.com","access":"read","local":false,"key_ro":"fake-refused-key"}' connect twenty --instance badvalue --json

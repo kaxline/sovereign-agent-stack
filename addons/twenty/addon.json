@@ -51,6 +51,7 @@
   },
   "instances": {
     "name": "workspace",
+    "optional": true,
     "settings": {
       "url": {
         "type": "url",
