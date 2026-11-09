@@ -10,8 +10,12 @@ the stack under another app.
 
 ### Upgrade steps
 
-None. LightRAG's registration on the api-server and browser profiles is
-unchanged.
+LightRAG's registration on the api-server and browser profiles is unchanged.
+One change can remove a key you added: a hand-added MCP key on the default
+profile (or on browser) at the GPT Researcher or Actual Budget URL is removed
+on the next bootstrap when that add-on is enabled, and the stack's own key
+(`gptr`, `actual`) stays. Point your key at a different URL, or use the
+stack's key. See "Other MCP keys at an add-on's URL are dropped" below.
 
 ### Changes
 
@@ -34,9 +38,20 @@ unchanged.
   existing entry at the add-on's URL on every profile, default included.
 - **Other MCP keys at an add-on's URL are dropped**: after bootstrap registers
   an add-on's MCP server on a profile, it removes every other key at the same
-  URL on that profile, such as an unfiltered `lightrag-mcp` copy cloned from
-  default. This applies to GPT Researcher, Actual Budget and LightRAG on
-  stack-managed profiles.
+  URL on that profile, whatever its tool filter. For LightRAG this removes an
+  unfiltered `lightrag-mcp` copy cloned from default into api-server or
+  browser. For GPT Researcher (default, browser) and Actual Budget (default,
+  browser, api-server) it also applies to the default profile, which is the
+  user's own config: a key you added by hand on default at the GPT Researcher
+  or Actual URL is now removed in favor of the stack's key. With an add-on's
+  flag off, bootstrap drops every key at its URL on those profiles the same
+  way.
+- **An invalid add-on manifest fails closed**: if a built-in manifest does
+  not validate (a typo, non-canonical JSON), bootstrap still removes every
+  MCP key at the URL the manifest names from the profiles it covers, instead
+  of leaving them as they were. `mcp.unmanaged` profiles are still skipped. A
+  manifest whose URL cannot be worked out is skipped with a warning, as
+  before.
 - **Add-on manifest fields** (experimental): a built-in manifest can declare
   `gates` (further flag-to-profile rows for `sync-profiles.sh`), `mcp` as a
   list with per-entry `title` and `when`, `instances`, `commands`,
