@@ -512,7 +512,7 @@ r = Run("token-redirect", "create", account("collection:c-placeholder", mode="se
 r.expect_code(0)
 check(not any(c[1] == "/redirected" for c in r.api["calls"]), "token-redirect: followed the redirect")
 check("redirect refused" in r.out and not r.api["invites"], f"token-redirect: output\n{r.out}")
-check(r.api.get("token_scope") == "api", f"token-redirect: token scope {r.api.get('token_scope')!r}")
+check(r.api.get("token_scope") == "api offline_access", f"token-redirect: token scope {r.api.get('token_scope')!r}")
 
 # grant --site that is not a host: exit 1. grant of an item already in scope: no "marks done" line.
 r = Run("grant-not-host", "grant", account("folder:Agent"),

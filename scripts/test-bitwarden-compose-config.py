@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Resolved compose config for the Bitwarden services: profiles, the broker's
-sandbox, and what hermes and bitwarden-setup can and cannot reach.
+sandbox, what hermes and bitwarden-setup can and cannot reach, and the local
+Vaultwarden with its TLS sidecar (profile vault).
 
 Needs a .env that satisfies compose interpolation, as CI writes. Prints no
 environment values.
@@ -16,6 +17,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SERVICES = ("bitwarden-broker", "bitwarden-secrets-sync", "bitwarden-setup")
+LOCAL_SERVICES = ("vaultwarden", "vaultwarden-tls")
+VAULTWARDEN_IMAGE = ("vaultwarden/server:1.37.4@sha256:"
+                     "efb3cde962015fcc036b2ea625242248611943b27212ebf4392841fb30fad055")
+LOCAL_NAME = "vaultwarden.vault.internal"
 ADDON_DATA = "addons/bitwarden"
 SYNC_VOLUME = "bitwarden_sync"
 failures: list[str] = []
@@ -53,9 +58,13 @@ def networks(service: dict) -> set[str]:
 
 def check_off() -> None:
     services = config("core").get("services", {})
-    for name in SERVICES:
+    for name in SERVICES + LOCAL_SERVICES:
         if name in services:
             fail(f"{name} is in the core profile")
+    services = config("core,bitwarden,bitwarden-tools").get("services", {})
+    for name in LOCAL_SERVICES:
+        if name in services:
+            fail(f"{name} starts without the vault profile")
 
 
 def check_broker(services: dict) -> None:
@@ -178,6 +187,82 @@ def check_tools(cfg: dict) -> None:
             fail(f"{name} mounts {SYNC_VOLUME}")
 
 
+def env_value(service: dict, key: str):
+    env = service.get("environment") or {}
+    return env.get(key) if isinstance(env, dict) else None
+
+
+def check_local(cfg: dict) -> None:
+    services = cfg.get("services", {})
+    vw, tls = services.get("vaultwarden"), services.get("vaultwarden-tls")
+    if vw is None or tls is None:
+        fail("vaultwarden and vaultwarden-tls belong to the vault profile")
+        return
+    if vw.get("image") != VAULTWARDEN_IMAGE:
+        fail(f"vaultwarden image is {vw.get('image')!r}, want {VAULTWARDEN_IMAGE!r}")
+    ports = vw.get("ports") or []
+    want_port = [{"mode": "ingress", "host_ip": "127.0.0.1", "target": 80, "published": "8222", "protocol": "tcp"}]
+    if ports != want_port:
+        fail(f"vaultwarden ports are {ports!r}, want only 127.0.0.1:8222:80")
+    for key, want in (("SIGNUPS_ALLOWED", "false"), ("INVITATIONS_ALLOWED", "true"),
+                      ("DOMAIN", "http://localhost:8222")):
+        if env_value(vw, key) != want:
+            fail(f"vaultwarden {key} must be {want}")
+    if env_value(vw, "ADMIN_TOKEN") is not None:
+        fail("vaultwarden ADMIN_TOKEN must come from a file, not the environment")
+    token_file = env_value(vw, "ADMIN_TOKEN_FILE")
+    token_dir = str(Path(token_file or "/").parent)
+    vol = mount_at(vw, token_dir)
+    if not token_file or vol is None or not vol.get("read_only") \
+            or not str(vol.get("source", "")).endswith(f"{ADDON_DATA}/secrets/local/vaultwarden"):
+        fail("vaultwarden reads ADMIN_TOKEN_FILE from secrets/local/vaultwarden, mounted read-only")
+    vol = mount_at(vw, "/data")
+    if vol is None or not str(vol.get("source", "")).endswith(f"{ADDON_DATA}/vaultwarden") or vol.get("read_only"):
+        fail("vaultwarden keeps /data in data/addons/bitwarden/vaultwarden")
+    if {v.get("target") for v in mounts(vw)} != {"/data", token_dir}:
+        fail(f"vaultwarden mounts {sorted(v.get('target') for v in mounts(vw))}, want /data and the token folder")
+    if networks(vw) != {"default", "vault"}:
+        fail(f"vaultwarden networks are {sorted(networks(vw))}, want ['default', 'vault']")
+    if "/alive" not in " ".join((vw.get("healthcheck") or {}).get("test") or []):
+        fail("vaultwarden healthcheck must GET /alive")
+
+    if tls.get("image") != "nginx:1.30.6-alpine":
+        fail(f"vaultwarden-tls image is {tls.get('image')!r}, want the pinned nginx")
+    if tls.get("ports"):
+        fail("vaultwarden-tls publishes a port")
+    if set(tls.get("networks") or {}) != {"vault"}:
+        fail(f"vaultwarden-tls networks are {sorted(networks(tls))}, want ['vault']")
+    aliases = ((tls.get("networks") or {}).get("vault") or {}).get("aliases") or []
+    if LOCAL_NAME not in aliases:
+        fail(f"vaultwarden-tls needs the alias {LOCAL_NAME} on vault")
+    want = {
+        "/etc/nginx/templates/default.conf.template": str(ROOT / "compose/bitwarden-tls/default.conf.template"),
+        "/etc/nginx/tls/server.crt": f"{ADDON_DATA}/secrets/local/tls/server.crt",
+        "/etc/nginx/tls/server.key": f"{ADDON_DATA}/secrets/local/tls/server.key",
+    }
+    got = {v.get("target"): str(v.get("source")) for v in mounts(tls)}
+    if set(got) != set(want) or any(not got[t].endswith(src) for t, src in want.items()):
+        fail(f"vaultwarden-tls mounts {sorted(got)}, want the template, server.crt and server.key")
+    for vol in mounts(tls):
+        if not vol.get("read_only"):
+            fail(f"vaultwarden-tls mounts {vol.get('target')} read-write")
+    if "vaultwarden" not in (tls.get("depends_on") or {}):
+        fail("vaultwarden-tls must depend on vaultwarden")
+    template = (ROOT / "compose/bitwarden-tls/default.conf.template").read_text(encoding="utf-8")
+    for needle in ("listen 443 ssl", "proxy_pass", "http://vaultwarden:80", "/notifications/hub",
+                   "Upgrade", "/etc/nginx/tls/server.crt", "/etc/nginx/tls/server.key"):
+        if needle not in template:
+            fail(f"compose/bitwarden-tls/default.conf.template lacks {needle!r}")
+
+    allowed = {"bitwarden-broker", "bitwarden-setup", *LOCAL_SERVICES}
+    for name, service in services.items():
+        if name not in allowed and any(f"{ADDON_DATA}/secrets" in str(v.get("source", "")) for v in mounts(service)):
+            fail(f"{name} mounts the Bitwarden secrets")
+    rows = (ROOT / "scripts/sync-profiles.sh").read_text(encoding="utf-8").splitlines()
+    if "BITWARDEN_LOCAL_ENABLED vault 0" not in rows:
+        fail("sync-profiles.sh must map BITWARDEN_LOCAL_ENABLED to vault, default off")
+
+
 def main() -> None:
     check_off()
     check_broker(config("core,bitwarden").get("services", {}))
@@ -185,6 +270,7 @@ def main() -> None:
         cfg = config("core,bitwarden,bitwarden-tools", backend)
         check_hermes(cfg, backend)
     check_tools(config("core,bitwarden,bitwarden-tools"))
+    check_local(config("core,bitwarden,bitwarden-tools,vault"))
     if failures:
         for msg in failures:
             print(f"FAIL {msg}", file=sys.stderr)

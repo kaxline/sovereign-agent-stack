@@ -2002,6 +2002,71 @@ services:
       - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/secrets:/secrets
     networks: [bitwarden-setup, vault]
 
+  # ----------------------------------------------------------------------
+  # Local Vaultwarden for the Bitwarden broker's local mode (docs/bitwarden.md)
+  # Profile: vault (BITWARDEN_LOCAL_ENABLED=1)
+  # Web vault: http://localhost:8222 (localhost-bound; VAULTWARDEN_PORT)
+  # Broker:  https://vaultwarden.vault.internal through vaultwarden-tls
+  # Data:    BITWARDEN_HOST_DATA_DIR/vaultwarden. make vault-init writes the
+  #          admin token, its hash and the TLS files under secrets/local/.
+  # ----------------------------------------------------------------------
+  vaultwarden:
+    profiles: ["vault"]
+    container_name: ${CONTAINER_PREFIX:-}vaultwarden
+    image: vaultwarden/server:1.37.4@sha256:efb3cde962015fcc036b2ea625242248611943b27212ebf4392841fb30fad055
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${VAULTWARDEN_PORT:-8222}:80"
+    environment:
+      - SIGNUPS_ALLOWED=false
+      - INVITATIONS_ALLOWED=true
+      - DOMAIN=http://localhost:${VAULTWARDEN_PORT:-8222}
+      # The Argon2id hash only; the plaintext stays in secrets/local/admin_token,
+      # which only bitwarden-setup mounts. Vaultwarden reads any setting from <NAME>_FILE.
+      - ADMIN_TOKEN_FILE=/run/vaultwarden/admin_token.phc
+    volumes:
+      - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/vaultwarden:/data
+      - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/secrets/local/vaultwarden:/run/vaultwarden:ro
+    # default carries the host port; vault is how vaultwarden-tls reaches it.
+    networks: [default, vault]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:80/alive"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+      start_interval: 2s
+
+  # TLS for the broker and bitwarden-setup: bw refuses plain-HTTP servers. No
+  # host port; the user's browser uses vaultwarden's own. compose/bitwarden-tls/
+  vaultwarden-tls:
+    profiles: ["vault"]
+    container_name: ${CONTAINER_PREFIX:-}vaultwarden-tls
+    image: ${VIKUNJA_PROXY_IMAGE:-nginx:1.30.6-alpine}
+    restart: unless-stopped
+    environment:
+      # Matches no variable: the template has no ${...} of its own.
+      - NGINX_ENVSUBST_FILTER=^VAULTWARDEN_TLS_
+      - NGINX_ENTRYPOINT_WORKER_PROCESSES_AUTOTUNE=1
+    cpus: 0.5
+    volumes:
+      - ./compose/bitwarden-tls/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+      # The server pair only; the CA's key stays out of this container.
+      - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/secrets/local/tls/server.crt:/etc/nginx/tls/server.crt:ro
+      - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/secrets/local/tls/server.key:/etc/nginx/tls/server.key:ro
+    networks:
+      vault:
+        aliases: [vaultwarden.vault.internal]
+    depends_on:
+      vaultwarden:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null --no-check-certificate https://127.0.0.1/alive || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
 networks:
   # Internal: no route off the host. Members: postgres-db, db-provision,
   # sql-mcp-ro, sql-mcp-rw, hermes, and any integration that stores data.
@@ -2012,7 +2077,7 @@ networks:
   crm:
     internal: true
   # Internal: the local Vaultwarden (profile vault). hermes joins it, so the
-  # broker in hermes' namespace reaches it; so does bitwarden-setup.
+  # broker in hermes' namespace reaches vaultwarden-tls; so does bitwarden-setup.
   vault:
     internal: true
   # bitwarden-setup's route to Bitwarden's servers, apart from hermes.

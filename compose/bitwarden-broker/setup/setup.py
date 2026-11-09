@@ -20,6 +20,21 @@ Commands:
                      ``--agent-email`` defaults to agent@vault.localhost for ``local``.
 ``list-unassigned``  Organization items in no collection, by name and URI host.
 
+Local-mode files, which need no account or password:
+
+    setup.py tls --dir DIR [--name NAME] [--rotate]
+    setup.py admin-token --dir DIR [--rotate]
+
+``tls``          Writes the private CA and the sidecar's server certificate
+                 (setup/tls.py) into DIR, normally /secrets/local/tls.
+``admin-token``  Writes a random Vaultwarden admin token to DIR/admin_token and
+                 its Argon2id PHC hash, which Vaultwarden reads through
+                 ADMIN_TOKEN_FILE, to DIR/vaultwarden/admin_token.phc. Both are
+                 mode 600. DIR is normally /secrets/local.
+
+Both keep files that exist and refuse a half-written set; ``--rotate``
+replaces everything.
+
 The account file is ``$BITWARDEN_ACCOUNTS_DIR/<slug>.env``. ``--server`` is the
 user's server and defaults to the account's ``BW_SERVER``; it must be https,
 except plain http to a loopback address, which only a test can serve from
@@ -44,12 +59,11 @@ import getpass
 import ipaddress
 import json
 import os
+import secrets
 import shutil
 import signal
 import sys
 import tempfile
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -70,8 +84,10 @@ STACK_SECRETS = "Stack secrets"
 DEFAULT_COLLECTION = "Agent"
 MEMBER_INVITED, MEMBER_ACCEPTED = 0, 1
 TYPE_USER = 2
-API_TIMEOUT_SECONDS = 30
 COMMANDS = ("create", "seed", "grant", "role", "list-unassigned")
+LOCAL_COMMANDS = ("tls", "admin-token")
+ADMIN_TOKEN_FILE = "admin_token"
+ADMIN_HASH_FILE = "vaultwarden/admin_token.phc"
 
 
 class SetupError(Exception):
@@ -238,25 +254,21 @@ class Run:
 
     # Org API
 
-    def api(self, method: str, path: str, body: dict, what: str) -> None:
-        """Call the organization API with the token; raises SetupError naming ``what`` and the status."""
-        _, api_base = vw_register.endpoints(self.args.server)
-        req = urllib.request.Request(f"{api_base}{path}", data=json.dumps(body).encode("utf-8"), method=method,
-                                     headers={"Content-Type": "application/json",
-                                              "Authorization": f"Bearer {self.token}"})
-        failure = None
+    def _org_call(self, what: str, fn, *args) -> None:
+        """Run a vw_register call with the token; raises SetupError naming ``what`` and the reason."""
         try:
-            with vw_register.opener().open(req, timeout=API_TIMEOUT_SECONDS):
-                pass
-        except urllib.error.HTTPError as exc:
-            failure = "redirect refused" if 300 <= exc.code < 400 else f"HTTP {exc.code}"
-            exc.close()
-        except (urllib.error.URLError, OSError):
-            failure = "unreachable"
-        finally:
-            req = None
-        if failure is not None:
-            raise SetupError(f"{what} refused: {failure}")
+            fn(self.args.server, self.token, *args)
+        except vw_register.VwError as exc:
+            failure = exc.failure
+        else:
+            return
+        raise SetupError(f"{what} {failure}")
+
+    def api(self, method: str, path: str, body: dict, what: str) -> None:
+        self._org_call(what, vw_register.api, method, path, body)
+
+    def invite(self, org: str, email: str) -> None:
+        self._org_call("invite", vw_register.invite_member, org, email, TYPE_USER, [])
 
     def web_vault_note(self) -> str:
         reason = self.token_error or "no token"
@@ -467,9 +479,7 @@ class Run:
                 invite_steps = True
             else:
                 try:
-                    self.api("POST", f"/organizations/{org}/users/invite",
-                             {"emails": [agent_email], "groups": [], "type": TYPE_USER, "collections": [],
-                              "permissions": {}}, "invite")
+                    self.invite(org, agent_email)
                     print(f"Invited {agent_email} to the organization.")
                     member = self.member(org, agent_email)
                 except SetupError as exc:
@@ -691,7 +701,85 @@ def ask_password(bw: UserBw, email: str) -> list[str]:
     raise PasswordTriesExhausted
 
 
+# Local-mode files
+
+def _write_secret(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(value + "\n")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except BaseException:
+        os.unlink(tmp)
+        raise
+
+
+def make_admin_token(dir: Path, rotate: bool = False) -> str:
+    """Write the admin token and its Argon2id hash under ``dir``; returns what happened, without either value."""
+    from argon2 import PasswordHasher, Type
+    from argon2.exceptions import InvalidHash, VerificationError
+
+    plain_path, hash_path = dir / ADMIN_TOKEN_FILE, dir / ADMIN_HASH_FILE
+    hasher = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=4, hash_len=32, salt_len=16, type=Type.ID)
+    plain = None
+    if not rotate and plain_path.exists():
+        plain = plain_path.read_text(encoding="utf-8").strip()
+        if not plain:
+            raise SetupError(f"{plain_path} is empty; pass --rotate to make a new token.")
+        if hash_path.exists():
+            try:
+                hasher.verify(hash_path.read_text(encoding="utf-8").strip(), plain)
+            except (InvalidHash, VerificationError):
+                raise SetupError(f"{hash_path} does not match {plain_path}; pass --rotate to replace both.") from None
+            return f"Kept {plain_path} and {hash_path}."
+        _write_secret(hash_path, hasher.hash(plain))
+        return f"Kept {plain_path}; wrote its hash to {hash_path}."
+    if not rotate and hash_path.exists():
+        raise SetupError(f"{hash_path} exists without {plain_path}; pass --rotate to replace it.")
+    plain = secrets.token_urlsafe(48)
+    try:
+        _write_secret(plain_path, plain)
+        _write_secret(hash_path, hasher.hash(plain))
+    finally:
+        plain = None
+    note = " Restart vaultwarden to use it." if rotate else ""
+    return f"Wrote {plain_path} and {hash_path}.{note}"
+
+
+def local_main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="bitwarden-setup")
+    parser.add_argument("command", choices=LOCAL_COMMANDS)
+    parser.add_argument("--dir", required=True, type=Path)
+    parser.add_argument("--name")
+    parser.add_argument("--rotate", action="store_true")
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "tls":
+            import tls
+            try:
+                tls.make_local_tls(args.dir, args.name or tls.LOCAL_NAME, rotate=args.rotate)
+            except tls.TlsError as exc:
+                raise SetupError(str(exc)) from None
+            print(f"TLS files for {args.name or tls.LOCAL_NAME} are in {args.dir}.")
+        else:
+            if args.name:
+                raise SetupError("--name applies to tls only.")
+            print(make_admin_token(args.dir, rotate=args.rotate))
+    except SetupError as exc:
+        print(exc)
+        return EXIT_FAILED
+    except OSError as exc:
+        print(f"Could not write the files in {args.dir} ({exc.strerror or 'error'}).")
+        return EXIT_FAILED
+    return 0
+
+
 def main(argv: list[str]) -> int:
+    if argv and argv[0] in LOCAL_COMMANDS:
+        return local_main(argv)
     args = parse_args(argv)
     accounts_dir = Path(os.environ.get("BITWARDEN_ACCOUNTS_DIR") or "/accounts")
     try:

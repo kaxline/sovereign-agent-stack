@@ -1,5 +1,7 @@
 # Bitwarden broker: the bw native build plus the stdlib broker package.
 # Also the image for bitwarden-setup and bitwarden-secrets-sync.
+# python3-cryptography and python3-argon2 are for bitwarden-setup's local mode
+# (setup/vw_register.py, setup/tls.py and the admin token).
 FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS bw
 
 # Digests are GitHub's asset digests for the cli-v${BW_CLI_VERSION} release
@@ -33,6 +35,7 @@ ARG BW_CLI_VERSION=2026.10.1
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates python3 python3-websockets \
+       python3-cryptography python3-argon2 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=bw /usr/local/bin/bw /usr/local/bin/bw

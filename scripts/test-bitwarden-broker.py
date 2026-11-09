@@ -570,6 +570,23 @@ def test_exception_context_holds_no_secrets() -> None:
         run.expect_clean(out.getvalue())
 
 
+def test_real_bw_stderr() -> None:
+    """bw 2026.10.1's own text against Vaultwarden 1.37.4, from scripts/test-vw-register.py."""
+    for text, want in (
+        ("Cryptography error, The decryption operation failed", ("auth", None)),  # bw unlock, wrong password
+        ("Username or password is incorrect. Try again", ("auth", None)),  # bw login, wrong password
+        ("Incorrect client_secret", ("auth", None)),  # bw login --apikey, wrong secret
+        ("Rate limit exceeded. Try again later.", ("rate_limited", 60)),  # any 429; no Retry-After printed
+        ('Syncing failed: {"response":{"error":{"code":401,"reason":"Unauthorized","description":"The request '
+         'requires user authentication."}},"statusCode":401}', ("auth", None)),
+        ("Not found.", ("unknown", None)),
+        ("Vault is locked.", ("locked", None)),
+        ("FetchError: request to https://vaultwarden.vault.internal/identity/connect/token failed, "
+         "reason: unable to verify the first certificate", ("network", None)),
+    ):
+        expect(bwcli.classify(NODE_WARNING + text) == want, f"{text[:40]!r}: {bwcli.classify(text)}")
+
+
 def test_node_warning_noise() -> None:
     expect(bwcli.classify(NODE_WARNING + "Not found.") == ("unknown", None), "PID read as a status code")
     expect(bwcli.classify(NODE_WARNING + "Too Many Requests (429). Retry-After: 120") == ("rate_limited", 120), "429")
@@ -1532,6 +1549,7 @@ def main() -> None:
     test_429_backoff()
     test_errors_carry_no_text()
     test_exception_context_holds_no_secrets()
+    test_real_bw_stderr()
     test_node_warning_noise()
     test_manual_unlock_and_lock()
     test_denylist()

@@ -53,9 +53,13 @@ _NOISE = re.compile(r"^\s*(\(node:\d+\)|\(use `node|$)", re.IGNORECASE)
 
 # Checked in order against bw's lower-cased stderr with the noise lines removed.
 _PATTERNS = tuple((cls, re.compile("|".join(parts))) for cls, parts in (
-    ("rate_limited", (r"too many requests", r"\b(?:status|http|code)\b\D{0,3}429\b", r"\b429\b\s*too many")),
-    ("auth", (r"invalid master password", r"username or password is incorrect",
-              r"client_id or client_secret is incorrect", r"\binvalid_client\b", r"\binvalid_grant\b",
+    # bw 2026.10.1 prints "Rate limit exceeded. Try again later." for Vaultwarden's 429, with no Retry-After.
+    ("rate_limited", (r"too many requests", r"rate limit exceeded", r"\b(?:status|http|code)\b\D{0,3}429\b",
+                      r"\b429\b\s*too many")),
+    # bw 2026.10.1's unlock with a wrong password: "Cryptography error, The decryption operation failed".
+    ("auth", (r"invalid master password", r"the decryption operation failed", r"username or password is incorrect",
+              r"client_id or client_secret is incorrect", r"\bincorrect client_(?:id|secret)\b",
+              r"\binvalid_client\b", r"\binvalid_grant\b",
               r"you are not logged in", r"\b401\b\s*unauthorized", r"\bunauthorized\b\s*\(?401\b",
               r"\b(?:status|http|code)\b\D{0,3}401\b")),
     ("locked", (r"vault is locked", r"session key is invalid")),
