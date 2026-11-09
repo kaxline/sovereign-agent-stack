@@ -171,6 +171,8 @@ jobs:
         run: bash scripts/test-crm-sh.sh
       - name: crm.sh migrate into the add-on instance store
         run: bash scripts/test-crm-migrate.sh
+      - name: Twenty add-on through addon.sh with stub docker and curl
+        run: sh scripts/test-twenty-addon-cli.sh
       - name: vault.sh subcommands with a stub docker
         run: bash scripts/test-vault-sh.sh
       - name: budget.sh subcommands against stubs
