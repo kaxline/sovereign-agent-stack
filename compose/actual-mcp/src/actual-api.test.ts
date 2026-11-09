@@ -169,7 +169,7 @@ describe('writes after the session ends', () => {
     vi.mocked(api.sync).mockRejectedValueOnce(ended());
 
     await expect(createTransaction('acct-1', { date: '2026-11-01', amount: -100 } as never)).rejects.toThrow(
-      'Actual session ended (token-expired). The next call signs in again'
+      'Actual sign-in failed (token-expired). If it keeps failing'
     );
     expect(api.addTransactions).not.toHaveBeenCalled();
   });
@@ -179,7 +179,7 @@ describe('writes after the session ends', () => {
     vi.advanceTimersByTime(1);
     vi.mocked(api.sync).mockRejectedValueOnce(ended());
 
-    await expect(getReports()).rejects.toThrow('Actual session ended (token-expired)');
+    await expect(getReports()).rejects.toThrow('Actual sign-in failed (token-expired)');
     expect(send).not.toHaveBeenCalled();
   });
 });

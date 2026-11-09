@@ -22,9 +22,11 @@ const DEFAULT_SYNC_TTL_MS = 60_000;
  * - Deleted: `/sync/sync` answers 400 `file-not-found` for a missing or deleted file
  *   (`verifyFileExists`; `FilesService.get` treats `deleted` as not found).
  * - Changed: `/sync/sync` answers 400 from `validateSyncedFile` when the server's file no
- *   longer matches this copy: `file-has-reset` (the budget was reset, new group id),
- *   `file-key-mismatch` and `file-old-version`. None of them clears on a retry, and every
- *   write made meanwhile would stay in the local cache.
+ *   longer matches this copy: `file-needs-upload` (the budget was reset in the Actual UI;
+ *   `/reset-user-file` clears its group id, so this comes first), `file-has-reset` (reset and
+ *   re-uploaded, new group id), `file-has-new-key` (another client changed the encryption
+ *   key), `file-key-mismatch` and `file-old-version`. None of them clears on a retry, and
+ *   every write made meanwhile would stay in the local cache.
  * - Missing: `api.downloadBudget()` throws `budget-not-found` during init when the sync id is
  *   not among the files this sign-in can see (deleted, or no access). Not a sync code.
  */
@@ -36,7 +38,13 @@ const SIGN_IN_CODES: ReadonlySet<string> = new Set([
 ]);
 const ACCESS_CODES: ReadonlySet<string> = new Set(['file-access-not-allowed']);
 const DELETED_CODES: ReadonlySet<string> = new Set(['file-not-found']);
-const CHANGED_CODES: ReadonlySet<string> = new Set(['file-has-reset', 'file-key-mismatch', 'file-old-version']);
+const CHANGED_CODES: ReadonlySet<string> = new Set([
+  'file-needs-upload',
+  'file-has-reset',
+  'file-has-new-key',
+  'file-key-mismatch',
+  'file-old-version',
+]);
 const MISSING_CODES: ReadonlySet<string> = new Set(['budget-not-found']);
 
 /** How to reconnect the single stack-wide budget; `ACTUAL_RECONNECT_HINT` replaces it per budget. */
@@ -51,7 +59,7 @@ function reconnectHint(): string {
 /** The caller-facing message for an ended-session code, or null for any other code. Secret-free. */
 export function sessionEndedMessage(code: string): string | null {
   if (SIGN_IN_CODES.has(code)) {
-    return `Actual session ended (${code}). The next call signs in again; if it keeps failing, ${reconnectHint()}.`;
+    return `Actual sign-in failed (${code}). If it keeps failing, ${reconnectHint()}.`;
   }
   if (ACCESS_CODES.has(code)) {
     return `Access to this budget was removed (${code}); its owner or an admin has to restore it.`;

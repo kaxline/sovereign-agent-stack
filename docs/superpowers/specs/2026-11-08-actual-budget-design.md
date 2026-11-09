@@ -607,16 +607,18 @@ a `make hermes-reload` does.
 
 ### Changes from the spike
 
-- **Fail on an ended session (replaces the launcher restart).** Done in fc0b5a8 and fix round 1
+- **Fail on an ended session (replaces the launcher restart).** Done in fc0b5a8 and two fix rounds
   after it, shipped as a 0.3.x fix for the single budget. `syncIfStale()` in the vendored
   `connection.ts` now fails the call when `api.sync()` throws with code `token-expired`,
   `token-not-found`, `unauthorized`, `invalid-password`, `file-access-not-allowed`,
-  `file-not-found`, `file-has-reset`, `file-key-mismatch` or `file-old-version`, shuts the API down
+  `file-not-found`, `file-needs-upload`, `file-has-reset`, `file-has-new-key`, `file-key-mismatch`
+  or `file-old-version`, shuts the API down
   and re-runs init on the next call; init failures with those codes or `budget-not-found` get the
   same message. Other sync errors, network ones included, still continue with local data. With
   `ACTUAL_SYNC_TTL_MS=0` every call syncs first, so a write is refused before it lands in the
   cache (re-run live on both paths). The reconnect advice comes from `ACTUAL_RECONNECT_HINT`,
-  which the connect launcher sets per budget; unset, it names the single-budget commands.
+  which the planned connect launcher is to set per budget; nothing sets it yet, so it names the
+  single-budget commands.
   VENDORED.md lists the change. A launcher restart would give the same error on the next call
   but drops every Mcp-Session-Id, which Hermes doesn't recover from without a reload, and it
   would have to parse child stderr to know when. The remaining window is a write made between a

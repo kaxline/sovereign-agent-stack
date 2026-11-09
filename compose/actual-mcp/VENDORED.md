@@ -23,7 +23,8 @@ twice: `actual-mcp-rw` with `--sse --enable-write` and `actual-mcp-ro` with `--s
   when a sync shows the copy can't be kept in step with the server. When `api.sync()` throws
   with `code` `token-expired`, `token-not-found`, `unauthorized` or `invalid-password` (session
   ended), `file-access-not-allowed` (access removed), `file-not-found` (budget deleted) or
-  `file-has-reset`, `file-key-mismatch`, `file-old-version` (budget changed on the server), it
+  `file-needs-upload`, `file-has-reset`, `file-has-new-key`, `file-key-mismatch`,
+  `file-old-version` (budget reset, re-keyed or otherwise changed on the server), it
   shuts the API down, marks the connection failed and fails the call with a message for that
   group; the next call re-runs init. An init that fails with one of those codes, or with
   `budget-not-found`, gets the same message. The reconnect advice in the messages comes from

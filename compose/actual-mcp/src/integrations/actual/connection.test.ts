@@ -171,7 +171,7 @@ describe('ActualConnection sync failure on an ended session', () => {
     const op = vi.fn().mockResolvedValue('written');
 
     await expect(conn.run(op)).rejects.toThrow(
-      'Actual session ended (token-expired). The next call signs in again; if it keeps failing, ' +
+      'Actual sign-in failed (token-expired). If it keeps failing, ' +
         'reconnect it with make budget-remove and make budget-init (local server) ' +
         'or make budget-add URL=<server> FORCE=1 (remote server).'
     );
@@ -183,7 +183,7 @@ describe('ActualConnection sync failure on an ended session', () => {
     vi.mocked(api.init).mockRejectedValueOnce(
       Object.assign(new Error('Authentication failed: invalid or expired session token'), { code: 'token-expired' })
     );
-    await expect(conn.run(op)).rejects.toThrow('Actual session ended (token-expired). The next call signs in again');
+    await expect(conn.run(op)).rejects.toThrow('Actual sign-in failed (token-expired). If it keeps failing');
     expect(api.init).toHaveBeenCalledTimes(2);
     expect(op).not.toHaveBeenCalled();
   });
@@ -207,7 +207,7 @@ describe('ActualConnection sync failure on an ended session', () => {
     await conn.ensureReady();
     vi.advanceTimersByTime(1);
     vi.mocked(api.sync).mockRejectedValueOnce(syncError(code));
-    await expect(conn.ensureReady()).rejects.toThrow(`Actual session ended (${code})`);
+    await expect(conn.ensureReady()).rejects.toThrow(`Actual sign-in failed (${code})`);
   });
 
   it('fails the call on file-not-found (budget deleted on the server)', async () => {
@@ -225,19 +225,22 @@ describe('ActualConnection sync failure on an ended session', () => {
     expect(api.shutdown).toHaveBeenCalledTimes(1);
   });
 
-  it.each(['file-has-reset', 'file-key-mismatch', 'file-old-version'])('fails the call on %s', async (code) => {
-    const conn = getActualConnection();
-    await conn.ensureReady();
-    vi.advanceTimersByTime(1);
-    vi.mocked(api.sync).mockRejectedValueOnce(syncError(code));
-    const op = vi.fn();
+  it.each(['file-needs-upload', 'file-has-reset', 'file-has-new-key', 'file-key-mismatch', 'file-old-version'])(
+    'fails the call on %s',
+    async (code) => {
+      const conn = getActualConnection();
+      await conn.ensureReady();
+      vi.advanceTimersByTime(1);
+      vi.mocked(api.sync).mockRejectedValueOnce(syncError(code));
+      const op = vi.fn();
 
-    await expect(conn.run(op)).rejects.toThrow(
-      `The budget changed on the server (${code}); reconnect it with make budget-remove and make budget-init`
-    );
-    expect(op).not.toHaveBeenCalled();
-    expect(api.shutdown).toHaveBeenCalledTimes(1);
-  });
+      await expect(conn.run(op)).rejects.toThrow(
+        `The budget changed on the server (${code}); reconnect it with make budget-remove and make budget-init`
+      );
+      expect(op).not.toHaveBeenCalled();
+      expect(api.shutdown).toHaveBeenCalledTimes(1);
+    }
+  );
 
   it('uses ACTUAL_RECONNECT_HINT in place of the default hint', async () => {
     process.env.ACTUAL_RECONNECT_HINT = 'run budget.sh connect --slug home --force';
@@ -294,7 +297,7 @@ describe('ActualConnection sync failure on an ended session', () => {
     expect(late).not.toHaveBeenCalled();
 
     shutdown.resolve();
-    expect(String(await firstSettled)).toContain('Actual session ended (token-expired)');
+    expect(String(await firstSettled)).toContain('Actual sign-in failed (token-expired)');
     await expect(second).resolves.toBe('fresh');
     expect(api.init).toHaveBeenCalledTimes(2);
     expect(vi.mocked(api.shutdown).mock.invocationCallOrder[0]).toBeLessThan(
@@ -317,7 +320,7 @@ describe('ActualConnection sync failure on an ended session', () => {
     shutdown.resolve();
     await closed;
 
-    expect(String(await call)).toContain('Actual session ended (token-expired)');
+    expect(String(await call)).toContain('Actual sign-in failed (token-expired)');
     expect(api.shutdown).toHaveBeenCalledTimes(1);
     await expect(conn.run(vi.fn())).rejects.toThrow('ActualConnection is closed');
   });
@@ -331,8 +334,8 @@ describe('ActualConnection sync failure on an ended session', () => {
     const a = conn.run(vi.fn());
     const b = conn.run(vi.fn());
     pending.reject(syncError('token-expired'));
-    await expect(a).rejects.toThrow('Actual session ended (token-expired)');
-    await expect(b).rejects.toThrow('Actual session ended (token-expired)');
+    await expect(a).rejects.toThrow('Actual sign-in failed (token-expired)');
+    await expect(b).rejects.toThrow('Actual sign-in failed (token-expired)');
     expect(api.shutdown).toHaveBeenCalledTimes(1);
   });
 
