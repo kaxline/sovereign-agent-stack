@@ -3,7 +3,8 @@
 
 Checks the order of calls make crm-init makes, re-runs, rotation, the
 single-workspace refusal, slug checks, and that no key or password is ever
-printed. No Docker, no network beyond 127.0.0.1.
+printed. Workspaces live in the Twenty add-on's instance store under a scratch
+data root. No Docker, no network beyond 127.0.0.1.
 """
 
 from __future__ import annotations
@@ -22,6 +23,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 ADMIN = ROOT / "scripts" / "twenty_admin.py"
+sys.path.insert(0, str(ROOT / "scripts" / "lib"))
+import addon_store  # noqa: E402
+
+MANIFEST = json.loads((ROOT / "addons" / "twenty" / "addon.json").read_text())
 PASSWORD = "pw-SECRET-0123!Aa1"
 OP = re.compile(r"^\s*(?:mutation|query)?\s*(?:\([^)]*\))?\s*\{\s*(\w+)", re.S)
 
@@ -127,8 +132,9 @@ def serve(stub: Stub) -> HTTPServer:
 class CrmInit(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp())
-        self.ws = self.tmp / "workspaces"
-        self.ws.mkdir()
+        self.droot = self.tmp / "droot"
+        self.droot.mkdir()
+        self.store = self.droot / "addons" / "twenty"
         self.data = self.tmp / "data"
         self.data.mkdir()
         self.hook_log = self.tmp / "grant.log"
@@ -149,7 +155,7 @@ class CrmInit(unittest.TestCase):
         env = {
             "PATH": os.environ["PATH"],
             "TWENTY_BASE_URL": f"http://127.0.0.1:{self.server.server_port}",
-            "TWENTY_WORKSPACES_DIR": str(self.ws),
+            "ADDONS_DATA_ROOT": str(self.droot),
             "TWENTY_DATA_DIR": str(self.data),
             "TWENTY_USERNAME": "owner@crm.localhost",
             "TWENTY_PASSWORD": password,
@@ -170,8 +176,16 @@ class CrmInit(unittest.TestCase):
         return proc
 
     def file(self, slug: str) -> dict:
-        lines = (self.ws / f"{slug}.env").read_text().splitlines()
-        return dict(line.split("=", 1) for line in lines if "=" in line and not line.startswith("#"))
+        """The stored instance, with its keys read from secrets/."""
+        values = json.loads((self.store / "instances" / f"{slug}.json").read_text())
+        for name in ("key_ro", "key_rw"):
+            path = self.store / "secrets" / f"{slug}.{name}"
+            if path.exists():
+                values[name] = path.read_text()
+        return values
+
+    def put(self, slug: str, values: dict) -> None:
+        addon_store.apply_instance(MANIFEST, self.droot, slug, values)
 
     def test_first_init_order(self):
         proc = self.run_init()
@@ -182,13 +196,18 @@ class CrmInit(unittest.TestCase):
             "createApiKey", "generateApiKeyToken", "createApiKey", "generateApiKeyToken",
         ])
         f = self.file("main")
-        self.assertEqual(f["TWENTY_URL"], "http://twenty-server:3000")
-        self.assertEqual(f["TWENTY_WORKSPACE_URL"], "http://localhost:3000/")
-        self.assertEqual(f["TWENTY_WORKSPACE_ID"], "ws1")
-        self.assertTrue(f["TWENTY_KEY_RO"].startswith("apikey-SECRET-"))
-        self.assertTrue(f["TWENTY_KEY_RW"].startswith("apikey-SECRET-"))
-        self.assertNotEqual(f["TWENTY_KEY_RO"], f["TWENTY_KEY_RW"])
-        self.assertEqual(stat.S_IMODE((self.ws / "main.env").stat().st_mode), 0o600)
+        self.assertEqual(f["url"], "http://twenty-server:3000")
+        self.assertIs(f["local"], True)
+        self.assertEqual(f["access"], "write")
+        self.assertEqual(f["workspace_url"], "http://localhost:3000/")
+        self.assertEqual(f["workspace_id"], "ws1")
+        self.assertTrue(f["key_ro"].startswith("apikey-SECRET-"))
+        self.assertTrue(f["key_rw"].startswith("apikey-SECRET-"))
+        self.assertNotEqual(f["key_ro"], f["key_rw"])
+        for name in ("key_ro", "key_rw"):
+            path = self.store / "secrets" / f"main.{name}"
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        self.assertNotIn("SECRET", (self.store / "instances" / "main.json").read_text())
         self.assertEqual(self.hook_log.read_text(), "grant-admin owner@crm.localhost\n")
         self.assertTrue((self.data / ".crm-init-done").exists())
 
@@ -226,15 +245,15 @@ class CrmInit(unittest.TestCase):
         proc = self.run_init()
         self.assertNotEqual(proc.returncode, 0)
         partial = self.file("main")
-        self.assertEqual(partial["TWENTY_WORKSPACE_ID"], "ws1")
-        self.assertNotIn("TWENTY_KEY_RW", partial)
+        self.assertEqual(partial["workspace_id"], "ws1")
+        self.assertNotIn("key_rw", partial)
         self.stub.sign_up_error = "User already exists"
         proc = self.run_init()
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(self.stub.ops.count("signUpInNewWorkspace"), 1)
         done = self.file("main")
-        self.assertEqual(done["TWENTY_WORKSPACE_ID"], "ws1")
-        self.assertTrue(done["TWENTY_KEY_RW"].startswith("apikey-SECRET-"))
+        self.assertEqual(done["workspace_id"], "ws1")
+        self.assertTrue(done["key_rw"].startswith("apikey-SECRET-"))
 
     def test_partial_file_blocks_a_second_workspace_in_single_mode(self):
         self.stub.fail_once = "createApiKey"
@@ -277,27 +296,22 @@ class CrmInit(unittest.TestCase):
         self.assertEqual(self.stub.ops.count("revokeApiKey"), 2)
         self.assertLess(self.stub.ops.index("revokeApiKey"), self.stub.ops.index("createApiKey"))
         new = self.file("main")
-        self.assertNotEqual(new["TWENTY_KEY_RW"], old["TWENTY_KEY_RW"])
-        self.assertEqual(new["TWENTY_WORKSPACE_ID"], old["TWENTY_WORKSPACE_ID"])
+        self.assertNotEqual(new["key_rw"], old["key_rw"])
+        self.assertEqual(new["workspace_id"], old["workspace_id"])
 
-    def test_rotate_keeps_lines_init_does_not_own(self):
+    def test_rotate_keeps_the_access_setting(self):
         self.run_init()
-        path = self.ws / "main.env"
-        path.write_text(path.read_text() + "TWENTY_ACCESS=read\nTWENTY_EXTRA=kept\n")
+        self.put("main", {"access": "read"})
         self.stub.sign_up_error = "User already exists"
         proc = self.run_init("--rotate")
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        new = self.file("main")
-        self.assertEqual(new["TWENTY_ACCESS"], "read")
-        self.assertEqual(new["TWENTY_EXTRA"], "kept")
-        self.assertEqual(path.read_text().count("TWENTY_ACCESS="), 1)
-        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        self.assertEqual(self.file("main")["access"], "read")
 
     def run_link(self, *args: str, **extra: str) -> subprocess.CompletedProcess:
         env = {
             "PATH": os.environ["PATH"],
             "TWENTY_BASE_URL": f"http://127.0.0.1:{self.server.server_port}",
-            "TWENTY_WORKSPACES_DIR": str(self.ws),
+            "ADDONS_DATA_ROOT": str(self.droot),
             "TWENTY_USERNAME": "owner@crm.localhost",
             "TWENTY_PASSWORD": PASSWORD,
             **extra,
@@ -324,7 +338,7 @@ class CrmInit(unittest.TestCase):
         self.assertEqual(proc.stdout, "http://localhost:3000/verify?loginToken=login-SECRET-1\n")
 
     def test_login_link_refuses_remote_and_unknown_workspaces(self):
-        (self.ws / "hosted.env").write_text("TWENTY_URL=https://crm.example.com\nTWENTY_KEY_RW=x\n")
+        self.put("hosted", {"url": "https://crm.example.com", "local": False, "access": "write", "key_rw": "x"})
         for slug, why in (("hosted", "local instance"), ("nope", "no workspace")):
             proc = self.run_link("--slug", slug)
             self.assertNotEqual(proc.returncode, 0)
@@ -334,8 +348,7 @@ class CrmInit(unittest.TestCase):
 
     def test_login_link_workspace_the_owner_cannot_enter(self):
         self.run_init()
-        path = self.ws / "main.env"
-        path.write_text(path.read_text().replace("TWENTY_WORKSPACE_ID=ws1", "TWENTY_WORKSPACE_ID=other"))
+        self.put("main", {"workspace_id": "other"})
         proc = self.run_link()
         self.assertNotEqual(proc.returncode, 0)
         self.assertEqual(proc.stdout, "")
@@ -360,10 +373,10 @@ class CrmInit(unittest.TestCase):
         self.run_init(multi="1")
         proc = self.run_init("--slug", "sales", multi="1")
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(self.file("sales")["TWENTY_WORKSPACE_URL"], "http://sales.localhost:3000/")
+        self.assertEqual(self.file("sales")["workspace_url"], "http://sales.localhost:3000/")
 
-    def test_remote_files_do_not_count_as_local(self):
-        (self.ws / "hosted.env").write_text("TWENTY_URL=https://crm.example.com\nTWENTY_KEY_RW=x\n")
+    def test_remote_instances_do_not_count_as_local(self):
+        self.put("hosted", {"url": "https://crm.example.com", "local": False, "access": "write", "key_rw": "x"})
         proc = self.run_init()
         self.assertEqual(proc.returncode, 0, proc.stderr)
 
@@ -404,6 +417,20 @@ class CrmInit(unittest.TestCase):
         self.assertIn("TWENTY_PASSWORD_FILE", proc.stderr)
         self.assertEqual(self.stub.ops, [])
 
+    def test_list_prints_rows_without_keys(self):
+        self.run_init()
+        self.put("hosted", {"url": "https://crm.example.com", "local": False, "access": "read",
+                            "key_ro": "ro-SECRET"})
+        proc = subprocess.run([sys.executable, "-I", str(ADMIN), "list"],
+                              env={"PATH": os.environ["PATH"], "ADDONS_DATA_ROOT": str(self.droot)},
+                              capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn("SECRET", proc.stdout + proc.stderr)
+        self.assertEqual(proc.stdout.splitlines(), [
+            "hosted\t0\tread\thttps://crm.example.com\t-\t-\t1\t0",
+            "main\t1\twrite\thttp://twenty-server:3000\thttp://localhost:3000/\tws1\t1\t1",
+        ])
+
     def test_bad_slug_rejected(self):
         proc = self.run_init("--slug", "Sales_1")
         self.assertNotEqual(proc.returncode, 0)
@@ -413,8 +440,8 @@ class CrmInit(unittest.TestCase):
         self.stub.roles = None  # getRoles answers null; ensure_roles must fail cleanly
         proc = self.run_init()
         self.assertNotEqual(proc.returncode, 0)
-        # Only the workspace's identity is kept, for the resume; Hermes skips a file without keys.
-        self.assertEqual(set(self.file("main")), {"TWENTY_URL", "TWENTY_WORKSPACE_URL", "TWENTY_WORKSPACE_ID"})
+        # Only the workspace's identity is kept, for the resume; the bootstrap skips an instance without keys.
+        self.assertEqual(set(self.file("main")), {"url", "local", "access", "workspace_url", "workspace_id"})
 
 
 if __name__ == "__main__":

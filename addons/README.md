@@ -30,6 +30,35 @@ except where noted:
   add-on, and each entry needs its own service: two entries may not name the
   same service key, directly or through a `{ro, rw}` map, because the
   bootstrap drops stale registrations by URL.
+- `mcp.instances` (built-in add-ons only): an `mcp` entry that registers one
+  server per instance in the add-on's store, instead of one fixed server. It
+  has no `service`, `path` or `name`. Its fields, besides the usual
+  `transport`, `timeout`, `connectTimeout`, `env`, `tools`, `pin`,
+  `writeTools` and `profiles`:
+  - `name`: a prefix, then `{slug}` once, such as `crm-{slug}`. The prefix may
+    not be a core server name or prefix. The bootstrap drops every entry under
+    the prefix that has no instance, so no add-on's fixed `mcp.name` may start
+    with another add-on's instance prefix, and two instance prefixes may not
+    start with one another.
+  - `url`: a string with `{setting:<name>}` placeholders that name `url` or
+    `string` instance settings, such as `{setting:url}/mcp`.
+  - `access`: `{setting:<name>}` naming a `choice` instance setting whose
+    `options` are only `read` and `write`. `read` registers the instance with
+    its `ro` key and `write` with its `rw` key. A profile that `mcp.profiles`
+    maps to `ro` gets the `ro` key whatever the setting (Twenty maps
+    `api-server` to `ro`), and a profile whose key is missing gets no entry.
+  - `auth`: `{header, scheme, secret: {ro, rw}}`. `secret` names two `secret`
+    instance settings. The bootstrap writes the chosen key into the profile's
+    `.env` as `<NAME>_KEY`, with `-` turned into `_` and the name uppercased
+    (`CRM_SALES_EU_KEY`), and the header carries `<scheme> ${<NAME>_KEY}`.
+  - `gate` (optional): `{setting, flag}`. An instance whose bool `setting` is
+    true registers only while `flag` (`builtin.flag` or a gate) is on.
+  For instance entries the bootstrap writes no `tools.include`: `tools` only
+  bounds what `pin` and `writeTools` may name. Of `env` it reads `timeout` and
+  `connectTimeout`; `env.url` and `env.access` are ignored.
+  The entry needs a top-level `instances` block that declares the settings it
+  names. Removing an instance drops its entries and keys on the next
+  bootstrap. `addons/twenty/addon.json` is the one user.
 - `services.<name>.when`: `{"gate": FLAG}`, so the service starts only while
   that gate flag is on. `mounts` maps `secrets`, `config` and `instances` to
   `ro` or `rw`; they mount the directories `data/addons/<short-id>/secrets`,
@@ -62,6 +91,7 @@ except where noted:
   `instances.connect` and `instances.disconnect` are hooks (below), and
   `instances.errors` lists the error names those hooks may report besides
   the shared ones.
+  Twenty sets `optional`, so it can be enabled before any workspace is connected.
 - `commands`: `{<name>: {service, instance, argv}}`. `addon.sh run` runs
   `argv` in the named service, and appends `--account <slug>` when `instance`
   is true. An add-on that reads personal data may not run a command in an MCP
@@ -97,11 +127,16 @@ that reads mail or messages may not send, run in cron or register on
 `api-server`), and checks each one against `docker-compose.yml` and
 `sync-profiles.sh`.
 
-The bootstraps keep an add-on's MCP server out of cron jobs unless its
-manifest sets `permissions.cron` to `true`, using the same
+The bootstraps fence add-on MCP servers out of cron jobs with the same
 `platform_toolsets.cron` list that keeps mail and messages out (see
-[docs/email.md](../docs/email.md)). A missing field counts as `false`. A
-manifest that fails validation is still fenced by its `mcp.name`. If
+[docs/email.md](../docs/email.md)). `permissions.cron` decides what stays in
+cron: `true` keeps every entry, `mcp.instances` entries included; `"ro"`
+keeps the `ro` service of a `{ro, rw}` service map and fences the `rw` one,
+and keeps `mcp.instances` entries, which then carry the key of the profile
+the job runs on; `false` or a missing field fences them all. Twenty sets
+`true`, so a cron job on the default profile gets a write workspace's
+read/write key. A manifest that fails validation is still fenced by its
+`mcp.name` and by the name of each stored instance. If
 `addon_manifest.py` can't be loaded, the list written on the last run is
 kept. `sh scripts/test-addon-cron-fence.sh` runs the fence in the Hermes
 image.

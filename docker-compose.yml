@@ -1341,11 +1341,14 @@ services:
       - CALDAV_MCP_TIMEOUT=${CALDAV_MCP_TIMEOUT:-60}
       - CALDAV_MCP_CONNECT_TIMEOUT=${CALDAV_MCP_CONNECT_TIMEOUT:-30}
       - CALDAV_MCP_ACCOUNTS_DIR=/bootstrap/caldav-accounts
-      # Twenty CRM: one MCP entry per workspace file (local or remote). docs/crm.md
+      # Twenty CRM: one MCP entry per workspace in the add-on's instance store. docs/crm.md
       - TWENTY_MCP_ENABLED=${TWENTY_MCP_ENABLED:-0}
-      # 0: local workspace files aren't registered (no twenty-server to reach).
+      - TWENTY_MCP_TIMEOUT=${TWENTY_MCP_TIMEOUT:-60}
+      - TWENTY_MCP_CONNECT_TIMEOUT=${TWENTY_MCP_CONNECT_TIMEOUT:-30}
+      # 0: local workspaces aren't registered (no twenty-server to reach).
       - TWENTY_LOCAL_ENABLED=${TWENTY_LOCAL_ENABLED:-0}
-      - TWENTY_WORKSPACES_DIR=/bootstrap/twenty-workspaces
+      # Twenty's instance store (one MCP entry per workspace), mounted below.
+      - ADDON_DATA_DIR=/bootstrap/addon-data
       # Actual Budget MCP (budget profile). The flag and the access cap only;
       # the budget's credentials never reach Hermes.
       - ACTUAL_MCP_ENABLED=${ACTUAL_MCP_ENABLED:-0}
@@ -1405,7 +1408,9 @@ services:
       - ./compose/hermes/api-server.env:/bootstrap/api-server.env:ro
       - ./compose/hermes/bootstrap-api-profile.sh:/bootstrap/bootstrap-api-profile.sh:ro
       - ./compose/caldav-mcp/accounts:/bootstrap/caldav-accounts:ro
-      - ./compose/twenty/workspaces:/bootstrap/twenty-workspaces:ro
+      # Twenty's workspaces: instances/<slug>.json and secrets/<slug>.key_ro|key_rw.
+      # Only this add-on's directory; other add-ons keep secrets under data/addons.
+      - ${ASSISTANT_DATA_ROOT:-./data}/addons/twenty:/bootstrap/addon-data/twenty:ro
       # Built-in add-on manifests and the reader for them (GPT Researcher so far).
       - ./addons:/bootstrap/addons:ro
       - ./scripts/lib/addon_manifest.py:/bootstrap/addon_manifest.py:ro
@@ -1458,11 +1463,14 @@ services:
       - CALDAV_MCP_TIMEOUT=${CALDAV_MCP_TIMEOUT:-60}
       - CALDAV_MCP_CONNECT_TIMEOUT=${CALDAV_MCP_CONNECT_TIMEOUT:-30}
       - CALDAV_MCP_ACCOUNTS_DIR=/bootstrap/caldav-accounts
-      # Twenty CRM: one MCP entry per workspace file (local or remote). docs/crm.md
+      # Twenty CRM: one MCP entry per workspace in the add-on's instance store. docs/crm.md
       - TWENTY_MCP_ENABLED=${TWENTY_MCP_ENABLED:-0}
-      # 0: local workspace files aren't registered (no twenty-server to reach).
+      - TWENTY_MCP_TIMEOUT=${TWENTY_MCP_TIMEOUT:-60}
+      - TWENTY_MCP_CONNECT_TIMEOUT=${TWENTY_MCP_CONNECT_TIMEOUT:-30}
+      # 0: local workspaces aren't registered (no twenty-server to reach).
       - TWENTY_LOCAL_ENABLED=${TWENTY_LOCAL_ENABLED:-0}
-      - TWENTY_WORKSPACES_DIR=/bootstrap/twenty-workspaces
+      # Twenty's instance store (one MCP entry per workspace), mounted below.
+      - ADDON_DATA_DIR=/bootstrap/addon-data
       # Actual Budget MCP (budget profile). The flag and the access cap only;
       # the budget's credentials never reach Hermes.
       - ACTUAL_MCP_ENABLED=${ACTUAL_MCP_ENABLED:-0}
@@ -1522,7 +1530,9 @@ services:
       - ./compose/hermes/browser.env:/bootstrap/browser.env:ro
       - ./compose/hermes/bootstrap-api-profile.sh:/bootstrap/bootstrap-api-profile.sh:ro
       - ./compose/caldav-mcp/accounts:/bootstrap/caldav-accounts:ro
-      - ./compose/twenty/workspaces:/bootstrap/twenty-workspaces:ro
+      # Twenty's workspaces: instances/<slug>.json and secrets/<slug>.key_ro|key_rw.
+      # Only this add-on's directory; other add-ons keep secrets under data/addons.
+      - ${ASSISTANT_DATA_ROOT:-./data}/addons/twenty:/bootstrap/addon-data/twenty:ro
       # Built-in add-on manifests and the reader for them (GPT Researcher so far).
       - ./addons:/bootstrap/addons:ro
       - ./scripts/lib/addon_manifest.py:/bootstrap/addon_manifest.py:ro
@@ -2074,7 +2084,9 @@ services:
     # TWENTY_SECRETS_DIR falls back to an empty folder the sync never writes.
     volumes:
       - bitwarden_sync:/run/bitwarden-sync
-      - ./compose/twenty/workspaces:/targets/twenty-workspaces
+      # Only the Twenty store's secrets folder: Bitwarden's own secrets sit
+      # elsewhere under data/addons and stay unmounted.
+      - ${ASSISTANT_DATA_ROOT:-./data}/addons/twenty/secrets:/targets/twenty-keys
       - ${TWENTY_SECRETS_DIR:-./compose/twenty/no-secrets}:/targets/twenty-secrets
       - ./compose/postgres/services:/targets/postgres-services
       - ./compose/caldav-mcp/accounts:/targets/caldav-accounts

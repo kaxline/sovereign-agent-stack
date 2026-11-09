@@ -1,0 +1,202 @@
+{
+  "manifestVersion": 1,
+  "id": "io.github.kaxline.stack.twenty",
+  "version": "1.0.0",
+  "title": "Twenty CRM",
+  "tagline": "Look up and edit CRM records from chat",
+  "description": "Connects Hermes to Twenty workspaces over MCP, one crm-<workspace> server per connected workspace. A workspace is the bundled local instance (twenty-server, twenty-worker, twenty-db, twenty-redis, switched on by TWENTY_LOCAL_ENABLED) or a remote Twenty reached by URL. Each workspace holds a read-only and a read-write API key; the workspace's access setting picks which one the default and browser profiles get, and mcp.profiles maps api-server to the read-only key. permissions.cron is true: cron jobs keep crm-* and use the key of the profile they run on, so a job on the default profile gets the read-write key of a write workspace. writeTools is empty because Twenty's roles on the API key are the boundary. TWENTY_MCP_ENABLED switches the MCP registration and starts no service. See docs/crm.md.",
+  "publisher": {
+    "name": "sovereign-agent-stack",
+    "url": "https://github.com/kaxline/sovereign-agent-stack"
+  },
+  "minStackVersion": "0.3.13",
+  "builtin": {
+    "flag": "TWENTY_MCP_ENABLED",
+    "profile": "crm-mcp",
+    "seed": false
+  },
+  "gates": [
+    {
+      "flag": "TWENTY_LOCAL_ENABLED",
+      "profile": "crm",
+      "seed": false
+    }
+  ],
+  "services": {
+    "server": {
+      "compose": "twenty-server",
+      "port": 3000,
+      "when": {
+        "gate": "TWENTY_LOCAL_ENABLED"
+      }
+    },
+    "worker": {
+      "compose": "twenty-worker",
+      "when": {
+        "gate": "TWENTY_LOCAL_ENABLED"
+      }
+    },
+    "db": {
+      "compose": "twenty-db",
+      "when": {
+        "gate": "TWENTY_LOCAL_ENABLED"
+      }
+    },
+    "redis": {
+      "compose": "twenty-redis",
+      "when": {
+        "gate": "TWENTY_LOCAL_ENABLED"
+      }
+    }
+  },
+  "instances": {
+    "name": "workspace",
+    "optional": true,
+    "settings": {
+      "url": {
+        "type": "url",
+        "label": "Twenty URL"
+      },
+      "access": {
+        "type": "choice",
+        "options": [
+          "read",
+          "write"
+        ],
+        "default": "read",
+        "label": "What the agent may do"
+      },
+      "local": {
+        "type": "bool",
+        "default": false,
+        "label": "Bundled local instance"
+      },
+      "workspace_url": {
+        "type": "url",
+        "optional": true,
+        "label": "Workspace URL"
+      },
+      "workspace_id": {
+        "type": "string",
+        "optional": true,
+        "label": "Workspace ID"
+      },
+      "key_ro": {
+        "type": "secret",
+        "optional": true,
+        "label": "Read-only API key"
+      },
+      "key_rw": {
+        "type": "secret",
+        "optional": true,
+        "label": "Read-write API key"
+      }
+    },
+    "connect": {
+      "script": [
+        "scripts/crm.sh",
+        "connect"
+      ]
+    },
+    "disconnect": {
+      "script": [
+        "scripts/crm.sh",
+        "disconnect"
+      ]
+    },
+    "errors": [
+      "local_mismatch",
+      "local_off",
+      "missing_key",
+      "bad_value"
+    ]
+  },
+  "mcp": {
+    "instances": {
+      "name": "crm-{slug}",
+      "url": "{setting:url}/mcp",
+      "access": "{setting:access}",
+      "auth": {
+        "header": "Authorization",
+        "scheme": "Bearer",
+        "secret": {
+          "ro": "key_ro",
+          "rw": "key_rw"
+        }
+      },
+      "gate": {
+        "setting": "local",
+        "flag": "TWENTY_LOCAL_ENABLED"
+      }
+    },
+    "transport": "http",
+    "timeout": 60,
+    "connectTimeout": 30,
+    "env": {
+      "timeout": "TWENTY_MCP_TIMEOUT",
+      "connectTimeout": "TWENTY_MCP_CONNECT_TIMEOUT"
+    },
+    "tools": [
+      "get_tool_catalog",
+      "learn_tools",
+      "execute_tool",
+      "list_object_metadata_names",
+      "list_skills",
+      "load_skills",
+      "search_help_center"
+    ],
+    "pin": [
+      "get_tool_catalog",
+      "learn_tools",
+      "execute_tool",
+      "list_object_metadata_names",
+      "list_skills",
+      "load_skills",
+      "search_help_center"
+    ],
+    "writeTools": [],
+    "profiles": {
+      "default": "rw",
+      "browser": "rw",
+      "api-server": "ro"
+    }
+  },
+  "hooks": {
+    "init": {
+      "script": [
+        "scripts/crm.sh",
+        "init"
+      ]
+    }
+  },
+  "data": {
+    "paths": [
+      {
+        "env": "TWENTY_DATA_DIR",
+        "default": "./data/twenty"
+      }
+    ]
+  },
+  "backup": {
+    "secrets": [
+      "TWENTY_ENCRYPTION_KEY",
+      "TWENTY_DB_PASSWORD"
+    ],
+    "recommended": [
+      "TWENTY_PASSWORD",
+      "TWENTY_PASSWORD_FILE"
+    ]
+  },
+  "permissions": {
+    "reads": [],
+    "writes": [
+      "external:crm"
+    ],
+    "sends": false,
+    "egress": [
+      "internet"
+    ],
+    "exposesToAgent": false,
+    "cron": true
+  }
+}

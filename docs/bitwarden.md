@@ -234,7 +234,7 @@ account's `BW_SECRETS_ITEM_SCOPE` (`folder:<name>` or `collection:<id>`); local 
 
 | Item name | Written to |
 |---|---|
-| `twenty/<slug>/key-ro`, `twenty/<slug>/key-rw` | `TWENTY_KEY_RO` / `TWENTY_KEY_RW` in `compose/twenty/workspaces/<slug>.env` |
+| `twenty/<slug>/key-ro`, `twenty/<slug>/key-rw` | the whole file `secrets/<slug>.key_ro` / `.key_rw` in the Twenty add-on store, `data/addons/twenty/` |
 | `twenty/encryption-key` | the file `TWENTY_ENCRYPTION_KEY_FILE` names |
 | `twenty/db-password` | the file `TWENTY_DB_PASSWORD_FILE` names |
 | `postgres/<role>` | `DB_SERVICE_PASSWORD` in `compose/postgres/services/<role>.env`, and the same password inside `DATABASE_URL` and any `*_DATABASE_PASSWORD` line that held the old one |
@@ -246,7 +246,7 @@ with it unset, those items are skipped with a note. No row covers `llm-proxy` ke
 A file is rewritten only when its value changed, through a temp file, at mode 600. A file that does
 not exist is never created, a symbolic link is skipped, an unknown item name is reported and
 skipped, and a name that maps to two files is refused. The output names files and items, never
-values. When a file Hermes reads changed (Twenty workspaces, CalDAV accounts), the command runs
+values. When a file Hermes reads changed (Twenty workspace keys, CalDAV accounts), the command runs
 `make hermes-reload`. `make up` runs the sync after `docker compose up -d` when an account has
 `BW_SECRETS_ITEM_SCOPE` and is unlocked; otherwise it prints that the sync was skipped and the files
 keep their values.
@@ -255,7 +255,9 @@ The `KEY=value` files are read by compose's `env_file`, shell scripts and Python
 quote differently. A value bound for one of them is refused (skipped with a note naming the item)
 when it holds `$`, a backtick, `\`, `'`, `"`, `#`, whitespace at either end, or a control character.
 Generated keys and passwords are normally alphanumeric; change such a value, or keep that file by
-hand. The two Twenty files take any value.
+hand. The Twenty files take any value, except that the workspace keys also refuse whitespace and
+control characters, since they go in an HTTP header. The workspace must already be stored
+(`make crm-add`, `make crm-init`); the sync never creates its key files.
 
 A new value in a file does not always change the service that checks it:
 

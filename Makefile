@@ -144,7 +144,7 @@ todo-open:
 # Twenty CRM (crm profile, or remote). See docs/crm.md.
 #   make crm-init [SLUG=main] [ROTATE=1]   local workspace + both Hermes keys
 #   make crm-add SLUG=name URL=https://... [FORCE=1]  a workspace on a remote Twenty
-#   make crm-remove SLUG=name              forget a workspace (file only)
+#   make crm-remove SLUG=name              forget a workspace (Twenty keeps it)
 #   make crm-access SLUG=name ACCESS=read  look things up only (write: make changes)
 #   make crm-open [SLUG=name]              open a workspace in the browser
 #   make crm-mode MULTI=0|1                single- or multi-workspace local instance

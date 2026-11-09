@@ -120,6 +120,7 @@ log() { printf 'log: %s\n' "$*"; }
 HERMES_HOME=/h
 ADDONS_DIR=/w/addons
 ADDON_MANIFEST_PY=/bootstrap/addon_manifest.py
+ADDON_DATA_DIR=/w/addon-data
 . /w/funcs.sh
 run_all() {
   for p in "" browser api-server; do

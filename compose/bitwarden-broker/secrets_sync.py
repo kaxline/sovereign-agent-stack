@@ -4,8 +4,9 @@ Reads ``GET /secrets`` from the running broker over ``BITWARDEN_SYNC_SOCKET``
 and maps each item by name:
 
 =========================================  ==============================================
-``twenty/<slug>/key-ro``, ``.../key-rw``    ``TWENTY_KEY_RO`` / ``TWENTY_KEY_RW`` in
-                                            ``compose/twenty/workspaces/<slug>.env``
+``twenty/<slug>/key-ro``, ``.../key-rw``    the whole file ``secrets/<slug>.key_ro`` /
+                                            ``.key_rw`` in the Twenty add-on store
+                                            (``<data root>/addons/twenty``)
 ``twenty/encryption-key``                   the file ``TWENTY_ENCRYPTION_KEY_FILE`` names
 ``twenty/db-password``                      the file ``TWENTY_DB_PASSWORD_FILE`` names
 ``postgres/<role>``                         ``DB_SERVICE_PASSWORD`` in
@@ -17,7 +18,8 @@ and maps each item by name:
 The target folders are mounted under ``BITWARDEN_SYNC_TARGETS`` (default
 ``/targets``). The two Twenty files must sit in ``TWENTY_SECRETS_DIR``, which
 compose mounts at ``<targets>/twenty-secrets``; the ``*_FILE`` variables carry
-their host paths, and only the file name is used here.
+their host paths, and only the file name is used here. The workspace key files
+are mounted at ``<targets>/twenty-keys`` from the store's ``secrets`` folder.
 
 A ``postgres/<role>`` value also replaces the password in ``DATABASE_URL`` and
 in any ``*_DATABASE_PASSWORD`` line that held the old ``DB_SERVICE_PASSWORD``,
@@ -27,7 +29,10 @@ line is skipped.
 A value for a KEY=value file is refused when compose's env_file or a shell
 would read it back differently: ``$``, a backtick, ``\\``, quotes, ``#``,
 whitespace at either end, or a control character. The line keeps its quoting.
-The Twenty files take any value. Lone surrogates are refused everywhere.
+The Twenty files take any value, except that the workspace keys also refuse
+whitespace and control characters (they go in an HTTP header, as crm.sh's key
+check does). Lone surrogates are refused everywhere. A workspace key file is
+never created: the instance must exist in the store first.
 
 A file is rewritten only when a value differs, through a temp file in the same
 folder, with mode 600 and the old owner where the container may set it (a
@@ -35,7 +40,7 @@ note says when it could not). Symbolic links are skipped, and no file is ever
 created. Output names files and
 items, never values. Exit codes: 0 done, 1 the broker is unreachable, refused
 the call or sent a malformed response (nothing written), or a file could not be
-written; 3 a file Hermes reads changed (Twenty workspaces, CalDAV accounts),
+written; 3 a file Hermes reads changed (Twenty workspace keys, CalDAV accounts),
 which takes precedence so the caller still reloads Hermes.
 """
 
@@ -61,7 +66,7 @@ DEFAULT_TARGETS = "/targets"
 
 # Root key -> (folder under the targets mount, display prefix, Hermes reads it).
 FOLDERS = {
-    "twenty-workspaces": ("twenty-workspaces", "compose/twenty/workspaces", True),
+    "twenty-keys": ("twenty-keys", "data/addons/twenty/secrets", True),
     "postgres-services": ("postgres-services", "compose/postgres/services", False),
     "caldav-accounts": ("caldav-accounts", "compose/caldav-mcp/accounts", True),
 }
@@ -76,8 +81,8 @@ SLUG = r"[a-z0-9-]+"
 ROLE = r"[a-z][a-z0-9_]{0,57}"
 # Item name pattern -> (root key, file name template or None, key or None).
 RULES = (
-    (re.compile(rf"twenty/({SLUG})/key-ro"), "twenty-workspaces", "{}.env", "TWENTY_KEY_RO"),
-    (re.compile(rf"twenty/({SLUG})/key-rw"), "twenty-workspaces", "{}.env", "TWENTY_KEY_RW"),
+    (re.compile(rf"twenty/({SLUG})/key-ro"), "twenty-keys", "{}.key_ro", None),
+    (re.compile(rf"twenty/({SLUG})/key-rw"), "twenty-keys", "{}.key_rw", None),
     (re.compile(r"twenty/encryption-key"), "twenty-encryption-key", None, None),
     (re.compile(r"twenty/db-password"), "twenty-db-password", None, None),
     (re.compile(rf"postgres/({ROLE})"), "postgres-services", "{}.env", "DB_SERVICE_PASSWORD"),
@@ -157,6 +162,10 @@ def plan(items: list[dict], roots: dict[str, Path],
             continue
         if any(0xD800 <= ord(c) <= 0xDFFF for c in value):
             problems.append(f"{show(name)}: the value is not valid Unicode; skipped")
+            continue
+        if root == "twenty-keys" and any(c.isspace() or unicodedata.category(c) == "Cc" for c in value):
+            problems.append(f"{show(name)}: the value has whitespace or a control character,"
+                            " which an HTTP header cannot carry; skipped")
             continue
         if key is not None and not env_safe(value):
             problems.append(f"{show(name)}: the value has a character a KEY=value file cannot hold"

@@ -668,7 +668,7 @@ a changelog entry.
 `enable` would refuse on: a top-level setting by name, an instance setting
 as `<slug>.<name>`, and `instances:<name>` (the manifest's `instances.name`)
 when the add-on needs an instance and has none. A manifest with
-`instances.optional: true` never lists `instances:<name>`. `hooks` names the
+`instances.optional: true` never lists `instances:<name>` (Twenty sets it). `hooks` names the
 hooks the manifest declares, `errors` is its `instances.errors`, and `data`
 and `backup` are copied from the manifest. A setting shows its stored
 value, else its default, else is absent. A `secret` setting shows only
@@ -730,6 +730,23 @@ the file with `shlex.split`, not compose
 `env_file` or `docker --env-file`, which don't unquote. A `bool` is `1` or
 `0`, a `list` is a JSON array, and `int`, `port` and `date` values are
 written as text.
+
+An `mcp` entry with `instances` registers one `mcp_servers.<name>` per stored
+instance (built-in add-ons only), so an add-on whose users connect several
+accounts or workspaces needs no fixed service per instance. The entry gives
+`name` as a prefix plus `{slug}` (`crm-{slug}`), `url` with `{setting:<name>}`
+placeholders, `access` as `{setting:<name>}` naming a `choice` setting whose
+options are `read` and `write`, `auth` as `{header, scheme, secret: {ro, rw}}`
+naming two `secret` settings, and optionally `gate: {setting, flag}`: an
+instance whose bool `setting` is true registers only while `flag` is on. The
+bootstrap writes the key the access level picks (`ro` for `read`, `rw` for
+`write`) into each profile's `.env` as `<NAME>_KEY` (`CRM_SALES_KEY`). A
+profile that `mcp.profiles` maps to `ro` gets the `ro` key whatever the access
+setting; Twenty maps `api-server` to `ro`. An instance missing the key its access needs
+gets no entry, and the bootstrap log says why. Entries, keys and pins of an
+instance that was removed are dropped. Field rules and the prefix rule across
+add-ons are in [addons/README.md](../addons/README.md); Twenty
+(`addons/twenty/addon.json`, [docs/crm.md](crm.md)) is the one user.
 
 `disable` keeps `data/addons/<short-id>/`; `disable --purge` deletes it, as
 described under [Removing data](#removing-data).
