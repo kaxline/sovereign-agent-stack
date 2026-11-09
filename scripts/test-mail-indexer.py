@@ -465,13 +465,81 @@ def test_upgrade_from_schema_1(env: Env) -> None:
     expect(version == str(mi.INDEX_SCHEMA_VERSION), "schema version recorded")
 
 
+def cli(config: Path, *args: str, timeout: int = 60) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, "-I", str(HERE / "mail-index.py"), "--config", str(config), *args],
+                          capture_output=True, text=True, timeout=timeout)
+
+
+def test_mailboxes_for_one_account(env: Env) -> None:
+    store, _ = env.store()
+    config = env.config(store, {PERSONAL: ["*"], WORK: ["*"]})
+    both = json.loads(cli(config, "mailboxes").stdout)
+    expect({r["account"] for r in both} == {PERSONAL, WORK}, "unfiltered listing covers both accounts")
+    proc = cli(config, "mailboxes", "--account", PERSONAL)
+    expect(proc.returncode == 0, f"mailboxes --account exit {proc.returncode}: {proc.stderr}")
+    rows = json.loads(proc.stdout)
+    expect(rows and {r["account"] for r in rows} == {PERSONAL}, f"only the named account: {rows}")
+    proc = cli(config, "mailboxes", "--account", "nope")
+    expect(proc.returncode == 2, f"unknown account exits 2, got {proc.returncode}")
+    expect("mail-index: config: no account nope" in proc.stderr, f"message: {proc.stderr}")
+
+
+def test_run_loop(env: Env) -> None:
+    store, _ = env.store()
+    config = env.config(store, {PERSONAL: ["INBOX"]})
+    proc = cli(config, "run", "--every", "1", "--passes", "2")
+    expect(proc.returncode == 0, f"loop exit {proc.returncode}: {proc.stderr}")
+    lines = proc.stdout.strip().splitlines()
+    expect(len(lines) == 2 and all(l.startswith("{") for l in lines), f"one JSON line per pass: {lines}")
+    first, second = json.loads(lines[0]), json.loads(lines[1])
+    expect(first["added"] == 7, f"first pass indexes: {first}")
+    expect((second["added"], second["updated"], second["removed"]) == (0, 0, 0), f"second pass: {second}")
+
+    # A source failure is reported and the loop goes on; a config error ends it.
+    bad = env.tmp / "loop-bad.toml"
+    bad.write_text(config.read_text().replace('source = "store"', 'source = "imap"\nhost = "127.0.0.1"\nport = 1', 1))
+    proc = cli(bad, "run", "--every", "1", "--passes", "2")
+    out = [json.loads(l) for l in proc.stdout.strip().splitlines()]
+    if proc.returncode == 2:
+        expect(out == [], f"config error prints no pass: {out}")
+    else:
+        expect(proc.returncode == 0 and len(out) == 2 and all("error" in o for o in out),
+               f"failed passes reported, loop continues: {proc.returncode} {out} {proc.stderr}")
+    gone = env.tmp / "does-not-exist.toml"
+    proc = cli(gone, "run", "--every", "1", "--passes", "2")
+    expect(proc.returncode == 2 and proc.stdout == "", f"config error exits: {proc.returncode}")
+
+
+def test_loop_stops_on_sigterm(env: Env) -> None:
+    import signal
+    import time
+    store, _ = env.store()
+    config = env.config(store, {PERSONAL: ["INBOX"]})
+    proc = subprocess.Popen([sys.executable, "-I", str(HERE / "mail-index.py"), "--config", str(config),
+                             "run", "--every", "300"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        line = proc.stdout.readline()  # first pass done, now sleeping
+        expect(json.loads(line)["added"] == 7, f"first pass: {line}")
+        time.sleep(0.3)
+        proc.send_signal(signal.SIGTERM)
+        code = proc.wait(timeout=10)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+    expect(code == 0, f"SIGTERM exits 0, got {code}")
+    cfg = mi.load_config(config)
+    expect(len(indexed(cfg)) == 7, "index complete after the stop")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as d:
         env = Env(Path(d))
         for test in (test_config_validation, test_scope, test_since, test_headers_bodies_and_search,
                      test_incremental, test_reads_uncheckpointed_wal, test_missing_file_keeps_metadata,
                      test_unrecognised_layout, test_cli_prints_counts_only, test_deleted_text_is_gone,
-                     test_resumes_after_interruption, test_ids_count_up, test_upgrade_from_schema_1):
+                     test_resumes_after_interruption, test_ids_count_up, test_upgrade_from_schema_1,
+                     test_mailboxes_for_one_account, test_run_loop, test_loop_stops_on_sigterm):
             test(env)
     print("OK mail indexer")
     return 0

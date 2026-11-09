@@ -4,7 +4,8 @@
 Usage:
   python3 scripts/mail-index.py --config mail-index.toml run
   python3 scripts/mail-index.py --config mail-index.toml doctor
-  python3 scripts/mail-index.py --config mail-index.toml mailboxes
+  python3 scripts/mail-index.py --config mail-index.toml mailboxes [--account ID]
+  python3 scripts/mail-index.py --config mail-index.toml run --every SECONDS [--passes N]
 
 The config may also come from MAIL_INDEX_CONFIG. The default source asks
 Mail.app through scripting (Automation permission for Mail). With
@@ -25,7 +26,9 @@ import json
 import os
 import sqlite3
 import sys
+import signal
 import tempfile
+import threading
 from dataclasses import replace
 from pathlib import Path
 
@@ -74,43 +77,92 @@ def _store_mailboxes(config: mi.Config) -> list[dict]:
     return sorted(out, key=lambda r: (r["account"], r["mailbox"].lower()))
 
 
+def guarded(fn) -> tuple[object, int]:
+    """Call fn and map its failures to an exit code, printing the `mail-index:` line.
+    Returns (result, 0) on success. The one place exceptions become exit codes."""
+    try:
+        return fn(), 0
+    except mi.ConfigError as exc:
+        print(f"mail-index: config: {exc}", file=sys.stderr)
+        return None, 2
+    except mi.LayoutError as exc:
+        print(f"mail-index: {exc}", file=sys.stderr)
+        return None, 3
+    except ms.AutomationDenied:
+        print("mail-index: macOS didn't allow this program to control Mail. Allow it under"
+              " System Settings > Privacy & Security > Automation; see docs/email.md.", file=sys.stderr)
+        return None, 4
+    except PermissionError:
+        print("mail-index: permission denied reading the store. With source = \"store\", macOS needs"
+              " Full Disk Access for the program running the indexer; see docs/email.md.", file=sys.stderr)
+        return None, 4
+    except (mail_imap.AuthFailed, mail_credentials.MissingPassword) as exc:
+        print(f"mail-index: {exc}", file=sys.stderr)
+        return None, 4
+    except (ms.ScriptError, mail_imap.ImapError) as exc:
+        print(f"mail-index: {exc}", file=sys.stderr)
+        return None, 5
+
+
+def one_command(args) -> object:
+    config = mi.load_config(Path(args.config))
+    if args.command == "run":
+        return mi.run(config).as_dict()
+    if args.command == "doctor":
+        return mi.doctor(config)
+    rows = list_mailboxes(config)
+    if args.account is not None:
+        if args.account not in {a.id for a in config.accounts}:
+            raise mi.ConfigError(f"no account {args.account}")
+        rows = [r for r in rows if r["account"] == args.account]
+    return rows
+
+
+def run_loop(args) -> int:
+    """Repeat `run` every args.every seconds. SIGTERM and SIGINT are noted and acted on
+    between passes, so a pass in progress finishes and the index is never left half-written."""
+    stop = threading.Event()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, lambda *_: stop.set())
+    done = 0
+    while not stop.is_set():
+        result, code = guarded(lambda: one_command(args))
+        if code == 2:
+            return 2
+        print(json.dumps(result if code == 0 else {"error": str(code)}), flush=True)
+        done += 1
+        if args.passes is not None and done >= args.passes:
+            break
+        stop.wait(args.every)
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--config", default=os.environ.get("MAIL_INDEX_CONFIG"),
                         help="TOML config (or set MAIL_INDEX_CONFIG)")
     parser.add_argument("command", choices=("run", "doctor", "mailboxes"))
+    parser.add_argument("--account", help="mailboxes: list only this account id")
+    parser.add_argument("--every", type=float, metavar="SECONDS",
+                        help="run: repeat every SECONDS until stopped, one JSON line per pass")
+    parser.add_argument("--passes", type=int, metavar="N", help="run --every: stop after N passes")
     args = parser.parse_args()
+    if args.account is not None and args.command != "mailboxes":
+        parser.error("--account only applies to mailboxes")
+    if args.every is not None and args.command != "run":
+        parser.error("--every only applies to run")
+    if args.every is not None and args.every <= 0:
+        parser.error("--every must be positive")
+    if args.passes is not None and (args.every is None or args.passes < 1):
+        parser.error("--passes needs --every and a positive count")
     if not args.config:
         print("mail-index: pass --config or set MAIL_INDEX_CONFIG", file=sys.stderr)
         return 2
-    try:
-        config = mi.load_config(Path(args.config))
-        if args.command == "run":
-            result = mi.run(config).as_dict()
-        elif args.command == "doctor":
-            result = mi.doctor(config)
-        else:
-            result = list_mailboxes(config)
-    except mi.ConfigError as exc:
-        print(f"mail-index: config: {exc}", file=sys.stderr)
-        return 2
-    except mi.LayoutError as exc:
-        print(f"mail-index: {exc}", file=sys.stderr)
-        return 3
-    except ms.AutomationDenied:
-        print("mail-index: macOS didn't allow this program to control Mail. Allow it under"
-              " System Settings > Privacy & Security > Automation; see docs/email.md.", file=sys.stderr)
-        return 4
-    except PermissionError:
-        print("mail-index: permission denied reading the store. With source = \"store\", macOS needs"
-              " Full Disk Access for the program running the indexer; see docs/email.md.", file=sys.stderr)
-        return 4
-    except (mail_imap.AuthFailed, mail_credentials.MissingPassword) as exc:
-        print(f"mail-index: {exc}", file=sys.stderr)
-        return 4
-    except (ms.ScriptError, mail_imap.ImapError) as exc:
-        print(f"mail-index: {exc}", file=sys.stderr)
-        return 5
+    if args.every is not None:
+        return run_loop(args)
+    result, code = guarded(lambda: one_command(args))
+    if code:
+        return code
     print(json.dumps(result, indent=2))
     return 0
 
