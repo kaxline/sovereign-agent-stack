@@ -430,8 +430,8 @@ wins when both are set (`src/integrations/actual/connection.ts`). That path has 
 `compose/actual/budgets/<slug>.env` (mode 600, gitignored), holds `ACTUAL_SERVER_URL`,
 `ACTUAL_BUDGET_SYNC_ID`, `ACTUAL_SESSION_TOKEN` and, if the budget is encrypted,
 `ACTUAL_BUDGET_ENCRYPTION_PASSWORD`. The password-free index `compose/actual/budgets.list` holds
-one line per row: slug, profile, server URL with any credentials masked. The bootstrap reads only
-the index.
+one line per row: slug, profile, access (`read` or `write`, default `read`) and server URL with
+any credentials masked. The bootstrap reads only the index.
 
 **Credentials.** `connect` accepts `ACTUAL_SESSION_TOKEN` or `ACTUAL_PASSWORD`. With a password,
 it signs in through `/account/login` and stores the session token it gets back, never the
@@ -448,28 +448,43 @@ take a path prefix itself.
 
 **Hermes entries.** For each row, the bootstrap registers on the row's profile:
 
-- `budget-<slug>`: the read/write URL, all 50 manifest tools, for chats.
-- `budget-<slug>-ro`: the read-only URL, the 18 read tools, for cron. The cron fence keeps it
-  and drops `budget-<slug>`.
+- `budget-<slug>-ro`: the read-only URL, the 18 read tools. Always registered. Cron gets only
+  this one.
+- `budget-<slug>`: the read/write URL, all 50 manifest tools, for chats. Only when the row's
+  access is `write`. The cron fence drops it.
 
-When the profile is `default`, `browser` gets the same entries, as it does for the single
-budget. If Hermes's per-platform toolsets can keep `-ro` out of chats, they do. Otherwise chats
-list the read tools twice. `ACTUAL_ACCESS=read` still applies stack-wide and drops the read/write
-entries. Registration needs `mcp.instances` in the manifest, which `addon_manifest.py` rejects as
+When the profile is `default`, `browser` gets the same entries. Boundary confirmed this. The
+shared `api-server` profile gets no connected budgets; it keeps only the single v0.3.12 budget.
+A row whose access isn't `read` or `write` registers nothing, which fails closed. The stack-wide
+`ACTUAL_ACCESS` in `.env` keeps its v0.3.12 meaning for the single budget only. For a `write` row,
+if Hermes's per-platform toolsets can keep `-ro` out of chats, they do. Otherwise chats list the
+read tools twice. Registration needs `mcp.instances` in the manifest, which `addon_manifest.py` rejects as
 not implemented. Agree its shape with the manifest roadmap work, or give Actual its own
 registration function as Twenty has, and move it later.
 
-**Commands.** `budget.sh connect --json` (keys: `ACTUAL_SLUG`, `ACTUAL_PROFILE` default
-`default`, `ACTUAL_SERVER_URL`, `ACTUAL_BUDGET_SYNC_ID`, `ACTUAL_SESSION_TOKEN` or
-`ACTUAL_PASSWORD`, optional `ACTUAL_BUDGET_ENCRYPTION_PASSWORD`, `--force` to replace) and
-`budget.sh disconnect <slug> --json`.
+**Commands.** Boundary calls these commands. They stay supported entry points with the same
+keys, checks, errors and output even if budgets later become `addon.sh` instances. In that case
+they turn into wrappers, and `connect` also accepts values as JSON on stdin. Credentials never
+come from argv.
+
+- `budget.sh connect --json`. Keys: `ACTUAL_SLUG`, `ACTUAL_PROFILE` (default `default`),
+  `ACTUAL_SERVER_URL`, `ACTUAL_BUDGET_SYNC_ID`, `ACTUAL_SESSION_TOKEN` or `ACTUAL_PASSWORD`,
+  optional `ACTUAL_BUDGET_ENCRYPTION_PASSWORD`, and `ACTUAL_ACCESS` (`read` or `write`, default
+  `read`). `--force` replaces an existing connection.
+- `budget.sh disconnect <slug> --json`.
+- `budget.sh access <slug> read|write --json` changes a row's access without reconnecting.
+- `budget.sh status [--slug <slug>] --json` checks each stored credential afresh, outside the
+  MCP process. It prints `{"slug","profile","access","state"}` per row. `state` is `ok` or one
+  of the error values. `make doctor` reports the same states.
 
 - Before writing anything, `connect` checks the slug, the profile and the credential, using the
   existing `actual-admin.mjs check` with its time limit.
 - Both commands recreate the MCP containers and run `make hermes-reload`.
 - They print JSON lines ending in `done` or `error`. The errors are `bad_slug`,
-  `unknown_profile`, `login_refused`, `token_expired`, `no_access`, `encryption_password`,
-  `timeout`, `server_unreachable` and `exists`.
+  `unknown_profile`, `bad_access`, `login_refused`, `token_expired`, `no_access`,
+  `encryption_password`, `timeout`, `server_unreachable` and `exists`. `token_expired` means an
+  ended session, whether it ended by expiry, by a disabled user, or by a password change (if
+  26.11.0 ends sessions on a password change).
 - `disconnect` removes the entries, the secret file and the cache. It leaves the budget on the
   server.
 
@@ -484,6 +499,10 @@ when it's ambiguous.
 
 - `ACTUAL_SESSION_TOKEN` opens a budget against 26.11.0. How do a bad token and a disabled
   user's token fail (the error text and the `actual-admin.mjs` exit code)?
+- What a tool call does after the session behind an already-loaded budget ends: fail, or
+  answer from the loaded copy without saying so. Check both the password path and the token
+  path. If it answers silently, the launcher restarts that budget's process when its sync fails
+  with an ended session, so calls fail with a `token_expired` tool error.
 - Whether changing the server password ends sessions from earlier password sign-ins.
 - Whether a user without access to a budget can open it by sync id (expect `no_access`).
 - Path prefix on the vendored server, or a proxy to internal ports. Memory per child with a
@@ -493,8 +512,13 @@ when it's ambiguous.
 - The `Mcp-Session-Id` lifetime claim (until `DELETE` or restart, no idle expiry). It comes from
   reading `src/index.ts`, and the spike runs it.
 
-### Open questions for Boundary
+### Settled with Boundary (CR 0026, round 2)
 
-- Whether `browser` should mirror `default`. We assume yes.
-- What "api-server runs" means for a person, since the stack has one shared `api-server`
-  profile.
+- `browser` mirrors `default`.
+- "Unattended runs" means the person's own profile's cron. The shared `api-server` profile keeps
+  only the single budget.
+- Access is per budget, defaults to `read`, and can be changed without reconnecting.
+- Boundary detects ended sessions with `budget.sh status`, not from tool errors, which Hermes
+  passes to the model rather than to Boundary.
+- Boundary asks only for a password on password servers. For a remote OpenID server, the person
+  copies the token from the web app.
