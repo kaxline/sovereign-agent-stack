@@ -1376,7 +1376,7 @@ addon_mcp_urls() {
 addon_mcp_pin_args() {
   addon_mcp_plan "$1" 2>/dev/null | while IFS='|' read -r _amp_name _amp_title _amp_on _amp_access \
       _amp_url _amp_timeout _amp_connect _amp_transport _amp_tools _amp_pins _amp_all_urls; do
-    [ "$_amp_on" = 1 ] && [ -n "$_amp_access" ] || continue
+    { [ "$_amp_on" = 1 ] && [ -n "$_amp_access" ]; } || continue
     for _amp_t in $_amp_pins; do
       printf ' %s %s' "$_amp_t" "$(mcp_tool_name "$_amp_name" "$_amp_t")"
     done
