@@ -7,8 +7,8 @@
 #   scripts/addon.sh list --json
 #   scripts/addon.sh configure <short-id> [--instance <slug>] < values.json
 #   scripts/addon.sh configure <short-id> --instance <slug> --remove
-#   scripts/addon.sh enable <short-id>
-#   scripts/addon.sh disable <short-id> [--purge]
+#   scripts/addon.sh enable <short-id> [--json]
+#   scripts/addon.sh disable <short-id> [--purge] [--json]
 #   scripts/addon.sh run <short-id> <command> [--instance <slug>]
 #
 # configure reads one JSON object on stdin. Secret values go only to
@@ -19,8 +19,19 @@
 # gate flag to 0, syncs, stops the services and reloads; --purge also deletes
 # data/addons/<short-id> and the compose volumes in services.*.volumes.
 #
-# Exit codes: 0 success, 1 any other failure, 2 invalid input or usage,
-# 3 a required setting is missing, 4 run: docker compose run failed.
+# --json prints one JSON object per line on stdout (scripts/lib/addon-events.sh):
+# `pull` lines (enable only: it pulls the images first), `setup` lines per
+# step, then one `done` or `error` line. Step output goes to stderr without
+# --json.
+#
+# configure, enable and disable hold data/addons/.lock while they run; a second
+# call fails with busy. A failed or interrupted enable writes the flags back as
+# they were, syncs COMPOSE_PROFILES and stops the services if the add-on was
+# off, and its error line has "rolledBack":true.
+#
+# Exit codes: 0 success, 1 compose_failed or busy, 2 bad_input (invalid input
+# or usage), 3 missing_settings, 4 command_failed (run: docker compose run
+# failed; addon_cli.py failed; SIGINT or SIGTERM).
 #
 # ADDONS_DIR overrides addons/ (tests). STACK_PYTHON=host uses host python3.
 set -euo pipefail
@@ -34,12 +45,15 @@ source "${ROOT}/scripts/lib/env.sh"
 source "${ROOT}/scripts/lib/data-root.sh"
 # shellcheck source=lib/python.sh
 source "${ROOT}/scripts/lib/python.sh"
+# shellcheck source=lib/addon-events.sh
+source "${ROOT}/scripts/lib/addon-events.sh"
 
-die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 # usage: the synopsis from the header, on stdout.
 usage() { sed -n '7,12s/^# *//p' "${BASH_SOURCE[0]}"; }
 # usage_error REASON: `error: usage: REASON` and the synopsis on stderr, exit 2.
+# In JSON mode, a bad_input error line instead.
 usage_error() {
+  [[ "$EV_JSON" == 1 ]] && ev_fail bad_input "" "usage: $1" ""
   printf 'error: usage: %s\n' "$1" >&2
   usage >&2
   exit 2
@@ -115,7 +129,175 @@ compose_project() {
 }
 
 hermes_reload() {
-  make hermes-reload || die "make hermes-reload failed"
+  make hermes-reload
+}
+
+# cli_checked STEP ARGS...: cli with stdin from /dev/null and its stdout in
+# CLI_OUT. On failure, ev_fail with cli's own error line as the message:
+# exit 2 is bad_input, 3 missing_settings, anything else command_failed.
+CLI_OUT=""
+cli_checked() {
+  local step="$1" err rc=0 msg code
+  shift
+  err="$(ev_log cli)"
+  CLI_OUT="$(cli "$@" < /dev/null 2> "$err")" || rc=$?
+  [[ "$rc" == 0 ]] && return 0
+  msg="$(sed -n 's/^error: //p' "$err" | tail -n 1)"
+  [[ -n "$msg" ]] || msg="addon_cli.py $1 failed (exit ${rc})"
+  case "$rc" in
+    2) code=bad_input ;;
+    3) code=missing_settings ;;
+    *) code=command_failed ;;
+  esac
+  ev_fail "$code" "$step" "$msg" "$err"
+}
+
+# The lock: data/addons/.lock, made with mkdir (atomic), holding the owner's
+# PID in pid. A lock whose PID no longer runs is taken over. addon_unlock runs
+# from the EXIT trap and removes only a lock this process took.
+LOCK_DIR=""
+addon_lock() {
+  local dir="${DATA_ROOT}/addons/.lock" pid
+  mkdir -p "${DATA_ROOT}/addons"
+  if ! mkdir "$dir" 2> /dev/null; then
+    pid="$(cat "${dir}/pid" 2> /dev/null || true)"
+    # Take over only a lock whose pid names a dead process and still names it
+    # on a second read, so a caller that took it over in between keeps it. No
+    # pid yet means the owner is between mkdir and writing it: busy.
+    if [[ "$pid" =~ ^[0-9]+$ ]] && ! kill -0 "$pid" 2> /dev/null \
+      && [[ "$(cat "${dir}/pid" 2> /dev/null || true)" == "$pid" ]]; then
+      rm -rf "$dir"
+      mkdir "$dir" 2> /dev/null || ev_fail busy "" "another add-on change is running" ""
+    else
+      ev_fail busy "" "another add-on change is running (pid ${pid:-unknown})" ""
+    fi
+  fi
+  LOCK_DIR="$dir"
+  printf '%s\n' "$$" > "${dir}/pid"
+}
+addon_unlock() {
+  [[ -n "$LOCK_DIR" ]] && rm -rf "$LOCK_DIR"
+  LOCK_DIR=""
+}
+on_exit() {
+  addon_unlock
+  ev_cleanup
+}
+
+# apply_flags PLAN: writes the plan's flags to .env and syncs COMPOSE_PROFILES.
+apply_flags() {
+  write_flags "$1"
+  "${ROOT}/scripts/sync-profiles.sh"
+}
+
+# Rollback for enable. rollback_record PLAN saves each plan flag's .env line
+# (or that it had none) and arms rollback; EV_ON_FAIL runs it on any failure,
+# including SIGINT and SIGTERM.
+ROLLBACK_FLAGS=""
+ROLLBACK_STOP=0
+ROLLBACK_SERVICES=""
+rollback_record() {
+  local plan="$1" flag value line builtin
+  ROLLBACK_FLAGS=""
+  while read -r flag value; do
+    [[ -n "$flag" ]] || continue
+    if line="$(grep -m 1 -E "^${flag}=" .env 2> /dev/null)"; then
+      ROLLBACK_FLAGS="${ROLLBACK_FLAGS}${flag} 1 ${line#*=}"$'\n'
+    else
+      ROLLBACK_FLAGS="${ROLLBACK_FLAGS}${flag} 0"$'\n'
+    fi
+  done <<EOF_FLAGS
+$(json_flags "$plan")
+EOF_FLAGS
+  builtin="$(printf '%s' "$plan" | sed -n 's/.*"builtin":"\([A-Z][A-Z0-9_]*\)".*/\1/p')"
+  ROLLBACK_STOP=0
+  truthy "$(env_get "$builtin")" || ROLLBACK_STOP=1
+  ROLLBACK_SERVICES="$(json_list services "$plan" | sed 's/@.*//')"
+  EV_ON_FAIL=rollback
+}
+
+# rollback: puts the recorded .env lines back, syncs and stops the services if
+# the add-on was off. Output goes to a log (JSON mode) or stderr (fd 4, as it
+# may run from a trap inside a step's redirection).
+rollback() {
+  if [[ "$EV_JSON" == 1 ]]; then
+    rollback_apply > "$(ev_log rollback)" 2>&1 || true
+  else
+    rollback_apply >&4 2>&4 || true
+  fi
+}
+rollback_apply() {
+  local flag present value services=()
+  while read -r flag present value; do
+    [[ -n "$flag" ]] || continue
+    if [[ "$present" == 1 ]]; then
+      upsert_env .env "$flag" "$value"
+    else
+      remove_env .env "$flag"
+    fi
+  done <<EOF_FLAGS
+$ROLLBACK_FLAGS
+EOF_FLAGS
+  EV_ROLLED_BACK=1
+  "${ROOT}/scripts/sync-profiles.sh" || true
+  if [[ "$ROLLBACK_STOP" == 1 ]]; then
+    while IFS= read -r flag; do
+      [[ -n "$flag" ]] && services+=("$flag")
+    done <<EOF_SERVICES
+$ROLLBACK_SERVICES
+EOF_SERVICES
+    [[ ${#services[@]} -gt 0 ]] && docker compose stop "${services[@]}"
+  fi
+  return 0
+}
+
+# remove_env FILE KEY: deletes every KEY= line.
+remove_env() {
+  local tmp
+  [[ -f "$1" ]] || return 0
+  tmp="$(mktemp)"
+  grep -v -E "^$2=" "$1" > "$tmp" || true
+  mv "$tmp" "$1"
+}
+
+# gate_on PLAN GATE: the gate's value after the plan's flags are written.
+gate_on() {
+  local v
+  v="$(printf '%s' "$1" | sed -n "s/.*\"$2\":\"\([01]\)\".*/\1/p")"
+  [[ -n "$v" ]] || v="$(env_get "$2")"
+  truthy "$v"
+}
+
+# pull_stream LOG SERVICES...: one compose pull per service, its output
+# appended to LOG and framed by marker objects so pull-events can name the
+# service. Compose 2.2x labels events with the service; newer versions label
+# them "Image <ref>". Images with a build section are left to `up`.
+pull_stream() {
+  local log="$1" s
+  shift
+  for s in "$@"; do
+    printf '{"addonPull":"start","service":"%s"}\n' "$s"
+    docker compose --progress json pull --ignore-buildable "$s" 2>&1 | tee -a "$log" || return 1
+    printf '{"addonPull":"done","service":"%s"}\n' "$s"
+  done
+}
+# pull_images SERVICES...: JSON mode only. pull lines on stdout, compose's
+# output in a log; a failure is compose_failed at step pull.
+pull_images() {
+  local csv log rc=0
+  [[ "$EV_JSON" == 1 && $# -gt 0 ]] || return 0
+  csv="$(IFS=,; printf '%s' "$*")"
+  log="$(ev_log pull)"
+  EV_STEP=pull
+  EV_CUR_LOG="$log"
+  ev_wait pull_pipe "$log" "$csv" "$@" || rc=$?
+  EV_CUR_LOG=""
+  [[ "$rc" == 0 ]] || ev_fail compose_failed pull "docker compose pull failed for: $*" "$log"
+}
+pull_pipe() {
+  local log="$1" csv="$2"
+  shift 2
+  pull_stream "$log" "$@" | cli pull-events "$csv"
 }
 
 cmd_list() {
@@ -134,6 +316,7 @@ cmd_configure() {
       *) usage_error "configure: unknown option $1" ;;
     esac
   done
+  addon_lock
   if [[ "$remove" == 1 ]]; then
     [[ -n "$instance" ]] || { printf 'error: --remove needs --instance\n' >&2; exit 2; }
     cli remove-instance "$sid" "$instance" < /dev/null
@@ -152,31 +335,39 @@ cmd_configure() {
 }
 
 cmd_enable() {
-  local sid="${1:-}" plan rc=0 entry name gate
+  local sid="${1:-}" plan entry name gate
   [[ -n "$sid" && $# -eq 1 ]] || usage_error "enable takes one short id"
-  plan="$(cli plan-enable "$sid" < /dev/null)" || rc=$?
-  [[ "$rc" == 0 ]] || exit "$rc"
-  write_flags "$plan"
-  "${ROOT}/scripts/sync-profiles.sh"
+  addon_lock
+  cli_checked flags plan-enable "$sid"
+  plan="$CLI_OUT"
   local services=()
   while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
     name="${entry%%@*}"
     gate=""
     [[ "$entry" == *@* ]] && gate="${entry#*@}"
-    if [[ -z "$gate" ]] || truthy "$(env_get "$gate")"; then
+    if [[ -z "$gate" ]] || gate_on "$plan" "$gate"; then
       services+=("$name")
     fi
   done <<EOF_SERVICES
 $(json_list services "$plan")
 EOF_SERVICES
+  pull_images ${services[@]+"${services[@]}"}
+  rollback_record "$plan"
+  run_step flags "" apply_flags "$plan" \
+    || ev_fail command_failed flags "writing the flags or syncing COMPOSE_PROFILES failed" "$EV_LAST_LOG"
   if [[ ${#services[@]} -gt 0 ]]; then
-    docker compose up -d --wait "${services[@]}" || die "docker compose up failed for: ${services[*]}"
+    run_step start "" docker compose up -d --wait "${services[@]}" \
+      || ev_fail compose_failed start "docker compose up failed for: ${services[*]}" "$EV_LAST_LOG"
   fi
-  hermes_reload
+  run_step reload "" hermes_reload \
+    || ev_fail compose_failed reload "make hermes-reload failed" "$EV_LAST_LOG"
+  EV_ON_FAIL=""
+  ev_done "$sid" enable "" ""
 }
 
 cmd_disable() {
-  local sid="${1:-}" purge=0 plan rc=0 line project vol
+  local sid="${1:-}" purge=0 plan line project vol
   [[ -n "$sid" ]] || usage_error "disable needs a short id"
   shift
   case "${1:-}" in
@@ -185,10 +376,11 @@ cmd_disable() {
     *) usage_error "disable: unknown option $1" ;;
   esac
   [[ $# -eq 0 ]] || usage_error "disable: too many arguments"
-  plan="$(cli plan-disable "$sid" < /dev/null)" || rc=$?
-  [[ "$rc" == 0 ]] || exit "$rc"
-  write_flags "$plan"
-  "${ROOT}/scripts/sync-profiles.sh"
+  addon_lock
+  cli_checked flags plan-disable "$sid"
+  plan="$CLI_OUT"
+  run_step flags "" apply_flags "$plan" \
+    || ev_fail command_failed flags "writing the flags or syncing COMPOSE_PROFILES failed" "$EV_LAST_LOG"
   local services=() volumes=()
   while IFS= read -r line; do
     [[ -n "$line" ]] && services+=("$line")
@@ -196,7 +388,8 @@ cmd_disable() {
 $(json_list services "$plan")
 EOF_SERVICES
   if [[ ${#services[@]} -gt 0 ]]; then
-    docker compose stop "${services[@]}" || die "docker compose stop failed for: ${services[*]}"
+    run_step stop "" docker compose stop "${services[@]}" \
+      || ev_fail compose_failed stop "docker compose stop failed for: ${services[*]}" "$EV_LAST_LOG"
   fi
   if [[ "$purge" == 1 ]]; then
     while IFS= read -r line; do
@@ -206,17 +399,23 @@ $(json_list volumes "$plan")
 EOF_VOLUMES
     if [[ ${#volumes[@]} -gt 0 ]]; then
       # A stopped container still holds its volumes.
-      docker compose rm -f "${services[@]}" || die "docker compose rm failed for: ${services[*]}"
+      run_step delete "" docker compose rm -f "${services[@]}" \
+        || ev_fail compose_failed delete "docker compose rm failed for: ${services[*]}" "$EV_LAST_LOG"
       project="$(compose_project)"
       for vol in "${volumes[@]}"; do
         if docker volume inspect "${project}_${vol}" > /dev/null 2>&1; then
-          docker volume rm "${project}_${vol}" || die "docker volume rm ${project}_${vol} failed"
+          run_step delete "$vol" docker volume rm "${project}_${vol}" \
+            || ev_fail compose_failed delete "docker volume rm ${project}_${vol} failed" "$EV_LAST_LOG"
         fi
       done
     fi
-    cli purge "$sid" < /dev/null
+    ev_step delete running "data/addons/${sid}"
+    cli_checked delete purge "$sid"
+    ev_step delete "done" "data/addons/${sid}"
   fi
-  hermes_reload
+  run_step reload "" hermes_reload \
+    || ev_fail compose_failed reload "make hermes-reload failed" "$EV_LAST_LOG"
+  ev_done "$sid" disable "" ""
 }
 
 cmd_run() {
@@ -241,9 +440,26 @@ EOF_ARGV
   docker compose run --rm --no-deps -T "${argv[@]}" || exit 4
 }
 
+trap on_exit EXIT
+
 sub="${1:-}"
 [[ -n "$sub" ]] || usage_error "no command given"
 shift
+# --json may come anywhere among enable's and disable's options.
+json=0
+args=()
+case "$sub" in
+  enable | disable)
+    for a in "$@"; do
+      if [[ "$a" == --json ]]; then json=1; else args+=("$a"); fi
+    done
+    set -- ${args[@]+"${args[@]}"}
+    ;;
+esac
+# list and run change nothing and keep the shell's default signal handling.
+case "$sub" in
+  configure | enable | disable) ev_init "$json" ;;
+esac
 case "$sub" in
   list) cmd_list "$@" ;;
   configure) cmd_configure "$@" ;;

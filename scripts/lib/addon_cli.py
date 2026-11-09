@@ -18,8 +18,8 @@ runs in the Hermes image through stack_python, so the host needs no python3.
     remove-instance SID SLUG
         Deletes the instance's file and secrets.
     plan-enable SID
-        Exits 3 if a required setting is missing. Prints {"flags": {...},
-        "services": [...]}: builtin.flag at "1" plus the stored value of each
+        Exits 3 if a required setting is missing. Prints {"builtin": FLAG,
+        "flags": {...}, "services": [...]}: builtin.flag at "1" plus the stored value of each
         bool setting whose flag is a gate, and every compose service, written
         "service@FLAG" when it runs only while its gate flag is 1.
     plan-disable SID
@@ -31,6 +31,21 @@ runs in the Hermes image through stack_python, so the host needs no python3.
         `--account SLUG` appended when the command takes an instance.
     purge SID
         Deletes data/addons/SID (addon_store.addon_dir refuses anything else).
+    pull-events SERVICES_CSV
+        Reads `docker compose --progress json pull` output on stdin and prints
+        {"phase":"pull","service":S,"current":N,"total":N} lines, bytes
+        downloaded summed over layers, at most one per service per second.
+        An event belongs to the service its id or parent_id names (older
+        compose), else to the service of the last {"addonPull":"start",
+        "service":S} marker addon.sh wrote, else to the only service given.
+        With markers, {"phase":"pull","service":S,"status":"done"} follows
+        each {"addonPull":"done","service":S}; without, it follows end of
+        input for every service given. Lines that aren't JSON are ignored.
+    log-tail [--lines N]
+        Reads a log on stdin and prints its last N lines (default 20) as a
+        JSON array, cleaned as every addon.sh output line is: control
+        characters other than tab dropped, tab made a space, cut to 500
+        characters. Blank lines are left out.
 
 Errors are one line, `error: <message>`, on stderr. Exit codes: 2 invalid
 input (unknown add-on, bad JSON, unknown or ill-typed setting), 3 a required
@@ -47,6 +62,8 @@ import json
 import re
 import shutil
 import sys
+import time
+import unicodedata
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -167,7 +184,7 @@ def cmd_plan_enable(args) -> None:
         name = _compose(manifest, key)
         gate = svc.get("when", {}).get("gate")
         services.append(f"{name}@{gate}" if gate else name)
-    _dump({"flags": flags, "services": services})
+    _dump({"builtin": manifest["builtin"]["flag"], "flags": flags, "services": services})
 
 
 def cmd_plan_disable(args) -> None:
@@ -208,6 +225,84 @@ def cmd_purge(args) -> None:
         shutil.rmtree(target)
 
 
+LINE_MAX = 500
+LINE_SPLIT_RE = re.compile(r"\r\n|\r|\n")
+
+
+def clean_line(text: str) -> str:
+    """The rule for every addon.sh output string (json_str in addon-events.sh)."""
+    text = text.replace("\t", " ")
+    return "".join(c for c in text if unicodedata.category(c) != "Cc")[:LINE_MAX]
+
+
+def cmd_log_tail(args) -> None:
+    text = sys.stdin.buffer.read().decode("utf-8", errors="replace")
+    lines = [line for line in (clean_line(raw) for raw in LINE_SPLIT_RE.split(text)) if line.strip()]
+    tail = lines[-args.lines:] if args.lines > 0 else []
+    print(json.dumps(tail, separators=(",", ":")))
+
+
+def _pull_line(**fields) -> None:
+    print(json.dumps({"phase": "pull", **fields}, separators=(",", ":")), flush=True)
+
+
+def cmd_pull_events(args) -> None:
+    services = [s for s in args.services.split(",") if s]
+    layers: dict[str, dict[str, tuple[int, int]]] = {s: {} for s in services}
+    last_sent: dict[str, float] = {}
+    marked = False
+    current = None
+    for raw in sys.stdin:
+        try:
+            event = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        marker = event.get("addonPull")
+        if marker is not None:
+            name = event.get("service")
+            if name not in layers:
+                continue
+            marked = True
+            if marker == "start":
+                current = name
+            elif marker == "done":
+                _pull_line(service=name, status="done")
+                current = None
+            continue
+        ident, parent = event.get("id"), event.get("parent_id")
+        if ident in layers:
+            service = ident
+        elif parent in layers:
+            service = parent
+        elif current is not None:
+            service = current
+        elif len(services) == 1:
+            service = services[0]
+        else:
+            continue
+        if not parent or not isinstance(ident, str):
+            continue
+        cur, total = event.get("current"), event.get("total")
+        text = str(event.get("text", ""))
+        if text.startswith("Downloading") and isinstance(cur, int) and isinstance(total, int) and total > 0:
+            layers[service][ident] = (min(cur, total), total)
+        elif text in ("Download complete", "Pull complete") and ident in layers[service]:
+            layers[service][ident] = (layers[service][ident][1],) * 2
+        else:
+            continue
+        now = time.monotonic()
+        if now - last_sent.get(service, -2.0) < 1.0:
+            continue
+        last_sent[service] = now
+        sums = layers[service].values()
+        _pull_line(service=service, current=sum(c for c, _ in sums), total=sum(t for _, t in sums))
+    if not marked:
+        for service in services:
+            _pull_line(service=service, status="done")
+
+
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(prog="addon_cli.py")
     p.add_argument("--addons-dir", type=Path, required=True)
@@ -235,6 +330,12 @@ def main(argv: list[str]) -> int:
     s.add_argument("command")
     s.add_argument("--instance")
     s.set_defaults(func=cmd_plan_run)
+    s = sub.add_parser("pull-events")
+    s.add_argument("services")
+    s.set_defaults(func=cmd_pull_events)
+    s = sub.add_parser("log-tail")
+    s.add_argument("--lines", type=int, default=20)
+    s.set_defaults(func=cmd_log_tail)
     args = p.parse_args(argv)
     try:
         args.func(args)
