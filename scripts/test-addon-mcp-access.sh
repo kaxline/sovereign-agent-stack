@@ -31,6 +31,7 @@ run() { register_addon_mcp_servers "$1" > /dev/null; }
 register_mcp_server() { printf 'register:%s:%s:%s:%s;' "${1:-default}" "$2" "$4" "$(shift 6; echo "$*")" >> "$record"; }
 hermes_config_set() { printf 'set:%s:%s=%s;' "${1:-default}" "$2" "$3" >> "$record"; }
 pin_mcp_tools() { printf 'pin:%s:%s;' "${1:-default}" "$(shift 2; echo "$*")" >> "$record"; }
+# shellcheck disable=SC2329  # called by the sourced bootstrap; redefined below
 drop_mcp_entries_for_url() { printf 'drop:%s:%s;' "${1:-default}" "$3" >> "$record"; }
 got() { calls="$(cat "$record")"; : > "$record"; }
 
