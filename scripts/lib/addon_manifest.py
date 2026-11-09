@@ -338,8 +338,13 @@ def validate(manifest, source: str = "builtin", repo=_AUTO) -> list[str]:
                                         manifest.get("instances"),
                                         builtin.get("flag") if isinstance(builtin, dict) else None))
             if perms.get("cron") == "ro" and not (
-                    isinstance(entry, dict) and isinstance(entry.get("service"), dict)
-                    and "ro" in entry["service"]):
+                    isinstance(entry, dict) and (
+                        (isinstance(entry.get("service"), dict) and "ro" in entry["service"])
+                        # with mcp.instances, cron and api-server use the instance's ro key
+                        or (isinstance(entry.get("instances"), dict)
+                            and isinstance(entry["instances"].get("auth"), dict)
+                            and isinstance(entry["instances"]["auth"].get("secret"), dict)
+                            and "ro" in entry["instances"]["auth"]["secret"]))):
                 err('permissions.cron "ro" needs a mcp.service map with an ro service: '
                     'cron ro needs an ro service')
         names = [e["name"] for e in entries if isinstance(e, dict) and isinstance(e.get("name"), str)]
@@ -863,7 +868,8 @@ def _validate_mcp_instances(inst, source: str, instances, gate_flags: set[str],
         err(f"mcp.instances.access: {m.group(1)!r} is not a choice instance setting")
     else:
         options = settings[m.group(1)].get("options")
-        if isinstance(options, list) and any(o not in INSTANCE_ACCESS_LEVELS for o in options):
+        if not isinstance(options, list) or any(
+                not isinstance(o, str) or o not in INSTANCE_ACCESS_LEVELS for o in options):
             err(f"mcp.instances.access: {m.group(1)!r} may offer only "
                 f"{' and '.join(INSTANCE_ACCESS_LEVELS)}")
 

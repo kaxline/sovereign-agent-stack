@@ -521,6 +521,18 @@ refused("mcp.instances access with an option outside read and write",
 check("mcp.instances access may offer read only",
       am.validate(inst_manifest(instances_settings={**INST_SETTINGS, "access": {
           "type": "choice", "options": ["read"], "default": "read"}}), "builtin") == [])
+for bad_opts in ([["x"]], [{}], "read", None):
+    refused(f"mcp.instances access with options {bad_opts!r} is an error, not a crash",
+            inst_manifest(instances_settings={**INST_SETTINGS, "access": {
+                "type": "choice", "options": bad_opts, "default": "read"}}),
+            "builtin", "mcp.instances.access")
+cron_ro = inst_manifest(permissions={**BASE["permissions"], "cron": "ro"})
+check("cron ro is accepted with mcp.instances whose auth.secret has ro",
+      am.validate(cron_ro, "builtin") == [], str(am.validate(cron_ro, "builtin")))
+cron_ro_no_key = inst_manifest({"instances__auth__secret": {"rw": "key_rw"}},
+                               permissions={**BASE["permissions"], "cron": "ro"})
+refused("cron ro is refused when mcp.instances auth.secret has no ro", cron_ro_no_key, "builtin",
+        'permissions.cron "ro"')
 refused("mcp.instances auth.secret.ro naming an unknown setting",
         inst_manifest({"instances__auth__secret__ro": "nope"}), "builtin", "mcp.instances.auth.secret.ro")
 refused("mcp.instances auth.secret.rw naming a non-secret setting",
