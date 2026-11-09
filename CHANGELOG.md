@@ -61,9 +61,16 @@ digests; it is not read from `.env`.
   - New services. `bitwarden-broker` (profile `bitwarden`) runs `bw`, holds
     every account's session key and fills pages over CDP itself. It shares
     `hermes`' network namespace and listens on `127.0.0.1:8099` there.
-    Compose does not restart it when `hermes` alone is recreated or
-    restarted (`make hermes-reload` included); Hermes cannot reach it until
-    `docker compose restart bitwarden-broker` or `make up`. `bitwarden-setup` and
+    Compose restarts it with `hermes` (`depends_on` with `restart: true`),
+    but a recreate of `hermes` alone leaves it in the removed container's
+    namespace, where `docker compose restart bitwarden-broker` fails. The
+    recovery is `docker compose --profile bitwarden up -d --no-deps
+    bitwarden-broker`; `make hermes-reload`, the new `make hermes-recreate`,
+    `make restart` and the scripts that recreate `hermes` run it through
+    `./scripts/vault.sh follow-hermes`, and `make doctor` flags a broker in the
+    wrong namespace. **Boundary:** a `hermes` recreate that Boundary drives
+    itself must be followed by that `up` (or `./scripts/vault.sh
+    follow-hermes`) while `BITWARDEN_ENABLED=1`. `bitwarden-setup` and
     `bitwarden-secrets-sync` (profile `bitwarden-tools`) are one-shots that
     the `make vault-*` and `make secrets-sync` targets start. `vaultwarden`
     (`vaultwarden/server:1.37.4`, pinned by digest) and `vaultwarden-tls`

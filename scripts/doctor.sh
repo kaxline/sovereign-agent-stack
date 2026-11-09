@@ -700,10 +700,10 @@ if [[ "$signal_enabled" -eq 1 ]]; then
           || docker compose exec -T hermes grep -q 'assistant-stack: cron synthesize Signal' /opt/hermes/cron/scheduler_delivery.py 2>/dev/null; then
           ok "Hermes cron Signal patches applied"
         else
-          warn "Hermes cron Signal patches missing — docker compose up -d --force-recreate hermes"
+          warn "Hermes cron Signal patches missing — make hermes-recreate"
         fi
       else
-        warn "Hermes cron Signal patches missing — docker compose up -d --force-recreate hermes"
+        warn "Hermes cron Signal patches missing — make hermes-recreate"
       fi
     fi
     if docker compose ps --status running signal-cli 2>/dev/null | grep -q signal-cli; then
@@ -1388,12 +1388,24 @@ if [[ "$bw_on" -eq 1 || "$bw_local" -eq 1 || "$bw_files" -gt 0 ]]; then
   done
   if [[ "$bw_on" -eq 1 ]]; then
     if docker info >/dev/null 2>&1; then
-      if [[ -z "$(docker compose --profile bitwarden ps --status running -q bitwarden-broker 2>/dev/null || true)" ]]; then
+      bw_cid="$(docker compose --profile bitwarden ps --status running -q bitwarden-broker 2>/dev/null || true)"
+      bw_hermes="$(docker compose ps --status running -q hermes 2>/dev/null || true)"
+      bw_netns=""
+      [[ -n "$bw_cid" ]] && bw_netns="$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$bw_cid" 2>/dev/null || true)"
+      bw_fix="docker compose --profile bitwarden up -d --no-deps bitwarden-broker"
+      if [[ -z "$bw_cid" ]]; then
         warn "bitwarden-broker not running — make up"
+      elif [[ -z "$bw_hermes" ]]; then
+        warn "hermes is not running, so the Bitwarden broker has no network — make up"
+      elif [[ "$bw_netns" != "container:${bw_hermes}" ]]; then
+        # The broker kept the namespace of a hermes container that was recreated.
+        bad "bitwarden-broker is not in the running hermes container's network namespace — ${bw_fix}"
+      elif ! docker compose exec -T hermes python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8099/health', timeout=3)" >/dev/null 2>&1; then
+        bad "Bitwarden broker does not answer /health from hermes — docker compose logs bitwarden-broker"
       elif ! bw_rows="$(docker compose --profile bitwarden exec -T bitwarden-broker python3 -m broker.cli accounts 2>/dev/null)"; then
-        bad "Bitwarden broker does not answer /health — docker compose logs bitwarden-broker"
+        bad "Bitwarden broker does not list its accounts — docker compose logs bitwarden-broker"
       else
-        ok "Bitwarden broker answers /health"
+        ok "Bitwarden broker answers /health from hermes"
         bw_seen=" "
         while IFS=$'\t' read -r bw_slug bw_mode bw_scope bw_state bw_class; do
           [[ -n "$bw_slug" ]] || continue
@@ -1434,7 +1446,7 @@ if [[ "$bw_on" -eq 1 || "$bw_local" -eq 1 || "$bw_files" -gt 0 ]]; then
         for f in "$bw_accounts"/*.env; do
           [[ -f "$f" ]] || continue
           bw_slug="$(basename "$f" .env)"
-          [[ "$bw_seen" == *" ${bw_slug} "* ]] || warn "${bw_slug}: not loaded by the broker yet — docker compose restart bitwarden-broker"
+          [[ "$bw_seen" == *" ${bw_slug} "* ]] || warn "${bw_slug}: not loaded by the broker yet — docker compose --profile bitwarden up -d --no-deps --force-recreate bitwarden-broker"
         done
       fi
     fi

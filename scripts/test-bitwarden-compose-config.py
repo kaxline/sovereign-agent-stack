@@ -75,6 +75,9 @@ def check_broker(services: dict) -> None:
         return
     if broker.get("network_mode") != "service:hermes":
         fail(f"bitwarden-broker network_mode is {broker.get('network_mode')!r}, want 'service:hermes'")
+    dep = (broker.get("depends_on") or {}).get("hermes") or {}
+    if dep.get("condition") != "service_started" or dep.get("restart") is not True:
+        fail(f"bitwarden-broker depends_on.hermes is {dep!r}, want condition service_started and restart true")
     if broker.get("networks"):
         fail("bitwarden-broker joins networks of its own")
     if broker.get("ports"):

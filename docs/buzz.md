@@ -49,7 +49,7 @@ make agent-create NAME=software-engineer DISPLAY_NAME="Software Engineer" WITH=b
 # Compatibility: make hermes-buzz-employee PROFILE=software-engineer DISPLAY_NAME="Software Engineer"
 
 # 4) Recreate Hermes so s6 picks up the new gateway
-docker compose up -d --force-recreate hermes
+make hermes-recreate
 
 # 5) @Software Engineer in Buzz
 ```
@@ -72,7 +72,7 @@ Optional root `.env` knobs:
 make buzz-cli-install
 make agent-create NAME=software-engineer DISPLAY_NAME="Software Engineer" WITH=buzz
 # Invite the printed pubkey in Desktop → Invites / Relay access
-docker compose up -d --force-recreate hermes
+make hermes-recreate
 ```
 
 Toggle without creating profiles:
@@ -182,7 +182,7 @@ One Buzz identity = one Hermes agent profile = one Nostr key.
 ```bash
 make agent-create NAME=software-engineer DISPLAY_NAME="Software Engineer" WITH=buzz
 make agent-create NAME=ui-ux-designer DISPLAY_NAME="UI/UX Designer" WITH=buzz
-docker compose up -d --force-recreate hermes
+make hermes-recreate
 ```
 
 Each profile gets its own gateway process (this stack’s default s6 layout). Keep `require_mention: true` in multi-agent rooms (sync writes recommended defaults).

@@ -24,7 +24,7 @@ make agent-create NAME=ui-ux-designer DISPLAY_NAME="UI/UX Designer" \
   ROLE="Own UX and visual design; coordinate via project files and shared rooms."
 
 # Recreate so s6 starts each profile gateway
-docker compose up -d --force-recreate hermes
+make hermes-recreate
 ```
 
 Optional rooms/DMs when Buzz is set up:

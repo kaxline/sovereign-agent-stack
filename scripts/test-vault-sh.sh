@@ -66,7 +66,10 @@ case " $* " in
 esac
 next=""
 for a in "$@"; do
-  if [ "$next" = 1 ]; then exit "$(rc_of "setup-$a")"; fi
+  if [ "$next" = 1 ]; then
+    [ -d "$VAULT_ACCOUNTS_DIR" ] && echo "stub: accounts dir at setup-$a" >> "$STUB/log"
+    exit "$(rc_of "setup-$a")"
+  fi
   [ "$a" = bitwarden-setup ] && next=1
   [ "$a" = bitwarden-secrets-sync ] && exit "$(rc_of secrets-sync)"
 done
@@ -195,7 +198,8 @@ reset_stub
 touch "$STUB/broker-running"
 printf 'checked\tcloud\tfolder\tunlocked\t-\nhome\tselfhosted\tcollection\tlocked\t-\n' > "$STUB/accounts"
 run_in "user.c"$'\n'"$SECRET"$'\n'"$PW"$'\n' add --slug checked --mode cloud || fail "add with the broker up"
-logged "restart bitwarden-broker" || fail "add restarts the broker"
+logged "--profile bitwarden up -d --no-deps --force-recreate bitwarden-broker" || fail "add recreates the broker"
+logged "restart bitwarden-broker" && fail "add must not docker compose restart the broker (it fails after a hermes recreate)"
 said "checked: signed in" || fail "add reports the broker's unlock"
 said "home is locked after the restart: make vault-unlock SLUG=home" || fail "add lists manual accounts to unlock again"
 no_secret "add checked"
@@ -298,7 +302,9 @@ reset_stub
 run init && fail "init without an owner and no terminal"
 said "VAULT_OWNER_EMAIL" || fail "init without an owner names VAULT_OWNER_EMAIL"
 reset_stub
-run init --owner owner@example.com || fail "init from scratch"
+VAULT_ACCOUNTS_DIR="$tmp/accounts-init" run init --owner owner@example.com || fail "init from scratch"
+logged "stub: accounts dir at setup-tls" || fail "init creates the accounts folder before its first container"
+[ "$(mode_of "$tmp/accounts-init")" = 711 ] || fail "init's accounts folder is mode 711"
 for d in bw broker secrets/local/tls local/tls/server local/vaultwarden vaultwarden; do
   [ -d "$BITWARDEN_HOST_DATA_DIR/$d" ] || fail "init creates $d"
 done
@@ -356,7 +362,59 @@ logged "bitwarden-secrets-sync" && fail "up-hook synced while the account was lo
 printf 'local\tlocal\tcollection\tunlocked\t-\n' > "$STUB/accounts"
 run up-hook || fail "up-hook, unlocked"
 logged "run --rm -T bitwarden-secrets-sync" || fail "up-hook runs secrets-sync when unlocked"
-grep -A3 -E '^up:' "${ROOT}/Makefile" | grep -q 'vault.sh up-hook' || fail "make up calls vault.sh up-hook"
+grep -A5 -E '^up:' "${ROOT}/Makefile" | grep -q 'vault.sh up-hook' || fail "make up calls vault.sh up-hook"
+grep -A5 -E '^up:' "${ROOT}/Makefile" | awk '/vault.sh pre-up/ { p = NR } /docker compose up -d/ { u = NR } END { exit !(p && u && p < u) }' \
+  || fail "make up runs vault.sh pre-up before docker compose up"
+
+# --- pre-up: the accounts folder before docker compose up ----------------------
+reset_stub
+printf 'BITWARDEN_ENABLED=0\n' > "$ENV_FILE"
+VAULT_ACCOUNTS_DIR="$tmp/accounts-preup" run pre-up || fail "pre-up while off"
+[ ! -e "$tmp/accounts-preup" ] || fail "pre-up creates nothing while BITWARDEN_ENABLED=0"
+[ ! -s "$out" ] || fail "pre-up prints nothing while off"
+printf 'BITWARDEN_ENABLED=1\n' > "$ENV_FILE"
+VAULT_ACCOUNTS_DIR="$tmp/accounts-preup" run pre-up || fail "pre-up while on"
+[ "$(mode_of "$tmp/accounts-preup")" = 711 ] || fail "pre-up creates the accounts folder, mode 711"
+[ ! -s "$STUB/log" ] || fail "pre-up runs no docker"
+
+# --- follow-hermes: after hermes is recreated or restarted ---------------------
+reset_stub
+printf 'BITWARDEN_ENABLED=0\n' > "$ENV_FILE"
+touch "$STUB/broker-running"
+run follow-hermes || fail "follow-hermes while off"
+[ ! -s "$out" ] || fail "follow-hermes prints nothing while BITWARDEN_ENABLED=0"
+[ ! -s "$STUB/log" ] || fail "follow-hermes runs docker while BITWARDEN_ENABLED=0"
+(ROOT="$ROOT"; . "${ROOT}/scripts/lib/bitwarden.sh"; follow_hermes) < /dev/null > "$out" 2>&1 || fail "follow_hermes while off"
+[ ! -s "$out" ] && [ ! -s "$STUB/log" ] || fail "the follow_hermes helper is a no-op while BITWARDEN_ENABLED=0"
+printf 'BITWARDEN_ENABLED=1\n' > "$ENV_FILE"
+rm -f "$STUB/broker-running"
+run follow-hermes || fail "follow-hermes with no broker container"
+logged " up " && fail "follow-hermes starts a broker that was never created"
+reset_stub
+touch "$STUB/broker-running"
+printf 'BW_MODE=cloud\nBW_UNLOCK=manual\n' > "$VAULT_ACCOUNTS_DIR/handson.env"
+printf 'handson\tcloud\tfolder\tlocked\t-\nlocal\tlocal\tcollection\tunlocked\t-\n' > "$STUB/accounts"
+(ROOT="$ROOT"; . "${ROOT}/scripts/lib/bitwarden.sh"; follow_hermes) < /dev/null > "$out" 2>&1 || fail "follow_hermes while on"
+logged "--profile bitwarden up -d --no-deps bitwarden-broker" || fail "follow_hermes brings the broker up in hermes' namespace"
+logged "force-recreate" && fail "follow_hermes leaves a broker in the current namespace alone (no --force-recreate)"
+said "handson is locked after the restart: make vault-unlock SLUG=handson" || fail "follow_hermes lists manual accounts to unlock"
+rm -f "$VAULT_ACCOUNTS_DIR/handson.env"
+
+# Every command that recreates or restarts hermes follows it with the broker.
+grep -A4 -E '^hermes-reload:' "${ROOT}/Makefile" | grep -q 'vault.sh follow-hermes' || fail "make hermes-reload follows hermes"
+grep -A3 -E '^hermes-recreate:' "${ROOT}/Makefile" | grep -q 'vault.sh follow-hermes' || fail "make hermes-recreate follows hermes"
+grep -A3 -E '^restart:' "${ROOT}/Makefile" | grep -q 'vault.sh follow-hermes' || fail "make restart follows hermes"
+for f in corpus.sh model-use.sh; do
+  grep -q 'follow_hermes' "${ROOT}/scripts/$f" || fail "scripts/$f calls follow_hermes after it recreates or restarts hermes"
+done
+for f in agent-create.sh bootstrap-buzz.sh agent-attach-buzz.sh; do
+  grep -q 'make hermes-recreate' "${ROOT}/scripts/$f" || fail "scripts/$f tells you to run make hermes-recreate"
+done
+# No script recreates hermes, or tells you to, without following it.
+bare="$(grep -lE 'force-recreate[^|;&]* hermes( |$|")' "${ROOT}"/scripts/*.sh 2>/dev/null | grep -v '/test-' || true)"
+for f in $bare; do
+  grep -q 'follow_hermes' "$f" || fail "$(basename "$f") recreates hermes without follow_hermes"
+done
 
 # --- secrets-sync exit codes ---------------------------------------------------
 reset_stub

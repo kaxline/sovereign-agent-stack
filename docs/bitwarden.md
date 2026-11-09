@@ -91,10 +91,15 @@ on one of them.
   broker restarts, `make vault-lock SLUG=…`, or `BITWARDEN_IDLE_LOCK_MINUTES` without a fill or
   unlock (default 0, never). While it is locked its items are not listed, and `browser_vault` `list`
   carries `"bitwarden": {"locked": ["<slug>"], "unlock": "make vault-unlock SLUG=<slug>"}`. The broker
-  shares `hermes`' network namespace (`network_mode: service:hermes`). Compose does not restart it
-  when `hermes` alone is recreated or restarted (`make hermes-reload`, `docker compose restart
-  hermes`): Hermes then gets `broker_unavailable` until `docker compose restart bitwarden-broker` or
-  `make up`, and a manual account then needs unlocking again.
+  shares `hermes`' network namespace (`network_mode: service:hermes`). Compose restarts it when it
+  restarts `hermes` (`make restart`, `docker compose restart hermes`), but not when `hermes` alone is
+  recreated (`docker compose up -d --force-recreate hermes`): the broker keeps the removed
+  container's namespace, Hermes gets `broker_unavailable`, and `docker compose restart
+  bitwarden-broker` leaves it exited. `make hermes-reload`, `make hermes-recreate`, `make restart`
+  and the stack scripts that recreate `hermes` run `./scripts/vault.sh follow-hermes`, which runs
+  `docker compose --profile bitwarden up -d --no-deps bitwarden-broker` and lists the manual
+  accounts to unlock. Run it yourself after recreating `hermes` any other way. A manual account
+  needs unlocking again after any of these.
 
 With `stored` on a personal account (`folder:` scope), the broker holds a password that opens your
 whole vault, and the scope only limits what it lists and fills. `make vault-add` says so before it
@@ -392,7 +397,8 @@ and local mode's files.
 | doctor: `<slug>: error (auth)` | Bitwarden refused the API key or master password: `make vault-add SLUG=… MODE=… FORCE=1` |
 | doctor: `<slug>: offline (rate_limited)` | Bitwarden answered 429. The broker waits 60 s (or the server's `Retry-After`) and keeps serving the last synced items |
 | doctor: `the broker refused an account file` | A key or value in the file is unknown; the message names the file and key |
-| doctor: `<slug>: not loaded by the broker yet` | The broker reads account files at start: `docker compose restart bitwarden-broker` |
+| doctor: `<slug>: not loaded by the broker yet` | The broker reads account files at start: `docker compose --profile bitwarden up -d --no-deps --force-recreate bitwarden-broker` |
+| doctor: `bitwarden-broker is not in the running hermes container's network namespace` | `hermes` was recreated and the broker was not: `docker compose --profile bitwarden up -d --no-deps bitwarden-broker` (or `./scripts/vault.sh follow-hermes`) |
 | A login is in the folder but not listed | It has no `http`/`https` URI, or only URIs with match type "Never"; or the agent released it and it is still denylisted. `make vault-sync` re-reads |
 | doctor: `… is a folder (Docker made it for a missing file)` | A container started before `make vault-init` wrote that file. Remove the folder and run `make vault-init` again |
 | `make vault-init` stops waiting for you | Register in the web vault with the invited address, then `make vault-init` again |

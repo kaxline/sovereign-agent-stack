@@ -2006,10 +2006,18 @@ services:
     image: &bitwarden-image ${IMAGE_PREFIX:-assistant}-bitwarden-broker:local
     restart: unless-stopped
     # hermes' namespace and nothing else: the broker reaches Chromium's
-    # loopback CDP port, and hermes-worker cannot reach the broker. Compose
-    # does not restart it when hermes alone is recreated or restarted; the
-    # broker then sits in the old namespace until it is restarted itself.
+    # loopback CDP port, and hermes-worker cannot reach the broker. With
+    # depends_on restart, compose restarts the broker when it restarts hermes.
+    # It does not when hermes alone is recreated (up --force-recreate hermes):
+    # the broker keeps the removed container's namespace, and a restart then
+    # fails. Recover with docker compose --profile bitwarden up -d --no-deps
+    # bitwarden-broker, which make hermes-reload, make hermes-recreate and
+    # scripts/vault.sh follow-hermes run.
     network_mode: "service:hermes"
+    depends_on:
+      hermes:
+        condition: service_started
+        restart: true
     user: "10001:10001"
     read_only: true
     tmpfs:

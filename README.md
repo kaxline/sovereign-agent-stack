@@ -163,6 +163,7 @@ make up / make down / make ps
 make logs
 make data-dir-show / data-dir-set DIR=… / data-dir-migrate DIR=…
 make hermes-reload             # re-apply Hermes config (both bootstraps + recreate hermes)
+make hermes-recreate           # recreate hermes only (new profiles or gateways)
 make hermes-upgrade AGENT=v… WEBUI=…
 make clean   # destroys volumes + repo ./data/ (not an external ASSISTANT_DATA_ROOT)
 ```

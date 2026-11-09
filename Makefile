@@ -1,4 +1,4 @@
-.PHONY: setup ensure-local services model-defaults model-defaults-add model-defaults-reload up down logs ps restart clean doctor hermes-upgrade hermes-reload gateway-preflight \
+.PHONY: setup ensure-local services model-defaults model-defaults-add model-defaults-reload up down logs ps restart clean doctor hermes-upgrade hermes-reload hermes-recreate gateway-preflight \
 	bootstrap-buzz buzz-cli-install agent-create hermes-buzz-employee \
 	buzz-relay-start buzz-relay-stop buzz-relay-status buzz-relay-logs buzz-relay-restart \
 	buzz-admin \
@@ -345,6 +345,7 @@ services:
 
 up: ensure-local
 	@echo "Profiles: $$(grep -E '^COMPOSE_PROFILES=' .env | head -1 | cut -d= -f2-)"
+	@./scripts/vault.sh pre-up
 	docker compose up -d
 	@./scripts/vault.sh up-hook
 
@@ -357,8 +358,12 @@ logs:
 ps:
 	docker compose ps
 
+# Compose restarts bitwarden-broker with hermes (depends_on restart: true);
+# vault.sh follow-hermes repairs a broker left in a removed hermes namespace
+# and lists the manual accounts to unlock.
 restart:
-	docker compose restart hermes hermes-webui
+	@rc=0; docker compose restart hermes hermes-webui || rc=$$?; \
+	./scripts/vault.sh follow-hermes; exit $$rc
 
 # Re-apply Hermes config after changing .env, MCP tokens or servers, skills, or
 # the compose file: both profile bootstraps, then recreate hermes so every
@@ -368,6 +373,14 @@ hermes-reload: ensure-local
 	docker compose run --rm -e HERMES_BOOTSTRAP_FORCE=1 hermes-api-bootstrap
 	docker compose run --rm --no-deps -e HERMES_BOOTSTRAP_FORCE=1 hermes-browser-bootstrap
 	docker compose up -d --no-deps --force-recreate hermes
+	@./scripts/vault.sh follow-hermes
+
+# Recreate hermes alone, so s6 picks up new profiles and gateways, then move the
+# Bitwarden broker into its new network namespace. Runs no bootstrap.
+#   make hermes-recreate
+hermes-recreate: ensure-local
+	docker compose up -d --force-recreate hermes
+	@./scripts/vault.sh follow-hermes
 
 # Corpus lifecycle (requires rag profile). One hot WORKSPACE at a time.
 #   make corpus-create SLUG=demo-a

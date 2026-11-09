@@ -133,7 +133,7 @@ Memory tiers (see SOUL.md and docs/agents.md):
 Next steps:
   1. Edit ${profile_dir}/SOUL.md to refine the role
   2. Recreate Hermes so s6 registers the gateway:
-       docker compose up -d --force-recreate hermes
+       make hermes-recreate
   3. Optional rooms/DMs: make agent-create NAME=${NAME} WITH=buzz
      (or: ./scripts/agent-attach-buzz.sh ${NAME})
 

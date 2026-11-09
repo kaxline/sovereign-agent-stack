@@ -351,8 +351,17 @@ The broker runs with `network_mode: "service:hermes"`, sharing the `hermes` cont
 namespace and nothing else. It listens on `127.0.0.1:8099` there, reaches the Chromium that
 browser-harness starts on its loopback CDP port, and reaches Bitwarden through `hermes`'s networks.
 `hermes-worker` and every other container cannot reach it. Agent code in `hermes` can, which is why
-the API below carries no secret in any response. Compose is expected to restart the broker when
-`hermes` is recreated, since it ties the shared namespace to `hermes`; that is not tested yet.
+the API below carries no secret in any response. With `depends_on: {hermes: {condition:
+service_started, restart: true}}` compose restarts the broker when it restarts `hermes`. It does
+not when `hermes` alone is recreated (checked on compose v5.6.1): the broker keeps
+`container:<removed id>`, and a later `docker compose restart bitwarden-broker` leaves it exited.
+`docker compose --profile bitwarden up -d --no-deps bitwarden-broker` recreates it in the current
+namespace and leaves a broker already there alone. `scripts/vault.sh follow-hermes` (through
+`follow_hermes` in `scripts/lib/bitwarden.sh`) runs it and lists the manual accounts to unlock,
+and every stack command that recreates or restarts `hermes` calls it; it does nothing while
+`BITWARDEN_ENABLED` is off. `vault.sh`'s own broker restart is `up -d --no-deps --force-recreate`.
+`make doctor` compares the broker's `HostConfig.NetworkMode` with `container:<hermes id>` and
+probes `/health` from `hermes`.
 
 The local Vaultwarden is reached only through `vaultwarden-tls` on the internal `vault` network,
 which `hermes` (and so the broker) joins (Local mode).

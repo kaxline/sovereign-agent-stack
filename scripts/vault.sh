@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Bitwarden add-on: the accounts the broker signs in to, local mode, access
 # requests and stack secrets. See docs/bitwarden.md.
+#
+# Test hook: VAULT_ACCOUNTS_DIR replaces compose/bitwarden/accounts (the folder
+# the broker mounts), so scripts/test-vault-sh.sh can run against a temp folder.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -51,7 +54,15 @@ Usage: scripts/vault.sh <command> [options]
   restore DIR [--force]
                     Put a backup back; refuses to overwrite data without --force
 
+  pre-up            Create the accounts folder before docker compose up (make up runs it)
+  follow-hermes     Recreate the broker in hermes' current network namespace and
+                    list the manual accounts to unlock (run after hermes is
+                    recreated or restarted; make hermes-reload runs it)
+
+Both are silent while BITWARDEN_ENABLED is off.
 After add or remove: make up. make doctor shows each account's state.
+
+Test hook: VAULT_ACCOUNTS_DIR replaces compose/bitwarden/accounts.
 EOF
 }
 
@@ -121,8 +132,21 @@ broker_state() {
   printf '%s\n' "$rows" | awk -F '\t' -v s="$slug" '$1 == s { print $4 " " $5; exit }'
 }
 
+# A recreate, not a restart: a restart keeps the network namespace of the
+# hermes container the broker was created with, which is gone once hermes has
+# been recreated, and the broker then stays exited.
 restart_broker() {
-  docker compose --profile bitwarden restart bitwarden-broker >/dev/null
+  docker compose --profile bitwarden up -d --no-deps --force-recreate bitwarden-broker >/dev/null
+}
+
+# Polls until the broker answers or VAULT_BROKER_WAIT seconds pass.
+wait_for_broker() {
+  local wait="${VAULT_BROKER_WAIT:-60}" start
+  start="$(date +%s)"
+  until broker_cli accounts >/dev/null 2>&1; do
+    (( $(date +%s) - start < wait )) || return 1
+    sleep 2
+  done
 }
 
 # Polls the broker until SLUG leaves "locked" (stored accounts unlock at start)
@@ -316,6 +340,15 @@ ensure_dirs() {
   done
 }
 
+# The broker bind-mounts the accounts folder; created here so Docker does not
+# create it root-owned before any account exists.
+ensure_accounts_dir() {
+  if [[ ! -d "$ACCOUNTS_DIR" ]]; then
+    mkdir -p "$ACCOUNTS_DIR"
+    chmod_own 711 "$ACCOUNTS_DIR"
+  fi
+}
+
 # --- add ------------------------------------------------------------------
 
 # Reads one line from stdin without echo into REPLY_SECRET.
@@ -439,10 +472,7 @@ cmd_add() {
 
   local scope_line="BW_SCOPE=${scope}"
   [[ "$scope" == *"#"* ]] && scope_line="BW_SCOPE=\"${scope}\""
-  if [[ ! -d "$ACCOUNTS_DIR" ]]; then
-    mkdir -p "$ACCOUNTS_DIR"
-    chmod_own 711 "$ACCOUNTS_DIR"
-  fi
+  ensure_accounts_dir
   local tmp
   tmp="$(umask 077 && mktemp "${ACCOUNTS_DIR}/.${slug}.XXXXXX")" || die "could not write in ${ACCOUNTS_DIR}"
   ADD_TMP="$tmp"
@@ -825,6 +855,29 @@ cmd_secrets_sync() {
   esac
 }
 
+# Run by make up before docker compose up. Silent while BITWARDEN_ENABLED is off.
+cmd_pre_up() {
+  is_true "$(env_get BITWARDEN_ENABLED 0)" || return 0
+  ensure_accounts_dir
+}
+
+# Run after hermes is recreated or restarted (scripts/lib/bitwarden.sh). The
+# broker shares hermes' network namespace; up recreates it when the namespace
+# it joined belongs to a removed container, and leaves it alone otherwise.
+# Silent while BITWARDEN_ENABLED is off or the broker container does not exist.
+cmd_follow_hermes() {
+  is_true "$(env_get BITWARDEN_ENABLED 0)" || return 0
+  command -v docker >/dev/null 2>&1 || return 0
+  docker compose --profile bitwarden ps -a -q bitwarden-broker 2>/dev/null | grep -q . || return 0
+  docker compose --profile bitwarden up -d --no-deps bitwarden-broker >/dev/null \
+    || die "bitwarden-broker did not start — docker compose --profile bitwarden up -d --no-deps bitwarden-broker"
+  if ! wait_for_broker; then
+    log "The Bitwarden broker does not answer yet; make doctor"
+    return 0
+  fi
+  note_locked_manual ""
+}
+
 # Run by make up after docker compose up. Silent while BITWARDEN_ENABLED is off.
 cmd_up_hook() {
   is_true "$(env_get BITWARDEN_ENABLED 0)" || return 0
@@ -871,7 +924,8 @@ cmd_init() {
   done
   local data new
   data="$(data_dir)"
-  # Step 1 of the order: every bind-mount source exists before any up.
+  # Step 1 of the order: every bind-mount source exists before any container runs.
+  ensure_accounts_dir
   new="$(ensure_dirs "$data" bw broker secrets secrets/local secrets/local/tls \
     local local/tls local/tls/server local/vaultwarden)"
   ensure_dirs "$data" vaultwarden >/dev/null
@@ -1066,6 +1120,8 @@ case "${1:-}" in
   open) shift; cmd_open "$@" ;;
   secrets-sync) shift; cmd_secrets_sync "$@" ;;
   up-hook) cmd_up_hook ;;
+  pre-up) cmd_pre_up ;;
+  follow-hermes) cmd_follow_hermes ;;
   backup) shift; cmd_backup "$@" ;;
   restore) shift; cmd_restore "$@" ;;
   -h | --help | help) usage ;;
