@@ -71,12 +71,14 @@ lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 valid_slug() { [[ "$1" =~ $SLUG_RE ]]; }
 valid_email() { [[ "$1" =~ $EMAIL_RE ]]; }
 need_slug() { valid_slug "$1" || die "--slug must use lowercase letters, digits and hyphens"; }
+# Options that take a value: need_value "$@" before reading $2.
+need_value() { [[ $# -ge 2 ]] || die "$1 needs a value"; }
 
-# One value from a KEY=value file, without sourcing it: CR, surrounding
-# spaces and one pair of quotes dropped, as the broker's parser does.
-file_get() {
+# One value from FILE_TEXT (see load_file), without sourcing anything: CR,
+# surrounding spaces and one pair of quotes dropped, as the broker's parser does.
+text_get() {
   local v
-  v="$(grep -E "^[[:space:]]*${2}[[:space:]]*=" "$1" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+  v="$(printf '%s\n' "$FILE_TEXT" | grep -E "^[[:space:]]*${1}[[:space:]]*=" | head -1 | cut -d= -f2- || true)"
   v="${v%$'\r'}"
   v="$(printf '%s' "$v" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
   case "$v" in
@@ -144,19 +146,137 @@ wait_for_account() {
 }
 
 # --- Files ----------------------------------------------------------------
+#
+# On Linux, secrets/<slug>/, local/ and the account files belong to the
+# containers' user (uid 10001, modes 700 and 600), and secrets/ and the accounts
+# folder stay with you at mode 711. vault.sh never chmods or writes a path it
+# does not own: what it cannot read or write it reaches through the
+# bitwarden-setup container, which runs as that user, and it says so once per
+# path. An unreadable file is never taken as empty.
 
-# Writes VALUE to PATH, mode 600, through a temp file in the same folder.
-# printf is a builtin, so the value never appears in any process's argv.
-write_private() {
-  local path="$1" value="$2" tmp
-  tmp="$(umask 077 && mktemp "$(dirname "$path")/.$(basename "$path").XXXXXX")"
-  printf '%s\n' "$value" > "$tmp"
-  chmod 600 "$tmp"
-  mv -f "$tmp" "$path"
+NOTED=" "
+FILE_TEXT=""
+LOADED=""
+
+# The path inside bitwarden-setup for a host path under its mounts.
+to_container() {
+  local p="$1" data
+  data="$(data_dir)"
+  case "$p" in
+    "$ACCOUNTS_DIR"/*) printf '/accounts/%s' "${p#"$ACCOUNTS_DIR"/}" ;;
+    "$data"/local/*) printf '/local/%s' "${p#"$data"/local/}" ;;
+    "$data"/secrets/*) printf '/secrets/%s' "${p#"$data"/secrets/}" ;;
+    *) return 1 ;;
+  esac
 }
 
-# On Linux the containers run as uid 10001 and must own their folders. Run as
-# root, chown them; otherwise print the command.
+# Runs SCRIPT with sh in bitwarden-setup, with ARGS (container paths) as $1...
+# and this process's stdin as its stdin.
+container_sh() {
+  local script="$1"
+  shift
+  docker compose --profile bitwarden-tools run --rm --no-deps -T --entrypoint sh bitwarden-setup -c "$script" sh "$@"
+}
+
+note_container() {
+  [[ "$NOTED" == *" $1 "* ]] && return 0
+  NOTED="${NOTED}$1 "
+  printf '[vault] Note: %s belongs to the containers'"'"' user (uid %s); using bitwarden-setup to reach it.\n' \
+    "$1" "$CONTAINER_UID" >&2
+}
+
+# Exit 3: no such file.
+# shellcheck disable=SC2016  # expanded by the sh that runs it
+READ_SCRIPT='[ -e "$1" ] || exit 3; cat "$1"'
+
+# Sets FILE_TEXT to PATH's contents, through bitwarden-setup when the host
+# cannot read it. With "optional", a missing file is empty; otherwise a file
+# that cannot be read stops the run. Call it in this shell, not in $(...).
+load_file() {
+  local path="$1" optional="${2:-}" rc=0 cpath parent
+  [[ "$path" == "$LOADED" ]] && return 0
+  parent="$(dirname "$path")"
+  if [[ -r "$path" ]]; then
+    FILE_TEXT="$(cat "$path")"
+  elif [[ ! -e "$path" && ( ! -e "$parent" || -x "$parent" ) ]]; then
+    [[ -n "$optional" ]] || die "no such file: ${path}"
+    FILE_TEXT=""
+  else
+    cpath="$(to_container "$path")" || die "cannot read ${path}"
+    note_container "$path"
+    FILE_TEXT="$(container_sh "$READ_SCRIPT" "$cpath")" || rc=$?
+    if [[ "$rc" -eq 3 && -n "$optional" ]]; then
+      FILE_TEXT=""
+    elif [[ "$rc" -ne 0 ]]; then
+      FILE_TEXT=""
+      LOADED=""
+      die "could not read ${path} through bitwarden-setup (docker compose build bitwarden-setup, then try again)"
+    fi
+  fi
+  LOADED="$path"
+}
+
+# Operations in secrets/<slug>/, run with sh on the host when it can write
+# there and in bitwarden-setup otherwise. $1 is the folder. Values come on
+# stdin, so they never appear in any process's argv.
+# shellcheck disable=SC2016  # expanded by the sh that runs it
+SECRET_WRITE='umask 077; t="$1/.$2.tmp"; cat > "$t" && chmod 600 "$t" && mv -f "$t" "$1/$2"'
+# shellcheck disable=SC2016  # expanded by the sh that runs it
+SECRET_RM='rm -f "$1/$2"'
+# shellcheck disable=SC2016  # expanded by the sh that runs it
+SECRET_BACKUP='for n in client_secret master_password; do
+  if [ -f "$1/$n" ]; then cp -p "$1/$n" "$1/$n.bak" || exit 1; fi
+done'
+# shellcheck disable=SC2016  # expanded by the sh that runs it
+SECRET_RESTORE='for n in client_secret master_password; do
+  if [ -f "$1/$n.bak" ]; then mv -f "$1/$n.bak" "$1/$n"; else rm -f "$1/$n"; fi
+done'
+# shellcheck disable=SC2016  # expanded by the sh that runs it
+SECRET_DROP_BACKUP='rm -f "$1/client_secret.bak" "$1/master_password.bak"'
+# shellcheck disable=SC2016  # expanded by the sh that runs it
+SECRET_CLEAR='rm -f "$1/client_secret" "$1/master_password" "$1/client_secret.bak" "$1/master_password.bak" \
+  "$1/.client_secret.tmp" "$1/.master_password.tmp"'
+
+slug_op() {
+  local slug="$1" script="$2" sdir
+  shift 2
+  sdir="$(data_dir)/secrets/${slug}"
+  if [[ -w "$sdir" ]]; then
+    sh -c "$script" sh "$sdir" "$@"
+  else
+    note_container "$sdir"
+    container_sh "$script" "/secrets/${slug}" "$@"
+  fi
+}
+
+# Writes VALUE to secrets/<slug>/NAME, mode 600.
+write_secret() {
+  printf '%s\n' "$3" | slug_op "$1" "$SECRET_WRITE" "$2"
+}
+
+# Removes secrets/<slug>/ and what is in it.
+remove_secrets() {
+  local sdir
+  sdir="$(data_dir)/secrets/$1"
+  [[ -d "$sdir" ]] || return 0
+  if [[ -w "$sdir" && -x "$sdir" ]]; then
+    rm -rf "${sdir:?}"
+  else
+    slug_op "$1" "$SECRET_CLEAR" < /dev/null || true
+    # An empty folder goes with write access to secrets/, which stays yours.
+    rmdir "$sdir" 2>/dev/null || log "Could not remove ${sdir}; remove it as root"
+  fi
+}
+
+# Sets a mode only on a path you own.
+chmod_own() {
+  [[ -O "$2" ]] && chmod "$1" "$2"
+  return 0
+}
+
+# On Linux the containers run as uid 10001 and must own their folders and the
+# account files. Run as root, chown them; otherwise print the command. secrets/
+# itself is never passed here: it stays yours.
 linux_owner() {
   [[ $# -gt 0 ]] || return 0
   [[ "$(uname -s)" == Linux ]] || return 0
@@ -168,11 +288,24 @@ linux_owner() {
 }
 
 # Creates the data folders before any container starts, so Docker does not
-# create them root-owned. Prints the folders it created.
+# create them root-owned. Prints the folders it created. A folder under one you
+# cannot enter belongs to the containers, which make their own.
 ensure_dirs() {
-  local data="$1" d
+  local data="$1" d p rest blocked
   shift
   for d in "$@"; do
+    blocked=""
+    p="$data"
+    rest="$d"
+    while [[ "$rest" == */* ]]; do
+      p="${p}/${rest%%/*}"
+      rest="${rest#*/}"
+      if [[ -d "$p" && ! -x "$p" ]]; then
+        blocked=1
+        break
+      fi
+    done
+    [[ -z "$blocked" ]] || continue
     if [[ -e "${data}/${d}" && ! -d "${data}/${d}" ]]; then
       die "${data}/${d} exists and is not a folder"
     fi
@@ -203,12 +336,12 @@ cmd_add() {
   local slug="" mode="" region="" url="" scope="folder:Agent" unlock="stored" force=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --slug) slug="${2:-}"; shift 2 ;;
-      --mode) mode="${2:-}"; shift 2 ;;
-      --region) region="${2:-}"; shift 2 ;;
-      --url) url="${2:-}"; shift 2 ;;
-      --scope) scope="${2:-}"; shift 2 ;;
-      --unlock) unlock="${2:-}"; shift 2 ;;
+      --slug) need_value "$@"; slug="$2"; shift 2 ;;
+      --mode) need_value "$@"; mode="$2"; shift 2 ;;
+      --region) need_value "$@"; region="$2"; shift 2 ;;
+      --url) need_value "$@"; url="$2"; shift 2 ;;
+      --scope) need_value "$@"; scope="$2"; shift 2 ;;
+      --unlock) need_value "$@"; unlock="$2"; shift 2 ;;
       --force) force=1; shift ;;
       *) die "unknown option for add: $1" ;;
     esac
@@ -280,23 +413,38 @@ cmd_add() {
 
   local data sdir new
   data="$(data_dir)"
+  ADD_SLUG="$slug"
+  trap add_cleanup EXIT
+  trap 'exit 130' INT TERM
+  [[ -d "${data}/secrets/${slug}" ]] || ADD_NEW_SDIR="${data}/secrets/${slug}"
   new="$(ensure_dirs "$data" bw broker secrets "secrets/${slug}")"
-  sdir="${data}/secrets/${slug}"
-  chmod 700 "$sdir"
-  write_private "${sdir}/client_secret" "$secret"
+  if printf '%s\n' "$new" | grep -qxF "${data}/secrets"; then
+    chmod_own 711 "${data}/secrets"
+  fi
+  if [[ -e "$file" ]]; then
+    # --force: the old file and secrets stay as .bak until the check passes.
+    mv -f "$file" "${file}.bak"
+    slug_op "$slug" "$SECRET_BACKUP" < /dev/null || die "could not back up secrets/${slug}/"
+    ADD_STAGE=backed
+  fi
+  write_secret "$slug" client_secret "$secret"
   if [[ "$unlock" == stored ]]; then
-    write_private "${sdir}/master_password" "$password"
+    write_secret "$slug" master_password "$password"
   else
-    rm -f "${sdir}/master_password"
+    slug_op "$slug" "$SECRET_RM" master_password < /dev/null
   fi
   secret=""
   password=""
 
   local scope_line="BW_SCOPE=${scope}"
   [[ "$scope" == *"#"* ]] && scope_line="BW_SCOPE=\"${scope}\""
-  mkdir -p "$ACCOUNTS_DIR"
+  if [[ ! -d "$ACCOUNTS_DIR" ]]; then
+    mkdir -p "$ACCOUNTS_DIR"
+    chmod_own 711 "$ACCOUNTS_DIR"
+  fi
   local tmp
-  tmp="$(umask 077 && mktemp "${ACCOUNTS_DIR}/.${slug}.XXXXXX")"
+  tmp="$(umask 077 && mktemp "${ACCOUNTS_DIR}/.${slug}.XXXXXX")" || die "could not write in ${ACCOUNTS_DIR}"
+  ADD_TMP="$tmp"
   {
     printf '# Written by make vault-add. Credentials are in secrets/%s/ under BITWARDEN_HOST_DATA_DIR. See docs/bitwarden.md.\n' "$slug"
     printf 'BW_MODE=%s\n' "$mode"
@@ -307,9 +455,13 @@ cmd_add() {
   } > "$tmp"
   chmod 600 "$tmp"
   mv -f "$tmp" "$file"
+  ADD_TMP=""
+  [[ "$ADD_STAGE" == backed ]] && ADD_STAGE=replaced || ADD_STAGE=written
   log "Wrote ${file#"${ROOT}"/} and secrets/${slug}/"
+  local owned
+  owned="$(printf '%s\n' "$new" | grep -vxF "${data}/secrets" || true)"
   # shellcheck disable=SC2086  # one folder per line, no spaces in the names we make
-  [[ -z "$new" ]] || linux_owner $new "$file"
+  linux_owner $owned "$file"
   if ! is_true "$(env_get BITWARDEN_ENABLED 0)"; then
     upsert_env "$ENV_PATH" BITWARDEN_ENABLED 1
     log "Set BITWARDEN_ENABLED=1"
@@ -319,6 +471,40 @@ cmd_add() {
     offer_setup "$slug" "$scope"
   fi
   check_account "$slug" "$unlock"
+  ADD_STAGE=finished
+}
+
+ADD_SLUG=""
+ADD_STAGE=""
+ADD_TMP=""
+ADD_NEW_SDIR=""
+
+# The old account file and secrets back in place (add --force failed).
+restore_backup() {
+  local file
+  file="$(account_file "$1")"
+  if [[ -e "${file}.bak" ]]; then
+    mv -f "${file}.bak" "$file"
+  else
+    rm -f "$file"
+  fi
+  slug_op "$1" "$SECRET_RESTORE" < /dev/null || log "Could not restore secrets/$1/ from its .bak files"
+}
+
+drop_backup() {
+  rm -f "$(account_file "$1").bak"
+  slug_op "$1" "$SECRET_DROP_BACKUP" < /dev/null || true
+}
+
+# EXIT trap of add: no temp file stays, a run stopped before the account file
+# was written leaves no new secrets folder, and a --force stopped there puts
+# the old files back.
+add_cleanup() {
+  [[ -z "$ADD_TMP" ]] || rm -f "$ADD_TMP"
+  case "$ADD_STAGE" in
+    backed) restore_backup "$ADD_SLUG" ;;
+    "") [[ -z "$ADD_NEW_SDIR" ]] || remove_secrets "$ADD_SLUG" ;;
+  esac
 }
 
 # Creating the folder or collection and moving items into it need your own
@@ -359,11 +545,16 @@ check_account() {
   local slug="$1" unlock="$2" got state class
   if ! broker_running; then
     log "The broker checks the API key when it starts: make up, then make doctor"
+    if [[ "$ADD_STAGE" == replaced ]]; then
+      log "The previous file is kept as ${slug}.env.bak (and secrets/${slug}/*.bak) until then; make vault-add FORCE=1 again replaces them"
+      ADD_STAGE=finished
+    fi
     return 0
   fi
   log "Restarting the broker so it loads ${slug}"
   restart_broker
   got="$(wait_for_account "$slug" "$unlock")"
+  note_locked_manual "$slug"
   state="${got%% *}"
   class="${got#* }"
   case "$state" in
@@ -377,10 +568,15 @@ check_account() {
       ;;
     error)
       if [[ "$class" == auth ]]; then
-        local data
-        data="$(data_dir)"
+        if [[ "$ADD_STAGE" == replaced ]]; then
+          restore_backup "$slug"
+          ADD_STAGE=finished
+          restart_broker
+          die "Bitwarden refused the API key or master password for ${slug} (auth); the previous account file and secrets are back"
+        fi
         rm -f "$(account_file "$slug")"
-        rm -rf "${data:?}/secrets/${slug:?}"
+        remove_secrets "$slug"
+        ADD_STAGE=finished
         restart_broker
         die "Bitwarden refused the API key or master password for ${slug} (auth); nothing was kept"
       fi
@@ -389,6 +585,24 @@ check_account() {
     offline) log "${slug}: the server is not reachable from the broker (${class}); make doctor" ;;
     *) log "${slug}: the broker has not loaded it; make doctor shows why" ;;
   esac
+  if [[ "$ADD_STAGE" == replaced ]]; then
+    drop_backup "$slug"
+    ADD_STAGE=written
+  fi
+}
+
+# After a broker restart: the manual accounts it locked, except SKIP.
+note_locked_manual() {
+  local skip="$1" rows s st f
+  rows="$(broker_cli accounts 2>/dev/null || true)"
+  while IFS=$'\t' read -r s _ _ st _; do
+    [[ -n "$s" && "$s" != "$skip" && "$st" == locked ]] || continue
+    f="$(account_file "$s")"
+    [[ -f "$f" ]] || continue
+    load_file "$f"
+    [[ "$(text_get BW_UNLOCK)" == manual ]] && log "${s} is locked after the restart: make vault-unlock SLUG=${s}"
+  done <<< "$rows"
+  return 0
 }
 
 # --- unlock, lock, sync, requests, grant -----------------------------------
@@ -396,7 +610,8 @@ check_account() {
 need_manual() {
   need_slug "$1"
   need_account "$1"
-  [[ "$(file_get "$(account_file "$1")" BW_UNLOCK)" == manual ]] \
+  load_file "$(account_file "$1")"
+  [[ "$(text_get BW_UNLOCK)" == manual ]] \
     || die "$1 uses stored unlock; the broker unlocks it by itself"
 }
 
@@ -404,7 +619,7 @@ cmd_unlock() {
   local slug=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --slug) slug="${2:-}"; shift 2 ;;
+      --slug) need_value "$@"; slug="$2"; shift 2 ;;
       *) die "unknown option for unlock: $1" ;;
     esac
   done
@@ -434,7 +649,7 @@ cmd_lock() {
   local slug=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --slug) slug="${2:-}"; shift 2 ;;
+      --slug) need_value "$@"; slug="$2"; shift 2 ;;
       *) die "unknown option for lock: $1" ;;
     esac
   done
@@ -473,28 +688,23 @@ cmd_requests() {
   fi
 }
 
-# The local account's owner, as local-init recorded it.
+# A value from local/state, which local-init writes; empty when there is none.
+# local/ belongs to the containers' user on Linux, so it may come through
+# bitwarden-setup. Call it in this shell, then read STATE_VALUE.
+STATE_VALUE=""
 state_get() {
-  local state
-  state="$(data_dir)/local/state"
-  [[ -e "$state" ]] || return 0
-  if [[ -r "$state" ]]; then
-    file_get "$state" "$1"
-  else
-    # On Linux the file belongs to uid 10001; bitwarden-setup can read it.
-    docker compose --profile bitwarden-tools run --rm --no-deps -T --entrypoint cat bitwarden-setup /local/state 2>/dev/null \
-      | grep -E "^${1}=" | head -1 | cut -d= -f2- || true
-  fi
+  load_file "$(data_dir)/local/state" optional
+  STATE_VALUE="$(text_get "$1")"
 }
 
 cmd_grant() {
   local site="" slug="" email="" item=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --site) site="${2:-}"; shift 2 ;;
-      --slug) slug="${2:-}"; shift 2 ;;
-      --email) email="${2:-}"; shift 2 ;;
-      --item) item="${2:-}"; shift 2 ;;
+      --site) need_value "$@"; site="$2"; shift 2 ;;
+      --slug) need_value "$@"; slug="$2"; shift 2 ;;
+      --email) need_value "$@"; email="$2"; shift 2 ;;
+      --item) need_value "$@"; item="$2"; shift 2 ;;
       *) die "unknown option for grant: $1" ;;
     esac
   done
@@ -533,7 +743,10 @@ cmd_grant() {
   need_slug "$slug"
   need_account "$slug"
   [[ -n "$email" ]] || email="${VAULT_OWNER_EMAIL:-}"
-  [[ -n "$email" || "$slug" != local ]] || email="$(state_get OWNER_EMAIL)"
+  if [[ -z "$email" && "$slug" == local ]]; then
+    state_get OWNER_EMAIL
+    email="$STATE_VALUE"
+  fi
   if [[ -z "$email" ]]; then
     [[ -t 0 ]] || die "pass --email with your own Bitwarden email"
     printf 'Your Bitwarden email for %s: ' "$slug"
@@ -543,8 +756,11 @@ cmd_grant() {
   local args=(grant --slug "$slug" --email "$email" --site "$site")
   [[ -z "$item" ]] || args+=(--item "$item")
   setup_run "${args[@]}" || die "bitwarden-setup grant did not move anything; the request stays pending"
-  broker_cli sync >/dev/null || log "The broker did not sync; make vault-sync picks the item up"
-  log "The broker synced; a pending request for ${site} is done once the item is in scope"
+  if broker_cli sync >/dev/null; then
+    log "The broker synced; a pending request for ${site} is done once the item is in scope"
+  else
+    log "The broker did not sync; make vault-sync picks the item up"
+  fi
 }
 
 # --- remove, open -----------------------------------------------------------
@@ -553,7 +769,7 @@ cmd_remove() {
   local slug=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --slug) slug="${2:-}"; shift 2 ;;
+      --slug) need_value "$@"; slug="$2"; shift 2 ;;
       *) die "unknown option for remove: $1" ;;
     esac
   done
@@ -564,13 +780,14 @@ cmd_remove() {
   local data
   data="$(data_dir)"
   rm -f "$(account_file "$slug")"
-  rm -rf "${data:?}/secrets/${slug:?}"
+  remove_secrets "$slug"
   rm -rf "${data:?}/bw/${slug:?}" 2>/dev/null \
     || log "Could not remove ${data}/bw/${slug} (owned by the broker's user); remove it as root"
   log "Removed ${slug}: its account file and secrets"
   if broker_running; then
     restart_broker
     log "Restarted the broker, which no longer holds ${slug}"
+    note_locked_manual "$slug"
   fi
   log "The API key still exists in Bitwarden; revoke it there (Settings > Security > Keys) if you are done with it"
 }
@@ -610,11 +827,12 @@ cmd_secrets_sync() {
 # Run by make up after docker compose up. Silent while BITWARDEN_ENABLED is off.
 cmd_up_hook() {
   is_true "$(env_get BITWARDEN_ENABLED 0)" || return 0
-  local f slugs="" slug
+  local f slugs="" slug entry
   for f in "$ACCOUNTS_DIR"/*.env; do
     [[ -f "$f" ]] || continue
-    [[ -n "$(file_get "$f" BW_SECRETS_ITEM_SCOPE)" ]] || continue
-    slugs="${slugs} $(basename "$f" .env)"
+    load_file "$f"
+    [[ -n "$(text_get BW_SECRETS_ITEM_SCOPE)" ]] || continue
+    slugs="${slugs} $(basename "$f" .env):$(text_get BW_UNLOCK)"
   done
   [[ -n "$slugs" ]] || return 0
   if ! broker_running; then
@@ -622,8 +840,9 @@ cmd_up_hook() {
     return 0
   fi
   local run="" got state
-  for slug in $slugs; do
-    got="$(wait_for_account "$slug" "$(file_get "$(account_file "$slug")" BW_UNLOCK)")"
+  for entry in $slugs; do
+    slug="${entry%%:*}"
+    got="$(wait_for_account "$slug" "${entry#*:}")"
     state="${got%% *}"
     case "$state" in
       unlocked) run=1 ;;
@@ -645,7 +864,7 @@ cmd_init() {
   local owner="" wait="$INIT_WAIT_SECONDS"
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --owner) owner="${2:-}"; shift 2 ;;
+      --owner) need_value "$@"; owner="$2"; shift 2 ;;
       *) die "unknown option for init: $1" ;;
     esac
   done
@@ -655,13 +874,20 @@ cmd_init() {
   new="$(ensure_dirs "$data" bw broker secrets secrets/local secrets/local/tls \
     local local/tls local/tls/server local/vaultwarden)"
   ensure_dirs "$data" vaultwarden >/dev/null
-  chmod 700 "${data}/secrets" "${data}/local"
+  # Only folders this run made: on Linux the rest may belong to the containers.
+  if printf '%s\n' "$new" | grep -qxF "${data}/secrets"; then
+    chmod_own 711 "${data}/secrets"
+  fi
+  local owned
+  owned="$(printf '%s\n' "$new" | grep -vxF "${data}/secrets" || true)"
   # shellcheck disable=SC2086  # one folder per line, no spaces in the names we make
-  [[ -z "$new" ]] || linux_owner $new
+  [[ -z "$owned" ]] || linux_owner $owned
 
   local step recorded
-  step="$(state_get STEP)"
-  recorded="$(lower "$(state_get OWNER_EMAIL)")"
+  state_get STEP
+  step="$STATE_VALUE"
+  state_get OWNER_EMAIL
+  recorded="$(lower "$STATE_VALUE")"
   if ! is_true "$(env_get BITWARDEN_LOCAL_ENABLED 0)"; then
     upsert_env "$ENV_PATH" BITWARDEN_LOCAL_ENABLED 1
     log "Set BITWARDEN_LOCAL_ENABLED=1"

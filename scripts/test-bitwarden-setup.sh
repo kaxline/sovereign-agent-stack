@@ -604,6 +604,11 @@ class LocalApi(http.server.BaseHTTPRequestHandler):
         if self.path == "/api/accounts/api-key":
             return self._reply(200, {"apiKey": AGENT_SECRET})
         if self.path == "/api/organizations":
+            st["orgs"].append({"id": LOCAL_ORG, "name": "Assistant"})
+            vault = self._vault()
+            if not any(c.get("id") == "c-agent" for c in vault["collections"]):
+                vault["collections"].append({"id": "c-agent", "organizationId": LOCAL_ORG, "name": "Agent"})
+            st["vault"].write_text(json.dumps(vault))
             return self._reply(200, {"id": LOCAL_ORG})
         if self.path == f"/api/organizations/{LOCAL_ORG}/users/invite":
             payload = json.loads(body)
@@ -617,6 +622,8 @@ class LocalApi(http.server.BaseHTTPRequestHandler):
         st["calls"].append(("GET", self.path, ""))
         if not self._authed():
             return self._reply(401, {})
+        if self.path == "/api/accounts/profile":
+            return self._reply(200, {"organizations": [] if st.get("hide_orgs") else st["orgs"]})
         if self.path == f"/api/organizations/{LOCAL_ORG}/collections":
             return self._reply(200, {"data": [{"id": "c-agent"}]})
         if self.path == "/api/users/uid-agent/public-key":
@@ -683,7 +690,7 @@ if HAVE_CRYPTO:
     from cryptography.hazmat.primitives.asymmetric import rsa
     pub = rsa.generate_private_key(public_exponent=65537, key_size=2048).public_key().public_bytes(
         serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
-    local.st = {"calls": [], "registered": {}, "members": [], "polls": 0, "accept_after": None,
+    local.st = {"calls": [], "registered": {}, "members": [], "orgs": [], "polls": 0, "accept_after": None,
                 "vault": d / "vault.json", "secrets": d / "secrets/local", "pub": pub, "refuse_register": True}
 
     # Registration refused and no token: exit 1, the sign-up fallback, no step recorded.
@@ -753,14 +760,38 @@ if HAVE_CRYPTO:
     code, out, _ = local_run(local.st, d)
     check(code == 0 and len(local.st["calls"]) == calls_before, f"local-init done: exit {code}, calls made\n{out}")
 
-    # Resume between registration and the organization: the public key comes from the server.
+    # Resume before the organization was recorded: the one that exists is reused, not made twice.
     state_path = d / "local/state"
+    stack_id = local_state(d).get("STACK_COLLECTION")
     state_path.write_text("STEP=api_key\nCLIENT_ID=user.uid-agent\n")
-    (d / "accounts/local.env").unlink(missing_ok=True)
     code, out, argvs = local_run(local.st, d)
     check(code == 0, f"local-init resume before the organization: exit {code}\n{out}")
+    check(count(local.st, "/api/organizations") == 1 and "Reusing" in out,
+          f"local-init: organization created again instead of reused\n{out}")
+    check(not any(c[1] == "/api/users/uid-agent/public-key" for c in local.st["calls"]),
+          "local-init: fetched the public key while reusing the organization")
+    check(local_state(d).get("AGENT_COLLECTION") == "c-agent" and local_state(d).get("ORG_ID") == LOCAL_ORG,
+          f"local-init reuse: state {local_state(d)}")
+
+    # A local.env naming other ids than the state is refused; --rotate writes it again.
+    acct = d / "accounts/local.env"
+    state_path.write_text(f"STEP=stack\nCLIENT_ID=user.uid-agent\nORG_ID={LOCAL_ORG}\nAGENT_COLLECTION=c-agent\n"
+                          f"STACK_COLLECTION={stack_id}\nOWNER_EMAIL={LOCAL_OWNER}\n")
+    acct.write_text(acct.read_text().replace("collection:c-agent", "collection:c-other"))
+    code, out, _ = local_run(local.st, d)
+    check(code == 1 and "other ids" in out, f"local-init: a local.env with other ids was not refused\n{out}")
+    check("BW_SCOPE=collection:c-other" in acct.read_text(), "local-init: the refused local.env was changed")
+    code, out, _ = local_run(local.st, d, extra=("--rotate",))
+    check(code == 0 and "BW_SCOPE=collection:c-agent" in acct.read_text().splitlines(),
+          f"local-init --rotate did not rewrite local.env: exit {code}\n{out}")
+
+    # No organization on the account: created, with the public key from the server.
+    local.st["hide_orgs"] = True
+    state_path.write_text("STEP=api_key\nCLIENT_ID=user.uid-agent\n")
+    code, out, argvs = local_run(local.st, d)
+    check(code == 0, f"local-init resume, no organization: exit {code}\n{out}")
     check(any(c[1] == "/api/users/uid-agent/public-key" for c in local.st["calls"]),
-          "local-init: no public key fetch when resuming before the organization")
+          "local-init: no public key fetch when creating the organization on resume")
     check(count(local.st, "/api/organizations") == 2, "local-init: organization not created on resume")
     local.shutdown()
 

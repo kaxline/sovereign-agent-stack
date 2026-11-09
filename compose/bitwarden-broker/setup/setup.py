@@ -56,6 +56,10 @@ replaces everything.
                  BITWARDEN_RATE_LIMIT_WAIT seconds (default 60) and tries once more.
                  Exits 4 when the owner has not registered in time.
 
+An existing organization named "Assistant" is reused rather than created
+twice. An existing local.env that names other ids than /local/state is
+refused; ``--rotate`` writes it again from the state.
+
 ``role`` on the ``local`` account records ``STEP=role`` in /local/state once it
 succeeds after ``local-init``.
 
@@ -872,9 +876,10 @@ class RegistrationFailed(Exception):
 class LocalInit:
     """One local-init run. The agent's password, token and bw session stay on this object."""
 
-    def __init__(self, server: str, signup: str):
+    def __init__(self, server: str, signup: str, rotate: bool = False):
         self.server = server
         self.signup = signup
+        self.rotate = rotate
         self.local_dir = Path(os.environ.get("BITWARDEN_LOCAL_DIR") or LOCAL_DIR)
         self.secrets_dir = Path(os.environ.get("BITWARDEN_SECRETS_DIR") or "/secrets") / "local"
         self.accounts_dir = Path(os.environ.get("BITWARDEN_ACCOUNTS_DIR") or "/accounts")
@@ -1011,25 +1016,50 @@ class LocalInit:
     def member(self, password: str, email: str) -> dict | None:
         return next((m for m in self.members(password) if str(m.get("email", "")).lower() == email), None)
 
-    def stack_collection(self, password: str) -> str:
+    def existing_org(self, token: str) -> str | None:
+        """The id of the agent's organization named "Assistant", if it has one."""
+        profile = vw_register.api(self.server, token, "GET", "/accounts/profile")
+        orgs = profile.get("organizations") if isinstance(profile, dict) else None
+        ids = [o.get("id") for o in orgs or [] if isinstance(o, dict) and o.get("name") == LOCAL_ORG_NAME
+               and isinstance(o.get("id"), str) and ID_RE.fullmatch(o["id"])]
+        return ids[0] if ids else None
+
+    def collection_named(self, password: str, name: str, create: bool = True) -> str:
+        """The id of the organization's collection called ``name``; bw decrypts the names."""
         bw = self.bw_login(password)
         org = self.state["ORG_ID"]
+        bw.run(["sync"])
         rows = bw.json(["list", "collections", "--organizationid", org])
-        found = next((c for c in rows or [] if isinstance(c, dict) and c.get("name") == STACK_SECRETS
+        found = next((c for c in rows or [] if isinstance(c, dict) and c.get("name") == name
                       and c.get("organizationId") == org and isinstance(c.get("id"), str)), None)
         if found is not None:
             return found["id"]
+        if not create:
+            raise SetupError(f'The organization has no collection "{name}".')
         created = bw.json(["create", "org-collection", "--organizationid", org], stdin=_b64({
-            "organizationId": org, "name": STACK_SECRETS, "externalId": None, "groups": [], "users": []}))
+            "organizationId": org, "name": name, "externalId": None, "groups": [], "users": []}))
         cid = created.get("id") if isinstance(created, dict) else None
         if not isinstance(cid, str):
             raise SetupError("bw create org-collection returned no id.")
-        print(f'Created the collection "{STACK_SECRETS}".')
+        print(f'Created the collection "{name}".')
         return cid
 
-    def write_account_file(self) -> None:
+    def stack_collection(self, password: str) -> str:
+        return self.collection_named(password, STACK_SECRETS)
+
+    def write_account_file(self, rotate: bool = False) -> None:
         path = self.accounts_dir / "local.env"
-        if path.exists():
+        if path.exists() and not rotate:
+            try:
+                acct = parse_file(path)
+                same = (acct.scope_kind == "collection" and acct.scope_value == self.state["AGENT_COLLECTION"]
+                        and acct.client_id == self.state["CLIENT_ID"]
+                        and acct.secrets_item_scope == ("collection", self.state["STACK_COLLECTION"]))
+            except AccountError:
+                same = False
+            if not same:
+                raise SetupError(f"{path.name} names other ids than local/state. Move it aside, or run "
+                                 "local-init --rotate to write it again from local/state.")
             print(f"Kept {path.name}.")
             return
         _write_secret(path, "\n".join([
@@ -1048,7 +1078,7 @@ class LocalInit:
         if recorded and recorded != owner:
             raise SetupError(f"make vault-init already invited {recorded}. Run it with that address "
                              f"(VAULT_OWNER_EMAIL={recorded}).")
-        if self.done("confirmed"):
+        if self.done("confirmed") and not self.rotate:
             print("Local mode steps 2 to 5 are already done.")
             return 0
         password = self.agent_password()
@@ -1066,15 +1096,24 @@ class LocalInit:
                 print(f"Stored the API key of {LOCAL_AGENT_EMAIL}.")
             if not self.done("org"):
                 token = self.get_token(password)
-                keys = self.keys or vw_register.public_key(self.server, token)
-                org, coll = vw_register.create_org(self.server, token, keys, LOCAL_ORG_NAME, DEFAULT_COLLECTION)
+                org = self.existing_org(token)
+                if org is not None:
+                    # A run that created it stopped before recording it.
+                    self.state["ORG_ID"] = org
+                    coll = self.collection_named(password, DEFAULT_COLLECTION)
+                    print(f'Reusing the organization "{LOCAL_ORG_NAME}".')
+                else:
+                    keys = self.keys or vw_register.public_key(self.server, token)
+                    org, coll = vw_register.create_org(self.server, token, keys, LOCAL_ORG_NAME, DEFAULT_COLLECTION)
+                    print(f'Created the organization "{LOCAL_ORG_NAME}" with the collection "{DEFAULT_COLLECTION}".')
                 self.record("org", ORG_ID=org, AGENT_COLLECTION=coll)
-                print(f'Created the organization "{LOCAL_ORG_NAME}" with the collection "{DEFAULT_COLLECTION}".')
             if not self.done("stack"):
                 self.record("stack", STACK_COLLECTION=self.stack_collection(password))
-            if not self.done("account_file"):
-                self.write_account_file()
+            if not self.done("account_file") or self.rotate:
+                self.write_account_file(self.rotate)
                 self.record("account_file")
+            if self.done("confirmed"):
+                return 0
             if not self.done("invited"):
                 if self.member(password, owner) is None:
                     vw_register.invite_member(self.server, self.get_token(password), self.state["ORG_ID"], owner,
@@ -1122,6 +1161,7 @@ def local_init_main(argv: list[str]) -> int:
     parser.add_argument("--server")
     parser.add_argument("--signup-url", default=LOCAL_SIGNUP_URL)
     parser.add_argument("--wait", type=float, default=600.0)
+    parser.add_argument("--rotate", action="store_true")
     args = parser.parse_args(argv)
     owner = args.owner.strip().lower()
     if not EMAIL_RE.fullmatch(owner):
@@ -1131,7 +1171,7 @@ def local_init_main(argv: list[str]) -> int:
     if server is None or (server != LOCAL_SERVER and not _is_loopback_url(server)):
         print(f"--server must be {LOCAL_SERVER}.")
         return EXIT_FAILED
-    run = LocalInit(server, args.signup_url)
+    run = LocalInit(server, args.signup_url, args.rotate)
     previous = {sig: signal.signal(sig, _interrupt) for sig in (signal.SIGINT, signal.SIGTERM)}
     try:
         return run.run(owner, max(args.wait, 0.0))

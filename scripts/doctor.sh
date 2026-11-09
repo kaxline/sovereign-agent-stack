@@ -1378,6 +1378,10 @@ if [[ "$bw_on" -eq 1 || "$bw_local" -eq 1 || "$bw_files" -gt 0 ]]; then
   fi
   for f in "$bw_accounts"/*.env; do
     [[ -f "$f" ]] || continue
+    if [[ ! -r "$f" ]]; then
+      warn "${f} belongs to the containers' user, so its settings are not checked here — sudo make doctor checks them"
+      continue
+    fi
     if [[ "$(bw_get "$f" BW_SCOPE)" == all ]]; then
       warn "$(basename "$f" .env): BW_SCOPE=all lets the agent reach every item in that vault — use folder: or collection: (make vault-add FORCE=1)"
     fi
@@ -1402,7 +1406,9 @@ if [[ "$bw_on" -eq 1 || "$bw_local" -eq 1 || "$bw_files" -gt 0 ]]; then
           case "$bw_state" in
             unlocked) ok "${bw_slug}: unlocked (${bw_mode}, ${bw_scope} scope)" ;;
             locked)
-              if [[ "$(bw_get "${bw_accounts}/${bw_slug}.env" BW_UNLOCK)" == manual ]]; then
+              if [[ ! -r "${bw_accounts}/${bw_slug}.env" ]]; then
+                warn "${bw_slug}: locked — make vault-unlock SLUG=${bw_slug} if it is a manual account"
+              elif [[ "$(bw_get "${bw_accounts}/${bw_slug}.env" BW_UNLOCK)" == manual ]]; then
                 warn "${bw_slug}: locked — make vault-unlock SLUG=${bw_slug}"
               else
                 warn "${bw_slug}: locked${bw_class:+ (${bw_class})} — the stored unlock has not finished or failed"

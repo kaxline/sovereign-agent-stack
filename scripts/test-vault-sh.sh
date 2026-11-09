@@ -10,7 +10,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 vault="${ROOT}/scripts/vault.sh"
 tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
+# Some cases leave folders unreadable on purpose.
+trap 'chmod -R u+rwx "$tmp" 2>/dev/null; rm -rf "$tmp"' EXIT
 
 export ENV_FILE="$tmp/.env"
 export VAULT_ACCOUNTS_DIR="$tmp/accounts"
@@ -22,10 +23,27 @@ mkdir -p "$tmp/bin" "$STUB"
 : > "$ENV_FILE"
 
 # docker: one log line per call; canned answers from files in $STUB.
+# bitwarden-setup with --entrypoint runs that command here, with its
+# /accounts, /local and /secrets paths under $STUB/cview, the container's view.
 cat > "$tmp/bin/docker" <<'SH'
 #!/bin/sh
 printf '%s\n' "$*" >> "$STUB/log"
 rc_of() { if [ -f "$STUB/rc.$1" ]; then cat "$STUB/rc.$1"; else echo 0; fi; }
+case " $* " in
+  *" --entrypoint "*)
+    ep=""; take=""; seen=""
+    for a do
+      shift
+      if [ -n "$seen" ]; then
+        case "$a" in /accounts/* | /local/* | /secrets/*) a="$STUB/cview$a" ;; esac
+        set -- "$@" "$a"
+      elif [ "$take" = 1 ]; then ep="$a"; take=""
+      elif [ "$a" = --entrypoint ]; then take=1
+      elif [ "$a" = bitwarden-setup ]; then seen=1
+      fi
+    done
+    exec "$ep" "$@" ;;
+esac
 case " $* " in
   *" info "*) exit 0 ;;
   *" ps "*bitwarden-broker*) [ -f "$STUB/broker-running" ] && echo cid-broker; exit 0 ;;
@@ -40,7 +58,7 @@ case " $* " in
   *" broker.cli requests --json "*) cat "$STUB/requests.json"; exit 0 ;;
   *" broker.cli requests --tsv "*) cat "$STUB/requests.tsv" 2>/dev/null; exit 0 ;;
   *" broker.cli requests "*) echo "No pending access requests."; exit 0 ;;
-  *" broker.cli sync "*) echo "Synced: personal"; exit 0 ;;
+  *" broker.cli sync "*) echo "Synced: personal"; exit "$(rc_of sync)" ;;
   *" broker.unlock "*)
     got="$(cat)"
     [ "$got" = "$(cat "$STUB/expect-password" 2>/dev/null)" ] && echo "stub: password on stdin" >> "$STUB/log"
@@ -70,7 +88,7 @@ out="$tmp/out"
 run() { "$vault" "$@" < /dev/null > "$out" 2>&1; }
 # Runs with stdin from a string (the masked prompts read it).
 run_in() { local input="$1"; shift; printf '%s' "$input" | "$vault" "$@" > "$out" 2>&1; }
-reset_stub() { rm -f "$STUB"/*; }
+reset_stub() { rm -f "$STUB"/* 2>/dev/null || true; }
 mode_of() { stat -f %Lp "$1" 2>/dev/null || stat -c %a "$1"; }
 logged() { grep -qF -- "$1" "$STUB/log" 2>/dev/null; }
 said() { grep -qF -- "$1" "$out"; }
@@ -103,6 +121,8 @@ run add --slug personal --mode cloud --scope 'collection:-x' && fail "collection
 run add --slug personal --mode cloud --unlock auto && fail "bad unlock accepted"
 said "--unlock must be stored or manual" || fail "bad unlock: message"
 run add --slug personal --mode cloud --frob && fail "unknown add option accepted"
+run add --mode cloud --slug && fail "--slug with no value accepted"
+said "--slug needs a value" || fail "an option without its value: message"
 run unlock && fail "unlock without --slug"
 run lock --slug Nope && fail "lock with a bad slug"
 run remove --slug local && fail "remove --slug local accepted"
@@ -131,6 +151,7 @@ s="$BITWARDEN_HOST_DATA_DIR/secrets/personal"
 [ "$(mode_of "$s/client_secret")" = 600 ] || fail "client_secret mode"
 [ "$(mode_of "$s/master_password")" = 600 ] || fail "master_password mode"
 [ "$(mode_of "$s")" = 700 ] || fail "secrets/<slug> is mode 700"
+[ "$(mode_of "$BITWARDEN_HOST_DATA_DIR/secrets")" = 711 ] || fail "secrets/ is mode 711"
 said "opens the whole vault" || fail "stored with a folder: scope prints the Unlock warning"
 grep -qx 'BITWARDEN_ENABLED=1' "$ENV_FILE" || fail "add turns on BITWARDEN_ENABLED"
 said "bitwarden-setup" || fail "add says how to create and seed the folder"
@@ -167,17 +188,48 @@ rm -f "$VAULT_ACCOUNTS_DIR/wide.env" "$VAULT_ACCOUNTS_DIR/hashy.env"
 # an auth error removes what add wrote.
 reset_stub
 touch "$STUB/broker-running"
-printf 'checked\tcloud\tfolder\tunlocked\t-\n' > "$STUB/accounts"
+printf 'checked\tcloud\tfolder\tunlocked\t-\nhome\tselfhosted\tcollection\tlocked\t-\n' > "$STUB/accounts"
 run_in "user.c"$'\n'"$SECRET"$'\n'"$PW"$'\n' add --slug checked --mode cloud || fail "add with the broker up"
 logged "restart bitwarden-broker" || fail "add restarts the broker"
 said "checked: signed in" || fail "add reports the broker's unlock"
+said "home is locked after the restart: make vault-unlock SLUG=home" || fail "add lists manual accounts to unlock again"
 no_secret "add checked"
 printf 'refused\tcloud\tfolder\terror\tauth\n' > "$STUB/accounts"
 run_in "user.r"$'\n'"$SECRET"$'\n'"$PW"$'\n' add --slug refused --mode cloud && fail "an auth error must fail add"
 said "auth" || fail "the auth failure names the error class"
 [ ! -e "$VAULT_ACCOUNTS_DIR/refused.env" ] || fail "an auth error keeps the account file"
 [ ! -e "$BITWARDEN_HOST_DATA_DIR/secrets/refused" ] || fail "an auth error keeps the secrets"
+
+# --force keeps the old file and secrets as .bak until the check passes, and
+# puts them back on an auth error.
+printf 'checked\tcloud\tfolder\terror\tauth\n' > "$STUB/accounts"
+cp "$VAULT_ACCOUNTS_DIR/checked.env" "$tmp/checked.before"
+run_in "user.new"$'\n'"new-$SECRET"$'\n'"new-$PW"$'\n' add --slug checked --mode cloud --force \
+  && fail "add --force with an auth error must fail"
+cmp -s "$VAULT_ACCOUNTS_DIR/checked.env" "$tmp/checked.before" || fail "auth error after --force: old account file not restored"
+cs="$BITWARDEN_HOST_DATA_DIR/secrets/checked"
+[ "$(cat "$cs/client_secret")" = "$SECRET" ] || fail "auth error after --force: old client_secret not restored"
+[ "$(cat "$cs/master_password")" = "$PW" ] || fail "auth error after --force: old master_password not restored"
+[ "$(mode_of "$cs/client_secret")" = 600 ] || fail "restored client_secret mode"
+[ ! -e "$VAULT_ACCOUNTS_DIR/checked.env.bak" ] && [ ! -e "$cs/client_secret.bak" ] || fail "auth error after --force left .bak files"
+said "previous account file and secrets are back" || fail "the --force auth error says what was restored"
+printf 'checked\tcloud\tfolder\tunlocked\t-\n' > "$STUB/accounts"
+run_in "user.new"$'\n'"new-$SECRET"$'\n' add --slug checked --mode cloud --unlock manual --force \
+  || fail "add --force that passes the check"
+grep -qx 'BW_CLIENTID=user.new' "$VAULT_ACCOUNTS_DIR/checked.env" || fail "--force writes the new file"
+[ ! -e "$cs/master_password" ] || fail "--force to manual removes the stored master password"
+[ ! -e "$VAULT_ACCOUNTS_DIR/checked.env.bak" ] && [ ! -e "$cs/client_secret.bak" ] && [ ! -e "$cs/master_password.bak" ] \
+  || fail "a passed check leaves .bak files"
 rm -f "$VAULT_ACCOUNTS_DIR/checked.env"
+rm -rf "$cs"
+
+# A run stopped before the account file is written leaves no new secrets folder or temp file.
+rm -f "$STUB/broker-running"
+chmod 500 "$VAULT_ACCOUNTS_DIR"
+run_in "user.s"$'\n'"$SECRET"$'\n'"$PW"$'\n' add --slug stopped --mode cloud && fail "add into an unwritable accounts folder"
+chmod 700 "$VAULT_ACCOUNTS_DIR"
+[ ! -e "$BITWARDEN_HOST_DATA_DIR/secrets/stopped" ] || fail "a stopped add left secrets/stopped/"
+for left in "$VAULT_ACCOUNTS_DIR"/.stopped.*; do [ ! -e "$left" ] || fail "a stopped add left a temp file"; done
 
 # --- unlock and lock ---------------------------------------------------------
 reset_stub
@@ -220,6 +272,11 @@ printf 'r1\tpersonal\twww.example.com\tsign in\n' > "$STUB/requests.tsv"
 run grant && fail "grant with no --site and no terminal must fail"
 said "www.example.com" || fail "grant lists pending requests"
 said "--site" || fail "grant without a terminal says to pass --site"
+echo 1 > "$STUB/rc.sync"
+run grant --site www.example.com --slug personal --email owner@example.com || fail "grant with a failed sync"
+said "did not sync" || fail "grant says when the sync failed"
+said "The broker synced" && fail "grant claims a sync that failed"
+rm -f "$STUB/rc.sync"
 echo 1 > "$STUB/rc.setup-grant"
 run grant --site www.example.com --slug personal --email owner@example.com && fail "a failed grant must fail"
 said "stays pending" || fail "a failed grant says the request stays pending"
@@ -241,7 +298,7 @@ for d in bw broker secrets/local/tls local/tls/server local/vaultwarden vaultwar
   [ -d "$BITWARDEN_HOST_DATA_DIR/$d" ] || fail "init creates $d"
 done
 [ "$(mode_of "$BITWARDEN_HOST_DATA_DIR/local")" = 700 ] || fail "local/ is mode 700"
-[ "$(mode_of "$BITWARDEN_HOST_DATA_DIR/secrets")" = 700 ] || fail "secrets/ is mode 700"
+[ "$(mode_of "$BITWARDEN_HOST_DATA_DIR/secrets")" = 711 ] || fail "secrets/ stays mode 711"
 order="$(grep -nE 'bitwarden-setup (tls|admin-token|local-init|role)|up -d|dirs ready' "$STUB/log" \
   | sed -E 's/^[0-9]+://; s/.*bitwarden-setup ([a-z-]+).*/\1/; s/.* up -d.*/up/; s/stub: dirs ready at up/dirs/' | tr '\n' ' ')"
 [ "$order" = "tls admin-token up dirs local-init role " ] || fail "init order: ${order}"
@@ -305,6 +362,63 @@ grep -q 'hermes-reload' "$STUB/log" || fail "secrets-sync exit 3 runs hermes-rel
 echo 1 > "$STUB/rc.secrets-sync"
 run secrets-sync && fail "secrets-sync exit 1 must fail"
 said "make up" || fail "secrets-sync exit 1 says to start the broker"
+
+# --- Linux: files that belong to the containers' user (Ruling R23) -------------
+# A non-root user on Linux after the uid 10001 chown: the account file, local/
+# and secrets/<slug>/ are out of reach, so vault.sh goes through bitwarden-setup
+# (the stub runs it against $STUB/cview) and says so, never reading them as empty.
+reset_stub
+# shellcheck disable=SC2016  # expanded by the stub
+printf '#!/bin/sh\nif [ "$1" = -s ]; then echo Linux; else exec /usr/bin/uname "$@"; fi\n' > "$tmp/bin/uname"
+# shellcheck disable=SC2016  # expanded by the stub
+printf '#!/bin/sh\ncase "$1" in -u | -g) echo 1000 ;; *) exec /usr/bin/id "$@" ;; esac\n' > "$tmp/bin/id"
+chmod +x "$tmp/bin/uname" "$tmp/bin/id"
+cv="$STUB/cview"
+mkdir -p "$cv/accounts" "$cv/local" "$cv/secrets/lin2"
+lin="$VAULT_ACCOUNTS_DIR/lin.env"
+printf 'BW_MODE=cloud\nBW_SERVER=https://vault.bitwarden.com\nBW_UNLOCK=manual\nBW_CLIENTID=user.lin\nBW_SECRETS_ITEM_SCOPE=folder:Stack\n' > "$lin"
+cp "$lin" "$cv/accounts/lin.env"
+chmod 000 "$lin"
+touch "$STUB/broker-running"
+printf '%s' "$PW" > "$STUB/expect-password"
+run_in "$PW"$'\n' unlock --slug lin || fail "linux: unlock of an unreadable manual account"
+logged "--entrypoint sh bitwarden-setup -c" || fail "linux: unlock did not read the account file through bitwarden-setup"
+logged "stub: password on stdin" || fail "linux: unlock did not pass the password"
+said "belongs to the containers' user" || fail "linux: no note about the container path"
+no_secret "linux unlock"
+
+printf 'lin\tcloud\tfolder\tunlocked\t-\nlocal\tlocal\tcollection\tlocked\t-\n' > "$STUB/accounts"
+run up-hook || fail "linux: up-hook"
+logged "/accounts/lin.env" || fail "linux: up-hook did not read lin.env through bitwarden-setup"
+logged "run --rm -T bitwarden-secrets-sync" || fail "linux: up-hook skipped the sync for an unreadable account file"
+said "skipped: local is locked" || fail "linux: up-hook lost the readable account"
+
+: > "$STUB/log"
+printf 'STEP=confirmed\nOWNER_EMAIL=owner@example.com\n' > "$cv/local/state"
+chmod 000 "$BITWARDEN_HOST_DATA_DIR/local"
+run init || fail "linux: init re-run with local/ out of reach"
+logged "/local/state" || fail "linux: init did not read local/state through bitwarden-setup"
+logged "role --slug local --email owner@example.com" || fail "linux: init did not resume from the container's state"
+logged "bitwarden-setup tls" && fail "linux: init re-ran tls after confirmed"
+chmod 700 "$BITWARDEN_HOST_DATA_DIR/local"
+
+: > "$STUB/log"
+mkdir -p "$BITWARDEN_HOST_DATA_DIR/secrets/lin2"
+chmod 500 "$BITWARDEN_HOST_DATA_DIR/secrets/lin2"
+printf 'lin2\tcloud\tfolder\tunlocked\t-\n' > "$STUB/accounts"
+run_in "user.lin2"$'\n'"$SECRET"$'\n'"$PW"$'\n' add --slug lin2 --mode cloud || fail "linux: add into a container-owned secrets folder"
+[ "$(cat "$cv/secrets/lin2/client_secret")" = "$SECRET" ] || fail "linux: client_secret not written through bitwarden-setup"
+[ "$(cat "$cv/secrets/lin2/master_password")" = "$PW" ] || fail "linux: master_password not written through bitwarden-setup"
+[ "$(mode_of "$cv/secrets/lin2/client_secret")" = 600 ] || fail "linux: client_secret mode"
+[ -z "$(ls -A "$BITWARDEN_HOST_DATA_DIR/secrets/lin2")" ] || fail "linux: add wrote into a folder it does not own"
+said "sudo chown -R 10001:10001" || fail "linux: add does not say how to hand the files to uid 10001"
+said "lin2: signed in" || fail "linux: add's check"
+no_secret "linux add"
+
+chmod 700 "$BITWARDEN_HOST_DATA_DIR/secrets/lin2"
+chmod 600 "$lin"
+rm -rf "$BITWARDEN_HOST_DATA_DIR/secrets/lin2"
+rm -f "$lin" "$VAULT_ACCOUNTS_DIR/lin2.env" "$tmp/bin/uname" "$tmp/bin/id"
 
 # --- backup and restore --------------------------------------------------------
 if command -v sqlite3 >/dev/null 2>&1; then
