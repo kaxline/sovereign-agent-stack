@@ -29,8 +29,8 @@ setup keeps working unchanged.
 | Directory | `addons/email-local/` | `addons/email/` |
 | Reads from | Mail.app (`script`, `store` sources) and the host `imap` source | IMAP servers, one instance per account |
 | Main flag / profile | `MAIL_MCP_ENABLED` / `mail` (unchanged) | `EMAIL_ENABLED` / `email` |
-| Drafts gate | Flag `MAIL_DRAFTS_ENABLED` / profile `mail-drafts` (unchanged) | Setting `drafts` (bool, default `false`) |
-| MCP names | `mail`, `drafts` (unchanged) | `email`, `email_drafts` |
+| Drafts gate | Flag `MAIL_DRAFTS_ENABLED` / profile `mail-drafts` (unchanged) | Gate `EMAIL_DRAFTS_ENABLED` / profile `email-drafts`, set by the `drafts` setting |
+| MCP names | `mail`, `drafts` (unchanged) | `email`, `email-drafts` |
 | Compose services | `mail-mcp`, `mail-drafts-mcp` (unchanged) | `email-indexer`, `email-mcp`, `email-drafts-mcp`, `email-outbox` |
 | Host component | `host` block: the reader and drafts apps in `macos/mail-apps/` | None |
 | Index | `MAIL_INDEX_DIR` (default `data/mail`) | Named volume `email_index` |
@@ -79,7 +79,7 @@ host source is a later decision, made after Keith's real-account check of both.
 - **`email-mcp`** is the `mail-mcp` image with `email_index` mounted read-only, registered as
   `mcp_servers.email`. Tools, the untrusted-content markers and `/watermark` are unchanged.
 - **`email-drafts-mcp`** is the `mail-drafts-mcp` image over the queue, registered as
-  `mcp_servers.email_drafts`. Starts only when `drafts` is on.
+  `mcp_servers.email-drafts`. Starts only when `drafts` is on.
 - **`email-outbox`** runs `mail_imap_drafts.py` against the queue with the host helper's checks
   and its 20-drafts-an-hour limit. It reads only the reply headers `docs/email.md` lists. Starts
   only when `drafts` is on.
@@ -148,18 +148,22 @@ only for listing.
 
 ### Gated entries
 
-`mcp` may be an object or a list of objects. Any `mcp` entry and any `services` entry may carry
-`when`:
+`mcp` may be an object or a list of objects. Built-in manifests may declare `gates`, a list of
+extra `{flag, profile, seed}` rows for `sync-profiles.sh`, and any `mcp` or `services` entry may
+carry `"when": {"gate": "<flag>"}` naming one of them:
 
 ```json
-"when": {"flag": "MAIL_DRAFTS_ENABLED"}
-"when": {"setting": "drafts"}
+"gates": [{"flag": "MAIL_DRAFTS_ENABLED", "profile": "mail-drafts", "seed": false}]
+"when": {"gate": "MAIL_DRAFTS_ENABLED"}
 ```
 
-`flag` is for built-ins and names an env key that `sync-profiles.sh` knows. `setting` names a
-`bool` setting. An entry whose gate is off gets no MCP registration and its service isn't
-started. A gate naming an unknown flag or setting fails validation. This also answers the
-manifest spec's open question about Twenty's two flags.
+Gates are flags, not settings, because compose profiles are switched by flags. A `bool` setting
+can carry `"flag": "<gate>"`, and `addon.sh configure` writes its value to that flag in `.env`;
+that is how `email`'s `drafts` setting turns on `EMAIL_DRAFTS_ENABLED`. An entry whose gate is off
+gets no MCP registration and its service isn't started. A gated entry follows its own flag, not
+the add-on's main flag, so `MAIL_DRAFTS_ENABLED` works without `MAIL_MCP_ENABLED` as it does
+today. A `when` naming an unknown gate fails validation. This also answers the manifest spec's
+open question about Twenty's two flags.
 
 ### Settings and instances
 
@@ -217,7 +221,7 @@ Added to `addon_manifest.py validate` and `test-addon-manifests.py`:
 - A `path` setting in a `reads` add-on may not have a default (already in the spec, now
   enforced).
 - `commands` may not name a service that an `mcp` entry points at, for a `reads` add-on.
-- `when` must name a known flag or a `bool` setting.
+- `when` must name a flag listed in `gates`.
 
 ## Boundary's install flow for `email`
 
