@@ -64,16 +64,12 @@ VIKUNJA_MCP_TOKEN_RW="${VIKUNJA_MCP_TOKEN_RW:-}"
 VIKUNJA_MCP_KEY="todos"
 VIKUNJA_MCP_PIN_RO="tasks_list tasks_read projects_list"
 VIKUNJA_MCP_PIN_RW="tasks_list tasks_read tasks_create tasks_update projects_list"
-MAIL_MCP_ENABLED="${MAIL_MCP_ENABLED:-0}"
+# The mail and drafts servers register from addons/email-local/addon.json,
+# which reads MAIL_MCP_ENABLED, MAIL_DRAFTS_ENABLED and the MAIL_*_URL and
+# timeout overrides from the environment. The URLs stay here for
+# set_stack_mcp_parked_retry.
 MAIL_MCP_URL="${MAIL_MCP_URL:-http://mail-mcp:8000/mcp}"
-MAIL_MCP_TIMEOUT="${MAIL_MCP_TIMEOUT:-60}"
-MAIL_MCP_CONNECT_TIMEOUT="${MAIL_MCP_CONNECT_TIMEOUT:-30}"
-MAIL_MCP_TOOLS="mail_status mail_search mail_get mail_thread"
-MAIL_DRAFTS_ENABLED="${MAIL_DRAFTS_ENABLED:-0}"
 MAIL_DRAFTS_MCP_URL="${MAIL_DRAFTS_MCP_URL:-http://mail-drafts-mcp:8000/mcp}"
-MAIL_DRAFTS_MCP_TIMEOUT="${MAIL_DRAFTS_MCP_TIMEOUT:-60}"
-MAIL_DRAFTS_MCP_CONNECT_TIMEOUT="${MAIL_DRAFTS_MCP_CONNECT_TIMEOUT:-30}"
-MAIL_DRAFTS_MCP_TOOLS="mail_draft_create mail_draft_status"
 MESSAGES_MCP_ENABLED="${MESSAGES_MCP_ENABLED:-0}"
 MESSAGES_MCP_URL="${MESSAGES_MCP_URL:-http://messages-mcp:8000/mcp}"
 MESSAGES_MCP_TIMEOUT="${MESSAGES_MCP_TIMEOUT:-60}"
@@ -916,24 +912,6 @@ reconcile_stack_eager_tools() {
       _rst_args="${_rst_args} ${_rst_t} mcp__${VIKUNJA_MCP_KEY}__${_rst_t}"
     done
   fi
-  case "$MAIL_MCP_ENABLED" in
-    1|true|TRUE|yes|YES)
-      if [ "$_rst_profile" != "api-server" ]; then
-        for _rst_t in $MAIL_MCP_TOOLS; do
-          _rst_args="${_rst_args} ${_rst_t} mcp__mail__${_rst_t}"
-        done
-      fi
-      ;;
-  esac
-  case "$MAIL_DRAFTS_ENABLED" in
-    1|true|TRUE|yes|YES)
-      if [ "$_rst_profile" != "api-server" ]; then
-        for _rst_t in $MAIL_DRAFTS_MCP_TOOLS; do
-          _rst_args="${_rst_args} ${_rst_t} mcp__drafts__${_rst_t}"
-        done
-      fi
-      ;;
-  esac
   case "$MESSAGES_MCP_ENABLED" in
     1|true|TRUE|yes|YES)
       if [ "$_rst_profile" != "api-server" ]; then
@@ -1282,33 +1260,6 @@ PY
   drop_mcp_entries_for_url "$_rvms_profile" "$VIKUNJA_MCP_KEY" "$VIKUNJA_MCP_URL"
   # shellcheck disable=SC2046
   pin_mcp_tools "$_rvms_profile" "$VIKUNJA_MCP_KEY" $(vikunja_mcp_pins_for "$_rvms_profile")
-}
-
-# Read-only mail index (mail compose profile), registered as mcp_servers.mail
-# on the interactive profiles only. Mail is the easiest place for a stranger
-# to plant instructions, so unattended api-server sessions never get it, not
-# even read-only. api-server is cloned from default, so the inherited entry
-# (and any hand-added copy pointing at the same URL) is removed there.
-register_mail_mcp_servers() {
-  _rmms_profile="$1"
-  case "$MAIL_MCP_ENABLED" in
-    1|true|TRUE|yes|YES) ;;
-    *)
-      log "Skipping mail MCP registration (MAIL_MCP_ENABLED=${MAIL_MCP_ENABLED})"
-      drop_mcp_entries_for_url "$_rmms_profile" "" "$MAIL_MCP_URL"
-      return 0
-      ;;
-  esac
-  if [ "$_rmms_profile" = "api-server" ]; then
-    log "Skipping mail MCP on api-server profile (unattended sessions)"
-    drop_mcp_entries_for_url "$_rmms_profile" "" "$MAIL_MCP_URL"
-    return 0
-  fi
-  # shellcheck disable=SC2086
-  register_mcp_server "$_rmms_profile" mail "Mail (read-only)" \
-    "$MAIL_MCP_URL" "$MAIL_MCP_TIMEOUT" "$MAIL_MCP_CONNECT_TIMEOUT" $MAIL_MCP_TOOLS
-  # shellcheck disable=SC2086
-  pin_mcp_tools "$_rmms_profile" mail $MAIL_MCP_TOOLS
 }
 
 # LightRAG MCP (rag profile) as read-oriented Knowledge Base access, on the
@@ -1828,30 +1779,6 @@ EOF
   addon_instances_warn_none
   # shellcheck disable=SC2086
   reconcile_addon_instance_servers "$_rai_profile" $_rai_specs $_rai_keep
-}
-
-# Draft-only mail MCP: queues drafts the host helper saves in Mail. Like the
-# read MCP, never on api-server: drafting is something a person asks for.
-register_mail_drafts_mcp_servers() {
-  _rmdm_profile="$1"
-  case "$MAIL_DRAFTS_ENABLED" in
-    1|true|TRUE|yes|YES) ;;
-    *)
-      log "Skipping mail drafts MCP registration (MAIL_DRAFTS_ENABLED=${MAIL_DRAFTS_ENABLED})"
-      drop_mcp_entries_for_url "$_rmdm_profile" "" "$MAIL_DRAFTS_MCP_URL"
-      return 0
-      ;;
-  esac
-  if [ "$_rmdm_profile" = "api-server" ]; then
-    log "Skipping mail drafts MCP on api-server profile (unattended sessions)"
-    drop_mcp_entries_for_url "$_rmdm_profile" "" "$MAIL_DRAFTS_MCP_URL"
-    return 0
-  fi
-  # shellcheck disable=SC2086
-  register_mcp_server "$_rmdm_profile" drafts "Mail drafts (no sending)" \
-    "$MAIL_DRAFTS_MCP_URL" "$MAIL_DRAFTS_MCP_TIMEOUT" "$MAIL_DRAFTS_MCP_CONNECT_TIMEOUT" $MAIL_DRAFTS_MCP_TOOLS
-  # shellcheck disable=SC2086
-  pin_mcp_tools "$_rmdm_profile" drafts $MAIL_DRAFTS_MCP_TOOLS
 }
 
 # Read-only Messages index (messages compose profile), registered as
@@ -2472,8 +2399,6 @@ if is_true "$BOOTSTRAP_SHARED"; then
   register_opencode_mcp_servers ""
   register_sql_mcp_servers ""
   register_vikunja_mcp_servers ""
-  register_mail_mcp_servers ""
-  register_mail_drafts_mcp_servers ""
   register_messages_mcp_servers ""
   register_addon_mcp_servers ""
   register_addon_vault_backends ""
@@ -2683,8 +2608,6 @@ register_caldav_mcp_servers "$PROFILE"
 register_opencode_mcp_servers "$PROFILE"
 register_sql_mcp_servers "$PROFILE"
 register_vikunja_mcp_servers "$PROFILE"
-register_mail_mcp_servers "$PROFILE"
-register_mail_drafts_mcp_servers "$PROFILE"
 register_messages_mcp_servers "$PROFILE"
 register_addon_mcp_servers "$PROFILE"
 register_addon_vault_backends "$PROFILE"
