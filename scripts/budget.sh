@@ -812,13 +812,20 @@ cmd_init() {
   log "Next: make up, then make hermes-reload. make budget-open opens the web app."
 }
 
+# password_accepted PASSWORD: whether the server's login accepts it.
+password_accepted() {
+  api_body="$(printf '{"loginMethod":"password","password":"%s"}' "$(json_escape_exact "$1")")"
+  api_call POST /account/login
+  [[ -n "$(json_field "$api_resp" token)" ]]
+}
+
 # init --server-only: the local server's password lives in
 # <data root>/addons/actual/secrets/server_password (mode 600), a budget is
 # created when the server has none, and budget.env, ACTUAL_BUDGET_FILE and
 # ACTUAL_MCP_ENABLED stay untouched. Safe to run again.
 init_server_only() {
-  local sdir="" pwf pw="" resp files n sync="" name=""
-  require_docker
+  local sdir="" pwf pw="" alt="" alt_pw="" resp files n sync="" name=""
+  docker info > /dev/null 2>&1 || emit_error server_unreachable "Docker daemon is not running"
   secrets_dir
   mkdir -p "$sdir" || emit_error not_found "couldn't create ${sdir}"
   pwf="${sdir}/server_password"
@@ -834,15 +841,22 @@ init_server_only() {
     bootstrap_server "$pw"
   else
     [[ -s "$pwf" ]] && pw="$(cat "$pwf")"
+    alt="$(file_get ACTUAL_PASSWORD)"
+    [[ -n "$pw" ]] || pw="$alt"
+    [[ -z "$alt" || "$alt" == "$pw" ]] || alt_pw="$alt"
     if [[ -z "$pw" ]]; then
-      pw="$(file_get ACTUAL_PASSWORD)"
       [[ -n "$pw" ]] || emit_error login_refused "actual-server already has a password and none is stored (addons/actual/secrets/server_password is missing)"
     fi
   fi
   in_session_token="" in_password="$pw"
+  if [[ -n "$alt_pw" ]] && ! password_accepted "$pw"; then
+    # The stored copy is stale (a rotation changed budget.env): retry once.
+    pw="$alt_pw"
+    in_password="$pw"
+  fi
   sign_in
   # A password adopted from budget.env is kept where the add-on looks for it.
-  [[ -s "$pwf" ]] || write_secret server_password "$pw"
+  [[ "$(cat "$pwf" 2> /dev/null)" == "$pw" ]] || write_secret server_password "$pw"
 
   api_call GET /sync/list-user-files
   json_ok "$api_resp" || emit_error server_unreachable "couldn't list the server's budgets: $(json_field "$api_resp" reason)"
@@ -870,7 +884,7 @@ init_server_only() {
 
 # POST /account/change-password takes the current password and a new one.
 rotate_password() {
-  local url old new resp
+  local url old new resp sdir
   url="$(file_get ACTUAL_SERVER_URL)"
   [[ "${url%/}" == "$LOCAL_URL" ]] \
     || die "${BUDGET_REL} points at $(safe_url "$url"), not the local server; change that server's password there, then make budget-add FORCE=1"
@@ -894,6 +908,13 @@ rotate_password() {
   write_budget_file "$url" "$(file_get ACTUAL_WEB_URL)" "$new" "$(file_get ACTUAL_BUDGET_SYNC_ID)" \
     "$(file_get ACTUAL_BUDGET_ENCRYPTION_PASSWORD)"
   rm -f "$PENDING_FILE"
+  # Keep the add-on's copy of the password in step, when there is one.
+  local root
+  root="$(resolve_data_root_path "${BUDGET_DATA_ROOT:-}")"
+  if validate_data_root_path "$root" 2> /dev/null && [[ -f "${root}/addons/actual/secrets/server_password" ]]; then
+    sdir="${root}/addons/actual/secrets"
+    write_secret server_password "$new"
+  fi
   refresh_mcps
   log "Next: make up if the MCP servers aren't running. Sign in to the web app again with make budget-open."
 }

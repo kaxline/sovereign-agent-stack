@@ -342,6 +342,12 @@ grep -qx "ACTUAL_PASSWORD=${new}" "$f" || fail "--rotate stores the new password
 grep -qx 'ACTUAL_BUDGET_SYNC_ID=sync-local' "$f" || fail "--rotate keeps the sync id"
 [ "$(mode "$f")" = 600 ] || fail "--rotate keeps mode 600"
 pws="$pws $new"
+mkdir -p "$tmp/rot/addons/actual/secrets"
+printf '%s' "$pw" > "$tmp/rot/addons/actual/secrets/server_password"
+BUDGET_DATA_ROOT="$tmp/rot" run init --rotate || fail "init --rotate with a stored copy ($(cat "$out"))"
+new2="$(cat "$STUB/server_pw")"
+[ "$(cat "$tmp/rot/addons/actual/secrets/server_password")" = "$new2" ] || fail "--rotate updates secrets/server_password when it exists"
+pws="$pws $new2"
 
 # A new server with no budget: init creates one.
 reset
@@ -795,6 +801,28 @@ so_run --json
 [ "$brc" = 0 ] && [ "$(jget 1 sync_id)" = sync-local ] && [ "$(jget 1 name)" = "My Budget" ] || fail "--server-only adopts a server set up by init ($(cat "$tmp/jout" "$tmp/jerr"))"
 [ "$(cat "$STUB/server_pw")" = srv-SECRET ] || fail "--server-only sets no new password on a bootstrapped server"
 cmp -s <(printf 'ACTUAL_PASSWORD=srv-SECRET\nACTUAL_BUDGET_SYNC_ID=sync-local\n') "$f" || fail "--server-only leaves budget.env alone"
+
+# A stale stored password and the right one in budget.env: retried, then refreshed.
+so_reset
+printf 'new-SECRET' > "$STUB/server_pw"
+printf 'old-SECRET' > "$so_secrets/server_password"
+budget_entry sync-local "My Budget" > "$STUB/files.json"
+printf 'ACTUAL_PASSWORD=new-SECRET\nACTUAL_BUDGET_SYNC_ID=sync-local\n' > "$f"
+so_run --json
+[ "$brc" = 0 ] && [ "$(jget 1 sync_id)" = sync-local ] || fail "--server-only retries with budget.env's password ($(cat "$tmp/jout" "$tmp/jerr"))"
+[ "$(cat "$so_secrets/server_password")" = new-SECRET ] || fail "--server-only refreshes the stale server_password"
+[ "$(mode "$so_secrets/server_password")" = 600 ] || fail "the refreshed server_password is mode 600"
+
+# Docker down: an error line and exit 4 in --json mode.
+so_reset
+# shellcheck disable=SC2016
+printf '#!/bin/sh\nif [ "$1" = info ]; then exit 1; fi\nexec "%s/bin/docker.real" "$@"\n' "$tmp" > "$tmp/bin/docker.new"
+mv "$tmp/bin/docker" "$tmp/bin/docker.real"
+mv "$tmp/bin/docker.new" "$tmp/bin/docker"
+chmod +x "$tmp/bin/docker"
+so_run --json
+[ "$brc" = 4 ] && [ "$(jget 1 error)" = server_unreachable ] || fail "--server-only with Docker down ($(cat "$tmp/jout" "$tmp/jerr"))"
+mv "$tmp/bin/docker.real" "$tmp/bin/docker"
 
 # Bootstrapped, password unknown: login_refused.
 so_reset
