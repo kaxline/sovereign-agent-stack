@@ -64,8 +64,30 @@ runs in the Hermes image through stack_python, so the host needs no python3.
         when it is a shared name or in instances.errors; any other name
         becomes command_failed with the name in the message. A non-zero
         EXIT without an `error` line is command_failed.
-    purge SID
-        Deletes data/addons/SID (addon_store.addon_dir refuses anything else).
+    data-envs SID
+        Prints the env names the data.paths of every add-on declare, SID's
+        first, one per line. addon.sh passes only these to plan-remove.
+    plan-remove SID --env JSON --flags JSON --repo DIR [--lines]
+        Exits 2 while SID's builtin flag is "1" in --flags (the .env flags).
+        Prints {"services": [...], "volumes": [...], "delete": [...],
+        "kept": [{"path", "reason"}]}: every one-shot and service, the
+        compose volumes, and SID's data.paths sorted into those to delete and
+        those to keep. A path is the value of its env in --env (addon.sh puts
+        the caller's environment first, then .env), else its default, joined
+        to DIR (the repo root) and normalised lexically: symlinks are never
+        resolved. It is kept, with the reason, when it is a data directory
+        (DIR/data or --data-root), lies outside both, is or holds data/hermes
+        or data/addons, or lies inside either, has a symlink between the data
+        directory and itself, or overlaps a path that another add-on whose
+        builtin flag is "1" declares. data/addons/SID is always the last item
+        of "delete". --lines prints `service NAME`, `volume NAME`,
+        `delete PATH` and `kept REASON<tab>PATH` lines instead, for addon.sh;
+        a path with a control character is refused (exit 2).
+    delete-path PATH --repo DIR
+        Deletes PATH: a symlink or file is unlinked, a directory removed with
+        shutil.rmtree, which doesn't follow symlinks inside it. Refuses
+        (exit 2) a PATH that plan-remove would not put in "delete", apart
+        from the overlap rule, and does nothing when PATH doesn't exist.
     pull-events SERVICES_CSV
         Reads `docker compose --progress json pull` output on stdin and prints
         {"phase":"pull","service":S,"current":N,"total":N} lines, bytes
@@ -100,8 +122,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
+import stat
 import sys
 import time
 import unicodedata
@@ -125,10 +149,16 @@ class Fail(Exception):
         self.code = code
 
 
+def _load(addons_dir: Path):
+    """(path, manifest, parse error) for each manifest under addons_dir. Every
+    command that reads manifests loads them here."""
+    return am.load_dir(addons_dir)
+
+
 def _manifest(addons_dir: Path, sid: str) -> dict:
     if not SID_RE.match(sid):
         raise Fail(f"unknown add-on {sid!r}")
-    for path, manifest, parse_error in am.load_dir(addons_dir):
+    for path, manifest, parse_error in _load(addons_dir):
         if path.parent.name != sid:
             continue
         errors = am.check_builtin_file(path, manifest, parse_error)
@@ -182,7 +212,7 @@ def _no_constant(name: str):
 def cmd_list(args) -> None:
     flags = _flags_arg(args.flags)
     out = []
-    for path, manifest, parse_error in am.load_dir(args.addons_dir):
+    for path, manifest, parse_error in _load(args.addons_dir):
         errors = am.check_builtin_file(path, manifest, parse_error)
         if errors:
             print(f"warning: skipping {path.parent.name}: {errors[0]}", file=sys.stderr)
@@ -394,13 +424,175 @@ def cmd_hook_result(args) -> None:
         print(item.replace("\n", " "))
 
 
-def cmd_purge(args) -> None:
+def _data_paths(manifest) -> list[dict]:
+    data = manifest.get("data") if isinstance(manifest, dict) else None
+    paths = data.get("paths") if isinstance(data, dict) else None
+    return [p for p in paths if isinstance(p, dict)] if isinstance(paths, list) else []
+
+
+def cmd_data_envs(args) -> None:
     manifest = _manifest(args.addons_dir, args.sid)
-    target = store.addon_dir(args.data_root, manifest)
-    if target.name != args.sid or target.parent != (Path(args.data_root) / "addons").resolve():
+    names = [p["env"] for p in _data_paths(manifest) if isinstance(p.get("env"), str)]
+    for _path, other, _err in _load(args.addons_dir):
+        names += [p["env"] for p in _data_paths(other) if isinstance(p.get("env"), str)]
+    for name in dict.fromkeys(n for n in names if am.ENV_RE.match(n)):
+        print(name)
+
+
+def _env_arg(text: str) -> dict[str, str]:
+    try:
+        env = json.loads(text)
+    except ValueError:
+        raise Fail("--env is not JSON") from None
+    if not (isinstance(env, dict) and all(
+            isinstance(k, str) and am.ENV_RE.match(k) and isinstance(v, str) for k, v in env.items())):
+        raise Fail("--env must map env names to strings")
+    return env
+
+
+def _inside(path: str, root: str) -> bool:
+    """path lies strictly below root. Both are normalised absolute paths."""
+    return path != root and path.startswith(root.rstrip("/") + "/")
+
+
+def _overlap(a: str, b: str) -> bool:
+    return a == b or _inside(a, b) or _inside(b, a)
+
+
+class DataRoots:
+    """The two data directories and the stack's own data under them, all
+    normalised lexically (os.path.normpath; symlinks are never resolved)."""
+
+    def __init__(self, repo: str, data_root) -> None:
+        self.repo = os.path.normpath(os.path.abspath(repo))
+        repo_data = os.path.join(self.repo, "data")
+        self.data_root = os.path.normpath(os.path.abspath(str(data_root)))
+        self.roots = [repo_data, self.data_root]
+        self.stack = [os.path.join(repo_data, "hermes"), os.path.join(repo_data, "addons"),
+                      os.path.join(self.data_root, "addons")]
+
+    def resolve(self, value: str) -> str:
+        return os.path.normpath(os.path.join(self.repo, value))
+
+    def refusal(self, path: str) -> str | None:
+        """Why path may not be deleted, or None. Ignores other add-ons."""
+        if path in self.roots:
+            return "is the data directory"
+        inside = [r for r in self.roots if _inside(path, r)]
+        if not inside:
+            return "outside the data directory"
+        if any(_inside(r, path) for r in self.roots) or any(_overlap(path, s) for s in self.stack):
+            return "holds stack data"
+        # A symlink between the data directory and the path makes the path's
+        # real place unknown without following it.
+        root = max(inside, key=len)
+        parts = os.path.relpath(path, root).split(os.sep)[:-1]
+        cur = root
+        for part in parts:
+            cur = os.path.join(cur, part)
+            if os.path.islink(cur):
+                return "behind a symlink"
+        return None
+
+
+def _path_of(entry: dict, env: dict[str, str], roots: DataRoots) -> str | None:
+    name = entry.get("env")
+    value = env.get(name, "") if isinstance(name, str) else ""
+    if not value:
+        value = entry.get("default")
+    if not isinstance(value, str) or not value:
+        return None
+    if any(unicodedata.category(c) == "Cc" for c in value):
+        raise Fail(f"{name or 'data.paths'}: the path has a control character")
+    return roots.resolve(value)
+
+
+def cmd_plan_remove(args) -> None:
+    manifest = _manifest(args.addons_dir, args.sid)
+    flags = _flags_arg(args.flags)
+    env = _env_arg(args.env)
+    if flags.get(manifest["builtin"]["flag"]) == "1":
+        raise Fail(f"{args.sid} is enabled; disable it first")
+    roots = DataRoots(args.repo, args.data_root)
+    # Paths other enabled add-ons declare. A manifest that fails its checks
+    # still counts while it parses: keeping too much is the safe side.
+    used: list[tuple[str, str]] = []
+    for path, other, _err in _load(args.addons_dir):
+        builtin = other.get("builtin") if isinstance(other, dict) else None
+        flag = builtin.get("flag") if isinstance(builtin, dict) else None
+        if path.parent.name == args.sid or not isinstance(flag, str) or flags.get(flag) != "1":
+            continue
+        for entry in _data_paths(other):
+            try:
+                other_path = _path_of(entry, env, roots)
+            except Fail:
+                continue
+            if other_path is not None:
+                used.append((other_path, path.parent.name))
+    own = os.path.join(roots.data_root, "addons", _own_sid(manifest, args.sid))
+    delete: list[str] = []
+    kept: list[dict] = []
+    for entry in _data_paths(manifest):
+        target = _path_of(entry, env, roots)
+        # data/addons/SID and what lies in it go with the add-on's own directory.
+        if target is None or target == own or _inside(target, own) \
+                or target in delete or any(k["path"] == target for k in kept):
+            continue
+        reason = roots.refusal(target)
+        if reason is None:
+            owner = next((sid for p, sid in used if _overlap(target, p)), None)
+            reason = f"used by {owner}" if owner else None
+        if reason is None:
+            delete.append(target)
+        else:
+            kept.append({"path": target, "reason": reason})
+    delete.append(own)
+    services, oneshots = [], []
+    for key, svc in manifest["services"].items():
+        (oneshots if svc.get("oneshot") else services).append(_compose(manifest, key))
+    volumes = am.data_volumes(manifest)
+    if not args.lines:
+        _dump({"services": oneshots + services, "volumes": volumes, "delete": delete, "kept": kept})
+        return
+    for item in delete + [k["path"] for k in kept]:
+        if any(unicodedata.category(c) == "Cc" for c in item):
+            raise Fail("a data path has a control character")
+    for name in oneshots + services:
+        print(f"service {name}")
+    for name in volumes:
+        print(f"volume {name}")
+    for item in delete:
+        print(f"delete {item}")
+    for k in kept:
+        print(f"kept {k['reason']}\t{k['path']}")
+
+
+def _own_sid(manifest: dict, sid: str) -> str:
+    short = am.short_id(manifest["id"])
+    if short != sid or not SID_RE.match(short):
         raise Fail("the add-on directory is outside data/addons")
-    if target.is_dir():
-        shutil.rmtree(target)
+    return short
+
+
+def cmd_delete_path(args) -> None:
+    path = args.path
+    roots = DataRoots(args.repo, args.data_root)
+    if path != os.path.normpath(os.path.abspath(path)):
+        raise Fail("delete-path takes a normalised absolute path")
+    reason = roots.refusal(path)
+    own_dir = os.path.dirname(path) == os.path.join(roots.data_root, "addons") \
+        and SID_RE.match(os.path.basename(path)) is not None
+    if reason is not None and not (reason == "holds stack data" and own_dir
+                                   and not os.path.islink(os.path.dirname(path))):
+        raise Fail(f"refusing to delete {path}: {reason}")
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return
+    if stat.S_ISDIR(st.st_mode):
+        shutil.rmtree(path)
+    else:
+        os.unlink(path)
 
 
 LINE_MAX = 500
@@ -579,10 +771,21 @@ def main(argv: list[str]) -> int:
     s.add_argument("file")
     s.set_defaults(func=cmd_redact)
     for name, func in (("plan-enable", cmd_plan_enable), ("plan-disable", cmd_plan_disable),
-                       ("purge", cmd_purge)):
+                       ("data-envs", cmd_data_envs)):
         s = sub.add_parser(name)
         s.add_argument("sid")
         s.set_defaults(func=func)
+    s = sub.add_parser("plan-remove")
+    s.add_argument("sid")
+    s.add_argument("--env", default="{}")
+    s.add_argument("--flags", default="{}")
+    s.add_argument("--repo", required=True)
+    s.add_argument("--lines", action="store_true")
+    s.set_defaults(func=cmd_plan_remove)
+    s = sub.add_parser("delete-path")
+    s.add_argument("path")
+    s.add_argument("--repo", required=True)
+    s.set_defaults(func=cmd_delete_path)
     s = sub.add_parser("toggle-script")
     s.add_argument("sid")
     s.set_defaults(func=cmd_toggle_script)

@@ -12,6 +12,7 @@
 #   scripts/addon.sh disable <short-id> [--purge] [--json]
 #   scripts/addon.sh connect <short-id> --instance <slug> [--json] < values.json
 #   scripts/addon.sh disconnect <short-id> --instance <slug> [--json]
+#   scripts/addon.sh remove <short-id> --delete-data [--json]
 #   scripts/addon.sh run <short-id> <command> [--instance <slug>]
 #
 # configure reads one JSON object on stdin. Secret values go only to
@@ -20,8 +21,20 @@
 # gate flag a stored setting owns), syncs COMPOSE_PROFILES, starts the
 # services whose gate is on, runs the manifest's init hook once (--reinit runs
 # it again; data/addons/<short-id>/state.json records it) and reloads Hermes. disable sets the flag and every
-# gate flag to 0, syncs, stops the services and reloads; --purge also deletes
-# data/addons/<short-id> and the compose volumes in services.*.volumes.
+# gate flag to 0, syncs, stops the services and reloads; --purge then runs
+# remove --delete-data's work in the same lock, and prints one done line.
+#
+# remove --delete-data refuses (bad_input) while the add-on is enabled. It
+# runs `docker compose rm -f -s` on every service and one-shot, removes each
+# compose volume in data.volumes that exists, and deletes each data.paths
+# directory and data/addons/<short-id>, all as step delete. A data path is its
+# env from the caller's environment, then .env, else its default, made
+# absolute against the repo root without resolving symlinks. It is deleted
+# only when it lies inside ./data or ASSISTANT_DATA_ROOT, isn't one of them,
+# doesn't hold or lie in data/hermes or data/addons, has no symlink between
+# the data directory and itself, and no other enabled add-on declares it or a
+# path that overlaps it. Otherwise a `delete` line with "kept" and "reason"
+# reports it and it stays. A symlink is unlinked, never followed.
 #
 # Reloading Hermes (step reload, run by enable, disable, connect and
 # disconnect) runs both bootstraps with HERMES_BOOTSTRAP_FORCE=1 and then
@@ -49,7 +62,7 @@
 # step, then one `done` or `error` line. Step output goes to stderr without
 # --json.
 #
-# configure, enable, disable, connect and disconnect hold data/addons/.lock
+# configure, enable, disable, connect, disconnect and remove hold data/addons/.lock
 # (a symlink to their PID) while they run; a second call fails with busy. A
 # failed or interrupted enable writes the flags back as they were, syncs
 # COMPOSE_PROFILES and stops the services if the add-on was off, and its
@@ -76,7 +89,7 @@ source "${ROOT}/scripts/lib/python.sh"
 source "${ROOT}/scripts/lib/addon-events.sh"
 
 # usage: the synopsis from the header, on stdout.
-usage() { sed -n '8,15s/^# *//p' "${BASH_SOURCE[0]}"; }
+usage() { sed -n '8,16s/^# *//p' "${BASH_SOURCE[0]}"; }
 # usage_error REASON: `error: usage: REASON` and the synopsis on stderr, exit 2.
 # In JSON mode, a bad_input error line instead.
 usage_error() {
@@ -680,7 +693,7 @@ EOF_USES
 }
 
 cmd_disable() {
-  local sid="${1:-}" purge=0 plan line project vol
+  local sid="${1:-}" purge=0 plan line
   [[ -n "$sid" ]] || usage_error "disable needs a short id"
   shift
   case "${1:-}" in
@@ -696,7 +709,7 @@ cmd_disable() {
   ! truthy "$(env_get "$(plan_builtin "$plan")")" || CHANGED=1
   run_step flags "" apply_flags "$plan" \
     || ev_fail command_failed flags "writing the flags or syncing COMPOSE_PROFILES failed" "$EV_LAST_LOG"
-  local services=() volumes=()
+  local services=()
   while IFS= read -r line; do
     [[ -n "$line" ]] && services+=("$line")
   done <<EOF_SERVICES
@@ -707,31 +720,98 @@ EOF_SERVICES
       || ev_fail compose_failed stop "docker compose stop failed for: ${services[*]}" "$EV_LAST_LOG"
   fi
   stop_unused_uses "$plan"
-  if [[ "$purge" == 1 ]]; then
-    while IFS= read -r line; do
-      [[ -n "$line" ]] && volumes+=("$line")
-    done <<EOF_VOLUMES
-$(json_list volumes "$plan")
-EOF_VOLUMES
-    if [[ ${#volumes[@]} -gt 0 ]]; then
-      # A stopped container still holds its volumes.
-      run_step delete "" docker compose rm -f "${services[@]}" \
-        || ev_fail compose_failed delete "docker compose rm failed for: ${services[*]}" "$EV_LAST_LOG"
-      project="$(compose_project)"
-      for vol in "${volumes[@]}"; do
-        if docker volume inspect "${project}_${vol}" > /dev/null 2>&1; then
-          run_step delete "$vol" docker volume rm "${project}_${vol}" \
-            || ev_fail compose_failed delete "docker volume rm ${project}_${vol} failed" "$EV_LAST_LOG"
-        fi
-      done
-    fi
-    ev_step delete running "data/addons/${sid}"
-    cli_checked delete purge "$sid"
-    ev_step delete "done" "data/addons/${sid}"
-  fi
   toggle_recreate "$plan" "$sid"
   reload_step
+  [[ "$purge" == 1 ]] && remove_data "$sid"
   ev_done "$sid" disable "$RECREATED" ""
+}
+
+# data_env_json SID: sets DATA_ENV_JSON to {"NAME":"VALUE",...} for the env
+# names `data-envs` gives (those data.paths declare, and nothing else from
+# .env), each from the caller's environment, then .env. Empty values are left
+# out, as compose's ${NAME:-default} ignores them. Only backslash and quote are escaped: a
+# control character makes the JSON invalid, and plan-remove refuses it.
+DATA_ENV_JSON=""
+data_env_json() {
+  local name value out=""
+  cli_checked "" data-envs "$1"
+  while IFS= read -r name; do
+    [[ "$name" =~ ^[A-Z][A-Z0-9_]*$ ]] || continue
+    value="${!name:-}"
+    [[ -n "$value" ]] || value="$(env_get "$name")"
+    [[ -n "$value" ]] || continue
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    out="${out:+${out},}\"${name}\":\"${value}\""
+  done <<EOF_NAMES
+$CLI_OUT
+EOF_NAMES
+  DATA_ENV_JSON="{${out}}"
+}
+
+# ev_kept PATH REASON: the delete line for a data path that stays.
+ev_kept() {
+  if [[ "$EV_JSON" == 1 ]]; then
+    printf '{"phase":"setup","step":"delete","status":"done","kept":%s,"reason":%s}\n' \
+      "$(json_str "$1")" "$(json_str "$2")" >&3
+  else
+    printf 'kept %s: %s\n' "$1" "$2" >&4
+  fi
+}
+
+# remove_data SID: remove --delete-data's work, under the caller's lock. Paths
+# go from plan-remove to delete-path one per line: plan-remove refuses a path
+# with a control character.
+remove_data() {
+  local sid="$1" line services=() volumes=() paths=() project vol path msg
+  data_env_json "$sid"
+  cli_checked "" plan-remove "$sid" --env "$DATA_ENV_JSON" --flags "$(env_flags_json)" --repo "$ROOT" --lines
+  while IFS= read -r line; do
+    case "$line" in
+      "service "*) services+=("${line#service }") ;;
+      "volume "*) volumes+=("${line#volume }") ;;
+      "delete "*) paths+=("${line#delete }") ;;
+      "kept "*) line="${line#kept }"; ev_kept "${line#*$'\t'}" "${line%%$'\t'*}" ;;
+    esac
+  done <<EOF_PLAN
+$CLI_OUT
+EOF_PLAN
+  # A stopped container still holds its volumes and bind mounts.
+  if [[ ${#services[@]} -gt 0 ]]; then
+    run_step delete "" docker compose rm -f -s "${services[@]}" \
+      || ev_fail compose_failed delete "docker compose rm failed for: ${services[*]}" "$EV_LAST_LOG"
+  fi
+  project="$(compose_project)"
+  for vol in ${volumes[@]+"${volumes[@]}"}; do
+    if docker volume inspect "${project}_${vol}" > /dev/null 2>&1; then
+      run_step delete "$vol" docker volume rm "${project}_${vol}" \
+        || { EV_TARGET="$vol"; ev_fail compose_failed delete "docker volume rm ${project}_${vol} failed" "$EV_LAST_LOG"; }
+    fi
+  done
+  for path in ${paths[@]+"${paths[@]}"}; do
+    if ! run_step delete "$path" cli delete-path "$path" --repo "$ROOT" < /dev/null; then
+      msg=""
+      [[ -n "$EV_LAST_LOG" ]] && msg="$(sed -n 's/^error: //p' "$EV_LAST_LOG" | tail -n 1)"
+      EV_TARGET="$path"
+      ev_fail command_failed delete "deleting ${path} failed${msg:+: ${msg}}" "$EV_LAST_LOG"
+    fi
+  done
+}
+
+cmd_remove() {
+  local sid="${1:-}" delete=0
+  [[ -n "$sid" ]] || usage_error "remove needs a short id"
+  shift
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --delete-data) delete=1; shift ;;
+      *) usage_error "remove: unknown option $1" ;;
+    esac
+  done
+  [[ "$delete" == 1 ]] || usage_error "remove needs --delete-data"
+  addon_lock
+  remove_data "$sid"
+  ev_done "$sid" remove "" ""
 }
 
 # instance_args CMD ARGS...: the slug from `--instance SLUG`, the only option
@@ -824,7 +904,7 @@ shift
 json=0
 args=()
 case "$sub" in
-  enable | disable | connect | disconnect)
+  enable | disable | connect | disconnect | remove)
     for a in "$@"; do
       if [[ "$a" == --json ]]; then json=1; else args+=("$a"); fi
     done
@@ -833,7 +913,7 @@ case "$sub" in
 esac
 # list and run change nothing and keep the shell's default signal handling.
 case "$sub" in
-  configure | enable | disable | connect | disconnect) ev_init "$json" ;;
+  configure | enable | disable | connect | disconnect | remove) ev_init "$json" ;;
 esac
 case "$sub" in
   list) cmd_list "$@" ;;
@@ -842,6 +922,7 @@ case "$sub" in
   disable) cmd_disable "$@" ;;
   connect) cmd_connect "$@" ;;
   disconnect) cmd_disconnect "$@" ;;
+  remove) cmd_remove "$@" ;;
   run) cmd_run "$@" ;;
   -h | --help | help) usage ;;
   *) printf 'error: unknown command %s\n' "$sub" >&2; exit 2 ;;

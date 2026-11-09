@@ -112,7 +112,8 @@ VAULT_EOF
 chmod +x "${root}/scripts/vault.sh"
 
 # Guard: addon_cli.py runs in the Hermes container in production, which mounts
-# only the repo, the data root and ADDONS_DIR. A python3 shim fails any
+# only the repo, the data root and ADDONS_DIR (${tmp}/dataroot is the data root
+# of the ASSISTANT_DATA_ROOT case). A python3 shim fails any
 # addon_cli.py call that has an argument naming an existing path elsewhere (a
 # host temp file, say). TMPDIR is outside the scratch root for the same reason.
 real_python3="$(command -v python3)"
@@ -125,7 +126,7 @@ case "\$*" in
       if [ "\$skip" = 1 ]; then skip=0; continue; fi
       case "\$a" in
         --addons-dir | --data-root) skip=1; continue ;;
-        "${root}" | "${root}"/* | "${REPO}"/*) continue ;;
+        "${root}" | "${root}"/* | "${REPO}"/* | "${tmp}/dataroot"/*) continue ;;
         /*) ;;
         *) continue ;;
       esac
@@ -921,6 +922,230 @@ addon enable pguser
 CONFIG_SERVICES="${tmp}/services-none" addon_json disable pguser --json
 expect_rc "disable pguser" 0
 if logged "compose stop pguser-worker" && ! logged "postgres"; then ok "an unmapped uses name is never stopped"; else bad "an unmapped uses name is never stopped"; cat "$STUB_LOG"; fi
+
+# remove --delete-data. Every path these checks delete is under $root, except
+# for the ASSISTANT_DATA_ROOT case under ${tmp}/dataroot. The `/` and `..`
+# cases run remove only after plan-remove has reported the path as kept.
+export TEST_ROOT="$root" TEST_TMP="$tmp"
+set_env() {
+  grep -v -E "^$1=" "${root}/.env" > "${tmp}/env.new" || true
+  printf '%s=%s\n' "$1" "$2" >> "${tmp}/env.new"
+  mv "${tmp}/env.new" "${root}/.env"
+}
+unset_env() {
+  grep -v -E "^$1=" "${root}/.env" > "${tmp}/env.new" || true
+  mv "${tmp}/env.new" "${root}/.env"
+}
+# plan_remove ENV_JSON FLAGS_JSON: plan-remove fixture, its output in $out.
+plan_remove() {
+  n=$((n + 1))
+  out="${tmp}/out/${n}"
+  python3 "${root}/scripts/lib/addon_cli.py" --addons-dir "$ADDONS_DIR" --data-root "${root}/data" \
+    plan-remove fixture --env "$1" --flags "$2" --repo "$root" > "$out" 2>&1 || true
+}
+plan_is() { python3 -c 'import json, os, sys
+p = json.load(open(sys.argv[1]))
+r, t = os.environ["TEST_ROOT"], os.environ["TEST_TMP"]
+sys.exit(0 if eval(sys.argv[2]) else 1)' "$out" "$1" 2> /dev/null; }
+seed_data() {
+  mkdir -p "${root}/data/fixture/sub" "${root}/data/addons/fixture/secrets" "${root}/data/other"
+  : > "${root}/data/fixture/sub/file"
+  : > "${root}/data/addons/fixture/secrets/token"
+  : > "${root}/data/other/keep"
+}
+addon disable fixture
+unset FIXTURE_DATA_DIR
+unset_env FIXTURE_DATA_DIR
+
+n=$((n + 1)); out="${tmp}/out/${n}"
+python3 "${root}/scripts/lib/addon_cli.py" --addons-dir "$ADDONS_DIR" --data-root "${root}/data" data-envs fixture > "$out" 2>&1 || true
+if grep -qx FIXTURE_DATA_DIR "$out"; then ok "data-envs names the env of each data path"; else bad "data-envs names the env of each data path"; sed 's/^/    /' "$out"; fi
+plan_remove '{}' '{}'
+r=0; plan_is 'p == {"services": ["fixture-seed", "fixture-worker", "fixture-extra"], "volumes": ["fixture_cache"], "delete": [r + "/data/fixture", r + "/data/addons/fixture"], "kept": []}' || r=1
+check "plan-remove lists services, volumes and the paths to delete" "$r"
+plan_remove '{}' '{"FIXTURE_ADDON_ENABLED":"1"}'
+if grep -q '^error: .*enabled' "$out"; then ok "plan-remove refuses an enabled add-on"; else bad "plan-remove refuses an enabled add-on"; sed 's/^/    /' "$out"; fi
+
+seed_data
+mkdir -p "${tmp}/outside-in"
+: > "${tmp}/outside-in/file"
+ln -s "${tmp}/outside-in" "${root}/data/fixture/link"
+: > "$STUB_LOG"
+addon_json remove fixture --delete-data --json
+expect_rc "remove fixture --delete-data" 0
+r=0; json_ok "$out" "done" 'last == {"phase":"done","id":"fixture","action":"remove","restart":[],"mcp":[]} and [l.get("target") for l in lines if l["phase"] == "setup" and l["status"] == "done" and l["step"] == "delete"] == [None, "fixture_cache", os.environ["TEST_ROOT"] + "/data/fixture", os.environ["TEST_ROOT"] + "/data/addons/fixture"]' || r=1
+check "remove prints a delete step for the services, each volume and each path" "$r"
+if [ ! -e "${root}/data/fixture" ] && [ ! -e "${root}/data/addons/fixture" ]; then ok "remove deletes data/fixture and data/addons/fixture"; else bad "remove deletes data/fixture and data/addons/fixture"; fi
+if [ -f "${root}/data/other/keep" ] && [ -d "${root}/data/addons" ]; then ok "remove leaves the rest of data/"; else bad "remove leaves the rest of data/"; fi
+if [ -f "${tmp}/outside-in/file" ]; then ok "remove does not follow a symlink inside a deleted directory"; else bad "remove does not follow a symlink inside a deleted directory"; fi
+rm_at="$(grep -n -x 'compose rm -f -s fixture-seed fixture-worker fixture-extra' "$STUB_LOG" | head -1 | cut -d: -f1 || true)"
+vol_at="$(grep -n -x 'volume rm fixtureproj_fixture_cache' "$STUB_LOG" | head -1 | cut -d: -f1 || true)"
+if [ -n "$rm_at" ] && [ -n "$vol_at" ] && [ "$rm_at" -lt "$vol_at" ]; then ok "remove runs compose rm -f -s before volume rm"; else bad "remove runs compose rm -f -s before volume rm"; cat "$STUB_LOG"; fi
+
+# Values that point at or above the data directory are kept.
+for v in / .. ./data; do
+  case "$v" in
+    /) want="/"; reason="outside the data directory" ;;
+    ..) want="$tmp"; reason="outside the data directory" ;;
+    *) want="${root}/data"; reason="is the data directory" ;;
+  esac
+  set_env FIXTURE_DATA_DIR "$v"
+  seed_data
+  plan_remove "{\"FIXTURE_DATA_DIR\":\"${v}\"}" '{}'
+  if ! WANT="$want" REASON="$reason" plan_is 'p["kept"] == [{"path": os.environ["WANT"], "reason": os.environ["REASON"]}] and p["delete"] == [r + "/data/addons/fixture"]'; then
+    bad "FIXTURE_DATA_DIR=${v} is kept by plan-remove (remove not run)"; sed 's/^/    /' "$out"
+    continue
+  fi
+  addon_json remove fixture --delete-data --json
+  expect_rc "remove with FIXTURE_DATA_DIR=${v}" 0
+  r=0; WANT="$want" REASON="$reason" json_ok "$out" "done" '{"phase":"setup","step":"delete","status":"done","kept":os.environ["WANT"],"reason":os.environ["REASON"]} in lines' || r=1
+  check "FIXTURE_DATA_DIR=${v} is reported as kept: ${reason}" "$r"
+  if [ ! -e "${root}/data/addons/fixture" ] && [ -f "${root}/data/fixture/sub/file" ] && [ -f "${root}/data/other/keep" ] \
+    && [ -f "${root}/.env" ] && [ -f "${tmp}/outside-in/file" ]; then
+    ok "FIXTURE_DATA_DIR=${v} deletes only data/addons/fixture"
+  else
+    bad "FIXTURE_DATA_DIR=${v} deletes only data/addons/fixture"
+  fi
+done
+unset_env FIXTURE_DATA_DIR
+
+# data/fixture as a symlink to a directory outside the scratch root.
+rm -rf "${root}/data/fixture"
+mkdir -p "${tmp}/outside-link"
+: > "${tmp}/outside-link/file"
+ln -s "${tmp}/outside-link" "${root}/data/fixture"
+addon_json remove fixture --delete-data --json
+expect_rc "remove with data/fixture a symlink" 0
+if [ ! -L "${root}/data/fixture" ] && [ ! -e "${root}/data/fixture" ] && [ -f "${tmp}/outside-link/file" ]; then
+  ok "a symlinked data path is unlinked, not followed"
+else
+  bad "a symlinked data path is unlinked, not followed"
+fi
+
+# A path under a symlinked directory is kept.
+mkdir -p "${tmp}/outside-behind/sub"
+: > "${tmp}/outside-behind/sub/file"
+ln -s "${tmp}/outside-behind" "${root}/data/lnk"
+set_env FIXTURE_DATA_DIR ./data/lnk/sub
+addon_json remove fixture --delete-data --json
+r=0; json_ok "$out" "done" '{"phase":"setup","step":"delete","status":"done","kept":os.environ["TEST_ROOT"] + "/data/lnk/sub","reason":"behind a symlink"} in lines' || r=1
+check "a path behind a symlink is kept" "$r"
+if [ -f "${tmp}/outside-behind/sub/file" ] && [ -L "${root}/data/lnk" ]; then ok "a path behind a symlink is not deleted"; else bad "a path behind a symlink is not deleted"; fi
+rm -f "${root}/data/lnk"
+
+# Hermes state and data/addons are kept.
+mkdir -p "${root}/data/hermes"
+: > "${root}/data/hermes/keep"
+for v in ./data/hermes ./data/addons; do
+  set_env FIXTURE_DATA_DIR "$v"
+  seed_data
+  addon_json remove fixture --delete-data --json
+  r=0; WANT="${root}/${v#./}" json_ok "$out" "done" '{"phase":"setup","step":"delete","status":"done","kept":os.environ["WANT"],"reason":"holds stack data"} in lines' || r=1
+  check "FIXTURE_DATA_DIR=${v} is kept as stack data" "$r"
+done
+if [ -f "${root}/data/hermes/keep" ] && [ -d "${root}/data/addons" ]; then ok "data/hermes and data/addons survive"; else bad "data/hermes and data/addons survive"; fi
+
+# The caller's environment comes before .env.
+set_env FIXTURE_DATA_DIR ./data/fixture
+seed_data
+mkdir -p "${root}/data/alt"
+: > "${root}/data/alt/file"
+FIXTURE_DATA_DIR=./data/alt addon_json remove fixture --delete-data --json
+unset FIXTURE_DATA_DIR
+if [ ! -e "${root}/data/alt" ] && [ -f "${root}/data/fixture/sub/file" ]; then ok "the environment's FIXTURE_DATA_DIR wins over .env"; else bad "the environment's FIXTURE_DATA_DIR wins over .env"; fi
+unset_env FIXTURE_DATA_DIR
+
+# A quote and a backslash in the value survive the trip to plan-remove; a
+# control character is refused before anything is deleted.
+seed_data
+mkdir -p "${root}/data/q\"b\\s"
+set_env FIXTURE_DATA_DIR './data/q"b\s'
+addon_json remove fixture --delete-data --json
+if [ "$rc" = 0 ] && [ ! -e "${root}/data/q\"b\\s" ] && [ -f "${root}/data/fixture/sub/file" ]; then
+  ok "a path with a quote and a backslash is deleted"
+else
+  bad "a path with a quote and a backslash is deleted"; sed 's/^/    /' "$out" "$err"
+fi
+unset_env FIXTURE_DATA_DIR
+seed_data
+FIXTURE_DATA_DIR="$(printf './data/a\tb')" addon_json remove fixture --delete-data --json
+unset FIXTURE_DATA_DIR
+r=0; json_ok "$out" error 'last["error"] == "bad_input"' || r=1
+if [ "$rc" = 2 ] && [ "$r" = 0 ] && [ -f "${root}/data/addons/fixture/secrets/token" ]; then
+  ok "a control character in a data path is bad_input and deletes nothing"
+else
+  bad "a control character in a data path is bad_input and deletes nothing"; sed 's/^/    /' "$out"
+fi
+
+# A path another enabled add-on declares is kept.
+seed_data
+set_env SHARER_ADDON_ENABLED 1
+addon_json remove fixture --delete-data --json
+r=0; json_ok "$out" "done" '{"phase":"setup","step":"delete","status":"done","kept":os.environ["TEST_ROOT"] + "/data/fixture","reason":"used by sharer"} in lines' || r=1
+check "a path an enabled add-on declares is kept, used by sharer" "$r"
+if [ -f "${root}/data/fixture/sub/file" ] && [ ! -e "${root}/data/addons/fixture" ]; then ok "the shared path survives"; else bad "the shared path survives"; fi
+set_env SHARER_ADDON_ENABLED 0
+addon_json remove fixture --delete-data --json
+if [ ! -e "${root}/data/fixture" ]; then ok "a disabled add-on's declaration keeps nothing"; else bad "a disabled add-on's declaration keeps nothing"; fi
+unset_env SHARER_ADDON_ENABLED
+
+# ASSISTANT_DATA_ROOT outside the repo is an allowed root too.
+mkdir -p "${tmp}/dataroot/fixture" "${tmp}/dataroot/addons/fixture"
+: > "${tmp}/dataroot/fixture/file"
+set_env ASSISTANT_DATA_ROOT "${tmp}/dataroot"
+set_env FIXTURE_DATA_DIR "${tmp}/dataroot/fixture"
+addon_json remove fixture --delete-data --json
+expect_rc "remove under ASSISTANT_DATA_ROOT" 0
+if [ ! -e "${tmp}/dataroot/fixture" ] && [ ! -e "${tmp}/dataroot/addons/fixture" ] && [ -d "${tmp}/dataroot/addons" ]; then
+  ok "remove deletes paths under ASSISTANT_DATA_ROOT"
+else
+  bad "remove deletes paths under ASSISTANT_DATA_ROOT"; sed 's/^/    /' "$out" "$err"
+fi
+set_env FIXTURE_DATA_DIR "${tmp}/dataroot"
+addon_json remove fixture --delete-data --json
+r=0; json_ok "$out" "done" '{"phase":"setup","step":"delete","status":"done","kept":os.environ["TEST_TMP"] + "/dataroot","reason":"is the data directory"} in lines' || r=1
+check "ASSISTANT_DATA_ROOT itself is kept" "$r"
+unset_env FIXTURE_DATA_DIR
+unset_env ASSISTANT_DATA_ROOT
+
+# Refusals.
+seed_data
+set_env FIXTURE_ADDON_ENABLED 1
+: > "$STUB_LOG"
+addon_json remove fixture --delete-data --json
+expect_rc "remove while enabled exits 2" 2
+r=0; json_ok "$out" error 'last["error"] == "bad_input"' || r=1
+check "remove while enabled is bad_input" "$r"
+if [ -f "${root}/data/addons/fixture/secrets/token" ] && ! logged "compose rm"; then ok "remove while enabled deletes nothing"; else bad "remove while enabled deletes nothing"; fi
+set_env FIXTURE_ADDON_ENABLED 0
+addon remove fixture
+expect_rc "remove without --delete-data exits 2" 2
+addon remove
+expect_rc "remove without a short id exits 2" 2
+addon remove fixture --delete-data --force
+expect_rc "remove with an unknown option exits 2" 2
+addon remove .. --delete-data
+expect_rc "remove .. exits 2" 2
+if [ -f "${root}/data/addons/fixture/secrets/token" ]; then ok "refused removes delete nothing"; else bad "refused removes delete nothing"; fi
+
+# delete-path checks again what it is given.
+mkdir -p "${root}/data/hermes" "${root}/data/fixture"
+: > "${root}/data/hermes/keep"
+for p in "${root}/data" "${root}/data/hermes" "${root}/data/fixture/../hermes" "${root}/data/addons"; do
+  r=0
+  python3 "${root}/scripts/lib/addon_cli.py" --addons-dir "$ADDONS_DIR" --data-root "${root}/data" \
+    delete-path "$p" --repo "$root" > /dev/null 2>&1 || r=$?
+  if [ "$r" = 2 ]; then ok "delete-path refuses ${p#"${root}/"}"; else bad "delete-path refuses ${p#"${root}/"}: exit ${r}, want 2"; fi
+done
+if [ -f "${root}/data/hermes/keep" ] && [ -d "${root}/data/fixture" ]; then ok "a refused delete-path deletes nothing"; else bad "a refused delete-path deletes nothing"; fi
+
+# disable --purge: one lock, one done line with action disable.
+seed_data
+addon_json disable fixture --purge --json
+expect_rc "disable --purge --json" 0
+r=0; json_ok "$out" "done" 'last["action"] == "disable" and sum(l["phase"] == "done" for l in lines) == 1 and ("delete","done") in steps' || r=1
+check "disable --purge prints one done line, action disable" "$r"
+if [ ! -e "${root}/data/fixture" ] && [ ! -e "${root}/data/addons/fixture" ]; then ok "disable --purge deletes the data paths"; else bad "disable --purge deletes the data paths"; fi
 
 if [ "$fail" = 0 ]; then
   echo "all addon.sh checks passed"
