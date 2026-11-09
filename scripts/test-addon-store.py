@@ -210,15 +210,22 @@ with tempfile.TemporaryDirectory() as tmp:
     raises("slug with trailing newline refused", st.InputError,
            lambda: st.apply_instance(MANIFEST, root, "work\n", {}), setting="slug")
     st.remove_instance(MANIFEST, root, ok31)
+    HOOKED = copy.deepcopy(MANIFEST)
+    HOOKED["instances"]["connect"] = {"command": "seed-init"}
     for label, ch in (("LF", "\n"), ("CR", "\r")):
-        raises(f"{label} in an instance secret refused, naming the setting", st.InputError,
-               lambda ch=ch: st.apply_instance(MANIFEST, root, "multi", {"host": "h", "password": f"top{ch}secret"}),
+        raises(f"{label} in an instance secret refused with a connect hook, naming the setting", st.InputError,
+               lambda ch=ch: st.apply_instance(HOOKED, root, "multi", {"host": "h", "password": f"top{ch}secret"}),
                setting="password", secret="top")
-        raises(f"{label} in an instance secret refused by check_instance", st.InputError,
-               lambda ch=ch: st.check_instance(MANIFEST, {"host": "h", "mailboxes": ["INBOX"], "password": f"top{ch}secret"}),
+        raises(f"{label} in an instance secret refused by check_instance with a connect hook", st.InputError,
+               lambda ch=ch: st.check_instance(HOOKED, {"host": "h", "mailboxes": ["INBOX"], "password": f"top{ch}secret"}),
                setting="password", secret="top")
     check("a refused multi-line secret writes nothing",
           not (st.addon_dir(root, MANIFEST) / "instances" / "multi.json").exists())
+    pem = "-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----\n"
+    st.apply_instance(MANIFEST, root, "multi", {"host": "h", "password": pem})
+    check("without a connect hook a multi-line secret is stored whole",
+          (st.addon_dir(root, MANIFEST) / "secrets" / "multi.password").read_text() == pem)
+    st.remove_instance(MANIFEST, root, "multi")
 
     for label, ch in (("U+2028", "\u2028"), ("form feed", "\f"), ("U+0085", "\x85"), ("tab", "\t")):
         raises(f"{label} in a setting string refused", st.InputError,

@@ -39,9 +39,13 @@ from pathlib import Path
 from typing import Iterator
 from urllib.parse import unquote, urlsplit
 
+import mail_imap_conn
+
 INDEX_SCHEMA_VERSION = 2
 SAVE_EVERY = 50  # messages fetched between commits, so a long first run can resume
 SOURCES = ("script", "store", "imap")
+# Defined in mail_imap_conn, which the Drafts app ships without mail_index.
+PLAIN_HOSTS = mail_imap_conn.PLAIN_HOSTS
 META_DB = "Envelope Index"
 MESSAGE_SUFFIXES = (".partial.emlx", ".emlx")
 # Left out of a "*" mailbox pattern; list them by name to include them.

@@ -595,9 +595,12 @@ expect_rc "a multi-line secret exits 2" 2
 r=0; json_ok "$out" error 'last["error"] == "bad_input" and "password" in last["message"]' || r=1
 check "a multi-line secret is bad_input naming the setting" "$r"
 if logged "fixture-connect"; then bad "a multi-line secret is refused before the hook runs"; else ok "a multi-line secret is refused before the hook runs"; fi
+addon_in '{"host":"h","password":"s3cr3t-value\rline2"}' configure hooked --instance multi
+expect_rc "configure --instance refuses a secret with CR when the add-on has a connect hook" 2
+if [ ! -e "${root}/data/addons/hooked/instances/multi.json" ]; then ok "a refused multi-line secret writes no instance"; else bad "a refused multi-line secret writes no instance"; fi
 addon_in '{"host":"h","password":"s3cr3t-value\rline2"}' configure fixture --instance multi
-expect_rc "configure --instance refuses a secret with CR" 2
-if [ ! -e "${root}/data/addons/fixture/instances/multi.json" ]; then ok "a refused multi-line secret writes no instance"; else bad "a refused multi-line secret writes no instance"; fi
+expect_rc "configure --instance accepts a multi-line secret without a connect hook" 0
+rm -f "${root}/data/addons/fixture/instances/multi.json" "${root}/data/addons/fixture/secrets/multi."*
 
 FIXTURE_CONNECT_MODE=exit1 addon_json_in '{"host":"good.example.com"}' connect hooked --instance work --json
 unset FIXTURE_CONNECT_MODE

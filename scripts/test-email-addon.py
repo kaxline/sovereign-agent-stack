@@ -112,9 +112,9 @@ with tempfile.TemporaryDirectory() as tmp:
 
 with tempfile.TemporaryDirectory() as tmp:
     root = Path(tmp).resolve()
-    cfg, inst = build(root, {"work": account()})
-    # addon_store refuses line breaks in secrets, so a PEM can't come through apply_instance.
-    (inst.parent / "secrets" / "work.tls_ca").write_text("-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----\n")
+    PEM = "-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----\n"
+    cfg, inst = build(root, {"work": account(tls_ca=PEM)})
+    check("the PEM secret is stored whole", (inst.parent / "secrets" / "work.tls_ca").read_text() == PEM)
     parsed = tomllib.loads(render(cfg, inst))
     check("tls_ca points at the mounted secret",
           parsed["accounts"][0]["tls_ca"] == "/run/addon/secrets/work.tls_ca", str(parsed["accounts"]))
@@ -131,13 +131,52 @@ with tempfile.TemporaryDirectory() as tmp:
 
 with tempfile.TemporaryDirectory() as tmp:
     root = Path(tmp).resolve()
+    st.apply_settings(MANIFEST, root, {"since": "2026-01-01"})
     for host in ("greenmail", "localhost", "127.0.0.1", "host.docker.internal"):
         cfg, inst = build(root, {"work": account(host=host, security="plain")})
         try:
-            parsed = tomllib.loads(render(cfg, inst))
-            check(f"plain on {host} passes", parsed["accounts"][0]["security"] == "plain")
-        except ValueError as exc:
-            check(f"plain on {host} passes", False, str(exc))
+            text = render(cfg, inst)
+            check(f"plain on {host} passes", tomllib.loads(text)["accounts"][0]["security"] == "plain")
+            (root / "c.toml").write_text(text)
+            mi.load_config(root / "c.toml")
+            check(f"plain on {host} passes load_config", True)
+        except Exception as exc:  # noqa: BLE001
+            check(f"plain on {host} passes", False, repr(exc))
+    # imap.example.com with plain: refused by load_config too, not only by render.
+    (root / "bad.toml").write_text('source = "imap"\nindex = "/x/i.sqlite"\nsince = 2026-01-01\n'
+                                   '[[accounts]]\nid = "work"\nhost = "imap.example.com"\nsecurity = "plain"\n'
+                                   'user = "u"\nmailboxes = ["INBOX"]\n')
+    try:
+        mi.load_config(root / "bad.toml")
+        check("load_config still refuses plain on imap.example.com", False, "no exception")
+    except mi.ConfigError:
+        check("load_config still refuses plain on imap.example.com", True)
+
+HOSTILE = 'a"b\\c\nd]e = 1\n[x]'
+with tempfile.TemporaryDirectory() as tmp:
+    root = Path(tmp).resolve()
+    cfg, inst = build(root, {"work": {"host": HOSTILE, "user": HOSTILE, "mailboxes": [HOSTILE, "ok"],
+                                      "password": PASSWORD}}, {"since": "2026-01-01"})
+    try:
+        parsed = tomllib.loads(render(cfg, inst))
+        acct = parsed["accounts"][0]
+        check("hostile values round-trip exactly",
+              acct["host"] == HOSTILE and acct["user"] == HOSTILE and acct["mailboxes"] == [HOSTILE, "ok"], str(acct))
+        check("hostile values add no keys or tables",
+              set(parsed) == {"source", "index", "since", "bodies", "attachments", "max_body_chars", "accounts"}
+              and len(parsed["accounts"]) == 1
+              and set(acct) == {"id", "host", "user", "mailboxes"}, str(parsed))
+    except Exception as exc:  # noqa: BLE001
+        check("hostile values parse", False, repr(exc))
+    (cfg / "settings.env").write_text("ADDON_EMAIL_SINCE='x\"\\y [evil] bodies = true'\n")
+    try:
+        parsed = tomllib.loads(render(cfg, inst))
+        check("a hostile since comes out quoted", isinstance(parsed["since"], str) and "evil" not in parsed
+              and parsed["bodies"] is False, str(parsed))
+    except ValueError:
+        check("a hostile since is refused", True)
+    except Exception as exc:  # noqa: BLE001
+        check("a hostile since is quoted or refused", False, repr(exc))
 
 with tempfile.TemporaryDirectory() as tmp:
     root = Path(tmp).resolve()
@@ -154,7 +193,7 @@ with tempfile.TemporaryDirectory() as tmp:
     (run / "instances").mkdir()
     (run / "secrets").mkdir()
     env = dict(os.environ, EMAIL_ADDON_RUN=str(run), EMAIL_ADDON_TMP=str(root / "tmp.toml"),
-               EMAIL_ADDON_DATA=str(root / "data"), ADDON_EMAIL_INTERVAL="1")
+               EMAIL_ADDON_DATA=str(root / "data"), )
     proc = subprocess.run([sys.executable, "-I", "-B", str(ROOT / "scripts" / "lib" / "email_addon.py"),
                            "index", "--passes", "1"], env=env, capture_output=True, text=True, timeout=60)
     check("index with no accounts logs it and exits 0",
@@ -162,14 +201,24 @@ with tempfile.TemporaryDirectory() as tmp:
           f"rc={proc.returncode} out={proc.stdout!r} err={proc.stderr!r}")
 
     # With an account that nothing listens for, the pass fails with 4 or 5 and the loop still exits 0.
-    (run / "config" / "settings.env").write_text("ADDON_EMAIL_SINCE=2026-01-01\n")
+    (run / "config" / "settings.env").write_text("ADDON_EMAIL_SINCE=2026-01-01\nADDON_EMAIL_INTERVAL=1\n")
     (run / "instances" / "work.json").write_text(json.dumps(
         {"host": "127.0.0.1", "port": 1, "security": "plain", "user": "u@example.com", "mailboxes": ["INBOX"]}))
     (run / "secrets" / "work.password").write_text("synthetic")
     proc = subprocess.run([sys.executable, "-I", "-B", str(ROOT / "scripts" / "lib" / "email_addon.py"),
-                           "index", "--passes", "1"], env=env, capture_output=True, text=True, timeout=60)
-    check("a failed pass is logged and does not stop the loop",
-          proc.returncode == 0 and "mail-index:" in proc.stderr and "synthetic" not in proc.stdout + proc.stderr,
+                           "index", "--passes", "2"], env=env, capture_output=True, text=True, timeout=60)
+    lines = [json.loads(x) for x in proc.stdout.splitlines() if x.startswith("{")]
+    check("a failed pass is logged and the loop goes on to the next pass",
+          proc.returncode == 0 and "mail-index:" in proc.stderr and "synthetic" not in proc.stdout + proc.stderr
+          and len(lines) == 2 and all(x.get("error") in ("4", "5") for x in lines),
+          f"rc={proc.returncode} out={proc.stdout!r} err={proc.stderr!r}")
+
+    # outbox with nothing configured logs, sleeps and never fails.
+    (run / "instances" / "work.json").unlink()
+    proc = subprocess.run([sys.executable, "-I", "-B", str(ROOT / "scripts" / "lib" / "email_addon.py"),
+                           "outbox", "--passes", "1"], env=env, capture_output=True, text=True, timeout=60)
+    check("outbox with no accounts logs it and exits 0",
+          proc.returncode == 0 and "email-outbox: no accounts configured" in proc.stderr,
           f"rc={proc.returncode} out={proc.stdout!r} err={proc.stderr!r}")
 
 print(f"\n{failures} failure(s)" if failures else "\nall passed")

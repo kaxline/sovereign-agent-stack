@@ -16,18 +16,25 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import signal
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
-PLAIN_HOSTS = {"host.docker.internal", "localhost", "127.0.0.1", "greenmail"}
 SECRETS_MOUNT = "/run/addon/secrets"
 INDEX_PATH = "/data/index/index.sqlite"
 DRAFTS_DIR = "/data/drafts"
 DEFAULT_INTERVAL = 900
+_LIB = str(Path(__file__).resolve().parent)
+if _LIB not in sys.path:  # python -I leaves the script's directory off the path
+    sys.path.insert(0, _LIB)
+
+import mail_imap_conn  # noqa: E402
+
 INSTANCE_KEYS = ("host", "port", "security", "user", "address", "addresses", "mailboxes", "drafts_mailbox")
 
 
@@ -112,8 +119,8 @@ def render(config_dir: Path, instances_dir: Path, *, index_path: str, drafts_dir
     lines = ['source = "imap"', f"index = {_q(index_path)}"]
     since = env.get("ADDON_EMAIL_SINCE")
     if since:
-        lines.append(f"since = {since}" if len(since) == 10 and since[4] == since[7] == "-" and
-                     since.replace("-", "").isdigit() else f"since = {_q(since)}")
+        lines.append(f"since = {since}" if re.fullmatch(r"\d{4}-\d{2}-\d{2}", since, re.ASCII)
+                     else f"since = {_q(since)}")
     lines.append(f"bodies = {'true' if _bool(env, 'BODIES', False) else 'false'}")
     lines.append(f"attachments = {'true' if _bool(env, 'ATTACHMENTS', False) else 'false'}")
     lines.append(f"max_body_chars = {_int(env, 'MAX_BODY_CHARS', 100000)}")
@@ -127,7 +134,7 @@ def render(config_dir: Path, instances_dir: Path, *, index_path: str, drafts_dir
         if not isinstance(data, dict):
             raise ValueError(f"{slug}: the instance file is not a JSON object")
         host = data.get("host")
-        if data.get("security") == "plain" and (not isinstance(host, str) or host.lower() not in PLAIN_HOSTS):
+        if data.get("security") == "plain" and (not isinstance(host, str) or not mail_imap_conn.plain_allowed(host)):
             raise ValueError(f"{slug}: security = \"plain\" is only allowed for a server on this machine"
                              " (host.docker.internal, localhost, 127.0.0.1 or greenmail)")
         lines += ["", "[[accounts]]", f"id = {_q(slug)}"]
@@ -164,44 +171,112 @@ def _python(script: Path, *args: str) -> list[str]:
     return [sys.executable, "-I", "-B", str(script), *args]
 
 
-def run_index(lay: dict, passes: int | None) -> int:
-    stop = threading.Event()
-    child: list[subprocess.Popen] = []
+class Supervisor:
+    """Signal handling shared by the long-running commands: a stop request is
+    remembered and forwarded to the child process."""
 
-    def on_signal(signum, _frame):
-        stop.set()
-        for proc in child:
+    def __init__(self) -> None:
+        self.stop = threading.Event()
+        self.child: subprocess.Popen | None = None
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(sig, self._on_signal)
+
+    def _on_signal(self, signum, _frame) -> None:
+        self.stop.set()
+        if self.child is not None:
             try:
-                proc.send_signal(signum)
+                self.child.send_signal(signum)
             except OSError:
                 pass
 
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        signal.signal(sig, on_signal)
+    def start(self, cmd: list[str]) -> subprocess.Popen:
+        proc = subprocess.Popen(cmd)
+        self.child = proc
+        if self.stop.is_set():  # the signal arrived before the child was recorded
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+        return proc
+
+    def finish(self, proc: subprocess.Popen) -> int:
+        code = proc.wait()
+        self.child = None
+        return code
+
+
+def run_index(lay: dict, passes: int | None) -> int:
+    sup = Supervisor()
     done = 0
-    while not stop.is_set():
+    while not sup.stop.is_set():
         try:
             every = interval(lay["config"])
             has_accounts = _render_to_file(lay)
-        except ValueError as exc:
+        except (ValueError, OSError) as exc:
             print(f"email-indexer: {exc}", file=sys.stderr, flush=True)
             return 2
         if not has_accounts:
             print("email-indexer: no accounts configured", file=sys.stderr, flush=True)
         else:
             # One pass per call, so the config is rendered again before each.
-            proc = subprocess.Popen(_python(lay["scripts"] / "mail-index.py", "--config", str(lay["out"]),
-                                            "run", "--every", str(every), "--passes", "1"))
-            child.append(proc)
-            code = proc.wait()
-            child.clear()
+            code = sup.finish(sup.start(_python(lay["scripts"] / "mail-index.py", "--config", str(lay["out"]),
+                                                "run", "--every", str(every), "--passes", "1")))
             if code == 2:
                 return 2
         done += 1
         if passes is not None and done >= passes:
             break
-        stop.wait(every)
+        sup.stop.wait(every)
     return 0
+
+
+def run_outbox(lay: dict, passes: int | None) -> int:
+    """Keep mail-drafts watch running while accounts exist. mail-drafts doesn't
+    handle SIGTERM itself, so this stays the parent and forwards it. The config is
+    rendered every interval; a change restarts the watcher. Never exits nonzero."""
+    sup = Supervisor()
+    done = 0
+    while not sup.stop.is_set():
+        try:
+            every = interval(lay["config"])
+            has_accounts = _render_to_file(lay)
+        except (ValueError, OSError) as exc:
+            print(f"email-outbox: {exc}", file=sys.stderr, flush=True)
+            every, has_accounts = DEFAULT_INTERVAL, None
+        if has_accounts is False:
+            print("email-outbox: no accounts configured", file=sys.stderr, flush=True)
+        elif has_accounts:
+            seen = lay["out"].read_text(encoding="utf-8")
+            proc = sup.start(_python(lay["scripts"] / "mail-drafts.py", "watch", "--no-mail-app",
+                                     "--config", str(lay["out"]), "--dir", lay["drafts"]))
+            while proc.poll() is None and not sup.stop.wait(min(every, 5)) and not _changed(lay, seen, every):
+                pass
+            if proc.poll() is None:
+                proc.terminate()
+            code = sup.finish(proc)
+            if not sup.stop.is_set():
+                print(f"email-outbox: the watcher stopped with code {code}; restarting", file=sys.stderr, flush=True)
+        done += 1
+        if passes is not None and done >= passes:
+            break
+        sup.stop.wait(every)
+    return 0
+
+
+_last_check = [0.0]
+
+
+def _changed(lay: dict, seen: str, every: int) -> bool:
+    """True when the rendered config differs from `seen`; checked at most once per interval."""
+    now = time.monotonic()
+    if now - _last_check[0] < every:
+        return False
+    _last_check[0] = now
+    try:
+        _render_to_file(lay)
+        return lay["out"].read_text(encoding="utf-8") != seen
+    except (ValueError, OSError):
+        return False
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -212,23 +287,21 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "mailboxes" and not args.account:
         parser.error("mailboxes needs --account")
-    if args.passes is not None and (args.command != "index" or args.passes < 1):
-        parser.error("--passes only applies to index, and must be positive")
+    if args.passes is not None and (args.command == "mailboxes" or args.passes < 1):
+        parser.error("--passes only applies to index and outbox, and must be positive")
     lay = _layout()
     os.environ["MAIL_CREDENTIALS_DIR"] = str(lay["secrets"])
     if args.command == "index":
         return run_index(lay, args.passes)
+    if args.command == "outbox":
+        return run_outbox(lay, args.passes)
     try:
         _render_to_file(lay)
-    except ValueError as exc:
+    except (ValueError, OSError) as exc:
         print(f"email-addon: {exc}", file=sys.stderr)
         return 2
-    if args.command == "mailboxes":
-        cmd = _python(lay["scripts"] / "mail-index.py", "--config", str(lay["out"]),
-                      "mailboxes", "--account", args.account)
-    else:
-        cmd = _python(lay["scripts"] / "mail-drafts.py", "watch", "--no-mail-app",
-                      "--config", str(lay["out"]), "--dir", lay["drafts"])
+    cmd = _python(lay["scripts"] / "mail-index.py", "--config", str(lay["out"]),
+                  "mailboxes", "--account", args.account)
     os.execv(cmd[0], cmd)
 
 
