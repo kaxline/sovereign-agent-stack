@@ -89,9 +89,10 @@ on one of them.
   broker restarts, `make vault-lock SLUG=…`, or `BITWARDEN_IDLE_LOCK_MINUTES` without a fill or
   unlock (default 0, never). While it is locked its items are not listed, and `browser_vault` `list`
   carries `"bitwarden": {"locked": ["<slug>"], "unlock": "make vault-unlock SLUG=<slug>"}`. The broker
-  shares `hermes`' network namespace (`network_mode: service:hermes`), so compose is expected to
-  restart it when `hermes` is recreated, and a manual account then needs unlocking again. That
-  restart has not been tested yet.
+  shares `hermes`' network namespace (`network_mode: service:hermes`). Compose does not restart it
+  when `hermes` alone is recreated or restarted (`make hermes-reload`, `docker compose restart
+  hermes`): Hermes then gets `broker_unavailable` until `docker compose restart bitwarden-broker` or
+  `make up`, and a manual account then needs unlocking again.
 
 With `stored` on a personal account (`folder:` scope), the broker holds a password that opens your
 whole vault, and the scope only limits what it lists and fills. `make vault-add` says so before it

@@ -60,9 +60,10 @@ digests; it is not read from `.env`.
   [docs/bitwarden.md](docs/bitwarden.md).
   - New services. `bitwarden-broker` (profile `bitwarden`) runs `bw`, holds
     every account's session key and fills pages over CDP itself. It shares
-    `hermes`' network namespace and listens on `127.0.0.1:8099` there;
-    compose is expected to restart it when `hermes` is recreated, which is
-    not tested yet. `bitwarden-setup` and
+    `hermes`' network namespace and listens on `127.0.0.1:8099` there.
+    Compose does not restart it when `hermes` alone is recreated or
+    restarted (`make hermes-reload` included); Hermes cannot reach it until
+    `docker compose restart bitwarden-broker` or `make up`. `bitwarden-setup` and
     `bitwarden-secrets-sync` (profile `bitwarden-tools`) are one-shots that
     the `make vault-*` and `make secrets-sync` targets start. `vaultwarden`
     (`vaultwarden/server:1.37.4`, pinned by digest) and `vaultwarden-tls`
@@ -116,6 +117,11 @@ digests; it is not read from `.env`.
     (`scripts/test-vw-register.py`). The organization steps on bitwarden.com
     and setup for accounts with two-step login, new-device verification or
     Argon2id are not checked or handled. Linux hosts are not tested.
+  - A live check on macOS ran `vault.sh` init, grant, sync, secrets-sync,
+    backup and restore against a scratch Vaultwarden 1.37.4 with real `bw`,
+    and a `bwbroker:` list, fill and release in-process in the pinned Hermes
+    image against headless Chromium, with no password in any tool result or
+    log. Not covered: a model-driven sign-in turn, bitwarden.com, Linux.
   - The `browser-login` skill (1.6.0) tells the model to fill `bwbroker:`
     handles like any other, to relay a locked account's `make vault-unlock`,
     and to call `bitwarden_request_access` once when a login is in Bitwarden

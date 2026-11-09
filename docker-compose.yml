@@ -2007,7 +2007,8 @@ services:
     restart: unless-stopped
     # hermes' namespace and nothing else: the broker reaches Chromium's
     # loopback CDP port, and hermes-worker cannot reach the broker. Compose
-    # restarts it when hermes is recreated.
+    # does not restart it when hermes alone is recreated or restarted; the
+    # broker then sits in the old namespace until it is restarted itself.
     network_mode: "service:hermes"
     user: "10001:10001"
     read_only: true
