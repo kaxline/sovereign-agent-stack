@@ -133,7 +133,7 @@ hermes_reload() {
   make hermes-reload
 }
 
-# cli_checked STEP ARGS...: cli with stdin from /dev/null and its stdout in
+# cli_checked STEP ARGS...: cli with stdin from $CLI_IN (default /dev/null) and its stdout in
 # CLI_OUT. On failure, ev_fail with cli's own error line as the message:
 # exit 2 is bad_input, 3 missing_settings, anything else command_failed.
 CLI_OUT=""
@@ -141,7 +141,7 @@ cli_checked() {
   local step="$1" err rc=0 msg code
   shift
   err="$(ev_log cli)"
-  CLI_OUT="$(cli "$@" < /dev/null 2> "$err")" || rc=$?
+  CLI_OUT="$(cli "$@" < "${CLI_IN:-/dev/null}" 2> "$err")" || rc=$?
   [[ "$rc" == 0 ]] && return 0
   msg="$(sed -n 's/^error: //p' "$err" | tail -n 1)"
   [[ -n "$msg" ]] || msg="addon_cli.py $1 failed (exit ${rc})"
@@ -335,7 +335,8 @@ pull_pipe() {
   pull_stream "$log" "$@" | cli pull-events "$csv"
 }
 
-# Hooks. run_hook STEP SID HOOK [plan-hook options]: runs the manifest's hook as
+# Hooks. An init hook that succeeds is recorded (mark-init) inside its step.
+# run_hook STEP SID HOOK [plan-hook options]: runs the manifest's hook as
 # step STEP. Sets HOOK_RAN (1 when a hook ran) and HOOK_ACCOUNT (the `account`
 # its `done` line reported, else empty). A hook that fails goes through
 # ev_fail, so the caller's rollback runs: its error line's name passes through
@@ -345,11 +346,14 @@ pull_pipe() {
 # "step" set; everything else goes to the step log.
 HOOK_RAN=0
 HOOK_ACCOUNT=""
-# hook_exec RAW KIND ARGV...: KIND is `script` (run from ROOT) or a compose
-# service. The hook's stdout is copied to RAW and filtered by hook-events.
+# hook_exec RAW SID HOOK KIND STEP ARGV...: KIND is `script` (run from ROOT) or
+# a compose service. The hook's stdout is copied to RAW and filtered by
+# hook-events. The step fails, so it never shows `done` first, when the hook
+# exits non-zero, when it printed an `error` line (even with exit 0), or when
+# recording init fails. Host files are never passed to cli: RAW goes on stdin.
 hook_exec() {
-  local raw="$1" kind="$2" step="$3" st
-  shift 3
+  local raw="$1" sid="$2" hook="$3" kind="$4" step="$5" st code
+  shift 5
   set +e
   if [[ "$kind" == script ]]; then
     "$@" < /dev/null | tee "$raw" | hook_events "$step"
@@ -359,7 +363,13 @@ hook_exec() {
   st=("${PIPESTATUS[@]}")
   set -e
   [[ "${st[1]}" == 0 && "${st[2]}" == 0 ]] || return 1
-  return "${st[0]}"
+  [[ "${st[0]}" == 0 ]] || return "${st[0]}"
+  code="$(cli hook-result "$sid" 0 < "$raw" 2> /dev/null | sed -n 1p)" || return 1
+  [[ -z "$code" ]] || return 1
+  if [[ "$hook" == init ]] && ! cli mark-init "$sid" < /dev/null; then
+    printf '{"phase":"error","error":"command_failed","message":"recording init in state.json failed"}\n' >> "$raw"
+    return 1
+  fi
 }
 hook_events() {
   if [[ "$EV_JSON" == 1 ]]; then cli hook-events "$1" >&3; else cli hook-events "$1"; fi
@@ -378,9 +388,9 @@ $CLI_OUT
 EOF_HOOK
   if [[ "$first" == script ]]; then kind=script; else kind="${first#service }"; fi
   raw="$(ev_log hook)"
-  run_step "$step" "" hook_exec "$raw" "$kind" "$step" "${argv[@]}" || rc=$?
+  run_step "$step" "" hook_exec "$raw" "$sid" "$hook" "$kind" "$step" "${argv[@]}" || rc=$?
   HOOK_RAN=1
-  cli_checked "$step" hook-result "$sid" "$raw" "$rc"
+  CLI_IN="$raw" cli_checked "$step" hook-result "$sid" "$rc"
   out="$CLI_OUT"
   code="$(printf '%s\n' "$out" | sed -n 1p)"
   msg="$(printf '%s\n' "$out" | sed -n 2p)"
@@ -492,7 +502,6 @@ EOF_ONESHOTS
       || start_failed ${oneshots[@]+"${oneshots[@]}"} "${services[@]}"
   fi
   run_hook init "$sid" init ${reinit[@]+"${reinit[@]}"}
-  [[ "$HOOK_RAN" == 0 ]] || cli_checked init mark-init "$sid"
   run_step reload "" hermes_reload \
     || ev_fail compose_failed reload "make hermes-reload failed" "$EV_LAST_LOG"
   EV_ON_FAIL=""

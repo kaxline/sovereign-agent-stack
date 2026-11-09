@@ -87,6 +87,33 @@ exit 0
 EOF
 chmod +x "${tmp}/bin/docker" "${tmp}/bin/make"
 
+# Guard: addon_cli.py runs in the Hermes container in production, which mounts
+# only the repo, the data root and ADDONS_DIR. A python3 shim fails any
+# addon_cli.py call that has an argument naming an existing path elsewhere (a
+# host temp file, say). TMPDIR is outside the scratch root for the same reason.
+real_python3="$(command -v python3)"
+cat > "${tmp}/bin/python3" <<GUARD_EOF
+#!/bin/sh
+case "\$*" in
+  *addon_cli.py*)
+    skip=0
+    for a in "\$@"; do
+      if [ "\$skip" = 1 ]; then skip=0; continue; fi
+      case "\$a" in
+        --addons-dir | --data-root) skip=1; continue ;;
+        "${root}" | "${root}"/* | "${REPO}"/*) continue ;;
+        /*) ;;
+        *) continue ;;
+      esac
+      if [ -e "\$a" ]; then echo "error: host path passed to addon_cli.py: \$a" >&2; exit 99; fi
+    done
+    ;;
+esac
+exec "${real_python3}" "\$@"
+GUARD_EOF
+chmod +x "${tmp}/bin/python3"
+mkdir -p "${tmp}/hosttmp"
+export TMPDIR="${tmp}/hosttmp"
 export PATH="${tmp}/bin:${PATH}"
 export STACK_PYTHON=host
 export ADDONS_DIR="${REPO}/scripts/fixtures/addons-cli"
@@ -342,7 +369,6 @@ unset PS_ANSWER DOCKER_FAIL_UP
 expect_rc "enable --json with the wait failing exits 1" 1
 r=0; json_ok "$out" error 'last["error"] == "compose_failed" and last["step"] == "start" and last["target"] == "fixture-seed" and last["logTail"] == ["log line from fixture-seed"]' || r=1
 check "a failed wait reports the exited container and its logs" "$r"
-
 if logged "compose logs --no-color --tail 20 fixture-seed" && logged "compose ps -a --format json"; then ok "a failed wait asks ps and logs"; else bad "a failed wait asks ps and logs"; cat "$STUB_LOG"; fi
 
 # The init hook: --reinit, a failing hook, a script hook and error names.
@@ -360,6 +386,11 @@ r=0; json_ok "$out" "done" '("init","running") not in steps' || r=1
 check "a skipped init prints no init step" "$r"
 
 addon disable fixture
+cp "$STATE" "${tmp}/state.before"
+DOCKER_FAIL_RUN=5 addon_json enable fixture --reinit --json
+unset DOCKER_FAIL_RUN
+expect_rc "--reinit with a failing hook exits 4" 4
+if cmp -s "$STATE" "${tmp}/state.before"; then ok "a failed --reinit keeps the recorded init"; else bad "a failed --reinit keeps the recorded init"; fi
 rm -f "$STATE"
 cp "${root}/.env" "${tmp}/env.before"
 : > "$STUB_LOG"
@@ -374,7 +405,19 @@ addon_json enable fixture --json
 expect_rc "enable after a failed init" 0
 if logged "fixture-seed-init" && [ -f "$STATE" ]; then ok "a failed init runs again on the next enable"; else bad "a failed init runs again on the next enable"; fi
 
-# A script hook, from a second fixture.
+# A corrupt state.json fails enable (command_failed) and is left alone.
+addon disable fixture
+printf '{broken' > "$STATE"
+addon_json enable fixture --json
+expect_rc "a corrupt state.json fails enable with 4" 4
+r=0; json_ok "$out" error 'last["error"] == "command_failed" and last["step"] == "init" and last.get("rolledBack") is True and ("init","done") not in steps' || r=1
+check "a corrupt state.json is command_failed at step init" "$r"
+if [ "$(cat "$STATE")" = '{broken' ]; then ok "a corrupt state.json is not overwritten"; else bad "a corrupt state.json is not overwritten"; fi
+rm -f "$STATE"
+addon_json enable fixture --json
+
+# A script hook, from a second fixture (it has one required instance).
+addon_in '{"host":"h"}' configure hooked --instance main
 : > "$STUB_LOG"
 addon_json enable hooked --json
 expect_rc "enable with a script init hook" 0
@@ -395,9 +438,19 @@ for mode in exit5 error; do
   check "script hook ${mode} is ${want_err} at step init" "$r"
   if [ ! -e "${root}/data/addons/hooked/state.json" ]; then ok "script hook ${mode} records no init"; else bad "script hook ${mode} records no init"; fi
 done
-FIXTURE_INIT_MODE=error FIXTURE_INIT_ERROR=wrong_password addon_json enable hooked --json
-r=0; json_ok "$out" error 'last["error"] == "command_failed" and "wrong_password" in last["message"] and "hook says no" in last["message"]' || r=1
+FIXTURE_INIT_MODE=error FIXTURE_INIT_ERROR=weird_thing addon_json enable hooked --json
+r=0; json_ok "$out" error 'last["error"] == "command_failed" and "weird_thing" in last["message"] and "hook says no" in last["message"]' || r=1
 check "an unlisted hook error becomes command_failed with its name in the message" "$r"
+# An error name in instances.errors passes through.
+FIXTURE_INIT_MODE=error FIXTURE_INIT_ERROR=wrong_password addon_json enable hooked --json
+expect_rc "a hook error listed in instances.errors exits 4" 4
+r=0; json_ok "$out" error 'last["error"] == "wrong_password" and last["step"] == "init" and last["message"] == "hook says no" and steps[-1] == ("init","error")' || r=1
+check "a listed hook error passes through unchanged" "$r"
+# An error line fails the step even when the hook exits 0, and init never shows done.
+FIXTURE_INIT_MODE=error0 FIXTURE_INIT_ERROR=bad_slug addon_json enable hooked --json
+expect_rc "an error line with exit 0 still fails" 4
+r=0; json_ok "$out" error 'last["error"] == "bad_slug" and ("init","done") not in steps and ("init","error") in steps' || r=1
+check "an error line with exit 0 shows init error, not done" "$r"
 unset FIXTURE_INIT_MODE FIXTURE_INIT_ERROR 2> /dev/null || true
 
 # plan-hook and mark-init directly.

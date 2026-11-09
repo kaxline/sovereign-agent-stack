@@ -35,5 +35,18 @@
     "egress": [],
     "exposesToAgent": false,
     "cron": false
+  },
+  "instances": {
+    "name": "account",
+    "settings": {
+      "host": {
+        "type": "string",
+        "label": "Host",
+        "optional": true
+      }
+    },
+    "errors": [
+      "wrong_password"
+    ]
   }
 }

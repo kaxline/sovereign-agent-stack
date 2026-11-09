@@ -42,8 +42,9 @@ runs in the Hermes image through stack_python, so the host needs no python3.
     hook-events STEP
         Reads a hook's stdout. JSON objects other than the `done` and `error`
         lines are printed with "step": STEP; every other line goes to stderr.
-    hook-result SID RAWFILE EXIT
-        Reads a hook's whole stdout from RAWFILE and prints three lines: an
+    hook-result SID EXIT
+        Reads a hook's whole stdout on stdin (not a file: the host's temp
+        directory isn't mounted where this runs) and prints three lines: an
         error code (empty on success), its message, and the `account` of the
         `done` line (empty when it has none). A hook's `error` name is kept
         when it is a shared name or in instances.errors; any other name
@@ -216,6 +217,13 @@ def cmd_plan_disable(args) -> None:
     _dump({"flags": flags, "services": services, "volumes": am.data_volumes(manifest)})
 
 
+def _check_argv(argv: list[str], where: str) -> None:
+    """argv is printed one item per line, so no item may be empty or hold a
+    line break or NUL."""
+    if any(not a or "\n" in a or "\0" in a for a in argv):
+        raise Fail(f"{where} has an empty item or a line break")
+
+
 def cmd_plan_run(args) -> None:
     manifest = _manifest(args.addons_dir, args.sid)
     cmd = manifest.get("commands", {}).get(args.command)
@@ -225,14 +233,13 @@ def cmd_plan_run(args) -> None:
     if cmd["instance"]:
         if args.instance is None:
             raise Fail(f"{args.command} needs --instance")
-        slug = store._slug(args.instance)
+        slug = store.slug(args.instance)
         if slug not in store._slugs(store.addon_dir(args.data_root, manifest)):
             raise Fail(f"no instance {slug!r}; configure it first")
         argv += ["--account", slug]
     elif args.instance is not None:
         raise Fail(f"{args.command} takes no --instance")
-    if any(not a or "\n" in a or "\0" in a for a in argv):
-        raise Fail(f"commands.{args.command}.argv has an empty item or a line break")
+    _check_argv(argv, f"commands.{args.command}.argv")
     print(_compose(manifest, cmd["service"]))
     for a in argv:
         print(a)
@@ -257,10 +264,9 @@ def cmd_plan_hook(args) -> None:
         cmd = manifest["commands"][spec["command"]]
         head, argv = [f"service {_compose(manifest, cmd['service'])}"], list(cmd["argv"])
     if instance_hook:
-        argv += ["--slug", store._slug(args.slug)]
+        argv += ["--slug", store.slug(args.slug)]
     argv.append("--json")
-    if any(not a or "\n" in a or "\0" in a for a in argv):
-        raise Fail(f"hooks.{args.hook}: an argv item is empty or has a line break")
+    _check_argv(argv, f"hooks.{args.hook}")
     for line in head + argv:
         print(line)
 
@@ -297,6 +303,8 @@ def hook_error(manifest: dict, name, message) -> tuple[str, str]:
     instances.errors passes through; any other becomes command_failed with the
     name in the message."""
     text = clean_line(message) if isinstance(message, str) else ""
+    if name == "command_failed":  # addon.sh's own code, e.g. from a failed mark-init
+        return name, text
     inst = manifest.get("instances")
     own = inst.get("errors", []) if isinstance(inst, dict) else []
     if isinstance(name, str) and am.ERROR_NAME_RE.match(name) \
@@ -309,10 +317,7 @@ def hook_error(manifest: dict, name, message) -> tuple[str, str]:
 def cmd_hook_result(args) -> None:
     manifest = _manifest(args.addons_dir, args.sid)
     done = error = None
-    try:
-        lines = Path(args.raw).read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        lines = []
+    lines = sys.stdin.buffer.read().decode("utf-8", errors="replace").splitlines()
     for line in lines:
         obj = _json_object(line)
         if obj is not None and obj.get("phase") == "done":
@@ -482,7 +487,6 @@ def main(argv: list[str]) -> int:
     s.set_defaults(func=cmd_hook_events)
     s = sub.add_parser("hook-result")
     s.add_argument("sid")
-    s.add_argument("raw")
     s.add_argument("exit", type=int)
     s.set_defaults(func=cmd_hook_result)
     s = sub.add_parser("plan-run")
@@ -505,6 +509,9 @@ def main(argv: list[str]) -> int:
     except Fail as exc:
         print(f"error: {exc}", file=sys.stderr)
         return exc.code
+    except store.StateError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     except (store.InputError, store.Missing) as exc:
         msg = str(exc)
         if exc.setting and not msg.startswith(exc.setting):

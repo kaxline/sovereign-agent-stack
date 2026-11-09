@@ -70,6 +70,11 @@ def _slug(slug) -> str:
     return slug
 
 
+# The public name; apply_instance and remove_instance take a `slug` argument
+# that shadows it, so they call _slug.
+slug = _slug
+
+
 def _mkdir(path: Path) -> None:
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(path, 0o700)
@@ -102,13 +107,28 @@ def _write(path: Path, data: str, mode: int) -> None:
 
 # --- state -------------------------------------------------------------------
 
+class StateError(RuntimeError):
+    """state.json exists but isn't a JSON object. Not repaired, so a write
+    can't drop the keys it holds."""
+
+
 def state(manifest: dict, data_root: Path) -> dict:
-    """data/addons/<id>/state.json as a dict; {} when missing or unreadable."""
+    """data/addons/<id>/state.json as a dict; {} when the file is missing.
+    Raises StateError when it can't be read or isn't a JSON object."""
+    path = addon_dir(data_root, manifest) / "state.json"
     try:
-        v = json.loads((addon_dir(data_root, manifest) / "state.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
         return {}
-    return v if isinstance(v, dict) else {}
+    except (OSError, UnicodeDecodeError):
+        raise StateError("state.json can't be read") from None
+    try:
+        v = json.loads(text)
+    except ValueError:
+        v = None
+    if not isinstance(v, dict):
+        raise StateError("state.json is not a JSON object; fix or remove it")
+    return v
 
 
 def set_state(manifest: dict, data_root: Path, key: str, value) -> None:

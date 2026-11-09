@@ -279,8 +279,22 @@ with tempfile.TemporaryDirectory() as tmp:
     check("state.json is 0600", (path.stat().st_mode & 0o777) == 0o600, oct(path.stat().st_mode))
     check("no temp file is left behind",
           sorted(p.name for p in path.parent.iterdir() if p.name.startswith(".")) == [])
-    path.write_text("[1]")
-    check("state is {} when the file is not an object", st.state(FIXTURE, Path(tmp)) == {})
+    for bad in ("[1]", "{broken"):
+        path.write_text(bad)
+        try:
+            st.state(FIXTURE, Path(tmp))
+            raised = False
+        except st.StateError:
+            raised = True
+        check(f"state raises on a corrupt state.json ({bad})", raised)
+        try:
+            st.set_state(FIXTURE, Path(tmp), "x", 1)
+            raised = False
+        except st.StateError:
+            raised = True
+        check("set_state refuses to overwrite a corrupt state.json",
+              raised and path.read_text() == bad)
+    check("slug is the public slug check", st.slug("work") == "work")
 
 if failures:
     print(f"{failures} failed")
