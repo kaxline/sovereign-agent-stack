@@ -95,6 +95,9 @@ done
 [[ -n "$sub" ]] || exit 0
 printf 'run %s ACTUAL_SERVER_URL=%s ACTUAL_BUDGET_FILE=%s\n' "$sub" "${ACTUAL_SERVER_URL:-}" "${ACTUAL_BUDGET_FILE:-}" >> "$STUB/admin.log"
 if [[ -e "$STUB/timeout" ]]; then echo timeout; exit 4; fi
+if [[ -e "$STUB/admin_rc" ]]; then echo "stub exit"; exit "$(cat "$STUB/admin_rc")"; fi
+if [[ -n "${ACTUAL_SESSION_TOKEN:-}" && "$ACTUAL_SESSION_TOKEN" != tok-1 ]]; then echo login; exit 3; fi
+printf 'token=%s sync=%s\n' "${ACTUAL_SESSION_TOKEN:-}" "${ACTUAL_BUDGET_SYNC_ID:-}" >> "$STUB/admin.env"
 if [[ -n "${ACTUAL_PASSWORD:-}" && -e "$STUB/server_pw" && "$ACTUAL_PASSWORD" != "$(cat "$STUB/server_pw")" ]]; then
   echo login; exit 3
 fi
@@ -140,7 +143,7 @@ run() {
 }
 reset() {
   rm -f "$f"
-  (cd "$STUB" && rm -f server_pw files.json enc_pw list.tsv down html curl_timeout admin.log opened clip)
+  (cd "$STUB" && rm -f server_pw files.json enc_pw list.tsv down html curl_timeout admin_rc admin.env admin.log opened clip)
   printf 'COMPOSE_PROFILES=core\nACTUAL_MCP_ENABLED=0\nACTUAL_LOCAL_ENABLED=0\nACTUAL_BUDGET_FILE=\n' > "$ENV_FILE"
 }
 mode() { stat -f %Lp "$1" 2>/dev/null || stat -c %a "$1"; }
@@ -494,6 +497,104 @@ budgets_run '{"server":"ftp://x","password":"right-SECRET"}'
 budgets_run 'not json'
 [ "$brc" = 2 ] && [ "$(jget 1 phase)" = error ] || fail "bad stdin is an error line ($(cat "$tmp/jout"))"
 grep -q 'budgets' <("$budget" --help) || fail "usage mentions budgets"
+
+# --- connect ---
+sec="$tmp/data/addons/actual/secrets"
+mkdir -p "$sec"
+rm -f "$sec"/main.* "$tmp/data/addons/actual/secrets/server_password"
+reset
+printf 'right-SECRET' > "$STUB/server_pw"
+files_json="$(budget_entry sync-a Main)"
+printf '%s' "$files_json" > "$STUB/files.json"
+connect_run() { # SLUG INPUT
+  brc=0
+  printf '%s' "$2" | STACK_PYTHON=host BUDGET_DATA_ROOT="$tmp/data" "$budget" connect --slug "$1" --json > "$tmp/jout" 2> "$tmp/jerr" || brc=$?
+  cat "$tmp/jout" "$tmp/jerr" >> "$all"
+}
+nofiles() { ! ls "$sec"/main.* > /dev/null 2>&1; }
+srv='"server":"https://budget.example.com","sync_id":"sync-a"'
+
+connect_run main "{$srv,\"password\":\"right-SECRET\"}"
+[ "$brc" = 0 ] || fail "password connect ($(cat "$tmp/jout" "$tmp/jerr"))"
+[ "$(cat "$sec/main.session_token")" = tok-1 ] || fail "connect stores the session token"
+[ "$(mode "$sec/main.session_token")" = 600 ] || fail "the token file is mode 600"
+[ ! -e "$sec/main.encryption_password" ] || fail "no encryption file without a password"
+[ "$(jget 1 phase)" = "done" ] && [ "$(jget 1 account)" = main ] || fail "connect done line ($(cat "$tmp/jout"))"
+grep -qx '{"phase":"done","account":"main","mcp":\["budget-main-ro"\]}' "$tmp/jout" || fail "read connect lists the -ro server ($(cat "$tmp/jout"))"
+grep -q 'token=tok-1 sync=sync-a' "$STUB/admin.env" || fail "check gets the token and sync id"
+grep -q 'ACTUAL_SERVER_URL=https://budget.example.com ' "$STUB/admin.log" || fail "check uses the remote URL"
+grep -q -- '-e ACTUAL_SESSION_TOKEN' "$STUB/docker.argv" || fail "docker gets the token by name"
+! grep -rqF right-SECRET "$tmp/data" || fail "no file holds the password"
+rm -f "$sec"/main.*
+
+connect_run main "{$srv,\"password\":\"right-SECRET\",\"access\":\"write\",\"profile\":\"default\",\"encryption_password\":\"enc-SECRET\"}"
+[ "$brc" = 0 ] || fail "write connect ($(cat "$tmp/jout" "$tmp/jerr"))"
+grep -qx '{"phase":"done","account":"main","mcp":\["budget-main-ro","budget-main"\]}' "$tmp/jout" || fail "write connect lists both servers ($(cat "$tmp/jout"))"
+[ "$(cat "$sec/main.encryption_password")" = enc-SECRET ] || fail "connect stores the encryption password"
+[ "$(mode "$sec/main.encryption_password")" = 600 ] || fail "the encryption file is mode 600"
+rm -f "$sec"/main.*
+
+connect_run main "{$srv,\"session_token\":\"tok-1\"}"
+[ "$brc" = 0 ] && [ "$(cat "$sec/main.session_token")" = tok-1 ] || fail "a token connect stores the token as given"
+rm -f "$sec"/main.*
+
+# The local server: signed in from the host, checked at the container URL.
+printf 'right-SECRET' > "$sec/server_password"
+connect_run main '{"server":"local","sync_id":"sync-a"}'
+[ "$brc" = 0 ] || fail "local connect ($(cat "$tmp/jout" "$tmp/jerr"))"
+tail -1 "$STUB/admin.log" | grep -q 'ACTUAL_SERVER_URL=http://actual-server:5006 ' || fail "local check uses the container URL"
+grep -q 'http://127.0.0.1:5006/account/login' "$STUB/curl.argv" || fail "local sign-in uses the host URL"
+rm -f "$sec"/main.* "$sec/server_password"
+
+# Each failure names its error and writes nothing.
+expect_err() { # LABEL RC NAME
+  [ "$brc" = "$2" ] && [ "$(jget 1 error)" = "$3" ] || fail "$1: want $3/$2 ($(cat "$tmp/jout" "$tmp/jerr"))"
+  nofiles || fail "$1 leaves secrets empty"
+}
+pwin="{$srv,\"password\":\"right-SECRET\"}"
+printf 'enc-SECRET' > "$STUB/enc_pw"
+connect_run main "$pwin"
+expect_err "missing encryption password" 4 encryption_password
+rm -f "$STUB/enc_pw"
+printf '2' > "$STUB/admin_rc"; connect_run main "$pwin"; expect_err "admin 2" 4 encryption_password
+printf '3' > "$STUB/admin_rc"; connect_run main "$pwin"; expect_err "admin 3 with a password" 4 login_refused
+connect_run main "{$srv,\"session_token\":\"tok-1\"}"; expect_err "admin 3 with a token" 4 token_expired
+printf '4' > "$STUB/admin_rc"; connect_run main "$pwin"; expect_err "admin 4" 4 timeout
+printf '5' > "$STUB/admin_rc"; connect_run main "$pwin"; expect_err "admin 5" 4 no_access
+printf '6' > "$STUB/admin_rc"; connect_run main "$pwin"; expect_err "admin 6" 4 server_unreachable
+rm -f "$STUB/admin_rc"
+connect_run main "{$srv,\"password\":\"wrong-SECRET\"}"; expect_err "refused password" 4 login_refused
+connect_run main "{$srv,\"session_token\":\"tok-old\"}"; expect_err "stale token" 4 token_expired
+touch "$STUB/down"; connect_run main "$pwin"; expect_err "server down" 4 server_unreachable
+rm -f "$STUB/down"
+connect_run Bad_Slug "$pwin"
+[ "$brc" = 2 ] && [ "$(jget 1 error)" = bad_slug ] || fail "bad slug"
+connect_run 'a
+b' "$pwin"
+[ "$brc" = 2 ] && [ "$(jget 1 error)" = bad_slug ] || fail "a slug with a newline is bad_slug"
+connect_run main "{$srv,\"password\":\"right-SECRET\",\"profile\":\"alice\"}"
+[ "$brc" = 2 ] && [ "$(jget 1 error)" = unknown_profile ] || fail "unknown profile"
+connect_run main "{$srv,\"password\":\"right-SECRET\",\"access\":\"admin\"}"
+[ "$brc" = 2 ] && [ "$(jget 1 error)" = bad_access ] || fail "bad access"
+nofiles || fail "input errors leave secrets empty"
+
+# --- disconnect ---
+disconnect_run() { # SLUG
+  brc=0
+  STACK_PYTHON=host BUDGET_DATA_ROOT="$tmp/data" "$budget" disconnect --slug "$1" --json < /dev/null > "$tmp/jout" 2> "$tmp/jerr" || brc=$?
+  cat "$tmp/jout" "$tmp/jerr" >> "$all"
+}
+printf 'tok-1' > "$sec/main.session_token"; printf 'enc-SECRET' > "$sec/main.encryption_password"
+printf 'keep' > "$sec/other.session_token"
+disconnect_run main
+[ "$brc" = 0 ] && [ "$(jget 1 phase)" = "done" ] || fail "disconnect ($(cat "$tmp/jout" "$tmp/jerr"))"
+nofiles || fail "disconnect removes both secret files"
+[ -e "$sec/other.session_token" ] || fail "disconnect leaves other slugs alone"
+disconnect_run nope
+[ "$brc" = 2 ] && [ "$(jget 1 error)" = not_found ] || fail "disconnect of an unknown slug is not_found"
+disconnect_run Bad_Slug
+[ "$brc" = 2 ] && [ "$(jget 1 error)" = bad_slug ] || fail "disconnect bad slug"
+rm -f "$sec/other.session_token"
 
 # --- access ---
 reset

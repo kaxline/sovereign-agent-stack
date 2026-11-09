@@ -54,6 +54,15 @@ Usage: scripts/budget.sh <command> [options]
         {"phase":"done"}, or one {"phase":"error",...}. Reads a JSON object
         on stdin: server ("local" or an http(s) URL) and session_token or
         password (local falls back to its stored server password).
+  connect --slug SLUG --json
+        A hook addon.sh runs. Reads the budgets input on stdin (server,
+        sync_id, session_token or password, optional encryption_password,
+        profile "default", access read|write), opens the budget with it, then
+        stores the session token and encryption password under
+        <data root>/addons/actual/secrets/ (mode 600). Writes nothing when
+        any check fails. Prints {"phase":"done","account":...,"mcp":[...]}.
+  disconnect --slug SLUG --json
+        A hook addon.sh runs. Removes SLUG's files from that secrets folder.
   open    Open the web app and copy the server password to the clipboard
   remove  Delete budget.env and set ACTUAL_MCP_ENABLED=0. Server data stays.
   access read|write
@@ -437,23 +446,118 @@ cmd_budgets() {
   emit_done
 }
 
+# hook_args CMD ARGS...: sets slug and JSON=1 from "--slug SLUG --json".
+hook_args() {
+  local cmd="$1"
+  shift
+  slug=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) JSON=1 ;;
+      --slug) [[ $# -ge 2 ]] || die "usage: budget.sh $cmd --slug SLUG --json"; slug="$2"; shift ;;
+      *) die "usage: budget.sh $cmd --slug SLUG --json" ;;
+    esac
+    shift
+  done
+  [[ "$JSON" == 1 ]] || die "usage: budget.sh $cmd --slug SLUG --json"
+  [[ "$slug" =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]] || emit_error bad_slug "slug must be 1-31 characters of a-z, 0-9 and -, not starting with -"
+}
+
+# secrets_dir: sets sdir to <data root>/addons/actual/secrets.
+secrets_dir() {
+  local root
+  root="$(resolve_data_root_path "${BUDGET_DATA_ROOT:-}")"
+  validate_data_root_path "$root" 2> "${WORK}/root.err" \
+    || emit_error not_found "$(cat "${WORK}/root.err")"
+  sdir="${root}/addons/actual/secrets"
+}
+
+# write_secret NAME VALUE: sdir/NAME at mode 600, through a temp file and mv.
+write_secret() {
+  local t
+  t="$(umask 077; mktemp "${sdir}/.write.XXXXXX")"
+  printf '%s' "$2" > "$t"
+  chmod 600 "$t"
+  mv -f "$t" "${sdir}/$1"
+}
+
+cmd_connect() {
+  local slug="" sdir="" rc=0 mcp
+  hook_args connect "$@"
+  read_input
+  [[ -n "$in_profile" ]] || in_profile=default
+  [[ -n "$in_access" ]] || in_access="read"
+  [[ "$in_profile" == default ]] || emit_error unknown_profile "profile \"$in_profile\" doesn't exist; only \"default\" does"
+  case "$in_access" in
+    read | write) ;;
+    *) emit_error bad_access "access must be read or write" ;;
+  esac
+  [[ -n "$in_sync_id" ]] || emit_error no_access "no budget sync id given"
+  secrets_dir
+  server_base "$in_server"
+  sign_in
+  a_url="$base"
+  [[ "$in_server" == local ]] && a_url="$LOCAL_URL"
+  a_pw="" a_token="$token" a_sync="$in_sync_id" a_enc="$in_encryption_password"
+  admin check > /dev/null 2> "${WORK}/admin.err" || rc=$?
+  a_token=""
+  case "$rc" in
+    0) ;;
+    2) emit_error encryption_password "the budget's encryption password is missing or wrong" ;;
+    3) if [[ -n "$in_session_token" ]]; then
+         emit_error token_expired "the session token has expired"
+       else
+         emit_error login_refused "the server refused the password"
+       fi ;;
+    4) emit_error timeout "$(safe_url "$a_url") didn't answer within ${ACTUAL_ADMIN_TIMEOUT_S:-45} s" ;;
+    5) emit_error no_access "this account can't open that budget" ;;
+    6) emit_error server_unreachable "no answer from $(safe_url "$a_url")" ;;
+    *) emit_error server_unreachable "opening the budget failed: $(admin_error)" ;;
+  esac
+  mkdir -p "$sdir"
+  write_secret "${slug}.session_token" "$token"
+  if [[ -n "$in_encryption_password" ]]; then
+    write_secret "${slug}.encryption_password" "$in_encryption_password"
+  else
+    rm -f "${sdir}/${slug}.encryption_password"
+  fi
+  mcp="$(json_str "budget-${slug}-ro")"
+  [[ "$in_access" == write ]] && mcp="${mcp},$(json_str "budget-${slug}")"
+  emit_done account "$(json_str "$slug")" mcp "[${mcp}]"
+}
+
+cmd_disconnect() {
+  local slug="" sdir="" f found=0
+  hook_args disconnect "$@"
+  secrets_dir
+  for f in "${sdir}/${slug}".*; do
+    [[ -e "$f" ]] || continue
+    rm -f "$f"
+    found=1
+  done
+  [[ "$found" == 1 ]] || emit_error not_found "no stored credentials for ${slug}"
+  # shellcheck disable=SC2119
+  emit_done
+}
+
 # --- actual-admin.mjs in the MCP image ---
 
 a_url=""
 a_pw=""
 a_sync=""
 a_enc=""
+a_token=""
 
 # Credentials go to the container by name (-e NAME), with the values in
 # docker's environment, so they stay out of the process list. It mounts
 # no-budget.env, so a run never depends on (or reads) the real budget file.
 admin() {
   ACTUAL_BUDGET_FILE=./compose/actual/no-budget.env \
-  ACTUAL_SERVER_URL="$a_url" ACTUAL_PASSWORD="$a_pw" \
+  ACTUAL_SERVER_URL="$a_url" ACTUAL_PASSWORD="$a_pw" ACTUAL_SESSION_TOKEN="$a_token" \
   ACTUAL_BUDGET_SYNC_ID="$a_sync" ACTUAL_BUDGET_ENCRYPTION_PASSWORD="$a_enc" \
   ACTUAL_ADMIN_TIMEOUT_S="${ACTUAL_ADMIN_TIMEOUT_S:-}" \
     docker compose run --rm --no-deps -T \
-      -e ACTUAL_SERVER_URL -e ACTUAL_PASSWORD -e ACTUAL_BUDGET_SYNC_ID -e ACTUAL_BUDGET_ENCRYPTION_PASSWORD \
+      -e ACTUAL_SERVER_URL -e ACTUAL_PASSWORD -e ACTUAL_SESSION_TOKEN -e ACTUAL_BUDGET_SYNC_ID -e ACTUAL_BUDGET_ENCRYPTION_PASSWORD \
       -e ACTUAL_ADMIN_TIMEOUT_S \
       --entrypoint node actual-mcp-rw /opt/actual-admin.mjs "$@"
 }
@@ -816,6 +920,8 @@ case "${1:-}" in
   remove) shift; cmd_remove "$@" ;;
   access) shift; cmd_access "$@" ;;
   budgets) shift; cmd_budgets "$@" ;;
+  connect) shift; cmd_connect "$@" ;;
+  disconnect) shift; cmd_disconnect "$@" ;;
   -h | --help | help) usage ;;
   *) usage >&2; exit 1 ;;
 esac
