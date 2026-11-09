@@ -638,3 +638,66 @@ failed attempt. They park the same way, so the reconnect call and
 
 This is an overlay on the pinned Hermes image (`patch-mcp-wake.py`). The route,
 key and response fields stay stable across pin moves. Changes are additive.
+
+## Add-ons: scripts/addon.sh
+
+Boundary lists, configures, enables and disables built-in add-ons
+(`addons/<id>/addon.json`, see [addons/README.md](../addons/README.md))
+through `scripts/addon.sh`. It needs bash and the container engine; the JSON
+and file work runs in the Hermes image. The contract is experimental in
+0.3.x. Field names and output shapes can change between patch releases, with
+a changelog entry.
+
+| Command | Does |
+|---|---|
+| `list --json` | Prints a JSON array, one object per add-on, sorted by short id |
+| `configure <short-id> < values.json` | Reads one JSON object on stdin and stores the settings. Prints nothing |
+| `configure <short-id> --instance <slug> < values.json` | Same for one instance. Values you omit keep their stored value |
+| `configure <short-id> --instance <slug> --remove` | Deletes the instance's file and secrets |
+| `enable <short-id>` | Checks required settings, sets the add-on's flag and gate flags in `.env`, syncs compose profiles, starts the services whose gate is on, reloads Hermes |
+| `disable <short-id> [--purge]` | Sets the flag and every gate flag to `0`, stops the services, reloads Hermes |
+| `run <short-id> <command> [--instance <slug>]` | Runs a manifest `commands` entry in its service with `docker compose run --rm --no-deps -T` |
+
+`list --json` objects carry `id`, `shortId`, `title`, `tagline`,
+`permissions`, `platform`, `enabled` (the flag in `.env`), `settings`,
+`instances` (slug to values) and `missing`, the names `enable` would refuse
+on. A setting shows its stored value, else its default, else is absent. A
+`secret` setting shows only `{"set": true}` or `{"set": false}`. A manifest
+that fails validation is left out with a warning on stderr.
+
+Values on `configure` must be JSON-native: numbers as numbers, bools as bools,
+lists of strings for `list`, `YYYY-MM-DD` strings for `date`. Secrets are
+accepted only in that JSON on stdin, never as arguments or environment. A
+setting name the manifest doesn't declare exits 2. Plain settings go to
+`data/addons/<short-id>/settings.env`; a `bool` setting that names a `flag`
+also writes the flag to `.env`. A gate flag changed through `configure` takes
+effect at the next `enable`, so call `enable` after `configure`. Instance
+`configure` never writes flags.
+
+```text
+data/addons/<short-id>/
+  settings.env            ADDON_<SHORT>_<NAME>=value, no secrets
+  instances/<slug>.json   non-secret instance values
+  secrets/<name>          0600; instance secrets are <slug>.<name>
+```
+
+Directories are 0700. A service mounts these paths read-only or read-write
+under `/run/addon/` when its manifest lists `mounts`.
+
+`disable` keeps `data/addons/<short-id>/`. `disable --purge` also deletes that
+directory and, when the manifest lists `services.<name>.volumes`, removes the
+add-on's containers and those named compose volumes. `enable` and `disable` write the
+flags to `.env` first, so a run that fails at a later step, such as a compose
+or Hermes reload error, leaves them written. Running the same command again
+converges.
+
+Errors are one line, `error: <message>`, on stderr. The message names the
+setting and never its value.
+
+| Exit | Meaning |
+|---|---|
+| `0` | Done |
+| `1` | The data root is invalid, or a compose, volume or `make hermes-reload` step failed |
+| `2` | Invalid input: unknown add-on, bad JSON, unknown or ill-typed setting, bad slug, unknown command or instance, usage error |
+| `3` | `enable` found required settings with no value |
+| `4` | `run`: the command failed in its container |
