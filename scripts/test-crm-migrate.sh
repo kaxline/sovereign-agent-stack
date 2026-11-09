@@ -129,6 +129,23 @@ run migrate || fail "migrate retry ($(cat "$out" "$err"))"
 [ -f "$ws/half.env.migrated" ] || fail "the retry migrates the file"
 [ "$(cat "$store/secrets/half.key_rw")" = half-rw-SECRET ] || fail "the retry stores the key"
 
+# A key with whitespace or a control character, or a URL with user:password@,
+# is skipped and left in place; single-quoted values lose their quotes.
+printf 'TWENTY_URL=https://crm.example.com\nTWENTY_KEY_RW=sp ace-SECRET\n' > "$ws/spacey.env"
+printf 'TWENTY_URL=https://crm.example.com\nTWENTY_KEY_RW=tab\tbed-SECRET\n' > "$ws/tabby.env"
+printf 'TWENTY_URL=https://u:pw-SECRET@crm.example.com\nTWENTY_KEY_RW=k-SECRET\n' > "$ws/creds.env"
+printf "TWENTY_URL='https://quoted.example.com/'\nTWENTY_KEY_RW='q-SECRET'\n" > "$ws/quoted.env"
+run migrate || fail "migrate with refused files ($(cat "$out" "$err"))"
+no_secret "refused files"
+for slug in spacey tabby creds; do
+  [ -f "$ws/${slug}.env" ] || fail "${slug}.env is left in place"
+  [ ! -e "$store/instances/${slug}.json" ] || fail "${slug} is not imported"
+  grep -q "${slug}.env" "$err" || fail "${slug}.env is named on stderr"
+done
+[ "$(jget "$store/instances/quoted.json" url)" = '"https://quoted.example.com"' ] || fail "single quotes are stripped from the URL"
+[ "$(cat "$store/secrets/quoted.key_rw")" = q-SECRET ] || fail "single quotes are stripped from the key"
+rm "$ws/spacey.env" "$ws/tabby.env" "$ws/creds.env"
+
 # No files: no container (a docker that fails loudly), exit 0.
 empty="$tmp/empty"
 mkdir -p "$empty/bin" "$empty/ws"

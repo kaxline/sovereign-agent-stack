@@ -106,6 +106,45 @@ grep -q -- '--force' "$out" || fail "the refusal mentions --force"
 TWENTY_KEY_RW=good-new-SECRET run add --slug hosted --url "$URL" --force || fail "--force overwrites"
 [ "$(secret hosted.key_rw)" = good-new-SECRET ] || fail "--force writes the new key"
 [ ! -e "$store/secrets/hosted.key_ro" ] || fail "--force drops a read-only key it wasn't given"
+# A --force whose store write fails keeps the old workspace and its keys. A
+# directory where key_ro goes makes configure fail after it wrote the JSON.
+mkdir "$store/secrets/hosted.key_ro"
+if TWENTY_ACCESS=read TWENTY_KEY_RW=good-other-SECRET TWENTY_KEY_RO=good-ro2-SECRET \
+  TWENTY_WORKSPACE_URL=https://changed.example.com/ run add --slug hosted --url "$URL" --force; then
+  fail "a --force whose write fails must fail"
+fi
+no_secret "failed --force"
+rmdir "$store/secrets/hosted.key_ro"
+[ "$(jget "$f" access)" = '"write"' ] || fail "a failed --force keeps the old access"
+[ "$(jget "$f" workspace_url)" = "\"$URL/\"" ] || fail "a failed --force keeps the old workspace URL"
+[ "$(secret hosted.key_rw)" = good-new-SECRET ] || fail "a failed --force keeps the old key"
+[ ! -e "$store/secrets/hosted.key_ro" ] || fail "a failed --force adds no key"
+
+# Keys with whitespace or control characters and URLs with user:password@ are refused.
+if TWENTY_KEY_RW='good x-SECRET' run add --slug spacey --url "$URL"; then fail "a key with a space accepted"; fi
+no_secret "key with a space"
+[ ! -e "$(inst spacey)" ] || fail "a key with a space writes nothing"
+if TWENTY_KEY_RW="good-$(printf '\t')x" run add --slug tabby --url "$URL"; then fail "a key with a tab accepted"; fi
+if TWENTY_KEY_RW=good-x run add --slug creds --url "https://u:pw-SECRET@crm.example.com"; then
+  fail "a URL with user:password@ accepted"
+fi
+no_secret "URL with a password"
+[ ! -e "$(inst creds)" ] || fail "a URL with a password writes nothing"
+
+# remove and add --force retire a leftover workspace file, so migrate can't bring it back.
+TWENTY_KEY_RW=good-rw-SECRET run add --slug spare --url "$URL" || fail "add spare ($(cat "$out"))"
+printf 'TWENTY_URL=https://old.example.com\nTWENTY_KEY_RW=old-SECRET\n' > "$CRM_WORKSPACES_DIR/spare.env"
+run remove --slug spare || fail "remove spare ($(cat "$out"))"
+[ ! -e "$CRM_WORKSPACES_DIR/spare.env" ] || fail "remove renames a leftover workspace file"
+[ -f "$CRM_WORKSPACES_DIR/spare.env.migrated" ] || fail "remove leaves the leftover as .env.migrated"
+run migrate || fail "migrate after remove ($(cat "$out"))"
+[ ! -e "$(inst spare)" ] || fail "migrate brings back a removed workspace"
+TWENTY_KEY_RW=good-rw-SECRET run add --slug spare2 --url "$URL" || fail "add spare2 ($(cat "$out"))"
+printf 'TWENTY_URL=https://old.example.com\nTWENTY_KEY_RW=old-SECRET\n' > "$CRM_WORKSPACES_DIR/spare2.env"
+TWENTY_KEY_RW=good-rw2-SECRET run add --slug spare2 --url "$URL" --force || fail "add --force spare2 ($(cat "$out"))"
+[ ! -e "$CRM_WORKSPACES_DIR/spare2.env" ] || fail "add --force renames a leftover workspace file"
+[ "$(secret spare2.key_rw)" = good-rw2-SECRET ] || fail "add --force stores the new key over a leftover file"
+run remove --slug spare2 || fail "remove spare2"
 if TWENTY_KEY_RW=good-x run add --slug Bad_1 --url "$URL"; then fail "bad slug accepted"; fi
 # bash 3.2 bracket ranges follow the locale's collation, where [a-z] matches A-Y.
 for slug in Sales SALES; do
@@ -229,6 +268,10 @@ CURL_CODE=000 CURL_EXIT=28 hook timeout '{"url":"https://crm.example.com","acces
 CURL_CODE=502 hook server_unreachable '{"url":"https://crm.example.com","access":"read","key_ro":"k-SECRET"}' connect --slug x --json
 grep -q 502 "$out" || fail "an unexpected HTTP code is named in the message"
 hook bad_slug '{"url":"https://crm.example.com","access":"read","key_ro":"k-SECRET"}' connect --slug Bad_1 --json
+hook bad_input '{"url":"https://crm.example.com","access":"read","key_ro":"k SECRET"}' connect --slug x --json
+hook bad_input '{"url":"https://crm.example.com","access":"write","key_rw":"k\tSECRET"}' connect --slug x --json
+hook bad_input '{"url":"https://u:pw-SECRET@crm.example.com","access":"read","key_ro":"k-SECRET"}' connect --slug x --json
+[ -s "$CURL_LOG" ] && fail "a refused key or URL reaches curl"
 hook "done" '{"url":"https://crm.example.com","access":"write","key_rw":"k-SECRET","key_ro":"k2-SECRET"}' connect --slug x --json
 grep -q 'Authorization: Bearer k-SECRET' "$CURL_LOG.headers" || fail "the key goes to curl in a header file"
 grep -q 'https://crm.example.com/mcp' "$CURL_LOG" || fail "connect checks <url>/mcp"
@@ -244,6 +287,9 @@ hook "done" '' disconnect --slug hosted --json
 printf '%s' "$last" | grep -q 'still exist' && fail "a remote disconnect has no local note"
 hook "done" '' disconnect --slug main --json
 printf '%s' "$last" | grep -q 'still exist' || fail "a local disconnect notes the workspace still exists in Twenty"
+# The store reader failing (no manifest here) doesn't fail the hook.
+ADDONS_DIR="$tmp/no-addons" hook "done" '' disconnect --slug main --json
+printf '%s' "$last" | grep -q 'still exist' || fail "disconnect reads local from the instance file"
 hook bad_slug '' disconnect --slug Bad_1 --json
 [ -e "$(inst main)" ] || fail "disconnect leaves the instance files to addon.sh"
 

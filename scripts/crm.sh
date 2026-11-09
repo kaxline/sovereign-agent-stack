@@ -119,6 +119,30 @@ json_safe() {
   [[ "$1" != *[[:cntrl:]]* ]]
 }
 
+# A key goes into a curl header file and a secret file as is, so it may not
+# hold whitespace or a control character.
+key_ok() {
+  [[ "$1" != *[[:space:][:cntrl:]]* ]]
+}
+
+# True when an http(s) URL carries user:password@ before the host. Such URLs
+# are refused, so no credential reaches a message or the store.
+has_userinfo() {
+  [[ "$1" =~ ^[A-Za-z]+://[^/?#]*@ ]]
+}
+
+# Renames a leftover pre-0.3.13 workspace file for SLUG, so migrate doesn't
+# bring back a workspace that remove or add --force replaced.
+retire_ws_file() {
+  local f="${WS_DIR}/${1}.env"
+  [[ -f "$f" ]] || return 0
+  if mv "$f" "${f}.migrated"; then
+    warn "renamed the old workspace file ${f} to ${f}.migrated"
+  else
+    warn "couldn't rename ${f}; delete it, or crm.sh migrate will warn about it"
+  fi
+}
+
 # A Twenty URL as the store keeps it: no trailing slash, no /mcp.
 norm_url() {
   local url="$1"
@@ -133,6 +157,7 @@ ws_get() {
   local v
   v="$(grep -E "^${2}=" "$1" 2>/dev/null | head -1 | cut -d= -f2- || true)"
   v="${v%\"}"; v="${v#\"}"
+  v="${v%\'}"; v="${v#\'}"
   printf '%s' "$v"
 }
 
@@ -238,6 +263,14 @@ migrate_workspaces() {
       http://* | https://*) ;;
       *) warn "skipped ${f}: TWENTY_URL isn't an http(s) URL"; continue ;;
     esac
+    if has_userinfo "$url"; then
+      warn "skipped ${f}: TWENTY_URL holds a user name or password before the host; remove it"
+      continue
+    fi
+    if ! { key_ok "$ro" && key_ok "$rw"; }; then
+      warn "skipped ${f}: a key holds whitespace or a control character"
+      continue
+    fi
     case "$access" in
       read | write) ;;
       *) warn "skipped ${f}: TWENTY_ACCESS must be read or write"; continue ;;
@@ -473,6 +506,14 @@ if not isinstance(v, dict):
     sys.exit(0)
 url = v.get("url")
 safe = re.compile(r"^https?://[^\s\"\\\\`$\x27]+$")
+if isinstance(url, str) and re.match(r"^[A-Za-z]+://[^/?#]*@", url):
+    print("error\turl holds a user name or password before the host")
+    sys.exit(0)
+for name in ("key_ro", "key_rw"):
+    key = v.get(name)
+    if key is not None and not (isinstance(key, str) and not any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in key)):
+        print("error\t" + name + " must be text without whitespace or control characters")
+        sys.exit(0)
 print("url\t" + (url if isinstance(url, str) and safe.match(url) else "-"))
 access = v.get("access", "read")
 print("access\t" + (access if access in ("read", "write") else "-"))
@@ -583,8 +624,9 @@ cmd_disconnect() {
   [[ -n "$json" ]] || die "disconnect is addon.sh's hook: crm.sh disconnect --slug S --json (crm.sh remove forgets a workspace)"
   json_mode
   valid_slug "$slug" || fail_with bad_slug "slug '${slug}' must use lowercase letters, digits and hyphens, a letter first"
-  load_rows
-  if is_local_slug "$slug"; then
+  # Read straight from the file (addon_store writes json.dumps(indent=2)), so
+  # an unreadable store can't fail the hook.
+  if grep -Eq '"local": *true' "${STORE}/instances/${slug}.json" 2>/dev/null; then
     printf '{"phase":"done","account":"%s","message":"%s"}\n' "$slug" \
       "The workspace and its keys still exist in Twenty; delete them there if you're done with them" >&3
   else
@@ -607,6 +649,7 @@ cmd_add() {
     http://* | https://*) ;;
     *) die "--url must start with http:// or https://" ;;
   esac
+  has_userinfo "$url" && die "--url must not hold a user name or password before the host"
   url="$(norm_url "$url")"
   local access="${TWENTY_ACCESS:-write}"
   case "$access" in
@@ -641,8 +684,8 @@ cmd_add() {
   if ! { json_safe "$url" && json_safe "$ws_url"; }; then
     die "the URL holds a quote, backslash or control character"
   fi
-  if ! { json_safe "$rw" && json_safe "$ro"; }; then
-    die "a key holds a quote, backslash or control character"
+  if ! { json_safe "$rw" && json_safe "$ro" && key_ok "$rw" && key_ok "$ro"; }; then
+    die "a key holds whitespace, a quote, a backslash or a control character"
   fi
 
   # Check every key before writing anything.
@@ -661,12 +704,38 @@ cmd_add() {
 
   local local_=false
   [[ "$url" == "$LOCAL_URL" ]] && local_=true
+  # --force: the old instance is copied aside and restored if configure
+  # fails, so a failed replace keeps the old workspace and its keys.
+  local backup="" name
   if stored "$slug"; then
-    addon_cli remove-instance twenty "$slug" || die "couldn't replace workspace '${slug}'"
+    backup="$(umask 077 && mktemp -d)"
+    # shellcheck disable=SC2064  # the path is fixed now
+    trap "rm -rf '$backup'" EXIT
+    cp -p "${STORE}/instances/${slug}.json" "${backup}/instance.json"
+    for name in key_ro key_rw; do
+      [[ -f "${STORE}/secrets/${slug}.${name}" ]] && cp -p "${STORE}/secrets/${slug}.${name}" "${backup}/${name}"
+    done
   fi
-  instance_json "$url" "$access" "$local_" "$ws_url" "" "$ro" "$rw" \
-    | addon_cli configure twenty --instance "$slug" > /dev/null \
-    || die "couldn't store workspace '${slug}' in ${STORE}"
+  if ! instance_json "$url" "$access" "$local_" "$ws_url" "" "$ro" "$rw" \
+    | addon_cli configure twenty --instance "$slug" > /dev/null; then
+    if [[ -n "$backup" ]]; then
+      cp -p "${backup}/instance.json" "${STORE}/instances/${slug}.json" || true
+      for name in key_ro key_rw; do
+        if [[ -f "${backup}/${name}" ]]; then
+          cp -p "${backup}/${name}" "${STORE}/secrets/${slug}.${name}" 2>/dev/null || true
+        else
+          rm -f "${STORE}/secrets/${slug}.${name}" 2>/dev/null || true
+        fi
+      done
+      die "couldn't store workspace '${slug}' in ${STORE}; kept the old one"
+    fi
+    addon_cli remove-instance twenty "$slug" > /dev/null 2>&1 || true
+    die "couldn't store workspace '${slug}' in ${STORE}"
+  fi
+  # configure merges, so drop a key the new values don't set.
+  [[ -n "$ro" ]] || rm -f "${STORE}/secrets/${slug}.key_ro"
+  [[ -n "$rw" ]] || rm -f "${STORE}/secrets/${slug}.key_rw"
+  retire_ws_file "$slug"
   log "Wrote ${STORE}/instances/${slug}.json (crm-${slug})"
   if ! is_true "$(env_get TWENTY_MCP_ENABLED 0)"; then
     upsert_env "$ENV_PATH" TWENTY_MCP_ENABLED 1
@@ -691,6 +760,7 @@ cmd_remove() {
   is_local_slug "$slug" && was_local=1
   addon_cli remove-instance twenty "$slug" || die "couldn't remove workspace '${slug}'"
   log "Removed workspace ${slug} and its keys from ${STORE}"
+  retire_ws_file "$slug"
   if [[ -n "$was_local" ]]; then
     log "The workspace and its keys still exist in Twenty; delete them there if you're done with them"
   fi
