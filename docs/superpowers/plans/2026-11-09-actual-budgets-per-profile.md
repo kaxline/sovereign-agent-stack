@@ -12,7 +12,7 @@
 
 **Depends on:**
 - Plan 3, `docs/superpowers/plans/2026-11-09-addon-lifecycle.md` on `feat/addon-lifecycle`, merged to `main`. This plan uses its `hooks`, `instances.connect`/`disconnect`/`errors`, `data`, `addon.sh connect`/`disconnect`/`enable` and the `phase` contract. Start only after it merges.
-- A `transient` flag on secret instance settings, which plan 3 doesn't have yet. `addon.sh connect` must validate such a setting, pass it to the hook on stdin and redact it, but never write it in step `register`. Without it, `addon.sh` would store the person's Actual password in `secrets/<slug>.password`. Agree it with the plan 3 owner and land it in plan 3 or as its first follow-up. Task 8 uses it.
+- A `transient` flag on secret instance settings, accepted by the plan 3 owner as plan 3 Task 11 (2026-11-09). Rules: only on a `secret` setting under `instances.settings` of a built-in manifest with `instances.connect`; `addon.sh connect` validates it like any secret (CR/LF refused), passes it to the hook on stdin unchanged and redacts it; step `register` never writes it, `missing()` skips it, and the listing shows `"transient": true`. Without it, `addon.sh` would store the person's Actual password in `secrets/<slug>.password`. Task 8 uses it; check it is on `main` before starting Task 8.
 
 ## Global Constraints
 
