@@ -6,9 +6,9 @@
 add-ons with `addons/<id>/addon.json`, so `scripts/addon.sh` lists, enables and disables them and
 Boundary sees them in `list --json` (CR 0022 R2 for LightRAG).
 
-**Architecture:** Three small extensions to the add-on path come first, each its own commit: drop
-other keys at an add-on's MCP URL, an `mcp.unmanaged` profile list, and stopping `uses` stack
-services on disable. Then LightRAG replaces `register_lightrag_mcp_servers` with a manifest.
+**Architecture:** Two small extensions to the add-on path come first, each its own commit: drop
+other keys at an add-on's MCP URL, and an `mcp.unmanaged` profile list. Stopping `uses` stack
+services on disable and one-shot handling come from `addon.sh` plan 3. Then LightRAG replaces `register_lightrag_mcp_servers` with a manifest.
 n8n's `n8n-import` learns to write its own credentials, and n8n gets a manifest with no MCP block,
 using the `data` and `backup` fields the `addon.sh` CR 0020 work adds.
 
@@ -24,12 +24,18 @@ open.
 ## Dependencies and target
 
 The LightRAG tasks (1, 2, 4, 5) depend on nothing outside this plan and can ship in the next 0.3.x
-patch. Task 3 edits `cmd_disable`, which the `addon.sh` CR 0020 work (the IMAP/SMTP session)
-rewrites for `--json` and `remove --delete-data`; land Task 3 after that rewrite, or hand it to
-that session.
+patch. Without `addon.sh` plan 3, `disable lightrag` leaves Neo4j running; Task 5's Neo4j check
+waits for plan 3.
 
-The n8n tasks (6–8) need three things from the `addon.sh` work: `data.volumes` / `data.paths`,
-`backup.secrets` / `backup.recommended`, and `remove <id> --delete-data`. They ship in the same
+`addon.sh` plan 3 (the IMAP/SMTP session, proposed for 0.3.13, not yet approved) rewrites
+`disable` and adds `remove <id> --delete-data`. It also takes two pieces this plan first had: a
+manifest service may set `"oneshot": true` (`enable` runs one-shots with `up --no-deps
+--exit-code-from` after `up -d --wait` on the rest; `remove` runs `rm -f` on every listed service,
+one-shots included, before deleting volumes), and `disable` stops each `uses` stack service that
+no remaining active profile starts, read from `docker compose config --services`.
+
+The n8n tasks (6–8) need from plan 3: `data.volumes` / `data.paths`, `backup.secrets` /
+`backup.recommended`, `oneshot`, and `remove <id> --delete-data`. They ship in the same
 0.3.x patch as `addon.sh` items 1–6, which the CR 0020 reply draft targets together. Proposed:
 0.3.13 for both, with n8n moving to whichever patch carries items 1–6 if that slips. Twenty's
 manifest is not in this plan.
@@ -88,7 +94,7 @@ manifest is not in this plan.
   `sync-profiles.sh` still runs with no host `python3` (`scripts/test-no-host-python.sh`).
 - `remove lightrag --delete-data` (and `disable --purge`) deletes no user data: `rag_storage/`, `inputs/` and the
   `neo4j_data` volume stay.
-- Each core extension (Tasks 1–3) is its own commit, separate from the LightRAG and n8n commits.
+- Each core extension (Tasks 1–2) is its own commit, separate from the LightRAG and n8n commits.
 - Branch `feat/n8n-lightrag-addons`, worktree `../assistant-n8n-lightrag`. Commit as Keith, no
   Claude trailers, no push. CHANGELOG under Unreleased; the release is a 0.3.x patch.
 - Run only the touched test scripts while iterating; run the CI script list once before each
@@ -100,7 +106,7 @@ manifest is not in this plan.
 - **A user's hand-added `lightrag-mcp` entry on the default profile:** stays, with LightRAG on or
   off. Test in Task 4.
 - **LightRAG disabled while `NEO4J_ENABLED=1`:** Neo4j keeps running and the graph is untouched.
-  With `neo4j` off too, Neo4j stops. Test in Task 3.
+  With `neo4j` off too, Neo4j stops. Tested in `addon.sh` plan 3; checked live in Task 5.
 - **`addon.sh enable n8n` with `N8N_ENCRYPTION_KEY` or `LIGHTRAG_API_KEY` empty:** `n8n-import`
   exits non-zero naming the key, and `n8n` never starts. Test in Task 6.
 - **`addon.sh remove n8n --delete-data`:** removes `n8n_storage` and `gptr_outputs`, including
@@ -142,20 +148,10 @@ manifest is not in this plan.
 - [ ] **Step 4:** Run the manifest test and `sh scripts/test-addon-mcp-access.sh`. Expected: PASS.
 - [ ] **Step 5:** Document the field in `addons/README.md` and the spec's `mcp` section. Commit: `Add mcp.unmanaged for profiles bootstrap leaves alone`.
 
-### Task 3: Stop unused stack services on disable
+### Task 3: (moved to `addon.sh` plan 3)
 
-**Files:**
-- Modify: `scripts/lib/addon_cli.py` (`cmd_plan_disable`), `scripts/lib/addon_manifest.py` (table), `scripts/addon.sh` (`cmd_disable`)
-- Test: `scripts/test-addon-cli.sh`
-
-**Interfaces:**
-- Produces: `STACK_COMPOSE_SERVICES = {"neo4j": ["neo4j"]}` in `addon_manifest.py` (only stack services whose containers sit behind profiles). `plan-disable` JSON gains `"stack": [...]`, the compose services for the add-on's `uses` found in that table. `cmd_disable`, after `sync-profiles.sh`, reads `docker compose config --services` (active profiles only) and stops each `stack` service not in that output.
-
-- [ ] **Step 1:** Tests in `test-addon-cli.sh` with the stubbed `docker`: a fixture add-on with `uses: ["llm","neo4j"]`. Case A: `COMPOSE_PROFILES` after disable still has `neo4j` (stub `config --services` prints `neo4j`) → no `stop neo4j`. Case B: stub omits `neo4j` → `docker compose stop neo4j` is called after the add-on's own services. Case C: `uses: ["llm"]` → `stack` is `[]`.
-- [ ] **Step 2:** Run `sh scripts/test-addon-cli.sh`. Expected: FAIL on A–C. CI doesn't run this script yet; add it to `.github/workflows/ci.yml` in this commit.
-- [ ] **Step 3:** Implement as above. Never `rm` or purge a stack service or its volumes, `--purge` included.
-- [ ] **Step 4:** Run the test. Expected: PASS.
-- [ ] **Step 5:** Commit: `Stop a used stack service on disable when no active profile starts it`.
+Stopping `uses` stack services on disable is part of plan 3's `disable` rewrite. Nothing to do
+here; Task 5 checks it live once plan 3 is merged.
 
 ### Task 4: LightRAG manifest replaces the hand-wired registration
 
@@ -165,7 +161,7 @@ manifest is not in this plan.
 - Rewrite: `scripts/test-lightrag-mcp-registration.sh` against the generic path, the way `test-gptr-mcp-registration.sh` runs `register_addon_mcp_servers` with the real `addon_manifest.py`
 
 **Interfaces:**
-- Consumes: Tasks 1 and 2 (Task 3 only for the Neo4j stop).
+- Consumes: Tasks 1 and 2.
 - Produces: short id `lightrag`, used by `addon.sh enable|disable lightrag` and Task 5.
 
 The manifest (fields in this order, canonical layout):
@@ -239,10 +235,10 @@ The manifest (fields in this order, canonical layout):
 - Modify: `scripts/sync-profiles.sh` (remove the `AUTOMATION_ENABLED automation 1` row)
 - Test: `sh scripts/test-addon-cli.sh` (n8n fixture cases), `python3 scripts/test-addon-manifests.py`
 
-Manifest values: id `io.github.kaxline.stack.n8n`, title `n8n`, tagline `Workflow automation with starter workflows for LightRAG, Neo4j, search and GPT Researcher`, `minStackVersion` the patch from "Dependencies and target", `builtin` `{AUTOMATION_ENABLED, automation, seed: true}`, services `ui` → `n8n` port 5678, `import` → `n8n-import`, `research` → `gpt-researcher` port 8000, `uses: ["llm", "search"]`, `data: {"paths": [], "volumes": ["n8n_storage", "gptr_outputs"]}`, `backup: {"secrets": ["N8N_ENCRYPTION_KEY"], "recommended": ["N8N_USER_MANAGEMENT_JWT_SECRET"]}`, no `mcp`, no `init`, `permissions: {reads: [], writes: [], sends: false, egress: ["llm-proxy", "search", "internet"], exposesToAgent: false, cron: false}`, `postInstallMessage`: open `http://localhost:5678` and create the owner account. The description says n8n's workflows reach LightRAG and Neo4j when those are on, that no Hermes tool reaches n8n, and that `remove --delete-data` deletes workflows, credentials and execution history.
+Manifest values: id `io.github.kaxline.stack.n8n`, title `n8n`, tagline `Workflow automation with starter workflows for LightRAG, Neo4j, search and GPT Researcher`, `minStackVersion` the patch from "Dependencies and target", `builtin` `{AUTOMATION_ENABLED, automation, seed: true}`, services `ui` → `n8n` port 5678, `import` → `n8n-import` with `"oneshot": true`, `research` → `gpt-researcher` port 8000, `uses: ["llm", "search"]`, `data: {"paths": [], "volumes": ["n8n_storage", "gptr_outputs"]}`, `backup: {"secrets": ["N8N_ENCRYPTION_KEY"], "recommended": ["N8N_USER_MANAGEMENT_JWT_SECRET"]}`, no `mcp`, no `init`, `permissions: {reads: [], writes: [], sends: false, egress: ["llm-proxy", "search", "internet"], exposesToAgent: false, cron: false}`, `postInstallMessage`: open `http://localhost:5678` and create the owner account. The description says n8n's workflows reach LightRAG and Neo4j when those are on, that no Hermes tool reaches n8n, and that `remove --delete-data` deletes workflows, credentials and execution history.
 
-- [ ] **Step 1:** Check how Compose 5.6.1 treats a one-shot in `docker compose up -d --wait`: a scratch compose file with a `busybox true` service and a long-running service that `depends_on` it with `service_completed_successfully`; run `up -d --wait` naming both. Record the exit code. If it is non-zero, tell the `addon.sh` session: `enable` must leave one-shots out of `up --wait` (by a manifest field or by reading `depends_on`), and `remove` must still `rm` them before deleting volumes.
-- [ ] **Step 2:** CLI tests with the stubbed `docker`: `enable n8n --json` brings up `n8n` and `gpt-researcher` (and `n8n-import` only if Step 1 exited 0) and never names `gptr-mcp`; `disable n8n --json` stops `n8n`, `n8n-import`, `gpt-researcher` and not `gptr-mcp` (R10 acceptance); `remove n8n --delete-data --json` removes the three containers, then `<project>_n8n_storage` and `<project>_gptr_outputs`, and prints one line per volume.
+- [ ] **Step 1 (record only):** Check how Compose 5.6.1 treats an exited one-shot in `docker compose up -d --wait` with a scratch compose file, and note the result in the commit message. No later step depends on it; plan 3's `oneshot` handling covers both outcomes.
+- [ ] **Step 2:** CLI tests with the stubbed `docker`: `enable n8n --json` runs `up -d --wait n8n gpt-researcher`, runs `n8n-import` as a one-shot, and never names `gptr-mcp`; `disable n8n --json` stops `n8n`, `n8n-import`, `gpt-researcher` and not `gptr-mcp` (R10 acceptance); `remove n8n --delete-data --json` removes the three containers, then `<project>_n8n_storage` and `<project>_gptr_outputs`, and prints one line per volume.
 - [ ] **Step 3:** Run the tests. Expected: FAIL (no manifest).
 - [ ] **Step 4:** Add the manifest and remove the `SERVICES_CORE` row.
 - [ ] **Step 5:** Run `sh scripts/test-addon-cli.sh`, `python3 scripts/test-addon-manifests.py`, `bash scripts/test-sync-profiles.sh`, `bash scripts/test-no-host-python.sh`. Expected: PASS.
