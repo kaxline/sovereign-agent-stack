@@ -650,23 +650,42 @@ a changelog entry.
 
 | Command | Does |
 |---|---|
-| `list --json` | Prints a JSON array, one object per add-on, sorted by short id |
+| `list --json [--sizes]` | Prints a JSON array, one object per add-on, sorted by short id. Takes no lock |
 | `configure <short-id> < values.json` | Reads one JSON object on stdin and stores the settings. Prints nothing |
 | `configure <short-id> --instance <slug> < values.json` | Same for one instance. Values you omit keep their stored value |
 | `configure <short-id> --instance <slug> --remove` | Deletes the instance's file and secrets |
-| `enable <short-id>` | Checks required settings, sets the add-on's flag and gate flags in `.env`, syncs compose profiles, starts the services whose gate is on, reloads Hermes |
-| `disable <short-id> [--purge]` | Sets the flag and every gate flag to `0`, stops the services, reloads Hermes |
+| `enable <short-id> [--reinit] [--json]` | Checks required settings, sets the add-on's flag and gate flags in `.env`, syncs compose profiles, starts the services whose gate is on, runs the `init` hook once, reloads Hermes |
+| `disable <short-id> [--purge] [--json]` | Sets the flag and every gate flag to `0`, stops the services, reloads Hermes. `--purge` then does what `remove --delete-data` does, under the same lock |
+| `connect <short-id> --instance <slug> [--json] < values.json` | Checks the values, runs the manifest's `instances.connect` hook, stores the instance, reloads Hermes |
+| `disconnect <short-id> --instance <slug> [--json]` | Runs `instances.disconnect`, removes the instance, reloads Hermes |
+| `remove <short-id> --delete-data [--json]` | Deletes the add-on's containers, compose volumes and data. Refused while the add-on is enabled |
 | `run <short-id> <command> [--instance <slug>]` | Runs a manifest `commands` entry in its service with `docker compose run --rm --no-deps -T` |
 
 `list --json` objects carry `id`, `shortId`, `title`, `tagline`,
 `permissions`, `platform`, `enabled` (the flag in `.env`), `settings`,
-`instances` (slug to values), `missing` and `schema`. `missing` lists what
+`instances` (slug to values), `services`, `missing`, `data`, `backup`,
+`hooks`, `errors` and `schema`. `missing` lists what
 `enable` would refuse on: a top-level setting by name, an instance setting
 as `<slug>.<name>`, and `instances:<name>` (the manifest's `instances.name`)
-when the add-on needs an instance and has none. A setting shows its stored
+when the add-on needs an instance and has none. A manifest with
+`instances.optional: true` never lists `instances:<name>`. `hooks` names the
+hooks the manifest declares, `errors` is its `instances.errors`, and `data`
+and `backup` are copied from the manifest. A setting shows its stored
 value, else its default, else is absent. A `secret` setting shows only
 `{"set": true}` or `{"set": false}`. A manifest that fails validation is left
 out with a warning on stderr.
+
+`services` has one object per manifest service, sorted by key: `key`,
+`compose`, `oneshot` (a service that runs to completion; built-in manifests
+only), `image` and `memory` (`{"reservation", "limit"}` in bytes), with
+`null` where compose gives no value, and `downloadSize` with `--sizes`.
+`image` and `memory` come from `docker compose --profile '*' config
+--format json`, which reads every service and starts nothing. Memory is taken
+from `deploy.resources`, then `mem_reservation` and `mem_limit`. If `config`
+fails, the catalog prints without those figures and one warning goes to
+stderr. `--sizes` also runs `docker manifest inspect --verbose` once per
+distinct image (a registry call) and sums the layer sizes for the engine's
+platform in bytes. An image with no matching entry has no `downloadSize`.
 
 `schema` is the manifest's settings schema, for building a settings form:
 `{"settings": {<name>: <spec>}, "instances": {"name": ..., "settings":
@@ -687,8 +706,9 @@ and the next `enable` writes the flag from it. A gate flag changed through
 `configure` takes effect at the next `enable`, so call `enable` after
 `configure`. Instance `configure` never writes flags.
 
-`configure` reads, merges and rewrites `settings.env` and the instance file
-without a lock. Run `configure` calls for one add-on one at a time.
+`configure` takes the same lock as `enable` (see [Lock and
+rollback](#lock-and-rollback)), so a call made while another change runs fails
+with `busy`.
 
 ```text
 data/addons/<short-id>/
@@ -711,21 +731,197 @@ the file with `shlex.split`, not compose
 `0`, a `list` is a JSON array, and `int`, `port` and `date` values are
 written as text.
 
-`disable` keeps `data/addons/<short-id>/`. `disable --purge` also deletes that
-directory and, when the manifest lists `services.<name>.volumes`, removes the
-add-on's containers and those named compose volumes. `enable` and `disable` write the
-flags to `.env` first, so a run that fails at a later step, such as a compose
-or Hermes reload error, leaves them written. Running the same command again
-converges.
+`disable` keeps `data/addons/<short-id>/`; `disable --purge` deletes it, as
+described under [Removing data](#removing-data).
 
-Errors are one line, `error: <message>`, on stderr. The message names the
-setting and never its value. A usage error starts with `error: usage:` and the
-synopsis follows on the next lines.
+Errors are one line, `error: <message>`, on stderr in both modes. The message
+names the setting and never its value. A usage error starts with
+`error: usage:` and the synopsis follows on the next lines.
 
 | Exit | Meaning |
 |---|---|
 | `0` | Done |
-| `1` | The data root is invalid, a compose, volume or `make hermes-reload` step failed, or the file work failed (for example, a permission error); the error line names the exception type |
-| `2` | Invalid input: unknown add-on, bad JSON, unknown or ill-typed setting, bad slug, unknown command or instance, usage error |
+| `1` | The data root is invalid, a compose step failed, another add-on change holds the lock (`busy`), or the file work failed (for example, a permission error); the error line names the exception type |
+| `2` | Invalid input: unknown add-on, bad JSON, unknown or ill-typed setting, bad slug, unknown command or instance, usage error. Also `connect` on an existing instance and `disconnect` on an unknown one |
 | `3` | `enable` found required settings with no value |
-| `4` | `run`: `docker compose run` failed, whether the command exited non-zero or the container couldn't start |
+| `4` | `run`: `docker compose run` failed, whether the command exited non-zero or the container couldn't start. Also a failed hook, `vault.sh reload-plugins`, an `onToggle.script`, or a SIGINT or SIGTERM |
+
+### JSON lines
+
+`enable`, `disable`, `connect`, `disconnect` and `remove` take `--json`. Then
+stdout carries one JSON object per line and nothing else, and the run ends
+with exactly one `done` or `error` line. Without `--json` those commands print
+their step output to stderr and nothing to stdout.
+
+```json
+{"phase":"pull","service":"gptr","current":1048576,"total":52428800}
+{"phase":"setup","step":"start","status":"running"}
+{"phase":"setup","step":"start","status":"done"}
+{"phase":"done","id":"gptr","action":"enable","restart":[],"mcp":["gpt-researcher"]}
+```
+
+`pull` lines come from `enable` only. It pulls each service's image first with
+`--policy missing --ignore-buildable`, so a local-only image or an offline
+machine still enables and an updated tag isn't fetched. A `pull` line carries
+bytes summed over layers, at most one per service per second, and ends with
+`{"phase":"pull","service":<name>,"status":"done"}`.
+
+A `setup` line is `{"phase":"setup","step":<name>,"status":"running"|"done"|"error"}`.
+A step that runs per service, volume or path adds `"target"`. Steps run in this
+order: `flags` (write `.env`, sync `COMPOSE_PROFILES`), `start` (one-shots,
+then the services), `stop` (gated services whose gate is off), `init`,
+`recreate` (only with `onToggle`), `reload`. `disable` runs `flags`, `stop`,
+`recreate`, `reload`, then `delete` with `--purge`. `connect` and `disconnect`
+run `check` (the hook), `register` (store or remove the instance) and `reload`.
+`remove` runs `delete`.
+
+`done`:
+
+```json
+{"phase":"done","id":"<short id>","action":"enable","restart":["svc"],"mcp":["name"],"account":"<slug>","message":"<text>"}
+```
+
+`restart` lists the compose services `onToggle` recreated. On `enable`, `mcp`
+is the `name` of each manifest `mcp` entry whose gate is on, followed by the
+names the `init` hook's `done` line reported in its `mcp`, each name once.
+On `connect` it is the names the `connect` hook reported. `account` appears
+only when a hook reported one. `message` appears only when the `init`,
+`connect` or `disconnect` hook's `done` line has a string `message`; it is
+cleaned like the strings in an `error` line, and on `connect` each staged
+secret value in it is `[redacted]`. An `enable` that skips a recorded `init`
+gets neither the hook's names nor its message.
+`addon.sh` does not wait for MCP servers. The caller waits until each name in
+`done.mcp` is up in `mcp.servers.status`.
+
+`error`:
+
+```json
+{"phase":"error","error":"compose_failed","step":"start","message":"...","logTail":["..."],"rolledBack":true}
+```
+
+`step` is `null` when the failure came before any step. `logTail` holds up to
+20 lines of the failing step's output. `rolledBack` appears when `enable`
+restored the flags. `target` names the service, volume or path when the
+failure has one. Every line is valid JSON: control characters other than tab
+are dropped, a tab becomes a space, and a log line is cut to 500 characters.
+
+| `error` | Exit | Cause |
+|---|---|---|
+| `bad_input` | 2 | Invalid input, or a rule refused the run (`remove` while enabled, `HERMES_UID` mismatch on Linux) |
+| `missing_settings` | 3 | `enable` found required settings with no value |
+| `compose_failed` | 1 | A `docker compose` call failed (pull, start, stop, recreate, delete, a bootstrap) |
+| `busy` | 1 | Another change holds the lock |
+| `command_failed` | 4 | A hook, `onToggle.script`, `vault.sh reload-plugins` or `addon_cli.py` failed, the run was signalled, or `addon.sh` exited unexpectedly (`enable` rolls back first). Exit 1 when the data root is invalid |
+| `exists`, `not_found` | 2 | `connect` on an existing slug, `disconnect` on an unknown one, detected by `addon.sh` |
+| a hook's own name | 4 | See [Hooks](#hooks) |
+
+### Lock and rollback
+
+`configure`, `enable`, `disable`, `connect`, `disconnect` and `remove` hold
+`data/addons/.lock` while they run. It is a symlink whose target is the
+holder's PID, so it is created together with its owner. A second call while the
+holder is alive fails at once with `busy`. A lock whose process has died is
+taken over under a guard directory, `data/addons/.lock.takeover`; a guard
+older than 10 seconds is treated as left by a takeover that died. `list` and
+`run` take no lock.
+
+An `enable` that fails or is interrupted (SIGINT, SIGTERM) restores each flag
+it changed to its earlier `.env` line, syncs `COMPOSE_PROFILES` and, if the
+add-on was off, stops its services. The `error` line then has
+`"rolledBack":true`. Anything the run did that isn't a flag, such as an
+`init` hook that already ran, stays. `disable`, `connect`, `disconnect` and
+`remove` don't roll back, and a rerun converges: `enable` and `disable` write
+the flags first, so a run that fails at a later step leaves them written.
+
+### Reloading Hermes
+
+Step `reload` runs `hermes-api-bootstrap` and `hermes-browser-bootstrap` with
+`HERMES_BOOTSTRAP_FORCE=1`, then `scripts/vault.sh reload-plugins`. It never
+recreates `hermes` and never calls `make`. Plugin changes, such as Bitwarden's
+tools, reach new sessions only. A bootstrap failure is `compose_failed`; a
+`reload-plugins` failure is `command_failed`.
+
+An add-on whose manifest sets `onToggle: {"recreate": [<compose service>],
+"script"?: [argv]}` gets step `recreate` before the reload on `enable` and
+`disable`, when the add-on's flag changed value in that run: the listed
+services are recreated with `up -d --no-deps --force-recreate`, then the
+script runs from the repo root. No built-in manifest uses `onToggle` yet.
+
+### Hooks
+
+A manifest declares `hooks.init` (also `upgrade`, `backup` and `restore`, which
+`addon.sh` doesn't run yet) and `instances.connect` and `instances.disconnect`.
+A hook is `{"script": [argv]}`, run from the repo root on the host, or
+`{"command": <name>}`, one of the manifest's `commands`, run in its service
+with `docker compose run --rm --no-deps -T`. `addon.sh` appends `--json`, and
+`--slug <slug> --json` for connect and disconnect.
+
+- `init` runs once, in `enable`. `data/addons/<short-id>/state.json` records the
+  manifest version and time after it succeeds. `enable --reinit` runs it again.
+- `connect` reads the staged instance values on stdin. A secret setting marked
+  `"transient": true` in `instances.settings` is passed to the hook and never
+  stored: it gets no file under `secrets/` and no key in the instance JSON,
+  and `missing` skips it. A secret value containing a CR or LF is refused.
+  Without an `instances.connect` hook, `connect` only stores the
+  instance.
+- `disconnect` runs with stdin `/dev/null`.
+- `instances.optional: true` lets `enable` succeed with no instance, so
+  `instances:<name>` never appears in `missing`.
+
+Only stdout is read. A hook prints JSON objects, one per line. An object whose
+`phase` is `setup` or `pull` is relayed inside the step, with `step` set to
+that step and every string cleaned by the rule for `error` lines.
+Its `done` line may carry `account` (a string), `mcp` (a list of names) and
+`message` (a string) that go into the run's `done` line. Anything else on
+stdout, and all of stderr, goes to the step log. On `connect`, the staged secret values are
+replaced with `[redacted]` in the step log, `logTail` and relayed lines.
+
+A hook fails its step when it exits non-zero, or when it prints an `error`
+line, even with exit 0. The `error` line's name passes through, with exit 4,
+when it is a shared name (`bad_slug`, `exists`, `not_found`, `login_refused`,
+`token_expired`, `no_access`, `timeout`, `server_unreachable`) or in the
+manifest's `instances.errors`. Any other name becomes `command_failed`, and the
+original name is in `message`. A hook that exits non-zero without an `error`
+line is `command_failed`.
+
+### Removing data
+
+`remove --delete-data` refuses (`bad_input`) while the add-on is enabled.
+`disable --purge` is `disable` followed by the same work, under one lock, with
+one `done` line whose `action` is `disable`. Step `delete` does, in order:
+
+1. `docker compose rm -f -s` for every service and one-shot.
+2. `docker volume rm <project>_<volume>` for each volume in `data.volumes`
+   that exists. The project is `COMPOSE_PROJECT_NAME` from the environment,
+   then `.env`, else the directory name.
+3. Deletion of each `data.paths` directory, then `data/addons/<short-id>`.
+
+A `data.paths` entry is `{"env": <NAME>, "default": "./data/..."}`. Its path
+is the value of `NAME` from the environment, then `.env`, else the default,
+made absolute against the repo root without resolving symlinks. A path stays,
+reported as `{"phase":"setup","step":"delete","status":"done","kept":<path>,"reason":<text>}`,
+when it:
+
+- lies outside `./data` and `ASSISTANT_DATA_ROOT`, or is, or holds, either of them;
+- is, holds or lies in stack data: `hermes`, `addons` or one of the user-data
+  directories under either root, as written or after resolving symlinks;
+- has a symlink between the data directory and itself;
+- overlaps a path that another enabled add-on declares.
+
+A symlink that is deleted is unlinked, never followed. A path with a control
+character is refused.
+
+### Compose project and profiles
+
+`addon.sh` never sets or unsets `COMPOSE_PROJECT_NAME` or `COMPOSE_PROFILES`.
+Every `docker compose` call, including both bootstraps, inherits the caller's
+environment. `scripts/test-addon-cli.sh` checks this. The one exception to
+the compose arguments is `list --json`, which adds `--profile '*'`.
+
+After `disable`, a compose service the manifest's `uses` maps to is stopped unless
+`docker compose config --services` still lists it. Only `neo4j` is mapped
+today. That command applies the active profiles, so `disable` decides from the
+caller's `COMPOSE_PROFILES` when it is exported, and from `.env` otherwise.
+**A caller must not export a stale `COMPOSE_PROFILES`**: one that still
+holds the profile `disable` just turned off keeps that service listed, and it
+is not stopped.

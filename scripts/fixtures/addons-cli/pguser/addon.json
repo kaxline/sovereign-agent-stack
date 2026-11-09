@@ -1,0 +1,34 @@
+{
+  "manifestVersion": 1,
+  "id": "io.example.stack.pguser",
+  "version": "1.0.0",
+  "title": "Pguser",
+  "tagline": "Test add-on that uses postgres, which disable never stops",
+  "description": "Not a real add-on. scripts/test-addon-cli.sh disables it to check that a uses name without a compose mapping is never stopped, against stub docker and make.",
+  "publisher": {
+    "name": "sovereign-agent-stack",
+    "url": "https://github.com/kaxline/sovereign-agent-stack"
+  },
+  "minStackVersion": "0.3.12",
+  "builtin": {
+    "flag": "PGUSER_ADDON_ENABLED",
+    "profile": "pguser",
+    "seed": false
+  },
+  "services": {
+    "worker": {
+      "compose": "pguser-worker"
+    }
+  },
+  "uses": [
+    "postgres"
+  ],
+  "permissions": {
+    "reads": [],
+    "writes": [],
+    "sends": false,
+    "egress": [],
+    "exposesToAgent": true,
+    "cron": false
+  }
+}

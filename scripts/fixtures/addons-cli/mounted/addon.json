@@ -1,0 +1,36 @@
+{
+  "manifestVersion": 1,
+  "id": "io.example.stack.mounted",
+  "version": "1.0.0",
+  "title": "Mounted",
+  "tagline": "Test add-on with mounts and no required settings",
+  "description": "Not a real add-on. scripts/test-addon-cli.sh enables it to check that enable creates the mount source directories before compose starts, against stub docker and make.",
+  "publisher": {
+    "name": "sovereign-agent-stack",
+    "url": "https://github.com/kaxline/sovereign-agent-stack"
+  },
+  "minStackVersion": "0.3.12",
+  "builtin": {
+    "flag": "MOUNTED_ADDON_ENABLED",
+    "profile": "mounted",
+    "seed": false
+  },
+  "services": {
+    "worker": {
+      "compose": "mounted-worker",
+      "mounts": {
+        "secrets": "ro",
+        "config": "ro",
+        "instances": "ro"
+      }
+    }
+  },
+  "permissions": {
+    "reads": [],
+    "writes": [],
+    "sends": false,
+    "egress": [],
+    "exposesToAgent": false,
+    "cron": false
+  }
+}

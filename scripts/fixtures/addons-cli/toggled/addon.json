@@ -1,0 +1,58 @@
+{
+  "manifestVersion": 1,
+  "id": "io.example.stack.toggled",
+  "version": "1.0.0",
+  "title": "Toggled",
+  "tagline": "Test add-on with onToggle, uses and an mcp server",
+  "description": "Not a real add-on. scripts/test-addon-cli.sh enables and disables it to check onToggle recreates, the mcp names in done and the stop of unused stack services, against stub docker and make.",
+  "publisher": {
+    "name": "sovereign-agent-stack",
+    "url": "https://github.com/kaxline/sovereign-agent-stack"
+  },
+  "minStackVersion": "0.3.12",
+  "builtin": {
+    "flag": "TOGGLED_ADDON_ENABLED",
+    "profile": "toggled",
+    "seed": false
+  },
+  "services": {
+    "worker": {
+      "compose": "toggled-worker",
+      "port": 8080
+    }
+  },
+  "uses": [
+    "neo4j"
+  ],
+  "mcp": {
+    "service": "worker",
+    "transport": "http",
+    "path": "/mcp",
+    "name": "toggled-mcp",
+    "timeout": 60,
+    "connectTimeout": 30,
+    "tools": [
+      "ping"
+    ],
+    "profiles": {
+      "default": "ro"
+    }
+  },
+  "onToggle": {
+    "recreate": [
+      "hermes"
+    ],
+    "script": [
+      "scripts/fixture-follow.sh",
+      "follow"
+    ]
+  },
+  "permissions": {
+    "reads": [],
+    "writes": [],
+    "sends": false,
+    "egress": [],
+    "exposesToAgent": true,
+    "cron": false
+  }
+}

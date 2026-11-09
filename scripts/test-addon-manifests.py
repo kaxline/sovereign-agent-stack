@@ -576,6 +576,216 @@ check("sync-profiles table has no duplicate flags", len(flags) == len(set(flags)
       ", ".join(f for f in flags if flags.count(f) > 1))
 
 
+# --- Lifecycle fields: oneshot, hooks, instance hooks, onToggle, data, backup ---
+LIFE_REPO = Path(tempfile.mkdtemp(prefix="addon-life-"))
+(LIFE_REPO / "scripts").mkdir()
+(LIFE_REPO / "scripts" / "crm.sh").write_text("#!/bin/sh\n")
+(LIFE_REPO / "docker-compose.yml").write_text(
+    "services:\n  gptr-mcp:\n    volumes:\n"
+    "      - ${FIXTURE_DATA_DIR:-./data/fixture}:/data\n"
+    "      - ./data/plain:/plain:ro\n"
+    "      - ./data/other:/other\n"
+    "      - ./data/par/child:/par\n"
+    "      - ${TW_DIR:-./data/tw}/storage:/tw\n"
+    "      - ./data/twenty/storage:/twl\n"
+    "      - ${TW2_DIR:-./data/twenty}/storage:/twe\n"
+    "volumes:\n  cache_a:\n")
+
+
+def life(**changes):
+    m = variant(**changes)
+    m.setdefault("commands", {})
+    m["commands"].setdefault("seed-init", {"service": "server", "instance": False, "argv": ["init"]})
+    m["commands"].setdefault("sync", {"service": "server", "instance": True, "argv": ["sync"]})
+    return m
+
+
+def life_errors(manifest, source="builtin"):
+    return am.validate(manifest, source, repo=LIFE_REPO)
+
+
+def life_refused(label, manifest, needle, source="builtin"):
+    errors = life_errors(manifest, source)
+    check(label, any(needle in e for e in errors), f"errors were {errors}")
+
+
+EVERYTHING = life(
+    services__job={"compose": "gptr-job", "oneshot": True},
+    hooks={"init": {"command": "seed-init"}, "upgrade": {"script": ["scripts/crm.sh", "upgrade"]},
+           "backup": {"script": ["scripts/crm.sh", "backup"]},
+           "restore": {"script": ["scripts/crm.sh", "restore"]}},
+    instances={"name": "workspace", "settings": {"url": {"type": "url"}},
+               "connect": {"script": ["scripts/crm.sh", "connect"]},
+               "disconnect": {"script": ["scripts/crm.sh", "disconnect"]},
+               "errors": ["bad_access", "file-access-not-allowed"]},
+    onToggle={"recreate": ["hermes"], "script": ["scripts/crm.sh", "follow"]},
+    data={"paths": [{"env": "FIXTURE_DATA_DIR", "default": "./data/fixture"},
+                    {"default": "./data/plain"}],
+          "volumes": ["cache_a"]},
+    backup={"secrets": ["CRM_TOKEN"], "recommended": ["CRM_URL"]})
+check("a manifest with every lifecycle field is valid", life_errors(EVERYTHING) == [],
+      str(life_errors(EVERYTHING)))
+check("data_volumes reads data.volumes", am.data_volumes(EVERYTHING) == ["cache_a"],
+      str(am.data_volumes(EVERYTHING)))
+check("hook() finds init, connect and a missing one",
+      am.hook(EVERYTHING, "init") == {"command": "seed-init"}
+      and am.hook(EVERYTHING, "connect") == {"script": ["scripts/crm.sh", "connect"]}
+      and am.hook(variant(), "init") is None and am.hook(EVERYTHING, "nope") is None)
+
+old_form = life(services__server__volumes=["cache_a", "cache_b"])
+check("services.<k>.volumes alone is still valid", life_errors(old_form) == [], str(life_errors(old_form)))
+check("data_volumes reads the old services.<k>.volumes field",
+      am.data_volumes(old_form) == ["cache_a", "cache_b"], str(am.data_volumes(old_form)))
+life_refused("data.volumes together with services.<k>.volumes fails",
+             life(services__server__volumes=["cache_a"], data={"volumes": ["cache_a"]}),
+             "data.volumes")
+
+life_refused("oneshot on the mcp target fails", life(services__server__oneshot=True), "oneshot")
+life_refused("oneshot with when fails",
+             life(gates=[{"flag": "GPTR_X_ENABLED", "profile": "x", "seed": False},],
+                  services__job={"compose": "j", "oneshot": True, "when": {"gate": "GPTR_X_ENABLED"}}),
+             "oneshot")
+life_refused("oneshot must be true or false", life(services__job={"compose": "j", "oneshot": "yes"}),
+             "oneshot")
+packaged_one = packaged(BASE)
+packaged_one["services"]["job"] = {"image": "ghcr.io/example/x@sha256:" + "a" * 64, "oneshot": True}
+life_refused("oneshot is built-in only", packaged_one, "oneshot", "official")
+
+life_refused("a hook with both command and script fails",
+             life(hooks={"init": {"command": "seed-init", "script": ["scripts/crm.sh"]}}), "hooks.init")
+life_refused("a hook with neither key fails", life(hooks={"init": {}}), "hooks.init")
+life_refused("a script outside scripts/ fails",
+             life(hooks={"init": {"script": ["bin/crm.sh"]}}), "hooks.init")
+life_refused("a script with a path component fails",
+             life(hooks={"init": {"script": ["scripts/../crm.sh"]}}), "hooks.init")
+life_refused("a script that does not exist fails",
+             life(hooks={"init": {"script": ["scripts/missing.sh"]}}), "hooks.init")
+life_refused("an argv item with a line break fails",
+             life(hooks={"init": {"script": ["scripts/crm.sh", "a\nb"]}}), "hooks.init")
+life_refused("an empty argv item fails",
+             life(hooks={"init": {"script": ["scripts/crm.sh", ""]}}), "hooks.init")
+life_refused("a hook as a bare string fails",
+             life(hooks={"backup": "scripts/crm.sh backup"}), "hooks.backup")
+life_refused("a command hook naming an instance command fails",
+             life(hooks={"init": {"command": "sync"}}), "hooks.init")
+life_refused("a command hook naming no command fails",
+             life(hooks={"init": {"command": "nope"}}), "hooks.init")
+life_refused("an unknown hook name fails", life(hooks={"explode": {"command": "seed-init"}}), "hooks")
+life_refused("a script hook is built-in only",
+             packaged(life(hooks={"init": {"script": ["scripts/crm.sh"]}})), "hooks.init", "official")
+check("a command hook is allowed from a community feed",
+      life_errors(packaged(life(hooks={"init": {"command": "seed-init"}})), "community") == [],
+      str(life_errors(packaged(life(hooks={"init": {"command": "seed-init"}})), "community")))
+
+CONNECT = {"script": ["scripts/crm.sh", "connect"]}
+life_refused("connect without disconnect fails",
+             life(instances={"name": "w", "settings": {"url": {"type": "url"}}, "connect": CONNECT}),
+             "connect and instances.disconnect")
+life_refused("disconnect without connect fails",
+             life(instances={"name": "w", "settings": {"url": {"type": "url"}}, "disconnect": CONNECT}),
+             "connect and instances.disconnect")
+for bad in ("timeout", "not_found", "Upper", "1x", ""):
+    life_refused(f"instances.errors entry {bad!r} fails",
+                 life(instances={"name": "w", "settings": {"url": {"type": "url"}}, "errors": [bad]}),
+                 "instances.errors")
+life_refused("instances.errors entries must be distinct",
+             life(instances={"name": "w", "settings": {"url": {"type": "url"}}, "errors": ["a", "a"]}),
+             "instances.errors")
+life_refused("instances.errors must be a list",
+             life(instances={"name": "w", "settings": {"url": {"type": "url"}}, "errors": "a"}),
+             "instances.errors")
+
+# transient instance secrets and optional instances
+TRANSIENT_INST = {"name": "w", "settings": {"url": {"type": "url"},
+                  "password": {"type": "secret", "transient": True}},
+                  "connect": CONNECT, "disconnect": CONNECT}
+check("a transient instance secret with a connect hook is valid",
+      life_errors(life(instances=TRANSIENT_INST)) == [], str(life_errors(life(instances=TRANSIENT_INST))))
+no_hooks = copy.deepcopy(TRANSIENT_INST)
+del no_hooks["connect"], no_hooks["disconnect"]
+life_refused("transient without instances.connect fails", life(instances=no_hooks), "instances.settings.password.transient")
+str_inst = copy.deepcopy(TRANSIENT_INST)
+str_inst["settings"]["url"]["transient"] = True
+life_refused("transient on a string setting fails", life(instances=str_inst), "instances.settings.url.transient")
+life_refused("transient on a top-level setting fails",
+             life(settings={"tok": {"type": "secret", "transient": True}}, instances=TRANSIENT_INST),
+             "settings.tok.transient")
+nb_inst = copy.deepcopy(TRANSIENT_INST)
+nb_inst["settings"]["password"]["transient"] = "yes"
+life_refused("transient must be a bool", life(instances=nb_inst), "instances.settings.password.transient")
+life_refused("transient is built-in only",
+             packaged(life(instances=TRANSIENT_INST)), "transient", "official")
+opt = {"name": "w", "settings": {"url": {"type": "url"}}, "optional": True}
+check("instances.optional true is valid", life_errors(life(instances=opt)) == [], str(life_errors(life(instances=opt))))
+life_refused("instances.optional must be a bool",
+             life(instances={**opt, "optional": "yes"}), "instances.optional")
+life_refused("instances.optional is built-in only", packaged(life(instances=opt)), "instances.optional", "official")
+
+for bad in ("../x", "/etc", "./data/../x", "./data", "./data/", "./data/unused",
+            "./data/.", "./data//x", "./data/./", "./data/x/", "./data/./x", "./data/x/.."):
+    life_refused(f"data.paths default {bad!r} fails", life(data={"paths": [{"default": bad}]}),
+                 "data.paths")
+check("a data.paths default that is the parent of a bind source passes",
+      life_errors(life(data={"paths": [{"default": "./data/plain"}, {"default": "./data/par"},
+                                       {"env": "TW_DIR", "default": "./data/tw"}]})) == [],
+      str(life_errors(life(data={"paths": [{"default": "./data/par"}]}))))
+life_refused("a parent match is on whole path segments",
+             life(data={"paths": [{"default": "./data/pare"}]}), "data.paths")
+life_refused("./data/twen is not a parent of the literal source ./data/twenty/storage",
+             life(data={"paths": [{"default": "./data/twen"}]}), "data.paths")
+life_refused("./data/twen is not a parent of ${TW2_DIR:-./data/twenty}/storage",
+             life(data={"paths": [{"env": "TW2_DIR", "default": "./data/twen"}]}), "data.paths")
+check("./data/twenty is a parent of both twenty/storage sources",
+      life_errors(life(data={"paths": [{"default": "./data/twenty"},
+                                       {"env": "TW2_DIR", "default": "./data/twenty"}]})) == [],
+      str(life_errors(life(data={"paths": [{"default": "./data/twenty"}]}))))
+life_refused("a parent match through the env form needs the same env",
+             life(data={"paths": [{"env": "OTHER_DIR", "default": "./data/tw"}]}), "data.paths")
+life_refused("data.paths env must be an env name",
+             life(data={"paths": [{"env": "lower", "default": "./data/fixture"}]}), "data.paths")
+life_refused("data.paths env must match the compose file's variable",
+             life(data={"paths": [{"env": "OTHER_DIR", "default": "./data/fixture"}]}), "data.paths")
+life_refused("data.paths entry needs a default", life(data={"paths": [{"env": "FIXTURE_DATA_DIR"}]}),
+             "data.paths")
+life_refused("data.paths entry with an unknown key fails",
+             life(data={"paths": [{"default": "./data/plain", "mode": "rw"}]}), "data.paths")
+life_refused("data.paths may not be empty", life(data={"paths": []}), "data.paths")
+life_refused("data with an unknown key fails", life(data={"files": []}), "data has unknown")
+life_refused("data.volumes must be distinct compose names",
+             life(data={"volumes": ["a", "a"]}), "data.volumes")
+life_refused("data is built-in only", packaged(life(data={"volumes": ["a"]})), "data", "official")
+check("data.paths is not checked against compose when there is no repo",
+      am.validate(life(data={"paths": [{"default": "./data/unused"}]}), "builtin", repo=None) == [],
+      str(am.validate(life(data={"paths": [{"default": "./data/unused"}]}), "builtin", repo=None)))
+
+life_refused("onToggle.recreate may not be empty", life(onToggle={"recreate": []}), "onToggle.recreate")
+life_refused("onToggle needs recreate", life(onToggle={"script": ["scripts/crm.sh"]}), "onToggle.recreate")
+life_refused("onToggle.recreate entries are distinct",
+             life(onToggle={"recreate": ["a", "a"]}), "onToggle.recreate")
+life_refused("onToggle.script is a repo script",
+             life(onToggle={"recreate": ["a"], "script": ["bin/x"]}), "onToggle.script")
+life_refused("onToggle with an unknown key fails",
+             life(onToggle={"recreate": ["a"], "stop": []}), "onToggle has unknown")
+
+life_refused("backup.secrets entries are env names", life(backup={"secrets": ["lower"]}), "backup.secrets")
+life_refused("backup.recommended entries are env names",
+             life(backup={"recommended": ["lower"]}), "backup.recommended")
+life_refused("backup with an unknown key fails", life(backup={"keys": []}), "backup has unknown")
+check("backup is allowed from a community feed",
+      life_errors(packaged(life(backup={"secrets": ["A_B"]})), "community") == [],
+      str(life_errors(packaged(life(backup={"secrets": ["A_B"]})), "community")))
+
+FIXTURE_DIR = ROOT / "scripts" / "fixtures" / "addons-cli"
+fixture_manifest = json.loads((FIXTURE_DIR / "fixture" / "addon.json").read_text())
+fixture_errors = am.validate(fixture_manifest, "builtin", repo=FIXTURE_DIR)
+check("the addons-cli fixture is valid against its compose file", fixture_errors == [],
+      str(fixture_errors))
+check("the fixture declares seed last, as a oneshot",
+      list(fixture_manifest["services"])[-1] == "seed"
+      and fixture_manifest["services"]["seed"].get("oneshot") is True)
+shutil.rmtree(LIFE_REPO)
+
+
 def service_block(name: str) -> str:
     m = re.search(rf"^  {re.escape(name)}:\n(.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)", compose, re.M | re.S)
     return m.group(1) if m else ""
@@ -608,10 +818,32 @@ def compose_volumes(compose_text: str) -> set[str]:
 
 def volume_problems(manifest: dict, compose_text: str) -> list[str]:
     declared = compose_volumes(compose_text)
-    return [f"{name}: volume {v} is not in docker-compose.yml's volumes"
-            for name, svc in manifest["services"].items() for v in svc.get("volumes", [])
-            if v not in declared]
+    return [f"volume {v} is not in docker-compose.yml's volumes"
+            for v in am.data_volumes(manifest) if v not in declared]
 
+
+def volume_owner_problems(manifest: dict, compose_text: str) -> list[str]:
+    """Compose services outside the add-on that mount one of its data volumes."""
+    own = {svc["compose"] for svc in manifest["services"].values()}
+    top = re.split(r"^volumes:\n", compose_text, maxsplit=1, flags=re.M)[0]
+    problems = []
+    for m in re.finditer(r"^  ([A-Za-z0-9_-]+):\n(.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)", top, re.M | re.S):
+        if m.group(1) in own:
+            continue
+        for v in am.data_volumes(manifest):
+            if re.search(rf"^      - [\"']?{re.escape(v)}:", m.group(2), re.M):
+                problems.append(f"{m.group(1)} mounts {v}, which belongs to the add-on")
+    return problems
+
+
+own_svc = next(iter(volumed["services"].values()))["compose"]
+FIX_OWNED = (f"services:\n  {own_svc}:\n    volumes:\n      - gptr_outputs:/o\n  core:\n    image: x\n"
+             "volumes:\n  gptr_outputs:\n")
+check("volume ownership accepts the add-on's own service", volume_owner_problems(volumed, FIX_OWNED) == [],
+      str(volume_owner_problems(volumed, FIX_OWNED)))
+shared = FIX_OWNED.replace("image: x", "volumes:\n      - gptr_outputs:/o")
+check("volume ownership flags a core service that mounts the add-on's volume",
+      len(volume_owner_problems(volumed, shared)) == 1, str(volume_owner_problems(volumed, shared)))
 
 FIX_VOLUMES = "services:\n  x:\n    image: x\nvolumes:\n  gptr_outputs:\n  other:\n"
 check("volumes cross-check accepts a declared volume", volume_problems(volumed, FIX_VOLUMES) == [],
@@ -667,6 +899,8 @@ for path, manifest, parse_error in am.load_dir(ROOT / "addons"):
           "; ".join(mount_problems(sid, manifest, compose)))
     check(f"{sid}: services.*.volumes are declared in docker-compose.yml",
           not volume_problems(manifest, compose), "; ".join(volume_problems(manifest, compose)))
+    check(f"{sid}: data volumes are mounted only by its own compose services",
+          not volume_owner_problems(manifest, compose), "; ".join(volume_owner_problems(manifest, compose)))
     for g in manifest.get("gates", []):
         check(f"{sid}: sync-profiles maps gate {g['flag']} to {g['profile']}",
               [g["flag"], g["profile"], "1" if g["seed"] else "0"] in rows, table.stdout)

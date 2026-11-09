@@ -111,6 +111,15 @@ ENV_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 DIGEST_RE = re.compile(r"@sha256:[0-9a-f]{64}$")
 PATH_RE = re.compile(r"^/[A-Za-z0-9._~/-]*$")
 COMPOSE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
+HOOK_SCRIPT_RE = re.compile(r"^scripts/[a-z0-9-]+\.sh\Z")
+ERROR_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*\Z")
+# ./data/ then one or more segments, none empty, "." or "..".
+DATA_PATH_RE = re.compile(r"^\./data(?:/(?!\.{1,2}(?:/|\Z))[^\s/]+)+\Z")
+# Error names every add-on's instance hooks share (spec, "instances.connect").
+SHARED_ERRORS = {"bad_slug", "exists", "not_found", "login_refused", "token_expired", "no_access",
+                 "timeout", "server_unreachable"}
+HOOK_NAMES = ("init", "upgrade", "backup", "restore")
+INSTANCE_HOOKS = ("connect", "disconnect")
 
 
 def short_id(manifest_id: str) -> str:
@@ -127,8 +136,27 @@ def _is_str_list(value) -> bool:
     return isinstance(value, list) and all(isinstance(v, str) for v in value)
 
 
-def validate(manifest, source: str = "builtin") -> list[str]:
-    """Return every problem with `manifest` for an add-on from `source`."""
+_AUTO = object()
+
+
+def _find_repo() -> Path | None:
+    """The repo root this file sits in (scripts/lib/..), or None where it
+    doesn't, such as the bootstrap containers."""
+    root = Path(__file__).resolve().parent.parent.parent
+    return root if (root / "docker-compose.yml").is_file() else None
+
+
+def validate(manifest, source: str = "builtin", repo=_AUTO) -> list[str]:
+    """Return every problem with `manifest` for an add-on from `source`.
+
+    `repo` is the repo root, for the checks that read it: a hook script must
+    exist, and a data path must be a bind-mount source in docker-compose.yml,
+    or the parent of one on whole path segments (`./data/twenty` for
+    `${V:-./data/twenty}/storage`). By default it is the root this file sits
+    in; with None, or where that root has no docker-compose.yml, those two
+    checks are skipped."""
+    if repo is _AUTO:
+        repo = _find_repo()
     if source not in SOURCES:
         raise ValueError(f"unknown source {source!r}")
     if not isinstance(manifest, dict):
@@ -226,6 +254,14 @@ def validate(manifest, source: str = "builtin") -> list[str]:
                 errors.extend(_validate_when(svc["when"], gate_flags, f"services.{name}.when"))
             if "port" in svc and not (isinstance(svc["port"], int) and 0 < svc["port"] < 65536):
                 err(f"services.{name}.port must be a port number")
+            if "oneshot" in svc:
+                if not isinstance(svc["oneshot"], bool):
+                    err(f"services.{name}.oneshot must be true or false")
+                elif svc["oneshot"]:
+                    if source != "builtin":
+                        err(f"services.{name}.oneshot: only built-in add-ons may have a oneshot service")
+                    if "when" in svc:
+                        err(f"services.{name}.oneshot: a oneshot service may not have when")
             if "volumes" in svc:
                 vols = svc["volumes"]
                 if source != "builtin":
@@ -334,10 +370,28 @@ def validate(manifest, source: str = "builtin") -> list[str]:
                 err("instances.settings must declare at least one setting")
             else:
                 errors.extend(_validate_settings(isettings, source=source, reads=bool(reads),
-                                                 flags=flags, in_instance=True))
-            extra = set(instances) - {"name", "settings"}
+                                                 flags=flags, in_instance=True,
+                                                 has_connect="connect" in instances))
+            extra = set(instances) - {"name", "settings", *INSTANCE_HOOKS, "errors", "optional"}
             if extra:
                 err(f"instances has unknown fields: {', '.join(sorted(extra))}")
+            if "optional" in instances:
+                if not isinstance(instances["optional"], bool):
+                    err("instances.optional must be true or false")
+                elif instances["optional"] and source != "builtin":
+                    err("instances.optional is for built-in add-ons only")
+            if ("connect" in instances) != ("disconnect" in instances):
+                err("instances.connect and instances.disconnect come as a pair")
+            if "errors" in instances:
+                names = instances["errors"]
+                if not (_is_str_list(names) and all(ERROR_NAME_RE.match(n) for n in names)
+                        and len(set(names)) == len(names)):
+                    err("instances.errors must be a list of distinct names of lowercase letters, "
+                        "digits, _ and -")
+                else:
+                    for n in names:
+                        if n in SHARED_ERRORS:
+                            err(f"instances.errors: {n!r} is a shared name; list only your own")
 
     mcp_services: set[str] = set()
     for entry in mcp_entries(manifest) if isinstance(mcp, (dict, list)) else []:
@@ -377,14 +431,198 @@ def validate(manifest, source: str = "builtin") -> list[str]:
             if extra:
                 err(f"commands.{cname} has unknown fields: {', '.join(sorted(extra))}")
 
+    for name, svc in services.items():
+        if isinstance(svc, dict) and svc.get("oneshot") is True and name in mcp_services:
+            err(f"services.{name}.oneshot: a oneshot service can't be the mcp target")
+
+    hook_commands = commands if isinstance(commands, dict) else {}
+    hooks = manifest.get("hooks")
+    if hooks is not None:
+        if not isinstance(hooks, dict):
+            err(f"hooks must be an object of {', '.join(HOOK_NAMES)} to a hook")
+        else:
+            extra = set(hooks) - set(HOOK_NAMES)
+            if extra:
+                err(f"hooks has unknown fields: {', '.join(sorted(extra))}")
+            for hname in HOOK_NAMES:
+                if hname in hooks:
+                    errors.extend(_validate_hook(hooks[hname], f"hooks.{hname}", source,
+                                                 hook_commands, repo))
+    if isinstance(instances, dict):
+        for hname in INSTANCE_HOOKS:
+            if hname in instances:
+                errors.extend(_validate_hook(instances[hname], f"instances.{hname}", source,
+                                             hook_commands, repo))
+
+    if "onToggle" in manifest:
+        errors.extend(_validate_on_toggle(manifest["onToggle"], source, repo))
+
+    old_volumes = [(n, s_["volumes"]) for n, s_ in services.items()
+                   if isinstance(s_, dict) and "volumes" in s_]
+    if "data" in manifest:
+        errors.extend(_validate_data(manifest["data"], source, repo, bool(old_volumes)))
+
+    if "backup" in manifest:
+        errors.extend(_validate_backup(manifest["backup"]))
+
     if "host" in manifest and source == "community":
         err("a host component is refused unless the add-on is built-in or on the official feed")
 
     return errors
 
 
+def _validate_script(argv, where: str, source: str, repo) -> list[str]:
+    """A repo-relative host script and its arguments (built-in only)."""
+    if source != "builtin":
+        return [f"{where}: a script is for built-in add-ons only"]
+    if not (_is_str_list(argv) and argv):
+        return [f"{where} must be a non-empty list of strings"]
+    errors: list[str] = []
+    if not HOOK_SCRIPT_RE.match(argv[0]):
+        errors.append(f"{where}[0] must be scripts/<name>.sh with lowercase letters, digits and -")
+    elif repo is not None and not (Path(repo) / argv[0]).is_file():
+        errors.append(f"{where}[0]: {argv[0]} does not exist in the repo")
+    if not all(a and "\n" not in a and "\r" not in a for a in argv):
+        errors.append(f"{where} items must be non-empty strings without line breaks")
+    return errors
+
+
+def _validate_hook(hook_, where: str, source: str, commands: dict, repo) -> list[str]:
+    if not isinstance(hook_, dict):
+        return [f'{where} must be {{"command": NAME}} or {{"script": [argv]}}']
+    if set(hook_) not in ({"command"}, {"script"}):
+        return [f"{where} must have exactly one of command or script"]
+    if "script" in hook_:
+        return _validate_script(hook_["script"], f"{where}.script", source, repo)
+    name = hook_["command"]
+    cmd = commands.get(name) if isinstance(name, str) else None
+    if not isinstance(cmd, dict):
+        return [f"{where}.command must name one of commands"]
+    if cmd.get("instance") is not False:
+        return [f"{where}.command: {name!r} takes an instance, and a hook has none"]
+    return []
+
+
+def _validate_on_toggle(value, source: str, repo) -> list[str]:
+    if not isinstance(value, dict):
+        return ["onToggle must be an object {recreate, script}"]
+    errors: list[str] = []
+    if source != "builtin":
+        errors.append("onToggle is for built-in add-ons only")
+    rec = value.get("recreate")
+    if not (_is_str_list(rec) and rec and all(COMPOSE_NAME_RE.match(r) for r in rec)
+            and len(set(rec)) == len(rec)):
+        errors.append("onToggle.recreate must be a non-empty list of distinct compose service names")
+    if "script" in value:
+        errors.extend(_validate_script(value["script"], "onToggle.script", source, repo))
+    extra = set(value) - {"recreate", "script"}
+    if extra:
+        errors.append(f"onToggle has unknown fields: {', '.join(sorted(extra))}")
+    return errors
+
+
+def _bind_sources(compose_text: str) -> set[str]:
+    """Sources of the short-syntax volume entries (`- SRC:DEST[:mode]`) in a compose file."""
+    found = set()
+    for m in re.finditer(r"^\s+-\s+[\"']?((?:\$\{[^}]*\}|[^:\s$\"'])+):", compose_text, re.M):
+        found.add(m.group(1))
+    return found
+
+
+def _validate_data(data, source: str, repo, old_volumes: bool) -> list[str]:
+    if not isinstance(data, dict):
+        return ["data must be an object {paths, volumes}"]
+    errors: list[str] = []
+    err = errors.append
+    if source != "builtin":
+        err("data is for built-in add-ons only")
+    extra = set(data) - {"paths", "volumes"}
+    if extra:
+        err(f"data has unknown fields: {', '.join(sorted(extra))}")
+    if "volumes" in data:
+        vols = data["volumes"]
+        if not (_is_str_list(vols) and vols and all(COMPOSE_NAME_RE.match(v) for v in vols)
+                and len(set(vols)) == len(vols)):
+            err("data.volumes must be a non-empty list of distinct compose volume names")
+        if old_volumes:
+            err("data.volumes and services.<name>.volumes are both present; keep data.volumes")
+    if "paths" in data:
+        paths = data["paths"]
+        if not (isinstance(paths, list) and paths):
+            err("data.paths must be a non-empty list of {env, default}")
+            paths = []
+        bound = None
+        if repo is not None:
+            compose = Path(repo) / "docker-compose.yml"
+            if compose.is_file():
+                bound = _bind_sources(compose.read_text(encoding="utf-8"))
+            else:
+                err("data.paths: the repo has no docker-compose.yml to check against")
+        for i, p in enumerate(paths):
+            at = f"data.paths[{i}]"
+            if not isinstance(p, dict):
+                err(f"{at} must be an object {{env, default}}")
+                continue
+            extra = set(p) - {"env", "default"}
+            if extra:
+                err(f"{at} has unknown fields: {', '.join(sorted(extra))}")
+            default = p.get("default")
+            env = p.get("env")
+            if "env" in p and not (isinstance(env, str) and ENV_RE.match(env)):
+                err(f"{at}.env must be an env var name")
+                env = None
+            if not (isinstance(default, str) and DATA_PATH_RE.match(default)
+                    and ".." not in default.split("/")):
+                err(f"{at}.default must be ./data/<path> with no .. segment")
+            elif bound is not None:
+                forms = [default] + ([f"${{{env}:-{default}}}"] if env is not None else [])
+                if not any(b == f or b.startswith(f + "/") for b in bound for f in forms):
+                    err(f"{at}.default {default!r} is not a bind mount source, or the parent of one, "
+                        "in docker-compose.yml")
+    return errors
+
+
+def _validate_backup(backup) -> list[str]:
+    if not isinstance(backup, dict):
+        return ["backup must be an object {secrets, recommended}"]
+    errors: list[str] = []
+    for key in ("secrets", "recommended"):
+        if key in backup and not (_is_str_list(backup[key])
+                                  and all(ENV_RE.match(v) for v in backup[key])):
+            errors.append(f"backup.{key} must be a list of env var names")
+    extra = set(backup) - {"secrets", "recommended"}
+    if extra:
+        errors.append(f"backup has unknown fields: {', '.join(sorted(extra))}")
+    return errors
+
+
+def data_volumes(manifest: dict) -> list[str]:
+    """Compose volume names the add-on's data lives in: data.volumes, or the
+    services.<name>.volumes of the old form (accepted for one patch)."""
+    data = manifest.get("data")
+    if isinstance(data, dict) and isinstance(data.get("volumes"), list):
+        return list(data["volumes"])
+    out: list[str] = []
+    services = manifest.get("services")
+    for svc in services.values() if isinstance(services, dict) else []:
+        vols = svc.get("volumes") if isinstance(svc, dict) else None
+        for v in vols if isinstance(vols, list) else []:
+            if v not in out:
+                out.append(v)
+    return out
+
+
+def hook(manifest: dict, name: str) -> dict | None:
+    """The hook `name` (init, upgrade, backup, restore, connect, disconnect), or None."""
+    where = manifest.get("instances") if name in INSTANCE_HOOKS else manifest.get("hooks")
+    if name not in INSTANCE_HOOKS and name not in HOOK_NAMES:
+        return None
+    found = where.get(name) if isinstance(where, dict) else None
+    return found if isinstance(found, dict) else None
+
+
 def _validate_settings(settings: dict, *, source: str, reads: bool, flags: set[str],
-                       in_instance: bool) -> list[str]:
+                       in_instance: bool, has_connect: bool = False) -> list[str]:
     """Check a settings schema (top-level, or an instance's). A setting with
     neither `default` nor `optional: true` is required. Messages name the
     setting, never a value."""
@@ -423,6 +661,16 @@ def _validate_settings(settings: dict, *, source: str, reads: bool, flags: set[s
             err(f"{at}: secret settings are refused unless the add-on is built-in or on the official feed")
         if t == "secret" and "default" in s:
             err(f"{at}: a secret setting may not have a default")
+        if "transient" in s:
+            if not isinstance(s["transient"], bool):
+                err(f"{at}.transient must be true or false")
+            elif s["transient"]:
+                if not in_instance or t != "secret":
+                    err(f"{at}.transient is for secret settings inside instances.settings only")
+                elif source != "builtin":
+                    err(f"{at}.transient is for built-in add-ons only")
+                elif not has_connect:
+                    err(f"{at}.transient needs instances.connect, which receives the value")
         if "default" in s and t != "choice" and not _default_fits(t, s["default"]):
             err(f"{at}.default does not match type {t}")
         if "flag" in s:
