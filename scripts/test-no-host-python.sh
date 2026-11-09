@@ -39,6 +39,37 @@ for f in $FIRST_RUN; do
 done
 [[ "$fail" -eq 0 ]] && echo "ok: first-run scripts run no host python3 or node"
 
+# sync-profiles.sh reads add-on manifests with sed. A scratch copy of the
+# script gets a manifest with a builtin block and one gate; --table must list both.
+gate_root="$(mktemp -d)"
+mkdir -p "$gate_root/scripts" "$gate_root/addons/demo"
+cp -R scripts/sync-profiles.sh scripts/lib "$gate_root/scripts/"
+cat > "$gate_root/addons/demo/addon.json" <<'JSON'
+{
+  "builtin": {
+    "flag": "DEMO_ENABLED",
+    "profile": "demo",
+    "seed": true
+  },
+  "gates": [
+    {
+      "flag": "DEMO_EXTRA_ENABLED",
+      "profile": "demo-extra",
+      "seed": false
+    }
+  ],
+  "services": {}
+}
+JSON
+gate_rows="$(bash "$gate_root/scripts/sync-profiles.sh" --table 2>&1 || true)"
+rm -rf "$gate_root"
+if printf '%s\n' "$gate_rows" | grep -qx 'DEMO_ENABLED demo 1' \
+  && printf '%s\n' "$gate_rows" | grep -qx 'DEMO_EXTRA_ENABLED demo-extra 0'; then
+  echo "ok: sync-profiles.sh lists an add-on's gate rows without python3"
+else
+  bad "sync-profiles.sh --table did not list the demo gate: $(printf '%s\n' "$gate_rows" | tail -3)"
+fi
+
 # --- Live check ---
 live_skip() {
   if [[ "${NO_HOST_PYTHON_LIVE:-}" == 1 ]]; then bad "live check: $*"; else echo "skip: live check ($*)"; fi

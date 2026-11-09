@@ -178,6 +178,8 @@ def validate(manifest, source: str = "builtin") -> list[str]:
                 extra = set(g) - {"flag", "profile", "seed"}
                 if extra:
                     err(f"gates[{i}] has unknown fields: {', '.join(sorted(extra))}")
+                elif list(g) != ["flag", "profile", "seed"] and set(g) == {"flag", "profile", "seed"}:
+                    err(f"gates keys must be in the order flag, profile, seed (gates[{i}]); sync-profiles.sh reads them line by line")
 
     services = manifest.get("services")
     if "services" in manifest:

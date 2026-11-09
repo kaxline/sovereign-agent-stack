@@ -390,6 +390,10 @@ two_gate_shape = two_entry()
 two_gate_shape["gates"] = [{"flag": "lower", "profile": "x", "seed": "no"}]
 refused("a gate needs an env var name", two_gate_shape, "builtin", "gates[0].flag")
 refused("a gate needs a boolean seed", two_gate_shape, "builtin", "gates[0].seed")
+# sync-profiles.sh reads gates line by line with sed, so key order is part of the format.
+two_order = two_entry()
+two_order["gates"] = [{"seed": False, "flag": "GPTR_EXTRA_ENABLED", "profile": "research-extra"}]
+refused("gate keys must be flag, profile, seed in that order", two_order, "builtin", "gates keys")
 two_empty = two_entry()
 two_empty["mcp"] = []
 refused("an empty mcp list", two_empty, "builtin", "mcp")
@@ -454,6 +458,11 @@ for path, manifest, parse_error in am.load_dir(ROOT / "addons"):
         profiles = re.search(r"^    profiles: \[(.*)\]$", block, re.M)
         listed = [p.strip().strip('"') for p in profiles.group(1).split(",")] if profiles else []
         check(f"{sid}: {svc['compose']} is in the {b['profile']} profile", b["profile"] in listed, str(listed))
+    for g in manifest.get("gates", []):
+        check(f"{sid}: sync-profiles maps gate {g['flag']} to {g['profile']}",
+              [g["flag"], g["profile"], "1" if g["seed"] else "0"] in rows, table.stdout)
+        check(f"{sid}: gate profile {g['profile']} exists in docker-compose.yml",
+              bool(re.search(rf'^    profiles: \[(?:.*[ ,"])?"?{re.escape(g["profile"])}"?[,\]]', compose, re.M)))
     if manifest.get("mcp"):
         for var in [b["flag"], *manifest["mcp"].get("env", {}).values()]:
             n = len(re.findall(rf"^      - {var}=", compose, re.M))
