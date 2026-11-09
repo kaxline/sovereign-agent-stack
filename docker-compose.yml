@@ -789,7 +789,7 @@ services:
   # Web UI:  http://localhost:5006   (localhost-bound; ACTUAL_PORT)
   # MCP:     http://actual-mcp-rw:3000/mcp, http://actual-mcp-ro:3000/mcp
   #          (Streamable HTTP, no auth; only hermes and actual-server share
-  #          their network)
+  #          their network); each connected budget at /<slug>/mcp on both
   # Data:    ACTUAL_DATA_DIR (default ./data/actual/server) on the server; each
   #          MCP container keeps a full copy of the budget in its cache volume
   # Credentials: compose/actual/budget.env (ACTUAL_BUDGET_FILE in .env)
@@ -838,6 +838,9 @@ services:
         target: /app/.env
     volumes:
       - actual_mcp_rw_cache:/data
+      # Connected budgets (instances/ and secrets/) for the launcher, which
+      # serves each at /<slug>/mcp. Created by make ensure-local.
+      - ${ASSISTANT_DATA_ROOT:-./data}/addons/actual:/budgets:ro
     networks: [budget]
     # No /health endpoint. Any HTTP answer on /mcp means the listener is up;
     # the budget itself loads on the first tool call.
@@ -863,6 +866,7 @@ services:
         target: /app/.env
     volumes:
       - actual_mcp_ro_cache:/data
+      - ${ASSISTANT_DATA_ROOT:-./data}/addons/actual:/budgets:ro
     networks: [budget]
     healthcheck: *actual-mcp-healthcheck
 
@@ -1353,6 +1357,9 @@ services:
       # the budget's credentials never reach Hermes.
       - ACTUAL_MCP_ENABLED=${ACTUAL_MCP_ENABLED:-0}
       - ACTUAL_ACCESS=${ACTUAL_ACCESS:-}
+      # The single budget's file path (not its contents). Empty or no-budget.env
+      # drops the legacy budget entry; connected budgets register either way.
+      - ACTUAL_BUDGET_FILE=${ACTUAL_BUDGET_FILE:-}
       # OpenCode coding MCP (coding profile); registered on default + browser only.
       - OPENCODE_MCP_URL=${OPENCODE_MCP_URL:-http://opencode-mcp:8000/sse}
       - OPENCODE_MCP_ENABLED=${OPENCODE_MCP_ENABLED:-0}
@@ -1411,9 +1418,13 @@ services:
       # Twenty's workspaces: instances/<slug>.json and secrets/<slug>.key_ro|key_rw.
       # Only this add-on's directory; other add-ons keep secrets under data/addons.
       - ${ASSISTANT_DATA_ROOT:-./data}/addons/twenty:/bootstrap/addon-data/twenty:ro
+      # Connected Actual budgets: instances/<slug>.json only, never secrets/.
+      # make ensure-local (budget.sh ensure) creates the directory first.
+      - ${ASSISTANT_DATA_ROOT:-./data}/addons/actual/instances:/bootstrap/addon-data/actual/instances:ro
       # Built-in add-on manifests and the reader for them (GPT Researcher so far).
       - ./addons:/bootstrap/addons:ro
       - ./scripts/lib/addon_manifest.py:/bootstrap/addon_manifest.py:ro
+      - ./scripts/lib/actual_rows.py:/bootstrap/actual_rows.py:ro
     entrypoint: /bin/sh
     command: /bootstrap/bootstrap-api-profile.sh
 
@@ -1475,6 +1486,9 @@ services:
       # the budget's credentials never reach Hermes.
       - ACTUAL_MCP_ENABLED=${ACTUAL_MCP_ENABLED:-0}
       - ACTUAL_ACCESS=${ACTUAL_ACCESS:-}
+      # The single budget's file path (not its contents). Empty or no-budget.env
+      # drops the legacy budget entry; connected budgets register either way.
+      - ACTUAL_BUDGET_FILE=${ACTUAL_BUDGET_FILE:-}
       - OPENCODE_MCP_URL=${OPENCODE_MCP_URL:-http://opencode-mcp:8000/sse}
       - OPENCODE_MCP_ENABLED=${OPENCODE_MCP_ENABLED:-0}
       - OPENCODE_MCP_TIMEOUT=${OPENCODE_MCP_TIMEOUT:-600}
@@ -1533,9 +1547,13 @@ services:
       # Twenty's workspaces: instances/<slug>.json and secrets/<slug>.key_ro|key_rw.
       # Only this add-on's directory; other add-ons keep secrets under data/addons.
       - ${ASSISTANT_DATA_ROOT:-./data}/addons/twenty:/bootstrap/addon-data/twenty:ro
+      # Connected Actual budgets: instances/<slug>.json only, never secrets/.
+      # make ensure-local (budget.sh ensure) creates the directory first.
+      - ${ASSISTANT_DATA_ROOT:-./data}/addons/actual/instances:/bootstrap/addon-data/actual/instances:ro
       # Built-in add-on manifests and the reader for them (GPT Researcher so far).
       - ./addons:/bootstrap/addons:ro
       - ./scripts/lib/addon_manifest.py:/bootstrap/addon_manifest.py:ro
+      - ./scripts/lib/actual_rows.py:/bootstrap/actual_rows.py:ro
     depends_on:
       hermes-api-bootstrap:
         condition: service_completed_successfully

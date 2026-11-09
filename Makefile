@@ -50,6 +50,7 @@ ensure-local:
 	@test -f compose/caldav-mcp/accounts/personal.env || (cp compose/caldav-mcp/account.env.example compose/caldav-mcp/accounts/personal.env && echo "Created compose/caldav-mcp/accounts/personal.env — set CALDAV_* credentials for calendar profile")
 	@./scripts/todo.sh ensure
 	@./scripts/crm.sh ensure
+	@./scripts/budget.sh ensure
 	@./scripts/sync-signal-profile.sh
 	@./scripts/sync-buzz-profile.sh
 	@./scripts/sync-terminal-backend.sh

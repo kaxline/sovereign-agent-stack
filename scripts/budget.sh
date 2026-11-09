@@ -83,6 +83,9 @@ Usage: scripts/budget.sh <command> [options]
   access SLUG read|write [--json]
         The same for one connected budget: saves it with addon.sh configure
         and reloads Hermes. Prints {"phase":"done","mcp":[...]}.
+  ensure  Create <data root>/addons/actual/instances and secrets (0700). make
+          ensure-local runs this so Docker doesn't create them root-owned on
+          Linux when it bind-mounts them.
 
 After init, add, remove or access: make up, then make hermes-reload
 EOF
@@ -1196,6 +1199,26 @@ cmd_access() {
   log "Next: make hermes-reload"
 }
 
+# The actual-mcp containers and the Hermes bootstraps bind-mount the store.
+# Not fatal: on a store Docker already created root-owned, make up goes on and
+# the warning says how to fix it.
+cmd_ensure() {
+  [[ $# -eq 0 ]] || die "ensure takes no options"
+  local root store
+  root="$(resolve_data_root_path "${BUDGET_DATA_ROOT:-}")"
+  if ! validate_data_root_path "$root" 2> "${WORK}/root.err"; then
+    printf '[budget] warning: %s; addons/actual not created\n' "$(cat "${WORK}/root.err")" >&2
+    return 0
+  fi
+  store="${root}/addons/actual"
+  if ! mkdir -p "${store}/instances" "${store}/secrets" 2> /dev/null \
+      || ! chmod 700 "$store" "${store}/instances" "${store}/secrets" 2> /dev/null; then
+    local fix="sudo chown -R \"\$(id -u):\$(id -g)\" '${store}'"
+    printf '[budget] warning: could not create %s, its instances and its secrets at 0700 (another user, often root, owns one); run %s\n' \
+      "$store" "$fix" >&2
+  fi
+}
+
 case "${1:-}" in
   init) shift; cmd_init "$@" ;;
   add) shift; cmd_add "$@" ;;
@@ -1207,6 +1230,7 @@ case "${1:-}" in
   budgets) shift; cmd_budgets "$@" ;;
   connect) shift; cmd_connect "$@" ;;
   disconnect) shift; cmd_disconnect "$@" ;;
+  ensure) shift; cmd_ensure "$@" ;;
   -h | --help | help) usage ;;
   *) usage >&2; exit 1 ;;
 esac

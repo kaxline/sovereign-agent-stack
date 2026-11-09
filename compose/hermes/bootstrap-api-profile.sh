@@ -82,8 +82,11 @@ MESSAGES_MCP_TOOLS="messages_status messages_chats messages_search messages_conv
 # Built-in add-ons (GPT Researcher so far) come from addons/<id>/addon.json.
 ADDONS_DIR="${ADDONS_DIR:-/bootstrap/addons}"
 ADDON_MANIFEST_PY="${ADDON_MANIFEST_PY:-/bootstrap/addon_manifest.py}"
-# Stores of add-ons with mcp.instances, one <short id>/ each (Twenty's workspaces).
+# Stores of add-ons with mcp.instances, one <short id>/ each (Twenty's workspaces),
+# and actual/instances, the connected Actual budgets.
 ADDON_DATA_DIR="${ADDON_DATA_DIR:-/bootstrap/addon-data}"
+# Plans the connected Actual budgets' MCP entries (register_actual_budget_rows).
+ACTUAL_ROWS_PY="${ACTUAL_ROWS_PY:-/bootstrap/actual_rows.py}"
 # Probe interval for a parked stack MCP server (patch-mcp-wake.py; Hermes
 # default 300, floor 10). hermes starts without waiting for its MCP sidecars,
 # so one still booting parks and comes back on the next probe. Empty leaves
@@ -182,6 +185,7 @@ bootstrap_inputs_hash() {
     # A changed add-on manifest, or reader, changes what gets registered.
     echo "addons"
     cat "$ADDON_MANIFEST_PY" 2>/dev/null || true
+    cat "$ACTUAL_ROWS_PY" 2>/dev/null || true
     for _bih_f in "$ADDONS_DIR"/*/addon.json; do
       [ -f "$_bih_f" ] || continue
       echo "$_bih_f"
@@ -859,7 +863,7 @@ set_stack_mcp_parked_retry() {
   _out="$(python3 - "$_cfg" "$MCP_PARKED_RETRY_INTERVAL" "$LIGHTRAG_MCP_URL" "$SEARXNG_MCP_URL" \
     "$CALDAV_MCP_URL" "$OPENCODE_MCP_URL" "$SQL_MCP_RO_URL" "$SQL_MCP_RW_URL" "$VIKUNJA_MCP_URL" \
     "$MAIL_MCP_URL" "$MAIL_DRAFTS_MCP_URL" "$MESSAGES_MCP_URL" \
-    $(addon_mcp_urls "$1") $(addon_instance_urls "$1") <<'PY'
+    $(addon_mcp_urls "$1") $(addon_instance_urls "$1") $(actual_row_urls "$1") <<'PY'
 import sys
 sys.path.insert(0, "/opt/hermes")
 try:
@@ -943,7 +947,15 @@ reconcile_stack_eager_tools() {
       fi
       ;;
   esac
-  _rst_args="${_rst_args} $(addon_mcp_pin_args "$_rst_profile")"
+  # Without the single budget, register_actual_budget_rows drops the legacy
+  # budget entry, so its mcp__budget__* pins stay out too.
+  for _rst_t in $(addon_mcp_pin_args "$_rst_profile"); do
+    case "$_rst_t" in
+      mcp__budget__*) actual_single_budget_off && continue ;;
+    esac
+    _rst_args="${_rst_args} ${_rst_t}"
+  done
+  _rst_args="${_rst_args} $(actual_row_pin_args "$_rst_profile")"
   _rst_args="${_rst_args} $(addon_instance_pin_args "$_rst_profile")"
   case "$OPENCODE_MCP_ENABLED" in
     1|true|TRUE|yes|YES)
@@ -1413,6 +1425,185 @@ register_addon_mcp_servers() {
     # shellcheck disable=SC2086
     pin_mcp_tools "$_ram_profile" "$_ram_name" $_ram_pins
   done
+}
+
+# Connected Actual budgets ("rows"): ADDON_DATA_DIR/actual/instances/<slug>.json,
+# written by addon.sh connect and mounted read-only (never secrets/). The
+# actual-mcp launchers serve each row at /<slug>/mcp; actual_rows.py plan says
+# which entries a profile gets: budget-<slug>-ro on actual-mcp-ro for every
+# row and budget-<slug> on actual-mcp-rw for a write row, on default and
+# browser only. Actual's manifest keeps its single mcp entry for the legacy
+# budget (register_addon_mcp_servers); rows don't use mcp.instances, which
+# needs bearer auth and gives one entry per instance.
+actual_rows_plan() {
+  [ -d "$ADDONS_DIR" ] || return 0
+  python3 "$ACTUAL_ROWS_PY" plan "${ADDON_DATA_DIR}/actual/instances" "$ADDONS_DIR" "${1:-default}"
+}
+
+# The add-on flag, read as addon_manifest.truthy reads it.
+actual_rows_on() {
+  case "$(printf '%s' "${ACTUAL_MCP_ENABLED:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# True when no single budget is configured: ACTUAL_BUDGET_FILE empty or the
+# empty placeholder compose falls back to.
+actual_single_budget_off() {
+  case "${ACTUAL_BUDGET_FILE:-}" in
+    ''|*no-budget.env) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Every row URL <profile> registers, one per line, for set_stack_mcp_parked_retry.
+actual_row_urls() {
+  actual_rows_on || return 0
+  actual_rows_plan "$1" 2>/dev/null | cut -d'|' -f3 | sed '/^$/d' || true
+}
+
+# "<tool> <mcp__name__tool> ..." for each row entry on <profile>, for
+# reconcile_stack_eager_tools.
+actual_row_pin_args() {
+  actual_rows_on || return 0
+  actual_rows_plan "$1" 2>/dev/null | while IFS='|' read -r _arp_name _arp_title _arp_url \
+      _arp_timeout _arp_connect _arp_tools _arp_pins; do
+    for _arp_t in $_arp_pins; do
+      printf ' %s %s' "$_arp_t" "$(mcp_tool_name "$_arp_name" "$_arp_t")"
+    done
+  done
+  return 0
+}
+
+# Drop row entries on one profile, and the tool pins of every budget entry
+# that is gone. An entry is a row entry when its URL is on actual-mcp-ro:3000
+# or actual-mcp-rw:3000 with a path other than the legacy /mcp.
+#   rows: drop budget-* row entries not named in <keep>; entries a client
+#         added under another name stay.
+#   all:  drop every row entry (the flag is off, or the profile gets none).
+# drop-legacy also drops the legacy budget entry on /mcp.
+#
+# Usage: reconcile_actual_budget_rows <profile> rows|all keep|drop-legacy [<name>]...
+reconcile_actual_budget_rows() {
+  _out="$(python3 - "$(config_path_for "$1")" "$2" "$3" "$(shift 3; echo "$*")" <<'PY'
+import re
+import sys
+from urllib.parse import urlsplit
+
+sys.path.insert(0, "/opt/hermes")
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import hermes_yaml as yaml
+from utils import atomic_yaml_write
+
+cfg_path, mode, legacy, keep = sys.argv[1], sys.argv[2], sys.argv[3], set(sys.argv[4].split())
+HOSTS = {"actual-mcp-ro", "actual-mcp-rw"}
+try:
+    with open(cfg_path) as fh:
+        config = yaml.safe_load(fh) or {}
+except FileNotFoundError:
+    raise SystemExit(0)
+servers = config.get("mcp_servers")
+if not isinstance(servers, dict):
+    servers = {}
+
+
+def place(entry):
+    """'row', 'legacy' or None for an entry's URL."""
+    if not isinstance(entry, dict):
+        return None
+    try:
+        parts = urlsplit(str(entry.get("url", "")).strip())
+        port = parts.port
+    except ValueError:
+        return None
+    if parts.scheme != "http" or parts.hostname not in HOSTS or port != 3000:
+        return None
+    return "legacy" if parts.path.rstrip("/") == "/mcp" else "row"
+
+
+removed = []
+for key, entry in list(servers.items()):
+    where = place(entry)
+    if where == "row" and (mode == "all" or (str(key).startswith("budget-") and key not in keep)):
+        removed.append(key)
+    elif where == "legacy" and key == "budget" and legacy == "drop-legacy":
+        removed.append(key)
+for key in removed:
+    del servers[key]
+
+
+def sanitize(name):
+    return re.sub(r"[^A-Za-z0-9_]", "_", str(name))
+
+
+# Pins of budget entries that are gone: mcp__budget__* and mcp__budget-*__* /
+# mcp__budget_*__* whose server isn't in the config any more. Bare tool names
+# stay; another entry may still use them.
+present = {sanitize(k) for k in servers} | {str(k) for k in servers}
+unpinned = 0
+tool_search = (config.get("tools") or {}).get("tool_search") or {}
+pins = tool_search.get("always_include")
+if isinstance(pins, list):
+    def stale(name):
+        if not isinstance(name, str) or not name.startswith("mcp__") or "__" not in name[5:]:
+            return False
+        server = name[5:].split("__", 1)[0]
+        ours = server == "budget" or server.startswith(("budget_", "budget-"))
+        return ours and server not in present
+
+    kept = [p for p in pins if not stale(p)]
+    unpinned = len(pins) - len(kept)
+    if unpinned:
+        tool_search["always_include"] = kept
+
+if removed or unpinned:
+    atomic_yaml_write(cfg_path, config)
+if removed:
+    print("Removed Actual budget MCP entries: " + ", ".join(sorted(map(str, removed))))
+if unpinned:
+    print(f"Removed {unpinned} tool pins of Actual budget entries that are gone")
+PY
+)"
+  if [ -n "$_out" ]; then log "$_out"; fi
+}
+
+# Runs after register_addon_mcp_servers, which writes or drops the legacy
+# budget entry on /mcp.
+register_actual_budget_rows() {
+  _rab_profile="$1"
+  _rab_legacy=keep
+  if actual_single_budget_off; then
+    _rab_legacy=drop-legacy
+  fi
+  if ! actual_rows_on; then
+    reconcile_actual_budget_rows "$_rab_profile" all "$_rab_legacy"
+    return 0
+  fi
+  if ! _rab_plan="$(actual_rows_plan "$_rab_profile")"; then
+    log "warning: could not plan the connected Actual budgets; their MCP entries left as they were"
+    return 0
+  fi
+  case "${_rab_profile:-default}" in
+    default|browser) _rab_mode=rows ;;
+    *) _rab_mode=all ;;
+  esac
+  _rab_keep=""
+  while IFS='|' read -r _rab_name _rab_title _rab_url _rab_timeout _rab_connect _rab_tools _rab_pins; do
+    [ -n "$_rab_name" ] || continue
+    # shellcheck disable=SC2086
+    register_mcp_server "$_rab_profile" "$_rab_name" "$_rab_title" \
+      "$_rab_url" "$_rab_timeout" "$_rab_connect" $_rab_tools
+    # shellcheck disable=SC2086
+    pin_mcp_tools "$_rab_profile" "$_rab_name" $_rab_pins
+    _rab_keep="${_rab_keep} ${_rab_name}"
+  done <<EOF
+$_rab_plan
+EOF
+  # shellcheck disable=SC2086
+  reconcile_actual_budget_rows "$_rab_profile" "$_rab_mode" "$_rab_legacy" $_rab_keep
 }
 
 # Built-in add-ons with a vaultBackend block (addon_manifest.py vault-plan): a
@@ -1983,7 +2174,9 @@ PY
 # platform_toolsets.cron to Hermes's default cron tools plus every other MCP
 # server. A job that names a fenced server in its own enabled_toolsets (make
 # mail-triage-cron, make messages-triage-cron) still gets it. Add-ons are
-# matched by MCP name or URL (addon_manifest.cron_fence).
+# matched by MCP name, or by the scheme, host and port of a URL
+# (addon_manifest.cron_fence), so a connected Actual budget's write entry on
+# actual-mcp-rw is fenced while its -ro entry on actual-mcp-ro is not.
 #
 # Add-ons with a vaultBackend reach Hermes through a plugin, not MCP, and the
 # plugin's toolset (bitwarden) is on in cron by default. While the plugin is
@@ -2004,6 +2197,7 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 sys.path.insert(0, "/opt/hermes")
 try:
@@ -2016,6 +2210,22 @@ from utils import atomic_yaml_write
 
 MAIL_URLS = ("mail-mcp:8000", "mail-drafts-mcp:8000", "messages-mcp:8000")
 cfg_path = Path(sys.argv[1])
+
+
+def origin(url):
+    """(scheme, host, port) of a URL, None when it has no host. A connected
+    Actual budget's write entry is http://actual-mcp-rw:3000/<slug>/mcp, on
+    the host of the fenced http://actual-mcp-rw:3000/mcp."""
+    try:
+        parts = urlsplit(url.strip())
+        port = parts.port or {"http": 80, "https": 443}.get(parts.scheme.lower())
+    except ValueError:
+        return None
+    if not parts.hostname:
+        return None
+    return (parts.scheme.lower(), parts.hostname.lower(), port)
+
+
 addon_names, addon_urls, addon_toolsets = set(), set(), []
 fence_known = True
 try:
@@ -2080,9 +2290,10 @@ elif plugin_ts:
 servers = config.get("mcp_servers") or {}
 enabled = {str(n) for n, s in servers.items()
            if isinstance(s, dict) and str(s.get("enabled", True)).lower() not in ("false", "no", "off", "0")}
+addon_origins = {o for o in map(origin, addon_urls) if o}
 mail = {n for n in enabled
         if any(u in str(servers[n].get("url", "")) for u in MAIL_URLS)
-        or n in addon_names or str(servers[n].get("url", "")) in addon_urls}
+        or n in addon_names or origin(str(servers[n].get("url", ""))) in addon_origins}
 platform = config.get("platform_toolsets")
 platform = platform if isinstance(platform, dict) else {}
 current = platform.get("cron")
@@ -2476,6 +2687,7 @@ if is_true "$BOOTSTRAP_SHARED"; then
   register_mail_drafts_mcp_servers ""
   register_messages_mcp_servers ""
   register_addon_mcp_servers ""
+  register_actual_budget_rows ""
   register_addon_vault_backends ""
   register_addon_instance_servers ""
 
@@ -2687,6 +2899,7 @@ register_mail_mcp_servers "$PROFILE"
 register_mail_drafts_mcp_servers "$PROFILE"
 register_messages_mcp_servers "$PROFILE"
 register_addon_mcp_servers "$PROFILE"
+register_actual_budget_rows "$PROFILE"
 register_addon_vault_backends "$PROFILE"
 register_addon_instance_servers "$PROFILE"
 

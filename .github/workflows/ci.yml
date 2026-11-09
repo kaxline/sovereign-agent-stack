@@ -59,6 +59,8 @@ jobs:
             "core,research" \
             "core,crm" \
             "core,bitwarden" \
+            "core,budget" \
+            "core,budget,budget-local" \
             "core,rag,calendar,automation,coding,ollama,searxng-prod,search-gate,db,todo,crm"
           do
             echo "=== COMPOSE_PROFILES=$profiles ==="
@@ -135,6 +137,8 @@ jobs:
         run: sh scripts/test-gptr-mcp-registration.sh
       - name: Actual Budget MCP registration
         run: sh scripts/test-actual-registration.sh
+      - name: Connected Actual budgets as MCP entries (image part skips without the image)
+        run: sh scripts/test-actual-rows.sh
       - name: actual-admin.mjs against an Actual server
         run: bash scripts/test-actual-admin.sh
       - name: Add-on MCP access levels

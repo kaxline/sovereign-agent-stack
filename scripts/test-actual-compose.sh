@@ -140,6 +140,10 @@ for name, write in (("actual-mcp-rw", True), ("actual-mcp-ro", False)):
     vols = svc.get("volumes") or []
     if not any(v.get("type") == "volume" and v.get("source") == cache and v.get("target") == "/data" for v in vols):
         errors.append(f"{name} does not mount volume {cache} at /data")
+    rows = [v for v in vols if v.get("target") == "/budgets"]
+    if len(rows) != 1 or rows[0].get("type") != "bind" or not rows[0].get("read_only") \
+            or not str(rows[0].get("source", "")).endswith("/data/addons/actual"):
+        errors.append(f"{name} does not mount <data root>/addons/actual read-only at /budgets ({rows})")
     if set(svc.get("networks") or {}) != {"budget"}:
         errors.append(f"{name} networks are {sorted(svc.get('networks') or {})}, want ['budget']")
     test = " ".join((svc.get("healthcheck") or {}).get("test") or [])
@@ -167,9 +171,27 @@ for name, svc in services.items():
     if "ACTUAL_PASSWORD" in keys:
         errors.append(f"{name} environment includes ACTUAL_PASSWORD")
 for name in ("hermes-api-bootstrap", "hermes-browser-bootstrap"):
-    keys = {k for k in env_map(services.get(name) or {}) if k.startswith("ACTUAL_")}
-    if keys != {"ACTUAL_MCP_ENABLED", "ACTUAL_ACCESS"}:
-        errors.append(f"{name} ACTUAL_* keys are {sorted(keys)}, want ACTUAL_ACCESS and ACTUAL_MCP_ENABLED")
+    svc = services.get(name) or {}
+    env = env_map(svc)
+    keys = {k for k in env if k.startswith("ACTUAL_")}
+    if keys != {"ACTUAL_MCP_ENABLED", "ACTUAL_ACCESS", "ACTUAL_BUDGET_FILE"}:
+        errors.append(f"{name} ACTUAL_* keys are {sorted(keys)}, want ACTUAL_ACCESS, ACTUAL_BUDGET_FILE and ACTUAL_MCP_ENABLED")
+    # The test runs with ACTUAL_BUDGET_FILE unset: the bootstrap sees it empty.
+    if env.get("ACTUAL_BUDGET_FILE") not in ("", None):
+        errors.append(f"{name} ACTUAL_BUDGET_FILE defaults to {env.get('ACTUAL_BUDGET_FILE')!r}, want empty")
+    # Only the instance files: the bootstrap never sees secrets/.
+    vols = svc.get("volumes") or []
+    rows = [v for v in vols if v.get("target") == "/bootstrap/addon-data/actual/instances"]
+    if len(rows) != 1 or not rows[0].get("read_only") \
+            or not str(rows[0].get("source", "")).endswith("/data/addons/actual/instances"):
+        errors.append(f"{name} does not mount <data root>/addons/actual/instances read-only ({rows})")
+    for v in vols:
+        if "addons/actual" in str(v.get("source", "")) and not str(v.get("source", "")).endswith("/instances"):
+            errors.append(f"{name} mounts {v.get('source')}; only addons/actual/instances may reach it")
+        if str(v.get("target", "")) == "/bootstrap/actual_rows.py" and not v.get("read_only"):
+            errors.append(f"{name} mounts actual_rows.py writable")
+    if not any(str(v.get("target", "")) == "/bootstrap/actual_rows.py" for v in vols):
+        errors.append(f"{name} does not mount scripts/lib/actual_rows.py at /bootstrap/actual_rows.py")
 
 for err in errors:
     print(f"FAIL {err}", file=sys.stderr)
