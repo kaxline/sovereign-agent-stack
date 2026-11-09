@@ -157,6 +157,52 @@ c="$store/instances/crlf.json"
 [ "$(cat "$store/secrets/crlf.key_ro")" = crlf-ro-SECRET ] || fail "CRLF key_ro"
 [ "$(cat "$store/secrets/crlf.key_rw")" = crlf-rw-SECRET ] || fail "CRLF key_rw"
 
+# init with a workspace file migrate couldn't store refuses before it reaches
+# Docker, so it never creates a second, empty workspace under the same slug.
+# A directory where the key file goes makes the store write fail.
+blk="$tmp/blk"
+mkdir -p "$blk/bin"
+printf '#!/bin/sh\necho "docker $*" >> "%s/docker.log"\nexit 9\n' "$blk" > "$blk/bin/docker"
+chmod +x "$blk/bin/docker"
+cp "$ENV_FILE" "$blk/.env"
+printf 'TWENTY_LOCAL_ENABLED=1\nTWENTY_USERNAME=owner@example.com\nTWENTY_PASSWORD=pw-SECRET-123\n' >> "$blk/.env"
+printf 'TWENTY_URL=http://twenty-server:3000\nTWENTY_KEY_RO=lm-ro-SECRET\nTWENTY_KEY_RW=lm-rw-SECRET\n' > "$ws/lm.env"
+mkdir "$store/secrets/lm.key_rw"
+if PATH="$blk/bin:$PATH" ENV_FILE="$blk/.env" run init --slug lm; then
+  fail "init with an unmigrated file for its slug must fail"
+fi
+no_secret "init blocked"
+grep -q 'lm.env' "$err" || fail "init names the unmigrated file"
+grep -q 'crm.sh migrate' "$err" || fail "init points at crm.sh migrate"
+[ ! -e "$blk/docker.log" ] || fail "init with an unmigrated file reaches Docker ($(cat "$blk/docker.log"))"
+[ ! -e "$store/instances/lm.json" ] || fail "init with an unmigrated file stores nothing"
+# --json: the hook's error line.
+if PATH="$blk/bin:$PATH" ENV_FILE="$blk/.env" run init --slug lm --json; then
+  fail "init --json with an unmigrated file must fail"
+fi
+tail -1 "$out" | grep -q '"phase":"error","error":"command_failed"' \
+  || fail "init --json reports command_failed ($(cat "$out"))"
+[ ! -e "$blk/docker.log" ] || fail "init --json with an unmigrated file reaches Docker"
+# Another slug's unmigrated file on the local URL blocks too: init can't see
+# that workspace, so single-workspace mode would let a second one in.
+if PATH="$blk/bin:$PATH" ENV_FILE="$blk/.env" run init --slug other; then
+  fail "init with another unmigrated local workspace must fail"
+fi
+grep -q 'lm.env' "$err" || fail "init names the other unmigrated local file"
+[ ! -e "$blk/docker.log" ] || fail "init with another unmigrated local file reaches Docker"
+rmdir "$store/secrets/lm.key_rw"
+# An unmigrated remote workspace for another slug doesn't block: init goes on
+# to Docker (the stub fails it there).
+mv "$ws/lm.env" "$tmp/lm.env.keep"
+printf 'TWENTY_URL=https://remote.example.com\nTWENTY_KEY_RW=r-rw-SECRET\n' > "$ws/remote.env"
+mkdir "$store/secrets/remote.key_rw"
+if PATH="$blk/bin:$PATH" ENV_FILE="$blk/.env" run init --slug other; then
+  fail "init with the docker stub must fail"
+fi
+grep -q 'Docker daemon' "$err" || fail "an unmigrated remote file doesn't block init ($(cat "$err"))"
+rmdir "$store/secrets/remote.key_rw"
+rm -f "$ws/remote.env" "$blk/docker.log" "$tmp/lm.env.keep"
+
 # No files: no container (a docker that fails loudly), exit 0.
 empty="$tmp/empty"
 mkdir -p "$empty/bin" "$empty/ws"

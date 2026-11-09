@@ -304,6 +304,23 @@ migrate_first() {
   migrate_workspaces || warn "some workspace files weren't migrated; see above"
 }
 
+# Prints the first workspace file migrate left in $WS_DIR that init can't
+# see: one for SLUG, or one on the local instance, whose slug isn't stored.
+# twenty_admin.py reads only the store, so with such a file init would create
+# a second, empty workspace (or let one past single-workspace mode).
+unmigrated_for_init() {
+  local f s
+  for f in "$WS_DIR"/*.env; do
+    [[ -f "$f" ]] || continue
+    s="$(basename "$f" .env)"
+    stored "$s" && continue
+    if [[ "$s" == "$1" || "$(norm_url "$(ws_get "$f" TWENTY_URL)")" == "$LOCAL_URL" ]]; then
+      printf '%s' "$f"
+      return 0
+    fi
+  done
+}
+
 data_dir() {
   resolve_data_root_path "$(env_get TWENTY_DATA_DIR ./data/twenty)"
 }
@@ -409,6 +426,11 @@ cmd_init() {
   fi
   valid_slug "$slug" || die "slug '${slug}' must use lowercase letters, digits and hyphens"
   migrate_first
+  local left
+  left="$(unmigrated_for_init "$slug")"
+  if [[ -n "$left" ]]; then
+    die "${left} isn't in ${STORE} yet, so init would create a new, empty workspace beside it. Fix what migrate reported above (make doctor says why) and run ./scripts/crm.sh migrate, then init again"
+  fi
   if [[ -n "$json" ]] && ! is_true "$(env_get TWENTY_LOCAL_ENABLED 0)"; then
     printf '{"phase":"done","message":"local instance off"}\n' >&3
     exit 0
