@@ -7,7 +7,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 crm="${ROOT}/scripts/crm.sh"
 tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
+trap 'chmod -R u+rwx "$tmp" 2>/dev/null; rm -rf "$tmp"' EXIT
 
 export STACK_PYTHON=host
 export ENV_FILE="$tmp/.env"
@@ -248,5 +248,20 @@ PATH="$fresh/bin:$PATH" ASSISTANT_DATA_ROOT="$fresh/data" CRM_WORKSPACES_DIR="$f
   || fail "ensure with a failing chmod must not abort ($(cat "$out" "$err"))"
 grep -q "$fresh/data/addons/twenty" "$err" || fail "the chmod warning names the store ($(cat "$err"))"
 grep -q 'chown' "$err" || fail "the chmod warning gives the chown fix"
+
+# A store directory Docker created root-owned with no instances/ in it (0555
+# here): mkdir fails, and ensure warns with the fix and still runs the rest.
+if [ "$(id -u)" != 0 ]; then
+  ro="$tmp/ro"
+  mkdir -p "$ro/data/addons/twenty" "$ro/ws"
+  chmod 555 "$ro/data/addons/twenty"
+  printf 'TWENTY_MULTIWORKSPACE=1\nTWENTY_PORT=3000\n' > "$tmp/ro.env"
+  ENV_FILE="$tmp/ro.env" ASSISTANT_DATA_ROOT="$ro/data" CRM_WORKSPACES_DIR="$ro/ws" run ensure \
+    || fail "ensure on an unwritable store must not abort ($(cat "$out" "$err"))"
+  grep -q "$ro/data/addons/twenty" "$err" || fail "the mkdir warning names the store ($(cat "$err"))"
+  grep -q 'chown' "$err" || fail "the mkdir warning gives the chown fix"
+  grep -q '^TWENTY_MULTIWORKSPACE_BOOL=true$' "$tmp/ro.env" || fail "ensure goes on after the mkdir warning"
+  chmod 755 "$ro/data/addons/twenty"
+fi
 
 printf 'OK crm.sh migrate\n'
