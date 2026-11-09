@@ -36,6 +36,7 @@ printf 'COMPOSE_PROJECT_NAME=fixtureproj\n' >> "${root}/.env"
 # `compose logs` prints one line naming the service.
 # `compose config --services` prints the file CONFIG_SERVICES names, if any.
 # DOCKER_FAIL_RECREATE=1 makes `compose up ... --force-recreate` exit 1.
+# STUB_LS_DIR=DIR makes `compose up` log `ls: ` and the names in DIR.
 # DOCKER_FAIL_BOOTSTRAP=1 makes `compose run ... hermes-api-bootstrap` exit 1.
 cat > "${tmp}/bin/docker" <<'EOF'
 #!/bin/sh
@@ -64,6 +65,7 @@ if [ "$1 $2" = "compose up" ] && [ "${DOCKER_FAIL_RECREATE:-0}" = 1 ]; then
   case "$*" in *--force-recreate*) echo "recreate failed"; exit 1 ;; esac
 fi
 if [ "$1 $2" = "compose up" ]; then
+  [ -n "${STUB_LS_DIR:-}" ] && echo "ls: $(ls "$STUB_LS_DIR" | tr '\n' ' ')" >> "${STUB_LOG}"
   [ -n "${DOCKER_UP_DELAY:-}" ] && sleep "$DOCKER_UP_DELAY"
   if [ "${DOCKER_SLEEP_UP:-0}" = 1 ]; then
     echo $$ > "${SLEEP_PID}"
@@ -95,12 +97,18 @@ fi
 [ "$1 $2" = "compose run" ] && echo "container says hello"
 exit 0
 EOF
+# uname stub: STUB_UNAME picks the answer (default Darwin, so a Linux CI user
+# id other than 1000 doesn't trip the HERMES_UID check).
+cat > "${tmp}/bin/uname" <<'UNAME_EOF'
+#!/bin/sh
+echo "${STUB_UNAME:-Darwin}"
+UNAME_EOF
 cat > "${tmp}/bin/make" <<'EOF'
 #!/bin/sh
 printf 'make %s\n' "$*" >> "${STUB_LOG}"
 exit 0
 EOF
-chmod +x "${tmp}/bin/docker" "${tmp}/bin/make"
+chmod +x "${tmp}/bin/docker" "${tmp}/bin/make" "${tmp}/bin/uname"
 # scripts/vault.sh stub: logs its argv; VAULT_FAIL=1 makes it exit 1. The real
 # one lives in the repo and is never run here.
 cat > "${root}/scripts/vault.sh" <<'VAULT_EOF'
@@ -265,7 +273,7 @@ if [ "$(stat -f %Lp "${root}/data/addons/fixture/state.json" 2> /dev/null || sta
 else
   bad "enable records init in state.json"
 fi
-if logged "fixture-extra"; then bad "gated service stays off while its gate is 0"; else ok "gated service stays off while its gate is 0"; fi
+if logged "compose up -d --wait fixture-worker fixture-extra"; then bad "gated service stays off while its gate is 0"; else ok "gated service stays off while its gate is 0"; fi
 if reloaded; then ok "enable reloads hermes with the bootstraps and reload-plugins"; else bad "enable reloads hermes with the bootstraps and reload-plugins"; cat "$STUB_LOG"; fi
 
 addon_in '{"extra": true}' configure fixture
@@ -1207,6 +1215,50 @@ expect_rc "disable --purge --json" 0
 r=0; json_ok "$out" "done" 'last["action"] == "disable" and sum(l["phase"] == "done" for l in lines) == 1 and ("delete","done") in steps' || r=1
 check "disable --purge prints one done line, action disable" "$r"
 if [ ! -e "${root}/data/fixture" ] && [ ! -e "${root}/data/addons/fixture" ]; then ok "disable --purge deletes the data paths"; else bad "disable --purge deletes the data paths"; fi
+
+# Mount sources: enable creates them before compose starts anything. The
+# mounted fixture has no required settings, so enable gets as far as `up`.
+: > "$STUB_LOG"
+STUB_LS_DIR="${root}/data/addons/mounted" addon enable mounted
+expect_rc "enable mounted" 0
+if logged "ls: config instances secrets "; then ok "enable creates config, instances and secrets before compose up"; else bad "enable creates config, instances and secrets before compose up"; cat "$STUB_LOG"; fi
+if [ "$(stat -f %Lp "${root}/data/addons/mounted/secrets" 2> /dev/null || stat -c %a "${root}/data/addons/mounted/secrets")" = 700 ]; then ok "the prepared secrets directory is 0700"; else bad "the prepared secrets directory is 0700"; fi
+
+# HERMES_UID/GID on Linux: refused before any flag is written.
+setenv() { sed "s/^$1=.*/$1=$2/" "${root}/.env" > "${root}/.env.new" && mv "${root}/.env.new" "${root}/.env"; }
+addon_in '{"token":"tok3n-value","interval":60}' configure fixture
+addon_in '{"host":"h","password":"s3cr3t-value"}' configure fixture --instance work
+before="$(envval FIXTURE_ADDON_ENABLED)"
+setenv HERMES_UID 4242
+STUB_UNAME=Linux addon_json enable fixture --json
+expect_rc "enable on Linux with a wrong HERMES_UID exits 2" 2
+r=0; json_ok "$out" "error" 'last["error"] == "bad_input" and last["message"].startswith("HERMES_UID 4242 is not your user id ") and last["message"].endswith("; set HERMES_UID and HERMES_GID in .env") and steps == []' || r=1
+check "the HERMES_UID refusal is bad_input with no steps" "$r"
+if [ "$(envval FIXTURE_ADDON_ENABLED)" = "$before" ]; then ok "the refused enable leaves the flag alone"; else bad "the refused enable leaves the flag alone"; fi
+setenv HERMES_UID "$(id -u)"
+setenv HERMES_GID 4243
+STUB_UNAME=Linux addon_json enable fixture --json
+expect_rc "enable on Linux with a wrong HERMES_GID exits 2" 2
+if grep -q 'HERMES_GID 4243 is not your user id' "$out"; then ok "the HERMES_GID refusal names the id"; else bad "the HERMES_GID refusal names the id"; fi
+STUB_UNAME=Darwin addon_json enable fixture --json
+expect_rc "the same ids are fine off Linux" 0
+setenv HERMES_GID "$(id -g)"
+STUB_UNAME=Linux addon_json enable fixture --json
+expect_rc "matching ids pass on Linux" 0
+
+# A gated service whose gate is off is stopped after the start step.
+addon_in '{"extra": false}' configure fixture
+: > "$STUB_LOG"
+addon enable fixture
+expect_rc "enable with the gate off" 0
+if logged "compose stop fixture-extra"; then ok "enable stops a gated service whose gate is off"; else bad "enable stops a gated service whose gate is off"; cat "$STUB_LOG"; fi
+addon_json enable fixture --json
+r=0; json_ok "$out" "done" '[s for s in steps if s[0] == "stop"] == [("stop","running"),("stop","done")] and steps.index(("stop","done")) < steps.index(("reload","running"))' || r=1
+check "the stop step comes after start and before reload" "$r"
+addon_in '{"extra": true}' configure fixture
+: > "$STUB_LOG"
+addon enable fixture
+if logged "compose stop"; then bad "enable stops nothing when the gate is on"; cat "$STUB_LOG"; else ok "enable stops nothing when the gate is on"; fi
 
 if [ "$fail" = 0 ]; then
   echo "all addon.sh checks passed"

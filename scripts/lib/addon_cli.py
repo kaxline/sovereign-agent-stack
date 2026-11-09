@@ -248,7 +248,7 @@ def cmd_check_instance(args) -> None:
     slug = store.slug(args.slug)
     if not args.slug_only:
         store.check_instance(manifest, _stdin_object())
-    exists = slug in store._slugs(store.addon_dir(args.data_root, manifest))
+    exists = slug in store.slugs(store.addon_dir(args.data_root, manifest))
     print("exists" if exists else "new")
 
 
@@ -283,17 +283,25 @@ def cmd_plan_enable(args) -> None:
     flags = {manifest["builtin"]["flag"]: "1"}
     # A gate flag that a bool setting owns follows the stored setting, so
     # enabling after a disable (which zeroes every gate) restores it.
-    stored = store._stored(manifest, store.addon_dir(args.data_root, manifest))
+    stored = store.stored(manifest, store.addon_dir(args.data_root, manifest))
     for name, spec in manifest.get("settings", {}).items():
         if spec.get("type") == "bool" and spec.get("flag") in gates and name in stored:
             flags[spec["flag"]] = "1" if stored[name] else "0"
-    services, oneshots = [], []
+    services, oneshots, gated, mounts = [], [], [], []
     for key, svc in manifest["services"].items():
         name = _compose(manifest, key)
         gate = svc.get("when", {}).get("gate")
         (oneshots if svc.get("oneshot") else services).append(f"{name}@{gate}" if gate else name)
+        if gate:
+            gated.append(f"{name}@{gate}")
+        if svc.get("mounts"):
+            mounts.append(name)
+    if mounts:
+        store.prepare(manifest, args.data_root)
+    # `stop` lists the gated services and one-shots; addon.sh stops those
+    # whose gate is off once the flags are written.
     _dump({"builtin": manifest["builtin"]["flag"], "flags": flags, "services": services,
-           "oneshots": oneshots, **_toggle_fields(manifest)})
+           "oneshots": oneshots, "stop": gated, "mounts": mounts, **_toggle_fields(manifest)})
 
 
 def cmd_plan_disable(args) -> None:
@@ -322,7 +330,7 @@ def cmd_plan_run(args) -> None:
         if args.instance is None:
             raise Fail(f"{args.command} needs --instance")
         slug = store.slug(args.instance)
-        if slug not in store._slugs(store.addon_dir(args.data_root, manifest)):
+        if slug not in store.slugs(store.addon_dir(args.data_root, manifest)):
             raise Fail(f"no instance {slug!r}; configure it first")
         argv += ["--account", slug]
     elif args.instance is not None:

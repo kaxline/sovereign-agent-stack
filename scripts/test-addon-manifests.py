@@ -796,6 +796,29 @@ def volume_problems(manifest: dict, compose_text: str) -> list[str]:
             for v in am.data_volumes(manifest) if v not in declared]
 
 
+def volume_owner_problems(manifest: dict, compose_text: str) -> list[str]:
+    """Compose services outside the add-on that mount one of its data volumes."""
+    own = {svc["compose"] for svc in manifest["services"].values()}
+    top = re.split(r"^volumes:\n", compose_text, maxsplit=1, flags=re.M)[0]
+    problems = []
+    for m in re.finditer(r"^  ([A-Za-z0-9_-]+):\n(.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)", top, re.M | re.S):
+        if m.group(1) in own:
+            continue
+        for v in am.data_volumes(manifest):
+            if re.search(rf"^      - [\"']?{re.escape(v)}:", m.group(2), re.M):
+                problems.append(f"{m.group(1)} mounts {v}, which belongs to the add-on")
+    return problems
+
+
+own_svc = next(iter(volumed["services"].values()))["compose"]
+FIX_OWNED = (f"services:\n  {own_svc}:\n    volumes:\n      - gptr_outputs:/o\n  core:\n    image: x\n"
+             "volumes:\n  gptr_outputs:\n")
+check("volume ownership accepts the add-on's own service", volume_owner_problems(volumed, FIX_OWNED) == [],
+      str(volume_owner_problems(volumed, FIX_OWNED)))
+shared = FIX_OWNED.replace("image: x", "volumes:\n      - gptr_outputs:/o")
+check("volume ownership flags a core service that mounts the add-on's volume",
+      len(volume_owner_problems(volumed, shared)) == 1, str(volume_owner_problems(volumed, shared)))
+
 FIX_VOLUMES = "services:\n  x:\n    image: x\nvolumes:\n  gptr_outputs:\n  other:\n"
 check("volumes cross-check accepts a declared volume", volume_problems(volumed, FIX_VOLUMES) == [],
       str(volume_problems(volumed, FIX_VOLUMES)))
@@ -850,6 +873,8 @@ for path, manifest, parse_error in am.load_dir(ROOT / "addons"):
           "; ".join(mount_problems(sid, manifest, compose)))
     check(f"{sid}: services.*.volumes are declared in docker-compose.yml",
           not volume_problems(manifest, compose), "; ".join(volume_problems(manifest, compose)))
+    check(f"{sid}: data volumes are mounted only by its own compose services",
+          not volume_owner_problems(manifest, compose), "; ".join(volume_owner_problems(manifest, compose)))
     for g in manifest.get("gates", []):
         check(f"{sid}: sync-profiles maps gate {g['flag']} to {g['profile']}",
               [g["flag"], g["profile"], "1" if g["seed"] else "0"] in rows, table.stdout)

@@ -85,6 +85,16 @@ def _mkdir_addon(d: Path) -> None:
     _mkdir(d / "config")
 
 
+def prepare(manifest: dict, data_root: Path) -> None:
+    """Create config/, instances/ and secrets/ under the add-on's data
+    directory (mode 0700) so compose bind mounts find real directories owned
+    by the caller. Existing files are left alone."""
+    d = addon_dir(data_root, manifest)
+    _mkdir_addon(d)
+    for name in ("instances", "secrets"):
+        _mkdir(d / name)
+
+
 def _settings_env(d: Path) -> Path:
     return d / "config" / "settings.env"
 
@@ -248,7 +258,7 @@ def _write_env(path: Path, env: dict[str, str]) -> None:
     _write(path, "".join(f"{k}={shlex.quote(v)}\n" for k, v in env.items()), 0o644)
 
 
-def _stored(manifest: dict, d: Path) -> dict:
+def stored(manifest: dict, d: Path) -> dict:
     """Non-secret top-level values in settings.env, typed."""
     env = _read_env(_settings_env(d))
     out = {}
@@ -278,7 +288,7 @@ def _secret_set(path: Path) -> bool:
         return False
 
 
-def _slugs(d: Path) -> list[str]:
+def slugs(d: Path) -> list[str]:
     try:
         names = [p.stem for p in (d / "instances").glob("*.json")]
     except OSError:
@@ -372,7 +382,7 @@ def remove_instance(manifest: dict, data_root: Path, slug: str) -> None:
 
 def missing(manifest: dict, data_root: Path) -> list[str]:
     d = addon_dir(data_root, manifest)
-    stored = _stored(manifest, d)
+    have = stored(manifest, d)
     out = []
     for name, spec in _schema(manifest).items():
         if not _required(spec):
@@ -380,14 +390,14 @@ def missing(manifest: dict, data_root: Path) -> list[str]:
         if spec["type"] == "secret":
             if not _secret_set(d / "secrets" / name):
                 out.append(name)
-        elif name not in stored:
+        elif name not in have:
             out.append(name)
     if isinstance(manifest.get("instances"), dict):
-        slugs = _slugs(d)
-        if not slugs:
+        found = slugs(d)
+        if not found:
             # Prefixed so it can't be read as a top-level setting's name.
             out.append(f"instances:{manifest['instances'].get('name') or 'instance'}")
-        for slug in slugs:
+        for slug in found:
             vals = _instance_values(d, slug)
             for name, spec in _inst_schema(manifest).items():
                 if not _required(spec):
@@ -437,7 +447,7 @@ def listing(manifest: dict, data_root: Path, environ) -> dict:
         "permissions": manifest.get("permissions"),
         "platform": host.get("platform") or "any",
         "enabled": am.truthy(environ.get(builtin.get("flag"))) if builtin.get("flag") else False,
-        "settings": _view(_schema(manifest), _stored(manifest, d), lambda n: d / "secrets" / n),
+        "settings": _view(_schema(manifest), stored(manifest, d), lambda n: d / "secrets" / n),
         "instances": {},
         "missing": missing(manifest, data_root),
         "data": manifest.get("data") or {},
@@ -451,7 +461,7 @@ def listing(manifest: dict, data_root: Path, environ) -> dict:
             if isinstance(manifest.get("instances"), dict) else None,
         },
     }
-    for slug in _slugs(d):
+    for slug in slugs(d):
         out["instances"][slug] = _view(_inst_schema(manifest), _instance_values(d, slug),
                                        lambda n, s=slug: d / "secrets" / f"{s}.{n}")
     return out

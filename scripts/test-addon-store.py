@@ -306,6 +306,21 @@ with tempfile.TemporaryDirectory() as tmp:
               raised and path.read_text() == bad)
     check("slug is the public slug check", st.slug("work") == "work")
 
+with tempfile.TemporaryDirectory() as tmp:
+    d = Path(tmp) / "addons" / "fixture"
+    st.prepare(FIXTURE, Path(tmp))
+    modes = {n: (d / n).stat().st_mode & 0o777 for n in ("config", "instances", "secrets")}
+    check("prepare creates config, instances and secrets at 0700",
+          modes == {"config": 0o700, "instances": 0o700, "secrets": 0o700}, repr(modes))
+    (d / "secrets" / "x").write_text("keep")
+    os.chmod(d / "secrets" / "x", 0o640)
+    os.chmod(d / "secrets", 0o755)
+    st.prepare(FIXTURE, Path(tmp))
+    check("a second prepare keeps an existing secret and its mode",
+          (d / "secrets" / "x").read_text() == "keep" and (d / "secrets" / "x").stat().st_mode & 0o777 == 0o640)
+    check("public stored and slugs read the data directory",
+          st.stored(FIXTURE, d) == {} and st.slugs(d) == [])
+
 if failures:
     print(f"{failures} failed")
     sys.exit(1)

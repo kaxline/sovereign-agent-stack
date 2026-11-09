@@ -609,20 +609,42 @@ start_failed() {
   ev_fail compose_failed start "docker compose up failed for: $*" "$up_log"
 }
 
-# gated_names PLAN KEY: the compose names under KEY ("services" or "oneshots")
-# whose gate is on or that have no gate, one per line.
+# gated_names PLAN KEY [off]: the compose names under KEY ("services",
+# "oneshots", "mcp" or "stop") whose gate is on or that have no gate, one per
+# line. With "off", the names whose gate is off.
 gated_names() {
   local entry gate
   while IFS= read -r entry; do
     [[ -n "$entry" ]] || continue
     gate=""
     [[ "$entry" == *@* ]] && gate="${entry#*@}"
-    if [[ -z "$gate" ]] || gate_on "$1" "$gate"; then
+    if [[ "${3:-}" == off ]]; then
+      if [[ -n "$gate" ]] && ! gate_on "$1" "$gate"; then
+        printf '%s\n' "${entry%%@*}"
+      fi
+    elif [[ -z "$gate" ]] || gate_on "$1" "$gate"; then
       printf '%s\n' "${entry%%@*}"
     fi
   done <<EOF_ENTRIES
 $(json_list "$2" "$1")
 EOF_ENTRIES
+}
+
+# check_hermes_user PLAN: on Linux, the services that mount add-on directories
+# run as HERMES_UID:HERMES_GID, so those must be the caller's ids or the
+# mounts are unreadable. Runs before any flag is written.
+check_hermes_user() {
+  local kind flag want have
+  [[ -n "$(json_list mounts "$1")" ]] || return 0
+  [[ "$(uname -s)" == Linux ]] || return 0
+  for kind in UID GID; do
+    flag=-u
+    [[ "$kind" == UID ]] || flag=-g
+    want="$(env_get "HERMES_${kind}" 1000)"
+    have="$(id "$flag")"
+    [[ "$want" == "$have" ]] \
+      || ev_fail bad_input "" "HERMES_${kind} ${want} is not your user id ${have}; set HERMES_UID and HERMES_GID in .env" ""
+  done
 }
 
 cmd_enable() {
@@ -638,7 +660,8 @@ cmd_enable() {
   addon_lock
   cli_checked flags plan-enable "$sid"
   plan="$CLI_OUT"
-  local services=() oneshots=() list
+  check_hermes_user "$plan"
+  local services=() oneshots=() stops=() list
   list="$(gated_names "$plan" services)"
   [[ -z "$list" ]] || while IFS= read -r name; do services+=("$name"); done <<EOF_SERVICES
 $list
@@ -647,6 +670,10 @@ EOF_SERVICES
   [[ -z "$list" ]] || while IFS= read -r name; do oneshots+=("$name"); done <<EOF_ONESHOTS
 $list
 EOF_ONESHOTS
+  list="$(gated_names "$plan" stop off)"
+  [[ -z "$list" ]] || while IFS= read -r name; do stops+=("$name"); done <<EOF_STOPS
+$list
+EOF_STOPS
   pull_images ${services[@]+"${services[@]}"} ${oneshots[@]+"${oneshots[@]}"}
   rollback_record "$plan"
   CHANGED=0
@@ -661,6 +688,10 @@ EOF_ONESHOTS
   if [[ ${#services[@]} -gt 0 ]]; then
     run_step start "" docker compose up -d --wait "${services[@]}" \
       || start_failed ${oneshots[@]+"${oneshots[@]}"} "${services[@]}"
+  fi
+  if [[ ${#stops[@]} -gt 0 ]]; then
+    run_step stop "" docker compose stop "${stops[@]}" \
+      || ev_fail compose_failed stop "docker compose stop failed for: ${stops[*]}" "$EV_LAST_LOG"
   fi
   run_hook init "$sid" init ${reinit[@]+"${reinit[@]}"}
   toggle_recreate "$plan" "$sid"
