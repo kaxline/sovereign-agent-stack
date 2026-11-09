@@ -982,71 +982,6 @@ register_mcp_server() {
   fi
 }
 
-# Drop an unfiltered MCP server entry that duplicates one we register WITH a
-# tool allowlist, on a managed profile only.
-#
-# Profiles are created with `profile create --clone`, so they inherit whatever
-# MCP servers the default profile has, hand-added ones included. If the user
-# registered the same server unfiltered under a different key (lightrag-mcp
-# alongside our filtered lightrag), the clone carries both, and the unfiltered
-# copy hands back every tool the allowlist exists to withhold. The allowlist
-# only bounds anything while it is the ONLY route to that server.
-#
-# The match is narrow on purpose: same URL, and no tools.include of its own. A
-# duplicate the user filtered themselves reads as a considered choice and stays.
-# The default profile is never touched, since that is the user's own config.
-#
-# Usage: drop_unfiltered_mcp_duplicate <profile> <keep-key> <drop-key> <url>
-drop_unfiltered_mcp_duplicate() {
-  _dup_profile="$1"
-  [ -n "$_dup_profile" ] || return 0
-  _out="$(python3 - "$(config_path_for "$_dup_profile")" "$2" "$3" "$4" <<'PY'
-import sys
-sys.path.insert(0, "/opt/hermes")
-try:
-    import yaml
-except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
-    import sys as _sys
-    _sys.path.insert(0, "/opt/hermes")
-    import hermes_yaml as yaml
-from utils import atomic_yaml_write
-
-cfg_path, keep_key, drop_key, url = sys.argv[1:5]
-
-try:
-    with open(cfg_path) as fh:
-        config = yaml.safe_load(fh) or {}
-except FileNotFoundError:
-    raise SystemExit(0)
-
-servers = config.get("mcp_servers")
-if not isinstance(servers, dict):
-    raise SystemExit(0)
-
-dup = servers.get(drop_key)
-keep = servers.get(keep_key)
-if not isinstance(dup, dict) or not isinstance(keep, dict):
-    raise SystemExit(0)
-
-if str(dup.get("url", "")).rstrip("/") != url.rstrip("/"):
-    raise SystemExit(0)
-
-if (dup.get("tools") or {}).get("include"):
-    print(f"Keeping '{drop_key}' - it carries its own tool filter")
-    raise SystemExit(0)
-
-allowed = (keep.get("tools") or {}).get("include") or []
-del servers[drop_key]
-atomic_yaml_write(cfg_path, config)
-print(
-    f"Removed unfiltered duplicate MCP server '{drop_key}' ({url}) - "
-    f"'{keep_key}' already exposes it, restricted to {len(allowed)} tools"
-)
-PY
-)"
-  if [ -n "$_out" ]; then log "$_out"; fi
-}
-
 # Web-reading MCP servers, registered on both the default and api-server
 # profiles. Both are read-only against the public web, so unlike LightRAG they
 # have no mutating tool to keep out of unattended sessions. The allowlists below
@@ -1091,9 +1026,9 @@ register_opencode_mcp_servers() {
 }
 
 # Remove MCP server entries on one profile whose URL matches <url>, except
-# <keep-key>. Unlike drop_unfiltered_mcp_duplicate this ignores tool filters:
-# for the SQL endpoints the boundary is the database role behind the URL, so a
-# filtered entry pointing at the read/write sidecar is still read/write.
+# <keep-key>. A tool filter on the other entry does not save it: for the SQL
+# endpoints the boundary is the database role behind the URL, so a filtered
+# entry pointing at the read/write sidecar is still read/write.
 #
 # Usage: drop_mcp_entries_for_url <profile> <keep-key> <url>
 drop_mcp_entries_for_url() {

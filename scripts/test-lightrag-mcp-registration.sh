@@ -86,6 +86,19 @@ run api-server; got
 [ "$calls" = "drop:api-server::http://x:1/mcp;" ] || fail "LIGHTRAG_MCP_URL applies to the drop ($calls)"
 unset LIGHTRAG_MCP_URL LIGHTRAG_MCP_TIMEOUT
 
+# An invalid manifest (here: not canonical JSON) fails closed: the URL is
+# dropped from api-server and browser, flag on or off; default stays alone.
+tr -d '\n' < "${ROOT}/addons/lightrag/addon.json" > "${ADDONS_DIR}/lightrag/addon.json"
+for flag in 0 1; do
+  LIGHTRAG_MCP_ENABLED="$flag"
+  run api-server 2>/dev/null; got
+  [ "$calls" = "drop:api-server::${URL};" ] \
+    || fail "invalid manifest, flag ${flag}: api-server should drop the URL ($calls)"
+  run "" 2>/dev/null; got
+  [ -z "$calls" ] || fail "invalid manifest, flag ${flag}: default is left alone ($calls)"
+done
+cp "${ROOT}/addons/lightrag/addon.json" "${ADDONS_DIR}/lightrag/addon.json"
+
 # reconcile_stack_eager_tools re-pins the same tools under both names.
 LIGHTRAG_MCP_ENABLED=1
 want=""

@@ -328,7 +328,72 @@ with tempfile.TemporaryDirectory() as tmp:
     check("unparsable manifest is reported", any("cannot parse" in e for e in results["broken"]))
     check("directory must match the short id", any("short id" in e for e in results["wrong"]))
     check("non-canonical layout is refused", any("canonical" in e for e in results["gptr"]))
-    check("plan skips invalid manifests", am.mcp_plan(Path(tmp), "default", env) == [])
+    rows = [l.split("|") for l in am.mcp_plan(Path(tmp), "default", env)]
+    check("plan only drops for invalid manifests", len(rows) == 2 and all(r[2] == "0" and r[3] == "" for r in rows),
+          str(rows))
+
+# --- invalid manifests fail closed ----------------------------------------------
+LR = json.loads((ROOT / "addons" / "lightrag" / "addon.json").read_text())
+LR_URL = "http://lightrag-mcp:8000/mcp"
+with tempfile.TemporaryDirectory() as tmp:
+    (Path(tmp) / "lightrag").mkdir()
+    # Valid but not canonical: the whole manifest is refused.
+    (Path(tmp) / "lightrag" / "addon.json").write_text(json.dumps(LR))
+    for env, url in (({}, LR_URL), ({"LIGHTRAG_MCP_URL": "http://x:1/mcp"}, "http://x:1/mcp")):
+        for flag in ("0", "1"):
+            e = {**env, "LIGHTRAG_MCP_ENABLED": flag}
+            plan = am.mcp_plan(Path(tmp), "api-server", e)
+            row = plan[0].split("|") if len(plan) == 1 else []
+            check(f"invalid manifest drops {url} on api-server (flag {flag})",
+                  len(row) == 11 and row[2] == "0" and row[3] == "" and row[4] == url
+                  and row[10] == url, str(plan))
+    check("invalid manifest leaves unmanaged default alone", am.mcp_plan(Path(tmp), "default", {}) == [])
+    check("mcp_urls lists an invalid manifest's URL", am.mcp_urls(Path(tmp), {}) == [LR_URL],
+          str(am.mcp_urls(Path(tmp), {})))
+    check("mcp_urls honours the override for an invalid manifest",
+          am.mcp_urls(Path(tmp), {"LIGHTRAG_MCP_URL": "http://x:1/mcp"}) == ["http://x:1/mcp"])
+    # Invalid for another reason (a stray field).
+    (Path(tmp) / "lightrag" / "addon.json").write_text(am.canonical({**LR, "bogus": 1}))
+    plan = am.mcp_plan(Path(tmp), "browser", {})
+    check("a manifest with an unknown field drops the URL", len(plan) == 1 and plan[0].split("|")[4] == LR_URL,
+          str(plan))
+    # Nothing derivable: no line, no exception.
+    for label, broken in (("no services", {"mcp": LR["mcp"]}),
+                          ("mcp is a string", {"mcp": "x", "services": LR["services"]}),
+                          ("service names nothing", {"mcp": {**LR["mcp"], "service": "nope"},
+                                                     "services": LR["services"]}),
+                          ("services is a list", {"mcp": LR["mcp"], "services": []}),
+                          ("port is an object", {"mcp": LR["mcp"],
+                                                 "services": {"mcp": {"compose": "a", "port": {}}}}),
+                          ("mcp entries are junk", {"mcp": [1, None, "x"], "services": LR["services"]})):
+        (Path(tmp) / "lightrag" / "addon.json").write_text(json.dumps(broken))
+        try:
+            got_plan = am.mcp_plan(Path(tmp), "api-server", {})
+            got_urls = am.mcp_urls(Path(tmp), {})
+        except Exception as exc:  # noqa: BLE001
+            check(f"broken manifest ({label}) does not raise", False, repr(exc))
+            continue
+        check(f"broken manifest ({label}) yields no line", got_plan == [] and got_urls == [],
+              f"{got_plan} {got_urls}")
+
+# --- one MCP name per add-on -------------------------------------------------------
+with tempfile.TemporaryDirectory() as tmp:
+    for d in ("lightrag", "gptr"):
+        (Path(tmp) / d).mkdir()
+    (Path(tmp) / "lightrag" / "addon.json").write_text(am.canonical(LR))
+    other = copy.deepcopy(BASE)
+    (Path(tmp) / "gptr" / "addon.json").write_text(am.canonical(other))
+    check("distinct mcp names pass the directory check", am.check_dir(Path(tmp)) == [], str(am.check_dir(Path(tmp))))
+    other["mcp"]["name"] = "lightrag"
+    (Path(tmp) / "gptr" / "addon.json").write_text(am.canonical(other))
+    errs = am.check_dir(Path(tmp))
+    check("two add-ons with one mcp name are refused",
+          len(errs) == 1 and "'lightrag'" in errs[0] and "gptr" in errs[0], str(errs))
+    rc = subprocess.run([sys.executable, str(ROOT / "scripts" / "lib" / "addon_manifest.py"), "validate", tmp],
+                        capture_output=True, text=True)
+    check("validate CLI reports the duplicate", rc.returncode == 1 and "more than one add-on" in rc.stdout, rc.stdout)
+check("the packaged add-ons have distinct mcp names", am.check_dir(ROOT / "addons") == [],
+      str(am.check_dir(ROOT / "addons")))
 
 # --- cron fence ---------------------------------------------------------------
 with tempfile.TemporaryDirectory() as tmp:

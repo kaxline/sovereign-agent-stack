@@ -629,6 +629,20 @@ def check_builtin_file(path: Path, manifest, parse_error: str | None) -> list[st
     return errors
 
 
+def check_dir(addons_dir: Path) -> list[str]:
+    """Rules across the set of built-in manifests: two add-ons may not
+    register the same MCP server name."""
+    owners: dict[str, list[str]] = {}
+    for path, manifest, _err in load_dir(addons_dir):
+        raw = manifest.get("mcp") if isinstance(manifest, dict) else None
+        names = {e["name"] for e in (raw if isinstance(raw, list) else [raw])
+                 if isinstance(e, dict) and isinstance(e.get("name"), str)}
+        for name in names:
+            owners.setdefault(name, []).append(path.parent.name)
+    return [f"mcp.name {name!r} is used by more than one add-on: {', '.join(dirs)}"
+            for name, dirs in sorted(owners.items()) if len(dirs) > 1]
+
+
 def truthy(value: str | None) -> bool:
     return (value or "").strip().lower() in ("1", "true", "yes", "on")
 
@@ -654,6 +668,50 @@ def _mcp_urls(manifest: dict, mcp: dict, environ) -> dict[str, str]:
         return {level: build(key) for level, key in mcp["service"].items()}
     override = environ.get(mcp.get("env", {}).get("url", ""), "")
     return {"": override or build(mcp["service"])}
+
+
+def _raw_mcp_urls(manifest, environ) -> list[tuple[dict, list[str]]]:
+    """(raw mcp entry, URLs) for each entry of a manifest that failed
+    validation and still names a URL. Reads the manifest defensively: nothing
+    is assumed about its shape, and a value that is not usable is skipped."""
+    out = []
+    if not isinstance(manifest, dict):
+        return out
+    services = manifest.get("services")
+    raw = manifest.get("mcp")
+    if not isinstance(services, dict):
+        return out
+    for entry in raw if isinstance(raw, list) else [raw]:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            path = entry.get("path")
+            svc = entry.get("service")
+            if not isinstance(path, str):
+                continue
+
+            def build(key) -> str:
+                s = services[key]
+                host, port = s["compose"], s["port"]
+                if not isinstance(host, str) or not isinstance(port, (int, str)) or not host:
+                    raise ValueError("bad service")
+                return f"http://{host}:{port}{path}"
+
+            if isinstance(svc, dict):
+                urls = [build(key) for key in svc.values()]
+            elif isinstance(svc, str):
+                env = entry.get("env")
+                var = env.get("url") if isinstance(env, dict) else None
+                override = environ.get(var, "") if isinstance(var, str) else ""
+                urls = [override or build(svc)]
+            else:
+                continue
+        except (KeyError, TypeError, ValueError, AttributeError):
+            continue
+        urls = sorted({u for u in urls if "|" not in u and "\n" not in u and " " not in u})
+        if urls:
+            out.append((entry, urls))
+    return out
 
 
 def cron_fence(addons_dir: Path, environ=os.environ) -> tuple[list[str], list[str]]:
@@ -703,6 +761,18 @@ def mcp_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
         if errors:
             for e in errors:
                 print(f"warning: skipping {path.parent.name}: {e}", file=sys.stderr)
+            # Fail closed: an invalid manifest still has its URLs dropped from
+            # the profile, so a stale entry or an unfiltered clone does not
+            # outlive the manifest that would have filtered it.
+            for entry, urls in _raw_mcp_urls(manifest, environ):
+                unmanaged = entry.get("unmanaged")
+                if isinstance(unmanaged, list) and profile in unmanaged:
+                    continue
+                name = entry.get("name") if isinstance(entry.get("name"), str) else path.parent.name
+                title = entry.get("title") if isinstance(entry.get("title"), str) else name
+                fields = [name, title, "0", "", urls[0], "0", "0", "http", "", "", " ".join(urls)]
+                if not any("|" in f or "\n" in f for f in fields):
+                    lines.append("|".join(fields))
             continue
         for mcp in mcp_entries(manifest):
             if profile in mcp.get("unmanaged", []):
@@ -746,6 +816,10 @@ def mcp_urls(addons_dir: Path, environ=os.environ) -> list[str]:
     urls = []
     for path, manifest, parse_error in load_dir(addons_dir):
         if check_builtin_file(path, manifest, parse_error):
+            for _entry, raw_urls in _raw_mcp_urls(manifest, environ):
+                for u in raw_urls:
+                    if u not in urls:
+                        urls.append(u)
             continue
         for mcp in mcp_entries(manifest):
             for u in sorted(set(_mcp_urls(manifest, mcp, environ).values())):
@@ -783,6 +857,9 @@ def main(argv: list[str]) -> int:
             for e in check_builtin_file(path, manifest, parse_error):
                 print(f"{path}: {e}")
                 bad += 1
+        for e in check_dir(Path(argv[1])):
+            print(f"{argv[1]}: {e}")
+            bad += 1
         return 1 if bad else 0
     if len(argv) == 2 and argv[0] == "mcp-urls":
         for u in mcp_urls(Path(argv[1])):
