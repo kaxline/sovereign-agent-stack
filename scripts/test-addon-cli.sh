@@ -10,11 +10,13 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 BASH_UNDER_TEST=bash
 [ -x /bin/bash ] && BASH_UNDER_TEST=/bin/bash
 
-tmp="$(mktemp -d)"
+# The physical path: addon.sh resolves the data root through symlinks
+# (/var -> /private/var on macOS), and the python3 guard below compares paths.
+tmp="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$tmp"' EXIT
 root="${tmp}/stack"
 mkdir -p "${root}/scripts/lib" "${tmp}/bin" "${tmp}/out"
-cp "${REPO}/scripts/addon.sh" "${REPO}/scripts/sync-profiles.sh" "${REPO}/scripts/fixture-init.sh" "${root}/scripts/" 2>/dev/null || true
+cp "${REPO}/scripts/addon.sh" "${REPO}/scripts/sync-profiles.sh" "${REPO}/scripts/fixture-init.sh" "${REPO}/scripts/fixture-connect.sh" "${root}/scripts/" 2>/dev/null || true
 for f in env.sh data-root.sh python.sh addon-events.sh addon_cli.py addon_manifest.py addon_store.py; do
   cp "${REPO}/scripts/lib/${f}" "${root}/scripts/lib/" 2>/dev/null || true
 done
@@ -442,9 +444,9 @@ FIXTURE_INIT_MODE=error FIXTURE_INIT_ERROR=weird_thing addon_json enable hooked 
 r=0; json_ok "$out" error 'last["error"] == "command_failed" and "weird_thing" in last["message"] and "hook says no" in last["message"]' || r=1
 check "an unlisted hook error becomes command_failed with its name in the message" "$r"
 # An error name in instances.errors passes through.
-FIXTURE_INIT_MODE=error FIXTURE_INIT_ERROR=wrong_password addon_json enable hooked --json
+FIXTURE_INIT_MODE=error FIXTURE_INIT_ERROR=encryption_password addon_json enable hooked --json
 expect_rc "a hook error listed in instances.errors exits 4" 4
-r=0; json_ok "$out" error 'last["error"] == "wrong_password" and last["step"] == "init" and last["message"] == "hook says no" and steps[-1] == ("init","error")' || r=1
+r=0; json_ok "$out" error 'last["error"] == "encryption_password" and last["step"] == "init" and last["message"] == "hook says no" and steps[-1] == ("init","error")' || r=1
 check "a listed hook error passes through unchanged" "$r"
 # An error line fails the step even when the hook exits 0, and init never shows done.
 FIXTURE_INIT_MODE=error0 FIXTURE_INIT_ERROR=bad_slug addon_json enable hooked --json
@@ -452,6 +454,116 @@ expect_rc "an error line with exit 0 still fails" 4
 r=0; json_ok "$out" error 'last["error"] == "bad_slug" and ("init","done") not in steps and ("init","error") in steps' || r=1
 check "an error line with exit 0 shows init error, not done" "$r"
 unset FIXTURE_INIT_MODE FIXTURE_INIT_ERROR 2> /dev/null || true
+
+# connect and disconnect. hooked has connect and disconnect script hooks
+# (scripts/fixture-connect.sh logs "fixture-connect MODE ARGV" to STUB_LOG);
+# fixture has none.
+# addon_json_in JSON [args...]: addon_json with JSON on stdin.
+addon_json_in() {
+  printf '%s' "$1" > "${tmp}/stdin"
+  shift
+  n=$((n + 1))
+  out="${tmp}/out/${n}"
+  err="${tmp}/out/${n}.err"
+  rc=0
+  "$BASH_UNDER_TEST" "${root}/scripts/addon.sh" "$@" < "${tmp}/stdin" > "$out" 2> "$err" || rc=$?
+}
+# no_staging NAME: no .staging.* file is left in data/addons.
+no_staging() {
+  if [ -n "$(find "${root}/data/addons" -maxdepth 1 -name '.staging.*')" ]; then bad "no staging file after ${1}"; else ok "no staging file after ${1}"; fi
+}
+HOOKED="${root}/data/addons/hooked"
+: > "$STUB_LOG"
+addon_json_in '{"bogus":1}' connect hooked --instance work --json
+expect_rc "connect with an unknown setting exits 2" 2
+r=0; json_ok "$out" error 'last["error"] == "bad_input"' || r=1
+check "connect with an unknown setting is bad_input" "$r"
+if logged "fixture-connect"; then bad "bad_input is found before the hook runs"; else ok "bad_input is found before the hook runs"; fi
+no_staging "bad_input"
+
+: > "$STUB_LOG"
+addon_json_in '{"host":"refuse.example.com","password":"s3cr3t-value\"x"}' connect hooked --instance work --json
+expect_rc "a refused connect exits 4" 4
+r=0; json_ok "$out" error 'last["error"] == "login_refused" and last["step"] == "check" and last["message"] == "refused" and ("check","error") in steps and ("register","running") not in steps' || r=1
+check "a refused connect is login_refused at step check" "$r"
+r=0; json_ok "$out" error 'any("[redacted]" in t for t in last["logTail"]) and not any("s3cr3t" in t for t in last["logTail"]) and any("refuse.example.com" in t for t in last["logTail"])' || r=1
+check "a refused connect's logTail shows [redacted] in place of the password" "$r"
+if [ ! -e "${HOOKED}/instances/work.json" ] && [ -z "$(find "${HOOKED}" -path '*/secrets/work.*' 2> /dev/null)" ]; then ok "a refused connect writes no instance"; else bad "a refused connect writes no instance"; fi
+no_staging "a refused connect"
+
+FIXTURE_CONNECT_ERROR=encryption_password addon_json_in '{"host":"good.example.com"}' connect hooked --instance work --json
+unset FIXTURE_CONNECT_ERROR
+expect_rc "a listed connect error exits 4" 4
+r=0; json_ok "$out" error 'last["error"] == "encryption_password" and last["step"] == "check"' || r=1
+check "a connect error in instances.errors passes through" "$r"
+FIXTURE_CONNECT_ERROR=weird addon_json_in '{"host":"good.example.com"}' connect hooked --instance work --json
+unset FIXTURE_CONNECT_ERROR
+expect_rc "an unlisted connect error exits 4" 4
+r=0; json_ok "$out" error 'last["error"] == "command_failed" and "weird" in last["message"] and last["step"] == "check"' || r=1
+check "an unlisted connect error becomes command_failed naming it" "$r"
+if [ ! -e "${HOOKED}/instances/work.json" ]; then ok "a failed connect hook writes no instance"; else bad "a failed connect hook writes no instance"; fi
+no_staging "a failed connect hook"
+
+: > "$STUB_LOG"
+addon_json_in '{"host":"good.example.com","password":"s3cr3t-value"}' connect hooked --instance work --json
+expect_rc "connect with a hook" 0
+r=0; json_ok "$out" "done" '[s for s in steps if s[1] != "running"] == [("check","done"),("register","done"),("reload","done")] and ("check","running") in steps and last == {"phase":"done","id":"hooked","action":"connect","restart":[],"mcp":["fixture-work"],"account":"work"}' || r=1
+check "connect prints check, register and reload, then done with account and mcp" "$r"
+r=0; json_ok "$out" "done" 'any(l.get("message") == "checking login" and l["step"] == "check" for l in lines)' || r=1
+check "connect relays the hook's progress line inside step check" "$r"
+if logged "fixture-connect connect --slug work --json"; then ok "connect runs the hook with --slug work --json"; else bad "connect runs the hook with --slug work --json"; cat "$STUB_LOG"; fi
+if [ -f "${HOOKED}/instances/work.json" ] && [ "$(cat "${HOOKED}/secrets/work.password" 2> /dev/null)" = s3cr3t-value ]; then ok "connect registers the instance"; else bad "connect registers the instance"; fi
+if logged "make hermes-reload"; then ok "connect reloads hermes"; else bad "connect reloads hermes"; fi
+no_staging "a good connect"
+
+: > "$STUB_LOG"
+addon_json_in '{"host":"good.example.com","password":"s3cr3t-value"}' connect hooked --instance work --json
+expect_rc "a second connect of the same slug exits 2" 2
+r=0; json_ok "$out" error 'last["error"] == "exists"' || r=1
+check "a second connect of the same slug is exists" "$r"
+if logged "fixture-connect"; then bad "exists is found before the hook runs"; else ok "exists is found before the hook runs"; fi
+no_staging "exists"
+
+: > "$STUB_LOG"
+addon_json_in '{"host":"h3","password":"s3cr3t-value"}' connect fixture --instance plain --json
+expect_rc "connect without a hook" 0
+r=0; json_ok "$out" "done" 'steps == [("register","running"),("register","done"),("reload","running"),("reload","done")] and last == {"phase":"done","id":"fixture","action":"connect","restart":[],"mcp":[]}' || r=1
+check "connect without a hook prints register and reload, no check" "$r"
+if [ -f "${root}/data/addons/fixture/instances/plain.json" ]; then ok "connect without a hook writes the instance"; else bad "connect without a hook writes the instance"; fi
+no_staging "a connect without a hook"
+
+addon_in '{"host":"h4","password":"s3cr3t-value"}' connect fixture --instance human
+expect_rc "connect without --json" 0
+if [ -f "${root}/data/addons/fixture/instances/human.json" ] && ! grep -q '^{' "$out"; then ok "connect without --json writes the instance and prints no JSON"; else bad "connect without --json writes the instance and prints no JSON"; sed 's/^/    /' "$out"; fi
+
+: > "$STUB_LOG"
+addon_json disconnect hooked --instance work --json
+expect_rc "disconnect with a hook" 0
+r=0; json_ok "$out" "done" '[s for s in steps if s[1] != "running"] == [("check","done"),("register","done"),("reload","done")] and last == {"phase":"done","id":"hooked","action":"disconnect","restart":[],"mcp":[]}' || r=1
+check "disconnect prints check, register and reload, then done" "$r"
+if logged "fixture-connect disconnect --slug work --json"; then ok "disconnect runs the hook with --slug work --json"; else bad "disconnect runs the hook with --slug work --json"; cat "$STUB_LOG"; fi
+if [ ! -e "${HOOKED}/instances/work.json" ] && [ ! -e "${HOOKED}/secrets/work.password" ]; then ok "disconnect removes the instance and its secrets"; else bad "disconnect removes the instance and its secrets"; fi
+: > "$STUB_LOG"
+addon_json disconnect hooked --instance work --json
+expect_rc "disconnect of an unknown slug exits 2" 2
+r=0; json_ok "$out" error 'last["error"] == "not_found"' || r=1
+check "disconnect of an unknown slug is not_found" "$r"
+if logged "fixture-connect"; then bad "not_found is found before the hook runs"; else ok "not_found is found before the hook runs"; fi
+addon_json disconnect fixture --instance plain --json
+r=0; json_ok "$out" "done" 'steps == [("register","running"),("register","done"),("reload","running"),("reload","done")]' || r=1
+check "disconnect without a hook prints register and reload" "$r"
+addon disconnect fixture --instance human
+if [ ! -e "${root}/data/addons/fixture/instances/human.json" ]; then ok "disconnect without --json removes the instance"; else bad "disconnect without --json removes the instance"; fi
+addon_json disconnect hooked --json
+expect_rc "disconnect without --instance exits 2" 2
+
+# log-tail --redact and redact directly.
+mkdir -p "${root}/data/addons"
+printf '%s' '{"host":"h","password":"ab\"cd"}' > "${root}/data/addons/.redact-test"
+out="${tmp}/out/log-tail-redact"
+printf 'x ab"cd y\n{"password":"ab\\"cd"}\nhost h\n' | python3 "${root}/scripts/lib/addon_cli.py" --addons-dir "$ADDONS_DIR" --data-root "${root}/data" log-tail --redact "${root}/data/addons/.redact-test" --sid hooked > "$out" 2>&1 || true
+if [ "$(cat "$out")" = '["x [redacted] y","{\"password\":\"[redacted]\"}","host h"]' ]; then ok "log-tail --redact replaces a secret value and its JSON form"; else bad "log-tail --redact replaces a secret value and its JSON form"; sed 's/^/    /' "$out"; fi
+rm -f "${root}/data/addons/.redact-test"
 
 # plan-hook and mark-init directly.
 plan_hook() { python3 "${root}/scripts/lib/addon_cli.py" --addons-dir "$ADDONS_DIR" --data-root "${root}/data" plan-hook "$@" 2>&1; }
@@ -623,6 +735,9 @@ for f in "${root}/.env" "$STUB_LOG" "${tmp}"/out/*; do
   if grep -q -e s3cr3t-value -e tok3n-value "$f"; then bad "secret value appears in ${f#"${tmp}/"}"; fi
 done
 grep -r -q -e s3cr3t-value -e tok3n-value "${root}/.env" "$STUB_LOG" "${tmp}/out" || ok "no secret value in .env, stub logs or output"
+# Under the scratch root, a secret value may sit only in data/addons/<id>/secrets.
+leaks="$(grep -r -l -e s3cr3t-value -e tok3n-value "$root" "${tmp}/hosttmp" 2> /dev/null | grep -v -E "^${root}/data/addons/[^/]+/secrets/" || true)"
+if [ -z "$leaks" ]; then ok "no secret value in any file outside data/addons/<id>/secrets"; else bad "secret value in: ${leaks}"; fi
 
 # A failure inside addon_cli.py is one error line, exit 1, no traceback.
 mkdir -p "${root}/data/addons/fixture/locked"

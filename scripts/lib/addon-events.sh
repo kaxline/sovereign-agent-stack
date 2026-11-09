@@ -19,6 +19,11 @@
 #                    sets it to its rollback while enable has flags to restore.
 #   EV_ROLLED_BACK   set to 1 by that function when it restored .env; ev_fail
 #                    then adds "rolledBack":true.
+#   EV_EXIT          when set, the exit status ev_fail uses in place of the
+#                    code's own (addon.sh's own exists and not_found exit 2).
+#   EV_REDACT        a JSON object file under the data root (connect's staged
+#                    values) and EV_REDACT_SID its add-on: logTail then shows
+#                    [redacted] for each secret value in it.
 #
 # ev_init saves stdout as file descriptor 3 and stderr as 4, and every line
 # here is printed there. A trap runs inside whatever redirection the shell is
@@ -35,6 +40,9 @@ EV_STEP=""
 EV_CHILD=""
 EV_ON_FAIL=""
 EV_ROLLED_BACK=0
+EV_EXIT=""
+EV_REDACT=""
+EV_REDACT_SID=""
 
 # ev_init JSON_MODE: JSON_MODE is 0 or 1. Makes EV_TMP and traps SIGINT and
 # SIGTERM, which stop the running step and end with ev_fail.
@@ -184,6 +192,10 @@ ev_done() {
 # ev_exit_status CODE: the exit status for an error code. Codes other than
 # addon.sh's own are a hook's error names, which exit 4.
 ev_exit_status() {
+  if [[ -n "$EV_EXIT" ]]; then
+    echo "$EV_EXIT"
+    return 0
+  fi
   case "$1" in
     bad_input) echo 2 ;;
     missing_settings) echo 3 ;;
@@ -193,9 +205,12 @@ ev_exit_status() {
 }
 
 # ev_log_tail LOGFILE: the last 20 lines of LOGFILE as a JSON array, or [].
+# With EV_REDACT set, secret values are redacted, and a failure to redact
+# gives [].
 ev_log_tail() {
-  local tail
-  tail="$(cli log-tail < "$1" 2> /dev/null)" || tail=""
+  local tail redact=()
+  [[ -n "$EV_REDACT" ]] && redact=(--redact "$EV_REDACT" --sid "$EV_REDACT_SID")
+  tail="$(cli log-tail ${redact[@]+"${redact[@]}"} < "$1" 2> /dev/null)" || tail=""
   case "$tail" in
     "["*"]") printf '%s' "$tail" ;;
     *) printf '[]' ;;

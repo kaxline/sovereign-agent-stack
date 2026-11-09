@@ -17,6 +17,11 @@ runs in the Hermes image through stack_python, so the host needs no python3.
         gate flags from the stored settings.
     remove-instance SID SLUG
         Deletes the instance's file and secrets.
+    check-instance SID SLUG [--slug-only]
+        Checks SLUG and the JSON object on stdin against instances.settings
+        (unknown or ill-typed settings, a missing required one) without
+        writing anything, then prints `exists` when SLUG already has an
+        instance, else `new`. --slug-only reads no stdin and checks only SLUG.
     plan-enable SID
         Exits 3 if a required setting is missing. Prints {"builtin": FLAG,
         "flags": {...}, "services": [...]}: builtin.flag at "1" plus the stored value of each
@@ -40,13 +45,16 @@ runs in the Hermes image through stack_python, so the host needs no python3.
         Records {"init": {"version": <manifest version>, "at": <UTC time>}}
         in data/addons/SID/state.json.
     hook-events STEP
-        Reads a hook's stdout. JSON objects other than the `done` and `error`
-        lines are printed with "step": STEP; every other line goes to stderr.
+        Reads a hook's stdout. JSON objects with a string `phase` other than
+        `done` and `error` are printed with "step": STEP; every other line
+        goes to stderr.
     hook-result SID EXIT
         Reads a hook's whole stdout on stdin (not a file: the host's temp
-        directory isn't mounted where this runs) and prints three lines: an
-        error code (empty on success), its message, and the `account` of the
-        `done` line (empty when it has none). A hook's `error` name is kept
+        directory isn't mounted where this runs) and prints four lines: an
+        error code (empty on success), its message, the `account` of the
+        `done` line (empty when it has none) and the names in its `mcp` list,
+        comma-separated (names that aren't lowercase letters, digits, _ and -
+        are left out). A hook's `error` name is kept
         when it is a shared name or in instances.errors; any other name
         becomes command_failed with the name in the message. A non-zero
         EXIT without an `error` line is command_failed.
@@ -62,11 +70,17 @@ runs in the Hermes image through stack_python, so the host needs no python3.
         With markers, {"phase":"pull","service":S,"status":"done"} follows
         each {"addonPull":"done","service":S}; without, it follows end of
         input for every service given. Lines that aren't JSON are ignored.
-    log-tail [--lines N]
+    log-tail [--lines N] [--redact FILE --sid SID]
         Reads a log on stdin and prints its last N lines (default 20) as a
         JSON array, cleaned as every addon.sh output line is: control
         characters other than tab dropped, tab made a space, cut to 500
-        characters. Blank lines are left out.
+        characters. Blank lines are left out. --redact first replaces each
+        value of a secret-typed instance setting (SID's manifest) in FILE's
+        JSON object with [redacted], longest first, as written and as it
+        appears inside a JSON string. A FILE that isn't a JSON object fails
+        (exit 2), so nothing unredacted is printed.
+    redact SID FILE
+        Copies stdin to stdout line by line with --redact's replacements.
 
 Errors are one line, `error: <message>`, on stderr. Exit codes: 2 invalid
 input (unknown add-on, bad JSON, unknown or ill-typed setting), 3 a required
@@ -188,6 +202,15 @@ def cmd_remove_instance(args) -> None:
     store.remove_instance(manifest, args.data_root, args.slug)
 
 
+def cmd_check_instance(args) -> None:
+    manifest = _manifest(args.addons_dir, args.sid)
+    slug = store.slug(args.slug)
+    if not args.slug_only:
+        store.check_instance(manifest, _stdin_object())
+    exists = slug in store._slugs(store.addon_dir(args.data_root, manifest))
+    print("exists" if exists else "new")
+
+
 def cmd_plan_enable(args) -> None:
     manifest = _manifest(args.addons_dir, args.sid)
     missing = store.missing(manifest, args.data_root)
@@ -291,7 +314,8 @@ def _json_object(line: str):
 def cmd_hook_events(args) -> None:
     for line in sys.stdin:
         obj = _json_object(line)
-        if obj is not None and obj.get("phase") not in ("done", "error"):
+        phase = obj.get("phase") if obj is not None else None
+        if isinstance(phase, str) and phase not in ("done", "error"):
             obj["step"] = args.step
             print(json.dumps(obj, separators=(",", ":")), flush=True)
         else:
@@ -324,14 +348,16 @@ def cmd_hook_result(args) -> None:
             done = obj
         elif obj is not None and obj.get("phase") == "error":
             error = obj
-    code = message = account = ""
+    code = message = account = mcp = ""
     if error is not None:
         code, message = hook_error(manifest, error.get("error"), error.get("message"))
     elif args.exit != 0:
         code, message = "command_failed", f"the hook exited with status {args.exit}"
     elif done is not None and isinstance(done.get("account"), str):
         account = clean_line(done["account"])
-    for item in (code, message, account):
+    if code == "" and done is not None and isinstance(done.get("mcp"), list):
+        mcp = ",".join(n for n in done["mcp"] if isinstance(n, str) and MCP_NAME_RE.match(n))
+    for item in (code, message, account, mcp):
         print(item.replace("\n", " "))
 
 
@@ -358,8 +384,50 @@ def clean_line(text: str) -> str:
     return "".join(c for c in text if unicodedata.category(c) != "Cc")[:LINE_MAX]
 
 
+MCP_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*\Z")
+REDACTED = "[redacted]"
+
+
+def _redactor(addons_dir: Path, sid: str, path: str):
+    """A function that replaces every secret value of the instance object in
+    PATH with [redacted]. Each value is matched as written and as it appears
+    inside a JSON string (escaped quotes, backslashes, \\u escapes), longest
+    first so a value that contains another is replaced whole."""
+    manifest = _manifest(addons_dir, sid)
+    try:
+        values = json.loads(Path(path).read_bytes().decode("utf-8"), parse_constant=_no_constant)
+    except (OSError, UnicodeDecodeError, ValueError):
+        raise Fail("--redact: the file is not a JSON object") from None
+    if not isinstance(values, dict):
+        raise Fail("--redact: the file is not a JSON object")
+    schema = store._inst_schema(manifest)
+    forms = set()
+    for name, value in values.items():
+        spec = schema.get(name)
+        if isinstance(spec, dict) and spec.get("type") == "secret" and isinstance(value, str) and value:
+            forms.update({value, json.dumps(value)[1:-1], json.dumps(value, ensure_ascii=False)[1:-1]})
+    ordered = sorted(forms, key=len, reverse=True)
+
+    def redact(text: str) -> str:
+        for form in ordered:
+            text = text.replace(form, REDACTED)
+        return text
+    return redact
+
+
+def cmd_redact(args) -> None:
+    redact = _redactor(args.addons_dir, args.sid, args.file)
+    out = sys.stdout.buffer
+    for line in sys.stdin.buffer:
+        out.write(redact(line.decode("utf-8", errors="replace")).encode("utf-8"))
+        out.flush()
+
+
 def cmd_log_tail(args) -> None:
-    text = sys.stdin.buffer.read().decode("utf-8", errors="replace")
+    if (args.redact is None) != (args.sid is None):
+        raise Fail("--redact and --sid go together")
+    redact = _redactor(args.addons_dir, args.sid, args.redact) if args.redact else (lambda t: t)
+    text = redact(sys.stdin.buffer.read().decode("utf-8", errors="replace"))
     lines = [line for line in (clean_line(raw) for raw in LINE_SPLIT_RE.split(text)) if line.strip()]
     tail = lines[-args.lines:] if args.lines > 0 else []
     print(json.dumps(tail, separators=(",", ":")))
@@ -468,6 +536,15 @@ def main(argv: list[str]) -> int:
     s.add_argument("sid")
     s.add_argument("slug")
     s.set_defaults(func=cmd_remove_instance)
+    s = sub.add_parser("check-instance")
+    s.add_argument("sid")
+    s.add_argument("slug")
+    s.add_argument("--slug-only", action="store_true")
+    s.set_defaults(func=cmd_check_instance)
+    s = sub.add_parser("redact")
+    s.add_argument("sid")
+    s.add_argument("file")
+    s.set_defaults(func=cmd_redact)
     for name, func in (("plan-enable", cmd_plan_enable), ("plan-disable", cmd_plan_disable),
                        ("purge", cmd_purge)):
         s = sub.add_parser(name)
@@ -502,6 +579,8 @@ def main(argv: list[str]) -> int:
     s.set_defaults(func=cmd_failed_container)
     s = sub.add_parser("log-tail")
     s.add_argument("--lines", type=int, default=20)
+    s.add_argument("--redact")
+    s.add_argument("--sid")
     s.set_defaults(func=cmd_log_tail)
     args = p.parse_args(argv)
     try:

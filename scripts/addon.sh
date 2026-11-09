@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# List, configure, enable, disable and run built-in add-ons (addons/<id>/addon.json).
+# List, configure, enable, disable, connect, disconnect and run built-in add-ons
+# (addons/<id>/addon.json).
 # This is the interface Boundary calls; scripts/lib/addon_cli.py does the
 # parsing and file work in the Hermes image (stack_python), so the host needs
 # only bash and the container engine.
@@ -9,6 +10,8 @@
 #   scripts/addon.sh configure <short-id> --instance <slug> --remove
 #   scripts/addon.sh enable <short-id> [--reinit] [--json]
 #   scripts/addon.sh disable <short-id> [--purge] [--json]
+#   scripts/addon.sh connect <short-id> --instance <slug> [--json] < values.json
+#   scripts/addon.sh disconnect <short-id> --instance <slug> [--json]
 #   scripts/addon.sh run <short-id> <command> [--instance <slug>]
 #
 # configure reads one JSON object on stdin. Secret values go only to
@@ -20,19 +23,33 @@
 # gate flag to 0, syncs, stops the services and reloads; --purge also deletes
 # data/addons/<short-id> and the compose volumes in services.*.volumes.
 #
+# connect stages the values on stdin in data/addons/.staging.XXXXXX (mode
+# 0600, removed on exit) and checks them against instances.settings. When the
+# manifest has instances.connect, step check runs that hook with
+# --slug <slug> --json and the values on stdin; it checks the credential and
+# stores what it keeps. Step register then writes the instance as configure
+# --instance does, and step reload reloads Hermes. The done line carries the
+# hook's account and mcp names. disconnect runs instances.disconnect (stdin
+# /dev/null) as step check, removes the instance (register) and reloads. A
+# hook's output is redacted before it is logged or relayed: each secret value
+# from the staged values becomes [redacted]. An existing slug on connect is
+# exists, an unknown one on disconnect not_found, both exit 2.
+#
 # --json prints one JSON object per line on stdout (scripts/lib/addon-events.sh):
 # `pull` lines (enable only: it pulls the images first), `setup` lines per
 # step, then one `done` or `error` line. Step output goes to stderr without
 # --json.
 #
-# configure, enable and disable hold data/addons/.lock (a symlink to their PID)
-# while they run; a second call fails with busy. A failed or interrupted enable writes the flags back as
-# they were, syncs COMPOSE_PROFILES and stops the services if the add-on was
-# off, and its error line has "rolledBack":true.
+# configure, enable, disable, connect and disconnect hold data/addons/.lock
+# (a symlink to their PID) while they run; a second call fails with busy. A
+# failed or interrupted enable writes the flags back as they were, syncs
+# COMPOSE_PROFILES and stops the services if the add-on was off, and its
+# error line has "rolledBack":true.
 #
 # Exit codes: 0 success, 1 compose_failed or busy, 2 bad_input (invalid input
-# or usage), 3 missing_settings, 4 command_failed (run: docker compose run
-# failed; addon_cli.py failed; SIGINT or SIGTERM).
+# or usage) and connect's exists and disconnect's not_found, 3
+# missing_settings, 4 command_failed (run: docker compose run failed;
+# addon_cli.py failed; SIGINT or SIGTERM) and every error a hook reports.
 #
 # ADDONS_DIR overrides addons/ (tests). STACK_PYTHON=host uses host python3.
 set -euo pipefail
@@ -50,7 +67,7 @@ source "${ROOT}/scripts/lib/python.sh"
 source "${ROOT}/scripts/lib/addon-events.sh"
 
 # usage: the synopsis from the header, on stdout.
-usage() { sed -n '7,12s/^# *//p' "${BASH_SOURCE[0]}"; }
+usage() { sed -n '8,15s/^# *//p' "${BASH_SOURCE[0]}"; }
 # usage_error REASON: `error: usage: REASON` and the synopsis on stderr, exit 2.
 # In JSON mode, a bad_input error line instead.
 usage_error() {
@@ -136,7 +153,9 @@ hermes_reload() {
 # cli_checked STEP ARGS...: cli with stdin from $CLI_IN (default /dev/null) and its stdout in
 # CLI_OUT. On failure, ev_fail with cli's own error line as the message:
 # exit 2 is bad_input, 3 missing_settings, anything else command_failed.
+# An empty STEP gives "step":null.
 CLI_OUT=""
+CLI_OPEN_STEP=""
 cli_checked() {
   local step="$1" err rc=0 msg code
   shift
@@ -150,7 +169,36 @@ cli_checked() {
     3) code=missing_settings ;;
     *) code=command_failed ;;
   esac
+  if [[ -n "$CLI_OPEN_STEP" ]]; then
+    ev_step "$CLI_OPEN_STEP" error
+    CLI_OPEN_STEP=""
+  fi
   ev_fail "$code" "$step" "$msg" "$err"
+}
+# cli_step STEP ARGS...: cli_checked as a step of its own, between running and
+# done (or error) lines.
+cli_step() {
+  local step="$1"
+  shift
+  ev_step "$step" running
+  CLI_OPEN_STEP="$step"
+  cli_checked "$step" "$@"
+  CLI_OPEN_STEP=""
+  ev_step "$step" "done"
+}
+
+# The staged values of connect. stage_stdin copies stdin to a 0600 file under
+# data/addons, which the Hermes container mounts, so addon_cli.py can read it
+# by path; on_exit removes it.
+STAGED=""
+stage_stdin() {
+  local old
+  old="$(umask)"
+  umask 077
+  STAGED="$(mktemp "${DATA_ROOT}/addons/.staging.XXXXXX")" || STAGED=""
+  umask "$old"
+  [[ -n "$STAGED" ]] || ev_fail command_failed "" "could not create a staging file in ${DATA_ROOT}/addons" ""
+  cat > "$STAGED" || ev_fail command_failed "" "reading the values on stdin failed" ""
 }
 
 # The lock: data/addons/.lock, a symlink whose target is the owner's PID.
@@ -213,6 +261,9 @@ addon_unlock() {
   LOCK_GUARD=""
 }
 on_exit() {
+  if [[ -n "$STAGED" ]]; then
+    rm -f "$STAGED"
+  fi
   addon_unlock
   ev_cleanup
 }
@@ -337,8 +388,11 @@ pull_pipe() {
 
 # Hooks. An init hook that succeeds is recorded (mark-init) inside its step.
 # run_hook STEP SID HOOK [plan-hook options]: runs the manifest's hook as
-# step STEP. Sets HOOK_RAN (1 when a hook ran) and HOOK_ACCOUNT (the `account`
-# its `done` line reported, else empty). A hook that fails goes through
+# step STEP. Sets HOOK_RAN (1 when a hook ran), HOOK_ACCOUNT (the `account`
+# its `done` line reported, else empty) and HOOK_MCP (its `mcp` names,
+# comma-separated). The hook's stdin is HOOK_STDIN. With HOOK_REDACT set (a
+# staged values file), the hook's stdout and stderr go through `cli redact`
+# before anything stores or prints them. A hook that fails goes through
 # ev_fail, so the caller's rollback runs: its error line's name passes through
 # when it is a shared name or in instances.errors, any other name becomes
 # command_failed (addon_cli.py hook-result decides). In JSON mode the hook's
@@ -346,6 +400,9 @@ pull_pipe() {
 # "step" set; everything else goes to the step log.
 HOOK_RAN=0
 HOOK_ACCOUNT=""
+HOOK_MCP=""
+HOOK_STDIN=/dev/null
+HOOK_REDACT=""
 # hook_exec RAW SID HOOK KIND STEP ARGV...: KIND is `script` (run from ROOT) or
 # a compose service. The hook's stdout is copied to RAW and filtered by
 # hook-events. The step fails, so it never shows `done` first, when the hook
@@ -355,20 +412,33 @@ hook_exec() {
   local raw="$1" sid="$2" hook="$3" kind="$4" step="$5" st code
   shift 5
   set +e
-  if [[ "$kind" == script ]]; then
-    "$@" < /dev/null | tee "$raw" | hook_events "$step"
+  if [[ -n "$HOOK_REDACT" ]]; then
+    hook_cmd "$kind" "$@" 2>&1 | cli redact "$sid" "$HOOK_REDACT" | tee "$raw" | hook_events "$step"
+    st=("${PIPESTATUS[@]}")
+    set -e
+    [[ "${st[1]}" == 0 && "${st[2]}" == 0 && "${st[3]}" == 0 ]] || return 1
   else
-    docker compose run --rm --no-deps -T "$kind" "$@" < /dev/null | tee "$raw" | hook_events "$step"
+    hook_cmd "$kind" "$@" | tee "$raw" | hook_events "$step"
+    st=("${PIPESTATUS[@]}")
+    set -e
+    [[ "${st[1]}" == 0 && "${st[2]}" == 0 ]] || return 1
   fi
-  st=("${PIPESTATUS[@]}")
-  set -e
-  [[ "${st[1]}" == 0 && "${st[2]}" == 0 ]] || return 1
   [[ "${st[0]}" == 0 ]] || return "${st[0]}"
   code="$(cli hook-result "$sid" 0 < "$raw" 2> /dev/null | sed -n 1p)" || return 1
   [[ -z "$code" ]] || return 1
   if [[ "$hook" == init ]] && ! cli mark-init "$sid" < /dev/null; then
     printf '{"phase":"error","error":"command_failed","message":"recording init in state.json failed"}\n' >> "$raw"
     return 1
+  fi
+}
+# hook_cmd KIND ARGV...: the hook itself, stdin from HOOK_STDIN.
+hook_cmd() {
+  local kind="$1"
+  shift
+  if [[ "$kind" == script ]]; then
+    "$@" < "$HOOK_STDIN"
+  else
+    docker compose run --rm --no-deps -T "$kind" "$@" < "$HOOK_STDIN"
   fi
 }
 hook_events() {
@@ -379,6 +449,7 @@ run_hook() {
   shift 3
   HOOK_RAN=0
   HOOK_ACCOUNT=""
+  HOOK_MCP=""
   cli_checked "$step" plan-hook "$sid" "$hook" "$@"
   [[ -n "$CLI_OUT" ]] || return 0
   while IFS= read -r line; do
@@ -395,6 +466,7 @@ EOF_HOOK
   code="$(printf '%s\n' "$out" | sed -n 1p)"
   msg="$(printf '%s\n' "$out" | sed -n 2p)"
   HOOK_ACCOUNT="$(printf '%s\n' "$out" | sed -n 3p)"
+  HOOK_MCP="$(printf '%s\n' "$out" | sed -n 4p)"
   [[ -z "$code" ]] || ev_fail "$code" "$step" "$msg" "$EV_LAST_LOG"
 }
 
@@ -560,6 +632,70 @@ EOF_VOLUMES
   ev_done "$sid" disable "" ""
 }
 
+# instance_args CMD ARGS...: the slug from `--instance SLUG`, the only option
+# connect and disconnect take, in INSTANCE_SLUG.
+INSTANCE_SLUG=""
+instance_args() {
+  local cmd="$1"
+  shift
+  INSTANCE_SLUG=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --instance) [[ $# -ge 2 && -n "$2" ]] || usage_error "--instance needs a slug"; INSTANCE_SLUG="$2"; shift 2 ;;
+      *) usage_error "${cmd}: unknown option $1" ;;
+    esac
+  done
+  [[ -n "$INSTANCE_SLUG" ]] || usage_error "${cmd} needs --instance <slug>"
+}
+
+reload_step() {
+  run_step reload "" hermes_reload \
+    || ev_fail compose_failed reload "make hermes-reload failed" "$EV_LAST_LOG"
+}
+
+cmd_connect() {
+  local sid="${1:-}" slug
+  [[ -n "$sid" ]] || usage_error "connect needs a short id"
+  shift
+  instance_args connect "$@"
+  slug="$INSTANCE_SLUG"
+  addon_lock
+  stage_stdin
+  EV_REDACT="$STAGED"
+  EV_REDACT_SID="$sid"
+  CLI_IN="$STAGED" cli_checked "" check-instance "$sid" "$slug"
+  if [[ "$CLI_OUT" != new ]]; then
+    EV_EXIT=2
+    ev_fail exists "" "${sid} already has an instance ${slug}" ""
+  fi
+  HOOK_STDIN="$STAGED"
+  HOOK_REDACT="$STAGED"
+  run_hook check "$sid" connect --slug "$slug"
+  HOOK_STDIN=/dev/null
+  HOOK_REDACT=""
+  CLI_IN="$STAGED" cli_step register configure "$sid" --instance "$slug"
+  reload_step
+  ev_done "$sid" connect "" "$HOOK_MCP" "$HOOK_ACCOUNT"
+}
+
+cmd_disconnect() {
+  local sid="${1:-}" slug
+  [[ -n "$sid" ]] || usage_error "disconnect needs a short id"
+  shift
+  instance_args disconnect "$@"
+  slug="$INSTANCE_SLUG"
+  addon_lock
+  cli_checked "" check-instance "$sid" "$slug" --slug-only
+  if [[ "$CLI_OUT" != exists ]]; then
+    EV_EXIT=2
+    ev_fail not_found "" "${sid} has no instance ${slug}" ""
+  fi
+  run_hook check "$sid" disconnect --slug "$slug"
+  cli_step register remove-instance "$sid" "$slug"
+  reload_step
+  ev_done "$sid" disconnect "" ""
+}
+
 cmd_run() {
   local sid="${1:-}" command="${2:-}" plan rc=0 line
   [[ -n "$sid" && -n "$command" ]] || usage_error "run needs a short id and a command"
@@ -587,11 +723,11 @@ trap on_exit EXIT
 sub="${1:-}"
 [[ -n "$sub" ]] || usage_error "no command given"
 shift
-# --json may come anywhere among enable's and disable's options.
+# --json may come anywhere among the options of the commands that take it.
 json=0
 args=()
 case "$sub" in
-  enable | disable)
+  enable | disable | connect | disconnect)
     for a in "$@"; do
       if [[ "$a" == --json ]]; then json=1; else args+=("$a"); fi
     done
@@ -600,13 +736,15 @@ case "$sub" in
 esac
 # list and run change nothing and keep the shell's default signal handling.
 case "$sub" in
-  configure | enable | disable) ev_init "$json" ;;
+  configure | enable | disable | connect | disconnect) ev_init "$json" ;;
 esac
 case "$sub" in
   list) cmd_list "$@" ;;
   configure) cmd_configure "$@" ;;
   enable) cmd_enable "$@" ;;
   disable) cmd_disable "$@" ;;
+  connect) cmd_connect "$@" ;;
+  disconnect) cmd_disconnect "$@" ;;
   run) cmd_run "$@" ;;
   -h | --help | help) usage ;;
   *) printf 'error: unknown command %s\n' "$sub" >&2; exit 2 ;;

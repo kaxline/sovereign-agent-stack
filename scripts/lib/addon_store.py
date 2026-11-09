@@ -316,6 +316,17 @@ def apply_settings(manifest: dict, data_root: Path, values: dict) -> dict[str, s
     return flags
 
 
+def check_instance(manifest: dict, values: dict) -> None:
+    """Raise InputError unless `values` is a complete new instance: every
+    setting known and well-typed, and every required one given. Writes
+    nothing; `connect` calls it before the hook sees the values."""
+    schema = _inst_schema(manifest)
+    clean = _validated(schema, values)
+    for name, spec in schema.items():
+        if _required(spec) and name not in clean:
+            raise InputError(f"{name}: required for a new instance", name)
+
+
 def apply_instance(manifest: dict, data_root: Path, slug: str, values: dict) -> None:
     slug = _slug(slug)
     schema = _inst_schema(manifest)
