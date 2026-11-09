@@ -109,12 +109,14 @@ assert "vault.capture_secret" in SERVER_REQUESTS and "vault.take" in METHODS
 
 KEY = "sk-test-" + "Qm7Lx2Vb9Rt4Wn8Kp3Zs6Hd1"
 OTHER = "ghp_a1B2c3D4e5F6g7H8i9J0kLmNoPqRs"
+FILLED = "Filled-Pw-7Hq2Lz9Xc4Vb"  # stands in for a password the broker filled
 PAGES = {
     "/key": f"""<!doctype html><title>keys</title><h1>API keys</h1>
 <p>Signed in as someone@example.com. Docs: https://docs.example.com/keys</p>
 <label for=k>Your new key</label><input id=k readonly value="{KEY}"><button>Copy</button>""".encode(),
     "/two": f"""<!doctype html><title>keys</title>
-<div>Project <code>proj-a</code></div><code id=a>{OTHER}</code><input id=b aria-label="Secret key" readonly value="{KEY}">""".encode(),
+<div>Project <code>proj-a</code></div><code id=a>{OTHER}</code><input id=b aria-label="Secret key" readonly value="{KEY}">
+<input id=pw type=password value="{FILLED}">""".encode(),
     "/none": b"<!doctype html><title>empty</title><p>No keys yet.</p>",
 }
 
@@ -232,6 +234,12 @@ try:
     assert out["error_type"] == "bad_candidate", out
     out = json.loads(in_turn({"action": "capture_secret", "name": "X_API_KEY", "destination": "viewer", "selector": "##"}))
     assert out["error_type"] == "bad_selector", out
+    # An editable password field is refused by selector too, so a filled password never reaches a file.
+    before = len(frames)
+    raw = in_turn({"action": "capture_secret", "name": "X_API_KEY", "destination": "env", "selector": "#pw"})
+    out = json.loads(raw)
+    assert out["error_type"] == "password_field" and FILLED not in raw, out
+    assert FILLED not in env_file() and len(frames) == before, "nothing stored or asked"
 
     # Nothing key-like.
     exec_(f"goto_url({origin + '/none'!r}); wait_for_load()")
