@@ -8,10 +8,13 @@ image's python3, mounted at /bootstrap/addon_manifest.py.
         Check every manifest as a built-in add-on. Prints one line per problem
         and exits 1 if there are any.
     addon_manifest.py mcp-plan <addons-dir> <profile>
-        For each add-on with an `mcp` block, print one line the bootstrap's
+        For each entry of each add-on's `mcp` block (one object, or a list of
+        objects), print one line, in list order, that the bootstrap's
         register_addon_mcp_servers reads, fields separated by "|":
         name|title|enabled|access|url|timeout|connect_timeout|transport|tools|pins|all_urls
-        `enabled` is 1 or 0 from the add-on's flag in the environment. `access`
+        `title` is the entry's own "title", else the manifest's. `enabled` is 1
+        or 0 from the flag in the environment: the entry's `when.gate` flag when
+        it has one, else builtin.flag. `access`
         is rw, ro, or empty when the profile gets no entry. Tools, pins and
         all_urls are space-separated. `mcp.service` is one service key or a map
         {"ro": key, "rw": key} that gives each access level its own service;
@@ -32,13 +35,27 @@ image's python3, mounted at /bootstrap/addon_manifest.py.
         manifests, and values containing | or a newline, are reported on stderr
         and skipped.
 
+A built-in manifest may list `gates`, each {flag, profile, seed}: one more
+sync-profiles.sh row, so a second flag can switch on part of an add-on. An
+`mcp` entry or a `services` entry names one with "when": {"gate": FLAG}.
+
 cron_fence() lists the MCP server names and URLs the bootstrap's
-fence_mail_from_cron keeps out of platform_toolsets.cron: every add-on whose
-permissions.cron is not true. With cron "ro" the add-on's name is not fenced and
+fence_mail_from_cron keeps out of platform_toolsets.cron: every MCP entry of
+every add-on whose permissions.cron is not true. With cron "ro" the add-on's name is not fenced and
 only its URLs other than the ro service's are, so a cron job keeps the ro
 entry and loses the rw one. An invalid manifest is fenced by whatever MCP
 name it carries, so a broken manifest can't open cron. cron_fence_toolsets()
 does the same for the plugin toolsets of add-ons with a vaultBackend.
+
+Settings (and the schema of `instances`, {name, settings}) take the types in
+SETTING_TYPES. A setting with neither `default` nor `optional: true` is
+required; a secret setting may not have a default; a bool setting may name a
+`flag`, which must be a gate flag. Names that map to the same
+ADDON_<SHORT>_<NAME> key (differing only by case, - or _) are refused. Two
+`mcp` entries may not point at the same service. `services.<name>.mounts` and
+`commands` are checked as validate() describes them. A built-in service may
+list `volumes`, the compose volume names `scripts/addon.sh disable --purge`
+removes; scripts/test-addon-manifests.py checks they exist in docker-compose.yml.
 
 Policy follows docs/private/addon-manifest-spec.md (draft). `source` is
 "builtin", "official" (a package from the official feed) or "community".
@@ -46,6 +63,7 @@ Policy follows docs/private/addon-manifest-spec.md (draft). `source` is
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import re
@@ -69,7 +87,14 @@ READ_CLASSES = {"mail", "messages", "contacts", "calendar", "projects", "memory"
                 "credentials"}
 EGRESS_WORDS = {"llm-proxy", "search", "postgres", "internet"}
 STACK_SERVICES = {"llm", "search", "storage", "postgres", "neo4j", "redis", "secrets", "scheduler"}
-SETTING_TYPES = {"string", "int", "bool", "choice", "port", "secret", "url", "path"}
+SETTING_TYPES = {"string", "int", "bool", "choice", "port", "secret", "url", "path", "list", "date"}
+# Setting names the stack fills in itself; a schema may not declare them.
+RESERVED_SETTINGS = {"slug"}
+# services.<name>.mounts keys and the fixed container path each one names.
+MOUNT_PATHS = {"secrets": "/run/addon/secrets", "config": "/run/addon/config",
+               "instances": "/run/addon/instances"}
+MOUNT_MODES = {"ro", "rw"}
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 TRANSPORTS = {"sse", "http"}
 ACCESS = {"ro", "rw"}
 UNATTENDED_PROFILE = "api-server"
@@ -85,6 +110,7 @@ TOOL_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 ENV_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 DIGEST_RE = re.compile(r"@sha256:[0-9a-f]{64}$")
 PATH_RE = re.compile(r"^/[A-Za-z0-9._~/-]*$")
+COMPOSE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 
 
 def short_id(manifest_id: str) -> str:
@@ -146,6 +172,34 @@ def validate(manifest, source: str = "builtin") -> list[str]:
     elif builtin is not None:
         err("only built-in add-ons may have a builtin block")
 
+    gates = manifest.get("gates")
+    gate_flags: set[str] = set()
+    if gates is not None:
+        if source != "builtin":
+            err("only built-in add-ons may have gates")
+        elif not (isinstance(gates, list) and gates):
+            err("gates must be a non-empty list of {flag, profile, seed}")
+        else:
+            for i, g in enumerate(gates):
+                if not isinstance(g, dict):
+                    err(f"gates[{i}] must be an object {{flag, profile, seed}}")
+                    continue
+                if not (isinstance(g.get("flag"), str) and ENV_RE.match(g["flag"])):
+                    err(f"gates[{i}].flag must be an env var name")
+                elif g["flag"] in gate_flags or (isinstance(builtin, dict) and g["flag"] == builtin.get("flag")):
+                    err(f"gates[{i}].flag {g['flag']!r} is already used by this add-on")
+                else:
+                    gate_flags.add(g["flag"])
+                if not (isinstance(g.get("profile"), str) and NAME_RE.match(g["profile"])):
+                    err(f"gates[{i}].profile must be a compose profile name")
+                if not isinstance(g.get("seed"), bool):
+                    err(f"gates[{i}].seed must be true or false")
+                extra = set(g) - {"flag", "profile", "seed"}
+                if extra:
+                    err(f"gates[{i}] has unknown fields: {', '.join(sorted(extra))}")
+                elif list(g) != ["flag", "profile", "seed"] and set(g) == {"flag", "profile", "seed"}:
+                    err(f"gates keys must be in the order flag, profile, seed (gates[{i}]); sync-profiles.sh reads them line by line")
+
     services = manifest.get("services")
     if "services" in manifest:
         if not (isinstance(services, dict) and services):
@@ -168,8 +222,17 @@ def validate(manifest, source: str = "builtin") -> list[str]:
                     err(f"services.{name}.image must be referenced by sha256 digest")
                 if "compose" in svc:
                     err(f"services.{name}: only built-in add-ons name a compose service")
+            if "when" in svc:
+                errors.extend(_validate_when(svc["when"], gate_flags, f"services.{name}.when"))
             if "port" in svc and not (isinstance(svc["port"], int) and 0 < svc["port"] < 65536):
                 err(f"services.{name}.port must be a port number")
+            if "volumes" in svc:
+                vols = svc["volumes"]
+                if source != "builtin":
+                    err(f"services.{name}.volumes: only built-in add-ons name compose volumes")
+                elif not (_is_str_list(vols) and vols and all(COMPOSE_NAME_RE.match(v) for v in vols)
+                          and len(set(vols)) == len(vols)):
+                    err(f"services.{name}.volumes must be a non-empty list of distinct compose volume names")
     else:
         services = {}
 
@@ -223,31 +286,96 @@ def validate(manifest, source: str = "builtin") -> list[str]:
 
     mcp = manifest.get("mcp")
     if mcp is not None:
-        errors.extend(_validate_mcp(mcp, services, source, bool(reads)))
-        if perms.get("cron") == "ro" and not (
-                isinstance(mcp, dict) and isinstance(mcp.get("service"), dict) and "ro" in mcp["service"]):
-            err('permissions.cron "ro" needs a mcp.service map with an ro service: cron ro needs an ro service')
+        if isinstance(mcp, list) and not mcp:
+            err("mcp must be an object or a non-empty list of objects")
+        entries = mcp if isinstance(mcp, list) else [mcp]
+        for entry in entries:
+            errors.extend(_validate_mcp(entry, services, source, bool(reads), gate_flags))
+            if perms.get("cron") == "ro" and not (
+                    isinstance(entry, dict) and isinstance(entry.get("service"), dict)
+                    and "ro" in entry["service"]):
+                err('permissions.cron "ro" needs a mcp.service map with an ro service: '
+                    'cron ro needs an ro service')
+        names = [e["name"] for e in entries if isinstance(e, dict) and isinstance(e.get("name"), str)]
+        if len(names) != len(set(names)):
+            err("mcp names must be unique within an add-on")
+        # The bootstrap drops stale entries by URL, so two entries on one
+        # service would drop each other's live registration.
+        keys = [_mcp_service_keys(e) for e in entries]
+        for i in range(len(keys)):
+            for j in range(i + 1, len(keys)):
+                for shared in sorted(keys[i] & keys[j]):
+                    err(f"mcp entries {i} and {j} share service {shared!r}; each entry needs its own")
 
     vault = manifest.get("vaultBackend")
     if vault is not None:
         errors.extend(_validate_vault_backend(vault, source, bool(reads)))
 
+    # A setting's flag names a gate: configure must not be able to switch
+    # builtin.flag, which only enable and disable write.
+    flags = set(gate_flags)
     settings = manifest.get("settings", {})
     if not isinstance(settings, dict):
         err("settings must be an object")
         settings = {}
-    for name, s in settings.items():
-        if not isinstance(s, dict) or s.get("type") not in SETTING_TYPES:
-            err(f"settings.{name}.type must be one of {', '.join(sorted(SETTING_TYPES))}")
+    errors.extend(_validate_settings(settings, source=source, reads=bool(reads), flags=flags,
+                                     in_instance=False))
+
+    instances = manifest.get("instances")
+    if instances is not None:
+        if not isinstance(instances, dict):
+            err("instances must be an object {name, settings}")
+        else:
+            iname = instances.get("name")
+            if not (isinstance(iname, str) and NAME_RE.match(iname)):
+                err("instances.name must be lowercase letters, digits and -")
+            isettings = instances.get("settings")
+            if not (isinstance(isettings, dict) and isettings):
+                err("instances.settings must declare at least one setting")
+            else:
+                errors.extend(_validate_settings(isettings, source=source, reads=bool(reads),
+                                                 flags=flags, in_instance=True))
+            extra = set(instances) - {"name", "settings"}
+            if extra:
+                err(f"instances has unknown fields: {', '.join(sorted(extra))}")
+
+    mcp_services: set[str] = set()
+    for entry in mcp_entries(manifest) if isinstance(mcp, (dict, list)) else []:
+        mcp_services |= _mcp_service_keys(entry)
+    for name, svc in services.items():
+        if not isinstance(svc, dict) or "mounts" not in svc:
             continue
-        if s["type"] == "choice":
-            opts = s.get("options")
-            if not (_is_str_list(opts) and opts):
-                err(f"settings.{name}.options must be a non-empty list")
-            elif "default" in s and s["default"] not in opts:
-                err(f"settings.{name}.default is not one of its options")
-        if s["type"] == "path" and reads and "default" in s:
-            err(f"settings.{name}: a path setting in an add-on that reads personal data may not have a default")
+        mounts = svc["mounts"]
+        if not (isinstance(mounts, dict) and mounts and set(mounts) <= set(MOUNT_PATHS)
+                and all(isinstance(v, str) and v in MOUNT_MODES for v in mounts.values())):
+            err(f"services.{name}.mounts must map secrets, config and/or instances to ro or rw")
+        elif "secrets" in mounts and name in mcp_services:
+            err(f"services.{name} holds secrets, so no mcp entry may point at it")
+
+    commands = manifest.get("commands")
+    if commands is not None:
+        if not isinstance(commands, dict):
+            err("commands must be an object of name to {service, instance, argv}")
+            commands = {}
+        for cname, cmd in commands.items():
+            if not NAME_RE.match(cname):
+                err(f"commands.{cname}: name must be lowercase letters, digits and -")
+            if not isinstance(cmd, dict):
+                err(f"commands.{cname} must be an object {{service, instance, argv}}")
+                continue
+            if not (isinstance(cmd.get("service"), str) and cmd["service"] in services):
+                err(f"commands.{cname}.service must name one of services")
+            elif reads and cmd["service"] in mcp_services:
+                err(f"commands.{cname}: command runs in an MCP service, which an add-on "
+                    "that reads personal data may not do")
+            if not isinstance(cmd.get("instance"), bool):
+                err(f"commands.{cname}.instance must be true or false")
+            argv = cmd.get("argv")
+            if not (_is_str_list(argv) and argv):
+                err(f"commands.{cname}.argv must be a non-empty list of strings")
+            extra = set(cmd) - {"service", "instance", "argv"}
+            if extra:
+                err(f"commands.{cname} has unknown fields: {', '.join(sorted(extra))}")
 
     if "host" in manifest and source == "community":
         err("a host component is refused unless the add-on is built-in or on the official feed")
@@ -255,11 +383,110 @@ def validate(manifest, source: str = "builtin") -> list[str]:
     return errors
 
 
-def _validate_mcp(mcp, services: dict, source: str, reads: bool) -> list[str]:
+def _validate_settings(settings: dict, *, source: str, reads: bool, flags: set[str],
+                       in_instance: bool) -> list[str]:
+    """Check a settings schema (top-level, or an instance's). A setting with
+    neither `default` nor `optional: true` is required. Messages name the
+    setting, never a value."""
+    errors: list[str] = []
+    err = errors.append
+    where = "instances.settings" if in_instance else "settings"
+    env_names: dict[str, str] = {}
+    for name, s in settings.items():
+        at = f"{where}.{name}"
+        if name in RESERVED_SETTINGS:
+            err(f"{at}: {name!r} is reserved")
+        # addon_store keys settings.env (and names secret files) by this form.
+        key = name.upper().replace("-", "_")
+        if key in env_names:
+            err(f"{at}: same settings.env key as {env_names[key]!r}; names may not differ only "
+                "by case, - or _")
+        else:
+            env_names[key] = name
+        if not isinstance(s, dict) or not (isinstance(s.get("type"), str) and s["type"] in SETTING_TYPES):
+            err(f"{at}.type must be one of {', '.join(sorted(SETTING_TYPES))}")
+            continue
+        t = s["type"]
+        if "label" in s and not (isinstance(s["label"], str) and s["label"].strip()):
+            err(f"{at}.label must be a non-empty string")
+        if "optional" in s and not isinstance(s["optional"], bool):
+            err(f"{at}.optional must be true or false")
+        if t == "choice":
+            opts = s.get("options")
+            if not (_is_str_list(opts) and opts):
+                err(f"{at}.options must be a non-empty list")
+            elif "default" in s and s["default"] not in opts:
+                err(f"{at}.default is not one of its options")
+        if t == "path" and reads and "default" in s:
+            err(f"{at}: a path setting in an add-on that reads personal data may not have a default")
+        if t == "secret" and source not in ("builtin", "official"):
+            err(f"{at}: secret settings are refused unless the add-on is built-in or on the official feed")
+        if t == "secret" and "default" in s:
+            err(f"{at}: a secret setting may not have a default")
+        if "default" in s and t != "choice" and not _default_fits(t, s["default"]):
+            err(f"{at}.default does not match type {t}")
+        if "flag" in s:
+            if in_instance:
+                err(f"{at}.flag is refused inside an instance")
+            elif t != "bool":
+                err(f"{at}.flag is for bool settings only")
+            elif not (isinstance(s["flag"], str) and ENV_RE.match(s["flag"])):
+                err(f"{at}.flag must be an env var name")
+            elif s["flag"] not in flags:
+                err(f"{at}.flag must name a flag listed in gates")
+    return errors
+
+
+def _default_fits(t: str, value) -> bool:
+    if t in ("string", "url", "path", "secret"):
+        return isinstance(value, str)
+    if t in ("int", "port"):
+        return isinstance(value, int) and not isinstance(value, bool) and (
+            t == "int" or 0 < value < 65536)
+    if t == "bool":
+        return isinstance(value, bool)
+    if t == "list":
+        return _is_str_list(value)
+    if t == "date":
+        if not (isinstance(value, str) and DATE_RE.match(value)):
+            return False
+        try:
+            datetime.date.fromisoformat(value)
+        except ValueError:
+            return False
+        return True
+    return True
+
+
+def _mcp_service_keys(entry) -> set[str]:
+    """The service keys an mcp entry points at: a string key, or the values
+    of an access-level map."""
+    svc = entry.get("service") if isinstance(entry, dict) else None
+    if isinstance(svc, str):
+        return {svc}
+    if isinstance(svc, dict):
+        return {v for v in svc.values() if isinstance(v, str)}
+    return set()
+
+
+def _validate_when(when, gate_flags: set[str], where: str) -> list[str]:
+    if not (isinstance(when, dict) and set(when) == {"gate"}):
+        return [f'{where} must be {{"gate": FLAG}}']
+    if when["gate"] not in gate_flags:
+        return [f"{where}.gate {when['gate']!r} is not a flag listed in gates"]
+    return []
+
+
+def _validate_mcp(mcp, services: dict, source: str, reads: bool,
+                  gate_flags: set[str] = frozenset()) -> list[str]:
     errors: list[str] = []
     err = errors.append
     if not isinstance(mcp, dict):
         return ["mcp must be an object"]
+    if "title" in mcp and not (isinstance(mcp["title"], str) and mcp["title"].strip()):
+        err("mcp.title must be a non-empty string")
+    if "when" in mcp:
+        errors.extend(_validate_when(mcp["when"], gate_flags, "mcp.when"))
     svc = mcp.get("service")
     levels: set[str] = set()  # access levels that have a service
     if isinstance(svc, str):
@@ -393,11 +620,18 @@ def truthy(value: str | None) -> bool:
     return (value or "").strip().lower() in ("1", "true", "yes", "on")
 
 
-def _mcp_urls(manifest: dict, environ) -> dict[str, str]:
+def mcp_entries(manifest: dict) -> list[dict]:
+    """The manifest's mcp entries: `[mcp]` for an object, the list as is."""
+    mcp = manifest.get("mcp")
+    if isinstance(mcp, list):
+        return mcp
+    return [mcp] if mcp else []
+
+
+def _mcp_urls(manifest: dict, mcp: dict, environ) -> dict[str, str]:
     """Access level -> URL. A single service gives {"": url}, which
     mcp.env.url may override; a service map gives one URL per level and
     ignores mcp.env.url."""
-    mcp = manifest["mcp"]
     services = manifest["services"]
 
     def build(key: str) -> str:
@@ -413,22 +647,23 @@ def cron_fence(addons_dir: Path, environ=os.environ) -> tuple[list[str], list[st
     names, urls = [], []
     for path, manifest, parse_error in load_dir(addons_dir):
         if check_builtin_file(path, manifest, parse_error):
-            mcp = manifest.get("mcp") if isinstance(manifest, dict) else None
-            name = mcp.get("name") if isinstance(mcp, dict) else None
-            if isinstance(name, str) and name:
-                names.append(name)
+            raw = manifest.get("mcp") if isinstance(manifest, dict) else None
+            for entry in raw if isinstance(raw, list) else [raw]:
+                name = entry.get("name") if isinstance(entry, dict) else None
+                if isinstance(name, str) and name:
+                    names.append(name)
             continue
-        mcp = manifest.get("mcp")
         cron = manifest.get("permissions", {}).get("cron")
-        if not mcp or cron is True:
+        if cron is True:
             continue
-        mcp_urls = _mcp_urls(manifest, environ)
-        if cron == "ro":
-            # The ro service stays in cron; its other URLs (rw) are fenced.
-            urls.extend(u for level, u in mcp_urls.items() if level != "ro")
-            continue
-        names.append(mcp["name"])
-        urls.extend(mcp_urls.values())
+        for mcp in mcp_entries(manifest):
+            mcp_urls = _mcp_urls(manifest, mcp, environ)
+            if cron == "ro":
+                # The ro service stays in cron; its other URLs (rw) are fenced.
+                urls.extend(u for level, u in mcp_urls.items() if level != "ro")
+                continue
+            names.append(mcp["name"])
+            urls.extend(mcp_urls.values())
     return sorted(set(names)), sorted(set(urls))
 
 
@@ -456,40 +691,39 @@ def mcp_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
             for e in errors:
                 print(f"warning: skipping {path.parent.name}: {e}", file=sys.stderr)
             continue
-        mcp = manifest.get("mcp")
-        if not mcp:
-            continue
-        env = mcp.get("env", {})
-        urls = _mcp_urls(manifest, environ)
-        timeout = environ.get(env.get("timeout", ""), "") or str(mcp["timeout"])
-        connect = environ.get(env.get("connectTimeout", ""), "") or str(mcp["connectTimeout"])
-        enabled = "1" if truthy(environ.get(manifest["builtin"]["flag"])) else "0"
-        access = mcp["profiles"].get(profile, "")
-        if "access" in env and access:
-            # Fail closed: only read, write or empty are known values.
-            cap = environ.get(env["access"], "")
-            if cap == "read":
-                access = "ro"
-            elif cap not in ("write", ""):
-                access = ""
-        if "" in urls:
-            url = urls[""]
-        else:
-            url = urls.get(access) or urls.get("rw") or urls["ro"]
-        tools, pins = mcp["tools"], mcp.get("pin", [])
-        if access == "ro":
-            # A read-only profile never sees a write tool, listed or pinned.
-            write = set(mcp.get("writeTools", []))
-            tools = [t for t in tools if t not in write]
-            pins = [t for t in pins if t not in write]
-        fields = [mcp["name"], manifest["title"], enabled, access, url, timeout, connect,
-                  mcp["transport"], " ".join(tools), " ".join(pins),
-                  " ".join(sorted(set(urls.values())))]
-        if any("|" in f or "\n" in f for f in fields):
-            print(f"warning: skipping {path.parent.name}: a value contains | or a newline",
-                  file=sys.stderr)
-            continue
-        lines.append("|".join(fields))
+        for mcp in mcp_entries(manifest):
+            env = mcp.get("env", {})
+            urls = _mcp_urls(manifest, mcp, environ)
+            timeout = environ.get(env.get("timeout", ""), "") or str(mcp["timeout"])
+            connect = environ.get(env.get("connectTimeout", ""), "") or str(mcp["connectTimeout"])
+            flag = mcp["when"]["gate"] if "when" in mcp else manifest["builtin"]["flag"]
+            enabled = "1" if truthy(environ.get(flag)) else "0"
+            access = mcp["profiles"].get(profile, "")
+            if "access" in env and access:
+                # Fail closed: only read, write or empty are known values.
+                cap = environ.get(env["access"], "")
+                if cap == "read":
+                    access = "ro"
+                elif cap not in ("write", ""):
+                    access = ""
+            if "" in urls:
+                url = urls[""]
+            else:
+                url = urls.get(access) or urls.get("rw") or urls["ro"]
+            tools, pins = mcp["tools"], mcp.get("pin", [])
+            if access == "ro":
+                # A read-only profile never sees a write tool, listed or pinned.
+                write = set(mcp.get("writeTools", []))
+                tools = [t for t in tools if t not in write]
+                pins = [t for t in pins if t not in write]
+            fields = [mcp["name"], mcp.get("title", manifest["title"]), enabled, access, url, timeout, connect,
+                      mcp["transport"], " ".join(tools), " ".join(pins),
+                      " ".join(sorted(set(urls.values())))]
+            if any("|" in f or "\n" in f for f in fields):
+                print(f"warning: skipping {path.parent.name}: a value contains | or a newline",
+                      file=sys.stderr)
+                continue
+            lines.append("|".join(fields))
     return lines
 
 

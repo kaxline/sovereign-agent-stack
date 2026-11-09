@@ -22,7 +22,7 @@ bad() { printf 'FAIL %s\n' "$*" >&2; fail=1; }
 FIRST_RUN="scripts/setup.sh scripts/sync-profiles.sh scripts/sync-signal-profile.sh
 scripts/sync-buzz-profile.sh scripts/sync-terminal-backend.sh scripts/sync-n8n-credentials.sh
 scripts/todo.sh scripts/crm.sh scripts/vault.sh scripts/budget.sh scripts/db.sh scripts/lib/env.sh scripts/lib/data-root.sh
-scripts/lib/hermes-yaml.sh"
+scripts/lib/hermes-yaml.sh scripts/addon.sh"
 
 # A command position (line start, after ; & | ( or a keyword, after VAR=value
 # prefixes) followed by python3, python or node.
@@ -38,6 +38,37 @@ for f in $FIRST_RUN; do
   fi
 done
 [[ "$fail" -eq 0 ]] && echo "ok: first-run scripts run no host python3 or node"
+
+# sync-profiles.sh reads add-on manifests with sed. A scratch copy of the
+# script gets a manifest with a builtin block and one gate; --table must list both.
+gate_root="$(mktemp -d)"
+mkdir -p "$gate_root/scripts" "$gate_root/addons/demo"
+cp -R scripts/sync-profiles.sh scripts/lib "$gate_root/scripts/"
+cat > "$gate_root/addons/demo/addon.json" <<'JSON'
+{
+  "builtin": {
+    "flag": "DEMO_ENABLED",
+    "profile": "demo",
+    "seed": true
+  },
+  "gates": [
+    {
+      "flag": "DEMO_EXTRA_ENABLED",
+      "profile": "demo-extra",
+      "seed": false
+    }
+  ],
+  "services": {}
+}
+JSON
+gate_rows="$(bash "$gate_root/scripts/sync-profiles.sh" --table 2>&1 || true)"
+rm -rf "$gate_root"
+if printf '%s\n' "$gate_rows" | grep -qx 'DEMO_ENABLED demo 1' \
+  && printf '%s\n' "$gate_rows" | grep -qx 'DEMO_EXTRA_ENABLED demo-extra 0'; then
+  echo "ok: sync-profiles.sh lists an add-on's gate rows without python3"
+else
+  bad "sync-profiles.sh --table did not list the demo gate: $(printf '%s\n' "$gate_rows" | tail -3)"
+fi
 
 # --- Live check ---
 live_skip() {

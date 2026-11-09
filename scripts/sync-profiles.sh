@@ -55,8 +55,11 @@ SEARCH_GATE_ENABLED search-gate 1"
 # run, scripts/test-no-host-python.sh), so the builtin block is read with sed.
 # That relies on the canonical layout scripts/test-addon-manifests.py
 # enforces: the block opens with `  "builtin": {` and has one key per line.
+# A built-in manifest may also list `gates`: the list opens with `  "gates": [`,
+# each gate has "flag", "profile", "seed" lines in that order, and one row per
+# gate follows the builtin row.
 addon_rows() {
-  local manifest block flag profile seed
+  local manifest block flag profile seed gates gflag gprofile gseed line
   for manifest in "${ROOT}"/addons/*/addon.json; do
     [[ -f "$manifest" ]] || continue
     block="$(sed -n '/^  "builtin": {$/,/^  }/p' "$manifest")"
@@ -72,6 +75,26 @@ addon_rows() {
       die "${manifest#"${ROOT}/"} has no readable builtin block; run python3 scripts/test-addon-manifests.py"
     fi
     printf '%s %s %s\n' "$flag" "$profile" "$seed"
+    gates="$(sed -n '/^  "gates": \[$/,/^  \]/p' "$manifest")"
+    [[ -n "$gates" ]] || continue
+    gflag="" gprofile=""
+    while IFS= read -r line; do
+      case "$line" in
+        *'"flag": "'*) gflag="$(printf '%s\n' "$line" | sed -n 's/^ *"flag": "\([A-Z0-9_]*\)",*$/\1/p')" ;;
+        *'"profile": "'*) gprofile="$(printf '%s\n' "$line" | sed -n 's/^ *"profile": "\([a-z0-9-]*\)",*$/\1/p')" ;;
+        *'"seed": '*)
+          gseed="$(printf '%s\n' "$line" | sed -n 's/^ *"seed": \([a-z]*\),*$/\1/p')"
+          case "$gseed" in true) gseed=1 ;; false) gseed=0 ;; *) gseed="" ;; esac
+          if [[ -z "$gflag" || -z "$gprofile" || -z "$gseed" ]]; then
+            die "${manifest#"${ROOT}/"} has an unreadable gates block; run python3 scripts/test-addon-manifests.py"
+          fi
+          printf '%s %s %s\n' "$gflag" "$gprofile" "$gseed"
+          gflag="" gprofile=""
+          ;;
+      esac
+    done <<EOF_GATES
+$gates
+EOF_GATES
   done
 }
 

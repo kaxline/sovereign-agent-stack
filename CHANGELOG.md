@@ -6,6 +6,30 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
+## Unreleased
+
+### Upgrade steps
+
+None. No shipped manifest uses the new fields, so existing installs behave
+as before.
+
+### Changes
+
+- **Add-on manifest fields** (experimental): a built-in manifest can declare
+  `gates` (further flag-to-profile rows for `sync-profiles.sh`), `mcp` as a
+  list with per-entry `title` and `when`, `instances`, `commands`,
+  `services.<name>.when`, `mounts` and `volumes`, and settings that take the
+  types `list` and `date`, `optional: true`, and `flag` (a gate flag) on a
+  bool. Services that list `mounts` get the add-on's `config/`, `instances/`
+  and `secrets/` directories under `/run/addon/`. See
+  [addons/README.md](addons/README.md).
+- **`scripts/addon.sh`** lists, configures, enables, disables and runs
+  commands of built-in add-ons, with settings, instances and secrets stored
+  under `data/addons/<short-id>/`. `list --json` includes each add-on's
+  settings schema for building a settings form. See
+  [docs/extending.md](docs/extending.md#add-ons-scriptsaddonsh). Field
+  names may change between patch releases while the stack is in 0.3.x.
+
 ## v0.3.12 — 2026-11-09
 
 ### Upgrade steps

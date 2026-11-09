@@ -59,7 +59,8 @@ def packaged(m):
     m.pop("builtin", None)
     m["services"] = {"server": {"image": "ghcr.io/example/x@sha256:" + "a" * 64,
                                 "port": 8000, "healthCheck": "/health"}}
-    m["mcp"].pop("env", None)
+    for entry in m["mcp"] if isinstance(m["mcp"], list) else [m["mcp"]]:
+        entry.pop("env", None)
     return m
 
 
@@ -359,6 +360,211 @@ check("an invalid vault manifest is fenced by its toolset", got == [("bwbroker",
 got = toolsets_of({"gptr": am.canonical(variant(permissions__cron=False))})
 check("an MCP-only add-on has no plugin toolset to fence", got == [], str(got))
 
+# --- gates and several MCP entries ---------------------------------------------
+def two_entry(**changes):
+    m = variant(**changes)
+    m["gates"] = [{"flag": "GPTR_EXTRA_ENABLED", "profile": "research-extra", "seed": False}]
+    first = copy.deepcopy(m["mcp"])
+    second = {**copy.deepcopy(m["mcp"]), "name": "gptr-extra", "title": "Extra",
+              "when": {"gate": "GPTR_EXTRA_ENABLED"}}
+    second.pop("env", None)
+    second["service"] = "extra"
+    m["services"]["extra"] = {"compose": "gptr-extra", "port": 8001}
+    m["mcp"] = [first, second]
+    return m
+
+
+check("a two-entry manifest is valid", am.validate(two_entry(), "builtin") == [],
+      str(am.validate(two_entry(), "builtin")))
+two_bad_gate = two_entry()
+two_bad_gate["mcp"][1]["when"] = {"gate": "NOPE_ENABLED"}
+refused("when names an unknown gate", two_bad_gate, "builtin", "when.gate")
+refused("gates on a packaged add-on", packaged(two_entry()), "official", "gates")
+two_dup = two_entry()
+two_dup["mcp"][1]["name"] = "gptr"
+refused("two entries share a name", two_dup, "builtin", "mcp names must be unique")
+two_shared = two_entry()
+two_shared["mcp"][1]["service"] = "server"
+refused("two entries share a service", two_shared, "builtin", "mcp entries 0 and 1 share service 'server'")
+two_shared["mcp"][1]["service"] = {"ro": "extra", "rw": "server"}
+refused("a service map overlapping another entry's service", two_shared, "builtin",
+        "mcp entries 0 and 1 share service 'server'")
+two_api = two_entry(permissions__reads=["messages"], permissions__cron=False)
+for entry in two_api["mcp"]:
+    entry["profiles"] = {"default": "ro"}
+two_api["mcp"][1]["profiles"] = {"default": "ro", "api-server": "ro"}
+refused("api-server on any entry of a reads add-on", two_api, "builtin", "api-server")
+two_gate_shape = two_entry()
+two_gate_shape["gates"] = [{"flag": "lower", "profile": "x", "seed": "no"}]
+refused("a gate needs an env var name", two_gate_shape, "builtin", "gates[0].flag")
+refused("a gate needs a boolean seed", two_gate_shape, "builtin", "gates[0].seed")
+# sync-profiles.sh reads gates line by line with sed, so key order is part of the format.
+two_order = two_entry()
+two_order["gates"] = [{"seed": False, "flag": "GPTR_EXTRA_ENABLED", "profile": "research-extra"}]
+refused("gate keys must be flag, profile, seed in that order", two_order, "builtin", "gates keys")
+two_empty = two_entry()
+two_empty["mcp"] = []
+refused("an empty mcp list", two_empty, "builtin", "mcp")
+two_svc = two_entry()
+two_svc["services"]["server"]["when"] = {"gate": "NOPE_ENABLED"}
+refused("a service when names an unknown gate", two_svc, "builtin", "services.server.when.gate")
+two_svc["services"]["server"]["when"] = {"gate": "GPTR_EXTRA_ENABLED"}
+check("a service may carry a known when", am.validate(two_svc, "builtin") == [],
+      str(am.validate(two_svc, "builtin")))
+two_ro = two_entry(permissions__cron="ro")
+refused("cron ro is checked on every entry", two_ro, "builtin", "cron ro needs an ro service")
+
+with tempfile.TemporaryDirectory() as tmp:
+    (Path(tmp) / "gptr").mkdir()
+    (Path(tmp) / "gptr" / "addon.json").write_text(am.canonical(two_entry()))
+    plan = am.mcp_plan(Path(tmp), "default", {"GPTR_MCP_ENABLED": "0", "GPTR_EXTRA_ENABLED": "1"})
+    first, second = (p.split("|") for p in plan) if len(plan) == 2 else ([], [])
+    check("mcp-plan prints one line per entry", len(plan) == 2, str(plan))
+    check("the first entry follows builtin.flag", first[:3] == ["gptr", "GPT Researcher", "0"], str(plan))
+    check("the second entry follows its gate and title", second[:3] == ["gptr-extra", "Extra", "1"], str(plan))
+    check("each line keeps the 11 fields", len(first) == 11 and len(second) == 11, str(plan))
+    plan = am.mcp_plan(Path(tmp), "default", {"GPTR_MCP_ENABLED": "1"})
+    check("a gate that is unset is off", [p.split("|")[2] for p in plan] == ["1", "0"], str(plan))
+
+for prof in ("default", "api-server", "browser"):
+    fixture = (ROOT / "scripts" / "fixtures" / f"addon-mcp-plan-{prof}.txt").read_text().splitlines()
+    check(f"mcp-plan over addons/ for {prof} matches the fixture",
+          am.mcp_plan(ROOT / "addons", prof, {}) == fixture, str(am.mcp_plan(ROOT / "addons", prof, {})))
+
+got = fence_of({"gptr": am.canonical(two_entry(permissions__cron=False))}, env)
+check("cron false fences every entry", got[0] == ["gptr", "gptr-extra"], str(got))
+
+# --- settings, instances, commands and mounts -------------------------------
+def with_settings(settings, **changes):
+    return variant(settings=settings, **changes)
+
+
+rich = variant(
+    builtin__flag="GPTR_MCP_ENABLED",
+    gates=[{"flag": "GPTR_EXTRA_ENABLED", "profile": "research-extra", "seed": False}],
+    settings={
+        "count": {"type": "int", "default": 3, "label": "How many"},
+        "tags": {"type": "list", "default": ["a", "b"]},
+        "since": {"type": "date", "optional": True},
+        "extra": {"type": "bool", "default": False, "flag": "GPTR_EXTRA_ENABLED"},
+        "token": {"type": "secret"},
+    },
+    instances={"name": "account", "settings": {
+        "host": {"type": "string"},
+        "port": {"type": "port", "default": 993},
+        "password": {"type": "secret"},
+    }},
+    commands={"sync": {"service": "server", "instance": True, "argv": ["sync", "--all"]}},
+)
+rich["services"]["worker"] = {"compose": "gptr-worker", "mounts": {"secrets": "ro", "config": "ro",
+                                                                    "instances": "rw"}}
+check("a manifest using every new field is valid", am.validate(rich, "builtin") == [],
+      str(am.validate(rich, "builtin")))
+
+refused("list default must be strings", with_settings({"t": {"type": "list", "default": [1]}}),
+        "builtin", "settings.t.default")
+refused("date default must be YYYY-MM-DD", with_settings({"d": {"type": "date", "default": "2026-13-40"}}),
+        "builtin", "settings.d.default")
+refused("int default must be an int", with_settings({"n": {"type": "int", "default": "3"}}),
+        "builtin", "settings.n.default")
+refused("optional must be a bool", with_settings({"n": {"type": "int", "optional": "yes"}}),
+        "builtin", "settings.n.optional")
+refused("flag only on bool", with_settings({"n": {"type": "int", "default": 1, "flag": "GPTR_MCP_ENABLED"}}),
+        "builtin", "settings.n.flag")
+refused("flag must be a known flag",
+        with_settings({"b": {"type": "bool", "default": True, "flag": "NOPE_ENABLED"}}),
+        "builtin", "settings.b.flag")
+refused("a setting flag may not be builtin.flag",
+        with_settings({"b": {"type": "bool", "default": True, "flag": "GPTR_MCP_ENABLED"}}),
+        "builtin", "settings.b.flag must name a flag listed in gates")
+refused("a secret setting may not have a default", with_settings({"t": {"type": "secret", "default": "x"}}),
+        "builtin", "settings.t: a secret setting may not have a default")
+refused("an instance secret may not have a default",
+        variant(instances={"name": "acct", "settings": {"p": {"type": "secret", "default": ""}}}),
+        "builtin", "instances.settings.p: a secret setting may not have a default")
+refused("setting names that differ only by case collide",
+        with_settings({"api": {"type": "string"}, "API": {"type": "string"}}),
+        "builtin", "settings.API: same settings.env key as 'api'")
+refused("setting names that differ only by - and _ collide",
+        with_settings({"api-key": {"type": "string"}, "api_key": {"type": "string"}}),
+        "builtin", "settings.api_key: same settings.env key as 'api-key'")
+refused("instance setting names that collide",
+        variant(instances={"name": "acct", "settings": {"Host": {"type": "string"},
+                                                        "host": {"type": "string"}}}),
+        "builtin", "instances.settings.host: same settings.env key as 'Host'")
+refused("a setting may not be called slug", with_settings({"slug": {"type": "string"}}),
+        "builtin", "reserved")
+refused("flag inside an instance",
+        variant(instances={"name": "acct", "settings": {
+            "b": {"type": "bool", "default": True, "flag": "GPTR_MCP_ENABLED"}}}),
+        "builtin", "refused inside an instance")
+refused("instance schema may not declare slug",
+        variant(instances={"name": "acct", "settings": {"slug": {"type": "string"}}}),
+        "builtin", "reserved")
+refused("instances need a name", variant(instances={"settings": {"a": {"type": "string"}}}),
+        "builtin", "instances.name")
+refused("secret settings from a community feed",
+        packaged(variant(settings={"token": {"type": "secret"}})), "community", "secret settings")
+refused("secret instance settings from a community feed",
+        packaged(variant(instances={"name": "acct", "settings": {"p": {"type": "secret"}}})),
+        "community", "secret settings")
+check("secret settings are allowed from the official feed",
+      am.validate(packaged(variant(settings={"token": {"type": "secret"}})), "official") == [],
+      str(am.validate(packaged(variant(settings={"token": {"type": "secret"}})), "official")))
+
+refused("unknown mount key", variant(services__server__mounts={"logs": "ro"}), "builtin", "mounts")
+refused("mount mode as a list", variant(services__server__mounts={"config": ["ro"]}), "builtin", "mounts")
+refused("mount mode as a dict", variant(services__server__mounts={"config": {}}), "builtin", "mounts")
+refused("command service as a list",
+        variant(commands={"x": {"service": ["server"], "instance": False, "argv": ["a"]}}),
+        "builtin", "commands.x.service")
+refused("command service as a dict",
+        variant(commands={"x": {"service": {}, "instance": False, "argv": ["a"]}}),
+        "builtin", "commands.x.service")
+refused("setting type as a list", with_settings({"t": {"type": ["int"]}}), "builtin", "settings.t.type")
+refused("setting type as a dict", with_settings({"t": {"type": {}}}), "builtin", "settings.t.type")
+refused("bad mount mode", variant(services__server__mounts={"secrets": "wo"}), "builtin", "mounts")
+refused("an mcp service may not mount secrets", variant(services__server__mounts={"secrets": "ro"}),
+        "builtin", "holds secrets")
+refused("a command needs a known service",
+        variant(commands={"x": {"service": "nope", "instance": False, "argv": ["a"]}}),
+        "builtin", "commands.x.service")
+refused("a command needs argv",
+        variant(commands={"x": {"service": "server", "instance": False, "argv": []}}),
+        "builtin", "commands.x.argv")
+refused("a command needs instance as a bool",
+        variant(commands={"x": {"service": "server", "instance": "yes", "argv": ["a"]}}),
+        "builtin", "commands.x.instance")
+refused("a reader's command may not run in an MCP service",
+        variant(permissions__reads=["messages"], permissions__cron=False,
+                mcp__profiles={"default": "ro"},
+                commands={"x": {"service": "server", "instance": False, "argv": ["a"]}}),
+        "builtin", "command runs in an MCP service")
+reader_cmd = copy.deepcopy(rich)
+reader_cmd.update(permissions={**reader_cmd["permissions"], "reads": ["messages"], "cron": False})
+reader_cmd["mcp"]["profiles"] = {"default": "ro"}
+reader_cmd["settings"].pop("token")
+reader_cmd["commands"]["sync"]["service"] = "worker"
+check("a reader's command may run in a non-MCP service", am.validate(reader_cmd, "builtin") == [],
+      str(am.validate(reader_cmd, "builtin")))
+
+volumed = variant(services__server__volumes=["gptr_outputs"])
+check("services.<name>.volumes lists compose volume names", am.validate(volumed, "builtin") == [],
+      str(am.validate(volumed, "builtin")))
+refused("volumes must be a list", variant(services__server__volumes="gptr_outputs"), "builtin",
+        "services.server.volumes")
+refused("volumes may not be empty", variant(services__server__volumes=[]), "builtin",
+        "services.server.volumes")
+refused("volume names are compose names", variant(services__server__volumes=["../etc"]), "builtin",
+        "services.server.volumes")
+refused("volume names are strings", variant(services__server__volumes=[1]), "builtin",
+        "services.server.volumes")
+refused("volumes listed twice", variant(services__server__volumes=["a", "a"]), "builtin",
+        "services.server.volumes")
+packaged_vol = packaged(BASE)
+packaged_vol["services"]["server"]["volumes"] = ["gptr_outputs"]
+refused("only built-in add-ons name compose volumes", packaged_vol, "official", "services.server.volumes")
+
 # --- Built-in manifests against the repo ------------------------------------
 compose = (ROOT / "docker-compose.yml").read_text()
 sync = ROOT / "scripts" / "sync-profiles.sh"
@@ -374,6 +580,72 @@ def service_block(name: str) -> str:
     m = re.search(rf"^  {re.escape(name)}:\n(.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)", compose, re.M | re.S)
     return m.group(1) if m else ""
 
+
+def mount_problems(sid: str, manifest: dict, compose_text: str) -> list[str]:
+    """Each service with `mounts` must mount exactly the fixed container paths
+    from data/addons/<sid>/ with the declared mode."""
+    problems = []
+    for name, svc in manifest["services"].items():
+        mounts = svc.get("mounts")
+        if not mounts:
+            continue
+        m = re.search(rf"^  {re.escape(svc['compose'])}:\n(.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)",
+                      compose_text, re.M | re.S)
+        block = m.group(1) if m else ""
+        lines = re.findall(r"^      - (\S*/addons/\S+:/run/addon/\S+)$", block, re.M)
+        want = [f"${{ASSISTANT_DATA_ROOT:-./data}}/addons/{sid}/{k}:{am.MOUNT_PATHS[k]}:{mode}"
+                for k, mode in mounts.items()]
+        if sorted(lines) != sorted(want):
+            problems.append(f"{name}: compose mounts {sorted(lines)}, manifest wants {sorted(want)}")
+    return problems
+
+
+def compose_volumes(compose_text: str) -> set[str]:
+    """Names under the top-level volumes: key of a compose file."""
+    m = re.search(r"^volumes:\n(.*?)(?=^\S|\Z)", compose_text, re.M | re.S)
+    return set(re.findall(r"^  ([A-Za-z0-9][A-Za-z0-9_.-]*):", m.group(1), re.M)) if m else set()
+
+
+def volume_problems(manifest: dict, compose_text: str) -> list[str]:
+    declared = compose_volumes(compose_text)
+    return [f"{name}: volume {v} is not in docker-compose.yml's volumes"
+            for name, svc in manifest["services"].items() for v in svc.get("volumes", [])
+            if v not in declared]
+
+
+FIX_VOLUMES = "services:\n  x:\n    image: x\nvolumes:\n  gptr_outputs:\n  other:\n"
+check("volumes cross-check accepts a declared volume", volume_problems(volumed, FIX_VOLUMES) == [],
+      str(volume_problems(volumed, FIX_VOLUMES)))
+check("volumes cross-check flags an undeclared volume",
+      len(volume_problems(volumed, FIX_VOLUMES.replace("gptr_outputs", "renamed"))) == 1)
+check("volumes cross-check reads only the top-level volumes key",
+      len(volume_problems(volumed, "services:\n  x:\n    volumes:\n      - gptr_outputs:/x\n")) == 1)
+
+
+FIX_COMPOSE = """services:
+  gptr-worker:
+    profiles: ["gptr"]
+    volumes:
+      - ${ASSISTANT_DATA_ROOT:-./data}/addons/gptr/secrets:/run/addon/secrets:ro
+      - ${ASSISTANT_DATA_ROOT:-./data}/addons/gptr/config:/run/addon/config:ro
+      - ${ASSISTANT_DATA_ROOT:-./data}/addons/gptr/instances:/run/addon/instances:rw
+      - ./other:/other
+  next:
+    image: x
+"""
+check("the config mount is the config directory", am.MOUNT_PATHS["config"] == "/run/addon/config",
+      str(am.MOUNT_PATHS))
+check("mounts cross-check accepts a matching compose service", mount_problems("gptr", rich, FIX_COMPOSE) == [],
+      str(mount_problems("gptr", rich, FIX_COMPOSE)))
+check("mounts cross-check flags the bare ./data form",
+      len(mount_problems("gptr", rich, FIX_COMPOSE.replace("${ASSISTANT_DATA_ROOT:-./data}", "./data"))) == 1)
+check("mounts cross-check flags a wrong mode",
+      len(mount_problems("gptr", rich, FIX_COMPOSE.replace("instances:rw", "instances:ro"))) == 1)
+check("mounts cross-check flags a missing mount",
+      len(mount_problems("gptr", rich, FIX_COMPOSE.replace(
+          "      - ${ASSISTANT_DATA_ROOT:-./data}/addons/gptr/secrets:/run/addon/secrets:ro\n", ""))) == 1)
+check("mounts cross-check flags a wrong source directory",
+      len(mount_problems("gptr", rich, FIX_COMPOSE.replace("addons/gptr/secrets", "addons/other/secrets"))) == 1)
 
 for path, manifest, parse_error in am.load_dir(ROOT / "addons"):
     sid = path.parent.name
@@ -391,6 +663,15 @@ for path, manifest, parse_error in am.load_dir(ROOT / "addons"):
         profiles = re.search(r"^    profiles: \[(.*)\]$", block, re.M)
         listed = [p.strip().strip('"') for p in profiles.group(1).split(",")] if profiles else []
         check(f"{sid}: {svc['compose']} is in the {b['profile']} profile", b["profile"] in listed, str(listed))
+    check(f"{sid}: compose mounts match services.*.mounts", not mount_problems(sid, manifest, compose),
+          "; ".join(mount_problems(sid, manifest, compose)))
+    check(f"{sid}: services.*.volumes are declared in docker-compose.yml",
+          not volume_problems(manifest, compose), "; ".join(volume_problems(manifest, compose)))
+    for g in manifest.get("gates", []):
+        check(f"{sid}: sync-profiles maps gate {g['flag']} to {g['profile']}",
+              [g["flag"], g["profile"], "1" if g["seed"] else "0"] in rows, table.stdout)
+        check(f"{sid}: gate profile {g['profile']} exists in docker-compose.yml",
+              bool(re.search(rf'^    profiles: \[(?:.*[ ,"])?"?{re.escape(g["profile"])}"?[,\]]', compose, re.M)))
     if manifest.get("mcp"):
         for var in [b["flag"], *manifest["mcp"].get("env", {}).values()]:
             n = len(re.findall(rf"^      - {var}=", compose, re.M))
