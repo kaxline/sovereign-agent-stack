@@ -70,15 +70,15 @@ cp "${tmp}/config.yaml" "${tmp}/orig.yaml"
 # LightRAG is unmanaged on default (bootstrap never registers it there), yet a
 # user's own entry on that URL still gets the interval.
 for profile in "" browser; do
-cp "${tmp}/orig.yaml" "${tmp}/config.yaml"
-out="$(run 15 "$profile")"
-for name in lightrag caldav-personal calendar-work todos; do
-  entry "$out" "$name" | grep -q 'parked_retry_interval: 15$' || fail "$name not set to 15: $(entry "$out" "$name")"
-done
-for name in boundary local-tool; do
-  if entry "$out" "$name" | grep -q parked_retry_interval; then fail "$name is not a stack sidecar"; fi
-done
-entry "$out" lightrag | grep -q 'timeout: 120$' || fail "other keys must survive"
+  cp "${tmp}/orig.yaml" "${tmp}/config.yaml"
+  out="$(run 15 "$profile")"
+  for name in lightrag caldav-personal calendar-work todos; do
+    entry "$out" "$name" | grep -q 'parked_retry_interval: 15$' || fail "$name not set to 15: $(entry "$out" "$name")"
+  done
+  for name in boundary local-tool; do
+    if entry "$out" "$name" | grep -q parked_retry_interval; then fail "$name is not a stack sidecar"; fi
+  done
+  entry "$out" lightrag | grep -q 'timeout: 120$' || fail "other keys must survive"
 done
 
 out="$(run 15 browser)"

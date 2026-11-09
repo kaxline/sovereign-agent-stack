@@ -93,7 +93,7 @@ run research; got
 [ "$calls" = "drop:research:${RO};drop:research:${RW};" ] \
   || fail "a profile with no access drops both URLs ($calls)"
 
-urls="$(addon_mcp_urls "")"
+urls="$(addon_mcp_urls)"
 [ "$urls" = "${RO}
 ${RW}" ] || fail "addon_mcp_urls lists both URLs ($urls)"
 
