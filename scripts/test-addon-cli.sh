@@ -1045,6 +1045,43 @@ for v in ./data/hermes ./data/addons; do
 done
 if [ -f "${root}/data/hermes/keep" ] && [ -d "${root}/data/addons" ]; then ok "data/hermes and data/addons survive"; else bad "data/hermes and data/addons survive"; fi
 
+# The user-data directories of data-root.sh are kept.
+set_env FIXTURE_DATA_DIR ./data/memory
+mkdir -p "${root}/data/memory"
+: > "${root}/data/memory/keep"
+addon_json remove fixture --delete-data --json
+r=0; json_ok "$out" "done" '{"phase":"setup","step":"delete","status":"done","kept":os.environ["TEST_ROOT"] + "/data/memory","reason":"holds stack data"} in lines' || r=1
+check "FIXTURE_DATA_DIR=./data/memory is kept as stack data" "$r"
+if [ -f "${root}/data/memory/keep" ]; then ok "data/memory survives"; else bad "data/memory survives"; fi
+unset_env FIXTURE_DATA_DIR
+
+# A leading ~ is expanded as compose does, so the kept path is the real one.
+mkdir -p "${tmp}/home"
+# shellcheck disable=SC2088 # a literal ~, for addon.sh to expand
+set_env FIXTURE_DATA_DIR '~/addon-data'
+HOME="${tmp}/home" addon_json remove fixture --delete-data --json
+r=0; json_ok "$out" "done" '{"phase":"setup","step":"delete","status":"done","kept":os.environ["TEST_TMP"] + "/home/addon-data","reason":"outside the data directory"} in lines' || r=1
+check "a ~ path is expanded and kept as outside" "$r"
+unset_env FIXTURE_DATA_DIR
+
+# ./data as a symlink: Hermes state named by its physical path is kept.
+mv "${root}/data" "${root}/physdata"
+ln -s physdata "${root}/data"
+mkdir -p "${root}/physdata/hermes"
+: > "${root}/physdata/hermes/keep"
+set_env FIXTURE_DATA_DIR "${root}/physdata/hermes"
+addon_json remove fixture --delete-data --json
+r=0; json_ok "$out" "done" '{"phase":"setup","step":"delete","status":"done","kept":os.environ["TEST_ROOT"] + "/physdata/hermes","reason":"holds stack data"} in lines' || r=1
+check "with ./data a symlink, the physical hermes directory is kept" "$r"
+if [ -f "${root}/physdata/hermes/keep" ]; then ok "the physical hermes directory survives"; else bad "the physical hermes directory survives"; sed 's/^/    /' "$out" "$err"; fi
+set_env FIXTURE_DATA_DIR ./data/hermes
+addon_json remove fixture --delete-data --json
+r=0; json_ok "$out" "done" '{"phase":"setup","step":"delete","status":"done","kept":os.environ["TEST_ROOT"] + "/data/hermes","reason":"holds stack data"} in lines' || r=1
+check "with ./data a symlink, ./data/hermes is kept" "$r"
+unset_env FIXTURE_DATA_DIR
+rm "${root}/data"
+mv "${root}/physdata" "${root}/data"
+
 # The caller's environment comes before .env.
 set_env FIXTURE_DATA_DIR ./data/fixture
 seed_data
@@ -1134,9 +1171,15 @@ mkdir -p "${root}/data/hermes" "${root}/data/fixture"
 for p in "${root}/data" "${root}/data/hermes" "${root}/data/fixture/../hermes" "${root}/data/addons"; do
   r=0
   python3 "${root}/scripts/lib/addon_cli.py" --addons-dir "$ADDONS_DIR" --data-root "${root}/data" \
-    delete-path "$p" --repo "$root" > /dev/null 2>&1 || r=$?
+    delete-path "$p" --repo "$root" --sid fixture > /dev/null 2>&1 || r=$?
   if [ "$r" = 2 ]; then ok "delete-path refuses ${p#"${root}/"}"; else bad "delete-path refuses ${p#"${root}/"}: exit ${r}, want 2"; fi
 done
+mkdir -p "${root}/data/addons/other"
+r=0
+python3 "${root}/scripts/lib/addon_cli.py" --addons-dir "$ADDONS_DIR" --data-root "${root}/data" \
+  delete-path "${root}/data/addons/other" --repo "$root" --sid fixture > /dev/null 2>&1 || r=$?
+if [ "$r" = 2 ] && [ -d "${root}/data/addons/other" ]; then ok "delete-path allows only data/addons/<its sid>"; else bad "delete-path allows only data/addons/<its sid>: exit ${r}"; fi
+rmdir "${root}/data/addons/other"
 if [ -f "${root}/data/hermes/keep" ] && [ -d "${root}/data/fixture" ]; then ok "a refused delete-path deletes nothing"; else bad "a refused delete-path deletes nothing"; fi
 
 # disable --purge: one lock, one done line with action disable.

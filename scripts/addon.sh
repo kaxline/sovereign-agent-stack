@@ -31,7 +31,8 @@
 # env from the caller's environment, then .env, else its default, made
 # absolute against the repo root without resolving symlinks. It is deleted
 # only when it lies inside ./data or ASSISTANT_DATA_ROOT, isn't one of them,
-# doesn't hold or lie in data/hermes or data/addons, has no symlink between
+# doesn't hold one, isn't, doesn't hold and doesn't lie in hermes, addons or a
+# USER_DATA_SUBDIRS directory under either, has no symlink between
 # the data directory and itself, and no other enabled add-on declares it or a
 # path that overlaps it. Otherwise a `delete` line with "kept" and "reason"
 # reports it and it stays. A symlink is unlinked, never followed.
@@ -728,8 +729,9 @@ EOF_SERVICES
 
 # data_env_json SID: sets DATA_ENV_JSON to {"NAME":"VALUE",...} for the env
 # names `data-envs` gives (those data.paths declare, and nothing else from
-# .env), each from the caller's environment, then .env. Empty values are left
-# out, as compose's ${NAME:-default} ignores them. Only backslash and quote are escaped: a
+# .env), each from the caller's exported environment, then .env, with a
+# leading ~ expanded to $HOME. Empty values are left out, as compose's
+# ${NAME:-default} ignores them. Only backslash and quote are escaped: a
 # control character makes the JSON invalid, and plan-remove refuses it.
 DATA_ENV_JSON=""
 data_env_json() {
@@ -737,9 +739,17 @@ data_env_json() {
   cli_checked "" data-envs "$1"
   while IFS= read -r name; do
     [[ "$name" =~ ^[A-Z][A-Z0-9_]*$ ]] || continue
-    value="${!name:-}"
+    # The exported environment only: addon.sh's own variables don't count.
+    value="$(printenv "$name" || true)"
     [[ -n "$value" ]] || value="$(env_get "$name")"
     [[ -n "$value" ]] || continue
+    # Compose expands a leading ~ to the home directory.
+    # shellcheck disable=SC2088 # a literal ~ in the value
+    if [[ "$value" == "~" ]]; then
+      value="$HOME"
+    elif [[ "$value" == "~/"* ]]; then
+      value="${HOME}/${value#\~/}"
+    fi
     value="${value//\\/\\\\}"
     value="${value//\"/\\\"}"
     out="${out:+${out},}\"${name}\":\"${value}\""
@@ -789,7 +799,7 @@ EOF_PLAN
     fi
   done
   for path in ${paths[@]+"${paths[@]}"}; do
-    if ! run_step delete "$path" cli delete-path "$path" --repo "$ROOT" < /dev/null; then
+    if ! run_step delete "$path" cli delete-path "$path" --repo "$ROOT" --sid "$sid" < /dev/null; then
       msg=""
       [[ -n "$EV_LAST_LOG" ]] && msg="$(sed -n 's/^error: //p' "$EV_LAST_LOG" | tail -n 1)"
       EV_TARGET="$path"

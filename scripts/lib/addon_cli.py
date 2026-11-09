@@ -76,18 +76,20 @@ runs in the Hermes image through stack_python, so the host needs no python3.
         the caller's environment first, then .env), else its default, joined
         to DIR (the repo root) and normalised lexically: symlinks are never
         resolved. It is kept, with the reason, when it is a data directory
-        (DIR/data or --data-root), lies outside both, is or holds data/hermes
-        or data/addons, or lies inside either, has a symlink between the data
+        (DIR/data or --data-root), lies outside both, holds a data directory,
+        or is, holds or lies inside hermes, addons or a USER_DATA_SUBDIRS
+        directory under either (as written or with symlinks resolved), has a symlink between the data
         directory and itself, or overlaps a path that another add-on whose
         builtin flag is "1" declares. data/addons/SID is always the last item
         of "delete". --lines prints `service NAME`, `volume NAME`,
         `delete PATH` and `kept REASON<tab>PATH` lines instead, for addon.sh;
         a path with a control character is refused (exit 2).
-    delete-path PATH --repo DIR
+    delete-path PATH --repo DIR --sid SID
         Deletes PATH: a symlink or file is unlinked, a directory removed with
         shutil.rmtree, which doesn't follow symlinks inside it. Refuses
         (exit 2) a PATH that plan-remove would not put in "delete", apart
-        from the overlap rule, and does nothing when PATH doesn't exist.
+        from the overlap rule (data/addons/SID is allowed), and does nothing
+        when PATH doesn't exist.
     pull-events SERVICES_CSV
         Reads `docker compose --progress json pull` output on stdin and prints
         {"phase":"pull","service":S,"current":N,"total":N} lines, bytes
@@ -459,17 +461,40 @@ def _overlap(a: str, b: str) -> bool:
     return a == b or _inside(a, b) or _inside(b, a)
 
 
+DATA_ROOT_SH = Path(__file__).resolve().parent / "data-root.sh"
+
+
+def user_data_subdirs() -> list[str]:
+    """USER_DATA_SUBDIRS from scripts/lib/data-root.sh, the one list of the
+    user-data directories under the data root."""
+    try:
+        text = DATA_ROOT_SH.read_text(encoding="utf-8")
+    except OSError:
+        raise Fail("cannot read scripts/lib/data-root.sh", 1) from None
+    m = re.search(r"^USER_DATA_SUBDIRS=\(([^)]*)\)", text, re.M)
+    names = m.group(1).split() if m else []
+    if not names or not all(re.match(r"^[a-z0-9_]+\Z", n) for n in names):
+        raise Fail("scripts/lib/data-root.sh has no USER_DATA_SUBDIRS list", 1)
+    return names
+
+
 class DataRoots:
-    """The two data directories and the stack's own data under them, all
-    normalised lexically (os.path.normpath; symlinks are never resolved)."""
+    """The two data directories and the stack's data under them. Paths to
+    delete are normalised lexically (os.path.normpath; their symlinks are
+    never resolved). The protected directories are listed both as written and
+    with symlinks resolved, so ./data as a symlink can't hide them."""
 
     def __init__(self, repo: str, data_root) -> None:
         self.repo = os.path.normpath(os.path.abspath(repo))
         repo_data = os.path.join(self.repo, "data")
         self.data_root = os.path.normpath(os.path.abspath(str(data_root)))
         self.roots = [repo_data, self.data_root]
-        self.stack = [os.path.join(repo_data, "hermes"), os.path.join(repo_data, "addons"),
-                      os.path.join(self.data_root, "addons")]
+        # Each data root as written and resolved: a path that holds one holds
+        # stack data whichever form it names.
+        self.all_roots = list(dict.fromkeys(
+            r for root in self.roots for r in (root, os.path.realpath(root))))
+        names = ["hermes", "addons", *user_data_subdirs()]
+        self.stack = list(dict.fromkeys(os.path.join(r, n) for r in self.all_roots for n in names))
 
     def resolve(self, value: str) -> str:
         return os.path.normpath(os.path.join(self.repo, value))
@@ -481,7 +506,7 @@ class DataRoots:
         inside = [r for r in self.roots if _inside(path, r)]
         if not inside:
             return "outside the data directory"
-        if any(_inside(r, path) for r in self.roots) or any(_overlap(path, s) for s in self.stack):
+        if any(_inside(r, path) for r in self.all_roots) or any(_overlap(path, s) for s in self.stack):
             return "holds stack data"
         # A symlink between the data directory and the path makes the path's
         # real place unknown without following it.
@@ -581,7 +606,7 @@ def cmd_delete_path(args) -> None:
         raise Fail("delete-path takes a normalised absolute path")
     reason = roots.refusal(path)
     own_dir = os.path.dirname(path) == os.path.join(roots.data_root, "addons") \
-        and SID_RE.match(os.path.basename(path)) is not None
+        and SID_RE.match(args.sid) is not None and os.path.basename(path) == args.sid
     if reason is not None and not (reason == "holds stack data" and own_dir
                                    and not os.path.islink(os.path.dirname(path))):
         raise Fail(f"refusing to delete {path}: {reason}")
@@ -785,6 +810,7 @@ def main(argv: list[str]) -> int:
     s = sub.add_parser("delete-path")
     s.add_argument("path")
     s.add_argument("--repo", required=True)
+    s.add_argument("--sid", required=True)
     s.set_defaults(func=cmd_delete_path)
     s = sub.add_parser("toggle-script")
     s.add_argument("sid")
