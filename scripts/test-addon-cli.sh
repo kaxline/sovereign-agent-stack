@@ -16,7 +16,7 @@ tmp="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$tmp"' EXIT
 root="${tmp}/stack"
 mkdir -p "${root}/scripts/lib" "${tmp}/bin" "${tmp}/out"
-cp "${REPO}/scripts/addon.sh" "${REPO}/scripts/sync-profiles.sh" "${REPO}/scripts/fixture-init.sh" "${REPO}/scripts/fixture-connect.sh" "${root}/scripts/" 2>/dev/null || true
+cp "${REPO}/scripts/addon.sh" "${REPO}/scripts/sync-profiles.sh" "${REPO}/scripts/fixture-init.sh" "${REPO}/scripts/fixture-connect.sh" "${REPO}/scripts/fixture-follow.sh" "${root}/scripts/" 2>/dev/null || true
 for f in env.sh data-root.sh python.sh addon-events.sh addon_cli.py addon_manifest.py addon_store.py; do
   cp "${REPO}/scripts/lib/${f}" "${root}/scripts/lib/" 2>/dev/null || true
 done
@@ -34,6 +34,9 @@ printf 'COMPOSE_PROJECT_NAME=fixtureproj\n' >> "${root}/.env"
 # DOCKER_FAIL_ONESHOT=1 makes `compose up --no-deps --exit-code-from` exit 1.
 # `compose ps -a --format json` prints the file PS_ANSWER names, if any.
 # `compose logs` prints one line naming the service.
+# `compose config --services` prints the file CONFIG_SERVICES names, if any.
+# DOCKER_FAIL_RECREATE=1 makes `compose up ... --force-recreate` exit 1.
+# DOCKER_FAIL_BOOTSTRAP=1 makes `compose run ... hermes-api-bootstrap` exit 1.
 cat > "${tmp}/bin/docker" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >> "${STUB_LOG}"
@@ -45,10 +48,20 @@ if [ "$1 $2 $3 $4" = "compose ps -a --format" ]; then
   [ -n "${PS_ANSWER:-}" ] && cat "$PS_ANSWER"
   exit 0
 fi
+if [ "$1 $2 $3" = "compose config --services" ]; then
+  [ -n "${CONFIG_SERVICES:-}" ] && cat "$CONFIG_SERVICES"
+  exit 0
+fi
+if [ "${DOCKER_FAIL_BOOTSTRAP:-0}" = 1 ] && [ "$1 $2" = "compose run" ]; then
+  case "$*" in *hermes-api-bootstrap*) echo "bootstrap failed"; exit 1 ;; esac
+fi
 if [ "$1 $2" = "compose logs" ]; then
   eval "last=\${$#}"
   echo "log line from $last"
   exit 0
+fi
+if [ "$1 $2" = "compose up" ] && [ "${DOCKER_FAIL_RECREATE:-0}" = 1 ]; then
+  case "$*" in *--force-recreate*) echo "recreate failed"; exit 1 ;; esac
 fi
 if [ "$1 $2" = "compose up" ]; then
   [ -n "${DOCKER_UP_DELAY:-}" ] && sleep "$DOCKER_UP_DELAY"
@@ -88,9 +101,19 @@ printf 'make %s\n' "$*" >> "${STUB_LOG}"
 exit 0
 EOF
 chmod +x "${tmp}/bin/docker" "${tmp}/bin/make"
+# scripts/vault.sh stub: logs its argv; VAULT_FAIL=1 makes it exit 1. The real
+# one lives in the repo and is never run here.
+cat > "${root}/scripts/vault.sh" <<'VAULT_EOF'
+#!/bin/sh
+printf 'vault.sh %s\n' "$*" >> "${STUB_LOG}"
+[ "${VAULT_FAIL:-0}" = 1 ] && { echo "reload-plugins failed"; exit 1; }
+exit 0
+VAULT_EOF
+chmod +x "${root}/scripts/vault.sh"
 
 # Guard: addon_cli.py runs in the Hermes container in production, which mounts
-# only the repo, the data root and ADDONS_DIR. A python3 shim fails any
+# only the repo, the data root and ADDONS_DIR (${tmp}/dataroot is the data root
+# of the ASSISTANT_DATA_ROOT case). A python3 shim fails any
 # addon_cli.py call that has an argument naming an existing path elsewhere (a
 # host temp file, say). TMPDIR is outside the scratch root for the same reason.
 real_python3="$(command -v python3)"
@@ -103,7 +126,7 @@ case "\$*" in
       if [ "\$skip" = 1 ]; then skip=0; continue; fi
       case "\$a" in
         --addons-dir | --data-root) skip=1; continue ;;
-        "${root}" | "${root}"/* | "${REPO}"/*) continue ;;
+        "${root}" | "${root}"/* | "${REPO}"/* | "${tmp}/dataroot"/*) continue ;;
         /*) ;;
         *) continue ;;
       esac
@@ -171,6 +194,18 @@ expect_rc() {
 }
 envval() { grep -E "^$1=" "${root}/.env" | tail -1 | cut -d= -f2- || true; }
 logged() { grep -qF -- "$1" "$STUB_LOG"; }
+# reloaded: the log holds the forced bootstraps in order, then reload-plugins,
+# and no make, recreate or follow-hermes.
+reloaded() {
+  python3 -c 'import sys
+log = open(sys.argv[1]).read().splitlines()
+want = ["compose run --rm -e HERMES_BOOTSTRAP_FORCE=1 hermes-api-bootstrap",
+        "compose run --rm --no-deps -e HERMES_BOOTSTRAP_FORCE=1 hermes-browser-bootstrap",
+        "vault.sh reload-plugins"]
+at = [log.index(w) if w in log else -1 for w in want]
+sys.exit(0 if -1 not in at and at == sorted(at)
+         and not any(l.startswith("make") or "--force-recreate" in l or "follow-hermes" in l for l in log) else 1)' "$STUB_LOG"
+}
 
 if [ ! -f "${root}/scripts/addon.sh" ]; then
   echo "FAIL: scripts/addon.sh: not found"
@@ -231,7 +266,7 @@ else
   bad "enable records init in state.json"
 fi
 if logged "fixture-extra"; then bad "gated service stays off while its gate is 0"; else ok "gated service stays off while its gate is 0"; fi
-if logged "make hermes-reload"; then ok "enable reloads hermes"; else bad "enable reloads hermes"; fi
+if reloaded; then ok "enable reloads hermes with the bootstraps and reload-plugins"; else bad "enable reloads hermes with the bootstraps and reload-plugins"; cat "$STUB_LOG"; fi
 
 addon_in '{"extra": true}' configure fixture
 expect_rc "configure a gate setting" 0
@@ -292,7 +327,7 @@ else
   bad "disable sets the flag and gate flags to 0"
 fi
 if logged "compose stop fixture-worker fixture-extra"; then ok "disable stops every service"; else bad "disable stops every service"; cat "$STUB_LOG"; fi
-if logged "make hermes-reload"; then ok "disable reloads hermes"; else bad "disable reloads hermes"; fi
+if reloaded; then ok "disable reloads hermes with the bootstraps and reload-plugins"; else bad "disable reloads hermes with the bootstraps and reload-plugins"; cat "$STUB_LOG"; fi
 if [ -f "${root}/data/addons/fixture/secrets/token" ]; then ok "disable keeps the data"; else bad "disable keeps the data"; fi
 if logged "volume rm"; then bad "disable without --purge removes no volume"; else ok "disable without --purge removes no volume"; fi
 
@@ -427,7 +462,7 @@ r=0; json_ok "$out" "done" 'steps == [("flags","running"),("flags","done"),("sta
 check "a script hook's done line gives the account, once" "$r"
 r=0; json_ok "$out" "done" '[i for i, l in enumerate(lines) if l.get("message") == "creating budget"] == [[i for i, l in enumerate(lines) if l.get("step") == "init" and l.get("status") == "running"][0] + 1] and lines[[i for i, l in enumerate(lines) if l.get("message") == "creating budget"][0]]["step"] == "init"' || r=1
 check "the hook's progress line sits inside the init step with step set" "$r"
-if logged "compose run"; then bad "a script hook does not use compose run"; else ok "a script hook does not use compose run"; fi
+if logged "compose run --rm --no-deps -T"; then bad "a script hook does not use compose run"; else ok "a script hook does not use compose run"; fi
 addon disable hooked
 for mode in exit5 error; do
   rm -f "${root}/data/addons/hooked/state.json"
@@ -537,7 +572,7 @@ r=0; json_ok "$out" "done" 'any(l.get("message") == "checking login" and l["step
 check "connect relays the hook's progress line inside step check" "$r"
 if logged "fixture-connect connect --slug work --json"; then ok "connect runs the hook with --slug work --json"; else bad "connect runs the hook with --slug work --json"; cat "$STUB_LOG"; fi
 if [ -f "${HOOKED}/instances/work.json" ] && [ "$(cat "${HOOKED}/secrets/work.password" 2> /dev/null)" = s3cr3t-value ]; then ok "connect registers the instance"; else bad "connect registers the instance"; fi
-if logged "make hermes-reload"; then ok "connect reloads hermes"; else bad "connect reloads hermes"; fi
+if reloaded; then ok "connect reloads hermes without a recreate"; else bad "connect reloads hermes without a recreate"; cat "$STUB_LOG"; fi
 no_staging "a good connect"
 
 : > "$STUB_LOG"
@@ -792,6 +827,386 @@ if [ -d "${root}/data/addons/keep" ] && [ -f "${root}/.env" ]; then ok "a bad sh
 
 addon frobnicate fixture
 expect_rc "unknown subcommand exits 2" 2
+
+# Reload failures, onToggle, done.mcp and the stop of unused `uses` services.
+: > "$STUB_LOG"
+VAULT_FAIL=1 addon_json enable hooked --json
+unset VAULT_FAIL
+expect_rc "a failing reload-plugins exits 4" 4
+r=0; json_ok "$out" error 'last["error"] == "command_failed" and last["step"] == "reload" and last.get("rolledBack") is True' || r=1
+check "a failing reload-plugins is command_failed at step reload, rolled back" "$r"
+if [ "$(envval HOOKED_ADDON_ENABLED)" != 1 ]; then ok "a failing reload-plugins restores the flag"; else bad "a failing reload-plugins restores the flag"; fi
+
+: > "$STUB_LOG"
+DOCKER_FAIL_BOOTSTRAP=1 addon_json enable hooked --json
+unset DOCKER_FAIL_BOOTSTRAP
+expect_rc "a failing bootstrap exits 1" 1
+r=0; json_ok "$out" error 'last["error"] == "compose_failed" and last["step"] == "reload" and last.get("rolledBack") is True' || r=1
+check "a failing bootstrap is compose_failed at step reload" "$r"
+if logged "vault.sh"; then bad "a failing bootstrap skips reload-plugins"; else ok "a failing bootstrap skips reload-plugins"; fi
+
+: > "$STUB_LOG"
+addon_json enable toggled --json
+expect_rc "enable toggled" 0
+r=0; json_ok "$out" "done" 'last == {"phase":"done","id":"toggled","action":"enable","restart":["hermes"],"mcp":["toggled-mcp"]} and ("recreate","done") in steps' || r=1
+check "enable with onToggle recreates hermes and reports its mcp name" "$r"
+if logged "compose up -d --no-deps --force-recreate hermes" && logged "fixture-follow follow"; then
+  ok "the first enable recreates hermes and runs the onToggle script"
+else
+  bad "the first enable recreates hermes and runs the onToggle script"; cat "$STUB_LOG"
+fi
+rec_at="$(grep -n 'force-recreate' "$STUB_LOG" | head -1 | cut -d: -f1 || true)"
+rel_at="$(grep -n 'vault.sh reload-plugins' "$STUB_LOG" | head -1 | cut -d: -f1 || true)"
+if [ -n "$rec_at" ] && [ -n "$rel_at" ] && [ "$rec_at" -lt "$rel_at" ]; then
+  ok "the recreate runs before the reload"
+else
+  bad "the recreate runs before the reload"
+fi
+: > "$STUB_LOG"
+addon_json enable toggled --json
+r=0; json_ok "$out" "done" 'last["restart"] == [] and ("recreate","running") not in steps' || r=1
+check "a second enable while enabled recreates nothing" "$r"
+if logged "force-recreate" || logged "fixture-follow"; then bad "a second enable logs no recreate or script"; else ok "a second enable logs no recreate or script"; fi
+
+# uses: disable stops neo4j only when no active profile keeps it in the config.
+printf 'toggled-worker\nneo4j\n' > "${tmp}/services-with"
+printf 'toggled-worker\nhermes\n' > "${tmp}/services-without"
+: > "$STUB_LOG"
+CONFIG_SERVICES="${tmp}/services-with" addon_json disable toggled --json
+r=0; json_ok "$out" "done" 'last == {"phase":"done","id":"toggled","action":"disable","restart":["hermes"],"mcp":[]} and ("recreate","done") in steps' || r=1
+check "disable with onToggle recreates hermes and reports no mcp" "$r"
+if logged "compose stop neo4j"; then bad "disable leaves a uses service that config still lists"; else ok "disable leaves a uses service that config still lists"; fi
+if logged "compose stop toggled-worker"; then ok "disable stops the add-on's own service"; else bad "disable stops the add-on's own service"; fi
+addon enable toggled
+: > "$STUB_LOG"
+CONFIG_SERVICES="${tmp}/services-without" addon_json disable toggled --json
+if logged "compose stop neo4j"; then ok "disable stops a uses service that config no longer lists"; else bad "disable stops a uses service that config no longer lists"; cat "$STUB_LOG"; fi
+r=0; json_ok "$out" "done" 'any(l.get("step") == "stop" and l.get("target") == "neo4j" for l in lines)' || r=1
+check "the uses stop names its target" "$r"
+addon enable toggled
+: > "$STUB_LOG"
+addon disable fixture
+if logged "neo4j"; then bad "an add-on without uses stops no stack service"; else ok "an add-on without uses stops no stack service"; fi
+
+# Disabling an add-on that is already off recreates nothing.
+addon disable toggled
+: > "$STUB_LOG"
+addon_json disable toggled --json
+expect_rc "disable an already disabled toggled" 0
+r=0; json_ok "$out" "done" 'last["restart"] == [] and ("recreate","running") not in steps' || r=1
+check "disable while disabled recreates nothing" "$r"
+if logged "force-recreate" || logged "fixture-follow"; then bad "disable while disabled logs no recreate or script"; else ok "disable while disabled logs no recreate or script"; fi
+
+# Recreate failures roll the enable back.
+: > "$STUB_LOG"
+DOCKER_FAIL_RECREATE=1 addon_json enable toggled --json
+unset DOCKER_FAIL_RECREATE
+expect_rc "a failing recreate exits 1" 1
+r=0; json_ok "$out" error 'last["error"] == "compose_failed" and last["step"] == "recreate" and last.get("rolledBack") is True and "recreate failed" in last["logTail"]' || r=1
+check "a failing recreate is compose_failed at step recreate, rolled back" "$r"
+if [ "$(envval TOGGLED_ADDON_ENABLED)" != 1 ]; then ok "a failing recreate restores the flag"; else bad "a failing recreate restores the flag"; fi
+if logged "fixture-follow"; then bad "a failing recreate skips the script"; else ok "a failing recreate skips the script"; fi
+
+: > "$STUB_LOG"
+FIXTURE_FOLLOW_FAIL=1 addon_json enable toggled --json
+unset FIXTURE_FOLLOW_FAIL
+expect_rc "a failing onToggle script exits 4" 4
+r=0; json_ok "$out" error 'last["error"] == "command_failed" and last["step"] == "recreate" and last.get("rolledBack") is True' || r=1
+check "a failing onToggle script is command_failed at step recreate, rolled back" "$r"
+if [ "$(envval TOGGLED_ADDON_ENABLED)" != 1 ]; then ok "a failing onToggle script restores the flag"; else bad "a failing onToggle script restores the flag"; fi
+
+# A uses name with no compose mapping is never stopped.
+printf 'pguser-worker\n' > "${tmp}/services-none"
+addon enable pguser
+: > "$STUB_LOG"
+CONFIG_SERVICES="${tmp}/services-none" addon_json disable pguser --json
+expect_rc "disable pguser" 0
+if logged "compose stop pguser-worker" && ! logged "postgres"; then ok "an unmapped uses name is never stopped"; else bad "an unmapped uses name is never stopped"; cat "$STUB_LOG"; fi
+
+# remove --delete-data. Every path these checks delete is under $root, except
+# for the ASSISTANT_DATA_ROOT case under ${tmp}/dataroot. The `/` and `..`
+# cases run remove only after plan-remove has reported the path as kept.
+export TEST_ROOT="$root" TEST_TMP="$tmp"
+set_env() {
+  grep -v -E "^$1=" "${root}/.env" > "${tmp}/env.new" || true
+  printf '%s=%s\n' "$1" "$2" >> "${tmp}/env.new"
+  mv "${tmp}/env.new" "${root}/.env"
+}
+unset_env() {
+  grep -v -E "^$1=" "${root}/.env" > "${tmp}/env.new" || true
+  mv "${tmp}/env.new" "${root}/.env"
+}
+# plan_remove ENV_JSON FLAGS_JSON: plan-remove fixture, its output in $out.
+plan_remove() {
+  n=$((n + 1))
+  out="${tmp}/out/${n}"
+  python3 "${root}/scripts/lib/addon_cli.py" --addons-dir "$ADDONS_DIR" --data-root "${root}/data" \
+    plan-remove fixture --env "$1" --flags "$2" --repo "$root" > "$out" 2>&1 || true
+}
+plan_is() { python3 -c 'import json, os, sys
+p = json.load(open(sys.argv[1]))
+r, t = os.environ["TEST_ROOT"], os.environ["TEST_TMP"]
+sys.exit(0 if eval(sys.argv[2]) else 1)' "$out" "$1" 2> /dev/null; }
+seed_data() {
+  mkdir -p "${root}/data/fixture/sub" "${root}/data/addons/fixture/secrets" "${root}/data/other"
+  : > "${root}/data/fixture/sub/file"
+  : > "${root}/data/addons/fixture/secrets/token"
+  : > "${root}/data/other/keep"
+}
+addon disable fixture
+unset FIXTURE_DATA_DIR
+unset_env FIXTURE_DATA_DIR
+
+n=$((n + 1)); out="${tmp}/out/${n}"
+python3 "${root}/scripts/lib/addon_cli.py" --addons-dir "$ADDONS_DIR" --data-root "${root}/data" data-envs fixture > "$out" 2>&1 || true
+if grep -qx FIXTURE_DATA_DIR "$out"; then ok "data-envs names the env of each data path"; else bad "data-envs names the env of each data path"; sed 's/^/    /' "$out"; fi
+plan_remove '{}' '{}'
+r=0; plan_is 'p == {"services": ["fixture-seed", "fixture-worker", "fixture-extra"], "volumes": ["fixture_cache"], "delete": [r + "/data/fixture", r + "/data/addons/fixture"], "kept": []}' || r=1
+check "plan-remove lists services, volumes and the paths to delete" "$r"
+plan_remove '{}' '{"FIXTURE_ADDON_ENABLED":"1"}'
+if grep -q '^error: .*enabled' "$out"; then ok "plan-remove refuses an enabled add-on"; else bad "plan-remove refuses an enabled add-on"; sed 's/^/    /' "$out"; fi
+
+seed_data
+mkdir -p "${tmp}/outside-in"
+: > "${tmp}/outside-in/file"
+ln -s "${tmp}/outside-in" "${root}/data/fixture/link"
+: > "$STUB_LOG"
+addon_json remove fixture --delete-data --json
+expect_rc "remove fixture --delete-data" 0
+r=0; json_ok "$out" "done" 'last == {"phase":"done","id":"fixture","action":"remove","restart":[],"mcp":[]} and [l.get("target") for l in lines if l["phase"] == "setup" and l["status"] == "done" and l["step"] == "delete"] == [None, "fixture_cache", os.environ["TEST_ROOT"] + "/data/fixture", os.environ["TEST_ROOT"] + "/data/addons/fixture"]' || r=1
+check "remove prints a delete step for the services, each volume and each path" "$r"
+if [ ! -e "${root}/data/fixture" ] && [ ! -e "${root}/data/addons/fixture" ]; then ok "remove deletes data/fixture and data/addons/fixture"; else bad "remove deletes data/fixture and data/addons/fixture"; fi
+if [ -f "${root}/data/other/keep" ] && [ -d "${root}/data/addons" ]; then ok "remove leaves the rest of data/"; else bad "remove leaves the rest of data/"; fi
+if [ -f "${tmp}/outside-in/file" ]; then ok "remove does not follow a symlink inside a deleted directory"; else bad "remove does not follow a symlink inside a deleted directory"; fi
+rm_at="$(grep -n -x 'compose rm -f -s fixture-seed fixture-worker fixture-extra' "$STUB_LOG" | head -1 | cut -d: -f1 || true)"
+vol_at="$(grep -n -x 'volume rm fixtureproj_fixture_cache' "$STUB_LOG" | head -1 | cut -d: -f1 || true)"
+if [ -n "$rm_at" ] && [ -n "$vol_at" ] && [ "$rm_at" -lt "$vol_at" ]; then ok "remove runs compose rm -f -s before volume rm"; else bad "remove runs compose rm -f -s before volume rm"; cat "$STUB_LOG"; fi
+
+# Values that point at or above the data directory are kept.
+for v in / .. ./data; do
+  case "$v" in
+    /) want="/"; reason="outside the data directory" ;;
+    ..) want="$tmp"; reason="outside the data directory" ;;
+    *) want="${root}/data"; reason="is the data directory" ;;
+  esac
+  set_env FIXTURE_DATA_DIR "$v"
+  seed_data
+  plan_remove "{\"FIXTURE_DATA_DIR\":\"${v}\"}" '{}'
+  if ! WANT="$want" REASON="$reason" plan_is 'p["kept"] == [{"path": os.environ["WANT"], "reason": os.environ["REASON"]}] and p["delete"] == [r + "/data/addons/fixture"]'; then
+    bad "FIXTURE_DATA_DIR=${v} is kept by plan-remove (remove not run)"; sed 's/^/    /' "$out"
+    continue
+  fi
+  addon_json remove fixture --delete-data --json
+  expect_rc "remove with FIXTURE_DATA_DIR=${v}" 0
+  r=0; WANT="$want" REASON="$reason" json_ok "$out" "done" '{"phase":"setup","step":"delete","status":"done","kept":os.environ["WANT"],"reason":os.environ["REASON"]} in lines' || r=1
+  check "FIXTURE_DATA_DIR=${v} is reported as kept: ${reason}" "$r"
+  if [ ! -e "${root}/data/addons/fixture" ] && [ -f "${root}/data/fixture/sub/file" ] && [ -f "${root}/data/other/keep" ] \
+    && [ -f "${root}/.env" ] && [ -f "${tmp}/outside-in/file" ]; then
+    ok "FIXTURE_DATA_DIR=${v} deletes only data/addons/fixture"
+  else
+    bad "FIXTURE_DATA_DIR=${v} deletes only data/addons/fixture"
+  fi
+done
+unset_env FIXTURE_DATA_DIR
+
+# data/fixture as a symlink to a directory outside the scratch root.
+rm -rf "${root}/data/fixture"
+mkdir -p "${tmp}/outside-link"
+: > "${tmp}/outside-link/file"
+ln -s "${tmp}/outside-link" "${root}/data/fixture"
+addon_json remove fixture --delete-data --json
+expect_rc "remove with data/fixture a symlink" 0
+if [ ! -L "${root}/data/fixture" ] && [ ! -e "${root}/data/fixture" ] && [ -f "${tmp}/outside-link/file" ]; then
+  ok "a symlinked data path is unlinked, not followed"
+else
+  bad "a symlinked data path is unlinked, not followed"
+fi
+
+# A path under a symlinked directory is kept.
+mkdir -p "${tmp}/outside-behind/sub"
+: > "${tmp}/outside-behind/sub/file"
+ln -s "${tmp}/outside-behind" "${root}/data/lnk"
+set_env FIXTURE_DATA_DIR ./data/lnk/sub
+addon_json remove fixture --delete-data --json
+r=0; json_ok "$out" "done" '{"phase":"setup","step":"delete","status":"done","kept":os.environ["TEST_ROOT"] + "/data/lnk/sub","reason":"behind a symlink"} in lines' || r=1
+check "a path behind a symlink is kept" "$r"
+if [ -f "${tmp}/outside-behind/sub/file" ] && [ -L "${root}/data/lnk" ]; then ok "a path behind a symlink is not deleted"; else bad "a path behind a symlink is not deleted"; fi
+rm -f "${root}/data/lnk"
+
+# Hermes state and data/addons are kept.
+mkdir -p "${root}/data/hermes"
+: > "${root}/data/hermes/keep"
+for v in ./data/hermes ./data/addons; do
+  set_env FIXTURE_DATA_DIR "$v"
+  seed_data
+  addon_json remove fixture --delete-data --json
+  r=0; WANT="${root}/${v#./}" json_ok "$out" "done" '{"phase":"setup","step":"delete","status":"done","kept":os.environ["WANT"],"reason":"holds stack data"} in lines' || r=1
+  check "FIXTURE_DATA_DIR=${v} is kept as stack data" "$r"
+done
+if [ -f "${root}/data/hermes/keep" ] && [ -d "${root}/data/addons" ]; then ok "data/hermes and data/addons survive"; else bad "data/hermes and data/addons survive"; fi
+
+# The user-data directories of data-root.sh are kept.
+set_env FIXTURE_DATA_DIR ./data/memory
+mkdir -p "${root}/data/memory"
+: > "${root}/data/memory/keep"
+addon_json remove fixture --delete-data --json
+r=0; json_ok "$out" "done" '{"phase":"setup","step":"delete","status":"done","kept":os.environ["TEST_ROOT"] + "/data/memory","reason":"holds stack data"} in lines' || r=1
+check "FIXTURE_DATA_DIR=./data/memory is kept as stack data" "$r"
+if [ -f "${root}/data/memory/keep" ]; then ok "data/memory survives"; else bad "data/memory survives"; fi
+unset_env FIXTURE_DATA_DIR
+
+# A protected directory that is a symlink: its target is kept too.
+for pair in hermes:state memory:mem2; do
+  link="${pair%%:*}"
+  dest="${pair#*:}"
+  rm -rf "${root}/data/${link}"
+  mkdir -p "${root}/data/${dest}"
+  : > "${root}/data/${dest}/keep"
+  ln -s "$dest" "${root}/data/${link}"
+  set_env FIXTURE_DATA_DIR "./data/${dest}"
+  addon_json remove fixture --delete-data --json
+  r=0; WANT="${root}/data/${dest}" json_ok "$out" "done" '{"phase":"setup","step":"delete","status":"done","kept":os.environ["WANT"],"reason":"holds stack data"} in lines' || r=1
+  check "with data/${link} -> ${dest}, ./data/${dest} is kept as stack data" "$r"
+  if [ -f "${root}/data/${dest}/keep" ]; then ok "data/${dest} survives"; else bad "data/${dest} survives"; fi
+  rm -f "${root}/data/${link}"
+  if [ -d "${root}/data/${dest}" ]; then mv "${root}/data/${dest}" "${root}/data/${link}"; else mkdir -p "${root}/data/${link}"; fi
+done
+unset_env FIXTURE_DATA_DIR
+
+# A leading ~ is expanded as compose does, so the kept path is the real one.
+mkdir -p "${tmp}/home"
+# shellcheck disable=SC2088 # a literal ~, for addon.sh to expand
+set_env FIXTURE_DATA_DIR '~/addon-data'
+HOME="${tmp}/home" addon_json remove fixture --delete-data --json
+r=0; json_ok "$out" "done" '{"phase":"setup","step":"delete","status":"done","kept":os.environ["TEST_TMP"] + "/home/addon-data","reason":"outside the data directory"} in lines' || r=1
+check "a ~ path is expanded and kept as outside" "$r"
+unset_env FIXTURE_DATA_DIR
+
+# ./data as a symlink: Hermes state named by its physical path is kept.
+mv "${root}/data" "${root}/physdata"
+ln -s physdata "${root}/data"
+mkdir -p "${root}/physdata/hermes"
+: > "${root}/physdata/hermes/keep"
+set_env FIXTURE_DATA_DIR "${root}/physdata/hermes"
+addon_json remove fixture --delete-data --json
+r=0; json_ok "$out" "done" '{"phase":"setup","step":"delete","status":"done","kept":os.environ["TEST_ROOT"] + "/physdata/hermes","reason":"holds stack data"} in lines' || r=1
+check "with ./data a symlink, the physical hermes directory is kept" "$r"
+if [ -f "${root}/physdata/hermes/keep" ]; then ok "the physical hermes directory survives"; else bad "the physical hermes directory survives"; sed 's/^/    /' "$out" "$err"; fi
+set_env FIXTURE_DATA_DIR ./data/hermes
+addon_json remove fixture --delete-data --json
+r=0; json_ok "$out" "done" '{"phase":"setup","step":"delete","status":"done","kept":os.environ["TEST_ROOT"] + "/data/hermes","reason":"holds stack data"} in lines' || r=1
+check "with ./data a symlink, ./data/hermes is kept" "$r"
+unset_env FIXTURE_DATA_DIR
+rm "${root}/data"
+mv "${root}/physdata" "${root}/data"
+
+# The caller's environment comes before .env.
+set_env FIXTURE_DATA_DIR ./data/fixture
+seed_data
+mkdir -p "${root}/data/alt"
+: > "${root}/data/alt/file"
+FIXTURE_DATA_DIR=./data/alt addon_json remove fixture --delete-data --json
+unset FIXTURE_DATA_DIR
+if [ ! -e "${root}/data/alt" ] && [ -f "${root}/data/fixture/sub/file" ]; then ok "the environment's FIXTURE_DATA_DIR wins over .env"; else bad "the environment's FIXTURE_DATA_DIR wins over .env"; fi
+unset_env FIXTURE_DATA_DIR
+
+# A quote and a backslash in the value survive the trip to plan-remove; a
+# control character is refused before anything is deleted.
+seed_data
+mkdir -p "${root}/data/q\"b\\s"
+set_env FIXTURE_DATA_DIR './data/q"b\s'
+addon_json remove fixture --delete-data --json
+if [ "$rc" = 0 ] && [ ! -e "${root}/data/q\"b\\s" ] && [ -f "${root}/data/fixture/sub/file" ]; then
+  ok "a path with a quote and a backslash is deleted"
+else
+  bad "a path with a quote and a backslash is deleted"; sed 's/^/    /' "$out" "$err"
+fi
+unset_env FIXTURE_DATA_DIR
+seed_data
+FIXTURE_DATA_DIR="$(printf './data/a\tb')" addon_json remove fixture --delete-data --json
+unset FIXTURE_DATA_DIR
+r=0; json_ok "$out" error 'last["error"] == "bad_input"' || r=1
+if [ "$rc" = 2 ] && [ "$r" = 0 ] && [ -f "${root}/data/addons/fixture/secrets/token" ]; then
+  ok "a control character in a data path is bad_input and deletes nothing"
+else
+  bad "a control character in a data path is bad_input and deletes nothing"; sed 's/^/    /' "$out"
+fi
+
+# A path another enabled add-on declares is kept.
+seed_data
+set_env SHARER_ADDON_ENABLED 1
+addon_json remove fixture --delete-data --json
+r=0; json_ok "$out" "done" '{"phase":"setup","step":"delete","status":"done","kept":os.environ["TEST_ROOT"] + "/data/fixture","reason":"used by sharer"} in lines' || r=1
+check "a path an enabled add-on declares is kept, used by sharer" "$r"
+if [ -f "${root}/data/fixture/sub/file" ] && [ ! -e "${root}/data/addons/fixture" ]; then ok "the shared path survives"; else bad "the shared path survives"; fi
+set_env SHARER_ADDON_ENABLED 0
+addon_json remove fixture --delete-data --json
+if [ ! -e "${root}/data/fixture" ]; then ok "a disabled add-on's declaration keeps nothing"; else bad "a disabled add-on's declaration keeps nothing"; fi
+unset_env SHARER_ADDON_ENABLED
+
+# ASSISTANT_DATA_ROOT outside the repo is an allowed root too.
+mkdir -p "${tmp}/dataroot/fixture" "${tmp}/dataroot/addons/fixture"
+: > "${tmp}/dataroot/fixture/file"
+set_env ASSISTANT_DATA_ROOT "${tmp}/dataroot"
+set_env FIXTURE_DATA_DIR "${tmp}/dataroot/fixture"
+addon_json remove fixture --delete-data --json
+expect_rc "remove under ASSISTANT_DATA_ROOT" 0
+if [ ! -e "${tmp}/dataroot/fixture" ] && [ ! -e "${tmp}/dataroot/addons/fixture" ] && [ -d "${tmp}/dataroot/addons" ]; then
+  ok "remove deletes paths under ASSISTANT_DATA_ROOT"
+else
+  bad "remove deletes paths under ASSISTANT_DATA_ROOT"; sed 's/^/    /' "$out" "$err"
+fi
+set_env FIXTURE_DATA_DIR "${tmp}/dataroot"
+addon_json remove fixture --delete-data --json
+r=0; json_ok "$out" "done" '{"phase":"setup","step":"delete","status":"done","kept":os.environ["TEST_TMP"] + "/dataroot","reason":"is the data directory"} in lines' || r=1
+check "ASSISTANT_DATA_ROOT itself is kept" "$r"
+unset_env FIXTURE_DATA_DIR
+unset_env ASSISTANT_DATA_ROOT
+
+# Refusals.
+seed_data
+set_env FIXTURE_ADDON_ENABLED 1
+: > "$STUB_LOG"
+addon_json remove fixture --delete-data --json
+expect_rc "remove while enabled exits 2" 2
+r=0; json_ok "$out" error 'last["error"] == "bad_input"' || r=1
+check "remove while enabled is bad_input" "$r"
+if [ -f "${root}/data/addons/fixture/secrets/token" ] && ! logged "compose rm"; then ok "remove while enabled deletes nothing"; else bad "remove while enabled deletes nothing"; fi
+set_env FIXTURE_ADDON_ENABLED 0
+addon remove fixture
+expect_rc "remove without --delete-data exits 2" 2
+addon remove
+expect_rc "remove without a short id exits 2" 2
+addon remove fixture --delete-data --force
+expect_rc "remove with an unknown option exits 2" 2
+addon remove .. --delete-data
+expect_rc "remove .. exits 2" 2
+if [ -f "${root}/data/addons/fixture/secrets/token" ]; then ok "refused removes delete nothing"; else bad "refused removes delete nothing"; fi
+
+# delete-path checks again what it is given.
+mkdir -p "${root}/data/hermes" "${root}/data/fixture"
+: > "${root}/data/hermes/keep"
+for p in "${root}/data" "${root}/data/hermes" "${root}/data/fixture/../hermes" "${root}/data/addons"; do
+  r=0
+  python3 "${root}/scripts/lib/addon_cli.py" --addons-dir "$ADDONS_DIR" --data-root "${root}/data" \
+    delete-path "$p" --repo "$root" --sid fixture > /dev/null 2>&1 || r=$?
+  if [ "$r" = 2 ]; then ok "delete-path refuses ${p#"${root}/"}"; else bad "delete-path refuses ${p#"${root}/"}: exit ${r}, want 2"; fi
+done
+mkdir -p "${root}/data/addons/other"
+r=0
+python3 "${root}/scripts/lib/addon_cli.py" --addons-dir "$ADDONS_DIR" --data-root "${root}/data" \
+  delete-path "${root}/data/addons/other" --repo "$root" --sid fixture > /dev/null 2>&1 || r=$?
+if [ "$r" = 2 ] && [ -d "${root}/data/addons/other" ]; then ok "delete-path allows only data/addons/<its sid>"; else bad "delete-path allows only data/addons/<its sid>: exit ${r}"; fi
+rmdir "${root}/data/addons/other"
+if [ -f "${root}/data/hermes/keep" ] && [ -d "${root}/data/fixture" ]; then ok "a refused delete-path deletes nothing"; else bad "a refused delete-path deletes nothing"; fi
+
+# disable --purge: one lock, one done line with action disable.
+seed_data
+addon_json disable fixture --purge --json
+expect_rc "disable --purge --json" 0
+r=0; json_ok "$out" "done" 'last["action"] == "disable" and sum(l["phase"] == "done" for l in lines) == 1 and ("delete","done") in steps' || r=1
+check "disable --purge prints one done line, action disable" "$r"
+if [ ! -e "${root}/data/fixture" ] && [ ! -e "${root}/data/addons/fixture" ]; then ok "disable --purge deletes the data paths"; else bad "disable --purge deletes the data paths"; fi
 
 if [ "$fail" = 0 ]; then
   echo "all addon.sh checks passed"

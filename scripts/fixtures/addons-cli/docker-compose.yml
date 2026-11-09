@@ -1,9 +1,13 @@
-# Compose file the manifest test checks the fixture's data.paths against.
+# Compose file the manifest test checks the fixtures' data.paths against.
 # scripts/test-addon-cli.sh stubs docker, so nothing runs this.
 services:
   fixture-worker:
     profiles: ["fixture"]
     volumes:
       - ${FIXTURE_DATA_DIR:-./data/fixture}:/data
+  sharer-worker:
+    profiles: ["sharer"]
+    volumes:
+      - ./data/fixture:/shared
 volumes:
   fixture_cache:

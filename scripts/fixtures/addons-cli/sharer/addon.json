@@ -1,0 +1,38 @@
+{
+  "manifestVersion": 1,
+  "id": "io.example.stack.sharer",
+  "version": "1.0.0",
+  "title": "Sharer",
+  "tagline": "Test add-on that declares the fixture's data path",
+  "description": "Not a real add-on. scripts/test-addon-cli.sh enables it to check that remove --delete-data keeps a path another enabled add-on declares.",
+  "publisher": {
+    "name": "sovereign-agent-stack",
+    "url": "https://github.com/kaxline/sovereign-agent-stack"
+  },
+  "minStackVersion": "0.3.12",
+  "builtin": {
+    "flag": "SHARER_ADDON_ENABLED",
+    "profile": "sharer",
+    "seed": false
+  },
+  "services": {
+    "worker": {
+      "compose": "sharer-worker"
+    }
+  },
+  "data": {
+    "paths": [
+      {
+        "default": "./data/fixture"
+      }
+    ]
+  },
+  "permissions": {
+    "reads": [],
+    "writes": [],
+    "sends": false,
+    "egress": [],
+    "exposesToAgent": false,
+    "cron": false
+  }
+}

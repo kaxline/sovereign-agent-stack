@@ -12,6 +12,7 @@
 #   scripts/addon.sh disable <short-id> [--purge] [--json]
 #   scripts/addon.sh connect <short-id> --instance <slug> [--json] < values.json
 #   scripts/addon.sh disconnect <short-id> --instance <slug> [--json]
+#   scripts/addon.sh remove <short-id> --delete-data [--json]
 #   scripts/addon.sh run <short-id> <command> [--instance <slug>]
 #
 # configure reads one JSON object on stdin. Secret values go only to
@@ -20,8 +21,30 @@
 # gate flag a stored setting owns), syncs COMPOSE_PROFILES, starts the
 # services whose gate is on, runs the manifest's init hook once (--reinit runs
 # it again; data/addons/<short-id>/state.json records it) and reloads Hermes. disable sets the flag and every
-# gate flag to 0, syncs, stops the services and reloads; --purge also deletes
-# data/addons/<short-id> and the compose volumes in services.*.volumes.
+# gate flag to 0, syncs, stops the services and reloads; --purge then runs
+# remove --delete-data's work in the same lock, and prints one done line.
+#
+# remove --delete-data refuses (bad_input) while the add-on is enabled. It
+# runs `docker compose rm -f -s` on every service and one-shot, removes each
+# compose volume in data.volumes that exists, and deletes each data.paths
+# directory and data/addons/<short-id>, all as step delete. A data path is its
+# env from the caller's environment, then .env, else its default, made
+# absolute against the repo root without resolving symlinks. It is deleted
+# only when it lies inside ./data or ASSISTANT_DATA_ROOT, isn't one of them,
+# doesn't hold one, isn't, doesn't hold and doesn't lie in hermes, addons or a
+# USER_DATA_SUBDIRS directory under either, has no symlink between
+# the data directory and itself, and no other enabled add-on declares it or a
+# path that overlaps it. Otherwise a `delete` line with "kept" and "reason"
+# reports it and it stays. A symlink is unlinked, never followed.
+#
+# Reloading Hermes (step reload, run by enable, disable, connect and
+# disconnect) runs both bootstraps with HERMES_BOOTSTRAP_FORCE=1 and then
+# scripts/vault.sh reload-plugins. It never recreates hermes. A manifest with
+# onToggle gets step recreate on enable and disable when the builtin flag
+# changed value: `up -d --no-deps --force-recreate` for onToggle.recreate, then
+# onToggle.script, before the reload; the done line lists those services in
+# restart. disable also stops each `uses` service that addon_cli.py maps to a
+# compose service when `docker compose config --services` no longer lists it.
 #
 # connect stages the values on stdin in data/addons/.staging.XXXXXX (mode
 # 0600, removed on exit) and checks them against instances.settings. When the
@@ -40,7 +63,7 @@
 # step, then one `done` or `error` line. Step output goes to stderr without
 # --json.
 #
-# configure, enable, disable, connect and disconnect hold data/addons/.lock
+# configure, enable, disable, connect, disconnect and remove hold data/addons/.lock
 # (a symlink to their PID) while they run; a second call fails with busy. A
 # failed or interrupted enable writes the flags back as they were, syncs
 # COMPOSE_PROFILES and stops the services if the add-on was off, and its
@@ -67,7 +90,7 @@ source "${ROOT}/scripts/lib/python.sh"
 source "${ROOT}/scripts/lib/addon-events.sh"
 
 # usage: the synopsis from the header, on stdout.
-usage() { sed -n '8,15s/^# *//p' "${BASH_SOURCE[0]}"; }
+usage() { sed -n '8,16s/^# *//p' "${BASH_SOURCE[0]}"; }
 # usage_error REASON: `error: usage: REASON` and the synopsis on stderr, exit 2.
 # In JSON mode, a bad_input error line instead.
 usage_error() {
@@ -146,13 +169,61 @@ compose_project() {
   printf '%s\n' "$p"
 }
 
-hermes_reload() {
-  make hermes-reload
+# reload_hermes: the two bootstraps with HERMES_BOOTSTRAP_FORCE=1, then
+# vault.sh reload-plugins, which tells Hermes to reload the profiles the
+# bootstrap marked. It does not recreate hermes. Returns 1 when a bootstrap
+# fails and 2 when reload-plugins fails.
+reload_hermes() {
+  docker compose run --rm -e HERMES_BOOTSTRAP_FORCE=1 hermes-api-bootstrap || return 1
+  docker compose run --rm --no-deps -e HERMES_BOOTSTRAP_FORCE=1 hermes-browser-bootstrap || return 1
+  ./scripts/vault.sh reload-plugins || return 2
 }
-# reload_step: hermes_reload as step reload; a failure is compose_failed.
+# reload_step: reload_hermes as step reload. A bootstrap failure is
+# compose_failed, a reload-plugins failure command_failed.
 reload_step() {
-  run_step reload "" hermes_reload \
-    || ev_fail compose_failed reload "make hermes-reload failed" "$EV_LAST_LOG"
+  local rc=0
+  run_step reload "" reload_hermes || rc=$?
+  case "$rc" in
+    0) ;;
+    2) ev_fail command_failed reload "vault.sh reload-plugins failed" "$EV_LAST_LOG" ;;
+    *) ev_fail compose_failed reload "a Hermes bootstrap failed" "$EV_LAST_LOG" ;;
+  esac
+}
+
+# plan_builtin PLAN: the builtin flag name in a plan.
+plan_builtin() {
+  printf '%s' "$1" | sed -n 's/.*"builtin":"\([A-Z][A-Z0-9_]*\)".*/\1/p'
+}
+
+# toggle_recreate PLAN SID: for enable and disable, when onToggle names services
+# and the builtin flag changed value in this run (CHANGED is 1): step recreate
+# runs `up -d --no-deps --force-recreate` for them, then onToggle.script from
+# ROOT. Sets RECREATED (the services, comma-separated).
+RECREATED=""
+toggle_recreate() {
+  local plan="$1" sid="$2" names=() name line script=()
+  RECREATED=""
+  [[ "$CHANGED" == 1 ]] || return 0
+  while IFS= read -r name; do
+    [[ -n "$name" ]] && names+=("$name")
+  done <<EOF_RECREATE
+$(json_list recreate "$plan")
+EOF_RECREATE
+  [[ ${#names[@]} -gt 0 ]] || return 0
+  # Resolve the script first: a rejected argv must not come after the recreate.
+  cli_checked recreate toggle-script "$sid"
+  if [[ -n "$CLI_OUT" ]]; then
+    while IFS= read -r line; do script+=("$line"); done <<EOF_SCRIPT
+$CLI_OUT
+EOF_SCRIPT
+  fi
+  run_step recreate "" docker compose up -d --no-deps --force-recreate "${names[@]}" \
+    || ev_fail compose_failed recreate "docker compose up --force-recreate failed for: ${names[*]}" "$EV_LAST_LOG"
+  if [[ ${#script[@]} -gt 0 ]]; then
+    run_step recreate "" "${script[@]}" \
+      || ev_fail command_failed recreate "${script[0]} failed" "$EV_LAST_LOG"
+  fi
+  RECREATED="$(IFS=,; printf '%s' "${names[*]}")"
 }
 
 # cli_checked STEP ARGS...: cli with stdin from $CLI_IN (default /dev/null) and its stdout in
@@ -555,7 +626,7 @@ EOF_ENTRIES
 }
 
 cmd_enable() {
-  local sid="${1:-}" plan name reinit=()
+  local sid="${1:-}" plan name mcp reinit=()
   [[ -n "$sid" ]] || usage_error "enable takes one short id"
   shift
   while [[ $# -gt 0 ]]; do
@@ -578,6 +649,8 @@ $list
 EOF_ONESHOTS
   pull_images ${services[@]+"${services[@]}"} ${oneshots[@]+"${oneshots[@]}"}
   rollback_record "$plan"
+  CHANGED=0
+  truthy "$(env_get "$(plan_builtin "$plan")")" || CHANGED=1
   run_step flags "" apply_flags "$plan" \
     || ev_fail command_failed flags "writing the flags or syncing COMPOSE_PROFILES failed" "$EV_LAST_LOG"
   # One-shots run to completion first: a service may depend on one.
@@ -590,13 +663,38 @@ EOF_ONESHOTS
       || start_failed ${oneshots[@]+"${oneshots[@]}"} "${services[@]}"
   fi
   run_hook init "$sid" init ${reinit[@]+"${reinit[@]}"}
+  toggle_recreate "$plan" "$sid"
   reload_step
   EV_ON_FAIL=""
-  ev_done "$sid" enable "" "" "$HOOK_ACCOUNT"
+  mcp="$(gated_names "$plan" mcp | paste -sd, -)"
+  ev_done "$sid" enable "$RECREATED" "$mcp" "$HOOK_ACCOUNT"
+}
+
+# stop_unused_uses PLAN: stops each compose service the manifest's `uses` maps
+# to (step stop, with that target) unless `docker compose config --services`,
+# which applies the active profiles, still lists it. A service no profile gates
+# is always listed, so it is never stopped.
+stop_unused_uses() {
+  local names=() name active="" cfg_log
+  while IFS= read -r name; do
+    [[ -n "$name" ]] && names+=("$name")
+  done <<EOF_USES
+$(json_list uses "$1")
+EOF_USES
+  [[ ${#names[@]} -gt 0 ]] || return 0
+  cfg_log="$(ev_log config)"
+  active="$(docker compose config --services 2> "$cfg_log")" \
+    || ev_fail compose_failed stop "docker compose config --services failed" "$cfg_log"
+  for name in "${names[@]}"; do
+    if ! printf '%s\n' "$active" | grep -qx -- "$name"; then
+      run_step stop "$name" docker compose stop "$name" \
+        || { EV_TARGET="$name"; ev_fail compose_failed stop "docker compose stop failed for: $name" "$EV_LAST_LOG"; }
+    fi
+  done
 }
 
 cmd_disable() {
-  local sid="${1:-}" purge=0 plan line project vol
+  local sid="${1:-}" purge=0 plan line
   [[ -n "$sid" ]] || usage_error "disable needs a short id"
   shift
   case "${1:-}" in
@@ -608,9 +706,11 @@ cmd_disable() {
   addon_lock
   cli_checked flags plan-disable "$sid"
   plan="$CLI_OUT"
+  CHANGED=0
+  ! truthy "$(env_get "$(plan_builtin "$plan")")" || CHANGED=1
   run_step flags "" apply_flags "$plan" \
     || ev_fail command_failed flags "writing the flags or syncing COMPOSE_PROFILES failed" "$EV_LAST_LOG"
-  local services=() volumes=()
+  local services=()
   while IFS= read -r line; do
     [[ -n "$line" ]] && services+=("$line")
   done <<EOF_SERVICES
@@ -620,30 +720,108 @@ EOF_SERVICES
     run_step stop "" docker compose stop "${services[@]}" \
       || ev_fail compose_failed stop "docker compose stop failed for: ${services[*]}" "$EV_LAST_LOG"
   fi
-  if [[ "$purge" == 1 ]]; then
-    while IFS= read -r line; do
-      [[ -n "$line" ]] && volumes+=("$line")
-    done <<EOF_VOLUMES
-$(json_list volumes "$plan")
-EOF_VOLUMES
-    if [[ ${#volumes[@]} -gt 0 ]]; then
-      # A stopped container still holds its volumes.
-      run_step delete "" docker compose rm -f "${services[@]}" \
-        || ev_fail compose_failed delete "docker compose rm failed for: ${services[*]}" "$EV_LAST_LOG"
-      project="$(compose_project)"
-      for vol in "${volumes[@]}"; do
-        if docker volume inspect "${project}_${vol}" > /dev/null 2>&1; then
-          run_step delete "$vol" docker volume rm "${project}_${vol}" \
-            || ev_fail compose_failed delete "docker volume rm ${project}_${vol} failed" "$EV_LAST_LOG"
-        fi
-      done
-    fi
-    ev_step delete running "data/addons/${sid}"
-    cli_checked delete purge "$sid"
-    ev_step delete "done" "data/addons/${sid}"
-  fi
+  stop_unused_uses "$plan"
+  toggle_recreate "$plan" "$sid"
   reload_step
-  ev_done "$sid" disable "" ""
+  [[ "$purge" == 1 ]] && remove_data "$sid"
+  ev_done "$sid" disable "$RECREATED" ""
+}
+
+# data_env_json SID: sets DATA_ENV_JSON to {"NAME":"VALUE",...} for the env
+# names `data-envs` gives (those data.paths declare, and nothing else from
+# .env), each from the caller's exported environment, then .env, with a
+# leading ~ expanded to $HOME. Empty values are left out, as compose's
+# ${NAME:-default} ignores them. Only backslash and quote are escaped: a
+# control character makes the JSON invalid, and plan-remove refuses it.
+DATA_ENV_JSON=""
+data_env_json() {
+  local name value out=""
+  cli_checked "" data-envs "$1"
+  while IFS= read -r name; do
+    [[ "$name" =~ ^[A-Z][A-Z0-9_]*$ ]] || continue
+    # The exported environment only: addon.sh's own variables don't count.
+    value="$(printenv "$name" || true)"
+    [[ -n "$value" ]] || value="$(env_get "$name")"
+    [[ -n "$value" ]] || continue
+    # Compose expands a leading ~ to the home directory.
+    # shellcheck disable=SC2088 # a literal ~ in the value
+    if [[ "$value" == "~" ]]; then
+      value="$HOME"
+    elif [[ "$value" == "~/"* ]]; then
+      value="${HOME}/${value#\~/}"
+    fi
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    out="${out:+${out},}\"${name}\":\"${value}\""
+  done <<EOF_NAMES
+$CLI_OUT
+EOF_NAMES
+  DATA_ENV_JSON="{${out}}"
+}
+
+# ev_kept PATH REASON: the delete line for a data path that stays.
+ev_kept() {
+  if [[ "$EV_JSON" == 1 ]]; then
+    printf '{"phase":"setup","step":"delete","status":"done","kept":%s,"reason":%s}\n' \
+      "$(json_str "$1")" "$(json_str "$2")" >&3
+  else
+    printf 'kept %s: %s\n' "$1" "$2" >&4
+  fi
+}
+
+# remove_data SID: remove --delete-data's work, under the caller's lock. Paths
+# go from plan-remove to delete-path one per line: plan-remove refuses a path
+# with a control character.
+remove_data() {
+  local sid="$1" line services=() volumes=() paths=() project vol path msg
+  data_env_json "$sid"
+  cli_checked "" plan-remove "$sid" --env "$DATA_ENV_JSON" --flags "$(env_flags_json)" --repo "$ROOT" --lines
+  while IFS= read -r line; do
+    case "$line" in
+      "service "*) services+=("${line#service }") ;;
+      "volume "*) volumes+=("${line#volume }") ;;
+      "delete "*) paths+=("${line#delete }") ;;
+      "kept "*) line="${line#kept }"; ev_kept "${line#*$'\t'}" "${line%%$'\t'*}" ;;
+    esac
+  done <<EOF_PLAN
+$CLI_OUT
+EOF_PLAN
+  # A stopped container still holds its volumes and bind mounts.
+  if [[ ${#services[@]} -gt 0 ]]; then
+    run_step delete "" docker compose rm -f -s "${services[@]}" \
+      || ev_fail compose_failed delete "docker compose rm failed for: ${services[*]}" "$EV_LAST_LOG"
+  fi
+  project="$(compose_project)"
+  for vol in ${volumes[@]+"${volumes[@]}"}; do
+    if docker volume inspect "${project}_${vol}" > /dev/null 2>&1; then
+      run_step delete "$vol" docker volume rm "${project}_${vol}" \
+        || { EV_TARGET="$vol"; ev_fail compose_failed delete "docker volume rm ${project}_${vol} failed" "$EV_LAST_LOG"; }
+    fi
+  done
+  for path in ${paths[@]+"${paths[@]}"}; do
+    if ! run_step delete "$path" cli delete-path "$path" --repo "$ROOT" --sid "$sid" < /dev/null; then
+      msg=""
+      [[ -n "$EV_LAST_LOG" ]] && msg="$(sed -n 's/^error: //p' "$EV_LAST_LOG" | tail -n 1)"
+      EV_TARGET="$path"
+      ev_fail command_failed delete "deleting ${path} failed${msg:+: ${msg}}" "$EV_LAST_LOG"
+    fi
+  done
+}
+
+cmd_remove() {
+  local sid="${1:-}" delete=0
+  [[ -n "$sid" ]] || usage_error "remove needs a short id"
+  shift
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --delete-data) delete=1; shift ;;
+      *) usage_error "remove: unknown option $1" ;;
+    esac
+  done
+  [[ "$delete" == 1 ]] || usage_error "remove needs --delete-data"
+  addon_lock
+  remove_data "$sid"
+  ev_done "$sid" remove "" ""
 }
 
 # instance_args CMD ARGS...: the slug from `--instance SLUG`, the only option
@@ -736,7 +914,7 @@ shift
 json=0
 args=()
 case "$sub" in
-  enable | disable | connect | disconnect)
+  enable | disable | connect | disconnect | remove)
     for a in "$@"; do
       if [[ "$a" == --json ]]; then json=1; else args+=("$a"); fi
     done
@@ -745,7 +923,7 @@ case "$sub" in
 esac
 # list and run change nothing and keep the shell's default signal handling.
 case "$sub" in
-  configure | enable | disable | connect | disconnect) ev_init "$json" ;;
+  configure | enable | disable | connect | disconnect | remove) ev_init "$json" ;;
 esac
 case "$sub" in
   list) cmd_list "$@" ;;
@@ -754,6 +932,7 @@ case "$sub" in
   disable) cmd_disable "$@" ;;
   connect) cmd_connect "$@" ;;
   disconnect) cmd_disconnect "$@" ;;
+  remove) cmd_remove "$@" ;;
   run) cmd_run "$@" ;;
   -h | --help | help) usage ;;
   *) printf 'error: unknown command %s\n' "$sub" >&2; exit 2 ;;
