@@ -55,8 +55,8 @@ an unquoted value starts a comment, so `BW_SCOPE=folder:Team #2` reads as `folde
 value (`BW_SCOPE="folder:Team #2"`). `make vault-add` quotes it for you.
 
 Credentials never go in this file. The API key's secret and, with stored unlock, the master
-password are `client_secret` and `master_password` in `secrets/<slug>/`, mode 600, mounted into the
-broker only.
+password are `client_secret` and `master_password` in `secrets/<slug>/`, mode 600. Only the broker
+(read-only) and `bitwarden-setup` mount that folder.
 
 ### Scope
 
@@ -128,9 +128,9 @@ certificate, remove `server.crt` and `server.key` from `local/tls/server/`, run
 `docker compose --profile bitwarden-tools run --rm bitwarden-setup tls`, which issues a new pair from
 the existing CA, then `docker compose restart vaultwarden-tls`.
 
-Vaultwarden allows 10 password logins a minute from one client IP. `make vault-init` signs in once for the
-API and once for `bw`; on a 429 it waits a minute and tries once more. Re-running it several times
-in a row can still hit the limit; wait a minute.
+Vaultwarden allows 10 password logins a minute from one client IP. `make vault-init` signs in once
+for the API and once for `bw`; on a 429 it waits a minute and tries once more. Re-running it several
+times in a row can still hit the limit; wait a minute.
 
 **The local Vaultwarden holds the only copy of what you store in it.** Back it up (see
 [Backup and restore](#backup-and-restore)).
@@ -197,10 +197,9 @@ and stops listing and filling it at once. Then it returns the item:
 
 - `folder:` scope: the item's folder becomes none.
 - `collection:` scope: the item leaves the agent's collection and keeps any other collections it is
-  in. When "Agent" was its only collection, it becomes an unassigned organization item, which only
-  Owners and Admins see. List those with
-  `docker compose --profile bitwarden-tools run --rm bitwarden-setup list-unassigned --slug <slug> --email <you>` and file them
-  in the web vault.
+  in. When that was its only collection, it becomes an unassigned organization item, which only
+  Owners and Admins see. List those, then file them in the web vault:
+  `docker compose --profile bitwarden-tools run --rm bitwarden-setup list-unassigned --slug <slug> --email <you>`.
 
 The result's `returned` is false when Bitwarden refused the edit. The item then stays in the agent's
 folder or collection but stays denylisted; move it out in Bitwarden. A denylist entry is dropped at
