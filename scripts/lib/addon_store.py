@@ -6,6 +6,7 @@
     instances/<slug>.json non-secret instance values
     secrets/<name>        a top-level secret setting
     secrets/<slug>.<name> an instance's secret setting
+    state.json            what the lifecycle recorded, e.g. {"init": {"version", "at"}}
 
 Standard library only. Directories are 0700 and secret files 0600, set with
 explicit chmods. config/ is created with the add-on directory, so a service
@@ -97,6 +98,27 @@ def _write(path: Path, data: str, mode: int) -> None:
         except OSError:
             pass
         raise
+
+
+# --- state -------------------------------------------------------------------
+
+def state(manifest: dict, data_root: Path) -> dict:
+    """data/addons/<id>/state.json as a dict; {} when missing or unreadable."""
+    try:
+        v = json.loads((addon_dir(data_root, manifest) / "state.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return v if isinstance(v, dict) else {}
+
+
+def set_state(manifest: dict, data_root: Path, key: str, value) -> None:
+    """Set one top-level key of state.json (mode 0600, written through a temp
+    file and os.replace)."""
+    d = addon_dir(data_root, manifest)
+    current = state(manifest, data_root)
+    current[key] = value
+    _mkdir_addon(d)
+    _write(d / "state.json", json.dumps(current, indent=2) + "\n", 0o600)
 
 
 # --- schema ------------------------------------------------------------------

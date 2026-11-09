@@ -267,6 +267,21 @@ with tempfile.TemporaryDirectory() as tmp:
     check("another exception prints its type only, exit 1",
           rc == 1 and err == "error: RuntimeError\n", repr((rc, err)))
 
+# --- state.json ---------------------------------------------------------------
+with tempfile.TemporaryDirectory() as tmp:
+    check("state is {} before anything is recorded", st.state(FIXTURE, Path(tmp)) == {})
+    st.set_state(FIXTURE, Path(tmp), "init", {"version": "1.0.0", "at": "2026-11-09T00:00:00Z"})
+    st.set_state(FIXTURE, Path(tmp), "other", 1)
+    got = st.state(FIXTURE, Path(tmp))
+    check("set_state then state round-trips and keeps other keys",
+          got == {"init": {"version": "1.0.0", "at": "2026-11-09T00:00:00Z"}, "other": 1}, repr(got))
+    path = Path(tmp) / "addons" / "fixture" / "state.json"
+    check("state.json is 0600", (path.stat().st_mode & 0o777) == 0o600, oct(path.stat().st_mode))
+    check("no temp file is left behind",
+          sorted(p.name for p in path.parent.iterdir() if p.name.startswith(".")) == [])
+    path.write_text("[1]")
+    check("state is {} when the file is not an object", st.state(FIXTURE, Path(tmp)) == {})
+
 if failures:
     print(f"{failures} failed")
     sys.exit(1)

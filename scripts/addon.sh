@@ -7,7 +7,7 @@
 #   scripts/addon.sh list --json
 #   scripts/addon.sh configure <short-id> [--instance <slug>] < values.json
 #   scripts/addon.sh configure <short-id> --instance <slug> --remove
-#   scripts/addon.sh enable <short-id> [--json]
+#   scripts/addon.sh enable <short-id> [--reinit] [--json]
 #   scripts/addon.sh disable <short-id> [--purge] [--json]
 #   scripts/addon.sh run <short-id> <command> [--instance <slug>]
 #
@@ -15,7 +15,8 @@
 # data/addons/<short-id>/secrets; bool settings with a flag write that flag to
 # .env while the add-on is enabled. enable checks every required setting, sets builtin.flag=1 (and each
 # gate flag a stored setting owns), syncs COMPOSE_PROFILES, starts the
-# services whose gate is on and reloads Hermes. disable sets the flag and every
+# services whose gate is on, runs the manifest's init hook once (--reinit runs
+# it again; data/addons/<short-id>/state.json records it) and reloads Hermes. disable sets the flag and every
 # gate flag to 0, syncs, stops the services and reloads; --purge also deletes
 # data/addons/<short-id> and the compose volumes in services.*.volumes.
 #
@@ -334,6 +335,59 @@ pull_pipe() {
   pull_stream "$log" "$@" | cli pull-events "$csv"
 }
 
+# Hooks. run_hook STEP SID HOOK [plan-hook options]: runs the manifest's hook as
+# step STEP. Sets HOOK_RAN (1 when a hook ran) and HOOK_ACCOUNT (the `account`
+# its `done` line reported, else empty). A hook that fails goes through
+# ev_fail, so the caller's rollback runs: its error line's name passes through
+# when it is a shared name or in instances.errors, any other name becomes
+# command_failed (addon_cli.py hook-result decides). In JSON mode the hook's
+# own JSON lines, other than done and error, are printed inside the step with
+# "step" set; everything else goes to the step log.
+HOOK_RAN=0
+HOOK_ACCOUNT=""
+# hook_exec RAW KIND ARGV...: KIND is `script` (run from ROOT) or a compose
+# service. The hook's stdout is copied to RAW and filtered by hook-events.
+hook_exec() {
+  local raw="$1" kind="$2" step="$3" st
+  shift 3
+  set +e
+  if [[ "$kind" == script ]]; then
+    "$@" < /dev/null | tee "$raw" | hook_events "$step"
+  else
+    docker compose run --rm --no-deps -T "$kind" "$@" < /dev/null | tee "$raw" | hook_events "$step"
+  fi
+  st=("${PIPESTATUS[@]}")
+  set -e
+  [[ "${st[1]}" == 0 && "${st[2]}" == 0 ]] || return 1
+  return "${st[0]}"
+}
+hook_events() {
+  if [[ "$EV_JSON" == 1 ]]; then cli hook-events "$1" >&3; else cli hook-events "$1"; fi
+}
+run_hook() {
+  local step="$1" sid="$2" hook="$3" raw rc=0 line first="" kind="" argv=() out code msg
+  shift 3
+  HOOK_RAN=0
+  HOOK_ACCOUNT=""
+  cli_checked "$step" plan-hook "$sid" "$hook" "$@"
+  [[ -n "$CLI_OUT" ]] || return 0
+  while IFS= read -r line; do
+    if [[ -z "$first" ]]; then first="$line"; else argv+=("$line"); fi
+  done <<EOF_HOOK
+$CLI_OUT
+EOF_HOOK
+  if [[ "$first" == script ]]; then kind=script; else kind="${first#service }"; fi
+  raw="$(ev_log hook)"
+  run_step "$step" "" hook_exec "$raw" "$kind" "$step" "${argv[@]}" || rc=$?
+  HOOK_RAN=1
+  cli_checked "$step" hook-result "$sid" "$raw" "$rc"
+  out="$CLI_OUT"
+  code="$(printf '%s\n' "$out" | sed -n 1p)"
+  msg="$(printf '%s\n' "$out" | sed -n 2p)"
+  HOOK_ACCOUNT="$(printf '%s\n' "$out" | sed -n 3p)"
+  [[ -z "$code" ]] || ev_fail "$code" "$step" "$msg" "$EV_LAST_LOG"
+}
+
 cmd_list() {
   [[ "${1:-}" == "--json" && $# -eq 1 ]] || usage_error "list takes --json only"
   cli list --flags "$(env_flags_json)" < /dev/null
@@ -403,8 +457,15 @@ EOF_ENTRIES
 }
 
 cmd_enable() {
-  local sid="${1:-}" plan name
-  [[ -n "$sid" && $# -eq 1 ]] || usage_error "enable takes one short id"
+  local sid="${1:-}" plan name reinit=()
+  [[ -n "$sid" ]] || usage_error "enable takes one short id"
+  shift
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --reinit) reinit=(--reinit); shift ;;
+      *) usage_error "enable: unknown option $1" ;;
+    esac
+  done
   addon_lock
   cli_checked flags plan-enable "$sid"
   plan="$CLI_OUT"
@@ -430,10 +491,12 @@ EOF_ONESHOTS
     run_step start "" docker compose up -d --wait "${services[@]}" \
       || start_failed ${oneshots[@]+"${oneshots[@]}"} "${services[@]}"
   fi
+  run_hook init "$sid" init ${reinit[@]+"${reinit[@]}"}
+  [[ "$HOOK_RAN" == 0 ]] || cli_checked init mark-init "$sid"
   run_step reload "" hermes_reload \
     || ev_fail compose_failed reload "make hermes-reload failed" "$EV_LAST_LOG"
   EV_ON_FAIL=""
-  ev_done "$sid" enable "" ""
+  ev_done "$sid" enable "" "" "$HOOK_ACCOUNT"
 }
 
 cmd_disable() {

@@ -14,7 +14,7 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 root="${tmp}/stack"
 mkdir -p "${root}/scripts/lib" "${tmp}/bin" "${tmp}/out"
-cp "${REPO}/scripts/addon.sh" "${REPO}/scripts/sync-profiles.sh" "${root}/scripts/" 2>/dev/null || true
+cp "${REPO}/scripts/addon.sh" "${REPO}/scripts/sync-profiles.sh" "${REPO}/scripts/fixture-init.sh" "${root}/scripts/" 2>/dev/null || true
 for f in env.sh data-root.sh python.sh addon-events.sh addon_cli.py addon_manifest.py addon_store.py; do
   cp "${REPO}/scripts/lib/${f}" "${root}/scripts/lib/" 2>/dev/null || true
 done
@@ -28,6 +28,7 @@ printf 'COMPOSE_PROJECT_NAME=fixtureproj\n' >> "${root}/.env"
 # DOCKER_SLEEP_UP=1 makes `compose up` write its PID to SLEEP_PID and sleep.
 # DOCKER_FAIL_PULL=1 makes `compose --progress json pull` exit 1.
 # DOCKER_UP_DELAY=N makes `compose up` sleep N seconds first.
+# DOCKER_FAIL_RUN=N makes `docker compose run` exit N after printing a line.
 # DOCKER_FAIL_ONESHOT=1 makes `compose up --no-deps --exit-code-from` exit 1.
 # `compose ps -a --format json` prints the file PS_ANSWER names, if any.
 # `compose logs` prints one line naming the service.
@@ -67,6 +68,10 @@ if [ "$1 $2 $3 $4" = "compose --progress json pull" ]; then
   fi
   echo '{"id":"Image example/x:1","status":"Working","text":"Pulling"}' >&2
   echo '{"id":"Image example/x:1","status":"Done","text":"Pulled"}' >&2
+fi
+if [ -n "${DOCKER_FAIL_RUN:-}" ] && [ "$1 $2" = "compose run" ]; then
+  echo "init container failing"
+  exit "$DOCKER_FAIL_RUN"
 fi
 if [ "${DOCKER_FAIL:-0}" = 1 ] && [ "$1 $2" = "compose run" ]; then
   echo "container output before failing"
@@ -189,6 +194,13 @@ addon enable fixture
 expect_rc "enable once settings are complete" 0
 if [ "$(envval FIXTURE_ADDON_ENABLED)" = 1 ]; then ok "enable sets the flag"; else bad "enable sets the flag"; fi
 if logged "compose up -d --wait fixture-worker"; then ok "enable starts the service"; else bad "enable starts the service"; cat "$STUB_LOG"; fi
+if logged "compose run --rm --no-deps -T fixture-worker fixture-seed-init --json"; then ok "the first enable runs the init hook"; else bad "the first enable runs the init hook"; cat "$STUB_LOG"; fi
+if [ "$(stat -f %Lp "${root}/data/addons/fixture/state.json" 2> /dev/null || stat -c %a "${root}/data/addons/fixture/state.json")" = 600 ] \
+  && python3 -c 'import json,sys; i=json.load(open(sys.argv[1]))["init"]; sys.exit(0 if i["version"]=="1.0.0" and i["at"].endswith("Z") else 1)' "${root}/data/addons/fixture/state.json"; then
+  ok "enable records init in state.json"
+else
+  bad "enable records init in state.json"
+fi
 if logged "fixture-extra"; then bad "gated service stays off while its gate is 0"; else ok "gated service stays off while its gate is 0"; fi
 if logged "make hermes-reload"; then ok "enable reloads hermes"; else bad "enable reloads hermes"; fi
 
@@ -197,6 +209,7 @@ expect_rc "configure a gate setting" 0
 if [ "$(envval FIXTURE_EXTRA_ENABLED)" = 1 ]; then ok "gate flag written to .env"; else bad "gate flag written to .env"; fi
 : > "$STUB_LOG"
 addon enable fixture
+if logged "fixture-seed-init"; then bad "a second enable does not run init again"; else ok "a second enable does not run init again"; fi
 if logged "compose up -d --wait fixture-worker fixture-extra"; then ok "enable starts gated service when its gate is 1"; else bad "enable starts gated service when its gate is 1"; cat "$STUB_LOG"; fi
 
 addon list --json
@@ -227,6 +240,7 @@ expect_rc "unknown instance exits 2" 2
 addon run fixture nope
 expect_rc "unknown command exits 2" 2
 DOCKER_FAIL=1 addon run fixture status
+unset DOCKER_FAIL
 expect_rc "failing container exits 4" 4
 
 addon enable nosuch
@@ -328,7 +342,81 @@ unset PS_ANSWER DOCKER_FAIL_UP
 expect_rc "enable --json with the wait failing exits 1" 1
 r=0; json_ok "$out" error 'last["error"] == "compose_failed" and last["step"] == "start" and last["target"] == "fixture-seed" and last["logTail"] == ["log line from fixture-seed"]' || r=1
 check "a failed wait reports the exited container and its logs" "$r"
+
 if logged "compose logs --no-color --tail 20 fixture-seed" && logged "compose ps -a --format json"; then ok "a failed wait asks ps and logs"; else bad "a failed wait asks ps and logs"; cat "$STUB_LOG"; fi
+
+# The init hook: --reinit, a failing hook, a script hook and error names.
+STATE="${root}/data/addons/fixture/state.json"
+addon disable fixture
+: > "$STUB_LOG"
+addon_json enable fixture --reinit --json
+expect_rc "enable --reinit --json" 0
+if logged "compose run --rm --no-deps -T fixture-worker fixture-seed-init --json"; then ok "--reinit runs init again"; else bad "--reinit runs init again"; cat "$STUB_LOG"; fi
+r=0; json_ok "$out" "done" 'steps == [("flags","running"),("flags","done"),("start","running"),("start","done"),("start","running"),("start","done"),("init","running"),("init","done"),("reload","running"),("reload","done")]' || r=1
+check "init is a step between start and reload" "$r"
+addon_json enable fixture --json
+if [ "$(grep -c fixture-seed-init "$STUB_LOG")" = 1 ]; then ok "enable without --reinit skips a recorded init"; else bad "enable without --reinit skips a recorded init"; cat "$STUB_LOG"; fi
+r=0; json_ok "$out" "done" '("init","running") not in steps' || r=1
+check "a skipped init prints no init step" "$r"
+
+addon disable fixture
+rm -f "$STATE"
+cp "${root}/.env" "${tmp}/env.before"
+: > "$STUB_LOG"
+DOCKER_FAIL_RUN=5 addon_json enable fixture --json
+unset DOCKER_FAIL_RUN
+expect_rc "a failing init hook exits 4" 4
+r=0; json_ok "$out" error 'last["error"] == "command_failed" and last["step"] == "init" and last.get("rolledBack") is True and ("init","error") in steps and "init container failing" in last["logTail"]' || r=1
+check "a failing init is command_failed at step init and rolls back" "$r"
+if cmp -s "${root}/.env" "${tmp}/env.before" && [ ! -e "$STATE" ]; then ok "a failed init restores .env and records nothing"; else bad "a failed init restores .env and records nothing"; fi
+: > "$STUB_LOG"
+addon_json enable fixture --json
+expect_rc "enable after a failed init" 0
+if logged "fixture-seed-init" && [ -f "$STATE" ]; then ok "a failed init runs again on the next enable"; else bad "a failed init runs again on the next enable"; fi
+
+# A script hook, from a second fixture.
+: > "$STUB_LOG"
+addon_json enable hooked --json
+expect_rc "enable with a script init hook" 0
+r=0; json_ok "$out" "done" 'steps == [("flags","running"),("flags","done"),("start","running"),("start","done"),("init","running"),("init","running"),("init","done"),("reload","running"),("reload","done")] and last == {"phase":"done","id":"hooked","action":"enable","restart":[],"mcp":[],"account":"main"} and [l["phase"] for l in lines].count("done") == 1' || r=1
+check "a script hook's done line gives the account, once" "$r"
+r=0; json_ok "$out" "done" '[i for i, l in enumerate(lines) if l.get("message") == "creating budget"] == [[i for i, l in enumerate(lines) if l.get("step") == "init" and l.get("status") == "running"][0] + 1] and lines[[i for i, l in enumerate(lines) if l.get("message") == "creating budget"][0]]["step"] == "init"' || r=1
+check "the hook's progress line sits inside the init step with step set" "$r"
+if logged "compose run"; then bad "a script hook does not use compose run"; else ok "a script hook does not use compose run"; fi
+addon disable hooked
+for mode in exit5 error; do
+  rm -f "${root}/data/addons/hooked/state.json"
+  case "$mode" in
+    exit5) FIXTURE_INIT_MODE=exit5 addon_json enable hooked --json; want_err=command_failed ;;
+    error) FIXTURE_INIT_MODE=error FIXTURE_INIT_ERROR=bad_slug addon_json enable hooked --json; want_err=bad_slug ;;
+  esac
+  expect_rc "script hook ${mode} exits 4" 4
+  r=0; json_ok "$out" error "last['error'] == '${want_err}' and last['step'] == 'init' and last.get('rolledBack') is True" || r=1
+  check "script hook ${mode} is ${want_err} at step init" "$r"
+  if [ ! -e "${root}/data/addons/hooked/state.json" ]; then ok "script hook ${mode} records no init"; else bad "script hook ${mode} records no init"; fi
+done
+FIXTURE_INIT_MODE=error FIXTURE_INIT_ERROR=wrong_password addon_json enable hooked --json
+r=0; json_ok "$out" error 'last["error"] == "command_failed" and "wrong_password" in last["message"] and "hook says no" in last["message"]' || r=1
+check "an unlisted hook error becomes command_failed with its name in the message" "$r"
+unset FIXTURE_INIT_MODE FIXTURE_INIT_ERROR 2> /dev/null || true
+
+# plan-hook and mark-init directly.
+plan_hook() { python3 "${root}/scripts/lib/addon_cli.py" --addons-dir "$ADDONS_DIR" --data-root "${root}/data" plan-hook "$@" 2>&1; }
+rm -f "$STATE"
+if [ "$(plan_hook fixture init)" = "service fixture-worker
+fixture-seed-init
+--json" ]; then ok "plan-hook prints service, argv and --json"; else bad "plan-hook prints service, argv and --json"; fi
+if [ "$(plan_hook hooked init)" = "script
+scripts/fixture-init.sh
+budget
+--json" ]; then ok "plan-hook prints script and its argv"; else bad "plan-hook prints script and its argv"; fi
+python3 "${root}/scripts/lib/addon_cli.py" --addons-dir "$ADDONS_DIR" --data-root "${root}/data" mark-init fixture
+if [ -z "$(plan_hook fixture init)" ] && [ -n "$(plan_hook fixture init --reinit)" ]; then ok "plan-hook skips a recorded init unless --reinit"; else bad "plan-hook skips a recorded init unless --reinit"; fi
+if [ -z "$(plan_hook fixture upgrade)" ]; then ok "plan-hook prints nothing for an absent hook"; else bad "plan-hook prints nothing for an absent hook"; fi
+if [ -z "$(plan_hook fixture connect --slug work)" ]; then ok "plan-hook prints nothing for a connect hook the manifest lacks"; else bad "plan-hook prints nothing for a connect hook the manifest lacks"; fi
+if plan_hook fixture connect > /dev/null; then bad "connect needs --slug"; else ok "connect needs --slug"; fi
+addon disable fixture
+addon disable hooked
 
 # With no container exited non-zero there is no target; logTail is the up output.
 printf '%s\n%s\n' '{"Service":"fixture-worker","State":"running","ExitCode":0}' '{"Service":"fixture-seed","State":"exited","ExitCode":0}' > "${tmp}/ps-lines.json"

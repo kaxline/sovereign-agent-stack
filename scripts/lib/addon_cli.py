@@ -29,6 +29,26 @@ runs in the Hermes image through stack_python, so the host needs no python3.
     plan-run SID COMMAND [--instance SLUG]
         Prints the compose service, then the command's argv, one per line, with
         `--account SLUG` appended when the command takes an instance.
+    plan-hook SID HOOK [--slug SLUG] [--reinit]
+        HOOK is init, upgrade, backup, restore, connect or disconnect. Prints
+        `script` and then the script's argv, or `service <compose name>` and
+        then the command's argv, one item per line, ending in `--json`
+        (`--slug SLUG --json` for connect and disconnect, which need --slug).
+        Prints nothing when the manifest has no such hook, or for init when
+        state.json records it and --reinit is not given.
+    mark-init SID
+        Records {"init": {"version": <manifest version>, "at": <UTC time>}}
+        in data/addons/SID/state.json.
+    hook-events STEP
+        Reads a hook's stdout. JSON objects other than the `done` and `error`
+        lines are printed with "step": STEP; every other line goes to stderr.
+    hook-result SID RAWFILE EXIT
+        Reads a hook's whole stdout from RAWFILE and prints three lines: an
+        error code (empty on success), its message, and the `account` of the
+        `done` line (empty when it has none). A hook's `error` name is kept
+        when it is a shared name or in instances.errors; any other name
+        becomes command_failed with the name in the message. A non-zero
+        EXIT without an `error` line is command_failed.
     purge SID
         Deletes data/addons/SID (addon_store.addon_dir refuses anything else).
     pull-events SERVICES_CSV
@@ -64,6 +84,7 @@ import shutil
 import sys
 import time
 import unicodedata
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -217,6 +238,98 @@ def cmd_plan_run(args) -> None:
         print(a)
 
 
+def cmd_plan_hook(args) -> None:
+    manifest = _manifest(args.addons_dir, args.sid)
+    if args.hook not in (*am.HOOK_NAMES, *am.INSTANCE_HOOKS):
+        raise Fail(f"unknown hook {args.hook!r}")
+    instance_hook = args.hook in am.INSTANCE_HOOKS
+    if instance_hook != (args.slug is not None):
+        raise Fail(f"{args.hook} needs --slug" if instance_hook else f"{args.hook} takes no --slug")
+    spec = am.hook(manifest, args.hook)
+    if spec is None:
+        return
+    if args.hook == "init" and not args.reinit \
+            and "init" in store.state(manifest, args.data_root):
+        return
+    if "script" in spec:
+        head, argv = ["script"], list(spec["script"])
+    else:
+        cmd = manifest["commands"][spec["command"]]
+        head, argv = [f"service {_compose(manifest, cmd['service'])}"], list(cmd["argv"])
+    if instance_hook:
+        argv += ["--slug", store._slug(args.slug)]
+    argv.append("--json")
+    if any(not a or "\n" in a or "\0" in a for a in argv):
+        raise Fail(f"hooks.{args.hook}: an argv item is empty or has a line break")
+    for line in head + argv:
+        print(line)
+
+
+def cmd_mark_init(args) -> None:
+    manifest = _manifest(args.addons_dir, args.sid)
+    at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    store.set_state(manifest, args.data_root, "init", {"version": manifest["version"], "at": at})
+
+
+def _json_object(line: str):
+    line = line.strip()
+    if not line.startswith("{"):
+        return None
+    try:
+        obj = json.loads(line)
+    except ValueError:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def cmd_hook_events(args) -> None:
+    for line in sys.stdin:
+        obj = _json_object(line)
+        if obj is not None and obj.get("phase") not in ("done", "error"):
+            obj["step"] = args.step
+            print(json.dumps(obj, separators=(",", ":")), flush=True)
+        else:
+            print(line.rstrip("\n"), file=sys.stderr, flush=True)
+
+
+def hook_error(manifest: dict, name, message) -> tuple[str, str]:
+    """(code, message) for the error a hook reported. A shared name or one in
+    instances.errors passes through; any other becomes command_failed with the
+    name in the message."""
+    text = clean_line(message) if isinstance(message, str) else ""
+    inst = manifest.get("instances")
+    own = inst.get("errors", []) if isinstance(inst, dict) else []
+    if isinstance(name, str) and am.ERROR_NAME_RE.match(name) \
+            and (name in am.SHARED_ERRORS or name in own):
+        return name, text
+    label = clean_line(name) if isinstance(name, str) and name else "unnamed error"
+    return "command_failed", f"hook error {label}: {text}" if text else f"hook error {label}"
+
+
+def cmd_hook_result(args) -> None:
+    manifest = _manifest(args.addons_dir, args.sid)
+    done = error = None
+    try:
+        lines = Path(args.raw).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        obj = _json_object(line)
+        if obj is not None and obj.get("phase") == "done":
+            done = obj
+        elif obj is not None and obj.get("phase") == "error":
+            error = obj
+    code = message = account = ""
+    if error is not None:
+        code, message = hook_error(manifest, error.get("error"), error.get("message"))
+    elif args.exit != 0:
+        code, message = "command_failed", f"the hook exited with status {args.exit}"
+    elif done is not None and isinstance(done.get("account"), str):
+        account = clean_line(done["account"])
+    for item in (code, message, account):
+        print(item.replace("\n", " "))
+
+
 def cmd_purge(args) -> None:
     manifest = _manifest(args.addons_dir, args.sid)
     target = store.addon_dir(args.data_root, manifest)
@@ -355,6 +468,23 @@ def main(argv: list[str]) -> int:
         s = sub.add_parser(name)
         s.add_argument("sid")
         s.set_defaults(func=func)
+    s = sub.add_parser("plan-hook")
+    s.add_argument("sid")
+    s.add_argument("hook")
+    s.add_argument("--slug")
+    s.add_argument("--reinit", action="store_true")
+    s.set_defaults(func=cmd_plan_hook)
+    s = sub.add_parser("mark-init")
+    s.add_argument("sid")
+    s.set_defaults(func=cmd_mark_init)
+    s = sub.add_parser("hook-events")
+    s.add_argument("step")
+    s.set_defaults(func=cmd_hook_events)
+    s = sub.add_parser("hook-result")
+    s.add_argument("sid")
+    s.add_argument("raw")
+    s.add_argument("exit", type=int)
+    s.set_defaults(func=cmd_hook_result)
     s = sub.add_parser("plan-run")
     s.add_argument("sid")
     s.add_argument("command")
