@@ -38,6 +38,35 @@ except where noted:
   an existing entry at the add-on's URL, on every profile. The names
   must be distinct and may not appear in `profiles`. An empty list behaves as
   absent.
+- `mcp.instances` (built-in add-ons only): an `mcp` entry that registers one
+  server per instance in the add-on's store, instead of one fixed server. It
+  has no `service`, `path` or `name`. Its fields, besides the usual
+  `transport`, `timeout`, `connectTimeout`, `env`, `tools`, `pin`,
+  `writeTools` and `profiles`:
+  - `name`: a prefix, then `{slug}` once, such as `crm-{slug}`. The prefix may
+    not be a core server name or prefix. The bootstrap drops every entry under
+    the prefix that has no instance, so no add-on's fixed `mcp.name` may start
+    with another add-on's instance prefix, and two instance prefixes may not
+    start with one another.
+  - `url`: a string with `{setting:<name>}` placeholders that name `url` or
+    `string` instance settings, such as `{setting:url}/mcp`.
+  - `access`: `{setting:<name>}` naming a `choice` instance setting whose
+    `options` are only `read` and `write`. `read` registers the instance with
+    its `ro` key and `write` with its `rw` key. A profile that `mcp.profiles`
+    maps to `ro` gets the `ro` key whatever the setting (Twenty maps
+    `api-server` to `ro`), and a profile whose key is missing gets no entry.
+  - `auth`: `{header, scheme, secret: {ro, rw}}`. `secret` names two `secret`
+    instance settings. The bootstrap writes the chosen key into the profile's
+    `.env` as `<NAME>_KEY`, with `-` turned into `_` and the name uppercased
+    (`CRM_SALES_EU_KEY`), and the header carries `<scheme> ${<NAME>_KEY}`.
+  - `gate` (optional): `{setting, flag}`. An instance whose bool `setting` is
+    true registers only while `flag` (`builtin.flag` or a gate) is on.
+  For instance entries the bootstrap writes no `tools.include`: `tools` only
+  bounds what `pin` and `writeTools` may name. Of `env` it reads `timeout` and
+  `connectTimeout`; `env.url` and `env.access` are ignored.
+  The entry needs a top-level `instances` block that declares the settings it
+  names. Removing an instance drops its entries and keys on the next
+  bootstrap. `addons/twenty/addon.json` is the one user.
 - `services.<name>.when`: `{"gate": FLAG}`, so the service starts only while
   that gate flag is on. `mounts` maps `secrets`, `config` and `instances` to
   `ro` or `rw`; they mount the directories `data/addons/<short-id>/secrets`,
@@ -47,8 +76,11 @@ except where noted:
   `${ASSISTANT_DATA_ROOT:-./data}/addons/<short-id>/<name>`;
   `scripts/test-addon-manifests.py` checks this, `validate` does not. A
   service that mounts `secrets` may not be an `mcp` service.
-  `volumes` lists the compose volume names that `addon.sh disable --purge`
-  removes.
+  `oneshot: true` (built-in only) marks a service that runs to completion:
+  `addon.sh enable` runs it with `up --exit-code-from` before the other
+  services, and it may not have `when` or be the `mcp` target. `volumes` is the old place for
+  compose volume names; use `data.volumes`. Both are accepted in 0.3.13, and
+  a manifest with both is refused.
 - `settings`: each setting has a `type` (`string`, `int`, `bool`, `choice`,
   `port`, `secret`, `url`, `path`, `list`, `date`), an optional `default`,
   `label` and `optional`. A setting with neither `default` nor
@@ -60,11 +92,32 @@ except where noted:
 - `instances`: `{name, settings}`, a settings schema stored once per instance
   slug. `flag` is not allowed inside it, and the name and default rules above
   apply. `addon.sh enable` also needs at least one instance, and reports
-  `instances:<name>` in `missing` until there is one.
+  `instances:<name>` in `missing` until there is one, unless
+  `instances.optional` is `true` (built-in only). A `secret` instance setting
+  may set `transient: true`: `addon.sh connect` passes the value to the
+  `instances.connect` hook and never stores it. It needs that hook.
+  `instances.connect` and `instances.disconnect` are hooks (below), and
+  `instances.errors` lists the error names those hooks may report besides
+  the shared ones.
+  Twenty sets `optional`, so it can be enabled before any workspace is connected.
 - `commands`: `{<name>: {service, instance, argv}}`. `addon.sh run` runs
   `argv` in the named service, and appends `--account <slug>` when `instance`
   is true. An add-on that reads personal data may not run a command in an MCP
   service.
+- `hooks`: `init`, `upgrade`, `backup` and `restore`, each
+  `{"script": [argv]}` (`scripts/<name>.sh` plus arguments, run on the host)
+  or `{"command": <name>}` (an entry of `commands` with `instance: false`).
+  `addon.sh` runs `init` on `enable`, and `connect` and `disconnect` from
+  `instances`; it doesn't run the others yet.
+- `onToggle`: `{"recreate": [<compose service>], "script"?: [argv]}`, built-in
+  only. `enable` and `disable` recreate those services, then run the script,
+  when the add-on's flag changes value. No built-in manifest uses it.
+- `data`: `{"paths": [{"env", "default"}], "volumes": [<compose volume>]}`,
+  built-in only. `addon.sh remove --delete-data` deletes them. A path's
+  `default` is `./data/...` and must be a bind-mount source in
+  `docker-compose.yml`, or its parent.
+- `backup`: `{"secrets": [<env name>], "recommended": [<env name>]}`, listed
+  by `addon.sh list --json` for callers that offer a backup.
 
 `scripts/addon.sh` reads these; see [docs/extending.md](../docs/extending.md#add-ons-scriptsaddonsh).
 
@@ -82,11 +135,16 @@ that reads mail or messages may not send, run in cron or register on
 `api-server`), and checks each one against `docker-compose.yml` and
 `sync-profiles.sh`.
 
-The bootstraps keep an add-on's MCP server out of cron jobs unless its
-manifest sets `permissions.cron` to `true`, using the same
+The bootstraps fence add-on MCP servers out of cron jobs with the same
 `platform_toolsets.cron` list that keeps mail and messages out (see
-[docs/email.md](../docs/email.md)). A missing field counts as `false`. A
-manifest that fails validation is still fenced by its `mcp.name`. If
+[docs/email.md](../docs/email.md)). `permissions.cron` decides what stays in
+cron: `true` keeps every entry, `mcp.instances` entries included; `"ro"`
+keeps the `ro` service of a `{ro, rw}` service map and fences the `rw` one,
+and keeps `mcp.instances` entries, which then carry the key of the profile
+the job runs on; `false` or a missing field fences them all. Twenty sets
+`true`, so a cron job on the default profile gets a write workspace's
+read/write key. A manifest that fails validation is still fenced by its
+`mcp.name` and by the name of each stored instance. If
 `addon_manifest.py` can't be loaded, the list written on the last run is
 kept. `sh scripts/test-addon-cron-fence.sh` runs the fence in the Hermes
 image.

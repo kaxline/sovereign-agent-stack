@@ -137,6 +137,229 @@ describe('ActualConnection sync-if-stale', () => {
   });
 });
 
+/** An error shaped like the ones `api.sync()` throws: a generic message plus a `code` (seen live on 26.11.0). */
+function syncError(code: string): Error {
+  return Object.assign(new Error('We had an unknown problem opening "budget-1".'), { code });
+}
+
+describe('ActualConnection sync failure on an ended session', () => {
+  beforeEach(() => {
+    resetActualConnectionForTests();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    vi.mocked(api.init).mockResolvedValue(undefined as never);
+    vi.mocked(api.getBudgets).mockResolvedValue([{ id: 'budget-1', cloudFileId: 'cloud-1' }] as never);
+    vi.mocked(api.downloadBudget).mockResolvedValue(undefined as never);
+    vi.mocked(api.sync).mockResolvedValue(undefined as never);
+    vi.mocked(api.shutdown).mockResolvedValue(undefined as never);
+    process.env.ACTUAL_SERVER_URL = 'https://example.invalid';
+    process.env.ACTUAL_PASSWORD = 'secret';
+    process.env.ACTUAL_SYNC_TTL_MS = '0';
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    delete process.env.ACTUAL_SYNC_TTL_MS;
+    resetActualConnectionForTests();
+  });
+
+  it('fails the call on token-expired, skips the operation, and re-inits on the next call', async () => {
+    const conn = getActualConnection();
+    await conn.ensureReady();
+    vi.advanceTimersByTime(1);
+    vi.mocked(api.sync).mockRejectedValueOnce(syncError('token-expired'));
+    const op = vi.fn().mockResolvedValue('written');
+
+    await expect(conn.run(op)).rejects.toThrow(
+      'Actual sign-in failed (token-expired). If it keeps failing, ' +
+        'reconnect it with make budget-remove and make budget-init (local server) ' +
+        'or make budget-add URL=<server> FORCE=1 (remote server).'
+    );
+    expect(op).not.toHaveBeenCalled();
+    expect(api.shutdown).toHaveBeenCalledTimes(1);
+
+    // The next call starts a fresh init instead of answering from the closed copy, and an
+    // init that fails the same way keeps the same message.
+    vi.mocked(api.init).mockRejectedValueOnce(
+      Object.assign(new Error('Authentication failed: invalid or expired session token'), { code: 'token-expired' })
+    );
+    await expect(conn.run(op)).rejects.toThrow('Actual sign-in failed (token-expired). If it keeps failing');
+    expect(api.init).toHaveBeenCalledTimes(2);
+    expect(op).not.toHaveBeenCalled();
+  });
+
+  it('fails the call on file-access-not-allowed', async () => {
+    const conn = getActualConnection();
+    await conn.ensureReady();
+    vi.advanceTimersByTime(1);
+    vi.mocked(api.sync).mockRejectedValueOnce(syncError('file-access-not-allowed'));
+    const op = vi.fn().mockResolvedValue('written');
+
+    await expect(conn.run(op)).rejects.toThrow(
+      'Access to this budget was removed (file-access-not-allowed); its owner or an admin has to restore it.'
+    );
+    expect(op).not.toHaveBeenCalled();
+    expect(api.shutdown).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['invalid-password', 'unauthorized', 'token-not-found'])('fails the call on %s', async (code) => {
+    const conn = getActualConnection();
+    await conn.ensureReady();
+    vi.advanceTimersByTime(1);
+    vi.mocked(api.sync).mockRejectedValueOnce(syncError(code));
+    await expect(conn.ensureReady()).rejects.toThrow(`Actual sign-in failed (${code})`);
+  });
+
+  it('fails the call on file-not-found (budget deleted on the server)', async () => {
+    const conn = getActualConnection();
+    await conn.ensureReady();
+    vi.advanceTimersByTime(1);
+    vi.mocked(api.sync).mockRejectedValueOnce(syncError('file-not-found'));
+    const op = vi.fn();
+
+    await expect(conn.run(op)).rejects.toThrow(
+      'This budget was deleted on the server (file-not-found); reconnect it with make budget-remove and ' +
+        'make budget-init (local server) or make budget-add URL=<server> FORCE=1 (remote server) with another budget.'
+    );
+    expect(op).not.toHaveBeenCalled();
+    expect(api.shutdown).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['file-needs-upload', 'file-has-reset', 'file-has-new-key', 'file-key-mismatch', 'file-old-version'])(
+    'fails the call on %s',
+    async (code) => {
+      const conn = getActualConnection();
+      await conn.ensureReady();
+      vi.advanceTimersByTime(1);
+      vi.mocked(api.sync).mockRejectedValueOnce(syncError(code));
+      const op = vi.fn();
+
+      await expect(conn.run(op)).rejects.toThrow(
+        `The budget changed on the server (${code}); reconnect it with make budget-remove and make budget-init`
+      );
+      expect(op).not.toHaveBeenCalled();
+      expect(api.shutdown).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  it('uses ACTUAL_RECONNECT_HINT in place of the default hint', async () => {
+    process.env.ACTUAL_RECONNECT_HINT = 'run budget.sh connect --slug home --force';
+    try {
+      const conn = getActualConnection();
+      await conn.ensureReady();
+      vi.advanceTimersByTime(1);
+      vi.mocked(api.sync).mockRejectedValueOnce(syncError('file-has-reset'));
+      await expect(conn.ensureReady()).rejects.toThrow(
+        /^The budget changed on the server \(file-has-reset\); run budget\.sh connect --slug home --force\.$/
+      );
+    } finally {
+      delete process.env.ACTUAL_RECONNECT_HINT;
+    }
+  });
+
+  it('wraps an init that cannot find the budget in a stable message', async () => {
+    vi.mocked(api.downloadBudget).mockRejectedValue(
+      Object.assign(new Error('Budget "cloud-1" not found. Check the sync id.'), { code: 'budget-not-found' })
+    );
+    const conn = getActualConnection();
+    const expected = "This budget isn't on the server or this sign-in can't open it (budget-not-found);";
+    await expect(conn.ensureReady()).rejects.toThrow(expected);
+    await expect(conn.ensureReady()).rejects.toThrow(expected);
+    expect(api.init).toHaveBeenCalledTimes(2);
+  });
+
+  it('leaves an init error with another code unwrapped', async () => {
+    vi.mocked(api.init).mockRejectedValueOnce(
+      Object.assign(new Error('Authentication failed: server offline or unreachable'), { code: 'network-failure' })
+    );
+    await expect(getActualConnection().ensureReady()).rejects.toThrow(
+      'Authentication failed: server offline or unreachable'
+    );
+  });
+
+  it('queues a caller that arrives during the shutdown behind it', async () => {
+    const shutdown = deferred<void>();
+    const conn = getActualConnection();
+    await conn.ensureReady();
+    vi.advanceTimersByTime(1);
+    vi.mocked(api.sync).mockRejectedValueOnce(syncError('token-expired'));
+    vi.mocked(api.shutdown).mockReturnValueOnce(shutdown.promise as never);
+
+    const first = conn.run(vi.fn());
+    const firstSettled = first.catch((e: unknown) => e);
+    // Let the sync reject and closeAfterEndedSession() reach api.shutdown().
+    while (vi.mocked(api.shutdown).mock.calls.length === 0) await Promise.resolve();
+
+    const late = vi.fn().mockResolvedValue('fresh');
+    const second = conn.run(late);
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(api.init).toHaveBeenCalledTimes(1); // the fresh init waits for the shutdown
+    expect(late).not.toHaveBeenCalled();
+
+    shutdown.resolve();
+    expect(String(await firstSettled)).toContain('Actual sign-in failed (token-expired)');
+    await expect(second).resolves.toBe('fresh');
+    expect(api.init).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(api.shutdown).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(api.init).mock.invocationCallOrder[1]
+    );
+  });
+
+  it('shuts down once when drainAndClose() races the ended-session shutdown', async () => {
+    const shutdown = deferred<void>();
+    const conn = getActualConnection();
+    await conn.ensureReady();
+    vi.advanceTimersByTime(1);
+    vi.mocked(api.sync).mockRejectedValueOnce(syncError('token-expired'));
+    vi.mocked(api.shutdown).mockReturnValueOnce(shutdown.promise as never);
+
+    const call = conn.run(vi.fn()).catch((e: unknown) => e);
+    while (vi.mocked(api.shutdown).mock.calls.length === 0) await Promise.resolve();
+
+    const closed = conn.drainAndClose();
+    shutdown.resolve();
+    await closed;
+
+    expect(String(await call)).toContain('Actual sign-in failed (token-expired)');
+    expect(api.shutdown).toHaveBeenCalledTimes(1);
+    await expect(conn.run(vi.fn())).rejects.toThrow('ActualConnection is closed');
+  });
+
+  it('fails every caller sharing the failed sync and shuts down once', async () => {
+    const pending = deferred<void>();
+    const conn = getActualConnection();
+    await conn.ensureReady();
+    vi.advanceTimersByTime(1);
+    vi.mocked(api.sync).mockReturnValueOnce(pending.promise as never);
+    const a = conn.run(vi.fn());
+    const b = conn.run(vi.fn());
+    pending.reject(syncError('token-expired'));
+    await expect(a).rejects.toThrow('Actual sign-in failed (token-expired)');
+    await expect(b).rejects.toThrow('Actual sign-in failed (token-expired)');
+    expect(api.shutdown).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['network-failure', 'network', 'internal'])('keeps serving local data on %s', async (code) => {
+    const conn = getActualConnection();
+    await conn.ensureReady();
+    vi.advanceTimersByTime(1);
+    vi.mocked(api.sync).mockRejectedValueOnce(syncError(code));
+    const op = vi.fn().mockResolvedValue('local');
+
+    await expect(conn.run(op)).resolves.toBe('local');
+    expect(api.shutdown).not.toHaveBeenCalled();
+    expect(api.init).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not match on message text: an uncoded error that mentions a session keeps serving', async () => {
+    const conn = getActualConnection();
+    await conn.ensureReady();
+    vi.advanceTimersByTime(1);
+    vi.mocked(api.sync).mockRejectedValueOnce(new Error('token-expired'));
+    await expect(conn.ensureReady()).resolves.toBeUndefined();
+  });
+});
+
 describe('ActualConnection.run', () => {
   beforeEach(() => {
     resetActualConnectionForTests();

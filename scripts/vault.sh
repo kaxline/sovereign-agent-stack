@@ -2,8 +2,9 @@
 # Bitwarden add-on: the accounts the broker signs in to, local mode, access
 # requests and stack secrets. See docs/bitwarden.md.
 #
-# Test hook: VAULT_ACCOUNTS_DIR replaces compose/bitwarden/accounts (the folder
-# the broker mounts), so scripts/test-vault-sh.sh can run against a temp folder.
+# Test hooks: VAULT_ACCOUNTS_DIR replaces compose/bitwarden/accounts (the folder
+# the broker mounts) and VAULT_HERMES_DATA_DIR replaces data/hermes, so
+# scripts/test-vault-sh.sh can run against temp folders.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -15,6 +16,9 @@ source "${ROOT}/scripts/lib/data-root.sh"
 
 ENV_PATH="${ENV_FILE:-.env}"
 ACCOUNTS_DIR="${VAULT_ACCOUNTS_DIR:-${ROOT}/compose/bitwarden/accounts}"
+# Mounted at /opt/data in hermes (docker-compose.yml).
+HERMES_DATA_DIR="${VAULT_HERMES_DATA_DIR:-${ROOT}/data/hermes}"
+PLUGINS_MARKER=.addon-plugins-changed
 # The containers' user (compose/bitwarden-broker/Dockerfile).
 CONTAINER_UID=10001
 INIT_WAIT_SECONDS=600
@@ -58,11 +62,16 @@ Usage: scripts/vault.sh <command> [options]
   follow-hermes     Recreate the broker in hermes' current network namespace and
                     list the manual accounts to unlock (run after hermes is
                     recreated or restarted; make hermes-reload runs it)
+  reload-plugins    Ask the running gateway to reload its plugins for each
+                    profile whose add-on login backends a bootstrap changed
+                    (make up runs it through up-hook)
 
-Both are silent while BITWARDEN_ENABLED is off.
+pre-up and follow-hermes are silent while BITWARDEN_ENABLED is off.
+reload-plugins is silent while no profile is marked.
 After add or remove: make up. make doctor shows each account's state.
 
-Test hook: VAULT_ACCOUNTS_DIR replaces compose/bitwarden/accounts.
+Test hooks: VAULT_ACCOUNTS_DIR replaces compose/bitwarden/accounts and
+VAULT_HERMES_DATA_DIR replaces data/hermes.
 EOF
 }
 
@@ -883,8 +892,64 @@ cmd_follow_hermes() {
   note_locked_manual ""
 }
 
-# Run by make up after docker compose up. Silent while BITWARDEN_ENABLED is off.
+# The bootstraps leave $PLUGINS_MARKER in a profile's home when they change its
+# add-on login backends (bootstrap-api-profile.sh register_addon_vault_backends).
+# Turning the add-on on or off does not recreate hermes, so the running gateway
+# is asked to reload its plugins for each marked profile, through Hermes' own
+# reload-plugins control verb. Tools reach new sessions; open ones keep theirs.
+# A marker stays until a reload succeeds. With hermes stopped there is nothing
+# to reload: it loads the config when it starts, and the marker is cleared later.
+cmd_reload_plugins() {
+  local m found=""
+  for m in "$HERMES_DATA_DIR/$PLUGINS_MARKER" "$HERMES_DATA_DIR"/profiles/*/"$PLUGINS_MARKER"; do
+    [[ -e "$m" ]] && found=1
+  done
+  [[ -n "$found" ]] || return 0
+  command -v docker >/dev/null 2>&1 || return 0
+  docker compose ps --status running -q hermes 2>/dev/null | grep -q . || return 0
+  local result
+  if ! result="$(docker compose exec -T hermes /opt/hermes/.venv/bin/python - "$PLUGINS_MARKER" <<'PY' 2>&1
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, "/opt/hermes")
+from gateway.control_socket import reload_gateway_plugins
+
+marker = sys.argv[1]
+root = Path(os.environ.get("HERMES_HOME") or "/opt/data")
+homes = [root] + sorted(p for p in (root / "profiles").glob("*") if p.is_dir())
+for home in homes:
+    flag = home / marker
+    if not flag.exists():
+        continue
+    name = "default" if home == root else home.name
+    answer = reload_gateway_plugins(home)
+    if answer is None and home != root:  # a profile the multiplexer serves
+        answer = reload_gateway_plugins(root, profile_home=home)
+    if answer and answer.get("reloaded"):
+        flag.unlink()
+        print(f"ok\t{name}")
+    else:
+        print(f"fail\t{name}\t{(answer or {}).get('error') or 'no gateway answered'}")
+PY
+)"; then
+    log "Could not ask the gateway to reload its plugins; make restart applies the add-on change"
+    return 0
+  fi
+  local status name reason
+  while IFS=$'\t' read -r status name reason; do
+    case "$status" in
+      ok) log "Reloaded plugins for the ${name} profile" ;;
+      fail) log "The gateway did not reload plugins for ${name} (${reason}); make restart applies the add-on change" ;;
+    esac
+  done <<< "$result"
+}
+
+# Run by make up after docker compose up. The Bitwarden steps are silent while
+# BITWARDEN_ENABLED is off.
 cmd_up_hook() {
+  cmd_reload_plugins
   is_true "$(env_get BITWARDEN_ENABLED 0)" || return 0
   local f slugs="" slug entry
   for f in "$ACCOUNTS_DIR"/*.env; do
@@ -1127,6 +1192,7 @@ case "${1:-}" in
   up-hook) cmd_up_hook ;;
   pre-up) cmd_pre_up ;;
   follow-hermes) cmd_follow_hermes ;;
+  reload-plugins) cmd_reload_plugins ;;
   backup) shift; cmd_backup "$@" ;;
   restore) shift; cmd_restore "$@" ;;
   -h | --help | help) usage ;;

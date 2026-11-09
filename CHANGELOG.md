@@ -10,15 +10,100 @@ the stack under another app.
 
 ### Upgrade steps
 
-LightRAG's registration on the api-server and browser profiles is unchanged.
-One change can remove a key you added: a hand-added MCP key on the default
-profile (or on browser) at the GPT Researcher or Actual Budget URL is removed
-on the next bootstrap when that add-on is enabled, and the stack's own key
-(`gptr`, `actual`) stays. Point your key at a different URL, or use the
-stack's key. See "Other MCP keys at an add-on's URL are dropped" below.
+- The first `make up` recreates `hermes` once, because `BITWARDEN_ENABLED`
+  left its environment (see Changes). A caller that recreates `hermes`
+  itself runs `./scripts/vault.sh follow-hermes` afterwards, as for any
+  recreate.
+- Of the shipped manifests only Twenty's uses the new add-on manifest
+  fields (and LightRAG's, `mcp.unmanaged`); GPT Researcher, Actual and Bitwarden behave as before, apart from
+  the dropped keys at their URLs described next.
+- LightRAG's registration on the api-server and browser profiles is unchanged.
+  One change can remove a key you added: a hand-added MCP key on the default
+  profile (or on browser) at the GPT Researcher or Actual Budget URL is removed
+  on the next bootstrap when that add-on is enabled, and the stack's own key
+  (`gptr`, `actual`) stays. Point your key at a different URL, or use the
+  stack's key. See "Other MCP keys at an add-on's URL are dropped" below.
+- Before tagging, run `scripts/addon.sh enable gptr --json` and
+  `disable gptr --json` on a live stack. `addon.sh` calls
+  `scripts/vault.sh reload-plugins` from the Bitwarden change above.
+- Twenty's workspaces move to the add-on store:
+  1. `make up` (or `./scripts/crm.sh migrate`) imports any
+     `compose/twenty/workspaces/<slug>.env` file into `data/addons/twenty/` and
+     renames it `<slug>.env.migrated`. Values lose surrounding whitespace, and
+     of a repeated key the last line counts, as the old bootstrap read it. A
+     file with an invalid name, whitespace inside a key or a URL with
+     `user:password@` is skipped with a message and stays in place; fix it and
+     run `migrate` again. `make doctor` lists the files still waiting, and
+     `crm.sh init` refuses while one for its slug, or one on the local instance,
+     is left.
+     **Without `make`** (Boundary's start path, or a plain `docker compose
+     up`): run `./scripts/crm.sh ensure` (or `make ensure-local`) before
+     compose. It creates `data/addons/twenty/{instances,secrets}` (0700) and
+     runs the migration; until then Hermes registers no `crm-*` entry, and on
+     Linux Docker creates the missing directories owned by root. These compose
+     services gain bind mounts of the store: `hermes-api-bootstrap` and
+     `hermes-browser-bootstrap` mount `data/addons/twenty` read-only at
+     `/bootstrap/addon-data/twenty`, and `bitwarden-secrets-sync` mounts
+     `data/addons/twenty/secrets` at `/targets/twenty-keys`. If `ensure` warns
+     that it can't set the store to 0700, `chown` it to your user as the
+     warning says.
+  2. `make hermes-reload` (a bootstrap run) rewrites the profile `.env` lines:
+     `TWENTY_<SLUG>_KEY` becomes `CRM_<SLUG>_KEY`.
+  3. With Bitwarden's `twenty/<slug>/key-ro` and `key-rw` items, run
+     `make secrets-sync` after the migration; the items now update the files in
+     `data/addons/twenty/secrets/`, not the old workspace files.
 
 ### Changes
 
+- **Twenty CRM is a built-in add-on** (`addons/twenty/addon.json`). Boundary can
+  move Twenty onto `scripts/addon.sh`: instances are workspaces, with `url`,
+  `access`, `local` and two secret keys, and the manifest's connect and
+  disconnect hooks call `crm.sh connect` and `crm.sh disconnect`.
+  `TWENTY_MCP_ENABLED=1` now also puts `crm-mcp` in `COMPOSE_PROFILES`; the
+  profile selects no service. The manifest declares `permissions.cron: true`,
+  which is what the stack did before 0.3.13 too: cron jobs keep the `crm-*`
+  entries, and a job on the default profile uses a write workspace's
+  read/write key.
+- **Twenty can be enabled before any workspace exists.** The manifest's
+  `instances` block sets `optional: true`, so `addon.sh enable twenty` no
+  longer stops with `missing_settings` / `instances:workspace`. Its init hook
+  still migrates leftover `compose/twenty/workspaces/*.env` files.
+- **Twenty's hook error names** for Boundary: `crm.sh connect` ends with
+  `local_mismatch`, `local_off`, `missing_key` or `bad_value` (listed in
+  `instances.errors`), or with the shared names `bad_slug`, `login_refused`,
+  `no_access`, `timeout` and `server_unreachable`. `crm.sh init --json`
+  ends with `bad_slug`, `server_unreachable` or `command_failed`.
+- **`crm.sh add` and `remove` output:** the stdout lines name the store
+  file, `<data root>/addons/twenty/instances/<slug>.json` as an absolute
+  path, instead of `compose/twenty/workspaces/<slug>.env`; renaming a
+  leftover workspace file is reported on stderr. `add` now refuses a key with
+  whitespace, a quote, a backslash or a control character, and a URL with
+  `user:password@` before the host. Exit codes are unchanged.
+- **Workspaces moved out of `compose/twenty/workspaces/`** into the add-on
+  store `data/addons/twenty/` (`instances/<slug>.json`,
+  `secrets/<slug>.key_ro` and `.key_rw`). `crm.sh migrate` imports the old
+  files and renames them `.env.migrated`; `make ensure-local` and `crm.sh`
+  `init`, `add`, `remove`, `access`, `login-link` and `open` run it.
+  `crm.sh add`, `remove` and `access` write the store.
+  `compose/twenty/workspace.env.example` is the legacy format and only
+  documents what `migrate` reads.
+- **Profile `.env` key names changed:** the Hermes bootstrap stores each
+  workspace key as `CRM_<SLUG>_KEY`, not `TWENTY_<SLUG>_KEY`, and removes the
+  old lines. `config.yaml` references the new name.
+- **Bitwarden's Twenty key items write the store.** `twenty/<slug>/key-ro`
+  and `key-rw` replace the whole file `secrets/<slug>.key_ro` / `.key_rw`
+  under `data/addons/twenty/` instead of lines in a workspace file. A value
+  with whitespace or a control character is refused, and a missing file is
+  never created. The sync service mounts only that `secrets` folder.
+- **`make doctor` reads the store** for Twenty: workspaces, keys present per
+  access level (no values printed), and a warning for each workspace file not
+  yet migrated, with the reason when it cannot be.
+- **`TWENTY_MCP_TIMEOUT` and `TWENTY_MCP_CONNECT_TIMEOUT`** from `.env` now
+  reach both Hermes bootstrap services and set the timeouts of every `crm-*`
+  server.
+- **`mcp.instances` in manifests** (built-in add-ons): one `mcp_servers`
+  entry per stored instance, with the key picked by access. See
+  [addons/README.md](addons/README.md).
 - **LightRAG is a built-in add-on** (CR 0022 R2): `addons/lightrag/addon.json`
   replaces the hand-written registration in the api-server bootstrap. The
   entry key is still `lightrag`, with the same five read tools and pins, on
@@ -66,6 +151,82 @@ stack's key. See "Other MCP keys at an add-on's URL are dropped" below.
   settings schema for building a settings form. See
   [docs/extending.md](docs/extending.md#add-ons-scriptsaddonsh). Field
   names may change between patch releases while the stack is in 0.3.x.
+- **`scripts/addon.sh` lifecycle** (experimental). New subcommands
+  `connect <id> --instance <slug>`, `disconnect` and `remove <id>
+  --delete-data`, plus `disable --purge`, `enable --reinit` and `--json` on
+  `enable`, `disable`, `connect`, `disconnect` and `remove`. With `--json`,
+  stdout is one JSON object per line (`pull`, `setup`, then one `done` or
+  `error`); `list --json [--sizes]` adds per-service image, memory in bytes
+  and download size. A lock (`data/addons/.lock`) makes a second change fail
+  with `busy`, and a failed `enable` restores the flags. `remove` keeps
+  paths outside `./data` and `ASSISTANT_DATA_ROOT`, stack data and paths
+  behind a symlink, and reports each as `kept`. `disable --purge` does the
+  same work as `remove --delete-data` after disabling: it removes the
+  containers, the `data.volumes` volumes and the `data.paths` directories,
+  with the same `kept` rules. A `--purge` failure in step `delete` is
+  reported as `compose_failed` (exit 1) when `docker compose rm` or `docker
+  volume rm` fails, and as `command_failed` (exit 4) when deleting a path
+  fails. Every
+  `--json` run ends with exactly one `done` or `error` line, including an
+  invalid data root (`command_failed`, exit 1) and an unexpected exit
+  (`command_failed`, exit 4, after the rollback). A hook's relayed lines are
+  limited to `setup` and `pull`. The `init` hook's `mcp` names join
+  `enable`'s `done.mcp`, and a hook's `done` `message` (from `init`,
+  `connect` or `disconnect`) is copied to the run's `done` line. A locked run deletes any
+  `data/addons/.staging.*` file a killed `connect` left. `addon.sh` does not
+  wait for MCP servers: Boundary checks the names in the `done` line's `mcp`
+  in `mcp.servers.status`. See
+  [docs/extending.md](docs/extending.md#add-ons-scriptsaddonsh).
+- **Add-on lifecycle manifest fields** (experimental): `services.<name>.oneshot`,
+  `hooks`, `instances.connect`, `instances.disconnect`, `instances.errors`,
+  `instances.optional`, `transient` on a secret instance setting (the value
+  goes to the connect hook and is never stored), `onToggle`, `data` and
+  `backup`. `services.<name>.volumes` becomes `data.volumes`; both are
+  accepted in this patch and the old form is refused from the next.
+- **Add-on reload.** `addon.sh` reloads Hermes by running both bootstraps
+  with `HERMES_BOOTSTRAP_FORCE=1` and then `scripts/vault.sh reload-plugins`.
+  It no longer recreates `hermes`, so plugin changes such as Bitwarden's tools
+  reach new sessions only. This needs the `reload-plugins` command from
+  `fix/bwbroker-always-installed`.
+- **Bitwarden's `backup` and `restore` hooks** moved from plain strings to
+  the `script` form (`{"script": ["scripts/vault.sh", "backup"]}`).
+- Boundary can move Actual Budget onto `addon.sh` once its manifest has
+  `hooks.init`, `instances.connect` and `data`.
+
+- **Turning Bitwarden on or off no longer recreates `hermes`.** The
+  `bwbroker` plugin is installed into `/opt/hermes/plugins/bwbroker` on
+  every start, and `BITWARDEN_ENABLED` is no longer in the `hermes`
+  service's environment; it still reaches both bootstraps, which turn the
+  plugin on or off per profile as before. When a bootstrap changes a
+  profile's add-on login backends it leaves `.addon-plugins-changed` in that
+  profile's home. The new `./scripts/vault.sh reload-plugins`, which
+  `make up` runs, sends the running gateway Hermes' `reload-plugins`
+  control verb for each marked profile and clears the marker once the
+  gateway answers. New sessions get or lose the Bitwarden tools; open
+  sessions keep theirs. A caller that runs the bootstraps without `make up`
+  runs `./scripts/vault.sh reload-plugins` after them. When no gateway
+  answers, the marker stays and `make restart` applies the change.
+
+### Fixes
+
+- **Actual Budget: ended sessions fail the call.** After the Actual server
+  password changed or the MCP server's session ended (deleted, or the user
+  disabled), `actual-mcp-rw` and `actual-mcp-ro` kept answering from their
+  loaded copy: reads were stale, and writes were reported as saved but never
+  reached the server. Now the sync before each call notices this, the call
+  fails, and nothing is written locally. The next call signs in again, so a
+  password install whose session merely expired recovers on its own; it keeps
+  failing only when the password changed, with `Actual sign-in failed
+  (<reason>). If it keeps failing, reconnect it with make budget-remove and
+  make budget-init (local server) or make budget-add URL=<server> FORCE=1
+  (remote server).` Removed access, a budget deleted on the server, and a
+  budget reset in the Actual web app, re-keyed or otherwise changed on the
+  server fail the same way, each with its own message. An unreachable server
+  still answers from the loaded copy, as before. Verified against a throwaway
+  `actual-server` 26.11.0 (deleted session and password change), not on a
+  live stack. A write in the few seconds between a good sync and the
+  background push can still miss the server if the session ends in that
+  window; it stays in the local cache.
 
 ## v0.3.12 — 2026-11-09
 

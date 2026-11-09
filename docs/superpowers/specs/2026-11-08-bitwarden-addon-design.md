@@ -443,8 +443,10 @@ Hermes v0.22.7 accepts a login backend only from a bundled plugin or a catalog i
 verified or official (`login_backend_provenance_error`), and no config key relaxes that; a copy under
 `$HERMES_HOME/plugins` loads its tools and has its backend refused. So the cont-init script
 `14-install-bwbroker-plugin.sh` copies the plugin and the backend module into
-`/opt/hermes/plugins/bwbroker` while `BITWARDEN_ENABLED` is on and removes it otherwise, as the stack
-already patches `/opt/hermes` for its overlays. The bootstraps then, per profile from the manifest's
+`/opt/hermes/plugins/bwbroker` on every start, as the stack already patches `/opt/hermes` for its
+overlays. The flag is kept out of the `hermes` service's environment, so turning the add-on on or off
+does not recreate `hermes`; `make up` asks the running gateway to reload its plugins instead
+(`scripts/vault.sh reload-plugins`). The bootstraps then, per profile from the manifest's
 `vault-plan`, add `bwbroker` to `plugins.enabled` and set `vault.bwbroker.enabled: true` on
 `default` and `browser`, remove both elsewhere or when the flag is off, and delete any copy of the
 plugin in a profile's own plugins dir. While the add-on is on they write

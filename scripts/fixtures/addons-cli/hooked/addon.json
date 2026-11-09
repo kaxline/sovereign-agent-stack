@@ -1,0 +1,69 @@
+{
+  "manifestVersion": 1,
+  "id": "io.example.stack.hooked",
+  "version": "2.0.0",
+  "title": "Hooked",
+  "tagline": "Test add-on with a script init hook",
+  "description": "Not a real add-on. scripts/test-addon-cli.sh enables it to run a script init hook, and connects and disconnects its instances through script hooks, against stub docker and make.",
+  "publisher": {
+    "name": "sovereign-agent-stack",
+    "url": "https://github.com/kaxline/sovereign-agent-stack"
+  },
+  "minStackVersion": "0.3.12",
+  "builtin": {
+    "flag": "HOOKED_ADDON_ENABLED",
+    "profile": "hooked",
+    "seed": false
+  },
+  "services": {
+    "worker": {
+      "compose": "hooked-worker"
+    }
+  },
+  "hooks": {
+    "init": {
+      "script": [
+        "scripts/fixture-init.sh",
+        "budget"
+      ]
+    }
+  },
+  "permissions": {
+    "reads": [],
+    "writes": [],
+    "sends": false,
+    "egress": [],
+    "exposesToAgent": false,
+    "cron": false
+  },
+  "instances": {
+    "name": "account",
+    "settings": {
+      "host": {
+        "type": "string",
+        "label": "Host",
+        "optional": true
+      },
+      "password": {
+        "type": "secret",
+        "label": "Password",
+        "optional": true,
+        "transient": true
+      }
+    },
+    "errors": [
+      "encryption_password"
+    ],
+    "connect": {
+      "script": [
+        "scripts/fixture-connect.sh"
+      ]
+    },
+    "disconnect": {
+      "script": [
+        "scripts/fixture-connect.sh",
+        "disconnect"
+      ]
+    }
+  }
+}

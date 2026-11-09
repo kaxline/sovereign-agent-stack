@@ -64,7 +64,17 @@
     }
   },
   "hooks": {
-    "backup": "scripts/vault.sh backup",
-    "restore": "scripts/vault.sh restore"
+    "backup": {
+      "script": [
+        "scripts/vault.sh",
+        "backup"
+      ]
+    },
+    "restore": {
+      "script": [
+        "scripts/vault.sh",
+        "restore"
+      ]
+    }
   }
 }

@@ -15,6 +15,7 @@ trap 'chmod -R u+rwx "$tmp" 2>/dev/null; rm -rf "$tmp"' EXIT
 
 export ENV_FILE="$tmp/.env"
 export VAULT_ACCOUNTS_DIR="$tmp/accounts"
+export VAULT_HERMES_DATA_DIR="$tmp/hermes-data"
 export BITWARDEN_HOST_DATA_DIR="$tmp/data"
 export VAULT_BROKER_WAIT=0
 export STUB="$tmp/stub"
@@ -47,6 +48,8 @@ esac
 case " $* " in
   *" info "*) exit 0 ;;
   *" ps "*bitwarden-broker*) [ -f "$STUB/broker-running" ] && echo cid-broker; exit 0 ;;
+  *" ps "*" hermes "*) [ -f "$STUB/hermes-running" ] && echo cid-hermes; exit 0 ;;
+  *" exec -T hermes "*) cat > /dev/null; cat "$STUB/reload-out" 2>/dev/null; exit "$(rc_of reload)" ;;
   *" ps "*) exit 0 ;;
   *" up "*)
     if [ -d "$STUB_DATA/local/tls/server" ] && [ -d "$STUB_DATA/local/vaultwarden" ] \
@@ -365,6 +368,32 @@ logged "run --rm -T bitwarden-secrets-sync" || fail "up-hook runs secrets-sync w
 grep -A5 -E '^up:' "${ROOT}/Makefile" | grep -q 'vault.sh up-hook' || fail "make up calls vault.sh up-hook"
 grep -A5 -E '^up:' "${ROOT}/Makefile" | awk '/vault.sh pre-up/ { p = NR } /docker compose up -d/ { u = NR } END { exit !(p && u && p < u) }' \
   || fail "make up runs vault.sh pre-up before docker compose up"
+
+# --- reload-plugins: the running gateway after a bootstrap changed a profile ---
+mkdir -p "$VAULT_HERMES_DATA_DIR/profiles/browser" "$VAULT_HERMES_DATA_DIR/profiles/api-server"
+reset_stub
+printf 'BITWARDEN_ENABLED=0\n' > "$ENV_FILE"
+run reload-plugins || fail "reload-plugins with no marker"
+{ [ ! -s "$out" ] && [ ! -s "$STUB/log" ]; } || fail "reload-plugins runs no docker and prints nothing with no marker"
+touch "$VAULT_HERMES_DATA_DIR/profiles/browser/.addon-plugins-changed"
+run reload-plugins || fail "reload-plugins with hermes stopped"
+logged "exec" && fail "reload-plugins execs into a stopped hermes"
+[ ! -s "$out" ] || fail "reload-plugins is silent with hermes stopped"
+touch "$STUB/hermes-running"
+printf 'ok\tbrowser\n' > "$STUB/reload-out"
+run up-hook || fail "up-hook with a marker and the flag off"
+logged "exec -T hermes /opt/hermes/.venv/bin/python - .addon-plugins-changed" \
+  || fail "up-hook reloads plugins while BITWARDEN_ENABLED=0 (turning the add-on off)"
+said "Reloaded plugins for the browser profile" || fail "reload-plugins reports the reloaded profile"
+printf 'ok\tdefault\nfail\tbrowser\thome is not served by this gateway\n' > "$STUB/reload-out"
+run reload-plugins || fail "reload-plugins with a refusal"
+said "Reloaded plugins for the default profile" || fail "reload-plugins reports each profile"
+said "The gateway did not reload plugins for browser (home is not served by this gateway); make restart" \
+  || fail "reload-plugins names the refusal and the fallback"
+echo 3 > "$STUB/rc.reload"
+run reload-plugins || fail "reload-plugins must not fail make up when the exec fails"
+said "Could not ask the gateway to reload its plugins; make restart" || fail "reload-plugins exec failure message"
+rm -f "$VAULT_HERMES_DATA_DIR/profiles/browser/.addon-plugins-changed"
 
 # --- pre-up: the accounts folder before docker compose up ----------------------
 reset_stub

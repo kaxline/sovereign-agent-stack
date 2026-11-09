@@ -1,0 +1,56 @@
+{
+  "name": "cc",
+  "networks": {
+    "default": {
+      "name": "cc_default",
+      "ipam": {}
+    }
+  },
+  "services": {
+    "fixture-extra": {
+      "profiles": [
+        "fixture-extra"
+      ],
+      "command": null,
+      "entrypoint": null,
+      "image": "busybox:1.36",
+      "mem_limit": "536870912",
+      "networks": {
+        "default": null
+      }
+    },
+    "fixture-seed": {
+      "profiles": [
+        "fixture"
+      ],
+      "command": null,
+      "entrypoint": null,
+      "image": "busybox:1.36",
+      "networks": {
+        "default": null
+      }
+    },
+    "fixture-worker": {
+      "profiles": [
+        "fixture"
+      ],
+      "deploy": {
+        "resources": {
+          "limits": {
+            "memory": "1073741824"
+          },
+          "reservations": {
+            "memory": "268435456"
+          }
+        },
+        "placement": {}
+      },
+      "command": null,
+      "entrypoint": null,
+      "image": "busybox:1.36",
+      "networks": {
+        "default": null
+      }
+    }
+  }
+}

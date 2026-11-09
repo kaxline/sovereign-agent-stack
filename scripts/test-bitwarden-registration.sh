@@ -30,14 +30,13 @@ grep -q '^register_addon_vault_backends() {' "$BOOTSTRAP" \
 grep -q 'addon_manifest.cron_fence_toolsets' "$BOOTSTRAP" \
   || fail "the cron fence must use addon_manifest.cron_fence_toolsets"
 # shellcheck disable=SC2016 # the literal compose line
-[ "$(grep -cF -- '- BITWARDEN_ENABLED=${BITWARDEN_ENABLED:-0}' "$COMPOSE")" = 3 ] \
-  || fail "hermes and both hermes-*-bootstrap services must receive BITWARDEN_ENABLED"
+[ "$(grep -cF -- '- BITWARDEN_ENABLED=${BITWARDEN_ENABLED:-0}' "$COMPOSE")" = 2 ] \
+  || fail "both hermes-*-bootstrap services, and nothing else, must receive BITWARDEN_ENABLED"
 hermes_block="$(awk '/^  hermes:$/ {on=1; next} on && /^  [a-z0-9-]+:$/ {exit} on' "$COMPOSE")"
-# shellcheck disable=SC2016 # the literal compose line
-printf '%s\n' "$hermes_block" | grep -qF -- '- BITWARDEN_ENABLED=${BITWARDEN_ENABLED:-0}' \
-  || fail "hermes must receive BITWARDEN_ENABLED for the plugin install"
-head -1 "$INSTALL" | grep -qx '#!/command/with-contenv sh' \
-  || fail "the install step must run with-contenv to see BITWARDEN_ENABLED"
+# The flag stays out of hermes' environment, so turning the add-on on or off
+# does not make compose recreate hermes.
+! printf '%s\n' "$hermes_block" | grep -qF -- '- BITWARDEN_ENABLED=' \
+  || fail "hermes must not receive BITWARDEN_ENABLED (flipping it would recreate hermes)"
 for mount in \
   './compose/hermes/plugins/bwbroker:/bootstrap/plugins/bwbroker:ro' \
   './compose/hermes/bitwarden_broker_backend.py:/bootstrap/bitwarden_broker_backend.py:ro' \
@@ -121,6 +120,7 @@ log() { printf 'log: %s\n' "$*"; }
 HERMES_HOME=/h
 ADDONS_DIR=/w/addons
 ADDON_MANIFEST_PY=/bootstrap/addon_manifest.py
+ADDON_DATA_DIR=/w/addon-data
 . /w/funcs.sh
 run_all() {
   for p in "" browser api-server; do
@@ -151,11 +151,10 @@ run_all
 [ "$(tree)" = "$first" ] && echo "on-idempotent"
 
 # The hermes container's install step, then the plugin as Hermes loads it.
-mkdir -p /opt/hermes/plugins/bwbroker && touch /opt/hermes/plugins/bwbroker/plugin.yaml
+mkdir -p /opt/hermes/plugins/bwbroker && touch /opt/hermes/plugins/bwbroker/stale
 BITWARDEN_ENABLED=0 sh /etc/cont-init.d/14-install-bwbroker-plugin
-[ -e /opt/hermes/plugins/bwbroker ] || echo "bundled-absent-flag-off"
-BITWARDEN_ENABLED=1 sh /etc/cont-init.d/14-install-bwbroker-plugin
-[ -f /opt/hermes/plugins/bwbroker/bitwarden_broker_backend.py ] && echo "bundled-installed"
+[ -f /opt/hermes/plugins/bwbroker/bitwarden_broker_backend.py ] && echo "bundled-installed-flag-off"
+[ -e /opt/hermes/plugins/bwbroker/stale ] || echo "bundled-replaced"
 for home in /h /h/profiles/browser /h/profiles/api-server; do
   HERMES_HOME="$home" python3 /w/runtime.py "$home"
 done
@@ -168,6 +167,13 @@ HERMES_HOME=/h/profiles/browser python3 /w/backend.py
 BITWARDEN_ENABLED=0
 run_all
 python3 /w/profile_config.py off-again
+# The plugin stays installed; with the flag off no profile loads it.
+for home in /h /h/profiles/browser; do
+  HERMES_HOME="$home" python3 /w/runtime.py "off:$home"
+done
+# A running process picks the plugin up on a forced rediscovery, as the
+# gateway's reload-plugins control verb runs, without a restart.
+HERMES_HOME=/h/profiles/browser python3 /w/reload.py
 EOF
 
 cat > "$work/profile_config.py" <<'PY'
@@ -217,6 +223,39 @@ print(f"rt:{label}:backends={','.join(backends)}")
 print(f"rt:{label}:tools={','.join(tools)}")
 print(f"rt:{label}:cron_has_bitwarden={'bitwarden' in _get_platform_tools(cfg, 'cron')}")
 print(f"rt:{label}:cli_has_bitwarden={'bitwarden' in _get_platform_tools(cfg, 'cli')}")
+PY
+
+cat > "$work/reload.py" <<'PY'
+"""One process: plugins discovered with the add-on off, then turned on and force-rediscovered."""
+import logging
+import os
+import sys
+
+logging.disable(logging.WARNING)
+sys.path.insert(0, "/opt/hermes")
+import hermes_yaml as yaml
+from hermes_cli.plugins import discover_plugins
+from tools.registry import registry
+from agent.vault_backends.base import enabled_backends
+
+
+def report(phase):
+    backends = ",".join(sorted(b.name for b in enabled_backends()))
+    entry = registry.get_entry("bitwarden_request_access")
+    print(f"reload:{phase}:backends={backends}")
+    print(f"reload:{phase}:tool={entry.toolset if entry else 'none'}")
+
+
+discover_plugins()
+report("before")
+path = os.path.join(os.environ["HERMES_HOME"], "config.yaml")
+cfg = yaml.safe_load(open(path)) or {}
+cfg.setdefault("plugins", {}).setdefault("enabled", []).append("bwbroker")
+cfg.setdefault("vault", {})["bwbroker"] = {"enabled": True}
+with open(path, "w") as fh:
+    yaml.safe_dump(cfg, fh)
+discover_plugins(force=True)
+report("after")
 PY
 
 cat > "$work/backend.py" <<'PY'
@@ -417,8 +456,8 @@ expect 'on:default:onepassword=False' "other vault keys are kept"
 expect 'on:default:cron=hermes-cron,searxng' "the bitwarden toolset is taken out of a hand-written cron list"
 expect 'on:browser:cron=' "no cron list is pinned for the plugin alone"
 expect 'on-idempotent' "a second run changes nothing"
-expect 'bundled-absent-flag-off' "the install step removes the plugin while the flag is off"
-expect 'bundled-installed' "the install step puts the plugin in Hermes's bundled dir while the flag is on"
+expect 'bundled-installed-flag-off' "the install step puts the plugin in Hermes's bundled dir with the flag off"
+expect 'bundled-replaced' "the install step replaces an earlier copy"
 expect "ok: a cron job's delegated child lists nothing" "the delegated-child check ran"
 tools_on='bitwarden_request_access@bitwarden,bitwarden_release_access@bitwarden'
 for home in /h /h/profiles/browser; do
@@ -440,6 +479,14 @@ expect 'off-again:default:plugins=disk-cleanup' "turning the flag off keeps defa
 for p in default browser; do
   expect "off-again:$p:bwbroker=None" "turning the flag off removes vault.bwbroker on $p"
   expect "off-again:$p:known_cron=" "turning the flag off removes the cron entry on $p"
+done
+expect 'reload:before:backends=local' "a process started with the add-on off has no bwbroker backend"
+expect 'reload:after:backends=bwbroker,local' "a forced rediscovery loads the bwbroker backend without a restart"
+expect 'reload:after:tool=bitwarden' "a forced rediscovery registers the Bitwarden tools"
+for home in /h /h/profiles/browser; do
+  expect "rt:off:$home:backends=local" "$home loads no bwbroker backend with the flag off"
+  expect "rt:off:$home:tools=bitwarden_request_access@none,bitwarden_release_access@none" \
+    "$home registers no Bitwarden tools with the flag off"
 done
 echo "ok: image ($IMAGE)"
 echo "ok"

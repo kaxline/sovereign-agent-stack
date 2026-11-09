@@ -29,16 +29,17 @@
         "secrets": "ro",
         "config": "ro",
         "instances": "ro"
-      },
-      "volumes": [
-        "fixture_cache"
-      ]
+      }
     },
     "extra": {
       "compose": "fixture-extra",
       "when": {
         "gate": "FIXTURE_EXTRA_ENABLED"
       }
+    },
+    "seed": {
+      "compose": "fixture-seed",
+      "oneshot": true
     }
   },
   "settings": {
@@ -86,7 +87,30 @@
         "fixture-status",
         "two words"
       ]
+    },
+    "seed-init": {
+      "service": "worker",
+      "instance": false,
+      "argv": [
+        "fixture-seed-init"
+      ]
     }
+  },
+  "hooks": {
+    "init": {
+      "command": "seed-init"
+    }
+  },
+  "data": {
+    "paths": [
+      {
+        "env": "FIXTURE_DATA_DIR",
+        "default": "./data/fixture"
+      }
+    ],
+    "volumes": [
+      "fixture_cache"
+    ]
   },
   "permissions": {
     "reads": [],

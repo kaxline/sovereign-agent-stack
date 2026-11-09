@@ -19,6 +19,20 @@ twice: `actual-mcp-rw` with `--sse --enable-write` and `actual-mcp-ro` with `--s
   `npm install --package-lock-only --ignore-scripts` in `node:24-alpine` (node 24.22.2, npm 11.19.1).
 - `Dockerfile`: the release stage creates `/data` owned by `node` and switches to `USER node`.
   Upstream runs as root. `/data` is the budget cache (`ACTUAL_DATA_DIR`).
+- `src/integrations/actual/connection.ts`: `syncIfStale()` no longer answers from the loaded copy
+  when a sync shows the copy can't be kept in step with the server. When `api.sync()` throws
+  with `code` `token-expired`, `token-not-found`, `unauthorized` or `invalid-password` (session
+  ended), `file-access-not-allowed` (access removed), `file-not-found` (budget deleted) or
+  `file-needs-upload`, `file-has-reset`, `file-has-new-key`, `file-key-mismatch`,
+  `file-old-version` (budget reset, re-keyed or otherwise changed on the server), it
+  shuts the API down, marks the connection failed and fails the call with a message for that
+  group; the next call re-runs init. An init that fails with one of those codes, or with
+  `budget-not-found`, gets the same message. The reconnect advice in the messages comes from
+  `ACTUAL_RECONNECT_HINT`, defaulting to the single-budget commands. Other sync errors, network
+  ones included, are logged and the call continues with local data, as upstream does. Tests in
+  `connection.test.ts` and `actual-api.test.ts`. Upstream logs and continues on every sync error,
+  so after a password change or a deleted session, writes were reported as done and stayed in
+  the local cache.
 - `actual-admin.mjs` (local addition, not from upstream): the `check`, `create` and `list` commands
   `scripts/budget.sh` runs with `--entrypoint node`. The Dockerfile copies it to
   `/opt/actual-admin.mjs`; it loads `@actual-app/api` from `/app/node_modules`.
@@ -26,7 +40,7 @@ twice: `actual-mcp-rw` with `--sse --enable-write` and `actual-mcp-ro` with `--s
   `vitest.e2e.config.ts`, `AGENTS.md`, `CLAUDE.md`, `CHANGELOG.md`, `cicd.md`,
   `release-please-config.json`, `.release-please-manifest.json`, `renovate.json`.
 
-`src/` is unchanged. Upstream commit `0c73b0d` changed `run-bank-sync` to report the ids
+Apart from `connection.ts` above, `src/` is unchanged. Upstream commit `0c73b0d` changed `run-bank-sync` to report the ids
 returned by `runBankSync` in the author's Actual fork. npm `26.11.0` declares the same return
 type (`Promise<SyncResponse>` in `@actual-app/api/@types/methods.d.ts`), so the build
 type-checks with no patch. That tool has not been run. The spike ran `get-accounts` (rw and ro)

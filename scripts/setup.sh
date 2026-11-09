@@ -981,11 +981,10 @@ mkdir -p compose/postgres/services
 set_env_if_missing .env VIKUNJA_MCP_ENABLED 0
 
 # Twenty CRM stays off until crm is enabled (local) or a remote is added.
-# The workspaces dir is a bind-mount source for the Hermes bootstraps.
+# Workspaces live in <data root>/addons/twenty, which make ensure-local creates.
 set_env_if_missing .env TWENTY_LOCAL_ENABLED 0
 set_env_if_missing .env TWENTY_MCP_ENABLED 0
 set_env_if_missing .env TWENTY_MULTIWORKSPACE 0
-mkdir -p compose/twenty/workspaces
 
 # Actual Budget stays off until budget is enabled (local) or a remote is added.
 set_env_if_missing .env ACTUAL_LOCAL_ENABLED 0

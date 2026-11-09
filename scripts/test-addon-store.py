@@ -67,7 +67,28 @@ MANIFEST["instances"] = {"name": "account", "settings": {
 errs = am.validate(MANIFEST, "builtin")
 check("fixture manifest is valid", errs == [], str(errs))
 
-PASSWORD = "p|w=\n'x\""
+FIXTURE = json.loads((ROOT / "scripts" / "fixtures" / "addons-cli" / "fixture" / "addon.json").read_text())
+with tempfile.TemporaryDirectory() as tmp:
+    fx = st.listing(FIXTURE, Path(tmp), {})
+    check("listing carries the fixture's data block", fx["data"] == FIXTURE.get("data") and fx["data"].get("paths"),
+          str(fx.get("data")))
+    check("listing carries backup, empty when the manifest has none", fx["backup"] == {}, str(fx.get("backup")))
+    check("listing names the hooks present, sorted", fx["hooks"] == ["init"], str(fx.get("hooks")))
+    check("listing carries instances.errors, empty when absent", fx["errors"] == [], str(fx.get("errors")))
+    rich_fx = copy.deepcopy(FIXTURE)
+    rich_fx["hooks"]["backup"] = {"script": ["scripts/vault.sh", "backup"]}
+    rich_fx["instances"]["connect"] = {"command": "seed-init"}
+    rich_fx["instances"]["disconnect"] = {"command": "seed-init"}
+    rich_fx["instances"]["errors"] = ["bad_access"]
+    rich_fx["backup"] = {"secrets": ["A_B"]}
+    rx = st.listing(rich_fx, Path(tmp), {})
+    check("listing includes connect and disconnect among the hooks",
+          rx["hooks"] == ["backup", "connect", "disconnect", "init"], str(rx["hooks"]))
+    check("listing carries instances.errors and backup",
+          rx["errors"] == ["bad_access"] and rx["backup"] == {"secrets": ["A_B"]}, str((rx["errors"], rx["backup"])))
+
+# Shell- and env-hostile, but one line: instance secrets refuse CR and LF.
+PASSWORD = "p|w= 'x\"\\$(y)"
 
 with tempfile.TemporaryDirectory() as tmp:
     root = Path(tmp).resolve()
@@ -189,6 +210,15 @@ with tempfile.TemporaryDirectory() as tmp:
     raises("slug with trailing newline refused", st.InputError,
            lambda: st.apply_instance(MANIFEST, root, "work\n", {}), setting="slug")
     st.remove_instance(MANIFEST, root, ok31)
+    for label, ch in (("LF", "\n"), ("CR", "\r")):
+        raises(f"{label} in an instance secret refused, naming the setting", st.InputError,
+               lambda ch=ch: st.apply_instance(MANIFEST, root, "multi", {"host": "h", "password": f"top{ch}secret"}),
+               setting="password", secret="top")
+        raises(f"{label} in an instance secret refused by check_instance", st.InputError,
+               lambda ch=ch: st.check_instance(MANIFEST, {"host": "h", "mailboxes": ["INBOX"], "password": f"top{ch}secret"}),
+               setting="password", secret="top")
+    check("a refused multi-line secret writes nothing",
+          not (st.addon_dir(root, MANIFEST) / "instances" / "multi.json").exists())
 
     for label, ch in (("U+2028", "\u2028"), ("form feed", "\f"), ("U+0085", "\x85"), ("tab", "\t")):
         raises(f"{label} in a setting string refused", st.InputError,
@@ -217,6 +247,7 @@ with tempfile.TemporaryDirectory() as tmp:
 # --- addon_cli.py: unexpected exceptions -----------------------------------------
 import contextlib  # noqa: E402
 import io  # noqa: E402
+from unittest import mock  # noqa: E402
 
 import addon_cli  # noqa: E402
 
@@ -229,8 +260,12 @@ def cli_main(argv, boom):
         raise boom
     addon_cli.store.listing = fake
     err = io.StringIO()
+    # list reads compose config on stdin; an empty one, so an open terminal or
+    # pipe on the real stdin can't block the run.
+    empty = io.TextIOWrapper(io.BytesIO(b""))
     try:
-        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch.object(sys, "stdin", empty):
             rc = addon_cli.main(argv)
     finally:
         addon_cli.store.listing = real
@@ -246,6 +281,213 @@ with tempfile.TemporaryDirectory() as tmp:
     rc, err = cli_main(argv, RuntimeError("value s3cr3t-in-message"))
     check("another exception prints its type only, exit 1",
           rc == 1 and err == "error: RuntimeError\n", repr((rc, err)))
+
+# --- state.json ---------------------------------------------------------------
+with tempfile.TemporaryDirectory() as tmp:
+    check("state is {} before anything is recorded", st.state(FIXTURE, Path(tmp)) == {})
+    st.set_state(FIXTURE, Path(tmp), "init", {"version": "1.0.0", "at": "2026-11-09T00:00:00Z"})
+    st.set_state(FIXTURE, Path(tmp), "other", 1)
+    got = st.state(FIXTURE, Path(tmp))
+    check("set_state then state round-trips and keeps other keys",
+          got == {"init": {"version": "1.0.0", "at": "2026-11-09T00:00:00Z"}, "other": 1}, repr(got))
+    path = Path(tmp) / "addons" / "fixture" / "state.json"
+    check("state.json is 0600", (path.stat().st_mode & 0o777) == 0o600, oct(path.stat().st_mode))
+    check("no temp file is left behind",
+          sorted(p.name for p in path.parent.iterdir() if p.name.startswith(".")) == [])
+    for bad in ("[1]", "{broken"):
+        path.write_text(bad)
+        try:
+            st.state(FIXTURE, Path(tmp))
+            raised = False
+        except st.StateError:
+            raised = True
+        check(f"state raises on a corrupt state.json ({bad})", raised)
+        try:
+            st.set_state(FIXTURE, Path(tmp), "x", 1)
+            raised = False
+        except st.StateError:
+            raised = True
+        check("set_state refuses to overwrite a corrupt state.json",
+              raised and path.read_text() == bad)
+    check("slug is the public slug check", st.slug("work") == "work")
+
+# _mkdir on a directory another user owns (Docker on Linux creates bind-mount
+# sources as root): chmod fails, and the error names the directory and chown.
+with tempfile.TemporaryDirectory() as tmp:
+    target = Path(tmp) / "addons" / "twenty" / "secrets"
+    real_chmod = os.chmod
+
+    def refuse_chmod(path, mode, *a, **kw):
+        if Path(path) == target:
+            raise PermissionError(1, "Operation not permitted", str(path))
+        return real_chmod(path, mode, *a, **kw)
+
+    os.chmod = refuse_chmod
+    try:
+        st._mkdir(target)
+        got = None
+    except PermissionError as e:
+        got = str(e)
+    finally:
+        os.chmod = real_chmod
+    check("_mkdir's chmod failure is a PermissionError naming the directory and chown",
+          got is not None and str(target) in got and "chown" in got, repr(got))
+
+with tempfile.TemporaryDirectory() as tmp:
+    d = Path(tmp) / "addons" / "fixture"
+    st.prepare(FIXTURE, Path(tmp))
+    modes = {n: (d / n).stat().st_mode & 0o777 for n in ("config", "instances", "secrets")}
+    check("prepare creates config, instances and secrets at 0700",
+          modes == {"config": 0o700, "instances": 0o700, "secrets": 0o700}, repr(modes))
+    (d / "secrets" / "x").write_text("keep")
+    os.chmod(d / "secrets" / "x", 0o640)
+    os.chmod(d / "secrets", 0o755)
+    st.prepare(FIXTURE, Path(tmp))
+    check("a second prepare keeps an existing secret and its mode",
+          (d / "secrets" / "x").read_text() == "keep" and (d / "secrets" / "x").stat().st_mode & 0o777 == 0o640)
+    check("public stored and slugs read the data directory",
+          st.stored(FIXTURE, d) == {} and st.slugs(d) == [])
+
+# Per-service figures: memory units, compose config parsing, listing.
+check("memory_bytes: '1g' and 1073741824 agree",
+      st.memory_bytes("1g") == 1073741824 and st.memory_bytes(1073741824) == 1073741824
+      and st.memory_bytes("1073741824") == 1073741824)
+check("memory_bytes: other units",
+      st.memory_bytes("512m") == 536870912 and st.memory_bytes("2GB") == 2147483648
+      and st.memory_bytes("64k") == 65536 and st.memory_bytes("10b") == 10)
+check("memory_bytes: junk, booleans and negatives give None",
+      all(st.memory_bytes(v) is None for v in (None, True, "lots", "", -5, "1.5g", [])))
+cfg = {"services": {
+    "a": {"image": "x:1", "deploy": {"resources": {"reservations": {"memory": "100"}, "limits": {"memory": "1g"}}},
+          "mem_limit": 5, "mem_reservation": 6},
+    "b": {"image": "y:2", "mem_limit": "512m", "mem_reservation": 7},
+    "c": {},
+}}
+fig = st.service_figures(cfg)
+check("service_figures prefers deploy.resources over mem_*",
+      fig["a"] == {"image": "x:1", "reservation": 100, "limit": 1073741824}, str(fig.get("a")))
+check("service_figures falls back to mem_limit and mem_reservation",
+      fig["b"] == {"image": "y:2", "reservation": 7, "limit": 536870912}, str(fig.get("b")))
+check("service_figures gives None for what compose leaves out",
+      fig["c"] == {"image": None, "reservation": None, "limit": None}, str(fig.get("c")))
+check("service_figures tolerates a config without services", st.service_figures({}) == {})
+with tempfile.TemporaryDirectory() as tmp:
+    bare = st.listing(FIXTURE, Path(tmp), {})
+    check("listing without figures lists services with null image and memory",
+          bare["services"][0] == {"key": "extra", "compose": "fixture-extra", "oneshot": False, "image": None,
+                                  "memory": {"reservation": None, "limit": None}}, str(bare.get("services")))
+    check("listing without figures has no downloadSize", all("downloadSize" not in s for s in bare["services"]))
+    withf = st.listing(FIXTURE, Path(tmp), {}, {"services": {"fixture-seed": {"image": "x:1", "reservation": 1, "limit": 2}},
+                                               "sizes": {"x:1": 99}})
+    seed = [s for s in withf["services"] if s["key"] == "seed"][0]
+    check("listing merges figures and downloadSize by image",
+          seed == {"key": "seed", "compose": "fixture-seed", "oneshot": True, "image": "x:1",
+                   "memory": {"reservation": 1, "limit": 2}, "downloadSize": 99}, str(seed))
+check("image_size sums layers for the platform",
+      st.image_size([{"Descriptor": {"platform": {"os": "linux", "architecture": "arm64"}},
+                      "OCIManifest": {"layers": [{"size": 3}, {"size": 4}]}},
+                     {"Descriptor": {"platform": {"os": "linux", "architecture": "amd64"}},
+                      "OCIManifest": {"layers": [{"size": 100}]}}], "linux/arm64") == 7)
+check("image_size is None when the platform is missing",
+      st.image_size([{"Descriptor": {"platform": {"os": "linux", "architecture": "amd64"}},
+                      "OCIManifest": {"layers": [{"size": 1}]}}], "linux/arm64") is None)
+check("image_size reads a single manifest object and SchemaV2Manifest",
+      st.image_size({"Descriptor": {"platform": {"os": "linux", "architecture": "arm64"}},
+                     "SchemaV2Manifest": {"layers": [{"size": 5}]}}, "linux/arm64") == 5)
+
+# --- transient instance secrets and optional instances ---------------------------
+TRANS = copy.deepcopy(MANIFEST)
+TRANS["instances"]["settings"]["password"] = {"type": "secret", "label": "Password", "transient": True}
+TRANS["instances"]["settings"]["mailboxes"]["optional"] = True
+TRANS["instances"]["connect"] = {"command": "seed-init"}
+TRANS["instances"]["disconnect"] = {"command": "seed-init"}
+with tempfile.TemporaryDirectory() as tmp:
+    root = Path(tmp).resolve()
+    d = st.addon_dir(root, TRANS)
+    st.apply_settings(TRANS, root, {"since": "2026-01-02"})
+    st.check_instance(TRANS, {"host": "h", "password": "tr4nsient"})
+    raises("check_instance still refuses a line break in a transient secret", st.InputError,
+           lambda: st.check_instance(TRANS, {"host": "h", "password": "a\nb"}), "password")
+    st.apply_instance(TRANS, root, "work", {"host": "h", "password": "tr4nsient"})
+    check("apply_instance writes no secret file for a transient setting",
+          not (d / "secrets" / "work.password").exists())
+    check("apply_instance writes no password key for a transient setting",
+          "password" not in json.loads((d / "instances" / "work.json").read_text()))
+    check("no file under the add-on dir holds the transient value",
+          not any("tr4nsient" in p.read_text(errors="replace") for p in d.rglob("*") if p.is_file()))
+    check("missing() never reports a transient setting",
+          not any("password" in m for m in st.missing(TRANS, root)), str(st.missing(TRANS, root)))
+    lst = st.listing(TRANS, root, {})
+    check("listing schema carries transient: true",
+          lst["schema"]["instances"]["settings"]["password"].get("transient") is True)
+    check("an instance view shows a transient setting neither set nor unset",
+          "password" not in lst["instances"]["work"] and lst["instances"]["work"]["host"] == "h",
+          str(lst["instances"]["work"]))
+    # A transient secret in a non-transient neighbour manifest stays a normal secret.
+    st.apply_instance(MANIFEST, root, "plain", {"password": "kept"})
+    check("a non-transient secret is still written", (st.addon_dir(root, MANIFEST) / "secrets" / "plain.password").exists())
+
+OPT = copy.deepcopy(MANIFEST)
+OPT["instances"]["optional"] = True
+with tempfile.TemporaryDirectory() as tmp:
+    root = Path(tmp).resolve()
+    st.apply_settings(OPT, root, {"since": "2026-01-02"})
+    check("optional instances: no instance, no instances: entry", st.missing(OPT, root) == [],
+          str(st.missing(OPT, root)))
+    st.apply_instance(OPT, root, "work", {"host": "h"})
+    check("optional instances: an existing instance still reports its missing settings",
+          st.missing(OPT, root) == ["work.mailboxes"], str(st.missing(OPT, root)))
+    check("listing carries instances.optional in the schema",
+          st.listing(OPT, root, {})["schema"]["instances"].get("optional") is True)
+    check("listing leaves optional out without the field",
+          "optional" not in st.listing(MANIFEST, root, {})["schema"]["instances"])
+with tempfile.TemporaryDirectory() as tmp:
+    check("without optional, no instance still reports instances:account",
+          st.missing(MANIFEST, Path(tmp)) == ["since", "instances:account"], str(st.missing(MANIFEST, Path(tmp))))
+
+# --- addon_cli: an mcp entry without a name (Twenty's `instances` entry) ----------
+NONAME = copy.deepcopy(MANIFEST)
+NONAME["mcp"] = [{"name": "named", "when": {"gate": "GPTR_EXTRA_ENABLED"}}, {"instances": {"from": "workspace"}}]
+check("_toggle_fields skips an mcp entry without a name",
+      addon_cli._toggle_fields(NONAME)["mcp"] == ["named@GPTR_EXTRA_ENABLED"],
+      str(addon_cli._toggle_fields(NONAME)["mcp"]))
+NONAME["mcp"] = {"instances": {"from": "workspace"}}
+check("_toggle_fields copes with a single nameless mcp object", addon_cli._toggle_fields(NONAME)["mcp"] == [])
+
+# --- addon_cli hook-events: which hook lines are relayed ----------------------------
+def hook_events(text: str):
+    """addon_cli hook-events on TEXT; (relayed objects, stderr lines)."""
+    out, err = io.StringIO(), io.StringIO()
+    stdin = io.TextIOWrapper(io.BytesIO(text.encode("utf-8")), encoding="utf-8")
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+            mock.patch.object(sys, "stdin", stdin):
+        addon_cli.main(["--addons-dir", str(ROOT / "addons"), "--data-root", "/nonexistent",
+                        "hook-events", "check"])
+    return [json.loads(x) for x in out.getvalue().splitlines()], err.getvalue().splitlines()
+
+
+long_text = "x" * 2000
+relayed, logged = hook_events("\n".join([
+    json.dumps({"phase": "setup", "step": "fake", "status": "running", "detail": "a\tb\x1b[31mc"}),
+    json.dumps({"phase": "pull", "service": "s", "status": long_text, "nested": {"k": "v\x07"}}),
+    json.dumps({"phase": "progress", "status": "x"}),
+    json.dumps({"phase": "done", "account": "a"}),
+    json.dumps({"phase": "error", "error": "timeout"}),
+    "plain text",
+]) + "\n")
+check("hook-events relays only setup and pull lines",
+      [r["phase"] for r in relayed] == ["setup", "pull"], repr(relayed))
+check("hook-events sets step to the caller's step, so a hook can't print a fake step",
+      all(r["step"] == "check" for r in relayed), repr(relayed))
+check("hook-events cleans string fields: tab to space, control characters dropped",
+      relayed and relayed[0]["detail"] == "a b[31mc", repr(relayed[:1]))
+check("hook-events cuts a long string field to 500 characters",
+      len(relayed) > 1 and relayed[1]["status"] == "x" * 500, str(len(relayed[1]["status"]) if len(relayed) > 1 else ""))
+check("hook-events cleans nested string fields",
+      len(relayed) > 1 and relayed[1]["nested"] == {"k": "v"}, repr(relayed[1:2]))
+check("hook-events sends other phases, done, error and plain text to the step log",
+      len(logged) == 4 and '"progress"' in logged[0] and '"done"' in logged[1]
+      and '"error"' in logged[2] and logged[3] == "plain text", repr(logged))
 
 if failures:
     print(f"{failures} failed")

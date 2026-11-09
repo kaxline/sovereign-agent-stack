@@ -77,18 +77,8 @@ MESSAGES_MCP_TOOLS="messages_status messages_chats messages_search messages_conv
 # Built-in add-ons (GPT Researcher so far) come from addons/<id>/addon.json.
 ADDONS_DIR="${ADDONS_DIR:-/bootstrap/addons}"
 ADDON_MANIFEST_PY="${ADDON_MANIFEST_PY:-/bootstrap/addon_manifest.py}"
-TWENTY_MCP_ENABLED="${TWENTY_MCP_ENABLED:-0}"
-TWENTY_WORKSPACES_DIR="${TWENTY_WORKSPACES_DIR:-/bootstrap/twenty-workspaces}"
-# The local instance; remote workspaces carry their own URL.
-TWENTY_LOCAL_MCP_URL="http://twenty-server:3000/mcp"
-# 0 while the local instance is off: its workspaces aren't registered. Compose
-# passes the .env value (default 0); unset here keeps the old behaviour.
-TWENTY_LOCAL_ENABLED="${TWENTY_LOCAL_ENABLED:-1}"
-TWENTY_MCP_TIMEOUT="${TWENTY_MCP_TIMEOUT:-60}"
-TWENTY_MCP_CONNECT_TIMEOUT="${TWENTY_MCP_CONNECT_TIMEOUT:-30}"
-# Twenty's MCP lists these seven whatever the workspace holds; the object
-# tools are reached through get_tool_catalog, learn_tools and execute_tool.
-TWENTY_MCP_PINS="get_tool_catalog learn_tools execute_tool list_object_metadata_names list_skills load_skills search_help_center"
+# Stores of add-ons with mcp.instances, one <short id>/ each (Twenty's workspaces).
+ADDON_DATA_DIR="${ADDON_DATA_DIR:-/bootstrap/addon-data}"
 # Probe interval for a parked stack MCP server (patch-mcp-wake.py; Hermes
 # default 300, floor 10). hermes starts without waiting for its MCP sidecars,
 # so one still booting parks and comes back on the next probe. Empty leaves
@@ -148,7 +138,7 @@ sha256_stdin() {
 # what the last complete run recorded:
 #
 # - inputs: this script, the profile's env file, the CalDAV accounts, the
-#   Twenty workspace files, the add-on manifests and their reader, the
+#   add-on instances (key files by name and mtime), the add-on manifests and their reader, the
 #   image, and every environment variable this container gets. One stamp per
 #   profile under STAMP_DIR.
 # - state: every file the bootstrap writes, in the default profile and every
@@ -172,12 +162,17 @@ bootstrap_inputs_hash() {
       echo "$_bih_f"
       cat "$_bih_f"
     done
-    # A new, removed or re-keyed Twenty workspace changes what gets registered.
-    echo "twenty"
-    for _bih_f in "${TWENTY_WORKSPACES_DIR:-/bootstrap/twenty-workspaces}"/*.env; do
+    # A new, removed or re-keyed add-on instance (a Twenty workspace) changes
+    # what gets registered. Key files count by name and mtime, never content.
+    echo "addon-instances"
+    for _bih_f in "$ADDON_DATA_DIR"/*/instances/*.json; do
       [ -f "$_bih_f" ] || continue
       echo "$_bih_f"
       cat "$_bih_f"
+    done
+    for _bih_f in "$ADDON_DATA_DIR"/*/secrets/*; do
+      [ -f "$_bih_f" ] || continue
+      echo "$_bih_f $(stat -c %Y "$_bih_f" 2>/dev/null || stat -f %m "$_bih_f" 2>/dev/null || echo unknown)"
     done
     # A changed add-on manifest, or reader, changes what gets registered.
     echo "addons"
@@ -859,7 +854,7 @@ set_stack_mcp_parked_retry() {
   _out="$(python3 - "$_cfg" "$MCP_PARKED_RETRY_INTERVAL" "$SEARXNG_MCP_URL" \
     "$CALDAV_MCP_URL" "$OPENCODE_MCP_URL" "$SQL_MCP_RO_URL" "$SQL_MCP_RW_URL" "$VIKUNJA_MCP_URL" \
     "$MAIL_MCP_URL" "$MAIL_DRAFTS_MCP_URL" "$MESSAGES_MCP_URL" \
-    "$TWENTY_LOCAL_MCP_URL" $(addon_mcp_urls) <<'PY'
+    $(addon_mcp_urls) $(addon_instance_urls "$1") <<'PY'
 import sys
 sys.path.insert(0, "/opt/hermes")
 try:
@@ -937,11 +932,7 @@ reconcile_stack_eager_tools() {
       ;;
   esac
   _rst_args="${_rst_args} $(addon_mcp_pin_args "$_rst_profile")"
-  for _rst_slug in $(twenty_workspace_slugs "$_rst_profile"); do
-    for _rst_t in $TWENTY_MCP_PINS; do
-      _rst_args="${_rst_args} ${_rst_t} $(mcp_tool_name "crm-${_rst_slug}" "$_rst_t")"
-    done
-  done
+  _rst_args="${_rst_args} $(addon_instance_pin_args "$_rst_profile")"
   case "$OPENCODE_MCP_ENABLED" in
     1|true|TRUE|yes|YES)
       if [ "$_rst_profile" != "api-server" ]; then
@@ -1319,9 +1310,9 @@ register_addon_mcp_servers() {
 }
 
 # Built-in add-ons with a vaultBackend block (addon_manifest.py vault-plan): a
-# login-backend plugin for Hermes's browser vault (Bitwarden's bwbroker). While
-# BITWARDEN_ENABLED is on, the hermes container installs the plugin into
-# Hermes's bundled plugins dir (14-install-bwbroker-plugin.sh), since Hermes
+# login-backend plugin for Hermes's browser vault (Bitwarden's bwbroker). The
+# hermes container always installs the plugin into Hermes's bundled plugins
+# dir (14-install-bwbroker-plugin.sh), since Hermes
 # refuses a login backend from $HERMES_HOME/plugins. This turns it on or off
 # per profile.
 #
@@ -1331,7 +1322,9 @@ register_addon_mcp_servers() {
 # plugins dir is removed either way: it would shadow the bundled one and have
 # its backend refused. While any vault add-on is on, vault.bitwarden.enabled
 # is false, so core's own Bitwarden backend (the bw CLI) never lists logins
-# beside the broker's. The config is written only when something changes.
+# beside the broker's. The config is written only when something changes, and
+# then .addon-plugins-changed is left in the profile's home for
+# scripts/vault.sh reload-plugins.
 addon_vault_plan() {
   [ -d "$ADDONS_DIR" ] || return 0
   python3 "$ADDON_MANIFEST_PY" vault-plan "$ADDONS_DIR" "${1:-default}"
@@ -1440,6 +1433,9 @@ if any(on == "1" for _n, on, *_rest in plan):
 
 if changes:
     atomic_yaml_write(str(cfg_path), config)
+    # A running gateway loaded its plugins at start; scripts/vault.sh up-hook
+    # asks it to reload them for each profile that has this marker.
+    (cfg_path.parent / ".addon-plugins-changed").touch()
 if changes or removed:
     print(f"add-on login backends on {profile}: {'; '.join(changes + ['removed ' + r for r in removed])}")
 PY
@@ -1447,123 +1443,52 @@ PY
   if [ -n "$_out" ]; then log "$_out"; fi
 }
 
-# Twenty CRM (crm profile, or a remote instance). One mcp_servers.crm-<slug>
-# per compose/twenty/workspaces/<slug>.env. The key, not the URL, selects the
-# workspace, so every entry points at the instance's bare /mcp. api-server gets
-# the workspace's read-only key, or no entry when there is none. default and
-# browser get the read/write key, or the read-only one when the file says
-# TWENTY_ACCESS=read (Boundary's "look things up" choice). Each key goes into the profile's .env as
-# TWENTY_<SLUG>_KEY, and config.yaml holds only the reference. Roles in Twenty
-# are the boundary, so there is no tools.include. docs/crm.md
-
-# Slug sales-eu -> TWENTY_SALES_EU_KEY.
-twenty_key_env_name() {
-  printf 'TWENTY_%s_KEY' "$(printf '%s' "$1" | tr '[:lower:]-' '[:upper:]_')"
+# Built-in add-ons with mcp.instances (Twenty CRM): one MCP entry per instance
+# in the add-on's store, ADDON_DATA_DIR/<short id>/ (instances/<slug>.json and
+# secrets/<slug>.<key setting>, mounted read-only). addon_manifest.py
+# instances-plan decides, per profile, which instance registers and with which
+# key file: a profile that mcp.profiles maps to ro (api-server) gets the ro
+# key, one mapped to rw follows the instance's access (read -> ro, write -> rw).
+# The key is copied into the profile's .env as <NAME>_KEY (crm-sales-eu ->
+# CRM_SALES_EU_KEY) and config.yaml holds only the header that references it.
+# The plan carries the key file's path, never the key. There is no
+# tools.include: for Twenty, roles on the API key are the boundary. docs/crm.md
+addon_instances_plan() {
+  [ -d "$ADDONS_DIR" ] || return 0
+  python3 "$ADDON_MANIFEST_PY" instances-plan "$ADDONS_DIR" "$ADDON_DATA_DIR" "${1:-default}"
 }
 
-# Parse one workspace file without sourcing it. Sets _tw_url (with /mcp,
-# no trailing slash), _tw_ro, _tw_rw and _tw_access (default write). Fails, with a warning naming the file
-# but never a value, when the URL is missing or not http(s).
-twenty_read_workspace() {
-  _tw_url=""
-  _tw_ro=""
-  _tw_rw=""
-  _tw_access="write"
-  while IFS= read -r _tw_line || [ -n "$_tw_line" ]; do
-    case "$_tw_line" in
-      ''|'#'*) continue ;;
-      *=*)
-        _tw_k="${_tw_line%%=*}"
-        _tw_v="$(printf '%s' "${_tw_line#*=}" | tr -d '\r')"
-        case "$_tw_v" in
-          \"*\") _tw_v="${_tw_v#\"}"; _tw_v="${_tw_v%\"}" ;;
-          \'*\') _tw_v="${_tw_v#\'}"; _tw_v="${_tw_v%\'}" ;;
-        esac
-        case "$_tw_k" in
-          TWENTY_URL) _tw_url="$_tw_v" ;;
-          TWENTY_KEY_RO) _tw_ro="$_tw_v" ;;
-          TWENTY_KEY_RW) _tw_rw="$_tw_v" ;;
-          TWENTY_ACCESS) _tw_access="${_tw_v:-write}" ;;
-        esac
-        ;;
-    esac
-  done < "$1"
-  case "$_tw_url" in
-    http://*|https://*) ;;
-    *)
-      log "WARNING: Skipping Twenty workspace '$(basename "$1")' - TWENTY_URL must start with http:// or https://"
-      return 1
-      ;;
-  esac
-  while :; do
-    case "$_tw_url" in
-      */) _tw_url="${_tw_url%/}" ;;
-      *) break ;;
-    esac
+# crm-sales-eu -> CRM_SALES_EU_KEY (addon_manifest.instance_key_env).
+addon_instance_key_env() {
+  printf '%s_KEY' "$(printf '%s' "$1" | tr '[:lower:]-' '[:upper:]_')"
+}
+
+# Every instance URL in the plan, one per line, for set_stack_mcp_parked_retry.
+addon_instance_urls() {
+  addon_instances_plan "$1" 2>/dev/null | cut -d'|' -f4 | sed '/^$/d' || true
+}
+
+# "<tool> <mcp__name__tool> ..." for each instance that registers on <profile>,
+# for reconcile_stack_eager_tools.
+addon_instance_pin_args() {
+  addon_instances_plan "$1" 2>/dev/null | while IFS='|' read -r _aip_name _aip_title _aip_on _aip_url \
+      _aip_keyenv _aip_keyfile _aip_timeout _aip_connect _aip_pins _aip_rest; do
+    [ "$_aip_on" = 1 ] || continue
+    case "$_aip_name" in *'*') continue ;; esac
+    for _aip_t in $_aip_pins; do
+      printf ' %s %s' "$_aip_t" "$(mcp_tool_name "$_aip_name" "$_aip_t")"
+    done
   done
-  case "$_tw_url" in
-    */mcp) ;;
-    *) _tw_url="${_tw_url}/mcp" ;;
-  esac
-}
-
-# After twenty_read_workspace: the key <profile> gets, in _tw_key, or a
-# failure with the reason in _tw_why. api-server is read-only whatever
-# TWENTY_ACCESS says.
-twenty_key_for_profile() {
-  _tw_key=""
-  _tw_why=""
-  if [ "$1" = "api-server" ]; then
-    _tw_key="$_tw_ro"
-    [ -n "$_tw_key" ] || _tw_why="no TWENTY_KEY_RO"
-  else
-    case "$_tw_access" in
-      write) _tw_key="$_tw_rw"; [ -n "$_tw_key" ] || _tw_why="TWENTY_ACCESS=write but no TWENTY_KEY_RW" ;;
-      read) _tw_key="$_tw_ro"; [ -n "$_tw_key" ] || _tw_why="TWENTY_ACCESS=read but no TWENTY_KEY_RO" ;;
-      *) _tw_why="TWENTY_ACCESS must be read or write" ;;
-    esac
-  fi
-  [ -n "$_tw_key" ]
-}
-
-# After twenty_read_workspace: true when the file points at the local
-# instance and TWENTY_LOCAL_ENABLED is off, so there is no server to reach.
-twenty_local_off() {
-  [ "$_tw_url" = "$TWENTY_LOCAL_MCP_URL" ] || return 1
-  case "$TWENTY_LOCAL_ENABLED" in
-    1|true|TRUE|yes|YES|on|ON) return 1 ;;
-  esac
   return 0
 }
 
-# Print one slug per line for each workspace that registers on <profile>:
-# a valid file with the key that profile uses.
-twenty_workspace_slugs() {
-  case "$TWENTY_MCP_ENABLED" in
-    1|true|TRUE|yes|YES) ;;
-    *) return 0 ;;
-  esac
-  [ -d "$TWENTY_WORKSPACES_DIR" ] || return 0
-  for _tws_file in "$TWENTY_WORKSPACES_DIR"/*.env; do
-    [ -f "$_tws_file" ] || continue
-    _tws_slug="$(basename "$_tws_file" .env)"
-    case "$_tws_slug" in
-      .*|''|*[!a-z0-9-]*) continue ;;
-    esac
-    twenty_read_workspace "$_tws_file" 2>/dev/null >/dev/null || continue
-    twenty_local_off && continue
-    twenty_key_for_profile "$1" || continue
-    printf '%s\n' "$_tws_slug"
-  done
-}
-
-# Write mcp_servers.<key> with a bearer-token header that references the
-# profile's env key. hermes config set cannot write a header map.
+# Write mcp_servers.<key> with a header that references the profile's env key,
+# "<scheme> ${<env-key>}". hermes config set cannot write a header map.
 #
-# Usage: write_twenty_mcp_entry <profile> <key> <url> <env-key>
-write_twenty_mcp_entry() {
-  _out="$(python3 - "$(config_path_for "$1")" "$2" "$3" "$4" \
-    "$TWENTY_MCP_TIMEOUT" "$TWENTY_MCP_CONNECT_TIMEOUT" <<'PY'
+# Usage: write_bearer_mcp_entry <profile> <key> <url> <env-key> <timeout> <connect-timeout> [header] [scheme]
+write_bearer_mcp_entry() {
+  _out="$(python3 - "$(config_path_for "$1")" "$2" "$3" "$4" "$5" "$6" \
+    "${7:-Authorization}" "${8:-Bearer}" <<'PY'
 import sys
 sys.path.insert(0, "/opt/hermes")
 try:
@@ -1572,7 +1497,7 @@ except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
     import hermes_yaml as yaml
 from utils import atomic_yaml_write
 
-cfg_path, key, url, env_key, timeout, connect_timeout = sys.argv[1:7]
+cfg_path, key, url, env_key, timeout, connect_timeout, header, scheme = sys.argv[1:9]
 try:
     with open(cfg_path) as fh:
         config = yaml.safe_load(fh) or {}
@@ -1593,7 +1518,7 @@ entry["connect_timeout"] = int(connect_timeout) if str(connect_timeout).isdigit(
 headers = entry.get("headers")
 if not isinstance(headers, dict):
     headers = {}
-headers["Authorization"] = "Bearer ${" + env_key + "}"
+headers[header] = scheme + " ${" + env_key + "}"
 entry["headers"] = headers
 servers[key] = entry
 atomic_yaml_write(cfg_path, config)
@@ -1603,18 +1528,21 @@ PY
   if [ -n "$_out" ]; then log "$_out"; fi
 }
 
-# Drop crm-* entries whose workspace file is gone or no longer registers on
-# this profile, their TWENTY_<SLUG>_KEY and their tool pins. With no crm-*
-# entry left, the bare Twenty tool names go from the pins too. Only crm-*
-# entries are ours; entries a client added under another name stay, even at
-# the same URL.
+# Drop entries whose name starts with an add-on's instance prefix (crm-) and
+# isn't in the keep list: an instance that is gone or no longer registers on
+# this profile. Their <NAME>_KEY and tool pins go with them, and with no entry
+# left under a prefix, that add-on's bare tool names leave the pins too. Only
+# entries under the prefixes are ours; entries a client added under another
+# name stay, even at the same URL.
 #
-# Usage: reconcile_twenty_workspaces <profile> <slug...>
-reconcile_twenty_workspaces() {
-  _rtw_profile="$1"
+# Twenty only: before 0.3.13 a workspace's key was TWENTY_<SLUG>_KEY; that
+# line is removed for every crm-* entry in the config, kept or dropped.
+#
+# Usage: reconcile_addon_instance_servers <profile> [<prefix>=<pin,pin...>]... [<name>]...
+reconcile_addon_instance_servers() {
+  _rais_profile="$1"
   shift
-  _out="$(TWENTY_MCP_PINS="$TWENTY_MCP_PINS" python3 - "$(config_path_for "$_rtw_profile")" "$@" <<'PY'
-import os
+  _out="$(python3 - "$(config_path_for "$_rais_profile")" "$@" <<'PY'
 import re
 import sys
 sys.path.insert(0, "/opt/hermes")
@@ -1625,7 +1553,15 @@ except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
 from utils import atomic_yaml_write
 
 cfg_path = sys.argv[1]
-keep = {f"crm-{s}" for s in sys.argv[2:]}
+bare, keep = {}, set()
+for arg in sys.argv[2:]:
+    if "=" in arg:
+        prefix, pins = arg.split("=", 1)
+        bare[prefix] = {p for p in pins.split(",") if p}
+    else:
+        keep.add(arg)
+if not bare:
+    raise SystemExit(0)
 try:
     with open(cfg_path) as fh:
         config = yaml.safe_load(fh) or {}
@@ -1633,27 +1569,35 @@ except FileNotFoundError:
     raise SystemExit(0)
 servers = config.get("mcp_servers")
 if not isinstance(servers, dict):
-    raise SystemExit(0)
-removed = sorted(k for k in servers if k.startswith("crm-") and k not in keep)
+    servers = {}
+prefixes = tuple(bare)
+ours = sorted(k for k in servers if isinstance(k, str) and k.startswith(prefixes))
+removed = [k for k in ours if k not in keep]
 for key in removed:
     del servers[key]
 
+
+def sanitize(name):
+    return re.sub(r"[^A-Za-z0-9_]", "_", name)
+
+
 # Pins of servers that are gone: mcp__crm_<slug>__* (Hermes' tool names) and
 # the mcp__crm-<slug>__* form earlier builds wrote, which never matched.
-kept_prefixes = tuple(p for s in keep for p in (
-    "mcp__" + re.sub(r"[^A-Za-z0-9_]", "_", s) + "__", f"mcp__{s}__"))
-any_left = any(k.startswith("crm-") for k in servers)
-bare = set(os.environ.get("TWENTY_MCP_PINS", "").split())
+kept_prefixes = tuple(p for s in keep for p in (f"mcp__{sanitize(s)}__", f"mcp__{s}__"))
 unpinned = 0
 tool_search = ((config.get("tools") or {}).get("tool_search") or {})
 pins = tool_search.get("always_include")
 if isinstance(pins, list):
+    left = {p: any(k.startswith(p) for k in servers) for p in prefixes}
+
     def stale(name):
         if not isinstance(name, str):
             return False
-        if name.startswith(("mcp__crm_", "mcp__crm-")):
-            return not name.startswith(kept_prefixes)
-        return not any_left and name in bare
+        for p in prefixes:
+            if name.startswith((f"mcp__{sanitize(p)}", f"mcp__{p}")):
+                return not name.startswith(kept_prefixes)
+        return any(not left[p] and name in bare[p] for p in prefixes)
+
     kept_pins = [p for p in pins if not stale(p)]
     unpinned = len(pins) - len(kept_pins)
     tool_search["always_include"] = kept_pins
@@ -1661,86 +1605,123 @@ if isinstance(pins, list):
 if removed or unpinned:
     atomic_yaml_write(cfg_path, config)
 if unpinned:
-    print(f"Removed {unpinned} stale Twenty tool pins")
+    print(f"Removed {unpinned} stale add-on instance tool pins")
 if removed:
-    print("Removed stale Twenty MCP entries: " + ", ".join(removed))
-    for key in removed:
-        print("REMOVED_SLUG " + key[len("crm-"):])
+    print("Removed stale add-on instance MCP entries: " + ", ".join(removed))
+for key in removed:
+    print("REMOVED " + key)
+for key in ours:
+    print("SEEN " + key)
 PY
 )"
   [ -n "$_out" ] || return 0
-  _rtw_env="$(caldav_profile_env_file "$_rtw_profile")"
-  printf '%s\n' "$_out" | while IFS= read -r _rtw_line; do
-    case "$_rtw_line" in
-      REMOVED_SLUG\ *)
-        remove_env_key "$_rtw_env" "$(twenty_key_env_name "${_rtw_line#REMOVED_SLUG }")"
+  _rais_env="$(caldav_profile_env_file "$_rais_profile")"
+  printf '%s\n' "$_out" | while IFS= read -r _rais_line; do
+    case "$_rais_line" in
+      REMOVED\ *)
+        remove_env_key "$_rais_env" "$(addon_instance_key_env "${_rais_line#REMOVED }")"
         ;;
-      *) log "$_rtw_line" ;;
+      SEEN\ crm-*)
+        # Twenty only, for the 0.3.13 upgrade: a crm-* entry still in the
+        # config may have its key under the old name. A legacy key whose
+        # entry was already gone stays; there is no wider sweep.
+        _rais_legacy="TWENTY_$(printf '%s' "${_rais_line#SEEN crm-}" | tr '[:lower:]-' '[:upper:]_')_KEY"
+        if grep -q "^${_rais_legacy}=" "$_rais_env" 2>/dev/null; then
+          remove_env_key "$_rais_env" "$_rais_legacy"
+        fi
+        ;;
+      SEEN\ *) ;;
+      *) log "$_rais_line" ;;
     esac
   done
 }
 
-register_twenty_mcp_servers() {
-  _rtms_profile="$1"
-  case "$TWENTY_MCP_ENABLED" in
-    1|true|TRUE|yes|YES) ;;
-    *)
-      log "Skipping Twenty CRM MCP registration (TWENTY_MCP_ENABLED=${TWENTY_MCP_ENABLED})"
-      reconcile_twenty_workspaces "$_rtms_profile"
-      return 0
-      ;;
-  esac
-  if [ ! -d "$TWENTY_WORKSPACES_DIR" ]; then
-    log "WARNING: Twenty workspaces dir missing (${TWENTY_WORKSPACES_DIR}) - run ./scripts/setup.sh"
-    reconcile_twenty_workspaces "$_rtms_profile"
+# After the last instance line of an add-on: warn when its flag is on and no
+# instance registered, unless there were instances and every one was skipped
+# for an expected reason: a gate (the local Twenty instance is off), a profile
+# the manifest leaves out, or no ro key on api-server.
+addon_instances_warn_none() {
+  [ -n "$_rai_title" ] || return 0
+  [ "$_rai_addon_on" = 1 ] && [ "$_rai_count" = 0 ] || return 0
+  [ "$_rai_seen" = 0 ] || [ "$_rai_quiet" != "$_rai_seen" ] || return 0
+  log "WARNING: ${_rai_title} is on but no instance registers on '${_rai_profile:-default}' - connect one, or add the key this profile needs"
+}
+
+register_addon_instance_servers() {
+  _rai_profile="$1"
+  [ -d "$ADDONS_DIR" ] || return 0
+  if ! _rai_plan="$(addon_instances_plan "$_rai_profile")"; then
+    log "warning: could not read add-on instances in ${ADDON_DATA_DIR}; their MCP entries left as they were"
     return 0
   fi
-
-  _rtms_env="$(caldav_profile_env_file "$_rtms_profile")"
-  _rtms_slugs=""
-  _rtms_local_off=""
-  for _rtms_file in "$TWENTY_WORKSPACES_DIR"/*.env; do
-    [ -f "$_rtms_file" ] || continue
-    _rtms_base="$(basename "$_rtms_file")"
-    _rtms_slug="${_rtms_base%.env}"
-    case "$_rtms_slug" in
-      .*) continue ;;
-      ''|*[!a-z0-9-]*)
-        log "WARNING: Skipping Twenty workspace '${_rtms_base}' - slug must match [a-z0-9-]+"
+  [ -n "$_rai_plan" ] || return 0
+  _rai_env="$(caldav_profile_env_file "$_rai_profile")"
+  _rai_specs=""
+  _rai_keep=""
+  _rai_title=""
+  while IFS='|' read -r _rai_name _rai_t _rai_on _rai_url _rai_keyenv _rai_keyfile \
+      _rai_timeout _rai_connect _rai_pins _rai_reason _rai_header _rai_scheme; do
+    case "$_rai_name" in
+      '') continue ;;
+      *'*')
+        # The add-on's own line: its prefix, flag and bare pin names.
+        addon_instances_warn_none
+        _rai_title="$_rai_t"
+        _rai_addon_on="$_rai_on"
+        _rai_count=0
+        _rai_seen=0
+        _rai_quiet=0
+        _rai_specs="${_rai_specs} ${_rai_name%\*}=$(printf '%s' "$_rai_pins" | tr ' ' ',')"
+        if [ "$_rai_on" != 1 ]; then
+          case "$_rai_reason" in
+            *' '*) log "Skipping ${_rai_t} MCP registration (${_rai_reason})" ;;
+            *) log "Skipping ${_rai_t} MCP registration (${_rai_reason} is off)" ;;
+          esac
+        fi
         continue
         ;;
     esac
-    twenty_read_workspace "$_rtms_file" || continue
-    if twenty_local_off; then
-      log "Skipping Twenty workspace '${_rtms_slug}' - the local instance is off (TWENTY_LOCAL_ENABLED=${TWENTY_LOCAL_ENABLED})"
-      _rtms_local_off=1
+    _rai_seen=$((_rai_seen + 1))
+    if [ "$_rai_on" != 1 ]; then
+      case "$_rai_reason" in
+        flag\ *) ;;
+        gate\ *|profile\ *)
+          log "Skipping ${_rai_t} instance '${_rai_name}' on '${_rai_profile:-default}' (${_rai_reason#* })"
+          _rai_quiet=$((_rai_quiet + 1))
+          ;;
+        key\ *)
+          if [ "$_rai_profile" = "api-server" ]; then
+            log "Skipping ${_rai_t} instance '${_rai_name}' on api-server (${_rai_reason#key })"
+            _rai_quiet=$((_rai_quiet + 1))
+          else
+            log "WARNING: Skipping ${_rai_t} instance '${_rai_name}' - ${_rai_reason#key }"
+          fi
+          ;;
+        *) log "WARNING: Skipping ${_rai_t} instance '${_rai_name}' - ${_rai_reason}" ;;
+      esac
       continue
     fi
-    if ! twenty_key_for_profile "$_rtms_profile"; then
-      if [ "$_rtms_profile" = "api-server" ]; then
-        log "Skipping Twenty workspace '${_rtms_slug}' on api-server (${_tw_why})"
-      else
-        log "WARNING: Skipping Twenty workspace '${_rtms_slug}' - ${_tw_why}"
-      fi
+    _rai_key="$(cat "$_rai_keyfile" 2>/dev/null)" || _rai_key=""
+    if [ -z "$_rai_key" ]; then
+      log "WARNING: Skipping ${_rai_t} instance '${_rai_name}' - cannot read its key file"
       continue
     fi
-    _rtms_key="$_tw_key"
-    _rtms_env_key="$(twenty_key_env_name "$_rtms_slug")"
-    mkdir -p "$(dirname "$_rtms_env")"
-    upsert_env "$_rtms_env" "$_rtms_env_key" "$_rtms_key"
-    log "Registering Twenty CRM MCP server 'crm-${_rtms_slug}' for profile '${_rtms_profile:-default}' at ${_tw_url}"
-    write_twenty_mcp_entry "$_rtms_profile" "crm-${_rtms_slug}" "$_tw_url" "$_rtms_env_key"
+    mkdir -p "$(dirname "$_rai_env")"
+    upsert_env "$_rai_env" "$_rai_keyenv" "$_rai_key"
+    _rai_key=""
+    log "Registering ${_rai_t} MCP server '${_rai_name}' for profile '${_rai_profile:-default}' at ${_rai_url}"
+    write_bearer_mcp_entry "$_rai_profile" "$_rai_name" "$_rai_url" "$_rai_keyenv" \
+      "$_rai_timeout" "$_rai_connect" "$_rai_header" "$_rai_scheme"
     # shellcheck disable=SC2086
-    pin_mcp_tools "$_rtms_profile" "crm-${_rtms_slug}" $TWENTY_MCP_PINS
-    _rtms_slugs="${_rtms_slugs} ${_rtms_slug}"
-  done
-  _rtms_key=""
+    pin_mcp_tools "$_rai_profile" "$_rai_name" $_rai_pins
+    _rai_keep="${_rai_keep} ${_rai_name}"
+    _rai_count=$((_rai_count + 1))
+  done <<EOF
+$_rai_plan
+EOF
+  addon_instances_warn_none
   # shellcheck disable=SC2086
-  reconcile_twenty_workspaces "$_rtms_profile" $_rtms_slugs
-  # Only local workspaces, all skipped while it's off: expected, not a fault.
-  if [ -z "$_rtms_slugs" ] && [ -z "$_rtms_local_off" ]; then
-    log "WARNING: TWENTY_MCP_ENABLED=1 but no Twenty workspace registers on '${_rtms_profile:-default}' - run make crm-init or make crm-add"
-  fi
+  reconcile_addon_instance_servers "$_rai_profile" $_rai_specs $_rai_keep
 }
 
 # Draft-only mail MCP: queues drafts the host helper saves in Mail. Like the
@@ -1912,7 +1893,7 @@ PY
 fence_mail_from_cron() {
   _fmc_cfg="$(config_path_for "$1")"
   [ -f "$_fmc_cfg" ] || return 0
-  _out="$(python3 - "$_fmc_cfg" "$ADDON_MANIFEST_PY" "$ADDONS_DIR" <<'PY'
+  _out="$(python3 - "$_fmc_cfg" "$ADDON_MANIFEST_PY" "$ADDONS_DIR" "$ADDON_DATA_DIR" <<'PY'
 import importlib.util
 import json
 import sys
@@ -1935,7 +1916,7 @@ try:
     spec = importlib.util.spec_from_file_location("addon_manifest", sys.argv[2])
     addon_manifest = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(addon_manifest)
-    _names, _urls = addon_manifest.cron_fence(Path(sys.argv[3]))
+    _names, _urls = addon_manifest.cron_fence(Path(sys.argv[3]), data_dir=Path(sys.argv[4]))
     addon_names, addon_urls = set(_names), set(_urls)
     addon_toolsets = addon_manifest.cron_fence_toolsets(Path(sys.argv[3]))
 except Exception as exc:  # no add-on is registered without the module either
@@ -2390,7 +2371,7 @@ if is_true "$BOOTSTRAP_SHARED"; then
   register_messages_mcp_servers ""
   register_addon_mcp_servers ""
   register_addon_vault_backends ""
-  register_twenty_mcp_servers ""
+  register_addon_instance_servers ""
 
   # session_search is on Hermes' curated tool_search.defer list. Pin + undefer
   # on default before the api-server.env gate so a missing env file cannot
@@ -2597,7 +2578,7 @@ register_mail_drafts_mcp_servers "$PROFILE"
 register_messages_mcp_servers "$PROFILE"
 register_addon_mcp_servers "$PROFILE"
 register_addon_vault_backends "$PROFILE"
-register_twenty_mcp_servers "$PROFILE"
+register_addon_instance_servers "$PROFILE"
 
 # Heal always_include + defer after every hermes config set / MCP register.
 if is_true "$BOOTSTRAP_SHARED"; then
