@@ -97,6 +97,7 @@ gate_ok() {
     core|"") return 0 ;;
     rag) has_profile rag ;;
     coding) has_profile coding ;;
+    bitwarden) has_profile bitwarden ;;
     *) return 1 ;;
   esac
 }

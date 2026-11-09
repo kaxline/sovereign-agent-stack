@@ -308,7 +308,8 @@ Other limits, as built:
 | `TWENTY_SECRETS_DIR` | unset | The folder holding both Twenty secret files, for `make secrets-sync` |
 
 `bw` 2026.10.1 is pinned in `compose/bitwarden-broker/Dockerfile` by the `BW_CLI_VERSION` build
-argument and a SHA-256 per architecture; a new version needs both digests.
+argument and a SHA-256 per architecture; a new version needs both digests. Run `make bitwarden-test`
+after a `bw` or Hermes bump; [Hermes](hermes.md#model-suitability-agentic-tool-use) lists what the two overlays anchor on.
 
 With both flags off, the add-on starts nothing and writes nothing into Hermes profiles.
 

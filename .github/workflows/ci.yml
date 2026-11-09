@@ -130,6 +130,18 @@ jobs:
         run: sh scripts/test-addon-cron-fence.sh --host-only
       - name: Bitwarden plugin registration
         run: sh scripts/test-bitwarden-registration.sh --host-only
+      - name: Digest redaction of broker-filled values (stdlib)
+        run: python3 scripts/test-digest-redaction.py --host-only
+      - name: Bitwarden broker against a fake bw (stdlib)
+        run: python3 scripts/test-bitwarden-broker.py --host-only
+      - name: Bitwarden access requests and release (stdlib)
+        run: python3 scripts/test-bitwarden-access.py
+      - name: Bitwarden fill overlay wiring (stdlib)
+        run: python3 scripts/test-bitwarden-fill.py --host-only
+      - name: Bitwarden secrets sync
+        run: sh scripts/test-bitwarden-secrets-sync.sh
+      - name: bitwarden-setup against a fake bw
+        run: sh scripts/test-bitwarden-setup.sh
       - name: LightRAG MCP registration
         run: sh scripts/test-lightrag-mcp-registration.sh
       - name: Twenty CRM compose profile

@@ -15,7 +15,7 @@
 	db-backup db-service-add db-psql todo-init todo-open dashboard-open \
 	crm-init crm-add crm-remove crm-access crm-open crm-mode \
 	vault-init vault-add vault-unlock vault-lock vault-sync vault-grant vault-requests vault-remove vault-open \
-	secrets-sync \
+	secrets-sync bitwarden-test \
 	coding-root-list coding-root-add \
 	context-root-list context-root-add opencode-smoke-fixture \
 	kb-eval-fixture kb-eval-fixture-remove \
@@ -217,6 +217,28 @@ vault-open:
 
 secrets-sync:
 	@./scripts/vault.sh secrets-sync
+
+# Every Bitwarden add-on test. The image parts skip without the pinned Hermes
+# image; test-vw-register.py and the compose config check need Docker, and the
+# compose check a .env that satisfies interpolation. Runs all, then lists failures.
+BITWARDEN_TESTS = \
+	"python3 scripts/test-addon-manifests.py" \
+	"python3 scripts/test-digest-redaction.py" \
+	"python3 scripts/test-bitwarden-broker.py" \
+	"python3 scripts/test-bitwarden-access.py" \
+	"python3 scripts/test-bitwarden-fill.py" \
+	"sh scripts/test-bitwarden-registration.sh" \
+	"python3 scripts/test-bitwarden-compose-config.py" \
+	"sh scripts/test-bitwarden-secrets-sync.sh" \
+	"sh scripts/test-bitwarden-setup.sh" \
+	"bash scripts/test-vault-sh.sh" \
+	"python3 scripts/test-vw-register.py"
+bitwarden-test:
+	@failed=""; for t in $(BITWARDEN_TESTS); do \
+		echo "=== $$t"; $$t || failed="$$failed\n  $$t"; \
+	done; \
+	if [ -n "$$failed" ]; then printf 'FAILED:%b\n' "$$failed"; exit 1; fi; \
+	echo "all Bitwarden tests passed"
 
 # Hermes dashboard, signed in through a one-time link. See docs/hermes.md.
 #   make dashboard-open
