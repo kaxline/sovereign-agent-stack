@@ -386,34 +386,36 @@ start_failed() {
   ev_fail compose_failed start "docker compose up failed for: $*" "$up_log"
 }
 
+# gated_names PLAN KEY: the compose names under KEY ("services" or "oneshots")
+# whose gate is on or that have no gate, one per line.
+gated_names() {
+  local entry gate
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    gate=""
+    [[ "$entry" == *@* ]] && gate="${entry#*@}"
+    if [[ -z "$gate" ]] || gate_on "$1" "$gate"; then
+      printf '%s\n' "${entry%%@*}"
+    fi
+  done <<EOF_ENTRIES
+$(json_list "$2" "$1")
+EOF_ENTRIES
+}
+
 cmd_enable() {
-  local sid="${1:-}" plan entry name gate
+  local sid="${1:-}" plan name
   [[ -n "$sid" && $# -eq 1 ]] || usage_error "enable takes one short id"
   addon_lock
   cli_checked flags plan-enable "$sid"
   plan="$CLI_OUT"
-  local services=() oneshots=()
-  while IFS= read -r entry; do
-    [[ -n "$entry" ]] || continue
-    name="${entry%%@*}"
-    gate=""
-    [[ "$entry" == *@* ]] && gate="${entry#*@}"
-    if [[ -z "$gate" ]] || gate_on "$plan" "$gate"; then
-      services+=("$name")
-    fi
-  done <<EOF_SERVICES
-$(json_list services "$plan")
+  local services=() oneshots=() list
+  list="$(gated_names "$plan" services)"
+  [[ -z "$list" ]] || while IFS= read -r name; do services+=("$name"); done <<EOF_SERVICES
+$list
 EOF_SERVICES
-  while IFS= read -r entry; do
-    [[ -n "$entry" ]] || continue
-    name="${entry%%@*}"
-    gate=""
-    [[ "$entry" == *@* ]] && gate="${entry#*@}"
-    if [[ -z "$gate" ]] || gate_on "$plan" "$gate"; then
-      oneshots+=("$name")
-    fi
-  done <<EOF_ONESHOTS
-$(json_list oneshots "$plan")
+  list="$(gated_names "$plan" oneshots)"
+  [[ -z "$list" ]] || while IFS= read -r name; do oneshots+=("$name"); done <<EOF_ONESHOTS
+$list
 EOF_ONESHOTS
   pull_images ${services[@]+"${services[@]}"} ${oneshots[@]+"${oneshots[@]}"}
   rollback_record "$plan"

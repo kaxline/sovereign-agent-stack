@@ -334,7 +334,7 @@ if logged "compose logs --no-color --tail 20 fixture-seed" && logged "compose ps
 printf '%s\n%s\n' '{"Service":"fixture-worker","State":"running","ExitCode":0}' '{"Service":"fixture-seed","State":"exited","ExitCode":0}' > "${tmp}/ps-lines.json"
 PS_ANSWER="${tmp}/ps-lines.json" DOCKER_FAIL_UP=1 addon_json enable fixture --json
 unset PS_ANSWER DOCKER_FAIL_UP
-r=0; json_ok "$out" error '"target" not in last and "colour red end" in " ".join(last["logTail"]).replace("\x1b[31m","").replace("\x1b[0m","") or "boom" in " ".join(last["logTail"])' || r=1
+r=0; json_ok "$out" error '"target" not in last and "boom" in " ".join(last["logTail"])' || r=1
 check "a failed wait with no failed container has no target" "$r"
 
 # failed-container reads an array or one object per line, one-shots first.
