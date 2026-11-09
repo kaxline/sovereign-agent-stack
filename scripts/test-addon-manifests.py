@@ -426,6 +426,91 @@ for prof in ("default", "api-server", "browser"):
 got = fence_of({"gptr": am.canonical(two_entry(permissions__cron=False))}, env)
 check("cron false fences every entry", got[0] == ["gptr", "gptr-extra"], str(got))
 
+# --- settings, instances, commands and mounts -------------------------------
+def with_settings(settings, **changes):
+    return variant(settings=settings, **changes)
+
+
+rich = variant(
+    builtin__flag="GPTR_MCP_ENABLED",
+    settings={
+        "count": {"type": "int", "default": 3, "label": "How many"},
+        "tags": {"type": "list", "default": ["a", "b"]},
+        "since": {"type": "date", "optional": True},
+        "enabled": {"type": "bool", "default": False, "flag": "GPTR_MCP_ENABLED"},
+        "token": {"type": "secret"},
+    },
+    instances={"name": "account", "settings": {
+        "host": {"type": "string"},
+        "port": {"type": "port", "default": 993},
+        "password": {"type": "secret"},
+    }},
+    commands={"sync": {"service": "server", "instance": True, "argv": ["sync", "--all"]}},
+)
+rich["services"]["worker"] = {"compose": "gptr-worker", "mounts": {"secrets": "ro", "config": "ro",
+                                                                    "instances": "rw"}}
+check("a manifest using every new field is valid", am.validate(rich, "builtin") == [],
+      str(am.validate(rich, "builtin")))
+
+refused("list default must be strings", with_settings({"t": {"type": "list", "default": [1]}}),
+        "builtin", "settings.t.default")
+refused("date default must be YYYY-MM-DD", with_settings({"d": {"type": "date", "default": "2026-13-40"}}),
+        "builtin", "settings.d.default")
+refused("int default must be an int", with_settings({"n": {"type": "int", "default": "3"}}),
+        "builtin", "settings.n.default")
+refused("optional must be a bool", with_settings({"n": {"type": "int", "optional": "yes"}}),
+        "builtin", "settings.n.optional")
+refused("flag only on bool", with_settings({"n": {"type": "int", "default": 1, "flag": "GPTR_MCP_ENABLED"}}),
+        "builtin", "settings.n.flag")
+refused("flag must be a known flag",
+        with_settings({"b": {"type": "bool", "default": True, "flag": "NOPE_ENABLED"}}),
+        "builtin", "settings.b.flag")
+refused("a setting may not be called slug", with_settings({"slug": {"type": "string"}}),
+        "builtin", "reserved")
+refused("flag inside an instance",
+        variant(instances={"name": "acct", "settings": {
+            "b": {"type": "bool", "default": True, "flag": "GPTR_MCP_ENABLED"}}}),
+        "builtin", "refused inside an instance")
+refused("instance schema may not declare slug",
+        variant(instances={"name": "acct", "settings": {"slug": {"type": "string"}}}),
+        "builtin", "reserved")
+refused("instances need a name", variant(instances={"settings": {"a": {"type": "string"}}}),
+        "builtin", "instances.name")
+refused("secret settings from a community feed",
+        packaged(variant(settings={"token": {"type": "secret"}})), "community", "secret settings")
+refused("secret instance settings from a community feed",
+        packaged(variant(instances={"name": "acct", "settings": {"p": {"type": "secret"}}})),
+        "community", "secret settings")
+check("secret settings are allowed from the official feed",
+      am.validate(packaged(variant(settings={"token": {"type": "secret"}})), "official") == [],
+      str(am.validate(packaged(variant(settings={"token": {"type": "secret"}})), "official")))
+
+refused("unknown mount key", variant(services__server__mounts={"logs": "ro"}), "builtin", "mounts")
+refused("bad mount mode", variant(services__server__mounts={"secrets": "wo"}), "builtin", "mounts")
+refused("an mcp service may not mount secrets", variant(services__server__mounts={"secrets": "ro"}),
+        "builtin", "holds secrets")
+refused("a command needs a known service",
+        variant(commands={"x": {"service": "nope", "instance": False, "argv": ["a"]}}),
+        "builtin", "commands.x.service")
+refused("a command needs argv",
+        variant(commands={"x": {"service": "server", "instance": False, "argv": []}}),
+        "builtin", "commands.x.argv")
+refused("a command needs instance as a bool",
+        variant(commands={"x": {"service": "server", "instance": "yes", "argv": ["a"]}}),
+        "builtin", "commands.x.instance")
+refused("a reader's command may not run in an MCP service",
+        variant(permissions__reads=["messages"], permissions__cron=False,
+                mcp__profiles={"default": "ro"},
+                commands={"x": {"service": "server", "instance": False, "argv": ["a"]}}),
+        "builtin", "command runs in an MCP service")
+reader_cmd = copy.deepcopy(rich)
+reader_cmd.update(permissions={**reader_cmd["permissions"], "reads": ["messages"], "cron": False})
+reader_cmd["mcp"]["profiles"] = {"default": "ro"}
+reader_cmd["settings"].pop("token")
+reader_cmd["commands"]["sync"]["service"] = "worker"
+check("a reader's command may run in a non-MCP service", am.validate(reader_cmd, "builtin") == [],
+      str(am.validate(reader_cmd, "builtin")))
+
 # --- Built-in manifests against the repo ------------------------------------
 compose = (ROOT / "docker-compose.yml").read_text()
 sync = ROOT / "scripts" / "sync-profiles.sh"
@@ -441,6 +526,46 @@ def service_block(name: str) -> str:
     m = re.search(rf"^  {re.escape(name)}:\n(.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)", compose, re.M | re.S)
     return m.group(1) if m else ""
 
+
+def mount_problems(sid: str, manifest: dict, compose_text: str) -> list[str]:
+    """Each service with `mounts` must mount exactly the fixed container paths
+    from data/addons/<sid>/ with the declared mode."""
+    problems = []
+    for name, svc in manifest["services"].items():
+        mounts = svc.get("mounts")
+        if not mounts:
+            continue
+        m = re.search(rf"^  {re.escape(svc['compose'])}:\n(.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)",
+                      compose_text, re.M | re.S)
+        block = m.group(1) if m else ""
+        lines = re.findall(r"^      - (\./data/addons/\S+:/run/addon/\S+)$", block, re.M)
+        want = [f"./data/addons/{sid}/{'settings.env' if k == 'config' else k}:{am.MOUNT_PATHS[k]}:{mode}"
+                for k, mode in mounts.items()]
+        if sorted(lines) != sorted(want):
+            problems.append(f"{name}: compose mounts {sorted(lines)}, manifest wants {sorted(want)}")
+    return problems
+
+
+FIX_COMPOSE = """services:
+  gptr-worker:
+    profiles: ["gptr"]
+    volumes:
+      - ./data/addons/gptr/secrets:/run/addon/secrets:ro
+      - ./data/addons/gptr/settings.env:/run/addon/settings.env:ro
+      - ./data/addons/gptr/instances:/run/addon/instances:rw
+      - ./other:/other
+  next:
+    image: x
+"""
+check("mounts cross-check accepts a matching compose service", mount_problems("gptr", rich, FIX_COMPOSE) == [],
+      str(mount_problems("gptr", rich, FIX_COMPOSE)))
+check("mounts cross-check flags a wrong mode",
+      len(mount_problems("gptr", rich, FIX_COMPOSE.replace("instances:rw", "instances:ro"))) == 1)
+check("mounts cross-check flags a missing mount",
+      len(mount_problems("gptr", rich, FIX_COMPOSE.replace(
+          "      - ./data/addons/gptr/secrets:/run/addon/secrets:ro\n", ""))) == 1)
+check("mounts cross-check flags a wrong source directory",
+      len(mount_problems("gptr", rich, FIX_COMPOSE.replace("addons/gptr/secrets", "addons/other/secrets"))) == 1)
 
 for path, manifest, parse_error in am.load_dir(ROOT / "addons"):
     sid = path.parent.name
@@ -458,6 +583,8 @@ for path, manifest, parse_error in am.load_dir(ROOT / "addons"):
         profiles = re.search(r"^    profiles: \[(.*)\]$", block, re.M)
         listed = [p.strip().strip('"') for p in profiles.group(1).split(",")] if profiles else []
         check(f"{sid}: {svc['compose']} is in the {b['profile']} profile", b["profile"] in listed, str(listed))
+    check(f"{sid}: compose mounts match services.*.mounts", not mount_problems(sid, manifest, compose),
+          "; ".join(mount_problems(sid, manifest, compose)))
     for g in manifest.get("gates", []):
         check(f"{sid}: sync-profiles maps gate {g['flag']} to {g['profile']}",
               [g["flag"], g["profile"], "1" if g["seed"] else "0"] in rows, table.stdout)

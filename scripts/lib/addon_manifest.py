@@ -47,12 +47,18 @@ entry and loses the rw one. An invalid manifest is fenced by whatever MCP
 name it carries, so a broken manifest can't open cron. cron_fence_toolsets()
 does the same for the plugin toolsets of add-ons with a vaultBackend.
 
+Settings (and the schema of `instances`, {name, settings}) take the types in
+SETTING_TYPES. A setting with neither `default` nor `optional: true` is
+required; a bool setting may name a `flag`. `services.<name>.mounts` and
+`commands` are checked as validate() describes them.
+
 Policy follows docs/private/addon-manifest-spec.md (draft). `source` is
 "builtin", "official" (a package from the official feed) or "community".
 """
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import re
@@ -76,7 +82,14 @@ READ_CLASSES = {"mail", "messages", "contacts", "calendar", "projects", "memory"
                 "credentials"}
 EGRESS_WORDS = {"llm-proxy", "search", "postgres", "internet"}
 STACK_SERVICES = {"llm", "search", "storage", "postgres", "neo4j", "redis", "secrets", "scheduler"}
-SETTING_TYPES = {"string", "int", "bool", "choice", "port", "secret", "url", "path"}
+SETTING_TYPES = {"string", "int", "bool", "choice", "port", "secret", "url", "path", "list", "date"}
+# Setting names the stack fills in itself; a schema may not declare them.
+RESERVED_SETTINGS = {"slug"}
+# services.<name>.mounts keys and the fixed container path each one names.
+MOUNT_PATHS = {"secrets": "/run/addon/secrets", "config": "/run/addon/settings.env",
+               "instances": "/run/addon/instances"}
+MOUNT_MODES = {"ro", "rw"}
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 TRANSPORTS = {"sse", "http"}
 ACCESS = {"ro", "rw"}
 UNATTENDED_PROFILE = "api-server"
@@ -278,27 +291,145 @@ def validate(manifest, source: str = "builtin") -> list[str]:
     if vault is not None:
         errors.extend(_validate_vault_backend(vault, source, bool(reads)))
 
+    flags = set(gate_flags)
+    if isinstance(builtin, dict) and isinstance(builtin.get("flag"), str):
+        flags.add(builtin["flag"])
     settings = manifest.get("settings", {})
     if not isinstance(settings, dict):
         err("settings must be an object")
         settings = {}
-    for name, s in settings.items():
-        if not isinstance(s, dict) or s.get("type") not in SETTING_TYPES:
-            err(f"settings.{name}.type must be one of {', '.join(sorted(SETTING_TYPES))}")
+    errors.extend(_validate_settings(settings, source=source, reads=bool(reads), flags=flags,
+                                     in_instance=False))
+
+    instances = manifest.get("instances")
+    if instances is not None:
+        if not isinstance(instances, dict):
+            err("instances must be an object {name, settings}")
+        else:
+            iname = instances.get("name")
+            if not (isinstance(iname, str) and NAME_RE.match(iname)):
+                err("instances.name must be lowercase letters, digits and -")
+            isettings = instances.get("settings")
+            if not (isinstance(isettings, dict) and isettings):
+                err("instances.settings must declare at least one setting")
+            else:
+                errors.extend(_validate_settings(isettings, source=source, reads=bool(reads),
+                                                 flags=flags, in_instance=True))
+            extra = set(instances) - {"name", "settings"}
+            if extra:
+                err(f"instances has unknown fields: {', '.join(sorted(extra))}")
+
+    mcp_services: set[str] = set()
+    for entry in mcp_entries(manifest) if isinstance(mcp, (dict, list)) else []:
+        svc = entry.get("service") if isinstance(entry, dict) else None
+        if isinstance(svc, str):
+            mcp_services.add(svc)
+        elif isinstance(svc, dict):
+            mcp_services.update(v for v in svc.values() if isinstance(v, str))
+    for name, svc in services.items():
+        if not isinstance(svc, dict) or "mounts" not in svc:
             continue
-        if s["type"] == "choice":
-            opts = s.get("options")
-            if not (_is_str_list(opts) and opts):
-                err(f"settings.{name}.options must be a non-empty list")
-            elif "default" in s and s["default"] not in opts:
-                err(f"settings.{name}.default is not one of its options")
-        if s["type"] == "path" and reads and "default" in s:
-            err(f"settings.{name}: a path setting in an add-on that reads personal data may not have a default")
+        mounts = svc["mounts"]
+        if not (isinstance(mounts, dict) and mounts and set(mounts) <= set(MOUNT_PATHS)
+                and all(v in MOUNT_MODES for v in mounts.values())):
+            err(f"services.{name}.mounts must map secrets, config and/or instances to ro or rw")
+        elif "secrets" in mounts and name in mcp_services:
+            err(f"services.{name} holds secrets, so no mcp entry may point at it")
+
+    commands = manifest.get("commands")
+    if commands is not None:
+        if not isinstance(commands, dict):
+            err("commands must be an object of name to {service, instance, argv}")
+            commands = {}
+        for cname, cmd in commands.items():
+            if not NAME_RE.match(cname):
+                err(f"commands.{cname}: name must be lowercase letters, digits and -")
+            if not isinstance(cmd, dict):
+                err(f"commands.{cname} must be an object {{service, instance, argv}}")
+                continue
+            if cmd.get("service") not in services:
+                err(f"commands.{cname}.service must name one of services")
+            elif reads and cmd["service"] in mcp_services:
+                err(f"commands.{cname}: command runs in an MCP service, which an add-on "
+                    "that reads personal data may not do")
+            if not isinstance(cmd.get("instance"), bool):
+                err(f"commands.{cname}.instance must be true or false")
+            argv = cmd.get("argv")
+            if not (_is_str_list(argv) and argv):
+                err(f"commands.{cname}.argv must be a non-empty list of strings")
+            extra = set(cmd) - {"service", "instance", "argv"}
+            if extra:
+                err(f"commands.{cname} has unknown fields: {', '.join(sorted(extra))}")
 
     if "host" in manifest and source == "community":
         err("a host component is refused unless the add-on is built-in or on the official feed")
 
     return errors
+
+
+def _validate_settings(settings: dict, *, source: str, reads: bool, flags: set[str],
+                       in_instance: bool) -> list[str]:
+    """Check a settings schema (top-level, or an instance's). A setting with
+    neither `default` nor `optional: true` is required. Messages name the
+    setting, never a value."""
+    errors: list[str] = []
+    err = errors.append
+    where = "instances.settings" if in_instance else "settings"
+    for name, s in settings.items():
+        at = f"{where}.{name}"
+        if name in RESERVED_SETTINGS:
+            err(f"{at}: {name!r} is reserved")
+        if not isinstance(s, dict) or s.get("type") not in SETTING_TYPES:
+            err(f"{at}.type must be one of {', '.join(sorted(SETTING_TYPES))}")
+            continue
+        t = s["type"]
+        if "label" in s and not (isinstance(s["label"], str) and s["label"].strip()):
+            err(f"{at}.label must be a non-empty string")
+        if "optional" in s and not isinstance(s["optional"], bool):
+            err(f"{at}.optional must be true or false")
+        if t == "choice":
+            opts = s.get("options")
+            if not (_is_str_list(opts) and opts):
+                err(f"{at}.options must be a non-empty list")
+            elif "default" in s and s["default"] not in opts:
+                err(f"{at}.default is not one of its options")
+        if t == "path" and reads and "default" in s:
+            err(f"{at}: a path setting in an add-on that reads personal data may not have a default")
+        if t == "secret" and source not in ("builtin", "official"):
+            err(f"{at}: secret settings are refused unless the add-on is built-in or on the official feed")
+        if "default" in s and t != "choice" and not _default_fits(t, s["default"]):
+            err(f"{at}.default does not match type {t}")
+        if "flag" in s:
+            if in_instance:
+                err(f"{at}.flag is refused inside an instance")
+            elif t != "bool":
+                err(f"{at}.flag is for bool settings only")
+            elif not (isinstance(s["flag"], str) and ENV_RE.match(s["flag"])):
+                err(f"{at}.flag must be an env var name")
+            elif s["flag"] not in flags:
+                err(f"{at}.flag must be builtin.flag or a flag listed in gates")
+    return errors
+
+
+def _default_fits(t: str, value) -> bool:
+    if t in ("string", "url", "path", "secret"):
+        return isinstance(value, str)
+    if t in ("int", "port"):
+        return isinstance(value, int) and not isinstance(value, bool) and (
+            t == "int" or 0 < value < 65536)
+    if t == "bool":
+        return isinstance(value, bool)
+    if t == "list":
+        return _is_str_list(value)
+    if t == "date":
+        if not (isinstance(value, str) and DATE_RE.match(value)):
+            return False
+        try:
+            datetime.date.fromisoformat(value)
+        except ValueError:
+            return False
+        return True
+    return True
 
 
 def _validate_when(when, gate_flags: set[str], where: str) -> list[str]:
