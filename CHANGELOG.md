@@ -10,8 +10,12 @@ the stack under another app.
 
 ### Upgrade steps
 
-None. No shipped manifest uses the new fields, so existing installs behave
-as before.
+- The first `make up` recreates `hermes` once, because `BITWARDEN_ENABLED`
+  left its environment (see Changes). A caller that recreates `hermes`
+  itself runs `./scripts/vault.sh follow-hermes` afterwards, as for any
+  recreate.
+- No shipped manifest uses the new add-on manifest fields, so existing
+  installs otherwise behave as before.
 
 ### Changes
 
@@ -29,6 +33,20 @@ as before.
   settings schema for building a settings form. See
   [docs/extending.md](docs/extending.md#add-ons-scriptsaddonsh). Field
   names may change between patch releases while the stack is in 0.3.x.
+
+- **Turning Bitwarden on or off no longer recreates `hermes`.** The
+  `bwbroker` plugin is installed into `/opt/hermes/plugins/bwbroker` on
+  every start, and `BITWARDEN_ENABLED` is no longer in the `hermes`
+  service's environment; it still reaches both bootstraps, which turn the
+  plugin on or off per profile as before. When a bootstrap changes a
+  profile's add-on login backends it leaves `.addon-plugins-changed` in that
+  profile's home. The new `./scripts/vault.sh reload-plugins`, which
+  `make up` runs, sends the running gateway Hermes' `reload-plugins`
+  control verb for each marked profile and clears the marker once the
+  gateway answers. New sessions get or lose the Bitwarden tools; open
+  sessions keep theirs. A caller that runs the bootstraps without `make up`
+  runs `./scripts/vault.sh reload-plugins` after them. When no gateway
+  answers, the marker stays and `make restart` applies the change.
 
 ### Fixes
 

@@ -677,9 +677,10 @@ for path, manifest, parse_error in am.load_dir(ROOT / "addons"):
             n = len(re.findall(rf"^      - {var}=", compose, re.M))
             check(f"{sid}: both hermes-*-bootstrap services receive {var}", n == 2, f"found {n}")
     if manifest.get("vaultBackend"):
-        # Both bootstraps read the flag for vault-plan; hermes reads it to install the plugin.
+        # Both bootstraps read the flag for vault-plan. hermes installs the plugin
+        # whatever the flag says, so flipping it does not recreate hermes.
         n = len(re.findall(rf"^      - {b['flag']}=", compose, re.M))
-        check(f"{sid}: both hermes-*-bootstrap services and hermes receive {b['flag']}", n == 3, f"found {n}")
+        check(f"{sid}: both hermes-*-bootstrap services, and not hermes, receive {b['flag']}", n == 2, f"found {n}")
 
 for svc in ("hermes-api-bootstrap", "hermes-browser-bootstrap"):
     block = service_block(svc)

@@ -1556,8 +1556,6 @@ services:
       - TZ=${TZ:-UTC}
       # Buzz localhost proxy (cont-init). Private keys stay in profile .env files.
       - HERMES_BUZZ_ENABLED=${HERMES_BUZZ_ENABLED:-0}
-      # Installs the Bitwarden broker's plugin (14-install-bwbroker-plugin.sh).
-      - BITWARDEN_ENABLED=${BITWARDEN_ENABLED:-0}
       - BUZZ_RELAY_URL=${BUZZ_RELAY_URL:-}
       # Bound every Hermes LLM call (foreground + bg-review). Local endpoints
       # skip implicit stale detection unless the stale timeout is explicit.
@@ -1824,8 +1822,8 @@ services:
       - ./compose/hermes/dashboard_handoff.py:/bootstrap/dashboard_handoff.py:ro
       - ./compose/hermes/patch-dashboard-handoff.py:/bootstrap/patch-dashboard-handoff.py:ro
       - ./compose/hermes/13-patch-dashboard.sh:/etc/cont-init.d/13-patch-dashboard:ro
-      # Bitwarden broker's Hermes plugin, installed into Hermes's bundled plugins
-      # dir while BITWARDEN_ENABLED is on; the bootstrap enables it per profile.
+      # Bitwarden broker's Hermes plugin, always installed into Hermes's bundled
+      # plugins dir; the bootstraps enable it per profile while BITWARDEN_ENABLED is on.
       - ./compose/hermes/plugins/bwbroker:/bootstrap/plugins/bwbroker:ro
       - ./compose/hermes/bitwarden_broker_backend.py:/bootstrap/bitwarden_broker_backend.py:ro
       - ./compose/hermes/14-install-bwbroker-plugin.sh:/etc/cont-init.d/14-install-bwbroker-plugin:ro

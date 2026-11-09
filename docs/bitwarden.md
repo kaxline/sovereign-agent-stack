@@ -127,7 +127,8 @@ writes the password. A `collection:` scope with a member account avoids this.
    organization and Bitwarden enforces the agent's scope.
 
 Each finished step is recorded in `local/state`. `make vault-init` then sets `BITWARDEN_ENABLED=1`;
-run `make up`. `make vault-open` opens the web vault at `http://localhost:8222`
+run `make up`. It starts the broker and asks the running gateway to reload its plugins, without
+recreating `hermes`; new sessions on `default` and `browser` get the Bitwarden tools. `make vault-open` opens the web vault at `http://localhost:8222`
 (`VAULTWARDEN_PORT`).
 
 The web vault is plain HTTP on `127.0.0.1`, which a browser treats as a secure context. `bw` refuses
@@ -385,7 +386,10 @@ None of this has been run on a Linux host.
 ## Turning it off
 
 Set `BITWARDEN_ENABLED=0` and run `make up`. The broker stops, and the next bootstrap takes
-`bwbroker` out of each profile's `plugins.enabled` and removes `vault.bwbroker`. It leaves
+`bwbroker` out of each profile's `plugins.enabled` and removes `vault.bwbroker`. `hermes` is not
+recreated: `make up` asks the running gateway to reload its plugins (`scripts/vault.sh
+reload-plugins`), and the Bitwarden tools are gone from new sessions. If the gateway does not
+answer, `make restart` applies the change. It leaves
 `vault.bitwarden.enabled: false`, which it wrote while the add-on was on, so Hermes' own `bw:`
 backend stays off until you remove that line. Account files and data stay. Turn local mode off with
 `BITWARDEN_LOCAL_ENABLED=0`.

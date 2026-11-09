@@ -1425,9 +1425,9 @@ register_addon_mcp_servers() {
 }
 
 # Built-in add-ons with a vaultBackend block (addon_manifest.py vault-plan): a
-# login-backend plugin for Hermes's browser vault (Bitwarden's bwbroker). While
-# BITWARDEN_ENABLED is on, the hermes container installs the plugin into
-# Hermes's bundled plugins dir (14-install-bwbroker-plugin.sh), since Hermes
+# login-backend plugin for Hermes's browser vault (Bitwarden's bwbroker). The
+# hermes container always installs the plugin into Hermes's bundled plugins
+# dir (14-install-bwbroker-plugin.sh), since Hermes
 # refuses a login backend from $HERMES_HOME/plugins. This turns it on or off
 # per profile.
 #
@@ -1437,7 +1437,9 @@ register_addon_mcp_servers() {
 # plugins dir is removed either way: it would shadow the bundled one and have
 # its backend refused. While any vault add-on is on, vault.bitwarden.enabled
 # is false, so core's own Bitwarden backend (the bw CLI) never lists logins
-# beside the broker's. The config is written only when something changes.
+# beside the broker's. The config is written only when something changes, and
+# then .addon-plugins-changed is left in the profile's home for
+# scripts/vault.sh reload-plugins.
 addon_vault_plan() {
   [ -d "$ADDONS_DIR" ] || return 0
   python3 "$ADDON_MANIFEST_PY" vault-plan "$ADDONS_DIR" "${1:-default}"
@@ -1546,6 +1548,9 @@ if any(on == "1" for _n, on, *_rest in plan):
 
 if changes:
     atomic_yaml_write(str(cfg_path), config)
+    # A running gateway loaded its plugins at start; scripts/vault.sh up-hook
+    # asks it to reload them for each profile that has this marker.
+    (cfg_path.parent / ".addon-plugins-changed").touch()
 if changes or removed:
     print(f"add-on login backends on {profile}: {'; '.join(changes + ['removed ' + r for r in removed])}")
 PY
