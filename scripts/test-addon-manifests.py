@@ -1002,7 +1002,12 @@ for path, manifest, parse_error in am.load_dir(ROOT / "addons"):
         check(f"{sid}: compose service {svc['compose']} exists", bool(block))
         profiles = re.search(r"^    profiles: \[(.*)\]$", block, re.M)
         listed = [p.strip().strip('"') for p in profiles.group(1).split(",")] if profiles else []
-        check(f"{sid}: {svc['compose']} is in the {b['profile']} profile", b["profile"] in listed, str(listed))
+        # A service behind a gate runs under the gate's profile; builtin.profile
+        # may then be a name no service uses (Twenty: crm-mcp).
+        want_profile = b["profile"]
+        if "when" in svc:
+            want_profile = next(g["profile"] for g in manifest["gates"] if g["flag"] == svc["when"]["gate"])
+        check(f"{sid}: {svc['compose']} is in the {want_profile} profile", want_profile in listed, str(listed))
     check(f"{sid}: compose mounts match services.*.mounts", not mount_problems(sid, manifest, compose),
           "; ".join(mount_problems(sid, manifest, compose)))
     check(f"{sid}: services.*.volumes are declared in docker-compose.yml",
@@ -1020,6 +1025,31 @@ for path, manifest, parse_error in am.load_dir(ROOT / "addons"):
         # Both bootstraps read the flag for vault-plan; hermes reads it to install the plugin.
         n = len(re.findall(rf"^      - {b['flag']}=", compose, re.M))
         check(f"{sid}: both hermes-*-bootstrap services and hermes receive {b['flag']}", n == 3, f"found {n}")
+
+# --- Twenty ------------------------------------------------------------------
+tw_path = ROOT / "addons" / "twenty" / "addon.json"
+check("addons/twenty/addon.json exists", tw_path.is_file())
+if tw_path.is_file():
+    tw = json.loads(tw_path.read_text())
+    check("twenty manifest is canonical JSON", tw_path.read_text() == am.canonical(tw))
+    tw_default = tw["data"]["paths"][0]["default"]
+    for svc_name in ("twenty-db", "twenty-server"):
+        block = service_block(svc_name)
+        want = "${TWENTY_DATA_DIR:-" + tw_default + "}/"
+        check(f"data.paths[0].default matches the {svc_name} bind mount", want in block, want)
+    check("twenty: builtin.profile is a name no compose service uses",
+          not re.search(rf'^    profiles: \[(?:.*[ ,"])?"?{re.escape(tw["builtin"]["profile"])}"?[,\]]',
+                        compose, re.M))
+    check("twenty: TWENTY_LOCAL_ENABLED is a gate on the crm profile",
+          {"flag": "TWENTY_LOCAL_ENABLED", "profile": "crm", "seed": False} in tw["gates"])
+    check("twenty: every service is gated on TWENTY_LOCAL_ENABLED",
+          all(s.get("when") == {"gate": "TWENTY_LOCAL_ENABLED"} for s in tw["services"].values()))
+    check("twenty: the four compose services are listed",
+          sorted(s["compose"] for s in tw["services"].values())
+          == ["twenty-db", "twenty-redis", "twenty-server", "twenty-worker"])
+    pins = re.search(r'^TWENTY_MCP_PINS="([^"]*)"', (ROOT / "compose/hermes/bootstrap-api-profile.sh").read_text(), re.M)
+    check("twenty: mcp.pin matches TWENTY_MCP_PINS in the bootstrap",
+          pins is not None and tw["mcp"]["pin"] == pins.group(1).split(), str(tw["mcp"]["pin"]))
 
 for svc in ("hermes-api-bootstrap", "hermes-browser-bootstrap"):
     block = service_block(svc)

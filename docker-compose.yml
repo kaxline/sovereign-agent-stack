@@ -1343,6 +1343,8 @@ services:
       - CALDAV_MCP_ACCOUNTS_DIR=/bootstrap/caldav-accounts
       # Twenty CRM: one MCP entry per workspace file (local or remote). docs/crm.md
       - TWENTY_MCP_ENABLED=${TWENTY_MCP_ENABLED:-0}
+      - TWENTY_MCP_TIMEOUT=${TWENTY_MCP_TIMEOUT:-60}
+      - TWENTY_MCP_CONNECT_TIMEOUT=${TWENTY_MCP_CONNECT_TIMEOUT:-30}
       # 0: local workspace files aren't registered (no twenty-server to reach).
       - TWENTY_LOCAL_ENABLED=${TWENTY_LOCAL_ENABLED:-0}
       - TWENTY_WORKSPACES_DIR=/bootstrap/twenty-workspaces
@@ -1460,6 +1462,8 @@ services:
       - CALDAV_MCP_ACCOUNTS_DIR=/bootstrap/caldav-accounts
       # Twenty CRM: one MCP entry per workspace file (local or remote). docs/crm.md
       - TWENTY_MCP_ENABLED=${TWENTY_MCP_ENABLED:-0}
+      - TWENTY_MCP_TIMEOUT=${TWENTY_MCP_TIMEOUT:-60}
+      - TWENTY_MCP_CONNECT_TIMEOUT=${TWENTY_MCP_CONNECT_TIMEOUT:-30}
       # 0: local workspace files aren't registered (no twenty-server to reach).
       - TWENTY_LOCAL_ENABLED=${TWENTY_LOCAL_ENABLED:-0}
       - TWENTY_WORKSPACES_DIR=/bootstrap/twenty-workspaces

@@ -55,8 +55,13 @@ sed -n '/^networks:/,/^volumes:/p' "$compose" | grep -q '^  crm:' || fail "crm n
 [ "$(grep -cF -- '- ./compose/twenty/workspaces:/bootstrap/twenty-workspaces:ro' "$compose")" = 2 ] \
   || fail "both hermes-*-bootstrap services mount the workspace files"
 
-grep -q '^TWENTY_LOCAL_ENABLED crm 0$' "${ROOT}/scripts/sync-profiles.sh" \
+# The rows come from addons/twenty/addon.json. TWENTY_MCP_ENABLED has a profile
+# no service uses, so a remote-only install does not start the local services.
+table="$(bash "${ROOT}/scripts/sync-profiles.sh" --table)"
+printf '%s\n' "$table" | grep -qx 'TWENTY_LOCAL_ENABLED crm 0' \
   || fail "sync-profiles.sh maps TWENTY_LOCAL_ENABLED to crm"
+printf '%s\n' "$table" | grep -qx 'TWENTY_MCP_ENABLED crm-mcp 0' \
+  || fail "sync-profiles.sh maps TWENTY_MCP_ENABLED to crm-mcp"
 
 # setup.sh: --crm turns both flags on; the secrets are generated for every
 # install so enabling crm later needs no extra step, and never replaced.
