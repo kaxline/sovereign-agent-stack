@@ -179,12 +179,13 @@ def cmd_plan_enable(args) -> None:
     for name, spec in manifest.get("settings", {}).items():
         if spec.get("type") == "bool" and spec.get("flag") in gates and name in stored:
             flags[spec["flag"]] = "1" if stored[name] else "0"
-    services = []
+    services, oneshots = [], []
     for key, svc in manifest["services"].items():
         name = _compose(manifest, key)
         gate = svc.get("when", {}).get("gate")
-        services.append(f"{name}@{gate}" if gate else name)
-    _dump({"builtin": manifest["builtin"]["flag"], "flags": flags, "services": services})
+        (oneshots if svc.get("oneshot") else services).append(f"{name}@{gate}" if gate else name)
+    _dump({"builtin": manifest["builtin"]["flag"], "flags": flags, "services": services,
+           "oneshots": oneshots})
 
 
 def cmd_plan_disable(args) -> None:
@@ -307,6 +308,31 @@ def cmd_pull_events(args) -> None:
             _pull_line(service=service, status="done")
 
 
+def cmd_failed_container(args) -> None:
+    """Print the first of SERVICES_CSV (in that order) whose container exited
+    non-zero, or nothing. Reads `docker compose ps -a --format json` on stdin:
+    one JSON array, or one object per line, depending on the compose version."""
+    text = sys.stdin.read().strip()
+    rows = []
+    if text:
+        try:
+            data = json.loads(text)
+            rows = data if isinstance(data, list) else [data]
+        except ValueError:
+            for line in text.splitlines():
+                try:
+                    rows.append(json.loads(line))
+                except ValueError:
+                    continue
+    failed = {r.get("Service") for r in rows if isinstance(r, dict)
+              and r.get("State") == "exited" and isinstance(r.get("ExitCode"), int)
+              and r["ExitCode"] != 0}
+    for name in args.services.split(","):
+        if name and name in failed:
+            print(name)
+            return
+
+
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(prog="addon_cli.py")
     p.add_argument("--addons-dir", type=Path, required=True)
@@ -337,6 +363,9 @@ def main(argv: list[str]) -> int:
     s = sub.add_parser("pull-events")
     s.add_argument("services")
     s.set_defaults(func=cmd_pull_events)
+    s = sub.add_parser("failed-container")
+    s.add_argument("services")
+    s.set_defaults(func=cmd_failed_container)
     s = sub.add_parser("log-tail")
     s.add_argument("--lines", type=int, default=20)
     s.set_defaults(func=cmd_log_tail)

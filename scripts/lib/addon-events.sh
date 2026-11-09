@@ -205,7 +205,8 @@ ev_log_tail() {
 # ev_fail CODE STEP MESSAGE LOGFILE: runs EV_ON_FAIL, prints the error line
 # (JSON mode) and `error: MESSAGE` on stderr, and exits with CODE's status.
 # An empty STEP is null in the error line (a failure before any step, such as
-# busy or a usage error). LOGFILE may be empty.
+# busy or a usage error). LOGFILE may be empty. A non-empty EV_TARGET (the
+# compose service that failed) adds "target" to the error line.
 ev_fail() {
   local code="$1" step="$2" message="$3" log="${4:-}" hook="$EV_ON_FAIL" tail="[]" stepjson=null extra=""
   trap '' INT TERM
@@ -215,6 +216,7 @@ ev_fail() {
     [[ -n "$log" && -s "$log" ]] && tail="$(ev_log_tail "$log")"
     [[ -n "$step" ]] && stepjson="$(json_str "$step")"
     [[ "$EV_ROLLED_BACK" == 1 ]] && extra=',"rolledBack":true'
+    [[ -n "${EV_TARGET:-}" ]] && extra="${extra},\"target\":$(json_str "$EV_TARGET")"
     printf '{"phase":"error","error":%s,"step":%s,"message":%s,"logTail":%s%s}\n' \
       "$(json_str "$code")" "$stepjson" "$(json_str "$message")" "$tail" "$extra" >&3 || true
   fi

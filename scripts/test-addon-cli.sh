@@ -28,16 +28,32 @@ printf 'COMPOSE_PROJECT_NAME=fixtureproj\n' >> "${root}/.env"
 # DOCKER_SLEEP_UP=1 makes `compose up` write its PID to SLEEP_PID and sleep.
 # DOCKER_FAIL_PULL=1 makes `compose --progress json pull` exit 1.
 # DOCKER_UP_DELAY=N makes `compose up` sleep N seconds first.
+# DOCKER_FAIL_ONESHOT=1 makes `compose up --no-deps --exit-code-from` exit 1.
+# `compose ps -a --format json` prints the file PS_ANSWER names, if any.
+# `compose logs` prints one line naming the service.
 cat > "${tmp}/bin/docker" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >> "${STUB_LOG}"
+if [ "$1 $2 $3 $4" = "compose up --no-deps --exit-code-from" ] && [ "${DOCKER_FAIL_ONESHOT:-0}" = 1 ]; then
+  echo "seed failed: no such table"
+  exit 1
+fi
+if [ "$1 $2 $3 $4" = "compose ps -a --format" ]; then
+  [ -n "${PS_ANSWER:-}" ] && cat "$PS_ANSWER"
+  exit 0
+fi
+if [ "$1 $2" = "compose logs" ]; then
+  eval "last=\${$#}"
+  echo "log line from $last"
+  exit 0
+fi
 if [ "$1 $2" = "compose up" ]; then
   [ -n "${DOCKER_UP_DELAY:-}" ] && sleep "$DOCKER_UP_DELAY"
   if [ "${DOCKER_SLEEP_UP:-0}" = 1 ]; then
     echo $$ > "${SLEEP_PID}"
     exec sleep 30
   fi
-  if [ "${DOCKER_FAIL_UP:-0}" = 1 ]; then
+  if [ "${DOCKER_FAIL_UP:-0}" = 1 ] && [ "$3" = "-d" ]; then
     printf '%s\n' 'boom "quoted" \ back'
     printf '%010000d\n' 0
     printf 'colour \033[31mred\033[0m\tend\n'
@@ -256,7 +272,7 @@ else
 fi
 
 # --json output, the lock and rollback. The fixture is enabled here.
-ENABLE_STEPS='[("flags","running"),("flags","done"),("start","running"),("start","done"),("reload","running"),("reload","done")]'
+ENABLE_STEPS='[("flags","running"),("flags","done"),("start","running"),("start","done"),("start","running"),("start","done"),("reload","running"),("reload","done")]'
 : > "$STUB_LOG"
 addon_json disable fixture --json
 expect_rc "disable --json" 0
@@ -275,6 +291,58 @@ if [ "$(grep -n 'pull' "$STUB_LOG" | head -1 | cut -d: -f1)" = 1 ] && logged "co
 else
   bad "enable --json pulls missing images before anything else"; cat "$STUB_LOG"
 fi
+
+# One-shots run before the wait and are left out of it.
+addon disable fixture
+: > "$STUB_LOG"
+addon_json enable fixture --json
+n_seed="$(grep -n 'compose up --no-deps --exit-code-from fixture-seed fixture-seed' "$STUB_LOG" | head -1 | cut -d: -f1)"
+n_wait="$(grep -n 'compose up -d --wait fixture-worker' "$STUB_LOG" | head -1 | cut -d: -f1)"
+if [ -n "$n_seed" ] && [ -n "$n_wait" ] && [ "$n_seed" -lt "$n_wait" ] && ! grep -F 'up -d --wait' "$STUB_LOG" | grep -qF fixture-seed; then
+  ok "enable runs the one-shot before the wait and leaves it out of it"
+else
+  bad "enable runs the one-shot before the wait and leaves it out of it"; cat "$STUB_LOG"
+fi
+r=0; json_ok "$out" "done" '[(l["step"], l.get("target")) for l in lines if l["phase"] == "setup" and l["step"] == "start" and l["status"] == "running"] == [("start", "fixture-seed"), ("start", None)]' || r=1
+check "the one-shot start step names its service" "$r"
+
+# A one-shot that exits non-zero stops enable before the wait.
+addon disable fixture
+cp "${root}/.env" "${tmp}/env.before"
+: > "$STUB_LOG"
+DOCKER_FAIL_ONESHOT=1 addon_json enable fixture --json
+unset DOCKER_FAIL_ONESHOT
+expect_rc "enable --json with a failing one-shot exits 1" 1
+r=0; json_ok "$out" error 'last["error"] == "compose_failed" and last["step"] == "start" and last["target"] == "fixture-seed" and last.get("rolledBack") is True and "seed failed: no such table" in last["logTail"]' || r=1
+check "a failing one-shot is compose_failed at step start with its target" "$r"
+if ! logged "up -d --wait"; then ok "a failing one-shot never reaches the wait"; else bad "a failing one-shot never reaches the wait"; cat "$STUB_LOG"; fi
+if cmp -s "${root}/.env" "${tmp}/env.before"; then ok "a failing one-shot rolls back .env"; else bad "a failing one-shot rolls back .env"; fi
+
+# The wait fails; ps shows which container exited (n8n-import blamed on n8n).
+cat > "${tmp}/ps-array.json" <<'PSEOF'
+[{"Service":"fixture-worker","State":"created","ExitCode":0},{"Service":"fixture-seed","State":"exited","ExitCode":1}]
+PSEOF
+: > "$STUB_LOG"
+PS_ANSWER="${tmp}/ps-array.json" DOCKER_FAIL_UP=1 addon_json enable fixture --json
+unset PS_ANSWER DOCKER_FAIL_UP
+expect_rc "enable --json with the wait failing exits 1" 1
+r=0; json_ok "$out" error 'last["error"] == "compose_failed" and last["step"] == "start" and last["target"] == "fixture-seed" and last["logTail"] == ["log line from fixture-seed"]' || r=1
+check "a failed wait reports the exited container and its logs" "$r"
+if logged "compose logs --no-color --tail 20 fixture-seed" && logged "compose ps -a --format json"; then ok "a failed wait asks ps and logs"; else bad "a failed wait asks ps and logs"; cat "$STUB_LOG"; fi
+
+# With no container exited non-zero there is no target; logTail is the up output.
+printf '%s\n%s\n' '{"Service":"fixture-worker","State":"running","ExitCode":0}' '{"Service":"fixture-seed","State":"exited","ExitCode":0}' > "${tmp}/ps-lines.json"
+PS_ANSWER="${tmp}/ps-lines.json" DOCKER_FAIL_UP=1 addon_json enable fixture --json
+unset PS_ANSWER DOCKER_FAIL_UP
+r=0; json_ok "$out" error '"target" not in last and "colour red end" in " ".join(last["logTail"]).replace("\x1b[31m","").replace("\x1b[0m","") or "boom" in " ".join(last["logTail"])' || r=1
+check "a failed wait with no failed container has no target" "$r"
+
+# failed-container reads an array or one object per line, one-shots first.
+r=0
+[ "$(printf '%s' '[{"Service":"a","State":"exited","ExitCode":2},{"Service":"b","State":"exited","ExitCode":3}]' | python3 "${REPO}/scripts/lib/addon_cli.py" --addons-dir "$ADDONS_DIR" --data-root "$tmp" failed-container b,a)" = b ] || r=1
+[ "$(printf '%s\n%s\n' '{"Service":"a","State":"exited","ExitCode":0}' '{"Service":"b","State":"exited","ExitCode":3}' | python3 "${REPO}/scripts/lib/addon_cli.py" --addons-dir "$ADDONS_DIR" --data-root "$tmp" failed-container a,b)" = b ] || r=1
+[ -z "$(printf '' | python3 "${REPO}/scripts/lib/addon_cli.py" --addons-dir "$ADDONS_DIR" --data-root "$tmp" failed-container a,b)" ] || r=1
+if [ "$r" = 0 ]; then ok "failed-container handles both ps formats and orders by the list"; else bad "failed-container handles both ps formats and orders by the list"; fi
 
 addon disable fixture
 cp "${root}/.env" "${tmp}/env.before"

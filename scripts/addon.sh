@@ -244,7 +244,7 @@ EOF_FLAGS
   builtin="$(printf '%s' "$plan" | sed -n 's/.*"builtin":"\([A-Z][A-Z0-9_]*\)".*/\1/p')"
   ROLLBACK_STOP=0
   truthy "$(env_get "$builtin")" || ROLLBACK_STOP=1
-  ROLLBACK_SERVICES="$(json_list services "$plan" | sed 's/@.*//')"
+  ROLLBACK_SERVICES="$(json_list services "$plan" | sed 's/@.*//')"$'\n'"$(json_list oneshots "$plan" | sed 's/@.*//')"
   EV_ON_FAIL=rollback
 }
 
@@ -368,13 +368,31 @@ cmd_configure() {
   write_flags "$out"
 }
 
+# start_failed SERVICES...: after `up -d --wait` fails, finds the container
+# that exited non-zero (SERVICES in the order given: one-shots, then the
+# rest). Docker blames the service that depends on a failed one-shot, so
+# `up`'s own output often names the wrong one. Without such a container the
+# error keeps the `up` output as logTail and has no target.
+start_failed() {
+  local up_log="$EV_LAST_LOG" csv="" svc bad="" log
+  for svc in "$@"; do csv="${csv:+${csv},}${svc}"; done
+  bad="$(docker compose ps -a --format json "$@" 2> /dev/null | cli failed-container "$csv" 2> /dev/null)" || bad=""
+  if [[ -n "$bad" ]]; then
+    log="$(ev_log logs)"
+    docker compose logs --no-color --tail 20 "$bad" > "$log" 2>&1 || true
+    EV_TARGET="$bad"
+    ev_fail compose_failed start "docker compose up failed: $bad exited with an error" "$log"
+  fi
+  ev_fail compose_failed start "docker compose up failed for: $*" "$up_log"
+}
+
 cmd_enable() {
   local sid="${1:-}" plan entry name gate
   [[ -n "$sid" && $# -eq 1 ]] || usage_error "enable takes one short id"
   addon_lock
   cli_checked flags plan-enable "$sid"
   plan="$CLI_OUT"
-  local services=()
+  local services=() oneshots=()
   while IFS= read -r entry; do
     [[ -n "$entry" ]] || continue
     name="${entry%%@*}"
@@ -386,13 +404,29 @@ cmd_enable() {
   done <<EOF_SERVICES
 $(json_list services "$plan")
 EOF_SERVICES
-  pull_images ${services[@]+"${services[@]}"}
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    name="${entry%%@*}"
+    gate=""
+    [[ "$entry" == *@* ]] && gate="${entry#*@}"
+    if [[ -z "$gate" ]] || gate_on "$plan" "$gate"; then
+      oneshots+=("$name")
+    fi
+  done <<EOF_ONESHOTS
+$(json_list oneshots "$plan")
+EOF_ONESHOTS
+  pull_images ${services[@]+"${services[@]}"} ${oneshots[@]+"${oneshots[@]}"}
   rollback_record "$plan"
   run_step flags "" apply_flags "$plan" \
     || ev_fail command_failed flags "writing the flags or syncing COMPOSE_PROFILES failed" "$EV_LAST_LOG"
+  # One-shots run to completion first: a service may depend on one.
+  for name in ${oneshots[@]+"${oneshots[@]}"}; do
+    run_step start "$name" docker compose up --no-deps --exit-code-from "$name" "$name" \
+      || { EV_TARGET="$name"; ev_fail compose_failed start "one-shot service $name failed" "$EV_LAST_LOG"; }
+  done
   if [[ ${#services[@]} -gt 0 ]]; then
     run_step start "" docker compose up -d --wait "${services[@]}" \
-      || ev_fail compose_failed start "docker compose up failed for: ${services[*]}" "$EV_LAST_LOG"
+      || start_failed ${oneshots[@]+"${oneshots[@]}"} "${services[@]}"
   fi
   run_step reload "" hermes_reload \
     || ev_fail compose_failed reload "make hermes-reload failed" "$EV_LAST_LOG"
