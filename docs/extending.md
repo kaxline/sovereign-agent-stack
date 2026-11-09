@@ -711,6 +711,22 @@ the file with `shlex.split`, not compose
 `0`, a `list` is a JSON array, and `int`, `port` and `date` values are
 written as text.
 
+An `mcp` entry with `instances` registers one `mcp_servers.<name>` per stored
+instance (built-in add-ons only), so an add-on whose users connect several
+accounts or workspaces needs no fixed service per instance. The entry gives
+`name` as a prefix plus `{slug}` (`crm-{slug}`), `url` with `{setting:<name>}`
+placeholders, `access` as `{setting:<name>}` naming a `choice` setting whose
+options are `read` and `write`, `auth` as `{header, scheme, secret: {ro, rw}}`
+naming two `secret` settings, and optionally `gate: {setting, flag}`: an
+instance whose bool `setting` is true registers only while `flag` is on. The
+bootstrap writes the key the access level picks (`ro` for `read`, `rw` for
+`write`) into each profile's `.env` as `<NAME>_KEY` (`CRM_SALES_KEY`), and
+`api-server` only ever gets `ro`. An instance missing the key its access needs
+gets no entry, and the bootstrap log says why. Entries, keys and pins of an
+instance that was removed are dropped. Field rules and the prefix rule across
+add-ons are in [addons/README.md](../addons/README.md); Twenty
+(`addons/twenty/addon.json`, [docs/crm.md](crm.md)) is the one user.
+
 `disable` keeps `data/addons/<short-id>/`. `disable --purge` also deletes that
 directory and, when the manifest lists `services.<name>.volumes`, removes the
 add-on's containers and those named compose volumes. `enable` and `disable` write the

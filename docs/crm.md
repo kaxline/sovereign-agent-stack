@@ -40,6 +40,14 @@ non-interactive run, put `TWENTY_KEY_RW`, `TWENTY_KEY_RO` and, if you want them,
 No containers start for a remote workspace. `make crm-remove SLUG=hosted`
 forgets it again.
 
+An app that manages add-ons connects a workspace through
+`scripts/addon.sh connect twenty --instance <slug>`, with a JSON object on
+stdin: `url`, `access` (`read` or `write`), `local`, `key_ro` and `key_rw`.
+The manifest's connect hook runs `crm.sh connect`, which checks each key with
+an MCP `initialize` before anything is stored. `disconnect` removes the
+instance and its keys. `crm.sh add`, `remove` and `access` write the same
+store.
+
 ## How it works
 
 | Piece | Role |
@@ -48,24 +56,30 @@ forgets it again.
 | `twenty-worker` | Background jobs. Same image, `yarn worker:prod`, no migrations |
 | `twenty-db` | Twenty's own Postgres 16, on the internal `crm` network |
 | `twenty-redis` | Twenty's queue and cache, `--maxmemory-policy noeviction`, on the `crm` network |
-| `compose/twenty/workspaces/<slug>.env` | One file per workspace, local or remote, mode 600, gitignored with everything else in that folder. `make crm-init` and `make crm-add` write them. A changed file makes the next start re-run the Hermes bootstrap |
-| Hermes bootstrap | Registers each file as `mcp_servers.crm-<slug>` when `TWENTY_MCP_ENABLED=1` |
+| `data/addons/twenty/` | The add-on's store: `instances/<slug>.json` and `secrets/<slug>.key_ro`, `<slug>.key_rw` (mode 600), one pair per workspace, local or remote. `make crm-init` and `make crm-add` write them |
+| Hermes bootstrap | Registers each instance as `mcp_servers.crm-<slug>` when `TWENTY_MCP_ENABLED=1`, through the manifest's `mcp.instances` |
 | `crm` skill | Tells Hermes how to pick a workspace and reach records (`compose/hermes/skills/crm/`) |
 
 Twenty doesn't use the [shared Postgres](database.md). It pins Postgres 16
 (the shared server runs 18), creates schemas per workspace while it runs, and
 needs a Redis that never evicts, because Redis holds its job queue.
 
-A workspace file holds:
+An instance file holds:
 
-```bash
-TWENTY_URL=http://twenty-server:3000          # or https://crm.example.com
-TWENTY_WORKSPACE_URL=http://localhost:3000/   # where make crm-open goes
-TWENTY_WORKSPACE_ID=...                       # local workspaces only
-TWENTY_ACCESS=write                           # read | write, default write
-TWENTY_KEY_RW=...
-TWENTY_KEY_RO=...                             # optional
+```json
+{
+  "url": "http://twenty-server:3000",
+  "access": "write",
+  "local": true,
+  "workspace_url": "http://localhost:3000/",
+  "workspace_id": "..."
+}
 ```
+
+`url` is the instance without `/mcp` (a hosted one reads
+`https://crm.example.com`). `access` is `read` or `write`. `workspace_url` is
+where `make crm-open` goes, and `workspace_id` is set for local workspaces
+only. The keys are separate files in `secrets/`; both are optional.
 
 The API key alone selects its workspace, so every entry points at the
 instance's `/mcp`, whatever the workspace's own hostname.
@@ -74,12 +88,12 @@ instance's `/mcp`, whatever the workspace's own hostname.
 
 | Hermes profile | Used by | Key |
 |---|---|---|
-| `api-server` | unattended API, n8n | `TWENTY_KEY_RO`; no entry when it's empty |
-| default | dashboard, CLI, Boundary | `TWENTY_KEY_RW`, or `TWENTY_KEY_RO` with `TWENTY_ACCESS=read` |
+| `api-server` | unattended API, n8n | the read-only key; no entry when there is none |
+| default | dashboard, CLI, Boundary | the read/write key, or the read-only key with access `read` |
 | `browser` | Hermes WebUI | same as default |
 
-`TWENTY_ACCESS=read` lets chats look things up without changing anything. When
-the key that `TWENTY_ACCESS` calls for is missing, that profile gets no entry
+Access `read` lets chats look things up without changing anything. When
+the key that the access setting calls for is missing, that profile gets no entry
 for the workspace, and the bootstrap log and `make doctor` say why.
 
 To change it later, without the keys at hand:
@@ -89,10 +103,9 @@ make crm-access SLUG=main ACCESS=read   # or ACCESS=write
 make hermes-reload
 ```
 
-`crm-access` refuses `read` when the file has no `TWENTY_KEY_RO`, and `write`
-when it has no `TWENTY_KEY_RW`. `make crm-init ROTATE=1` rewrites only the
-lines it owns (the URLs, the workspace id and the two keys), so the access
-setting and any other line survive a rotation.
+`crm-access` refuses `read` when the workspace has no read-only key, and
+`write` when it has no read/write key. `make crm-init ROTATE=1` mints new keys
+and keeps the access setting.
 
 The Hermes bootstraps read the workspaces from the add-on's instance store
 (`data/addons/twenty/instances/<slug>.json` and `secrets/<slug>.key_ro|key_rw`,
@@ -137,6 +150,27 @@ browser an owner session, which includes server admin. Twenty accepts it for
 `LOGIN_TOKEN_EXPIRES_IN`, 15 minutes by default. `login-link` refuses remote
 workspaces; sign in on their own Twenty. When it fails, `crm-open` opens the
 sign-in page and says where the password is.
+
+### Upgrading from workspace files
+
+Before stack 0.3.13, each workspace was a file,
+`compose/twenty/workspaces/<slug>.env`. `./scripts/crm.sh migrate` imports
+those files into the store and renames each to `<slug>.env.migrated`. `make
+ensure-local` runs it, and so does every other `crm.sh` command. It keeps a
+workspace already in the store and leaves its file where it is, with a
+warning. It skips, with a message and without renaming:
+
+- a name that doesn't start with a letter or is longer than 31 characters;
+- a key that holds whitespace or a control character;
+- a URL that isn't `http(s)` or has `user:password@` in it;
+- a value with a quote, backslash or control character;
+- a `TWENTY_ACCESS` other than `read` or `write`.
+
+Fix the file and run `migrate` again. `make doctor` warns about every file
+still waiting. The profile key names changed with it: `TWENTY_<SLUG>_KEY` in
+the Hermes profile `.env` files is now `CRM_<SLUG>_KEY`, and the bootstrap
+removes the old lines. `compose/twenty/workspace.env.example` documents the
+old format and nothing copies it.
 
 ### Picking up a new workspace
 
@@ -207,8 +241,9 @@ If a container is killed for memory under heavier use, raise its limit in
 
 | Variable | Default | Effect |
 |---|---|---|
-| `TWENTY_LOCAL_ENABLED` | `0` | Starts the local instance (profile `crm`). While `0`, Hermes gets no entry for local workspace files |
-| `TWENTY_MCP_ENABLED` | `0` | Registers every workspace file in Hermes. `crm-init` and `crm-add` set it to `1` |
+| `TWENTY_LOCAL_ENABLED` | `0` | Starts the local instance (profile `crm`). While `0`, Hermes gets no entry for local workspaces |
+| `TWENTY_MCP_ENABLED` | `0` | Registers every stored workspace in Hermes (profile `crm-mcp`, which selects no service). `crm-init` and `crm-add` set it to `1` |
+| `TWENTY_MCP_TIMEOUT`, `TWENTY_MCP_CONNECT_TIMEOUT` | manifest: 60 and 30 | Seconds Hermes waits for a call and for the first connection, on every `crm-*` server |
 | `TWENTY_MULTIWORKSPACE` | `0` | Local instance: one workspace (`0`) or several on subdomains (`1`). Change it with `make crm-mode` |
 | `TWENTY_PORT` | `3000` | Host port on `127.0.0.1` |
 | `TWENTY_IMAGE` | `twentycrm/twenty:v2.55.0` | Pinned. The server migrates its database on start, so a bump can't be undone by changing it back: back up first |
@@ -244,7 +279,7 @@ docker compose exec -T twenty-db pg_dump -U twenty twenty > twenty-$(date +%F).s
 
 A restore needs `TWENTY_ENCRYPTION_KEY` and `TWENTY_DB_PASSWORD` (or their
 files) from the same install; keep them with the backup. The owner password
-and the local workspace files are worth keeping too, but can be recreated:
+and `data/addons/twenty/` are worth keeping too, but can be recreated:
 `make crm-init ROTATE=1` mints new keys. Back up before changing
 `TWENTY_IMAGE`.
 
@@ -252,8 +287,8 @@ and the local workspace files are worth keeping too, but can be recreated:
 
 Set `TWENTY_LOCAL_ENABLED=0` and run `make up` to stop the local instance;
 its data stays in `TWENTY_DATA_DIR`. The bootstraps that `make up` reruns
-then drop the `crm-*` entries and keys of every workspace file pointing at
-`http://twenty-server:3000`, and keep the files. Remote workspaces stay
+then drop the `crm-*` entries and keys of every local workspace, and keep
+the store. Remote workspaces stay
 registered, so moving to a hosted Twenty needs only `make crm-add` and this.
 Setting it back to `1` registers the local workspaces again. Set `TWENTY_MCP_ENABLED=0` and run
 `make hermes-reload` to remove every `crm-*` entry and key from Hermes.
@@ -270,9 +305,9 @@ only.
   admin. `crm-init` grants it on every run, so running it again fixes this.
   For an account created another way, run `./scripts/crm.sh grant-admin <email>`.
 - **`crm-init` stopped partway:** run it again. Once Twenty has created the
-  workspace, its id is in the workspace file, so the next run picks up that
+  workspace, its id is in the instance file, so the next run picks up that
   workspace, revokes any keys the failed run minted and mints new ones. Until
-  then the file has no keys, and Hermes skips it.
+  then the workspace has no keys, and Hermes skips it.
 - **`make doctor` says Twenty rejects a key:** the key was revoked or the
   workspace deleted. `make crm-init ROTATE=1` mints new keys for a local
   workspace. For a remote one, create new keys in Twenty and run

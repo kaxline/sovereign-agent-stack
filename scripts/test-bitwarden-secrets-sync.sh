@@ -119,9 +119,8 @@ def check_modes(case):
 
 def seed():
     old = {k: val(f"old-{k}") for k in ("ro", "rw", "enc", "db", "pg", "work", "home")}
-    write("twenty-workspaces/main.env",
-          "# Written by make crm-add.\nTWENTY_URL=https://crm.example.com\n"
-          f"TWENTY_ACCESS=write\nTWENTY_KEY_RW=\"{old['rw']}\"\nTWENTY_KEY_RO={old['ro']}\n")
+    write("twenty-keys/main.key_ro", old["ro"])
+    write("twenty-keys/main.key_rw", old["rw"])
     write("twenty-secrets/encryption_key", old["enc"])
     write("twenty-secrets/db_password", old["db"] + "\n")
     write("postgres-services/vikunja.env",
@@ -162,7 +161,8 @@ code, out, err = run()
 if code != 3:
     fail(f"all rows: exit {code}, want 3 (Hermes-side files changed); stderr={err.strip()!r}")
 want_changed = {
-    "changed compose/twenty/workspaces/main.env",
+    "changed data/addons/twenty/secrets/main.key_ro",
+    "changed data/addons/twenty/secrets/main.key_rw",
     f"changed {HOST_SECRETS}/encryption_key",
     f"changed {HOST_SECRETS}/db_password",
     "changed compose/postgres/services/vikunja.env",
@@ -172,10 +172,8 @@ want_changed = {
 got_changed = {line for line in out.splitlines() if line.startswith("changed ")}
 if got_changed != want_changed:
     fail(f"all rows: changed lines {sorted(got_changed)}, want {sorted(want_changed)}")
-if read("twenty-workspaces/main.env") != ("# Written by make crm-add.\nTWENTY_URL=https://crm.example.com\n"
-                                          f"TWENTY_ACCESS=write\nTWENTY_KEY_RW=\"{new['rw']}\"\n"
-                                          f"TWENTY_KEY_RO={new['ro']}\n"):
-    fail("twenty workspace: key lines not replaced in place with their quoting kept")
+if read("twenty-keys/main.key_ro") != new["ro"] or read("twenty-keys/main.key_rw") != new["rw"]:
+    fail("twenty keys: the whole key files were not replaced with the new values")
 if read("twenty-secrets/encryption_key") != new["enc"]:
     fail("twenty/encryption-key: want the value with no trailing newline")
 if read("twenty-secrets/db_password") != new["db"] + "\n":
@@ -200,6 +198,29 @@ for name in ("github/example-token", "llm-proxy/chat"):
     if name not in out:
         fail(f"unknown item {name} not reported")
 check_modes("all rows")
+
+# --- Twenty keys: any value a header can carry, and only for a stored instance
+keys_before = (read("twenty-keys/main.key_ro"), read("twenty-keys/main.key_rw"))
+for label, suffix in (("space", " x"), ("tab", "\tx"), ("line break", "\nx"), ("trailing space", " ")):
+    serve([{"name": "twenty/main/key-ro", "value": val("hdr") + suffix}])
+    code, out, err = run()
+    if (read("twenty-keys/main.key_ro"), read("twenty-keys/main.key_rw")) != keys_before:
+        fail(f"twenty key with {label}: a file was written")
+    if code != 0 or "twenty/main/key-ro" not in out or "changed " in out:
+        fail(f"twenty key with {label}: exit {code}, out={out.splitlines()}, want 0 and a note")
+serve([{"name": "twenty/ghost/key-ro", "value": val("ghost")}])
+code, out, err = run()
+if (TARGETS / "twenty-keys/ghost.key_ro").exists():
+    fail("twenty/ghost/key-ro: the sync created a key file for a workspace that is not stored")
+if code != 0 or "data/addons/twenty/secrets/ghost.key_ro: no such file" not in out:
+    fail(f"twenty/ghost/key-ro: exit {code}, out={out.splitlines()}, want 0 and a missing-file note")
+serve([{"name": "twenty/main/key-rw", "value": val("rw2") + "$#'\\\""}])
+code, out, err = run()
+if code != 3 or "changed data/addons/twenty/secrets/main.key_rw" not in out:
+    fail(f"twenty key with shell characters: exit {code}, out={out.splitlines()}, want 3 and a change")
+if (TARGETS / "twenty-workspaces").exists():
+    fail("twenty-workspaces folder is still used")
+check_modes("twenty keys")
 
 # --- Unchanged values leave files and mtimes alone ---------------------------
 mtimes = {p: p.stat().st_mtime_ns for p in TARGETS.rglob("*") if p.is_file()}

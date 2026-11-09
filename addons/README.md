@@ -30,6 +30,31 @@ except where noted:
   add-on, and each entry needs its own service: two entries may not name the
   same service key, directly or through a `{ro, rw}` map, because the
   bootstrap drops stale registrations by URL.
+- `mcp.instances` (built-in add-ons only): an `mcp` entry that registers one
+  server per instance in the add-on's store, instead of one fixed server. It
+  has no `service`, `path` or `name`. Its fields, besides the usual
+  `transport`, `timeout`, `connectTimeout`, `env`, `tools`, `pin`,
+  `writeTools` and `profiles`:
+  - `name`: a prefix, then `{slug}` once, such as `crm-{slug}`. The prefix may
+    not be a core server name or prefix. The bootstrap drops every entry under
+    the prefix that has no instance, so no add-on's fixed `mcp.name` may start
+    with another add-on's instance prefix, and two instance prefixes may not
+    start with one another.
+  - `url`: a string with `{setting:<name>}` placeholders that name `url` or
+    `string` instance settings, such as `{setting:url}/mcp`.
+  - `access`: `{setting:<name>}` naming a `choice` instance setting whose
+    `options` are only `read` and `write`. `read` registers the instance with
+    its `ro` key and `write` with its `rw` key. A profile whose key is missing
+    gets no entry, and `api-server` only ever gets `ro`.
+  - `auth`: `{header, scheme, secret: {ro, rw}}`. `secret` names two `secret`
+    instance settings. The bootstrap writes the chosen key into the profile's
+    `.env` as `<NAME>_KEY`, with `-` turned into `_` and the name uppercased
+    (`CRM_SALES_EU_KEY`), and the header carries `<scheme> ${<NAME>_KEY}`.
+  - `gate` (optional): `{setting, flag}`. An instance whose bool `setting` is
+    true registers only while `flag` (`builtin.flag` or a gate) is on.
+  The entry needs a top-level `instances` block that declares the settings it
+  names. Removing an instance drops its entries and keys on the next
+  bootstrap. `addons/twenty/addon.json` is the one user.
 - `services.<name>.when`: `{"gate": FLAG}`, so the service starts only while
   that gate flag is on. `mounts` maps `secrets`, `config` and `instances` to
   `ro` or `rw`; they mount the directories `data/addons/<short-id>/secrets`,

@@ -10,11 +10,50 @@ the stack under another app.
 
 ### Upgrade steps
 
-None. No shipped manifest uses the new fields, so existing installs behave
-as before.
+1. `make up` (or `./scripts/crm.sh migrate`) imports any
+   `compose/twenty/workspaces/<slug>.env` file into `data/addons/twenty/` and
+   renames it `<slug>.env.migrated`. A file with an invalid name, a key with
+   whitespace or a URL with `user:password@` is skipped with a message and
+   stays in place; fix it and run `migrate` again. `make doctor` lists the
+   files still waiting.
+2. `make hermes-reload` (a bootstrap run) rewrites the profile `.env` lines:
+   `TWENTY_<SLUG>_KEY` becomes `CRM_<SLUG>_KEY`.
+3. With Bitwarden's `twenty/<slug>/key-ro` and `key-rw` items, run
+   `make secrets-sync` after the migration; the items now update the files in
+   `data/addons/twenty/secrets/`, not the old workspace files.
 
 ### Changes
 
+- **Twenty CRM is a built-in add-on** (`addons/twenty/addon.json`). Boundary can
+  move Twenty onto `scripts/addon.sh`: instances are workspaces, with `url`,
+  `access`, `local` and two secret keys, and the manifest's connect and
+  disconnect hooks call `crm.sh connect` and `crm.sh disconnect`.
+  `TWENTY_MCP_ENABLED=1` now also puts `crm-mcp` in `COMPOSE_PROFILES`; the
+  profile selects no service.
+- **Workspaces moved out of `compose/twenty/workspaces/`** into the add-on
+  store `data/addons/twenty/` (`instances/<slug>.json`,
+  `secrets/<slug>.key_ro` and `.key_rw`). `crm.sh migrate` imports the old
+  files and renames them `.env.migrated`; `make ensure-local` and every
+  `crm.sh` command run it. `crm.sh add`, `remove` and `access` write the
+  store. `compose/twenty/workspace.env.example` is the legacy format and only
+  documents what `migrate` reads.
+- **Profile `.env` key names changed:** the Hermes bootstrap stores each
+  workspace key as `CRM_<SLUG>_KEY`, not `TWENTY_<SLUG>_KEY`, and removes the
+  old lines. `config.yaml` references the new name.
+- **Bitwarden's Twenty key items write the store.** `twenty/<slug>/key-ro`
+  and `key-rw` replace the whole file `secrets/<slug>.key_ro` / `.key_rw`
+  under `data/addons/twenty/` instead of lines in a workspace file. A value
+  with whitespace or a control character is refused, and a missing file is
+  never created. The sync service mounts only that `secrets` folder.
+- **`make doctor` reads the store** for Twenty: workspaces, keys present per
+  access level (no values printed), and a warning for each workspace file not
+  yet migrated, with the reason when it cannot be.
+- **`TWENTY_MCP_TIMEOUT` and `TWENTY_MCP_CONNECT_TIMEOUT`** from `.env` now
+  reach both Hermes bootstrap services and set the timeouts of every `crm-*`
+  server.
+- **`mcp.instances` in manifests** (built-in add-ons): one `mcp_servers`
+  entry per stored instance, with the key picked by access. See
+  [addons/README.md](addons/README.md).
 - **Add-on manifest fields** (experimental): a built-in manifest can declare
   `gates` (further flag-to-profile rows for `sync-profiles.sh`), `mcp` as a
   list with per-entry `title` and `when`, `instances`, `commands`,

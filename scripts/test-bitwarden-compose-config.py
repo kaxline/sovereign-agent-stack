@@ -171,7 +171,7 @@ def check_tools(cfg: dict) -> None:
     # Exactly the target folders, read-write; TWENTY_SECRETS_DIR unset here.
     want = {
         "/run/bitwarden-sync": SYNC_VOLUME,
-        "/targets/twenty-workspaces": str(ROOT / "compose/twenty/workspaces"),
+        "/targets/twenty-keys": str(ROOT / "data/addons/twenty/secrets"),
         "/targets/twenty-secrets": str(ROOT / "compose/twenty/no-secrets"),
         "/targets/postgres-services": str(ROOT / "compose/postgres/services"),
         "/targets/caldav-accounts": str(ROOT / "compose/caldav-mcp/accounts"),

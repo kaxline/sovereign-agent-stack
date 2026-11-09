@@ -2086,7 +2086,9 @@ services:
     # TWENTY_SECRETS_DIR falls back to an empty folder the sync never writes.
     volumes:
       - bitwarden_sync:/run/bitwarden-sync
-      - ./compose/twenty/workspaces:/targets/twenty-workspaces
+      # Only the Twenty store's secrets folder: Bitwarden's own secrets sit
+      # elsewhere under data/addons and stay unmounted.
+      - ${ASSISTANT_DATA_ROOT:-./data}/addons/twenty/secrets:/targets/twenty-keys
       - ${TWENTY_SECRETS_DIR:-./compose/twenty/no-secrets}:/targets/twenty-secrets
       - ./compose/postgres/services:/targets/postgres-services
       - ./compose/caldav-mcp/accounts:/targets/caldav-accounts
