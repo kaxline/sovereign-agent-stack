@@ -6,42 +6,77 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
-## Unreleased
+## v0.3.12 — 2026-11-09
 
 ### Upgrade steps
 
-1. `docker compose up -d`. Both bootstrap services now receive
-   `TWENTY_LOCAL_ENABLED`, which changes their input hash, so they run in full
-   once. They also mount `addons/` and `scripts/lib/addon_manifest.py`, so a
-   checkout used as the compose project directory needs both.
-   The bootstrap environment now also carries `ACTUAL_MCP_ENABLED` and
-   `ACTUAL_ACCESS`, so the first `up` after upgrading re-runs both bootstraps
-   in full, even with the add-on off.
-2. Expect `hermes` to be recreated once, with the Bitwarden add-on off. It
-   joins a new internal network, `vault`, on every install (and `budget`, for
-   the Actual Budget add-on), and it and both
-   bootstrap services receive `BITWARDEN_ENABLED` (default `0`). The network
-   is empty while local mode is off. The bootstrap script and the add-on
-   manifests changed too, so both bootstraps run in full once. Nothing else
-   changes with the add-on off: no new service starts, and the bootstraps
-   write nothing for it.
+1. `docker compose up -d`. It recreates `hermes` once, with both add-ons
+   off: `hermes` joins two new internal networks, `vault` and `budget`, and
+   gets new overlay mounts. The network `vault` stays empty while Bitwarden's
+   local mode is off. Both bootstrap services run in full once, because
+   their environment gains `TWENTY_LOCAL_ENABLED`, `ACTUAL_MCP_ENABLED`,
+   `ACTUAL_ACCESS` and `BITWARDEN_ENABLED`, and the bootstrap script and the
+   add-on manifests changed. With both add-ons off no new service starts and
+   the bootstraps write nothing for them.
+2. A checkout used as the compose project directory needs `addons/` and
+   `scripts/lib/addon_manifest.py`, which both bootstraps now mount.
+3. **Boundary:** with `BITWARDEN_ENABLED=1`, a `hermes` recreate that Boundary
+   drives itself must be followed by `docker compose --profile bitwarden up -d
+   --no-deps bitwarden-broker` (or `./scripts/vault.sh follow-hermes`). See
+   the Bitwarden entry under Changes. Boundary should also add its
+   `vault.create_login` card before moving its pin (CR 0024 R1, below).
+
+### New services
+
+All are off by default.
+
+- `actual-mcp-rw` and `actual-mcp-ro` (profile `budget`): the Actual Budget
+  MCP servers, built from the vendored giorgiobrullo/actual-mcp. Started by
+  `ACTUAL_MCP_ENABLED=1`.
+- `actual-server` (profile `budget-local`,
+  `actualbudget/actual-server:26.11.0`, pinned by digest): a local Actual
+  server. Started by `ACTUAL_LOCAL_ENABLED=1`.
+- `bitwarden-broker` (profile `bitwarden`): runs `bw`, holds every account's
+  session key and fills pages over CDP. It shares `hermes`' network namespace
+  and listens on `127.0.0.1:8099` there. The image builds from
+  `compose/bitwarden-broker/` on first use. Started by `BITWARDEN_ENABLED=1`.
+- `bitwarden-setup` and `bitwarden-secrets-sync` (profile `bitwarden-tools`):
+  one-shots that the `make vault-*` and `make secrets-sync` targets start.
+- `vaultwarden` (`vaultwarden/server:1.37.4`, pinned by digest) and
+  `vaultwarden-tls` (profile `vault`): Bitwarden's local mode. Started by
+  `BITWARDEN_LOCAL_ENABLED=1`.
+
+New networks: `budget`, `vault` (internal; `hermes`, `vaultwarden-tls`,
+`bitwarden-setup`), `vault-backend` (internal), `vault-host` and
+`bitwarden-setup`. New volume: `bitwarden_sync`.
 
 ### New optional `.env` keys
 
-For the Bitwarden add-on; the Actual Budget keys are listed under its entry
-below. All default to off or to the values shown. See
+Defaults keep the previous behaviour. `setup.sh --budget` fills in the Actual
+keys; see [docs/budget.md](docs/budget.md) and
 [docs/bitwarden.md](docs/bitwarden.md#settings).
 
-- `BITWARDEN_ENABLED=0`: starts `bitwarden-broker` (profile `bitwarden`, from
-  `addons/bitwarden/addon.json`) and registers its login backend.
+- `ACTUAL_MCP_ENABLED=0`, `ACTUAL_LOCAL_ENABLED=0`: start the `budget` and
+  `budget-local` profiles.
+- `ACTUAL_ACCESS=` (empty): `read` limits every profile to `actual-mcp-ro`;
+  `write` or empty keeps the manifest's levels; any other value registers no
+  budget tools.
+- `ACTUAL_PORT=5006`, `ACTUAL_DATA_DIR=` (empty means `./data/actual/server`),
+  `ACTUAL_BUDGET_FILE=` (host path to the budget file; empty mounts a
+  placeholder and every tool call fails), `ACTUAL_SERVER_IMAGE` (commented
+  out). `ACTUAL_ADMIN_TIMEOUT_S` is read from the environment and has no
+  line in `.env.example`.
+- `BITWARDEN_ENABLED=0`: starts `bitwarden-broker` and registers its login
+  backend.
 - `BITWARDEN_LOCAL_ENABLED=0`: starts `vaultwarden` and `vaultwarden-tls`
-  (profile `vault`, wired in `sync-profiles.sh` by hand as Twenty's is).
+  (wired in `sync-profiles.sh` by hand, as Twenty's is).
 - `BITWARDEN_SYNC_MINUTES=10`, `BITWARDEN_IDLE_LOCK_MINUTES=0`: the broker's
   `bw sync` interval (must be above 0) and the idle lock for `manual`
   accounts.
 - `BITWARDEN_HOST_DATA_DIR=./data/addons/bitwarden`: `bw/`, `broker/`,
   `secrets/`, `local/` and `vaultwarden/`. Not moved by `ASSISTANT_DATA_ROOT`.
-- `VAULTWARDEN_PORT=8222` (bound to `127.0.0.1`), `VAULTWARDEN_TLS_IMAGE=nginx:1.30.6-alpine`.
+- `VAULTWARDEN_PORT=8222` (bound to `127.0.0.1`),
+  `VAULTWARDEN_TLS_IMAGE=nginx:1.30.6-alpine`.
 - `VAULT_OWNER_EMAIL`: your address for `make vault-init`.
 - `TWENTY_SECRETS_DIR`: the folder holding `TWENTY_ENCRYPTION_KEY_FILE` and
   `TWENTY_DB_PASSWORD_FILE`, so `make secrets-sync` can write them. Unset, it
@@ -58,26 +93,14 @@ digests; it is not read from `.env`.
   Vaultwarden, or a local Vaultwarden, and `make secrets-sync` writes stack
   secrets from Bitwarden into the existing secret files. See
   [docs/bitwarden.md](docs/bitwarden.md).
-  - New services. `bitwarden-broker` (profile `bitwarden`) runs `bw`, holds
-    every account's session key and fills pages over CDP itself. It shares
-    `hermes`' network namespace and listens on `127.0.0.1:8099` there.
-    Compose restarts it with `hermes` (`depends_on` with `restart: true`),
-    but a recreate of `hermes` alone leaves it in the removed container's
-    namespace, where `docker compose restart bitwarden-broker` fails. The
-    recovery is `docker compose --profile bitwarden up -d --no-deps
-    bitwarden-broker`; `make hermes-reload`, the new `make hermes-recreate`,
-    `make restart` and the scripts that recreate `hermes` run it through
-    `./scripts/vault.sh follow-hermes`, and `make doctor` flags a broker in the
-    wrong namespace. **Boundary:** a `hermes` recreate that Boundary drives
-    itself must be followed by that `up` (or `./scripts/vault.sh
-    follow-hermes`) while `BITWARDEN_ENABLED=1`. `bitwarden-setup` and
-    `bitwarden-secrets-sync` (profile `bitwarden-tools`) are one-shots that
-    the `make vault-*` and `make secrets-sync` targets start. `vaultwarden`
-    (`vaultwarden/server:1.37.4`, pinned by digest) and `vaultwarden-tls`
-    (profile `vault`) are local mode. New networks `vault` (internal; `hermes`,
-    `vaultwarden-tls`, `bitwarden-setup`), `vault-backend` (internal),
-    `vault-host` and `bitwarden-setup`, and the volume `bitwarden_sync`. The
-    broker image builds from `compose/bitwarden-broker/` on first use.
+  - The broker and `hermes`. Compose restarts `bitwarden-broker` with
+    `hermes` (`depends_on` with `restart: true`), but a recreate of `hermes`
+    alone leaves it in the removed container's namespace, where `docker
+    compose restart bitwarden-broker` fails. The recovery is `docker compose
+    --profile bitwarden up -d --no-deps bitwarden-broker`; `make
+    hermes-reload`, the new `make hermes-recreate`, `make restart` and the
+    scripts that recreate `hermes` run it through `./scripts/vault.sh
+    follow-hermes`, and `make doctor` flags a broker in the wrong namespace.
   - New commands: `make vault-init`, `vault-add`, `vault-unlock`, `vault-lock`,
     `vault-sync`, `vault-requests`, `vault-grant`, `vault-remove`,
     `vault-open` and `secrets-sync`, all through `scripts/vault.sh`, which also
@@ -179,26 +202,18 @@ digests; it is not read from `.env`.
   forms don't see the change and to use `fill_input` instead, reloading first if
   the field was already set that way. Code that uses the native value setter
   gets no hint.
-- **Actual Budget add-on** (profiles `budget` and `budget-local`): Hermes
-  reads and edits an Actual Budget file through two MCP servers,
-  `actual-mcp-rw` and `actual-mcp-ro`, built from a vendored
-  giorgiobrullo/actual-mcp. `actual-server` runs locally or a remote server is
-  used. Setup is `./scripts/setup.sh --budget`, `make budget-init` (local) or
-  `make budget-add URL=...` (remote); `make budget-open`, `make budget-remove`
-  and `make budget-access ACCESS=read|write` do the rest, and `make doctor`
-  has a Budget block. A `budget` skill tells Hermes to look up ids, treat
-  amounts as cents and confirm deletes, bulk edits and category moves. The
-  read-only instance serves `api-server`; default and `browser` get the
-  read/write instance unless `ACTUAL_ACCESS=read`. A read/write entry is kept
-  out of cron. See [docs/budget.md](docs/budget.md). **The add-on has not been
-  checked on a live stack yet**; only the offline tests against stubs have
-  run. Both flags default to off, so existing installs see no change. Hermes
-  now joins the new `budget` network, so the next `up` recreates it.
-  - New `.env` keys, all optional: `ACTUAL_MCP_ENABLED`,
-    `ACTUAL_LOCAL_ENABLED`, `ACTUAL_ACCESS`, `ACTUAL_PORT`, `ACTUAL_DATA_DIR`,
-    `ACTUAL_BUDGET_FILE`, and `ACTUAL_SERVER_IMAGE` (commented out, pinned by
-    digest). `ACTUAL_ADMIN_TIMEOUT_S` is read from the environment and has no
-    line in `.env.example`.
+- **Actual Budget add-on** (experimental): Hermes reads and edits an Actual
+  Budget file through `actual-mcp-rw` and `actual-mcp-ro`, against the local
+  `actual-server` or a remote server. Setup is `./scripts/setup.sh --budget`,
+  `make budget-init` (local) or `make budget-add URL=...` (remote); `make
+  budget-open`, `make budget-remove` and `make budget-access
+  ACCESS=read|write` do the rest, and `make doctor` has a Budget block. A
+  `budget` skill tells Hermes to look up ids, treat amounts as cents and
+  confirm deletes, bulk edits and category moves. The read-only instance
+  serves `api-server`; default and `browser` get the read/write instance
+  unless `ACTUAL_ACCESS=read`. A read/write entry is kept out of cron. See
+  [docs/budget.md](docs/budget.md). **The add-on has not been checked on a
+  live stack**; only the offline tests against stubs have run.
 - **Manifest extensions** the Actual add-on needs (the format is still
   experimental):
   - `mcp.service` may be a map `{"ro": ..., "rw": ...}` that gives each
@@ -214,7 +229,6 @@ digests; it is not read from `.env`.
   the add-on can register, space-separated and sorted, so the bootstrap can
   drop the ones a profile must not have. A caller that splits the line on `|`
   must accept the extra field.
-
 - **GPT Researcher is registered from a manifest**: `addons/gptr/addon.json`
   now holds its flag, profile, tools, pins and profile list, and
   `sync-profiles.sh` and both bootstraps read it instead of their own copies.
@@ -227,7 +241,6 @@ digests; it is not read from `.env`.
   out every add-on whose `permissions.cron` isn't `true`. GPT Researcher sets
   it, so nothing changes for it. A job that names an add-on in its own
   `enabled_toolsets` still gets it.
-
 - **`crm.sh access` changes a workspace's access** (CR 0023 R1):
   `./scripts/crm.sh access --slug S read|write` (`make crm-access`) sets
   `TWENTY_ACCESS` in that workspace file. It refuses `read` when the file has
