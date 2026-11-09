@@ -183,7 +183,8 @@ none.
   account (for example `agent@…`) that the organization grants only that collection, so Bitwarden
   enforces the scope and the broker never holds a key to anything else. The docs recommend this
   wherever the user has an organization, and `vault-init` sets up `local` this way.
-- `all`. Refused by `vault-add` unless `SCOPE=all` is passed explicitly; `make doctor` warns while
+- `all`. Refused by `vault-add` unless `CONFIRM_SCOPE_ALL=1` is set as well (Ruling R25: `make
+  vault-add SCOPE=all` exports `SCOPE`, so `SCOPE` itself cannot confirm); `make doctor` warns while
   any account uses it.
 
 An item with no `http` or `https` URI, or whose only URIs have match type "Never", is never listed.
@@ -287,7 +288,7 @@ organization and recording it is handled by reusing an organization named "Assis
 local account file stays, and the broker reports it as offline, as `crm` does for local Twenty
 workspaces.
 
-The local Vaultwarden holds the only copy of whatever the user stores there. `vault-init`'s closing
+The local Vaultwarden holds what the user stores in local mode, with no other copy unless they back it up. `vault-init`'s closing
 message and `docs/bitwarden.md` say so, and the add-on's `backup` hook (`scripts/vault.sh backup
 DIR`) covers the data directory, the secret files and the account files together: an online SQLite
 backup of `db.sqlite3` (in a container that shares Vaultwarden's mounts while it runs), plus
@@ -350,8 +351,8 @@ The broker runs with `network_mode: "service:hermes"`, sharing the `hermes` cont
 namespace and nothing else. It listens on `127.0.0.1:8099` there, reaches the Chromium that
 browser-harness starts on its loopback CDP port, and reaches Bitwarden through `hermes`'s networks.
 `hermes-worker` and every other container cannot reach it. Agent code in `hermes` can, which is why
-the API below carries no secret in any response. The broker restarts when `hermes` is recreated,
-since compose ties the shared namespace to it.
+the API below carries no secret in any response. Compose is expected to restart the broker when
+`hermes` is recreated, since it ties the shared namespace to `hermes`; that is not tested yet.
 
 The local Vaultwarden is reached only through `vaultwarden-tls` on the internal `vault` network,
 which `hermes` (and so the broker) joins (Local mode).

@@ -36,7 +36,7 @@ Usage: scripts/vault.sh <command> [options]
       [--scope folder:NAME|collection:ID|all] [--unlock stored|manual] [--force]
         An account on bitwarden.com or your own server. Asks for the API key
         (and, with stored unlock, the master password) in hidden prompts.
-        --scope all also needs SCOPE=all in the environment.
+        --scope all also needs CONFIRM_SCOPE_ALL=1 in the environment.
   unlock --slug S   Unlock a manual account in the broker (hidden prompt)
   lock --slug S     Lock a manual account
   sync              Re-read every unlocked account's items now
@@ -370,8 +370,9 @@ cmd_add() {
   esac
   case "$scope" in
     all)
-      [[ "${SCOPE:-}" == all ]] \
-        || die "--scope all lets the agent reach every item in the vault; pass SCOPE=all to make vault-add (or set it in the environment) to confirm"
+      # A separate variable: make vault-add SCOPE=all exports SCOPE, so SCOPE itself confirms nothing.
+      [[ "${CONFIRM_SCOPE_ALL:-}" == 1 ]] \
+        || die "--scope all lets the agent reach every item in the vault; set CONFIRM_SCOPE_ALL=1 (make vault-add SCOPE=all CONFIRM_SCOPE_ALL=1) to confirm"
       ;;
     folder:*)
       local name="${scope#folder:}"
@@ -944,7 +945,7 @@ finish_init() {
     upsert_env "$ENV_PATH" BITWARDEN_ENABLED 1
     log "Set BITWARDEN_ENABLED=1"
   fi
-  log "The local Vaultwarden holds the only copy of what you store in it. Back it up with scripts/vault.sh backup DIR."
+  log "The local Vaultwarden holds what you store in local mode, and nothing else has a copy unless you back it up: scripts/vault.sh backup DIR."
   log "Web vault: $(local_url) (make vault-open). Next: make up"
 }
 

@@ -173,7 +173,7 @@ crm-mode:
 #   make vault-init [VAULT_OWNER_EMAIL=you@example.com]  local Vaultwarden, the agent account, you as Owner
 #   make vault-add SLUG=name MODE=cloud [REGION=eu] [SCOPE=folder:Agent] [UNLOCK=stored|manual] [FORCE=1]
 #   make vault-add SLUG=name MODE=selfhosted URL=https://... [SCOPE=collection:<id>]
-#                                          an account the broker signs in to; SCOPE=all must be typed out
+#                                          an account the broker signs in to; SCOPE=all also needs CONFIRM_SCOPE_ALL=1
 #   make vault-unlock SLUG=name            unlock a manual account (hidden prompt)
 #   make vault-lock SLUG=name              lock it again
 #   make vault-sync                        re-read every unlocked account now

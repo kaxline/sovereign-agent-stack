@@ -1434,7 +1434,7 @@ if [[ "$bw_on" -eq 1 || "$bw_local" -eq 1 || "$bw_files" -gt 0 ]]; then
         for f in "$bw_accounts"/*.env; do
           [[ -f "$f" ]] || continue
           bw_slug="$(basename "$f" .env)"
-          [[ "$bw_seen" == *" ${bw_slug} "* ]] || warn "${bw_slug}: not loaded by the broker yet — make up restarts it"
+          [[ "$bw_seen" == *" ${bw_slug} "* ]] || warn "${bw_slug}: not loaded by the broker yet — docker compose restart bitwarden-broker"
         done
       fi
     fi

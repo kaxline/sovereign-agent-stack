@@ -90,7 +90,7 @@ whether its profile is on.
 | **`mail`** | `MAIL_MCP_ENABLED` | Read-only search over Apple Mail, indexed on the host |
 | **`mail-drafts`** | `MAIL_DRAFTS_ENABLED` | Hermes queues drafts for Mail's Drafts folder |
 | **`messages`** | `MESSAGES_MCP_ENABLED` | Read-only iMessage/SMS history, indexed on the host |
-| **`bitwarden`** | `BITWARDEN_ENABLED` | Browser sign-ins with logins from Bitwarden, filled by a broker so Hermes never holds the password ([docs/bitwarden.md](docs/bitwarden.md)) |
+| **`bitwarden`** | `BITWARDEN_ENABLED` | Browser sign-ins with logins from Bitwarden, filled by a broker so the gateway never holds the password ([docs/bitwarden.md](docs/bitwarden.md)) |
 | **`vault`** | `BITWARDEN_LOCAL_ENABLED` | A local Vaultwarden for the Bitwarden add-on, set up by `make vault-init` |
 | **`signal`** | `HERMES_SIGNAL_ENABLED` | signal-cli daemon for Hermes ([docs/signal.md](docs/signal.md)) |
 | **`ollama`** | `OLLAMA_ENABLED` | Bundled Ollama + demo model pull |

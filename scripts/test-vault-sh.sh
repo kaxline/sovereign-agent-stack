@@ -174,13 +174,18 @@ run_in "user.y"$'\n'"$SECRET"$'\n' add --slug hashy --mode cloud --scope 'folder
   || fail "add with # in the folder name"
 grep -qx 'BW_SCOPE="folder:Agent #2"' "$VAULT_ACCOUNTS_DIR/hashy.env" || fail "folder name with # quoted"
 
-# --scope all: refused unless SCOPE=all came in literally.
+# --scope all: refused unless CONFIRM_SCOPE_ALL=1, even with SCOPE=all exported
+# (make vault-add SCOPE=all exports it, so it can't be the confirmation).
 run_in "user.z"$'\n'"$SECRET"$'\n' add --slug wide --mode cloud --scope all --unlock manual \
-  && fail "--scope all accepted without SCOPE=all"
-said "SCOPE=all" || fail "the all refusal names SCOPE=all"
+  && fail "--scope all accepted without CONFIRM_SCOPE_ALL"
+said "CONFIRM_SCOPE_ALL=1" || fail "the all refusal names CONFIRM_SCOPE_ALL=1"
 [ ! -e "$VAULT_ACCOUNTS_DIR/wide.env" ] || fail "a refused --scope all wrote a file"
 printf 'user.z\n%s\n' "$SECRET" | SCOPE=all "$vault" add --slug wide --mode cloud --scope all --unlock manual \
-  > "$out" 2>&1 || fail "--scope all with SCOPE=all"
+  > "$out" 2>&1 && fail "--scope all accepted with SCOPE=all alone"
+grep -q "CONFIRM_SCOPE_ALL=1" "$out" || fail "SCOPE=all alone is refused naming CONFIRM_SCOPE_ALL=1"
+[ ! -e "$VAULT_ACCOUNTS_DIR/wide.env" ] || fail "SCOPE=all alone wrote a file"
+printf 'user.z\n%s\n' "$SECRET" | SCOPE=all CONFIRM_SCOPE_ALL=1 "$vault" add --slug wide --mode cloud --scope all \
+  --unlock manual > "$out" 2>&1 || fail "--scope all with CONFIRM_SCOPE_ALL=1"
 grep -qx 'BW_SCOPE=all' "$VAULT_ACCOUNTS_DIR/wide.env" || fail "scope all written"
 rm -f "$VAULT_ACCOUNTS_DIR/wide.env" "$VAULT_ACCOUNTS_DIR/hashy.env"
 
@@ -306,7 +311,7 @@ logged "local-init --owner owner@example.com --signup-url http://localhost:8222"
 logged "role --slug local --email owner@example.com" || fail "role arguments"
 logged "--profile vault up -d --wait vaultwarden vaultwarden-tls" || fail "init starts the vault profile"
 grep -qx 'BITWARDEN_LOCAL_ENABLED=1' "$ENV_FILE" || fail "init sets BITWARDEN_LOCAL_ENABLED=1"
-said "only copy" || fail "init's closing message says the local Vaultwarden holds the only copy"
+said "nothing else has a copy unless you back it up" || fail "init's closing message says nothing else has a copy without a backup"
 
 # The owner has not registered yet: local-init exits 4, init stops before role.
 reset_stub

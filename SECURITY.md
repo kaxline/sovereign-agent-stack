@@ -26,7 +26,7 @@ This is a **local development** stack. It is not hardened for internet-facing de
 | vikunja (optional) | compose-internal `:3456`; also on the internal `db` network | Vikunja accounts (sign-up off by default); MCP needs a scoped API token |
 | signal-cli (optional) | compose-internal `:8080` | None — HTTP JSON-RPC has no auth; keep unpublished |
 | bitwarden-broker (optional) | `127.0.0.1:8099` inside `hermes`' network namespace; Unix socket in the `bitwarden_sync` volume | None on TCP: no route returns a password, code or session key, and agent code in `hermes` can call it. The socket, which serves stack secrets and takes manual unlocks, is mounted only by the broker and `bitwarden-secrets-sync` |
-| bitwarden-setup (optional, one-shot) | no port; its own network plus the internal `vault` network | Your master password in a hidden prompt, held for one run; shares no network or volume with `hermes` |
+| bitwarden-setup (optional, one-shot) | no port; its own network plus the internal `vault` network | Your master password in a hidden prompt, held for one run; listens on no port, shares only the internal `vault` network and no volume with `hermes` |
 | bitwarden-secrets-sync (optional, one-shot) | no network (`network_mode: none`) | The broker's Unix socket; mounts only the folders of the files it writes |
 | vaultwarden (optional) | `127.0.0.1:8222` (`VAULTWARDEN_PORT`), plain HTTP; on the internal `vault-backend` network | Vaultwarden accounts, sign-ups off; admin page behind a generated token. `hermes` and the broker cannot reach it directly |
 | vaultwarden-tls (optional) | compose-internal `:443` as `vaultwarden.vault.internal` on the internal `vault` network | TLS from a private CA only the broker and `bitwarden-setup` trust; sets `X-Real-IP` from the connecting address so Vaultwarden's login rate limit can't be bypassed |
@@ -53,7 +53,7 @@ If you discover a security issue in this repository, please open a private advis
 - Put `DB_DATA_DIR` in a cloud-synced folder.
 - Give a Bitwarden account `BW_SCOPE=all`. The agent can then fill every login in that vault, and code it runs in the browser can read each filled password. Keep the scope to one folder or collection (`make doctor` warns about `all`).
 - Use `BW_UNLOCK=stored` with your personal account's master password unless you accept that the broker holds the key to your whole vault; the `folder:` scope only limits what it lists and fills. Prefer `collection:` with a separate member account. See [docs/bitwarden.md](docs/bitwarden.md#unlock).
-- Publish the Vaultwarden port beyond `127.0.0.1`. The web vault is plain HTTP and holds the only copy of what you store in local mode.
+- Publish the Vaultwarden port beyond `127.0.0.1`. The web vault is plain HTTP and holds what you store in local mode, with no other copy unless you back it up (`scripts/vault.sh backup DIR`).
 
 **Do:**
 

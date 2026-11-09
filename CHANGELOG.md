@@ -54,8 +54,9 @@ digests; it is not read from `.env`.
   [docs/bitwarden.md](docs/bitwarden.md).
   - New services. `bitwarden-broker` (profile `bitwarden`) runs `bw`, holds
     every account's session key and fills pages over CDP itself. It shares
-    `hermes`' network namespace, listens on `127.0.0.1:8099` there and
-    restarts when `hermes` is recreated. `bitwarden-setup` and
+    `hermes`' network namespace and listens on `127.0.0.1:8099` there;
+    compose is expected to restart it when `hermes` is recreated, which is
+    not tested yet. `bitwarden-setup` and
     `bitwarden-secrets-sync` (profile `bitwarden-tools`) are one-shots that
     the `make vault-*` and `make secrets-sync` targets start. `vaultwarden`
     (`vaultwarden/server:1.37.4`, pinned by digest) and `vaultwarden-tls`
@@ -79,7 +80,7 @@ digests; it is not read from `.env`.
     profile they manage, `api-server` included, so Hermes' own `bw:` backend
     stays off, and list the plugin's
     `bitwarden` toolset in `known_plugin_toolsets.cron` so cron jobs don't get
-    it. Turning the flag off removes the plugin entries and leaves
+    it unless a job names it in its own `enabled_toolsets`. Turning the flag off removes the plugin entries and leaves
     `vault.bitwarden.enabled: false` in place. The plugin adds
     `bitwarden_request_access` and `bitwarden_release_access`; its backend
     lists nothing and refuses fills in cron turns, including `delegate_task`

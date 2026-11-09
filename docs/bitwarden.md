@@ -7,8 +7,10 @@ page itself. The Hermes gateway lists metadata only (handle, label, username, or
 item has a TOTP key) and never holds a value. The agent keeps the `browser_vault_*` tools and the
 `browser-login` skill; Bitwarden logins appear in `browser_vault_list` with `bwbroker:` handles.
 
-The add-on is on the `default` and `browser` profiles only. It is never on `api-server`, and cron
-jobs get neither its logins nor its tools (see [What the agent can and cannot see](#what-the-agent-can-and-cannot-see)).
+The add-on is on the `default` and `browser` profiles only. It is never on `api-server`. Cron jobs
+get no Bitwarden logins and no fills; the two access tools stay out of cron's tool list unless a job
+names the `bitwarden` toolset in its own `enabled_toolsets` (see
+[What the agent can and cannot see](#what-the-agent-can-and-cannot-see)).
 
 ## Accounts and modes
 
@@ -69,8 +71,8 @@ password are `client_secret` and `master_password` in `secrets/<slug>/`, mode 60
   account (for example `agent@…`) that the organization grants only that collection, so Bitwarden
   enforces the scope and the broker never holds a key to anything else. Use this wherever you have
   an organization. Local mode is set up this way.
-- `all` lets the agent reach every item. `make vault-add` refuses it unless you also pass
-  `SCOPE=all` in the environment, and `make doctor` warns while any account uses it.
+- `all` lets the agent reach every item. `make vault-add SCOPE=all` refuses it unless you also
+  set `CONFIRM_SCOPE_ALL=1`, and `make doctor` warns while any account uses it.
 
 An item is listed only when it has at least one `http` or `https` URI whose match type is not
 "Never". Its origins are those URIs, normalized as Hermes normalizes origins, and a fill runs only
@@ -87,7 +89,9 @@ on one of them.
   broker restarts, `make vault-lock SLUG=…`, or `BITWARDEN_IDLE_LOCK_MINUTES` without a fill or
   unlock (default 0, never). While it is locked its items are not listed, and `browser_vault_list`
   carries `"bitwarden": {"locked": ["<slug>"], "unlock": "make vault-unlock SLUG=<slug>"}`. The broker
-  restarts whenever `hermes` is recreated, so a manual account needs unlocking again after that.
+  shares `hermes`' network namespace (`network_mode: service:hermes`), so compose is expected to
+  restart it when `hermes` is recreated, and a manual account then needs unlocking again. That
+  restart has not been tested yet.
 
 With `stored` on a personal account (`folder:` scope), the broker holds a password that opens your
 whole vault, and the scope only limits what it lists and fills. `make vault-add` says so before it
@@ -132,8 +136,8 @@ Vaultwarden allows 10 password logins a minute from one client IP. `make vault-i
 for the API and once for `bw`; on a 429 it waits a minute and tries once more. Re-running it several
 times in a row can still hit the limit; wait a minute.
 
-**The local Vaultwarden holds the only copy of what you store in it.** Back it up (see
-[Backup and restore](#backup-and-restore)).
+**The local Vaultwarden holds what you store in local mode, and nothing else has a copy unless you
+back it up** with `scripts/vault.sh backup DIR` (see [Backup and restore](#backup-and-restore)).
 
 Setting `BITWARDEN_LOCAL_ENABLED=0` and running `make up` stops Vaultwarden. `local.env` stays, the
 broker reports the account as `offline`, and `make doctor` notes it.
@@ -142,8 +146,9 @@ broker reports the account as `offline`, and `make doctor` notes it.
 
 Creating the agent's folder or collection, moving items into it and changing the agent account's
 role need your own vault key, which the broker does not hold in `collection` mode. These steps run
-in `bitwarden-setup`, a one-shot container from the broker's image that shares no network or volume
-with `hermes`. It asks for your email and master password on the host terminal (three tries; after
+in `bitwarden-setup`, a one-shot container from the broker's image. It listens on no port, shares
+no volume with `hermes`, and shares only the internal `vault` network with it, its route to the
+local Vaultwarden. It asks for your email and master password on the host terminal (three tries; after
 three wrong passwords it exits with nothing changed), unlocks your account into a new folder under
 `/tmp`, does its work, and runs `bw lock` and `bw logout` on every exit, Ctrl-C included. A second
 Ctrl-C during that cleanup can stop `bw logout` before the server hears it, which leaves a `bw`
@@ -242,15 +247,15 @@ hand. The two Twenty files take any value.
 
 A new value in a file does not always change the service that checks it:
 
-- **`twenty/<slug>/key-ro`, `key-rw`**: create the key in Twenty first, then store it. Hermes picks
+- `twenty/<slug>/key-ro`, `key-rw`: create the key in Twenty first, then store it. Hermes picks
   it up through the `make hermes-reload` the sync runs. `make crm-init ROTATE=1` writes keys of its
   own, so update the Bitwarden items after one, or the next sync puts the old keys back.
-- **`twenty/encryption-key`**: don't change it on an existing install. Twenty encrypts what it
+- `twenty/encryption-key`: don't change it on an existing install. Twenty encrypts what it
   stores with it, and a new key loses that data ([CRM](crm.md#settings)).
-- **`twenty/db-password`**: Postgres reads its password file only when it first creates the
+- `twenty/db-password`: Postgres reads its password file only when it first creates the
   database. Change the role's password first (`docker compose exec twenty-db psql -U twenty`, then
   `\password twenty`), run the sync, then `docker compose up -d --force-recreate twenty-server twenty-worker`.
-- **`postgres/<role>`**: `db-provision` sets each `svc_<role>` password from its file on every
+- `postgres/<role>`: `db-provision` sets each `svc_<role>` password from its file on every
   `make up`; run it now with `docker compose run --rm db-provision`, then restart the integration
   that uses the role.
 
@@ -288,7 +293,9 @@ Other limits, as built:
 - A login form inside a cross-origin iframe is not found. The fill returns "No password field on
   the current page".
 - Cron turns list no Bitwarden logins and refuse fills, including subagents a cron job starts with
-  `delegate_task`; the `bitwarden` toolset is also kept out of cron's tool list. A subagent that a
+  `delegate_task`. The `bitwarden` toolset is kept out of cron's tool list, but a job that names it
+  in its own `enabled_toolsets` still gets `bitwarden_request_access` and
+  `bitwarden_release_access`; the backend still lists and fills nothing there. A subagent that a
   chat starts is not a cron turn and gets the logins as the chat does.
 - `browser_vault_save_login` saves into Hermes' own local vault, never into Bitwarden. Add Bitwarden
   logins in Bitwarden, or have the agent ask with `bitwarden_request_access`.
@@ -376,7 +383,7 @@ and local mode's files.
 | doctor: `<slug>: error (auth)` | Bitwarden refused the API key or master password: `make vault-add SLUG=… MODE=… FORCE=1` |
 | doctor: `<slug>: offline (rate_limited)` | Bitwarden answered 429. The broker waits 60 s (or the server's `Retry-After`) and keeps serving the last synced items |
 | doctor: `the broker refused an account file` | A key or value in the file is unknown; the message names the file and key |
-| doctor: `<slug>: not loaded by the broker yet` | The broker reads account files at start: `make up`, or `docker compose restart bitwarden-broker` |
+| doctor: `<slug>: not loaded by the broker yet` | The broker reads account files at start: `docker compose restart bitwarden-broker` |
 | A login is in the folder but not listed | It has no `http`/`https` URI, or only URIs with match type "Never"; or the agent released it and it is still denylisted. `make vault-sync` re-reads |
 | doctor: `… is a folder (Docker made it for a missing file)` | A container started before `make vault-init` wrote that file. Remove the folder and run `make vault-init` again |
 | `make vault-init` stops waiting for you | Register in the web vault with the invited address, then `make vault-init` again |

@@ -1977,8 +1977,9 @@ services:
 
   # One-shot, interactive: unlocks the user's own account to create the
   # agent's folder or collection and move items into it (make vault-init,
-  # vault-add, vault-grant). Shares no network or volume with hermes; vault
-  # is how it reaches the local Vaultwarden.
+  # vault-add, vault-grant). Shares only the internal vault network with
+  # hermes (its route to the local Vaultwarden), listens on no port, and
+  # shares no volume with it.
   bitwarden-setup:
     profiles: ["bitwarden-tools"]
     build: *bitwarden-build
