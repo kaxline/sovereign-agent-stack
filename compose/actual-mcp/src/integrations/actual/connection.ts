@@ -8,35 +8,78 @@ const DEFAULT_DATA_DIR: string = path.resolve(os.homedir() || '.', '.actual');
 const DEFAULT_SYNC_TTL_MS = 60_000;
 
 /**
- * `code` values on an `api.sync()` error that mean this process can no longer reach the
- * budget with its credential: the session ended (deleted, user disabled, server password
- * changed), the password is wrong, or access to the budget was revoked or it is gone.
- * Seen live against actual-server 26.11.0: `token-expired` (deleted session, password
- * change) and `file-access-not-allowed` (revoked user_access). The rest are the other
- * auth reasons loot-core can attach. Network codes (`network-failure`, `network`) are
- * deliberately absent: an unreachable server keeps the offline behaviour.
+ * Error `code` values that mean this process can't keep using its copy of the budget. Each
+ * group gets its own message (`sessionEndedMessage`). Network codes (`network-failure`,
+ * `network`) and anything else are deliberately absent: an unreachable server keeps the
+ * offline behaviour.
+ *
+ * - Sign-in: the session ended (deleted, user disabled, server password changed, expired) or
+ *   the password is wrong. `api.sync()` reports a missing session as `token-expired`
+ *   (loot-core's `getServerErrorReason`); seen live on 26.11.0 for a deleted session and a
+ *   password change. `api.init()` throws `token-expired` or `invalid-password`.
+ * - Access: `/sync/sync` answers 403 `file-access-not-allowed` once the user's `user_access`
+ *   row is gone (seen live).
+ * - Deleted: `/sync/sync` answers 400 `file-not-found` for a missing or deleted file
+ *   (`verifyFileExists`; `FilesService.get` treats `deleted` as not found).
+ * - Changed: `/sync/sync` answers 400 from `validateSyncedFile` when the server's file no
+ *   longer matches this copy: `file-has-reset` (the budget was reset, new group id),
+ *   `file-key-mismatch` and `file-old-version`. None of them clears on a retry, and every
+ *   write made meanwhile would stay in the local cache.
+ * - Missing: `api.downloadBudget()` throws `budget-not-found` during init when the sync id is
+ *   not among the files this sign-in can see (deleted, or no access). Not a sync code.
  */
-const SESSION_ENDED_CODES: ReadonlySet<string> = new Set([
+const SIGN_IN_CODES: ReadonlySet<string> = new Set([
   'token-expired',
   'token-not-found',
   'unauthorized',
   'invalid-password',
-  'file-access-not-allowed',
-  'budget-not-found',
 ]);
+const ACCESS_CODES: ReadonlySet<string> = new Set(['file-access-not-allowed']);
+const DELETED_CODES: ReadonlySet<string> = new Set(['file-not-found']);
+const CHANGED_CODES: ReadonlySet<string> = new Set(['file-has-reset', 'file-key-mismatch', 'file-old-version']);
+const MISSING_CODES: ReadonlySet<string> = new Set(['budget-not-found']);
 
-/** The session-ended code on an error from `api.sync()`, or null. Matches `error.code` only, never the message. */
-export function sessionEndedCode(error: unknown): string | null {
-  const code = (error as { code?: unknown } | null)?.code;
-  return typeof code === 'string' && SESSION_ENDED_CODES.has(code) ? code : null;
+/** How to reconnect the single stack-wide budget; `ACTUAL_RECONNECT_HINT` replaces it per budget. */
+export const DEFAULT_RECONNECT_HINT =
+  'reconnect it with make budget-remove and make budget-init (local server) ' +
+  'or make budget-add URL=<server> FORCE=1 (remote server)';
+
+function reconnectHint(): string {
+  return process.env.ACTUAL_RECONNECT_HINT?.trim() || DEFAULT_RECONNECT_HINT;
 }
 
-/** Thrown to the caller when a sync shows the budget's session has ended. Carries no credentials. */
+/** The caller-facing message for an ended-session code, or null for any other code. Secret-free. */
+export function sessionEndedMessage(code: string): string | null {
+  if (SIGN_IN_CODES.has(code)) {
+    return `Actual session ended (${code}). The next call signs in again; if it keeps failing, ${reconnectHint()}.`;
+  }
+  if (ACCESS_CODES.has(code)) {
+    return `Access to this budget was removed (${code}); its owner or an admin has to restore it.`;
+  }
+  if (DELETED_CODES.has(code)) {
+    return `This budget was deleted on the server (${code}); ${reconnectHint()} with another budget.`;
+  }
+  if (CHANGED_CODES.has(code)) {
+    return `The budget changed on the server (${code}); ${reconnectHint()}.`;
+  }
+  if (MISSING_CODES.has(code)) {
+    return `This budget isn't on the server or this sign-in can't open it (${code}); ${reconnectHint()}.`;
+  }
+  return null;
+}
+
+/** The ended-session code on an error, or null. Matches `error.code` only, never the message. */
+export function sessionEndedCode(error: unknown): string | null {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && sessionEndedMessage(code) !== null ? code : null;
+}
+
+/** Thrown to the caller when a sync or init shows the budget can't be used. Carries no credentials. */
 export class ActualSessionEndedError extends Error {
   readonly code: string;
 
-  constructor(code: string) {
-    super(`Actual session ended (${code}): reconnect with make budget-add FORCE=1 or make budget-init`);
+  constructor(code: string, cause?: unknown) {
+    super(sessionEndedMessage(code) ?? `Actual budget unavailable (${code})`, { cause });
     this.name = 'ActualSessionEndedError';
     this.code = code;
   }
@@ -148,7 +191,10 @@ export class ActualConnection {
           this.state = 'failed';
         }
         this.inflightInit = null;
-        throw err;
+        // Reason: give an init that fails for an ended-session reason the same message a
+        // failed sync gives, so the text stays stable from one call to the next.
+        const code = sessionEndedCode(err);
+        throw code === null ? err : new ActualSessionEndedError(code, err);
       });
     return this.inflightInit;
   }
@@ -164,11 +210,13 @@ export class ActualConnection {
    * Pull remote changes into local data when the TTL has elapsed. Concurrent
    * stale callers share one in-flight sync.
    *
-   * A sync that fails because the session ended or access was revoked
-   * (`sessionEndedCode`) closes the API, marks the connection failed and rejects,
+   * A sync that fails because the session ended, access was removed, or the
+   * budget was deleted or changed on the server (`sessionEndedCode`) closes the
+   * API, marks the connection failed and rejects with `ActualSessionEndedError`,
    * so the waiting operation never runs: no read answers from the stale copy and
-   * no write lands in the local cache. The next call re-runs init, which fails
-   * with the API's own `Authentication failed: ...` while the credential is dead.
+   * no write lands in the local cache. The next call re-runs init; a password
+   * install whose session merely expired signs in again there, and while the
+   * cause persists init fails with the same message.
    *
    * Any other failure, network errors included, is logged and the call continues
    * with local data, as upstream does: answering from slightly stale data beats
@@ -192,7 +240,7 @@ export class ActualConnection {
         }
         console.error(`Actual session ended (${code}); closing the budget so later calls re-initialize.`);
         await this.closeAfterEndedSession();
-        throw new ActualSessionEndedError(code);
+        throw new ActualSessionEndedError(code, error);
       })
       .finally(() => {
         this.inflightSync = null;
