@@ -8,10 +8,10 @@ LightRAG is a built-in add-on (`addons/lightrag/addon.json`). Switch it on or of
 
 ```bash
 ./scripts/addon.sh enable lightrag    # LIGHTRAG_MCP_ENABLED=1, rag profile on, starts lightrag and lightrag-mcp, reloads Hermes
-./scripts/addon.sh disable lightrag   # flag 0, rag profile off, stops lightrag and lightrag-mcp, reloads Hermes
+./scripts/addon.sh disable lightrag   # flag 0, rag profile off, stops lightrag, lightrag-mcp and an unused neo4j, reloads Hermes
 ```
 
-`disable` keeps `rag_storage/`, `inputs/` and the Neo4j graph. It does not stop Neo4j, which is a separate stack service (`NEO4J_ENABLED`). `enable` and `disable` do not change `WORKSPACE`; use `make corpus-use` for that. `./scripts/addon.sh list --json` shows `lightrag` with its state.
+`disable` also stops Neo4j when nothing else keeps it running: Neo4j stays up only while `NEO4J_ENABLED` is on or another active profile starts it. `disable` keeps `rag_storage/`, `inputs/` and the graph data (the `neo4j_data` volume). `llm` is not a compose service, so `disable` does not touch it. `enable` and `disable` do not change `WORKSPACE`; use `make corpus-use` for that. `./scripts/addon.sh list --json` shows `lightrag` with its state.
 
 ## Quick path
 

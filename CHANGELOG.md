@@ -110,7 +110,9 @@ the stack under another app.
   the api-server and browser profiles only. The default profile is left
   alone (`mcp.unmanaged`, below). `scripts/addon.sh enable|disable lightrag`
   sets `LIGHTRAG_MCP_ENABLED` and the `rag` profile and starts or stops
-  `lightrag` and `lightrag-mcp`; Neo4j stays with `NEO4J_ENABLED`. `lightrag`
+  `lightrag` and `lightrag-mcp`. `disable` also stops Neo4j unless
+  `NEO4J_ENABLED` is on or another active profile starts it; `rag_storage/`,
+  `inputs/` and the `neo4j_data` volume are kept. `lightrag`
   now appears in `scripts/addon.sh list` and `list --json`.
   `LIGHTRAG_MCP_TIMEOUT` and `LIGHTRAG_MCP_CONNECT_TIMEOUT` in `.env` now
   reach the bootstrap. Compose did not pass them before, so they were
