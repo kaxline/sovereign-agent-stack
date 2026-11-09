@@ -169,4 +169,15 @@ rmdir "$empty/ws"
 PATH="$empty/bin:$PATH" STACK_PYTHON='' CRM_WORKSPACES_DIR="$empty/ws" run migrate \
   || fail "migrate with no workspaces dir ($(cat "$out" "$err"))"
 
+# ensure creates the store the Hermes bootstraps mount, 0700, before Docker
+# would create it root-owned.
+fresh="$tmp/fresh"
+mkdir -p "$fresh/ws"
+ASSISTANT_DATA_ROOT="$fresh/data" CRM_WORKSPACES_DIR="$fresh/ws" run ensure \
+  || fail "ensure on a fresh data root ($(cat "$out" "$err"))"
+for d in "$fresh/data/addons/twenty" "$fresh/data/addons/twenty/instances" "$fresh/data/addons/twenty/secrets"; do
+  [ -d "$d" ] || fail "ensure creates ${d#"$fresh"/}"
+  [ "$(mode "$d")" = 700 ] || fail "${d#"$fresh"/} is 0700 ($(mode "$d"))"
+done
+
 printf 'OK crm.sh migrate\n'

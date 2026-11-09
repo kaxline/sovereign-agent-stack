@@ -94,16 +94,19 @@ when it has no `TWENTY_KEY_RW`. `make crm-init ROTATE=1` rewrites only the
 lines it owns (the URLs, the workspace id and the two keys), so the access
 setting and any other line survive a rotation.
 
-Bootstrap writes each key into that profile's `.env` under `data/hermes/` as
-`TWENTY_<SLUG>_KEY` (`crm-sales-eu` uses `TWENTY_SALES_EU_KEY`). `config.yaml`
-holds only the reference:
+The Hermes bootstraps read the workspaces from the add-on's instance store
+(`data/addons/twenty/instances/<slug>.json` and `secrets/<slug>.key_ro|key_rw`,
+mounted read-only) and write each key into that profile's `.env` under
+`data/hermes/` as `CRM_<SLUG>_KEY` (`crm-sales-eu` uses `CRM_SALES_EU_KEY`).
+Keys stored by earlier versions as `TWENTY_<SLUG>_KEY` are removed.
+`config.yaml` holds only the reference:
 
 ```yaml
 mcp_servers:
   crm-main:
     url: http://twenty-server:3000/mcp
     headers:
-      Authorization: Bearer ${TWENTY_MAIN_KEY}
+      Authorization: Bearer ${CRM_MAIN_KEY}
 ```
 
 On a local instance `make crm-init` creates two roles for those keys:

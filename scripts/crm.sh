@@ -927,6 +927,10 @@ cmd_migrate() {
 
 cmd_ensure() {
   mkdir -p "$WS_DIR"
+  # The Hermes bootstraps mount the store read-only; created here (0700, as
+  # addon_store makes them) so Docker doesn't create them root-owned on Linux.
+  mkdir -p "${STORE}/instances" "${STORE}/secrets"
+  chmod 700 "$STORE" "${STORE}/instances" "${STORE}/secrets"
   sync_bool
   migrate_first
   is_true "$(env_get TWENTY_LOCAL_ENABLED 0)" || return 0

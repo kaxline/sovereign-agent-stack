@@ -84,7 +84,8 @@ refused("packaged mcp service without healthCheck", no_health, "community", "hea
 refused("pin outside tools", variant(mcp__pin=["nope"]), "builtin", "mcp.pin")
 refused("writeTools outside tools", variant(mcp__writeTools=["nope"]), "builtin", "mcp.writeTools")
 refused("core name collision", variant(mcp__name="mail"), "builtin", "collides")
-refused("core prefix collision", variant(mcp__name="crm-main"), "builtin", "collides")
+refused("core prefix collision", variant(mcp__name="caldav-main"), "builtin", "collides")
+check("crm- is no longer a core prefix", "crm-" not in am.CORE_MCP_PREFIXES, str(am.CORE_MCP_PREFIXES))
 refused("bad access level", variant(mcp__profiles={"default": "admin"}), "builtin", "ro or rw")
 refused("unknown stack service", variant(uses=["kafka"]), "builtin", "kafka")
 refused("postgres without exposesToAgent", variant(uses=["postgres"]), "builtin", "exposesToAgent")
@@ -591,6 +592,166 @@ with tempfile.TemporaryDirectory() as tmp:
     got = am.cron_fence(Path(tmp), {})
     check("cron fence tolerates an instances manifest with cron false", got == ([], []), str(got))
 
+# --- instances-plan (Twenty's real manifest, a synthetic store) ---------------
+# Fields: name|title|on|url|keyenv|keyfile|timeout|connect|pins|reason|header|scheme.
+# A line whose name ends in * describes the add-on: on is its flag, pins the bare
+# pin names, reason the flag's name.
+TW_PINS = ("get_tool_catalog learn_tools execute_tool list_object_metadata_names "
+           "list_skills load_skills search_help_center")
+FAKE_KEYS = {"main.key_ro": "ro-fake-main", "main.key_rw": "rw-fake-main",
+             "remote.key_rw": "rw-fake-remote", "lookup.key_ro": "ro-fake-lookup",
+             "lookup.key_rw": "rw-fake-lookup", "rdonly.key_rw": "rw-fake-rdonly",
+             "odd.key_ro": "ro-fake-odd", "odd.key_rw": "rw-fake-odd",
+             "badkey.key_rw": "rw-fake\nline"}
+
+
+def tw_store(tmp: Path, instances: dict) -> Path:
+    """data dir with addons-data/twenty/{instances,secrets}; returns the data dir."""
+    data = tmp / "addon-data"
+    (data / "twenty" / "instances").mkdir(parents=True)
+    (data / "twenty" / "secrets").mkdir()
+    for slug, values in instances.items():
+        (data / "twenty" / "instances" / f"{slug}.json").write_text(json.dumps(values))
+    for name, value in FAKE_KEYS.items():
+        if name.split(".")[0] in instances:
+            (data / "twenty" / "secrets" / name).write_text(value)
+    return data
+
+
+def plan_rows(data: Path, profile: str, environ: dict) -> dict[str, list[str]]:
+    lines = am.instances_plan(ROOT / "addons", data, profile, environ)
+    rows = {}
+    for line in lines:
+        fields = line.split("|")
+        check(f"instances-plan line has 12 fields ({fields[0]})", len(fields) == 12, line)
+        rows[fields[0]] = fields
+    return rows
+
+
+TW_ON = {"TWENTY_MCP_ENABLED": "1", "TWENTY_LOCAL_ENABLED": "1"}
+with tempfile.TemporaryDirectory() as tmp:
+    data = tw_store(Path(tmp), {
+        "main": {"url": "http://twenty-server:3000", "access": "write", "local": True},
+        "remote": {"url": "https://crm.example.com/", "access": "write", "local": False},
+        "lookup": {"url": "https://lookup.example.com", "access": "read"},
+        "rdonly": {"url": "https://rdonly.example.com", "access": "read"},
+        "odd": {"url": "https://odd.example.com", "access": "admin"},
+        "ftp": {"url": "ftp://crm.example.com", "access": "write"},
+        "badkey": {"url": "https://badkey.example.com", "access": "write"},
+        "Bad_Slug": {"url": "https://bad.example.com", "access": "write"},
+    })
+    (data / "twenty" / "instances" / ".hidden.json").write_text("{}")
+    (data / "twenty" / "instances" / "sample.json.example").write_text("{}")
+    out = "\n".join(am.instances_plan(ROOT / "addons", data, "default", TW_ON))
+    check("instances-plan never prints a key value", "fake" not in out, out)
+
+    rows = plan_rows(data, "default", TW_ON)
+    check("the add-on line names the prefix, flag and bare pins",
+          rows.get("crm-*", [])[:3] == ["crm-*", "Twenty CRM", "1"]
+          and rows["crm-*"][8] == TW_PINS and rows["crm-*"][9] == "TWENTY_MCP_ENABLED", str(rows.get("crm-*")))
+    m = rows.get("crm-main", [])
+    check("default: crm-main is on at twenty-server/mcp with CRM_MAIN_KEY and key_rw",
+          m[2:6] == ["1", "http://twenty-server:3000/mcp", "CRM_MAIN_KEY",
+                     str(data / "twenty" / "secrets" / "main.key_rw")], str(m))
+    check("crm-main carries timeouts, the seven pins and the Bearer header",
+          m[6:8] == ["60", "30"] and m[8] == TW_PINS and m[9] == "" and m[10:] == ["Authorization", "Bearer"], str(m))
+    check("a trailing slash on the url is dropped",
+          rows.get("crm-remote", [""] * 4)[3] == "https://crm.example.com/mcp", str(rows.get("crm-remote")))
+    check("access read gives default the ro key",
+          rows.get("crm-lookup", [""] * 6)[5].endswith("lookup.key_ro"), str(rows.get("crm-lookup")))
+    r = rows.get("crm-rdonly", [])
+    check("access read with no key_ro: off, reason names key_ro",
+          r[2:3] == ["0"] and r[5] == "" and r[9].startswith("key ") and "key_ro" in r[9], str(r))
+    o = rows.get("crm-odd", [])
+    check("unknown access: off with an access reason that holds no value",
+          o[2:3] == ["0"] and o[9].startswith("access ") and "admin" not in o[9], str(o))
+    f = rows.get("crm-ftp", [])
+    check("a non-http url is off", f[2:3] == ["0"] and f[9].startswith("url "), str(f))
+    b = rows.get("crm-badkey", [])
+    check("a key holding a line break is off", b[2:3] == ["0"] and b[9].startswith("key "), str(b))
+    check("bad slugs and hidden files get no line",
+          not any(k in rows for k in ("crm-Bad_Slug", "crm-.hidden", "crm-sample")), str(sorted(rows)))
+
+    rows = plan_rows(data, "api-server", TW_ON)
+    check("api-server: crm-main uses key_ro",
+          rows.get("crm-main", [""] * 6)[2] == "1" and rows["crm-main"][5].endswith("main.key_ro"),
+          str(rows.get("crm-main")))
+    r = rows.get("crm-remote", [])
+    check("api-server: remote without key_ro is off, reason key", r[2:3] == ["0"] and r[9].startswith("key "), str(r))
+    check("api-server: access read keeps key_ro",
+          rows.get("crm-lookup", [""] * 6)[5].endswith("lookup.key_ro"), str(rows.get("crm-lookup")))
+    check("api-server: no line hands out a key_rw",
+          not any(r[5].endswith(".key_rw") for r in rows.values()), str(rows))
+    check("api-server: unknown access is off too", rows.get("crm-odd", ["", "", "1"])[2] == "0")
+
+    rows = plan_rows(data, "browser", TW_ON)
+    check("browser follows access", rows.get("crm-main", [""] * 6)[5].endswith("main.key_rw")
+          and rows.get("crm-lookup", [""] * 6)[5].endswith("lookup.key_ro"), str(rows))
+
+    rows = plan_rows(data, "worker", TW_ON)
+    check("a profile outside mcp.profiles gets no entry, reason profile",
+          rows.get("crm-main", [""] * 10)[2] == "0" and rows["crm-main"][9].startswith("profile "),
+          str(rows.get("crm-main")))
+
+    local_off = {"TWENTY_MCP_ENABLED": "1", "TWENTY_LOCAL_ENABLED": "0"}
+    rows = plan_rows(data, "default", local_off)
+    check("local instance skipped while TWENTY_LOCAL_ENABLED=0, reason gate",
+          rows.get("crm-main", [""] * 10)[2] == "0" and rows["crm-main"][9].startswith("gate "),
+          str(rows.get("crm-main")))
+    check("remote instance kept while the local one is off", rows.get("crm-remote", ["", "", "0"])[2] == "1")
+    rows = plan_rows(data, "default", {"TWENTY_MCP_ENABLED": "1"})
+    check("an unset gate flag is off", rows.get("crm-main", ["", "", "1"])[2] == "0")
+
+    rows = plan_rows(data, "default", {"TWENTY_MCP_ENABLED": "0", "TWENTY_LOCAL_ENABLED": "1"})
+    check("TWENTY_MCP_ENABLED=0: the add-on line is off and every instance is off with reason flag",
+          rows.get("crm-*", ["", "", "1"])[2] == "0"
+          and all(r[2] == "0" and r[9].startswith("flag ") for k, r in rows.items() if k != "crm-*"),
+          str(rows))
+    rows = plan_rows(data, "default", {**TW_ON, "TWENTY_MCP_TIMEOUT": "90"})
+    check("TWENTY_MCP_TIMEOUT overrides the timeout", rows.get("crm-main", [""] * 7)[6] == "90")
+
+with tempfile.TemporaryDirectory() as tmp:
+    rows = plan_rows(Path(tmp) / "missing", "default", TW_ON)
+    check("no store: only the add-on line", sorted(rows) == ["crm-*"], str(sorted(rows)))
+    check("main() prints instances-plan",
+          subprocess.run([sys.executable, str(ROOT / "scripts/lib/addon_manifest.py"), "instances-plan",
+                          str(ROOT / "addons"), str(Path(tmp) / "missing"), "default"],
+                         capture_output=True, text=True, env={"TWENTY_MCP_ENABLED": "1"}).stdout.startswith("crm-*|"))
+
+# A broken manifest with mcp.instances still names its prefix, off, so the
+# bootstrap drops its entries.
+with tempfile.TemporaryDirectory() as tmp:
+    (Path(tmp) / "twenty").mkdir()
+    broken = json.loads((ROOT / "addons" / "twenty" / "addon.json").read_text())
+    broken["permissions"]["sends"] = "maybe"
+    (Path(tmp) / "twenty" / "addon.json").write_text(am.canonical(broken))
+    lines = am.instances_plan(Path(tmp), Path(tmp) / "data", "default", TW_ON)
+    check("an invalid instances manifest gives an off add-on line",
+          [l.split("|")[:3] for l in lines] == [["crm-*", "twenty", "0"]], str(lines))
+
+# Cron: Twenty's cron "ro" keeps crm-* entries in cron, as before 0.3.13; with
+# cron false every instance's entry is fenced.
+with tempfile.TemporaryDirectory() as tmp:
+    data = tw_store(Path(tmp), {"main": {"url": "http://twenty-server:3000", "access": "write"},
+                                "remote": {"url": "https://crm.example.com", "access": "read"}})
+    got = am.cron_fence(ROOT / "addons", TW_ON, data)
+    check("twenty (cron ro): no crm-* name or instance URL is fenced",
+          not any(n.startswith("crm-") for n in got[0])
+          and not any("twenty" in u or "example.com" in u for u in got[1]), str(got))
+    addons = Path(tmp) / "addons"
+    (addons / "twenty").mkdir(parents=True)
+    fenced = json.loads((ROOT / "addons" / "twenty" / "addon.json").read_text())
+    fenced["permissions"]["cron"] = False
+    (addons / "twenty" / "addon.json").write_text(am.canonical(fenced))
+    got = am.cron_fence(addons, TW_ON, data)
+    check("an instances add-on with cron false fences each instance's name",
+          got[0] == ["crm-main", "crm-remote"], str(got))
+    fenced["permissions"]["sends"] = "maybe"
+    (addons / "twenty" / "addon.json").write_text(am.canonical(fenced))
+    got = am.cron_fence(addons, TW_ON, data)
+    check("an invalid instances manifest fences each instance's name",
+          got[0] == ["crm-main", "crm-remote"], str(got))
+
 # --- settings, instances, commands and mounts -------------------------------
 def with_settings(settings, **changes):
     return variant(settings=settings, **changes)
@@ -1047,15 +1208,25 @@ if tw_path.is_file():
     check("twenty: the four compose services are listed",
           sorted(s["compose"] for s in tw["services"].values())
           == ["twenty-db", "twenty-redis", "twenty-server", "twenty-worker"])
-    pins = re.search(r'^TWENTY_MCP_PINS="([^"]*)"', (ROOT / "compose/hermes/bootstrap-api-profile.sh").read_text(), re.M)
-    check("twenty: mcp.pin matches TWENTY_MCP_PINS in the bootstrap",
-          pins is not None and tw["mcp"]["pin"] == pins.group(1).split(), str(tw["mcp"]["pin"]))
+    check("twenty: mcp.pin is the seven tools Twenty's MCP lists for every workspace",
+          tw["mcp"]["pin"] == TW_PINS.split(), str(tw["mcp"]["pin"]))
+    gate = tw["mcp"]["instances"]["gate"]["flag"]
+    n = len(re.findall(rf"^      - {gate}=", compose, re.M))
+    check(f"twenty: both hermes-*-bootstrap services receive the instance gate {gate}", n == 2, f"found {n}")
+    bootstrap = (ROOT / "compose/hermes/bootstrap-api-profile.sh").read_text()
+    check("the bootstrap has no Twenty-specific registration left",
+          not re.search(r"register_twenty|reconcile_twenty|twenty_[a-z_]+\(\)|TWENTY_WORKSPACES_DIR|TWENTY_LOCAL_MCP_URL"
+                        r"|TWENTY_MCP_PINS", bootstrap))
 
 for svc in ("hermes-api-bootstrap", "hermes-browser-bootstrap"):
     block = service_block(svc)
     check(f"{svc} mounts addons/", "- ./addons:/bootstrap/addons:ro" in block)
     check(f"{svc} mounts addon_manifest.py",
           "- ./scripts/lib/addon_manifest.py:/bootstrap/addon_manifest.py:ro" in block)
+    check(f"{svc} mounts the Twenty instance store read-only",
+          "- ${ASSISTANT_DATA_ROOT:-./data}/addons/twenty:/bootstrap/addon-data/twenty:ro" in block)
+    check(f"{svc} sets ADDON_DATA_DIR", "- ADDON_DATA_DIR=/bootstrap/addon-data" in block)
+    check(f"{svc} no longer mounts the workspace files", "twenty-workspaces" not in block)
 
 if failures:
     print(f"{failures} failed")

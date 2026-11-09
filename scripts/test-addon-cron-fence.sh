@@ -19,8 +19,10 @@ IMAGE="nousresearch/hermes-agent:$TAG"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 # shellcheck disable=SC2016 # the literal bootstrap line
-grep -q '_out="$(python3 - "$_fmc_cfg" "$ADDON_MANIFEST_PY" "$ADDONS_DIR" <<' "$BOOTSTRAP" \
-  || fail "fence_mail_from_cron must pass the add-on manifests to its python"
+grep -q '_out="$(python3 - "$_fmc_cfg" "$ADDON_MANIFEST_PY" "$ADDONS_DIR" "$ADDON_DATA_DIR" <<' "$BOOTSTRAP" \
+  || fail "fence_mail_from_cron must pass the add-on manifests and instance stores to its python"
+grep -q 'addon_manifest.cron_fence(Path(sys.argv\[3\]), data_dir=Path(sys.argv\[4\]))' "$BOOTSTRAP" \
+  || fail "the fence reads instance names from the stores"
 grep -q 'addon_manifest.cron_fence' "$BOOTSTRAP" || fail "the fence must use addon_manifest.cron_fence"
 
 # cron "ro" on the split fixture: only its rw URL is fenced, and no name.
@@ -55,6 +57,18 @@ m = json.load(open("addons/gptr/addon.json"))
 m["permissions"]["cron"] = False
 open(sys.argv[1], "w").write(am.canonical(m))
 PY
+# Twenty: one workspace in a synthetic store, and a copy of its manifest with cron false.
+mkdir -p "$work/addon-data/twenty/instances" "$work/addons-crm-off/twenty"
+printf '{"url": "http://twenty-server:3000", "access": "write"}\n' > "$work/addon-data/twenty/instances/main.json"
+python3 - "$work/addons-crm-off/twenty/addon.json" <<'PY'
+import json
+import sys
+sys.path.insert(0, "scripts/lib")
+import addon_manifest as am
+m = json.load(open("addons/twenty/addon.json"))
+m["permissions"]["cron"] = False
+open(sys.argv[1], "w").write(am.canonical(m))
+PY
 mkdir -p "$work/addons-ro/split"
 cp scripts/fixtures/addons/split/addon.json "$work/addons-ro/split/addon.json"
 sed -n '/^fence_mail_from_cron() {/,/^}/p' "$BOOTSTRAP" > "$work/fence.sh"
@@ -71,9 +85,14 @@ seed_split() {
   rm -f /h/.mail-cron-toolsets.json
   printf 'mcp_servers:\n  split:\n    url: %s\n  searxng:\n    url: http://searxng-mcp:8000/mcp\n' "$1" > /h/config.yaml
 }
+seed_crm() {
+  rm -f /h/.mail-cron-toolsets.json
+  printf 'mcp_servers:\n  crm-main:\n    url: http://twenty-server:3000/mcp\n  searxng:\n    url: http://searxng-mcp:8000/mcp\n' > /h/config.yaml
+}
 cron_list() { tr -d '\n ' < /h/config.yaml | sed -n 's/.*cron:\(.*\)/\1/p'; }
 
 ADDON_MANIFEST_PY=/bootstrap/addon_manifest.py
+ADDON_DATA_DIR=/w/addon-data
 ADDONS_DIR=/bootstrap/addons; seed; fence_mail_from_cron ""
 echo "true:$(cron_list)"
 ADDONS_DIR=/w/addons-off; seed; fence_mail_from_cron ""
@@ -82,6 +101,10 @@ ADDONS_DIR=/w/addons-ro; seed_split http://split-ro:9000/mcp; fence_mail_from_cr
 echo "ro-at-ro:$(cron_list)"
 seed_split http://split-rw:9000/mcp; fence_mail_from_cron ""
 echo "ro-at-rw:$(cron_list)"
+ADDONS_DIR=/bootstrap/addons; seed_crm; fence_mail_from_cron ""
+echo "crm-ro:$(cron_list)"
+ADDONS_DIR=/w/addons-crm-off; seed_crm; fence_mail_from_cron ""
+echo "crm-false:$(cron_list)"
 ADDONS_DIR=/w/addons-off
 ADDON_MANIFEST_PY=/nope.py; fence_mail_from_cron "" >/dev/null
 echo "missing:$(cron_list)"
@@ -99,6 +122,8 @@ expect 'true:' "cron true leaves platform_toolsets.cron unset"
 expect 'false:-hermes-cron-searxng' "cron false pins a cron list without gptr"
 expect 'ro-at-ro:' "a cron ro add-on registered at its ro URL stays in cron"
 expect 'ro-at-rw:-hermes-cron-searxng' "a cron ro add-on registered at its rw URL is fenced"
+expect 'crm-ro:' "Twenty (cron ro) leaves crm-* entries in cron, as before 0.3.13"
+expect 'crm-false:-hermes-cron-searxng' "an instances add-on with cron false fences crm-main"
 expect 'missing:-hermes-cron-searxng' "a missing module keeps the list it wrote"
 expect 'back:' "the list is removed once the manifest allows cron"
 echo "ok: image ($IMAGE)"

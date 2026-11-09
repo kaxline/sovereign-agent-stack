@@ -52,8 +52,11 @@ sed -n '/^networks:/,/^volumes:/p' "$compose" | grep -q '^  crm:' || fail "crm n
   || fail "both hermes-*-bootstrap services receive TWENTY_MCP_ENABLED"
 [ "$(grep -cF -- '- TWENTY_LOCAL_ENABLED=${TWENTY_LOCAL_ENABLED:-0}' "$compose")" = 2 ] \
   || fail "both hermes-*-bootstrap services receive TWENTY_LOCAL_ENABLED"
-[ "$(grep -cF -- '- ./compose/twenty/workspaces:/bootstrap/twenty-workspaces:ro' "$compose")" = 2 ] \
-  || fail "both hermes-*-bootstrap services mount the workspace files"
+[ "$(grep -cF -- '- ${ASSISTANT_DATA_ROOT:-./data}/addons/twenty:/bootstrap/addon-data/twenty:ro' "$compose")" = 2 ] \
+  || fail "both hermes-*-bootstrap services mount the Twenty instance store read-only"
+[ "$(grep -cF -- '- ADDON_DATA_DIR=/bootstrap/addon-data' "$compose")" = 2 ] \
+  || fail "both hermes-*-bootstrap services receive ADDON_DATA_DIR"
+if grep -qF -- '/bootstrap/twenty-workspaces' "$compose"; then fail "no service mounts the old workspace files"; fi
 
 # The rows come from addons/twenty/addon.json. TWENTY_MCP_ENABLED has a profile
 # no service uses, so a remote-only install does not start the local services.
