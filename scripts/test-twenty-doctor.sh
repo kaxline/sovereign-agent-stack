@@ -108,6 +108,39 @@ doctor
 hasnt "api-server ro" "api-server holds"
 has "profile registers" "Hermes api-server profile registers crm-main"
 
+# Read as instances-plan reads the store. No access field: the manifest's
+# default, read.
+rm -f "$tmp/work/data/hermes/profiles/api-server/"*
+printf '{\n  "url": "https://crm.example.com",\n  "local": false\n}\n' > "$store/instances/main.json"
+setkeys main "$KEY_RO" ""
+doctor
+has "missing access is read" "crm-main: access read, keys present: ro"
+hasnt "missing access is not write" " FAIL "
+# An access that isn't a string.
+printf '{\n  "url": "https://crm.example.com",\n  "access": ["write"]\n}\n' > "$store/instances/main.json"
+doctor
+has "non-string access" "crm-main: access is not a string"
+# local comes from the local setting, not the URL.
+setenv TWENTY_LOCAL_ENABLED=0
+printf '{\n  "url": "https://crm.example.com",\n  "access": "read",\n  "local": true\n}\n' > "$store/instances/main.json"
+doctor
+has "local setting, remote url" "crm-main: not registered while the local instance is off"
+printf '{\n  "url": "http://twenty-server:3000",\n  "access": "read",\n  "local": false\n}\n' > "$store/instances/main.json"
+doctor
+hasnt "local false on the local url" "not registered while the local instance is off"
+has "local false on the local url is checked" "crm-main: access read, keys present: ro"
+printf '{\n  "url": "https://crm.example.com",\n  "access": "read",\n  "local": "yes"\n}\n' > "$store/instances/main.json"
+doctor
+has "non-bool local" "crm-main: local must be true or false"
+setenv
+# A key file with a line break: the bootstrap refuses it, so doctor does too.
+instance main read https://crm.example.com
+printf '%s\n' "$KEY_RO" > "$store/secrets/main.key_ro"
+doctor
+has "key with a line break" "main.key_ro holds a line break or control character"
+hasnt "no probe with a refused key" "MCP answers with the ro key"
+setkeys main "$KEY_RO" "$KEY_RW"
+
 # Legacy workspace files.
 printf 'TWENTY_URL=https://crm.example.com\nTWENTY_KEY_RW=fake-legacy-key\n' > "$tmp/work/compose/twenty/workspaces/x.env"
 printf 'TWENTY_URL=https://crm.example.com\n' > "$tmp/work/compose/twenty/workspaces/y.env.migrated"

@@ -8,6 +8,31 @@ twenty_json_get() {
   sed -n "s/.*\"${2}\": *\"\\([^\"]*\\)\".*/\\1/p" "$1" 2>/dev/null | head -1 || true
 }
 
+# The local setting of an instance file: true, false, "" when absent (the
+# manifest's default, false) or "bad" when it isn't a JSON bool.
+twenty_json_local() {
+  grep -Eq '"local":' "$1" 2>/dev/null || return 0
+  if grep -Eq '"local": *true *(,|}|$)' "$1"; then
+    printf true
+  elif grep -Eq '"local": *false *(,|}|$)' "$1"; then
+    printf false
+  else
+    printf bad
+  fi
+}
+
+# Why the bootstrap would refuse a key file, as addon_manifest.py's
+# _key_problem says it, or nothing. Never prints the value.
+twenty_key_problem() {
+  if [[ ! -f "$1" ]]; then
+    printf missing
+  elif [[ ! -s "$1" ]]; then
+    printf empty
+  elif [[ "$(LC_ALL=C tr -d '\000-\037\177' < "$1" | wc -c)" -ne "$(wc -c < "$1")" ]]; then
+    printf 'holds a line break or control character'
+  fi
+}
+
 # A value from a legacy workspace file, read as crm.sh's ws_get reads it: last
 # match, CR and surrounding whitespace dropped, then one pair of quotes.
 twenty_ws_get() {
@@ -139,20 +164,35 @@ doctor_twenty() {
 
   if [[ "$twenty_mcp" -eq 1 ]]; then
     ok "TWENTY_MCP_ENABLED=1"
-    local twenty_count=0 url access ro_f rw_f has_ro has_rw key kind k probe hdr code label cfg env_key rw
+    local twenty_count=0 url access local_ rw_f has_ro has_rw why key kind k probe hdr code label cfg env_key rw
     for f in "$store/instances"/*.json; do
       [[ -f "$f" ]] || continue
       slug="$(basename "$f" .json)"
       twenty_count=$((twenty_count + 1))
       url="$(twenty_json_get "$f" url)"
+      # As instances-plan reads it: a missing access is the manifest's
+      # default (read), and one that isn't a string is refused.
       access="$(twenty_json_get "$f" access)"
-      access="${access:-write}"
-      ro_f="${store}/secrets/${slug}.key_ro"
+      if [[ -z "$access" ]] && grep -q '"access":' "$f"; then
+        grep -Eq '"access": *""' "$f" || access="not a string"
+      fi
+      access="${access:-read}"
+      local_="$(twenty_json_local "$f")"
       rw_f="${store}/secrets/${slug}.key_rw"
       has_ro=0; has_rw=0
-      [[ -s "$ro_f" ]] && has_ro=1
-      [[ -s "$rw_f" ]] && has_rw=1
-      if [[ "$twenty_local" -eq 0 && "${url%/}" =~ ^http://twenty-server:3000(/mcp)?$ ]]; then
+      for kind in ro rw; do
+        why="$(twenty_key_problem "${store}/secrets/${slug}.key_${kind}")"
+        if [[ -z "$why" ]]; then
+          if [[ "$kind" == ro ]]; then has_ro=1; else has_rw=1; fi
+        elif [[ "$why" != missing ]]; then
+          bad "crm-${slug}: ${slug}.key_${kind} ${why}, so Hermes won't use it — write the key on one line with no newline"
+        fi
+      done
+      if [[ "$local_" == bad ]]; then
+        bad "crm-${slug}: local must be true or false in ${f} — Hermes gets no entry for it"
+        continue
+      fi
+      if [[ "$twenty_local" -eq 0 && "$local_" == true ]]; then
         if grep -qsE "^  crm-${slug}:" data/hermes/config.yaml; then
           warn "crm-${slug}: the local instance is off but Hermes still registers it — run make hermes-reload"
         else
@@ -161,7 +201,7 @@ doctor_twenty() {
         continue
       fi
       if [[ "$access" != read && "$access" != write ]]; then
-        bad "crm-${slug}: access is ${access} in ${f}; use read or write"
+        bad "crm-${slug}: access is ${access} in ${f}; use read or write — Hermes gets no entry for it"
         continue
       fi
       if [[ "$has_ro$has_rw" == 00 ]]; then
@@ -175,11 +215,13 @@ doctor_twenty() {
       # The local instance is checked through its host port; the key alone
       # selects the workspace, whatever the hostname.
       probe="${url%/}"
-      [[ "$probe" == http://twenty-server:3000* ]] && probe="http://127.0.0.1:${twenty_port}"
+      if [[ "$local_" == true || "$probe" == http://twenty-server:3000* ]]; then
+        probe="http://127.0.0.1:${twenty_port}"
+      fi
       probe="${probe%/mcp}/mcp"
       for kind in rw ro; do
         k="${store}/secrets/${slug}.key_${kind}"
-        [[ -s "$k" ]] || continue
+        [[ "$kind" == rw && "$has_rw" -eq 1 ]] || [[ "$kind" == ro && "$has_ro" -eq 1 ]] || continue
         key="$(cat "$k")"
         # The key goes in a header file, not argv, so ps never shows it.
         hdr="$(mktemp)"
