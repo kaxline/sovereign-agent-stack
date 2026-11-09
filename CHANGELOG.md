@@ -152,6 +152,8 @@ digests; it is not read from `.env`.
   calls the new `vault.take {id}` RPC, which returns `{name, origin, value}`
   once. This replaces the CR's `secret.deliver` frame, which would have gone
   to every attached viewer. The value is redacted from later tool output.
+  A `selector` that names an editable password input is refused
+  (`password_field`), as the page scan already skipped one.
   See "Capturing keys from a page" in `docs/hermes.md`.
 - **`browser_vault` `create_login` (CR 0024 R1)**: on a sign-up form, the
   model calls `browser_vault` with `action: create_login` and the
