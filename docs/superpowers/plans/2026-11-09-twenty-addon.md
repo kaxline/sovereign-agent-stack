@@ -23,7 +23,7 @@
 
 ## Decisions for Keith
 
-These shape the build, so they are settled at plan approval. The first option of each is the plan's default.
+Keith approved the default (first option) of each on 2026-11-09.
 
 1. **`ask` access.** Twenty's MCP exposes generic `execute_tool`, so there is no write-tool list for the trust gate, and CR 0023 R3 hasn't landed. Registering `ask` with the `rw` key, as the spec's rule says, would let writes through without asking. The plan ships `access` options `["read", "write"]` and adds `ask` with R3. Alternative: ship `ask` as an option that registers no entry (fails closed) until R3.
 2. **Default access for a new connect.** The spec example says `read`; `crm.sh add` defaults to `write` today. The plan uses `read` for `instances.settings.access.default`, and `crm.sh add` keeps sending `write` when `TWENTY_ACCESS` is unset, so its behaviour doesn't change. Migrated workspaces get their file's value written explicitly.
