@@ -44,14 +44,18 @@ except where noted:
     `string` instance settings, such as `{setting:url}/mcp`.
   - `access`: `{setting:<name>}` naming a `choice` instance setting whose
     `options` are only `read` and `write`. `read` registers the instance with
-    its `ro` key and `write` with its `rw` key. A profile whose key is missing
-    gets no entry, and `api-server` only ever gets `ro`.
+    its `ro` key and `write` with its `rw` key. A profile that `mcp.profiles`
+    maps to `ro` gets the `ro` key whatever the setting (Twenty maps
+    `api-server` to `ro`), and a profile whose key is missing gets no entry.
   - `auth`: `{header, scheme, secret: {ro, rw}}`. `secret` names two `secret`
     instance settings. The bootstrap writes the chosen key into the profile's
     `.env` as `<NAME>_KEY`, with `-` turned into `_` and the name uppercased
     (`CRM_SALES_EU_KEY`), and the header carries `<scheme> ${<NAME>_KEY}`.
   - `gate` (optional): `{setting, flag}`. An instance whose bool `setting` is
     true registers only while `flag` (`builtin.flag` or a gate) is on.
+  For instance entries the bootstrap writes no `tools.include`: `tools` only
+  bounds what `pin` and `writeTools` may name. Of `env` it reads `timeout` and
+  `connectTimeout`; `env.url` and `env.access` are ignored.
   The entry needs a top-level `instances` block that declares the settings it
   names. Removing an instance drops its entries and keys on the next
   bootstrap. `addons/twenty/addon.json` is the one user.

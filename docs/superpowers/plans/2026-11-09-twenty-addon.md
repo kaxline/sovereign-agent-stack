@@ -15,7 +15,7 @@
 ## Global constraints
 
 - Hook contract (plan 3, Global Constraints and Task 5): hooks get `--slug <slug> --json` (`connect`, `disconnect`) or `--json` (`init`), and secrets arrive only as one JSON object on stdin. In `--json` mode stdout carries only JSON lines `{"phase":"setup","status":"running"|"done","message":...}` and ends with exactly one `{"phase":"done",...}` or `{"phase":"error","error":<name>,"message":...}`. Without `--json`, output stays as today's `[crm] ...` lines.
-- Error names: the shared list (`bad_slug`, `exists`, `not_found`, `login_refused`, `token_expired`, `no_access`, `timeout`, `server_unreachable`) plus Twenty's own, listed in `instances.errors`: `local_mismatch`, `local_off`, `missing_key`.
+- Error names: the shared list (`bad_slug`, `exists`, `not_found`, `login_refused`, `token_expired`, `no_access`, `timeout`, `server_unreachable`) plus Twenty's own, listed in `instances.errors`: `local_mismatch`, `local_off`, `missing_key`, `bad_value`.
 - No key in argv, env of a child process other than the existing curl header file, a log line or `logTail`. `mcp_status` keeps passing the key through a 0600 header file.
 - Fail closed: an instance whose `access` isn't a known option, or that lacks the key its access needs, gets no MCP entry, and the bootstrap logs why without the value.
 - Back-compat (`boundary-downstream-consumer` memory): Boundary calls `crm.sh init`, `add`, `remove`, `access` and `login-link` today and keeps doing so until it moves to `addon.sh`. Their arguments, exit codes and stdout stay the same.

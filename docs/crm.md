@@ -43,8 +43,10 @@ forgets it again.
 An app that manages add-ons connects a workspace through
 `scripts/addon.sh connect twenty --instance <slug>`, with a JSON object on
 stdin: `url`, `access` (`read` or `write`), `local`, `key_ro` and `key_rw`.
-The manifest's connect hook runs `crm.sh connect`, which checks each key with
-an MCP `initialize` before anything is stored. `disconnect` removes the
+The bundled instance's URL, `http://twenty-server:3000`, needs `"local": true`,
+and `local: true` needs that URL; either one alone fails with
+`local_mismatch`. The manifest's connect hook runs `crm.sh connect`, which
+checks each key with an MCP `initialize` before anything is stored. `disconnect` removes the
 instance and its keys. `crm.sh add`, `remove` and `access` write the same
 store.
 

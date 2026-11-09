@@ -720,8 +720,9 @@ options are `read` and `write`, `auth` as `{header, scheme, secret: {ro, rw}}`
 naming two `secret` settings, and optionally `gate: {setting, flag}`: an
 instance whose bool `setting` is true registers only while `flag` is on. The
 bootstrap writes the key the access level picks (`ro` for `read`, `rw` for
-`write`) into each profile's `.env` as `<NAME>_KEY` (`CRM_SALES_KEY`), and
-`api-server` only ever gets `ro`. An instance missing the key its access needs
+`write`) into each profile's `.env` as `<NAME>_KEY` (`CRM_SALES_KEY`). A
+profile that `mcp.profiles` maps to `ro` gets the `ro` key whatever the access
+setting; Twenty maps `api-server` to `ro`. An instance missing the key its access needs
 gets no entry, and the bootstrap log says why. Entries, keys and pins of an
 instance that was removed are dropped. Field rules and the prefix rule across
 add-ons are in [addons/README.md](../addons/README.md); Twenty

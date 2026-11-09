@@ -12,10 +12,24 @@ the stack under another app.
 
 1. `make up` (or `./scripts/crm.sh migrate`) imports any
    `compose/twenty/workspaces/<slug>.env` file into `data/addons/twenty/` and
-   renames it `<slug>.env.migrated`. A file with an invalid name, a key with
-   whitespace or a URL with `user:password@` is skipped with a message and
-   stays in place; fix it and run `migrate` again. `make doctor` lists the
-   files still waiting.
+   renames it `<slug>.env.migrated`. Values lose surrounding whitespace, and
+   of a repeated key the last line counts, as the old bootstrap read it. A
+   file with an invalid name, whitespace inside a key or a URL with
+   `user:password@` is skipped with a message and stays in place; fix it and
+   run `migrate` again. `make doctor` lists the files still waiting, and
+   `crm.sh init` refuses while one for its slug, or one on the local instance,
+   is left.
+   **Without `make`** (Boundary's start path, or a plain `docker compose
+   up`): run `./scripts/crm.sh ensure` (or `make ensure-local`) before
+   compose. It creates `data/addons/twenty/{instances,secrets}` (0700) and
+   runs the migration; until then Hermes registers no `crm-*` entry, and on
+   Linux Docker creates the missing directories owned by root. These compose
+   services gain bind mounts of the store: `hermes-api-bootstrap` and
+   `hermes-browser-bootstrap` mount `data/addons/twenty` read-only at
+   `/bootstrap/addon-data/twenty`, and `bitwarden-secrets-sync` mounts
+   `data/addons/twenty/secrets` at `/targets/twenty-keys`. If `ensure` warns
+   that it can't set the store to 0700, `chown` it to your user as the
+   warning says.
 2. `make hermes-reload` (a bootstrap run) rewrites the profile `.env` lines:
    `TWENTY_<SLUG>_KEY` becomes `CRM_<SLUG>_KEY`.
 3. With Bitwarden's `twenty/<slug>/key-ro` and `key-rw` items, run
@@ -33,6 +47,17 @@ the stack under another app.
   which is what the stack did before 0.3.13 too: cron jobs keep the `crm-*`
   entries, and a job on the default profile uses a write workspace's
   read/write key.
+- **Twenty's hook error names** for Boundary: `crm.sh connect` ends with
+  `local_mismatch`, `local_off`, `missing_key` or `bad_value` (listed in
+  `instances.errors`), or with the shared names `bad_slug`, `login_refused`,
+  `no_access`, `timeout` and `server_unreachable`. `crm.sh init --json`
+  ends with `bad_slug`, `server_unreachable` or `command_failed`.
+- **`crm.sh add` and `remove` output:** the stdout lines name the store
+  file, `<data root>/addons/twenty/instances/<slug>.json` as an absolute
+  path, instead of `compose/twenty/workspaces/<slug>.env`; renaming a
+  leftover workspace file is reported on stderr. `add` now refuses a key with
+  whitespace, a quote, a backslash or a control character, and a URL with
+  `user:password@` before the host. Exit codes are unchanged.
 - **Workspaces moved out of `compose/twenty/workspaces/`** into the add-on
   store `data/addons/twenty/` (`instances/<slug>.json`,
   `secrets/<slug>.key_ro` and `.key_rw`). `crm.sh migrate` imports the old
