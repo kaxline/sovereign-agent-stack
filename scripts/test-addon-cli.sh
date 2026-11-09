@@ -1233,6 +1233,23 @@ check "ASSISTANT_DATA_ROOT itself is kept" "$r"
 unset_env FIXTURE_DATA_DIR
 unset_env ASSISTANT_DATA_ROOT
 
+# An exported ASSISTANT_DATA_ROOT wins over .env, as it does for compose.
+mkdir -p "${tmp}/dataroot/from-env" "${tmp}/dataroot/exported"
+set_env ASSISTANT_DATA_ROOT "${tmp}/dataroot/from-env"
+printf '%s' '{"host":"h"}' > "${tmp}/stdin"
+n=$((n + 1)); out="${tmp}/out/${n}"; rc=0
+ASSISTANT_DATA_ROOT="${tmp}/dataroot/exported" "$BASH_UNDER_TEST" "${root}/scripts/addon.sh" \
+  configure fixture --instance envwins < "${tmp}/stdin" > "$out" 2>&1 || rc=$?
+expect_rc "configure with an exported ASSISTANT_DATA_ROOT" 0
+if [ -f "${tmp}/dataroot/exported/addons/fixture/instances/envwins.json" ] \
+  && [ ! -e "${tmp}/dataroot/from-env/addons/fixture" ]; then
+  ok "an exported ASSISTANT_DATA_ROOT wins over .env"
+else
+  bad "an exported ASSISTANT_DATA_ROOT wins over .env"; sed 's/^/    /' "$out"
+fi
+unset_env ASSISTANT_DATA_ROOT
+rm -rf "${tmp}/dataroot/from-env" "${tmp}/dataroot/exported"
+
 # Refusals.
 seed_data
 set_env FIXTURE_ADDON_ENABLED 1

@@ -140,7 +140,7 @@ class Stack:
 
     def compose(self, *args: str, check: bool = True, timeout: float | None = 600, stdin: str | None = None,
                 ) -> subprocess.CompletedProcess:
-        out = subprocess.run(["docker", "compose", "--profile", "*", *args], cwd=self.root, env=self.env,
+        out = subprocess.run(["docker", "compose", "-p", PROJECT, "--profile", "*", *args], cwd=self.root, env=self.env,
                              capture_output=True, text=True, timeout=timeout, input=stdin)
         if check and out.returncode != 0:
             fail(f"docker compose {' '.join(args)} exited {out.returncode}: {out.stderr.strip()[-2000:]}")
@@ -190,6 +190,8 @@ class Stack:
         return found
 
     def down(self) -> None:
+        if not self.root.is_dir():  # nothing was copied, so nothing was started
+            return
         self.compose("down", "-v", "--remove-orphans", "--timeout", "5", check=False, timeout=300)
 
 
@@ -207,6 +209,12 @@ def guard(stack: Stack) -> None:
         for vol in cfg["services"][name].get("volumes", []):
             if vol.get("type") == "bind" and not vol["source"].startswith(data + os.sep):
                 fail(f"{name} binds {vol['source']}, outside the temp data root; aborting")
+    for name in EMAIL_SERVICES:
+        svc = cfg["services"][name]
+        if not svc.get("image", "").startswith(f"{PROJECT}-") \
+                or svc.get("container_name") != f"{PROJECT}-{name}":
+            fail(f"{name} image {svc.get('image')!r} or container_name {svc.get('container_name')!r}"
+                 f" lacks the {PROJECT} prefix; aborting")
     for name in ("hermes-api-bootstrap", "hermes-browser-bootstrap"):
         svc = cfg["services"][name]
         if svc.get("image") != "busybox:1.36" or svc.get("entrypoint") != ["true"] \
@@ -452,7 +460,7 @@ def run(stack: Stack) -> None:
     stack.addon_ok("enable", "email")
     wait_for("the held draft in GreenMail", lambda: "Held while off" in drafts_on_server(port, "work"), 90,
              why=lambda: outbox_state(stack))
-    expect(True, "after drafts on and enable, the held request reaches work's Drafts")
+    print("ok after drafts on and enable, the held request reaches work's Drafts", flush=True)
 
     # Removing an instance drops it from the next pass.
     stack.addon_ok("configure", "email", "--instance", "home", "--remove")

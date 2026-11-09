@@ -207,6 +207,29 @@ def test_refusals(env: Env) -> None:
     expect((queue / "notes.json").exists(), "files that aren't requests are left alone")
 
 
+def test_unreadable(env: Env) -> None:
+    """A queue file the helper can't open (another owner, say) is rejected and
+    removed; it doesn't block the draft behind it."""
+    if os.geteuid() == 0:
+        print("note: running as root; the unreadable-file check is skipped")
+        return
+    root, out, runner = env.setup()
+    queue, _ = drafts.dirs(root)
+    blocked = "f" * 32
+    path = queue / f"{blocked}.json"
+    path.write_text(json.dumps(GOOD | {"id": blocked}))
+    path.chmod(0)
+    good = drafts.enqueue(root, GOOD)
+    os.utime(path, (1000, 1000))  # first in queue order
+    os.utime(queue / f"{good}.json", (2000, 2000))
+    stats = md.Helper(root, runner=runner).process()
+    expect(stats.rejected == 1 and stats.created == 1, f"unreadable file stats {stats}")
+    expect(status(root, blocked) == {"id": blocked, "state": "rejected", "reason": "unreadable request",
+                                     "at": status(root, blocked)["at"]}, f"unreadable status {status(root, blocked)}")
+    expect(not path.exists(), "the unreadable file is removed from the queue")
+    expect(status(root, good)["state"] == "created" and len(saved(out)) == 1, "the draft behind it is saved")
+
+
 def test_rate_limit(env: Env) -> None:
     root, out, runner = env.setup()
     ids = [drafts.enqueue(root, GOOD) for _ in range(3)]
@@ -267,6 +290,7 @@ def main() -> int:
             test_new_drafts(env)
             test_replies(env)
             test_refusals(env)
+            test_unreadable(env)
             test_rate_limit(env)
             test_errors(env)
             test_doctor_and_pruning(env)

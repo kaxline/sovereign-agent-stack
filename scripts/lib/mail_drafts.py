@@ -156,10 +156,15 @@ class Helper:
                 clean = drafts.validate(raw)
                 if clean.get("id") != request_id:
                     raise drafts.BadRequest("request id doesn't match its file name")
-            except (ValueError, drafts.BadRequest) as exc:
+            except (OSError, ValueError, drafts.BadRequest) as exc:
+                # OSError: a file this process can't read (another owner, say).
+                # Rejecting it keeps it from blocking the drafts behind it.
                 reason = str(exc) if isinstance(exc, drafts.BadRequest) else "unreadable request"
                 drafts.write_status(self.root, request_id, "rejected", reason, now=now)
-                path.unlink(missing_ok=True)
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass  # rejected again next pass; the rest of the queue still runs
                 stats.rejected += 1
                 continue
             outbox = self._outbox(clean)
