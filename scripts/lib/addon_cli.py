@@ -257,6 +257,10 @@ def _toggle_fields(manifest: dict) -> dict:
     entries = mcp if isinstance(mcp, list) else [mcp]
     names = []
     for entry in entries:
+        # An mcp.instances entry has no name of its own: connect and the init
+        # hook report the per-instance names.
+        if not isinstance(entry, dict) or "name" not in entry:
+            continue
         gate = entry.get("when", {}).get("gate")
         names.append(f"{entry['name']}@{gate}" if gate else entry["name"])
     return {"recreate": list(manifest.get("onToggle", {}).get("recreate", [])),

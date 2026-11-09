@@ -3,8 +3,11 @@
 # with its data root outside it, host python3, and stub docker, make and curl.
 # enable is refused until a workspace is stored; after connect, enable runs
 # crm.sh init (local instance off), which migrates a legacy workspace file;
-# connect and disconnect run crm.sh's hooks; disable --purge deletes the
-# instance store. No fake key may appear in any output or argv.
+# connect and disconnect run crm.sh's hooks (a bad value or a local mismatch
+# comes back as crm.sh's error, a schema violation as addon.sh's bad_input);
+# remove --delete-data deletes the instance store and the local data dir, and
+# is refused while Twenty is enabled. No fake key may appear in any output or
+# argv.
 #
 #   sh scripts/test-twenty-addon-cli.sh
 #
@@ -22,6 +25,9 @@ trap '[ -n "${KEEP_TMP:-}" ] && echo "kept $tmp" || rm -rf "$tmp"' EXIT
 root="${tmp}/stack"
 data="${tmp}/dataroot"
 mkdir -p "${root}/scripts/lib" "${root}/compose/twenty/workspaces" "$data" "${tmp}/bin" "${tmp}/out"
+# addon.sh's reload step calls vault.sh reload-plugins.
+printf '#!/bin/sh\nexit 0\n' > "${root}/scripts/vault.sh"
+chmod +x "${root}/scripts/vault.sh"
 for f in addon.sh sync-profiles.sh crm.sh twenty_admin.py; do
   cp "${REPO}/scripts/${f}" "${root}/scripts/"
 done
@@ -30,13 +36,17 @@ for f in env.sh data-root.sh python.sh addon-events.sh addon_cli.py addon_manife
 done
 cp -R "${REPO}/addons" "${root}/addons"
 cp "${REPO}/docker-compose.yml" "${root}/"
-# The env readers take a key's first line, so ASSISTANT_DATA_ROOT replaces
+# The env readers take a key's first line, so ASSISTANT_DATA_ROOT and
+# TWENTY_DATA_DIR replace
 # the example's ./data rather than being appended. TWENTY_LOCAL_ENABLED is 0
 # in the example.
-grep -v '^ASSISTANT_DATA_ROOT=' "${REPO}/.env.example" > "${root}/.env"
+grep -v -e '^ASSISTANT_DATA_ROOT=' -e '^TWENTY_DATA_DIR=' "${REPO}/.env.example" > "${root}/.env"
 {
   printf 'COMPOSE_PROJECT_NAME=twentytest\n'
   printf 'ASSISTANT_DATA_ROOT=%s\n' "$data"
+  # The manifest's default ./data/twenty is relative to the repo root, so the
+  # local data dir is pointed into the scratch data root.
+  printf 'TWENTY_DATA_DIR=%s\n' "${data}/twenty"
 } >> "${root}/.env"
 
 # A workspace file from before 0.3.13, which enable's init hook migrates.
@@ -176,6 +186,12 @@ expect_rc "enable exits 0" 0
 t "enable ends with done after the init step" \
   json_ok "done" 'any(l.get("step") == "init" and l.get("status") == "done" for l in lines)'
 no_keys "enable"
+
+# --- remove while enabled: refused ---------------------------------------------
+addon remove twenty --delete-data --json < /dev/null
+expect_rc "remove while enabled exits 2" 2
+t "remove while enabled is bad_input" json_ok error 'last.get("error") == "bad_input"'
+t "a refused remove keeps the instance store" test -d "$store"
 # addon.sh relays a hook's done account and mcp, not its message, and its step
 # logs are temporary, so the message is checked on crm.sh itself.
 out="${tmp}/out/init-direct"
@@ -185,6 +201,7 @@ rc=0
 expect_rc "crm.sh init --json exits 0" 0
 t "crm.sh init --json ends with done: local instance off" \
   json_ok "done" 'last.get("message") == "local instance off"'
+no_keys "crm.sh init --json"
 t "state.json records init" json_file "${store}/state.json" '"init" in v'
 t "enable sets TWENTY_MCP_ENABLED=1" has_line '^TWENTY_MCP_ENABLED=1$' "${root}/.env"
 t "enable starts no service with TWENTY_LOCAL_ENABLED=0" lacks_line "compose up" "$STUB_LOG"
@@ -195,6 +212,23 @@ t "legacy.env is gone" absent "${ws}/legacy.env"
 t "the legacy instance keeps its url and access" \
   json_file "${store}/instances/legacy.json" 'v["url"] == "https://legacy.example.com" and v["access"] == "read" and v["local"] is False'
 
+# --- connect with a value crm.sh's hook refuses, and one addon.sh refuses ----------
+addon_in '{"url":"https://u:pw@crm.example.com","access":"read","local":false,"key_ro":"fake-refused-key"}' connect twenty --instance badvalue --json
+expect_rc "connect with credentials in the url exits 4" 4
+t "connect with credentials in the url relays bad_value" json_ok error 'last.get("error") == "bad_value"'
+no_keys "connect with credentials in the url"
+addon_in '{"url":"https://crm.example.com","access":"read","local":true,"key_ro":"fake-refused-key"}' connect twenty --instance mismatch --json
+expect_rc "connect local true with a remote url exits 4" 4
+t "connect local true with a remote url relays local_mismatch" json_ok error 'last.get("error") == "local_mismatch"'
+no_keys "connect local mismatch"
+addon_in '{"url":"https://crm.example.com","access":"admin","local":false,"key_ro":"fake-refused-key"}' connect twenty --instance schema --json
+expect_rc "connect with access admin exits 2" 2
+t "connect with access admin is bad_input from addon.sh's schema check" \
+  json_ok error 'last.get("error") == "bad_input"'
+no_keys "connect with access admin"
+t "refused connects write nothing" \
+  absent "${store}/instances/badvalue.json" "${store}/instances/mismatch.json" "${store}/instances/schema.json"
+
 # --- disconnect sales ------------------------------------------------------------
 addon disconnect twenty --instance sales --json < /dev/null
 expect_rc "disconnect exits 0" 0
@@ -203,20 +237,23 @@ no_keys "disconnect"
 t "disconnect removes the instance and its key" absent "${store}/instances/sales.json" "${store}/secrets/sales.key_ro"
 t "disconnect leaves the other instance" present "${store}/instances/legacy.json"
 
-# --- disable, then disable --purge -------------------------------------------------
-# addon.sh has no `remove --delete-data` yet (plan 3); disable --purge is what
-# deletes data/addons/twenty today.
+# --- disable, then remove --delete-data ---------------------------------------------
+# The local instance's data dir, which remove deletes with the store.
+mkdir -p "${data}/twenty/db"
+: > "${data}/twenty/db/PG_VERSION"
 addon disable twenty --json < /dev/null
 expect_rc "disable exits 0" 0
 t "disable ends with done" json_ok "done"
+no_keys "disable"
 t "disable sets TWENTY_MCP_ENABLED=0" has_line '^TWENTY_MCP_ENABLED=0$' "${root}/.env"
 t "disable keeps the instance store" test -d "$store"
 
-addon disable twenty --purge --json < /dev/null
-expect_rc "disable --purge exits 0" 0
-t "disable --purge ends with done after the delete step" \
-  json_ok "done" 'any(l.get("step") == "delete" and l.get("status") == "done" for l in lines)'
-t "disable --purge deletes data/addons/twenty" absent "$store"
+addon remove twenty --delete-data --json < /dev/null
+expect_rc "remove --delete-data exits 0" 0
+t "remove --delete-data ends with done" json_ok "done"
+no_keys "remove --delete-data"
+t "remove --delete-data deletes data/addons/twenty" absent "$store"
+t "remove --delete-data deletes data/twenty" absent "${data}/twenty"
 
 # --- nothing outside the scratch root ----------------------------------------------
 for k in $KEYS; do
