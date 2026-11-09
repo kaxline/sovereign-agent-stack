@@ -24,9 +24,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import sqlite3
 import sys
-import signal
 import tempfile
 import threading
 from dataclasses import replace
@@ -102,6 +102,10 @@ def guarded(fn) -> tuple[object, int]:
     except (ms.ScriptError, mail_imap.ImapError) as exc:
         print(f"mail-index: {exc}", file=sys.stderr)
         return None, 5
+    except Exception as exc:  # noqa: BLE001 - the loop must outlive anything a pass throws
+        # Type name only: the message or a traceback could carry message content.
+        print(f"mail-index: unexpected {type(exc).__name__}", file=sys.stderr)
+        return None, 1
 
 
 def one_command(args) -> object:
@@ -120,7 +124,7 @@ def one_command(args) -> object:
 
 def run_loop(args) -> int:
     """Repeat `run` every args.every seconds. SIGTERM and SIGINT are noted and acted on
-    between passes, so a pass in progress finishes and the index is never left half-written."""
+    between passes, so a pass in progress finishes before the process exits."""
     stop = threading.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stop.set())

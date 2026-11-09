@@ -512,6 +512,23 @@ def test_run_loop(env: Env) -> None:
     expect(proc.returncode == 2 and proc.stdout == "", f"config error exits: {proc.returncode}")
 
 
+def test_unexpected_error_is_contained(env: Env) -> None:
+    store, _ = env.store()
+    config = env.config(store, {PERSONAL: ["INBOX"]})
+    index = mi.load_config(config).index
+    index.parent.mkdir(parents=True, exist_ok=True)
+    index.write_bytes(b"this is not a database " * 200)
+    proc = cli(config, "run", "--every", "1", "--passes", "2")
+    out = [json.loads(l) for l in proc.stdout.strip().splitlines()]
+    expect(proc.returncode == 0 and out == [{"error": "1"}, {"error": "1"}], f"loop survives: {proc.returncode} {out}")
+    lines = proc.stderr.strip().splitlines()
+    expect(len(lines) == 2 and all(l.startswith("mail-index: unexpected ") and " " not in l[len("mail-index: unexpected "):]
+                                   for l in lines), f"type name only: {proc.stderr!r}")
+    expect("Traceback" not in proc.stderr, "no traceback")
+    proc = cli(config, "run")
+    expect(proc.returncode == 1 and "Traceback" not in proc.stderr, f"single run exits 1: {proc.returncode} {proc.stderr!r}")
+
+
 def test_loop_stops_on_sigterm(env: Env) -> None:
     import signal
     import time
@@ -541,7 +558,8 @@ def main() -> int:
                      test_incremental, test_reads_uncheckpointed_wal, test_missing_file_keeps_metadata,
                      test_unrecognised_layout, test_cli_prints_counts_only, test_deleted_text_is_gone,
                      test_resumes_after_interruption, test_ids_count_up, test_upgrade_from_schema_1,
-                     test_mailboxes_for_one_account, test_run_loop, test_loop_stops_on_sigterm):
+                     test_mailboxes_for_one_account, test_run_loop, test_unexpected_error_is_contained,
+                     test_loop_stops_on_sigterm):
             test(env)
     print("OK mail indexer")
     return 0
