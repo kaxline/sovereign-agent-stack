@@ -16,7 +16,8 @@ What reads a manifest:
   profile listed in `mcp.profiles` while the flag is on. A profile left out
   gets no entry, and turning the flag off drops the entries.
 
-Optional fields beyond the basics, all checked by `addon_manifest.py validate`:
+Optional fields beyond the basics, checked by `addon_manifest.py validate`
+except where noted:
 
 - `gates`: a list of `{flag, profile, seed}` for built-in add-ons, each one
   more flag-to-profile row after `builtin`, so a second flag can switch on
@@ -26,24 +27,32 @@ Optional fields beyond the basics, all checked by `addon_manifest.py validate`:
 - `mcp`: one object or a non-empty list of them. Each entry may set its own
   `title` and `when: {"gate": FLAG}`; the entry is registered while that gate
   flag is on, else while `builtin.flag` is on. Names must be unique within the
-  add-on.
+  add-on, and each entry needs its own service: two entries may not name the
+  same service key, directly or through a `{ro, rw}` map, because the
+  bootstrap drops stale registrations by URL.
 - `services.<name>.when`: `{"gate": FLAG}`, so the service starts only while
   that gate flag is on. `mounts` maps `secrets`, `config` and `instances` to
-  `ro` or `rw`; they mount `data/addons/<short-id>/secrets`, `settings.env`
-  and `instances` at `/run/addon/secrets`, `/run/addon/settings.env` and
-  `/run/addon/instances`, and the compose file must declare exactly those
-  mounts. A service that mounts `secrets` may not be an `mcp` service.
+  `ro` or `rw`; they mount the directories `data/addons/<short-id>/secrets`,
+  `config` (which holds `settings.env`) and `instances` at
+  `/run/addon/secrets`, `/run/addon/config` and `/run/addon/instances`. The
+  compose service must declare exactly those mounts, with sources written as
+  `${ASSISTANT_DATA_ROOT:-./data}/addons/<short-id>/<name>`;
+  `scripts/test-addon-manifests.py` checks this, `validate` does not. A
+  service that mounts `secrets` may not be an `mcp` service.
   `volumes` lists the compose volume names that `addon.sh disable --purge`
   removes.
 - `settings`: each setting has a `type` (`string`, `int`, `bool`, `choice`,
   `port`, `secret`, `url`, `path`, `list`, `date`), an optional `default`,
   `label` and `optional`. A setting with neither `default` nor
   `optional: true` is required, and `addon.sh enable` refuses while one has no
-  value. A `bool` setting may name a `flag`, which must be `builtin.flag` or a
-  gate.
+  value. A `secret` setting may not have a `default`. A `bool` setting may
+  name a `flag`, which must be a gate flag, not `builtin.flag`. Two names that
+  differ only by case, `-` or `_` are refused, because they share one
+  `settings.env` key.
 - `instances`: `{name, settings}`, a settings schema stored once per instance
-  slug. `flag` is not allowed inside it. `addon.sh enable` also needs at least
-  one instance.
+  slug. `flag` is not allowed inside it, and the name and default rules above
+  apply. `addon.sh enable` also needs at least one instance, and reports
+  `instances:<name>` in `missing` until there is one.
 - `commands`: `{<name>: {service, instance, argv}}`. `addon.sh run` runs
   `argv` in the named service, and appends `--account <slug>` when `instance`
   is true. An add-on that reads personal data may not run a command in an MCP

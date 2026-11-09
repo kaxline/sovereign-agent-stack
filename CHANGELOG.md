@@ -19,11 +19,14 @@ as before.
   `gates` (further flag-to-profile rows for `sync-profiles.sh`), `mcp` as a
   list with per-entry `title` and `when`, `instances`, `commands`,
   `services.<name>.when`, `mounts` and `volumes`, and settings that take the
-  types `list` and `date`, `optional: true`, and `flag` on a bool. See
+  types `list` and `date`, `optional: true`, and `flag` (a gate flag) on a
+  bool. Services that list `mounts` get the add-on's `config/`, `instances/`
+  and `secrets/` directories under `/run/addon/`. See
   [addons/README.md](addons/README.md).
 - **`scripts/addon.sh`** lists, configures, enables, disables and runs
   commands of built-in add-ons, with settings, instances and secrets stored
-  under `data/addons/<short-id>/`. See
+  under `data/addons/<short-id>/`. `list --json` includes each add-on's
+  settings schema for building a settings form. See
   [docs/extending.md](docs/extending.md#add-ons-scriptsaddonsh). Field
   names may change between patch releases while the stack is in 0.3.x.
 

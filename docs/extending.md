@@ -660,29 +660,56 @@ a changelog entry.
 
 `list --json` objects carry `id`, `shortId`, `title`, `tagline`,
 `permissions`, `platform`, `enabled` (the flag in `.env`), `settings`,
-`instances` (slug to values) and `missing`, the names `enable` would refuse
-on. A setting shows its stored value, else its default, else is absent. A
-`secret` setting shows only `{"set": true}` or `{"set": false}`. A manifest
-that fails validation is left out with a warning on stderr.
+`instances` (slug to values), `missing` and `schema`. `missing` lists what
+`enable` would refuse on: a top-level setting by name, an instance setting
+as `<slug>.<name>`, and `instances:<name>` (the manifest's `instances.name`)
+when the add-on needs an instance and has none. A setting shows its stored
+value, else its default, else is absent. A `secret` setting shows only
+`{"set": true}` or `{"set": false}`. A manifest that fails validation is left
+out with a warning on stderr.
+
+`schema` is the manifest's settings schema, for building a settings form:
+`{"settings": {<name>: <spec>}, "instances": {"name": ..., "settings":
+{<name>: <spec>}}}`, with `instances` set to `null` when the manifest declares
+none. Each spec is copied from the manifest (`type`, `label`, `default`,
+`optional`, `flag`, `options` and any other field it sets). A `secret`
+setting can't declare a `default`, so the schema holds no secret value.
 
 Values on `configure` must be JSON-native: numbers as numbers, bools as bools,
 lists of strings for `list`, `YYYY-MM-DD` strings for `date`. Secrets are
-accepted only in that JSON on stdin, never as arguments or environment. A
-setting name the manifest doesn't declare exits 2. Plain settings go to
-`data/addons/<short-id>/settings.env`; a `bool` setting that names a `flag`
-also writes the flag to `.env`. A gate flag changed through `configure` takes
-effect at the next `enable`, so call `enable` after `configure`. Instance
-`configure` never writes flags.
+accepted only in that JSON on stdin, never as arguments or environment.
+Sending `""` for a secret clears it, and it then counts as unset. A setting
+name the manifest doesn't declare exits 2. Plain settings go to
+`data/addons/<short-id>/config/settings.env`. A `bool` setting that names a
+`flag` (always a gate flag) also writes that flag to `.env`, but only while
+the add-on's own flag is on; while the add-on is disabled the value is stored
+and the next `enable` writes the flag from it. A gate flag changed through
+`configure` takes effect at the next `enable`, so call `enable` after
+`configure`. Instance `configure` never writes flags.
+
+`configure` reads, merges and rewrites `settings.env` and the instance file
+without a lock. Run `configure` calls for one add-on one at a time.
 
 ```text
 data/addons/<short-id>/
-  settings.env            ADDON_<SHORT>_<NAME>=value, no secrets
+  config/settings.env     ADDON_<SHORT>_<NAME>=value, no secrets
   instances/<slug>.json   non-secret instance values
   secrets/<name>          0600; instance secrets are <slug>.<name>
 ```
 
-Directories are 0700. A service mounts these paths read-only or read-write
-under `/run/addon/` when its manifest lists `mounts`.
+Directories are 0700. `config/` is created with the add-on directory, before
+any setting is stored. A service whose manifest lists `mounts` gets
+`config/`, `instances/` and `secrets/` at `/run/addon/config`,
+`/run/addon/instances` and `/run/addon/secrets`, read-only or read-write as
+listed.
+
+`settings.env` holds one `KEY=value` line per stored setting. `KEY` is
+`ADDON_<SHORT>_<NAME>`: the short id and the setting name, uppercased, with
+`-` turned into `_`. Values are quoted with Python's `shlex.quote`, so read
+the file with `shlex.split`, not compose
+`env_file` or `docker --env-file`, which don't unquote. A `bool` is `1` or
+`0`, a `list` is a JSON array, and `int`, `port` and `date` values are
+written as text.
 
 `disable` keeps `data/addons/<short-id>/`. `disable --purge` also deletes that
 directory and, when the manifest lists `services.<name>.volumes`, removes the
@@ -692,12 +719,13 @@ or Hermes reload error, leaves them written. Running the same command again
 converges.
 
 Errors are one line, `error: <message>`, on stderr. The message names the
-setting and never its value.
+setting and never its value. A usage error starts with `error: usage:` and the
+synopsis follows on the next lines.
 
 | Exit | Meaning |
 |---|---|
 | `0` | Done |
-| `1` | The data root is invalid, or a compose, volume or `make hermes-reload` step failed |
+| `1` | The data root is invalid, a compose, volume or `make hermes-reload` step failed, or the file work failed (for example, a permission error); the error line names the exception type |
 | `2` | Invalid input: unknown add-on, bad JSON, unknown or ill-typed setting, bad slug, unknown command or instance, usage error |
 | `3` | `enable` found required settings with no value |
-| `4` | `run`: the command failed in its container |
+| `4` | `run`: `docker compose run` failed, whether the command exited non-zero or the container couldn't start |
