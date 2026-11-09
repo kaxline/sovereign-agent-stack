@@ -165,6 +165,22 @@ def test_credentials_handoff() -> None:
     expect("MissingPassword" in out.stderr or "Error" in out.stderr, "no launcher, no password_env: refused")
 
 
+def test_credentials_dir() -> None:
+    """MAIL_CREDENTIALS_DIR/<account>.password is the third source, read exactly."""
+    probe = ("import sys; sys.path.insert(0, sys.argv[1]); import mail_credentials as mc\n"
+             "print(repr(mc.password('work', None)))\n"
+             "print(mc.password('work', 'PW_FROM_ENV'))\n"
+             "try:\n    mc.password('other', None)\nexcept mc.MissingPassword as e:\n"
+             "    print('missing', 'MAIL_CREDENTIALS_DIR' in str(e), sys.argv[2] not in str(e), 'pw with' not in str(e))\n")
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "work.password").write_text("pw with spaces\n", encoding="utf-8")
+        out = subprocess.run([sys.executable, "-I", "-c", probe, str(LIB), d], capture_output=True, text=True,
+                             env={"MAIL_CREDENTIALS_DIR": d, "PW_FROM_ENV": "from-env", "PATH": "/usr/bin"})
+        expect(out.stdout.split("\n")[:2] == ["'pw with spaces\\n'", "from-env"] and
+               out.stdout.split("\n")[2] == "missing True True True",
+               f"password from MAIL_CREDENTIALS_DIR: {out.stdout!r} {out.stderr!r}")
+
+
 def imap_calls(path: Path) -> set[str]:
     """Every imaplib method a module calls on its connection (self._imap.x / imap.x)."""
     return set(re.findall(r"\b(?:self\._imap|imap)\.(\w+)\(", path.read_text()))
@@ -765,6 +781,7 @@ def main() -> int:
     test_reader_source_reads_only()
     test_shared_and_drafts_code()
     test_credentials_handoff()
+    test_credentials_dir()
     with tempfile.TemporaryDirectory() as d:
         certs = make_certs(Path(d) / "certs")
         test_login_methods(certs)
