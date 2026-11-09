@@ -1,6 +1,6 @@
 # Actual Budget add-on
 
-Status: draft for review, 2026-11-08. Branch `feat/actual-budget`.
+Status: built and released in v0.3.12 (single budget). The amendment at the end, 2026-11-09, plans budgets per profile (CR 0026) and is not built.
 
 ## Goal
 
@@ -400,3 +400,101 @@ Both steps work without the web app.
 - Encryption can also be turned on headless: `api.internal.send('key-make', {password})` with
   the budget loaded. The spike used this instead of the web app; the server then listed an
   `encryptKeyId` for that budget. Whether the web app calls the same handler is unverified.
+
+## Amendment 2026-11-09: budgets per profile (CR 0026)
+
+Not built. This replaces "one budget per stack" from the Goal for installs that connect budgets;
+the single budget from `ACTUAL_BUDGET_FILE` keeps working unchanged. Boundary's CR 0026 asks for
+it, and the stack reply is in `docs/private/cr-0026-stack-reply.md`.
+
+### What 26.11.0 allows
+
+Boundary checked these facts in the pinned `actualbudget/actual-server:26.11.0` image, and they
+replace anything this spec or the 2026-11-09 research notes said about API keys:
+
+- The image has no API keys. A sign-in creates a session (`sessions`: `token`, `expires_at`,
+  `user_id`, `auth_method`), and the client sends it as `x-actual-token`. `expires_at` is `-1`
+  (never) unless `token_expiration` sets a limit, or it follows the OpenID provider.
+- Password login always signs in as the same user, so every password client is one identity.
+- Access is per budget and all-or-nothing: `user_access (user_id, file_id)` has no permission
+  column. Read-only access still has to come from the read-only MCP server.
+- Synced changes carry no author, so no credential choice gives attribution.
+- Disabling a user ends their sessions.
+
+The vendored MCP server takes `ACTUAL_SESSION_TOKEN` in place of `ACTUAL_PASSWORD`, and the token
+wins when both are set (`src/integrations/actual/connection.ts`). That path has not been run.
+
+### Design
+
+**Rows.** A connected budget is one row, keyed by Hermes profile and slug. Its secret file,
+`compose/actual/budgets/<slug>.env` (mode 600, gitignored), holds `ACTUAL_SERVER_URL`,
+`ACTUAL_BUDGET_SYNC_ID`, `ACTUAL_SESSION_TOKEN` and, if the budget is encrypted,
+`ACTUAL_BUDGET_ENCRYPTION_PASSWORD`. The password-free index `compose/actual/budgets.list` holds
+one line per row: slug, profile, server URL with any credentials masked. The bootstrap reads only
+the index.
+
+**Credentials.** `connect` accepts `ACTUAL_SESSION_TOKEN` or `ACTUAL_PASSWORD`. With a password,
+it signs in through `/account/login` and stores the session token it gets back, never the
+password. On an OpenID server the person copies a token from the web app; 26.11.0 has no screen
+that shows one.
+
+**Processes.** Both MCP containers get a small launcher as their entrypoint. It starts one
+actual-mcp child per row: write-enabled in `actual-mcp-rw`, read-only in `actual-mcp-ro`. Each
+child has its own cache directory in the container's cache volume. The launcher routes
+`/<slug>/mcp` to its child, and `/mcp` stays the legacy single budget. Compose services,
+networks and the secret approach stay the same, with the budgets directory mounted read-only. A
+spike decides whether children run on internal ports behind a proxy, or whether the server can
+take a path prefix itself.
+
+**Hermes entries.** For each row, the bootstrap registers on the row's profile:
+
+- `budget-<slug>`: the read/write URL, all 50 manifest tools, for chats.
+- `budget-<slug>-ro`: the read-only URL, the 18 read tools, for cron. The cron fence keeps it
+  and drops `budget-<slug>`.
+
+When the profile is `default`, `browser` gets the same entries, as it does for the single
+budget. If Hermes's per-platform toolsets can keep `-ro` out of chats, they do. Otherwise chats
+list the read tools twice. `ACTUAL_ACCESS=read` still applies stack-wide and drops the read/write
+entries. Registration needs `mcp.instances` in the manifest, which `addon_manifest.py` rejects as
+not implemented. Agree its shape with the manifest roadmap work, or give Actual its own
+registration function as Twenty has, and move it later.
+
+**Commands.** `budget.sh connect --json` (keys: `ACTUAL_SLUG`, `ACTUAL_PROFILE` default
+`default`, `ACTUAL_SERVER_URL`, `ACTUAL_BUDGET_SYNC_ID`, `ACTUAL_SESSION_TOKEN` or
+`ACTUAL_PASSWORD`, optional `ACTUAL_BUDGET_ENCRYPTION_PASSWORD`, `--force` to replace) and
+`budget.sh disconnect <slug> --json`.
+
+- Before writing anything, `connect` checks the slug, the profile and the credential, using the
+  existing `actual-admin.mjs check` with its time limit.
+- Both commands recreate the MCP containers and run `make hermes-reload`.
+- They print JSON lines ending in `done` or `error`. The errors are `bad_slug`,
+  `unknown_profile`, `login_refused`, `token_expired`, `no_access`, `encryption_password`,
+  `timeout`, `server_unreachable` and `exists`.
+- `disconnect` removes the entries, the secret file and the cache. It leaves the budget on the
+  server.
+
+**Host ports, later (CR 0026 R3).** `ACTUAL_MCP_RO_PORT` and `ACTUAL_MCP_RW_PORT`, unset by
+default, publish on `127.0.0.1`. Setting either one starts both servers with `--enable-bearer`,
+using generated tokens in mode-600 files. There is no open endpoint on the host.
+
+**Skill.** The `budget` skill learns the crm skill's rule: use the budget the user named, and ask
+when it's ambiguous.
+
+### Spike before building
+
+- `ACTUAL_SESSION_TOKEN` opens a budget against 26.11.0. How do a bad token and a disabled
+  user's token fail (the error text and the `actual-admin.mjs` exit code)?
+- Whether changing the server password ends sessions from earlier password sign-ins.
+- Whether a user without access to a budget can open it by sync id (expect `no_access`).
+- Path prefix on the vendored server, or a proxy to internal ports. Memory per child with a
+  realistic budget.
+- Whether Hermes v0.22.7 per-platform toolsets can keep `budget-<slug>-ro` out of chats while
+  cron keeps it.
+- The `Mcp-Session-Id` lifetime claim (until `DELETE` or restart, no idle expiry). It comes from
+  reading `src/index.ts`, and the spike runs it.
+
+### Open questions for Boundary
+
+- Whether `browser` should mirror `default`. We assume yes.
+- What "api-server runs" means for a person, since the stack has one shared `api-server`
+  profile.
