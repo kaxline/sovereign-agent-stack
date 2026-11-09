@@ -64,7 +64,26 @@
     }
   },
   "hooks": {
-    "backup": "scripts/vault.sh backup",
-    "restore": "scripts/vault.sh restore"
+    "backup": {
+      "script": [
+        "scripts/vault.sh",
+        "backup"
+      ]
+    },
+    "restore": {
+      "script": [
+        "scripts/vault.sh",
+        "restore"
+      ]
+    }
+  },
+  "onToggle": {
+    "recreate": [
+      "hermes"
+    ],
+    "script": [
+      "scripts/vault.sh",
+      "follow-hermes"
+    ]
   }
 }

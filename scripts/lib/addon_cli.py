@@ -174,12 +174,7 @@ def cmd_plan_disable(args) -> None:
     manifest = _manifest(args.addons_dir, args.sid)
     flags = {f: "0" for f in [manifest["builtin"]["flag"], *_gate_flags(manifest)]}
     services = [_compose(manifest, key) for key in manifest["services"]]
-    volumes = []
-    for svc in manifest["services"].values():
-        for v in svc.get("volumes", []):
-            if v not in volumes:
-                volumes.append(v)
-    _dump({"flags": flags, "services": services, "volumes": volumes})
+    _dump({"flags": flags, "services": services, "volumes": am.data_volumes(manifest)})
 
 
 def cmd_plan_run(args) -> None:

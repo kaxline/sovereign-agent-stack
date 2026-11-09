@@ -365,6 +365,7 @@ def listing(manifest: dict, data_root: Path, environ) -> dict:
     d = addon_dir(data_root, manifest)
     builtin = manifest.get("builtin") if isinstance(manifest.get("builtin"), dict) else {}
     host = manifest.get("host") if isinstance(manifest.get("host"), dict) else {}
+    instances = manifest.get("instances")
     out = {
         "id": manifest["id"],
         "shortId": am.short_id(manifest["id"]),
@@ -376,6 +377,10 @@ def listing(manifest: dict, data_root: Path, environ) -> dict:
         "settings": _view(_schema(manifest), _stored(manifest, d), lambda n: d / "secrets" / n),
         "instances": {},
         "missing": missing(manifest, data_root),
+        "data": manifest.get("data") or {},
+        "backup": manifest.get("backup") or {},
+        "hooks": sorted([n for n in (*am.HOOK_NAMES, *am.INSTANCE_HOOKS) if am.hook(manifest, n)]),
+        "errors": list(instances.get("errors", [])) if isinstance(instances, dict) else [],
         "schema": {
             "settings": _schema_view(_schema(manifest)),
             "instances": {"name": manifest["instances"].get("name"),

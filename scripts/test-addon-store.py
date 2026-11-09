@@ -67,6 +67,26 @@ MANIFEST["instances"] = {"name": "account", "settings": {
 errs = am.validate(MANIFEST, "builtin")
 check("fixture manifest is valid", errs == [], str(errs))
 
+FIXTURE = json.loads((ROOT / "scripts" / "fixtures" / "addons-cli" / "fixture" / "addon.json").read_text())
+with tempfile.TemporaryDirectory() as tmp:
+    fx = st.listing(FIXTURE, Path(tmp), {})
+    check("listing carries the fixture's data block", fx["data"] == FIXTURE.get("data") and fx["data"].get("paths"),
+          str(fx.get("data")))
+    check("listing carries backup, empty when the manifest has none", fx["backup"] == {}, str(fx.get("backup")))
+    check("listing names the hooks present, sorted", fx["hooks"] == ["init"], str(fx.get("hooks")))
+    check("listing carries instances.errors, empty when absent", fx["errors"] == [], str(fx.get("errors")))
+    rich_fx = copy.deepcopy(FIXTURE)
+    rich_fx["hooks"]["backup"] = {"script": ["scripts/vault.sh", "backup"]}
+    rich_fx["instances"]["connect"] = {"command": "seed-init"}
+    rich_fx["instances"]["disconnect"] = {"command": "seed-init"}
+    rich_fx["instances"]["errors"] = ["bad_access"]
+    rich_fx["backup"] = {"secrets": ["A_B"]}
+    rx = st.listing(rich_fx, Path(tmp), {})
+    check("listing includes connect and disconnect among the hooks",
+          rx["hooks"] == ["backup", "connect", "disconnect", "init"], str(rx["hooks"]))
+    check("listing carries instances.errors and backup",
+          rx["errors"] == ["bad_access"] and rx["backup"] == {"secrets": ["A_B"]}, str((rx["errors"], rx["backup"])))
+
 PASSWORD = "p|w=\n'x\""
 
 with tempfile.TemporaryDirectory() as tmp:
