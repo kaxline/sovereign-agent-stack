@@ -434,6 +434,151 @@ for prof in ("default", "api-server", "browser"):
 got = fence_of({"gptr": am.canonical(two_entry(permissions__cron=False))}, env)
 check("cron false fences every entry", got[0] == ["gptr", "gptr-extra"], str(got))
 
+# --- mcp.instances ------------------------------------------------------------
+INST_MCP = {
+    "instances": {
+        "name": "crm-{slug}",
+        "url": "{setting:url}/mcp",
+        "access": "{setting:access}",
+        "auth": {"header": "Authorization", "scheme": "Bearer",
+                 "secret": {"ro": "key_ro", "rw": "key_rw"}},
+        "gate": {"setting": "local", "flag": "TWENTY_LOCAL_ENABLED"},
+    },
+    "transport": "http", "timeout": 120, "connectTimeout": 30,
+    "tools": ["search_things", "create_thing"], "pin": ["search_things"],
+    "writeTools": ["create_thing"],
+    "profiles": {"default": "rw", "browser": "ro"},
+}
+INST_SETTINGS = {
+    "url": {"type": "url"},
+    "access": {"type": "choice", "options": ["read", "write"], "default": "read"},
+    "key_ro": {"type": "secret", "optional": True},
+    "key_rw": {"type": "secret", "optional": True},
+    "local": {"type": "bool", "default": False},
+}
+
+
+def inst_manifest(mcp_changes=None, instances_settings=None, **top):
+    m = variant()
+    m["gates"] = [{"flag": "TWENTY_LOCAL_ENABLED", "profile": "crm", "seed": False}]
+    m["instances"] = {"name": "workspace", "settings": copy.deepcopy(instances_settings or INST_SETTINGS)}
+    mcp = copy.deepcopy(INST_MCP)
+    for dotted, value in (mcp_changes or {}).items():
+        node = mcp
+        keys = dotted.split("__")
+        for k in keys[:-1]:
+            node = node[k]
+        if value is None:
+            node.pop(keys[-1], None)
+        else:
+            node[keys[-1]] = value
+    m["mcp"] = mcp
+    for k, v in top.items():
+        if v is None:
+            m.pop(k, None)
+        else:
+            m[k] = v
+    return m
+
+
+check("mcp.instances manifest is valid as built-in", am.validate(inst_manifest(), "builtin") == [],
+      str(am.validate(inst_manifest(), "builtin")))
+check("mcp.instances takes env and no service, path or name",
+      am.validate(inst_manifest({"env": {"timeout": "TWENTY_MCP_TIMEOUT"}}), "builtin") == [],
+      str(am.validate(inst_manifest({"env": {"timeout": "TWENTY_MCP_TIMEOUT"}}), "builtin")))
+check("mcp.instances may gate on builtin.flag",
+      am.validate(inst_manifest({"instances__gate__flag": "GPTR_MCP_ENABLED"}), "builtin") == [])
+check("mcp.instances gate is optional",
+      am.validate(inst_manifest({"instances__gate": None}), "builtin") == [])
+refused("mcp.instances name without {slug}", inst_manifest({"instances__name": "crm"}),
+        "builtin", "mcp.instances.name")
+refused("mcp.instances name needs a lowercase prefix", inst_manifest({"instances__name": "{slug}"}),
+        "builtin", "mcp.instances.name")
+refused("mcp.instances name with a bad character", inst_manifest({"instances__name": "CRM-{slug}"}),
+        "builtin", "mcp.instances.name")
+refused("mcp.instances name with {slug} twice", inst_manifest({"instances__name": "a-{slug}-{slug}"}),
+        "builtin", "mcp.instances.name")
+refused("mcp.instances prefix collides with a core name", inst_manifest({"instances__name": "mail-{slug}"}),
+        "builtin", "collides")
+refused("mcp.instances prefix collides with a core prefix", inst_manifest({"instances__name": "caldav-{slug}"}),
+        "builtin", "collides")
+refused("mcp.instances url naming an unknown setting",
+        inst_manifest({"instances__url": "{setting:host}/mcp"}), "builtin", "mcp.instances.url")
+refused("mcp.instances url without a setting",
+        inst_manifest({"instances__url": "http://example.com/mcp"}), "builtin", "mcp.instances.url")
+refused("mcp.instances url naming a bool setting",
+        inst_manifest({"instances__url": "{setting:local}/mcp"}), "builtin", "mcp.instances.url")
+refused("mcp.instances access that is not a setting reference",
+        inst_manifest({"instances__access": "read"}), "builtin", "mcp.instances.access")
+refused("mcp.instances access naming an unknown setting",
+        inst_manifest({"instances__access": "{setting:level}"}), "builtin", "mcp.instances.access")
+refused("mcp.instances access naming a non-choice setting",
+        inst_manifest({"instances__access": "{setting:url}"}), "builtin", "mcp.instances.access")
+refused("mcp.instances access with an option outside read and write",
+        inst_manifest(instances_settings={**INST_SETTINGS, "access": {
+            "type": "choice", "options": ["read", "write", "ask"], "default": "read"}}),
+        "builtin", "mcp.instances.access")
+check("mcp.instances access may offer read only",
+      am.validate(inst_manifest(instances_settings={**INST_SETTINGS, "access": {
+          "type": "choice", "options": ["read"], "default": "read"}}), "builtin") == [])
+refused("mcp.instances auth.secret.ro naming an unknown setting",
+        inst_manifest({"instances__auth__secret__ro": "nope"}), "builtin", "mcp.instances.auth.secret.ro")
+refused("mcp.instances auth.secret.rw naming a non-secret setting",
+        inst_manifest({"instances__auth__secret__rw": "url"}), "builtin", "mcp.instances.auth.secret.rw")
+refused("mcp.instances auth.secret needs both levels",
+        inst_manifest({"instances__auth__secret": {"ro": "key_ro"}}), "builtin", "mcp.instances.auth.secret")
+refused("mcp.instances auth.secret with an extra level",
+        inst_manifest({"instances__auth__secret__admin": "key_rw"}), "builtin", "mcp.instances.auth.secret")
+refused("mcp.instances auth.header must be a header name",
+        inst_manifest({"instances__auth__header": "Bad Header"}), "builtin", "mcp.instances.auth.header")
+refused("mcp.instances auth unknown key",
+        inst_manifest({"instances__auth__extra": "x"}), "builtin", "mcp.instances.auth")
+refused("mcp.instances auth is required", inst_manifest({"instances__auth": None}),
+        "builtin", "mcp.instances.auth")
+refused("mcp.instances gate.setting naming a non-bool setting",
+        inst_manifest({"instances__gate__setting": "url"}), "builtin", "mcp.instances.gate.setting")
+refused("mcp.instances gate.setting naming an unknown setting",
+        inst_manifest({"instances__gate__setting": "nope"}), "builtin", "mcp.instances.gate.setting")
+refused("mcp.instances gate.flag that is neither builtin.flag nor a gate",
+        inst_manifest({"instances__gate__flag": "OTHER_ENABLED"}), "builtin", "mcp.instances.gate.flag")
+refused("mcp.instances gate unknown key",
+        inst_manifest({"instances__gate__extra": 1}), "builtin", "mcp.instances.gate")
+refused("mcp.instances unknown key", inst_manifest({"instances__colour": "red"}),
+        "builtin", "mcp.instances has unknown fields")
+refused("mcp.instances without a top-level instances block", inst_manifest(instances=None),
+        "builtin", "needs a top-level instances block")
+refused("mcp.instances alongside mcp.service",
+        inst_manifest({"service": "server"}), "builtin", "mcp.instances")
+refused("mcp.instances alongside mcp.path", inst_manifest({"path": "/mcp"}), "builtin", "mcp.instances")
+refused("mcp.instances alongside mcp.name", inst_manifest({"name": "twenty"}), "builtin", "mcp.instances")
+refused("mcp.instances needs transport", inst_manifest({"transport": None}), "builtin", "mcp.transport")
+refused("mcp.instances needs tools", inst_manifest({"tools": None}), "builtin", "mcp.tools")
+refused("mcp.instances needs profiles", inst_manifest({"profiles": None}), "builtin", "mcp.profiles")
+refused("mcp.instances pin outside tools", inst_manifest({"pin": ["nope"]}), "builtin", "mcp.pin")
+inst_packaged = packaged(inst_manifest({"instances__gate": None, "env": None}, gates=None))
+refused("mcp.instances is built-in only", inst_packaged, "official",
+        "mcp.instances is for built-in add-ons only")
+refused("mcp.instances not an object", inst_manifest({"instances": "crm-{slug}"}),
+        "builtin", "mcp.instances must be an object")
+
+# Add-ons with mcp.instances have no name or URL of their own yet, so the
+# plan and the cron fence skip them without failing.
+with tempfile.TemporaryDirectory() as tmp:
+    for sid, manifest in (("gptr", BASE), ("twentyish", None)):
+        (Path(tmp) / sid).mkdir()
+    (Path(tmp) / "gptr" / "addon.json").write_text(am.canonical(BASE))
+    im = inst_manifest()
+    im["id"] = "io.example.twentyish"
+    im["permissions"]["cron"] = False
+    (Path(tmp) / "twentyish" / "addon.json").write_text(am.canonical(im))
+    check("the instances manifest passes check_builtin_file",
+          am.check_builtin_file(Path(tmp) / "twentyish" / "addon.json", im, None) == [],
+          str(am.check_builtin_file(Path(tmp) / "twentyish" / "addon.json", im, None)))
+    plan = am.mcp_plan(Path(tmp), "default", {"GPTR_MCP_ENABLED": "1", "GPTR_EXTRA_ENABLED": "1"})
+    check("mcp-plan emits a line for gptr only", len(plan) == 1 and plan[0].startswith("gptr|"), str(plan))
+    got = am.cron_fence(Path(tmp), {})
+    check("cron fence tolerates an instances manifest with cron false", got == ([], []), str(got))
+
 # --- settings, instances, commands and mounts -------------------------------
 def with_settings(settings, **changes):
     return variant(settings=settings, **changes)

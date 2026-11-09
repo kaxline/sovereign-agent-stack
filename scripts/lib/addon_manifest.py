@@ -52,7 +52,15 @@ SETTING_TYPES. A setting with neither `default` nor `optional: true` is
 required; a secret setting may not have a default; a bool setting may name a
 `flag`, which must be a gate flag. Names that map to the same
 ADDON_<SHORT>_<NAME> key (differing only by case, - or _) are refused. Two
-`mcp` entries may not point at the same service. `services.<name>.mounts` and
+`mcp` entries may not point at the same service. An `mcp` entry with `instances`
+(built-in only) registers one server per add-on instance and has no `service`,
+`path` or `name`: {name: "<prefix>{slug}", url: "{setting:<url setting>}...",
+access: "{setting:<choice setting offering only read and write>}", auth: {header,
+scheme, secret: {ro, rw}} naming secret instance settings, gate?: {setting: a
+bool instance setting, flag: builtin.flag or a gate}}. The name's prefix may not
+be a core server name or prefix other than "crm-". The entry keeps transport,
+timeout, connectTimeout, env, tools, pin, writeTools and profiles. mcp-plan and
+cron_fence skip it until the registration reads it. `services.<name>.mounts` and
 `commands` are checked as validate() describes them. A built-in service may
 list `volumes`, the compose volume names `scripts/addon.sh disable --purge`
 removes; scripts/test-addon-manifests.py checks they exist in docker-compose.yml.
@@ -326,7 +334,9 @@ def validate(manifest, source: str = "builtin", repo=_AUTO) -> list[str]:
             err("mcp must be an object or a non-empty list of objects")
         entries = mcp if isinstance(mcp, list) else [mcp]
         for entry in entries:
-            errors.extend(_validate_mcp(entry, services, source, bool(reads), gate_flags))
+            errors.extend(_validate_mcp(entry, services, source, bool(reads), gate_flags,
+                                        manifest.get("instances"),
+                                        builtin.get("flag") if isinstance(builtin, dict) else None))
             if perms.get("cron") == "ro" and not (
                     isinstance(entry, dict) and isinstance(entry.get("service"), dict)
                     and "ro" in entry["service"]):
@@ -710,18 +720,28 @@ def _validate_when(when, gate_flags: set[str], where: str) -> list[str]:
 
 
 def _validate_mcp(mcp, services: dict, source: str, reads: bool,
-                  gate_flags: set[str] = frozenset()) -> list[str]:
+                  gate_flags: set[str] = frozenset(), instances=None,
+                  builtin_flag: str | None = None) -> list[str]:
     errors: list[str] = []
     err = errors.append
     if not isinstance(mcp, dict):
         return ["mcp must be an object"]
+    per_instance = "instances" in mcp
     if "title" in mcp and not (isinstance(mcp["title"], str) and mcp["title"].strip()):
         err("mcp.title must be a non-empty string")
     if "when" in mcp:
         errors.extend(_validate_when(mcp["when"], gate_flags, "mcp.when"))
     svc = mcp.get("service")
     levels: set[str] = set()  # access levels that have a service
-    if isinstance(svc, str):
+    if per_instance:
+        # The URL and the server names come from mcp.instances.
+        keys = []
+        for key in ("service", "path", "name"):
+            if key in mcp:
+                err(f"mcp.instances replaces mcp.{key}; an entry has one or the other")
+        errors.extend(_validate_mcp_instances(mcp["instances"], source, instances,
+                                              gate_flags, builtin_flag))
+    elif isinstance(svc, str):
         keys = [svc]
         if svc in services:
             levels = set(ACCESS)
@@ -741,13 +761,14 @@ def _validate_mcp(mcp, services: dict, source: str, reads: bool,
             err(f"services.{key}.port is needed to build the MCP URL")
     if mcp.get("transport") not in TRANSPORTS:
         err(f"mcp.transport must be one of {', '.join(sorted(TRANSPORTS))}")
-    if not (isinstance(mcp.get("path"), str) and PATH_RE.match(mcp["path"])):
-        err("mcp.path must be an absolute URL path")
-    name = mcp.get("name")
-    if not (isinstance(name, str) and NAME_RE.match(name)):
-        err("mcp.name must be lowercase letters, digits and -")
-    elif name in CORE_MCP_NAMES or name.startswith(CORE_MCP_PREFIXES):
-        err(f"mcp.name {name!r} collides with a server core registers")
+    if not per_instance:
+        name = mcp.get("name")
+        if not (isinstance(mcp.get("path"), str) and PATH_RE.match(mcp["path"])):
+            err("mcp.path must be an absolute URL path")
+        if not (isinstance(name, str) and NAME_RE.match(name)):
+            err("mcp.name must be lowercase letters, digits and -")
+        elif name in CORE_MCP_NAMES or name.startswith(CORE_MCP_PREFIXES):
+            err(f"mcp.name {name!r} collides with a server core registers")
     for key in ("timeout", "connectTimeout"):
         if not (isinstance(mcp.get(key), int) and mcp[key] > 0):
             err(f"mcp.{key} must be a positive number of seconds")
@@ -781,8 +802,99 @@ def _validate_mcp(mcp, services: dict, source: str, reads: bool,
         elif not isinstance(env, dict) or set(env) - {"url", "timeout", "connectTimeout", "access"} \
                 or not all(isinstance(v, str) and ENV_RE.match(v) for v in env.values()):
             err("mcp.env maps url, timeout, connectTimeout and access to env var names")
-    if mcp.get("instances") is not None:
-        err("mcp.instances is not implemented yet")
+    return errors
+
+
+SETTING_REF_RE = re.compile(r"\{setting:([^{}:]+)\}")
+HEADER_RE = re.compile(r"^[A-Za-z0-9-]+$")
+# The options an instance's access setting may offer, and the level each maps to.
+INSTANCE_ACCESS_LEVELS = {"read": "ro", "write": "rw"}
+
+
+def _validate_mcp_instances(inst, source: str, instances, gate_flags: set[str],
+                            builtin_flag: str | None) -> list[str]:
+    """Check mcp.instances: {name, url, access, auth, gate?}. Every
+    {setting:<name>} refers to a setting in the top-level instances.settings."""
+    errors: list[str] = []
+    err = errors.append
+    if not isinstance(inst, dict):
+        return ["mcp.instances must be an object"]
+    if source != "builtin":
+        err("mcp.instances is for built-in add-ons only")
+    extra = set(inst) - {"name", "url", "access", "auth", "gate"}
+    if extra:
+        err(f"mcp.instances has unknown fields: {', '.join(sorted(extra))}")
+    settings = instances.get("settings") if isinstance(instances, dict) else None
+    if not isinstance(settings, dict):
+        err("mcp.instances needs a top-level instances block with settings")
+        settings = {}
+
+    def setting_type(name) -> str | None:
+        s = settings.get(name) if isinstance(name, str) else None
+        return s.get("type") if isinstance(s, dict) else None
+
+    name = inst.get("name")
+    if not (isinstance(name, str) and name.count("{slug}") == 1 and not name.startswith("{slug}")
+            and NAME_RE.match(name.replace("{slug}", "x"))):
+        err("mcp.instances.name must be lowercase letters, digits and - with {slug} once, "
+            "after a prefix such as crm-")
+    else:
+        prefix = name.split("{slug}")[0]
+        # "crm-" is core's prefix for the entries this block takes over, so it is allowed here.
+        if prefix.rstrip("-") in CORE_MCP_NAMES or any(
+                prefix.startswith(p) for p in CORE_MCP_PREFIXES if p != "crm-"):
+            err(f"mcp.instances.name prefix {prefix!r} collides with a server core registers")
+
+    url = inst.get("url")
+    refs = SETTING_REF_RE.findall(url) if isinstance(url, str) else []
+    rest = SETTING_REF_RE.sub("", url) if isinstance(url, str) else ""
+    if not (refs and "{" not in rest and "}" not in rest):
+        err("mcp.instances.url must be a string with {setting:<name>} placeholders")
+    else:
+        for ref in refs:
+            if setting_type(ref) not in ("url", "string"):
+                err(f"mcp.instances.url: {ref!r} is not a url or string instance setting")
+
+    access = inst.get("access")
+    m = SETTING_REF_RE.fullmatch(access) if isinstance(access, str) else None
+    if not m:
+        err("mcp.instances.access must be {setting:<name>} naming a choice instance setting")
+    elif setting_type(m.group(1)) != "choice":
+        err(f"mcp.instances.access: {m.group(1)!r} is not a choice instance setting")
+    else:
+        options = settings[m.group(1)].get("options")
+        if isinstance(options, list) and any(o not in INSTANCE_ACCESS_LEVELS for o in options):
+            err(f"mcp.instances.access: {m.group(1)!r} may offer only "
+                f"{' and '.join(INSTANCE_ACCESS_LEVELS)}")
+
+    auth = inst.get("auth")
+    if not isinstance(auth, dict):
+        err("mcp.instances.auth must be {header, scheme, secret}")
+    else:
+        stray = set(auth) - {"header", "scheme", "secret"}
+        if stray:
+            err(f"mcp.instances.auth has unknown fields: {', '.join(sorted(stray))}")
+        if not (isinstance(auth.get("header"), str) and HEADER_RE.match(auth["header"])):
+            err("mcp.instances.auth.header must be an HTTP header name")
+        if not (isinstance(auth.get("scheme"), str) and HEADER_RE.match(auth["scheme"])):
+            err("mcp.instances.auth.scheme must be a word such as Bearer")
+        secret = auth.get("secret")
+        if not (isinstance(secret, dict) and set(secret) == ACCESS):
+            err("mcp.instances.auth.secret must map ro and rw to secret instance settings")
+        else:
+            for level in sorted(ACCESS):
+                if setting_type(secret[level]) != "secret":
+                    err(f"mcp.instances.auth.secret.{level} must name a secret instance setting")
+
+    gate = inst.get("gate")
+    if gate is not None:
+        if not (isinstance(gate, dict) and set(gate) == {"setting", "flag"}):
+            err("mcp.instances.gate must be {setting, flag}")
+        else:
+            if setting_type(gate["setting"]) != "bool":
+                err("mcp.instances.gate.setting must name a bool instance setting")
+            if gate["flag"] != builtin_flag and gate["flag"] not in gate_flags:
+                err("mcp.instances.gate.flag must be builtin.flag or a flag listed in gates")
     return errors
 
 
@@ -889,6 +1001,8 @@ def cron_fence(addons_dir: Path, environ=os.environ) -> tuple[list[str], list[st
         if cron is True:
             continue
         for mcp in mcp_entries(manifest):
+            if "instances" in mcp:
+                continue  # its names exist per instance; registration reads them elsewhere
             mcp_urls = _mcp_urls(manifest, mcp, environ)
             if cron == "ro":
                 # The ro service stays in cron; its other URLs (rw) are fenced.
@@ -924,6 +1038,8 @@ def mcp_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
                 print(f"warning: skipping {path.parent.name}: {e}", file=sys.stderr)
             continue
         for mcp in mcp_entries(manifest):
+            if "instances" in mcp:
+                continue  # per-instance entries are registered by a later step
             env = mcp.get("env", {})
             urls = _mcp_urls(manifest, mcp, environ)
             timeout = environ.get(env.get("timeout", ""), "") or str(mcp["timeout"])
