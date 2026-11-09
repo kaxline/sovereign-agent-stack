@@ -145,7 +145,9 @@ role need your own vault key, which the broker does not hold in `collection` mod
 in `bitwarden-setup`, a one-shot container from the broker's image that shares no network or volume
 with `hermes`. It asks for your email and master password on the host terminal (three tries; after
 three wrong passwords it exits with nothing changed), unlocks your account into a new folder under
-`/tmp`, does its work, and runs `bw lock` and `bw logout` on every exit, Ctrl-C included.
+`/tmp`, does its work, and runs `bw lock` and `bw logout` on every exit, Ctrl-C included. A second
+Ctrl-C during that cleanup can stop `bw logout` before the server hears it, which leaves a `bw`
+device session on your account until you remove it in the web vault.
 `make vault-init`, `make vault-add` and `make vault-grant` use it. Its output shows item names,
 usernames and URIs, never a password, TOTP key or note.
 
