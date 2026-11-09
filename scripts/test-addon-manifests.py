@@ -377,6 +377,28 @@ with tempfile.TemporaryDirectory() as tmp:
         check(f"broken manifest ({label}) yields no line", got_plan == [] and got_urls == [],
               f"{got_plan} {got_urls}")
 
+# An invalid manifest's drop-only line must not undo a valid add-on's entry at
+# the same URL, whichever directory sorts first.
+for first, second in (("abad", "lightrag"), ("lightrag", "zbad")):
+    with tempfile.TemporaryDirectory() as tmp:
+        good = "lightrag"
+        bad = first if first.endswith("bad") else second
+        (Path(tmp) / good).mkdir()
+        (Path(tmp) / good / "addon.json").write_text(am.canonical(LR))
+        (Path(tmp) / bad).mkdir()
+        (Path(tmp) / bad / "addon.json").write_text(json.dumps({**LR, "id": f"io.example.{bad}",
+                                                              "mcp": {**LR["mcp"], "name": "bad-mcp"}}))  # not canonical
+        plan = [l.split("|") for l in am.mcp_plan(Path(tmp), "api-server", {"LIGHTRAG_MCP_ENABLED": "1"})]
+        errs = {p.parent.name: e for p, _m, e in am.checked_dir(Path(tmp))}
+        check(f"shared URL, {first} before {second}: only the bad one is invalid",
+              errs[good] == [] and errs[bad] != [], str(errs))
+        check(f"shared URL, {first} before {second}: the valid line is kept",
+              any(r[0] == LR["mcp"]["name"] and r[2] == "1" and r[4] == LR_URL for r in plan), str(plan))
+        check(f"shared URL, {first} before {second}: no drop-only line for the shared URL",
+              not any(r[0] == "bad-mcp" for r in plan), str(plan))
+        check(f"shared URL, {first} before {second}: mcp_urls still lists it once",
+              am.mcp_urls(Path(tmp), {}) == [LR_URL], str(am.mcp_urls(Path(tmp), {})))
+
 # --- one MCP name per add-on -------------------------------------------------------
 with tempfile.TemporaryDirectory() as tmp:
     for d in ("lightrag", "gptr"):

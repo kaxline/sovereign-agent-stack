@@ -1195,6 +1195,8 @@ def cron_fence_toolsets(addons_dir: Path) -> list[tuple[str, str]]:
 
 def mcp_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
     lines = []
+    drops = []  # (position in lines, name, title, urls) of fail-closed drop-only lines
+    managed = set()  # URLs a valid manifest registers or manages on this profile
     for path, manifest, errors in checked_dir(addons_dir):
         if errors:
             for e in errors:
@@ -1208,9 +1210,8 @@ def mcp_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
                     continue
                 name = entry.get("name") if isinstance(entry.get("name"), str) else path.parent.name
                 title = entry.get("title") if isinstance(entry.get("title"), str) else name
-                fields = [name, title, "0", "", urls[0], "0", "0", "http", "", "", " ".join(urls)]
-                if not any("|" in f or "\n" in f for f in fields):
-                    lines.append("|".join(fields))
+                drops.append((len(lines), name, title, urls))
+                lines.append(None)
             continue
         for mcp in mcp_entries(manifest):
             if "instances" in mcp:
@@ -1219,6 +1220,7 @@ def mcp_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
                 continue
             env = mcp.get("env", {})
             urls = _mcp_urls(manifest, mcp, environ)
+            managed.update(urls.values())
             timeout = environ.get(env.get("timeout", ""), "") or str(mcp["timeout"])
             connect = environ.get(env.get("connectTimeout", ""), "") or str(mcp["connectTimeout"])
             flag = mcp["when"]["gate"] if "when" in mcp else manifest["builtin"]["flag"]
@@ -1249,7 +1251,15 @@ def mcp_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
                       file=sys.stderr)
                 continue
             lines.append("|".join(fields))
-    return lines
+    # An invalid manifest's drop-only line must not undo a valid add-on's
+    # registration at the same URL: leave out the URLs a valid manifest manages.
+    for pos, name, title, urls in drops:
+        urls = [u for u in urls if u not in managed]
+        if urls:
+            fields = [name, title, "0", "", urls[0], "0", "0", "http", "", "", " ".join(urls)]
+            if not any("|" in f or "\n" in f for f in fields):
+                lines[pos] = "|".join(fields)
+    return [l for l in lines if l is not None]
 
 
 def mcp_urls(addons_dir: Path, environ=os.environ) -> list[str]:
