@@ -316,7 +316,7 @@ cmp -s "$f" "$tmp/before" || fail "init again leaves budget.env alone"
 # --rotate: a new password on the server and in the file.
 run init --rotate || fail "init --rotate ($(cat "$out"))"
 new="$(cat "$STUB/server_pw")"
-[ "$new" != "$pw" ] && [ "${#new}" = 48 ] || fail "--rotate sets a new generated password"
+{ [ "$new" != "$pw" ] && [ "${#new}" = 48 ]; } || fail "--rotate sets a new generated password"
 grep -qx "ACTUAL_PASSWORD=${new}" "$f" || fail "--rotate stores the new password"
 grep -qx 'ACTUAL_BUDGET_SYNC_ID=sync-local' "$f" || fail "--rotate keeps the sync id"
 [ "$(mode "$f")" = 600 ] || fail "--rotate keeps mode 600"
