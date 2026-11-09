@@ -1055,6 +1055,24 @@ check "FIXTURE_DATA_DIR=./data/memory is kept as stack data" "$r"
 if [ -f "${root}/data/memory/keep" ]; then ok "data/memory survives"; else bad "data/memory survives"; fi
 unset_env FIXTURE_DATA_DIR
 
+# A protected directory that is a symlink: its target is kept too.
+for pair in hermes:state memory:mem2; do
+  link="${pair%%:*}"
+  dest="${pair#*:}"
+  rm -rf "${root}/data/${link}"
+  mkdir -p "${root}/data/${dest}"
+  : > "${root}/data/${dest}/keep"
+  ln -s "$dest" "${root}/data/${link}"
+  set_env FIXTURE_DATA_DIR "./data/${dest}"
+  addon_json remove fixture --delete-data --json
+  r=0; WANT="${root}/data/${dest}" json_ok "$out" "done" '{"phase":"setup","step":"delete","status":"done","kept":os.environ["WANT"],"reason":"holds stack data"} in lines' || r=1
+  check "with data/${link} -> ${dest}, ./data/${dest} is kept as stack data" "$r"
+  if [ -f "${root}/data/${dest}/keep" ]; then ok "data/${dest} survives"; else bad "data/${dest} survives"; fi
+  rm -f "${root}/data/${link}"
+  if [ -d "${root}/data/${dest}" ]; then mv "${root}/data/${dest}" "${root}/data/${link}"; else mkdir -p "${root}/data/${link}"; fi
+done
+unset_env FIXTURE_DATA_DIR
+
 # A leading ~ is expanded as compose does, so the kept path is the real one.
 mkdir -p "${tmp}/home"
 # shellcheck disable=SC2088 # a literal ~, for addon.sh to expand

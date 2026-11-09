@@ -494,7 +494,10 @@ class DataRoots:
         self.all_roots = list(dict.fromkeys(
             r for root in self.roots for r in (root, os.path.realpath(root))))
         names = ["hermes", "addons", *user_data_subdirs()]
-        self.stack = list(dict.fromkeys(os.path.join(r, n) for r in self.all_roots for n in names))
+        # Each protected directory as written and resolved: data/hermes may
+        # itself be a symlink to another directory under data/.
+        written = [os.path.join(r, n) for r in self.all_roots for n in names]
+        self.stack = list(dict.fromkeys(written + [os.path.realpath(d) for d in written]))
 
     def resolve(self, value: str) -> str:
         return os.path.normpath(os.path.join(self.repo, value))
