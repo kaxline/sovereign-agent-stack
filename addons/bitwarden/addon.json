@@ -76,14 +76,5 @@
         "restore"
       ]
     }
-  },
-  "onToggle": {
-    "recreate": [
-      "hermes"
-    ],
-    "script": [
-      "scripts/vault.sh",
-      "follow-hermes"
-    ]
   }
 }
