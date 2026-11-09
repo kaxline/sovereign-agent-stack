@@ -59,7 +59,8 @@ def packaged(m):
     m.pop("builtin", None)
     m["services"] = {"server": {"image": "ghcr.io/example/x@sha256:" + "a" * 64,
                                 "port": 8000, "healthCheck": "/health"}}
-    m["mcp"].pop("env", None)
+    for entry in m["mcp"] if isinstance(m["mcp"], list) else [m["mcp"]]:
+        entry.pop("env", None)
     return m
 
 
@@ -358,6 +359,68 @@ got = toolsets_of({"bitwarden": am.canonical(vault_manifest(permissions__cron=Tr
 check("an invalid vault manifest is fenced by its toolset", got == [("bwbroker", "bitwarden")], str(got))
 got = toolsets_of({"gptr": am.canonical(variant(permissions__cron=False))})
 check("an MCP-only add-on has no plugin toolset to fence", got == [], str(got))
+
+# --- gates and several MCP entries ---------------------------------------------
+def two_entry(**changes):
+    m = variant(**changes)
+    m["gates"] = [{"flag": "GPTR_EXTRA_ENABLED", "profile": "research-extra", "seed": False}]
+    first = copy.deepcopy(m["mcp"])
+    second = {**copy.deepcopy(m["mcp"]), "name": "gptr-extra", "title": "Extra",
+              "when": {"gate": "GPTR_EXTRA_ENABLED"}}
+    second.pop("env", None)
+    m["mcp"] = [first, second]
+    return m
+
+
+check("a two-entry manifest is valid", am.validate(two_entry(), "builtin") == [],
+      str(am.validate(two_entry(), "builtin")))
+two_bad_gate = two_entry()
+two_bad_gate["mcp"][1]["when"] = {"gate": "NOPE_ENABLED"}
+refused("when names an unknown gate", two_bad_gate, "builtin", "when.gate")
+refused("gates on a packaged add-on", packaged(two_entry()), "official", "gates")
+two_dup = two_entry()
+two_dup["mcp"][1]["name"] = "gptr"
+refused("two entries share a name", two_dup, "builtin", "mcp names must be unique")
+two_api = two_entry(permissions__reads=["messages"], permissions__cron=False)
+for entry in two_api["mcp"]:
+    entry["profiles"] = {"default": "ro"}
+two_api["mcp"][1]["profiles"] = {"default": "ro", "api-server": "ro"}
+refused("api-server on any entry of a reads add-on", two_api, "builtin", "api-server")
+two_gate_shape = two_entry()
+two_gate_shape["gates"] = [{"flag": "lower", "profile": "x", "seed": "no"}]
+refused("a gate needs an env var name", two_gate_shape, "builtin", "gates[0].flag")
+refused("a gate needs a boolean seed", two_gate_shape, "builtin", "gates[0].seed")
+two_empty = two_entry()
+two_empty["mcp"] = []
+refused("an empty mcp list", two_empty, "builtin", "mcp")
+two_svc = two_entry()
+two_svc["services"]["server"]["when"] = {"gate": "NOPE_ENABLED"}
+refused("a service when names an unknown gate", two_svc, "builtin", "services.server.when.gate")
+two_svc["services"]["server"]["when"] = {"gate": "GPTR_EXTRA_ENABLED"}
+check("a service may carry a known when", am.validate(two_svc, "builtin") == [],
+      str(am.validate(two_svc, "builtin")))
+two_ro = two_entry(permissions__cron="ro")
+refused("cron ro is checked on every entry", two_ro, "builtin", "cron ro needs an ro service")
+
+with tempfile.TemporaryDirectory() as tmp:
+    (Path(tmp) / "gptr").mkdir()
+    (Path(tmp) / "gptr" / "addon.json").write_text(am.canonical(two_entry()))
+    plan = am.mcp_plan(Path(tmp), "default", {"GPTR_MCP_ENABLED": "0", "GPTR_EXTRA_ENABLED": "1"})
+    first, second = (p.split("|") for p in plan) if len(plan) == 2 else ([], [])
+    check("mcp-plan prints one line per entry", len(plan) == 2, str(plan))
+    check("the first entry follows builtin.flag", first[:3] == ["gptr", "GPT Researcher", "0"], str(plan))
+    check("the second entry follows its gate and title", second[:3] == ["gptr-extra", "Extra", "1"], str(plan))
+    check("each line keeps the 11 fields", len(first) == 11 and len(second) == 11, str(plan))
+    plan = am.mcp_plan(Path(tmp), "default", {"GPTR_MCP_ENABLED": "1"})
+    check("a gate that is unset is off", [p.split("|")[2] for p in plan] == ["1", "0"], str(plan))
+
+for prof in ("default", "api-server", "browser"):
+    fixture = (ROOT / "scripts" / "fixtures" / f"addon-mcp-plan-{prof}.txt").read_text().splitlines()
+    check(f"mcp-plan over addons/ for {prof} matches the fixture",
+          am.mcp_plan(ROOT / "addons", prof, {}) == fixture, str(am.mcp_plan(ROOT / "addons", prof, {})))
+
+got = fence_of({"gptr": am.canonical(two_entry(permissions__cron=False))}, env)
+check("cron false fences every entry", got[0] == ["gptr", "gptr-extra"], str(got))
 
 # --- Built-in manifests against the repo ------------------------------------
 compose = (ROOT / "docker-compose.yml").read_text()

@@ -8,10 +8,13 @@ image's python3, mounted at /bootstrap/addon_manifest.py.
         Check every manifest as a built-in add-on. Prints one line per problem
         and exits 1 if there are any.
     addon_manifest.py mcp-plan <addons-dir> <profile>
-        For each add-on with an `mcp` block, print one line the bootstrap's
+        For each entry of each add-on's `mcp` block (one object, or a list of
+        objects), print one line, in list order, that the bootstrap's
         register_addon_mcp_servers reads, fields separated by "|":
         name|title|enabled|access|url|timeout|connect_timeout|transport|tools|pins|all_urls
-        `enabled` is 1 or 0 from the add-on's flag in the environment. `access`
+        `title` is the entry's own "title", else the manifest's. `enabled` is 1
+        or 0 from the flag in the environment: the entry's `when.gate` flag when
+        it has one, else builtin.flag. `access`
         is rw, ro, or empty when the profile gets no entry. Tools, pins and
         all_urls are space-separated. `mcp.service` is one service key or a map
         {"ro": key, "rw": key} that gives each access level its own service;
@@ -32,9 +35,13 @@ image's python3, mounted at /bootstrap/addon_manifest.py.
         manifests, and values containing | or a newline, are reported on stderr
         and skipped.
 
+A built-in manifest may list `gates`, each {flag, profile, seed}: one more
+sync-profiles.sh row, so a second flag can switch on part of an add-on. An
+`mcp` entry or a `services` entry names one with "when": {"gate": FLAG}.
+
 cron_fence() lists the MCP server names and URLs the bootstrap's
-fence_mail_from_cron keeps out of platform_toolsets.cron: every add-on whose
-permissions.cron is not true. With cron "ro" the add-on's name is not fenced and
+fence_mail_from_cron keeps out of platform_toolsets.cron: every MCP entry of
+every add-on whose permissions.cron is not true. With cron "ro" the add-on's name is not fenced and
 only its URLs other than the ro service's are, so a cron job keeps the ro
 entry and loses the rw one. An invalid manifest is fenced by whatever MCP
 name it carries, so a broken manifest can't open cron. cron_fence_toolsets()
@@ -146,6 +153,32 @@ def validate(manifest, source: str = "builtin") -> list[str]:
     elif builtin is not None:
         err("only built-in add-ons may have a builtin block")
 
+    gates = manifest.get("gates")
+    gate_flags: set[str] = set()
+    if gates is not None:
+        if source != "builtin":
+            err("only built-in add-ons may have gates")
+        elif not (isinstance(gates, list) and gates):
+            err("gates must be a non-empty list of {flag, profile, seed}")
+        else:
+            for i, g in enumerate(gates):
+                if not isinstance(g, dict):
+                    err(f"gates[{i}] must be an object {{flag, profile, seed}}")
+                    continue
+                if not (isinstance(g.get("flag"), str) and ENV_RE.match(g["flag"])):
+                    err(f"gates[{i}].flag must be an env var name")
+                elif g["flag"] in gate_flags or (isinstance(builtin, dict) and g["flag"] == builtin.get("flag")):
+                    err(f"gates[{i}].flag {g['flag']!r} is already used by this add-on")
+                else:
+                    gate_flags.add(g["flag"])
+                if not (isinstance(g.get("profile"), str) and NAME_RE.match(g["profile"])):
+                    err(f"gates[{i}].profile must be a compose profile name")
+                if not isinstance(g.get("seed"), bool):
+                    err(f"gates[{i}].seed must be true or false")
+                extra = set(g) - {"flag", "profile", "seed"}
+                if extra:
+                    err(f"gates[{i}] has unknown fields: {', '.join(sorted(extra))}")
+
     services = manifest.get("services")
     if "services" in manifest:
         if not (isinstance(services, dict) and services):
@@ -168,6 +201,8 @@ def validate(manifest, source: str = "builtin") -> list[str]:
                     err(f"services.{name}.image must be referenced by sha256 digest")
                 if "compose" in svc:
                     err(f"services.{name}: only built-in add-ons name a compose service")
+            if "when" in svc:
+                errors.extend(_validate_when(svc["when"], gate_flags, f"services.{name}.when"))
             if "port" in svc and not (isinstance(svc["port"], int) and 0 < svc["port"] < 65536):
                 err(f"services.{name}.port must be a port number")
     else:
@@ -223,10 +258,19 @@ def validate(manifest, source: str = "builtin") -> list[str]:
 
     mcp = manifest.get("mcp")
     if mcp is not None:
-        errors.extend(_validate_mcp(mcp, services, source, bool(reads)))
-        if perms.get("cron") == "ro" and not (
-                isinstance(mcp, dict) and isinstance(mcp.get("service"), dict) and "ro" in mcp["service"]):
-            err('permissions.cron "ro" needs a mcp.service map with an ro service: cron ro needs an ro service')
+        if isinstance(mcp, list) and not mcp:
+            err("mcp must be an object or a non-empty list of objects")
+        entries = mcp if isinstance(mcp, list) else [mcp]
+        for entry in entries:
+            errors.extend(_validate_mcp(entry, services, source, bool(reads), gate_flags))
+            if perms.get("cron") == "ro" and not (
+                    isinstance(entry, dict) and isinstance(entry.get("service"), dict)
+                    and "ro" in entry["service"]):
+                err('permissions.cron "ro" needs a mcp.service map with an ro service: '
+                    'cron ro needs an ro service')
+        names = [e["name"] for e in entries if isinstance(e, dict) and isinstance(e.get("name"), str)]
+        if len(names) != len(set(names)):
+            err("mcp names must be unique within an add-on")
 
     vault = manifest.get("vaultBackend")
     if vault is not None:
@@ -255,11 +299,24 @@ def validate(manifest, source: str = "builtin") -> list[str]:
     return errors
 
 
-def _validate_mcp(mcp, services: dict, source: str, reads: bool) -> list[str]:
+def _validate_when(when, gate_flags: set[str], where: str) -> list[str]:
+    if not (isinstance(when, dict) and set(when) == {"gate"}):
+        return [f'{where} must be {{"gate": FLAG}}']
+    if when["gate"] not in gate_flags:
+        return [f"{where}.gate {when['gate']!r} is not a flag listed in gates"]
+    return []
+
+
+def _validate_mcp(mcp, services: dict, source: str, reads: bool,
+                  gate_flags: set[str] = frozenset()) -> list[str]:
     errors: list[str] = []
     err = errors.append
     if not isinstance(mcp, dict):
         return ["mcp must be an object"]
+    if "title" in mcp and not (isinstance(mcp["title"], str) and mcp["title"].strip()):
+        err("mcp.title must be a non-empty string")
+    if "when" in mcp:
+        errors.extend(_validate_when(mcp["when"], gate_flags, "mcp.when"))
     svc = mcp.get("service")
     levels: set[str] = set()  # access levels that have a service
     if isinstance(svc, str):
@@ -393,11 +450,18 @@ def truthy(value: str | None) -> bool:
     return (value or "").strip().lower() in ("1", "true", "yes", "on")
 
 
-def _mcp_urls(manifest: dict, environ) -> dict[str, str]:
+def mcp_entries(manifest: dict) -> list[dict]:
+    """The manifest's mcp entries: `[mcp]` for an object, the list as is."""
+    mcp = manifest.get("mcp")
+    if isinstance(mcp, list):
+        return mcp
+    return [mcp] if mcp else []
+
+
+def _mcp_urls(manifest: dict, mcp: dict, environ) -> dict[str, str]:
     """Access level -> URL. A single service gives {"": url}, which
     mcp.env.url may override; a service map gives one URL per level and
     ignores mcp.env.url."""
-    mcp = manifest["mcp"]
     services = manifest["services"]
 
     def build(key: str) -> str:
@@ -413,22 +477,23 @@ def cron_fence(addons_dir: Path, environ=os.environ) -> tuple[list[str], list[st
     names, urls = [], []
     for path, manifest, parse_error in load_dir(addons_dir):
         if check_builtin_file(path, manifest, parse_error):
-            mcp = manifest.get("mcp") if isinstance(manifest, dict) else None
-            name = mcp.get("name") if isinstance(mcp, dict) else None
-            if isinstance(name, str) and name:
-                names.append(name)
+            raw = manifest.get("mcp") if isinstance(manifest, dict) else None
+            for entry in raw if isinstance(raw, list) else [raw]:
+                name = entry.get("name") if isinstance(entry, dict) else None
+                if isinstance(name, str) and name:
+                    names.append(name)
             continue
-        mcp = manifest.get("mcp")
         cron = manifest.get("permissions", {}).get("cron")
-        if not mcp or cron is True:
+        if cron is True:
             continue
-        mcp_urls = _mcp_urls(manifest, environ)
-        if cron == "ro":
-            # The ro service stays in cron; its other URLs (rw) are fenced.
-            urls.extend(u for level, u in mcp_urls.items() if level != "ro")
-            continue
-        names.append(mcp["name"])
-        urls.extend(mcp_urls.values())
+        for mcp in mcp_entries(manifest):
+            mcp_urls = _mcp_urls(manifest, mcp, environ)
+            if cron == "ro":
+                # The ro service stays in cron; its other URLs (rw) are fenced.
+                urls.extend(u for level, u in mcp_urls.items() if level != "ro")
+                continue
+            names.append(mcp["name"])
+            urls.extend(mcp_urls.values())
     return sorted(set(names)), sorted(set(urls))
 
 
@@ -456,40 +521,39 @@ def mcp_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
             for e in errors:
                 print(f"warning: skipping {path.parent.name}: {e}", file=sys.stderr)
             continue
-        mcp = manifest.get("mcp")
-        if not mcp:
-            continue
-        env = mcp.get("env", {})
-        urls = _mcp_urls(manifest, environ)
-        timeout = environ.get(env.get("timeout", ""), "") or str(mcp["timeout"])
-        connect = environ.get(env.get("connectTimeout", ""), "") or str(mcp["connectTimeout"])
-        enabled = "1" if truthy(environ.get(manifest["builtin"]["flag"])) else "0"
-        access = mcp["profiles"].get(profile, "")
-        if "access" in env and access:
-            # Fail closed: only read, write or empty are known values.
-            cap = environ.get(env["access"], "")
-            if cap == "read":
-                access = "ro"
-            elif cap not in ("write", ""):
-                access = ""
-        if "" in urls:
-            url = urls[""]
-        else:
-            url = urls.get(access) or urls.get("rw") or urls["ro"]
-        tools, pins = mcp["tools"], mcp.get("pin", [])
-        if access == "ro":
-            # A read-only profile never sees a write tool, listed or pinned.
-            write = set(mcp.get("writeTools", []))
-            tools = [t for t in tools if t not in write]
-            pins = [t for t in pins if t not in write]
-        fields = [mcp["name"], manifest["title"], enabled, access, url, timeout, connect,
-                  mcp["transport"], " ".join(tools), " ".join(pins),
-                  " ".join(sorted(set(urls.values())))]
-        if any("|" in f or "\n" in f for f in fields):
-            print(f"warning: skipping {path.parent.name}: a value contains | or a newline",
-                  file=sys.stderr)
-            continue
-        lines.append("|".join(fields))
+        for mcp in mcp_entries(manifest):
+            env = mcp.get("env", {})
+            urls = _mcp_urls(manifest, mcp, environ)
+            timeout = environ.get(env.get("timeout", ""), "") or str(mcp["timeout"])
+            connect = environ.get(env.get("connectTimeout", ""), "") or str(mcp["connectTimeout"])
+            flag = mcp["when"]["gate"] if "when" in mcp else manifest["builtin"]["flag"]
+            enabled = "1" if truthy(environ.get(flag)) else "0"
+            access = mcp["profiles"].get(profile, "")
+            if "access" in env and access:
+                # Fail closed: only read, write or empty are known values.
+                cap = environ.get(env["access"], "")
+                if cap == "read":
+                    access = "ro"
+                elif cap not in ("write", ""):
+                    access = ""
+            if "" in urls:
+                url = urls[""]
+            else:
+                url = urls.get(access) or urls.get("rw") or urls["ro"]
+            tools, pins = mcp["tools"], mcp.get("pin", [])
+            if access == "ro":
+                # A read-only profile never sees a write tool, listed or pinned.
+                write = set(mcp.get("writeTools", []))
+                tools = [t for t in tools if t not in write]
+                pins = [t for t in pins if t not in write]
+            fields = [mcp["name"], mcp.get("title", manifest["title"]), enabled, access, url, timeout, connect,
+                      mcp["transport"], " ".join(tools), " ".join(pins),
+                      " ".join(sorted(set(urls.values())))]
+            if any("|" in f or "\n" in f for f in fields):
+                print(f"warning: skipping {path.parent.name}: a value contains | or a newline",
+                      file=sys.stderr)
+                continue
+            lines.append("|".join(fields))
     return lines
 
 
