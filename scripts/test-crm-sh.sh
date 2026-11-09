@@ -352,6 +352,31 @@ PATH="$tmp/dbin:$PATH" ENV_FILE="$tmp/acme.env" CRM_WORKSPACES_DIR="$tmp/ws-two"
 [ "$(mcp_of)" = "crm-main" ] || fail "init --json leaves out an instance missing its key: $last"
 grep -rq SECRET "$out" "$tmp/err" && fail "init --json output holds a key"
 
+# The plan call failing (a python3 stub): one terminal done line with an
+# empty list, exit 0, a warning on stderr, no error line.
+mkdir -p "$tmp/pbin"
+real_py="$(command -v python3)"
+printf '#!/bin/sh\ncase "$*" in *instances-plan*) echo plan-broke >&2; exit 1 ;; esac\nexec %s "$@"\n' "$real_py" > "$tmp/pbin/python3"
+chmod +x "$tmp/pbin/python3"
+PATH="$tmp/pbin:$tmp/dbin:$PATH" ENV_FILE="$tmp/acme.env" CRM_WORKSPACES_DIR="$tmp/ws-two" \
+  ASSISTANT_DATA_ROOT="$d2" hook "done" '' init --json
+[ "$(mcp_of)" = "" ] || fail "init --json with an unreadable plan lists nothing: $last"
+[ "$(grep -c '"phase": *"\(done\|error\)"' "$out")" = 1 ] || fail "init --json with an unreadable plan has one terminal line: $(cat "$out")"
+grep -q "couldn't work out the registered servers" "$tmp/err" || fail "an unreadable plan is warned about on stderr"
+# The add-on's own flag off on the local-off path: nothing registers.
+cp "$tmp/off.env" "$tmp/off-mcp.env"
+printf 'TWENTY_MCP_ENABLED=0\n' >> "$tmp/off-mcp.env"
+ENV_FILE="$tmp/off-mcp.env" CRM_WORKSPACES_DIR="$tmp/ws-two" ASSISTANT_DATA_ROOT="$d2" hook "done" '' init --json
+[ "$(mcp_of)" = "" ] || fail "init --json with TWENTY_MCP_ENABLED=0 lists nothing: $last"
+cp "$tmp/off.env" "$tmp/off-mcp1.env"
+printf 'TWENTY_MCP_ENABLED=1\n' >> "$tmp/off-mcp1.env"
+rm -f "$d2"/addons/twenty/secrets/hosted.key_ro
+mk_ws "$tmp/ws-ro" ronly https://crm.example.com
+printf 'TWENTY_URL=https://crm.example.com\nTWENTY_ACCESS=read\nTWENTY_KEY_RO=ro-SECRET\n' > "$tmp/ws-ro/ronly.env"
+d3="$tmp/data-ro"; mkdir -p "$d3"
+ENV_FILE="$tmp/off-mcp1.env" CRM_WORKSPACES_DIR="$tmp/ws-ro" ASSISTANT_DATA_ROOT="$d3" hook "done" '' init --json
+[ "$(mcp_of)" = "crm-ronly" ] || fail "init --json lists an instance with only key_ro and access read: $last"
+
 # Slug guard. Two local workspaces and no main, single-workspace mode: init
 # without --slug keeps main, so twenty_admin.py refuses it as a third.
 mk_ws "$tmp/ws-ab" a http://twenty-server:3000

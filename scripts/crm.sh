@@ -418,25 +418,33 @@ to_phases() {
 # The MCP server names the bootstrap would register for the stored instances,
 # sorted, one per line. The rules (key present, local instances need
 # TWENTY_LOCAL_ENABLED) are addon_manifest.py's instances-plan; this takes the
-# names it marks on for the default and api-server profiles. The add-on's own
-# flag counts as on, since init turns it on. Key values never leave the plan.
+# names it marks on for the default and api-server profiles. $1 is the
+# add-on's flag value (1 after init has turned it on). Returns 1 with no output
+# when the plan can't be read. Key values never leave the plan.
 registered_mcp() {
-  local mounts=(--mount "$DATA_ROOT") profile
+  local mounts=(--mount "$DATA_ROOT") profile plan="" one
   path_is_inside "$ADDONS" "$ROOT" || mounts+=(--mount "$ADDONS")
   for profile in default api-server; do
-    TWENTY_MCP_ENABLED=1 TWENTY_LOCAL_ENABLED="$(env_get TWENTY_LOCAL_ENABLED 0)" \
+    one="$(TWENTY_MCP_ENABLED="$1" TWENTY_LOCAL_ENABLED="$(env_get TWENTY_LOCAL_ENABLED 0)" \
       stack_python "${mounts[@]}" --env TWENTY_MCP_ENABLED --env TWENTY_LOCAL_ENABLED \
-      -I "${ROOT}/scripts/lib/addon_manifest.py" instances-plan "$ADDONS" "${DATA_ROOT}/addons" "$profile" \
-      || die "can't work out which workspaces register"
-  done | awk -F'|' '$3 == "1" && $1 !~ /\*$/ { print $1 }' | sort -u
+      -I "${ROOT}/scripts/lib/addon_manifest.py" instances-plan "$ADDONS" "${DATA_ROOT}/addons" "$profile")" \
+      || return 1
+    plan="${plan}${one}"$'\n'
+  done
+  printf '%s' "$plan" | awk -F'|' '$3 == "1" && $1 !~ /\*$/ { print $1 }' | sort -u
 }
 
-# registered_mcp as a JSON list body: "crm-a","crm-b".
+# registered_mcp $1 as a JSON list body: "crm-a","crm-b". Never fails: when the
+# plan can't be read it warns and gives an empty list.
 registered_mcp_json() {
-  local n out=""
+  local names n out=""
+  if ! names="$(registered_mcp "$1")"; then
+    warn "couldn't work out the registered servers; mcp is empty"
+    return 0
+  fi
   while IFS= read -r n; do
     [[ -n "$n" ]] && out="${out:+${out},}\"${n}\""
-  done < <(registered_mcp)
+  done <<< "$names"
   printf '%s' "$out"
 }
 
@@ -458,7 +466,7 @@ cmd_init() {
   valid_slug "$slug" || die "slug '${slug}' must use lowercase letters, digits and hyphens"
   migrate_first
   if [[ -n "$json" ]] && ! is_true "$(env_get TWENTY_LOCAL_ENABLED 0)"; then
-    printf '{"phase":"done","message":"local instance off","mcp":[%s]}\n' "$(registered_mcp_json)" >&3
+    printf '{"phase":"done","message":"local instance off","mcp":[%s]}\n' "$(registered_mcp_json "$(env_get TWENTY_MCP_ENABLED 0)")" >&3
     exit 0
   fi
   # addon.sh enable runs init without --slug. In single-workspace mode the
@@ -533,7 +541,7 @@ cmd_init() {
   fi
   log "Next: make hermes-reload, then ask Hermes about your CRM. make crm-open opens it."
   if [[ -n "$json" ]]; then
-    printf '{"phase":"done","account":"%s","mcp":[%s]}\n' "$slug" "$(registered_mcp_json)" >&3
+    printf '{"phase":"done","account":"%s","mcp":[%s]}\n' "$slug" "$(registered_mcp_json 1)" >&3
   fi
 }
 
