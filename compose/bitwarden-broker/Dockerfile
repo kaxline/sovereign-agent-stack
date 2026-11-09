@@ -12,18 +12,20 @@ ARG BW_SHA256_ARM64=79ecb3293fb259660961c949d3e32fdab8682b2bcff0f6764ce38a411ca1
 ARG BW_SHA256_X64=eb09c3715291c21cf744819b873a255c1247b1b8b45bae138621a644ec7ad8f5
 ARG TARGETARCH
 
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl unzip \
     && rm -rf /var/lib/apt/lists/*
 
 # The x64 asset carries no architecture in its name.
+WORKDIR /tmp
 RUN set -eu; \
     case "${TARGETARCH:-$(dpkg --print-architecture)}" in \
       arm64) asset="bw-linux-arm64-${BW_CLI_VERSION}.zip"; sum="${BW_SHA256_ARM64}" ;; \
       amd64) asset="bw-linux-${BW_CLI_VERSION}.zip"; sum="${BW_SHA256_X64}" ;; \
       *) echo "no bw build for ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
-    cd /tmp; \
     curl -fsSL -o "$asset" "https://github.com/bitwarden/clients/releases/download/cli-v${BW_CLI_VERSION}/${asset}"; \
     echo "${sum}  ${asset}" | sha256sum -c -; \
     unzip -q "$asset" bw; \
@@ -39,7 +41,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=bw /usr/local/bin/bw /usr/local/bin/bw
-RUN bw --version | tee /dev/stderr | grep -qx "${BW_CLI_VERSION}"
+RUN v="$(bw --version)"; echo "$v" >&2; test "$v" = "${BW_CLI_VERSION}"
 
 # A new bitwarden_sync volume copies /run/bitwarden-sync's owner and mode.
 RUN groupadd --gid 10001 broker \
