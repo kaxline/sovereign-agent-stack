@@ -48,6 +48,23 @@ the stack under another app.
 
 ### Changes
 
+- **Mail.app email is a built-in add-on** (`addons/email-local/addon.json`),
+  a manifest over the existing `mail-mcp` and `mail-drafts-mcp` services.
+  Nothing an install sets changes: the flags `MAIL_MCP_ENABLED` and
+  `MAIL_DRAFTS_ENABLED`, the profiles `mail` and `mail-drafts`, the MCP names
+  `mail` and `drafts`, the `MAIL_*_URL` and timeout overrides, and the host
+  apps and their install. The bootstrap registers both servers through the
+  add-on path instead of its own functions, so `addon.sh list --json` now
+  includes `email-local` with `platform: macos`.
+- **`MAIL_MCP_ENABLED` and `MAIL_DRAFTS_ENABLED` accept `on` and any case**
+  (`1`, `true`, `yes`, `on`), in the bootstrap, `make doctor` and
+  `mail-triage-cron.sh`. `sync-profiles.sh` already started the containers
+  for these values; before, Hermes then left the servers unregistered for
+  `True` or `on`.
+- **The cron fence also fences by name and configured URL for mail.** Besides
+  any server on `mail-mcp:8000` or `mail-drafts-mcp:8000`, cron jobs now lose
+  servers named `mail` or `drafts` and servers on the configured
+  `MAIL_MCP_URL` or `MAIL_DRAFTS_MCP_URL`.
 - **Twenty CRM is a built-in add-on** (`addons/twenty/addon.json`). Boundary can
   move Twenty onto `scripts/addon.sh`: instances are workspaces, with `url`,
   `access`, `local` and two secret keys, and the manifest's connect and

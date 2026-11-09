@@ -834,6 +834,21 @@ with tempfile.TemporaryDirectory() as tmp:
     check("email-local's mail under another add-on's instance prefix is refused",
           any("'mail'" in e and "mai's instance prefix" in e for e in errs["email-local"]), str(errs))
 
+# A second add-on that takes email-local's fixed name "mail" refuses both.
+dup = copy.deepcopy(BASE)
+dup["id"] = "io.example.dupmail"
+dup["mcp"]["name"] = "mail"
+check("mcp.name mail alone is a valid manifest", am.validate(dup, "builtin") == [],
+      str(am.validate(dup, "builtin")))
+with tempfile.TemporaryDirectory() as tmp:
+    d = conflict_dir(Path(tmp), {"dupmail": dup})
+    errs = {p.parent.name: e for p, _m, e in am.checked_dir(d)}
+    check("the same mcp.name in two add-ons refuses both",
+          any("declared by both" in e for e in errs["dupmail"])
+          and any("declared by both" in e for e in errs["email-local"]), str(errs))
+    plan = am.mcp_plan(d, "default", {"MAIL_MCP_ENABLED": "1"})
+    check("mcp-plan registers neither", not any(l.startswith("mail|") for l in plan), str(plan))
+
 overlap = json.loads((ROOT / "addons" / "twenty" / "addon.json").read_text())
 overlap["id"] = "io.example.twentyish"
 overlap["mcp"]["instances"]["name"] = "crm-eu-{slug}"

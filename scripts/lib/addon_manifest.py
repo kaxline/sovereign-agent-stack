@@ -980,7 +980,8 @@ def _raw_mcp_list(manifest) -> list:
 
 def dir_conflicts(loaded) -> dict[Path, list[str]]:
     """Errors that only show across the manifests of one addons dir, by path.
-    The bootstrap drops every entry under an mcp.instances prefix that isn't a
+    Two add-ons may not declare the same mcp.name. The bootstrap drops every
+    entry under an mcp.instances prefix that isn't a
     live instance, so an mcp.name under another add-on's prefix (or its own)
     would be written and then removed on every start, and two prefixes where
     one starts with the other would remove each other's entries. Read from
@@ -995,6 +996,14 @@ def dir_conflicts(loaded) -> dict[Path, list[str]]:
             if template:
                 prefixes.append((path, template.split("{slug}")[0]))
     out: dict[Path, list[str]] = {}
+    # Two add-ons with the same fixed name would overwrite each other's entry
+    # and drop it by URL when either flag is off.
+    for i, (pa, a) in enumerate(names):
+        for pb, b in names[i + 1:]:
+            if a == b and pa != pb:
+                msg = f"mcp.name {a!r} is declared by both {pa.parent.name} and {pb.parent.name}"
+                out.setdefault(pa, []).append(msg)
+                out.setdefault(pb, []).append(msg)
     for path, name in names:
         for other, prefix in prefixes:
             if name.startswith(prefix):

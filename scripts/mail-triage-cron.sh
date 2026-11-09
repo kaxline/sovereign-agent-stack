@@ -37,9 +37,10 @@ done
 
 [[ -f .env ]] || die "no .env; run ./scripts/setup.sh first"
 if [[ "$action" == "create" ]]; then
-  case "$(env_get MAIL_MCP_ENABLED)" in
-    1|true|TRUE|yes|YES) ;;
-    *) die "MAIL_MCP_ENABLED isn't 1; run ./scripts/setup.sh --mail first" ;;
+  # Same values as sync-profiles.sh and addon_manifest.truthy: 1, true, yes, on, any case.
+  case "$(env_get MAIL_MCP_ENABLED | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on) ;;
+    *) die "MAIL_MCP_ENABLED is off; run ./scripts/setup.sh --mail first" ;;
   esac
   grep -qs 'mail-mcp:8000' data/hermes/config.yaml \
     || die "the default Hermes profile has no mail MCP; re-run hermes-api-bootstrap and hermes-browser-bootstrap"

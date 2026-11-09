@@ -54,7 +54,8 @@ drop_mcp_entries_for_url() {
   case "$3" in "$URL"|"$MAIL_URL") printf 'drop:%s:%s;' "${1:-default}" "$3" >> "$record" ;; esac
 }
 got() { calls="$(cat "$record")"; : > "$record"; }
-# Only the drafts calls of a record.
+# Only the drafts calls of a record: with MAIL_MCP_ENABLED=0 the mail entry adds
+# its own drop, which the drafts cases aren't about.
 drafts_only() { printf '%s' "$1" | tr ';' '\n' | grep -E '^(register|pin):[^:]*:drafts:|^drop:[^:]*:http://mail-drafts-mcp' | tr '\n' ';'; }
 
 TOOLS="mail_draft_create mail_draft_status"
