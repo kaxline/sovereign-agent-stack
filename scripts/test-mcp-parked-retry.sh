@@ -17,8 +17,13 @@ fi
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 {
-  grep -E '^(LIGHTRAG|SEARXNG|CALDAV|OPENCODE|SQL|VIKUNJA|MAIL|MAIL_DRAFTS|MESSAGES)_MCP(_RO|_RW)?_URL=' "$bootstrap"
-  sed -n '/^set_stack_mcp_parked_retry() {/,/^}/p' "$bootstrap"
+  grep -E '^(SEARXNG|CALDAV|OPENCODE|SQL|VIKUNJA|MAIL|MAIL_DRAFTS|MESSAGES)_MCP(_RO|_RW)?_URL=' "$bootstrap"
+  # LightRAG's URL comes from its manifest (addon_mcp_urls), not from a variable.
+  for fn in addon_mcp_plan addon_mcp_urls set_stack_mcp_parked_retry; do
+    range='/^'"${fn}"'() {/,/^}/p'
+    sed -n "$range" "$bootstrap"
+  done
+  printf 'ADDONS_DIR=/a\nADDON_MANIFEST_PY=/l/addon_manifest.py\n'
   cat <<'EOF'
 log() { printf '%s\n' "$1"; }
 config_path_for() { echo /t/config.yaml; }
@@ -51,8 +56,9 @@ fail() {
 
 # run <MCP_PARKED_RETRY_INTERVAL>: prints the log line, then the config.
 run() {
-  docker run --rm --network none -v "${tmp}:/t" --entrypoint /bin/sh "$image" -c \
-    "MCP_PARKED_RETRY_INTERVAL='$1'; . /t/fn.sh; set_stack_mcp_parked_retry ''; echo ---; cat /t/config.yaml"
+  docker run --rm --network none -v "${tmp}:/t" -v "${ROOT}/addons:/a:ro" \
+    -v "${ROOT}/scripts/lib:/l:ro" --entrypoint /bin/sh "$image" -c \
+    "MCP_PARKED_RETRY_INTERVAL='$1'; . /t/fn.sh; set_stack_mcp_parked_retry browser; echo ---; cat /t/config.yaml"
 }
 
 # entry <output> <name>: the lines of one mcp_servers entry.

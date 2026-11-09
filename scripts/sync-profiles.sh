@@ -34,8 +34,7 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 # Built-in add-ons (addons/<id>/addon.json) add their own rows from the
 # manifest's builtin block; this list keeps the services that have no
 # manifest yet. docs/private/addon-manifest-spec.md
-SERVICES_CORE="LIGHTRAG_MCP_ENABLED rag 0
-NEO4J_ENABLED neo4j 0
+SERVICES_CORE="NEO4J_ENABLED neo4j 0
 CALDAV_MCP_ENABLED calendar 0
 SQL_MCP_ENABLED db 0
 VIKUNJA_MCP_ENABLED todo 0

@@ -25,11 +25,6 @@ SKILLS_EXTERNAL_DIR="${HERMES_SKILLS_EXTERNAL_DIR:-/opt/skills}"
 # default-profile value, so the API profile must be set back explicitly.
 INTERACTIVE_MEMORY_NUDGE="${HERMES_INTERACTIVE_MEMORY_NUDGE_INTERVAL:-3}"
 PROFILE_MEMORY_NUDGE="${HERMES_MEMORY_NUDGE_INTERVAL:-10}"
-LIGHTRAG_MCP_URL="${LIGHTRAG_MCP_URL:-http://lightrag-mcp:8000/mcp}"
-LIGHTRAG_MCP_TIMEOUT="${LIGHTRAG_MCP_TIMEOUT:-120}"
-LIGHTRAG_MCP_CONNECT_TIMEOUT="${LIGHTRAG_MCP_CONNECT_TIMEOUT:-30}"
-LIGHTRAG_MCP_ENABLED="${LIGHTRAG_MCP_ENABLED:-0}"
-LIGHTRAG_MCP_TOOLS="query_document get_documents get_pipeline_status get_graph_labels check_lightrag_health"
 SEARXNG_MCP_URL="${SEARXNG_MCP_URL:-http://mcp-searxng:3000/mcp}"
 SEARXNG_MCP_TIMEOUT="${SEARXNG_MCP_TIMEOUT:-60}"
 SEARXNG_MCP_CONNECT_TIMEOUT="${SEARXNG_MCP_CONNECT_TIMEOUT:-30}"
@@ -861,7 +856,7 @@ set_stack_mcp_parked_retry() {
   [ -f "$_cfg" ] || return 0
   # One argument per add-on URL.
   # shellcheck disable=SC2046
-  _out="$(python3 - "$_cfg" "$MCP_PARKED_RETRY_INTERVAL" "$LIGHTRAG_MCP_URL" "$SEARXNG_MCP_URL" \
+  _out="$(python3 - "$_cfg" "$MCP_PARKED_RETRY_INTERVAL" "$SEARXNG_MCP_URL" \
     "$CALDAV_MCP_URL" "$OPENCODE_MCP_URL" "$SQL_MCP_RO_URL" "$SQL_MCP_RW_URL" "$VIKUNJA_MCP_URL" \
     "$MAIL_MCP_URL" "$MAIL_DRAFTS_MCP_URL" "$MESSAGES_MCP_URL" \
     "$TWENTY_LOCAL_MCP_URL" $(addon_mcp_urls "$1") <<'PY'
@@ -902,13 +897,6 @@ PY
 reconcile_stack_eager_tools() {
   _rst_profile="$1"
   _rst_args="session_search web_url_read searxng_web_search mcp__searxng__web_url_read mcp__searxng__searxng_web_search"
-  case "$LIGHTRAG_MCP_ENABLED" in
-    1|true|TRUE|yes|YES)
-      if [ -n "$_rst_profile" ]; then
-        _rst_args="${_rst_args} query_document get_documents get_pipeline_status get_graph_labels check_lightrag_health mcp__lightrag__query_document mcp__lightrag__get_documents mcp__lightrag__get_pipeline_status mcp__lightrag__get_graph_labels mcp__lightrag__check_lightrag_health"
-      fi
-      ;;
-  esac
   case "$SQL_MCP_ENABLED" in
     1|true|TRUE|yes|YES)
       for _rst_t in $SQL_MCP_TOOLS; do
@@ -1318,40 +1306,6 @@ register_mail_mcp_servers() {
     "$MAIL_MCP_URL" "$MAIL_MCP_TIMEOUT" "$MAIL_MCP_CONNECT_TIMEOUT" $MAIL_MCP_TOOLS
   # shellcheck disable=SC2086
   pin_mcp_tools "$_rmms_profile" mail $MAIL_MCP_TOOLS
-}
-
-# LightRAG MCP (rag profile) as read-oriented Knowledge Base access, on the
-# api-server and browser profiles. The default profile is the user's own
-# config, and bootstrap never registers LightRAG there.
-#
-# Treat the include list as a security boundary rather than a convenience. The
-# server exposes 17 tools, 12 of which mutate the knowledge graph (insert_*,
-# edit_*, and delete_by_doc_ids / delete_by_entities). Only the five
-# read-oriented ones belong on these profiles.
-#
-# With LIGHTRAG_MCP_ENABLED off, every entry pointing at the LightRAG URL is
-# removed, whatever its key, so a profile that once had LightRAG doesn't keep
-# retrying a server that is gone (CR 0022 R1).
-register_lightrag_mcp_servers() {
-  _rlms_profile="$1"
-  case "$LIGHTRAG_MCP_ENABLED" in
-    1|true|TRUE|yes|YES) ;;
-    *)
-      log "Skipping LightRAG MCP registration (LIGHTRAG_MCP_ENABLED=${LIGHTRAG_MCP_ENABLED})"
-      drop_mcp_entries_for_url "$_rlms_profile" "" "$LIGHTRAG_MCP_URL"
-      return 0
-      ;;
-  esac
-  # shellcheck disable=SC2086
-  register_mcp_server "$_rlms_profile" lightrag LightRAG \
-    "$LIGHTRAG_MCP_URL" "$LIGHTRAG_MCP_TIMEOUT" "$LIGHTRAG_MCP_CONNECT_TIMEOUT" $LIGHTRAG_MCP_TOOLS
-
-  # The clone inherits the default profile's own unfiltered LightRAG entry,
-  # which would hand this profile all 17 tools through the back door and leave
-  # the allowlist above meaning nothing.
-  drop_unfiltered_mcp_duplicate "$_rlms_profile" lightrag lightrag-mcp "$LIGHTRAG_MCP_URL"
-  # shellcheck disable=SC2086
-  pin_mcp_tools "$_rlms_profile" lightrag $LIGHTRAG_MCP_TOOLS
 }
 
 # Built-in add-ons with an mcp block, from addons/*/addon.json
@@ -2693,10 +2647,6 @@ if [ "$PROFILE" = "browser" ]; then
   log "Setting auxiliary.title_generation.enabled=${TITLE_ENABLED} on browser (${UPSTREAM_KIND} upstream)"
   hermes_config_set "$PROFILE" "auxiliary.title_generation.enabled" "$TITLE_ENABLED"
 fi
-
-# LightRAG goes on the profile this bootstrap manages, never on default. See
-# register_lightrag_mcp_servers.
-register_lightrag_mcp_servers "$PROFILE"
 
 # Same web-reading servers as the default profile above; profiles carry their
 # own config.yaml, so the earlier registration does not reach API sessions.
