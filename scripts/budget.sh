@@ -29,7 +29,7 @@ usage() {
   cat <<'EOF'
 Usage: scripts/budget.sh <command> [options]
 
-  init [--rotate]
+  init [--rotate | --server-only] [--json]
         Local server (ACTUAL_LOCAL_ENABLED=1, after make up): set a generated
         server password on a new server, create a budget or adopt the only
         one, check that it opens, and write compose/actual/budget.env.
@@ -37,6 +37,11 @@ Usage: scripts/budget.sh <command> [options]
         is the password of a server that already has one. Does nothing when
         budget.env exists, unless --rotate is given: then it sets a new
         generated server password on the server and in the file.
+        --server-only (the Actual add-on's hooks.init, with --json): set up the
+        local server without budget.env. The generated server password goes
+        to <data root>/addons/actual/secrets/server_password; a budget named
+        Budget is created when the server has none. Prints {"phase":"done"}
+        with sync_id and name when the server has exactly one budget.
   add --url URL [--force]
         A budget on a remote server. ACTUAL_PASSWORD, ACTUAL_BUDGET_SYNC_ID
         and ACTUAL_BUDGET_ENCRYPTION_PASSWORD come from the environment, or
@@ -70,7 +75,8 @@ Usage: scripts/budget.sh <command> [options]
         encryption_password, timeout, server_unreachable or bad_access, then
         {"phase":"done"}. A bad state doesn't change the exit code.
   open    Open the web app and copy the server password to the clipboard
-  remove  Delete budget.env and set ACTUAL_MCP_ENABLED=0. Server data stays.
+  remove  Delete budget.env and clear ACTUAL_BUDGET_FILE; sets ACTUAL_MCP_ENABLED=0
+          unless connected budgets remain. Server data stays.
   access read|write
         What chats may do with the budget: look things up (read) or make
         changes (write). Sets ACTUAL_ACCESS in .env.
@@ -688,14 +694,57 @@ refresh_mcps() {
 
 # --- Commands ---
 
+# note TEXT: a [budget] log line, except in --json mode (stdout is JSON only).
+note() {
+  [[ "$JSON" == 1 ]] || log "$1"
+  return 0
+}
+
+# probe_server: sets base and resp (the needs-bootstrap answer), or fails.
+probe_server() {
+  base="http://127.0.0.1:$(env_get ACTUAL_PORT 5006)"
+  resp="$(http GET /account/needs-bootstrap)" || resp=""
+  json_ok "$resp" \
+    || emit_error server_unreachable "actual-server isn't answering on ${base}; ./scripts/setup.sh --budget (or ACTUAL_LOCAL_ENABLED=1), then make up"
+}
+
+# bootstrap_server PASSWORD: sets the server password of a new server.
+bootstrap_server() {
+  resp="$(printf '{"password":"%s"}' "$1" | http POST /account/bootstrap)" || resp=""
+  json_ok "$resp" || emit_error server_unreachable "bootstrap failed: $(json_field "$resp" reason)"
+  note "Set a generated server password on actual-server"
+}
+
+# create_budget PASSWORD: creates a budget named Budget; sets created_sync.
+created_sync=""
+create_budget() {
+  local rc=0 created
+  note "Creating a budget named Budget"
+  a_url="$LOCAL_URL" a_pw="$1" a_sync="" a_enc=""
+  created="$(admin create Budget 2> "${WORK}/admin.err")" || rc=$?
+  if [[ "$rc" -eq 4 ]]; then
+    emit_error timeout "no answer from $(safe_url "$a_url") within ${ACTUAL_ADMIN_TIMEOUT_S:-45} s (ACTUAL_ADMIN_TIMEOUT_S); nothing written"
+  fi
+  [[ "$rc" -eq 0 ]] || emit_error server_unreachable "couldn't create a budget: $(admin_error)"
+  created_sync="$(printf '%s\n' "$created" | grep -v '^[[:space:]]*$' | tail -1)"
+  [[ -n "$created_sync" ]] || emit_error server_unreachable "creating a budget printed no sync id"
+}
+
 cmd_init() {
-  local rotate=""
+  local rotate="" server_only=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --rotate) rotate=1; shift ;;
+      --server-only) server_only=1; shift ;;
+      --json) JSON=1; shift ;;
       *) die "unknown option for init: $1" ;;
     esac
   done
+  if [[ -n "$server_only" ]]; then
+    [[ -z "$rotate" ]] || die "--rotate doesn't go with --server-only"
+    init_server_only
+    return 0
+  fi
   require_uid
   if [[ -n "$rotate" && ! -f "$BUDGET_FILE" ]]; then
     die "no ${BUDGET_REL}, so there is no password to rotate; run make budget-init first"
@@ -704,11 +753,8 @@ cmd_init() {
     log "${BUDGET_REL} exists; nothing to do (--rotate sets a new server password; make budget-remove starts over)"
     return 0
   fi
-  base="http://127.0.0.1:$(env_get ACTUAL_PORT 5006)"
   local resp
-  resp="$(http GET /account/needs-bootstrap)" || resp=""
-  json_ok "$resp" \
-    || die "actual-server isn't answering on ${base}; ./scripts/setup.sh --budget (or ACTUAL_LOCAL_ENABLED=1), then make up"
+  probe_server
 
   if [[ -n "$rotate" ]]; then
     rotate_password
@@ -725,9 +771,7 @@ cmd_init() {
       mkdir -p "$(dirname "$PENDING_FILE")"
       (umask 077 && printf '%s' "$pw" > "$PENDING_FILE")
     fi
-    resp="$(printf '{"password":"%s"}' "$pw" | http POST /account/bootstrap)" || resp=""
-    json_ok "$resp" || die "bootstrap failed: $(json_field "$resp" reason)"
-    log "Set a generated server password on actual-server"
+    bootstrap_server "$pw"
   else
     pw="${ACTUAL_PASSWORD:-}"
     [[ -n "$pw" || ! -s "$PENDING_FILE" ]] || pw="$(cat "$PENDING_FILE")"
@@ -747,14 +791,8 @@ cmd_init() {
       || die "actual-server has no budget with sync id ${want}"
     sync="$want"
   elif [[ "$n" -eq 0 ]]; then
-    log "Creating a budget named Budget"
-    local rc=0 created
-    a_url="$LOCAL_URL" a_pw="$pw" a_sync="" a_enc=""
-    created="$(admin create Budget 2> "${WORK}/admin.err")" || rc=$?
-    [[ "$rc" -ne 4 ]] || timed_out
-    [[ "$rc" -eq 0 ]] || die "couldn't create a budget: $(admin_error)"
-    sync="$(printf '%s\n' "$created" | grep -v '^[[:space:]]*$' | tail -1)"
-    [[ -n "$sync" ]] || die "creating a budget printed no sync id"
+    create_budget "$pw"
+    sync="$created_sync"
   elif [[ "$n" -eq 1 ]]; then
     sync="$(printf '%s' "$files" | cut -f1)"
     log "Adopting the existing budget '$(printf '%s' "$files" | cut -f2)'"
@@ -772,6 +810,62 @@ cmd_init() {
   log "Set ACTUAL_LOCAL_ENABLED=1"
   refresh_mcps
   log "Next: make up, then make hermes-reload. make budget-open opens the web app."
+}
+
+# init --server-only: the local server's password lives in
+# <data root>/addons/actual/secrets/server_password (mode 600), a budget is
+# created when the server has none, and budget.env, ACTUAL_BUDGET_FILE and
+# ACTUAL_MCP_ENABLED stay untouched. Safe to run again.
+init_server_only() {
+  local sdir="" pwf pw="" resp files n sync="" name=""
+  require_docker
+  secrets_dir
+  mkdir -p "$sdir" || emit_error not_found "couldn't create ${sdir}"
+  pwf="${sdir}/server_password"
+  probe_server
+  if [[ "$resp" == *'"bootstrapped":false'* ]]; then
+    # The password is stored before the server is told, so a failed run can't lose it.
+    if [[ -s "$pwf" ]]; then
+      pw="$(cat "$pwf")"
+    else
+      pw="$(openssl rand -hex 24)"
+      write_secret server_password "$pw"
+    fi
+    bootstrap_server "$pw"
+  else
+    [[ -s "$pwf" ]] && pw="$(cat "$pwf")"
+    if [[ -z "$pw" ]]; then
+      pw="$(file_get ACTUAL_PASSWORD)"
+      [[ -n "$pw" ]] || emit_error login_refused "actual-server already has a password and none is stored (addons/actual/secrets/server_password is missing)"
+    fi
+  fi
+  in_session_token="" in_password="$pw"
+  sign_in
+  # A password adopted from budget.env is kept where the add-on looks for it.
+  [[ -s "$pwf" ]] || write_secret server_password "$pw"
+
+  api_call GET /sync/list-user-files
+  json_ok "$api_resp" || emit_error server_unreachable "couldn't list the server's budgets: $(json_field "$api_resp" reason)"
+  files="$(printf '%s' "$api_resp" | parse_user_files)"
+  n="$(printf '%s' "$files" | grep -c . || true)"
+  if [[ "$n" -eq 0 ]]; then
+    create_budget "$pw"
+    sync="$created_sync"
+    name=Budget
+  elif [[ "$n" -eq 1 ]]; then
+    sync="$(printf '%s' "$files" | cut -f1)"
+    name="$(printf '%s' "$files" | cut -f2)"
+    note "The server has the budget '${name}'"
+  else
+    note "The server has ${n} budgets"
+  fi
+  if [[ -n "$sync" ]]; then
+    emit_done sync_id "$(json_str "$sync")" name "$(json_str "$name")"
+  else
+    # shellcheck disable=SC2119
+    emit_done
+  fi
+  note "Set up actual-server (no budget.env written)"
 }
 
 # POST /account/change-password takes the current password and a new one.
@@ -919,8 +1013,18 @@ cmd_remove() {
   url="$(file_get ACTUAL_SERVER_URL)"
   rm -f "$BUDGET_FILE"
   upsert_env "$ENV_PATH" ACTUAL_BUDGET_FILE ""
-  upsert_env "$ENV_PATH" ACTUAL_MCP_ENABLED 0
-  log "Removed ${BUDGET_REL}; cleared ACTUAL_BUDGET_FILE and set ACTUAL_MCP_ENABLED=0"
+  # Connected budgets (instances/*.json) keep the MCP servers on.
+  local root rows=""
+  root="$(resolve_data_root_path "${BUDGET_DATA_ROOT:-}")"
+  if validate_data_root_path "$root" 2> /dev/null; then
+    rows="$(find "${root}/addons/actual/instances" -maxdepth 1 -name '*.json' 2> /dev/null | head -1)"
+  fi
+  if [[ -n "$rows" ]]; then
+    log "Removed ${BUDGET_REL}; cleared ACTUAL_BUDGET_FILE. ACTUAL_MCP_ENABLED stays 1 while budgets are connected"
+  else
+    upsert_env "$ENV_PATH" ACTUAL_MCP_ENABLED 0
+    log "Removed ${BUDGET_REL}; cleared ACTUAL_BUDGET_FILE and set ACTUAL_MCP_ENABLED=0"
+  fi
   if [[ "${url%/}" == "$LOCAL_URL" ]]; then
     log "actual-server and its budgets are untouched (ACTUAL_DATA_DIR); ACTUAL_LOCAL_ENABLED is unchanged"
   fi

@@ -254,6 +254,7 @@ addon-test:
 
 # Actual Budget (budget and budget-local profiles, or remote). See docs/budget.md.
 #   make budget-init [SYNC_ID=id] [ROTATE=1]  local server: password, budget, budget.env
+#     (scripts/budget.sh init --server-only is the add-on's hook: no budget.env)
 #   make budget-add URL=https://... [SYNC_ID=id] [FORCE=1]  a budget on a remote server
 #   make budget-open                         open the web app, password on the clipboard
 #   make budget-remove                       forget the budget (file only; server data stays)

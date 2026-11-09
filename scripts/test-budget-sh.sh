@@ -735,16 +735,122 @@ grep -qx 'http://localhost:5006/' "$STUB/opened" || fail "open opens ACTUAL_WEB_
 [ "$(cat "$STUB/clip")" = open-SECRET ] || fail "open copies the server password"
 grep -q 'clipboard' "$out" || fail "open says the password is on the clipboard"
 
+# --- init --server-only ---
+so_data="$tmp/so-data"
+so_secrets="$so_data/addons/actual/secrets"
+so_run() { # ARGS...
+  brc=0
+  STACK_PYTHON=host BUDGET_DATA_ROOT="$so_data" "$budget" init --server-only "$@" < /dev/null > "$tmp/jout" 2> "$tmp/jerr" || brc=$?
+  cat "$tmp/jout" "$tmp/jerr" >> "$all"
+}
+so_reset() {
+  reset
+  rm -rf "$so_data" "$tmp/actual/server-password.pending"
+  mkdir -p "$so_secrets"
+}
+# A fresh server: bootstrapped with a generated password kept in secrets/, a
+# budget created, and none of the single-budget settings written.
+so_reset
+so_run --json
+[ "$brc" = 0 ] || fail "init --server-only on a fresh server ($(cat "$tmp/jout" "$tmp/jerr"))"
+jlines_ok || fail "init --server-only --json prints JSON lines only ($(cat "$tmp/jout"))"
+[ -s "$STUB/server_pw" ] || fail "--server-only bootstraps the server"
+[ "$(cat "$so_secrets/server_password")" = "$(cat "$STUB/server_pw")" ] || fail "--server-only keeps the generated password in secrets/server_password"
+[ "$(mode "$so_secrets/server_password")" = 600 ] || fail "server_password is mode 600"
+[ "$(wc -l < "$tmp/jout" | tr -d ' ')" = 1 ] || fail "--server-only prints one line ($(cat "$tmp/jout"))"
+[ "$(jget 1 phase)" = "done" ] && [ "$(jget 1 sync_id)" = sync-new ] && [ "$(jget 1 name)" = Budget ] || fail "--server-only done carries sync_id and name ($(cat "$tmp/jout"))"
+grep -q '^run create' "$STUB/admin.log" || fail "--server-only creates a Budget"
+[ ! -e "$f" ] || fail "--server-only writes no budget.env"
+grep -q 'ACTUAL_MCP_ENABLED=1' "$ENV_FILE" && fail "--server-only doesn't enable the MCP servers"
+grep -q 'ACTUAL_LOCAL_ENABLED=1' "$ENV_FILE" && fail "--server-only leaves ACTUAL_LOCAL_ENABLED alone"
+grep -qx 'ACTUAL_BUDGET_FILE=' "$ENV_FILE" || fail "--server-only leaves ACTUAL_BUDGET_FILE alone"
+[ ! -e "$tmp/actual/server-password.pending" ] || fail "--server-only leaves no pending file"
+pws="$pws $(cat "$STUB/server_pw")"
+
+# Again: nothing created, same password; done names the budget the server lists.
+budget_entry sync-new Budget > "$STUB/files.json"
+: > "$STUB/admin.log"
+cp "$so_secrets/server_password" "$tmp/pw.before"
+so_run --json
+[ "$brc" = 0 ] && [ "$(jget 1 sync_id)" = sync-new ] || fail "--server-only again ($(cat "$tmp/jout" "$tmp/jerr"))"
+grep -q '^run create' "$STUB/admin.log" && fail "--server-only again creates nothing"
+cmp -s "$so_secrets/server_password" "$tmp/pw.before" || fail "--server-only again keeps the password"
+
+# Two budgets: no sync_id in done.
+so_reset
+printf 'srv-SECRET' > "$STUB/server_pw"
+printf 'srv-SECRET' > "$so_secrets/server_password"
+{ budget_entry sync-a Household; printf ','; budget_entry sync-b Business; } > "$STUB/files.json"
+so_run --json
+[ "$brc" = 0 ] && [ "$(wc -l < "$tmp/jout" | tr -d ' ')" = 1 ] && [ "$(jget 1 phase)" = "done" ] || fail "--server-only with two budgets ($(cat "$tmp/jout" "$tmp/jerr"))"
+grep -q 'sync_id' "$tmp/jout" && fail "done has no sync_id when the server lists two budgets"
+grep -q '^run create' "$STUB/admin.log" 2>/dev/null && fail "--server-only creates nothing beside two budgets"
+
+# A server set up by init: its budget.env password is adopted, no new password.
+so_reset
+printf 'srv-SECRET' > "$STUB/server_pw"
+budget_entry sync-local "My Budget" > "$STUB/files.json"
+printf 'ACTUAL_PASSWORD=srv-SECRET\nACTUAL_BUDGET_SYNC_ID=sync-local\n' > "$f"
+so_run --json
+[ "$brc" = 0 ] && [ "$(jget 1 sync_id)" = sync-local ] && [ "$(jget 1 name)" = "My Budget" ] || fail "--server-only adopts a server set up by init ($(cat "$tmp/jout" "$tmp/jerr"))"
+[ "$(cat "$STUB/server_pw")" = srv-SECRET ] || fail "--server-only sets no new password on a bootstrapped server"
+cmp -s <(printf 'ACTUAL_PASSWORD=srv-SECRET\nACTUAL_BUDGET_SYNC_ID=sync-local\n') "$f" || fail "--server-only leaves budget.env alone"
+
+# Bootstrapped, password unknown: login_refused.
+so_reset
+printf 'srv-SECRET' > "$STUB/server_pw"
+budget_entry sync-local "My Budget" > "$STUB/files.json"
+so_run --json
+[ "$brc" = 4 ] && [ "$(jget 1 error)" = login_refused ] || fail "--server-only with no known password is login_refused ($(cat "$tmp/jout" "$tmp/jerr"))"
+[ ! -e "$so_secrets/server_password" ] || fail "a refused --server-only stores no password"
+printf 'wrong-SECRET' > "$so_secrets/server_password"
+so_run --json
+[ "$brc" = 4 ] && [ "$(jget 1 error)" = login_refused ] || fail "--server-only with a wrong stored password is login_refused"
+
+# Server down, create timeout.
+so_reset
+touch "$STUB/down"
+so_run --json
+[ "$brc" = 4 ] && [ "$(jget 1 error)" = server_unreachable ] || fail "--server-only with no server is server_unreachable ($(cat "$tmp/jout"))"
+rm -f "$STUB/down"
+touch "$STUB/timeout"
+so_run --json
+[ "$brc" = 4 ] && [ "$(jget 1 error)" = timeout ] || fail "--server-only create timeout ($(cat "$tmp/jout" "$tmp/jerr"))"
+rm -f "$STUB/timeout"
+pws="$pws $(cat "$STUB/server_pw" 2>/dev/null || true)"
+
+# Without --json: log lines, no JSON.
+so_reset
+so_run
+[ "$brc" = 0 ] || fail "--server-only without --json ($(cat "$tmp/jout" "$tmp/jerr"))"
+grep -q '^\[budget\]' "$tmp/jout" || fail "--server-only without --json logs ($(cat "$tmp/jout" "$tmp/jerr"))"
+pws="$pws $(cat "$STUB/server_pw")"
+
 # --- remove ---
+printf 'x' > "$f"
 printf 'ACTUAL_MCP_ENABLED=1\nACTUAL_LOCAL_ENABLED=1\nACTUAL_BUDGET_FILE=%s\n' "$f" > "$ENV_FILE"
-run remove || fail "remove ($(cat "$out"))"
+BUDGET_DATA_ROOT="$tmp/data" run remove || fail "remove ($(cat "$out"))"
 [ ! -e "$f" ] || fail "remove deletes budget.env"
 grep -q 'docker compose stop actual-mcp-rw actual-mcp-ro' "$out" || fail "remove says to stop the MCP containers"
 grep -q 'make hermes-reload' "$out" || fail "remove says to run make hermes-reload"
 grep -qx 'ACTUAL_MCP_ENABLED=0' "$ENV_FILE" || fail "remove sets ACTUAL_MCP_ENABLED=0"
 grep -qx 'ACTUAL_BUDGET_FILE=' "$ENV_FILE" || fail "remove clears ACTUAL_BUDGET_FILE"
 grep -qx 'ACTUAL_LOCAL_ENABLED=1' "$ENV_FILE" || fail "remove leaves the local server on"
-run remove && fail "remove with no budget file must fail"
+BUDGET_DATA_ROOT="$tmp/data" run remove && fail "remove with no budget file must fail"
+
+# remove beside connected budgets keeps the MCP servers on.
+mkdir -p "$tmp/data/addons/actual/instances"
+printf '{}' > "$tmp/data/addons/actual/instances/main.json"
+printf 'ACTUAL_MCP_ENABLED=1\nACTUAL_LOCAL_ENABLED=1\nACTUAL_BUDGET_FILE=%s\n' "$f" > "$ENV_FILE"
+printf 'x' > "$f"
+BUDGET_DATA_ROOT="$tmp/data" run remove || fail "remove beside a row ($(cat "$out"))"
+[ ! -e "$f" ] || fail "remove beside a row deletes budget.env"
+grep -qx 'ACTUAL_MCP_ENABLED=1' "$ENV_FILE" || fail "remove leaves ACTUAL_MCP_ENABLED=1 while a budget is connected"
+grep -qx 'ACTUAL_BUDGET_FILE=' "$ENV_FILE" || fail "remove beside a row clears ACTUAL_BUDGET_FILE"
+rm -f "$tmp/data/addons/actual/instances/main.json"
+printf 'x' > "$f"
+BUDGET_DATA_ROOT="$tmp/data" run remove || fail "remove with no rows ($(cat "$out"))"
+grep -qx 'ACTUAL_MCP_ENABLED=0' "$ENV_FILE" || fail "remove with no rows sets ACTUAL_MCP_ENABLED=0"
 
 run frobnicate && fail "unknown subcommand must fail"
 
