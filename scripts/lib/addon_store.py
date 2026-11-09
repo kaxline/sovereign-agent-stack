@@ -352,13 +352,14 @@ def apply_instance(manifest: dict, data_root: Path, slug: str, values: dict) -> 
     schema = _inst_schema(manifest)
     clean = _validated_instance(schema, values)
     d = addon_dir(data_root, manifest)
+    # A transient secret was checked above and goes to the connect hook only.
     plain = {k: v for k, v in clean.items() if schema[k]["type"] != "secret"}
     _mkdir_addon(d)
     merged = _instance_values(d, slug)
     merged.update(plain)
     _write(d / "instances" / f"{slug}.json", json.dumps(merged, indent=2) + "\n", 0o644)
     for name, value in clean.items():
-        if schema[name]["type"] == "secret":
+        if schema[name]["type"] == "secret" and not schema[name].get("transient"):
             _write(d / "secrets" / f"{slug}.{name}", value, 0o600)
 
 
@@ -394,13 +395,13 @@ def missing(manifest: dict, data_root: Path) -> list[str]:
             out.append(name)
     if isinstance(manifest.get("instances"), dict):
         found = slugs(d)
-        if not found:
+        if not found and not manifest["instances"].get("optional"):
             # Prefixed so it can't be read as a top-level setting's name.
             out.append(f"instances:{manifest['instances'].get('name') or 'instance'}")
         for slug in found:
             vals = _instance_values(d, slug)
             for name, spec in _inst_schema(manifest).items():
-                if not _required(spec):
+                if not _required(spec) or spec.get("transient"):
                     continue
                 if spec["type"] == "secret":
                     if not _secret_set(d / "secrets" / f"{slug}.{name}"):
@@ -413,6 +414,8 @@ def missing(manifest: dict, data_root: Path) -> list[str]:
 def _view(schema: dict, vals: dict, secret_path) -> dict:
     out = {}
     for name, spec in schema.items():
+        if spec.get("transient"):
+            continue
         if spec["type"] == "secret":
             out[name] = {"set": _secret_set(secret_path(name))}
         elif name in vals:
@@ -538,6 +541,7 @@ def listing(manifest: dict, data_root: Path, environ, figures=None) -> dict:
         "schema": {
             "settings": _schema_view(_schema(manifest)),
             "instances": {"name": manifest["instances"].get("name"),
+                          **({"optional": True} if manifest["instances"].get("optional") is True else {}),
                           "settings": _schema_view(_inst_schema(manifest))}
             if isinstance(manifest.get("instances"), dict) else None,
         },

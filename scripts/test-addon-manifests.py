@@ -695,6 +695,32 @@ life_refused("instances.errors must be a list",
              life(instances={"name": "w", "settings": {"url": {"type": "url"}}, "errors": "a"}),
              "instances.errors")
 
+# transient instance secrets and optional instances
+TRANSIENT_INST = {"name": "w", "settings": {"url": {"type": "url"},
+                  "password": {"type": "secret", "transient": True}},
+                  "connect": CONNECT, "disconnect": CONNECT}
+check("a transient instance secret with a connect hook is valid",
+      life_errors(life(instances=TRANSIENT_INST)) == [], str(life_errors(life(instances=TRANSIENT_INST))))
+no_hooks = copy.deepcopy(TRANSIENT_INST)
+del no_hooks["connect"], no_hooks["disconnect"]
+life_refused("transient without instances.connect fails", life(instances=no_hooks), "instances.settings.password.transient")
+str_inst = copy.deepcopy(TRANSIENT_INST)
+str_inst["settings"]["url"]["transient"] = True
+life_refused("transient on a string setting fails", life(instances=str_inst), "instances.settings.url.transient")
+life_refused("transient on a top-level setting fails",
+             life(settings={"tok": {"type": "secret", "transient": True}}, instances=TRANSIENT_INST),
+             "settings.tok.transient")
+nb_inst = copy.deepcopy(TRANSIENT_INST)
+nb_inst["settings"]["password"]["transient"] = "yes"
+life_refused("transient must be a bool", life(instances=nb_inst), "instances.settings.password.transient")
+life_refused("transient is built-in only",
+             packaged(life(instances=TRANSIENT_INST)), "transient", "official")
+opt = {"name": "w", "settings": {"url": {"type": "url"}}, "optional": True}
+check("instances.optional true is valid", life_errors(life(instances=opt)) == [], str(life_errors(life(instances=opt))))
+life_refused("instances.optional must be a bool",
+             life(instances={**opt, "optional": "yes"}), "instances.optional")
+life_refused("instances.optional is built-in only", packaged(life(instances=opt)), "instances.optional", "official")
+
 for bad in ("../x", "/etc", "./data/../x", "./data", "./data/", "./data/unused",
             "./data/.", "./data//x", "./data/./", "./data/x/", "./data/./x", "./data/x/.."):
     life_refused(f"data.paths default {bad!r} fails", life(data={"paths": [{"default": bad}]}),

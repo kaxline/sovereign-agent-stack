@@ -368,6 +368,65 @@ check("image_size reads a single manifest object and SchemaV2Manifest",
       st.image_size({"Descriptor": {"platform": {"os": "linux", "architecture": "arm64"}},
                      "SchemaV2Manifest": {"layers": [{"size": 5}]}}, "linux/arm64") == 5)
 
+# --- transient instance secrets and optional instances ---------------------------
+TRANS = copy.deepcopy(MANIFEST)
+TRANS["instances"]["settings"]["password"] = {"type": "secret", "label": "Password", "transient": True}
+TRANS["instances"]["settings"]["mailboxes"]["optional"] = True
+TRANS["instances"]["connect"] = {"command": "seed-init"}
+TRANS["instances"]["disconnect"] = {"command": "seed-init"}
+with tempfile.TemporaryDirectory() as tmp:
+    root = Path(tmp).resolve()
+    d = st.addon_dir(root, TRANS)
+    st.apply_settings(TRANS, root, {"since": "2026-01-02"})
+    st.check_instance(TRANS, {"host": "h", "password": "tr4nsient"})
+    raises("check_instance still refuses a line break in a transient secret", st.InputError,
+           lambda: st.check_instance(TRANS, {"host": "h", "password": "a\nb"}), "password")
+    st.apply_instance(TRANS, root, "work", {"host": "h", "password": "tr4nsient"})
+    check("apply_instance writes no secret file for a transient setting",
+          not (d / "secrets" / "work.password").exists())
+    check("apply_instance writes no password key for a transient setting",
+          "password" not in json.loads((d / "instances" / "work.json").read_text()))
+    check("no file under the add-on dir holds the transient value",
+          not any("tr4nsient" in p.read_text(errors="replace") for p in d.rglob("*") if p.is_file()))
+    check("missing() never reports a transient setting",
+          not any("password" in m for m in st.missing(TRANS, root)), str(st.missing(TRANS, root)))
+    lst = st.listing(TRANS, root, {})
+    check("listing schema carries transient: true",
+          lst["schema"]["instances"]["settings"]["password"].get("transient") is True)
+    check("an instance view shows a transient setting neither set nor unset",
+          "password" not in lst["instances"]["work"] and lst["instances"]["work"]["host"] == "h",
+          str(lst["instances"]["work"]))
+    # A transient secret in a non-transient neighbour manifest stays a normal secret.
+    st.apply_instance(MANIFEST, root, "plain", {"password": "kept"})
+    check("a non-transient secret is still written", (st.addon_dir(root, MANIFEST) / "secrets" / "plain.password").exists())
+
+OPT = copy.deepcopy(MANIFEST)
+OPT["instances"]["optional"] = True
+with tempfile.TemporaryDirectory() as tmp:
+    root = Path(tmp).resolve()
+    st.apply_settings(OPT, root, {"since": "2026-01-02"})
+    check("optional instances: no instance, no instances: entry", st.missing(OPT, root) == [],
+          str(st.missing(OPT, root)))
+    st.apply_instance(OPT, root, "work", {"host": "h"})
+    check("optional instances: an existing instance still reports its missing settings",
+          st.missing(OPT, root) == ["work.mailboxes"], str(st.missing(OPT, root)))
+    check("listing carries instances.optional in the schema",
+          st.listing(OPT, root, {})["schema"]["instances"].get("optional") is True)
+    check("listing leaves optional out without the field",
+          "optional" not in st.listing(MANIFEST, root, {})["schema"]["instances"])
+with tempfile.TemporaryDirectory() as tmp:
+    check("without optional, no instance still reports instances:account",
+          st.missing(MANIFEST, Path(tmp)) == ["since", "instances:account"], str(st.missing(MANIFEST, Path(tmp))))
+
+# --- addon_cli: an mcp entry without a name (Twenty's `instances` entry) ----------
+NONAME = copy.deepcopy(MANIFEST)
+NONAME["mcp"] = [{"name": "named", "when": {"gate": "GPTR_EXTRA_ENABLED"}}, {"instances": {"from": "workspace"}}]
+check("_toggle_fields skips an mcp entry without a name",
+      addon_cli._toggle_fields(NONAME)["mcp"] == ["named@GPTR_EXTRA_ENABLED"],
+      str(addon_cli._toggle_fields(NONAME)["mcp"]))
+NONAME["mcp"] = {"instances": {"from": "workspace"}}
+check("_toggle_fields copes with a single nameless mcp object", addon_cli._toggle_fields(NONAME)["mcp"] == [])
+
 if failures:
     print(f"{failures} failed")
     sys.exit(1)

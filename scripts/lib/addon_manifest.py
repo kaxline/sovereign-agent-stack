@@ -370,10 +370,16 @@ def validate(manifest, source: str = "builtin", repo=_AUTO) -> list[str]:
                 err("instances.settings must declare at least one setting")
             else:
                 errors.extend(_validate_settings(isettings, source=source, reads=bool(reads),
-                                                 flags=flags, in_instance=True))
-            extra = set(instances) - {"name", "settings", *INSTANCE_HOOKS, "errors"}
+                                                 flags=flags, in_instance=True,
+                                                 has_connect="connect" in instances))
+            extra = set(instances) - {"name", "settings", *INSTANCE_HOOKS, "errors", "optional"}
             if extra:
                 err(f"instances has unknown fields: {', '.join(sorted(extra))}")
+            if "optional" in instances:
+                if not isinstance(instances["optional"], bool):
+                    err("instances.optional must be true or false")
+                elif instances["optional"] and source != "builtin":
+                    err("instances.optional is for built-in add-ons only")
             if ("connect" in instances) != ("disconnect" in instances):
                 err("instances.connect and instances.disconnect come as a pair")
             if "errors" in instances:
@@ -616,7 +622,7 @@ def hook(manifest: dict, name: str) -> dict | None:
 
 
 def _validate_settings(settings: dict, *, source: str, reads: bool, flags: set[str],
-                       in_instance: bool) -> list[str]:
+                       in_instance: bool, has_connect: bool = False) -> list[str]:
     """Check a settings schema (top-level, or an instance's). A setting with
     neither `default` nor `optional: true` is required. Messages name the
     setting, never a value."""
@@ -655,6 +661,16 @@ def _validate_settings(settings: dict, *, source: str, reads: bool, flags: set[s
             err(f"{at}: secret settings are refused unless the add-on is built-in or on the official feed")
         if t == "secret" and "default" in s:
             err(f"{at}: a secret setting may not have a default")
+        if "transient" in s:
+            if not isinstance(s["transient"], bool):
+                err(f"{at}.transient must be true or false")
+            elif s["transient"]:
+                if not in_instance or t != "secret":
+                    err(f"{at}.transient is for secret settings inside instances.settings only")
+                elif source != "builtin":
+                    err(f"{at}.transient is for built-in add-ons only")
+                elif not has_connect:
+                    err(f"{at}.transient needs instances.connect, which receives the value")
         if "default" in s and t != "choice" and not _default_fits(t, s["default"]):
             err(f"{at}.default does not match type {t}")
         if "flag" in s:

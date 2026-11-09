@@ -632,7 +632,11 @@ check "connect prints check, register and reload, then done with account and mcp
 r=0; json_ok "$out" "done" 'any(l.get("message") == "checking login" and l["step"] == "check" for l in lines)' || r=1
 check "connect relays the hook's progress line inside step check" "$r"
 if logged "fixture-connect connect --slug work --json"; then ok "connect runs the hook with --slug work --json"; else bad "connect runs the hook with --slug work --json"; cat "$STUB_LOG"; fi
-if [ -f "${HOOKED}/instances/work.json" ] && [ "$(cat "${HOOKED}/secrets/work.password" 2> /dev/null)" = s3cr3t-value ]; then ok "connect registers the instance"; else bad "connect registers the instance"; fi
+if [ -f "${HOOKED}/instances/work.json" ]; then ok "connect registers the instance"; else bad "connect registers the instance"; fi
+if logged "fixture-connect stdin-password"; then ok "connect passes a transient password to the hook on stdin"; else bad "connect passes a transient password to the hook on stdin"; cat "$STUB_LOG"; fi
+if [ ! -e "${HOOKED}/secrets/work.password" ] && ! grep -q password "${HOOKED}/instances/work.json" && ! grep -r -q s3cr3t-value "${HOOKED}"; then ok "a transient password is stored nowhere under data/addons/hooked"; else bad "a transient password is stored nowhere under data/addons/hooked"; fi
+addon list --json
+if python3 -c 'import json,sys; t=open(sys.argv[1]).read(); a=json.loads(t[t.index("\n[")+1:] if not t.startswith("[") else t); h=[x for x in a if x["shortId"]=="hooked"][0]; sys.exit(0 if h["schema"]["instances"]["settings"]["password"].get("transient") is True and "password" not in h["instances"]["work"] and not [m for m in h["missing"] if "password" in m] else 1)' "$out"; then ok "list shows the transient password in the schema only, never set or unset"; else bad "list shows the transient password in the schema only, never set or unset"; sed 's/^/    /' "$out"; fi
 if reloaded; then ok "connect reloads hermes without a recreate"; else bad "connect reloads hermes without a recreate"; cat "$STUB_LOG"; fi
 no_staging "a good connect"
 

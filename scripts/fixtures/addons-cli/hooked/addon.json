@@ -47,7 +47,8 @@
       "password": {
         "type": "secret",
         "label": "Password",
-        "optional": true
+        "optional": true,
+        "transient": true
       }
     },
     "errors": [
