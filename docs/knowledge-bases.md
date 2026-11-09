@@ -4,6 +4,15 @@ LightRAG + Neo4j give you GraphRAG over markdown (and other docs). This stack ke
 
 Requires the **`rag`** compose profile (`./scripts/setup.sh --rag`).
 
+LightRAG is a built-in add-on (`addons/lightrag/addon.json`). Switch it on or off with:
+
+```bash
+./scripts/addon.sh enable lightrag    # LIGHTRAG_MCP_ENABLED=1, rag profile on, starts lightrag and lightrag-mcp, reloads Hermes
+./scripts/addon.sh disable lightrag   # flag 0, rag profile off, stops lightrag and lightrag-mcp, reloads Hermes
+```
+
+`disable` keeps `rag_storage/`, `inputs/` and the Neo4j graph. It does not stop Neo4j, which is a separate stack service (`NEO4J_ENABLED`). `enable` and `disable` do not change `WORKSPACE`; use `make corpus-use` for that. `./scripts/addon.sh list --json` shows `lightrag` with its state.
+
 ## Quick path
 
 ```bash

@@ -10,11 +10,33 @@ the stack under another app.
 
 ### Upgrade steps
 
-None. No shipped manifest uses the new fields, so existing installs behave
-as before.
+None. LightRAG's registration on the api-server and browser profiles is
+unchanged.
 
 ### Changes
 
+- **LightRAG is a built-in add-on** (CR 0022 R2): `addons/lightrag/addon.json`
+  replaces the hand-written registration in the api-server bootstrap. The
+  entry key is still `lightrag`, with the same five read tools and pins, on
+  the api-server and browser profiles only. The default profile is left
+  alone (`mcp.unmanaged`, below). `scripts/addon.sh enable|disable lightrag`
+  sets `LIGHTRAG_MCP_ENABLED` and the `rag` profile and starts or stops
+  `lightrag` and `lightrag-mcp`; Neo4j stays with `NEO4J_ENABLED`. `lightrag`
+  now appears in `scripts/addon.sh list` and `list --json`.
+  `LIGHTRAG_MCP_TIMEOUT` and `LIGHTRAG_MCP_CONNECT_TIMEOUT` in `.env` now
+  reach the bootstrap. Compose did not pass them before, so they were
+  ignored and the defaults of 120 and 30 seconds applied. An install that
+  set them now gets those values. See
+  [docs/knowledge-bases.md](docs/knowledge-bases.md).
+- **`mcp.unmanaged`** (experimental, built-in manifests only): a list of
+  Hermes profile names on which bootstrap neither registers, drops nor pins
+  the add-on's MCP entry. The parked-retry setting still applies to an
+  existing entry at the add-on's URL on every profile, default included.
+- **Other MCP keys at an add-on's URL are dropped**: after bootstrap registers
+  an add-on's MCP server on a profile, it removes every other key at the same
+  URL on that profile, such as an unfiltered `lightrag-mcp` copy cloned from
+  default. This applies to GPT Researcher, Actual Budget and LightRAG on
+  stack-managed profiles.
 - **Add-on manifest fields** (experimental): a built-in manifest can declare
   `gates` (further flag-to-profile rows for `sync-profiles.sh`), `mcp` as a
   list with per-entry `title` and `when`, `instances`, `commands`,
