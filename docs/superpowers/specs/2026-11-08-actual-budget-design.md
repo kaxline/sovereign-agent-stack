@@ -405,7 +405,9 @@ Both steps work without the web app.
 
 Not built. This replaces "one budget per stack" from the Goal for installs that connect budgets;
 the single budget from `ACTUAL_BUDGET_FILE` keeps working unchanged. Boundary's CR 0026 asks for
-it, and the stack reply is in `docs/private/cr-0026-stack-reply.md`.
+it, and the stack reply is in `docs/private/cr-0026-stack-reply.md`. "Settled through round 6"
+at the end of this amendment replaces the storage, commands and output described under Design.
+The build plan is `docs/superpowers/plans/2026-11-09-actual-budgets-per-profile.md`.
 
 ### What 26.11.0 allows
 
@@ -662,3 +664,76 @@ child restart behind the proxy (only its error classifier was run).
   passes to the model rather than to Boundary.
 - Boundary asks only for a password on password servers. For a remote OpenID server, the person
   copies the token from the web app.
+
+### Settled through round 6 (2026-11-09)
+
+Boundary accepted rounds 4 to 6, and `addon.sh` 0.3.13 (plan 3,
+`docs/superpowers/plans/2026-11-09-addon-lifecycle.md`) settled the hook contract. Where this
+section and Design disagree, this section wins.
+
+**Connected budgets are `addon.sh` instances.** Boundary calls
+`addon.sh connect actual --instance <slug> --json` and `addon.sh disconnect actual --instance <slug>
+--json`. `addon.sh` runs `budget.sh connect` and `budget.sh disconnect` as the manifest's
+`instances.connect` and `instances.disconnect` hooks, with `--slug <slug> --json` appended, and
+`connect` gets the values on stdin. A row is `data/addons/actual/instances/<slug>.json`, which
+`addon.sh` writes, and its secrets are `data/addons/actual/secrets/<slug>.<name>`. This replaces
+`compose/actual/budgets/<slug>.env` and `budgets.list`.
+
+**Instance settings.** `server` (a URL, or `local` for the stack's own `actual-server`),
+`sync_id`, `profile` (default `default`), `access` (default `read`), and the secrets
+`session_token`, `password` and `encryption_password`, all optional. `profile` and `access` are
+plain strings so that the hook, not `addon.sh`, reports `unknown_profile` and `bad_access`.
+`password` is transient: `addon.sh` passes it to the hook and never stores it. `connect` signs in
+with it and writes the session token it gets back to `secrets/<slug>.session_token`. This needs a
+`transient` flag on secret instance settings in plan 3 (see the build plan's dependencies).
+
+**Profiles.** In this build `profile` must be `default`, which `browser` mirrors. The bootstraps
+register add-ons only on `default`, `browser` and `api-server`, so a row on a member's own profile
+would register nowhere. Any other value is `unknown_profile`.
+
+**Output.** Every line keys on `phase`. The last line is `{"phase":"done",...}` or
+`{"phase":"error","error":"<name>","message":"<one sentence>",...}`, with no secret in any field.
+`connect`'s `done` carries `account` (the slug) and `mcp`: `budget-<slug>-ro`, plus `budget-<slug>`
+for a `write` row. Error names: the shared `bad_slug`, `exists`, `not_found`, `login_refused`,
+`token_expired`, `no_access`, `timeout` and `server_unreachable`, and Actual's own
+`unknown_profile`, `bad_access` and `encryption_password`, listed in `instances.errors`.
+`file-access-not-allowed` is not a `connect` error: the MCP server reports it to the model, and
+`connect` and `status` report revoked access as `no_access`.
+
+**Commands Boundary calls directly.** These print the same lines:
+
+- `budget.sh budgets --json` (R4): the server and credential keys on stdin, or `{"server":
+  "local"}`. One `{"phase":"budget","sync_id","name","encrypted"}` line per budget the credential
+  can open, then `done`. `encrypted` is whether the server's `/sync/list-user-files` entry has an
+  `encryptKeyId`. It signs in over HTTP and loads no budget, so it writes nothing.
+- `budget.sh access <slug> read|write --json`: changes a row's access and reloads Hermes. One
+  argument (`access read|write`) keeps its v0.3.12 meaning for the single budget.
+- `budget.sh status [--slug <slug>] --json`: `{"phase":"budget","slug","profile","access","state"}`
+  per row, then `done`. `state` is `ok`, `token_expired`, `no_access`, `encryption_password`,
+  `server_unreachable`, `timeout` or `bad_access`.
+
+**Local server (R5).** `budget.sh init --server-only` is the manifest's `hooks.init`, which
+`addon.sh enable actual` runs once after `actual-server` is healthy. It sets a generated password
+on a fresh server and keeps it in `data/addons/actual/secrets/server_password`, or adopts the one
+in `compose/actual/budget.env` if `make budget-init` set the server up. It creates a budget named
+`Budget` when the server has none. Its `done` line carries `sync_id` and `name` when exactly one
+budget exists afterwards. It never writes `budget.env` or `ACTUAL_BUDGET_FILE`. A server whose
+password the stack doesn't know ends with `login_refused`. The manifest's `local` setting owns
+`ACTUAL_LOCAL_ENABLED`, which gates `actual-server`. `connect` with `server: "local"` signs in
+with the stored server password.
+
+**The single budget beside rows.** The plain `budget` entry registers only while
+`ACTUAL_BUDGET_FILE` names a budget file, so an install set up with `init --server-only` has rows
+and no `budget` entry. `budget.sh remove` removes the single budget and turns `ACTUAL_MCP_ENABLED`
+off only when no rows remain. `make budget-init` without `--server-only` keeps its v0.3.12
+behaviour.
+
+**Processes pick up rows without a recreate.** `addon.sh connect` and `disconnect` never recreate
+containers, so the launcher in each MCP container polls the instances and secrets directories
+every 2 seconds. A new row starts a child, a removed row stops it, and any change to a row's
+files restarts its child. Every stop deletes that child's cache directory, so a write stranded
+under an ended session is never pushed under a new credential. Each child gets
+`ACTUAL_RECONNECT_HINT` naming `addon.sh disconnect` and `connect` for its slug.
+
+**Cron.** The cron fence matches an add-on's non-`ro` services by host and port, not by exact URL,
+so every `budget-<slug>` entry on `actual-mcp-rw` stays out of cron.
