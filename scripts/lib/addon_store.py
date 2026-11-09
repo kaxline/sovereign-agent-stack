@@ -316,12 +316,22 @@ def apply_settings(manifest: dict, data_root: Path, values: dict) -> dict[str, s
     return flags
 
 
+def _validated_instance(schema: dict, values) -> dict:
+    """_validated, plus: a secret value may not hold CR or LF. A hook's output
+    is redacted line by line, which can't match a value split across lines."""
+    clean = _validated(schema, values)
+    for name, value in clean.items():
+        if schema[name]["type"] == "secret" and isinstance(value, str) and ("\n" in value or "\r" in value):
+            raise InputError(f"{name}: a secret may not contain a line break", name)
+    return clean
+
+
 def check_instance(manifest: dict, values: dict) -> None:
     """Raise InputError unless `values` is a complete new instance: every
     setting known and well-typed, and every required one given. Writes
     nothing; `connect` calls it before the hook sees the values."""
     schema = _inst_schema(manifest)
-    clean = _validated(schema, values)
+    clean = _validated_instance(schema, values)
     for name, spec in schema.items():
         if _required(spec) and name not in clean:
             raise InputError(f"{name}: required for a new instance", name)
@@ -330,7 +340,7 @@ def check_instance(manifest: dict, values: dict) -> None:
 def apply_instance(manifest: dict, data_root: Path, slug: str, values: dict) -> None:
     slug = _slug(slug)
     schema = _inst_schema(manifest)
-    clean = _validated(schema, values)
+    clean = _validated_instance(schema, values)
     d = addon_dir(data_root, manifest)
     plain = {k: v for k, v in clean.items() if schema[k]["type"] != "secret"}
     _mkdir_addon(d)

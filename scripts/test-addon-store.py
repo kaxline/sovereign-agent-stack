@@ -87,7 +87,8 @@ with tempfile.TemporaryDirectory() as tmp:
     check("listing carries instances.errors and backup",
           rx["errors"] == ["bad_access"] and rx["backup"] == {"secrets": ["A_B"]}, str((rx["errors"], rx["backup"])))
 
-PASSWORD = "p|w=\n'x\""
+# Shell- and env-hostile, but one line: instance secrets refuse CR and LF.
+PASSWORD = "p|w= 'x\"\\$(y)"
 
 with tempfile.TemporaryDirectory() as tmp:
     root = Path(tmp).resolve()
@@ -209,6 +210,15 @@ with tempfile.TemporaryDirectory() as tmp:
     raises("slug with trailing newline refused", st.InputError,
            lambda: st.apply_instance(MANIFEST, root, "work\n", {}), setting="slug")
     st.remove_instance(MANIFEST, root, ok31)
+    for label, ch in (("LF", "\n"), ("CR", "\r")):
+        raises(f"{label} in an instance secret refused, naming the setting", st.InputError,
+               lambda ch=ch: st.apply_instance(MANIFEST, root, "multi", {"host": "h", "password": f"top{ch}secret"}),
+               setting="password", secret="top")
+        raises(f"{label} in an instance secret refused by check_instance", st.InputError,
+               lambda ch=ch: st.check_instance(MANIFEST, {"host": "h", "mailboxes": ["INBOX"], "password": f"top{ch}secret"}),
+               setting="password", secret="top")
+    check("a refused multi-line secret writes nothing",
+          not (st.addon_dir(root, MANIFEST) / "instances" / "multi.json").exists())
 
     for label, ch in (("U+2028", "\u2028"), ("form feed", "\f"), ("U+0085", "\x85"), ("tab", "\t")):
         raises(f"{label} in a setting string refused", st.InputError,

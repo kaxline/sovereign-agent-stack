@@ -491,6 +491,23 @@ check "a refused connect's logTail shows [redacted] in place of the password" "$
 if [ ! -e "${HOOKED}/instances/work.json" ] && [ -z "$(find "${HOOKED}" -path '*/secrets/work.*' 2> /dev/null)" ]; then ok "a refused connect writes no instance"; else bad "a refused connect writes no instance"; fi
 no_staging "a refused connect"
 
+: > "$STUB_LOG"
+addon_json_in '{"host":"good.example.com","password":"s3cr3t-value\nline2"}' connect hooked --instance work --json
+expect_rc "a multi-line secret exits 2" 2
+r=0; json_ok "$out" error 'last["error"] == "bad_input" and "password" in last["message"]' || r=1
+check "a multi-line secret is bad_input naming the setting" "$r"
+if logged "fixture-connect"; then bad "a multi-line secret is refused before the hook runs"; else ok "a multi-line secret is refused before the hook runs"; fi
+addon_in '{"host":"h","password":"s3cr3t-value\rline2"}' configure fixture --instance multi
+expect_rc "configure --instance refuses a secret with CR" 2
+if [ ! -e "${root}/data/addons/fixture/instances/multi.json" ]; then ok "a refused multi-line secret writes no instance"; else bad "a refused multi-line secret writes no instance"; fi
+
+FIXTURE_CONNECT_MODE=exit1 addon_json_in '{"host":"good.example.com"}' connect hooked --instance work --json
+unset FIXTURE_CONNECT_MODE
+expect_rc "a connect hook exiting 1 with no error line exits 4" 4
+r=0; json_ok "$out" error 'last["error"] == "command_failed" and last["step"] == "check" and "status 1" in last["message"] and ("register","running") not in steps' || r=1
+check "a connect hook exiting 1 with no error line is command_failed at step check" "$r"
+if [ ! -e "${HOOKED}/instances/work.json" ]; then ok "a connect hook exiting 1 writes no instance"; else bad "a connect hook exiting 1 writes no instance"; fi
+
 FIXTURE_CONNECT_ERROR=encryption_password addon_json_in '{"host":"good.example.com"}' connect hooked --instance work --json
 unset FIXTURE_CONNECT_ERROR
 expect_rc "a listed connect error exits 4" 4
@@ -503,6 +520,13 @@ r=0; json_ok "$out" error 'last["error"] == "command_failed" and "weird" in last
 check "an unlisted connect error becomes command_failed naming it" "$r"
 if [ ! -e "${HOOKED}/instances/work.json" ]; then ok "a failed connect hook writes no instance"; else bad "a failed connect hook writes no instance"; fi
 no_staging "a failed connect hook"
+
+FIXTURE_CONNECT_MODE=stderr_error addon_json_in '{"host":"good.example.com"}' connect hooked --instance work --json
+unset FIXTURE_CONNECT_MODE
+expect_rc "an error line on the hook's stderr is not the result" 0
+r=0; json_ok "$out" "done" 'not any(l.get("message") == "on stderr" for l in lines)' || r=1
+check "an error line on the hook's stderr is neither relayed nor the result" "$r"
+addon disconnect hooked --instance work
 
 : > "$STUB_LOG"
 addon_json_in '{"host":"good.example.com","password":"s3cr3t-value"}' connect hooked --instance work --json

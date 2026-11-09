@@ -4,8 +4,10 @@
 # argv is `[disconnect] --slug work --json`. connect reads the values on stdin
 # and prints a done line with an account and an MCP name. When the host is
 # refuse.example.com it echoes stdin on stdout and stderr, prints a
-# login_refused error line and exits 1; FIXTURE_CONNECT_ERROR makes it print
-# an error line with that name and exit 1.
+# login_refused error line and exits 1. FIXTURE_CONNECT_ERROR makes it print
+# an error line with that name and exit 1; FIXTURE_CONNECT_MODE=exit1 makes it
+# exit 1 with no error line; FIXTURE_CONNECT_MODE=stderr_error prints an error
+# line on stderr and then succeeds.
 set -eu
 mode=connect
 if [ "${1:-}" = disconnect ]; then
@@ -30,6 +32,10 @@ case "$input" in
     printf '{"phase":"error","error":"login_refused","message":"refused"}\n'
     exit 1
     ;;
+esac
+case "${FIXTURE_CONNECT_MODE:-}" in
+  exit1) exit 1 ;;
+  stderr_error) printf '{"phase":"error","error":"login_refused","message":"on stderr"}\n' >&2 ;;
 esac
 if [ -n "${FIXTURE_CONNECT_ERROR:-}" ]; then
   printf '{"phase":"error","error":"%s","message":"hook says no"}\n' "$FIXTURE_CONNECT_ERROR"

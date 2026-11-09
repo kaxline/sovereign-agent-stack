@@ -149,6 +149,11 @@ compose_project() {
 hermes_reload() {
   make hermes-reload
 }
+# reload_step: hermes_reload as step reload; a failure is compose_failed.
+reload_step() {
+  run_step reload "" hermes_reload \
+    || ev_fail compose_failed reload "make hermes-reload failed" "$EV_LAST_LOG"
+}
 
 # cli_checked STEP ARGS...: cli with stdin from $CLI_IN (default /dev/null) and its stdout in
 # CLI_OUT. On failure, ev_fail with cli's own error line as the message:
@@ -390,9 +395,10 @@ pull_pipe() {
 # run_hook STEP SID HOOK [plan-hook options]: runs the manifest's hook as
 # step STEP. Sets HOOK_RAN (1 when a hook ran), HOOK_ACCOUNT (the `account`
 # its `done` line reported, else empty) and HOOK_MCP (its `mcp` names,
-# comma-separated). The hook's stdin is HOOK_STDIN. With HOOK_REDACT set (a
-# staged values file), the hook's stdout and stderr go through `cli redact`
-# before anything stores or prints them. A hook that fails goes through
+# comma-separated). The hook's stdin is HOOK_STDIN. Events and the result
+# come from the hook's stdout only; its stderr goes to the step log and is
+# never parsed. With HOOK_REDACT set (a staged values file), stdout and stderr
+# each go through `cli redact` before anything stores or prints them. A hook that fails goes through
 # ev_fail, so the caller's rollback runs: its error line's name passes through
 # when it is a shared name or in instances.errors, any other name becomes
 # command_failed (addon_cli.py hook-result decides). In JSON mode the hook's
@@ -405,24 +411,17 @@ HOOK_STDIN=/dev/null
 HOOK_REDACT=""
 # hook_exec RAW SID HOOK KIND STEP ARGV...: KIND is `script` (run from ROOT) or
 # a compose service. The hook's stdout is copied to RAW and filtered by
-# hook-events. The step fails, so it never shows `done` first, when the hook
+# hook-events; its stderr goes to this function's stderr (the step log). The step fails, so it never shows `done` first, when the hook
 # exits non-zero, when it printed an `error` line (even with exit 0), or when
 # recording init fails. Host files are never passed to cli: RAW goes on stdin.
 hook_exec() {
   local raw="$1" sid="$2" hook="$3" kind="$4" step="$5" st code
   shift 5
   set +e
-  if [[ -n "$HOOK_REDACT" ]]; then
-    hook_cmd "$kind" "$@" 2>&1 | cli redact "$sid" "$HOOK_REDACT" | tee "$raw" | hook_events "$step"
-    st=("${PIPESTATUS[@]}")
-    set -e
-    [[ "${st[1]}" == 0 && "${st[2]}" == 0 && "${st[3]}" == 0 ]] || return 1
-  else
-    hook_cmd "$kind" "$@" | tee "$raw" | hook_events "$step"
-    st=("${PIPESTATUS[@]}")
-    set -e
-    [[ "${st[1]}" == 0 && "${st[2]}" == 0 ]] || return 1
-  fi
+  hook_split "$sid" "$kind" "$@" 5>&1 | hook_filter "$sid" | tee "$raw" | hook_events "$step"
+  st=("${PIPESTATUS[@]}")
+  set -e
+  [[ "${st[1]}" == 0 && "${st[2]}" == 0 && "${st[3]}" == 0 ]] || return 1
   [[ "${st[0]}" == 0 ]] || return "${st[0]}"
   code="$(cli hook-result "$sid" 0 < "$raw" 2> /dev/null | sed -n 1p)" || return 1
   [[ -z "$code" ]] || return 1
@@ -430,6 +429,23 @@ hook_exec() {
     printf '{"phase":"error","error":"command_failed","message":"recording init in state.json failed"}\n' >> "$raw"
     return 1
   fi
+}
+# hook_split SID KIND ARGV...: the hook with its stdout on fd 5 and its stderr
+# through hook_filter to stderr. Returns the hook's status, or 1 when the
+# stderr filter failed.
+hook_split() {
+  local sid="$1" st
+  shift
+  set +e
+  hook_cmd "$@" 2>&1 1>&5 5>&- | hook_filter "$sid" >&2 5>&-
+  st=("${PIPESTATUS[@]}")
+  set -e
+  [[ "${st[1]}" == 0 ]] || return 1
+  return "${st[0]}"
+}
+# hook_filter SID: `cli redact` with HOOK_REDACT, else cat.
+hook_filter() {
+  if [[ -n "$HOOK_REDACT" ]]; then cli redact "$1" "$HOOK_REDACT"; else cat; fi
 }
 # hook_cmd KIND ARGV...: the hook itself, stdin from HOOK_STDIN.
 hook_cmd() {
@@ -574,8 +590,7 @@ EOF_ONESHOTS
       || start_failed ${oneshots[@]+"${oneshots[@]}"} "${services[@]}"
   fi
   run_hook init "$sid" init ${reinit[@]+"${reinit[@]}"}
-  run_step reload "" hermes_reload \
-    || ev_fail compose_failed reload "make hermes-reload failed" "$EV_LAST_LOG"
+  reload_step
   EV_ON_FAIL=""
   ev_done "$sid" enable "" "" "$HOOK_ACCOUNT"
 }
@@ -627,8 +642,7 @@ EOF_VOLUMES
     cli_checked delete purge "$sid"
     ev_step delete "done" "data/addons/${sid}"
   fi
-  run_step reload "" hermes_reload \
-    || ev_fail compose_failed reload "make hermes-reload failed" "$EV_LAST_LOG"
+  reload_step
   ev_done "$sid" disable "" ""
 }
 
@@ -646,11 +660,6 @@ instance_args() {
     esac
   done
   [[ -n "$INSTANCE_SLUG" ]] || usage_error "${cmd} needs --instance <slug>"
-}
-
-reload_step() {
-  run_step reload "" hermes_reload \
-    || ev_fail compose_failed reload "make hermes-reload failed" "$EV_LAST_LOG"
 }
 
 cmd_connect() {
