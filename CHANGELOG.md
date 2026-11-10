@@ -10,6 +10,10 @@ the stack under another app.
 
 ### Upgrade steps
 
+- Accounts added with `vault.sh add` before this release have no add-on store
+  entry, so Boundary cannot disconnect them until the next `make up`, which
+  records them. An account whose slug does not start with a letter or is longer
+  than 31 characters stays out of the store; `make up` says so.
 - The first `make up` recreates `hermes` once, because `BITWARDEN_ENABLED`
   left its environment (see Changes). A caller that recreates `hermes`
   itself runs `./scripts/vault.sh follow-hermes` afterwards, as for any
@@ -124,6 +128,28 @@ the stack under another app.
 
 ### Changes
 
+- **Bitwarden accounts from Boundary.** `addon.sh connect bitwarden --instance
+  S --json` and `disconnect` call `vault.sh add --json` and `remove --json`.
+  `status --json`, `unlock --json`, `lock --json` and `sync --json` give Boundary
+  the account states and the unlock and sync actions; see the Boundary section
+  of `docs/bitwarden.md`. Connect and disconnect restart the broker, which locks
+  the other `manual` accounts; the done message names them. New slugs start
+  with a letter and have at most 31 characters. `make vault-add` and
+  `make vault-remove` keep the add-on store's entries in step.
+- **The broker signs in `manual` accounts at start.** They stay locked; a wrong
+  API key shows as `login_refused` at once. `bw` stays signed in across broker
+  restarts, so the start sign-in checks the key only the first time; a key
+  revoked later shows at the next unlock. `GET /accounts` gains `logged_in` and
+  `retry_after`.
+- **Logins Bitwarden would not take back are listed.** When a release cannot
+  move an item out of the agent's folder or collection, the broker records it in
+  `broker/unreturned.json`. `make vault-requests` and `requests --json` list
+  it under `unreturned` (`account`, `label`, `site`) until a sync no longer
+  finds the item in scope. `requests --json` documents `pending[].request_id`,
+  `account`, `site`, `reason` and `created`.
+- **`addon.sh` relays `retryAfter`.** A hook's error line may carry a positive
+  integer `retryAfter` (seconds); the add-on's error line then has the same
+  field, for any add-on.
 - **Twenty CRM is a built-in add-on** (`addons/twenty/addon.json`). Boundary can
   move Twenty onto `scripts/addon.sh`: instances are workspaces, with `url`,
   `access`, `local` and two secret keys, and the manifest's connect and
