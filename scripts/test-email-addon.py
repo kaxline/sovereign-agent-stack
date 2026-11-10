@@ -153,15 +153,24 @@ with tempfile.TemporaryDirectory() as tmp:
         check("load_config still refuses plain on imap.example.com", True)
 
 HOSTILE = 'a"b\\c\nd]e = 1\n[x]'
+HOSTILE_HOST = 'a"b\\c]e=1[x]'  # a host can't hold whitespace; the indexer would refuse it
 with tempfile.TemporaryDirectory() as tmp:
     root = Path(tmp).resolve()
     cfg, inst = build(root, {"work": {"host": HOSTILE, "user": HOSTILE, "mailboxes": [HOSTILE, "ok"],
                                       "password": PASSWORD}}, {"since": "2026-01-01"})
     try:
+        render(cfg, inst)
+        check("a host with whitespace is refused", False, "no exception")
+    except ValueError as exc:
+        check("a host with whitespace is refused, naming the slug", str(exc).startswith("work: "), str(exc))
+    cfg, inst = build(root, {"work": {"host": HOSTILE_HOST, "user": HOSTILE, "mailboxes": [HOSTILE, "ok"],
+                                      "password": PASSWORD}})
+    try:
         parsed = tomllib.loads(render(cfg, inst))
         acct = parsed["accounts"][0]
         check("hostile values round-trip exactly",
-              acct["host"] == HOSTILE and acct["user"] == HOSTILE and acct["mailboxes"] == [HOSTILE, "ok"], str(acct))
+              acct["host"] == HOSTILE_HOST and acct["user"] == HOSTILE and acct["mailboxes"] == [HOSTILE, "ok"],
+              str(acct))
         check("hostile values add no keys or tables",
               set(parsed) == {"source", "index", "since", "bodies", "attachments", "max_body_chars", "accounts"}
               and len(parsed["accounts"]) == 1
@@ -224,6 +233,80 @@ with tempfile.TemporaryDirectory() as tmp:
     check("outbox with no accounts logs it and exits 0",
           proc.returncode == 0 and "email-outbox: no accounts configured" in proc.stderr,
           f"rc={proc.returncode} out={proc.stdout!r} err={proc.stderr!r}")
+
+# One account without mailboxes or with a bad setting must not break the others.
+with tempfile.TemporaryDirectory() as tmp:
+    root = Path(tmp).resolve()
+    run = root / "run"
+    for sub in ("config", "instances", "secrets"):
+        (run / sub).mkdir(parents=True)
+    (run / "config" / "settings.env").write_text("ADDON_EMAIL_SINCE=2026-01-01\nADDON_EMAIL_INTERVAL=1\n")
+
+    def instance(slug: str, **values) -> None:
+        (run / "instances" / f"{slug}.json").write_text(json.dumps(values))
+        (run / "secrets" / f"{slug}.password").write_text("synthetic")
+
+    # Nothing listens on 127.0.0.1:1, so a pass fails to connect; the render is what's checked.
+    instance("good", host="127.0.0.1", port=1, security="plain", user="u@example.com", mailboxes=["INBOX"])
+    instance("nobox", host="127.0.0.1", port=1, security="plain", user="n@example.com")
+    instance("public", host="imap.example.com", security="plain", user="p@example.com", mailboxes=["INBOX"])
+    cfg, inst = run / "config", run / "instances"
+
+    try:
+        parsed = tomllib.loads(ea.render(cfg, inst, index_path="/i", drafts_dir="/d", listing=True, account="nobox"))
+        check("listing renders only the requested account, with a placeholder scope",
+              [a["id"] for a in parsed["accounts"]] == ["nobox"] and parsed["accounts"][0]["mailboxes"] == ["*"],
+              str(parsed))
+        (root / "list.toml").write_text(ea.render(cfg, inst, index_path=str(root / "i.sqlite"), drafts_dir="/d",
+                                                  listing=True, account="nobox"))
+        mi.load_config(root / "list.toml")
+        check("load_config accepts the listing config for an account with no mailboxes", True)
+    except Exception as exc:  # noqa: BLE001
+        check("listing works for an account with no mailboxes", False, repr(exc))
+
+    env = dict(os.environ, EMAIL_ADDON_RUN=str(run), EMAIL_ADDON_TMP=str(root / "tmp.toml"),
+               EMAIL_ADDON_DATA=str(root / "data"))
+    entry = [sys.executable, "-I", "-B", str(ROOT / "scripts" / "lib" / "email_addon.py")]
+    proc = subprocess.run([*entry, "mailboxes", "--account", "nobox"], env=env, capture_output=True, text=True,
+                          timeout=60)
+    check("mailboxes for an account with no mailboxes gets past the config (fails only on connect)",
+          proc.returncode == 5 and "config" not in proc.stderr and "nobox" in proc.stderr,
+          f"rc={proc.returncode} err={proc.stderr!r}")
+
+    proc = subprocess.run([*entry, "index", "--passes", "1"], env=env, capture_output=True, text=True, timeout=60)
+    rendered = tomllib.loads((root / "tmp.toml").read_text())
+    lines = [json.loads(x) for x in proc.stdout.splitlines() if x.startswith("{")]
+    check("index renders only the good account", [a["id"] for a in rendered.get("accounts", [])] == ["good"],
+          str(rendered))
+    check("index logs each skipped account by slug and still runs the pass",
+          proc.returncode == 0 and "email-indexer: nobox: " in proc.stderr and "email-indexer: public: " in proc.stderr
+          and "email-indexer: good" not in proc.stderr and len(lines) == 1,
+          f"rc={proc.returncode} out={proc.stdout!r} err={proc.stderr!r}")
+
+    # outbox: the render step in-process (a running watcher wouldn't end on its own).
+    import contextlib
+    import io
+    lay = {"config": cfg, "instances": inst, "secrets": run / "secrets", "out": root / "outbox.toml",
+           "index": "/i", "drafts": "/d", "scripts": ROOT / "scripts"}
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        has = ea.render_pass(lay, "email-outbox")
+    rendered = tomllib.loads((root / "outbox.toml").read_text())
+    check("outbox renders only the good account and logs each skipped slug",
+          has and [a["id"] for a in rendered["accounts"]] == ["good"]
+          and "email-outbox: nobox: " in err.getvalue() and "email-outbox: public: " in err.getvalue(),
+          f"{rendered} {err.getvalue()!r}")
+
+    (inst / "good.json").unlink()
+    proc = subprocess.run([*entry, "index", "--passes", "1"], env=env, capture_output=True, text=True, timeout=60)
+    check("index with every account skipped behaves like no accounts configured",
+          proc.returncode == 0 and "email-indexer: no accounts configured" in proc.stderr
+          and "email-indexer: nobox: " in proc.stderr and not proc.stdout.strip(),
+          f"rc={proc.returncode} out={proc.stdout!r} err={proc.stderr!r}")
+    proc = subprocess.run([*entry, "outbox", "--passes", "1"], env=env, capture_output=True, text=True, timeout=60)
+    check("outbox with every account skipped logs the slugs and no accounts configured",
+          proc.returncode == 0 and "email-outbox: no accounts configured" in proc.stderr
+          and "email-outbox: public: " in proc.stderr, f"rc={proc.returncode} err={proc.stderr!r}")
 
 print(f"\n{failures} failure(s)" if failures else "\nall passed")
 sys.exit(1 if failures else 0)

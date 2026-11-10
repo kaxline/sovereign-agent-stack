@@ -23,6 +23,7 @@ import subprocess
 import sys
 import threading
 import time
+import tomllib
 from pathlib import Path
 
 SECRETS_MOUNT = "/run/addon/secrets"
@@ -117,12 +118,46 @@ def _value(slug: str, key: str, value) -> str:
 LISTING_SINCE = "1970-01-01"
 
 
+def _account_lines(slug: str, path: Path, secrets: Path, *, listing: bool) -> list[str]:
+    """One [[accounts]] block, checked the way mail_index.load_config checks it.
+    Raises ValueError naming the slug. With listing, an account without
+    mailboxes gets a placeholder scope: listing ignores scope."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise ValueError(f"{slug}: the instance file can't be read as JSON") from None
+    if not isinstance(data, dict):
+        raise ValueError(f"{slug}: the instance file is not a JSON object")
+    host = data.get("host")
+    if data.get("security") == "plain" and (not isinstance(host, str) or not mail_imap_conn.plain_allowed(host)):
+        raise ValueError(f"{slug}: security = \"plain\" is only allowed for a server on this machine"
+                         " (host.docker.internal, localhost, 127.0.0.1 or greenmail)")
+    if not data.get("mailboxes"):
+        if not listing:
+            raise ValueError(f"{slug}: no mailboxes chosen yet")
+        data = {**data, "mailboxes": ["*"]}
+    lines = ["", "[[accounts]]", f"id = {_q(slug)}"]
+    for key in INSTANCE_KEYS:
+        if key in data and data[key] is not None:
+            lines.append(f"{key} = {_value(slug, key, data[key])}")
+    if (secrets / f"{slug}.tls_ca").is_file():
+        lines.append(f"tls_ca = {_q(f'{SECRETS_MOUNT}/{slug}.tls_ca')}")
+    item = tomllib.loads("\n".join(lines))["accounts"][0]
+    if not all(isinstance(b, str) and b for b in item["mailboxes"]):
+        raise ValueError(f"{slug}: mailboxes must be non-empty names")
+    mail_imap_conn.account_settings(item, Path("/"), where=slug)  # ConfigError is a ValueError
+    return lines
+
+
 def render(config_dir: Path, instances_dir: Path, *, index_path: str, drafts_dir: str,
-           listing: bool = False) -> str:
+           listing: bool = False, account: str | None = None, skipped: list[str] | None = None) -> str:
     """TOML in mail-index.toml format. Never holds a password: the mail
     tools read those from MAIL_CREDENTIALS_DIR. drafts_dir is accepted for
     symmetry with the outbox command and isn't part of the config. With
-    listing (the mailboxes command), a missing since becomes LISTING_SINCE."""
+    listing (the mailboxes command), a missing since becomes LISTING_SINCE.
+    With account, only that instance is rendered. An instance that fails its
+    checks raises ValueError, or, when skipped is a list, is left out and its
+    reason ("<slug>: ...") appended to skipped."""
     env = _setting_env(config_dir)
     lines = ['source = "imap"', f"index = {_q(index_path)}"]
     since = env.get("ADDON_EMAIL_SINCE") or (LISTING_SINCE if listing else None)
@@ -133,24 +168,18 @@ def render(config_dir: Path, instances_dir: Path, *, index_path: str, drafts_dir
     lines.append(f"attachments = {'true' if _bool(env, 'ATTACHMENTS', False) else 'false'}")
     lines.append(f"max_body_chars = {_int(env, 'MAX_BODY_CHARS', 100000)}")
     secrets = Path(instances_dir).parent / "secrets"
-    for path in sorted(Path(instances_dir).glob("*.json")):
-        slug = path.stem
+    paths = sorted(Path(instances_dir).glob("*.json"))
+    if account is not None:
+        paths = [p for p in paths if p.stem == account]
+        if not paths:
+            raise ValueError(f"{account}: no such account")
+    for path in paths:
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            raise ValueError(f"{slug}: the instance file can't be read as JSON") from None
-        if not isinstance(data, dict):
-            raise ValueError(f"{slug}: the instance file is not a JSON object")
-        host = data.get("host")
-        if data.get("security") == "plain" and (not isinstance(host, str) or not mail_imap_conn.plain_allowed(host)):
-            raise ValueError(f"{slug}: security = \"plain\" is only allowed for a server on this machine"
-                             " (host.docker.internal, localhost, 127.0.0.1 or greenmail)")
-        lines += ["", "[[accounts]]", f"id = {_q(slug)}"]
-        for key in INSTANCE_KEYS:
-            if key in data and data[key] is not None:
-                lines.append(f"{key} = {_value(slug, key, data[key])}")
-        if (secrets / f"{slug}.tls_ca").is_file():
-            lines.append(f"tls_ca = {_q(f'{SECRETS_MOUNT}/{slug}.tls_ca')}")
+            lines += _account_lines(path.stem, path, secrets, listing=listing)
+        except ValueError as exc:
+            if skipped is None:
+                raise
+            skipped.append(str(exc))
     return "\n".join(lines) + "\n"
 
 
@@ -166,14 +195,24 @@ def _layout() -> dict:
     }
 
 
-def _render_to_file(lay: dict, *, listing: bool = False) -> bool:
-    """Write the config; True when it has at least one account."""
-    text = render(lay["config"], lay["instances"], index_path=lay["index"], drafts_dir=lay["drafts"],
-                  listing=listing)
+def _render_to_file(lay: dict, **kwargs) -> bool:
+    """Write the config; True when it has at least one account. kwargs go to render."""
+    text = render(lay["config"], lay["instances"], index_path=lay["index"], drafts_dir=lay["drafts"], **kwargs)
     tmp = lay["out"].with_name(lay["out"].name + ".new")
     tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, lay["out"])
     return "[[accounts]]" in text
+
+
+def render_pass(lay: dict, tag: str) -> bool:
+    """Render for one index or outbox pass, leaving out instances that fail their
+    checks and logging one `<tag>: <slug>: <reason>` line for each. True when an
+    account is left."""
+    skipped: list[str] = []
+    has_accounts = _render_to_file(lay, skipped=skipped)
+    for reason in skipped:
+        print(f"{tag}: {reason}", file=sys.stderr, flush=True)
+    return has_accounts
 
 
 def _python(script: Path, *args: str) -> list[str]:
@@ -220,7 +259,7 @@ def run_index(lay: dict, passes: int | None) -> int:
     while not sup.stop.is_set():
         try:
             every = interval(lay["config"])
-            has_accounts = _render_to_file(lay)
+            has_accounts = render_pass(lay, "email-indexer")
         except (ValueError, OSError) as exc:
             print(f"email-indexer: {exc}", file=sys.stderr, flush=True)
             return 2
@@ -248,7 +287,7 @@ def run_outbox(lay: dict, passes: int | None) -> int:
     while not sup.stop.is_set():
         try:
             every = interval(lay["config"])
-            has_accounts = _render_to_file(lay)
+            has_accounts = render_pass(lay, "email-outbox")
         except (ValueError, OSError) as exc:
             print(f"email-outbox: {exc}", file=sys.stderr, flush=True)
             every, has_accounts = DEFAULT_INTERVAL, None
@@ -282,7 +321,7 @@ def _changed(lay: dict, seen: str, every: int) -> bool:
         return False
     _last_check[0] = now
     try:
-        _render_to_file(lay)
+        _render_to_file(lay, skipped=[])  # render_pass logs the skipped accounts on the next pass
         return lay["out"].read_text(encoding="utf-8") != seen
     except (ValueError, OSError):
         return False
@@ -305,7 +344,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "outbox":
         return run_outbox(lay, args.passes)
     try:
-        _render_to_file(lay, listing=True)
+        _render_to_file(lay, listing=True, account=args.account)
     except (ValueError, OSError) as exc:
         print(f"email-addon: {exc}", file=sys.stderr)
         return 2
