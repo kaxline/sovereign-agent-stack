@@ -76,7 +76,10 @@ def _age(created) -> str:
 
 def cmd_accounts() -> None:
     for a in _call("GET", "/accounts"):
-        print("\t".join(_cell(a.get(k)) for k in ("slug", "mode", "scope", "state", "error_class")))
+        row = [_cell(a.get(k)) for k in ("slug", "mode", "scope", "state", "error_class")]
+        row.append("1" if a.get("logged_in") else "0")
+        row.append("" if a.get("retry_after") is None else str(a["retry_after"]))
+        print("\t".join(row))
     for error in _call("GET", "/health").get("account_errors") or []:
         print(f"refused\t{_cell(error)}")
 
@@ -91,19 +94,27 @@ def cmd_requests(form: str | None) -> None:
         for r in pending:
             print("\t".join(_cell(r.get(k)) for k in ("request_id", "account", "site", "reason")))
         return
+    unreturned = data.get("unreturned") or []
     if not pending:
         print("No pending access requests.")
-        return
-    print("Pending access requests:")
-    for number, r in enumerate(pending, 1):
-        account = f"account {r['account']}, " if r.get("account") else ""
-        print(f"  {number}. {_cell(r.get('site'))}  ({account}{_age(r.get('created'))})")
-        if r.get("reason"):
-            print(f"     Reason, in the agent's text: {_cell(r.get('reason'))}")
+    else:
+        print("Pending access requests:")
+        for number, r in enumerate(pending, 1):
+            account = f"account {r['account']}, " if r.get("account") else ""
+            print(f"  {number}. {_cell(r.get('site'))}  ({account}{_age(r.get('created'))})")
+            if r.get("reason"):
+                print(f"     Reason, in the agent's text: {_cell(r.get('reason'))}")
+    if unreturned:
+        print("Released logins Bitwarden would not move out of the agent's scope (move them yourself):")
+        for r in unreturned:
+            print(f"  - {_cell(r.get('label'))}  ({_cell(r.get('site'))}, account {_cell(r.get('account'))})")
 
 
-def cmd_sync() -> None:
+def cmd_sync(form: str | None = None) -> None:
     reply = _call("POST", "/sync")
+    if form == "--json":
+        print(json.dumps(reply))
+        return
     if reply.get("reason") == "busy":
         print("A sync is already running; try again when it ends.")
         return
@@ -122,10 +133,10 @@ def main(argv: list[str]) -> int:
             cmd_accounts()
         elif argv[:1] == ["requests"] and len(argv) <= 2 and argv[1:] in ([], ["--json"], ["--tsv"]):
             cmd_requests(argv[1] if len(argv) == 2 else None)
-        elif argv == ["sync"]:
-            cmd_sync()
+        elif argv in (["sync"], ["sync", "--json"]):
+            cmd_sync(argv[1] if len(argv) == 2 else None)
         else:
-            print("usage: python3 -m broker.cli accounts | requests [--json | --tsv] | sync", file=sys.stderr)
+            print("usage: python3 -m broker.cli accounts | requests [--json | --tsv] | sync [--json]", file=sys.stderr)
             return 2
     except Unreachable:
         print("The Bitwarden broker is not reachable.", file=sys.stderr)

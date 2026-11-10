@@ -505,9 +505,12 @@ def cmd_hook_result(args) -> None:
             done = obj
         elif obj is not None and obj.get("phase") == "error":
             error = obj
-    code = message = account = mcp = note = ""
+    code = message = account = mcp = note = retry = ""
     if error is not None:
         code, message = hook_error(manifest, error.get("error"), error.get("message"))
+        after = error.get("retryAfter")
+        if isinstance(after, int) and not isinstance(after, bool) and after > 0:
+            retry = str(after)
     elif args.exit != 0:
         code, message = "command_failed", f"the hook exited with status {args.exit}"
     elif done is not None and isinstance(done.get("account"), str):
@@ -516,7 +519,7 @@ def cmd_hook_result(args) -> None:
         mcp = ",".join(n for n in done["mcp"] if isinstance(n, str) and MCP_NAME_RE.match(n))
     if code == "" and done is not None and isinstance(done.get("message"), str):
         note = clean_line(done["message"])
-    for item in (code, message, account, mcp, note):
+    for item in (code, message, account, mcp, note, retry):
         print(item.replace("\n", " "))
 
 

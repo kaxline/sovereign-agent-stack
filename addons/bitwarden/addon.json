@@ -76,5 +76,80 @@
         "restore"
       ]
     }
+  },
+  "instances": {
+    "name": "account",
+    "optional": true,
+    "settings": {
+      "mode": {
+        "type": "choice",
+        "options": [
+          "cloud",
+          "selfhosted"
+        ],
+        "label": "Bitwarden cloud or your own server"
+      },
+      "region": {
+        "type": "choice",
+        "options": [
+          "us",
+          "eu"
+        ],
+        "optional": true,
+        "label": "Cloud region (us or eu)"
+      },
+      "url": {
+        "type": "url",
+        "optional": true,
+        "label": "Self-hosted server URL (https://)"
+      },
+      "scope": {
+        "type": "string",
+        "default": "folder:Agent",
+        "label": "What the agent can reach: folder:NAME or collection:ID"
+      },
+      "unlock": {
+        "type": "choice",
+        "options": [
+          "stored",
+          "manual"
+        ],
+        "default": "manual",
+        "label": "Unlock: stored (the broker keeps the master password) or manual"
+      },
+      "client_id": {
+        "type": "secret",
+        "transient": true,
+        "label": "API key client_id"
+      },
+      "client_secret": {
+        "type": "secret",
+        "transient": true,
+        "label": "API key client_secret"
+      },
+      "master_password": {
+        "type": "secret",
+        "transient": true,
+        "optional": true,
+        "label": "Master password (stored unlock only)"
+      }
+    },
+    "connect": {
+      "script": [
+        "scripts/vault.sh",
+        "add"
+      ]
+    },
+    "disconnect": {
+      "script": [
+        "scripts/vault.sh",
+        "remove"
+      ]
+    },
+    "errors": [
+      "bad_input",
+      "rate_limited",
+      "broker_down"
+    ]
   }
 }

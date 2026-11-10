@@ -234,6 +234,7 @@ BITWARDEN_TESTS = \
 	"sh scripts/test-bitwarden-secrets-sync.sh" \
 	"sh scripts/test-bitwarden-setup.sh" \
 	"bash scripts/test-vault-sh.sh" \
+	"bash scripts/test-bitwarden-connect.sh" \
 	"python3 scripts/test-vw-register.py"
 bitwarden-test:
 	@failed=""; for t in $(BITWARDEN_TESTS); do \

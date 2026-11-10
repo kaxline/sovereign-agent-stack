@@ -10,6 +10,10 @@ the stack under another app.
 
 ### Upgrade steps
 
+- Accounts added with `vault.sh add` before this release have no add-on store
+  entry, so Boundary cannot disconnect them until the next `make up`, which
+  records them. An account whose slug does not start with a letter or is longer
+  than 31 characters stays out of the store; `make up` says so.
 - The next `up` recreates `hermes` once on every install, whether or not you
   use the new `email` add-on, because `hermes` now joins the internal `email`
   network. Both Hermes bootstraps re-run for the same release, because of the
@@ -130,6 +134,30 @@ the stack under another app.
 
 ### Changes
 
+- **Bitwarden accounts from Boundary.** `addon.sh connect bitwarden --instance
+  S --json` and `disconnect` call `vault.sh add --json` and `remove --json`.
+  `status --json`, `unlock --json`, `lock --json` and `sync --json` give Boundary
+  the account states and the unlock and sync actions; see the Boundary section
+  of `docs/bitwarden.md`. Connect restarts the broker, and disconnect restarts
+  it when it is running; a restart locks the other `manual` accounts, and the
+  done message names them. A disconnect retried after a failed restart ends
+  with `done` and drops the store entry. New slugs start
+  with a letter and have at most 31 characters. `make vault-add` and
+  `make vault-remove` keep the add-on store's entries in step.
+- **The broker signs in `manual` accounts at start.** They stay locked; a wrong
+  API key shows as `login_refused` at once. `bw` stays signed in across broker
+  restarts, so the start sign-in checks the key only the first time and does
+  not catch a key revoked later. `GET /accounts` gains `logged_in` and
+  `retry_after`.
+- **Logins Bitwarden would not take back are listed.** When a release cannot
+  move an item out of the agent's folder or collection, the broker records it in
+  `broker/unreturned.json`. `make vault-requests` and `requests --json` list
+  it under `unreturned` (`account`, `label`, `site`) until a sync no longer
+  finds the item in scope. `requests --json` documents `pending[].request_id`,
+  `account`, `site`, `reason` and `created`.
+- **`addon.sh` relays `retryAfter`.** A hook's error line may carry a positive
+  integer `retryAfter` (seconds); the add-on's error line then has the same
+  field, for any add-on.
 - **Mail.app email is a built-in add-on** (`addons/email-local/addon.json`),
   a manifest over the existing `mail-mcp` and `mail-drafts-mcp` services.
   Nothing an install sets changes: the flags `MAIL_MCP_ENABLED` and

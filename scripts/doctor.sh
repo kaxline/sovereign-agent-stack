@@ -1281,7 +1281,7 @@ if [[ "$bw_on" -eq 1 || "$bw_local" -eq 1 || "$bw_files" -gt 0 ]]; then
       else
         ok "Bitwarden broker answers /health from hermes"
         bw_seen=" "
-        while IFS=$'\t' read -r bw_slug bw_mode bw_scope bw_state bw_class; do
+        while IFS=$'\t' read -r bw_slug bw_mode bw_scope bw_state bw_class _; do
           [[ -n "$bw_slug" ]] || continue
           if [[ "$bw_slug" == refused ]]; then
             bad "the broker refused an account file: ${bw_mode}"

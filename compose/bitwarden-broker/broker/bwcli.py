@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import os
 import re
 import subprocess
@@ -196,6 +197,18 @@ class Bw:
     @property
     def state(self) -> str:
         return self._state
+
+    @property
+    def logged_in(self) -> bool:
+        return self._logged_in
+
+    def retry_after(self) -> int | None:
+        """Whole seconds (at least 1) until bw calls may run again after a 429, else None."""
+        at = self.retry_at
+        if at is None:
+            return None
+        left = at - time.monotonic()
+        return max(1, math.ceil(left)) if left > 0 else None
 
     @property
     def error_class(self) -> str:

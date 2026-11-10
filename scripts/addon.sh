@@ -68,7 +68,9 @@
 # (a symlink to their PID) while they run; a second call fails with busy. A
 # failed or interrupted enable writes the flags back as they were, syncs
 # COMPOSE_PROFILES and stops the services if the add-on was off, and its
-# error line has "rolledBack":true.
+# error line has "rolledBack":true. A hook's error line may carry a positive
+# integer "retryAfter" (seconds); the add-on's error line then has the same
+# "retryAfter" field. Any other value is dropped.
 #
 # Exit codes: 0 success, 1 compose_failed, busy or an invalid data root
 # (command_failed), 2 bad_input (invalid input or usage) and connect's exists
@@ -584,6 +586,7 @@ EOF_HOOK
   HOOK_ACCOUNT="$(printf '%s\n' "$out" | sed -n 3p)"
   HOOK_MCP="$(printf '%s\n' "$out" | sed -n 4p)"
   HOOK_MESSAGE="$(printf '%s\n' "$out" | sed -n 5p)"
+  EV_RETRY_AFTER="$(printf '%s\n' "$out" | sed -n 6p)"
   [[ -z "$code" ]] || ev_fail "$code" "$step" "$msg" "$EV_LAST_LOG"
 }
 

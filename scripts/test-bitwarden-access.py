@@ -258,6 +258,165 @@ def test_regrant_clears_denylist() -> None:
         b.expect_clean()
 
 
+def unreturned(b) -> list:
+    return b.call("GET", "/requests")[1]["unreturned"]
+
+
+def unreturned_file(b) -> list:
+    path = b.run.tmp / "broker" / "unreturned.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+
+
+REFUSE = "No rights to modify the collection."
+
+
+def test_unreturned_listed_after_refused_move() -> None:
+    with bt.broker_run(vault=bt.vault_data(refuse_edit=REFUSE)) as b:
+        b.add_account("personal")
+        b.start(unlocked=["personal"])
+        expect(unreturned(b) == [], f"unreturned before any release: {unreturned(b)}")
+        a = handle("personal", "A")
+        expect(b.call("POST", "/release", {"handle": a})[1]["returned"] is False, "refused release")
+        want = [{"account": "personal", "label": "Item A", "site": "login.example.com"}]
+        expect(unreturned(b) == want, f"unreturned {unreturned(b)}")
+        path = b.run.tmp / "broker" / "unreturned.json"
+        expect(stat.S_IMODE(path.stat().st_mode) == 0o600, "unreturned.json is not mode 600")
+        expect(unreturned_file(b) == [{"handle": a, **want[0]}], f"file {unreturned_file(b)}")
+        expect(b.call("POST", "/release", {"handle": a})[1]["returned"] is False, "retry")
+        expect(unreturned(b) == want, f"a retry changed the entry: {unreturned(b)}")
+        b.stop()
+        b.expect_clean()
+
+
+def test_unreturned_cleared_by_sync() -> None:
+    with bt.broker_run(vault=bt.vault_data(refuse_edit=REFUSE)) as b:
+        b.add_account("personal")
+        b.start(unlocked=["personal"])
+        a = handle("personal", "A")
+        b.call("POST", "/release", {"handle": a})
+        expect(len(unreturned(b)) == 1, "listed")
+        edit_vault(b, "A", folderId=None)
+        b.call("POST", "/sync", {})
+        expect(unreturned(b) == [] and a not in denylist(b), "a sync kept the entry after A left scope")
+        expect(unreturned_file(b) == [], f"file {unreturned_file(b)}")
+        b.stop()
+        b.expect_clean()
+
+
+def test_unreturned_hidden_for_removed_account() -> None:
+    """A disconnected account's records are not listed; the file keeps them."""
+    with bt.broker_run(vault=bt.vault_data(refuse_edit=REFUSE)) as b:
+        b.add_account("personal")
+        b.add_account("work")
+        b.start(unlocked=["personal", "work"])
+        a = handle("personal", "A")
+        b.call("POST", "/release", {"handle": a})
+        expect([r["account"] for r in unreturned(b)] == ["personal"], f"listed {unreturned(b)}")
+        b.stop()
+        (b.accounts_dir / "personal.env").unlink()
+        b.start(unlocked=["work"])
+        expect(unreturned(b) == [], f"listed a removed account's record: {unreturned(b)}")
+        expect([r["handle"] for r in unreturned_file(b)] == [a], f"file {unreturned_file(b)}")
+        b.stop()
+        b.expect_clean()
+
+
+def test_orphan_unreturned_dropped_by_prune() -> None:
+    """A record whose handle is not on the denylist (a prune that overtook a release, or a
+    crash between the two removals) is dropped at the next prune of its account."""
+    with bt.broker_run(vault=bt.vault_data(refuse_edit=REFUSE)) as b:
+        b.add_account("personal")
+        b.start(unlocked=["personal"])
+        a = handle("personal", "A")
+        b.call("POST", "/release", {"handle": a})
+        b.stop()
+        path = b.run.tmp / "broker" / "unreturned.json"
+        orphan = {"handle": handle("personal", "B"), "account": "personal", "label": "Item B",
+                  "site": "b.example.com"}
+        path.write_text(json.dumps(unreturned_file(b) + [orphan]), encoding="utf-8")
+        path.chmod(0o600)
+        expect(orphan["handle"] not in denylist(b), "the orphan is on the denylist")
+        b.start(unlocked=["personal"])
+        b.call("POST", "/sync", {})
+        expect([r["handle"] for r in unreturned_file(b)] == [a],
+               f"a prune kept the orphan or dropped the denylisted record: {unreturned_file(b)}")
+        expect([r["label"] for r in unreturned(b)] == ["Item A"], f"listed {unreturned(b)}")
+        b.stop()
+        b.expect_clean()
+
+
+def test_unreturned_survives_lock_and_restart() -> None:
+    with bt.broker_run(vault=bt.vault_data(refuse_edit=REFUSE)) as b:
+        b.add_account("personal", unlock="manual")
+        b.start()
+        expect(b.sock_call("POST", "/unlock", {"slug": "personal", "password": bt.MASTER})[0] == 200, "unlock")
+        b.call("POST", "/release", {"handle": handle("personal", "A")})
+        want = [{"account": "personal", "label": "Item A", "site": "login.example.com"}]
+        expect(unreturned(b) == want, f"listed {unreturned(b)}")
+        expect(b.sock_call("POST", "/lock", {"slug": "personal"})[0] == 200, "lock")
+        expect(unreturned(b) == want, f"after lock {unreturned(b)}")
+        b.stop()
+        b.start()
+        expect(unreturned(b) == want, f"after restart {unreturned(b)}")
+        b.stop()
+        path = b.run.tmp / "broker" / "unreturned.json"
+        saved = path.read_bytes()
+        path.write_text("{", encoding="utf-8")
+        b.start(expect_exit=True)
+        path.write_bytes(saved)
+        b.expect_clean()
+
+
+def test_unreturned_skips_returned_and_scope_all() -> None:
+    # The edit works, the refresh after it fails: returned, so not listed.
+    with tempfile.TemporaryDirectory() as tmp:
+        gate = Path(tmp) / "gate"
+        with bt.broker_run(vault=bt.vault_data(edit_gate=str(gate))) as b:
+            b.add_account("org", scope=f"collection:{bt.COLLECTION}")
+            b.start(unlocked=["org"])
+            c = handle("org", "C")
+            result = {}
+            thread = threading.Thread(target=lambda: result.update(got=b.call("POST", "/release", {"handle": c})))
+            thread.start()
+            b.wait_for(lambda: any(e["argv"][:2] == ["edit", "item-collections"] for e in b.run.log_lines()),
+                       "edit started")
+            data = json.loads(b.run.vault_file.read_text(encoding="utf-8"))
+            data["truncate_lists"] = True
+            b.run.vault_file.write_text(json.dumps(data), encoding="utf-8")
+            gate.write_text("go", encoding="utf-8")
+            thread.join(30)
+            expect(result.get("got") == (200, {"released": True, "returned": True}), f"release {result}")
+            expect(vault_item(b, "C")["collectionIds"] == [], "the edit did not run")
+            expect(unreturned(b) == [] and unreturned_file(b) == [], f"listed a returned item: {unreturned(b)}")
+            b.stop()
+
+    with bt.broker_run() as b:
+        b.add_account("all", scope="all")
+        b.start(unlocked=["all"])
+        a = handle("all", "A")
+        expect(a in b.handles(), "A listed in scope all")
+        expect(b.call("POST", "/release", {"handle": a})[1]["returned"] is False, "scope all release")
+        expect(unreturned(b) == [] and unreturned_file(b) == [], f"listed a scope all item: {unreturned(b)}")
+        b.stop()
+        b.expect_clean()
+
+
+def test_regrant_clears_unreturned() -> None:
+    with bt.broker_run(vault=bt.vault_data(refuse_edit=REFUSE)) as b:
+        b.add_account("personal")
+        b.start(unlocked=["personal"])
+        a = handle("personal", "A")
+        b.call("POST", "/release", {"handle": a})
+        edit_vault(b, "A", folderId=None)
+        b.call("POST", "/sync", {})
+        edit_vault(b, "A", folderId=bt.FOLDER_AGENT)
+        b.call("POST", "/sync", {})
+        expect(a in b.handles(), "A is not listed after it was granted again")
+        expect(unreturned(b) == [] and unreturned_file(b) == [], f"regrant kept the record: {unreturned(b)}")
+        b.stop()
+        b.expect_clean()
+
+
 def test_retry_after_user_moved_item() -> None:
     """A failed release, then the user moves the item out of scope: the retry edits nothing."""
     refuse = "No rights to modify the collection."
@@ -339,6 +498,13 @@ def main() -> None:
     test_release_before_move()
     test_release_paths()
     test_regrant_clears_denylist()
+    test_unreturned_listed_after_refused_move()
+    test_unreturned_cleared_by_sync()
+    test_unreturned_survives_lock_and_restart()
+    test_unreturned_hidden_for_removed_account()
+    test_orphan_unreturned_dropped_by_prune()
+    test_unreturned_skips_returned_and_scope_all()
+    test_regrant_clears_unreturned()
     test_retry_after_user_moved_item()
     test_sync_marks_requests_done()
     test_restart_keeps_requests_and_denylist()

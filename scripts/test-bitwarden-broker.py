@@ -1209,7 +1209,8 @@ def test_api_returns_no_values() -> None:
 
         status, accts = b.call("GET", "/accounts")
         expect(status == 200 and accts == [{"slug": "personal", "mode": "cloud", "scope": "folder",
-                                            "state": "unlocked", "error_class": ""}], f"/accounts {accts}")
+                                            "state": "unlocked", "error_class": "", "logged_in": True,
+                                            "retry_after": None}], f"/accounts {accts}")
         status, items = b.call("GET", "/items")
         expect(status == 200 and sorted(i["handle"] for i in items) == [a, handle("personal", "E")], f"/items {items}")
         expect(next(i for i in items if i["handle"] == a) == {
@@ -1350,6 +1351,57 @@ def broker_cli(b: Broker, *args):
     return out.returncode, out.stdout, out.stderr
 
 
+def account_row(b: Broker, slug: str) -> dict:
+    status, rows = b.call("GET", "/accounts")
+    expect(status == 200, f"GET /accounts {status}")
+    return next(r for r in rows if r["slug"] == slug)
+
+
+def test_manual_login_at_start() -> None:
+    with broker_run() as b:
+        b.add_account("manual", unlock="manual")
+        b.start()
+        b.wait_for(lambda: account_row(b, "manual")["logged_in"], "manual account signed in")
+        row = account_row(b, "manual")
+        expect(row["state"] == "locked" and row["error_class"] == "", f"manual account {row}")
+        expect(row["retry_after"] is None, f"retry_after {row['retry_after']}")
+        b.expect_clean()
+
+
+def test_manual_login_refused_at_start() -> None:
+    with broker_run(vault=vault_data(client_secret="wrong-" + secrets.token_urlsafe(18))) as b:
+        b.add_account("manual", unlock="manual")
+        b.start()
+        b.wait_for(lambda: account_row(b, "manual")["state"] == "error", "manual sign-in refused")
+        row = account_row(b, "manual")
+        expect(row["error_class"] == "auth" and row["logged_in"] is False, f"refused account {row}")
+        b.expect_clean()
+
+
+def test_accounts_retry_after() -> None:
+    with broker_run(vault=vault_data(rate_limit_after=1, retry_after=120)) as b:
+        b.add_account("personal")
+        b.start()
+        b.wait_for(lambda: account_row(b, "personal")["state"] == "unlocked", "personal unlocked")
+        expect(account_row(b, "personal")["retry_after"] is None, "retry_after before a 429")
+        broker_cli(b, "sync")
+        b.wait_for(lambda: account_row(b, "personal")["error_class"] == "rate_limited", "429 recorded")
+        left = account_row(b, "personal")["retry_after"]
+        expect(isinstance(left, int) and 30 < left <= 120, f"retry_after {left}")
+        code, out, err = broker_cli(b, "accounts")
+        cols = next(l for l in out.splitlines() if l.startswith("personal")).split("\t")
+        expect(len(cols) == 7 and cols[5] == "1" and 30 < int(cols[6]) <= 120, f"accounts columns {cols}")
+        b.stop()
+    # The expiry is a time comparison on the Bw object, so it is checked in-process.
+    with tempfile.TemporaryDirectory() as tmp:
+        bw = Run(Path(tmp)).bw(Run(Path(tmp)).account("personal"))
+        expect(bw.retry_after() is None, "retry_after without a backoff")
+        bw.retry_at = time.monotonic() + 0.2
+        expect(bw.retry_after() == 1, f"a sub-second wait rounds up to 1, got {bw.retry_after()}")
+        bw.retry_at = time.monotonic() - 1
+        expect(bw.retry_after() is None, "retry_after after retry_at passed")
+
+
 def test_cli_for_vault_sh() -> None:
     with broker_run() as b:
         b.add_account("personal")
@@ -1359,8 +1411,12 @@ def test_cli_for_vault_sh() -> None:
         code, out, err = broker_cli(b, "accounts")
         expect(code == 0, f"accounts exit {code}: {err}")
         rows = [line.split("\t") for line in out.splitlines()]
-        expect(["manual", "cloud", "folder", "locked", "-"] in rows, f"accounts rows {rows}")
-        expect(["personal", "cloud", "folder", "unlocked", "-"] in rows, f"accounts rows {rows}")
+        b.wait_for(lambda: ["manual", "cloud", "folder", "locked", "-", "1", ""] in
+                   [l.split("\t") for l in broker_cli(b, "accounts")[1].splitlines()], "manual account signed in")
+        code, out, err = broker_cli(b, "accounts")
+        rows = [line.split("\t") for line in out.splitlines()]
+        expect(["manual", "cloud", "folder", "locked", "-", "1", ""] in rows, f"accounts rows {rows}")
+        expect(["personal", "cloud", "folder", "unlocked", "-", "1", ""] in rows, f"accounts rows {rows}")
         expect(any(r[0] == "refused" and "broken.env" in r[1] for r in rows), f"refused file not listed: {rows}")
 
         status, _ = b.call("POST", "/requests", {"site": "https://www.example.com/login", "account": "personal",
@@ -1379,9 +1435,15 @@ def test_cli_for_vault_sh() -> None:
 
         code, out, err = broker_cli(b, "sync")
         expect(code == 0 and "personal" in out, f"sync exit {code}: {out}{err}")
+        code, out, err = broker_cli(b, "sync", "--json")
+        expect(code == 0 and len(out.splitlines()) == 1, f"sync --json exit {code}: {out!r}{err}")
+        reply = json.loads(out)
+        expect(isinstance(reply, dict) and ("synced" in reply or "reason" in reply), f"sync --json reply {reply}")
         code, out, err = broker_cli(b, "items")
         expect(code == 2, f"an unknown command exit {code}")
         b.stop()
+        code, out, err = broker_cli(b, "sync", "--json")
+        expect(code == 1 and out == "" and "not reachable" in err, f"sync --json with the broker down: {code} {out!r} {err}")
         code, out, err = broker_cli(b, "accounts")
         expect(code == 1 and "not reachable" in err, f"broker down exit {code}: {err}")
         b.expect_clean()
@@ -1663,6 +1725,9 @@ def main() -> None:
     test_api_returns_no_values()
     test_sync_socket_scope()
     test_unlock_over_socket()
+    test_manual_login_at_start()
+    test_manual_login_refused_at_start()
+    test_accounts_retry_after()
     test_cli_for_vault_sh()
     test_sync_loop_and_idle_lock()
     test_tcp_request_checks()
