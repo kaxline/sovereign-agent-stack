@@ -3,8 +3,10 @@
 # requests and stack secrets. See docs/bitwarden.md.
 #
 # Test hooks: VAULT_ACCOUNTS_DIR replaces compose/bitwarden/accounts (the folder
-# the broker mounts) and VAULT_HERMES_DATA_DIR replaces data/hermes, so
-# scripts/test-vault-sh.sh can run against temp folders.
+# the broker mounts), VAULT_HERMES_DATA_DIR replaces data/hermes,
+# VAULT_ADDON_SH replaces scripts/addon.sh and VAULT_ADDON_STORE replaces the
+# add-on store (<data root>/addons/bitwarden), so scripts/test-vault-sh.sh can
+# run against temp folders.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -20,6 +22,7 @@ ENV_PATH="${ENV_FILE:-.env}"
 ACCOUNTS_DIR="${VAULT_ACCOUNTS_DIR:-${ROOT}/compose/bitwarden/accounts}"
 # Mounted at /opt/data in hermes (docker-compose.yml).
 HERMES_DATA_DIR="${VAULT_HERMES_DATA_DIR:-${ROOT}/data/hermes}"
+ADDON_SH="${VAULT_ADDON_SH:-${ROOT}/scripts/addon.sh}"
 PLUGINS_MARKER=.addon-plugins-changed
 # The containers' user (compose/bitwarden-broker/Dockerfile).
 CONTAINER_UID=10001
@@ -79,8 +82,13 @@ pre-up and follow-hermes are silent while BITWARDEN_ENABLED is off.
 reload-plugins is silent while no profile is marked.
 After add or remove: make up. make doctor shows each account's state.
 
-Test hooks: VAULT_ACCOUNTS_DIR replaces compose/bitwarden/accounts and
-VAULT_HERMES_DATA_DIR replaces data/hermes.
+add and remove without --json, and up-hook for account files it has not
+seen, record each account in the add-on store (scripts/addon.sh configure
+bitwarden --instance S), which Boundary lists. A failed record is a warning.
+
+Test hooks: VAULT_ACCOUNTS_DIR replaces compose/bitwarden/accounts,
+VAULT_HERMES_DATA_DIR replaces data/hermes, VAULT_ADDON_SH replaces
+scripts/addon.sh and VAULT_ADDON_STORE replaces <data root>/addons/bitwarden.
 EOF
 }
 
@@ -456,6 +464,75 @@ ensure_accounts_dir() {
   fi
 }
 
+# --- The add-on store -------------------------------------------------------
+#
+# addon.sh keeps one instances/<slug>.json of non-secret values per account in
+# the add-on store, and Boundary lists accounts from it. addon.sh connect and
+# disconnect write it around add and remove --json. Terminal add and remove,
+# and up-hook for account files the store lacks, write it through addon.sh
+# configure. --json mode never calls addon.sh: connect and disconnect hold the
+# add-on lock while their hook runs, so the call would end in busy.
+
+store_dir() {
+  printf '%s' "${VAULT_ADDON_STORE:-$(resolve_data_root_path)/addons/bitwarden}"
+}
+
+# store_values MODE SERVER SCOPE UNLOCK: the instance values as one JSON
+# object. A cloud server gives region us or eu, a selfhosted one url; an empty
+# scope or unlock is left out, so the manifest's default applies.
+store_values() {
+  local out
+  out="{\"mode\":$(json_str "$1")"
+  case "$1" in
+    cloud)
+      case "$2" in
+        https://vault.bitwarden.com) out="${out},\"region\":\"us\"" ;;
+        https://vault.bitwarden.eu) out="${out},\"region\":\"eu\"" ;;
+      esac
+      ;;
+    selfhosted) out="${out},\"url\":$(json_str "$2")" ;;
+  esac
+  [[ -z "$3" ]] || out="${out},\"scope\":$(json_str "$3")"
+  [[ -z "$4" ]] || out="${out},\"unlock\":$(json_str "$4")"
+  printf '%s}' "$out"
+}
+
+# store_record SLUG VALUES: addon.sh configure bitwarden --instance SLUG with
+# VALUES on stdin. A failure prints a warning and returns 1.
+store_record() {
+  [[ "$JSON" != 1 ]] || return 0
+  local rc=0
+  printf '%s\n' "$2" | "$ADDON_SH" configure bitwarden --instance "$1" > /dev/null || rc=$?
+  [[ "$rc" != 0 ]] || return 0
+  printf '[vault] Warning: scripts/addon.sh configure exited %s, so Boundary does not list %s yet; make up records it again\n' \
+    "$rc" "$1" >&2
+  return 1
+}
+
+# store_forget SLUG: addon.sh configure bitwarden --instance SLUG --remove. A
+# failure prints a warning.
+store_forget() {
+  [[ "$JSON" != 1 ]] || return 0
+  local rc=0
+  "$ADDON_SH" configure bitwarden --instance "$1" --remove < /dev/null > /dev/null || rc=$?
+  [[ "$rc" != 0 ]] || return 0
+  printf '[vault] Warning: scripts/addon.sh configure exited %s, so Boundary still lists %s; scripts/addon.sh configure bitwarden --instance %s --remove drops it\n' \
+    "$rc" "$1" "$1" >&2
+}
+
+# up-hook: records the account in FILE_TEXT when the store has no entry for
+# SLUG. local belongs to make vault-init and is never recorded.
+store_backfill() {
+  local slug="$1"
+  [[ "$slug" != local ]] || return 0
+  [[ ! -e "$(store_dir)/instances/${slug}.json" ]] || return 0
+  if store_record "$slug" "$(store_values "$(text_get BW_MODE)" "$(text_get BW_SERVER)" \
+    "$(text_get BW_SCOPE)" "$(text_get BW_UNLOCK)")"; then
+    log "Recorded ${slug} in the add-on store"
+  fi
+  return 0
+}
+
 # --- add ------------------------------------------------------------------
 
 # Reads one line from stdin without echo into REPLY_SECRET.
@@ -672,6 +749,10 @@ cmd_add() {
   fi
   check_account "$slug" "$unlock"
   ADD_STAGE=finished
+  # --force: the old entry goes first, so a value the new account leaves out
+  # (region after a move to selfhosted, say) does not stay behind.
+  [[ -z "$force" ]] || store_forget "$slug"
+  store_record "$slug" "$(store_values "$mode" "$server" "$scope" "$unlock")" || true
 }
 
 ADD_SLUG=""
@@ -1271,6 +1352,7 @@ cmd_remove() {
   # After the restart, so the broker no longer writes there.
   remove_bw_dir "$slug" \
     || log "Could not remove ${data}/bw/${slug} (owned by the broker's user); remove it as root"
+  store_forget "$slug"
   log "$REVOKE_REMINDER"
   if [[ "$JSON" == 1 ]]; then
     local msg="${REVOKE_REMINDER}."
@@ -1389,16 +1471,19 @@ PY
 }
 
 # Run by make up after docker compose up. The Bitwarden steps are silent while
-# BITWARDEN_ENABLED is off.
+# BITWARDEN_ENABLED is off. Each account file the add-on store lacks, other
+# than local, is recorded there (accounts added before the store kept them).
 cmd_up_hook() {
   cmd_reload_plugins
   is_true "$(env_get BITWARDEN_ENABLED 0)" || return 0
   local f slugs="" slug entry
   for f in "$ACCOUNTS_DIR"/*.env; do
     [[ -f "$f" ]] || continue
+    slug="$(basename "$f" .env)"
     load_file "$f"
+    store_backfill "$slug"
     [[ -n "$(text_get BW_SECRETS_ITEM_SCOPE)" ]] || continue
-    slugs="${slugs} $(basename "$f" .env):$(text_get BW_UNLOCK)"
+    slugs="${slugs} ${slug}:$(text_get BW_UNLOCK)"
   done
   [[ -n "$slugs" ]] || return 0
   if ! broker_running; then

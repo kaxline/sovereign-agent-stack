@@ -102,7 +102,17 @@ cat > "$tmp/bin/make" <<'SH'
 #!/bin/sh
 printf 'make %s\n' "$*" >> "$STUB/log"
 SH
-chmod +x "$tmp/bin/docker" "$tmp/bin/make"
+# addon.sh: terminal add and remove record accounts in the add-on store;
+# scripts/test-bitwarden-connect.sh covers that. This keeps them off the
+# repo's own store.
+cat > "$tmp/bin/addon-stub" <<'SH'
+#!/bin/sh
+cat > /dev/null
+printf 'addon.sh %s\n' "$*" >> "$STUB/addon-log"
+SH
+chmod +x "$tmp/bin/docker" "$tmp/bin/make" "$tmp/bin/addon-stub"
+export VAULT_ADDON_SH="$tmp/bin/addon-stub"
+export VAULT_ADDON_STORE="$tmp/store"
 export PATH="$tmp/bin:$PATH"
 
 fail() {

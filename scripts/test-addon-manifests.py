@@ -1651,6 +1651,67 @@ with tempfile.TemporaryDirectory() as tmp:
     ac_missing = addon_store.missing(ac, Path(tmp))
     check("actual: missing() is empty with no rows", ac_missing == [], str(ac_missing))
 
+# --- Bitwarden accounts as instances ------------------------------------------
+# addon.sh connect bitwarden runs vault.sh add --json with the values on stdin;
+# the store keeps only the non-secret ones (CR 0028).
+bw = json.loads((ROOT / "addons" / "bitwarden" / "addon.json").read_text())
+bwi = bw.get("instances") or {}
+bws = bwi.get("settings") or {}
+check("bitwarden: instances block is named account and optional",
+      bwi.get("name") == "account" and bwi.get("optional") is True, str(bwi.get("name")))
+check("bitwarden: instance settings are the ones vault.sh add --json reads",
+      sorted(bws) == sorted(["mode", "region", "url", "scope", "unlock", "client_id", "client_secret",
+                             "master_password"]), str(sorted(bws)))
+check("bitwarden: mode is a cloud/selfhosted choice and required",
+      bws.get("mode", {}).get("type") == "choice" and bws["mode"].get("options") == ["cloud", "selfhosted"]
+      and addon_store._required(bws["mode"]))
+check("bitwarden: region is an optional us/eu choice",
+      bws.get("region", {}).get("options") == ["us", "eu"] and bws["region"].get("optional") is True)
+check("bitwarden: url is an optional url", bws.get("url") == {**bws.get("url", {}), "type": "url", "optional": True})
+check("bitwarden: scope defaults to folder:Agent",
+      bws.get("scope", {}).get("type") == "string" and bws["scope"].get("default") == "folder:Agent")
+check("bitwarden: unlock is stored or manual, default manual",
+      bws.get("unlock", {}).get("options") == ["stored", "manual"] and bws["unlock"].get("default") == "manual")
+check("bitwarden: client_id, client_secret and master_password are transient secrets",
+      all(bws.get(k, {}).get("type") == "secret" and bws[k].get("transient") is True
+          for k in ("client_id", "client_secret", "master_password")))
+check("bitwarden: client_id and client_secret are required, master_password optional",
+      addon_store._required(bws.get("client_id", {})) and addon_store._required(bws.get("client_secret", {}))
+      and bws.get("master_password", {}).get("optional") is True)
+check("bitwarden: every instance setting has a label", all(isinstance(s.get("label"), str) for s in bws.values()))
+check("bitwarden: connect and disconnect are vault.sh add and remove",
+      bwi.get("connect") == {"script": ["scripts/vault.sh", "add"]}
+      and bwi.get("disconnect") == {"script": ["scripts/vault.sh", "remove"]}, str(bwi.get("connect")))
+check("bitwarden: instances.errors are rate_limited and broker_down",
+      bwi.get("errors") == ["rate_limited", "broker_down"], str(bwi.get("errors")))
+bw_values = {"mode": "cloud", "region": "eu", "unlock": "stored", "client_id": "user.syn",
+             "client_secret": "syn-secret", "master_password": "syn-master"}
+try:
+    addon_store.check_instance(bw, bw_values)
+    bw_checked = True
+except addon_store.InputError as exc:
+    bw_checked = str(exc)
+check("bitwarden: a complete account passes check_instance", bw_checked is True, str(bw_checked))
+for key in ("mode", "client_id", "client_secret"):
+    try:
+        addon_store.check_instance(bw, {k: v for k, v in bw_values.items() if k != key})
+        got = "accepted"
+    except addon_store.InputError as exc:
+        got = exc.setting
+    check(f"bitwarden: an account without {key} is refused", got == key, got)
+with tempfile.TemporaryDirectory() as tmp:
+    addon_store.apply_instance(bw, Path(tmp), "home", bw_values)
+    d = Path(tmp) / "addons" / "bitwarden"
+    kept = json.loads((d / "instances" / "home.json").read_text())
+    check("bitwarden: the store keeps no secret of an account",
+          kept == {"mode": "cloud", "region": "eu", "unlock": "stored"}, str(kept))
+    left = sorted(p.name for p in (d / "secrets").iterdir()) if (d / "secrets").is_dir() else []
+    check("bitwarden: the store writes no secret file for an account", left == [], str(left))
+    check("bitwarden: an account row needs no stored secret", addon_store.missing(bw, Path(tmp)) == [],
+          str(addon_store.missing(bw, Path(tmp))))
+    check("bitwarden: missing() is empty with no accounts",
+          addon_store.missing(bw, Path(tmp) / "none") == [])
+
 if failures:
     print(f"{failures} failed")
     sys.exit(1)
