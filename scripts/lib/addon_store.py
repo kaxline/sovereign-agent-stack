@@ -359,7 +359,12 @@ def check_instance(manifest: dict, values: dict) -> None:
             raise InputError(f"{name}: required for a new instance", name)
 
 
-def apply_instance(manifest: dict, data_root: Path, slug: str, values: dict) -> None:
+def apply_instance(manifest: dict, data_root: Path, slug: str, values: dict,
+                   replace: bool = False) -> None:
+    """Write VALUES into instance SLUG, merged over what it holds. With
+    REPLACE (connect --force) the instance is VALUES alone: settings left out
+    fall back to their defaults and this slug's stored secrets left out are
+    deleted."""
     slug = _slug(slug)
     schema = _inst_schema(manifest)
     clean = _validated_instance(schema, values, _has_connect(manifest))
@@ -367,12 +372,19 @@ def apply_instance(manifest: dict, data_root: Path, slug: str, values: dict) -> 
     # A transient secret was checked above and goes to the connect hook only.
     plain = {k: v for k, v in clean.items() if schema[k]["type"] != "secret"}
     _mkdir_addon(d)
-    merged = _instance_values(d, slug)
+    merged = {} if replace else _instance_values(d, slug)
     merged.update(plain)
     _write(d / "instances" / f"{slug}.json", json.dumps(merged, indent=2) + "\n", 0o644)
     for name, value in clean.items():
         if schema[name]["type"] == "secret" and not schema[name].get("transient"):
             _write(d / "secrets" / f"{slug}.{name}", value, 0o600)
+    if replace:
+        for name, spec in schema.items():
+            if spec["type"] == "secret" and name not in clean:
+                try:
+                    (d / "secrets" / f"{slug}.{name}").unlink()
+                except FileNotFoundError:
+                    pass
 
 
 def remove_instance(manifest: dict, data_root: Path, slug: str) -> None:

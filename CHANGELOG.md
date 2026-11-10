@@ -134,6 +134,17 @@ the stack under another app.
 
 ### Changes
 
+- **`addon.sh connect --force` and hook results** (CR 0026 R7). `connect
+  <short-id> --instance <slug> --force` replaces an existing instance: the
+  `connect` hook gets `--slug <slug> --replace --json`, and only after it
+  passes is the instance rewritten from the new values alone, so settings left
+  out fall back to their defaults and stored secrets left out are deleted. A
+  failed hook leaves the old instance untouched. The `done` line then has
+  `"replaced":true`; `--force` on an unknown slug is a plain connect. An
+  `init` or `connect` hook's `done` line may carry a `result` object, which
+  `enable` or `connect` passes on as `result` in its own `done` line, keeping
+  string, number and bool values only. See the addon.sh section of
+  `docs/extending.md`.
 - **Bitwarden accounts from Boundary.** `addon.sh connect bitwarden --instance
   S --json` and `disconnect` call `vault.sh add --json` and `remove --json`.
   `status --json`, `unlock --json`, `lock --json` and `sync --json` give Boundary

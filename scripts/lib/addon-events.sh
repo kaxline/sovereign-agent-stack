@@ -184,13 +184,17 @@ ev_step() {
   printf '{"phase":"setup","step":%s,"status":%s%s}\n' "$(json_str "$1")" "$(json_str "$2")" "$target" >&3
 }
 
-# ev_done ID ACTION RESTART_CSV MCP_CSV [ACCOUNT] [MESSAGE]: the done line.
-# An empty ACCOUNT or MESSAGE is left out.
+# ev_done ID ACTION RESTART_CSV MCP_CSV [ACCOUNT] [MESSAGE] [RESULT] [REPLACED]:
+# the done line. An empty ACCOUNT, MESSAGE or RESULT is left out. RESULT is a
+# JSON object already encoded (addon_cli.py hook-result's last line) and goes
+# in as "result"; REPLACED=1 adds "replaced":true.
 ev_done() {
   [[ "$EV_JSON" == 1 ]] || return 0
   local extra=""
   [[ -n "${5:-}" ]] && extra=",\"account\":$(json_str "$5")"
   [[ -n "${6:-}" ]] && extra="${extra},\"message\":$(json_str "$6")"
+  [[ -n "${7:-}" ]] && extra="${extra},\"result\":$7"
+  [[ "${8:-}" == 1 ]] && extra="${extra},\"replaced\":true"
   printf '{"phase":"done","id":%s,"action":%s,"restart":%s,"mcp":%s%s}\n' \
     "$(json_str "$1")" "$(json_str "$2")" "$(ev_json_array "$3")" "$(ev_json_array "$4")" "$extra" >&3
 }

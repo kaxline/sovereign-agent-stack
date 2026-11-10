@@ -8,9 +8,10 @@ runs in the Hermes image through stack_python, so the host needs no python3.
         A JSON array of addon_store.listing() objects, sorted by short id.
         JSON maps env flag names to "1" or "0" (addon.sh reads them from .env).
         A manifest that fails check_builtin_file or am.dir_conflicts is left out with a warning.
-    configure SID [--instance SLUG] [--flags JSON]
+    configure SID [--instance SLUG [--replace]] [--flags JSON]
         Reads one JSON object on stdin and stores it with apply_settings, or
-        apply_instance for SLUG. Prints {"flags": {FLAG: "1"|"0"}}, the .env
+        apply_instance for SLUG (--replace: the object alone, without the
+        instance's old values and secrets). Prints {"flags": {FLAG: "1"|"0"}}, the .env
         writes addon.sh makes: the gate flags of bool settings given, only
         while builtin.flag is 1 in --flags (the .env flags, as for list).
         Always {} for an instance or a disabled add-on; plan-enable restores
@@ -42,11 +43,12 @@ runs in the Hermes image through stack_python, so the host needs no python3.
     plan-run SID COMMAND [--instance SLUG]
         Prints the compose service, then the command's argv, one per line, with
         `--account SLUG` appended when the command takes an instance.
-    plan-hook SID HOOK [--slug SLUG] [--reinit]
+    plan-hook SID HOOK [--slug SLUG] [--reinit] [--replace]
         HOOK is init, upgrade, backup, restore, connect or disconnect. Prints
         `script` and then the script's argv, or `service <compose name>` and
         then the command's argv, one item per line, ending in `--json`
-        (`--slug SLUG --json` for connect and disconnect, which need --slug).
+        (`--slug SLUG --json` for connect and disconnect, which need --slug;
+        connect with --replace ends in `--slug SLUG --replace --json`).
         Prints nothing when the manifest has no such hook, or for init when
         state.json records it and --reinit is not given.
     mark-init SID
@@ -58,12 +60,15 @@ runs in the Hermes image through stack_python, so the host needs no python3.
         clean_line; every other line goes to stderr.
     hook-result SID EXIT
         Reads a hook's whole stdout on stdin (not a file: the host's temp
-        directory isn't mounted where this runs) and prints five lines: an
+        directory isn't mounted where this runs) and prints seven lines: an
         error code (empty on success), its message, the `account` of the
         `done` line (empty when it has none), the names in its `mcp` list,
         comma-separated (names that aren't lowercase letters, digits, _ and -
-        are left out), and its `message` through clean_line (empty when it
-        has none or the hook failed). A hook's `error` name is kept
+        are left out), its `message` through clean_line (empty when it
+        has none or the hook failed), the error line's positive integer
+        `retryAfter` (else empty), and its `result` as compact JSON, filtered
+        by _hook_result_object (empty when nothing is left or the hook
+        failed). A hook's `error` name is kept
         when it is a shared name or in instances.errors; any other name
         becomes command_failed with the name in the message. A non-zero
         EXIT without an `error` line is command_failed.
@@ -127,6 +132,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import shutil
@@ -282,12 +288,14 @@ def cmd_configure(args) -> None:
     manifest = _manifest(args.addons_dir, args.sid)
     env_flags = _flags_arg(args.flags)
     values = _stdin_object()
+    if args.replace and args.instance is None:
+        raise Fail("--replace needs --instance")
     if args.instance is None:
         flags = store.apply_settings(manifest, args.data_root, values)
         if env_flags.get(manifest["builtin"]["flag"]) != "1":
             flags = {}
     else:
-        store.apply_instance(manifest, args.data_root, args.instance, values)
+        store.apply_instance(manifest, args.data_root, args.instance, values, replace=args.replace)
         flags = {}
     _dump({"flags": flags})
 
@@ -426,8 +434,12 @@ def cmd_plan_hook(args) -> None:
     else:
         cmd = manifest["commands"][spec["command"]]
         head, argv = [f"service {_compose(manifest, cmd['service'])}"], list(cmd["argv"])
+    if args.replace and args.hook != "connect":
+        raise Fail(f"{args.hook} takes no --replace")
     if instance_hook:
         argv += ["--slug", store.slug(args.slug)]
+    if args.replace:
+        argv.append("--replace")
     argv.append("--json")
     _check_argv(argv, f"hooks.{args.hook}")
     for line in head + argv:
@@ -495,6 +507,30 @@ def hook_error(manifest: dict, name, message) -> tuple[str, str]:
     return "command_failed", f"hook error {label}: {text}" if text else f"hook error {label}"
 
 
+RESULT_KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}\Z")
+RESULT_MAX_KEYS = 32
+
+
+def _hook_result_object(value) -> dict:
+    """The `result` of a hook's done line as addon.sh passes it on: the first
+    RESULT_MAX_KEYS entries whose key matches RESULT_KEY_RE and whose value is
+    a string (through clean_line), a finite number or a bool. Anything else,
+    including a result that isn't an object, is dropped."""
+    if not isinstance(value, dict):
+        return {}
+    out = {}
+    for key, v in value.items():
+        if len(out) == RESULT_MAX_KEYS:
+            break
+        if not RESULT_KEY_RE.match(key):
+            continue
+        if isinstance(v, str):
+            out[key] = clean_line(v)
+        elif isinstance(v, (bool, int)) or (isinstance(v, float) and math.isfinite(v)):
+            out[key] = v
+    return out
+
+
 def cmd_hook_result(args) -> None:
     manifest = _manifest(args.addons_dir, args.sid)
     done = error = None
@@ -519,7 +555,9 @@ def cmd_hook_result(args) -> None:
         mcp = ",".join(n for n in done["mcp"] if isinstance(n, str) and MCP_NAME_RE.match(n))
     if code == "" and done is not None and isinstance(done.get("message"), str):
         note = clean_line(done["message"])
-    for item in (code, message, account, mcp, note, retry):
+    result = _hook_result_object(done.get("result")) if code == "" and done is not None else {}
+    result_json = json.dumps(result, separators=(",", ":")) if result else ""
+    for item in (code, message, account, mcp, note, retry, result_json):
         print(item.replace("\n", " "))
 
 
@@ -885,6 +923,7 @@ def main(argv: list[str]) -> int:
     s.add_argument("sid")
     s.add_argument("--instance")
     s.add_argument("--flags", default="{}")
+    s.add_argument("--replace", action="store_true")
     s.set_defaults(func=cmd_configure)
     s = sub.add_parser("remove-instance")
     s.add_argument("sid")
@@ -927,6 +966,7 @@ def main(argv: list[str]) -> int:
     s.add_argument("hook")
     s.add_argument("--slug")
     s.add_argument("--reinit", action="store_true")
+    s.add_argument("--replace", action="store_true")
     s.set_defaults(func=cmd_plan_hook)
     s = sub.add_parser("mark-init")
     s.add_argument("sid")
