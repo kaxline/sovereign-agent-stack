@@ -214,7 +214,8 @@ class Broker:
 
     def get_accounts(self, _body) -> list:
         return [{"slug": slug, "mode": a.mode, "scope": a.scope_kind, "state": self.bws[slug].state,
-                 "error_class": self.bws[slug].error_class} for slug, a in sorted(self.accounts.items())]
+                 "error_class": self.bws[slug].error_class, "logged_in": self.bws[slug].logged_in,
+                 "retry_after": self.bws[slug].retry_after()} for slug, a in sorted(self.accounts.items())]
 
     def get_items(self, _body) -> list:
         return [{"handle": m.handle, "label": m.label, "username": m.username, "origins": list(m.origins),
@@ -385,6 +386,13 @@ class Broker:
         with self._guard:
             self._activity[slug] = time.monotonic()
 
+    def login_manual(self, slug: str) -> None:
+        """Sign a ``manual`` account in at start. It stays locked; a refusal shows in its state."""
+        try:
+            self.bws[slug].login()
+        except BwError:
+            LOG.info("%s: sign-in failed (%s)", slug, self.bws[slug].error_class or "unknown")
+
     def unlock_stored(self, slug: str) -> bool:
         """Unlock a ``stored`` account with its stored master password; True if it is unlocked."""
         bw = self.bws[slug]
@@ -498,6 +506,8 @@ class Broker:
                    threading.Thread(target=self.run_loop, args=(stop,), name="sync", daemon=True)]
         threads += [threading.Thread(target=self.unlock_stored, args=(slug,), name=f"unlock-{slug}", daemon=True)
                     for slug, a in sorted(self.accounts.items()) if a.unlock == "stored"]
+        threads += [threading.Thread(target=self.login_manual, args=(slug,), name=f"login-{slug}", daemon=True)
+                    for slug, a in sorted(self.accounts.items()) if a.unlock != "stored"]
         for t in threads:
             t.start()
         LOG.info("listening on %s:%d with %d accounts", tcp_host, tcp.server_address[1], len(self.accounts))

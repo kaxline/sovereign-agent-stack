@@ -76,7 +76,10 @@ def _age(created) -> str:
 
 def cmd_accounts() -> None:
     for a in _call("GET", "/accounts"):
-        print("\t".join(_cell(a.get(k)) for k in ("slug", "mode", "scope", "state", "error_class")))
+        row = [_cell(a.get(k)) for k in ("slug", "mode", "scope", "state", "error_class")]
+        row.append("1" if a.get("logged_in") else "0")
+        row.append("" if a.get("retry_after") is None else str(a["retry_after"]))
+        print("\t".join(row))
     for error in _call("GET", "/health").get("account_errors") or []:
         print(f"refused\t{_cell(error)}")
 
