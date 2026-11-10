@@ -1493,6 +1493,9 @@ services:
       # The single budget's file path (not its contents). Empty or no-budget.env
       # drops the legacy budget entry; connected budgets register either way.
       - ACTUAL_BUDGET_FILE=${ACTUAL_BUDGET_FILE:-}
+      # Off drops the rows whose server is local (actual_rows.py). The container
+      # environment is part of the bootstrap's input stamp, so a toggle re-runs it.
+      - ACTUAL_LOCAL_ENABLED=${ACTUAL_LOCAL_ENABLED:-0}
       # OpenCode coding MCP (coding profile); registered on default + browser only.
       - OPENCODE_MCP_URL=${OPENCODE_MCP_URL:-http://opencode-mcp:8000/sse}
       - OPENCODE_MCP_ENABLED=${OPENCODE_MCP_ENABLED:-0}
@@ -1627,6 +1630,7 @@ services:
       # The single budget's file path (not its contents). Empty or no-budget.env
       # drops the legacy budget entry; connected budgets register either way.
       - ACTUAL_BUDGET_FILE=${ACTUAL_BUDGET_FILE:-}
+      - ACTUAL_LOCAL_ENABLED=${ACTUAL_LOCAL_ENABLED:-0}
       - OPENCODE_MCP_URL=${OPENCODE_MCP_URL:-http://opencode-mcp:8000/sse}
       - OPENCODE_MCP_ENABLED=${OPENCODE_MCP_ENABLED:-0}
       - OPENCODE_MCP_TIMEOUT=${OPENCODE_MCP_TIMEOUT:-600}

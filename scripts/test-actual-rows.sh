@@ -33,6 +33,10 @@ ALL="$READ $WRITE"
 PINS="get-accounts get-grouped-categories get-transactions monthly-summary get-budget-month get-payees"
 [ "$(echo "$READ" | wc -w | tr -d ' ')" = 18 ] || fail "fixture: 18 read tools"
 
+# Local rows register only while the local server is on; the sections below
+# start with it on and the local-server section turns it off.
+ACTUAL_LOCAL_ENABLED=1
+export ACTUAL_LOCAL_ENABLED
 plan() { python3 "$rows_py" plan "$idir" "${ROOT}/addons" "$1" 2> "${tmp}/plan.err"; }
 
 # --- actual_rows.py plan -----------------------------------------------------
@@ -88,6 +92,31 @@ mkdir -p "${tmp}/no-actual"
 [ -z "$(python3 "$rows_py" plan "$idir" "${tmp}/no-actual" default)" ] || fail "no Actual manifest plans nothing"
 echo "ok: plan"
 
+# A local row is skipped while the local server is off; a remote row is not.
+# Quotes, case and the other truthy words follow addon.sh's flag reading.
+ACTUAL_LOCAL_ENABLED=0
+export ACTUAL_LOCAL_ENABLED
+want_off="$(printf '%s\n%s' "$want_home_ro" "$want_home_rw")"
+[ "$(plan default)" = "$want_off" ] || fail "with the local server off only the remote row plans ($(plan default))"
+grep -qx 'warning: skipping Actual row main: the local Actual server is off (ACTUAL_LOCAL_ENABLED)' "${tmp}/plan.err" \
+  || fail "the skipped local row is named on stderr ($(cat "${tmp}/plan.err"))"
+[ "$(wc -l < "${tmp}/plan.err" | tr -d ' ')" = 1 ] || fail "one stderr line for the skipped local row ($(cat "${tmp}/plan.err"))"
+for v in "" false no off random; do
+  ACTUAL_LOCAL_ENABLED="$v"
+  export ACTUAL_LOCAL_ENABLED
+  [ "$(plan default)" = "$want_off" ] || fail "ACTUAL_LOCAL_ENABLED='${v}' counts as off"
+done
+unset ACTUAL_LOCAL_ENABLED
+[ "$(plan default)" = "$want_off" ] || fail "an unset ACTUAL_LOCAL_ENABLED counts as off"
+for v in 1 true TRUE Yes on ON '"1"' "'true'"; do
+  ACTUAL_LOCAL_ENABLED="$v"
+  export ACTUAL_LOCAL_ENABLED
+  [ "$(plan default)" = "$want" ] || fail "ACTUAL_LOCAL_ENABLED=${v} counts as on ($(plan default | cut -c1-40 | tr '\n' ' '))"
+done
+ACTUAL_LOCAL_ENABLED=1
+export ACTUAL_LOCAL_ENABLED
+echo "ok: plan with the local server off"
+
 # --- register_actual_budget_rows with stubbed writers ------------------------
 
 load_fns "$bootstrap" actual_rows_plan actual_rows_on actual_single_budget_off \
@@ -117,6 +146,16 @@ for p in "" browser; do
 done
 run api-server
 [ "$calls" = "reconcile:api-server:all keep;" ] || fail "api-server registers nothing and drops every row entry ($calls)"
+
+# With the local server off the local row's entries are dropped (not kept)
+# and the remote row is still registered.
+ACTUAL_LOCAL_ENABLED=0
+run ""
+[ "$calls" = "register:default:budget-home-ro:${RO_HOME};pin:default:budget-home-ro:${PINS};register:default:budget-home:${RW_HOME};pin:default:budget-home:${PINS};reconcile:default:rows keep budget-home-ro budget-home;" ] \
+  || fail "local server off: the local row is dropped, the remote row registers ($calls)"
+ACTUAL_LOCAL_ENABLED=1
+run ""
+case "$calls" in *"budget-main-ro"*) ;; *) fail "local server on: the local row registers again ($calls)" ;; esac
 
 for f in "" ./compose/actual/no-budget.env /abs/compose/actual/no-budget.env; do
   ACTUAL_BUDGET_FILE="$f"
@@ -174,10 +213,15 @@ grep -q '\$(actual_row_urls "\$1")' "$bootstrap" || fail "set_stack_mcp_parked_r
 grep -q '\$(actual_row_pin_args "\$_rst_profile")' "$bootstrap" || fail "reconcile_stack_eager_tools re-pins row tools"
 # shellcheck disable=SC2016
 grep -q 'cat "\$ACTUAL_ROWS_PY"' "$bootstrap" || fail "actual_rows.py is part of the bootstrap stamp"
+# The stamp hashes the container's whole environment, so ACTUAL_LOCAL_ENABLED
+# (passed in docker-compose.yml, checked below) is covered without its own line.
+grep -q "env | grep -v" "$bootstrap" || fail "the bootstrap stamp hashes the container environment"
 for svc in hermes-api-bootstrap hermes-browser-bootstrap; do
   sed -n "/^  ${svc}:\$/,/^  [a-z-]*:\$/p" "${ROOT}/docker-compose.yml" > "${tmp}/svc"
   grep -qF -- '- ./scripts/lib/actual_rows.py:/bootstrap/actual_rows.py:ro' "${tmp}/svc" \
     || fail "${svc} mounts actual_rows.py next to addon_manifest.py"
+  grep -qF -- '- ACTUAL_LOCAL_ENABLED=${ACTUAL_LOCAL_ENABLED:-0}' "${tmp}/svc" \
+    || fail "${svc} gets ACTUAL_LOCAL_ENABLED"
 done
 echo "ok: register_actual_budget_rows (stubs)"
 
@@ -253,7 +297,7 @@ irun() {
   docker run --rm --entrypoint sh -v "${work}:/w" -v "${ROOT}/addons:/addons:ro" \
     -v "${ROOT}/scripts/lib/addon_manifest.py:/addon_manifest.py:ro" \
     -v "${rows_py}:/actual_rows.py:ro" \
-    -e ACTUAL_MCP_ENABLED="$2" -e ACTUAL_BUDGET_FILE="$3" "$image" /w/run.sh "$1" > "${work}/out" 2>&1 \
+    -e ACTUAL_MCP_ENABLED="$2" -e ACTUAL_BUDGET_FILE="$3" -e ACTUAL_LOCAL_ENABLED="${ACTUAL_LOCAL_ENABLED:-1}" "$image" /w/run.sh "$1" > "${work}/out" 2>&1 \
     || { cat "${work}/out" >&2; fail "register_actual_budget_rows exited non-zero"; }
 }
 
@@ -289,6 +333,14 @@ rm -f "${work}/data/actual/instances/home.json"
 irun "" 1 ./compose/actual/budget.env
 state="$(q "$cfg" '" ".join(sorted(s)) + "|" + str(any(p.startswith("mcp__budget_home") for p in pins))')"
 [ "$state" = "budget budget-main-ro my-budget searxng|False" ] || fail "a removed row's entries and pins go ($state)"
+
+ACTUAL_LOCAL_ENABLED=0
+irow home '{"server": "https://actual.example.com", "sync_id": "sync-home", "profile": "default", "access": "write"}'
+irun "" 1 ./compose/actual/budget.env
+state="$(q "$cfg" '" ".join(sorted(s)) + "|" + str(any(p.startswith("mcp__budget_main") for p in pins))')"
+[ "$state" = "budget budget-home budget-home-ro my-budget searxng|False" ] || fail "local server off: the local row's entries and pins go, the remote row stays ($state)"
+ACTUAL_LOCAL_ENABLED=1
+rm -f "${work}/data/actual/instances/home.json"
 
 irun "" 0 ./compose/actual/budget.env
 state="$(q "$cfg" '" ".join(sorted(s))')"

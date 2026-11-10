@@ -108,8 +108,8 @@ ACTUAL_ENV = {
     "actual-mcp-ro": {"ACTUAL_SYNC_TTL_MS", "ACTUAL_DATA_DIR"},
 }
 # The only ACTUAL_* keys any other service may carry. ACTUAL_BUDGET_FILE is
-# the single budget's path, never its contents.
-ACTUAL_BOOTSTRAP_KEYS = {"ACTUAL_MCP_ENABLED", "ACTUAL_ACCESS", "ACTUAL_BUDGET_FILE"}
+# the single budget's path, never its contents. ACTUAL_LOCAL_ENABLED is a flag.
+ACTUAL_BOOTSTRAP_KEYS = {"ACTUAL_MCP_ENABLED", "ACTUAL_ACCESS", "ACTUAL_BUDGET_FILE", "ACTUAL_LOCAL_ENABLED"}
 ACTUAL_BOOTSTRAPS = {"hermes-api-bootstrap", "hermes-browser-bootstrap"}
 
 # Keys that must still be present after the allowlist, so a drop is caught.
@@ -150,8 +150,8 @@ REQUIRED = {
     "twenty-db": {"POSTGRES_PASSWORD"},
     "actual-mcp-rw": {"ACTUAL_SYNC_TTL_MS", "ACTUAL_DATA_DIR"},
     "actual-mcp-ro": {"ACTUAL_SYNC_TTL_MS", "ACTUAL_DATA_DIR"},
-    "hermes-api-bootstrap": {"ACTUAL_MCP_ENABLED", "ACTUAL_ACCESS", "ACTUAL_BUDGET_FILE"},
-    "hermes-browser-bootstrap": {"ACTUAL_MCP_ENABLED", "ACTUAL_ACCESS", "ACTUAL_BUDGET_FILE"},
+    "hermes-api-bootstrap": {"ACTUAL_MCP_ENABLED", "ACTUAL_ACCESS", "ACTUAL_BUDGET_FILE", "ACTUAL_LOCAL_ENABLED"},
+    "hermes-browser-bootstrap": {"ACTUAL_MCP_ENABLED", "ACTUAL_ACCESS", "ACTUAL_BUDGET_FILE", "ACTUAL_LOCAL_ENABLED"},
 }
 
 # Clients may carry these names only when the value is the placeholder.
