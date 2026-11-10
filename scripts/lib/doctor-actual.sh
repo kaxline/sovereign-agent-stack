@@ -86,7 +86,12 @@ actual_budget_rows() {
     if [[ "$state" == ok ]]; then
       ok "budget-${slug}: ok"
     else
-      warn "budget-${slug}: ${state} - make budget-add or reconnect it in Boundary"
+      case "$state" in
+        timeout | server_unreachable)
+          warn "budget-${slug}: ${state} - check that its Actual server is running and reachable" ;;
+        *)
+          warn "budget-${slug}: ${state} - reconnect it: make budget-disconnect SLUG=${slug}, then make budget-connect, or in Boundary" ;;
+      esac
     fi
   done <<EOF_ROWS
 ${lines}

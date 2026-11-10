@@ -198,8 +198,8 @@ that end in `{"phase":"done"}` or one `{"phase":"error",...}`:
 | `secrets/server_password` | The bundled server's generated password |
 
 Secret files are mode 600. The MCP containers mount `data/addons/actual`
-read-only at `/budgets`. On Linux they run as uid 1000, so connected budgets need the host
-user to be uid 1000 (`HERMES_UID`, the default).
+read-only at `/budgets`. On Linux they run as uid 1000, so connected budgets
+need the host user to be uid 1000 (`HERMES_UID`, the default).
 
 In each MCP container a launcher starts one child per row and serves it at
 `/<slug>/mcp`; the legacy `/mcp` path still serves the single budget. The
@@ -233,6 +233,9 @@ A connected budget holds a session token, not the password. Changing the
 password on an Actual server, or turning OpenID on, ends the session of every
 budget connected to it. `budget.sh status` then shows `token_expired` for each
 until it is reconnected (`make budget-disconnect`, then `make budget-connect`).
+
+A write made in the seconds between a good sync and the background push can
+still be stranded if the session ends right then.
 
 ## Networks
 
@@ -287,8 +290,8 @@ tool. It also reports each connected budget's `status`.
 ## Testing
 
 Offline, against stubs: `test-addon-manifests.py`, `test-actual-registration.sh`,
-`test-addon-mcp-access.sh`, `test-addon-cron-fence.sh`, `test-actual-rows.sh`, `test-actual-admin.sh`, `test-budget-sh.sh` and
-`test-actual-doctor.sh`. None of them starts Actual.
+`test-addon-mcp-access.sh`, `test-addon-cron-fence.sh`, `test-actual-rows.sh`,
+`test-actual-admin.sh`, `test-budget-sh.sh` and `test-actual-doctor.sh`. None of them starts Actual.
 
 ## Image bumps
 
