@@ -2,13 +2,15 @@
 
 compose/hermes is mounted at /bootstrap, as in the real container, so a
 driver can run the patch scripts and then import the patched Hermes code.
-Tests call ``maybe_run`` after their host checks: it skips cleanly when
-Docker or the image is missing, unless ``--image`` forces the check.
+Tests call ``maybe_run`` after their host checks: it skips when Docker or the
+image is missing, unless ``--image`` or HERMES_IMAGE_REQUIRED=1 makes that a
+failure. scripts/lib/hermes-image.sh is the same gate for shell tests.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -16,7 +18,18 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 HERMES_DIR = ROOT / "compose" / "hermes"
-DEFAULT_TAG = "v0.22.7"
+
+
+def _compose_default_tag() -> str:
+    """The HERMES_AGENT_IMAGE_TAG default in docker-compose.yml, the one pin."""
+    text = (ROOT / "docker-compose.yml").read_text()
+    m = re.search(r"hermes-agent:\$\{HERMES_AGENT_IMAGE_TAG:-([^}]+)\}", text)
+    if not m:
+        raise SystemExit("FAIL docker-compose.yml has no hermes-agent:${HERMES_AGENT_IMAGE_TAG:-...} pin")
+    return m.group(1)
+
+
+DEFAULT_TAG = _compose_default_tag()
 
 
 # Prelude for drivers that call finish_text_response with a bare AIAgent.
@@ -133,12 +146,29 @@ def run_driver(driver: str, stdin: str = "", tag: str = "", mounts=(), image: st
     print(f"image ok ({image})")
 
 
-def maybe_run(driver: str, stdin: str = "", argv: list[str] | None = None, mounts=()) -> None:
+def image_gate(argv: list[str] | None = None) -> str | None:
+    """The tag to run image checks with, or None to skip them.
+
+    --host-only skips. A missing image skips with a line saying so, unless
+    --image is given (run_driver then fails on its own) or
+    HERMES_IMAGE_REQUIRED=1 is set, which fails here so a CI job that is meant
+    to run image checks cannot pass without them.
+    """
     args = sys.argv[1:] if argv is None else argv
     if "--host-only" in args:
-        return
+        return None
     tag = image_tag()
     if "--image" in args or image_available(tag):
+        return tag
+    if os.environ.get("HERMES_IMAGE_REQUIRED") == "1":
+        print(f"FAIL image checks: nousresearch/hermes-agent:{tag} not present "
+              "and HERMES_IMAGE_REQUIRED=1", file=sys.stderr)
+        raise SystemExit(1)
+    print(f"skip image checks (nousresearch/hermes-agent:{tag} not present)")
+    return None
+
+
+def maybe_run(driver: str, stdin: str = "", argv: list[str] | None = None, mounts=()) -> None:
+    tag = image_gate(argv)
+    if tag is not None:
         run_driver(driver, stdin, tag, mounts)
-    else:
-        print(f"skip image checks (nousresearch/hermes-agent:{tag} not present)")
