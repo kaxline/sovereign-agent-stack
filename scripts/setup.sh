@@ -980,8 +980,11 @@ mkdir -p compose/postgres/services
 # Vikunja MCP stays off until todo is enabled and make todo-init has run.
 set_env_if_missing .env VIKUNJA_MCP_ENABLED 0
 
+# Every add-on's store under <data root>/addons, created now so core
+# services' bind mounts find it, whether or not the add-on is enabled.
+./scripts/addon-dirs.sh
+
 # Twenty CRM stays off until crm is enabled (local) or a remote is added.
-# Workspaces live in <data root>/addons/twenty, which make ensure-local creates.
 set_env_if_missing .env TWENTY_LOCAL_ENABLED 0
 set_env_if_missing .env TWENTY_MCP_ENABLED 0
 set_env_if_missing .env TWENTY_MULTIWORKSPACE 0

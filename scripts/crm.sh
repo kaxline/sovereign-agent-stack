@@ -13,8 +13,6 @@ source "${ROOT}/scripts/lib/data-root.sh"
 source "${ROOT}/scripts/lib/python.sh"
 
 ENV_PATH="${ENV_FILE:-.env}"
-# Workspace files from before 0.3.13; migrate moves them into the store.
-WS_DIR="${CRM_WORKSPACES_DIR:-${ROOT}/compose/twenty/workspaces}"
 LOCAL_URL="http://twenty-server:3000"
 ADDONS="${ADDONS_DIR:-${ROOT}/addons}"
 # ASSISTANT_DATA_ROOT from the environment wins over the env file, as it does
@@ -53,10 +51,7 @@ Usage: scripts/crm.sh <command> [options]
         Local workspace: print a URL that signs a browser in as the owner,
         good for 15 minutes. Only the URL goes to stdout.
   mode 0|1          Single- (0) or multi-workspace (1) local instance
-  ensure            Create data dirs, sync flags and migrate (run by make ensure-local)
-  migrate           Move compose/twenty/workspaces/<slug>.env files into the
-                    add-on instance store, renaming each to <slug>.env.migrated.
-                    init, add, remove, access, login-link, open and ensure run it.
+  ensure            Create data dirs and sync flags (run by make ensure-local)
   connect --slug S --json
                     addon.sh's connect hook: checks the values on stdin (JSON)
                     and each key with an MCP initialize. Stores nothing.
@@ -133,18 +128,6 @@ has_userinfo() {
   [[ "$1" =~ ^[A-Za-z]+://[^/?#]*@ ]]
 }
 
-# Renames a leftover pre-0.3.13 workspace file for SLUG, so migrate doesn't
-# bring back a workspace that remove or add --force replaced.
-retire_ws_file() {
-  local f="${WS_DIR}/${1}.env"
-  [[ -f "$f" ]] || return 0
-  if mv "$f" "${f}.migrated"; then
-    warn "renamed the old workspace file ${f} to ${f}.migrated"
-  else
-    warn "couldn't rename ${f}; delete it, or crm.sh migrate will warn about it"
-  fi
-}
-
 # A Twenty URL as the store keeps it: no trailing slash, no /mcp.
 norm_url() {
   local url="$1"
@@ -152,19 +135,6 @@ norm_url() {
   url="${url%/mcp}"
   while [[ "$url" == */ ]]; do url="${url%/}"; done
   printf '%s' "$url"
-}
-
-# One value from a workspace file, without sourcing it, read as the old
-# bootstrap read it: the last matching line wins. CR and surrounding
-# whitespace go, then one pair of quotes. scripts/lib/doctor-twenty.sh's
-# twenty_ws_get mirrors this.
-ws_get() {
-  local v
-  v="$(grep -E "^${2}=" "$1" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '\r' \
-    | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' || true)"
-  v="${v%\"}"; v="${v#\"}"
-  v="${v%\'}"; v="${v#\'}"
-  printf '%s' "$v"
 }
 
 # scripts/lib/addon_cli.py, called as scripts/addon.sh's cli() calls it. It
@@ -234,97 +204,6 @@ local_slugs() {
 
 is_local_slug() {
   [[ "$(row_get "$1" 2)" == 1 ]]
-}
-
-# Moves each $WS_DIR/<slug>.env into the store with addon_cli configure, then
-# renames it <slug>.env.migrated. A slug already in the store keeps its stored
-# values and its file stays, with a warning. Prints to stderr only, never a
-# key. Returns 1 when a store write failed (that file stays for the next run).
-migrate_workspaces() {
-  local f any=""
-  for f in "$WS_DIR"/*.env; do
-    [[ -f "$f" ]] && { any=1; break; }
-  done
-  [[ -n "$any" ]] || return 0
-  local failed=0 slug url access local_ ws_url ws_id ro rw
-  for f in "$WS_DIR"/*.env; do
-    [[ -f "$f" ]] || continue
-    slug="$(basename "$f" .env)"
-    if ! valid_slug "$slug"; then
-      warn "skipped ${f}: '${slug}' isn't a workspace name (lowercase letters, digits and hyphens, a letter first, at most 31); rename it and run crm.sh migrate"
-      continue
-    fi
-    if stored "$slug"; then
-      warn "${slug} is already in ${STORE}; kept the stored workspace and left ${f}. Delete the file once you've checked it."
-      continue
-    fi
-    url="$(norm_url "$(ws_get "$f" TWENTY_URL)")"
-    access="$(ws_get "$f" TWENTY_ACCESS)"
-    [[ -n "$access" ]] || access="write"
-    ws_url="$(ws_get "$f" TWENTY_WORKSPACE_URL)"
-    ws_id="$(ws_get "$f" TWENTY_WORKSPACE_ID)"
-    ro="$(ws_get "$f" TWENTY_KEY_RO)"
-    rw="$(ws_get "$f" TWENTY_KEY_RW)"
-    case "$url" in
-      http://* | https://*) ;;
-      *) warn "skipped ${f}: TWENTY_URL isn't an http(s) URL"; continue ;;
-    esac
-    if has_userinfo "$url"; then
-      warn "skipped ${f}: TWENTY_URL holds a user name or password before the host; remove it"
-      continue
-    fi
-    if ! { key_ok "$ro" && key_ok "$rw"; }; then
-      warn "skipped ${f}: a key holds whitespace or a control character"
-      continue
-    fi
-    case "$access" in
-      read | write) ;;
-      *) warn "skipped ${f}: TWENTY_ACCESS must be read or write"; continue ;;
-    esac
-    if ! { json_safe "$url" && json_safe "$ws_url" && json_safe "$ws_id" && json_safe "$ro" && json_safe "$rw"; }; then
-      warn "skipped ${f}: a value holds a quote, backslash or control character"
-      continue
-    fi
-    local_=false
-    [[ "$url" == "$LOCAL_URL" ]] && local_=true
-    if instance_json "$url" "$access" "$local_" "$ws_url" "$ws_id" "$ro" "$rw" \
-      | addon_cli configure twenty --instance "$slug" > /dev/null; then
-      if mv "$f" "${f}.migrated"; then
-        warn "migrated ${slug} to ${STORE} (the old file is ${f}.migrated)"
-      else
-        warn "stored ${slug} but couldn't rename ${f}; delete it"
-        failed=1
-      fi
-    else
-      # Undo a partial write, so the next run sees no stored slug and retries.
-      addon_cli remove-instance twenty "$slug" > /dev/null 2>&1 || true
-      warn "couldn't store ${slug}; left ${f} for the next run"
-      failed=1
-    fi
-  done
-  return "$failed"
-}
-
-# Migration ahead of another command: a failure is reported, not fatal.
-migrate_first() {
-  migrate_workspaces || warn "some workspace files weren't migrated; see above"
-}
-
-# Prints the first workspace file migrate left in $WS_DIR that init can't
-# see: one for SLUG, or one on the local instance, whose slug isn't stored.
-# twenty_admin.py reads only the store, so with such a file init would create
-# a second, empty workspace (or let one past single-workspace mode).
-unmigrated_for_init() {
-  local f s
-  for f in "$WS_DIR"/*.env; do
-    [[ -f "$f" ]] || continue
-    s="$(basename "$f" .env)"
-    stored "$s" && continue
-    if [[ "$s" == "$1" || "$(norm_url "$(ws_get "$f" TWENTY_URL)")" == "$LOCAL_URL" ]]; then
-      printf '%s' "$f"
-      return 0
-    fi
-  done
 }
 
 data_dir() {
@@ -464,14 +343,13 @@ cmd_init() {
     fail_with bad_slug "slug '${slug}' must use lowercase letters, digits and hyphens"
   fi
   valid_slug "$slug" || die "slug '${slug}' must use lowercase letters, digits and hyphens"
-  migrate_first
   if [[ -n "$json" ]] && ! is_true "$(env_get TWENTY_LOCAL_ENABLED 0)"; then
     printf '{"phase":"done","message":"local instance off","mcp":[%s]}\n' "$(registered_mcp_json "$(env_get TWENTY_MCP_ENABLED 0)")" >&3
     exit 0
   fi
   # addon.sh enable runs init without --slug. In single-workspace mode the
-  # local instance holds one workspace, and one migrated from a pre-0.3.13
-  # file may have any slug; init with main would refuse it as a second one.
+  # local instance holds one workspace, and the stored one may have any slug;
+  # init with main would refuse it as a second one.
   if [[ -z "$slug_given" ]] && ! is_true "$(env_get TWENTY_MULTIWORKSPACE 0)"; then
     load_rows
     if ! is_local_slug "$slug"; then
@@ -485,11 +363,6 @@ cmd_init() {
         log "Using the local workspace '${slug}'; single-workspace mode has one"
       fi
     fi
-  fi
-  local left
-  left="$(unmigrated_for_init "$slug")"
-  if [[ -n "$left" ]]; then
-    die "${left} isn't in ${STORE} yet, so init would create a new, empty workspace beside it. Fix what migrate reported above (make doctor says why) and run ./scripts/crm.sh migrate, then init again"
   fi
   DIE_ERROR=server_unreachable
   require_running
@@ -734,7 +607,6 @@ cmd_add() {
     read | write) ;;
     *) die "TWENTY_ACCESS must be read or write" ;;
   esac
-  migrate_first
   if stored "$slug" && [[ -z "$force" ]]; then
     die "workspace '${slug}' exists (${STORE}/instances/${slug}.json); pass --force (make crm-add FORCE=1) to replace it"
   fi
@@ -813,7 +685,6 @@ cmd_add() {
   # configure merges, so drop a key the new values don't set.
   [[ -n "$ro" ]] || rm -f "${STORE}/secrets/${slug}.key_ro"
   [[ -n "$rw" ]] || rm -f "${STORE}/secrets/${slug}.key_rw"
-  retire_ws_file "$slug"
   log "Wrote ${STORE}/instances/${slug}.json (crm-${slug})"
   if ! is_true "$(env_get TWENTY_MCP_ENABLED 0)"; then
     upsert_env "$ENV_PATH" TWENTY_MCP_ENABLED 1
@@ -831,14 +702,12 @@ cmd_remove() {
     esac
   done
   valid_slug "$slug" || die "--slug must use lowercase letters, digits and hyphens"
-  migrate_first
   stored "$slug" || die "no workspace '${slug}' in ${STORE}"
   load_rows
   local was_local=""
   is_local_slug "$slug" && was_local=1
   addon_cli remove-instance twenty "$slug" || die "couldn't remove workspace '${slug}'"
   log "Removed workspace ${slug} and its keys from ${STORE}"
-  retire_ws_file "$slug"
   if [[ -n "$was_local" ]]; then
     log "The workspace and its keys still exist in Twenty; delete them there if you're done with them"
   fi
@@ -856,7 +725,6 @@ cmd_access() {
   done
   valid_slug "$slug" || die "--slug must use lowercase letters, digits and hyphens"
   [[ -n "$access" ]] || die "usage: crm.sh access --slug S read|write"
-  migrate_first
   stored "$slug" || die "no workspace '${slug}' in ${STORE}"
   load_rows
   if [[ "$access" == read && "$(row_get "$slug" 7)" != 1 ]]; then
@@ -896,7 +764,6 @@ cmd_login_link() {
     esac
   done
   [[ -z "$slug" ]] || valid_slug "$slug" || die "--slug must use lowercase letters, digits and hyphens"
-  migrate_first
   load_rows
   [[ -n "$slug" ]] || slug="$(default_slug)"
   valid_slug "$slug" || die "--slug must use lowercase letters, digits and hyphens"
@@ -921,7 +788,6 @@ cmd_open() {
       *) die "unknown option for open: $1" ;;
     esac
   done
-  migrate_first
   load_rows
   [[ -n "$slug" ]] || slug="$(default_slug)"
   local url
@@ -998,13 +864,7 @@ cmd_mode() {
   fi
 }
 
-cmd_migrate() {
-  [[ $# -eq 0 ]] || die "usage: crm.sh migrate"
-  migrate_workspaces || die "some workspace files weren't migrated; fix the errors above and run crm.sh migrate again"
-}
-
 cmd_ensure() {
-  mkdir -p "$WS_DIR"
   # The Hermes bootstraps mount the store read-only; created here (0700, as
   # addon_store makes them) so Docker doesn't create them root-owned on Linux.
   # Not fatal: on a store Docker already created root-owned, make up goes on
@@ -1016,7 +876,6 @@ cmd_ensure() {
     warn "couldn't set ${STORE}, its instances and its secrets to 0700 (another user, often root, owns one); run sudo chown -R \"\$(id -u):\$(id -g)\" '${STORE}'"
   fi
   sync_bool
-  migrate_first
   is_true "$(env_get TWENTY_LOCAL_ENABLED 0)" || return 0
   local dir
   dir="$(data_dir)"
@@ -1033,7 +892,6 @@ case "${1:-}" in
   open) shift; cmd_open "$@" ;;
   mode) shift; cmd_mode "$@" ;;
   ensure) cmd_ensure ;;
-  migrate) shift; cmd_migrate "$@" ;;
   connect) shift; cmd_connect "$@" ;;
   disconnect) shift; cmd_disconnect "$@" ;;
   grant-admin) shift; cmd_grant_admin "$@" ;;

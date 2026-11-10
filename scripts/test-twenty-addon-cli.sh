@@ -2,8 +2,8 @@
 # scripts/addon.sh against the real addons/twenty manifest, in a scratch ROOT
 # with its data root outside it, host python3, and stub docker, make and curl.
 # enable succeeds with no workspace stored (the instances are optional) and
-# runs crm.sh init (local instance off), which migrates a legacy workspace
-# file, and its done line carries the init hook's mcp names and message;
+# runs crm.sh init (local instance off) with one remote workspace already
+# stored, and its done line carries the init hook's mcp names and message;
 # connect follows;
 # connect and disconnect run crm.sh's hooks (a bad value or a local mismatch
 # comes back as crm.sh's error, a schema violation as addon.sh's bad_input);
@@ -27,7 +27,7 @@ tmp="$(cd "$(mktemp -d)" && pwd -P)"
 trap '[ -n "${KEEP_TMP:-}" ] && echo "kept $tmp" || rm -rf "$tmp"' EXIT
 root="${tmp}/stack"
 data="${tmp}/dataroot"
-mkdir -p "${root}/scripts/lib" "${root}/compose/twenty/workspaces" "$data" "${tmp}/bin" "${tmp}/out"
+mkdir -p "${root}/scripts/lib" "$data" "${tmp}/bin" "${tmp}/out"
 # addon.sh's reload step calls vault.sh reload-plugins.
 printf '#!/bin/sh\nexit 0\n' > "${root}/scripts/vault.sh"
 chmod +x "${root}/scripts/vault.sh"
@@ -51,13 +51,12 @@ grep -v -e '^ASSISTANT_DATA_ROOT=' -e '^TWENTY_DATA_DIR=' "${REPO}/.env.example"
   printf 'TWENTY_DATA_DIR=%s\n' "${data}/twenty"
 } >> "${root}/.env"
 
-# A workspace file from before 0.3.13, which enable's init hook migrates.
-cat > "${root}/compose/twenty/workspaces/legacy.env" <<'EOF'
-TWENTY_URL=https://legacy.example.com
-TWENTY_ACCESS=read
-TWENTY_KEY_RO=fake-legacy-ro-key
-TWENTY_KEY_RW=fake-legacy-rw-key
-EOF
+# A remote workspace already in the store, as addon_store writes one.
+mkdir -p "${data}/addons/twenty/instances" "${data}/addons/twenty/secrets"
+printf '{"url": "https://legacy.example.com", "access": "read", "local": false}\n' \
+  > "${data}/addons/twenty/instances/legacy.json"
+printf 'fake-legacy-ro-key' > "${data}/addons/twenty/secrets/legacy.key_ro"
+printf 'fake-legacy-rw-key' > "${data}/addons/twenty/secrets/legacy.key_rw"
 KEYS="fake-legacy-ro-key fake-legacy-rw-key fake-ro-key fake-refused-key"
 
 # Stubs log their argv, one call per line. curl prints CURL_CODE as the HTTP
@@ -143,30 +142,23 @@ lacks_line() { ! grep -q "$1" "$2"; }
 absent() { for p in "$@"; do [ ! -e "$p" ] || return 1; done; }
 present() { for p in "$@"; do [ -f "$p" ] || return 1; done; }
 json_file() { python3 -c "import json, sys; v = json.load(open(sys.argv[1])); sys.exit(0 if eval(sys.argv[2]) else 1)" "$1" "$2" 2> /dev/null; }
-ws="${root}/compose/twenty/workspaces"
 
 # --- enable first, with no workspace stored ----------------------------------------
 # Twenty's instances are optional, so enable succeeds. Its init hook runs
-# crm.sh init --json, which migrates the pre-0.3.13 legacy.env.
+# crm.sh init --json, which reports the stored legacy instance.
 addon enable twenty --json < /dev/null
 expect_rc "enable with no workspace stored exits 0" 0
 t "enable ends with done after the init step" \
   json_ok "done" 'any(l.get("step") == "init" and l.get("status") == "done" for l in lines)'
 no_keys "enable"
 # The init hook's done line carries the mcp names crm.sh init reports (the
-# migrated instance) and its message; addon.sh copies both into enable's.
+# stored instance) and its message; addon.sh copies both into enable's.
 t "enable's done lists crm-legacy, the name crm.sh init reports" \
   json_ok "done" 'last.get("mcp") == ["crm-legacy"]'
 t "enable's done carries the init hook's message" \
   json_ok "done" 'last.get("message") == "local instance off"'
 t "enable sets TWENTY_MCP_ENABLED=1" has_line '^TWENTY_MCP_ENABLED=1$' "${root}/.env"
 t "enable starts no service with TWENTY_LOCAL_ENABLED=0" lacks_line "compose up" "$STUB_LOG"
-t "init migrated legacy.env into the store" \
-  present "${store}/instances/legacy.json" "${store}/secrets/legacy.key_ro" "${store}/secrets/legacy.key_rw"
-t "legacy.env is renamed .env.migrated" present "${ws}/legacy.env.migrated"
-t "legacy.env is gone" absent "${ws}/legacy.env"
-t "the legacy instance keeps its url and access" \
-  json_file "${store}/instances/legacy.json" 'v["url"] == "https://legacy.example.com" and v["access"] == "read" and v["local"] is False'
 
 # --- connect sales: curl 200 ---------------------------------------------------
 CURL_CODE=200

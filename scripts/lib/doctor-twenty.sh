@@ -33,61 +33,8 @@ twenty_key_problem() {
   fi
 }
 
-# A value from a legacy workspace file, read as crm.sh's ws_get reads it: last
-# match, CR and surrounding whitespace dropped, then one pair of quotes.
-twenty_ws_get() {
-  local v
-  v="$(grep -E "^${2}=" "$1" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '\r' \
-    | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' || true)"
-  v="${v%\"}"; v="${v#\"}"
-  v="${v%\'}"; v="${v#\'}"
-  printf '%s' "$v"
-}
-
-# Why a legacy workspace file cannot migrate, or nothing. Mirrors the checks in
-# crm.sh migrate_workspaces (valid_slug, scheme, has_userinfo, key_ok, access,
-# json_safe), in the same order. Names the rule, never a value.
-twenty_unmigratable() {
-  local f="$1" slug url access v name
-  slug="$(basename "$f" .env)"
-  if ! [[ "$slug" =~ ^[a-z][a-z0-9-]{0,30}$ ]]; then
-    printf '%s' "the name must start with a letter and be at most 31 lowercase letters, digits and hyphens"
-    return 0
-  fi
-  url="$(twenty_ws_get "$f" TWENTY_URL)"
-  url="${url%/}"
-  if ! [[ "$url" =~ ^https?:// ]]; then
-    printf '%s' "TWENTY_URL is not an http(s) URL"
-    return 0
-  fi
-  if [[ "$url" =~ ^[A-Za-z]+://[^/?#]*@ ]]; then
-    printf '%s' "the URL carries user:password@"
-    return 0
-  fi
-  for name in TWENTY_KEY_RO TWENTY_KEY_RW; do
-    v="$(twenty_ws_get "$f" "$name")"
-    if [[ "$v" == *[[:space:][:cntrl:]]* ]]; then
-      printf '%s' "a key holds whitespace or a control character"
-      return 0
-    fi
-  done
-  access="$(twenty_ws_get "$f" TWENTY_ACCESS)"
-  case "${access:-write}" in read | write) ;; *) printf '%s' "TWENTY_ACCESS must be read or write"; return 0 ;; esac
-  for name in TWENTY_URL TWENTY_WORKSPACE_URL TWENTY_WORKSPACE_ID TWENTY_KEY_RO TWENTY_KEY_RW; do
-    v="$(twenty_ws_get "$f" "$name")"
-    case "$v" in
-      *\"* | *\\*) printf '%s' "a value holds a quote or backslash"; return 0 ;;
-    esac
-    if [[ "$v" == *[[:cntrl:]]* ]]; then
-      printf '%s' "a value holds a control character"
-      return 0
-    fi
-  done
-  return 0
-}
-
 doctor_twenty() {
-  local twenty_local twenty_mcp twenty_port data_root store f slug leftovers=0 pair
+  local twenty_local twenty_mcp twenty_port data_root store f slug pair
   twenty_local="$(env_get TWENTY_LOCAL_ENABLED 0)"
   case "$twenty_local" in 1 | true | TRUE | yes | YES) twenty_local=1 ;; *) twenty_local=0 ;; esac
   twenty_mcp="$(env_get TWENTY_MCP_ENABLED 0)"
@@ -95,29 +42,13 @@ doctor_twenty() {
   data_root="$(env_get ASSISTANT_DATA_ROOT ./data)"
   [[ "$data_root" == /* ]] || data_root="${ROOT}/${data_root#./}"
   store="${data_root}/addons/twenty"
-  for f in compose/twenty/workspaces/*.env; do
-    [[ -f "$f" ]] && leftovers=$((leftovers + 1))
-  done
 
-  if has_profile crm || [[ "$twenty_local" -eq 1 || "$twenty_mcp" -eq 1 || "$leftovers" -gt 0 ]]; then
+  if has_profile crm || [[ "$twenty_local" -eq 1 || "$twenty_mcp" -eq 1 ]]; then
     echo
     echo "--- CRM (Twenty) ---"
   else
     return 0
   fi
-
-  for f in compose/twenty/workspaces/*.env; do
-    [[ -f "$f" ]] || continue
-    local why
-    why="$(twenty_unmigratable "$f")"
-    if [[ -f "${store}/instances/$(basename "$f" .env).json" ]]; then
-      warn "${f}: ${store} already has this workspace, so migrate keeps the stored one and leaves the file. Delete the file once you've checked the store"
-    elif [[ -n "$why" ]]; then
-      warn "${f} was not migrated to ${store}, and can't be: ${why}. Fix the file, then run ./scripts/crm.sh migrate"
-    else
-      warn "${f} was not migrated to ${store} — run ./scripts/crm.sh migrate"
-    fi
-  done
 
   twenty_port="$(env_get TWENTY_PORT 3000)"
   if [[ "$twenty_local" -eq 1 ]]; then

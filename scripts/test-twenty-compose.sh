@@ -69,10 +69,8 @@ for k in TWENTY_LOCAL_ENABLED TWENTY_MCP_ENABLED TWENTY_MULTIWORKSPACE TWENTY_PO
   grep -qE "^#? ?${k}=" "${ROOT}/.env.example" || fail ".env.example documents ${k}"
 done
 
-# Temp files that hold keys while a workspace file is written stay out of git.
-for f in compose/twenty/workspaces/.main.env.tmp compose/twenty/workspaces/.main.AbC123 compose/twenty/workspaces/main.env; do
-  git -C "$ROOT" check-ignore -q "$f" || fail "$f must be gitignored"
-done
-if git -C "$ROOT" check-ignore -q compose/twenty/workspaces/.gitkeep; then fail ".gitkeep must stay tracked"; fi
+# Workspace files left from before 0.3.13 hold keys and stay out of git.
+git -C "$ROOT" check-ignore -q compose/twenty/workspaces/main.env \
+  || fail "compose/twenty/workspaces/main.env must be gitignored"
 
 printf 'OK Twenty compose profile\n'

@@ -24,6 +24,7 @@ scripts/test-actual-registration.sh             ci
 scripts/test-actual-rows.sh                     ci image
 scripts/test-addon-cli.sh                       ci
 scripts/test-addon-cron-fence.sh                ci image
+scripts/test-addon-dirs.sh                      ci
 scripts/test-addon-manifests.py                 ci
 scripts/test-addon-mcp-access.sh                ci
 scripts/test-addon-store.py                     ci
@@ -48,7 +49,6 @@ scripts/test-client-context.py                  ci image
 scripts/test-compaction-tool-facts.py           ci image
 scripts/test-compose-env-allowlist.py           ci docker
 scripts/test-cont-init-env.py                   ci docker
-scripts/test-crm-migrate.sh                     ci
 scripts/test-crm-script.py                      ci
 scripts/test-crm-sh.sh                          ci
 scripts/test-cron-delivery-errors.py            ci
