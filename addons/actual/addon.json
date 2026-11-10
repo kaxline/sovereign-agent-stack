@@ -195,6 +195,7 @@
   },
   "instances": {
     "name": "budget",
+    "optional": true,
     "settings": {
       "server": {
         "type": "string",

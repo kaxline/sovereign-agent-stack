@@ -1477,6 +1477,13 @@ with tempfile.TemporaryDirectory() as tmp:
           stored_inst.get("access") == "write" and stored_inst.get("server") == "https://actual.example.com"
           and stored_inst.get("sync_id") == "abc-123", str(stored_inst))
 
+# addon.sh enable actual works before any budget is connected (Boundary's local
+# flow, and v0.3.12 installs): no row is required.
+check("actual: instances block is optional", ac["instances"].get("optional") is True)
+with tempfile.TemporaryDirectory() as tmp:
+    ac_missing = addon_store.missing(ac, Path(tmp))
+    check("actual: missing() is empty with no rows", ac_missing == [], str(ac_missing))
+
 if failures:
     print(f"{failures} failed")
     sys.exit(1)
