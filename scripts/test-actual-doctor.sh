@@ -153,7 +153,31 @@ has "a good row is OK" "  OK  budget-main: ok"
 has "an expired row warns" " WARN budget-second: token_expired"
 [ "$(grep -c 'WARN budget-' "$out")" = 1 ] || fail "exactly one budget warning ($(cat "$out"))"
 hasnt "a row's output holds no token" "tok-"
+
+# Rows on Linux as a uid other than 1000: the containers can't read the secrets.
+STUB_UNAME=Linux STUB_UID=1001 doctor
+has "rows on Linux uid 1001 fail" "read the connected budgets' secret files as uid 1000"
+STUB_UNAME=Linux STUB_UID=1000 doctor
+hasnt "rows on Linux uid 1000 pass" "secret files as uid 1000"
+
+# Rows and no single budget: no budget.env checks, but the profile, the
+# containers and the rows still are.
+for ref in "" "./compose/actual/no-budget.env"; do
+  printf 'COMPOSE_PROFILES=core\nACTUAL_MCP_ENABLED=1\nACTUAL_LOCAL_ENABLED=1\nACTUAL_BUDGET_FILE=%s\n' "$ref" > "$tmp/work/.env"
+  : > "$STUB/docker.argv"
+  doctor
+  has "rows-only ($ref) says no single budget is configured" "  OK  no single budget is configured"
+  hasnt "rows-only ($ref) doesn't ask for make budget-init" "make budget-init"
+  hasnt "rows-only ($ref) checks no budget file" "is missing"
+  has "rows-only ($ref) still checks the profile" "'budget' not in COMPOSE_PROFILES"
+  has "rows-only ($ref) still checks the containers" "actual-mcp-rw is healthy"
+  has "rows-only ($ref) still checks the local server" "actual-server is healthy"
+  has "rows-only ($ref) still runs tools/list" "actual-mcp-rw answers tools/list"
+  has "rows-only ($ref) still lists the rows" "  OK  budget-main: ok"
+  hasnt "rows-only ($ref) runs no single-budget credential check" "opens with the credentials"
+done
 rm -f "$inst"/*.json "$sec"/*.session_token
+# Without rows an empty ACTUAL_BUDGET_FILE is still a FAIL (checked below).
 
 # A missing budget file.
 rm -f "$f"
