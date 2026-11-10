@@ -1,8 +1,9 @@
 """`docker compose config` rendered as JSON, for tests that check the stack's wiring.
 
-Only docker-compose.yml is loaded. A local docker-compose.override.yml adds
-machine-specific binds and services that would make the same test pass in CI
-and fail on a workstation (or the reverse). Renders are cached per process,
+Only docker-compose.yml is loaded, and ASSISTANT_DATA_ROOT is ./data unless
+the caller passes another. A local docker-compose.override.yml or a data root
+set in .env would make the same test pass in CI and fail on a workstation (or
+the reverse). Renders are cached per process,
 so tests that ask for the same profiles and environment twice run compose once.
 """
 
@@ -33,6 +34,8 @@ def _render(profiles: str, env_items: tuple[tuple[str, str], ...], drop: tuple[s
     env = os.environ.copy()
     for key in drop:
         env.pop(key, None)
+    # Set in the environment, it wins over .env.
+    env["ASSISTANT_DATA_ROOT"] = "./data"
     env.update(env_items)
     env["COMPOSE_PROFILES"] = profiles
     proc = subprocess.run(
