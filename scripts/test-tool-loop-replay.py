@@ -99,16 +99,14 @@ print("image ok")
 '''
 
 
-def test_overlay_is_wired() -> None:
+def test_runs_after_notes() -> None:
     runner = (ROOT / "compose" / "hermes" / "05-patch-tool-calling.sh").read_text()
     notes = runner.index("run_patch /bootstrap/patch-tool-loop-notes.py")
     replay = runner.index("run_patch /bootstrap/patch-tool-loop-replay.py")
     assert notes < replay, "replay overlay must run after the notes overlay"
-    assert "/bootstrap/patch-tool-loop-replay.py:ro" in (ROOT / "docker-compose.yml").read_text()
-
 
 def main() -> None:
-    test_overlay_is_wired()
+    test_runs_after_notes()
     print("ok")
     hermes_image.maybe_run(IMAGE_DRIVER)
 

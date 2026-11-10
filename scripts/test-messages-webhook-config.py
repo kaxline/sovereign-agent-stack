@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
-from testkit import expect, fail  # noqa: E402
+from testkit import expect  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 BOOTSTRAP = ROOT / "compose" / "hermes" / "bootstrap-api-profile.sh"

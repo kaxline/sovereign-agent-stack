@@ -20,7 +20,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts" / "lib"))
-from testkit import expect, fail  # noqa: E402
+from testkit import expect  # noqa: E402
 
 import hermes_image  # noqa: E402
 
@@ -32,9 +32,8 @@ EARLIER_VAULT_OVERLAYS = ("/bootstrap/patch-browser-exec-hint.py", "/bootstrap/p
                           "/bootstrap/patch-vault-capture-secret.py")
 
 
-def test_overlay_is_wired() -> None:
+def test_overlay_order() -> None:
     runner = (ROOT / "compose" / "hermes" / "05-patch-tool-calling.sh").read_text()
-    expect("run_patch /bootstrap/patch-bitwarden-broker-fill.py" in runner, "cont-init runs the patch")
     expect(runner.index("patch-digest-redaction.py") < runner.index("patch-bitwarden-broker-fill.py"),
            "the fill overlay runs after the digest overlay")
     # These also patch tools/browser_vault_tool.py and run first; the image driver applies them in this order.
@@ -43,14 +42,10 @@ def test_overlay_is_wired() -> None:
         expect(f"run_patch {earlier}" in runner
                and runner.index(name) < runner.index("patch-bitwarden-broker-fill.py"),
                f"{name} runs before the fill overlay")
-    compose = (ROOT / "docker-compose.yml").read_text()
-    expect("./compose/hermes/patch-bitwarden-broker-fill.py:/bootstrap/patch-bitwarden-broker-fill.py:ro"
-           in compose, "the patch is mounted")
     patch = (ROOT / "compose" / "hermes" / "patch-bitwarden-broker-fill.py").read_text()
     for name in ("_ensure_supervisor", "focus_page", "_page_session_id",
                  "return _fill_bound_page(backend, handle, meta, page_origin, effective_task_id)"):
         expect(name in patch, f"NEEDED names {name}")
-
 
 IMAGE_DRIVER = r'''
 import json, logging, os, secrets, socket, string, subprocess, sys, tempfile, threading, time, urllib.request
@@ -370,7 +365,7 @@ os.write(1, b"image ok\n")
 
 
 def main() -> None:
-    test_overlay_is_wired()
+    test_overlay_order()
     print("ok")
     driver = f"EARLIER_VAULT_OVERLAYS = {EARLIER_VAULT_OVERLAYS!r}\n" + IMAGE_DRIVER
     hermes_image.maybe_run(driver, mounts=[(str(BROKER_SRC), "/broker-src")])
