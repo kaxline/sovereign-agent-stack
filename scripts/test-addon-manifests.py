@@ -1454,6 +1454,29 @@ check("actual: listing shows hooks and errors",
       and ac_listing["errors"] == ["bad_access", "encryption_password", "unknown_profile"],
       f"{ac_listing['hooks']} {ac_listing['errors']}")
 
+# mcp-plan for the Actual add-on is what it was before the instance settings and hooks
+# were added (captured at a0ed9ea): one line per profile and ACTUAL_MCP_ENABLED value.
+ac_frozen = (ROOT / "scripts" / "fixtures" / "actual-mcp-plan-a0ed9ea.txt").read_text().splitlines()
+ac_now = []
+for prof in ("default", "browser", "api-server"):
+    for on in ("0", "1"):
+        for line in am.mcp_plan(ROOT / "addons", prof, {"ACTUAL_MCP_ENABLED": on}):
+            if line.startswith("budget|"):
+                ac_now.append(f"{prof} {on}\t{line}")
+check("actual: mcp-plan lines for default, browser and api-server are unchanged",
+      ac_now == ac_frozen and len(ac_now) == 6, f"{len(ac_now)} lines")
+
+# configure --instance with only access keeps server and sync_id (budget.sh access).
+with tempfile.TemporaryDirectory() as tmp:
+    root = Path(tmp)
+    addon_store.apply_instance(ac, root, "main", {"server": "https://actual.example.com", "sync_id": "abc-123"})
+    addon_store.apply_instance(ac, root, "main", {"access": "write"})
+    stored_inst = json.loads((root / "addons" / "actual" / "instances" / "main.json").read_text()) \
+        if (root / "addons" / "actual" / "instances" / "main.json").exists() else {}
+    check("actual: configuring only access keeps server and sync_id",
+          stored_inst.get("access") == "write" and stored_inst.get("server") == "https://actual.example.com"
+          and stored_inst.get("sync_id") == "abc-123", str(stored_inst))
+
 if failures:
     print(f"{failures} failed")
     sys.exit(1)
