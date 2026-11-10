@@ -145,10 +145,16 @@ class Unreturned:
             if handle in self._records:
                 self._save({h: r for h, r in self._records.items() if h != handle})
 
-    def entries(self) -> list[dict]:
-        """``{account, label, site}`` per record, sorted by account and then label; no handle."""
+    def handles(self) -> list[str]:
         with self._lock:
-            rows = [{k: r[k] for k in ("account", "label", "site")} for r in self._records.values()]
+            return list(self._records)
+
+    def entries(self, accounts=None) -> list[dict]:
+        """``{account, label, site}`` per record, sorted by account and then label; no handle.
+        With ``accounts``, only records of those accounts."""
+        with self._lock:
+            rows = [{k: r[k] for k in ("account", "label", "site")} for r in self._records.values()
+                    if accounts is None or r["account"] in accounts]
         return sorted(rows, key=lambda r: (r["account"], r["label"], r["site"]))
 
     def _save(self, records: dict[str, dict]) -> None:

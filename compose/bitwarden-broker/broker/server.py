@@ -313,7 +313,8 @@ class Broker:
     def get_requests(self, _body) -> dict:
         self.requests.expire()
         return {"pending": self.requests.pending(), "recent": self.requests.recent(),
-                "unreturned": self.unreturned.entries()}
+                # A removed account's records stay in the file but are not listed.
+                "unreturned": self.unreturned.entries(self.accounts)}
 
     def post_release(self, body) -> dict:
         _fields(body, required=("handle",))
@@ -456,14 +457,22 @@ class Broker:
         return ok
 
     def _prune(self, slug: str) -> None:
-        """Drop denylist entries for this account's items that the last listing no longer has."""
+        """Drop denylist entries for this account's items that the last listing no longer has,
+        and this account's unreturned records whose handle is not on the denylist."""
         present = self.bws[slug].cached_ids()
         if present is None:
             return
         prefix = f"{HANDLE_PREFIX}{slug}/"
         for handle in self.denylist.handles():
             if handle.startswith(prefix) and handle[len(prefix):] not in present:
+                # The record goes first: a crash between the two leaves a denylist entry
+                # the next prune removes, never a record without one.
+                self.unreturned.remove(handle)
                 self.denylist.remove(handle)
+        # A release that a prune overtook (between its denylist add and its record add)
+        # leaves a record with no denylist entry.
+        for handle in self.unreturned.handles():
+            if handle.startswith(prefix) and handle not in self.denylist:
                 self.unreturned.remove(handle)
 
     def _mark_done(self) -> None:
