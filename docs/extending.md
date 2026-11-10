@@ -655,7 +655,7 @@ a changelog entry.
 | `configure <short-id> --instance <slug> < values.json` | Same for one instance. Values you omit keep their stored value |
 | `configure <short-id> --instance <slug> --remove` | Deletes the instance's file and secrets |
 | `enable <short-id> [--reinit] [--json]` | Checks required settings, sets the add-on's flag and gate flags in `.env`, syncs compose profiles, starts the services whose gate is on, runs the `init` hook once, reloads Hermes |
-| `disable <short-id> [--purge] [--json]` | Sets the flag and every gate flag to `0`, stops the services, reloads Hermes. `--purge` then does what `remove --delete-data` does, under the same lock |
+| `disable <short-id> [--purge] [--json]` | Sets the flag and every gate flag to `0`, stops the services, reloads Hermes. A gate flag that is on in `.env` while its `bool` setting isn't stored (set by hand) gets the setting stored as `true` first, so the next `enable` turns it back on. `--purge` then does what `remove --delete-data` does, under the same lock |
 | `connect <short-id> --instance <slug> [--json] < values.json` | Checks the values, runs the manifest's `instances.connect` hook, stores the instance, reloads Hermes |
 | `disconnect <short-id> --instance <slug> [--json]` | Runs `instances.disconnect`, removes the instance, reloads Hermes |
 | `remove <short-id> --delete-data [--json]` | Deletes the add-on's containers, compose volumes and data. Refused while the add-on is enabled |

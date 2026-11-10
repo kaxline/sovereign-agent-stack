@@ -30,11 +30,13 @@ runs in the Hermes image through stack_python, so the host needs no python3.
         "oneshots", "recreate" (onToggle.recreate), "uses" (the compose
         service of each `uses` name in USES_COMPOSE) and "mcp" (each mcp name,
         "name@FLAG" when the entry has a gate).
-    plan-disable SID
+    plan-disable SID [--flags JSON]
         Prints {"builtin": FLAG, "flags": {...}, "services": [...], "volumes": [...]}: builtin.flag
         and every gate flag at "0", every compose service, and the compose
         volumes the manifest declares, plus "recreate", "uses" and "mcp" as
-        plan-enable prints them.
+        plan-enable prints them. First, a bool setting whose flag is a gate
+        that is "1" in --flags (the .env flags) and that isn't stored is
+        stored as true, so plan-enable restores the flag.
     toggle-script SID
         Prints onToggle.script's argv, one item per line; nothing without one.
     plan-run SID COMMAND [--instance SLUG]
@@ -360,6 +362,17 @@ def cmd_plan_enable(args) -> None:
 
 def cmd_plan_disable(args) -> None:
     manifest = _manifest(args.addons_dir, args.sid)
+    env_flags = _flags_arg(args.flags)
+    # A gate flag that a bool setting owns, on in .env with the setting never
+    # stored (set by hand, as v0.3.12 did ACTUAL_LOCAL_ENABLED), is stored as
+    # true before the flag is zeroed, so the next enable turns it back on.
+    gates = set(_gate_flags(manifest))
+    stored = store.stored(manifest, store.addon_dir(args.data_root, manifest))
+    keep = {name: True for name, spec in manifest.get("settings", {}).items()
+            if spec.get("type") == "bool" and spec.get("flag") in gates
+            and env_flags.get(spec["flag"]) == "1" and name not in stored}
+    if keep:
+        store.apply_settings(manifest, args.data_root, keep)
     flags = {f: "0" for f in [manifest["builtin"]["flag"], *_gate_flags(manifest)]}
     services = [_compose(manifest, key) for key in manifest["services"]]
     _dump({"builtin": manifest["builtin"]["flag"], "flags": flags, "services": services,
@@ -883,11 +896,14 @@ def main(argv: list[str]) -> int:
     s.add_argument("sid")
     s.add_argument("file")
     s.set_defaults(func=cmd_redact)
-    for name, func in (("plan-enable", cmd_plan_enable), ("plan-disable", cmd_plan_disable),
-                       ("data-envs", cmd_data_envs)):
+    for name, func in (("plan-enable", cmd_plan_enable), ("data-envs", cmd_data_envs)):
         s = sub.add_parser(name)
         s.add_argument("sid")
         s.set_defaults(func=func)
+    s = sub.add_parser("plan-disable")
+    s.add_argument("sid")
+    s.add_argument("--flags", default="{}")
+    s.set_defaults(func=cmd_plan_disable)
     s = sub.add_parser("plan-remove")
     s.add_argument("sid")
     s.add_argument("--env", default="{}")
