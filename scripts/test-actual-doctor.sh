@@ -151,6 +151,18 @@ has "an expired row warns" " WARN budget-second: token_expired"
 [ "$(grep -c 'WARN budget-' "$out")" = 1 ] || fail "exactly one budget warning ($(cat "$out"))"
 hasnt "a row's output holds no token" "tok-"
 
+# A local row while the local server is off: one warning with the way back
+# on, and the remote rows still read ok.
+printf '{"server":"local","sync_id":"s3","profile":"default","access":"read"}' > "$inst/mine.json"
+printf 'COMPOSE_PROFILES=core,budget\nACTUAL_MCP_ENABLED=1\nACTUAL_LOCAL_ENABLED=0\nACTUAL_BUDGET_FILE=\n' > "$tmp/work/.env"
+doctor
+has "a local row with the server off warns server_off" " WARN budget-mine: server_off"
+has "server_off says how to turn the local server back on" "addon.sh configure actual with {\"local\": true}, then scripts/addon.sh enable actual (add --reinit"
+[ "$(grep -c 'WARN budget-mine' "$out")" = 1 ] || fail "exactly one server_off warning ($(cat "$out"))"
+has "a remote row beside it is still checked" "  OK  budget-main: ok"
+rm -f "$inst/mine.json"
+setenv
+
 # Rows on Linux as a uid other than 1000: the containers can't read the secrets.
 STUB_UNAME=Linux STUB_UID=1001 doctor
 has "rows on Linux uid 1001 fail" "read the connected budgets' secret files as uid 1000"
