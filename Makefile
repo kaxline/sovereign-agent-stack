@@ -244,8 +244,9 @@ addon-test:
 #   make budget-open                         open the web app, password on the clipboard
 #   make budget-remove                       forget the budget (file only; server data stays)
 #   make budget-access ACCESS=read           look things up only (write: make changes)
-#   make budget-connect SLUG=name URL=https://...|local [ACCESS=write] [SYNC_ID=id]
-#     connect one more budget through addon.sh (asks for the passwords)
+#   make budget-connect SLUG=name URL=https://...|local [ACCESS=write] [SYNC_ID=id] [FORCE=1]
+#     connect one more budget through addon.sh (asks for the passwords);
+#     FORCE=1 replaces an existing connection of that name
 #   make budget-disconnect SLUG=name         disconnect it
 budget-init:
 	$(if $(SYNC_ID),ACTUAL_BUDGET_SYNC_ID="$(SYNC_ID)") ./scripts/budget.sh init $(if $(ROTATE),--rotate)
@@ -265,8 +266,8 @@ budget-access:
 	./scripts/budget.sh access "$(ACCESS)"
 
 budget-connect:
-	@test -n "$(SLUG)" -a -n "$(URL)" || (echo "Usage: make budget-connect SLUG=name URL=https://budget.example.com|local [ACCESS=write] [SYNC_ID=id]"; exit 1)
-	@./scripts/budget.sh connect-cli --slug "$(SLUG)" --url "$(URL)" $(if $(ACCESS),--access "$(ACCESS)") $(if $(SYNC_ID),--sync-id "$(SYNC_ID)")
+	@test -n "$(SLUG)" -a -n "$(URL)" || (echo "Usage: make budget-connect SLUG=name URL=https://budget.example.com|local [ACCESS=write] [SYNC_ID=id] [FORCE=1]"; exit 1)
+	@./scripts/budget.sh connect-cli --slug "$(SLUG)" --url "$(URL)" $(if $(ACCESS),--access "$(ACCESS)") $(if $(SYNC_ID),--sync-id "$(SYNC_ID)") $(if $(filter 1,$(FORCE)),--force)
 
 budget-disconnect:
 	@test -n "$(SLUG)" || (echo "Usage: make budget-disconnect SLUG=name"; exit 1)

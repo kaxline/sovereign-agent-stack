@@ -15,7 +15,10 @@ http://actual-mcp-rw:3000/<slug>/mcp with every tool. Only rows whose profile
 is default appear, and only on the default and browser profiles. A row the
 actual-mcp launcher would skip (bad slug, access, server or sync_id) is
 skipped here too, with one stderr line naming it; the launcher also skips a
-row with no session token, which this never reads.
+row with no session token, which this never reads. A row whose server is
+"local" is skipped as well while ACTUAL_LOCAL_ENABLED is not truthy (1, true,
+yes or on in any case, one pair of quotes stripped, as addon.sh reads .env
+flags); the launcher keeps serving it, but Hermes no longer lists it.
 
 Tool lists, pins and timeouts come from addons/actual/addon.json through
 addon_manifest. With no Actual manifest it prints nothing; with an invalid
@@ -25,6 +28,7 @@ one it exits 1, so the bootstrap leaves the entries as they were.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -40,6 +44,13 @@ SLUG_RE = re.compile(r"^[a-z][a-z0-9-]{0,30}\Z")
 ROW_PROFILES = {"default": "default", "browser": "default"}
 RO_URL = "http://actual-mcp-ro:3000/{slug}/mcp"
 RW_URL = "http://actual-mcp-rw:3000/{slug}/mcp"
+
+
+def local_enabled() -> bool:
+    """ACTUAL_LOCAL_ENABLED as addon.sh's env_flags_json reads a .env value."""
+    value = os.environ.get("ACTUAL_LOCAL_ENABLED", "")
+    value = value.removesuffix('"').removeprefix('"').removesuffix("'").removeprefix("'")
+    return value.lower() in ("1", "true", "yes", "on")
 
 
 def warn(slug: str, reason: str) -> None:
@@ -76,6 +87,7 @@ def rows(instances_dir: Path) -> list[tuple[str, str, str]]:
     except FileNotFoundError:
         return []
     out = []
+    local_on = local_enabled()
     for name in names:
         slug = name[: -len(".json")]
         if not SLUG_RE.match(slug):
@@ -99,6 +111,9 @@ def rows(instances_dir: Path) -> list[tuple[str, str, str]]:
         server = fields.get("server")
         if not (server == "local" or (isinstance(server, str) and is_http_url(server))):
             warn(slug, 'server must be an http(s) URL or "local"')
+            continue
+        if server == "local" and not local_on:
+            warn(slug, "the local Actual server is off (ACTUAL_LOCAL_ENABLED)")
             continue
         sync_id = fields.get("sync_id")
         if not isinstance(sync_id, str) or not sync_id.strip():
