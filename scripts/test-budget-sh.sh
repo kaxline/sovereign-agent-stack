@@ -610,8 +610,11 @@ disconnect_run main
 [ "$brc" = 0 ] && [ "$(jget 1 phase)" = "done" ] || fail "disconnect ($(cat "$tmp/jout" "$tmp/jerr"))"
 nofiles || fail "disconnect removes both secret files"
 [ -e "$sec/other.session_token" ] || fail "disconnect leaves other slugs alone"
+# No files (a half-finished connect, hand-deleted secrets): still done, so
+# addon.sh goes on to remove the row.
 disconnect_run nope
-[ "$brc" = 2 ] && [ "$(jget 1 error)" = not_found ] || fail "disconnect of an unknown slug is not_found"
+[ "$brc" = 0 ] && [ "$(cat "$tmp/jout")" = '{"phase":"done"}' ] || fail "disconnect with no files is done ($(cat "$tmp/jout" "$tmp/jerr"))"
+[ -e "$sec/other.session_token" ] || fail "disconnect with no files touches nothing else"
 disconnect_run Bad_Slug
 [ "$brc" = 2 ] && [ "$(jget 1 error)" = bad_slug ] || fail "disconnect bad slug"
 rm -f "$sec/other.session_token"

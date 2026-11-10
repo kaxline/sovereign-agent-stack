@@ -69,7 +69,8 @@ Usage: scripts/budget.sh <command> [options]
         <data root>/addons/actual/secrets/ (mode 600). Writes nothing when
         any check fails. Prints {"phase":"done","account":...,"mcp":[...]}.
   disconnect --slug SLUG --json
-        A hook addon.sh runs. Removes SLUG's files from that secrets folder.
+        A hook addon.sh runs. Removes SLUG's files from that secrets folder;
+        done also when there are none.
   status [--slug SLUG] --json
         Opens each connected budget (addons/actual/instances/*.json) with its
         stored session token. One {"phase":"budget","slug","profile","access",
@@ -577,16 +578,16 @@ cmd_connect() {
   emit_done account "$(json_str "$slug")" mcp "[${mcp}]"
 }
 
+# disconnect: done with or without files to remove. addon.sh reports an
+# unknown slug itself, and must still drop a row whose secrets are gone.
 cmd_disconnect() {
-  local slug="" sdir="" f found=0
+  local slug="" sdir="" f
   hook_args disconnect "$@"
   secrets_dir
   for f in "${sdir}/${slug}".*; do
     [[ -e "$f" ]] || continue
     rm -f "$f"
-    found=1
   done
-  [[ "$found" == 1 ]] || emit_error not_found "no stored credentials for ${slug}"
   # shellcheck disable=SC2119
   emit_done
 }
