@@ -4,10 +4,11 @@
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=lib/testkit.sh
+. "${ROOT}/scripts/lib/testkit.sh"
 bootstrap="${ROOT}/compose/hermes/bootstrap-api-profile.sh"
 
-# shellcheck disable=SC1090
-eval "$(sed -n '/^register_messages_mcp_servers() {/,/^}/p' "$bootstrap")"
+load_fns "$bootstrap" register_messages_mcp_servers
 eval "$(grep -E '^MESSAGES_(MCP_URL|MCP_TIMEOUT|MCP_CONNECT_TIMEOUT|MCP_TOOLS|TRIAGE_TOOL)=' "$bootstrap")"
 
 calls=""
@@ -15,11 +16,6 @@ log() { :; }
 register_mcp_server() { calls="${calls}register:${1:-default}:${2}:$(shift 6; echo "$*");"; }
 pin_mcp_tools() { calls="${calls}pin:${1:-default}:$(shift 2; echo "$*");"; }
 drop_mcp_entries_for_url() { calls="${calls}drop:${1:-default}:${3};"; }
-
-fail() {
-  printf 'FAIL %s\n' "$1" >&2
-  exit 1
-}
 
 run() {
   calls=""
@@ -51,7 +47,9 @@ done
 
 grep -q '"messages-mcp:8000"' "$bootstrap" || fail "the cron fence must cover messages-mcp"
 grep -q '"cron_job": "messages-triage"' "$bootstrap" || fail "the webhook route must fire messages-triage"
-if sed -n '/^configure_messages_webhook() {/,/^}/p' "$bootstrap" | grep -q 'PROMPT = .*{chat\|PROMPT = .*{senders'; then
+# Not in a pipeline: a missing function must fail here, not pass the grep.
+webhook_src="$(fn_source "$bootstrap" configure_messages_webhook)" || exit 1
+if printf '%s\n' "$webhook_src" | grep -q 'PROMPT = .*{chat\|PROMPT = .*{senders'; then
   fail "the webhook prompt must not carry chat or sender names"
 fi
 

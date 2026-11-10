@@ -5,6 +5,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=lib/testkit.sh
+. "${ROOT}/scripts/lib/testkit.sh"
 crm="${ROOT}/scripts/crm.sh"
 tmp="$(mktemp -d)"
 trap 'chmod -R u+rwx "$tmp" 2>/dev/null; rm -rf "$tmp"' EXIT
@@ -18,10 +20,6 @@ printf 'TWENTY_MULTIWORKSPACE=0\nTWENTY_PORT=3000\n' > "$ENV_FILE"
 store="$ASSISTANT_DATA_ROOT/addons/twenty"
 ws="$CRM_WORKSPACES_DIR"
 
-fail() {
-  printf 'FAIL %s\n' "$1" >&2
-  exit 1
-}
 out="$tmp/out"
 err="$tmp/err"
 run() {

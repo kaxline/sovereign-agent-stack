@@ -9,6 +9,9 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+from testkit import expect, fail  # noqa: E402
+
 HERE = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location("check_mail_cron", HERE / "check-mail-cron.py")
 cmc = importlib.util.module_from_spec(spec)
@@ -27,16 +30,6 @@ SERVERS = """mcp_servers:
   drafts:
     url: http://mail-drafts-mcp:8000/mcp
 """
-
-
-def fail(msg: str) -> None:
-    print(f"FAIL {msg}", file=sys.stderr)
-    raise SystemExit(1)
-
-
-def expect(cond: bool, msg: str) -> None:
-    if not cond:
-        fail(msg)
 
 
 def home(tmp: Path, name: str, config: str, jobs: list[dict], profile: str | None = None) -> Path:

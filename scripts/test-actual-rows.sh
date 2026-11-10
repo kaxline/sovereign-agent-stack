@@ -11,16 +11,13 @@
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=lib/testkit.sh
+. "${ROOT}/scripts/lib/testkit.sh"
 bootstrap="${ROOT}/compose/hermes/bootstrap-api-profile.sh"
 rows_py="${ROOT}/scripts/lib/actual_rows.py"
 # shellcheck source=lib/hermes-image.sh
 . "${ROOT}/scripts/lib/hermes-image.sh"
 image="$HERMES_IMAGE"
-
-fail() {
-  printf 'FAIL %s\n' "$1" >&2
-  exit 1
-}
 
 [ -f "$rows_py" ] || fail "scripts/lib/actual_rows.py exists"
 
@@ -93,13 +90,8 @@ echo "ok: plan"
 
 # --- register_actual_budget_rows with stubbed writers ------------------------
 
-for fn in actual_rows_plan actual_rows_on actual_single_budget_off register_actual_budget_rows \
-    actual_row_urls actual_row_pin_args mcp_tool_name; do
-  range='/^'"${fn}"'() {/,/^}/p'
-  # shellcheck disable=SC1090
-  eval "$(sed -n "$range" "$bootstrap")"
-  command -v "$fn" >/dev/null 2>&1 || fail "${fn} missing from bootstrap"
-done
+load_fns "$bootstrap" actual_rows_plan actual_rows_on actual_single_budget_off \
+  register_actual_budget_rows actual_row_urls actual_row_pin_args mcp_tool_name
 ADDONS_DIR="${ROOT}/addons"
 ADDON_DATA_DIR="${tmp}/addon-data"
 ACTUAL_ROWS_PY="$rows_py"
@@ -210,10 +202,10 @@ work="${tmp}/image"
 mkdir -p "${work}/home/profiles/api-server" "${work}/data/actual/instances"
 {
   for fn in actual_rows_plan actual_rows_on actual_single_budget_off register_actual_budget_rows \
-      reconcile_actual_budget_rows register_mcp_server set_yaml_list hermes_config_set config_flush \
-      pin_mcp_tools mcp_tool_name pin_tool_search_always_include ensure_yaml_list_items \
-      config_path_for python3; do
-    sed -n "/^${fn}() {/,/^}/p" "$bootstrap"
+    reconcile_actual_budget_rows register_mcp_server set_yaml_list hermes_config_set config_flush \
+    pin_mcp_tools mcp_tool_name pin_tool_search_always_include ensure_yaml_list_items \
+    config_path_for python3; do
+    fn_source "$bootstrap" "$fn"
   done
   cat <<'EOF'
 log() { printf '%s\n' "$1"; }

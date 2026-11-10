@@ -13,21 +13,13 @@ import sys
 import types
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+from testkit import Checks  # noqa: E402
+
 ROOT = Path(__file__).resolve().parent.parent
 SERVER = ROOT / "compose" / "opencode-mcp" / "server.py"
 
-failures = 0
-
-
-def fail(msg: str) -> None:
-    global failures
-    failures += 1
-    print(f"FAIL {msg}", file=sys.stderr)
-
-
-def check(cond: bool, msg: str) -> None:
-    if not cond:
-        fail(msg)
+checks = Checks()
 
 
 def install_stubs() -> None:
@@ -92,23 +84,23 @@ def main() -> int:
     # Default (developer stack): hint names the make target.
     dev = load(base)
     out = dev.coding_start_task("/Users/you/elsewhere", "run the tests")
-    check(out.get("needs_access") is True, f"dev: expected needs_access, got {out}")
+    checks.expect(out.get("needs_access") is True, f"dev: expected needs_access, got {out}")
     hint = out.get("hint", "")
-    check("make coding-root-add DIR=/Users/you/elsewhere" in hint, f"dev hint: {hint}")
-    check("hermes-worker" in hint, f"dev hint should name hermes-worker: {hint}")
-    check(dev.coding_list_roots()["aliases"] == {}, "dev: aliases should be empty")
+    checks.expect("make coding-root-add DIR=/Users/you/elsewhere" in hint, f"dev hint: {hint}")
+    checks.expect("hermes-worker" in hint, f"dev hint should name hermes-worker: {hint}")
+    checks.expect(dev.coding_list_roots()["aliases"] == {}, "dev: aliases should be empty")
 
     # App-managed: no commands, path named.
     for value in ("1", "true"):
         managed = load({**base, "CODING_ROOTS_APP_MANAGED": value})
         out = managed.coding_start_task("/Users/you/elsewhere", "run the tests")
         hint = out.get("hint", "")
-        check(out.get("needs_access") is True, f"managed={value}: expected needs_access")
-        check("/Users/you/elsewhere" in hint, f"managed={value}: path missing: {hint}")
+        checks.expect(out.get("needs_access") is True, f"managed={value}: expected needs_access")
+        checks.expect("/Users/you/elsewhere" in hint, f"managed={value}: path missing: {hint}")
         for word in ("make", "docker", "compose", "recreate"):
-            check(word not in hint, f"managed={value}: hint mentions {word!r}: {hint}")
+            checks.expect(word not in hint, f"managed={value}: hint mentions {word!r}: {hint}")
     off = load({**base, "CODING_ROOTS_APP_MANAGED": "0"})
-    check("make coding-root-add" in off._needs_access_hint("/x"), "managed=0 should keep dev text")
+    checks.expect("make coding-root-add" in off._needs_access_hint("/x"), "managed=0 should keep dev text")
 
     # Aliases: two projects share a folder name (foo) under different roots.
     aliased = load({
@@ -132,9 +124,9 @@ def main() -> int:
     }
     for given, want in cases.items():
         got = aliased._resolve_alias(given)
-        check(got == want, f"alias {given!r}: want {want!r}, got {got!r}")
+        checks.expect(got == want, f"alias {given!r}: want {want!r}, got {got!r}")
     roots_out = aliased.coding_list_roots()
-    check(
+    checks.expect(
         set(roots_out["aliases"]) == {
             "/opt/projects/foo", "/opt/projects/foo-app",
             "/opt/projects/nested", "/opt/projects/nested/inner",
@@ -146,17 +138,13 @@ def main() -> int:
     # thread from starting; only the routing is under test.
     aliased._start_worker = lambda task_id: None
     out = aliased.coding_start_task("/opt/projects/foo", "run the tests")
-    check(out.get("ok") is True, f"aliased start: {out}")
-    check(out.get("directory") == "/Users/other/foo", f"aliased start directory: {out}")
+    checks.expect(out.get("ok") is True, f"aliased start: {out}")
+    checks.expect(out.get("directory") == "/Users/other/foo", f"aliased start directory: {out}")
     out = aliased.coding_start_task("/opt/projects/foobar", "run the tests")
-    check(out.get("needs_access") is True, f"unaliased /opt path should need access: {out}")
+    checks.expect(out.get("needs_access") is True, f"unaliased /opt path should need access: {out}")
 
-    if failures:
-        print(f"{failures} check(s) failed", file=sys.stderr)
-        return 1
-    print("ok")
-    return 0
+    checks.finish("ok")
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

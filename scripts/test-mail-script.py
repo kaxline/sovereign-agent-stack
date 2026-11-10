@@ -24,19 +24,11 @@ import mail_index as mi  # noqa: E402
 import mail_script as ms  # noqa: E402
 import synthetic_mail as sm  # noqa: E402
 
+from testkit import expect, fail  # noqa: E402
+
 PERSONAL = sm.ACCOUNTS["personal"].id
 WORK = sm.ACCOUNTS["work"].id
 FAKE = LIB / "fake_mail_app.js"
-
-
-def fail(msg: str) -> None:
-    print(f"FAIL {msg}", file=sys.stderr)
-    raise SystemExit(1)
-
-
-def expect(cond: bool, msg: str) -> None:
-    if not cond:
-        fail(msg)
 
 
 class Env:

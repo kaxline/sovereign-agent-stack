@@ -12,6 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 import compose_config  # noqa: E402
+from testkit import Checks  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -161,10 +162,6 @@ PLACEHOLDER_ON = {
     "gpt-researcher": {"OPENAI_API_KEY"},
     "gptr-mcp": {"OPENAI_API_KEY"},
 }
-
-
-def fail(msg: str) -> None:
-    print(f"FAIL {msg}", file=sys.stderr)
 
 
 def env_map(service: dict) -> dict:
@@ -403,11 +400,10 @@ def main() -> None:
     errors += check_db_network(services, config.get("networks") or {})
     errors += check_n8n_store(services)
     errors += check_actual(services)
-    if errors:
-        for err in errors:
-            fail(err)
-        raise SystemExit(1)
-    print(
+    checks = Checks()
+    for err in errors:
+        checks.fail(err)
+    checks.finish(
         f"OK compose env allowlists ({len(services)} services, profiles={PROFILES})"
     )
 

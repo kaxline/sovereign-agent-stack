@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 HERMES_DIR = ROOT / "compose" / "hermes"
 sys.path.insert(0, str(HERMES_DIR))
 sys.path.insert(0, str(ROOT / "scripts" / "lib"))
+from testkit import expect, fail  # noqa: E402
 
 import browser_exec_hints as bh  # noqa: E402
 import hermes_image  # noqa: E402
@@ -36,16 +37,6 @@ SESSION_IMPORT_STDERR = """Traceback (most recent call last):
   File "<string>", line 2, in <module>
 ModuleNotFoundError: No module named 'browser_helpers'"""
 SESSION_BARE_CODE = "page_info()"
-
-
-def fail(msg: str) -> None:
-    print(f"FAIL {msg}", file=sys.stderr)
-    raise SystemExit(1)
-
-
-def expect(cond: bool, msg: str) -> None:
-    if not cond:
-        fail(msg)
 
 
 def test_session_import() -> None:

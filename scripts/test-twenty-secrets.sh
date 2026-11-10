@@ -7,14 +7,11 @@
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=lib/testkit.sh
+. "${ROOT}/scripts/lib/testkit.sh"
 wrapper="${ROOT}/compose/twenty/secrets-entrypoint.sh"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-
-fail() {
-  printf 'FAIL %s\n' "$1" >&2
-  exit 1
-}
 
 # The stub records what Twenty would receive.
 cat > "$tmp/entrypoint.sh" <<'EOF'
@@ -81,12 +78,8 @@ if run ENCRYPTION_KEY= PG_DATABASE_URL=postgres://twenty:value-db@twenty-db:5432
 work="$tmp"
 trap 'rm -rf "$work"' EXIT
 bootstrap="${ROOT}/compose/hermes/bootstrap-api-profile.sh"
-for fn in addon_instances_plan addon_instance_key_env addon_instances_warn_none \
-    register_addon_instance_servers upsert_env replace_file; do
-  range="/^${fn}() {/,/^}/p"
-  # shellcheck disable=SC1090
-  eval "$(sed -n "$range" "$bootstrap")"
-done
+load_fns "$bootstrap" addon_instances_plan addon_instance_key_env addon_instances_warn_none \
+  register_addon_instance_servers upsert_env replace_file
 ADDONS_DIR="${ROOT}/addons"
 ADDON_MANIFEST_PY="${ROOT}/scripts/lib/addon_manifest.py"
 ADDON_DATA_DIR="$work/addon-data"

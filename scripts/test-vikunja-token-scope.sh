@@ -4,16 +4,12 @@
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=lib/testkit.sh
+. "${ROOT}/scripts/lib/testkit.sh"
 bootstrap="${ROOT}/compose/hermes/bootstrap-api-profile.sh"
 
-# shellcheck disable=SC1090
-eval "$(sed -n '/^vikunja_mcp_token_for() {/,/^}/p; /^vikunja_mcp_pins_for() {/,/^}/p' "$bootstrap")"
+load_fns "$bootstrap" vikunja_mcp_token_for vikunja_mcp_pins_for
 eval "$(grep -E '^VIKUNJA_MCP_PIN_(RO|RW)=' "$bootstrap")"
-
-fail() {
-  printf 'FAIL %s\n' "$1" >&2
-  exit 1
-}
 
 VIKUNJA_MCP_TOKEN_RO=ro-token
 VIKUNJA_MCP_TOKEN_RW=rw-token

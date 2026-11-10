@@ -17,21 +17,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "compose" / "hermes"))
 sys.path.insert(0, str(ROOT / "scripts" / "lib"))
+from testkit import expect, fail  # noqa: E402
 
 import web_search_mode as wsm  # noqa: E402
 import hermes_image  # noqa: E402
 
 UNAVAILABLE = "⚠️ Some search engines were unavailable: {}. Results may be incomplete."
-
-
-def fail(msg: object) -> None:
-    print(f"FAIL {msg}", file=sys.stderr)
-    raise SystemExit(1)
-
-
-def expect(cond: bool, msg: object) -> None:
-    if not cond:
-        fail(msg)
 
 
 def err(text: str) -> str:

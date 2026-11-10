@@ -3,17 +3,14 @@
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=lib/testkit.sh
+. "${ROOT}/scripts/lib/testkit.sh"
 script="${ROOT}/compose/hermes/007-profile-ownership.sh"
 
 # Short base: a Unix socket path is limited to about 104 bytes, and macOS's
 # default TMPDIR is long.
 tmp="$(mktemp -d /tmp/css.XXXXXX)"
 trap 'rm -rf "$tmp"' EXIT
-
-fail() {
-  printf 'FAIL %s\n' "$1" >&2
-  exit 1
-}
 
 # sock <path>: bind a Unix socket at path and leave it behind.
 sock() {

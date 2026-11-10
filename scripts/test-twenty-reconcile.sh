@@ -9,6 +9,8 @@
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=lib/testkit.sh
+. "${ROOT}/scripts/lib/testkit.sh"
 bootstrap="${ROOT}/compose/hermes/bootstrap-api-profile.sh"
 # shellcheck source=lib/hermes-image.sh
 . "${ROOT}/scripts/lib/hermes-image.sh"
@@ -19,11 +21,10 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 {
   for fn in addon_instances_plan addon_instance_key_env addon_instances_warn_none \
-      register_addon_instance_servers write_bearer_mcp_entry reconcile_addon_instance_servers \
-      remove_env_key replace_file upsert_env pin_mcp_tools mcp_tool_name \
-      pin_tool_search_always_include ensure_yaml_list_items; do
-    range="/^${fn}() {/,/^}/p"
-    sed -n "$range" "$bootstrap"
+    register_addon_instance_servers write_bearer_mcp_entry reconcile_addon_instance_servers \
+    remove_env_key replace_file upsert_env pin_mcp_tools mcp_tool_name \
+    pin_tool_search_always_include ensure_yaml_list_items; do
+    fn_source "$bootstrap" "$fn"
   done
   cat <<'EOF2'
 log() { printf '%s\n' "$1"; }
@@ -75,11 +76,6 @@ run() {
     -e TWENTY_MCP_ENABLED="$1" -e TWENTY_LOCAL_ENABLED=1 "$image" \
     -c ". /t/fn.sh && register_addon_instance_servers ''" > "${tmp}/out" 2>&1 \
     || { cat "${tmp}/out" >&2; printf 'FAIL register exited non-zero\n' >&2; exit 1; }
-}
-
-fail() {
-  printf 'FAIL %s\n' "$1" >&2
-  exit 1
 }
 
 no_key_leaks() {
