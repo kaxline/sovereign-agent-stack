@@ -153,8 +153,8 @@ jobs:
         run: sh scripts/test-gptr-mcp-registration.sh
       - name: Actual Budget MCP registration
         run: sh scripts/test-actual-registration.sh
-      - name: Connected Actual budgets as MCP entries (image part skips without the image)
-        run: sh scripts/test-actual-rows.sh
+      - name: Connected Actual budgets as MCP entries (host part)
+        run: sh scripts/test-actual-rows.sh --host-only
       - name: actual-admin.mjs against an Actual server
         run: bash scripts/test-actual-admin.sh
       - name: Add-on MCP access levels

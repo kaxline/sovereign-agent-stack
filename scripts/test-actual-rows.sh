@@ -4,7 +4,7 @@
 # Hermes MCP entries: actual_rows.py plan on fixture rows, the bootstrap's
 # register_actual_budget_rows with stubbed writers, then the real writers in
 # the pinned Hermes image against a scratch config (skipped when Docker or
-# the image is missing unless --image is given). No secret is involved: the
+# the image is missing unless --image or HERMES_IMAGE_REQUIRED=1 is given). No secret is involved: the
 # bootstrap never reads secrets/.
 #
 #   sh scripts/test-actual-rows.sh [--host-only | --image]
@@ -13,7 +13,9 @@ set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 bootstrap="${ROOT}/compose/hermes/bootstrap-api-profile.sh"
 rows_py="${ROOT}/scripts/lib/actual_rows.py"
-image="nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v0.22.7}"
+# shellcheck source=lib/hermes-image.sh
+. "${ROOT}/scripts/lib/hermes-image.sh"
+image="$HERMES_IMAGE"
 
 fail() {
   printf 'FAIL %s\n' "$1" >&2
@@ -200,13 +202,7 @@ done
 grep -q '^	@./scripts/budget.sh ensure$' "${ROOT}/Makefile" || fail "make ensure-local runs budget.sh ensure"
 echo "ok: budget.sh ensure"
 
-[ "${1:-}" = "--host-only" ] && exit 0
-if [ "${1:-}" != "--image" ]; then
-  if ! command -v docker >/dev/null 2>&1 || ! docker image inspect "$image" >/dev/null 2>&1; then
-    echo "skip image checks ($image not present)"
-    exit 0
-  fi
-fi
+hermes_image_gate "${1:-}" "image checks"
 
 # --- The real writers in the Hermes image ------------------------------------
 
