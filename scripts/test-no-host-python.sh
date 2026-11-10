@@ -39,7 +39,7 @@ for f in $FIRST_RUN; do
 done
 [[ "$fail" -eq 0 ]] && echo "ok: first-run scripts run no host python3 or node"
 
-# sync-profiles.sh reads add-on manifests with sed. A scratch copy of the
+# sync-profiles.sh reads add-on manifests with awk. A scratch copy of the
 # script gets a manifest with a builtin block and one gate; --table must list both.
 gate_root="$(mktemp -d)"
 mkdir -p "$gate_root/scripts" "$gate_root/addons/demo"

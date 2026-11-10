@@ -549,7 +549,7 @@ two_gate_shape = two_entry()
 two_gate_shape["gates"] = [{"flag": "lower", "profile": "x", "seed": "no"}]
 refused("a gate needs an env var name", two_gate_shape, "builtin", "gates[0].flag")
 refused("a gate needs a boolean seed", two_gate_shape, "builtin", "gates[0].seed")
-# sync-profiles.sh reads gates line by line with sed, so key order is part of the format.
+# sync-profiles.sh reads gates line by line with awk, so key order is part of the format.
 two_order = two_entry()
 two_order["gates"] = [{"seed": False, "flag": "GPTR_EXTRA_ENABLED", "profile": "research-extra"}]
 refused("gate keys must be flag, profile, seed in that order", two_order, "builtin", "gates keys")

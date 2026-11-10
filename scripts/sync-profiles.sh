@@ -46,50 +46,70 @@ SEARXNG_PROD_ENABLED searxng-prod 1
 SEARCH_GATE_ENABLED search-gate 1"
 
 # One "flag profile seed" row per addons/*/addon.json. No python3 here (first
-# run, scripts/test-no-host-python.sh), so the builtin block is read with sed.
+# run, scripts/test-no-host-python.sh), so the builtin block is read with awk.
 # That relies on the canonical layout scripts/test-addon-manifests.py
 # enforces: the block opens with `  "builtin": {` and has one key per line.
 # A built-in manifest may also list `gates`: the list opens with `  "gates": [`,
 # each gate has "flag", "profile", "seed" lines in that order, and one row per
 # gate follows the builtin row.
 addon_rows() {
-  local manifest block flag profile seed gates gflag gprofile gseed line
+  local manifest out line file
+  local -a manifests=()
   for manifest in "${ROOT}"/addons/*/addon.json; do
-    [[ -f "$manifest" ]] || continue
-    block="$(sed -n '/^  "builtin": {$/,/^  }/p' "$manifest")"
-    flag="$(printf '%s\n' "$block" | sed -n 's/^    "flag": "\([A-Z0-9_]*\)",*$/\1/p')"
-    profile="$(printf '%s\n' "$block" | sed -n 's/^    "profile": "\([a-z0-9-]*\)",*$/\1/p')"
-    seed="$(printf '%s\n' "$block" | sed -n 's/^    "seed": \([a-z]*\),*$/\1/p')"
-    case "$seed" in
-      true) seed=1 ;;
-      false) seed=0 ;;
-      *) seed="" ;;
-    esac
-    if [[ -z "$flag" || -z "$profile" || -z "$seed" ]]; then
-      die "${manifest#"${ROOT}/"} has no readable builtin block; run python3 scripts/test-addon-manifests.py"
-    fi
-    printf '%s %s %s\n' "$flag" "$profile" "$seed"
-    gates="$(sed -n '/^  "gates": \[$/,/^  \]/p' "$manifest")"
-    [[ -n "$gates" ]] || continue
-    gflag="" gprofile=""
-    while IFS= read -r line; do
-      case "$line" in
-        *'"flag": "'*) gflag="$(printf '%s\n' "$line" | sed -n 's/^ *"flag": "\([A-Z0-9_]*\)",*$/\1/p')" ;;
-        *'"profile": "'*) gprofile="$(printf '%s\n' "$line" | sed -n 's/^ *"profile": "\([a-z0-9-]*\)",*$/\1/p')" ;;
-        *'"seed": '*)
-          gseed="$(printf '%s\n' "$line" | sed -n 's/^ *"seed": \([a-z]*\),*$/\1/p')"
-          case "$gseed" in true) gseed=1 ;; false) gseed=0 ;; *) gseed="" ;; esac
-          if [[ -z "$gflag" || -z "$gprofile" || -z "$gseed" ]]; then
-            die "${manifest#"${ROOT}/"} has an unreadable gates block; run python3 scripts/test-addon-manifests.py"
-          fi
-          printf '%s %s %s\n' "$gflag" "$gprofile" "$gseed"
-          gflag="" gprofile=""
-          ;;
-      esac
-    done <<EOF_GATES
-$gates
-EOF_GATES
+    [[ -f "$manifest" ]] && manifests+=("$manifest")
   done
+  [[ ${#manifests[@]} -gt 0 ]] || return 0
+  # One awk run for every manifest; a sed per key cost a process each. It
+  # prints the rows, and "! builtin FILE" or "! gates FILE" for a block it
+  # cannot read. A builtin key given twice counts as unreadable.
+  out="$(awk '
+    function val(s) { sub(/^ *"[a-z]*": "?/, "", s); sub(/"?,*$/, "", s); return s }
+    function bool(s) { return s == "true" ? 1 : s == "false" ? 0 : "" }
+    function flush() {
+      if (file == "") return
+      if (flag == "" || profile == "" || seed == "" || twice) { print "! builtin " file; return }
+      print flag " " profile " " seed
+      printf "%s", rows
+      if (gbad) print "! gates " file
+    }
+    function builtin_line() {
+      if ($0 ~ /^    "flag": "[A-Z0-9_]*",*$/) { twice += flag != ""; flag = val($0) }
+      else if ($0 ~ /^    "profile": "[a-z0-9-]*",*$/) { twice += profile != ""; profile = val($0) }
+      else if ($0 ~ /^    "seed": [a-z]*,*$/) { twice += seed != ""; seed = bool(val($0)) }
+    }
+    function gate_line() {
+      if (index($0, "\"flag\": \"")) gflag = $0 ~ /^ *"flag": "[A-Z0-9_]*",*$/ ? val($0) : ""
+      else if (index($0, "\"profile\": \"")) gprofile = $0 ~ /^ *"profile": "[a-z0-9-]*",*$/ ? val($0) : ""
+      else if (index($0, "\"seed\": ")) {
+        gseed = $0 ~ /^ *"seed": [a-z]*,*$/ ? bool(val($0)) : ""
+        if (gflag == "" || gprofile == "" || gseed == "") gbad = 1
+        else if (!gbad) rows = rows gflag " " gprofile " " gseed "\n"
+        gflag = gprofile = ""
+      }
+    }
+    FNR == 1 {
+      flush(); file = FILENAME
+      inb = ing = twice = gbad = 0; flag = profile = seed = rows = gflag = gprofile = ""
+    }
+    inb { if (/^  [}]/) inb = 0; else builtin_line(); next }
+    ing { if (/^  []]/) ing = 0; else gate_line(); next }
+    /^  "builtin": [{]$/ { inb = 1; next }
+    /^  "gates": [[]$/ { ing = 1; next }
+    END { flush() }
+  ' "${manifests[@]}")" || die "could not read the add-on manifests in ${ROOT}/addons"
+  while IFS= read -r line; do
+    case "$line" in
+      "! builtin "*)
+        file="${line#"! builtin "}"
+        die "${file#"${ROOT}/"} has no readable builtin block; run python3 scripts/test-addon-manifests.py"
+        ;;
+      "! gates "*)
+        file="${line#"! gates "}"
+        die "${file#"${ROOT}/"} has an unreadable gates block; run python3 scripts/test-addon-manifests.py"
+        ;;
+      ?*) printf '%s\n' "$line" ;;
+    esac
+  done <<< "$out"
 }
 
 # A plain assignment, so a die inside addon_rows stops the script (set -e).
@@ -103,13 +123,9 @@ if [[ "${1:-}" == "--table" ]]; then
   exit 0
 fi
 
-env_has() {
-  grep -qE "^${1}=" .env 2>/dev/null
-}
-
 truthy() {
-  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
-    1 | true | yes | on) return 0 ;;
+  case "$1" in
+    1 | [Tt][Rr][Uu][Ee] | [Yy][Ee][Ss] | [Oo][Nn]) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -137,11 +153,40 @@ csv_clean() {
 
 [[ -f .env ]] || die ".env missing — run ./scripts/setup.sh first"
 
+# .env, read once into envv_<KEY> variables, first line winning as in env_get.
+# env_get forks grep, head and cut, and the loop below asks about every flag.
+while IFS= read -r line || [[ -n "$line" ]]; do
+  [[ "$line" == *=* ]] || continue
+  key="${line%%=*}"
+  case "$key" in "" | [0-9]* | *[!A-Za-z0-9_]*) continue ;; esac
+  name="envv_${key}"
+  [[ -n "${!name+x}" ]] || printf -v "$name" '%s' "${line#*=}"
+done < .env
+env_present() {
+  local name="envv_$1"
+  [[ -n "${!name+x}" ]]
+}
+# env_value KEY [DEFAULT]: sets $value to what env_get KEY DEFAULT prints.
+env_value() {
+  local name="envv_$1"
+  value="${!name-}"
+  value="${value%\"}"
+  value="${value#\"}"
+  value="${value%\'}"
+  value="${value#\'}"
+  [[ -n "$value" ]] || value="${2:-}"
+}
+# env_set KEY VALUE: after upsert_env appends a key .env did not have.
+env_set() {
+  printf -v "envv_$1" '%s' "$2"
+}
+
 if [[ "${1:-}" == "--list" ]]; then
-  profiles="$(csv_clean "$(env_get COMPOSE_PROFILES core)")"
+  env_value COMPOSE_PROFILES core
+  profiles="$(csv_clean "$value")"
   printf '%-22s %-14s %s\n' FLAG PROFILE STATE
   while read -r flag profile _seed; do
-    value="$(env_get "$flag")"
+    env_value "$flag"
     if csv_has "$profiles" "$profile"; then
       if truthy "$value"; then state=on; else state="on (flag is ${value:-unset})"; fi
     else
@@ -149,7 +194,6 @@ if [[ "${1:-}" == "--list" ]]; then
     fi
     printf '%-22s %-14s %s\n' "$flag" "$profile" "$state"
   done <<< "$SERVICES"
-  value="$(env_get HERMES_SIGNAL_ENABLED)"
   if csv_has "$profiles" signal; then state=on; else state=off; fi
   printf '%-22s %-14s %s\n' HERMES_SIGNAL_ENABLED signal "$state"
   echo
@@ -157,23 +201,29 @@ if [[ "${1:-}" == "--list" ]]; then
   exit 0
 fi
 
-before_profiles="$(env_get COMPOSE_PROFILES)"
-before_managed="$(env_get COMPOSE_PROFILES_MANAGED)"
-profiles="$(csv_clean "$(env_get COMPOSE_PROFILES core)")"
+env_value COMPOSE_PROFILES
+before_profiles="$value"
+env_value COMPOSE_PROFILES_MANAGED
+before_managed="$value"
+env_value COMPOSE_PROFILES core
+profiles="$(csv_clean "$value")"
 managed="$(csv_clean "$before_managed")"
 
 while read -r flag profile seed; do
-  if ! env_has "$flag"; then
+  if ! env_present "$flag"; then
     [[ "$seed" == 1 ]] || continue
     if csv_has "$profiles" "$profile"; then
       upsert_env .env "$flag" 1
+      env_set "$flag" 1
       log "Set ${flag}=1 (the ${profile} profile was already on)"
     else
       upsert_env .env "$flag" 0
+      env_set "$flag" 0
     fi
   fi
 
-  if truthy "$(env_get "$flag")"; then
+  env_value "$flag"
+  if truthy "$value"; then
     if ! csv_has "$profiles" "$profile"; then
       profiles="$(csv_add "$profiles" "$profile")"
       log "Added '${profile}' to COMPOSE_PROFILES (${flag}=1)"
@@ -197,10 +247,12 @@ done <<< "$SERVICES"
 # added by hand counts too. COMPOSE_PROFILES is left as it was on failure.
 missing=""
 if csv_has "$profiles" rag || csv_has "$profiles" neo4j; then
-  [[ -n "$(env_get NEO4J_PASSWORD)" ]] || missing="${missing} NEO4J_PASSWORD"
+  env_value NEO4J_PASSWORD
+  [[ -n "$value" ]] || missing="${missing} NEO4J_PASSWORD"
 fi
 if csv_has "$profiles" rag; then
-  [[ -n "$(env_get LIGHTRAG_API_KEY)" ]] || missing="${missing} LIGHTRAG_API_KEY"
+  env_value LIGHTRAG_API_KEY
+  [[ -n "$value" ]] || missing="${missing} LIGHTRAG_API_KEY"
 fi
 if [[ -n "$missing" ]]; then
   die "rag or neo4j is on but${missing} not set in .env. Run ./scripts/setup.sh to generate them."

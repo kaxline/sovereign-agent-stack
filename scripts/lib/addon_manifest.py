@@ -143,7 +143,7 @@ def short_id(manifest_id: str) -> str:
 
 def canonical(manifest: dict) -> str:
     """The only layout allowed in the repo. sync-profiles.sh reads the
-    `builtin` block with sed, which needs a fixed layout."""
+    `builtin` block with awk, which needs a fixed layout."""
     return json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
 
 
