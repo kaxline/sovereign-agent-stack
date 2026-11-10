@@ -22,7 +22,10 @@ the stack under another app.
   `.env` now take effect. One change can remove a key you added: a hand-added MCP key on the default
   profile (or on browser) at the GPT Researcher or Actual Budget URL is removed
   on the next bootstrap when that add-on is enabled, and the stack's own key
-  (`gptr`, `budget`) stays. Point your key at a different URL, or use the
+  stays: `gptr`, and `budget` while `ACTUAL_BUDGET_FILE` names a budget file
+  (without one, `budget` is dropped too; see "The single `budget` entry"
+  below). Connected budgets' `budget-<slug>` entries are on their own URLs
+  and are not affected. Point your key at a different URL, or use the
   stack's key. See "Other MCP keys at an add-on's URL are dropped" below.
 - Before tagging, run `scripts/addon.sh enable gptr --json` and
   `disable gptr --json` on a live stack. `addon.sh` calls
