@@ -597,6 +597,20 @@ connect_run main "{$srv,\"password\":\"right-SECRET\",\"profile\":\"alice\"}"
 connect_run main "{$srv,\"password\":\"right-SECRET\",\"access\":\"admin\"}"
 [ "$brc" = 2 ] && [ "$(jget 1 error)" = bad_access ] || fail "bad access"
 nofiles || fail "input errors leave secrets empty"
+# Linux as a uid other than 1000: the containers couldn't read the files.
+: > "$STUB/curl.argv"
+STUB_UNAME=Linux STUB_UID=1001 connect_run main "$pwin"
+[ "$brc" = 2 ] && [ "$(jget 1 error)" = not_found ] || fail "connect on Linux as uid 1001 ($(cat "$tmp/jout" "$tmp/jerr"))"
+jget 1 message | grep -q 'uid 1000' || fail "the uid refusal names uid 1000 ($(cat "$tmp/jout"))"
+[ "$(wc -l < "$tmp/jout" | tr -d ' ')" = 1 ] || fail "the uid refusal is one JSON line"
+[ ! -s "$STUB/curl.argv" ] || fail "the uid refusal signs in nowhere"
+nofiles || fail "the uid refusal writes nothing"
+STUB_UNAME=Linux STUB_UID=1000 connect_run main "$pwin"
+[ "$brc" = 0 ] || fail "connect on Linux as uid 1000 ($(cat "$tmp/jout" "$tmp/jerr"))"
+rm -f "$sec"/main.*
+STUB_UNAME=Darwin STUB_UID=501 connect_run main "$pwin"
+[ "$brc" = 0 ] || fail "connect on macOS as uid 501 ($(cat "$tmp/jout" "$tmp/jerr"))"
+rm -f "$sec"/main.*
 
 # --- disconnect ---
 disconnect_run() { # SLUG
@@ -704,12 +718,17 @@ grep -qx 'ACTUAL_ACCESS=write' "$ENV_FILE" || fail "access write sets ACTUAL_ACC
 grep -q 'hermes-reload' "$out" || fail "access says to run make hermes-reload"
 
 # access SLUG read|write: addon.sh configure and the Hermes reload, stubbed.
+# addon.sh: logs argv and stdin; prints $STUB/addon.out on stdout and exits
+# with $STUB/addon.rc when they exist.
 cat > "$tmp/bin/addon-stub" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$STUB/addon.argv"
 cat >> "$STUB/addon.stdin"
 printf '\n' >> "$STUB/addon.stdin"
 [[ ! -e "$STUB/addon_fail" ]] || { echo "configure refused" >&2; exit 3; }
+[[ ! -e "$STUB/addon.out" ]] || cat "$STUB/addon.out"
+[[ ! -e "$STUB/addon.err" ]] || cat "$STUB/addon.err" >&2
+exit "$(cat "$STUB/addon.rc" 2>/dev/null || echo 0)"
 SH
 cat > "$tmp/bin/vault-stub" <<'SH'
 #!/usr/bin/env bash
@@ -796,7 +815,8 @@ done
 so_reset
 printf 'COMPOSE_PROFILES=core\nACTUAL_LOCAL_ENABLED=0\n' > "$ENV_FILE"
 so_run
-[ "$brc" = 0 ] && grep -q 'ACTUAL_LOCAL_ENABLED' "$tmp/jout" || fail "--server-only off without --json logs why ($(cat "$tmp/jout" "$tmp/jerr"))"
+[ "$brc" = 0 ] || fail "--server-only off without --json ($(cat "$tmp/jout" "$tmp/jerr"))"
+grep -q 'ACTUAL_LOCAL_ENABLED' "$tmp/jout" || fail "--server-only off without --json logs why ($(cat "$tmp/jout" "$tmp/jerr"))"
 grep -q -- '--reinit' "$tmp/jout" || fail "--server-only off names addon.sh enable actual --reinit"
 # A fresh server: bootstrapped with a generated password kept in secrets/, a
 # budget created, and none of the single-budget settings written.
@@ -937,9 +957,17 @@ cli_run() { # ARGS... (environment as set by the caller)
 reset
 printf 'cli-SECRET' > "$STUB/server_pw"
 budget_entry sync-only "Only" > "$STUB/files.json"
+# The add-on off: refused before anything is asked or sent.
+ACTUAL_PASSWORD=cli-SECRET cli_run --slug home --url https://budget.example.com --sync-id sync-x
+[ "$brc" != 0 ] && [ ! -e "$STUB/addon.argv" ] || fail "connect-cli with the add-on off must not call addon.sh"
+grep -q 'the Actual add-on is off; run scripts/addon.sh enable actual first' "$tmp/jerr" || fail "connect-cli says the add-on is off ($(cat "$tmp/jerr"))"
+printf 'COMPOSE_PROFILES=core\nACTUAL_MCP_ENABLED=1\nACTUAL_LOCAL_ENABLED=0\nACTUAL_BUDGET_FILE=\n' > "$ENV_FILE"
+printf '{"phase":"setup","step":"register","status":"running"}\n{"phase":"done","id":"actual","action":"connect","restart":[],"mcp":["budget-home-ro","budget-home"],"account":"home"}\n' > "$STUB/addon.out"
 ACTUAL_PASSWORD=cli-SECRET ACTUAL_BUDGET_ENCRYPTION_PASSWORD='cli-enc"SECRET' \
   cli_run --slug home --url https://budget.example.com --access write
 [ "$brc" = 0 ] || fail "connect-cli ($(cat "$tmp/jout" "$tmp/jerr"))"
+[ "$(cat "$tmp/jout")" = '[budget] Connected home; Hermes entries: budget-home-ro, budget-home' ] || fail "connect-cli prints a [budget] line, not JSON ($(cat "$tmp/jout"))"
+rm -f "$STUB/addon.out"
 grep -qx 'connect actual --instance home --json' "$STUB/addon.argv" || fail "connect-cli calls addon.sh connect ($(cat "$STUB/addon.argv"))"
 python3 - "$STUB/addon.stdin" <<'PY' || fail "connect-cli sends the connect JSON on stdin"
 import json, sys
@@ -971,6 +999,41 @@ ACTUAL_PASSWORD=cli-SECRET cli_run --slug home --url https://budget.example.com
 grep -q 'SYNC_ID' "$tmp/jerr" || fail "connect-cli names SYNC_ID when there are several budgets"
 cli_run --slug home
 [ "$brc" != 0 ] || fail "connect-cli without --url must fail"
+# addon.sh refuses: its message on stderr as a [budget] line, its exit code.
+printf '{"phase":"error","error":"exists","step":null,"message":"actual already has an instance home","logTail":[]}\n' > "$STUB/addon.out"
+printf 'error: actual already has an instance home\n' > "$STUB/addon.err"
+printf '2' > "$STUB/addon.rc"
+cli_run --slug home --url local --sync-id sync-l
+[ "$brc" = 2 ] && [ ! -s "$tmp/jout" ] || fail "connect-cli passes addon.sh's exit code on ($brc, $(cat "$tmp/jout"))"
+[ "$(cat "$tmp/jerr")" = '[budget] ERROR: actual already has an instance home (exists)' ] || fail "connect-cli prints addon.sh's error once ($(cat "$tmp/jerr"))"
+rm -f "$STUB/addon.out" "$STUB/addon.err" "$STUB/addon.rc"
+
+# --- disconnect-cli (make budget-disconnect) ---
+dcli_run() { # ARGS...
+  brc=0
+  rm -f "$STUB/addon.argv"
+  STACK_PYTHON=host BUDGET_DATA_ROOT="$tmp/data" BUDGET_ADDON_SH="$tmp/bin/addon-stub" \
+    "$budget" disconnect-cli "$@" < /dev/null > "$tmp/jout" 2> "$tmp/jerr" || brc=$?
+  cat "$tmp/jout" "$tmp/jerr" >> "$all"
+}
+printf '{"phase":"setup","step":"reload","status":"done"}\n{"phase":"done","id":"actual","action":"disconnect","restart":[],"mcp":[]}\n' > "$STUB/addon.out"
+dcli_run --slug home
+[ "$brc" = 0 ] && [ "$(cat "$tmp/jout")" = '[budget] Disconnected home' ] || fail "disconnect-cli prints a [budget] line ($brc, $(cat "$tmp/jout" "$tmp/jerr"))"
+grep -qx 'disconnect actual --instance home --json' "$STUB/addon.argv" || fail "disconnect-cli calls addon.sh disconnect ($(cat "$STUB/addon.argv"))"
+printf '{"phase":"error","error":"not_found","step":null,"message":"actual has no instance nope","logTail":[]}\n' > "$STUB/addon.out"
+printf 'error: actual has no instance nope\n' > "$STUB/addon.err"
+printf '2' > "$STUB/addon.rc"
+dcli_run --slug nope
+[ "$brc" = 2 ] && [ ! -s "$tmp/jout" ] && [ "$(cat "$tmp/jerr")" = '[budget] ERROR: actual has no instance nope (not_found)' ] || fail "disconnect-cli error ($brc, $(cat "$tmp/jout" "$tmp/jerr"))"
+# No JSON from addon.sh (a usage error): its stderr is shown.
+rm -f "$STUB/addon.out"
+printf 'usage: addon.sh ...\n' > "$STUB/addon.err"
+dcli_run --slug home
+[ "$brc" = 2 ] || fail "disconnect-cli passes the exit code on when addon.sh printed no JSON ($brc)"
+grep -q 'usage: addon.sh' "$tmp/jerr" || fail "disconnect-cli shows addon.sh's stderr when it printed no JSON ($(cat "$tmp/jerr"))"
+rm -f "$STUB/addon.out" "$STUB/addon.err" "$STUB/addon.rc"
+dcli_run
+[ "$brc" != 0 ] && [ ! -e "$STUB/addon.argv" ] || fail "disconnect-cli without --slug must fail"
 reset
 
 run frobnicate && fail "unknown subcommand must fail"

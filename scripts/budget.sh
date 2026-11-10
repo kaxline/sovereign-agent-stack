@@ -81,7 +81,11 @@ Usage: scripts/budget.sh <command> [options]
         make budget-connect: asks for the server and encryption passwords (or
         takes ACTUAL_PASSWORD and ACTUAL_BUDGET_ENCRYPTION_PASSWORD), sends
         them on a pipe to addon.sh connect actual --instance SLUG --json and
-        passes its output on. With local no server password is asked.
+        prints its result as [budget] lines. With local no server password
+        is asked. Refuses while ACTUAL_MCP_ENABLED is off.
+  disconnect-cli --slug SLUG
+        make budget-disconnect: addon.sh disconnect actual --instance SLUG,
+        printed as [budget] lines.
   open    Open the web app and copy the server password to the clipboard
   remove  Delete budget.env and clear ACTUAL_BUDGET_FILE; sets ACTUAL_MCP_ENABLED=0
           unless connected budgets remain. Server data stays.
@@ -105,15 +109,20 @@ die() { printf '[budget] ERROR: %s\n' "$1" >&2; exit 1; }
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-# The MCP containers run as uid 1000 and read budget.env, mode 600, through a
-# bind mount. On Linux that only works when the file's owner is uid 1000.
-# Docker Desktop on macOS maps ownership, so it isn't affected.
+# The MCP containers run as uid 1000 and read budget.env and the connected
+# budgets' secret files, mode 600, through bind mounts. On Linux that only
+# works when the files' owner is uid 1000. Docker Desktop on macOS maps
+# ownership, so it isn't affected. require_uid [WHAT] names what they read
+# (default budget.env); in --json mode the refusal is a not_found line.
 require_uid() {
   [[ "$(uname -s)" == Linux ]] || return 0
-  local uid
+  local uid what="${1:-budget.env}"
   uid="$(id -u)"
   [[ "$uid" == 1000 ]] && return 0
-  die "on Linux the MCP containers read budget.env as uid 1000 (the image's node user), and the file would be mode 600 owned by uid ${uid}, so they couldn't open it. Run this as the uid 1000 user; nothing written"
+  if [[ "$JSON" == 1 ]]; then
+    emit_error not_found "on Linux the MCP containers read ${what} as uid 1000 (the image's node user), and the files would be mode 600 owned by uid ${uid}, so they couldn't open them. Run this as the uid 1000 user; nothing written"
+  fi
+  die "on Linux the MCP containers read ${what} as uid 1000 (the image's node user), and the file would be mode 600 owned by uid ${uid}, so they couldn't open it. Run this as the uid 1000 user; nothing written"
 }
 
 require_docker() {
@@ -541,6 +550,7 @@ cmd_connect() {
     *) emit_error bad_access "access must be read or write" ;;
   esac
   [[ -n "$in_sync_id" ]] || emit_error no_access "no budget sync id given"
+  require_uid "the connected budgets' secret files"
   secrets_dir
   server_base "$in_server"
   sign_in
@@ -1271,6 +1281,10 @@ cmd_connect_cli() {
     shift 2
   done
   [[ -n "$slug" && -n "$url" ]] || die "$usage"
+  # addon.sh connect stores the row either way, but Hermes registers nothing
+  # for it while the add-on is off.
+  truthy "$(env_get ACTUAL_MCP_ENABLED 0)" \
+    || emit_error not_found "the Actual add-on is off; run scripts/addon.sh enable actual first"
   local pw="" enc=""
   if [[ "$url" != local ]]; then
     pw="${ACTUAL_PASSWORD:-}"
@@ -1297,7 +1311,48 @@ cmd_connect_cli() {
   [[ -z "$access" ]] || body="${body},\"access\":\"$(json_escape_exact "$access")\""
   [[ -z "$pw" ]] || body="${body},\"password\":\"$(json_escape_exact "$pw")\""
   [[ -z "$enc" ]] || body="${body},\"encryption_password\":\"$(json_escape_exact "$enc")\""
-  printf '%s}' "$body" | "${BUDGET_ADDON_SH:-${ROOT}/scripts/addon.sh}" connect actual --instance "$slug" --json
+  printf '%s}' "$body" | addon_human connect "$slug"
+}
+
+# addon_human ACTION SLUG: runs addon.sh ACTION actual --instance SLUG --json
+# with this stdin and turns its JSON lines into [budget] lines for a person.
+# Exits with addon.sh's code. BUDGET_ADDON_SH is a test hook.
+addon_human() {
+  local rc=0 lines
+  lines="$("${BUDGET_ADDON_SH:-${ROOT}/scripts/addon.sh}" "$1" actual --instance "$2" --json 2> "${WORK}/addon.err")" || rc=$?
+  printf '%s\n' "$lines" | stack_python -c '
+import json, sys
+action, slug = sys.argv[1], sys.argv[2]
+seen = 0
+for line in sys.stdin:
+    try:
+        d = json.loads(line)
+    except ValueError:
+        continue
+    if not isinstance(d, dict):
+        continue
+    if d.get("phase") == "done":
+        seen = 1
+        if action == "connect":
+            mcp = ", ".join(m for m in d.get("mcp") or [] if isinstance(m, str))
+            print("[budget] Connected %s%s" % (slug, "; Hermes entries: " + mcp if mcp else ""))
+        else:
+            print("[budget] Disconnected %s" % slug)
+    elif d.get("phase") == "error":
+        seen = 1
+        print("[budget] ERROR: %s (%s)" % (d.get("message") or "addon.sh failed", d.get("error")), file=sys.stderr)
+sys.exit(0 if seen else 3)
+' "$1" "$2" || grep -v '^[[:space:]]*$' "${WORK}/addon.err" >&2 || true
+  return "$rc"
+}
+
+# disconnect-cli --slug SLUG (make budget-disconnect): addon.sh disconnect,
+# with [budget] lines instead of JSON.
+cmd_disconnect_cli() {
+  local slug="" usage="usage: budget.sh disconnect-cli --slug SLUG"
+  [[ $# -eq 2 && "$1" == --slug && -n "$2" ]] || die "$usage"
+  slug="$2"
+  addon_human disconnect "$slug" < /dev/null
 }
 
 case "${1:-}" in
@@ -1312,6 +1367,7 @@ case "${1:-}" in
   connect) shift; cmd_connect "$@" ;;
   disconnect) shift; cmd_disconnect "$@" ;;
   connect-cli) shift; cmd_connect_cli "$@" ;;
+  disconnect-cli) shift; cmd_disconnect_cli "$@" ;;
   ensure) shift; cmd_ensure "$@" ;;
   -h | --help | help) usage ;;
   *) usage >&2; exit 1 ;;

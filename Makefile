@@ -286,7 +286,7 @@ budget-connect:
 
 budget-disconnect:
 	@test -n "$(SLUG)" || (echo "Usage: make budget-disconnect SLUG=name"; exit 1)
-	@./scripts/addon.sh disconnect actual --instance "$(SLUG)" --json
+	@./scripts/budget.sh disconnect-cli --slug "$(SLUG)"
 
 # Hermes dashboard, signed in through a one-time link. See docs/hermes.md.
 #   make dashboard-open
