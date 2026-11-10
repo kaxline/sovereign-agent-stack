@@ -511,7 +511,7 @@ mail-index-test:
 
 # Mail.app scripting source, run under Node against a fake Mail (needs node).
 mail-script-test:
-	python3 scripts/test-mail-script.py
+	python3 scripts/test-mail-script.py || [ $$? = 77 ]
 
 # IMAP source and drafts against a throwaway GreenMail server in Docker
 # (synthetic mail only; skipped when Docker isn't running).

@@ -315,7 +315,7 @@ def test_switching_source(env: Env) -> None:
 def main() -> int:
     if shutil.which("node") is None:
         print("SKIP mail script source (node not found)")
-        return 0
+        return 77
     test_script_is_read_only()
     with tempfile.TemporaryDirectory(prefix="synthetic-mail-script-") as tmp:
         env = Env(Path(tmp))
