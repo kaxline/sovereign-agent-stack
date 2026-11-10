@@ -182,6 +182,21 @@ and never stored. A failed check writes nothing. Errors end with one of
 stored (run `scripts/addon.sh enable actual --reinit`) and, on Linux, a host
 user other than uid 1000.
 
+To replace a connected budget (a new password, a new session after the old
+one ended), connect it again with `FORCE=1`:
+
+```bash
+make budget-connect SLUG=home URL=https://budget.example.com FORCE=1
+```
+
+`FORCE=1` passes `--force` to `addon.sh connect`, which replaces the row and
+runs `budget.sh connect --slug <slug> --replace --json`. `--replace` makes the
+same checks in the same order as a new connect and writes nothing until they
+pass, so a failed replace leaves the old session token and encryption
+password as they were. On success it overwrites `secrets/<slug>.session_token`
+and writes or removes `secrets/<slug>.encryption_password`. The MCP launcher
+restarts that budget's server when its files change.
+
 ### Commands
 
 `scripts/budget.sh` subcommands for connected budgets, all printing JSON lines
@@ -190,12 +205,13 @@ that end in `{"phase":"done"}` or one `{"phase":"error",...}`:
 | Command | Effect |
 |---|---|
 | `budgets --json` | Reads `server` and `session_token` or `password` on stdin and lists the budgets that credential can open |
-| `status [--slug SLUG] --json` | Opens each connected budget with its stored token. `state` is `ok`, `token_expired`, `no_access`, `encryption_password`, `timeout`, `server_unreachable` or `bad_access`; a bad state doesn't change the exit code |
+| `status [--slug SLUG] --json` | Opens each connected budget with its stored token. `state` is `ok`, `token_expired`, `no_access`, `encryption_password`, `timeout`, `server_unreachable`, `bad_access` or `server_off` (a local row while `ACTUAL_LOCAL_ENABLED` is off; nothing is signed in to or run for it); a bad state doesn't change the exit code |
 | `access <slug> read\|write --json` | Saves the row's access with `addon.sh configure` and reloads Hermes |
-| `init --server-only --json` | The manifest's init hook: sets up the bundled server (generated password in `secrets/server_password`, a budget named Budget if there is none) without writing `compose/actual/budget.env`. With `ACTUAL_LOCAL_ENABLED` off it does nothing |
+| `init --server-only --json` | The manifest's init hook: sets up the bundled server (generated password in `secrets/server_password`, a budget named Budget if there is none) without writing `compose/actual/budget.env`. When the server has exactly one budget afterwards, the `done` line also carries it as `"result": {"sync_id": ..., "name": ...}`, which `addon.sh enable actual --json` returns as `done.result`. With `ACTUAL_LOCAL_ENABLED` off it does nothing |
 | `ensure` | Creates `addons/actual/instances` and `secrets` at mode 700; `make ensure-local` runs it |
 
-`make doctor` lists each connected budget with its `status` state.
+`make doctor` lists each connected budget with its `status` state; `server_off`
+is a warning.
 
 ### What lives under `data/addons/actual/`
 
@@ -239,6 +255,17 @@ The init hook sets up the bundled server only while `ACTUAL_LOCAL_ENABLED` is
 on; on a remote-only install it does nothing. `addon.sh enable` runs it once,
 so after turning the bundled server on later, run
 `scripts/addon.sh enable actual --reinit`.
+
+While `ACTUAL_LOCAL_ENABLED` is off, the Hermes bootstraps skip connected
+budgets whose `server` is `local` and drop their entries, with one stderr line
+naming each slug. Rows on a remote server are unaffected. The MCP containers
+keep serving the rows' children, but nothing calls them once Hermes drops the
+entries. `budget.sh status` reports these rows as `server_off`. To turn the
+bundled server back on, run `scripts/addon.sh configure actual` with
+`{"local": true}`, then `scripts/addon.sh enable actual`; add `--reinit` if the
+add-on was first enabled with the local server off, since the init hook did
+nothing then. Both bootstraps get `ACTUAL_LOCAL_ENABLED` in their environment,
+so changing it re-runs their registration on the next start.
 
 `make budget-remove` keeps `ACTUAL_MCP_ENABLED=1` while any connected budget
 exists.

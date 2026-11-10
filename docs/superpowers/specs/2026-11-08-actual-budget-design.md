@@ -737,3 +737,21 @@ under an ended session is never pushed under a new credential. Each child gets
 
 **Cron.** The cron fence matches an add-on's non-`ro` services by host and port, not by exact URL,
 so every `budget-<slug>` entry on `actual-mcp-rw` stays out of cron.
+
+### Settled in round 7 (2026-11-10)
+
+- **Replacing a connection.** `addon.sh connect --force` passes `--replace` to the hook after
+  `--slug <slug>`. `budget.sh connect --replace` makes the checks of a new connect in the same
+  order and writes nothing until they pass, then overwrites `secrets/<slug>.session_token` and
+  writes or removes `secrets/<slug>.encryption_password`; a failed check leaves the old files.
+  `make budget-connect FORCE=1` passes `--force` through `connect-cli`. The launcher already
+  restarts a budget's server when its files change.
+- **First budget as `result`.** `budget.sh init --server-only --json` keeps `sync_id` and `name`
+  at the top level of `done` and, when exactly one budget exists afterwards, repeats them as
+  `"result": {"sync_id", "name"}`. With several or none there is no `result`.
+- **Local budgets with the local server off.** While `ACTUAL_LOCAL_ENABLED` is off, `actual_rows.py`
+  skips rows whose `server` is `local` (one stderr line naming the slug), so the bootstraps drop
+  their entries; remote rows are unaffected. Both bootstrap services get the flag, which changes
+  their input stamp. `budget.sh status` reports these rows as `server_off` without signing in or
+  running a container, and `make doctor` warns with the steps to turn the server back on. The
+  launcher keeps running their children.

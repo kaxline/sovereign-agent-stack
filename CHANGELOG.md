@@ -117,6 +117,21 @@ the stack under another app.
   `disable` stores `local` as true first, so the next `enable` restores it.
   This holds for every add-on whose bool setting owns a gate flag.
   `make budget-*` commands are unaffected.
+- **Replacing a connection:** `make budget-connect ... FORCE=1` passes
+  `--force` to `addon.sh connect`, which runs `budget.sh connect --slug <slug>
+  --replace --json`. The hook makes the same checks as for a new connection and
+  overwrites the secret files only if they pass.
+- **First budget in `enable`'s result:** `budget.sh init --server-only --json`
+  adds `"result": {"sync_id": ..., "name": ...}` to its `done` line when the
+  server has exactly one budget afterwards (`sync_id` and `name` stay at the
+  top level). With several or none there is no `result`.
+- **Local budgets while the local server is off:** with `ACTUAL_LOCAL_ENABLED`
+  off, the Hermes bootstraps skip rows whose server is `local` and drop their
+  entries; remote rows are unaffected. Both bootstrap services now get
+  `ACTUAL_LOCAL_ENABLED`, so toggling it re-runs the registration (this
+  recreates the two one-shot bootstrap services once on the next `up`).
+  `budget.sh status` reports such rows as `server_off`, and `make doctor`
+  warns with the steps to turn the server back on.
 - **The init hook** (`budget.sh init --server-only`) does nothing while
   `ACTUAL_LOCAL_ENABLED` is off, so `addon.sh enable actual` works on a
   remote-only install. Turning the bundled server on later takes `addon.sh
