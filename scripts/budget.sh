@@ -42,9 +42,9 @@ Usage: scripts/budget.sh <command> [options]
         to <data root>/addons/actual/secrets/server_password; a budget named
         Budget is created when the server has none. Prints {"phase":"done"}
         with sync_id and name, and the same two as "result", when the server
-        has exactly one budget. With
-        ACTUAL_LOCAL_ENABLED off it does nothing and prints {"phase":"done"};
-        after turning it on, run scripts/addon.sh enable actual --reinit.
+        has exactly one budget. With ACTUAL_LOCAL_ENABLED off it does nothing
+        and prints {"phase":"done"}; after turning it on, run
+        scripts/addon.sh enable actual --reinit.
   add --url URL [--force]
         A budget on a remote server. ACTUAL_PASSWORD, ACTUAL_BUDGET_SYNC_ID
         and ACTUAL_BUDGET_ENCRYPTION_PASSWORD come from the environment, or
@@ -79,12 +79,13 @@ Usage: scripts/budget.sh <command> [options]
         stored session token. One {"phase":"budget","slug","profile","access",
         "state"} line each, state ok, token_expired, no_access,
         encryption_password, timeout, server_unreachable, bad_access or
-        server_off (a local row while ACTUAL_LOCAL_ENABLED is off; nothing is
-        signed in to or run for it), then {"phase":"done"}. A bad state doesn't change the exit code.
+        server_off (a local row while ACTUAL_LOCAL_ENABLED is off; no sign-in
+        and no Actual check), then {"phase":"done"}. A bad state doesn't
+        change the exit code.
   connect-cli --slug SLUG --url URL|local [--access read|write] [--sync-id ID] [--force]
-        make budget-connect (FORCE=1 adds --force): asks for the server and encryption passwords (or
-        takes ACTUAL_PASSWORD and ACTUAL_BUDGET_ENCRYPTION_PASSWORD), sends
-        them on a pipe to addon.sh connect actual --instance SLUG --json and
+        make budget-connect (FORCE=1 adds --force): asks for the server and
+        encryption passwords (or takes ACTUAL_PASSWORD and
+        ACTUAL_BUDGET_ENCRYPTION_PASSWORD), sends them on a pipe to addon.sh connect actual --instance SLUG --json and
         prints its result as [budget] lines. With local no server password
         is asked. --force passes --force to addon.sh connect, which replaces
         an existing connection of that name. Refuses while ACTUAL_MCP_ENABLED
@@ -1150,7 +1151,7 @@ print("i_access=%s" % shlex.quote(val("access", "read")))
     read | write) ;;
     *) state=bad_access ;;
   esac
-  # A local row while the local server is off: nothing to sign in to or run.
+  # A local row while the local server is off: no sign-in, no Actual check.
   if [[ -z "${state:-}" && "$i_server" == local ]] && ! truthy "$(env_get ACTUAL_LOCAL_ENABLED 0)"; then
     state=server_off
   fi

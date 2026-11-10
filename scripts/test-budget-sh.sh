@@ -763,15 +763,14 @@ for lv in 0 "" no; do
   printf 'tok-1' > "$sec/main.session_token"
   : > "$STUB/admin.log"
   : > "$STUB/curl.argv"
-  cp "$STUB/docker.argv" "$tmp/docker.before" 2> /dev/null || : > "$tmp/docker.before"
   status_run
   [ "$brc" = 0 ] || fail "status with the local server off ('${lv}') exits 0 ($(cat "$tmp/jout" "$tmp/jerr"))"
   jlines_ok || fail "every status line is JSON with the local server off"
   grep -qx '{"phase":"budget","slug":"loc","profile":"default","access":"write","state":"server_off"}' "$tmp/jout" || fail "a local row is server_off ('${lv}') ($(cat "$tmp/jout"))"
   grep -qx '{"phase":"budget","slug":"main","profile":"default","access":"read","state":"ok"}' "$tmp/jout" || fail "a remote row is still checked ($(cat "$tmp/jout"))"
   [ "$(wc -l < "$tmp/jout" | tr -d ' ')" = 3 ] || fail "two budget lines and done ($(cat "$tmp/jout"))"
-  [ "$(grep -c . "$STUB/admin.log")" = 1 ] || fail "only the remote row runs a container ($(cat "$STUB/admin.log"))"
-  ! grep -q 'actual-server' "$STUB/admin.log" || fail "only the remote row runs a container ($(cat "$STUB/admin.log"))"
+  [ "$(grep -c . "$STUB/admin.log")" = 1 ] || fail "only the remote row is checked by a container ($(cat "$STUB/admin.log"))"
+  ! grep -q 'actual-server' "$STUB/admin.log" || fail "only the remote row is checked by a container ($(cat "$STUB/admin.log"))"
   [ ! -s "$STUB/curl.argv" ] || fail "status signs in nowhere ($(cat "$STUB/curl.argv"))"
 done
 status_run --slug loc

@@ -157,7 +157,7 @@ printf '{"server":"local","sync_id":"s3","profile":"default","access":"read"}' >
 printf 'COMPOSE_PROFILES=core,budget\nACTUAL_MCP_ENABLED=1\nACTUAL_LOCAL_ENABLED=0\nACTUAL_BUDGET_FILE=\n' > "$tmp/work/.env"
 doctor
 has "a local row with the server off warns server_off" " WARN budget-mine: server_off"
-has "server_off says how to turn the local server back on" "addon.sh configure actual with {\"local\": true}, then scripts/addon.sh enable actual (add --reinit"
+has "server_off says how to turn the local server back on" "echo '{\"local\": true}' | scripts/addon.sh configure actual, then scripts/addon.sh enable actual (add --reinit"
 [ "$(grep -c 'WARN budget-mine' "$out")" = 1 ] || fail "exactly one server_off warning ($(cat "$out"))"
 has "a remote row beside it is still checked" "  OK  budget-main: ok"
 rm -f "$inst/mine.json"

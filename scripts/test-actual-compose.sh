@@ -179,8 +179,8 @@ for name in ("hermes-api-bootstrap", "hermes-browser-bootstrap"):
     svc = services.get(name) or {}
     env = env_map(svc)
     keys = {k for k in env if k.startswith("ACTUAL_")}
-    if keys != {"ACTUAL_MCP_ENABLED", "ACTUAL_ACCESS", "ACTUAL_BUDGET_FILE"}:
-        errors.append(f"{name} ACTUAL_* keys are {sorted(keys)}, want ACTUAL_ACCESS, ACTUAL_BUDGET_FILE and ACTUAL_MCP_ENABLED")
+    if keys != {"ACTUAL_MCP_ENABLED", "ACTUAL_ACCESS", "ACTUAL_BUDGET_FILE", "ACTUAL_LOCAL_ENABLED"}:
+        errors.append(f"{name} ACTUAL_* keys are {sorted(keys)}, want ACTUAL_ACCESS, ACTUAL_BUDGET_FILE, ACTUAL_LOCAL_ENABLED and ACTUAL_MCP_ENABLED")
     # The test runs with ACTUAL_BUDGET_FILE unset: the bootstrap sees it empty.
     if env.get("ACTUAL_BUDGET_FILE") not in ("", None):
         errors.append(f"{name} ACTUAL_BUDGET_FILE defaults to {env.get('ACTUAL_BUDGET_FILE')!r}, want empty")

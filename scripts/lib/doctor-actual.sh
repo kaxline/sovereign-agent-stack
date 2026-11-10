@@ -108,7 +108,7 @@ actual_budget_rows() {
         timeout | server_unreachable)
           warn "budget-${slug}: ${state} - check that its Actual server is running and reachable" ;;
         server_off)
-          warn "budget-${slug}: server_off - the local Actual server is off; turn it back on with scripts/addon.sh configure actual with {\"local\": true}, then scripts/addon.sh enable actual (add --reinit if the add-on was first enabled with the local server off)" ;;
+          warn "budget-${slug}: server_off - the local Actual server is off; turn it back on with: echo '{\"local\": true}' | scripts/addon.sh configure actual, then scripts/addon.sh enable actual (add --reinit if the add-on was first enabled with the local server off)" ;;
         *)
           warn "budget-${slug}: ${state} - reconnect it: make budget-disconnect SLUG=${slug}, then make budget-connect, or in Boundary" ;;
       esac

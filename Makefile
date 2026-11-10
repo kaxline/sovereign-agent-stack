@@ -267,7 +267,7 @@ budget-access:
 
 budget-connect:
 	@test -n "$(SLUG)" -a -n "$(URL)" || (echo "Usage: make budget-connect SLUG=name URL=https://budget.example.com|local [ACCESS=write] [SYNC_ID=id] [FORCE=1]"; exit 1)
-	@./scripts/budget.sh connect-cli --slug "$(SLUG)" --url "$(URL)" $(if $(ACCESS),--access "$(ACCESS)") $(if $(SYNC_ID),--sync-id "$(SYNC_ID)") $(if $(FORCE),--force)
+	@./scripts/budget.sh connect-cli --slug "$(SLUG)" --url "$(URL)" $(if $(ACCESS),--access "$(ACCESS)") $(if $(SYNC_ID),--sync-id "$(SYNC_ID)") $(if $(filter 1,$(FORCE)),--force)
 
 budget-disconnect:
 	@test -n "$(SLUG)" || (echo "Usage: make budget-disconnect SLUG=name"; exit 1)
