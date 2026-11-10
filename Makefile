@@ -15,7 +15,7 @@
 	db-backup db-service-add db-psql todo-init todo-open dashboard-open \
 	crm-init crm-add crm-remove crm-access crm-open crm-mode \
 	vault-init vault-add vault-unlock vault-lock vault-sync vault-grant vault-requests vault-remove vault-open \
-	secrets-sync bitwarden-test addon-list addon-test \
+	secrets-sync bitwarden-test addon-list addon-test hermes-image-test actual-mcp-test \
 	budget-init budget-add budget-open budget-remove budget-access budget-connect budget-disconnect \
 	coding-root-list coding-root-add \
 	context-root-list context-root-add opencode-smoke-fixture \
@@ -650,6 +650,23 @@ tool-eval-run:
 
 tool-eval-score:
 	./scripts/tool-eval.sh score
+
+# Every test with checks inside the pinned Hermes image, found by its use of
+# the image gate in scripts/lib/hermes_image.py or hermes-image.sh. Run it on
+# every Hermes bump. A missing image fails rather than skips. Runs all, then
+# lists failures. .github/workflows/hermes-image.yml runs this target.
+hermes-image-test:
+	@failed=""; for f in $$(grep -lE 'hermes_image\.(maybe_run|image_gate|run_driver)|hermes_image_gate ' scripts/test-* imessage/tests/test-* | sort); do \
+		case "$$f" in *.py) t="python3 $$f" ;; *) t="sh $$f" ;; esac; \
+		echo "=== $$t"; HERMES_IMAGE_REQUIRED=1 $$t || failed="$$failed\n  $$t"; \
+	done; \
+	if [ -n "$$failed" ]; then printf 'FAILED:%b\n' "$$failed"; exit 1; fi; \
+	echo "all Hermes image tests passed"
+
+# The vendored actual-mcp unit tests (vitest), in the image's build stage, so
+# the host needs no node.
+actual-mcp-test:
+	docker build --target test compose/actual-mcp
 
 # Hermes' multiplex migration preflight, run against a throwaway copy of the
 # Hermes home with gateway.standalone removed. Changes nothing.

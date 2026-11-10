@@ -12,12 +12,13 @@ of the service that mounts it. It prints variable names, never values.
 
 from __future__ import annotations
 
-import json
 import os
 import re
-import subprocess
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+import compose_config  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 CONT_INIT = "/etc/cont-init.d/"
@@ -26,21 +27,8 @@ VAR_RE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)")
 
 
 def load_config(backend: str) -> dict:
-    env = os.environ.copy()
-    env.setdefault("COMPOSE_PROFILES", "core")
-    env["HERMES_TERMINAL_BACKEND"] = backend
-    proc = subprocess.run(
-        ["docker", "compose", "-f", "docker-compose.yml", "config", "--format", "json"],
-        cwd=ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-    if proc.returncode != 0:
-        err = (proc.stderr or proc.stdout or "docker compose config failed").strip()
-        print(f"FAIL {backend}: {err}", file=sys.stderr)
-        raise SystemExit(1)
-    return json.loads(proc.stdout)
+    profiles = os.environ.get("COMPOSE_PROFILES", "core")
+    return compose_config.render(profiles, {"HERMES_TERMINAL_BACKEND": backend})
 
 
 def env_names(service: dict) -> set[str]:

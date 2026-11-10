@@ -2,17 +2,16 @@
 # Which MCP entries hermes-*-bootstrap gives parked_retry_interval.
 #
 # Runs set_stack_mcp_parked_retry in the pinned Hermes image, which has the
-# YAML module it needs. Skips when Docker or the image is missing.
+# YAML module it needs. Skips when Docker or the image is missing, unless
+# --image or HERMES_IMAGE_REQUIRED=1 is given.
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 bootstrap="${ROOT}/compose/hermes/bootstrap-api-profile.sh"
-image="nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v0.22.7}"
-
-if ! docker image inspect "$image" >/dev/null 2>&1; then
-  printf 'skip MCP parked retry (%s not present)\n' "$image"
-  exit 0
-fi
+# shellcheck source=lib/hermes-image.sh
+. "${ROOT}/scripts/lib/hermes-image.sh"
+image="$HERMES_IMAGE"
+hermes_image_gate "${1:-}" "MCP parked retry"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT

@@ -9,11 +9,11 @@ files as the other compose checks (see .github/workflows/ci.yml).
 
 from __future__ import annotations
 
-import json
-import os
-import subprocess
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+import compose_config  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 FLAGS = ("CONTEXT_ROOTS_APP_MANAGED", "CODING_ROOTS_APP_MANAGED", "CODING_PATH_ALIASES")
@@ -30,22 +30,7 @@ def check(cond: bool, msg: str) -> None:
 
 
 def services(extra: dict[str, str]) -> dict:
-    env = os.environ.copy()
-    for key in FLAGS:
-        env.pop(key, None)
-    env.update(extra)
-    env["COMPOSE_PROFILES"] = "core,coding"
-    proc = subprocess.run(
-        ["docker", "compose", "config", "--format", "json"],
-        cwd=ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-    if proc.returncode != 0:
-        print(proc.stderr, file=sys.stderr)
-        raise SystemExit(1)
-    return json.loads(proc.stdout)["services"]
+    return compose_config.render("core,coding", extra, drop=tuple(FLAGS))["services"]
 
 
 def env_of(service: dict) -> dict:

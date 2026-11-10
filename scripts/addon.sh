@@ -102,11 +102,20 @@ usage_error() {
   exit 2
 }
 
-truthy() {
-  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
-    1 | true | yes | on) return 0 ;;
+# bool_word VALUE: sets BOOL to 1 or 0 for a bool word in any case, else
+# returns 1. It sets a variable and uses bracket patterns so that no call
+# forks: bash 3.2 has no ${v,,}, and env_flags_json calls this for every .env
+# line, where a `tr` per line cost ~0.6s a run.
+bool_word() {
+  case "$1" in
+    1 | [Tt][Rr][Uu][Ee] | [Yy][Ee][Ss] | [Oo][Nn]) BOOL=1 ;;
+    0 | [Ff][Aa][Ll][Ss][Ee] | [Nn][Oo] | [Oo][Ff][Ff] | "") BOOL=0 ;;
     *) return 1 ;;
   esac
+}
+
+truthy() {
+  bool_word "$1" && [[ "$BOOL" == 1 ]]
 }
 
 ADDONS="${ADDONS_DIR:-${ROOT}/addons}"
@@ -153,12 +162,8 @@ env_flags_json() {
     [[ "$seen" == *",${key},"* ]] && continue
     seen="${seen}${key},"
     val="${val%\"}"; val="${val#\"}"; val="${val%\'}"; val="${val#\'}"
-    case "$(printf '%s' "$val" | tr '[:upper:]' '[:lower:]')" in
-      1 | true | yes | on) val=1 ;;
-      0 | false | no | off | "") val=0 ;;
-      *) continue ;;
-    esac
-    out="${out:+${out},}\"${key}\":\"${val}\""
+    bool_word "$val" || continue
+    out="${out:+${out},}\"${key}\":\"${BOOL}\""
   done < <(grep -E '^[A-Z][A-Z0-9_]*=' .env || true)
   printf '{%s}' "$out"
 }

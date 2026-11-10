@@ -232,8 +232,20 @@ the stack under another app.
   runs `./scripts/vault.sh reload-plugins` after them. When no gateway
   answers, the marker stays and `make restart` applies the change.
 
+- **Tests.** `make hermes-image-test` runs all 35 tests with checks inside
+  the pinned Hermes image; run it after a Hermes bump. With
+  `HERMES_IMAGE_REQUIRED=1` a missing image fails a test instead of
+  skipping it. `make actual-mcp-test` runs the vendored actual-mcp unit tests
+  in a new `test` stage of its Dockerfile; the release image is unchanged.
+  `scripts/addon.sh` no longer forks per `.env` line when reading flags,
+  which took about 0.6 s per read on a `.env` copied from `.env.example`
+  (`list`, `enable` and `disable` read them).
+
 ### Fixes
 
+- **Compose tests ignore a local override.** The compose config tests load
+  only `docker-compose.yml`. `test-bitwarden-compose-config.py` failed on an
+  install whose `docker-compose.override.yml` adds `hermes-worker` binds.
 - **Actual Budget: ended sessions fail the call.** After the Actual server
   password changed or the MCP server's session ended (deleted, or the user
   disabled), `actual-mcp-rw` and `actual-mcp-ro` kept answering from their
