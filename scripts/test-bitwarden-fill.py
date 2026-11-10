@@ -119,7 +119,13 @@ threading.Thread(target=site.serve_forever, daemon=True).start()
 
 # --- headless Chromium, as in spike 1 ---------------------------------------
 udd = tempfile.mkdtemp()
-chrome = subprocess.Popen(["/opt/hermes/tools/chromium-1208/chrome-linux/chrome", "--headless=new", "--no-sandbox",
+# The bundled Chromium's directory differs by architecture (chrome-linux on
+# arm64, chrome-linux64 on x64), so find the binary rather than name it.
+import glob
+chrome_bins = sorted(glob.glob("/opt/hermes/tools/chromium-*/chrome-linux*/chrome"))
+if not chrome_bins:
+    sys.exit("no bundled Chromium under /opt/hermes/tools/chromium-*/chrome-linux*/")
+chrome = subprocess.Popen([chrome_bins[0], "--headless=new", "--no-sandbox",
                            "--disable-gpu", "--no-first-run", "--remote-debugging-port=0", f"--user-data-dir={udd}",
                            f"{ORIGIN}/login"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 active = os.path.join(udd, "DevToolsActivePort")

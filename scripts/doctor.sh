@@ -1359,7 +1359,7 @@ if has_profile mail || [[ "$mail_on" -eq 1 ]]; then
   mail_index="${mail_dir%/}/$(env_get MAIL_INDEX_FILE index.sqlite)"
   if [[ -f "$mail_index" ]]; then
     ok "mail index exists (${mail_index})"
-    mail_mode="$(stat -f '%Lp' "$mail_dir" 2>/dev/null || stat -c '%a' "$mail_dir" 2>/dev/null || echo '?')"
+    mail_mode="$(stat -c '%a' "$mail_dir" 2>/dev/null || stat -f '%Lp' "$mail_dir" 2>/dev/null || echo '?')"
     if [[ "$mail_mode" == "700" ]]; then
       ok "${mail_dir} is owner-only"
     else
@@ -1433,7 +1433,7 @@ if has_profile messages || [[ "$messages_on" -eq 1 ]]; then
   fi
   for d in "$msg_dir" "$msg_events"; do
     [[ -d "$d" ]] || { warn "${d} missing — run ./scripts/setup.sh --messages"; continue; }
-    mode="$(stat -f '%Lp' "$d" 2>/dev/null || stat -c '%a' "$d" 2>/dev/null || echo '?')"
+    mode="$(stat -c '%a' "$d" 2>/dev/null || stat -f '%Lp' "$d" 2>/dev/null || echo '?')"
     if [[ "$mode" == "700" ]]; then
       ok "${d} is owner-only"
     else
@@ -1518,7 +1518,7 @@ if has_profile mail-drafts || [[ "$drafts_on" -eq 1 ]]; then
   [[ "$drafts_on" -eq 1 ]] || warn "mail-drafts profile on but MAIL_DRAFTS_ENABLED is off — Hermes will not register the draft tools"
   drafts_dir="$(env_get MAIL_DRAFTS_DIR ./data/mail-drafts)"
   if [[ -d "$drafts_dir" ]]; then
-    drafts_mode="$(stat -f '%Lp' "$drafts_dir" 2>/dev/null || stat -c '%a' "$drafts_dir" 2>/dev/null || echo '?')"
+    drafts_mode="$(stat -c '%a' "$drafts_dir" 2>/dev/null || stat -f '%Lp' "$drafts_dir" 2>/dev/null || echo '?')"
     if [[ "$drafts_mode" == "700" ]]; then
       ok "${drafts_dir} is owner-only"
     else

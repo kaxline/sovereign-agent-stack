@@ -31,7 +31,7 @@ jget() {
 }
 inst() { printf '%s/instances/%s.json' "$store" "$1"; }
 secret() { cat "$store/secrets/$1" 2>/dev/null || true; }
-mode_of() { stat -f %Lp "$1" 2>/dev/null || stat -c %a "$1"; }
+mode_of() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
 
 # A stub Twenty MCP: initialize answers 200 for keys starting "good-", 401 otherwise.
 cat > "$tmp/stub.py" <<'PY'
