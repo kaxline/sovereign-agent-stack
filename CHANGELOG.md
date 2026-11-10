@@ -154,6 +154,15 @@ the stack under another app.
 
 ### Changes
 
+- **`sync-profiles.sh` is faster.** It reads `.env` once, and every add-on
+  manifest in one `awk` run, instead of running `grep` and `sed` per flag and
+  per key. That is about 15 processes per run instead of about 180, and 0.04 s
+  instead of about 0.6 s on macOS. `make up` and every `addon.sh enable` and
+  `disable` run it. Its output and `.env` changes are unchanged, with one
+  exception. For a `.env` that does not end in a newline, `upsert_env` appends
+  the next key onto the last line, as before. The old script then re-read the
+  merged line and acted on the wrong value, and the new one uses the value the
+  file started with.
 - **`addon.sh connect --force` and hook results** (CR 0026 R7). `connect
   <short-id> --instance <slug> --force` replaces an existing instance: the
   `connect` hook gets `--slug <slug> --replace --json`, and only after it
