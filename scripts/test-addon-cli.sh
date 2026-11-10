@@ -240,6 +240,23 @@ if [ ! -f "${root}/scripts/addon.sh" ]; then
   exit 1
 fi
 
+# env_flags_json and truthy read bool words in any case, under the bash in use.
+mkdir -p "${tmp}/flags"
+printf 'A_ENABLED=TRUE\nB_ENABLED="Off"\nC_ENABLED=yes\nD_ENABLED=\nE_URL=http://x\nA_ENABLED=0\nF=On\n' \
+  > "${tmp}/flags/.env"
+# shellcheck disable=SC2016 # the script runs under $BASH_UNDER_TEST
+got="$(cd "${tmp}/flags" && "$BASH_UNDER_TEST" -c 'set -euo pipefail
+eval "$(sed -n -e "/^bool_word() /,/^}$/p" -e "/^truthy() /,/^}$/p" -e "/^env_flags_json() /,/^}$/p" "$1")"
+command -v env_flags_json >/dev/null && command -v truthy >/dev/null || exit 3
+printf "%s " "$(env_flags_json)"
+for v in ON True 1 yes off FALSE 0 "" maybe; do truthy "$v" && printf 1 || printf 0; done' _ "${root}/scripts/addon.sh" 2>&1)" || true
+want='{"A_ENABLED":"1","B_ENABLED":"0","C_ENABLED":"1","D_ENABLED":"0","F":"1"} 111100000'
+if [ "$got" = "$want" ]; then
+  ok "bool words in any case map to flags, first .env line wins"
+else
+  bad "bool words in any case map to flags: got '${got}', want '${want}'"
+fi
+
 addon_in '{"interval": 600}' configure fixture
 expect_rc "configure top-level settings" 0
 if [ -f "${root}/data/addons/fixture/config/settings.env" ] && [ ! -e "${root}/data/addons/fixture/settings.env" ]; then

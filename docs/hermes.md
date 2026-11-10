@@ -59,6 +59,8 @@ This stack pins Hermes Agent and Hermes WebUI together. The same values live in 
 
 Bump both with `make hermes-upgrade AGENT=… WEBUI=…` — never one at a time. Details: [Hermes WebUI — Upgrading](hermes-webui.md#upgrading).
 
+After a bump, `make hermes-image-test` runs every overlay and bootstrap test inside the new image and fails if the image is missing. The tests read the tag from `docker-compose.yml`; set `HERMES_AGENT_IMAGE_TAG` to test another one. CI runs only their host parts; `.github/workflows/hermes-image.yml` runs the image parts on demand and when the overlays change.
+
 Hermes Agent switched from calendar tags (`v2026.9.14`) to semver (`v0.21.6`, `v0.22.0`, …) after September 2026. A semver tag is newer than every calendar tag, so compare versions by release date, not by string order. The overlays in this stack are anchored to `v0.22.7` and do not apply to calendar-tagged images.
 
 ### Gateway topology

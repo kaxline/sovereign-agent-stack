@@ -7,14 +7,15 @@
 # The host part checks the wiring. The image part runs the real function in
 # nousresearch/hermes-agent (Hermes's YAML writer lives there) against scratch
 # configs; it is skipped when Docker or the image is missing unless --image
-# is given.
+# or HERMES_IMAGE_REQUIRED=1 is given.
 set -eu
 
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 BOOTSTRAP=compose/hermes/bootstrap-api-profile.sh
-TAG="${HERMES_AGENT_IMAGE_TAG:-v0.22.7}"
-IMAGE="nousresearch/hermes-agent:$TAG"
+# shellcheck source=lib/hermes-image.sh
+. scripts/lib/hermes-image.sh
+IMAGE="$HERMES_IMAGE"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -41,14 +42,7 @@ assert got == ([], ["http://split-rw:9000/mcp"]), got
 PY
 echo "ok: host wiring"
 
-mode="${1:-}"
-[ "$mode" = "--host-only" ] && exit 0
-if [ "$mode" != "--image" ]; then
-  if ! command -v docker >/dev/null 2>&1 || ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-    echo "skip image checks ($IMAGE not present)"
-    exit 0
-  fi
-fi
+hermes_image_gate "${1:-}" "image checks"
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/addon-cron-fence.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
