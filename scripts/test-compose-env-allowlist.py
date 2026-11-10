@@ -7,11 +7,11 @@ environment key names. It does not print secret values.
 
 from __future__ import annotations
 
-import json
-import os
-import subprocess
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+import compose_config  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -178,22 +178,8 @@ def env_map(service: dict) -> dict:
 
 
 def load_config() -> dict:
-    env = os.environ.copy()
-    env["COMPOSE_PROFILES"] = PROFILES
     # A local .env must not hide the worker allowlist. ssh is the default layout.
-    env["HERMES_TERMINAL_BACKEND"] = "ssh"
-    proc = subprocess.run(
-        ["docker", "compose", "config", "--format", "json"],
-        cwd=ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-    if proc.returncode != 0:
-        err = (proc.stderr or proc.stdout or "docker compose config failed").strip()
-        fail(err)
-        raise SystemExit(1)
-    return json.loads(proc.stdout)
+    return compose_config.render(PROFILES, {"HERMES_TERMINAL_BACKEND": "ssh"})
 
 
 def check_secrets(services: dict) -> list[str]:
