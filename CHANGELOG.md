@@ -46,6 +46,53 @@ the stack under another app.
      `make secrets-sync` after the migration; the items now update the files in
      `data/addons/twenty/secrets/`, not the old workspace files.
 
+### Connected Actual budgets
+
+- **`addon.sh connect actual --instance <slug>`** connects a budget on the
+  bundled or a remote Actual server (stdin keys `server`, `sync_id`,
+  `session_token` or `password`, `encryption_password`, `profile`, `access`).
+  `make budget-connect SLUG=... URL=... [ACCESS=write] [SYNC_ID=...]` asks for
+  the passwords without echo and pipes the JSON to it; `make budget-disconnect
+  SLUG=...` removes the budget. Only the session token is stored, under
+  `data/addons/actual/secrets/`; the password is used once. Only the `default`
+  Hermes profile is supported (`browser` mirrors it).
+- **New `budget.sh` commands:** `budgets --json`, `status [--slug] --json`,
+  `access <slug> read|write --json`, `init --server-only` (the manifest's init
+  hook), `connect` and `disconnect` (its hooks) and `ensure`, which `make
+  ensure-local` runs to create `data/addons/actual/{instances,secrets}` (0700).
+  `actual-admin.mjs` signs in with `ACTUAL_SESSION_TOKEN` and exits 5
+  (`no_access`) or 6 (`unreachable`). `make doctor` shows each connected
+  budget's state.
+- **Launcher in the `actual-mcp` containers:** one child per connected budget
+  at `/<slug>/mcp`. It polls the store every 2 s, restarts a child when any of
+  its files change and deletes its cache on every stop. `/mcp` is unchanged.
+- **New mounts:** both MCP containers mount `data/addons/actual` read-only at
+  `/budgets`, and the Hermes bootstraps mount `data/addons/actual/instances`
+  read-only. Without `make`, run `./scripts/budget.sh ensure` before compose,
+  or on Linux Docker creates the directories owned by root.
+- **Hermes entries:** `budget-<slug>-ro` for every connected budget and
+  `budget-<slug>` for `write` ones, on `default` and `browser`. The cron fence
+  now matches add-on services by scheme, host and port, so `budget-<slug>`
+  stays out of cron.
+- **The single `budget` entry** registers only while `ACTUAL_BUDGET_FILE` names
+  a budget file. `make budget-remove` keeps `ACTUAL_MCP_ENABLED=1` while any
+  connected budget exists.
+- **Manifest:** the `local` setting owns `ACTUAL_LOCAL_ENABLED`, and the
+  manifest gains `instances` settings and hooks, `data` paths and volumes, and
+  the error names `bad_access`, `encryption_password` and `unknown_profile`.
+  `addon.sh disable actual` now sets `ACTUAL_LOCAL_ENABLED=0` and stops
+  `actual-server`; `addon.sh enable actual` turns it back on only if `local` is
+  stored (`addon.sh configure actual` with `{"local": true}`). A v0.3.12 install
+  that set `ACTUAL_LOCAL_ENABLED=1` by hand must store `local` before it runs
+  `disable` and `enable`. `make budget-*` commands are unaffected.
+- **Limits:** on Linux the host user must be uid 1000 (`HERMES_UID`, the
+  default), because the MCP containers read the mode-600 secret files as uid
+  1000. A password change on an Actual server, or turning OpenID on, ends every
+  connected budget's session; `budget.sh status` shows `token_expired` until
+  each is reconnected. A write made in the seconds between a good sync and the
+  background push can still be stranded if the session ends right then.
+- Not run on a live stack; the checks are in `docs/private/actual-budget-live-check.md`.
+
 ### Changes
 
 - **Twenty CRM is a built-in add-on** (`addons/twenty/addon.json`). Boundary can
