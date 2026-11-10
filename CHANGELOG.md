@@ -180,12 +180,17 @@ the stack under another app.
   restarts, so the start sign-in checks the key only the first time and does
   not catch a key revoked later. `GET /accounts` gains `logged_in` and
   `retry_after`.
-- **Logins Bitwarden would not take back are listed.** When a release cannot
-  move an item out of the agent's folder or collection, the broker records it in
-  `broker/unreturned.json`. `make vault-requests` and `requests --json` list
-  it under `unreturned` (`account`, `label`, `site`) until a sync no longer
-  finds the item in scope. `requests --json` documents `pending[].request_id`,
-  `account`, `site`, `reason` and `created`.
+- **`make vault-grant` and `vault.sh grant` are gone.** Approve a request by
+  moving the login into the agent's folder or collection in a Bitwarden app;
+  the next sync marks the pending request done. `bitwarden_release_access`
+  denylists the login and no longer moves it out of the agent's folder or
+  collection, so you move it in a Bitwarden app. The broker never lists or
+  fills a denylisted login meanwhile, and the next sync that no longer finds it
+  in scope drops the denylist entry. `vault.sh requests --json` (and
+  `GET /requests`) returns `pending` and `recent` and no longer has an
+  `unreturned` key. The release reply is `{"released": true}` without
+  `returned`, and `bitwarden-setup` has no `grant` command, `--site` or
+  `--item`. `python3 -m broker.cli requests` has no `--tsv`.
 - **`addon.sh` relays `retryAfter`.** A hook's error line may carry a positive
   integer `retryAfter` (seconds); the add-on's error line then has the same
   field, for any add-on.

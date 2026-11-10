@@ -14,7 +14,6 @@ import json
 import stat
 import sys
 import tempfile
-import threading
 import time
 import unicodedata
 from pathlib import Path
@@ -142,309 +141,104 @@ def test_request_reveals_nothing() -> None:
         b.expect_clean()
 
 
-def test_release_before_move() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        gate = Path(tmp) / "gate"
-        with bt.broker_run(vault=bt.vault_data(edit_gate=str(gate))) as b:
-            b.add_account("personal")
-            b.start(unlocked=["personal"])
-            a = handle("personal", "A")
-            expect(a in b.handles(), "A listed before release")
-            result = {}
-            thread = threading.Thread(target=lambda: result.update(got=b.call("POST", "/release", {"handle": a})))
-            thread.start()
-            b.wait_for(lambda: any(e["argv"][:2] == ["edit", "item"] for e in b.run.log_lines()), "edit started")
-            expect(a not in b.handles(), "/items lists A while the move runs")
-            unknown = b.call("POST", "/fill", bt.fill_body("bwbroker:personal/ffffffff-0000-4000-8000-000000000000"))
-            expect(b.call("POST", "/fill", bt.fill_body(a)) == unknown == (404, {"error": "unknown_handle"}),
-                   "/fill refuses A while the move runs, as for an unknown handle")
-            expect(a in denylist(b), "A is on the denylist before the move ends")
-            gate.write_text("go", encoding="utf-8")
-            thread.join(30)
-            expect(result.get("got") == (200, {"released": True, "returned": True}), f"release {result}")
-            b.stop()
-            b.expect_clean()
+def bw_moves(b) -> list:
+    """bw calls that read or change an item's folder or collections."""
+    return [e["argv"] for e in b.run.log_lines()
+            if e["argv"][:1] == ["edit"] or e["argv"][:2] == ["get", "item"]]
 
 
-def test_release_paths() -> None:
-    # folder: scope: folderId goes to null.
+def test_release_denylists_and_stops() -> None:
     with bt.broker_run() as b:
         b.add_account("personal")
         b.start(unlocked=["personal"])
         a = handle("personal", "A")
-        expect(b.call("POST", "/release", {"handle": a}) == (200, {"released": True, "returned": True}), "folder")
-        expect(vault_item(b, "A")["folderId"] is None, "folderId not null")
-        expect(vault_item(b, "A")["login"]["password"] == bt.ITEM_PASSWORDS["A"], "edit kept the rest of the item")
-        expect(a not in b.handles(), "A listed after release")
+        expect(a in b.handles(), "A listed before release")
+        expect(b.call("POST", "/release", {"handle": a}) == (200, {"released": True}), "release reply")
+        expect(a in denylist(b), "A is not on the denylist")
+        expect(a not in b.handles(), "/items lists A after release")
+        unknown = b.call("POST", "/fill", bt.fill_body("bwbroker:personal/ffffffff-0000-4000-8000-000000000000"))
+        expect(b.call("POST", "/fill", bt.fill_body(a)) == unknown == (404, {"error": "unknown_handle"}),
+               "/fill refuses A, as for an unknown handle")
+        expect(bw_moves(b) == [], f"release called bw to move the item: {bw_moves(b)}")
+        expect(vault_item(b, "A")["folderId"] == bt.FOLDER_AGENT, "release changed the item in the vault")
+        expect(b.call("POST", "/release", {"handle": a}) == (200, {"released": True}), "release of a denylisted handle")
         expect(b.call("POST", "/release", {"handle": handle("personal", "B")}) == (404, {"error": "unknown_handle"}),
                "release of an item outside scope")
         expect(b.call("POST", "/release", {"handle": "nope"}) == (404, {"error": "unknown_handle"}), "bad handle")
-        edits = [e["argv"] for e in b.run.log_lines() if e["argv"][:1] == ["edit"]]
-        expect(edits == [["edit", "item", item_id("A")]], f"the item JSON goes over stdin, not argv: {edits}")
         b.stop()
         b.expect_clean()
 
-    # collection: scope: collectionIds goes to [].
+
+def test_release_leaves_collection_and_scope_all_items() -> None:
     with bt.broker_run() as b:
         b.add_account("org", scope=f"collection:{bt.COLLECTION}")
         b.start(unlocked=["org"])
         c = handle("org", "C")
         expect(c in b.handles(), "C listed in the collection scope")
-        expect(b.call("POST", "/release", {"handle": c}) == (200, {"released": True, "returned": True}), "collection")
-        expect(vault_item(b, "C")["collectionIds"] == [], f"collectionIds {vault_item(b, 'C')['collectionIds']}")
-        edits = [e["argv"] for e in b.run.log_lines() if e["argv"][:1] == ["edit"]]
-        expect(edits == [["edit", "item-collections", item_id("C"), "--organizationid", bt.ORG]], f"edit argv {edits}")
-        expect(c not in b.handles(), "C listed after release")
+        expect(b.call("POST", "/release", {"handle": c}) == (200, {"released": True}), "collection")
+        expect(c in denylist(b) and c not in b.handles(), "C served or not denylisted after release")
+        expect(vault_item(b, "C")["collectionIds"] == [bt.COLLECTION], "release changed the item's collections")
+        expect(bw_moves(b) == [], f"release called bw to move the item: {bw_moves(b)}")
         b.stop()
         b.expect_clean()
-
-    # R10: an item in two collections keeps the one outside the scope.
-    other = "0c0d0000-0000-4000-8000-00000000000d"
-    data = bt.vault_data()
-    next(i for i in data["items"] if i["id"] == item_id("C"))["collectionIds"] = [bt.COLLECTION, other]
-    with bt.broker_run(vault=data) as b:
-        b.add_account("org", scope=f"collection:{bt.COLLECTION}")
-        b.start(unlocked=["org"])
-        c = handle("org", "C")
-        expect(b.call("POST", "/release", {"handle": c}) == (200, {"released": True, "returned": True}), "two")
-        expect(vault_item(b, "C")["collectionIds"] == [other], f"collectionIds {vault_item(b, 'C')['collectionIds']}")
-        expect(c not in b.handles() and c not in denylist(b), "C served or still denylisted after release")
-        b.stop()
-        b.expect_clean()
-
-    # The server refuses: not returned, still denylisted.
-    with bt.broker_run(vault=bt.vault_data(refuse_edit="No rights to modify the collection.")) as b:
-        b.add_account("personal")
-        b.start(unlocked=["personal"])
-        a = handle("personal", "A")
-        expect(b.call("POST", "/release", {"handle": a}) == (200, {"released": True, "returned": False}), "refused")
-        expect(vault_item(b, "A")["folderId"] == bt.FOLDER_AGENT, "a refused edit changed the vault")
-        expect(a in denylist(b) and a not in b.handles(), "a refused return left A served")
-        expect(b.call("POST", "/release", {"handle": a}) == (200, {"released": True, "returned": False}),
-               "a release can be retried for a denylisted handle")
-        b.stop()
-        b.expect_clean()
-
-
-def test_regrant_clears_denylist() -> None:
-    with bt.broker_run() as b:
-        b.add_account("personal")
-        b.start(unlocked=["personal"])
-        a = handle("personal", "A")
-        expect(b.call("POST", "/release", {"handle": a})[1]["returned"] is True, "release")
-        expect(a not in denylist(b), "the entry stays after the item left scope")
-        edit_vault(b, "A", folderId=bt.FOLDER_AGENT)
-        expect(b.call("POST", "/sync", {}) == (200, {"synced": ["personal"]}), "sync")
-        expect(a in b.handles(), "a re-granted item is not listed after sync")
-        b.stop()
-        b.expect_clean()
-
-    # The return failed, so the item never left scope: it stays denylisted across syncs
-    # until it leaves, and a later grant lists it again.
-    with bt.broker_run(vault=bt.vault_data(refuse_edit="No rights to modify the collection.")) as b:
-        b.add_account("personal")
-        b.start(unlocked=["personal"])
-        a = handle("personal", "A")
-        expect(b.call("POST", "/release", {"handle": a})[1]["returned"] is False, "refused release")
-        b.call("POST", "/sync", {})
-        expect(a in denylist(b) and a not in b.handles(), "a sync dropped the entry while A is still in scope")
-        edit_vault(b, "A", folderId=None)
-        b.call("POST", "/sync", {})
-        expect(a not in denylist(b), "the entry stays after A left scope")
-        edit_vault(b, "A", folderId=bt.FOLDER_AGENT)
-        b.call("POST", "/sync", {})
-        expect(a in b.handles(), "A is not listed after it was granted again")
-        b.stop()
-        b.expect_clean()
-
-
-def unreturned(b) -> list:
-    return b.call("GET", "/requests")[1]["unreturned"]
-
-
-def unreturned_file(b) -> list:
-    path = b.run.tmp / "broker" / "unreturned.json"
-    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
-
-
-REFUSE = "No rights to modify the collection."
-
-
-def test_unreturned_listed_after_refused_move() -> None:
-    with bt.broker_run(vault=bt.vault_data(refuse_edit=REFUSE)) as b:
-        b.add_account("personal")
-        b.start(unlocked=["personal"])
-        expect(unreturned(b) == [], f"unreturned before any release: {unreturned(b)}")
-        a = handle("personal", "A")
-        expect(b.call("POST", "/release", {"handle": a})[1]["returned"] is False, "refused release")
-        want = [{"account": "personal", "label": "Item A", "site": "login.example.com"}]
-        expect(unreturned(b) == want, f"unreturned {unreturned(b)}")
-        path = b.run.tmp / "broker" / "unreturned.json"
-        expect(stat.S_IMODE(path.stat().st_mode) == 0o600, "unreturned.json is not mode 600")
-        expect(unreturned_file(b) == [{"handle": a, **want[0]}], f"file {unreturned_file(b)}")
-        expect(b.call("POST", "/release", {"handle": a})[1]["returned"] is False, "retry")
-        expect(unreturned(b) == want, f"a retry changed the entry: {unreturned(b)}")
-        b.stop()
-        b.expect_clean()
-
-
-def test_unreturned_cleared_by_sync() -> None:
-    with bt.broker_run(vault=bt.vault_data(refuse_edit=REFUSE)) as b:
-        b.add_account("personal")
-        b.start(unlocked=["personal"])
-        a = handle("personal", "A")
-        b.call("POST", "/release", {"handle": a})
-        expect(len(unreturned(b)) == 1, "listed")
-        edit_vault(b, "A", folderId=None)
-        b.call("POST", "/sync", {})
-        expect(unreturned(b) == [] and a not in denylist(b), "a sync kept the entry after A left scope")
-        expect(unreturned_file(b) == [], f"file {unreturned_file(b)}")
-        b.stop()
-        b.expect_clean()
-
-
-def test_unreturned_hidden_for_removed_account() -> None:
-    """A disconnected account's records are not listed; the file keeps them."""
-    with bt.broker_run(vault=bt.vault_data(refuse_edit=REFUSE)) as b:
-        b.add_account("personal")
-        b.add_account("work")
-        b.start(unlocked=["personal", "work"])
-        a = handle("personal", "A")
-        b.call("POST", "/release", {"handle": a})
-        expect([r["account"] for r in unreturned(b)] == ["personal"], f"listed {unreturned(b)}")
-        b.stop()
-        (b.accounts_dir / "personal.env").unlink()
-        b.start(unlocked=["work"])
-        expect(unreturned(b) == [], f"listed a removed account's record: {unreturned(b)}")
-        expect([r["handle"] for r in unreturned_file(b)] == [a], f"file {unreturned_file(b)}")
-        b.stop()
-        b.expect_clean()
-
-
-def test_orphan_unreturned_dropped_by_prune() -> None:
-    """A record whose handle is not on the denylist (a prune that overtook a release, or a
-    crash between the two removals) is dropped at the next prune of its account."""
-    with bt.broker_run(vault=bt.vault_data(refuse_edit=REFUSE)) as b:
-        b.add_account("personal")
-        b.start(unlocked=["personal"])
-        a = handle("personal", "A")
-        b.call("POST", "/release", {"handle": a})
-        b.stop()
-        path = b.run.tmp / "broker" / "unreturned.json"
-        orphan = {"handle": handle("personal", "B"), "account": "personal", "label": "Item B",
-                  "site": "b.example.com"}
-        path.write_text(json.dumps(unreturned_file(b) + [orphan]), encoding="utf-8")
-        path.chmod(0o600)
-        expect(orphan["handle"] not in denylist(b), "the orphan is on the denylist")
-        b.start(unlocked=["personal"])
-        b.call("POST", "/sync", {})
-        expect([r["handle"] for r in unreturned_file(b)] == [a],
-               f"a prune kept the orphan or dropped the denylisted record: {unreturned_file(b)}")
-        expect([r["label"] for r in unreturned(b)] == ["Item A"], f"listed {unreturned(b)}")
-        b.stop()
-        b.expect_clean()
-
-
-def test_unreturned_survives_lock_and_restart() -> None:
-    with bt.broker_run(vault=bt.vault_data(refuse_edit=REFUSE)) as b:
-        b.add_account("personal", unlock="manual")
-        b.start()
-        expect(b.sock_call("POST", "/unlock", {"slug": "personal", "password": bt.MASTER})[0] == 200, "unlock")
-        b.call("POST", "/release", {"handle": handle("personal", "A")})
-        want = [{"account": "personal", "label": "Item A", "site": "login.example.com"}]
-        expect(unreturned(b) == want, f"listed {unreturned(b)}")
-        expect(b.sock_call("POST", "/lock", {"slug": "personal"})[0] == 200, "lock")
-        expect(unreturned(b) == want, f"after lock {unreturned(b)}")
-        b.stop()
-        b.start()
-        expect(unreturned(b) == want, f"after restart {unreturned(b)}")
-        b.stop()
-        path = b.run.tmp / "broker" / "unreturned.json"
-        saved = path.read_bytes()
-        path.write_text("{", encoding="utf-8")
-        b.start(expect_exit=True)
-        path.write_bytes(saved)
-        b.expect_clean()
-
-
-def test_unreturned_skips_returned_and_scope_all() -> None:
-    # The edit works, the refresh after it fails: returned, so not listed.
-    with tempfile.TemporaryDirectory() as tmp:
-        gate = Path(tmp) / "gate"
-        with bt.broker_run(vault=bt.vault_data(edit_gate=str(gate))) as b:
-            b.add_account("org", scope=f"collection:{bt.COLLECTION}")
-            b.start(unlocked=["org"])
-            c = handle("org", "C")
-            result = {}
-            thread = threading.Thread(target=lambda: result.update(got=b.call("POST", "/release", {"handle": c})))
-            thread.start()
-            b.wait_for(lambda: any(e["argv"][:2] == ["edit", "item-collections"] for e in b.run.log_lines()),
-                       "edit started")
-            data = json.loads(b.run.vault_file.read_text(encoding="utf-8"))
-            data["truncate_lists"] = True
-            b.run.vault_file.write_text(json.dumps(data), encoding="utf-8")
-            gate.write_text("go", encoding="utf-8")
-            thread.join(30)
-            expect(result.get("got") == (200, {"released": True, "returned": True}), f"release {result}")
-            expect(vault_item(b, "C")["collectionIds"] == [], "the edit did not run")
-            expect(unreturned(b) == [] and unreturned_file(b) == [], f"listed a returned item: {unreturned(b)}")
-            b.stop()
 
     with bt.broker_run() as b:
         b.add_account("all", scope="all")
         b.start(unlocked=["all"])
         a = handle("all", "A")
         expect(a in b.handles(), "A listed in scope all")
-        expect(b.call("POST", "/release", {"handle": a})[1]["returned"] is False, "scope all release")
-        expect(unreturned(b) == [] and unreturned_file(b) == [], f"listed a scope all item: {unreturned(b)}")
+        expect(b.call("POST", "/release", {"handle": a}) == (200, {"released": True}), "scope all")
+        expect(a in denylist(b) and a not in b.handles(), "A served or not denylisted after release")
+        expect(bw_moves(b) == [], f"release called bw to move the item: {bw_moves(b)}")
         b.stop()
         b.expect_clean()
 
 
-def test_regrant_clears_unreturned() -> None:
-    with bt.broker_run(vault=bt.vault_data(refuse_edit=REFUSE)) as b:
+def test_sync_drops_denylist_entry_after_user_moves_item() -> None:
+    with bt.broker_run() as b:
         b.add_account("personal")
         b.start(unlocked=["personal"])
         a = handle("personal", "A")
         b.call("POST", "/release", {"handle": a})
-        edit_vault(b, "A", folderId=None)
         b.call("POST", "/sync", {})
-        edit_vault(b, "A", folderId=bt.FOLDER_AGENT)
+        expect(a in denylist(b) and a not in b.handles(), "a sync dropped the entry while A is still in scope")
+        edit_vault(b, "A", folderId=None)  # the user moves it out in Bitwarden
         b.call("POST", "/sync", {})
-        expect(a in b.handles(), "A is not listed after it was granted again")
-        expect(unreturned(b) == [] and unreturned_file(b) == [], f"regrant kept the record: {unreturned(b)}")
+        expect(a not in denylist(b) and a not in b.handles(), "the entry stays after A left scope")
+        edit_vault(b, "A", folderId=bt.FOLDER_AGENT)  # and back in
+        expect(b.call("POST", "/sync", {}) == (200, {"synced": ["personal"]}), "sync")
+        expect(a in b.handles(), "A is not listed after the user moved it back")
         b.stop()
         b.expect_clean()
 
 
-def test_retry_after_user_moved_item() -> None:
-    """A failed release, then the user moves the item out of scope: the retry edits nothing."""
-    refuse = "No rights to modify the collection."
-    with bt.broker_run(vault=bt.vault_data(refuse_edit=refuse)) as b:
+def test_requests_reply_has_no_unreturned() -> None:
+    with bt.broker_run() as b:
         b.add_account("personal")
         b.start(unlocked=["personal"])
-        a = handle("personal", "A")
-        expect(b.call("POST", "/release", {"handle": a})[1]["returned"] is False, "refused release")
-        edit_vault(b, "A", folderId=bt.FOLDER_OTHER)
-        edits = sum(e["argv"][:1] == ["edit"] for e in b.run.log_lines())
-        expect(b.call("POST", "/release", {"handle": a}) == (200, {"released": True, "returned": True}), "retry")
-        expect(sum(e["argv"][:1] == ["edit"] for e in b.run.log_lines()) == edits, "the retry ran bw edit")
-        expect(vault_item(b, "A")["folderId"] == bt.FOLDER_OTHER, "the retry moved the item again")
-        expect(a not in denylist(b) and a not in b.handles(), "the entry stays after the item left scope")
+        b.call("POST", "/release", {"handle": handle("personal", "A")})
+        status, got = b.call("GET", "/requests")
+        expect(status == 200 and sorted(got) == ["pending", "recent"], f"GET /requests keys {sorted(got)}")
         b.stop()
         b.expect_clean()
 
-    with bt.broker_run(vault=bt.vault_data(refuse_edit=refuse)) as b:
-        b.add_account("org", scope=f"collection:{bt.COLLECTION}")
-        b.start(unlocked=["org"])
-        c = handle("org", "C")
-        expect(b.call("POST", "/release", {"handle": c})[1]["returned"] is False, "refused collection release")
-        edit_vault(b, "C", collectionIds=[])
-        edits = sum(e["argv"][:1] == ["edit"] for e in b.run.log_lines())
-        expect(b.call("POST", "/release", {"handle": c})[1]["returned"] is True, "collection retry")
-        expect(sum(e["argv"][:1] == ["edit"] for e in b.run.log_lines()) == edits, "the retry ran bw edit")
-        expect(c not in denylist(b), "the collection entry stays after the item left scope")
-        b.stop()
+
+def test_leftover_unreturned_file_is_ignored() -> None:
+    """A broker from before this change may have left unreturned.json; it is never read."""
+    with bt.broker_run() as b:
+        b.add_account("personal")
+        path = b.run.tmp / "broker" / "unreturned.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        for content in ('[{"handle": "bwbroker:personal/x", "account": "personal", "label": "L", "site": "s"}]', "{"):
+            path.write_text(content, encoding="utf-8")
+            b.start(unlocked=["personal"])
+            status, got = b.call("GET", "/requests")
+            expect(status == 200 and sorted(got) == ["pending", "recent"], f"GET /requests with {content!r}: {got}")
+            expect(b.call("POST", "/release", {"handle": handle("personal", "A")}) == (200, {"released": True}),
+                   "release")
+            b.call("POST", "/sync", {})
+            b.stop()
+            expect(path.read_text(encoding="utf-8") == content, "the broker rewrote unreturned.json")
         b.expect_clean()
 
 
@@ -465,13 +259,13 @@ def test_sync_marks_requests_done() -> None:
 
 def test_restart_keeps_requests_and_denylist() -> None:
     """Review Focus 4: the broker restarts while hermes stays up."""
-    with bt.broker_run(vault=bt.vault_data(refuse_edit="No rights to modify the collection.")) as b:
+    with bt.broker_run() as b:
         b.add_account("personal")
         b.start(unlocked=["personal"])
         a = handle("personal", "A")
         b.call("POST", "/requests", {"site": "one.example.com", "reason": "first"})
         b.call("POST", "/requests", {"site": "two.example.com", "reason": "second"})
-        expect(b.call("POST", "/release", {"handle": a})[1] == {"released": True, "returned": False}, "release")
+        expect(b.call("POST", "/release", {"handle": a})[1] == {"released": True}, "release")
         before = b.call("GET", "/requests")[1]
         b.stop()
 
@@ -495,17 +289,11 @@ def main() -> None:
     test_request_validation()
     test_request_cap_and_expiry()
     test_request_reveals_nothing()
-    test_release_before_move()
-    test_release_paths()
-    test_regrant_clears_denylist()
-    test_unreturned_listed_after_refused_move()
-    test_unreturned_cleared_by_sync()
-    test_unreturned_survives_lock_and_restart()
-    test_unreturned_hidden_for_removed_account()
-    test_orphan_unreturned_dropped_by_prune()
-    test_unreturned_skips_returned_and_scope_all()
-    test_regrant_clears_unreturned()
-    test_retry_after_user_moved_item()
+    test_release_denylists_and_stops()
+    test_release_leaves_collection_and_scope_all_items()
+    test_sync_drops_denylist_entry_after_user_moves_item()
+    test_requests_reply_has_no_unreturned()
+    test_leftover_unreturned_file_is_ignored()
     test_sync_marks_requests_done()
     test_restart_keeps_requests_and_denylist()
     print("ok")

@@ -318,7 +318,7 @@ class Fake(BaseHTTPRequestHandler):
         if self.path == "/release":
             if body.get("handle") != "bwbroker:work/1111":
                 return self._send(404, {"error": "unknown_handle"})
-            return self._send(200, {"released": True, "returned": False})
+            return self._send(200, {"released": True})
         return self._send(404, {"error": "not_found"})
 
 
@@ -386,8 +386,7 @@ def call(tool, args):
 got = call("bitwarden_request_access", {"site": "example.com", "reason": "Sign in to read the invoice"})
 check("request returns pending with the approve text", got == {
     "pending": True, "request_id": "req-1",
-    "approve": "make vault-grant SITE=example.com, or move the login into the agent's folder or collection "
-               "in Bitwarden"}, got)
+    "approve": "move the login for example.com into the agent's folder or collection in a Bitwarden app"}, got)
 check("request leaves account out when none is given",
       state["posts"][-1] == ("/requests", {"site": "example.com", "reason": "Sign in to read the invoice"}),
       state["posts"][-1])
@@ -398,7 +397,7 @@ check("a broker refusal comes back as its code", got == {"success": False, "erro
 got = call("bitwarden_request_access", {"site": "odd.example.com", "reason": "r"})
 check("a code outside the fixed form is not passed on", got == {"success": False, "error": "unavailable"}, got)
 got = call("bitwarden_release_access", {"handle": "bwbroker:work/1111"})
-check("release returns released and returned", got == {"released": True, "returned": False}, got)
+check("release returns released", got == {"released": True}, got)
 got = call("bitwarden_release_access", {"handle": "bwbroker:work/4444"})
 check("release of an unknown handle", got == {"success": False, "error": "unknown_handle"}, got)
 schemas = {name: registry.get_entry(name).schema for name in ("bitwarden_request_access",

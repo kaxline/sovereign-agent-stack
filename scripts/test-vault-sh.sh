@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2015  # "A && B || fail" is the check: fail runs when either test is false
 # scripts/vault.sh with docker (and make) replaced by recording stubs on PATH.
 # Covers argument checks, add's files and modes, the scope all refusal,
 # passwords kept out of every argv and all output, requests --json, init's
@@ -77,7 +78,6 @@ case " $* " in
     [ -f "$STUB/record-ps" ] && { ps -ax -o args= >> "$STUB/ps" 2>/dev/null || true; }
     cat "$STUB/accounts" 2>/dev/null; exit "$(rc_of accounts)" ;;
   *" broker.cli requests --json "*) cat "$STUB/requests.json"; exit 0 ;;
-  *" broker.cli requests --tsv "*) cat "$STUB/requests.tsv" 2>/dev/null; exit 0 ;;
   *" broker.cli requests "*) echo "No pending access requests."; exit 0 ;;
   *" broker.cli sync --json "*) cat "$STUB/sync.json"; exit "$(rc_of sync)" ;;
   *" broker.cli sync "*) echo "Synced: personal"; exit "$(rc_of sync)" ;;
@@ -293,7 +293,7 @@ rm -f "$STUB/rc.unlock"
 run lock --slug home || fail "lock"
 logged "broker.unlock --lock home" || fail "lock runs broker.unlock --lock"
 
-# --- requests, sync and grant -----------------------------------------------
+# --- requests, sync; grant is gone -----------------------------------------------
 reset_stub
 touch "$STUB/broker-running"
 printf '{"pending": [{"request_id": "r1", "account": "personal", "site": "www.example.com", "reason": "sign in", "created": 1, "status": "pending", "done_at": null}], "recent": []}\n' \
@@ -306,22 +306,10 @@ fi
 run requests || fail "requests"
 run sync || fail "sync"
 logged "broker.cli sync" || fail "sync calls the broker"
-run grant --site www.example.com --slug personal --email owner@example.com || fail "grant --site"
-logged "run --rm bitwarden-setup grant --slug personal --email owner@example.com --site www.example.com" \
-  || fail "grant runs bitwarden-setup grant"
-[ "$(grep -c 'broker.cli sync' "$STUB/log")" = 2 ] || fail "grant syncs the broker afterwards"
-printf 'r1\tpersonal\twww.example.com\tsign in\n' > "$STUB/requests.tsv"
-run grant && fail "grant with no --site and no terminal must fail"
-said "www.example.com" || fail "grant lists pending requests"
-said "--site" || fail "grant without a terminal says to pass --site"
-echo 1 > "$STUB/rc.sync"
-run grant --site www.example.com --slug personal --email owner@example.com || fail "grant with a failed sync"
-said "did not sync" || fail "grant says when the sync failed"
-said "The broker synced" && fail "grant claims a sync that failed"
-rm -f "$STUB/rc.sync"
-echo 1 > "$STUB/rc.setup-grant"
-run grant --site www.example.com --slug personal --email owner@example.com && fail "a failed grant must fail"
-said "stays pending" || fail "a failed grant says the request stays pending"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert set(d)=={"pending","recent"}, sorted(d)' "$tmp/req.json" \
+  || fail "requests --json has keys other than pending and recent"
+run grant --site www.example.com --slug personal --email owner@example.com && fail "grant must be an unknown command"
+logged "bitwarden-setup grant" && fail "grant must not reach bitwarden-setup"
 
 # --- remove ------------------------------------------------------------------
 reset_stub
@@ -600,19 +588,19 @@ rm -rf "$VAULT_ACCOUNTS_DIR"
 reset_stub
 mv "$VAULT_ACCOUNTS_DIR" "$tmp/accounts-kept2" 2>/dev/null || true
 mkdir -p "$VAULT_ACCOUNTS_DIR"
-st_file() { printf '# t\nBW_MODE=cloud\nBW_SERVER=https://example.com\nBW_SCOPE=folder:Agent\nBW_UNLOCK=%s\nBW_CLIENTID=syn-id\n' "$2" > "$VAULT_ACCOUNTS_DIR/$1.env"; }
+st_agent_file() { printf '# t\nBW_MODE=cloud\nBW_SERVER=https://example.com\nBW_SCOPE=folder:Agent\nBW_UNLOCK=%s\nBW_CLIENTID=syn-id\n' "$2" > "$VAULT_ACCOUNTS_DIR/$1.env"; }
 jj() { STACK_PYTHON=host "$vault" "$@" > "$out" 2> "$tmp/jerr"; }
 jerrcode() { local rc=0; printf '%s' "$1" | jj "${@:2}" || rc=$?; echo "$rc"; }
 jline() { python3 -c "import json,sys; d=json.loads(sys.stdin.read()); print(d.get('$1'))" < "$out"; }
-st_file man manual
-st_file sto stored
+st_agent_file man manual
+st_agent_file sto stored
 printf '%s' "$PW" > "$STUB/expect-password"
 payload="{\"master_password\":\"$PW\"}"
 [ "$(jerrcode "$payload" unlock --slug man --json)" = 4 ] || fail "unlock --json with the broker down exits 4"
 [ "$(jline error)" = broker_down ] || fail "unlock --json broker_down"
 touch "$STUB/broker-running"
 [ "$(jerrcode "$payload" unlock --slug man --json)" = 0 ] || fail "unlock --json"
-[ "$(wc -l < "$out" | tr -d ' ')" = 1 ] && [ "$(jline phase)" = done ] || fail "unlock --json ends with done"
+[ "$(wc -l < "$out" | tr -d ' ')" = 1 ] && [ "$(jline phase)" = "done" ] || fail "unlock --json ends with done"
 logged "stub: password on stdin" || fail "unlock --json passes the password on stdin"
 grep -qF "broker.unlock man" "$STUB/ps" || fail "the ps record missed the unlock exec"
 grep -qF "$PW" "$STUB/ps" && fail "the password reached an argv"
@@ -629,7 +617,7 @@ rm -f "$STUB/rc.unlock"
 [ "$(jerrcode "$payload" unlock --slug nope --json)" = 2 ] && [ "$(jline error)" = not_found ] || fail "unlock --json missing file"
 [ "$(jerrcode "not json" unlock --slug man --json)" = 2 ] && [ "$(jline error)" = bad_input ] || fail "unlock --json bad JSON"
 [ "$(jerrcode '{}' unlock --slug man --json)" = 2 ] && [ "$(jline error)" = bad_input ] || fail "unlock --json without a password"
-[ "$(jerrcode "" lock --slug man --json)" = 0 ] && [ "$(jline phase)" = done ] && [ "$(wc -l < "$out" | tr -d ' ')" = 1 ] || fail "lock --json"
+[ "$(jerrcode "" lock --slug man --json)" = 0 ] && [ "$(jline phase)" = "done" ] && [ "$(wc -l < "$out" | tr -d ' ')" = 1 ] || fail "lock --json"
 logged "broker.unlock --lock man" || fail "lock --json runs broker.unlock --lock"
 [ "$(jerrcode "" lock --slug sto --json)" = 2 ] && [ "$(jline error)" = bad_input ] || fail "lock --json stored account"
 echo 3 > "$STUB/rc.unlock"
@@ -665,7 +653,7 @@ gone() {
   [ ! -e "$VAULT_ACCOUNTS_DIR/$1.env" ] || fail "$2: the account file stayed"
   [ ! -e "$D/secrets/$1" ] || fail "$2: secrets/$1 stayed"
   [ ! -e "$D/bw/$1" ] || fail "$2: bw/$1 stayed"
-  for left in "$VAULT_ACCOUNTS_DIR"/.$1.*; do [ ! -e "$left" ] || fail "$2: a temp file stayed"; done
+  for left in "$VAULT_ACCOUNTS_DIR"/."$1".*; do [ ! -e "$left" ] || fail "$2: a temp file stayed"; done
 }
 no_secret_json() {
   no_secret "$1"

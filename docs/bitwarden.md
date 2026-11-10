@@ -166,7 +166,7 @@ three wrong passwords it exits with nothing changed), unlocks your account into 
 `/tmp`, does its work, and runs `bw lock` and `bw logout` on every exit, Ctrl-C included. A second
 Ctrl-C during that cleanup can stop `bw logout` before the server hears it, which leaves a `bw`
 device session on your account until you remove it in the web vault.
-`make vault-init`, `make vault-add` and `make vault-grant` use it. Its output shows item names,
+`make vault-init` and `make vault-add` use it. Its output shows item names,
 usernames and URIs, never a password, TOTP key or note.
 
 | Mode and scope | Setup creates | Left to you |
@@ -203,36 +203,26 @@ pending at a time, and requests are dropped after 7 days. `make vault-requests` 
 
 ### Approving
 
-- `make vault-grant` lists pending requests. For the one you pick, `bitwarden-setup` asks for your
-  unlock, lists the matching items, and moves the one you choose. The broker then syncs and marks
-  the request done once the item is in scope. `make vault-grant SITE=example.com` skips the list.
-- In Bitwarden: move the item into the folder or collection in any Bitwarden app. The broker's
-  next sync (every `BITWARDEN_SYNC_MINUTES`, or `make vault-sync`) picks it up and marks a pending
-  request for that host done. The broker runs one `make vault-sync` at a time and at most one every
-  30 s; a call inside that interval gets the last result back. `make vault-grant SITE=…` also takes
-  only a host with a dot.
+Move the item into the agent's folder or collection in any Bitwarden app. The broker's next sync
+(every `BITWARDEN_SYNC_MINUTES`, or `make vault-sync`) picks it up and marks a pending request for
+that host done. The broker runs one `make vault-sync` at a time and at most one every 30 s; a call
+inside that interval gets the last result back.
 
 ### Releasing
 
-`bitwarden_release_access(handle)` takes an item out of the agent's scope on the agent's word alone,
+`bitwarden_release_access(handle)` takes an item out of the agent's use on the agent's word alone,
 since narrowing access is safe whoever asks. The broker adds the handle to `broker/denylist.json`
-and stops listing and filling it at once. Then it returns the item:
+and stops listing and filling it at once. It does not move the item: it stays in the agent's folder
+or collection until you move it out in a Bitwarden app, and the agent gets it back only through a
+new request that you approve by moving it in again.
 
-- `folder:` scope: the item's folder becomes none.
-- `collection:` scope: the item leaves the agent's collection and keeps any other collections it is
-  in. When that was its only collection, it becomes an unassigned organization item, which only
-  Owners and Admins see. List those, then file them in the web vault:
-  `docker compose --profile bitwarden-tools run --rm bitwarden-setup list-unassigned --slug <slug> --email <you>`.
+A denylist entry is dropped at the first sync that no longer finds the item in scope, so moving it
+back into scope later lists it again. Requests and denylist entries survive broker restarts.
 
-The result's `returned` is false when Bitwarden refused the edit. The item then stays in the agent's
-folder or collection but stays denylisted; move it out in Bitwarden. A denylist entry is dropped at
-the first sync that no longer finds the item in scope, so granting it again later lists it again.
-Requests and denylist entries survive broker restarts.
-
-When Bitwarden refuses the move, the broker also writes the item's account, label and site to
-`broker/unreturned.json`, because a locked account can no longer look the label up. The entry is
-listed under `unreturned` by `make vault-requests` and `vault.sh requests --json` while the broker
-has its account loaded, and is dropped at the first sync that no longer finds the item in scope.
+With a `collection:` scope, an item that was only in the agent's collection becomes an unassigned
+organization item when you take it out, which only Owners and Admins see. List those, then file
+them in the web vault:
+`docker compose --profile bitwarden-tools run --rm bitwarden-setup list-unassigned --slug <slug> --email <you>`.
 
 ## Boundary
 
@@ -248,7 +238,7 @@ unlock reads `{master_password}`.
 | `unlock --slug S --json` | `{"phase":"done"}`, or an error line; one attempt, no prompt |
 | `lock --slug S --json` | `{"phase":"done"}`, or an error line |
 | `sync --json` | The broker's reply on one line: `synced` (slugs), and `busy` or `reason` (`busy`, `recent`) when set |
-| `requests --json` | `pending`, `recent` and `unreturned` (below) |
+| `requests --json` | `pending` and `recent` (below) |
 | `add --json`, `remove --json` | `setup` lines, then `done` with `account` and `message` |
 
 `state` is `unlocked`, `locked`, `offline`, `error` (passed through from the broker) or `refused`;
@@ -259,7 +249,6 @@ unlock reads `{master_password}`.
 `requests --json` lists these fields:
 
 - `pending[]`: `request_id`, `account`, `site`, `reason` (the agent's text), `created` (Unix seconds)
-- `unreturned[]`: `account`, `label`, `site`
 
 `sync` and `requests` exit 1 with a message on stderr when the broker is not running; `status`
 reports `broker_down` per account and exits 0. The error lines of the other commands use the exit
@@ -379,7 +368,7 @@ Other limits, as built:
   logins in Bitwarden, or have the agent ask with `bitwarden_request_access`.
 - On a cloud personal account `bw get totp` needs Premium. Without it, `browser_vault` `enter_code`
   answers that the login has no authenticator key, and the agent asks you for the code.
-- `make vault-init`, `vault-add` and `vault-grant` sign in to your own account with email and master
+- `make vault-init` and `vault-add` sign in to your own account with email and master
   password. Two-step login, bitwarden.com's new-device verification and accounts set to Argon2id are
   not handled: the sign-in or the organization API calls fail, and setup prints the web vault steps
   where it can. The organization steps have been run against Vaultwarden only.

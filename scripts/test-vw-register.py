@@ -13,8 +13,9 @@ BITWARDEN_TEST_IMAGE) then repeats spike 2's sequence with vw_register, the
 broker's Bw class, setup.py and bw, and runs the live checks other tasks
 deferred to this test:
 
-  1. bwcli.return_item's ``bw edit item-collections`` with the ids on stdin.
-  2. The Owner sees the released item through ``bw list items --organizationid``.
+  1. The Owner's ``bw edit item-collections`` with the ids on stdin takes an item out
+     of the Agent collection, and the agent's next sync no longer lists it.
+  2. The Owner sees that unassigned item through ``bw list items --organizationid``.
   3. bw's real stderr for a wrong password, a 401 and a missing item, through
      bwcli.classify.
   4. Whether bw prints Retry-After on a 429.
@@ -359,8 +360,10 @@ def inside_main() -> int:
                 "notes": None, "favorite": False, "fields": [], "secureNote": None, "card": None,
                 "identity": None, "reprompt": 0, "folderId": None}
 
-    def run_setup(args: list[str], password: str, timeout: float = 180) -> tuple[int, str]:
-        """setup.py under a pty, answering the master password prompt once."""
+    def run_setup(args: list[str], password: str, timeout: float = 180,
+                  replies: tuple[tuple[bytes, str], ...] = ()) -> tuple[int, str]:
+        """setup.py under a pty, answering the master password prompt once, then each
+        (prompt, reply) in ``replies`` in order."""
         env = {"PATH": os.environ["PATH"], "HOME": "/tmp", "NODE_EXTRA_CA_CERTS": os.environ["NODE_EXTRA_CA_CERTS"],
                "BITWARDEN_ACCOUNTS_DIR": "/tmp/accounts", "PYTHONDONTWRITEBYTECODE": "1"}
         pid, fd = pty.fork()
@@ -369,7 +372,7 @@ def inside_main() -> int:
                 os.execve(sys.executable, [sys.executable, "/app/setup/setup.py", *args], env)
             finally:
                 os._exit(127)
-        buf, answered = b"", False
+        buf, answered, pending, seen = b"", False, list(replies), 0
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             ready, _, _ = select.select([fd], [], [], 0.5)
@@ -383,7 +386,11 @@ def inside_main() -> int:
                 buf += chunk
                 if not answered and b"Master password" in buf:
                     os.write(fd, (password + "\n").encode("utf-8"))
-                    answered = True
+                    answered, seen = True, len(buf)
+                elif answered and pending and pending[0][0] in buf[seen:]:
+                    os.write(fd, (pending[0][1] + "\n").encode("utf-8"))
+                    pending.pop(0)
+                    seen = len(buf)
         done, status = os.waitpid(pid, os.WNOHANG)
         if not done:
             os.kill(pid, signal.SIGKILL)
@@ -599,21 +606,19 @@ def inside_main() -> int:
         # --- Check 1: release by empty item-collections ----------------------
 
         def release():
-            ok = agent.return_item(st["agent_item"])
-            if not ok:
-                # Diagnose: the same edit with the ids in argv, as spike 2 ran it.
-                code, _, err = bw(agent_dir, ["edit", "item-collections", st["agent_item"], "--organizationid",
-                                              st["org"], b64([])], agent_env())
-                raise AssertionError(f"return_item returned False; with the ids in argv bw exits {code}: "
-                                     f"{first_line(err)}")
+            # What the user does in a Bitwarden app after a release: take the item out of the collection.
+            bw_ok(owner_dir, ["edit", "item-collections", st["agent_item"], "--organizationid", st["org"]],
+                  owner_env, stdin=b64([]))
             bw_ok(owner_dir, ["sync"], owner_env)
             item = json.loads(bw_ok(owner_dir, ["get", "item", st["agent_item"]], owner_env))
             expect(item.get("collectionIds") == [], f"collectionIds {item.get('collectionIds')}")
             expect(item.get("organizationId") == st["org"], "the item left the organization")
+            agent.sync()
             expect(agent.list_items() == [], "the agent still lists the item")
-            return Detail("returned True; the item is in the organization with no collection")
+            return Detail("the item is in the organization with no collection and the agent's sync drops it")
 
-        step("check 1: bwcli.return_item runs bw edit item-collections with [] on stdin", release, fatal=False)
+        step("check 1: the Owner's bw edit item-collections with [] on stdin removes the item from Agent",
+             release, fatal=False)
 
         # --- Check 2: the owner sees the unassigned item ---------------------
 
@@ -628,20 +633,20 @@ def inside_main() -> int:
 
         step("check 2: the Owner lists the unassigned item", owner_sees, fatal=False)
 
-        # --- Grants: setup.py grant moves items into Agent -------------------
+        # --- Seed: setup.py seed moves the items the user picks into Agent ---
 
-        def grant(item_key: str, name: str):
-            code, out = run_setup(["grant", "--slug", "local", "--email", OWNER_EMAIL, "--item", st[item_key]],
-                                  syn["owner_pw"])
-            expect(code == 0 and f'Moved "{name}"' in out, f"setup.py grant exit {code}")
+        def seed(site: str, name: str):
+            code, out = run_setup(["seed", "--slug", "local", "--email", OWNER_EMAIL], syn["owner_pw"],
+                                  replies=((b"Site to give", site), (b"Move which", "1"), (b"Site to give", "")))
+            expect(code == 0 and f'Moved "{name}"' in out, f"setup.py seed exit {code}")
             agent.sync()
             names = sorted(i["name"] for i in agent.list_items())
             expect(name in names, f"agent lists {names}")
 
-        step("setup.py grant --item: bw move of a personal item into Agent; the agent sees it",
-             lambda: grant("personal_item", "personal"), fatal=False)
-        step("setup.py grant --item: the released item back into Agent; the agent sees it",
-             lambda: grant("agent_item", "linkedin"), fatal=False)
+        step("setup.py seed: bw move of a personal item into Agent; the agent sees it",
+             lambda: seed("personal.example.com", "personal"), fatal=False)
+        step("setup.py seed: the unassigned organization item back into Agent; the agent sees it",
+             lambda: seed("linkedin.example.com", "linkedin"), fatal=False)
 
         # --- WebSocket upgrade through the sidecar ---------------------------
 

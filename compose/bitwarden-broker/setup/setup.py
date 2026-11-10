@@ -13,8 +13,6 @@ Commands:
                      agent member is invited if it is not one yet and gets Manage
                      on the collection. ``local`` accounts are refused here.
 ``seed``             Asks for sites and moves the matching items the user picks.
-``grant``            ``--site H`` and/or ``--item ID``; moves one or more items and
-                     prints what moved. The broker's next sync marks the request done.
 ``role``             Changes the agent member to the User role with Manage on the
                      scope collection and view on "Stack secrets" (Local mode step 6).
                      ``--agent-email`` defaults to agent@vault.localhost for ``local``.
@@ -114,7 +112,7 @@ STACK_SECRETS = "Stack secrets"
 DEFAULT_COLLECTION = "Agent"
 MEMBER_INVITED, MEMBER_ACCEPTED = 0, 1
 TYPE_USER = 2
-COMMANDS = ("create", "seed", "grant", "role", "list-unassigned")
+COMMANDS = ("create", "seed", "role", "list-unassigned")
 LOCAL_COMMANDS = ("tls", "admin-token")
 LOCAL_DIR = "/local"
 LOCAL_SERVER = "https://vaultwarden.vault.internal"
@@ -463,38 +461,6 @@ class Run:
                 return 0
             self.offer(items, target, site)
 
-    def cmd_grant(self) -> int:
-        target = self.target()
-        items = self.items()
-        moved = 0
-        if self.args.item:
-            item = next((i for i in items if i["id"] == self.args.item), None)
-            if item is None:
-                raise SetupError("No login item with that id in your vault.")
-            if self.args.site:
-                host = normalize_host(self.args.site)
-                if host is None or not match_items([item], host):
-                    raise SetupError(f'"{item["name"]}" has no URI for {self.args.site}; nothing moved.')
-            if self.in_target(item, target):
-                print(f'"{item["name"]}" is already in {target.label}.')
-            elif self.move(item, target):
-                moved = 1
-            else:
-                return EXIT_FAILED
-        else:
-            site = self.args.site or input("Site to give the agent: ").strip()
-            host = normalize_host(site)
-            if host is None:
-                print(f"{site!r} is not a host name.")
-                return EXIT_FAILED
-            if not match_items([i for i in items if not self.in_target(i, target)], host):
-                print(f"No login items for {host} outside {target.label}.")
-                return EXIT_FAILED
-            moved = self.offer(items, target, site)
-        if moved:
-            print("The broker marks a pending request for this site done on its next sync.")
-        return 0
-
     def cmd_create(self) -> int:
         if self.account.scope_kind == "folder":
             name = self.account.scope_value
@@ -674,8 +640,6 @@ def parse_args(argv: list[str]):
     parser.add_argument("--agent-email")
     parser.add_argument("--org")
     parser.add_argument("--name")
-    parser.add_argument("--site")
-    parser.add_argument("--item")
     return parser.parse_args(argv)
 
 
@@ -709,8 +673,6 @@ def _check_server(server: str) -> str | None:
 
 def preflight(args, account: Account) -> str | None:
     """A reason to refuse before asking for the password, or None."""
-    if args.item and not ID_RE.fullmatch(args.item):
-        return "--item is not a Bitwarden item id."
     if args.org and not ID_RE.fullmatch(args.org):
         return "--org is not a Bitwarden organization id."
     kind = account.scope_kind
@@ -723,7 +685,7 @@ def preflight(args, account: Account) -> str | None:
             return "create for a collection: scope needs --agent-email, the agent member account's email."
     if args.command in ("role", "list-unassigned") and kind != "collection":
         return f"{args.command} needs a collection: scope."
-    if args.command in ("seed", "grant") and kind == "all":
+    if args.command == "seed" and kind == "all":
         return "This account's scope is all; there is no folder or collection to move items into."
     if args.command == "role" and not args.agent_email and account.mode != "local":
         return "role needs --agent-email for an account that is not local."

@@ -1,7 +1,7 @@
 """The broker's TCP API for scripts/vault.sh, which runs this through ``docker compose exec``.
 
     python3 -m broker.cli accounts
-    python3 -m broker.cli requests [--json | --tsv]
+    python3 -m broker.cli requests [--json]
     python3 -m broker.cli sync
 
 The API listens on ``BITWARDEN_LISTEN`` (127.0.0.1:8099) inside hermes' network
@@ -11,8 +11,7 @@ namespace, so the host reaches it only through the broker container.
 state, error class or ``-``), then ``refused<TAB><message>`` for each account
 file the broker refused at start. ``requests`` prints the pending access
 requests for a person; ``--json`` prints ``GET /requests`` as the broker sent
-it, and ``--tsv`` one line per pending request (id, account or ``-``, site,
-reason). ``sync`` runs ``POST /sync``.
+it. ``sync`` runs ``POST /sync``.
 
 Exit codes: 0 done, 1 the broker is not reachable, 2 bad usage or the broker
 refused the call.
@@ -90,11 +89,6 @@ def cmd_requests(form: str | None) -> None:
     if form == "--json":
         print(json.dumps(data))
         return
-    if form == "--tsv":
-        for r in pending:
-            print("\t".join(_cell(r.get(k)) for k in ("request_id", "account", "site", "reason")))
-        return
-    unreturned = data.get("unreturned") or []
     if not pending:
         print("No pending access requests.")
     else:
@@ -104,10 +98,6 @@ def cmd_requests(form: str | None) -> None:
             print(f"  {number}. {_cell(r.get('site'))}  ({account}{_age(r.get('created'))})")
             if r.get("reason"):
                 print(f"     Reason, in the agent's text: {_cell(r.get('reason'))}")
-    if unreturned:
-        print("Released logins Bitwarden would not move out of the agent's scope (move them yourself):")
-        for r in unreturned:
-            print(f"  - {_cell(r.get('label'))}  ({_cell(r.get('site'))}, account {_cell(r.get('account'))})")
 
 
 def cmd_sync(form: str | None = None) -> None:
@@ -131,12 +121,12 @@ def main(argv: list[str]) -> int:
     try:
         if argv == ["accounts"]:
             cmd_accounts()
-        elif argv[:1] == ["requests"] and len(argv) <= 2 and argv[1:] in ([], ["--json"], ["--tsv"]):
+        elif argv[:1] == ["requests"] and len(argv) <= 2 and argv[1:] in ([], ["--json"]):
             cmd_requests(argv[1] if len(argv) == 2 else None)
         elif argv in (["sync"], ["sync", "--json"]):
             cmd_sync(argv[1] if len(argv) == 2 else None)
         else:
-            print("usage: python3 -m broker.cli accounts | requests [--json | --tsv] | sync [--json]", file=sys.stderr)
+            print("usage: python3 -m broker.cli accounts | requests [--json] | sync [--json]", file=sys.stderr)
             return 2
     except Unreachable:
         print("The Bitwarden broker is not reachable.", file=sys.stderr)

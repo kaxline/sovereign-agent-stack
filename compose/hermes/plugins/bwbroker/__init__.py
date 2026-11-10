@@ -4,8 +4,8 @@ Registers the broker's login backend (bitwarden_broker_backend.py, installed
 beside this file) and two tools in the ``bitwarden`` toolset. The bootstrap's
 cron fence keeps that toolset out of cron. Neither tool can widen the agent's
 access: a request only records that the agent asked, and the user approves it
-with ``make vault-grant`` or by moving the login in Bitwarden. A release
-narrows access at once.
+by moving the login into the agent's folder or collection in a Bitwarden app.
+A release denylists the login at once; the user moves it out in Bitwarden.
 
 Tool results are JSON strings. A broker error comes back as
 ``{"success": false, "error": <code>}`` with the broker's fixed code,
@@ -19,12 +19,7 @@ import json
 from . import bitwarden_broker_backend as broker
 
 TOOLSET = "bitwarden"
-# A release runs bw (read the item, edit its collections, refresh the list) before
-# it answers, which took over 5 s against a local Vaultwarden; the default 5 s
-# timeout reported broker_unavailable for a release that went through.
-RELEASE_TIMEOUT = 60
-APPROVE = ("make vault-grant SITE={site}, or move the login into the agent's folder or collection "
-           "in Bitwarden")
+APPROVE = "move the login for {site} into the agent's folder or collection in a Bitwarden app"
 
 REQUEST_SCHEMA = {
     "name": "bitwarden_request_access",
@@ -51,7 +46,7 @@ RELEASE_SCHEMA = {
     "name": "bitwarden_release_access",
     "description": (
         "Give a Bitwarden login back when you no longer need it. The broker stops listing and filling it "
-        "at once and moves it out of your folder or collection. Getting it back takes a new "
+        "at once; the user moves it out of your folder or collection in Bitwarden. Getting it back takes a new "
         "bitwarden_request_access, and requesting never grants access by itself: the user approves outside "
         "this chat."),
     "parameters": {
@@ -92,13 +87,13 @@ def release_access(args: dict, **_kwargs) -> str:
     if not isinstance(handle, str) or not handle.startswith(broker.HANDLE_PREFIX):
         return _refused("unknown_handle")
     try:
-        status, payload = broker.call("POST", "/release", {"handle": handle}, timeout=RELEASE_TIMEOUT)
+        status, payload = broker.call("POST", "/release", {"handle": handle})
     except broker.BrokerUnavailable:
         return _refused("broker_unavailable")
     if status != 200 or not isinstance(payload, dict) \
-            or type(payload.get("released")) is not bool or type(payload.get("returned")) is not bool:
+            or type(payload.get("released")) is not bool:
         return _refused(broker.error_code(payload))
-    return json.dumps({"released": payload["released"], "returned": payload["returned"]})
+    return json.dumps({"released": payload["released"]})
 
 
 def register(ctx) -> None:

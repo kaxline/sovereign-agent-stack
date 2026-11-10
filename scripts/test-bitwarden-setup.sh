@@ -3,7 +3,7 @@
 # and a fake organization API (prelogin, token, invite, member edit) on a free
 # loopback port. Each run happens under a pty, so getpass and the prompts read
 # from a real terminal. Checks creation per mode and scope, seeding by host,
-# the transfer notice, grant, the role change, list-unassigned, three wrong
+# the transfer notice, the role change, list-unassigned, three wrong
 # passwords, lock and logout on every exit path (SIGINT and SIGTERM included),
 # the temporary bw directory removed, and no password, token or item secret in
 # any output. Needs host python3 only.
@@ -390,38 +390,23 @@ for ident in ("i-li-www", "i-li-bare", "i-gh"):
           f"seed-collection: {ident} not in the collection")
 r.expect_lock_logout()
 
-# grant --site --item: no prompt but the password, prints what moved.
+# seed of an unassigned organization item: edit item-collections, no move, no notice.
 v = with_collection(base_vault())
 v["items"].append(item("i-org-loose", "Org loose", "https://www.example.com/login", organizationId=ORG))
-r = Run("grant-item", "grant", account("collection:c-agent"), v, extra=("--site", "linkedin.com", "--item",
-                                                                        "i-li-bare"))
-r.expect_code(0)
-check(r.cmds("move") == [["move", "i-li-bare", ORG]], f"grant-item: moves {r.cmds('move')}")
-check("Moved" in r.out and "LinkedIn second" in r.out and NOTICE in r.out, f"grant-item: output\n{r.out}")
-r.expect_lock_logout()
-
-# grant of an unassigned organization item: edit item-collections, no move, no notice.
-r = Run("grant-org-item", "grant", account("collection:c-agent"), v, extra=("--item", "i-org-loose"))
+r = Run("seed-org-item", "seed", account("collection:c-agent"), v,
+        script=[("Master password", USER_PW), ("Site", "example.com"), ("Move which", "1"), ("Site", "")])
 r.expect_code(0)
 check(r.cmds("move") == [] and r.cmds("edit") == [["edit", "item-collections", "i-org-loose", "--organizationid",
-                                                   ORG]], f"grant-org-item: calls {r.argvs}")
-check(r.item("i-org-loose")["collectionIds"] == ["c-agent"], "grant-org-item: not assigned")
-check(NOTICE not in r.out, "grant-org-item: transfer notice for an item already in the organization")
-
-# grant --item whose URIs do not match --site: refused, nothing moved.
-r = Run("grant-mismatch", "grant", account("collection:c-agent"), with_collection(base_vault()),
-        extra=("--site", "linkedin.com", "--item", "i-notli"))
-r.expect_code(1)
-check(not r.cmds("move", "edit"), "grant-mismatch: moved an item that does not match the site")
+                                                   ORG]], f"seed-org-item: calls {r.argvs}")
+check(r.item("i-org-loose")["collectionIds"] == ["c-agent"], "seed-org-item: not assigned")
+check(NOTICE not in r.out, "seed-org-item: transfer notice for an item already in the organization")
 r.expect_lock_logout()
 
-# grant --site with a prompt for the pick.
-r = Run("grant-site", "grant", account("folder:Agent"), dict(base_vault(), folders=[{"id": "f-agent",
-                                                                                     "name": "Agent"}]),
-        extra=("--site", "www.linkedin.com"), script=[("Master password", USER_PW), ("Move which", "1")])
-r.expect_code(0)
-check(r.item("i-li-www")["folderId"] == "f-agent" and "LinkedIn second" not in r.out,
-      f"grant-site: wrong match or move\n{r.out}")
+# grant is gone: argparse rejects it before any bw call or prompt.
+r = Run("grant-removed", "grant", account("folder:Agent"),
+        dict(base_vault(), folders=[{"id": "f-agent", "name": "Agent"}]), script=[])
+r.expect_code(2)
+check(not r.calls and "invalid choice" in r.out, f"grant-removed: calls {r.argvs}\n{r.out}")
 
 # role --slug local: the member edit exactly as spike 2.
 v = with_collection(base_vault())
@@ -514,22 +499,14 @@ check(not any(c[1] == "/redirected" for c in r.api["calls"]), "token-redirect: f
 check("redirect refused" in r.out and not r.api["invites"], f"token-redirect: output\n{r.out}")
 check(r.api.get("token_scope") == "api offline_access", f"token-redirect: token scope {r.api.get('token_scope')!r}")
 
-# grant --site that is not a host: exit 1. grant of an item already in scope: no "marks done" line.
-r = Run("grant-not-host", "grant", account("folder:Agent"),
-        dict(base_vault(), folders=[{"id": "f-agent", "name": "Agent"}]), extra=("--site", "not a host"))
-r.expect_code(1)
-check(not r.cmds("edit", "move") and "next sync" not in r.out, f"grant-not-host: output\n{r.out}")
-# A single label would match every login under it (items match subdomains).
-for single in ("com", "localhost"):
-    r = Run(f"grant-single-{single}", "grant", account("folder:Agent"),
-            dict(base_vault(), folders=[{"id": "f-agent", "name": "Agent"}]), extra=("--site", single))
-    r.expect_code(1)
-    check(not r.cmds("edit", "move") and "is not a host name" in r.out, f"grant --site {single}: output\n{r.out}")
-v = dict(base_vault(), folders=[{"id": "f-agent", "name": "Agent"}])
-v["items"][0]["folderId"] = "f-agent"
-r = Run("grant-already", "grant", account("folder:Agent"), v, extra=("--item", "i-li-www"))
-r.expect_code(0)
-check("already in" in r.out and "next sync" not in r.out, f"grant-already: output\n{r.out}")
+# seed with a site that is not a host: nothing moves. A single label would match every login under
+# it (items match subdomains), so it is refused too.
+for name, site in (("not-host", "not a host"), ("single-com", "com"), ("single-localhost", "localhost")):
+    r = Run(f"seed-{name}", "seed", account("folder:Agent"),
+            dict(base_vault(), folders=[{"id": "f-agent", "name": "Agent"}]),
+            script=[("Master password", USER_PW), ("Site", site), ("Site", "")])
+    r.expect_code(0)
+    check(not r.cmds("edit", "move") and "is not a host name" in r.out, f"seed {site!r}: output\n{r.out}")
 
 # local-init: Local mode steps 2-5 against a fake Vaultwarden, re-run from local/state.
 try:
