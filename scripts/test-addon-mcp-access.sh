@@ -25,6 +25,7 @@ run() { register_addon_mcp_servers "$1" > /dev/null; }
 register_mcp_server() { printf 'register:%s:%s:%s:%s;' "${1:-default}" "$2" "$4" "$(shift 6; echo "$*")" >> "$record"; }
 hermes_config_set() { printf 'set:%s:%s=%s;' "${1:-default}" "$2" "$3" >> "$record"; }
 pin_mcp_tools() { printf 'pin:%s:%s;' "${1:-default}" "$(shift 2; echo "$*")" >> "$record"; }
+# shellcheck disable=SC2329  # called by the sourced bootstrap; redefined below
 drop_mcp_entries_for_url() { printf 'drop:%s:%s;' "${1:-default}" "$3" >> "$record"; }
 got() { calls="$(cat "$record")"; : > "$record"; }
 
@@ -34,13 +35,13 @@ TOOLS="get_a get_b set_a"
 
 export SPLIT_MCP_ENABLED=1
 run ""; got
-[ "$calls" = "drop:default:${RO};register:default:split:${RW}:${TOOLS};pin:default:get_a set_a;" ] \
+[ "$calls" = "drop:default:${RO};register:default:split:${RW}:${TOOLS};drop:default:${RW};pin:default:get_a set_a;" ] \
   || fail "default registers the rw URL after dropping ro ($calls)"
 run browser; got
-[ "$calls" = "drop:browser:${RO};register:browser:split:${RW}:${TOOLS};pin:browser:get_a set_a;" ] \
+[ "$calls" = "drop:browser:${RO};register:browser:split:${RW}:${TOOLS};drop:browser:${RW};pin:browser:get_a set_a;" ] \
   || fail "browser registers the rw URL after dropping ro ($calls)"
 run api-server; got
-[ "$calls" = "drop:api-server:${RW};register:api-server:split:${RO}:get_a get_b;pin:api-server:get_a;" ] \
+[ "$calls" = "drop:api-server:${RW};register:api-server:split:${RO}:get_a get_b;drop:api-server:${RO};pin:api-server:get_a;" ] \
   || fail "api-server registers the ro URL after dropping rw ($calls)"
 
 # set_a is a writeTool: no pin args for it on api-server either.
@@ -60,12 +61,12 @@ done
 SPLIT_MCP_ENABLED=1
 export SPLIT_ACCESS=read
 run ""; got
-[ "$calls" = "drop:default:${RW};register:default:split:${RO}:get_a get_b;pin:default:get_a;" ] \
+[ "$calls" = "drop:default:${RW};register:default:split:${RO}:get_a get_b;drop:default:${RO};pin:default:get_a;" ] \
   || fail "read caps default to the ro URL and read tools ($calls)"
 for v in write ""; do
   export SPLIT_ACCESS="$v"
   run ""; got
-  [ "$calls" = "drop:default:${RO};register:default:split:${RW}:${TOOLS};pin:default:get_a set_a;" ] \
+  [ "$calls" = "drop:default:${RO};register:default:split:${RW}:${TOOLS};drop:default:${RW};pin:default:get_a set_a;" ] \
     || fail "SPLIT_ACCESS='$v' keeps rw ($calls)"
 done
 unset SPLIT_ACCESS
@@ -87,8 +88,18 @@ run research; got
 [ "$calls" = "drop:research:${RO};drop:research:${RW};" ] \
   || fail "a profile with no access drops both URLs ($calls)"
 
-urls="$(addon_mcp_urls "")"
+urls="$(addon_mcp_urls)"
 [ "$urls" = "${RO}
 ${RW}" ] || fail "addon_mcp_urls lists both URLs ($urls)"
+
+# After registering, every other key at the add-on's URL goes (a profile cloned
+# from default can carry an unfiltered entry for the same server).
+drop_mcp_entries_for_url() { printf 'drop:%s:%s:%s;' "${1:-default}" "$2" "$3" >> "$record"; }
+addon_mcp_plan() {
+  printf '%s\n' 'demo|Demo|1|rw|http://demo:8000/mcp|60|10|http|tool_a tool_b|tool_a|http://demo:8000/mcp'
+}
+run browser; got
+[ "$calls" = "register:browser:demo:http://demo:8000/mcp:tool_a tool_b;drop:browser:demo:http://demo:8000/mcp;pin:browser:tool_a;" ] \
+  || fail "registering drops other keys at the URL ($calls)"
 
 printf 'OK add-on MCP access levels\n'

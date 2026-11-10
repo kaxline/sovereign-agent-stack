@@ -33,7 +33,7 @@ up to `GPTR_MCP_TIMEOUT` seconds (900) for one call.
 
 `GPTR_MCP_ENABLED=0` removes the profile again, if the sync added it, and the
 next bootstrap drops the `gptr` entries. With `automation` on and the flag at
-`0`, `gptr-mcp` still runs for OpenCode and n8n, but Hermes doesn't register it.
+`0`, `gptr-mcp` still runs for OpenCode, but Hermes doesn't register it.
 
 The flag, profile, tools, pins and profile list come from
 [`addons/gptr/addon.json`](../addons/README.md), which both `sync-profiles.sh`

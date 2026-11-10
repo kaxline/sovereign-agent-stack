@@ -18,8 +18,13 @@ hermes_image_gate "${1:-}" "MCP parked retry"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 {
-  grep -E '^(LIGHTRAG|SEARXNG|CALDAV|OPENCODE|SQL|VIKUNJA|MAIL|MAIL_DRAFTS|MESSAGES)_MCP(_RO|_RW)?_URL=' "$bootstrap"
-  fn_source "$bootstrap" set_stack_mcp_parked_retry
+  grep -E '^(SEARXNG|CALDAV|OPENCODE|SQL|VIKUNJA|MAIL|MAIL_DRAFTS|MESSAGES)_MCP(_RO|_RW)?_URL=' "$bootstrap"
+  # LightRAG's URL comes from its manifest (addon_mcp_urls), not from a variable;
+  # instance URLs come from addon_instance_urls.
+  for fn in addon_mcp_urls addon_instances_plan addon_instance_urls set_stack_mcp_parked_retry; do
+    fn_source "$bootstrap" "$fn"
+  done
+  printf 'ADDONS_DIR=/a\nADDON_MANIFEST_PY=/l/addon_manifest.py\nADDON_DATA_DIR=/t/addon-data\n'
   cat <<'EOF'
 log() { printf '%s\n' "$1"; }
 config_path_for() { echo /t/config.yaml; }
@@ -43,12 +48,14 @@ mcp_servers:
   local-tool:
     command: npx
 EOF
+mkdir -p "${tmp}/addon-data"
 chmod -R a+rwX "$tmp"
 
-# run <MCP_PARKED_RETRY_INTERVAL>: prints the log line, then the config.
+# run <MCP_PARKED_RETRY_INTERVAL> [profile]: prints the log line, then the config.
 run() {
-  docker run --rm --network none -v "${tmp}:/t" --entrypoint /bin/sh "$image" -c \
-    "MCP_PARKED_RETRY_INTERVAL='$1'; . /t/fn.sh; set_stack_mcp_parked_retry ''; echo ---; cat /t/config.yaml"
+  docker run --rm --network none -v "${tmp}:/t" -v "${ROOT}/addons:/a:ro" \
+    -v "${ROOT}/scripts/lib:/l:ro" --entrypoint /bin/sh "$image" -c \
+    "MCP_PARKED_RETRY_INTERVAL='$1'; . /t/fn.sh; set_stack_mcp_parked_retry '${2:-}'; echo ---; cat /t/config.yaml"
 }
 
 # entry <output> <name>: the lines of one mcp_servers entry.
@@ -56,16 +63,22 @@ entry() {
   printf '%s\n' "$1" | sed -n "/^  $2:/,/^  [a-z]/p" | sed '$d'
 }
 
-out="$(run 15)"
-for name in lightrag caldav-personal calendar-work todos; do
-  entry "$out" "$name" | grep -q 'parked_retry_interval: 15$' || fail "$name not set to 15: $(entry "$out" "$name")"
+cp "${tmp}/config.yaml" "${tmp}/orig.yaml"
+# LightRAG is unmanaged on default (bootstrap never registers it there), yet a
+# user's own entry on that URL still gets the interval.
+for profile in "" browser; do
+  cp "${tmp}/orig.yaml" "${tmp}/config.yaml"
+  out="$(run 15 "$profile")"
+  for name in lightrag caldav-personal calendar-work todos; do
+    entry "$out" "$name" | grep -q 'parked_retry_interval: 15$' || fail "$name not set to 15: $(entry "$out" "$name")"
+  done
+  for name in boundary local-tool; do
+    if entry "$out" "$name" | grep -q parked_retry_interval; then fail "$name is not a stack sidecar"; fi
+  done
+  entry "$out" lightrag | grep -q 'timeout: 120$' || fail "other keys must survive"
 done
-for name in boundary local-tool; do
-  if entry "$out" "$name" | grep -q parked_retry_interval; then fail "$name is not a stack sidecar"; fi
-done
-entry "$out" lightrag | grep -q 'timeout: 120$' || fail "other keys must survive"
 
-out="$(run 15)"
+out="$(run 15 browser)"
 case "$out" in
   Set*) fail "a second run rewrote an unchanged config" ;;
 esac

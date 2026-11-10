@@ -46,7 +46,7 @@ GPTR_MCP_ENABLED=1
 for profile in "" browser; do
   run "$profile"; got
   p="${profile:-default}"
-  [ "$calls" = "register:${p}:gptr:900:${TOOLS};set:${p}:mcp_servers.gptr.transport=sse;pin:${p}:${PINS};" ] \
+  [ "$calls" = "register:${p}:gptr:900:${TOOLS};drop:${p}:${URL};set:${p}:mcp_servers.gptr.transport=sse;pin:${p}:${PINS};" ] \
     || fail "${p} registers the five tools over SSE and pins three ($calls)"
 done
 run api-server; got

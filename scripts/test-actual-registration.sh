@@ -45,16 +45,16 @@ export ACTUAL_MCP_ENABLED=1
 for profile in "" browser; do
   p="${profile:-default}"
   run "$profile"; got
-  [ "$calls" = "drop:${p}:${RO};register:${p}:budget:${RW}:${ALL};pin:${p}:${PINS};" ] \
+  [ "$calls" = "drop:${p}:${RO};register:${p}:budget:${RW}:${ALL};drop:${p}:${RW};pin:${p}:${PINS};" ] \
     || fail "${p} registers rw with all tools ($calls)"
 done
 run api-server; got
-[ "$calls" = "drop:api-server:${RW};register:api-server:budget:${RO}:${READ};pin:api-server:${PINS};" ] \
+[ "$calls" = "drop:api-server:${RW};register:api-server:budget:${RO}:${READ};drop:api-server:${RO};pin:api-server:${PINS};" ] \
   || fail "api-server registers ro with read tools only ($calls)"
 
 export ACTUAL_ACCESS=read
 run ""; got
-[ "$calls" = "drop:default:${RW};register:default:budget:${RO}:${READ};pin:default:${PINS};" ] \
+[ "$calls" = "drop:default:${RW};register:default:budget:${RO}:${READ};drop:default:${RO};pin:default:${PINS};" ] \
   || fail "ACTUAL_ACCESS=read puts default on ro ($calls)"
 export ACTUAL_ACCESS=nope
 for p in "" browser api-server; do
