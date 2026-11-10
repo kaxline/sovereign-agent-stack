@@ -93,14 +93,26 @@ core._tool_read_only_hints[_server_key("calendar-test")] = {"caldav_list_calenda
 
 seen, replayed = [], []
 answers = []
+answerers = []
 def notify(data):
     seen.append(dict(data))
     def answer():
         time.sleep(0.2)
         replayed.append(approval.list_gateway_approvals(SK))
         approval.resolve_gateway_approval(SK, answers.pop(0), resolve_all=True)
-    threading.Thread(target=answer, daemon=True).start()
+    t = threading.Thread(target=answer, daemon=True)
+    answerers.append(t)
+    t.start()
 approval.register_gateway_notify(SK, notify)
+
+def settle():
+    """Wait for every answer thread. With resolve_all, one answer can approve
+    two pending prompts; the other thread's answer would otherwise land on
+    the next block's prompt."""
+    for t in answerers:
+        t.join(10)
+    answerers.clear()
+    answers.clear()
 
 def gate(tool, args, call_id):
     set_current_session_key(SK)  # contextvars: a new thread starts without it
@@ -156,6 +168,7 @@ for t in threads: t.join(10)
 assert results == [None, None], results
 assert sorted(d["mcp"]["arguments"]["summary"] for d in seen) == ["A", "B"], seen
 assert max(len(r) for r in replayed) == 2, replayed
+settle()
 
 # A session answer is remembered for that tool: the next call does not ask.
 seen.clear()
