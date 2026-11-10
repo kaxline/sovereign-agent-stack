@@ -519,7 +519,7 @@ mail-imap-test:
 	python3 scripts/test-mail-imap.py
 
 # The email add-on end to end through scripts/addon.sh, against GreenMail, in a
-# throwaway compose project (email-e2e) with its own .env and data root.
+# throwaway compose project (email-e2e-<random>) with its own .env and data root.
 # Synthetic mail only; skipped when Docker isn't running.
 email-test:
 	python3 scripts/test-email-e2e.py || [ $$? = 77 ]
