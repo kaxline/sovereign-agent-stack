@@ -20,16 +20,18 @@ ROOT = Path(__file__).resolve().parents[2]
 HERMES_DIR = ROOT / "compose" / "hermes"
 
 
-def _compose_default_tag() -> str:
-    """The HERMES_AGENT_IMAGE_TAG default in docker-compose.yml, the one pin."""
+def compose_default_tag() -> str:
+    """The HERMES_AGENT_IMAGE_TAG default in docker-compose.yml, the one pin.
+
+    Read on call, not at import: drivers import this module inside the image,
+    where only scripts/ is mounted.
+    """
     text = (ROOT / "docker-compose.yml").read_text()
     m = re.search(r"hermes-agent:\$\{HERMES_AGENT_IMAGE_TAG:-([^}]+)\}", text)
     if not m:
         raise SystemExit("FAIL docker-compose.yml has no hermes-agent:${HERMES_AGENT_IMAGE_TAG:-...} pin")
     return m.group(1)
 
-
-DEFAULT_TAG = _compose_default_tag()
 
 
 # Prelude for drivers that call finish_text_response with a bare AIAgent.
@@ -110,7 +112,7 @@ def drive(holds, reasoning, content=""):
 
 
 def image_tag() -> str:
-    return os.environ.get("HERMES_AGENT_IMAGE_TAG", DEFAULT_TAG)
+    return os.environ.get("HERMES_AGENT_IMAGE_TAG") or compose_default_tag()
 
 
 def image_available(tag: str) -> bool:
