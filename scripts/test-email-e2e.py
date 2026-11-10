@@ -3,14 +3,17 @@
 
 Synthetic mail only: GreenMail and the users, passwords and messages from
 scripts/test-mail-imap.py exist only for this run. Everything runs in a
-throwaway compose project, email-e2e, from a copy of this checkout in a temp
-directory: its own .env (copied from .env.example), ASSISTANT_DATA_ROOT in the
-temp directory, IMAGE_PREFIX and CONTAINER_PREFIX set to email-e2e so no image
-tag or container name of the main stack is reused, and an override file that
-turns hermes-api-bootstrap and hermes-browser-bootstrap into no-ops and adds
-GreenMail as service `greenmail` on the project's email-egress network.
-`docker compose down -v` for the project always runs at the end. Skipped
-when Docker isn't running.
+throwaway compose project, email-e2e-<random>, from a copy of this checkout in
+a temp directory: its own .env (copied from .env.example), ASSISTANT_DATA_ROOT
+in the temp directory, IMAGE_PREFIX and CONTAINER_PREFIX set to the project
+name so no image tag or container name of the main stack, or of another run of
+this test, is reused, and an override file that turns hermes-api-bootstrap and
+hermes-browser-bootstrap into no-ops and adds GreenMail as service `greenmail`
+on the project's email-egress network. The name is new for each run because
+runs from two checkouts at once would otherwise share containers, networks,
+volumes and image tags, and stop or recreate each other's services. At the end
+`docker compose down -v` for the project always runs and the run's image tags
+are removed. Skipped when Docker isn't running.
 
     python3 scripts/test-email-e2e.py      (make email-test)
 """
@@ -22,6 +25,7 @@ import email.policy
 import importlib.util
 import json
 import os
+import secrets
 import shutil
 import sqlite3
 import subprocess
@@ -32,7 +36,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
-PROJECT = "email-e2e"
+PROJECT = f"email-e2e-{secrets.token_hex(4)}"  # one per run; see the docstring
 sys.path.insert(0, str(REPO / "compose" / "mail-drafts-mcp"))
 sys.path.insert(0, str(REPO / "compose" / "mail-mcp"))
 
@@ -195,6 +199,11 @@ class Stack:
         if not self.root.is_dir():  # nothing was copied, so nothing was started
             return
         self.compose("down", "-v", "--remove-orphans", "--timeout", "5", check=False, timeout=300)
+        # Only this run's tags; the layers stay in the build cache for the next run.
+        tags = subprocess.run(["docker", "image", "ls", "--format", "{{.Repository}}:{{.Tag}}",
+                               "--filter", f"reference={PROJECT}-*"], capture_output=True, text=True).stdout.split()
+        if tags:
+            subprocess.run(["docker", "image", "rm", *tags], capture_output=True)
 
 
 # --------------------------------------------------------------------------- helpers
@@ -307,7 +316,7 @@ def queue_file(stack: Stack, local_root: Path, request_id: str) -> None:
 
 def run(stack: Stack) -> None:
     guard(stack)
-    print("building the email-imap, mail-mcp and mail-drafts-mcp images (tagged email-e2e-*)", flush=True)
+    print(f"building the email-imap, mail-mcp and mail-drafts-mcp images (tagged {PROJECT}-*)", flush=True)
     stack.compose("build", "email-indexer", "email-mcp", "email-drafts-mcp", timeout=1800)
 
     stack.compose("up", "-d", "greenmail")
