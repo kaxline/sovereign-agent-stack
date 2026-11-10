@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2015  # "A && B || fail" is the check: fail runs when either test is false
 # crm.sh migrate: compose/twenty/workspaces/<slug>.env files into the Twenty
 # add-on's instance store. Synthetic workspaces in a scratch data root, host
 # python3 (STACK_PYTHON=host), no Docker.
