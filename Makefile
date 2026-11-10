@@ -16,7 +16,7 @@
 	crm-init crm-add crm-remove crm-access crm-open crm-mode \
 	vault-init vault-add vault-unlock vault-lock vault-sync vault-grant vault-requests vault-remove vault-open \
 	secrets-sync bitwarden-test addon-list addon-test \
-	budget-init budget-add budget-open budget-remove budget-access \
+	budget-init budget-add budget-open budget-remove budget-access budget-connect budget-disconnect \
 	coding-root-list coding-root-add \
 	context-root-list context-root-add opencode-smoke-fixture \
 	kb-eval-fixture kb-eval-fixture-remove \
@@ -260,6 +260,9 @@ addon-test:
 #   make budget-open                         open the web app, password on the clipboard
 #   make budget-remove                       forget the budget (file only; server data stays)
 #   make budget-access ACCESS=read           look things up only (write: make changes)
+#   make budget-connect SLUG=name URL=https://...|local [ACCESS=write] [SYNC_ID=id]
+#     connect one more budget through addon.sh (asks for the passwords)
+#   make budget-disconnect SLUG=name         disconnect it
 budget-init:
 	$(if $(SYNC_ID),ACTUAL_BUDGET_SYNC_ID="$(SYNC_ID)") ./scripts/budget.sh init $(if $(ROTATE),--rotate)
 
@@ -276,6 +279,14 @@ budget-remove:
 budget-access:
 	@test -n "$(ACCESS)" || (echo "Usage: make budget-access ACCESS=read|write"; exit 1)
 	./scripts/budget.sh access "$(ACCESS)"
+
+budget-connect:
+	@test -n "$(SLUG)" -a -n "$(URL)" || (echo "Usage: make budget-connect SLUG=name URL=https://budget.example.com|local [ACCESS=write] [SYNC_ID=id]"; exit 1)
+	@./scripts/budget.sh connect-cli --slug "$(SLUG)" --url "$(URL)" $(if $(ACCESS),--access "$(ACCESS)") $(if $(SYNC_ID),--sync-id "$(SYNC_ID)")
+
+budget-disconnect:
+	@test -n "$(SLUG)" || (echo "Usage: make budget-disconnect SLUG=name"; exit 1)
+	@./scripts/addon.sh disconnect actual --instance "$(SLUG)" --json
 
 # Hermes dashboard, signed in through a one-time link. See docs/hermes.md.
 #   make dashboard-open

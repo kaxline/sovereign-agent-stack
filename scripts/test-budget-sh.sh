@@ -880,10 +880,59 @@ printf 'x' > "$f"
 BUDGET_DATA_ROOT="$tmp/data" run remove || fail "remove with no rows ($(cat "$out"))"
 grep -qx 'ACTUAL_MCP_ENABLED=0' "$ENV_FILE" || fail "remove with no rows sets ACTUAL_MCP_ENABLED=0"
 
+# --- connect-cli (make budget-connect) ---
+# The passwords go to addon.sh on stdin; with them in the environment nothing
+# is asked. addon.sh is the stub above.
+cli_run() { # ARGS... (environment as set by the caller)
+  brc=0
+  rm -f "$STUB/addon.argv" "$STUB/addon.stdin"
+  STACK_PYTHON=host BUDGET_DATA_ROOT="$tmp/data" BUDGET_ADDON_SH="$tmp/bin/addon-stub" \
+    "$budget" connect-cli "$@" < /dev/null > "$tmp/jout" 2> "$tmp/jerr" || brc=$?
+  cat "$tmp/jout" "$tmp/jerr" >> "$all"
+}
+reset
+printf 'cli-SECRET' > "$STUB/server_pw"
+budget_entry sync-only "Only" > "$STUB/files.json"
+ACTUAL_PASSWORD=cli-SECRET ACTUAL_BUDGET_ENCRYPTION_PASSWORD='cli-enc"SECRET' \
+  cli_run --slug home --url https://budget.example.com --access write
+[ "$brc" = 0 ] || fail "connect-cli ($(cat "$tmp/jout" "$tmp/jerr"))"
+grep -qx 'connect actual --instance home --json' "$STUB/addon.argv" || fail "connect-cli calls addon.sh connect ($(cat "$STUB/addon.argv"))"
+python3 - "$STUB/addon.stdin" <<'PY' || fail "connect-cli sends the connect JSON on stdin"
+import json, sys
+d = json.loads(open(sys.argv[1]).read())
+assert d == {"server": "https://budget.example.com", "sync_id": "sync-only", "access": "write",
+             "password": "cli-SECRET", "encryption_password": 'cli-enc"SECRET'}, d
+PY
+ACTUAL_PASSWORD=cli-SECRET cli_run --slug home --url https://budget.example.com --sync-id sync-x
+python3 - "$STUB/addon.stdin" <<'PY' || fail "connect-cli with a sync id and no encryption password"
+import json, sys
+d = json.loads(open(sys.argv[1]).read())
+assert d == {"server": "https://budget.example.com", "sync_id": "sync-x", "password": "cli-SECRET"}, d
+PY
+# local: no server password.
+cli_run --slug mine --url local --sync-id sync-l
+[ "$brc" = 0 ] || fail "connect-cli local ($(cat "$tmp/jerr"))"
+python3 - "$STUB/addon.stdin" <<'PY' || fail "connect-cli local sends no password"
+import json, sys
+d = json.loads(open(sys.argv[1]).read())
+assert d == {"server": "local", "sync_id": "sync-l"}, d
+PY
+# No password and no terminal: refused, addon.sh not called.
+cli_run --slug home --url https://budget.example.com --sync-id sync-x
+[ "$brc" != 0 ] && [ ! -e "$STUB/addon.argv" ] || fail "connect-cli without a password must not call addon.sh"
+# Two budgets and no sync id: refused.
+{ budget_entry sync-a Household; printf ','; budget_entry sync-b Business; } > "$STUB/files.json"
+ACTUAL_PASSWORD=cli-SECRET cli_run --slug home --url https://budget.example.com
+[ "$brc" != 0 ] && [ ! -e "$STUB/addon.argv" ] || fail "connect-cli with two budgets must not call addon.sh"
+grep -q 'SYNC_ID' "$tmp/jerr" || fail "connect-cli names SYNC_ID when there are several budgets"
+cli_run --slug home
+[ "$brc" != 0 ] || fail "connect-cli without --url must fail"
+reset
+
 run frobnicate && fail "unknown subcommand must fail"
 
 # --- No password in any output, or in curl or docker argv ---
-for s in right-SECRET wrong-SECRET enc-SECRET bad-enc-SECRET srv-SECRET open-SECRET check-SECRET url-SECRET "$quoted" "$unstorable" line-SECRET $pws; do
+for s in cli-SECRET 'cli-enc"SECRET' right-SECRET wrong-SECRET enc-SECRET bad-enc-SECRET srv-SECRET open-SECRET check-SECRET url-SECRET "$quoted" "$unstorable" line-SECRET $pws; do
   for log in "$all" "$STUB/curl.argv" "$STUB/docker.argv"; do
     if grep -qF -- "$s" "$log"; then fail "${log##*/} contains a password"; fi
   done

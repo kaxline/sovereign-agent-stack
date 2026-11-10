@@ -74,6 +74,11 @@ Usage: scripts/budget.sh <command> [options]
         "state"} line each, state ok, token_expired, no_access,
         encryption_password, timeout, server_unreachable or bad_access, then
         {"phase":"done"}. A bad state doesn't change the exit code.
+  connect-cli --slug SLUG --url URL|local [--access read|write] [--sync-id ID]
+        make budget-connect: asks for the server and encryption passwords (or
+        takes ACTUAL_PASSWORD and ACTUAL_BUDGET_ENCRYPTION_PASSWORD), sends
+        them on a pipe to addon.sh connect actual --instance SLUG --json and
+        passes its output on. With local no server password is asked.
   open    Open the web app and copy the server password to the clipboard
   remove  Delete budget.env and clear ACTUAL_BUDGET_FILE; sets ACTUAL_MCP_ENABLED=0
           unless connected budgets remain. Server data stays.
@@ -1219,6 +1224,55 @@ cmd_ensure() {
   fi
 }
 
+# connect-cli --slug SLUG --url URL|local [--access read|write] [--sync-id ID]
+# (make budget-connect): asks for the passwords in a terminal, builds the
+# connect JSON, and pipes it to addon.sh connect. The passwords travel on
+# pipes only. ACTUAL_PASSWORD and ACTUAL_BUDGET_ENCRYPTION_PASSWORD in the
+# environment are used instead of asking, as for add. Without --sync-id the
+# server's only budget is used. BUDGET_ADDON_SH is a test hook.
+cmd_connect_cli() {
+  local slug="" url="" access="" sync="" usage="usage: budget.sh connect-cli --slug SLUG --url URL|local [--access read|write] [--sync-id ID]"
+  while [[ $# -gt 0 ]]; do
+    [[ $# -ge 2 ]] || die "$usage"
+    case "$1" in
+      --slug) slug="$2" ;;
+      --url) url="$2" ;;
+      --access) access="$2" ;;
+      --sync-id) sync="$2" ;;
+      *) die "$usage" ;;
+    esac
+    shift 2
+  done
+  [[ -n "$slug" && -n "$url" ]] || die "$usage"
+  local pw="" enc=""
+  if [[ "$url" != local ]]; then
+    pw="${ACTUAL_PASSWORD:-}"
+    [[ -n "$pw" ]] || pw="$(ask 1 "Server password for $(safe_url "$url")")"
+    [[ -n "$pw" ]] || die "set ACTUAL_PASSWORD (no terminal to ask in)"
+  fi
+  enc="${ACTUAL_BUDGET_ENCRYPTION_PASSWORD:-}"
+  [[ -n "$enc" ]] || enc="$(ask 1 "Encryption password (Enter if the budget isn't end-to-end encrypted)")"
+  if [[ -z "$sync" ]]; then
+    local lines n=0 id="" ph
+    lines="$(printf '{"server":"%s","password":"%s"}' "$(json_escape_exact "$url")" "$(json_escape_exact "$pw")" \
+      | "${BASH_SOURCE[0]}" budgets --json || true)"
+    while IFS= read -r ph; do
+      case "$ph" in
+        '{"phase":"budget"'*) n=$((n + 1)); id="$(printf '%s' "$ph" | stack_python -c 'import json,sys; print(json.load(sys.stdin)["sync_id"])')" ;;
+        '{"phase":"error"'*) die "couldn't list the budgets: $ph" ;;
+      esac
+    done <<< "$lines"
+    [[ "$n" == 1 ]] || die "the server has ${n} budgets; run again with SYNC_ID=... (budget.sh budgets --json lists them)"
+    sync="$id"
+  fi
+  local body
+  body="$(printf '{"server":"%s","sync_id":"%s"' "$(json_escape_exact "$url")" "$(json_escape_exact "$sync")")"
+  [[ -z "$access" ]] || body="${body},\"access\":\"$(json_escape_exact "$access")\""
+  [[ -z "$pw" ]] || body="${body},\"password\":\"$(json_escape_exact "$pw")\""
+  [[ -z "$enc" ]] || body="${body},\"encryption_password\":\"$(json_escape_exact "$enc")\""
+  printf '%s}' "$body" | "${BUDGET_ADDON_SH:-${ROOT}/scripts/addon.sh}" connect actual --instance "$slug" --json
+}
+
 case "${1:-}" in
   init) shift; cmd_init "$@" ;;
   add) shift; cmd_add "$@" ;;
@@ -1230,6 +1284,7 @@ case "${1:-}" in
   budgets) shift; cmd_budgets "$@" ;;
   connect) shift; cmd_connect "$@" ;;
   disconnect) shift; cmd_disconnect "$@" ;;
+  connect-cli) shift; cmd_connect_cli "$@" ;;
   ensure) shift; cmd_ensure "$@" ;;
   -h | --help | help) usage ;;
   *) usage >&2; exit 1 ;;
