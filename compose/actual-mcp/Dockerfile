@@ -1,5 +1,5 @@
-# ---- Builder ----
-FROM node:24-alpine AS builder
+# ---- Build ----
+FROM node:24-alpine AS build
 
 WORKDIR /app
 
@@ -11,6 +11,15 @@ RUN --mount=type=cache,target=/root/.npm npm ci
 
 COPY . ./
 RUN npm run build
+
+# ---- Test ----
+# Local addition: `make actual-mcp-test` builds this stage, which runs the unit
+# tests with the dev dependencies the builder stage prunes. Nothing else uses it.
+FROM build AS test
+RUN npx vitest run
+
+# ---- Builder ----
+FROM build AS builder
 
 # Reason: prune here so the release stage gets compiled production modules without needing a toolchain.
 RUN npm prune --omit=dev

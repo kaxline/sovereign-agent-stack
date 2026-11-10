@@ -189,6 +189,8 @@ jobs:
         run: sh scripts/test-twenty-addon-cli.sh
       - name: vault.sh subcommands with a stub docker
         run: bash scripts/test-vault-sh.sh
+      - name: actual-mcp unit tests (vitest in the image's build stage)
+        run: make actual-mcp-test
       - name: budget.sh subcommands against stubs
         run: bash scripts/test-budget-sh.sh
       - name: make doctor Actual Budget block against stubs

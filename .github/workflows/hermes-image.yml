@@ -1,9 +1,9 @@
 name: hermes-image
 
 # Runs the image half of the overlay and bootstrap tests inside the pinned
-# nousresearch/hermes-agent image (about 3.2 GB). ci.yml runs only their host
-# halves. HERMES_IMAGE_REQUIRED=1 makes a missing image fail every step rather
-# than skip it.
+# nousresearch/hermes-agent image (about 3.2 GB) through `make
+# hermes-image-test`, which finds them and fails on a missing image. ci.yml
+# runs only their host halves.
 
 on:
   workflow_dispatch:
@@ -24,8 +24,6 @@ on:
 jobs:
   image-tests:
     runs-on: ubuntu-latest
-    env:
-      HERMES_IMAGE_REQUIRED: "1"
     steps:
       - uses: actions/checkout@v4
       - name: Pull the pinned Hermes image
@@ -33,75 +31,5 @@ jobs:
           tag="$(sed -n 's/.*hermes-agent:\${HERMES_AGENT_IMAGE_TAG:-\([^}]*\)}.*/\1/p' docker-compose.yml | head -1)"
           test -n "$tag"
           docker pull "nousresearch/hermes-agent:${tag}"
-      # Image-only: these have no host checks.
-      - name: Gateway topology, multiplex and compat proxy
-        run: python3 scripts/test-gateway-multiplex.py
-      - name: Gateway topology (standalone)
-        run: python3 scripts/test-hermes-topology.py
-      - name: Hosted rooms
-        run: python3 scripts/test-hosted-rooms.py
-      - name: Kanban edit
-        run: python3 scripts/test-kanban-edit.py
-      - name: Reasoning promotion gate
-        run: python3 scripts/test-reasoning-promotion-gate.py
-      - name: send_message tool
-        run: python3 scripts/test-send-message-tool.py
-      - name: CalDAV foreign entries
-        run: python3 scripts/test-caldav-foreign-entries.py
-      - name: Mirror exclude
-        run: python3 scripts/test-mirror-exclude.py
-      - name: Parked retry interval on stack MCP entries
-        run: sh scripts/test-mcp-parked-retry.sh
-      - name: Twenty workspace reconcile
-        run: sh scripts/test-twenty-reconcile.sh
-      # Host and image checks together.
-      - name: Fabricated result detector
-        run: python3 scripts/test-fabricated-result.py
-      - name: History budget window
-        run: python3 scripts/test-history-budget.py
-      - name: Client context and prompt profile check
-        run: python3 scripts/test-client-context.py
-      - name: Turn heartbeat and session live status
-        run: python3 scripts/test-gateway-liveness.py
-      - name: MCP wake and parked retry interval
-        run: python3 scripts/test-mcp-wake.py
-      - name: Compaction summarizer reads tool results
-        run: python3 scripts/test-compaction-tool-facts.py
-      - name: Stale-replay loop guard
-        run: python3 scripts/test-tool-loop-replay.py
-      - name: Tool loop notes
-        run: python3 scripts/test-tool-loop-notes.py
-      - name: Searxng pause points at browser search
-        run: python3 scripts/test-searxng-pause-browser.py
-      - name: Refused searxng page read points at the browser
-        run: python3 scripts/test-blocked-fetch-hint.py
-      - name: Browser unresolvable host error
-        run: python3 scripts/test-browser-unresolvable-host.py
-      - name: Browser exec hints
-        run: python3 scripts/test-browser-exec-hints.py
-      - name: Web search modes
-        run: python3 scripts/test-web-search-mode.py
-      - name: Turn speaker labels
-        run: python3 scripts/test-turn-speaker.py
-      - name: MCP trust details on approvals
-        run: python3 scripts/test-mcp-trust-details.py
-      - name: Kanban guards
-        run: python3 scripts/test-kanban-guards.py
-      - name: Kanban wake
-        run: python3 scripts/test-kanban-wake.py
-      - name: Dashboard handoff links (starts two containers)
-        run: python3 scripts/test-dashboard-handoff.py
-      - name: Vault create_login
-        run: python3 scripts/test-vault-create-login.py
-      - name: Vault capture_secret
-        run: python3 scripts/test-vault-capture-secret.py
-      - name: Digest redaction of broker-filled values
-        run: python3 scripts/test-digest-redaction.py
-      - name: Bitwarden broker
-        run: python3 scripts/test-bitwarden-broker.py
-      - name: Bitwarden fill overlay
-        run: python3 scripts/test-bitwarden-fill.py
-      - name: Bitwarden plugin registration
-        run: sh scripts/test-bitwarden-registration.sh
-      - name: Add-on cron fence
-        run: sh scripts/test-addon-cron-fence.sh
+      - name: Hermes image tests
+        run: make hermes-image-test
