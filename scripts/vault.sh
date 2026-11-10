@@ -47,6 +47,10 @@ Usage: scripts/vault.sh <command> [options]
         An account on bitwarden.com or your own server. Asks for the API key
         (and, with stored unlock, the master password) in hidden prompts.
         --scope all also needs CONFIRM_SCOPE_ALL=1 in the environment.
+  add --slug S --json
+        For Boundary's connect: {mode, region, url, scope, unlock, client_id,
+        client_secret, master_password} on stdin, unlock manual by default,
+        no --force or scope all. JSON lines out; a failed check keeps nothing.
   unlock --slug S   Unlock a manual account in the broker (hidden prompt)
   lock --slug S     Lock a manual account
   sync              Re-read every unlocked account's items now
@@ -55,7 +59,8 @@ Usage: scripts/vault.sh <command> [options]
   grant [--site H] [--slug S] [--email E] [--item ID]
         Move an item for a requested site into the agent's scope, with your
         own unlock in bitwarden-setup. Without --site, pick a pending request.
-  remove --slug S   Forget an account: its file, secrets and bw data
+  remove --slug S [--json]
+                    Forget an account: its file, secrets and bw data
   open              Open the local web vault
   secrets-sync      Write stack secrets from the vault into the stack's files
   backup DIR        Copy the local Vaultwarden, secrets and account files to DIR
@@ -79,8 +84,21 @@ VAULT_HERMES_DATA_DIR replaces data/hermes.
 EOF
 }
 
-log() { printf '[vault] %s\n' "$1"; }
-die() { printf '[vault] ERROR: %s\n' "$1" >&2; exit 1; }
+# In --json mode stdout carries JSON lines only, so log goes to stderr.
+log() {
+  if [[ "$JSON" == 1 ]]; then printf '[vault] %s\n' "$1" >&2; else printf '[vault] %s\n' "$1"; fi
+}
+# With JSON_DIE=1 (add and remove --json) die prints a command_failed line
+# and exits 4.
+JSON_DIE=0
+die() {
+  if [[ "$JSON_DIE" == 1 ]]; then
+    JSON_DIE=0
+    emit_error command_failed "$1"
+  fi
+  printf '[vault] ERROR: %s\n' "$1" >&2
+  exit 1
+}
 
 is_true() {
   case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
@@ -96,7 +114,7 @@ valid_slug() { [[ "$1" =~ $SLUG_RE ]]; }
 valid_email() { [[ "$1" =~ $EMAIL_RE ]]; }
 need_slug() { valid_slug "$1" || die "--slug must use lowercase letters, digits and hyphens"; }
 # Options that take a value: need_value "$@" before reading $2.
-need_value() { [[ $# -ge 2 ]] || die "$1 needs a value"; }
+need_value() { [[ $# -ge 2 ]] || emit_error bad_input "$1 needs a value"; }
 
 # One value from FILE_TEXT (see load_file), without sourcing anything: CR,
 # surrounding spaces and one pair of quotes dropped, as the broker's parser does.
@@ -158,14 +176,19 @@ emit_done() {
   emit_line "${out}}"
 }
 
-# emit_error NAME MESSAGE: the error line on stdout, "error: MESSAGE" on
-# stderr, then exit: 2 for bad_input, bad_slug, exists, not_found; 4 for the
-# rest. Without --json it is die.
+# emit_error NAME MESSAGE [RETRY_AFTER]: the error line on stdout, "error:
+# MESSAGE" on stderr, then exit: 2 for bad_input, bad_slug, exists, not_found;
+# 4 for the rest. A positive integer RETRY_AFTER adds "retryAfter". Without
+# --json it is die.
 emit_error() {
   if [[ "$JSON" != 1 ]]; then
     die "$2"
   fi
-  printf '{"phase":"error","error":%s,"message":%s}\n' "$(json_str "$1")" "$(json_str "$2")"
+  local retry=""
+  if [[ "${3:-}" =~ $RETRY_RE && "${3:-0}" -gt 0 ]]; then
+    retry=",\"retryAfter\":$((10#$3))"
+  fi
+  printf '{"phase":"error","error":%s,"message":%s%s}\n' "$(json_str "$1")" "$(json_str "$2")" "$retry"
   printf 'error: %s\n' "$2" >&2
   case "$1" in
     bad_input | bad_slug | exists | not_found) exit 2 ;;
@@ -449,84 +472,141 @@ UNLOCK_WARNING="With stored unlock the broker keeps this account's master passwo
 the scope only limits what the broker lists and fills. A collection: scope with a separate member account \
 lets Bitwarden enforce the limit instead (docs/bitwarden.md)."
 
+# add --json reads {mode, region, url, scope, unlock, client_id,
+# client_secret, master_password} from stdin and never prompts, writes .env or
+# offers bitwarden-setup. scope defaults to folder:Agent and unlock to manual.
+# Any outcome but a sign-in the broker confirms removes what it wrote.
 cmd_add() {
-  local slug="" mode="" region="" url="" scope="folder:Agent" unlock="stored" force=""
+  local slug="" mode="" region="" url="" scope="folder:Agent" unlock="stored" force="" a
+  for a in "$@"; do
+    if [[ "$a" == --json ]]; then
+      JSON=1
+      JSON_DIE=1
+      unlock=manual
+    fi
+  done
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --json) shift ;;
       --slug) need_value "$@"; slug="$2"; shift 2 ;;
-      --mode) need_value "$@"; mode="$2"; shift 2 ;;
-      --region) need_value "$@"; region="$2"; shift 2 ;;
-      --url) need_value "$@"; url="$2"; shift 2 ;;
-      --scope) need_value "$@"; scope="$2"; shift 2 ;;
-      --unlock) need_value "$@"; unlock="$2"; shift 2 ;;
-      --force) force=1; shift ;;
-      *) die "unknown option for add: $1" ;;
+      --mode | --region | --url | --scope | --unlock)
+        [[ "$JSON" != 1 ]] || emit_error bad_input "add --json reads $1 from stdin"
+        need_value "$@"
+        case "$1" in
+          --mode) mode="$2" ;;
+          --region) region="$2" ;;
+          --url) url="$2" ;;
+          --scope) scope="$2" ;;
+          --unlock) unlock="$2" ;;
+        esac
+        shift 2
+        ;;
+      --force)
+        [[ "$JSON" != 1 ]] || emit_error bad_input "--force does not work with --json; disconnect the account first"
+        force=1; shift ;;
+      *) emit_error bad_input "unknown option for add: $1" ;;
     esac
   done
-  need_slug "$slug"
-  [[ "$slug" != local ]] || die "the slug local belongs to make vault-init"
+  if [[ "$JSON" == 1 ]]; then
+    valid_slug "$slug" || emit_error bad_slug "--slug must use lowercase letters, digits and hyphens"
+  else
+    need_slug "$slug"
+  fi
+  [[ "$slug" != local ]] || emit_error bad_input "the slug local belongs to make vault-init"
+  local in_mode="" in_region="" in_url="" in_scope="" in_unlock="" in_client_id="" in_client_secret="" in_master_password=""
+  if [[ "$JSON" == 1 ]]; then
+    read_input mode region url scope unlock client_id client_secret master_password
+    mode="$in_mode"
+    region="$in_region"
+    url="$in_url"
+    [[ -z "$in_scope" ]] || scope="$in_scope"
+    [[ -z "$in_unlock" ]] || unlock="$in_unlock"
+  fi
   local server
   case "$mode" in
     cloud)
-      [[ -z "$url" ]] || die "--url is for --mode selfhosted; cloud takes --region us or eu"
+      [[ -z "$url" ]] || emit_error bad_input "--url is for --mode selfhosted; cloud takes --region us or eu"
       case "$(lower "$region")" in
         "" | us) server="https://vault.bitwarden.com" ;;
         eu) server="https://vault.bitwarden.eu" ;;
-        *) die "--region must be us or eu" ;;
+        *) emit_error bad_input "--region must be us or eu" ;;
       esac
       ;;
     selfhosted)
-      [[ -z "$region" ]] || die "--region is for --mode cloud"
+      [[ -z "$region" ]] || emit_error bad_input "--region is for --mode cloud"
       while [[ "$url" == */ ]]; do url="${url%/}"; done
       [[ "$url" =~ $URL_RE ]] \
-        || die "--url must be an https:// URL with no user, query or fragment"
+        || emit_error bad_input "--url must be an https:// URL with no user, query or fragment"
       server="$url"
       ;;
-    local) die "local accounts come from make vault-init" ;;
-    *) die "--mode must be cloud or selfhosted" ;;
+    local) emit_error bad_input "local accounts come from make vault-init" ;;
+    *) emit_error bad_input "--mode must be cloud or selfhosted" ;;
   esac
   case "$scope" in
     all)
+      [[ "$JSON" != 1 ]] \
+        || emit_error bad_input "scope all lets the agent reach every item in the vault; it is only available from make vault-add with CONFIRM_SCOPE_ALL=1"
       # A separate variable: make vault-add SCOPE=all exports SCOPE, so SCOPE itself confirms nothing.
       [[ "${CONFIRM_SCOPE_ALL:-}" == 1 ]] \
         || die "--scope all lets the agent reach every item in the vault; set CONFIRM_SCOPE_ALL=1 (make vault-add SCOPE=all CONFIRM_SCOPE_ALL=1) to confirm"
       ;;
     folder:*)
       local name="${scope#folder:}"
-      [[ -n "$name" && "$name" != " "* && "$name" != *" " ]] || die "--scope folder:NAME needs a name without spaces at either end"
-      [[ "$name" != *\"* && "$name" =~ $NO_CNTRL_RE ]] || die "the folder name must not contain \" or control characters"
+      [[ -n "$name" && "$name" != " "* && "$name" != *" " ]] || emit_error bad_input "--scope folder:NAME needs a name without spaces at either end"
+      [[ "$name" != *\"* && "$name" =~ $NO_CNTRL_RE ]] || emit_error bad_input "the folder name must not contain \" or control characters"
       ;;
     collection:*)
-      [[ "${scope#collection:}" =~ $ID_RE ]] || die "--scope collection:ID needs a Bitwarden collection id"
+      [[ "${scope#collection:}" =~ $ID_RE ]] || emit_error bad_input "--scope collection:ID needs a Bitwarden collection id"
       ;;
-    *) die "--scope must be folder:<name>, collection:<id> or all" ;;
+    *) emit_error bad_input "--scope must be folder:<name>, collection:<id> or all" ;;
   esac
   case "$unlock" in
     stored | manual) ;;
-    *) die "--unlock must be stored or manual" ;;
+    *) emit_error bad_input "--unlock must be stored or manual" ;;
   esac
   local file
   file="$(account_file "$slug")"
+  if [[ "$JSON" == 1 && -e "$file" ]]; then
+    emit_error exists "an account named ${slug} exists"
+  fi
   if [[ -e "$file" && -z "$force" ]]; then
     die "${file#"${ROOT}"/} exists; pass --force (make vault-add FORCE=1) to replace it"
   fi
 
   local client_id secret="" password=""
-  log "The agent signs in with this account's personal API key (web vault: Settings > Security > Keys > API key)."
-  ask_hidden "client_id: "
-  client_id="$REPLY_SECRET"
-  [[ "$client_id" =~ $NO_SPACE_RE ]] || die "the client_id must not be empty or contain spaces"
-  ask_hidden "client_secret: "
-  secret="$REPLY_SECRET"
-  [[ -n "$secret" ]] || die "the client_secret must not be empty"
+  if [[ "$JSON" == 1 ]]; then
+    client_id="$in_client_id"
+    secret="$in_client_secret"
+    [[ "$unlock" == stored ]] && password="$in_master_password"
+    in_client_id=""
+    in_client_secret=""
+    in_master_password=""
+  else
+    log "The agent signs in with this account's personal API key (web vault: Settings > Security > Keys > API key)."
+    ask_hidden "client_id: "
+    client_id="$REPLY_SECRET"
+  fi
+  [[ "$client_id" =~ $NO_SPACE_RE ]] || emit_error bad_input "the client_id must not be empty or contain spaces"
+  if [[ "$JSON" != 1 ]]; then
+    ask_hidden "client_secret: "
+    secret="$REPLY_SECRET"
+  fi
+  [[ -n "$secret" ]] || emit_error bad_input "the client_secret must not be empty"
   if [[ "$unlock" == stored ]]; then
-    ask_hidden "Master password (stored for the broker): "
-    password="$REPLY_SECRET"
-    [[ -n "$password" ]] || die "the master password must not be empty with --unlock stored"
+    if [[ "$JSON" != 1 ]]; then
+      ask_hidden "Master password (stored for the broker): "
+      password="$REPLY_SECRET"
+    fi
+    [[ -n "$password" ]] || emit_error bad_input "the master password must not be empty with --unlock stored"
   fi
   REPLY_SECRET=""
   if [[ "$unlock" == stored && "$scope" != collection:* ]]; then
     printf '[vault] Warning: %s\n' "$UNLOCK_WARNING" >&2
+  fi
+  if [[ "$JSON" == 1 ]]; then
+    require_broker_json
+    empty_bw_dir "$slug"
+    emit_line '{"phase":"setup","step":"write","status":"running","message":"writing the account file and secrets"}'
   fi
 
   local data sdir new
@@ -577,6 +657,11 @@ cmd_add() {
   owned="$(printf '%s\n' "$new" | grep -vxF "${data}/secrets" || true)"
   # shellcheck disable=SC2086  # one folder per line, no spaces in the names we make
   linux_owner $owned "$file"
+  if [[ "$JSON" == 1 ]]; then
+    emit_line '{"phase":"setup","step":"write","status":"done"}'
+    check_account_json "$slug" "$unlock"
+    return 0
+  fi
   if ! is_true "$(env_get BITWARDEN_ENABLED 0)"; then
     upsert_env "$ENV_PATH" BITWARDEN_ENABLED 1
     log "Set BITWARDEN_ENABLED=1"
@@ -593,6 +678,8 @@ ADD_SLUG=""
 ADD_STAGE=""
 ADD_TMP=""
 ADD_NEW_SDIR=""
+# add --json: 1 once the broker was recreated with the new account file.
+ADD_RESTARTED=0
 
 # The old account file and secrets back in place (add --force failed).
 restore_backup() {
@@ -613,13 +700,124 @@ drop_backup() {
 
 # EXIT trap of add: no temp file stays, a run stopped before the account file
 # was written leaves no new secrets folder, and a --force stopped there puts
-# the old files back.
+# the old files back. With --json, any exit before the check passed (an error,
+# SIGTERM) removes the account file, secrets/<slug>/ and bw/<slug>/.
 add_cleanup() {
   [[ -z "$ADD_TMP" ]] || rm -f "$ADD_TMP"
+  if [[ "$JSON" == 1 ]]; then
+    [[ "$ADD_STAGE" == finished ]] || add_rollback "$ADD_SLUG"
+    return 0
+  fi
   case "$ADD_STAGE" in
     backed) restore_backup "$ADD_SLUG" ;;
     "") [[ -z "$ADD_NEW_SDIR" ]] || remove_secrets "$ADD_SLUG" ;;
   esac
+}
+
+# bw/<slug>/ holds the bw CLI's login. bw login --apikey takes an existing
+# login as success, so a leftover one would skip the check of the new key.
+empty_bw_dir() {
+  local d
+  d="$(data_dir)/bw/$1"
+  [[ -e "$d" ]] || return 0
+  rm -rf "${d:?}" 2>/dev/null || true
+  [[ ! -e "$d" ]] \
+    || emit_error command_failed "could not empty ${d} (owned by the broker's user); remove it as root, then connect again"
+}
+
+# add --json failed or was stopped: the account file, secrets/<slug>/ and
+# bw/<slug>/ go, and a broker that loaded the account is recreated without it.
+add_rollback() {
+  local slug="$1" d
+  ADD_STAGE=finished
+  [[ -n "$slug" ]] || return 0
+  rm -f "$(account_file "$slug")" || true
+  remove_secrets "$slug" || true
+  d="$(data_dir)/bw/${slug}"
+  if [[ -e "$d" ]]; then
+    rm -rf "${d:?}" 2>/dev/null || log "Could not remove ${d} (owned by the broker's user); remove it as root"
+  fi
+  if [[ "$ADD_RESTARTED" == 1 ]]; then
+    ADD_RESTARTED=0
+    restart_broker 2>/dev/null || log "The broker did not restart; it holds ${slug} until make up"
+  fi
+  return 0
+}
+
+# Polls the broker in this shell (so a signal stops it within one poll) until
+# SLUG has signed in: unlocked for stored unlock, logged_in or no longer
+# locked for manual. Sets W_STATE, W_CLASS (empty for none), W_LOGGED and
+# W_RETRY from the last row seen. Returns 1 when VAULT_BROKER_WAIT seconds
+# pass first.
+W_STATE=""
+W_CLASS=""
+W_LOGGED=""
+W_RETRY=""
+wait_for_login() {
+  local slug="$1" unlock="$2" wait="${VAULT_BROKER_WAIT:-60}" start rows row
+  start="$(date +%s)"
+  while :; do
+    rows="$(broker_cli accounts 2>/dev/null || true)"
+    row="$(printf '%s\n' "$rows" | awk -F '\t' -v s="$slug" '$1 == s { print; exit }')"
+    if [[ -n "$row" ]]; then
+      IFS=$'\t' read -r _ _ _ W_STATE W_CLASS W_LOGGED W_RETRY <<< "$row"
+      [[ "$W_CLASS" != "-" ]] || W_CLASS=""
+      if [[ "$W_STATE" != locked ]] || [[ "$unlock" == manual && "$W_LOGGED" == 1 ]]; then
+        return 0
+      fi
+    fi
+    [[ $(( $(date +%s) - start )) -lt "$wait" ]] || return 1
+    sleep 2
+  done
+}
+
+# add --json: recreate the broker so it signs in with the new key, and keep
+# the account only when it has: unlocked (stored unlock), or locked with
+# logged_in=1 and no error (manual). Anything else rolls back and ends with an
+# error line.
+check_account_json() {
+  local slug="$1" unlock="$2" wait="${VAULT_BROKER_WAIT:-60}" timed_out=0
+  emit_line '{"phase":"setup","step":"check","status":"running","message":"the broker is signing in"}'
+  ADD_RESTARTED=1
+  if ! restart_broker; then
+    add_rollback "$slug"
+    emit_error command_failed "the broker did not restart (docker compose --profile bitwarden up -d bitwarden-broker); nothing was kept"
+  fi
+  W_STATE=""; W_CLASS=""; W_LOGGED=""; W_RETRY=""
+  wait_for_login "$slug" "$unlock" || timed_out=1
+  if [[ "$timed_out" == 0 && -z "$W_CLASS" ]]; then
+    if [[ "$unlock" == stored && "$W_STATE" == unlocked ]] \
+      || [[ "$unlock" == manual && "$W_STATE" == locked && "$W_LOGGED" == 1 ]]; then
+      ADD_STAGE=finished
+      emit_line '{"phase":"setup","step":"check","status":"done"}'
+      LOCKED_MANUAL=""
+      note_locked_manual "$slug"
+      local msg
+      if [[ "$unlock" == stored ]]; then
+        msg="${slug} is signed in and unlocked."
+      else
+        msg="${slug} is signed in and stays locked until you unlock it."
+      fi
+      [[ -z "$LOCKED_MANUAL" ]] || msg="${msg} $(locked_sentence)"
+      emit_done account "$(json_str "$slug")" message "$(json_str "$msg")"
+      return 0
+    fi
+  fi
+  add_rollback "$slug"
+  case "$W_CLASS" in
+    auth) emit_error login_refused "Bitwarden refused the API key or master password for ${slug}; nothing was kept" ;;
+    network) emit_error server_unreachable "the broker could not reach the Bitwarden server for ${slug}; nothing was kept" ;;
+    rate_limited)
+      if [[ "$W_RETRY" =~ $RETRY_RE ]]; then
+        emit_error rate_limited "Bitwarden is limiting sign-ins for ${slug}; try again in ${W_RETRY} s. Nothing was kept" "$W_RETRY"
+      fi
+      emit_error rate_limited "Bitwarden is limiting sign-ins for ${slug}; try again later. Nothing was kept"
+      ;;
+  esac
+  if [[ "$timed_out" == 1 ]]; then
+    emit_error timeout "the broker did not finish signing in to ${slug} within ${wait} s; nothing was kept"
+  fi
+  emit_error command_failed "the broker reports ${slug} as ${W_STATE:-not loaded}${W_CLASS:+ (${W_CLASS})}; nothing was kept"
 }
 
 # Creating the folder or collection and moving items into it need your own
@@ -706,7 +904,15 @@ check_account() {
   fi
 }
 
-# After a broker restart: the manual accounts it locked, except SKIP.
+# After a broker restart: the manual accounts it locked, except SKIP. Each is
+# logged and added to LOCKED_MANUAL (space-separated). In --json mode a file
+# that cannot be read is skipped instead of stopping the run.
+LOCKED_MANUAL=""
+# The sentence for a done message that names LOCKED_MANUAL.
+locked_sentence() {
+  local names="${LOCKED_MANUAL# }"
+  printf 'The broker restart locked %s; unlock them again.' "${names// /, }"
+}
 note_locked_manual() {
   local skip="$1" rows s st f
   rows="$(broker_cli accounts 2>/dev/null || true)"
@@ -714,8 +920,16 @@ note_locked_manual() {
     [[ -n "$s" && "$s" != "$skip" && "$st" == locked ]] || continue
     f="$(account_file "$s")"
     [[ -f "$f" ]] || continue
-    load_file "$f"
-    [[ "$(text_get BW_UNLOCK)" == manual ]] && log "${s} is locked after the restart: make vault-unlock SLUG=${s}"
+    if [[ "$JSON" == 1 ]]; then
+      FILE_TEXT="$(JSON_DIE=0; load_file "$f" 2>/dev/null && printf '%s' "$FILE_TEXT")" || continue
+      LOADED=""
+    else
+      load_file "$f"
+    fi
+    if [[ "$(text_get BW_UNLOCK)" == manual ]]; then
+      log "${s} is locked after the restart: make vault-unlock SLUG=${s}"
+      LOCKED_MANUAL="${LOCKED_MANUAL} ${s}"
+    fi
   done <<< "$rows"
   return 0
 }
@@ -991,18 +1205,37 @@ cmd_grant() {
 
 # --- remove, open -----------------------------------------------------------
 
+REVOKE_REMINDER="The API key still exists in Bitwarden; revoke it there (Settings > Security > Keys) if you are done with it"
+
+# remove --json: the same removal, ending with a done line whose message is
+# the revoke reminder.
 cmd_remove() {
-  local slug=""
+  local slug="" a
+  for a in "$@"; do
+    if [[ "$a" == --json ]]; then
+      JSON=1
+      JSON_DIE=1
+    fi
+  done
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --json) shift ;;
       --slug) need_value "$@"; slug="$2"; shift 2 ;;
-      *) die "unknown option for remove: $1" ;;
+      *) emit_error bad_input "unknown option for remove: $1" ;;
     esac
   done
-  need_slug "$slug"
+  if [[ "$JSON" == 1 ]]; then
+    valid_slug "$slug" || emit_error bad_slug "--slug must use lowercase letters, digits and hyphens"
+  else
+    need_slug "$slug"
+  fi
   [[ "$slug" != local ]] \
-    || die "the local account is part of make vault-init; BITWARDEN_LOCAL_ENABLED=0 and make up turn local mode off"
-  need_account "$slug"
+    || emit_error bad_input "the local account is part of make vault-init; BITWARDEN_LOCAL_ENABLED=0 and make up turn local mode off"
+  if [[ "$JSON" == 1 ]]; then
+    [[ -f "$(account_file "$slug")" ]] || emit_error not_found "no account '${slug}'"
+  else
+    need_account "$slug"
+  fi
   local data
   data="$(data_dir)"
   rm -f "$(account_file "$slug")"
@@ -1011,11 +1244,21 @@ cmd_remove() {
     || log "Could not remove ${data}/bw/${slug} (owned by the broker's user); remove it as root"
   log "Removed ${slug}: its account file and secrets"
   if broker_running; then
-    restart_broker
+    if [[ "$JSON" == 1 ]]; then
+      restart_broker \
+        || emit_error command_failed "removed the files of ${slug}, but the broker did not restart; it holds ${slug} until make up"
+    else
+      restart_broker
+    fi
     log "Restarted the broker, which no longer holds ${slug}"
     note_locked_manual "$slug"
   fi
-  log "The API key still exists in Bitwarden; revoke it there (Settings > Security > Keys) if you are done with it"
+  log "$REVOKE_REMINDER"
+  if [[ "$JSON" == 1 ]]; then
+    local msg="${REVOKE_REMINDER}."
+    [[ -z "$LOCKED_MANUAL" ]] || msg="${msg} $(locked_sentence)"
+    emit_done account "$(json_str "$slug")" message "$(json_str "$msg")"
+  fi
 }
 
 local_url() { printf 'http://localhost:%s' "$(env_get VAULTWARDEN_PORT 8222)"; }

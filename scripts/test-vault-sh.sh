@@ -52,12 +52,15 @@ case " $* " in
   *" exec -T hermes "*) cat > /dev/null; cat "$STUB/reload-out" 2>/dev/null; exit "$(rc_of reload)" ;;
   *" ps "*) exit 0 ;;
   *" up "*)
+    [ -e "$STUB_DATA/bw/jm/stale" ] && echo "stub: stale bw login at up" >> "$STUB/log"
     if [ -d "$STUB_DATA/local/tls/server" ] && [ -d "$STUB_DATA/local/vaultwarden" ] \
       && [ -d "$STUB_DATA/secrets/local/tls" ] && [ -d "$STUB_DATA/vaultwarden" ]; then
       echo "stub: dirs ready at up" >> "$STUB/log"
     fi
-    exit 0 ;;
-  *" broker.cli accounts "*) cat "$STUB/accounts" 2>/dev/null; exit "$(rc_of accounts)" ;;
+    exit "$(rc_of up)" ;;
+  *" broker.cli accounts "*)
+    [ -f "$STUB/record-ps" ] && { ps -ax -o args= >> "$STUB/ps" 2>/dev/null || true; }
+    cat "$STUB/accounts" 2>/dev/null; exit "$(rc_of accounts)" ;;
   *" broker.cli requests --json "*) cat "$STUB/requests.json"; exit 0 ;;
   *" broker.cli requests --tsv "*) cat "$STUB/requests.tsv" 2>/dev/null; exit 0 ;;
   *" broker.cli requests "*) echo "No pending access requests."; exit 0 ;;
@@ -617,6 +620,145 @@ rc=0; STACK_PYTHON=host "$vault" sync --json < /dev/null > "$out" 2> "$tmp/jerr"
 [ "$rc" = 1 ] && [ ! -s "$out" ] && grep -q "not running" "$tmp/jerr" || fail "sync --json with the broker down"
 rm -rf "$VAULT_ACCOUNTS_DIR"
 [ ! -d "$tmp/accounts-kept2" ] || mv "$tmp/accounts-kept2" "$VAULT_ACCOUNTS_DIR"
+
+# --- add and remove --json: the connect and disconnect hooks ----------------------
+reset_stub
+mv "$VAULT_ACCOUNTS_DIR" "$tmp/accounts-kept3" 2>/dev/null || true
+mkdir -p "$VAULT_ACCOUNTS_DIR"
+D="$BITWARDEN_HOST_DATA_DIR"
+# ja PAYLOAD SLUG [ARGS...]: add --json with PAYLOAD on stdin; prints the exit code.
+ja() { local rc=0; printf '%s' "$1" | STACK_PYTHON=host "$vault" add --slug "$2" --json "${@:3}" > "$out" 2> "$tmp/jerr" || rc=$?; echo "$rc"; }
+jr() { local rc=0; STACK_PYTHON=host "$vault" remove "$@" < /dev/null > "$out" 2> "$tmp/jerr" || rc=$?; echo "$rc"; }
+jlast() { tail -1 "$out" | python3 -c "import json,sys; v=json.load(sys.stdin).get('$1'); print('null' if v is None else v)"; }
+only_json() {
+  python3 -c 'import json,sys
+for l in open(sys.argv[1]):
+    d = json.loads(l)
+    assert isinstance(d, dict) and "phase" in d, l' "$out" || fail "$1: stdout holds something other than JSON lines"
+}
+gone() {
+  [ ! -e "$VAULT_ACCOUNTS_DIR/$1.env" ] || fail "$2: the account file stayed"
+  [ ! -e "$D/secrets/$1" ] || fail "$2: secrets/$1 stayed"
+  [ ! -e "$D/bw/$1" ] || fail "$2: bw/$1 stayed"
+  for left in "$VAULT_ACCOUNTS_DIR"/.$1.*; do [ ! -e "$left" ] || fail "$2: a temp file stayed"; done
+}
+no_secret_json() {
+  no_secret "$1"
+  if grep -qF -e "$PW" -e "$SECRET" -e "user.syn-$$" "$tmp/jerr"; then fail "$1: a secret reached stderr"; fi
+}
+recreates() { grep -c -- "--force-recreate bitwarden-broker" "$STUB/log" 2>/dev/null || true; }
+MANUAL="{\"mode\":\"cloud\",\"client_id\":\"user.syn-$$\",\"client_secret\":\"$SECRET\"}"
+STORED="{\"mode\":\"cloud\",\"unlock\":\"stored\",\"client_id\":\"user.syn-$$\",\"client_secret\":\"$SECRET\",\"master_password\":\"$PW\"}"
+printf 'BITWARDEN_ENABLED=0\n' > "$ENV_FILE"
+cp "$ENV_FILE" "$tmp/env.before"
+
+# Broker down: nothing written, .env unchanged.
+[ "$(ja "$MANUAL" jm)" = 4 ] && [ "$(jlast error)" = broker_down ] || fail "add --json with the broker down"
+gone jm "broker down"
+cmp -s "$ENV_FILE" "$tmp/env.before" || fail "add --json wrote .env"
+only_json "broker down"
+
+# Refusals before anything is written.
+touch "$STUB/broker-running"
+[ "$(CONFIRM_SCOPE_ALL=1 ja "{\"mode\":\"cloud\",\"scope\":\"all\",\"client_id\":\"x\",\"client_secret\":\"y\"}" jm)" = 2 ] \
+  && [ "$(jlast error)" = bad_input ] || fail "add --json scope all must be bad_input"
+[ "$(ja "$MANUAL" jm --force)" = 2 ] && [ "$(jlast error)" = bad_input ] || fail "add --json --force must be bad_input"
+[ "$(ja "$MANUAL" local)" = 2 ] && [ "$(jlast error)" = bad_input ] || fail "add --json slug local"
+[ "$(ja "$MANUAL" Bad_1)" = 2 ] && [ "$(jlast error)" = bad_slug ] || fail "add --json bad slug"
+[ "$(ja "not json" jm)" = 2 ] && [ "$(jlast error)" = bad_input ] || fail "add --json bad JSON"
+[ "$(ja '{"mode":"cloud","unlock":"stored","client_id":"x","client_secret":"y"}' jm)" = 2 ] \
+  && [ "$(jlast error)" = bad_input ] || fail "add --json stored without a master password"
+[ "$(ja '{"mode":"moon","client_id":"x","client_secret":"y"}' jm)" = 2 ] && [ "$(jlast error)" = bad_input ] \
+  || fail "add --json bad mode"
+gone jm "refusals"
+[ "$(recreates)" = 0 ] || fail "a refused add --json touched the broker"
+
+# Manual add with the broker signed in: done, the files written, a stale bw
+# login emptied first, another manual account named in the message.
+printf '# t\nBW_MODE=cloud\nBW_UNLOCK=manual\nBW_CLIENTID=o\n' > "$VAULT_ACCOUNTS_DIR/other.env"
+printf 'jm\tcloud\tfolder\tlocked\t-\t1\t\nother\tcloud\tfolder\tlocked\t-\t0\t\n' > "$STUB/accounts"
+mkdir -p "$D/bw/jm"
+touch "$D/bw/jm/stale"
+touch "$STUB/record-ps"
+[ "$(ja "$MANUAL" jm)" = 0 ] || fail "add --json manual"
+only_json "add --json"
+[ "$(jlast phase)" = "done" ] && [ "$(jlast account)" = jm ] || fail "add --json ends with done for jm"
+jlast message | grep -q "other" || fail "the done message names the manual account the restart locked"
+grep -q '"phase":"setup","step":"write"' "$out" && grep -q '"phase":"setup","step":"check"' "$out" \
+  || fail "add --json prints its write and check steps"
+grep -qx 'BW_UNLOCK=manual' "$VAULT_ACCOUNTS_DIR/jm.env" || fail "add --json defaults to manual unlock"
+grep -qx 'BW_SCOPE=folder:Agent' "$VAULT_ACCOUNTS_DIR/jm.env" || fail "add --json defaults to folder:Agent"
+[ "$(cat "$D/secrets/jm/client_secret")" = "$SECRET" ] || fail "add --json writes client_secret"
+[ ! -e "$D/secrets/jm/master_password" ] || fail "manual add --json stores no master password"
+[ ! -e "$D/bw/jm/stale" ] || fail "add --json left the stale bw login"
+logged "stub: stale bw login at up" && fail "the broker started with the stale bw login"
+cmp -s "$ENV_FILE" "$tmp/env.before" || fail "add --json wrote .env"
+logged "bitwarden-setup create" && fail "add --json offered bitwarden-setup"
+[ -s "$STUB/ps" ] || fail "the ps record is empty"
+grep -qF -e "$SECRET" -e "user.syn-$$" "$STUB/ps" && fail "a secret reached an argv during add --json"
+no_secret_json "add --json"
+rm -f "$STUB/record-ps" "$STUB/ps"
+[ "$(ja "$MANUAL" jm)" = 2 ] && [ "$(jlast error)" = exists ] || fail "add --json over an existing account"
+
+# remove --json.
+: > "$STUB/log"
+[ "$(jr --slug jm --json)" = 0 ] && [ "$(jlast phase)" = "done" ] || fail "remove --json"
+only_json "remove --json"
+jlast message | grep -q "revoke" || fail "remove --json reminds to revoke the key"
+[ "$(recreates)" = 1 ] || fail "remove --json restarts the broker"
+gone jm "remove --json"
+[ "$(jr --slug jm --json)" = 2 ] && [ "$(jlast error)" = not_found ] || fail "remove --json of a missing account"
+[ "$(jr --slug local --json)" = 2 ] && [ "$(jlast error)" = bad_input ] || fail "remove --json local"
+rm -f "$VAULT_ACCOUNTS_DIR/other.env"
+
+# Failures after the write: each leaves nothing and restarts the broker again.
+# check SLUG PAYLOAD ROW ERROR
+check_fail() {
+  : > "$STUB/log"
+  printf '%s\n' "$3" > "$STUB/accounts"
+  [ "$(ja "$2" "$1")" = 4 ] && [ "$(jlast error)" = "$4" ] || fail "add --json ending in $4"
+  only_json "$4"
+  gone "$1" "$4"
+  [ "$(recreates)" = 2 ] || fail "$4: the broker was not restarted without the account"
+  no_secret_json "$4"
+}
+check_fail jr "$MANUAL" "$(printf 'jr\tcloud\tfolder\terror\tauth\t0\t')" login_refused
+check_fail jn "$STORED" "$(printf 'jn\tcloud\tfolder\toffline\tnetwork\t0\t')" server_unreachable
+check_fail jl "$STORED" "$(printf 'jl\tcloud\tfolder\terror\trate_limited\t0\t120')" rate_limited
+[ "$(tail -1 "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("retryAfter"))')" = 120 ] \
+  || fail "rate_limited carries retryAfter 120"
+check_fail jt "$STORED" "$(printf 'jt\tcloud\tfolder\tlocked\t-\t1\t')" timeout
+check_fail ju "$MANUAL" "$(printf 'ju\tcloud\tfolder\tlocked\t-\t0\t')" timeout
+check_fail jx "$STORED" "$(printf 'jx\tcloud\tfolder\terror\tunknown\t0\t')" command_failed
+
+# The broker does not come back up.
+: > "$STUB/log"
+echo 1 > "$STUB/rc.up"
+[ "$(ja "$MANUAL" jd)" = 4 ] && [ "$(jlast error)" = command_failed ] || fail "add --json when the restart fails"
+gone jd "restart failure"
+rm -f "$STUB/rc.up"
+
+# SIGTERM (addon.sh stopping the hook) in the middle of the check.
+: > "$STUB/log"
+printf 'jk\tcloud\tfolder\tlocked\t-\t0\t\n' > "$STUB/accounts"
+printf '%s' "$MANUAL" > "$tmp/payload"
+VAULT_BROKER_WAIT=60 STACK_PYTHON=host "$vault" add --slug jk --json < "$tmp/payload" > "$out" 2> "$tmp/jerr" &
+pid=$!
+n=0
+until grep -q "broker.cli accounts" "$STUB/log" 2>/dev/null; do
+  n=$((n + 1)); [ "$n" -lt 100 ] || { kill "$pid" 2>/dev/null; fail "add --json never polled the broker"; }
+  sleep 0.1
+done
+[ -f "$VAULT_ACCOUNTS_DIR/jk.env" ] || fail "SIGTERM case: the account file was not written before the check"
+kill -TERM "$pid"
+rc=0; wait "$pid" || rc=$?
+[ "$rc" != 0 ] || fail "add --json stopped by SIGTERM exited 0"
+gone jk "SIGTERM"
+[ "$(recreates)" = 2 ] || fail "SIGTERM: the broker was not restarted without the account"
+only_json "SIGTERM"
+
+rm -rf "$VAULT_ACCOUNTS_DIR"
+[ ! -d "$tmp/accounts-kept3" ] || mv "$tmp/accounts-kept3" "$VAULT_ACCOUNTS_DIR"
 
 # --- backup and restore --------------------------------------------------------
 if command -v sqlite3 >/dev/null 2>&1; then
