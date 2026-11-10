@@ -93,6 +93,12 @@ rename or reshape them.
    take effect. Compose did not pass them to the bootstraps before, so the
    defaults (120 and 30 seconds for LightRAG, 60 and 30 for Twenty) applied
    whatever `.env` said. Check any values you set.
+10. **Boundary:** Bitwarden access requests are approved by moving the login
+    into the agent's folder or collection in a Bitwarden app; `make
+    vault-grant`, `vault.sh grant` and `bitwarden-setup grant` are gone. The
+    release reply drops `returned`, which v0.3.12 shipped, and is now
+    `{"released": true}`. See "`make vault-grant` and `vault.sh grant` are
+    gone" under Changes.
 
 ### New services
 
