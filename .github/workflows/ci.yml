@@ -133,6 +133,12 @@ jobs:
         run: python3 scripts/test-addon-manifests.py
       - name: GPT Researcher MCP registration
         run: sh scripts/test-gptr-mcp-registration.sh
+      - name: Email add-on config renderer and entry point (stdlib)
+        run: python3 scripts/test-email-addon.py
+      - name: Email add-on MCP registration
+        run: sh scripts/test-email-registration.sh
+      - name: mail-triage-cron accepts the MAIL_MCP_ENABLED values
+        run: sh scripts/test-mail-triage-cron.sh
       - name: Actual Budget MCP registration
         run: sh scripts/test-actual-registration.sh
       - name: Add-on MCP access levels

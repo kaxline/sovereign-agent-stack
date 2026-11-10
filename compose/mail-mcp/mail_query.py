@@ -41,7 +41,7 @@ class BadRequest(ValueError):
 def connect(path: Path) -> sqlite3.Connection:
     path = Path(path)
     if not path.is_file():
-        raise IndexUnavailable("the mail index has not been built yet; run make mail-index on the host")
+        raise IndexUnavailable("no index yet; the indexer hasn't completed a pass")
     db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     db.row_factory = sqlite3.Row
     try:

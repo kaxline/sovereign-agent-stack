@@ -92,7 +92,7 @@ matches `[a-z][a-z0-9-]{0,30}` and is the account id in search results.
 | Account setting | Default | Meaning |
 |---|---|---|
 | `host` | none | IMAP server |
-| `port` | `993` | `143` with STARTTLS |
+| `port` | `993` | With `security` `starttls` or `plain` and no port stored, `143` |
 | `security` | `tls` | `tls`, `starttls` or `plain` |
 | `user` | none | Login name |
 | `address` | none | From address for drafts |
@@ -116,6 +116,11 @@ port Bridge shows for IMAP and the Bridge-generated password. Choose
 exports. Containers reach `host.docker.internal` through an `extra_hosts`
 entry on both egress services.
 
+Proton through Bridge is unverified with this add-on. Two things may stop it.
+TLS to `host.docker.internal` may fail hostname verification, because Bridge's
+certificate may not name that host. On Linux, `host-gateway` is the Docker
+bridge address, so it doesn't reach a Bridge that listens only on loopback.
+
 ### Calling order
 
 The order Boundary uses, which you can follow by hand:
@@ -126,10 +131,13 @@ The order Boundary uses, which you can follow by hand:
 2. `scripts/addon.sh configure email < settings.json` for the settings, then
    `scripts/addon.sh configure email --instance <slug> < account.json` for
    each account. Values you leave out keep their stored value, so the first
-   call for an account can omit `mailboxes`.
+   call for an account can omit `mailboxes`. Index and outbox passes skip an
+   account until it has `mailboxes`.
 3. `scripts/addon.sh run email mailboxes --instance <slug>` prints the
    account's mailbox names, message counts and special-use flags, which fill
-   the mailbox choice. Then `configure` the account again with `mailboxes`.
+   the mailbox choice. It renders only that account, so it works before the
+   account has `mailboxes` and whatever state the other accounts are in. Then
+   `configure` the account again with `mailboxes`.
 4. `scripts/addon.sh enable email`.
 
 To change `drafts` later, run `configure` and then `enable` again: a gate
@@ -141,12 +149,26 @@ for these commands is in [Add-ons: scripts/addon.sh](extending.md#add-ons-script
 
 ### Failures
 
-A password the server refuses is logged by `email-indexer` as a
-`mail-index:` line with the account id and exit code 4, prints
-`{"error": "4"}` as the pass result and never includes the password. The loop then runs the next pass and the other accounts.
+A password the server refuses, or a missing password file, is logged by
+`email-indexer` as a `mail-index:` line naming the account id, never the
+password. A server that can't be reached is logged the same way. The pass
+goes on to the other accounts and indexes them. The failed account's rows stay
+in the index as they were, and are brought up to date on the first pass that
+reaches it. The pass's JSON line carries the usual counts plus `"failed":
+{"<id>": 4}` (5 for a server that failed or couldn't be reached) and
+`"error": "4"`, or `"5"` when no account's password failed. The next pass runs
+after `interval` as usual.
+
+An account with no `mailboxes`, or with a setting the indexer would refuse
+(such as `security = "plain"` on another host), is left out of each index and
+outbox pass with one `email-indexer: <slug>: <reason>` or `email-outbox:
+<slug>: <reason>` line. The other accounts run. When every account is left
+out, the pass behaves as with no accounts.
+
 With `EMAIL_ENABLED=1` and no account, `email-indexer` writes no index and
-logs `no accounts configured` once per pass, and `mail_status` reports an
-empty index. Turning `drafts` off stops `email-outbox` and leaves queued
+logs `no accounts configured` once per pass. Until a pass has written the
+index, `mail_status` and the other tools return `{"error": "no index yet; the
+indexer hasn't completed a pass"}`. Turning `drafts` off stops `email-outbox` and leaves queued
 drafts on disk; they are saved after `drafts` is turned back on. The outbox
 rejects a queue file it can't read ("unreadable request") and moves on to the
 next one.
@@ -197,13 +219,20 @@ Run these yourself. Report pass or fail and counts, not messages, subjects or se
    docker compose logs --tail 20 email-indexer
    ```
 
-   `in_scope` should match the mailbox's message count within the `since`
+   `in_scope` should match the chosen mailboxes' message count within the `since`
    window, and `unreadable` should be 0. A login failure shows as a
-   `mail-index:` line with the account id and an exit code of 4. With one
+   `mail-index:` line with the account id, and the pass's JSON line has
+   `"failed": {"work": 4}` and `"error": "4"`. With one
    account, `in_scope` is that account's count (with several it is the
    total); `mail_status` also reports a count per account. Compare the count
-   with your mail client's count for the same mailbox since the `since` date,
-   and report the two numbers and pass or fail.
+   with your mail client's count for the chosen mailboxes since the `since`
+   date, and report the two numbers and pass or fail.
+
+For Proton, repeat steps 2 to 5 with an account on Bridge as described in
+[Settings and accounts](#settings-and-accounts), and report whether
+`run email mailboxes` lists the mailboxes and whether the first pass shows no
+`failed`. If TLS fails hostname verification, note the error's wording and
+whether `security = "plain"` against a Bridge without TLS works instead.
 
 For drafts, run the `configure` call with `{"drafts":true}`, then `enable`
 again, ask Hermes to draft a reply, and check the Drafts mailbox in your mail
@@ -616,8 +645,10 @@ passwords.
    `launchctl print gui/$(id -u)/local.assistant.mail-reader` shows
    `last exit code = 4`.
 
-Exit code 4 means the server refused the login or no password was found,
-and 5 means the server couldn't be reached.
+Exit code 4 means the server refused the login or no password was found
+for at least one account, and 5 means a server couldn't be reached. The
+other accounts are still indexed, and the run's JSON lists the failed ones
+under `failed`.
 
 **Proton.** Run Proton Mail Bridge (a paid Proton plan) and point an account
 at it: `host = "127.0.0.1"`, `port = 1143`, `security = "starttls"`, the

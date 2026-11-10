@@ -77,7 +77,18 @@ the stack under another app.
   `host.docker.internal` and `greenmail`; Proton Bridge goes through
   `host.docker.internal`. A multi-line PEM `tls_ca` can be stored, because the
   add-on has no connect hook. Not tested on a real account yet; see
-  [docs/email.md](docs/email.md#first-real-run-email).
+  [docs/email.md](docs/email.md#first-real-run-email). An account without
+  `mailboxes`, or with a setting the indexer refuses, is skipped with a
+  log line naming its slug while the other accounts run.
+- **One IMAP account failing no longer stops the others** (`email` and
+  `email-local`'s IMAP source). A refused or missing password, or a server
+  that can't be reached, is logged as before; the pass then indexes the other
+  accounts and keeps the failed account's rows. `mail-index.py run` prints the
+  counts with `"failed": {"<id>": 4}` (or 5) and exits 4 or 5 as before. Under
+  `run --every`, the pass's JSON line now has the counts and `failed` beside
+  the `"error"` key, where it used to be `{"error": "4"}` alone. The mail
+  MCP's error before the first pass now reads "no index yet; the indexer
+  hasn't completed a pass".
 - **`scripts/addon.sh` lets an exported `ASSISTANT_DATA_ROOT` win over
   `.env`**, as compose and `crm.sh` already did. Before, an exported value was
   ignored when `.env` set one.
