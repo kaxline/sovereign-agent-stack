@@ -13,6 +13,8 @@ cd "$ROOT"
 source "${ROOT}/scripts/lib/env.sh"
 # shellcheck source=lib/data-root.sh
 source "${ROOT}/scripts/lib/data-root.sh"
+# shellcheck source=lib/python.sh
+source "${ROOT}/scripts/lib/python.sh"
 
 ENV_PATH="${ENV_FILE:-.env}"
 ACCOUNTS_DIR="${VAULT_ACCOUNTS_DIR:-${ROOT}/compose/bitwarden/accounts}"
@@ -30,6 +32,7 @@ ID_RE='^[A-Za-z0-9][A-Za-z0-9-]{0,63}$'
 NO_SPACE_RE='^[^[:space:]]+$'
 NO_CNTRL_RE='^[^[:cntrl:]]+$'
 NUMBER_RE='^[0-9]+$'
+RETRY_RE='^[0-9]+([.][0-9]+)?$'
 
 usage() {
   cat <<'EOF'
@@ -47,6 +50,7 @@ Usage: scripts/vault.sh <command> [options]
   unlock --slug S   Unlock a manual account in the broker (hidden prompt)
   lock --slug S     Lock a manual account
   sync              Re-read every unlocked account's items now
+  status --json     One JSON line per account: state, error, retry_after
   requests [--json] The agent's pending access requests
   grant [--site H] [--slug S] [--email E] [--item ID]
         Move an item for a requested site into the agent's scope, with your
@@ -116,6 +120,77 @@ account_file() { printf '%s/%s.env' "$ACCOUNTS_DIR" "$1"; }
 
 need_account() {
   [[ -f "$(account_file "$1")" ]] || die "no account '$1' in ${ACCOUNTS_DIR#"${ROOT}"/} — make vault-add or make vault-init"
+}
+
+# --- JSON lines (--json) ---
+
+JSON=0
+
+json_escape() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  printf '%s' "$s"
+}
+
+# json_str TEXT: TEXT as a JSON string. Control characters become spaces;
+# other characters, non-ASCII included, pass through.
+json_str() {
+  local s="$1"
+  s="$(printf '%s' "$s" | tr '\001-\037' ' ')"
+  printf '"%s"' "$(json_escape "$s")"
+}
+
+# emit_line JSON: one line on stdout in --json mode, nothing otherwise.
+emit_line() {
+  [[ "$JSON" == 1 ]] && printf '%s\n' "$1"
+  return 0
+}
+
+# emit_done [KEY JSON_VALUE]...: {"phase":"done",...}. VALUE is already JSON.
+# shellcheck disable=SC2120
+emit_done() {
+  local out='{"phase":"done"'
+  while [[ $# -ge 2 ]]; do
+    out="${out},$(json_str "$1"):$2"
+    shift 2
+  done
+  emit_line "${out}}"
+}
+
+# emit_error NAME MESSAGE: the error line on stdout, "error: MESSAGE" on
+# stderr, then exit: 2 for bad_input, bad_slug, exists, not_found; 4 for the
+# rest. Without --json it is die.
+emit_error() {
+  if [[ "$JSON" != 1 ]]; then
+    die "$2"
+  fi
+  printf '{"phase":"error","error":%s,"message":%s}\n' "$(json_str "$1")" "$(json_str "$2")"
+  printf 'error: %s\n' "$2" >&2
+  case "$1" in
+    bad_input | bad_slug | exists | not_found) exit 2 ;;
+    *) exit 4 ;;
+  esac
+}
+
+# read_input KEY...: one JSON object from stdin into in_KEY variables. A
+# missing or non-string field is empty. The values come back shell-quoted by
+# python, never on an argv.
+read_input() {
+  local assigns
+  assigns="$(stack_python -c '
+import json, shlex, sys
+try:
+    d = json.load(sys.stdin)
+    if not isinstance(d, dict):
+        raise ValueError
+except ValueError:
+    sys.exit(3)
+for k in sys.argv[1:]:
+    v = d.get(k)
+    print("in_%s=%s" % (k, shlex.quote(v if isinstance(v, str) else "")))
+' "$@")" || emit_error bad_input "stdin is not a JSON object"
+  eval "$assigns"
 }
 
 # --- Docker ---------------------------------------------------------------
@@ -710,6 +785,65 @@ cmd_sync() {
   broker_cli sync
 }
 
+# status --json: one line per account file, sorted by slug, for Boundary.
+cmd_status() {
+  local json=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      *) usage >&2; exit 1 ;;
+    esac
+  done
+  [[ "$json" == 1 ]] || { usage >&2; exit 1; }
+  JSON=1
+  local rows="" up=0
+  if broker_running && rows="$(broker_cli accounts 2>/dev/null)"; then
+    up=1
+  fi
+  local refused=" " a b
+  while IFS=$'\t' read -r a b _; do
+    [[ "$a" == refused ]] && refused="${refused}${b%%:*} "
+  done <<< "$rows"
+  local f name slug row mode scope unlock st ec retry err
+  for f in "$ACCOUNTS_DIR"/*.env; do
+    [[ -e "$f" ]] || continue
+    name="$(basename "$f")"
+    slug="${name%.env}"
+    if [[ "$up" == 1 && "$refused" == *" ${name} "* ]]; then
+      if [[ "$slug" =~ $SLUG_RE ]]; then
+        slug="$(json_str "$slug")"
+      else
+        slug=null
+      fi
+      emit_line "{\"file\":$(json_str "$name"),\"slug\":${slug},\"state\":\"refused\",\"error\":\"bad_file\"}"
+      continue
+    fi
+    load_file "$f"
+    mode="$(text_get BW_MODE)"
+    scope="$(text_get BW_SCOPE)"
+    [[ -n "$scope" ]] || scope="folder:Agent"
+    unlock="$(text_get BW_UNLOCK)"
+    row=""
+    [[ "$up" == 1 ]] && row="$(printf '%s\n' "$rows" | awk -F '\t' -v s="$slug" '$1 == s && $1 != "refused" { print; exit }')"
+    if [[ -z "$row" ]]; then
+      st=offline; err='"broker_down"'; retry=null
+    else
+      IFS=$'\t' read -r _ _ _ st ec _ retry <<< "$row"
+      [[ "$ec" == "-" ]] && ec=""
+      case "$ec" in
+        auth) err='"login_refused"' ;;
+        network) err='"server_unreachable"' ;;
+        rate_limited) err='"rate_limited"' ;;
+        unknown) err='"unknown"' ;;
+        *) err=null ;;
+      esac
+      if [[ "$retry" =~ $RETRY_RE ]]; then :; else retry=null; fi
+    fi
+    emit_line "{\"slug\":$(json_str "$slug"),\"mode\":$(json_str "$mode"),\"scope\":$(json_str "$scope"),\"unlock\":$(json_str "$unlock"),\"state\":$(json_str "$st"),\"error\":${err},\"retry_after\":${retry}}"
+  done
+  return 0
+}
+
 # --json is for Boundary: the broker's JSON on stdout and nothing else.
 cmd_requests() {
   local form=""
@@ -1184,6 +1318,7 @@ case "${1:-}" in
   unlock) shift; cmd_unlock "$@" ;;
   lock) shift; cmd_lock "$@" ;;
   sync) shift; cmd_sync "$@" ;;
+  status) shift; cmd_status "$@" ;;
   requests) shift; cmd_requests "$@" ;;
   grant) shift; cmd_grant "$@" ;;
   remove) shift; cmd_remove "$@" ;;

@@ -512,6 +512,49 @@ chmod 600 "$lin"
 rm -rf "$BITWARDEN_HOST_DATA_DIR/secrets/lin2"
 rm -f "$lin" "$VAULT_ACCOUNTS_DIR/lin2.env" "$tmp/bin/uname" "$tmp/bin/id"
 
+# --- status --json ---------------------------------------------------------------
+reset_stub
+mv "$VAULT_ACCOUNTS_DIR" "$tmp/accounts-kept" 2>/dev/null || true
+mkdir -p "$VAULT_ACCOUNTS_DIR"
+st_file() { printf '# t\nBW_MODE=%s\nBW_SERVER=https://example.com\nBW_SCOPE=%s\nBW_UNLOCK=%s\nBW_CLIENTID=syn-id\n' "$2" "$3" "$4" > "$VAULT_ACCOUNTS_DIR/$1.env"; }
+js() { python3 -c 'import json,sys
+for l in sys.stdin: json.loads(l)' < "$out"; }
+jfield() { sed -n "${1}p" "$out" | python3 -c "import json,sys; v=json.load(sys.stdin).get('$2','MISSING'); print('null' if v is None else v)"; }
+run status && fail "status without --json is a usage error"
+touch "$STUB/broker-running"
+run status --json || fail "status --json with no accounts"
+[ ! -s "$out" ] || fail "no accounts gives no output"
+st_file work cloud folder:Work stored
+st_file home selfhosted collection:abc manual
+printf 'BW_MODE=local\nBW_UNLOCK=stored\nBW_CLIENTID=x\n' > "$VAULT_ACCOUNTS_DIR/local.env"
+st_file bad cloud all manual
+printf 'work\tcloud\tfolder\tunlocked\t-\t1\t\nhome\tselfhosted\tcollection\tlocked\t-\t0\t\nlocal\tlocal\tcollection\tunlocked\t-\t1\t\nbad\tcloud\tfolder\terror\tauth\t0\t12.5\nrefused\tBad_File.env: line 3: expected KEY=value\n' > "$STUB/accounts"
+printf 'BW_MODE=\n' > "$VAULT_ACCOUNTS_DIR/Bad_File.env"
+run status --json || fail "status --json"
+js || fail "status lines parse as JSON"
+[ "$(wc -l < "$out" | tr -d ' ')" = 5 ] || fail "one line per account file"
+[ "$(jfield 1 slug)" = null ] && [ "$(jfield 1 file)" = Bad_File.env ] || fail "refused file with a non-slug stem"
+[ "$(jfield 1 state)" = refused ] && [ "$(jfield 1 error)" = bad_file ] || fail "refused file state"
+[ "$(jfield 2 slug)" = bad ] && [ "$(jfield 2 error)" = login_refused ] && [ "$(jfield 2 retry_after)" = 12.5 ] || fail "auth maps to login_refused with retry_after"
+[ "$(jfield 3 slug)" = home ] && [ "$(jfield 3 unlock)" = manual ] && [ "$(jfield 3 state)" = locked ] && [ "$(jfield 3 error)" = null ] || fail "manual locked account"
+[ "$(jfield 3 scope)" = collection:abc ] && [ "$(jfield 3 mode)" = selfhosted ] || fail "scope and mode come from the file"
+[ "$(jfield 4 slug)" = local ] && [ "$(jfield 4 mode)" = local ] || fail "local mode reported"
+[ "$(jfield 5 slug)" = work ] && [ "$(jfield 5 state)" = unlocked ] && [ "$(jfield 5 unlock)" = stored ] && [ "$(jfield 5 retry_after)" = null ] || fail "stored account unlocked"
+grep -q 'syn-id' "$out" && fail "status prints no client id"
+rm -f "$VAULT_ACCOUNTS_DIR/Bad_File.env"
+for e in network:server_unreachable rate_limited:rate_limited unknown:unknown locked:null; do
+  printf 'bad\tcloud\tfolder\terror\t%s\t0\t\n' "${e%%:*}" > "$STUB/accounts"
+  run status --json || fail "status --json $e"
+  [ "$(jfield 1 error)" = "${e#*:}" ] || fail "error_class ${e%%:*} mapping"
+done
+rm -f "$STUB/broker-running"
+run status --json || fail "status --json with the broker down exits 0"
+js || fail "broker-down lines parse as JSON"
+[ "$(wc -l < "$out" | tr -d ' ')" = 4 ] || fail "broker down: one line per file"
+[ "$(jfield 1 state)" = offline ] && [ "$(jfield 1 error)" = broker_down ] && [ "$(jfield 1 retry_after)" = null ] || fail "broker down fields"
+rm -rf "$VAULT_ACCOUNTS_DIR"
+[ ! -d "$tmp/accounts-kept" ] || mv "$tmp/accounts-kept" "$VAULT_ACCOUNTS_DIR"
+
 # --- backup and restore --------------------------------------------------------
 if command -v sqlite3 >/dev/null 2>&1; then
   reset_stub
