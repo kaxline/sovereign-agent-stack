@@ -3,15 +3,11 @@
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=lib/testkit.sh
+. "${ROOT}/scripts/lib/testkit.sh"
 bootstrap="${ROOT}/compose/hermes/bootstrap-api-profile.sh"
 
-# shellcheck disable=SC1090
-eval "$(sed -n '/^caldav_password_env_key() {/,/^}/p' "$bootstrap")"
-
-fail() {
-  printf 'FAIL %s\n' "$1" >&2
-  exit 1
-}
+load_fns "$bootstrap" caldav_password_env_key
 
 got="$(caldav_password_env_key personal)"
 [ "$got" = "CALDAV_PERSONAL_PASSWORD" ] || fail "personal -> ${got}"

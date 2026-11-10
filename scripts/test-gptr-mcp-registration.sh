@@ -7,6 +7,8 @@
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=lib/testkit.sh
+. "${ROOT}/scripts/lib/testkit.sh"
 bootstrap="${ROOT}/compose/hermes/bootstrap-api-profile.sh"
 compose="${ROOT}/docker-compose.yml"
 # Only GPT Researcher's manifest: other add-ons add their own drop calls.
@@ -15,20 +17,9 @@ mkdir "${ADDONS_DIR}/gptr"
 cp "${ROOT}/addons/gptr/addon.json" "${ADDONS_DIR}/gptr/addon.json"
 ADDON_MANIFEST_PY="${ROOT}/scripts/lib/addon_manifest.py"
 
-# The range is built in a variable: macOS sh (bash 3.2) brace-expands
-# {/,/^} inside a quoted "$(sed ...)" that nests a second quoted string.
-for fn in addon_mcp_plan addon_mcp_pin_args register_addon_mcp_servers mcp_tool_name; do
-  range='/^'"${fn}"'() {/,/^}/p'
-  # shellcheck disable=SC1090
-  eval "$(sed -n "$range" "$bootstrap")"
-done
+load_fns "$bootstrap" addon_mcp_plan addon_mcp_pin_args register_addon_mcp_servers mcp_tool_name
 
 log() { :; }
-
-fail() {
-  printf 'FAIL %s\n' "$1" >&2
-  exit 1
-}
 
 # The plan is read in a pipeline, so the stubs' record has to come back
 # through a file rather than the subshell's $calls.

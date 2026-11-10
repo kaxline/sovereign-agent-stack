@@ -5,11 +5,12 @@
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=lib/testkit.sh
+. "${ROOT}/scripts/lib/testkit.sh"
 bootstrap="${ROOT}/compose/hermes/bootstrap-api-profile.sh"
 compose="${ROOT}/docker-compose.yml"
 
-# shellcheck disable=SC1090
-eval "$(sed -n '/^register_lightrag_mcp_servers() {/,/^}/p' "$bootstrap")"
+load_fns "$bootstrap" register_lightrag_mcp_servers
 eval "$(grep -E '^LIGHTRAG_MCP_(URL|TIMEOUT|CONNECT_TIMEOUT|TOOLS)=' "$bootstrap")"
 command -v register_lightrag_mcp_servers >/dev/null \
   || { printf 'FAIL register_lightrag_mcp_servers not found in bootstrap\n' >&2; exit 1; }
@@ -20,11 +21,6 @@ register_mcp_server() { calls="${calls}register:${1:-default}:${2}:${5}:$(shift 
 drop_unfiltered_mcp_duplicate() { calls="${calls}dedupe:${1:-default}:${2}:${3};"; }
 pin_mcp_tools() { calls="${calls}pin:${1:-default}:$(shift 2; echo "$*");"; }
 drop_mcp_entries_for_url() { calls="${calls}drop:${1:-default}:${2}:${3};"; }
-
-fail() {
-  printf 'FAIL %s\n' "$1" >&2
-  exit 1
-}
 
 run() {
   calls=""

@@ -7,6 +7,8 @@
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=lib/testkit.sh
+. "${ROOT}/scripts/lib/testkit.sh"
 bootstrap="${ROOT}/compose/hermes/bootstrap-api-profile.sh"
 # shellcheck source=lib/hermes-image.sh
 . "${ROOT}/scripts/lib/hermes-image.sh"
@@ -17,7 +19,7 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 {
   grep -E '^(LIGHTRAG|SEARXNG|CALDAV|OPENCODE|SQL|VIKUNJA|MAIL|MAIL_DRAFTS|MESSAGES)_MCP(_RO|_RW)?_URL=' "$bootstrap"
-  sed -n '/^set_stack_mcp_parked_retry() {/,/^}/p' "$bootstrap"
+  fn_source "$bootstrap" set_stack_mcp_parked_retry
   cat <<'EOF'
 log() { printf '%s\n' "$1"; }
 config_path_for() { echo /t/config.yaml; }
@@ -42,11 +44,6 @@ mcp_servers:
     command: npx
 EOF
 chmod -R a+rwX "$tmp"
-
-fail() {
-  printf 'FAIL %s\n' "$1" >&2
-  exit 1
-}
 
 # run <MCP_PARKED_RETRY_INTERVAL>: prints the log line, then the config.
 run() {

@@ -6,19 +6,11 @@
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=lib/testkit.sh
+. "${ROOT}/scripts/lib/testkit.sh"
 bootstrap="${ROOT}/compose/hermes/bootstrap-api-profile.sh"
 
-fail() {
-  printf 'FAIL %s\n' "$1" >&2
-  exit 1
-}
-
-for fn in pin_mcp_tools mcp_tool_name; do
-  range="/^${fn}() {/,/^}/p"
-  # shellcheck disable=SC1090
-  eval "$(sed -n "$range" "$bootstrap")"
-  command -v "$fn" >/dev/null 2>&1 || fail "${fn} missing from bootstrap"
-done
+load_fns "$bootstrap" pin_mcp_tools mcp_tool_name
 
 pinned=""
 pin_tool_search_always_include() { shift; pinned="$*"; }

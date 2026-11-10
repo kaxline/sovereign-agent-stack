@@ -6,12 +6,9 @@
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=lib/testkit.sh
+. "${ROOT}/scripts/lib/testkit.sh"
 compose="${ROOT}/docker-compose.yml"
-
-fail() {
-  printf 'FAIL %s\n' "$1" >&2
-  exit 1
-}
 
 # One service's block, from its name to the next top-level service.
 block() {

@@ -14,14 +14,14 @@ set -eu
 
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
+# shellcheck source=lib/testkit.sh
+. "${ROOT}/scripts/lib/testkit.sh"
 BOOTSTRAP=compose/hermes/bootstrap-api-profile.sh
 COMPOSE=docker-compose.yml
 INSTALL=compose/hermes/14-install-bwbroker-plugin.sh
 # shellcheck source=lib/hermes-image.sh
 . scripts/lib/hermes-image.sh
 IMAGE="$HERMES_IMAGE"
-
-fail() { echo "FAIL: $*" >&2; exit 1; }
 
 # --- host: wiring -----------------------------------------------------------
 grep -q '^register_addon_vault_backends() {' "$BOOTSTRAP" \
@@ -104,8 +104,7 @@ cp "$work/home/profiles/browser/config.yaml" "$work/base/browser.yaml"
 cp "$work/home/profiles/api-server/config.yaml" "$work/base/api-server.yaml"
 
 for fn in config_path_for addon_vault_plan register_addon_vault_backends fence_mail_from_cron; do
-  range='/^'"${fn}"'() {/,/^}/p'
-  sed -n "$range" "$BOOTSTRAP" >> "$work/funcs.sh"
+  fn_source "$BOOTSTRAP" "$fn" >> "$work/funcs.sh"
 done
 
 cat > "$work/run.sh" <<'EOF'

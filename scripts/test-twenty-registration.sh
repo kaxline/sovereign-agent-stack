@@ -7,15 +7,12 @@
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=lib/testkit.sh
+. "${ROOT}/scripts/lib/testkit.sh"
 bootstrap="${ROOT}/compose/hermes/bootstrap-api-profile.sh"
 
-for fn in addon_instances_plan addon_instance_key_env addon_instance_urls addon_instance_pin_args \
-    addon_instances_warn_none register_addon_instance_servers mcp_tool_name; do
-  range="/^${fn}() {/,/^}/p"
-  # shellcheck disable=SC1090
-  eval "$(sed -n "$range" "$bootstrap")"
-  command -v "$fn" >/dev/null 2>&1 || { printf 'FAIL %s missing from bootstrap\n' "$fn" >&2; exit 1; }
-done
+load_fns "$bootstrap" addon_instances_plan addon_instance_key_env addon_instance_urls \
+  addon_instance_pin_args addon_instances_warn_none register_addon_instance_servers mcp_tool_name
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -38,11 +35,6 @@ remove_env_key() { calls="${calls}remove:${1}:${2};"; }
 write_bearer_mcp_entry() { calls="${calls}write:${1:-default}:${2}:${3}:${4}:${5}:${6}:${7}:${8};"; }
 pin_mcp_tools() { calls="${calls}pin:${1:-default}:${2}:$(shift 2; echo "$*");"; }
 reconcile_addon_instance_servers() { calls="${calls}reconcile:${1:-default}:$(shift; echo "$*");"; }
-
-fail() {
-  printf 'FAIL %s\n' "$1" >&2
-  exit 1
-}
 
 run() {
   calls=""

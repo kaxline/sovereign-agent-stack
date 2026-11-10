@@ -5,6 +5,8 @@
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=lib/testkit.sh
+. "${ROOT}/scripts/lib/testkit.sh"
 bootstrap="${ROOT}/compose/hermes/bootstrap-api-profile.sh"
 # Only Actual's manifest: other add-ons add their own drop calls.
 ADDONS_DIR="$(mktemp -d)"
@@ -12,18 +14,10 @@ mkdir "${ADDONS_DIR}/actual"
 cp "${ROOT}/addons/actual/addon.json" "${ADDONS_DIR}/actual/addon.json"
 ADDON_MANIFEST_PY="${ROOT}/scripts/lib/addon_manifest.py"
 
-for fn in addon_mcp_plan addon_mcp_pin_args addon_mcp_urls register_addon_mcp_servers mcp_tool_name; do
-  range='/^'"${fn}"'() {/,/^}/p'
-  # shellcheck disable=SC1090
-  eval "$(sed -n "$range" "$bootstrap")"
-done
+load_fns "$bootstrap" addon_mcp_plan addon_mcp_pin_args addon_mcp_urls register_addon_mcp_servers \
+  mcp_tool_name
 
 log() { :; }
-
-fail() {
-  printf 'FAIL %s\n' "$1" >&2
-  exit 1
-}
 
 record="$(mktemp)"
 trap 'rm -rf "$record" "$ADDONS_DIR"' EXIT

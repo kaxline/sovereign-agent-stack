@@ -4,10 +4,11 @@
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=lib/testkit.sh
+. "${ROOT}/scripts/lib/testkit.sh"
 bootstrap="${ROOT}/compose/hermes/bootstrap-api-profile.sh"
 
-# shellcheck disable=SC1090
-eval "$(sed -n '/^register_mail_mcp_servers() {/,/^}/p' "$bootstrap")"
+load_fns "$bootstrap" register_mail_mcp_servers
 eval "$(grep -E '^MAIL_MCP_(URL|TIMEOUT|CONNECT_TIMEOUT|TOOLS)=' "$bootstrap")"
 
 calls=""
@@ -15,11 +16,6 @@ log() { :; }
 register_mcp_server() { calls="${calls}register:${1:-default}:${2}:$(shift 6; echo "$*");"; }
 pin_mcp_tools() { calls="${calls}pin:${1:-default};"; }
 drop_mcp_entries_for_url() { calls="${calls}drop:${1:-default}:${3};"; }
-
-fail() {
-  printf 'FAIL %s\n' "$1" >&2
-  exit 1
-}
 
 run() {
   calls=""

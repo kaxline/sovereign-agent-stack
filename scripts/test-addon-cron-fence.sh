@@ -12,12 +12,12 @@ set -eu
 
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
+# shellcheck source=lib/testkit.sh
+. "${ROOT}/scripts/lib/testkit.sh"
 BOOTSTRAP=compose/hermes/bootstrap-api-profile.sh
 # shellcheck source=lib/hermes-image.sh
 . scripts/lib/hermes-image.sh
 IMAGE="$HERMES_IMAGE"
-
-fail() { echo "FAIL: $*" >&2; exit 1; }
 
 # shellcheck disable=SC2016 # the literal bootstrap line
 grep -q '_out="$(python3 - "$_fmc_cfg" "$ADDON_MANIFEST_PY" "$ADDONS_DIR" "$ADDON_DATA_DIR" <<' "$BOOTSTRAP" \
@@ -70,7 +70,7 @@ open(sys.argv[1], "w").write(am.canonical(m))
 PY
 mkdir -p "$work/addons-ro/split"
 cp scripts/fixtures/addons/split/addon.json "$work/addons-ro/split/addon.json"
-sed -n '/^fence_mail_from_cron() {/,/^}/p' "$BOOTSTRAP" > "$work/fence.sh"
+fn_source "$BOOTSTRAP" fence_mail_from_cron > "$work/fence.sh"
 cat > "$work/run.sh" <<'EOF'
 set -eu
 log() { printf '%s\n' "$*"; }
