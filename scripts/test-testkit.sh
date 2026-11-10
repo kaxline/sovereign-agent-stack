@@ -1,4 +1,5 @@
 #!/bin/sh
+# shellcheck disable=SC2015  # "A && B || fail" is the check: fail runs when either test is false
 # scripts/lib/testkit.sh and testkit.py: the helpers every other test uses.
 #
 #   sh scripts/test-testkit.sh

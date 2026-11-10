@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2015  # "A && B || fail" is the check: fail runs when either test is false
 # scripts/budget.sh against stubs: a fake Actual server behind a stub curl, a
 # stub docker that plays actual-admin.mjs, and stub uname/id/open/pbcopy. No
 # real Actual server, container or budget is touched.
