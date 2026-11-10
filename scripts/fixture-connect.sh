@@ -10,6 +10,8 @@
 # line on stderr and then succeeds. The password is transient: when stdin has
 # one it must be the test value, else the hook exits 5; it logs
 # "fixture-connect stdin-password" to STUB_LOG when it got the right one.
+# FIXTURE_CONNECT_RETRY is added as the raw JSON value of "retryAfter" to the
+# FIXTURE_CONNECT_ERROR line.
 # FIXTURE_DONE_EXTRA is added to either done line's object (e.g. ,"message":"x").
 set -eu
 mode=connect
@@ -51,7 +53,8 @@ case "${FIXTURE_CONNECT_MODE:-}" in
   stderr_error) printf '{"phase":"error","error":"login_refused","message":"on stderr"}\n' >&2 ;;
 esac
 if [ -n "${FIXTURE_CONNECT_ERROR:-}" ]; then
-  printf '{"phase":"error","error":"%s","message":"hook says no"}\n' "$FIXTURE_CONNECT_ERROR"
+  printf '{"phase":"error","error":"%s","message":"hook says no"%s}\n' "$FIXTURE_CONNECT_ERROR" \
+    "${FIXTURE_CONNECT_RETRY:+,\"retryAfter\":${FIXTURE_CONNECT_RETRY}}"
   exit 1
 fi
 printf '{"phase":"done","account":"work","mcp":["fixture-work"]%s}\n' "${FIXTURE_DONE_EXTRA:-}"

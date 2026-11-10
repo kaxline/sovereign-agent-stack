@@ -19,6 +19,8 @@
 #                    sets it to its rollback while enable has flags to restore.
 #   EV_ROLLED_BACK   set to 1 by that function when it restored .env; ev_fail
 #                    then adds "rolledBack":true.
+#   EV_RETRY_AFTER   seconds from a hook's error line; ev_fail then adds
+#                    "retryAfter".
 #   EV_ERRORED       1 once an error line (or, in human mode, `error:`) is out.
 #   EV_EXIT          when set, the exit status ev_fail uses in place of the
 #                    code's own (addon.sh's own exists and not_found exit 2).
@@ -232,7 +234,9 @@ ev_fail() {
 # (JSON mode) and `error: MESSAGE` on stderr, and sets EV_ERRORED to 1. An
 # empty STEP is null in the error line (a failure before any step, such as
 # busy or a usage error). LOGFILE may be empty. A non-empty EV_TARGET (the
-# compose service that failed) adds "target" to the error line. addon.sh's
+# compose service that failed) adds "target" to the error line. A non-empty
+# EV_RETRY_AFTER (a positive integer, set by addon.sh's run_hook) adds
+# "retryAfter" after it. addon.sh's
 # EXIT trap calls it directly, as exit there would skip the rest of the trap.
 ev_error() {
   local code="$1" step="$2" message="$3" log="${4:-}" hook="$EV_ON_FAIL" tail="[]" stepjson=null extra=""
@@ -246,6 +250,7 @@ ev_error() {
     [[ -n "$step" ]] && stepjson="$(json_str "$step")"
     [[ "$EV_ROLLED_BACK" == 1 ]] && extra=',"rolledBack":true'
     [[ -n "${EV_TARGET:-}" ]] && extra="${extra},\"target\":$(json_str "$EV_TARGET")"
+    [[ -n "${EV_RETRY_AFTER:-}" ]] && extra="${extra},\"retryAfter\":${EV_RETRY_AFTER}"
     printf '{"phase":"error","error":%s,"step":%s,"message":%s,"logTail":%s%s}\n' \
       "$(json_str "$code")" "$stepjson" "$(json_str "$message")" "$tail" "$extra" >&3 || true
   fi

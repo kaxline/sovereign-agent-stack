@@ -676,6 +676,17 @@ unset FIXTURE_CONNECT_ERROR
 expect_rc "an unlisted connect error exits 4" 4
 r=0; json_ok "$out" error 'last["error"] == "command_failed" and "weird" in last["message"] and last["step"] == "check"' || r=1
 check "an unlisted connect error becomes command_failed naming it" "$r"
+for v in 120 '"soon"' true 0 -5 1.5; do
+  FIXTURE_CONNECT_ERROR=encryption_password FIXTURE_CONNECT_RETRY="$v" addon_json_in '{"host":"good.example.com"}' connect hooked --instance work --json
+  if [ "$v" = 120 ]; then
+    r=0; json_ok "$out" error 'last["error"] == "encryption_password" and last["retryAfter"] == 120' || r=1
+    check "a hook's retryAfter 120 is relayed on the error line" "$r"
+  else
+    r=0; json_ok "$out" error '"retryAfter" not in last' || r=1
+    check "a hook's retryAfter ${v} is dropped" "$r"
+  fi
+done
+unset FIXTURE_CONNECT_ERROR FIXTURE_CONNECT_RETRY
 if [ ! -e "${HOOKED}/instances/work.json" ]; then ok "a failed connect hook writes no instance"; else bad "a failed connect hook writes no instance"; fi
 no_staging "a failed connect hook"
 
