@@ -30,12 +30,14 @@ printf 'COMPOSE_PROJECT_NAME=bwconnect\nBITWARDEN_ENABLED=1\n' > "${root}/.env"
 
 # docker: one log line per call. The broker is running; `broker.cli accounts`
 # prints $STUB/accounts; the broker's sh -c removes bw/<slug>/ on the host;
-# the bootstraps and everything else exit 0.
+# the bootstraps and everything else exit 0. With $STUB/fail-recreate the
+# broker recreate fails.
 cat > "${tmp}/bin/docker" <<'SH'
 #!/bin/sh
 printf '%s\n' "$*" >> "$STUB/log"
 case " $* " in
   *" ps "*bitwarden-broker*) echo cid-broker; exit 0 ;;
+  *" --force-recreate bitwarden-broker"*) [ -f "$STUB/fail-recreate" ] && exit 1; exit 0 ;;
   *" broker.cli accounts "*) cat "$STUB/accounts" 2>/dev/null; exit 0 ;;
   *" exec -T bitwarden-broker sh -c "*)
     for a do last="$a"; done
@@ -150,6 +152,21 @@ check "disconnect removes the store entry" '[ ! -e "$INST/home.json" ]'
 check "secrets/ is still mode 711" '[ "$(mode_of "$D/secrets")" = 711 ]'
 addon disconnect bitwarden --instance home --json < /dev/null
 check "a second disconnect is not_found" '[ "$rc" = 2 ] && [ "$(last error)" = not_found ]'
+
+# A disconnect whose broker restart fails keeps the store entry; the retry,
+# with the account file already gone, clears it.
+printf 'retry\tcloud\tfolder\tlocked\t-\t1\t\n' > "$STUB/accounts"
+connect retry "$MANUAL"
+check "connect retry exits 0" '[ "$rc" = 0 ] && [ -f "$INST/retry.json" ]'
+touch "$STUB/fail-recreate"
+addon disconnect bitwarden --instance retry --json < /dev/null
+rm -f "$STUB/fail-recreate"
+check "a disconnect whose restart fails is command_failed" '[ "$rc" = 4 ] && [ "$(last error)" = command_failed ]'
+check "the failed disconnect removed the account file and kept the store entry" \
+  '[ ! -e "$ACC/retry.env" ] && [ ! -e "$D/secrets/retry" ] && [ -f "$INST/retry.json" ]'
+addon disconnect bitwarden --instance retry --json < /dev/null
+check "the retried disconnect ends with done" '[ "$rc" = 0 ] && [ "$(last phase)" = done ]'
+check "the retried disconnect clears the store entry" '[ ! -e "$INST/retry.json" ]'
 
 # --- vault.sh: terminal add and remove keep the store in step -------------------
 printf 'term\tcloud\tfolder\tunlocked\t-\t1\t\n' > "$STUB/accounts"

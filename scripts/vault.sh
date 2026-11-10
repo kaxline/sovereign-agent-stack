@@ -253,6 +253,14 @@ broker_state() {
   printf '%s\n' "$rows" | awk -F '\t' -v s="$slug" '$1 == s { print $4 " " $5; exit }'
 }
 
+# True unless the running broker's account list leaves out the slug; a list
+# that cannot be read counts as holding it.
+broker_may_hold() {
+  local rows
+  rows="$(broker_cli accounts 2>/dev/null)" || return 0
+  printf '%s\n' "$rows" | awk -F '\t' -v s="$1" '$1 == s { f = 1 } END { exit !f }'
+}
+
 # A recreate, not a restart: a restart keeps the network namespace of the
 # hermes container the broker was created with, which is gone once hermes has
 # been recreated, and the broker then stays exited.
@@ -1345,20 +1353,29 @@ cmd_remove() {
   fi
   [[ "$slug" != local ]] \
     || emit_error bad_input "the local account is part of make vault-init; BITWARDEN_LOCAL_ENABLED=0 and make up turn local mode off"
-  if [[ "$JSON" == 1 ]]; then
-    [[ -f "$(account_file "$slug")" ]] || emit_error not_found "no account '${slug}'"
-  else
-    need_account "$slug"
-  fi
-  local data
+  # --json with no account file: an earlier remove got as far as deleting it (its
+  # broker restart failed, say), so this one removes what is left and ends with
+  # done, which lets addon.sh disconnect drop the store entry.
+  local data had_file=1
   data="$(data_dir)"
+  if [[ ! -f "$(account_file "$slug")" ]]; then
+    [[ "$JSON" == 1 ]] || need_account "$slug"
+    had_file=0
+  fi
   rm -f "$(account_file "$slug")"
   remove_secrets "$slug"
-  log "Removed ${slug}: its account file and secrets"
-  if broker_running; then
+  if [[ "$had_file" == 1 ]]; then
+    log "Removed ${slug}: its account file and secrets"
+  else
+    log "${slug} has no account file; removing its secrets and bw/${slug} if they are left"
+  fi
+  if broker_running && { [[ "$had_file" == 1 ]] || broker_may_hold "$slug"; }; then
     if [[ "$JSON" == 1 ]]; then
-      restart_broker \
-        || emit_error command_failed "removed the files of ${slug}, but the broker did not restart; it holds ${slug} until make up"
+      if ! restart_broker; then
+        remove_bw_dir "$slug" \
+          || log "Could not remove ${data}/bw/${slug} (owned by the broker's user); remove it as root"
+        emit_error command_failed "removed the files of ${slug}, but the broker did not restart; it holds ${slug} until make up"
+      fi
     else
       restart_broker
     fi
@@ -1372,6 +1389,7 @@ cmd_remove() {
   log "$REVOKE_REMINDER"
   if [[ "$JSON" == 1 ]]; then
     local msg="${REVOKE_REMINDER}."
+    [[ "$had_file" == 1 ]] || msg="${slug} had no account file; removed its secrets and bw/${slug} if they were left. ${msg}"
     [[ -z "$LOCKED_MANUAL" ]] || msg="${msg} $(locked_sentence)"
     emit_done account "$(json_str "$slug")" message "$(json_str "$msg")"
   fi

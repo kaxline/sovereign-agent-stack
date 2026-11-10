@@ -685,7 +685,9 @@ only_json "broker down"
 
 # Refusals before anything is written.
 touch "$STUB/broker-running"
-[ "$(CONFIRM_SCOPE_ALL=1 ja "{\"mode\":\"cloud\",\"scope\":\"all\",\"client_id\":\"x\",\"client_secret\":\"y\"}" jm)" = 2 ] \
+# In a variable: bash 3.2 brace-expands a double-quoted {a,b} word inside "$(...)".
+ALL='{"mode":"cloud","scope":"all","client_id":"x","client_secret":"y"}'
+[ "$(CONFIRM_SCOPE_ALL=1 ja "$ALL" jm)" = 2 ] \
   && [ "$(jlast error)" = bad_input ] || fail "add --json scope all must be bad_input"
 [ "$(ja "$MANUAL" jm --force)" = 2 ] && [ "$(jlast error)" = bad_input ] || fail "add --json --force must be bad_input"
 [ "$(ja "$MANUAL" local)" = 2 ] && [ "$(jlast error)" = bad_input ] || fail "add --json slug local"
@@ -732,7 +734,34 @@ only_json "remove --json"
 jlast message | grep -q "revoke" || fail "remove --json reminds to revoke the key"
 [ "$(recreates)" = 1 ] || fail "remove --json restarts the broker"
 gone jm "remove --json"
-[ "$(jr --slug jm --json)" = 2 ] && [ "$(jlast error)" = not_found ] || fail "remove --json of a missing account"
+# No account file: done, with what is left removed, and no restart while the
+# broker does not list the account.
+printf 'other\tcloud\tfolder\tlocked\t-\t0\t\n' > "$STUB/accounts"
+mkdir -p "$D/secrets/jm" "$D/bw/jm"
+touch "$D/secrets/jm/client_secret" "$D/bw/jm/data.json"
+: > "$STUB/log"
+[ "$(jr --slug jm --json)" = 0 ] && [ "$(jlast phase)" = "done" ] || fail "remove --json of a missing account is done"
+only_json "remove --json of a missing account"
+jlast message | grep -q "had no account file" || fail "remove --json of a missing account says so"
+gone jm "remove --json of a missing account"
+[ "$(recreates)" = 0 ] || fail "remove --json of an account the broker does not hold restarted it"
+
+# The restart fails: command_failed, with bw/<slug>/ already removed. A retry
+# restarts the broker, which still lists the account, and ends with done.
+printf '# t\nBW_MODE=cloud\nBW_UNLOCK=manual\nBW_CLIENTID=o\n' > "$VAULT_ACCOUNTS_DIR/jf.env"
+mkdir -p "$D/secrets/jf" "$D/bw/jf"
+touch "$D/secrets/jf/client_secret" "$D/bw/jf/data.json"
+printf 'jf\tcloud\tfolder\tlocked\t-\t0\t\n' > "$STUB/accounts"
+echo 1 > "$STUB/rc.up"
+: > "$STUB/log"
+[ "$(jr --slug jf --json)" = 4 ] && [ "$(jlast error)" = command_failed ] || fail "remove --json when the restart fails"
+only_json "remove --json when the restart fails"
+gone jf "remove --json when the restart fails"
+rm -f "$STUB/rc.up"
+: > "$STUB/log"
+[ "$(jr --slug jf --json)" = 0 ] && [ "$(jlast phase)" = "done" ] || fail "remove --json retry after a failed restart"
+[ "$(recreates)" = 1 ] || fail "the retry did not restart the broker that still holds jf"
+printf 'jm\tcloud\tfolder\tlocked\t-\t1\t\nother\tcloud\tfolder\tlocked\t-\t0\t\n' > "$STUB/accounts"
 [ "$(jr --slug local --json)" = 2 ] && [ "$(jlast error)" = bad_input ] || fail "remove --json local"
 rm -f "$VAULT_ACCOUNTS_DIR/other.env"
 
