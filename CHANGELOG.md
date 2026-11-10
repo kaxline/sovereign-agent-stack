@@ -132,14 +132,16 @@ the stack under another app.
   S --json` and `disconnect` call `vault.sh add --json` and `remove --json`.
   `status --json`, `unlock --json`, `lock --json` and `sync --json` give Boundary
   the account states and the unlock and sync actions; see the Boundary section
-  of `docs/bitwarden.md`. Connect and disconnect restart the broker, which locks
-  the other `manual` accounts; the done message names them. New slugs start
+  of `docs/bitwarden.md`. Connect restarts the broker, and disconnect restarts
+  it when it is running; a restart locks the other `manual` accounts, and the
+  done message names them. A disconnect retried after a failed restart ends
+  with `done` and drops the store entry. New slugs start
   with a letter and have at most 31 characters. `make vault-add` and
   `make vault-remove` keep the add-on store's entries in step.
 - **The broker signs in `manual` accounts at start.** They stay locked; a wrong
   API key shows as `login_refused` at once. `bw` stays signed in across broker
-  restarts, so the start sign-in checks the key only the first time; a key
-  revoked later shows at the next unlock. `GET /accounts` gains `logged_in` and
+  restarts, so the start sign-in checks the key only the first time and does
+  not catch a key revoked later. `GET /accounts` gains `logged_in` and
   `retry_after`.
 - **Logins Bitwarden would not take back are listed.** When a release cannot
   move an item out of the agent's folder or collection, the broker records it in

@@ -103,8 +103,7 @@ on one of them.
 
 A `manual` account is signed in with its API key (`bw login --apikey`) each time the broker starts,
 and stays locked. `bw` keeps its login across broker restarts, so that sign-in checks a `manual`
-account's API key only the first time. A key revoked later shows as `login_refused` at the next
-`unlock`. `GET /accounts` reports `logged_in` and, after a rate limit, `retry_after` (whole seconds).
+account's API key only the first time and does not catch a key revoked later. `GET /accounts` reports `logged_in` and, after a rate limit, `retry_after` (whole seconds).
 
 With `stored` on a personal account (`folder:` scope), the broker holds a password that opens your
 whole vault, and the scope only limits what it lists and fills. `make vault-add` says so before it
@@ -232,8 +231,8 @@ Requests and denylist entries survive broker restarts.
 
 When Bitwarden refuses the move, the broker also writes the item's account, label and site to
 `broker/unreturned.json`, because a locked account can no longer look the label up. The entry is
-listed under `unreturned` by `make vault-requests` and `vault.sh requests --json`, and is dropped
-at the first sync that no longer finds the item in scope.
+listed under `unreturned` by `make vault-requests` and `vault.sh requests --json` while the broker
+has its account loaded, and is dropped at the first sync that no longer finds the item in scope.
 
 ## Boundary
 
@@ -252,8 +251,8 @@ unlock reads `{master_password}`.
 | `requests --json` | `pending`, `recent` and `unreturned` (below) |
 | `add --json`, `remove --json` | `setup` lines, then `done` with `account` and `message` |
 
-`state` is `unlocked`, `locked`, `offline` or `refused`; `locked` is a normal state for a `manual`
-account. `error` is `login_refused`, `server_unreachable`, `rate_limited`, `unknown`, `bad_file`
+`state` is `unlocked`, `locked`, `offline`, `error` (passed through from the broker) or `refused`;
+`locked` is a normal state for a `manual` account. `error` is `login_refused`, `server_unreachable`, `rate_limited`, `unknown`, `bad_file`
 (with `refused`), `not_loaded` (the running broker has not read that file; `make up`),
 `broker_down` (the broker is not running) or null. `retry_after` is whole seconds or null.
 
@@ -262,17 +261,20 @@ account. `error` is `login_refused`, `server_unreachable`, `rate_limited`, `unkn
 - `pending[]`: `request_id`, `account`, `site`, `reason` (the agent's text), `created` (Unix seconds)
 - `unreturned[]`: `account`, `label`, `site`
 
-`status`, `sync` and `requests` exit 1 with a message on stderr when the broker is not running
-(`status` reports `broker_down` per account instead and exits 0). The error lines of the other
-commands use the exit codes of `addon.sh`: 2 for `bad_input`, `bad_slug`, `exists` and `not_found`,
-4 for the rest (`login_refused`, `server_unreachable`, `rate_limited`, `timeout`, `broker_down`,
+`sync` and `requests` exit 1 with a message on stderr when the broker is not running; `status`
+reports `broker_down` per account and exits 0. The error lines of the other commands use the exit
+codes of `addon.sh`: 2 for `bad_input`, `bad_slug`, `exists` and `not_found`, 4 for the rest
+(`login_refused`, `server_unreachable`, `rate_limited`, `timeout`, `broker_down`,
 `command_failed`). A `rate_limited` line carries `retryAfter` when the broker knows it.
 
 `addon.sh connect bitwarden --instance S --json` runs `vault.sh add --json` and `disconnect` runs
 `vault.sh remove --json`. Connect writes the account file, restarts the broker and keeps the
 account only when the broker signs in: unlocked for `stored`, locked and signed in for `manual`.
-Otherwise it removes what it wrote and ends with an error line. Connect and disconnect restart the
-broker, which locks the other `manual` accounts; the done message names them. A new slug starts
+Otherwise it removes what it wrote and ends with an error line. Connect restarts the broker, and
+disconnect restarts it when it is running; a restart locks the other `manual` accounts, and the
+done message names them. When disconnect's restart fails, the account file and secrets are already
+gone and the store entry stays; a retried disconnect finds no account file, restarts the broker
+if it still lists the account, and ends with `done`, which drops the entry. A new slug starts
 with a letter and has at most 31 characters, as the add-on store requires, and Boundary
 disconnects only accounts the store has an entry for. `make vault-add` and `make vault-remove`
 keep the store in step, and `make up` records account files that have no entry. For an account

@@ -58,9 +58,12 @@ Usage: scripts/vault.sh <command> [options]
         For Boundary's connect: {mode, region, url, scope, unlock, client_id,
         client_secret, master_password} on stdin, unlock manual by default,
         no --force or scope all. JSON lines out; a failed check keeps nothing.
-  unlock --slug S   Unlock a manual account in the broker (hidden prompt)
-  lock --slug S     Lock a manual account
-  sync              Re-read every unlocked account's items now
+  unlock --slug S [--json]
+                    Unlock a manual account in the broker (hidden prompt; with
+                    --json, {master_password} on stdin and no prompt)
+  lock --slug S [--json]
+                    Lock a manual account
+  sync [--json]     Re-read every unlocked account's items now
   status --json     One JSON line per account: state, error, retry_after
   requests [--json] The agent's pending access requests
   grant [--site H] [--slug S] [--email E] [--item ID]
