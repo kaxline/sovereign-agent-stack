@@ -142,7 +142,12 @@ number can be connected beside, or instead of, the single budget above. Each
 gets its own MCP entries in Hermes: `budget-<slug>-ro` always, and
 `budget-<slug>` when the row's access is `write`. Only the `default` Hermes
 profile is supported, and `browser` mirrors it. A row naming another profile
-is refused with `unknown_profile`.
+is refused with `unknown_profile`. A slug is a lowercase letter followed by up
+to 30 of `a-z`, `0-9` and `-`.
+
+Enable the add-on (`scripts/addon.sh enable actual`) before connecting a
+budget. `addon.sh connect` on a disabled add-on stores the row and reports
+`done`, but Hermes registers no entry for it until the add-on is enabled.
 
 ```bash
 make budget-connect SLUG=home URL=https://budget.example.com ACCESS=write SYNC_ID=...
@@ -154,15 +159,16 @@ make budget-disconnect SLUG=home
 from the terminal without echo (or from `ACTUAL_PASSWORD` and
 `ACTUAL_BUDGET_ENCRYPTION_PASSWORD`), builds the JSON below with them on stdin
 only, and pipes it to `scripts/addon.sh connect actual --instance <slug> --json`.
-Without `SYNC_ID` it uses the server's only budget and stops when there are
-several. `ACCESS` defaults to `read`. Boundary calls `addon.sh` directly with
-the same JSON:
+It refuses while `ACTUAL_MCP_ENABLED` is off. Without `SYNC_ID` it uses the
+server's only budget and stops when there are several. `ACCESS` defaults to
+`read`. It and `make budget-disconnect` print `addon.sh`'s result as
+`[budget]` lines. Boundary calls `addon.sh` directly with the same JSON:
 
 | Key | Meaning |
 |---|---|
 | `server` | `local`, or the server's `http(s)` URL |
 | `sync_id` | Settings > Advanced settings in Actual |
-| `session_token` or `password` | One of them signs in; `local` falls back to the stored server password |
+| `session_token` or `password` | One of them signs in; `local` falls back to the stored server password, or on a v0.3.12 install to the one in `compose/actual/budget.env` |
 | `encryption_password` | End-to-end encrypted budgets only |
 | `profile` | `default` (the default) |
 | `access` | `read` (the default) or `write` |
@@ -170,8 +176,11 @@ the same JSON:
 `addon.sh` runs `budget.sh connect`, which opens the budget with those values
 and, only if that works, stores the session token. The password is used once
 and never stored. A failed check writes nothing. Errors end with one of
-`bad_slug`, `bad_access`, `unknown_profile`, `login_refused`, `token_expired`,
-`encryption_password`, `no_access`, `timeout` or `server_unreachable`.
+`bad_slug`, `bad_access`, `unknown_profile`, `not_found`, `login_refused`,
+`token_expired`, `encryption_password`, `no_access`, `timeout` or
+`server_unreachable`. `not_found` covers a local server whose password isn't
+stored (run `scripts/addon.sh enable actual --reinit`) and, on Linux, a host
+user other than uid 1000.
 
 ### Commands
 
@@ -183,7 +192,7 @@ that end in `{"phase":"done"}` or one `{"phase":"error",...}`:
 | `budgets --json` | Reads `server` and `session_token` or `password` on stdin and lists the budgets that credential can open |
 | `status [--slug SLUG] --json` | Opens each connected budget with its stored token. `state` is `ok`, `token_expired`, `no_access`, `encryption_password`, `timeout`, `server_unreachable` or `bad_access`; a bad state doesn't change the exit code |
 | `access <slug> read\|write --json` | Saves the row's access with `addon.sh configure` and reloads Hermes |
-| `init --server-only --json` | The manifest's init hook: sets up the bundled server (generated password in `secrets/server_password`, a budget named Budget if there is none) without writing `compose/actual/budget.env` |
+| `init --server-only --json` | The manifest's init hook: sets up the bundled server (generated password in `secrets/server_password`, a budget named Budget if there is none) without writing `compose/actual/budget.env`. With `ACTUAL_LOCAL_ENABLED` off it does nothing |
 | `ensure` | Creates `addons/actual/instances` and `secrets` at mode 700; `make ensure-local` runs it |
 
 `make doctor` lists each connected budget with its `status` state.
@@ -199,7 +208,9 @@ that end in `{"phase":"done"}` or one `{"phase":"error",...}`:
 
 Secret files are mode 600. The MCP containers mount `data/addons/actual`
 read-only at `/budgets`. On Linux they run as uid 1000, so connected budgets
-need the host user to be uid 1000 (`HERMES_UID`, the default).
+need the host user to be uid 1000 (`HERMES_UID`, the default); `budget.sh
+connect` refuses another uid and `make doctor` flags it. The launcher drops
+one trailing newline from a secret file and keeps every other character.
 
 In each MCP container a launcher starts one child per row and serves it at
 `/<slug>/mcp`; the legacy `/mcp` path still serves the single budget. The
@@ -218,11 +229,16 @@ like `budget` does.
 ### The bundled server and the add-on switches
 
 `addon.sh disable actual` sets `ACTUAL_LOCAL_ENABLED=0` and stops
-`actual-server`; `addon.sh enable actual` turns it back on only if the
-manifest's `local` setting is stored (`addon.sh configure actual` with
-`{"local": true}`). An install from v0.3.12 that set `ACTUAL_LOCAL_ENABLED=1`
-by hand needs that setting stored the same way before it uses `disable` and
-`enable`. The `make budget-*` commands don't depend on it.
+`actual-server`; `addon.sh enable actual` turns it back on when the manifest's
+`local` setting is stored (`addon.sh configure actual` with `{"local": true}`).
+When `ACTUAL_LOCAL_ENABLED=1` was set by hand (as v0.3.12 did) and `local`
+isn't stored, `disable` stores `local` as true before it zeroes the flag, so
+the next `enable` restores it. The `make budget-*` commands don't depend on it.
+
+The init hook sets up the bundled server only while `ACTUAL_LOCAL_ENABLED` is
+on; on a remote-only install it does nothing. `addon.sh enable` runs it once,
+so after turning the bundled server on later, run
+`scripts/addon.sh enable actual --reinit`.
 
 `make budget-remove` keeps `ACTUAL_MCP_ENABLED=1` while any connected budget
 exists.

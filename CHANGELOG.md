@@ -48,14 +48,22 @@ the stack under another app.
 
 ### Connected Actual budgets
 
+- **Upgrade step:** with Actual enabled, rebuild the locally built MCP image,
+  since `make up` doesn't rebuild it: `docker compose up -d --build
+  actual-mcp-rw actual-mcp-ro`. The old image has no session-token sign-in
+  and no launcher, so connected budgets get no MCP server until it is rebuilt.
 - **`addon.sh connect actual --instance <slug>`** connects a budget on the
   bundled or a remote Actual server (stdin keys `server`, `sync_id`,
   `session_token` or `password`, `encryption_password`, `profile`, `access`).
-  `make budget-connect SLUG=... URL=... [ACCESS=write] [SYNC_ID=...]` asks for
-  the passwords without echo and pipes the JSON to it; `make budget-disconnect
-  SLUG=...` removes the budget. Only the session token is stored, under
-  `data/addons/actual/secrets/`; the password is used once. Only the `default`
-  Hermes profile is supported (`browser` mirrors it).
+  The add-on must be enabled first: `connect` on a disabled add-on stores the
+  budget, but Hermes registers no entry for it. `make budget-connect SLUG=...
+  URL=... [ACCESS=write] [SYNC_ID=...]` asks for the passwords without echo,
+  pipes the JSON to it and refuses while `ACTUAL_MCP_ENABLED` is off; `make
+  budget-disconnect SLUG=...` removes the budget. Both print `[budget]` lines.
+  Only the session token is stored, under `data/addons/actual/secrets/`; the
+  password is used once. A slug starts with a letter, then up to 30 of
+  `a-z`, `0-9` and `-`. Only the `default` Hermes profile is supported
+  (`browser` mirrors it).
 - **New `budget.sh` commands:** `budgets --json`, `status [--slug] --json`,
   `access <slug> read|write --json`, `init --server-only` (the manifest's init
   hook), `connect` and `disconnect` (its hooks) and `ensure`, which `make
@@ -78,16 +86,26 @@ the stack under another app.
   a budget file. `make budget-remove` keeps `ACTUAL_MCP_ENABLED=1` while any
   connected budget exists.
 - **Manifest:** the `local` setting owns `ACTUAL_LOCAL_ENABLED`, and the
-  manifest gains `instances` settings and hooks, `data` paths and volumes, and
-  the error names `bad_access`, `encryption_password` and `unknown_profile`.
-  `addon.sh disable actual` now sets `ACTUAL_LOCAL_ENABLED=0` and stops
-  `actual-server`; `addon.sh enable actual` turns it back on only if `local` is
-  stored (`addon.sh configure actual` with `{"local": true}`). A v0.3.12 install
-  that set `ACTUAL_LOCAL_ENABLED=1` by hand must store `local` before it runs
-  `disable` and `enable`. `make budget-*` commands are unaffected.
+  manifest gains `instances` settings and hooks (with `optional: true`, so
+  `addon.sh enable actual` works before any budget is connected), `data` paths
+  and volumes, and the error names `bad_access`, `encryption_password` and
+  `unknown_profile`. `addon.sh disable actual` now sets
+  `ACTUAL_LOCAL_ENABLED=0` and stops `actual-server`; `addon.sh enable actual`
+  turns it back on when `local` is stored. When the flag is on and `local`
+  isn't stored (a v0.3.12 install that set `ACTUAL_LOCAL_ENABLED=1` by hand),
+  `disable` stores `local` as true first, so the next `enable` restores it.
+  This holds for every add-on whose bool setting owns a gate flag.
+  `make budget-*` commands are unaffected.
+- **The init hook** (`budget.sh init --server-only`) does nothing while
+  `ACTUAL_LOCAL_ENABLED` is off, so `addon.sh enable actual` works on a
+  remote-only install. Turning the bundled server on later takes `addon.sh
+  enable actual --reinit` to set it up. On a v0.3.12 local install,
+  `server: "local"` signs in with the password in `compose/actual/budget.env`
+  and copies it to `data/addons/actual/secrets/server_password`.
 - **Limits:** on Linux the host user must be uid 1000 (`HERMES_UID`, the
   default), because the MCP containers read the mode-600 secret files as uid
-  1000. A password change on an Actual server, or turning OpenID on, ends every
+  1000; `budget.sh connect` refuses another uid with `not_found`, and `make
+  doctor` flags it. A password change on an Actual server, or turning OpenID on, ends every
   connected budget's session; `budget.sh status` shows `token_expired` until
   each is reconnected. A write made in the seconds between a good sync and the
   background push can still be stranded if the session ends right then.
