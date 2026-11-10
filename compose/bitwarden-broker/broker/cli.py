@@ -110,8 +110,11 @@ def cmd_requests(form: str | None) -> None:
             print(f"  - {_cell(r.get('label'))}  ({_cell(r.get('site'))}, account {_cell(r.get('account'))})")
 
 
-def cmd_sync() -> None:
+def cmd_sync(form: str | None = None) -> None:
     reply = _call("POST", "/sync")
+    if form == "--json":
+        print(json.dumps(reply))
+        return
     if reply.get("reason") == "busy":
         print("A sync is already running; try again when it ends.")
         return
@@ -130,10 +133,10 @@ def main(argv: list[str]) -> int:
             cmd_accounts()
         elif argv[:1] == ["requests"] and len(argv) <= 2 and argv[1:] in ([], ["--json"], ["--tsv"]):
             cmd_requests(argv[1] if len(argv) == 2 else None)
-        elif argv == ["sync"]:
-            cmd_sync()
+        elif argv in (["sync"], ["sync", "--json"]):
+            cmd_sync(argv[1] if len(argv) == 2 else None)
         else:
-            print("usage: python3 -m broker.cli accounts | requests [--json | --tsv] | sync", file=sys.stderr)
+            print("usage: python3 -m broker.cli accounts | requests [--json | --tsv] | sync [--json]", file=sys.stderr)
             return 2
     except Unreachable:
         print("The Bitwarden broker is not reachable.", file=sys.stderr)

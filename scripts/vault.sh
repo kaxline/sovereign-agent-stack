@@ -723,22 +723,46 @@ note_locked_manual() {
 # --- unlock, lock, sync, requests, grant -----------------------------------
 
 need_manual() {
-  need_slug "$1"
-  need_account "$1"
+  valid_slug "$1" || emit_error bad_slug "--slug must use lowercase letters, digits and hyphens"
+  [[ -f "$(account_file "$1")" ]] \
+    || emit_error not_found "no account '$1' in ${ACCOUNTS_DIR#"${ROOT}"/} — make vault-add or make vault-init"
   load_file "$(account_file "$1")"
   [[ "$(text_get BW_UNLOCK)" == manual ]] \
-    || die "$1 uses stored unlock; the broker unlocks it by itself"
+    || emit_error bad_input "$1 uses stored unlock; the broker unlocks it by itself"
 }
 
+# require_broker for --json: the broker_down error line.
+require_broker_json() {
+  broker_running || emit_error broker_down "the Bitwarden broker is not running"
+}
+
+# unlock --json reads {"master_password"} from stdin and makes one attempt.
 cmd_unlock() {
-  local slug=""
+  local slug="" json=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --slug) need_value "$@"; slug="$2"; shift 2 ;;
+      --json) json=1; shift ;;
       *) die "unknown option for unlock: $1" ;;
     esac
   done
+  [[ "$json" == 1 ]] && JSON=1
   need_manual "$slug"
+  if [[ "$JSON" == 1 ]]; then
+    local in_master_password=""
+    read_input master_password
+    [[ -n "$in_master_password" ]] || emit_error bad_input "master_password is empty"
+    require_broker_json
+    local jrc=0
+    printf '%s\n' "$in_master_password" | broker_exec python3 -m broker.unlock "$slug" >/dev/null 2>&1 || jrc=$?
+    in_master_password=""
+    case "$jrc" in
+      0) emit_done; return 0 ;;
+      2) emit_error login_refused "the master password was refused" ;;
+      3) emit_error not_found "the broker has no manual account ${slug}; it reads account files when it starts (make up)" ;;
+      *) emit_error command_failed "the broker could not unlock ${slug}; make doctor" ;;
+    esac
+  fi
   require_broker
   local tries=1 rc password
   [[ -t 0 ]] && tries=3
@@ -761,25 +785,38 @@ cmd_unlock() {
 }
 
 cmd_lock() {
-  local slug=""
+  local slug="" json=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --slug) need_value "$@"; slug="$2"; shift 2 ;;
+      --json) json=1; shift ;;
       *) die "unknown option for lock: $1" ;;
     esac
   done
+  [[ "$json" == 1 ]] && JSON=1
   need_manual "$slug"
-  require_broker
+  if [[ "$JSON" == 1 ]]; then
+    require_broker_json
+  else
+    require_broker
+  fi
   local rc=0
   broker_exec python3 -m broker.unlock --lock "$slug" >/dev/null 2>&1 || rc=$?
   case "$rc" in
-    0) log "${slug} is locked" ;;
-    3) die "the broker has no manual account ${slug}" ;;
-    *) die "the broker could not lock ${slug}; make doctor" ;;
+    0) if [[ "$JSON" == 1 ]]; then emit_done; else log "${slug} is locked"; fi ;;
+    3) emit_error not_found "the broker has no manual account ${slug}" ;;
+    *) emit_error command_failed "the broker could not lock ${slug}; make doctor" ;;
   esac
 }
 
+# sync --json: the broker's reply on one line. With the broker down it exits
+# 1 with stderr only, as requests --json does.
 cmd_sync() {
+  if [[ $# -eq 1 && "$1" == --json ]]; then
+    broker_running || { printf '[vault] ERROR: the Bitwarden broker is not running\n' >&2; exit 1; }
+    broker_cli sync --json
+    return
+  fi
   [[ $# -eq 0 ]] || die "sync takes no options"
   require_broker
   broker_cli sync

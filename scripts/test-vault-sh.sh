@@ -61,9 +61,11 @@ case " $* " in
   *" broker.cli requests --json "*) cat "$STUB/requests.json"; exit 0 ;;
   *" broker.cli requests --tsv "*) cat "$STUB/requests.tsv" 2>/dev/null; exit 0 ;;
   *" broker.cli requests "*) echo "No pending access requests."; exit 0 ;;
+  *" broker.cli sync --json "*) cat "$STUB/sync.json"; exit "$(rc_of sync)" ;;
   *" broker.cli sync "*) echo "Synced: personal"; exit "$(rc_of sync)" ;;
   *" broker.unlock "*)
     got="$(cat)"
+    ps -ax -o args= >> "$STUB/ps" 2>/dev/null || true
     [ "$got" = "$(cat "$STUB/expect-password" 2>/dev/null)" ] && echo "stub: password on stdin" >> "$STUB/log"
     exit "$(rc_of unlock)" ;;
 esac
@@ -565,6 +567,56 @@ js || fail "broker-down lines parse as JSON"
 [ "$(jfield 1 state)" = offline ] && [ "$(jfield 1 error)" = broker_down ] && [ "$(jfield 1 retry_after)" = null ] || fail "broker down fields"
 rm -rf "$VAULT_ACCOUNTS_DIR"
 [ ! -d "$tmp/accounts-kept" ] || mv "$tmp/accounts-kept" "$VAULT_ACCOUNTS_DIR"
+
+# --- unlock, lock and sync --json ------------------------------------------------
+reset_stub
+mv "$VAULT_ACCOUNTS_DIR" "$tmp/accounts-kept2" 2>/dev/null || true
+mkdir -p "$VAULT_ACCOUNTS_DIR"
+st_file() { printf '# t\nBW_MODE=cloud\nBW_SERVER=https://example.com\nBW_SCOPE=folder:Agent\nBW_UNLOCK=%s\nBW_CLIENTID=syn-id\n' "$2" > "$VAULT_ACCOUNTS_DIR/$1.env"; }
+jj() { STACK_PYTHON=host "$vault" "$@" > "$out" 2> "$tmp/jerr"; }
+jerrcode() { local rc=0; printf '%s' "$1" | jj "${@:2}" || rc=$?; echo "$rc"; }
+jline() { python3 -c "import json,sys; d=json.loads(sys.stdin.read()); print(d.get('$1'))" < "$out"; }
+st_file man manual
+st_file sto stored
+printf '%s' "$PW" > "$STUB/expect-password"
+payload="{\"master_password\":\"$PW\"}"
+[ "$(jerrcode "$payload" unlock --slug man --json)" = 4 ] || fail "unlock --json with the broker down exits 4"
+[ "$(jline error)" = broker_down ] || fail "unlock --json broker_down"
+touch "$STUB/broker-running"
+[ "$(jerrcode "$payload" unlock --slug man --json)" = 0 ] || fail "unlock --json"
+[ "$(wc -l < "$out" | tr -d ' ')" = 1 ] && [ "$(jline phase)" = done ] || fail "unlock --json ends with done"
+logged "stub: password on stdin" || fail "unlock --json passes the password on stdin"
+grep -qF "broker.unlock man" "$STUB/ps" || fail "the ps record missed the unlock exec"
+grep -qF "$PW" "$STUB/ps" && fail "the password reached an argv"
+no_secret "unlock --json"
+grep -qF "$PW" "$tmp/jerr" && fail "unlock --json leaked the password to stderr"
+echo 2 > "$STUB/rc.unlock"
+[ "$(jerrcode "$payload" unlock --slug man --json)" = 4 ] && [ "$(jline error)" = login_refused ] || fail "unlock --json wrong password"
+echo 3 > "$STUB/rc.unlock"
+[ "$(jerrcode "$payload" unlock --slug man --json)" = 2 ] && [ "$(jline error)" = not_found ] || fail "unlock --json exit 3 is not_found"
+echo 1 > "$STUB/rc.unlock"
+[ "$(jerrcode "$payload" unlock --slug man --json)" = 4 ] && [ "$(jline error)" = command_failed ] || fail "unlock --json other exit is command_failed"
+rm -f "$STUB/rc.unlock"
+[ "$(jerrcode "$payload" unlock --slug sto --json)" = 2 ] && [ "$(jline error)" = bad_input ] || fail "unlock --json stored account"
+[ "$(jerrcode "$payload" unlock --slug nope --json)" = 2 ] && [ "$(jline error)" = not_found ] || fail "unlock --json missing file"
+[ "$(jerrcode "not json" unlock --slug man --json)" = 2 ] && [ "$(jline error)" = bad_input ] || fail "unlock --json bad JSON"
+[ "$(jerrcode '{}' unlock --slug man --json)" = 2 ] && [ "$(jline error)" = bad_input ] || fail "unlock --json without a password"
+[ "$(jerrcode "" lock --slug man --json)" = 0 ] && [ "$(jline phase)" = done ] && [ "$(wc -l < "$out" | tr -d ' ')" = 1 ] || fail "lock --json"
+logged "broker.unlock --lock man" || fail "lock --json runs broker.unlock --lock"
+[ "$(jerrcode "" lock --slug sto --json)" = 2 ] && [ "$(jline error)" = bad_input ] || fail "lock --json stored account"
+echo 3 > "$STUB/rc.unlock"
+[ "$(jerrcode "" lock --slug man --json)" = 2 ] && [ "$(jline error)" = not_found ] || fail "lock --json exit 3"
+rm -f "$STUB/rc.unlock"
+for body in '{"synced":["a"],"busy":[]}' '{"synced":[],"reason":"busy"}' '{"synced":["a"],"reason":"recent"}' '{"synced":[],"busy":["b"]}'; do
+  printf '%s\n' "$body" > "$STUB/sync.json"
+  rc=0; STACK_PYTHON=host "$vault" sync --json < /dev/null > "$out" 2> "$tmp/jerr" || rc=$?
+  [ "$rc" = 0 ] && [ "$(cat "$out")" = "$body" ] || fail "sync --json passes $body through"
+done
+rm -f "$STUB/broker-running"
+rc=0; STACK_PYTHON=host "$vault" sync --json < /dev/null > "$out" 2> "$tmp/jerr" || rc=$?
+[ "$rc" = 1 ] && [ ! -s "$out" ] && grep -q "not running" "$tmp/jerr" || fail "sync --json with the broker down"
+rm -rf "$VAULT_ACCOUNTS_DIR"
+[ ! -d "$tmp/accounts-kept2" ] || mv "$tmp/accounts-kept2" "$VAULT_ACCOUNTS_DIR"
 
 # --- backup and restore --------------------------------------------------------
 if command -v sqlite3 >/dev/null 2>&1; then
