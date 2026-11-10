@@ -83,34 +83,48 @@ jobs:
       - uses: actions/checkout@v4
       - name: Project source registry (stdlib)
         run: python3 scripts/test-project-sources.py
-      - name: Fabricated result detector (stdlib)
-        run: python3 scripts/test-fabricated-result.py
-      - name: Vault create_login policy and field selection (stdlib)
+      - name: Fabricated result detector (host part)
+        run: python3 scripts/test-fabricated-result.py --host-only
+      - name: Vault create_login policy and field selection (host part)
         run: python3 scripts/test-vault-create-login.py --host-only
-      - name: Vault capture_secret value detection and names (stdlib)
+      - name: Vault capture_secret value detection and names (host part)
         run: python3 scripts/test-vault-capture-secret.py --host-only
       - name: Eval trace names vault actions (stdlib)
         run: python3 scripts/test-tool-eval-trace.py
-      - name: Stale-replay loop guard wiring (stdlib)
+      - name: Stale-replay loop guard wiring (host part)
         run: python3 scripts/test-tool-loop-replay.py --host-only
-      - name: Searxng pause points at browser search wiring (stdlib)
+      - name: Searxng pause points at browser search wiring (host part)
         run: python3 scripts/test-searxng-pause-browser.py --host-only
-      - name: Refused searxng page read points at the browser (stdlib)
+      - name: Refused searxng page read points at the browser (host part)
         run: python3 scripts/test-blocked-fetch-hint.py --host-only
-      - name: Browser unresolvable host error wiring (stdlib)
+      - name: Browser unresolvable host error wiring (host part)
         run: python3 scripts/test-browser-unresolvable-host.py --host-only
-      - name: History budget window (stdlib)
-        run: python3 scripts/test-history-budget.py
-      - name: Compaction summarizer reads tool results (stdlib)
+      - name: History budget window (host part)
+        run: python3 scripts/test-history-budget.py --host-only
+      - name: Compaction summarizer reads tool results (host part)
         run: python3 scripts/test-compaction-tool-facts.py --host-only
-      - name: Client context and prompt profile check (stdlib)
-        run: python3 scripts/test-client-context.py
-      - name: Turn heartbeat and session live status (stdlib)
-        run: python3 scripts/test-gateway-liveness.py
-      - name: MCP wake and parked retry interval (stdlib)
-        run: python3 scripts/test-mcp-wake.py
-      - name: Gateway topology, multiplex and compat proxy (stdlib)
-        run: python3 scripts/test-gateway-multiplex.py
+      - name: Client context and prompt profile check (host part)
+        run: python3 scripts/test-client-context.py --host-only
+      - name: Turn heartbeat and session live status (host part)
+        run: python3 scripts/test-gateway-liveness.py --host-only
+      - name: MCP wake and parked retry interval (host part)
+        run: python3 scripts/test-mcp-wake.py --host-only
+      - name: Browser exec hints (host part)
+        run: python3 scripts/test-browser-exec-hints.py --host-only
+      - name: Dashboard handoff links (host part)
+        run: python3 scripts/test-dashboard-handoff.py --host-only
+      - name: Kanban guards (host part)
+        run: python3 scripts/test-kanban-guards.py --host-only
+      - name: Kanban wake (host part)
+        run: python3 scripts/test-kanban-wake.py --host-only
+      - name: Turn speaker labels (host part)
+        run: python3 scripts/test-turn-speaker.py --host-only
+      - name: MCP trust details on approvals (host part)
+        run: python3 scripts/test-mcp-trust-details.py --host-only
+      - name: Web search modes (host part)
+        run: python3 scripts/test-web-search-mode.py --host-only
+      - name: Search gate against a fake SearXNG (stdlib)
+        run: python3 scripts/test-search-gate.py
       - name: Cron delivery error check (stdlib)
         run: python3 scripts/test-cron-delivery-errors.py
       - name: CalDAV password env key
@@ -121,8 +135,6 @@ jobs:
         run: sh scripts/test-vikunja-token-scope.sh
       - name: Bootstrap stamp and batched config writes
         run: sh scripts/test-bootstrap-stamp.sh
-      - name: Parked retry interval on stack MCP entries (skips without the image)
-        run: sh scripts/test-mcp-parked-retry.sh
       - name: Profile ownership fixed before Hermes setup
         run: sh scripts/test-profile-ownership.sh
       - name: Compose profiles follow the *_ENABLED flags
@@ -131,23 +143,27 @@ jobs:
         run: bash scripts/test-sync-n8n-credentials.sh
       - name: Add-on manifests
         run: python3 scripts/test-addon-manifests.py
+      - name: Add-on instance store (stdlib)
+        run: python3 scripts/test-addon-store.py
+      - name: addon.sh lifecycle with stub docker and make
+        run: sh scripts/test-addon-cli.sh
       - name: GPT Researcher MCP registration
         run: sh scripts/test-gptr-mcp-registration.sh
       - name: Actual Budget MCP registration
         run: sh scripts/test-actual-registration.sh
       - name: Add-on MCP access levels
         run: sh scripts/test-addon-mcp-access.sh
-      - name: Add-on cron fence
+      - name: Add-on cron fence (host part)
         run: sh scripts/test-addon-cron-fence.sh --host-only
-      - name: Bitwarden plugin registration
+      - name: Bitwarden plugin registration (host part)
         run: sh scripts/test-bitwarden-registration.sh --host-only
-      - name: Digest redaction of broker-filled values (stdlib)
+      - name: Digest redaction of broker-filled values (host part)
         run: python3 scripts/test-digest-redaction.py --host-only
-      - name: Bitwarden broker against a fake bw (stdlib)
+      - name: Bitwarden broker against a fake bw (host part)
         run: python3 scripts/test-bitwarden-broker.py --host-only
       - name: Bitwarden access requests and release (stdlib)
         run: python3 scripts/test-bitwarden-access.py
-      - name: Bitwarden fill overlay wiring (stdlib)
+      - name: Bitwarden fill overlay wiring (host part)
         run: python3 scripts/test-bitwarden-fill.py --host-only
       - name: Bitwarden secrets sync
         run: sh scripts/test-bitwarden-secrets-sync.sh
@@ -163,8 +179,6 @@ jobs:
         run: sh scripts/test-twenty-registration.sh
       - name: MCP pin names match Hermes' tool names
         run: sh scripts/test-mcp-pin-names.sh
-      - name: Twenty workspace reconcile (Hermes image)
-        run: sh scripts/test-twenty-reconcile.sh
       - name: Twenty workspace setup (stub server)
         run: python3 scripts/test-crm-script.py
       - name: crm.sh subcommands without a running stack
@@ -179,6 +193,8 @@ jobs:
         run: bash scripts/test-budget-sh.sh
       - name: make doctor Actual Budget block against stubs
         run: bash scripts/test-actual-doctor.sh
+      - name: make doctor Twenty block against stubs
+        run: bash scripts/test-twenty-doctor.sh
       - name: First run needs no host python3, node or make
         run: bash scripts/test-no-host-python.sh
       - name: LLM proxy routes
