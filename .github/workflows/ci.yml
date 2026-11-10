@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  compose-config:
+  tests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -66,155 +66,18 @@ jobs:
             echo "=== COMPOSE_PROFILES=$profiles ==="
             COMPOSE_PROFILES="$profiles" docker compose config -q
           done
-          python3 scripts/test-compose-env-allowlist.py
-          python3 scripts/test-twenty-compose-config.py
-          python3 scripts/test-bitwarden-compose-config.py
-          sh scripts/test-actual-compose.sh
           echo "=== HERMES_TERMINAL_BACKEND=local ==="
           HERMES_TERMINAL_BACKEND=local COMPOSE_PROFILES=core docker compose config -q
           echo "=== core without the N8N_* keys ==="
           grep -v '^N8N_' .env > /tmp/no-n8n.env
           COMPOSE_PROFILES=core docker compose --env-file /tmp/no-n8n.env config -q
-          python3 scripts/test-terminal-backend-compose.py
-          python3 scripts/test-cont-init-env.py  # also every overlay patch and its modules are mounted
-          python3 scripts/test-root-access-hint.py
-
-  project-sources:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Test helpers (testkit.sh, testkit.py)
-        run: sh scripts/test-testkit.sh
-      - name: Project source registry (stdlib)
-        run: python3 scripts/test-project-sources.py
-      - name: Fabricated result detector (host part)
-        run: python3 scripts/test-fabricated-result.py --host-only
-      - name: Vault create_login policy and field selection (host part)
-        run: python3 scripts/test-vault-create-login.py --host-only
-      - name: Vault capture_secret value detection and names (host part)
-        run: python3 scripts/test-vault-capture-secret.py --host-only
-      - name: Eval trace names vault actions (stdlib)
-        run: python3 scripts/test-tool-eval-trace.py
-      - name: Stale-replay loop guard wiring (host part)
-        run: python3 scripts/test-tool-loop-replay.py --host-only
-      - name: Refused searxng page read points at the browser (host part)
-        run: python3 scripts/test-blocked-fetch-hint.py --host-only
-      - name: History budget window (host part)
-        run: python3 scripts/test-history-budget.py --host-only
-      - name: Compaction summarizer reads tool results (host part)
-        run: python3 scripts/test-compaction-tool-facts.py --host-only
-      - name: Client context and prompt profile check (host part)
-        run: python3 scripts/test-client-context.py --host-only
-      - name: Turn heartbeat and session live status (host part)
-        run: python3 scripts/test-gateway-liveness.py --host-only
-      - name: MCP wake and parked retry interval (host part)
-        run: python3 scripts/test-mcp-wake.py --host-only
-      - name: Browser exec hints (host part)
-        run: python3 scripts/test-browser-exec-hints.py --host-only
-      - name: Dashboard handoff links (host part)
-        run: python3 scripts/test-dashboard-handoff.py --host-only
-      - name: Kanban guards (host part)
-        run: python3 scripts/test-kanban-guards.py --host-only
-      - name: Kanban wake (host part)
-        run: python3 scripts/test-kanban-wake.py --host-only
-      - name: Turn speaker labels (host part)
-        run: python3 scripts/test-turn-speaker.py --host-only
-      - name: MCP trust details on approvals (host part)
-        run: python3 scripts/test-mcp-trust-details.py --host-only
-      - name: Web search modes (host part)
-        run: python3 scripts/test-web-search-mode.py --host-only
-      - name: Search gate against a fake SearXNG (stdlib)
-        run: python3 scripts/test-search-gate.py
-      - name: Cron delivery error check (stdlib)
-        run: python3 scripts/test-cron-delivery-errors.py
-      - name: CalDAV password env key
-        run: sh scripts/test-caldav-password-ref.sh
-      - name: Buzz sync skipped when Buzz is not configured
-        run: sh scripts/test-buzz-sync-gate.sh
-      - name: Vikunja token per profile
-        run: sh scripts/test-vikunja-token-scope.sh
-      - name: Bootstrap stamp and batched config writes
-        run: sh scripts/test-bootstrap-stamp.sh
-      - name: Profile ownership fixed before Hermes setup
-        run: sh scripts/test-profile-ownership.sh
-      - name: Compose profiles follow the *_ENABLED flags
-        run: bash scripts/test-sync-profiles.sh
-      - name: n8n credentials only with automation
-        run: bash scripts/test-sync-n8n-credentials.sh
-      - name: Add-on manifests
-        run: python3 scripts/test-addon-manifests.py
-      - name: Add-on instance store (stdlib)
-        run: python3 scripts/test-addon-store.py
-      - name: addon.sh lifecycle with stub docker and make
-        run: sh scripts/test-addon-cli.sh
-      - name: GPT Researcher MCP registration
-        run: sh scripts/test-gptr-mcp-registration.sh
-      - name: Email add-on config renderer and entry point (stdlib)
-        run: python3 scripts/test-email-addon.py
-      - name: Email add-on MCP registration
-        run: sh scripts/test-email-registration.sh
-      - name: mail-triage-cron accepts the MAIL_MCP_ENABLED values
-        run: sh scripts/test-mail-triage-cron.sh
-      - name: Actual Budget MCP registration
-        run: sh scripts/test-actual-registration.sh
-      - name: Connected Actual budgets as MCP entries (host part)
-        run: sh scripts/test-actual-rows.sh --host-only
-      - name: actual-admin.mjs against an Actual server
-        run: bash scripts/test-actual-admin.sh
-      - name: Add-on MCP access levels
-        run: sh scripts/test-addon-mcp-access.sh
-      - name: Add-on cron fence (host part)
-        run: sh scripts/test-addon-cron-fence.sh --host-only
-      - name: Bitwarden plugin registration (host part)
-        run: sh scripts/test-bitwarden-registration.sh --host-only
-      - name: Digest redaction of broker-filled values (host part)
-        run: python3 scripts/test-digest-redaction.py --host-only
-      - name: Bitwarden broker against a fake bw (host part)
-        run: python3 scripts/test-bitwarden-broker.py --host-only
-      - name: Bitwarden access requests and release (stdlib)
-        run: python3 scripts/test-bitwarden-access.py
-      - name: Bitwarden fill overlay wiring (host part)
-        run: python3 scripts/test-bitwarden-fill.py --host-only
-      - name: Bitwarden secrets sync
-        run: sh scripts/test-bitwarden-secrets-sync.sh
-      - name: bitwarden-setup against a fake bw
-        run: sh scripts/test-bitwarden-setup.sh
-      - name: LightRAG MCP registration
-        run: sh scripts/test-lightrag-mcp-registration.sh
-      - name: Twenty CRM compose profile
-        run: sh scripts/test-twenty-compose.sh
-      - name: Twenty secrets entrypoint
-        run: sh scripts/test-twenty-secrets.sh
-      - name: Twenty CRM MCP registration
-        run: sh scripts/test-twenty-registration.sh
-      - name: MCP pin names match Hermes' tool names
-        run: sh scripts/test-mcp-pin-names.sh
-      - name: Twenty workspace setup (stub server)
-        run: python3 scripts/test-crm-script.py
-      - name: crm.sh subcommands without a running stack
-        run: bash scripts/test-crm-sh.sh
-      - name: crm.sh migrate into the add-on instance store
-        run: bash scripts/test-crm-migrate.sh
-      - name: Twenty add-on through addon.sh with stub docker and curl
-        run: sh scripts/test-twenty-addon-cli.sh
-      - name: vault.sh subcommands with a stub docker
-        run: bash scripts/test-vault-sh.sh
+      # Every test tagged ci in scripts/tests.manifest. Image tests run their
+      # host part here; hermes-image.yml runs the image part. --strict: a
+      # test that would skip (no Docker, say) fails the job.
+      - name: Tests (scripts/tests.manifest, tag ci)
+        run: python3 scripts/run-tests.py --tag ci --host-only --strict --tail 0 -j 4
       - name: actual-mcp unit tests (vitest in the image's build stage)
         run: make actual-mcp-test
-      - name: budget.sh subcommands against stubs
-        run: bash scripts/test-budget-sh.sh
-      - name: make doctor Actual Budget block against stubs
-        run: bash scripts/test-actual-doctor.sh
-      - name: make doctor Twenty block against stubs
-        run: bash scripts/test-twenty-doctor.sh
-      - name: First run needs no host python3, node or make
-        run: bash scripts/test-no-host-python.sh
-      - name: LLM proxy routes
-        run: python3 scripts/test-llm-proxy.py
-      - name: Terminal backend override sync
-        run: python3 scripts/test-terminal-backend-sync.py
-      - name: OpenCode MCP roots and aliases (stdlib)
-        run: python3 scripts/test-opencode-mcp-roots.py
 
   bash32:
     runs-on: macos-latest

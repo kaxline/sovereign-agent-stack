@@ -15,8 +15,8 @@ if [ "$version" != 3 ]; then
     echo "error: ${BASH32} is not bash 3.x" >&2
     exit 1
   fi
-  echo "skipped: ${BASH32} is not bash 3.x"
-  exit 0
+  echo "SKIP bash32: ${BASH32} is not bash 3.x"
+  exit 77
 fi
 
 tmp="$(mktemp -d)"

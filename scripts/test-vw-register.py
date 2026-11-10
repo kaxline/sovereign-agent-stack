@@ -60,8 +60,8 @@ def docker(*args: str, timeout: int = 300) -> subprocess.CompletedProcess:
 
 def host_main() -> int:
     if shutil.which("docker") is None or docker("info", timeout=30).returncode != 0:
-        print("skip: Docker is not available")
-        return 0
+        print("SKIP vw-register: Docker is not available")
+        return 77
     src = Path(os.environ.get("BITWARDEN_TEST_SRC") or BROKER_SRC).resolve()
     tag = secrets.token_hex(4)
     net, back, vw, tls, gen, drv = (f"bwtest-{kind}-{tag}" for kind in ("net", "back", "vw", "tls", "gen", "drv"))

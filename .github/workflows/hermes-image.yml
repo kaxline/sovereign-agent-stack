@@ -1,9 +1,9 @@
 name: hermes-image
 
-# Runs the image half of the overlay and bootstrap tests inside the pinned
+# Runs the tests tagged image in scripts/tests.manifest inside the pinned
 # nousresearch/hermes-agent image (about 3.2 GB) through `make
-# hermes-image-test`, which finds them and fails on a missing image. ci.yml
-# runs only their host halves.
+# hermes-image-test`, which fails on a missing image. ci.yml runs only their
+# host parts.
 
 on:
   workflow_dispatch:
@@ -14,6 +14,8 @@ on:
       - "scripts/lib/**"
       - "scripts/test-*"
       - "imessage/tests/**"
+      - "scripts/run-tests.py"
+      - "scripts/tests.manifest"
       - ".github/workflows/hermes-image.yml"
   push:
     branches: [main, master]

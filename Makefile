@@ -15,7 +15,7 @@
 	db-backup db-service-add db-psql todo-init todo-open dashboard-open \
 	crm-init crm-add crm-remove crm-access crm-open crm-mode \
 	vault-init vault-add vault-unlock vault-lock vault-sync vault-grant vault-requests vault-remove vault-open \
-	secrets-sync bitwarden-test addon-list addon-test hermes-image-test actual-mcp-test \
+	secrets-sync bitwarden-test addon-list addon-test test hermes-image-test actual-mcp-test \
 	budget-init budget-add budget-open budget-remove budget-access budget-connect budget-disconnect \
 	coding-root-list coding-root-add \
 	context-root-list context-root-add opencode-smoke-fixture \
@@ -220,28 +220,13 @@ vault-open:
 secrets-sync:
 	@./scripts/vault.sh secrets-sync
 
-# Every Bitwarden add-on test. The image parts skip without the pinned Hermes
-# image; test-vw-register.py and the compose config check need Docker, and the
-# compose check a .env that satisfies interpolation. Runs all, then lists failures.
-BITWARDEN_TESTS = \
-	"python3 scripts/test-addon-manifests.py" \
-	"python3 scripts/test-digest-redaction.py" \
-	"python3 scripts/test-bitwarden-broker.py" \
-	"python3 scripts/test-bitwarden-access.py" \
-	"python3 scripts/test-bitwarden-fill.py" \
-	"sh scripts/test-bitwarden-registration.sh" \
-	"python3 scripts/test-bitwarden-compose-config.py" \
-	"sh scripts/test-bitwarden-secrets-sync.sh" \
-	"sh scripts/test-bitwarden-setup.sh" \
-	"bash scripts/test-vault-sh.sh" \
-	"bash scripts/test-bitwarden-connect.sh" \
-	"python3 scripts/test-vw-register.py"
+# Every Bitwarden add-on test, through scripts/run-tests.py. Image parts run
+# when the pinned Hermes image is present; test-vw-register.py and the compose
+# config check need Docker, and the compose check a .env that satisfies
+# interpolation.
 bitwarden-test:
-	@failed=""; for t in $(BITWARDEN_TESTS); do \
-		echo "=== $$t"; $$t || failed="$$failed\n  $$t"; \
-	done; \
-	if [ -n "$$failed" ]; then printf 'FAILED:%b\n' "$$failed"; exit 1; fi; \
-	echo "all Bitwarden tests passed"
+	@$(RUN_TESTS) scripts/test-addon-manifests.py scripts/test-digest-redaction.py \
+		scripts/test-bitwarden- scripts/test-vault-sh.sh scripts/test-vw-register.py
 
 # Built-in add-ons through scripts/addon.sh, the interface Boundary calls.
 #   make addon-list    every add-on with its settings, instances and missing values (JSON)
@@ -250,9 +235,7 @@ addon-list:
 	@./scripts/addon.sh list --json
 
 addon-test:
-	python3 scripts/test-addon-manifests.py
-	python3 scripts/test-addon-store.py
-	sh scripts/test-addon-cli.sh
+	@$(RUN_TESTS) scripts/test-addon-manifests.py scripts/test-addon-store.py scripts/test-addon-cli.sh
 
 # Actual Budget (budget and budget-local profiles, or remote). See docs/budget.md.
 #   make budget-init [SYNC_ID=id] [ROTATE=1]  local server: password, budget, budget.env
@@ -464,7 +447,7 @@ project-sources-test:
 
 # Host scripts under macOS /bin/bash 3.2. Skips where there is no bash 3.x.
 bash32-test:
-	sh scripts/test-bash32.sh
+	sh scripts/test-bash32.sh || [ $$? = 77 ]
 
 # Fake Apple Mail store for mail-reader tests. See docs/email.md.
 synthetic-mail-test:
@@ -506,7 +489,7 @@ messages-app:
 	imessage/macos/build.sh
 
 messages-app-test:
-	python3 imessage/tests/test-messages-app.py
+	python3 imessage/tests/test-messages-app.py || [ $$? = 77 ]
 
 # Apple Mail indexer (host-side). Reads through Mail.app by default; set
 # source = "store" in the config to read Mail's files instead. See docs/email.md.
@@ -538,14 +521,12 @@ mail-imap-test:
 # throwaway compose project (email-e2e) with its own .env and data root.
 # Synthetic mail only; skipped when Docker isn't running.
 email-test:
-	python3 scripts/test-email-e2e.py
+	python3 scripts/test-email-e2e.py || [ $$? = 77 ]
 
 # The email add-on's checks that need no Docker: the config renderer and entry
 # point, which profiles get its MCP servers, and the triage cron's flag check.
 email-unit-test:
-	python3 scripts/test-email-addon.py
-	sh scripts/test-email-registration.sh
-	sh scripts/test-mail-triage-cron.sh
+	@$(RUN_TESTS) scripts/test-email-addon.py scripts/test-email-registration.sh scripts/test-mail-triage-cron.sh
 
 # Mail drafts (host-side): saves drafts queued by mail-drafts-mcp to Mail's
 # Drafts. Never sends. See docs/email.md.
@@ -560,8 +541,7 @@ mail-drafts-doctor:
 	python3 scripts/mail-drafts.py --dir "$(MAIL_DRAFTS_DIR)" doctor
 
 mail-drafts-test:
-	python3 scripts/test-mail-drafts.py
-	sh scripts/test-mail-drafts-registration.sh
+	@$(RUN_TESTS) scripts/test-mail-drafts.py scripts/test-mail-drafts-registration.sh
 
 # macOS apps that hold the mail permissions instead of your terminal. Build
 # here; install with macos/mail-apps/install.sh (see docs/email.md).
@@ -569,7 +549,7 @@ mail-apps:
 	macos/mail-apps/build.sh
 
 mail-apps-test:
-	python3 scripts/test-mail-apps.py
+	python3 scripts/test-mail-apps.py || [ $$? = 77 ]
 
 # Hermes cron job that reports new mail: mail tools only, runs only when newer
 # mail was indexed, delivers to Signal when set up. See docs/email.md.
@@ -588,16 +568,14 @@ mail-cron-test:
 
 # Read-only mail MCP: query layer against a synthetic index, and which profiles get it.
 mail-mcp-test:
-	python3 scripts/test-mail-mcp.py
-	sh scripts/test-mail-mcp-registration.sh
+	@$(RUN_TESTS) scripts/test-mail-mcp.py scripts/test-mail-mcp-registration.sh
 
 # Read-only Messages MCP: query layer, triage cursor and forwarder against a
 # synthetic index; which profiles get it; the webhook route (needs the hermes
 # container); and the container itself (needs Docker). See docs/messages.md.
 messages-mcp-test:
-	python3 imessage/tests/test-messages-mcp.py
-	sh scripts/test-messages-mcp-registration.sh
-	python3 scripts/test-messages-webhook-config.py
+	@$(RUN_TESTS) imessage/tests/test-messages-mcp.py scripts/test-messages-mcp-registration.sh \
+		scripts/test-messages-webhook-config.py
 	python3 imessage/tests/test-messages-mcp-container.py
 
 # Hermes cron job that reports new messages: messages tools only, fired by
@@ -615,9 +593,7 @@ messages-triage-cron-remove:
 # CalDAV bootstrap and the calendar overlays. The image checks need the pinned
 # Hermes image and skip without it.
 calendar-test:
-	sh scripts/test-caldav-password-ref.sh
-	python3 scripts/test-caldav-foreign-entries.py
-	python3 scripts/test-mirror-exclude.py
+	@$(RUN_TESTS) scripts/test-caldav- scripts/test-mirror-exclude.py
 	python3 scripts/test-mcp-trust-details.py
 
 # Shared coding roots (Hermes + OpenCode). See docs/opencode.md.
@@ -665,17 +641,23 @@ tool-eval-run:
 tool-eval-score:
 	./scripts/tool-eval.sh score
 
-# Every test with checks inside the pinned Hermes image, found by its use of
-# the image gate in scripts/lib/hermes_image.py or hermes-image.sh. Run it on
-# every Hermes bump. A missing image fails rather than skips. Runs all, then
-# lists failures. .github/workflows/hermes-image.yml runs this target.
+# Every test in scripts/tests.manifest, several at a time, with a log per test
+# under .test-runs/. Tests this machine can't run (no Docker, not macOS) are
+# skipped and listed; image tests run only their host part without the pinned
+# Hermes image. See CONTRIBUTING.md.
+#   make test                    everything that can run here
+#   make test ARGS="mail -j 4"   tests whose path contains "mail", 4 at a time
+#   make test ARGS=--strict      a skip fails the run, and image tests need the image
+#   make test ARGS=--list        what would run, and how
+RUN_TESTS = python3 scripts/run-tests.py
+test:
+	@$(RUN_TESTS) $(ARGS)
+
+# Every test tagged image (it has checks inside the pinned Hermes image). Run
+# it on every Hermes bump. A missing image fails rather than skips.
+# .github/workflows/hermes-image.yml runs this target.
 hermes-image-test:
-	@failed=""; for f in $$(grep -lE 'hermes_image\.(maybe_run|image_gate|run_driver)|hermes_image_gate ' scripts/test-* imessage/tests/test-* | sort); do \
-		case "$$f" in *.py) t="python3 $$f" ;; *) t="sh $$f" ;; esac; \
-		echo "=== $$t"; HERMES_IMAGE_REQUIRED=1 $$t || failed="$$failed\n  $$t"; \
-	done; \
-	if [ -n "$$failed" ]; then printf 'FAILED:%b\n' "$$failed"; exit 1; fi; \
-	echo "all Hermes image tests passed"
+	@$(RUN_TESTS) --tag image --strict
 
 # The vendored actual-mcp unit tests (vitest), in the image's build stage, so
 # the host needs no node.

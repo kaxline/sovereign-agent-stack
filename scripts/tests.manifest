@@ -1,0 +1,121 @@
+# Every test script, with tags saying what it needs. scripts/run-tests.py runs
+# them and refuses to run while this list and the scripts/test-* and
+# imessage/tests/test-* files disagree, so a new test goes in here too.
+#
+# A test exits 0 to pass, 77 to skip (printing a line that starts with SKIP)
+# and anything else to fail. Run one by hand with its interpreter:
+# python3 for .py, bash when its first line names bash, sh otherwise.
+
+@tag docker  needs a running Docker daemon (compose config, docker run or build); skipped without one
+@tag image   has checks inside the pinned Hermes image, through scripts/lib/hermes_image.py or hermes-image.sh; without the image only its host part runs
+@tag macos   needs macOS with swiftc; skipped elsewhere
+@tag ci      runs in .github/workflows/ci.yml (host part only for image tests)
+
+imessage/tests/test-messages-app.py             macos
+imessage/tests/test-messages-index.py
+imessage/tests/test-messages-mcp-container.py   docker
+imessage/tests/test-messages-mcp.py
+imessage/tests/test-messages-watch.py
+imessage/tests/test-synthetic-messages.py
+scripts/test-actual-admin.sh                    docker
+scripts/test-actual-compose.sh                  ci docker
+scripts/test-actual-doctor.sh                   ci
+scripts/test-actual-registration.sh             ci
+scripts/test-actual-rows.sh                     ci image
+scripts/test-addon-cli.sh                       ci
+scripts/test-addon-cron-fence.sh                ci image
+scripts/test-addon-manifests.py                 ci
+scripts/test-addon-mcp-access.sh                ci
+scripts/test-addon-store.py                     ci
+scripts/test-bash32.sh
+scripts/test-bitwarden-access.py                ci
+scripts/test-bitwarden-broker.py                ci image
+scripts/test-bitwarden-compose-config.py        ci docker
+scripts/test-bitwarden-connect.sh
+scripts/test-bitwarden-fill.py                  ci image
+scripts/test-bitwarden-registration.sh          ci image
+scripts/test-bitwarden-secrets-sync.sh          ci
+scripts/test-bitwarden-setup.sh                 ci
+scripts/test-blocked-fetch-hint.py              ci image
+scripts/test-bootstrap-stamp.sh                 ci
+scripts/test-browser-exec-hints.py              ci image
+scripts/test-browser-unresolvable-host.py       image
+scripts/test-budget-sh.sh                       ci
+scripts/test-buzz-sync-gate.sh                  ci
+scripts/test-caldav-foreign-entries.py          image
+scripts/test-caldav-password-ref.sh             ci
+scripts/test-client-context.py                  ci image
+scripts/test-compaction-tool-facts.py           ci image
+scripts/test-compose-env-allowlist.py           ci docker
+scripts/test-cont-init-env.py                   ci docker
+scripts/test-crm-migrate.sh                     ci
+scripts/test-crm-script.py                      ci
+scripts/test-crm-sh.sh                          ci
+scripts/test-cron-delivery-errors.py            ci
+scripts/test-dashboard-handoff.py               ci image
+scripts/test-digest-redaction.py                ci image
+scripts/test-email-addon.py                     ci
+scripts/test-email-e2e.py                       docker
+scripts/test-email-registration.sh              ci
+scripts/test-fabricated-result.py               ci image
+scripts/test-gateway-liveness.py                ci image
+scripts/test-gateway-multiplex.py               image
+scripts/test-gptr-mcp-registration.sh           ci
+scripts/test-hermes-topology.py                 image
+scripts/test-history-budget.py                  ci image
+scripts/test-hosted-rooms.py                    image
+scripts/test-kanban-edit.py                     image
+scripts/test-kanban-guards.py                   ci image
+scripts/test-kanban-wake.py                     ci image
+scripts/test-lightrag-mcp-registration.sh       ci
+scripts/test-llm-proxy.py                       ci
+scripts/test-mail-apps.py                       macos
+scripts/test-mail-cron.py
+scripts/test-mail-drafts-registration.sh
+scripts/test-mail-drafts.py
+scripts/test-mail-imap.py
+scripts/test-mail-indexer.py
+scripts/test-mail-mcp-registration.sh
+scripts/test-mail-mcp.py
+scripts/test-mail-script.py
+scripts/test-mail-triage-cron.sh                ci
+scripts/test-mcp-parked-retry.sh                image
+scripts/test-mcp-pin-names.sh                   ci
+scripts/test-mcp-trust-details.py               ci image
+scripts/test-mcp-wake.py                        ci image
+scripts/test-messages-mcp-registration.sh
+scripts/test-messages-webhook-config.py         image
+scripts/test-mirror-exclude.py                  image
+scripts/test-no-host-python.sh                  ci
+scripts/test-opencode-mcp-roots.py              ci
+scripts/test-profile-ownership.sh               ci
+scripts/test-project-sources.py                 ci
+scripts/test-reasoning-promotion-gate.py        image
+scripts/test-root-access-hint.py                ci docker
+scripts/test-run-tests.py                       ci
+scripts/test-search-gate.py                     ci
+scripts/test-searxng-pause-browser.py           image
+scripts/test-send-message-tool.py               image
+scripts/test-sync-n8n-credentials.sh            ci
+scripts/test-sync-profiles.sh                   ci
+scripts/test-synthetic-mail.py
+scripts/test-terminal-backend-compose.py        ci docker
+scripts/test-terminal-backend-sync.py           ci
+scripts/test-testkit.sh                         ci
+scripts/test-tool-eval-trace.py                 ci
+scripts/test-tool-loop-notes.py                 image
+scripts/test-tool-loop-replay.py                ci image
+scripts/test-turn-speaker.py                    ci image
+scripts/test-twenty-addon-cli.sh                ci
+scripts/test-twenty-compose-config.py           ci docker
+scripts/test-twenty-compose.sh                  ci
+scripts/test-twenty-doctor.sh                   ci
+scripts/test-twenty-reconcile.sh                image
+scripts/test-twenty-registration.sh             ci
+scripts/test-twenty-secrets.sh                  ci
+scripts/test-vault-capture-secret.py            ci image
+scripts/test-vault-create-login.py              ci image
+scripts/test-vault-sh.sh                        ci
+scripts/test-vikunja-token-scope.sh             ci
+scripts/test-vw-register.py                     docker
+scripts/test-web-search-mode.py                 ci image

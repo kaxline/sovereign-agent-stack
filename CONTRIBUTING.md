@@ -52,7 +52,9 @@ docker compose run --rm --entrypoint /bin/sh n8n-import -c \
 - Keep changes focused; match existing compose and shell style.
 - Do not commit secrets or local overlays listed in `.gitignore`.
 - Update README / `docs/` when you add env vars or services.
-- CI runs `docker compose config` across profile combos, the `scripts/test-*` tests (host parts only; `.github/workflows/hermes-image.yml` runs the Hermes image parts), shellcheck and hadolint.
+- `make test` runs every test in `scripts/tests.manifest` through `scripts/run-tests.py`, several at a time, and prints the log of each failure (all logs are in `.test-runs/latest/`). `make test ARGS=mail` runs the tests whose path contains `mail`; `ARGS=--list` shows what would run and how. Tests that need Docker or macOS are skipped and listed where those are missing, and image tests run only their host part without the pinned Hermes image; `ARGS=--strict` turns those skips into failures.
+- A new `scripts/test-*` or `imessage/tests/test-*` file gets a line in `scripts/tests.manifest`, tagged with what it needs: `docker`, `image` (it uses the Hermes image gate), `macos`, and `ci` to run in CI. The runner refuses to run while the manifest and the files disagree. A test exits 0 to pass, 77 to skip with a line starting `SKIP`, and anything else to fail. Tests run at the same time, so a test keeps its files in a temp directory and gives containers, networks and image tags a per-run name.
+- CI runs `docker compose config` across profile combos, the tests tagged `ci` (host parts only; `.github/workflows/hermes-image.yml` runs the Hermes image parts), shellcheck and hadolint.
 - New tests use the shared helpers. Shell tests source `scripts/lib/testkit.sh` for `fail`, and for `load_fns` and `fn_source` to call or copy functions from `compose/hermes/bootstrap-api-profile.sh`. Python tests import `fail` and `expect` from `scripts/lib/testkit.py` to stop at the first failure, or `Checks` to report every failure before exiting. Code that runs inside the Hermes image can't import them and keeps its own. Compose wiring tests render through `scripts/lib/compose_config.py`.
 
 ## Third-party code
