@@ -97,8 +97,8 @@ on one of them.
   container's namespace, Hermes gets `broker_unavailable`, and `docker compose restart
   bitwarden-broker` leaves it exited. `make hermes-reload`, `make hermes-recreate`, `make restart`
   and the stack scripts that recreate `hermes` run `./scripts/vault.sh follow-hermes`, which runs
-  `docker compose --profile bitwarden up -d --no-deps bitwarden-broker` and lists the manual
-  accounts to unlock. Run it yourself after recreating `hermes` any other way. A manual account
+  `up -d --no-deps bitwarden-broker` with the profiles in `.env` plus `bitwarden` and lists the
+  manual accounts to unlock. Run it yourself after recreating `hermes` any other way. A manual account
   needs unlocking again after any of these.
 
 A `manual` account is signed in with its API key (`bw login --apikey`) each time the broker starts,
@@ -464,8 +464,8 @@ and local mode's files.
 | doctor: `<slug>: error (auth)` | Bitwarden refused the API key or master password: `make vault-add SLUG=… MODE=… FORCE=1` |
 | doctor: `<slug>: offline (rate_limited)` | Bitwarden answered 429. The broker waits 60 s (or the server's `Retry-After`) and keeps serving the last synced items |
 | doctor: `the broker refused an account file` | A key or value in the file is unknown; the message names the file and key |
-| doctor: `<slug>: not loaded by the broker yet` | The broker reads account files at start: `docker compose --profile bitwarden up -d --no-deps --force-recreate bitwarden-broker` |
-| doctor: `bitwarden-broker is not in the running hermes container's network namespace` | `hermes` was recreated and the broker was not: `docker compose --profile bitwarden up -d --no-deps bitwarden-broker` (or `./scripts/vault.sh follow-hermes`) |
+| doctor: `<slug>: not loaded by the broker yet` | The broker reads account files at start: `docker compose --profile core --profile bitwarden up -d --no-deps --force-recreate bitwarden-broker` |
+| doctor: `bitwarden-broker is not in the running hermes container's network namespace` | `hermes` was recreated and the broker was not: `docker compose --profile core --profile bitwarden up -d --no-deps bitwarden-broker` (or `./scripts/vault.sh follow-hermes`) |
 | A login is in the folder but not listed | It has no `http`/`https` URI, or only URIs with match type "Never"; or the agent released it and it is still denylisted. `make vault-sync` re-reads |
 | doctor: `… is a folder (Docker made it for a missing file)` | A container started before `make vault-init` wrote that file. Remove the folder and run `make vault-init` again |
 | `make vault-init` stops waiting for you | Register in the web vault with the invited address, then `make vault-init` again |

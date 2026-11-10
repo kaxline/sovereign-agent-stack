@@ -1262,11 +1262,13 @@ if [[ "$bw_on" -eq 1 || "$bw_local" -eq 1 || "$bw_files" -gt 0 ]]; then
   done
   if [[ "$bw_on" -eq 1 ]]; then
     if docker info >/dev/null 2>&1; then
-      bw_cid="$(docker compose --profile bitwarden ps --status running -q bitwarden-broker 2>/dev/null || true)"
+      # shellcheck source=lib/env.sh
+      source "$ROOT/scripts/lib/env.sh"
+      bw_cid="$(compose_with_profile bitwarden ps --status running -q bitwarden-broker 2>/dev/null || true)"
       bw_hermes="$(docker compose ps --status running -q hermes 2>/dev/null || true)"
       bw_netns=""
       [[ -n "$bw_cid" ]] && bw_netns="$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$bw_cid" 2>/dev/null || true)"
-      bw_fix="docker compose --profile bitwarden up -d --no-deps bitwarden-broker"
+      bw_fix="docker compose --profile core --profile bitwarden up -d --no-deps bitwarden-broker"
       if [[ -z "$bw_cid" ]]; then
         warn "bitwarden-broker not running — make up"
       elif [[ -z "$bw_hermes" ]]; then
@@ -1276,7 +1278,7 @@ if [[ "$bw_on" -eq 1 || "$bw_local" -eq 1 || "$bw_files" -gt 0 ]]; then
         bad "bitwarden-broker is not in the running hermes container's network namespace — ${bw_fix}"
       elif ! docker compose exec -T hermes python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8099/health', timeout=3)" >/dev/null 2>&1; then
         bad "Bitwarden broker does not answer /health from hermes — docker compose logs bitwarden-broker"
-      elif ! bw_rows="$(docker compose --profile bitwarden exec -T bitwarden-broker python3 -m broker.cli accounts 2>/dev/null)"; then
+      elif ! bw_rows="$(compose_with_profile bitwarden exec -T bitwarden-broker python3 -m broker.cli accounts 2>/dev/null)"; then
         bad "Bitwarden broker does not list its accounts — docker compose logs bitwarden-broker"
       else
         ok "Bitwarden broker answers /health from hermes"
@@ -1320,7 +1322,7 @@ if [[ "$bw_on" -eq 1 || "$bw_local" -eq 1 || "$bw_files" -gt 0 ]]; then
         for f in "$bw_accounts"/*.env; do
           [[ -f "$f" ]] || continue
           bw_slug="$(basename "$f" .env)"
-          [[ "$bw_seen" == *" ${bw_slug} "* ]] || warn "${bw_slug}: not loaded by the broker yet — docker compose --profile bitwarden up -d --no-deps --force-recreate bitwarden-broker"
+          [[ "$bw_seen" == *" ${bw_slug} "* ]] || warn "${bw_slug}: not loaded by the broker yet — docker compose --profile core --profile bitwarden up -d --no-deps --force-recreate bitwarden-broker"
         done
       fi
     fi
