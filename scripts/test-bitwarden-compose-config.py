@@ -9,8 +9,11 @@ environment values.
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
@@ -42,6 +45,57 @@ def mount_at(service: dict, target: str) -> dict | None:
 
 def networks(service: dict) -> set[str]:
     return set(service.get("networks") or {})
+
+
+def helper_profiles(env_profiles: str | None, caller: str | None = None) -> list[str]:
+    """The --profile values `compose_with_profile bitwarden` passes, with .env
+    holding COMPOSE_PROFILES=env_profiles (None: no such line) and the caller's
+    environment holding COMPOSE_PROFILES=caller (None: unset)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        env_file = Path(tmp) / ".env"
+        env_file.write_text("" if env_profiles is None else f"COMPOSE_PROFILES={env_profiles}\n", encoding="utf-8")
+        env = {k: v for k, v in os.environ.items() if k != "COMPOSE_PROFILES"}
+        env["ENV_FILE"] = str(env_file)
+        if caller is not None:
+            env["COMPOSE_PROFILES"] = caller
+        script = ('source scripts/lib/env.sh; docker() { printf "%s\\n" "$@"; }; '
+                  "compose_with_profile bitwarden ps -q bitwarden-broker")
+        proc = subprocess.run(["bash", "-c", script], cwd=ROOT, env=env, capture_output=True, text=True)
+    args = [a for a in proc.stdout.split("\n") if a]
+    if proc.returncode != 0 or args[:1] != ["compose"] or args[-3:] != ["ps", "-q", "bitwarden-broker"]:
+        checks.fail(f"compose_with_profile ran docker {args} (exit {proc.returncode})")
+        return []
+    flags = args[1:-3]
+    if len(flags) % 2 or any(f != "--profile" for f in flags[::2]):
+        checks.fail(f"compose_with_profile passed {flags}, not --profile pairs")
+        return []
+    return flags[1::2]
+
+
+def check_profile_flags() -> None:
+    """--profile bitwarden on its own replaces COMPOSE_PROFILES and drops core,
+    so compose rejects the project: bitwarden-broker depends on hermes. The
+    scripts go through compose_with_profile, which keeps the enabled profiles."""
+    pattern = re.compile(r"docker compose --profile bitwarden(\s|$)")
+    for rel in ("scripts/vault.sh", "scripts/doctor.sh"):
+        for n, line in enumerate((ROOT / rel).read_text(encoding="utf-8").splitlines(), 1):
+            if not line.lstrip().startswith("#") and pattern.search(line):
+                checks.fail(f"{rel}:{n} runs docker compose --profile bitwarden alone; use compose_with_profile")
+    cases = (
+        (None, None, ["core", "bitwarden"]),
+        ("core,budget,bitwarden", None, ["core", "budget", "bitwarden"]),
+        ("core, rag", None, ["core", "rag", "bitwarden"]),
+        ("core,budget", "core,mail", ["core", "mail", "bitwarden"]),
+    )
+    for env_profiles, caller, want in cases:
+        got = helper_profiles(env_profiles, caller)
+        checks.expect(got == want, f"compose_with_profile with .env {env_profiles!r} and caller {caller!r}: {got}, want {want}")
+    services = config(",".join(helper_profiles(None))).get("services", {})
+    checks.expect({"bitwarden-broker", "hermes"} <= set(services),
+                  "the default profiles plus bitwarden render bitwarden-broker and hermes")
+    # vault.sh passes these alone (setup_run, secrets-sync, init).
+    for alone in ("bitwarden-tools", "vault"):
+        config(alone)
 
 
 def check_off() -> None:
@@ -298,6 +352,7 @@ def check_local(cfg: dict) -> None:
 
 def main() -> None:
     check_off()
+    check_profile_flags()
     check_broker(config("core,bitwarden").get("services", {}))
     for backend in ("ssh", "local"):
         cfg = config("core,bitwarden,bitwarden-tools", backend)

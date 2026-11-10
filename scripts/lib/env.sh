@@ -48,6 +48,26 @@ has_compose_profile() {
   [[ ",${profiles_csv}," == *",${profile},"* ]]
 }
 
+# docker compose with every profile COMPOSE_PROFILES enables (the caller's
+# environment, else .env, else core) plus PROFILE. A --profile flag on its own
+# replaces COMPOSE_PROFILES, and compose then rejects the whole project when an
+# active service depends on one outside it: bitwarden-broker depends on hermes,
+# which is in core.
+#   compose_with_profile bitwarden ps -q bitwarden-broker
+compose_with_profile() {
+  local extra="$1" csv p
+  shift
+  local -a args=()
+  csv="${COMPOSE_PROFILES:-$(env_get COMPOSE_PROFILES core)}"
+  local IFS=','
+  for p in $csv; do
+    p="${p//[[:space:]]/}"
+    [[ -z "$p" || "$p" == "$extra" ]] || args+=(--profile "$p")
+  done
+  args+=(--profile "$extra")
+  docker compose "${args[@]}" "$@"
+}
+
 # Gateway topology: HERMES_GATEWAY_TOPOLOGY (standalone|multiplex) from the
 # environment or .env; unset, HERMES_PIN_STANDALONE_GATEWAYS=0 means multiplex.
 # Same rule as compose/hermes/019-pin-profile-gateways.sh.

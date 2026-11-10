@@ -237,14 +237,14 @@ for k in sys.argv[1:]:
 
 broker_running() {
   command -v docker >/dev/null 2>&1 || return 1
-  docker compose --profile bitwarden ps --status running -q bitwarden-broker 2>/dev/null | grep -q .
+  compose_with_profile bitwarden ps --status running -q bitwarden-broker 2>/dev/null | grep -q .
 }
 
 require_broker() {
   broker_running || die "the Bitwarden broker is not running — set BITWARDEN_ENABLED=1, then make up"
 }
 
-broker_exec() { docker compose --profile bitwarden exec -T bitwarden-broker "$@"; }
+broker_exec() { compose_with_profile bitwarden exec -T bitwarden-broker "$@"; }
 broker_cli() { broker_exec python3 -m broker.cli "$@"; }
 
 # bitwarden-setup takes the terminal for its hidden prompts (tty: true in compose).
@@ -268,7 +268,7 @@ broker_may_hold() {
 # hermes container the broker was created with, which is gone once hermes has
 # been recreated, and the broker then stays exited.
 restart_broker() {
-  docker compose --profile bitwarden up -d --no-deps --force-recreate bitwarden-broker >/dev/null
+  compose_with_profile bitwarden up -d --no-deps --force-recreate bitwarden-broker >/dev/null
 }
 
 # Polls until the broker answers or VAULT_BROKER_WAIT seconds pass.
@@ -906,7 +906,7 @@ check_account_json() {
   ADD_RESTARTED=1
   if ! restart_broker; then
     add_rollback "$slug"
-    emit_error command_failed "the broker did not restart (docker compose --profile bitwarden up -d bitwarden-broker); nothing was kept"
+    emit_error command_failed "the broker did not restart (docker compose --profile core --profile bitwarden up -d --no-deps bitwarden-broker); nothing was kept"
   fi
   W_STATE=""; W_CLASS=""; W_LOGGED=""; W_RETRY=""
   wait_for_login "$slug" "$unlock" || timed_out=1
@@ -1443,9 +1443,9 @@ cmd_pre_up() {
 cmd_follow_hermes() {
   is_true "$(env_get BITWARDEN_ENABLED 0)" || return 0
   command -v docker >/dev/null 2>&1 || return 0
-  docker compose --profile bitwarden ps -a -q bitwarden-broker 2>/dev/null | grep -q . || return 0
-  docker compose --profile bitwarden up -d --no-deps bitwarden-broker >/dev/null \
-    || die "bitwarden-broker did not start — docker compose --profile bitwarden up -d --no-deps bitwarden-broker"
+  compose_with_profile bitwarden ps -a -q bitwarden-broker 2>/dev/null | grep -q . || return 0
+  compose_with_profile bitwarden up -d --no-deps bitwarden-broker >/dev/null \
+    || die "bitwarden-broker did not start — docker compose --profile core --profile bitwarden up -d --no-deps bitwarden-broker"
   if ! wait_for_broker; then
     log "The Bitwarden broker does not answer yet; make doctor"
     return 0

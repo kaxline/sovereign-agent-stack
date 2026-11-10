@@ -10,6 +10,11 @@ the stack under another app.
 
 ### Upgrade steps
 
+- With Bitwarden enabled, rebuild the broker image, since `make up` and
+  `addon.sh enable` don't rebuild it: `docker compose --profile core --profile
+  bitwarden build bitwarden-broker`, then `./scripts/vault.sh follow-hermes`.
+  An image built before 2026-11-09 has no `broker.cli`, and every `vault.sh`
+  command that asks the broker for account state fails with it.
 - Accounts added with `vault.sh add` before this release have no add-on store
   entry, so Boundary cannot disconnect them until the next `make up`, which
   records them. An account whose slug does not start with a letter or is longer
@@ -443,6 +448,13 @@ the stack under another app.
 
 ### Fixes
 
+- **Bitwarden: `vault.sh` found no broker.** `vault.sh` and `make doctor` ran
+  `docker compose --profile bitwarden …`, which replaces `COMPOSE_PROFILES`
+  and drops `core`. `bitwarden-broker` depends on `hermes`, which is in
+  `core`, so compose rejected the project, and every command reported
+  `broker_down` or exited 1 while the broker was running. Boundary's connect
+  failed the same way. The scripts now pass the profiles `COMPOSE_PROFILES`
+  enables plus `bitwarden`, and the commands they print add `--profile core`.
 - **Compose tests ignore local settings.** The compose config tests load
   only `docker-compose.yml` and render with `ASSISTANT_DATA_ROOT=./data`.
   `test-bitwarden-compose-config.py` and `test-actual-compose.sh` failed on
