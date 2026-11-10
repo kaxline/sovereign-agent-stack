@@ -2,10 +2,16 @@
 //   docker compose run --rm --no-deps -T -e ACTUAL_SERVER_URL -e ACTUAL_PASSWORD ... \
 //     --entrypoint node actual-mcp-rw /opt/actual-admin.mjs <command>
 //
-//   check          Open ACTUAL_BUDGET_SYNC_ID. Exit 0 when it opens; print
-//                  "encryption" and exit 2 for a wrong or missing encryption
-//                  password, "login" and exit 3 when the server refuses
-//                  ACTUAL_PASSWORD, exit 1 for anything else.
+// Sign-in uses ACTUAL_SESSION_TOKEN when it is set and ACTUAL_PASSWORD otherwise.
+//
+//   check          Open ACTUAL_BUDGET_SYNC_ID. Exit 0 when it opens. Otherwise
+//                  print one word to stdout and exit with its code:
+//                    encryption  2  wrong or missing encryption password
+//                    login       3  the server refused the password or token
+//                    timeout     4  (see below)
+//                    no_access   5  the server has no such budget for this login
+//                    unreachable 6  the server can't be reached
+//                  Anything else exits 1 with no word.
 //   create <name>  Create a budget on the server and print its sync id.
 //   list           One "<sync id>\t<name>" line per budget that isn't deleted.
 //
@@ -14,7 +20,7 @@
 // make doctor or budget.sh. A node timer, since macOS has no timeout(1).
 //
 // Credentials come from the environment only (ACTUAL_SERVER_URL,
-// ACTUAL_PASSWORD, ACTUAL_BUDGET_SYNC_ID, ACTUAL_BUDGET_ENCRYPTION_PASSWORD) and
+// ACTUAL_PASSWORD, ACTUAL_SESSION_TOKEN, ACTUAL_BUDGET_SYNC_ID, ACTUAL_BUDGET_ENCRYPTION_PASSWORD) and
 // are never printed: the API's own logging is silenced and error messages are
 // scrubbed of them before they reach stderr.
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -26,7 +32,7 @@ const require = createRequire('/app/package.json');
 const api = require('@actual-app/api');
 
 const env = process.env;
-const secrets = [env.ACTUAL_PASSWORD, env.ACTUAL_BUDGET_ENCRYPTION_PASSWORD].filter(Boolean);
+const secrets = [env.ACTUAL_PASSWORD, env.ACTUAL_SESSION_TOKEN, env.ACTUAL_BUDGET_ENCRYPTION_PASSWORD].filter(Boolean);
 const out = (s) => process.stdout.write(`${s}\n`);
 const scrub = (s) => secrets.reduce((acc, v) => acc.split(v).join('***'), String(s));
 const err = (s) => process.stderr.write(`${scrub(s)}\n`);
@@ -34,7 +40,7 @@ const err = (s) => process.stderr.write(`${scrub(s)}\n`);
 // The API logs freely (sync details, full error objects). Keep it off both streams.
 for (const k of ['log', 'info', 'warn', 'error', 'debug']) console[k] = () => {};
 
-const LOGIN = new Set(['invalid-password', 'unauthorized', 'token-expired']);
+const LOGIN = new Set(['invalid-password', 'unauthorized', 'token-expired', 'token-not-found']);
 const ENCRYPTION = new Set(['missing-key', 'decrypt-failure']);
 
 class Exit extends Error {
@@ -47,16 +53,29 @@ class Exit extends Error {
 
 let dataDir;
 
+// Maps an API error to an Exit; anything unrecognised is returned unchanged.
+function classify(e) {
+  if (LOGIN.has(e?.code)) return new Exit(3, 'login', 'the server refused the password or token');
+  if (ENCRYPTION.has(e?.code)) return new Exit(2, 'encryption', 'wrong or missing encryption password');
+  if (e?.code === 'budget-not-found') return new Exit(5, 'no_access', 'the server has no such budget for this login');
+  if (e?.code === 'network-failure') return new Exit(6, 'unreachable', 'the server can not be reached');
+  return e;
+}
+
 async function open() {
   if (!env.ACTUAL_SERVER_URL) throw new Exit(1, '', 'ACTUAL_SERVER_URL is not set');
-  if (!env.ACTUAL_PASSWORD) throw new Exit(3, 'login', 'ACTUAL_PASSWORD is not set');
+  if (!env.ACTUAL_SESSION_TOKEN && !env.ACTUAL_PASSWORD) {
+    throw new Exit(3, 'login', 'neither ACTUAL_SESSION_TOKEN nor ACTUAL_PASSWORD is set');
+  }
   // A scratch cache, so admin runs never touch the MCP servers' /data copy.
   dataDir = mkdtempSync(join(tmpdir(), 'actual-admin-'));
   try {
-    await api.init({ dataDir, serverURL: env.ACTUAL_SERVER_URL, password: env.ACTUAL_PASSWORD });
+    const credential = env.ACTUAL_SESSION_TOKEN
+      ? { sessionToken: env.ACTUAL_SESSION_TOKEN }
+      : { password: env.ACTUAL_PASSWORD };
+    await api.init({ dataDir, serverURL: env.ACTUAL_SERVER_URL, ...credential });
   } catch (e) {
-    if (LOGIN.has(e?.code)) throw new Exit(3, 'login', 'the server refused the password');
-    throw e;
+    throw classify(e);
   }
 }
 
@@ -75,9 +94,7 @@ async function check() {
     const password = env.ACTUAL_BUDGET_ENCRYPTION_PASSWORD;
     await api.downloadBudget(syncId, password ? { password } : {});
   } catch (e) {
-    if (ENCRYPTION.has(e?.code)) throw new Exit(2, 'encryption', 'wrong or missing encryption password');
-    if (LOGIN.has(e?.code)) throw new Exit(3, 'login', 'the server refused the password');
-    throw e;
+    throw classify(e);
   }
 }
 

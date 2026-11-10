@@ -19,6 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts" / "lib"))
 import addon_manifest as am  # noqa: E402
+import addon_store  # noqa: E402
 
 failures = 0
 
@@ -1402,6 +1403,86 @@ for svc in ("hermes-api-bootstrap", "hermes-browser-bootstrap"):
           "- ${ASSISTANT_DATA_ROOT:-./data}/addons/twenty:/bootstrap/addon-data/twenty:ro" in block)
     check(f"{svc} sets ADDON_DATA_DIR", "- ADDON_DATA_DIR=/bootstrap/addon-data" in block)
     check(f"{svc} no longer mounts the workspace files", "twenty-workspaces" not in block)
+
+# --- Actual Budget -----------------------------------------------------------
+ac_path = ROOT / "addons" / "actual" / "addon.json"
+ac = json.loads(ac_path.read_text())
+check("actual manifest is canonical JSON", ac_path.read_text() == am.canonical(ac))
+check("actual manifest is valid as built-in", am.validate(ac, "builtin") == [], str(am.validate(ac, "builtin")))
+check("actual: gate ACTUAL_LOCAL_ENABLED on budget-local, not seeded",
+      ac.get("gates") == [{"flag": "ACTUAL_LOCAL_ENABLED", "profile": "budget-local", "seed": False}],
+      str(ac.get("gates")))
+check("actual: services.server is actual-server on 5006, gated",
+      ac["services"].get("server") == {"compose": "actual-server", "port": 5006,
+                                       "when": {"gate": "ACTUAL_LOCAL_ENABLED"}},
+      str(ac["services"].get("server")))
+check("actual: rw and ro services are unchanged",
+      ac["services"]["rw"] == {"compose": "actual-mcp-rw", "port": 3000}
+      and ac["services"]["ro"] == {"compose": "actual-mcp-ro", "port": 3000})
+check("actual: settings.local is a bool on ACTUAL_LOCAL_ENABLED, default false",
+      ac.get("settings", {}).get("local", {}).get("type") == "bool"
+      and ac["settings"]["local"].get("flag") == "ACTUAL_LOCAL_ENABLED"
+      and ac["settings"]["local"].get("default") is False, str(ac.get("settings")))
+check("actual: init hook", am.hook(ac, "init") == {"script": ["scripts/budget.sh", "init", "--server-only"]},
+      str(am.hook(ac, "init")))
+check("actual: connect hook", am.hook(ac, "connect") == {"script": ["scripts/budget.sh", "connect"]})
+check("actual: disconnect hook", am.hook(ac, "disconnect") == {"script": ["scripts/budget.sh", "disconnect"]})
+check("actual: instances.errors", ac["instances"].get("errors") == ["bad_access", "encryption_password", "unknown_profile"],
+      str(ac["instances"].get("errors")))
+check("actual: instances name is budget", ac["instances"].get("name") == "budget")
+ai = ac["instances"]["settings"]
+check("actual: password is a transient optional secret",
+      ai.get("password", {}).get("type") == "secret" and ai["password"].get("transient") is True
+      and ai["password"].get("optional") is True, str(ai.get("password")))
+check("actual: session_token and encryption_password are optional secrets",
+      all(ai.get(k, {}).get("type") == "secret" and ai[k].get("optional") is True
+          for k in ("session_token", "encryption_password")))
+check("actual: profile defaults to default and access to read, both plain strings",
+      ai.get("profile", {}).get("type") == "string" and ai["profile"].get("default") == "default"
+      and ai.get("access", {}).get("type") == "string" and ai["access"].get("default") == "read")
+check("actual: server and sync_id are strings", all(ai.get(k, {}).get("type") == "string" for k in ("server", "sync_id")))
+check("actual: data.paths matches the actual-server bind mount",
+      ac.get("data", {}).get("paths") == [{"env": "ACTUAL_DATA_DIR", "default": "./data/actual/server"}]
+      and "${ACTUAL_DATA_DIR:-./data/actual/server}:/data" in compose, str(ac.get("data")))
+check("actual: data.volumes are the two MCP caches",
+      ac.get("data", {}).get("volumes") == ["actual_mcp_rw_cache", "actual_mcp_ro_cache"]
+      and all(re.search(rf"^  {v}:", compose, re.M) for v in ("actual_mcp_rw_cache", "actual_mcp_ro_cache")))
+check("actual: no services.<k>.volumes left", not any("volumes" in v for v in ac["services"].values()))
+ac_listing = addon_store.listing(ac, Path("/nonexistent"), {})
+check("actual: listing shows hooks and errors",
+      ac_listing["hooks"] == ["connect", "disconnect", "init"]
+      and ac_listing["errors"] == ["bad_access", "encryption_password", "unknown_profile"],
+      f"{ac_listing['hooks']} {ac_listing['errors']}")
+
+# mcp-plan for the Actual add-on is what it was before the instance settings and hooks
+# were added (captured at a0ed9ea): one line per profile and ACTUAL_MCP_ENABLED value.
+ac_frozen = (ROOT / "scripts" / "fixtures" / "actual-mcp-plan-a0ed9ea.txt").read_text().splitlines()
+ac_now = []
+for prof in ("default", "browser", "api-server"):
+    for on in ("0", "1"):
+        for line in am.mcp_plan(ROOT / "addons", prof, {"ACTUAL_MCP_ENABLED": on}):
+            if line.startswith("budget|"):
+                ac_now.append(f"{prof} {on}\t{line}")
+check("actual: mcp-plan lines for default, browser and api-server are unchanged",
+      ac_now == ac_frozen and len(ac_now) == 6, f"{len(ac_now)} lines")
+
+# configure --instance with only access keeps server and sync_id (budget.sh access).
+with tempfile.TemporaryDirectory() as tmp:
+    root = Path(tmp)
+    addon_store.apply_instance(ac, root, "main", {"server": "https://actual.example.com", "sync_id": "abc-123"})
+    addon_store.apply_instance(ac, root, "main", {"access": "write"})
+    stored_inst = json.loads((root / "addons" / "actual" / "instances" / "main.json").read_text()) \
+        if (root / "addons" / "actual" / "instances" / "main.json").exists() else {}
+    check("actual: configuring only access keeps server and sync_id",
+          stored_inst.get("access") == "write" and stored_inst.get("server") == "https://actual.example.com"
+          and stored_inst.get("sync_id") == "abc-123", str(stored_inst))
+
+# addon.sh enable actual works before any budget is connected (Boundary's local
+# flow, and v0.3.12 installs): no row is required.
+check("actual: instances block is optional", ac["instances"].get("optional") is True)
+with tempfile.TemporaryDirectory() as tmp:
+    ac_missing = addon_store.missing(ac, Path(tmp))
+    check("actual: missing() is empty with no rows", ac_missing == [], str(ac_missing))
 
 if failures:
     print(f"{failures} failed")

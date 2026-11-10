@@ -38,4 +38,6 @@ RUN mkdir -p /data && chown node:node /data
 USER node
 
 EXPOSE 3000
-ENTRYPOINT ["node", "build/index.js"]
+# Local addition: the launcher runs build/index.js as children, one for the budget in
+# /app/.env and one per connected budget under ACTUAL_ROWS_DIR (src/launcher).
+ENTRYPOINT ["node", "build/launcher/main.js"]
