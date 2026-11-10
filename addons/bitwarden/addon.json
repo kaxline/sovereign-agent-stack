@@ -147,6 +147,7 @@
       ]
     },
     "errors": [
+      "bad_input",
       "rate_limited",
       "broker_down"
     ]

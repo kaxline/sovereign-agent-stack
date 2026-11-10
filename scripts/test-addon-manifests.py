@@ -1683,8 +1683,8 @@ check("bitwarden: every instance setting has a label", all(isinstance(s.get("lab
 check("bitwarden: connect and disconnect are vault.sh add and remove",
       bwi.get("connect") == {"script": ["scripts/vault.sh", "add"]}
       and bwi.get("disconnect") == {"script": ["scripts/vault.sh", "remove"]}, str(bwi.get("connect")))
-check("bitwarden: instances.errors are rate_limited and broker_down",
-      bwi.get("errors") == ["rate_limited", "broker_down"], str(bwi.get("errors")))
+check("bitwarden: instances.errors are bad_input, rate_limited and broker_down",
+      bwi.get("errors") == ["bad_input", "rate_limited", "broker_down"], str(bwi.get("errors")))
 bw_values = {"mode": "cloud", "region": "eu", "unlock": "stored", "client_id": "user.syn",
              "client_secret": "syn-secret", "master_password": "syn-master"}
 try:

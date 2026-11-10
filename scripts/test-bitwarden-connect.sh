@@ -136,6 +136,12 @@ check "a rate-limited connect leaves no store entry" '[ ! -e "$INST/slow.json" ]
 connect nokey '{"mode":"cloud","client_secret":"x"}'
 check "connect without client_id is bad_input before the hook" '[ "$rc" = 2 ] && [ "$(last error)" = bad_input ] && [ ! -e "$ACC/nokey.env" ]'
 
+# A combination vault.sh add refuses reaches Boundary as bad_input, not command_failed.
+connect allscope "{\"mode\":\"cloud\",\"scope\":\"all\",\"client_id\":\"$CID\",\"client_secret\":\"$SECRET\"}"
+check "connect with scope all is bad_input from the hook" \
+  '[ "$rc" != 0 ] && [ "$(last error)" = bad_input ] && [ ! -e "$ACC/allscope.env" ] && [ ! -e "$INST/allscope.json" ]'
+check "the scope all refusal leaks no secret" 'no_secret'
+
 printf 'home\tcloud\tfolder\tunlocked\t-\t1\t\n' > "$STUB/accounts"
 addon disconnect bitwarden --instance home --json < /dev/null
 check "disconnect home exits 0 with done" '[ "$rc" = 0 ] && [ "$(last phase)" = done ]'
