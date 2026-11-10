@@ -159,8 +159,10 @@ budgets_run() {
   cat "$tmp/jout" "$tmp/jerr" >> "$all"
 }
 jlines_ok() { python3 -c 'import json,sys; [json.loads(l) for l in sys.stdin]' < "$tmp/jout"; }
-jget() { # LINE FIELD
-  sed -n "${1}p" "$tmp/jout" | python3 -c 'import json,sys; v=json.load(sys.stdin)["'"$2"'"]; print(json.dumps(v) if isinstance(v,bool) else v)'
+jget() { # LINE FIELD (FIELD may be a.b for a nested object)
+  sed -n "${1}p" "$tmp/jout" | python3 -c 'import json,sys; v=json.load(sys.stdin)
+for k in sys.argv[1].split("."): v=v[k]
+print(json.dumps(v) if isinstance(v,bool) else v)' "$2"
 }
 
 # --- add ---
@@ -525,7 +527,9 @@ files_json="$(budget_entry sync-a Main)"
 printf '%s' "$files_json" > "$STUB/files.json"
 connect_run() { # SLUG INPUT
   brc=0
-  printf '%s' "$2" | STACK_PYTHON=host BUDGET_DATA_ROOT="$tmp/data" "$budget" connect --slug "$1" --json > "$tmp/jout" 2> "$tmp/jerr" || brc=$?
+  # CONNECT_FLAGS: extra flags, split on spaces.
+  # shellcheck disable=SC2086
+  printf '%s' "$2" | STACK_PYTHON=host BUDGET_DATA_ROOT="$tmp/data" "$budget" connect --slug "$1" ${CONNECT_FLAGS:-} --json > "$tmp/jout" 2> "$tmp/jerr" || brc=$?
   cat "$tmp/jout" "$tmp/jerr" >> "$all"
 }
 nofiles() { ! ls "$sec"/main.* > /dev/null 2>&1; }
@@ -617,6 +621,50 @@ STUB_UNAME=Darwin STUB_UID=501 connect_run main "$pwin"
 [ "$brc" = 0 ] || fail "connect on macOS as uid 501 ($(cat "$tmp/jout" "$tmp/jerr"))"
 rm -f "$sec"/main.*
 
+# --replace (addon.sh connect --force): the same checks in the same order,
+# nothing written until they pass, then the old secrets are overwritten.
+old_secrets() {
+  printf 'tok-OLD' > "$sec/main.session_token"
+  printf 'enc-OLD' > "$sec/main.encryption_password"
+  chmod 600 "$sec/main.session_token" "$sec/main.encryption_password"
+}
+old_secrets
+CONNECT_FLAGS=--replace connect_run main "$pwin"
+[ "$brc" = 0 ] || fail "connect --replace ($(cat "$tmp/jout" "$tmp/jerr"))"
+grep -qx '{"phase":"done","account":"main","mcp":\["budget-main-ro"\]}' "$tmp/jout" || fail "connect --replace done line ($(cat "$tmp/jout"))"
+[ "$(cat "$sec/main.session_token")" = tok-1 ] || fail "connect --replace overwrites the session token"
+[ "$(mode "$sec/main.session_token")" = 600 ] || fail "the replaced token file is mode 600"
+[ ! -e "$sec/main.encryption_password" ] || fail "connect --replace without an encryption password removes the old one"
+compgen -G "$sec/.write.*" > /dev/null && fail "connect --replace leaves no temp file"
+old_secrets
+CONNECT_FLAGS=--replace connect_run main "{$srv,\"password\":\"right-SECRET\",\"encryption_password\":\"enc-NEW\"}"
+[ "$brc" = 0 ] || fail "connect --replace with an encryption password ($(cat "$tmp/jout" "$tmp/jerr"))"
+[ "$(cat "$sec/main.encryption_password")" = enc-NEW ] || fail "connect --replace overwrites the encryption password"
+[ "$(mode "$sec/main.encryption_password")" = 600 ] || fail "the replaced encryption file is mode 600"
+rm -f "$sec"/main.*
+
+# A failed check under --replace leaves the old secrets as they were.
+replace_fails() { # LABEL RC NAME
+  [ "$brc" = "$2" ] && [ "$(jget 1 error)" = "$3" ] || fail "--replace $1: want $3/$2 ($(cat "$tmp/jout" "$tmp/jerr"))"
+  [ "$(cat "$sec/main.session_token")" = tok-OLD ] || fail "--replace $1 keeps the old token"
+  [ "$(cat "$sec/main.encryption_password")" = enc-OLD ] || fail "--replace $1 keeps the old encryption password"
+}
+old_secrets
+CONNECT_FLAGS=--replace connect_run main "{$srv,\"password\":\"wrong-SECRET\"}"; replace_fails "refused password" 4 login_refused
+printf '4' > "$STUB/admin_rc"; CONNECT_FLAGS=--replace connect_run main "$pwin"; replace_fails "admin 4" 4 timeout
+printf '5' > "$STUB/admin_rc"; CONNECT_FLAGS=--replace connect_run main "$pwin"; replace_fails "admin 5" 4 no_access
+rm -f "$STUB/admin_rc"
+printf 'enc-SECRET' > "$STUB/enc_pw"
+CONNECT_FLAGS=--replace connect_run main "$pwin"; replace_fails "missing encryption password" 4 encryption_password
+rm -f "$STUB/enc_pw"
+CONNECT_FLAGS=--replace connect_run main "{$srv,\"password\":\"right-SECRET\",\"profile\":\"alice\"}"; replace_fails "unknown profile" 2 unknown_profile
+CONNECT_FLAGS=--replace connect_run Bad_Slug "$pwin"
+[ "$brc" = 2 ] && [ "$(jget 1 error)" = bad_slug ] || fail "--replace with a bad slug"
+rm -f "$sec"/main.*
+CONNECT_FLAGS="--replace --replace" connect_run main "$pwin"
+[ "$brc" = 0 ] || fail "--replace twice is accepted"
+rm -f "$sec"/main.*
+
 # --- disconnect ---
 disconnect_run() { # SLUG
   brc=0
@@ -701,9 +749,40 @@ printf 'enc-SECRET' > "$STUB/enc_pw"
 status_run --slug main
 [ "$(jget 1 state)" = ok ] || fail "status passes the stored encryption password ($(cat "$tmp/jout"))"
 rm -f "$STUB/enc_pw" "$sec/main.encryption_password"
+printf 'COMPOSE_PROFILES=core\nACTUAL_LOCAL_ENABLED=1\n' > "$ENV_FILE"
 inst main read local
 status_run --slug main
 tail -1 "$STUB/admin.log" | grep -q 'ACTUAL_SERVER_URL=http://actual-server:5006 ' || fail "a local row checks at the container URL"
+# The local server off: a local row is server_off without a sign-in or a
+# container (even with no token); a remote row in the same run is checked.
+for lv in 0 "" no; do
+  rm -f "$idir"/*.json "$sec"/*
+  printf 'COMPOSE_PROFILES=core\nACTUAL_LOCAL_ENABLED=%s\n' "$lv" > "$ENV_FILE"
+  inst loc write local
+  inst main read
+  printf 'tok-1' > "$sec/main.session_token"
+  : > "$STUB/admin.log"
+  : > "$STUB/curl.argv"
+  cp "$STUB/docker.argv" "$tmp/docker.before" 2> /dev/null || : > "$tmp/docker.before"
+  status_run
+  [ "$brc" = 0 ] || fail "status with the local server off ('${lv}') exits 0 ($(cat "$tmp/jout" "$tmp/jerr"))"
+  jlines_ok || fail "every status line is JSON with the local server off"
+  grep -qx '{"phase":"budget","slug":"loc","profile":"default","access":"write","state":"server_off"}' "$tmp/jout" || fail "a local row is server_off ('${lv}') ($(cat "$tmp/jout"))"
+  grep -qx '{"phase":"budget","slug":"main","profile":"default","access":"read","state":"ok"}' "$tmp/jout" || fail "a remote row is still checked ($(cat "$tmp/jout"))"
+  [ "$(wc -l < "$tmp/jout" | tr -d ' ')" = 3 ] || fail "two budget lines and done ($(cat "$tmp/jout"))"
+  [ "$(grep -c . "$STUB/admin.log")" = 1 ] || fail "only the remote row runs a container ($(cat "$STUB/admin.log"))"
+  ! grep -q 'actual-server' "$STUB/admin.log" || fail "only the remote row runs a container ($(cat "$STUB/admin.log"))"
+  [ ! -s "$STUB/curl.argv" ] || fail "status signs in nowhere ($(cat "$STUB/curl.argv"))"
+done
+status_run --slug loc
+[ "$brc" = 0 ] && [ "$(jget 1 state)" = server_off ] || fail "status --slug on a local row with the server off ($(cat "$tmp/jout"))"
+rm -f "$sec/main.session_token"
+status_run --slug loc
+[ "$(jget 1 state)" = server_off ] || fail "server_off needs no token file ($(cat "$tmp/jout"))"
+printf 'COMPOSE_PROFILES=core\nACTUAL_LOCAL_ENABLED=1\n' > "$ENV_FILE"
+status_run --slug loc
+[ "$(jget 1 state)" = token_expired ] || fail "with the local server on the local row is checked again ($(cat "$tmp/jout"))"
+
 rm -f "$idir"/*.json "$sec"/*
 status_run
 [ "$brc" = 0 ] && [ "$(wc -l < "$tmp/jout" | tr -d ' ')" = 1 ] && [ "$(jget 1 phase)" = "done" ] || fail "no rows is just done ($(cat "$tmp/jout"))"
@@ -834,6 +913,7 @@ jlines_ok || fail "init --server-only --json prints JSON lines only ($(cat "$tmp
 [ "$(mode "$so_secrets/server_password")" = 600 ] || fail "server_password is mode 600"
 [ "$(wc -l < "$tmp/jout" | tr -d ' ')" = 1 ] || fail "--server-only prints one line ($(cat "$tmp/jout"))"
 [ "$(jget 1 phase)" = "done" ] && [ "$(jget 1 sync_id)" = sync-new ] && [ "$(jget 1 name)" = Budget ] || fail "--server-only done carries sync_id and name ($(cat "$tmp/jout"))"
+[ "$(jget 1 result.sync_id)" = sync-new ] && [ "$(jget 1 result.name)" = Budget ] || fail "--server-only done carries the budget as result ($(cat "$tmp/jout"))"
 grep -q '^run create' "$STUB/admin.log" || fail "--server-only creates a Budget"
 [ ! -e "$f" ] || fail "--server-only writes no budget.env"
 grep -q 'ACTUAL_MCP_ENABLED=1' "$ENV_FILE" && fail "--server-only doesn't enable the MCP servers"
@@ -847,7 +927,7 @@ budget_entry sync-new Budget > "$STUB/files.json"
 : > "$STUB/admin.log"
 cp "$so_secrets/server_password" "$tmp/pw.before"
 so_run --json
-[ "$brc" = 0 ] && [ "$(jget 1 sync_id)" = sync-new ] || fail "--server-only again ($(cat "$tmp/jout" "$tmp/jerr"))"
+[ "$brc" = 0 ] && [ "$(jget 1 sync_id)" = sync-new ] && [ "$(jget 1 result.sync_id)" = sync-new ] && [ "$(jget 1 result.name)" = Budget ] || fail "--server-only again ($(cat "$tmp/jout" "$tmp/jerr"))"
 grep -q '^run create' "$STUB/admin.log" && fail "--server-only again creates nothing"
 cmp -s "$so_secrets/server_password" "$tmp/pw.before" || fail "--server-only again keeps the password"
 
@@ -859,6 +939,7 @@ printf 'srv-SECRET' > "$so_secrets/server_password"
 so_run --json
 [ "$brc" = 0 ] && [ "$(wc -l < "$tmp/jout" | tr -d ' ')" = 1 ] && [ "$(jget 1 phase)" = "done" ] || fail "--server-only with two budgets ($(cat "$tmp/jout" "$tmp/jerr"))"
 grep -q 'sync_id' "$tmp/jout" && fail "done has no sync_id when the server lists two budgets"
+grep -q 'result' "$tmp/jout" && fail "done has no result when the server lists two budgets"
 grep -q '^run create' "$STUB/admin.log" 2>/dev/null && fail "--server-only creates nothing beside two budgets"
 
 # A server set up by init: its budget.env password is adopted, no new password.
@@ -982,6 +1063,15 @@ assert d == {"server": "https://budget.example.com", "sync_id": "sync-only", "ac
 PY
 ACTUAL_PASSWORD=cli-SECRET cli_run --slug home --url https://budget.example.com --sync-id sync-x
 python3 - "$STUB/addon.stdin" <<'PY' || fail "connect-cli with a sync id and no encryption password"
+import json, sys
+d = json.loads(open(sys.argv[1]).read())
+assert d == {"server": "https://budget.example.com", "sync_id": "sync-x", "password": "cli-SECRET"}, d
+PY
+# --force goes to addon.sh connect, nothing else changes.
+ACTUAL_PASSWORD=cli-SECRET cli_run --slug home --url https://budget.example.com --sync-id sync-x --force
+[ "$brc" = 0 ] || fail "connect-cli --force ($(cat "$tmp/jout" "$tmp/jerr"))"
+grep -qx 'connect actual --instance home --force --json' "$STUB/addon.argv" || fail "connect-cli --force passes --force to addon.sh connect ($(cat "$STUB/addon.argv"))"
+python3 - "$STUB/addon.stdin" <<'PY' || fail "connect-cli --force sends the same JSON"
 import json, sys
 d = json.loads(open(sys.argv[1]).read())
 assert d == {"server": "https://budget.example.com", "sync_id": "sync-x", "password": "cli-SECRET"}, d

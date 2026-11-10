@@ -41,7 +41,8 @@ Usage: scripts/budget.sh <command> [options]
         local server without budget.env. The generated server password goes
         to <data root>/addons/actual/secrets/server_password; a budget named
         Budget is created when the server has none. Prints {"phase":"done"}
-        with sync_id and name when the server has exactly one budget. With
+        with sync_id and name, and the same two as "result", when the server
+        has exactly one budget. With
         ACTUAL_LOCAL_ENABLED off it does nothing and prints {"phase":"done"};
         after turning it on, run scripts/addon.sh enable actual --reinit.
   add --url URL [--force]
@@ -61,13 +62,15 @@ Usage: scripts/budget.sh <command> [options]
         {"phase":"done"}, or one {"phase":"error",...}. Reads a JSON object
         on stdin: server ("local" or an http(s) URL) and session_token or
         password (local falls back to its stored server password).
-  connect --slug SLUG --json
+  connect --slug SLUG [--replace] --json
         A hook addon.sh runs. Reads the budgets input on stdin (server,
         sync_id, session_token or password, optional encryption_password,
         profile "default", access read|write), opens the budget with it, then
         stores the session token and encryption password under
         <data root>/addons/actual/secrets/ (mode 600). Writes nothing when
         any check fails. Prints {"phase":"done","account":...,"mcp":[...]}.
+        --replace (addon.sh connect --force) runs the same checks and then
+        overwrites the secret files of an existing connection.
   disconnect --slug SLUG --json
         A hook addon.sh runs. Removes SLUG's files from that secrets folder;
         done also when there are none.
@@ -75,14 +78,17 @@ Usage: scripts/budget.sh <command> [options]
         Opens each connected budget (addons/actual/instances/*.json) with its
         stored session token. One {"phase":"budget","slug","profile","access",
         "state"} line each, state ok, token_expired, no_access,
-        encryption_password, timeout, server_unreachable or bad_access, then
-        {"phase":"done"}. A bad state doesn't change the exit code.
-  connect-cli --slug SLUG --url URL|local [--access read|write] [--sync-id ID]
-        make budget-connect: asks for the server and encryption passwords (or
+        encryption_password, timeout, server_unreachable, bad_access or
+        server_off (a local row while ACTUAL_LOCAL_ENABLED is off; nothing is
+        signed in to or run for it), then {"phase":"done"}. A bad state doesn't change the exit code.
+  connect-cli --slug SLUG --url URL|local [--access read|write] [--sync-id ID] [--force]
+        make budget-connect (FORCE=1 adds --force): asks for the server and encryption passwords (or
         takes ACTUAL_PASSWORD and ACTUAL_BUDGET_ENCRYPTION_PASSWORD), sends
         them on a pipe to addon.sh connect actual --instance SLUG --json and
         prints its result as [budget] lines. With local no server password
-        is asked. Refuses while ACTUAL_MCP_ENABLED is off.
+        is asked. --force passes --force to addon.sh connect, which replaces
+        an existing connection of that name. Refuses while ACTUAL_MCP_ENABLED
+        is off.
   disconnect-cli --slug SLUG
         make budget-disconnect: addon.sh disconnect actual --instance SLUG,
         printed as [budget] lines.
@@ -489,20 +495,24 @@ cmd_budgets() {
   emit_done
 }
 
-# hook_args CMD ARGS...: sets slug and JSON=1 from "--slug SLUG --json".
+# hook_args CMD ARGS...: sets slug and JSON=1 from "--slug SLUG --json", and
+# for connect replace=1 from --replace (addon.sh connect --force).
 hook_args() {
-  local cmd="$1"
+  local cmd="$1" usage
   shift
   slug=""
+  usage="usage: budget.sh $cmd --slug SLUG [--replace] --json"
+  [[ "$cmd" == connect ]] || usage="usage: budget.sh $cmd --slug SLUG --json"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --json) JSON=1 ;;
-      --slug) [[ $# -ge 2 ]] || die "usage: budget.sh $cmd --slug SLUG --json"; slug="$2"; shift ;;
-      *) die "usage: budget.sh $cmd --slug SLUG --json" ;;
+      --slug) [[ $# -ge 2 ]] || die "$usage"; slug="$2"; shift ;;
+      --replace) [[ "$cmd" == connect ]] || die "$usage"; replace=1 ;;
+      *) die "$usage" ;;
     esac
     shift
   done
-  [[ "$JSON" == 1 ]] || die "usage: budget.sh $cmd --slug SLUG --json"
+  [[ "$JSON" == 1 ]] || die "$usage"
   [[ "$slug" =~ ^[a-z][a-z0-9-]{0,30}$ ]] || emit_error bad_slug "slug must be 1-31 characters of a-z, 0-9 and -, starting with a letter"
 }
 
@@ -538,8 +548,14 @@ admin_rc_name() {
   esac
 }
 
+# connect --slug SLUG [--replace] --json. --replace (addon.sh connect --force)
+# runs the same checks in the same order as a new connect; the secret files
+# are written only after they all pass, so a failed run leaves the old ones.
+# The writes already replace a file of the same name.
 cmd_connect() {
-  local slug="" sdir="" rc=0 mcp name
+  # replace is set by hook_args and changes nothing below: see above.
+  # shellcheck disable=SC2034
+  local slug="" sdir="" rc=0 mcp name replace=0
   hook_args connect "$@"
   read_input
   [[ -n "$in_profile" ]] || in_profile=default
@@ -919,7 +935,10 @@ init_server_only() {
     note "The server has ${n} budgets"
   fi
   if [[ -n "$sync" ]]; then
-    emit_done sync_id "$(json_str "$sync")" name "$(json_str "$name")"
+    # With exactly one budget, also as result: what addon.sh enable returns to
+    # its caller.
+    emit_done sync_id "$(json_str "$sync")" name "$(json_str "$name")" \
+      result "{\"sync_id\":$(json_str "$sync"),\"name\":$(json_str "$name")}"
   else
     # shellcheck disable=SC2119
     emit_done
@@ -1131,6 +1150,10 @@ print("i_access=%s" % shlex.quote(val("access", "read")))
     read | write) ;;
     *) state=bad_access ;;
   esac
+  # A local row while the local server is off: nothing to sign in to or run.
+  if [[ -z "${state:-}" && "$i_server" == local ]] && ! truthy "$(env_get ACTUAL_LOCAL_ENABLED 0)"; then
+    state=server_off
+  fi
   if [[ -z "${state:-}" && ! -s "$tf" ]]; then
     state=token_expired
   fi
@@ -1269,8 +1292,13 @@ cmd_ensure() {
 # environment are used instead of asking, as for add. Without --sync-id the
 # server's only budget is used. BUDGET_ADDON_SH is a test hook.
 cmd_connect_cli() {
-  local slug="" url="" access="" sync="" usage="usage: budget.sh connect-cli --slug SLUG --url URL|local [--access read|write] [--sync-id ID]"
+  local slug="" url="" access="" sync="" force="" usage="usage: budget.sh connect-cli --slug SLUG --url URL|local [--access read|write] [--sync-id ID] [--force]"
   while [[ $# -gt 0 ]]; do
+    if [[ "$1" == --force ]]; then
+      force=--force
+      shift
+      continue
+    fi
     [[ $# -ge 2 ]] || die "$usage"
     case "$1" in
       --slug) slug="$2" ;;
@@ -1312,15 +1340,15 @@ cmd_connect_cli() {
   [[ -z "$access" ]] || body="${body},\"access\":\"$(json_escape_exact "$access")\""
   [[ -z "$pw" ]] || body="${body},\"password\":\"$(json_escape_exact "$pw")\""
   [[ -z "$enc" ]] || body="${body},\"encryption_password\":\"$(json_escape_exact "$enc")\""
-  printf '%s}' "$body" | addon_human connect "$slug"
+  printf '%s}' "$body" | addon_human connect "$slug" ${force:+"$force"}
 }
 
-# addon_human ACTION SLUG: runs addon.sh ACTION actual --instance SLUG --json
-# with this stdin and turns its JSON lines into [budget] lines for a person.
+# addon_human ACTION SLUG [--force]: runs addon.sh ACTION actual --instance
+# SLUG [--force] --json with this stdin and turns its JSON lines into [budget] lines for a person.
 # Exits with addon.sh's code. BUDGET_ADDON_SH is a test hook.
 addon_human() {
   local rc=0 lines
-  lines="$("${BUDGET_ADDON_SH:-${ROOT}/scripts/addon.sh}" "$1" actual --instance "$2" --json 2> "${WORK}/addon.err")" || rc=$?
+  lines="$("${BUDGET_ADDON_SH:-${ROOT}/scripts/addon.sh}" "$1" actual --instance "$2" ${3:+"$3"} --json 2> "${WORK}/addon.err")" || rc=$?
   printf '%s\n' "$lines" | stack_python -c '
 import json, sys
 action, slug = sys.argv[1], sys.argv[2]

@@ -108,8 +108,10 @@ for v in "" false no off random; do
 done
 unset ACTUAL_LOCAL_ENABLED
 [ "$(plan default)" = "$want_off" ] || fail "an unset ACTUAL_LOCAL_ENABLED counts as off"
+# The quotes in two of the values are the point.
+# shellcheck disable=SC2089,SC2090
 for v in 1 true TRUE Yes on ON '"1"' "'true'"; do
-  ACTUAL_LOCAL_ENABLED="$v"
+  ACTUAL_LOCAL_ENABLED=$v
   export ACTUAL_LOCAL_ENABLED
   [ "$(plan default)" = "$want" ] || fail "ACTUAL_LOCAL_ENABLED=${v} counts as on ($(plan default | cut -c1-40 | tr '\n' ' '))"
 done
@@ -220,6 +222,7 @@ for svc in hermes-api-bootstrap hermes-browser-bootstrap; do
   sed -n "/^  ${svc}:\$/,/^  [a-z-]*:\$/p" "${ROOT}/docker-compose.yml" > "${tmp}/svc"
   grep -qF -- '- ./scripts/lib/actual_rows.py:/bootstrap/actual_rows.py:ro' "${tmp}/svc" \
     || fail "${svc} mounts actual_rows.py next to addon_manifest.py"
+  # shellcheck disable=SC2016  # literal compose text
   grep -qF -- '- ACTUAL_LOCAL_ENABLED=${ACTUAL_LOCAL_ENABLED:-0}' "${tmp}/svc" \
     || fail "${svc} gets ACTUAL_LOCAL_ENABLED"
 done
