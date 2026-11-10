@@ -159,6 +159,13 @@ reaches it. The pass's JSON line carries the usual counts plus `"failed":
 `"error": "4"`, or `"5"` when no account's password failed. The next pass runs
 after `interval` as usual.
 
+The index keeps the last pass's failed accounts as ids and codes only, and
+`mail_status` returns them as `"failed_accounts": {"home": 4}`. An account
+drops out of it after a pass that reads it. When every account fails, the
+pass doesn't create the index and doesn't change `last_indexed`, so
+`mail_status` never shows a fresh pass that found nothing; on an existing
+index it records only `failed_accounts`.
+
 An account with no `mailboxes`, or with a setting the indexer would refuse
 (such as `security = "plain"` on another host), is left out of each index and
 outbox pass with one `email-indexer: <slug>: <reason>` or `email-outbox:
@@ -923,7 +930,7 @@ at `http://mail-mcp:8000/mcp`, compose-internal only). The query logic in
 
 | Tool | Returns |
 |---|---|
-| `mail_status` | Message count, date range, last index run, whether bodies are searchable, `newest_id`, each account/mailbox with total and unread counts |
+| `mail_status` | Message count, date range, last index run, whether bodies are searchable, `newest_id`, each account/mailbox with total and unread counts, and `failed_accounts`: the accounts the last pass couldn't read, with code 4 (password) or 5 (server) |
 | `mail_search` | Up to 50 summaries, newest first: id, date, sender, subject, account, mailbox, read/flagged, attachment count, a `reply_ref` for drafts, and a snippet when the query matched. Filters: `query` (every word must match, as a prefix), `sender`, `mailbox`, `since`/`until` (inclusive dates), `unread_only`, `flagged_only`, `limit`, `offset`, and `after_id` (only mail indexed after that id, such as a `newest_id` from an earlier `mail_status`) |
 | `mail_get` | One message by id: recipients, Message-ID, thread id, attachment names, and the body (up to `max_chars`, default 20,000) |
 | `mail_thread` | Every indexed message in the same conversation, oldest first |

@@ -89,6 +89,10 @@ the stack under another app.
   the `"error"` key, where it used to be `{"error": "4"}` alone. The mail
   MCP's error before the first pass now reads "no index yet; the indexer
   hasn't completed a pass".
+- **`mail_status` has `failed_accounts`** (`{"<id>": 4}` or 5) for the
+  accounts the last pass couldn't read, cleared once a pass reads them. A pass
+  where every account fails no longer creates the index or moves
+  `last_indexed`.
 - **`scripts/addon.sh` lets an exported `ASSISTANT_DATA_ROOT` win over
   `.env`**, as compose and `crm.sh` already did. Before, an exported value was
   ignored when `.env` set one.

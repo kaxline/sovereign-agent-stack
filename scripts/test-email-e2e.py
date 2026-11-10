@@ -502,6 +502,8 @@ def run(stack: Stack) -> None:
     home_after = {mid for mid, r in after_rows.items() if r["account"] == "home"}
     expect(home_after == home_before and home_before,
            f"home's {len(home_before)} rows remain in the index")
+    status = json.loads(stack.exec_py("email-mcp", "import json, server; print(json.dumps(server.mail_status()))"))
+    expect(status.get("failed_accounts") == {"home": 4}, f"mail_status lists home under failed_accounts ({status.get('failed_accounts')})")
 
     # Removing an instance drops it from the next pass.
     stack.addon_ok("configure", "email", "--instance", "home", "--remove")
@@ -512,7 +514,8 @@ def run(stack: Stack) -> None:
     stack.compose("restart", "email-indexer")
     wait_for_pass(stack, seen)
     status = json.loads(stack.exec_py("email-mcp", "import json, server; print(json.dumps(server.mail_status()))"))
-    expect({b["account"] for b in status["mailboxes"]} == {"work"}, "the next pass's mail_status lists only work")
+    expect({b["account"] for b in status["mailboxes"]} == {"work"} and status.get("failed_accounts") == {},
+           "the next pass's mail_status lists only work, with no failed accounts")
     hits = json.loads(stack.exec_py("email-mcp", "import json, server; print(json.dumps(server.mail_search('lease')))"))
     expect(hits.get("results") == [], "home's messages no longer show in search")
 

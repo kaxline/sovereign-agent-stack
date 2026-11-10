@@ -803,6 +803,15 @@ def _fetch_all(rows: list[MetaRow], owner: dict[str, object]) -> Iterator[tuple[
         yield from src.fetch(group)
 
 
+def _record_failures(db: sqlite3.Connection, failed: dict[str, int]) -> None:
+    """Keep this pass's failed accounts in meta as {id: code}, ids and codes only,
+    for mail_status. An account that succeeds drops out at the next pass."""
+    if failed:
+        db.execute("INSERT OR REPLACE INTO meta VALUES ('failed_accounts', ?)", (json.dumps(failed, sort_keys=True),))
+    else:
+        db.execute("DELETE FROM meta WHERE key = 'failed_accounts'")
+
+
 def run(config: Config, *, now: float | None = None, source=None, sources: list | None = None) -> RunStats:
     """Bring the index up to date with every configured account.
 
@@ -827,6 +836,17 @@ def run(config: Config, *, now: float | None = None, source=None, sources: list 
     stats.in_scope = len(rows)
     # An account its source couldn't read this pass keeps its rows as they are.
     failed = {name.upper() for name in stats.failed}
+    if config.accounts and all(a.id.upper() in failed for a in config.accounts):
+        # Nothing was read: don't create an index or move last_run, which would
+        # read as "indexed just now, no new mail". Only the failures are recorded.
+        if config.index.exists():
+            db = open_index(config.index)
+            try:
+                _record_failures(db, stats.failed)
+                db.commit()
+            finally:
+                db.close()
+        return stats
 
     db = open_index(config.index)
     try:
@@ -932,6 +952,7 @@ def run(config: Config, *, now: float | None = None, source=None, sources: list 
 
         for src in sources:  # accounts that failed while their messages were fetched
             stats.failed.update(getattr(src, "failed", {}))
+        _record_failures(db, stats.failed)
         db.execute("INSERT OR REPLACE INTO meta VALUES ('scope', ?)", (fingerprint,))
         db.execute("INSERT OR REPLACE INTO meta VALUES ('bodies', ?)", (str(int(config.bodies)),))
         db.execute("INSERT OR REPLACE INTO meta VALUES ('last_run', ?)",
