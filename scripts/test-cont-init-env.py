@@ -181,7 +181,8 @@ def main() -> None:
         run |= patches
     if total == 0:
         errors.append("no /etc/cont-init.d bind mounts found; the check is not looking at the right config")
-    for patch in sorted(p.name for p in (ROOT / "compose" / "hermes").glob("patch-*.py")):
+    # is_file: Docker leaves an empty directory where a bind mount's source was missing.
+    for patch in sorted(p.name for p in (ROOT / "compose" / "hermes").glob("patch-*.py") if p.is_file()):
         if patch not in run:
             errors.append(f"compose/hermes/{patch} is not run by any mounted cont-init script")
     if errors:

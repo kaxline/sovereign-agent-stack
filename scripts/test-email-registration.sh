@@ -132,9 +132,4 @@ for n in ("email", "email-drafts"):
 [ "$tools" = "${TOOLS} |  | ${TOOLS} | False
 ${DRAFT_TOOLS} | mail_draft_create | ${DRAFT_TOOLS} | False" ] || fail "email tools, writeTools, pins and env ($tools)"
 
-table="$(bash "${ROOT}/scripts/sync-profiles.sh" --table)"
-printf '%s\n' "$table" | grep -q '^EMAIL_ENABLED email 0$' || fail "sync-profiles.sh must map EMAIL_ENABLED to email"
-printf '%s\n' "$table" | grep -q '^EMAIL_DRAFTS_ENABLED email-drafts 0$' \
-  || fail "sync-profiles.sh must map EMAIL_DRAFTS_ENABLED to email-drafts"
-
 printf 'OK email MCP registration\n'

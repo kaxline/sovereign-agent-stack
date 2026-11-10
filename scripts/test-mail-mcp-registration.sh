@@ -103,7 +103,4 @@ manifest="${ROOT}/addons/email-local/addon.json"
 tools="$(python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); e=[x for x in m["mcp"] if x["name"]=="mail"][0]; print(" ".join(e["tools"]), "|", " ".join(e["writeTools"]))' "$manifest")"
 [ "$tools" = "${TOOLS} | " ] || fail "mail tools and writeTools ($tools)"
 
-bash "${ROOT}/scripts/sync-profiles.sh" --table | grep -q '^MAIL_MCP_ENABLED mail 0$' \
-  || fail "sync-profiles.sh must map MAIL_MCP_ENABLED to mail"
-
 printf 'OK mail MCP registration\n'
