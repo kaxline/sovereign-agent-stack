@@ -69,8 +69,60 @@ curl -s -m 15 -H 'Content-Type: application/json' -H "$accept" "$@" -X POST "$u"
 SH
 }
 
+# Whether any connected budget (<data root>/addons/actual/instances/*.json)
+# exists. The data root is resolved as budget.sh does, BUDGET_DATA_ROOT first.
+actual_has_rows() {
+  (
+    # shellcheck source=data-root.sh
+    source "${ROOT}/scripts/lib/data-root.sh"
+    data="$(resolve_data_root_path "${BUDGET_DATA_ROOT:-}")"
+    validate_data_root_path "$data" 2>/dev/null || exit 1
+    for f in "${data}/addons/actual/instances/"*.json; do
+      [[ -e "$f" ]] && exit 0
+    done
+    exit 1
+  )
+}
+
+# The connected budgets (addons/actual/instances/*.json): one line each from
+# budget.sh status, which re-checks the stored credential. Its error lines
+# (no data root, say) print nothing; no rows is the normal case.
+actual_budget_rows() {
+  if [[ "$(uname -s)" == Linux && "$(id -u)" != 1000 ]] && actual_has_rows; then
+    bad "on Linux the MCP containers read the connected budgets' secret files as uid 1000 (the image's node user), and this host runs as uid $(id -u); at mode 600 they can't open them"
+  fi
+  docker info >/dev/null 2>&1 || return 0
+  local lines line slug state
+  lines="$("${ROOT}/scripts/budget.sh" status --json 2>/dev/null || true)"
+  while IFS= read -r line; do
+    case "$line" in
+      '{"phase":"budget"'*) ;;
+      *) continue ;;
+    esac
+    slug="$(printf '%s' "$line" | sed -n 's/.*"slug":"\([^"]*\)".*/\1/p')"
+    state="$(printf '%s' "$line" | sed -n 's/.*"state":"\([^"]*\)".*/\1/p')"
+    if [[ "$state" == ok ]]; then
+      ok "budget-${slug}: ok"
+    else
+      case "$state" in
+        timeout | server_unreachable)
+          warn "budget-${slug}: ${state} - check that its Actual server is running and reachable" ;;
+        *)
+          warn "budget-${slug}: ${state} - reconnect it: make budget-disconnect SLUG=${slug}, then make budget-connect, or in Boundary" ;;
+      esac
+    fi
+  done <<EOF_ROWS
+${lines}
+EOF_ROWS
+}
+
 doctor_actual() {
   actual_is_true "$(env_get ACTUAL_MCP_ENABLED 0)" || return 0
+  actual_single_budget
+  actual_budget_rows
+}
+
+actual_single_budget() {
   local local_on=0
   actual_is_true "$(env_get ACTUAL_LOCAL_ENABLED 0)" && local_on=1
   echo
@@ -98,8 +150,24 @@ doctor_actual() {
   esac
 
   # The file: there, mode 600, readable by the containers, with the keys set.
-  local ref file
+  # An install with connected budgets and no single budget skips this part.
+  # actual_budget_file and actual_services_and_tools read and set these.
+  local ref missing=1 url="" actual_file="" actual_ref=""
   ref="$(env_get ACTUAL_BUDGET_FILE)"
+  if [[ -z "$ref" || "$ref" == *no-budget.env ]] && actual_has_rows; then
+    ok "no single budget is configured (ACTUAL_BUDGET_FILE is ${ref:-empty}); the connected budgets are listed below"
+  else
+    actual_budget_file "$ref" || return 0
+  fi
+
+  actual_services_and_tools
+}
+
+# actual_budget_file REF: the single budget's file checks. Sets missing (0
+# when the keys are all set) and url. Returns 1 when the file is missing, and
+# the rest of the block is skipped.
+actual_budget_file() {
+  local ref="$1" file
   if [[ -z "$ref" ]]; then
     bad "ACTUAL_BUDGET_FILE is unset, so the MCP servers get compose/actual/no-budget.env — run make budget-init or make budget-add"
     ref="./compose/actual/budget.env"
@@ -108,7 +176,7 @@ doctor_actual() {
   [[ "$file" == /* ]] || file="${PWD}/${file#./}"
   if [[ ! -f "$file" ]]; then
     bad "${ref#./} is missing — run make budget-init or make budget-add"
-    return 0
+    return 1
   fi
   local mode
   mode="$(actual_file_mode "$file")"
@@ -120,7 +188,8 @@ doctor_actual() {
   if [[ "$(uname -s)" == Linux && "$(id -u)" != 1000 ]]; then
     bad "on Linux the MCP containers read ${ref#./} as uid 1000 (the image's node user), and this host runs as uid $(id -u); at mode 600 they can't open it"
   fi
-  local key missing=0
+  local key
+  missing=0
   for key in ACTUAL_SERVER_URL ACTUAL_PASSWORD ACTUAL_BUDGET_SYNC_ID; do
     if [[ -z "$(actual_file_get "$file" "$key")" ]]; then
       bad "${ref#./} has no ${key} — make budget-init or make budget-add FORCE=1"
@@ -128,7 +197,6 @@ doctor_actual() {
     fi
   done
 
-  local url
   url="$(actual_file_get "$file" ACTUAL_SERVER_URL)"
   if [[ "${url%/}" == http://actual-server:5006 ]]; then
     if [[ "$local_on" -eq 0 ]]; then
@@ -137,7 +205,14 @@ doctor_actual() {
   elif [[ -n "$url" ]]; then
     ok "remote server: $(actual_safe_url "$url")"
   fi
+  actual_file="$file"
+  actual_ref="$ref"
+  return 0
+}
 
+# The containers' health, the single budget's credential check (when its file
+# has every key) and each instance's tools/list.
+actual_services_and_tools() {
   docker info >/dev/null 2>&1 || return 0
 
   local svc state
@@ -156,7 +231,7 @@ doctor_actual() {
   # The credentials: budget.sh check opens the budget with actual-admin.mjs
   # in the MCP image. Its output names no password.
   if [[ "$missing" -eq 0 ]]; then
-    local sync rc=0 err
+    local sync rc=0 err file="$actual_file" ref="$actual_ref"
     sync="$(actual_file_get "$file" ACTUAL_BUDGET_SYNC_ID)"
     err="$(BUDGET_ENV_PATH="$file" "${ROOT}/scripts/budget.sh" check 2>&1 >/dev/null)" || rc=$?
     case "$rc" in

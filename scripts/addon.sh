@@ -801,7 +801,7 @@ cmd_disable() {
   esac
   [[ $# -eq 0 ]] || usage_error "disable: too many arguments"
   addon_lock
-  cli_checked flags plan-disable "$sid"
+  cli_checked flags plan-disable "$sid" --flags "$(env_flags_json)"
   plan="$CLI_OUT"
   CHANGED=0
   ! truthy "$(env_get "$(plan_builtin "$plan")")" || CHANGED=1

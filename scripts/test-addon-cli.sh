@@ -412,6 +412,49 @@ else
   bad "enable restores a gate from its stored setting"
 fi
 
+# A gate flag set by hand in .env with its setting never stored (v0.3.12's
+# ACTUAL_LOCAL_ENABLED): disable stores the setting as true, so enable
+# restores the flag.
+settings_env="${root}/data/addons/fixture/config/settings.env"
+unstore_extra() {
+  grep -v '^ADDON_FIXTURE_EXTRA=' "$settings_env" > "${settings_env}.new" || true
+  mv "${settings_env}.new" "$settings_env"
+}
+unstore_extra
+addon disable fixture
+expect_rc "disable with a hand-set gate flag" 0
+if grep -qx 'ADDON_FIXTURE_EXTRA=1' "$settings_env" && [ "$(envval FIXTURE_EXTRA_ENABLED)" = 0 ]; then
+  ok "disable stores a hand-set gate's setting as true, then zeroes the flag"
+else
+  bad "disable stores a hand-set gate's setting as true, then zeroes the flag: $(cat "$settings_env")"
+fi
+addon enable fixture
+if [ "$(envval FIXTURE_EXTRA_ENABLED)" = 1 ]; then
+  ok "enable restores a hand-set gate after disable"
+else
+  bad "enable restores a hand-set gate after disable"
+fi
+# Off by hand and not stored: disable stores nothing, enable leaves it off.
+unstore_extra
+python3 - "${root}/.env" <<'PY2'
+import sys
+p = sys.argv[1]
+lines = open(p).read().splitlines()
+open(p, "w").write("\n".join("FIXTURE_EXTRA_ENABLED=0" if l.startswith("FIXTURE_EXTRA_ENABLED=") else l for l in lines) + "\n")
+PY2
+addon disable fixture
+if grep -q '^ADDON_FIXTURE_EXTRA=' "$settings_env"; then
+  bad "disable stores nothing for a gate flag that is off"
+else
+  ok "disable stores nothing for a gate flag that is off"
+fi
+addon enable fixture
+if [ "$(envval FIXTURE_EXTRA_ENABLED)" = 0 ]; then ok "enable leaves an unstored, off gate off"; else bad "enable leaves an unstored, off gate off"; fi
+# Back to the state the tests below expect: extra stored and on.
+addon_in '{"extra": true}' configure fixture
+addon enable fixture
+if [ "$(envval FIXTURE_EXTRA_ENABLED)" = 1 ]; then ok "extra back on"; else bad "extra back on"; fi
+
 # --json output, the lock and rollback. The fixture is enabled here.
 ENABLE_STEPS='[("flags","running"),("flags","done"),("start","running"),("start","done"),("start","running"),("start","done"),("reload","running"),("reload","done")]'
 : > "$STUB_LOG"

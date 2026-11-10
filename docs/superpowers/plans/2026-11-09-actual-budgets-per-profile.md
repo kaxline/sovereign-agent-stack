@@ -20,7 +20,7 @@
 - Error names: the shared `bad_slug`, `exists`, `not_found`, `login_refused`, `token_expired`, `no_access`, `timeout`, `server_unreachable`, and Actual's `unknown_profile`, `bad_access`, `encryption_password`. Never `bad_input`, `missing_settings`, `command_failed`, `compose_failed` or `busy`: those are `addon.sh`'s own.
 - Exit codes for `budget.sh` in `--json` mode: 0 for `done`; 2 for `bad_slug`, `unknown_profile`, `bad_access`, `not_found`; 4 for every other error name.
 - No secret (password, session token, encryption password, server password) in argv, an env var visible to `docker inspect`, any stdout or stderr line, a log, or a file outside `data/addons/actual/secrets/` (mode 600) and `compose/actual/budget.env`. Containers get credentials by name (`-e NAME`) as `budget.sh` does today.
-- Data paths: `${ACTUAL_ADDON_DATA_DIR:-./data/addons/actual}` on the host, which must equal `addon.sh`'s `data/addons/actual` under `ASSISTANT_DATA_ROOT`. Rows are `instances/<slug>.json`; secrets are `secrets/<slug>.session_token`, `secrets/<slug>.encryption_password` and `secrets/server_password`.
+- Data paths: `$(resolve_data_root_path)/addons/actual` on the host (`scripts/lib/data-root.sh`, as `addon.sh` uses), and `${ASSISTANT_DATA_ROOT:-./data}/addons/actual` in compose. Rows are `instances/<slug>.json`; secrets are `secrets/<slug>.session_token`, `secrets/<slug>.encryption_password` and `secrets/server_password`.
 - Instance settings: `server` (string: an `http(s)` URL or `local`), `sync_id` (string), `profile` (string, default `default`), `access` (string, default `read`), and optional secrets `session_token`, `password` (transient), `encryption_password`.
 - `profile` must be `default` in this build. MCP names: `budget-<slug>-ro` on `http://actual-mcp-ro:3000/<slug>/mcp`, and for `write` rows `budget-<slug>` on `http://actual-mcp-rw:3000/<slug>/mcp`. `browser` gets the same entries as `default`; `api-server` gets none.
 - The local server is `http://actual-server:5006` from containers and `http://127.0.0.1:${ACTUAL_PORT:-5006}` from the host.
@@ -184,7 +184,7 @@ git commit -m "Run one Actual MCP child per connected budget behind a launcher t
 ### Task 7: Compose and Hermes registration
 
 **Files:**
-- Modify: `docker-compose.yml` (`actual-mcp-rw`, `actual-mcp-ro`: mount `${ACTUAL_ADDON_DATA_DIR:-./data/addons/actual}` read-only at `/budgets`; both bootstrap services: mount its `instances/` read-only at `/bootstrap/actual-instances` and pass `ACTUAL_BUDGET_FILE`)
+- Modify: `docker-compose.yml` (`actual-mcp-rw`, `actual-mcp-ro`: mount `${ASSISTANT_DATA_ROOT:-./data}/addons/actual` read-only at `/budgets`; both bootstrap services: mount its `instances/` read-only at `/bootstrap/addon-data/actual/instances`, next to Twenty's mount under the existing `ADDON_DATA_DIR`, and pass `ACTUAL_BUDGET_FILE`)
 - Modify: `compose/hermes/bootstrap-api-profile.sh` (`register_actual_budget_rows`, the single-budget drop, the fence match)
 - Create: `scripts/lib/actual_rows.py` (runs in the bootstrap's `python3`)
 - Create: `scripts/test-actual-rows.sh`
@@ -193,7 +193,8 @@ git commit -m "Run one Actual MCP child per connected budget behind a launcher t
 **Interfaces:**
 - Consumes: the instance layout; the manifest's `mcp.tools`, `writeTools`, `pin`, `timeout` and `connectTimeout` through `addon_manifest.py`.
 - Produces:
-  - `actual_rows.py plan INSTANCES_DIR ADDONS_DIR PROFILE`: one line per entry, `name|title|url|timeout|connect_timeout|tools|pins`, using the manifest's read tools for `-ro` and all tools for the `write` entry. Only rows with `profile` `default` appear, on `default` and `browser`; `api-server` gets nothing. Skips rows as `readRows` does.
+  - Not `mcp.instances`: main's generic per-instance registration (Twenty's) needs bearer auth and gives one server per instance with a key chosen by access, while Actual needs no auth and two servers per row on two containers. Actual's manifest keeps its single `mcp` entry for the legacy budget.
+  - `actual_rows.py plan INSTANCES_DIR ADDONS_DIR PROFILE` (called with `$ADDON_DATA_DIR/actual/instances`): one line per entry, `name|title|url|timeout|connect_timeout|tools|pins`, using the manifest's read tools for `-ro` and all tools for the `write` entry. Only rows with `profile` `default` appear, on `default` and `browser`; `api-server` gets nothing. Skips rows as `readRows` does.
   - `register_actual_budget_rows PROFILE`, called after `register_addon_mcp_servers` on `default` and on `$PROFILE`: when `ACTUAL_MCP_ENABLED` is off, drops every entry whose URL starts with `http://actual-mcp-ro:3000/` or `http://actual-mcp-rw:3000/` and isn't the legacy `/mcp`; otherwise registers the plan's entries, pins their tools and drops `budget-*` entries on those hosts that the plan no longer lists. When `ACTUAL_BUDGET_FILE` is empty or ends in `no-budget.env`, it also drops the legacy `budget` entry.
   - `fence_mail_from_cron` treats a server as fenced when its URL's scheme, host and port match a fenced add-on URL's, instead of the exact URL.
 

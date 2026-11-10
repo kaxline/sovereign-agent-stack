@@ -1,6 +1,6 @@
 # Actual Budget add-on
 
-Status: built and released in v0.3.12 (single budget). The amendment at the end, 2026-11-09, plans budgets per profile (CR 0026) and is not built.
+Status: built and released in v0.3.12 (single budget). The amendment at the end, 2026-11-09, plans budgets per profile (CR 0026); built on branch `feat/actual-budgets-per-profile`.
 
 ## Goal
 
@@ -403,7 +403,7 @@ Both steps work without the web app.
 
 ## Amendment 2026-11-09: budgets per profile (CR 0026)
 
-Not built. This replaces "one budget per stack" from the Goal for installs that connect budgets;
+This replaces "one budget per stack" from the Goal for installs that connect budgets;
 the single budget from `ACTUAL_BUDGET_FILE` keeps working unchanged. Boundary's CR 0026 asks for
 it, and the stack reply is in `docs/private/cr-0026-stack-reply.md`. "Settled through round 6"
 at the end of this amendment replaces the storage, commands and output described under Design.

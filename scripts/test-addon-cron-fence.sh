@@ -24,6 +24,11 @@ grep -q '_out="$(python3 - "$_fmc_cfg" "$ADDON_MANIFEST_PY" "$ADDONS_DIR" "$ADDO
 grep -q 'addon_manifest.cron_fence(Path(sys.argv\[3\]), data_dir=Path(sys.argv\[4\]))' "$BOOTSTRAP" \
   || fail "the fence reads instance names from the stores"
 grep -q 'addon_manifest.cron_fence' "$BOOTSTRAP" || fail "the fence must use addon_manifest.cron_fence"
+# A connected Actual budget's write entry sits at a path under the fenced rw
+# URL's host (http://actual-mcp-rw:3000/<slug>/mcp), so the fence compares
+# scheme, host and port.
+grep -q 'origin(str(servers\[n\].get("url", ""))) in addon_origins' "$BOOTSTRAP" \
+  || fail "the fence matches add-on URLs by scheme, host and port"
 
 # cron "ro" on the split fixture: only its rw URL is fenced, and no name.
 python3 - <<'PY' || fail "cron ro must fence the rw URL only"
@@ -89,6 +94,10 @@ seed_crm() {
   rm -f /h/.mail-cron-toolsets.json
   printf 'mcp_servers:\n  crm-main:\n    url: http://twenty-server:3000/mcp\n  searxng:\n    url: http://searxng-mcp:8000/mcp\n' > /h/config.yaml
 }
+seed_rows() {
+  rm -f /h/.mail-cron-toolsets.json
+  printf 'mcp_servers:\n  budget-main:\n    url: http://actual-mcp-rw:3000/main/mcp\n  budget-main-ro:\n    url: http://actual-mcp-ro:3000/main/mcp\n  searxng:\n    url: http://searxng-mcp:8000/mcp\n' > /h/config.yaml
+}
 cron_list() { tr -d '\n ' < /h/config.yaml | sed -n 's/.*cron:\(.*\)/\1/p'; }
 
 ADDON_MANIFEST_PY=/bootstrap/addon_manifest.py
@@ -103,6 +112,8 @@ seed_split http://split-rw:9000/mcp; fence_mail_from_cron ""
 echo "ro-at-rw:$(cron_list)"
 ADDONS_DIR=/bootstrap/addons; seed_crm; fence_mail_from_cron ""
 echo "crm-ro:$(cron_list)"
+seed_rows; fence_mail_from_cron ""
+echo "rows:$(cron_list)"
 ADDONS_DIR=/w/addons-crm-off; seed_crm; fence_mail_from_cron ""
 echo "crm-false:$(cron_list)"
 ADDONS_DIR=/w/addons-off
@@ -123,6 +134,7 @@ expect 'false:-hermes-cron-searxng' "cron false pins a cron list without gptr"
 expect 'ro-at-ro:' "a cron ro add-on registered at its ro URL stays in cron"
 expect 'ro-at-rw:-hermes-cron-searxng' "a cron ro add-on registered at its rw URL is fenced"
 expect 'crm-ro:' "Twenty (cron true) leaves crm-* entries in cron, as before 0.3.13"
+expect 'rows:-hermes-cron-budget-main-ro-searxng' "a connected budget's write entry is fenced, its -ro entry stays"
 expect 'crm-false:-hermes-cron-searxng' "an instances add-on with cron false fences crm-main"
 expect 'missing:-hermes-cron-searxng' "a missing module keeps the list it wrote"
 expect 'back:' "the list is removed once the manifest allows cron"
