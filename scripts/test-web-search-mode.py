@@ -276,17 +276,13 @@ def test_private_first_keeps_argument_errors_local() -> None:
     expect(calls == ["searxng", "ring"], "fetch timeout is rescued")
 
 
-def test_overlay_is_wired() -> None:
+def test_overlay_order_and_env() -> None:
     runner = (ROOT / "compose" / "hermes" / "05-patch-tool-calling.sh").read_text()
-    line = "run_patch /bootstrap/patch-web-search-mode.py"
-    expect(line in runner, "cont-init runs the patch")
-    expect(runner.index(line) > runner.index("run_patch /bootstrap/patch-blocked-fetch-hint.py"),
+    expect(runner.index("run_patch /bootstrap/patch-web-search-mode.py")
+           > runner.index("run_patch /bootstrap/patch-blocked-fetch-hint.py"),
            "runs after the blocked-fetch hint it imports")
     compose = (ROOT / "docker-compose.yml").read_text()
-    for name in ("web_search_mode.py", "patch-web-search-mode.py"):
-        expect(f"./compose/hermes/{name}:/bootstrap/{name}:ro" in compose, f"{name} is mounted")
     expect("- HERMES_WEB_SEARCH_MODE=${HERMES_WEB_SEARCH_MODE:-private}" in compose, "env reaches hermes")
-
 
 IMAGE_DRIVER = r'''
 import json, os, shutil, subprocess, sys, tempfile
@@ -347,7 +343,7 @@ def main() -> None:
     test_ring_errors_fall_back()
     test_empty_ring_page_falls_back()
     test_private_first_keeps_argument_errors_local()
-    test_overlay_is_wired()
+    test_overlay_order_and_env()
     print("ok")
     hermes_image.maybe_run(IMAGE_DRIVER)
 

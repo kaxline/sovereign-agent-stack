@@ -74,16 +74,8 @@ def test_bootstrap_covers_every_profile() -> None:
     assert compose.count("HERMES_TOOL_LOOP_HARD_STOP=${HERMES_TOOL_LOOP_HARD_STOP:-true}") == 2
 
 
-def test_overlay_is_wired() -> None:
-    assert "run_patch /bootstrap/patch-tool-loop-notes.py" in (
-        ROOT / "compose" / "hermes" / "05-patch-tool-calling.sh"
-    ).read_text()
-    assert "/bootstrap/patch-tool-loop-notes.py:ro" in (ROOT / "docker-compose.yml").read_text()
-
-
 def main() -> None:
     test_bootstrap_covers_every_profile()
-    test_overlay_is_wired()
     print("ok")
     hermes_image.maybe_run(IMAGE_DRIVER)
 

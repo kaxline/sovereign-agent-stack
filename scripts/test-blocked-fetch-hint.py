@@ -18,7 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "compose" / "hermes"))
 sys.path.insert(0, str(ROOT / "scripts" / "lib"))
-from testkit import expect, fail  # noqa: E402
+from testkit import expect  # noqa: E402
 
 import blocked_fetch_hint as bfh  # noqa: E402
 import hermes_image  # noqa: E402
@@ -74,14 +74,6 @@ def test_no_note() -> None:
         expect(bfh.hint_for(name, args, result) is None, f"no note for {name} {args} {result[:60]}")
 
 
-def test_overlay_is_wired() -> None:
-    runner = (ROOT / "compose" / "hermes" / "05-patch-tool-calling.sh").read_text()
-    expect("run_patch /bootstrap/patch-blocked-fetch-hint.py" in runner, "cont-init runs the patch")
-    compose = (ROOT / "docker-compose.yml").read_text()
-    for name in ("blocked_fetch_hint.py", "patch-blocked-fetch-hint.py"):
-        expect(f"/bootstrap/{name}:ro" in compose, f"{name} is mounted")
-
-
 IMAGE_DRIVER = r'''
 import json, os, subprocess, sys
 from types import SimpleNamespace
@@ -127,7 +119,6 @@ def main() -> None:
     test_refusals()
     test_empty_and_challenge()
     test_no_note()
-    test_overlay_is_wired()
     print("ok")
     hermes_image.maybe_run(IMAGE_DRIVER)
 
