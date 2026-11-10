@@ -6,8 +6,10 @@ the last segment of the manifest's `id`. The format is experimental while the
 stack is in 0.3.x, and field names can change between patch releases, with a
 changelog entry. The add-ons so far are GPT Researcher (`gptr/`), Actual
 Budget (`actual/`), Bitwarden (`bitwarden/`), Twenty CRM (`twenty/`) and
-Email on this Mac (`email-local/`: the Mail.app `mail` and `drafts` servers,
-see [docs/email.md](../docs/email.md)). The other optional services are still
+Email on this Mac (`email-local/`: the Mail.app `mail` and `drafts` servers)
+and Email over IMAP (`email/`: containers that hold the account passwords,
+registered as `email` and `email-drafts`); both are described in
+[docs/email.md](../docs/email.md). The other optional services are still
 wired by hand.
 
 What reads a manifest:

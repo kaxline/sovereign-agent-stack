@@ -10,6 +10,12 @@ the stack under another app.
 
 ### Upgrade steps
 
+- The next `up` recreates `hermes` once on every install, whether or not you
+  use the new `email` add-on, because `hermes` now joins the internal `email`
+  network. Both Hermes bootstraps re-run for the same release, because of the
+  new `EMAIL_*` env keys. The `email` network exists but stays empty while the
+  add-on is off. With `BITWARDEN_ENABLED=1`, run `./scripts/vault.sh
+  follow-hermes` after that recreate.
 - The first `make up` recreates `hermes` once, because `BITWARDEN_ENABLED`
   left its environment (see Changes). A caller that recreates `hermes`
   itself runs `./scripts/vault.sh follow-hermes` afterwards, as for any
@@ -56,6 +62,29 @@ the stack under another app.
   apps and their install. The bootstrap registers both servers through the
   add-on path instead of its own functions, so `addon.sh list --json` now
   includes `email-local` with `platform: macos`.
+- **New `email` add-on** (`addons/email/addon.json`): read-only email over
+  IMAP accounts, configured through `scripts/addon.sh` with no host helper.
+  Four services: `email-indexer` and `email-outbox` (profiles `email` and
+  `email-drafts`) hold the account passwords as files under
+  `data/addons/email/secrets/` and join only the new `email-egress` network;
+  `email-mcp` and `email-drafts-mcp` hold no password and join only the new
+  internal `email` network, which `hermes` also joins. Flags are
+  `EMAIL_ENABLED` and the gate `EMAIL_DRAFTS_ENABLED` (set by the `drafts`
+  setting). The index and the drafts queue live in the named volumes
+  `email_index` and `email_drafts`, which `disable email --purge` deletes. MCP
+  names are `email` and `email-drafts`, never offered to `api-server` or cron.
+  `security = "plain"` is allowed only for `localhost`, `127.0.0.1`,
+  `host.docker.internal` and `greenmail`; Proton Bridge goes through
+  `host.docker.internal`. A multi-line PEM `tls_ca` can be stored, because the
+  add-on has no connect hook. Not tested on a real account yet; see
+  [docs/email.md](docs/email.md#first-real-run-email).
+- **`scripts/addon.sh` lets an exported `ASSISTANT_DATA_ROOT` win over
+  `.env`**, as compose and `crm.sh` already did. Before, an exported value was
+  ignored when `.env` set one.
+- **The drafts watcher rejects an unreadable queue file** (status `rejected`,
+  reason "unreadable request") and moves on to the next request, where it used
+  to stop on it. This applies to `mail-drafts` on the host, so `email-local`
+  too, as well as `email-outbox`.
 - **`MAIL_MCP_ENABLED` and `MAIL_DRAFTS_ENABLED` accept `on` and any case**
   (`1`, `true`, `yes`, `on`), in the bootstrap, `make doctor` and
   `mail-triage-cron.sh`. `sync-profiles.sh` already started the containers

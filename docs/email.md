@@ -1,4 +1,213 @@
-# Email from Apple Mail (design)
+# Email
+
+Hermes reads email through one of two add-ons. They are separate, with
+separate flags, profiles and MCP names, and can run together.
+
+| Add-on | Reads | Where it runs | Flags |
+|---|---|---|---|
+| `email-local` | Apple Mail, or IMAP accounts configured in `mail-index.toml` | A host indexer plus the `mail-mcp` and `mail-drafts-mcp` containers | `MAIL_MCP_ENABLED`, `MAIL_DRAFTS_ENABLED` |
+| `email` | IMAP accounts | Four containers, configured through `scripts/addon.sh` | `EMAIL_ENABLED`, `EMAIL_DRAFTS_ENABLED` |
+
+Neither add-on can send mail, and neither is offered to `api-server` sessions
+or to cron. New IMAP users should start with [`email`](#imap-add-on-email).
+[`email-local`](#email-on-this-mac-email-local) is the design and reference
+for the Mail.app source, the index, `mail-mcp` and the drafts queue, which
+`email` reuses.
+
+## IMAP add-on (`email`)
+
+`addons/email/addon.json` runs the IMAP indexer and the drafts outbox in
+containers, so nothing is installed on the host and no Keychain is involved.
+Boundary drives it through `scripts/addon.sh`; the commands below are what it
+calls. Everything about the index, the MCP tools, scope rules, drafts and the
+untrusted-content markers is the same code as in `email-local`, described in
+the sections below.
+
+```text
+                      internet (IMAP servers)
+                        ^               ^
+              email-indexer         email-outbox          hold passwords; egress network only;
+               (writes index)      (APPEND drafts)        no network shared with Hermes
+                        |               ^
+            email_index volume    email_drafts volume (drafts queue)
+                        v ro            |
+                  email-mcp        email-drafts-mcp       no passwords; no internet;
+                (mail-mcp image) (mail-drafts-mcp image)  internal `email` network only
+                        ^               ^
+                        +---- Hermes ---+
+```
+
+| Service | Profile | Does |
+|---|---|---|
+| `email-indexer` | `email` | Runs a pass every `interval` seconds and is the index's only writer. Renders its config from the add-on's files before each pass. |
+| `email-mcp` | `email` | The `mail-mcp` image over `email_index`, mounted read-only. Registered as `mcp_servers.email` with `mail_status`, `mail_search`, `mail_get` and `mail_thread`. |
+| `email-drafts-mcp` | `email-drafts` | The `mail-drafts-mcp` image over the `email_drafts` queue. Registered as `mcp_servers.email-drafts` with `mail_draft_create` and `mail_draft_status`. |
+| `email-outbox` | `email-drafts` | Saves queued drafts to each account's Drafts mailbox with IMAP `APPEND`, under the drafts limits in [Drafts](#drafts). Nothing is sent. |
+
+All four run as `HERMES_UID:HERMES_GID` with a read-only root filesystem,
+`cap_drop: ["ALL"]`, `no-new-privileges`, `/tmp` as tmpfs and no host ports.
+`email-mcp` and `email-drafts-mcp` join only the internal `email` network,
+which Hermes also joins. `email-indexer` and `email-outbox` join only
+`email-egress`, which nothing else joins. The `email` network exists but stays
+empty while the add-on is off. Both MCP servers are registered on the default
+and `browser` profiles, never on `api-server`, and the manifest sets
+`permissions.cron: false`, so cron jobs lose them.
+
+The index lives in the named volume `email_index` and the drafts queue in
+`email_drafts`, not in bind mounts: one container writes the SQLite index in
+WAL mode while another reads it, which is unreliable over Docker Desktop's
+bind mounts. The index can be rebuilt from the servers and isn't backed up.
+`addon.sh disable email --purge` deletes both volumes and
+`data/addons/email/`.
+
+### Passwords
+
+Each password is a file, `data/addons/email/secrets/<slug>.password`, mode
+0600, owned by the user who runs `addon.sh`. The `secrets` folder is mounted
+read-only into `email-indexer` and `email-outbox` only. The password is never
+in a container Hermes can reach, in `.env`, in an environment variable, in an
+argument or in `docker inspect` output. `addon.sh configure` reads it from
+JSON on stdin and from nowhere else.
+
+This is weaker than `email-local` with the Keychain, where the password never
+reaches a container. Choose `email-local` if that matters more than running
+without a host helper.
+
+### Settings and accounts
+
+Settings go to `data/addons/email/config/settings.env`:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `since` | none, required | Index mail received on or after this date (`YYYY-MM-DD`) |
+| `bodies` | `false` | Index message bodies |
+| `attachments` | `false` | Index attachment text |
+| `max_body_chars` | `100000` | Characters kept from each body |
+| `interval` | `900` | Seconds between index passes; at least 300 |
+| `drafts` | `false` | Turns on `EMAIL_DRAFTS_ENABLED`, which starts `email-drafts-mcp` and `email-outbox` |
+
+Each account is an instance, stored as `instances/<slug>.json`. A slug
+matches `[a-z][a-z0-9-]{0,30}` and is the account id in search results.
+
+| Account setting | Default | Meaning |
+|---|---|---|
+| `host` | none | IMAP server |
+| `port` | `993` | `143` with STARTTLS |
+| `security` | `tls` | `tls`, `starttls` or `plain` |
+| `user` | none | Login name |
+| `address` | none | From address for drafts |
+| `addresses` | none | Other From addresses |
+| `mailboxes` | none | Mailboxes to index; patterns as in [Config](#config) |
+| `tls_ca` | none | CA certificate in PEM form, for a server that signs its own |
+| `drafts_mailbox` | none | The Drafts mailbox, when the server doesn't flag one |
+| `password` | none | Password or app password |
+
+`security = "plain"` sends the password unencrypted. The renderer and the
+indexer accept it only for `localhost`, `127.0.0.1`, `host.docker.internal`
+and `greenmail` (the test server), and refuse any other host with the
+account's slug in the error. `tls_ca` is stored as a secret
+(`secrets/<slug>.tls_ca`), and because `email` has no connect hook it may be a
+multi-line PEM.
+
+Proton Bridge runs on the host, so use `host = "host.docker.internal"`, the
+port and connection security that Bridge shows for IMAP (`plain` is accepted
+for this host), the Bridge-generated password, and `tls_ca` set to the certificate
+Bridge exports. Containers reach `host.docker.internal` through an
+`extra_hosts` entry on both egress services.
+
+### Calling order
+
+The order Boundary uses, which you can follow by hand:
+
+1. `scripts/addon.sh list --json`. The `schema` key describes the settings
+   and the account form. `missing` shows `instances:accounts` until an account
+   exists, and `since` until it is set.
+2. `scripts/addon.sh configure email < settings.json` for the settings, then
+   `scripts/addon.sh configure email --instance <slug> < account.json` for
+   each account. Values you leave out keep their stored value, so the first
+   call for an account can omit `mailboxes`.
+3. `scripts/addon.sh run email mailboxes --instance <slug>` prints the
+   account's mailbox names, message counts and special-use flags, which fill
+   the mailbox choice. Then `configure` the account again with `mailboxes`.
+4. `scripts/addon.sh enable email`.
+
+To change `drafts` later, run `configure` and then `enable` again: a gate
+change takes effect at the next `enable`. `configure --instance <slug>
+--remove` deletes an account and its secrets; its messages leave the index
+on the next pass. On Linux, `HERMES_UID` and `HERMES_GID` in `.env` must equal
+the user running `addon.sh`, or `enable` stops with `bad_input`. The contract
+for these commands is in [Add-ons: scripts/addon.sh](extending.md#add-ons-scriptsaddonsh).
+
+### Failures
+
+A password the server refuses is logged by `email-indexer` as a
+`mail-index:` line with the account id and exit code 4, prints
+`{"error": "4"}` as the pass result and never includes the password. The loop then runs the next pass and the other accounts.
+With `EMAIL_ENABLED=1` and no account, `email-indexer` writes no index and
+logs `no accounts configured` once per pass, and `mail_status` reports an
+empty index. Turning `drafts` off stops `email-outbox` and leaves queued
+drafts on disk; they are saved after `drafts` is turned back on. The outbox
+rejects a queue file it can't read ("unreadable request") and moves on to the
+next one.
+
+### First real run (`email`)
+
+Run these yourself. They need your account, so nothing here is run for you.
+Report pass or fail and counts, not messages, subjects or sender names.
+
+1. Write the settings, with a short `since` window on a large mailbox:
+
+   ```bash
+   printf '%s' '{"since":"2026-11-01","bodies":false,"drafts":false}' | ./scripts/addon.sh configure email
+   ```
+
+2. Add the account. The password is read without echo and goes into the JSON
+   on stdin only, never into an argument or the environment. Edit the host,
+   user and address first:
+
+   ```bash
+   read -rs -p 'IMAP password: ' pw; echo
+   printf '%s' "$pw" | python3 -c '
+   import json, sys
+   print(json.dumps({"host": "imap.example.com", "port": 993, "security": "tls",
+                     "user": "you@example.com", "address": "you@example.com",
+                     "password": sys.stdin.read()}))
+   ' | ./scripts/addon.sh configure email --instance work
+   unset pw
+   ```
+
+3. List the mailboxes. Check that each one you expect appears once and the
+   counts look plausible; the Drafts mailbox should carry a special-use flag.
+
+   ```bash
+   ./scripts/addon.sh run email mailboxes --instance work
+   ```
+
+4. Choose the mailboxes, then enable:
+
+   ```bash
+   printf '%s' '{"mailboxes":["INBOX"]}' | ./scripts/addon.sh configure email --instance work
+   ./scripts/addon.sh enable email
+   ```
+
+5. Wait for one pass and read the counts. The indexer logs one JSON line per
+   pass with `in_scope`, `added`, `updated`, `removed` and `unreadable`:
+
+   ```bash
+   docker compose logs --tail 20 email-indexer
+   ```
+
+   `in_scope` should match the mailbox's message count within the `since`
+   window, and `unreadable` should be 0. A login failure shows as a
+   `mail-index:` line with the account id and an exit code of 4. Ask Hermes
+   for the number of unread messages this week and compare it with your mail
+   client.
+
+For drafts, run the `configure` call with `{"drafts":true}`, then `enable`
+again, ask Hermes to draft a reply, and check the Drafts mailbox in your mail
+client.
+
+## Email on this Mac (`email-local`)
 
 Read-only email for Hermes, through Apple Mail instead of a login to a mail
 server. A [host-side indexer](#indexer) builds a scoped index, and
@@ -14,7 +223,7 @@ Hermes can't send email. With the separate [drafts](#drafts) opt-in it can
 write drafts, which a host helper saves to Mail's Drafts for you to send.
 
 Accounts that Mail.app doesn't have, or machines without it, can use the
-optional [IMAP source](#imap-source) instead. It sits behind the same scope,
+[`email` add-on](#imap-add-on-email), or the optional [IMAP source](#imap-source) of this add-on. It sits behind the same scope,
 index and read-only MCP, and keeps the password away from the agent. See
 [Providers](#providers) for how sources plug in.
 
@@ -294,7 +503,10 @@ Not built. Notes for whoever builds them:
 ## IMAP source
 
 Optional. For accounts that Mail.app doesn't have, machines without Mail.app,
-or Proton through Bridge.
+or Proton through Bridge. New IMAP users should use the
+[`email` add-on](#imap-add-on-email) instead, which needs no config file or
+host helper. This source suits an install that already runs `email-local` and
+wants IMAP accounts beside Mail.app in one index, with the password in the Keychain.
 
 ```toml
 [[accounts]]
@@ -698,7 +910,8 @@ profiles. It never registers it on `api-server`. Unattended sessions there
 run without anyone watching, and mail is the easiest place for a stranger to
 plant instructions. Because profiles are cloned from default, the bootstrap
 removes any entry pointing at `mail-mcp` from `api-server`, and from every
-profile when `MAIL_MCP_ENABLED` isn't `1`.
+profile when `MAIL_MCP_ENABLED` is off (`1`, `true`, `yes` and `on`, in any
+case, count as on).
 
 **Container.** It mounts only `MAIL_INDEX_DIR` (default `./data/mail`),
 read-only. The root filesystem is read-only too, all capabilities are

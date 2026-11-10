@@ -126,8 +126,9 @@ class Stack:
             dst = self.root / rel
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dst, follow_symlinks=False)
-        # scripts/lib/data-root.sh reads ASSISTANT_DATA_ROOT from .env only (the
-        # first line), so the copy's .env must name the temp data root itself.
+        # An exported ASSISTANT_DATA_ROOT wins over .env in addon.sh, compose and
+        # crm.sh, so the run's environment sets it; the copy's .env names the
+        # same temp data root as well, for tools that read only the file.
         ours = {"COMPOSE_PROJECT_NAME": PROJECT, "ASSISTANT_DATA_ROOT": str(self.data),
                 "IMAGE_PREFIX": PROJECT, "CONTAINER_PREFIX": f"{PROJECT}-"}
         lines = [line for line in (REPO / ".env.example").read_text().splitlines()
