@@ -83,6 +83,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Test helpers (testkit.sh, testkit.py)
+        run: sh scripts/test-testkit.sh
       - name: Project source registry (stdlib)
         run: python3 scripts/test-project-sources.py
       - name: Fabricated result detector (host part)

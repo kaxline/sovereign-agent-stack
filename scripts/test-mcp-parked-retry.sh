@@ -7,6 +7,8 @@
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=lib/testkit.sh
+. "${ROOT}/scripts/lib/testkit.sh"
 bootstrap="${ROOT}/compose/hermes/bootstrap-api-profile.sh"
 # shellcheck source=lib/hermes-image.sh
 . "${ROOT}/scripts/lib/hermes-image.sh"
@@ -20,8 +22,7 @@ trap 'rm -rf "$tmp"' EXIT
   # LightRAG's URL comes from its manifest (addon_mcp_urls), not from a variable;
   # instance URLs come from addon_instance_urls.
   for fn in addon_mcp_urls addon_instances_plan addon_instance_urls set_stack_mcp_parked_retry; do
-    range='/^'"${fn}"'() {/,/^}/p'
-    sed -n "$range" "$bootstrap"
+    fn_source "$bootstrap" "$fn"
   done
   printf 'ADDONS_DIR=/a\nADDON_MANIFEST_PY=/l/addon_manifest.py\nADDON_DATA_DIR=/t/addon-data\n'
   cat <<'EOF'
@@ -49,11 +50,6 @@ mcp_servers:
 EOF
 mkdir -p "${tmp}/addon-data"
 chmod -R a+rwX "$tmp"
-
-fail() {
-  printf 'FAIL %s\n' "$1" >&2
-  exit 1
-}
 
 # run <MCP_PARKED_RETRY_INTERVAL> [profile]: prints the log line, then the config.
 run() {

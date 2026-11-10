@@ -20,20 +20,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts" / "lib"))
+from testkit import expect, fail  # noqa: E402
 
 import hermes_image  # noqa: E402
 
 BROKER_SRC = ROOT / "compose" / "bitwarden-broker"
-
-
-def fail(msg: str) -> None:
-    print(f"FAIL {msg}", file=sys.stderr)
-    raise SystemExit(1)
-
-
-def expect(cond: bool, msg: str) -> None:
-    if not cond:
-        fail(msg)
 
 
 # The other overlays that edit tools/browser_vault_tool.py, in 05-patch-tool-calling.sh order.

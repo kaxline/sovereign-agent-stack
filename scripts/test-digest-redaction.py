@@ -22,6 +22,7 @@ from urllib.parse import quote
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "compose" / "bitwarden-broker"))
 sys.path.insert(0, str(ROOT / "scripts" / "lib"))
+from testkit import expect, fail  # noqa: E402
 
 from broker import digest_redaction as dr  # noqa: E402
 import hermes_image  # noqa: E402
@@ -31,16 +32,6 @@ MODULE = ROOT / "compose" / "bitwarden-broker" / "broker" / "digest_redaction.py
 RNG = random.Random(20261108)
 BASE = dr.new_base()
 PRINTABLE = string.ascii_letters + string.digits + string.punctuation + " \n"
-
-
-def fail(msg: str) -> None:
-    print(f"FAIL {msg}", file=sys.stderr)
-    raise SystemExit(1)
-
-
-def expect(cond: bool, msg: str) -> None:
-    if not cond:
-        fail(msg)
 
 
 def password(n: int = 24) -> str:

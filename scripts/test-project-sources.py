@@ -20,15 +20,7 @@ if str(LIB) not in sys.path:
 
 import project_sources as ps  # noqa: E402
 
-
-def fail(msg: str) -> None:
-    print(f"FAIL {msg}", file=sys.stderr)
-    raise SystemExit(1)
-
-
-def expect(cond: bool, msg: str) -> None:
-    if not cond:
-        fail(msg)
+from testkit import expect, fail  # noqa: E402
 
 
 def test_default_walk_skips_drafts() -> None:

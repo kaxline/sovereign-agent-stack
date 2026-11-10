@@ -5,6 +5,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=lib/testkit.sh
+. "${ROOT}/scripts/lib/testkit.sh"
 crm="${ROOT}/scripts/crm.sh"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -16,11 +18,6 @@ export ASSISTANT_DATA_ROOT="$tmp/data"
 mkdir -p "$CRM_WORKSPACES_DIR" "$ASSISTANT_DATA_ROOT"
 store="$ASSISTANT_DATA_ROOT/addons/twenty"
 printf 'TWENTY_MULTIWORKSPACE=0\nTWENTY_MULTIWORKSPACE_BOOL=false\nTWENTY_PORT=3000\n' > "$ENV_FILE"
-
-fail() {
-  printf 'FAIL %s\n' "$1" >&2
-  exit 1
-}
 
 out="$tmp/out"
 run() {

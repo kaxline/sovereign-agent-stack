@@ -18,6 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "compose" / "hermes"))
 sys.path.insert(0, str(ROOT / "scripts" / "lib"))
+from testkit import expect, fail  # noqa: E402
 
 import blocked_fetch_hint as bfh  # noqa: E402
 import hermes_image  # noqa: E402
@@ -25,16 +26,6 @@ import hermes_image  # noqa: E402
 TOOL = "mcp__searxng__web_url_read"
 URL = "https://registry.example.com/search?q=acme"
 ARGS = {"url": URL}
-
-
-def fail(msg: str) -> None:
-    print(f"FAIL {msg}", file=sys.stderr)
-    raise SystemExit(1)
-
-
-def expect(cond: bool, msg: str) -> None:
-    if not cond:
-        fail(msg)
 
 
 def err(text: str) -> str:

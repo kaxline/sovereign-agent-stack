@@ -52,7 +52,8 @@ docker compose run --rm --entrypoint /bin/sh n8n-import -c \
 - Keep changes focused; match existing compose and shell style.
 - Do not commit secrets or local overlays listed in `.gitignore`.
 - Update README / `docs/` when you add env vars or services.
-- CI runs `docker compose config` across profile combos, `scripts/test-project-sources.py`, shellcheck, and hadolint.
+- CI runs `docker compose config` across profile combos, the `scripts/test-*` tests (host parts only; `.github/workflows/hermes-image.yml` runs the Hermes image parts), shellcheck and hadolint.
+- New tests use the shared helpers. Shell tests source `scripts/lib/testkit.sh` for `fail`, and for `load_fns` and `fn_source` to call or copy functions from `compose/hermes/bootstrap-api-profile.sh`. Python tests import `fail` and `expect` from `scripts/lib/testkit.py` to stop at the first failure, or `Checks` to report every failure before exiting. Code that runs inside the Hermes image can't import them and keeps its own. Compose wiring tests render through `scripts/lib/compose_config.py`.
 
 ## Third-party code
 

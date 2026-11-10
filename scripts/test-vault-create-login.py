@@ -16,18 +16,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "compose" / "hermes"))
 sys.path.insert(0, str(ROOT / "scripts" / "lib"))
+from testkit import Checks  # noqa: E402
 
 import hermes_image  # noqa: E402
 import vault_create_login as vcl  # noqa: E402
 
-failures = 0
-
-
-def expect(cond: bool, msg: str) -> None:
-    global failures
-    if not cond:
-        failures += 1
-        print(f"FAIL: {msg}")
+checks = Checks()
 
 
 def has_each(password: str, sets: list[str]) -> bool:
@@ -36,58 +30,58 @@ def has_each(password: str, sets: list[str]) -> bool:
 
 def test_default_policy() -> None:
     policy = vcl.derive_policy([{}])
-    expect(policy.length == 24, f"default length {policy.length}")
+    checks.expect(policy.length == 24, f"default length {policy.length}")
     for _ in range(50):
         pw = vcl.generate_password(policy)
-        expect(len(pw) == 24 and has_each(pw, [vcl.LOWER, vcl.UPPER, vcl.DIGIT, vcl.DEFAULT_SYMBOLS]), pw)
-        expect(set(pw) <= set(vcl.LOWER + vcl.UPPER + vcl.DIGIT + vcl.DEFAULT_SYMBOLS), f"charset {pw}")
+        checks.expect(len(pw) == 24 and has_each(pw, [vcl.LOWER, vcl.UPPER, vcl.DIGIT, vcl.DEFAULT_SYMBOLS]), pw)
+        checks.expect(set(pw) <= set(vcl.LOWER + vcl.UPPER + vcl.DIGIT + vcl.DEFAULT_SYMBOLS), f"charset {pw}")
 
 
 def test_length_limits() -> None:
-    expect(vcl.derive_policy([{"maxLength": 16}, {}]).length == 16, "maxlength 16")
-    expect(vcl.derive_policy([{"minLength": 32}]).length == 32, "minlength 32")
-    expect(vcl.derive_policy([{"minLength": 20, "maxLength": 12}]).length == 12, "conflict uses maxlength")
-    expect(vcl.derive_policy([{"maxLength": 16}, {"maxLength": 20}]).length == 16, "smallest maxlength wins")
-    expect(vcl.derive_policy([{}], cap=12).length == 12, "retry cap")
-    expect(vcl.derive_policy([{"minLength": 16}], cap=12).length == 16, "cap keeps minlength")
+    checks.expect(vcl.derive_policy([{"maxLength": 16}, {}]).length == 16, "maxlength 16")
+    checks.expect(vcl.derive_policy([{"minLength": 32}]).length == 32, "minlength 32")
+    checks.expect(vcl.derive_policy([{"minLength": 20, "maxLength": 12}]).length == 12, "conflict uses maxlength")
+    checks.expect(vcl.derive_policy([{"maxLength": 16}, {"maxLength": 20}]).length == 16, "smallest maxlength wins")
+    checks.expect(vcl.derive_policy([{}], cap=12).length == 12, "retry cap")
+    checks.expect(vcl.derive_policy([{"minLength": 16}], cap=12).length == 16, "cap keeps minlength")
 
 
 def test_passwordrules() -> None:
     rules = vcl.parse_passwordrules(
         "minlength: 10; maxlength: 14; required: lower; required: upper; required: digit; "
         "required: [-().&@?'#,/+]; max-consecutive: 2; unknown: x")
-    expect(rules.minlength == 10 and rules.maxlength == 14 and rules.max_consecutive == 2, f"numbers {rules}")
-    expect(len(rules.required) == 4 and rules.required[3] == "-().&@?'#,/+", f"required {rules.required}")
+    checks.expect(rules.minlength == 10 and rules.maxlength == 14 and rules.max_consecutive == 2, f"numbers {rules}")
+    checks.expect(len(rules.required) == 4 and rules.required[3] == "-().&@?'#,/+", f"required {rules.required}")
     policy = vcl.derive_policy([{"passwordrules": "minlength: 10; maxlength: 14; required: lower; required: upper; "
                                                   "required: digit; required: [-().&@?'#,/+]; max-consecutive: 2"}])
-    expect(policy.length == 14, f"rules length {policy.length}")
+    checks.expect(policy.length == 14, f"rules length {policy.length}")
     for _ in range(50):
         pw = vcl.generate_password(policy)
-        expect(len(pw) == 14 and has_each(pw, [vcl.LOWER, vcl.UPPER, vcl.DIGIT, "-().&@?'#,/+"]), pw)
-        expect(not vcl._too_consecutive(pw, 2), f"consecutive {pw}")
-        expect(set(pw) <= set(vcl.LOWER + vcl.UPPER + vcl.DIGIT + "-().&@?'#,/+"), f"allowed {pw}")
+        checks.expect(len(pw) == 14 and has_each(pw, [vcl.LOWER, vcl.UPPER, vcl.DIGIT, "-().&@?'#,/+"]), pw)
+        checks.expect(not vcl._too_consecutive(pw, 2), f"consecutive {pw}")
+        checks.expect(set(pw) <= set(vcl.LOWER + vcl.UPPER + vcl.DIGIT + "-().&@?'#,/+"), f"allowed {pw}")
     digits = vcl.derive_policy([{"passwordrules": "required: digit; minlength: 6; maxlength: 6"}])
-    expect(digits.length == 6 and set(vcl.generate_password(digits)) <= set(string.digits), "digits only")
+    checks.expect(digits.length == 6 and set(vcl.generate_password(digits)) <= set(string.digits), "digits only")
     allowed = vcl.derive_policy([{"passwordrules": "allowed: lower, upper"}])
-    expect(set(vcl.generate_password(allowed)) <= set(vcl.LOWER + vcl.UPPER), "allowed only")
+    checks.expect(set(vcl.generate_password(allowed)) <= set(vcl.LOWER + vcl.UPPER), "allowed only")
 
 
 def test_alnum_fallback() -> None:
     policy = vcl.derive_policy([{}], symbols=False)
     for _ in range(20):
         pw = vcl.generate_password(policy)
-        expect(pw.isalnum() and has_each(pw, [vcl.LOWER, vcl.UPPER, vcl.DIGIT]), pw)
+        checks.expect(pw.isalnum() and has_each(pw, [vcl.LOWER, vcl.UPPER, vcl.DIGIT]), pw)
     # Rules that require a symbol keep it even on the fallback.
     policy = vcl.derive_policy([{"passwordrules": "required: lower; required: [!]"}], symbols=False)
-    expect("!" in vcl.generate_password(policy), "required symbol kept")
+    checks.expect("!" in vcl.generate_password(policy), "required symbol kept")
 
 
 def test_parse_answer() -> None:
-    expect(vcl.parse_answer('{"generate": true}') == {"generate": True}, "generate json")
-    expect(vcl.parse_answer("generate") == {"generate": True}, "generate word")
-    expect(vcl.parse_answer('{"password": "typed-Pass1"}') == {"password": "typed-Pass1"}, "typed")
+    checks.expect(vcl.parse_answer('{"generate": true}') == {"generate": True}, "generate json")
+    checks.expect(vcl.parse_answer("generate") == {"generate": True}, "generate word")
+    checks.expect(vcl.parse_answer('{"password": "typed-Pass1"}') == {"password": "typed-Pass1"}, "typed")
     for raw in ("", None, "{}", '{"generate": "yes"}', '{"password": ""}', "[1]", "not json"):
-        expect(vcl.parse_answer(raw) is None, f"decline {raw!r}")
+        checks.expect(vcl.parse_answer(raw) is None, f"decline {raw!r}")
 
 
 def control(index, autocomplete="", form=0, name="", label=""):
@@ -97,21 +91,21 @@ def control(index, autocomplete="", form=0, name="", label=""):
 
 def test_select_fields() -> None:
     pick = lambda cs: [c["index"] for c in vcl.select_new_password_fields(cs)]  # noqa: E731
-    expect(pick([control(1, "new-password"), control(2, "new-password")]) == [1, 2], "two marked")
-    expect(pick([control(1, "current-password"), control(2, "new-password"), control(3, "new-password")]) == [2, 3],
+    checks.expect(pick([control(1, "new-password"), control(2, "new-password")]) == [1, 2], "two marked")
+    checks.expect(pick([control(1, "current-password"), control(2, "new-password"), control(3, "new-password")]) == [2, 3],
            "change-password form skips current")
-    expect(pick([control(1, label="Create password"), control(2, label="Confirm password")]) == [1, 2], "unmarked")
-    expect(pick([control(1, name="old_password"), control(2, label="New password")]) == [2], "labelled current")
-    expect(pick([control(1, "current-password")]) == [], "sign-in only")
-    expect(pick([control(1, "current-password", form=0), control(2, form=1), control(3, form=1)]) == [2, 3],
+    checks.expect(pick([control(1, label="Create password"), control(2, label="Confirm password")]) == [1, 2], "unmarked")
+    checks.expect(pick([control(1, name="old_password"), control(2, label="New password")]) == [2], "labelled current")
+    checks.expect(pick([control(1, "current-password")]) == [], "sign-in only")
+    checks.expect(pick([control(1, "current-password", form=0), control(2, form=1), control(3, form=1)]) == [2, 3],
            "sign-up form beside a sign-in form")
-    expect(pick([control(1, form=0), control(2, form=1)]) == [1], "first form only")
+    checks.expect(pick([control(1, form=0), control(2, form=1)]) == [1], "first form only")
     # ParaBank's register page: a sign-in box in the sidebar, then the registration form.
-    expect(pick([control(1, form=0, name="password"), control(2, form=1, name="customer.password"),
+    checks.expect(pick([control(1, form=0, name="password"), control(2, form=1, name="customer.password"),
                  control(3, form=1, name="repeatedPassword")]) == [2, 3], "sidebar sign-in before sign-up")
-    expect(pick([control(1, form=0, name="password"), control(2, form=1, label="Choose a password")]) == [2],
+    checks.expect(pick([control(1, form=0, name="password"), control(2, form=1, label="Choose a password")]) == [2],
            "sign-up wording breaks a tie")
-    expect(pick([control(1, "one-time-code")]) == [], "otp")
+    checks.expect(pick([control(1, "one-time-code")]) == [], "otp")
 
 
 def test_schema() -> None:
@@ -122,10 +116,10 @@ def test_schema() -> None:
     vcl.extend_schema(schema)
     vcl.extend_schema(schema)
     props = schema["parameters"]["properties"]
-    expect(props["action"]["enum"].count("create_login") == 1, "enum once")
-    expect("identifier" in props and "create_login" in props["handle"]["description"], "props")
-    expect(props["label"]["description"].startswith("save_login / create_login"), props["label"])
-    expect(schema["description"].count("create_login (") == 1, "description once")
+    checks.expect(props["action"]["enum"].count("create_login") == 1, "enum once")
+    checks.expect("identifier" in props and "create_login" in props["handle"]["description"], "props")
+    checks.expect(props["label"]["description"].startswith("save_login / create_login"), props["label"])
+    checks.expect(schema["description"].count("create_login (") == 1, "description once")
 
 
 # Runs inside the Hermes image with compose/hermes mounted at /bootstrap.
@@ -315,9 +309,7 @@ def main() -> None:
     test_parse_answer()
     test_select_fields()
     test_schema()
-    if failures:
-        sys.exit(1)
-    print("ok")
+    checks.finish("ok")
     hermes_image.maybe_run(IMAGE_DRIVER)
 
 

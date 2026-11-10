@@ -18,6 +18,7 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "compose" / "hermes"))
 sys.path.insert(0, str(ROOT / "scripts" / "lib"))
+from testkit import expect, fail  # noqa: E402
 
 import compaction_tool_facts as ctf  # noqa: E402
 import hermes_image  # noqa: E402
@@ -28,16 +29,6 @@ FAKE = SimpleNamespace(
     # Upstream v0.22.7's check, which misses the "(N chars result)" stubs its own pruner writes.
     _is_summary_stub=lambda s: s.startswith("[") and " chars)" in s and len(s) < 400,
 )
-
-
-def fail(msg: str) -> None:
-    print(f"FAIL {msg}", file=sys.stderr)
-    raise SystemExit(1)
-
-
-def expect(cond: bool, msg: str) -> None:
-    if not cond:
-        fail(msg)
 
 
 def tool(call_id: str, content: str) -> dict:

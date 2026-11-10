@@ -9,6 +9,8 @@
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=lib/testkit.sh
+. "${ROOT}/scripts/lib/testkit.sh"
 bootstrap="${ROOT}/compose/hermes/bootstrap-api-profile.sh"
 compose="${ROOT}/docker-compose.yml"
 # Only LightRAG's manifest: other add-ons add their own drop calls.
@@ -17,20 +19,9 @@ mkdir "${ADDONS_DIR}/lightrag"
 cp "${ROOT}/addons/lightrag/addon.json" "${ADDONS_DIR}/lightrag/addon.json" 2>/dev/null || true
 ADDON_MANIFEST_PY="${ROOT}/scripts/lib/addon_manifest.py"
 
-# The range is built in a variable: macOS sh (bash 3.2) brace-expands
-# {/,/^} inside a quoted "$(sed ...)" that nests a second quoted string.
-for fn in addon_mcp_plan addon_mcp_pin_args register_addon_mcp_servers mcp_tool_name; do
-  range='/^'"${fn}"'() {/,/^}/p'
-  # shellcheck disable=SC1090
-  eval "$(sed -n "$range" "$bootstrap")"
-done
+load_fns "$bootstrap" addon_mcp_plan addon_mcp_pin_args register_addon_mcp_servers mcp_tool_name
 
 log() { :; }
-
-fail() {
-  printf 'FAIL %s\n' "$1" >&2
-  exit 1
-}
 
 [ -f "${ADDONS_DIR}/lightrag/addon.json" ] || fail "addons/lightrag/addon.json not found"
 

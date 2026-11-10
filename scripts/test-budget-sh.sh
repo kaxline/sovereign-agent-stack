@@ -7,6 +7,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=lib/testkit.sh
+. "${ROOT}/scripts/lib/testkit.sh"
 budget="${ROOT}/scripts/budget.sh"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -16,11 +18,6 @@ export BUDGET_ENV_PATH="$tmp/actual/budget.env"
 export STUB="$tmp/stub"
 mkdir -p "$tmp/bin" "$tmp/actual" "$STUB"
 f="$BUDGET_ENV_PATH"
-
-fail() {
-  printf 'FAIL %s\n' "$1" >&2
-  exit 1
-}
 
 # --- Stubs ---
 

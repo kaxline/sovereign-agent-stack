@@ -17,18 +17,10 @@ import mail_index as mi  # noqa: E402
 import mail_query as mq  # noqa: E402
 import synthetic_mail as sm  # noqa: E402
 
+from testkit import expect, fail  # noqa: E402
+
 PERSONAL = sm.ACCOUNTS["personal"].id
 WORK = sm.ACCOUNTS["work"].id
-
-
-def fail(msg: str) -> None:
-    print(f"FAIL {msg}", file=sys.stderr)
-    raise SystemExit(1)
-
-
-def expect(cond: bool, msg: str) -> None:
-    if not cond:
-        fail(msg)
 
 
 def build_index(tmp: Path, *, bodies: bool) -> Path:

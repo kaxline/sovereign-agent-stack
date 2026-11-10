@@ -6,15 +6,12 @@
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=lib/testkit.sh
+. "${ROOT}/scripts/lib/testkit.sh"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 mkdir "${tmp}/scripts"
 cp "${ROOT}/scripts/mail-triage-cron.sh" "${tmp}/scripts/"
-
-fail() {
-  printf 'FAIL %s\n' "$1" >&2
-  exit 1
-}
 
 create() {
   printf 'MAIL_MCP_ENABLED=%s\n' "$1" > "${tmp}/.env"

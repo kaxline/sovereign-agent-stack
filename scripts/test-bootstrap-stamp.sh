@@ -8,6 +8,8 @@
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=lib/testkit.sh
+. "${ROOT}/scripts/lib/testkit.sh"
 bootstrap="${ROOT}/compose/hermes/bootstrap-api-profile.sh"
 REAL_PYTHON="$(command -v python3)"
 # The image's /bin/sh is dash; use it here too when it is installed.
@@ -47,11 +49,6 @@ echo "python3" >> "${tmp}/spawns"
 exit 0
 EOF
 chmod +x "${tmp}/bin/hermes" "${tmp}/bin/python3"
-
-fail() {
-  printf 'FAIL %s\n' "$1" >&2
-  exit 1
-}
 
 # run <profile> [VAR=value...]; leaves the log in $tmp/out
 run() {

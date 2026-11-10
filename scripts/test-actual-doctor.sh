@@ -8,17 +8,14 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=lib/testkit.sh
+. "${ROOT}/scripts/lib/testkit.sh"
 REAL_DOCKER="$(command -v docker || true)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 export STUB="$tmp/stub"
 mkdir -p "$tmp/bin" "$tmp/work/actual" "$STUB"
 f="$tmp/work/actual/budget.env"
-
-fail() {
-  printf 'FAIL %s\n' "$1" >&2
-  exit 1
-}
 
 # docker: info works; compose ps -q prints an id for each $STUB/running-<svc>;
 # inspect says healthy; exec in hermes prints $STUB/tools-<host>.json; the
