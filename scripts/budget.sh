@@ -41,7 +41,9 @@ Usage: scripts/budget.sh <command> [options]
         local server without budget.env. The generated server password goes
         to <data root>/addons/actual/secrets/server_password; a budget named
         Budget is created when the server has none. Prints {"phase":"done"}
-        with sync_id and name when the server has exactly one budget.
+        with sync_id and name when the server has exactly one budget. With
+        ACTUAL_LOCAL_ENABLED off it does nothing and prints {"phase":"done"};
+        after turning it on, run scripts/addon.sh enable actual --reinit.
   add --url URL [--force]
         A budget on a remote server. ACTUAL_PASSWORD, ACTUAL_BUDGET_SYNC_ID
         and ACTUAL_BUDGET_ENCRYPTION_PASSWORD come from the environment, or
@@ -827,12 +829,28 @@ password_accepted() {
   [[ -n "$(json_field "$api_resp" token)" ]]
 }
 
+# truthy VALUE: 1, true, yes or on (any case), as addon.sh reads .env flags.
+truthy() {
+  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+    1 | true | yes | on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # init --server-only: the local server's password lives in
 # <data root>/addons/actual/secrets/server_password (mode 600), a budget is
 # created when the server has none, and budget.env, ACTUAL_BUDGET_FILE and
-# ACTUAL_MCP_ENABLED stay untouched. Safe to run again.
+# ACTUAL_MCP_ENABLED stay untouched. Safe to run again. With the local server
+# off it does nothing, so enabling the add-on on a remote-only install works;
+# turning the server on later takes addon.sh enable actual --reinit.
 init_server_only() {
   local sdir="" pwf pw="" alt="" alt_pw="" resp files n sync="" name=""
+  if ! truthy "$(env_get ACTUAL_LOCAL_ENABLED 0)"; then
+    note "ACTUAL_LOCAL_ENABLED is off, so there is no local server to set up; after turning it on, run scripts/addon.sh enable actual --reinit"
+    # shellcheck disable=SC2119
+    emit_done
+    return 0
+  fi
   docker info > /dev/null 2>&1 || emit_error server_unreachable "Docker daemon is not running"
   secrets_dir
   mkdir -p "$sdir" || emit_error not_found "couldn't create ${sdir}"

@@ -751,9 +751,36 @@ so_run() { # ARGS...
 }
 so_reset() {
   reset
+  printf 'COMPOSE_PROFILES=core\nACTUAL_MCP_ENABLED=0\nACTUAL_LOCAL_ENABLED=1\nACTUAL_BUDGET_FILE=\n' > "$ENV_FILE"
   rm -rf "$so_data" "$tmp/actual/server-password.pending"
   mkdir -p "$so_secrets"
 }
+# The local server off (a remote-only install): done, with nothing probed or
+# written, so addon.sh enable actual goes through.
+for lv in 0 "" no; do
+  so_reset
+  if [[ -n "$lv" ]]; then
+    printf 'COMPOSE_PROFILES=core\nACTUAL_LOCAL_ENABLED=%s\n' "$lv" > "$ENV_FILE"
+  else
+    printf 'COMPOSE_PROFILES=core\n' > "$ENV_FILE"
+  fi
+  cp "$ENV_FILE" "$tmp/env.before"
+  rm -f "$STUB/curl.argv.so" "$STUB/docker.argv.so"
+  cp "$STUB/curl.argv" "$STUB/curl.argv.so" 2>/dev/null || : > "$STUB/curl.argv.so"
+  cp "$STUB/docker.argv" "$STUB/docker.argv.so" 2>/dev/null || : > "$STUB/docker.argv.so"
+  so_run --json
+  [ "$brc" = 0 ] && [ "$(cat "$tmp/jout")" = '{"phase":"done"}' ] || fail "--server-only with ACTUAL_LOCAL_ENABLED='$lv' is done ($(cat "$tmp/jout" "$tmp/jerr"))"
+  cmp -s "$STUB/curl.argv" "$STUB/curl.argv.so" || fail "--server-only with the local server off probes nothing"
+  cmp -s "$STUB/docker.argv" "$STUB/docker.argv.so" || fail "--server-only with the local server off runs no docker"
+  [ -z "$(ls -A "$so_secrets")" ] || fail "--server-only with the local server off writes no secret"
+  cmp -s "$ENV_FILE" "$tmp/env.before" || fail "--server-only with the local server off leaves .env alone"
+done
+# Off without --json: a log line, exit 0.
+so_reset
+printf 'COMPOSE_PROFILES=core\nACTUAL_LOCAL_ENABLED=0\n' > "$ENV_FILE"
+so_run
+[ "$brc" = 0 ] && grep -q 'ACTUAL_LOCAL_ENABLED' "$tmp/jout" || fail "--server-only off without --json logs why ($(cat "$tmp/jout" "$tmp/jerr"))"
+grep -q -- '--reinit' "$tmp/jout" || fail "--server-only off names addon.sh enable actual --reinit"
 # A fresh server: bootstrapped with a generated password kept in secrets/, a
 # budget created, and none of the single-budget settings written.
 so_reset
@@ -768,7 +795,7 @@ jlines_ok || fail "init --server-only --json prints JSON lines only ($(cat "$tmp
 grep -q '^run create' "$STUB/admin.log" || fail "--server-only creates a Budget"
 [ ! -e "$f" ] || fail "--server-only writes no budget.env"
 grep -q 'ACTUAL_MCP_ENABLED=1' "$ENV_FILE" && fail "--server-only doesn't enable the MCP servers"
-grep -q 'ACTUAL_LOCAL_ENABLED=1' "$ENV_FILE" && fail "--server-only leaves ACTUAL_LOCAL_ENABLED alone"
+grep -qx 'ACTUAL_LOCAL_ENABLED=1' "$ENV_FILE" || fail "--server-only leaves ACTUAL_LOCAL_ENABLED alone"
 grep -qx 'ACTUAL_BUDGET_FILE=' "$ENV_FILE" || fail "--server-only leaves ACTUAL_BUDGET_FILE alone"
 [ ! -e "$tmp/actual/server-password.pending" ] || fail "--server-only leaves no pending file"
 pws="$pws $(cat "$STUB/server_pw")"
