@@ -12,7 +12,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 bootstrap="${ROOT}/compose/hermes/bootstrap-api-profile.sh"
 compose="${ROOT}/docker-compose.yml"
 # Only GPT Researcher's manifest: other add-ons add their own drop calls.
-ADDONS_DIR="$(mktemp -d)"
+addons="$(mktemp -d)"
+ADDONS_DIR="$addons"
 mkdir "${ADDONS_DIR}/gptr"
 cp "${ROOT}/addons/gptr/addon.json" "${ADDONS_DIR}/gptr/addon.json"
 ADDON_MANIFEST_PY="${ROOT}/scripts/lib/addon_manifest.py"
@@ -24,7 +25,7 @@ log() { :; }
 # The plan is read in a pipeline, so the stubs' record has to come back
 # through a file rather than the subshell's $calls.
 record="$(mktemp)"
-trap 'rm -rf "$record" "$ADDONS_DIR"' EXIT
+trap 'rm -rf "$record" "$addons"' EXIT
 run() {
   register_addon_mcp_servers "$1" > /dev/null
 }
@@ -82,21 +83,14 @@ GPTR_MCP_ENABLED=1
 run browser 2>/dev/null; got
 [ -z "$calls" ] || fail "a broken manifest registers nothing ($calls)"
 rm -rf "$broken"
-# Only GPT Researcher's manifest: other add-ons add their own drop calls.
-ADDONS_DIR="$(mktemp -d)"
-mkdir "${ADDONS_DIR}/gptr"
-cp "${ROOT}/addons/gptr/addon.json" "${ADDONS_DIR}/gptr/addon.json"
+ADDONS_DIR="$addons"
 
-# Compose: gptr-mcp starts with research or automation, the REST service only
-# with automation, and both bootstraps receive the flag.
+# Compose: gptr-mcp starts with research or automation, and the REST service
+# only with automation. test-addon-manifests.py checks the flag reaches both
+# bootstraps and its sync-profiles row.
 sed -n '/^  gptr-mcp:/,/^    container_name:/p' "$compose" | grep -q 'profiles: \["research", "automation"\]' \
   || fail "gptr-mcp must be in the research and automation profiles"
 sed -n '/^  gpt-researcher:/,/^    container_name:/p' "$compose" | grep -q 'profiles: \["automation"\]' \
   || fail "gpt-researcher (REST, port 8000) stays in automation only"
-[ "$(grep -cF -- '- GPTR_MCP_ENABLED=' "$compose")" = 2 ] \
-  || fail "both hermes-*-bootstrap services must receive GPTR_MCP_ENABLED"
-
-bash "${ROOT}/scripts/sync-profiles.sh" --table | grep -q '^GPTR_MCP_ENABLED research 1$' \
-  || fail "sync-profiles.sh must map GPTR_MCP_ENABLED to research"
 
 printf 'OK GPT Researcher MCP registration\n'

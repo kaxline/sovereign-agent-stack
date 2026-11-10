@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
-from testkit import expect, fail  # noqa: E402
+from testkit import expect  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location("check_mail_cron", HERE / "check-mail-cron.py")

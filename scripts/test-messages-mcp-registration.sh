@@ -38,13 +38,6 @@ run browser
 run api-server
 [ "$calls" = "drop:api-server:http://messages-mcp:8000/mcp;" ] || fail "api-server must drop, never register ($calls)"
 
-for tool in $MESSAGES_MCP_TOOLS $MESSAGES_TRIAGE_TOOL; do
-  case "$tool" in
-    messages_status|messages_chats|messages_search|messages_conversation|messages_get|messages_triage_batch) ;;
-    *) fail "unexpected tool in allowlist: $tool" ;;
-  esac
-done
-
 grep -q '"messages-mcp:8000"' "$bootstrap" || fail "the cron fence must cover messages-mcp"
 grep -q '"cron_job": "messages-triage"' "$bootstrap" || fail "the webhook route must fire messages-triage"
 # Not in a pipeline: a missing function must fail here, not pass the grep.

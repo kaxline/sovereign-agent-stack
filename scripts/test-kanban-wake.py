@@ -22,7 +22,7 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "compose" / "hermes"))
 sys.path.insert(0, str(ROOT / "scripts" / "lib"))
-from testkit import expect, fail  # noqa: E402
+from testkit import expect  # noqa: E402
 
 import kanban_wake  # noqa: E402
 import hermes_image  # noqa: E402

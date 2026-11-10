@@ -1520,15 +1520,24 @@ for path, manifest, parse_error in am.load_dir(ROOT / "addons"):
               [g["flag"], g["profile"], "1" if g["seed"] else "0"] in rows, table.stdout)
         check(f"{sid}: gate profile {g['profile']} exists in docker-compose.yml",
               bool(re.search(rf'^    profiles: \[(?:.*[ ,"])?"?{re.escape(g["profile"])}"?[,\]]', compose, re.M)))
+    def flag_lines(var: str) -> int:
+        """Compose lines passing VAR off by default: `- VAR=${VAR:-0}`."""
+        return len(re.findall(rf"^      - {var}=\$\{{{var}:-0\}}$", compose, re.M))
+
     if manifest.get("mcp"):
-        for var in [b["flag"], *manifest["mcp"].get("env", {}).values()]:
+        gate = manifest["mcp"].get("instances", {}).get("gate", {}).get("flag")
+        for var in [b["flag"], *([gate] if gate else [])]:
+            n = flag_lines(var)
+            check(f"{sid}: both hermes-*-bootstrap services receive {var}=${{{var}:-0}}", n == 2, f"found {n}")
+        for var in manifest["mcp"].get("env", {}).values():
             n = len(re.findall(rf"^      - {var}=", compose, re.M))
             check(f"{sid}: both hermes-*-bootstrap services receive {var}", n == 2, f"found {n}")
     if manifest.get("vaultBackend"):
         # Both bootstraps read the flag for vault-plan. hermes installs the plugin
         # whatever the flag says, so flipping it does not recreate hermes.
-        n = len(re.findall(rf"^      - {b['flag']}=", compose, re.M))
-        check(f"{sid}: both hermes-*-bootstrap services, and not hermes, receive {b['flag']}", n == 2, f"found {n}")
+        n = flag_lines(b["flag"])
+        check(f"{sid}: both hermes-*-bootstrap services, and not hermes, receive {b['flag']}=${{{b['flag']}:-0}}",
+              n == 2, f"found {n}")
 
 # --- Twenty ------------------------------------------------------------------
 tw_path = ROOT / "addons" / "twenty" / "addon.json"
@@ -1553,9 +1562,6 @@ if tw_path.is_file():
           == ["twenty-db", "twenty-redis", "twenty-server", "twenty-worker"])
     check("twenty: mcp.pin is the seven tools Twenty's MCP lists for every workspace",
           tw["mcp"]["pin"] == TW_PINS.split(), str(tw["mcp"]["pin"]))
-    gate = tw["mcp"]["instances"]["gate"]["flag"]
-    n = len(re.findall(rf"^      - {gate}=", compose, re.M))
-    check(f"twenty: both hermes-*-bootstrap services receive the instance gate {gate}", n == 2, f"found {n}")
     bootstrap = (ROOT / "compose/hermes/bootstrap-api-profile.sh").read_text()
     check("the bootstrap has no Twenty-specific registration left",
           not re.search(r"register_twenty|reconcile_twenty|twenty_[a-z_]+\(\)|TWENTY_WORKSPACES_DIR|TWENTY_LOCAL_MCP_URL"

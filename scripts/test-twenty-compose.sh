@@ -45,23 +45,13 @@ for svc in twenty-db twenty-redis; do
 done
 sed -n '/^networks:/,/^volumes:/p' "$compose" | grep -q '^  crm:' || fail "crm network is declared"
 
-[ "$(grep -cF -- '- TWENTY_MCP_ENABLED=${TWENTY_MCP_ENABLED:-0}' "$compose")" = 2 ] \
-  || fail "both hermes-*-bootstrap services receive TWENTY_MCP_ENABLED"
-[ "$(grep -cF -- '- TWENTY_LOCAL_ENABLED=${TWENTY_LOCAL_ENABLED:-0}' "$compose")" = 2 ] \
-  || fail "both hermes-*-bootstrap services receive TWENTY_LOCAL_ENABLED"
+# Both flags reaching the bootstraps, and their sync-profiles rows, are checked
+# for every add-on in test-addon-manifests.py.
 [ "$(grep -cF -- '- ${ASSISTANT_DATA_ROOT:-./data}/addons/twenty:/bootstrap/addon-data/twenty:ro' "$compose")" = 2 ] \
   || fail "both hermes-*-bootstrap services mount the Twenty instance store read-only"
 [ "$(grep -cF -- '- ADDON_DATA_DIR=/bootstrap/addon-data' "$compose")" = 2 ] \
   || fail "both hermes-*-bootstrap services receive ADDON_DATA_DIR"
 if grep -qF -- '/bootstrap/twenty-workspaces' "$compose"; then fail "no service mounts the old workspace files"; fi
-
-# The rows come from addons/twenty/addon.json. TWENTY_MCP_ENABLED has a profile
-# no service uses, so a remote-only install does not start the local services.
-table="$(bash "${ROOT}/scripts/sync-profiles.sh" --table)"
-printf '%s\n' "$table" | grep -qx 'TWENTY_LOCAL_ENABLED crm 0' \
-  || fail "sync-profiles.sh maps TWENTY_LOCAL_ENABLED to crm"
-printf '%s\n' "$table" | grep -qx 'TWENTY_MCP_ENABLED crm-mcp 0' \
-  || fail "sync-profiles.sh maps TWENTY_MCP_ENABLED to crm-mcp"
 
 # setup.sh: --crm turns both flags on; the secrets are generated for every
 # install so enabling crm later needs no extra step, and never replaced.

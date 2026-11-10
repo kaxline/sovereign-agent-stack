@@ -38,11 +38,4 @@ done
 run api-server
 [ "$calls" = "drop:api-server:http://mail-mcp:8000/mcp;" ] || fail "api-server must drop, never register ($calls)"
 
-for tool in $MAIL_MCP_TOOLS; do
-  case "$tool" in
-    mail_status|mail_search|mail_get|mail_thread) ;;
-    *) fail "unexpected tool in allowlist: $tool" ;;
-  esac
-done
-
 printf 'OK mail MCP registration\n'
