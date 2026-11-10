@@ -110,10 +110,11 @@ account's slug in the error. `tls_ca` is stored as a secret
 multi-line PEM.
 
 Proton Bridge runs on the host, so use `host = "host.docker.internal"`, the
-port and connection security that Bridge shows for IMAP (`plain` is accepted
-for this host), the Bridge-generated password, and `tls_ca` set to the certificate
-Bridge exports. Containers reach `host.docker.internal` through an
-`extra_hosts` entry on both egress services.
+port Bridge shows for IMAP and the Bridge-generated password. Choose
+`security = "plain"` when Bridge listens without TLS. When it uses TLS, choose
+`starttls` or `tls` to match, and set `tls_ca` to the certificate Bridge
+exports. Containers reach `host.docker.internal` through an `extra_hosts`
+entry on both egress services.
 
 ### Calling order
 
@@ -152,8 +153,7 @@ next one.
 
 ### First real run (`email`)
 
-Run these yourself. They need your account, so nothing here is run for you.
-Report pass or fail and counts, not messages, subjects or sender names.
+Run these yourself. Report pass or fail and counts, not messages, subjects or sender names.
 
 1. Write the settings, with a short `since` window on a large mailbox:
 
@@ -166,7 +166,7 @@ Report pass or fail and counts, not messages, subjects or sender names.
    user and address first:
 
    ```bash
-   read -rs -p 'IMAP password: ' pw; echo
+   printf 'IMAP password: ' >&2; read -rs pw; echo
    printf '%s' "$pw" | python3 -c '
    import json, sys
    print(json.dumps({"host": "imap.example.com", "port": 993, "security": "tls",
@@ -199,9 +199,11 @@ Report pass or fail and counts, not messages, subjects or sender names.
 
    `in_scope` should match the mailbox's message count within the `since`
    window, and `unreadable` should be 0. A login failure shows as a
-   `mail-index:` line with the account id and an exit code of 4. Ask Hermes
-   for the number of unread messages this week and compare it with your mail
-   client.
+   `mail-index:` line with the account id and an exit code of 4. With one
+   account, `in_scope` is that account's count (with several it is the
+   total); `mail_status` also reports a count per account. Compare the count
+   with your mail client's count for the same mailbox since the `since` date,
+   and report the two numbers and pass or fail.
 
 For drafts, run the `configure` call with `{"drafts":true}`, then `enable`
 again, ask Hermes to draft a reply, and check the Drafts mailbox in your mail
@@ -223,7 +225,8 @@ Hermes can't send email. With the separate [drafts](#drafts) opt-in it can
 write drafts, which a host helper saves to Mail's Drafts for you to send.
 
 Accounts that Mail.app doesn't have, or machines without it, can use the
-[`email` add-on](#imap-add-on-email), or the optional [IMAP source](#imap-source) of this add-on. It sits behind the same scope,
+[`email` add-on](#imap-add-on-email), or the optional
+[IMAP source](#imap-source) of `email-local`. It sits behind the same scope,
 index and read-only MCP, and keeps the password away from the agent. See
 [Providers](#providers) for how sources plug in.
 
