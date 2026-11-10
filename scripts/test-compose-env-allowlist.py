@@ -7,11 +7,11 @@ environment key names. It does not print secret values.
 
 from __future__ import annotations
 
-import json
-import os
-import subprocess
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+import compose_config  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -56,8 +56,8 @@ SECRET_KEYS = {
     "DB_POSTGRESDB_PASSWORD": set(),
     "N8N_ENCRYPTION_KEY": {"n8n", "n8n-import"},
     "N8N_USER_MANAGEMENT_JWT_SECRET": {"n8n", "n8n-import"},
-    "NEO4J_PASSWORD": {"lightrag"},
-    "LIGHTRAG_API_KEY": {"lightrag"},
+    "NEO4J_PASSWORD": {"lightrag", "n8n-import"},
+    "LIGHTRAG_API_KEY": {"lightrag", "n8n-import"},
     "OPENCODE_SERVER_PASSWORD": {"opencode", "opencode-mcp"},
     "HERMES_DASHBOARD_PASSWORD": set(),
     "HERMES_DASHBOARD_AUTH_SECRET": set(),
@@ -106,15 +106,21 @@ ACTUAL_ENV = {
     "actual-mcp-rw": {"ACTUAL_SYNC_TTL_MS", "ACTUAL_DATA_DIR"},
     "actual-mcp-ro": {"ACTUAL_SYNC_TTL_MS", "ACTUAL_DATA_DIR"},
 }
-# The only ACTUAL_* keys any other service may carry.
-ACTUAL_BOOTSTRAP_KEYS = {"ACTUAL_MCP_ENABLED", "ACTUAL_ACCESS"}
+# The only ACTUAL_* keys any other service may carry. ACTUAL_BUDGET_FILE is
+# the single budget's path, never its contents.
+ACTUAL_BOOTSTRAP_KEYS = {"ACTUAL_MCP_ENABLED", "ACTUAL_ACCESS", "ACTUAL_BUDGET_FILE"}
 ACTUAL_BOOTSTRAPS = {"hermes-api-bootstrap", "hermes-browser-bootstrap"}
 
 # Keys that must still be present after the allowlist, so a drop is caught.
 REQUIRED = {
     "lightrag": {"NEO4J_PASSWORD", "LIGHTRAG_API_KEY"},
     "n8n": {"N8N_ENCRYPTION_KEY", "N8N_USER_MANAGEMENT_JWT_SECRET"},
-    "n8n-import": {"N8N_ENCRYPTION_KEY", "N8N_USER_MANAGEMENT_JWT_SECRET"},
+    "n8n-import": {
+        "N8N_ENCRYPTION_KEY",
+        "N8N_USER_MANAGEMENT_JWT_SECRET",
+        "LIGHTRAG_API_KEY",
+        "NEO4J_PASSWORD",
+    },
     "hermes": {
         "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD",
         "HERMES_DASHBOARD_BASIC_AUTH_SECRET",
@@ -143,8 +149,8 @@ REQUIRED = {
     "twenty-db": {"POSTGRES_PASSWORD"},
     "actual-mcp-rw": {"ACTUAL_SYNC_TTL_MS", "ACTUAL_DATA_DIR"},
     "actual-mcp-ro": {"ACTUAL_SYNC_TTL_MS", "ACTUAL_DATA_DIR"},
-    "hermes-api-bootstrap": {"ACTUAL_MCP_ENABLED", "ACTUAL_ACCESS"},
-    "hermes-browser-bootstrap": {"ACTUAL_MCP_ENABLED", "ACTUAL_ACCESS"},
+    "hermes-api-bootstrap": {"ACTUAL_MCP_ENABLED", "ACTUAL_ACCESS", "ACTUAL_BUDGET_FILE"},
+    "hermes-browser-bootstrap": {"ACTUAL_MCP_ENABLED", "ACTUAL_ACCESS", "ACTUAL_BUDGET_FILE"},
 }
 
 # Clients may carry these names only when the value is the placeholder.
@@ -178,22 +184,8 @@ def env_map(service: dict) -> dict:
 
 
 def load_config() -> dict:
-    env = os.environ.copy()
-    env["COMPOSE_PROFILES"] = PROFILES
     # A local .env must not hide the worker allowlist. ssh is the default layout.
-    env["HERMES_TERMINAL_BACKEND"] = "ssh"
-    proc = subprocess.run(
-        ["docker", "compose", "config", "--format", "json"],
-        cwd=ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-    if proc.returncode != 0:
-        err = (proc.stderr or proc.stdout or "docker compose config failed").strip()
-        fail(err)
-        raise SystemExit(1)
-    return json.loads(proc.stdout)
+    return compose_config.render(PROFILES, {"HERMES_TERMINAL_BACKEND": "ssh"})
 
 
 def check_secrets(services: dict) -> list[str]:

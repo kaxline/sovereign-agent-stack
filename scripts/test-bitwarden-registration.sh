@@ -9,7 +9,7 @@
 # and the plugin itself in nousresearch/hermes-agent, against scratch
 # profiles, a synthetic Bitwarden manifest and a fake broker on
 # 127.0.0.1:8099. It is skipped when Docker or the image is missing unless
-# --image is given.
+# --image or HERMES_IMAGE_REQUIRED=1 is given.
 set -eu
 
 cd "$(dirname "$0")/.."
@@ -17,8 +17,9 @@ ROOT="$(pwd)"
 BOOTSTRAP=compose/hermes/bootstrap-api-profile.sh
 COMPOSE=docker-compose.yml
 INSTALL=compose/hermes/14-install-bwbroker-plugin.sh
-TAG="${HERMES_AGENT_IMAGE_TAG:-v0.22.7}"
-IMAGE="nousresearch/hermes-agent:$TAG"
+# shellcheck source=lib/hermes-image.sh
+. scripts/lib/hermes-image.sh
+IMAGE="$HERMES_IMAGE"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -47,14 +48,7 @@ done
 grep -qx 'name: bwbroker' compose/hermes/plugins/bwbroker/plugin.yaml || fail "plugin.yaml must name bwbroker"
 echo "ok: host wiring"
 
-mode="${1:-}"
-[ "$mode" = "--host-only" ] && exit 0
-if [ "$mode" != "--image" ]; then
-  if ! command -v docker >/dev/null 2>&1 || ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-    echo "skip image checks ($IMAGE not present)"
-    exit 0
-  fi
-fi
+hermes_image_gate "${1:-}" "image checks"
 
 # --- image: scratch profiles, synthetic manifest ----------------------------
 work="$(mktemp -d "${TMPDIR:-/tmp}/bitwarden-registration.XXXXXX")"

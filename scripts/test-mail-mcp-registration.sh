@@ -62,7 +62,7 @@ MAIL_MCP_ENABLED=1
 for profile in "" browser; do
   run "$profile"; got
   p="${profile:-default}"
-  [ "$calls" = "register:${p}:mail:Mail (read-only):${URL}:60:30:${TOOLS};pin:${p}:${TOOLS};" ] \
+  [ "$calls" = "register:${p}:mail:Mail (read-only):${URL}:60:30:${TOOLS};drop:${p}:${URL};pin:${p}:${TOOLS};" ] \
     || fail "${p} should register the four read tools and pin them ($calls)"
 done
 
@@ -83,7 +83,7 @@ done
 MAIL_MCP_ENABLED=1
 export MAIL_MCP_URL="http://elsewhere:9000/mcp" MAIL_MCP_TIMEOUT=90 MAIL_MCP_CONNECT_TIMEOUT=45
 run browser; got
-[ "$calls" = "register:browser:mail:Mail (read-only):http://elsewhere:9000/mcp:90:45:${TOOLS};pin:browser:${TOOLS};" ] \
+[ "$calls" = "register:browser:mail:Mail (read-only):http://elsewhere:9000/mcp:90:45:${TOOLS};drop:browser:http://elsewhere:9000/mcp;pin:browser:${TOOLS};" ] \
   || fail "MAIL_MCP_* overrides the manifest ($calls)"
 MAIL_MCP_ENABLED=0
 run browser; got

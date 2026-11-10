@@ -68,7 +68,7 @@ MAIL_DRAFTS_ENABLED=1
 for profile in "" browser; do
   run "$profile"; got
   p="${profile:-default}"
-  [ "$(drafts_only "$calls")" = "register:${p}:drafts:Mail drafts (no sending):${URL}:60:30:${TOOLS};pin:${p}:drafts:${TOOLS};" ] \
+  [ "$(drafts_only "$calls")" = "register:${p}:drafts:Mail drafts (no sending):${URL}:60:30:${TOOLS};drop:${p}:${URL};pin:${p}:drafts:${TOOLS};" ] \
     || fail "${p} should register the two draft tools and pin them ($calls)"
 done
 
@@ -81,7 +81,7 @@ MAIL_MCP_ENABLED=0 MAIL_DRAFTS_ENABLED=1
 for profile in "" browser; do
   run "$profile"; got
   p="${profile:-default}"
-  [ "$calls" = "drop:${p}:${MAIL_URL};register:${p}:drafts:Mail drafts (no sending):${URL}:60:30:${TOOLS};pin:${p}:drafts:${TOOLS};" ] \
+  [ "$calls" = "drop:${p}:${MAIL_URL};register:${p}:drafts:Mail drafts (no sending):${URL}:60:30:${TOOLS};drop:${p}:${URL};pin:${p}:drafts:${TOOLS};" ] \
     || fail "${p}: drafts on, mail off registers drafts and drops mail ($calls)"
 done
 

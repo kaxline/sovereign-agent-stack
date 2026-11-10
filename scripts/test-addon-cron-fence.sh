@@ -7,14 +7,15 @@
 # The host part checks the wiring. The image part runs the real function in
 # nousresearch/hermes-agent (Hermes's YAML writer lives there) against scratch
 # configs; it is skipped when Docker or the image is missing unless --image
-# is given.
+# or HERMES_IMAGE_REQUIRED=1 is given.
 set -eu
 
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 BOOTSTRAP=compose/hermes/bootstrap-api-profile.sh
-TAG="${HERMES_AGENT_IMAGE_TAG:-v0.22.7}"
-IMAGE="nousresearch/hermes-agent:$TAG"
+# shellcheck source=lib/hermes-image.sh
+. scripts/lib/hermes-image.sh
+IMAGE="$HERMES_IMAGE"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -24,6 +25,11 @@ grep -q '_out="$(python3 - "$_fmc_cfg" "$ADDON_MANIFEST_PY" "$ADDONS_DIR" "$ADDO
 grep -q 'addon_manifest.cron_fence(Path(sys.argv\[3\]), data_dir=Path(sys.argv\[4\]))' "$BOOTSTRAP" \
   || fail "the fence reads instance names from the stores"
 grep -q 'addon_manifest.cron_fence' "$BOOTSTRAP" || fail "the fence must use addon_manifest.cron_fence"
+# A connected Actual budget's write entry sits at a path under the fenced rw
+# URL's host (http://actual-mcp-rw:3000/<slug>/mcp), so the fence compares
+# scheme, host and port.
+grep -q 'origin(str(servers\[n\].get("url", ""))) in addon_origins' "$BOOTSTRAP" \
+  || fail "the fence matches add-on URLs by scheme, host and port"
 
 # cron "ro" on the split fixture: only its rw URL is fenced, and no name.
 python3 - <<'PY' || fail "cron ro must fence the rw URL only"
@@ -36,14 +42,7 @@ assert got == ([], ["http://split-rw:9000/mcp"]), got
 PY
 echo "ok: host wiring"
 
-mode="${1:-}"
-[ "$mode" = "--host-only" ] && exit 0
-if [ "$mode" != "--image" ]; then
-  if ! command -v docker >/dev/null 2>&1 || ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-    echo "skip image checks ($IMAGE not present)"
-    exit 0
-  fi
-fi
+hermes_image_gate "${1:-}" "image checks"
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/addon-cron-fence.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
@@ -89,6 +88,10 @@ seed_crm() {
   rm -f /h/.mail-cron-toolsets.json
   printf 'mcp_servers:\n  crm-main:\n    url: http://twenty-server:3000/mcp\n  searxng:\n    url: http://searxng-mcp:8000/mcp\n' > /h/config.yaml
 }
+seed_rows() {
+  rm -f /h/.mail-cron-toolsets.json
+  printf 'mcp_servers:\n  budget-main:\n    url: http://actual-mcp-rw:3000/main/mcp\n  budget-main-ro:\n    url: http://actual-mcp-ro:3000/main/mcp\n  searxng:\n    url: http://searxng-mcp:8000/mcp\n' > /h/config.yaml
+}
 cron_list() { tr -d '\n ' < /h/config.yaml | sed -n 's/.*cron:\(.*\)/\1/p'; }
 
 ADDON_MANIFEST_PY=/bootstrap/addon_manifest.py
@@ -103,6 +106,8 @@ seed_split http://split-rw:9000/mcp; fence_mail_from_cron ""
 echo "ro-at-rw:$(cron_list)"
 ADDONS_DIR=/bootstrap/addons; seed_crm; fence_mail_from_cron ""
 echo "crm-ro:$(cron_list)"
+seed_rows; fence_mail_from_cron ""
+echo "rows:$(cron_list)"
 ADDONS_DIR=/w/addons-crm-off; seed_crm; fence_mail_from_cron ""
 echo "crm-false:$(cron_list)"
 ADDONS_DIR=/w/addons-off
@@ -123,6 +128,7 @@ expect 'false:-hermes-cron-searxng' "cron false pins a cron list without gptr"
 expect 'ro-at-ro:' "a cron ro add-on registered at its ro URL stays in cron"
 expect 'ro-at-rw:-hermes-cron-searxng' "a cron ro add-on registered at its rw URL is fenced"
 expect 'crm-ro:' "Twenty (cron true) leaves crm-* entries in cron, as before 0.3.13"
+expect 'rows:-hermes-cron-budget-main-ro-searxng' "a connected budget's write entry is fenced, its -ro entry stays"
 expect 'crm-false:-hermes-cron-searxng' "an instances add-on with cron false fences crm-main"
 expect 'missing:-hermes-cron-searxng' "a missing module keeps the list it wrote"
 expect 'back:' "the list is removed once the manifest allows cron"

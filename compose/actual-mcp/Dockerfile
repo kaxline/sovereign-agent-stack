@@ -1,5 +1,5 @@
-# ---- Builder ----
-FROM node:24-alpine AS builder
+# ---- Build ----
+FROM node:24-alpine AS build
 
 WORKDIR /app
 
@@ -11,6 +11,15 @@ RUN --mount=type=cache,target=/root/.npm npm ci
 
 COPY . ./
 RUN npm run build
+
+# ---- Test ----
+# Local addition: `make actual-mcp-test` builds this stage, which runs the unit
+# tests with the dev dependencies the builder stage prunes. Nothing else uses it.
+FROM build AS test
+RUN npx vitest run
+
+# ---- Builder ----
+FROM build AS builder
 
 # Reason: prune here so the release stage gets compiled production modules without needing a toolchain.
 RUN npm prune --omit=dev
@@ -38,4 +47,6 @@ RUN mkdir -p /data && chown node:node /data
 USER node
 
 EXPOSE 3000
-ENTRYPOINT ["node", "build/index.js"]
+# Local addition: the launcher runs build/index.js as children, one for the budget in
+# /app/.env and one per connected budget under ACTUAL_ROWS_DIR (src/launcher).
+ENTRYPOINT ["node", "build/launcher/main.js"]

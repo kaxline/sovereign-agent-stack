@@ -240,6 +240,23 @@ if [ ! -f "${root}/scripts/addon.sh" ]; then
   exit 1
 fi
 
+# env_flags_json and truthy read bool words in any case, under the bash in use.
+mkdir -p "${tmp}/flags"
+printf 'A_ENABLED=TRUE\nB_ENABLED="Off"\nC_ENABLED=yes\nD_ENABLED=\nE_URL=http://x\nA_ENABLED=0\nF=On\n' \
+  > "${tmp}/flags/.env"
+# shellcheck disable=SC2016 # the script runs under $BASH_UNDER_TEST
+got="$(cd "${tmp}/flags" && "$BASH_UNDER_TEST" -c 'set -euo pipefail
+eval "$(sed -n -e "/^bool_word() /,/^}$/p" -e "/^truthy() /,/^}$/p" -e "/^env_flags_json() /,/^}$/p" "$1")"
+command -v env_flags_json >/dev/null && command -v truthy >/dev/null || exit 3
+printf "%s " "$(env_flags_json)"
+for v in ON True 1 yes off FALSE 0 "" maybe; do truthy "$v" && printf 1 || printf 0; done' _ "${root}/scripts/addon.sh" 2>&1)" || true
+want='{"A_ENABLED":"1","B_ENABLED":"0","C_ENABLED":"1","D_ENABLED":"0","F":"1"} 111100000'
+if [ "$got" = "$want" ]; then
+  ok "bool words in any case map to flags, first .env line wins"
+else
+  bad "bool words in any case map to flags: got '${got}', want '${want}'"
+fi
+
 addon_in '{"interval": 600}' configure fixture
 expect_rc "configure top-level settings" 0
 if [ -f "${root}/data/addons/fixture/config/settings.env" ] && [ ! -e "${root}/data/addons/fixture/settings.env" ]; then
@@ -411,6 +428,49 @@ if [ "$(envval FIXTURE_EXTRA_ENABLED)" = 1 ] && logged "fixture-extra"; then
 else
   bad "enable restores a gate from its stored setting"
 fi
+
+# A gate flag set by hand in .env with its setting never stored (v0.3.12's
+# ACTUAL_LOCAL_ENABLED): disable stores the setting as true, so enable
+# restores the flag.
+settings_env="${root}/data/addons/fixture/config/settings.env"
+unstore_extra() {
+  grep -v '^ADDON_FIXTURE_EXTRA=' "$settings_env" > "${settings_env}.new" || true
+  mv "${settings_env}.new" "$settings_env"
+}
+unstore_extra
+addon disable fixture
+expect_rc "disable with a hand-set gate flag" 0
+if grep -qx 'ADDON_FIXTURE_EXTRA=1' "$settings_env" && [ "$(envval FIXTURE_EXTRA_ENABLED)" = 0 ]; then
+  ok "disable stores a hand-set gate's setting as true, then zeroes the flag"
+else
+  bad "disable stores a hand-set gate's setting as true, then zeroes the flag: $(cat "$settings_env")"
+fi
+addon enable fixture
+if [ "$(envval FIXTURE_EXTRA_ENABLED)" = 1 ]; then
+  ok "enable restores a hand-set gate after disable"
+else
+  bad "enable restores a hand-set gate after disable"
+fi
+# Off by hand and not stored: disable stores nothing, enable leaves it off.
+unstore_extra
+python3 - "${root}/.env" <<'PY2'
+import sys
+p = sys.argv[1]
+lines = open(p).read().splitlines()
+open(p, "w").write("\n".join("FIXTURE_EXTRA_ENABLED=0" if l.startswith("FIXTURE_EXTRA_ENABLED=") else l for l in lines) + "\n")
+PY2
+addon disable fixture
+if grep -q '^ADDON_FIXTURE_EXTRA=' "$settings_env"; then
+  bad "disable stores nothing for a gate flag that is off"
+else
+  ok "disable stores nothing for a gate flag that is off"
+fi
+addon enable fixture
+if [ "$(envval FIXTURE_EXTRA_ENABLED)" = 0 ]; then ok "enable leaves an unstored, off gate off"; else bad "enable leaves an unstored, off gate off"; fi
+# Back to the state the tests below expect: extra stored and on.
+addon_in '{"extra": true}' configure fixture
+addon enable fixture
+if [ "$(envval FIXTURE_EXTRA_ENABLED)" = 1 ]; then ok "extra back on"; else bad "extra back on"; fi
 
 # --json output, the lock and rollback. The fixture is enabled here.
 ENABLE_STEPS='[("flags","running"),("flags","done"),("start","running"),("start","done"),("start","running"),("start","done"),("reload","running"),("reload","done")]'
@@ -1437,6 +1497,67 @@ unset FIXTURE_DONE_EXTRA
 expect_rc "disconnect with a hook message" 0
 r=0; json_ok "$out" "done" 'last == {"phase":"done","id":"hooked","action":"disconnect","restart":[],"mcp":[],"message":"signed out"}' || r=1
 check "disconnect's done line carries the hook's message" "$r"
+
+# The built-in n8n add-on (CR 0020 R10), from the real addons/ directory.
+# gpt-researcher belongs to it; gptr-mcp belongs to the GPT Researcher add-on
+# and is never named.
+saved_addons_dir="$ADDONS_DIR"
+export ADDONS_DIR="${root}/addons"
+: > "$STUB_LOG"
+addon_json enable n8n --json
+expect_rc "enable n8n" 0
+r=0; json_ok "$out" "done" 'last == {"phase":"done","id":"n8n","action":"enable","restart":[],"mcp":[]}' || r=1
+check "enable n8n --json ends in done with no restart and no mcp" "$r"
+n_imp="$(grep -n -x 'compose up --no-deps --exit-code-from n8n-import n8n-import' "$STUB_LOG" | head -1 | cut -d: -f1 || true)"
+n_up="$(grep -n 'compose up -d --wait' "$STUB_LOG" | head -1 | cut -d: -f1 || true)"
+if [ -n "$n_imp" ] && [ -n "$n_up" ] && [ "$n_imp" -lt "$n_up" ] \
+  && grep 'compose up -d --wait' "$STUB_LOG" | grep -qw n8n \
+  && grep 'compose up -d --wait' "$STUB_LOG" | grep -qw gpt-researcher \
+  && ! grep 'up -d --wait' "$STUB_LOG" | grep -qF n8n-import; then
+  ok "enable n8n runs n8n-import as a one-shot, then waits for n8n and gpt-researcher"
+else
+  bad "enable n8n runs n8n-import as a one-shot, then waits for n8n and gpt-researcher"; cat "$STUB_LOG"
+fi
+if logged gptr-mcp; then bad "enable n8n never names gptr-mcp"; cat "$STUB_LOG"; else ok "enable n8n never names gptr-mcp"; fi
+if [ "$(envval AUTOMATION_ENABLED)" = 1 ]; then ok "enable n8n sets AUTOMATION_ENABLED=1"; else bad "enable n8n sets AUTOMATION_ENABLED=1"; fi
+
+addon_json list --json
+expect_rc "list --json over the real add-ons" 0
+if python3 -c 'import json,sys; a={x["shortId"]: x for x in json.load(open(sys.argv[1]))}; sys.exit(0 if a["n8n"].get("postInstallMessage") == "Open http://localhost:5678 and create the owner account." and "postInstallMessage" not in a["gptr"] else 1)' "$out"; then
+  ok "list --json carries n8n's postInstallMessage and none for an add-on without one"
+else
+  bad "list --json carries n8n's postInstallMessage and none for an add-on without one"
+fi
+
+# Disabling n8n stops its three containers and leaves gptr-mcp running.
+: > "$STUB_LOG"
+addon_json disable n8n --json
+expect_rc "disable n8n" 0
+stop_line="$(grep -E '^compose stop ' "$STUB_LOG" | grep -vE 'neo4j' || true)"
+for svc in n8n n8n-import gpt-researcher; do
+  if printf '%s\n' "$stop_line" | grep -qw -- "$svc"; then ok "disable n8n stops $svc"; else bad "disable n8n stops $svc"; cat "$STUB_LOG"; fi
+done
+if logged gptr-mcp; then bad "disable n8n leaves gptr-mcp alone"; cat "$STUB_LOG"; else ok "disable n8n leaves gptr-mcp alone"; fi
+if logged "stop searxng" || logged "stop search-gate"; then bad "disable n8n stops no search service"; else ok "disable n8n stops no search service"; fi
+if [ "$(envval AUTOMATION_ENABLED)" = 0 ]; then ok "disable n8n sets AUTOMATION_ENABLED=0"; else bad "disable n8n sets AUTOMATION_ENABLED=0"; fi
+
+# remove --delete-data: the three containers, then the two named volumes, one
+# delete line per volume.
+: > "$STUB_LOG"
+addon_json remove n8n --delete-data --json
+expect_rc "remove n8n --delete-data" 0
+r=0; json_ok "$out" "done" '[l.get("target") for l in lines if l["phase"] == "setup" and l["status"] == "done" and l["step"] == "delete"][:3] == [None, "n8n_storage", "gptr_outputs"]' || r=1
+check "remove n8n prints a delete step for the containers, then one per volume" "$r"
+rm_at="$(grep -n -x 'compose rm -f -s n8n-import n8n gpt-researcher' "$STUB_LOG" | head -1 | cut -d: -f1 || true)"
+v1="$(grep -n -x 'volume rm fixtureproj_n8n_storage' "$STUB_LOG" | head -1 | cut -d: -f1 || true)"
+v2="$(grep -n -x 'volume rm fixtureproj_gptr_outputs' "$STUB_LOG" | head -1 | cut -d: -f1 || true)"
+if [ -n "$rm_at" ] && [ -n "$v1" ] && [ -n "$v2" ] && [ "$rm_at" -lt "$v1" ] && [ "$v1" -lt "$v2" ]; then
+  ok "remove n8n removes the three containers, then each volume"
+else
+  bad "remove n8n removes the three containers, then each volume"; cat "$STUB_LOG"
+fi
+if logged gptr-mcp; then bad "remove n8n never names gptr-mcp"; else ok "remove n8n never names gptr-mcp"; fi
+export ADDONS_DIR="$saved_addons_dir"
 
 if [ "$fail" = 0 ]; then
   echo "all addon.sh checks passed"

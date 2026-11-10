@@ -19,6 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts" / "lib"))
 import addon_manifest as am  # noqa: E402
+import addon_store  # noqa: E402
 
 failures = 0
 
@@ -88,6 +89,26 @@ check("mail and drafts are add-on names now (email-local), not core ones",
       not {"mail", "drafts"} & am.CORE_MCP_NAMES, str(am.CORE_MCP_NAMES))
 refused("core prefix collision", variant(mcp__name="caldav-main"), "builtin", "collides")
 check("crm- is no longer a core prefix", "crm-" not in am.CORE_MCP_PREFIXES, str(am.CORE_MCP_PREFIXES))
+# mcp.unmanaged: profiles bootstrap leaves alone.
+_ok = variant(mcp__profiles={"browser": "rw"}, mcp__unmanaged=["default"])
+check("unmanaged accepts profiles outside mcp.profiles", am.validate(_ok, "builtin") == [], str(am.validate(_ok, "builtin")))
+check("an empty unmanaged list is valid", am.validate(variant(mcp__unmanaged=[]), "builtin") == [])
+check("postInstallMessage as a string is valid", am.validate(variant(postInstallMessage="Open it."), "builtin") == [])
+refused("postInstallMessage must be a string", variant(postInstallMessage=5), "builtin", "postInstallMessage")
+refused("postInstallMessage may not be blank", variant(postInstallMessage=" "), "builtin", "postInstallMessage")
+_overlap = variant(mcp__profiles={"default": "ro", "browser": "ro"}, mcp__unmanaged=["browser"])
+refused("unmanaged overlaps profiles", _overlap, "builtin", "unmanaged")
+refused("unmanaged not a list", variant(mcp__unmanaged="default"), "builtin", "unmanaged")
+refused("unmanaged repeats a name", variant(mcp__unmanaged=["browser", "browser"]), "builtin", "unmanaged")
+refused("unmanaged has a bad name", variant(mcp__unmanaged=["Bad Name"]), "builtin", "unmanaged")
+_pk = packaged(_ok)
+refused("unmanaged is refused on a packaged add-on", _pk, "community", "unmanaged")
+refused("unmanaged is refused on the official feed", _pk, "official", "unmanaged")
+with tempfile.TemporaryDirectory() as tmp:
+    (Path(tmp) / "gptr").mkdir()
+    (Path(tmp) / "gptr" / "addon.json").write_text(am.canonical(_ok))
+    check("mcp_plan skips an unmanaged profile", am.mcp_plan(Path(tmp), "default", {}) == [])
+    check("mcp_plan still lists other profiles", len(am.mcp_plan(Path(tmp), "browser", {})) == 1)
 refused("bad access level", variant(mcp__profiles={"default": "admin"}), "builtin", "ro or rw")
 refused("unknown stack service", variant(uses=["kafka"]), "builtin", "kafka")
 refused("postgres without exposesToAgent", variant(uses=["postgres"]), "builtin", "exposesToAgent")
@@ -239,6 +260,15 @@ refused("env.access must be an env var name",
 
 ACCESS_URL = {"read": "http://split-ro:9000/mcp", "write": "http://split-rw:9000/mcp",
               "": "http://split-rw:9000/mcp", "Read": None, "ask": None, "readonly": None}
+# --- mcp-urls: every URL, whatever profiles/unmanaged say ---------------------
+urls = am.mcp_urls(ROOT / "addons", {})
+check("mcp-urls lists LightRAG although default is unmanaged", "http://lightrag-mcp:8000/mcp" in urls, str(urls))
+check("mcp-urls lists both URLs of a split add-on",
+      {"http://actual-mcp-ro:3000/mcp", "http://actual-mcp-rw:3000/mcp"} <= set(urls), str(urls))
+urls = am.mcp_urls(ROOT / "addons", {"LIGHTRAG_MCP_URL": "http://x:1/mcp"})
+check("mcp-urls honours the env URL override",
+      "http://x:1/mcp" in urls and "http://lightrag-mcp:8000/mcp" not in urls, str(urls))
+
 with tempfile.TemporaryDirectory() as tmp:
     (Path(tmp) / "split").mkdir()
     (Path(tmp) / "split" / "addon.json").write_text(am.canonical(SPLIT))
@@ -305,7 +335,125 @@ with tempfile.TemporaryDirectory() as tmp:
     check("unparsable manifest is reported", any("cannot parse" in e for e in results["broken"]))
     check("directory must match the short id", any("short id" in e for e in results["wrong"]))
     check("non-canonical layout is refused", any("canonical" in e for e in results["gptr"]))
-    check("plan skips invalid manifests", am.mcp_plan(Path(tmp), "default", env) == [])
+    rows = [l.split("|") for l in am.mcp_plan(Path(tmp), "default", env)]
+    check("plan only drops for invalid manifests", len(rows) == 2 and all(r[2] == "0" and r[3] == "" for r in rows),
+          str(rows))
+
+# --- invalid manifests fail closed ----------------------------------------------
+LR = json.loads((ROOT / "addons" / "lightrag" / "addon.json").read_text())
+LR_URL = "http://lightrag-mcp:8000/mcp"
+with tempfile.TemporaryDirectory() as tmp:
+    (Path(tmp) / "lightrag").mkdir()
+    # Valid but not canonical: the whole manifest is refused.
+    (Path(tmp) / "lightrag" / "addon.json").write_text(json.dumps(LR))
+    for env, url in (({}, LR_URL), ({"LIGHTRAG_MCP_URL": "http://x:1/mcp"}, "http://x:1/mcp")):
+        for flag in ("0", "1"):
+            e = {**env, "LIGHTRAG_MCP_ENABLED": flag}
+            plan = am.mcp_plan(Path(tmp), "api-server", e)
+            row = plan[0].split("|") if len(plan) == 1 else []
+            check(f"invalid manifest drops {url} on api-server (flag {flag})",
+                  len(row) == 11 and row[2] == "0" and row[3] == "" and row[4] == url
+                  and row[10] == url, str(plan))
+    check("invalid manifest leaves unmanaged default alone", am.mcp_plan(Path(tmp), "default", {}) == [])
+    check("mcp_urls lists an invalid manifest's URL", am.mcp_urls(Path(tmp), {}) == [LR_URL],
+          str(am.mcp_urls(Path(tmp), {})))
+    check("mcp_urls honours the override for an invalid manifest",
+          am.mcp_urls(Path(tmp), {"LIGHTRAG_MCP_URL": "http://x:1/mcp"}) == ["http://x:1/mcp"])
+    # Invalid for another reason (a stray field).
+    (Path(tmp) / "lightrag" / "addon.json").write_text(am.canonical({**LR, "bogus": 1}))
+    plan = am.mcp_plan(Path(tmp), "browser", {})
+    check("a manifest with an unknown field drops the URL", len(plan) == 1 and plan[0].split("|")[4] == LR_URL,
+          str(plan))
+    # Nothing derivable: no line, no exception.
+    for label, broken in (("no services", {"mcp": LR["mcp"]}),
+                          ("mcp is a string", {"mcp": "x", "services": LR["services"]}),
+                          ("service names nothing", {"mcp": {**LR["mcp"], "service": "nope"},
+                                                     "services": LR["services"]}),
+                          ("services is a list", {"mcp": LR["mcp"], "services": []}),
+                          ("port is an object", {"mcp": LR["mcp"],
+                                                 "services": {"mcp": {"compose": "a", "port": {}}}}),
+                          ("mcp entries are junk", {"mcp": [1, None, "x"], "services": LR["services"]})):
+        (Path(tmp) / "lightrag" / "addon.json").write_text(json.dumps(broken))
+        try:
+            got_plan = am.mcp_plan(Path(tmp), "api-server", {})
+            got_urls = am.mcp_urls(Path(tmp), {})
+        except Exception as exc:  # noqa: BLE001
+            check(f"broken manifest ({label}) does not raise", False, repr(exc))
+            continue
+        check(f"broken manifest ({label}) yields no line", got_plan == [] and got_urls == [],
+              f"{got_plan} {got_urls}")
+
+# An invalid manifest's drop-only line must not undo a valid add-on's entry at
+# the same URL, whichever directory sorts first.
+for first, second in (("abad", "lightrag"), ("lightrag", "zbad")):
+    with tempfile.TemporaryDirectory() as tmp:
+        good = "lightrag"
+        bad = first if first.endswith("bad") else second
+        (Path(tmp) / good).mkdir()
+        (Path(tmp) / good / "addon.json").write_text(am.canonical(LR))
+        (Path(tmp) / bad).mkdir()
+        (Path(tmp) / bad / "addon.json").write_text(json.dumps({**LR, "id": f"io.example.{bad}",
+                                                              "mcp": {**LR["mcp"], "name": "bad-mcp"}}))  # not canonical
+        plan = [l.split("|") for l in am.mcp_plan(Path(tmp), "api-server", {"LIGHTRAG_MCP_ENABLED": "1"})]
+        errs = {p.parent.name: e for p, _m, e in am.checked_dir(Path(tmp))}
+        check(f"shared URL, {first} before {second}: only the bad one is invalid",
+              errs[good] == [] and errs[bad] != [], str(errs))
+        check(f"shared URL, {first} before {second}: the valid line is kept",
+              any(r[0] == LR["mcp"]["name"] and r[2] == "1" and r[4] == LR_URL for r in plan), str(plan))
+        check(f"shared URL, {first} before {second}: no drop-only line for the shared URL",
+              not any(r[0] == "bad-mcp" for r in plan), str(plan))
+        check(f"shared URL, {first} before {second}: mcp_urls still lists it once",
+              am.mcp_urls(Path(tmp), {}) == [LR_URL], str(am.mcp_urls(Path(tmp), {})))
+
+# A valid line skipped for a | in a value registers nothing, so it does not
+# protect the URL; a trailing slash does not hide a shared URL.
+def shared_dir(tmp, good_mcp, bad_mcp):
+    (Path(tmp) / "lightrag").mkdir()
+    (Path(tmp) / "lightrag" / "addon.json").write_text(am.canonical({**LR, "mcp": {**LR["mcp"], **good_mcp}}))
+    (Path(tmp) / "zbad").mkdir()  # not canonical, so invalid
+    (Path(tmp) / "zbad" / "addon.json").write_text(json.dumps({**LR, "id": "io.example.zbad",
+                                                              "mcp": {**LR["mcp"], "name": "bad-mcp", **bad_mcp}}))
+
+
+on = {"LIGHTRAG_MCP_ENABLED": "1"}
+with tempfile.TemporaryDirectory() as tmp:
+    shared_dir(tmp, {"title": "A|B"}, {})
+    errs = {p.parent.name: e for p, _m, e in am.checked_dir(Path(tmp))}
+    plan = [l.split("|") for l in am.mcp_plan(Path(tmp), "api-server", on)]
+    check("a valid line skipped for a pipe does not protect its URL",
+          errs["lightrag"] == [] and [r[0] for r in plan] == ["bad-mcp"], f"{errs} {plan}")
+with tempfile.TemporaryDirectory() as tmp:
+    shared_dir(tmp, {}, {"path": "/mcp/"})
+    plan = [l.split("|") for l in am.mcp_plan(Path(tmp), "api-server", on)]
+    check("a trailing slash on the invalid add-on's URL does not hide the shared URL",
+          [r[0] for r in plan] == ["lightrag"], str(plan))
+
+# --- one MCP name per add-on -------------------------------------------------------
+with tempfile.TemporaryDirectory() as tmp:
+    for d in ("lightrag", "gptr"):
+        (Path(tmp) / d).mkdir()
+    (Path(tmp) / "lightrag" / "addon.json").write_text(am.canonical(LR))
+    other = copy.deepcopy(BASE)
+    (Path(tmp) / "gptr" / "addon.json").write_text(am.canonical(other))
+    def dir_errs(d):
+        return {p.parent.name: e for p, _m, e in am.checked_dir(d)}
+
+    check("distinct mcp names pass the directory check", dir_errs(Path(tmp)) == {"lightrag": [], "gptr": []},
+      str(dir_errs(Path(tmp))))
+    other["mcp"]["name"] = "lightrag"
+    (Path(tmp) / "gptr" / "addon.json").write_text(am.canonical(other))
+    errs = dir_errs(Path(tmp))
+    check("two add-ons with one mcp name are both refused",
+          all(len(errs[k]) == 1 and "'lightrag'" in errs[k][0] and "gptr" in errs[k][0] for k in errs)
+          and set(errs) == {"lightrag", "gptr"}, str(errs))
+    check("mcp-plan treats a name clash like any directory conflict: off lines only",
+          all(l.split("|")[2:4] == ["0", ""] for l in am.mcp_plan(Path(tmp), "api-server", {"LIGHTRAG_MCP_ENABLED": "1"})),
+          str(am.mcp_plan(Path(tmp), "api-server", {"LIGHTRAG_MCP_ENABLED": "1"})))
+    rc = subprocess.run([sys.executable, str(ROOT / "scripts" / "lib" / "addon_manifest.py"), "validate", tmp],
+                        capture_output=True, text=True)
+    check("validate CLI reports the duplicate", rc.returncode == 1 and "more than one add-on" in rc.stdout, rc.stdout)
+check("the packaged add-ons have distinct mcp names",
+      all(not any("more than one add-on" in e for e in errs) for _p, _m, errs in am.checked_dir(ROOT / "addons")))
 
 # --- cron fence ---------------------------------------------------------------
 with tempfile.TemporaryDirectory() as tmp:
@@ -788,6 +936,23 @@ with tempfile.TemporaryDirectory() as tmp:
     check("an invalid instances manifest gives an off add-on line",
           [l.split("|")[:3] for l in lines] == [["crm-*", "twenty", "0"]], str(lines))
 
+# mcp.unmanaged on an mcp.instances entry: the profile gets no line at all, so
+# the bootstrap neither registers nor drops crm-* there. Valid and invalid alike.
+with tempfile.TemporaryDirectory() as tmp:
+    (Path(tmp) / "twenty").mkdir()
+    tw = json.loads((ROOT / "addons" / "twenty" / "addon.json").read_text())
+    tw["mcp"]["unmanaged"] = ["ops"]
+    (Path(tmp) / "twenty" / "addon.json").write_text(am.canonical(tw))
+    check("unmanaged on an instances entry is valid", am.validate(tw, "builtin") == [], str(am.validate(tw, "builtin")))
+    check("instances-plan skips an unmanaged profile", am.instances_plan(Path(tmp), Path(tmp) / "data", "ops", TW_ON) == [])
+    check("instances-plan still lists other profiles",
+          [l.split("|")[0] for l in am.instances_plan(Path(tmp), Path(tmp) / "data", "default", TW_ON)] == ["crm-*"])
+    check("mcp-urls leaves out instance entries", am.mcp_urls(Path(tmp), {}) == [], str(am.mcp_urls(Path(tmp), {})))
+    tw["permissions"]["sends"] = "maybe"
+    (Path(tmp) / "twenty" / "addon.json").write_text(am.canonical(tw))
+    check("an invalid instances manifest skips an unmanaged profile too",
+          am.instances_plan(Path(tmp), Path(tmp) / "data", "ops", TW_ON) == [])
+
 # --- cross-manifest conflicts -------------------------------------------------
 check("real addons/ has no cross-manifest conflict", am.dir_conflicts(am.load_dir(ROOT / "addons")) == {},
       str(am.dir_conflicts(am.load_dir(ROOT / "addons"))))
@@ -815,7 +980,10 @@ with tempfile.TemporaryDirectory() as tmp:
           any("crm-x" in e and "twenty" in e for e in errs["crmx"]), str(errs["crmx"]))
     check("Twenty itself stays valid next to it", errs["twenty"] == [], str(errs["twenty"]))
     plan = am.mcp_plan(d, "default", {"GPTR_MCP_ENABLED": "1"})
-    check("mcp-plan skips the conflicting add-on", not any(l.startswith("crm-x|") for l in plan), str(plan))
+    # Fail closed: the invalid add-on gives only an off line with no access,
+    # which drops its URL and registers nothing.
+    check("mcp-plan registers nothing for the conflicting add-on",
+          all(l.split("|")[2:4] == ["0", ""] for l in plan if l.startswith("crm-x|")), str(plan))
     validate = subprocess.run([sys.executable, str(ROOT / "scripts/lib/addon_manifest.py"), "validate", str(d)],
                               capture_output=True, text=True)
     check("validate reports the conflict", validate.returncode == 1 and "crm-x" in validate.stdout,
@@ -844,10 +1012,13 @@ with tempfile.TemporaryDirectory() as tmp:
     d = conflict_dir(Path(tmp), {"dupmail": dup})
     errs = {p.parent.name: e for p, _m, e in am.checked_dir(d)}
     check("the same mcp.name in two add-ons refuses both",
-          any("declared by both" in e for e in errs["dupmail"])
-          and any("declared by both" in e for e in errs["email-local"]), str(errs))
+          any("used by more than one add-on" in e for e in errs["dupmail"])
+          and any("used by more than one add-on" in e for e in errs["email-local"]), str(errs))
     plan = am.mcp_plan(d, "default", {"MAIL_MCP_ENABLED": "1"})
-    check("mcp-plan registers neither", not any(l.startswith("mail|") for l in plan), str(plan))
+    # Gated-off entries stay in the plan with no access and zero timeouts, so
+    # neither profile can register them.
+    check("mcp-plan registers neither",
+          not any(l.split("|")[0] == "mail" and l.split("|")[3] for l in plan), str(plan))
 
 overlap = json.loads((ROOT / "addons" / "twenty" / "addon.json").read_text())
 overlap["id"] = "io.example.twentyish"
@@ -1435,6 +1606,86 @@ for svc in ("hermes-api-bootstrap", "hermes-browser-bootstrap"):
           "- ${ASSISTANT_DATA_ROOT:-./data}/addons/twenty:/bootstrap/addon-data/twenty:ro" in block)
     check(f"{svc} sets ADDON_DATA_DIR", "- ADDON_DATA_DIR=/bootstrap/addon-data" in block)
     check(f"{svc} no longer mounts the workspace files", "twenty-workspaces" not in block)
+
+# --- Actual Budget -----------------------------------------------------------
+ac_path = ROOT / "addons" / "actual" / "addon.json"
+ac = json.loads(ac_path.read_text())
+check("actual manifest is canonical JSON", ac_path.read_text() == am.canonical(ac))
+check("actual manifest is valid as built-in", am.validate(ac, "builtin") == [], str(am.validate(ac, "builtin")))
+check("actual: gate ACTUAL_LOCAL_ENABLED on budget-local, not seeded",
+      ac.get("gates") == [{"flag": "ACTUAL_LOCAL_ENABLED", "profile": "budget-local", "seed": False}],
+      str(ac.get("gates")))
+check("actual: services.server is actual-server on 5006, gated",
+      ac["services"].get("server") == {"compose": "actual-server", "port": 5006,
+                                       "when": {"gate": "ACTUAL_LOCAL_ENABLED"}},
+      str(ac["services"].get("server")))
+check("actual: rw and ro services are unchanged",
+      ac["services"]["rw"] == {"compose": "actual-mcp-rw", "port": 3000}
+      and ac["services"]["ro"] == {"compose": "actual-mcp-ro", "port": 3000})
+check("actual: settings.local is a bool on ACTUAL_LOCAL_ENABLED, default false",
+      ac.get("settings", {}).get("local", {}).get("type") == "bool"
+      and ac["settings"]["local"].get("flag") == "ACTUAL_LOCAL_ENABLED"
+      and ac["settings"]["local"].get("default") is False, str(ac.get("settings")))
+check("actual: init hook", am.hook(ac, "init") == {"script": ["scripts/budget.sh", "init", "--server-only"]},
+      str(am.hook(ac, "init")))
+check("actual: connect hook", am.hook(ac, "connect") == {"script": ["scripts/budget.sh", "connect"]})
+check("actual: disconnect hook", am.hook(ac, "disconnect") == {"script": ["scripts/budget.sh", "disconnect"]})
+check("actual: instances.errors", ac["instances"].get("errors") == ["bad_access", "encryption_password", "unknown_profile"],
+      str(ac["instances"].get("errors")))
+check("actual: instances name is budget", ac["instances"].get("name") == "budget")
+ai = ac["instances"]["settings"]
+check("actual: password is a transient optional secret",
+      ai.get("password", {}).get("type") == "secret" and ai["password"].get("transient") is True
+      and ai["password"].get("optional") is True, str(ai.get("password")))
+check("actual: session_token and encryption_password are optional secrets",
+      all(ai.get(k, {}).get("type") == "secret" and ai[k].get("optional") is True
+          for k in ("session_token", "encryption_password")))
+check("actual: profile defaults to default and access to read, both plain strings",
+      ai.get("profile", {}).get("type") == "string" and ai["profile"].get("default") == "default"
+      and ai.get("access", {}).get("type") == "string" and ai["access"].get("default") == "read")
+check("actual: server and sync_id are strings", all(ai.get(k, {}).get("type") == "string" for k in ("server", "sync_id")))
+check("actual: data.paths matches the actual-server bind mount",
+      ac.get("data", {}).get("paths") == [{"env": "ACTUAL_DATA_DIR", "default": "./data/actual/server"}]
+      and "${ACTUAL_DATA_DIR:-./data/actual/server}:/data" in compose, str(ac.get("data")))
+check("actual: data.volumes are the two MCP caches",
+      ac.get("data", {}).get("volumes") == ["actual_mcp_rw_cache", "actual_mcp_ro_cache"]
+      and all(re.search(rf"^  {v}:", compose, re.M) for v in ("actual_mcp_rw_cache", "actual_mcp_ro_cache")))
+check("actual: no services.<k>.volumes left", not any("volumes" in v for v in ac["services"].values()))
+ac_listing = addon_store.listing(ac, Path("/nonexistent"), {})
+check("actual: listing shows hooks and errors",
+      ac_listing["hooks"] == ["connect", "disconnect", "init"]
+      and ac_listing["errors"] == ["bad_access", "encryption_password", "unknown_profile"],
+      f"{ac_listing['hooks']} {ac_listing['errors']}")
+
+# mcp-plan for the Actual add-on is what it was before the instance settings and hooks
+# were added (captured at a0ed9ea): one line per profile and ACTUAL_MCP_ENABLED value.
+ac_frozen = (ROOT / "scripts" / "fixtures" / "actual-mcp-plan-a0ed9ea.txt").read_text().splitlines()
+ac_now = []
+for prof in ("default", "browser", "api-server"):
+    for on in ("0", "1"):
+        for line in am.mcp_plan(ROOT / "addons", prof, {"ACTUAL_MCP_ENABLED": on}):
+            if line.startswith("budget|"):
+                ac_now.append(f"{prof} {on}\t{line}")
+check("actual: mcp-plan lines for default, browser and api-server are unchanged",
+      ac_now == ac_frozen and len(ac_now) == 6, f"{len(ac_now)} lines")
+
+# configure --instance with only access keeps server and sync_id (budget.sh access).
+with tempfile.TemporaryDirectory() as tmp:
+    root = Path(tmp)
+    addon_store.apply_instance(ac, root, "main", {"server": "https://actual.example.com", "sync_id": "abc-123"})
+    addon_store.apply_instance(ac, root, "main", {"access": "write"})
+    stored_inst = json.loads((root / "addons" / "actual" / "instances" / "main.json").read_text()) \
+        if (root / "addons" / "actual" / "instances" / "main.json").exists() else {}
+    check("actual: configuring only access keeps server and sync_id",
+          stored_inst.get("access") == "write" and stored_inst.get("server") == "https://actual.example.com"
+          and stored_inst.get("sync_id") == "abc-123", str(stored_inst))
+
+# addon.sh enable actual works before any budget is connected (Boundary's local
+# flow, and v0.3.12 installs): no row is required.
+check("actual: instances block is optional", ac["instances"].get("optional") is True)
+with tempfile.TemporaryDirectory() as tmp:
+    ac_missing = addon_store.missing(ac, Path(tmp))
+    check("actual: missing() is empty with no rows", ac_missing == [], str(ac_missing))
 
 if failures:
     print(f"{failures} failed")

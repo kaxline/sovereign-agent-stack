@@ -220,12 +220,9 @@ def live_checks(tag: str) -> None:
 
 def main() -> None:
     host_checks()
-    hermes_image.maybe_run(IMAGE_DRIVER)
-    args = sys.argv[1:]
-    tag = hermes_image.image_tag()
-    if "--host-only" in args:
-        return
-    if "--image" in args or hermes_image.image_available(tag):
+    tag = hermes_image.image_gate()
+    if tag is not None:
+        hermes_image.run_driver(IMAGE_DRIVER, tag=tag)
         live_checks(tag)
 
 

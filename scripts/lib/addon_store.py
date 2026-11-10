@@ -558,6 +558,9 @@ def listing(manifest: dict, data_root: Path, environ, figures=None) -> dict:
             if isinstance(manifest.get("instances"), dict) else None,
         },
     }
+    message = manifest.get("postInstallMessage")
+    if isinstance(message, str) and message.strip():
+        out["postInstallMessage"] = message
     for slug in slugs(d):
         out["instances"][slug] = _view(_inst_schema(manifest), _instance_values(d, slug),
                                        lambda n, s=slug: d / "secrets" / f"{s}.{n}")

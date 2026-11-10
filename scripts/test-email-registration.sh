@@ -57,8 +57,8 @@ got() { calls="$(cat "$record")"; : > "$record"; }
 
 TOOLS="mail_status mail_search mail_get mail_thread"
 DRAFT_TOOLS="mail_draft_create mail_draft_status"
-REG="register:%s:email:Email (read-only):${URL}:60:30:${TOOLS};pin:%s:email:${TOOLS};"
-DRAFTS_REG="register:%s:email-drafts:Email drafts (no sending):${DRAFTS_URL}:60:30:${DRAFT_TOOLS};pin:%s:email-drafts:${DRAFT_TOOLS};"
+REG="register:%s:email:Email (read-only):${URL}:60:30:${TOOLS};drop:%s:${URL};pin:%s:email:${TOOLS};"
+DRAFTS_REG="register:%s:email-drafts:Email drafts (no sending):${DRAFTS_URL}:60:30:${DRAFT_TOOLS};drop:%s:${DRAFTS_URL};pin:%s:email-drafts:${DRAFT_TOOLS};"
 
 # Off: every profile drops both URLs and registers nothing.
 export EMAIL_ENABLED=0 EMAIL_DRAFTS_ENABLED=0
@@ -74,7 +74,7 @@ for profile in "" browser; do
   run "$profile"; got
   p="${profile:-default}"
   # shellcheck disable=SC2059
-  want="$(printf "$REG" "$p" "$p")drop:${p}:${DRAFTS_URL};"
+  want="$(printf "$REG" "$p" "$p" "$p")drop:${p}:${DRAFTS_URL};"
   [ "$calls" = "$want" ] || fail "on: ${p} should register email and drop email-drafts ($calls)"
 done
 
@@ -84,7 +84,7 @@ for profile in "" browser; do
   run "$profile"; got
   p="${profile:-default}"
   # shellcheck disable=SC2059
-  want="$(printf "$REG" "$p" "$p")$(printf "$DRAFTS_REG" "$p" "$p")"
+  want="$(printf "$REG" "$p" "$p" "$p")$(printf "$DRAFTS_REG" "$p" "$p" "$p")"
   [ "$calls" = "$want" ] || fail "gate on: ${p} should register email and email-drafts ($calls)"
 done
 

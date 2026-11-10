@@ -8,11 +8,11 @@ secret values.
 
 from __future__ import annotations
 
-import json
-import os
-import subprocess
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+import compose_config  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 SERVICES = ("twenty-server", "twenty-worker", "twenty-db", "twenty-redis")
@@ -25,17 +25,7 @@ def fail(msg: str) -> None:
 
 
 def config(extra_env: dict[str, str] | None = None) -> dict:
-    env = os.environ.copy()
-    env["COMPOSE_PROFILES"] = "core,crm"
-    env.update(extra_env or {})
-    proc = subprocess.run(
-        ["docker", "compose", "config", "--format", "json"],
-        cwd=ROOT, env=env, capture_output=True, text=True,
-    )
-    if proc.returncode != 0:
-        print(f"FAIL docker compose config: {proc.stderr.strip().splitlines()[-1:]}", file=sys.stderr)
-        raise SystemExit(1)
-    return json.loads(proc.stdout)
+    return compose_config.render("core,crm", extra_env)
 
 
 def memory_bytes(value) -> int:

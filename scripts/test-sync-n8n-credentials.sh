@@ -109,4 +109,33 @@ mv "${tmp}/node" "${tmp}/bin/node"
 N8N_NODE=host run
 check "N8N_NODE=host runs the host node" test "$(calls)" -eq 1
 
+# The generator itself, with the real node (skipped where there is none).
+# N8N_CREDENTIALS_OUT redirects its output; without it the default stays.
+if real_node="$(command -v node)"; then
+  gen="${ROOT}/scripts/generate-n8n-credentials.js"
+  genout="${tmp}/gen-out"
+  mkdir -p "$genout"
+  gen_run() {
+    if env -i PATH="$(dirname "$real_node")" "$@" "$real_node" "$gen" > "${tmp}/out" 2>&1; then
+      status=0
+    else
+      status=$?
+    fi
+  }
+  # shellcheck disable=SC2317,SC2329
+  only_in_out() { [[ "$(find "$genout" -name '*.json' | wc -l | tr -d ' ')" -eq 2 ]]; }
+  gen_run N8N_CREDENTIALS_OUT="$genout" N8N_ENCRYPTION_KEY=abc123 LIGHTRAG_API_KEY=lr_x
+  check "generator writes to N8N_CREDENTIALS_OUT" test "$status" -eq 0
+  check "generator wrote both files there" only_in_out
+  gen_run N8N_CREDENTIALS_OUT="$genout" N8N_ENCRYPTION_KEY= LIGHTRAG_API_KEY=lr_x
+  check "empty N8N_ENCRYPTION_KEY exits 1" test "$status" -eq 1
+  check "empty N8N_ENCRYPTION_KEY is named" grep -q N8N_ENCRYPTION_KEY "${tmp}/out"
+  check "N8N_ENCRYPTION_KEY error does not name the other key" bash -c "! grep -q LIGHTRAG_API_KEY '${tmp}/out'"
+  gen_run N8N_CREDENTIALS_OUT="$genout" N8N_ENCRYPTION_KEY=abc123 LIGHTRAG_API_KEY=
+  check "empty LIGHTRAG_API_KEY exits 1" test "$status" -eq 1
+  check "empty LIGHTRAG_API_KEY is named" grep -q LIGHTRAG_API_KEY "${tmp}/out"
+  gen_run N8N_CREDENTIALS_OUT="$genout" N8N_ENCRYPTION_KEY= LIGHTRAG_API_KEY=
+  check "both empty names both" bash -c "grep -q N8N_ENCRYPTION_KEY '${tmp}/out' && grep -q LIGHTRAG_API_KEY '${tmp}/out'"
+fi
+
 exit "$fail"

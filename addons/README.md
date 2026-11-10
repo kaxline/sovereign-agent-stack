@@ -5,10 +5,11 @@ containers are already in `docker-compose.yml`. The directory is named after
 the last segment of the manifest's `id`. The format is experimental while the
 stack is in 0.3.x, and field names can change between patch releases, with a
 changelog entry. The add-ons so far are GPT Researcher (`gptr/`), Actual
-Budget (`actual/`), Bitwarden (`bitwarden/`), Twenty CRM (`twenty/`) and
-Email on this Mac (`email-local/`: the Mail.app `mail` and `drafts` servers)
-and Email over IMAP (`email/`: containers that hold the account passwords,
-registered as `email` and `email-drafts`); both are described in
+Budget (`actual/`), Bitwarden (`bitwarden/`), Twenty CRM (`twenty/`),
+LightRAG (`lightrag/`), n8n (`n8n/`), Email on this Mac (`email-local/`: the
+Mail.app `mail` and `drafts` servers) and Email over IMAP (`email/`:
+containers that hold the account passwords, registered as `email` and
+`email-drafts`); both email add-ons are described in
 [docs/email.md](../docs/email.md). The other optional services are still
 wired by hand.
 
@@ -24,6 +25,9 @@ What reads a manifest:
 Optional fields beyond the basics, checked by `addon_manifest.py validate`
 except where noted:
 
+- `postInstallMessage`: a non-empty string of Markdown. `addon.sh list --json`
+  passes it through as `postInstallMessage`; nothing else reads it, and the
+  key is absent from the listing when the manifest has none.
 - `gates`: a list of `{flag, profile, seed}` for built-in add-ons, each one
   more flag-to-profile row after `builtin`, so a second flag can switch on
   part of an add-on. A gate flag must differ from `builtin.flag` and from the
@@ -35,6 +39,14 @@ except where noted:
   add-on, and each entry needs its own service: two entries may not name the
   same service key, directly or through a `{ro, rw}` map, because the
   bootstrap drops stale registrations by URL.
+  `unmanaged` (built-in add-ons only) is a list of Hermes profile names, for
+  example `["default"]`, that bootstrap leaves alone for that entry: it
+  registers, drops or pins on none of them, so a server the user added by
+  hand on that profile at the same URL stays. For a fixed entry, parked retry
+  still applies to an existing entry at the add-on's URL, on every profile.
+  An `mcp.instances` entry gets no parked retry on an unmanaged profile. The names
+  must be distinct and may not appear in `profiles`. An empty list behaves as
+  absent.
 - `mcp.instances` (built-in add-ons only): an `mcp` entry that registers one
   server per instance in the add-on's store, instead of one fixed server. It
   has no `service`, `path` or `name`. Its fields, besides the usual

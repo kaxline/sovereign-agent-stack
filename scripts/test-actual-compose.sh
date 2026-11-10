@@ -14,8 +14,8 @@ fail() {
   exit 1
 }
 
-grep -q '^ACTUAL_LOCAL_ENABLED budget-local 0$' scripts/sync-profiles.sh \
-  || fail "sync-profiles.sh maps ACTUAL_LOCAL_ENABLED to budget-local"
+bash scripts/sync-profiles.sh --table | grep -qx 'ACTUAL_LOCAL_ENABLED budget-local 0' \
+  || fail "sync-profiles.sh maps ACTUAL_LOCAL_ENABLED to budget-local (the gate in addons/actual/addon.json)"
 
 for k in ACTUAL_MCP_ENABLED ACTUAL_LOCAL_ENABLED ACTUAL_ACCESS ACTUAL_PORT ACTUAL_DATA_DIR ACTUAL_SERVER_IMAGE ACTUAL_BUDGET_FILE; do
   grep -qE "^#? ?${k}=" .env.example || fail ".env.example documents ${k}"
@@ -60,10 +60,18 @@ grep -qF '"@actual-app/core": "26.11.0"' compose/actual-mcp/package.json || fail
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
+# Only docker-compose.yml, with the default data root: a local override file or
+# an ASSISTANT_DATA_ROOT in .env must not change what this checks (as in
+# scripts/lib/compose_config.py).
+compose_config() {
+  env -u ACTUAL_BUDGET_FILE ASSISTANT_DATA_ROOT=./data COMPOSE_PROFILES="$1" \
+    docker compose -f docker-compose.yml config --format json
+}
+
 # With no profiles, no Actual service is defined.
-env -u ACTUAL_BUDGET_FILE COMPOSE_PROFILES= docker compose config --format json > "${tmp}/none.json" \
+compose_config "" > "${tmp}/none.json" \
   || fail "docker compose config with no profiles"
-env -u ACTUAL_BUDGET_FILE COMPOSE_PROFILES=core,budget,budget-local docker compose config --format json > "${tmp}/budget.json" \
+compose_config core,budget,budget-local > "${tmp}/budget.json" \
   || fail "docker compose config with core,budget,budget-local"
 
 python3 - "${tmp}/none.json" "${tmp}/budget.json" <<'EOF'
@@ -140,6 +148,10 @@ for name, write in (("actual-mcp-rw", True), ("actual-mcp-ro", False)):
     vols = svc.get("volumes") or []
     if not any(v.get("type") == "volume" and v.get("source") == cache and v.get("target") == "/data" for v in vols):
         errors.append(f"{name} does not mount volume {cache} at /data")
+    rows = [v for v in vols if v.get("target") == "/budgets"]
+    if len(rows) != 1 or rows[0].get("type") != "bind" or not rows[0].get("read_only") \
+            or not str(rows[0].get("source", "")).endswith("/data/addons/actual"):
+        errors.append(f"{name} does not mount <data root>/addons/actual read-only at /budgets ({rows})")
     if set(svc.get("networks") or {}) != {"budget"}:
         errors.append(f"{name} networks are {sorted(svc.get('networks') or {})}, want ['budget']")
     test = " ".join((svc.get("healthcheck") or {}).get("test") or [])
@@ -167,9 +179,27 @@ for name, svc in services.items():
     if "ACTUAL_PASSWORD" in keys:
         errors.append(f"{name} environment includes ACTUAL_PASSWORD")
 for name in ("hermes-api-bootstrap", "hermes-browser-bootstrap"):
-    keys = {k for k in env_map(services.get(name) or {}) if k.startswith("ACTUAL_")}
-    if keys != {"ACTUAL_MCP_ENABLED", "ACTUAL_ACCESS"}:
-        errors.append(f"{name} ACTUAL_* keys are {sorted(keys)}, want ACTUAL_ACCESS and ACTUAL_MCP_ENABLED")
+    svc = services.get(name) or {}
+    env = env_map(svc)
+    keys = {k for k in env if k.startswith("ACTUAL_")}
+    if keys != {"ACTUAL_MCP_ENABLED", "ACTUAL_ACCESS", "ACTUAL_BUDGET_FILE"}:
+        errors.append(f"{name} ACTUAL_* keys are {sorted(keys)}, want ACTUAL_ACCESS, ACTUAL_BUDGET_FILE and ACTUAL_MCP_ENABLED")
+    # The test runs with ACTUAL_BUDGET_FILE unset: the bootstrap sees it empty.
+    if env.get("ACTUAL_BUDGET_FILE") not in ("", None):
+        errors.append(f"{name} ACTUAL_BUDGET_FILE defaults to {env.get('ACTUAL_BUDGET_FILE')!r}, want empty")
+    # Only the instance files: the bootstrap never sees secrets/.
+    vols = svc.get("volumes") or []
+    rows = [v for v in vols if v.get("target") == "/bootstrap/addon-data/actual/instances"]
+    if len(rows) != 1 or not rows[0].get("read_only") \
+            or not str(rows[0].get("source", "")).endswith("/data/addons/actual/instances"):
+        errors.append(f"{name} does not mount <data root>/addons/actual/instances read-only ({rows})")
+    for v in vols:
+        if "addons/actual" in str(v.get("source", "")) and not str(v.get("source", "")).endswith("/instances"):
+            errors.append(f"{name} mounts {v.get('source')}; only addons/actual/instances may reach it")
+        if str(v.get("target", "")) == "/bootstrap/actual_rows.py" and not v.get("read_only"):
+            errors.append(f"{name} mounts actual_rows.py writable")
+    if not any(str(v.get("target", "")) == "/bootstrap/actual_rows.py" for v in vols):
+        errors.append(f"{name} does not mount scripts/lib/actual_rows.py at /bootstrap/actual_rows.py")
 
 for err in errors:
     print(f"FAIL {err}", file=sys.stderr)

@@ -1,0 +1,35 @@
+name: hermes-image
+
+# Runs the image half of the overlay and bootstrap tests inside the pinned
+# nousresearch/hermes-agent image (about 3.2 GB) through `make
+# hermes-image-test`, which finds them and fails on a missing image. ci.yml
+# runs only their host halves.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "compose/hermes/**"
+      - "docker-compose.yml"
+      - "scripts/lib/**"
+      - "scripts/test-*"
+      - "imessage/tests/**"
+      - ".github/workflows/hermes-image.yml"
+  push:
+    branches: [main, master]
+    paths:
+      - "compose/hermes/**"
+      - "docker-compose.yml"
+
+jobs:
+  image-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pull the pinned Hermes image
+        run: |
+          tag="$(sed -n 's/.*hermes-agent:\${HERMES_AGENT_IMAGE_TAG:-\([^}]*\)}.*/\1/p' docker-compose.yml | head -1)"
+          test -n "$tag"
+          docker pull "nousresearch/hermes-agent:${tag}"
+      - name: Hermes image tests
+        run: make hermes-image-test

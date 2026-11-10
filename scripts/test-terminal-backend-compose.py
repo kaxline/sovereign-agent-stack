@@ -7,11 +7,11 @@ The override file is not loaded, so machine-specific binds stay out of the check
 
 from __future__ import annotations
 
-import json
-import os
-import subprocess
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+import compose_config  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -25,21 +25,7 @@ def fail(msg: str) -> None:
 
 
 def load_config(backend: str) -> dict:
-    env = os.environ.copy()
-    env["COMPOSE_PROFILES"] = "core"
-    env["HERMES_TERMINAL_BACKEND"] = backend
-    proc = subprocess.run(
-        ["docker", "compose", "-f", "docker-compose.yml", "config", "--format", "json"],
-        cwd=ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-    if proc.returncode != 0:
-        err = (proc.stderr or proc.stdout or "docker compose config failed").strip()
-        fail(f"{backend}: {err}")
-        raise SystemExit(1)
-    return json.loads(proc.stdout)
+    return compose_config.render("core", {"HERMES_TERMINAL_BACKEND": backend})
 
 
 def binds(service: dict) -> list[dict]:

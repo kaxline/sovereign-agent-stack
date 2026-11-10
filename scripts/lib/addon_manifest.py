@@ -7,6 +7,12 @@ image's python3, mounted at /bootstrap/addon_manifest.py.
     addon_manifest.py validate <addons-dir>
         Check every manifest as a built-in add-on. Prints one line per problem
         and exits 1 if there are any.
+    addon_manifest.py mcp-urls <addons-dir>
+        Print every MCP URL of every valid built-in add-on, one per line,
+        whatever the flag, `profiles` or `unmanaged` say (mcp.env.url applies).
+        For tuning entries that already exist; registers nothing. An
+        mcp.instances entry has no fixed URL and is left out; instances-plan
+        gives each instance's.
     addon_manifest.py mcp-plan <addons-dir> <profile>
         For each entry of each add-on's `mcp` block (one object, or a list of
         objects), print one line, in list order, that the bootstrap's
@@ -87,7 +93,7 @@ SOURCES = ("builtin", "official", "community")
 
 # Names core still registers itself. An add-on may not take one, or start
 # with one of the prefixes core uses for per-instance entries.
-CORE_MCP_NAMES = {"searxng", "lightrag", "opencode", "sql", "vikunja", "messages"}
+CORE_MCP_NAMES = {"searxng", "opencode", "sql", "vikunja", "messages"}
 CORE_MCP_PREFIXES = ("caldav-",)
 # Names of the login backends core ships; an add-on's vaultBackend may not take one.
 CORE_VAULT_NAMES = {"vault", "op", "bw"}
@@ -187,6 +193,9 @@ def validate(manifest, source: str = "builtin", repo=_AUTO) -> list[str]:
     for key in ("title", "tagline", "description"):
         if key in manifest and not (isinstance(manifest[key], str) and manifest[key].strip()):
             err(f"{key} must be a non-empty string")
+    if "postInstallMessage" in manifest and not (isinstance(manifest["postInstallMessage"], str)
+                                                 and manifest["postInstallMessage"].strip()):
+        err("postInstallMessage must be a non-empty string")
     pub = manifest.get("publisher")
     if "publisher" in manifest and not (isinstance(pub, dict) and isinstance(pub.get("name"), str)
                                         and isinstance(pub.get("url"), str)):
@@ -818,6 +827,15 @@ def _validate_mcp(mcp, services: dict, source: str, reads: bool,
             err(f"mcp.profiles.{prof} is {level}, but mcp.service has no service for {level}")
     if reads and UNATTENDED_PROFILE in profiles:
         err(f"an add-on that reads personal data may not be on {UNATTENDED_PROFILE}")
+    if "unmanaged" in mcp:
+        unmanaged = mcp["unmanaged"]
+        if source != "builtin":
+            err("mcp.unmanaged is for built-in add-ons only")
+        elif not (_is_str_list(unmanaged) and all(NAME_RE.match(n) for n in unmanaged)
+                  and len(set(unmanaged)) == len(unmanaged)):
+            err("mcp.unmanaged must be a list of distinct Hermes profile names")
+        elif set(unmanaged) & set(profiles):
+            err("mcp.unmanaged may not name a profile in mcp.profiles")
     env = mcp.get("env", {})
     if env:
         if source != "builtin":
@@ -983,8 +1001,9 @@ def dir_conflicts(loaded) -> dict[Path, list[str]]:
     Two add-ons may not declare the same mcp.name. The bootstrap drops every
     entry under an mcp.instances prefix that isn't a
     live instance, so an mcp.name under another add-on's prefix (or its own)
-    would be written and then removed on every start, and two prefixes where
-    one starts with the other would remove each other's entries. Read from
+    would be written and then removed on every start, two prefixes where
+    one starts with the other would remove each other's entries, and two
+    add-ons may not register the same MCP server name. Read from
     the raw manifests, so an invalid one still counts."""
     names, prefixes = [], []
     for path, manifest, _parse_error in loaded:
@@ -996,14 +1015,15 @@ def dir_conflicts(loaded) -> dict[Path, list[str]]:
             if template:
                 prefixes.append((path, template.split("{slug}")[0]))
     out: dict[Path, list[str]] = {}
-    # Two add-ons with the same fixed name would overwrite each other's entry
-    # and drop it by URL when either flag is off.
-    for i, (pa, a) in enumerate(names):
-        for pb, b in names[i + 1:]:
-            if a == b and pa != pb:
-                msg = f"mcp.name {a!r} is declared by both {pa.parent.name} and {pb.parent.name}"
-                out.setdefault(pa, []).append(msg)
-                out.setdefault(pb, []).append(msg)
+    owners: dict[str, list[Path]] = {}
+    for path, name in names:
+        if path not in owners.setdefault(name, []):
+            owners[name].append(path)
+    for name, paths in sorted(owners.items()):
+        if len(paths) > 1:
+            msg = f"mcp.name {name!r} is used by more than one add-on: {', '.join(p.parent.name for p in paths)}"
+            for p in paths:
+                out.setdefault(p, []).append(msg)
     for path, name in names:
         for other, prefix in prefixes:
             if name.startswith(prefix):
@@ -1069,6 +1089,50 @@ def _mcp_urls(manifest: dict, mcp: dict, environ) -> dict[str, str]:
     return {"": override or build(mcp["service"])}
 
 
+def _raw_mcp_urls(manifest, environ) -> list[tuple[dict, list[str]]]:
+    """(raw mcp entry, URLs) for each entry of a manifest that failed
+    validation and still names a URL. Reads the manifest defensively: nothing
+    is assumed about its shape, and a value that is not usable is skipped."""
+    out = []
+    if not isinstance(manifest, dict):
+        return out
+    services = manifest.get("services")
+    raw = manifest.get("mcp")
+    if not isinstance(services, dict):
+        return out
+    for entry in raw if isinstance(raw, list) else [raw]:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            path = entry.get("path")
+            svc = entry.get("service")
+            if not isinstance(path, str):
+                continue
+
+            def build(key) -> str:
+                s = services[key]
+                host, port = s["compose"], s["port"]
+                if not isinstance(host, str) or not isinstance(port, (int, str)) or not host:
+                    raise ValueError("bad service")
+                return f"http://{host}:{port}{path}"
+
+            if isinstance(svc, dict):
+                urls = [build(key) for key in svc.values()]
+            elif isinstance(svc, str):
+                env = entry.get("env")
+                var = env.get("url") if isinstance(env, dict) else None
+                override = environ.get(var, "") if isinstance(var, str) else ""
+                urls = [override or build(svc)]
+            else:
+                continue
+        except (KeyError, TypeError, ValueError, AttributeError):
+            continue
+        urls = sorted({u for u in urls if "|" not in u and "\n" not in u and " " not in u})
+        if urls:
+            out.append((entry, urls))
+    return out
+
+
 def cron_fence(addons_dir: Path, environ=os.environ,
                data_dir: Path | None = None) -> tuple[list[str], list[str]]:
     """data_dir holds each add-on's store (<data_dir>/<short id>/instances); an
@@ -1128,14 +1192,29 @@ def cron_fence_toolsets(addons_dir: Path) -> list[tuple[str, str]]:
 
 def mcp_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
     lines = []
+    drops = []  # (position in lines, name, title, urls) of fail-closed drop-only lines
+    managed = set()  # URLs a valid manifest registers or manages on this profile
     for path, manifest, errors in checked_dir(addons_dir):
         if errors:
             for e in errors:
                 print(f"warning: skipping {path.parent.name}: {e}", file=sys.stderr)
+            # Fail closed: an invalid manifest still has its URLs dropped from
+            # the profile, so a stale entry or an unfiltered clone does not
+            # outlive the manifest that would have filtered it.
+            for entry, urls in _raw_mcp_urls(manifest, environ):
+                unmanaged = entry.get("unmanaged")
+                if isinstance(unmanaged, list) and profile in unmanaged:
+                    continue
+                name = entry.get("name") if isinstance(entry.get("name"), str) else path.parent.name
+                title = entry.get("title") if isinstance(entry.get("title"), str) else name
+                drops.append((len(lines), name, title, urls))
+                lines.append(None)
             continue
         for mcp in mcp_entries(manifest):
             if "instances" in mcp:
                 continue  # instances_plan lists these, one line per instance
+            if profile in mcp.get("unmanaged", []):
+                continue
             env = mcp.get("env", {})
             urls = _mcp_urls(manifest, mcp, environ)
             timeout = environ.get(env.get("timeout", ""), "") or str(mcp["timeout"])
@@ -1167,8 +1246,35 @@ def mcp_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
                 print(f"warning: skipping {path.parent.name}: a value contains | or a newline",
                       file=sys.stderr)
                 continue
+            managed.update(u.rstrip("/") for u in urls.values())
             lines.append("|".join(fields))
-    return lines
+    # An invalid manifest's drop-only line must not undo a valid add-on's
+    # registration at the same URL: leave out the URLs a valid manifest manages.
+    for pos, name, title, urls in drops:
+        urls = [u for u in urls if u.rstrip("/") not in managed]
+        if urls:
+            fields = [name, title, "0", "", urls[0], "0", "0", "http", "", "", " ".join(urls)]
+            if not any("|" in f or "\n" in f for f in fields):
+                lines[pos] = "|".join(fields)
+    return [l for l in lines if l is not None]
+
+
+def mcp_urls(addons_dir: Path, environ=os.environ) -> list[str]:
+    urls = []
+    for _path, manifest, errors in checked_dir(addons_dir):
+        if errors:
+            for _entry, raw_urls in _raw_mcp_urls(manifest, environ):
+                for u in raw_urls:
+                    if u not in urls:
+                        urls.append(u)
+            continue
+        for mcp in mcp_entries(manifest):
+            if "instances" in mcp:
+                continue  # no fixed URL: each instance's comes from its store
+            for u in sorted(set(_mcp_urls(manifest, mcp, environ).values())):
+                if u not in urls:
+                    urls.append(u)
+    return urls
 
 
 # The instance store's slug rule (addon_store.SLUG_RE; addon_store imports this module).
@@ -1272,7 +1378,8 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
     keyfile is a path under data_dir; key values are never printed.
 
     An invalid manifest still gives its add-on line, off, when its
-    mcp.instances.name is readable, so the bootstrap drops its entries."""
+    mcp.instances.name is readable, so the bootstrap drops its entries. A
+    profile in the entry's mcp.unmanaged gets no line, valid or not."""
     data_dir = Path(data_dir)
     lines = []
 
@@ -1289,6 +1396,9 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
                 print(f"warning: skipping {sid_dir}: {e}", file=sys.stderr)
             for entry in _raw_mcp_list(manifest):
                 template = _raw_instance_template(entry)
+                unmanaged = entry.get("unmanaged") if isinstance(entry, dict) else None
+                if isinstance(unmanaged, list) and profile in unmanaged:
+                    continue
                 if template:
                     pins = entry.get("pin") if isinstance(entry, dict) else None
                     pins = [p for p in pins if TOOL_RE.match(p)] if _is_str_list(pins) else []
@@ -1296,7 +1406,7 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
                           " ".join(pins), "invalid manifest", "", ""], sid_dir)
             continue
         for mcp in mcp_entries(manifest):
-            if "instances" not in mcp:
+            if "instances" not in mcp or profile in mcp.get("unmanaged", []):
                 continue
             inst = mcp["instances"]
             template = inst["name"]
@@ -1402,6 +1512,10 @@ def main(argv: list[str]) -> int:
                 print(f"{path}: {e}")
                 bad += 1
         return 1 if bad else 0
+    if len(argv) == 2 and argv[0] == "mcp-urls":
+        for u in mcp_urls(Path(argv[1])):
+            print(u)
+        return 0
     if len(argv) == 3 and argv[0] == "mcp-plan":
         for line in mcp_plan(Path(argv[1]), argv[2]):
             print(line)

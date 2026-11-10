@@ -20,8 +20,19 @@ the stack under another app.
   left its environment (see Changes). A caller that recreates `hermes`
   itself runs `./scripts/vault.sh follow-hermes` afterwards, as for any
   recreate.
-- Of the shipped manifests only Twenty's uses the new add-on manifest
-  fields; GPT Researcher, Actual and Bitwarden behave as before.
+- Twenty and LightRAG use the new add-on manifest fields (LightRAG uses
+  `mcp.unmanaged`). GPT Researcher, Actual and Bitwarden behave as before,
+  except for the dropped keys at their URLs described next.
+- LightRAG's registration on the api-server and browser profiles is unchanged,
+  except that `LIGHTRAG_MCP_TIMEOUT` and `LIGHTRAG_MCP_CONNECT_TIMEOUT` set in
+  `.env` now take effect. One change can remove a key you added: a hand-added MCP key on the default
+  profile (or on browser) at the GPT Researcher or Actual Budget URL is removed
+  on the next bootstrap when that add-on is enabled, and the stack's own key
+  stays: `gptr`, and `budget` while `ACTUAL_BUDGET_FILE` names a budget file
+  (without one, `budget` is dropped too; see "The single `budget` entry"
+  below). Connected budgets' `budget-<slug>` entries are on their own URLs
+  and are not affected. Point your key at a different URL, or use the
+  stack's key. See "Other MCP keys at an add-on's URL are dropped" below.
 - Before tagging, run `scripts/addon.sh enable gptr --json` and
   `disable gptr --json` on a live stack. `addon.sh` calls
   `scripts/vault.sh reload-plugins` from the Bitwarden change above.
@@ -51,6 +62,71 @@ the stack under another app.
   3. With Bitwarden's `twenty/<slug>/key-ro` and `key-rw` items, run
      `make secrets-sync` after the migration; the items now update the files in
      `data/addons/twenty/secrets/`, not the old workspace files.
+
+### Connected Actual budgets
+
+- **Upgrade step:** with Actual enabled, rebuild the locally built MCP image,
+  since `make up` doesn't rebuild it: `docker compose up -d --build
+  actual-mcp-rw actual-mcp-ro`. The old image has no session-token sign-in
+  and no launcher, so connected budgets get no MCP server until it is rebuilt.
+- **`addon.sh connect actual --instance <slug>`** connects a budget on the
+  bundled or a remote Actual server (stdin keys `server`, `sync_id`,
+  `session_token` or `password`, `encryption_password`, `profile`, `access`).
+  The add-on must be enabled first: `connect` on a disabled add-on stores the
+  budget, but Hermes registers no entry for it. `make budget-connect SLUG=...
+  URL=... [ACCESS=write] [SYNC_ID=...]` asks for the passwords without echo,
+  pipes the JSON to it and refuses while `ACTUAL_MCP_ENABLED` is off; `make
+  budget-disconnect SLUG=...` removes the budget. Both print `[budget]` lines.
+  Only the session token is stored, under `data/addons/actual/secrets/`; the
+  password is used once. A slug starts with a letter, then up to 30 of
+  `a-z`, `0-9` and `-`. Only the `default` Hermes profile is supported
+  (`browser` mirrors it).
+- **New `budget.sh` commands:** `budgets --json`, `status [--slug] --json`,
+  `access <slug> read|write --json`, `init --server-only` (the manifest's init
+  hook), `connect` and `disconnect` (its hooks) and `ensure`, which `make
+  ensure-local` runs to create `data/addons/actual/{instances,secrets}` (0700).
+  `actual-admin.mjs` signs in with `ACTUAL_SESSION_TOKEN` and exits 5
+  (`no_access`) or 6 (`unreachable`). `make doctor` shows each connected
+  budget's state.
+- **Launcher in the `actual-mcp` containers:** one child per connected budget
+  at `/<slug>/mcp`. It polls the store every 2 s, restarts a child when any of
+  its files change and deletes its cache on every stop. `/mcp` is unchanged.
+- **New mounts:** both MCP containers mount `data/addons/actual` read-only at
+  `/budgets`, and the Hermes bootstraps mount `data/addons/actual/instances`
+  read-only. Without `make`, run `./scripts/budget.sh ensure` before compose,
+  or on Linux Docker creates the directories owned by root.
+- **Hermes entries:** `budget-<slug>-ro` for every connected budget and
+  `budget-<slug>` for `write` ones, on `default` and `browser`. The cron fence
+  now matches add-on services by scheme, host and port, so `budget-<slug>`
+  stays out of cron.
+- **The single `budget` entry** registers only while `ACTUAL_BUDGET_FILE` names
+  a budget file. `make budget-remove` keeps `ACTUAL_MCP_ENABLED=1` while any
+  connected budget exists.
+- **Manifest:** the `local` setting owns `ACTUAL_LOCAL_ENABLED`, and the
+  manifest gains `instances` settings and hooks (with `optional: true`, so
+  `addon.sh enable actual` works before any budget is connected), `data` paths
+  and volumes, and the error names `bad_access`, `encryption_password` and
+  `unknown_profile`. `addon.sh disable actual` now sets
+  `ACTUAL_LOCAL_ENABLED=0` and stops `actual-server`; `addon.sh enable actual`
+  turns it back on when `local` is stored. When the flag is on and `local`
+  isn't stored (a v0.3.12 install that set `ACTUAL_LOCAL_ENABLED=1` by hand),
+  `disable` stores `local` as true first, so the next `enable` restores it.
+  This holds for every add-on whose bool setting owns a gate flag.
+  `make budget-*` commands are unaffected.
+- **The init hook** (`budget.sh init --server-only`) does nothing while
+  `ACTUAL_LOCAL_ENABLED` is off, so `addon.sh enable actual` works on a
+  remote-only install. Turning the bundled server on later takes `addon.sh
+  enable actual --reinit` to set it up. On a v0.3.12 local install,
+  `server: "local"` signs in with the password in `compose/actual/budget.env`
+  and copies it to `data/addons/actual/secrets/server_password`.
+- **Limits:** on Linux the host user must be uid 1000 (`HERMES_UID`, the
+  default), because the MCP containers read the mode-600 secret files as uid
+  1000; `budget.sh connect` refuses another uid with `not_found`, and `make
+  doctor` flags it. A password change on an Actual server, or turning OpenID on, ends every
+  connected budget's session; `budget.sh status` shows `token_expired` until
+  each is reconnected. A write made in the seconds between a good sync and the
+  background push can still be stranded if the session ends right then.
+- Not run on a live stack; the checks are in `docs/private/actual-budget-live-check.md`.
 
 ### Changes
 
@@ -158,6 +234,68 @@ the stack under another app.
 - **`mcp.instances` in manifests** (built-in add-ons): one `mcp_servers`
   entry per stored instance, with the key picked by access. See
   [addons/README.md](addons/README.md).
+- **LightRAG is a built-in add-on** (CR 0022 R2): `addons/lightrag/addon.json`
+  replaces the hand-written registration in the api-server bootstrap. The
+  entry key is still `lightrag`, with the same five read tools and pins, on
+  the api-server and browser profiles only. The default profile is left
+  alone (`mcp.unmanaged`, below). `scripts/addon.sh enable|disable lightrag`
+  sets `LIGHTRAG_MCP_ENABLED` and the `rag` profile and starts or stops
+  `lightrag` and `lightrag-mcp`. `disable` also stops Neo4j unless
+  `NEO4J_ENABLED` is on or another active profile starts it; `rag_storage/`,
+  `inputs/` and the `neo4j_data` volume are kept. `lightrag`
+  now appears in `scripts/addon.sh list` and `list --json`.
+  `LIGHTRAG_MCP_TIMEOUT` and `LIGHTRAG_MCP_CONNECT_TIMEOUT` in `.env` now
+  reach the bootstrap. Compose did not pass them before, so they were
+  ignored and the defaults of 120 and 30 seconds applied. An install that
+  set them now gets those values. See
+  [docs/knowledge-bases.md](docs/knowledge-bases.md).
+- **n8n is a built-in add-on** (CR 0020 R10): `addons/n8n/addon.json`.
+  `scripts/addon.sh enable|disable n8n` sets `AUTOMATION_ENABLED` as before;
+  `enable` runs `n8n-import`, then starts `n8n` and `gpt-researcher`, and
+  `disable` stops those three. `gpt-researcher` belongs to n8n.
+  `disable n8n` leaves `gptr-mcp` running, since the GPT Researcher add-on
+  owns it. With `GPTR_MCP_ENABLED=0` it stays up only until it is
+  stopped or recreated, since `automation` was its last active profile;
+  `scripts/addon.sh enable gptr` keeps it. `remove n8n --delete-data` (or `disable n8n --purge`) deletes the
+  `n8n_storage` and `gptr_outputs` volumes, so the SQLite database with its
+  workflows, credentials and execution history is gone. Back up
+  `N8N_ENCRYPTION_KEY` with the volume. `n8n` appears in `addon.sh list`;
+  the `AUTOMATION_ENABLED` row left `sync-profiles.sh`'s table for the
+  manifest's `builtin` block. See [docs/n8n.md](docs/n8n.md).
+- **`n8n-import` generates the demo credentials itself.** On the first start
+  (no `database.sqlite` yet) it runs the generator in the n8n container from
+  `N8N_ENCRYPTION_KEY`, `LIGHTRAG_API_KEY`, `NEO4J_USERNAME` and
+  `NEO4J_PASSWORD`, and imports from `/tmp/n8n-credentials`. It no longer
+  reads `n8n/demo-data/credentials/` on the host, so enabling n8n needs no
+  host-side step. It exits 1 and names `N8N_ENCRYPTION_KEY` or
+  `LIGHTRAG_API_KEY` if either is empty. Only `n8n-import` gets the
+  LightRAG and Neo4j keys; the `n8n` service doesn't.
+- **`postInstallMessage` in `addon.sh list --json`** (additive): an object gets
+  the key `postInstallMessage` only when its manifest has a non-empty one
+  (n8n does). Other objects are unchanged. The validator now refuses a
+  `postInstallMessage` that is not a non-empty string.
+- **`mcp.unmanaged`** (experimental, built-in manifests only): a list of
+  Hermes profile names on which bootstrap neither registers, drops nor pins
+  the add-on's MCP entry. For a fixed entry, the parked-retry setting still
+  applies to an existing entry at the add-on's URL on every profile, default
+  included. An `mcp.instances` entry has no fixed URL, so on an unmanaged
+  profile it gets no parked retry either.
+- **Other MCP keys at an add-on's URL are dropped**: after bootstrap registers
+  an add-on's MCP server on a profile, it removes every other key at the same
+  URL on that profile, whatever its tool filter. For LightRAG this removes an
+  unfiltered `lightrag-mcp` copy cloned from default into api-server or
+  browser. For GPT Researcher (default, browser) and Actual Budget (default,
+  browser, api-server) it also applies to the default profile, which is the
+  user's own config: a key you added by hand on default at the GPT Researcher
+  or Actual URL is now removed in favor of the stack's key. With an add-on's
+  flag off, bootstrap drops every key at its URL on those profiles the same
+  way.
+- **An invalid add-on manifest fails closed**: if a built-in manifest does
+  not validate (a typo, non-canonical JSON), bootstrap still removes every
+  MCP key at the URL the manifest names from the profiles it covers, instead
+  of leaving them as they were. `mcp.unmanaged` profiles are still skipped. A
+  manifest whose URL cannot be worked out is skipped with a warning, as
+  before.
 - **Add-on manifest fields** (experimental): a built-in manifest can declare
   `gates` (further flag-to-profile rows for `sync-profiles.sh`), `mcp` as a
   list with per-entry `title` and `when`, `instances`, `commands`,
@@ -228,8 +366,22 @@ the stack under another app.
   runs `./scripts/vault.sh reload-plugins` after them. When no gateway
   answers, the marker stays and `make restart` applies the change.
 
+- **Tests.** `make hermes-image-test` runs all 35 tests with checks inside
+  the pinned Hermes image; run it after a Hermes bump. With
+  `HERMES_IMAGE_REQUIRED=1` a missing image fails a test instead of
+  skipping it. `make actual-mcp-test` runs the vendored actual-mcp unit tests
+  in a new `test` stage of its Dockerfile; the release image is unchanged.
+  `scripts/addon.sh` no longer forks per `.env` line when reading flags,
+  which took about 0.6 s per read on a `.env` copied from `.env.example`
+  (`list`, `enable` and `disable` read them).
+
 ### Fixes
 
+- **Compose tests ignore local settings.** The compose config tests load
+  only `docker-compose.yml` and render with `ASSISTANT_DATA_ROOT=./data`.
+  `test-bitwarden-compose-config.py` and `test-actual-compose.sh` failed on
+  an install whose `docker-compose.override.yml` adds `hermes-worker` binds
+  or whose `.env` moves the data root.
 - **Actual Budget: ended sessions fail the call.** After the Actual server
   password changed or the MCP server's session ended (deleted, or the user
   disabled), `actual-mcp-rw` and `actual-mcp-ro` kept answering from their

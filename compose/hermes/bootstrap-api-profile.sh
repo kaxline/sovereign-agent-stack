@@ -25,11 +25,6 @@ SKILLS_EXTERNAL_DIR="${HERMES_SKILLS_EXTERNAL_DIR:-/opt/skills}"
 # default-profile value, so the API profile must be set back explicitly.
 INTERACTIVE_MEMORY_NUDGE="${HERMES_INTERACTIVE_MEMORY_NUDGE_INTERVAL:-3}"
 PROFILE_MEMORY_NUDGE="${HERMES_MEMORY_NUDGE_INTERVAL:-10}"
-LIGHTRAG_MCP_URL="${LIGHTRAG_MCP_URL:-http://lightrag-mcp:8000/mcp}"
-LIGHTRAG_MCP_TIMEOUT="${LIGHTRAG_MCP_TIMEOUT:-120}"
-LIGHTRAG_MCP_CONNECT_TIMEOUT="${LIGHTRAG_MCP_CONNECT_TIMEOUT:-30}"
-LIGHTRAG_MCP_ENABLED="${LIGHTRAG_MCP_ENABLED:-0}"
-LIGHTRAG_MCP_TOOLS="query_document get_documents get_pipeline_status get_graph_labels check_lightrag_health"
 SEARXNG_MCP_URL="${SEARXNG_MCP_URL:-http://mcp-searxng:3000/mcp}"
 SEARXNG_MCP_TIMEOUT="${SEARXNG_MCP_TIMEOUT:-60}"
 SEARXNG_MCP_CONNECT_TIMEOUT="${SEARXNG_MCP_CONNECT_TIMEOUT:-30}"
@@ -78,8 +73,11 @@ MESSAGES_MCP_TOOLS="messages_status messages_chats messages_search messages_conv
 # Built-in add-ons (GPT Researcher so far) come from addons/<id>/addon.json.
 ADDONS_DIR="${ADDONS_DIR:-/bootstrap/addons}"
 ADDON_MANIFEST_PY="${ADDON_MANIFEST_PY:-/bootstrap/addon_manifest.py}"
-# Stores of add-ons with mcp.instances, one <short id>/ each (Twenty's workspaces).
+# Stores of add-ons with mcp.instances, one <short id>/ each (Twenty's workspaces),
+# and actual/instances, the connected Actual budgets.
 ADDON_DATA_DIR="${ADDON_DATA_DIR:-/bootstrap/addon-data}"
+# Plans the connected Actual budgets' MCP entries (register_actual_budget_rows).
+ACTUAL_ROWS_PY="${ACTUAL_ROWS_PY:-/bootstrap/actual_rows.py}"
 # Probe interval for a parked stack MCP server (patch-mcp-wake.py; Hermes
 # default 300, floor 10). hermes starts without waiting for its MCP sidecars,
 # so one still booting parks and comes back on the next probe. Empty leaves
@@ -178,6 +176,7 @@ bootstrap_inputs_hash() {
     # A changed add-on manifest, or reader, changes what gets registered.
     echo "addons"
     cat "$ADDON_MANIFEST_PY" 2>/dev/null || true
+    cat "$ACTUAL_ROWS_PY" 2>/dev/null || true
     for _bih_f in "$ADDONS_DIR"/*/addon.json; do
       [ -f "$_bih_f" ] || continue
       echo "$_bih_f"
@@ -852,10 +851,10 @@ set_stack_mcp_parked_retry() {
   [ -f "$_cfg" ] || return 0
   # One argument per add-on URL.
   # shellcheck disable=SC2046
-  _out="$(python3 - "$_cfg" "$MCP_PARKED_RETRY_INTERVAL" "$LIGHTRAG_MCP_URL" "$SEARXNG_MCP_URL" \
+  _out="$(python3 - "$_cfg" "$MCP_PARKED_RETRY_INTERVAL" "$SEARXNG_MCP_URL" \
     "$CALDAV_MCP_URL" "$OPENCODE_MCP_URL" "$SQL_MCP_RO_URL" "$SQL_MCP_RW_URL" "$VIKUNJA_MCP_URL" \
     "$MAIL_MCP_URL" "$MAIL_DRAFTS_MCP_URL" "$MESSAGES_MCP_URL" \
-    $(addon_mcp_urls "$1") $(addon_instance_urls "$1") <<'PY'
+    $(addon_mcp_urls) $(addon_instance_urls "$1") $(actual_row_urls "$1") <<'PY'
 import sys
 sys.path.insert(0, "/opt/hermes")
 try:
@@ -893,13 +892,6 @@ PY
 reconcile_stack_eager_tools() {
   _rst_profile="$1"
   _rst_args="session_search web_url_read searxng_web_search mcp__searxng__web_url_read mcp__searxng__searxng_web_search"
-  case "$LIGHTRAG_MCP_ENABLED" in
-    1|true|TRUE|yes|YES)
-      if [ -n "$_rst_profile" ]; then
-        _rst_args="${_rst_args} query_document get_documents get_pipeline_status get_graph_labels check_lightrag_health mcp__lightrag__query_document mcp__lightrag__get_documents mcp__lightrag__get_pipeline_status mcp__lightrag__get_graph_labels mcp__lightrag__check_lightrag_health"
-      fi
-      ;;
-  esac
   case "$SQL_MCP_ENABLED" in
     1|true|TRUE|yes|YES)
       for _rst_t in $SQL_MCP_TOOLS; do
@@ -921,7 +913,15 @@ reconcile_stack_eager_tools() {
       fi
       ;;
   esac
-  _rst_args="${_rst_args} $(addon_mcp_pin_args "$_rst_profile")"
+  # Without the single budget, register_actual_budget_rows drops the legacy
+  # budget entry, so its mcp__budget__* pins stay out too.
+  for _rst_t in $(addon_mcp_pin_args "$_rst_profile"); do
+    case "$_rst_t" in
+      mcp__budget__*) actual_single_budget_off && continue ;;
+    esac
+    _rst_args="${_rst_args} ${_rst_t}"
+  done
+  _rst_args="${_rst_args} $(actual_row_pin_args "$_rst_profile")"
   _rst_args="${_rst_args} $(addon_instance_pin_args "$_rst_profile")"
   case "$OPENCODE_MCP_ENABLED" in
     1|true|TRUE|yes|YES)
@@ -961,71 +961,6 @@ register_mcp_server() {
   if [ "$#" -gt 0 ]; then
     set_yaml_list "$(config_path_for "$_rms_profile")" "mcp_servers.${_rms_key}.tools.include" "$@"
   fi
-}
-
-# Drop an unfiltered MCP server entry that duplicates one we register WITH a
-# tool allowlist, on a managed profile only.
-#
-# Profiles are created with `profile create --clone`, so they inherit whatever
-# MCP servers the default profile has, hand-added ones included. If the user
-# registered the same server unfiltered under a different key (lightrag-mcp
-# alongside our filtered lightrag), the clone carries both, and the unfiltered
-# copy hands back every tool the allowlist exists to withhold. The allowlist
-# only bounds anything while it is the ONLY route to that server.
-#
-# The match is narrow on purpose: same URL, and no tools.include of its own. A
-# duplicate the user filtered themselves reads as a considered choice and stays.
-# The default profile is never touched, since that is the user's own config.
-#
-# Usage: drop_unfiltered_mcp_duplicate <profile> <keep-key> <drop-key> <url>
-drop_unfiltered_mcp_duplicate() {
-  _dup_profile="$1"
-  [ -n "$_dup_profile" ] || return 0
-  _out="$(python3 - "$(config_path_for "$_dup_profile")" "$2" "$3" "$4" <<'PY'
-import sys
-sys.path.insert(0, "/opt/hermes")
-try:
-    import yaml
-except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
-    import sys as _sys
-    _sys.path.insert(0, "/opt/hermes")
-    import hermes_yaml as yaml
-from utils import atomic_yaml_write
-
-cfg_path, keep_key, drop_key, url = sys.argv[1:5]
-
-try:
-    with open(cfg_path) as fh:
-        config = yaml.safe_load(fh) or {}
-except FileNotFoundError:
-    raise SystemExit(0)
-
-servers = config.get("mcp_servers")
-if not isinstance(servers, dict):
-    raise SystemExit(0)
-
-dup = servers.get(drop_key)
-keep = servers.get(keep_key)
-if not isinstance(dup, dict) or not isinstance(keep, dict):
-    raise SystemExit(0)
-
-if str(dup.get("url", "")).rstrip("/") != url.rstrip("/"):
-    raise SystemExit(0)
-
-if (dup.get("tools") or {}).get("include"):
-    print(f"Keeping '{drop_key}' - it carries its own tool filter")
-    raise SystemExit(0)
-
-allowed = (keep.get("tools") or {}).get("include") or []
-del servers[drop_key]
-atomic_yaml_write(cfg_path, config)
-print(
-    f"Removed unfiltered duplicate MCP server '{drop_key}' ({url}) - "
-    f"'{keep_key}' already exposes it, restricted to {len(allowed)} tools"
-)
-PY
-)"
-  if [ -n "$_out" ]; then log "$_out"; fi
 }
 
 # Web-reading MCP servers, registered on both the default and api-server
@@ -1072,9 +1007,9 @@ register_opencode_mcp_servers() {
 }
 
 # Remove MCP server entries on one profile whose URL matches <url>, except
-# <keep-key>. Unlike drop_unfiltered_mcp_duplicate this ignores tool filters:
-# for the SQL endpoints the boundary is the database role behind the URL, so a
-# filtered entry pointing at the read/write sidecar is still read/write.
+# <keep-key>. A tool filter on the other entry does not save it: for the SQL
+# endpoints the boundary is the database role behind the URL, so a filtered
+# entry pointing at the read/write sidecar is still read/write.
 #
 # Usage: drop_mcp_entries_for_url <profile> <keep-key> <url>
 drop_mcp_entries_for_url() {
@@ -1262,40 +1197,6 @@ PY
   pin_mcp_tools "$_rvms_profile" "$VIKUNJA_MCP_KEY" $(vikunja_mcp_pins_for "$_rvms_profile")
 }
 
-# LightRAG MCP (rag profile) as read-oriented Knowledge Base access, on the
-# api-server and browser profiles. The default profile is the user's own
-# config, and bootstrap never registers LightRAG there.
-#
-# Treat the include list as a security boundary rather than a convenience. The
-# server exposes 17 tools, 12 of which mutate the knowledge graph (insert_*,
-# edit_*, and delete_by_doc_ids / delete_by_entities). Only the five
-# read-oriented ones belong on these profiles.
-#
-# With LIGHTRAG_MCP_ENABLED off, every entry pointing at the LightRAG URL is
-# removed, whatever its key, so a profile that once had LightRAG doesn't keep
-# retrying a server that is gone (CR 0022 R1).
-register_lightrag_mcp_servers() {
-  _rlms_profile="$1"
-  case "$LIGHTRAG_MCP_ENABLED" in
-    1|true|TRUE|yes|YES) ;;
-    *)
-      log "Skipping LightRAG MCP registration (LIGHTRAG_MCP_ENABLED=${LIGHTRAG_MCP_ENABLED})"
-      drop_mcp_entries_for_url "$_rlms_profile" "" "$LIGHTRAG_MCP_URL"
-      return 0
-      ;;
-  esac
-  # shellcheck disable=SC2086
-  register_mcp_server "$_rlms_profile" lightrag LightRAG \
-    "$LIGHTRAG_MCP_URL" "$LIGHTRAG_MCP_TIMEOUT" "$LIGHTRAG_MCP_CONNECT_TIMEOUT" $LIGHTRAG_MCP_TOOLS
-
-  # The clone inherits the default profile's own unfiltered LightRAG entry,
-  # which would hand this profile all 17 tools through the back door and leave
-  # the allowlist above meaning nothing.
-  drop_unfiltered_mcp_duplicate "$_rlms_profile" lightrag lightrag-mcp "$LIGHTRAG_MCP_URL"
-  # shellcheck disable=SC2086
-  pin_mcp_tools "$_rlms_profile" lightrag $LIGHTRAG_MCP_TOOLS
-}
-
 # Built-in add-ons with an mcp block, from addons/*/addon.json
 # (scripts/lib/addon_manifest.py mcp-plan). Each line of the plan says whether
 # the add-on's flag is on and what access this profile gets; a profile the
@@ -1307,10 +1208,12 @@ addon_mcp_plan() {
   python3 "$ADDON_MANIFEST_PY" mcp-plan "$ADDONS_DIR" "${1:-default}"
 }
 
-# Every add-on MCP URL, on or off, one per line, for set_stack_mcp_parked_retry.
-# Field 11 of the plan holds all of an add-on's URLs, space-separated.
+# Every add-on MCP URL, on or off, on any profile (profiles and unmanaged are
+# ignored), one per line, for set_stack_mcp_parked_retry. That only tunes
+# entries that already exist, so it also reaches a user's own entry on default.
 addon_mcp_urls() {
-  addon_mcp_plan "$1" 2>/dev/null | cut -d'|' -f11 | tr ' ' '\n' | sed '/^$/d' || true
+  [ -d "$ADDONS_DIR" ] || return 0
+  python3 "$ADDON_MANIFEST_PY" mcp-urls "$ADDONS_DIR" 2>/dev/null || true
 }
 
 # "<tool> <mcp__name__tool> ..." for each add-on that registers on <profile>,
@@ -1358,12 +1261,194 @@ register_addon_mcp_servers() {
     # shellcheck disable=SC2086
     register_mcp_server "$_ram_profile" "$_ram_name" "$_ram_title" \
       "$_ram_url" "$_ram_timeout" "$_ram_connect" $_ram_tools
+    # A profile cloned from default can carry another key at this URL, with
+    # its own (unfiltered) tool list.
+    drop_mcp_entries_for_url "$_ram_profile" "$_ram_name" "$_ram_url"
     if [ "$_ram_transport" = sse ]; then
       hermes_config_set "$_ram_profile" "mcp_servers.${_ram_name}.transport" "sse"
     fi
     # shellcheck disable=SC2086
     pin_mcp_tools "$_ram_profile" "$_ram_name" $_ram_pins
   done
+}
+
+# Connected Actual budgets ("rows"): ADDON_DATA_DIR/actual/instances/<slug>.json,
+# written by addon.sh connect and mounted read-only (never secrets/). The
+# actual-mcp launchers serve each row at /<slug>/mcp; actual_rows.py plan says
+# which entries a profile gets: budget-<slug>-ro on actual-mcp-ro for every
+# row and budget-<slug> on actual-mcp-rw for a write row, on default and
+# browser only. Actual's manifest keeps its single mcp entry for the legacy
+# budget (register_addon_mcp_servers); rows don't use mcp.instances, which
+# needs bearer auth and gives one entry per instance.
+actual_rows_plan() {
+  [ -d "$ADDONS_DIR" ] || return 0
+  python3 "$ACTUAL_ROWS_PY" plan "${ADDON_DATA_DIR}/actual/instances" "$ADDONS_DIR" "${1:-default}"
+}
+
+# The add-on flag, read as addon_manifest.truthy reads it.
+actual_rows_on() {
+  case "$(printf '%s' "${ACTUAL_MCP_ENABLED:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# True when no single budget is configured: ACTUAL_BUDGET_FILE empty or the
+# empty placeholder compose falls back to.
+actual_single_budget_off() {
+  case "${ACTUAL_BUDGET_FILE:-}" in
+    ''|*no-budget.env) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Every row URL <profile> registers, one per line, for set_stack_mcp_parked_retry.
+actual_row_urls() {
+  actual_rows_on || return 0
+  actual_rows_plan "$1" 2>/dev/null | cut -d'|' -f3 | sed '/^$/d' || true
+}
+
+# "<tool> <mcp__name__tool> ..." for each row entry on <profile>, for
+# reconcile_stack_eager_tools.
+actual_row_pin_args() {
+  actual_rows_on || return 0
+  actual_rows_plan "$1" 2>/dev/null | while IFS='|' read -r _arp_name _arp_title _arp_url \
+      _arp_timeout _arp_connect _arp_tools _arp_pins; do
+    for _arp_t in $_arp_pins; do
+      printf ' %s %s' "$_arp_t" "$(mcp_tool_name "$_arp_name" "$_arp_t")"
+    done
+  done
+  return 0
+}
+
+# Drop row entries on one profile, and the tool pins of every budget entry
+# that is gone. An entry is a row entry when its URL is on actual-mcp-ro:3000
+# or actual-mcp-rw:3000 with a path other than the legacy /mcp.
+#   rows: drop budget-* row entries not named in <keep>; entries a client
+#         added under another name stay.
+#   all:  drop every row entry (the flag is off, or the profile gets none).
+# drop-legacy also drops the legacy budget entry on /mcp.
+#
+# Usage: reconcile_actual_budget_rows <profile> rows|all keep|drop-legacy [<name>]...
+reconcile_actual_budget_rows() {
+  _out="$(python3 - "$(config_path_for "$1")" "$2" "$3" "$(shift 3; echo "$*")" <<'PY'
+import re
+import sys
+from urllib.parse import urlsplit
+
+sys.path.insert(0, "/opt/hermes")
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import hermes_yaml as yaml
+from utils import atomic_yaml_write
+
+cfg_path, mode, legacy, keep = sys.argv[1], sys.argv[2], sys.argv[3], set(sys.argv[4].split())
+HOSTS = {"actual-mcp-ro", "actual-mcp-rw"}
+try:
+    with open(cfg_path) as fh:
+        config = yaml.safe_load(fh) or {}
+except FileNotFoundError:
+    raise SystemExit(0)
+servers = config.get("mcp_servers")
+if not isinstance(servers, dict):
+    servers = {}
+
+
+def place(entry):
+    """'row', 'legacy' or None for an entry's URL."""
+    if not isinstance(entry, dict):
+        return None
+    try:
+        parts = urlsplit(str(entry.get("url", "")).strip())
+        port = parts.port
+    except ValueError:
+        return None
+    if parts.scheme != "http" or parts.hostname not in HOSTS or port != 3000:
+        return None
+    return "legacy" if parts.path.rstrip("/") == "/mcp" else "row"
+
+
+removed = []
+for key, entry in list(servers.items()):
+    where = place(entry)
+    if where == "row" and (mode == "all" or (str(key).startswith("budget-") and key not in keep)):
+        removed.append(key)
+    elif where == "legacy" and key == "budget" and legacy == "drop-legacy":
+        removed.append(key)
+for key in removed:
+    del servers[key]
+
+
+def sanitize(name):
+    return re.sub(r"[^A-Za-z0-9_]", "_", str(name))
+
+
+# Pins of budget entries that are gone: mcp__budget__* and mcp__budget-*__* /
+# mcp__budget_*__* whose server isn't in the config any more. Bare tool names
+# stay; another entry may still use them.
+present = {sanitize(k) for k in servers} | {str(k) for k in servers}
+unpinned = 0
+tool_search = (config.get("tools") or {}).get("tool_search") or {}
+pins = tool_search.get("always_include")
+if isinstance(pins, list):
+    def stale(name):
+        if not isinstance(name, str) or not name.startswith("mcp__") or "__" not in name[5:]:
+            return False
+        server = name[5:].split("__", 1)[0]
+        ours = server == "budget" or server.startswith(("budget_", "budget-"))
+        return ours and server not in present
+
+    kept = [p for p in pins if not stale(p)]
+    unpinned = len(pins) - len(kept)
+    if unpinned:
+        tool_search["always_include"] = kept
+
+if removed or unpinned:
+    atomic_yaml_write(cfg_path, config)
+if removed:
+    print("Removed Actual budget MCP entries: " + ", ".join(sorted(map(str, removed))))
+if unpinned:
+    print(f"Removed {unpinned} tool pins of Actual budget entries that are gone")
+PY
+)"
+  if [ -n "$_out" ]; then log "$_out"; fi
+}
+
+# Runs after register_addon_mcp_servers, which writes or drops the legacy
+# budget entry on /mcp.
+register_actual_budget_rows() {
+  _rab_profile="$1"
+  _rab_legacy=keep
+  if actual_single_budget_off; then
+    _rab_legacy=drop-legacy
+  fi
+  if ! actual_rows_on; then
+    reconcile_actual_budget_rows "$_rab_profile" all "$_rab_legacy"
+    return 0
+  fi
+  if ! _rab_plan="$(actual_rows_plan "$_rab_profile")"; then
+    log "warning: could not plan the connected Actual budgets; their MCP entries left as they were"
+    return 0
+  fi
+  case "${_rab_profile:-default}" in
+    default|browser) _rab_mode=rows ;;
+    *) _rab_mode=all ;;
+  esac
+  _rab_keep=""
+  while IFS='|' read -r _rab_name _rab_title _rab_url _rab_timeout _rab_connect _rab_tools _rab_pins; do
+    [ -n "$_rab_name" ] || continue
+    # shellcheck disable=SC2086
+    register_mcp_server "$_rab_profile" "$_rab_name" "$_rab_title" \
+      "$_rab_url" "$_rab_timeout" "$_rab_connect" $_rab_tools
+    # shellcheck disable=SC2086
+    pin_mcp_tools "$_rab_profile" "$_rab_name" $_rab_pins
+    _rab_keep="${_rab_keep} ${_rab_name}"
+  done <<EOF
+$_rab_plan
+EOF
+  # shellcheck disable=SC2086
+  reconcile_actual_budget_rows "$_rab_profile" "$_rab_mode" "$_rab_legacy" $_rab_keep
 }
 
 # Built-in add-ons with a vaultBackend block (addon_manifest.py vault-plan): a
@@ -1910,7 +1995,9 @@ PY
 # platform_toolsets.cron to Hermes's default cron tools plus every other MCP
 # server. A job that names a fenced server in its own enabled_toolsets (make
 # mail-triage-cron, make messages-triage-cron) still gets it. Add-ons are
-# matched by MCP name or URL (addon_manifest.cron_fence).
+# matched by MCP name, or by the scheme, host and port of a URL
+# (addon_manifest.cron_fence), so a connected Actual budget's write entry on
+# actual-mcp-rw is fenced while its -ro entry on actual-mcp-ro is not.
 #
 # Add-ons with a vaultBackend reach Hermes through a plugin, not MCP, and the
 # plugin's toolset (bitwarden) is on in cron by default. While the plugin is
@@ -1931,6 +2018,7 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 sys.path.insert(0, "/opt/hermes")
 try:
@@ -1943,6 +2031,22 @@ from utils import atomic_yaml_write
 
 MAIL_URLS = ("mail-mcp:8000", "mail-drafts-mcp:8000", "messages-mcp:8000")
 cfg_path = Path(sys.argv[1])
+
+
+def origin(url):
+    """(scheme, host, port) of a URL, None when it has no host. A connected
+    Actual budget's write entry is http://actual-mcp-rw:3000/<slug>/mcp, on
+    the host of the fenced http://actual-mcp-rw:3000/mcp."""
+    try:
+        parts = urlsplit(url.strip())
+        port = parts.port or {"http": 80, "https": 443}.get(parts.scheme.lower())
+    except ValueError:
+        return None
+    if not parts.hostname:
+        return None
+    return (parts.scheme.lower(), parts.hostname.lower(), port)
+
+
 addon_names, addon_urls, addon_toolsets = set(), set(), []
 fence_known = True
 try:
@@ -2007,9 +2111,10 @@ elif plugin_ts:
 servers = config.get("mcp_servers") or {}
 enabled = {str(n) for n, s in servers.items()
            if isinstance(s, dict) and str(s.get("enabled", True)).lower() not in ("false", "no", "off", "0")}
+addon_origins = {o for o in map(origin, addon_urls) if o}
 mail = {n for n in enabled
         if any(u in str(servers[n].get("url", "")) for u in MAIL_URLS)
-        or n in addon_names or str(servers[n].get("url", "")) in addon_urls}
+        or n in addon_names or origin(str(servers[n].get("url", ""))) in addon_origins}
 platform = config.get("platform_toolsets")
 platform = platform if isinstance(platform, dict) else {}
 current = platform.get("cron")
@@ -2401,6 +2506,7 @@ if is_true "$BOOTSTRAP_SHARED"; then
   register_vikunja_mcp_servers ""
   register_messages_mcp_servers ""
   register_addon_mcp_servers ""
+  register_actual_budget_rows ""
   register_addon_vault_backends ""
   register_addon_instance_servers ""
 
@@ -2597,10 +2703,6 @@ if [ "$PROFILE" = "browser" ]; then
   hermes_config_set "$PROFILE" "auxiliary.title_generation.enabled" "$TITLE_ENABLED"
 fi
 
-# LightRAG goes on the profile this bootstrap manages, never on default. See
-# register_lightrag_mcp_servers.
-register_lightrag_mcp_servers "$PROFILE"
-
 # Same web-reading servers as the default profile above; profiles carry their
 # own config.yaml, so the earlier registration does not reach API sessions.
 register_web_mcp_servers "$PROFILE"
@@ -2610,6 +2712,7 @@ register_sql_mcp_servers "$PROFILE"
 register_vikunja_mcp_servers "$PROFILE"
 register_messages_mcp_servers "$PROFILE"
 register_addon_mcp_servers "$PROFILE"
+register_actual_budget_rows "$PROFILE"
 register_addon_vault_backends "$PROFILE"
 register_addon_instance_servers "$PROFILE"
 
