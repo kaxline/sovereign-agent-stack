@@ -30,6 +30,10 @@ cat > "$tmp/bin/docker" <<'SH'
 #!/bin/sh
 printf '%s\n' "$*" >> "$STUB/log"
 rc_of() { if [ -f "$STUB/rc.$1" ]; then cat "$STUB/rc.$1"; else echo 0; fi; }
+# bw/ may be mode 000 (Linux: it belongs to uid 10001); the broker's side of
+# the stub opens it for one step and puts the mode back.
+bw_open() { bwm=""; [ -d "$STUB_DATA/bw" ] || return 0; bwm="$(stat -f %Lp "$STUB_DATA/bw" 2>/dev/null || stat -c %a "$STUB_DATA/bw")"; chmod u+rwx "$STUB_DATA/bw"; }
+bw_close() { [ -z "$bwm" ] || chmod "$bwm" "$STUB_DATA/bw"; }
 case " $* " in
   *" --entrypoint "*)
     ep=""; take=""; seen=""
@@ -46,13 +50,24 @@ case " $* " in
     exec "$ep" "$@" ;;
 esac
 case " $* " in
+  *" exec -T bitwarden-broker sh -c "*)
+    for a do last="$a"; done
+    [ -f "$STUB/rc.bwrm" ] && exit "$(cat "$STUB/rc.bwrm")"
+    bw_open
+    rm -rf "$STUB_DATA/bw/${last#/data/bw/}"; [ ! -e "$STUB_DATA/bw/${last#/data/bw/}" ]; r=$?
+    bw_close
+    exit "$r" ;;
   *" info "*) exit 0 ;;
   *" ps "*bitwarden-broker*) [ -f "$STUB/broker-running" ] && echo cid-broker; exit 0 ;;
   *" ps "*" hermes "*) [ -f "$STUB/hermes-running" ] && echo cid-hermes; exit 0 ;;
   *" exec -T hermes "*) cat > /dev/null; cat "$STUB/reload-out" 2>/dev/null; exit "$(rc_of reload)" ;;
   *" ps "*) exit 0 ;;
   *" up "*)
+    bw_open
     [ -e "$STUB_DATA/bw/jm/stale" ] && echo "stub: stale bw login at up" >> "$STUB/log"
+    # The broker writing a sign-in into bw/<slug>/ while it is replaced.
+    if [ -f "$STUB/bw-at-up" ]; then mkdir -p "$STUB_DATA/bw/$(cat "$STUB/bw-at-up")" && touch "$STUB_DATA/bw/$(cat "$STUB/bw-at-up")/login"; fi
+    bw_close
     if [ -d "$STUB_DATA/local/tls/server" ] && [ -d "$STUB_DATA/local/vaultwarden" ] \
       && [ -d "$STUB_DATA/secrets/local/tls" ] && [ -d "$STUB_DATA/vaultwarden" ]; then
       echo "stub: dirs ready at up" >> "$STUB/log"
@@ -730,6 +745,46 @@ check_fail jl "$STORED" "$(printf 'jl\tcloud\tfolder\terror\trate_limited\t0\t12
 check_fail jt "$STORED" "$(printf 'jt\tcloud\tfolder\tlocked\t-\t1\t')" timeout
 check_fail ju "$MANUAL" "$(printf 'ju\tcloud\tfolder\tlocked\t-\t0\t')" timeout
 check_fail jx "$STORED" "$(printf 'jx\tcloud\tfolder\terror\tunknown\t0\t')" command_failed
+
+# bw/<slug>/ goes after the rollback's broker restart, since the old broker
+# can write its sign-in there until it is replaced.
+echo jp > "$STUB/bw-at-up"
+check_fail jp "$MANUAL" "$(printf 'jp\tcloud\tfolder\terror\tauth\t0\t')" login_refused
+rm -f "$STUB/bw-at-up"
+
+# bw/ the host cannot search (Linux, uid 10001, mode 700): the broker removes
+# bw/<slug>/, a leftover login included.
+mkdir -p "$D/bw/jm"
+touch "$D/bw/jm/stale"
+chmod 000 "$D/bw"
+: > "$STUB/log"
+printf 'jm\tcloud\tfolder\tlocked\t-\t1\t\n' > "$STUB/accounts"
+[ "$(ja "$MANUAL" jm)" = 0 ] && [ "$(jlast phase)" = "done" ] || fail "add --json with an unsearchable bw/"
+logged "exec -T bitwarden-broker sh -c" || fail "unsearchable bw/: the broker did not remove bw/jm"
+logged "stub: stale bw login at up" && fail "unsearchable bw/: the broker started with the stale bw login"
+[ "$(jr --slug jm --json)" = 0 ] || fail "remove --json with an unsearchable bw/"
+chmod 700 "$D/bw"
+gone jm "remove --json with an unsearchable bw/"
+# A failed connect: bw/<slug>/ the broker wrote is removed through the broker.
+chmod 000 "$D/bw"
+echo jq > "$STUB/bw-at-up"
+: > "$STUB/log"
+printf 'jq\tcloud\tfolder\terror\tauth\t0\t\n' > "$STUB/accounts"
+[ "$(ja "$MANUAL" jq)" = 4 ] && [ "$(jlast error)" = login_refused ] || fail "unsearchable bw/: login_refused"
+rm -f "$STUB/bw-at-up"
+chmod 700 "$D/bw"
+gone jq "unsearchable bw/, login_refused"
+# The broker cannot remove it either: command_failed before anything is written.
+mkdir -p "$D/bw/jv"
+chmod 000 "$D/bw"
+echo 1 > "$STUB/rc.bwrm"
+: > "$STUB/log"
+[ "$(ja "$MANUAL" jv)" = 4 ] && [ "$(jlast error)" = command_failed ] || fail "unsearchable bw/ the broker cannot empty"
+rm -f "$STUB/rc.bwrm"
+chmod 700 "$D/bw"
+[ ! -e "$VAULT_ACCOUNTS_DIR/jv.env" ] && [ ! -e "$D/secrets/jv" ] || fail "an unconfirmed bw/jv still let add write"
+[ "$(recreates)" = 0 ] || fail "an unconfirmed bw/jv still restarted the broker"
+rm -rf "$D/bw/jv"
 
 # The broker does not come back up.
 : > "$STUB/log"

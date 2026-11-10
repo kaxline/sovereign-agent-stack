@@ -185,7 +185,7 @@ emit_error() {
     die "$2"
   fi
   local retry=""
-  if [[ "${3:-}" =~ $RETRY_RE && "${3:-0}" -gt 0 ]]; then
+  if [[ "${3:-}" =~ $RETRY_RE ]] && (( 10#$3 > 0 )); then
     retry=",\"retryAfter\":$((10#$3))"
   fi
   printf '{"phase":"error","error":%s,"message":%s%s}\n' "$(json_str "$1")" "$(json_str "$2")" "$retry"
@@ -717,30 +717,47 @@ add_cleanup() {
 # bw/<slug>/ holds the bw CLI's login. bw login --apikey takes an existing
 # login as success, so a leftover one would skip the check of the new key.
 empty_bw_dir() {
-  local d
-  d="$(data_dir)/bw/$1"
-  [[ -e "$d" ]] || return 0
-  rm -rf "${d:?}" 2>/dev/null || true
-  [[ ! -e "$d" ]] \
-    || emit_error command_failed "could not empty ${d} (owned by the broker's user); remove it as root, then connect again"
+  remove_bw_dir "$1" \
+    || emit_error command_failed "could not empty $(data_dir)/bw/$1 (owned by the broker's user); remove it as root, then connect again"
+}
+
+# Removes bw/<slug>/ and returns 0 only once it is confirmed gone. On Linux
+# bw/ belongs to the containers' user (mode 700), so the host cannot even see
+# whether the folder exists; then the running broker, which mounts it at
+# /data/bw, removes it. Returns 1 when neither can confirm it.
+# shellcheck disable=SC2016  # expanded by the sh that runs it
+BW_RM='rm -rf -- "$1" && [ ! -e "$1" ]'
+remove_bw_dir() {
+  local bw d
+  bw="$(data_dir)/bw"
+  d="${bw}/$1"
+  [[ -e "$bw" || -L "$bw" ]] || return 0
+  if [[ -d "$bw" && -x "$bw" ]]; then
+    [[ -e "$d" || -L "$d" ]] || return 0
+    rm -rf "${d:?}" 2>/dev/null || true
+    [[ -e "$d" || -L "$d" ]] || return 0
+  fi
+  broker_running || return 1
+  note_container "$d"
+  broker_exec sh -c "$BW_RM" sh "/data/bw/$1" < /dev/null > /dev/null 2>&1
 }
 
 # add --json failed or was stopped: the account file, secrets/<slug>/ and
 # bw/<slug>/ go, and a broker that loaded the account is recreated without it.
+# bw/<slug>/ goes last: until the recreate, the old broker may still write
+# its sign-in there.
 add_rollback() {
-  local slug="$1" d
+  local slug="$1"
   ADD_STAGE=finished
   [[ -n "$slug" ]] || return 0
   rm -f "$(account_file "$slug")" || true
   remove_secrets "$slug" || true
-  d="$(data_dir)/bw/${slug}"
-  if [[ -e "$d" ]]; then
-    rm -rf "${d:?}" 2>/dev/null || log "Could not remove ${d} (owned by the broker's user); remove it as root"
-  fi
   if [[ "$ADD_RESTARTED" == 1 ]]; then
     ADD_RESTARTED=0
     restart_broker 2>/dev/null || log "The broker did not restart; it holds ${slug} until make up"
   fi
+  remove_bw_dir "$slug" \
+    || log "Could not remove $(data_dir)/bw/${slug} (owned by the broker's user); remove it as root"
   return 0
 }
 
@@ -1240,8 +1257,6 @@ cmd_remove() {
   data="$(data_dir)"
   rm -f "$(account_file "$slug")"
   remove_secrets "$slug"
-  rm -rf "${data:?}/bw/${slug:?}" 2>/dev/null \
-    || log "Could not remove ${data}/bw/${slug} (owned by the broker's user); remove it as root"
   log "Removed ${slug}: its account file and secrets"
   if broker_running; then
     if [[ "$JSON" == 1 ]]; then
@@ -1253,6 +1268,9 @@ cmd_remove() {
     log "Restarted the broker, which no longer holds ${slug}"
     note_locked_manual "$slug"
   fi
+  # After the restart, so the broker no longer writes there.
+  remove_bw_dir "$slug" \
+    || log "Could not remove ${data}/bw/${slug} (owned by the broker's user); remove it as root"
   log "$REVOKE_REMINDER"
   if [[ "$JSON" == 1 ]]; then
     local msg="${REVOKE_REMINDER}."
