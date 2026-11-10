@@ -504,7 +504,10 @@ def test_run_loop(env: Env) -> None:
     proc = subprocess.run([sys.executable, "-I", str(HERE / "mail-index.py"), "--config", str(bad),
                            "run", "--every", "1", "--passes", "2"], capture_output=True, text=True, env=env_wo)
     out = [json.loads(l) for l in proc.stdout.strip().splitlines()]
-    expect(proc.returncode == 0 and out == [{"error": "5"}, {"error": "5"}],
+    # The pass still runs (and would index other accounts), so its line has the
+    # counts too, with the failed account under `failed` and the pass's `error`.
+    expect(proc.returncode == 0 and len(out) == 2
+           and all(o.get("error") == "5" and o.get("failed") == {"x": 5} and o.get("added") == 0 for o in out),
            f"failed passes reported, loop continues: {proc.returncode} {out} {proc.stderr}")
     expect(proc.stderr.count("mail-index:") == 2, f"stderr: {proc.stderr}")
     gone = env.tmp / "does-not-exist.toml"

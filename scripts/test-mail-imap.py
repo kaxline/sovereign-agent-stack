@@ -254,6 +254,105 @@ def make_certs(out: Path) -> Path | None:
     return out
 
 
+class FakeReader:
+    """A ReadOnlyImap stand-in holding one INBOX: {uid: (internaldate, raw message)}.
+    `fail` is raised on connect, as a refused login or an unreachable server would."""
+
+    def __init__(self, account_id: str, messages: dict[int, tuple[str, bytes]], fail: Exception | None = None):
+        self.account_id, self.messages, self.fail = account_id, messages, fail
+        self.capabilities: set[str] = set()
+
+    def __enter__(self):
+        if self.fail is not None:
+            raise self.fail
+        return self
+
+    def __exit__(self, *exc) -> None:
+        pass
+
+    def list_mailboxes(self):
+        return mail_imap.parse_list([b'(\\HasNoChildren) "/" "INBOX"'])
+
+    def examine(self, box) -> int:
+        return 7
+
+    def uid_search_since(self, day) -> list[int]:
+        return sorted(self.messages)
+
+    def uid_fetch(self, uids: list[int], items: str) -> list:
+        out = []
+        for i, uid in enumerate(uids, start=1):
+            when, raw = self.messages[uid]
+            meta = f'{i} (UID {uid} FLAGS () INTERNALDATE "{when}" BODY[] {{{len(raw)}}}'.encode()
+            out += [(meta, raw), b")"]
+        return out
+
+
+def test_one_failed_account_keeps_the_others() -> None:
+    """A refused login or an unreachable server for one account is logged with
+    its id, reported under `failed`, and doesn't stop the others; the failed
+    account's rows stay in the index."""
+    import contextlib
+    import io
+
+    def msg(n: int, who: str) -> tuple[str, bytes]:
+        raw = (f"From: {who}@example.com\r\nTo: me@example.com\r\nSubject: synthetic {who} {n}\r\n"
+               f"Date: Thu, 01 Oct 2026 10:00:00 +0000\r\nMessage-ID: <fake-{who}-{n}@example.com>\r\n\r\nHello.\r\n")
+        return "01-Oct-2026 10:00:00 +0000", raw.encode()
+
+    with tempfile.TemporaryDirectory() as d:
+        cfg_path = Path(d) / "c.toml"
+        cfg_path.write_text(
+            f'source = "imap"\nindex = "{Path(d) / "index.sqlite"}"\nsince = 2026-01-01\n'
+            '[[accounts]]\nid = "home"\nhost = "127.0.0.1"\nsecurity = "plain"\nuser = "h@example.com"\n'
+            'mailboxes = ["INBOX"]\n'
+            '[[accounts]]\nid = "work"\nhost = "127.0.0.1"\nsecurity = "plain"\nuser = "w@example.com"\n'
+            'mailboxes = ["INBOX"]\n')
+        config = mi.load_config(cfg_path)
+        boxes = {"home": {1: msg(1, "home"), 2: msg(2, "home")}, "work": {1: msg(1, "work")}}
+        fails: dict[str, Exception] = {}
+
+        def connect(account_id, settings):
+            return FakeReader(account_id, boxes[account_id], fails.get(account_id))
+
+        def accounts() -> dict[str, int]:
+            db = sqlite3.connect(config.index)
+            got = dict(db.execute("SELECT account, count(*) FROM messages GROUP BY account").fetchall())
+            db.close()
+            return got
+
+        stats = mi.run(config, source=mail_imap.ImapSource(config, connect=connect))
+        expect(accounts() == {"home": 2, "work": 1} and "failed" not in stats.as_dict(),
+               f"both accounts indexed: {accounts()} {stats}")
+
+        # home's password is refused; work gets new mail, and home's mail changed on the server too.
+        fails["home"] = mail_imap_conn.AuthFailed("home: the server rejected the user name or password")
+        boxes["work"][2] = msg(2, "work")
+        del boxes["home"][2]
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            stats = mi.run(config, source=mail_imap.ImapSource(config, connect=connect))
+        expect(stats.as_dict().get("failed") == {"home": 4}, f"the pass reports home as failed with 4: {stats}")
+        expect("mail-index: home: " in err.getvalue() and "work" not in err.getvalue(),
+               f"one mail-index: line naming home: {err.getvalue()!r}")
+        expect(accounts() == {"home": 2, "work": 2}, f"work's new mail indexed, home's rows kept: {accounts()}")
+        expect(stats.added == 1 and stats.removed == 0, f"nothing of home's purged: {stats}")
+
+        # A missing password counts as 4 too, and an unreachable server as 5.
+        fails["home"] = mail_credentials.MissingPassword("home: no readable password file for this account")
+        fails["work"] = mail_imap_conn.ImapError("work: can't connect to 127.0.0.1:143 (ConnectionRefusedError)")
+        with contextlib.redirect_stderr(io.StringIO()):
+            stats = mi.run(config, source=mail_imap.ImapSource(config, connect=connect))
+        expect(stats.as_dict().get("failed") == {"home": 4, "work": 5} and accounts() == {"home": 2, "work": 2},
+               f"both failed, nothing removed: {stats} {accounts()}")
+
+        # Once home logs in again, its removed message leaves the index.
+        fails.clear()
+        stats = mi.run(config, source=mail_imap.ImapSource(config, connect=connect))
+        expect(accounts() == {"home": 1, "work": 2} and stats.removed == 1 and "failed" not in stats.as_dict(),
+               f"home catches up after the failure: {accounts()} {stats}")
+
+
 # --------------------------------------------------------------------------- fake IMAP server
 
 class FakeImap:
@@ -806,6 +905,7 @@ def main() -> int:
     test_credentials_handoff()
     test_credentials_dir()
     test_credentials_dir_traversal()
+    test_one_failed_account_keeps_the_others()
     with tempfile.TemporaryDirectory() as d:
         certs = make_certs(Path(d) / "certs")
         test_login_methods(certs)

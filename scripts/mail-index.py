@@ -108,6 +108,14 @@ def guarded(fn) -> tuple[object, int]:
         return None, 1
 
 
+def pass_code(result: object) -> int:
+    """A run's exit code from its result: 4 when an account's password failed,
+    5 when an account's server did (the account ids are under `failed`), else 0."""
+    failed = result.get("failed") if isinstance(result, dict) else None
+    codes = set(failed.values()) if failed else set()
+    return 4 if 4 in codes else (5 if codes else 0)
+
+
 def one_command(args) -> object:
     config = mi.load_config(Path(args.config))
     if args.command == "run":
@@ -133,6 +141,10 @@ def run_loop(args) -> int:
         result, code = guarded(lambda: one_command(args))
         if code == 2:
             return 2
+        if code == 0 and pass_code(result):
+            # Some accounts failed and the rest were indexed: the counts, plus the
+            # error a failed pass prints, so readers of `error` still see it.
+            result = {**result, "error": str(pass_code(result))}
         print(json.dumps(result if code == 0 else {"error": str(code)}), flush=True)
         done += 1
         if args.passes is not None and done >= args.passes:
@@ -168,7 +180,7 @@ def main() -> int:
     if code:
         return code
     print(json.dumps(result, indent=2))
-    return 0
+    return pass_code(result)
 
 
 if __name__ == "__main__":
