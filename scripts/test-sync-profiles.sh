@@ -153,11 +153,14 @@ expect "manifest row removes its profile when off" COMPOSE_PROFILES core
 # Bitwarden's row comes from addons/bitwarden/addon.json with seed false: a
 # missing flag stays unwritten, and BITWARDEN_ENABLED=1 turns on the broker's
 # profile. BITWARDEN_LOCAL_ENABLED (vault) is a SERVICES_CORE row.
-if "${tmp}/scripts/sync-profiles.sh" --table | grep -qx 'BITWARDEN_ENABLED bitwarden 0'; then
+# Capture first: under pipefail, grep -q exiting on the match can SIGPIPE the
+# table writer and fail the pipeline on a loaded machine.
+table="$("${tmp}/scripts/sync-profiles.sh" --table)"
+if grep -qx 'BITWARDEN_ENABLED bitwarden 0' <<<"$table"; then
   echo "ok: table has the BITWARDEN_ENABLED bitwarden 0 row"
 else
   echo "FAIL: table has the BITWARDEN_ENABLED bitwarden 0 row"
-  "${tmp}/scripts/sync-profiles.sh" --table | sed 's/^/    /'
+  printf '%s\n' "$table" | sed 's/^/    /'
   fail=1
 fi
 printf 'COMPOSE_PROFILES=core\n' > "${tmp}/.env"
