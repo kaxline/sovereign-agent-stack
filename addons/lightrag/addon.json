@@ -1,0 +1,78 @@
+{
+  "manifestVersion": 1,
+  "id": "io.github.kaxline.stack.lightrag",
+  "version": "1.0.0",
+  "title": "LightRAG",
+  "tagline": "Ask questions of your knowledge base from chat",
+  "description": "Runs LightRAG over the active WORKSPACE with Neo4j as its graph store, and gives Hermes five read-only tools through lightrag-mcp on the api-server and browser profiles. The upstream MCP server has 17 tools; the 12 that change the knowledge graph are never registered. The default profile is the user's own config and is left alone. Disabling keeps rag_storage, inputs and the Neo4j graph. See docs/knowledge-bases.md.",
+  "publisher": {
+    "name": "sovereign-agent-stack",
+    "url": "https://github.com/kaxline/sovereign-agent-stack"
+  },
+  "minStackVersion": "0.3.13",
+  "builtin": {
+    "flag": "LIGHTRAG_MCP_ENABLED",
+    "profile": "rag",
+    "seed": false
+  },
+  "services": {
+    "api": {
+      "compose": "lightrag",
+      "port": 9621
+    },
+    "mcp": {
+      "compose": "lightrag-mcp",
+      "port": 8000
+    }
+  },
+  "uses": [
+    "llm",
+    "neo4j"
+  ],
+  "mcp": {
+    "service": "mcp",
+    "transport": "http",
+    "path": "/mcp",
+    "name": "lightrag",
+    "title": "LightRAG",
+    "timeout": 120,
+    "connectTimeout": 30,
+    "env": {
+      "url": "LIGHTRAG_MCP_URL",
+      "timeout": "LIGHTRAG_MCP_TIMEOUT",
+      "connectTimeout": "LIGHTRAG_MCP_CONNECT_TIMEOUT"
+    },
+    "tools": [
+      "query_document",
+      "get_documents",
+      "get_pipeline_status",
+      "get_graph_labels",
+      "check_lightrag_health"
+    ],
+    "pin": [
+      "query_document",
+      "get_documents",
+      "get_pipeline_status",
+      "get_graph_labels",
+      "check_lightrag_health"
+    ],
+    "writeTools": [],
+    "profiles": {
+      "api-server": "ro",
+      "browser": "ro"
+    },
+    "unmanaged": [
+      "default"
+    ]
+  },
+  "permissions": {
+    "reads": [],
+    "writes": [],
+    "sends": false,
+    "egress": [
+      "llm-proxy"
+    ],
+    "exposesToAgent": true,
+    "cron": true
+  }
+}

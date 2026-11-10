@@ -1478,6 +1478,67 @@ expect_rc "disconnect with a hook message" 0
 r=0; json_ok "$out" "done" 'last == {"phase":"done","id":"hooked","action":"disconnect","restart":[],"mcp":[],"message":"signed out"}' || r=1
 check "disconnect's done line carries the hook's message" "$r"
 
+# The built-in n8n add-on (CR 0020 R10), from the real addons/ directory.
+# gpt-researcher belongs to it; gptr-mcp belongs to the GPT Researcher add-on
+# and is never named.
+saved_addons_dir="$ADDONS_DIR"
+export ADDONS_DIR="${root}/addons"
+: > "$STUB_LOG"
+addon_json enable n8n --json
+expect_rc "enable n8n" 0
+r=0; json_ok "$out" "done" 'last == {"phase":"done","id":"n8n","action":"enable","restart":[],"mcp":[]}' || r=1
+check "enable n8n --json ends in done with no restart and no mcp" "$r"
+n_imp="$(grep -n -x 'compose up --no-deps --exit-code-from n8n-import n8n-import' "$STUB_LOG" | head -1 | cut -d: -f1 || true)"
+n_up="$(grep -n 'compose up -d --wait' "$STUB_LOG" | head -1 | cut -d: -f1 || true)"
+if [ -n "$n_imp" ] && [ -n "$n_up" ] && [ "$n_imp" -lt "$n_up" ] \
+  && grep 'compose up -d --wait' "$STUB_LOG" | grep -qw n8n \
+  && grep 'compose up -d --wait' "$STUB_LOG" | grep -qw gpt-researcher \
+  && ! grep 'up -d --wait' "$STUB_LOG" | grep -qF n8n-import; then
+  ok "enable n8n runs n8n-import as a one-shot, then waits for n8n and gpt-researcher"
+else
+  bad "enable n8n runs n8n-import as a one-shot, then waits for n8n and gpt-researcher"; cat "$STUB_LOG"
+fi
+if logged gptr-mcp; then bad "enable n8n never names gptr-mcp"; cat "$STUB_LOG"; else ok "enable n8n never names gptr-mcp"; fi
+if [ "$(envval AUTOMATION_ENABLED)" = 1 ]; then ok "enable n8n sets AUTOMATION_ENABLED=1"; else bad "enable n8n sets AUTOMATION_ENABLED=1"; fi
+
+addon_json list --json
+expect_rc "list --json over the real add-ons" 0
+if python3 -c 'import json,sys; a={x["shortId"]: x for x in json.load(open(sys.argv[1]))}; sys.exit(0 if a["n8n"].get("postInstallMessage") == "Open http://localhost:5678 and create the owner account." and "postInstallMessage" not in a["gptr"] else 1)' "$out"; then
+  ok "list --json carries n8n's postInstallMessage and none for an add-on without one"
+else
+  bad "list --json carries n8n's postInstallMessage and none for an add-on without one"
+fi
+
+# Disabling n8n stops its three containers and leaves gptr-mcp running.
+: > "$STUB_LOG"
+addon_json disable n8n --json
+expect_rc "disable n8n" 0
+stop_line="$(grep -E '^compose stop ' "$STUB_LOG" | grep -vE 'neo4j' || true)"
+for svc in n8n n8n-import gpt-researcher; do
+  if printf '%s\n' "$stop_line" | grep -qw -- "$svc"; then ok "disable n8n stops $svc"; else bad "disable n8n stops $svc"; cat "$STUB_LOG"; fi
+done
+if logged gptr-mcp; then bad "disable n8n leaves gptr-mcp alone"; cat "$STUB_LOG"; else ok "disable n8n leaves gptr-mcp alone"; fi
+if logged "stop searxng" || logged "stop search-gate"; then bad "disable n8n stops no search service"; else ok "disable n8n stops no search service"; fi
+if [ "$(envval AUTOMATION_ENABLED)" = 0 ]; then ok "disable n8n sets AUTOMATION_ENABLED=0"; else bad "disable n8n sets AUTOMATION_ENABLED=0"; fi
+
+# remove --delete-data: the three containers, then the two named volumes, one
+# delete line per volume.
+: > "$STUB_LOG"
+addon_json remove n8n --delete-data --json
+expect_rc "remove n8n --delete-data" 0
+r=0; json_ok "$out" "done" '[l.get("target") for l in lines if l["phase"] == "setup" and l["status"] == "done" and l["step"] == "delete"][:3] == [None, "n8n_storage", "gptr_outputs"]' || r=1
+check "remove n8n prints a delete step for the containers, then one per volume" "$r"
+rm_at="$(grep -n -x 'compose rm -f -s n8n-import n8n gpt-researcher' "$STUB_LOG" | head -1 | cut -d: -f1 || true)"
+v1="$(grep -n -x 'volume rm fixtureproj_n8n_storage' "$STUB_LOG" | head -1 | cut -d: -f1 || true)"
+v2="$(grep -n -x 'volume rm fixtureproj_gptr_outputs' "$STUB_LOG" | head -1 | cut -d: -f1 || true)"
+if [ -n "$rm_at" ] && [ -n "$v1" ] && [ -n "$v2" ] && [ "$rm_at" -lt "$v1" ] && [ "$v1" -lt "$v2" ]; then
+  ok "remove n8n removes the three containers, then each volume"
+else
+  bad "remove n8n removes the three containers, then each volume"; cat "$STUB_LOG"
+fi
+if logged gptr-mcp; then bad "remove n8n never names gptr-mcp"; else ok "remove n8n never names gptr-mcp"; fi
+export ADDONS_DIR="$saved_addons_dir"
+
 if [ "$fail" = 0 ]; then
   echo "all addon.sh checks passed"
 else

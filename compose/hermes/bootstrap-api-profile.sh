@@ -25,11 +25,6 @@ SKILLS_EXTERNAL_DIR="${HERMES_SKILLS_EXTERNAL_DIR:-/opt/skills}"
 # default-profile value, so the API profile must be set back explicitly.
 INTERACTIVE_MEMORY_NUDGE="${HERMES_INTERACTIVE_MEMORY_NUDGE_INTERVAL:-3}"
 PROFILE_MEMORY_NUDGE="${HERMES_MEMORY_NUDGE_INTERVAL:-10}"
-LIGHTRAG_MCP_URL="${LIGHTRAG_MCP_URL:-http://lightrag-mcp:8000/mcp}"
-LIGHTRAG_MCP_TIMEOUT="${LIGHTRAG_MCP_TIMEOUT:-120}"
-LIGHTRAG_MCP_CONNECT_TIMEOUT="${LIGHTRAG_MCP_CONNECT_TIMEOUT:-30}"
-LIGHTRAG_MCP_ENABLED="${LIGHTRAG_MCP_ENABLED:-0}"
-LIGHTRAG_MCP_TOOLS="query_document get_documents get_pipeline_status get_graph_labels check_lightrag_health"
 SEARXNG_MCP_URL="${SEARXNG_MCP_URL:-http://mcp-searxng:3000/mcp}"
 SEARXNG_MCP_TIMEOUT="${SEARXNG_MCP_TIMEOUT:-60}"
 SEARXNG_MCP_CONNECT_TIMEOUT="${SEARXNG_MCP_CONNECT_TIMEOUT:-30}"
@@ -860,10 +855,10 @@ set_stack_mcp_parked_retry() {
   [ -f "$_cfg" ] || return 0
   # One argument per add-on URL.
   # shellcheck disable=SC2046
-  _out="$(python3 - "$_cfg" "$MCP_PARKED_RETRY_INTERVAL" "$LIGHTRAG_MCP_URL" "$SEARXNG_MCP_URL" \
+  _out="$(python3 - "$_cfg" "$MCP_PARKED_RETRY_INTERVAL" "$SEARXNG_MCP_URL" \
     "$CALDAV_MCP_URL" "$OPENCODE_MCP_URL" "$SQL_MCP_RO_URL" "$SQL_MCP_RW_URL" "$VIKUNJA_MCP_URL" \
     "$MAIL_MCP_URL" "$MAIL_DRAFTS_MCP_URL" "$MESSAGES_MCP_URL" \
-    $(addon_mcp_urls "$1") $(addon_instance_urls "$1") $(actual_row_urls "$1") <<'PY'
+    $(addon_mcp_urls) $(addon_instance_urls "$1") $(actual_row_urls "$1") <<'PY'
 import sys
 sys.path.insert(0, "/opt/hermes")
 try:
@@ -901,13 +896,6 @@ PY
 reconcile_stack_eager_tools() {
   _rst_profile="$1"
   _rst_args="session_search web_url_read searxng_web_search mcp__searxng__web_url_read mcp__searxng__searxng_web_search"
-  case "$LIGHTRAG_MCP_ENABLED" in
-    1|true|TRUE|yes|YES)
-      if [ -n "$_rst_profile" ]; then
-        _rst_args="${_rst_args} query_document get_documents get_pipeline_status get_graph_labels check_lightrag_health mcp__lightrag__query_document mcp__lightrag__get_documents mcp__lightrag__get_pipeline_status mcp__lightrag__get_graph_labels mcp__lightrag__check_lightrag_health"
-      fi
-      ;;
-  esac
   case "$SQL_MCP_ENABLED" in
     1|true|TRUE|yes|YES)
       for _rst_t in $SQL_MCP_TOOLS; do
@@ -997,71 +985,6 @@ register_mcp_server() {
   fi
 }
 
-# Drop an unfiltered MCP server entry that duplicates one we register WITH a
-# tool allowlist, on a managed profile only.
-#
-# Profiles are created with `profile create --clone`, so they inherit whatever
-# MCP servers the default profile has, hand-added ones included. If the user
-# registered the same server unfiltered under a different key (lightrag-mcp
-# alongside our filtered lightrag), the clone carries both, and the unfiltered
-# copy hands back every tool the allowlist exists to withhold. The allowlist
-# only bounds anything while it is the ONLY route to that server.
-#
-# The match is narrow on purpose: same URL, and no tools.include of its own. A
-# duplicate the user filtered themselves reads as a considered choice and stays.
-# The default profile is never touched, since that is the user's own config.
-#
-# Usage: drop_unfiltered_mcp_duplicate <profile> <keep-key> <drop-key> <url>
-drop_unfiltered_mcp_duplicate() {
-  _dup_profile="$1"
-  [ -n "$_dup_profile" ] || return 0
-  _out="$(python3 - "$(config_path_for "$_dup_profile")" "$2" "$3" "$4" <<'PY'
-import sys
-sys.path.insert(0, "/opt/hermes")
-try:
-    import yaml
-except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
-    import sys as _sys
-    _sys.path.insert(0, "/opt/hermes")
-    import hermes_yaml as yaml
-from utils import atomic_yaml_write
-
-cfg_path, keep_key, drop_key, url = sys.argv[1:5]
-
-try:
-    with open(cfg_path) as fh:
-        config = yaml.safe_load(fh) or {}
-except FileNotFoundError:
-    raise SystemExit(0)
-
-servers = config.get("mcp_servers")
-if not isinstance(servers, dict):
-    raise SystemExit(0)
-
-dup = servers.get(drop_key)
-keep = servers.get(keep_key)
-if not isinstance(dup, dict) or not isinstance(keep, dict):
-    raise SystemExit(0)
-
-if str(dup.get("url", "")).rstrip("/") != url.rstrip("/"):
-    raise SystemExit(0)
-
-if (dup.get("tools") or {}).get("include"):
-    print(f"Keeping '{drop_key}' - it carries its own tool filter")
-    raise SystemExit(0)
-
-allowed = (keep.get("tools") or {}).get("include") or []
-del servers[drop_key]
-atomic_yaml_write(cfg_path, config)
-print(
-    f"Removed unfiltered duplicate MCP server '{drop_key}' ({url}) - "
-    f"'{keep_key}' already exposes it, restricted to {len(allowed)} tools"
-)
-PY
-)"
-  if [ -n "$_out" ]; then log "$_out"; fi
-}
-
 # Web-reading MCP servers, registered on both the default and api-server
 # profiles. Both are read-only against the public web, so unlike LightRAG they
 # have no mutating tool to keep out of unattended sessions. The allowlists below
@@ -1106,9 +1029,9 @@ register_opencode_mcp_servers() {
 }
 
 # Remove MCP server entries on one profile whose URL matches <url>, except
-# <keep-key>. Unlike drop_unfiltered_mcp_duplicate this ignores tool filters:
-# for the SQL endpoints the boundary is the database role behind the URL, so a
-# filtered entry pointing at the read/write sidecar is still read/write.
+# <keep-key>. A tool filter on the other entry does not save it: for the SQL
+# endpoints the boundary is the database role behind the URL, so a filtered
+# entry pointing at the read/write sidecar is still read/write.
 #
 # Usage: drop_mcp_entries_for_url <profile> <keep-key> <url>
 drop_mcp_entries_for_url() {
@@ -1323,40 +1246,6 @@ register_mail_mcp_servers() {
   pin_mcp_tools "$_rmms_profile" mail $MAIL_MCP_TOOLS
 }
 
-# LightRAG MCP (rag profile) as read-oriented Knowledge Base access, on the
-# api-server and browser profiles. The default profile is the user's own
-# config, and bootstrap never registers LightRAG there.
-#
-# Treat the include list as a security boundary rather than a convenience. The
-# server exposes 17 tools, 12 of which mutate the knowledge graph (insert_*,
-# edit_*, and delete_by_doc_ids / delete_by_entities). Only the five
-# read-oriented ones belong on these profiles.
-#
-# With LIGHTRAG_MCP_ENABLED off, every entry pointing at the LightRAG URL is
-# removed, whatever its key, so a profile that once had LightRAG doesn't keep
-# retrying a server that is gone (CR 0022 R1).
-register_lightrag_mcp_servers() {
-  _rlms_profile="$1"
-  case "$LIGHTRAG_MCP_ENABLED" in
-    1|true|TRUE|yes|YES) ;;
-    *)
-      log "Skipping LightRAG MCP registration (LIGHTRAG_MCP_ENABLED=${LIGHTRAG_MCP_ENABLED})"
-      drop_mcp_entries_for_url "$_rlms_profile" "" "$LIGHTRAG_MCP_URL"
-      return 0
-      ;;
-  esac
-  # shellcheck disable=SC2086
-  register_mcp_server "$_rlms_profile" lightrag LightRAG \
-    "$LIGHTRAG_MCP_URL" "$LIGHTRAG_MCP_TIMEOUT" "$LIGHTRAG_MCP_CONNECT_TIMEOUT" $LIGHTRAG_MCP_TOOLS
-
-  # The clone inherits the default profile's own unfiltered LightRAG entry,
-  # which would hand this profile all 17 tools through the back door and leave
-  # the allowlist above meaning nothing.
-  drop_unfiltered_mcp_duplicate "$_rlms_profile" lightrag lightrag-mcp "$LIGHTRAG_MCP_URL"
-  # shellcheck disable=SC2086
-  pin_mcp_tools "$_rlms_profile" lightrag $LIGHTRAG_MCP_TOOLS
-}
-
 # Built-in add-ons with an mcp block, from addons/*/addon.json
 # (scripts/lib/addon_manifest.py mcp-plan). Each line of the plan says whether
 # the add-on's flag is on and what access this profile gets; a profile the
@@ -1368,10 +1257,12 @@ addon_mcp_plan() {
   python3 "$ADDON_MANIFEST_PY" mcp-plan "$ADDONS_DIR" "${1:-default}"
 }
 
-# Every add-on MCP URL, on or off, one per line, for set_stack_mcp_parked_retry.
-# Field 11 of the plan holds all of an add-on's URLs, space-separated.
+# Every add-on MCP URL, on or off, on any profile (profiles and unmanaged are
+# ignored), one per line, for set_stack_mcp_parked_retry. That only tunes
+# entries that already exist, so it also reaches a user's own entry on default.
 addon_mcp_urls() {
-  addon_mcp_plan "$1" 2>/dev/null | cut -d'|' -f11 | tr ' ' '\n' | sed '/^$/d' || true
+  [ -d "$ADDONS_DIR" ] || return 0
+  python3 "$ADDON_MANIFEST_PY" mcp-urls "$ADDONS_DIR" 2>/dev/null || true
 }
 
 # "<tool> <mcp__name__tool> ..." for each add-on that registers on <profile>,
@@ -1419,6 +1310,9 @@ register_addon_mcp_servers() {
     # shellcheck disable=SC2086
     register_mcp_server "$_ram_profile" "$_ram_name" "$_ram_title" \
       "$_ram_url" "$_ram_timeout" "$_ram_connect" $_ram_tools
+    # A profile cloned from default can carry another key at this URL, with
+    # its own (unfiltered) tool list.
+    drop_mcp_entries_for_url "$_ram_profile" "$_ram_name" "$_ram_url"
     if [ "$_ram_transport" = sse ]; then
       hermes_config_set "$_ram_profile" "mcp_servers.${_ram_name}.transport" "sse"
     fi
@@ -2883,10 +2777,6 @@ if [ "$PROFILE" = "browser" ]; then
   log "Setting auxiliary.title_generation.enabled=${TITLE_ENABLED} on browser (${UPSTREAM_KIND} upstream)"
   hermes_config_set "$PROFILE" "auxiliary.title_generation.enabled" "$TITLE_ENABLED"
 fi
-
-# LightRAG goes on the profile this bootstrap manages, never on default. See
-# register_lightrag_mcp_servers.
-register_lightrag_mcp_servers "$PROFILE"
 
 # Same web-reading servers as the default profile above; profiles carry their
 # own config.yaml, so the earlier registration does not reach API sessions.

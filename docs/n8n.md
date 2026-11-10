@@ -11,11 +11,29 @@ Workflow automation with starter workflows and credentials pre-imported for Ligh
 
 n8n follows patterns from the [n8n self-hosted AI starter kit](https://github.com/n8n-io/self-hosted-ai-starter-kit): a one-shot `n8n-import` container and demo data under `n8n/demo-data/`. Unlike the starter kit, n8n stores its data in SQLite, not Postgres. Ollama and Qdrant are left out by default, since LightRAG owns RAG here (`rag` profile) and inference runs on your model server or the `ollama` profile.
 
+## Enable, disable and remove
+
+n8n is a built-in add-on (`addons/n8n/addon.json`), so `scripts/addon.sh` manages it. The flag stays `AUTOMATION_ENABLED` and the profile stays `automation`; an install that already set the flag keeps working unchanged.
+
+```bash
+./scripts/addon.sh enable n8n
+./scripts/addon.sh disable n8n
+./scripts/addon.sh remove n8n --delete-data
+```
+
+`enable` sets `AUTOMATION_ENABLED=1`, runs `n8n-import` to completion, then starts `n8n` and `gpt-researcher` and waits for them to be healthy. `gpt-researcher` is the REST service the Deep Research workflow calls, so it belongs to this add-on. `addon.sh list --json` carries the manifest's `postInstallMessage` (open `http://localhost:5678` and create the owner account) for a caller to show after install.
+
+`disable` sets the flag to 0 and stops `n8n`, `n8n-import` and `gpt-researcher`. It does not touch `gptr-mcp`, which belongs to the [GPT Researcher](gpt-researcher.md) add-on and keeps running. With `GPTR_MCP_ENABLED=0` it stays up only until it is stopped or recreated, because once `automation` is off no active profile starts it; `scripts/addon.sh enable gptr` keeps it. `n8n_storage` and `gptr_outputs` are kept, so a later `enable` finds the same workflows, credentials and owner account.
+
+`remove n8n --delete-data` refuses while n8n is enabled. It removes the three containers, then deletes the `n8n_storage` and `gptr_outputs` volumes and `data/addons/n8n`. The SQLite database goes with `n8n_storage`: every workflow, stored credential and execution record, and the owner account. The research reports in `gptr_outputs` go too. `disable n8n --purge` does the same in one step. There is no undo.
+
+`N8N_ENCRYPTION_KEY` encrypts the stored credentials, and the volume holds a copy in its `config` file. Back up the key with the volume: a restored volume without the key can't decrypt its credentials (see Credentials below for how n8n 1.x and 2.x react to a mismatch). `addon.sh list --json` lists the key under `backup.secrets`, and `N8N_USER_MANAGEMENT_JWT_SECRET` under `backup.recommended`.
+
 ## Where n8n stores data
 
 Workflows, credentials, the owner account and execution history live in SQLite at `/home/node/.n8n/database.sqlite` on the `n8n_storage` volume, next to the `config` file that holds the instance's encryption key. `n8n` and `n8n-import` both mount that volume and set `DB_TYPE=sqlite`. A compose overlay that binds `/home/node/.n8n` somewhere else must do it for both services.
 
-`n8n-import` runs before `n8n` on every `up`. It imports the demo credentials and workflows only when `database.sqlite` does not exist yet, and otherwise exits without opening the database, so it never touches a store a running n8n holds.
+`n8n-import` runs before `n8n` on every `up`. It generates the demo credentials inside the container from `N8N_ENCRYPTION_KEY`, `LIGHTRAG_API_KEY` and `NEO4J_*`, then imports them and the workflows, only when `database.sqlite` does not exist yet. If `N8N_ENCRYPTION_KEY` or `LIGHTRAG_API_KEY` is empty it exits 1 and names the key. When the database exists it exits without opening it, so it never touches a store a running n8n holds.
 
 Back up the volume with n8n stopped, since copying a SQLite file mid-write can give a corrupt copy:
 
@@ -46,7 +64,9 @@ The volume name is `<compose project>_n8n_storage`; check it with `docker volume
 
 ## Credentials
 
-Encrypted credential JSON under `n8n/demo-data/credentials/` is **gitignored** and created locally by `scripts/sync-n8n-credentials.sh`, which runs Node in the n8n image, so the host needs none (`N8N_NODE=host` uses the host's `node`). `./scripts/setup.sh` rewrites the files when `automation` is on, and `make up` writes them if `automation` is on and none exist yet. With `automation` off, neither runs. The files are encrypted with `N8N_ENCRYPTION_KEY` so they line up with your `.env` secrets. Never commit them.
+`n8n-import` does not read `n8n/demo-data/credentials/` on the host. It writes its own copy to `/tmp/n8n-credentials` in the container, so enabling n8n needs no host-side step.
+
+The host copy under `n8n/demo-data/credentials/` is **gitignored**, used for re-importing into an existing database (below), and created locally by `scripts/sync-n8n-credentials.sh`, which runs Node in the n8n image, so the host needs none (`N8N_NODE=host` uses the host's `node`). `./scripts/setup.sh` rewrites the files when `automation` is on, and `make up` writes them if `automation` is on and none exist yet. With `automation` off, neither runs. The files are encrypted with `N8N_ENCRYPTION_KEY` so they line up with your `.env` secrets. Never commit them.
 
 | Credential | Type | Matches `.env` key |
 |---|---|---|

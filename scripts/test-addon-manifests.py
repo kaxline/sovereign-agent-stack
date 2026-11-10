@@ -87,6 +87,26 @@ refused("writeTools outside tools", variant(mcp__writeTools=["nope"]), "builtin"
 refused("core name collision", variant(mcp__name="mail"), "builtin", "collides")
 refused("core prefix collision", variant(mcp__name="caldav-main"), "builtin", "collides")
 check("crm- is no longer a core prefix", "crm-" not in am.CORE_MCP_PREFIXES, str(am.CORE_MCP_PREFIXES))
+# mcp.unmanaged: profiles bootstrap leaves alone.
+_ok = variant(mcp__profiles={"browser": "rw"}, mcp__unmanaged=["default"])
+check("unmanaged accepts profiles outside mcp.profiles", am.validate(_ok, "builtin") == [], str(am.validate(_ok, "builtin")))
+check("an empty unmanaged list is valid", am.validate(variant(mcp__unmanaged=[]), "builtin") == [])
+check("postInstallMessage as a string is valid", am.validate(variant(postInstallMessage="Open it."), "builtin") == [])
+refused("postInstallMessage must be a string", variant(postInstallMessage=5), "builtin", "postInstallMessage")
+refused("postInstallMessage may not be blank", variant(postInstallMessage=" "), "builtin", "postInstallMessage")
+_overlap = variant(mcp__profiles={"default": "ro", "browser": "ro"}, mcp__unmanaged=["browser"])
+refused("unmanaged overlaps profiles", _overlap, "builtin", "unmanaged")
+refused("unmanaged not a list", variant(mcp__unmanaged="default"), "builtin", "unmanaged")
+refused("unmanaged repeats a name", variant(mcp__unmanaged=["browser", "browser"]), "builtin", "unmanaged")
+refused("unmanaged has a bad name", variant(mcp__unmanaged=["Bad Name"]), "builtin", "unmanaged")
+_pk = packaged(_ok)
+refused("unmanaged is refused on a packaged add-on", _pk, "community", "unmanaged")
+refused("unmanaged is refused on the official feed", _pk, "official", "unmanaged")
+with tempfile.TemporaryDirectory() as tmp:
+    (Path(tmp) / "gptr").mkdir()
+    (Path(tmp) / "gptr" / "addon.json").write_text(am.canonical(_ok))
+    check("mcp_plan skips an unmanaged profile", am.mcp_plan(Path(tmp), "default", {}) == [])
+    check("mcp_plan still lists other profiles", len(am.mcp_plan(Path(tmp), "browser", {})) == 1)
 refused("bad access level", variant(mcp__profiles={"default": "admin"}), "builtin", "ro or rw")
 refused("unknown stack service", variant(uses=["kafka"]), "builtin", "kafka")
 refused("postgres without exposesToAgent", variant(uses=["postgres"]), "builtin", "exposesToAgent")
@@ -238,6 +258,15 @@ refused("env.access must be an env var name",
 
 ACCESS_URL = {"read": "http://split-ro:9000/mcp", "write": "http://split-rw:9000/mcp",
               "": "http://split-rw:9000/mcp", "Read": None, "ask": None, "readonly": None}
+# --- mcp-urls: every URL, whatever profiles/unmanaged say ---------------------
+urls = am.mcp_urls(ROOT / "addons", {})
+check("mcp-urls lists LightRAG although default is unmanaged", "http://lightrag-mcp:8000/mcp" in urls, str(urls))
+check("mcp-urls lists both URLs of a split add-on",
+      {"http://actual-mcp-ro:3000/mcp", "http://actual-mcp-rw:3000/mcp"} <= set(urls), str(urls))
+urls = am.mcp_urls(ROOT / "addons", {"LIGHTRAG_MCP_URL": "http://x:1/mcp"})
+check("mcp-urls honours the env URL override",
+      "http://x:1/mcp" in urls and "http://lightrag-mcp:8000/mcp" not in urls, str(urls))
+
 with tempfile.TemporaryDirectory() as tmp:
     (Path(tmp) / "split").mkdir()
     (Path(tmp) / "split" / "addon.json").write_text(am.canonical(SPLIT))
@@ -304,7 +333,125 @@ with tempfile.TemporaryDirectory() as tmp:
     check("unparsable manifest is reported", any("cannot parse" in e for e in results["broken"]))
     check("directory must match the short id", any("short id" in e for e in results["wrong"]))
     check("non-canonical layout is refused", any("canonical" in e for e in results["gptr"]))
-    check("plan skips invalid manifests", am.mcp_plan(Path(tmp), "default", env) == [])
+    rows = [l.split("|") for l in am.mcp_plan(Path(tmp), "default", env)]
+    check("plan only drops for invalid manifests", len(rows) == 2 and all(r[2] == "0" and r[3] == "" for r in rows),
+          str(rows))
+
+# --- invalid manifests fail closed ----------------------------------------------
+LR = json.loads((ROOT / "addons" / "lightrag" / "addon.json").read_text())
+LR_URL = "http://lightrag-mcp:8000/mcp"
+with tempfile.TemporaryDirectory() as tmp:
+    (Path(tmp) / "lightrag").mkdir()
+    # Valid but not canonical: the whole manifest is refused.
+    (Path(tmp) / "lightrag" / "addon.json").write_text(json.dumps(LR))
+    for env, url in (({}, LR_URL), ({"LIGHTRAG_MCP_URL": "http://x:1/mcp"}, "http://x:1/mcp")):
+        for flag in ("0", "1"):
+            e = {**env, "LIGHTRAG_MCP_ENABLED": flag}
+            plan = am.mcp_plan(Path(tmp), "api-server", e)
+            row = plan[0].split("|") if len(plan) == 1 else []
+            check(f"invalid manifest drops {url} on api-server (flag {flag})",
+                  len(row) == 11 and row[2] == "0" and row[3] == "" and row[4] == url
+                  and row[10] == url, str(plan))
+    check("invalid manifest leaves unmanaged default alone", am.mcp_plan(Path(tmp), "default", {}) == [])
+    check("mcp_urls lists an invalid manifest's URL", am.mcp_urls(Path(tmp), {}) == [LR_URL],
+          str(am.mcp_urls(Path(tmp), {})))
+    check("mcp_urls honours the override for an invalid manifest",
+          am.mcp_urls(Path(tmp), {"LIGHTRAG_MCP_URL": "http://x:1/mcp"}) == ["http://x:1/mcp"])
+    # Invalid for another reason (a stray field).
+    (Path(tmp) / "lightrag" / "addon.json").write_text(am.canonical({**LR, "bogus": 1}))
+    plan = am.mcp_plan(Path(tmp), "browser", {})
+    check("a manifest with an unknown field drops the URL", len(plan) == 1 and plan[0].split("|")[4] == LR_URL,
+          str(plan))
+    # Nothing derivable: no line, no exception.
+    for label, broken in (("no services", {"mcp": LR["mcp"]}),
+                          ("mcp is a string", {"mcp": "x", "services": LR["services"]}),
+                          ("service names nothing", {"mcp": {**LR["mcp"], "service": "nope"},
+                                                     "services": LR["services"]}),
+                          ("services is a list", {"mcp": LR["mcp"], "services": []}),
+                          ("port is an object", {"mcp": LR["mcp"],
+                                                 "services": {"mcp": {"compose": "a", "port": {}}}}),
+                          ("mcp entries are junk", {"mcp": [1, None, "x"], "services": LR["services"]})):
+        (Path(tmp) / "lightrag" / "addon.json").write_text(json.dumps(broken))
+        try:
+            got_plan = am.mcp_plan(Path(tmp), "api-server", {})
+            got_urls = am.mcp_urls(Path(tmp), {})
+        except Exception as exc:  # noqa: BLE001
+            check(f"broken manifest ({label}) does not raise", False, repr(exc))
+            continue
+        check(f"broken manifest ({label}) yields no line", got_plan == [] and got_urls == [],
+              f"{got_plan} {got_urls}")
+
+# An invalid manifest's drop-only line must not undo a valid add-on's entry at
+# the same URL, whichever directory sorts first.
+for first, second in (("abad", "lightrag"), ("lightrag", "zbad")):
+    with tempfile.TemporaryDirectory() as tmp:
+        good = "lightrag"
+        bad = first if first.endswith("bad") else second
+        (Path(tmp) / good).mkdir()
+        (Path(tmp) / good / "addon.json").write_text(am.canonical(LR))
+        (Path(tmp) / bad).mkdir()
+        (Path(tmp) / bad / "addon.json").write_text(json.dumps({**LR, "id": f"io.example.{bad}",
+                                                              "mcp": {**LR["mcp"], "name": "bad-mcp"}}))  # not canonical
+        plan = [l.split("|") for l in am.mcp_plan(Path(tmp), "api-server", {"LIGHTRAG_MCP_ENABLED": "1"})]
+        errs = {p.parent.name: e for p, _m, e in am.checked_dir(Path(tmp))}
+        check(f"shared URL, {first} before {second}: only the bad one is invalid",
+              errs[good] == [] and errs[bad] != [], str(errs))
+        check(f"shared URL, {first} before {second}: the valid line is kept",
+              any(r[0] == LR["mcp"]["name"] and r[2] == "1" and r[4] == LR_URL for r in plan), str(plan))
+        check(f"shared URL, {first} before {second}: no drop-only line for the shared URL",
+              not any(r[0] == "bad-mcp" for r in plan), str(plan))
+        check(f"shared URL, {first} before {second}: mcp_urls still lists it once",
+              am.mcp_urls(Path(tmp), {}) == [LR_URL], str(am.mcp_urls(Path(tmp), {})))
+
+# A valid line skipped for a | in a value registers nothing, so it does not
+# protect the URL; a trailing slash does not hide a shared URL.
+def shared_dir(tmp, good_mcp, bad_mcp):
+    (Path(tmp) / "lightrag").mkdir()
+    (Path(tmp) / "lightrag" / "addon.json").write_text(am.canonical({**LR, "mcp": {**LR["mcp"], **good_mcp}}))
+    (Path(tmp) / "zbad").mkdir()  # not canonical, so invalid
+    (Path(tmp) / "zbad" / "addon.json").write_text(json.dumps({**LR, "id": "io.example.zbad",
+                                                              "mcp": {**LR["mcp"], "name": "bad-mcp", **bad_mcp}}))
+
+
+on = {"LIGHTRAG_MCP_ENABLED": "1"}
+with tempfile.TemporaryDirectory() as tmp:
+    shared_dir(tmp, {"title": "A|B"}, {})
+    errs = {p.parent.name: e for p, _m, e in am.checked_dir(Path(tmp))}
+    plan = [l.split("|") for l in am.mcp_plan(Path(tmp), "api-server", on)]
+    check("a valid line skipped for a pipe does not protect its URL",
+          errs["lightrag"] == [] and [r[0] for r in plan] == ["bad-mcp"], f"{errs} {plan}")
+with tempfile.TemporaryDirectory() as tmp:
+    shared_dir(tmp, {}, {"path": "/mcp/"})
+    plan = [l.split("|") for l in am.mcp_plan(Path(tmp), "api-server", on)]
+    check("a trailing slash on the invalid add-on's URL does not hide the shared URL",
+          [r[0] for r in plan] == ["lightrag"], str(plan))
+
+# --- one MCP name per add-on -------------------------------------------------------
+with tempfile.TemporaryDirectory() as tmp:
+    for d in ("lightrag", "gptr"):
+        (Path(tmp) / d).mkdir()
+    (Path(tmp) / "lightrag" / "addon.json").write_text(am.canonical(LR))
+    other = copy.deepcopy(BASE)
+    (Path(tmp) / "gptr" / "addon.json").write_text(am.canonical(other))
+    def dir_errs(d):
+        return {p.parent.name: e for p, _m, e in am.checked_dir(d)}
+
+    check("distinct mcp names pass the directory check", dir_errs(Path(tmp)) == {"lightrag": [], "gptr": []},
+      str(dir_errs(Path(tmp))))
+    other["mcp"]["name"] = "lightrag"
+    (Path(tmp) / "gptr" / "addon.json").write_text(am.canonical(other))
+    errs = dir_errs(Path(tmp))
+    check("two add-ons with one mcp name are both refused",
+          all(len(errs[k]) == 1 and "'lightrag'" in errs[k][0] and "gptr" in errs[k][0] for k in errs)
+          and set(errs) == {"lightrag", "gptr"}, str(errs))
+    check("mcp-plan treats a name clash like any directory conflict: off lines only",
+          all(l.split("|")[2:4] == ["0", ""] for l in am.mcp_plan(Path(tmp), "api-server", {"LIGHTRAG_MCP_ENABLED": "1"})),
+          str(am.mcp_plan(Path(tmp), "api-server", {"LIGHTRAG_MCP_ENABLED": "1"})))
+    rc = subprocess.run([sys.executable, str(ROOT / "scripts" / "lib" / "addon_manifest.py"), "validate", tmp],
+                        capture_output=True, text=True)
+    check("validate CLI reports the duplicate", rc.returncode == 1 and "more than one add-on" in rc.stdout, rc.stdout)
+check("the packaged add-ons have distinct mcp names",
+      all(not any("more than one add-on" in e for e in errs) for _p, _m, errs in am.checked_dir(ROOT / "addons")))
 
 # --- cron fence ---------------------------------------------------------------
 with tempfile.TemporaryDirectory() as tmp:
@@ -787,6 +934,23 @@ with tempfile.TemporaryDirectory() as tmp:
     check("an invalid instances manifest gives an off add-on line",
           [l.split("|")[:3] for l in lines] == [["crm-*", "twenty", "0"]], str(lines))
 
+# mcp.unmanaged on an mcp.instances entry: the profile gets no line at all, so
+# the bootstrap neither registers nor drops crm-* there. Valid and invalid alike.
+with tempfile.TemporaryDirectory() as tmp:
+    (Path(tmp) / "twenty").mkdir()
+    tw = json.loads((ROOT / "addons" / "twenty" / "addon.json").read_text())
+    tw["mcp"]["unmanaged"] = ["ops"]
+    (Path(tmp) / "twenty" / "addon.json").write_text(am.canonical(tw))
+    check("unmanaged on an instances entry is valid", am.validate(tw, "builtin") == [], str(am.validate(tw, "builtin")))
+    check("instances-plan skips an unmanaged profile", am.instances_plan(Path(tmp), Path(tmp) / "data", "ops", TW_ON) == [])
+    check("instances-plan still lists other profiles",
+          [l.split("|")[0] for l in am.instances_plan(Path(tmp), Path(tmp) / "data", "default", TW_ON)] == ["crm-*"])
+    check("mcp-urls leaves out instance entries", am.mcp_urls(Path(tmp), {}) == [], str(am.mcp_urls(Path(tmp), {})))
+    tw["permissions"]["sends"] = "maybe"
+    (Path(tmp) / "twenty" / "addon.json").write_text(am.canonical(tw))
+    check("an invalid instances manifest skips an unmanaged profile too",
+          am.instances_plan(Path(tmp), Path(tmp) / "data", "ops", TW_ON) == [])
+
 # --- cross-manifest conflicts -------------------------------------------------
 check("real addons/ has no cross-manifest conflict", am.dir_conflicts(am.load_dir(ROOT / "addons")) == {},
       str(am.dir_conflicts(am.load_dir(ROOT / "addons"))))
@@ -814,7 +978,10 @@ with tempfile.TemporaryDirectory() as tmp:
           any("crm-x" in e and "twenty" in e for e in errs["crmx"]), str(errs["crmx"]))
     check("Twenty itself stays valid next to it", errs["twenty"] == [], str(errs["twenty"]))
     plan = am.mcp_plan(d, "default", {"GPTR_MCP_ENABLED": "1"})
-    check("mcp-plan skips the conflicting add-on", not any(l.startswith("crm-x|") for l in plan), str(plan))
+    # Fail closed: the invalid add-on gives only an off line with no access,
+    # which drops its URL and registers nothing.
+    check("mcp-plan registers nothing for the conflicting add-on",
+          all(l.split("|")[2:4] == ["0", ""] for l in plan if l.startswith("crm-x|")), str(plan))
     validate = subprocess.run([sys.executable, str(ROOT / "scripts/lib/addon_manifest.py"), "validate", str(d)],
                               capture_output=True, text=True)
     check("validate reports the conflict", validate.returncode == 1 and "crm-x" in validate.stdout,

@@ -56,8 +56,8 @@ SECRET_KEYS = {
     "DB_POSTGRESDB_PASSWORD": set(),
     "N8N_ENCRYPTION_KEY": {"n8n", "n8n-import"},
     "N8N_USER_MANAGEMENT_JWT_SECRET": {"n8n", "n8n-import"},
-    "NEO4J_PASSWORD": {"lightrag"},
-    "LIGHTRAG_API_KEY": {"lightrag"},
+    "NEO4J_PASSWORD": {"lightrag", "n8n-import"},
+    "LIGHTRAG_API_KEY": {"lightrag", "n8n-import"},
     "OPENCODE_SERVER_PASSWORD": {"opencode", "opencode-mcp"},
     "HERMES_DASHBOARD_PASSWORD": set(),
     "HERMES_DASHBOARD_AUTH_SECRET": set(),
@@ -115,7 +115,12 @@ ACTUAL_BOOTSTRAPS = {"hermes-api-bootstrap", "hermes-browser-bootstrap"}
 REQUIRED = {
     "lightrag": {"NEO4J_PASSWORD", "LIGHTRAG_API_KEY"},
     "n8n": {"N8N_ENCRYPTION_KEY", "N8N_USER_MANAGEMENT_JWT_SECRET"},
-    "n8n-import": {"N8N_ENCRYPTION_KEY", "N8N_USER_MANAGEMENT_JWT_SECRET"},
+    "n8n-import": {
+        "N8N_ENCRYPTION_KEY",
+        "N8N_USER_MANAGEMENT_JWT_SECRET",
+        "LIGHTRAG_API_KEY",
+        "NEO4J_PASSWORD",
+    },
     "hermes": {
         "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD",
         "HERMES_DASHBOARD_BASIC_AUTH_SECRET",

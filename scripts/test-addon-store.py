@@ -75,6 +75,17 @@ with tempfile.TemporaryDirectory() as tmp:
     check("listing carries backup, empty when the manifest has none", fx["backup"] == {}, str(fx.get("backup")))
     check("listing names the hooks present, sorted", fx["hooks"] == ["init"], str(fx.get("hooks")))
     check("listing carries instances.errors, empty when absent", fx["errors"] == [], str(fx.get("errors")))
+    check("listing has no postInstallMessage key when the manifest has none", "postInstallMessage" not in fx,
+          str(fx.get("postInstallMessage")))
+    msg_fx = copy.deepcopy(FIXTURE)
+    msg_fx["postInstallMessage"] = "Open http://localhost:1 now."
+    check("listing carries postInstallMessage", st.listing(msg_fx, Path(tmp), {}).get("postInstallMessage")
+          == "Open http://localhost:1 now.")
+    msg_fx["postInstallMessage"] = "  "
+    check("listing omits a blank postInstallMessage", "postInstallMessage" not in st.listing(msg_fx, Path(tmp), {}))
+    n8n = json.loads((ROOT / "addons" / "n8n" / "addon.json").read_text())
+    check("listing carries n8n's postInstallMessage",
+          st.listing(n8n, Path(tmp), {}).get("postInstallMessage") == n8n["postInstallMessage"])
     rich_fx = copy.deepcopy(FIXTURE)
     rich_fx["hooks"]["backup"] = {"script": ["scripts/vault.sh", "backup"]}
     rich_fx["instances"]["connect"] = {"command": "seed-init"}

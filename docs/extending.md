@@ -664,7 +664,8 @@ a changelog entry.
 `list --json` objects carry `id`, `shortId`, `title`, `tagline`,
 `permissions`, `platform`, `enabled` (the flag in `.env`), `settings`,
 `instances` (slug to values), `services`, `missing`, `data`, `backup`,
-`hooks`, `errors` and `schema`. `missing` lists what
+`hooks`, `errors` and `schema`, plus `postInstallMessage` (Markdown from
+the manifest) when the manifest has a non-empty one. `missing` lists what
 `enable` would refuse on: a top-level setting by name, an instance setting
 as `<slug>.<name>`, and `instances:<name>` (the manifest's `instances.name`)
 when the add-on needs an instance and has none. A manifest with

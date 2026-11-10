@@ -14,8 +14,19 @@ the stack under another app.
   left its environment (see Changes). A caller that recreates `hermes`
   itself runs `./scripts/vault.sh follow-hermes` afterwards, as for any
   recreate.
-- Of the shipped manifests only Twenty's uses the new add-on manifest
-  fields; GPT Researcher, Actual and Bitwarden behave as before.
+- Twenty and LightRAG use the new add-on manifest fields (LightRAG uses
+  `mcp.unmanaged`). GPT Researcher, Actual and Bitwarden behave as before,
+  except for the dropped keys at their URLs described next.
+- LightRAG's registration on the api-server and browser profiles is unchanged,
+  except that `LIGHTRAG_MCP_TIMEOUT` and `LIGHTRAG_MCP_CONNECT_TIMEOUT` set in
+  `.env` now take effect. One change can remove a key you added: a hand-added MCP key on the default
+  profile (or on browser) at the GPT Researcher or Actual Budget URL is removed
+  on the next bootstrap when that add-on is enabled, and the stack's own key
+  stays: `gptr`, and `budget` while `ACTUAL_BUDGET_FILE` names a budget file
+  (without one, `budget` is dropped too; see "The single `budget` entry"
+  below). Connected budgets' `budget-<slug>` entries are on their own URLs
+  and are not affected. Point your key at a different URL, or use the
+  stack's key. See "Other MCP keys at an add-on's URL are dropped" below.
 - Before tagging, run `scripts/addon.sh enable gptr --json` and
   `disable gptr --json` on a live stack. `addon.sh` calls
   `scripts/vault.sh reload-plugins` from the Bitwarden change above.
@@ -162,6 +173,68 @@ the stack under another app.
 - **`mcp.instances` in manifests** (built-in add-ons): one `mcp_servers`
   entry per stored instance, with the key picked by access. See
   [addons/README.md](addons/README.md).
+- **LightRAG is a built-in add-on** (CR 0022 R2): `addons/lightrag/addon.json`
+  replaces the hand-written registration in the api-server bootstrap. The
+  entry key is still `lightrag`, with the same five read tools and pins, on
+  the api-server and browser profiles only. The default profile is left
+  alone (`mcp.unmanaged`, below). `scripts/addon.sh enable|disable lightrag`
+  sets `LIGHTRAG_MCP_ENABLED` and the `rag` profile and starts or stops
+  `lightrag` and `lightrag-mcp`. `disable` also stops Neo4j unless
+  `NEO4J_ENABLED` is on or another active profile starts it; `rag_storage/`,
+  `inputs/` and the `neo4j_data` volume are kept. `lightrag`
+  now appears in `scripts/addon.sh list` and `list --json`.
+  `LIGHTRAG_MCP_TIMEOUT` and `LIGHTRAG_MCP_CONNECT_TIMEOUT` in `.env` now
+  reach the bootstrap. Compose did not pass them before, so they were
+  ignored and the defaults of 120 and 30 seconds applied. An install that
+  set them now gets those values. See
+  [docs/knowledge-bases.md](docs/knowledge-bases.md).
+- **n8n is a built-in add-on** (CR 0020 R10): `addons/n8n/addon.json`.
+  `scripts/addon.sh enable|disable n8n` sets `AUTOMATION_ENABLED` as before;
+  `enable` runs `n8n-import`, then starts `n8n` and `gpt-researcher`, and
+  `disable` stops those three. `gpt-researcher` belongs to n8n.
+  `disable n8n` leaves `gptr-mcp` running, since the GPT Researcher add-on
+  owns it. With `GPTR_MCP_ENABLED=0` it stays up only until it is
+  stopped or recreated, since `automation` was its last active profile;
+  `scripts/addon.sh enable gptr` keeps it. `remove n8n --delete-data` (or `disable n8n --purge`) deletes the
+  `n8n_storage` and `gptr_outputs` volumes, so the SQLite database with its
+  workflows, credentials and execution history is gone. Back up
+  `N8N_ENCRYPTION_KEY` with the volume. `n8n` appears in `addon.sh list`;
+  the `AUTOMATION_ENABLED` row left `sync-profiles.sh`'s table for the
+  manifest's `builtin` block. See [docs/n8n.md](docs/n8n.md).
+- **`n8n-import` generates the demo credentials itself.** On the first start
+  (no `database.sqlite` yet) it runs the generator in the n8n container from
+  `N8N_ENCRYPTION_KEY`, `LIGHTRAG_API_KEY`, `NEO4J_USERNAME` and
+  `NEO4J_PASSWORD`, and imports from `/tmp/n8n-credentials`. It no longer
+  reads `n8n/demo-data/credentials/` on the host, so enabling n8n needs no
+  host-side step. It exits 1 and names `N8N_ENCRYPTION_KEY` or
+  `LIGHTRAG_API_KEY` if either is empty. Only `n8n-import` gets the
+  LightRAG and Neo4j keys; the `n8n` service doesn't.
+- **`postInstallMessage` in `addon.sh list --json`** (additive): an object gets
+  the key `postInstallMessage` only when its manifest has a non-empty one
+  (n8n does). Other objects are unchanged. The validator now refuses a
+  `postInstallMessage` that is not a non-empty string.
+- **`mcp.unmanaged`** (experimental, built-in manifests only): a list of
+  Hermes profile names on which bootstrap neither registers, drops nor pins
+  the add-on's MCP entry. For a fixed entry, the parked-retry setting still
+  applies to an existing entry at the add-on's URL on every profile, default
+  included. An `mcp.instances` entry has no fixed URL, so on an unmanaged
+  profile it gets no parked retry either.
+- **Other MCP keys at an add-on's URL are dropped**: after bootstrap registers
+  an add-on's MCP server on a profile, it removes every other key at the same
+  URL on that profile, whatever its tool filter. For LightRAG this removes an
+  unfiltered `lightrag-mcp` copy cloned from default into api-server or
+  browser. For GPT Researcher (default, browser) and Actual Budget (default,
+  browser, api-server) it also applies to the default profile, which is the
+  user's own config: a key you added by hand on default at the GPT Researcher
+  or Actual URL is now removed in favor of the stack's key. With an add-on's
+  flag off, bootstrap drops every key at its URL on those profiles the same
+  way.
+- **An invalid add-on manifest fails closed**: if a built-in manifest does
+  not validate (a typo, non-canonical JSON), bootstrap still removes every
+  MCP key at the URL the manifest names from the profiles it covers, instead
+  of leaving them as they were. `mcp.unmanaged` profiles are still skipped. A
+  manifest whose URL cannot be worked out is skipped with a warning, as
+  before.
 - **Add-on manifest fields** (experimental): a built-in manifest can declare
   `gates` (further flag-to-profile rows for `sync-profiles.sh`), `mcp` as a
   list with per-entry `title` and `when`, `instances`, `commands`,

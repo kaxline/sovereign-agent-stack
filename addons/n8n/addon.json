@@ -1,0 +1,63 @@
+{
+  "manifestVersion": 1,
+  "id": "io.github.kaxline.stack.n8n",
+  "version": "1.0.0",
+  "title": "n8n",
+  "tagline": "Workflow automation with starter workflows for LightRAG, Neo4j, search and GPT Researcher",
+  "description": "Runs n8n with starter workflows, plus the GPT Researcher API (gpt-researcher) that one of them calls. n8n-import loads the workflows and generates n8n's demo credentials on first start, when n8n_storage has no database yet. The workflows reach LightRAG and Neo4j when those add-ons are on. No Hermes tool reaches n8n, and the separate gptr-mcp service of the GPT Researcher add-on is not touched. Disabling keeps n8n_storage and gptr_outputs. remove --delete-data deletes the workflows, credentials and execution history in n8n_storage and the reports in gptr_outputs. Back up N8N_ENCRYPTION_KEY: without it the stored credentials cannot be decrypted.",
+  "publisher": {
+    "name": "sovereign-agent-stack",
+    "url": "https://github.com/kaxline/sovereign-agent-stack"
+  },
+  "minStackVersion": "0.3.13",
+  "builtin": {
+    "flag": "AUTOMATION_ENABLED",
+    "profile": "automation",
+    "seed": true
+  },
+  "services": {
+    "ui": {
+      "compose": "n8n",
+      "port": 5678
+    },
+    "import": {
+      "compose": "n8n-import",
+      "oneshot": true
+    },
+    "research": {
+      "compose": "gpt-researcher",
+      "port": 8000
+    }
+  },
+  "uses": [
+    "llm",
+    "search"
+  ],
+  "data": {
+    "volumes": [
+      "n8n_storage",
+      "gptr_outputs"
+    ]
+  },
+  "backup": {
+    "secrets": [
+      "N8N_ENCRYPTION_KEY"
+    ],
+    "recommended": [
+      "N8N_USER_MANAGEMENT_JWT_SECRET"
+    ]
+  },
+  "permissions": {
+    "reads": [],
+    "writes": [],
+    "sends": false,
+    "egress": [
+      "llm-proxy",
+      "search",
+      "internet"
+    ],
+    "exposesToAgent": false,
+    "cron": false
+  },
+  "postInstallMessage": "Open http://localhost:5678 and create the owner account."
+}
