@@ -723,6 +723,21 @@ r=0; json_ok "$out" error 'last["error"] == "exists"' || r=1
 check "a second connect of the same slug is exists" "$r"
 if logged "fixture-connect"; then bad "exists is found before the hook runs"; else ok "exists is found before the hook runs"; fi
 no_staging "exists"
+# connect --force (CR 0026 R7a) replaces an existing instance once its hook passes.
+FIXTURE_CONNECT_ERROR=encryption_password addon_json_in '{"password":"s3cr3t-value"}' connect hooked --instance work --force --json
+unset FIXTURE_CONNECT_ERROR
+expect_rc "a failed connect --force exits 4" 4
+if python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])) == {"host":"good.example.com"} else 1)' "${HOOKED}/instances/work.json"; then ok "a failed connect --force keeps the old instance"; else bad "a failed connect --force keeps the old instance"; fi
+: > "$STUB_LOG"
+addon_json_in '{"password":"s3cr3t-value"}' connect hooked --instance work --force --json
+expect_rc "connect --force over an existing slug" 0
+r=0; json_ok "$out" "done" 'last == {"phase":"done","id":"hooked","action":"connect","restart":[],"mcp":["fixture-work"],"account":"work","replaced":True}' || r=1
+check "connect --force's done line has replaced" "$r"
+if logged "fixture-connect connect --slug work --replace --json"; then ok "connect --force runs the hook with --replace"; else bad "connect --force runs the hook with --replace"; cat "$STUB_LOG"; fi
+if python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])) == {} else 1)' "${HOOKED}/instances/work.json"; then ok "connect --force drops a setting left out"; else bad "connect --force drops a setting left out"; cat "${HOOKED}/instances/work.json"; fi
+no_staging "connect --force"
+addon_json disconnect hooked --instance work --force --json
+expect_rc "disconnect --force is a usage error" 2
 
 : > "$STUB_LOG"
 addon_json_in '{"host":"h3","password":"s3cr3t-value"}' connect fixture --instance plain --json
@@ -743,6 +758,13 @@ r=0; json_ok "$out" "done" '[s for s in steps if s[1] != "running"] == [("check"
 check "disconnect prints check, register and reload, then done" "$r"
 if logged "fixture-connect disconnect --slug work --json"; then ok "disconnect runs the hook with --slug work --json"; else bad "disconnect runs the hook with --slug work --json"; cat "$STUB_LOG"; fi
 if [ ! -e "${HOOKED}/instances/work.json" ] && [ ! -e "${HOOKED}/secrets/work.password" ]; then ok "disconnect removes the instance and its secrets"; else bad "disconnect removes the instance and its secrets"; fi
+: > "$STUB_LOG"
+addon_json_in '{"host":"good.example.com"}' connect hooked --instance work --force --json
+expect_rc "connect --force on an unknown slug" 0
+r=0; json_ok "$out" "done" '"replaced" not in last and last["account"] == "work"' || r=1
+check "connect --force on an unknown slug is a plain connect" "$r"
+if logged "fixture-connect connect --slug work --json"; then ok "connect --force on an unknown slug runs the hook without --replace"; else bad "connect --force on an unknown slug runs the hook without --replace"; cat "$STUB_LOG"; fi
+addon disconnect hooked --instance work
 : > "$STUB_LOG"
 addon_json disconnect hooked --instance work --json
 expect_rc "disconnect of an unknown slug exits 2" 2
@@ -1508,6 +1530,37 @@ unset FIXTURE_DONE_EXTRA
 expect_rc "disconnect with a hook message" 0
 r=0; json_ok "$out" "done" 'last == {"phase":"done","id":"hooked","action":"disconnect","restart":[],"mcp":[],"message":"signed out"}' || r=1
 check "disconnect's done line carries the hook's message" "$r"
+# A hook's done line may carry "result" (CR 0026 R7b): kept are string,
+# number and bool values under name-like keys, at most 32 of them.
+# shellcheck disable=SC2089,SC2090 # literal JSON text the fixture hook prints
+export FIXTURE_DONE_EXTRA=',"result":{"sync_id":"b-1","name":"Home\tbudget\u001b","count":3,"ratio":0.5,"ok":true,"nested":{"a":1},"list":[1],"nil":null,"Bad-Key":"x"}'
+addon_json enable hooked --reinit --json
+unset FIXTURE_DONE_EXTRA
+expect_rc "enable with an init hook reporting a result" 0
+r=0; json_ok "$out" "done" 'last["result"] == {"sync_id":"b-1","name":"Home budget","count":3,"ratio":0.5,"ok":True}' || r=1
+check "enable's done line carries the init hook's result, filtered" "$r"
+addon_json enable hooked --json
+r=0; json_ok "$out" "done" '"result" not in last' || r=1
+check "enable without an init run has no result" "$r"
+# shellcheck disable=SC2089,SC2090 # literal JSON text the fixture hook prints
+export FIXTURE_DONE_EXTRA=',"result":{"token":"s3cr3t-value","n":1}'
+addon_json_in '{"host":"good.example.com","password":"s3cr3t-value"}' connect hooked --instance work --json
+unset FIXTURE_DONE_EXTRA
+expect_rc "connect with a hook result" 0
+r=0; json_ok "$out" "done" 'last["result"] == {"token":"[redacted]","n":1}' || r=1
+check "connect's done line carries the hook's result, redacted" "$r"
+# shellcheck disable=SC2089,SC2090 # literal JSON text the fixture hook prints
+export FIXTURE_DONE_EXTRA=',"result":{"gone":"x"}'
+addon_json disconnect hooked --instance work --json
+unset FIXTURE_DONE_EXTRA
+r=0; json_ok "$out" "done" '"result" not in last' || r=1
+check "disconnect's done line has no result" "$r"
+hook_result() { python3 "${root}/scripts/lib/addon_cli.py" --addons-dir "$ADDONS_DIR" --data-root "${root}/data" hook-result hooked "$@" 2>&1 | sed -n 7p; }
+if [ -z "$(printf '%s\n' '{"phase":"done","result":{"a":"x"}}' '{"phase":"error","error":"bad_slug"}' | hook_result 0)" ]; then ok "an error drops the result"; else bad "an error drops the result"; fi
+if [ -z "$(printf '%s\n' '{"phase":"done","result":{"a":"x"}}' | hook_result 3)" ]; then ok "a non-zero exit drops the result"; else bad "a non-zero exit drops the result"; fi
+if [ -z "$(printf '%s\n' '{"phase":"done","result":["a"]}' '{"phase":"done","result":{"n":NaN,"m":Infinity}}' | hook_result 0)" ]; then ok "a non-object result and non-finite numbers are dropped"; else bad "a non-object result and non-finite numbers are dropped"; fi
+many="$(python3 -c 'import json; print(json.dumps({"phase":"done","result":{f"k{i}":i for i in range(40)}}))')"
+if [ "$(printf '%s\n' "$many" | hook_result 0 | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')" = 32 ]; then ok "a result keeps at most 32 keys"; else bad "a result keeps at most 32 keys"; fi
 
 # The built-in n8n add-on (CR 0020 R10), from the real addons/ directory.
 # gpt-researcher belongs to it; gptr-mcp belongs to the GPT Researcher add-on

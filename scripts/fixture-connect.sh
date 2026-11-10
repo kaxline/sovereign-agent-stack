@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Connect and disconnect hook for scripts/fixtures/addons-cli/hooked, used by
 # scripts/test-addon-cli.sh. Logs its argv to STUB_LOG and exits 3 unless the
-# argv is `[disconnect] --slug work --json`. connect reads the values on stdin
+# argv is `[disconnect] --slug work --json` (connect also takes
+# `--slug work --replace --json`). connect reads the values on stdin
 # and prints a done line with an account and an MCP name. When the host is
 # refuse.example.com it echoes stdin on stdout and stderr, prints a
 # login_refused error line and exits 1. FIXTURE_CONNECT_ERROR makes it print
@@ -20,7 +21,7 @@ if [ "${1:-}" = disconnect ]; then
   shift
 fi
 printf 'fixture-connect %s %s\n' "$mode" "$*" >> "${STUB_LOG:-/dev/null}"
-if [ "$*" != "--slug work --json" ]; then
+if [ "$*" != "--slug work --json" ] && { [ "$mode" = disconnect ] || [ "$*" != "--slug work --replace --json" ]; }; then
   echo "unexpected argv: $*" >&2
   exit 3
 fi

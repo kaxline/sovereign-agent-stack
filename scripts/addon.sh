@@ -11,7 +11,7 @@
 #   scripts/addon.sh configure <short-id> --instance <slug> --remove
 #   scripts/addon.sh enable <short-id> [--reinit] [--json]
 #   scripts/addon.sh disable <short-id> [--purge] [--json]
-#   scripts/addon.sh connect <short-id> --instance <slug> [--json] < values.json
+#   scripts/addon.sh connect <short-id> --instance <slug> [--force] [--json] < values.json
 #   scripts/addon.sh disconnect <short-id> --instance <slug> [--json]
 #   scripts/addon.sh remove <short-id> --delete-data [--json]
 #   scripts/addon.sh run <short-id> <command> [--instance <slug>]
@@ -53,11 +53,25 @@
 # --slug <slug> --json and the values on stdin; it checks the credential and
 # stores what it keeps. Step register then writes the instance as configure
 # --instance does, and step reload reloads Hermes. The done line carries the
-# hook's account and mcp names. disconnect runs instances.disconnect (stdin
+# hook's account and mcp names. With --force an existing slug is replaced: the
+# hook gets --replace after --slug <slug>, and only once it passes does step
+# register rewrite the instance from the new values alone, so settings left
+# out fall back to their defaults and stored secrets left out are deleted. A
+# failed check leaves the old instance as it was; a failed reload after
+# register leaves the new one. The done line then has "replaced":true.
+# --force on an unknown slug is a plain connect. disconnect runs instances.disconnect (stdin
 # /dev/null) as step check, removes the instance (register) and reloads. A
 # hook's output is redacted before it is logged or relayed: each secret value
 # from the staged values becomes [redacted]. An existing slug on connect is
-# exists, an unknown one on disconnect not_found, both exit 2.
+# exists (without --force), an unknown one on disconnect not_found, both exit 2.
+#
+# An init or connect hook's done line may carry "result", an object. Its
+# string, finite number and bool values under keys of a letter followed by up
+# to 63 letters, digits or _ (at most 32 entries, strings cleaned as every
+# output string is) go into the done line of enable or connect as "result".
+# Anything else is dropped, and there is no "result" when nothing is left or
+# when the hook failed. A connect hook's result is redacted like the rest of
+# its output; an init hook's is not.
 #
 # --json prints one JSON object per line on stdout (scripts/lib/addon-events.sh):
 # `pull` lines (enable only: it pulls the images first), `setup` lines per
@@ -510,6 +524,7 @@ pull_pipe() {
 HOOK_ACCOUNT=""
 HOOK_MCP=""
 HOOK_MESSAGE=""
+HOOK_RESULT=""
 HOOK_STDIN=/dev/null
 HOOK_REDACT=""
 # hook_exec RAW SID HOOK KIND STEP ARGV...: KIND is `script` (run from ROOT) or
@@ -569,6 +584,7 @@ run_hook() {
   HOOK_ACCOUNT=""
   HOOK_MCP=""
   HOOK_MESSAGE=""
+  HOOK_RESULT=""
   cli_checked "$step" plan-hook "$sid" "$hook" "$@"
   [[ -n "$CLI_OUT" ]] || return 0
   while IFS= read -r line; do
@@ -587,6 +603,7 @@ EOF_HOOK
   HOOK_MCP="$(printf '%s\n' "$out" | sed -n 4p)"
   HOOK_MESSAGE="$(printf '%s\n' "$out" | sed -n 5p)"
   EV_RETRY_AFTER="$(printf '%s\n' "$out" | sed -n 6p)"
+  HOOK_RESULT="$(printf '%s\n' "$out" | sed -n 7p)"
   [[ -z "$code" ]] || ev_fail "$code" "$step" "$msg" "$EV_LAST_LOG"
 }
 
@@ -773,7 +790,7 @@ EOF_STOPS
   EV_ON_FAIL=""
   # The manifest's gated names, then the init hook's, each once.
   mcp="$({ gated_names "$plan" mcp; printf '%s\n' "$HOOK_MCP" | tr ',' '\n'; } | awk 'NF && !seen[$0]++' | paste -sd, -)"
-  ev_done "$sid" enable "$RECREATED" "$mcp" "$HOOK_ACCOUNT" "$HOOK_MESSAGE"
+  ev_done "$sid" enable "$RECREATED" "$mcp" "$HOOK_ACCOUNT" "$HOOK_MESSAGE" "$HOOK_RESULT"
 }
 
 # stop_unused_uses PLAN: stops each compose service the manifest's `uses` maps
@@ -930,16 +947,19 @@ cmd_remove() {
   ev_done "$sid" remove "" ""
 }
 
-# instance_args CMD ARGS...: the slug from `--instance SLUG`, the only option
-# connect and disconnect take, in INSTANCE_SLUG.
+# instance_args CMD ARGS...: the slug from `--instance SLUG` in INSTANCE_SLUG,
+# and INSTANCE_FORCE=1 for --force, which only connect takes.
 INSTANCE_SLUG=""
+INSTANCE_FORCE=0
 instance_args() {
   local cmd="$1"
   shift
   INSTANCE_SLUG=""
+  INSTANCE_FORCE=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --instance) [[ $# -ge 2 && -n "$2" ]] || usage_error "--instance needs a slug"; INSTANCE_SLUG="$2"; shift 2 ;;
+      --force) [[ "$cmd" == connect ]] || usage_error "${cmd}: unknown option $1"; INSTANCE_FORCE=1; shift ;;
       *) usage_error "${cmd}: unknown option $1" ;;
     esac
   done
@@ -947,7 +967,7 @@ instance_args() {
 }
 
 cmd_connect() {
-  local sid="${1:-}" slug
+  local sid="${1:-}" slug replace=0 replace_args=()
   [[ -n "$sid" ]] || usage_error "connect needs a short id"
   shift
   instance_args connect "$@"
@@ -958,17 +978,21 @@ cmd_connect() {
   EV_REDACT_SID="$sid"
   CLI_IN="$STAGED" cli_checked "" check-instance "$sid" "$slug"
   if [[ "$CLI_OUT" != new ]]; then
-    EV_EXIT=2
-    ev_fail exists "" "${sid} already has an instance ${slug}" ""
+    if [[ "$INSTANCE_FORCE" != 1 ]]; then
+      EV_EXIT=2
+      ev_fail exists "" "${sid} already has an instance ${slug}" ""
+    fi
+    replace=1
+    replace_args=(--replace)
   fi
   HOOK_STDIN="$STAGED"
   HOOK_REDACT="$STAGED"
-  run_hook check "$sid" connect --slug "$slug"
+  run_hook check "$sid" connect --slug "$slug" ${replace_args[@]+"${replace_args[@]}"}
   HOOK_STDIN=/dev/null
   HOOK_REDACT=""
-  CLI_IN="$STAGED" cli_step register configure "$sid" --instance "$slug"
+  CLI_IN="$STAGED" cli_step register configure "$sid" --instance "$slug" ${replace_args[@]+"${replace_args[@]}"}
   reload_step
-  ev_done "$sid" connect "" "$HOOK_MCP" "$HOOK_ACCOUNT" "$HOOK_MESSAGE"
+  ev_done "$sid" connect "" "$HOOK_MCP" "$HOOK_ACCOUNT" "$HOOK_MESSAGE" "$HOOK_RESULT" "$replace"
 }
 
 cmd_disconnect() {

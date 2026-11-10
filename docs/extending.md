@@ -656,7 +656,7 @@ a changelog entry.
 | `configure <short-id> --instance <slug> --remove` | Deletes the instance's file and secrets |
 | `enable <short-id> [--reinit] [--json]` | Checks required settings, sets the add-on's flag and gate flags in `.env`, syncs compose profiles, starts the services whose gate is on, runs the `init` hook once, reloads Hermes |
 | `disable <short-id> [--purge] [--json]` | Sets the flag and every gate flag to `0`, stops the services, reloads Hermes. A gate flag that is on in `.env` while its `bool` setting isn't stored (set by hand) gets the setting stored as `true` first, so the next `enable` turns it back on. `--purge` then does what `remove --delete-data` does, under the same lock |
-| `connect <short-id> --instance <slug> [--json] < values.json` | Checks the values, runs the manifest's `instances.connect` hook, stores the instance, reloads Hermes |
+| `connect <short-id> --instance <slug> [--force] [--json] < values.json` | Checks the values, runs the manifest's `instances.connect` hook, stores the instance, reloads Hermes. `--force` replaces an existing instance; see [Replacing an instance](#replacing-an-instance) |
 | `disconnect <short-id> --instance <slug> [--json]` | Runs `instances.disconnect`, removes the instance, reloads Hermes |
 | `remove <short-id> --delete-data [--json]` | Deletes the add-on's containers, compose volumes and data. Refused while the add-on is enabled |
 | `run <short-id> <command> [--instance <slug>]` | Runs a manifest `commands` entry in its service with `docker compose run --rm --no-deps -T` |
@@ -760,7 +760,7 @@ names the setting and never its value. A usage error starts with
 |---|---|
 | `0` | Done |
 | `1` | The data root is invalid, a compose step failed, another add-on change holds the lock (`busy`), or the file work failed (for example, a permission error); the error line names the exception type |
-| `2` | Invalid input: unknown add-on, bad JSON, unknown or ill-typed setting, bad slug, unknown command or instance, usage error. Also `connect` on an existing instance and `disconnect` on an unknown one |
+| `2` | Invalid input: unknown add-on, bad JSON, unknown or ill-typed setting, bad slug, unknown command or instance, usage error. Also `connect` without `--force` on an existing instance and `disconnect` on an unknown one |
 | `3` | `enable` found required settings with no value |
 | `4` | `run`: `docker compose run` failed, whether the command exited non-zero or the container couldn't start. Also a failed hook, `vault.sh reload-plugins`, an `onToggle.script`, or a SIGINT or SIGTERM |
 
@@ -796,7 +796,7 @@ run `check` (the hook), `register` (store or remove the instance) and `reload`.
 `done`:
 
 ```json
-{"phase":"done","id":"<short id>","action":"enable","restart":["svc"],"mcp":["name"],"account":"<slug>","message":"<text>"}
+{"phase":"done","id":"<short id>","action":"enable","restart":["svc"],"mcp":["name"],"account":"<slug>","message":"<text>","result":{"key":"value"}}
 ```
 
 `restart` lists the compose services `onToggle` recreated. On `enable`, `mcp`
@@ -806,8 +806,12 @@ On `connect` it is the names the `connect` hook reported. `account` appears
 only when a hook reported one. `message` appears only when the `init`,
 `connect` or `disconnect` hook's `done` line has a string `message`; it is
 cleaned like the strings in an `error` line, and on `connect` each staged
-secret value in it is `[redacted]`. An `enable` that skips a recorded `init`
-gets neither the hook's names nor its message.
+secret value in it is `[redacted]`. `result` appears on `enable` and
+`connect` when the `init` or `connect` hook's `done` line has a `result`
+object with at least one value kept (see [Hooks](#hooks)). `replaced: true`
+appears when `connect --force` replaced an existing instance. An `enable` that
+skips a recorded `init` gets neither the hook's names, its message nor its
+result.
 `addon.sh` does not wait for MCP servers. The caller waits until each name in
 `done.mcp` is up in `mcp.servers.status`.
 
@@ -830,7 +834,7 @@ are dropped, a tab becomes a space, and a log line is cut to 500 characters.
 | `compose_failed` | 1 | A `docker compose` call failed (pull, start, stop, recreate, delete, a bootstrap) |
 | `busy` | 1 | Another change holds the lock |
 | `command_failed` | 4 | A hook, `onToggle.script`, `vault.sh reload-plugins` or `addon_cli.py` failed, the run was signalled, or `addon.sh` exited unexpectedly (`enable` rolls back first). Exit 1 when the data root is invalid |
-| `exists`, `not_found` | 2 | `connect` on an existing slug, `disconnect` on an unknown one, detected by `addon.sh` |
+| `exists`, `not_found` | 2 | `connect` without `--force` on an existing slug, `disconnect` on an unknown one, detected by `addon.sh` |
 | a hook's own name | 4 | See [Hooks](#hooks) |
 
 ### Lock and rollback
@@ -872,7 +876,8 @@ A manifest declares `hooks.init` (also `upgrade`, `backup` and `restore`, which
 A hook is `{"script": [argv]}`, run from the repo root on the host, or
 `{"command": <name>}`, one of the manifest's `commands`, run in its service
 with `docker compose run --rm --no-deps -T`. `addon.sh` appends `--json`, and
-`--slug <slug> --json` for connect and disconnect.
+`--slug <slug> --json` for connect and disconnect (`--slug <slug> --replace
+--json` for a connect that replaces an instance).
 
 - `init` runs once, in `enable`. `data/addons/<short-id>/state.json` records the
   manifest version and time after it succeeds. `enable --reinit` runs it again.
@@ -890,7 +895,13 @@ Only stdout is read. A hook prints JSON objects, one per line. An object whose
 `phase` is `setup` or `pull` is relayed inside the step, with `step` set to
 that step and every string cleaned by the rule for `error` lines.
 Its `done` line may carry `account` (a string), `mcp` (a list of names) and
-`message` (a string) that go into the run's `done` line. Anything else on
+`message` (a string) that go into the run's `done` line. An `init` or
+`connect` hook's `done` line may also carry `result`, an object. `addon.sh`
+keeps its first 32 entries whose key is a letter followed by up to 63
+letters, digits or `_` and whose value is a string (cleaned like the other
+strings), a finite number or a bool, and drops the rest. On `connect` its
+strings are redacted like the hook's other output; an `init` hook's are not,
+so don't put a secret there. Anything else on
 stdout, and all of stderr, goes to the step log. On `connect`, the staged secret values are
 replaced with `[redacted]` in the step log, `logTail` and relayed lines.
 
@@ -901,6 +912,17 @@ when it is a shared name (`bad_slug`, `exists`, `not_found`, `login_refused`,
 manifest's `instances.errors`. Any other name becomes `command_failed`, and the
 original name is in `message`. A hook that exits non-zero without an `error`
 line is `command_failed`.
+
+### Replacing an instance
+
+`connect --force` on an existing slug runs the `connect` hook with `--replace`
+after `--slug <slug>`. The hook checks the new values and replaces what it
+stores for the instance only once its checks pass. `addon.sh` then rewrites the
+instance from the new values alone: settings left out fall back to their
+defaults, and stored secrets left out are deleted. If the hook fails, the old
+instance stays as it was. If the reload fails after the rewrite, the new
+values stay. The `done` line has `"replaced":true`. On an unknown slug,
+`--force` is a plain `connect` and the hook gets no `--replace`.
 
 ### Removing data
 

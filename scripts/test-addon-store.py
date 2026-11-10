@@ -141,6 +141,19 @@ with tempfile.TemporaryDirectory() as tmp:
     check("password only in its own file", hits == [str(pf)], str(hits))
     check("no temp files left", not [p for p in root.rglob("*") if ".tmp" in p.name])
 
+    # replace=True (connect --force): the instance is the new input alone.
+    st.apply_instance(MANIFEST, root, "swap", {"host": "a.example.com", "user": "u", "password": "old-pw"})
+    st.apply_instance(MANIFEST, root, "swap", {"host": "b.example.com"}, replace=True)
+    check("replace drops settings left out",
+          json.loads((d / "instances" / "swap.json").read_text()) == {"host": "b.example.com"})
+    check("replace deletes a secret left out", not (d / "secrets" / "swap.password").exists())
+    st.apply_instance(MANIFEST, root, "swap", {"password": "new-pw"}, replace=True)
+    check("replace writes a secret it is given",
+          (d / "secrets" / "swap.password").read_text() == "new-pw"
+          and json.loads((d / "instances" / "swap.json").read_text()) == {})
+    check("replace leaves other instances' secrets", (d / "secrets" / "work.password").read_text() == PASSWORD)
+    st.remove_instance(MANIFEST, root, "swap")
+
     lst = st.listing(MANIFEST, root, {"GPTR_MCP_ENABLED": "1"})
     check("listing masks secret", lst["instances"]["work"]["password"] == {"set": True})
     check("listing top-level secret masked", lst["settings"]["api"] == {"set": True})
