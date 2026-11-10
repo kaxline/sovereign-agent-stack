@@ -32,7 +32,7 @@ ID_RE='^[A-Za-z0-9][A-Za-z0-9-]{0,63}$'
 NO_SPACE_RE='^[^[:space:]]+$'
 NO_CNTRL_RE='^[^[:cntrl:]]+$'
 NUMBER_RE='^[0-9]+$'
-RETRY_RE='^[0-9]+([.][0-9]+)?$'
+RETRY_RE='^[0-9]+$'
 
 usage() {
   cat <<'EOF'
@@ -818,7 +818,16 @@ cmd_status() {
       emit_line "{\"file\":$(json_str "$name"),\"slug\":${slug},\"state\":\"refused\",\"error\":\"bad_file\"}"
       continue
     fi
-    load_file "$f"
+    # A file that cannot be read is reported like a refused one; load_file dies, so it runs in a subshell.
+    if ! FILE_TEXT="$(load_file "$f" && printf '%s' "$FILE_TEXT")"; then
+      if [[ "$slug" =~ $SLUG_RE ]]; then
+        slug="$(json_str "$slug")"
+      else
+        slug=null
+      fi
+      emit_line "{\"file\":$(json_str "$name"),\"slug\":${slug},\"state\":\"refused\",\"error\":\"bad_file\"}"
+      continue
+    fi
     mode="$(text_get BW_MODE)"
     scope="$(text_get BW_SCOPE)"
     [[ -n "$scope" ]] || scope="folder:Agent"
@@ -826,7 +835,8 @@ cmd_status() {
     row=""
     [[ "$up" == 1 ]] && row="$(printf '%s\n' "$rows" | awk -F '\t' -v s="$slug" '$1 == s && $1 != "refused" { print; exit }')"
     if [[ -z "$row" ]]; then
-      st=offline; err='"broker_down"'; retry=null
+      st=offline; retry=null
+      if [[ "$up" == 1 ]]; then err='"not_loaded"'; else err='"broker_down"'; fi
     else
       IFS=$'\t' read -r _ _ _ st ec _ retry <<< "$row"
       [[ "$ec" == "-" ]] && ec=""

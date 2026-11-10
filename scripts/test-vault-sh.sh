@@ -528,14 +528,14 @@ st_file work cloud folder:Work stored
 st_file home selfhosted collection:abc manual
 printf 'BW_MODE=local\nBW_UNLOCK=stored\nBW_CLIENTID=x\n' > "$VAULT_ACCOUNTS_DIR/local.env"
 st_file bad cloud all manual
-printf 'work\tcloud\tfolder\tunlocked\t-\t1\t\nhome\tselfhosted\tcollection\tlocked\t-\t0\t\nlocal\tlocal\tcollection\tunlocked\t-\t1\t\nbad\tcloud\tfolder\terror\tauth\t0\t12.5\nrefused\tBad_File.env: line 3: expected KEY=value\n' > "$STUB/accounts"
+printf 'work\tcloud\tfolder\tunlocked\t-\t1\t\nhome\tselfhosted\tcollection\tlocked\t-\t0\t\nlocal\tlocal\tcollection\tunlocked\t-\t1\t\nbad\tcloud\tfolder\terror\tauth\t0\t12\nrefused\tBad_File.env: line 3: expected KEY=value\n' > "$STUB/accounts"
 printf 'BW_MODE=\n' > "$VAULT_ACCOUNTS_DIR/Bad_File.env"
 run status --json || fail "status --json"
 js || fail "status lines parse as JSON"
 [ "$(wc -l < "$out" | tr -d ' ')" = 5 ] || fail "one line per account file"
 [ "$(jfield 1 slug)" = null ] && [ "$(jfield 1 file)" = Bad_File.env ] || fail "refused file with a non-slug stem"
 [ "$(jfield 1 state)" = refused ] && [ "$(jfield 1 error)" = bad_file ] || fail "refused file state"
-[ "$(jfield 2 slug)" = bad ] && [ "$(jfield 2 error)" = login_refused ] && [ "$(jfield 2 retry_after)" = 12.5 ] || fail "auth maps to login_refused with retry_after"
+[ "$(jfield 2 slug)" = bad ] && [ "$(jfield 2 error)" = login_refused ] && [ "$(jfield 2 retry_after)" = 12 ] || fail "auth maps to login_refused with retry_after"
 [ "$(jfield 3 slug)" = home ] && [ "$(jfield 3 unlock)" = manual ] && [ "$(jfield 3 state)" = locked ] && [ "$(jfield 3 error)" = null ] || fail "manual locked account"
 [ "$(jfield 3 scope)" = collection:abc ] && [ "$(jfield 3 mode)" = selfhosted ] || fail "scope and mode come from the file"
 [ "$(jfield 4 slug)" = local ] && [ "$(jfield 4 mode)" = local ] || fail "local mode reported"
@@ -547,6 +547,17 @@ for e in network:server_unreachable rate_limited:rate_limited unknown:unknown lo
   run status --json || fail "status --json $e"
   [ "$(jfield 1 error)" = "${e#*:}" ] || fail "error_class ${e%%:*} mapping"
 done
+st_file fresh cloud folder:Work stored
+printf 'work\tcloud\tfolder\tunlocked\t-\t1\t\n' > "$STUB/accounts"
+chmod 000 "$VAULT_ACCOUNTS_DIR/home.env"
+run status --json || fail "status --json with an unreadable file and an unloaded file"
+grep '^{' "$out" | python3 -c 'import json,sys
+for l in sys.stdin: json.loads(l)' || fail "unreadable-file lines parse as JSON"
+[ "$(grep -c '^{' "$out")" = 5 ] || fail "one line per file despite an unreadable one"
+grep -q '"slug":"fresh".*"state":"offline","error":"not_loaded","retry_after":null' "$out" || fail "a file the running broker has not loaded is not_loaded"
+grep -q '"file":"home.env","slug":"home","state":"refused","error":"bad_file"' "$out" || fail "an unreadable file is reported as bad_file"
+chmod 600 "$VAULT_ACCOUNTS_DIR/home.env"
+rm -f "$VAULT_ACCOUNTS_DIR/fresh.env"
 rm -f "$STUB/broker-running"
 run status --json || fail "status --json with the broker down exits 0"
 js || fail "broker-down lines parse as JSON"
