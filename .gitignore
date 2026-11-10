@@ -61,3 +61,6 @@ node_modules/
 .vscode/
 # Built macOS helper apps (macos/mail-apps/build.sh)
 build/
+
+# scripts/run-tests.py logs and per-test times
+/.test-runs/

@@ -9,6 +9,7 @@ is forwarded to a signed webhook on the host.
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import hmac
 import json
@@ -34,7 +35,8 @@ import messages_query as mq  # noqa: E402
 import messages_watch as mw  # noqa: E402
 import synthetic_messages as sm  # noqa: E402
 
-IMAGE = "assistant-messages-mcp:test"
+# Per run, so runs from other checkouts never build over or remove this one.
+IMAGE = f"assistant-messages-mcp:test-{os.getpid()}"
 SECRET = "container-secret-0123456789abcdef"
 TOOLS = {"messages_status", "messages_chats", "messages_search", "messages_conversation", "messages_get",
          "messages_triage_batch"}
@@ -85,10 +87,11 @@ def rpc(port: int, method: str, params: dict, rid: int) -> dict:
 def main() -> int:
     if shutil.which("docker") is None or subprocess.run(["docker", "info"], capture_output=True).returncode:
         print("SKIP Messages MCP container (needs Docker)")
-        return 0
+        return 77
     built = subprocess.run(["docker", "build", "-q", "-f", str(SRC / "mcp" / "Dockerfile"), "-t", IMAGE, str(SRC)],
                            capture_output=True, text=True)
     expect(built.returncode == 0, f"image build: {built.stderr[-500:]}")
+    atexit.register(subprocess.run, ["docker", "rmi", "-f", IMAGE], capture_output=True)
 
     with tempfile.TemporaryDirectory(prefix="msgmcp-container-") as tmp_name:
         tmp = Path(tmp_name)

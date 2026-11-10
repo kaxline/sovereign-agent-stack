@@ -553,7 +553,7 @@ def run(stack: Stack) -> None:
 def main() -> int:
     if not tmi.docker_ok():
         print("SKIP email add-on end to end: Docker isn't running")
-        return 0
+        return 77
     tmp = Path(os.path.realpath(tempfile.mkdtemp(prefix="email-e2e-")))
     stack = Stack(tmp)
     try:

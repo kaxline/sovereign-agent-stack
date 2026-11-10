@@ -1,94 +1,111 @@
 #!/usr/bin/env python3
-"""Checks configure_messages_webhook (bootstrap-api-profile.sh) inside the
-running hermes container, against throwaway config files in its /tmp.
+"""Checks configure_messages_webhook (bootstrap-api-profile.sh) in the pinned
+Hermes image, against throwaway config files in the container's /tmp.
 
-Needs a running hermes container (HERMES_CONTAINER, default "hermes");
-skips otherwise. Never touches data/hermes.
+Host: the Python body can be cut out of the bootstrap function. Image (skips
+without the pinned image unless --image): turning the webhook on adds the
+messages route, a second run changes nothing, turning it off removes only what
+it added, and a webhook platform the user set up keeps its routes and port.
 """
 
 from __future__ import annotations
 
-import json
-import os
 import re
-import subprocess
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts" / "lib"))
+
+import hermes_image  # noqa: E402
 from testkit import expect  # noqa: E402
 
-ROOT = Path(__file__).resolve().parent.parent
 BOOTSTRAP = ROOT / "compose" / "hermes" / "bootstrap-api-profile.sh"
-SECRET = "webhook-test-secret-0123456789"
-CONTAINER = os.environ.get("HERMES_CONTAINER", "hermes")
 
 
 def script() -> str:
-    body = re.search(r"^configure_messages_webhook\(\) \{\n(.*?)^\}", BOOTSTRAP.read_text(), re.S | re.M).group(1)
-    return re.search(r"<<'PY'\n(.*?)\nPY\n", body, re.S).group(1)
+    m = re.search(r"^configure_messages_webhook\(\) \{\n(.*?)^\}", BOOTSTRAP.read_text(), re.S | re.M)
+    expect(m is not None, "bootstrap-api-profile.sh defines configure_messages_webhook")
+    body = re.search(r"<<'PY'\n(.*?)\nPY\n", m.group(1), re.S)
+    expect(body is not None, "configure_messages_webhook runs a python3 heredoc")
+    return body.group(1)
 
 
-def exec_in_hermes(cmd: list[str], stdin: str = "", env: dict | None = None) -> subprocess.CompletedProcess:
-    extra = [f"--env={k}={v}" for k, v in (env or {}).items()]
-    return subprocess.run(["docker", "exec", "-i", *extra, CONTAINER, *cmd],
-                          input=stdin, capture_output=True, text=True, timeout=60)
+# Reads the configure script on stdin. The bootstrap runs it with the image's
+# python3, which is the interpreter this driver runs under.
+IMAGE_DRIVER = r'''
+import json
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, "/opt/hermes")
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ has no PyYAML; hermes_yaml wraps ruamel, as in the bootstrap
+    import hermes_yaml as yaml
+
+SECRET = "webhook-test-secret-0123456789"
+CONFIGURE = sys.stdin.read()
+work = Path(tempfile.mkdtemp(prefix="messages-webhook-"))
+cfg_path = work / "config.yaml"
+
+
+def expect(ok, msg):
+    if not ok:
+        raise SystemExit(f"FAIL {msg}")
+
+
+def configure(on, port=8646):
+    r = subprocess.run([sys.executable, "-", str(cfg_path), "1" if on else "0", str(port)], input=CONFIGURE,
+                       capture_output=True, text=True, env={"MESSAGES_WEBHOOK_SECRET": SECRET, "PATH": "/usr/bin:/bin"})
+    expect(r.returncode == 0, f"configure failed: {r.stderr[-400:]}")
+    return r.stdout.strip()
+
+
+def read():
+    return yaml.safe_load(cfg_path.read_text())
+
+
+def write(text):
+    cfg_path.write_text(text)
+    (work / ".messages-webhook.json").unlink(missing_ok=True)
+
+
+write("model: x\n")
+out = configure(True)
+cfg = read()
+wh = cfg["platforms"]["webhook"]
+route = wh["extra"]["routes"]["messages"]
+expect("set the messages webhook route" in out and wh["enabled"] is True, f"enabled: {out}")
+expect(wh["extra"]["port"] == 8646 and wh["extra"]["host"] == "0.0.0.0", "port and host")
+expect(dict(route) == {"secret": SECRET, "events": ["messages.new"], "cron_job": "messages-triage",
+                       "prompt": route["prompt"]}, f"route: {json.dumps(route, default=str)}")
+expect("{count}" in route["prompt"] and "{chat" not in route["prompt"], "prompt carries only the count")
+expect(cfg["model"] == "x", "other settings kept")
+expect("already set" in configure(True), "second run changes nothing")
+
+out = configure(False)
+expect("removed" in out and "webhook" not in (read().get("platforms") or {}), "turning off removes what we added")
+
+# A webhook platform the user set up: keep their routes and port, add ours.
+write("platforms:\n  webhook:\n    enabled: true\n    extra:\n      port: 9000\n      routes:\n"
+      "        github:\n          secret: s\n")
+out = configure(True)
+wh = read()["platforms"]["webhook"]
+expect("WARNING" in out and wh["extra"]["port"] == 9000, f"their port is kept, with a warning: {out}")
+expect(set(wh["extra"]["routes"]) == {"github", "messages"}, "their route is kept")
+configure(False)
+wh = read()["platforms"]["webhook"]
+expect(wh["enabled"] is True and set(wh["extra"]["routes"]) == {"github"}, "turning off leaves theirs alone")
+print("image ok")
+'''
 
 
 def main() -> int:
-    up = subprocess.run(["docker", "ps", "--filter", f"name=^{CONTAINER}$", "--format", "{{.Names}}"],
-                        capture_output=True, text=True)
-    if up.returncode != 0 or up.stdout.strip() != CONTAINER:
-        print("SKIP messages webhook config (hermes isn't running)")
-        return 0
-    py = script()
-    work = "/tmp/messages-webhook-test"
-    exec_in_hermes(["sh", "-c", f"rm -rf {work} && mkdir -p {work}"])
-
-    def configure(on: bool, port: int = 8646) -> str:
-        r = exec_in_hermes(["python3", "-", f"{work}/config.yaml", "1" if on else "0", str(port)], py,
-                           env={"MESSAGES_WEBHOOK_SECRET": SECRET})
-        expect(r.returncode == 0, f"configure failed: {r.stderr[-400:]}")
-        return r.stdout.strip()
-
-    def read() -> dict:
-        # Hermes v0.22+ has no PyYAML; hermes_yaml wraps ruamel, as in the bootstrap.
-        r = exec_in_hermes(["python3", "-c", "import json,sys; sys.path.insert(0, '/opt/hermes')\n"
-                            "try:\n    import yaml\nexcept ImportError:\n    import hermes_yaml as yaml\n"
-                            f"print(json.dumps(yaml.safe_load(open('{work}/config.yaml'))))"])
-        return json.loads(r.stdout)
-
-    def write(text: str) -> None:
-        exec_in_hermes(["sh", "-c", f"cat > {work}/config.yaml && rm -f {work}/.messages-webhook.json"], text)
-
-    write("model: x\n")
-    out = configure(True)
-    cfg = read()
-    wh = cfg["platforms"]["webhook"]
-    route = wh["extra"]["routes"]["messages"]
-    expect("set the messages webhook route" in out and wh["enabled"] is True, f"enabled: {out}")
-    expect(wh["extra"]["port"] == 8646 and wh["extra"]["host"] == "0.0.0.0", "port and host")
-    expect(route == {"secret": SECRET, "events": ["messages.new"], "cron_job": "messages-triage",
-                     "prompt": route["prompt"]}, f"route: {route}")
-    expect("{count}" in route["prompt"] and "{chat" not in route["prompt"], "prompt carries only the count")
-    expect(cfg["model"] == "x", "other settings kept")
-    expect("already set" in configure(True), "second run changes nothing")
-
-    out = configure(False)
-    expect("removed" in out and "webhook" not in read().get("platforms", {}), "turning off removes what we added")
-
-    # A webhook platform the user set up: keep their routes and port, just add ours.
-    write("platforms:\n  webhook:\n    enabled: true\n    extra:\n      port: 9000\n      routes:\n"
-          "        github:\n          secret: s\n")
-    out = configure(True)
-    wh = read()["platforms"]["webhook"]
-    expect("WARNING" in out and wh["extra"]["port"] == 9000, f"their port is kept, with a warning: {out}")
-    expect(set(wh["extra"]["routes"]) == {"github", "messages"}, "their route is kept")
-    configure(False)
-    wh = read()["platforms"]["webhook"]
-    expect(wh["enabled"] is True and set(wh["extra"]["routes"]) == {"github"}, "turning off leaves theirs alone")
-
-    exec_in_hermes(["rm", "-rf", work])
+    configure = script()
+    hermes_image.maybe_run(IMAGE_DRIVER, stdin=configure)
     print("OK messages webhook config")
     return 0
 

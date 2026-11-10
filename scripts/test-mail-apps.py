@@ -44,7 +44,7 @@ def scripts(app: Path) -> set[str]:
 def main() -> int:
     if sys.platform != "darwin" or shutil.which("swiftc") is None:
         print("SKIP mail apps (needs macOS with swiftc)")
-        return 0
+        return 77
     with tempfile.TemporaryDirectory(prefix="synthetic-mail-apps-") as tmp:
         tmp = Path(tmp)
         out = tmp / "apps"

@@ -12,8 +12,8 @@ MCP_IMAGE="assistant-actual-mcp:local"
 
 for img in "$SERVER_IMAGE" "$MCP_IMAGE"; do
   if ! docker image inspect "$img" >/dev/null 2>&1; then
-    printf 'skip: %s not present\n' "$img"
-    exit 0
+    printf 'SKIP actual-admin: %s not present\n' "$img"
+    exit 77
   fi
 done
 

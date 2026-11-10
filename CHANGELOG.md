@@ -403,6 +403,18 @@ the stack under another app.
   which took about 0.6 s per read on a `.env` copied from `.env.example`
   (`list`, `enable` and `disable` read them).
 
+- **`make test`.** `scripts/run-tests.py` runs every test listed in
+  `scripts/tests.manifest`, several at a time, with a log per test under
+  `.test-runs/`. Tags in the manifest say what a test needs (Docker, macOS,
+  the Hermes image), so tests this machine can't run are listed as skipped
+  rather than passing silently; `--strict` makes a skip fail. CI runs the
+  tests tagged `ci` through it in one step, and `make hermes-image-test`,
+  `bitwarden-test` and the other multi-test targets use it too. A test that
+  skips as a whole now exits 77 instead of 0. `test-messages-webhook-config.py`
+  runs in the pinned Hermes image instead of the running `hermes` container,
+  and `test-messages-mcp-container.py` builds a per-run image tag that it
+  removes afterwards.
+
 ### Fixes
 
 - **Compose tests ignore local settings.** The compose config tests load
