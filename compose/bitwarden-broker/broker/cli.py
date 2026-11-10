@@ -94,15 +94,20 @@ def cmd_requests(form: str | None) -> None:
         for r in pending:
             print("\t".join(_cell(r.get(k)) for k in ("request_id", "account", "site", "reason")))
         return
+    unreturned = data.get("unreturned") or []
     if not pending:
         print("No pending access requests.")
-        return
-    print("Pending access requests:")
-    for number, r in enumerate(pending, 1):
-        account = f"account {r['account']}, " if r.get("account") else ""
-        print(f"  {number}. {_cell(r.get('site'))}  ({account}{_age(r.get('created'))})")
-        if r.get("reason"):
-            print(f"     Reason, in the agent's text: {_cell(r.get('reason'))}")
+    else:
+        print("Pending access requests:")
+        for number, r in enumerate(pending, 1):
+            account = f"account {r['account']}, " if r.get("account") else ""
+            print(f"  {number}. {_cell(r.get('site'))}  ({account}{_age(r.get('created'))})")
+            if r.get("reason"):
+                print(f"     Reason, in the agent's text: {_cell(r.get('reason'))}")
+    if unreturned:
+        print("Released logins Bitwarden would not move out of the agent's scope (move them yourself):")
+        for r in unreturned:
+            print(f"  - {_cell(r.get('label'))}  ({_cell(r.get('site'))}, account {_cell(r.get('account'))})")
 
 
 def cmd_sync() -> None:

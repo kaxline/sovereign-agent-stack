@@ -21,7 +21,8 @@ failed start, and, when ``BITWARDEN_IDLE_LOCK_MINUTES`` is above 0, locks a
 ``manual`` account that has gone that long since its last fill or unlock.
 After each sync, pending access requests for a host now in scope are marked
 done, and denylist entries for items no longer in scope are dropped, so a later
-grant of the same item lists it again.
+grant of the same item lists it again. A release that bw refused or could not
+perform is also recorded in ``unreturned.json`` until that entry is dropped.
 """
 
 from __future__ import annotations
@@ -47,7 +48,7 @@ from . import cdp, digest_redaction
 from .accounts import load_dir
 from .bwcli import Bw, BwError
 from .requests_store import RequestError, Store
-from .vault import HANDLE_PREFIX, Denylist, Vault, parse_handle
+from .vault import HANDLE_PREFIX, Denylist, Unreturned, Vault, parse_handle
 
 ACCESS_LOG = logging.getLogger("broker.access")
 LOG = logging.getLogger("broker.server")
@@ -198,6 +199,10 @@ class Broker:
         except (OSError, ValueError):
             raise ConfigError("denylist.json cannot be loaded; fix or move it") from None
         try:
+            self.unreturned = Unreturned(store_dir / "unreturned.json")
+        except (OSError, ValueError):
+            raise ConfigError("unreturned.json cannot be loaded; fix or move it") from None
+        try:
             self.requests = Store(store_dir / "requests.json", accounts=self.accounts)
         except (OSError, ValueError):
             raise ConfigError("requests.json cannot be loaded; fix or move it") from None
@@ -307,7 +312,8 @@ class Broker:
 
     def get_requests(self, _body) -> dict:
         self.requests.expire()
-        return {"pending": self.requests.pending(), "recent": self.requests.recent()}
+        return {"pending": self.requests.pending(), "recent": self.requests.recent(),
+                "unreturned": self.unreturned.entries()}
 
     def post_release(self, body) -> dict:
         _fields(body, required=("handle",))
@@ -317,11 +323,17 @@ class Broker:
             raise HttpError(404, "unknown_handle")
         if self.vault.get(handle) is None and handle not in self.denylist:
             raise HttpError(404, "unknown_handle")
+        meta = self.vault.get(handle)  # before the denylist add, which hides the item
         # Denylisted before the move starts, so /items and /fill refuse it while bw runs.
         self.denylist.add(handle)
-        returned = self.bws[parsed[0]].return_item(parsed[1])
+        bw = self.bws[parsed[0]]
+        returned = bw.return_item(parsed[1])
         if returned:
             self._prune(parsed[0])
+        elif meta is not None and bw.account.scope_kind in ("folder", "collection"):
+            # Still in the agent's scope in Bitwarden: the person has to move it.
+            site = urlsplit(meta.origins[0]).hostname if meta.origins else None
+            self.unreturned.add(handle, meta.account, meta.label, site or "")
         return {"released": True, "returned": returned}
 
     # --- Unix socket routes -------------------------------------------------
@@ -452,6 +464,7 @@ class Broker:
         for handle in self.denylist.handles():
             if handle.startswith(prefix) and handle[len(prefix):] not in present:
                 self.denylist.remove(handle)
+                self.unreturned.remove(handle)
 
     def _mark_done(self) -> None:
         hosts = {urlsplit(origin).hostname for meta in self.vault.items() for origin in meta.origins}
