@@ -59,6 +59,7 @@ want="$(printf '%s\n%s\n%s' "$want_home_ro" "$want_home_rw" "$want_main_ro")"
 # another profile (not in this build).
 row alice '{"server": "local", "sync_id": "s", "profile": "alice", "access": "write"}'
 row Bad_Slug '{"server": "local", "sync_id": "s"}'
+row 9lives '{"server": "local", "sync_id": "s"}'
 row admin '{"server": "local", "sync_id": "s", "access": "admin"}'
 row ftp '{"server": "ftp://actual.example.com", "sync_id": "s"}'
 row nosync '{"server": "local"}'
@@ -67,7 +68,7 @@ row list '["server", "local"]'
 row broken '{"server": '
 printf '{}\n' > "${idir}/sample.json.example"
 [ "$(plan default)" = "$want" ] || fail "skipped rows plan nothing ($(plan default))"
-for s in alice Bad_Slug admin ftp nosync blank list broken; do
+for s in alice Bad_Slug 9lives admin ftp nosync blank list broken; do
   grep -q "row ${s}:" "${tmp}/plan.err" || fail "the skipped row ${s} is named on stderr ($(cat "${tmp}/plan.err"))"
 done
 
@@ -75,7 +76,7 @@ done
 row plain '{"server": "local", "sync_id": "s"}'
 plan default | grep -qx "budget-plain-ro|.*|http://actual-mcp-ro:3000/plain/mcp|.*" || fail "a row with no access is read"
 plan default | grep -q '^budget-plain|' && fail "a row with no access gets no write entry"
-rm -f "${idir}"/alice.json "${idir}"/Bad_Slug.json "${idir}"/admin.json "${idir}"/ftp.json "${idir}"/nosync.json \
+rm -f "${idir}"/alice.json "${idir}"/Bad_Slug.json "${idir}"/9lives.json "${idir}"/admin.json "${idir}"/ftp.json "${idir}"/nosync.json \
   "${idir}"/blank.json "${idir}"/list.json "${idir}"/broken.json "${idir}"/plain.json
 
 # An invalid Actual manifest fails the plan (the bootstrap then leaves entries as they were).

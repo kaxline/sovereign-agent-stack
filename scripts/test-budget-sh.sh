@@ -589,6 +589,14 @@ touch "$STUB/down"; connect_run main "$pwin"; expect_err "server down" 4 server_
 rm -f "$STUB/down"
 connect_run Bad_Slug "$pwin"
 [ "$brc" = 2 ] && [ "$(jget 1 error)" = bad_slug ] || fail "bad slug"
+# addon_store.SLUG_RE's rule: a slug starts with a letter.
+connect_run 9lives "$pwin"
+[ "$brc" = 2 ] && [ "$(jget 1 error)" = bad_slug ] || fail "a slug starting with a digit is bad_slug"
+python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import addon_store; sys.exit(0 if not addon_store.SLUG_RE.match("9lives") and addon_store.SLUG_RE.match("a9-x") else 1)' "${ROOT}/scripts/lib" \
+  || fail "addon_store agrees on 9lives and a9-x"
+connect_run a9-x "$pwin"
+[ "$brc" = 0 ] || fail "a9-x is a valid slug ($(cat "$tmp/jout" "$tmp/jerr"))"
+rm -f "$sec"/a9-x.*
 connect_run 'a
 b' "$pwin"
 [ "$brc" = 2 ] && [ "$(jget 1 error)" = bad_slug ] || fail "a slug with a newline is bad_slug"

@@ -34,7 +34,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import addon_manifest  # noqa: E402
 
 ACTUAL_DIR = "actual"
-SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,30}\Z")
+# addon_store.SLUG_RE: a lowercase letter, then up to 30 of a-z, 0-9 and -.
+SLUG_RE = re.compile(r"^[a-z][a-z0-9-]{0,30}\Z")
 # Hermes profiles that get the default profile's rows.
 ROW_PROFILES = {"default": "default", "browser": "default"}
 RO_URL = "http://actual-mcp-ro:3000/{slug}/mcp"

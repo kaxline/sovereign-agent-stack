@@ -21,8 +21,19 @@ export interface Row {
   fingerprint: string;
 }
 
-const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,30}$/;
+// The slug rule of addon_store.SLUG_RE: a lowercase letter, then up to 30 of a-z, 0-9 and -.
+const SLUG_RE = /^[a-z][a-z0-9-]{0,30}$/;
 const LOCAL_SERVER_URL = 'http://actual-server:5006';
+
+/**
+ * A secret file's value: the text less one trailing newline (\n or \r\n), which an editor or
+ * `echo` adds. Other whitespace is part of the value, as budget.sh connect checked it.
+ */
+export function secretValue(text: string): string {
+  if (text.endsWith('\r\n')) return text.slice(0, -2);
+  if (text.endsWith('\n')) return text.slice(0, -1);
+  return text;
+}
 
 const stderrLine = (line: string): void => {
   process.stderr.write(`${line}\n`);
@@ -124,13 +135,13 @@ function readRow(dir: string, slug: string, write: boolean, skip: (reason: strin
   }
 
   const tokenFile = readOptional(path.join(dir, 'secrets', `${slug}.session_token`), 'session token');
-  const token = tokenFile?.text.trim();
-  if (!tokenFile || !token) {
+  const token = tokenFile ? secretValue(tokenFile.text) : undefined;
+  if (!tokenFile || !token?.trim()) {
     skip('missing or empty session token');
     return undefined;
   }
   const passwordFile = readOptional(path.join(dir, 'secrets', `${slug}.encryption_password`), 'encryption password');
-  const encryptionPassword = passwordFile?.text.trim() || undefined;
+  const encryptionPassword = (passwordFile ? secretValue(passwordFile.text) : '') || undefined;
 
   const hash = createHash('sha256');
   for (const file of [instance, tokenFile, passwordFile]) {

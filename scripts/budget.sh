@@ -503,7 +503,7 @@ hook_args() {
     shift
   done
   [[ "$JSON" == 1 ]] || die "usage: budget.sh $cmd --slug SLUG --json"
-  [[ "$slug" =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]] || emit_error bad_slug "slug must be 1-31 characters of a-z, 0-9 and -, not starting with -"
+  [[ "$slug" =~ ^[a-z][a-z0-9-]{0,30}$ ]] || emit_error bad_slug "slug must be 1-31 characters of a-z, 0-9 and -, starting with a letter"
 }
 
 # secrets_dir: sets sdir to <data root>/addons/actual/secrets.
@@ -1164,9 +1164,9 @@ cmd_status() {
     shift
   done
   [[ "$JSON" == 1 ]] || die "usage: budget.sh status [--slug SLUG] --json"
-  slug_check() { [[ "$1" =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]]; }
+  slug_check() { [[ "$1" =~ ^[a-z][a-z0-9-]{0,30}$ ]]; }
   if [[ -n "$slug" ]]; then
-    slug_check "$slug" || emit_error bad_slug "slug must be 1-31 characters of a-z, 0-9 and -, not starting with -"
+    slug_check "$slug" || emit_error bad_slug "slug must be 1-31 characters of a-z, 0-9 and -, starting with a letter"
   fi
   instances_dir
   if [[ -n "$slug" ]]; then
@@ -1184,9 +1184,10 @@ cmd_status() {
   emit_done
 }
 
-# access SLUG read|write [--json]: one connected budget. addon.sh stores the
-# value; the Hermes reload is the one addon.sh makes after a configure.
-# BUDGET_ADDON_SH and BUDGET_VAULT_SH are test hooks.
+# access SLUG read|write [--json]: one connected budget. addon.sh configure
+# stores the value but doesn't reload Hermes, so this runs both bootstraps and
+# vault.sh reload-plugins itself. BUDGET_ADDON_SH and BUDGET_VAULT_SH are test
+# hooks.
 cmd_access_budget() {
   local slug="" want="" arg n=0 idir="" sdir=""
   for arg in "$@"; do
@@ -1203,7 +1204,7 @@ cmd_access_budget() {
     esac
   done
   [[ "$n" == 2 ]] || die "usage: budget.sh access SLUG read|write [--json]"
-  [[ "$slug" =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]] || emit_error bad_slug "slug must be 1-31 characters of a-z, 0-9 and -, not starting with -"
+  [[ "$slug" =~ ^[a-z][a-z0-9-]{0,30}$ ]] || emit_error bad_slug "slug must be 1-31 characters of a-z, 0-9 and -, starting with a letter"
   case "$want" in
     read | write) ;;
     *) emit_error bad_access "access must be read or write" ;;

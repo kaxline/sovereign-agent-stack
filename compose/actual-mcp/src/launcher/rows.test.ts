@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Children, readRows, type Row, type SpawnFn } from './rows.js';
+import { Children, readRows, secretValue, type Row, type SpawnFn } from './rows.js';
 
 let dir: string;
 
@@ -28,7 +28,7 @@ afterEach(() => {
 });
 
 describe('readRows', () => {
-  it('reads every valid row, trimming secrets', () => {
+  it('reads every valid row, dropping one trailing newline from secrets', () => {
     writeRow(
       'home',
       { server: 'https://budget.example.com', sync_id: 'sync-home', profile: 'p1', access: 'write' },
@@ -49,6 +49,24 @@ describe('readRows', () => {
     expect(rows[0].encryptionPassword).toBeUndefined();
     expect(rows[1]).toMatchObject({ slug: 'work', token: 'tok-work', encryptionPassword: 'secret' });
     expect(rows[0].fingerprint).not.toBe(rows[1].fingerprint);
+  });
+
+  it('keeps spaces in secrets and drops only one trailing \\n or \\r\\n', () => {
+    writeRow('crlf', { server: 'local', sync_id: 's1' }, ' tok crlf \r\n', '  enc pw\n\n');
+    writeRow('plain', { server: 'local', sync_id: 's2' }, 'tok-plain', ' ');
+
+    const rows = readRows(dir, false);
+
+    expect(rows[0]).toMatchObject({ slug: 'crlf', token: ' tok crlf ', encryptionPassword: '  enc pw\n' });
+    expect(rows[1]).toMatchObject({ slug: 'plain', token: 'tok-plain', encryptionPassword: ' ' });
+  });
+
+  it('secretValue strips exactly one line ending', () => {
+    expect(secretValue('a\n')).toBe('a');
+    expect(secretValue('a\r\n')).toBe('a');
+    expect(secretValue('a\n\n')).toBe('a\n');
+    expect(secretValue(' a ')).toBe(' a ');
+    expect(secretValue('a\r')).toBe('a\r');
   });
 
   it('keeps only write rows when write is true', () => {
@@ -74,16 +92,18 @@ describe('readRows', () => {
     writeRow('emptytoken', { server: 'local', sync_id: 's1', profile: 'p1' }, ' \n');
     writeRow('admin', { server: 'local', sync_id: 's2', profile: 'p2', access: 'admin' }, 'S3CRET-a');
     writeRow('Bad_Slug', { server: 'local', sync_id: 's3', profile: 'p3' }, 'S3CRET-b');
+    writeRow('9lives', { server: 'local', sync_id: 's5', profile: 'p5' }, 'S3CRET-c');
     writeRow('good', { server: 'local', sync_id: 's4', profile: 'p4' }, 'tok-secret-value');
 
     const rows = readRows(dir, false, (line) => lines.push(line));
 
     expect(rows.map((r) => r.slug)).toEqual(['good']);
-    expect(lines).toHaveLength(4);
+    expect(lines).toHaveLength(5);
     expect(lines.find((l) => l.includes('notoken'))).toMatch(/token/);
     expect(lines.find((l) => l.includes('emptytoken'))).toMatch(/token/);
     expect(lines.find((l) => l.includes('admin'))).toMatch(/access/);
     expect(lines.find((l) => l.includes('Bad_Slug'))).toMatch(/slug/);
+    expect(lines.find((l) => l.includes('9lives'))).toMatch(/slug/);
     expect(lines.join('\n')).not.toMatch(/S3CRET|tok-secret-value/);
   });
 
