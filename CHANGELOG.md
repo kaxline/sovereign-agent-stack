@@ -6,78 +6,131 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
-## Unreleased
+## v0.3.13 — 2026-11-10
+
+Every add-on manifest field added in this release is experimental: `gates`, `commands`, `mounts`, `instances` and `mcp.instances`,
+`mcp.unmanaged`, the lifecycle fields (`services.<name>.oneshot`, `hooks`,
+`instances.connect`, `instances.disconnect`, `instances.errors`,
+`instances.optional`, `transient`, `onToggle`, `data`, `backup`), and the
+`result` and `retryAfter` fields of hook lines. A later 0.3.x patch may
+rename or reshape them.
 
 ### Upgrade steps
 
-- With Bitwarden enabled, rebuild the broker image, since `make up` and
-  `addon.sh enable` don't rebuild it: `docker compose --profile core --profile
-  bitwarden build bitwarden-broker`, then `./scripts/vault.sh follow-hermes`.
-  An image built before 2026-11-09 has no `broker.cli`, and every `vault.sh`
-  command that asks the broker for account state fails with it.
-- Accounts added with `vault.sh add` before this release have no add-on store
-  entry, so Boundary cannot disconnect them until the next `make up`, which
-  records them. An account whose slug does not start with a letter or is longer
-  than 31 characters stays out of the store; `make up` says so.
-- The next `up` recreates `hermes` once on every install, whether or not you
-  use the new `email` add-on, because `hermes` now joins the internal `email`
-  network. Both Hermes bootstraps re-run for the same release, because of the
-  new `EMAIL_*` env keys. The `email` network exists but stays empty while the
-  add-on is off. With `BITWARDEN_ENABLED=1`, run `./scripts/vault.sh
-  follow-hermes` after that recreate.
-- The first `make up` recreates `hermes` once, because `BITWARDEN_ENABLED`
-  left its environment (see Changes). A caller that recreates `hermes`
-  itself runs `./scripts/vault.sh follow-hermes` afterwards, as for any
-  recreate.
-- Twenty and LightRAG use the new add-on manifest fields (LightRAG uses
-  `mcp.unmanaged`). GPT Researcher, Actual and Bitwarden behave as before,
-  except for the dropped keys at their URLs described next.
-- LightRAG's registration on the api-server and browser profiles is unchanged,
-  except that `LIGHTRAG_MCP_TIMEOUT` and `LIGHTRAG_MCP_CONNECT_TIMEOUT` set in
-  `.env` now take effect. One change can remove a key you added: a hand-added MCP key on the default
-  profile (or on browser) at the GPT Researcher or Actual Budget URL is removed
-  on the next bootstrap when that add-on is enabled, and the stack's own key
-  stays: `gptr`, and `budget` while `ACTUAL_BUDGET_FILE` names a budget file
-  (without one, `budget` is dropped too; see "The single `budget` entry"
-  below). Connected budgets' `budget-<slug>` entries are on their own URLs
-  and are not affected. Point your key at a different URL, or use the
-  stack's key. See "Other MCP keys at an add-on's URL are dropped" below.
-- Before tagging, run `scripts/addon.sh enable gptr --json` and
-  `disable gptr --json` on a live stack. `addon.sh` calls
-  `scripts/vault.sh reload-plugins` from the Bitwarden change above.
-- Twenty's workspaces move to the add-on store:
-  1. `make up` (or `./scripts/crm.sh migrate`) imports any
-     `compose/twenty/workspaces/<slug>.env` file into `data/addons/twenty/` and
-     renames it `<slug>.env.migrated`. Values lose surrounding whitespace, and
-     of a repeated key the last line counts, as the old bootstrap read it. A
-     file with an invalid name, whitespace inside a key or a URL with
-     `user:password@` is skipped with a message and stays in place; fix it and
-     run `migrate` again. `make doctor` lists the files still waiting, and
-     `crm.sh init` refuses while one for its slug, or one on the local instance,
-     is left.
-     **Without `make`** (Boundary's start path, or a plain `docker compose
-     up`): run `./scripts/crm.sh ensure` (or `make ensure-local`) before
-     compose. It creates `data/addons/twenty/{instances,secrets}` (0700) and
-     runs the migration; until then Hermes registers no `crm-*` entry, and on
-     Linux Docker creates the missing directories owned by root. These compose
-     services gain bind mounts of the store: `hermes-api-bootstrap` and
-     `hermes-browser-bootstrap` mount `data/addons/twenty` read-only at
-     `/bootstrap/addon-data/twenty`, and `bitwarden-secrets-sync` mounts
-     `data/addons/twenty/secrets` at `/targets/twenty-keys`. If `ensure` warns
-     that it can't set the store to 0700, `chown` it to your user as the
-     warning says.
-  2. `make hermes-reload` (a bootstrap run) rewrites the profile `.env` lines:
-     `TWENTY_<SLUG>_KEY` becomes `CRM_<SLUG>_KEY`.
-  3. With Bitwarden's `twenty/<slug>/key-ro` and `key-rw` items, run
-     `make secrets-sync` after the migration; the items now update the files in
-     `data/addons/twenty/secrets/`, not the old workspace files.
+1. `make up`. It recreates `hermes` once on every install, whether or not
+   you use the new `email` add-on: `hermes` joins the internal `email`
+   network, and `BITWARDEN_ENABLED` left its environment (see "Turning
+   Bitwarden on or off" under Changes). The `email` network stays empty while
+   the add-on is off. Both Hermes bootstraps re-run once, because their
+   environment gains the `EMAIL_*`, `LIGHTRAG_MCP_*TIMEOUT`,
+   `TWENTY_MCP_*TIMEOUT`, `ACTUAL_BUDGET_FILE` and `ACTUAL_LOCAL_ENABLED` keys
+   and new mounts. The same run:
+   - creates `data/addons/actual/{instances,secrets}` and
+     `data/addons/twenty/{instances,secrets}` (0700) through `make
+     ensure-local`;
+   - imports any `compose/twenty/workspaces/<slug>.env` into
+     `data/addons/twenty/` and renames it `<slug>.env.migrated` (step 4);
+   - records accounts added with `vault.sh add` before this release in the
+     add-on store, so Boundary can disconnect them. An account whose slug does
+     not start with a letter or is longer than 31 characters stays out of the
+     store, and `make up` says so;
+   - runs `./scripts/vault.sh reload-plugins`.
+2. With Bitwarden enabled, rebuild the broker image, since `make up` and
+   `addon.sh enable` don't rebuild it: `docker compose --profile core
+   --profile bitwarden build bitwarden-broker`, then `./scripts/vault.sh
+   follow-hermes`. An image built before 2026-11-09 has no `broker.cli`, and
+   every `vault.sh` command that asks the broker for account state fails with
+   it.
+3. With Actual enabled, rebuild the locally built MCP image, since `make up`
+   doesn't rebuild it: `docker compose up -d --build actual-mcp-rw
+   actual-mcp-ro`. The old image has no session-token sign-in and no
+   launcher, so connected budgets get no MCP server until it is rebuilt.
+4. Twenty's workspaces move to the add-on store:
+   1. `make up` (or `./scripts/crm.sh migrate`) imports the workspace files.
+      Values lose surrounding whitespace, and of a repeated key the last line
+      counts, as the old bootstrap read it. A file with an invalid name,
+      whitespace inside a key or a URL with `user:password@` is skipped with a
+      message and stays in place; fix it and run `./scripts/crm.sh migrate`
+      again. `make doctor` lists the files still waiting, and `crm.sh init`
+      refuses while one for its slug, or one on the local instance, is left.
+      If `crm.sh ensure` warns that it can't set the store to 0700, `chown` it
+      to your user as the warning says.
+   2. `make hermes-reload` (a bootstrap run) rewrites the profile `.env`
+      lines: `TWENTY_<SLUG>_KEY` becomes `CRM_<SLUG>_KEY`.
+   3. With Bitwarden's `twenty/<slug>/key-ro` and `key-rw` items, run `make
+      secrets-sync` after the migration; the items now update the files in
+      `data/addons/twenty/secrets/`, not the old workspace files.
+5. **Without `make`** (Boundary's start path, or a plain `docker compose
+   up`):
+   - Run `./scripts/crm.sh ensure` and `./scripts/budget.sh ensure` (or `make
+     ensure-local`) before compose. Until then Hermes registers no `crm-*`
+     entry, the Twenty workspace files are not migrated, and on Linux Docker
+     creates the missing bind-mount directories owned by root.
+   - After running the bootstraps, run `./scripts/vault.sh reload-plugins`.
+   - After recreating `hermes` with `BITWARDEN_ENABLED=1`, run
+     `./scripts/vault.sh follow-hermes`, as for any recreate.
+6. A checkout used as the compose project directory needs
+   `scripts/lib/actual_rows.py` (mounted by both bootstraps),
+   `scripts/generate-n8n-credentials.js` (mounted by `n8n-import`) and
+   `compose/email-imap/` (the build context of the email add-on's image).
+7. Compose overlays: the bootstraps' `/bootstrap/twenty-workspaces` mount and
+   `TWENTY_WORKSPACES_DIR` are gone, replaced by
+   `/bootstrap/addon-data/twenty` and `ADDON_DATA_DIR`.
+   `bitwarden-secrets-sync`'s `/targets/twenty-workspaces` became
+   `/targets/twenty-keys`. An overlay that moved the old paths now adds a
+   mount nothing reads; point it at the new container path. No path in the
+   stable list in [docs/extending.md](docs/extending.md#add-or-change-mounts)
+   changed.
+8. A hand-added MCP key on the default profile (or on browser) at the GPT
+   Researcher or Actual Budget URL is removed on the next bootstrap while that
+   add-on is enabled. The stack's own keys stay: `gptr`, and `budget` while
+   `ACTUAL_BUDGET_FILE` names a budget file (without one, `budget` is dropped
+   too). Connected budgets' `budget-<slug>` entries are on their own URLs and
+   are not affected. Point your key at a different URL, or use the stack's
+   key. See "Other MCP keys at an add-on's URL are dropped" under Changes.
+9. `LIGHTRAG_MCP_TIMEOUT`, `LIGHTRAG_MCP_CONNECT_TIMEOUT`,
+   `TWENTY_MCP_TIMEOUT` and `TWENTY_MCP_CONNECT_TIMEOUT` set in `.env` now
+   take effect. Compose did not pass them to the bootstraps before, so the
+   defaults (120 and 30 seconds for LightRAG, 60 and 30 for Twenty) applied
+   whatever `.env` said. Check any values you set.
 
-### Connected Actual budgets
+### New services
 
-- **Upgrade step:** with Actual enabled, rebuild the locally built MCP image,
-  since `make up` doesn't rebuild it: `docker compose up -d --build
-  actual-mcp-rw actual-mcp-ro`. The old image has no session-token sign-in
-  and no launcher, so connected budgets get no MCP server until it is rebuilt.
+All are off by default. `scripts/addon.sh enable email` turns them on; see
+[docs/email.md](docs/email.md).
+
+- `email-indexer` and `email-mcp` (profile `email`, flag `EMAIL_ENABLED`):
+  index IMAP accounts read-only and serve the index over MCP as `email`.
+- `email-outbox` and `email-drafts-mcp` (profile `email-drafts`, flag
+  `EMAIL_DRAFTS_ENABLED`): queue drafts over MCP as `email-drafts` and save
+  them to each account's Drafts mailbox over IMAP. Nothing is sent.
+
+`email-indexer` and `email-outbox` build the image
+`${IMAGE_PREFIX:-assistant}-email-imap:local` from
+`compose/email-imap/Dockerfile` on first use; `email-mcp` and
+`email-drafts-mcp` reuse the `mail-mcp` and `mail-drafts-mcp` images. New
+networks: `email` (internal; `hermes`, `email-mcp`, `email-drafts-mcp`) and
+`email-egress` (`email-indexer`, `email-outbox`). New volumes: `email_index`
+and `email_drafts`.
+
+The new compose profile `crm-mcp` selects no service; `TWENTY_MCP_ENABLED=1`
+adds it to `COMPOSE_PROFILES`.
+
+### New optional `.env` keys
+
+Defaults keep the previous behaviour. `setup.sh` fills in none of them.
+
+- `EMAIL_ENABLED=0`, `EMAIL_DRAFTS_ENABLED=0` (commented out in
+  `.env.example`): start the `email` and `email-drafts` profiles.
+  `scripts/addon.sh enable email` and the add-on's `drafts` setting set
+  them; accounts, settings and passwords live under `data/addons/email/`.
+- `TWENTY_MCP_TIMEOUT=60`, `TWENTY_MCP_CONNECT_TIMEOUT=30` (no line in
+  `.env.example`): seconds Hermes waits for a call and for the first
+  connection on every `crm-*` server.
+
+### Changes
+
+#### Connected Actual budgets
 - **`addon.sh connect actual --instance <slug>`** connects a budget on the
   bundled or a remote Actual server (stdin keys `server`, `sync_id`,
   `session_token` or `password`, `encryption_password`, `profile`, `access`).
@@ -150,9 +203,9 @@ the stack under another app.
   connected budget's session; `budget.sh status` shows `token_expired` until
   each is reconnected. A write made in the seconds between a good sync and the
   background push can still be stranded if the session ends right then.
-- Not run on a live stack; the checks are in `docs/private/actual-budget-live-check.md`.
+- Not run on a live stack yet.
 
-### Changes
+#### Other changes
 
 - **`sync-profiles.sh` is faster.** It reads `.env` once, and every add-on
   manifest in one `awk` run, instead of running `grep` and `sed` per flag and
@@ -304,7 +357,7 @@ the stack under another app.
 - **`TWENTY_MCP_TIMEOUT` and `TWENTY_MCP_CONNECT_TIMEOUT`** from `.env` now
   reach both Hermes bootstrap services and set the timeouts of every `crm-*`
   server.
-- **`mcp.instances` in manifests** (built-in add-ons): one `mcp_servers`
+- **`mcp.instances` in manifests** (experimental, built-in add-ons): one `mcp_servers`
   entry per stored instance, with the key picked by access. See
   [addons/README.md](addons/README.md).
 - **LightRAG is a built-in add-on** (CR 0022 R2): `addons/lightrag/addon.json`
@@ -418,13 +471,11 @@ the stack under another app.
 - **Add-on reload.** `addon.sh` reloads Hermes by running both bootstraps
   with `HERMES_BOOTSTRAP_FORCE=1` and then `scripts/vault.sh reload-plugins`.
   It no longer recreates `hermes`, so plugin changes such as Bitwarden's tools
-  reach new sessions only. This needs the `reload-plugins` command from
-  `fix/bwbroker-always-installed`.
+  reach new sessions only.
 - **Bitwarden's `backup` and `restore` hooks** moved from plain strings to
   the `script` form (`{"script": ["scripts/vault.sh", "backup"]}`).
 - Boundary can move Actual Budget onto `addon.sh` once its manifest has
   `hooks.init`, `instances.connect` and `data`.
-
 - **Turning Bitwarden on or off no longer recreates `hermes`.** The
   `bwbroker` plugin is installed into `/opt/hermes/plugins/bwbroker` on
   every start, and `BITWARDEN_ENABLED` is no longer in the `hermes`
@@ -438,7 +489,6 @@ the stack under another app.
   sessions keep theirs. A caller that runs the bootstraps without `make up`
   runs `./scripts/vault.sh reload-plugins` after them. When no gateway
   answers, the marker stays and `make restart` applies the change.
-
 - **Tests.** `make hermes-image-test` runs all 35 tests with checks inside
   the pinned Hermes image; run it after a Hermes bump. With
   `HERMES_IMAGE_REQUIRED=1` a missing image fails a test instead of
@@ -447,7 +497,6 @@ the stack under another app.
   `scripts/addon.sh` no longer forks per `.env` line when reading flags,
   which took about 0.6 s per read on a `.env` copied from `.env.example`
   (`list`, `enable` and `disable` read them).
-
 - **`make test`.** `scripts/run-tests.py` runs every test listed in
   `scripts/tests.manifest`, several at a time, with a log per test under
   `.test-runs/`. Tags in the manifest say what a test needs (Docker, macOS,
@@ -460,7 +509,7 @@ the stack under another app.
   and `test-messages-mcp-container.py` builds a per-run image tag that it
   removes afterwards.
 
-### Fixes
+#### Fixes
 
 - **Bitwarden: `vault.sh` found no broker.** `vault.sh` and `make doctor` ran
   `docker compose --profile bitwarden …`, which replaces `COMPOSE_PROFILES`
