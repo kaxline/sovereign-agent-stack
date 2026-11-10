@@ -609,17 +609,24 @@ def greenmail(certs: Path | None):
         port = host_port(3143)
         tls_port = host_port(3993) if certs else None
         deadline = time.time() + 60
-        while True:
-            try:
-                imaplib.IMAP4("127.0.0.1", port, timeout=5).logout()
-                break
-            except (OSError, imaplib.IMAP4.error):
-                if time.time() > deadline:
-                    fail("GreenMail didn't start")
-                time.sleep(0.5)
+        while not greenmail_ready(port):
+            if time.time() > deadline:
+                fail("GreenMail didn't start")
+            time.sleep(0.5)
         yield port, tls_port
     finally:
         subprocess.run(["docker", "stop", name], capture_output=True)
+
+
+def greenmail_ready(port: int) -> bool:
+    """Every test user can log in. GreenMail answers on IMAP before it has
+    created the users in GREENMAIL_OPTS, so a greeting alone is not enough."""
+    for account in USERS:
+        try:
+            admin(port, account).logout()
+        except (OSError, imaplib.IMAP4.error):
+            return False
+    return True
 
 
 def admin(port: int, account: str) -> imaplib.IMAP4:

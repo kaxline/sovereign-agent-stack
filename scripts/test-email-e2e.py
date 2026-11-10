@@ -246,14 +246,6 @@ def greenmail_port(stack: Stack) -> int:
     return int(out.rsplit(":", 1)[1])
 
 
-def imap_up(port: int) -> bool:
-    try:
-        tmi.imaplib.IMAP4("127.0.0.1", port, timeout=5).logout()
-        return True
-    except (OSError, tmi.imaplib.IMAP4.error):
-        return False
-
-
 def drafts_on_server(port: int, account: str) -> dict[str, tuple[set, email.message.EmailMessage]]:
     conn = tmi.admin(port, account)
     typ, _ = conn.select("Drafts", readonly=True)
@@ -320,7 +312,7 @@ def run(stack: Stack) -> None:
 
     stack.compose("up", "-d", "greenmail")
     port = greenmail_port(stack)
-    wait_for("GreenMail", lambda: imap_up(port), 90, every=1)
+    wait_for("GreenMail", lambda: tmi.greenmail_ready(port), 90, every=1)
     tmi.seed(port)
     for account in INSTANCES.values():
         conn = tmi.admin(port, account)
