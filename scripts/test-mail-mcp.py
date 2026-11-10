@@ -90,6 +90,7 @@ def test_status(index: Path) -> None:
     expect(inbox["messages"] == 7 and inbox["unread"] == 3, f"INBOX counts: {inbox}")
     expect(s["oldest"].startswith("2026-10-0") and s["last_indexed"], "dates are ISO strings")
     expect(s["newest_id"] == 11, f"newest_id is the highest indexed id: {s['newest_id']}")
+    expect(s["failed_accounts"] == {}, f"no failed accounts after a clean pass: {s['failed_accounts']}")
 
 
 def test_new_mail(tmp: Path, index: Path) -> None:

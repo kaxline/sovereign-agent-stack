@@ -93,10 +93,7 @@ SOURCES = ("builtin", "official", "community")
 
 # Names core still registers itself. An add-on may not take one, or start
 # with one of the prefixes core uses for per-instance entries.
-CORE_MCP_NAMES = {
-    "searxng", "opencode", "sql", "vikunja", "mail", "drafts",
-    "messages",
-}
+CORE_MCP_NAMES = {"searxng", "opencode", "sql", "vikunja", "messages"}
 CORE_MCP_PREFIXES = ("caldav-",)
 # Names of the login backends core ships; an add-on's vaultBackend may not take one.
 CORE_VAULT_NAMES = {"vault", "op", "bw"}
@@ -1001,7 +998,8 @@ def _raw_mcp_list(manifest) -> list:
 
 def dir_conflicts(loaded) -> dict[Path, list[str]]:
     """Errors that only show across the manifests of one addons dir, by path.
-    The bootstrap drops every entry under an mcp.instances prefix that isn't a
+    Two add-ons may not declare the same mcp.name. The bootstrap drops every
+    entry under an mcp.instances prefix that isn't a
     live instance, so an mcp.name under another add-on's prefix (or its own)
     would be written and then removed on every start, two prefixes where
     one starts with the other would remove each other's entries, and two

@@ -1337,19 +1337,20 @@ doctor_actual
 
 # --- Mail (read-only MCP over the host-built index) ---
 mail_enabled="$(env_get MAIL_MCP_ENABLED 0)"
-case "$mail_enabled" in 1|true|TRUE|yes|YES) mail_on=1 ;; *) mail_on=0 ;; esac
+# Same values as sync-profiles.sh and addon_manifest.truthy: 1, true, yes, on, any case.
+case "$(printf '%s' "$mail_enabled" | tr '[:upper:]' '[:lower:]')" in 1|true|yes|on) mail_on=1 ;; *) mail_on=0 ;; esac
 if has_profile mail || [[ "$mail_on" -eq 1 ]]; then
   echo
   echo "--- Mail ---"
   if has_profile mail; then
     ok "COMPOSE_PROFILES includes mail"
   else
-    bad "MAIL_MCP_ENABLED=1 but 'mail' not in COMPOSE_PROFILES — run make ensure-local"
+    bad "MAIL_MCP_ENABLED=${mail_enabled} but 'mail' not in COMPOSE_PROFILES — run make ensure-local"
   fi
   if [[ "$mail_on" -eq 1 ]]; then
-    ok "MAIL_MCP_ENABLED=1"
+    ok "MAIL_MCP_ENABLED=${mail_enabled}"
   else
-    warn "mail profile on but MAIL_MCP_ENABLED is not 1 — Hermes will not register the mail tools"
+    warn "mail profile on but MAIL_MCP_ENABLED is off — Hermes will not register the mail tools"
   fi
   # Existence and permissions only; doctor never opens the index.
   mail_dir="$(env_get MAIL_INDEX_DIR ./data/mail)"
@@ -1502,16 +1503,17 @@ fi
 
 # --- Mail drafts (queue for the host helper; never sends) ---
 drafts_enabled="$(env_get MAIL_DRAFTS_ENABLED 0)"
-case "$drafts_enabled" in 1|true|TRUE|yes|YES) drafts_on=1 ;; *) drafts_on=0 ;; esac
+# Same values as sync-profiles.sh and addon_manifest.truthy: 1, true, yes, on, any case.
+case "$(printf '%s' "$drafts_enabled" | tr '[:upper:]' '[:lower:]')" in 1|true|yes|on) drafts_on=1 ;; *) drafts_on=0 ;; esac
 if has_profile mail-drafts || [[ "$drafts_on" -eq 1 ]]; then
   echo
   echo "--- Mail drafts ---"
   if has_profile mail-drafts; then
     ok "COMPOSE_PROFILES includes mail-drafts"
   else
-    bad "MAIL_DRAFTS_ENABLED=1 but 'mail-drafts' not in COMPOSE_PROFILES — run make ensure-local"
+    bad "MAIL_DRAFTS_ENABLED=${drafts_enabled} but 'mail-drafts' not in COMPOSE_PROFILES — run make ensure-local"
   fi
-  [[ "$drafts_on" -eq 1 ]] || warn "mail-drafts profile on but MAIL_DRAFTS_ENABLED is not 1 — Hermes will not register the draft tools"
+  [[ "$drafts_on" -eq 1 ]] || warn "mail-drafts profile on but MAIL_DRAFTS_ENABLED is off — Hermes will not register the draft tools"
   drafts_dir="$(env_get MAIL_DRAFTS_DIR ./data/mail-drafts)"
   if [[ -d "$drafts_dir" ]]; then
     drafts_mode="$(stat -f '%Lp' "$drafts_dir" 2>/dev/null || stat -c '%a' "$drafts_dir" 2>/dev/null || echo '?')"

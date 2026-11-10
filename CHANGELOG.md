@@ -10,6 +10,12 @@ the stack under another app.
 
 ### Upgrade steps
 
+- The next `up` recreates `hermes` once on every install, whether or not you
+  use the new `email` add-on, because `hermes` now joins the internal `email`
+  network. Both Hermes bootstraps re-run for the same release, because of the
+  new `EMAIL_*` env keys. The `email` network exists but stays empty while the
+  add-on is off. With `BITWARDEN_ENABLED=1`, run `./scripts/vault.sh
+  follow-hermes` after that recreate.
 - The first `make up` recreates `hermes` once, because `BITWARDEN_ENABLED`
   left its environment (see Changes). A caller that recreates `hermes`
   itself runs `./scripts/vault.sh follow-hermes` afterwards, as for any
@@ -124,6 +130,61 @@ the stack under another app.
 
 ### Changes
 
+- **Mail.app email is a built-in add-on** (`addons/email-local/addon.json`),
+  a manifest over the existing `mail-mcp` and `mail-drafts-mcp` services.
+  Nothing an install sets changes: the flags `MAIL_MCP_ENABLED` and
+  `MAIL_DRAFTS_ENABLED`, the profiles `mail` and `mail-drafts`, the MCP names
+  `mail` and `drafts`, the `MAIL_*_URL` and timeout overrides, and the host
+  apps and their install. The bootstrap registers both servers through the
+  add-on path instead of its own functions, so `addon.sh list --json` now
+  includes `email-local` with `platform: macos`.
+- **New `email` add-on** (`addons/email/addon.json`): read-only email over
+  IMAP accounts, configured through `scripts/addon.sh` with no host helper.
+  Four services: `email-indexer` and `email-outbox` (profiles `email` and
+  `email-drafts`) hold the account passwords as files under
+  `data/addons/email/secrets/` and join only the new `email-egress` network;
+  `email-mcp` and `email-drafts-mcp` hold no password and join only the new
+  internal `email` network, which `hermes` also joins. Flags are
+  `EMAIL_ENABLED` and the gate `EMAIL_DRAFTS_ENABLED` (set by the `drafts`
+  setting). The index and the drafts queue live in the named volumes
+  `email_index` and `email_drafts`, which `disable email --purge` deletes. MCP
+  names are `email` and `email-drafts`, never offered to `api-server` or cron.
+  `security = "plain"` is allowed only for `localhost`, `127.0.0.1`,
+  `host.docker.internal` and `greenmail`; Proton Bridge goes through
+  `host.docker.internal`. A multi-line PEM `tls_ca` can be stored, because the
+  add-on has no connect hook. Not tested on a real account yet; see
+  [docs/email.md](docs/email.md#first-real-run-email). An account without
+  `mailboxes`, or with a setting the indexer refuses, is skipped with a
+  log line naming its slug while the other accounts run.
+- **One IMAP account failing no longer stops the others** (`email` and
+  `email-local`'s IMAP source). A refused or missing password, or a server
+  that can't be reached, is logged as before; the pass then indexes the other
+  accounts and keeps the failed account's rows. `mail-index.py run` prints the
+  counts with `"failed": {"<id>": 4}` (or 5) and exits 4 or 5 as before. Under
+  `run --every`, the pass's JSON line now has the counts and `failed` beside
+  the `"error"` key, where it used to be `{"error": "4"}` alone. The mail
+  MCP's error before the first pass now reads "no index yet; the indexer
+  hasn't completed a pass".
+- **`mail_status` has `failed_accounts`** (`{"<id>": 4}` or 5) for the
+  accounts the last pass couldn't read, cleared once a pass reads them. A pass
+  where every account fails no longer creates the index or moves
+  `last_indexed`.
+- **`scripts/addon.sh` lets an exported `ASSISTANT_DATA_ROOT` win over
+  `.env`**, as compose and `crm.sh` already did. Before, an exported value was
+  ignored when `.env` set one.
+- **The drafts watcher rejects an unreadable queue file** (status `rejected`,
+  reason "unreadable request") and moves on to the next request, where it used
+  to stop on it. This applies to `mail-drafts` on the host, so `email-local`
+  too, as well as `email-outbox`.
+- **`MAIL_MCP_ENABLED` and `MAIL_DRAFTS_ENABLED` accept `on` and any case**
+  (`1`, `true`, `yes`, `on`), in the bootstrap, `make doctor` and
+  `mail-triage-cron.sh`. `sync-profiles.sh` already started the containers
+  for these values; before, Hermes then left the servers unregistered for
+  `True` or `on`.
+- **The cron fence also fences by name and configured URL for mail.** Besides
+  any server on `mail-mcp:8000` or `mail-drafts-mcp:8000`, cron jobs now lose
+  servers named `mail` or `drafts` and servers on the configured
+  `MAIL_MCP_URL` or `MAIL_DRAFTS_MCP_URL`.
 - **Twenty CRM is a built-in add-on** (`addons/twenty/addon.json`). Boundary can
   move Twenty onto `scripts/addon.sh`: instances are workspaces, with `url`,
   `access`, `local` and two secret keys, and the manifest's connect and

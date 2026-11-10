@@ -119,8 +119,9 @@ truthy() {
 }
 
 ADDONS="${ADDONS_DIR:-${ROOT}/addons}"
-# Checked below, once --json is known.
-DATA_ROOT="$(resolve_data_root_path)"
+# ASSISTANT_DATA_ROOT from the environment wins over .env, as it does for
+# compose. Checked below, once --json is known.
+DATA_ROOT="$(resolve_data_root_path "${ASSISTANT_DATA_ROOT:-$(env_get ASSISTANT_DATA_ROOT)}")"
 
 # cli ARGS...: addon_cli.py in the Hermes image with the data root (and an
 # add-ons dir outside the repo) mounted. stdin passes through.

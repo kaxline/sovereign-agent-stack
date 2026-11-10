@@ -1,0 +1,233 @@
+{
+  "manifestVersion": 1,
+  "id": "io.github.kaxline.stack.email",
+  "version": "1.0.0",
+  "title": "Email (IMAP)",
+  "tagline": "Read-only email for Hermes from IMAP accounts",
+  "description": "email-indexer logs in to each IMAP account and builds a scoped index on the email_index volume; email-mcp serves that index to Hermes read-only. The drafts setting (EMAIL_DRAFTS_ENABLED) adds email-drafts-mcp, which queues drafts, and email-outbox, which saves them to the account's Drafts mailbox over IMAP; nothing is sent. Passwords are files under data/addons/email/secrets, mounted only into email-indexer and email-outbox, which reach the internet on a network Hermes isn't on. Neither MCP server is offered to unattended api-server sessions or to cron. See docs/email.md.",
+  "publisher": {
+    "name": "sovereign-agent-stack",
+    "url": "https://github.com/kaxline/sovereign-agent-stack"
+  },
+  "minStackVersion": "0.3.13",
+  "builtin": {
+    "flag": "EMAIL_ENABLED",
+    "profile": "email",
+    "seed": false
+  },
+  "gates": [
+    {
+      "flag": "EMAIL_DRAFTS_ENABLED",
+      "profile": "email-drafts",
+      "seed": false
+    }
+  ],
+  "services": {
+    "indexer": {
+      "compose": "email-indexer",
+      "mounts": {
+        "secrets": "ro",
+        "config": "ro",
+        "instances": "ro"
+      }
+    },
+    "mcp": {
+      "compose": "email-mcp",
+      "port": 8000
+    },
+    "drafts-mcp": {
+      "compose": "email-drafts-mcp",
+      "port": 8000,
+      "when": {
+        "gate": "EMAIL_DRAFTS_ENABLED"
+      }
+    },
+    "outbox": {
+      "compose": "email-outbox",
+      "mounts": {
+        "secrets": "ro",
+        "config": "ro",
+        "instances": "ro"
+      },
+      "when": {
+        "gate": "EMAIL_DRAFTS_ENABLED"
+      }
+    }
+  },
+  "mcp": [
+    {
+      "name": "email",
+      "title": "Email (read-only)",
+      "service": "mcp",
+      "transport": "http",
+      "path": "/mcp",
+      "timeout": 60,
+      "connectTimeout": 30,
+      "tools": [
+        "mail_status",
+        "mail_search",
+        "mail_get",
+        "mail_thread"
+      ],
+      "pin": [
+        "mail_status",
+        "mail_search",
+        "mail_get",
+        "mail_thread"
+      ],
+      "writeTools": [],
+      "profiles": {
+        "default": "rw",
+        "browser": "rw"
+      }
+    },
+    {
+      "name": "email-drafts",
+      "title": "Email drafts (no sending)",
+      "service": "drafts-mcp",
+      "when": {
+        "gate": "EMAIL_DRAFTS_ENABLED"
+      },
+      "transport": "http",
+      "path": "/mcp",
+      "timeout": 60,
+      "connectTimeout": 30,
+      "tools": [
+        "mail_draft_create",
+        "mail_draft_status"
+      ],
+      "pin": [
+        "mail_draft_create",
+        "mail_draft_status"
+      ],
+      "writeTools": [
+        "mail_draft_create"
+      ],
+      "profiles": {
+        "default": "rw",
+        "browser": "rw"
+      }
+    }
+  ],
+  "permissions": {
+    "reads": [
+      "mail"
+    ],
+    "writes": [
+      "external:mail-drafts"
+    ],
+    "sends": false,
+    "egress": [
+      "internet"
+    ],
+    "exposesToAgent": false,
+    "cron": false
+  },
+  "settings": {
+    "since": {
+      "type": "date",
+      "label": "Index mail received on or after this date (YYYY-MM-DD)"
+    },
+    "bodies": {
+      "type": "bool",
+      "default": false,
+      "label": "Index message bodies"
+    },
+    "attachments": {
+      "type": "bool",
+      "default": false,
+      "label": "Index attachment text"
+    },
+    "max_body_chars": {
+      "type": "int",
+      "default": 100000,
+      "label": "Characters kept from each body"
+    },
+    "interval": {
+      "type": "int",
+      "default": 900,
+      "min": 300,
+      "label": "Seconds between index passes"
+    },
+    "drafts": {
+      "type": "bool",
+      "default": false,
+      "flag": "EMAIL_DRAFTS_ENABLED",
+      "label": "Let Hermes save drafts to the Drafts mailbox (never sends)"
+    }
+  },
+  "instances": {
+    "name": "accounts",
+    "settings": {
+      "host": {
+        "type": "string",
+        "label": "IMAP server"
+      },
+      "port": {
+        "type": "port",
+        "default": 993,
+        "label": "IMAP port (143 with STARTTLS)"
+      },
+      "security": {
+        "type": "choice",
+        "options": [
+          "tls",
+          "starttls",
+          "plain"
+        ],
+        "default": "tls",
+        "label": "Connection security; plain only for a server on this machine"
+      },
+      "user": {
+        "type": "string",
+        "label": "Login user name"
+      },
+      "address": {
+        "type": "string",
+        "label": "From address for drafts"
+      },
+      "addresses": {
+        "type": "list",
+        "optional": true,
+        "label": "Other From addresses"
+      },
+      "mailboxes": {
+        "type": "list",
+        "label": "Mailboxes to index"
+      },
+      "tls_ca": {
+        "type": "secret",
+        "optional": true,
+        "label": "CA certificate (PEM), e.g. Proton Bridge's"
+      },
+      "drafts_mailbox": {
+        "type": "string",
+        "optional": true,
+        "label": "Drafts mailbox, when the server doesn't flag one"
+      },
+      "password": {
+        "type": "secret",
+        "label": "Password or app password"
+      }
+    }
+  },
+  "commands": {
+    "mailboxes": {
+      "service": "indexer",
+      "instance": true,
+      "argv": [
+        "python",
+        "-I",
+        "-B",
+        "/app/scripts/lib/email_addon.py",
+        "mailboxes"
+      ]
+    }
+  },
+  "data": {
+    "volumes": [
+      "email_index",
+      "email_drafts"
+    ]
+  }
+}

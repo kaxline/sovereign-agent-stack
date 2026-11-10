@@ -4,9 +4,14 @@ Each directory holds the `addon.json` manifest of one optional service whose
 containers are already in `docker-compose.yml`. The directory is named after
 the last segment of the manifest's `id`. The format is experimental while the
 stack is in 0.3.x, and field names can change between patch releases, with a
-changelog entry. GPT Researcher (`gptr/`), Actual Budget (`actual/`),
-Bitwarden (`bitwarden/`), LightRAG (`lightrag/`) and n8n (`n8n/`) are the
-add-ons so far; the other optional services are still wired by hand.
+changelog entry. The add-ons so far are GPT Researcher (`gptr/`), Actual
+Budget (`actual/`), Bitwarden (`bitwarden/`), Twenty CRM (`twenty/`),
+LightRAG (`lightrag/`), n8n (`n8n/`), Email on this Mac (`email-local/`: the
+Mail.app `mail` and `drafts` servers) and Email over IMAP (`email/`:
+containers that hold the account passwords, registered as `email` and
+`email-drafts`); both email add-ons are described in
+[docs/email.md](../docs/email.md). The other optional services are still
+wired by hand.
 
 What reads a manifest:
 
@@ -122,6 +127,11 @@ except where noted:
   `docker-compose.yml`, or its parent.
 - `backup`: `{"secrets": [<env name>], "recommended": [<env name>]}`, listed
   by `addon.sh list --json` for callers that offer a backup.
+- `host`: a part that runs on the host instead of in Docker, with
+  `platform`, `install`, `uninstall`, `grants`, `grantTarget` and `check`.
+  `addon.sh list --json` reports `platform` (`any` when there is no `host`);
+  nothing installs the host part. Refused from a community feed.
+  `email-local` uses it for the Mail.app helper apps.
 
 `scripts/addon.sh` reads these; see [docs/extending.md](../docs/extending.md#add-ons-scriptsaddonsh).
 
