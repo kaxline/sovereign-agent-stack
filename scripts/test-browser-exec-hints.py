@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 HERMES_DIR = ROOT / "compose" / "hermes"
 sys.path.insert(0, str(HERMES_DIR))
 sys.path.insert(0, str(ROOT / "scripts" / "lib"))
-from testkit import expect, fail  # noqa: E402
+from testkit import expect  # noqa: E402
 
 import browser_exec_hints as bh  # noqa: E402
 import hermes_image  # noqa: E402

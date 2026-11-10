@@ -66,15 +66,7 @@ print("image ok")
 '''
 
 
-def test_overlay_is_wired() -> None:
-    runner = (ROOT / "compose" / "hermes" / "05-patch-tool-calling.sh").read_text()
-    assert "run_patch /bootstrap/patch-browser-unresolvable-host.py" in runner
-    assert "/bootstrap/patch-browser-unresolvable-host.py:ro" in (ROOT / "docker-compose.yml").read_text()
-
-
 def main() -> None:
-    test_overlay_is_wired()
-    print("ok")
     hermes_image.maybe_run(IMAGE_DRIVER)
 
 

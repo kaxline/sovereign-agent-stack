@@ -54,6 +54,15 @@ class Refused(RuntimeError):
 
 # --------------------------------------------------------------------------- config
 
+# Hosts where an account may use security = "plain", besides loopback addresses.
+# mail_index.PLAIN_HOSTS is the same set.
+PLAIN_HOSTS = frozenset({"localhost", "127.0.0.1", "host.docker.internal", "greenmail"})
+
+
+def plain_allowed(host: str) -> bool:
+    return host.lower().rstrip(".") in PLAIN_HOSTS or is_loopback(host)
+
+
 def is_loopback(host: str) -> bool:
     if host.lower() in ("localhost", "localhost."):
         return True
@@ -89,9 +98,9 @@ def account_settings(item: dict, base: Path, *, where: str) -> dict:
     security = item.get("security", "tls")
     if security not in SECURITY:
         raise ConfigError(f"{where}: `security` must be \"tls\" (the default) or \"starttls\"")
-    if security == "plain" and not is_loopback(host):
+    if security == "plain" and not plain_allowed(host):
         raise ConfigError(f"{where}: security = \"plain\" is only allowed for a server on this machine"
-                          " (localhost); use \"tls\" or \"starttls\"")
+                          " (localhost, host.docker.internal or greenmail); use \"tls\" or \"starttls\"")
     port = item.get("port", DEFAULT_PORT[security])
     if not isinstance(port, int) or isinstance(port, bool) or not 0 < port < 65536:
         raise ConfigError(f"{where}: `port` must be a port number")

@@ -76,7 +76,7 @@ jobs:
           grep -v '^N8N_' .env > /tmp/no-n8n.env
           COMPOSE_PROFILES=core docker compose --env-file /tmp/no-n8n.env config -q
           python3 scripts/test-terminal-backend-compose.py
-          python3 scripts/test-cont-init-env.py
+          python3 scripts/test-cont-init-env.py  # also every overlay patch and its modules are mounted
           python3 scripts/test-root-access-hint.py
 
   project-sources:
@@ -97,12 +97,8 @@ jobs:
         run: python3 scripts/test-tool-eval-trace.py
       - name: Stale-replay loop guard wiring (host part)
         run: python3 scripts/test-tool-loop-replay.py --host-only
-      - name: Searxng pause points at browser search wiring (host part)
-        run: python3 scripts/test-searxng-pause-browser.py --host-only
       - name: Refused searxng page read points at the browser (host part)
         run: python3 scripts/test-blocked-fetch-hint.py --host-only
-      - name: Browser unresolvable host error wiring (host part)
-        run: python3 scripts/test-browser-unresolvable-host.py --host-only
       - name: History budget window (host part)
         run: python3 scripts/test-history-budget.py --host-only
       - name: Compaction summarizer reads tool results (host part)
@@ -153,6 +149,12 @@ jobs:
         run: sh scripts/test-addon-cli.sh
       - name: GPT Researcher MCP registration
         run: sh scripts/test-gptr-mcp-registration.sh
+      - name: Email add-on config renderer and entry point (stdlib)
+        run: python3 scripts/test-email-addon.py
+      - name: Email add-on MCP registration
+        run: sh scripts/test-email-registration.sh
+      - name: mail-triage-cron accepts the MAIL_MCP_ENABLED values
+        run: sh scripts/test-mail-triage-cron.sh
       - name: Actual Budget MCP registration
         run: sh scripts/test-actual-registration.sh
       - name: Connected Actual budgets as MCP entries (host part)

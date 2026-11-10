@@ -56,21 +56,9 @@ export ACTUAL_ACCESS=read
 run ""; got
 [ "$calls" = "drop:default:${RW};register:default:budget:${RO}:${READ};drop:default:${RO};pin:default:${PINS};" ] \
   || fail "ACTUAL_ACCESS=read puts default on ro ($calls)"
-export ACTUAL_ACCESS=nope
-for p in "" browser api-server; do
-  run "$p"; got
-  [ "$calls" = "drop:${p:-default}:${RO};drop:${p:-default}:${RW};" ] \
-    || fail "ACTUAL_ACCESS=nope registers nothing on ${p:-default} ($calls)"
-done
 unset ACTUAL_ACCESS
-
-ACTUAL_MCP_ENABLED=0
-for p in "" browser api-server research; do
-  run "$p"; got
-  [ "$calls" = "drop:${p:-default}:${RO};drop:${p:-default}:${RW};" ] \
-    || fail "flag off drops both URLs on ${p:-default} ($calls)"
-done
-ACTUAL_MCP_ENABLED=1
+# Unknown access values and the flag off go through the same branches for
+# every add-on; test-addon-mcp-access.sh covers them on its fixture.
 
 # cron "ro": the rw URL is fenced out of cron, the ro URL and the name are not.
 fence="$(python3 -I - "$ADDONS_DIR" "$ROOT/scripts/lib" <<'PY'

@@ -41,7 +41,7 @@ class BadRequest(ValueError):
 def connect(path: Path) -> sqlite3.Connection:
     path = Path(path)
     if not path.is_file():
-        raise IndexUnavailable("the mail index has not been built yet; run make mail-index on the host")
+        raise IndexUnavailable("no index yet; the indexer hasn't completed a pass")
     db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     db.row_factory = sqlite3.Row
     try:
@@ -126,6 +126,10 @@ def status(db: sqlite3.Connection) -> dict:
                             " FROM messages GROUP BY account, mailbox ORDER BY account, mailbox")
     ]
     last_run = meta.get("last_run")
+    try:
+        failed = json.loads(meta.get("failed_accounts") or "{}")
+    except ValueError:
+        failed = {}
     return {
         "messages": total,
         "bodies_indexed": bool(with_body),
@@ -134,6 +138,9 @@ def status(db: sqlite3.Connection) -> dict:
         "last_indexed": _iso(int(last_run)) if last_run else None,
         "newest_id": newest_id,
         "mailboxes": boxes,
+        # Accounts the last pass couldn't read, {id: 4 (password) or 5 (server)};
+        # their mail in the index may be out of date.
+        "failed_accounts": failed if isinstance(failed, dict) else {},
     }
 
 

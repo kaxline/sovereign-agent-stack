@@ -24,22 +24,12 @@ grep -q '_out="$(python3 - "$_fmc_cfg" "$ADDON_MANIFEST_PY" "$ADDONS_DIR" "$ADDO
   || fail "fence_mail_from_cron must pass the add-on manifests and instance stores to its python"
 grep -q 'addon_manifest.cron_fence(Path(sys.argv\[3\]), data_dir=Path(sys.argv\[4\]))' "$BOOTSTRAP" \
   || fail "the fence reads instance names from the stores"
-grep -q 'addon_manifest.cron_fence' "$BOOTSTRAP" || fail "the fence must use addon_manifest.cron_fence"
 # A connected Actual budget's write entry sits at a path under the fenced rw
 # URL's host (http://actual-mcp-rw:3000/<slug>/mcp), so the fence compares
 # scheme, host and port.
 grep -q 'origin(str(servers\[n\].get("url", ""))) in addon_origins' "$BOOTSTRAP" \
   || fail "the fence matches add-on URLs by scheme, host and port"
-
-# cron "ro" on the split fixture: only its rw URL is fenced, and no name.
-python3 - <<'PY' || fail "cron ro must fence the rw URL only"
-import sys
-from pathlib import Path
-sys.path.insert(0, "scripts/lib")
-import addon_manifest as am
-got = am.cron_fence(Path("scripts/fixtures/addons"), {})
-assert got == ([], ["http://split-rw:9000/mcp"]), got
-PY
+# What cron_fence returns for each manifest is checked in test-addon-manifests.py.
 echo "ok: host wiring"
 
 hermes_image_gate "${1:-}" "image checks"

@@ -1,0 +1,126 @@
+{
+  "manifestVersion": 1,
+  "id": "io.github.kaxline.stack.email-local",
+  "version": "1.0.0",
+  "title": "Email on this Mac",
+  "tagline": "Read-only email for Hermes, through Apple Mail",
+  "description": "A host-side indexer builds a scoped index of Apple Mail, and the mail-mcp sidecar serves it to Hermes. By default the indexer asks Mail.app through scripting, which needs only the Automation permission for Mail. Reading Mail's files directly is an opt-in fast mode that needs Full Disk Access. The MAIL_DRAFTS_ENABLED gate adds mail-drafts-mcp, which queues drafts that a host helper saves to Mail's Drafts; nothing is sent. Neither server is offered to unattended api-server sessions or to cron. See docs/email.md.",
+  "publisher": {
+    "name": "sovereign-agent-stack",
+    "url": "https://github.com/kaxline/sovereign-agent-stack"
+  },
+  "minStackVersion": "0.3.13",
+  "builtin": {
+    "flag": "MAIL_MCP_ENABLED",
+    "profile": "mail",
+    "seed": false
+  },
+  "gates": [
+    {
+      "flag": "MAIL_DRAFTS_ENABLED",
+      "profile": "mail-drafts",
+      "seed": false
+    }
+  ],
+  "services": {
+    "reader": {
+      "compose": "mail-mcp",
+      "port": 8000
+    },
+    "drafts": {
+      "compose": "mail-drafts-mcp",
+      "port": 8000,
+      "when": {
+        "gate": "MAIL_DRAFTS_ENABLED"
+      }
+    }
+  },
+  "mcp": [
+    {
+      "name": "mail",
+      "title": "Mail (read-only)",
+      "service": "reader",
+      "transport": "http",
+      "path": "/mcp",
+      "timeout": 60,
+      "connectTimeout": 30,
+      "env": {
+        "url": "MAIL_MCP_URL",
+        "timeout": "MAIL_MCP_TIMEOUT",
+        "connectTimeout": "MAIL_MCP_CONNECT_TIMEOUT"
+      },
+      "tools": [
+        "mail_status",
+        "mail_search",
+        "mail_get",
+        "mail_thread"
+      ],
+      "pin": [
+        "mail_status",
+        "mail_search",
+        "mail_get",
+        "mail_thread"
+      ],
+      "writeTools": [],
+      "profiles": {
+        "default": "rw",
+        "browser": "rw"
+      }
+    },
+    {
+      "name": "drafts",
+      "title": "Mail drafts (no sending)",
+      "service": "drafts",
+      "when": {
+        "gate": "MAIL_DRAFTS_ENABLED"
+      },
+      "transport": "http",
+      "path": "/mcp",
+      "timeout": 60,
+      "connectTimeout": 30,
+      "env": {
+        "url": "MAIL_DRAFTS_MCP_URL",
+        "timeout": "MAIL_DRAFTS_MCP_TIMEOUT",
+        "connectTimeout": "MAIL_DRAFTS_MCP_CONNECT_TIMEOUT"
+      },
+      "tools": [
+        "mail_draft_create",
+        "mail_draft_status"
+      ],
+      "pin": [
+        "mail_draft_create",
+        "mail_draft_status"
+      ],
+      "writeTools": [
+        "mail_draft_create"
+      ],
+      "profiles": {
+        "default": "rw",
+        "browser": "rw"
+      }
+    }
+  ],
+  "permissions": {
+    "reads": [
+      "mail"
+    ],
+    "writes": [
+      "external:mail-drafts"
+    ],
+    "sends": false,
+    "egress": [],
+    "exposesToAgent": false,
+    "cron": false
+  },
+  "host": {
+    "platform": "macos",
+    "install": "macos/mail-apps/install.sh",
+    "uninstall": "macos/mail-apps/install.sh uninstall reader",
+    "grants": [
+      "automation:mail",
+      "full-disk-access (store source only)"
+    ],
+    "grantTarget": "~/Applications/Assistant Mail Reader.app",
+    "check": "make mail-index-doctor"
+  }
+}

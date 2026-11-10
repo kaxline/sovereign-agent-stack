@@ -46,8 +46,10 @@ def _call(fn, *args, **kwargs) -> dict:
 def mail_status() -> dict:
     """How much mail is indexed: message count, date range, last index run,
     whether bodies are searchable, `newest_id` (pass it to mail_search as
-    `after_id` next time to see only newer mail), and each account/mailbox
-    with counts."""
+    `after_id` next time to see only newer mail), each account/mailbox
+    with counts, and `failed_accounts`: accounts the last index pass couldn't
+    read (4: password refused or missing, 5: server unreachable), whose mail
+    may be out of date."""
     return _call(mq.status)
 
 

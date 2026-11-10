@@ -15,13 +15,16 @@ from __future__ import annotations
 
 import email
 import email.policy
+import imaplib
 import re
+import sys
 import time
 from datetime import datetime, timezone
 from email.utils import parseaddr, parsedate_to_datetime
 from pathlib import Path
 from typing import Iterator
 
+import mail_credentials
 import mail_index as mi
 from mail_imap_conn import (AuthFailed, Connection, ImapError, Mailbox, Refused,  # noqa: F401  (re-exported)
                             decode_mutf7, encode_mutf7, fetch_items, flags_of, parse_list, quote, uid_of)
@@ -110,6 +113,10 @@ def internaldate(meta: bytes) -> int | None:
 
 # --------------------------------------------------------------------------- source
 
+# What makes one account fail for this pass without stopping the others: a
+# refused or missing password, a server error, or a dropped connection.
+ACCOUNT_FAILURES = (ImapError, mail_credentials.MissingPassword, imaplib.IMAP4.error, OSError)
+
 class ImapSource:
     """One or more IMAP accounts. Opens one connection per account at a time."""
 
@@ -118,6 +125,22 @@ class ImapSource:
     def __init__(self, config: mi.Config, connect=None) -> None:
         self.config = config
         self.connect = connect or ReadOnlyImap  # tests may pass a factory
+        # {account id: exit code} for accounts this pass couldn't read: 4 for a
+        # refused or missing password, 5 for a server that failed or couldn't be reached.
+        self.failed: dict[str, int] = {}
+
+    def _failed(self, scope: mi.AccountScope, exc: BaseException) -> None:
+        """Log one `mail-index:` line for an account that failed and note its code.
+        The messages of AuthFailed, MissingPassword and ImapError name the account
+        and never carry the password; other errors are logged by type name only."""
+        if isinstance(exc, (AuthFailed, mail_credentials.MissingPassword)):
+            code, text = 4, str(exc)
+        elif isinstance(exc, ImapError):
+            code, text = 5, str(exc)
+        else:
+            code, text = 5, f"{scope.id}: the connection failed ({type(exc).__name__})"
+        print(f"mail-index: {text}", file=sys.stderr, flush=True)
+        self.failed[scope.id] = min(code, self.failed.get(scope.id, code))
 
     def _accounts(self):
         for scope in self.config.accounts:
@@ -165,16 +188,24 @@ class ImapSource:
         return rows
 
     def rows(self) -> tuple[list[mi.MetaRow], dict]:
+        """Every account's rows. An account that fails (see _failed) adds none and
+        is listed under `failed`, so the index keeps its rows; the rest go on."""
         rows: list[mi.MetaRow] = []
         missing = found = 0
+        self.failed = {}
         for scope, conn in self._accounts():
-            with conn:
-                boxes, gone = self._scoped(conn, scope)
-                missing += gone
-                found += len(boxes)
-                for box in boxes:
-                    rows += self._summaries(conn, scope, box)
-        return rows, {"accounts_missing": [], "mailboxes_missing": missing, "mailboxes_found": found}
+            try:
+                with conn:
+                    boxes, gone = self._scoped(conn, scope)
+                    got = [r for box in boxes for r in self._summaries(conn, scope, box)]
+            except ACCOUNT_FAILURES as exc:
+                self._failed(scope, exc)
+                continue
+            missing += gone
+            found += len(boxes)
+            rows += got
+        return rows, {"accounts_missing": [], "mailboxes_missing": missing, "mailboxes_found": found,
+                      "failed": dict(self.failed)}
 
     def fetch(self, rows: list[mi.MetaRow]) -> Iterator[tuple[mi.MetaRow, object]]:
         cfg = self.config
@@ -186,36 +217,45 @@ class ImapSource:
             boxes = by_account.get(scope.id.upper())
             if not boxes:
                 continue
-            with conn:
-                listed = {b.path: b for b in conn.list_mailboxes()}
-                for path, group in boxes.items():
-                    box = listed.get(path)
-                    validity = conn.examine(box) if box else None
-                    by_uid: dict[int, mi.MetaRow] = {}
-                    for row in group:
-                        v, _, uid = row.source_id.partition(".")
-                        if validity is None or str(validity) != v:
-                            yield row, mi.MISSING  # mailbox gone, or renumbered since the listing
-                        else:
-                            by_uid[int(uid)] = row
-                    uids = list(by_uid)
-                    for start in range(0, len(uids), DETAILS_BATCH):
-                        chunk = uids[start:start + DETAILS_BATCH]
-                        got: dict[int, bytes] = {}
-                        for meta, literal in fetch_items(conn.uid_fetch(chunk, items)):
-                            uid = uid_of(meta)
-                            if uid is not None and literal is not None:
-                                got[uid] = literal
-                        for uid in chunk:
-                            row = by_uid[uid]
-                            if uid not in got:
-                                yield row, mi.MISSING
-                                continue
-                            try:
-                                yield row, mi.parse_raw(got[uid], bodies=cfg.bodies, attachments=cfg.attachments,
-                                                        max_chars=cfg.max_body_chars)
-                            except Exception:
-                                yield row, mi.UNREADABLE
+            try:
+                yield from self._fetch_account(conn, boxes, items)
+            except ACCOUNT_FAILURES as exc:
+                # Rows not yet fetched stay out of the index until a later pass.
+                self._failed(scope, exc)
+
+    def _fetch_account(self, conn: ReadOnlyImap, boxes: dict[str, list[mi.MetaRow]],
+                       items: str) -> Iterator[tuple[mi.MetaRow, object]]:
+        cfg = self.config
+        with conn:
+            listed = {b.path: b for b in conn.list_mailboxes()}
+            for path, group in boxes.items():
+                box = listed.get(path)
+                validity = conn.examine(box) if box else None
+                by_uid: dict[int, mi.MetaRow] = {}
+                for row in group:
+                    v, _, uid = row.source_id.partition(".")
+                    if validity is None or str(validity) != v:
+                        yield row, mi.MISSING  # mailbox gone, or renumbered since the listing
+                    else:
+                        by_uid[int(uid)] = row
+                uids = list(by_uid)
+                for start in range(0, len(uids), DETAILS_BATCH):
+                    chunk = uids[start:start + DETAILS_BATCH]
+                    got: dict[int, bytes] = {}
+                    for meta, literal in fetch_items(conn.uid_fetch(chunk, items)):
+                        uid = uid_of(meta)
+                        if uid is not None and literal is not None:
+                            got[uid] = literal
+                    for uid in chunk:
+                        row = by_uid[uid]
+                        if uid not in got:
+                            yield row, mi.MISSING
+                            continue
+                        try:
+                            yield row, mi.parse_raw(got[uid], bodies=cfg.bodies, attachments=cfg.attachments,
+                                                    max_chars=cfg.max_body_chars)
+                        except Exception:
+                            yield row, mi.UNREADABLE
 
     def mailboxes(self) -> list[dict]:
         """Every account's mailboxes with message counts, for writing the config."""

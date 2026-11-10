@@ -26,7 +26,7 @@ if str(LIB) not in sys.path:
 
 import synthetic_mail as sm  # noqa: E402
 
-from testkit import expect, fail  # noqa: E402
+from testkit import expect  # noqa: E402
 
 READER = "Assistant Mail Reader"
 DRAFTS = "Assistant Mail Drafts"

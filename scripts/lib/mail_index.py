@@ -39,9 +39,13 @@ from pathlib import Path
 from typing import Iterator
 from urllib.parse import unquote, urlsplit
 
+import mail_imap_conn
+
 INDEX_SCHEMA_VERSION = 2
 SAVE_EVERY = 50  # messages fetched between commits, so a long first run can resume
 SOURCES = ("script", "store", "imap")
+# Defined in mail_imap_conn, which the Drafts app ships without mail_index.
+PLAIN_HOSTS = mail_imap_conn.PLAIN_HOSTS
 META_DB = "Envelope Index"
 MESSAGE_SUFFIXES = (".partial.emlx", ".emlx")
 # Left out of a "*" mailbox pattern; list them by name to include them.
@@ -104,6 +108,10 @@ def load_config(path: Path) -> Config:
         raw = tomllib.loads(path.read_text())
     except FileNotFoundError:
         raise ConfigError(f"config not found: {path}") from None
+    except UnicodeDecodeError:
+        raise ConfigError(f"config is not valid UTF-8: {path}") from None
+    except OSError as exc:
+        raise ConfigError(f"config can't be read ({type(exc).__name__}): {path}") from None
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"config is not valid TOML: {exc}") from None
     base = path.resolve().parent
@@ -568,9 +576,15 @@ class RunStats:
     accounts_missing: list[str] = field(default_factory=list)
     mailboxes_missing: int = 0
     compacted: bool = False
+    # {account id: exit code} for accounts a source couldn't read this pass
+    # (4: password refused or missing, 5: server error or unreachable).
+    failed: dict[str, int] = field(default_factory=dict)
 
     def as_dict(self) -> dict:
-        return dict(self.__dict__)
+        out = dict(self.__dict__)
+        if not out["failed"]:
+            del out["failed"]  # passes without a failure print what they always have
+        return out
 
 
 def open_index(path: Path) -> sqlite3.Connection:
@@ -789,6 +803,15 @@ def _fetch_all(rows: list[MetaRow], owner: dict[str, object]) -> Iterator[tuple[
         yield from src.fetch(group)
 
 
+def _record_failures(db: sqlite3.Connection, failed: dict[str, int]) -> None:
+    """Keep this pass's failed accounts in meta as {id: code}, ids and codes only,
+    for mail_status. An account that succeeds drops out at the next pass."""
+    if failed:
+        db.execute("INSERT OR REPLACE INTO meta VALUES ('failed_accounts', ?)", (json.dumps(failed, sort_keys=True),))
+    else:
+        db.execute("DELETE FROM meta WHERE key = 'failed_accounts'")
+
+
 def run(config: Config, *, now: float | None = None, source=None, sources: list | None = None) -> RunStats:
     """Bring the index up to date with every configured account.
 
@@ -801,6 +824,7 @@ def run(config: Config, *, now: float | None = None, source=None, sources: list 
     for src in sources:
         got, info = src.rows()
         rows += got
+        stats.failed.update(info.get("failed", {}))
         stats.accounts_missing += info["accounts_missing"]
         stats.mailboxes_missing += info.get("mailboxes_missing", 0)
         names = {a.id.upper() for a in src.config.accounts} if hasattr(src, "config") else set()
@@ -810,6 +834,19 @@ def run(config: Config, *, now: float | None = None, source=None, sources: list 
             owner.setdefault(r.account.upper(), src)
     stats.accounts_missing = sorted(set(stats.accounts_missing))
     stats.in_scope = len(rows)
+    # An account its source couldn't read this pass keeps its rows as they are.
+    failed = {name.upper() for name in stats.failed}
+    if config.accounts and all(a.id.upper() in failed for a in config.accounts):
+        # Nothing was read: don't create an index or move last_run, which would
+        # read as "indexed just now, no new mail". Only the failures are recorded.
+        if config.index.exists():
+            db = open_index(config.index)
+            try:
+                _record_failures(db, stats.failed)
+                db.commit()
+            finally:
+                db.close()
+        return stats
 
     db = open_index(config.index)
     try:
@@ -827,10 +864,12 @@ def run(config: Config, *, now: float | None = None, source=None, sources: list 
         legacy = db.execute("SELECT value FROM meta WHERE key='source'").fetchone()
         built_from: dict[str, str] = json.loads(recorded[0]) if recorded else {}
         now_from = {name: getattr(src, "name", "script") for name, src in owner.items()}
+        for name in failed & set(built_from):
+            now_from[name] = built_from[name]  # not re-indexed this pass, so not switched yet
         for (account,) in db.execute("SELECT DISTINCT account FROM messages").fetchall():
             before = built_from.get(account.upper(), legacy[0] if legacy else "store")
             after = now_from.get(account.upper())
-            if after is not None and before != after:
+            if after is not None and before != after and account.upper() not in failed:
                 ids = [r[0] for r in db.execute("SELECT rowid FROM messages WHERE account = ?", (account,))]
                 for rowid in ids:
                     db.execute("DELETE FROM messages_fts WHERE rowid = ?", (rowid,))
@@ -846,6 +885,8 @@ def run(config: Config, *, now: float | None = None, source=None, sources: list 
                     db.execute("SELECT rowid, account, mailbox, source_id, flags, body_indexed FROM messages")}
         keep = {(r.account, r.mailbox, r.source_id) for r in rows}
         for key in set(existing) - keep:
+            if key[0].upper() in failed:
+                continue
             rowid = existing.pop(key)[0]
             db.execute("DELETE FROM messages WHERE rowid = ?", (rowid,))
             db.execute("DELETE FROM messages_fts WHERE rowid = ?", (rowid,))
@@ -909,6 +950,9 @@ def run(config: Config, *, now: float | None = None, source=None, sources: list 
             if done % SAVE_EVERY == 0:
                 db.commit()
 
+        for src in sources:  # accounts that failed while their messages were fetched
+            stats.failed.update(getattr(src, "failed", {}))
+        _record_failures(db, stats.failed)
         db.execute("INSERT OR REPLACE INTO meta VALUES ('scope', ?)", (fingerprint,))
         db.execute("INSERT OR REPLACE INTO meta VALUES ('bodies', ?)", (str(int(config.bodies)),))
         db.execute("INSERT OR REPLACE INTO meta VALUES ('last_run', ?)",

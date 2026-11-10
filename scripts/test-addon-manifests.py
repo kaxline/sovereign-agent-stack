@@ -84,7 +84,9 @@ del no_health["services"]["server"]["healthCheck"]
 refused("packaged mcp service without healthCheck", no_health, "community", "healthCheck")
 refused("pin outside tools", variant(mcp__pin=["nope"]), "builtin", "mcp.pin")
 refused("writeTools outside tools", variant(mcp__writeTools=["nope"]), "builtin", "mcp.writeTools")
-refused("core name collision", variant(mcp__name="mail"), "builtin", "collides")
+refused("core name collision", variant(mcp__name="messages"), "builtin", "collides")
+check("mail and drafts are add-on names now (email-local), not core ones",
+      not {"mail", "drafts"} & am.CORE_MCP_NAMES, str(am.CORE_MCP_NAMES))
 refused("core prefix collision", variant(mcp__name="caldav-main"), "builtin", "collides")
 check("crm- is no longer a core prefix", "crm-" not in am.CORE_MCP_PREFIXES, str(am.CORE_MCP_PREFIXES))
 # mcp.unmanaged: profiles bootstrap leaves alone.
@@ -647,7 +649,7 @@ refused("mcp.instances name with a bad character", inst_manifest({"instances__na
         "builtin", "mcp.instances.name")
 refused("mcp.instances name with {slug} twice", inst_manifest({"instances__name": "a-{slug}-{slug}"}),
         "builtin", "mcp.instances.name")
-refused("mcp.instances prefix collides with a core name", inst_manifest({"instances__name": "mail-{slug}"}),
+refused("mcp.instances prefix collides with a core name", inst_manifest({"instances__name": "sql-{slug}"}),
         "builtin", "collides")
 refused("mcp.instances prefix collides with a core prefix", inst_manifest({"instances__name": "caldav-{slug}"}),
         "builtin", "collides")
@@ -655,7 +657,7 @@ refused("mcp.instances prefix collides with a core prefix", inst_manifest({"inst
 # instance, so a prefix that overlaps a core name or prefix in either
 # direction would drop core entries (sql, searxng, caldav-*).
 for bad_name in ("s{slug}", "sq{slug}", "searx{slug}", "cal{slug}", "caldav-x-{slug}",
-                 "mail{slug}", "messages-{slug}"):
+                 "messag{slug}", "messages-{slug}"):
     refused(f"mcp.instances prefix overlapping a core name or prefix ({bad_name})",
             inst_manifest({"instances__name": bad_name}), "builtin", "collides with a server core registers")
 check("mcp.instances prefix crm- is accepted", am.validate(inst_manifest(), "builtin") == [])
@@ -986,6 +988,37 @@ with tempfile.TemporaryDirectory() as tmp:
                               capture_output=True, text=True)
     check("validate reports the conflict", validate.returncode == 1 and "crm-x" in validate.stdout,
           validate.stdout)
+
+# mail and drafts left CORE_MCP_NAMES for email-local, so the cross-add-on
+# check is what keeps another add-on's instance prefix off them.
+mai = json.loads((ROOT / "addons" / "twenty" / "addon.json").read_text())
+mai["id"] = "io.example.mai"
+mai["mcp"]["instances"]["name"] = "mai{slug}"
+check("instance prefix mai passes validate alone", am.validate(mai, "builtin") == [],
+      str(am.validate(mai, "builtin")))
+with tempfile.TemporaryDirectory() as tmp:
+    d = conflict_dir(Path(tmp), {"mai": mai})
+    errs = {p.parent.name: e for p, _m, e in am.checked_dir(d)}
+    check("email-local's mail under another add-on's instance prefix is refused",
+          any("'mail'" in e and "mai's instance prefix" in e for e in errs["email-local"]), str(errs))
+
+# A second add-on that takes email-local's fixed name "mail" refuses both.
+dup = copy.deepcopy(BASE)
+dup["id"] = "io.example.dupmail"
+dup["mcp"]["name"] = "mail"
+check("mcp.name mail alone is a valid manifest", am.validate(dup, "builtin") == [],
+      str(am.validate(dup, "builtin")))
+with tempfile.TemporaryDirectory() as tmp:
+    d = conflict_dir(Path(tmp), {"dupmail": dup})
+    errs = {p.parent.name: e for p, _m, e in am.checked_dir(d)}
+    check("the same mcp.name in two add-ons refuses both",
+          any("used by more than one add-on" in e for e in errs["dupmail"])
+          and any("used by more than one add-on" in e for e in errs["email-local"]), str(errs))
+    plan = am.mcp_plan(d, "default", {"MAIL_MCP_ENABLED": "1"})
+    # Gated-off entries stay in the plan with no access and zero timeouts, so
+    # neither profile can register them.
+    check("mcp-plan registers neither",
+          not any(l.split("|")[0] == "mail" and l.split("|")[3] for l in plan), str(plan))
 
 overlap = json.loads((ROOT / "addons" / "twenty" / "addon.json").read_text())
 overlap["id"] = "io.example.twentyish"
@@ -1520,15 +1553,26 @@ for path, manifest, parse_error in am.load_dir(ROOT / "addons"):
               [g["flag"], g["profile"], "1" if g["seed"] else "0"] in rows, table.stdout)
         check(f"{sid}: gate profile {g['profile']} exists in docker-compose.yml",
               bool(re.search(rf'^    profiles: \[(?:.*[ ,"])?"?{re.escape(g["profile"])}"?[,\]]', compose, re.M)))
+    def flag_lines(var: str) -> int:
+        """Compose lines passing VAR off by default: `- VAR=${VAR:-0}`."""
+        return len(re.findall(rf"^      - {var}=\$\{{{var}:-0\}}$", compose, re.M))
+
     if manifest.get("mcp"):
-        for var in [b["flag"], *manifest["mcp"].get("env", {}).values()]:
+        entries = am.mcp_entries(manifest)
+        flags = [b["flag"], *(x["when"]["gate"] for x in entries if "when" in x)]
+        flags += [x["instances"]["gate"]["flag"] for x in entries if "gate" in x.get("instances", {})]
+        for var in dict.fromkeys(flags):
+            n = flag_lines(var)
+            check(f"{sid}: both hermes-*-bootstrap services receive {var}=${{{var}:-0}}", n == 2, f"found {n}")
+        for var in dict.fromkeys(v for x in entries for v in x.get("env", {}).values()):
             n = len(re.findall(rf"^      - {var}=", compose, re.M))
             check(f"{sid}: both hermes-*-bootstrap services receive {var}", n == 2, f"found {n}")
     if manifest.get("vaultBackend"):
         # Both bootstraps read the flag for vault-plan. hermes installs the plugin
         # whatever the flag says, so flipping it does not recreate hermes.
-        n = len(re.findall(rf"^      - {b['flag']}=", compose, re.M))
-        check(f"{sid}: both hermes-*-bootstrap services, and not hermes, receive {b['flag']}", n == 2, f"found {n}")
+        n = flag_lines(b["flag"])
+        check(f"{sid}: both hermes-*-bootstrap services, and not hermes, receive {b['flag']}=${{{b['flag']}:-0}}",
+              n == 2, f"found {n}")
 
 # --- Twenty ------------------------------------------------------------------
 tw_path = ROOT / "addons" / "twenty" / "addon.json"
@@ -1553,9 +1597,6 @@ if tw_path.is_file():
           == ["twenty-db", "twenty-redis", "twenty-server", "twenty-worker"])
     check("twenty: mcp.pin is the seven tools Twenty's MCP lists for every workspace",
           tw["mcp"]["pin"] == TW_PINS.split(), str(tw["mcp"]["pin"]))
-    gate = tw["mcp"]["instances"]["gate"]["flag"]
-    n = len(re.findall(rf"^      - {gate}=", compose, re.M))
-    check(f"twenty: both hermes-*-bootstrap services receive the instance gate {gate}", n == 2, f"found {n}")
     bootstrap = (ROOT / "compose/hermes/bootstrap-api-profile.sh").read_text()
     check("the bootstrap has no Twenty-specific registration left",
           not re.search(r"register_twenty|reconcile_twenty|twenty_[a-z_]+\(\)|TWENTY_WORKSPACES_DIR|TWENTY_LOCAL_MCP_URL"

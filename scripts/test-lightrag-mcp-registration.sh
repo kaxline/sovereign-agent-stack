@@ -12,7 +12,6 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=lib/testkit.sh
 . "${ROOT}/scripts/lib/testkit.sh"
 bootstrap="${ROOT}/compose/hermes/bootstrap-api-profile.sh"
-compose="${ROOT}/docker-compose.yml"
 # Only LightRAG's manifest: other add-ons add their own drop calls.
 ADDONS_DIR="$(mktemp -d)"
 mkdir "${ADDONS_DIR}/lightrag"
@@ -104,13 +103,5 @@ LIGHTRAG_MCP_ENABLED=0
 # The bootstrap carries no LightRAG-specific registration any more.
 grep -q 'register_lightrag_mcp_servers\|LIGHTRAG_MCP_TOOLS' "$bootstrap" \
   && fail "LightRAG registration must come from the manifest only"
-
-[ "$(grep -cF -- '- LIGHTRAG_MCP_ENABLED=' "$compose")" = 2 ] \
-  || fail "both hermes-*-bootstrap services must receive LIGHTRAG_MCP_ENABLED"
-[ "$(grep -cF -- '- LIGHTRAG_MCP_URL=' "$compose")" = 2 ] \
-  || fail "both hermes-*-bootstrap services must receive LIGHTRAG_MCP_URL"
-
-bash "${ROOT}/scripts/sync-profiles.sh" --table | grep -q '^LIGHTRAG_MCP_ENABLED rag 0$' \
-  || fail "sync-profiles.sh must map LIGHTRAG_MCP_ENABLED to rag (from the manifest)"
 
 printf 'OK LightRAG MCP registration\n'

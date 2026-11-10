@@ -489,6 +489,129 @@ services:
       start_period: 15s
 
   # ----------------------------------------------------------------------
+  # email add-on (addons/email/addon.json): IMAP accounts, docs/email.md
+  # Profiles: email (EMAIL_ENABLED), email-drafts (EMAIL_DRAFTS_ENABLED)
+  # MCP:      http://email-mcp:8000/mcp, http://email-drafts-mcp:8000/mcp
+  # email-indexer and email-outbox hold the account passwords (files under
+  # /run/addon/secrets) and join only email-egress, which nothing else joins.
+  # email-mcp and email-drafts-mcp hold no password and join only the internal
+  # email network, with hermes. Settings, instances and secrets are written by
+  # scripts/addon.sh under data/addons/email/.
+  # ----------------------------------------------------------------------
+  email-indexer:
+    profiles: ["email"]
+    container_name: ${CONTAINER_PREFIX:-}email-indexer
+    build:
+      context: .
+      dockerfile: compose/email-imap/Dockerfile
+    image: ${IMAGE_PREFIX:-assistant}-email-imap:local
+    restart: unless-stopped
+    command: ["python", "-I", "-B", "/app/scripts/lib/email_addon.py", "index"]
+    user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+    # The index's only writer. The image's /data/index is mode 1777, and this
+    # container mounts email_index first (email-mcp depends on it), so the new
+    # volume takes that mode and any HERMES_UID can write it.
+    volumes:
+      - email_index:/data/index
+      - ${ASSISTANT_DATA_ROOT:-./data}/addons/email/secrets:/run/addon/secrets:ro
+      - ${ASSISTANT_DATA_ROOT:-./data}/addons/email/config:/run/addon/config:ro
+      - ${ASSISTANT_DATA_ROOT:-./data}/addons/email/instances:/run/addon/instances:ro
+    # Proton Bridge and other IMAP servers on this machine.
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    networks: [email-egress]
+    # No host ports.
+
+  email-mcp:
+    profiles: ["email"]
+    container_name: ${CONTAINER_PREFIX:-}email-mcp
+    build:
+      context: ./compose/mail-mcp
+    image: ${IMAGE_PREFIX:-assistant}-mail-mcp:local
+    restart: unless-stopped
+    user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+    environment:
+      - MAIL_INDEX_PATH=/data/mail/index.sqlite
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=8000
+    volumes:
+      - email_index:/data/mail:ro
+    networks: [email]
+    depends_on:
+      email-indexer:
+        condition: service_started
+    # No host ports — compose-internal only.
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  email-drafts-mcp:
+    profiles: ["email-drafts"]
+    container_name: ${CONTAINER_PREFIX:-}email-drafts-mcp
+    build:
+      context: ./compose/mail-drafts-mcp
+    image: ${IMAGE_PREFIX:-assistant}-mail-drafts-mcp:local
+    restart: unless-stopped
+    user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+    environment:
+      - MAIL_DRAFTS_PATH=/data/mail-drafts
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=8000
+    volumes:
+      - email_drafts:/data/mail-drafts
+    networks: [email]
+    depends_on:
+      email-outbox:
+        condition: service_started
+    # No host ports — compose-internal only.
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  email-outbox:
+    profiles: ["email-drafts"]
+    container_name: ${CONTAINER_PREFIX:-}email-outbox
+    build:
+      context: .
+      dockerfile: compose/email-imap/Dockerfile
+    image: ${IMAGE_PREFIX:-assistant}-email-imap:local
+    restart: unless-stopped
+    command: ["python", "-I", "-B", "/app/scripts/lib/email_addon.py", "outbox"]
+    user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+    # Saves queued drafts to each account's Drafts mailbox over IMAP; never
+    # sends. Mounts email_drafts before email-drafts-mcp does, so the new
+    # volume takes the image's 1777 /data/drafts.
+    volumes:
+      - email_drafts:/data/drafts
+      - ${ASSISTANT_DATA_ROOT:-./data}/addons/email/secrets:/run/addon/secrets:ro
+      - ${ASSISTANT_DATA_ROOT:-./data}/addons/email/config:/run/addon/config:ro
+      - ${ASSISTANT_DATA_ROOT:-./data}/addons/email/instances:/run/addon/instances:ro
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    networks: [email-egress]
+    # No host ports.
+
+  # ----------------------------------------------------------------------
   # messages-mcp — read-only MCP over the host-built Messages index, plus the
   # forwarder for the host watcher's new-message events (docs/messages.md)
   # Profile: messages
@@ -1398,6 +1521,9 @@ services:
       - MAIL_DRAFTS_MCP_URL=${MAIL_DRAFTS_MCP_URL:-http://mail-drafts-mcp:8000/mcp}
       - MAIL_DRAFTS_MCP_TIMEOUT=${MAIL_DRAFTS_MCP_TIMEOUT:-60}
       - MAIL_DRAFTS_MCP_CONNECT_TIMEOUT=${MAIL_DRAFTS_MCP_CONNECT_TIMEOUT:-30}
+      # Email add-on (profiles email, email-drafts): default + browser only, never api-server.
+      - EMAIL_ENABLED=${EMAIL_ENABLED:-0}
+      - EMAIL_DRAFTS_ENABLED=${EMAIL_DRAFTS_ENABLED:-0}
       # GPT Researcher MCP (research profile): default + browser only, never api-server.
       - GPTR_MCP_ENABLED=${GPTR_MCP_ENABLED:-0}
       - GPTR_MCP_URL=${GPTR_MCP_URL:-http://gptr-mcp:8000/sse}
@@ -1527,6 +1653,9 @@ services:
       - MAIL_DRAFTS_MCP_URL=${MAIL_DRAFTS_MCP_URL:-http://mail-drafts-mcp:8000/mcp}
       - MAIL_DRAFTS_MCP_TIMEOUT=${MAIL_DRAFTS_MCP_TIMEOUT:-60}
       - MAIL_DRAFTS_MCP_CONNECT_TIMEOUT=${MAIL_DRAFTS_MCP_CONNECT_TIMEOUT:-30}
+      # Email add-on (profiles email, email-drafts): default + browser only, never api-server.
+      - EMAIL_ENABLED=${EMAIL_ENABLED:-0}
+      - EMAIL_DRAFTS_ENABLED=${EMAIL_DRAFTS_ENABLED:-0}
       # GPT Researcher MCP (research profile): default + browser only, never api-server.
       - GPTR_MCP_ENABLED=${GPTR_MCP_ENABLED:-0}
       - GPTR_MCP_URL=${GPTR_MCP_URL:-http://gptr-mcp:8000/sse}
@@ -1918,8 +2047,9 @@ services:
     # sidecars. hermes is the one default-network service that joins it, so
     # hermes-worker (the agent's shell) cannot reach either. vault is internal
     # too and holds the local Vaultwarden for the Bitwarden broker. budget keeps
-    # the unauthenticated Actual Budget MCP servers off the default network.
-    networks: [default, db, vault, budget]
+    # the unauthenticated Actual Budget MCP servers off the default network, and
+    # email (internal) does the same for email-mcp and email-drafts-mcp.
+    networks: [default, db, vault, budget, email]
     # Healthy once the dashboard and the api-server gateway answer. The gateway
     # binds 8643 only after startup MCP discovery has finished for every
     # profile, so the dashboard alone turns healthy before chats can be served.
@@ -2253,6 +2383,13 @@ networks:
   # auth, plus hermes and actual-server. Not internal: the MCP servers may
   # need to reach a remote Actual server.
   budget: {}
+  # Internal: email-mcp, email-drafts-mcp and hermes. No password and no route
+  # off the host.
+  email:
+    internal: true
+  # email-indexer and email-outbox only: their route to the IMAP servers, apart
+  # from hermes and the MCP servers.
+  email-egress: {}
 
 # Twenty's secrets as files (CR 0020 R8). Unset, they point at an empty file
 # that nothing reads: the *_FILE variables inside the containers stay empty.
@@ -2283,3 +2420,8 @@ volumes:
   ollama_data:
   hermes_uv_cache:
   bitwarden_sync:
+  # The email add-on's index (email-indexer writes, email-mcp reads) and its
+  # drafts queue (email-drafts-mcp writes, email-outbox drains). Removed by
+  # scripts/addon.sh disable email --purge.
+  email_index:
+  email_drafts:

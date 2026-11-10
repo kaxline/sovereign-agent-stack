@@ -216,16 +216,6 @@ def test_timing() -> None:
     print(f"timing ({dr.FP_BITS}-bit fingerprints): 60 chars, 64 entries: {timed(lambda: dr.scrub_table(short, BASE, table, MARKER), 200):.3f} ms per call")
 
 
-def test_overlay_is_wired() -> None:
-    runner = (ROOT / "compose" / "hermes" / "05-patch-tool-calling.sh").read_text()
-    expect("run_patch /bootstrap/patch-digest-redaction.py" in runner, "cont-init runs the patch")
-    compose = (ROOT / "docker-compose.yml").read_text()
-    expect("./compose/bitwarden-broker/broker/digest_redaction.py:/bootstrap/digest_redaction.py:ro" in compose,
-           "module is mounted")
-    expect("./compose/hermes/patch-digest-redaction.py:/bootstrap/patch-digest-redaction.py:ro" in compose,
-           "patch is mounted")
-
-
 # The module is passed on stdin: hermes_image mounts only compose/hermes at /bootstrap.
 IMAGE_DRIVER = r'''
 import base64, os, subprocess, sys
@@ -284,7 +274,6 @@ def main() -> None:
     test_unicode_and_newline_values()
     test_malformed_entries_ignored()
     test_timing()
-    test_overlay_is_wired()
     print("ok")
     hermes_image.maybe_run(IMAGE_DRIVER, stdin=MODULE.read_text(encoding="utf-8"))
 

@@ -655,9 +655,12 @@ expect_rc "a multi-line secret exits 2" 2
 r=0; json_ok "$out" error 'last["error"] == "bad_input" and "password" in last["message"]' || r=1
 check "a multi-line secret is bad_input naming the setting" "$r"
 if logged "fixture-connect"; then bad "a multi-line secret is refused before the hook runs"; else ok "a multi-line secret is refused before the hook runs"; fi
+addon_in '{"host":"h","password":"s3cr3t-value\rline2"}' configure hooked --instance multi
+expect_rc "configure --instance refuses a secret with CR when the add-on has a connect hook" 2
+if [ ! -e "${root}/data/addons/hooked/instances/multi.json" ]; then ok "a refused multi-line secret writes no instance"; else bad "a refused multi-line secret writes no instance"; fi
 addon_in '{"host":"h","password":"s3cr3t-value\rline2"}' configure fixture --instance multi
-expect_rc "configure --instance refuses a secret with CR" 2
-if [ ! -e "${root}/data/addons/fixture/instances/multi.json" ]; then ok "a refused multi-line secret writes no instance"; else bad "a refused multi-line secret writes no instance"; fi
+expect_rc "configure --instance accepts a multi-line secret without a connect hook" 0
+rm -f "${root}/data/addons/fixture/instances/multi.json" "${root}/data/addons/fixture/secrets/multi."*
 
 FIXTURE_CONNECT_MODE=exit1 addon_json_in '{"host":"good.example.com"}' connect hooked --instance work --json
 unset FIXTURE_CONNECT_MODE
@@ -1300,6 +1303,23 @@ r=0; json_ok "$out" "done" '{"phase":"setup","step":"delete","status":"done","ke
 check "ASSISTANT_DATA_ROOT itself is kept" "$r"
 unset_env FIXTURE_DATA_DIR
 unset_env ASSISTANT_DATA_ROOT
+
+# An exported ASSISTANT_DATA_ROOT wins over .env, as it does for compose.
+mkdir -p "${tmp}/dataroot/from-env" "${tmp}/dataroot/exported"
+set_env ASSISTANT_DATA_ROOT "${tmp}/dataroot/from-env"
+printf '%s' '{"host":"h"}' > "${tmp}/stdin"
+n=$((n + 1)); out="${tmp}/out/${n}"; rc=0
+ASSISTANT_DATA_ROOT="${tmp}/dataroot/exported" "$BASH_UNDER_TEST" "${root}/scripts/addon.sh" \
+  configure fixture --instance envwins < "${tmp}/stdin" > "$out" 2>&1 || rc=$?
+expect_rc "configure with an exported ASSISTANT_DATA_ROOT" 0
+if [ -f "${tmp}/dataroot/exported/addons/fixture/instances/envwins.json" ] \
+  && [ ! -e "${tmp}/dataroot/from-env/addons/fixture" ]; then
+  ok "an exported ASSISTANT_DATA_ROOT wins over .env"
+else
+  bad "an exported ASSISTANT_DATA_ROOT wins over .env"; sed 's/^/    /' "$out"
+fi
+unset_env ASSISTANT_DATA_ROOT
+rm -rf "${tmp}/dataroot/from-env" "${tmp}/dataroot/exported"
 
 # Refusals.
 seed_data
