@@ -5,7 +5,8 @@ stderr.
 
 - ``fail`` and ``expect`` stop the test at the first failure (exit 1).
 - ``Checks`` collects failures, so one run reports every broken check, then
-  ``finish`` exits 1 if any failed.
+  ``finish`` exits 1 if any failed, or prints its ok line and returns, so a
+  test can go on to its image checks.
 
 Failures go to ``sys.__stderr__``, so they reach the terminal while a test
 has redirected ``sys.stderr`` to capture output, and stdout is flushed first,
@@ -36,7 +37,7 @@ def expect(cond: object, msg: object) -> None:
 
 
 class Checks:
-    """Failures collected over a run; ``finish`` reports and exits."""
+    """Failures collected over a run; ``finish`` ends the collecting part."""
 
     def __init__(self) -> None:
         self.failures: list[str] = []
@@ -50,10 +51,9 @@ class Checks:
             self.fail(msg)
         return bool(cond)
 
-    def finish(self, ok_line: str = "ok") -> NoReturn:
-        """Exit 1 after a summary when anything failed, else print ok_line and exit 0."""
+    def finish(self, ok_line: str = "ok") -> None:
+        """Exit 1 after a summary when anything failed, else print ok_line."""
         if self.failures:
             _report(f"{len(self.failures)} check(s) failed")
             raise SystemExit(1)
         print(ok_line)
-        raise SystemExit(0)

@@ -46,21 +46,13 @@ import mail_imap_conn  # noqa: E402
 import mail_index as mi  # noqa: E402
 import synthetic_mail as sm  # noqa: E402
 
+from testkit import expect, fail  # noqa: E402
+
 IMAGE = "greenmail/standalone:2.1.3"
 PASSWORD = "synthetic-pw"  # a throwaway user on a throwaway server
 USERS = {"personal": sm.ME[1], "work": sm.WORK_ME[1]}
 PASSWORD_ENV = "SYNTHETIC_IMAP_PASSWORD"
 KEYSTORE_PASSWORD = "synthetic-keystore"
-
-
-def fail(msg: str) -> None:
-    print(f"FAIL {msg}", file=sys.stderr)
-    raise SystemExit(1)
-
-
-def expect(cond: bool, msg: str) -> None:
-    if not cond:
-        fail(msg)
 
 
 # --------------------------------------------------------------------------- unit checks

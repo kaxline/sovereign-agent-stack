@@ -26,18 +26,10 @@ if str(LIB) not in sys.path:
 
 import synthetic_mail as sm  # noqa: E402
 
+from testkit import expect, fail  # noqa: E402
+
 READER = "Assistant Mail Reader"
 DRAFTS = "Assistant Mail Drafts"
-
-
-def fail(msg: str) -> None:
-    print(f"FAIL {msg}", file=sys.stderr)
-    raise SystemExit(1)
-
-
-def expect(cond: bool, msg: str) -> None:
-    if not cond:
-        fail(msg)
 
 
 def run(argv: list, **kw) -> subprocess.CompletedProcess:

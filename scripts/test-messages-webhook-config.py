@@ -15,20 +15,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+from testkit import expect, fail  # noqa: E402
+
 ROOT = Path(__file__).resolve().parent.parent
 BOOTSTRAP = ROOT / "compose" / "hermes" / "bootstrap-api-profile.sh"
 SECRET = "webhook-test-secret-0123456789"
 CONTAINER = os.environ.get("HERMES_CONTAINER", "hermes")
-
-
-def fail(msg: str) -> None:
-    print(f"FAIL {msg}", file=sys.stderr)
-    raise SystemExit(1)
-
-
-def expect(cond: bool, msg: str) -> None:
-    if not cond:
-        fail(msg)
 
 
 def script() -> str:

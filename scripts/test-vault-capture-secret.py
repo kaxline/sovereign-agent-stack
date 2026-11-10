@@ -16,18 +16,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "compose" / "hermes"))
 sys.path.insert(0, str(ROOT / "scripts" / "lib"))
+from testkit import Checks  # noqa: E402
 
 import hermes_image  # noqa: E402
 import vault_capture_secret as vcs  # noqa: E402
 
-failures = 0
-
-
-def expect(cond: bool, msg: str) -> None:
-    global failures
-    if not cond:
-        failures += 1
-        print(f"FAIL: {msg}")
+checks = Checks()
 
 
 def test_looks_like_secret() -> None:
@@ -37,9 +31,9 @@ def test_looks_like_secret() -> None:
           "Abcdefghijklmnopqrstuvwxyz", "aaaaaaaaaaaaaaaaaaaaaaaa", "short-Key1", "two words here and more here",
           "Settings-General-Billing-Keys", "12345678901234567890123"]
     for v in yes:
-        expect(vcs.looks_like_secret(v), f"key-like: {v}")
+        checks.expect(vcs.looks_like_secret(v), f"key-like: {v}")
     for v in no:
-        expect(not vcs.looks_like_secret(v), f"not key-like: {v}")
+        checks.expect(not vcs.looks_like_secret(v), f"not key-like: {v}")
 
 
 def test_pick_candidates() -> None:
@@ -48,22 +42,22 @@ def test_pick_candidates() -> None:
            {"where": "span", "value": "someone@example.com"},
            {"where": "pre", "value": "ghp_a1B2c3D4e5F6g7H8i9J0kLmNoPqRs"}]
     got = vcs.pick_candidates(raw)
-    expect([c["where"] for c in got] == ["input #key", "pre"], f"dedupe and filter: {got}")
-    expect(vcs.masked("sk-test-4f9aQ2LmZx81BvT0") == "…BvT0", "masked")
+    checks.expect([c["where"] for c in got] == ["input #key", "pre"], f"dedupe and filter: {got}")
+    checks.expect(vcs.masked("sk-test-4f9aQ2LmZx81BvT0") == "…BvT0", "masked")
 
 
 def test_names() -> None:
     for ok in ("PREM_API_KEY", "OPENAI_API_KEY", "MY_SERVICE_TOKEN"):
-        expect(vcs.name_problem(ok) == "", f"allowed {ok}")
+        checks.expect(vcs.name_problem(ok) == "", f"allowed {ok}")
     for bad in ("prem_api_key", "AB", "HERMES_API_KEY", "OPENAI_BASE_URL", "PATH", "LD_PRELOAD", "API_SERVER_KEY",
                 "HTTPS_PROXY", "MY-KEY", "PYTHONPATH"):
-        expect(vcs.name_problem(bad) != "", f"refused {bad}")
+        checks.expect(vcs.name_problem(bad) != "", f"refused {bad}")
 
 
 def test_parse_answer() -> None:
-    expect(vcs.parse_answer("approve") and vcs.parse_answer('{"approve": true}'), "approve")
+    checks.expect(vcs.parse_answer("approve") and vcs.parse_answer('{"approve": true}'), "approve")
     for raw in ("", None, "{}", '{"approve": "yes"}', "no", "[true]"):
-        expect(not vcs.parse_answer(raw), f"decline {raw!r}")
+        checks.expect(not vcs.parse_answer(raw), f"decline {raw!r}")
 
 
 def test_schema() -> None:
@@ -72,11 +66,11 @@ def test_schema() -> None:
     vcs.extend_schema(schema)
     vcs.extend_schema(schema)
     props = schema["parameters"]["properties"]
-    expect(props["action"]["enum"].count("capture_secret") == 1, "enum once")
-    expect(props["destination"]["enum"] == ["env", "viewer"], "destination enum")
-    expect(all(k in props for k in ("name", "selector", "candidate")), "props")
-    expect(schema["description"].count("capture_secret (") == 1, "description once")
-    expect("//" not in vcs.TAB_PROBE.split("JSON.parse(")[1].split("candidates.some")[0].replace("://", ""),
+    checks.expect(props["action"]["enum"].count("capture_secret") == 1, "enum once")
+    checks.expect(props["destination"]["enum"] == ["env", "viewer"], "destination enum")
+    checks.expect(all(k in props for k in ("name", "selector", "candidate")), "props")
+    checks.expect(schema["description"].count("capture_secret (") == 1, "description once")
+    checks.expect("//" not in vcs.TAB_PROBE.split("JSON.parse(")[1].split("candidates.some")[0].replace("://", ""),
            "probe has no line comments (it is joined onto one line)")
 
 
@@ -265,9 +259,7 @@ def main() -> None:
     test_names()
     test_parse_answer()
     test_schema()
-    if failures:
-        sys.exit(1)
-    print("ok")
+    checks.finish("ok")
     hermes_image.maybe_run(IMAGE_DRIVER)
 
 

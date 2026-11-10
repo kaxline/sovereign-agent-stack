@@ -58,8 +58,9 @@ py "tk.expect(0, 'zero'); print('after')"
 [ "$rc" = 1 ] && [ "$out" = "FAIL zero" ] || bad "py: expect fails a false condition and stops (rc=$rc, out=$out)"
 py "import io; sys.stderr = io.StringIO(); tk.fail('loud')"
 [ "$rc" = 1 ] && [ "$out" = "FAIL loud" ] || bad "py: fail reaches the terminal while stderr is captured (rc=$rc, out=$out)"
-py "c = tk.Checks(); c.expect(1, 'a'); c.finish('all good')"
-[ "$rc" = 0 ] && [ "$out" = "all good" ] || bad "py: Checks.finish passes with no failures (rc=$rc, out=$out)"
+py "c = tk.Checks(); c.expect(1, 'a'); c.finish('all good'); print('next part')"
+[ "$rc" = 0 ] && [ "$out" = "all good
+next part" ] || bad "py: Checks.finish passes and returns with no failures (rc=$rc, out=$out)"
 py "c = tk.Checks(); c.expect(0, 'a'); c.fail('b'); print('ran on'); c.finish()"
 [ "$rc" = 1 ] && [ "$out" = "FAIL a
 FAIL b

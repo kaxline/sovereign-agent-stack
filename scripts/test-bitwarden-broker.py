@@ -33,6 +33,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "compose" / "bitwarden-broker"))
 sys.path.insert(0, str(ROOT / "scripts" / "lib"))
+from testkit import expect, fail  # noqa: E402
 
 import hermes_image  # noqa: E402
 from broker import accounts, bwcli, cdp, origins, vault  # noqa: E402
@@ -62,17 +63,6 @@ ORG = "0e0e0000-0000-4000-8000-00000000000e"
 
 def item_id(name: str) -> str:
     return f"{name.lower() * 8}-0000-4000-8000-000000000000"
-
-
-def fail(msg: str) -> None:
-    # sys.__stderr__, because captured() redirects sys.stderr.
-    print(f"FAIL {msg}", file=sys.__stderr__)
-    raise SystemExit(1)
-
-
-def expect(cond: bool, msg: str) -> None:
-    if not cond:
-        fail(msg)
 
 
 def login_item(name, folder=None, collections=(), uris=(), totp=None, kind=1):

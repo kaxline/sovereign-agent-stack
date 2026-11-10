@@ -9,15 +9,14 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+from testkit import Checks  # noqa: E402
+
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "sync-terminal-backend.sh"
 
 NOTES = "/Users/you/Notes/Factland Foundation"
 REPO = "/Users/you/other-repo"
-
-
-def fail(msg: str) -> None:
-    print(f"FAIL {msg}", file=sys.stderr)
 
 
 def write_env(directory: Path, backend: str | None, coding: str, context: str) -> None:
@@ -141,11 +140,10 @@ def main() -> None:
         elif "HERMES_TERMINAL_BACKEND=ssh" not in (root / ".env").read_text():
             errors.append("missing backend was not defaulted to ssh")
 
-    if errors:
-        for err in errors:
-            fail(err)
-        raise SystemExit(1)
-    print("OK terminal backend override sync")
+    checks = Checks()
+    for err in errors:
+        checks.fail(err)
+    checks.finish("OK terminal backend override sync")
 
 
 if __name__ == "__main__":

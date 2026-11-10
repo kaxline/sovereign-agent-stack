@@ -12,16 +12,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 import compose_config  # noqa: E402
+from testkit import Checks  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 
 KNOWN_OPT = {"/opt/projects", "/opt/voice", "/opt/memory", "/opt/skills"}
 KEY_TARGET = "/opt/hermes-ssh/id_ed25519"
 KEY_INIT = "/etc/cont-init.d/09-install-worker-key"
-
-
-def fail(msg: str) -> None:
-    print(f"FAIL {msg}", file=sys.stderr)
 
 
 def load_config(backend: str) -> dict:
@@ -137,11 +134,10 @@ def check_local(config: dict) -> list[str]:
 
 def main() -> None:
     errors = check_ssh(load_config("ssh")) + check_local(load_config("local"))
-    if errors:
-        for err in errors:
-            fail(err)
-        raise SystemExit(1)
-    print("OK terminal backend compose layouts (ssh and local)")
+    checks = Checks()
+    for err in errors:
+        checks.fail(err)
+    checks.finish("OK terminal backend compose layouts (ssh and local)")
 
 
 if __name__ == "__main__":
