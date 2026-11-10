@@ -373,19 +373,27 @@ for k in ("server", "sync_id", "profile", "access", "session_token", "password",
   eval "$assigns"
 }
 
-# server_base SERVER: sets base (and local_pw for "local").
+# server_base SERVER: sets base (and local_pw for "local"). The local
+# server's password comes from secrets/server_password, or on an install that
+# budget.sh init set up (v0.3.12) from budget.env, which is then copied there.
 local_pw=""
 server_base() {
   case "$1" in
     local)
       base="http://127.0.0.1:$(env_get ACTUAL_PORT 5006)"
-      local root pwf
-      root="$(resolve_data_root_path "${BUDGET_DATA_ROOT:-}")"
-      validate_data_root_path "$root" 2> "${WORK}/root.err" \
-        || emit_error not_found "$(cat "${WORK}/root.err")"
-      pwf="${root}/addons/actual/secrets/server_password"
-      [[ -s "$pwf" ]] || emit_error not_found "the local server's password isn't stored (${pwf#"${root}"/} is missing)"
-      local_pw="$(cat "$pwf")"
+      local sdir="" pwf url
+      secrets_dir
+      pwf="${sdir}/server_password"
+      url="$(file_get ACTUAL_SERVER_URL)"
+      if [[ -s "$pwf" ]]; then
+        local_pw="$(cat "$pwf")"
+      elif [[ "${url%/}" == "$LOCAL_URL" && -n "$(file_get ACTUAL_PASSWORD)" ]]; then
+        local_pw="$(file_get ACTUAL_PASSWORD)"
+        mkdir -p "$sdir" || emit_error not_found "couldn't create ${sdir}"
+        write_secret server_password "$local_pw"
+      else
+        emit_error not_found "the local server's password isn't stored (addons/actual/secrets/server_password is missing); run scripts/addon.sh enable actual --reinit (or make budget-init)"
+      fi
       ;;
     http://?* | https://?*)
       base="$1"

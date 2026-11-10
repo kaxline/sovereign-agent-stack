@@ -485,6 +485,20 @@ grep -q 'http://127.0.0.1:5006/account/login' "$STUB/curl.argv" || fail "local t
 rm "$tmp/data/addons/actual/secrets/server_password"
 budgets_run '{"server":"local"}'
 [ "$brc" = 2 ] && [ "$(jget 1 error)" = not_found ] || fail "local without a stored password is not_found ($(cat "$tmp/jout"))"
+jget 1 message | grep -q 'addon.sh enable actual --reinit' || fail "not_found names addon.sh enable actual --reinit ($(cat "$tmp/jout"))"
+# A v0.3.12 local install: the password is in budget.env and is copied to secrets/.
+printf 'ACTUAL_SERVER_URL=http://actual-server:5006\nACTUAL_PASSWORD=right-SECRET\nACTUAL_BUDGET_SYNC_ID=sync-a\n' > "$f"
+budgets_run '{"server":"local"}'
+[ "$brc" = 0 ] && [ "$(jget 1 sync_id)" = sync-a ] || fail "local falls back to budget.env's password ($(cat "$tmp/jout" "$tmp/jerr"))"
+[ "$(cat "$tmp/data/addons/actual/secrets/server_password")" = right-SECRET ] || fail "the budget.env password is copied to secrets/server_password"
+[ "$(mode "$tmp/data/addons/actual/secrets/server_password")" = 600 ] || fail "the copied server_password is mode 600"
+rm "$tmp/data/addons/actual/secrets/server_password"
+# budget.env for a remote server holds that server's password, not the local one.
+printf 'ACTUAL_SERVER_URL=https://budget.example.com\nACTUAL_PASSWORD=right-SECRET\nACTUAL_BUDGET_SYNC_ID=sync-a\n' > "$f"
+budgets_run '{"server":"local"}'
+[ "$brc" = 2 ] && [ "$(jget 1 error)" = not_found ] || fail "a remote budget.env isn't used for local ($(cat "$tmp/jout"))"
+[ ! -e "$tmp/data/addons/actual/secrets/server_password" ] || fail "a remote budget.env password isn't copied"
+rm -f "$f"
 
 # A password with a tab, a newline and a quote still signs in.
 printf 'tab\there\nnl "q" \\ SECRET' > "$STUB/server_pw"
