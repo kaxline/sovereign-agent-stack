@@ -1272,7 +1272,7 @@ def test_api_returns_no_values() -> None:
         expect(b.call("GET", "/items?debug=1")[0] == 200, "a query string is ignored")
 
         expect(b.call("POST", "/release", {"handle": handle("personal", "E")})
-               == (200, {"released": True, "returned": True}), "/release")
+               == (200, {"released": True}), "/release")
 
         stderr = b.stderr()
         expect(f"POST /fill 200 {a}" in stderr, f"the access log names the handle:\n{stderr}")
@@ -1426,10 +1426,7 @@ def test_cli_for_vault_sh() -> None:
         expect(code == 0, f"requests --json exit {code}: {err}")
         data = json.loads(out)
         expect([r["site"] for r in data["pending"]] == ["www.example.com"], f"requests --json {data}")
-        code, out, err = broker_cli(b, "requests", "--tsv")
-        fields = out.rstrip("\n").split("\t")
-        expect(code == 0 and len(out.splitlines()) == 1 and len(fields) == 4, f"requests --tsv {out!r}")
-        expect(fields[1:3] == ["personal", "www.example.com"], f"requests --tsv fields {fields}")
+        expect(set(data) == {"pending", "recent"}, f"requests --json keys {sorted(data)}")
         code, out, err = broker_cli(b, "requests")
         expect(code == 0 and "www.example.com" in out and "agent's text" in out.lower(), f"requests text {out!r}")
 

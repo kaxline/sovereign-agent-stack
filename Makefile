@@ -14,7 +14,7 @@
 	data-dir-show data-dir-set data-dir-migrate \
 	db-backup db-service-add db-psql todo-init todo-open dashboard-open \
 	crm-init crm-add crm-remove crm-access crm-open crm-mode \
-	vault-init vault-add vault-unlock vault-lock vault-sync vault-grant vault-requests vault-remove vault-open \
+	vault-init vault-add vault-unlock vault-lock vault-sync vault-requests vault-remove vault-open \
 	secrets-sync bitwarden-test addon-list addon-test test hermes-image-test actual-mcp-test \
 	budget-init budget-add budget-open budget-remove budget-access budget-connect budget-disconnect \
 	coding-root-list coding-root-add \
@@ -180,7 +180,6 @@ crm-mode:
 #   make vault-lock SLUG=name              lock it again
 #   make vault-sync                        re-read every unlocked account now
 #   make vault-requests                    the agent's pending access requests
-#   make vault-grant [SITE=example.com] [SLUG=name]  move an item into the agent's scope
 #   make vault-remove SLUG=name            forget an account (file, secrets, bw data)
 #   make vault-open                        open the local web vault
 #   make secrets-sync                      write stack secrets from the vault into their files
@@ -206,9 +205,6 @@ vault-sync:
 
 vault-requests:
 	@./scripts/vault.sh requests
-
-vault-grant:
-	@./scripts/vault.sh grant $(if $(SITE),--site "$(SITE)") $(if $(SLUG),--slug "$(SLUG)")
 
 vault-remove:
 	@test -n "$(SLUG)" || (echo "Usage: make vault-remove SLUG=<slug>"; exit 1)

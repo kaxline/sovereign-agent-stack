@@ -65,8 +65,8 @@ defined. Do not import them. Only `print(...)` output comes back.
    - None exists, the user says the login is in Bitwarden (or asks you to move
      it into your vault), and `bitwarden_request_access` is among your tools:
      call it once, with the site's hostname and one sentence of reason. Tell the user the request is pending
-     and that they approve it with `make vault-grant SITE=<site>` or by moving
-     the login into the agent's folder or collection in Bitwarden. Do not say
+     and that they approve it by moving the login into the agent's folder or
+     collection in a Bitwarden app. Do not say
      the login was moved or that you have access; requesting grants nothing.
      Stop until they say it is done, then `action="list"` again.
    - None exists otherwise: `action="save_login"` (optional `label`). The

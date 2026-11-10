@@ -21,8 +21,7 @@ failed start, and, when ``BITWARDEN_IDLE_LOCK_MINUTES`` is above 0, locks a
 ``manual`` account that has gone that long since its last fill or unlock.
 After each sync, pending access requests for a host now in scope are marked
 done, and denylist entries for items no longer in scope are dropped, so a later
-grant of the same item lists it again. A release that bw refused or could not
-perform is also recorded in ``unreturned.json`` until that entry is dropped.
+grant of the same item lists it again.
 """
 
 from __future__ import annotations
@@ -48,7 +47,7 @@ from . import cdp, digest_redaction
 from .accounts import load_dir
 from .bwcli import Bw, BwError
 from .requests_store import RequestError, Store
-from .vault import HANDLE_PREFIX, Denylist, Unreturned, Vault, parse_handle
+from .vault import HANDLE_PREFIX, Denylist, Vault, parse_handle
 
 ACCESS_LOG = logging.getLogger("broker.access")
 LOG = logging.getLogger("broker.server")
@@ -199,10 +198,6 @@ class Broker:
         except (OSError, ValueError):
             raise ConfigError("denylist.json cannot be loaded; fix or move it") from None
         try:
-            self.unreturned = Unreturned(store_dir / "unreturned.json")
-        except (OSError, ValueError):
-            raise ConfigError("unreturned.json cannot be loaded; fix or move it") from None
-        try:
             self.requests = Store(store_dir / "requests.json", accounts=self.accounts)
         except (OSError, ValueError):
             raise ConfigError("requests.json cannot be loaded; fix or move it") from None
@@ -312,9 +307,7 @@ class Broker:
 
     def get_requests(self, _body) -> dict:
         self.requests.expire()
-        return {"pending": self.requests.pending(), "recent": self.requests.recent(),
-                # A removed account's records stay in the file but are not listed.
-                "unreturned": self.unreturned.entries(self.accounts)}
+        return {"pending": self.requests.pending(), "recent": self.requests.recent()}
 
     def post_release(self, body) -> dict:
         _fields(body, required=("handle",))
@@ -324,18 +317,11 @@ class Broker:
             raise HttpError(404, "unknown_handle")
         if self.vault.get(handle) is None and handle not in self.denylist:
             raise HttpError(404, "unknown_handle")
-        meta = self.vault.get(handle)  # before the denylist add, which hides the item
-        # Denylisted before the move starts, so /items and /fill refuse it while bw runs.
+        # Denylisted at once, so /items and /fill refuse it. The person moves the item out of
+        # the agent's folder or collection in Bitwarden; a sync that no longer finds it in scope
+        # drops the entry.
         self.denylist.add(handle)
-        bw = self.bws[parsed[0]]
-        returned = bw.return_item(parsed[1])
-        if returned:
-            self._prune(parsed[0])
-        elif meta is not None and bw.account.scope_kind in ("folder", "collection"):
-            # Still in the agent's scope in Bitwarden: the person has to move it.
-            site = urlsplit(meta.origins[0]).hostname if meta.origins else None
-            self.unreturned.add(handle, meta.account, meta.label, site or "")
-        return {"released": True, "returned": returned}
+        return {"released": True}
 
     # --- Unix socket routes -------------------------------------------------
 
@@ -457,23 +443,14 @@ class Broker:
         return ok
 
     def _prune(self, slug: str) -> None:
-        """Drop denylist entries for this account's items that the last listing no longer has,
-        and this account's unreturned records whose handle is not on the denylist."""
+        """Drop denylist entries for this account's items that the last listing no longer has."""
         present = self.bws[slug].cached_ids()
         if present is None:
             return
         prefix = f"{HANDLE_PREFIX}{slug}/"
         for handle in self.denylist.handles():
             if handle.startswith(prefix) and handle[len(prefix):] not in present:
-                # The record goes first: a crash between the two leaves a denylist entry
-                # the next prune removes, never a record without one.
-                self.unreturned.remove(handle)
                 self.denylist.remove(handle)
-        # A release that a prune overtook (between its denylist add and its record add)
-        # leaves a record with no denylist entry.
-        for handle in self.unreturned.handles():
-            if handle.startswith(prefix) and handle not in self.denylist:
-                self.unreturned.remove(handle)
 
     def _mark_done(self) -> None:
         hosts = {urlsplit(origin).hostname for meta in self.vault.items() for origin in meta.origins}

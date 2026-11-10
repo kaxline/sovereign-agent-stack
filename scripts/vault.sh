@@ -38,7 +38,6 @@ URL_RE='^https://[A-Za-z0-9.-]+(:[0-9]+)?(/[^[:space:]?#]*)?$'
 ID_RE='^[A-Za-z0-9][A-Za-z0-9-]{0,63}$'
 NO_SPACE_RE='^[^[:space:]]+$'
 NO_CNTRL_RE='^[^[:cntrl:]]+$'
-NUMBER_RE='^[0-9]+$'
 RETRY_RE='^[0-9]+$'
 
 usage() {
@@ -66,9 +65,6 @@ Usage: scripts/vault.sh <command> [options]
   sync [--json]     Re-read every unlocked account's items now
   status --json     One JSON line per account: state, error, retry_after
   requests [--json] The agent's pending access requests
-  grant [--site H] [--slug S] [--email E] [--item ID]
-        Move an item for a requested site into the agent's scope, with your
-        own unlock in bitwarden-setup. Without --site, pick a pending request.
   remove --slug S [--json]
                     Forget an account: its file, secrets and bw data
   open              Open the local web vault
@@ -974,7 +970,7 @@ offer_setup() {
     [[ -z "$org" ]] || args+=(--org "$org")
   fi
   setup_run "${args[@]}" || die "bitwarden-setup create failed; the account file is kept, run it again when ready"
-  setup_run seed --slug "$slug" --email "$email" || log "bitwarden-setup seed stopped; make vault-grant moves items later"
+  setup_run seed --slug "$slug" --email "$email" || log "bitwarden-setup seed stopped; move items into the agent's folder or collection in a Bitwarden app"
 }
 
 # With the broker up, restart it so it loads the new file, and report what it
@@ -1255,77 +1251,6 @@ STATE_VALUE=""
 state_get() {
   load_file "$(data_dir)/local/state" optional
   STATE_VALUE="$(text_get "$1")"
-}
-
-cmd_grant() {
-  local site="" slug="" email="" item=""
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --site) need_value "$@"; site="$2"; shift 2 ;;
-      --slug) need_value "$@"; slug="$2"; shift 2 ;;
-      --email) need_value "$@"; email="$2"; shift 2 ;;
-      --item) need_value "$@"; item="$2"; shift 2 ;;
-      *) die "unknown option for grant: $1" ;;
-    esac
-  done
-  require_broker
-  if [[ -z "$site" ]]; then
-    local rows n pick row r_account r_site r_reason
-    rows="$(broker_cli requests --tsv)" || die "the broker did not list its requests; make doctor"
-    if [[ -z "$rows" ]]; then
-      log "No pending access requests. make vault-grant SITE=example.com grants a site directly."
-      return 0
-    fi
-    n=0
-    printf 'Pending access requests (the reason is the agent'"'"'s text):\n'
-    while IFS=$'\t' read -r _ r_account r_site r_reason; do
-      n=$((n + 1))
-      printf '  %d. %s  (account %s)  %s\n' "$n" "$r_site" "$r_account" "$r_reason"
-    done <<< "$rows"
-    [[ -t 0 ]] || die "pass --site (make vault-grant SITE=...) when there is no terminal to pick in"
-    printf 'Grant which? '
-    IFS= read -r pick
-    [[ "$pick" =~ $NUMBER_RE && "$pick" -ge 1 && "$pick" -le "$n" ]] || die "enter a number from 1 to ${n}"
-    row="$(printf '%s\n' "$rows" | sed -n "${pick}p")"
-    site="$(printf '%s' "$row" | cut -f3)"
-    [[ -n "$slug" ]] || slug="$(printf '%s' "$row" | cut -f2)"
-    [[ "$slug" != "-" ]] || slug=""
-  fi
-  if [[ -z "$slug" ]]; then
-    local f count=0
-    for f in "$ACCOUNTS_DIR"/*.env; do
-      [[ -f "$f" ]] || continue
-      count=$((count + 1))
-      slug="$(basename "$f" .env)"
-    done
-    [[ "$count" -eq 1 ]] || die "several accounts or none; pass --slug (make vault-grant SLUG=...)"
-  fi
-  need_slug "$slug"
-  need_account "$slug"
-  [[ -n "$email" ]] || email="${VAULT_OWNER_EMAIL:-}"
-  if [[ -z "$email" && "$slug" == local ]]; then
-    state_get OWNER_EMAIL
-    email="$STATE_VALUE"
-  fi
-  if [[ -z "$email" ]]; then
-    [[ -t 0 ]] || die "pass --email with your own Bitwarden email"
-    printf 'Your Bitwarden email for %s: ' "$slug"
-    IFS= read -r email
-  fi
-  valid_email "$email" || die "not an email address: ${email}"
-  local args=(grant --slug "$slug" --email "$email" --site "$site")
-  [[ -z "$item" ]] || args+=(--item "$item")
-  setup_run "${args[@]}" || die "bitwarden-setup grant did not move anything; the request stays pending"
-  local synced
-  if synced="$(broker_cli sync)"; then
-    case "$synced" in
-      "A sync is already running"* | "The last sync ended under 30 s ago"*)
-        log "The broker synced less than 30 s ago or is syncing now; make vault-sync in 30 s picks the item up" ;;
-      *) log "The broker synced; a pending request for ${site} is done once the item is in scope" ;;
-    esac
-  else
-    log "The broker did not sync; make vault-sync picks the item up"
-  fi
 }
 
 # --- remove, open -----------------------------------------------------------
@@ -1750,7 +1675,6 @@ case "${1:-}" in
   sync) shift; cmd_sync "$@" ;;
   status) shift; cmd_status "$@" ;;
   requests) shift; cmd_requests "$@" ;;
-  grant) shift; cmd_grant "$@" ;;
   remove) shift; cmd_remove "$@" ;;
   open) shift; cmd_open "$@" ;;
   secrets-sync) shift; cmd_secrets_sync "$@" ;;
