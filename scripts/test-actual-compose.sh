@@ -60,10 +60,18 @@ grep -qF '"@actual-app/core": "26.11.0"' compose/actual-mcp/package.json || fail
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
+# Only docker-compose.yml, with the default data root: a local override file or
+# an ASSISTANT_DATA_ROOT in .env must not change what this checks (as in
+# scripts/lib/compose_config.py).
+compose_config() {
+  env -u ACTUAL_BUDGET_FILE ASSISTANT_DATA_ROOT=./data COMPOSE_PROFILES="$1" \
+    docker compose -f docker-compose.yml config --format json
+}
+
 # With no profiles, no Actual service is defined.
-env -u ACTUAL_BUDGET_FILE COMPOSE_PROFILES= docker compose config --format json > "${tmp}/none.json" \
+compose_config "" > "${tmp}/none.json" \
   || fail "docker compose config with no profiles"
-env -u ACTUAL_BUDGET_FILE COMPOSE_PROFILES=core,budget,budget-local docker compose config --format json > "${tmp}/budget.json" \
+compose_config core,budget,budget-local > "${tmp}/budget.json" \
   || fail "docker compose config with core,budget,budget-local"
 
 python3 - "${tmp}/none.json" "${tmp}/budget.json" <<'EOF'

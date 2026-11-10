@@ -243,9 +243,11 @@ the stack under another app.
 
 ### Fixes
 
-- **Compose tests ignore a local override.** The compose config tests load
-  only `docker-compose.yml`. `test-bitwarden-compose-config.py` failed on an
-  install whose `docker-compose.override.yml` adds `hermes-worker` binds.
+- **Compose tests ignore local settings.** The compose config tests load
+  only `docker-compose.yml` and render with `ASSISTANT_DATA_ROOT=./data`.
+  `test-bitwarden-compose-config.py` and `test-actual-compose.sh` failed on
+  an install whose `docker-compose.override.yml` adds `hermes-worker` binds
+  or whose `.env` moves the data root.
 - **Actual Budget: ended sessions fail the call.** After the Actual server
   password changed or the MCP server's session ended (deleted, or the user
   disabled), `actual-mcp-rw` and `actual-mcp-ro` kept answering from their
