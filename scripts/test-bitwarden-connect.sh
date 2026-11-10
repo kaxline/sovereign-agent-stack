@@ -198,6 +198,28 @@ vault remove --slug js --json < /dev/null
 check "remove --json succeeds" '[ "$rc" = 0 ] && [ "$(last phase)" = done ]'
 check "add and remove --json never call addon.sh" '[ ! -s "$STUB/addon-log" ]'
 
+# --- slugs the add-on store refuses --------------------------------------------
+# addon.sh disconnect cannot remove an account whose slug the store refuses, so
+# add takes only a slug that starts with a letter and has at most 31 characters.
+LONG="a2345678901234567890123456789012"
+: > "$STUB/addon-log"
+for s in 1abc "$LONG"; do
+  printf '%s\n%s\n' "$CID" "$SECRET" > "${tmp}/stdin"
+  vault add --slug "$s" --mode cloud --unlock manual < "${tmp}/stdin"
+  check "terminal add refuses the slug $s" \
+    '[ "$rc" != 0 ] && grep -q "start with a letter and have at most 31 characters" "$out" "$err" && [ ! -e "$ACC/$s.env" ] && [ ! -e "$D/secrets/$s" ]'
+  printf '%s' "$MANUAL" > "${tmp}/stdin"
+  vault add --slug "$s" --json < "${tmp}/stdin"
+  check "add --json refuses the slug $s with bad_slug" \
+    '[ "$rc" = 2 ] && [ "$(last error)" = bad_slug ] && [ ! -e "$ACC/$s.env" ]'
+done
+printf '%s\n%s\n' "$CID" "$SECRET" > "${tmp}/stdin"
+vault add --slug "${LONG%?}" --mode cloud --unlock manual < "${tmp}/stdin"
+check "terminal add takes a 31-character slug" '[ "$rc" = 0 ] && [ -f "$ACC/${LONG%?}.env" ]'
+vault remove --slug "${LONG%?}" < /dev/null
+check "refused slugs never reach addon.sh" \
+  '[ "$(grep "^addon.sh" "$STUB/addon-log" | tr "\n" "|")" = "addon.sh configure bitwarden --instance ${LONG%?}|addon.sh configure bitwarden --instance ${LONG%?} --remove|" ]'
+
 # --- make up hook: account files without a store entry -------------------------
 : > "$STUB/addon-log"
 mkdir -p "$ACC" "$INST"
@@ -216,6 +238,18 @@ check "up-hook skips local and accounts already in the store" \
 : > "$STUB/addon-log"
 ADDON_FAIL=1 vault up-hook < /dev/null
 check "a failing configure does not fail up-hook" '[ "$rc" = 0 ] && grep -q "Warning" "$out" "$err"'
+
+# An account file from before add checked the slug: one line saying what to do.
+: > "$STUB/addon-log"
+printf 'BW_MODE=cloud\nBW_SERVER=https://vault.bitwarden.com\nBW_SCOPE=folder:Agent\nBW_UNLOCK=manual\nBW_CLIENTID=user.n\n' > "$ACC/9old.env"
+vault up-hook < /dev/null
+check "up-hook says Boundary cannot disconnect 9old and how to fix it" \
+  '[ "$rc" = 0 ] && [ "$(grep -c "Boundary cannot disconnect 9old" "$err")" = 1 ] && grep -q "make vault-remove SLUG=9old and add it again" "$err"'
+check "the 9old line promises no later fix" '! grep "9old" "$out" "$err" | grep -q "make up records"'
+check "up-hook does not try to record 9old" '! grep -q "instance 9old" "$STUB/addon-log"'
+vault remove --slug 9old < /dev/null
+check "terminal remove of 9old skips the store and warns about nothing" \
+  '[ "$rc" = 0 ] && [ ! -e "$ACC/9old.env" ] && ! grep -q "instance 9old" "$STUB/addon-log" && ! grep -q Warning "$out" "$err"'
 unset VAULT_ADDON_SH
 vault up-hook < /dev/null
 check "up-hook with the real addon.sh writes instances/old.json" \

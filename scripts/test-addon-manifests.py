@@ -1667,7 +1667,8 @@ check("bitwarden: mode is a cloud/selfhosted choice and required",
       and addon_store._required(bws["mode"]))
 check("bitwarden: region is an optional us/eu choice",
       bws.get("region", {}).get("options") == ["us", "eu"] and bws["region"].get("optional") is True)
-check("bitwarden: url is an optional url", bws.get("url") == {**bws.get("url", {}), "type": "url", "optional": True})
+check("bitwarden: url is an optional url",
+      bws.get("url", {}).get("type") == "url" and bws["url"].get("optional") is True)
 check("bitwarden: scope defaults to folder:Agent",
       bws.get("scope", {}).get("type") == "string" and bws["scope"].get("default") == "folder:Agent")
 check("bitwarden: unlock is stored or manual, default manual",

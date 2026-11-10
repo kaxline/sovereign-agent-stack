@@ -29,6 +29,10 @@ CONTAINER_UID=10001
 INIT_WAIT_SECONDS=600
 # Regexes live in variables: bash 3.2 parses some unquoted ones in [[ =~ ]] differently.
 SLUG_RE='^[a-z0-9-]+$'
+# The add-on store's rule (scripts/lib/addon_store.py SLUG_RE): addon.sh
+# disconnect, and so Boundary, can only remove an account whose slug fits it.
+STORE_SLUG_RE='^[a-z][a-z0-9-]{0,30}$'
+STORE_SLUG_RULE="start with a letter and have at most 31 characters"
 EMAIL_RE='^[^@[:space:]]+@[^@[:space:]]+$'
 URL_RE='^https://[A-Za-z0-9.-]+(:[0-9]+)?(/[^[:space:]?#]*)?$'
 ID_RE='^[A-Za-z0-9][A-Za-z0-9-]{0,63}$'
@@ -84,7 +88,9 @@ After add or remove: make up. make doctor shows each account's state.
 
 add and remove without --json, and up-hook for account files it has not
 seen, record each account in the add-on store (scripts/addon.sh configure
-bitwarden --instance S), which Boundary lists. A failed record is a warning.
+bitwarden --instance S). addon.sh disconnect, which Boundary runs, removes
+only accounts recorded there. A failed record is a warning. add takes only a
+slug that starts with a letter and has at most 31 characters, as the store does.
 
 Test hooks: VAULT_ACCOUNTS_DIR replaces compose/bitwarden/accounts,
 VAULT_HERMES_DATA_DIR replaces data/hermes, VAULT_ADDON_SH replaces
@@ -467,8 +473,9 @@ ensure_accounts_dir() {
 # --- The add-on store -------------------------------------------------------
 #
 # addon.sh keeps one instances/<slug>.json of non-secret values per account in
-# the add-on store, and Boundary lists accounts from it. addon.sh connect and
-# disconnect write it around add and remove --json. Terminal add and remove,
+# the add-on store. Boundary lists accounts from status --json, but disconnects
+# them through addon.sh disconnect, which refuses an account the store lacks.
+# addon.sh connect and disconnect write it around add and remove --json. Terminal add and remove,
 # and up-hook for account files the store lacks, write it through addon.sh
 # configure. --json mode never calls addon.sh: connect and disconnect hold the
 # add-on lock while their hook runs, so the call would end in busy.
@@ -504,27 +511,34 @@ store_record() {
   local rc=0
   printf '%s\n' "$2" | "$ADDON_SH" configure bitwarden --instance "$1" > /dev/null || rc=$?
   [[ "$rc" != 0 ]] || return 0
-  printf '[vault] Warning: scripts/addon.sh configure exited %s, so Boundary does not list %s yet; make up records it again\n' \
+  printf '[vault] Warning: scripts/addon.sh configure exited %s, so Boundary cannot disconnect %s until make up records it in the add-on store\n' \
     "$rc" "$1" >&2
   return 1
 }
 
 # store_forget SLUG: addon.sh configure bitwarden --instance SLUG --remove. A
-# failure prints a warning.
+# failure prints a warning. A slug outside the store's rule was never there.
 store_forget() {
   [[ "$JSON" != 1 ]] || return 0
+  [[ "$1" =~ $STORE_SLUG_RE ]] || return 0
   local rc=0
   "$ADDON_SH" configure bitwarden --instance "$1" --remove < /dev/null > /dev/null || rc=$?
   [[ "$rc" != 0 ]] || return 0
-  printf '[vault] Warning: scripts/addon.sh configure exited %s, so Boundary still lists %s; scripts/addon.sh configure bitwarden --instance %s --remove drops it\n' \
+  printf '[vault] Warning: scripts/addon.sh configure exited %s, so the add-on store still holds %s and connecting it again from Boundary fails with exists; scripts/addon.sh configure bitwarden --instance %s --remove drops it\n' \
     "$rc" "$1" "$1" >&2
 }
 
 # up-hook: records the account in FILE_TEXT when the store has no entry for
-# SLUG. local belongs to make vault-init and is never recorded.
+# SLUG. local belongs to make vault-init and is never recorded. A slug the
+# store refuses (added before add checked it) gets a line saying what to do.
 store_backfill() {
   local slug="$1"
   [[ "$slug" != local ]] || return 0
+  if [[ ! "$slug" =~ $STORE_SLUG_RE ]]; then
+    printf '[vault] Warning: Boundary cannot disconnect %s: an account slug must %s. Remove it with make vault-remove SLUG=%s and add it again under such a slug\n' \
+      "$slug" "$STORE_SLUG_RULE" "$slug" >&2
+    return 0
+  fi
   [[ ! -e "$(store_dir)/instances/${slug}.json" ]] || return 0
   if store_record "$slug" "$(store_values "$(text_get BW_MODE)" "$(text_get BW_SERVER)" \
     "$(text_get BW_SCOPE)" "$(text_get BW_UNLOCK)")"; then
@@ -590,6 +604,8 @@ cmd_add() {
     need_slug "$slug"
   fi
   [[ "$slug" != local ]] || emit_error bad_input "the slug local belongs to make vault-init"
+  [[ "$slug" =~ $STORE_SLUG_RE ]] \
+    || emit_error bad_slug "--slug must ${STORE_SLUG_RULE}, so Boundary can disconnect the account"
   local in_mode="" in_region="" in_url="" in_scope="" in_unlock="" in_client_id="" in_client_secret="" in_master_password=""
   if [[ "$JSON" == 1 ]]; then
     read_input mode region url scope unlock client_id client_secret master_password
