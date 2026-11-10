@@ -26,7 +26,7 @@ actual_safe_url() {
 }
 
 actual_file_mode() {
-  stat -f %Lp "$1" 2>/dev/null || stat -c %a "$1" 2>/dev/null || echo unknown
+  stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null || echo unknown
 }
 
 # Health of a compose service: healthy, starting, a state, or empty when it

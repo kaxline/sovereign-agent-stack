@@ -235,7 +235,7 @@ mkdir -p "$droot"
 BUDGET_DATA_ROOT="$droot" bash "${ROOT}/scripts/budget.sh" ensure > /dev/null || fail "budget.sh ensure"
 for d in addons/actual addons/actual/instances addons/actual/secrets; do
   [ -d "${droot}/${d}" ] || fail "budget.sh ensure creates ${d}"
-  mode="$(stat -f %Lp "${droot}/${d}" 2>/dev/null || stat -c %a "${droot}/${d}")"
+  mode="$(stat -c %a "${droot}/${d}" 2>/dev/null || stat -f %Lp "${droot}/${d}")"
   [ "$mode" = 700 ] || fail "${d} is 0700, not ${mode}"
 done
 grep -q '^	@./scripts/budget.sh ensure$' "${ROOT}/Makefile" || fail "make ensure-local runs budget.sh ensure"

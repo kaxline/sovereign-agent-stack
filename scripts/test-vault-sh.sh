@@ -33,7 +33,7 @@ printf '%s\n' "$*" >> "$STUB/log"
 rc_of() { if [ -f "$STUB/rc.$1" ]; then cat "$STUB/rc.$1"; else echo 0; fi; }
 # bw/ may be mode 000 (Linux: it belongs to uid 10001); the broker's side of
 # the stub opens it for one step and puts the mode back.
-bw_open() { bwm=""; [ -d "$STUB_DATA/bw" ] || return 0; bwm="$(stat -f %Lp "$STUB_DATA/bw" 2>/dev/null || stat -c %a "$STUB_DATA/bw")"; chmod u+rwx "$STUB_DATA/bw"; }
+bw_open() { bwm=""; [ -d "$STUB_DATA/bw" ] || return 0; bwm="$(stat -c %a "$STUB_DATA/bw" 2>/dev/null || stat -f %Lp "$STUB_DATA/bw")"; chmod u+rwx "$STUB_DATA/bw"; }
 bw_close() { [ -z "$bwm" ] || chmod "$bwm" "$STUB_DATA/bw"; }
 case " $* " in
   *" --entrypoint "*)
@@ -125,7 +125,7 @@ run() { "$vault" "$@" < /dev/null > "$out" 2>&1; }
 # Runs with stdin from a string (the masked prompts read it).
 run_in() { local input="$1"; shift; printf '%s' "$input" | "$vault" "$@" > "$out" 2>&1; }
 reset_stub() { rm -f "$STUB"/* 2>/dev/null || true; }
-mode_of() { stat -f %Lp "$1" 2>/dev/null || stat -c %a "$1"; }
+mode_of() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
 logged() { grep -qF -- "$1" "$STUB/log" 2>/dev/null; }
 said() { grep -qF -- "$1" "$out"; }
 PW="syn-master-$$-Zq9"

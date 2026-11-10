@@ -144,7 +144,7 @@ reset() {
   (cd "$STUB" && rm -f server_pw files.json enc_pw list.tsv down html curl_timeout admin_rc admin.env admin.log opened clip)
   printf 'COMPOSE_PROFILES=core\nACTUAL_MCP_ENABLED=0\nACTUAL_LOCAL_ENABLED=0\nACTUAL_BUDGET_FILE=\n' > "$ENV_FILE"
 }
-mode() { stat -f %Lp "$1" 2>/dev/null || stat -c %a "$1"; }
+mode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
 budget_entry() { # groupId name [deleted] [encryptKeyId]
   local key=null
   [[ -n "${4:-}" ]] && key="\"$4\""

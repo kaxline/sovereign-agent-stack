@@ -137,7 +137,7 @@ no_keys() {
   done
   ok "$1: no key in the output"
 }
-mode_of() { stat -f %Lp "$1" 2> /dev/null || stat -c %a "$1"; }
+mode_of() { stat -c %a "$1" 2> /dev/null || stat -f %Lp "$1"; }
 has_line() { grep -q "$1" "$2"; }
 lacks_line() { ! grep -q "$1" "$2"; }
 absent() { for p in "$@"; do [ ! -e "$p" ] || return 1; done; }

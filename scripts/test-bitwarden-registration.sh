@@ -52,7 +52,9 @@ hermes_image_gate "${1:-}" "image checks"
 
 # --- image: scratch profiles, synthetic manifest ----------------------------
 work="$(mktemp -d "${TMPDIR:-/tmp}/bitwarden-registration.XXXXXX")"
-trap 'rm -rf "$work"' EXIT
+# On Linux the container leaves root-owned files here that the runner's user
+# can't delete; a failed cleanup must not fail the test.
+trap 'rm -rf "$work" 2>/dev/null || true' EXIT
 mkdir -p "$work/addons/bitwarden" "$work/home/profiles/browser" "$work/home/profiles/api-server" "$work/base"
 
 python3 - "$work/addons/bitwarden/addon.json" <<'PY'

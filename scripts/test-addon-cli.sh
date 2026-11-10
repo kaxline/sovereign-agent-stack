@@ -304,7 +304,7 @@ expect_rc "enable once settings are complete" 0
 if [ "$(envval FIXTURE_ADDON_ENABLED)" = 1 ]; then ok "enable sets the flag"; else bad "enable sets the flag"; fi
 if logged "compose up -d --wait fixture-worker"; then ok "enable starts the service"; else bad "enable starts the service"; cat "$STUB_LOG"; fi
 if logged "compose run --rm --no-deps -T fixture-worker fixture-seed-init --json"; then ok "the first enable runs the init hook"; else bad "the first enable runs the init hook"; cat "$STUB_LOG"; fi
-if [ "$(stat -f %Lp "${root}/data/addons/fixture/state.json" 2> /dev/null || stat -c %a "${root}/data/addons/fixture/state.json")" = 600 ] \
+if [ "$(stat -c %a "${root}/data/addons/fixture/state.json" 2> /dev/null || stat -f %Lp "${root}/data/addons/fixture/state.json")" = 600 ] \
   && python3 -c 'import json,sys; i=json.load(open(sys.argv[1]))["init"]; sys.exit(0 if i["version"]=="1.0.0" and i["at"].endswith("Z") else 1)' "${root}/data/addons/fixture/state.json"; then
   ok "enable records init in state.json"
 else
@@ -1394,7 +1394,7 @@ if [ ! -e "${root}/data/fixture" ] && [ ! -e "${root}/data/addons/fixture" ]; th
 STUB_LS_DIR="${root}/data/addons/mounted" addon enable mounted
 expect_rc "enable mounted" 0
 if logged "ls: config instances secrets "; then ok "enable creates config, instances and secrets before compose up"; else bad "enable creates config, instances and secrets before compose up"; cat "$STUB_LOG"; fi
-if [ "$(stat -f %Lp "${root}/data/addons/mounted/secrets" 2> /dev/null || stat -c %a "${root}/data/addons/mounted/secrets")" = 700 ]; then ok "the prepared secrets directory is 0700"; else bad "the prepared secrets directory is 0700"; fi
+if [ "$(stat -c %a "${root}/data/addons/mounted/secrets" 2> /dev/null || stat -f %Lp "${root}/data/addons/mounted/secrets")" = 700 ]; then ok "the prepared secrets directory is 0700"; else bad "the prepared secrets directory is 0700"; fi
 
 # HERMES_UID/GID on Linux: refused before any flag is written.
 setenv() { sed "s/^$1=.*/$1=$2/" "${root}/.env" > "${root}/.env.new" && mv "${root}/.env.new" "${root}/.env"; }

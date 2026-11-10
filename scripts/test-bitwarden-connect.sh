@@ -77,7 +77,7 @@ failed=0
 ok() { echo "ok: $1"; }
 bad() { echo "FAIL: $1"; failed=1; }
 check() { if eval "$2"; then ok "$1"; else bad "$1"; [ -f "$out" ] && sed 's/^/  | /' "$out" "$err" >&2; fi; }
-mode_of() { stat -f %Lp "$1" 2>/dev/null || stat -c %a "$1"; }
+mode_of() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
 n=0
 out=""
 err=""
