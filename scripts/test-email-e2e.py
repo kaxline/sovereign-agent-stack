@@ -45,6 +45,7 @@ import mail_imap_conn  # noqa: E402  scripts/lib, on the path through tmi
 import mail_query as mq  # noqa: E402  compose/mail-mcp
 
 PASSWORD = tmi.PASSWORD
+WRONG_PASSWORD = "synthetic-wrong-pw"  # given to one account to check a refused login
 # Instance slug -> GreenMail user in tmi.USERS, and the mailbox patterns
 # test-mail-imap.py indexes for that user.
 INSTANCES = {"home": "personal", "work": "work"}
@@ -336,19 +337,29 @@ def run(stack: Stack) -> None:
     expect(not (stack.data / "addons" / "email" / "secrets").exists(),
            "the refused enable created no bind source under data/addons/email")
 
+    # docs/email.md's calling order: work is configured without mailboxes, listed, then scoped.
     for slug, user in INSTANCES.items():
-        stack.addon_ok("configure", "email", "--instance", slug, values={
-            "host": "greenmail", "port": 3143, "security": "plain", "user": tmi.USERS[user],
-            "address": tmi.USERS[user], "mailboxes": SCOPE[slug], "password": PASSWORD})
+        values = {"host": "greenmail", "port": 3143, "security": "plain", "user": tmi.USERS[user],
+                  "address": tmi.USERS[user], "password": PASSWORD}
+        if slug != "work":
+            values["mailboxes"] = SCOPE[slug]
+        stack.addon_ok("configure", "email", "--instance", slug, values=values)
     secrets = sorted(p.name for p in (stack.data / "addons" / "email" / "secrets").iterdir())
     expect(secrets == ["home.password", "work.password"], "configure --instance stores one password file per instance")
+    stored = json.loads((stack.data / "addons" / "email" / "instances" / "work.json").read_text())
+    expect("mailboxes" not in stored, "work is stored without mailboxes")
 
     out = stack.addon_ok("run", "email", "mailboxes", "--instance", "work")
     listing = json.loads(out.stdout)
     inbox = [r for r in listing if r["mailbox"] == "INBOX"]
     expect(len(inbox) == 1 and isinstance(inbox[0]["messages"], int) and inbox[0]["messages"] > 0
            and {r["account"] for r in listing} == {"work"},
-           f"run email mailboxes --instance work lists INBOX with a count ({inbox[0]['messages'] if inbox else '-'})")
+           "run email mailboxes --instance work, before work has mailboxes, lists INBOX with a count"
+           f" ({inbox[0]['messages'] if inbox else '-'})")
+    stack.addon_ok("configure", "email", "--instance", "work", values={"mailboxes": SCOPE["work"]})
+    stored = json.loads((stack.data / "addons" / "email" / "instances" / "work.json").read_text())
+    expect(stored.get("mailboxes") == SCOPE["work"] and stored.get("host") == "greenmail",
+           "configure with only mailboxes sets them and keeps work's other values")
 
     stack.addon_ok("configure", "email", values={"since": "2026-01-01", "bodies": True, "attachments": True,
                                                   "interval": 300, "drafts": True})
@@ -463,6 +474,35 @@ def run(stack: Stack) -> None:
              why=lambda: outbox_state(stack))
     print("ok after drafts on and enable, the held request reaches work's Drafts", flush=True)
 
+    # A refused password for home: the pass reports it, work's new mail is indexed, home's rows stay.
+    def index_rows(name: str) -> dict[str, sqlite3.Row]:
+        stack.compose("cp", "email-indexer:/data/index", str(stack.tmp / name))
+        return tmi.rows(stack.tmp / name / "index.sqlite")
+    home_before = {mid for mid, r in index_rows("before-refused").items() if r["account"] == "home"}
+    stack.addon_ok("configure", "email", "--instance", "home", values={"password": WRONG_PASSWORD})
+    conn = tmi.admin(port, "work")
+    fresh = tmi.sm.build_message(tmi.sm.Spec(
+        rowid=998, account="work", mailbox="INBOX", sender=("Avery Kim", "avery@example.com"), to=[tmi.sm.WORK_ME],
+        subject="New for work while home is refused", date="Fri, 09 Oct 2026 09:00:00 +0000", text="Hello."))
+    conn.append("INBOX", "()", tmi.imaplib.Time2Internaldate(time.time()),
+                fresh.as_bytes(policy=tmi.sm.POLICY.clone(linesep="\r\n")))
+    conn.logout()
+    seen = len(pass_lines(stack))
+    stack.compose("restart", "email-indexer")
+    line = wait_for("a pass after the refused password",
+                    lambda: (pass_lines(stack)[seen:] or [None])[0], 180)
+    logs = stack.compose("logs", "--no-color", "--no-log-prefix", "email-indexer").stdout
+    expect("mail-index: home: " in logs and WRONG_PASSWORD not in logs,
+           "the refused login logs a mail-index: line naming home, without the password")
+    expect(line.get("error") == "4" and line.get("failed") == {"home": 4},
+           f"the pass shows code 4 for home ({ {k: line.get(k) for k in ('error', 'failed', 'added')} })")
+    after_rows = index_rows("after-refused")
+    expect("<synthetic-998@example.net>" in after_rows and after_rows["<synthetic-998@example.net>"]["account"] == "work",
+           "work's new mail is indexed in the same pass")
+    home_after = {mid for mid, r in after_rows.items() if r["account"] == "home"}
+    expect(home_after == home_before and home_before,
+           f"home's {len(home_before)} rows remain in the index")
+
     # Removing an instance drops it from the next pass.
     stack.addon_ok("configure", "email", "--instance", "home", "--remove")
     expect(not (stack.data / "addons" / "email" / "instances" / "home.json").exists()
@@ -497,9 +537,9 @@ def run(stack: Stack) -> None:
     cids = [c for s in stack_services for c in stack.compose("ps", "-aq", s).stdout.split()]
     inspect = subprocess.run(["docker", "inspect", *cids], capture_output=True, text=True).stdout
     expect(set(EMAIL_SERVICES) <= set(stack_services), f"services checked for the password: {sorted(stack_services)}")
-    expect(PASSWORD not in logs, "no password in docker compose logs")
+    expect(PASSWORD not in logs and WRONG_PASSWORD not in logs, "no password in docker compose logs")
     expect(PASSWORD not in inspect, f"no password in docker inspect of {len(cids)} containers")
-    expect(not any(PASSWORD in o for o in OUTPUT), "no password in addon.sh output")
+    expect(not any(PASSWORD in o or WRONG_PASSWORD in o for o in OUTPUT), "no password in addon.sh output")
 
     stack.addon_ok("disable", "email", "--purge")
     have = set(subprocess.run(["docker", "volume", "ls", "-q"], capture_output=True, text=True).stdout.split())
