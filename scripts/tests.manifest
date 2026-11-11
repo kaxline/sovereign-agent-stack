@@ -20,13 +20,11 @@ imessage/tests/test-synthetic-messages.py
 scripts/test-actual-admin.sh                    docker
 scripts/test-actual-compose.sh                  ci docker
 scripts/test-actual-doctor.sh                   ci
-scripts/test-actual-registration.sh             ci
-scripts/test-actual-rows.sh                     ci image
+scripts/test-actual-instances.sh                ci
 scripts/test-addon-cli.sh                       ci
 scripts/test-addon-cron-fence.sh                ci image
 scripts/test-addon-dirs.sh                      ci
 scripts/test-addon-manifests.py                 ci
-scripts/test-addon-mcp-access.sh                ci
 scripts/test-addon-store.py                     ci
 scripts/test-bash32.sh
 scripts/test-bitwarden-access.py                ci

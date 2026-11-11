@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "title": "Actual Budget",
   "tagline": "Read and edit an Actual Budget file from chat",
-  "description": "Connects Hermes to a remote Actual Budget file through two MCP servers: actual-mcp-rw for chats a person is watching and actual-mcp-ro for api-server and cron. The budget is financial data. permissions.reads stays empty because the manifest's finance read class has not shipped; until it does, cron may use the read-only server and the write server is fenced out of cron. run-bank-sync is not exposed. See docs/budget.md.",
+  "description": "Connects Hermes to Actual Budget files, one MCP entry per connected budget, served by actual-mcp-ro (read-only) and actual-mcp-rw (write). A budget is read-only on every profile until its bind gives the default and browser profiles rw (scripts/budget.sh access SLUG write); api-server and cron get only the read-only server. The budget is financial data. permissions.reads stays empty because the manifest's finance read class has not shipped. run-bank-sync is not exposed. See docs/budget.md.",
   "publisher": {
     "name": "sovereign-agent-stack",
     "url": "https://github.com/kaxline/sovereign-agent-stack"
@@ -33,18 +33,13 @@
     }
   },
   "mcp": {
-    "service": {
-      "rw": "rw",
-      "ro": "ro"
+    "instances": {
+      "name": "budget-{slug}",
+      "url": "http://actual-mcp-{access}:3000/{slug}/mcp"
     },
     "transport": "http",
-    "path": "/mcp",
-    "name": "budget",
     "timeout": 120,
     "connectTimeout": 60,
-    "env": {
-      "access": "ACTUAL_ACCESS"
-    },
     "tools": [
       "get-transactions",
       "spending-by-category",
@@ -140,8 +135,8 @@
       "update-transaction"
     ],
     "profiles": {
-      "default": "rw",
-      "browser": "rw",
+      "default": "ro",
+      "browser": "ro",
       "api-server": "ro"
     }
   },
@@ -205,16 +200,6 @@
         "type": "string",
         "label": "Budget sync ID"
       },
-      "profile": {
-        "type": "string",
-        "default": "default",
-        "label": "Hermes profile that gets the budget"
-      },
-      "access": {
-        "type": "string",
-        "default": "read",
-        "label": "What the agent may do (read or write)"
-      },
       "session_token": {
         "type": "secret",
         "optional": true,
@@ -245,9 +230,7 @@
       ]
     },
     "errors": [
-      "bad_access",
-      "encryption_password",
-      "unknown_profile"
+      "encryption_password"
     ]
   }
 }

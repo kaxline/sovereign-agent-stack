@@ -70,9 +70,10 @@ listed in [hermes.md](../hermes.md#automatically-registered-mcp-servers).
 
 `api-server` is the unattended identity: `UNATTENDED_PROFILE` in
 `addon_manifest.py`, and `validate` refuses a manifest that reads personal
-data and lists it. Access levels come from each manifest's `mcp.profiles`;
-for an `ro` profile the plans leave out `writeTools`, and with `mcp.instances`
-the `ro` profile gets the instance's `ro` key. Core servers draw the same line
+data and lists it. Access levels come from each manifest's `mcp.profiles`, or
+for an instance from its `bind`; for an `ro` profile the plans leave out
+`writeTools`, and with `mcp.instances` the `ro` profile gets the instance's
+`ro` key or URL. Core servers draw the same line
 in the bootstrap: CalDAV gets 8 read-only tools on `api-server`, `sql` connects
 there as the `agent_ro` role, and `opencode` is never registered there.
 Independent agents created with `make agent-create` are further profiles
@@ -156,8 +157,7 @@ above.
   against a new image.
 - **The adapter's own reach.** Core MCP servers (`searxng`, `caldav-<slug>`,
   `sql`, `opencode`, `todos`, `messages`) are registered by the bootstrap
-  directly, not from manifests. Connected Actual budgets come from a separate
-  plan, `scripts/lib/actual_rows.py`. The add-on store mounts for the
+  directly, not from manifests. The add-on store mounts for the
   bootstraps are written per add-on in `docker-compose.yml`. Manifests name
   identities by Hermes profile name.
 

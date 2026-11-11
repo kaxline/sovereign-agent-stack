@@ -22,16 +22,11 @@ image's python3, mounted at /bootstrap/addon_manifest.py.
         or 0 from the flag in the environment: the entry's `when.gate` flag when
         it has one, else builtin.flag. `access`
         is rw, ro, or empty when the profile gets no entry. Tools, pins and
-        all_urls are space-separated. `mcp.service` is one service key or a map
-        {"ro": key, "rw": key} that gives each access level its own service;
-        `url` is then the one for this profile's access (the rw URL, else ro,
-        when the profile gets no entry) and `all_urls` lists every URL the
-        add-on can register, sorted, so the bootstrap can drop the ones this
-        profile must not have. Invalid manifests are reported on stderr and
-        skipped. mcp.env.access names a variable that caps access: "read" turns
-        rw into ro, "write" or empty changes nothing, and any other value gives
-        the profile no entry. For a profile whose access is ro, tools and pins leave out
-        the manifest's writeTools.
+        all_urls are space-separated; `all_urls` lists every URL the entry can
+        register, so the bootstrap can drop the ones this profile must not
+        have. Invalid manifests are reported on stderr and skipped. For a
+        profile whose access is ro, tools and pins leave out the manifest's
+        writeTools.
     addon_manifest.py vault-plan <addons-dir> <profile>
         For each add-on with a `vaultBackend` block, print one line the
         bootstrap reads, fields separated by "|":
@@ -63,10 +58,15 @@ required; a secret setting may not have a default; a bool setting may name a
 ADDON_<SHORT>_<NAME> key (differing only by case, - or _) are refused. Two
 `mcp` entries may not point at the same service. An `mcp` entry with `instances`
 (built-in only) registers one server per add-on instance and has no `service`,
-`path` or `name`: {name: "<prefix>{slug}", url: "{setting:<url setting>}...",
-access: "{setting:<choice setting offering only read and write>}", auth: {header,
-scheme, secret: {ro, rw}} naming secret instance settings, gate?: {setting: a
-bool instance setting, flag: builtin.flag or a gate}}. The name's prefix may not
+`path` or `name`: {name: "<prefix>{slug}", url: a template with
+{setting:<url or string setting>}, {access} (ro or rw, the level the profile
+gets) and {slug}, access?: "{setting:<choice setting offering only read and
+write>}" that caps the level, auth?: {header, scheme, secret: {ro, rw}} naming
+secret instance settings, gate?: {setting: a bool instance setting, flag:
+builtin.flag or a gate}}. Without auth the entry takes no key. An instance file
+may hold `bind`, the stack's per-instance binding: a map from profile to ro or
+rw that replaces mcp.profiles for that instance (bind_problem() has the
+rules). The name's prefix may not
 be a core server name or prefix. The entry keeps transport, timeout,
 connectTimeout, env, tools, pin, writeTools and profiles. mcp-plan skips it;
 instances-plan (instances_plan()) lists one line per instance in the add-on's
@@ -105,7 +105,7 @@ EGRESS_WORDS = {"llm-proxy", "search", "postgres", "internet"}
 STACK_SERVICES = {"llm", "search", "storage", "postgres", "neo4j", "redis", "secrets", "scheduler"}
 SETTING_TYPES = {"string", "int", "bool", "choice", "port", "secret", "url", "path", "list", "date"}
 # Setting names the stack fills in itself; a schema may not declare them.
-RESERVED_SETTINGS = {"slug"}
+RESERVED_SETTINGS = {"slug", "bind"}
 # services.<name>.mounts keys and the fixed container path each one names.
 MOUNT_PATHS = {"secrets": "/run/addon/secrets", "config": "/run/addon/config",
                "instances": "/run/addon/instances"}
@@ -333,17 +333,16 @@ def validate(manifest, repo=_AUTO) -> list[str]:
             errors.extend(_validate_mcp(entry, services, bool(reads), gate_flags,
                                         manifest.get("instances"),
                                         builtin.get("flag") if isinstance(builtin, dict) else None))
+            inst_entry = entry.get("instances") if isinstance(entry, dict) else None
             if perms.get("cron") == "ro" and not (
-                    isinstance(entry, dict) and (
-                        (isinstance(entry.get("service"), dict) and "ro" in entry["service"])
-                        # with mcp.instances, api-server gets only the instance's ro key;
-                        # cron follows the profile it runs on
-                        or (isinstance(entry.get("instances"), dict)
-                            and isinstance(entry["instances"].get("auth"), dict)
-                            and isinstance(entry["instances"]["auth"].get("secret"), dict)
-                            and "ro" in entry["instances"]["auth"]["secret"]))):
-                err('permissions.cron "ro" needs a mcp.service map with an ro service: '
-                    'cron ro needs an ro service')
+                    isinstance(inst_entry, dict) and (
+                        # cron follows the profile it runs on; the fence drops the rw URL
+                        (isinstance(inst_entry.get("url"), str) and "{access}" in inst_entry["url"])
+                        or (isinstance(inst_entry.get("auth"), dict)
+                            and isinstance(inst_entry["auth"].get("secret"), dict)
+                            and "ro" in inst_entry["auth"]["secret"]))):
+                err('permissions.cron "ro" needs an mcp.instances entry with an {access} URL '
+                    'or an ro key: cron ro needs an ro service')
         names = [e["name"] for e in entries if isinstance(e, dict) and isinstance(e.get("name"), str)]
         if len(names) != len(set(names)):
             err("mcp names must be unique within an add-on")
@@ -734,7 +733,6 @@ def _validate_mcp(mcp, services: dict, reads: bool,
     if "when" in mcp:
         errors.extend(_validate_when(mcp["when"], gate_flags, "mcp.when"))
     svc = mcp.get("service")
-    levels: set[str] = set()  # access levels that have a service
     if per_instance:
         # The URL and the server names come from mcp.instances.
         keys = []
@@ -745,15 +743,13 @@ def _validate_mcp(mcp, services: dict, reads: bool,
                                               gate_flags, builtin_flag))
     elif isinstance(svc, str):
         keys = [svc]
-        if svc in services:
-            levels = set(ACCESS)
-    elif isinstance(svc, dict) and svc and set(svc) <= ACCESS \
-            and all(isinstance(v, str) for v in svc.values()):
-        keys = list(svc.values())
-        levels = set(svc)
+    elif isinstance(svc, dict):
+        keys = []
+        err("the mcp.service {ro, rw} map was removed in 0.3.15; use mcp.instances with "
+            "{access} in its url")
     else:
         keys = []
-        err("mcp.service must name one of services, or map ro and/or rw to one")
+        err("mcp.service must name one of services")
     for key in keys:
         if key not in services:
             err("mcp.service must name one of services")
@@ -791,17 +787,17 @@ def _validate_mcp(mcp, services: dict, reads: bool,
     for prof, level in profiles.items():
         if level not in ACCESS:
             err(f"mcp.profiles.{prof} must be ro or rw")
-        elif isinstance(svc, dict) and level not in levels:
-            err(f"mcp.profiles.{prof} is {level}, but mcp.service has no service for {level}")
     if reads and UNATTENDED_PROFILE in profiles:
         err(f"an add-on that reads personal data may not be on {UNATTENDED_PROFILE}")
     if "unmanaged" in mcp:
         err("mcp.unmanaged was removed in 0.3.14; the bootstrap manages every profile in mcp.profiles")
     env = mcp.get("env", {})
     if env:
-        if not isinstance(env, dict) or set(env) - {"url", "timeout", "connectTimeout", "access"} \
+        if isinstance(env, dict) and "access" in env:
+            err("mcp.env.access was removed in 0.3.15")
+        elif not isinstance(env, dict) or set(env) - {"url", "timeout", "connectTimeout"} \
                 or not all(isinstance(v, str) and ENV_RE.match(v) for v in env.values()):
-            err("mcp.env maps url, timeout, connectTimeout and access to env var names")
+            err("mcp.env maps url, timeout and connectTimeout to env var names")
     return errors
 
 
@@ -848,8 +844,11 @@ def _validate_mcp_instances(inst, instances, gate_flags: set[str],
     url = inst.get("url")
     refs = SETTING_REF_RE.findall(url) if isinstance(url, str) else []
     rest = SETTING_REF_RE.sub("", url) if isinstance(url, str) else ""
-    if not (refs and "{" not in rest and "}" not in rest):
-        err("mcp.instances.url must be a string with {setting:<name>} placeholders")
+    rest = rest.replace("{access}", "").replace("{slug}", "")
+    if not (isinstance(url, str) and url and "{" not in rest and "}" not in rest
+            and (refs or "{slug}" in url)):
+        err("mcp.instances.url must be a string whose only placeholders are {setting:<name>}, "
+            "{access} and {slug}, with {slug} or a setting so each instance has its own URL")
     else:
         for ref in refs:
             if setting_type(ref) not in ("url", "string"):
@@ -857,7 +856,9 @@ def _validate_mcp_instances(inst, instances, gate_flags: set[str],
 
     access = inst.get("access")
     m = SETTING_REF_RE.fullmatch(access) if isinstance(access, str) else None
-    if not m:
+    if "access" not in inst:
+        pass
+    elif not m:
         err("mcp.instances.access must be {setting:<name>} naming a choice instance setting")
     elif setting_type(m.group(1)) != "choice":
         err(f"mcp.instances.access: {m.group(1)!r} is not a choice instance setting")
@@ -869,7 +870,9 @@ def _validate_mcp_instances(inst, instances, gate_flags: set[str],
                 f"{' and '.join(INSTANCE_ACCESS_LEVELS)}")
 
     auth = inst.get("auth")
-    if not isinstance(auth, dict):
+    if "auth" not in inst:
+        pass
+    elif not isinstance(auth, dict):
         err("mcp.instances.auth must be {header, scheme, secret}")
     else:
         stray = set(auth) - {"header", "scheme", "secret"}
@@ -1030,18 +1033,10 @@ def mcp_entries(manifest: dict) -> list[dict]:
 
 
 def _mcp_urls(manifest: dict, mcp: dict, environ) -> dict[str, str]:
-    """Access level -> URL. A single service gives {"": url}, which
-    mcp.env.url may override; a service map gives one URL per level and
-    ignores mcp.env.url."""
-    services = manifest["services"]
-
-    def build(key: str) -> str:
-        return f"http://{services[key]['compose']}:{services[key]['port']}{mcp['path']}"
-
-    if isinstance(mcp["service"], dict):
-        return {level: build(key) for level, key in mcp["service"].items()}
+    """{"": url}: the entry's service URL, which mcp.env.url may override."""
+    svc = manifest["services"][mcp["service"]]
     override = environ.get(mcp.get("env", {}).get("url", ""), "")
-    return {"": override or build(mcp["service"])}
+    return {"": override or f"http://{svc['compose']}:{svc['port']}{mcp['path']}"}
 
 
 def _raw_mcp_urls(manifest, environ) -> list[tuple[dict, list[str]]]:
@@ -1110,14 +1105,22 @@ def cron_fence(addons_dir: Path, environ=os.environ,
             continue
         for mcp in mcp_entries(manifest):
             if "instances" in mcp:
-                # cron "ro": the entries stay in cron. A cron job gets the key
-                # of the profile it runs on (rw on default for a write
-                # instance); a profile mapped to ro gets only the ro key
-                # (instances_plan).
-                if cron != "ro" and data_dir is not None:
-                    template = mcp["instances"]["name"]
-                    names.extend(template.replace("{slug}", s)
-                                 for s in _store_slugs(Path(data_dir) / path.parent.name)[0])
+                # cron "ro": the entries stay in cron with the level of the
+                # profile the job runs on. With {access} in the URL, each
+                # instance's rw URL is fenced, so a job never gets write tools.
+                # With keys and no {access}, a profile mapped to ro gets only
+                # the ro key (instances_plan).
+                if data_dir is None:
+                    continue
+                inst = mcp["instances"]
+                store = Path(data_dir) / path.parent.name
+                if cron != "ro":
+                    names.extend(inst["name"].replace("{slug}", s) for s in _store_slugs(store)[0])
+                elif "{access}" in inst["url"]:
+                    schema = manifest["instances"]["settings"]
+                    for s in _store_slugs(store)[0]:
+                        values = _instance_values(store, s, schema) or {}
+                        urls.append(_instance_url(inst["url"], values, schema, "rw", s))
                 continue
             mcp_urls = _mcp_urls(manifest, mcp, environ)
             if cron == "ro":
@@ -1172,17 +1175,7 @@ def mcp_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
             flag = mcp["when"]["gate"] if "when" in mcp else manifest["builtin"]["flag"]
             enabled = "1" if truthy(environ.get(flag)) else "0"
             access = mcp["profiles"].get(profile, "")
-            if "access" in env and access:
-                # Fail closed: only read, write or empty are known values.
-                cap = environ.get(env["access"], "")
-                if cap == "read":
-                    access = "ro"
-                elif cap not in ("write", ""):
-                    access = ""
-            if "" in urls:
-                url = urls[""]
-            else:
-                url = urls.get(access) or urls.get("rw") or urls["ro"]
+            url = urls[""]
             tools, pins = mcp["tools"], mcp.get("pin", [])
             if access == "ro":
                 # A read-only profile never sees a write tool, listed or pinned.
@@ -1298,6 +1291,30 @@ def _fill_url(template: str, values: dict, schema: dict) -> str:
     return "".join(out)
 
 
+def _instance_url(template: str, values: dict, schema: dict, level: str, slug: str) -> str:
+    """_fill_url, then {access} as LEVEL (ro or rw) and {slug}."""
+    return _fill_url(template, values, schema).replace("{access}", level).replace("{slug}", slug)
+
+
+def bind_problem(bind, profiles: dict, reads: bool) -> str | None:
+    """Why `bind` (an instance's per-profile binding) is refused, or None.
+    It maps profiles named in mcp.profiles to ro or rw; rw is refused for the
+    unattended profile, and an add-on that reads personal data may not name
+    it at all. It may raise a profile from ro to rw."""
+    if not isinstance(bind, dict):
+        return "must map profiles to ro or rw"
+    for prof, level in bind.items():
+        if prof not in profiles:
+            return f"names {prof!r}, which is not in the manifest's mcp.profiles"
+        if level not in ACCESS:
+            return f"{prof} must be ro or rw"
+        if prof == UNATTENDED_PROFILE and reads:
+            return f"{UNATTENDED_PROFILE} is refused for an add-on that reads personal data"
+        if prof == UNATTENDED_PROFILE and level == "rw":
+            return f"{UNATTENDED_PROFILE} may only be ro"
+    return None
+
+
 def _key_problem(path: Path) -> str:
     """Why the key file can't be used, or "". Never returns the value."""
     try:
@@ -1315,16 +1332,19 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
     """One line per instance of each add-on with mcp.instances, after a line for
     the add-on itself:
 
-        name|title|on|url|keyenv|keyfile|timeout|connect|pins|reason|header|scheme
+        name|title|on|url|keyenv|keyfile|timeout|connect|pins|reason|header|scheme|tools
 
     The add-on's line has name "<prefix>*", on set from its flag, pins the
     names to unpin once no entry with the prefix is left, and reason the
     flag's name. An instance line is on (1) when the flag is on, the profile is
-    in mcp.profiles, the url is http(s), the gate (if any) lets it through, the
-    access setting is read or write and the key file it needs holds one line.
-    Otherwise on is 0 and reason starts with flag, profile, file, url, gate,
-    access or key. A profile mapped to ro in mcp.profiles takes the ro key whatever
-    the access setting; an rw profile takes ro for read and rw for write.
+    in the instance's `bind` (mcp.profiles when it has none), the url is
+    http(s), the gate (if any) lets it through, the access setting (if any) is
+    read or write and the key file it needs (if any) holds one line. Otherwise
+    on is 0 and reason starts with flag, profile, bind, file, url, gate, access
+    or key. The profile's level is ro or rw from bind or mcp.profiles; an
+    access setting of read caps it at ro. The level picks the key and fills
+    {access} in the url. tools is the entry's tool list, less writeTools at ro;
+    an entry without auth has empty keyenv, keyfile, header and scheme.
     keyfile is a path under data_dir; key values are never printed.
 
     An invalid manifest still gives its add-on line, off, when its
@@ -1349,7 +1369,7 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
                     pins = entry.get("pin") if isinstance(entry, dict) else None
                     pins = [p for p in pins if TOOL_RE.match(p)] if _is_str_list(pins) else []
                     emit([template.split("{slug}")[0] + "*", sid_dir, "0", "", "", "", "", "",
-                          " ".join(pins), "invalid manifest", "", ""], sid_dir)
+                          " ".join(pins), "invalid manifest", "", "", ""], sid_dir)
             continue
         for mcp in mcp_entries(manifest):
             if "instances" not in mcp:
@@ -1362,10 +1382,12 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
             connect = environ.get(env.get("connectTimeout", ""), "") or str(mcp["connectTimeout"])
             flag = mcp["when"]["gate"] if "when" in mcp else manifest["builtin"]["flag"]
             flag_on = truthy(environ.get(flag))
-            level = mcp["profiles"].get(profile, "")
-            header, scheme = inst["auth"]["header"], inst["auth"]["scheme"]
+            default_level = mcp["profiles"].get(profile, "")
+            auth = inst.get("auth")
+            header, scheme = (auth["header"], auth["scheme"]) if auth else ("", "")
+            reads = bool(manifest.get("permissions", {}).get("reads"))
             emit([template.split("{slug}")[0] + "*", title, "1" if flag_on else "0", "", "", "", timeout,
-                  connect, " ".join(mcp.get("pin", [])), flag, "", ""], sid_dir)
+                  connect, " ".join(mcp.get("pin", [])), flag, "", "", ""], sid_dir)
 
             schema = manifest["instances"]["settings"]
             store = data_dir / sid_dir
@@ -1373,27 +1395,47 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
             for f in bad:
                 print(f"warning: {sid_dir}: skipping instance file {f}: a slug is lowercase letters, "
                       "digits and -, starting with a letter", file=sys.stderr)
-            access_setting = SETTING_REF_RE.fullmatch(inst["access"]).group(1)
+            access_setting = (SETTING_REF_RE.fullmatch(inst["access"]).group(1)
+                              if "access" in inst else None)
             gate = inst.get("gate")
             for slug in slugs:
                 name = template.replace("{slug}", slug)
 
-                def line(on: str, url="", keyfile="", pins="", reason="") -> None:
-                    emit([name, title, on, url, instance_key_env(name), keyfile, timeout, connect,
-                          pins, reason, header, scheme], f"{sid_dir}/{slug}")
+                def line(on: str, url="", keyfile="", pins="", reason="", tools="") -> None:
+                    emit([name, title, on, url, instance_key_env(name) if auth else "", keyfile,
+                          timeout, connect, pins, reason, header, scheme, tools], f"{sid_dir}/{slug}")
 
                 values = _instance_values(store, slug, schema)
                 if not flag_on:
                     line("0", reason=f"flag {flag} is off")
                     continue
-                if not level:
-                    line("0", reason="profile not in the manifest's mcp.profiles")
-                    continue
                 if values is None:
                     line("0", reason=f"file instances/{slug}.json is not a JSON object")
                     continue
+                if "bind" in values:
+                    problem = bind_problem(values["bind"], mcp["profiles"], reads)
+                    if problem:
+                        line("0", reason=f"bind {problem}")
+                        continue
+                    level = values["bind"].get(profile, "")
+                    if not level:
+                        line("0", reason="profile not in the instance's bind")
+                        continue
+                else:
+                    level = default_level
+                    if not level:
+                        line("0", reason="profile not in the manifest's mcp.profiles")
+                        continue
 
-                url = _fill_url(inst["url"], values, schema)
+                use = level
+                if access_setting is not None:
+                    access = values.get(access_setting)
+                    if not isinstance(access, str) or access not in INSTANCE_ACCESS_LEVELS:
+                        line("0", reason=f"access {access_setting} must be read or write")
+                        continue
+                    if access == "read":
+                        use = "ro"
+                url = _instance_url(inst["url"], values, schema, use, slug)
                 if not re.match(r"^https?://[^\s|]+\Z", url):
                     line("0", reason="url must start with http:// or https://")
                     continue
@@ -1408,24 +1450,23 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
                     if gated and not truthy(environ.get(gate["flag"])):
                         line("0", url=url, reason=f"gate {gate['setting']} is set and {gate['flag']} is off")
                         continue
-                access = values.get(access_setting)
-                if not isinstance(access, str) or access not in INSTANCE_ACCESS_LEVELS:
-                    line("0", url=url, reason=f"access {access_setting} must be read or write")
-                    continue
-                use = "ro" if level == "ro" else INSTANCE_ACCESS_LEVELS[access]
-                secret = inst["auth"]["secret"][use]
-                keyfile = store / "secrets" / f"{slug}.{secret}"
-                problem = _key_problem(keyfile)
-                if problem:
-                    why = (f"{access_setting} is {access}" if level == "rw"
-                           else "this profile is read-only")
-                    line("0", url=url, reason=f"key {secret} is {problem}; {why}")
-                    continue
-                pins = mcp.get("pin", [])
+                keyfile = ""
+                if auth:
+                    secret = auth["secret"][use]
+                    keyfile = store / "secrets" / f"{slug}.{secret}"
+                    problem = _key_problem(keyfile)
+                    if problem:
+                        why = (f"{access_setting} is {values.get(access_setting)}"
+                               if level == "rw" and access_setting is not None
+                               else "this profile is read-only")
+                        line("0", url=url, reason=f"key {secret} is {problem}; {why}")
+                        continue
+                pins, tools = mcp.get("pin", []), mcp["tools"]
                 if use == "ro":
                     write = set(mcp.get("writeTools", []))
                     pins = [t for t in pins if t not in write]
-                line("1", url=url, keyfile=str(keyfile), pins=" ".join(pins))
+                    tools = [t for t in tools if t not in write]
+                line("1", url=url, keyfile=str(keyfile), pins=" ".join(pins), tools=" ".join(tools))
     return lines
 
 

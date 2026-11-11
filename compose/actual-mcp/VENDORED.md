@@ -28,7 +28,8 @@ twice: `actual-mcp-rw` with `--sse --enable-write` and `actual-mcp-ro` with `--s
   shuts the API down, marks the connection failed and fails the call with a message for that
   group; the next call re-runs init. An init that fails with one of those codes, or with
   `budget-not-found`, gets the same message. The reconnect advice in the messages comes from
-  `ACTUAL_RECONNECT_HINT`, defaulting to the single-budget commands. Other sync errors, network
+  `ACTUAL_RECONNECT_HINT`, which the launcher sets for each budget (the default names the
+  single-budget commands removed in 0.3.15 and is no longer reached). Other sync errors, network
   ones included, are logged and the call continues with local data, as upstream does. Tests in
   `connection.test.ts` and `actual-api.test.ts`. Upstream logs and continues on every sync error,
   so after a password change or a deleted session, writes were reported as done and stayed in
@@ -37,8 +38,9 @@ twice: `actual-mcp-rw` with `--sse --enable-write` and `actual-mcp-ro` with `--s
   `scripts/budget.sh` runs with `--entrypoint node`. The Dockerfile copies it to
   `/opt/actual-admin.mjs`; it loads `@actual-app/api` from `/app/node_modules`.
 - `src/launcher/` (local addition) and the Dockerfile `ENTRYPOINT`: the container runs
-  `build/launcher/main.js`, which listens on :3000 and runs `build/index.js` as children. The
-  budget in `/app/.env` keeps `/mcp`, `/sse` and `/messages`; each connected budget under
+  `build/launcher/main.js`, which listens on :3000 and runs `build/index.js` as children.
+  `/mcp`, `/sse` and `/messages` answer 404 since the single budget was removed in 0.3.15; each
+  connected budget under
   `ACTUAL_ROWS_DIR` (default `/budgets`) gets its own child behind `/<slug>/mcp`, with its cache
   in `/data/rows/<slug>`. Children follow added, changed and removed rows every 2 s. An
   unknown-session 400 from a child goes out as 404. Tests in `src/launcher/*.test.ts`.

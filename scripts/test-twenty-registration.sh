@@ -16,7 +16,10 @@ load_fns "$bootstrap" addon_instances_plan addon_instance_key_env addon_instance
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-ADDONS_DIR="${ROOT}/addons"
+# Only Twenty's manifest: other instance add-ons (Actual) add their own prefixes.
+ADDONS_DIR="${tmp}/addons"
+mkdir -p "${ADDONS_DIR}/twenty"
+cp "${ROOT}/addons/twenty/addon.json" "${ADDONS_DIR}/twenty/addon.json"
 ADDON_MANIFEST_PY="${ROOT}/scripts/lib/addon_manifest.py"
 ADDON_DATA_DIR="${tmp}/addon-data"
 store="${ADDON_DATA_DIR}/twenty"
