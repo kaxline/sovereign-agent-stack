@@ -48,10 +48,13 @@ Usage: scripts/vault.sh <command> [options]
         An account on bitwarden.com or your own server. Asks for the API key
         (and, with stored unlock, the master password) in hidden prompts.
         --scope all also needs CONFIRM_SCOPE_ALL=1 in the environment.
-  add --slug S --json
+  add --slug S [--replace] --json
         For Boundary's connect: {mode, region, url, scope, unlock, client_id,
         client_secret, master_password} on stdin, unlock manual by default,
         no --force or scope all. JSON lines out; a failed check keeps nothing.
+        --replace (addon.sh connect --force) replaces an existing account: its
+        instance file and secrets stay as backups until the check passes, and
+        a failed check puts them back.
   unlock --slug S [--json]
                     Unlock a manual account in the broker (hidden prompt; with
                     --json, {master_password} on stdin and no prompt)
@@ -494,7 +497,7 @@ lets Bitwarden enforce the limit instead (docs/bitwarden.md)."
 # or offers bitwarden-setup. scope defaults to folder:Agent and unlock to manual.
 # Any outcome but a sign-in the broker confirms removes what it wrote.
 cmd_add() {
-  local slug="" mode="" region="" url="" scope="folder:Agent" unlock="stored" force="" a
+  local slug="" mode="" region="" url="" scope="folder:Agent" unlock="stored" force="" replace="" a
   for a in "$@"; do
     if [[ "$a" == --json ]]; then
       JSON=1
@@ -519,8 +522,11 @@ cmd_add() {
         shift 2
         ;;
       --force)
-        [[ "$JSON" != 1 ]] || emit_error bad_input "--force does not work with --json; disconnect the account first"
+        [[ "$JSON" != 1 ]] || emit_error bad_input "--force does not work with --json; use --replace"
         force=1; shift ;;
+      --replace)
+        [[ "$JSON" == 1 ]] || emit_error bad_input "--replace is for add --json; use --force"
+        replace=1; shift ;;
       *) emit_error bad_input "unknown option for add: $1" ;;
     esac
   done
@@ -583,10 +589,10 @@ cmd_add() {
   esac
   local file
   file="$(instance_file "$slug")"
-  if [[ "$JSON" == 1 && -e "$file" ]]; then
+  if [[ "$JSON" == 1 && -e "$file" && -z "$replace" ]]; then
     emit_error exists "an account named ${slug} exists"
   fi
-  if [[ -e "$file" && -z "$force" ]]; then
+  if [[ -e "$file" && -z "$force" && -z "$replace" ]]; then
     die "${file} exists; pass --force (make vault-add FORCE=1) to replace it"
   fi
 
@@ -751,15 +757,24 @@ remove_bw_dir() {
 }
 
 # add --json failed or was stopped: the instance file, secrets/<slug>/ and
-# bw/<slug>/ go, and a broker that loaded the account is recreated without it.
+# bw/<slug>/ go (with --replace, the old instance file and secrets come back
+# instead), and a broker that loaded the account is recreated without it.
 # bw/<slug>/ goes last: until the recreate, the old broker may still write
 # its sign-in there.
 add_rollback() {
-  local slug="$1"
+  local slug="$1" stage="$ADD_STAGE"
   ADD_STAGE=finished
   [[ -n "$slug" ]] || return 0
-  rm -f "$(instance_file "$slug")" || true
-  remove_secrets "$slug" || true
+  case "$stage" in
+    backed | replaced)
+      # --replace: the old instance file and secrets go back in place.
+      restore_backup "$slug"
+      ;;
+    *)
+      rm -f "$(instance_file "$slug")" || true
+      remove_secrets "$slug" || true
+      ;;
+  esac
   if [[ "$ADD_RESTARTED" == 1 ]]; then
     ADD_RESTARTED=0
     restart_broker 2>/dev/null || log "The broker did not restart; it holds ${slug} until make up"
@@ -801,18 +816,25 @@ wait_for_login() {
 # logged_in=1 and no error (manual). Anything else rolls back and ends with an
 # error line.
 check_account_json() {
-  local slug="$1" unlock="$2" wait="${VAULT_BROKER_WAIT:-60}" timed_out=0
+  local slug="$1" unlock="$2" wait="${VAULT_BROKER_WAIT:-60}" timed_out=0 kept="nothing was kept" kept_s="Nothing was kept"
+  case "$ADD_STAGE" in
+    backed | replaced)
+      kept="the previous account is back in place"
+      kept_s="The previous account is back in place"
+      ;;
+  esac
   emit_line '{"phase":"setup","step":"check","status":"running","message":"the broker is signing in"}'
   ADD_RESTARTED=1
   if ! restart_broker; then
     add_rollback "$slug"
-    emit_error command_failed "the broker did not restart (docker compose --profile core --profile bitwarden up -d --no-deps bitwarden-broker); nothing was kept"
+    emit_error command_failed "the broker did not restart (docker compose --profile core --profile bitwarden up -d --no-deps bitwarden-broker); ${kept}"
   fi
   W_STATE=""; W_CLASS=""; W_LOGGED=""; W_RETRY=""
   wait_for_login "$slug" "$unlock" || timed_out=1
   if [[ "$timed_out" == 0 && -z "$W_CLASS" ]]; then
     if [[ "$unlock" == stored && "$W_STATE" == unlocked ]] \
       || [[ "$unlock" == manual && "$W_STATE" == locked && "$W_LOGGED" == 1 ]]; then
+      [[ "$ADD_STAGE" != replaced ]] || drop_backup "$slug"
       ADD_STAGE=finished
       emit_line '{"phase":"setup","step":"check","status":"done"}'
       LOCKED_MANUAL=""
@@ -830,19 +852,19 @@ check_account_json() {
   fi
   add_rollback "$slug"
   case "$W_CLASS" in
-    auth) emit_error login_refused "Bitwarden refused the API key or master password for ${slug}; nothing was kept" ;;
-    network) emit_error server_unreachable "the broker could not reach the Bitwarden server for ${slug}; nothing was kept" ;;
+    auth) emit_error login_refused "Bitwarden refused the API key or master password for ${slug}; ${kept}" ;;
+    network) emit_error server_unreachable "the broker could not reach the Bitwarden server for ${slug}; ${kept}" ;;
     rate_limited)
       if [[ "$W_RETRY" =~ $RETRY_RE ]]; then
-        emit_error rate_limited "Bitwarden is limiting sign-ins for ${slug}; try again in ${W_RETRY} s. Nothing was kept" "$W_RETRY"
+        emit_error rate_limited "Bitwarden is limiting sign-ins for ${slug}; try again in ${W_RETRY} s. ${kept_s}" "$W_RETRY"
       fi
-      emit_error rate_limited "Bitwarden is limiting sign-ins for ${slug}; try again later. Nothing was kept"
+      emit_error rate_limited "Bitwarden is limiting sign-ins for ${slug}; try again later. ${kept_s}"
       ;;
   esac
   if [[ "$timed_out" == 1 ]]; then
-    emit_error timeout "the broker did not finish signing in to ${slug} within ${wait} s; nothing was kept"
+    emit_error timeout "the broker did not finish signing in to ${slug} within ${wait} s; ${kept}"
   fi
-  emit_error command_failed "the broker reports ${slug} as ${W_STATE:-not loaded}${W_CLASS:+ (${W_CLASS})}; nothing was kept"
+  emit_error command_failed "the broker reports ${slug} as ${W_STATE:-not loaded}${W_CLASS:+ (${W_CLASS})}; ${kept}"
 }
 
 # Creating the folder or collection and moving items into it need your own

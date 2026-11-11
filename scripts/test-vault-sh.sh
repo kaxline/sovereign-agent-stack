@@ -738,6 +738,30 @@ no_secret_json "add --json"
 rm -f "$STUB/record-ps" "$STUB/ps"
 [ "$(ja "$MANUAL" jm)" = 2 ] && [ "$(jlast error)" = exists ] || fail "add --json over an existing account"
 
+# --replace (addon.sh connect --force): an auth error puts the old account back,
+# a passing check replaces it and drops the backups.
+[ "$(ja "$MANUAL" jm --force)" = 2 ] && jlast message | grep -q -- "--replace" || fail "add --json --force points at --replace"
+rc=0; printf 'x' | STACK_PYTHON=host "$vault" add --slug jm --mode cloud --replace > "$out" 2>&1 || rc=$?
+[ "$rc" != 0 ] && grep -q -- "--force" "$out" || fail "add --replace without --json is refused, pointing at --force"
+cp "$INST/jm.json" "$tmp/jm.before"
+NEW="{\"mode\":\"cloud\",\"client_id\":\"user.new-$$\",\"client_secret\":\"new-$SECRET\"}"
+printf 'jm\tcloud\tfolder\terror\tauth\t0\t\n' > "$STUB/accounts"
+[ "$(ja "$NEW" jm --replace)" = 4 ] && [ "$(jlast error)" = login_refused ] || fail "add --json --replace with an auth error"
+jlast message | grep -q "previous account is back in place" || fail "a failed --replace says the old account is back"
+cmp -s "$INST/jm.json" "$tmp/jm.before" || fail "a failed --replace did not put the old instance file back"
+[ "$(cat "$D/secrets/jm/client_id")" = "user.syn-$$" ] || fail "a failed --replace did not put the old client_id back"
+[ "$(cat "$D/secrets/jm/client_secret")" = "$SECRET" ] || fail "a failed --replace did not put the old client_secret back"
+for left in "$INST"/.jm.json.bak "$D"/secrets/jm/*.bak; do
+  [ ! -e "$left" ] || fail "a failed --replace left $left"
+done
+printf 'jm\tcloud\tfolder\tlocked\t-\t1\t\n' > "$STUB/accounts"
+[ "$(ja "$NEW" jm --replace)" = 0 ] && [ "$(jlast phase)" = "done" ] || fail "add --json --replace that passes the check"
+[ "$(cat "$D/secrets/jm/client_id")" = "user.new-$$" ] || fail "--replace writes the new client_id"
+for left in "$INST"/.jm.json.bak "$D"/secrets/jm/*.bak; do
+  [ ! -e "$left" ] || fail "a passing --replace left $left"
+done
+grep -qF -e "new-$SECRET" -e "$SECRET" "$out" "$tmp/jerr" && fail "--replace printed a secret"
+
 # remove --json.
 : > "$STUB/log"
 [ "$(jr --slug jm --json)" = 0 ] && [ "$(jlast phase)" = "done" ] || fail "remove --json"

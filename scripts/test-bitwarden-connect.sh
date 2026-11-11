@@ -124,6 +124,23 @@ check "connect reloads both bootstraps" 'grep -q hermes-api-bootstrap "$STUB/log
 connect home "$STORED"
 check "a second connect of home is exists" '[ "$rc" = 2 ] && [ "$(last error)" = exists ]'
 
+# connect --force (Boundary's replace): addon.sh passes --replace to vault.sh add.
+cp "$INST/home.json" "${tmp}/home.before"
+REPL="{\"mode\":\"cloud\",\"region\":\"us\",\"unlock\":\"stored\",\"client_id\":\"user.repl-$$\",\"client_secret\":\"$SECRET\",\"master_password\":\"$PW\"}"
+printf 'home\tcloud\tfolder\terror\tauth\t0\t\n' > "$STUB/accounts"
+printf '%s' "$REPL" > "${tmp}/stdin"; addon connect bitwarden --instance home --force --json < "${tmp}/stdin"
+check "connect --force with a refused key is login_refused" '[ "$rc" = 4 ] && [ "$(last error)" = login_refused ]'
+check "a refused connect --force keeps the old instance file" 'cmp -s "$INST/home.json" "${tmp}/home.before"'
+check "a refused connect --force keeps the old client_id" '[ "$(cat "$D/secrets/home/client_id")" = "$CID" ]'
+printf 'home\tcloud\tfolder\tunlocked\t-\t1\t\n' > "$STUB/accounts"
+printf '%s' "$REPL" > "${tmp}/stdin"; addon connect bitwarden --instance home --force --json < "${tmp}/stdin"
+check "connect --force replaces home" '[ "$rc" = 0 ] && [ "$(last phase)" = done ] && grep -q "\"replaced\":true" "$out"'
+check "connect --force writes the new client_id" '[ "$(cat "$D/secrets/home/client_id")" = "user.repl-$$" ]'
+check "connect --force writes the new region" \
+  'python3 -c "import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get(\"region\")==\"us\" else 1)" "$INST/home.json"'
+check "connect --force leaves no backups" '! ls -a "$INST" "$D/secrets/home" | grep -q "\.bak"'
+check "connect --force leaks no secret" '! grep -qF -e "$PW" -e "$SECRET" "$out" "$err"'
+
 : > "$STUB/log"
 printf 'bad\tcloud\tfolder\terror\tauth\t0\t\n' > "$STUB/accounts"
 connect bad "$MANUAL"

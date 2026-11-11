@@ -262,6 +262,10 @@ unlock reads `{master_password}`.
 | `requests --json` | `pending` and `recent` (below) |
 | `add --json`, `remove --json` | `setup` lines, then `done` with `account` and `message` |
 
+`add --json` refuses an existing slug with `exists`. `add --replace --json`, which `addon.sh
+connect --force` runs, replaces the account: the old instance file and secrets stay as backups
+until the new key signs in, and a failed check puts them back and says so in the error message.
+
 `state` is `unlocked`, `locked`, `offline`, `error` (passed through from the broker) or `refused`;
 `locked` is a normal state for a `manual` account. `error` is `login_refused`, `server_unreachable`,
 `rate_limited`, `unknown`, `not_loaded` (the running broker has not read that instance; `make up`),

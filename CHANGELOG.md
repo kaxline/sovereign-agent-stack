@@ -96,6 +96,10 @@ the stack under another app.
   `rw`. A budget on the local server stays registered while
   `ACTUAL_LOCAL_ENABLED` is off; its calls fail until the server is back.
   `scripts/lib/actual_rows.py` and the bootstrap's Actual row code are gone.
+- Fixed: `addon.sh connect bitwarden --force` failed, because `vault.sh add`
+  refused the `--replace` the hook gets. `vault.sh add --replace --json` now
+  replaces the account, keeping the old instance file and secrets as backups
+  until the new key signs in and putting them back if it doesn't.
 - Removed the `mcp.service` `{ro, rw}` map and `mcp.env.access`, whose only
   user was Actual's single budget.
 - `budget.sh`: removed `init` without `--server-only` (and `--rotate`), `add`,
