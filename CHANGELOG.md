@@ -69,6 +69,13 @@ the stack under another app.
 
 ### Changes
 
+- Manifests take an optional `store` block (Boundary CR 0027 R4). Its one
+  field, `store.dataLeaves`, says what leaves this Mac and where it goes, and
+  `validate` requires it when `permissions.egress` includes `internet`. Every
+  built-in add-on with `internet` has one. `addon.sh list --json` now returns
+  `description` and `store` on each entry (R5), `store` as `{}` when a
+  manifest has none. R1–R3 (category, keywords, example questions) are not
+  done.
 - The `email` add-on has now had its first run on a real IMAP account
   (INBOX, a ten-day `since` window): `run email mailboxes` listed the
   mailboxes and the first pass indexed every message in scope with none

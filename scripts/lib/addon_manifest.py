@@ -115,6 +115,9 @@ TRANSPORTS = {"sse", "http"}
 ACCESS = {"ro", "rw"}
 UNATTENDED_PROFILE = "api-server"
 
+# Keys of the optional `store` block (display facts for Boundary's add-on store).
+STORE_FIELDS = {"dataLeaves"}
+
 REQUIRED = ("manifestVersion", "id", "version", "title", "tagline", "description",
             "publisher", "minStackVersion", "services", "permissions")
 
@@ -315,6 +318,8 @@ def validate(manifest, repo=_AUTO) -> list[str]:
         err("permissions.egress must be a list")
     sends = perms.get("sends", False) is True
     cron = perms.get("cron", False) in (True, "ro")
+    errors.extend(_validate_store(manifest.get("store"),
+                                  internet=_is_str_list(egress) and "internet" in egress))
 
     if reads:
         if sends:
@@ -464,6 +469,26 @@ def validate(manifest, repo=_AUTO) -> list[str]:
     if "backup" in manifest:
         errors.extend(_validate_backup(manifest["backup"]))
 
+    return errors
+
+
+def _validate_store(store, *, internet: bool) -> list[str]:
+    """The optional `store` block of display facts (Boundary CR 0027). Only
+    `dataLeaves` is defined so far; an add-on whose egress includes `internet`
+    must say in it what leaves this Mac and where it goes."""
+    if store is None:
+        return ["permissions.egress includes internet, so store.dataLeaves must say what leaves this Mac"] if internet else []
+    if not isinstance(store, dict):
+        return ["store must be an object"]
+    errors = []
+    extra = set(store) - STORE_FIELDS
+    if extra:
+        errors.append(f"store has unknown fields: {', '.join(sorted(extra))}")
+    leaves = store.get("dataLeaves")
+    if "dataLeaves" in store and not (isinstance(leaves, str) and leaves.strip()):
+        errors.append("store.dataLeaves must be a non-empty string")
+    elif internet and "dataLeaves" not in store:
+        errors.append("permissions.egress includes internet, so store.dataLeaves must say what leaves this Mac")
     return errors
 
 

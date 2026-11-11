@@ -229,5 +229,8 @@
       "email_index",
       "email_drafts"
     ]
+  },
+  "store": {
+    "dataLeaves": "email-indexer reads mail from each account's IMAP server, and with drafts on, email-outbox saves drafts to that server's Drafts mailbox. Nothing is sent."
   }
 }

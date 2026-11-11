@@ -28,6 +28,11 @@ except where noted:
 - `postInstallMessage`: a non-empty string of Markdown. `addon.sh list --json`
   passes it through as `postInstallMessage`; nothing else reads it, and the
   key is absent from the listing when the manifest has none.
+- `store`: display facts for Boundary's add-on store, passed through by
+  `addon.sh list --json` as `store` (`{}` when the manifest has none), beside
+  `description`. Its one field so far is `dataLeaves`, a sentence saying what
+  leaves this Mac and where it goes; it is required when
+  `permissions.egress` includes `internet`. Unknown keys are refused.
 - `gates`: a list of `{flag, profile, seed}` for built-in add-ons, each one
   more flag-to-profile row after `builtin`, so a second flag can switch on
   part of an add-on. A gate flag must differ from `builtin.flag` and from the

@@ -58,5 +58,8 @@
     "exposesToAgent": false,
     "cron": false
   },
-  "postInstallMessage": "Open http://localhost:5678 and create the owner account."
+  "postInstallMessage": "Open http://localhost:5678 and create the owner account.",
+  "store": {
+    "dataLeaves": "Workflows call whatever services you connect them to. The starter research workflow sends queries to outside search engines and fetches the pages they find."
+  }
 }

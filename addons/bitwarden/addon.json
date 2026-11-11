@@ -137,5 +137,8 @@
       "rate_limited",
       "broker_down"
     ]
+  },
+  "store": {
+    "dataLeaves": "The broker syncs each connected Bitwarden account with that account's server, and filled pages receive the values the agent was given access to."
   }
 }

@@ -232,5 +232,8 @@
     "errors": [
       "encryption_password"
     ]
+  },
+  "store": {
+    "dataLeaves": "Budget data is read from and written to the Actual server each budget connects to. The bundled local server keeps it on this Mac."
   }
 }

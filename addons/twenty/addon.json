@@ -198,5 +198,8 @@
     ],
     "exposesToAgent": false,
     "cron": true
+  },
+  "store": {
+    "dataLeaves": "With a remote workspace, CRM data is read from and written to that workspace's server. The bundled local workspace keeps it on this Mac."
   }
 }

@@ -579,6 +579,8 @@ def listing(manifest: dict, data_root: Path, environ, figures=None) -> dict:
         "shortId": am.short_id(manifest["id"]),
         "title": manifest.get("title"),
         "tagline": manifest.get("tagline"),
+        "description": manifest.get("description"),
+        "store": manifest.get("store") if isinstance(manifest.get("store"), dict) else {},
         "permissions": manifest.get("permissions"),
         "platform": host.get("platform") or "any",
         "enabled": am.truthy(environ.get(builtin.get("flag"))) if builtin.get("flag") else False,
