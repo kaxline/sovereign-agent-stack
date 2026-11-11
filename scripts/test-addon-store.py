@@ -64,7 +64,7 @@ MANIFEST["instances"] = {"name": "account", "settings": {
     "password": {"type": "secret", "optional": True},
     "mailboxes": {"type": "list", "label": "Mailboxes"},
 }}
-errs = am.validate(MANIFEST, "builtin")
+errs = am.validate(MANIFEST)
 check("fixture manifest is valid", errs == [], str(errs))
 
 FIXTURE = json.loads((ROOT / "scripts" / "fixtures" / "addons-cli" / "fixture" / "addon.json").read_text())
@@ -87,14 +87,13 @@ with tempfile.TemporaryDirectory() as tmp:
     check("listing carries n8n's postInstallMessage",
           st.listing(n8n, Path(tmp), {}).get("postInstallMessage") == n8n["postInstallMessage"])
     rich_fx = copy.deepcopy(FIXTURE)
-    rich_fx["hooks"]["backup"] = {"script": ["scripts/vault.sh", "backup"]}
     rich_fx["instances"]["connect"] = {"command": "seed-init"}
     rich_fx["instances"]["disconnect"] = {"command": "seed-init"}
     rich_fx["instances"]["errors"] = ["bad_access"]
     rich_fx["backup"] = {"secrets": ["A_B"]}
     rx = st.listing(rich_fx, Path(tmp), {})
     check("listing includes connect and disconnect among the hooks",
-          rx["hooks"] == ["backup", "connect", "disconnect", "init"], str(rx["hooks"]))
+          rx["hooks"] == ["connect", "disconnect", "init"], str(rx["hooks"]))
     check("listing carries instances.errors and backup",
           rx["errors"] == ["bad_access"] and rx["backup"] == {"secrets": ["A_B"]}, str((rx["errors"], rx["backup"])))
 
@@ -409,7 +408,7 @@ with tempfile.TemporaryDirectory() as tmp:
                                   "memory": {"reservation": None, "limit": None}}, str(bare.get("services")))
     check("listing without figures has no downloadSize", all("downloadSize" not in s for s in bare["services"]))
     withf = st.listing(FIXTURE, Path(tmp), {}, {"services": {"fixture-seed": {"image": "x:1", "reservation": 1, "limit": 2}},
-                                               "sizes": {"x:1": 99}})
+                                               "sizes": {"x:1": 99}, "oneshots": {"fixture-seed"}})
     seed = [s for s in withf["services"] if s["key"] == "seed"][0]
     check("listing merges figures and downloadSize by image",
           seed == {"key": "seed", "compose": "fixture-seed", "oneshot": True, "image": "x:1",
@@ -480,10 +479,10 @@ with tempfile.TemporaryDirectory() as tmp:
 NONAME = copy.deepcopy(MANIFEST)
 NONAME["mcp"] = [{"name": "named", "when": {"gate": "GPTR_EXTRA_ENABLED"}}, {"instances": {"from": "workspace"}}]
 check("_toggle_fields skips an mcp entry without a name",
-      addon_cli._toggle_fields(NONAME)["mcp"] == ["named@GPTR_EXTRA_ENABLED"],
-      str(addon_cli._toggle_fields(NONAME)["mcp"]))
+      addon_cli._plan_fields(NONAME)["mcp"] == ["named@GPTR_EXTRA_ENABLED"],
+      str(addon_cli._plan_fields(NONAME)["mcp"]))
 NONAME["mcp"] = {"instances": {"from": "workspace"}}
-check("_toggle_fields copes with a single nameless mcp object", addon_cli._toggle_fields(NONAME)["mcp"] == [])
+check("_toggle_fields copes with a single nameless mcp object", addon_cli._plan_fields(NONAME)["mcp"] == [])
 
 # --- addon_cli hook-events: which hook lines are relayed ----------------------------
 def hook_events(text: str):

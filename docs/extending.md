@@ -677,8 +677,8 @@ value, else its default, else is absent. A `secret` setting shows only
 out with a warning on stderr.
 
 `services` has one object per manifest service, sorted by key: `key`,
-`compose`, `oneshot` (a service that runs to completion; built-in manifests
-only), `image` and `memory` (`{"reservation", "limit"}` in bytes), with
+`compose`, `oneshot` (another compose service depends on it with
+`condition: service_completed_successfully`, so it runs to completion), `image` and `memory` (`{"reservation", "limit"}` in bytes), with
 `null` where compose gives no value, and `downloadSize` with `--sizes`.
 `image` and `memory` come from `docker compose --profile '*' config
 --format json`, which reads every service and starts nothing. Memory is taken
@@ -733,7 +733,7 @@ the file with `shlex.split`, not compose
 written as text.
 
 An `mcp` entry with `instances` registers one `mcp_servers.<name>` per stored
-instance (built-in add-ons only), so an add-on whose users connect several
+instance, so an add-on whose users connect several
 accounts or workspaces needs no fixed service per instance. The entry gives
 `name` as a prefix plus `{slug}` (`crm-{slug}`), `url` with `{setting:<name>}`
 placeholders, `access` as `{setting:<name>}` naming a `choice` setting whose
@@ -762,7 +762,7 @@ names the setting and never its value. A usage error starts with
 | `1` | The data root is invalid, a compose step failed, another add-on change holds the lock (`busy`), or the file work failed (for example, a permission error); the error line names the exception type |
 | `2` | Invalid input: unknown add-on, bad JSON, unknown or ill-typed setting, bad slug, unknown command or instance, usage error. Also `connect` without `--force` on an existing instance and `disconnect` on an unknown one |
 | `3` | `enable` found required settings with no value |
-| `4` | `run`: `docker compose run` failed, whether the command exited non-zero or the container couldn't start. Also a failed hook, `vault.sh reload-plugins`, an `onToggle.script`, or a SIGINT or SIGTERM |
+| `4` | `run`: `docker compose run` failed, whether the command exited non-zero or the container couldn't start. Also a failed hook, `vault.sh reload-plugins`, or a SIGINT or SIGTERM |
 
 ### JSON lines
 
@@ -788,18 +788,18 @@ A `setup` line is `{"phase":"setup","step":<name>,"status":"running"|"done"|"err
 A step that runs per service, volume or path adds `"target"`. Steps run in this
 order: `flags` (write `.env`, sync `COMPOSE_PROFILES`), `start` (one-shots,
 then the services), `stop` (gated services whose gate is off), `init`,
-`recreate` (only with `onToggle`), `reload`. `disable` runs `flags`, `stop`,
-`recreate`, `reload`, then `delete` with `--purge`. `connect` and `disconnect`
+`reload`. `disable` runs `flags`, `stop`, `reload`, then `delete` with
+`--purge`. `connect` and `disconnect`
 run `check` (the hook), `register` (store or remove the instance) and `reload`.
 `remove` runs `delete`.
 
 `done`:
 
 ```json
-{"phase":"done","id":"<short id>","action":"enable","restart":["svc"],"mcp":["name"],"account":"<slug>","message":"<text>","result":{"key":"value"}}
+{"phase":"done","id":"<short id>","action":"enable","restart":[],"mcp":["name"],"account":"<slug>","message":"<text>","result":{"key":"value"}}
 ```
 
-`restart` lists the compose services `onToggle` recreated. On `enable`, `mcp`
+`restart` is always empty since 0.3.14 and stays for clients that read it. On `enable`, `mcp`
 is the `name` of each manifest `mcp` entry whose gate is on, followed by the
 names the `init` hook's `done` line reported in its `mcp`, each name once.
 On `connect` it is the names the `connect` hook reported. `account` appears
@@ -833,7 +833,7 @@ are dropped, a tab becomes a space, and a log line is cut to 500 characters.
 | `missing_settings` | 3 | `enable` found required settings with no value |
 | `compose_failed` | 1 | A `docker compose` call failed (pull, start, stop, recreate, delete, a bootstrap) |
 | `busy` | 1 | Another change holds the lock |
-| `command_failed` | 4 | A hook, `onToggle.script`, `vault.sh reload-plugins` or `addon_cli.py` failed, the run was signalled, or `addon.sh` exited unexpectedly (`enable` rolls back first). Exit 1 when the data root is invalid |
+| `command_failed` | 4 | A hook, `vault.sh reload-plugins` or `addon_cli.py` failed, the run was signalled, or `addon.sh` exited unexpectedly (`enable` rolls back first). Exit 1 when the data root is invalid |
 | `exists`, `not_found` | 2 | `connect` without `--force` on an existing slug, `disconnect` on an unknown one, detected by `addon.sh` |
 | a hook's own name | 4 | See [Hooks](#hooks) |
 
@@ -863,16 +863,9 @@ recreates `hermes` and never calls `make`. Plugin changes, such as Bitwarden's
 tools, reach new sessions only. A bootstrap failure is `compose_failed`; a
 `reload-plugins` failure is `command_failed`.
 
-An add-on whose manifest sets `onToggle: {"recreate": [<compose service>],
-"script"?: [argv]}` gets step `recreate` before the reload on `enable` and
-`disable`, when the add-on's flag changed value in that run: the listed
-services are recreated with `up -d --no-deps --force-recreate`, then the
-script runs from the repo root. No built-in manifest uses `onToggle` yet.
-
 ### Hooks
 
-A manifest declares `hooks.init` (also `upgrade`, `backup` and `restore`, which
-`addon.sh` doesn't run yet) and `instances.connect` and `instances.disconnect`.
+A manifest declares `hooks.init`, `instances.connect` and `instances.disconnect`.
 A hook is `{"script": [argv]}`, run from the repo root on the host, or
 `{"command": <name>}`, one of the manifest's `commands`, run in its service
 with `docker compose run --rm --no-deps -T`. `addon.sh` appends `--json`, and

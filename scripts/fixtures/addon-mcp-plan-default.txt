@@ -4,3 +4,4 @@ email-drafts|Email drafts (no sending)|0|rw|http://email-drafts-mcp:8000/mcp|60|
 mail|Mail (read-only)|0|rw|http://mail-mcp:8000/mcp|60|30|http|mail_status mail_search mail_get mail_thread|mail_status mail_search mail_get mail_thread|http://mail-mcp:8000/mcp
 drafts|Mail drafts (no sending)|0|rw|http://mail-drafts-mcp:8000/mcp|60|30|http|mail_draft_create mail_draft_status|mail_draft_create mail_draft_status|http://mail-drafts-mcp:8000/mcp
 gptr|GPT Researcher|0|rw|http://gptr-mcp:8000/sse|900|30|sse|deep_research quick_search write_report get_research_sources get_research_context|deep_research quick_search write_report|http://gptr-mcp:8000/sse
+lightrag|LightRAG|0|ro|http://lightrag-mcp:8000/mcp|120|30|http|query_document get_documents get_pipeline_status get_graph_labels check_lightrag_health|query_document get_documents get_pipeline_status get_graph_labels check_lightrag_health|http://lightrag-mcp:8000/mcp

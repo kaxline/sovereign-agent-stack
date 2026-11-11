@@ -16,11 +16,13 @@ tmp="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$tmp"' EXIT
 root="${tmp}/stack"
 mkdir -p "${root}/scripts/lib" "${tmp}/bin" "${tmp}/out"
-cp "${REPO}/scripts/addon.sh" "${REPO}/scripts/sync-profiles.sh" "${REPO}/scripts/fixture-init.sh" "${REPO}/scripts/fixture-connect.sh" "${REPO}/scripts/fixture-follow.sh" "${root}/scripts/" 2>/dev/null || true
+cp "${REPO}/scripts/addon.sh" "${REPO}/scripts/sync-profiles.sh" "${REPO}/scripts/fixture-init.sh" "${REPO}/scripts/fixture-connect.sh" "${root}/scripts/" 2>/dev/null || true
 for f in env.sh data-root.sh python.sh addon-events.sh addon_cli.py addon_manifest.py addon_store.py; do
   cp "${REPO}/scripts/lib/${f}" "${root}/scripts/lib/" 2>/dev/null || true
 done
 cp -R "${REPO}/addons" "${root}/addons"
+# addon_cli.py reads one-shots from the docker-compose.yml beside scripts/.
+cp "${REPO}/scripts/fixtures/addons-cli/docker-compose.yml" "${root}/docker-compose.yml"
 cp "${REPO}/.env.example" "${root}/.env"
 printf 'COMPOSE_PROJECT_NAME=fixtureproj\n' >> "${root}/.env"
 
@@ -35,7 +37,6 @@ printf 'COMPOSE_PROJECT_NAME=fixtureproj\n' >> "${root}/.env"
 # `compose ps -a --format json` prints the file PS_ANSWER names, if any.
 # `compose logs` prints one line naming the service.
 # `compose config --services` prints the file CONFIG_SERVICES names, if any.
-# DOCKER_FAIL_RECREATE=1 makes `compose up ... --force-recreate` exit 1.
 # STUB_LS_DIR=DIR makes `compose up` log `ls: ` and the names in DIR.
 # DOCKER_FAIL_BOOTSTRAP=1 makes `compose run ... hermes-api-bootstrap` exit 1.
 # `compose --profile * config --format json` prints scripts/fixtures/compose-config.json;
@@ -79,9 +80,6 @@ if [ "$1 $2" = "compose logs" ]; then
   eval "last=\${$#}"
   echo "log line from $last"
   exit 0
-fi
-if [ "$1 $2" = "compose up" ] && [ "${DOCKER_FAIL_RECREATE:-0}" = 1 ]; then
-  case "$*" in *--force-recreate*) echo "recreate failed"; exit 1 ;; esac
 fi
 if [ "$1 $2" = "compose up" ]; then
   [ -n "${STUB_LS_DIR:-}" ] && echo "ls: $(ls "$STUB_LS_DIR" | tr '\n' ' ')" >> "${STUB_LOG}"
@@ -223,7 +221,7 @@ expect_rc() {
 envval() { grep -E "^$1=" "${root}/.env" | tail -1 | cut -d= -f2- || true; }
 logged() { grep -qF -- "$1" "$STUB_LOG"; }
 # reloaded: the log holds the forced bootstraps in order, then reload-plugins,
-# and no make, recreate or follow-hermes.
+# and no make or recreate.
 reloaded() {
   python3 -c 'import sys
 log = open(sys.argv[1]).read().splitlines()
@@ -232,7 +230,7 @@ want = ["compose run --rm -e HERMES_BOOTSTRAP_FORCE=1 hermes-api-bootstrap",
         "vault.sh reload-plugins"]
 at = [log.index(w) if w in log else -1 for w in want]
 sys.exit(0 if -1 not in at and at == sorted(at)
-         and not any(l.startswith("make") or "--force-recreate" in l or "follow-hermes" in l for l in log) else 1)' "$STUB_LOG"
+         and not any(l.startswith("make") or "--force-recreate" in l for l in log) else 1)' "$STUB_LOG"
 }
 
 if [ ! -f "${root}/scripts/addon.sh" ]; then
@@ -799,7 +797,8 @@ budget
 --json" ]; then ok "plan-hook prints script and its argv"; else bad "plan-hook prints script and its argv"; fi
 python3 "${root}/scripts/lib/addon_cli.py" --addons-dir "$ADDONS_DIR" --data-root "${root}/data" mark-init fixture
 if [ -z "$(plan_hook fixture init)" ] && [ -n "$(plan_hook fixture init --reinit)" ]; then ok "plan-hook skips a recorded init unless --reinit"; else bad "plan-hook skips a recorded init unless --reinit"; fi
-if [ -z "$(plan_hook fixture upgrade)" ]; then ok "plan-hook prints nothing for an absent hook"; else bad "plan-hook prints nothing for an absent hook"; fi
+if [ -z "$(plan_hook toggled init)" ]; then ok "plan-hook prints nothing for an absent hook"; else bad "plan-hook prints nothing for an absent hook"; fi
+case "$(plan_hook fixture upgrade)" in *"unknown hook"*) ok "plan-hook refuses the removed upgrade hook" ;; *) bad "plan-hook refuses the removed upgrade hook" ;; esac
 if [ -z "$(plan_hook fixture connect --slug work)" ]; then ok "plan-hook prints nothing for a connect hook the manifest lacks"; else bad "plan-hook prints nothing for a connect hook the manifest lacks"; fi
 if plan_hook fixture connect > /dev/null; then bad "connect needs --slug"; else ok "connect needs --slug"; fi
 addon disable fixture
@@ -991,7 +990,7 @@ if [ -d "${root}/data/addons/keep" ] && [ -f "${root}/.env" ]; then ok "a bad sh
 addon frobnicate fixture
 expect_rc "unknown subcommand exits 2" 2
 
-# Reload failures, onToggle, done.mcp and the stop of unused `uses` services.
+# Reload failures, done.mcp and the stop of unused `uses` services.
 : > "$STUB_LOG"
 VAULT_FAIL=1 addon_json enable hooked --json
 unset VAULT_FAIL
@@ -1011,33 +1010,17 @@ if logged "vault.sh"; then bad "a failing bootstrap skips reload-plugins"; else 
 : > "$STUB_LOG"
 addon_json enable toggled --json
 expect_rc "enable toggled" 0
-r=0; json_ok "$out" "done" 'last == {"phase":"done","id":"toggled","action":"enable","restart":["hermes"],"mcp":["toggled-mcp"]} and ("recreate","done") in steps' || r=1
-check "enable with onToggle recreates hermes and reports its mcp name" "$r"
-if logged "compose up -d --no-deps --force-recreate hermes" && logged "fixture-follow follow"; then
-  ok "the first enable recreates hermes and runs the onToggle script"
-else
-  bad "the first enable recreates hermes and runs the onToggle script"; cat "$STUB_LOG"
-fi
-rec_at="$(grep -n 'force-recreate' "$STUB_LOG" | head -1 | cut -d: -f1 || true)"
-rel_at="$(grep -n 'vault.sh reload-plugins' "$STUB_LOG" | head -1 | cut -d: -f1 || true)"
-if [ -n "$rec_at" ] && [ -n "$rel_at" ] && [ "$rec_at" -lt "$rel_at" ]; then
-  ok "the recreate runs before the reload"
-else
-  bad "the recreate runs before the reload"
-fi
-: > "$STUB_LOG"
-addon_json enable toggled --json
-r=0; json_ok "$out" "done" 'last["restart"] == [] and ("recreate","running") not in steps' || r=1
-check "a second enable while enabled recreates nothing" "$r"
-if logged "force-recreate" || logged "fixture-follow"; then bad "a second enable logs no recreate or script"; else ok "a second enable logs no recreate or script"; fi
+r=0; json_ok "$out" "done" 'last == {"phase":"done","id":"toggled","action":"enable","restart":[],"mcp":["toggled-mcp"]}' || r=1
+check "enable reports the mcp name and an empty restart" "$r"
+if logged "force-recreate"; then bad "enable recreates nothing"; cat "$STUB_LOG"; else ok "enable recreates nothing"; fi
 
 # uses: disable stops neo4j only when no active profile keeps it in the config.
 printf 'toggled-worker\nneo4j\n' > "${tmp}/services-with"
 printf 'toggled-worker\nhermes\n' > "${tmp}/services-without"
 : > "$STUB_LOG"
 CONFIG_SERVICES="${tmp}/services-with" addon_json disable toggled --json
-r=0; json_ok "$out" "done" 'last == {"phase":"done","id":"toggled","action":"disable","restart":["hermes"],"mcp":[]} and ("recreate","done") in steps' || r=1
-check "disable with onToggle recreates hermes and reports no mcp" "$r"
+r=0; json_ok "$out" "done" 'last == {"phase":"done","id":"toggled","action":"disable","restart":[],"mcp":[]}' || r=1
+check "disable reports no mcp and an empty restart" "$r"
 if logged "compose stop neo4j"; then bad "disable leaves a uses service that config still lists"; else ok "disable leaves a uses service that config still lists"; fi
 if logged "compose stop toggled-worker"; then ok "disable stops the add-on's own service"; else bad "disable stops the add-on's own service"; fi
 addon enable toggled
@@ -1050,33 +1033,6 @@ addon enable toggled
 : > "$STUB_LOG"
 addon disable fixture
 if logged "neo4j"; then bad "an add-on without uses stops no stack service"; else ok "an add-on without uses stops no stack service"; fi
-
-# Disabling an add-on that is already off recreates nothing.
-addon disable toggled
-: > "$STUB_LOG"
-addon_json disable toggled --json
-expect_rc "disable an already disabled toggled" 0
-r=0; json_ok "$out" "done" 'last["restart"] == [] and ("recreate","running") not in steps' || r=1
-check "disable while disabled recreates nothing" "$r"
-if logged "force-recreate" || logged "fixture-follow"; then bad "disable while disabled logs no recreate or script"; else ok "disable while disabled logs no recreate or script"; fi
-
-# Recreate failures roll the enable back.
-: > "$STUB_LOG"
-DOCKER_FAIL_RECREATE=1 addon_json enable toggled --json
-unset DOCKER_FAIL_RECREATE
-expect_rc "a failing recreate exits 1" 1
-r=0; json_ok "$out" error 'last["error"] == "compose_failed" and last["step"] == "recreate" and last.get("rolledBack") is True and "recreate failed" in last["logTail"]' || r=1
-check "a failing recreate is compose_failed at step recreate, rolled back" "$r"
-if [ "$(envval TOGGLED_ADDON_ENABLED)" != 1 ]; then ok "a failing recreate restores the flag"; else bad "a failing recreate restores the flag"; fi
-if logged "fixture-follow"; then bad "a failing recreate skips the script"; else ok "a failing recreate skips the script"; fi
-
-: > "$STUB_LOG"
-FIXTURE_FOLLOW_FAIL=1 addon_json enable toggled --json
-unset FIXTURE_FOLLOW_FAIL
-expect_rc "a failing onToggle script exits 4" 4
-r=0; json_ok "$out" error 'last["error"] == "command_failed" and last["step"] == "recreate" and last.get("rolledBack") is True' || r=1
-check "a failing onToggle script is command_failed at step recreate, rolled back" "$r"
-if [ "$(envval TOGGLED_ADDON_ENABLED)" != 1 ]; then ok "a failing onToggle script restores the flag"; else bad "a failing onToggle script restores the flag"; fi
 
 # A uses name with no compose mapping is never stopped.
 printf 'pguser-worker\n' > "${tmp}/services-none"
@@ -1567,6 +1523,8 @@ if [ "$(printf '%s\n' "$many" | hook_result 0 | python3 -c 'import json,sys; pri
 # and is never named.
 saved_addons_dir="$ADDONS_DIR"
 export ADDONS_DIR="${root}/addons"
+# n8n-import is a one-shot because n8n depends on it in the real compose file.
+cp "${REPO}/docker-compose.yml" "${root}/docker-compose.yml"
 : > "$STUB_LOG"
 addon_json enable n8n --json
 expect_rc "enable n8n" 0
@@ -1622,6 +1580,7 @@ else
 fi
 if logged gptr-mcp; then bad "remove n8n never names gptr-mcp"; else ok "remove n8n never names gptr-mcp"; fi
 export ADDONS_DIR="$saved_addons_dir"
+cp "${REPO}/scripts/fixtures/addons-cli/docker-compose.yml" "${root}/docker-compose.yml"
 
 if [ "$fail" = 0 ]; then
   echo "all addon.sh checks passed"

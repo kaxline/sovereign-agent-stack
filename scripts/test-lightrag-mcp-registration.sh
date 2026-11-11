@@ -4,8 +4,8 @@
 # on and off. Registration goes through the generic add-on path
 # (register_addon_mcp_servers reading addons/lightrag/addon.json); the calls it
 # makes must match what the LightRAG-specific code made before CR 0022 R2:
-# the same key, the same five read tools, the same pins, api-server and
-# browser only, and nothing on the default profile.
+# the same key, the same five read tools and the same pins. Since 0.3.14 the
+# default profile is managed like api-server and browser.
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -51,7 +51,8 @@ for flag in 0 "" false no; do
       || fail "LIGHTRAG_MCP_ENABLED='${flag}': ${profile} should only drop entries ($calls)"
   done
   run ""; got
-  [ -z "$calls" ] || fail "LIGHTRAG_MCP_ENABLED='${flag}': default is left alone ($calls)"
+  [ "$calls" = "drop:default::${URL};" ] \
+    || fail "LIGHTRAG_MCP_ENABLED='${flag}': default should only drop entries ($calls)"
 done
 
 # On: the five read tools, the unfiltered duplicate dropped, pins.
@@ -63,7 +64,8 @@ for flag in 1 true yes; do
       || fail "LIGHTRAG_MCP_ENABLED='${flag}': ${profile} registers the five read tools ($calls)"
   done
   run ""; got
-  [ -z "$calls" ] || fail "LIGHTRAG_MCP_ENABLED='${flag}': bootstrap never registers LightRAG on default ($calls)"
+  [ "$calls" = "register:default:lightrag:120:${TOOLS};drop:default:lightrag:${URL};pin:default:${TOOLS};" ] \
+    || fail "LIGHTRAG_MCP_ENABLED='${flag}': default registers the five read tools ($calls)"
 done
 
 # LIGHTRAG_MCP_URL and the timeouts still override the manifest.
@@ -77,7 +79,7 @@ run api-server; got
 unset LIGHTRAG_MCP_URL LIGHTRAG_MCP_TIMEOUT
 
 # An invalid manifest (here: not canonical JSON) fails closed: the URL is
-# dropped from api-server and browser, flag on or off; default stays alone.
+# dropped from every profile, flag on or off.
 tr -d '\n' < "${ROOT}/addons/lightrag/addon.json" > "${ADDONS_DIR}/lightrag/addon.json"
 for flag in 0 1; do
   LIGHTRAG_MCP_ENABLED="$flag"
@@ -85,7 +87,8 @@ for flag in 0 1; do
   [ "$calls" = "drop:api-server::${URL};" ] \
     || fail "invalid manifest, flag ${flag}: api-server should drop the URL ($calls)"
   run "" 2>/dev/null; got
-  [ -z "$calls" ] || fail "invalid manifest, flag ${flag}: default is left alone ($calls)"
+  [ "$calls" = "drop:default::${URL};" ] \
+    || fail "invalid manifest, flag ${flag}: default should drop the URL ($calls)"
 done
 cp "${ROOT}/addons/lightrag/addon.json" "${ADDONS_DIR}/lightrag/addon.json"
 
@@ -96,7 +99,7 @@ for t in $TOOLS; do want="${want} ${t} mcp__lightrag__${t}"; done
 for profile in api-server browser; do
   [ "$(addon_mcp_pin_args "$profile")" = "$want" ] || fail "pin args for ${profile}"
 done
-[ -z "$(addon_mcp_pin_args "")" ] || fail "no pin args on default"
+[ "$(addon_mcp_pin_args "")" = "$want" ] || fail "pin args for default"
 LIGHTRAG_MCP_ENABLED=0
 [ -z "$(addon_mcp_pin_args browser)" ] || fail "no pin args with the flag off"
 

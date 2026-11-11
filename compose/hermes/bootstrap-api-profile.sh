@@ -1208,8 +1208,8 @@ addon_mcp_plan() {
   python3 "$ADDON_MANIFEST_PY" mcp-plan "$ADDONS_DIR" "${1:-default}"
 }
 
-# Every add-on MCP URL, on or off, on any profile (profiles and unmanaged are
-# ignored), one per line, for set_stack_mcp_parked_retry. That only tunes
+# Every add-on MCP URL, on or off, on any profile (profiles are ignored), one
+# per line, for set_stack_mcp_parked_retry. That only tunes
 # entries that already exist, so it also reaches a user's own entry on default.
 addon_mcp_urls() {
   [ -d "$ADDONS_DIR" ] || return 0

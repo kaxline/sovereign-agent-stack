@@ -28,23 +28,22 @@ runs in the Hermes image through stack_python, so the host needs no python3.
         "flags": {...}, "services": [...]}: builtin.flag at "1" plus the stored value of each
         bool setting whose flag is a gate, and every compose service, written
         "service@FLAG" when it runs only while its gate flag is 1. Also
-        "oneshots", "recreate" (onToggle.recreate), "uses" (the compose
-        service of each `uses` name in USES_COMPOSE) and "mcp" (each mcp name,
-        "name@FLAG" when the entry has a gate).
+        "oneshots" (services another compose service depends on with condition
+        service_completed_successfully in docker-compose.yml), "uses" (the
+        compose service of each `uses` name in USES_COMPOSE) and "mcp" (each
+        mcp name, "name@FLAG" when the entry has a gate).
     plan-disable SID [--flags JSON]
         Prints {"builtin": FLAG, "flags": {...}, "services": [...], "volumes": [...]}: builtin.flag
         and every gate flag at "0", every compose service, and the compose
-        volumes the manifest declares, plus "recreate", "uses" and "mcp" as
-        plan-enable prints them. First, a bool setting whose flag is a gate
+        volumes the manifest declares, plus "uses" and "mcp" as plan-enable
+        prints them. First, a bool setting whose flag is a gate
         that is "1" in --flags (the .env flags) and that isn't stored is
         stored as true, so plan-enable restores the flag.
-    toggle-script SID
-        Prints onToggle.script's argv, one item per line; nothing without one.
     plan-run SID COMMAND [--instance SLUG]
         Prints the compose service, then the command's argv, one per line, with
         `--account SLUG` appended when the command takes an instance.
     plan-hook SID HOOK [--slug SLUG] [--reinit] [--replace]
-        HOOK is init, upgrade, backup, restore, connect or disconnect. Prints
+        HOOK is init, connect or disconnect. Prints
         `script` and then the script's argv, or `service <compose name>` and
         then the command's argv, one item per line, ending in `--json`
         (`--slug SLUG --json` for connect and disconnect, which need --slug;
@@ -262,7 +261,7 @@ def _read_sizes(sizes_dir: Path, platform: str) -> dict:
 def cmd_list(args) -> None:
     flags = _flags_arg(args.flags)
     services = _compose_config()
-    figures = {"services": services}
+    figures = {"services": services, "oneshots": _oneshots()}
     if args.sizes_dir is not None:
         figures["sizes"] = _read_sizes(args.sizes_dir, args.platform)
     out = [store.listing(m, args.data_root, flags, figures) for m in _listed(args.addons_dir)]
@@ -314,9 +313,21 @@ def cmd_check_instance(args) -> None:
     print("exists" if exists else "new")
 
 
-def _toggle_fields(manifest: dict) -> dict:
-    """onToggle's compose services, `uses` mapped to compose services, and the
-    mcp names ("name@FLAG" when the entry has a gate), for plan-enable and plan-disable."""
+COMPOSE_FILE = Path(__file__).resolve().parent.parent.parent / "docker-compose.yml"
+
+
+def _oneshots() -> set[str]:
+    """The compose services in docker-compose.yml that run to completion
+    (addon_manifest.compose_oneshots); none when the file is missing."""
+    try:
+        return am.compose_oneshots(COMPOSE_FILE.read_text(encoding="utf-8"))
+    except OSError:
+        return set()
+
+
+def _plan_fields(manifest: dict) -> dict:
+    """`uses` mapped to compose services, and the mcp names ("name@FLAG" when
+    the entry has a gate), for plan-enable and plan-disable."""
     mcp = manifest.get("mcp", [])
     entries = mcp if isinstance(mcp, list) else [mcp]
     names = []
@@ -325,17 +336,8 @@ def _toggle_fields(manifest: dict) -> dict:
             continue  # an `instances` entry is named per instance; only connect reports the names
         gate = entry.get("when", {}).get("gate")
         names.append(f"{entry['name']}@{gate}" if gate else entry["name"])
-    return {"recreate": list(manifest.get("onToggle", {}).get("recreate", [])),
-            "uses": [USES_COMPOSE[u] for u in manifest.get("uses", []) if u in USES_COMPOSE],
+    return {"uses": [USES_COMPOSE[u] for u in manifest.get("uses", []) if u in USES_COMPOSE],
             "mcp": names}
-
-
-def cmd_toggle_script(args) -> None:
-    manifest = _manifest(args.addons_dir, args.sid)
-    argv = list(manifest.get("onToggle", {}).get("script", []))
-    _check_argv(argv, "onToggle.script")
-    for a in argv:
-        print(a)
 
 
 def cmd_plan_enable(args) -> None:
@@ -352,10 +354,11 @@ def cmd_plan_enable(args) -> None:
         if spec.get("type") == "bool" and spec.get("flag") in gates and name in stored:
             flags[spec["flag"]] = "1" if stored[name] else "0"
     services, oneshots, gated, mounts = [], [], [], []
+    runs_once = _oneshots()
     for key, svc in manifest["services"].items():
         name = _compose(manifest, key)
         gate = svc.get("when", {}).get("gate")
-        (oneshots if svc.get("oneshot") else services).append(f"{name}@{gate}" if gate else name)
+        (oneshots if name in runs_once else services).append(f"{name}@{gate}" if gate else name)
         if gate:
             gated.append(f"{name}@{gate}")
         if svc.get("mounts"):
@@ -365,7 +368,7 @@ def cmd_plan_enable(args) -> None:
     # `stop` lists the gated services and one-shots; addon.sh stops those
     # whose gate is off once the flags are written.
     _dump({"builtin": manifest["builtin"]["flag"], "flags": flags, "services": services,
-           "oneshots": oneshots, "stop": gated, "mounts": mounts, **_toggle_fields(manifest)})
+           "oneshots": oneshots, "stop": gated, "mounts": mounts, **_plan_fields(manifest)})
 
 
 def cmd_plan_disable(args) -> None:
@@ -385,7 +388,7 @@ def cmd_plan_disable(args) -> None:
     services = [_compose(manifest, key) for key in manifest["services"]]
     _dump({"builtin": manifest["builtin"]["flag"], "flags": flags, "services": services,
            "volumes": am.data_volumes(manifest),
-           **_toggle_fields(manifest)})
+           **_plan_fields(manifest)})
 
 
 def _check_argv(argv: list[str], where: str) -> None:
@@ -711,8 +714,10 @@ def cmd_plan_remove(args) -> None:
             kept.append({"path": target, "reason": reason})
     delete.append(own)
     services, oneshots = [], []
-    for key, svc in manifest["services"].items():
-        (oneshots if svc.get("oneshot") else services).append(_compose(manifest, key))
+    runs_once = _oneshots()
+    for key in manifest["services"]:
+        name = _compose(manifest, key)
+        (oneshots if name in runs_once else services).append(name)
     volumes = am.data_volumes(manifest)
     if not args.lines:
         _dump({"services": oneshots + services, "volumes": volumes, "delete": delete, "kept": kept})
@@ -958,9 +963,6 @@ def main(argv: list[str]) -> int:
     s.add_argument("--repo", required=True)
     s.add_argument("--sid", required=True)
     s.set_defaults(func=cmd_delete_path)
-    s = sub.add_parser("toggle-script")
-    s.add_argument("sid")
-    s.set_defaults(func=cmd_toggle_script)
     s = sub.add_parser("plan-hook")
     s.add_argument("sid")
     s.add_argument("hook")
