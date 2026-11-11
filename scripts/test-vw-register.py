@@ -738,19 +738,27 @@ def inside_main() -> int:
 
         def rate_limit():
             # Vaultwarden limits password grants per client address; the sidecar passes the driver's in
-            # X-Real-IP. Spend the allowance with a made-up account.
-            seen, retry_after = 0, None
-            for _ in range(LOGIN_BURST + 20):
-                seen, retry_after = grant_status()
-                if seen == 429:
+            # X-Real-IP. Spend the allowance with a made-up account, then sign in with bw at once.
+            # The limiter gives one grant back every LOGIN_RATELIMIT_SECONDS (60 by default), so bw's
+            # login can land on a fresh one and succeed. That run says nothing about a 429: try again.
+            for attempt in range(1, 4):
+                appdata = f"/tmp/bw-429-{attempt}"
+                bw_ok(appdata, ["config", "server", BASE])  # before spending, to keep the gap short
+                seen, retry_after = 0, None
+                for _ in range(LOGIN_BURST + 20):
+                    seen, retry_after = grant_status()
+                    if seen == 429:
+                        break
+                expect(seen == 429, f"no 429 after {LOGIN_BURST + 20} password grants")
+                code, _, err = bw(appdata, ["login", OWNER_EMAIL, "--passwordenv", "BW_PW", "--raw"],
+                                  {"BW_PW": syn["owner_pw"]})
+                if code != 0:
                     break
-            expect(seen == 429, f"no 429 after {LOGIN_BURST + 20} password grants")
-            bw_ok("/tmp/bw-429", ["config", "server", BASE])
-            code, _, err = bw("/tmp/bw-429", ["login", OWNER_EMAIL, "--passwordenv", "BW_PW", "--raw"],
-                              {"BW_PW": syn["owner_pw"]})
+                say(f"check 4: bw signed in on attempt {attempt}; the limiter gave a grant back, trying again")
+            expect(code != 0, "bw signed in on all 3 attempts; the limiter never refused it")
             got, wait = classify(err)
             has_retry = "retry-after" in err.lower()
-            expect(got == "rate_limited", f"classify gave {got!r} for {first_line(err)!r}")
+            expect(got == "rate_limited", f"classify gave {got!r} for {first_line(err)!r} (bw exit {code})")
             return Detail(f"server Retry-After header: {retry_after!r}; bw exit {code}; bw prints Retry-After: "
                           f"{'yes' if has_retry else 'no'}; classify: {got}, wait {wait}; "
                           f"bw said: {first_line(err)}")
