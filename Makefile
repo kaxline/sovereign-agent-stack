@@ -16,7 +16,7 @@
 	crm-init crm-add crm-remove crm-access crm-open crm-mode \
 	vault-init vault-add vault-unlock vault-lock vault-sync vault-requests vault-remove vault-open \
 	bitwarden-test addon-list addon-test test hermes-image-test actual-mcp-test \
-	budget-init budget-add budget-open budget-remove budget-access budget-connect budget-disconnect \
+	budget-open budget-access budget-connect budget-disconnect \
 	coding-root-list coding-root-add \
 	context-root-list context-root-add opencode-smoke-fixture \
 	kb-eval-fixture kb-eval-fixture-remove \
@@ -231,32 +231,19 @@ addon-test:
 	@$(RUN_TESTS) scripts/test-addon-manifests.py scripts/test-addon-store.py scripts/test-addon-cli.sh
 
 # Actual Budget (budget and budget-local profiles, or remote). See docs/budget.md.
-#   make budget-init [SYNC_ID=id] [ROTATE=1]  local server: password, budget, budget.env
-#     (scripts/budget.sh init --server-only is the add-on's hook: no budget.env)
-#   make budget-add URL=https://... [SYNC_ID=id] [FORCE=1]  a budget on a remote server
-#   make budget-open                         open the web app, password on the clipboard
-#   make budget-remove                       forget the budget (file only; server data stays)
-#   make budget-access ACCESS=read           look things up only (write: make changes)
+# scripts/addon.sh enable actual sets up the local server (budget.sh init --server-only).
 #   make budget-connect SLUG=name URL=https://...|local [ACCESS=write] [SYNC_ID=id] [FORCE=1]
-#     connect one more budget through addon.sh (asks for the passwords);
+#     connect a budget through addon.sh (asks for the passwords);
 #     FORCE=1 replaces an existing connection of that name
+#   make budget-access SLUG=name ACCESS=read|write  what chats may do with it
 #   make budget-disconnect SLUG=name         disconnect it
-budget-init:
-	$(if $(SYNC_ID),ACTUAL_BUDGET_SYNC_ID="$(SYNC_ID)") ./scripts/budget.sh init $(if $(ROTATE),--rotate)
-
-budget-add:
-	@test -n "$(URL)" || (echo "Usage: make budget-add URL=https://budget.example.com [SYNC_ID=id]"; exit 1)
-	$(if $(SYNC_ID),ACTUAL_BUDGET_SYNC_ID="$(SYNC_ID)") ./scripts/budget.sh add --url "$(URL)" $(if $(FORCE),--force)
-
+#   make budget-open                         open the local server's web app, password on the clipboard
 budget-open:
 	@./scripts/budget.sh open
 
-budget-remove:
-	./scripts/budget.sh remove
-
 budget-access:
-	@test -n "$(ACCESS)" || (echo "Usage: make budget-access ACCESS=read|write"; exit 1)
-	./scripts/budget.sh access "$(ACCESS)"
+	@test -n "$(SLUG)" -a -n "$(ACCESS)" || (echo "Usage: make budget-access SLUG=name ACCESS=read|write"; exit 1)
+	./scripts/budget.sh access "$(SLUG)" "$(ACCESS)"
 
 budget-connect:
 	@test -n "$(SLUG)" -a -n "$(URL)" || (echo "Usage: make budget-connect SLUG=name URL=https://budget.example.com|local [ACCESS=write] [SYNC_ID=id] [FORCE=1]"; exit 1)

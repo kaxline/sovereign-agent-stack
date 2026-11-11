@@ -58,8 +58,9 @@ m = json.load(open("addons/twenty/addon.json"))
 m["permissions"]["cron"] = False
 open(sys.argv[1], "w").write(am.canonical(m))
 PY
-mkdir -p "$work/addons-ro/split"
-cp scripts/fixtures/addons/split/addon.json "$work/addons-ro/split/addon.json"
+# Actual (cron "ro", {access} in its instance URL): one connected budget.
+mkdir -p "$work/addon-data/actual/instances"
+printf '{"server": "local", "sync_id": "s1", "bind": {"default": "rw"}}\n' > "$work/addon-data/actual/instances/main.json"
 fn_source "$BOOTSTRAP" fence_mail_from_cron > "$work/fence.sh"
 cat > "$work/run.sh" <<'EOF'
 set -eu
@@ -70,17 +71,13 @@ seed() {
   rm -f /h/.mail-cron-toolsets.json
   printf 'mcp_servers:\n  gptr:\n    url: http://gptr-mcp:8000/sse\n  searxng:\n    url: http://searxng-mcp:8000/mcp\n' > /h/config.yaml
 }
-seed_split() {
+seed_budget() {
   rm -f /h/.mail-cron-toolsets.json
-  printf 'mcp_servers:\n  split:\n    url: %s\n  searxng:\n    url: http://searxng-mcp:8000/mcp\n' "$1" > /h/config.yaml
+  printf 'mcp_servers:\n  budget-main:\n    url: %s\n  searxng:\n    url: http://searxng-mcp:8000/mcp\n' "$1" > /h/config.yaml
 }
 seed_crm() {
   rm -f /h/.mail-cron-toolsets.json
   printf 'mcp_servers:\n  crm-main:\n    url: http://twenty-server:3000/mcp\n  searxng:\n    url: http://searxng-mcp:8000/mcp\n' > /h/config.yaml
-}
-seed_rows() {
-  rm -f /h/.mail-cron-toolsets.json
-  printf 'mcp_servers:\n  budget-main:\n    url: http://actual-mcp-rw:3000/main/mcp\n  budget-main-ro:\n    url: http://actual-mcp-ro:3000/main/mcp\n  searxng:\n    url: http://searxng-mcp:8000/mcp\n' > /h/config.yaml
 }
 cron_list() { tr -d '\n ' < /h/config.yaml | sed -n 's/.*cron:\(.*\)/\1/p'; }
 
@@ -90,14 +87,12 @@ ADDONS_DIR=/bootstrap/addons; seed; fence_mail_from_cron ""
 echo "true:$(cron_list)"
 ADDONS_DIR=/w/addons-off; seed; fence_mail_from_cron ""
 echo "false:$(cron_list)"
-ADDONS_DIR=/w/addons-ro; seed_split http://split-ro:9000/mcp; fence_mail_from_cron ""
+ADDONS_DIR=/bootstrap/addons; seed_budget http://actual-mcp-ro:3000/main/mcp; fence_mail_from_cron ""
 echo "ro-at-ro:$(cron_list)"
-seed_split http://split-rw:9000/mcp; fence_mail_from_cron ""
+seed_budget http://actual-mcp-rw:3000/main/mcp; fence_mail_from_cron ""
 echo "ro-at-rw:$(cron_list)"
-ADDONS_DIR=/bootstrap/addons; seed_crm; fence_mail_from_cron ""
+seed_crm; fence_mail_from_cron ""
 echo "crm-ro:$(cron_list)"
-seed_rows; fence_mail_from_cron ""
-echo "rows:$(cron_list)"
 ADDONS_DIR=/w/addons-crm-off; seed_crm; fence_mail_from_cron ""
 echo "crm-false:$(cron_list)"
 ADDONS_DIR=/w/addons-off
@@ -115,10 +110,9 @@ out="$(docker run --rm --entrypoint /bin/sh \
 expect() { printf '%s\n' "$out" | grep -qx -- "$1" || fail "$2 (output: $out)"; }
 expect 'true:' "cron true leaves platform_toolsets.cron unset"
 expect 'false:-hermes-cron-searxng' "cron false pins a cron list without gptr"
-expect 'ro-at-ro:' "a cron ro add-on registered at its ro URL stays in cron"
-expect 'ro-at-rw:-hermes-cron-searxng' "a cron ro add-on registered at its rw URL is fenced"
+expect 'ro-at-ro:' "a budget (cron ro) registered at its ro URL stays in cron"
+expect 'ro-at-rw:-hermes-cron-searxng' "a budget (cron ro) registered at its rw URL is fenced"
 expect 'crm-ro:' "Twenty (cron true) leaves crm-* entries in cron, as before 0.3.13"
-expect 'rows:-hermes-cron-budget-main-ro-searxng' "a connected budget's write entry is fenced, its -ro entry stays"
 expect 'crm-false:-hermes-cron-searxng' "an instances add-on with cron false fences crm-main"
 expect 'missing:-hermes-cron-searxng' "a missing module keeps the list it wrote"
 expect 'back:' "the list is removed once the manifest allows cron"

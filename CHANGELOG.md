@@ -54,8 +54,48 @@ the stack under another app.
    with your `BITWARDEN_HOST_DATA_DIR` in place of `data/addons/bitwarden` if
    you set one. macOS (Docker Desktop) needs nothing. The old
    `<project>_bitwarden_sync` volume is unused; `docker volume rm` removes it.
+8. Actual Budget: the single budget is gone, with no migration.
+   `ACTUAL_BUDGET_FILE`, `ACTUAL_ACCESS` and `compose/actual/budget.env` are no
+   longer read. Delete them, and a `budget` entry left in a Hermes profile's
+   `mcp_servers`, and connect the budget again with `make budget-connect`.
+   Connected budgets keep working, but each becomes read-only on every profile
+   until `./scripts/budget.sh access <slug> write` gives it a `bind`. Their old
+   `access` and `profile` fields in `instances/<slug>.json` are ignored.
+   **Boundary must change before moving the pin:** connect no longer accepts
+   `profile` or `access` (send `bind`, or call `budget.sh access` afterwards),
+   `budget.sh access` and connect report `mcp: ["budget-<slug>"]` instead of
+   `budget-<slug>-ro` and `budget-<slug>`, and a row's write access is read
+   from `bind`.
 
 ### Changes
+
+- Per-instance binding: an instance file may hold `bind`, a map from Hermes
+  profile to `ro` or `rw` that replaces the manifest's `mcp.profiles` for that
+  instance. `addon.sh connect` and `configure --instance` take it in the JSON
+  on stdin, `check-instance` validates it, and `list --json` shows it. `rw` is
+  refused on `api-server`, and an add-on that reads personal data may not name
+  `api-server`.
+- `mcp.instances` URLs may use `{access}` (`ro` or `rw`, the profile's level)
+  and `{slug}`; `auth` and `access` are optional. An entry without `auth` is
+  registered with its tool list, less `writeTools` at `ro`. instances-plan
+  lines gain a thirteenth field, `tools`. With `permissions.cron` `"ro"`, each
+  instance's `rw` URL is fenced out of cron.
+- Actual Budget registers through `mcp.instances`: one `budget-<slug>` entry
+  per budget and profile, at `actual-mcp-ro` or `actual-mcp-rw` by level.
+  Budgets now reach `api-server` read-only, as Twenty's workspaces do. The
+  read/write server serves a budget only when its `bind` gives some profile
+  `rw`. A budget on the local server stays registered while
+  `ACTUAL_LOCAL_ENABLED` is off; its calls fail until the server is back.
+  `scripts/lib/actual_rows.py` and the bootstrap's Actual row code are gone.
+- Removed the `mcp.service` `{ro, rw}` map and `mcp.env.access`, whose only
+  user was Actual's single budget.
+- `budget.sh`: removed `init` without `--server-only` (and `--rotate`), `add`,
+  `check`, `remove` and `access read|write` without a slug, with `make
+  budget-init`, `budget-add` and `budget-remove`. `make budget-access` is now
+  `SLUG=<slug> ACCESS=read|write`. `status --json` lines drop `profile` and the
+  `bad_access` state; `access` is derived from `bind`. `open` serves the
+  bundled server only. The actual-mcp containers no longer mount
+  `/app/.env`, and `/mcp`, `/sse` and `/messages` on them answer 404.
 
 - Removed manifest fields, unused by any built-in add-on or replaced:
   `onToggle` (and `addon.sh`'s `recreate` step), `services.<name>.volumes`

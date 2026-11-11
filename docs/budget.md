@@ -1,13 +1,13 @@
 # Budget (Actual Budget)
 
 [Actual Budget](https://actualbudget.org) is an open-source budgeting app with
-a web UI and a sync server. Hermes reaches a budget file through two MCP
-servers built from a vendored copy of
+a web UI and a sync server. Hermes reaches each connected budget through two
+MCP servers built from a vendored copy of
 [giorgiobrullo/actual-mcp](https://github.com/giorgiobrullo/actual-mcp) (see
 `compose/actual-mcp/VENDORED.md`), so it reads and edits the same accounts,
 categories and transactions you see in Actual. Run an Actual server in this
-stack, connect one you already have, or both. The budget is financial data:
-read this page's [Where data lives](#where-data-lives) before backing up or
+stack, connect budgets on servers you already have, or both. The budget is
+financial data: read [Where data lives](#where-data-lives) before backing up or
 sharing a checkout.
 
 The add-on is untested on a live stack so far; the checks that exist run
@@ -17,29 +17,32 @@ against stubs (see [Testing](#testing)).
 
 | Flag | Default | Effect |
 |---|---|---|
-| `ACTUAL_MCP_ENABLED` | `0` | Starts `actual-mcp-rw` and `actual-mcp-ro` (profile `budget`) and registers the `budget` MCP server in Hermes |
+| `ACTUAL_MCP_ENABLED` | `0` | Starts `actual-mcp-rw` and `actual-mcp-ro` (profile `budget`); Hermes registers one MCP entry per connected budget |
 | `ACTUAL_LOCAL_ENABLED` | `0` | Starts `actual-server` (profile `budget-local`) on `127.0.0.1:${ACTUAL_PORT:-5006}` |
 
-A remote Actual server needs only the first. A local one needs both.
+Budgets on a remote server need only the first. The bundled server needs both.
 
 ## Local quick path
 
 ```bash
-./scripts/setup.sh --budget   # sets both flags
+./scripts/setup.sh --budget        # sets both flags
 make up
-make budget-init              # server password, a budget, compose/actual/budget.env
-make hermes-reload
+scripts/addon.sh enable actual     # sets up actual-server and creates a budget
+make budget-connect SLUG=home URL=local ACCESS=write
 make doctor
-make budget-open              # opens the web app, copies the server password
+make budget-open                   # opens the web app, copies the server password
 ```
 
-`make budget-init` sets a generated password on a new server, creates a budget
-or adopts the server's only one (`SYNC_ID=` picks one of several), checks that
-it opens, writes the budget file, sets `ACTUAL_BUDGET_FILE` and
-`ACTUAL_MCP_ENABLED=1`, and recreates running MCP containers. It does nothing
-when the budget file exists; `ROTATE=1` sets a new server password instead.
-`make budget-open` copies the password with `pbcopy`, or, when `pbcopy` isn't available, prints
-where it is.
+`addon.sh enable actual` runs the add-on's init hook, `budget.sh init
+--server-only`. On a new server it sets a generated password, which it keeps in
+`<data root>/addons/actual/secrets/server_password` (mode 600) before telling
+the server, and it creates a budget named Budget when the server has none. With
+`ACTUAL_LOCAL_ENABLED` off the hook does nothing, so after turning the bundled
+server on later, run `scripts/addon.sh enable actual --reinit`.
+
+`make budget-open` opens `http://localhost:${ACTUAL_PORT}/` and copies the
+stored server password with `pbcopy`; without `pbcopy` it prints where the
+password is. It refuses while `ACTUAL_LOCAL_ENABLED` is off.
 
 In WebUI: *Add a $12.50 coffee at Example Cafe to my checking account.* Then
 in a new chat: *What did I spend this month, by category?*
@@ -47,103 +50,17 @@ in a new chat: *What did I spend this month, by category?*
 ## Remote quick path
 
 ```bash
-make budget-add URL=https://budget.example.com   # asks for the password and sync id
-make hermes-reload
+scripts/addon.sh enable actual
+make budget-connect SLUG=home URL=https://budget.example.com ACCESS=write SYNC_ID=...
 ```
-
-`budget-add` takes `ACTUAL_PASSWORD`, `ACTUAL_BUDGET_SYNC_ID` and
-`ACTUAL_BUDGET_ENCRYPTION_PASSWORD` from the environment, or asks for them
-(passwords hidden). With no sync id it uses the server's only budget. It opens
-the budget with those values and writes nothing if that fails. If the budget
-file exists it refuses unless `FORCE=1` is given.
-
-`make budget-remove` deletes the budget file, clears `ACTUAL_BUDGET_FILE` and
-sets `ACTUAL_MCP_ENABLED=0`.
-Server data stays.
-
-## The budget file
-
-Credentials live in `compose/actual/budget.env`, mode 600, which `.env`
-points to with `ACTUAL_BUDGET_FILE`. Compose mounts it read-only at `/app/.env`
-in both MCP containers as a secret, and the server loads it with dotenv, so the
-passwords appear in neither `.env` nor `docker inspect` of the MCP containers.
-The file holds:
-
-```bash
-ACTUAL_SERVER_URL=http://actual-server:5006   # or the remote https:// URL
-ACTUAL_WEB_URL=http://localhost:5006/         # where make budget-open goes
-ACTUAL_PASSWORD=...
-ACTUAL_BUDGET_SYNC_ID=...                     # Settings > Advanced settings
-ACTUAL_BUDGET_ENCRYPTION_PASSWORD=...         # end-to-end encrypted budgets only
-```
-
-`compose/actual/budget.env.example` has the template. With `ACTUAL_BUDGET_FILE`
-empty, an empty placeholder is mounted and every tool call fails.
-
-On Linux the MCP containers run as uid 1000, so `budget.sh` refuses to write
-the file unless the host user is uid 1000. Nothing is written otherwise.
-
-`budget.sh` admin runs (`init`, `add`, `check`) start a short-lived
-`docker compose run` container and pass the credentials to it as environment
-variables. They are visible in `docker inspect` of that container while it
-runs.
-
-Turning on end-to-end encryption in Actual changes the budget's sync id. Run
-`make budget-add URL=... FORCE=1` again for a remote server, or, for the local
-one, `make budget-remove` then `make budget-init`.
-
-## Two instances
-
-| Hermes profile | Used by | Instance | Tools |
-|---|---|---|---|
-| default | dashboard, CLI, Boundary | `actual-mcp-rw`, or `actual-mcp-ro` with `ACTUAL_ACCESS=read` | the 50 tools in the manifest (18 read, 32 write), or the 18 reads |
-| `browser` | WebUI | same as default | same |
-| `api-server` | unattended API, n8n | `actual-mcp-ro` | the 18 reads |
-
-Both are the same image. The read-only instance starts without
-`--enable-write`, so the write tools aren't in its `tools/list`; a call to
-`create-transaction` there returns `Unknown tool`. The read/write instance adds
-the write tools. The manifest also lists the write tools in `writeTools`, so
-the bootstrap leaves them out of the `tools.include` of any profile that gets
-the read-only instance.
-
-`run-bank-sync` exists in the upstream server and isn't in the manifest's tool list, so Hermes isn't offered it.
-
-`ACTUAL_ACCESS` caps what chats may do:
-
-| Value | Effect |
-|---|---|
-| empty or `write` | The levels in the table above |
-| `read` | default and `browser` use the read-only instance |
-| anything else | No `budget` entry on any profile |
-
-`make budget-access ACCESS=read` sets it; run `make hermes-reload` afterwards.
-
-## Cron
-
-A cron job with no tool list of its own runs with its profile's
-`platform_toolsets.cron`, which names MCP servers, not tools. A read/write
-`budget` entry would hand such a job every write tool, so the bootstraps keep
-it out of that list (the manifest sets `permissions.cron` to `"ro"`). A job
-that reads the budget, such as a weekly spending summary, goes on
-`api-server`, where `budget` is the read-only instance.
-
-The fence only edits `platform_toolsets.cron`, so a job with its own
-`enabled_toolsets` isn't covered. If that list names no MCP server, the job
-gets every MCP server on its profile, and a list that names `budget` gets it
-too. On default and `browser` that is the read/write instance. Give such jobs
-the MCP servers they need by name, or `no_mcp`.
 
 ## Connected budgets
 
 A connected budget is one budget on one Actual server (the bundled one or a
 remote one), stored as a row under `<data root>/addons/actual/instances/`. Any
-number can be connected beside, or instead of, the single budget above. Each
-gets its own MCP entries in Hermes: `budget-<slug>-ro` always, and
-`budget-<slug>` when the row's access is `write`. Only the `default` Hermes
-profile is supported, and `browser` mirrors it. A row naming another profile
-is refused with `unknown_profile`. A slug is a lowercase letter followed by up
-to 30 of `a-z`, `0-9` and `-`.
+number can be connected. Each gets one MCP entry per Hermes profile, named
+`budget-<slug>`. A slug is a lowercase letter followed by up to 30 of `a-z`,
+`0-9` and `-`.
 
 Enable the add-on (`scripts/addon.sh enable actual`) before connecting a
 budget. `addon.sh connect` on a disabled add-on stores the row and reports
@@ -152,6 +69,7 @@ budget. `addon.sh connect` on a disabled add-on stores the row and reports
 ```bash
 make budget-connect SLUG=home URL=https://budget.example.com ACCESS=write SYNC_ID=...
 make budget-connect SLUG=mine URL=local        # the bundled server, no password asked
+make budget-access SLUG=home ACCESS=read
 make budget-disconnect SLUG=home
 ```
 
@@ -160,27 +78,29 @@ from the terminal without echo (or from `ACTUAL_PASSWORD` and
 `ACTUAL_BUDGET_ENCRYPTION_PASSWORD`), builds the JSON below with them on stdin
 only, and pipes it to `scripts/addon.sh connect actual --instance <slug> --json`.
 It refuses while `ACTUAL_MCP_ENABLED` is off. Without `SYNC_ID` it uses the
-server's only budget and stops when there are several. `ACCESS` defaults to
-`read`. It and `make budget-disconnect` print `addon.sh`'s result as
-`[budget]` lines. Boundary calls `addon.sh` directly with the same JSON:
+server's only budget and stops when there are several. `ACCESS=write` adds the
+bind that `access <slug> write` stores (see [Access and bind](#access-and-bind));
+without it the budget is read-only. It and `make budget-disconnect` print
+`addon.sh`'s result as `[budget]` lines. Boundary calls `addon.sh` directly
+with the same JSON:
 
 | Key | Meaning |
 |---|---|
 | `server` | `local`, or the server's `http(s)` URL |
 | `sync_id` | Settings > Advanced settings in Actual |
-| `session_token` or `password` | One of them signs in; `local` falls back to the stored server password, or on a v0.3.12 install to the one in `compose/actual/budget.env` |
+| `session_token` or `password` | One of them signs in; `local` falls back to the stored server password |
 | `encryption_password` | End-to-end encrypted budgets only |
-| `profile` | `default` (the default) |
-| `access` | `read` (the default) or `write` |
+| `bind` | Optional: profile to `ro` or `rw` (see [Access and bind](#access-and-bind)) |
 
-`addon.sh` runs `budget.sh connect`, which opens the budget with those values
-and, only if that works, stores the session token. The password is used once
-and never stored. A failed check writes nothing. Errors end with one of
-`bad_slug`, `bad_access`, `unknown_profile`, `not_found`, `login_refused`,
-`token_expired`, `encryption_password`, `no_access`, `timeout` or
-`server_unreachable`. `not_found` covers a local server whose password isn't
-stored (run `scripts/addon.sh enable actual --reinit`) and, on Linux, a host
-user other than uid 1000.
+`addon.sh` checks the input, stores `bind` itself, and runs `budget.sh
+connect`, which opens the budget with the rest and, only if that works, stores
+the session token. The password is used once and never stored. A failed check
+writes nothing. The hook's errors are `bad_slug`, `not_found`,
+`login_refused`, `token_expired`, `encryption_password`, `no_access`, `timeout`
+and `server_unreachable`. `not_found` covers a local server whose password
+isn't stored (run `scripts/addon.sh enable actual --reinit`) and, on Linux, a
+host user other than uid 1000. A setting the manifest doesn't know, such as
+the old `profile` or `access`, is refused by `addon.sh` before the hook runs.
 
 To replace a connected budget (a new password, a new session after the old
 one ended), connect it again with `FORCE=1`:
@@ -195,32 +115,129 @@ same checks in the same order as a new connect and writes nothing until they
 pass, so a failed replace leaves the old session token and encryption
 password as they were. On success it overwrites `secrets/<slug>.session_token`
 and writes or removes `secrets/<slug>.encryption_password`. The MCP launcher
-restarts that budget's server when its files change.
+restarts that budget's server when its files change. The row is replaced
+too, so pass `ACCESS=write` again to keep a write bind.
 
-### Commands
+## Access and bind
 
-`scripts/budget.sh` subcommands for connected budgets, all printing JSON lines
-that end in `{"phase":"done"}` or one `{"phase":"error",...}`:
+Each row may hold `bind`, a map from Hermes profile to `ro` or `rw`. `ro`
+points the profile's `budget-<slug>` entry at `actual-mcp-ro`, `rw` at
+`actual-mcp-rw`. A row without `bind` gets the manifest's `mcp.profiles`, which
+is `ro` on `default`, `browser` and `api-server`, so a new budget is read-only
+until its bind raises a profile. A profile left out of a row's bind gets no
+entry for that budget. The store refuses `rw` on `api-server`.
+
+`budget.sh access <slug> read|write` writes one of two binds through
+`scripts/addon.sh configure actual --instance <slug>`:
+
+| Access | Bind |
+|---|---|
+| `read` | `{"default":"ro","browser":"ro","api-server":"ro"}` |
+| `write` | `{"default":"rw","browser":"rw","api-server":"ro"}` |
+
+`addon.sh configure` stores the bind without reloading Hermes, so `access`
+then re-runs `hermes-api-bootstrap` and `hermes-browser-bootstrap` with
+`HERMES_BOOTSTRAP_FORCE=1` and `vault.sh reload-plugins`. With `--json` it
+prints `{"phase":"done","mcp":["budget-<slug>"]}`; Boundary reads `mcp` from
+that line. `make budget-access SLUG=... ACCESS=read|write` runs it.
+
+| Hermes profile | Used by | Instance with `ro` | Instance with `rw` |
+|---|---|---|---|
+| default | dashboard, CLI, Boundary | `actual-mcp-ro`: the 18 reads | `actual-mcp-rw`: the 50 tools in the manifest (18 read, 32 write) |
+| `browser` | WebUI | same | same |
+| `api-server` | unattended API, n8n | `actual-mcp-ro` | not allowed |
+
+Both instances run the same image. The read-only instance starts without
+`--enable-write`, so the write tools aren't in its `tools/list`; a call to
+`create-transaction` there returns `Unknown tool`. The manifest also lists the
+write tools in `writeTools`, so the bootstrap leaves them out of the
+`tools.include` of any profile that gets the read-only instance.
+
+`run-bank-sync` exists in the upstream server and isn't in the manifest's tool
+list, so Hermes isn't offered it.
+
+## Commands
+
+`scripts/budget.sh` subcommands. The `--json` ones print JSON lines that end in
+`{"phase":"done",...}` or one `{"phase":"error",...}`:
 
 | Command | Effect |
 |---|---|
+| `init --server-only [--json]` | The manifest's init hook (above). When the server has exactly one budget afterwards, the `done` line also carries it as `"result": {"sync_id": ..., "name": ...}`, which `addon.sh enable actual --json` returns as `done.result` |
 | `budgets --json` | Reads `server` and `session_token` or `password` on stdin and lists the budgets that credential can open |
-| `status [--slug SLUG] --json` | Opens each connected budget with its stored token. `state` is `ok`, `token_expired`, `no_access`, `encryption_password`, `timeout`, `server_unreachable`, `bad_access` or `server_off` (a local row while `ACTUAL_LOCAL_ENABLED` is off; no sign-in and no Actual check); a bad state doesn't change the exit code |
-| `access <slug> read\|write --json` | Saves the row's access with `addon.sh configure` and reloads Hermes |
-| `init --server-only --json` | The manifest's init hook: sets up the bundled server (generated password in `secrets/server_password`, a budget named Budget if there is none) without writing `compose/actual/budget.env`. When the server has exactly one budget afterwards, the `done` line also carries it as `"result": {"sync_id": ..., "name": ...}`, which `addon.sh enable actual --json` returns as `done.result`. With `ACTUAL_LOCAL_ENABLED` off it does nothing |
+| `connect` / `disconnect --slug SLUG --json` | The manifest's instance hooks; `addon.sh` runs them. `connect` prints `{"phase":"done","account":"<slug>","mcp":["budget-<slug>"]}` |
+| `status [--slug SLUG] --json` | Opens each connected budget with its stored token: one `{"phase":"budget","slug":...,"access":...,"state":...}` line each |
+| `access SLUG read\|write [--json]` | Writes the row's bind (see [Access and bind](#access-and-bind)) |
+| `connect-cli`, `disconnect-cli` | `make budget-connect` and `make budget-disconnect` |
+| `open` | `make budget-open` |
 | `ensure` | Creates `addons/actual/instances` and `secrets` at mode 700; `make ensure-local` runs it |
 
-`make doctor` lists each connected budget with its `status` state; `server_off`
-is a warning.
+In `status`, `access` is `write` when the row's `bind.default` is `rw`, else
+`read`. `state` is `ok`, `token_expired`, `no_access`, `encryption_password`,
+`timeout`, `server_unreachable` or `server_off`. `server_off` is a local row
+while `ACTUAL_LOCAL_ENABLED` is off, reported without a sign-in or an Actual
+check. A bad state doesn't change the exit code.
 
-### What lives under `data/addons/actual/`
+`budget.sh` admin runs (`connect`, `status`, and creating the bundled server's
+first budget) start a short-lived `docker compose run` container and pass the
+credentials to it as environment variables. They are visible in `docker
+inspect` of that container while it runs.
+
+## Cron
+
+A cron job with no tool list of its own runs with its profile's
+`platform_toolsets.cron`, which names MCP servers, not tools. A `budget-<slug>`
+entry on `actual-mcp-rw` would hand such a job every write tool, so the
+bootstraps keep write entries out of that list (the manifest sets
+`permissions.cron` to `"ro"`). A job that reads a budget, such as a weekly
+spending summary, goes on `api-server`, where every budget is read-only.
+
+The fence only edits `platform_toolsets.cron`, so a job with its own
+`enabled_toolsets` isn't covered. If that list names no MCP server, the job
+gets every MCP server on its profile, and a list that names a `budget-<slug>`
+entry gets it too. On `default` and `browser` that entry is the read/write
+instance when the bind says `rw`. Give such jobs the MCP servers they need by
+name, or `no_mcp`.
+
+## The bundled server and the add-on switches
+
+`addon.sh disable actual` sets `ACTUAL_LOCAL_ENABLED=0` and stops
+`actual-server`; `addon.sh enable actual` turns it back on when the manifest's
+`local` setting is stored (`addon.sh configure actual` with `{"local": true}`).
+When `ACTUAL_LOCAL_ENABLED=1` was set by hand and `local` isn't stored,
+`disable` stores `local` as true before it zeroes the flag, so the next
+`enable` restores it.
+
+While `ACTUAL_LOCAL_ENABLED` is off, `budget.sh status` reports rows whose
+`server` is `local` as `server_off`. To turn the bundled server back on, run
+`echo '{"local": true}' | scripts/addon.sh configure actual`, then
+`scripts/addon.sh enable actual`; add `--reinit` if the add-on was first
+enabled with the local server off, since the init hook did nothing then.
+
+## Expired sessions
+
+A connected budget holds a session token, not the password. Changing the
+password on an Actual server, or turning OpenID on, ends the session of every
+budget connected to it. `budget.sh status` then shows `token_expired` for each
+until it is reconnected (`make budget-connect ... FORCE=1`, or
+`make budget-disconnect` then `make budget-connect`).
+
+Turning on end-to-end encryption in Actual changes the budget's sync id, so
+the budget has to be connected again with the new one.
+
+A write made in the seconds between a good sync and the background push can
+still be stranded if the session ends right then.
+
+## Where data lives
 
 | Path | Content |
 |---|---|
-| `instances/<slug>.json` | The row: server, sync id, profile, access |
-| `secrets/<slug>.session_token` | The token the MCP child signs in with |
-| `secrets/<slug>.encryption_password` | Only for encrypted budgets |
-| `secrets/server_password` | The bundled server's generated password |
+| `ACTUAL_DATA_DIR` (default `./data/actual/server`) | The bundled server's budget files and its own state. Back it up with the server stopped |
+| `<data root>/addons/actual/instances/<slug>.json` | The row: server, sync id, and `bind` when one was set |
+| `<data root>/addons/actual/secrets/<slug>.session_token` | The token the MCP child signs in with |
+| `<data root>/addons/actual/secrets/<slug>.encryption_password` | Only for encrypted budgets |
+| `<data root>/addons/actual/secrets/server_password` | The bundled server's generated password |
+| `actual_mcp_rw_cache`, `actual_mcp_ro_cache` (Docker volumes) | Each MCP container's copy of the budgets it serves; `docker compose down -v` deletes them |
 
 Secret files are mode 600. The MCP containers mount `data/addons/actual`
 read-only at `/budgets`. On Linux they run as uid 1000, so connected budgets
@@ -229,57 +246,10 @@ connect` refuses another uid and `make doctor` flags it. The launcher drops
 one trailing newline from a secret file and keeps every other character.
 
 In each MCP container a launcher starts one child per row and serves it at
-`/<slug>/mcp`; the legacy `/mcp` path still serves the single budget. The
-launcher checks the store every 2 seconds, restarts a child when any of its
-files change, and deletes the child's cache whenever it stops. The `-ro`
-container's children run without write tools.
-
-### Hermes entries and cron
-
-`budget-<slug>-ro` and `budget-<slug>` are registered on `default` and
-`browser` only. The plain `budget` entry registers only while
-`ACTUAL_BUDGET_FILE` names a budget file. The cron fence matches add-on
-services by scheme, host and port, so `budget-<slug>` stays out of cron lists
-like `budget` does.
-
-### The bundled server and the add-on switches
-
-`addon.sh disable actual` sets `ACTUAL_LOCAL_ENABLED=0` and stops
-`actual-server`; `addon.sh enable actual` turns it back on when the manifest's
-`local` setting is stored (`addon.sh configure actual` with `{"local": true}`).
-When `ACTUAL_LOCAL_ENABLED=1` was set by hand (as v0.3.12 did) and `local`
-isn't stored, `disable` stores `local` as true before it zeroes the flag, so
-the next `enable` restores it. The `make budget-*` commands don't depend on it.
-
-The init hook sets up the bundled server only while `ACTUAL_LOCAL_ENABLED` is
-on; on a remote-only install it does nothing. `addon.sh enable` runs it once,
-so after turning the bundled server on later, run
-`scripts/addon.sh enable actual --reinit`.
-
-While `ACTUAL_LOCAL_ENABLED` is off, the Hermes bootstraps skip connected
-budgets whose `server` is `local` and drop their entries, with one stderr line
-naming each slug. Rows on a remote server are unaffected. The MCP containers
-keep serving the rows' children, but nothing calls them once Hermes drops the
-entries. `budget.sh status` reports these rows as `server_off`. To turn the
-bundled server back on, run
-`echo '{"local": true}' | scripts/addon.sh configure actual`, then
-`scripts/addon.sh enable actual`; add `--reinit` if the
-add-on was first enabled with the local server off, since the init hook did
-nothing then. Both bootstraps get `ACTUAL_LOCAL_ENABLED` in their environment,
-so changing it re-runs their registration on the next start.
-
-`make budget-remove` keeps `ACTUAL_MCP_ENABLED=1` while any connected budget
-exists.
-
-### Expired sessions
-
-A connected budget holds a session token, not the password. Changing the
-password on an Actual server, or turning OpenID on, ends the session of every
-budget connected to it. `budget.sh status` then shows `token_expired` for each
-until it is reconnected (`make budget-disconnect`, then `make budget-connect`).
-
-A write made in the seconds between a good sync and the background push can
-still be stranded if the session ends right then.
+`/<slug>/mcp`. `actual-mcp-rw` starts children only for rows whose bind gives
+some profile `rw`. The launcher checks the store every 2 seconds, restarts a
+child when any of its files change, and deletes the child's cache whenever it
+stops.
 
 ## Networks
 
@@ -291,19 +261,7 @@ server.
 
 With `HERMES_TERMINAL_BACKEND=local` the agent's shell runs inside `hermes`,
 which is on `budget`, so any profile with a shell tool can reach
-`actual-mcp-rw` with curl.
-
-## Where data lives
-
-- The server's data directory, `ACTUAL_DATA_DIR` (default
-  `./data/actual/server`), holds the budget files and the server's own state. Back it up with the server stopped.
-- `actual_mcp_rw_cache` and `actual_mcp_ro_cache`, Docker volumes, each hold a
-  full copy of the budget that the MCP container downloaded. Treat them like
-  the data directory; `docker compose down -v` deletes them.
-- `compose/actual/budget.env` holds the credentials.
-- `<data root>/addons/actual/` holds the connected budgets (see
-  [Connected budgets](#connected-budgets)); each MCP container keeps a cache
-  per connected budget that the launcher deletes when the child stops.
+`actual-mcp-rw` with curl, whatever a budget's bind says.
 
 ## Limits and quirks
 
@@ -315,27 +273,31 @@ which is on `budget`, so any profile with a shell tool can reach
   calls, which the `budget` skill (`compose/hermes/skills/budget/`) asks
   Hermes to confirm first.
 - `ACTUAL_ADMIN_TIMEOUT_S` (default 45) bounds each admin check. A server that
-  doesn't answer in time makes `actual-admin.mjs` exit 4; `make doctor` then
-  warns and skips the credential check, and `budget.sh` reports the timeout and
-  writes nothing.
-- The MCP containers load the budget on the first tool call, not at startup, so
-  a wrong password shows as a failed call. `make doctor` opens the budget with
-  the file's credentials to catch it.
+  doesn't answer in time makes `actual-admin.mjs` exit 4; `connect` reports
+  `timeout` and writes nothing, and `status` reports the row as `timeout`.
+- The MCP containers load a budget on its first tool call, not at startup, so
+  a bad credential shows as a failed call. `make doctor` opens each connected
+  budget with its stored token to catch it.
 
 ## Checks
 
-`make doctor` checks that the profiles are enabled, that the budget file exists
-and is mode 600, that the file points at a server that is running (it warns
-when it names `actual-server` and `ACTUAL_LOCAL_ENABLED=0`), that both MCP
-containers are healthy, that the budget opens with the file's credentials, that
-`actual-mcp-rw` answers `tools/list`, and that `actual-mcp-ro` lists no write
-tool. It also reports each connected budget's `status`.
+`make doctor` checks that the `budget` profile (and `budget-local`, when
+`ACTUAL_LOCAL_ENABLED` is on) is in `COMPOSE_PROFILES`, that the MCP containers
+and the bundled server are healthy, and, on Linux, that the host user is uid
+1000 when budgets are connected. It lists each connected budget with its
+`status` state; anything but `ok` is a warning. For each budget in state `ok`
+it runs `tools/list` on `actual-mcp-ro`'s `/<slug>/mcp` and fails if a write
+tool is listed, and, when the status says `access` `write`, checks that
+`actual-mcp-rw`'s `/<slug>/mcp` answers.
 
 ## Testing
 
-Offline, against stubs: `test-addon-manifests.py`, `test-actual-registration.sh`,
-`test-addon-mcp-access.sh`, `test-addon-cron-fence.sh`, `test-actual-rows.sh`,
-`test-actual-admin.sh`, `test-budget-sh.sh` and `test-actual-doctor.sh`. None of them starts Actual.
+Offline, against stubs: `test-addon-manifests.py`, `test-actual-instances.sh`,
+`test-addon-cron-fence.sh`, `test-budget-sh.sh` and `test-actual-doctor.sh`.
+`test-actual-compose.sh` runs `docker compose config`. None of them starts
+Actual.
+`test-actual-admin.sh` runs `actual-admin.mjs` against a real
+`actual-server` container and skips when Docker or either image is missing.
 
 ## Image bumps
 
@@ -343,15 +305,15 @@ The `actual-server` image (`ACTUAL_SERVER_IMAGE`, pinned by digest) and
 `@actual-app/api` in `compose/actual-mcp` are pinned together at 26.11.0. Bump
 them together. A version mismatch, or a renamed tool, breaks the add-on
 without failing any offline test, so re-run a live check after any bump: add a
-transaction from WebUI, ask for the month's spending, confirm a write through
-`api-server` fails, and set `ACTUAL_ACCESS=read` and confirm WebUI loses its
-write tools.
+transaction from WebUI on a budget with access `write`, ask for the month's
+spending, confirm a write through `api-server` fails, and run `budget.sh
+access <slug> read` and confirm WebUI loses its write tools.
 
 ## Turning it off
 
-Set `ACTUAL_MCP_ENABLED=0`, or run `make budget-remove`, then run
-`make hermes-reload`. That drops the `budget` entry from every profile's
-`config.yaml` and cron list.
+`make budget-disconnect SLUG=...` removes one budget and its Hermes entries.
+To turn the add-on off, run `scripts/addon.sh disable actual`, or set
+`ACTUAL_MCP_ENABLED=0` and run `make hermes-reload`.
 
 Compose leaves a removed profile's containers running, and `make up` doesn't
 stop them. Stop the MCP containers yourself:
@@ -360,7 +322,5 @@ stop them. Stop the MCP containers yourself:
 docker compose stop actual-mcp-rw actual-mcp-ro
 ```
 
-Until they stop, they keep serving the budget with the credentials from the
-file they mounted at start. With `ACTUAL_LOCAL_ENABLED=0`, stop the server the
-same way (`docker compose stop actual-server`); its data stays in
-`ACTUAL_DATA_DIR`.
+With `ACTUAL_LOCAL_ENABLED=0`, stop the server the same way (`docker compose
+stop actual-server`); its data stays in `ACTUAL_DATA_DIR`.

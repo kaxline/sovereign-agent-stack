@@ -30,8 +30,8 @@ for.
 | `services` | One entry per compose service: `compose` (the service name), `port`, `when: {gate}`, and `mounts` for the instance store (below) |
 | `uses` | Stack services the add-on needs (`llm`, `search`, `storage`, `postgres`, `neo4j`, `redis`, `secrets`, `scheduler`) |
 | `permissions` | `reads` (personal-data classes), `writes`, `sends`, `exposesToAgent`, `egress`, and `cron` (`true`, `false` or `"ro"`) |
-| `mcp` | One server entry or a list: `name`, `service` (one key or `{ro, rw}`), `path`, `transport`, `timeout`, `connectTimeout`, `tools`, `pin`, `writeTools`, `profiles`, `env`, `when` |
-| `mcp.instances` | In place of `service`, `path` and `name`: one server per stored instance, with `name` (`<prefix>{slug}`), `url`, `access`, `auth` and an optional `gate` |
+| `mcp` | One server entry or a list: `name`, `service`, `path`, `transport`, `timeout`, `connectTimeout`, `tools`, `pin`, `writeTools`, `profiles`, `env`, `when` |
+| `mcp.instances` | In place of `service`, `path` and `name`: one server per stored instance, with `name` (`<prefix>{slug}`), a `url` template (`{setting:...}`, `{access}`, `{slug}`), and optional `access`, `auth` and `gate` |
 | `vaultBackend` | A login backend for the agent's browser vault: `name`, `plugin`, `toolset`, `tools`, `profiles` |
 | `settings` | The add-on's settings schema, each with a `type`, optional `default`, `label`, `optional` and, for a `bool`, a gate `flag` |
 | `instances` | `{name, settings}`: a settings schema stored once per instance slug, plus `optional`, `errors` and the `connect`/`disconnect` hooks |
@@ -74,7 +74,7 @@ Each add-on has one directory, `data/addons/<short-id>/`
 ```text
 data/addons/<short-id>/
   config/settings.env      ADDON_<SHORT>_<NAME>=value, shlex-quoted, no secrets
-  instances/<slug>.json    one instance's non-secret values
+  instances/<slug>.json    one instance's non-secret values, and its bind
   secrets/<name>           a top-level secret setting, 0600
   secrets/<slug>.<name>    an instance's secret setting, 0600
   state.json               what the lifecycle recorded, such as the init run
@@ -82,6 +82,12 @@ data/addons/<short-id>/
 
 Directories are 0700. Every file is written to a temporary name in its own
 directory and renamed, so a reader never sees a half-written file.
+
+An instance file may hold `bind`, the stack's per-instance binding: a map from
+identity to `ro` or `rw` that replaces `mcp.profiles` for that instance. An
+identity it leaves out gets no entry. It may raise `ro` to `rw`, but never on
+`api-server`, the unattended identity. `addon_manifest.bind_problem()` has
+the rules, and `addon.sh connect` and `configure --instance` write it.
 
 A slug is a lowercase letter followed by up to 30 lowercase letters, digits
 or `-`: `^[a-z][a-z0-9-]{0,30}\Z` (`SLUG_RE` in `addon_store.py`). An adapter
@@ -140,16 +146,21 @@ for each `mcp.instances` entry, one line for the add-on and then one per
 stored instance:
 
 ```text
-name|title|on|url|keyenv|keyfile|timeout|connect|pins|reason|header|scheme
+name|title|on|url|keyenv|keyfile|timeout|connect|pins|reason|header|scheme|tools
 ```
 
 The add-on's line has `name` `<prefix>*`, `on` from its flag and `reason` the
-flag's name. An instance line is on (`1`) when the flag is on, the identity is
-in `mcp.profiles`, the URL is http(s), the gate lets it through, the access
-setting is `read` or `write`, and the key file it needs holds one line.
+flag's name. The identity's level is `ro` or `rw`, from the instance's `bind`
+when it has one, else from `mcp.profiles`; an `access` setting of `read` caps
+it at `ro`. The level fills `{access}` in the URL and picks the key. An
+instance line is on (`1`) when the flag is on, the identity has a level, the
+URL is http(s), the gate lets it through, the access setting (if any) is
+`read` or `write`, and the key file it needs (if any) holds one line.
 Otherwise `on` is `0` and `reason` says which check failed. `keyenv` is the
 variable name the key goes under (`crm-sales-eu` gives `CRM_SALES_EU_KEY`);
-`keyfile` is a path under `<data-dir>`. The plan never prints a key.
+`keyfile` is a path under `<data-dir>`. An entry without `auth` has empty
+`keyenv`, `keyfile`, `header` and `scheme`, and the adapter registers it with
+`tools`, which leaves out `writeTools` at `ro`. The plan never prints a key.
 
 `addon_manifest.py vault-plan <addons-dir> <identity>` prints one line per
 add-on with a `vaultBackend`:
@@ -168,14 +179,11 @@ nothing; it is for tuning entries that already exist.
 `cron_fence(addons_dir, data_dir=...)` is a function, not a subcommand. It
 returns the MCP server names and URLs to keep out of scheduled runs: every
 entry of every add-on whose `permissions.cron` is not `true`. With `cron`
-`"ro"` only the URLs other than the `ro` service's are fenced. An invalid
+`"ro"`, `mcp.instances` entries stay at the level of the identity the run
+uses, and when the URL has `{access}` each instance's `rw` URL is fenced. An invalid
 manifest is fenced by whatever name it carries, and an `mcp.instances` entry
 by the name of each stored instance. `cron_fence_toolsets()` does the same for
 `vaultBackend` toolsets.
-
-Actual Budget's connected budgets use a separate plan,
-`scripts/lib/actual_rows.py plan`, with lines of
-`name|title|url|timeout|connect_timeout|tools|pins`.
 
 ## Lifecycle CLI
 

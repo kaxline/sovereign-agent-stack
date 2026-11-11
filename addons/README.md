@@ -37,8 +37,9 @@ except where noted:
   `title` and `when: {"gate": FLAG}`; the entry is registered while that gate
   flag is on, else while `builtin.flag` is on. Names must be unique within the
   add-on, and each entry needs its own service: two entries may not name the
-  same service key, directly or through a `{ro, rw}` map, because the
-  bootstrap drops stale registrations by URL. On every profile in `profiles`
+  same service key, because the bootstrap drops stale registrations by URL.
+  `service` is one service key; the `{ro, rw}` map and `env.access` were
+  removed in 0.3.15 (use `mcp.instances` with `{access}` in its `url`). On every profile in `profiles`
   the bootstrap registers the entry and removes any other entry at the same
   URL; on every other profile it removes entries at that URL.
 - `mcp.instances`: an `mcp` entry that registers one
@@ -51,25 +52,39 @@ except where noted:
     the prefix that has no instance, so no add-on's fixed `mcp.name` may start
     with another add-on's instance prefix, and two instance prefixes may not
     start with one another.
-  - `url`: a string with `{setting:<name>}` placeholders that name `url` or
-    `string` instance settings, such as `{setting:url}/mcp`.
-  - `access`: `{setting:<name>}` naming a `choice` instance setting whose
-    `options` are only `read` and `write`. `read` registers the instance with
-    its `ro` key and `write` with its `rw` key. A profile that `mcp.profiles`
-    maps to `ro` gets the `ro` key whatever the setting (Twenty maps
-    `api-server` to `ro`), and a profile whose key is missing gets no entry.
-  - `auth`: `{header, scheme, secret: {ro, rw}}`. `secret` names two `secret`
-    instance settings. The bootstrap writes the chosen key into the profile's
-    `.env` as `<NAME>_KEY`, with `-` turned into `_` and the name uppercased
-    (`CRM_SALES_EU_KEY`), and the header carries `<scheme> ${<NAME>_KEY}`.
+  - `url`: a template. `{setting:<name>}` names a `url` or `string` instance
+    setting, `{access}` becomes `ro` or `rw` (the profile's level, below) and
+    `{slug}` the instance's slug. It needs `{slug}` or a setting, so each
+    instance has its own URL: `{setting:url}/mcp` (Twenty),
+    `http://actual-mcp-{access}:3000/{slug}/mcp` (Actual).
+  - A profile's level is `ro` or `rw`: the instance's `bind` when it has one
+    (below), else `mcp.profiles`. A profile it leaves out gets no entry.
+  - `access` (optional): `{setting:<name>}` naming a `choice` instance setting
+    whose `options` are only `read` and `write`. `read` caps the level at `ro`.
+  - `auth` (optional): `{header, scheme, secret: {ro, rw}}`. `secret` names two
+    `secret` instance settings, and the level picks one. The bootstrap writes
+    that key into the profile's `.env` as `<NAME>_KEY`, with `-` turned into
+    `_` and the name uppercased (`CRM_SALES_EU_KEY`), and the header carries
+    `<scheme> ${<NAME>_KEY}`. A profile whose key is missing gets no entry.
+    Without `auth` the entry takes no key, and the bootstrap writes
+    `tools.include`: `tools` less `writeTools` at `ro`.
   - `gate` (optional): `{setting, flag}`. An instance whose bool `setting` is
     true registers only while `flag` (`builtin.flag` or a gate) is on.
-  For instance entries the bootstrap writes no `tools.include`: `tools` only
-  bounds what `pin` and `writeTools` may name. Of `env` it reads `timeout` and
-  `connectTimeout`; `env.url` and `env.access` are ignored.
+  With `auth` the bootstrap writes no `tools.include`, and `tools` only bounds
+  what `pin` and `writeTools` may name; the key's role is the boundary. Of
+  `env` it reads `timeout` and `connectTimeout`; `env.url` is ignored.
   The entry needs a top-level `instances` block that declares the settings it
   names. Removing an instance drops its entries and keys on the next
-  bootstrap. `addons/twenty/addon.json` is the one user.
+  bootstrap. Twenty and Actual use it.
+- `bind`, per instance: an instance file may hold `bind`, a map from profile to
+  `ro` or `rw` that replaces `mcp.profiles` for that instance. It is the
+  stack's, not a setting: no schema may declare it, and `addon.sh connect` and
+  `configure --instance` take it in the JSON on stdin beside the values. A
+  profile it names must be in the entry's `mcp.profiles`; it may raise `ro` to
+  `rw`, except on `api-server`, which may only be `ro`, and an add-on that
+  reads personal data may not name `api-server` at all. `{}` gives the
+  instance to no profile. `addon.sh list --json` shows each instance's
+  `bind`.
 - `services.<name>.when`: `{"gate": FLAG}`, so the service starts only while
   that gate flag is on. `mounts` maps `secrets`, `config` and `instances` to
   `ro` or `rw`; they mount the directories `data/addons/<short-id>/secrets`,
@@ -143,9 +158,10 @@ The bootstraps fence add-on MCP servers out of cron jobs with the same
 `platform_toolsets.cron` list that keeps mail and messages out (see
 [docs/email.md](../docs/email.md)). `permissions.cron` decides what stays in
 cron: `true` keeps every entry, `mcp.instances` entries included; `"ro"`
-keeps the `ro` service of a `{ro, rw}` service map and fences the `rw` one,
-and keeps `mcp.instances` entries, which then carry the key of the profile
-the job runs on; `false` or a missing field fences them all. Twenty sets
+keeps `mcp.instances` entries at the level of the profile the job runs on,
+and fences each instance's `rw` URL when the `url` has `{access}` (Actual),
+so a job never gets write tools; `false` or a missing field fences them
+all. Twenty sets
 `true`, so a cron job on the default profile gets a write workspace's
 read/write key. A manifest that fails validation is still fenced by its
 `mcp.name` and by the name of each stored instance. If

@@ -14,29 +14,19 @@ cd "$ROOT"
 bash scripts/sync-profiles.sh --table | grep -qx 'ACTUAL_LOCAL_ENABLED budget-local 0' \
   || fail "sync-profiles.sh maps ACTUAL_LOCAL_ENABLED to budget-local (the gate in addons/actual/addon.json)"
 
-for k in ACTUAL_MCP_ENABLED ACTUAL_LOCAL_ENABLED ACTUAL_ACCESS ACTUAL_PORT ACTUAL_DATA_DIR ACTUAL_SERVER_IMAGE ACTUAL_BUDGET_FILE; do
+for k in ACTUAL_MCP_ENABLED ACTUAL_LOCAL_ENABLED ACTUAL_PORT ACTUAL_DATA_DIR ACTUAL_SERVER_IMAGE; do
   grep -qE "^#? ?${k}=" .env.example || fail ".env.example documents ${k}"
+done
+for k in ACTUAL_ACCESS ACTUAL_BUDGET_FILE; do
+  if grep -qE "^#? ?${k}=" .env.example; then fail ".env.example still has the single budget's ${k}"; fi
 done
 grep -qE '^ACTUAL_MCP_ENABLED=0$' .env.example || fail ".env.example has ACTUAL_MCP_ENABLED=0"
 grep -qE '^ACTUAL_LOCAL_ENABLED=0$' .env.example || fail ".env.example has ACTUAL_LOCAL_ENABLED=0"
 
-# The budget file: the MCP server's own key names, no values.
-example=compose/actual/budget.env.example
-[ -f "$example" ] || fail "${example} exists"
-for k in ACTUAL_SERVER_URL ACTUAL_WEB_URL ACTUAL_PASSWORD ACTUAL_BUDGET_SYNC_ID ACTUAL_BUDGET_ENCRYPTION_PASSWORD; do
-  grep -qE "^${k}=" "$example" || fail "${example} has ${k}"
-done
-for k in ACTUAL_PASSWORD ACTUAL_BUDGET_SYNC_ID ACTUAL_BUDGET_ENCRYPTION_PASSWORD; do
-  grep -qE "^${k}=$" "$example" || fail "${example} leaves ${k} empty"
-done
-
-# The placeholder the secret falls back to is tracked and empty.
-[ -f compose/actual/no-budget.env ] || fail "compose/actual/no-budget.env exists"
-[ ! -s compose/actual/no-budget.env ] || fail "compose/actual/no-budget.env is empty"
-for f in compose/actual/budget.env.example compose/actual/no-budget.env; do
-  if git check-ignore -q "$f"; then fail "$f must stay tracked"; fi
-done
-for f in compose/actual/budget.env compose/actual/.budget.env.tmp compose/actual/other; do
+# Nothing tracked is left under compose/actual/, and a budget file from before
+# 0.3.15 stays gitignored.
+[ -z "$(git ls-files compose/actual)" ] || fail "compose/actual/ has tracked files"
+for f in compose/actual/budget.env compose/actual/other; do
   git check-ignore -q "$f" || fail "$f must be gitignored"
 done
 # The root .gitignore's data/ rule must not drop vendored sources.
@@ -61,7 +51,7 @@ trap 'rm -rf "$tmp"' EXIT
 # an ASSISTANT_DATA_ROOT in .env must not change what this checks (as in
 # scripts/lib/compose_config.py).
 compose_config() {
-  env -u ACTUAL_BUDGET_FILE ASSISTANT_DATA_ROOT=./data COMPOSE_PROFILES="$1" \
+  ASSISTANT_DATA_ROOT=./data COMPOSE_PROFILES="$1" \
     docker compose -f docker-compose.yml config --format json
 }
 
@@ -138,9 +128,8 @@ for name, write in (("actual-mcp-rw", True), ("actual-mcp-ro", False)):
     env = env_map(svc)
     if env != {"ACTUAL_SYNC_TTL_MS": "0", "ACTUAL_DATA_DIR": "/data"}:
         errors.append(f"{name} environment keys are {sorted(env)}, want ACTUAL_SYNC_TTL_MS=0 and ACTUAL_DATA_DIR=/data")
-    secrets = svc.get("secrets") or []
-    if not any(s.get("source") == "actual_budget" and s.get("target") == "/app/.env" for s in secrets):
-        errors.append(f"{name} does not get secret actual_budget at /app/.env")
+    if svc.get("secrets"):
+        errors.append(f"{name} still mounts a secret ({svc.get('secrets')})")
     cache = name.replace("-", "_") + "_cache"
     vols = svc.get("volumes") or []
     if not any(v.get("type") == "volume" and v.get("source") == cache and v.get("target") == "/data" for v in vols):
@@ -155,9 +144,8 @@ for name, write in (("actual-mcp-rw", True), ("actual-mcp-ro", False)):
     if "/mcp" not in test or "node" not in test:
         errors.append(f"{name} healthcheck does not probe /mcp with node")
 
-secret = (cfg.get("secrets") or {}).get("actual_budget") or {}
-if not str(secret.get("file", "")).endswith("compose/actual/no-budget.env"):
-    errors.append(f"secret actual_budget falls back to {secret.get('file')}, want compose/actual/no-budget.env")
+if "actual_budget" in (cfg.get("secrets") or {}):
+    errors.append("the single budget's actual_budget secret is still declared")
 
 # budget is a plain bridge network so the MCP servers can reach a remote
 # Actual server. It stays dedicated: exactly these four services join it.
@@ -179,11 +167,8 @@ for name in ("hermes-api-bootstrap", "hermes-browser-bootstrap"):
     svc = services.get(name) or {}
     env = env_map(svc)
     keys = {k for k in env if k.startswith("ACTUAL_")}
-    if keys != {"ACTUAL_MCP_ENABLED", "ACTUAL_ACCESS", "ACTUAL_BUDGET_FILE", "ACTUAL_LOCAL_ENABLED"}:
-        errors.append(f"{name} ACTUAL_* keys are {sorted(keys)}, want ACTUAL_ACCESS, ACTUAL_BUDGET_FILE, ACTUAL_LOCAL_ENABLED and ACTUAL_MCP_ENABLED")
-    # The test runs with ACTUAL_BUDGET_FILE unset: the bootstrap sees it empty.
-    if env.get("ACTUAL_BUDGET_FILE") not in ("", None):
-        errors.append(f"{name} ACTUAL_BUDGET_FILE defaults to {env.get('ACTUAL_BUDGET_FILE')!r}, want empty")
+    if keys != {"ACTUAL_MCP_ENABLED"}:
+        errors.append(f"{name} ACTUAL_* keys are {sorted(keys)}, want only ACTUAL_MCP_ENABLED")
     # Only the instance files: the bootstrap never sees secrets/.
     vols = svc.get("volumes") or []
     rows = [v for v in vols if v.get("target") == "/bootstrap/addon-data/actual/instances"]
@@ -193,10 +178,8 @@ for name in ("hermes-api-bootstrap", "hermes-browser-bootstrap"):
     for v in vols:
         if "addons/actual" in str(v.get("source", "")) and not str(v.get("source", "")).endswith("/instances"):
             errors.append(f"{name} mounts {v.get('source')}; only addons/actual/instances may reach it")
-        if str(v.get("target", "")) == "/bootstrap/actual_rows.py" and not v.get("read_only"):
-            errors.append(f"{name} mounts actual_rows.py writable")
-    if not any(str(v.get("target", "")) == "/bootstrap/actual_rows.py" for v in vols):
-        errors.append(f"{name} does not mount scripts/lib/actual_rows.py at /bootstrap/actual_rows.py")
+        if "actual_rows" in str(v.get("target", "")):
+            errors.append(f"{name} still mounts actual_rows.py")
 
 for err in errors:
     print(f"FAIL {err}", file=sys.stderr)

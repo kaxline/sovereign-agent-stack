@@ -389,13 +389,13 @@ setup_crm_profile() {
   log "Enabled Twenty CRM (crm profile). After make up: make crm-init. See docs/crm.md"
 }
 
-# Local Actual Budget server and its MCP servers. The server password, budget
-# and budget.env come from make budget-init after make up; a remote server is
-# added with make budget-add instead.
+# Local Actual Budget server and its MCP servers. The server password and a
+# first budget come from the add-on's init hook (scripts/addon.sh enable
+# actual) after make up; budgets are connected with make budget-connect.
 setup_budget_profile() {
   upsert_env .env ACTUAL_LOCAL_ENABLED 1
   upsert_env .env ACTUAL_MCP_ENABLED 1
-  log "Enabled Actual Budget (budget-local and budget profiles). After make up: make budget-init. See docs/budget.md"
+  log "Enabled Actual Budget (budget-local and budget profiles). After make up: scripts/addon.sh enable actual, then make budget-connect. See docs/budget.md"
 }
 
 # Twenty reads true/false; the stack's flag is 0/1 like every other.
@@ -1097,7 +1097,7 @@ Optional profiles (re-run setup with a flag below, or set the service's
   --db            Shared Postgres + SQL MCP for Hermes (docs/database.md)
   --todo          Vikunja todo lists + MCP, then make todo-init (docs/todo.md)
   --crm           Local Twenty CRM + MCP, then make crm-init (docs/crm.md)
-  --budget        Local Actual Budget + MCP, then make budget-init (docs/budget.md)
+  --budget        Local Actual Budget + MCP, then make budget-connect (docs/budget.md)
   --mail          Read-only search over your Apple Mail, indexed on the host (docs/email.md)
   --mail-drafts   Hermes drafts email into Mail's Drafts for you to send (docs/email.md)
   --messages      Read-only iMessage/SMS history and new-message alerts, indexed on the host (docs/messages.md)

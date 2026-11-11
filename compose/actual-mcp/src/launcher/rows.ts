@@ -71,7 +71,8 @@ function isHttpUrl(value: string): boolean {
 }
 
 /**
- * Reads every row under `dir`. With `write`, keeps only rows whose access is `write`.
+ * Reads every row under `dir`. With `write`, keeps only rows whose `bind` gives some profile `rw`
+ * (the stack's per-instance binding, a map from profile to `ro` or `rw`).
  * A row that can't be served is skipped with one line to `warn` (stderr by default).
  */
 export function readRows(dir: string, write: boolean, warn: (line: string) => void = stderrLine): Row[] {
@@ -116,12 +117,13 @@ function readRow(dir: string, slug: string, write: boolean, skip: (reason: strin
     return undefined;
   }
 
-  const access = fields.access ?? 'read';
-  if (access !== 'read' && access !== 'write') {
-    skip('access must be read or write');
+  const bind = fields.bind;
+  if (bind !== undefined && (!bind || typeof bind !== 'object' || Array.isArray(bind))) {
+    skip('bind must map profiles to ro or rw');
     return undefined;
   }
-  if (write && access !== 'write') return undefined;
+  const writable = bind !== undefined && Object.values(bind as Record<string, unknown>).includes('rw');
+  if (write && !writable) return undefined;
 
   const server = fields.server;
   const serverUrl = server === 'local' ? LOCAL_SERVER_URL : server;
@@ -344,8 +346,8 @@ export class Children {
 
   private start(slot: Slot, row: Row): void {
     const cwd = path.join(this.cwdRoot, row.slug);
-    // Reason: the server loads .env from its cwd; an empty one keeps the legacy budget's
-    // credentials out of a row's child.
+    // Reason: the server loads .env from its cwd; an empty cwd keeps any /app/.env out of a
+    // row's child.
     fs.rmSync(cwd, { recursive: true, force: true });
     fs.mkdirSync(cwd, { recursive: true });
 

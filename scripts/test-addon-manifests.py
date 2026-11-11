@@ -191,70 +191,23 @@ repo_plan = am.vault_plan(ROOT / "addons", "api-server", {})
 check("the repo's Bitwarden add-on has no api-server access and is off without its flag",
       repo_plan == [f"bwbroker|0||{tail}"], str(repo_plan))
 
-# A service map gives each access level its own service.
-SPLIT = json.loads((ROOT / "scripts" / "fixtures" / "addons" / "split" / "addon.json").read_text())
-check("the split fixture is valid", am.validate(SPLIT) == [], str(am.validate(SPLIT)))
+refused("a {ro, rw} service map is refused", variant(mcp__service={"rw": "server"}),
+        "map was removed in 0.3.15")
+refused("mcp.env.access is refused", variant(mcp__env={"access": "GPTR_ACCESS"}),
+        "mcp.env.access was removed")
+refused("an unknown env key", variant(mcp__env={"acess": "GPTR_ACCESS"}), "mcp.env")
 
-
-def split(**changes):
-    m = copy.deepcopy(SPLIT)
-    m.update(changes)
-    return m
-
-
-one = variant(mcp__service={"rw": "server"})
-check("a map with only rw is accepted", am.validate(one) == [], str(am.validate(one)))
-refused("a map naming an unknown service", variant(mcp__service={"rw": "nope"}), "mcp.service")
-refused("a map with a bad access key", variant(mcp__service={"rx": "server"}), "mcp.service")
-refused("a mapped service without a port",
-        split(services={"rw": {"compose": "split-rw"}, "ro": {"compose": "split-ro", "port": 9000}}),
-        ".port is needed")
-refused("a profile at ro when the map has no ro", variant(mcp__service={"rw": "server"},
-                                                          mcp__profiles={"api-server": "ro"}),
-        "no service for ro")
-
-check("env.access is accepted", am.validate(SPLIT) == [], str(am.validate(SPLIT)))
-refused("an unknown env key", split(mcp={**SPLIT["mcp"], "env": {"acess": "SPLIT_ACCESS"}}),
-        "mcp.env")
-refused("env.access must be an env var name",
-        split(mcp={**SPLIT["mcp"], "env": {"access": "lower"}}), "mcp.env")
-
-ACCESS_URL = {"read": "http://split-ro:9000/mcp", "write": "http://split-rw:9000/mcp",
-              "": "http://split-rw:9000/mcp", "Read": None, "ask": None, "readonly": None}
 # --- mcp-urls: every URL, whatever profiles say --------------------------------
 urls = am.mcp_urls(ROOT / "addons", {})
 check("mcp-urls lists LightRAG", "http://lightrag-mcp:8000/mcp" in urls, str(urls))
-check("mcp-urls lists both URLs of a split add-on",
-      {"http://actual-mcp-ro:3000/mcp", "http://actual-mcp-rw:3000/mcp"} <= set(urls), str(urls))
 urls = am.mcp_urls(ROOT / "addons", {"LIGHTRAG_MCP_URL": "http://x:1/mcp"})
 check("mcp-urls honours the env URL override",
       "http://x:1/mcp" in urls and "http://lightrag-mcp:8000/mcp" not in urls, str(urls))
 
-with tempfile.TemporaryDirectory() as tmp:
-    (Path(tmp) / "split").mkdir()
-    (Path(tmp) / "split" / "addon.json").write_text(am.canonical(SPLIT))
-    for cap, want_url in ACCESS_URL.items():
-        for prof in ("default", "api-server"):
-            line = am.mcp_plan(Path(tmp), prof, {"SPLIT_MCP_ENABLED": "1", "SPLIT_ACCESS": cap})[0].split("|")
-            if want_url is None:
-                ok = line[3] == ""
-            elif prof == "api-server":
-                ok = line[3] == "ro"
-            else:
-                ok = line[3] == ("ro" if cap == "read" else "rw") and line[4] == want_url
-            check(f"SPLIT_ACCESS={cap!r} on {prof}: access {line[3]!r}", ok, str(line))
-    line = am.mcp_plan(Path(tmp), "default", {"SPLIT_MCP_ENABLED": "1"})[0].split("|")
-    check("SPLIT_ACCESS unset keeps rw", line[3] == "rw", str(line))
-
 # permissions.cron: true, false or "ro".
-check("cron ro with a service map that has ro is accepted", SPLIT["permissions"]["cron"] == "ro"
-      and am.validate(SPLIT) == [], str(am.validate(SPLIT)))
-refused("cron ro on an add-on that reads", split(permissions={**SPLIT["permissions"], "reads": ["mail"]}),
+refused("cron ro on an add-on that reads", variant(permissions__cron="ro", permissions__reads=["mail"]),
         "permissions.cron false")
 refused("cron ro with a string service", variant(permissions__cron="ro"), "cron ro needs an ro service")
-refused("cron ro with a map that has no ro service",
-        split(mcp={**SPLIT["mcp"], "service": {"rw": "rw"}, "profiles": {"default": "rw"}}),
-        "cron ro needs an ro service")
 refused("cron yes", variant(permissions__cron="yes"), "permissions.cron")
 
 # --- mcp-plan ---------------------------------------------------------------
@@ -271,16 +224,6 @@ plan = am.mcp_plan(ROOT / "addons", "default",
                    {"GPTR_MCP_ENABLED": "0", "GPTR_MCP_URL": "http://elsewhere:9/sse", "GPTR_MCP_TIMEOUT": "60"})
 check("plan honours the env overrides and the flag off",
       any(line.startswith("gptr|GPT Researcher|0|rw|http://elsewhere:9/sse|60|30|") for line in plan), str(plan))
-
-with tempfile.TemporaryDirectory() as tmp:
-    (Path(tmp) / "split").mkdir()
-    (Path(tmp) / "split" / "addon.json").write_text(am.canonical(SPLIT))
-    ro_url, rw_url = "http://split-ro:9000/mcp", "http://split-rw:9000/mcp"
-    for prof, url in (("default", rw_url), ("browser", rw_url), ("api-server", ro_url), ("other", rw_url)):
-        got = am.mcp_plan(Path(tmp), prof, {"SPLIT_MCP_ENABLED": "1"})
-        check(f"split plan for {prof} picks {url[7:15]} and lists both URLs",
-              len(got) == 1 and got[0].split("|")[4] == url and got[0].split("|")[10] == f"{ro_url} {rw_url}",
-              str(got))
 
 with tempfile.TemporaryDirectory() as tmp:
     bad = Path(tmp) / "broken"
@@ -440,12 +383,6 @@ got = fence_of({"gptr": am.canonical(variant(permissions__cron=None))},
                {**env, "GPTR_MCP_URL": "http://elsewhere:9/sse"})
 check("a missing cron field fences, at the overridden URL", got == (["gptr"], ["http://elsewhere:9/sse"]),
       str(got))
-SPLIT_CRON_FALSE = split(permissions={**SPLIT["permissions"], "cron": False})
-got = fence_of({"split": am.canonical(SPLIT_CRON_FALSE)}, {})
-check("a service map with cron false fences every URL",
-      got == (["split"], ["http://split-ro:9000/mcp", "http://split-rw:9000/mcp"]), str(got))
-got = fence_of({"split": am.canonical(SPLIT)}, {})
-check("cron ro fences only the rw URL, and no name", got == ([], ["http://split-rw:9000/mcp"]), str(got))
 broken = variant(permissions__cron=True, permissions__reads=["mail"])
 got = fence_of({"gptr": am.canonical(broken)}, env)
 check("an invalid manifest is fenced by its MCP name", got[0] == ["gptr"], str(got))
@@ -668,8 +605,19 @@ refused("mcp.instances auth.header must be a header name",
         inst_manifest({"instances__auth__header": "Bad Header"}), "mcp.instances.auth.header")
 refused("mcp.instances auth unknown key",
         inst_manifest({"instances__auth__extra": "x"}), "mcp.instances.auth")
-refused("mcp.instances auth is required", inst_manifest({"instances__auth": None}),
-        "mcp.instances.auth")
+check("mcp.instances auth is optional", am.validate(inst_manifest({"instances__auth": None})) == [],
+      str(am.validate(inst_manifest({"instances__auth": None}))))
+check("mcp.instances access is optional", am.validate(inst_manifest({"instances__access": None})) == [],
+      str(am.validate(inst_manifest({"instances__access": None}))))
+check("mcp.instances url may use {access} and {slug}",
+      am.validate(inst_manifest({"instances__url": "http://x-{access}:1/{slug}/mcp"})) == [],
+      str(am.validate(inst_manifest({"instances__url": "http://x-{access}:1/{slug}/mcp"}))))
+refused("mcp.instances url with an unknown placeholder",
+        inst_manifest({"instances__url": "http://x-{level}:1/{slug}/mcp"}), "mcp.instances.url")
+refused("mcp.instances url with only {access} gives every instance one URL",
+        inst_manifest({"instances__url": "http://x-{access}:1/mcp"}), "mcp.instances.url")
+refused("an instance schema may not declare bind",
+        inst_manifest(instances_settings={**INST_SETTINGS, "bind": {"type": "string"}}), "reserved")
 refused("mcp.instances gate.setting naming a non-bool setting",
         inst_manifest({"instances__gate__setting": "url"}), "mcp.instances.gate.setting")
 refused("mcp.instances gate.setting naming an unknown setting",
@@ -712,9 +660,10 @@ with tempfile.TemporaryDirectory() as tmp:
     check("cron fence tolerates an instances manifest with cron false", got == ([], []), str(got))
 
 # --- instances-plan (Twenty's real manifest, a synthetic store) ---------------
-# Fields: name|title|on|url|keyenv|keyfile|timeout|connect|pins|reason|header|scheme.
+# Fields: name|title|on|url|keyenv|keyfile|timeout|connect|pins|reason|header|scheme|tools.
 # A line whose name ends in * describes the add-on: on is its flag, pins the bare
 # pin names, reason the flag's name.
+TW = json.loads((ROOT / "addons" / "twenty" / "addon.json").read_text())
 TW_PINS = ("get_tool_catalog learn_tools execute_tool list_object_metadata_names "
            "list_skills load_skills search_help_center")
 FAKE_KEYS = {"main.key_ro": "ro-fake-main", "main.key_rw": "rw-fake-main",
@@ -743,8 +692,9 @@ def plan_rows(data: Path, profile: str, environ: dict) -> dict[str, list[str]]:
     rows = {}
     for line in lines:
         fields = line.split("|")
-        check(f"instances-plan line has 12 fields ({fields[0]})", len(fields) == 12, line)
-        rows[fields[0]] = fields
+        check(f"instances-plan line has 13 fields ({fields[0]})", len(fields) == 13, line)
+        if fields[0].startswith("crm-"):
+            rows[fields[0]] = fields
     return rows
 
 
@@ -776,7 +726,8 @@ with tempfile.TemporaryDirectory() as tmp:
           m[2:6] == ["1", "http://twenty-server:3000/mcp", "CRM_MAIN_KEY",
                      str(data / "twenty" / "secrets" / "main.key_rw")], str(m))
     check("crm-main carries timeouts, the seven pins and the Bearer header",
-          m[6:8] == ["60", "30"] and m[8] == TW_PINS and m[9] == "" and m[10:] == ["Authorization", "Bearer"], str(m))
+          m[6:8] == ["60", "30"] and m[8] == TW_PINS and m[9] == "" and m[10:12] == ["Authorization", "Bearer"]
+          and m[12] == " ".join(TW["mcp"]["tools"]), str(m))
     check("a trailing slash on the url is dropped",
           rows.get("crm-remote", [""] * 4)[3] == "https://crm.example.com/mcp", str(rows.get("crm-remote")))
     check("access read gives default the ro key",
@@ -882,7 +833,10 @@ with tempfile.TemporaryDirectory() as tmp:
     check("main() prints instances-plan",
           subprocess.run([sys.executable, str(ROOT / "scripts/lib/addon_manifest.py"), "instances-plan",
                           str(ROOT / "addons"), str(Path(tmp) / "missing"), "default"],
-                         capture_output=True, text=True, env={"TWENTY_MCP_ENABLED": "1"}).stdout.startswith("crm-*|"))
+                         capture_output=True, text=True, env={"TWENTY_MCP_ENABLED": "1"}).stdout.splitlines()
+          == ["budget-*|Actual Budget|0||||120|60|get-accounts get-grouped-categories get-transactions "
+              "monthly-summary get-budget-month get-payees|ACTUAL_MCP_ENABLED|||",
+              "crm-*|Twenty CRM|1||||60|30|" + TW_PINS + "|TWENTY_MCP_ENABLED|||"])
 
 # A broken manifest with mcp.instances still names its prefix, off, so the
 # bootstrap drops its entries.
@@ -979,7 +933,8 @@ with tempfile.TemporaryDirectory() as tmp:
           str(errs))
     lines = am.instances_plan(d, Path(tmp) / "data", "default", TW_ON)
     check("instances-plan turns both off, so their entries are dropped",
-          sorted(l.split("|")[0] + ":" + l.split("|")[2] for l in lines) == ["crm-*:0", "crm-eu-*:0"], str(lines))
+          sorted(l.split("|")[0] + ":" + l.split("|")[2] for l in lines if l.startswith("crm"))
+          == ["crm-*:0", "crm-eu-*:0"], str(lines))
 
 with tempfile.TemporaryDirectory() as tmp:
     d = Path(tmp)
@@ -1526,7 +1481,7 @@ check("actual: init hook", am.hook(ac, "init") == {"script": ["scripts/budget.sh
       str(am.hook(ac, "init")))
 check("actual: connect hook", am.hook(ac, "connect") == {"script": ["scripts/budget.sh", "connect"]})
 check("actual: disconnect hook", am.hook(ac, "disconnect") == {"script": ["scripts/budget.sh", "disconnect"]})
-check("actual: instances.errors", ac["instances"].get("errors") == ["bad_access", "encryption_password", "unknown_profile"],
+check("actual: instances.errors", ac["instances"].get("errors") == ["encryption_password"],
       str(ac["instances"].get("errors")))
 check("actual: instances name is budget", ac["instances"].get("name") == "budget")
 ai = ac["instances"]["settings"]
@@ -1536,9 +1491,13 @@ check("actual: password is a transient optional secret",
 check("actual: session_token and encryption_password are optional secrets",
       all(ai.get(k, {}).get("type") == "secret" and ai[k].get("optional") is True
           for k in ("session_token", "encryption_password")))
-check("actual: profile defaults to default and access to read, both plain strings",
-      ai.get("profile", {}).get("type") == "string" and ai["profile"].get("default") == "default"
-      and ai.get("access", {}).get("type") == "string" and ai["access"].get("default") == "read")
+check("actual: no profile or access setting; bind replaces them", "profile" not in ai and "access" not in ai,
+      str(sorted(ai)))
+check("actual: one mcp.instances entry, budget-{slug} on actual-mcp-{access}, no key",
+      ac["mcp"].get("instances") == {"name": "budget-{slug}", "url": "http://actual-mcp-{access}:3000/{slug}/mcp"},
+      str(ac["mcp"].get("instances")))
+check("actual: read-only on every profile until bind raises one",
+      ac["mcp"].get("profiles") == {"default": "ro", "browser": "ro", "api-server": "ro"}, str(ac["mcp"].get("profiles")))
 check("actual: server and sync_id are strings", all(ai.get(k, {}).get("type") == "string" for k in ("server", "sync_id")))
 check("actual: data.paths matches the actual-server bind mount",
       ac.get("data", {}).get("paths") == [{"env": "ACTUAL_DATA_DIR", "default": "./data/actual/server"}]
@@ -1550,31 +1509,48 @@ check("actual: no services.<k>.volumes left", not any("volumes" in v for v in ac
 ac_listing = addon_store.listing(ac, Path("/nonexistent"), {})
 check("actual: listing shows hooks and errors",
       ac_listing["hooks"] == ["connect", "disconnect", "init"]
-      and ac_listing["errors"] == ["bad_access", "encryption_password", "unknown_profile"],
+      and ac_listing["errors"] == ["encryption_password"],
       f"{ac_listing['hooks']} {ac_listing['errors']}")
 
-# mcp-plan for the Actual add-on is what it was before the instance settings and hooks
-# were added (captured at a0ed9ea): one line per profile and ACTUAL_MCP_ENABLED value.
-ac_frozen = (ROOT / "scripts" / "fixtures" / "actual-mcp-plan-a0ed9ea.txt").read_text().splitlines()
-ac_now = []
-for prof in ("default", "browser", "api-server"):
-    for on in ("0", "1"):
-        for line in am.mcp_plan(ROOT / "addons", prof, {"ACTUAL_MCP_ENABLED": on}):
-            if line.startswith("budget|"):
-                ac_now.append(f"{prof} {on}\t{line}")
-check("actual: mcp-plan lines for default, browser and api-server are unchanged",
-      ac_now == ac_frozen and len(ac_now) == 6, f"{len(ac_now)} lines")
-
-# configure --instance with only access keeps server and sync_id (budget.sh access).
+# configure --instance with only bind keeps server and sync_id (budget.sh access).
+WRITE_BIND = {"default": "rw", "browser": "rw", "api-server": "ro"}
 with tempfile.TemporaryDirectory() as tmp:
     root = Path(tmp)
     addon_store.apply_instance(ac, root, "main", {"server": "https://actual.example.com", "sync_id": "abc-123"})
-    addon_store.apply_instance(ac, root, "main", {"access": "write"})
-    stored_inst = json.loads((root / "addons" / "actual" / "instances" / "main.json").read_text()) \
-        if (root / "addons" / "actual" / "instances" / "main.json").exists() else {}
-    check("actual: configuring only access keeps server and sync_id",
-          stored_inst.get("access") == "write" and stored_inst.get("server") == "https://actual.example.com"
+    addon_store.apply_instance(ac, root, "main", {"bind": WRITE_BIND})
+    inst_file = root / "addons" / "actual" / "instances" / "main.json"
+    stored_inst = json.loads(inst_file.read_text()) if inst_file.exists() else {}
+    check("actual: configuring only bind keeps server and sync_id",
+          stored_inst.get("bind") == WRITE_BIND and stored_inst.get("server") == "https://actual.example.com"
           and stored_inst.get("sync_id") == "abc-123", str(stored_inst))
+    check("actual: list shows the bind", addon_store.listing(ac, root, {})["instances"]["main"].get("bind")
+          == WRITE_BIND)
+    for bad, needle in (({"api-server": "rw"}, "may only be ro"), ({"ops": "ro"}, "not in the manifest"),
+                        ({"default": "admin"}, "must be ro or rw"), ("rw", "must map")):
+        try:
+            addon_store.apply_instance(ac, root, "main", {"bind": bad})
+            check(f"actual: bind {bad!r} is refused", False)
+        except addon_store.InputError as exc:
+            check(f"actual: bind {bad!r} is refused", needle in str(exc), str(exc))
+    check("actual: a refused bind leaves the stored one", json.loads(inst_file.read_text()).get("bind") == WRITE_BIND)
+    try:
+        addon_store.check_instance(ac, {"server": "local", "sync_id": "s", "access": "write"})
+        check("actual: the removed access setting is refused", False)
+    except addon_store.InputError as exc:
+        check("actual: the removed access setting is refused", "unknown setting" in str(exc), str(exc))
+    addon_store.check_instance(ac, {"server": "local", "sync_id": "s", "bind": {"default": "rw"}})
+    check("actual: check_instance accepts bind", True)
+tw_manifest = json.loads((ROOT / "addons" / "twenty" / "addon.json").read_text())
+check("bind_problem refuses api-server for an add-on that reads personal data",
+      "reads personal data" in (am.bind_problem({"api-server": "ro"}, {"api-server": "ro"}, True) or ""))
+bw = json.loads((ROOT / "addons" / "bitwarden" / "addon.json").read_text())
+if isinstance(bw.get("instances"), dict) and not any("instances" in e for e in am.mcp_entries(bw)):
+    try:
+        addon_store.check_instance(bw, {"bind": {"default": "ro"}})
+        check("bind is refused on an add-on with no mcp.instances entry", False)
+    except addon_store.InputError as exc:
+        check("bind is refused on an add-on with no mcp.instances entry", "no MCP server per instance" in str(exc),
+              str(exc))
 
 # addon.sh enable actual works before any budget is connected (Boundary's local
 # flow, and v0.3.12 installs): no row is required.

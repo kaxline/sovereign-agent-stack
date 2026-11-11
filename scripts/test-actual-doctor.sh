@@ -14,12 +14,12 @@ REAL_DOCKER="$(command -v docker || true)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 export STUB="$tmp/stub"
-mkdir -p "$tmp/bin" "$tmp/work/actual" "$STUB"
-f="$tmp/work/actual/budget.env"
+mkdir -p "$tmp/bin" "$tmp/work" "$STUB"
 
 # docker: info works; compose ps -q prints an id for each $STUB/running-<svc>;
-# inspect says healthy; exec in hermes prints $STUB/tools-<host>.json; the
-# admin check prints $STUB/check_word and exits with $STUB/check_rc.
+# inspect says healthy; exec in hermes logs the URL to $STUB/tools.urls and
+# prints $STUB/tools-<host>.json; the admin check prints $STUB/check_word and
+# exits with $STUB/check_rc.
 cat > "$tmp/bin/docker" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$STUB/docker.argv"
@@ -33,7 +33,7 @@ case "$1 ${2:-}" in
   "compose exec")
     cat > /dev/null
     for a in "$@"; do
-      case "$a" in http://*) host="${a#http://}"; host="${host%%:*}" ;; esac
+      case "$a" in http://*) printf '%s\n' "$a" >> "$STUB/tools.urls"; host="${a#http://}"; host="${host%%:*}" ;; esac
     done
     cat "$STUB/tools-${host}.json" 2>/dev/null
     exit 0 ;;
@@ -78,6 +78,8 @@ export STACK_PYTHON=host BUDGET_DATA_ROOT="$tmp/data"
 sec="$tmp/data/addons/actual/secrets"
 mkdir -p "$sec" "$tmp/data/addons/actual/instances"
 
+inst="$tmp/data/addons/actual/instances"
+
 out="$tmp/out"
 all="$tmp/all"
 : > "$all"
@@ -87,17 +89,13 @@ doctor() {
 }
 has() { grep -qF -- "$2" "$out" || fail "$1 (output: $(cat "$out"))"; }
 hasnt() { if grep -qF -- "$2" "$out"; then fail "$1 (output: $(cat "$out"))"; fi; }
-setenv() { # extra .env lines
-  {
-    printf 'COMPOSE_PROFILES=core,budget,budget-local\nACTUAL_MCP_ENABLED=1\nACTUAL_LOCAL_ENABLED=1\n'
-    printf 'ACTUAL_BUDGET_FILE=./actual/budget.env\n'
-    printf '%s\n' "$@"
-  } > "$tmp/work/.env"
+setenv() {
+  printf 'COMPOSE_PROFILES=core,budget,budget-local\nACTUAL_MCP_ENABLED=1\nACTUAL_LOCAL_ENABLED=1\n' > "$tmp/work/.env"
 }
-budget_file() { # server url
-  printf 'ACTUAL_SERVER_URL=%s\nACTUAL_WEB_URL=http://localhost:5006/\nACTUAL_PASSWORD=pw-SECRET\nACTUAL_BUDGET_SYNC_ID=sync-1\nACTUAL_BUDGET_ENCRYPTION_PASSWORD=enc-SECRET\n' \
-    "${1:-http://actual-server:5006}" > "$f"
-  chmod 600 "$f"
+row() { # SLUG SYNC [SERVER] [BIND_DEFAULT]
+  local bind=""
+  [[ -z "${4:-}" ]] || bind=",\"bind\":{\"default\":\"$4\",\"browser\":\"$4\",\"api-server\":\"ro\"}"
+  printf '{"server":"%s","sync_id":"%s"%s}' "${3:-https://budget.example.com}" "$2" "$bind" > "$inst/$1.json"
 }
 tools() { # host names...
   local host="$1" first=1 n
@@ -121,45 +119,79 @@ rm -f "$tmp/work/.env"
 doctor
 [ ! -s "$out" ] || fail "with no .env the block prints nothing"
 
-# Healthy: everything passes, both instances answer, ro has no write tool.
+# No rows: the profiles and the containers, no tools/list and no warning.
 setenv
-budget_file
 touch "$STUB/running-actual-mcp-rw" "$STUB/running-actual-mcp-ro" "$STUB/running-hermes" "$STUB/running-actual-server"
 tools actual-mcp-rw get-accounts get-transactions create-transaction delete-transaction
 tools actual-mcp-ro get-accounts get-transactions
 doctor
-hasnt "a healthy budget has no FAIL" " FAIL "
-hasnt "a healthy budget has no WARN" " WARN "
 has "the section has a header" "--- Budget (Actual) ---"
-has "the file check passes" "mode 600"
-has "the credentials check passes" "budget sync-1 opens"
-has "rw answers tools/list" "actual-mcp-rw answers tools/list (4 tools)"
-has "ro lists no write tool" "actual-mcp-ro lists 2 tools and none of the 32 write tools"
-grep -q 'ACTUAL_PASSWORD=pw-SECRET' "$STUB/admin.env" || fail "the check gets the file's password in docker's environment"
-grep -q 'ACTUAL_BUDGET_ENCRYPTION_PASSWORD=enc-SECRET' "$STUB/admin.env" || fail "the check gets the encryption password"
-grep -q 'compose exec -T hermes' "$STUB/docker.argv" || fail "tools/list runs inside the hermes container"
+has "the budget profile passes" "COMPOSE_PROFILES includes budget"
+has "the local profile passes" "COMPOSE_PROFILES includes budget-local"
+has "the containers are checked" "actual-mcp-rw is healthy"
+has "the local server is checked" "actual-server is healthy"
+hasnt "no rows has no FAIL" " FAIL "
+hasnt "no rows has no WARN" " WARN "
+hasnt "no single-budget file is checked" "budget.env"
+hasnt "no ACTUAL_ACCESS check" "ACTUAL_ACCESS"
+[ ! -e "$STUB/tools.urls" ] || fail "no rows runs no tools/list ($(cat "$STUB/tools.urls"))"
 
-# Connected budgets: one line each; only the expired one warns.
-inst="$tmp/data/addons/actual/instances"
-printf '{"server":"https://budget.example.com","sync_id":"s1","profile":"default","access":"read"}' > "$inst/main.json"
-printf '{"server":"https://budget.example.com","sync_id":"s2","profile":"default","access":"write"}' > "$inst/second.json"
+# Connected budgets: one line each; only the expired one warns. tools/list runs
+# per ok row on its /<slug>/mcp path: ro always, rw for a write row.
+row main s1 https://budget.example.com rw
+row second s2
+row third s3 https://budget.example.com ro
 printf 'tok-good' > "$sec/main.session_token"
 printf 'tok-bad' > "$sec/second.session_token"
+printf 'tok-good' > "$sec/third.session_token"
 doctor
 has "a good row is OK" "  OK  budget-main: ok"
+has "a read row is OK" "  OK  budget-third: ok"
 has "an expired row warns" " WARN budget-second: token_expired"
 [ "$(grep -c 'WARN budget-' "$out")" = 1 ] || fail "exactly one budget warning ($(cat "$out"))"
+hasnt "a healthy set of rows has no FAIL" " FAIL "
 hasnt "a row's output holds no token" "tok-"
+has "rw answers tools/list for a write row" "budget-main on actual-mcp-rw answers tools/list (4 tools)"
+has "ro lists no write tool" "budget-main on actual-mcp-ro lists 2 tools and none of the 32 write tools"
+has "a read row's ro is checked" "budget-third on actual-mcp-ro lists 2 tools"
+hasnt "a read row's rw isn't checked" "budget-third on actual-mcp-rw"
+hasnt "an expired row's tools aren't checked" "budget-second on"
+grep -qx 'http://actual-mcp-ro:3000/main/mcp' "$STUB/tools.urls" || fail "tools/list uses the row's path ($(cat "$STUB/tools.urls"))"
+grep -qx 'http://actual-mcp-rw:3000/main/mcp' "$STUB/tools.urls" || fail "tools/list on rw uses the row's path"
+if grep -q ':3000/mcp$' "$STUB/tools.urls"; then fail "no tools/list on the legacy /mcp path"; fi
+grep -q 'compose exec -T hermes' "$STUB/docker.argv" || fail "tools/list runs inside the hermes container"
+
+# The ro instance lists a write tool.
+tools actual-mcp-ro get-accounts create-transaction set-budget-amount
+doctor
+has "a write tool on ro fails" "budget-main on actual-mcp-ro lists write tools: create-transaction set-budget-amount"
+tools actual-mcp-ro get-accounts get-transactions
+
+# A row gives no tools.
+rm -f "$STUB/tools-actual-mcp-rw.json"
+doctor
+has "no tools on rw fails" "budget-main on actual-mcp-rw gave no tools on tools/list"
+tools actual-mcp-rw get-accounts get-transactions create-transaction delete-transaction
+
+# Not running: warnings, no exec.
+rm -f "$STUB/running-actual-mcp-ro" "$STUB/running-hermes"
+: > "$STUB/docker.argv"
+doctor
+has "a stopped ro instance warns" "actual-mcp-ro not running"
+has "a stopped hermes warns" "hermes not running"
+if grep -q 'compose exec' "$STUB/docker.argv"; then fail "no tools/list without hermes"; fi
+touch "$STUB/running-actual-mcp-ro" "$STUB/running-hermes"
 
 # A local row while the local server is off: one warning with the way back
 # on, and the remote rows still read ok.
-printf '{"server":"local","sync_id":"s3","profile":"default","access":"read"}' > "$inst/mine.json"
-printf 'COMPOSE_PROFILES=core,budget\nACTUAL_MCP_ENABLED=1\nACTUAL_LOCAL_ENABLED=0\nACTUAL_BUDGET_FILE=\n' > "$tmp/work/.env"
+row mine s4 local
+printf 'COMPOSE_PROFILES=core,budget\nACTUAL_MCP_ENABLED=1\nACTUAL_LOCAL_ENABLED=0\n' > "$tmp/work/.env"
 doctor
 has "a local row with the server off warns server_off" " WARN budget-mine: server_off"
 has "server_off says how to turn the local server back on" "echo '{\"local\": true}' | scripts/addon.sh configure actual, then scripts/addon.sh enable actual (add --reinit"
 [ "$(grep -c 'WARN budget-mine' "$out")" = 1 ] || fail "exactly one server_off warning ($(cat "$out"))"
 has "a remote row beside it is still checked" "  OK  budget-main: ok"
+hasnt "the local server isn't checked while off" "actual-server"
 rm -f "$inst/mine.json"
 setenv
 
@@ -168,128 +200,22 @@ STUB_UNAME=Linux STUB_UID=1001 doctor
 has "rows on Linux uid 1001 fail" "read the connected budgets' secret files as uid 1000"
 STUB_UNAME=Linux STUB_UID=1000 doctor
 hasnt "rows on Linux uid 1000 pass" "secret files as uid 1000"
-
-# Rows and no single budget: no budget.env checks, but the profile, the
-# containers and the rows still are.
-for ref in "" "./compose/actual/no-budget.env"; do
-  printf 'COMPOSE_PROFILES=core\nACTUAL_MCP_ENABLED=1\nACTUAL_LOCAL_ENABLED=1\nACTUAL_BUDGET_FILE=%s\n' "$ref" > "$tmp/work/.env"
-  : > "$STUB/docker.argv"
-  doctor
-  has "rows-only ($ref) says no single budget is configured" "  OK  no single budget is configured"
-  hasnt "rows-only ($ref) doesn't ask for make budget-init" "make budget-init"
-  hasnt "rows-only ($ref) checks no budget file" "is missing"
-  has "rows-only ($ref) still checks the profile" "'budget' not in COMPOSE_PROFILES"
-  has "rows-only ($ref) still checks the containers" "actual-mcp-rw is healthy"
-  has "rows-only ($ref) still checks the local server" "actual-server is healthy"
-  has "rows-only ($ref) still runs tools/list" "actual-mcp-rw answers tools/list"
-  has "rows-only ($ref) still lists the rows" "  OK  budget-main: ok"
-  hasnt "rows-only ($ref) runs no single-budget credential check" "opens with the credentials"
-done
 rm -f "$inst"/*.json "$sec"/*.session_token
-# Without rows an empty ACTUAL_BUDGET_FILE is still a FAIL (checked below).
-
-# A missing budget file.
-rm -f "$f"
-doctor
-has "a missing file fails" " FAIL "
-has "a missing file says what to run" "run make budget-init or make budget-add"
-hasnt "no credential check without a file" "opens"
-
-# ACTUAL_BUDGET_FILE unset: the default path, and a FAIL that compose mounts no-budget.env.
-printf 'COMPOSE_PROFILES=core,budget\nACTUAL_MCP_ENABLED=1\n' > "$tmp/work/.env"
-mkdir -p "$tmp/work/compose/actual"
-doctor
-has "unset ACTUAL_BUDGET_FILE fails" "ACTUAL_BUDGET_FILE is unset"
-has "unset ACTUAL_BUDGET_FILE checks the default path" "compose/actual/budget.env is missing"
-
-# Mode 644.
-setenv
-budget_file
-chmod 644 "$f"
-doctor
-has "mode 644 fails" " FAIL "
-has "mode 644 is named" "mode 644"
-chmod 600 "$f"
-
-# Linux with a uid other than 1000.
 STUB_UNAME=Linux STUB_UID=1001 doctor
-has "Linux uid 1001 fails" "uid 1000"
-STUB_UNAME=Linux STUB_UID=1000 doctor
-hasnt "Linux uid 1000 passes" "uid 1000"
-
-# A file missing a key.
-grep -v '^ACTUAL_BUDGET_SYNC_ID=' "$f" > "$f.new" && mv "$f.new" "$f" && chmod 600 "$f"
-doctor
-has "a missing sync id fails" "has no ACTUAL_BUDGET_SYNC_ID"
-budget_file
-
-# ACTUAL_ACCESS.
-setenv ACTUAL_ACCESS=Read
-doctor
-has "ACTUAL_ACCESS=Read fails, naming the value" "ACTUAL_ACCESS=Read"
-grep -F 'ACTUAL_ACCESS=Read' "$out" | grep -q FAIL || fail "ACTUAL_ACCESS=Read is a FAIL"
-setenv ACTUAL_ACCESS=read
-doctor
-hasnt "ACTUAL_ACCESS=read passes" " FAIL "
-
-# The server refuses the password; a wrong encryption password; no answer.
-setenv
-printf 'login\n' > "$STUB/check_word"; printf '3\n' > "$STUB/check_rc"
-doctor
-has "a refused password fails" "the server password changed"
-has "the remedy covers a remote server" "re-run make budget-add FORCE=1 (remote)"
-has "the remedy covers the local server" "make budget-remove and then make budget-init, which asks for it (local"
-has "the local remedy covers an encrypted budget" "export ACTUAL_BUDGET_ENCRYPTION_PASSWORD first if the budget is encrypted"
-printf 'encryption\n' > "$STUB/check_word"; printf '2\n' > "$STUB/check_rc"
-doctor
-has "a wrong encryption password fails" "ACTUAL_BUDGET_ENCRYPTION_PASSWORD"
-grep -F 'ACTUAL_BUDGET_ENCRYPTION_PASSWORD' "$out" | grep -q FAIL || fail "the encryption check is a FAIL"
-printf 'timeout\n' > "$STUB/check_word"; printf '4\n' > "$STUB/check_rc"
-doctor
-has "a timeout warns, naming the server" " WARN no answer from http://actual-server:5006 within 45 s"
-hasnt "a timeout is not a FAIL" " FAIL "
-budget_file https://user:url-SECRET@budget.example.com
-ACTUAL_ADMIN_TIMEOUT_S=3 doctor
-has "a timeout masks user:password@ and uses ACTUAL_ADMIN_TIMEOUT_S" "no answer from https://***@budget.example.com within 3 s"
-budget_file
-printf '1\n' > "$STUB/check_rc"; : > "$STUB/check_word"
-doctor
-has "another check failure warns" "couldn't open budget sync-1"
-rm -f "$STUB/check_word" "$STUB/check_rc"
-
-# The ro instance lists a write tool.
-tools actual-mcp-ro get-accounts create-transaction set-budget-amount
-doctor
-has "a write tool on ro fails" "actual-mcp-ro lists write tools: create-transaction set-budget-amount"
-tools actual-mcp-ro get-accounts get-transactions
-
-# Not running: warnings, no exec.
-rm -f "$STUB/running-actual-mcp-ro" "$STUB/running-hermes"
-: > "$STUB/docker.argv"
-doctor
-has "a stopped ro instance warns" "actual-mcp-ro not running"
-if grep -q 'compose exec' "$STUB/docker.argv"; then fail "no tools/list without hermes"; fi
-touch "$STUB/running-actual-mcp-ro" "$STUB/running-hermes"
-
-# Local server off while the file points at it.
-setenv
-printf 'COMPOSE_PROFILES=core,budget\nACTUAL_MCP_ENABLED=1\nACTUAL_LOCAL_ENABLED=0\nACTUAL_BUDGET_FILE=./actual/budget.env\n' > "$tmp/work/.env"
-doctor
-has "local off with an actual-server URL warns" " WARN "
-has "the warning names ACTUAL_LOCAL_ENABLED" "ACTUAL_LOCAL_ENABLED=0"
-budget_file https://budget.example.com
-doctor
-hasnt "local off with a remote URL doesn't warn about it" "ACTUAL_LOCAL_ENABLED=0"
+hasnt "no rows on Linux uid 1001 pass" "secret files as uid 1000"
 
 # Profile missing.
-printf 'COMPOSE_PROFILES=core\nACTUAL_MCP_ENABLED=1\nACTUAL_BUDGET_FILE=./actual/budget.env\n' > "$tmp/work/.env"
+printf 'COMPOSE_PROFILES=core\nACTUAL_MCP_ENABLED=1\n' > "$tmp/work/.env"
 doctor
 has "a missing budget profile fails" "'budget' not in COMPOSE_PROFILES"
+printf 'COMPOSE_PROFILES=core,budget\nACTUAL_MCP_ENABLED=1\nACTUAL_LOCAL_ENABLED=1\n' > "$tmp/work/.env"
+doctor
+has "a missing budget-local profile fails" "'budget-local' not in COMPOSE_PROFILES"
 
-# No password in any output.
-for s in pw-SECRET enc-SECRET url-SECRET tok-bad tok-good; do
-  if grep -qF -- "$s" "$all"; then fail "doctor output contains a password"; fi
-  if grep -qF -- "$s" "$STUB/docker.argv"; then fail "docker argv contains a password"; fi
+# No token in any output.
+for s in tok-bad tok-good; do
+  if grep -qF -- "$s" "$all"; then fail "doctor output contains a token"; fi
+  if grep -qF -- "$s" "$STUB/docker.argv"; then fail "docker argv contains a token"; fi
 done
 
 # Opt-in: the real timer in actual-admin.mjs. 10.255.255.1 is unroutable, so
