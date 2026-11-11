@@ -1264,6 +1264,14 @@ check("the addons-cli fixture is valid against its compose file", fixture_errors
       str(fixture_errors))
 check("the fixture's compose file makes fixture-seed a one-shot",
       "fixture-seed" in am.compose_oneshots((FIXTURE_DIR / "docker-compose.yml").read_text()))
+HERMES_USERS = am.compose_hermes_user((ROOT / "docker-compose.yml").read_text())
+check("compose_hermes_user finds the services that run as HERMES_UID",
+      {"bitwarden-broker", "mail-mcp", "mail-drafts-mcp", "email-indexer"} <= HERMES_USERS
+      and "signal-cli" not in HERMES_USERS and "hermes" not in HERMES_USERS, str(sorted(HERMES_USERS)))
+check("compose_hermes_user reads only services' own user lines",
+      am.compose_hermes_user("services:\n  a:\n    user: \"${HERMES_UID:-1000}:1\"\n  b:\n    user: \"1000\"\n"
+                             "  c:\n    environment:\n      user: HERMES_UID\nx-other:\n  d:\n"
+                             "    user: \"${HERMES_UID}\"\n") == {"a"})
 check("compose_oneshots finds n8n-import in docker-compose.yml",
       "n8n-import" in am.compose_oneshots((ROOT / "docker-compose.yml").read_text()))
 check("compose_oneshots reads only completed-successfully conditions",

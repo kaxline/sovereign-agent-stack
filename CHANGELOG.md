@@ -113,6 +113,12 @@ the stack under another app.
   `rw`. A budget on the local server stays registered while
   `ACTUAL_LOCAL_ENABLED` is off; its calls fail until the server is back.
   `scripts/lib/actual_rows.py` and the bootstrap's Actual row code are gone.
+- Fixed: on Linux, `addon.sh enable` checked `HERMES_UID` and `HERMES_GID`,
+  and created the add-on's store directories, only for add-ons whose
+  manifest declares `mounts`. It now does both whenever an add-on service
+  runs as `HERMES_UID` in `docker-compose.yml`, which covers Bitwarden's
+  broker and email-local's servers. `plan-enable` reports those services as
+  `hermesUser`.
 - Fixed: `addon.sh connect bitwarden --force` failed, because `vault.sh add`
   refused the `--replace` the hook gets. `vault.sh add --replace --json` now
   replaces the account, keeping the old instance file and secrets as backups

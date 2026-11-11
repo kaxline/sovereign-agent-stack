@@ -12,6 +12,10 @@ services:
         condition: service_completed_successfully
   fixture-seed:
     profiles: ["fixture"]
+  # Runs as the Hermes user with no manifest mounts (addon_manifest.compose_hermes_user).
+  toggled-worker:
+    profiles: ["toggled"]
+    user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
   sharer-worker:
     profiles: ["sharer"]
     volumes:

@@ -391,7 +391,8 @@ email add-on's services do. On Linux those must equal your `id -u` and `id -g`: 
 read the instance store's `instances/`, which `scripts/lib/addon_store.py` keeps at mode 700, and
 every file under `BITWARDEN_HOST_DATA_DIR` is yours. With any other `HERMES_UID`, the broker
 refuses `instances/` (`bad_file`, shown by `make doctor`) and loads no instance, and `make doctor`
-flags the mismatch. Docker Desktop on macOS maps bind-mount ownership to your user, so nothing here
+flags the mismatch. `scripts/addon.sh enable bitwarden` refuses to start with `bad_input` while the
+ids differ, after creating the store's directories. Docker Desktop on macOS maps bind-mount ownership to your user, so nothing here
 applies there.
 
 Earlier versions ran both as uid 10001 and gave it `bw/`, `broker/`, `local/` and `secrets/<slug>/`.

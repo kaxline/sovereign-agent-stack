@@ -849,7 +849,7 @@ are dropped, a tab becomes a space, and a log line is cut to 500 characters.
 
 | `error` | Exit | Cause |
 |---|---|---|
-| `bad_input` | 2 | Invalid input, or a rule refused the run (`remove` while enabled, `HERMES_UID` mismatch on Linux) |
+| `bad_input` | 2 | Invalid input, or a rule refused the run (`remove` while enabled, or on Linux a `HERMES_UID` or `HERMES_GID` that isn't the caller's when the add-on has a service that declares `mounts` or runs as `HERMES_UID` in compose) |
 | `missing_settings` | 3 | `enable` found required settings with no value |
 | `compose_failed` | 1 | A `docker compose` call failed (pull, start, stop, recreate, delete, a bootstrap) |
 | `busy` | 1 | Another change holds the lock |

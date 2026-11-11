@@ -1419,6 +1419,19 @@ expect_rc "the same ids are fine off Linux" 0
 setenv HERMES_GID "$(id -g)"
 STUB_UNAME=Linux addon_json enable fixture --json
 expect_rc "matching ids pass on Linux" 0
+# A service that runs as HERMES_UID in compose, with no manifest mounts
+# (Bitwarden's broker, email-local's servers), gets the same check, and its
+# store is created first.
+addon disable toggled
+rm -rf "${root}/data/addons/toggled"
+setenv HERMES_UID 4242
+STUB_UNAME=Linux addon_json enable toggled --json
+expect_rc "enable of a HERMES_UID service on Linux with a wrong HERMES_UID exits 2" 2
+if grep -q 'HERMES_UID 4242 is not your user id' "$out"; then ok "a HERMES_UID service without mounts is checked"; else bad "a HERMES_UID service without mounts is checked"; fi
+if [ -d "${root}/data/addons/toggled/instances" ]; then ok "its store is prepared"; else bad "its store is prepared"; fi
+setenv HERMES_UID "$(id -u)"
+STUB_UNAME=Linux addon_json enable toggled --json
+expect_rc "a HERMES_UID service passes with matching ids" 0
 
 # A gated service whose gate is off is stopped after the start step.
 addon_in '{"extra": false}' configure fixture

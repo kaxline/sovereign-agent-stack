@@ -576,6 +576,30 @@ def data_volumes(manifest: dict) -> list[str]:
     return []
 
 
+def compose_hermes_user(compose_text: str) -> set[str]:
+    """Compose services under `services:` whose `user:` names HERMES_UID: they
+    run as the Hermes user, so on Linux HERMES_UID and HERMES_GID must be the
+    caller's ids for the files they share with the host. Reads the service's
+    own `user:` line at four spaces' indent, not one from a YAML merge key."""
+    found: set[str] = set()
+    in_services = False
+    current = None
+    for line in compose_text.splitlines():
+        if re.match(r"^\S", line):
+            in_services = line.rstrip() == "services:"
+            current = None
+            continue
+        if not in_services:
+            continue
+        m = re.match(r"^  ([A-Za-z0-9][A-Za-z0-9_.-]*):\s*$", line)
+        if m:
+            current = m.group(1)
+            continue
+        if current and re.match(r"^    user:.*\bHERMES_UID\b", line):
+            found.add(current)
+    return found
+
+
 def compose_oneshots(compose_text: str) -> set[str]:
     """Compose services that another service depends on with condition
     service_completed_successfully: they run to completion, so addon.sh starts

@@ -714,11 +714,12 @@ EOF_ENTRIES
 }
 
 # check_hermes_user PLAN: on Linux, the services that mount add-on directories
-# run as HERMES_UID:HERMES_GID, so those must be the caller's ids or the
-# mounts are unreadable. Runs before any flag is written.
+# (plan "mounts") or run as HERMES_UID (plan "hermesUser", from their compose
+# user:) share files with the caller, so HERMES_UID:HERMES_GID must be the
+# caller's ids or those files are unreadable. Runs before any flag is written.
 check_hermes_user() {
   local kind flag want have
-  [[ -n "$(json_list mounts "$1")" ]] || return 0
+  [[ -n "$(json_list mounts "$1")$(json_list hermesUser "$1")" ]] || return 0
   [[ "$(uname -s)" == Linux ]] || return 0
   for kind in UID GID; do
     flag=-u

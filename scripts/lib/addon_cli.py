@@ -31,7 +31,11 @@ runs in the Hermes image through stack_python, so the host needs no python3.
         "oneshots" (services another compose service depends on with condition
         service_completed_successfully in docker-compose.yml), "uses" (the
         compose service of each `uses` name in USES_COMPOSE) and "mcp" (each
-        mcp name, "name@FLAG" when the entry has a gate).
+        mcp name, "name@FLAG" when the entry has a gate). "mounts" lists the
+        services that declare `mounts` and "hermesUser" those whose compose
+        `user:` is HERMES_UID; with either, the add-on's store directories
+        are created first, and addon.sh checks HERMES_UID and HERMES_GID on
+        Linux.
     plan-disable SID [--flags JSON]
         Prints {"builtin": FLAG, "flags": {...}, "services": [...], "volumes": [...]}: builtin.flag
         and every gate flag at "0", every compose service, and the compose
@@ -316,6 +320,15 @@ def cmd_check_instance(args) -> None:
 COMPOSE_FILE = Path(__file__).resolve().parent.parent.parent / "docker-compose.yml"
 
 
+def _hermes_user() -> set[str]:
+    """The compose services in docker-compose.yml that run as HERMES_UID
+    (addon_manifest.compose_hermes_user); none when the file is missing."""
+    try:
+        return am.compose_hermes_user(COMPOSE_FILE.read_text(encoding="utf-8"))
+    except OSError:
+        return set()
+
+
 def _oneshots() -> set[str]:
     """The compose services in docker-compose.yml that run to completion
     (addon_manifest.compose_oneshots); none when the file is missing."""
@@ -353,8 +366,8 @@ def cmd_plan_enable(args) -> None:
     for name, spec in manifest.get("settings", {}).items():
         if spec.get("type") == "bool" and spec.get("flag") in gates and name in stored:
             flags[spec["flag"]] = "1" if stored[name] else "0"
-    services, oneshots, gated, mounts = [], [], [], []
-    runs_once = _oneshots()
+    services, oneshots, gated, mounts, hermes_user = [], [], [], [], []
+    runs_once, as_hermes = _oneshots(), _hermes_user()
     for key, svc in manifest["services"].items():
         name = _compose(manifest, key)
         gate = svc.get("when", {}).get("gate")
@@ -363,12 +376,15 @@ def cmd_plan_enable(args) -> None:
             gated.append(f"{name}@{gate}")
         if svc.get("mounts"):
             mounts.append(name)
-    if mounts:
+        if name in as_hermes:
+            hermes_user.append(name)
+    if mounts or hermes_user:
         store.prepare(manifest, args.data_root)
     # `stop` lists the gated services and one-shots; addon.sh stops those
     # whose gate is off once the flags are written.
     _dump({"builtin": manifest["builtin"]["flag"], "flags": flags, "services": services,
-           "oneshots": oneshots, "stop": gated, "mounts": mounts, **_plan_fields(manifest)})
+           "oneshots": oneshots, "stop": gated, "mounts": mounts, "hermesUser": hermes_user,
+           **_plan_fields(manifest)})
 
 
 def cmd_plan_disable(args) -> None:
