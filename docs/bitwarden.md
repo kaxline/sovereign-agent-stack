@@ -15,8 +15,10 @@ profile and in cron.
 
 ## Accounts and modes
 
-Each Bitwarden account the broker signs in to is one file, `compose/bitwarden/accounts/<slug>.env`.
-Several accounts can be configured at once.
+Each Bitwarden account the broker signs in to is an instance in the add-on store,
+`<data root>/addons/bitwarden/instances/<slug>.json` (`ASSISTANT_DATA_ROOT`, default `./data`). The
+local account is the exception: `make vault-init` keeps it outside the store (see
+[Local mode](#local-mode)). Several accounts can be configured at once.
 
 | Mode | Server | Account made by | Command |
 |---|---|---|---|
@@ -26,53 +28,67 @@ Several accounts can be configured at once.
 
 `make vault-add` asks for the account's personal API key (`client_id`, `client_secret`; web vault:
 **Settings > Security > Keys > API key**) and, with stored unlock, the master password, in hidden
-prompts on the host terminal. None of them is ever a command-line argument. It writes the account
-file and `secrets/<slug>/` under `BITWARDEN_HOST_DATA_DIR`, sets `BITWARDEN_ENABLED=1`, and offers
-to create the folder or collection and choose its items (see [Setup and seeding](#setup-and-seeding)).
-With the broker running it restarts the broker, which reads account files only when it starts,
-and reports what the broker makes of the credentials. When Bitwarden refuses the API key or master
-password, it removes what it wrote (with `FORCE=1`, it puts the previous file and secrets back).
-Without a running broker the check happens at the next `make up`; `make doctor` shows the result.
+prompts on the host terminal. None of them is ever a command-line argument. It writes the instance
+file (through `scripts/lib/addon_store.py`, with the manifest's validation) and `secrets/<slug>/`
+under `BITWARDEN_HOST_DATA_DIR`, sets `BITWARDEN_ENABLED=1`, and offers to create the folder or
+collection and choose its items (see [Setup and seeding](#setup-and-seeding)). With the broker
+running it restarts the broker, which reads the instance store only when it starts, and reports what
+the broker makes of the credentials. When Bitwarden refuses the API key or master password, it
+removes what it wrote (with `FORCE=1`, it puts the previous instance file and secrets back). Without
+a running broker the check happens at the next `make up`; `make doctor` shows the result.
 
 Other options: `SCOPE=` (default `folder:Agent`), `UNLOCK=stored|manual` (default `stored`),
-`FORCE=1` to replace an existing account. `make vault-remove SLUG=…` deletes the account file,
+`FORCE=1` to replace an existing account. `make vault-remove SLUG=…` deletes the instance file,
 its secrets and its `bw` data, and restarts the broker; the API key still exists in Bitwarden until
 you revoke it there.
 
-### Account files
+### Instance files
 
+```json
+{
+  "mode": "cloud",
+  "region": "eu",
+  "scope": "folder:Agent",
+  "unlock": "stored"
+}
 ```
-BW_MODE=cloud                               # cloud | selfhosted | local
-BW_SERVER=https://vault.bitwarden.com       # cloud: vault.bitwarden.com or vault.bitwarden.eu
-BW_SCOPE=folder:Agent                       # folder:<name> | collection:<id> | all
-BW_UNLOCK=stored                            # stored | manual
-BW_CLIENTID=user.…                          # the account's personal API key id
-```
 
-`BW_SCOPE` defaults to `folder:Agent`. The other four keys are required. The broker accepts CRLF
-line endings, spaces around keys and values, `#` comment lines and one pair of quotes around a
-value. An unknown key, an unknown value (`BW_UNLOCK=auto`), a repeated key or a missing required
-key refuses the whole file, and `make doctor` names the file and the key. A `#` after whitespace in
-an unquoted value starts a comment, so `BW_SCOPE=folder:Team #2` reads as `folder:Team`; quote the
-value (`BW_SCOPE="folder:Team #2"`). `make vault-add` quotes it for you.
+| Key | Values | Default |
+|---|---|---|
+| `mode` | `cloud` or `selfhosted` | required |
+| `region` | `us` (vault.bitwarden.com) or `eu` (vault.bitwarden.eu); cloud only | `us` |
+| `url` | your server's `https://` URL, with no user, query or fragment; selfhosted only, required there | |
+| `scope` | `folder:<name>`, `collection:<id>` or `all` | `folder:Agent` |
+| `unlock` | `stored` or `manual` | `manual` |
 
-`BW_SECRETS_ITEM_SCOPE` belonged to the stack secrets sync, which was removed. A file that still sets
-it loads; the broker ignores the key and its value, and `make doctor` names the file so you can
-delete the line.
+The slug is the file name without `.json`: a lowercase letter, then up to 30 of `a-z`, `0-9` and
+`-`, the add-on store's rule. `local` is reserved for `make vault-init`. The broker ignores keys it
+does not know. `scripts/addon.sh` and `make vault-add` write these files; the broker and
+`bitwarden-setup` mount `instances/` (the broker read-only). An account the broker cannot load is
+refused on its own, and the others still load. Its cause is one of:
 
-Credentials never go in this file. The API key's secret and, with stored unlock, the master
-password are `client_secret` and `master_password` in `secrets/<slug>/`, mode 600. Only the broker
-(read-only) and `bitwarden-setup` mount that folder.
+- `bad_file`: the file is not a JSON object or cannot be read, or a value is wrong
+  (`"unlock": "auto"`, a selfhosted account without `url`). The message names the setting.
+- `bad_slug`: the file name breaks the slug rule, or is `local.json`.
+- `missing_client_id`: `secrets/<slug>/client_id` is missing or empty. Connect the account again.
+
+Credentials never go in this file. The API key and, with stored unlock, the master password are
+`client_id`, `client_secret` and `master_password` in `secrets/<slug>/`, mode 600. The manifest marks all three `transient`, so the add-on store never
+holds them. Only the broker (read-only) and `bitwarden-setup` mount that folder.
+
+Account files from earlier versions, `compose/bitwarden/accounts/<slug>.env`, are not read. `make
+doctor` warns while that folder holds any; connect those accounts again with `make vault-add` or
+from Boundary, then delete the folder.
 
 ### Scope
 
-`BW_SCOPE` decides which items the agent can reach through an account.
+`scope` decides which items the agent can reach through an account.
 
 - `folder:<name>` works on a personal account with no organization. The broker lists and fills
   only items in that folder. Bitwarden does not enforce this: the broker holds a key that decrypts
   the whole vault.
-- `collection:<id>` is for an organization. The account file then belongs to a separate member
-  account (for example `agent@…`) that the organization grants only that collection, so Bitwarden
+- `collection:<id>` is for an organization. The account is then a separate member account
+  (for example `agent@…`) that the organization grants only that collection, so Bitwarden
   enforces the scope and the broker never holds a key to anything else. Use this wherever you have
   an organization. Local mode is set up this way.
 - `all` lets the agent reach every item. `make vault-add SCOPE=all` refuses it unless you also
@@ -120,8 +136,10 @@ writes the password. A `collection:` scope with a member account avoids this.
    Sets `BITWARDEN_LOCAL_ENABLED=1` and starts `vaultwarden` and `vaultwarden-tls` (profile `vault`).
 2. Registers the agent account `agent@vault.localhost` with a generated master password and stores
    that password and the account's API key in `secrets/local/`.
-3. Creates the organization "Assistant" with the collection "Agent" and writes
-   `compose/bitwarden/accounts/local.env` (`BW_SCOPE=collection:<Agent>`, `BW_UNLOCK=stored`).
+3. Creates the organization "Assistant" with the collection "Agent" and writes the local account:
+   `broker/local-account.json` (`{"scope": "collection:<Agent>"}`, mode 600) and
+   `secrets/local/client_id`. The broker loads it as mode `local` with stored unlock. It stays out
+   of the add-on instance store, so Boundary cannot disconnect it; `status --json` lists it.
 4. Invites your address (`VAULT_OWNER_EMAIL`, or asked) as an Owner and prints the web vault's
    address. Register there with that address and a master password you choose; the stack never
    sees or stores it. Sign-ups are otherwise off.
@@ -131,7 +149,9 @@ writes the password. A `collection:` scope with a member account avoids this.
    User role with Manage on "Agent". From then on you own the
    organization and Bitwarden enforces the agent's scope.
 
-Each finished step is recorded in `local/state`. `make vault-init` then sets `BITWARDEN_ENABLED=1`;
+Each finished step is recorded in `local/state`. On a stack set up before the local account moved
+out of `compose/bitwarden/accounts/local.env`, `make vault-init` writes the two files from
+`local/state` without signing in. `make vault-init` then sets `BITWARDEN_ENABLED=1`;
 run `make up`. It starts the broker and asks the running gateway to reload its plugins, without
 recreating `hermes`; new sessions on `default` and `browser` get the Bitwarden tools. `make vault-open` opens the web vault at `http://localhost:8222`
 (`VAULTWARDEN_PORT`).
@@ -153,8 +173,8 @@ times in a row can still hit the limit; wait a minute.
 **The local Vaultwarden holds what you store in local mode, and nothing else has a copy unless you
 back it up** with `scripts/vault.sh backup DIR` (see [Backup and restore](#backup-and-restore)).
 
-Setting `BITWARDEN_LOCAL_ENABLED=0` and running `make up` stops Vaultwarden. `local.env` stays, the
-broker reports the account as `offline`, and `make doctor` notes it.
+Setting `BITWARDEN_LOCAL_ENABLED=0` and running `make up` stops Vaultwarden. The local account
+stays, the broker reports it as `offline`, and `make doctor` notes it.
 
 ## Setup and seeding
 
@@ -235,7 +255,7 @@ unlock reads `{master_password}`.
 
 | Command | Output |
 |---|---|
-| `status --json` | One line per account file, sorted by slug: `slug`, `mode`, `scope`, `unlock`, `state`, `error`, `retry_after` |
+| `status --json` | One line per account (each instance file, and `local`), sorted by slug: `slug`, `mode`, `scope`, `unlock`, `state`, `error`, `retry_after`. A refused account is `file`, `slug`, `state`, `error` instead |
 | `unlock --slug S --json` | `{"phase":"done"}`, or an error line; one attempt, no prompt |
 | `lock --slug S --json` | `{"phase":"done"}`, or an error line |
 | `sync --json` | The broker's reply on one line: `synced` (slugs), and `busy` or `reason` (`busy`, `recent`) when set |
@@ -243,9 +263,12 @@ unlock reads `{master_password}`.
 | `add --json`, `remove --json` | `setup` lines, then `done` with `account` and `message` |
 
 `state` is `unlocked`, `locked`, `offline`, `error` (passed through from the broker) or `refused`;
-`locked` is a normal state for a `manual` account. `error` is `login_refused`, `server_unreachable`, `rate_limited`, `unknown`, `bad_file`
-(with `refused`), `not_loaded` (the running broker has not read that file; `make up`),
-`broker_down` (the broker is not running) or null. `retry_after` is whole seconds or null.
+`locked` is a normal state for a `manual` account. `error` is `login_refused`, `server_unreachable`,
+`rate_limited`, `unknown`, `not_loaded` (the running broker has not read that instance; `make up`),
+`broker_down` (the broker is not running) or null. With `refused` it is `bad_file`, `bad_slug` or
+`missing_client_id` (see [Instance files](#instance-files)); `file` is the instance file's name, or
+`broker/local-account.json`, and `slug` is null when the file name breaks the slug rule or is
+`local.json`. `retry_after` is whole seconds or null.
 
 `requests --json` lists these fields:
 
@@ -258,17 +281,17 @@ codes of `addon.sh`: 2 for `bad_input`, `bad_slug`, `exists` and `not_found`, 4 
 `command_failed`). A `rate_limited` line carries `retryAfter` when the broker knows it.
 
 `addon.sh connect bitwarden --instance S --json` runs `vault.sh add --json` and `disconnect` runs
-`vault.sh remove --json`. Connect writes the account file, restarts the broker and keeps the
-account only when the broker signs in: unlocked for `stored`, locked and signed in for `manual`.
-Otherwise it removes what it wrote and ends with an error line. Connect restarts the broker, and
+`vault.sh remove --json`. `addon.sh` writes the instance file only after the hook, and the broker
+needs it at the restart, so `vault.sh add` writes it first (through `scripts/lib/addon_store.py`),
+with the client_id and the other secrets, restarts the broker and keeps the account only when the
+broker signs in: unlocked for `stored`, locked and signed in for `manual`. Otherwise it removes
+what it wrote, the instance file included, and ends with an error line; `addon.sh` then writes
+nothing. After a sign-in, `addon.sh` writes the same values again. `vault.sh remove` deletes the
+instance file and secrets before it restarts the broker. Connect restarts the broker, and
 disconnect restarts it when it is running; a restart locks the other `manual` accounts, and the
-done message names them. When disconnect's restart fails, the account file and secrets are already
-gone and the store entry stays; a retried disconnect finds no account file, restarts the broker
-if it still lists the account, and ends with `done`, which drops the entry. A new slug starts
-with a letter and has at most 31 characters, as the add-on store requires, and Boundary
-disconnects only accounts the store has an entry for. `make vault-add` and `make vault-remove`
-keep the store in step, and `make up` records account files that have no entry. For an account
-whose slug breaks the new rule, `make up` says Boundary cannot disconnect it.
+done message names them. When disconnect's restart fails, it ends with `command_failed`; the
+instance file and secrets are already gone, so a retried disconnect is `not_found`, and the broker
+drops the account at its next restart (`make up`). `vault.sh` never calls `addon.sh`.
 
 ## What the agent can and cannot see
 
@@ -350,8 +373,8 @@ scripts/vault.sh restore ~/vault-backup-2026-11-08 [--force]
 ```
 
 `backup` takes an online SQLite backup of Vaultwarden's `db.sqlite3` and copies `rsa_key*`,
-`config.json`, `attachments/` and `sends/`, plus `secrets/`, `local/` and the account files, into a
-new, empty folder. The backup holds master passwords and API keys; keep it as safe as the vault.
+`config.json`, `attachments/` and `sends/`, plus `secrets/`, `local/`, `broker/local-account.json`
+and the instance files, into a new, empty folder. The backup holds master passwords and API keys; keep it as safe as the vault.
 `restore` needs Vaultwarden stopped (`docker compose stop vaultwarden vaultwarden-tls`) and refuses
 to overwrite existing data without `--force`. With `--force` it copies the backup over what is
 there; files that exist only in the current data stay.
@@ -363,15 +386,13 @@ ownership to your user, so nothing here applies there. On Linux:
 
 - `make vault-add` and `make vault-init` create the data folders before any container starts. Run
   as root they give the new folders to uid 10001; otherwise they print the
-  `sudo chown -R 10001:10001 …` command to run. `secrets/` and the accounts folder stay yours at
-  mode 711.
+  `sudo chown -R 10001:10001 …` command to run. `secrets/` stays yours at mode 711.
 - When `vault.sh` cannot read or write a file the containers own, it goes through
   `bitwarden-setup` and prints a note naming the path.
-- `bitwarden-setup` writes `local.env` (vault-init) and rewrites `BW_SCOPE` (setup creating a new
-  collection) inside the accounts folder, which uid 10001 cannot write while it is yours at 711.
-  Before those steps, give it access, for example
-  `sudo setfacl -m u:10001:rwx compose/bitwarden/accounts`, or run them as root. Otherwise they stop
-  with a permission error.
+- The instance store's `instances/` is yours at mode 700, which `scripts/lib/addon_store.py` sets
+  again on every write, so uid 10001 cannot read it. The broker then loads only the local account,
+  and `bitwarden-setup` cannot read an instance or rewrite its `scope` after creating a collection.
+  This is a known gap.
 
 None of this has been run on a Linux host.
 
@@ -383,14 +404,14 @@ recreated: `make up` asks the running gateway to reload its plugins (`scripts/va
 reload-plugins`), and the Bitwarden tools are gone from new sessions. If the gateway does not
 answer, `make restart` applies the change. It leaves
 `vault.bitwarden.enabled: false`, which it wrote while the add-on was on, so Hermes' own `bw:`
-backend stays off until you remove that line. Account files and data stay. Turn local mode off with
+backend stays off until you remove that line. Instance files and data stay. Turn local mode off with
 `BITWARDEN_LOCAL_ENABLED=0`.
 
 ## Troubleshooting
 
 `make doctor` has a Bitwarden section: the broker's health, each account's state (`unlocked`,
-`locked`, `offline`, `error` with an error class), refused account files, a `BW_SCOPE=all` warning,
-and local mode's files.
+`locked`, `offline`, `error` with an error class), refused accounts, a `scope` `all` warning, account
+files from earlier versions, and local mode's files.
 
 | Symptom | Cause and fix |
 |---|---|
@@ -398,8 +419,9 @@ and local mode's files.
 | `"bitwarden": {"locked": [...]}` | A manual account is locked: `make vault-unlock SLUG=…` |
 | doctor: `<slug>: error (auth)` | Bitwarden refused the API key or master password: `make vault-add SLUG=… MODE=… FORCE=1` |
 | doctor: `<slug>: offline (rate_limited)` | Bitwarden answered 429. The broker waits 60 s (or the server's `Retry-After`) and keeps serving the last synced items |
-| doctor: `the broker refused an account file` | A key or value in the file is unknown; the message names the file and key |
-| doctor: `<slug>: not loaded by the broker yet` | The broker reads account files at start: `docker compose --profile core --profile bitwarden up -d --no-deps --force-recreate bitwarden-broker` |
+| doctor: `the broker refused an account (<cause>)` | See the causes under [Instance files](#instance-files); the message names the file and the setting |
+| doctor: `compose/bitwarden/accounts/ holds … account file(s)` | Files from an earlier version, which nothing reads. Connect those accounts again (`make vault-add` or Boundary), then delete the folder |
+| doctor: `<slug>: not loaded by the broker yet` | The broker reads the instance store at start: `docker compose --profile core --profile bitwarden up -d --no-deps --force-recreate bitwarden-broker` |
 | doctor: `bitwarden-broker is not in the running hermes container's network namespace` | `hermes` was recreated and the broker was not: `docker compose --profile core --profile bitwarden up -d --no-deps bitwarden-broker` (or `./scripts/vault.sh follow-hermes`) |
 | A login is in the folder but not listed | It has no `http`/`https` URI, or only URIs with match type "Never"; or the agent released it and it is still denylisted. `make vault-sync` re-reads |
 | doctor: `… is a folder (Docker made it for a missing file)` | A container started before `make vault-init` wrote that file. Remove the folder and run `make vault-init` again |

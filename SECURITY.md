@@ -41,7 +41,7 @@ If you discover a security issue in this repository, please open a private advis
 **Do not:**
 
 - Expose n8n, SearXNG, GPT Researcher, or Hermes to the public internet without authentication and rate limiting.
-- Commit `.env`, `compose/hermes/api-server.env`, `compose/hermes/browser.env`, `compose/caldav-mcp/accounts/*.env`, `compose/postgres/services/*.env` (includes Vikunja's database login), `compose/bitwarden/accounts/*.env`, `n8n/demo-data/credentials/*.json`, `searxng/settings.local.yml`, `opencode/opencode.local.json`, `docker-compose.override.yml`, or anything under `data/`.
+- Commit `.env`, `compose/hermes/api-server.env`, `compose/hermes/browser.env`, `compose/caldav-mcp/accounts/*.env`, `compose/postgres/services/*.env` (includes Vikunja's database login), `n8n/demo-data/credentials/*.json`, `searxng/settings.local.yml`, `opencode/opencode.local.json`, `docker-compose.override.yml`, or anything under `data/`.
 - Reuse one `API_SERVER_KEY` across Hermes profiles. Keys are scoped per profile and a shared key fails closed, so give `compose/hermes/api-server.env` and `compose/hermes/browser.env` distinct values.
 - Point `OPENCODE_WORKSPACE_HOST` at `$HOME` or `/` — OpenCode and Hermes have full read/write access to coding roots.
 - Use `make coding-root-add DIR=...` to grant broad parents lightly; prefer the specific repo path. Never add `/` or `$HOME` alone (the script refuses those).
