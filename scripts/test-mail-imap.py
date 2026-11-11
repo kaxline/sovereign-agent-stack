@@ -39,6 +39,9 @@ HERE = Path(__file__).resolve().parent
 LIB = HERE / "lib"
 if str(LIB) not in sys.path:
     sys.path.insert(0, str(LIB))
+MAIL_LIB = HERE.parent / "compose" / "email-imap" / "lib"  # the mail library, shared with the email-imap image
+if str(MAIL_LIB) not in sys.path:
+    sys.path.insert(0, str(MAIL_LIB))
 
 import mail_credentials  # noqa: E402
 import mail_imap  # noqa: E402
@@ -132,7 +135,7 @@ def test_reader_refuses_writes() -> None:
 
 def test_reader_source_reads_only() -> None:
     """A test, as for mail_script.js: the reader's code must not gain a write."""
-    code = (LIB / "mail_imap.py").read_text()
+    code = (MAIL_LIB / "mail_imap.py").read_text()
     calls = r"\b_?imap\.(store|append|expunge|copy|move|delete|create|rename|subscribe|setacl|setquota|xatom)\("
     for pattern in (calls,
                     r"""['"](STORE|COPY|MOVE|EXPUNGE|APPEND|DELETE)['"]""", r"BODY\[\]"):
@@ -148,11 +151,11 @@ def test_credentials_handoff() -> None:
     probe = ("import sys; sys.path.insert(0, sys.argv[1]); import mail_credentials as mc, os\n"
              "print(mc.password('Work', None) == 'pw-1', 'MAIL_CREDENTIALS_FD' not in os.environ)\n"
              "try:\n    mc.password('other', None)\nexcept mc.MissingPassword as e:\n    print('missing', 'pw-1' not in str(e))\n")
-    out = subprocess.run([sys.executable, "-I", "-c", probe, str(LIB)], input='{"work": "pw-1"}',
+    out = subprocess.run([sys.executable, "-I", "-c", probe, str(MAIL_LIB)], input='{"work": "pw-1"}',
                          capture_output=True, text=True, env={"MAIL_CREDENTIALS_FD": "0", "PATH": "/usr/bin"})
     expect(out.stdout.split() == ["True", "True", "missing", "True"],
            f"password handoff over stdin: {out.stdout!r} {out.stderr!r}")
-    out = subprocess.run([sys.executable, "-I", "-c", probe, str(LIB)], input="", capture_output=True, text=True,
+    out = subprocess.run([sys.executable, "-I", "-c", probe, str(MAIL_LIB)], input="", capture_output=True, text=True,
                          env={"PATH": "/usr/bin"})
     expect("MissingPassword" in out.stderr or "Error" in out.stderr, "no launcher, no password_env: refused")
 
@@ -166,7 +169,7 @@ def test_credentials_dir() -> None:
              "    print('missing', 'MAIL_CREDENTIALS_DIR' in str(e), sys.argv[2] not in str(e), 'pw with' not in str(e))\n")
     with tempfile.TemporaryDirectory() as d:
         (Path(d) / "work.password").write_text("pw with spaces\n", encoding="utf-8")
-        out = subprocess.run([sys.executable, "-I", "-c", probe, str(LIB), d], capture_output=True, text=True,
+        out = subprocess.run([sys.executable, "-I", "-c", probe, str(MAIL_LIB), d], capture_output=True, text=True,
                              env={"MAIL_CREDENTIALS_DIR": d, "PW_FROM_ENV": "from-env", "PATH": "/usr/bin"})
         expect(out.stdout.split("\n")[:2] == ["'pw with spaces\\n'", "from-env"] and
                out.stdout.split("\n")[2] == "missing True True True",
@@ -185,7 +188,7 @@ def test_credentials_dir_traversal() -> None:
         (Path(d) / "x.password").write_text("outside")
         (base / "sub" / "y.password").write_text("nested")
         (base / ".hidden.password").write_text("hidden")
-        out = subprocess.run([sys.executable, "-I", "-c", probe, str(LIB)], capture_output=True, text=True,
+        out = subprocess.run([sys.executable, "-I", "-c", probe, str(MAIL_LIB)], capture_output=True, text=True,
                              env={"MAIL_CREDENTIALS_DIR": str(base), "PATH": "/usr/bin"})
         expect(out.stdout.split() == ["refused"] * 4, f"credentials dir traversal: {out.stdout!r} {out.stderr!r}")
 
@@ -196,11 +199,11 @@ def imap_calls(path: Path) -> set[str]:
 
 
 def test_shared_and_drafts_code() -> None:
-    calls = imap_calls(LIB / "mail_imap_conn.py")
+    calls = imap_calls(MAIL_LIB / "mail_imap_conn.py")
     expect(calls <= {"authenticate", "list", "login", "logout", "starttls", "shutdown"},
            f"shared IMAP code gained {calls}")
-    code = (LIB / "mail_imap_drafts.py").read_text()
-    calls = imap_calls(LIB / "mail_imap_drafts.py")
+    code = (MAIL_LIB / "mail_imap_drafts.py").read_text()
+    calls = imap_calls(MAIL_LIB / "mail_imap_drafts.py")
     expect(calls <= {"select", "response", "uid", "append"}, f"drafts IMAP code gained {calls}")
     for m in re.finditer(r"\._imap\.uid\(\s*['\"](\w+)['\"],\s*\w+,\s*(\w+)", code):
         expect(m.group(1) == "FETCH" and m.group(2) == "REPLY_HEADERS", f"drafts UID {m.group(0)}")
@@ -211,7 +214,7 @@ def test_shared_and_drafts_code() -> None:
             expect("readonly=True" in line, f"drafts SELECT without readonly=True: {line.strip()}")
         if ".append(" in line and "_imap" in line:
             expect("box.raw" in line, "drafts append only to the Drafts box")
-    expect("smtplib" not in code and "smtplib" not in (LIB / "mail_drafts.py").read_text(), "no SMTP anywhere")
+    expect("smtplib" not in code and "smtplib" not in (MAIL_LIB / "mail_drafts.py").read_text(), "no SMTP anywhere")
     for m in re.finditer(r"\._imap\.uid\(\s*['\"](\w+)", code):
         expect(m.group(1) in ("SEARCH", "FETCH"), f"UID {m.group(1)} in the reader")
 

@@ -54,6 +54,15 @@ the stack under another app.
   takes a source argument.
 - `addon.sh list --json`'s `hooks` no longer lists `backup` or `restore`.
   The `done` line's `restart` is always `[]`.
+- The email-imap image (`email-indexer`, `email-outbox`) builds from
+  `compose/email-imap/` instead of the repo root, and imports nothing from
+  `scripts/lib`. The mail library moved from `scripts/lib/` to
+  `compose/email-imap/lib/` (`mail_*.py`, `mail_*.js`, `jxa.py`,
+  `email_addon.py`), and `mail-index.py` and `mail-drafts.py` to
+  `compose/email-imap/`. `scripts/mail-index.py` and `scripts/mail-drafts.py`
+  still work and run the moved files. Paths inside the image are unchanged.
+  A compose override that sets `build.dockerfile:
+  compose/email-imap/Dockerfile` for these services must drop it.
 
 - New `scripts/addon-dirs.sh` creates every add-on's store directories; no
   add-on script has to run before core starts.

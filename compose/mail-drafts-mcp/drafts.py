@@ -5,7 +5,9 @@ helper (scripts/mail-drafts.py) validates them again, asks Mail.app to save
 each one as a draft, writes <dir>/status/<id>.json and deletes the request.
 Nothing here can send mail: a draft waits in Mail until the user sends it.
 
-Standard library only; the host helper imports this file too.
+Standard library only. The email-imap image and the host helper use a copy,
+compose/email-imap/lib/drafts.py; scripts/test-email-addon.py checks that it
+matches this file.
 """
 
 from __future__ import annotations

@@ -45,7 +45,7 @@ tmi = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(tmi)
 
 import drafts  # noqa: E402  compose/mail-drafts-mcp
-import mail_imap_conn  # noqa: E402  scripts/lib, on the path through tmi
+import mail_imap_conn  # noqa: E402  compose/email-imap/lib, on the path through tmi
 import mail_query as mq  # noqa: E402  compose/mail-mcp
 
 PASSWORD = tmi.PASSWORD
