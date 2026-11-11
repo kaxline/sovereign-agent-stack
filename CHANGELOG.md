@@ -76,6 +76,16 @@ the stack under another app.
   v0.3.13 and "IMAP login and TLS" under v0.3.6 no longer apply. Drafts
   (`APPEND` to a real Drafts mailbox) and Proton through Bridge still
   haven't had a real run.
+- Boundary's dashboard contract has now run on a live stack under
+  `multiplex`: over `/api/ws` (9119), `session.create` and `prompt.submit`
+  ran turns to `message.complete`, `turn.heartbeat` arrived every 30 s
+  during a two-and-a-half-minute turn and stopped at `message.complete`,
+  and `session.live_status` reported `working` mid-turn and `idle` after.
+  The "Boundary under `multiplex`" note under v0.3.6 no longer applies,
+  apart from the upstream `.env` read on the event loop it describes,
+  which v0.22.7 still has. The dashboard's own Chat page runs the terminal
+  UI over `/api/pty` and never receives turn events on `/api/ws`, so test
+  this contract with a client of `/api/ws`, not by watching that page.
 - `addon.sh enable`, `run` and hooks that run in a compose service now run
   `docker compose build --quiet` on their services first. Before, a service
   built from this repo (`email-indexer`, `email-mcp`, `email-drafts-mcp`,
