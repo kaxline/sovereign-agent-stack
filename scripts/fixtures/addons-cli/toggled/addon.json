@@ -3,8 +3,8 @@
   "id": "io.example.stack.toggled",
   "version": "1.0.0",
   "title": "Toggled",
-  "tagline": "Test add-on with onToggle, uses and an mcp server",
-  "description": "Not a real add-on. scripts/test-addon-cli.sh enables and disables it to check onToggle recreates, the mcp names in done and the stop of unused stack services, against stub docker and make.",
+  "tagline": "Test add-on with uses and an mcp server",
+  "description": "Not a real add-on. scripts/test-addon-cli.sh enables and disables it to check the mcp names in done and the stop of unused stack services, against stub docker and make.",
   "publisher": {
     "name": "sovereign-agent-stack",
     "url": "https://github.com/kaxline/sovereign-agent-stack"
@@ -37,15 +37,6 @@
     "profiles": {
       "default": "ro"
     }
-  },
-  "onToggle": {
-    "recreate": [
-      "hermes"
-    ],
-    "script": [
-      "scripts/fixture-follow.sh",
-      "follow"
-    ]
   },
   "permissions": {
     "reads": [],

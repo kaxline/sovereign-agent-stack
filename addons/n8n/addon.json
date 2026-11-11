@@ -21,8 +21,7 @@
       "port": 5678
     },
     "import": {
-      "compose": "n8n-import",
-      "oneshot": true
+      "compose": "n8n-import"
     },
     "research": {
       "compose": "gpt-researcher",

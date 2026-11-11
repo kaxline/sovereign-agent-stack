@@ -527,12 +527,13 @@ def _service_rows(manifest: dict, figures) -> list:
     figures = figures or {}
     by_compose = figures.get("services") or {}
     sizes = figures.get("sizes") or {}
+    oneshots = figures.get("oneshots") or set()
     services = manifest.get("services")
     rows = []
     for key in sorted(services if isinstance(services, dict) else []):
         spec = services[key] if isinstance(services[key], dict) else {}
         f = by_compose.get(spec.get("compose")) or {}
-        row = {"key": key, "compose": spec.get("compose"), "oneshot": bool(spec.get("oneshot")),
+        row = {"key": key, "compose": spec.get("compose"), "oneshot": spec.get("compose") in oneshots,
                "image": f.get("image"),
                "memory": {"reservation": f.get("reservation"), "limit": f.get("limit")}}
         if f.get("image") in sizes:

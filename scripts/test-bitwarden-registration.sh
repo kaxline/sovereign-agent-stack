@@ -72,7 +72,7 @@ m["permissions"].update(reads=["credentials"], cron=False, egress=["internet"])
 m["vaultBackend"] = {"name": "bwbroker", "plugin": "compose/hermes/plugins/bwbroker", "toolset": "bitwarden",
                      "tools": ["bitwarden_request_access", "bitwarden_release_access"],
                      "profiles": {"default": "rw", "browser": "rw"}}
-errors = am.validate(m, "builtin")
+errors = am.validate(m)
 if errors:
     raise SystemExit(f"fixture manifest is invalid: {errors}")
 open(sys.argv[1], "w").write(am.canonical(m))

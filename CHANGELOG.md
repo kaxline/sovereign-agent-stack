@@ -21,8 +21,35 @@ the stack under another app.
    left over, since they hold API keys, and add remote workspaces again with
    `make crm-add`. Boundary: stop reading and writing that folder before
    moving the pin.
+3. LightRAG is registered on the default profile too, read-only with the same
+   five tools as on `api-server` and `browser`. After the next bootstrap run
+   with `LIGHTRAG_MCP_ENABLED=1`, any other entry at LightRAG's URL on
+   default (a hand-made `lightrag-mcp`, for example) is removed. With the flag
+   off, entries at that URL are removed from default as well. To keep
+   LightRAG out of chat, run `./scripts/addon.sh disable lightrag`.
+4. Add-on manifests outside this repo that use a removed field (below) fail
+   validation and are skipped with a warning until the field is taken out.
 
 ### Changes
+
+- Removed manifest fields, unused by any built-in add-on or replaced:
+  `onToggle` (and `addon.sh`'s `recreate` step), `services.<name>.volumes`
+  (use `data.volumes`), `services.<name>.oneshot`, `mcp.unmanaged`, and the
+  `upgrade`, `backup` and `restore` hooks (`hooks.init` stays). A manifest
+  that still has one is refused with a message naming the field. Bitwarden's
+  `backup` and `restore` hooks are accepted, and ignored, until the stack
+  secrets sync removal lands. `addon_cli.py toggle-script` is gone.
+- A service is now a one-shot when another compose service depends on it
+  with `condition: service_completed_successfully` in `docker-compose.yml`;
+  `addon.sh enable` and `remove` read that instead of the manifest.
+  `addon.sh list --json` still reports `oneshot` per service. n8n's
+  `n8n-import` is the only add-on one-shot.
+- The validator accepts built-in manifests only: the packaged-add-on rules
+  (image digests, `official` and `community` feeds and their refusals) are
+  gone from the code and stay in the spec as design. `validate()` no longer
+  takes a source argument.
+- `addon.sh list --json`'s `hooks` no longer lists `backup` or `restore`.
+  The `done` line's `restart` is always `[]`.
 
 - New `scripts/addon-dirs.sh` creates every add-on's store directories; no
   add-on script has to run before core starts.

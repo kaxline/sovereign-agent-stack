@@ -85,7 +85,7 @@ require_rag_profile() {
   profiles="$(env_get COMPOSE_PROFILES core)"
   case ",${profiles}," in
     *,rag,*) ;;
-    *) die "rag profile is not enabled (COMPOSE_PROFILES=${profiles}). Re-run: ./scripts/setup.sh --rag" ;;
+    *) die "rag profile is not enabled (COMPOSE_PROFILES=${profiles}). Enable it: ./scripts/addon.sh enable lightrag" ;;
   esac
 }
 

@@ -33,8 +33,8 @@ def check(label: str, ok: bool, detail: str = "") -> None:
         print(f"FAIL: {label}{': ' + detail if detail else ''}")
 
 
-def refused(label: str, manifest, source: str, needle: str) -> None:
-    errors = am.validate(manifest, source)
+def refused(label: str, manifest, needle: str) -> None:
+    errors = am.validate(manifest)
     check(label, any(needle in e for e in errors), f"errors were {errors}")
 
 
@@ -55,95 +55,63 @@ def variant(**changes):
     return m
 
 
-def packaged(m):
-    m = copy.deepcopy(m)
-    m.pop("builtin", None)
-    m["services"] = {"server": {"image": "ghcr.io/example/x@sha256:" + "a" * 64,
-                                "port": 8000, "healthCheck": "/health"}}
-    for entry in m["mcp"] if isinstance(m["mcp"], list) else [m["mcp"]]:
-        entry.pop("env", None)
-    return m
-
-
 # --- Policy ---------------------------------------------------------------
-check("gptr manifest is valid as built-in", am.validate(BASE, "builtin") == [],
-      str(am.validate(BASE, "builtin")))
-check("packaged form is valid from a community feed", am.validate(packaged(BASE), "community") == [],
-      str(am.validate(packaged(BASE), "community")))
+check("gptr manifest is valid as built-in", am.validate(BASE) == [],
+      str(am.validate(BASE)))
+try:
+    am.validate(BASE, "builtin")
+    check("validate() refuses the old source argument", False)
+except TypeError:
+    check("validate() refuses the old source argument", True)
 
-refused("missing permissions", variant(permissions=None), "builtin", "'permissions'")
-refused("bad id", variant(id="gptr"), "builtin", "reverse-domain")
-refused("built-in without builtin block", variant(builtin=None), "builtin", "builtin block")
-refused("packaged with builtin block", {**packaged(BASE), "builtin": BASE["builtin"]}, "official",
-        "only built-in")
-refused("packaged image by tag", variant(services={"server": {"image": "x:latest", "port": 1,
-                                                              "healthCheck": "/h"}}, builtin=None),
-        "community", "digest")
-no_health = packaged(BASE)
-del no_health["services"]["server"]["healthCheck"]
-refused("packaged mcp service without healthCheck", no_health, "community", "healthCheck")
-refused("pin outside tools", variant(mcp__pin=["nope"]), "builtin", "mcp.pin")
-refused("writeTools outside tools", variant(mcp__writeTools=["nope"]), "builtin", "mcp.writeTools")
-refused("core name collision", variant(mcp__name="messages"), "builtin", "collides")
+refused("missing permissions", variant(permissions=None), "'permissions'")
+refused("bad id", variant(id="gptr"), "reverse-domain")
+refused("built-in without builtin block", variant(builtin=None), "builtin block")
+refused("an image in a built-in manifest", variant(services__server__image="x@sha256:" + "a" * 64),
+        "keeps its image in docker-compose.yml")
+refused("pin outside tools", variant(mcp__pin=["nope"]), "mcp.pin")
+refused("writeTools outside tools", variant(mcp__writeTools=["nope"]), "mcp.writeTools")
+refused("core name collision", variant(mcp__name="messages"), "collides")
 check("mail and drafts are add-on names now (email-local), not core ones",
       not {"mail", "drafts"} & am.CORE_MCP_NAMES, str(am.CORE_MCP_NAMES))
-refused("core prefix collision", variant(mcp__name="caldav-main"), "builtin", "collides")
+refused("core prefix collision", variant(mcp__name="caldav-main"), "collides")
 check("crm- is no longer a core prefix", "crm-" not in am.CORE_MCP_PREFIXES, str(am.CORE_MCP_PREFIXES))
-# mcp.unmanaged: profiles bootstrap leaves alone.
-_ok = variant(mcp__profiles={"browser": "rw"}, mcp__unmanaged=["default"])
-check("unmanaged accepts profiles outside mcp.profiles", am.validate(_ok, "builtin") == [], str(am.validate(_ok, "builtin")))
-check("an empty unmanaged list is valid", am.validate(variant(mcp__unmanaged=[]), "builtin") == [])
-check("postInstallMessage as a string is valid", am.validate(variant(postInstallMessage="Open it."), "builtin") == [])
-refused("postInstallMessage must be a string", variant(postInstallMessage=5), "builtin", "postInstallMessage")
-refused("postInstallMessage may not be blank", variant(postInstallMessage=" "), "builtin", "postInstallMessage")
-_overlap = variant(mcp__profiles={"default": "ro", "browser": "ro"}, mcp__unmanaged=["browser"])
-refused("unmanaged overlaps profiles", _overlap, "builtin", "unmanaged")
-refused("unmanaged not a list", variant(mcp__unmanaged="default"), "builtin", "unmanaged")
-refused("unmanaged repeats a name", variant(mcp__unmanaged=["browser", "browser"]), "builtin", "unmanaged")
-refused("unmanaged has a bad name", variant(mcp__unmanaged=["Bad Name"]), "builtin", "unmanaged")
-_pk = packaged(_ok)
-refused("unmanaged is refused on a packaged add-on", _pk, "community", "unmanaged")
-refused("unmanaged is refused on the official feed", _pk, "official", "unmanaged")
-with tempfile.TemporaryDirectory() as tmp:
-    (Path(tmp) / "gptr").mkdir()
-    (Path(tmp) / "gptr" / "addon.json").write_text(am.canonical(_ok))
-    check("mcp_plan skips an unmanaged profile", am.mcp_plan(Path(tmp), "default", {}) == [])
-    check("mcp_plan still lists other profiles", len(am.mcp_plan(Path(tmp), "browser", {})) == 1)
-refused("bad access level", variant(mcp__profiles={"default": "admin"}), "builtin", "ro or rw")
-refused("unknown stack service", variant(uses=["kafka"]), "builtin", "kafka")
-refused("postgres without exposesToAgent", variant(uses=["postgres"]), "builtin", "exposesToAgent")
-refused("neo4j without exposesToAgent", variant(uses=["neo4j"]), "builtin", "exposesToAgent")
+refused("mcp.unmanaged is refused", variant(mcp__unmanaged=["default"]), "mcp.unmanaged was removed")
+refused("onToggle is refused", variant(onToggle={"recreate": ["hermes"]}), "onToggle was removed")
+refused("services.<k>.oneshot is refused", variant(services__server__oneshot=True), "oneshot was removed")
+refused("services.<k>.volumes is refused", variant(services__server__volumes=["a"]),
+        "services.<name>.volumes was removed")
+refused("hooks.upgrade is refused", variant(hooks={"upgrade": {"script": ["scripts/crm.sh"]}}),
+        "hooks has unknown fields: upgrade")
+check("postInstallMessage as a string is valid", am.validate(variant(postInstallMessage="Open it.")) == [])
+refused("postInstallMessage must be a string", variant(postInstallMessage=5), "postInstallMessage")
+refused("postInstallMessage may not be blank", variant(postInstallMessage=" "), "postInstallMessage")
+refused("bad access level", variant(mcp__profiles={"default": "admin"}), "ro or rw")
+refused("unknown stack service", variant(uses=["kafka"]), "kafka")
+refused("postgres without exposesToAgent", variant(uses=["postgres"]), "exposesToAgent")
+refused("neo4j without exposesToAgent", variant(uses=["neo4j"]), "exposesToAgent")
 refused("choice default not in options",
         variant(settings={"access": {"type": "choice", "options": ["read", "write"], "default": "ask"}}),
-        "builtin", "not one of its options")
-refused("mcp.env on a packaged add-on", {**packaged(BASE), "mcp": BASE["mcp"]}, "official", "mcp.env")
+        "not one of its options")
 
 # The personal-data checks from the spec's "What changes".
 reader = variant(permissions__reads=["messages"], permissions__cron=False,
                  mcp__profiles={"default": "ro", "browser": "ro"})
-check("messages reader is valid as built-in", am.validate(reader, "builtin") == [],
-      str(am.validate(reader, "builtin")))
+check("messages reader is valid as built-in", am.validate(reader) == [],
+      str(am.validate(reader)))
 refused("reader that sends", variant(permissions__reads=["messages"], permissions__cron=False,
                                      permissions__sends=True, mcp__profiles={"default": "ro"}),
-        "builtin", "may not send")
+        "may not send")
 refused("reader on api-server", variant(permissions__reads=["messages"], permissions__cron=False,
                                         mcp__profiles={"default": "ro", "api-server": "ro"}),
-        "builtin", "api-server")
+        "api-server")
 refused("reader with a default path",
         variant(permissions__reads=["messages"], permissions__cron=False,
                 mcp__profiles={"default": "ro"},
                 settings={"db": {"type": "path", "default": "~/Library/Messages/chat.db"}}),
-        "builtin", "may not have a default")
+        "may not have a default")
 refused("reader in cron", variant(permissions__reads=["mail"], permissions__cron=True,
-                                  mcp__profiles={"default": "ro"}), "builtin", "cron false")
-refused("reader from a community feed", packaged(reader), "community", "refused for community")
-check("reader from the official feed is allowed", am.validate(packaged(reader), "official") == [],
-      str(am.validate(packaged(reader), "official")))
-refused("sender from a community feed", packaged(variant(permissions__sends=True)), "community",
-        "sends is refused")
-refused("host component from a community feed", {**packaged(BASE), "host": {"platform": "macos"}},
-        "community", "host component")
-
+                                  mcp__profiles={"default": "ro"}), "cron false")
 # --- credentials and vaultBackend ---------------------------------------------
 VAULT = {"name": "bwbroker", "plugin": "compose/hermes/plugins/bwbroker", "toolset": "bitwarden",
          "tools": ["bitwarden_request_access", "bitwarden_release_access"],
@@ -168,42 +136,35 @@ def vault_manifest(**changes):
     return m
 
 
-check("vault manifest is valid as built-in", am.validate(vault_manifest(), "builtin") == [],
-      str(am.validate(vault_manifest(), "builtin")))
-refused("credentials_cron_refused", vault_manifest(permissions__cron=True), "builtin",
+check("vault manifest is valid as built-in", am.validate(vault_manifest()) == [],
+      str(am.validate(vault_manifest())))
+refused("credentials_cron_refused", vault_manifest(permissions__cron=True), 
         "needs permissions.cron false")
 refused("credentials_api_server_refused",
-        vault_manifest(vaultBackend__profiles={"default": "rw", "api-server": "rw"}), "builtin",
+        vault_manifest(vaultBackend__profiles={"default": "rw", "api-server": "rw"}), 
         "api-server")
 for reserved in ("vault", "op", "bw"):
     refused(f"vault_backend_reserved_name {reserved}", vault_manifest(vaultBackend__name=reserved),
-            "builtin", "vaultBackend.name is reserved")
-refused("vault_backend_bad_name", vault_manifest(vaultBackend__name="Bad-Name"), "builtin",
+            "vaultBackend.name is reserved")
+refused("vault_backend_bad_name", vault_manifest(vaultBackend__name="Bad-Name"), 
         "vaultBackend.name must")
-packaged_vault = vault_manifest(builtin=None)
-packaged_vault["services"] = {"broker": {"image": "ghcr.io/example/x@sha256:" + "a" * 64,
-                                         "port": 8099, "healthCheck": "/health"}}
-refused("vault_backend_community_refused", packaged_vault, "community",
-        "vaultBackend is refused unless the add-on is built-in or on the official feed")
-check("vaultBackend from the official feed is allowed",
-      am.validate(packaged_vault, "official") == [], str(am.validate(packaged_vault, "official")))
-refused("vault_backend_shape: missing plugin", vault_manifest(vaultBackend__plugin=None), "builtin",
+refused("vault_backend_shape: missing plugin", vault_manifest(vaultBackend__plugin=None), 
         "vaultBackend.plugin")
 refused("vault_backend_shape: plugin escapes", vault_manifest(vaultBackend__plugin="a/../x"),
-        "builtin", "vaultBackend.plugin")
+        "vaultBackend.plugin")
 refused("vault_backend_shape: absolute plugin", vault_manifest(vaultBackend__plugin="/x/y"),
-        "builtin", "vaultBackend.plugin")
-refused("vault_backend_shape: missing toolset", vault_manifest(vaultBackend__toolset=None), "builtin",
+        "vaultBackend.plugin")
+refused("vault_backend_shape: missing toolset", vault_manifest(vaultBackend__toolset=None), 
         "vaultBackend.toolset")
-refused("vault_backend_shape: bad toolset", vault_manifest(vaultBackend__toolset="Bit warden"), "builtin",
+refused("vault_backend_shape: bad toolset", vault_manifest(vaultBackend__toolset="Bit warden"), 
         "vaultBackend.toolset")
 refused("vault_backend_shape: tools not a list", vault_manifest(vaultBackend__tools="a b"),
-        "builtin", "vaultBackend.tools")
+        "vaultBackend.tools")
 refused("vault_backend_shape: bad profile value",
-        vault_manifest(vaultBackend__profiles={"default": "admin"}), "builtin", "ro or rw")
-refused("vaultBackend is not an object", vault_manifest(vaultBackend="x"), "builtin",
+        vault_manifest(vaultBackend__profiles={"default": "admin"}), "ro or rw")
+refused("vaultBackend is not an object", vault_manifest(vaultBackend="x"), 
         "vaultBackend must be an object")
-refused("vaultBackend without profiles", vault_manifest(vaultBackend__profiles={}), "builtin",
+refused("vaultBackend without profiles", vault_manifest(vaultBackend__profiles={}), 
         "vaultBackend.profiles")
 
 # --- vault-plan ---------------------------------------------------------------
@@ -232,7 +193,7 @@ check("the repo's Bitwarden add-on has no api-server access and is off without i
 
 # A service map gives each access level its own service.
 SPLIT = json.loads((ROOT / "scripts" / "fixtures" / "addons" / "split" / "addon.json").read_text())
-check("the split fixture is valid", am.validate(SPLIT, "builtin") == [], str(am.validate(SPLIT, "builtin")))
+check("the split fixture is valid", am.validate(SPLIT) == [], str(am.validate(SPLIT)))
 
 
 def split(**changes):
@@ -242,27 +203,27 @@ def split(**changes):
 
 
 one = variant(mcp__service={"rw": "server"})
-check("a map with only rw is accepted", am.validate(one, "builtin") == [], str(am.validate(one, "builtin")))
-refused("a map naming an unknown service", variant(mcp__service={"rw": "nope"}), "builtin", "mcp.service")
-refused("a map with a bad access key", variant(mcp__service={"rx": "server"}), "builtin", "mcp.service")
+check("a map with only rw is accepted", am.validate(one) == [], str(am.validate(one)))
+refused("a map naming an unknown service", variant(mcp__service={"rw": "nope"}), "mcp.service")
+refused("a map with a bad access key", variant(mcp__service={"rx": "server"}), "mcp.service")
 refused("a mapped service without a port",
         split(services={"rw": {"compose": "split-rw"}, "ro": {"compose": "split-ro", "port": 9000}}),
-        "builtin", ".port is needed")
+        ".port is needed")
 refused("a profile at ro when the map has no ro", variant(mcp__service={"rw": "server"},
                                                           mcp__profiles={"api-server": "ro"}),
-        "builtin", "no service for ro")
+        "no service for ro")
 
-check("env.access is accepted", am.validate(SPLIT, "builtin") == [], str(am.validate(SPLIT, "builtin")))
+check("env.access is accepted", am.validate(SPLIT) == [], str(am.validate(SPLIT)))
 refused("an unknown env key", split(mcp={**SPLIT["mcp"], "env": {"acess": "SPLIT_ACCESS"}}),
-        "builtin", "mcp.env")
+        "mcp.env")
 refused("env.access must be an env var name",
-        split(mcp={**SPLIT["mcp"], "env": {"access": "lower"}}), "builtin", "mcp.env")
+        split(mcp={**SPLIT["mcp"], "env": {"access": "lower"}}), "mcp.env")
 
 ACCESS_URL = {"read": "http://split-ro:9000/mcp", "write": "http://split-rw:9000/mcp",
               "": "http://split-rw:9000/mcp", "Read": None, "ask": None, "readonly": None}
-# --- mcp-urls: every URL, whatever profiles/unmanaged say ---------------------
+# --- mcp-urls: every URL, whatever profiles say --------------------------------
 urls = am.mcp_urls(ROOT / "addons", {})
-check("mcp-urls lists LightRAG although default is unmanaged", "http://lightrag-mcp:8000/mcp" in urls, str(urls))
+check("mcp-urls lists LightRAG", "http://lightrag-mcp:8000/mcp" in urls, str(urls))
 check("mcp-urls lists both URLs of a split add-on",
       {"http://actual-mcp-ro:3000/mcp", "http://actual-mcp-rw:3000/mcp"} <= set(urls), str(urls))
 urls = am.mcp_urls(ROOT / "addons", {"LIGHTRAG_MCP_URL": "http://x:1/mcp"})
@@ -287,14 +248,14 @@ with tempfile.TemporaryDirectory() as tmp:
 
 # permissions.cron: true, false or "ro".
 check("cron ro with a service map that has ro is accepted", SPLIT["permissions"]["cron"] == "ro"
-      and am.validate(SPLIT, "builtin") == [], str(am.validate(SPLIT, "builtin")))
+      and am.validate(SPLIT) == [], str(am.validate(SPLIT)))
 refused("cron ro on an add-on that reads", split(permissions={**SPLIT["permissions"], "reads": ["mail"]}),
-        "builtin", "permissions.cron false")
-refused("cron ro with a string service", variant(permissions__cron="ro"), "builtin", "cron ro needs an ro service")
+        "permissions.cron false")
+refused("cron ro with a string service", variant(permissions__cron="ro"), "cron ro needs an ro service")
 refused("cron ro with a map that has no ro service",
         split(mcp={**SPLIT["mcp"], "service": {"rw": "rw"}, "profiles": {"default": "rw"}}),
-        "builtin", "cron ro needs an ro service")
-refused("cron yes", variant(permissions__cron="yes"), "builtin", "permissions.cron")
+        "cron ro needs an ro service")
+refused("cron yes", variant(permissions__cron="yes"), "permissions.cron")
 
 # --- mcp-plan ---------------------------------------------------------------
 env = {"GPTR_MCP_ENABLED": "1"}
@@ -354,7 +315,9 @@ with tempfile.TemporaryDirectory() as tmp:
             check(f"invalid manifest drops {url} on api-server (flag {flag})",
                   len(row) == 11 and row[2] == "0" and row[3] == "" and row[4] == url
                   and row[10] == url, str(plan))
-    check("invalid manifest leaves unmanaged default alone", am.mcp_plan(Path(tmp), "default", {}) == [])
+    _plan = am.mcp_plan(Path(tmp), "default", {})
+    check("invalid manifest drops LightRAG on default too",
+          len(_plan) == 1 and _plan[0].split("|")[2:5] == ["0", "", LR_URL], str(_plan))
     check("mcp_urls lists an invalid manifest's URL", am.mcp_urls(Path(tmp), {}) == [LR_URL],
           str(am.mcp_urls(Path(tmp), {})))
     check("mcp_urls honours the override for an invalid manifest",
@@ -452,7 +415,7 @@ with tempfile.TemporaryDirectory() as tmp:
     rc = subprocess.run([sys.executable, str(ROOT / "scripts" / "lib" / "addon_manifest.py"), "validate", tmp],
                         capture_output=True, text=True)
     check("validate CLI reports the duplicate", rc.returncode == 1 and "more than one add-on" in rc.stdout, rc.stdout)
-check("the packaged add-ons have distinct mcp names",
+check("the built-in add-ons have distinct mcp names",
       all(not any("more than one add-on" in e for e in errs) for _p, _m, errs in am.checked_dir(ROOT / "addons")))
 
 # --- cron fence ---------------------------------------------------------------
@@ -525,45 +488,44 @@ def two_entry(**changes):
     return m
 
 
-check("a two-entry manifest is valid", am.validate(two_entry(), "builtin") == [],
-      str(am.validate(two_entry(), "builtin")))
+check("a two-entry manifest is valid", am.validate(two_entry()) == [],
+      str(am.validate(two_entry())))
 two_bad_gate = two_entry()
 two_bad_gate["mcp"][1]["when"] = {"gate": "NOPE_ENABLED"}
-refused("when names an unknown gate", two_bad_gate, "builtin", "when.gate")
-refused("gates on a packaged add-on", packaged(two_entry()), "official", "gates")
+refused("when names an unknown gate", two_bad_gate, "when.gate")
 two_dup = two_entry()
 two_dup["mcp"][1]["name"] = "gptr"
-refused("two entries share a name", two_dup, "builtin", "mcp names must be unique")
+refused("two entries share a name", two_dup, "mcp names must be unique")
 two_shared = two_entry()
 two_shared["mcp"][1]["service"] = "server"
-refused("two entries share a service", two_shared, "builtin", "mcp entries 0 and 1 share service 'server'")
+refused("two entries share a service", two_shared, "mcp entries 0 and 1 share service 'server'")
 two_shared["mcp"][1]["service"] = {"ro": "extra", "rw": "server"}
-refused("a service map overlapping another entry's service", two_shared, "builtin",
+refused("a service map overlapping another entry's service", two_shared, 
         "mcp entries 0 and 1 share service 'server'")
 two_api = two_entry(permissions__reads=["messages"], permissions__cron=False)
 for entry in two_api["mcp"]:
     entry["profiles"] = {"default": "ro"}
 two_api["mcp"][1]["profiles"] = {"default": "ro", "api-server": "ro"}
-refused("api-server on any entry of a reads add-on", two_api, "builtin", "api-server")
+refused("api-server on any entry of a reads add-on", two_api, "api-server")
 two_gate_shape = two_entry()
 two_gate_shape["gates"] = [{"flag": "lower", "profile": "x", "seed": "no"}]
-refused("a gate needs an env var name", two_gate_shape, "builtin", "gates[0].flag")
-refused("a gate needs a boolean seed", two_gate_shape, "builtin", "gates[0].seed")
+refused("a gate needs an env var name", two_gate_shape, "gates[0].flag")
+refused("a gate needs a boolean seed", two_gate_shape, "gates[0].seed")
 # sync-profiles.sh reads gates line by line with awk, so key order is part of the format.
 two_order = two_entry()
 two_order["gates"] = [{"seed": False, "flag": "GPTR_EXTRA_ENABLED", "profile": "research-extra"}]
-refused("gate keys must be flag, profile, seed in that order", two_order, "builtin", "gates keys")
+refused("gate keys must be flag, profile, seed in that order", two_order, "gates keys")
 two_empty = two_entry()
 two_empty["mcp"] = []
-refused("an empty mcp list", two_empty, "builtin", "mcp")
+refused("an empty mcp list", two_empty, "mcp")
 two_svc = two_entry()
 two_svc["services"]["server"]["when"] = {"gate": "NOPE_ENABLED"}
-refused("a service when names an unknown gate", two_svc, "builtin", "services.server.when.gate")
+refused("a service when names an unknown gate", two_svc, "services.server.when.gate")
 two_svc["services"]["server"]["when"] = {"gate": "GPTR_EXTRA_ENABLED"}
-check("a service may carry a known when", am.validate(two_svc, "builtin") == [],
-      str(am.validate(two_svc, "builtin")))
+check("a service may carry a known when", am.validate(two_svc) == [],
+      str(am.validate(two_svc)))
 two_ro = two_entry(permissions__cron="ro")
-refused("cron ro is checked on every entry", two_ro, "builtin", "cron ro needs an ro service")
+refused("cron ro is checked on every entry", two_ro, "cron ro needs an ro service")
 
 with tempfile.TemporaryDirectory() as tmp:
     (Path(tmp) / "gptr").mkdir()
@@ -632,107 +594,104 @@ def inst_manifest(mcp_changes=None, instances_settings=None, **top):
     return m
 
 
-check("mcp.instances manifest is valid as built-in", am.validate(inst_manifest(), "builtin") == [],
-      str(am.validate(inst_manifest(), "builtin")))
+check("mcp.instances manifest is valid as built-in", am.validate(inst_manifest()) == [],
+      str(am.validate(inst_manifest())))
 check("mcp.instances takes env and no service, path or name",
-      am.validate(inst_manifest({"env": {"timeout": "TWENTY_MCP_TIMEOUT"}}), "builtin") == [],
-      str(am.validate(inst_manifest({"env": {"timeout": "TWENTY_MCP_TIMEOUT"}}), "builtin")))
+      am.validate(inst_manifest({"env": {"timeout": "TWENTY_MCP_TIMEOUT"}})) == [],
+      str(am.validate(inst_manifest({"env": {"timeout": "TWENTY_MCP_TIMEOUT"}}))))
 check("mcp.instances may gate on builtin.flag",
-      am.validate(inst_manifest({"instances__gate__flag": "GPTR_MCP_ENABLED"}), "builtin") == [])
+      am.validate(inst_manifest({"instances__gate__flag": "GPTR_MCP_ENABLED"})) == [])
 check("mcp.instances gate is optional",
-      am.validate(inst_manifest({"instances__gate": None}), "builtin") == [])
+      am.validate(inst_manifest({"instances__gate": None})) == [])
 refused("mcp.instances name without {slug}", inst_manifest({"instances__name": "crm"}),
-        "builtin", "mcp.instances.name")
+        "mcp.instances.name")
 refused("mcp.instances name needs a lowercase prefix", inst_manifest({"instances__name": "{slug}"}),
-        "builtin", "mcp.instances.name")
+        "mcp.instances.name")
 refused("mcp.instances name with a bad character", inst_manifest({"instances__name": "CRM-{slug}"}),
-        "builtin", "mcp.instances.name")
+        "mcp.instances.name")
 refused("mcp.instances name with {slug} twice", inst_manifest({"instances__name": "a-{slug}-{slug}"}),
-        "builtin", "mcp.instances.name")
+        "mcp.instances.name")
 refused("mcp.instances prefix collides with a core name", inst_manifest({"instances__name": "sql-{slug}"}),
-        "builtin", "collides")
+        "collides")
 refused("mcp.instances prefix collides with a core prefix", inst_manifest({"instances__name": "caldav-{slug}"}),
-        "builtin", "collides")
+        "collides")
 # The bootstrap drops every entry under an instance prefix that has no
 # instance, so a prefix that overlaps a core name or prefix in either
 # direction would drop core entries (sql, searxng, caldav-*).
 for bad_name in ("s{slug}", "sq{slug}", "searx{slug}", "cal{slug}", "caldav-x-{slug}",
                  "messag{slug}", "messages-{slug}"):
     refused(f"mcp.instances prefix overlapping a core name or prefix ({bad_name})",
-            inst_manifest({"instances__name": bad_name}), "builtin", "collides with a server core registers")
-check("mcp.instances prefix crm- is accepted", am.validate(inst_manifest(), "builtin") == [])
+            inst_manifest({"instances__name": bad_name}), "collides with a server core registers")
+check("mcp.instances prefix crm- is accepted", am.validate(inst_manifest()) == [])
 check("mcp.instances prefix searx- is accepted (no core name starts with it)",
-      am.validate(inst_manifest({"instances__name": "searx-{slug}"}), "builtin") == [])
+      am.validate(inst_manifest({"instances__name": "searx-{slug}"})) == [])
 refused("mcp.instances url naming an unknown setting",
-        inst_manifest({"instances__url": "{setting:host}/mcp"}), "builtin", "mcp.instances.url")
+        inst_manifest({"instances__url": "{setting:host}/mcp"}), "mcp.instances.url")
 refused("mcp.instances url without a setting",
-        inst_manifest({"instances__url": "http://example.com/mcp"}), "builtin", "mcp.instances.url")
+        inst_manifest({"instances__url": "http://example.com/mcp"}), "mcp.instances.url")
 refused("mcp.instances url naming a bool setting",
-        inst_manifest({"instances__url": "{setting:local}/mcp"}), "builtin", "mcp.instances.url")
+        inst_manifest({"instances__url": "{setting:local}/mcp"}), "mcp.instances.url")
 refused("mcp.instances access that is not a setting reference",
-        inst_manifest({"instances__access": "read"}), "builtin", "mcp.instances.access")
+        inst_manifest({"instances__access": "read"}), "mcp.instances.access")
 refused("mcp.instances access naming an unknown setting",
-        inst_manifest({"instances__access": "{setting:level}"}), "builtin", "mcp.instances.access")
+        inst_manifest({"instances__access": "{setting:level}"}), "mcp.instances.access")
 refused("mcp.instances access naming a non-choice setting",
-        inst_manifest({"instances__access": "{setting:url}"}), "builtin", "mcp.instances.access")
+        inst_manifest({"instances__access": "{setting:url}"}), "mcp.instances.access")
 refused("mcp.instances access with an option outside read and write",
         inst_manifest(instances_settings={**INST_SETTINGS, "access": {
             "type": "choice", "options": ["read", "write", "ask"], "default": "read"}}),
-        "builtin", "mcp.instances.access")
+        "mcp.instances.access")
 check("mcp.instances access may offer read only",
       am.validate(inst_manifest(instances_settings={**INST_SETTINGS, "access": {
-          "type": "choice", "options": ["read"], "default": "read"}}), "builtin") == [])
+          "type": "choice", "options": ["read"], "default": "read"}})) == [])
 for bad_opts in ([["x"]], [{}], "read", None):
     refused(f"mcp.instances access with options {bad_opts!r} is an error, not a crash",
             inst_manifest(instances_settings={**INST_SETTINGS, "access": {
                 "type": "choice", "options": bad_opts, "default": "read"}}),
-            "builtin", "mcp.instances.access")
+            "mcp.instances.access")
 cron_ro = inst_manifest(permissions={**BASE["permissions"], "cron": "ro"})
 check("cron ro is accepted with mcp.instances whose auth.secret has ro",
-      am.validate(cron_ro, "builtin") == [], str(am.validate(cron_ro, "builtin")))
+      am.validate(cron_ro) == [], str(am.validate(cron_ro)))
 cron_ro_no_key = inst_manifest({"instances__auth__secret": {"rw": "key_rw"}},
                                permissions={**BASE["permissions"], "cron": "ro"})
-refused("cron ro is refused when mcp.instances auth.secret has no ro", cron_ro_no_key, "builtin",
+refused("cron ro is refused when mcp.instances auth.secret has no ro", cron_ro_no_key, 
         'permissions.cron "ro"')
 refused("mcp.instances auth.secret.ro naming an unknown setting",
-        inst_manifest({"instances__auth__secret__ro": "nope"}), "builtin", "mcp.instances.auth.secret.ro")
+        inst_manifest({"instances__auth__secret__ro": "nope"}), "mcp.instances.auth.secret.ro")
 refused("mcp.instances auth.secret.rw naming a non-secret setting",
-        inst_manifest({"instances__auth__secret__rw": "url"}), "builtin", "mcp.instances.auth.secret.rw")
+        inst_manifest({"instances__auth__secret__rw": "url"}), "mcp.instances.auth.secret.rw")
 refused("mcp.instances auth.secret needs both levels",
-        inst_manifest({"instances__auth__secret": {"ro": "key_ro"}}), "builtin", "mcp.instances.auth.secret")
+        inst_manifest({"instances__auth__secret": {"ro": "key_ro"}}), "mcp.instances.auth.secret")
 refused("mcp.instances auth.secret with an extra level",
-        inst_manifest({"instances__auth__secret__admin": "key_rw"}), "builtin", "mcp.instances.auth.secret")
+        inst_manifest({"instances__auth__secret__admin": "key_rw"}), "mcp.instances.auth.secret")
 refused("mcp.instances auth.header must be a header name",
-        inst_manifest({"instances__auth__header": "Bad Header"}), "builtin", "mcp.instances.auth.header")
+        inst_manifest({"instances__auth__header": "Bad Header"}), "mcp.instances.auth.header")
 refused("mcp.instances auth unknown key",
-        inst_manifest({"instances__auth__extra": "x"}), "builtin", "mcp.instances.auth")
+        inst_manifest({"instances__auth__extra": "x"}), "mcp.instances.auth")
 refused("mcp.instances auth is required", inst_manifest({"instances__auth": None}),
-        "builtin", "mcp.instances.auth")
+        "mcp.instances.auth")
 refused("mcp.instances gate.setting naming a non-bool setting",
-        inst_manifest({"instances__gate__setting": "url"}), "builtin", "mcp.instances.gate.setting")
+        inst_manifest({"instances__gate__setting": "url"}), "mcp.instances.gate.setting")
 refused("mcp.instances gate.setting naming an unknown setting",
-        inst_manifest({"instances__gate__setting": "nope"}), "builtin", "mcp.instances.gate.setting")
+        inst_manifest({"instances__gate__setting": "nope"}), "mcp.instances.gate.setting")
 refused("mcp.instances gate.flag that is neither builtin.flag nor a gate",
-        inst_manifest({"instances__gate__flag": "OTHER_ENABLED"}), "builtin", "mcp.instances.gate.flag")
+        inst_manifest({"instances__gate__flag": "OTHER_ENABLED"}), "mcp.instances.gate.flag")
 refused("mcp.instances gate unknown key",
-        inst_manifest({"instances__gate__extra": 1}), "builtin", "mcp.instances.gate")
+        inst_manifest({"instances__gate__extra": 1}), "mcp.instances.gate")
 refused("mcp.instances unknown key", inst_manifest({"instances__colour": "red"}),
-        "builtin", "mcp.instances has unknown fields")
+        "mcp.instances has unknown fields")
 refused("mcp.instances without a top-level instances block", inst_manifest(instances=None),
-        "builtin", "needs a top-level instances block")
+        "needs a top-level instances block")
 refused("mcp.instances alongside mcp.service",
-        inst_manifest({"service": "server"}), "builtin", "mcp.instances")
-refused("mcp.instances alongside mcp.path", inst_manifest({"path": "/mcp"}), "builtin", "mcp.instances")
-refused("mcp.instances alongside mcp.name", inst_manifest({"name": "twenty"}), "builtin", "mcp.instances")
-refused("mcp.instances needs transport", inst_manifest({"transport": None}), "builtin", "mcp.transport")
-refused("mcp.instances needs tools", inst_manifest({"tools": None}), "builtin", "mcp.tools")
-refused("mcp.instances needs profiles", inst_manifest({"profiles": None}), "builtin", "mcp.profiles")
-refused("mcp.instances pin outside tools", inst_manifest({"pin": ["nope"]}), "builtin", "mcp.pin")
-inst_packaged = packaged(inst_manifest({"instances__gate": None, "env": None}, gates=None))
-refused("mcp.instances is built-in only", inst_packaged, "official",
-        "mcp.instances is for built-in add-ons only")
+        inst_manifest({"service": "server"}), "mcp.instances")
+refused("mcp.instances alongside mcp.path", inst_manifest({"path": "/mcp"}), "mcp.instances")
+refused("mcp.instances alongside mcp.name", inst_manifest({"name": "twenty"}), "mcp.instances")
+refused("mcp.instances needs transport", inst_manifest({"transport": None}), "mcp.transport")
+refused("mcp.instances needs tools", inst_manifest({"tools": None}), "mcp.tools")
+refused("mcp.instances needs profiles", inst_manifest({"profiles": None}), "mcp.profiles")
+refused("mcp.instances pin outside tools", inst_manifest({"pin": ["nope"]}), "mcp.pin")
 refused("mcp.instances not an object", inst_manifest({"instances": "crm-{slug}"}),
-        "builtin", "mcp.instances must be an object")
+        "mcp.instances must be an object")
 
 # Add-ons with mcp.instances have no name or URL of their own yet, so the
 # plan and the cron fence skip them without failing.
@@ -936,22 +895,11 @@ with tempfile.TemporaryDirectory() as tmp:
     check("an invalid instances manifest gives an off add-on line",
           [l.split("|")[:3] for l in lines] == [["crm-*", "twenty", "0"]], str(lines))
 
-# mcp.unmanaged on an mcp.instances entry: the profile gets no line at all, so
-# the bootstrap neither registers nor drops crm-* there. Valid and invalid alike.
 with tempfile.TemporaryDirectory() as tmp:
     (Path(tmp) / "twenty").mkdir()
     tw = json.loads((ROOT / "addons" / "twenty" / "addon.json").read_text())
-    tw["mcp"]["unmanaged"] = ["ops"]
     (Path(tmp) / "twenty" / "addon.json").write_text(am.canonical(tw))
-    check("unmanaged on an instances entry is valid", am.validate(tw, "builtin") == [], str(am.validate(tw, "builtin")))
-    check("instances-plan skips an unmanaged profile", am.instances_plan(Path(tmp), Path(tmp) / "data", "ops", TW_ON) == [])
-    check("instances-plan still lists other profiles",
-          [l.split("|")[0] for l in am.instances_plan(Path(tmp), Path(tmp) / "data", "default", TW_ON)] == ["crm-*"])
     check("mcp-urls leaves out instance entries", am.mcp_urls(Path(tmp), {}) == [], str(am.mcp_urls(Path(tmp), {})))
-    tw["permissions"]["sends"] = "maybe"
-    (Path(tmp) / "twenty" / "addon.json").write_text(am.canonical(tw))
-    check("an invalid instances manifest skips an unmanaged profile too",
-          am.instances_plan(Path(tmp), Path(tmp) / "data", "ops", TW_ON) == [])
 
 # --- cross-manifest conflicts -------------------------------------------------
 check("real addons/ has no cross-manifest conflict", am.dir_conflicts(am.load_dir(ROOT / "addons")) == {},
@@ -971,8 +919,8 @@ def conflict_dir(tmp: Path, extra: dict) -> Path:
 crmx = copy.deepcopy(BASE)
 crmx["id"] = "io.example.crmx"
 crmx["mcp"]["name"] = "crm-x"
-check("crm-x alone is a valid manifest (crm- is not a core prefix)", am.validate(crmx, "builtin") == [],
-      str(am.validate(crmx, "builtin")))
+check("crm-x alone is a valid manifest (crm- is not a core prefix)", am.validate(crmx) == [],
+      str(am.validate(crmx)))
 with tempfile.TemporaryDirectory() as tmp:
     d = conflict_dir(Path(tmp), {"crmx": crmx})
     errs = {p.parent.name: e for p, _m, e in am.checked_dir(d)}
@@ -994,8 +942,8 @@ with tempfile.TemporaryDirectory() as tmp:
 mai = json.loads((ROOT / "addons" / "twenty" / "addon.json").read_text())
 mai["id"] = "io.example.mai"
 mai["mcp"]["instances"]["name"] = "mai{slug}"
-check("instance prefix mai passes validate alone", am.validate(mai, "builtin") == [],
-      str(am.validate(mai, "builtin")))
+check("instance prefix mai passes validate alone", am.validate(mai) == [],
+      str(am.validate(mai)))
 with tempfile.TemporaryDirectory() as tmp:
     d = conflict_dir(Path(tmp), {"mai": mai})
     errs = {p.parent.name: e for p, _m, e in am.checked_dir(d)}
@@ -1006,8 +954,8 @@ with tempfile.TemporaryDirectory() as tmp:
 dup = copy.deepcopy(BASE)
 dup["id"] = "io.example.dupmail"
 dup["mcp"]["name"] = "mail"
-check("mcp.name mail alone is a valid manifest", am.validate(dup, "builtin") == [],
-      str(am.validate(dup, "builtin")))
+check("mcp.name mail alone is a valid manifest", am.validate(dup) == [],
+      str(am.validate(dup)))
 with tempfile.TemporaryDirectory() as tmp:
     d = conflict_dir(Path(tmp), {"dupmail": dup})
     errs = {p.parent.name: e for p, _m, e in am.checked_dir(d)}
@@ -1100,112 +1048,87 @@ rich = variant(
 )
 rich["services"]["worker"] = {"compose": "gptr-worker", "mounts": {"secrets": "ro", "config": "ro",
                                                                     "instances": "rw"}}
-check("a manifest using every new field is valid", am.validate(rich, "builtin") == [],
-      str(am.validate(rich, "builtin")))
+check("a manifest using every new field is valid", am.validate(rich) == [],
+      str(am.validate(rich)))
 
 refused("list default must be strings", with_settings({"t": {"type": "list", "default": [1]}}),
-        "builtin", "settings.t.default")
+        "settings.t.default")
 refused("date default must be YYYY-MM-DD", with_settings({"d": {"type": "date", "default": "2026-13-40"}}),
-        "builtin", "settings.d.default")
+        "settings.d.default")
 refused("int default must be an int", with_settings({"n": {"type": "int", "default": "3"}}),
-        "builtin", "settings.n.default")
+        "settings.n.default")
 refused("optional must be a bool", with_settings({"n": {"type": "int", "optional": "yes"}}),
-        "builtin", "settings.n.optional")
+        "settings.n.optional")
 refused("flag only on bool", with_settings({"n": {"type": "int", "default": 1, "flag": "GPTR_MCP_ENABLED"}}),
-        "builtin", "settings.n.flag")
+        "settings.n.flag")
 refused("flag must be a known flag",
         with_settings({"b": {"type": "bool", "default": True, "flag": "NOPE_ENABLED"}}),
-        "builtin", "settings.b.flag")
+        "settings.b.flag")
 refused("a setting flag may not be builtin.flag",
         with_settings({"b": {"type": "bool", "default": True, "flag": "GPTR_MCP_ENABLED"}}),
-        "builtin", "settings.b.flag must name a flag listed in gates")
+        "settings.b.flag must name a flag listed in gates")
 refused("a secret setting may not have a default", with_settings({"t": {"type": "secret", "default": "x"}}),
-        "builtin", "settings.t: a secret setting may not have a default")
+        "settings.t: a secret setting may not have a default")
 refused("an instance secret may not have a default",
         variant(instances={"name": "acct", "settings": {"p": {"type": "secret", "default": ""}}}),
-        "builtin", "instances.settings.p: a secret setting may not have a default")
+        "instances.settings.p: a secret setting may not have a default")
 refused("setting names that differ only by case collide",
         with_settings({"api": {"type": "string"}, "API": {"type": "string"}}),
-        "builtin", "settings.API: same settings.env key as 'api'")
+        "settings.API: same settings.env key as 'api'")
 refused("setting names that differ only by - and _ collide",
         with_settings({"api-key": {"type": "string"}, "api_key": {"type": "string"}}),
-        "builtin", "settings.api_key: same settings.env key as 'api-key'")
+        "settings.api_key: same settings.env key as 'api-key'")
 refused("instance setting names that collide",
         variant(instances={"name": "acct", "settings": {"Host": {"type": "string"},
                                                         "host": {"type": "string"}}}),
-        "builtin", "instances.settings.host: same settings.env key as 'Host'")
+        "instances.settings.host: same settings.env key as 'Host'")
 refused("a setting may not be called slug", with_settings({"slug": {"type": "string"}}),
-        "builtin", "reserved")
+        "reserved")
 refused("flag inside an instance",
         variant(instances={"name": "acct", "settings": {
             "b": {"type": "bool", "default": True, "flag": "GPTR_MCP_ENABLED"}}}),
-        "builtin", "refused inside an instance")
+        "refused inside an instance")
 refused("instance schema may not declare slug",
         variant(instances={"name": "acct", "settings": {"slug": {"type": "string"}}}),
-        "builtin", "reserved")
+        "reserved")
 refused("instances need a name", variant(instances={"settings": {"a": {"type": "string"}}}),
-        "builtin", "instances.name")
-refused("secret settings from a community feed",
-        packaged(variant(settings={"token": {"type": "secret"}})), "community", "secret settings")
-refused("secret instance settings from a community feed",
-        packaged(variant(instances={"name": "acct", "settings": {"p": {"type": "secret"}}})),
-        "community", "secret settings")
-check("secret settings are allowed from the official feed",
-      am.validate(packaged(variant(settings={"token": {"type": "secret"}})), "official") == [],
-      str(am.validate(packaged(variant(settings={"token": {"type": "secret"}})), "official")))
+        "instances.name")
 
-refused("unknown mount key", variant(services__server__mounts={"logs": "ro"}), "builtin", "mounts")
-refused("mount mode as a list", variant(services__server__mounts={"config": ["ro"]}), "builtin", "mounts")
-refused("mount mode as a dict", variant(services__server__mounts={"config": {}}), "builtin", "mounts")
+refused("unknown mount key", variant(services__server__mounts={"logs": "ro"}), "mounts")
+refused("mount mode as a list", variant(services__server__mounts={"config": ["ro"]}), "mounts")
+refused("mount mode as a dict", variant(services__server__mounts={"config": {}}), "mounts")
 refused("command service as a list",
         variant(commands={"x": {"service": ["server"], "instance": False, "argv": ["a"]}}),
-        "builtin", "commands.x.service")
+        "commands.x.service")
 refused("command service as a dict",
         variant(commands={"x": {"service": {}, "instance": False, "argv": ["a"]}}),
-        "builtin", "commands.x.service")
-refused("setting type as a list", with_settings({"t": {"type": ["int"]}}), "builtin", "settings.t.type")
-refused("setting type as a dict", with_settings({"t": {"type": {}}}), "builtin", "settings.t.type")
-refused("bad mount mode", variant(services__server__mounts={"secrets": "wo"}), "builtin", "mounts")
+        "commands.x.service")
+refused("setting type as a list", with_settings({"t": {"type": ["int"]}}), "settings.t.type")
+refused("setting type as a dict", with_settings({"t": {"type": {}}}), "settings.t.type")
+refused("bad mount mode", variant(services__server__mounts={"secrets": "wo"}), "mounts")
 refused("an mcp service may not mount secrets", variant(services__server__mounts={"secrets": "ro"}),
-        "builtin", "holds secrets")
+        "holds secrets")
 refused("a command needs a known service",
         variant(commands={"x": {"service": "nope", "instance": False, "argv": ["a"]}}),
-        "builtin", "commands.x.service")
+        "commands.x.service")
 refused("a command needs argv",
         variant(commands={"x": {"service": "server", "instance": False, "argv": []}}),
-        "builtin", "commands.x.argv")
+        "commands.x.argv")
 refused("a command needs instance as a bool",
         variant(commands={"x": {"service": "server", "instance": "yes", "argv": ["a"]}}),
-        "builtin", "commands.x.instance")
+        "commands.x.instance")
 refused("a reader's command may not run in an MCP service",
         variant(permissions__reads=["messages"], permissions__cron=False,
                 mcp__profiles={"default": "ro"},
                 commands={"x": {"service": "server", "instance": False, "argv": ["a"]}}),
-        "builtin", "command runs in an MCP service")
+        "command runs in an MCP service")
 reader_cmd = copy.deepcopy(rich)
 reader_cmd.update(permissions={**reader_cmd["permissions"], "reads": ["messages"], "cron": False})
 reader_cmd["mcp"]["profiles"] = {"default": "ro"}
 reader_cmd["settings"].pop("token")
 reader_cmd["commands"]["sync"]["service"] = "worker"
-check("a reader's command may run in a non-MCP service", am.validate(reader_cmd, "builtin") == [],
-      str(am.validate(reader_cmd, "builtin")))
-
-volumed = variant(services__server__volumes=["gptr_outputs"])
-check("services.<name>.volumes lists compose volume names", am.validate(volumed, "builtin") == [],
-      str(am.validate(volumed, "builtin")))
-refused("volumes must be a list", variant(services__server__volumes="gptr_outputs"), "builtin",
-        "services.server.volumes")
-refused("volumes may not be empty", variant(services__server__volumes=[]), "builtin",
-        "services.server.volumes")
-refused("volume names are compose names", variant(services__server__volumes=["../etc"]), "builtin",
-        "services.server.volumes")
-refused("volume names are strings", variant(services__server__volumes=[1]), "builtin",
-        "services.server.volumes")
-refused("volumes listed twice", variant(services__server__volumes=["a", "a"]), "builtin",
-        "services.server.volumes")
-packaged_vol = packaged(BASE)
-packaged_vol["services"]["server"]["volumes"] = ["gptr_outputs"]
-refused("only built-in add-ons name compose volumes", packaged_vol, "official", "services.server.volumes")
+check("a reader's command may run in a non-MCP service", am.validate(reader_cmd) == [],
+      str(am.validate(reader_cmd)))
 
 # --- Built-in manifests against the repo ------------------------------------
 compose = (ROOT / "docker-compose.yml").read_text()
@@ -1218,7 +1141,7 @@ check("sync-profiles table has no duplicate flags", len(flags) == len(set(flags)
       ", ".join(f for f in flags if flags.count(f) > 1))
 
 
-# --- Lifecycle fields: oneshot, hooks, instance hooks, onToggle, data, backup ---
+# --- Lifecycle fields: hooks, instance hooks, data, backup ----------------------
 LIFE_REPO = Path(tempfile.mkdtemp(prefix="addon-life-"))
 (LIFE_REPO / "scripts").mkdir()
 (LIFE_REPO / "scripts" / "crm.sh").write_text("#!/bin/sh\n")
@@ -1242,25 +1165,22 @@ def life(**changes):
     return m
 
 
-def life_errors(manifest, source="builtin"):
-    return am.validate(manifest, source, repo=LIFE_REPO)
+def life_errors(manifest):
+    return am.validate(manifest, repo=LIFE_REPO)
 
 
-def life_refused(label, manifest, needle, source="builtin"):
-    errors = life_errors(manifest, source)
+def life_refused(label, manifest, needle):
+    errors = life_errors(manifest)
     check(label, any(needle in e for e in errors), f"errors were {errors}")
 
 
 EVERYTHING = life(
-    services__job={"compose": "gptr-job", "oneshot": True},
-    hooks={"init": {"command": "seed-init"}, "upgrade": {"script": ["scripts/crm.sh", "upgrade"]},
-           "backup": {"script": ["scripts/crm.sh", "backup"]},
-           "restore": {"script": ["scripts/crm.sh", "restore"]}},
+    services__job={"compose": "gptr-job"},
+    hooks={"init": {"command": "seed-init"}},
     instances={"name": "workspace", "settings": {"url": {"type": "url"}},
                "connect": {"script": ["scripts/crm.sh", "connect"]},
                "disconnect": {"script": ["scripts/crm.sh", "disconnect"]},
                "errors": ["bad_access", "file-access-not-allowed"]},
-    onToggle={"recreate": ["hermes"], "script": ["scripts/crm.sh", "follow"]},
     data={"paths": [{"env": "FIXTURE_DATA_DIR", "default": "./data/fixture"},
                     {"default": "./data/plain"}],
           "volumes": ["cache_a"]},
@@ -1269,29 +1189,14 @@ check("a manifest with every lifecycle field is valid", life_errors(EVERYTHING) 
       str(life_errors(EVERYTHING)))
 check("data_volumes reads data.volumes", am.data_volumes(EVERYTHING) == ["cache_a"],
       str(am.data_volumes(EVERYTHING)))
+check("Bitwarden's retired backup and restore hooks are still accepted",
+      life_errors(life(hooks={"backup": {"script": ["scripts/crm.sh"]},
+                              "restore": {"script": ["scripts/crm.sh"]}})) == [])
+check("hook() finds no retired hook", am.hook(life(hooks={"backup": {"script": ["scripts/crm.sh"]}}), "backup") is None)
 check("hook() finds init, connect and a missing one",
       am.hook(EVERYTHING, "init") == {"command": "seed-init"}
       and am.hook(EVERYTHING, "connect") == {"script": ["scripts/crm.sh", "connect"]}
       and am.hook(variant(), "init") is None and am.hook(EVERYTHING, "nope") is None)
-
-old_form = life(services__server__volumes=["cache_a", "cache_b"])
-check("services.<k>.volumes alone is still valid", life_errors(old_form) == [], str(life_errors(old_form)))
-check("data_volumes reads the old services.<k>.volumes field",
-      am.data_volumes(old_form) == ["cache_a", "cache_b"], str(am.data_volumes(old_form)))
-life_refused("data.volumes together with services.<k>.volumes fails",
-             life(services__server__volumes=["cache_a"], data={"volumes": ["cache_a"]}),
-             "data.volumes")
-
-life_refused("oneshot on the mcp target fails", life(services__server__oneshot=True), "oneshot")
-life_refused("oneshot with when fails",
-             life(gates=[{"flag": "GPTR_X_ENABLED", "profile": "x", "seed": False},],
-                  services__job={"compose": "j", "oneshot": True, "when": {"gate": "GPTR_X_ENABLED"}}),
-             "oneshot")
-life_refused("oneshot must be true or false", life(services__job={"compose": "j", "oneshot": "yes"}),
-             "oneshot")
-packaged_one = packaged(BASE)
-packaged_one["services"]["job"] = {"image": "ghcr.io/example/x@sha256:" + "a" * 64, "oneshot": True}
-life_refused("oneshot is built-in only", packaged_one, "oneshot", "official")
 
 life_refused("a hook with both command and script fails",
              life(hooks={"init": {"command": "seed-init", "script": ["scripts/crm.sh"]}}), "hooks.init")
@@ -1307,17 +1212,12 @@ life_refused("an argv item with a line break fails",
 life_refused("an empty argv item fails",
              life(hooks={"init": {"script": ["scripts/crm.sh", ""]}}), "hooks.init")
 life_refused("a hook as a bare string fails",
-             life(hooks={"backup": "scripts/crm.sh backup"}), "hooks.backup")
+             life(hooks={"init": "scripts/crm.sh init"}), "hooks.init")
 life_refused("a command hook naming an instance command fails",
              life(hooks={"init": {"command": "sync"}}), "hooks.init")
 life_refused("a command hook naming no command fails",
              life(hooks={"init": {"command": "nope"}}), "hooks.init")
 life_refused("an unknown hook name fails", life(hooks={"explode": {"command": "seed-init"}}), "hooks")
-life_refused("a script hook is built-in only",
-             packaged(life(hooks={"init": {"script": ["scripts/crm.sh"]}})), "hooks.init", "official")
-check("a command hook is allowed from a community feed",
-      life_errors(packaged(life(hooks={"init": {"command": "seed-init"}})), "community") == [],
-      str(life_errors(packaged(life(hooks={"init": {"command": "seed-init"}})), "community")))
 
 CONNECT = {"script": ["scripts/crm.sh", "connect"]}
 life_refused("connect without disconnect fails",
@@ -1355,13 +1255,10 @@ life_refused("transient on a top-level setting fails",
 nb_inst = copy.deepcopy(TRANSIENT_INST)
 nb_inst["settings"]["password"]["transient"] = "yes"
 life_refused("transient must be a bool", life(instances=nb_inst), "instances.settings.password.transient")
-life_refused("transient is built-in only",
-             packaged(life(instances=TRANSIENT_INST)), "transient", "official")
 opt = {"name": "w", "settings": {"url": {"type": "url"}}, "optional": True}
 check("instances.optional true is valid", life_errors(life(instances=opt)) == [], str(life_errors(life(instances=opt))))
 life_refused("instances.optional must be a bool",
              life(instances={**opt, "optional": "yes"}), "instances.optional")
-life_refused("instances.optional is built-in only", packaged(life(instances=opt)), "instances.optional", "official")
 
 for bad in ("../x", "/etc", "./data/../x", "./data", "./data/", "./data/unused",
             "./data/.", "./data//x", "./data/./", "./data/x/", "./data/./x", "./data/x/.."):
@@ -1395,36 +1292,28 @@ life_refused("data.paths may not be empty", life(data={"paths": []}), "data.path
 life_refused("data with an unknown key fails", life(data={"files": []}), "data has unknown")
 life_refused("data.volumes must be distinct compose names",
              life(data={"volumes": ["a", "a"]}), "data.volumes")
-life_refused("data is built-in only", packaged(life(data={"volumes": ["a"]})), "data", "official")
 check("data.paths is not checked against compose when there is no repo",
-      am.validate(life(data={"paths": [{"default": "./data/unused"}]}), "builtin", repo=None) == [],
-      str(am.validate(life(data={"paths": [{"default": "./data/unused"}]}), "builtin", repo=None)))
-
-life_refused("onToggle.recreate may not be empty", life(onToggle={"recreate": []}), "onToggle.recreate")
-life_refused("onToggle needs recreate", life(onToggle={"script": ["scripts/crm.sh"]}), "onToggle.recreate")
-life_refused("onToggle.recreate entries are distinct",
-             life(onToggle={"recreate": ["a", "a"]}), "onToggle.recreate")
-life_refused("onToggle.script is a repo script",
-             life(onToggle={"recreate": ["a"], "script": ["bin/x"]}), "onToggle.script")
-life_refused("onToggle with an unknown key fails",
-             life(onToggle={"recreate": ["a"], "stop": []}), "onToggle has unknown")
+      am.validate(life(data={"paths": [{"default": "./data/unused"}]}), repo=None) == [],
+      str(am.validate(life(data={"paths": [{"default": "./data/unused"}]}), repo=None)))
 
 life_refused("backup.secrets entries are env names", life(backup={"secrets": ["lower"]}), "backup.secrets")
 life_refused("backup.recommended entries are env names",
              life(backup={"recommended": ["lower"]}), "backup.recommended")
 life_refused("backup with an unknown key fails", life(backup={"keys": []}), "backup has unknown")
-check("backup is allowed from a community feed",
-      life_errors(packaged(life(backup={"secrets": ["A_B"]})), "community") == [],
-      str(life_errors(packaged(life(backup={"secrets": ["A_B"]})), "community")))
 
 FIXTURE_DIR = ROOT / "scripts" / "fixtures" / "addons-cli"
 fixture_manifest = json.loads((FIXTURE_DIR / "fixture" / "addon.json").read_text())
-fixture_errors = am.validate(fixture_manifest, "builtin", repo=FIXTURE_DIR)
+fixture_errors = am.validate(fixture_manifest, repo=FIXTURE_DIR)
 check("the addons-cli fixture is valid against its compose file", fixture_errors == [],
       str(fixture_errors))
-check("the fixture declares seed last, as a oneshot",
-      list(fixture_manifest["services"])[-1] == "seed"
-      and fixture_manifest["services"]["seed"].get("oneshot") is True)
+check("the fixture's compose file makes fixture-seed a one-shot",
+      "fixture-seed" in am.compose_oneshots((FIXTURE_DIR / "docker-compose.yml").read_text()))
+check("compose_oneshots finds n8n-import in docker-compose.yml",
+      "n8n-import" in am.compose_oneshots((ROOT / "docker-compose.yml").read_text()))
+check("compose_oneshots reads only completed-successfully conditions",
+      am.compose_oneshots("services:\n  a:\n    depends_on:\n      b:\n        condition: service_healthy\n"
+                          "      c:\n        condition: service_completed_successfully\n"
+                          "    image: x\n  d:\n    depends_on: [e]\n") == {"c"})
 shutil.rmtree(LIFE_REPO)
 
 
@@ -1478,6 +1367,7 @@ def volume_owner_problems(manifest: dict, compose_text: str) -> list[str]:
     return problems
 
 
+volumed = variant(data={"volumes": ["gptr_outputs"]})
 own_svc = next(iter(volumed["services"].values()))["compose"]
 FIX_OWNED = (f"services:\n  {own_svc}:\n    volumes:\n      - gptr_outputs:/o\n  core:\n    image: x\n"
              "volumes:\n  gptr_outputs:\n")
@@ -1616,7 +1506,7 @@ for svc in ("hermes-api-bootstrap", "hermes-browser-bootstrap"):
 ac_path = ROOT / "addons" / "actual" / "addon.json"
 ac = json.loads(ac_path.read_text())
 check("actual manifest is canonical JSON", ac_path.read_text() == am.canonical(ac))
-check("actual manifest is valid as built-in", am.validate(ac, "builtin") == [], str(am.validate(ac, "builtin")))
+check("actual manifest is valid as built-in", am.validate(ac) == [], str(am.validate(ac)))
 check("actual: gate ACTUAL_LOCAL_ENABLED on budget-local, not seeded",
       ac.get("gates") == [{"flag": "ACTUAL_LOCAL_ENABLED", "profile": "budget-local", "seed": False}],
       str(ac.get("gates")))
