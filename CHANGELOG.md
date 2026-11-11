@@ -31,9 +31,29 @@ the stack under another app.
    validation and are skipped with a warning until the field is taken out.
 5. Bitwarden: the secret files the stack secrets sync wrote (Twenty keys,
    Postgres service passwords, CalDAV passwords) stay where they are; edit them
-   by hand from now on. Delete `BW_SECRETS_ITEM_SCOPE` from account files
-   (`make doctor` names them) and `TWENTY_SECRETS_DIR` from `.env`. Boundary
-   never called either, so it needs no change.
+   by hand from now on. Delete `TWENTY_SECRETS_DIR` from `.env`. Boundary
+   never called the sync, so it needs no change.
+6. Bitwarden: account files (`compose/bitwarden/accounts/<slug>.env`) are no
+   longer read, and nothing migrates them. Connect each account again with
+   `make vault-add FORCE=1` (the store already lists it, so plain
+   `make vault-add` refuses with "exists") or from Boundary (disconnect it
+   first if Boundary still lists it), then delete the folder; `make doctor` warns while it holds
+   `.env` files. Accounts connected before this release are refused with
+   `missing_client_id` until connected again. Local mode: run `make
+   vault-init` again; it writes the local account from `local/state` without
+   signing in. Boundary: `status --json` can now report `bad_slug` and
+   `missing_client_id` as the `error` of a `refused` line.
+7. Bitwarden on Linux: the broker and `bitwarden-setup` now run as
+   `HERMES_UID:HERMES_GID`, which must equal your `id -u` and `id -g`. Before
+   `make up`, give the Bitwarden data folder back to your user once:
+
+   ```bash
+   sudo chown -R "$(id -u):$(id -g)" data/addons/bitwarden
+   ```
+
+   with your `BITWARDEN_HOST_DATA_DIR` in place of `data/addons/bitwarden` if
+   you set one. macOS (Docker Desktop) needs nothing. The old
+   `<project>_bitwarden_sync` volume is unused; `docker volume rm` removes it.
 
 ### Changes
 
@@ -76,11 +96,32 @@ the stack under another app.
   broker's `GET /secrets` route on its Unix socket (the socket still takes
   manual unlocks). `make up` no longer runs a sync. Local mode no longer
   creates the "Stack secrets" collection; existing ones stay in Vaultwarden.
-  Account files with `BW_SECRETS_ITEM_SCOPE` still load: the broker ignores the
-  key and `make doctor` names the files. `TWENTY_SECRETS_DIR` and
+  `TWENTY_SECRETS_DIR` and
   `compose/twenty/no-secrets/` are gone. The Bitwarden manifest drops
   `hooks.backup` and `hooks.restore`; `vault.sh backup` and `restore` are
   unchanged.
+- The Bitwarden broker reads its accounts from the add-on instance store,
+  `<data root>/addons/bitwarden/instances/<slug>.json`, mounted read-only at
+  `/store/instances` (`BITWARDEN_INSTANCES_DIR`), with each API key's
+  `client_id` in `secrets/<slug>/client_id`. The slug rule is the store's in
+  the broker, `bitwarden-setup` and `vault.sh`. `vault.sh add` writes the
+  instance file through `scripts/lib/addon_store.py` before it restarts the
+  broker and removes it on a failed sign-in; `remove` deletes it before the
+  restart. Terminal add and remove no longer call `addon.sh configure`, and
+  `make up` no longer records account files in the store. The local account
+  is `broker/local-account.json` plus `secrets/local/client_id`, outside the
+  store. Removed: the account-file parser, `BITWARDEN_ACCOUNTS_DIR`,
+  `VAULT_ACCOUNTS_DIR`, `VAULT_ADDON_SH`, `VAULT_ADDON_STORE`, the
+  `compose/bitwarden/accounts` mounts and `make doctor`'s
+  `BW_SECRETS_ITEM_SCOPE` warning. `vault.sh backup` copies the instance
+  files and the local account in place of the account files.
+- `bitwarden-broker` and `bitwarden-setup` run as `HERMES_UID:HERMES_GID`
+  instead of uid 10001, so on Linux they read the store's 0700 `instances/`
+  as the host user does. The manual-unlock socket's folder,
+  `/run/bitwarden-sync`, is a tmpfs owned by that user; the `bitwarden_sync`
+  volume is gone. `vault.sh` no longer reaches files through
+  `bitwarden-setup` or prints `chown 10001` hints: a path it cannot use stops
+  it with the chown below.
 
 ## v0.3.13 — 2026-11-10
 

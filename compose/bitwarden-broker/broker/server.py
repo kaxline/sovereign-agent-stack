@@ -43,7 +43,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import cdp, digest_redaction
-from .accounts import load_dir
+from .accounts import load_all
 from .bwcli import Bw, BwError
 from .requests_store import RequestError, Store
 from .vault import HANDLE_PREFIX, Denylist, Vault, parse_handle
@@ -84,7 +84,7 @@ class HttpError(Exception):
 
 @dataclass(frozen=True)
 class Config:
-    accounts_dir: Path
+    instances_dir: Path
     data_dir: Path
     secrets_dir: Path
     sync_seconds: float
@@ -97,12 +97,12 @@ class Config:
     @classmethod
     def from_env(cls, env) -> Config:
         dirs = {}
-        for name in ("BITWARDEN_ACCOUNTS_DIR", "BITWARDEN_DATA_DIR", "BITWARDEN_SECRETS_DIR"):
+        for name in ("BITWARDEN_INSTANCES_DIR", "BITWARDEN_DATA_DIR", "BITWARDEN_SECRETS_DIR"):
             if not env.get(name):
                 raise ConfigError(f"{name} is required")
             dirs[name] = Path(env[name])
         return cls(
-            accounts_dir=dirs["BITWARDEN_ACCOUNTS_DIR"],
+            instances_dir=dirs["BITWARDEN_INSTANCES_DIR"],
             data_dir=dirs["BITWARDEN_DATA_DIR"],
             secrets_dir=dirs["BITWARDEN_SECRETS_DIR"],
             sync_seconds=_minutes(env, "BITWARDEN_SYNC_MINUTES", "10", allow_zero=False),
@@ -185,7 +185,9 @@ def _parse_json(raw: bytes):
 class Broker:
     def __init__(self, config: Config):
         self.config = config
-        accounts, self.account_errors = load_dir(config.accounts_dir)
+        # The instance store plus broker/local-account.json (make vault-init).
+        accounts, self.refused = load_all(config.instances_dir, config.data_dir / "broker", config.secrets_dir)
+        self.account_errors = [r.message for r in self.refused]
         self.accounts = {a.slug: a for a in accounts}
         self.bws = {a.slug: Bw(a, config.data_dir / "bw", config.secrets_dir, bw_path=config.bw_path)
                     for a in accounts}
@@ -222,7 +224,8 @@ class Broker:
 
     def get_health(self, _body) -> dict:
         return {"status": "ok", "accounts": [{"slug": s, "state": self.bws[s].state} for s in sorted(self.bws)],
-                "account_errors": list(self.account_errors)}
+                "account_errors": list(self.account_errors),
+                "refused": [{"file": r.file, "error": r.cause, "message": r.message} for r in self.refused]}
 
     def post_fill(self, body) -> dict:
         _fields(body, required=("handle", "target_id", "port"), optional=("field", "base"))
@@ -703,7 +706,7 @@ def main() -> int:
     try:
         broker = Broker(Config.from_env(os.environ))
         for error in broker.account_errors:
-            LOG.warning("account file refused: %s", error)
+            LOG.warning("account refused: %s", error)
         running = broker.start()
     except ConfigError as exc:
         LOG.error("not starting: %s", exc)

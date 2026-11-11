@@ -49,7 +49,7 @@ so it can reach Chromium's loopback CDP port, and listens on `127.0.0.1:8099`. R
 | `POST /release` | `{handle}` |
 | `GET /accounts` | each account's slug, mode, scope, state, error class and retry time |
 | `POST /sync` | sync every account now |
-| `GET /health` | status and each account's state |
+| `GET /health` | status, each account's state, and each refused account's file and cause |
 
 Bodies are JSON objects of at most 64 KiB with no unknown or duplicate keys, and an error body is
 `{"error": "<code>"}` with a fixed code. The access log records method, route, status and handle,
@@ -67,8 +67,9 @@ These parts are specific to the current implementation and not part of the inter
 
 - Sharing the `hermes` network namespace, which ties the broker's lifecycle to the `hermes`
   container. A browser service of its own, planned, would remove it.
-- Account files in `compose/bitwarden/accounts/<slug>.env`. The broker is planned to read the
-  add-on's instance store directly instead.
+- Where an account is defined: the add-on instance store (`instances/<slug>.json`, read directly
+  by the broker), with each `client_id` in `secrets/<slug>/client_id`, and the local account in
+  `broker/local-account.json`.
 - The `bw` CLI, sync interval (`BITWARDEN_SYNC_MINUTES`) and idle lock
   (`BITWARDEN_IDLE_LOCK_MINUTES`).
 

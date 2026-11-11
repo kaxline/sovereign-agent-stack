@@ -9,7 +9,7 @@ Commands:
                      (``collection:`` scope, ``--agent-email`` required). For a
                      collection id that does not exist yet, ``--org ORG`` and
                      ``--name NAME`` (default Agent) say where to create it, and
-                     the new id replaces ``BW_SCOPE`` in the account file. The
+                     the new id replaces ``scope`` in the instance file. The
                      agent member is invited if it is not one yet and gets Manage
                      on the collection. ``local`` accounts are refused here.
 ``seed``             Asks for sites and moves the matching items the user picks.
@@ -43,7 +43,8 @@ replaces everything.
                  Registers agent@vault.localhost with a generated master password
                  (kept in /secrets/local/master_password) after an admin invite,
                  stores its API key in /secrets/local/client_secret, creates the
-                 organization "Assistant" with the collection "Agent", writes /accounts/local.env, invites EMAIL as an Owner,
+                 organization "Assistant" with the collection "Agent", writes the local
+                 account (below), invites EMAIL as an Owner,
                  then waits up to SECONDS (default 600) for that address to register
                  at the sign-up URL and confirms it with ``bw confirm org-member``.
                  Each finished step is recorded in /local/state (``STEP=`` plus the
@@ -53,15 +54,22 @@ replaces everything.
                  BITWARDEN_RATE_LIMIT_WAIT seconds (default 60) and tries once more.
                  Exits 4 when the owner has not registered in time.
 
-An existing organization named "Assistant" is reused rather than created
-twice. An existing local.env that names other ids than /local/state is
-refused; ``--rotate`` writes it again from the state.
+The local account is ``/broker/local-account.json`` (``{"scope":
+"collection:<id>"}``, mode 600) and ``/secrets/local/client_id``; the broker
+loads it as mode ``local`` with stored unlock. It stays out of the add-on
+instance store. An existing organization named "Assistant" is reused rather
+than created twice. An existing local-account.json or client_id that names
+other ids than /local/state is refused; ``--rotate`` writes them again from
+the state.
 
 ``role`` on the ``local`` account records ``STEP=role`` in /local/state once it
 succeeds after ``local-init``.
 
-The account file is ``$BITWARDEN_ACCOUNTS_DIR/<slug>.env``. ``--server`` is the
-user's server and defaults to the account's ``BW_SERVER``; it must be https,
+The account is ``$BITWARDEN_INSTANCES_DIR/<slug>.json`` (default
+/store/instances, the add-on instance store) with its client_id in
+``$BITWARDEN_SECRETS_DIR/<slug>/client_id``, or for ``local`` the files above
+(``$BITWARDEN_BROKER_DIR``, default /broker). ``--server`` is the user's server
+and defaults to the account's server; it must be https,
 except plain http to a loopback address, which only a test can serve from
 inside this container. ``BITWARDEN_BW`` names the bw binary (default ``bw``).
 
@@ -98,7 +106,9 @@ from urllib.parse import urlsplit
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import vw_register  # noqa: E402
-from broker.accounts import ID_RE, Account, AccountError, parse_file  # noqa: E402
+from broker.accounts import (  # noqa: E402
+    ID_RE, LOCAL_FILE, LOCAL_SLUG, Account, AccountError, load_account, read_client_id,
+)
 from broker.bwcli import BwError, classify, run_bw, sanitize_item  # noqa: E402
 from broker.vault import fill_origins  # noqa: E402
 
@@ -533,43 +543,37 @@ class Run:
         return 0
 
     def set_scope(self, cid: str) -> None:
-        """Point the account file's BW_SCOPE at the new collection, keeping every other line."""
+        """Point the instance file's scope at the new collection, keeping every other key."""
         path = self.account.path
-        line = f"BW_SCOPE=collection:{cid}"
+        scope = f"collection:{cid}"
+        fix = (f"set it with: printf '%s' '{{\"scope\":\"{scope}\"}}' | "
+               f"scripts/addon.sh configure bitwarden --instance {self.account.slug}")
         try:
-            lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-            ending = "\r\n" if lines and lines[0].endswith("\r\n") else "\n"
-            out, done = [], False
-            for old in lines:
-                if old.partition("=")[0].strip() == "BW_SCOPE" and not old.lstrip().startswith("#"):
-                    out.append(line + ending)
-                    done = True
-                else:
-                    out.append(old)
-            if not done:
-                if out and not out[-1].endswith("\n"):
-                    out[-1] += ending
-                out.append(line + ending)
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError
+            data["scope"] = scope
             st = path.stat()
-            fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+            # The add-on store's own temp-file pattern and mode (scripts/lib/addon_store.py _write).
+            fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
             owner_note = False
             try:
-                with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
-                    f.write("".join(out))
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(json.dumps(data, indent=2) + "\n")
                     if (st.st_uid, st.st_gid) != (os.getuid(), os.getgid()):
                         try:
                             os.fchown(f.fileno(), st.st_uid, st.st_gid)
                         except PermissionError:
                             owner_note = True
-                os.chmod(tmp, 0o600)
+                os.chmod(tmp, 0o644)
                 os.replace(tmp, path)
             except BaseException:
                 os.unlink(tmp)
                 raise
-        except OSError:
-            print(f"Could not update {path.name}; set {line} in it.")
+        except (OSError, ValueError):
+            print(f"Could not update {path.name}; {fix}")
             return
-        print(f"Set {line} in {path.name}.")
+        print(f"Set scope {scope} in {path.name}.")
         if owner_note:
             print(f"Note: {path} now belongs to this container's user; its owner could not be kept.")
 
@@ -839,7 +843,7 @@ class LocalInit:
         self.rotate = rotate
         self.local_dir = Path(os.environ.get("BITWARDEN_LOCAL_DIR") or LOCAL_DIR)
         self.secrets_dir = Path(os.environ.get("BITWARDEN_SECRETS_DIR") or "/secrets") / "local"
-        self.accounts_dir = Path(os.environ.get("BITWARDEN_ACCOUNTS_DIR") or "/accounts")
+        self.broker_dir = Path(os.environ.get("BITWARDEN_BROKER_DIR") or "/broker")
         self.poll = float(os.environ.get("BITWARDEN_LOCAL_POLL_SECONDS") or 5)
         self.limit_wait = float(os.environ.get("BITWARDEN_RATE_LIMIT_WAIT") or 60)
         self.state = read_state(self.local_dir)
@@ -1001,29 +1005,38 @@ class LocalInit:
         print(f'Created the collection "{name}".')
         return cid
 
+    def local_account_written(self) -> bool:
+        return (self.broker_dir / LOCAL_FILE).exists() and (self.secrets_dir / "client_id").exists()
+
     def write_account_file(self, rotate: bool = False) -> None:
-        path = self.accounts_dir / "local.env"
-        if path.exists() and not rotate:
-            try:
-                acct = parse_file(path)
-                same = (acct.scope_kind == "collection" and acct.scope_value == self.state["AGENT_COLLECTION"]
-                        and acct.client_id == self.state["CLIENT_ID"])
-            except AccountError:
-                same = False
-            if not same:
-                raise SetupError(f"{path.name} names other ids than local/state. Move it aside, or run "
-                                 "local-init --rotate to write it again from local/state.")
-            print(f"Kept {path.name}.")
-            return
-        _write_secret(path, "\n".join([
-            "# Written by make vault-init (bitwarden-setup local-init). See docs/bitwarden.md.",
-            "BW_MODE=local",
-            f"BW_SERVER={LOCAL_SERVER}",
-            f"BW_SCOPE=collection:{self.state['AGENT_COLLECTION']}",
-            "BW_UNLOCK=stored",
-            f"BW_CLIENTID={self.state['CLIENT_ID']}",
-        ]))
-        print(f"Wrote {path.name}.")
+        """The local account: broker/local-account.json and secrets/local/client_id (the step "account_file")."""
+        path = self.broker_dir / LOCAL_FILE
+        id_path = self.secrets_dir / "client_id"
+        scope = f"collection:{self.state['AGENT_COLLECTION']}"
+        if not rotate:
+            conflict = False
+            if id_path.exists():
+                try:
+                    have = read_client_id(self.secrets_dir.parent, LOCAL_SLUG, LOCAL_FILE)
+                    conflict = have != self.state["CLIENT_ID"]
+                except AccountError:
+                    conflict = True
+            if path.exists():
+                try:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                    conflict = conflict or not isinstance(data, dict) or data.get("scope") != scope
+                except (OSError, UnicodeDecodeError, ValueError):
+                    conflict = True
+            if conflict:
+                raise SetupError(f"{path.name} or secrets/local/client_id names other ids than local/state. "
+                                 "Move them aside, or run local-init --rotate to write them again from "
+                                 "local/state.")
+            if path.exists() and id_path.exists():
+                print(f"Kept {path.name}.")
+                return
+        _write_secret(id_path, self.state["CLIENT_ID"])
+        _write_secret(path, json.dumps({"scope": scope}, indent=2))
+        print(f"Wrote {path.name} and secrets/local/client_id.")
 
     def run(self, owner: str, wait: float) -> int:
         recorded = self.state.get("OWNER_EMAIL")
@@ -1031,6 +1044,9 @@ class LocalInit:
             raise SetupError(f"make vault-init already invited {recorded}. Run it with that address "
                              f"(VAULT_OWNER_EMAIL={recorded}).")
         if self.done("confirmed") and not self.rotate:
+            # Set up before the broker read the local account from these files.
+            if not self.local_account_written():
+                self.write_account_file()
             print("Local mode steps 2 to 5 are already done.")
             return 0
         password = self.agent_password()
@@ -1059,7 +1075,7 @@ class LocalInit:
                     org, coll = vw_register.create_org(self.server, token, keys, LOCAL_ORG_NAME, DEFAULT_COLLECTION)
                     print(f'Created the organization "{LOCAL_ORG_NAME}" with the collection "{DEFAULT_COLLECTION}".')
                 self.record("org", ORG_ID=org, AGENT_COLLECTION=coll)
-            if not self.done("account_file") or self.rotate:
+            if not self.done("account_file") or self.rotate or not self.local_account_written():
                 self.write_account_file(self.rotate)
                 self.record("account_file")
             if self.done("confirmed"):
@@ -1153,9 +1169,13 @@ def main(argv: list[str]) -> int:
     if argv and argv[0] == "local-init":
         return local_init_main(argv)
     args = parse_args(argv)
-    accounts_dir = Path(os.environ.get("BITWARDEN_ACCOUNTS_DIR") or "/accounts")
     try:
-        account = parse_file(accounts_dir / f"{args.slug}.env")
+        account = load_account(
+            args.slug,
+            Path(os.environ.get("BITWARDEN_INSTANCES_DIR") or "/store/instances"),
+            Path(os.environ.get("BITWARDEN_BROKER_DIR") or "/broker"),
+            Path(os.environ.get("BITWARDEN_SECRETS_DIR") or "/secrets"),
+        )
     except AccountError as exc:
         print(exc)
         return EXIT_FAILED
@@ -1165,7 +1185,7 @@ def main(argv: list[str]) -> int:
         return EXIT_FAILED
     # Only a test serves a loopback URL from inside this container.
     if args.server != account.server and not _is_loopback_url(args.server):
-        print(f"--server must match BW_SERVER in {account.path.name}.")
+        print(f"--server must match the server of {args.slug} ({account.path.name}).")
         return EXIT_FAILED
     refusal = preflight(args, account)
     if refusal:

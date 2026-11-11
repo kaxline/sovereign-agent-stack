@@ -217,20 +217,30 @@ class Run:
                  server=BASE, redirect=False):
         self.name = name
         d = TMP / name
-        (d / "accounts").mkdir(parents=True)
+        for sub in ("instances", "broker", f"secrets/{slug}"):
+            (d / sub).mkdir(parents=True)
         self.vault_file = d / "vault.json"
         self.vault_file.write_text(json.dumps(vault))
         self.vault_before = json.loads(json.dumps(vault))
         self.log_file = d / "bw.log"
-        self.account_file = d / "accounts" / f"{slug}.env"
-        self.account_file.write_text("\n".join(account) + "\n")
-        self.account_file.chmod(0o600)
+        (d / "secrets" / slug / "client_id").write_text("user.syn\n")
+        if account.get("local"):
+            # make vault-init's local account: broker/local-account.json, outside the store.
+            self.account_file = d / "broker" / "local-account.json"
+            self.account_file.write_text(json.dumps({"scope": account["scope"]}))
+            self.account_file.chmod(0o600)
+        else:
+            # The instance file as addon_store writes it.
+            self.account_file = d / "instances" / f"{slug}.json"
+            self.account_file.write_text(json.dumps(account, indent=2) + "\n")
+            self.account_file.chmod(0o644)
         wrapper = d / "bw"
         wrapper.write_text(f"#!/bin/sh\nexport FAKE_BW_VAULT='{self.vault_file}'\n"
                            f"export FAKE_BW_LOG='{self.log_file}'\nexec '{sys.executable}' '{FAKE_BW}' \"$@\"\n")
         wrapper.chmod(0o755)
         env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(d), "PYTHONDONTWRITEBYTECODE": "1",
-               "BITWARDEN_ACCOUNTS_DIR": str(d / "accounts"), "BITWARDEN_BW": str(wrapper), "LANG": "C.UTF-8"}
+               "BITWARDEN_INSTANCES_DIR": str(d / "instances"), "BITWARDEN_BROKER_DIR": str(d / "broker"),
+               "BITWARDEN_SECRETS_DIR": str(d / "secrets"), "BITWARDEN_BW": str(wrapper), "LANG": "C.UTF-8"}
         api.st = {"calls": [], "invites": [], "edits": [], "refuse": refuse, "vault": self.vault_file,
                   "token_ok": None, "redirect": redirect}
         argv = [cmd, "--server", server, "--email", USER_EMAIL, "--slug", slug, *extra]
@@ -273,12 +283,17 @@ class Run:
         check(tail == ["lock", "logout"], f"{self.name}: last bw calls {tail}, want lock then logout")
 
 
-ACCOUNT = ["BW_MODE=cloud", "BW_SERVER=https://vault.bitwarden.com", "BW_UNLOCK=stored", "BW_CLIENTID=user.syn"]
-
-
-def account(scope, mode="cloud", server="https://vault.bitwarden.com", extra=()):
-    return [f"BW_MODE={mode}", f"BW_SERVER={server}", f"BW_SCOPE={scope}", "BW_UNLOCK=stored",
-            "BW_CLIENTID=user.syn", *extra]
+def account(scope, mode="cloud", server="https://vault.bitwarden.com", extra=None):
+    """Instance values (or, for mode local, the local account's scope); the client_id is secrets/<slug>/client_id."""
+    if mode == "local":
+        return {"local": True, "scope": scope}
+    values = {"mode": mode, "scope": scope, "unlock": "stored"}
+    if mode == "cloud":
+        values["region"] = "eu" if server.endswith(".eu") else "us"
+    else:
+        values["url"] = server
+    values.update(extra or {})
+    return values
 
 
 def with_collection(vault, cid="c-agent", name="Agent", users=()):
@@ -323,10 +338,11 @@ check(len(colls) == 1, f"create-collection: collections {r.vault['collections']}
 if agent and colls:
     check({"id": agent[0]["id"], "readOnly": False, "hidePasswords": False, "manage": True} in colls[0]["users"],
           f"create-collection: agent access {colls[0].get('users')}")
-    check(f"BW_SCOPE=collection:{colls[0]['id']}" in r.account_file.read_text().splitlines(),
-          "create-collection: account file BW_SCOPE not updated to the new collection")
-    check(oct(r.account_file.stat().st_mode & 0o777) == "0o600", "create-collection: account file mode")
-    check("BW_CLIENTID=user.syn" in r.account_file.read_text(), "create-collection: account file lost a key")
+    got = json.loads(r.account_file.read_text())
+    check(got == {"mode": "selfhosted", "scope": f"collection:{colls[0]['id']}", "unlock": "stored",
+                  "url": "https://vault.example.com"},
+          f"create-collection: instance file not pointed at the new collection, or a key lost: {got}")
+    check(oct(r.account_file.stat().st_mode & 0o777) == "0o644", "create-collection: instance file mode")
 check("accept" in r.out.lower() and AGENT_EMAIL in r.out, "create-collection: no steps left for the user")
 r.expect_lock_logout()
 
@@ -408,15 +424,12 @@ r = Run("grant-removed", "grant", account("folder:Agent"),
 r.expect_code(2)
 check(not r.calls and "invalid choice" in r.out, f"grant-removed: calls {r.argvs}\n{r.out}")
 
-# role --slug local: the member edit exactly as spike 2. A "Stack secrets" collection and a leftover
-# BW_SECRETS_ITEM_SCOPE (from the removed stack secrets sync) give the agent no access.
+# role --slug local: the member edit exactly as spike 2. A "Stack secrets" collection gives the agent no access.
 v = with_collection(base_vault())
 with_collection(v, cid="c-secrets", name="Stack secrets")
 v["members"].append({"id": "m-agent", "email": "agent@vault.localhost", "status": 2, "type": 0,
                      "organizationId": ORG})
-r = Run("role-local", "role", account("collection:c-agent", mode="local", server="https://vaultwarden.vault.internal",
-                                      extra=("BW_SECRETS_ITEM_SCOPE=collection:c-secrets",)),
-        v, slug="local")
+r = Run("role-local", "role", account("collection:c-agent", mode="local"), v, slug="local")
 r.expect_code(0)
 check(r.api["edits"] == [(f"/api/organizations/{ORG}/users/m-agent", {
     "type": 2, "groups": [], "permissions": {}, "collections": [
@@ -426,8 +439,7 @@ check(not r.cmds("create", "edit", "move"), "role-local: changed the vault")
 r.expect_lock_logout()
 
 # role, token refused: web vault steps and exit 1.
-r = Run("role-refused", "role", account("collection:c-agent", mode="local",
-                                        server="https://vaultwarden.vault.internal"), v, slug="local", refuse=True)
+r = Run("role-refused", "role", account("collection:c-agent", mode="local"), v, slug="local", refuse=True)
 r.expect_code(1)
 check("web vault" in r.out.lower() and not r.api["edits"], f"role-refused: output\n{r.out}")
 r.expect_lock_logout()
@@ -484,11 +496,11 @@ for knob in ("refuse_config", "ignore_config"):
     check("nothing was sent" in r.out, f"config-{knob}: output\n{r.out}")
     r.expect_lock_logout()
 
-# --server other than BW_SERVER (and not loopback): refused before bw runs.
+# --server other than the account's server (and not loopback): refused before bw runs.
 r = Run("server-mismatch", "create", account("folder:Agent"), base_vault(), server="https://other.example.com",
         script=[])
 r.expect_code(1)
-check(not r.calls and "BW_SERVER" in r.out, f"server-mismatch: calls {r.argvs}\n{r.out}")
+check(not r.calls and "must match the server" in r.out, f"server-mismatch: calls {r.argvs}\n{r.out}")
 
 # The token endpoint redirects: refused, the form is not re-sent, web vault steps follow.
 r = Run("token-redirect", "create", account("collection:c-placeholder", mode="selfhosted",
@@ -630,7 +642,7 @@ class LocalApi(http.server.BaseHTTPRequestHandler):
 def local_run(st, d, extra=(), owner=LOCAL_OWNER):
     wrapper = d / "bw"
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(d), "PYTHONDONTWRITEBYTECODE": "1",
-           "LANG": "C.UTF-8", "BITWARDEN_ACCOUNTS_DIR": str(d / "accounts"), "BITWARDEN_SECRETS_DIR": str(d / "secrets"),
+           "LANG": "C.UTF-8", "BITWARDEN_BROKER_DIR": str(d / "broker"), "BITWARDEN_SECRETS_DIR": str(d / "secrets"),
            "BITWARDEN_LOCAL_DIR": str(d / "local"), "BITWARDEN_BW": str(wrapper),
            "BITWARDEN_LOCAL_POLL_SECONDS": "0.1", "BITWARDEN_RATE_LIMIT_WAIT": "0.2"}
     argv = ["local-init", "--owner", owner, "--server", local_base, "--signup-url", "http://localhost:8222",
@@ -662,7 +674,7 @@ if HAVE_CRYPTO:
     threading.Thread(target=local.serve_forever, daemon=True).start()
     local_base = f"http://127.0.0.1:{local.server_address[1]}"
     d = TMP / "local-init"
-    for sub in ("accounts", "secrets/local", "local"):
+    for sub in ("broker", "secrets/local", "local"):
         (d / sub).mkdir(parents=True)
     (d / "local/admin_token").write_text(ADMIN_TOKEN + "\n")
     (d / "vault.json").write_text(json.dumps({"folders": [], "collections": [], "items": [], "members": []}))
@@ -710,13 +722,14 @@ if HAVE_CRYPTO:
     secret_file = d / "secrets/local/client_secret"
     check(secret_file.read_text().strip() == AGENT_SECRET and oct(secret_file.stat().st_mode & 0o777) == "0o600",
           "local-init: client_secret content or mode")
-    acct = d / "accounts/local.env"
-    lines = acct.read_text().splitlines() if acct.exists() else []
-    for want in ("BW_MODE=local", "BW_SERVER=https://vaultwarden.vault.internal", "BW_SCOPE=collection:c-agent",
-                 "BW_UNLOCK=stored", "BW_CLIENTID=user.uid-agent"):
-        check(want in lines, f"local-init: local.env lacks {want}: {lines}")
-    check(not any("SECRETS_ITEM_SCOPE" in line for line in lines), f"local-init: local.env sets a secrets scope: {lines}")
-    check(acct.exists() and oct(acct.stat().st_mode & 0o777) == "0o600", "local-init: local.env mode")
+    acct = d / "broker/local-account.json"
+    cid = d / "secrets/local/client_id"
+    check(acct.exists() and json.loads(acct.read_text()) == {"scope": "collection:c-agent"},
+          f"local-init: local-account.json {acct.read_text() if acct.exists() else 'missing'}")
+    check(acct.exists() and oct(acct.stat().st_mode & 0o777) == "0o600", "local-init: local-account.json mode")
+    check(cid.exists() and cid.read_text().strip() == "user.uid-agent" and oct(cid.stat().st_mode & 0o777) == "0o600",
+          "local-init: secrets/local/client_id content or mode")
+    check(not list(d.rglob("*.env")), f"local-init wrote an .env file: {list(d.rglob('*.env'))}")
     check(LOCAL_OWNER in out and "http://localhost:8222" in out and "again" in out,
           f"local-init: no sign-up address or re-run hint\n{out}")
 
@@ -742,6 +755,16 @@ if HAVE_CRYPTO:
     code, out, _ = local_run(local.st, d)
     check(code == 0 and len(local.st["calls"]) == calls_before, f"local-init done: exit {code}, calls made\n{out}")
 
+    # Set up before the local account moved out of local.env: confirmed, but no local-account.json or
+    # client_id. Written from local/state, with no call to the server.
+    acct.unlink()
+    cid.unlink()
+    code, out, _ = local_run(local.st, d)
+    check(code == 0 and len(local.st["calls"]) == calls_before, f"local-init upgrade: exit {code}, calls made\n{out}")
+    check(acct.exists() and json.loads(acct.read_text()) == {"scope": "collection:c-agent"}
+          and cid.exists() and cid.read_text().strip() == "user.uid-agent",
+          f"local-init upgrade: local account not written\n{out}")
+
     # Resume before the organization was recorded: the one that exists is reused, not made twice.
     state_path = d / "local/state"
     state_path.write_text("STEP=api_key\nCLIENT_ID=user.uid-agent\n")
@@ -754,18 +777,22 @@ if HAVE_CRYPTO:
     check(local_state(d).get("AGENT_COLLECTION") == "c-agent" and local_state(d).get("ORG_ID") == LOCAL_ORG,
           f"local-init reuse: state {local_state(d)}")
 
-    # A local.env naming other ids than the state is refused; --rotate writes it again. The state is
+    # A local account naming other ids than the state is refused; --rotate writes it again. The state is
     # the older kind, with STEP=stack and STACK_COLLECTION, and still resumes.
-    acct = d / "accounts/local.env"
     state_path.write_text(f"STEP=stack\nCLIENT_ID=user.uid-agent\nORG_ID={LOCAL_ORG}\nAGENT_COLLECTION=c-agent\n"
                           f"STACK_COLLECTION=c-stack\nOWNER_EMAIL={LOCAL_OWNER}\n")
-    acct.write_text(acct.read_text().replace("collection:c-agent", "collection:c-other"))
+    acct.write_text(json.dumps({"scope": "collection:c-other"}))
     code, out, _ = local_run(local.st, d)
-    check(code == 1 and "other ids" in out, f"local-init: a local.env with other ids was not refused\n{out}")
-    check("BW_SCOPE=collection:c-other" in acct.read_text(), "local-init: the refused local.env was changed")
+    check(code == 1 and "other ids" in out, f"local-init: a local account with other ids was not refused\n{out}")
+    check("c-other" in acct.read_text(), "local-init: the refused local-account.json was changed")
+    cid.write_text("user.someone-else\n")
+    acct.write_text(json.dumps({"scope": "collection:c-agent"}))
+    code, out, _ = local_run(local.st, d)
+    check(code == 1 and "other ids" in out, f"local-init: a client_id with other ids was not refused\n{out}")
     code, out, _ = local_run(local.st, d, extra=("--rotate",))
-    check(code == 0 and "BW_SCOPE=collection:c-agent" in acct.read_text().splitlines(),
-          f"local-init --rotate did not rewrite local.env: exit {code}\n{out}")
+    check(code == 0 and json.loads(acct.read_text()) == {"scope": "collection:c-agent"}
+          and cid.read_text().strip() == "user.uid-agent",
+          f"local-init --rotate did not rewrite the local account: exit {code}\n{out}")
 
     # No organization on the account: created, with the public key from the server.
     local.st["hide_orgs"] = True
