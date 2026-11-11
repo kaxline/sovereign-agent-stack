@@ -5,6 +5,9 @@ and which parts of `docker-compose.yml` it can rely on across upgrades.
 
 Pin a release tag, not a branch. [CHANGELOG.md](../CHANGELOG.md) lists each
 release's new services, required `.env` keys and new host requirements.
+[contracts/](contracts/README.md) describes each category the stack is built
+from (models, tools, agent, credentials, secrets, storage, search) as an
+interface and its current implementation.
 
 ## Host tools
 
