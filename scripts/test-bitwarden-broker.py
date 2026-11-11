@@ -143,7 +143,7 @@ class Run:
         return accounts.Account(
             slug=slug, mode="cloud", server="https://vault.bitwarden.com", scope_kind=kind,
             scope_value=value or None, unlock=unlock, client_id="user.00000000-0000-4000-8000-000000000001",
-            secrets_item_scope=None, path=self.tmp / f"{slug}.env",
+            path=self.tmp / f"{slug}.env",
         )
 
     def bw(self, account) -> bwcli.Bw:
@@ -269,9 +269,10 @@ def test_account_file_tolerance() -> None:
         write_env(d, "noid.env", good.replace("BW_CLIENTID=user.x\n", ""))
         write_env(d, "dup.env", good + "BW_MODE=local\n")
         write_env(d, "bad-scope.env", good + "BW_SCOPE=everything\n")
-        write_env(d, "bad-secrets-scope.env", good + "BW_SECRETS_ITEM_SCOPE=all\n")
+        # BW_SECRETS_ITEM_SCOPE belonged to the removed stack secrets sync: any value loads, none is used.
+        write_env(d, "leftover-key.env", good + "BW_SECRETS_ITEM_SCOPE='collection:a b'\n")
         write_env(d, "bad-collection.env", good + "BW_SCOPE=collection:--organizationid\n")
-        write_env(d, "bad-secrets-collection.env", good + "BW_SECRETS_ITEM_SCOPE='collection:a b'\n")
+        write_env(d, "leftover-twice.env", good + "BW_SECRETS_ITEM_SCOPE=a\nBW_SECRETS_ITEM_SCOPE=b\n")
         write_env(d, "server-query.env", good.replace("BW_MODE=cloud", "BW_MODE=selfhosted").replace(
             "https://vault.bitwarden.com", "https://vault.example.com/?next=x"))
         write_env(d, "server-fragment.env", good.replace("BW_MODE=cloud", "BW_MODE=selfhosted").replace(
@@ -280,24 +281,24 @@ def test_account_file_tolerance() -> None:
 
         loaded, errors = accounts.load_dir(d)
         by_slug = {a.slug: a for a in loaded}
-        expect(sorted(by_slug) == ["home-lab", "local", "personal"], f"loaded {sorted(by_slug)}")
+        expect(sorted(by_slug) == ["home-lab", "leftover-key", "local", "personal"], f"loaded {sorted(by_slug)}")
 
         p = by_slug["personal"]
         expect(p.mode == "cloud" and p.server == "https://vault.bitwarden.eu", "quoted mode, inline comment")
         expect((p.scope_kind, p.scope_value) == ("folder", "Agent"), "spaces around key and value")
         expect(p.unlock == "stored" and p.client_id == "user.00000000-0000-4000-8000-000000000001", "single quotes")
-        expect(p.secrets_item_scope == ("folder", "Stack secrets"), f"secrets scope {p.secrets_item_scope}")
+        expect(not hasattr(p, "secrets_item_scope"), "the secrets scope is not kept")
         expect(p.path == d / "personal.env", "path")
         h = by_slug["home-lab"]
         expect(h.server == "https://vault.example.com" and h.unlock == "manual", "selfhosted, trailing slash")
-        expect((h.scope_kind, h.scope_value) == ("collection", COLLECTION) and h.secrets_item_scope is None, "collection")
+        expect((h.scope_kind, h.scope_value) == ("collection", COLLECTION), "collection")
         expect((by_slug["local"].scope_kind, by_slug["local"].scope_value) == ("all", None), "all")
 
         want = {
             "auto.env": "BW_UNLOCK", "unknown.env": "BW_FOO", "bad_slug.env": "slug",
             "plain-http.env": "BW_SERVER", "wrong-cloud.env": "BW_SERVER", "noid.env": "BW_CLIENTID",
-            "dup.env": "BW_MODE", "bad-scope.env": "BW_SCOPE", "bad-secrets-scope.env": "BW_SECRETS_ITEM_SCOPE",
-            "bad-collection.env": "BW_SCOPE", "bad-secrets-collection.env": "BW_SECRETS_ITEM_SCOPE",
+            "dup.env": "BW_MODE", "bad-scope.env": "BW_SCOPE",
+            "bad-collection.env": "BW_SCOPE", "leftover-twice.env": "BW_SECRETS_ITEM_SCOPE",
             "server-query.env": "BW_SERVER", "server-fragment.env": "BW_SERVER",
         }
         expect(len(errors) == len(want), f"{len(errors)} errors: {errors}")
@@ -1281,18 +1282,16 @@ def test_api_returns_no_values() -> None:
         b.expect_clean(extra_secrets=[STACK_VALUE])
 
 
-def test_sync_socket_scope() -> None:
+def test_socket_serves_no_secrets() -> None:
     with broker_run(vault=stack_vault()) as b:
+        # A leftover BW_SECRETS_ITEM_SCOPE is ignored: the account lists its own scope as usual.
         b.add_account("personal", secrets_scope="folder:Stack")
-        b.add_account("other")  # no BW_SECRETS_ITEM_SCOPE: serves no secrets
-        b.start(unlocked=["personal", "other"])
+        b.start(unlocked=["personal"])
         mode = stat.S_IMODE(b.socket.stat().st_mode)
         expect(mode == 0o600, f"socket mode {oct(mode)}")
-        expect(b.sock_call("GET", "/secrets") == (200, [{"name": "llm-proxy/openai", "value": STACK_VALUE}]),
-               "the socket serves the Stack item only")
+        expect(b.sock_call("GET", "/secrets") == (404, {"error": "not_found"}), "socket /secrets")
         expect(b.call("GET", "/secrets") == (404, {"error": "not_found"}), "TCP /secrets")
-        expect(handle("personal", "A") in b.handles(), "the agent scope is unchanged")
-        expect(not any("5555" in h for h in b.handles()), "a stack secret is listed to the agent")
+        expect(sorted(b.handles()) == [handle("personal", "A"), handle("personal", "E")], f"handles {b.handles()}")
         expect(b.sock_call("GET", "/items") == (404, {"error": "not_found"}), "the socket serves no TCP routes")
         b.stop()
         expect(not b.socket.exists(), "the socket is removed on stop")
@@ -1720,7 +1719,7 @@ def main() -> None:
     test_fill_bounded_by_timeout()
     test_totp_page_write()
     test_api_returns_no_values()
-    test_sync_socket_scope()
+    test_socket_serves_no_secrets()
     test_unlock_over_socket()
     test_manual_login_at_start()
     test_manual_login_refused_at_start()

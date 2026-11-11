@@ -4,10 +4,9 @@ The broker shares the ``hermes`` container's network namespace, so agent code
 can reach the TCP port. No TCP route returns a password, TOTP code, seed or
 session key: ``/fill`` writes the value into the page itself and returns only
 digests of it (``digest_redaction.build_entry``). The Unix socket at
-``BITWARDEN_SYNC_SOCKET`` (mode 600, never bound on TCP) carries the three
-calls that handle values: ``GET /secrets`` for ``BW_SECRETS_ITEM_SCOPE`` items,
-and ``POST /unlock`` and ``POST /lock`` for ``manual`` accounts
-(``python3 -m broker.unlock``).
+``BITWARDEN_SYNC_SOCKET`` (mode 600, never bound on TCP) carries the two
+calls that handle values: ``POST /unlock`` and ``POST /lock`` for ``manual``
+accounts (``python3 -m broker.unlock``).
 
 Request bodies are JSON objects of at most 64 KiB, with no duplicate keys and
 no keys a route does not take. Every error body is ``{"error": "<code>"}`` with
@@ -324,18 +323,6 @@ class Broker:
         return {"released": True}
 
     # --- Unix socket routes -------------------------------------------------
-
-    def get_secrets(self, _body) -> list:
-        out = []
-        for slug in sorted(self.bws):
-            bw = self.bws[slug]
-            if self.accounts[slug].secrets_item_scope is None or bw.state != "unlocked":
-                continue
-            try:
-                out.extend({"name": name, "value": value} for name, value in bw.secret_items())
-            except BwError:
-                continue
-        return out
 
     def _manual(self, slug):
         account = self.accounts.get(slug) if isinstance(slug, str) else None
@@ -668,7 +655,6 @@ class _TcpHandler(_Handler):
 
 class _UnixHandler(_Handler):
     routes = {
-        "/secrets": {"GET": "get_secrets"},
         "/unlock": {"POST": "post_unlock"},
         "/lock": {"POST": "post_lock"},
         "/health": {"GET": "get_health"},

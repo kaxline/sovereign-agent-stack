@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Bitwarden add-on: the accounts the broker signs in to, local mode, access
-# requests and stack secrets. See docs/bitwarden.md.
+# Bitwarden add-on: the accounts the broker signs in to, local mode and access
+# requests. See docs/bitwarden.md.
 #
 # Test hooks: VAULT_ACCOUNTS_DIR replaces compose/bitwarden/accounts (the folder
 # the broker mounts), VAULT_HERMES_DATA_DIR replaces data/hermes,
@@ -68,7 +68,6 @@ Usage: scripts/vault.sh <command> [options]
   remove --slug S [--json]
                     Forget an account: its file, secrets and bw data
   open              Open the local web vault
-  secrets-sync      Write stack secrets from the vault into the stack's files
   backup DIR        Copy the local Vaultwarden, secrets and account files to DIR
   restore DIR [--force]
                     Put a backup back; refuses to overwrite data without --force
@@ -1340,21 +1339,6 @@ cmd_open() {
   fi
 }
 
-# --- secrets-sync and the make up hook --------------------------------------
-
-cmd_secrets_sync() {
-  local rc=0
-  docker compose --profile bitwarden-tools run --rm -T bitwarden-secrets-sync || rc=$?
-  case "$rc" in
-    0) ;;
-    3)
-      log "Files Hermes reads changed; running make hermes-reload"
-      make -C "$ROOT" hermes-reload
-      ;;
-    *) die "secrets-sync wrote nothing or not everything (see above); is the broker running? make up, then make doctor" ;;
-  esac
-}
-
 # Run by make up before docker compose up. Silent while BITWARDEN_ENABLED is off.
 cmd_pre_up() {
   is_true "$(env_get BITWARDEN_ENABLED 0)" || return 0
@@ -1438,36 +1422,13 @@ PY
 cmd_up_hook() {
   cmd_reload_plugins
   is_true "$(env_get BITWARDEN_ENABLED 0)" || return 0
-  local f slugs="" slug entry
+  local f slug
   for f in "$ACCOUNTS_DIR"/*.env; do
     [[ -f "$f" ]] || continue
     slug="$(basename "$f" .env)"
     load_file "$f"
     store_backfill "$slug"
-    [[ -n "$(text_get BW_SECRETS_ITEM_SCOPE)" ]] || continue
-    slugs="${slugs} ${slug}:$(text_get BW_UNLOCK)"
   done
-  [[ -n "$slugs" ]] || return 0
-  if ! broker_running; then
-    log "Bitwarden secrets sync skipped: the broker is not running"
-    return 0
-  fi
-  local run="" got state
-  for entry in $slugs; do
-    slug="${entry%%:*}"
-    got="$(wait_for_account "$slug" "${entry#*:}")"
-    state="${got%% *}"
-    case "$state" in
-      unlocked) run=1 ;;
-      locked) log "Bitwarden secrets sync skipped: ${slug} is locked" ;;
-      offline) log "Bitwarden secrets sync skipped: ${slug} is offline" ;;
-      error) log "Bitwarden secrets sync skipped: ${slug} is in error (make doctor)" ;;
-      *) log "Bitwarden secrets sync skipped: the broker has not loaded ${slug} (make doctor)" ;;
-    esac
-  done
-  if [[ -n "$run" ]]; then
-    (cmd_secrets_sync) || log "Bitwarden secrets sync failed; make secrets-sync to retry"
-  fi
   return 0
 }
 
@@ -1546,7 +1507,7 @@ cmd_init() {
     esac
   fi
 
-  log "Last step: you sign in once so the agent account becomes a plain User with access to Agent and Stack secrets only"
+  log "Last step: you sign in once so the agent account becomes a plain User with access to the Agent collection only"
   setup_run role --slug local --email "$owner" \
     || die "bitwarden-setup role failed; make vault-init again retries this step"
   log "Local mode is set up."
@@ -1677,7 +1638,6 @@ case "${1:-}" in
   requests) shift; cmd_requests "$@" ;;
   remove) shift; cmd_remove "$@" ;;
   open) shift; cmd_open "$@" ;;
-  secrets-sync) shift; cmd_secrets_sync "$@" ;;
   up-hook) cmd_up_hook ;;
   pre-up) cmd_pre_up ;;
   follow-hermes) cmd_follow_hermes ;;

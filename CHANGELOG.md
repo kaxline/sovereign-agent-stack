@@ -29,6 +29,11 @@ the stack under another app.
    LightRAG out of chat, run `./scripts/addon.sh disable lightrag`.
 4. Add-on manifests outside this repo that use a removed field (below) fail
    validation and are skipped with a warning until the field is taken out.
+5. Bitwarden: the secret files the stack secrets sync wrote (Twenty keys,
+   Postgres service passwords, CalDAV passwords) stay where they are; edit them
+   by hand from now on. Delete `BW_SECRETS_ITEM_SCOPE` from account files
+   (`make doctor` names them) and `TWENTY_SECRETS_DIR` from `.env`. Boundary
+   never called either, so it needs no change.
 
 ### Changes
 
@@ -36,9 +41,8 @@ the stack under another app.
   `onToggle` (and `addon.sh`'s `recreate` step), `services.<name>.volumes`
   (use `data.volumes`), `services.<name>.oneshot`, `mcp.unmanaged`, and the
   `upgrade`, `backup` and `restore` hooks (`hooks.init` stays). A manifest
-  that still has one is refused with a message naming the field. Bitwarden's
-  `backup` and `restore` hooks are accepted, and ignored, until the stack
-  secrets sync removal lands. `addon_cli.py toggle-script` is gone.
+  that still has one is refused with a message naming the field.
+  `addon_cli.py toggle-script` is gone.
 - A service is now a one-shot when another compose service depends on it
   with `condition: service_completed_successfully` in `docker-compose.yml`;
   `addon.sh enable` and `remove` read that instead of the manifest.
@@ -58,6 +62,16 @@ the stack under another app.
   doctor`'s warnings about leftover workspace files.
   `compose/twenty/workspace.env.example` and `compose/twenty/workspaces/` are
   gone from the repo; the folder stays gitignored.
+- Removed the Bitwarden stack secrets sync: `make secrets-sync`,
+  `vault.sh secrets-sync`, the `bitwarden-secrets-sync` service and the
+  broker's `GET /secrets` route on its Unix socket (the socket still takes
+  manual unlocks). `make up` no longer runs a sync. Local mode no longer
+  creates the "Stack secrets" collection; existing ones stay in Vaultwarden.
+  Account files with `BW_SECRETS_ITEM_SCOPE` still load: the broker ignores the
+  key and `make doctor` names the files. `TWENTY_SECRETS_DIR` and
+  `compose/twenty/no-secrets/` are gone. The Bitwarden manifest drops
+  `hooks.backup` and `hooks.restore`; `vault.sh backup` and `restore` are
+  unchanged.
 
 ## v0.3.13 — 2026-11-10
 

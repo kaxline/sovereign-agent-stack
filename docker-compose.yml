@@ -2169,8 +2169,8 @@ services:
   # API:     http://127.0.0.1:8099 inside hermes' network namespace only
   # Data:    BITWARDEN_HOST_DATA_DIR (default ./data/addons/bitwarden): bw/,
   #          broker/ and secrets/. Accounts: compose/bitwarden/accounts/<slug>.env
-  # The image also runs bitwarden-setup and bitwarden-secrets-sync
-  # (profile bitwarden-tools, started by make targets only).
+  # The image also runs bitwarden-setup (profile bitwarden-tools, started by
+  # make targets only).
   # ----------------------------------------------------------------------
   bitwarden-broker:
     profiles: ["bitwarden"]
@@ -2215,7 +2215,7 @@ services:
       - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/secrets:/secrets:ro
       - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/bw:/data/bw
       - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/broker:/data/broker
-      # The socket that returns values; only bitwarden-secrets-sync also mounts it.
+      # The Unix socket for manual unlocks (python3 -m broker.unlock).
       - bitwarden_sync:/run/bitwarden-sync
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8099/health', timeout=3)"]
@@ -2223,39 +2223,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
-
-  # One-shot: writes the stack's secret files from the broker's sync socket.
-  # make secrets-sync runs it. No network; the socket is its only channel.
-  bitwarden-secrets-sync:
-    profiles: ["bitwarden-tools"]
-    build: *bitwarden-build
-    image: *bitwarden-image
-    entrypoint: ["python3", "/app/secrets_sync.py"]
-    network_mode: none
-    user: "10001:10001"
-    read_only: true
-    tmpfs:
-      - /tmp
-    cap_drop: [ALL]
-    security_opt:
-      - no-new-privileges:true
-    environment:
-      - BITWARDEN_SYNC_SOCKET=/run/bitwarden-sync/sync.sock
-      - BITWARDEN_SYNC_TARGETS=/targets
-      # Host paths; the sync uses only the file names, inside TWENTY_SECRETS_DIR.
-      - TWENTY_ENCRYPTION_KEY_FILE=${TWENTY_ENCRYPTION_KEY_FILE:-}
-      - TWENTY_DB_PASSWORD_FILE=${TWENTY_DB_PASSWORD_FILE:-}
-      - TWENTY_SECRETS_DIR=${TWENTY_SECRETS_DIR:-}
-    # The folders of the files it writes, and nothing else. Unset,
-    # TWENTY_SECRETS_DIR falls back to an empty folder the sync never writes.
-    volumes:
-      - bitwarden_sync:/run/bitwarden-sync
-      # Only the Twenty store's secrets folder: Bitwarden's own secrets sit
-      # elsewhere under data/addons and stay unmounted.
-      - ${ASSISTANT_DATA_ROOT:-./data}/addons/twenty/secrets:/targets/twenty-keys
-      - ${TWENTY_SECRETS_DIR:-./compose/twenty/no-secrets}:/targets/twenty-secrets
-      - ./compose/postgres/services:/targets/postgres-services
-      - ./compose/caldav-mcp/accounts:/targets/caldav-accounts
 
   # One-shot, interactive: unlocks the user's own account to create the
   # agent's folder or collection and move items into it (make vault-init,

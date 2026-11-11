@@ -408,7 +408,8 @@ r = Run("grant-removed", "grant", account("folder:Agent"),
 r.expect_code(2)
 check(not r.calls and "invalid choice" in r.out, f"grant-removed: calls {r.argvs}\n{r.out}")
 
-# role --slug local: the member edit exactly as spike 2.
+# role --slug local: the member edit exactly as spike 2. A "Stack secrets" collection and a leftover
+# BW_SECRETS_ITEM_SCOPE (from the removed stack secrets sync) give the agent no access.
 v = with_collection(base_vault())
 with_collection(v, cid="c-secrets", name="Stack secrets")
 v["members"].append({"id": "m-agent", "email": "agent@vault.localhost", "status": 2, "type": 0,
@@ -419,8 +420,7 @@ r = Run("role-local", "role", account("collection:c-agent", mode="local", server
 r.expect_code(0)
 check(r.api["edits"] == [(f"/api/organizations/{ORG}/users/m-agent", {
     "type": 2, "groups": [], "permissions": {}, "collections": [
-        {"id": "c-agent", "readOnly": False, "hidePasswords": False, "manage": True},
-        {"id": "c-secrets", "readOnly": True, "hidePasswords": False, "manage": False}]})],
+        {"id": "c-agent", "readOnly": False, "hidePasswords": False, "manage": True}]})],
       f"role-local: edits {r.api['edits']}")
 check(not r.cmds("create", "edit", "move"), "role-local: changed the vault")
 r.expect_lock_logout()
@@ -694,7 +694,7 @@ if HAVE_CRYPTO:
     check(pw_file.read_text() == first_pw, "local-init generated a second agent password")
     state = local_state(d)
     check(state.get("STEP") == "invited" and state.get("ORG_ID") == LOCAL_ORG and state.get("OWNER_EMAIL") == LOCAL_OWNER
-          and state.get("AGENT_COLLECTION") == "c-agent" and state.get("STACK_COLLECTION"),
+          and state.get("AGENT_COLLECTION") == "c-agent" and "STACK_COLLECTION" not in state,
           f"local-init state after the invite: {state}")
     check(oct((d / "local/state").stat().st_mode & 0o777) == "0o600", "local-init: state file mode")
     check(count(local.st, "/identity/connect/token") == 2, "local-init: token grants (one 429, one retry)")
@@ -704,22 +704,21 @@ if HAVE_CRYPTO:
     check(count(local.st, "/api/organizations") == 1, "local-init: organization created more than once")
     check([m["email"] for m in local.st["members"]] == [LOCAL_OWNER] and local.st["members"][0]["type"] == 0,
           f"local-init: owner invite {local.st['members']}")
-    check(sum(1 for a in argvs if a[:1] == ["login"]) == 1, f"local-init: bw logins {argvs}")
-    stack = [c for c in json.loads((d / "vault.json").read_text())["collections"] if c.get("name") == "Stack secrets"]
-    check(len(stack) == 1 and stack[0]["id"] == state.get("STACK_COLLECTION"), f"local-init: Stack secrets {stack}")
+    check(argvs == [], f"local-init: bw ran before the owner registered: {argvs}")
+    names = [c.get("name") for c in json.loads((d / "vault.json").read_text())["collections"]]
+    check(names == ["Agent"], f"local-init: collections {names}, want only Agent")
     secret_file = d / "secrets/local/client_secret"
     check(secret_file.read_text().strip() == AGENT_SECRET and oct(secret_file.stat().st_mode & 0o777) == "0o600",
           "local-init: client_secret content or mode")
     acct = d / "accounts/local.env"
     lines = acct.read_text().splitlines() if acct.exists() else []
     for want in ("BW_MODE=local", "BW_SERVER=https://vaultwarden.vault.internal", "BW_SCOPE=collection:c-agent",
-                 "BW_UNLOCK=stored", "BW_CLIENTID=user.uid-agent",
-                 f"BW_SECRETS_ITEM_SCOPE=collection:{state.get('STACK_COLLECTION')}"):
+                 "BW_UNLOCK=stored", "BW_CLIENTID=user.uid-agent"):
         check(want in lines, f"local-init: local.env lacks {want}: {lines}")
+    check(not any("SECRETS_ITEM_SCOPE" in line for line in lines), f"local-init: local.env sets a secrets scope: {lines}")
     check(acct.exists() and oct(acct.stat().st_mode & 0o777) == "0o600", "local-init: local.env mode")
     check(LOCAL_OWNER in out and "http://localhost:8222" in out and "again" in out,
           f"local-init: no sign-up address or re-run hint\n{out}")
-    check(argvs[-2:] == [["lock"], ["logout"]], f"local-init: bw not locked and logged out: {argvs[-2:]}")
 
     # A different owner than recorded: refused before any call.
     calls_before = len(local.st["calls"])
@@ -745,7 +744,6 @@ if HAVE_CRYPTO:
 
     # Resume before the organization was recorded: the one that exists is reused, not made twice.
     state_path = d / "local/state"
-    stack_id = local_state(d).get("STACK_COLLECTION")
     state_path.write_text("STEP=api_key\nCLIENT_ID=user.uid-agent\n")
     code, out, argvs = local_run(local.st, d)
     check(code == 0, f"local-init resume before the organization: exit {code}\n{out}")
@@ -756,10 +754,11 @@ if HAVE_CRYPTO:
     check(local_state(d).get("AGENT_COLLECTION") == "c-agent" and local_state(d).get("ORG_ID") == LOCAL_ORG,
           f"local-init reuse: state {local_state(d)}")
 
-    # A local.env naming other ids than the state is refused; --rotate writes it again.
+    # A local.env naming other ids than the state is refused; --rotate writes it again. The state is
+    # the older kind, with STEP=stack and STACK_COLLECTION, and still resumes.
     acct = d / "accounts/local.env"
     state_path.write_text(f"STEP=stack\nCLIENT_ID=user.uid-agent\nORG_ID={LOCAL_ORG}\nAGENT_COLLECTION=c-agent\n"
-                          f"STACK_COLLECTION={stack_id}\nOWNER_EMAIL={LOCAL_OWNER}\n")
+                          f"STACK_COLLECTION=c-stack\nOWNER_EMAIL={LOCAL_OWNER}\n")
     acct.write_text(acct.read_text().replace("collection:c-agent", "collection:c-other"))
     code, out, _ = local_run(local.st, d)
     check(code == 1 and "other ids" in out, f"local-init: a local.env with other ids was not refused\n{out}")

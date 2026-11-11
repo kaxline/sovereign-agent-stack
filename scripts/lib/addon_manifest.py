@@ -134,10 +134,6 @@ DATA_PATH_RE = re.compile(r"^\./data(?:/(?!\.{1,2}(?:/|\Z))[^\s/]+)+\Z")
 SHARED_ERRORS = {"bad_slug", "exists", "not_found", "login_refused", "token_expired", "no_access",
                  "timeout", "server_unreachable"}
 HOOK_NAMES = ("init",)
-# Bitwarden's manifest still lists these until the stack secrets sync removal
-# (refactor/remove-secrets-sync) merges; nothing runs them. Whichever of the
-# two branches merges second deletes this.
-RETIRED_HOOKS = ("backup", "restore")
 INSTANCE_HOOKS = ("connect", "disconnect")
 # Fields removed in 0.3.14. A manifest that still has one is refused with a
 # pointer, rather than having the field silently ignored.
@@ -450,7 +446,7 @@ def validate(manifest, repo=_AUTO) -> list[str]:
         if not isinstance(hooks, dict):
             err(f"hooks must be an object of {', '.join(HOOK_NAMES)} to a hook")
         else:
-            extra = set(hooks) - set(HOOK_NAMES) - set(RETIRED_HOOKS)
+            extra = set(hooks) - set(HOOK_NAMES)
             if extra:
                 err(f"hooks has unknown fields: {', '.join(sorted(extra))}")
             for hname in HOOK_NAMES:

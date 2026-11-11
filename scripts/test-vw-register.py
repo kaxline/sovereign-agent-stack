@@ -506,15 +506,6 @@ def inside_main() -> int:
         def agent_env() -> dict:
             return {"BW_SESSION": agent._session}
 
-        def stack():
-            bw_ok(agent_dir, ["sync"], agent_env())
-            out = bw_ok(agent_dir, ["create", "org-collection", "--organizationid", st["org"]], agent_env(),
-                        stdin=b64({"organizationId": st["org"], "name": "Stack secrets", "externalId": None,
-                                   "groups": [], "users": []}))
-            st["stack_coll"] = json.loads(out)["id"]
-
-        step('bw create org-collection "Stack secrets" as the agent', stack)
-
         # --- The owner joins -------------------------------------------------
 
         step("organization invite of the owner as Owner",
@@ -549,11 +540,11 @@ def inside_main() -> int:
             st["owner_tok"] = secret("owner token", vw.token(BASE, OWNER_EMAIL, syn["owner_pw"]))
             m = member(st["owner_tok"], AGENT_EMAIL)
             got = sorted((c.get("id"), c.get("readOnly"), c.get("manage")) for c in m.get("collections") or [])
-            want = sorted([(st["agent_coll"], False, True), (st["stack_coll"], True, False)])
+            want = [(st["agent_coll"], False, True)]
             expect(m.get("type") == 2, f"agent type {m.get('type')}, want 2 (User)")
             expect(got == want, f"agent collections {got}, want {want}")
 
-        step("setup.py role: the owner makes the agent a User with Manage on Agent and view on Stack secrets", role)
+        step("setup.py role: the owner makes the agent a User with Manage on Agent only", role)
 
         def agent_cannot_edit_owner():
             try:

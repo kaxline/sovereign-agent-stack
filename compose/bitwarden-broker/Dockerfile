@@ -1,5 +1,5 @@
 # Bitwarden broker: the bw native build plus the stdlib broker package.
-# Also the image for bitwarden-setup and bitwarden-secrets-sync.
+# Also the image for bitwarden-setup.
 # python3-cryptography and python3-argon2 are for bitwarden-setup's local mode
 # (setup/vw_register.py, setup/tls.py and the admin token).
 FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS bw
@@ -50,7 +50,6 @@ RUN groupadd --gid 10001 broker \
 
 COPY --chmod=0755 entrypoint.sh /app/entrypoint.sh
 COPY broker /app/broker
-COPY secrets_sync.py /app/secrets_sync.py
 COPY setup /app/setup
 
 # The root filesystem is read-only at run time; /tmp is a tmpfs.

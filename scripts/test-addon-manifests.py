@@ -1189,9 +1189,10 @@ check("a manifest with every lifecycle field is valid", life_errors(EVERYTHING) 
       str(life_errors(EVERYTHING)))
 check("data_volumes reads data.volumes", am.data_volumes(EVERYTHING) == ["cache_a"],
       str(am.data_volumes(EVERYTHING)))
-check("Bitwarden's retired backup and restore hooks are still accepted",
-      life_errors(life(hooks={"backup": {"script": ["scripts/crm.sh"]},
-                              "restore": {"script": ["scripts/crm.sh"]}})) == [])
+check("backup and restore hooks are refused as unknown",
+      any("hooks has unknown fields: backup, restore" in e
+          for e in life_errors(life(hooks={"backup": {"script": ["scripts/crm.sh"]},
+                                           "restore": {"script": ["scripts/crm.sh"]}}))))
 check("hook() finds no retired hook", am.hook(life(hooks={"backup": {"script": ["scripts/crm.sh"]}}), "backup") is None)
 check("hook() finds init, connect and a missing one",
       am.hook(EVERYTHING, "init") == {"command": "seed-init"}

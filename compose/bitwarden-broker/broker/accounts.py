@@ -27,7 +27,10 @@ UNLOCKS = ("stored", "manual")
 CLOUD_SERVERS = ("https://vault.bitwarden.com", "https://vault.bitwarden.eu")
 LOCAL_SERVER = "https://vaultwarden.vault.internal"
 DEFAULT_SCOPE = "folder:Agent"
-KEYS = ("BW_MODE", "BW_SERVER", "BW_SCOPE", "BW_UNLOCK", "BW_CLIENTID", "BW_SECRETS_ITEM_SCOPE")
+KEYS = ("BW_MODE", "BW_SERVER", "BW_SCOPE", "BW_UNLOCK", "BW_CLIENTID")
+# Read by an earlier version (the stack secrets sync, since removed). Files that still set it load;
+# the value is not checked or used.
+IGNORED_KEYS = ("BW_SECRETS_ITEM_SCOPE",)
 REQUIRED = ("BW_MODE", "BW_SERVER", "BW_UNLOCK", "BW_CLIENTID")
 _INLINE_COMMENT = re.compile(r"\s+#.*$")
 
@@ -41,7 +44,6 @@ class Account:
     scope_value: str | None
     unlock: str  # "stored" | "manual"
     client_id: str
-    secrets_item_scope: tuple[str, str] | None
     path: Path
 
 
@@ -113,7 +115,7 @@ def parse_file(path: Path) -> Account:
         key = key.strip()
         if not sep:
             raise AccountError(f"{name}: line {number}: expected KEY=value")
-        if key not in KEYS:
+        if key not in KEYS and key not in IGNORED_KEYS:
             raise AccountError(f"{name}: {key}: unknown key")
         if key in values:
             raise AccountError(f"{name}: {key}: set more than once")
@@ -142,15 +144,10 @@ def parse_file(path: Path) -> Account:
     client_id = values["BW_CLIENTID"]
     if any(c.isspace() for c in client_id):
         raise AccountError(f"{name}: BW_CLIENTID: must not contain whitespace")
-    secrets_scope = None
-    if values.get("BW_SECRETS_ITEM_SCOPE"):
-        secrets_scope = _scope(values["BW_SECRETS_ITEM_SCOPE"], allow_all=False)
-        if secrets_scope is None:
-            raise AccountError(f"{name}: BW_SECRETS_ITEM_SCOPE: must be folder:<name> or collection:<id>")
 
     return Account(
         slug=slug, mode=mode, server=server, scope_kind=scope[0], scope_value=scope[1], unlock=unlock,
-        client_id=client_id, secrets_item_scope=secrets_scope, path=path,
+        client_id=client_id, path=path,
     )
 
 
