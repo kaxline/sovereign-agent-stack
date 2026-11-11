@@ -20,8 +20,6 @@ ENV_PATH="${ENV_FILE:-.env}"
 # Mounted at /opt/data in hermes (docker-compose.yml).
 HERMES_DATA_DIR="${VAULT_HERMES_DATA_DIR:-${ROOT}/data/hermes}"
 PLUGINS_MARKER=.addon-plugins-changed
-# The containers' user (compose/bitwarden-broker/Dockerfile).
-CONTAINER_UID=10001
 INIT_WAIT_SECONDS=600
 # Regexes live in variables: bash 3.2 parses some unquoted ones in [[ =~ ]] differently.
 # The add-on store's rule (scripts/lib/addon_store.py SLUG_RE), which the broker applies too.
@@ -317,53 +315,23 @@ wait_for_account() {
 
 # --- Files ----------------------------------------------------------------
 #
-# On Linux, secrets/<slug>/, local/ and broker/ belong to the containers' user
-# (uid 10001, modes 700 and 600), and secrets/ stays with you at mode 711. The
-# instance store is yours (scripts/lib/addon_store.py). vault.sh never chmods or writes a path it
-# does not own: what it cannot read or write it reaches through the
-# bitwarden-setup container, which runs as that user, and it says so once per
-# path. An unreadable file is never taken as empty.
+# The containers run as HERMES_UID:HERMES_GID, the host user, so every file
+# under BITWARDEN_HOST_DATA_DIR and the instance store is yours. A folder an
+# earlier version gave to uid 10001, or one Docker made as root, stops the run
+# with the chown that fixes it. An unreadable file is never taken as empty.
 
-NOTED=" "
 FILE_TEXT=""
 LOADED=""
 
-# The path inside bitwarden-setup for a host path under its mounts.
-to_container() {
-  local p="$1" data
-  data="$(data_dir)"
-  case "$p" in
-    "$data"/broker/*) printf '/broker/%s' "${p#"$data"/broker/}" ;;
-    "$data"/local/*) printf '/local/%s' "${p#"$data"/local/}" ;;
-    "$data"/secrets/*) printf '/secrets/%s' "${p#"$data"/secrets/}" ;;
-    *) return 1 ;;
-  esac
-}
+# The one-time fix for Bitwarden data the host user cannot reach.
+# shellcheck disable=SC2016  # printed for the user to run
+own_fix() { printf 'sudo chown -R "$(id -u):$(id -g)" %s' "$(data_dir)"; }
 
-# Runs SCRIPT with sh in bitwarden-setup, with ARGS (container paths) as $1...
-# and this process's stdin as its stdin.
-container_sh() {
-  local script="$1"
-  shift
-  docker compose --profile bitwarden-tools run --rm --no-deps -T --entrypoint sh bitwarden-setup -c "$script" sh "$@"
-}
-
-note_container() {
-  [[ "$NOTED" == *" $1 "* ]] && return 0
-  NOTED="${NOTED}$1 "
-  printf '[vault] Note: %s belongs to the containers'"'"' user (uid %s); using bitwarden-setup to reach it.\n' \
-    "$1" "$CONTAINER_UID" >&2
-}
-
-# Exit 3: no such file.
-# shellcheck disable=SC2016  # expanded by the sh that runs it
-READ_SCRIPT='[ -e "$1" ] || exit 3; cat "$1"'
-
-# Sets FILE_TEXT to PATH's contents, through bitwarden-setup when the host
-# cannot read it. With "optional", a missing file is empty; otherwise a file
-# that cannot be read stops the run. Call it in this shell, not in $(...).
+# Sets FILE_TEXT to PATH's contents. With "optional", a missing file is empty;
+# otherwise a file that cannot be read stops the run. Call it in this shell,
+# not in $(...).
 load_file() {
-  local path="$1" optional="${2:-}" rc=0 cpath parent
+  local path="$1" optional="${2:-}" parent
   [[ "$path" == "$LOADED" ]] && return 0
   parent="$(dirname "$path")"
   if [[ -r "$path" ]]; then
@@ -372,22 +340,14 @@ load_file() {
     [[ -n "$optional" ]] || die "no such file: ${path}"
     FILE_TEXT=""
   else
-    cpath="$(to_container "$path")" || die "cannot read ${path}"
-    note_container "$path"
-    FILE_TEXT="$(container_sh "$READ_SCRIPT" "$cpath")" || rc=$?
-    if [[ "$rc" -eq 3 && -n "$optional" ]]; then
-      FILE_TEXT=""
-    elif [[ "$rc" -ne 0 ]]; then
-      FILE_TEXT=""
-      LOADED=""
-      die "could not read ${path} through bitwarden-setup (docker compose build bitwarden-setup, then try again)"
-    fi
+    FILE_TEXT=""
+    LOADED=""
+    die "cannot read ${path}; it belongs to another user. Run once: $(own_fix)"
   fi
   LOADED="$path"
 }
 
-# Operations in secrets/<slug>/, run with sh on the host when it can write
-# there and in bitwarden-setup otherwise. $1 is the folder. Values come on
+# Operations in secrets/<slug>/, run with sh. $1 is the folder. Values come on
 # stdin, so they never appear in any process's argv.
 # shellcheck disable=SC2016  # expanded by the sh that runs it
 SECRET_WRITE='umask 077; t="$1/.$2.tmp"; cat > "$t" && chmod 600 "$t" && mv -f "$t" "$1/$2"'
@@ -403,21 +363,13 @@ SECRET_RESTORE='for n in client_id client_secret master_password; do
 done'
 # shellcheck disable=SC2016  # expanded by the sh that runs it
 SECRET_DROP_BACKUP='rm -f "$1/client_id.bak" "$1/client_secret.bak" "$1/master_password.bak"'
-# shellcheck disable=SC2016  # expanded by the sh that runs it
-SECRET_CLEAR='rm -f "$1/client_id" "$1/client_secret" "$1/master_password" \
-  "$1/client_id.bak" "$1/client_secret.bak" "$1/master_password.bak" \
-  "$1/.client_id.tmp" "$1/.client_secret.tmp" "$1/.master_password.tmp"'
 
 slug_op() {
   local slug="$1" script="$2" sdir
   shift 2
   sdir="$(data_dir)/secrets/${slug}"
-  if [[ -w "$sdir" ]]; then
-    sh -c "$script" sh "$sdir" "$@"
-  else
-    note_container "$sdir"
-    container_sh "$script" "/secrets/${slug}" "$@"
-  fi
+  [[ -w "$sdir" && -x "$sdir" ]] || die "cannot write ${sdir}; it belongs to another user. Run once: $(own_fix)"
+  sh -c "$script" sh "$sdir" "$@"
 }
 
 # Writes VALUE to secrets/<slug>/NAME, mode 600.
@@ -430,13 +382,8 @@ remove_secrets() {
   local sdir
   sdir="$(data_dir)/secrets/$1"
   [[ -d "$sdir" ]] || return 0
-  if [[ -w "$sdir" && -x "$sdir" ]]; then
-    rm -rf "${sdir:?}"
-  else
-    slug_op "$1" "$SECRET_CLEAR" < /dev/null || true
-    # An empty folder goes with write access to secrets/, which stays yours.
-    rmdir "$sdir" 2>/dev/null || log "Could not remove ${sdir}; remove it as root"
-  fi
+  rm -rf "${sdir:?}" 2>/dev/null || true
+  [[ ! -e "$sdir" ]] || log "Could not remove ${sdir}; run once: $(own_fix), then remove it"
 }
 
 # Sets a mode only on a path you own.
@@ -445,43 +392,18 @@ chmod_own() {
   return 0
 }
 
-# On Linux the containers run as uid 10001 and must own their folders. Run as
-# root, chown them; otherwise print the command. secrets/
-# itself is never passed here: it stays yours.
-linux_owner() {
-  [[ $# -gt 0 ]] || return 0
-  [[ "$(uname -s)" == Linux ]] || return 0
-  if [[ "$(id -u)" == 0 ]]; then
-    chown -R "${CONTAINER_UID}:${CONTAINER_UID}" "$@"
-  else
-    log "The Bitwarden containers run as uid ${CONTAINER_UID}; give them these: sudo chown -R ${CONTAINER_UID}:${CONTAINER_UID} $*"
-  fi
-}
-
 # Creates the data folders before any container starts, so Docker does not
-# create them root-owned. Prints the folders it created. A folder under one you
-# cannot enter belongs to the containers, which make their own.
+# create them root-owned. Prints the folders it created.
 ensure_dirs() {
-  local data="$1" d p rest blocked
+  local data="$1" d
   shift
   for d in "$@"; do
-    blocked=""
-    p="$data"
-    rest="$d"
-    while [[ "$rest" == */* ]]; do
-      p="${p}/${rest%%/*}"
-      rest="${rest#*/}"
-      if [[ -d "$p" && ! -x "$p" ]]; then
-        blocked=1
-        break
-      fi
-    done
-    [[ -z "$blocked" ]] || continue
     if [[ -e "${data}/${d}" && ! -d "${data}/${d}" ]]; then
       die "${data}/${d} exists and is not a folder"
     fi
     if [[ ! -d "${data}/${d}" ]]; then
-      (umask 077 && mkdir -p "${data}/${d}")
+      (umask 077 && mkdir -p "${data}/${d}") 2>/dev/null \
+        || die "could not create ${data}/${d}; run once: $(own_fix)"
       printf '%s\n' "${data}/${d}"
     fi
   done
@@ -736,10 +658,6 @@ cmd_add() {
   store_write "$slug" "$(store_values "$mode" "$server" "$scope" "$unlock")"
   [[ "$ADD_STAGE" == backed ]] && ADD_STAGE=replaced || ADD_STAGE=written
   log "Wrote ${file} and secrets/${slug}/"
-  local owned
-  owned="$(printf '%s\n' "$new" | grep -vxF "${data}/secrets" || true)"
-  # shellcheck disable=SC2086  # one folder per line, no spaces in the names we make
-  linux_owner $owned
   if [[ "$JSON" == 1 ]]; then
     emit_line '{"phase":"setup","step":"write","status":"done"}'
     check_account_json "$slug" "$unlock"
@@ -810,28 +728,20 @@ add_cleanup() {
 # login as success, so a leftover one would skip the check of the new key.
 empty_bw_dir() {
   remove_bw_dir "$1" \
-    || emit_error command_failed "could not empty $(data_dir)/bw/$1 (owned by the broker's user); remove it as root, then connect again"
+    || emit_error command_failed "could not empty $(data_dir)/bw/$1; run once: $(own_fix), then connect again"
 }
 
-# Removes bw/<slug>/ and returns 0 only once it is confirmed gone. On Linux
-# bw/ belongs to the containers' user (mode 700), so the host cannot even see
-# whether the folder exists; then the running broker, which mounts it at
-# /data/bw, removes it. Returns 1 when neither can confirm it.
-# shellcheck disable=SC2016  # expanded by the sh that runs it
-BW_RM='rm -rf -- "$1" && [ ! -e "$1" ]'
+# Removes bw/<slug>/ and returns 0 only once it is confirmed gone; 1 when a
+# bw/ the host cannot search (left by uid 10001 or root) hides whether it is.
 remove_bw_dir() {
   local bw d
   bw="$(data_dir)/bw"
   d="${bw}/$1"
   [[ -e "$bw" || -L "$bw" ]] || return 0
-  if [[ -d "$bw" && -x "$bw" ]]; then
-    [[ -e "$d" || -L "$d" ]] || return 0
-    rm -rf "${d:?}" 2>/dev/null || true
-    [[ -e "$d" || -L "$d" ]] || return 0
-  fi
-  broker_running || return 1
-  note_container "$d"
-  broker_exec sh -c "$BW_RM" sh "/data/bw/$1" < /dev/null > /dev/null 2>&1
+  [[ -d "$bw" && -x "$bw" ]] || return 1
+  [[ -e "$d" || -L "$d" ]] || return 0
+  rm -rf "${d:?}" 2>/dev/null || true
+  [[ ! -e "$d" && ! -L "$d" ]]
 }
 
 # add --json failed or was stopped: the instance file, secrets/<slug>/ and
@@ -849,7 +759,7 @@ add_rollback() {
     restart_broker 2>/dev/null || log "The broker did not restart; it holds ${slug} until make up"
   fi
   remove_bw_dir "$slug" \
-    || log "Could not remove $(data_dir)/bw/${slug} (owned by the broker's user); remove it as root"
+    || log "Could not remove $(data_dir)/bw/${slug}; run once: $(own_fix), then remove it"
   return 0
 }
 
@@ -1171,16 +1081,14 @@ cmd_status() {
   while IFS=$'\t' read -r a b c _; do
     [[ "$a" == refused ]] && refused="${refused}${b%%:*}"$'\t'"${c:-bad_file}"$'\n'
   done <<< "$rows"
-  local list="" f lf bdir
+  local list="" f lf
   for f in "$(store_dir)"/instances/*.json; do
     [[ -e "$f" ]] || continue
     f="$(basename "$f")"
     list="${list}${f%.json}"$'\t'"${f}"$'\n'
   done
   lf="$(local_account_file)"
-  bdir="$(dirname "$lf")"
-  # On Linux broker/ belongs to the containers' user, so the host may not see the file.
-  if [[ -e "$lf" ]] || [[ -d "$bdir" && ! -x "$bdir" ]]; then
+  if [[ -e "$lf" ]]; then
     list="${list}local"$'\t'"broker/local-account.json"$'\n'
   fi
   local slug name sj cause text row mode scope unlock st ec retry err
@@ -1189,7 +1097,7 @@ cmd_status() {
     cause=""
     sj="$(json_str "$slug")"
     if [[ "$name" == */* ]]; then
-      # The local account, read through bitwarden-setup when the host cannot; load_file dies, so a subshell.
+      # load_file dies on a file it cannot read, so a subshell.
       if ! text="$(JSON_DIE=0; load_file "$lf" optional 2>/dev/null && printf '%s' "$FILE_TEXT")"; then
         cause=bad_file
       elif [[ -z "$text" ]]; then
@@ -1263,8 +1171,7 @@ cmd_requests() {
 }
 
 # A value from local/state, which local-init writes; empty when there is none.
-# local/ belongs to the containers' user on Linux, so it may come through
-# bitwarden-setup. Call it in this shell, then read STATE_VALUE.
+# Call it in this shell, then read STATE_VALUE.
 STATE_VALUE=""
 state_get() {
   load_file "$(data_dir)/local/state" optional
@@ -1299,17 +1206,23 @@ cmd_remove() {
   fi
   [[ "$slug" != local ]] \
     || emit_error bad_input "the local account is part of make vault-init; BITWARDEN_LOCAL_ENABLED=0 and make up turn local mode off"
-  # --json with no instance file: addon.sh disconnect found the store entry, so
-  # an earlier remove got as far as deleting it (its broker restart failed,
-  # say). This one removes what is left and ends with done.
+  # --json with no instance file: removes what is left and ends with done.
   local data had_file=1
   data="$(data_dir)"
   if [[ ! -f "$(instance_file "$slug")" ]]; then
     [[ "$JSON" == 1 ]] || need_account "$slug"
     had_file=0
   fi
-  # Before the restart, so the broker no longer loads the account.
-  rm -f "$(instance_file "$slug")"
+  # Aside before the restart, so the broker no longer loads the account. A
+  # failed restart (or any exit before the end) puts it back: the store still
+  # lists the account, and addon.sh disconnect's retry runs this again, finds
+  # the secrets gone and ends with done.
+  if [[ "$had_file" == 1 ]]; then
+    REMOVE_SLUG="$slug"
+    trap remove_cleanup EXIT
+    trap 'exit 130' INT TERM
+    mv -f "$(instance_file "$slug")" "$(instance_aside "$slug")"
+  fi
   remove_secrets "$slug"
   if [[ "$had_file" == 1 ]]; then
     log "Removed ${slug}: its instance file and secrets"
@@ -1320,18 +1233,20 @@ cmd_remove() {
     if [[ "$JSON" == 1 ]]; then
       if ! restart_broker; then
         remove_bw_dir "$slug" \
-          || log "Could not remove ${data}/bw/${slug} (owned by the broker's user); remove it as root"
-        emit_error command_failed "removed the files of ${slug}, but the broker did not restart; it holds ${slug} until make up"
+          || log "Could not remove ${data}/bw/${slug}; run once: $(own_fix), then remove it"
+        emit_error command_failed "removed the secrets of ${slug}, but the broker did not restart; disconnect ${slug} again to finish"
       fi
     else
-      restart_broker
+      restart_broker || die "removed the secrets of ${slug}, but the broker did not restart; make vault-remove SLUG=${slug} again finishes"
     fi
     log "Restarted the broker, which no longer holds ${slug}"
     note_locked_manual "$slug"
   fi
+  rm -f "$(instance_aside "$slug")"
+  REMOVE_SLUG=""
   # After the restart, so the broker no longer writes there.
   remove_bw_dir "$slug" \
-    || log "Could not remove ${data}/bw/${slug} (owned by the broker's user); remove it as root"
+    || log "Could not remove ${data}/bw/${slug}; run once: $(own_fix), then remove it"
   log "$REVOKE_REMINDER"
   if [[ "$JSON" == 1 ]]; then
     local msg="${REVOKE_REMINDER}."
@@ -1339,6 +1254,18 @@ cmd_remove() {
     [[ -z "$LOCKED_MANUAL" ]] || msg="${msg} $(locked_sentence)"
     emit_done account "$(json_str "$slug")" message "$(json_str "$msg")"
   fi
+}
+
+# remove moves the instance file here while the broker restarts. A dot name:
+# neither the broker nor the store lists it.
+instance_aside() { printf '%s/instances/.%s.json.removing' "$(store_dir)" "$1"; }
+REMOVE_SLUG=""
+# EXIT trap of remove: an instance file still aside goes back.
+remove_cleanup() {
+  [[ -n "$REMOVE_SLUG" ]] || return 0
+  [[ ! -e "$(instance_aside "$REMOVE_SLUG")" ]] \
+    || mv -f "$(instance_aside "$REMOVE_SLUG")" "$(instance_file "$REMOVE_SLUG")"
+  return 0
 }
 
 local_url() { printf 'http://localhost:%s' "$(env_get VAULTWARDEN_PORT 8222)"; }
@@ -1457,14 +1384,10 @@ cmd_init() {
   new="$(ensure_dirs "$data" bw broker secrets secrets/local secrets/local/tls \
     local local/tls local/tls/server local/vaultwarden)"
   ensure_dirs "$data" vaultwarden >/dev/null
-  # Only folders this run made: on Linux the rest may belong to the containers.
+  # Only a secrets/ this run made: one that exists keeps its mode.
   if printf '%s\n' "$new" | grep -qxF "${data}/secrets"; then
     chmod_own 711 "${data}/secrets"
   fi
-  local owned
-  owned="$(printf '%s\n' "$new" | grep -vxF "${data}/secrets" || true)"
-  # shellcheck disable=SC2086  # one folder per line, no spaces in the names we make
-  [[ -z "$owned" ]] || linux_owner $owned
 
   local step recorded
   state_get STEP
@@ -1480,8 +1403,7 @@ cmd_init() {
     local lf
     lf="$(local_account_file)"
     # Set up before the broker read the local account from broker/local-account.json:
-    # local-init writes it from local/state without signing in. On Linux broker/
-    # may be hidden from the host; local-init keeps a file that is there.
+    # local-init writes it from local/state without signing in.
     if [[ -n "$recorded" ]] && { [[ ! -e "$lf" ]] || [[ ! -e "$(data_dir)/secrets/local/client_id" ]]; }; then
       setup_run local-init --owner "$recorded" --signup-url "$(local_url)" \
         || die "bitwarden-setup local-init could not write the local account; make vault-init again retries it"

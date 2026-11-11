@@ -2195,10 +2195,16 @@ services:
       hermes:
         condition: service_started
         restart: true
-    user: "10001:10001"
+    # The host user, as email-imap and the Hermes readers of instances/ run:
+    # the store keeps instances/ at 0700, owned by that user.
+    user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
     read_only: true
     tmpfs:
       - /tmp
+      # The Unix socket for manual unlocks (python3 -m broker.unlock, run with
+      # docker compose exec as the same user). A tmpfs, so its owner follows
+      # HERMES_UID; nothing else mounts it.
+      - /run/bitwarden-sync:mode=0700,uid=${HERMES_UID:-1000},gid=${HERMES_GID:-1000}
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
@@ -2219,8 +2225,6 @@ services:
       - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/secrets:/secrets:ro
       - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/bw:/data/bw
       - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/broker:/data/broker
-      # The Unix socket for manual unlocks (python3 -m broker.unlock).
-      - bitwarden_sync:/run/bitwarden-sync
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8099/health', timeout=3)"]
       interval: 30s
@@ -2242,7 +2246,7 @@ services:
     entrypoint: ["python3", "/app/setup/setup.py"]
     stdin_open: true
     tty: true
-    user: "10001:10001"
+    user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
     read_only: true
     tmpfs:
       - /tmp
@@ -2400,7 +2404,6 @@ volumes:
   actual_mcp_ro_cache:
   ollama_data:
   hermes_uv_cache:
-  bitwarden_sync:
   # The email add-on's index (email-indexer writes, email-mcp reads) and its
   # drafts queue (email-drafts-mcp writes, email-outbox drains). Removed by
   # scripts/addon.sh disable email --purge.

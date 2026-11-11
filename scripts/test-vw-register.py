@@ -46,6 +46,9 @@ VW_IMAGE = ("vaultwarden/server:1.37.4@sha256:"
 NGINX_IMAGE = "nginx:1.30.6-alpine"
 LOCAL_NAME = "vaultwarden.vault.internal"
 BASE = f"https://{LOCAL_NAME}"
+# Compose runs the broker and bitwarden-setup as HERMES_UID:HERMES_GID, the host user; the image has
+# no passwd entry for it.
+USER = f"{os.getuid()}:{os.getgid()}"
 AGENT_EMAIL = "agent@vault.localhost"
 OWNER_EMAIL = "owner@example.com"
 STRANGER_EMAIL = "stranger@example.com"
@@ -72,8 +75,8 @@ def host_main() -> int:
     # bitwarden-setup's /local and /secrets, as BITWARDEN_HOST_DATA_DIR/local and /secrets.
     local, secrets_dir = tmp / "local", tmp / "secrets"
     for d in (local, secrets_dir):
-        d.mkdir(mode=0o777)
-        os.chmod(d, 0o777)  # the containers write here as uid 10001
+        d.mkdir(mode=0o700)
+        os.chmod(d, 0o700)  # the containers write here as the host user, as compose runs them
     (tmp / "vwdata").mkdir()
     synthetic = {
         "agent_pw": secrets.token_urlsafe(24),
@@ -91,7 +94,7 @@ def host_main() -> int:
         print(text, flush=True)
 
     def broker_run(*args: str) -> subprocess.CompletedProcess:
-        proc = docker("run", "--rm", "--name", gen, "--user", "10001:10001", "--read-only", "--tmpfs", "/tmp",
+        proc = docker("run", "--rm", "--name", gen, "--user", USER, "--read-only", "--tmpfs", "/tmp",
                       "--entrypoint", "python3", "-v", f"{src}:/app:ro", "-v", f"{local}:/local",
                       "-v", f"{secrets_dir}:/secrets",
                       image, "/app/setup/setup.py", *args)
@@ -192,7 +195,7 @@ def host_main() -> int:
 
         try:
             proc = subprocess.run(
-                ["docker", "run", "--rm", "--name", drv, "--network", net, "--user", "10001:10001",
+                ["docker", "run", "--rm", "--name", drv, "--network", net, "--user", USER,
                  "--read-only", "--tmpfs", "/tmp", "--entrypoint", "python3",
                  "-e", "HOME=/tmp", "-e", "NODE_EXTRA_CA_CERTS=/secrets/local/tls/ca.crt",
                  "-e", f"VW_TEST_SIDECAR={tls}",

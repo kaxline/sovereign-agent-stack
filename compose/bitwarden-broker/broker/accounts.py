@@ -24,6 +24,7 @@ Messages never repeat a value from the file.
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -212,7 +213,15 @@ def load_all(instances_dir: Path, broker_dir: Path, secrets_dir: Path) -> tuple[
     loaded: list[Account] = []
     refused: list[Refusal] = []
     instances_dir = Path(instances_dir)
-    files = sorted(instances_dir.glob("*.json")) if instances_dir.is_dir() else []
+    files: list[Path] = []
+    if instances_dir.is_dir():
+        try:
+            files = sorted(instances_dir / n for n in os.listdir(instances_dir)
+                           if n.endswith(".json") and not n.startswith("."))
+        except OSError:
+            # The container runs as HERMES_UID, which must own the store's 0700 instances/.
+            refused.append(Refusal("instances/", "bad_file", "instances/: cannot be read; the broker runs as "
+                                   "HERMES_UID:HERMES_GID, which must own the add-on store"))
     for file in files:
         if not file.is_file():
             continue

@@ -91,13 +91,22 @@ that writes account files.
 
 Each says what it costs if wrong.
 
-1. **Linux can't read the store (rule 2).** `scripts/lib/addon_store.py` keeps `instances/` at
-   mode 700, owned by the host user, and sets that mode again on every write, so uid 10001 (the
-   broker and `bitwarden-setup`) cannot read it on Linux. Not solved here, since it needs a change
-   to `addon_store.py`'s modes or the containers' uid; docs/bitwarden.md says so. `addon-dirs.sh`
-   (run by `make ensure-local`, so `make up`) creates the folder; `vault.sh` also creates it in
-   `pre-up`, `add`, `init` and `restore`. Wrong: Linux installs load only the local account until
-   it is solved.
+1. **The containers run as the host user (rule 2), superseding the first build's "Linux loads
+   only `local`".** `bitwarden-broker` and `bitwarden-setup` run as
+   `${HERMES_UID:-1000}:${HERMES_GID:-1000}`, as email-imap and the Hermes readers of `instances/`
+   do, so they read the store's 0700 `instances/` like the host user. The image drops its uid 10001
+   user (HOME is /tmp, and nothing looks up a passwd entry). The `bitwarden_sync` volume is
+   replaced by a tmpfs at `/run/bitwarden-sync` (`mode=0700,uid=HERMES_UID,gid=HERMES_GID`): a new
+   named volume takes the image directory's owner, which cannot follow an arbitrary uid, and only
+   the broker uses the socket, through `docker compose exec` as the same user. `vault.sh` drops
+   the bitwarden-setup file access, the broker-side `bw/` removal and the `chown 10001` hints; a
+   path it cannot use stops it with `sudo chown -R "$(id -u):$(id -g)" <BITWARDEN_HOST_DATA_DIR>`.
+   `secrets/` keeps mode 711 so macOS behaves as before. `make doctor` flags a `HERMES_UID` other
+   than `id -u` on Linux and a Bitwarden data folder another user owns. Wrong: an install whose
+   `HERMES_UID` is not the host user breaks here as it already breaks email; the CHANGELOG
+   upgrade step has the one-time chown. `addon-dirs.sh` (run by `make ensure-local`, so `make
+   up`) creates `instances/`; `vault.sh` also creates it in `pre-up`, `add`, `init` and
+   `restore`.
 2. **`bitwarden-setup` mounts.** It mounts `instances/` read-write at `/store/instances` and
    `broker/` read-write at `/broker` (rule 3 needs the second). After `create` makes a new
    collection, setup rewrites `scope` in the instance file itself (JSON, indent 2, mode 644, the
@@ -110,10 +119,14 @@ Each says what it costs if wrong.
    through `apply_instance` (with `replace=True`, so a `--force` drops values the new account
    leaves out), run by `stack_python` as `vault.sh` already runs Python. Wrong: a non-transient
    instance secret added later would be left behind.
-4. **Disconnect retry.** With the instance file deleted before the restart (rule 4), a disconnect
-   whose broker restart fails ends in `command_failed` with the store entry already gone; a retry
-   is `not_found`, and the broker drops the account at its next restart. Wrong: Boundary cannot
-   retry to make a running broker drop the account; `make up` does.
+4. **Disconnect retry, superseding the first build's `not_found`.** `vault.sh remove` (both modes)
+   deletes the secrets and moves `instances/<slug>.json` to `instances/.<slug>.json.removing`
+   before the broker restart, so the broker does not load the account. A failed restart, or any
+   exit before the end (an EXIT trap), puts the file back: the store still lists the account, and
+   `addon.sh disconnect`'s retry runs the hook again, finds the secrets gone, restarts and ends with
+   `done`, as the CR 0028 reply promised. Success deletes the aside copy. Wrong: a remove killed
+   with SIGKILL leaves the aside copy, which nothing lists; the next remove of that slug does not
+   clean it.
 5. **Refusal causes (rule 6).** `bad_file` (not a JSON object, unreadable, a wrong value, a
    `client_id` with whitespace), `bad_slug` (outside the rule, or `local.json`), and
    `missing_client_id` (`secrets/<slug>/client_id` missing or empty). `status --json` keeps its
@@ -122,9 +135,12 @@ Each says what it costs if wrong.
    and an unreadable file on the host, so they show with the broker down. The broker's
    `/health` keeps `account_errors` and adds `refused` (`file`, `error`, `message`);
    `broker.cli accounts` prints the cause as a third column of a `refused` line.
-6. **`status --json` still lists `local`** (mode `local`, from `broker/local-account.json`), as it
-   listed `local.env`. "Boundary never lists it" is read as the store's listing. Wrong: drop the
-   local line from `status --json`.
+6. **`status --json` and `local` match main.** Main lists `local.env` like any account file (mode,
+   scope and unlock from the file, `bad_file` when unreadable or refused). The build lists `local`
+   when `broker/local-account.json` exists, with mode `local`, its scope and unlock `stored`, the
+   values `local.env` always held; only a refused line's `file` changes, to
+   `broker/local-account.json`. The first build also listed it when `broker/` was unsearchable;
+   that went with the uid change.
 7. **Re-running `make vault-init`.** With `STEP=role` and the local account files missing, it runs
    `local-init`, which writes them from `local/state` without signing in. `local-init` also
    writes them whenever they are missing, at any step. Without this, the CHANGELOG's "run it
@@ -141,3 +157,8 @@ Each says what it costs if wrong.
     the store lists.
 11. **Backup and restore** copy `instances/` and `broker/local-account.json` in place of the
     account files. Restoring an older backup that has `accounts/` says those files are not read.
+12. **An unreadable `instances/` is a refusal.** When the broker cannot list `instances/` (its
+    `HERMES_UID` does not own the folder), it refuses `instances/` with `bad_file` and a message
+    naming `HERMES_UID`, instead of loading no instance silently. `make doctor` prints it with
+    the other refusals; `status --json` matches refusals by instance file name, so it shows the
+    instances as `not_loaded`. Wrong: Boundary would need a per-store refusal line.

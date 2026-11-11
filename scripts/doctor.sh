@@ -1232,6 +1232,18 @@ if [[ "$bw_on" -eq 1 || "$bw_local" -eq 1 || "$bw_files" -gt 0 || "$bw_old" -gt 
     /*) ;;
     *) bw_data="${ROOT}/${bw_data#./}" ;;
   esac
+  # The broker and bitwarden-setup run as HERMES_UID:HERMES_GID, which on Linux
+  # must be you: earlier versions gave these folders to uid 10001.
+  bw_own_fix="sudo chown -R \"\$(id -u):\$(id -g)\" ${bw_data}"
+  if [[ "$(uname -s)" == Linux && "$(env_get HERMES_UID 1000)" != "$(id -u)" ]]; then
+    bad "HERMES_UID=$(env_get HERMES_UID 1000) is not your uid ($(id -u)); the Bitwarden containers run as HERMES_UID — set it in .env"
+  fi
+  for bw_dir in bw broker local secrets; do
+    if [[ -e "${bw_data}/${bw_dir}" && ! -O "${bw_data}/${bw_dir}" ]]; then
+      bad "${bw_data}/${bw_dir} belongs to another user (uid 10001 from an earlier version, or root) — ${bw_own_fix}"
+      break
+    fi
+  done
   # Docker turns a missing bind-mount source into an empty folder, which then
   # stands where vault-init's file should go.
   if [[ -d "${bw_data}/secrets/local/tls/ca.crt" ]]; then

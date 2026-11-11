@@ -27,7 +27,8 @@ VAULTWARDEN_IMAGE = ("vaultwarden/server:1.37.4@sha256:"
                      "efb3cde962015fcc036b2ea625242248611943b27212ebf4392841fb30fad055")
 LOCAL_NAME = "vaultwarden.vault.internal"
 ADDON_DATA = "addons/bitwarden"
-SYNC_VOLUME = "bitwarden_sync"
+SYNC_DIR = "/run/bitwarden-sync"
+HOST_USER = "1000:1000"  # HERMES_UID:HERMES_GID's defaults
 checks = Checks()
 
 
@@ -127,8 +128,13 @@ def check_broker(services: dict) -> None:
         checks.fail("bitwarden-broker needs read_only: true")
     if broker.get("cap_drop") != ["ALL"]:
         checks.fail(f"bitwarden-broker cap_drop is {broker.get('cap_drop')!r}, want ['ALL']")
-    if broker.get("user") != "10001:10001":
-        checks.fail("bitwarden-broker runs as 10001:10001")
+    if broker.get("user") != HOST_USER:
+        checks.fail(f"bitwarden-broker runs as HERMES_UID:HERMES_GID ({HOST_USER}), not {broker.get('user')!r}")
+    # The manual-unlock socket's folder: a tmpfs owned by that user, so no
+    # volume keeps an image owner that differs from it.
+    sync = next((t for t in broker.get("tmpfs") or [] if t.split(":")[0] == SYNC_DIR), "")
+    if sync != f"{SYNC_DIR}:mode=0700,uid=1000,gid=1000":
+        checks.fail(f"bitwarden-broker needs a mode 0700 tmpfs at {SYNC_DIR} owned by HERMES_UID, not {sync!r}")
     if "no-new-privileges:true" not in (broker.get("security_opt") or []):
         checks.fail("bitwarden-broker needs no-new-privileges:true")
     if "/tmp" not in [t.split(":")[0] for t in broker.get("tmpfs") or []]:
@@ -141,7 +147,6 @@ def check_broker(services: dict) -> None:
         "/secrets": (True, f"{ADDON_DATA}/secrets"),
         "/data/bw": (False, f"{ADDON_DATA}/bw"),
         "/data/broker": (False, f"{ADDON_DATA}/broker"),
-        "/run/bitwarden-sync": (False, SYNC_VOLUME),
     }
     for target, (read_only, source) in want.items():
         vol = mount_at(broker, target)
@@ -185,7 +190,7 @@ def check_hermes(cfg: dict, backend: str) -> None:
     hermes = services.get("hermes") or {}
     for vol in mounts(hermes):
         source = str(vol.get("source", ""))
-        if ADDON_DATA in source or source == SYNC_VOLUME or "compose/bitwarden/" in source:
+        if ADDON_DATA in source or "compose/bitwarden/" in source:
             checks.fail(f"hermes ({backend}) mounts {source}")
     if "vault" not in networks(hermes):
         checks.fail(f"hermes ({backend}) is not on the vault network")
@@ -233,16 +238,15 @@ def check_tools(cfg: dict) -> None:
             checks.fail(f"bitwarden-setup needs {key}={want}")
     for vol in mounts(setup):
         source = str(vol.get("source", ""))
-        if "hermes" in source or source == SYNC_VOLUME:
+        if "hermes" in source:
             checks.fail(f"bitwarden-setup mounts {source}")
-    vol = mount_at(services.get("bitwarden-broker") or {}, "/run/bitwarden-sync")
-    if vol is None or vol.get("source") != SYNC_VOLUME:
-        checks.fail("bitwarden-broker mounts bitwarden_sync at /run/bitwarden-sync")
+    if setup.get("user") != HOST_USER:
+        checks.fail(f"bitwarden-setup runs as HERMES_UID:HERMES_GID ({HOST_USER}), not {setup.get('user')!r}")
+    if "bitwarden_sync" in (cfg.get("volumes") or {}):
+        checks.fail("the bitwarden_sync volume is gone: the socket folder is a tmpfs")
     for name, service in services.items():
-        if name == "bitwarden-broker":
-            continue
-        if any(v.get("source") == SYNC_VOLUME for v in mounts(service)):
-            checks.fail(f"{name} mounts {SYNC_VOLUME}")
+        if name != "bitwarden-broker" and any(SYNC_DIR in str(t) for t in service.get("tmpfs") or []):
+            checks.fail(f"{name} mounts {SYNC_DIR}")
 
 
 def env_value(service: dict, key: str):

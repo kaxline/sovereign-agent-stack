@@ -348,6 +348,15 @@ def test_instance_store() -> None:
 
         expect(accounts.load_all(Path(tmp) / "missing", Path(tmp) / "missing", sec) == ([], []),
                "missing folders")
+        if os.getuid() != 0:
+            d.chmod(0)
+            try:
+                loaded, refused = load()
+            finally:
+                d.chmod(0o700)
+            expect([a.slug for a in loaded] == [] and [(r.file, r.cause) for r in refused] == [
+                ("instances/", "bad_file"), ("broker/local-account.json", "bad_file")],
+                f"an unreadable instances/ is one refusal: {loaded} {refused}")
         account = accounts.load_account("home-lab", d, broker_dir, sec)
         expect(account.slug == "home-lab", "load_account finds an instance")
         for slug, cause in (("nope", "bad_file"), ("9abc", "bad_slug"), ("local", "bad_file")):

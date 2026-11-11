@@ -159,20 +159,23 @@ check "secrets/ is still mode 711" '[ "$(mode_of "$D/secrets")" = 711 ]'
 addon disconnect bitwarden --instance home --json < /dev/null
 check "a second disconnect is not_found" '[ "$rc" = 2 ] && [ "$(last error)" = not_found ]'
 
-# A disconnect whose broker restart fails: vault.sh already deleted the
-# instance file, and addon.sh disconnect ends in command_failed. The retry
-# finds the store entry gone and ends with not_found.
+# A disconnect whose broker restart fails: the secrets are gone, the instance
+# file is back after the restart, so the store still lists the account. The
+# retried disconnect runs the hook again and ends with done.
 printf 'retry\tcloud\tfolder\tlocked\t-\t1\t\n' > "$STUB/accounts"
 connect retry "$MANUAL"
 check "connect retry exits 0" '[ "$rc" = 0 ] && [ -f "$INST/retry.json" ]'
+: > "$STUB/log"
 touch "$STUB/fail-recreate"
 addon disconnect bitwarden --instance retry --json < /dev/null
 rm -f "$STUB/fail-recreate"
 check "a disconnect whose restart fails is command_failed" '[ "$rc" = 4 ] && [ "$(last error)" = command_failed ]'
-check "the failed disconnect removed the instance file and secrets before the restart" \
-  '[ ! -e "$INST/retry.json" ] && [ ! -e "$D/secrets/retry" ]'
+check "the restart ran without the instance file" '! grep "instances at recreate" "$STUB/log" | grep -q retry.json'
+check "the failed disconnect removed the secrets and kept the store entry" \
+  '[ -f "$INST/retry.json" ] && [ ! -e "$D/secrets/retry" ] && ! ls -A "$INST" | grep -q "^\.retry"'
 addon disconnect bitwarden --instance retry --json < /dev/null
-check "the retried disconnect is not_found" '[ "$rc" = 2 ] && [ "$(last error)" = not_found ]'
+check "the retried disconnect ends with done" '[ "$rc" = 0 ] && [ "$(last phase)" = done ]'
+check "the retried disconnect clears the store entry" '[ ! -e "$INST/retry.json" ]'
 
 # --- vault.sh: terminal add and remove write the instance store ----------------
 : > "$STUB/log"

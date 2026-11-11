@@ -29,39 +29,12 @@ mkdir -p "$tmp/bin" "$STUB"
 : > "$ENV_FILE"
 
 # docker: one log line per call; canned answers from files in $STUB.
-# bitwarden-setup with --entrypoint runs that command here, with its
-# /broker, /local and /secrets paths under $STUB/cview, the container's view.
 cat > "$tmp/bin/docker" <<'SH'
 #!/bin/sh
 printf '%s\n' "$*" >> "$STUB/log"
 rc_of() { if [ -f "$STUB/rc.$1" ]; then cat "$STUB/rc.$1"; else echo 0; fi; }
-# bw/ may be mode 000 (Linux: it belongs to uid 10001); the broker's side of
-# the stub opens it for one step and puts the mode back.
-bw_open() { bwm=""; [ -d "$STUB_DATA/bw" ] || return 0; bwm="$(stat -c %a "$STUB_DATA/bw" 2>/dev/null || stat -f %Lp "$STUB_DATA/bw")"; chmod u+rwx "$STUB_DATA/bw"; }
-bw_close() { [ -z "$bwm" ] || chmod "$bwm" "$STUB_DATA/bw"; }
 case " $* " in
-  *" --entrypoint "*)
-    ep=""; take=""; seen=""
-    for a do
-      shift
-      if [ -n "$seen" ]; then
-        case "$a" in /broker/* | /local/* | /secrets/*) a="$STUB/cview$a" ;; esac
-        set -- "$@" "$a"
-      elif [ "$take" = 1 ]; then ep="$a"; take=""
-      elif [ "$a" = --entrypoint ]; then take=1
-      elif [ "$a" = bitwarden-setup ]; then seen=1
-      fi
-    done
-    exec "$ep" "$@" ;;
-esac
-case " $* " in
-  *" exec -T bitwarden-broker sh -c "*)
-    for a do last="$a"; done
-    [ -f "$STUB/rc.bwrm" ] && exit "$(cat "$STUB/rc.bwrm")"
-    bw_open
-    rm -rf "$STUB_DATA/bw/${last#/data/bw/}"; [ ! -e "$STUB_DATA/bw/${last#/data/bw/}" ]; r=$?
-    bw_close
-    exit "$r" ;;
+  *" --entrypoint "* | *" exec -T bitwarden-broker sh "*) echo "stub: container file access" >> "$STUB/log"; exit 1 ;;
   *" info "*) exit 0 ;;
   *" ps "*bitwarden-broker*) [ -f "$STUB/broker-running" ] && echo cid-broker; exit 0 ;;
   *" ps "*" hermes "*) [ -f "$STUB/hermes-running" ] && echo cid-hermes; exit 0 ;;
@@ -71,11 +44,9 @@ case " $* " in
     for f in "$ASSISTANT_DATA_ROOT"/addons/bitwarden/instances/*.json; do
       [ -e "$f" ] && echo "stub: instance ${f##*/} at up" >> "$STUB/log"
     done
-    bw_open
     [ -e "$STUB_DATA/bw/jm/stale" ] && echo "stub: stale bw login at up" >> "$STUB/log"
     # The broker writing a sign-in into bw/<slug>/ while it is replaced.
     if [ -f "$STUB/bw-at-up" ]; then mkdir -p "$STUB_DATA/bw/$(cat "$STUB/bw-at-up")" && touch "$STUB_DATA/bw/$(cat "$STUB/bw-at-up")/login"; fi
-    bw_close
     if [ -d "$STUB_DATA/local/tls/server" ] && [ -d "$STUB_DATA/local/vaultwarden" ] \
       && [ -d "$STUB_DATA/secrets/local/tls" ] && [ -d "$STUB_DATA/vaultwarden" ]; then
       echo "stub: dirs ready at up" >> "$STUB/log"
@@ -497,58 +468,31 @@ said '"slug":"old"' || fail "status --json does not list the account with the un
 said refused && fail "status --json reports the unknown key as refused"
 rm -f "$INST/old.json"
 
-# --- Linux: files that belong to the containers' user (Ruling R23) -------------
-# A non-root user on Linux after the uid 10001 chown: broker/, local/ and
-# secrets/<slug>/ are out of reach, so vault.sh goes through bitwarden-setup
-# (the stub runs it against $STUB/cview) and says so, never reading them as empty.
-# The instance store stays yours.
+# --- Data an earlier version gave to uid 10001 (or root) -------------------------
+# The containers now run as the host user. vault.sh never reaches a path it
+# cannot use through a container: it stops, writes nothing and names the chown.
 reset_stub
-# shellcheck disable=SC2016  # expanded by the stub
-printf '#!/bin/sh\nif [ "$1" = -s ]; then echo Linux; else exec /usr/bin/uname "$@"; fi\n' > "$tmp/bin/uname"
-# shellcheck disable=SC2016  # expanded by the stub
-printf '#!/bin/sh\ncase "$1" in -u | -g) echo 1000 ;; *) exec /usr/bin/id "$@" ;; esac\n' > "$tmp/bin/id"
-chmod +x "$tmp/bin/uname" "$tmp/bin/id"
-cv="$STUB/cview"
-mkdir -p "$cv/broker" "$cv/local" "$cv/secrets/lin2"
 touch "$STUB/broker-running"
-# status --json reads broker/local-account.json through bitwarden-setup.
-printf '{\n  "scope": "collection:c-lin"\n}\n' > "$cv/broker/local-account.json"
-rm -f "$BITWARDEN_HOST_DATA_DIR/broker/local-account.json"
-chmod 000 "$BITWARDEN_HOST_DATA_DIR/broker"
-printf 'local\tlocal\tcollection\tunlocked\t-\t1\t\n' > "$STUB/accounts"
-run status --json || fail "linux: status --json with broker/ out of reach"
-grep -q '"slug":"local","mode":"local","scope":"collection:c-lin","unlock":"stored","state":"unlocked"' "$out" \
-  || fail "linux: status did not read local-account.json through bitwarden-setup"
-logged "/broker/local-account.json" || fail "linux: status did not go through bitwarden-setup"
-chmod 700 "$BITWARDEN_HOST_DATA_DIR/broker"
-
-: > "$STUB/log"
-printf 'STEP=confirmed\nOWNER_EMAIL=owner@example.com\n' > "$cv/local/state"
+printf 'STEP=confirmed\nOWNER_EMAIL=owner@example.com\n' > "$BITWARDEN_HOST_DATA_DIR/local/state"
 chmod 000 "$BITWARDEN_HOST_DATA_DIR/local"
-run init || fail "linux: init re-run with local/ out of reach"
-logged "/local/state" || fail "linux: init did not read local/state through bitwarden-setup"
-logged "role --slug local --email owner@example.com" || fail "linux: init did not resume from the container's state"
-logged "bitwarden-setup tls" && fail "linux: init re-ran tls after confirmed"
+run init && fail "init with local/ out of reach must stop"
+said "sudo chown -R \"\$(id -u):\$(id -g)\"" || fail "init names the chown for local/"
+logged "bitwarden-setup" && fail "init ran bitwarden-setup with local/ out of reach"
 chmod 700 "$BITWARDEN_HOST_DATA_DIR/local"
 
 : > "$STUB/log"
 mkdir -p "$BITWARDEN_HOST_DATA_DIR/secrets/lin2"
 chmod 500 "$BITWARDEN_HOST_DATA_DIR/secrets/lin2"
 printf 'lin2\tcloud\tfolder\tunlocked\t-\n' > "$STUB/accounts"
-run_in "user.lin2"$'\n'"$SECRET"$'\n'"$PW"$'\n' add --slug lin2 --mode cloud || fail "linux: add into a container-owned secrets folder"
-[ "$(cat "$cv/secrets/lin2/client_secret")" = "$SECRET" ] || fail "linux: client_secret not written through bitwarden-setup"
-[ "$(cat "$cv/secrets/lin2/client_id")" = user.lin2 ] || fail "linux: client_id not written through bitwarden-setup"
-[ "$(cat "$cv/secrets/lin2/master_password")" = "$PW" ] || fail "linux: master_password not written through bitwarden-setup"
-[ "$(mode_of "$cv/secrets/lin2/client_secret")" = 600 ] || fail "linux: client_secret mode"
-[ -z "$(ls -A "$BITWARDEN_HOST_DATA_DIR/secrets/lin2")" ] || fail "linux: add wrote into a folder it does not own"
-# Every folder existed and the instance file stays yours, so there is nothing to hand to uid 10001.
-said "sudo chown" && fail "linux: add asks to chown when it made nothing new"
-said "lin2: signed in" || fail "linux: add's check"
-no_secret "linux add"
-
+run_in "user.lin2"$'\n'"$SECRET"$'\n'"$PW"$'\n' add --slug lin2 --mode cloud && fail "add into a secrets folder it cannot write"
+said "sudo chown -R \"\$(id -u):\$(id -g)\"" || fail "add names the chown for secrets/lin2"
+[ ! -e "$INST/lin2.json" ] || fail "a stopped add wrote the instance file"
+[ -z "$(ls -A "$BITWARDEN_HOST_DATA_DIR/secrets/lin2")" ] || fail "add wrote into a folder it does not own"
+logged "container file access" && fail "add reached a file through a container"
+logged " up " && fail "a stopped add restarted the broker"
+no_secret "add into an unwritable folder"
 chmod 700 "$BITWARDEN_HOST_DATA_DIR/secrets/lin2"
 rm -rf "$BITWARDEN_HOST_DATA_DIR/secrets/lin2"
-rm -f "$INST/lin2.json" "$tmp/bin/uname" "$tmp/bin/id"
 
 # --- status --json ---------------------------------------------------------------
 reset_stub
@@ -779,9 +723,11 @@ jlast message | grep -q "had no instance file" || fail "remove --json of a missi
 gone jm "remove --json of a missing account"
 [ "$(recreates)" = 0 ] || fail "remove --json of an account the broker does not hold restarted it"
 
-# The restart fails: command_failed, with bw/<slug>/ already removed. A retry
-# restarts the broker, which still lists the account, and ends with done.
+# The restart fails: command_failed, with the secrets and bw/<slug>/ removed
+# and the instance file back in place, so the store still lists jf. A retry
+# restarts the broker and ends with done.
 inst jf '{"mode":"cloud","unlock":"manual"}'
+cp "$INST/jf.json" "$tmp/jf.before"
 mkdir -p "$D/secrets/jf" "$D/bw/jf"
 touch "$D/secrets/jf/client_secret" "$D/bw/jf/data.json"
 printf 'jf\tcloud\tfolder\tlocked\t-\t0\t\n' > "$STUB/accounts"
@@ -789,11 +735,25 @@ echo 1 > "$STUB/rc.up"
 : > "$STUB/log"
 [ "$(jr --slug jf --json)" = 4 ] && [ "$(jlast error)" = command_failed ] || fail "remove --json when the restart fails"
 only_json "remove --json when the restart fails"
-gone jf "remove --json when the restart fails"
+logged "stub: instance jf.json at up" && fail "the instance file was in place during the restart"
+cmp -s "$INST/jf.json" "$tmp/jf.before" || fail "a failed restart did not put the instance file back"
+[ ! -e "$D/secrets/jf" ] && [ ! -e "$D/bw/jf" ] || fail "a failed restart kept the secrets or bw/jf"
+for left in "$INST"/.jf.*; do [ ! -e "$left" ] || fail "a failed restart left a file aside"; done
 rm -f "$STUB/rc.up"
 : > "$STUB/log"
 [ "$(jr --slug jf --json)" = 0 ] && [ "$(jlast phase)" = "done" ] || fail "remove --json retry after a failed restart"
 [ "$(recreates)" = 1 ] || fail "the retry did not restart the broker that still holds jf"
+gone jf "remove --json retry after a failed restart"
+# Terminal remove: the same, failing with the file back, then done.
+inst jt '{"mode":"cloud","unlock":"manual"}'
+printf 'jt\tcloud\tfolder\tlocked\t-\t0\t\n' > "$STUB/accounts"
+echo 1 > "$STUB/rc.up"
+rc=0; STACK_PYTHON=host "$vault" remove --slug jt < /dev/null > "$out" 2>&1 || rc=$?
+[ "$rc" != 0 ] && [ -f "$INST/jt.json" ] || fail "terminal remove with a failed restart keeps the instance file"
+rm -f "$STUB/rc.up"
+rc=0; STACK_PYTHON=host "$vault" remove --slug jt < /dev/null > "$out" 2>&1 || rc=$?
+[ "$rc" = 0 ] || fail "terminal remove retry"
+gone jt "terminal remove retry"
 printf 'jm\tcloud\tfolder\tlocked\t-\t1\t\nother\tcloud\tfolder\tlocked\t-\t0\t\n' > "$STUB/accounts"
 [ "$(jr --slug local --json)" = 2 ] && [ "$(jlast error)" = bad_input ] || fail "remove --json local"
 rm -f "$INST/other.json"
@@ -824,38 +784,17 @@ echo jp > "$STUB/bw-at-up"
 check_fail jp "$MANUAL" "$(printf 'jp\tcloud\tfolder\terror\tauth\t0\t')" login_refused
 rm -f "$STUB/bw-at-up"
 
-# bw/ the host cannot search (Linux, uid 10001, mode 700): the broker removes
-# bw/<slug>/, a leftover login included.
-mkdir -p "$D/bw/jm"
-touch "$D/bw/jm/stale"
-chmod 000 "$D/bw"
-: > "$STUB/log"
-printf 'jm\tcloud\tfolder\tlocked\t-\t1\t\n' > "$STUB/accounts"
-[ "$(ja "$MANUAL" jm)" = 0 ] && [ "$(jlast phase)" = "done" ] || fail "add --json with an unsearchable bw/"
-logged "exec -T bitwarden-broker sh -c" || fail "unsearchable bw/: the broker did not remove bw/jm"
-logged "stub: stale bw login at up" && fail "unsearchable bw/: the broker started with the stale bw login"
-[ "$(jr --slug jm --json)" = 0 ] || fail "remove --json with an unsearchable bw/"
-chmod 700 "$D/bw"
-gone jm "remove --json with an unsearchable bw/"
-# A failed connect: bw/<slug>/ the broker wrote is removed through the broker.
-chmod 000 "$D/bw"
-echo jq > "$STUB/bw-at-up"
-: > "$STUB/log"
-printf 'jq\tcloud\tfolder\terror\tauth\t0\t\n' > "$STUB/accounts"
-[ "$(ja "$MANUAL" jq)" = 4 ] && [ "$(jlast error)" = login_refused ] || fail "unsearchable bw/: login_refused"
-rm -f "$STUB/bw-at-up"
-chmod 700 "$D/bw"
-gone jq "unsearchable bw/, login_refused"
-# The broker cannot remove it either: command_failed before anything is written.
+# bw/ the host cannot search (left by uid 10001): command_failed with the
+# chown, before anything is written or restarted.
 mkdir -p "$D/bw/jv"
 chmod 000 "$D/bw"
-echo 1 > "$STUB/rc.bwrm"
 : > "$STUB/log"
-[ "$(ja "$MANUAL" jv)" = 4 ] && [ "$(jlast error)" = command_failed ] || fail "unsearchable bw/ the broker cannot empty"
-rm -f "$STUB/rc.bwrm"
+[ "$(ja "$MANUAL" jv)" = 4 ] && [ "$(jlast error)" = command_failed ] || fail "add --json with an unsearchable bw/"
+jlast message | grep -qF 'sudo chown -R' || fail "the unsearchable bw/ error names the chown"
 chmod 700 "$D/bw"
-[ ! -e "$INST/jv.json" ] && [ ! -e "$D/secrets/jv" ] || fail "an unconfirmed bw/jv still let add write"
-[ "$(recreates)" = 0 ] || fail "an unconfirmed bw/jv still restarted the broker"
+[ ! -e "$INST/jv.json" ] && [ ! -e "$D/secrets/jv" ] || fail "an unsearchable bw/ still let add write"
+[ "$(recreates)" = 0 ] || fail "an unsearchable bw/ still restarted the broker"
+logged "container file access" && fail "add --json reached bw/ through a container"
 rm -rf "$D/bw/jv"
 
 # The broker does not come back up.
