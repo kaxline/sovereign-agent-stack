@@ -662,7 +662,17 @@ a changelog entry.
 | `connect <short-id> --instance <slug> [--force] [--json] < values.json` | Checks the values, runs the manifest's `instances.connect` hook, stores the instance, reloads Hermes. `--force` replaces an existing instance; see [Replacing an instance](#replacing-an-instance) |
 | `disconnect <short-id> --instance <slug> [--json]` | Runs `instances.disconnect`, removes the instance, reloads Hermes |
 | `remove <short-id> --delete-data [--json]` | Deletes the add-on's containers, compose volumes and data. Refused while the add-on is enabled |
-| `run <short-id> <command> [--instance <slug>]` | Runs a manifest `commands` entry in its service with `docker compose run --rm --no-deps -T` |
+| `run <short-id> <command> [--instance <slug>]` | Runs a manifest `commands` entry in its service with `docker compose run --rm --no-deps -T`, after building the service as described below the table |
+
+Every service built from this repo (one with a `build` section in
+`docker-compose.yml`) is built with `docker compose build --quiet` before
+`addon.sh` runs it, so a checkout never runs an image older than its source:
+in step `start` of `enable` before the one-shots and the services start,
+before a hook that runs in a compose service, and before `run`. An unchanged
+build is a cache hit that takes a second or two. Compose's build output goes
+to stderr, or the step log with `--json`, only when the build fails; a failed
+build is `compose_failed` at step `start` for `enable` and exit 4 for `run`.
+Dependencies aren't built, so `hermes` is never rebuilt this way.
 
 `list --json` objects carry `id`, `shortId`, `title`, `tagline`,
 `permissions`, `platform`, `enabled` (the flag in `.env`), `settings`,
@@ -789,7 +799,8 @@ their step output to stderr and nothing to stdout.
 
 `pull` lines come from `enable` only. It pulls each service's image first with
 `--policy missing --ignore-buildable`, so a local-only image or an offline
-machine still enables and an updated tag isn't fetched. A `pull` line carries
+machine still enables and an updated tag isn't fetched. Images built from
+this repo are built in step `start` instead. A `pull` line carries
 bytes summed over layers, at most one per service per second, and ends with
 `{"phase":"pull","service":<name>,"status":"done"}`.
 

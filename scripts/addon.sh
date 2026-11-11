@@ -19,7 +19,7 @@
 # configure reads one JSON object on stdin. Secret values go only to
 # data/addons/<short-id>/secrets; bool settings with a flag write that flag to
 # .env while the add-on is enabled. enable checks every required setting, sets builtin.flag=1 (and each
-# gate flag a stored setting owns), syncs COMPOSE_PROFILES, starts the
+# gate flag a stored setting owns), syncs COMPOSE_PROFILES, builds and starts the
 # services whose gate is on, runs the manifest's init hook once (--reinit runs
 # it again; data/addons/<short-id>/state.json records it) and reloads Hermes. disable sets the flag and every
 # gate flag to 0, syncs, stops the services and reloads; --purge then runs
@@ -88,6 +88,10 @@
 # and disconnect's not_found, 3 missing_settings, 4 command_failed (run:
 # docker compose run failed; addon_cli.py failed; SIGINT or SIGTERM; an
 # unexpected exit) and every error a hook reports.
+#
+# enable, run and a hook that runs in a compose service first run
+# `docker compose build --quiet` on that service (build_images), so a service
+# built from this repo never runs an image older than its source.
 #
 # ADDONS_DIR overrides addons/ (tests). STACK_PYTHON=host uses host python3.
 set -euo pipefail
@@ -435,12 +439,38 @@ gate_on() {
   truthy "$v"
 }
 
+# build_images SERVICES...: `docker compose build --quiet` for the named
+# services, so a service built from this repo never runs an image older than
+# its source. Compose skips services without a build section and doesn't
+# build dependencies; an unchanged build is a cache hit. Compose's output goes
+# to stderr only when the build fails, so stdout stays clean for hooks and run.
+build_images() {
+  local log rc=0
+  log="$(mktemp)"
+  docker compose build --quiet "$@" > "$log" 2>&1 || rc=$?
+  [[ "$rc" == 0 ]] || cat "$log" >&2
+  rm -f "$log"
+  return "$rc"
+}
+# BUILD_FAILED: start_oneshot's and start_services' status for a failed build.
+BUILD_FAILED=86
+# start_oneshot NAME: builds the one-shot, then runs it to completion.
+start_oneshot() {
+  build_images "$1" || return "$BUILD_FAILED"
+  docker compose up --no-deps --exit-code-from "$1" "$1"
+}
+# start_services SERVICES...: builds the services, then starts them and waits.
+start_services() {
+  build_images "$@" || return "$BUILD_FAILED"
+  docker compose up -d --wait "$@"
+}
+
 # pull_stream LOG SERVICES...: one compose pull per service, its output
 # appended to LOG and framed by marker objects so pull-events can name the
 # service. Compose 2.2x labels events with the service; newer versions label
 # them "Image <ref>". Only missing images are pulled (enable isn't an upgrade,
 # and a machine offline or with a local-only image must still enable), and
-# images with a build section are left to `up`.
+# images with a build section are left to build_images in step start.
 pull_stream() {
   local log="$1" s
   shift
@@ -533,6 +563,7 @@ hook_cmd() {
   if [[ "$kind" == script ]]; then
     "$@" < "$HOOK_STDIN"
   else
+    build_images "$kind" || return 1
     docker compose run --rm --no-deps -T "$kind" "$@" < "$HOOK_STDIN"
   fi
 }
@@ -731,13 +762,26 @@ EOF_STOPS
   run_step flags "" apply_flags "$plan" \
     || ev_fail command_failed flags "writing the flags or syncing COMPOSE_PROFILES failed" "$EV_LAST_LOG"
   # One-shots run to completion first: a service may depend on one.
+  local rc
   for name in ${oneshots[@]+"${oneshots[@]}"}; do
-    run_step start "$name" docker compose up --no-deps --exit-code-from "$name" "$name" \
-      || { EV_TARGET="$name"; ev_fail compose_failed start "one-shot service $name failed" "$EV_LAST_LOG"; }
+    rc=0
+    run_step start "$name" start_oneshot "$name" || rc=$?
+    if [[ "$rc" == "$BUILD_FAILED" ]]; then
+      EV_TARGET="$name"
+      ev_fail compose_failed start "docker compose build failed for: $name" "$EV_LAST_LOG"
+    elif [[ "$rc" != 0 ]]; then
+      EV_TARGET="$name"
+      ev_fail compose_failed start "one-shot service $name failed" "$EV_LAST_LOG"
+    fi
   done
   if [[ ${#services[@]} -gt 0 ]]; then
-    run_step start "" docker compose up -d --wait "${services[@]}" \
-      || start_failed ${oneshots[@]+"${oneshots[@]}"} "${services[@]}"
+    rc=0
+    run_step start "" start_services "${services[@]}" || rc=$?
+    if [[ "$rc" == "$BUILD_FAILED" ]]; then
+      ev_fail compose_failed start "docker compose build failed for: ${services[*]}" "$EV_LAST_LOG"
+    elif [[ "$rc" != 0 ]]; then
+      start_failed ${oneshots[@]+"${oneshots[@]}"} "${services[@]}"
+    fi
   fi
   if [[ ${#stops[@]} -gt 0 ]]; then
     run_step stop "" docker compose stop "${stops[@]}" \
@@ -987,6 +1031,7 @@ cmd_run() {
   done <<EOF_ARGV
 $plan
 EOF_ARGV
+  build_images "${argv[0]}" || exit 4
   docker compose run --rm --no-deps -T "${argv[@]}" || exit 4
 }
 
