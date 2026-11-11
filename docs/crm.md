@@ -153,27 +153,11 @@ browser an owner session, which includes server admin. Twenty accepts it for
 workspaces; sign in on their own Twenty. When it fails, `crm-open` opens the
 sign-in page and says where the password is.
 
-### Upgrading from workspace files
+### Workspace files from before 0.3.13
 
-Before stack 0.3.13, each workspace was a file,
-`compose/twenty/workspaces/<slug>.env`. `./scripts/crm.sh migrate` imports
-those files into the store and renames each to `<slug>.env.migrated`. `make
-ensure-local` runs it, and so do `crm.sh init`, `add`, `remove`, `access`,
-`login-link` and `open`. It keeps a workspace already in the store and leaves
-its file where it is, with a warning. It skips, with a message and without
-renaming:
-
-- a name that doesn't start with a letter or is longer than 31 characters;
-- a key that holds whitespace or a control character;
-- a URL that isn't `http(s)` or has `user:password@` in it;
-- a value with a quote, backslash or control character;
-- a `TWENTY_ACCESS` other than `read` or `write`.
-
-Fix the file and run `migrate` again. `make doctor` warns about every file
-still waiting. The profile key names changed with it: `TWENTY_<SLUG>_KEY` in
-the Hermes profile `.env` files is now `CRM_<SLUG>_KEY`, and the bootstrap
-removes the old lines. `compose/twenty/workspace.env.example` documents the
-old format and nothing copies it.
+Since stack 0.3.14 nothing reads `compose/twenty/workspaces/<slug>.env`, and
+`crm.sh migrate` is gone. Delete those files, since they hold API keys, and
+add remote workspaces again with `make crm-add`.
 
 ### Picking up a new workspace
 

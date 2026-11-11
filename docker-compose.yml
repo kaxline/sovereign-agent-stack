@@ -1558,7 +1558,8 @@ services:
       # Only this add-on's directory; other add-ons keep secrets under data/addons.
       - ${ASSISTANT_DATA_ROOT:-./data}/addons/twenty:/bootstrap/addon-data/twenty:ro
       # Connected Actual budgets: instances/<slug>.json only, never secrets/.
-      # make ensure-local (budget.sh ensure) creates the directory first.
+      # scripts/addon-dirs.sh (setup.sh, make ensure-local) creates the
+      # add-on directories, so this works with Twenty and Actual off.
       - ${ASSISTANT_DATA_ROOT:-./data}/addons/actual/instances:/bootstrap/addon-data/actual/instances:ro
       # Built-in add-on manifests and the reader for them (GPT Researcher so far).
       - ./addons:/bootstrap/addons:ro
@@ -1693,7 +1694,8 @@ services:
       # Only this add-on's directory; other add-ons keep secrets under data/addons.
       - ${ASSISTANT_DATA_ROOT:-./data}/addons/twenty:/bootstrap/addon-data/twenty:ro
       # Connected Actual budgets: instances/<slug>.json only, never secrets/.
-      # make ensure-local (budget.sh ensure) creates the directory first.
+      # scripts/addon-dirs.sh (setup.sh, make ensure-local) creates the
+      # add-on directories, so this works with Twenty and Actual off.
       - ${ASSISTANT_DATA_ROOT:-./data}/addons/actual/instances:/bootstrap/addon-data/actual/instances:ro
       # Built-in add-on manifests and the reader for them (GPT Researcher so far).
       - ./addons:/bootstrap/addons:ro

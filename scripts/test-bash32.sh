@@ -90,7 +90,6 @@ check "make ensure-local" make ensure-local
 check "make ensure-local adds the crm profile and Twenty's data dirs" \
   sh -c 'grep -E "^COMPOSE_PROFILES=" .env | grep -q "crm" && test -d data/twenty/db && test -d data/twenty/storage'
 check "crm.sh tests" ./scripts/test-crm-sh.sh
-check "crm.sh migrate tests" ./scripts/test-crm-migrate.sh
 check "vault.sh tests" ./scripts/test-vault-sh.sh
 check "sync-profiles tests" ./scripts/test-sync-profiles.sh
 

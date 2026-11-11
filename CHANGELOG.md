@@ -6,6 +6,32 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
+## Unreleased
+
+### Upgrade steps
+
+1. **Without `make`** (Boundary's start path, or a plain `docker compose
+   up`): run `./scripts/addon-dirs.sh` before compose, in place of v0.3.13's
+   `./scripts/crm.sh ensure` and `./scripts/budget.sh ensure`. It creates
+   `<data root>/addons/<id>/{config,instances,secrets}` (0700) for every
+   add-on, enabled or not, so the Hermes bootstraps' bind mounts of
+   `addons/twenty` and `addons/actual/instances` find real directories. `make
+   ensure-local` and `setup.sh` run it. The two `ensure` commands still work.
+2. `compose/twenty/workspaces/<slug>.env` files are no longer read. Delete any
+   left over, since they hold API keys, and add remote workspaces again with
+   `make crm-add`. Boundary: stop reading and writing that folder before
+   moving the pin.
+
+### Changes
+
+- New `scripts/addon-dirs.sh` creates every add-on's store directories; no
+  add-on script has to run before core starts.
+- Removed `crm.sh migrate`, the workspace-file import that `crm.sh ensure`,
+  `init`, `add`, `remove`, `access`, `login-link` and `open` ran, and `make
+  doctor`'s warnings about leftover workspace files.
+  `compose/twenty/workspace.env.example` and `compose/twenty/workspaces/` are
+  gone from the repo; the folder stays gitignored.
+
 ## v0.3.13 — 2026-11-10
 
 Every add-on manifest field added in this release is experimental: `gates`, `commands`, `mounts`, `instances` and `mcp.instances`,

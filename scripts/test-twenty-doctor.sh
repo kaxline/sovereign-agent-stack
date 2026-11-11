@@ -9,7 +9,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-mkdir -p "$tmp/bin" "$tmp/work/compose/twenty/workspaces" "$tmp/data/addons/twenty/instances" \
+mkdir -p "$tmp/bin" "$tmp/work" "$tmp/data/addons/twenty/instances" \
   "$tmp/data/addons/twenty/secrets" "$tmp/work/data/hermes/profiles/api-server"
 store="$tmp/data/addons/twenty"
 
@@ -141,71 +141,7 @@ has "key with a line break" "main.key_ro holds a line break or control character
 hasnt "no probe with a refused key" "MCP answers with the ro key"
 setkeys main "$KEY_RO" "$KEY_RW"
 
-# Legacy workspace files.
-printf 'TWENTY_URL=https://crm.example.com\nTWENTY_KEY_RW=fake-legacy-key\n' > "$tmp/work/compose/twenty/workspaces/x.env"
-printf 'TWENTY_URL=https://crm.example.com\n' > "$tmp/work/compose/twenty/workspaces/y.env.migrated"
-doctor
-has "leftover file" "compose/twenty/workspaces/x.env was not migrated"
-has "names migrate" "./scripts/crm.sh migrate"
-hasnt "migrated file ignored" "y.env"
-printf 'TWENTY_URL=https://crm.example.com\n' > "$tmp/work/compose/twenty/workspaces/1bad.env"
-printf 'TWENTY_URL=https://u:pw@crm.example.com\n' > "$tmp/work/compose/twenty/workspaces/cred.env"
-printf 'TWENTY_URL=https://crm.example.com\nTWENTY_KEY_RO="fake key"\n' > "$tmp/work/compose/twenty/workspaces/space.env"
-doctor
-has "bad slug" "1bad.env was not migrated"
-has "bad slug reason" "must start with a letter"
-has "userinfo reason" "user:password@"
-has "whitespace reason" "a key holds whitespace"
-
-# Of a repeated key the last line counts: a bad last value is reported.
-rm -f "$tmp/work/compose/twenty/workspaces/"*.env
-printf 'TWENTY_URL=https://crm.example.com\nTWENTY_ACCESS=read\nTWENTY_ACCESS=admin\n' > "$tmp/work/compose/twenty/workspaces/dup.env"
-doctor
-has "last access counts" "TWENTY_ACCESS must be read or write"
-
-# Leftovers warn even with the MCP switch off.
-rm -f "$tmp/work/compose/twenty/workspaces/"*.env
-printf 'TWENTY_URL=https://crm.example.com\n' > "$tmp/work/compose/twenty/workspaces/x.env"
-setenv
-sed -i.bak 's/TWENTY_MCP_ENABLED=1/TWENTY_MCP_ENABLED=0/' "$tmp/work/.env"
-doctor
-has "off but leftover" "was not migrated"
-
-# A leftover whose slug is already stored: migrate would keep the store.
-rm -f "$tmp/work/compose/twenty/workspaces/"*.env
-printf 'TWENTY_URL=https://crm.example.com\n' > "$tmp/work/compose/twenty/workspaces/main.env"
-setenv
-doctor
-has "already stored" "already has this workspace"
-hasnt "no migrate hint" "run ./scripts/crm.sh migrate"
-# Other skip causes.
-rm -f "$tmp/work/compose/twenty/workspaces/"*.env
-printf 'TWENTY_URL=ftp://crm.example.com\n' > "$tmp/work/compose/twenty/workspaces/a.env"
-printf 'TWENTY_URL=https://crm.example.com\nTWENTY_WORKSPACE_ID=a"b\n' > "$tmp/work/compose/twenty/workspaces/b.env"
-printf 'TWENTY_URL=https://crm.example.com\nTWENTY_ACCESS=admin\n' > "$tmp/work/compose/twenty/workspaces/c.env"
-doctor
-has "scheme" "not an http(s) URL"
-has "quote" "a quote or backslash"
-has "access" "TWENTY_ACCESS must be read or write"
-
-# Valid files in the shapes migrate accepts: no "can't be" warning.
-rm -f "$tmp/work/compose/twenty/workspaces/"*.env
-printf 'TWENTY_URL="https://crm.example.com"\nTWENTY_KEY_RO="fake-q-ro"\n' > "$tmp/work/compose/twenty/workspaces/dq.env"
-printf "TWENTY_URL='https://crm.example.com'\nTWENTY_ACCESS='read'\n" > "$tmp/work/compose/twenty/workspaces/sq.env"
-printf 'TWENTY_URL=https://crm.example.com\r\nTWENTY_KEY_RW=fake-crlf-rw\r\nTWENTY_ACCESS=write\r\n' > "$tmp/work/compose/twenty/workspaces/crlf.env"
-# Surrounding whitespace is trimmed and the last of a repeated key wins, as
-# crm.sh's ws_get reads the file.
-printf 'TWENTY_URL=https://crm.example.com\nTWENTY_KEY_RW=fake-trail-rw  \t\n' > "$tmp/work/compose/twenty/workspaces/trail.env"
-printf 'TWENTY_URL=https://crm.example.com\nTWENTY_ACCESS=admin\nTWENTY_ACCESS=read\n' > "$tmp/work/compose/twenty/workspaces/dup.env"
-doctor
-has "dq listed" "dq.env was not migrated"
-has "trail listed" "trail.env was not migrated"
-has "dup listed" "dup.env was not migrated"
-has "sq listed" "sq.env was not migrated"
-has "crlf listed" "crlf.env was not migrated"
-hasnt "valid files can migrate" "can't be"
-
-for k in "$KEY_RO" "$KEY_RW" fake-legacy-key; do
+for k in "$KEY_RO" "$KEY_RW"; do
   if grep -qF -- "$k" "$all"; then fail "a key shows in the output"; fi
 done
 echo ok

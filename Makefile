@@ -48,6 +48,7 @@ ensure-local:
 	@mkdir -p compose/caldav-mcp/accounts
 	@mkdir -p compose/postgres/services
 	@test -f compose/caldav-mcp/accounts/personal.env || (cp compose/caldav-mcp/account.env.example compose/caldav-mcp/accounts/personal.env && echo "Created compose/caldav-mcp/accounts/personal.env — set CALDAV_* credentials for calendar profile")
+	@./scripts/addon-dirs.sh
 	@./scripts/todo.sh ensure
 	@./scripts/crm.sh ensure
 	@./scripts/budget.sh ensure
