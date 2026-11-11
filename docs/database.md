@@ -191,8 +191,8 @@ Postgres 18 images keep the cluster in a versioned subdirectory
 `make db-backup`, stop the stack, move `data/db` aside, bump `DB_IMAGE`,
 `make up`, then restore as above.
 
-`make clean` does not touch a bind mount. Delete `data/db` yourself to
-start over.
+`make clean` deletes the repo's `./data/`, which holds the default `data/db`.
+A `DB_DATA_DIR` outside the repo stays; delete it yourself to start over.
 
 ## Settings
 

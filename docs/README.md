@@ -29,4 +29,5 @@ Per-service setup, usage, and verification guides. See the [project README](../R
 | [Writing in your voice](writing-voice.md) | `core` / Hermes | Drafting artifacts in your style (not chat tone) |
 | [Memory](memory.md) | `core` / Hermes | Built-in USER.md, session search, curated notes |
 | [Extending the stack](extending.md) | downstream | Second copies, overlay mounts, worker mounts, model key rotation |
+| [Contracts](contracts/README.md) | downstream | Each category's interface and current implementation, for swapping one out |
 | [Releasing](releasing.md) | maintainers | Version tags and the changelog |
