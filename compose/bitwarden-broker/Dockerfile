@@ -43,18 +43,15 @@ RUN apt-get update \
 COPY --from=bw /usr/local/bin/bw /usr/local/bin/bw
 RUN v="$(bw --version)"; echo "$v" >&2; test "$v" = "${BW_CLI_VERSION}"
 
-# A new bitwarden_sync volume copies /run/bitwarden-sync's owner and mode.
-RUN groupadd --gid 10001 broker \
-    && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /tmp --shell /usr/sbin/nologin broker \
-    && install -d -o 10001 -g 10001 -m 0700 /run/bitwarden-sync
-
 COPY --chmod=0755 entrypoint.sh /app/entrypoint.sh
 COPY broker /app/broker
 COPY setup /app/setup
 
-# The root filesystem is read-only at run time; /tmp is a tmpfs.
+# The root filesystem is read-only at run time; /tmp and /run/bitwarden-sync
+# are tmpfs mounts. Compose runs both services as HERMES_UID:HERMES_GID, which
+# need no passwd entry: HOME is /tmp.
 ENV HOME=/tmp PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /app
-USER 10001:10001
+USER 1000:1000
 
 ENTRYPOINT ["/app/entrypoint.sh"]

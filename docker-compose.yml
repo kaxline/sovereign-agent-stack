@@ -913,7 +913,8 @@ services:
   #          their network); each connected budget at /<slug>/mcp on both
   # Data:    ACTUAL_DATA_DIR (default ./data/actual/server) on the server; each
   #          MCP container keeps a full copy of the budget in its cache volume
-  # Credentials: compose/actual/budget.env (ACTUAL_BUDGET_FILE in .env)
+  # Credentials: each connected budget's session token and encryption
+  #          password in <data root>/addons/actual/secrets, read by the launcher
   # Upstream: https://github.com/actualbudget/actual (MIT)
   # ----------------------------------------------------------------------
   actual-server:
@@ -927,7 +928,7 @@ services:
       - ${ACTUAL_DATA_DIR:-./data/actual/server}:/data
     # budget only: the MCP servers reach it at http://actual-server:5006, and
     # the port publishes from it (it isn't internal). Nothing on default can
-    # reach the unauthenticated /account/bootstrap before make budget-init.
+    # reach the unauthenticated /account/bootstrap before the add-on's init hook.
     networks: [budget]
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5006/health').then((r)=>process.exit(r.ok?0:1),()=>process.exit(1))"]
@@ -937,10 +938,8 @@ services:
       start_period: 20s
 
   # Vendored from https://github.com/giorgiobrullo/actual-mcp (MIT); see
-  # compose/actual-mcp/VENDORED.md. Writes on. Credentials come from the
-  # budget file at /app/.env, which the server loads with dotenv, so they stay
-  # out of docker inspect. With no budget file it starts on an empty file and
-  # every tool call fails until one is set.
+  # compose/actual-mcp/VENDORED.md. Writes on. Serves only budgets whose bind
+  # gives some profile rw.
   actual-mcp-rw:
     profiles: ["budget"]
     container_name: ${CONTAINER_PREFIX:-}actual-mcp-rw
@@ -954,9 +953,6 @@ services:
       # answer from a copy up to a minute old.
       ACTUAL_SYNC_TTL_MS: "0"
       ACTUAL_DATA_DIR: /data
-    secrets:
-      - source: actual_budget
-        target: /app/.env
     volumes:
       - actual_mcp_rw_cache:/data
       # Connected budgets (instances/ and secrets/) for the launcher, which
@@ -982,9 +978,6 @@ services:
     restart: unless-stopped
     command: ["--sse"]
     environment: *actual-mcp-env
-    secrets:
-      - source: actual_budget
-        target: /app/.env
     volumes:
       - actual_mcp_ro_cache:/data
       - ${ASSISTANT_DATA_ROOT:-./data}/addons/actual:/budgets:ro
@@ -1484,16 +1477,9 @@ services:
       - TWENTY_LOCAL_ENABLED=${TWENTY_LOCAL_ENABLED:-0}
       # Twenty's instance store (one MCP entry per workspace), mounted below.
       - ADDON_DATA_DIR=/bootstrap/addon-data
-      # Actual Budget MCP (budget profile). The flag and the access cap only;
-      # the budget's credentials never reach Hermes.
+      # Actual Budget MCP (budget profile): the flag only; the budgets'
+      # credentials never reach Hermes.
       - ACTUAL_MCP_ENABLED=${ACTUAL_MCP_ENABLED:-0}
-      - ACTUAL_ACCESS=${ACTUAL_ACCESS:-}
-      # The single budget's file path (not its contents). Empty or no-budget.env
-      # drops the legacy budget entry; connected budgets register either way.
-      - ACTUAL_BUDGET_FILE=${ACTUAL_BUDGET_FILE:-}
-      # Off drops the rows whose server is local (actual_rows.py). The container
-      # environment is part of the bootstrap's input stamp, so a toggle re-runs it.
-      - ACTUAL_LOCAL_ENABLED=${ACTUAL_LOCAL_ENABLED:-0}
       # OpenCode coding MCP (coding profile); registered on default + browser only.
       - OPENCODE_MCP_URL=${OPENCODE_MCP_URL:-http://opencode-mcp:8000/sse}
       - OPENCODE_MCP_ENABLED=${OPENCODE_MCP_ENABLED:-0}
@@ -1562,7 +1548,6 @@ services:
       # Built-in add-on manifests and the reader for them (GPT Researcher so far).
       - ./addons:/bootstrap/addons:ro
       - ./scripts/lib/addon_manifest.py:/bootstrap/addon_manifest.py:ro
-      - ./scripts/lib/actual_rows.py:/bootstrap/actual_rows.py:ro
     entrypoint: /bin/sh
     command: /bootstrap/bootstrap-api-profile.sh
 
@@ -1622,14 +1607,7 @@ services:
       - TWENTY_LOCAL_ENABLED=${TWENTY_LOCAL_ENABLED:-0}
       # Twenty's instance store (one MCP entry per workspace), mounted below.
       - ADDON_DATA_DIR=/bootstrap/addon-data
-      # Actual Budget MCP (budget profile). The flag and the access cap only;
-      # the budget's credentials never reach Hermes.
       - ACTUAL_MCP_ENABLED=${ACTUAL_MCP_ENABLED:-0}
-      - ACTUAL_ACCESS=${ACTUAL_ACCESS:-}
-      # The single budget's file path (not its contents). Empty or no-budget.env
-      # drops the legacy budget entry; connected budgets register either way.
-      - ACTUAL_BUDGET_FILE=${ACTUAL_BUDGET_FILE:-}
-      - ACTUAL_LOCAL_ENABLED=${ACTUAL_LOCAL_ENABLED:-0}
       - OPENCODE_MCP_URL=${OPENCODE_MCP_URL:-http://opencode-mcp:8000/sse}
       - OPENCODE_MCP_ENABLED=${OPENCODE_MCP_ENABLED:-0}
       - OPENCODE_MCP_TIMEOUT=${OPENCODE_MCP_TIMEOUT:-600}
@@ -1698,7 +1676,6 @@ services:
       # Built-in add-on manifests and the reader for them (GPT Researcher so far).
       - ./addons:/bootstrap/addons:ro
       - ./scripts/lib/addon_manifest.py:/bootstrap/addon_manifest.py:ro
-      - ./scripts/lib/actual_rows.py:/bootstrap/actual_rows.py:ro
     depends_on:
       hermes-api-bootstrap:
         condition: service_completed_successfully
@@ -2166,7 +2143,10 @@ services:
   # Profile: bitwarden (BITWARDEN_ENABLED=1)
   # API:     http://127.0.0.1:8099 inside hermes' network namespace only
   # Data:    BITWARDEN_HOST_DATA_DIR (default ./data/addons/bitwarden): bw/,
-  #          broker/ and secrets/. Accounts: compose/bitwarden/accounts/<slug>.env
+  #          broker/ and secrets/. Accounts: the add-on instance store,
+  #          ${ASSISTANT_DATA_ROOT}/addons/bitwarden/instances/<slug>.json
+  #          (read-only), with each client_id in secrets/<slug>/client_id; the
+  #          local account (make vault-init) is broker/local-account.json.
   # The image also runs bitwarden-setup (profile bitwarden-tools, started by
   # make targets only).
   # ----------------------------------------------------------------------
@@ -2190,15 +2170,21 @@ services:
       hermes:
         condition: service_started
         restart: true
-    user: "10001:10001"
+    # The host user, as email-imap and the Hermes readers of instances/ run:
+    # the store keeps instances/ at 0700, owned by that user.
+    user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
     read_only: true
     tmpfs:
       - /tmp
+      # The Unix socket for manual unlocks (python3 -m broker.unlock, run with
+      # docker compose exec as the same user). A tmpfs, so its owner follows
+      # HERMES_UID; nothing else mounts it.
+      - /run/bitwarden-sync:mode=0700,uid=${HERMES_UID:-1000},gid=${HERMES_GID:-1000}
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
     environment:
-      - BITWARDEN_ACCOUNTS_DIR=/accounts
+      - BITWARDEN_INSTANCES_DIR=/store/instances
       - BITWARDEN_DATA_DIR=/data
       - BITWARDEN_SECRETS_DIR=/secrets
       - BITWARDEN_SYNC_MINUTES=${BITWARDEN_SYNC_MINUTES:-10}
@@ -2209,12 +2195,11 @@ services:
       # a warning when the file is absent, so cloud accounts work without it.
       - NODE_EXTRA_CA_CERTS=/secrets/local/tls/ca.crt
     volumes:
-      - ./compose/bitwarden/accounts:/accounts:ro
+      # ASSISTANT_DATA_ROOT moves the store, not BITWARDEN_HOST_DATA_DIR.
+      - ${ASSISTANT_DATA_ROOT:-./data}/addons/bitwarden/instances:/store/instances:ro
       - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/secrets:/secrets:ro
       - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/bw:/data/bw
       - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/broker:/data/broker
-      # The Unix socket for manual unlocks (python3 -m broker.unlock).
-      - bitwarden_sync:/run/bitwarden-sync
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8099/health', timeout=3)"]
       interval: 30s
@@ -2226,7 +2211,9 @@ services:
   # agent's folder or collection and move items into it (make vault-init,
   # vault-add). Shares only the internal vault network with
   # hermes (its route to the local Vaultwarden), listens on no port, and
-  # shares no volume with it.
+  # shares no volume with it. It writes an instance's scope after creating a
+  # collection (/store/instances) and the local account
+  # (/broker/local-account.json, /secrets/local/client_id).
   bitwarden-setup:
     profiles: ["bitwarden-tools"]
     build: *bitwarden-build
@@ -2234,7 +2221,7 @@ services:
     entrypoint: ["python3", "/app/setup/setup.py"]
     stdin_open: true
     tty: true
-    user: "10001:10001"
+    user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
     read_only: true
     tmpfs:
       - /tmp
@@ -2242,12 +2229,14 @@ services:
     security_opt:
       - no-new-privileges:true
     environment:
-      - BITWARDEN_ACCOUNTS_DIR=/accounts
+      - BITWARDEN_INSTANCES_DIR=/store/instances
+      - BITWARDEN_BROKER_DIR=/broker
       - BITWARDEN_SECRETS_DIR=/secrets
       - NODE_EXTRA_CA_CERTS=/secrets/local/tls/ca.crt
     volumes:
-      - ./compose/bitwarden/accounts:/accounts
+      - ${ASSISTANT_DATA_ROOT:-./data}/addons/bitwarden/instances:/store/instances
       - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/secrets:/secrets
+      - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/broker:/broker
       # Local mode's admin token and TLS material; no other service mounts this
       # folder whole, and the broker none of it.
       - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/local:/local
@@ -2369,11 +2358,6 @@ secrets:
     file: ${TWENTY_ENCRYPTION_KEY_FILE:-./compose/twenty/no-secret}
   twenty_db_password:
     file: ${TWENTY_DB_PASSWORD_FILE:-./compose/twenty/no-secret}
-  # The Actual Budget MCP servers' budget file, mounted at /app/.env. Unset, it
-  # points at an empty placeholder, so a missing budget.env never makes Docker
-  # create a directory in its place.
-  actual_budget:
-    file: ${ACTUAL_BUDGET_FILE:-./compose/actual/no-budget.env}
 
 volumes:
   neo4j_data:
@@ -2390,7 +2374,6 @@ volumes:
   actual_mcp_ro_cache:
   ollama_data:
   hermes_uv_cache:
-  bitwarden_sync:
   # The email add-on's index (email-indexer writes, email-mcp reads) and its
   # drafts queue (email-drafts-mcp writes, email-outbox drains). Removed by
   # scripts/addon.sh disable email --purge.

@@ -15,10 +15,8 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 export ENV_FILE="$tmp/.env"
-export BUDGET_ENV_PATH="$tmp/actual/budget.env"
 export STUB="$tmp/stub"
-mkdir -p "$tmp/bin" "$tmp/actual" "$STUB"
-f="$BUDGET_ENV_PATH"
+mkdir -p "$tmp/bin" "$STUB"
 
 # --- Stubs ---
 
@@ -91,7 +89,7 @@ for a in "$@"; do
   [[ "$a" == /opt/actual-admin.mjs ]] && next=1
 done
 [[ -n "$sub" ]] || exit 0
-printf 'run %s ACTUAL_SERVER_URL=%s ACTUAL_BUDGET_FILE=%s\n' "$sub" "${ACTUAL_SERVER_URL:-}" "${ACTUAL_BUDGET_FILE:-}" >> "$STUB/admin.log"
+printf 'run %s ACTUAL_SERVER_URL=%s \n' "$sub" "${ACTUAL_SERVER_URL:-}" >> "$STUB/admin.log"
 if [[ -e "$STUB/timeout" ]]; then echo timeout; exit 4; fi
 if [[ -e "$STUB/admin_rc" ]]; then echo "stub exit"; exit "$(cat "$STUB/admin_rc")"; fi
 if [[ -n "${ACTUAL_SESSION_TOKEN:-}" && "$ACTUAL_SESSION_TOKEN" != tok-1 ]]; then echo login; exit 3; fi
@@ -140,10 +138,10 @@ run() {
   return "$rc"
 }
 reset() {
-  rm -f "$f"
   (cd "$STUB" && rm -f server_pw files.json enc_pw list.tsv down html curl_timeout admin_rc admin.env admin.log opened clip)
-  printf 'COMPOSE_PROFILES=core\nACTUAL_MCP_ENABLED=0\nACTUAL_LOCAL_ENABLED=0\nACTUAL_BUDGET_FILE=\n' > "$ENV_FILE"
+  printf 'COMPOSE_PROFILES=core\nACTUAL_MCP_ENABLED=0\nACTUAL_LOCAL_ENABLED=0\n' > "$ENV_FILE"
 }
+pws=""
 mode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
 budget_entry() { # groupId name [deleted] [encryptKeyId]
   local key=null
@@ -166,275 +164,21 @@ for k in sys.argv[1].split("."): v=v[k]
 print(json.dumps(v) if isinstance(v,bool) else v)' "$2"
 }
 
-# --- add ---
+# --- removed commands ---
+# The single budget (budget.env) is gone: add, check, remove, init without
+# --server-only and access with no slug all refuse.
 reset
-printf 'right-SECRET' > "$STUB/server_pw"
-
-# A refused server password: nothing written, and the error says which password.
-if ACTUAL_PASSWORD=wrong-SECRET ACTUAL_BUDGET_SYNC_ID=sync-1 ACTUAL_BUDGET_ENCRYPTION_PASSWORD='' \
-  run add --url https://budget.example.com; then
-  fail "add with a refused server password must fail"
-fi
-grep -q 'server password' "$out" || fail "the error names the server password ($(cat "$out"))"
-[ ! -e "$f" ] || fail "a refused server password writes nothing"
-grep -q 'ACTUAL_MCP_ENABLED=0' "$ENV_FILE" || fail "a failed add leaves .env alone"
-
-# The credentials reach the container as environment, not argv.
-grep -q -- '-e ACTUAL_PASSWORD' "$STUB/docker.argv" || fail "docker run passes ACTUAL_PASSWORD by name"
-grep -q -- '--entrypoint node' "$STUB/docker.argv" || fail "docker run overrides the entrypoint with node"
-grep -q 'ACTUAL_SERVER_URL=https://budget.example.com ' "$STUB/admin.log" || fail "the check uses the given URL"
-grep -q 'ACTUAL_BUDGET_FILE=./compose/actual/no-budget.env' "$STUB/admin.log" \
-  || fail "admin runs mount no-budget.env, not the real budget file"
-
-# A wrong or missing encryption password: nothing written, and the error names it.
-printf 'enc-SECRET' > "$STUB/enc_pw"
-if ACTUAL_PASSWORD=right-SECRET ACTUAL_BUDGET_SYNC_ID=sync-1 ACTUAL_BUDGET_ENCRYPTION_PASSWORD=bad-enc-SECRET \
-  run add --url https://budget.example.com; then
-  fail "add with a wrong encryption password must fail"
-fi
-grep -q 'encryption password' "$out" || fail "the error names the encryption password ($(cat "$out"))"
-[ ! -e "$f" ] || fail "a wrong encryption password writes nothing"
-
-# Success: mode 600, the five keys, and the flags in .env.
-ACTUAL_PASSWORD=right-SECRET ACTUAL_BUDGET_SYNC_ID=sync-1 ACTUAL_BUDGET_ENCRYPTION_PASSWORD=enc-SECRET \
-  run add --url https://budget.example.com/ || fail "add should succeed ($(cat "$out"))"
-[ -f "$f" ] || fail "add writes budget.env"
-[ "$(mode "$f")" = 600 ] || fail "budget.env is mode 600"
-grep -qx 'ACTUAL_SERVER_URL=https://budget.example.com' "$f" || fail "add stores the URL without a trailing slash"
-grep -qx 'ACTUAL_WEB_URL=https://budget.example.com/' "$f" || fail "add stores the web URL"
-grep -qx 'ACTUAL_PASSWORD=right-SECRET' "$f" || fail "add stores the server password"
-grep -qx 'ACTUAL_BUDGET_SYNC_ID=sync-1' "$f" || fail "add stores the sync id"
-grep -qx 'ACTUAL_BUDGET_ENCRYPTION_PASSWORD=enc-SECRET' "$f" || fail "add stores the encryption password"
-[ "$(grep -c '^ACTUAL_' "$f")" = 5 ] || fail "budget.env has five keys"
-grep -qx 'ACTUAL_MCP_ENABLED=1' "$ENV_FILE" || fail "add sets ACTUAL_MCP_ENABLED=1"
-grep -qx "ACTUAL_BUDGET_FILE=${f}" "$ENV_FILE" || fail "add points ACTUAL_BUDGET_FILE at the file"
-grep -qx 'ACTUAL_LOCAL_ENABLED=0' "$ENV_FILE" || fail "add leaves ACTUAL_LOCAL_ENABLED alone"
-
-# An existing file needs --force.
-if ACTUAL_PASSWORD=right-SECRET ACTUAL_BUDGET_SYNC_ID=sync-2 ACTUAL_BUDGET_ENCRYPTION_PASSWORD=enc-SECRET \
-  run add --url https://budget.example.com; then
-  fail "add must not overwrite without --force"
-fi
-grep -q -- '--force' "$out" || fail "the refusal mentions --force"
-grep -qx 'ACTUAL_BUDGET_SYNC_ID=sync-1' "$f" || fail "a refused add leaves the file alone"
-
-# --force on an unencrypted budget: no encryption line.
-rm -f "$STUB/enc_pw"
-ACTUAL_PASSWORD=right-SECRET ACTUAL_BUDGET_SYNC_ID=sync-2 ACTUAL_BUDGET_ENCRYPTION_PASSWORD='' \
-  run add --url https://budget.example.com --force || fail "--force overwrites ($(cat "$out"))"
-grep -qx 'ACTUAL_BUDGET_SYNC_ID=sync-2' "$f" || fail "--force writes the new sync id"
-if grep -q '^ACTUAL_BUDGET_ENCRYPTION_PASSWORD' "$f"; then fail "no encryption password, no line"; fi
-[ "$(mode "$f")" = 600 ] || fail "an overwritten budget.env stays mode 600"
-
-# No sync id: adopt the only budget, refuse to guess between two.
-rm -f "$f"
-printf 'sync-only\tHousehold\n' > "$STUB/list.tsv"
-ACTUAL_PASSWORD=right-SECRET ACTUAL_BUDGET_ENCRYPTION_PASSWORD='' run add --url https://budget.example.com \
-  || fail "add adopts the only budget ($(cat "$out"))"
-grep -qx 'ACTUAL_BUDGET_SYNC_ID=sync-only' "$f" || fail "add stores the adopted sync id"
-rm -f "$f"
-printf 'sync-a\tHousehold\nsync-b\tBusiness\n' > "$STUB/list.tsv"
-if ACTUAL_PASSWORD=right-SECRET ACTUAL_BUDGET_ENCRYPTION_PASSWORD='' run add --url https://budget.example.com; then
-  fail "add with two budgets and no sync id must fail"
-fi
-{ grep -q 'Household' "$out" && grep -q 'sync-b' "$out"; } || fail "add lists the budgets to choose from"
-[ ! -e "$f" ] || fail "an ambiguous add writes nothing"
-
-# The server never answers: actual-admin.mjs exits 4, and nothing is written.
-rm -f "$f"
-cp "$ENV_FILE" "$tmp/env-before"
-touch "$STUB/timeout"
-if ACTUAL_PASSWORD=right-SECRET ACTUAL_BUDGET_SYNC_ID=sync-1 ACTUAL_BUDGET_ENCRYPTION_PASSWORD='' \
-  run add --url https://budget.example.com; then
-  fail "add must fail when the check times out"
-fi
-grep -q 'no answer from https://budget.example.com within 45 s' "$out" || fail "a timeout names the server ($(cat "$out"))"
-[ ! -e "$f" ] || fail "a timed-out add writes nothing"
-cmp -s "$ENV_FILE" "$tmp/env-before" || fail "a timed-out add leaves .env alone"
-if ACTUAL_PASSWORD=right-SECRET ACTUAL_BUDGET_ENCRYPTION_PASSWORD='' run add --url https://budget.example.com; then
-  fail "add must fail when list times out"
-fi
-grep -q 'no answer from' "$out" || fail "a list timeout says so"
-ACTUAL_ADMIN_TIMEOUT_S=7 ACTUAL_PASSWORD=right-SECRET ACTUAL_BUDGET_SYNC_ID=sync-1 ACTUAL_BUDGET_ENCRYPTION_PASSWORD='' \
-  run add --url https://u:url-SECRET@budget.example.com && fail "add must fail on a timeout"
-grep -q 'within 7 s' "$out" || fail "the timeout message uses ACTUAL_ADMIN_TIMEOUT_S"
-grep -q 'https://\*\*\*@budget.example.com' "$out" || fail "the timeout message masks user:password@ in the URL"
-rm -f "$STUB/timeout"
-grep -q -- '-e ACTUAL_ADMIN_TIMEOUT_S' "$STUB/docker.argv" || fail "docker run passes ACTUAL_ADMIN_TIMEOUT_S by name"
-
-# Usage errors.
-run add && fail "add needs --url"
-ACTUAL_PASSWORD=x ACTUAL_BUDGET_SYNC_ID=y run add --url budget.example.com && fail "URL without http(s) accepted"
-run add --url https://budget.example.com && fail "no password and no terminal must fail"
-[ ! -e "$f" ] || fail "a failed add writes nothing"
-
-# Linux with a uid other than 1000: the container couldn't read the file.
-if STUB_UNAME=Linux STUB_UID=1001 ACTUAL_PASSWORD=right-SECRET ACTUAL_BUDGET_SYNC_ID=sync-1 \
-  run add --url https://budget.example.com; then
-  fail "add on Linux as uid 1001 must refuse"
-fi
-grep -q '1000' "$out" || fail "the refusal says the container reads the file as uid 1000"
-[ ! -e "$f" ] || fail "a refused add writes nothing"
-STUB_UNAME=Linux STUB_UID=1000 ACTUAL_PASSWORD=right-SECRET ACTUAL_BUDGET_SYNC_ID=sync-1 ACTUAL_BUDGET_ENCRYPTION_PASSWORD='' \
-  run add --url https://budget.example.com || fail "add on Linux as uid 1000 ($(cat "$out"))"
-
-# Passwords with quotes. dotenv has no escapes, so budget.env picks a quote the
-# value doesn't contain, and refuses a value no encoding can carry.
-rm -f "$f"
-quoted="q'u\"o te-SECRET"
-printf '%s' "$quoted" > "$STUB/server_pw"
-ACTUAL_PASSWORD="$quoted" ACTUAL_BUDGET_SYNC_ID=sync-1 ACTUAL_BUDGET_ENCRYPTION_PASSWORD='' \
-  run add --url https://budget.example.com || fail "add with ' and \" in the password ($(cat "$out"))"
-grep -qxF "ACTUAL_PASSWORD=\`${quoted}\`" "$f" || fail "a password with ' and \" is stored in backticks"
-run open || fail "open with a quoted password ($(cat "$out"))"
-[ "$(cat "$STUB/clip")" = "$quoted" ] || fail "the quoted password reads back unchanged"
-rm -f "$f"
-cp "$ENV_FILE" "$tmp/env-before"
-unstorable="a'b\"c\`d#e-SECRET"
-printf '%s' "$unstorable" > "$STUB/server_pw"
-if ACTUAL_PASSWORD="$unstorable" ACTUAL_BUDGET_SYNC_ID=sync-1 ACTUAL_BUDGET_ENCRYPTION_PASSWORD='' \
-  run add --url https://budget.example.com; then
-  fail "a password budget.env can't hold must fail"
-fi
-grep -q 'ACTUAL_PASSWORD' "$out" || fail "the refusal names ACTUAL_PASSWORD ($(cat "$out"))"
-[ ! -e "$f" ] || fail "an unstorable password writes no budget.env"
-cmp -s "$ENV_FILE" "$tmp/env-before" || fail "an unstorable password leaves .env alone"
-if ACTUAL_PASSWORD=right-SECRET ACTUAL_BUDGET_SYNC_ID=sync-1 ACTUAL_BUDGET_ENCRYPTION_PASSWORD="$(printf 'two\nline-SECRET')" \
-  run add --url https://budget.example.com; then
-  fail "an unstorable encryption password must fail"
-fi
-grep -q 'ACTUAL_BUDGET_ENCRYPTION_PASSWORD' "$out" || fail "the refusal names the encryption password"
-[ ! -e "$f" ] || fail "an unstorable encryption password writes nothing"
-rm -f "$STUB/server_pw"
-
-# --- init ---
-# A new server with one budget: bootstrap with a generated password, adopt it.
-reset
-budget_entry sync-local "My Budget" > "$STUB/files.json"
-run init || fail "init on a new server ($(cat "$out"))"
-[ -s "$STUB/server_pw" ] || fail "init bootstraps the server"
-pw="$(cat "$STUB/server_pw")"
-[ "${#pw}" = 48 ] || fail "init generates a 48-character password"
-grep -qx "ACTUAL_PASSWORD=${pw}" "$f" || fail "init stores the generated password"
-grep -qx 'ACTUAL_SERVER_URL=http://actual-server:5006' "$f" || fail "init points at actual-server"
-grep -qx 'ACTUAL_WEB_URL=http://localhost:5006/' "$f" || fail "init stores the local web URL"
-grep -qx 'ACTUAL_BUDGET_SYNC_ID=sync-local' "$f" || fail "init adopts the only budget"
-[ "$(mode "$f")" = 600 ] || fail "init writes budget.env mode 600"
-grep -qx 'ACTUAL_MCP_ENABLED=1' "$ENV_FILE" || fail "init sets ACTUAL_MCP_ENABLED=1"
-grep -qx 'ACTUAL_LOCAL_ENABLED=1' "$ENV_FILE" || fail "init sets ACTUAL_LOCAL_ENABLED=1"
-grep -qx "ACTUAL_BUDGET_FILE=${f}" "$ENV_FILE" || fail "init points ACTUAL_BUDGET_FILE at the file"
-grep -q 'create' "$STUB/admin.log" && fail "init with one budget creates none"
-[ ! -e "$tmp/actual/server-password.pending" ] || fail "init leaves no pending password file"
-if grep -q "$pw" "$STUB/curl.argv"; then fail "the password went to curl's argv"; fi
-grep -q 'ACTUAL_SERVER_URL=http://actual-server:5006 ' "$STUB/admin.log" || fail "init checks through actual-server"
-pws="$pw"
-
-# Re-running init with the file in place changes nothing.
-cp "$f" "$tmp/before"
-run init || fail "init again ($(cat "$out"))"
-cmp -s "$f" "$tmp/before" || fail "init again leaves budget.env alone"
-
-# --rotate: a new password on the server and in the file.
-run init --rotate || fail "init --rotate ($(cat "$out"))"
-new="$(cat "$STUB/server_pw")"
-{ [ "$new" != "$pw" ] && [ "${#new}" = 48 ]; } || fail "--rotate sets a new generated password"
-grep -qx "ACTUAL_PASSWORD=${new}" "$f" || fail "--rotate stores the new password"
-grep -qx 'ACTUAL_BUDGET_SYNC_ID=sync-local' "$f" || fail "--rotate keeps the sync id"
-[ "$(mode "$f")" = 600 ] || fail "--rotate keeps mode 600"
-pws="$pws $new"
-mkdir -p "$tmp/rot/addons/actual/secrets"
-printf '%s' "$pw" > "$tmp/rot/addons/actual/secrets/server_password"
-BUDGET_DATA_ROOT="$tmp/rot" run init --rotate || fail "init --rotate with a stored copy ($(cat "$out"))"
-new2="$(cat "$STUB/server_pw")"
-[ "$(cat "$tmp/rot/addons/actual/secrets/server_password")" = "$new2" ] || fail "--rotate updates secrets/server_password when it exists"
-pws="$pws $new2"
-
-# A new server with no budget: init creates one.
-reset
-run init || fail "init with no budget ($(cat "$out"))"
-grep -q '^run create' "$STUB/admin.log" || fail "init creates a budget"
-grep -qx 'ACTUAL_BUDGET_SYNC_ID=sync-new' "$f" || fail "init stores the created budget's sync id"
-pws="$pws $(cat "$STUB/server_pw")"
-
-# Two budgets: init lists them and needs SYNC_ID. Deleted budgets don't count.
-reset
-printf 'srv-SECRET' > "$STUB/server_pw"
-{ budget_entry sync-a Household; printf ','; budget_entry sync-b Business; printf ','; budget_entry sync-gone Old 1; } > "$STUB/files.json"
-if ACTUAL_PASSWORD=srv-SECRET run init; then fail "init with two budgets and no SYNC_ID must fail"; fi
-{ grep -q 'Household' "$out" && grep -q 'Business' "$out"; } || fail "init lists the budgets ($(cat "$out"))"
-grep -q 'Old' "$out" && fail "init leaves out deleted budgets"
-grep -q 'SYNC_ID' "$out" || fail "init says to pass SYNC_ID"
-[ ! -e "$f" ] || fail "an ambiguous init writes nothing"
-grep -qx 'ACTUAL_MCP_ENABLED=0' "$ENV_FILE" || fail "a failed init leaves .env alone"
-ACTUAL_PASSWORD=srv-SECRET ACTUAL_BUDGET_SYNC_ID=sync-b run init || fail "init with SYNC_ID ($(cat "$out"))"
-grep -qx 'ACTUAL_BUDGET_SYNC_ID=sync-b' "$f" || fail "init stores the chosen sync id"
-grep -qx 'ACTUAL_PASSWORD=srv-SECRET' "$f" || fail "init stores the given password for a bootstrapped server"
-rm -f "$f"
-if ACTUAL_PASSWORD=srv-SECRET ACTUAL_BUDGET_SYNC_ID=sync-gone run init; then fail "init with a deleted budget's sync id must fail"; fi
-
-# A bootstrapped server and no password: no terminal to ask in.
-if run init; then fail "init on a bootstrapped server with no password must fail"; fi
-grep -q 'ACTUAL_PASSWORD' "$out" || fail "the error says to set ACTUAL_PASSWORD"
-if ACTUAL_PASSWORD=wrong-SECRET ACTUAL_BUDGET_SYNC_ID=sync-b run init; then fail "init with a refused password must fail"; fi
-grep -q 'server password' "$out" || fail "a refused init password names the server password"
-[ ! -e "$f" ] || fail "a failed init writes nothing"
-
-# The server isn't up.
-touch "$STUB/down"
-if run init; then fail "init with no server must fail"; fi
-grep -q 'make up' "$out" || fail "the error says to start the server"
-rm -f "$STUB/down"
-
-if STUB_UNAME=Linux STUB_UID=1001 ACTUAL_PASSWORD=srv-SECRET ACTUAL_BUDGET_SYNC_ID=sync-b run init; then
-  fail "init on Linux as uid 1001 must refuse"
-fi
-grep -q '1000' "$out" || fail "init's refusal names uid 1000"
-# A create that times out: init fails and writes nothing.
-reset
-touch "$STUB/timeout"
-run init && fail "init must fail when create times out"
-grep -q 'no answer from' "$out" || fail "init says the create timed out ($(cat "$out"))"
-[ ! -e "$f" ] || fail "a timed-out init writes no budget.env"
-grep -qx 'ACTUAL_MCP_ENABLED=0' "$ENV_FILE" || fail "a timed-out init leaves .env alone"
-rm -f "$STUB/timeout"
-pws="$pws $(cat "$STUB/server_pw")"
-
+run add --url https://budget.example.com && fail "add is gone"
+run check && fail "check is gone"
+run remove && fail "remove is gone"
+run init && fail "init needs --server-only"
+grep -q -- '--server-only' "$out" || fail "bare init names --server-only ($(cat "$out"))"
+run init --rotate && fail "init --rotate is gone"
 run init --frob && fail "init rejects unknown options"
-rm -f "$f"
-run init --rotate && fail "init --rotate with no budget file must fail"
-grep -q 'make budget-init' "$out" || fail "--rotate with no file says to run make budget-init ($(cat "$out"))"
-
-# --- check (make doctor runs it) ---
-reset
-printf 'check-SECRET' > "$STUB/server_pw"
-printf 'ACTUAL_SERVER_URL=http://actual-server:5006\nACTUAL_PASSWORD=check-SECRET\nACTUAL_BUDGET_SYNC_ID=sync-c\n' > "$f"
-chmod 600 "$f"
-run check || fail "check on a good file ($(cat "$out"))"
-printf 'other' > "$STUB/server_pw"
-rc=0; run check || rc=$?
-[ "$rc" = 3 ] || fail "check exits 3 when the server refuses the password (got $rc)"
-printf 'check-SECRET' > "$STUB/server_pw"
-printf 'enc-SECRET' > "$STUB/enc_pw"
-rc=0; run check || rc=$?
-[ "$rc" = 2 ] || fail "check exits 2 for a missing encryption password (got $rc)"
-rm -f "$STUB/enc_pw"
-touch "$STUB/timeout"
-rc=0; run check || rc=$?
-[ "$rc" = 4 ] || fail "check exits 4 on a timeout (got $rc)"
-rm -f "$STUB/timeout"
-printf 'ACTUAL_SERVER_URL=https://u:url-SECRET@budget.example.com\nACTUAL_PASSWORD=check-SECRET\nACTUAL_BUDGET_SYNC_ID=\n' > "$f"
-rc=0; run check || rc=$?
-[ "$rc" = 1 ] || fail "check exits 1 when the budget doesn't open (got $rc)"
-grep -q 'on https://\*\*\*@budget.example.com' "$out" || fail "check masks user:password@ in the URL ($(cat "$out"))"
-rm -f "$f"
-printf 'sync-a\tHousehold\nsync-b\tBusiness\n' > "$STUB/list.tsv"
-ACTUAL_PASSWORD=check-SECRET ACTUAL_BUDGET_ENCRYPTION_PASSWORD='' run add --url https://u:url-SECRET@budget.example.com \
-  && fail "add with two budgets must fail"
-grep -q '^\[budget\] ERROR: https://\*\*\*@budget.example.com has 2 budgets' "$out" || fail "add masks user:password@ in the URL ($(cat "$out"))"
-rm -f "$STUB/list.tsv"
-rm -f "$f" "$STUB/enc_pw"
-rc=0; run check || rc=$?
-[ "$rc" = 1 ] || fail "check with no file exits 1 (got $rc)"
+run access read && fail "access with no slug is gone"
+run access write && fail "access with no slug is gone"
+if grep -q '^ACTUAL_ACCESS=' "$ENV_FILE"; then fail "access with no slug writes nothing to .env"; fi
+if "$budget" --help | grep -q 'budget\.env'; then fail "usage names no budget.env"; fi
 
 # --- budgets ---
 reset
@@ -486,20 +230,6 @@ rm "$tmp/data/addons/actual/secrets/server_password"
 budgets_run '{"server":"local"}'
 [ "$brc" = 2 ] && [ "$(jget 1 error)" = not_found ] || fail "local without a stored password is not_found ($(cat "$tmp/jout"))"
 jget 1 message | grep -q 'addon.sh enable actual --reinit' || fail "not_found names addon.sh enable actual --reinit ($(cat "$tmp/jout"))"
-# A v0.3.12 local install: the password is in budget.env and is copied to secrets/.
-printf 'ACTUAL_SERVER_URL=http://actual-server:5006\nACTUAL_PASSWORD=right-SECRET\nACTUAL_BUDGET_SYNC_ID=sync-a\n' > "$f"
-budgets_run '{"server":"local"}'
-[ "$brc" = 0 ] && [ "$(jget 1 sync_id)" = sync-a ] || fail "local falls back to budget.env's password ($(cat "$tmp/jout" "$tmp/jerr"))"
-[ "$(cat "$tmp/data/addons/actual/secrets/server_password")" = right-SECRET ] || fail "the budget.env password is copied to secrets/server_password"
-[ "$(mode "$tmp/data/addons/actual/secrets/server_password")" = 600 ] || fail "the copied server_password is mode 600"
-rm "$tmp/data/addons/actual/secrets/server_password"
-# budget.env for a remote server holds that server's password, not the local one.
-printf 'ACTUAL_SERVER_URL=https://budget.example.com\nACTUAL_PASSWORD=right-SECRET\nACTUAL_BUDGET_SYNC_ID=sync-a\n' > "$f"
-budgets_run '{"server":"local"}'
-[ "$brc" = 2 ] && [ "$(jget 1 error)" = not_found ] || fail "a remote budget.env isn't used for local ($(cat "$tmp/jout"))"
-[ ! -e "$tmp/data/addons/actual/secrets/server_password" ] || fail "a remote budget.env password isn't copied"
-rm -f "$f"
-
 # A password with a tab, a newline and a quote still signs in.
 printf 'tab\there\nnl "q" \\ SECRET' > "$STUB/server_pw"
 budgets_run '{"server":"https://budget.example.com","password":"tab\there\nnl \"q\" \\ SECRET"}'
@@ -542,16 +272,17 @@ connect_run main "{$srv,\"password\":\"right-SECRET\"}"
 [ "$(mode "$sec/main.session_token")" = 600 ] || fail "the token file is mode 600"
 [ ! -e "$sec/main.encryption_password" ] || fail "no encryption file without a password"
 [ "$(jget 1 phase)" = "done" ] && [ "$(jget 1 account)" = main ] || fail "connect done line ($(cat "$tmp/jout"))"
-grep -qx '{"phase":"done","account":"main","mcp":\["budget-main-ro"\]}' "$tmp/jout" || fail "read connect lists the -ro server ($(cat "$tmp/jout"))"
+grep -qx '{"phase":"done","account":"main","mcp":\["budget-main"\]}' "$tmp/jout" || fail "connect lists budget-main ($(cat "$tmp/jout"))"
 grep -q 'token=tok-1 sync=sync-a' "$STUB/admin.env" || fail "check gets the token and sync id"
 grep -q 'ACTUAL_SERVER_URL=https://budget.example.com ' "$STUB/admin.log" || fail "check uses the remote URL"
 grep -q -- '-e ACTUAL_SESSION_TOKEN' "$STUB/docker.argv" || fail "docker gets the token by name"
 ! grep -rqF right-SECRET "$tmp/data" || fail "no file holds the password"
 rm -f "$sec"/main.*
 
-connect_run main "{$srv,\"password\":\"right-SECRET\",\"access\":\"write\",\"profile\":\"default\",\"encryption_password\":\"enc-SECRET\"}"
-[ "$brc" = 0 ] || fail "write connect ($(cat "$tmp/jout" "$tmp/jerr"))"
-grep -qx '{"phase":"done","account":"main","mcp":\["budget-main-ro","budget-main"\]}' "$tmp/jout" || fail "write connect lists both servers ($(cat "$tmp/jout"))"
+# A bind is addon.sh's business: the hook ignores it.
+connect_run main "{$srv,\"password\":\"right-SECRET\",\"bind\":{\"default\":\"rw\",\"browser\":\"rw\",\"api-server\":\"ro\"},\"encryption_password\":\"enc-SECRET\"}"
+[ "$brc" = 0 ] || fail "connect with a bind ($(cat "$tmp/jout" "$tmp/jerr"))"
+grep -qx '{"phase":"done","account":"main","mcp":\["budget-main"\]}' "$tmp/jout" || fail "connect with a bind lists budget-main once ($(cat "$tmp/jout"))"
 [ "$(cat "$sec/main.encryption_password")" = enc-SECRET ] || fail "connect stores the encryption password"
 [ "$(mode "$sec/main.encryption_password")" = 600 ] || fail "the encryption file is mode 600"
 rm -f "$sec"/main.*
@@ -602,10 +333,6 @@ rm -f "$sec"/a9-x.*
 connect_run 'a
 b' "$pwin"
 [ "$brc" = 2 ] && [ "$(jget 1 error)" = bad_slug ] || fail "a slug with a newline is bad_slug"
-connect_run main "{$srv,\"password\":\"right-SECRET\",\"profile\":\"alice\"}"
-[ "$brc" = 2 ] && [ "$(jget 1 error)" = unknown_profile ] || fail "unknown profile"
-connect_run main "{$srv,\"password\":\"right-SECRET\",\"access\":\"admin\"}"
-[ "$brc" = 2 ] && [ "$(jget 1 error)" = bad_access ] || fail "bad access"
 nofiles || fail "input errors leave secrets empty"
 # Linux as a uid other than 1000: the containers couldn't read the files.
 : > "$STUB/curl.argv"
@@ -632,7 +359,7 @@ old_secrets() {
 old_secrets
 CONNECT_FLAGS=--replace connect_run main "$pwin"
 [ "$brc" = 0 ] || fail "connect --replace ($(cat "$tmp/jout" "$tmp/jerr"))"
-grep -qx '{"phase":"done","account":"main","mcp":\["budget-main-ro"\]}' "$tmp/jout" || fail "connect --replace done line ($(cat "$tmp/jout"))"
+grep -qx '{"phase":"done","account":"main","mcp":\["budget-main"\]}' "$tmp/jout" || fail "connect --replace done line ($(cat "$tmp/jout"))"
 [ "$(cat "$sec/main.session_token")" = tok-1 ] || fail "connect --replace overwrites the session token"
 [ "$(mode "$sec/main.session_token")" = 600 ] || fail "the replaced token file is mode 600"
 [ ! -e "$sec/main.encryption_password" ] || fail "connect --replace without an encryption password removes the old one"
@@ -658,7 +385,6 @@ rm -f "$STUB/admin_rc"
 printf 'enc-SECRET' > "$STUB/enc_pw"
 CONNECT_FLAGS=--replace connect_run main "$pwin"; replace_fails "missing encryption password" 4 encryption_password
 rm -f "$STUB/enc_pw"
-CONNECT_FLAGS=--replace connect_run main "{$srv,\"password\":\"right-SECRET\",\"profile\":\"alice\"}"; replace_fails "unknown profile" 2 unknown_profile
 CONNECT_FLAGS=--replace connect_run Bad_Slug "$pwin"
 [ "$brc" = 2 ] && [ "$(jget 1 error)" = bad_slug ] || fail "--replace with a bad slug"
 rm -f "$sec"/main.*
@@ -693,8 +419,14 @@ mkdir -p "$idir"
 rm -f "$sec"/*
 reset
 printf 'right-SECRET' > "$STUB/server_pw"
-inst() { # SLUG ACCESS [SERVER]
-  printf '{"server":"%s","sync_id":"sync-a","profile":"default","access":"%s"}' "${3:-https://budget.example.com}" "$2" > "$idir/$1.json"
+inst() { # SLUG ACCESS [SERVER]: ACCESS write binds default and browser rw,
+  # read binds every profile ro, none writes no bind.
+  local bind=""
+  case "$2" in
+    write) bind=',"bind":{"default":"rw","browser":"rw","api-server":"ro"}' ;;
+    read) bind=',"bind":{"default":"ro","browser":"ro","api-server":"ro"}' ;;
+  esac
+  printf '{"server":"%s","sync_id":"sync-a"%s}' "${3:-https://budget.example.com}" "$bind" > "$idir/$1.json"
 }
 status_run() { # [ARGS...]
   brc=0
@@ -709,8 +441,8 @@ status_run
 [ "$brc" = 0 ] || fail "status exits 0 ($(cat "$tmp/jout" "$tmp/jerr"))"
 jlines_ok || fail "every status line is JSON"
 [ "$(wc -l < "$tmp/jout" | tr -d ' ')" = 3 ] || fail "two budget lines and done ($(cat "$tmp/jout"))"
-grep -qx '{"phase":"budget","slug":"main","profile":"default","access":"write","state":"ok"}' "$tmp/jout" || fail "main is ok ($(cat "$tmp/jout"))"
-grep -qx '{"phase":"budget","slug":"second","profile":"default","access":"read","state":"token_expired"}' "$tmp/jout" || fail "second is token_expired ($(cat "$tmp/jout"))"
+grep -qx '{"phase":"budget","slug":"main","access":"write","state":"ok"}' "$tmp/jout" || fail "main is ok ($(cat "$tmp/jout"))"
+grep -qx '{"phase":"budget","slug":"second","access":"read","state":"token_expired"}' "$tmp/jout" || fail "second is token_expired ($(cat "$tmp/jout"))"
 [ "$(jget 3 phase)" = "done" ] || fail "status ends with done"
 grep -q -- '-e ACTUAL_SESSION_TOKEN' "$STUB/docker.argv" || fail "status passes the token by name"
 
@@ -736,10 +468,21 @@ state_for() { # RC
 [ "$(state_for 6)" = server_unreachable ] || fail "exit 6 is server_unreachable"
 [ "$(state_for 1)" = server_unreachable ] || fail "exit 1 is server_unreachable"
 
-# bad stored access, no token file, an encryption password file, local.
-inst main admin
+# access from bind: no bind, or one that isn't a map, reads as read; only
+# default decides.
+inst main none
 status_run --slug main
-[ "$(jget 1 state)" = bad_access ] || fail "stored access admin is bad_access ($(cat "$tmp/jout"))"
+grep -qx '{"phase":"budget","slug":"main","access":"read","state":"ok"}' "$tmp/jout" || fail "no bind is read ($(cat "$tmp/jout"))"
+printf '{"server":"https://budget.example.com","sync_id":"sync-a","bind":"rw"}' > "$idir/main.json"
+status_run --slug main
+[ "$(jget 1 access)" = read ] && [ "$(jget 1 state)" = ok ] || fail "a bind that isn't a map is read ($(cat "$tmp/jout"))"
+printf '{"server":"https://budget.example.com","sync_id":"sync-a","bind":{"browser":"rw"}}' > "$idir/main.json"
+status_run --slug main
+[ "$(jget 1 access)" = read ] || fail "access follows bind.default only ($(cat "$tmp/jout"))"
+printf '{"server":"https://budget.example.com","sync_id":"sync-a","profile":"default","access":"write"}' > "$idir/main.json"
+status_run --slug main
+grep -qx '{"phase":"budget","slug":"main","access":"read","state":"ok"}' "$tmp/jout" || fail "old access/profile keys are ignored ($(cat "$tmp/jout"))"
+# no token file, an encryption password file, local.
 inst main read
 rm -f "$sec/main.session_token"
 status_run --slug main
@@ -767,8 +510,8 @@ for lv in 0 "" no; do
   status_run
   [ "$brc" = 0 ] || fail "status with the local server off ('${lv}') exits 0 ($(cat "$tmp/jout" "$tmp/jerr"))"
   jlines_ok || fail "every status line is JSON with the local server off"
-  grep -qx '{"phase":"budget","slug":"loc","profile":"default","access":"write","state":"server_off"}' "$tmp/jout" || fail "a local row is server_off ('${lv}') ($(cat "$tmp/jout"))"
-  grep -qx '{"phase":"budget","slug":"main","profile":"default","access":"read","state":"ok"}' "$tmp/jout" || fail "a remote row is still checked ($(cat "$tmp/jout"))"
+  grep -qx '{"phase":"budget","slug":"loc","access":"write","state":"server_off"}' "$tmp/jout" || fail "a local row is server_off ('${lv}') ($(cat "$tmp/jout"))"
+  grep -qx '{"phase":"budget","slug":"main","access":"read","state":"ok"}' "$tmp/jout" || fail "a remote row is still checked ($(cat "$tmp/jout"))"
   [ "$(wc -l < "$tmp/jout" | tr -d ' ')" = 3 ] || fail "two budget lines and done ($(cat "$tmp/jout"))"
   [ "$(grep -c . "$STUB/admin.log")" = 1 ] || fail "only the remote row is checked by a container ($(cat "$STUB/admin.log"))"
   ! grep -q 'actual-server' "$STUB/admin.log" || fail "only the remote row is checked by a container ($(cat "$STUB/admin.log"))"
@@ -790,16 +533,6 @@ grep -q 'status' <("$budget" --help) || fail "usage mentions status"
 
 # --- access ---
 reset
-cp "$ENV_FILE" "$tmp/env-before"
-run access maybe && fail "access maybe must fail"
-cmp -s "$ENV_FILE" "$tmp/env-before" || fail "a refused access leaves .env alone"
-run access && fail "access needs read or write"
-run access read || fail "access read ($(cat "$out"))"
-grep -qx 'ACTUAL_ACCESS=read' "$ENV_FILE" || fail "access read sets ACTUAL_ACCESS=read"
-run access write || fail "access write"
-[ "$(grep -c '^ACTUAL_ACCESS=' "$ENV_FILE")" = 1 ] || fail "access replaces the line"
-grep -qx 'ACTUAL_ACCESS=write' "$ENV_FILE" || fail "access write sets ACTUAL_ACCESS=write"
-grep -q 'hermes-reload' "$out" || fail "access says to run make hermes-reload"
 
 # access SLUG read|write: addon.sh configure and the Hermes reload, stubbed.
 # addon.sh: logs argv and stdin; prints $STUB/addon.out on stdout and exits
@@ -830,13 +563,18 @@ inst main read
 access_run main write --json
 [ "$brc" = 0 ] || fail "access main write ($(cat "$tmp/jout" "$tmp/jerr"))"
 grep -qx 'configure actual --instance main' "$STUB/addon.argv" || fail "access calls addon.sh configure ($(cat "$STUB/addon.argv"))"
-grep -qx '{"access":"write"}' "$STUB/addon.stdin" || fail "access sends the value on stdin"
+grep -qx '{"bind":{"default":"rw","browser":"rw","api-server":"ro"}}' "$STUB/addon.stdin" || fail "access write sends the bind on stdin ($(cat "$STUB/addon.stdin"))"
 grep -q 'compose run --rm -e HERMES_BOOTSTRAP_FORCE=1 hermes-api-bootstrap' "$STUB/docker.argv" || fail "access runs the api bootstrap"
 grep -q 'compose run --rm --no-deps -e HERMES_BOOTSTRAP_FORCE=1 hermes-browser-bootstrap' "$STUB/docker.argv" || fail "access runs the browser bootstrap"
 grep -qx 'reload-plugins' "$STUB/vault.argv" || fail "access reloads the plugins"
-grep -qx '{"phase":"done","mcp":\["budget-main-ro","budget-main"\]}' "$tmp/jout" || fail "write lists both names ($(cat "$tmp/jout"))"
+grep -qx '{"phase":"done","mcp":\["budget-main"\]}' "$tmp/jout" || fail "write lists budget-main ($(cat "$tmp/jout"))"
+: > "$STUB/addon.stdin"
 access_run main read --json
-grep -qx '{"phase":"done","mcp":\["budget-main-ro"\]}' "$tmp/jout" || fail "read lists the -ro name ($(cat "$tmp/jout"))"
+[ "$brc" = 0 ] || fail "access main read ($(cat "$tmp/jout" "$tmp/jerr"))"
+grep -qx '{"bind":{"default":"ro","browser":"ro","api-server":"ro"}}' "$STUB/addon.stdin" || fail "access read sends the ro bind ($(cat "$STUB/addon.stdin"))"
+grep -qx '{"phase":"done","mcp":\["budget-main"\]}' "$tmp/jout" || fail "read lists budget-main ($(cat "$tmp/jout"))"
+access_run main read
+[ "$brc" = 0 ] && grep -q '^\[budget\] Set access read for main' "$tmp/jout" || fail "access without --json logs a line ($(cat "$tmp/jout" "$tmp/jerr"))"
 : > "$STUB/addon.argv"
 access_run main sudo --json
 [ "$brc" = 2 ] && [ "$(jget 1 error)" = bad_access ] || fail "access main sudo is bad_access"
@@ -853,13 +591,20 @@ reset
 
 # --- open ---
 reset
-run open && fail "open with no budget file must fail"
-printf 'ACTUAL_SERVER_URL=http://actual-server:5006\nACTUAL_WEB_URL=http://localhost:5006/\nACTUAL_PASSWORD=open-SECRET\nACTUAL_BUDGET_SYNC_ID=s\n' > "$f"
-chmod 600 "$f"
-run open || fail "open ($(cat "$out"))"
-grep -qx 'http://localhost:5006/' "$STUB/opened" || fail "open opens ACTUAL_WEB_URL"
-[ "$(cat "$STUB/clip")" = open-SECRET ] || fail "open copies the server password"
+run open && fail "open with the local server off must fail"
+grep -q 'ACTUAL_LOCAL_ENABLED' "$out" || fail "open says the local server is off ($(cat "$out"))"
+printf 'COMPOSE_PROFILES=core\nACTUAL_LOCAL_ENABLED=1\nACTUAL_PORT=5099\n' > "$ENV_FILE"
+mkdir -p "$tmp/open-data/addons/actual/secrets"
+BUDGET_DATA_ROOT="$tmp/open-data" run open || fail "open without a stored password ($(cat "$out"))"
+grep -qx 'http://localhost:5099/' "$STUB/opened" || fail "open opens the local web app on ACTUAL_PORT"
+[ ! -e "$STUB/clip" ] || fail "open copies nothing without a stored password"
+grep -q -- '--reinit' "$out" || fail "open says how to get a stored password ($(cat "$out"))"
+printf 'open-SECRET' > "$tmp/open-data/addons/actual/secrets/server_password"
+BUDGET_DATA_ROOT="$tmp/open-data" run open || fail "open ($(cat "$out"))"
+[ "$(cat "$STUB/clip")" = open-SECRET ] || fail "open copies the stored server password"
 grep -q 'clipboard' "$out" || fail "open says the password is on the clipboard"
+run open --x && fail "open takes no options"
+reset
 
 # --- init --server-only ---
 so_data="$tmp/so-data"
@@ -871,8 +616,8 @@ so_run() { # ARGS...
 }
 so_reset() {
   reset
-  printf 'COMPOSE_PROFILES=core\nACTUAL_MCP_ENABLED=0\nACTUAL_LOCAL_ENABLED=1\nACTUAL_BUDGET_FILE=\n' > "$ENV_FILE"
-  rm -rf "$so_data" "$tmp/actual/server-password.pending"
+  printf 'COMPOSE_PROFILES=core\nACTUAL_MCP_ENABLED=0\nACTUAL_LOCAL_ENABLED=1\n' > "$ENV_FILE"
+  rm -rf "$so_data"
   mkdir -p "$so_secrets"
 }
 # The local server off (a remote-only install): done, with nothing probed or
@@ -903,7 +648,7 @@ so_run
 grep -q 'ACTUAL_LOCAL_ENABLED' "$tmp/jout" || fail "--server-only off without --json logs why ($(cat "$tmp/jout" "$tmp/jerr"))"
 grep -q -- '--reinit' "$tmp/jout" || fail "--server-only off names addon.sh enable actual --reinit"
 # A fresh server: bootstrapped with a generated password kept in secrets/, a
-# budget created, and none of the single-budget settings written.
+# budget created, and ACTUAL_MCP_ENABLED left alone.
 so_reset
 so_run --json
 [ "$brc" = 0 ] || fail "init --server-only on a fresh server ($(cat "$tmp/jout" "$tmp/jerr"))"
@@ -915,11 +660,8 @@ jlines_ok || fail "init --server-only --json prints JSON lines only ($(cat "$tmp
 [ "$(jget 1 phase)" = "done" ] && [ "$(jget 1 sync_id)" = sync-new ] && [ "$(jget 1 name)" = Budget ] || fail "--server-only done carries sync_id and name ($(cat "$tmp/jout"))"
 [ "$(jget 1 result.sync_id)" = sync-new ] && [ "$(jget 1 result.name)" = Budget ] || fail "--server-only done carries the budget as result ($(cat "$tmp/jout"))"
 grep -q '^run create' "$STUB/admin.log" || fail "--server-only creates a Budget"
-[ ! -e "$f" ] || fail "--server-only writes no budget.env"
 grep -q 'ACTUAL_MCP_ENABLED=1' "$ENV_FILE" && fail "--server-only doesn't enable the MCP servers"
 grep -qx 'ACTUAL_LOCAL_ENABLED=1' "$ENV_FILE" || fail "--server-only leaves ACTUAL_LOCAL_ENABLED alone"
-grep -qx 'ACTUAL_BUDGET_FILE=' "$ENV_FILE" || fail "--server-only leaves ACTUAL_BUDGET_FILE alone"
-[ ! -e "$tmp/actual/server-password.pending" ] || fail "--server-only leaves no pending file"
 pws="$pws $(cat "$STUB/server_pw")"
 
 # Again: nothing created, same password; done names the budget the server lists.
@@ -941,27 +683,6 @@ so_run --json
 grep -q 'sync_id' "$tmp/jout" && fail "done has no sync_id when the server lists two budgets"
 grep -q 'result' "$tmp/jout" && fail "done has no result when the server lists two budgets"
 grep -q '^run create' "$STUB/admin.log" 2>/dev/null && fail "--server-only creates nothing beside two budgets"
-
-# A server set up by init: its budget.env password is adopted, no new password.
-so_reset
-printf 'srv-SECRET' > "$STUB/server_pw"
-budget_entry sync-local "My Budget" > "$STUB/files.json"
-printf 'ACTUAL_PASSWORD=srv-SECRET\nACTUAL_BUDGET_SYNC_ID=sync-local\n' > "$f"
-so_run --json
-[ "$brc" = 0 ] && [ "$(jget 1 sync_id)" = sync-local ] && [ "$(jget 1 name)" = "My Budget" ] || fail "--server-only adopts a server set up by init ($(cat "$tmp/jout" "$tmp/jerr"))"
-[ "$(cat "$STUB/server_pw")" = srv-SECRET ] || fail "--server-only sets no new password on a bootstrapped server"
-cmp -s <(printf 'ACTUAL_PASSWORD=srv-SECRET\nACTUAL_BUDGET_SYNC_ID=sync-local\n') "$f" || fail "--server-only leaves budget.env alone"
-
-# A stale stored password and the right one in budget.env: retried, then refreshed.
-so_reset
-printf 'new-SECRET' > "$STUB/server_pw"
-printf 'old-SECRET' > "$so_secrets/server_password"
-budget_entry sync-local "My Budget" > "$STUB/files.json"
-printf 'ACTUAL_PASSWORD=new-SECRET\nACTUAL_BUDGET_SYNC_ID=sync-local\n' > "$f"
-so_run --json
-[ "$brc" = 0 ] && [ "$(jget 1 sync_id)" = sync-local ] || fail "--server-only retries with budget.env's password ($(cat "$tmp/jout" "$tmp/jerr"))"
-[ "$(cat "$so_secrets/server_password")" = new-SECRET ] || fail "--server-only refreshes the stale server_password"
-[ "$(mode "$so_secrets/server_password")" = 600 ] || fail "the refreshed server_password is mode 600"
 
 # Docker down: an error line and exit 4 in --json mode.
 so_reset
@@ -1004,32 +725,6 @@ so_run
 grep -q '^\[budget\]' "$tmp/jout" || fail "--server-only without --json logs ($(cat "$tmp/jout" "$tmp/jerr"))"
 pws="$pws $(cat "$STUB/server_pw")"
 
-# --- remove ---
-printf 'x' > "$f"
-printf 'ACTUAL_MCP_ENABLED=1\nACTUAL_LOCAL_ENABLED=1\nACTUAL_BUDGET_FILE=%s\n' "$f" > "$ENV_FILE"
-BUDGET_DATA_ROOT="$tmp/data" run remove || fail "remove ($(cat "$out"))"
-[ ! -e "$f" ] || fail "remove deletes budget.env"
-grep -q 'docker compose stop actual-mcp-rw actual-mcp-ro' "$out" || fail "remove says to stop the MCP containers"
-grep -q 'make hermes-reload' "$out" || fail "remove says to run make hermes-reload"
-grep -qx 'ACTUAL_MCP_ENABLED=0' "$ENV_FILE" || fail "remove sets ACTUAL_MCP_ENABLED=0"
-grep -qx 'ACTUAL_BUDGET_FILE=' "$ENV_FILE" || fail "remove clears ACTUAL_BUDGET_FILE"
-grep -qx 'ACTUAL_LOCAL_ENABLED=1' "$ENV_FILE" || fail "remove leaves the local server on"
-BUDGET_DATA_ROOT="$tmp/data" run remove && fail "remove with no budget file must fail"
-
-# remove beside connected budgets keeps the MCP servers on.
-mkdir -p "$tmp/data/addons/actual/instances"
-printf '{}' > "$tmp/data/addons/actual/instances/main.json"
-printf 'ACTUAL_MCP_ENABLED=1\nACTUAL_LOCAL_ENABLED=1\nACTUAL_BUDGET_FILE=%s\n' "$f" > "$ENV_FILE"
-printf 'x' > "$f"
-BUDGET_DATA_ROOT="$tmp/data" run remove || fail "remove beside a row ($(cat "$out"))"
-[ ! -e "$f" ] || fail "remove beside a row deletes budget.env"
-grep -qx 'ACTUAL_MCP_ENABLED=1' "$ENV_FILE" || fail "remove leaves ACTUAL_MCP_ENABLED=1 while a budget is connected"
-grep -qx 'ACTUAL_BUDGET_FILE=' "$ENV_FILE" || fail "remove beside a row clears ACTUAL_BUDGET_FILE"
-rm -f "$tmp/data/addons/actual/instances/main.json"
-printf 'x' > "$f"
-BUDGET_DATA_ROOT="$tmp/data" run remove || fail "remove with no rows ($(cat "$out"))"
-grep -qx 'ACTUAL_MCP_ENABLED=0' "$ENV_FILE" || fail "remove with no rows sets ACTUAL_MCP_ENABLED=0"
-
 # --- connect-cli (make budget-connect) ---
 # The passwords go to addon.sh on stdin; with them in the environment nothing
 # is asked. addon.sh is the stub above.
@@ -1047,18 +742,19 @@ budget_entry sync-only "Only" > "$STUB/files.json"
 ACTUAL_PASSWORD=cli-SECRET cli_run --slug home --url https://budget.example.com --sync-id sync-x
 [ "$brc" != 0 ] && [ ! -e "$STUB/addon.argv" ] || fail "connect-cli with the add-on off must not call addon.sh"
 grep -q 'the Actual add-on is off; run scripts/addon.sh enable actual first' "$tmp/jerr" || fail "connect-cli says the add-on is off ($(cat "$tmp/jerr"))"
-printf 'COMPOSE_PROFILES=core\nACTUAL_MCP_ENABLED=1\nACTUAL_LOCAL_ENABLED=0\nACTUAL_BUDGET_FILE=\n' > "$ENV_FILE"
-printf '{"phase":"setup","step":"register","status":"running"}\n{"phase":"done","id":"actual","action":"connect","restart":[],"mcp":["budget-home-ro","budget-home"],"account":"home"}\n' > "$STUB/addon.out"
+printf 'COMPOSE_PROFILES=core\nACTUAL_MCP_ENABLED=1\nACTUAL_LOCAL_ENABLED=0\n' > "$ENV_FILE"
+printf '{"phase":"setup","step":"register","status":"running"}\n{"phase":"done","id":"actual","action":"connect","restart":[],"mcp":["budget-home"],"account":"home"}\n' > "$STUB/addon.out"
 ACTUAL_PASSWORD=cli-SECRET ACTUAL_BUDGET_ENCRYPTION_PASSWORD='cli-enc"SECRET' \
   cli_run --slug home --url https://budget.example.com --access write
 [ "$brc" = 0 ] || fail "connect-cli ($(cat "$tmp/jout" "$tmp/jerr"))"
-[ "$(cat "$tmp/jout")" = '[budget] Connected home; Hermes entries: budget-home-ro, budget-home' ] || fail "connect-cli prints a [budget] line, not JSON ($(cat "$tmp/jout"))"
+[ "$(cat "$tmp/jout")" = '[budget] Connected home; Hermes entries: budget-home' ] || fail "connect-cli prints a [budget] line, not JSON ($(cat "$tmp/jout"))"
 rm -f "$STUB/addon.out"
 grep -qx 'connect actual --instance home --json' "$STUB/addon.argv" || fail "connect-cli calls addon.sh connect ($(cat "$STUB/addon.argv"))"
 python3 - "$STUB/addon.stdin" <<'PY' || fail "connect-cli sends the connect JSON on stdin"
 import json, sys
 d = json.loads(open(sys.argv[1]).read())
-assert d == {"server": "https://budget.example.com", "sync_id": "sync-only", "access": "write",
+assert d == {"server": "https://budget.example.com", "sync_id": "sync-only",
+             "bind": {"default": "rw", "browser": "rw", "api-server": "ro"},
              "password": "cli-SECRET", "encryption_password": 'cli-enc"SECRET'}, d
 PY
 ACTUAL_PASSWORD=cli-SECRET cli_run --slug home --url https://budget.example.com --sync-id sync-x
@@ -1076,6 +772,15 @@ import json, sys
 d = json.loads(open(sys.argv[1]).read())
 assert d == {"server": "https://budget.example.com", "sync_id": "sync-x", "password": "cli-SECRET"}, d
 PY
+# --access read sends no bind; --access admin is refused before addon.sh.
+ACTUAL_PASSWORD=cli-SECRET cli_run --slug home --url https://budget.example.com --sync-id sync-x --access read
+python3 - "$STUB/addon.stdin" <<'PY' || fail "connect-cli --access read sends no bind"
+import json, sys
+d = json.loads(open(sys.argv[1]).read())
+assert d == {"server": "https://budget.example.com", "sync_id": "sync-x", "password": "cli-SECRET"}, d
+PY
+ACTUAL_PASSWORD=cli-SECRET cli_run --slug home --url https://budget.example.com --sync-id sync-x --access admin
+[ "$brc" != 0 ] && [ ! -e "$STUB/addon.argv" ] || fail "connect-cli --access admin must not call addon.sh"
 # local: no server password.
 cli_run --slug mine --url local --sync-id sync-l
 [ "$brc" = 0 ] || fail "connect-cli local ($(cat "$tmp/jerr"))"
@@ -1134,7 +839,7 @@ reset
 run frobnicate && fail "unknown subcommand must fail"
 
 # --- No password in any output, or in curl or docker argv ---
-for s in cli-SECRET 'cli-enc"SECRET' right-SECRET wrong-SECRET enc-SECRET bad-enc-SECRET srv-SECRET open-SECRET check-SECRET url-SECRET "$quoted" "$unstorable" line-SECRET $pws; do
+for s in cli-SECRET 'cli-enc"SECRET' right-SECRET wrong-SECRET enc-SECRET srv-SECRET open-SECRET $pws; do
   for log in "$all" "$STUB/curl.argv" "$STUB/docker.argv"; do
     if grep -qF -- "$s" "$log"; then fail "${log##*/} contains a password"; fi
   done

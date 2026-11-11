@@ -31,9 +31,41 @@ the stack under another app.
    validation and are skipped with a warning until the field is taken out.
 5. Bitwarden: the secret files the stack secrets sync wrote (Twenty keys,
    Postgres service passwords, CalDAV passwords) stay where they are; edit them
-   by hand from now on. Delete `BW_SECRETS_ITEM_SCOPE` from account files
-   (`make doctor` names them) and `TWENTY_SECRETS_DIR` from `.env`. Boundary
-   never called either, so it needs no change.
+   by hand from now on. Delete `TWENTY_SECRETS_DIR` from `.env`. Boundary
+   never called the sync, so it needs no change.
+6. Bitwarden: account files (`compose/bitwarden/accounts/<slug>.env`) are no
+   longer read, and nothing migrates them. Connect each account again with
+   `make vault-add FORCE=1` (the store already lists it, so plain
+   `make vault-add` refuses with "exists") or from Boundary (disconnect it
+   first if Boundary still lists it), then delete the folder; `make doctor` warns while it holds
+   `.env` files. Accounts connected before this release are refused with
+   `missing_client_id` until connected again. Local mode: run `make
+   vault-init` again; it writes the local account from `local/state` without
+   signing in. Boundary: `status --json` can now report `bad_slug` and
+   `missing_client_id` as the `error` of a `refused` line.
+7. Bitwarden on Linux: the broker and `bitwarden-setup` now run as
+   `HERMES_UID:HERMES_GID`, which must equal your `id -u` and `id -g`. Before
+   `make up`, give the Bitwarden data folder back to your user once:
+
+   ```bash
+   sudo chown -R "$(id -u):$(id -g)" data/addons/bitwarden
+   ```
+
+   with your `BITWARDEN_HOST_DATA_DIR` in place of `data/addons/bitwarden` if
+   you set one. macOS (Docker Desktop) needs nothing. The old
+   `<project>_bitwarden_sync` volume is unused; `docker volume rm` removes it.
+8. Actual Budget: the single budget is gone, with no migration.
+   `ACTUAL_BUDGET_FILE`, `ACTUAL_ACCESS` and `compose/actual/budget.env` are no
+   longer read. Delete them, and a `budget` entry left in a Hermes profile's
+   `mcp_servers`, and connect the budget again with `make budget-connect`.
+   Connected budgets keep working, but each becomes read-only on every profile
+   until `./scripts/budget.sh access <slug> write` gives it a `bind`. Their old
+   `access` and `profile` fields in `instances/<slug>.json` are ignored.
+   **Boundary must change before moving the pin:** connect no longer accepts
+   `profile` or `access` (send `bind`, or call `budget.sh access` afterwards),
+   `budget.sh access` and connect report `mcp: ["budget-<slug>"]` instead of
+   `budget-<slug>-ro` and `budget-<slug>`, and a row's write access is read
+   from `bind`.
 
 ### Changes
 
@@ -46,6 +78,34 @@ the stack under another app.
   on an account without mailboxes. An unchanged build is a cache hit. A
   failed build is `compose_failed` at step `start` (`enable`) or exit 4
   (`run`); the step names and their order are unchanged.
+- Per-instance binding: an instance file may hold `bind`, a map from Hermes
+  profile to `ro` or `rw` that replaces the manifest's `mcp.profiles` for that
+  instance. `addon.sh connect` and `configure --instance` take it in the JSON
+  on stdin, `check-instance` validates it, and `list --json` shows it. `rw` is
+  refused on `api-server`, and an add-on that reads personal data may not name
+  `api-server`.
+- `mcp.instances` URLs may use `{access}` (`ro` or `rw`, the profile's level)
+  and `{slug}`; `auth` and `access` are optional. An entry without `auth` is
+  registered with its tool list, less `writeTools` at `ro`. instances-plan
+  lines gain a thirteenth field, `tools`. With `permissions.cron` `"ro"`, each
+  instance's `rw` URL is fenced out of cron.
+- Actual Budget registers through `mcp.instances`: one `budget-<slug>` entry
+  per budget and profile, at `actual-mcp-ro` or `actual-mcp-rw` by level.
+  Budgets now reach `api-server` read-only, as Twenty's workspaces do. The
+  read/write server serves a budget only when its `bind` gives some profile
+  `rw`. A budget on the local server stays registered while
+  `ACTUAL_LOCAL_ENABLED` is off; its calls fail until the server is back.
+  `scripts/lib/actual_rows.py` and the bootstrap's Actual row code are gone.
+- Removed the `mcp.service` `{ro, rw}` map and `mcp.env.access`, whose only
+  user was Actual's single budget.
+- `budget.sh`: removed `init` without `--server-only` (and `--rotate`), `add`,
+  `check`, `remove` and `access read|write` without a slug, with `make
+  budget-init`, `budget-add` and `budget-remove`. `make budget-access` is now
+  `SLUG=<slug> ACCESS=read|write`. `status --json` lines drop `profile` and the
+  `bad_access` state; `access` is derived from `bind`. `open` serves the
+  bundled server only. The actual-mcp containers no longer mount
+  `/app/.env`, and `/mcp`, `/sse` and `/messages` on them answer 404.
+
 - Removed manifest fields, unused by any built-in add-on or replaced:
   `onToggle` (and `addon.sh`'s `recreate` step), `services.<name>.volumes`
   (use `data.volumes`), `services.<name>.oneshot`, `mcp.unmanaged`, and the
@@ -85,11 +145,32 @@ the stack under another app.
   broker's `GET /secrets` route on its Unix socket (the socket still takes
   manual unlocks). `make up` no longer runs a sync. Local mode no longer
   creates the "Stack secrets" collection; existing ones stay in Vaultwarden.
-  Account files with `BW_SECRETS_ITEM_SCOPE` still load: the broker ignores the
-  key and `make doctor` names the files. `TWENTY_SECRETS_DIR` and
+  `TWENTY_SECRETS_DIR` and
   `compose/twenty/no-secrets/` are gone. The Bitwarden manifest drops
   `hooks.backup` and `hooks.restore`; `vault.sh backup` and `restore` are
   unchanged.
+- The Bitwarden broker reads its accounts from the add-on instance store,
+  `<data root>/addons/bitwarden/instances/<slug>.json`, mounted read-only at
+  `/store/instances` (`BITWARDEN_INSTANCES_DIR`), with each API key's
+  `client_id` in `secrets/<slug>/client_id`. The slug rule is the store's in
+  the broker, `bitwarden-setup` and `vault.sh`. `vault.sh add` writes the
+  instance file through `scripts/lib/addon_store.py` before it restarts the
+  broker and removes it on a failed sign-in; `remove` deletes it before the
+  restart. Terminal add and remove no longer call `addon.sh configure`, and
+  `make up` no longer records account files in the store. The local account
+  is `broker/local-account.json` plus `secrets/local/client_id`, outside the
+  store. Removed: the account-file parser, `BITWARDEN_ACCOUNTS_DIR`,
+  `VAULT_ACCOUNTS_DIR`, `VAULT_ADDON_SH`, `VAULT_ADDON_STORE`, the
+  `compose/bitwarden/accounts` mounts and `make doctor`'s
+  `BW_SECRETS_ITEM_SCOPE` warning. `vault.sh backup` copies the instance
+  files and the local account in place of the account files.
+- `bitwarden-broker` and `bitwarden-setup` run as `HERMES_UID:HERMES_GID`
+  instead of uid 10001, so on Linux they read the store's 0700 `instances/`
+  as the host user does. The manual-unlock socket's folder,
+  `/run/bitwarden-sync`, is a tmpfs owned by that user; the `bitwarden_sync`
+  volume is gone. `vault.sh` no longer reaches files through
+  `bitwarden-setup` or prints `chown 10001` hints: a path it cannot use stops
+  it with the chown below.
 
 ## v0.3.13 — 2026-11-10
 

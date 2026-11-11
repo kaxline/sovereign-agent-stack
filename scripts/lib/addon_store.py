@@ -348,11 +348,35 @@ def _validated_instance(schema: dict, values, connect: bool = True) -> dict:
     return clean
 
 
+_NO_BIND = object()
+
+
+def _split_bind(manifest: dict, values):
+    """(VALUES less `bind`, the checked bind or _NO_BIND). `bind` is the
+    stack's per-instance binding, a map from profile to ro or rw that replaces
+    mcp.profiles for the instance; addon_manifest.bind_problem has the rules."""
+    if not isinstance(values, dict) or "bind" not in values:
+        return values, _NO_BIND
+    rest = {k: v for k, v in values.items() if k != "bind"}
+    entries = [e for e in am.mcp_entries(manifest) if "instances" in e]
+    if not entries:
+        raise InputError("bind: this add-on registers no MCP server per instance", "bind")
+    profiles: dict = {}
+    for e in entries:
+        profiles.update(e.get("profiles", {}))
+    reads = bool(manifest.get("permissions", {}).get("reads"))
+    problem = am.bind_problem(values["bind"], profiles, reads)
+    if problem:
+        raise InputError(f"bind: {problem}", "bind")
+    return rest, dict(values["bind"])
+
+
 def check_instance(manifest: dict, values: dict) -> None:
     """Raise InputError unless `values` is a complete new instance: every
     setting known and well-typed, and every required one given. Writes
     nothing; `connect` calls it before the hook sees the values."""
     schema = _inst_schema(manifest)
+    values, _bind = _split_bind(manifest, values)
     clean = _validated_instance(schema, values, _has_connect(manifest))
     for name, spec in schema.items():
         if _required(spec) and name not in clean:
@@ -364,9 +388,10 @@ def apply_instance(manifest: dict, data_root: Path, slug: str, values: dict,
     """Write VALUES into instance SLUG, merged over what it holds. With
     REPLACE (connect --force) the instance is VALUES alone: settings left out
     fall back to their defaults and this slug's stored secrets left out are
-    deleted."""
+    deleted. VALUES may carry `bind` (_split_bind), stored beside the settings."""
     slug = _slug(slug)
     schema = _inst_schema(manifest)
+    values, bind = _split_bind(manifest, values)
     clean = _validated_instance(schema, values, _has_connect(manifest))
     d = addon_dir(data_root, manifest)
     # A transient secret was checked above and goes to the connect hook only.
@@ -374,6 +399,8 @@ def apply_instance(manifest: dict, data_root: Path, slug: str, values: dict,
     _mkdir_addon(d)
     merged = {} if replace else _instance_values(d, slug)
     merged.update(plain)
+    if bind is not _NO_BIND:
+        merged["bind"] = bind
     _write(d / "instances" / f"{slug}.json", json.dumps(merged, indent=2) + "\n", 0o644)
     for name, value in clean.items():
         if schema[name]["type"] == "secret" and not schema[name].get("transient"):
@@ -575,6 +602,9 @@ def listing(manifest: dict, data_root: Path, environ, figures=None) -> dict:
     if isinstance(message, str) and message.strip():
         out["postInstallMessage"] = message
     for slug in slugs(d):
-        out["instances"][slug] = _view(_inst_schema(manifest), _instance_values(d, slug),
-                                       lambda n, s=slug: d / "secrets" / f"{s}.{n}")
+        vals = _instance_values(d, slug)
+        view = _view(_inst_schema(manifest), vals, lambda n, s=slug: d / "secrets" / f"{s}.{n}")
+        if isinstance(vals.get("bind"), dict):
+            view["bind"] = vals["bind"]
+        out["instances"][slug] = view
     return out

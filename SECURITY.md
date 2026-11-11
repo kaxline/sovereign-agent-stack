@@ -25,7 +25,7 @@ This is a **local development** stack. It is not hardened for internet-facing de
 | vikunja-proxy (optional) | `127.0.0.1:3456` | `/login-local` signs any local caller in as the managed account (by design); refuses non-localhost host names and cross-site fetches |
 | vikunja (optional) | compose-internal `:3456`; also on the internal `db` network | Vikunja accounts (sign-up off by default); MCP needs a scoped API token |
 | signal-cli (optional) | compose-internal `:8080` | None — HTTP JSON-RPC has no auth; keep unpublished |
-| bitwarden-broker (optional) | `127.0.0.1:8099` inside `hermes`' network namespace; Unix socket in the `bitwarden_sync` volume | None on TCP: no route returns a password, code or session key, and agent code in `hermes` can call it. The socket takes manual unlocks and locks and answers `/health`; only the broker mounts it |
+| bitwarden-broker (optional) | `127.0.0.1:8099` inside `hermes`' network namespace; Unix socket in a tmpfs only it mounts | None on TCP: no route returns a password, code or session key, and agent code in `hermes` can call it. The socket takes manual unlocks and locks and answers `/health`; only the broker mounts it |
 | bitwarden-setup (optional, one-shot) | no port; its own network plus the internal `vault` network | Your master password in a hidden prompt, held for one run; listens on no port, shares only the internal `vault` network and no volume with `hermes` |
 | vaultwarden (optional) | `127.0.0.1:8222` (`VAULTWARDEN_PORT`), plain HTTP; on the internal `vault-backend` network | Vaultwarden accounts, sign-ups off; admin page behind a generated token. `hermes` and the broker cannot reach it directly |
 | vaultwarden-tls (optional) | compose-internal `:443` as `vaultwarden.vault.internal` on the internal `vault` network | TLS from a private CA only the broker and `bitwarden-setup` trust; sets `X-Real-IP` from the connecting address so Vaultwarden's login rate limit can't be bypassed |
@@ -41,7 +41,7 @@ If you discover a security issue in this repository, please open a private advis
 **Do not:**
 
 - Expose n8n, SearXNG, GPT Researcher, or Hermes to the public internet without authentication and rate limiting.
-- Commit `.env`, `compose/hermes/api-server.env`, `compose/hermes/browser.env`, `compose/caldav-mcp/accounts/*.env`, `compose/postgres/services/*.env` (includes Vikunja's database login), `compose/bitwarden/accounts/*.env`, `n8n/demo-data/credentials/*.json`, `searxng/settings.local.yml`, `opencode/opencode.local.json`, `docker-compose.override.yml`, or anything under `data/`.
+- Commit `.env`, `compose/hermes/api-server.env`, `compose/hermes/browser.env`, `compose/caldav-mcp/accounts/*.env`, `compose/postgres/services/*.env` (includes Vikunja's database login), `n8n/demo-data/credentials/*.json`, `searxng/settings.local.yml`, `opencode/opencode.local.json`, `docker-compose.override.yml`, or anything under `data/`.
 - Reuse one `API_SERVER_KEY` across Hermes profiles. Keys are scoped per profile and a shared key fails closed, so give `compose/hermes/api-server.env` and `compose/hermes/browser.env` distinct values.
 - Point `OPENCODE_WORKSPACE_HOST` at `$HOME` or `/` — OpenCode and Hermes have full read/write access to coding roots.
 - Use `make coding-root-add DIR=...` to grant broad parents lightly; prefer the specific repo path. Never add `/` or `$HOME` alone (the script refuses those).

@@ -31,10 +31,10 @@ describe('readRows', () => {
   it('reads every valid row, dropping one trailing newline from secrets', () => {
     writeRow(
       'home',
-      { server: 'https://budget.example.com', sync_id: 'sync-home', profile: 'p1', access: 'write' },
+      { server: 'https://budget.example.com', sync_id: 'sync-home', bind: { default: 'rw', 'api-server': 'ro' } },
       'tok-home\n'
     );
-    writeRow('work', { server: 'http://10.0.0.5:5006', sync_id: 'sync-work', profile: 'p2' }, 'tok-work', 'secret\n');
+    writeRow('work', { server: 'http://10.0.0.5:5006', sync_id: 'sync-work' }, 'tok-work', 'secret\n');
     fs.writeFileSync(path.join(dir, 'secrets', 'server_password'), 'ignored');
 
     const rows = readRows(dir, false);
@@ -70,14 +70,14 @@ describe('readRows', () => {
   });
 
   it('keeps only write rows when write is true', () => {
-    writeRow('home', { server: 'local', sync_id: 's1', profile: 'p1', access: 'write' }, 'tok');
-    writeRow('work', { server: 'local', sync_id: 's2', profile: 'p2', access: 'read' }, 'tok');
+    writeRow('home', { server: 'local', sync_id: 's1', bind: { default: 'rw', 'api-server': 'ro' } }, 'tok');
+    writeRow('work', { server: 'local', sync_id: 's2', bind: { default: 'ro' } }, 'tok');
 
     expect(readRows(dir, true).map((r) => r.slug)).toEqual(['home']);
   });
 
   it('maps server "local" to the stack Actual server', () => {
-    writeRow('home', { server: 'local', sync_id: 's1', profile: 'p1' }, 'tok');
+    writeRow('home', { server: 'local', sync_id: 's1' }, 'tok');
 
     expect(readRows(dir, false)[0].serverUrl).toBe('http://actual-server:5006');
   });
@@ -86,14 +86,14 @@ describe('readRows', () => {
     expect(readRows(path.join(dir, 'absent'), false)).toEqual([]);
   });
 
-  it('skips a row with no token, a bad access value or a bad slug, one stderr line each', () => {
+  it('skips a row with no token, a bad bind value or a bad slug, one stderr line each', () => {
     const lines: string[] = [];
-    writeRow('notoken', { server: 'local', sync_id: 's1', profile: 'p1' });
-    writeRow('emptytoken', { server: 'local', sync_id: 's1', profile: 'p1' }, ' \n');
-    writeRow('admin', { server: 'local', sync_id: 's2', profile: 'p2', access: 'admin' }, 'S3CRET-a');
-    writeRow('Bad_Slug', { server: 'local', sync_id: 's3', profile: 'p3' }, 'S3CRET-b');
-    writeRow('9lives', { server: 'local', sync_id: 's5', profile: 'p5' }, 'S3CRET-c');
-    writeRow('good', { server: 'local', sync_id: 's4', profile: 'p4' }, 'tok-secret-value');
+    writeRow('notoken', { server: 'local', sync_id: 's1' });
+    writeRow('emptytoken', { server: 'local', sync_id: 's1' }, ' \n');
+    writeRow('admin', { server: 'local', sync_id: 's2', bind: 'admin' }, 'S3CRET-a');
+    writeRow('Bad_Slug', { server: 'local', sync_id: 's3' }, 'S3CRET-b');
+    writeRow('9lives', { server: 'local', sync_id: 's5' }, 'S3CRET-c');
+    writeRow('good', { server: 'local', sync_id: 's4' }, 'tok-secret-value');
 
     const rows = readRows(dir, false, (line) => lines.push(line));
 
@@ -101,7 +101,7 @@ describe('readRows', () => {
     expect(lines).toHaveLength(5);
     expect(lines.find((l) => l.includes('notoken'))).toMatch(/token/);
     expect(lines.find((l) => l.includes('emptytoken'))).toMatch(/token/);
-    expect(lines.find((l) => l.includes('admin'))).toMatch(/access/);
+    expect(lines.find((l) => l.includes('admin'))).toMatch(/bind/);
     expect(lines.find((l) => l.includes('Bad_Slug'))).toMatch(/slug/);
     expect(lines.find((l) => l.includes('9lives'))).toMatch(/slug/);
     expect(lines.join('\n')).not.toMatch(/S3CRET|tok-secret-value/);
@@ -109,7 +109,7 @@ describe('readRows', () => {
 
   it('writes skip lines to stderr by default', () => {
     const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    writeRow('Bad_Slug', { server: 'local', sync_id: 's3', profile: 'p3' }, 'tok');
+    writeRow('Bad_Slug', { server: 'local', sync_id: 's3' }, 'tok');
 
     readRows(dir, false);
 
@@ -118,7 +118,7 @@ describe('readRows', () => {
   });
 
   it('changes the fingerprint when a token is rewritten with the same length in the same second', () => {
-    writeRow('home', { server: 'local', sync_id: 's1', profile: 'p1' }, 'token-aaaa');
+    writeRow('home', { server: 'local', sync_id: 's1' }, 'token-aaaa');
     const tokenFile = path.join(dir, 'secrets', 'home.session_token');
     const stamp = new Date('2026-11-09T12:00:00.000Z');
     fs.utimesSync(tokenFile, stamp, stamp);
@@ -132,7 +132,7 @@ describe('readRows', () => {
   });
 
   it('keeps the fingerprint when nothing changed', () => {
-    writeRow('home', { server: 'local', sync_id: 's1', profile: 'p1' }, 'tok');
+    writeRow('home', { server: 'local', sync_id: 's1' }, 'tok');
 
     expect(readRows(dir, false)[0].fingerprint).toBe(readRows(dir, false)[0].fingerprint);
   });
@@ -397,15 +397,15 @@ describe('Children', () => {
 
   it('keeps reconciling other rows when one row has an unreadable token', () => {
     const { children, calls, lines } = make();
-    writeRow('keep', { server: 'local', sync_id: 's1', profile: 'p1' }, 'tok-keep');
-    writeRow('gone', { server: 'local', sync_id: 's2', profile: 'p2' }, 'tok-gone');
+    writeRow('keep', { server: 'local', sync_id: 's1' }, 'tok-keep');
+    writeRow('gone', { server: 'local', sync_id: 's2' }, 'tok-gone');
     children.reconcile(readRows(dir, false, () => {}));
     expect(calls.map((c) => c.env.ACTUAL_SESSION_TOKEN)).toEqual(['tok-gone', 'tok-keep']);
 
     fs.rmSync(path.join(dir, 'instances', 'gone.json'));
-    writeRow('broken', { server: 'local', sync_id: 's3', profile: 'p3' });
+    writeRow('broken', { server: 'local', sync_id: 's3' });
     fs.mkdirSync(path.join(dir, 'secrets', 'broken.session_token'));
-    writeRow('fresh', { server: 'local', sync_id: 's4', profile: 'p4' }, 'tok-fresh');
+    writeRow('fresh', { server: 'local', sync_id: 's4' }, 'tok-fresh');
     const warnings: string[] = [];
     const rows = readRows(dir, false, (line) => warnings.push(line));
     children.reconcile(rows);
