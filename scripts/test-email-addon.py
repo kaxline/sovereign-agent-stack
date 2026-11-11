@@ -19,6 +19,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts" / "lib"))
+sys.path.insert(0, str(ROOT / "compose" / "email-imap" / "lib"))
 import addon_store as st  # noqa: E402
 import email_addon as ea  # noqa: E402
 import mail_index as mi  # noqa: E402
@@ -207,7 +208,7 @@ with tempfile.TemporaryDirectory() as tmp:
     (run / "secrets").mkdir()
     env = dict(os.environ, EMAIL_ADDON_RUN=str(run), EMAIL_ADDON_TMP=str(root / "tmp.toml"),
                EMAIL_ADDON_DATA=str(root / "data"), )
-    proc = subprocess.run([sys.executable, "-I", "-B", str(ROOT / "scripts" / "lib" / "email_addon.py"),
+    proc = subprocess.run([sys.executable, "-I", "-B", str(ROOT / "compose" / "email-imap" / "lib" / "email_addon.py"),
                            "index", "--passes", "1"], env=env, capture_output=True, text=True, timeout=60)
     check("index with no accounts logs it and exits 0",
           proc.returncode == 0 and "email-indexer: no accounts configured" in proc.stderr + proc.stdout,
@@ -218,7 +219,7 @@ with tempfile.TemporaryDirectory() as tmp:
     (run / "instances" / "work.json").write_text(json.dumps(
         {"host": "127.0.0.1", "port": 1, "security": "plain", "user": "u@example.com", "mailboxes": ["INBOX"]}))
     (run / "secrets" / "work.password").write_text("synthetic")
-    proc = subprocess.run([sys.executable, "-I", "-B", str(ROOT / "scripts" / "lib" / "email_addon.py"),
+    proc = subprocess.run([sys.executable, "-I", "-B", str(ROOT / "compose" / "email-imap" / "lib" / "email_addon.py"),
                            "index", "--passes", "2"], env=env, capture_output=True, text=True, timeout=60)
     lines = [json.loads(x) for x in proc.stdout.splitlines() if x.startswith("{")]
     check("a failed pass is logged and the loop goes on to the next pass",
@@ -228,7 +229,7 @@ with tempfile.TemporaryDirectory() as tmp:
 
     # outbox with nothing configured logs, sleeps and never fails.
     (run / "instances" / "work.json").unlink()
-    proc = subprocess.run([sys.executable, "-I", "-B", str(ROOT / "scripts" / "lib" / "email_addon.py"),
+    proc = subprocess.run([sys.executable, "-I", "-B", str(ROOT / "compose" / "email-imap" / "lib" / "email_addon.py"),
                            "outbox", "--passes", "1"], env=env, capture_output=True, text=True, timeout=60)
     check("outbox with no accounts logs it and exits 0",
           proc.returncode == 0 and "email-outbox: no accounts configured" in proc.stderr,
@@ -266,7 +267,7 @@ with tempfile.TemporaryDirectory() as tmp:
 
     env = dict(os.environ, EMAIL_ADDON_RUN=str(run), EMAIL_ADDON_TMP=str(root / "tmp.toml"),
                EMAIL_ADDON_DATA=str(root / "data"))
-    entry = [sys.executable, "-I", "-B", str(ROOT / "scripts" / "lib" / "email_addon.py")]
+    entry = [sys.executable, "-I", "-B", str(ROOT / "compose" / "email-imap" / "lib" / "email_addon.py")]
     proc = subprocess.run([*entry, "mailboxes", "--account", "nobox"], env=env, capture_output=True, text=True,
                           timeout=60)
     check("mailboxes for an account with no mailboxes gets past the config (fails only on connect)",
@@ -287,7 +288,7 @@ with tempfile.TemporaryDirectory() as tmp:
     import contextlib
     import io
     lay = {"config": cfg, "instances": inst, "secrets": run / "secrets", "out": root / "outbox.toml",
-           "index": "/i", "drafts": "/d", "scripts": ROOT / "scripts"}
+           "index": "/i", "drafts": "/d", "scripts": ROOT / "compose" / "email-imap"}
     err = io.StringIO()
     with contextlib.redirect_stderr(err):
         has = ea.render_pass(lay, "email-outbox")
@@ -307,6 +308,38 @@ with tempfile.TemporaryDirectory() as tmp:
     check("outbox with every account skipped logs the slugs and no accounts configured",
           proc.returncode == 0 and "email-outbox: no accounts configured" in proc.stderr
           and "email-outbox: public: " in proc.stderr, f"rc={proc.returncode} err={proc.stderr!r}")
+
+# The email-imap image is a self-contained adapter (docs/contracts/tools.md):
+# it builds from compose/email-imap and imports nothing from scripts/lib.
+import ast  # noqa: E402
+import re  # noqa: E402
+
+IMAGE = ROOT / "compose" / "email-imap"
+own = {p.stem for p in (IMAGE / "lib").glob("*.py")}
+strays = []
+for path in sorted(IMAGE.rglob("*.py")):
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        names = ([a.name for a in node.names] if isinstance(node, ast.Import)
+                 else [node.module or ""] if isinstance(node, ast.ImportFrom) and node.level == 0 else [])
+        for name in names:
+            top = name.split(".")[0]
+            if top not in sys.stdlib_module_names and top not in own and top != "__future__":
+                strays.append(f"{path.relative_to(ROOT)}: {name}")
+check("email-imap imports only the standard library and its own lib/", not strays, str(strays))
+sources = [w for line in (IMAGE / "Dockerfile").read_text().splitlines() if line.startswith("COPY ")
+           for w in line.split()[1:-1] if not w.startswith("--")]
+check("the email-imap Dockerfile copies only files from its own directory",
+      sources and all(not w.startswith(("/", "..")) and (IMAGE / w).exists() for w in sources), str(sources))
+compose_text = (ROOT / "docker-compose.yml").read_text()
+for svc in ("email-indexer", "email-outbox"):
+    block = re.search(rf"^  {svc}:\n(.*?)(?=^  \S|\Z)", compose_text, re.M | re.S)
+    build = re.search(r"^    build:\n((?:      .*\n)+)", block.group(1) if block else "", re.M)
+    check(f"{svc} builds from compose/email-imap with its own Dockerfile",
+          build is not None and build.group(1).strip() == "context: ./compose/email-imap",
+          build.group(1) if build else "no build block")
+check("compose/email-imap/lib/drafts.py matches compose/mail-drafts-mcp/drafts.py (the queue format's source)",
+      (IMAGE / "lib" / "drafts.py").read_bytes() == (ROOT / "compose" / "mail-drafts-mcp" / "drafts.py").read_bytes(),
+      "copy compose/mail-drafts-mcp/drafts.py over compose/email-imap/lib/drafts.py")
 
 print(f"\n{failures} failure(s)" if failures else "\nall passed")
 sys.exit(1 if failures else 0)

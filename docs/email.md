@@ -458,7 +458,7 @@ We chose this over one MCP server per provider because:
 ### Read adapters
 
 An adapter implements four calls. The `script` source
-(`scripts/lib/mail_script.py`) is the reference.
+(`compose/email-imap/lib/mail_script.py`) is the reference.
 
 | Call | Returns |
 |---|---|
@@ -610,11 +610,11 @@ refused before anything is sent.
 the limits come from our code and from keeping the password out of the
 agent's reach:
 
-- The reader (`scripts/lib/mail_imap.py`) only reads: `LIST`, `STATUS`,
+- The reader (`compose/email-imap/lib/mail_imap.py`) only reads: `LIST`, `STATUS`,
   `EXAMINE`, `UID SEARCH` and `UID FETCH` with `BODY.PEEK`. Its connection
   class has no other commands, refuses any other `FETCH` items, and a test
   fails if the file gains a write.
-- The drafts outbox (`scripts/lib/mail_imap_drafts.py`) only appends to the
+- The drafts outbox (`compose/email-imap/lib/mail_imap_drafts.py`) only appends to the
   Drafts folder and reads the reply headers above. A test fails if it gains
   anything else. Neither has SMTP.
 - The shared code (`mail_imap_conn.py`) only logs in and lists mailboxes.
@@ -713,7 +713,7 @@ Mail store ──(Full Disk Access, read-only)──▶ mail-indexer (host)
   works out the schema with `PRAGMA table_info` and refuses to run on a
   layout it doesn't recognise. It finds message files by globbing, because
   folder layouts shift between releases.
-- **The scripting code only reads.** `scripts/lib/mail_script.js` reads
+- **The scripting code only reads.** `compose/email-imap/lib/mail_script.js` reads
   properties and nothing else. A test fails if it gains a send, move,
   delete, compose or similar call.
 - **Scope is explicit, with no defaults.** The accounts, the mailboxes and
@@ -735,8 +735,9 @@ Mail store ──(Full Disk Access, read-only)──▶ mail-indexer (host)
 ## Indexer
 
 `scripts/mail-index.py` runs on the host. Python 3.11 or newer, standard
-library only. The library is `scripts/lib/mail_index.py`, with the scripting
-source in `mail_script.py` and `mail_script.js`.
+library only. It runs `compose/email-imap/mail-index.py`, the same file the
+email add-on's image runs. The library is `compose/email-imap/lib/mail_index.py`,
+with the scripting source in `mail_script.py` and `mail_script.js`.
 
 ```bash
 cp mail-index.toml.example mail-index.toml   # gitignored; fill in since and accounts
@@ -1069,7 +1070,10 @@ said to.
 
 **Rules, checked twice.** The container checks each request before queueing
 it, and the host helper checks it again before Mail sees it, so a request
-written straight into the queue gets no further:
+written straight into the queue gets no further. Both use
+`compose/mail-drafts-mcp/drafts.py`; the host helper and the email-imap image
+use a copy of it, `compose/email-imap/lib/drafts.py`, and
+`scripts/test-email-addon.py` fails if the two differ.
 
 - Addresses are plain `name@domain`, with no display names, commas or line
   breaks, and at most 20 recipients in all.
@@ -1101,7 +1105,7 @@ as `failed` with `imap_login_refused`, `imap_password_missing`,
 `imap_unreachable`, `drafts_mailbox_not_found` or `reply_message_not_found`.
 
 **The host helper** (`scripts/mail-drafts.py`) has no access to the mail
-index, and `scripts/lib/mail_drafts.js` reads no message content. A test fails
+index, and `compose/email-imap/lib/mail_drafts.js` reads no message content. A test fails
 if that script gains a send, delete or move call, or reads a subject, sender,
 body or headers. Drafts are saved hidden; `--open` also shows each one in a
 compose window. After a draft is saved, the helper deletes its request and

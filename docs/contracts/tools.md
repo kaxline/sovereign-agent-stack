@@ -107,11 +107,11 @@ adapter:
 - has a `VENDORED.md` when its code comes from upstream, naming the upstream
   commit and the local changes (`compose/actual-mcp/VENDORED.md` is one).
 
-Not every adapter meets this yet: `compose/email-imap/Dockerfile` builds from
-the repo root and copies modules from `scripts/lib`.
-
 Host-side lifecycle scripts such as `scripts/budget.sh`, `scripts/crm.sh` and
 `scripts/vault.sh` are stack glue, not adapters, and may use `scripts/lib`.
+Host code may also import an adapter's code from its `compose/<name>/`
+directory: `scripts/mail-index.py` and `scripts/mail-drafts.py` run the files
+in `compose/email-imap/`, so the host tools and the image share one copy.
 
 ## Plans for the agent side
 
