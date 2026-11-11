@@ -41,8 +41,18 @@ the stack under another app.
    `missing_client_id` until connected again. Local mode: run `make
    vault-init` again; it writes the local account from `local/state` without
    signing in. Boundary: `status --json` can now report `bad_slug` and
-   `missing_client_id` as the `error` of a `refused` line, and a disconnect
-   whose broker restart failed is `not_found` when retried.
+   `missing_client_id` as the `error` of a `refused` line.
+7. Bitwarden on Linux: the broker and `bitwarden-setup` now run as
+   `HERMES_UID:HERMES_GID`, which must equal your `id -u` and `id -g`. Before
+   `make up`, give the Bitwarden data folder back to your user once:
+
+   ```bash
+   sudo chown -R "$(id -u):$(id -g)" data/addons/bitwarden
+   ```
+
+   with your `BITWARDEN_HOST_DATA_DIR` in place of `data/addons/bitwarden` if
+   you set one. macOS (Docker Desktop) needs nothing. The old
+   `<project>_bitwarden_sync` volume is unused; `docker volume rm` removes it.
 
 ### Changes
 
@@ -94,9 +104,14 @@ the stack under another app.
   `VAULT_ACCOUNTS_DIR`, `VAULT_ADDON_SH`, `VAULT_ADDON_STORE`, the
   `compose/bitwarden/accounts` mounts and `make doctor`'s
   `BW_SECRETS_ITEM_SCOPE` warning. `vault.sh backup` copies the instance
-  files and the local account in place of the account files. On Linux the
-  broker (uid 10001) cannot read `instances/` at mode 700, so it loads only
-  the local account there.
+  files and the local account in place of the account files.
+- `bitwarden-broker` and `bitwarden-setup` run as `HERMES_UID:HERMES_GID`
+  instead of uid 10001, so on Linux they read the store's 0700 `instances/`
+  as the host user does. The manual-unlock socket's folder,
+  `/run/bitwarden-sync`, is a tmpfs owned by that user; the `bitwarden_sync`
+  volume is gone. `vault.sh` no longer reaches files through
+  `bitwarden-setup` or prints `chown 10001` hints: a path it cannot use stops
+  it with the chown below.
 
 ## v0.3.13 — 2026-11-10
 

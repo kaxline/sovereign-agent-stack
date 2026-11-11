@@ -104,8 +104,8 @@ on one of them.
   so the logins work in every session on `default` and `browser` with no prompt. The session key
   stays in the broker's memory.
 - `manual`: no master password is stored. `make vault-unlock SLUG=…` asks for it in a hidden prompt
-  and hands it to the broker over a Unix socket in the
-  `bitwarden_sync` volume, which only the broker mounts. The broker uses it for one `bw unlock` and drops it. The account stays unlocked until the
+  and hands it to the broker over a Unix socket in `/run/bitwarden-sync`, a tmpfs only the broker
+  mounts, through `docker compose exec`. The broker uses it for one `bw unlock` and drops it. The account stays unlocked until the
   broker restarts, `make vault-lock SLUG=…`, or `BITWARDEN_IDLE_LOCK_MINUTES` without a fill or
   unlock (default 0, never). While it is locked its items are not listed, and `browser_vault` `list`
   carries `"bitwarden": {"locked": ["<slug>"], "unlock": "make vault-unlock SLUG=<slug>"}`. The broker
@@ -287,11 +287,12 @@ with the client_id and the other secrets, restarts the broker and keeps the acco
 broker signs in: unlocked for `stored`, locked and signed in for `manual`. Otherwise it removes
 what it wrote, the instance file included, and ends with an error line; `addon.sh` then writes
 nothing. After a sign-in, `addon.sh` writes the same values again. `vault.sh remove` deletes the
-instance file and secrets before it restarts the broker. Connect restarts the broker, and
-disconnect restarts it when it is running; a restart locks the other `manual` accounts, and the
-done message names them. When disconnect's restart fails, it ends with `command_failed`; the
-instance file and secrets are already gone, so a retried disconnect is `not_found`, and the broker
-drops the account at its next restart (`make up`). `vault.sh` never calls `addon.sh`.
+secrets and moves the instance file aside before it restarts the broker, then deletes it. Connect
+restarts the broker, and disconnect restarts it when it is running; a restart locks the other
+`manual` accounts, and the done message names them. When disconnect's restart fails, it ends with
+`command_failed` and the instance file goes back, so the store still lists the account. A retried
+disconnect finds the secrets gone, restarts the broker and ends with `done`, which drops the store
+entry. `vault.sh` never calls `addon.sh`.
 
 ## What the agent can and cannot see
 
@@ -381,18 +382,24 @@ there; files that exist only in the current data stay.
 
 ## Linux hosts
 
-The broker and `bitwarden-setup` run as uid 10001. Docker Desktop on macOS maps bind-mount
-ownership to your user, so nothing here applies there. On Linux:
+The broker and `bitwarden-setup` run as `HERMES_UID:HERMES_GID` (default `1000:1000`), as the
+email add-on's services do. On Linux those must equal your `id -u` and `id -g`: the containers then
+read the instance store's `instances/`, which `scripts/lib/addon_store.py` keeps at mode 700, and
+every file under `BITWARDEN_HOST_DATA_DIR` is yours. With any other `HERMES_UID`, the broker
+refuses `instances/` (`bad_file`, shown by `make doctor`) and loads no instance, and `make doctor`
+flags the mismatch. Docker Desktop on macOS maps bind-mount ownership to your user, so nothing here
+applies there.
 
-- `make vault-add` and `make vault-init` create the data folders before any container starts. Run
-  as root they give the new folders to uid 10001; otherwise they print the
-  `sudo chown -R 10001:10001 …` command to run. `secrets/` stays yours at mode 711.
-- When `vault.sh` cannot read or write a file the containers own, it goes through
-  `bitwarden-setup` and prints a note naming the path.
-- The instance store's `instances/` is yours at mode 700, which `scripts/lib/addon_store.py` sets
-  again on every write, so uid 10001 cannot read it. The broker then loads only the local account,
-  and `bitwarden-setup` cannot read an instance or rewrite its `scope` after creating a collection.
-  This is a known gap.
+Earlier versions ran both as uid 10001 and gave it `bw/`, `broker/`, `local/` and `secrets/<slug>/`.
+Hand them back once, before `make up`:
+
+```bash
+sudo chown -R "$(id -u):$(id -g)" data/addons/bitwarden
+```
+
+Use your `BITWARDEN_HOST_DATA_DIR` in place of `data/addons/bitwarden` if you set one. Until then,
+`vault.sh` stops at the first path it cannot read or write and prints that command, and the broker
+cannot read its own `bw/` data.
 
 None of this has been run on a Linux host.
 
