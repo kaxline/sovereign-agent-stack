@@ -55,8 +55,9 @@ Rules a reader of the plans can rely on, all enforced by `validate`:
 ### Removed in 0.3.14
 
 `onToggle`, `services.<name>.volumes` (use `data.volumes`),
-`services.<name>.oneshot`, `mcp.unmanaged` and the `upgrade` hook are gone.
-`validate` refuses the first four with a message saying so. Packaged add-ons
+`services.<name>.oneshot`, `mcp.unmanaged` and the `upgrade`, `backup` and
+`restore` hooks are gone. `validate` refuses the first four with a message
+saying so, and the three hooks as unknown fields of `hooks`. Packaged add-ons
 and feeds are design only.
 
 A one-shot service is no longer marked in the manifest. A service is a
@@ -64,10 +65,6 @@ one-shot when another compose service lists it in `depends_on` with
 `condition: service_completed_successfully`, written out in that service
 rather than through a YAML merge key (`compose_oneshots()` in
 `addon_manifest.py`). `addon.sh enable` runs it to completion first.
-
-The `backup` and `restore` hooks are retired: nothing runs them.
-Bitwarden's manifest still lists them, and `validate` tolerates those two
-names until the stack secrets sync is removed.
 
 ## Instance store
 
