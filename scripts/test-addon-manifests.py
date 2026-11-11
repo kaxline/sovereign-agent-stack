@@ -1367,6 +1367,7 @@ def volume_owner_problems(manifest: dict, compose_text: str) -> list[str]:
     return problems
 
 
+volumed = variant(data={"volumes": ["gptr_outputs"]})
 own_svc = next(iter(volumed["services"].values()))["compose"]
 FIX_OWNED = (f"services:\n  {own_svc}:\n    volumes:\n      - gptr_outputs:/o\n  core:\n    image: x\n"
              "volumes:\n  gptr_outputs:\n")
