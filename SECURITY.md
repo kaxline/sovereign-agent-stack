@@ -25,9 +25,8 @@ This is a **local development** stack. It is not hardened for internet-facing de
 | vikunja-proxy (optional) | `127.0.0.1:3456` | `/login-local` signs any local caller in as the managed account (by design); refuses non-localhost host names and cross-site fetches |
 | vikunja (optional) | compose-internal `:3456`; also on the internal `db` network | Vikunja accounts (sign-up off by default); MCP needs a scoped API token |
 | signal-cli (optional) | compose-internal `:8080` | None — HTTP JSON-RPC has no auth; keep unpublished |
-| bitwarden-broker (optional) | `127.0.0.1:8099` inside `hermes`' network namespace; Unix socket in the `bitwarden_sync` volume | None on TCP: no route returns a password, code or session key, and agent code in `hermes` can call it. The socket, which serves stack secrets and takes manual unlocks, is mounted only by the broker and `bitwarden-secrets-sync` |
+| bitwarden-broker (optional) | `127.0.0.1:8099` inside `hermes`' network namespace; Unix socket in the `bitwarden_sync` volume | None on TCP: no route returns a password, code or session key, and agent code in `hermes` can call it. The socket takes manual unlocks and locks and answers `/health`; only the broker mounts it |
 | bitwarden-setup (optional, one-shot) | no port; its own network plus the internal `vault` network | Your master password in a hidden prompt, held for one run; listens on no port, shares only the internal `vault` network and no volume with `hermes` |
-| bitwarden-secrets-sync (optional, one-shot) | no network (`network_mode: none`) | The broker's Unix socket; mounts only the folders of the files it writes |
 | vaultwarden (optional) | `127.0.0.1:8222` (`VAULTWARDEN_PORT`), plain HTTP; on the internal `vault-backend` network | Vaultwarden accounts, sign-ups off; admin page behind a generated token. `hermes` and the broker cannot reach it directly |
 | vaultwarden-tls (optional) | compose-internal `:443` as `vaultwarden.vault.internal` on the internal `vault` network | TLS from a private CA only the broker and `bitwarden-setup` trust; sets `X-Real-IP` from the connecting address so Vaultwarden's login rate limit can't be bypassed |
 

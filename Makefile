@@ -15,7 +15,7 @@
 	db-backup db-service-add db-psql todo-init todo-open dashboard-open \
 	crm-init crm-add crm-remove crm-access crm-open crm-mode \
 	vault-init vault-add vault-unlock vault-lock vault-sync vault-requests vault-remove vault-open \
-	secrets-sync bitwarden-test addon-list addon-test test hermes-image-test actual-mcp-test \
+	bitwarden-test addon-list addon-test test hermes-image-test actual-mcp-test \
 	budget-init budget-add budget-open budget-remove budget-access budget-connect budget-disconnect \
 	coding-root-list coding-root-add \
 	context-root-list context-root-add opencode-smoke-fixture \
@@ -183,7 +183,6 @@ crm-mode:
 #   make vault-requests                    the agent's pending access requests
 #   make vault-remove SLUG=name            forget an account (file, secrets, bw data)
 #   make vault-open                        open the local web vault
-#   make secrets-sync                      write stack secrets from the vault into their files
 vault-init:
 	./scripts/vault.sh init $(if $(VAULT_OWNER_EMAIL),--owner "$(VAULT_OWNER_EMAIL)")
 
@@ -213,9 +212,6 @@ vault-remove:
 
 vault-open:
 	@./scripts/vault.sh open
-
-secrets-sync:
-	@./scripts/vault.sh secrets-sync
 
 # Every Bitwarden add-on test, through scripts/run-tests.py. Image parts run
 # when the pinned Hermes image is present; test-vw-register.py and the compose

@@ -1259,6 +1259,9 @@ if [[ "$bw_on" -eq 1 || "$bw_local" -eq 1 || "$bw_files" -gt 0 ]]; then
     if [[ "$(bw_get "$f" BW_SCOPE)" == all ]]; then
       warn "$(basename "$f" .env): BW_SCOPE=all lets the agent reach every item in that vault — use folder: or collection: (make vault-add FORCE=1)"
     fi
+    if grep -qE '^[[:space:]]*BW_SECRETS_ITEM_SCOPE[[:space:]]*=' "$f"; then
+      warn "$(basename "$f" .env): BW_SECRETS_ITEM_SCOPE is ignored since the stack secrets sync was removed — delete that line from ${f}"
+    fi
   done
   if [[ "$bw_on" -eq 1 ]]; then
     if docker info >/dev/null 2>&1; then

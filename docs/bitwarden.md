@@ -1,7 +1,6 @@
 # Bitwarden
 
-Hermes signs in to websites with logins kept in Bitwarden, and `make secrets-sync` writes stack
-secrets from Bitwarden into the files the stack already reads. A sidecar, `bitwarden-broker`, holds
+Hermes signs in to websites with logins kept in Bitwarden. A sidecar, `bitwarden-broker`, holds
 each account's `bw` data, API key and session key, and writes passwords and one-time codes into the
 page itself. The Hermes gateway lists metadata only (handle, label, username, origins, whether the
 item has a TOTP key) and never holds a value. The agent keeps the `browser_vault_*` tools and the
@@ -48,7 +47,6 @@ BW_SERVER=https://vault.bitwarden.com       # cloud: vault.bitwarden.com or vaul
 BW_SCOPE=folder:Agent                       # folder:<name> | collection:<id> | all
 BW_UNLOCK=stored                            # stored | manual
 BW_CLIENTID=user.…                          # the account's personal API key id
-BW_SECRETS_ITEM_SCOPE=folder:Stack secrets  # optional, see Stack secrets
 ```
 
 `BW_SCOPE` defaults to `folder:Agent`. The other four keys are required. The broker accepts CRLF
@@ -57,6 +55,10 @@ value. An unknown key, an unknown value (`BW_UNLOCK=auto`), a repeated key or a 
 key refuses the whole file, and `make doctor` names the file and the key. A `#` after whitespace in
 an unquoted value starts a comment, so `BW_SCOPE=folder:Team #2` reads as `folder:Team`; quote the
 value (`BW_SCOPE="folder:Team #2"`). `make vault-add` quotes it for you.
+
+`BW_SECRETS_ITEM_SCOPE` belonged to the stack secrets sync, which was removed. A file that still sets
+it loads; the broker ignores the key and its value, and `make doctor` names the file so you can
+delete the line.
 
 Credentials never go in this file. The API key's secret and, with stored unlock, the master
 password are `client_secret` and `master_password` in `secrets/<slug>/`, mode 600. Only the broker
@@ -86,8 +88,8 @@ on one of them.
   so the logins work in every session on `default` and `browser` with no prompt. The session key
   stays in the broker's memory.
 - `manual`: no master password is stored. `make vault-unlock SLUG=…` asks for it in a hidden prompt
-  and hands it to the broker over a Unix socket that only the broker and `bitwarden-secrets-sync`
-  mount. The broker uses it for one `bw unlock` and drops it. The account stays unlocked until the
+  and hands it to the broker over a Unix socket in the
+  `bitwarden_sync` volume, which only the broker mounts. The broker uses it for one `bw unlock` and drops it. The account stays unlocked until the
   broker restarts, `make vault-lock SLUG=…`, or `BITWARDEN_IDLE_LOCK_MINUTES` without a fill or
   unlock (default 0, never). While it is locked its items are not listed, and `browser_vault` `list`
   carries `"bitwarden": {"locked": ["<slug>"], "unlock": "make vault-unlock SLUG=<slug>"}`. The broker
@@ -118,16 +120,15 @@ writes the password. A `collection:` scope with a member account avoids this.
    Sets `BITWARDEN_LOCAL_ENABLED=1` and starts `vaultwarden` and `vaultwarden-tls` (profile `vault`).
 2. Registers the agent account `agent@vault.localhost` with a generated master password and stores
    that password and the account's API key in `secrets/local/`.
-3. Creates the organization "Assistant" with the collections "Agent" and "Stack secrets" and writes
-   `compose/bitwarden/accounts/local.env` (`BW_SCOPE=collection:<Agent>`, `BW_UNLOCK=stored`,
-   `BW_SECRETS_ITEM_SCOPE=collection:<Stack secrets>`).
+3. Creates the organization "Assistant" with the collection "Agent" and writes
+   `compose/bitwarden/accounts/local.env` (`BW_SCOPE=collection:<Agent>`, `BW_UNLOCK=stored`).
 4. Invites your address (`VAULT_OWNER_EMAIL`, or asked) as an Owner and prints the web vault's
    address. Register there with that address and a master password you choose; the stack never
    sees or stores it. Sign-ups are otherwise off.
 5. Waits up to 10 minutes for you to register, then confirms you in the organization. If you have
    not registered by then it stops; `make vault-init` again picks up from this step.
 6. Asks for your master password once, in `bitwarden-setup`, to change the agent account to the
-   User role with Manage on "Agent" and view on "Stack secrets". From then on you own the
+   User role with Manage on "Agent". From then on you own the
    organization and Bitwarden enforces the agent's scope.
 
 Each finished step is recorded in `local/state`. `make vault-init` then sets `BITWARDEN_ENABLED=1`;
@@ -269,57 +270,6 @@ disconnects only accounts the store has an entry for. `make vault-add` and `make
 keep the store in step, and `make up` records account files that have no entry. For an account
 whose slug breaks the new rule, `make up` says Boundary cannot disconnect it.
 
-## Stack secrets
-
-`make secrets-sync` runs `bitwarden-secrets-sync`, which reads items from the broker over the Unix
-socket and writes them into secret files the stack already reads. It serves only items in an
-account's `BW_SECRETS_ITEM_SCOPE` (`folder:<name>` or `collection:<id>`); local mode sets it to
-"Stack secrets". Each login item maps by its exact name, and its password field is the value:
-
-| Item name | Written to |
-|---|---|
-| `twenty/<slug>/key-ro`, `twenty/<slug>/key-rw` | the whole file `secrets/<slug>.key_ro` / `.key_rw` in the Twenty add-on store, `data/addons/twenty/` |
-| `twenty/encryption-key` | the file `TWENTY_ENCRYPTION_KEY_FILE` names |
-| `twenty/db-password` | the file `TWENTY_DB_PASSWORD_FILE` names |
-| `postgres/<role>` | `DB_SERVICE_PASSWORD` in `compose/postgres/services/<role>.env`, and the same password inside `DATABASE_URL` and any `*_DATABASE_PASSWORD` line that held the old one |
-| `caldav/<slug>` | `CALDAV_PASSWORD` in `compose/caldav-mcp/accounts/<slug>.env` |
-
-The two Twenty files must sit directly in `TWENTY_SECRETS_DIR`, which compose mounts for the sync;
-with it unset, those items are skipped with a note. No row covers `llm-proxy` keys.
-
-A file is rewritten only when its value changed, through a temp file, at mode 600. A file that does
-not exist is never created, a symbolic link is skipped, an unknown item name is reported and
-skipped, and a name that maps to two files is refused. The output names files and items, never
-values. When a file Hermes reads changed (Twenty workspace keys, CalDAV accounts), the command runs
-`make hermes-reload`. `make up` runs the sync after `docker compose up -d` when an account has
-`BW_SECRETS_ITEM_SCOPE` and is unlocked; otherwise it prints that the sync was skipped and the files
-keep their values.
-
-The `KEY=value` files are read by compose's `env_file`, shell scripts and Python parsers, which
-quote differently. A value bound for one of them is refused (skipped with a note naming the item)
-when it holds `$`, a backtick, `\`, `'`, `"`, `#`, whitespace at either end, or a control character.
-Generated keys and passwords are normally alphanumeric; change such a value, or keep that file by
-hand. The Twenty files take any value, except that the workspace keys also refuse whitespace and
-control characters, since they go in an HTTP header. The workspace must already be stored
-(`make crm-add`, `make crm-init`); the sync never creates its key files.
-
-A new value in a file does not always change the service that checks it:
-
-- `twenty/<slug>/key-ro`, `key-rw`: create the key in Twenty first, then store it. Hermes picks
-  it up through the `make hermes-reload` the sync runs. `make crm-init ROTATE=1` writes keys of its
-  own, so update the Bitwarden items after one, or the next sync puts the old keys back.
-- `twenty/encryption-key`: don't change it on an existing install. Twenty encrypts what it
-  stores with it, and a new key loses that data ([CRM](crm.md#settings)).
-- `twenty/db-password`: Postgres reads its password file only when it first creates the
-  database. Change the role's password first (`docker compose exec twenty-db psql -U twenty`, then
-  `\password twenty`), run the sync, then `docker compose up -d --force-recreate twenty-server twenty-worker`.
-- `postgres/<role>`: `db-provision` sets each `svc_<role>` password from its file on every
-  `make up`; run it now with `docker compose run --rm db-provision`, then restart the integration
-  that uses the role.
-
-Values Hermes needs in profile `.env` files (CalDAV passwords for MCP headers) still end up there,
-with the caveat in [SECURITY.md](../SECURITY.md).
-
 ## What the agent can and cannot see
 
 The agent drives the page the password is typed into, so code it writes can read the field. Origin
@@ -385,7 +335,6 @@ Other limits, as built:
 | `VAULTWARDEN_PORT` | `8222` | Web vault port, bound to `127.0.0.1` |
 | `VAULTWARDEN_TLS_IMAGE` | `nginx:1.30.6-alpine` | The TLS sidecar's image |
 | `VAULT_OWNER_EMAIL` | unset | Your address for `make vault-init` |
-| `TWENTY_SECRETS_DIR` | unset | The folder holding both Twenty secret files, for `make secrets-sync` |
 
 `bw` 2026.10.1 is pinned in `compose/bitwarden-broker/Dockerfile` by the `BW_CLI_VERSION` build
 argument and a SHA-256 per architecture; a new version needs both digests. Run `make bitwarden-test`
@@ -423,9 +372,6 @@ ownership to your user, so nothing here applies there. On Linux:
   Before those steps, give it access, for example
   `sudo setfacl -m u:10001:rwx compose/bitwarden/accounts`, or run them as root. Otherwise they stop
   with a permission error.
-- `make secrets-sync` runs as uid 10001 too. It needs write access to the target folders, and a file
-  it replaces may end up owned by uid 10001 (it prints a note when it could not keep the owner).
-  Check that the service reading the file can still read it.
 
 None of this has been run on a Linux host.
 

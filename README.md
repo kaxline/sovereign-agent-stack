@@ -140,7 +140,7 @@ See [SECURITY.md](SECURITY.md).
 | [Shared database](docs/database.md) | Postgres schema-per-integration + SQL MCP (`db`) |
 | [Todo lists](docs/todo.md) | Vikunja web app + MCP (`todo`) |
 | [CRM](docs/crm.md) | Twenty, local (`crm`) or remote, + MCP |
-| [Bitwarden](docs/bitwarden.md) | Browser logins and stack secrets from Bitwarden (`bitwarden`, `vault`) |
+| [Bitwarden](docs/bitwarden.md) | Browser logins from Bitwarden (`bitwarden`, `vault`) |
 | [Hermes WebUI](docs/hermes-webui.md) | Chat UI + lean gateway mode |
 | [Knowledge bases](docs/knowledge-bases.md) | Corpora, ingest, hot-workspace switching (`rag`) |
 | [Projects](docs/projects.md) | Briefs, `sources.yaml`, INDEX, context roots |

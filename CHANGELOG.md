@@ -21,6 +21,11 @@ the stack under another app.
    left over, since they hold API keys, and add remote workspaces again with
    `make crm-add`. Boundary: stop reading and writing that folder before
    moving the pin.
+3. Bitwarden: the secret files the stack secrets sync wrote (Twenty keys,
+   Postgres service passwords, CalDAV passwords) stay where they are; edit them
+   by hand from now on. Delete `BW_SECRETS_ITEM_SCOPE` from account files
+   (`make doctor` names them) and `TWENTY_SECRETS_DIR` from `.env`. Boundary:
+   stop calling `vault.sh secrets-sync` and the broker's `GET /secrets`.
 
 ### Changes
 
@@ -31,6 +36,16 @@ the stack under another app.
   doctor`'s warnings about leftover workspace files.
   `compose/twenty/workspace.env.example` and `compose/twenty/workspaces/` are
   gone from the repo; the folder stays gitignored.
+- Removed the Bitwarden stack secrets sync: `make secrets-sync`,
+  `vault.sh secrets-sync`, the `bitwarden-secrets-sync` service and the
+  broker's `GET /secrets` route on its Unix socket (the socket still takes
+  manual unlocks). `make up` no longer runs a sync. Local mode no longer
+  creates the "Stack secrets" collection; existing ones stay in Vaultwarden.
+  Account files with `BW_SECRETS_ITEM_SCOPE` still load: the broker ignores the
+  key and `make doctor` names the files. `TWENTY_SECRETS_DIR` and
+  `compose/twenty/no-secrets/` are gone. The Bitwarden manifest drops
+  `hooks.backup` and `hooks.restore`; `vault.sh backup` and `restore` are
+  unchanged.
 
 ## v0.3.13 — 2026-11-10
 

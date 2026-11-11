@@ -14,7 +14,7 @@ Commands:
                      on the collection. ``local`` accounts are refused here.
 ``seed``             Asks for sites and moves the matching items the user picks.
 ``role``             Changes the agent member to the User role with Manage on the
-                     scope collection and view on "Stack secrets" (Local mode step 6).
+                     scope collection (Local mode step 6).
                      ``--agent-email`` defaults to agent@vault.localhost for ``local``.
 ``list-unassigned``  Organization items in no collection, by name and URI host.
 
@@ -43,8 +43,7 @@ replaces everything.
                  Registers agent@vault.localhost with a generated master password
                  (kept in /secrets/local/master_password) after an admin invite,
                  stores its API key in /secrets/local/client_secret, creates the
-                 organization "Assistant" with the collections "Agent" and "Stack
-                 secrets", writes /accounts/local.env, invites EMAIL as an Owner,
+                 organization "Assistant" with the collection "Agent", writes /accounts/local.env, invites EMAIL as an Owner,
                  then waits up to SECONDS (default 600) for that address to register
                  at the sign-up URL and confirms it with ``bw confirm org-member``.
                  Each finished step is recorded in /local/state (``STEP=`` plus the
@@ -108,7 +107,6 @@ NOTICE = ("Moving an item into an organization collection transfers it from your
 PASSWORD_TRIES = 3
 EXIT_FAILED, EXIT_PASSWORD, EXIT_INTERRUPTED = 1, 2, 130
 LOCAL_AGENT_EMAIL = "agent@vault.localhost"
-STACK_SECRETS = "Stack secrets"
 DEFAULT_COLLECTION = "Agent"
 MEMBER_INVITED, MEMBER_ACCEPTED = 0, 1
 TYPE_USER = 2
@@ -118,6 +116,7 @@ LOCAL_DIR = "/local"
 LOCAL_SERVER = "https://vaultwarden.vault.internal"
 LOCAL_ORG_NAME = "Assistant"
 LOCAL_SIGNUP_URL = "http://localhost:8222"
+# "stack" and STACK_COLLECTION are no longer written. Older /local/state files still hold them.
 LOCAL_STEPS = ("registered", "api_key", "org", "stack", "account_file", "invited", "confirmed", "role")
 STATE_KEYS = ("STEP", "CLIENT_ID", "ORG_ID", "AGENT_COLLECTION", "STACK_COLLECTION", "OWNER_EMAIL")
 STATE_FILE = "state"
@@ -580,19 +579,11 @@ class Run:
         if agent_coll is None:
             raise SetupError(f"Collection {self.account.scope_value} is not visible to {self.args.email}.")
         org = agent_coll.get("organizationId")
-        colls = self.collections()
-        secrets_scope = self.account.secrets_item_scope
-        if secrets_scope and secrets_scope[0] == "collection":
-            stack = next((c for c in colls if c["id"] == secrets_scope[1]), None)
-        else:
-            stack = next((c for c in colls if c.get("organizationId") == org and c.get("name") == STACK_SECRETS), None)
         member = self.member(org, agent_email)
         if member is None:
             raise SetupError(f"{agent_email} is not a member of the organization.")
         access = [{"id": agent_coll["id"], "readOnly": False, "hidePasswords": False, "manage": True}]
-        if stack is not None:
-            access.append({"id": stack["id"], "readOnly": True, "hidePasswords": False, "manage": False})
-        names = f'Manage on "{agent_coll.get("name")}"' + (f' and view on "{stack.get("name")}"' if stack else "")
+        names = f'Manage on "{agent_coll.get("name")}"'
         if self.token is not None:
             try:
                 self.api("PUT", f"/organizations/{org}/users/{member['id']}",
@@ -1010,17 +1001,13 @@ class LocalInit:
         print(f'Created the collection "{name}".')
         return cid
 
-    def stack_collection(self, password: str) -> str:
-        return self.collection_named(password, STACK_SECRETS)
-
     def write_account_file(self, rotate: bool = False) -> None:
         path = self.accounts_dir / "local.env"
         if path.exists() and not rotate:
             try:
                 acct = parse_file(path)
                 same = (acct.scope_kind == "collection" and acct.scope_value == self.state["AGENT_COLLECTION"]
-                        and acct.client_id == self.state["CLIENT_ID"]
-                        and acct.secrets_item_scope == ("collection", self.state["STACK_COLLECTION"]))
+                        and acct.client_id == self.state["CLIENT_ID"])
             except AccountError:
                 same = False
             if not same:
@@ -1035,7 +1022,6 @@ class LocalInit:
             f"BW_SCOPE=collection:{self.state['AGENT_COLLECTION']}",
             "BW_UNLOCK=stored",
             f"BW_CLIENTID={self.state['CLIENT_ID']}",
-            f"BW_SECRETS_ITEM_SCOPE=collection:{self.state['STACK_COLLECTION']}",
         ]))
         print(f"Wrote {path.name}.")
 
@@ -1073,8 +1059,6 @@ class LocalInit:
                     org, coll = vw_register.create_org(self.server, token, keys, LOCAL_ORG_NAME, DEFAULT_COLLECTION)
                     print(f'Created the organization "{LOCAL_ORG_NAME}" with the collection "{DEFAULT_COLLECTION}".')
                 self.record("org", ORG_ID=org, AGENT_COLLECTION=coll)
-            if not self.done("stack"):
-                self.record("stack", STACK_COLLECTION=self.stack_collection(password))
             if not self.done("account_file") or self.rotate:
                 self.write_account_file(self.rotate)
                 self.record("account_file")

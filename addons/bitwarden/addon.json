@@ -63,20 +63,6 @@
       "label": "Lock manual accounts after this many minutes without a fill; 0 never (BITWARDEN_IDLE_LOCK_MINUTES)"
     }
   },
-  "hooks": {
-    "backup": {
-      "script": [
-        "scripts/vault.sh",
-        "backup"
-      ]
-    },
-    "restore": {
-      "script": [
-        "scripts/vault.sh",
-        "restore"
-      ]
-    }
-  },
   "instances": {
     "name": "account",
     "optional": true,

@@ -15,9 +15,6 @@ bw's stdout and stderr stay inside ``_exec`` and ``_run``. A failure raises
 ``BwError(error_class)``, whose text is the class name alone, with no chained
 exception (``__context__`` and ``__cause__`` are None).
 
-``secret_items`` is the one method that returns values; the server calls it
-only for the Unix socket.
-
 ``unlock()`` and ``sync()`` refresh a cached list of login-item metadata.
 ``cached_items()`` serves it without running bw, and the list stays until a new
 one replaces it or the account locks.
@@ -423,26 +420,3 @@ class Bw:
     def get_totp(self, item_id: str) -> str:
         with self._lock:
             return self._get("totp", item_id).strip()
-
-    def secret_items(self) -> list[tuple[str, str]]:
-        """``(name, password)`` for each login item in ``BW_SECRETS_ITEM_SCOPE``; [] when it is unset."""
-        scope = self.account.secrets_item_scope
-        if scope is None:
-            return []
-        with self._lock:
-            if self._session is None:
-                raise self._fail("locked")
-            raw: list = []
-            try:
-                raw, keep = self._scoped(*scope)
-                out = []
-                for item in raw:
-                    meta = _sanitize(item)
-                    if meta is None or meta["type"] != 1 or not keep(meta):
-                        continue
-                    password = (item.get("login") or {}).get("password")
-                    if isinstance(meta["name"], str) and meta["name"] and isinstance(password, str) and password:
-                        out.append((meta["name"], password))
-                return out
-            finally:
-                raw = None

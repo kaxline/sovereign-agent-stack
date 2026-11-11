@@ -3,8 +3,8 @@
 # scripts/vault.sh with docker (and make) replaced by recording stubs on PATH.
 # Covers argument checks, add's files and modes, the scope all refusal,
 # passwords kept out of every argv and all output, requests --json, init's
-# order and resume from local/state, the make up hook, secrets-sync's exit
-# codes, and backup/restore (when the host has sqlite3). Bash 3.2 compatible;
+# order and resume from local/state, the make up hook, the removed
+# secrets-sync command, and backup/restore (when the host has sqlite3). Bash 3.2 compatible;
 # needs no host python3.
 set -euo pipefail
 
@@ -94,7 +94,6 @@ for a in "$@"; do
     exit "$(rc_of "setup-$a")"
   fi
   [ "$a" = bitwarden-setup ] && next=1
-  [ "$a" = bitwarden-secrets-sync ] && exit "$(rc_of secrets-sync)"
 done
 exit 0
 SH
@@ -378,11 +377,11 @@ printf 'BITWARDEN_ENABLED=1\n' > "$ENV_FILE"
 touch "$STUB/broker-running"
 printf 'local\tlocal\tcollection\tlocked\t-\npersonal\tcloud\tfolder\tunlocked\t-\n' > "$STUB/accounts"
 run up-hook || fail "up-hook, locked"
-said "Bitwarden secrets sync skipped: local is locked" || fail "up-hook skip message"
+said "secrets sync" && fail "up-hook mentions the removed secrets sync"
 logged "bitwarden-secrets-sync" && fail "up-hook synced while the account was locked"
 printf 'local\tlocal\tcollection\tunlocked\t-\n' > "$STUB/accounts"
 run up-hook || fail "up-hook, unlocked"
-logged "run --rm -T bitwarden-secrets-sync" || fail "up-hook runs secrets-sync when unlocked"
+logged "bitwarden-secrets-sync" && fail "up-hook runs a sync for an account with a leftover BW_SECRETS_ITEM_SCOPE"
 grep -A5 -E '^up:' "${ROOT}/Makefile" | grep -q 'vault.sh up-hook' || fail "make up calls vault.sh up-hook"
 grep -A5 -E '^up:' "${ROOT}/Makefile" | awk '/vault.sh pre-up/ { p = NR } /docker compose up -d/ { u = NR } END { exit !(p && u && p < u) }' \
   || fail "make up runs vault.sh pre-up before docker compose up"
@@ -463,15 +462,23 @@ for f in $bare; do
   grep -q 'follow_hermes' "$f" || fail "$(basename "$f") recreates hermes without follow_hermes"
 done
 
-# --- secrets-sync exit codes ---------------------------------------------------
+# --- secrets-sync is gone --------------------------------------------------------
 reset_stub
-echo 3 > "$STUB/rc.secrets-sync"
-run secrets-sync || fail "secrets-sync exit 3"
-logged "make" || fail "secrets-sync exit 3 runs make hermes-reload"
-grep -q 'hermes-reload' "$STUB/log" || fail "secrets-sync exit 3 runs hermes-reload"
-echo 1 > "$STUB/rc.secrets-sync"
-run secrets-sync && fail "secrets-sync exit 1 must fail"
-said "make up" || fail "secrets-sync exit 1 says to start the broker"
+run secrets-sync && fail "secrets-sync must fail as an unknown command"
+logged "docker" && fail "secrets-sync ran docker"
+grep -q 'secrets-sync' "${ROOT}/Makefile" && fail "the Makefile still has a secrets-sync target"
+
+# --- status --json: a leftover BW_SECRETS_ITEM_SCOPE is not a refusal ---------------
+reset_stub
+printf 'BW_MODE=cloud\nBW_SERVER=https://vault.bitwarden.com\nBW_UNLOCK=manual\nBW_CLIENTID=user.old\nBW_SECRETS_ITEM_SCOPE=folder:Stack\n' \
+  > "$VAULT_ACCOUNTS_DIR/old.env"
+chmod 600 "$VAULT_ACCOUNTS_DIR/old.env"
+touch "$STUB/broker-running"
+printf 'old\tcloud\tfolder\tlocked\t-\n' > "$STUB/accounts"
+run status --json || fail "status --json with a leftover BW_SECRETS_ITEM_SCOPE"
+said '"slug":"old"' || fail "status --json does not list the account with the leftover key"
+said refused && fail "status --json reports the leftover key as refused"
+rm -f "$VAULT_ACCOUNTS_DIR/old.env"
 
 # --- Linux: files that belong to the containers' user (Ruling R23) -------------
 # A non-root user on Linux after the uid 10001 chown: the account file, local/
@@ -500,8 +507,7 @@ no_secret "linux unlock"
 printf 'lin\tcloud\tfolder\tunlocked\t-\nlocal\tlocal\tcollection\tlocked\t-\n' > "$STUB/accounts"
 run up-hook || fail "linux: up-hook"
 logged "/accounts/lin.env" || fail "linux: up-hook did not read lin.env through bitwarden-setup"
-logged "run --rm -T bitwarden-secrets-sync" || fail "linux: up-hook skipped the sync for an unreadable account file"
-said "skipped: local is locked" || fail "linux: up-hook lost the readable account"
+logged "bitwarden-secrets-sync" && fail "linux: up-hook ran a sync"
 
 : > "$STUB/log"
 printf 'STEP=confirmed\nOWNER_EMAIL=owner@example.com\n' > "$cv/local/state"
