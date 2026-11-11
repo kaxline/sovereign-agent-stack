@@ -502,8 +502,7 @@ services:
     profiles: ["email"]
     container_name: ${CONTAINER_PREFIX:-}email-indexer
     build:
-      context: .
-      dockerfile: compose/email-imap/Dockerfile
+      context: ./compose/email-imap
     image: ${IMAGE_PREFIX:-assistant}-email-imap:local
     restart: unless-stopped
     command: ["python", "-I", "-B", "/app/scripts/lib/email_addon.py", "index"]
@@ -589,8 +588,7 @@ services:
     profiles: ["email-drafts"]
     container_name: ${CONTAINER_PREFIX:-}email-outbox
     build:
-      context: .
-      dockerfile: compose/email-imap/Dockerfile
+      context: ./compose/email-imap
     image: ${IMAGE_PREFIX:-assistant}-email-imap:local
     restart: unless-stopped
     command: ["python", "-I", "-B", "/app/scripts/lib/email_addon.py", "outbox"]

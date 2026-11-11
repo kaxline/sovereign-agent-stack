@@ -6,8 +6,8 @@
 # Each app carries only its own helper's scripts, sealed by its code
 # signature, plus a small launcher that runs them with an isolated Python:
 #
-#   Assistant Mail Reader.app   scripts/mail-index.py and the indexer library
-#   Assistant Mail Drafts.app   scripts/mail-drafts.py and the drafts library
+#   Assistant Mail Reader.app   compose/email-imap/mail-index.py and its library
+#   Assistant Mail Drafts.app   compose/email-imap/mail-drafts.py and its library
 #
 # Environment:
 #   MAIL_APPS_PYTHON         Python 3.11+ to run the helpers (default: python3 on PATH)
@@ -90,24 +90,24 @@ PLIST
 
 make_app "Assistant Mail Reader" mail-reader assistant-mail-reader mail-index.py \
   "Reads the mailboxes you chose in mail-index.toml so your assistant can search them. It never changes or sends mail." \
-  scripts/mail-index.py:mail-index.py \
-  scripts/lib/mail_index.py:lib/mail_index.py \
-  scripts/lib/mail_script.py:lib/mail_script.py \
-  scripts/lib/mail_script.js:lib/mail_script.js \
-  scripts/lib/mail_imap.py:lib/mail_imap.py \
-  scripts/lib/mail_imap_conn.py:lib/mail_imap_conn.py \
-  scripts/lib/mail_credentials.py:lib/mail_credentials.py \
-  scripts/lib/jxa.py:lib/jxa.py
+  compose/email-imap/mail-index.py:mail-index.py \
+  compose/email-imap/lib/mail_index.py:lib/mail_index.py \
+  compose/email-imap/lib/mail_script.py:lib/mail_script.py \
+  compose/email-imap/lib/mail_script.js:lib/mail_script.js \
+  compose/email-imap/lib/mail_imap.py:lib/mail_imap.py \
+  compose/email-imap/lib/mail_imap_conn.py:lib/mail_imap_conn.py \
+  compose/email-imap/lib/mail_credentials.py:lib/mail_credentials.py \
+  compose/email-imap/lib/jxa.py:lib/jxa.py
 
 make_app "Assistant Mail Drafts" mail-drafts assistant-mail-drafts mail-drafts.py \
   "Saves drafts your assistant wrote to your Drafts for you to review. It never sends mail." \
-  scripts/mail-drafts.py:mail-drafts.py \
-  scripts/lib/mail_drafts.py:lib/mail_drafts.py \
-  scripts/lib/mail_drafts.js:lib/mail_drafts.js \
-  scripts/lib/mail_imap_drafts.py:lib/mail_imap_drafts.py \
-  scripts/lib/mail_imap_conn.py:lib/mail_imap_conn.py \
-  scripts/lib/mail_credentials.py:lib/mail_credentials.py \
-  scripts/lib/jxa.py:lib/jxa.py \
-  compose/mail-drafts-mcp/drafts.py:lib/drafts.py
+  compose/email-imap/mail-drafts.py:mail-drafts.py \
+  compose/email-imap/lib/mail_drafts.py:lib/mail_drafts.py \
+  compose/email-imap/lib/mail_drafts.js:lib/mail_drafts.js \
+  compose/email-imap/lib/mail_imap_drafts.py:lib/mail_imap_drafts.py \
+  compose/email-imap/lib/mail_imap_conn.py:lib/mail_imap_conn.py \
+  compose/email-imap/lib/mail_credentials.py:lib/mail_credentials.py \
+  compose/email-imap/lib/jxa.py:lib/jxa.py \
+  compose/email-imap/lib/drafts.py:lib/drafts.py
 
 printf 'python: %s\nsigned: %s\n' "$PYTHON" "$( [[ "$IDENTITY" == "-" ]] && echo "ad hoc" || echo "$IDENTITY")"

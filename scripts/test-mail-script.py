@@ -19,6 +19,9 @@ HERE = Path(__file__).resolve().parent
 LIB = HERE / "lib"
 if str(LIB) not in sys.path:
     sys.path.insert(0, str(LIB))
+MAIL_LIB = HERE.parent / "compose" / "email-imap" / "lib"  # the mail library, shared with the email-imap image
+if str(MAIL_LIB) not in sys.path:
+    sys.path.insert(0, str(MAIL_LIB))
 
 import mail_index as mi  # noqa: E402
 import mail_script as ms  # noqa: E402

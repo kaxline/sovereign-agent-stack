@@ -18,18 +18,12 @@ the draft's text or recipients.
 from __future__ import annotations
 
 import json
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
+import drafts  # a copy of compose/mail-drafts-mcp/drafts.py, the queue format's source
 import jxa
-
-_DRAFTS_LIB = Path(__file__).resolve().parents[2] / "compose" / "mail-drafts-mcp"
-if str(_DRAFTS_LIB) not in sys.path:
-    sys.path.insert(0, str(_DRAFTS_LIB))
-
-import drafts  # noqa: E402
 
 SCRIPT = Path(__file__).with_name("mail_drafts.js")
 STATUS_KEEP_DAYS = 30

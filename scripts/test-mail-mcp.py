@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-for p in (HERE / "lib", HERE.parent / "compose" / "mail-mcp"):
+for p in (HERE / "lib", HERE.parent / "compose" / "email-imap" / "lib", HERE.parent / "compose" / "mail-mcp"):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
