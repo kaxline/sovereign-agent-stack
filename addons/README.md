@@ -10,7 +10,8 @@ LightRAG (`lightrag/`), n8n (`n8n/`), Email on this Mac (`email-local/`: the
 Mail.app `mail` and `drafts` servers) and Email over IMAP (`email/`:
 containers that hold the account passwords, registered as `email` and
 `email-drafts`); both email add-ons are described in
-[docs/email.md](../docs/email.md). The other optional services are still
+[docs/email.md](../docs/email.md). The AI text detector (`detector/`) is
+described in [docs/detector.md](../docs/detector.md). The other optional services are still
 wired by hand.
 
 What reads a manifest:
