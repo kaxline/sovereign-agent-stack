@@ -235,6 +235,9 @@ Run these yourself. Report pass or fail and counts, not messages, subjects or se
    with your mail client's count for the chosen mailboxes since the `since`
    date, and report the two numbers and pass or fail.
 
+These steps passed on one real account on 2026-11-11, INBOX only. Drafts
+and Proton haven't had a real run.
+
 For Proton, repeat steps 2 to 5 with an account on Bridge as described in
 [Settings and accounts](#settings-and-accounts), and report whether
 `run email mailboxes` lists the mailboxes and whether the first pass shows no

@@ -69,6 +69,13 @@ the stack under another app.
 
 ### Changes
 
+- The `email` add-on has now had its first run on a real IMAP account
+  (INBOX, a ten-day `since` window): `run email mailboxes` listed the
+  mailboxes and the first pass indexed every message in scope with none
+  unreadable or failed. The "not tested on a real account" note under
+  v0.3.13 and "IMAP login and TLS" under v0.3.6 no longer apply. Drafts
+  (`APPEND` to a real Drafts mailbox) and Proton through Bridge still
+  haven't had a real run.
 - `addon.sh enable`, `run` and hooks that run in a compose service now run
   `docker compose build --quiet` on their services first. Before, a service
   built from this repo (`email-indexer`, `email-mcp`, `email-drafts-mcp`,
