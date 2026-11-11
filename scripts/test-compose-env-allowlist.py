@@ -91,7 +91,7 @@ WORKER_ENV = {"HERMES_UID", "HERMES_GID", "TZ"}
 
 # bitwarden-broker shares hermes' network namespace and may carry only these.
 BROKER_ENV = {
-    "BITWARDEN_ACCOUNTS_DIR",
+    "BITWARDEN_INSTANCES_DIR",
     "BITWARDEN_DATA_DIR",
     "BITWARDEN_SECRETS_DIR",
     "BITWARDEN_SYNC_MINUTES",

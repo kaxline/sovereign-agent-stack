@@ -295,7 +295,7 @@ def inside_main() -> int:
 
     sys.path[:0] = ["/app", "/app/setup"]
     import vw_register as vw
-    from broker.accounts import parse_file
+    from broker.accounts import LOCAL_SERVER, load_local
     from broker.bwcli import Bw, BwError, classify, run_bw
 
     syn = json.loads(Path("/test/synthetic.json").read_text(encoding="utf-8"))
@@ -365,7 +365,8 @@ def inside_main() -> int:
         """setup.py under a pty, answering the master password prompt once, then each
         (prompt, reply) in ``replies`` in order."""
         env = {"PATH": os.environ["PATH"], "HOME": "/tmp", "NODE_EXTRA_CA_CERTS": os.environ["NODE_EXTRA_CA_CERTS"],
-               "BITWARDEN_ACCOUNTS_DIR": "/tmp/accounts", "PYTHONDONTWRITEBYTECODE": "1"}
+               "BITWARDEN_BROKER_DIR": "/tmp/broker", "BITWARDEN_SECRETS_DIR": "/tmp/secrets",
+               "BITWARDEN_INSTANCES_DIR": "/tmp/instances", "PYTHONDONTWRITEBYTECODE": "1"}
         pid, fd = pty.fork()
         if pid == 0:
             try:
@@ -485,15 +486,17 @@ def inside_main() -> int:
 
         step("the agent creates the organization Assistant with the collection Agent", org)
 
-        Path("/tmp/accounts").mkdir(mode=0o700)
+        # The local account as local-init writes it: broker/local-account.json and secrets/local/client_id.
+        Path("/tmp/broker").mkdir(mode=0o700)
         Path("/tmp/secrets/local").mkdir(parents=True, mode=0o700)
-        account_file = Path("/tmp/accounts/local.env")
-        account_file.write_text(f"BW_MODE=local\nBW_SERVER={BASE}\nBW_SCOPE=collection:{st['agent_coll']}\n"
-                                f"BW_UNLOCK=stored\nBW_CLIENTID={st['client_id']}\n", encoding="utf-8")
+        account_file = Path("/tmp/broker/local-account.json")
+        account_file.write_text(json.dumps({"scope": f"collection:{st['agent_coll']}"}), encoding="utf-8")
         os.chmod(account_file, 0o600)
-        for name, value in (("client_secret", st["client_secret"]), ("master_password", syn["agent_pw"])):
+        for name, value in (("client_id", st["client_id"]), ("client_secret", st["client_secret"]),
+                            ("master_password", syn["agent_pw"])):
             Path(f"/tmp/secrets/local/{name}").write_text(value + "\n", encoding="utf-8")
-        agent = Bw(parse_file(account_file), Path("/tmp/bw"), Path("/tmp/secrets"))
+        expect(BASE == LOCAL_SERVER, f"the local account's server is {LOCAL_SERVER}, the test serves {BASE}")
+        agent = Bw(load_local(Path("/tmp/broker"), Path("/tmp/secrets")), Path("/tmp/bw"), Path("/tmp/secrets"))
         agent_dir = str(agent.data_dir)
 
         def agent_unlock():

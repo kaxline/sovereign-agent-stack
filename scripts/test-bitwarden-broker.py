@@ -119,7 +119,7 @@ def vault_data(**extra) -> dict:
 
 
 class Run:
-    """A temp layout (accounts, bw data, secrets, fake vault) plus capture of everything emitted."""
+    """A temp layout (instances, bw data, secrets, fake vault) plus capture of everything emitted."""
 
     def __init__(self, tmp: Path, **vault_extra):
         self.tmp = tmp
@@ -143,7 +143,7 @@ class Run:
         return accounts.Account(
             slug=slug, mode="cloud", server="https://vault.bitwarden.com", scope_kind=kind,
             scope_value=value or None, unlock=unlock, client_id="user.00000000-0000-4000-8000-000000000001",
-            path=self.tmp / f"{slug}.env",
+            path=self.tmp / f"{slug}.json",
         )
 
     def bw(self, account) -> bwcli.Bw:
@@ -234,84 +234,129 @@ def expect_bw_error(run: Run, fn, error_class: str, msg: str) -> bwcli.BwError:
     fail(f"{msg}: no BwError")
 
 
-def write_env(directory: Path, name: str, text: str, newline: str = "\n") -> None:
-    (directory / name).write_bytes(text.replace("\n", newline).encode("utf-8"))
+def write_instance(directory: Path, slug: str, values, secrets_dir: Path | None = None,
+                   client_id: str | None = "user.syn") -> None:
+    """instances/<slug>.json as addon_store writes it, and secrets/<slug>/client_id unless client_id is None."""
+    text = values if isinstance(values, str) else json.dumps(values, indent=2) + "\n"
+    (directory / f"{slug}.json").write_text(text, encoding="utf-8")
+    if secrets_dir is not None and client_id is not None:
+        (secrets_dir / slug).mkdir(parents=True, exist_ok=True)
+        (secrets_dir / slug / "client_id").write_text(client_id + "\n", encoding="utf-8")
 
 
-def test_account_file_tolerance() -> None:
+def test_instance_store() -> None:
     with tempfile.TemporaryDirectory() as tmp:
-        d = Path(tmp)
-        write_env(d, "personal.env", (
-            "# Personal vault, edited by hand\n"
-            'BW_MODE="cloud"   \n'
-            "BW_SERVER=https://vault.bitwarden.eu    # EU region\n"
-            "\n"
-            "  BW_SCOPE = folder:Agent  \n"
-            "BW_UNLOCK=stored\n"
-            "BW_CLIENTID='user.00000000-0000-4000-8000-000000000001'\n"
-            'BW_SECRETS_ITEM_SCOPE="folder:Stack secrets"\n'
-        ), newline="\r\n")
-        write_env(d, "home-lab.env", (
-            "BW_MODE=selfhosted\nBW_SERVER=https://vault.example.com/\nBW_SCOPE=collection:" + COLLECTION + "\n"
-            "BW_UNLOCK=manual\nBW_CLIENTID=user.00000000-0000-4000-8000-000000000002\n"
-        ))
-        write_env(d, "local.env", (
-            "BW_MODE=local\nBW_SERVER=https://vaultwarden.vault.internal\nBW_SCOPE=all\n"
-            "BW_UNLOCK=stored\nBW_CLIENTID=user.00000000-0000-4000-8000-000000000003\n"
-        ))
-        good = "BW_MODE=cloud\nBW_SERVER=https://vault.bitwarden.com\nBW_UNLOCK=stored\nBW_CLIENTID=user.x\n"
-        write_env(d, "auto.env", good.replace("BW_UNLOCK=stored", "BW_UNLOCK=auto"))
-        write_env(d, "unknown.env", good + "BW_FOO=1\n")
-        write_env(d, "bad_slug.env", good)
-        write_env(d, "plain-http.env", good.replace("BW_MODE=cloud", "BW_MODE=selfhosted").replace(
-            "https://vault.bitwarden.com", "http://vault.example.com"))
-        write_env(d, "wrong-cloud.env", good.replace("https://vault.bitwarden.com", "https://vault.example.com"))
-        write_env(d, "noid.env", good.replace("BW_CLIENTID=user.x\n", ""))
-        write_env(d, "dup.env", good + "BW_MODE=local\n")
-        write_env(d, "bad-scope.env", good + "BW_SCOPE=everything\n")
-        # BW_SECRETS_ITEM_SCOPE belonged to the removed stack secrets sync: any value loads, none is used.
-        write_env(d, "leftover-key.env", good + "BW_SECRETS_ITEM_SCOPE='collection:a b'\n")
-        write_env(d, "bad-collection.env", good + "BW_SCOPE=collection:--organizationid\n")
-        write_env(d, "leftover-twice.env", good + "BW_SECRETS_ITEM_SCOPE=a\nBW_SECRETS_ITEM_SCOPE=b\n")
-        write_env(d, "server-query.env", good.replace("BW_MODE=cloud", "BW_MODE=selfhosted").replace(
-            "https://vault.bitwarden.com", "https://vault.example.com/?next=x"))
-        write_env(d, "server-fragment.env", good.replace("BW_MODE=cloud", "BW_MODE=selfhosted").replace(
-            "https://vault.bitwarden.com", "https://vault.example.com/#x"))
+        d = Path(tmp) / "instances"
+        sec = Path(tmp) / "secrets"
+        broker_dir = Path(tmp) / "broker"
+        for x in (d, sec, broker_dir):
+            x.mkdir()
+        write_instance(d, "personal", {"mode": "cloud", "region": "eu", "scope": "folder:Agent", "unlock": "stored",
+                                       "note": "an unknown key"}, sec, "user.00000000-0000-4000-8000-000000000001")
+        write_instance(d, "us-default", {"mode": "cloud"}, sec)
+        write_instance(d, "home-lab", {"mode": "selfhosted", "url": "https://vault.example.com/",
+                                       "scope": "collection:" + COLLECTION, "unlock": "manual"}, sec)
+        write_instance(d, "wide", {"mode": "cloud", "scope": "all"}, sec)
+        good = {"mode": "cloud", "unlock": "stored"}
+        write_instance(d, "not-json", "{mode: cloud", sec)
+        write_instance(d, "a-list", "[1, 2]", sec)
+        write_instance(d, "auto", {**good, "unlock": "auto"}, sec)
+        write_instance(d, "mars", {**good, "region": "mars"}, sec)
+        write_instance(d, "no-mode", {"unlock": "stored"}, sec)
+        write_instance(d, "mode-local", {**good, "mode": "local"}, sec)
+        write_instance(d, "number-scope", {**good, "scope": 5}, sec)
+        write_instance(d, "no-url", {"mode": "selfhosted"}, sec)
+        write_instance(d, "plain-http", {"mode": "selfhosted", "url": "http://vault.example.com"}, sec)
+        write_instance(d, "url-query", {"mode": "selfhosted", "url": "https://vault.example.com/?next=x"}, sec)
+        write_instance(d, "url-fragment", {"mode": "selfhosted", "url": "https://vault.example.com/#x"}, sec)
+        write_instance(d, "bad-scope", {**good, "scope": "everything"}, sec)
+        write_instance(d, "bad-collection", {**good, "scope": "collection:--organizationid"}, sec)
+        write_instance(d, "no-id", good, sec, client_id=None)
+        write_instance(d, "empty-id", good, sec, client_id="")
+        write_instance(d, "spaced-id", good, sec, client_id="user.a b")
+        # Slugs outside the store's rule, and the reserved local.
+        write_instance(d, "9abc", good, sec)
+        write_instance(d, "a" * 32, good, sec)
+        write_instance(d, "Upper", good, sec)
+        write_instance(d, "local", good, sec)
         (d / "README").write_text("not an account\n", encoding="utf-8")
+        (d / ".personal.json.x.tmp").write_text("{}", encoding="utf-8")
+        # An account file from before the instance store, in either folder, is not read.
+        old_env = "BW_MODE=cloud\nBW_SERVER=https://vault.bitwarden.com\nBW_UNLOCK=stored\nBW_CLIENTID=user.x\n"
+        (d / "old.env").write_text(old_env, encoding="utf-8")
+        (broker_dir / "local.env").write_text(old_env, encoding="utf-8")
 
-        loaded, errors = accounts.load_dir(d)
+        def load():
+            return accounts.load_all(d, broker_dir, sec)
+
+        loaded, refused = load()
         by_slug = {a.slug: a for a in loaded}
-        expect(sorted(by_slug) == ["home-lab", "leftover-key", "local", "personal"], f"loaded {sorted(by_slug)}")
-
+        expect(sorted(by_slug) == ["home-lab", "personal", "us-default", "wide"], f"loaded {sorted(by_slug)}")
         p = by_slug["personal"]
-        expect(p.mode == "cloud" and p.server == "https://vault.bitwarden.eu", "quoted mode, inline comment")
-        expect((p.scope_kind, p.scope_value) == ("folder", "Agent"), "spaces around key and value")
-        expect(p.unlock == "stored" and p.client_id == "user.00000000-0000-4000-8000-000000000001", "single quotes")
-        expect(not hasattr(p, "secrets_item_scope"), "the secrets scope is not kept")
-        expect(p.path == d / "personal.env", "path")
+        expect(p.mode == "cloud" and p.server == "https://vault.bitwarden.eu", "cloud eu")
+        expect((p.scope_kind, p.scope_value) == ("folder", "Agent") and p.unlock == "stored", "scope and unlock")
+        expect(p.client_id == "user.00000000-0000-4000-8000-000000000001", "client_id from secrets/<slug>/client_id")
+        expect(p.path == d / "personal.json", "path")
+        u = by_slug["us-default"]
+        expect(u.server == "https://vault.bitwarden.com", "region defaults to us")
+        expect((u.scope_kind, u.scope_value, u.unlock) == ("folder", "Agent", "manual"),
+               "scope defaults to folder:Agent, unlock to manual")
         h = by_slug["home-lab"]
-        expect(h.server == "https://vault.example.com" and h.unlock == "manual", "selfhosted, trailing slash")
+        expect(h.mode == "selfhosted" and h.server == "https://vault.example.com" and h.unlock == "manual",
+               "selfhosted, trailing slash dropped")
         expect((h.scope_kind, h.scope_value) == ("collection", COLLECTION), "collection")
-        expect((by_slug["local"].scope_kind, by_slug["local"].scope_value) == ("all", None), "all")
+        expect((by_slug["wide"].scope_kind, by_slug["wide"].scope_value) == ("all", None), "all")
 
         want = {
-            "auto.env": "BW_UNLOCK", "unknown.env": "BW_FOO", "bad_slug.env": "slug",
-            "plain-http.env": "BW_SERVER", "wrong-cloud.env": "BW_SERVER", "noid.env": "BW_CLIENTID",
-            "dup.env": "BW_MODE", "bad-scope.env": "BW_SCOPE",
-            "bad-collection.env": "BW_SCOPE", "leftover-twice.env": "BW_SECRETS_ITEM_SCOPE",
-            "server-query.env": "BW_SERVER", "server-fragment.env": "BW_SERVER",
+            "not-json.json": ("bad_file", "JSON"), "a-list.json": ("bad_file", "object"),
+            "auto.json": ("bad_file", "unlock"), "mars.json": ("bad_file", "region"),
+            "no-mode.json": ("bad_file", "mode"), "mode-local.json": ("bad_file", "mode"),
+            "number-scope.json": ("bad_file", "scope"), "no-url.json": ("bad_file", "url"),
+            "plain-http.json": ("bad_file", "url"), "url-query.json": ("bad_file", "url"),
+            "url-fragment.json": ("bad_file", "url"), "bad-scope.json": ("bad_file", "scope"),
+            "bad-collection.json": ("bad_file", "scope"),
+            "no-id.json": ("missing_client_id", "client_id"), "empty-id.json": ("missing_client_id", "client_id"),
+            "spaced-id.json": ("bad_file", "client_id"),
+            "9abc.json": ("bad_slug", "slug"), f"{'a' * 32}.json": ("bad_slug", "slug"),
+            "Upper.json": ("bad_slug", "slug"), "local.json": ("bad_slug", "reserved"),
         }
-        expect(len(errors) == len(want), f"{len(errors)} errors: {errors}")
-        for name, key in want.items():
-            expect(any(name in e and key in e for e in errors), f"no error naming {name} and {key}: {errors}")
+        got = {r.file: r for r in refused}
+        expect(sorted(got) == sorted(want), f"refused {sorted(got)}")
+        for name, (cause, word) in want.items():
+            r = got[name]
+            expect(r.cause == cause, f"{name}: cause {r.cause}, want {cause}")
+            expect(r.message.startswith(f"{name}: ") and word in r.message, f"{name}: message {r.message!r}")
+        expect("user.a b" not in " ".join(r.message for r in refused), "no message repeats a value")
 
-        expect(accounts.load_dir(d / "missing") == ([], []), "missing directory")
+        # The local account: broker/local-account.json plus secrets/local/client_id.
+        (sec / "local").mkdir(exist_ok=True)
+        (sec / "local" / "client_id").write_text("user.local\n", encoding="utf-8")
+        (broker_dir / "local-account.json").write_text(json.dumps({"scope": "collection:" + COLLECTION}),
+                                                       encoding="utf-8")
+        loaded, refused = load()
+        local = {a.slug: a for a in loaded}["local"]
+        expect((local.mode, local.server, local.unlock) == ("local", accounts.LOCAL_SERVER, "stored"), "local")
+        expect((local.scope_kind, local.scope_value, local.client_id) == ("collection", COLLECTION, "user.local"),
+               "local scope and client_id")
+        expect("local.json" in {r.file for r in refused}, "an instance named local stays refused")
+        (broker_dir / "local-account.json").write_text(json.dumps({"scope": "folder:Agent"}), encoding="utf-8")
+        loaded, refused = load()
+        expect("local" not in {a.slug for a in loaded}, "a local account without a collection scope is refused")
+        expect(any(r.file == "broker/local-account.json" and r.cause == "bad_file" for r in refused),
+               f"local refusal: {refused}")
+        expect(len(loaded) == 4, "the instances still load beside a refused local account")
 
-        defaults = d / "defaults"
-        defaults.mkdir()
-        write_env(defaults, "plain.env", good)
-        (only,), errs = accounts.load_dir(defaults)
-        expect(not errs and (only.scope_kind, only.scope_value) == ("folder", "Agent"), "default scope folder:Agent")
+        expect(accounts.load_all(Path(tmp) / "missing", Path(tmp) / "missing", sec) == ([], []),
+               "missing folders")
+        account = accounts.load_account("home-lab", d, broker_dir, sec)
+        expect(account.slug == "home-lab", "load_account finds an instance")
+        for slug, cause in (("nope", "bad_file"), ("9abc", "bad_slug"), ("local", "bad_file")):
+            try:
+                accounts.load_account(slug, d, broker_dir, sec)
+            except accounts.AccountError as exc:
+                expect(exc.cause == cause, f"load_account {slug}: {exc.cause}")
+            else:
+                fail(f"load_account {slug} loaded")
 
 
 def test_normalize_origin() -> None:
@@ -1051,8 +1096,8 @@ class Broker:
         self.run = run
         if vault is not None:
             run.vault_file.write_text(json.dumps(vault), encoding="utf-8")
-        self.accounts_dir = run.tmp / "accounts"
-        self.accounts_dir.mkdir(exist_ok=True)
+        self.instances_dir = run.tmp / "instances"
+        self.instances_dir.mkdir(exist_ok=True)
         self.socket = run.tmp / "sync" / "sync.sock"
         self.stderr_path = run.tmp / "broker-stderr.log"
         self.port = free_port()
@@ -1066,7 +1111,7 @@ class Broker:
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
             "HOME": str(run.tmp),
             "PYTHONDONTWRITEBYTECODE": "1",
-            "BITWARDEN_ACCOUNTS_DIR": str(self.accounts_dir),
+            "BITWARDEN_INSTANCES_DIR": str(self.instances_dir),
             "BITWARDEN_DATA_DIR": str(run.tmp),
             "BITWARDEN_SECRETS_DIR": str(run.secrets_root),
             "BITWARDEN_SYNC_MINUTES": sync_minutes,
@@ -1077,15 +1122,12 @@ class Broker:
             "BITWARDEN_SYNC_MIN_SECONDS": "0",  # test_sync_coalesced sets 30
         }
 
-    def add_account(self, slug, scope="folder:Agent", unlock="stored", secrets_scope=None) -> None:
+    def add_account(self, slug, scope="folder:Agent", unlock="stored", extra=None) -> None:
+        """An instance file as addon_store writes it, and secrets/<slug>/ with the client_id."""
         self.run.account(slug, scope=scope, unlock=unlock)
-        lines = ["BW_MODE=cloud", "BW_SERVER=https://vault.bitwarden.com", f"BW_SCOPE={scope}",
-                 f"BW_UNLOCK={unlock}", f"BW_CLIENTID={CLIENT_ID}"]
-        if secrets_scope:
-            lines.append(f"BW_SECRETS_ITEM_SCOPE={secrets_scope}")
-        path = self.accounts_dir / f"{slug}.env"
-        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        path.chmod(0o600)
+        write_instance(self.instances_dir, slug, {"mode": "cloud", "region": "us", "scope": scope,
+                                                  "unlock": unlock, **(extra or {})},
+                       self.run.secrets_root, CLIENT_ID)
 
     def start(self, unlocked=(), expect_exit=False) -> None:
         import subprocess
@@ -1204,7 +1246,7 @@ def fill_body(h, field="password", base=BASE, port=None, target=TARGET) -> dict:
 
 def test_api_returns_no_values() -> None:
     with broker_run(vault=stack_vault()) as b:
-        b.add_account("personal", secrets_scope="folder:Stack")
+        b.add_account("personal", extra={"secrets_item_scope": "folder:Stack"})
         b.start(unlocked=["personal"])
         a = handle("personal", "A")
 
@@ -1284,8 +1326,8 @@ def test_api_returns_no_values() -> None:
 
 def test_socket_serves_no_secrets() -> None:
     with broker_run(vault=stack_vault()) as b:
-        # A leftover BW_SECRETS_ITEM_SCOPE is ignored: the account lists its own scope as usual.
-        b.add_account("personal", secrets_scope="folder:Stack")
+        # A key the broker does not know is ignored: the account lists its own scope as usual.
+        b.add_account("personal", extra={"secrets_item_scope": "folder:Stack"})
         b.start(unlocked=["personal"])
         mode = stat.S_IMODE(b.socket.stat().st_mode)
         expect(mode == 0o600, f"socket mode {oct(mode)}")
@@ -1405,7 +1447,8 @@ def test_cli_for_vault_sh() -> None:
     with broker_run() as b:
         b.add_account("personal")
         b.add_account("manual", unlock="manual")
-        (b.accounts_dir / "broken.env").write_text("BW_MODE=cloud\n", encoding="utf-8")
+        write_instance(b.instances_dir, "broken", {"mode": "cloud"}, b.run.secrets_root, client_id=None)
+        write_instance(b.instances_dir, "9bad", {"mode": "cloud"}, b.run.secrets_root)
         b.start(unlocked=["personal"])
         code, out, err = broker_cli(b, "accounts")
         expect(code == 0, f"accounts exit {code}: {err}")
@@ -1416,7 +1459,10 @@ def test_cli_for_vault_sh() -> None:
         rows = [line.split("\t") for line in out.splitlines()]
         expect(["manual", "cloud", "folder", "locked", "-", "1", ""] in rows, f"accounts rows {rows}")
         expect(["personal", "cloud", "folder", "unlocked", "-", "1", ""] in rows, f"accounts rows {rows}")
-        expect(any(r[0] == "refused" and "broken.env" in r[1] for r in rows), f"refused file not listed: {rows}")
+        expect(["refused", "broken.json: client_id: secrets/broken/client_id is missing; connect the account again",
+                "missing_client_id"] in rows, f"refused instance not listed with its cause: {rows}")
+        expect(any(r[0] == "refused" and r[1].startswith("9bad.json: ") and r[2] == "bad_slug" for r in rows),
+               f"bad slug not listed: {rows}")
 
         status, _ = b.call("POST", "/requests", {"site": "https://www.example.com/login", "account": "personal",
                                                  "reason": "needs\tto sign in\nnow"})
@@ -1701,7 +1747,7 @@ def test_sync_coalesced() -> None:
 
 
 def main() -> None:
-    test_account_file_tolerance()
+    test_instance_store()
     test_normalize_origin()
     test_bw_invocation()
     test_scope_filtering()

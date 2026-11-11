@@ -1193,20 +1193,36 @@ fi
 source "${ROOT}/scripts/lib/doctor-twenty.sh"
 doctor_twenty
 
-# --- Bitwarden (broker, account files, local Vaultwarden) ---
+# --- Bitwarden (broker, instance store, local Vaultwarden) ---
 bw_on="$(env_get BITWARDEN_ENABLED 0)"
 case "$bw_on" in 1|true|TRUE|yes|YES) bw_on=1 ;; *) bw_on=0 ;; esac
 bw_local="$(env_get BITWARDEN_LOCAL_ENABLED 0)"
 case "$bw_local" in 1|true|TRUE|yes|YES) bw_local=1 ;; *) bw_local=0 ;; esac
-bw_accounts="compose/bitwarden/accounts"
+# The add-on instance store, which the broker reads (instances/<slug>.json).
+bw_store="$(env_get ASSISTANT_DATA_ROOT ./data)"
+case "$bw_store" in
+  "~") bw_store="$HOME" ;;
+  \~/*) bw_store="$HOME/${bw_store#\~/}" ;;
+  /*) ;;
+  *) bw_store="${ROOT}/${bw_store#./}" ;;
+esac
+bw_instances="${bw_store}/addons/bitwarden/instances"
 bw_files=0
-for f in "$bw_accounts"/*.env; do [[ -f "$f" ]] && bw_files=$((bw_files + 1)); done
-# A KEY=value from an account file, as the broker reads it: CR, spaces and quotes dropped.
+for f in "$bw_instances"/*.json; do [[ -f "$f" ]] && bw_files=$((bw_files + 1)); done
+# Account files from before the instance store; nothing reads them.
+bw_old=0
+for f in compose/bitwarden/accounts/*.env; do [[ -f "$f" ]] && bw_old=$((bw_old + 1)); done
+# A KEY=value from local/state: CR, spaces and quotes dropped.
 bw_get() {
   grep -E "^[[:space:]]*${2}[[:space:]]*=" "$1" 2>/dev/null | head -1 | cut -d= -f2- \
     | tr -d '\r"'"'" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' || true
 }
-if [[ "$bw_on" -eq 1 || "$bw_local" -eq 1 || "$bw_files" -gt 0 ]]; then
+# A string value from an instance file as addon_store writes it (one key per line).
+bw_json_get() {
+  sed -n -E 's/^[[:space:]]*"'"$2"'"[[:space:]]*:[[:space:]]*"([^"]*)"[[:space:]]*,?[[:space:]]*$/\1/p' "$1" 2>/dev/null \
+    | head -1 || true
+}
+if [[ "$bw_on" -eq 1 || "$bw_local" -eq 1 || "$bw_files" -gt 0 || "$bw_old" -gt 0 ]]; then
   echo
   echo "--- Bitwarden ---"
   bw_data="$(env_get BITWARDEN_HOST_DATA_DIR ./data/addons/bitwarden)"
@@ -1247,20 +1263,16 @@ if [[ "$bw_on" -eq 1 || "$bw_local" -eq 1 || "$bw_files" -gt 0 ]]; then
       bw_step="$(bw_get "${bw_data}/local/state" STEP)"
       [[ "$bw_step" == role ]] || warn "make vault-init has not finished (last step: ${bw_step:-none}) — run it again"
     fi
-  elif [[ -f "${bw_accounts}/local.env" ]]; then
+  elif [[ -f "${bw_data}/broker/local-account.json" ]]; then
     ok "local account is offline while BITWARDEN_LOCAL_ENABLED=0 (note; its data stays)"
   fi
-  for f in "$bw_accounts"/*.env; do
+  if [[ "$bw_old" -gt 0 ]]; then
+    warn "compose/bitwarden/accounts/ holds ${bw_old} account file(s), which the broker no longer reads — connect those accounts again (make vault-add or Boundary), then delete the folder"
+  fi
+  for f in "$bw_instances"/*.json; do
     [[ -f "$f" ]] || continue
-    if [[ ! -r "$f" ]]; then
-      warn "${f} belongs to the containers' user, so its settings are not checked here — sudo make doctor checks them"
-      continue
-    fi
-    if [[ "$(bw_get "$f" BW_SCOPE)" == all ]]; then
-      warn "$(basename "$f" .env): BW_SCOPE=all lets the agent reach every item in that vault — use folder: or collection: (make vault-add FORCE=1)"
-    fi
-    if grep -qE '^[[:space:]]*BW_SECRETS_ITEM_SCOPE[[:space:]]*=' "$f"; then
-      warn "$(basename "$f" .env): BW_SECRETS_ITEM_SCOPE is ignored since the stack secrets sync was removed — delete that line from ${f}"
+    if [[ "$(bw_json_get "$f" scope)" == all ]]; then
+      warn "$(basename "$f" .json): scope all lets the agent reach every item in that vault — use folder: or collection: (make vault-add FORCE=1)"
     fi
   done
   if [[ "$bw_on" -eq 1 ]]; then
@@ -1286,10 +1298,13 @@ if [[ "$bw_on" -eq 1 || "$bw_local" -eq 1 || "$bw_files" -gt 0 ]]; then
       else
         ok "Bitwarden broker answers /health from hermes"
         bw_seen=" "
+        bw_refused=" "
         while IFS=$'\t' read -r bw_slug bw_mode bw_scope bw_state bw_class _; do
           [[ -n "$bw_slug" ]] || continue
           if [[ "$bw_slug" == refused ]]; then
-            bad "the broker refused an account file: ${bw_mode}"
+            # bw_mode is the message, bw_scope the cause.
+            bad "the broker refused an account (${bw_scope}): ${bw_mode}"
+            bw_refused="${bw_refused}${bw_mode%%:*} "
             continue
           fi
           bw_seen="${bw_seen}${bw_slug} "
@@ -1297,9 +1312,9 @@ if [[ "$bw_on" -eq 1 || "$bw_local" -eq 1 || "$bw_files" -gt 0 ]]; then
           case "$bw_state" in
             unlocked) ok "${bw_slug}: unlocked (${bw_mode}, ${bw_scope} scope)" ;;
             locked)
-              if [[ ! -r "${bw_accounts}/${bw_slug}.env" ]]; then
-                warn "${bw_slug}: locked — make vault-unlock SLUG=${bw_slug} if it is a manual account"
-              elif [[ "$(bw_get "${bw_accounts}/${bw_slug}.env" BW_UNLOCK)" == manual ]]; then
+              bw_unlock=""
+              [[ "$bw_slug" == local ]] || bw_unlock="$(bw_json_get "${bw_instances}/${bw_slug}.json" unlock)"
+              if [[ "$bw_slug" != local && "${bw_unlock:-manual}" == manual ]]; then
                 warn "${bw_slug}: locked — make vault-unlock SLUG=${bw_slug}"
               else
                 warn "${bw_slug}: locked${bw_class:+ (${bw_class})} — the stored unlock has not finished or failed"
@@ -1307,7 +1322,7 @@ if [[ "$bw_on" -eq 1 || "$bw_local" -eq 1 || "$bw_files" -gt 0 ]]; then
               ;;
             offline)
               if [[ "$bw_slug" == local && "$bw_local" -eq 0 ]]; then
-                : # noted above, from the account file
+                : # noted above
               else
                 warn "${bw_slug}: offline (${bw_class:-network}) — the broker cannot reach its server"
               fi
@@ -1322,15 +1337,16 @@ if [[ "$bw_on" -eq 1 || "$bw_local" -eq 1 || "$bw_files" -gt 0 ]]; then
             *) warn "${bw_slug}: ${bw_state}" ;;
           esac
         done <<< "$bw_rows"
-        for f in "$bw_accounts"/*.env; do
+        for f in "$bw_instances"/*.json; do
           [[ -f "$f" ]] || continue
-          bw_slug="$(basename "$f" .env)"
+          bw_slug="$(basename "$f" .json)"
+          [[ "$bw_refused" != *" ${bw_slug}.json "* ]] || continue
           [[ "$bw_seen" == *" ${bw_slug} "* ]] || warn "${bw_slug}: not loaded by the broker yet — docker compose --profile core --profile bitwarden up -d --no-deps --force-recreate bitwarden-broker"
         done
       fi
     fi
   elif [[ "$bw_files" -gt 0 ]]; then
-    warn "Bitwarden account files exist but BITWARDEN_ENABLED is not 1 — the broker is off"
+    warn "Bitwarden accounts are connected but BITWARDEN_ENABLED is not 1 — the broker is off"
   fi
 fi
 

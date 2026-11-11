@@ -2,11 +2,9 @@
 # Bitwarden add-on: the accounts the broker signs in to, local mode and access
 # requests. See docs/bitwarden.md.
 #
-# Test hooks: VAULT_ACCOUNTS_DIR replaces compose/bitwarden/accounts (the folder
-# the broker mounts), VAULT_HERMES_DATA_DIR replaces data/hermes,
-# VAULT_ADDON_SH replaces scripts/addon.sh and VAULT_ADDON_STORE replaces the
-# add-on store (<data root>/addons/bitwarden), so scripts/test-vault-sh.sh can
-# run against temp folders.
+# Test hook: VAULT_HERMES_DATA_DIR replaces data/hermes. The add-on store
+# follows ASSISTANT_DATA_ROOT (environment, then .env), as addon.sh does, so
+# scripts/test-vault-sh.sh can run against temp folders.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -19,20 +17,19 @@ source "${ROOT}/scripts/lib/data-root.sh"
 source "${ROOT}/scripts/lib/python.sh"
 
 ENV_PATH="${ENV_FILE:-.env}"
-ACCOUNTS_DIR="${VAULT_ACCOUNTS_DIR:-${ROOT}/compose/bitwarden/accounts}"
 # Mounted at /opt/data in hermes (docker-compose.yml).
 HERMES_DATA_DIR="${VAULT_HERMES_DATA_DIR:-${ROOT}/data/hermes}"
-ADDON_SH="${VAULT_ADDON_SH:-${ROOT}/scripts/addon.sh}"
 PLUGINS_MARKER=.addon-plugins-changed
 # The containers' user (compose/bitwarden-broker/Dockerfile).
 CONTAINER_UID=10001
 INIT_WAIT_SECONDS=600
 # Regexes live in variables: bash 3.2 parses some unquoted ones in [[ =~ ]] differently.
-SLUG_RE='^[a-z0-9-]+$'
-# The add-on store's rule (scripts/lib/addon_store.py SLUG_RE): addon.sh
-# disconnect, and so Boundary, can only remove an account whose slug fits it.
-STORE_SLUG_RE='^[a-z][a-z0-9-]{0,30}$'
-STORE_SLUG_RULE="start with a letter and have at most 31 characters"
+# The add-on store's rule (scripts/lib/addon_store.py SLUG_RE), which the broker applies too.
+SLUG_RE='^[a-z][a-z0-9-]{0,30}$'
+SLUG_RULE="--slug must start with a lowercase letter and have at most 31 of a-z, 0-9 and -"
+# The contents of a JSON string as json.dumps writes it: no quote, backslash
+# or control character except as an escape.
+JSON_STR_RE='^([^"\\[:cntrl:]]|\\(["\\/bfnrt]|u[0-9A-Fa-f]{4}))*$'
 EMAIL_RE='^[^@[:space:]]+@[^@[:space:]]+$'
 URL_RE='^https://[A-Za-z0-9.-]+(:[0-9]+)?(/[^[:space:]?#]*)?$'
 ID_RE='^[A-Za-z0-9][A-Za-z0-9-]{0,63}$'
@@ -66,13 +63,15 @@ Usage: scripts/vault.sh <command> [options]
   status --json     One JSON line per account: state, error, retry_after
   requests [--json] The agent's pending access requests
   remove --slug S [--json]
-                    Forget an account: its file, secrets and bw data
+                    Forget an account: its instance file, secrets and bw data
   open              Open the local web vault
-  backup DIR        Copy the local Vaultwarden, secrets and account files to DIR
+  backup DIR        Copy the local Vaultwarden, secrets, the local account and
+                    the instance files to DIR
   restore DIR [--force]
                     Put a backup back; refuses to overwrite data without --force
 
-  pre-up            Create the accounts folder before docker compose up (make up runs it)
+  pre-up            Create the instance store's folder before docker compose up
+                    (make up runs it)
   follow-hermes     Recreate the broker in hermes' current network namespace and
                     list the manual accounts to unlock (run after hermes is
                     recreated or restarted; make hermes-reload runs it)
@@ -84,15 +83,14 @@ pre-up and follow-hermes are silent while BITWARDEN_ENABLED is off.
 reload-plugins is silent while no profile is marked.
 After add or remove: make up. make doctor shows each account's state.
 
-add and remove without --json, and up-hook for account files it has not
-seen, record each account in the add-on store (scripts/addon.sh configure
-bitwarden --instance S). addon.sh disconnect, which Boundary runs, removes
-only accounts recorded there. A failed record is a warning. add takes only a
-slug that starts with a letter and has at most 31 characters, as the store does.
+Each account other than local is an instance in the add-on store,
+<data root>/addons/bitwarden/instances/<slug>.json, which the broker reads.
+add writes it (through scripts/lib/addon_store.py) before the broker restarts
+and removes it when the sign-in fails; remove deletes it before the restart.
+The client_id is secrets/<slug>/client_id. A slug starts with a lowercase
+letter and has at most 31 of a-z, 0-9 and -.
 
-Test hooks: VAULT_ACCOUNTS_DIR replaces compose/bitwarden/accounts,
-VAULT_HERMES_DATA_DIR replaces data/hermes, VAULT_ADDON_SH replaces
-scripts/addon.sh and VAULT_ADDON_STORE replaces <data root>/addons/bitwarden.
+Test hook: VAULT_HERMES_DATA_DIR replaces data/hermes.
 EOF
 }
 
@@ -124,7 +122,7 @@ lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 # A regex, not a glob: bash 3.2 bracket ranges follow the locale.
 valid_slug() { [[ "$1" =~ $SLUG_RE ]]; }
 valid_email() { [[ "$1" =~ $EMAIL_RE ]]; }
-need_slug() { valid_slug "$1" || die "--slug must use lowercase letters, digits and hyphens"; }
+need_slug() { valid_slug "$1" || die "$SLUG_RULE"; }
 # Options that take a value: need_value "$@" before reading $2.
 need_value() { [[ $# -ge 2 ]] || emit_error bad_input "$1 needs a value"; }
 
@@ -142,14 +140,35 @@ text_get() {
   printf '%s' "$v"
 }
 
+# json_get KEY TEXT: the raw contents of KEY's string value in TEXT, a JSON
+# object as json.dumps(indent=2) writes it (one key per line), escapes kept, so
+# it can go back between quotes as JSON. Empty when the key is missing, not a
+# string or not in that layout.
+json_get() {
+  local v
+  v="$(printf '%s\n' "$2" | sed -n -E 's/^[[:space:]]*"'"$1"'"[[:space:]]*:[[:space:]]*"(([^"\\]|\\.)*)"[[:space:]]*,?[[:space:]]*$/\1/p' | head -1)"
+  [[ "$v" =~ $JSON_STR_RE ]] || v=""
+  printf '%s' "$v"
+}
+
 data_dir() {
   resolve_data_root_path "${BITWARDEN_HOST_DATA_DIR:-$(env_get BITWARDEN_HOST_DATA_DIR ./data/addons/bitwarden)}"
 }
 
-account_file() { printf '%s/%s.env' "$ACCOUNTS_DIR" "$1"; }
+# ASSISTANT_DATA_ROOT from the environment wins over .env, as it does for
+# compose and addon.sh.
+data_root() { resolve_data_root_path "${ASSISTANT_DATA_ROOT:-}"; }
+
+# The add-on store's folder; the broker mounts its instances/ read-only.
+store_dir() { printf '%s/addons/bitwarden' "$(data_root)"; }
+
+instance_file() { printf '%s/instances/%s.json' "$(store_dir)" "$1"; }
+
+# The local account (make vault-init), outside the store.
+local_account_file() { printf '%s/broker/local-account.json' "$(data_dir)"; }
 
 need_account() {
-  [[ -f "$(account_file "$1")" ]] || die "no account '$1' in ${ACCOUNTS_DIR#"${ROOT}"/} — make vault-add or make vault-init"
+  [[ -f "$(instance_file "$1")" ]] || die "no account '$1' in the add-on store — make vault-add"
 }
 
 # --- JSON lines (--json) ---
@@ -298,9 +317,9 @@ wait_for_account() {
 
 # --- Files ----------------------------------------------------------------
 #
-# On Linux, secrets/<slug>/, local/ and the account files belong to the
-# containers' user (uid 10001, modes 700 and 600), and secrets/ and the accounts
-# folder stay with you at mode 711. vault.sh never chmods or writes a path it
+# On Linux, secrets/<slug>/, local/ and broker/ belong to the containers' user
+# (uid 10001, modes 700 and 600), and secrets/ stays with you at mode 711. The
+# instance store is yours (scripts/lib/addon_store.py). vault.sh never chmods or writes a path it
 # does not own: what it cannot read or write it reaches through the
 # bitwarden-setup container, which runs as that user, and it says so once per
 # path. An unreadable file is never taken as empty.
@@ -314,7 +333,7 @@ to_container() {
   local p="$1" data
   data="$(data_dir)"
   case "$p" in
-    "$ACCOUNTS_DIR"/*) printf '/accounts/%s' "${p#"$ACCOUNTS_DIR"/}" ;;
+    "$data"/broker/*) printf '/broker/%s' "${p#"$data"/broker/}" ;;
     "$data"/local/*) printf '/local/%s' "${p#"$data"/local/}" ;;
     "$data"/secrets/*) printf '/secrets/%s' "${p#"$data"/secrets/}" ;;
     *) return 1 ;;
@@ -375,18 +394,19 @@ SECRET_WRITE='umask 077; t="$1/.$2.tmp"; cat > "$t" && chmod 600 "$t" && mv -f "
 # shellcheck disable=SC2016  # expanded by the sh that runs it
 SECRET_RM='rm -f "$1/$2"'
 # shellcheck disable=SC2016  # expanded by the sh that runs it
-SECRET_BACKUP='for n in client_secret master_password; do
+SECRET_BACKUP='for n in client_id client_secret master_password; do
   if [ -f "$1/$n" ]; then cp -p "$1/$n" "$1/$n.bak" || exit 1; fi
 done'
 # shellcheck disable=SC2016  # expanded by the sh that runs it
-SECRET_RESTORE='for n in client_secret master_password; do
+SECRET_RESTORE='for n in client_id client_secret master_password; do
   if [ -f "$1/$n.bak" ]; then mv -f "$1/$n.bak" "$1/$n"; else rm -f "$1/$n"; fi
 done'
 # shellcheck disable=SC2016  # expanded by the sh that runs it
-SECRET_DROP_BACKUP='rm -f "$1/client_secret.bak" "$1/master_password.bak"'
+SECRET_DROP_BACKUP='rm -f "$1/client_id.bak" "$1/client_secret.bak" "$1/master_password.bak"'
 # shellcheck disable=SC2016  # expanded by the sh that runs it
-SECRET_CLEAR='rm -f "$1/client_secret" "$1/master_password" "$1/client_secret.bak" "$1/master_password.bak" \
-  "$1/.client_secret.tmp" "$1/.master_password.tmp"'
+SECRET_CLEAR='rm -f "$1/client_id" "$1/client_secret" "$1/master_password" \
+  "$1/client_id.bak" "$1/client_secret.bak" "$1/master_password.bak" \
+  "$1/.client_id.tmp" "$1/.client_secret.tmp" "$1/.master_password.tmp"'
 
 slug_op() {
   local slug="$1" script="$2" sdir
@@ -425,8 +445,8 @@ chmod_own() {
   return 0
 }
 
-# On Linux the containers run as uid 10001 and must own their folders and the
-# account files. Run as root, chown them; otherwise print the command. secrets/
+# On Linux the containers run as uid 10001 and must own their folders. Run as
+# root, chown them; otherwise print the command. secrets/
 # itself is never passed here: it stays yours.
 linux_owner() {
   [[ $# -gt 0 ]] || return 0
@@ -467,32 +487,28 @@ ensure_dirs() {
   done
 }
 
-# The broker bind-mounts the accounts folder; created here so Docker does not
-# create it root-owned before any account exists.
-ensure_accounts_dir() {
-  if [[ ! -d "$ACCOUNTS_DIR" ]]; then
-    mkdir -p "$ACCOUNTS_DIR"
-    chmod_own 711 "$ACCOUNTS_DIR"
-  fi
+# The broker bind-mounts the store's instances/; created here (mode 700, as
+# scripts/addon-dirs.sh makes it) so Docker does not create it root-owned.
+ensure_store_dir() {
+  local d
+  d="$(store_dir)/instances"
+  [[ -d "$d" ]] && return 0
+  (umask 077 && mkdir -p "$d") || die "could not create ${d}"
 }
 
 # --- The add-on store -------------------------------------------------------
 #
-# addon.sh keeps one instances/<slug>.json of non-secret values per account in
-# the add-on store. Boundary lists accounts from status --json, but disconnects
-# them through addon.sh disconnect, which refuses an account the store lacks.
-# addon.sh connect and disconnect write it around add and remove --json. Terminal add and remove,
-# and up-hook for account files the store lacks, write it through addon.sh
-# configure. --json mode never calls addon.sh: connect and disconnect hold the
-# add-on lock while their hook runs, so the call would end in busy.
-
-store_dir() {
-  printf '%s' "${VAULT_ADDON_STORE:-$(resolve_data_root_path)/addons/bitwarden}"
-}
+# The broker reads each account from instances/<slug>.json in the add-on
+# store. addon.sh connect runs add --json before it writes that file, and the
+# broker restart in add needs it, so add writes it here through
+# scripts/lib/addon_store.py (apply_instance, with the manifest's validation),
+# and addon.sh's configure step then writes the same values. remove and a
+# failed add delete it with rm: the add-on stores no secret per instance, so
+# that is all remove_instance would do. --json mode never calls addon.sh:
+# connect and disconnect hold the add-on lock while their hook runs.
 
 # store_values MODE SERVER SCOPE UNLOCK: the instance values as one JSON
-# object. A cloud server gives region us or eu, a selfhosted one url; an empty
-# scope or unlock is left out, so the manifest's default applies.
+# object. A cloud server gives region us or eu, a selfhosted one url.
 store_values() {
   local out
   out="{\"mode\":$(json_str "$1")"
@@ -505,52 +521,34 @@ store_values() {
       ;;
     selfhosted) out="${out},\"url\":$(json_str "$2")" ;;
   esac
-  [[ -z "$3" ]] || out="${out},\"scope\":$(json_str "$3")"
-  [[ -z "$4" ]] || out="${out},\"unlock\":$(json_str "$4")"
+  out="${out},\"scope\":$(json_str "$3"),\"unlock\":$(json_str "$4")"
   printf '%s}' "$out"
 }
 
-# store_record SLUG VALUES: addon.sh configure bitwarden --instance SLUG with
-# VALUES on stdin. A failure prints a warning and returns 1.
-store_record() {
-  [[ "$JSON" != 1 ]] || return 0
-  local rc=0
-  printf '%s\n' "$2" | "$ADDON_SH" configure bitwarden --instance "$1" > /dev/null || rc=$?
-  [[ "$rc" != 0 ]] || return 0
-  printf '[vault] Warning: scripts/addon.sh configure exited %s, so Boundary cannot disconnect %s until make up records it in the add-on store\n' \
-    "$rc" "$1" >&2
-  return 1
-}
+# argv: repo, data root, slug, values. Exit 3: addon_store refused a value.
+STORE_WRITE_PY='
+import json
+import sys
+from pathlib import Path
 
-# store_forget SLUG: addon.sh configure bitwarden --instance SLUG --remove. A
-# failure prints a warning. A slug outside the store's rule was never there.
-store_forget() {
-  [[ "$JSON" != 1 ]] || return 0
-  [[ "$1" =~ $STORE_SLUG_RE ]] || return 0
-  local rc=0
-  "$ADDON_SH" configure bitwarden --instance "$1" --remove < /dev/null > /dev/null || rc=$?
-  [[ "$rc" != 0 ]] || return 0
-  printf '[vault] Warning: scripts/addon.sh configure exited %s, so the add-on store still holds %s and connecting it again from Boundary fails with exists; scripts/addon.sh configure bitwarden --instance %s --remove drops it\n' \
-    "$rc" "$1" "$1" >&2
-}
+repo, data_root, slug, values = sys.argv[1:5]
+sys.path.insert(0, str(Path(repo) / "scripts" / "lib"))
+import addon_store
 
-# up-hook: records the account in FILE_TEXT when the store has no entry for
-# SLUG. local belongs to make vault-init and is never recorded. A slug the
-# store refuses (added before add checked it) gets a line saying what to do.
-store_backfill() {
-  local slug="$1"
-  [[ "$slug" != local ]] || return 0
-  if [[ ! "$slug" =~ $STORE_SLUG_RE ]]; then
-    printf '[vault] Warning: Boundary cannot disconnect %s: an account slug must %s. Remove it with make vault-remove SLUG=%s and add it again under such a slug\n' \
-      "$slug" "$STORE_SLUG_RULE" "$slug" >&2
-    return 0
-  fi
-  [[ ! -e "$(store_dir)/instances/${slug}.json" ]] || return 0
-  if store_record "$slug" "$(store_values "$(text_get BW_MODE)" "$(text_get BW_SERVER)" \
-    "$(text_get BW_SCOPE)" "$(text_get BW_UNLOCK)")"; then
-    log "Recorded ${slug} in the add-on store"
-  fi
-  return 0
+manifest = json.loads((Path(repo) / "addons" / "bitwarden" / "addon.json").read_text(encoding="utf-8"))
+try:
+    addon_store.apply_instance(manifest, Path(data_root), slug, json.loads(values), replace=True)
+except addon_store.InputError as exc:
+    print(f"addon_store: {exc}", file=sys.stderr)
+    sys.exit(3)
+'
+
+# store_write SLUG VALUES: instances/SLUG.json holds VALUES and nothing else.
+store_write() {
+  local root
+  root="$(data_root)"
+  stack_python --mount "$root" - "$ROOT" "$root" "$1" "$2" <<< "$STORE_WRITE_PY" \
+    || die "could not write $(instance_file "$1") through scripts/lib/addon_store.py"
 }
 
 # --- add ------------------------------------------------------------------
@@ -570,8 +568,8 @@ the scope only limits what the broker lists and fills. A collection: scope with 
 lets Bitwarden enforce the limit instead (docs/bitwarden.md)."
 
 # add --json reads {mode, region, url, scope, unlock, client_id,
-# client_secret, master_password} from stdin and never prompts, writes .env or
-# offers bitwarden-setup. scope defaults to folder:Agent and unlock to manual.
+# client_secret, master_password} from stdin and never prompts, changes .env
+# or offers bitwarden-setup. scope defaults to folder:Agent and unlock to manual.
 # Any outcome but a sign-in the broker confirms removes what it wrote.
 cmd_add() {
   local slug="" mode="" region="" url="" scope="folder:Agent" unlock="stored" force="" a
@@ -605,13 +603,11 @@ cmd_add() {
     esac
   done
   if [[ "$JSON" == 1 ]]; then
-    valid_slug "$slug" || emit_error bad_slug "--slug must use lowercase letters, digits and hyphens"
+    valid_slug "$slug" || emit_error bad_slug "$SLUG_RULE"
   else
     need_slug "$slug"
   fi
   [[ "$slug" != local ]] || emit_error bad_input "the slug local belongs to make vault-init"
-  [[ "$slug" =~ $STORE_SLUG_RE ]] \
-    || emit_error bad_slug "--slug must ${STORE_SLUG_RULE}, so Boundary can disconnect the account"
   local in_mode="" in_region="" in_url="" in_scope="" in_unlock="" in_client_id="" in_client_secret="" in_master_password=""
   if [[ "$JSON" == 1 ]]; then
     read_input mode region url scope unlock client_id client_secret master_password
@@ -664,12 +660,12 @@ cmd_add() {
     *) emit_error bad_input "--unlock must be stored or manual" ;;
   esac
   local file
-  file="$(account_file "$slug")"
+  file="$(instance_file "$slug")"
   if [[ "$JSON" == 1 && -e "$file" ]]; then
     emit_error exists "an account named ${slug} exists"
   fi
   if [[ -e "$file" && -z "$force" ]]; then
-    die "${file#"${ROOT}"/} exists; pass --force (make vault-add FORCE=1) to replace it"
+    die "${file} exists; pass --force (make vault-add FORCE=1) to replace it"
   fi
 
   local client_id secret="" password=""
@@ -705,7 +701,7 @@ cmd_add() {
   if [[ "$JSON" == 1 ]]; then
     require_broker_json
     empty_bw_dir "$slug"
-    emit_line '{"phase":"setup","step":"write","status":"running","message":"writing the account file and secrets"}'
+    emit_line '{"phase":"setup","step":"write","status":"running","message":"writing the instance file and secrets"}'
   fi
 
   local data sdir new
@@ -719,11 +715,12 @@ cmd_add() {
     chmod_own 711 "${data}/secrets"
   fi
   if [[ -e "$file" ]]; then
-    # --force: the old file and secrets stay as .bak until the check passes.
-    mv -f "$file" "${file}.bak"
+    # --force: the old instance file and secrets stay as backups until the check passes.
+    cp -p "$file" "$(instance_backup "$slug")"
     slug_op "$slug" "$SECRET_BACKUP" < /dev/null || die "could not back up secrets/${slug}/"
     ADD_STAGE=backed
   fi
+  write_secret "$slug" client_id "$client_id"
   write_secret "$slug" client_secret "$secret"
   if [[ "$unlock" == stored ]]; then
     write_secret "$slug" master_password "$password"
@@ -733,29 +730,16 @@ cmd_add() {
   secret=""
   password=""
 
-  local scope_line="BW_SCOPE=${scope}"
-  [[ "$scope" == *"#"* ]] && scope_line="BW_SCOPE=\"${scope}\""
-  ensure_accounts_dir
-  local tmp
-  tmp="$(umask 077 && mktemp "${ACCOUNTS_DIR}/.${slug}.XXXXXX")" || die "could not write in ${ACCOUNTS_DIR}"
-  ADD_TMP="$tmp"
-  {
-    printf '# Written by make vault-add. Credentials are in secrets/%s/ under BITWARDEN_HOST_DATA_DIR. See docs/bitwarden.md.\n' "$slug"
-    printf 'BW_MODE=%s\n' "$mode"
-    printf 'BW_SERVER=%s\n' "$server"
-    printf '%s\n' "$scope_line"
-    printf 'BW_UNLOCK=%s\n' "$unlock"
-    printf 'BW_CLIENTID=%s\n' "$client_id"
-  } > "$tmp"
-  chmod 600 "$tmp"
-  mv -f "$tmp" "$file"
-  ADD_TMP=""
+  # Before the broker restart: the broker reads the account from this file.
+  ensure_store_dir
+  ADD_WRITING=1
+  store_write "$slug" "$(store_values "$mode" "$server" "$scope" "$unlock")"
   [[ "$ADD_STAGE" == backed ]] && ADD_STAGE=replaced || ADD_STAGE=written
-  log "Wrote ${file#"${ROOT}"/} and secrets/${slug}/"
+  log "Wrote ${file} and secrets/${slug}/"
   local owned
   owned="$(printf '%s\n' "$new" | grep -vxF "${data}/secrets" || true)"
   # shellcheck disable=SC2086  # one folder per line, no spaces in the names we make
-  linux_owner $owned "$file"
+  linux_owner $owned
   if [[ "$JSON" == 1 ]]; then
     emit_line '{"phase":"setup","step":"write","status":"done"}'
     check_account_json "$slug" "$unlock"
@@ -771,25 +755,28 @@ cmd_add() {
   fi
   check_account "$slug" "$unlock"
   ADD_STAGE=finished
-  # --force: the old entry goes first, so a value the new account leaves out
-  # (region after a move to selfhosted, say) does not stay behind.
-  [[ -z "$force" ]] || store_forget "$slug"
-  store_record "$slug" "$(store_values "$mode" "$server" "$scope" "$unlock")" || true
 }
 
 ADD_SLUG=""
 ADD_STAGE=""
-ADD_TMP=""
 ADD_NEW_SDIR=""
-# add --json: 1 once the broker was recreated with the new account file.
+# 1 from the start of the instance file write: a run stopped during it may
+# have written the file.
+ADD_WRITING=0
+# add --json: 1 once the broker was recreated with the new instance file.
 ADD_RESTARTED=0
 
-# The old account file and secrets back in place (add --force failed).
+# add --force keeps the old instance file here until the check passes. A dot
+# name: neither the broker nor the store lists it.
+instance_backup() { printf '%s/instances/.%s.json.bak' "$(store_dir)" "$1"; }
+
+# The old instance file and secrets back in place (add --force failed).
 restore_backup() {
-  local file
-  file="$(account_file "$1")"
-  if [[ -e "${file}.bak" ]]; then
-    mv -f "${file}.bak" "$file"
+  local file bak
+  file="$(instance_file "$1")"
+  bak="$(instance_backup "$1")"
+  if [[ -e "$bak" ]]; then
+    mv -f "$bak" "$file"
   else
     rm -f "$file"
   fi
@@ -797,23 +784,25 @@ restore_backup() {
 }
 
 drop_backup() {
-  rm -f "$(account_file "$1").bak"
+  rm -f "$(instance_backup "$1")"
   slug_op "$1" "$SECRET_DROP_BACKUP" < /dev/null || true
 }
 
-# EXIT trap of add: no temp file stays, a run stopped before the account file
-# was written leaves no new secrets folder, and a --force stopped there puts
+# EXIT trap of add: a run stopped before the instance file was written leaves
+# no new secrets folder and no instance file, and a --force stopped there puts
 # the old files back. With --json, any exit before the check passed (an error,
-# SIGTERM) removes the account file, secrets/<slug>/ and bw/<slug>/.
+# SIGTERM) removes the instance file, secrets/<slug>/ and bw/<slug>/.
 add_cleanup() {
-  [[ -z "$ADD_TMP" ]] || rm -f "$ADD_TMP"
   if [[ "$JSON" == 1 ]]; then
     [[ "$ADD_STAGE" == finished ]] || add_rollback "$ADD_SLUG"
     return 0
   fi
   case "$ADD_STAGE" in
     backed) restore_backup "$ADD_SLUG" ;;
-    "") [[ -z "$ADD_NEW_SDIR" ]] || remove_secrets "$ADD_SLUG" ;;
+    "")
+      [[ "$ADD_WRITING" != 1 ]] || rm -f "$(instance_file "$ADD_SLUG")"
+      [[ -z "$ADD_NEW_SDIR" ]] || remove_secrets "$ADD_SLUG"
+      ;;
   esac
 }
 
@@ -845,7 +834,7 @@ remove_bw_dir() {
   broker_exec sh -c "$BW_RM" sh "/data/bw/$1" < /dev/null > /dev/null 2>&1
 }
 
-# add --json failed or was stopped: the account file, secrets/<slug>/ and
+# add --json failed or was stopped: the instance file, secrets/<slug>/ and
 # bw/<slug>/ go, and a broker that loaded the account is recreated without it.
 # bw/<slug>/ goes last: until the recreate, the old broker may still write
 # its sign-in there.
@@ -853,7 +842,7 @@ add_rollback() {
   local slug="$1"
   ADD_STAGE=finished
   [[ -n "$slug" ]] || return 0
-  rm -f "$(account_file "$slug")" || true
+  rm -f "$(instance_file "$slug")" || true
   remove_secrets "$slug" || true
   if [[ "$ADD_RESTARTED" == 1 ]]; then
     ADD_RESTARTED=0
@@ -968,18 +957,18 @@ offer_setup() {
     args+=(--agent-email "$agent")
     [[ -z "$org" ]] || args+=(--org "$org")
   fi
-  setup_run "${args[@]}" || die "bitwarden-setup create failed; the account file is kept, run it again when ready"
+  setup_run "${args[@]}" || die "bitwarden-setup create failed; the account is kept, run it again when ready"
   setup_run seed --slug "$slug" --email "$email" || log "bitwarden-setup seed stopped; move items into the agent's folder or collection in a Bitwarden app"
 }
 
-# With the broker up, restart it so it loads the new file, and report what it
+# With the broker up, restart it so it loads the new instance, and report what it
 # makes of the credentials. An auth error removes what add wrote.
 check_account() {
   local slug="$1" unlock="$2" got state class
   if ! broker_running; then
     log "The broker checks the API key when it starts: make up, then make doctor"
     if [[ "$ADD_STAGE" == replaced ]]; then
-      log "The previous file is kept as ${slug}.env.bak (and secrets/${slug}/*.bak) until then; make vault-add FORCE=1 again replaces them"
+      log "The previous instance file is kept as $(instance_backup "$slug") (and secrets/${slug}/*.bak) until then; make vault-add FORCE=1 again replaces them"
       ADD_STAGE=finished
     fi
     return 0
@@ -1005,9 +994,9 @@ check_account() {
           restore_backup "$slug"
           ADD_STAGE=finished
           restart_broker
-          die "Bitwarden refused the API key or master password for ${slug} (auth); the previous account file and secrets are back"
+          die "Bitwarden refused the API key or master password for ${slug} (auth); the previous instance file and secrets are back"
         fi
-        rm -f "$(account_file "$slug")"
+        rm -f "$(instance_file "$slug")"
         remove_secrets "$slug"
         ADD_STAGE=finished
         restart_broker
@@ -1025,8 +1014,7 @@ check_account() {
 }
 
 # After a broker restart: the manual accounts it locked, except SKIP. Each is
-# logged and added to LOCKED_MANUAL (space-separated). In --json mode a file
-# that cannot be read is skipped instead of stopping the run.
+# logged and added to LOCKED_MANUAL (space-separated). local uses stored unlock.
 LOCKED_MANUAL=""
 # The sentence for a done message that names LOCKED_MANUAL.
 locked_sentence() {
@@ -1034,19 +1022,11 @@ locked_sentence() {
   printf 'The broker restart locked %s; unlock them again.' "${names// /, }"
 }
 note_locked_manual() {
-  local skip="$1" rows s st f
+  local skip="$1" rows s st
   rows="$(broker_cli accounts 2>/dev/null || true)"
   while IFS=$'\t' read -r s _ _ st _; do
-    [[ -n "$s" && "$s" != "$skip" && "$st" == locked ]] || continue
-    f="$(account_file "$s")"
-    [[ -f "$f" ]] || continue
-    if [[ "$JSON" == 1 ]]; then
-      FILE_TEXT="$(JSON_DIE=0; load_file "$f" 2>/dev/null && printf '%s' "$FILE_TEXT")" || continue
-      LOADED=""
-    else
-      load_file "$f"
-    fi
-    if [[ "$(text_get BW_UNLOCK)" == manual ]]; then
+    [[ -n "$s" && "$s" != "$skip" && "$s" != local && "$st" == locked ]] || continue
+    if [[ "$(instance_unlock "$s")" == manual ]]; then
       log "${s} is locked after the restart: make vault-unlock SLUG=${s}"
       LOCKED_MANUAL="${LOCKED_MANUAL} ${s}"
     fi
@@ -1056,12 +1036,22 @@ note_locked_manual() {
 
 # --- unlock, lock, sync, requests, grant -----------------------------------
 
+# The unlock of instance SLUG: its unlock value, manual when it has none (the
+# manifest's default), empty when there is no instance file.
+instance_unlock() {
+  local f v
+  f="$(instance_file "$1")"
+  [[ -r "$f" ]] || return 0
+  v="$(json_get unlock "$(cat "$f")")"
+  printf '%s' "${v:-manual}"
+}
+
 need_manual() {
-  valid_slug "$1" || emit_error bad_slug "--slug must use lowercase letters, digits and hyphens"
-  [[ -f "$(account_file "$1")" ]] \
-    || emit_error not_found "no account '$1' in ${ACCOUNTS_DIR#"${ROOT}"/} — make vault-add or make vault-init"
-  load_file "$(account_file "$1")"
-  [[ "$(text_get BW_UNLOCK)" == manual ]] \
+  valid_slug "$1" || emit_error bad_slug "$SLUG_RULE"
+  [[ "$1" != local ]] || emit_error bad_input "local uses stored unlock; the broker unlocks it by itself"
+  [[ -f "$(instance_file "$1")" ]] \
+    || emit_error not_found "no account '$1' in the add-on store — make vault-add"
+  [[ "$(instance_unlock "$1")" == manual ]] \
     || emit_error bad_input "$1 uses stored unlock; the broker unlocks it by itself"
 }
 
@@ -1093,7 +1083,7 @@ cmd_unlock() {
     case "$jrc" in
       0) emit_done; return 0 ;;
       2) emit_error login_refused "the master password was refused" ;;
-      3) emit_error not_found "the broker has no manual account ${slug}; it reads account files when it starts (make up)" ;;
+      3) emit_error not_found "the broker has no manual account ${slug}; it reads the instance store when it starts (make up)" ;;
       *) emit_error command_failed "the broker could not unlock ${slug}; make doctor" ;;
     esac
   fi
@@ -1111,7 +1101,7 @@ cmd_unlock() {
     case "$rc" in
       0) log "${slug} is unlocked until the broker restarts or make vault-lock SLUG=${slug}"; return 0 ;;
       2) printf '[vault] Wrong master password.\n' >&2 ;;
-      3) die "the broker has no manual account ${slug}; it reads account files when it starts (make up)" ;;
+      3) die "the broker has no manual account ${slug}; it reads the instance store when it starts (make up)" ;;
       *) die "the broker could not unlock ${slug}; make doctor" ;;
     esac
   done
@@ -1156,7 +1146,12 @@ cmd_sync() {
   broker_cli sync
 }
 
-# status --json: one line per account file, sorted by slug, for Boundary.
+# status --json: one line per account, sorted by slug, for Boundary: each
+# instance file in the add-on store, and local when make vault-init wrote
+# broker/local-account.json. An account the broker refused (or that cannot be
+# read, or whose file name breaks the slug rule) is
+# {"file","slug","state":"refused","error"} with error bad_file, bad_slug or
+# missing_client_id; slug is null when the file name gives none.
 cmd_status() {
   local json=0
   while [[ $# -gt 0 ]]; do
@@ -1171,38 +1166,61 @@ cmd_status() {
   if broker_running && rows="$(broker_cli accounts 2>/dev/null)"; then
     up=1
   fi
-  local refused=" " a b
-  while IFS=$'\t' read -r a b _; do
-    [[ "$a" == refused ]] && refused="${refused}${b%%:*} "
+  # "<file>\t<cause>" per account the running broker refused.
+  local refused="" a b c
+  while IFS=$'\t' read -r a b c _; do
+    [[ "$a" == refused ]] && refused="${refused}${b%%:*}"$'\t'"${c:-bad_file}"$'\n'
   done <<< "$rows"
-  local f name slug row mode scope unlock st ec retry err
-  for f in "$ACCOUNTS_DIR"/*.env; do
+  local list="" f lf bdir
+  for f in "$(store_dir)"/instances/*.json; do
     [[ -e "$f" ]] || continue
-    name="$(basename "$f")"
-    slug="${name%.env}"
-    if [[ "$up" == 1 && "$refused" == *" ${name} "* ]]; then
-      if [[ "$slug" =~ $SLUG_RE ]]; then
-        slug="$(json_str "$slug")"
-      else
-        slug=null
+    f="$(basename "$f")"
+    list="${list}${f%.json}"$'\t'"${f}"$'\n'
+  done
+  lf="$(local_account_file)"
+  bdir="$(dirname "$lf")"
+  # On Linux broker/ belongs to the containers' user, so the host may not see the file.
+  if [[ -e "$lf" ]] || [[ -d "$bdir" && ! -x "$bdir" ]]; then
+    list="${list}local"$'\t'"broker/local-account.json"$'\n'
+  fi
+  local slug name sj cause text row mode scope unlock st ec retry err
+  while IFS=$'\t' read -r slug name; do
+    [[ -n "$slug" ]] || continue
+    cause=""
+    sj="$(json_str "$slug")"
+    if [[ "$name" == */* ]]; then
+      # The local account, read through bitwarden-setup when the host cannot; load_file dies, so a subshell.
+      if ! text="$(JSON_DIE=0; load_file "$lf" optional 2>/dev/null && printf '%s' "$FILE_TEXT")"; then
+        cause=bad_file
+      elif [[ -z "$text" ]]; then
+        continue
       fi
-      emit_line "{\"file\":$(json_str "$name"),\"slug\":${slug},\"state\":\"refused\",\"error\":\"bad_file\"}"
+      mode=local
+      unlock=stored
+    elif ! valid_slug "$slug" || [[ "$slug" == local ]]; then
+      cause=bad_slug
+      sj=null
+    elif [[ ! -r "$(store_dir)/instances/${name}" ]]; then
+      cause=bad_file
+    else
+      text="$(cat "$(store_dir)/instances/${name}")"
+      mode="$(json_get mode "$text")"
+      unlock="$(json_get unlock "$text")"
+      [[ -n "$unlock" ]] || unlock=manual
+    fi
+    if [[ -z "$cause" && "$up" == 1 ]]; then
+      cause="$(printf '%s' "$refused" | awk -F '\t' -v f="$name" '$1 == f { print $2; exit }')"
+      case "$cause" in
+        "" | bad_file | bad_slug | missing_client_id) ;;
+        *) cause=bad_file ;;
+      esac
+    fi
+    if [[ -n "$cause" ]]; then
+      emit_line "{\"file\":$(json_str "$name"),\"slug\":${sj},\"state\":\"refused\",\"error\":\"${cause}\"}"
       continue
     fi
-    # A file that cannot be read is reported like a refused one; load_file dies, so it runs in a subshell.
-    if ! FILE_TEXT="$(load_file "$f" && printf '%s' "$FILE_TEXT")"; then
-      if [[ "$slug" =~ $SLUG_RE ]]; then
-        slug="$(json_str "$slug")"
-      else
-        slug=null
-      fi
-      emit_line "{\"file\":$(json_str "$name"),\"slug\":${slug},\"state\":\"refused\",\"error\":\"bad_file\"}"
-      continue
-    fi
-    mode="$(text_get BW_MODE)"
-    scope="$(text_get BW_SCOPE)"
+    scope="$(json_get scope "$text")"
     [[ -n "$scope" ]] || scope="folder:Agent"
-    unlock="$(text_get BW_UNLOCK)"
     row=""
     [[ "$up" == 1 ]] && row="$(printf '%s\n' "$rows" | awk -F '\t' -v s="$slug" '$1 == s && $1 != "refused" { print; exit }')"
     if [[ -z "$row" ]]; then
@@ -1220,8 +1238,9 @@ cmd_status() {
       esac
       if [[ "$retry" =~ $RETRY_RE ]]; then :; else retry=null; fi
     fi
-    emit_line "{\"slug\":$(json_str "$slug"),\"mode\":$(json_str "$mode"),\"scope\":$(json_str "$scope"),\"unlock\":$(json_str "$unlock"),\"state\":$(json_str "$st"),\"error\":${err},\"retry_after\":${retry}}"
-  done
+    # mode, scope and unlock are JSON string contents already (json_get).
+    emit_line "{\"slug\":${sj},\"mode\":\"${mode}\",\"scope\":\"${scope}\",\"unlock\":\"${unlock}\",\"state\":$(json_str "$st"),\"error\":${err},\"retry_after\":${retry}}"
+  done <<< "$(printf '%s' "$list" | LC_ALL=C sort -t $'\t' -k1,1)"
   return 0
 }
 
@@ -1274,27 +1293,28 @@ cmd_remove() {
     esac
   done
   if [[ "$JSON" == 1 ]]; then
-    valid_slug "$slug" || emit_error bad_slug "--slug must use lowercase letters, digits and hyphens"
+    valid_slug "$slug" || emit_error bad_slug "$SLUG_RULE"
   else
     need_slug "$slug"
   fi
   [[ "$slug" != local ]] \
     || emit_error bad_input "the local account is part of make vault-init; BITWARDEN_LOCAL_ENABLED=0 and make up turn local mode off"
-  # --json with no account file: an earlier remove got as far as deleting it (its
-  # broker restart failed, say), so this one removes what is left and ends with
-  # done, which lets addon.sh disconnect drop the store entry.
+  # --json with no instance file: addon.sh disconnect found the store entry, so
+  # an earlier remove got as far as deleting it (its broker restart failed,
+  # say). This one removes what is left and ends with done.
   local data had_file=1
   data="$(data_dir)"
-  if [[ ! -f "$(account_file "$slug")" ]]; then
+  if [[ ! -f "$(instance_file "$slug")" ]]; then
     [[ "$JSON" == 1 ]] || need_account "$slug"
     had_file=0
   fi
-  rm -f "$(account_file "$slug")"
+  # Before the restart, so the broker no longer loads the account.
+  rm -f "$(instance_file "$slug")"
   remove_secrets "$slug"
   if [[ "$had_file" == 1 ]]; then
-    log "Removed ${slug}: its account file and secrets"
+    log "Removed ${slug}: its instance file and secrets"
   else
-    log "${slug} has no account file; removing its secrets and bw/${slug} if they are left"
+    log "${slug} has no instance file; removing its secrets and bw/${slug} if they are left"
   fi
   if broker_running && { [[ "$had_file" == 1 ]] || broker_may_hold "$slug"; }; then
     if [[ "$JSON" == 1 ]]; then
@@ -1312,11 +1332,10 @@ cmd_remove() {
   # After the restart, so the broker no longer writes there.
   remove_bw_dir "$slug" \
     || log "Could not remove ${data}/bw/${slug} (owned by the broker's user); remove it as root"
-  store_forget "$slug"
   log "$REVOKE_REMINDER"
   if [[ "$JSON" == 1 ]]; then
     local msg="${REVOKE_REMINDER}."
-    [[ "$had_file" == 1 ]] || msg="${slug} had no account file; removed its secrets and bw/${slug} if they were left. ${msg}"
+    [[ "$had_file" == 1 ]] || msg="${slug} had no instance file; removed its secrets and bw/${slug} if they were left. ${msg}"
     [[ -z "$LOCKED_MANUAL" ]] || msg="${msg} $(locked_sentence)"
     emit_done account "$(json_str "$slug")" message "$(json_str "$msg")"
   fi
@@ -1342,7 +1361,7 @@ cmd_open() {
 # Run by make up before docker compose up. Silent while BITWARDEN_ENABLED is off.
 cmd_pre_up() {
   is_true "$(env_get BITWARDEN_ENABLED 0)" || return 0
-  ensure_accounts_dir
+  ensure_store_dir
 }
 
 # Run after hermes is recreated or restarted (scripts/lib/bitwarden.sh). The
@@ -1416,20 +1435,9 @@ PY
   done <<< "$result"
 }
 
-# Run by make up after docker compose up. The Bitwarden steps are silent while
-# BITWARDEN_ENABLED is off. Each account file the add-on store lacks, other
-# than local, is recorded there (accounts added before the store kept them).
+# Run by make up after docker compose up.
 cmd_up_hook() {
   cmd_reload_plugins
-  is_true "$(env_get BITWARDEN_ENABLED 0)" || return 0
-  local f slug
-  for f in "$ACCOUNTS_DIR"/*.env; do
-    [[ -f "$f" ]] || continue
-    slug="$(basename "$f" .env)"
-    load_file "$f"
-    store_backfill "$slug"
-  done
-  return 0
 }
 
 # --- init -------------------------------------------------------------------
@@ -1445,7 +1453,7 @@ cmd_init() {
   local data new
   data="$(data_dir)"
   # Step 1 of the order: every bind-mount source exists before any container runs.
-  ensure_accounts_dir
+  ensure_store_dir
   new="$(ensure_dirs "$data" bw broker secrets secrets/local secrets/local/tls \
     local local/tls local/tls/server local/vaultwarden)"
   ensure_dirs "$data" vaultwarden >/dev/null
@@ -1469,6 +1477,15 @@ cmd_init() {
   fi
   if [[ "$step" == role ]]; then
     log "Local mode is already set up for ${recorded:-its owner}."
+    local lf
+    lf="$(local_account_file)"
+    # Set up before the broker read the local account from broker/local-account.json:
+    # local-init writes it from local/state without signing in. On Linux broker/
+    # may be hidden from the host; local-init keeps a file that is there.
+    if [[ -n "$recorded" ]] && { [[ ! -e "$lf" ]] || [[ ! -e "$(data_dir)/secrets/local/client_id" ]]; }; then
+      setup_run local-init --owner "$recorded" --signup-url "$(local_url)" \
+        || die "bitwarden-setup local-init could not write the local account; make vault-init again retries it"
+    fi
     finish_init
     return 0
   fi
@@ -1577,12 +1594,16 @@ cmd_backup() {
       [[ -d "${vw}/${f}" ]] && cp -Rp "${vw}/${f}" "${dir}/vaultwarden/"
     done
   else
-    log "No local Vaultwarden database; copying the secrets and account files only"
+    log "No local Vaultwarden database; copying the secrets, the local account and the instance files only"
   fi
   for f in secrets local; do
     [[ -d "${data}/${f}" ]] && cp -Rp "${data}/${f}" "${dir}/"
   done
-  [[ -d "$ACCOUNTS_DIR" ]] && cp -Rp "$ACCOUNTS_DIR" "${dir}/accounts"
+  if [[ -f "$(local_account_file)" ]]; then
+    (umask 077 && mkdir -p "${dir}/broker")
+    cp -p "$(local_account_file)" "${dir}/broker/"
+  fi
+  [[ -d "$(store_dir)/instances" ]] && cp -Rp "$(store_dir)/instances" "${dir}/instances"
   log "Backed up to ${dir}. It holds master passwords and API keys; keep it as safe as the vault."
 }
 
@@ -1605,11 +1626,12 @@ cmd_restore() {
   [[ -e "${vw}/db.sqlite3" ]] && existing="${existing} vaultwarden/db.sqlite3"
   [[ -n "$(ls -A "${data}/secrets" 2>/dev/null)" ]] && existing="${existing} secrets/"
   [[ -n "$(ls -A "${data}/local" 2>/dev/null)" ]] && existing="${existing} local/"
-  [[ -n "$(ls -A "$ACCOUNTS_DIR" 2>/dev/null)" ]] && existing="${existing} accounts/"
+  [[ -e "$(local_account_file)" ]] && existing="${existing} broker/local-account.json"
+  [[ -n "$(ls -A "$(store_dir)/instances" 2>/dev/null)" ]] && existing="${existing} instances/"
   if [[ -n "$existing" && -z "$force" ]]; then
     die "restoring would overwrite${existing}; pass --force to replace them"
   fi
-  mkdir -p "$vw" "$ACCOUNTS_DIR"
+  mkdir -p "$vw"
   if [[ -f "${dir}/vaultwarden/db.sqlite3" ]]; then
     rm -f "${vw}/db.sqlite3" "${vw}/db.sqlite3-wal" "${vw}/db.sqlite3-shm"
     for f in "${dir}"/vaultwarden/*; do
@@ -1624,7 +1646,17 @@ cmd_restore() {
       cp -Rp "${dir}/${f}/." "${data}/${f}/"
     fi
   done
-  [[ -d "${dir}/accounts" ]] && cp -Rp "${dir}/accounts/." "${ACCOUNTS_DIR}/"
+  if [[ -f "${dir}/broker/local-account.json" ]]; then
+    (umask 077 && mkdir -p "${data}/broker")
+    cp -p "${dir}/broker/local-account.json" "${data}/broker/"
+  fi
+  if [[ -d "${dir}/instances" ]]; then
+    ensure_store_dir
+    cp -Rp "${dir}/instances/." "$(store_dir)/instances/"
+  fi
+  # A backup from before the instance store has accounts/<slug>.env, which nothing reads now.
+  [[ ! -d "${dir}/accounts" ]] \
+    || log "${dir}/accounts holds account files from an earlier version, which are not read any more; connect those accounts again (make vault-add)"
   log "Restored from ${dir}. Next: make up"
 }
 

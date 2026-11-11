@@ -8,8 +8,9 @@ The API listens on ``BITWARDEN_LISTEN`` (127.0.0.1:8099) inside hermes' network
 namespace, so the host reaches it only through the broker container.
 
 ``accounts`` prints one tab-separated line per account (slug, mode, scope kind,
-state, error class or ``-``), then ``refused<TAB><message>`` for each account
-file the broker refused at start. ``requests`` prints the pending access
+state, error class or ``-``, logged in ``1`` or ``0``, retry after or empty), then
+``refused<TAB><message><TAB><cause>`` for each instance file the broker refused at
+start (cause ``bad_file``, ``bad_slug`` or ``missing_client_id``). ``requests`` prints the pending access
 requests for a person; ``--json`` prints ``GET /requests`` as the broker sent
 it. ``sync`` runs ``POST /sync``.
 
@@ -79,8 +80,9 @@ def cmd_accounts() -> None:
         row.append("1" if a.get("logged_in") else "0")
         row.append("" if a.get("retry_after") is None else str(a["retry_after"]))
         print("\t".join(row))
-    for error in _call("GET", "/health").get("account_errors") or []:
-        print(f"refused\t{_cell(error)}")
+    for r in _call("GET", "/health").get("refused") or []:
+        if isinstance(r, dict):
+            print(f"refused\t{_cell(r.get('message') or r.get('file'))}\t{_cell(r.get('error'))}")
 
 
 def cmd_requests(form: str | None) -> None:

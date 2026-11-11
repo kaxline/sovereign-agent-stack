@@ -137,7 +137,7 @@ def check_broker(services: dict) -> None:
     if "python3" not in test or "http://127.0.0.1:8099/health" not in test:
         checks.fail("bitwarden-broker healthcheck GETs http://127.0.0.1:8099/health with python3")
     want = {
-        "/accounts": (True, "compose/bitwarden/accounts"),
+        "/store/instances": (True, f"{ADDON_DATA}/instances"),
         "/secrets": (True, f"{ADDON_DATA}/secrets"),
         "/data/bw": (False, f"{ADDON_DATA}/bw"),
         "/data/broker": (False, f"{ADDON_DATA}/broker"),
@@ -155,6 +155,29 @@ def check_broker(services: dict) -> None:
     extra = {v.get("target") for v in mounts(broker)} - set(want)
     if extra:
         checks.fail(f"bitwarden-broker mounts more than it needs: {sorted(extra)}")
+    if mount_at(broker, "/accounts") is not None or "compose/bitwarden/" in str(broker.get("volumes")):
+        checks.fail("bitwarden-broker still mounts the account files")
+    if env_value(broker, "BITWARDEN_INSTANCES_DIR") != "/store/instances":
+        checks.fail("bitwarden-broker needs BITWARDEN_INSTANCES_DIR=/store/instances")
+    if env_value(broker, "BITWARDEN_ACCOUNTS_DIR") is not None:
+        checks.fail("bitwarden-broker still sets BITWARDEN_ACCOUNTS_DIR")
+
+
+def check_store_follows_data_root() -> None:
+    """ASSISTANT_DATA_ROOT moves the instance store, BITWARDEN_HOST_DATA_DIR the rest."""
+    with tempfile.TemporaryDirectory() as tmp:
+        store, bw = Path(tmp) / "store-root", Path(tmp) / "bw-data"
+        services = compose_config.render("core,bitwarden,bitwarden-tools", {
+            "ASSISTANT_DATA_ROOT": str(store), "BITWARDEN_HOST_DATA_DIR": str(bw)}).get("services", {})
+    for name in SERVICES:
+        service = services.get(name) or {}
+        vol = mount_at(service, "/store/instances")
+        if vol is None or vol.get("source") != str(store / ADDON_DATA / "instances"):
+            checks.fail(f"{name} /store/instances comes from {vol and vol.get('source')!r}, "
+                        "want ASSISTANT_DATA_ROOT/addons/bitwarden/instances")
+        vol = mount_at(service, "/secrets")
+        if vol is None or vol.get("source") != str(bw / "secrets"):
+            checks.fail(f"{name} /secrets does not follow BITWARDEN_HOST_DATA_DIR")
 
 
 def check_hermes(cfg: dict, backend: str) -> None:
@@ -198,10 +221,16 @@ def check_tools(cfg: dict) -> None:
     setup_net = (cfg.get("networks") or {}).get("bitwarden-setup") or {}
     if setup_net.get("internal"):
         checks.fail("network bitwarden-setup must reach Bitwarden, so it is not internal")
-    for target, source in (("/secrets", f"{ADDON_DATA}/secrets"), ("/accounts", "compose/bitwarden/accounts")):
+    for target, source in (("/secrets", f"{ADDON_DATA}/secrets"), ("/store/instances", f"{ADDON_DATA}/instances"),
+                           ("/broker", f"{ADDON_DATA}/broker")):
         vol = mount_at(setup, target)
         if vol is None or not str(vol.get("source", "")).endswith(source) or vol.get("read_only"):
             checks.fail(f"bitwarden-setup mounts {source} read-write at {target}")
+    if mount_at(setup, "/accounts") is not None:
+        checks.fail("bitwarden-setup still mounts the account files")
+    for key, want in (("BITWARDEN_INSTANCES_DIR", "/store/instances"), ("BITWARDEN_BROKER_DIR", "/broker")):
+        if env_value(setup, key) != want:
+            checks.fail(f"bitwarden-setup needs {key}={want}")
     for vol in mounts(setup):
         source = str(vol.get("source", ""))
         if "hermes" in source or source == SYNC_VOLUME:
@@ -338,6 +367,7 @@ def main() -> None:
     check_off()
     check_profile_flags()
     check_broker(config("core,bitwarden").get("services", {}))
+    check_store_follows_data_root()
     for backend in ("ssh", "local"):
         cfg = config("core,bitwarden,bitwarden-tools", backend)
         check_hermes(cfg, backend)
