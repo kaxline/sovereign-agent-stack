@@ -64,8 +64,7 @@ entry() {
 }
 
 cp "${tmp}/config.yaml" "${tmp}/orig.yaml"
-# LightRAG is unmanaged on default (bootstrap never registers it there), yet a
-# user's own entry on that URL still gets the interval.
+# Every stack sidecar entry gets the interval, on default and browser alike.
 for profile in "" browser; do
   cp "${tmp}/orig.yaml" "${tmp}/config.yaml"
   out="$(run 15 "$profile")"

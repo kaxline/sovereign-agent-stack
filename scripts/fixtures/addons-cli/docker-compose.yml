@@ -1,10 +1,17 @@
-# Compose file the manifest test checks the fixtures' data.paths against.
-# scripts/test-addon-cli.sh stubs docker, so nothing runs this.
+# Compose file the manifest test checks the fixtures' data.paths against, and
+# the one scripts/test-addon-cli.sh copies into its scratch root so addon_cli.py
+# reads one-shots from it. Docker is stubbed there, so nothing runs this.
 services:
   fixture-worker:
     profiles: ["fixture"]
     volumes:
       - ${FIXTURE_DATA_DIR:-./data/fixture}:/data
+    # Makes fixture-seed a one-shot for addon.sh (addon_manifest.compose_oneshots).
+    depends_on:
+      fixture-seed:
+        condition: service_completed_successfully
+  fixture-seed:
+    profiles: ["fixture"]
   sharer-worker:
     profiles: ["sharer"]
     volumes:

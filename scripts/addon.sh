@@ -40,11 +40,8 @@
 #
 # Reloading Hermes (step reload, run by enable, disable, connect and
 # disconnect) runs both bootstraps with HERMES_BOOTSTRAP_FORCE=1 and then
-# scripts/vault.sh reload-plugins. It never recreates hermes. A manifest with
-# onToggle gets step recreate on enable and disable when the builtin flag
-# changed value: `up -d --no-deps --force-recreate` for onToggle.recreate, then
-# onToggle.script, before the reload; the done line lists those services in
-# restart. disable also stops each `uses` service that addon_cli.py maps to a
+# scripts/vault.sh reload-plugins. It never recreates hermes, and the done
+# line's restart is always empty (kept for clients that read it). disable also stops each `uses` service that addon_cli.py maps to a
 # compose service when `docker compose config --services` no longer lists it.
 #
 # connect stages the values on stdin in data/addons/.staging.XXXXXX (mode
@@ -212,42 +209,6 @@ reload_step() {
     2) ev_fail command_failed reload "vault.sh reload-plugins failed" "$EV_LAST_LOG" ;;
     *) ev_fail compose_failed reload "a Hermes bootstrap failed" "$EV_LAST_LOG" ;;
   esac
-}
-
-# plan_builtin PLAN: the builtin flag name in a plan.
-plan_builtin() {
-  printf '%s' "$1" | sed -n 's/.*"builtin":"\([A-Z][A-Z0-9_]*\)".*/\1/p'
-}
-
-# toggle_recreate PLAN SID: for enable and disable, when onToggle names services
-# and the builtin flag changed value in this run (CHANGED is 1): step recreate
-# runs `up -d --no-deps --force-recreate` for them, then onToggle.script from
-# ROOT. Sets RECREATED (the services, comma-separated).
-RECREATED=""
-toggle_recreate() {
-  local plan="$1" sid="$2" names=() name line script=()
-  RECREATED=""
-  [[ "$CHANGED" == 1 ]] || return 0
-  while IFS= read -r name; do
-    [[ -n "$name" ]] && names+=("$name")
-  done <<EOF_RECREATE
-$(json_list recreate "$plan")
-EOF_RECREATE
-  [[ ${#names[@]} -gt 0 ]] || return 0
-  # Resolve the script first: a rejected argv must not come after the recreate.
-  cli_checked recreate toggle-script "$sid"
-  if [[ -n "$CLI_OUT" ]]; then
-    while IFS= read -r line; do script+=("$line"); done <<EOF_SCRIPT
-$CLI_OUT
-EOF_SCRIPT
-  fi
-  run_step recreate "" docker compose up -d --no-deps --force-recreate "${names[@]}" \
-    || ev_fail compose_failed recreate "docker compose up --force-recreate failed for: ${names[*]}" "$EV_LAST_LOG"
-  if [[ ${#script[@]} -gt 0 ]]; then
-    run_step recreate "" "${script[@]}" \
-      || ev_fail command_failed recreate "${script[0]} failed" "$EV_LAST_LOG"
-  fi
-  RECREATED="$(IFS=,; printf '%s' "${names[*]}")"
 }
 
 # cli_checked STEP ARGS...: cli with stdin from $CLI_IN (default /dev/null) and its stdout in
@@ -767,8 +728,6 @@ $list
 EOF_STOPS
   pull_images ${services[@]+"${services[@]}"} ${oneshots[@]+"${oneshots[@]}"}
   rollback_record "$plan"
-  CHANGED=0
-  truthy "$(env_get "$(plan_builtin "$plan")")" || CHANGED=1
   run_step flags "" apply_flags "$plan" \
     || ev_fail command_failed flags "writing the flags or syncing COMPOSE_PROFILES failed" "$EV_LAST_LOG"
   # One-shots run to completion first: a service may depend on one.
@@ -785,12 +744,11 @@ EOF_STOPS
       || ev_fail compose_failed stop "docker compose stop failed for: ${stops[*]}" "$EV_LAST_LOG"
   fi
   run_hook init "$sid" init ${reinit[@]+"${reinit[@]}"}
-  toggle_recreate "$plan" "$sid"
   reload_step
   EV_ON_FAIL=""
   # The manifest's gated names, then the init hook's, each once.
   mcp="$({ gated_names "$plan" mcp; printf '%s\n' "$HOOK_MCP" | tr ',' '\n'; } | awk 'NF && !seen[$0]++' | paste -sd, -)"
-  ev_done "$sid" enable "$RECREATED" "$mcp" "$HOOK_ACCOUNT" "$HOOK_MESSAGE" "$HOOK_RESULT"
+  ev_done "$sid" enable "" "$mcp" "$HOOK_ACCOUNT" "$HOOK_MESSAGE" "$HOOK_RESULT"
 }
 
 # stop_unused_uses PLAN: stops each compose service the manifest's `uses` maps
@@ -829,8 +787,6 @@ cmd_disable() {
   addon_lock
   cli_checked flags plan-disable "$sid" --flags "$(env_flags_json)"
   plan="$CLI_OUT"
-  CHANGED=0
-  ! truthy "$(env_get "$(plan_builtin "$plan")")" || CHANGED=1
   run_step flags "" apply_flags "$plan" \
     || ev_fail command_failed flags "writing the flags or syncing COMPOSE_PROFILES failed" "$EV_LAST_LOG"
   local services=()
@@ -844,10 +800,9 @@ EOF_SERVICES
       || ev_fail compose_failed stop "docker compose stop failed for: ${services[*]}" "$EV_LAST_LOG"
   fi
   stop_unused_uses "$plan"
-  toggle_recreate "$plan" "$sid"
   reload_step
   [[ "$purge" == 1 ]] && remove_data "$sid"
-  ev_done "$sid" disable "$RECREATED" ""
+  ev_done "$sid" disable "" ""
 }
 
 # data_env_json SID: sets DATA_ENV_JSON to {"NAME":"VALUE",...} for the env

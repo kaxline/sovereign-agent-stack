@@ -38,16 +38,10 @@ except where noted:
   flag is on, else while `builtin.flag` is on. Names must be unique within the
   add-on, and each entry needs its own service: two entries may not name the
   same service key, directly or through a `{ro, rw}` map, because the
-  bootstrap drops stale registrations by URL.
-  `unmanaged` (built-in add-ons only) is a list of Hermes profile names, for
-  example `["default"]`, that bootstrap leaves alone for that entry: it
-  registers, drops or pins on none of them, so a server the user added by
-  hand on that profile at the same URL stays. For a fixed entry, parked retry
-  still applies to an existing entry at the add-on's URL, on every profile.
-  An `mcp.instances` entry gets no parked retry on an unmanaged profile. The names
-  must be distinct and may not appear in `profiles`. An empty list behaves as
-  absent.
-- `mcp.instances` (built-in add-ons only): an `mcp` entry that registers one
+  bootstrap drops stale registrations by URL. On every profile in `profiles`
+  the bootstrap registers the entry and removes any other entry at the same
+  URL; on every other profile it removes entries at that URL.
+- `mcp.instances`: an `mcp` entry that registers one
   server per instance in the add-on's store, instead of one fixed server. It
   has no `service`, `path` or `name`. Its fields, besides the usual
   `transport`, `timeout`, `connectTimeout`, `env`, `tools`, `pin`,
@@ -85,11 +79,11 @@ except where noted:
   `${ASSISTANT_DATA_ROOT:-./data}/addons/<short-id>/<name>`;
   `scripts/test-addon-manifests.py` checks this, `validate` does not. A
   service that mounts `secrets` may not be an `mcp` service.
-  `oneshot: true` (built-in only) marks a service that runs to completion:
+  A service that another compose service depends on with
+  `condition: service_completed_successfully` (written out in that service's
+  `depends_on`, not through a YAML merge key) runs to completion:
   `addon.sh enable` runs it with `up --exit-code-from` before the other
-  services, and it may not have `when` or be the `mcp` target. `volumes` is the old place for
-  compose volume names; use `data.volumes`. Both are accepted in 0.3.13, and
-  a manifest with both is refused.
+  services. The manifest doesn't mark it.
 - `settings`: each setting has a `type` (`string`, `int`, `bool`, `choice`,
   `port`, `secret`, `url`, `path`, `list`, `date`), an optional `default`,
   `label` and `optional`. A setting with neither `default` nor
@@ -102,7 +96,7 @@ except where noted:
   slug. `flag` is not allowed inside it, and the name and default rules above
   apply. `addon.sh enable` also needs at least one instance, and reports
   `instances:<name>` in `missing` until there is one, unless
-  `instances.optional` is `true` (built-in only). A `secret` instance setting
+  `instances.optional` is `true`. A `secret` instance setting
   may set `transient: true`: `addon.sh connect` passes the value to the
   `instances.connect` hook and never stores it. It needs that hook.
   `instances.connect` and `instances.disconnect` are hooks (below), and
@@ -113,16 +107,12 @@ except where noted:
   `argv` in the named service, and appends `--account <slug>` when `instance`
   is true. An add-on that reads personal data may not run a command in an MCP
   service.
-- `hooks`: `init`, `upgrade`, `backup` and `restore`, each
-  `{"script": [argv]}` (`scripts/<name>.sh` plus arguments, run on the host)
-  or `{"command": <name>}` (an entry of `commands` with `instance: false`).
-  `addon.sh` runs `init` on `enable`, and `connect` and `disconnect` from
-  `instances`; it doesn't run the others yet.
-- `onToggle`: `{"recreate": [<compose service>], "script"?: [argv]}`, built-in
-  only. `enable` and `disable` recreate those services, then run the script,
-  when the add-on's flag changes value. No built-in manifest uses it.
-- `data`: `{"paths": [{"env", "default"}], "volumes": [<compose volume>]}`,
-  built-in only. `addon.sh remove --delete-data` deletes them. A path's
+- `hooks`: `init`, `{"script": [argv]}` (`scripts/<name>.sh` plus arguments,
+  run on the host) or `{"command": <name>}` (an entry of `commands` with
+  `instance: false`). `addon.sh` runs `init` on `enable`, and `connect` and
+  `disconnect` from `instances`.
+- `data`: `{"paths": [{"env", "default"}], "volumes": [<compose volume>]}`.
+  `addon.sh remove --delete-data` deletes them. A path's
   `default` is `./data/...` and must be a bind-mount source in
   `docker-compose.yml`, or its parent.
 - `backup`: `{"secrets": [<env name>], "recommended": [<env name>]}`, listed
@@ -130,7 +120,7 @@ except where noted:
 - `host`: a part that runs on the host instead of in Docker, with
   `platform`, `install`, `uninstall`, `grants`, `grantTarget` and `check`.
   `addon.sh list --json` reports `platform` (`any` when there is no `host`);
-  nothing installs the host part. Refused from a community feed.
+  nothing installs the host part.
   `email-local` uses it for the Mail.app helper apps.
 
 `scripts/addon.sh` reads these; see [docs/extending.md](../docs/extending.md#add-ons-scriptsaddonsh).

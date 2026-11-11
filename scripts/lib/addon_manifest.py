@@ -9,7 +9,7 @@ image's python3, mounted at /bootstrap/addon_manifest.py.
         and exits 1 if there are any.
     addon_manifest.py mcp-urls <addons-dir>
         Print every MCP URL of every valid built-in add-on, one per line,
-        whatever the flag, `profiles` or `unmanaged` say (mcp.env.url applies).
+        whatever the flag or `profiles` say (mcp.env.url applies).
         For tuning entries that already exist; registers nothing. An
         mcp.instances entry has no fixed URL and is left out; instances-plan
         gives each instance's.
@@ -71,12 +71,14 @@ be a core server name or prefix. The entry keeps transport, timeout,
 connectTimeout, env, tools, pin, writeTools and profiles. mcp-plan skips it;
 instances-plan (instances_plan()) lists one line per instance in the add-on's
 store for the bootstrap to register. `services.<name>.mounts` and
-`commands` are checked as validate() describes them. A built-in service may
-list `volumes`, the compose volume names `scripts/addon.sh disable --purge`
-removes; scripts/test-addon-manifests.py checks they exist in docker-compose.yml.
+`commands` are checked as validate() describes them. `data.volumes` lists the
+compose volume names `scripts/addon.sh disable --purge` removes;
+scripts/test-addon-manifests.py checks they exist in docker-compose.yml.
 
-Policy follows docs/private/addon-manifest-spec.md (draft). `source` is
-"builtin", "official" (a package from the official feed) or "community".
+Policy follows docs/private/addon-manifest-spec.md (draft). Only built-in
+add-ons (manifests in addons/) are accepted; packaged add-ons and feeds are
+design only. A service is a one-shot when another compose service depends on
+it with condition service_completed_successfully (compose_oneshots()).
 """
 
 from __future__ import annotations
@@ -89,7 +91,6 @@ import sys
 from pathlib import Path
 
 MANIFEST_VERSION = 1
-SOURCES = ("builtin", "official", "community")
 
 # Names core still registers itself. An add-on may not take one, or start
 # with one of the prefixes core uses for per-instance entries.
@@ -123,7 +124,6 @@ NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 VAULT_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 TOOL_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 ENV_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
-DIGEST_RE = re.compile(r"@sha256:[0-9a-f]{64}$")
 PATH_RE = re.compile(r"^/[A-Za-z0-9._~/-]*$")
 COMPOSE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 HOOK_SCRIPT_RE = re.compile(r"^scripts/[a-z0-9-]+\.sh\Z")
@@ -133,8 +133,18 @@ DATA_PATH_RE = re.compile(r"^\./data(?:/(?!\.{1,2}(?:/|\Z))[^\s/]+)+\Z")
 # Error names every add-on's instance hooks share (spec, "instances.connect").
 SHARED_ERRORS = {"bad_slug", "exists", "not_found", "login_refused", "token_expired", "no_access",
                  "timeout", "server_unreachable"}
-HOOK_NAMES = ("init", "upgrade", "backup", "restore")
+HOOK_NAMES = ("init",)
 INSTANCE_HOOKS = ("connect", "disconnect")
+# Fields removed in 0.3.14. A manifest that still has one is refused with a
+# pointer, rather than having the field silently ignored.
+REMOVED_FIELDS = {
+    "onToggle": "onToggle was removed in 0.3.14",
+}
+REMOVED_SERVICE_FIELDS = {
+    "oneshot": "oneshot was removed in 0.3.14; a service is a one-shot when another compose "
+               "service depends on it with condition service_completed_successfully",
+    "volumes": "services.<name>.volumes was removed in 0.3.14; use data.volumes",
+}
 
 
 def short_id(manifest_id: str) -> str:
@@ -161,8 +171,8 @@ def _find_repo() -> Path | None:
     return root if (root / "docker-compose.yml").is_file() else None
 
 
-def validate(manifest, source: str = "builtin", repo=_AUTO) -> list[str]:
-    """Return every problem with `manifest` for an add-on from `source`.
+def validate(manifest, repo=_AUTO) -> list[str]:
+    """Return every problem with built-in add-on `manifest`.
 
     `repo` is the repo root, for the checks that read it: a hook script must
     exist, and a data path must be a bind-mount source in docker-compose.yml,
@@ -172,8 +182,8 @@ def validate(manifest, source: str = "builtin", repo=_AUTO) -> list[str]:
     checks are skipped."""
     if repo is _AUTO:
         repo = _find_repo()
-    if source not in SOURCES:
-        raise ValueError(f"unknown source {source!r}")
+    if isinstance(repo, str) and repo in ("builtin", "official", "community"):
+        raise TypeError("validate() no longer takes a source; every manifest is built-in")
     if not isinstance(manifest, dict):
         return ["manifest must be a JSON object"]
     errors: list[str] = []
@@ -201,29 +211,28 @@ def validate(manifest, source: str = "builtin", repo=_AUTO) -> list[str]:
                                         and isinstance(pub.get("url"), str)):
         err("publisher must be {name, url}")
 
+    for key, why in REMOVED_FIELDS.items():
+        if key in manifest:
+            err(why)
+
     builtin = manifest.get("builtin")
-    if source == "builtin":
-        if not isinstance(builtin, dict):
-            err("a built-in add-on needs a builtin block {flag, profile, seed}")
-        else:
-            if not (isinstance(builtin.get("flag"), str) and ENV_RE.match(builtin["flag"])):
-                err("builtin.flag must be an env var name")
-            if not (isinstance(builtin.get("profile"), str) and NAME_RE.match(builtin["profile"])):
-                err("builtin.profile must be a compose profile name")
-            if not isinstance(builtin.get("seed"), bool):
-                err("builtin.seed must be true or false")
-            extra = set(builtin) - {"flag", "profile", "seed"}
-            if extra:
-                err(f"builtin has unknown fields: {', '.join(sorted(extra))}")
-    elif builtin is not None:
-        err("only built-in add-ons may have a builtin block")
+    if not isinstance(builtin, dict):
+        err("a built-in add-on needs a builtin block {flag, profile, seed}")
+    else:
+        if not (isinstance(builtin.get("flag"), str) and ENV_RE.match(builtin["flag"])):
+            err("builtin.flag must be an env var name")
+        if not (isinstance(builtin.get("profile"), str) and NAME_RE.match(builtin["profile"])):
+            err("builtin.profile must be a compose profile name")
+        if not isinstance(builtin.get("seed"), bool):
+            err("builtin.seed must be true or false")
+        extra = set(builtin) - {"flag", "profile", "seed"}
+        if extra:
+            err(f"builtin has unknown fields: {', '.join(sorted(extra))}")
 
     gates = manifest.get("gates")
     gate_flags: set[str] = set()
     if gates is not None:
-        if source != "builtin":
-            err("only built-in add-ons may have gates")
-        elif not (isinstance(gates, list) and gates):
+        if not (isinstance(gates, list) and gates):
             err("gates must be a non-empty list of {flag, profile, seed}")
         else:
             for i, g in enumerate(gates):
@@ -257,36 +266,17 @@ def validate(manifest, source: str = "builtin", repo=_AUTO) -> list[str]:
             if not isinstance(svc, dict):
                 err(f"services.{name} must be an object")
                 continue
-            if source == "builtin":
-                if not (isinstance(svc.get("compose"), str) and svc["compose"]):
-                    err(f"services.{name}.compose must name the compose service")
-                if "image" in svc:
-                    err(f"services.{name}: a built-in add-on keeps its image in docker-compose.yml")
-            else:
-                image = svc.get("image")
-                if not (isinstance(image, str) and DIGEST_RE.search(image)):
-                    err(f"services.{name}.image must be referenced by sha256 digest")
-                if "compose" in svc:
-                    err(f"services.{name}: only built-in add-ons name a compose service")
+            if not (isinstance(svc.get("compose"), str) and svc["compose"]):
+                err(f"services.{name}.compose must name the compose service")
+            if "image" in svc:
+                err(f"services.{name}: a built-in add-on keeps its image in docker-compose.yml")
+            for key, why in REMOVED_SERVICE_FIELDS.items():
+                if key in svc:
+                    err(f"services.{name}: {why}")
             if "when" in svc:
                 errors.extend(_validate_when(svc["when"], gate_flags, f"services.{name}.when"))
             if "port" in svc and not (isinstance(svc["port"], int) and 0 < svc["port"] < 65536):
                 err(f"services.{name}.port must be a port number")
-            if "oneshot" in svc:
-                if not isinstance(svc["oneshot"], bool):
-                    err(f"services.{name}.oneshot must be true or false")
-                elif svc["oneshot"]:
-                    if source != "builtin":
-                        err(f"services.{name}.oneshot: only built-in add-ons may have a oneshot service")
-                    if "when" in svc:
-                        err(f"services.{name}.oneshot: a oneshot service may not have when")
-            if "volumes" in svc:
-                vols = svc["volumes"]
-                if source != "builtin":
-                    err(f"services.{name}.volumes: only built-in add-ons name compose volumes")
-                elif not (_is_str_list(vols) and vols and all(COMPOSE_NAME_RE.match(v) for v in vols)
-                          and len(set(vols)) == len(vols)):
-                    err(f"services.{name}.volumes must be a non-empty list of distinct compose volume names")
     else:
         services = {}
 
@@ -327,14 +317,10 @@ def validate(manifest, source: str = "builtin", repo=_AUTO) -> list[str]:
     cron = perms.get("cron", False) in (True, "ro")
 
     if reads:
-        if source == "community":
-            err("permissions.reads is refused for community feeds")
         if sends:
             err("an add-on that reads personal data may not send; ship the send path as its own add-on")
         if cron:
             err("an add-on that reads personal data needs permissions.cron false")
-    if sends and source == "community":
-        err("permissions.sends is refused for community feeds")
     if {"postgres", "neo4j"} & set(uses) and perms.get("exposesToAgent") is not True:
         err("uses postgres or neo4j, so permissions.exposesToAgent must be true")
 
@@ -344,7 +330,7 @@ def validate(manifest, source: str = "builtin", repo=_AUTO) -> list[str]:
             err("mcp must be an object or a non-empty list of objects")
         entries = mcp if isinstance(mcp, list) else [mcp]
         for entry in entries:
-            errors.extend(_validate_mcp(entry, services, source, bool(reads), gate_flags,
+            errors.extend(_validate_mcp(entry, services, bool(reads), gate_flags,
                                         manifest.get("instances"),
                                         builtin.get("flag") if isinstance(builtin, dict) else None))
             if perms.get("cron") == "ro" and not (
@@ -371,7 +357,7 @@ def validate(manifest, source: str = "builtin", repo=_AUTO) -> list[str]:
 
     vault = manifest.get("vaultBackend")
     if vault is not None:
-        errors.extend(_validate_vault_backend(vault, source, bool(reads)))
+        errors.extend(_validate_vault_backend(vault, bool(reads)))
 
     # A setting's flag names a gate: configure must not be able to switch
     # builtin.flag, which only enable and disable write.
@@ -380,7 +366,7 @@ def validate(manifest, source: str = "builtin", repo=_AUTO) -> list[str]:
     if not isinstance(settings, dict):
         err("settings must be an object")
         settings = {}
-    errors.extend(_validate_settings(settings, source=source, reads=bool(reads), flags=flags,
+    errors.extend(_validate_settings(settings, reads=bool(reads), flags=flags,
                                      in_instance=False))
 
     instances = manifest.get("instances")
@@ -395,17 +381,14 @@ def validate(manifest, source: str = "builtin", repo=_AUTO) -> list[str]:
             if not (isinstance(isettings, dict) and isettings):
                 err("instances.settings must declare at least one setting")
             else:
-                errors.extend(_validate_settings(isettings, source=source, reads=bool(reads),
+                errors.extend(_validate_settings(isettings, reads=bool(reads),
                                                  flags=flags, in_instance=True,
                                                  has_connect="connect" in instances))
             extra = set(instances) - {"name", "settings", *INSTANCE_HOOKS, "errors", "optional"}
             if extra:
                 err(f"instances has unknown fields: {', '.join(sorted(extra))}")
-            if "optional" in instances:
-                if not isinstance(instances["optional"], bool):
-                    err("instances.optional must be true or false")
-                elif instances["optional"] and source != "builtin":
-                    err("instances.optional is for built-in add-ons only")
+            if "optional" in instances and not isinstance(instances["optional"], bool):
+                err("instances.optional must be true or false")
             if ("connect" in instances) != ("disconnect" in instances):
                 err("instances.connect and instances.disconnect come as a pair")
             if "errors" in instances:
@@ -457,10 +440,6 @@ def validate(manifest, source: str = "builtin", repo=_AUTO) -> list[str]:
             if extra:
                 err(f"commands.{cname} has unknown fields: {', '.join(sorted(extra))}")
 
-    for name, svc in services.items():
-        if isinstance(svc, dict) and svc.get("oneshot") is True and name in mcp_services:
-            err(f"services.{name}.oneshot: a oneshot service can't be the mcp target")
-
     hook_commands = commands if isinstance(commands, dict) else {}
     hooks = manifest.get("hooks")
     if hooks is not None:
@@ -472,35 +451,25 @@ def validate(manifest, source: str = "builtin", repo=_AUTO) -> list[str]:
                 err(f"hooks has unknown fields: {', '.join(sorted(extra))}")
             for hname in HOOK_NAMES:
                 if hname in hooks:
-                    errors.extend(_validate_hook(hooks[hname], f"hooks.{hname}", source,
+                    errors.extend(_validate_hook(hooks[hname], f"hooks.{hname}",
                                                  hook_commands, repo))
     if isinstance(instances, dict):
         for hname in INSTANCE_HOOKS:
             if hname in instances:
-                errors.extend(_validate_hook(instances[hname], f"instances.{hname}", source,
+                errors.extend(_validate_hook(instances[hname], f"instances.{hname}",
                                              hook_commands, repo))
 
-    if "onToggle" in manifest:
-        errors.extend(_validate_on_toggle(manifest["onToggle"], source, repo))
-
-    old_volumes = [(n, s_["volumes"]) for n, s_ in services.items()
-                   if isinstance(s_, dict) and "volumes" in s_]
     if "data" in manifest:
-        errors.extend(_validate_data(manifest["data"], source, repo, bool(old_volumes)))
+        errors.extend(_validate_data(manifest["data"], repo))
 
     if "backup" in manifest:
         errors.extend(_validate_backup(manifest["backup"]))
 
-    if "host" in manifest and source == "community":
-        err("a host component is refused unless the add-on is built-in or on the official feed")
-
     return errors
 
 
-def _validate_script(argv, where: str, source: str, repo) -> list[str]:
-    """A repo-relative host script and its arguments (built-in only)."""
-    if source != "builtin":
-        return [f"{where}: a script is for built-in add-ons only"]
+def _validate_script(argv, where: str, repo) -> list[str]:
+    """A repo-relative host script and its arguments."""
     if not (_is_str_list(argv) and argv):
         return [f"{where} must be a non-empty list of strings"]
     errors: list[str] = []
@@ -513,13 +482,13 @@ def _validate_script(argv, where: str, source: str, repo) -> list[str]:
     return errors
 
 
-def _validate_hook(hook_, where: str, source: str, commands: dict, repo) -> list[str]:
+def _validate_hook(hook_, where: str, commands: dict, repo) -> list[str]:
     if not isinstance(hook_, dict):
         return [f'{where} must be {{"command": NAME}} or {{"script": [argv]}}']
     if set(hook_) not in ({"command"}, {"script"}):
         return [f"{where} must have exactly one of command or script"]
     if "script" in hook_:
-        return _validate_script(hook_["script"], f"{where}.script", source, repo)
+        return _validate_script(hook_["script"], f"{where}.script", repo)
     name = hook_["command"]
     cmd = commands.get(name) if isinstance(name, str) else None
     if not isinstance(cmd, dict):
@@ -527,24 +496,6 @@ def _validate_hook(hook_, where: str, source: str, commands: dict, repo) -> list
     if cmd.get("instance") is not False:
         return [f"{where}.command: {name!r} takes an instance, and a hook has none"]
     return []
-
-
-def _validate_on_toggle(value, source: str, repo) -> list[str]:
-    if not isinstance(value, dict):
-        return ["onToggle must be an object {recreate, script}"]
-    errors: list[str] = []
-    if source != "builtin":
-        errors.append("onToggle is for built-in add-ons only")
-    rec = value.get("recreate")
-    if not (_is_str_list(rec) and rec and all(COMPOSE_NAME_RE.match(r) for r in rec)
-            and len(set(rec)) == len(rec)):
-        errors.append("onToggle.recreate must be a non-empty list of distinct compose service names")
-    if "script" in value:
-        errors.extend(_validate_script(value["script"], "onToggle.script", source, repo))
-    extra = set(value) - {"recreate", "script"}
-    if extra:
-        errors.append(f"onToggle has unknown fields: {', '.join(sorted(extra))}")
-    return errors
 
 
 def _bind_sources(compose_text: str) -> set[str]:
@@ -555,13 +506,11 @@ def _bind_sources(compose_text: str) -> set[str]:
     return found
 
 
-def _validate_data(data, source: str, repo, old_volumes: bool) -> list[str]:
+def _validate_data(data, repo) -> list[str]:
     if not isinstance(data, dict):
         return ["data must be an object {paths, volumes}"]
     errors: list[str] = []
     err = errors.append
-    if source != "builtin":
-        err("data is for built-in add-ons only")
     extra = set(data) - {"paths", "volumes"}
     if extra:
         err(f"data has unknown fields: {', '.join(sorted(extra))}")
@@ -570,8 +519,6 @@ def _validate_data(data, source: str, repo, old_volumes: bool) -> list[str]:
         if not (_is_str_list(vols) and vols and all(COMPOSE_NAME_RE.match(v) for v in vols)
                 and len(set(vols)) == len(vols)):
             err("data.volumes must be a non-empty list of distinct compose volume names")
-        if old_volumes:
-            err("data.volumes and services.<name>.volumes are both present; keep data.volumes")
     if "paths" in data:
         paths = data["paths"]
         if not (isinstance(paths, list) and paths):
@@ -623,23 +570,50 @@ def _validate_backup(backup) -> list[str]:
 
 
 def data_volumes(manifest: dict) -> list[str]:
-    """Compose volume names the add-on's data lives in: data.volumes, or the
-    services.<name>.volumes of the old form (accepted for one patch)."""
+    """Compose volume names the add-on's data lives in (data.volumes)."""
     data = manifest.get("data")
     if isinstance(data, dict) and isinstance(data.get("volumes"), list):
         return list(data["volumes"])
-    out: list[str] = []
-    services = manifest.get("services")
-    for svc in services.values() if isinstance(services, dict) else []:
-        vols = svc.get("volumes") if isinstance(svc, dict) else None
-        for v in vols if isinstance(vols, list) else []:
-            if v not in out:
-                out.append(v)
-    return out
+    return []
+
+
+def compose_oneshots(compose_text: str) -> set[str]:
+    """Compose services that another service depends on with condition
+    service_completed_successfully: they run to completion, so addon.sh starts
+    them with --exit-code-from and lists them before the long-running ones.
+
+    Reads the long form only, written out in the depending service:
+        depends_on:
+          <name>:
+            condition: service_completed_successfully
+    A depends_on that comes in through a YAML merge key is not seen."""
+    found: set[str] = set()
+    dep_indent = None  # indent of the current depends_on: line
+    name_indent = None
+    current = None
+    for line in compose_text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if dep_indent is not None and indent <= dep_indent:
+            dep_indent = name_indent = current = None
+        if dep_indent is None:
+            if stripped == "depends_on:":
+                dep_indent = indent
+            continue
+        if name_indent is None or indent <= name_indent:
+            m = re.match(r"^([A-Za-z0-9][A-Za-z0-9_.-]*):\s*$", stripped)
+            name_indent, current = (indent, m.group(1)) if m else (indent, None)
+            continue
+        if current and re.match(r"^condition:\s*[\"']?service_completed_successfully[\"']?\s*$",
+                                stripped):
+            found.add(current)
+    return found
 
 
 def hook(manifest: dict, name: str) -> dict | None:
-    """The hook `name` (init, upgrade, backup, restore, connect, disconnect), or None."""
+    """The hook `name` (init, connect, disconnect), or None."""
     where = manifest.get("instances") if name in INSTANCE_HOOKS else manifest.get("hooks")
     if name not in INSTANCE_HOOKS and name not in HOOK_NAMES:
         return None
@@ -647,7 +621,7 @@ def hook(manifest: dict, name: str) -> dict | None:
     return found if isinstance(found, dict) else None
 
 
-def _validate_settings(settings: dict, *, source: str, reads: bool, flags: set[str],
+def _validate_settings(settings: dict, *, reads: bool, flags: set[str],
                        in_instance: bool, has_connect: bool = False) -> list[str]:
     """Check a settings schema (top-level, or an instance's). A setting with
     neither `default` nor `optional: true` is required. Messages name the
@@ -683,8 +657,6 @@ def _validate_settings(settings: dict, *, source: str, reads: bool, flags: set[s
                 err(f"{at}.default is not one of its options")
         if t == "path" and reads and "default" in s:
             err(f"{at}: a path setting in an add-on that reads personal data may not have a default")
-        if t == "secret" and source not in ("builtin", "official"):
-            err(f"{at}: secret settings are refused unless the add-on is built-in or on the official feed")
         if t == "secret" and "default" in s:
             err(f"{at}: a secret setting may not have a default")
         if "transient" in s:
@@ -693,8 +665,6 @@ def _validate_settings(settings: dict, *, source: str, reads: bool, flags: set[s
             elif s["transient"]:
                 if not in_instance or t != "secret":
                     err(f"{at}.transient is for secret settings inside instances.settings only")
-                elif source != "builtin":
-                    err(f"{at}.transient is for built-in add-ons only")
                 elif not has_connect:
                     err(f"{at}.transient needs instances.connect, which receives the value")
         if "default" in s and t != "choice" and not _default_fits(t, s["default"]):
@@ -751,7 +721,7 @@ def _validate_when(when, gate_flags: set[str], where: str) -> list[str]:
     return []
 
 
-def _validate_mcp(mcp, services: dict, source: str, reads: bool,
+def _validate_mcp(mcp, services: dict, reads: bool,
                   gate_flags: set[str] = frozenset(), instances=None,
                   builtin_flag: str | None = None) -> list[str]:
     errors: list[str] = []
@@ -771,7 +741,7 @@ def _validate_mcp(mcp, services: dict, source: str, reads: bool,
         for key in ("service", "path", "name"):
             if key in mcp:
                 err(f"mcp.instances replaces mcp.{key}; an entry has one or the other")
-        errors.extend(_validate_mcp_instances(mcp["instances"], source, instances,
+        errors.extend(_validate_mcp_instances(mcp["instances"], instances,
                                               gate_flags, builtin_flag))
     elif isinstance(svc, str):
         keys = [svc]
@@ -787,9 +757,7 @@ def _validate_mcp(mcp, services: dict, source: str, reads: bool,
     for key in keys:
         if key not in services:
             err("mcp.service must name one of services")
-        elif source != "builtin" and not services[key].get("healthCheck"):
-            err(f"services.{key}.healthCheck is required on the service mcp points at")
-        elif source == "builtin" and "port" not in services[key]:
+        elif "port" not in services[key]:
             err(f"services.{key}.port is needed to build the MCP URL")
     if mcp.get("transport") not in TRANSPORTS:
         err(f"mcp.transport must be one of {', '.join(sorted(TRANSPORTS))}")
@@ -828,19 +796,10 @@ def _validate_mcp(mcp, services: dict, source: str, reads: bool,
     if reads and UNATTENDED_PROFILE in profiles:
         err(f"an add-on that reads personal data may not be on {UNATTENDED_PROFILE}")
     if "unmanaged" in mcp:
-        unmanaged = mcp["unmanaged"]
-        if source != "builtin":
-            err("mcp.unmanaged is for built-in add-ons only")
-        elif not (_is_str_list(unmanaged) and all(NAME_RE.match(n) for n in unmanaged)
-                  and len(set(unmanaged)) == len(unmanaged)):
-            err("mcp.unmanaged must be a list of distinct Hermes profile names")
-        elif set(unmanaged) & set(profiles):
-            err("mcp.unmanaged may not name a profile in mcp.profiles")
+        err("mcp.unmanaged was removed in 0.3.14; the bootstrap manages every profile in mcp.profiles")
     env = mcp.get("env", {})
     if env:
-        if source != "builtin":
-            err("mcp.env is for built-in add-ons only")
-        elif not isinstance(env, dict) or set(env) - {"url", "timeout", "connectTimeout", "access"} \
+        if not isinstance(env, dict) or set(env) - {"url", "timeout", "connectTimeout", "access"} \
                 or not all(isinstance(v, str) and ENV_RE.match(v) for v in env.values()):
             err("mcp.env maps url, timeout, connectTimeout and access to env var names")
     return errors
@@ -852,7 +811,7 @@ HEADER_RE = re.compile(r"^[A-Za-z0-9-]+$")
 INSTANCE_ACCESS_LEVELS = {"read": "ro", "write": "rw"}
 
 
-def _validate_mcp_instances(inst, source: str, instances, gate_flags: set[str],
+def _validate_mcp_instances(inst, instances, gate_flags: set[str],
                             builtin_flag: str | None) -> list[str]:
     """Check mcp.instances: {name, url, access, auth, gate?}. Every
     {setting:<name>} refers to a setting in the top-level instances.settings."""
@@ -860,8 +819,6 @@ def _validate_mcp_instances(inst, source: str, instances, gate_flags: set[str],
     err = errors.append
     if not isinstance(inst, dict):
         return ["mcp.instances must be an object"]
-    if source != "builtin":
-        err("mcp.instances is for built-in add-ons only")
     extra = set(inst) - {"name", "url", "access", "auth", "gate"}
     if extra:
         err(f"mcp.instances has unknown fields: {', '.join(sorted(extra))}")
@@ -942,11 +899,9 @@ def _validate_mcp_instances(inst, source: str, instances, gate_flags: set[str],
     return errors
 
 
-def _validate_vault_backend(vb, source: str, reads: bool) -> list[str]:
+def _validate_vault_backend(vb, reads: bool) -> list[str]:
     errors: list[str] = []
     err = errors.append
-    if source == "community":
-        err("vaultBackend is refused unless the add-on is built-in or on the official feed")
     if not isinstance(vb, dict):
         errors.append("vaultBackend must be an object")
         return errors
@@ -1053,7 +1008,7 @@ def check_builtin_file(path: Path, manifest, parse_error: str | None) -> list[st
     """validate() plus the repo-only rules: canonical layout, dir name."""
     if parse_error:
         return [parse_error]
-    errors = validate(manifest, "builtin")
+    errors = validate(manifest)
     if isinstance(manifest, dict) and isinstance(manifest.get("id"), str):
         if path.parent.name != short_id(manifest["id"]):
             errors.append(f"directory must be named after the short id {short_id(manifest['id'])!r}")
@@ -1202,9 +1157,6 @@ def mcp_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
             # the profile, so a stale entry or an unfiltered clone does not
             # outlive the manifest that would have filtered it.
             for entry, urls in _raw_mcp_urls(manifest, environ):
-                unmanaged = entry.get("unmanaged")
-                if isinstance(unmanaged, list) and profile in unmanaged:
-                    continue
                 name = entry.get("name") if isinstance(entry.get("name"), str) else path.parent.name
                 title = entry.get("title") if isinstance(entry.get("title"), str) else name
                 drops.append((len(lines), name, title, urls))
@@ -1213,8 +1165,6 @@ def mcp_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
         for mcp in mcp_entries(manifest):
             if "instances" in mcp:
                 continue  # instances_plan lists these, one line per instance
-            if profile in mcp.get("unmanaged", []):
-                continue
             env = mcp.get("env", {})
             urls = _mcp_urls(manifest, mcp, environ)
             timeout = environ.get(env.get("timeout", ""), "") or str(mcp["timeout"])
@@ -1378,8 +1328,7 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
     keyfile is a path under data_dir; key values are never printed.
 
     An invalid manifest still gives its add-on line, off, when its
-    mcp.instances.name is readable, so the bootstrap drops its entries. A
-    profile in the entry's mcp.unmanaged gets no line, valid or not."""
+    mcp.instances.name is readable, so the bootstrap drops its entries."""
     data_dir = Path(data_dir)
     lines = []
 
@@ -1396,9 +1345,6 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
                 print(f"warning: skipping {sid_dir}: {e}", file=sys.stderr)
             for entry in _raw_mcp_list(manifest):
                 template = _raw_instance_template(entry)
-                unmanaged = entry.get("unmanaged") if isinstance(entry, dict) else None
-                if isinstance(unmanaged, list) and profile in unmanaged:
-                    continue
                 if template:
                     pins = entry.get("pin") if isinstance(entry, dict) else None
                     pins = [p for p in pins if TOOL_RE.match(p)] if _is_str_list(pins) else []
@@ -1406,7 +1352,7 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
                           " ".join(pins), "invalid manifest", "", ""], sid_dir)
             continue
         for mcp in mcp_entries(manifest):
-            if "instances" not in mcp or profile in mcp.get("unmanaged", []):
+            if "instances" not in mcp:
                 continue
             inst = mcp["instances"]
             template = inst["name"]

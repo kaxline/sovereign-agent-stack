@@ -38,8 +38,7 @@
       }
     },
     "seed": {
-      "compose": "fixture-seed",
-      "oneshot": true
+      "compose": "fixture-seed"
     }
   },
   "settings": {

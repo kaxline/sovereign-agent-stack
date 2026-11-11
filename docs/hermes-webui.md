@@ -83,13 +83,7 @@ Port 8644 is **not** published to the host. Only the WebUI talks to it, at `http
 
 One thing the `browser` profile does **not** get is a looser LightRAG allowlist. The five-tool read-only filter carries over from `api-server` unchanged, because 12 of that server's 17 tools mutate the knowledge graph and having a human in the loop is a poor reason to expose `delete_by_entities`.
 
-Keeping that true takes an extra step. Profiles are created with `profile create --clone`, so they inherit the default profile's MCP servers. The stack ships LightRAG on the default profile unfiltered, as `lightrag-mcp`, for dashboard and CLI use; the clone therefore arrives carrying both that entry and the filtered `lightrag` one, both pointing at the same server. All 17 tools come back through the unfiltered copy and the allowlist stops meaning anything. The bootstrap drops the duplicate and logs it:
-
-```text
-Removed unfiltered duplicate MCP server 'lightrag-mcp' (...) - 'lightrag' already exposes it, restricted to 5 tools
-```
-
-That removal is narrowly gated: only profiles the bootstrap manages, only on a URL match, and only when the duplicate carries no allowlist of its own. Your default profile is left exactly as you configured it, and a duplicate you filtered yourself reads as intentional and stays.
+Keeping that true takes an extra step. Profiles are created with `profile create --clone`, so they inherit the default profile's MCP servers, including any entry added by hand at LightRAG's URL without the allowlist. After registering the filtered `lightrag` entry on a profile in the manifest's `mcp.profiles` (default, api-server and browser), the bootstrap removes every other entry at the same URL from that profile, filtered or not, so the 17 tools can't come back through a second key.
 
 Re-apply after changing `browser.env` or `HERMES_BROWSER_MAX_TURNS` (one-shot containers do not re-run on every `up`):
 
