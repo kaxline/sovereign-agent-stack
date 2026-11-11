@@ -37,6 +37,15 @@ the stack under another app.
 
 ### Changes
 
+- `addon.sh enable`, `run` and hooks that run in a compose service now run
+  `docker compose build --quiet` on their services first. Before, a service
+  built from this repo (`email-indexer`, `email-mcp`, `email-drafts-mcp`,
+  `email-outbox`, among others) kept running whatever image was built first,
+  so an install that had built it before an update ran old code: `run email
+  mailboxes` failed with ``accounts[0] needs a non-empty `mailboxes` list``
+  on an account without mailboxes. An unchanged build is a cache hit. A
+  failed build is `compose_failed` at step `start` (`enable`) or exit 4
+  (`run`); the step names and their order are unchanged.
 - Removed manifest fields, unused by any built-in add-on or replaced:
   `onToggle` (and `addon.sh`'s `recreate` step), `services.<name>.volumes`
   (use `data.volumes`), `services.<name>.oneshot`, `mcp.unmanaged`, and the

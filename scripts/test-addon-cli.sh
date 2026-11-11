@@ -34,6 +34,8 @@ printf 'COMPOSE_PROJECT_NAME=fixtureproj\n' >> "${root}/.env"
 # DOCKER_UP_DELAY=N makes `compose up` sleep N seconds first.
 # DOCKER_FAIL_RUN=N makes `docker compose run` exit N after printing a line.
 # DOCKER_FAIL_ONESHOT=1 makes `compose up --no-deps --exit-code-from` exit 1.
+# `compose build` prints a line on stdout; DOCKER_FAIL_BUILD=1 makes it print
+# "failed to solve: boom" on stderr and exit 1.
 # `compose ps -a --format json` prints the file PS_ANSWER names, if any.
 # `compose logs` prints one line naming the service.
 # `compose config --services` prints the file CONFIG_SERVICES names, if any.
@@ -75,6 +77,14 @@ if [ "$1 $2 $3" = "compose config --services" ]; then
 fi
 if [ "${DOCKER_FAIL_BOOTSTRAP:-0}" = 1 ] && [ "$1 $2" = "compose run" ]; then
   case "$*" in *hermes-api-bootstrap*) echo "bootstrap failed"; exit 1 ;; esac
+fi
+if [ "$1 $2" = "compose build" ]; then
+  echo "build progress on stdout"
+  if [ "${DOCKER_FAIL_BUILD:-0}" = 1 ]; then
+    echo "failed to solve: boom" >&2
+    exit 1
+  fi
+  exit 0
 fi
 if [ "$1 $2" = "compose logs" ]; then
   eval "last=\${$#}"
@@ -220,6 +230,14 @@ expect_rc() {
 }
 envval() { grep -E "^$1=" "${root}/.env" | tail -1 | cut -d= -f2- || true; }
 logged() { grep -qF -- "$1" "$STUB_LOG"; }
+# built_before CALL SERVICE: the stub log line right before the first line starting
+# with CALL is `compose build --quiet` naming SERVICE first.
+built_before() {
+  python3 -c 'import sys
+log = open(sys.argv[1]).read().splitlines()
+at = [i for i, l in enumerate(log) if l.startswith(sys.argv[2])]
+sys.exit(0 if at and at[0] > 0 and log[at[0] - 1].startswith("compose build --quiet " + sys.argv[3]) else 1)' "$STUB_LOG" "$1" "$2"
+}
 # reloaded: the log holds the forced bootstraps in order, then reload-plugins,
 # and no make or recreate.
 reloaded() {
@@ -505,6 +523,33 @@ fi
 r=0; json_ok "$out" "done" '[(l["step"], l.get("target")) for l in lines if l["phase"] == "setup" and l["step"] == "start" and l["status"] == "running"] == [("start", "fixture-seed"), ("start", None)]' || r=1
 check "the one-shot start step names its service" "$r"
 
+# Services built from this repo are rebuilt before each start, run and hook,
+# so a checkout never runs an image older than its source.
+if built_before "compose up --no-deps --exit-code-from fixture-seed fixture-seed" fixture-seed; then ok "enable builds the one-shot before running it"; else bad "enable builds the one-shot before running it"; cat "$STUB_LOG"; fi
+if built_before "compose up -d --wait fixture-worker" fixture-worker; then ok "enable builds the services before starting them"; else bad "enable builds the services before starting them"; cat "$STUB_LOG"; fi
+if grep -q "build progress" "$out"; then bad "build output stays out of enable --json stdout"; else ok "build output stays out of enable --json stdout"; fi
+: > "$STUB_LOG"
+addon_json run fixture sync --instance work
+expect_rc "run with a build first" 0
+if built_before "compose run --rm --no-deps -T fixture-worker fixture-sync" fixture-worker; then ok "run builds the service first"; else bad "run builds the service first"; cat "$STUB_LOG"; fi
+if grep -q "build progress" "$out" "$err"; then bad "a build that passes prints nothing"; cat "$out" "$err"; else ok "a build that passes prints nothing"; fi
+: > "$STUB_LOG"
+DOCKER_FAIL_BUILD=1 addon_json run fixture status
+unset DOCKER_FAIL_BUILD
+expect_rc "a failed build stops run with exit 4" 4
+if logged "fixture-status"; then bad "run doesn't start a container after a failed build"; else ok "run doesn't start a container after a failed build"; fi
+if grep -q "failed to solve: boom" "$err" && ! grep -q "failed to solve" "$out"; then ok "run shows the build error on stderr"; else bad "run shows the build error on stderr"; cat "$out" "$err"; fi
+addon disable fixture
+: > "$STUB_LOG"
+DOCKER_FAIL_BUILD=1 addon_json enable fixture --json
+unset DOCKER_FAIL_BUILD
+expect_rc "a failed build fails enable" 1
+r=0; json_ok "$out" "error" 'last["error"] == "compose_failed" and last["step"] == "start" and "build" in last["message"] and last.get("rolledBack") is True and any("failed to solve: boom" in t for t in last.get("logTail", []))' || r=1
+check "a failed build is compose_failed at start, rolled back, with the build error" "$r"
+if logged "compose up"; then bad "enable starts nothing after a failed build"; cat "$STUB_LOG"; else ok "enable starts nothing after a failed build"; fi
+addon_json enable fixture --json
+expect_rc "enable again once the build passes" 0
+
 # A one-shot that exits non-zero stops enable before the wait.
 addon disable fixture
 cp "${root}/.env" "${tmp}/env.before"
@@ -536,6 +581,7 @@ addon disable fixture
 addon_json enable fixture --reinit --json
 expect_rc "enable --reinit --json" 0
 if logged "compose run --rm --no-deps -T fixture-worker fixture-seed-init --json"; then ok "--reinit runs init again"; else bad "--reinit runs init again"; cat "$STUB_LOG"; fi
+if built_before "compose run --rm --no-deps -T fixture-worker fixture-seed-init" fixture-worker; then ok "a service hook is built before it runs"; else bad "a service hook is built before it runs"; cat "$STUB_LOG"; fi
 r=0; json_ok "$out" "done" 'steps == [("flags","running"),("flags","done"),("start","running"),("start","done"),("start","running"),("start","done"),("init","running"),("init","done"),("reload","running"),("reload","done")]' || r=1
 check "init is a step between start and reload" "$r"
 addon_json enable fixture --json
