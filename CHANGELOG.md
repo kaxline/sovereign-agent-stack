@@ -24,8 +24,8 @@ the stack under another app.
 3. Bitwarden: the secret files the stack secrets sync wrote (Twenty keys,
    Postgres service passwords, CalDAV passwords) stay where they are; edit them
    by hand from now on. Delete `BW_SECRETS_ITEM_SCOPE` from account files
-   (`make doctor` names them) and `TWENTY_SECRETS_DIR` from `.env`. Boundary:
-   stop calling `vault.sh secrets-sync` and the broker's `GET /secrets`.
+   (`make doctor` names them) and `TWENTY_SECRETS_DIR` from `.env`. Boundary
+   never called either, so it needs no change.
 
 ### Changes
 
