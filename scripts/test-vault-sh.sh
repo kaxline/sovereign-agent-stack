@@ -250,6 +250,38 @@ run_in "user.new"$'\n'"new-$SECRET"$'\n' add --slug checked --mode cloud --unloc
 rm -f "$INST/checked.json"
 rm -rf "$cs"
 
+# --force stopped after the write, before the check passed (here the broker
+# restart fails): the old instance file and secrets come back, no backups stay.
+printf 'user.f1\n%s\n%s\n' "$SECRET" "$PW" | "$vault" add --slug forced --mode cloud > "$out" 2>&1 \
+  || fail "add forced with the broker up"
+cp "$INST/forced.json" "$tmp/forced.before"
+fs="$BITWARDEN_HOST_DATA_DIR/secrets/forced"
+echo 1 > "$STUB/rc.up"
+printf 'user.f2\nnew-%s\n' "$SECRET" | "$vault" add --slug forced --mode cloud --unlock manual --force > "$out" 2>&1 \
+  && fail "add --force with a failing restart must fail"
+rm -f "$STUB/rc.up"
+cmp -s "$INST/forced.json" "$tmp/forced.before" || fail "a stopped --force did not put the old instance file back"
+[ "$(cat "$fs/client_id")" = user.f1 ] && [ "$(cat "$fs/master_password")" = "$PW" ] \
+  || fail "a stopped --force did not put the old secrets back"
+{ [ ! -e "$INST/.forced.json.bak" ] && [ ! -e "$fs/client_id.bak" ] && [ ! -e "$fs/master_password.bak" ]; } \
+  || fail "a stopped --force left .bak files"
+
+# Two --force runs with the broker down: the backups from the first, the last
+# account known to work, are kept. remove deletes them.
+rm -f "$STUB/broker-running"
+printf 'user.f3\nf3-%s\n' "$SECRET" | "$vault" add --slug forced --mode cloud --unlock manual --force > "$out" 2>&1 \
+  || fail "first --force with the broker down"
+printf 'user.f4\nf4-%s\n' "$SECRET" | "$vault" add --slug forced --mode cloud --unlock manual --force > "$out" 2>&1 \
+  || fail "second --force with the broker down"
+said "Keeping the backups of forced" || fail "the second --force does not say it keeps the backups"
+cmp -s "$INST/.forced.json.bak" "$tmp/forced.before" && [ "$(cat "$fs/client_id.bak")" = user.f1 ] \
+  || fail "the second --force overwrote the first one's backups"
+[ "$(cat "$fs/client_id")" = user.f4 ] || fail "the second --force did not write the new client_id"
+run remove --slug forced || fail "remove forced"
+[ ! -e "$INST/.forced.json.bak" ] && [ ! -e "$INST/forced.json" ] && [ ! -e "$fs" ] \
+  || fail "remove leaves the --force backups"
+touch "$STUB/broker-running"
+
 # The instance file write fails (no working python3): no new secrets folder, instance file or temp file.
 rm -f "$STUB/broker-running"
 printf 'user.s\n%s\n%s\n' "$SECRET" "$PW" | PATH="$tmp/bin-nopy:$PATH" "$vault" add --slug stopped --mode cloud > "$out" 2>&1 \
@@ -405,12 +437,15 @@ rm -f "$VAULT_HERMES_DATA_DIR/profiles/browser/.addon-plugins-changed"
 # --- pre-up: the store's instances/ before docker compose up --------------------
 reset_stub
 printf 'BITWARDEN_ENABLED=0\n' > "$ENV_FILE"
-ASSISTANT_DATA_ROOT="$tmp/root-preup" run pre-up || fail "pre-up while off"
-[ ! -e "$tmp/root-preup" ] || fail "pre-up creates nothing while BITWARDEN_ENABLED=0"
+ASSISTANT_DATA_ROOT="$tmp/root-preup" BITWARDEN_HOST_DATA_DIR="$tmp/bw-preup" run pre-up || fail "pre-up while off"
+[ ! -e "$tmp/root-preup" ] && [ ! -e "$tmp/bw-preup" ] || fail "pre-up creates nothing while BITWARDEN_ENABLED=0"
 [ ! -s "$out" ] || fail "pre-up prints nothing while off"
 printf 'BITWARDEN_ENABLED=1\n' > "$ENV_FILE"
-ASSISTANT_DATA_ROOT="$tmp/root-preup" run pre-up || fail "pre-up while on"
+ASSISTANT_DATA_ROOT="$tmp/root-preup" BITWARDEN_HOST_DATA_DIR="$tmp/bw-preup" run pre-up || fail "pre-up while on"
 [ "$(mode_of "$tmp/root-preup/addons/bitwarden/instances")" = 700 ] || fail "pre-up creates instances/, mode 700"
+[ "$(mode_of "$tmp/bw-preup/bw")" = 700 ] && [ "$(mode_of "$tmp/bw-preup/broker")" = 700 ] \
+  || fail "pre-up creates bw/ and broker/, mode 700"
+[ "$(mode_of "$tmp/bw-preup/secrets")" = 711 ] || fail "pre-up creates secrets/, mode 711"
 [ ! -s "$STUB/log" ] || fail "pre-up runs no docker"
 
 # --- follow-hermes: after hermes is recreated or restarted ---------------------

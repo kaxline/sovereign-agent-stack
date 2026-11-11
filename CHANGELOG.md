@@ -35,8 +35,9 @@ the stack under another app.
    never called the sync, so it needs no change.
 6. Bitwarden: account files (`compose/bitwarden/accounts/<slug>.env`) are no
    longer read, and nothing migrates them. Connect each account again with
-   `make vault-add` or from Boundary (disconnect it first if Boundary still
-   lists it), then delete the folder; `make doctor` warns while it holds
+   `make vault-add FORCE=1` (the store already lists it, so plain
+   `make vault-add` refuses with "exists") or from Boundary (disconnect it
+   first if Boundary still lists it), then delete the folder; `make doctor` warns while it holds
    `.env` files. Accounts connected before this release are refused with
    `missing_client_id` until connected again. Local mode: run `make
    vault-init` again; it writes the local account from `local/state` without

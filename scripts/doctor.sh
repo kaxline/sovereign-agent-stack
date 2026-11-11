@@ -1199,7 +1199,8 @@ case "$bw_on" in 1|true|TRUE|yes|YES) bw_on=1 ;; *) bw_on=0 ;; esac
 bw_local="$(env_get BITWARDEN_LOCAL_ENABLED 0)"
 case "$bw_local" in 1|true|TRUE|yes|YES) bw_local=1 ;; *) bw_local=0 ;; esac
 # The add-on instance store, which the broker reads (instances/<slug>.json).
-bw_store="$(env_get ASSISTANT_DATA_ROOT ./data)"
+# ASSISTANT_DATA_ROOT from the environment wins over .env, as in compose, addon.sh and vault.sh.
+bw_store="${ASSISTANT_DATA_ROOT:-$(env_get ASSISTANT_DATA_ROOT ./data)}"
 case "$bw_store" in
   "~") bw_store="$HOME" ;;
   \~/*) bw_store="$HOME/${bw_store#\~/}" ;;

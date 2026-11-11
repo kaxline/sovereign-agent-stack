@@ -162,3 +162,10 @@ Each says what it costs if wrong.
     naming `HERMES_UID`, instead of loading no instance silently. `make doctor` prints it with
     the other refusals; `status --json` matches refusals by instance file name, so it shows the
     instances as `not_loaded`. Wrong: Boundary would need a per-store refusal line.
+13. **Review fixes.** A terminal `add --force` stopped after the write but before the check passed
+    (bitwarden-setup failing, a failed broker restart) restores the previous account, as an auth
+    error does: backups are dropped only once a check passes. A second `FORCE=1` while an earlier
+    one is unchecked keeps the earlier backups, which hold the last account known to work.
+    `remove` deletes those backups. `pre-up` also creates `bw/`, `broker/` and `secrets/`, so
+    Docker on Linux does not create them as root. Wrong: a user who wanted the unchecked middle
+    account restored gets the older one.

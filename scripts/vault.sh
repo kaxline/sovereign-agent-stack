@@ -68,8 +68,8 @@ Usage: scripts/vault.sh <command> [options]
   restore DIR [--force]
                     Put a backup back; refuses to overwrite data without --force
 
-  pre-up            Create the instance store's folder before docker compose up
-                    (make up runs it)
+  pre-up            Create the instance store's folder and bw/, broker/ and
+                    secrets/ before docker compose up (make up runs it)
   follow-hermes     Recreate the broker in hermes' current network namespace and
                     list the manual accounts to unlock (run after hermes is
                     recreated or restarted; make hermes-reload runs it)
@@ -637,9 +637,15 @@ cmd_add() {
     chmod_own 711 "${data}/secrets"
   fi
   if [[ -e "$file" ]]; then
-    # --force: the old instance file and secrets stay as backups until the check passes.
-    cp -p "$file" "$(instance_backup "$slug")"
-    slug_op "$slug" "$SECRET_BACKUP" < /dev/null || die "could not back up secrets/${slug}/"
+    # --force: the old instance file and secrets stay as backups until the check
+    # passes. Backups left by an earlier FORCE=1 that was never checked (the
+    # broker was down) hold the last account known to work, so they stay.
+    if [[ ! -e "$(instance_backup "$slug")" ]]; then
+      cp -p "$file" "$(instance_backup "$slug")"
+      slug_op "$slug" "$SECRET_BACKUP" < /dev/null || die "could not back up secrets/${slug}/"
+    else
+      log "Keeping the backups of ${slug} from an earlier make vault-add FORCE=1 that was not checked yet"
+    fi
     ADD_STAGE=backed
   fi
   write_secret "$slug" client_id "$client_id"
@@ -707,8 +713,8 @@ drop_backup() {
 }
 
 # EXIT trap of add: a run stopped before the instance file was written leaves
-# no new secrets folder and no instance file, and a --force stopped there puts
-# the old files back. With --json, any exit before the check passed (an error,
+# no new secrets folder and no instance file, and a --force stopped before the
+# check passed (bitwarden-setup failing, say) puts the old files back. With --json, any exit before the check passed (an error,
 # SIGTERM) removes the instance file, secrets/<slug>/ and bw/<slug>/.
 add_cleanup() {
   if [[ "$JSON" == 1 ]]; then
@@ -716,7 +722,7 @@ add_cleanup() {
     return 0
   fi
   case "$ADD_STAGE" in
-    backed) restore_backup "$ADD_SLUG" ;;
+    backed | replaced) restore_backup "$ADD_SLUG" ;;
     "")
       [[ "$ADD_WRITING" != 1 ]] || rm -f "$(instance_file "$ADD_SLUG")"
       [[ -z "$ADD_NEW_SDIR" ]] || remove_secrets "$ADD_SLUG"
@@ -867,7 +873,11 @@ offer_setup() {
     args+=(--agent-email "$agent")
     [[ -z "$org" ]] || args+=(--org "$org")
   fi
-  setup_run "${args[@]}" || die "bitwarden-setup create failed; the account is kept, run it again when ready"
+  if ! setup_run "${args[@]}"; then
+    [[ "$ADD_STAGE" != replaced ]] \
+      || die "bitwarden-setup create failed; the previous account is back. make vault-add FORCE=1 again when ready"
+    die "bitwarden-setup create failed; the account is kept, run it again when ready"
+  fi
   setup_run seed --slug "$slug" --email "$email" || log "bitwarden-setup seed stopped; move items into the agent's folder or collection in a Bitwarden app"
 }
 
@@ -878,7 +888,7 @@ check_account() {
   if ! broker_running; then
     log "The broker checks the API key when it starts: make up, then make doctor"
     if [[ "$ADD_STAGE" == replaced ]]; then
-      log "The previous instance file is kept as $(instance_backup "$slug") (and secrets/${slug}/*.bak) until then; make vault-add FORCE=1 again replaces them"
+      log "The previous instance file is kept as $(instance_backup "$slug") (and secrets/${slug}/*.bak) until a check passes; make vault-add FORCE=1 again keeps them"
       ADD_STAGE=finished
     fi
     return 0
@@ -1223,6 +1233,7 @@ cmd_remove() {
     trap 'exit 130' INT TERM
     mv -f "$(instance_file "$slug")" "$(instance_aside "$slug")"
   fi
+  rm -f "$(instance_backup "$slug")"
   remove_secrets "$slug"
   if [[ "$had_file" == 1 ]]; then
     log "Removed ${slug}: its instance file and secrets"
@@ -1286,9 +1297,17 @@ cmd_open() {
 }
 
 # Run by make up before docker compose up. Silent while BITWARDEN_ENABLED is off.
+# Every folder the broker mounts exists before compose starts it: on Linux,
+# Docker would create a missing one as root, which HERMES_UID cannot write.
 cmd_pre_up() {
   is_true "$(env_get BITWARDEN_ENABLED 0)" || return 0
   ensure_store_dir
+  local data new
+  data="$(data_dir)"
+  new="$(ensure_dirs "$data" bw broker secrets)"
+  if printf '%s\n' "$new" | grep -qxF "${data}/secrets"; then
+    chmod_own 711 "${data}/secrets"
+  fi
 }
 
 # Run after hermes is recreated or restarted (scripts/lib/bitwarden.sh). The
