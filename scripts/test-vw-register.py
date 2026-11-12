@@ -41,8 +41,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 BROKER_SRC = ROOT / "compose/bitwarden-broker"
 TEMPLATE = ROOT / "compose/bitwarden-tls/default.conf.template"
-VW_IMAGE = ("vaultwarden/server:1.37.4@sha256:"
-            "efb3cde962015fcc036b2ea625242248611943b27212ebf4392841fb30fad055")
+VW_IMAGE = ("vaultwarden/server:1.37.5@sha256:"
+            "4fe17f415f90087377d37c755e0ea3cf189dcc6794e49cdd2a9adbb4937d9e1f")
 NGINX_IMAGE = "nginx:1.30.6-alpine"
 LOCAL_NAME = "vaultwarden.vault.internal"
 BASE = f"https://{LOCAL_NAME}"
