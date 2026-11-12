@@ -29,7 +29,49 @@ class RpcError(Exception):
         return (data.get("io.github.kaxline.stack") or {}).get("reason")
 
 
+class StdioTransport:
+    """``hermes acp`` over stdio: one JSON-RPC message per line."""
+
+    def __init__(self, proc) -> None:
+        self.proc = proc
+
+    @classmethod
+    async def spawn(cls, *argv: str, env=None, stderr=None):
+        proc = await asyncio.create_subprocess_exec(
+            *argv, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=stderr, env=env,
+            limit=16 * 1024 * 1024,
+        )
+        return cls(proc)
+
+    async def send(self, text: str) -> None:
+        self.proc.stdin.write(text.encode() + b"\n")
+        await self.proc.stdin.drain()
+
+    def __aiter__(self):
+        return self._lines()
+
+    async def _lines(self):
+        while True:
+            line = await self.proc.stdout.readline()
+            if not line:
+                return
+            if line.strip():
+                yield line.decode()
+
+    async def close(self) -> None:
+        if self.proc.returncode is None:
+            self.proc.stdin.close()
+            try:
+                await asyncio.wait_for(self.proc.wait(), 10)
+            except asyncio.TimeoutError:
+                self.proc.kill()
+                await self.proc.wait()
+
+
 class AcpClient:
+    """``ws`` is anything with ``send(text)``, async iteration over text frames and
+    ``close()``: a websockets connection or a ``StdioTransport``."""
+
     def __init__(self, ws, validator=None) -> None:
         self.ws = ws
         self.validator = validator
@@ -55,8 +97,11 @@ class AcpClient:
         ws = await websockets.connect(url, additional_headers=headers, origin=None, max_size=None)
         client = cls(ws, validator)
         client.connection_id = ws.response.headers.get("Acp-Connection-Id")
-        client._reader = asyncio.create_task(client._read())
+        client.start()
         return client
+
+    def start(self) -> None:
+        self._reader = asyncio.create_task(self._read())
 
     async def close(self) -> None:
         await self.ws.close()
@@ -88,7 +133,7 @@ class AcpClient:
                                 if method:
                                     self.frame_errors += self.validator.result_errors(method, frame["result"])
                             fut.set_result(frame["result"])
-        except websockets.ConnectionClosed:
+        except (websockets.ConnectionClosed, ConnectionError):
             pass
         finally:
             for fut in self._pending.values():
@@ -107,7 +152,7 @@ class AcpClient:
                 reply = {"jsonrpc": "2.0", "id": frame["id"], "error": {"code": -32800, "message": "cancelled"}}
         try:
             await self.ws.send(json.dumps(reply))
-        except websockets.ConnectionClosed:
+        except (websockets.ConnectionClosed, ConnectionError):
             pass
 
     async def request(self, method: str, params: dict | None = None, timeout: float = 30) -> dict:

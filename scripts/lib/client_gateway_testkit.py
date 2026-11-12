@@ -20,7 +20,7 @@ TOKEN = "test-token-" + "x" * 32
 IN_IMAGE = "--in-image" in sys.argv
 
 
-def run_in_image(test_file: str) -> None:
+def run_in_image(test_file: str, docker_args=()) -> None:
     """Host side: run ``test_file --in-image`` inside the pinned Hermes image."""
     sys.path.insert(0, str(ROOT / "scripts" / "lib"))
     import hermes_image
@@ -42,6 +42,7 @@ def run_in_image(test_file: str) -> None:
             (ROOT / "scripts", "/repo/scripts"),
             (ROOT / "compose" / "client-gateway", "/repo/compose/client-gateway"),
         ],
+        docker_args=tuple(docker_args),
     )
 
 
