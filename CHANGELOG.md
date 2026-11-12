@@ -127,7 +127,7 @@ the stack under another app.
   (`todos`), its URL, the pins and which token each profile gets are
   unchanged. Two differences: the profile `.env` key that holds the token is
   now `TODOS_KEY` (was `VIKUNJA_MCP_TOKEN`, which is left in place and no
-  longer read), and the first `addon.sh enable vikunja` on an install set up
+  longer read; `make doctor` checks `TODOS_KEY`), and the first `addon.sh enable vikunja` on an install set up
   with `make todo-init` runs `todo.sh init` once more, which replaces both
   tokens. The manifest declares `uses: postgres` and `exposesToAgent: true`:
   the SQL add-on's roles can read the `vikunja` schema.

@@ -106,6 +106,7 @@ scripts/test-synthetic-mail.py
 scripts/test-terminal-backend-compose.py        ci docker
 scripts/test-terminal-backend-sync.py           ci
 scripts/test-testkit.sh                         ci
+scripts/test-todo-doctor.sh                     ci
 scripts/test-tool-eval-trace.py                 ci
 scripts/test-tool-loop-notes.py                 image
 scripts/test-tool-loop-replay.py                ci image

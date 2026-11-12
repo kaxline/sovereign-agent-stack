@@ -1035,6 +1035,9 @@ if has_profile db || [[ "$sql_on" -eq 1 || "$db_running" -eq 1 ]]; then
 fi
 
 # --- Todo lists (Vikunja) ---
+# Per-profile checks: scripts/lib/doctor-todo.sh.
+# shellcheck source=lib/doctor-todo.sh
+source "${ROOT}/scripts/lib/doctor-todo.sh"
 vikunja_enabled="$(env_get VIKUNJA_MCP_ENABLED 0)"
 case "$vikunja_enabled" in 1|true|TRUE|yes|YES) vikunja_on=1 ;; *) vikunja_on=0 ;; esac
 if has_profile todo || [[ "$vikunja_on" -eq 1 ]]; then
@@ -1071,24 +1074,7 @@ if has_profile todo || [[ "$vikunja_on" -eq 1 ]]; then
   fi
   if [[ -n "$(env_get VIKUNJA_MCP_TOKEN_RW)" && -n "$(env_get VIKUNJA_MCP_TOKEN_RO)" ]]; then
     ok "Vikunja MCP tokens are set"
-    for pair in "default:data/hermes/config.yaml:data/hermes/.env" \
-      "api-server:data/hermes/profiles/api-server/config.yaml:data/hermes/profiles/api-server/.env" \
-      "browser:data/hermes/profiles/browser/config.yaml:data/hermes/profiles/browser/.env"; do
-      IFS=':' read -r label cfg envfile <<< "$pair"
-      [[ -f "$cfg" ]] || continue
-      if grep -qE '^  todos:' "$cfg" && grep -q 'VIKUNJA_MCP_TOKEN' "$cfg" \
-        && grep -qE '^VIKUNJA_MCP_TOKEN=.+' "$envfile" 2>/dev/null; then
-        ok "Hermes ${label} profile registers the todos MCP server"
-      elif grep -qE '^  vikunja:' "$cfg"; then
-        warn "Hermes ${label} profile still uses the old mcp_servers.vikunja key — run make hermes-reload"
-      else
-        warn "Hermes ${label} profile has no todos MCP entry — run make hermes-reload"
-      fi
-    done
-    # The read-only token must be the one api-server holds.
-    if grep -qs "^VIKUNJA_MCP_TOKEN=$(env_get VIKUNJA_MCP_TOKEN_RW)\$" data/hermes/profiles/api-server/.env; then
-      bad "api-server holds the read/write Vikunja token — run make hermes-reload (unattended sessions must stay read-only)"
-    fi
+    todo_profile_checks
   else
     warn "Vikunja MCP tokens not set — after make up, run make todo-init"
   fi

@@ -49,8 +49,8 @@ which signs the browser in and keeps it signed in; bookmark it. In WebUI:
 
 | Hermes profile | Used by | Token | Tools |
 |---|---|---|---|
-| `api-server` | unattended API / n8n / Boundary | `VIKUNJA_MCP_TOKEN_RO` | 12 on 2.8.0: list and read tasks, projects, labels, comments, assignees; kanban views and buckets via `find_action` |
-| default | dashboard, CLI | `VIKUNJA_MCP_TOKEN_RW` | 28 on 2.8.0: the above plus create, update, delete; also create, rename and delete buckets and move tasks between them |
+| `api-server` | unattended API / n8n / Boundary | `VIKUNJA_MCP_TOKEN_RO` | 12 on 2.8.0: list and read tasks, projects, labels, comments, assignees; kanban views and buckets via `find_action`. No `users_search` |
+| default | dashboard, CLI | `VIKUNJA_MCP_TOKEN_RW` | 27 on 2.8.0: the above plus `users_search`, create, update, delete; also create, rename and delete buckets and move tasks between them |
 | `browser` | Hermes WebUI | `VIKUNJA_MCP_TOKEN_RW` | same as default |
 
 Vikunja filters the tool list by the token's scopes and refuses any call
