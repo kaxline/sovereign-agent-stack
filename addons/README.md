@@ -12,7 +12,8 @@ containers that hold the account passwords, registered as `email` and
 `email-drafts`); both email add-ons are described in
 [docs/email.md](../docs/email.md). The AI text detector (`detector/`) is
 described in [docs/detector.md](../docs/detector.md). The SQL MCP (`sql/`)
-is described in [docs/database.md](../docs/database.md). The other optional
+is described in [docs/database.md](../docs/database.md), and OpenCode
+(`opencode/`) in [docs/opencode.md](../docs/opencode.md). The other optional
 services are still wired by hand.
 
 What reads a manifest:

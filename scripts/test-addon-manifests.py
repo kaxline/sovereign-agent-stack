@@ -620,8 +620,8 @@ refused("mcp.instances prefix collides with a core prefix", inst_manifest({"inst
         "collides")
 # The bootstrap drops every entry under an instance prefix that has no
 # instance, so a prefix that overlaps a core name or prefix in either
-# direction would drop core entries (searxng, opencode, caldav-*).
-for bad_name in ("s{slug}", "op{slug}", "searx{slug}", "cal{slug}", "caldav-x-{slug}",
+# direction would drop core entries (searxng, caldav-*).
+for bad_name in ("s{slug}", "searx{slug}", "cal{slug}", "caldav-x-{slug}",
                  "messag{slug}", "messages-{slug}"):
     refused(f"mcp.instances prefix overlapping a core name or prefix ({bad_name})",
             inst_manifest({"instances__name": bad_name}), "collides with a server core registers")
@@ -976,6 +976,16 @@ with tempfile.TemporaryDirectory() as tmp:
     errs = {p.parent.name: e for p, _m, e in am.checked_dir(d)}
     check("email-local's mail under another add-on's instance prefix is refused",
           any("'mail'" in e and "mai's instance prefix" in e for e in errs["email-local"]), str(errs))
+
+# opencode left CORE_MCP_NAMES for addons/opencode the same way.
+op = copy.deepcopy(mai)
+op["id"] = "io.example.op"
+op["mcp"]["instances"]["name"] = "op{slug}"
+with tempfile.TemporaryDirectory() as tmp:
+    d = conflict_dir(Path(tmp), {"op": op})
+    errs = {p.parent.name: e for p, _m, e in am.checked_dir(d)}
+    check("opencode under another add-on's instance prefix is refused",
+          any("'opencode'" in e and "op's instance prefix" in e for e in errs["opencode"]), str(errs))
 
 # A second add-on that takes email-local's fixed name "mail" refuses both.
 dup = copy.deepcopy(BASE)

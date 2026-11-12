@@ -33,10 +33,6 @@ CALDAV_MCP_TIMEOUT="${CALDAV_MCP_TIMEOUT:-60}"
 CALDAV_MCP_CONNECT_TIMEOUT="${CALDAV_MCP_CONNECT_TIMEOUT:-30}"
 CALDAV_MCP_ENABLED="${CALDAV_MCP_ENABLED:-0}"
 CALDAV_MCP_ACCOUNTS_DIR="${CALDAV_MCP_ACCOUNTS_DIR:-/bootstrap/caldav-accounts}"
-OPENCODE_MCP_URL="${OPENCODE_MCP_URL:-http://opencode-mcp:8000/sse}"
-OPENCODE_MCP_TIMEOUT="${OPENCODE_MCP_TIMEOUT:-600}"
-OPENCODE_MCP_CONNECT_TIMEOUT="${OPENCODE_MCP_CONNECT_TIMEOUT:-30}"
-OPENCODE_MCP_ENABLED="${OPENCODE_MCP_ENABLED:-0}"
 # The mail and drafts servers register from addons/email-local/addon.json,
 # which reads MAIL_MCP_ENABLED, MAIL_DRAFTS_ENABLED and the MAIL_*_URL and
 # timeout overrides from the environment. The URLs stay here for
@@ -835,7 +831,7 @@ set_stack_mcp_parked_retry() {
   # One argument per add-on URL.
   # shellcheck disable=SC2046
   _out="$(python3 - "$_cfg" "$MCP_PARKED_RETRY_INTERVAL" "$SEARXNG_MCP_URL" \
-    "$CALDAV_MCP_URL" "$OPENCODE_MCP_URL" \
+    "$CALDAV_MCP_URL" \
     "$MAIL_MCP_URL" "$MAIL_DRAFTS_MCP_URL" "$MESSAGES_MCP_URL" \
     $(addon_mcp_urls) $(addon_instance_urls "$1") <<'PY'
 import sys
@@ -886,13 +882,6 @@ reconcile_stack_eager_tools() {
   esac
   _rst_args="${_rst_args} $(addon_mcp_pin_args "$_rst_profile")"
   _rst_args="${_rst_args} $(addon_instance_pin_args "$_rst_profile")"
-  case "$OPENCODE_MCP_ENABLED" in
-    1|true|TRUE|yes|YES)
-      if [ "$_rst_profile" != "api-server" ]; then
-        _rst_args="${_rst_args} coding_list_roots coding_start_task coding_get_task_status coding_wait_for_task coding_get_task_result coding_continue_task mcp__opencode__coding_list_roots mcp__opencode__coding_start_task mcp__opencode__coding_get_task_status mcp__opencode__coding_wait_for_task mcp__opencode__coding_get_task_result mcp__opencode__coding_continue_task"
-      fi
-      ;;
-  esac
   log "Reconciling tools.tool_search.always_include for '${_rst_profile:-default}'"
   # shellcheck disable=SC2086
   pin_tool_search_always_include "$_rst_profile" $_rst_args
@@ -937,36 +926,6 @@ register_web_mcp_servers() {
     "$SEARXNG_MCP_URL" "$SEARXNG_MCP_TIMEOUT" "$SEARXNG_MCP_CONNECT_TIMEOUT" \
     web_url_read searxng_web_search
   pin_mcp_tools "$_rwms_profile" searxng web_url_read searxng_web_search
-}
-
-# OpenCode coding delegation (coding compose profile). Mutating — never on
-# api-server. Register on the default (dashboard/CLI) profile and on browser.
-register_opencode_mcp_servers() {
-  _roms_profile="$1"
-  case "$OPENCODE_MCP_ENABLED" in
-    1|true|TRUE|yes|YES) ;;
-    *)
-      log "Skipping OpenCode MCP registration (OPENCODE_MCP_ENABLED=${OPENCODE_MCP_ENABLED})"
-      return 0
-      ;;
-  esac
-  # Unattended n8n must not get write access to coding roots.
-  if [ "$_roms_profile" = "api-server" ]; then
-    log "Skipping OpenCode MCP on api-server profile (mutating coding tools)"
-    return 0
-  fi
-  register_mcp_server "$_roms_profile" opencode OpenCode \
-    "$OPENCODE_MCP_URL" "$OPENCODE_MCP_TIMEOUT" "$OPENCODE_MCP_CONNECT_TIMEOUT" \
-    coding_list_roots coding_start_task coding_get_task_status \
-    coding_wait_for_task coding_get_task_result coding_continue_task
-  hermes_config_set "$_roms_profile" "mcp_servers.opencode.transport" "sse"
-  # MCP tools are deferred behind tool_describe/tool_call when the schema budget
-  # is tight. WebUI smoke showed the model describing coding_start_task then
-  # stopping (finish_reason=stop) without invoking it. Pin the coding tools so
-  # they stay in the model-visible tool list.
-  pin_mcp_tools "$_roms_profile" opencode \
-    coding_list_roots coding_start_task coding_get_task_status \
-    coding_wait_for_task coding_get_task_result coding_continue_task
 }
 
 # Remove MCP server entries on one profile whose URL matches <url>, except
@@ -2177,7 +2136,6 @@ if is_true "$BOOTSTRAP_SHARED"; then
   # reading whether or not the API server profile is ever configured.
   register_web_mcp_servers ""
   register_caldav_mcp_servers ""
-  register_opencode_mcp_servers ""
   register_messages_mcp_servers ""
   register_addon_mcp_servers ""
   register_addon_vault_backends ""
@@ -2380,7 +2338,6 @@ fi
 # own config.yaml, so the earlier registration does not reach API sessions.
 register_web_mcp_servers "$PROFILE"
 register_caldav_mcp_servers "$PROFILE"
-register_opencode_mcp_servers "$PROFILE"
 register_messages_mcp_servers "$PROFILE"
 register_addon_mcp_servers "$PROFILE"
 register_addon_vault_backends "$PROFILE"

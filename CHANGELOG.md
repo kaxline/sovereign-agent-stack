@@ -10,6 +10,28 @@ the stack under another app.
 
 ### Changes
 
+- OpenCode is a built-in add-on (`addons/opencode/addon.json`), so
+  `addon.sh list`, `enable opencode` and `disable opencode` work on it. The
+  flag (`OPENCODE_MCP_ENABLED`), the compose profile (`coding`), the server
+  name (`opencode`), its URL and timeout variables, the six pinned
+  `coding_*` tools and the profiles that get it (default and browser, not
+  api-server) are unchanged, and it stays in cron jobs. With the flag on, the
+  bootstraps write the same `config.yaml` on default and browser as before.
+  Three differences, all removals of `opencode` entries (the
+  `tools.tool_search.always_include` pins stay, as before):
+  - api-server no longer keeps the `opencode` entry it copied from default
+    when the profile was created. The old code skipped registering it there
+    but never removed the copy, so api-server sessions could call the coding
+    tools.
+  - Turning the flag off removes the entry from default and browser. Before,
+    it stayed until removed by hand.
+  - With the flag on, a profile keeps no entry other than `opencode` at
+    `opencode-mcp`'s URL.
+
+  `OPENCODE_WORKSPACE_HOST` and `OPENCODE_SERVER_PASSWORD` stay in `.env`, so
+  `addon.sh enable opencode` doesn't check them; Compose still stops with its
+  own message when either is empty. `opencode` is no longer on the validator's
+  list of names core registers.
 - Vikunja todo lists are a built-in add-on (`addons/vikunja/addon.json`,
   title "Todo lists"), so `addon.sh list`, `enable vikunja` and `disable
   vikunja` work on them (Boundary CR 0032 R1 and R2). `enable` registers the
