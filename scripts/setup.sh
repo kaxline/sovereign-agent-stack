@@ -285,14 +285,8 @@ setup_neo4j_profile() {
 setup_calendar_profile() {
   append_compose_profile calendar
   upsert_env .env CALDAV_MCP_ENABLED 1
-  mkdir -p compose/caldav-mcp/accounts
-  if [[ ! -f compose/caldav-mcp/accounts/personal.env ]]; then
-    cp compose/caldav-mcp/account.env.example compose/caldav-mcp/accounts/personal.env
-    log "Created compose/caldav-mcp/accounts/personal.env — fill CALDAV_* credentials (iCloud: app-specific password)"
-  fi
   log "Enabled CalDAV MCP registration (CALDAV_MCP_ENABLED=1)"
-  log "Add more accounts: cp compose/caldav-mcp/account.env.example compose/caldav-mcp/accounts/<name>.env"
-  log "Then: make hermes-reload"
+  log "After make up, connect each account: scripts/addon.sh connect caldav --instance <slug> < account.json (docs/calendar.md)"
 }
 
 # Shared Postgres + SQL MCP. The secrets are generated for every install (see

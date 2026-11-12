@@ -1,0 +1,121 @@
+{
+  "manifestVersion": 1,
+  "id": "io.github.kaxline.stack.caldav",
+  "version": "1.0.0",
+  "title": "CalDAV calendars",
+  "tagline": "Read and change CalDAV calendars from chat",
+  "description": "Connects Hermes to CalDAV accounts (iCloud, Nextcloud, Fastmail and other CalDAV servers) through caldav-mcp, one caldav-<account> server per connected account. caldav-mcp holds no credentials: each entry sends the account's URL, username and password in X-Caldav-* headers, with the password as a reference to the profile's .env. The default and browser profiles get all 14 tools; calendar is personal data, so api-server and cron jobs get none. Clients may register their own entries at the same caldav-mcp URL under another name (Boundary uses calendar-<slug>); the bootstrap leaves them alone. See docs/calendar.md.",
+  "publisher": {
+    "name": "sovereign-agent-stack",
+    "url": "https://github.com/kaxline/sovereign-agent-stack"
+  },
+  "minStackVersion": "0.3.15",
+  "builtin": {
+    "flag": "CALDAV_MCP_ENABLED",
+    "profile": "calendar",
+    "seed": false
+  },
+  "services": {
+    "mcp": {
+      "compose": "caldav-mcp",
+      "port": 8080
+    }
+  },
+  "instances": {
+    "name": "account",
+    "optional": true,
+    "settings": {
+      "url": {
+        "type": "url",
+        "label": "CalDAV server URL"
+      },
+      "username": {
+        "type": "string",
+        "label": "Username"
+      },
+      "password": {
+        "type": "secret",
+        "label": "Password (an app-specific password for iCloud)"
+      }
+    }
+  },
+  "mcp": {
+    "instances": {
+      "name": "caldav-{slug}",
+      "url": "http://caldav-mcp:8080/mcp",
+      "headers": {
+        "X-Caldav-Url": "{setting:url}",
+        "X-Caldav-Username": "{setting:username}",
+        "X-Caldav-Password": "{secret:password}"
+      }
+    },
+    "transport": "http",
+    "timeout": 60,
+    "connectTimeout": 30,
+    "env": {
+      "timeout": "CALDAV_MCP_TIMEOUT",
+      "connectTimeout": "CALDAV_MCP_CONNECT_TIMEOUT"
+    },
+    "tools": [
+      "caldav_list_calendars",
+      "caldav_get_events",
+      "caldav_get_today_events",
+      "caldav_get_week_events",
+      "caldav_get_event_by_uid",
+      "caldav_search_events",
+      "caldav_get_freebusy",
+      "caldav_list_attendees",
+      "caldav_create_event",
+      "caldav_update_event",
+      "caldav_delete_event",
+      "caldav_move_event",
+      "caldav_add_attendee",
+      "caldav_remove_attendee"
+    ],
+    "pin": [
+      "caldav_list_calendars",
+      "caldav_get_events",
+      "caldav_get_today_events",
+      "caldav_get_week_events",
+      "caldav_get_event_by_uid",
+      "caldav_search_events",
+      "caldav_get_freebusy",
+      "caldav_list_attendees",
+      "caldav_create_event",
+      "caldav_update_event",
+      "caldav_delete_event",
+      "caldav_move_event",
+      "caldav_add_attendee",
+      "caldav_remove_attendee"
+    ],
+    "writeTools": [
+      "caldav_create_event",
+      "caldav_update_event",
+      "caldav_delete_event",
+      "caldav_move_event",
+      "caldav_add_attendee",
+      "caldav_remove_attendee"
+    ],
+    "profiles": {
+      "default": "rw",
+      "browser": "rw"
+    }
+  },
+  "permissions": {
+    "reads": [
+      "calendar"
+    ],
+    "writes": [
+      "external:calendar"
+    ],
+    "sends": false,
+    "egress": [
+      "internet"
+    ],
+    "exposesToAgent": false,
+    "cron": false
+  },
+  "store": {
+    "dataLeaves": "Calendar data is read from and written to the CalDAV server each account connects to."
+  }
+}

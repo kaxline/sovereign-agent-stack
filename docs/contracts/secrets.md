@@ -16,7 +16,6 @@ install used it. Its last version is `compose/bitwarden-broker/secrets_sync.py` 
 | `.env` (generated keys such as `POSTGRES_PASSWORD`, `N8N_ENCRYPTION_KEY`, `LLM_PROXY_ADMIN_TOKEN`) | `scripts/setup.sh` | compose interpolation and `env_file` |
 | `<data root>/addons/<short id>/secrets/` (files at 0600, directory at 0700) | `scripts/addon.sh configure` and `connect`, through `scripts/lib/addon_store.py` | the add-on's services, through `services.<name>.mounts` |
 | `compose/postgres/services/<slug>.env` | `make db-service-add NAME=<slug>` | the shared Postgres provisioner and the integration using that schema |
-| `compose/caldav-mcp/accounts/<slug>.env` | the user | `caldav-mcp` and the Hermes bootstrap, which registers one entry per account |
 | Files named by `*_FILE` variables (`TWENTY_ENCRYPTION_KEY_FILE`, `TWENTY_DB_PASSWORD_FILE`, `LLM_PROXY_FALLBACKS_FILE`) | the user or setup | the service that variable belongs to |
 
 ## Rules a secret source must follow

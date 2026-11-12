@@ -32,6 +32,10 @@
     "llm",
     "search"
   ],
+  "web": {
+    "service": "ui",
+    "path": "/"
+  },
   "data": {
     "volumes": [
       "n8n_storage",

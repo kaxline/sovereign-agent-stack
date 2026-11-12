@@ -19,7 +19,7 @@ TOKEN_TITLE_RO="assistant-hermes-ro"
 
 usage() {
   cat <<'EOF'
-Usage: ./scripts/todo.sh <command>
+Usage: ./scripts/todo.sh <command> [--json]
 
 Commands:
   prepare   Register Vikunja's schema in the shared Postgres
@@ -35,14 +35,26 @@ Commands:
             both tokens. Asks nothing.
   open      Open the web app, signed in (http://localhost:3456/login-local).
 
+--json (prepare and init, as addon.sh enable runs them for the vikunja
+add-on): progress goes to stderr, and init ends with one JSON done line on
+stdout naming the account and the todos MCP server.
+
 Examples:
   make todo-init
   make todo-open
 EOF
 }
 
-log() { printf '[todo] %s\n' "$1"; }
-die() { printf '[todo] ERROR: %s\n' "$1" >&2; exit 1; }
+JSON=0
+log() { if [[ "$JSON" == 1 ]]; then printf '[todo] %s\n' "$1" >&2; else printf '[todo] %s\n' "$1"; fi; }
+die() {
+  printf '[todo] ERROR: %s\n' "$1" >&2
+  if [[ "$JSON" == 1 ]]; then
+    local msg="${1//\\/\\\\}"
+    printf '{"phase":"error","error":"command_failed","message":"%s"}\n' "${msg//\"/\\\"}"
+  fi
+  exit 1
+}
 
 cmd_prepare() {
   if [[ ! -f "$SERVICE_FILE" ]]; then
@@ -268,6 +280,11 @@ PY
   # Picks up VIKUNJA_USERNAME / VIKUNJA_PASSWORD for /login-local.
   docker compose up -d vikunja-proxy >/dev/null 2>&1 \
     || log "WARNING: could not recreate vikunja-proxy; run make up"
+  if [[ "$JSON" == 1 ]]; then
+    # addon.sh reloads Hermes itself. The username matches [A-Za-z0-9._-].
+    printf '{"phase":"done","account":"%s","mcp":["todos"]}\n' "$username"
+    return 0
+  fi
   cat <<EOF
 
 Open your todo lists (signed in): make todo-open
@@ -278,6 +295,11 @@ Register the tokens with Hermes (about two minutes):
 EOF
 }
 
+case "${2:-}" in
+  --json) JSON=1 ;;
+  "") ;;
+  *) usage >&2; exit 1 ;;
+esac
 case "${1:-}" in
   prepare) cmd_prepare ;;
   open) cmd_open ;;

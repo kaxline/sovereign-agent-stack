@@ -12,7 +12,8 @@ then the implementation the stack ships.
 | [secrets](secrets.md) | Service configuration secrets | files |
 | [storage](storage.md) | The data root, shared databases and add-on stores | files, Postgres, Neo4j |
 | [search](search.md) | Web search | HTTP, MCP |
+| [browser](browser.md) | The browser the agent drives, and how the credential backend reaches it | CDP over WebSocket |
 | [upstreams](upstreams.md) | Every fork, vendored copy and overlay, with its pin and filing status | — |
 
-Browser, messaging channels and the client API Boundary uses are still Hermes-specific; the
+The browser, messaging channels and the client API Boundary uses are still Hermes-specific; the
 [agent](agent.md) page lists where.

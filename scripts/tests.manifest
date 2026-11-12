@@ -41,7 +41,6 @@ scripts/test-browser-unresolvable-host.py       image
 scripts/test-budget-sh.sh                       ci
 scripts/test-buzz-sync-gate.sh                  ci
 scripts/test-caldav-foreign-entries.py          image
-scripts/test-caldav-password-ref.sh             ci
 scripts/test-client-context.py                  ci image
 scripts/test-compaction-tool-facts.py           ci image
 scripts/test-compose-env-allowlist.py           ci docker
@@ -50,6 +49,7 @@ scripts/test-crm-script.py                      ci
 scripts/test-crm-sh.sh                          ci
 scripts/test-cron-delivery-errors.py            ci
 scripts/test-dashboard-handoff.py               ci image
+scripts/test-db-service-remove.sh               ci
 scripts/test-detector.py                        ci
 scripts/test-digest-redaction.py                ci image
 scripts/test-email-addon.py                     ci

@@ -11,13 +11,18 @@ image's python3, mounted at /bootstrap/addon_manifest.py.
         Print every MCP URL of every valid built-in add-on, one per line,
         whatever the flag or `profiles` say (mcp.env.url applies).
         For tuning entries that already exist; registers nothing. An
-        mcp.instances entry has no fixed URL and is left out; instances-plan
-        gives each instance's.
+        mcp.instances entry is listed only when its url has no placeholder
+        (CalDAV); instances-plan gives each instance's.
     addon_manifest.py mcp-plan <addons-dir> <profile>
         For each entry of each add-on's `mcp` block (one object, or a list of
         objects), print one line, in list order, that the bootstrap's
         register_addon_mcp_servers reads, fields separated by "|":
-        name|title|enabled|access|url|timeout|connect_timeout|transport|tools|pins|all_urls
+        name|title|enabled|access|url|timeout|connect_timeout|transport|tools|pins|all_urls|keysrc|keyenv|header|scheme
+        For an entry with `auth`, keysrc is the env var holding the token for
+        this profile's access (empty when the profile gets no entry), keyenv
+        the profile .env key the bootstrap copies it to (instance_key_env of
+        the name), and header and scheme come from auth; without auth all
+        four are empty. Token values are never printed.
         `title` is the entry's own "title", else the manifest's. `enabled` is 1
         or 0 from the flag in the environment: the entry's `when.gate` flag when
         it has one, else builtin.flag. `access`
@@ -62,8 +67,11 @@ ADDON_<SHORT>_<NAME> key (differing only by case, - or _) are refused. Two
 {setting:<url or string setting>}, {access} (ro or rw, the level the profile
 gets) and {slug}, access?: "{setting:<choice setting offering only read and
 write>}" that caps the level, auth?: {header, scheme, secret: {ro, rw}} naming
-secret instance settings, gate?: {setting: a bool instance setting, flag:
-builtin.flag or a gate}}. Without auth the entry takes no key. An instance file
+secret instance settings, headers?: {<header>: a template with
+{setting:<url or string setting>} and at most one {secret:<secret setting>}
+across all headers}, in place of auth, gate?: {setting: a bool instance
+setting, flag: builtin.flag or a gate}}. Without auth or a secret header the
+entry takes no key. With headers the url may be the same for every instance. An instance file
 may hold `bind`, the stack's per-instance binding: a map from profile to ro or
 rw that replaces mcp.profiles for that instance (bind_problem() has the
 rules). The name's prefix may not
@@ -71,9 +79,15 @@ be a core server name or prefix. The entry keeps transport, timeout,
 connectTimeout, env, tools, pin, writeTools and profiles. mcp-plan skips it;
 instances-plan (instances_plan()) lists one line per instance in the add-on's
 store for the bootstrap to register. `services.<name>.mounts` and
-`commands` are checked as validate() describes them. `data.volumes` lists the
+`commands` are checked as validate() describes them. An entry without
+instances may carry auth, {header, scheme, env: {ro, rw}} naming the env vars
+that hold its tokens (_validate_mcp_auth()). `data.volumes` lists the
 compose volume names `scripts/addon.sh disable --purge` removes;
 scripts/test-addon-manifests.py checks they exist in docker-compose.yml.
+`data.schemas` lists the shared-Postgres schemas it drops, with their
+svc_<schema> roles (needs uses postgres; no two add-ons may share one).
+`web` ({service, path}) is the page a person opens: addon.sh list resolves
+it to a URL on the port compose publishes for that service's `port`.
 
 Policy follows docs/private/addon-manifest-spec.md (draft). Only built-in
 add-ons (manifests in addons/) are accepted; packaged add-ons and feeds are
@@ -94,8 +108,8 @@ MANIFEST_VERSION = 1
 
 # Names core still registers itself. An add-on may not take one, or start
 # with one of the prefixes core uses for per-instance entries.
-CORE_MCP_NAMES = {"searxng", "opencode", "vikunja", "messages"}
-CORE_MCP_PREFIXES = ("caldav-",)
+CORE_MCP_NAMES = {"searxng", "opencode", "messages"}
+CORE_MCP_PREFIXES: tuple[str, ...] = ()
 # Names of the login backends core ships; an add-on's vaultBackend may not take one.
 CORE_VAULT_NAMES = {"vault", "op", "bw"}
 
@@ -132,11 +146,20 @@ COMPOSE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 HOOK_SCRIPT_RE = re.compile(r"^scripts/[a-z0-9-]+\.sh\Z")
 ERROR_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*\Z")
 # ./data/ then one or more segments, none empty, "." or "..".
+# A shared-Postgres schema (data.schemas): what scripts/db.sh service-add
+# takes as a slug. The role is svc_<slug>.
+SCHEMA_RE = re.compile(r"^[a-z][a-z0-9_]{0,57}\Z")
+RESERVED_SCHEMAS = {"agent", "public", "information_schema"}
+# web.path: an absolute URL path, no query or fragment.
+WEB_PATH_RE = re.compile(r"^/[A-Za-z0-9._~/-]*\Z")
 DATA_PATH_RE = re.compile(r"^\./data(?:/(?!\.{1,2}(?:/|\Z))[^\s/]+)+\Z")
 # Error names every add-on's instance hooks share (spec, "instances.connect").
 SHARED_ERRORS = {"bad_slug", "exists", "not_found", "login_refused", "token_expired", "no_access",
                  "timeout", "server_unreachable"}
-HOOK_NAMES = ("init",)
+# prepare runs on the host on every enable, before any service starts (an
+# add-on's schema in the shared Postgres, a bind-mount directory); init runs
+# once, after the services start.
+HOOK_NAMES = ("prepare", "init")
 INSTANCE_HOOKS = ("connect", "disconnect")
 # Fields removed in 0.3.14. A manifest that still has one is refused with a
 # pointer, rather than having the field silently ignored.
@@ -467,6 +490,8 @@ def validate(manifest, repo=_AUTO) -> list[str]:
                 if hname in hooks:
                     errors.extend(_validate_hook(hooks[hname], f"hooks.{hname}",
                                                  hook_commands, repo))
+            if isinstance(hooks.get("prepare"), dict) and "script" not in hooks["prepare"]:
+                err("hooks.prepare must be a script: it runs before the add-on's services exist")
     if isinstance(instances, dict):
         for hname in INSTANCE_HOOKS:
             if hname in instances:
@@ -475,6 +500,11 @@ def validate(manifest, repo=_AUTO) -> list[str]:
 
     if "data" in manifest:
         errors.extend(_validate_data(manifest["data"], repo))
+        if data_schemas(manifest) and "postgres" not in uses:
+            err("data.schemas lives in the shared Postgres, so uses must include postgres")
+
+    if "web" in manifest:
+        errors.extend(_validate_web(manifest["web"], services))
 
     if "backup" in manifest:
         errors.extend(_validate_backup(manifest["backup"]))
@@ -542,10 +572,10 @@ def _bind_sources(compose_text: str) -> set[str]:
 
 def _validate_data(data, repo) -> list[str]:
     if not isinstance(data, dict):
-        return ["data must be an object {paths, volumes}"]
+        return ["data must be an object {paths, volumes, schemas}"]
     errors: list[str] = []
     err = errors.append
-    extra = set(data) - {"paths", "volumes"}
+    extra = set(data) - {"paths", "volumes", "schemas"}
     if extra:
         err(f"data has unknown fields: {', '.join(sorted(extra))}")
     if "volumes" in data:
@@ -553,6 +583,13 @@ def _validate_data(data, repo) -> list[str]:
         if not (_is_str_list(vols) and vols and all(COMPOSE_NAME_RE.match(v) for v in vols)
                 and len(set(vols)) == len(vols)):
             err("data.volumes must be a non-empty list of distinct compose volume names")
+    if "schemas" in data:
+        schemas = data["schemas"]
+        if not (_is_str_list(schemas) and schemas and len(set(schemas)) == len(schemas)
+                and all(SCHEMA_RE.match(v) and v not in RESERVED_SCHEMAS
+                        and not v.startswith("pg_") for v in schemas)):
+            err("data.schemas must be a non-empty list of distinct schema names "
+                "([a-z][a-z0-9_]{0,57}, not agent, public, information_schema or pg_*)")
     if "paths" in data:
         paths = data["paths"]
         if not (isinstance(paths, list) and paths):
@@ -601,6 +638,34 @@ def _validate_backup(backup) -> list[str]:
     if extra:
         errors.append(f"backup has unknown fields: {', '.join(sorted(extra))}")
     return errors
+
+
+def _validate_web(web, services) -> list[str]:
+    """`web`: {service, path}, the page a person opens. service names one of
+    services with a `port`; addon.sh list resolves the host port compose
+    publishes for it."""
+    if not isinstance(web, dict):
+        return ["web must be an object {service, path}"]
+    errors: list[str] = []
+    extra = set(web) - {"service", "path"}
+    if extra:
+        errors.append(f"web has unknown fields: {', '.join(sorted(extra))}")
+    svc = web.get("service")
+    if not (isinstance(svc, str) and isinstance(services, dict) and isinstance(services.get(svc), dict)
+            and "port" in services[svc]):
+        errors.append("web.service must name one of services that has a port")
+    path = web.get("path")
+    if not (isinstance(path, str) and WEB_PATH_RE.match(path)):
+        errors.append("web.path must be an absolute URL path (/ then letters, digits, . _ ~ / -)")
+    return errors
+
+
+def data_schemas(manifest: dict) -> list[str]:
+    """Shared-Postgres schemas the add-on's data lives in (data.schemas)."""
+    data = manifest.get("data")
+    if isinstance(data, dict) and _is_str_list(data.get("schemas")):
+        return list(data["schemas"])
+    return []
 
 
 def data_volumes(manifest: dict) -> list[str]:
@@ -848,6 +913,11 @@ def _validate_mcp(mcp, services: dict, reads: bool,
             err(f"mcp.profiles.{prof} must be ro or rw")
     if reads and UNATTENDED_PROFILE in profiles:
         err(f"an add-on that reads personal data may not be on {UNATTENDED_PROFILE}")
+    if "auth" in mcp:
+        if per_instance:
+            err("mcp.auth is for an entry without instances; use mcp.instances.auth")
+        else:
+            errors.extend(_validate_mcp_auth(mcp["auth"], profiles))
     if "unmanaged" in mcp:
         err("mcp.unmanaged was removed in 0.3.14; the bootstrap manages every profile in mcp.profiles")
     env = mcp.get("env", {})
@@ -860,7 +930,37 @@ def _validate_mcp(mcp, services: dict, reads: bool,
     return errors
 
 
+def _validate_mcp_auth(auth, profiles: dict) -> list[str]:
+    """mcp.auth on an entry without instances: {header, scheme, env: {ro, rw}},
+    env naming the variable that holds the token for each access level
+    mcp.profiles uses. The token's scopes are the boundary, so the bootstrap
+    writes no tools.include for such an entry."""
+    if not isinstance(auth, dict):
+        return ["mcp.auth must be {header, scheme, env}"]
+    errors: list[str] = []
+    err = errors.append
+    stray = set(auth) - {"header", "scheme", "env"}
+    if stray:
+        err(f"mcp.auth has unknown fields: {', '.join(sorted(stray))}")
+    if not (isinstance(auth.get("header"), str) and HEADER_RE.match(auth["header"])):
+        err("mcp.auth.header must be an HTTP header name")
+    if not (isinstance(auth.get("scheme"), str) and HEADER_RE.match(auth["scheme"])):
+        err("mcp.auth.scheme must be a word such as Bearer")
+    env = auth.get("env")
+    if not (isinstance(env, dict) and env and set(env) <= ACCESS
+            and all(isinstance(v, str) and ENV_RE.match(v) for v in env.values())):
+        err("mcp.auth.env must map ro and rw to env var names")
+        return errors
+    missing = sorted({level for level in profiles.values() if level in ACCESS} - set(env))
+    if missing:
+        err(f"mcp.auth.env names no token for {', '.join(missing)}, which mcp.profiles uses")
+    if len(env) == 2 and env["ro"] == env["rw"]:
+        err("mcp.auth.env must name a different variable for ro and rw")
+    return errors
+
+
 SETTING_REF_RE = re.compile(r"\{setting:([^{}:]+)\}")
+SECRET_REF_RE = re.compile(r"\{secret:([^{}:]+)\}")
 HEADER_RE = re.compile(r"^[A-Za-z0-9-]+$")
 # The options an instance's access setting may offer, and the level each maps to.
 INSTANCE_ACCESS_LEVELS = {"read": "ro", "write": "rw"}
@@ -868,13 +968,14 @@ INSTANCE_ACCESS_LEVELS = {"read": "ro", "write": "rw"}
 
 def _validate_mcp_instances(inst, instances, gate_flags: set[str],
                             builtin_flag: str | None) -> list[str]:
-    """Check mcp.instances: {name, url, access, auth, gate?}. Every
-    {setting:<name>} refers to a setting in the top-level instances.settings."""
+    """Check mcp.instances: {name, url, access?, auth?, headers?, gate?}. Every
+    {setting:<name>} and {secret:<name>} refers to a setting in the top-level
+    instances.settings."""
     errors: list[str] = []
     err = errors.append
     if not isinstance(inst, dict):
         return ["mcp.instances must be an object"]
-    extra = set(inst) - {"name", "url", "access", "auth", "gate"}
+    extra = set(inst) - {"name", "url", "access", "auth", "headers", "gate"}
     if extra:
         err(f"mcp.instances has unknown fields: {', '.join(sorted(extra))}")
     settings = instances.get("settings") if isinstance(instances, dict) else None
@@ -900,14 +1001,51 @@ def _validate_mcp_instances(inst, instances, gate_flags: set[str],
                 or any(p.startswith(prefix) for p in CORE_MCP_PREFIXES)):
             err(f"mcp.instances.name prefix {prefix!r} collides with a server core registers")
 
+    headers = inst.get("headers")
+    header_refs = False  # a header names a setting, so instances can share one URL
+    if "headers" not in inst:
+        pass
+    elif not (isinstance(headers, dict) and headers):
+        err("mcp.instances.headers must map header names to templates")
+    else:
+        if "auth" in inst:
+            err("mcp.instances may have auth or headers, not both")
+        seen, secrets = set(), []
+        for hname, template in headers.items():
+            if not HEADER_RE.match(hname) or hname.lower() in seen:
+                err(f"mcp.instances.headers: {hname!r} must be an HTTP header name, once")
+            seen.add(hname.lower())
+            if not (isinstance(template, str) and template):
+                err(f"mcp.instances.headers.{hname} must be a non-empty string")
+                continue
+            srefs = SETTING_REF_RE.findall(template)
+            xrefs = SECRET_REF_RE.findall(template)
+            rest = SECRET_REF_RE.sub("", SETTING_REF_RE.sub("", template))
+            if "{" in rest or "}" in rest:
+                err(f"mcp.instances.headers.{hname}: the only placeholders are "
+                    "{setting:<name>} and {secret:<name>}")
+                continue
+            for ref in srefs:
+                if setting_type(ref) not in ("url", "string"):
+                    err(f"mcp.instances.headers.{hname}: {ref!r} is not a url or string instance setting")
+            for ref in xrefs:
+                spec = settings.get(ref)
+                if setting_type(ref) != "secret" or (isinstance(spec, dict) and spec.get("transient")):
+                    err(f"mcp.instances.headers.{hname}: {ref!r} is not a stored secret instance setting")
+            secrets.extend(xrefs)
+            header_refs = header_refs or bool(srefs or xrefs)
+        if len(secrets) > 1:
+            err("mcp.instances.headers may name one {secret:<name>} in all")
+
     url = inst.get("url")
     refs = SETTING_REF_RE.findall(url) if isinstance(url, str) else []
     rest = SETTING_REF_RE.sub("", url) if isinstance(url, str) else ""
     rest = rest.replace("{access}", "").replace("{slug}", "")
     if not (isinstance(url, str) and url and "{" not in rest and "}" not in rest
-            and (refs or "{slug}" in url)):
+            and (refs or "{slug}" in url or header_refs)):
         err("mcp.instances.url must be a string whose only placeholders are {setting:<name>}, "
-            "{access} and {slug}, with {slug} or a setting so each instance has its own URL")
+            "{access} and {slug}, with {slug} or a setting so each instance has its own URL, "
+            "unless headers name a setting")
     else:
         for ref in refs:
             if setting_type(ref) not in ("url", "string"):
@@ -1015,15 +1153,19 @@ def _raw_mcp_list(manifest) -> list:
 
 def dir_conflicts(loaded) -> dict[Path, list[str]]:
     """Errors that only show across the manifests of one addons dir, by path.
-    Two add-ons may not declare the same mcp.name. The bootstrap drops every
+    Two add-ons may not declare the same mcp.name or the same data.schemas
+    entry, so remove --delete-data never drops another add-on's schema. The bootstrap drops every
     entry under an mcp.instances prefix that isn't a
     live instance, so an mcp.name under another add-on's prefix (or its own)
     would be written and then removed on every start, two prefixes where
     one starts with the other would remove each other's entries, and two
     add-ons may not register the same MCP server name. Read from
     the raw manifests, so an invalid one still counts."""
-    names, prefixes = [], []
+    names, prefixes, schemas = [], [], {}
     for path, manifest, _parse_error in loaded:
+        if isinstance(manifest, dict):
+            for schema in data_schemas(manifest):
+                schemas.setdefault(schema, []).append(path)
         for entry in _raw_mcp_list(manifest):
             name = entry.get("name") if isinstance(entry, dict) else None
             if isinstance(name, str) and name:
@@ -1039,6 +1181,11 @@ def dir_conflicts(loaded) -> dict[Path, list[str]]:
     for name, paths in sorted(owners.items()):
         if len(paths) > 1:
             msg = f"mcp.name {name!r} is used by more than one add-on: {', '.join(p.parent.name for p in paths)}"
+            for p in paths:
+                out.setdefault(p, []).append(msg)
+    for schema, paths in sorted(schemas.items()):
+        if len(paths) > 1:
+            msg = f"data.schemas {schema!r} is declared by more than one add-on: {', '.join(p.parent.name for p in paths)}"
             for p in paths:
                 out.setdefault(p, []).append(msg)
     for path, name in names:
@@ -1209,7 +1356,7 @@ def cron_fence_toolsets(addons_dir: Path) -> list[tuple[str, str]]:
 
 def mcp_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
     lines = []
-    drops = []  # (position in lines, name, title, urls) of fail-closed drop-only lines
+    drops = []  # (position in lines, name, title, urls, keyenv) of fail-closed drop-only lines
     managed = set()  # URLs a valid manifest registers or manages on this profile
     for path, manifest, errors in checked_dir(addons_dir):
         if errors:
@@ -1221,7 +1368,8 @@ def mcp_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
             for entry, urls in _raw_mcp_urls(manifest, environ):
                 name = entry.get("name") if isinstance(entry.get("name"), str) else path.parent.name
                 title = entry.get("title") if isinstance(entry.get("title"), str) else name
-                drops.append((len(lines), name, title, urls))
+                keyenv = instance_key_env(name) if isinstance(entry.get("auth"), dict) else ""
+                drops.append((len(lines), name, title, urls, keyenv))
                 lines.append(None)
             continue
         for mcp in mcp_entries(manifest):
@@ -1241,9 +1389,13 @@ def mcp_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
                 write = set(mcp.get("writeTools", []))
                 tools = [t for t in tools if t not in write]
                 pins = [t for t in pins if t not in write]
+            auth = mcp.get("auth")
+            keysrc = auth["env"][access] if auth and access else ""
+            keyenv = instance_key_env(mcp["name"]) if auth else ""
+            header, scheme = (auth["header"], auth["scheme"]) if auth else ("", "")
             fields = [mcp["name"], mcp.get("title", manifest["title"]), enabled, access, url, timeout, connect,
                       mcp["transport"], " ".join(tools), " ".join(pins),
-                      " ".join(sorted(set(urls.values())))]
+                      " ".join(sorted(set(urls.values()))), keysrc, keyenv, header, scheme]
             if any("|" in f or "\n" in f for f in fields):
                 print(f"warning: skipping {path.parent.name}: a value contains | or a newline",
                       file=sys.stderr)
@@ -1252,10 +1404,11 @@ def mcp_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
             lines.append("|".join(fields))
     # An invalid manifest's drop-only line must not undo a valid add-on's
     # registration at the same URL: leave out the URLs a valid manifest manages.
-    for pos, name, title, urls in drops:
+    for pos, name, title, urls, keyenv in drops:
         urls = [u for u in urls if u.rstrip("/") not in managed]
         if urls:
-            fields = [name, title, "0", "", urls[0], "0", "0", "http", "", "", " ".join(urls)]
+            fields = [name, title, "0", "", urls[0], "0", "0", "http", "", "", " ".join(urls),
+                      "", keyenv, "", ""]
             if not any("|" in f or "\n" in f for f in fields):
                 lines[pos] = "|".join(fields)
     return [l for l in lines if l is not None]
@@ -1272,7 +1425,12 @@ def mcp_urls(addons_dir: Path, environ=os.environ) -> list[str]:
             continue
         for mcp in mcp_entries(manifest):
             if "instances" in mcp:
-                continue  # no fixed URL: each instance's comes from its store
+                # Each instance's URL comes from its store, unless the template
+                # has no placeholder (CalDAV): then every instance shares it.
+                u = mcp["instances"]["url"]
+                if "{" not in u and u not in urls:
+                    urls.append(u)
+                continue
             for u in sorted(set(_mcp_urls(manifest, mcp, environ).values())):
                 if u not in urls:
                     urls.append(u)
@@ -1309,10 +1467,21 @@ def _store_slugs(store: Path) -> tuple[list[str], list[str]]:
     return good, bad
 
 
-def instance_key_env(name: str) -> str:
+def instance_key_env(name: str, suffix: str = "KEY") -> str:
     """crm-sales-eu -> CRM_SALES_EU_KEY, the profile .env key holding an
-    instance's key. The bootstrap's addon_instance_key_env does the same."""
-    return re.sub(r"[^A-Za-z0-9]", "_", name).upper() + "_KEY"
+    instance's key. The bootstrap's addon_instance_key_env does the same. A
+    secret header names its key after the secret setting instead
+    (caldav-personal, password -> CALDAV_PERSONAL_PASSWORD)."""
+    return re.sub(r"[^A-Za-z0-9]", "_", f"{name}_{suffix}").upper()
+
+
+def _header_secret(inst: dict) -> str | None:
+    """The secret setting an mcp.instances.headers block names, if any."""
+    for template in (inst.get("headers") or {}).values():
+        m = SECRET_REF_RE.search(template)
+        if m:
+            return m.group(1)
+    return None
 
 
 def _instance_values(store: Path, slug: str, schema: dict) -> dict | None:
@@ -1396,11 +1565,13 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
     """One line per instance of each add-on with mcp.instances, after a line for
     the add-on itself:
 
-        name|title|on|url|keyenv|keyfile|timeout|connect|pins|reason|header|scheme|tools
+        name|title|on|url|keyenv|keyfile|timeout|connect|pins|reason|header|scheme|tools|headers
 
     The add-on's line has name "<prefix>*", on set from its flag, pins the
-    names to unpin once no entry with the prefix is left, and reason the
-    flag's name. An instance line is on (1) when the flag is on, the profile is
+    names to unpin once no entry with the prefix is left, reason the flag's
+    name, and keyenv, for an entry with a secret header, the suffix of its
+    instances' key names (PASSWORD for CalDAV), so the bootstrap can drop a
+    removed instance's key; it is empty otherwise. An instance line is on (1) when the flag is on, the profile is
     in the instance's `bind` (mcp.profiles when it has none), the url is
     http(s), the gate (if any) lets it through, the access setting (if any) is
     read or write and the key file it needs (if any) holds one line. Otherwise
@@ -1410,6 +1581,12 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
     {access} in the url. tools is the entry's tool list, less writeTools at ro;
     an entry without auth has empty keyenv, keyfile, header and scheme.
     keyfile is a path under data_dir; key values are never printed.
+
+    headers is empty unless the entry has mcp.instances.headers. Then it is a
+    JSON object of the filled headers, with the secret as ${<keyenv>}, and
+    keyenv and keyfile name the secret's key as for auth; header and scheme
+    stay empty. An instance whose header would be empty or hold a control
+    character is off with reason header.
 
     An invalid manifest still gives its add-on line, off, when its
     mcp.instances.name is readable, so the bootstrap drops its entries."""
@@ -1433,7 +1610,7 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
                     pins = entry.get("pin") if isinstance(entry, dict) else None
                     pins = [p for p in pins if TOOL_RE.match(p)] if _is_str_list(pins) else []
                     emit([template.split("{slug}")[0] + "*", sid_dir, "0", "", "", "", "", "",
-                          " ".join(pins), "invalid manifest", "", "", ""], sid_dir)
+                          " ".join(pins), "invalid manifest", "", "", "", ""], sid_dir)
             continue
         for mcp in mcp_entries(manifest):
             if "instances" not in mcp:
@@ -1449,9 +1626,12 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
             default_level = mcp["profiles"].get(profile, "")
             auth = inst.get("auth")
             header, scheme = (auth["header"], auth["scheme"]) if auth else ("", "")
+            header_secret = _header_secret(inst)
+            key_suffix = "KEY" if auth else (header_secret.upper() if header_secret else "")
             reads = bool(manifest.get("permissions", {}).get("reads"))
-            emit([template.split("{slug}")[0] + "*", title, "1" if flag_on else "0", "", "", "", timeout,
-                  connect, " ".join(mcp.get("pin", [])), flag, "", "", ""], sid_dir)
+            emit([template.split("{slug}")[0] + "*", title, "1" if flag_on else "0", "",
+                  re.sub(r"[^A-Za-z0-9]", "_", key_suffix) if header_secret else "", "", timeout,
+                  connect, " ".join(mcp.get("pin", [])), flag, "", "", "", ""], sid_dir)
 
             schema = manifest["instances"]["settings"]
             store = data_dir / sid_dir
@@ -1465,9 +1645,12 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
             for slug in slugs:
                 name = template.replace("{slug}", slug)
 
-                def line(on: str, url="", keyfile="", pins="", reason="", tools="") -> None:
-                    emit([name, title, on, url, instance_key_env(name) if auth else "", keyfile,
-                          timeout, connect, pins, reason, header, scheme, tools], f"{sid_dir}/{slug}")
+                keyenv = instance_key_env(name, key_suffix) if key_suffix else ""
+
+                def line(on: str, url="", keyfile="", pins="", reason="", tools="", headers="") -> None:
+                    emit([name, title, on, url, keyenv, keyfile,
+                          timeout, connect, pins, reason, header, scheme, tools, headers],
+                         f"{sid_dir}/{slug}")
 
                 values = _instance_values(store, slug, schema)
                 if not flag_on:
@@ -1514,7 +1697,29 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
                     if gated and not truthy(environ.get(gate["flag"])):
                         line("0", url=url, reason=f"gate {gate['setting']} is set and {gate['flag']} is off")
                         continue
+                filled = ""
+                if "headers" in inst:
+                    filled_map, empty = {}, ""
+                    for hname, htemplate in inst["headers"].items():
+                        value = SETTING_REF_RE.sub(
+                            lambda m: values.get(m.group(1)) if isinstance(values.get(m.group(1)), str) else "",
+                            htemplate)
+                        value = SECRET_REF_RE.sub(lambda m: "${" + keyenv + "}", value)
+                        if not value or not KEY_TEXT_RE.match(value):
+                            empty = hname
+                            break
+                        filled_map[hname] = value
+                    if empty:
+                        line("0", url=url, reason=f"header {empty} is empty or holds a control character")
+                        continue
+                    filled = json.dumps(filled_map, ensure_ascii=False, separators=(",", ":"))
                 keyfile = ""
+                if header_secret:
+                    keyfile = store / "secrets" / f"{slug}.{header_secret}"
+                    problem = _key_problem(keyfile)
+                    if problem:
+                        line("0", url=url, reason=f"key {header_secret} is {problem}")
+                        continue
                 if auth:
                     secret = auth["secret"][use]
                     keyfile = store / "secrets" / f"{slug}.{secret}"
@@ -1530,7 +1735,8 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
                     write = set(mcp.get("writeTools", []))
                     pins = [t for t in pins if t not in write]
                     tools = [t for t in tools if t not in write]
-                line("1", url=url, keyfile=str(keyfile), pins=" ".join(pins), tools=" ".join(tools))
+                line("1", url=url, keyfile=str(keyfile) if keyfile else "", pins=" ".join(pins),
+                     tools=" ".join(tools), headers=filled)
     return lines
 
 

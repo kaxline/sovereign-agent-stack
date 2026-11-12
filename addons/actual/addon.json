@@ -167,6 +167,10 @@
       "label": "Bundled local Actual server"
     }
   },
+  "web": {
+    "service": "server",
+    "path": "/"
+  },
   "hooks": {
     "init": {
       "script": [

@@ -29,7 +29,7 @@ trap 'rm -rf "$tmp"' EXIT
   cat <<'EOF2'
 log() { printf '%s\n' "$1"; }
 config_path_for() { echo /t/config.yaml; }
-caldav_profile_env_file() { echo /t/.env; }
+profile_env_file() { echo /t/.env; }
 ADDONS_DIR=/addons
 ADDON_MANIFEST_PY=/addon_manifest.py
 ADDON_DATA_DIR=/t/addon-data
