@@ -45,7 +45,7 @@ MANIFEST = ROOT / "scripts" / "tests.manifest"
 TEST_GLOBS = ("scripts/test-*", "imessage/tests/test-*")
 REQUIREMENT_TAGS = ("docker", "image", "macos")
 SKIP_EXIT = 77
-GATE_RE = re.compile(r"hermes_image\.(maybe_run|image_gate|run_driver)|hermes_image_gate ")
+GATE_RE = re.compile(r"hermes_image\.(maybe_run|image_gate|run_driver)|hermes_image_gate |\brun_in_image\(")
 KEEP_RUNS = 10
 
 
