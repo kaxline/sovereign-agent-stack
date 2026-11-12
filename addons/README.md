@@ -157,10 +157,16 @@ except where noted:
   enable` runs `prepare` every time, before it sets the flag or starts
   anything, so it must be safe to re-run; it runs `init` once, after the
   services start. `connect` and `disconnect` come from `instances`.
-- `data`: `{"paths": [{"env", "default"}], "volumes": [<compose volume>]}`.
-  `addon.sh remove --delete-data` deletes them. A path's
-  `default` is `./data/...` and must be a bind-mount source in
-  `docker-compose.yml`, or its parent.
+- `data`: `{"paths": [{"env", "default"}], "volumes": [<compose volume>],
+  "schemas": [<schema>]}`. `addon.sh remove --delete-data` deletes them. A
+  path's `default` is `./data/...` and must be a bind-mount source in
+  `docker-compose.yml`, or its parent. A schema is one in the shared Postgres,
+  dropped with its `svc_<schema>` role by `scripts/db.sh service-remove`; it
+  needs `uses: ["postgres"]`, and no two add-ons may declare the same one.
+- `web`: `{"service", "path"}`, the page a person opens. `service` is a key
+  of `services` that has a `port`. `addon.sh list --json` resolves it to
+  `web.url`, `http://localhost:<host port><path>`, from the port compose
+  publishes for that container port. Vikunja, Twenty, Actual and n8n set it.
 - `backup`: `{"secrets": [<env name>], "recommended": [<env name>]}`, listed
   by `addon.sh list --json` for callers that offer a backup.
 - `host`: a part that runs on the host instead of in Docker, with

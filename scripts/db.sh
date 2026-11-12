@@ -21,6 +21,10 @@ Commands:
                       compose/postgres/services/<slug>.env with a generated
                       password and DATABASE_URL. db-provision creates role
                       svc_<slug> and schema <slug> on its next run.
+  service-remove <slug> --yes
+                      Drop schema <slug> (CASCADE) and role svc_<slug>, then
+                      delete compose/postgres/services/<slug>.env. Every
+                      table in the schema is lost. postgres-db must be running.
   psql                Admin psql shell inside postgres-db
 
 Examples:
@@ -65,10 +69,7 @@ cmd_backup() {
 cmd_service_add() {
   local slug="${1:-}"
   [[ -n "$slug" ]] || die "Usage: ./scripts/db.sh service-add <slug>"
-  [[ "$slug" =~ ^[a-z][a-z0-9_]{0,57}$ ]] || die "slug must match [a-z][a-z0-9_]{0,57} (it becomes a schema name): $slug"
-  case "$slug" in
-    agent|public|information_schema|pg_*) die "'$slug' is a reserved schema name" ;;
-  esac
+  check_slug "$slug"
   local file="${SERVICES_DIR}/${slug}.env"
   [[ ! -e "$file" ]] || die "${file} already exists — edit or delete it instead"
   mkdir -p "$SERVICES_DIR"
@@ -89,6 +90,35 @@ EOF
   log "The ${slug} service must join the db network and use env_file: ${file#"${ROOT}"/}"
 }
 
+check_slug() {
+  [[ "$1" =~ ^[a-z][a-z0-9_]{0,57}$ ]] || die "slug must match [a-z][a-z0-9_]{0,57} (it becomes a schema name): $1"
+  case "$1" in
+    agent|public|information_schema|pg_*) die "'$1' is a reserved schema name" ;;
+  esac
+}
+
+# Runs with postgres-db named explicitly, so it works while no active profile
+# includes it (scripts/addon.sh remove starts it that way).
+cmd_service_remove() {
+  local slug="${1:-}" yes="${2:-}"
+  [[ -n "$slug" ]] || die "Usage: ./scripts/db.sh service-remove <slug> --yes"
+  check_slug "$slug"
+  [[ "$yes" == "--yes" ]] || die "service-remove drops schema ${slug} and every table in it; pass --yes"
+  docker info >/dev/null 2>&1 || die "Docker daemon is not running"
+  # DROP OWNED BY also revokes the role's grants and default privileges, which
+  # DROP ROLE would otherwise refuse over.
+  docker compose exec -T postgres-db psql -X -q -v ON_ERROR_STOP=1 -U postgres -d "$(db_name)" \
+    -v schema="$slug" -v role="svc_${slug}" <<'SQL' || die "dropping schema ${slug} and role svc_${slug} failed (is postgres-db running?)"
+SET client_min_messages = warning;
+DROP SCHEMA IF EXISTS :"schema" CASCADE;
+SELECT format('DROP OWNED BY %I', :'role')
+WHERE EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'role') \gexec
+DROP ROLE IF EXISTS :"role";
+SQL
+  rm -f "${SERVICES_DIR}/${slug}.env"
+  log "Dropped schema ${slug} and role svc_${slug}; removed services/${slug}.env"
+}
+
 cmd_psql() {
   require_running
   exec docker compose exec postgres-db psql -U postgres -d "$(db_name)"
@@ -97,6 +127,7 @@ cmd_psql() {
 case "${1:-}" in
   backup) cmd_backup ;;
   service-add) shift; cmd_service_add "$@" ;;
+  service-remove) shift; cmd_service_remove "$@" ;;
   psql) cmd_psql ;;
   -h|--help|"") usage ;;
   *) usage >&2; exit 1 ;;

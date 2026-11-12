@@ -148,14 +148,16 @@ database.
    schema.
 
 Removing `services/<slug>.env` makes the next provision run set the role to
-`NOLOGIN`. The schema and its data stay. To delete them:
+`NOLOGIN`. The schema and its data stay. To delete them, with `postgres-db`
+running:
 
 ```bash
-make db-psql
--- then:
-DROP SCHEMA my_integration CASCADE;
-DROP ROLE svc_my_integration;
+./scripts/db.sh service-remove my_integration --yes
 ```
+
+It drops the schema `CASCADE`, everything `svc_my_integration` owns and the
+role, then deletes `services/my_integration.env`. An add-on that lists the
+schema in `data.schemas` gets this from `addon.sh remove --delete-data`.
 
 ## Backup and restore
 

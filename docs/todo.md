@@ -187,9 +187,17 @@ Attachments are files under `VIKUNJA_FILES_DIR`; copy that directory too.
 ## Turning it off
 
 Set `VIKUNJA_MCP_ENABLED=0`, then run `make ensure-local` (which removes the
-`todo` profile) and `make hermes-reload`. The bootstrap drops the `todos` MCP
-entry and the token from each profile. The schema and its data stay in
-Postgres until you drop them ([database.md](database.md#adding-an-integration)).
+`todo` profile) and `make hermes-reload`, or run `./scripts/addon.sh disable
+vikunja`. The bootstrap drops the `todos` MCP entry and the token from each
+profile. The schema and its data stay in Postgres.
+
+`./scripts/addon.sh remove vikunja --delete-data`, while the add-on is off,
+deletes the lists: it drops the `vikunja` schema and role
+(`db.sh service-remove`), deletes `compose/postgres/services/vikunja.env`,
+the files directory and `data/addons/vikunja`. The next `enable` starts with
+an empty account. `VIKUNJA_USERNAME`, `VIKUNJA_PASSWORD` and both token
+variables stay in `.env`; that `enable` runs `init` again, which replaces the
+tokens.
 
 ## Troubleshooting
 

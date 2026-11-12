@@ -84,6 +84,10 @@ instances may carry auth, {header, scheme, env: {ro, rw}} naming the env vars
 that hold its tokens (_validate_mcp_auth()). `data.volumes` lists the
 compose volume names `scripts/addon.sh disable --purge` removes;
 scripts/test-addon-manifests.py checks they exist in docker-compose.yml.
+`data.schemas` lists the shared-Postgres schemas it drops, with their
+svc_<schema> roles (needs uses postgres; no two add-ons may share one).
+`web` ({service, path}) is the page a person opens: addon.sh list resolves
+it to a URL on the port compose publishes for that service's `port`.
 
 Policy follows docs/private/addon-manifest-spec.md (draft). Only built-in
 add-ons (manifests in addons/) are accepted; packaged add-ons and feeds are
@@ -142,6 +146,12 @@ COMPOSE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 HOOK_SCRIPT_RE = re.compile(r"^scripts/[a-z0-9-]+\.sh\Z")
 ERROR_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*\Z")
 # ./data/ then one or more segments, none empty, "." or "..".
+# A shared-Postgres schema (data.schemas): what scripts/db.sh service-add
+# takes as a slug. The role is svc_<slug>.
+SCHEMA_RE = re.compile(r"^[a-z][a-z0-9_]{0,57}\Z")
+RESERVED_SCHEMAS = {"agent", "public", "information_schema"}
+# web.path: an absolute URL path, no query or fragment.
+WEB_PATH_RE = re.compile(r"^/[A-Za-z0-9._~/-]*\Z")
 DATA_PATH_RE = re.compile(r"^\./data(?:/(?!\.{1,2}(?:/|\Z))[^\s/]+)+\Z")
 # Error names every add-on's instance hooks share (spec, "instances.connect").
 SHARED_ERRORS = {"bad_slug", "exists", "not_found", "login_refused", "token_expired", "no_access",
@@ -490,6 +500,11 @@ def validate(manifest, repo=_AUTO) -> list[str]:
 
     if "data" in manifest:
         errors.extend(_validate_data(manifest["data"], repo))
+        if data_schemas(manifest) and "postgres" not in uses:
+            err("data.schemas lives in the shared Postgres, so uses must include postgres")
+
+    if "web" in manifest:
+        errors.extend(_validate_web(manifest["web"], services))
 
     if "backup" in manifest:
         errors.extend(_validate_backup(manifest["backup"]))
@@ -557,10 +572,10 @@ def _bind_sources(compose_text: str) -> set[str]:
 
 def _validate_data(data, repo) -> list[str]:
     if not isinstance(data, dict):
-        return ["data must be an object {paths, volumes}"]
+        return ["data must be an object {paths, volumes, schemas}"]
     errors: list[str] = []
     err = errors.append
-    extra = set(data) - {"paths", "volumes"}
+    extra = set(data) - {"paths", "volumes", "schemas"}
     if extra:
         err(f"data has unknown fields: {', '.join(sorted(extra))}")
     if "volumes" in data:
@@ -568,6 +583,13 @@ def _validate_data(data, repo) -> list[str]:
         if not (_is_str_list(vols) and vols and all(COMPOSE_NAME_RE.match(v) for v in vols)
                 and len(set(vols)) == len(vols)):
             err("data.volumes must be a non-empty list of distinct compose volume names")
+    if "schemas" in data:
+        schemas = data["schemas"]
+        if not (_is_str_list(schemas) and schemas and len(set(schemas)) == len(schemas)
+                and all(SCHEMA_RE.match(v) and v not in RESERVED_SCHEMAS
+                        and not v.startswith("pg_") for v in schemas)):
+            err("data.schemas must be a non-empty list of distinct schema names "
+                "([a-z][a-z0-9_]{0,57}, not agent, public, information_schema or pg_*)")
     if "paths" in data:
         paths = data["paths"]
         if not (isinstance(paths, list) and paths):
@@ -616,6 +638,34 @@ def _validate_backup(backup) -> list[str]:
     if extra:
         errors.append(f"backup has unknown fields: {', '.join(sorted(extra))}")
     return errors
+
+
+def _validate_web(web, services) -> list[str]:
+    """`web`: {service, path}, the page a person opens. service names one of
+    services with a `port`; addon.sh list resolves the host port compose
+    publishes for it."""
+    if not isinstance(web, dict):
+        return ["web must be an object {service, path}"]
+    errors: list[str] = []
+    extra = set(web) - {"service", "path"}
+    if extra:
+        errors.append(f"web has unknown fields: {', '.join(sorted(extra))}")
+    svc = web.get("service")
+    if not (isinstance(svc, str) and isinstance(services, dict) and isinstance(services.get(svc), dict)
+            and "port" in services[svc]):
+        errors.append("web.service must name one of services that has a port")
+    path = web.get("path")
+    if not (isinstance(path, str) and WEB_PATH_RE.match(path)):
+        errors.append("web.path must be an absolute URL path (/ then letters, digits, . _ ~ / -)")
+    return errors
+
+
+def data_schemas(manifest: dict) -> list[str]:
+    """Shared-Postgres schemas the add-on's data lives in (data.schemas)."""
+    data = manifest.get("data")
+    if isinstance(data, dict) and _is_str_list(data.get("schemas")):
+        return list(data["schemas"])
+    return []
 
 
 def data_volumes(manifest: dict) -> list[str]:
@@ -1103,15 +1153,19 @@ def _raw_mcp_list(manifest) -> list:
 
 def dir_conflicts(loaded) -> dict[Path, list[str]]:
     """Errors that only show across the manifests of one addons dir, by path.
-    Two add-ons may not declare the same mcp.name. The bootstrap drops every
+    Two add-ons may not declare the same mcp.name or the same data.schemas
+    entry, so remove --delete-data never drops another add-on's schema. The bootstrap drops every
     entry under an mcp.instances prefix that isn't a
     live instance, so an mcp.name under another add-on's prefix (or its own)
     would be written and then removed on every start, two prefixes where
     one starts with the other would remove each other's entries, and two
     add-ons may not register the same MCP server name. Read from
     the raw manifests, so an invalid one still counts."""
-    names, prefixes = [], []
+    names, prefixes, schemas = [], [], {}
     for path, manifest, _parse_error in loaded:
+        if isinstance(manifest, dict):
+            for schema in data_schemas(manifest):
+                schemas.setdefault(schema, []).append(path)
         for entry in _raw_mcp_list(manifest):
             name = entry.get("name") if isinstance(entry, dict) else None
             if isinstance(name, str) and name:
@@ -1127,6 +1181,11 @@ def dir_conflicts(loaded) -> dict[Path, list[str]]:
     for name, paths in sorted(owners.items()):
         if len(paths) > 1:
             msg = f"mcp.name {name!r} is used by more than one add-on: {', '.join(p.parent.name for p in paths)}"
+            for p in paths:
+                out.setdefault(p, []).append(msg)
+    for schema, paths in sorted(schemas.items()):
+        if len(paths) > 1:
+            msg = f"data.schemas {schema!r} is declared by more than one add-on: {', '.join(p.parent.name for p in paths)}"
             for p in paths:
                 out.setdefault(p, []).append(msg)
     for path, name in names:

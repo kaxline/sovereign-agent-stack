@@ -509,9 +509,10 @@ def memory_bytes(value):
 
 
 def service_figures(config: dict) -> dict:
-    """{compose service: {"image", "reservation", "limit"}} from the JSON of
-    `docker compose config`. Memory comes from deploy.resources, then
-    mem_reservation and mem_limit; None where compose gives nothing."""
+    """{compose service: {"image", "reservation", "limit", "ports"}} from the
+    JSON of `docker compose config`. Memory comes from deploy.resources, then
+    mem_reservation and mem_limit; None where compose gives nothing. "ports"
+    maps each published container port to (host_ip, host port)."""
     services = config.get("services") if isinstance(config, dict) else None
     out = {}
     for name, svc in (services.items() if isinstance(services, dict) else []):
@@ -528,7 +529,52 @@ def service_figures(config: dict) -> dict:
         image = svc.get("image")
         out[name] = {"image": image if isinstance(image, str) else None,
                      "reservation": pick("reservations", "mem_reservation"),
-                     "limit": pick("limits", "mem_limit")}
+                     "limit": pick("limits", "mem_limit"),
+                     "ports": _published(svc.get("ports"))}
+    return out
+
+
+def _published(ports) -> dict:
+    """{container port: (host_ip, host port)} from compose config's long-form
+    ports, first binding per container port. Ranges and unpublished ports are
+    left out."""
+    out = {}
+    for p in ports if isinstance(ports, list) else []:
+        if not isinstance(p, dict):
+            continue
+        target, published = p.get("target"), str(p.get("published") or "")
+        if isinstance(target, int) and published.isdigit() and target not in out:
+            host_ip = p.get("host_ip")
+            out[target] = (host_ip if isinstance(host_ip, str) else "", int(published))
+    return out
+
+
+def web_view(manifest: dict, environ, figures) -> dict | None:
+    """listing's "web": {"service", "path", "url"}, or None without a `web`
+    field. url is http://localhost:<port><path> on the host port compose
+    publishes for the service's `port` (the host_ip when it binds one other
+    than loopback or every address), and null when compose config gave no
+    figures, the port isn't published, or the service's gate flag isn't 1."""
+    web = manifest.get("web")
+    if not isinstance(web, dict):
+        return None
+    key, path = web.get("service"), web.get("path")
+    services = manifest.get("services") if isinstance(manifest.get("services"), dict) else {}
+    spec = services.get(key) if isinstance(services.get(key), dict) else {}
+    out = {"service": key, "path": path, "url": None}
+    gate = (spec.get("when") or {}).get("gate") if isinstance(spec.get("when"), dict) else None
+    if gate and not am.truthy(environ.get(gate)):
+        return out
+    figure = ((figures or {}).get("services") or {}).get(spec.get("compose")) or {}
+    bound = (figure.get("ports") or {}).get(spec.get("port"))
+    if bound:
+        host_ip, port = bound
+        if host_ip in ("", "127.0.0.1", "0.0.0.0", "::", "::1"):
+            # localhost, not 127.0.0.1: the app's own public URL and cookies use it.
+            host = "localhost"
+        else:
+            host = f"[{host_ip}]" if ":" in host_ip else host_ip
+        out["url"] = f"http://{host}:{port}{path}"
     return out
 
 
@@ -591,6 +637,7 @@ def listing(manifest: dict, data_root: Path, environ, figures=None) -> dict:
         "data": manifest.get("data") or {},
         "backup": manifest.get("backup") or {},
         "hooks": sorted([n for n in (*am.HOOK_NAMES, *am.INSTANCE_HOOKS) if am.hook(manifest, n)]),
+        "web": web_view(manifest, environ, figures),
         "errors": list(instances.get("errors", [])) if isinstance(instances, dict) else [],
         "schema": {
             "settings": _schema_view(_schema(manifest)),

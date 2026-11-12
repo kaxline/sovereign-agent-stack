@@ -49,6 +49,7 @@ scripts/test-crm-script.py                      ci
 scripts/test-crm-sh.sh                          ci
 scripts/test-cron-delivery-errors.py            ci
 scripts/test-dashboard-handoff.py               ci image
+scripts/test-db-service-remove.sh               ci
 scripts/test-detector.py                        ci
 scripts/test-digest-redaction.py                ci image
 scripts/test-email-addon.py                     ci
