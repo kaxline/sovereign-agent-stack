@@ -34,6 +34,16 @@ the stack under another app.
   `browser`, and a `hermes-cron` or `hermes-cli` in it is replaced by its
   toolsets without `browser`. Cron runs unattended, and the browser can drive
   signed-in sessions.
+- New, opt-in: the client gateway (compose profile `client-gateway`), which
+  serves ACP v1 over a WebSocket on `127.0.0.1:${CLIENT_GATEWAY_PORT:-8650}`
+  at `/acp` (the built-in assistant) and `/acp/agents/<slug>`, backed by
+  Hermes' dashboard `/api/ws`. It needs `CLIENT_API_TOKEN` (32 characters or
+  more; `scripts/setup.sh` generates it) sent as `Authorization: Bearer` on the
+  upgrade; a browser `Origin` must be listed in `CLIENT_API_ALLOWED_ORIGINS`.
+  Phase 1 covers sessions, prompt turns, cancel, approvals and clarify; secret
+  and vault prompts are declined until a later release. Nothing changes for
+  clients on `/api/ws`, and Boundary has no step yet. ACP pin and versions:
+  `compose/client-gateway/ACP.md`.
 - CalDAV calendars are a built-in add-on (`addons/caldav/addon.json`, title
   "CalDAV calendars"), so `addon.sh list`, `enable caldav`, `connect caldav`
   and `disconnect caldav` work on them. The flag (`CALDAV_MCP_ENABLED`), the

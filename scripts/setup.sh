@@ -826,6 +826,9 @@ set_env_if_placeholder .env N8N_USER_MANAGEMENT_JWT_SECRET "$(rand_hex 16)"
 set_env_if_placeholder .env HERMES_DASHBOARD_PASSWORD "$(rand_hex 16)"
 set_env_if_placeholder .env HERMES_DASHBOARD_AUTH_SECRET "$(rand_hex 32)"
 set_env_if_placeholder .env HERMES_DASHBOARD_HANDOFF_SECRET "$(rand_hex 32)"
+# Client gateway bearer token (profile client-gateway), generated for every
+# install so enabling the profile needs no extra step.
+set_env_if_placeholder .env CLIENT_API_TOKEN "$(rand_hex 32)"
 set_env_if_placeholder .env LLM_PROXY_ADMIN_TOKEN "$(rand_hex 32)"
 # Shared Postgres (db profile). Hex, so they drop into connection URLs as-is.
 # Generated whether or not db is on, like POSTGRES_PASSWORD for n8n.

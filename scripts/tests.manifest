@@ -42,6 +42,10 @@ scripts/test-budget-sh.sh                       ci
 scripts/test-buzz-sync-gate.sh                  ci
 scripts/test-caldav-foreign-entries.py          image
 scripts/test-client-context.py                  ci image
+scripts/test-client-gateway-connection.py       image
+scripts/test-client-gateway-hermes.py           image
+scripts/test-client-gateway-oracle.py           docker image
+scripts/test-client-gateway-transport.py        docker image
 scripts/test-compaction-tool-facts.py           ci image
 scripts/test-compose-env-allowlist.py           ci docker
 scripts/test-cont-init-env.py                   ci docker

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "io.github.kaxline.stack ACP extensions",
+  "description": "Methods are _io.github.kaxline.stack/<name>; _meta keys sit under \"io.github.kaxline.stack\". Definitions share one namespace with schema/acp-v1.json, so they may $ref ACP definitions by name. x-methods maps each extension method to its params and result definitions.",
+  "x-methods": {},
+  "$defs": {
+    "StackErrorData": {
+      "description": "data[\"io.github.kaxline.stack\"] on every gateway error.",
+      "type": "object",
+      "properties": {
+        "reason": {"type": "string"},
+        "runtime_code": {"type": "integer", "description": "The runtime's own code, only with reason runtime_error."},
+        "details": {"type": "array", "items": {"type": "string"}}
+      },
+      "required": ["reason"]
+    },
+    "StackSessionMeta": {
+      "description": "_meta[\"io.github.kaxline.stack\"] on session/new, session/load and session/resume params.",
+      "type": "object",
+      "properties": {
+        "historyBudget": {"type": "integer", "minimum": 0},
+        "omitMessages": {"type": "boolean"},
+        "source": {"type": "string"}
+      }
+    },
+    "StackMcpServersMeta": {
+      "description": "_meta[\"io.github.kaxline.stack\"].mcpServers on session setup responses.",
+      "type": "object",
+      "properties": {
+        "applied": {"type": "array", "items": {"type": "string"}},
+        "skipped": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}, "reason": {"type": "string"}},
+            "required": ["name", "reason"]
+          }
+        }
+      },
+      "required": ["applied", "skipped"]
+    }
+  }
+}
