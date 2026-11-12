@@ -42,18 +42,27 @@ seed() {
   [ -z "$6" ] || printf '%s' "$6" > "$s/secrets/$2.key_rw"
 }
 
-# A stub Twenty MCP: initialize answers 200 for keys starting "good-", 401 otherwise.
+# A stub Twenty 2.56+ MCP: answers 200 for keys starting "good-", 401 otherwise.
+# tools/list gives the catalog tools at ?mode=meta and record tools without it.
 cat > "$tmp/stub.py" <<'PY'
-import sys
+import json, sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
+CATALOG = ["get_tool_catalog", "learn_tools", "execute_tool", "list_object_metadata_names",
+           "list_skills", "load_skills", "search_help_center"]
+DIRECT = ["list_skills", "find_many_people", "delete_one_person"]
 class H(BaseHTTPRequestHandler):
     def do_POST(self):
-        self.rfile.read(int(self.headers.get("content-length") or 0))
-        ok = self.path == "/mcp" and self.headers.get("authorization", "").startswith("Bearer good-")
+        body = json.loads(self.rfile.read(int(self.headers.get("content-length") or 0)) or b"{}")
+        path, _, query = self.path.partition("?")
+        ok = path == "/mcp" and self.headers.get("authorization", "").startswith("Bearer good-")
+        out = {}
+        if body.get("method") == "tools/list":
+            names = CATALOG if query == "mode=meta" else DIRECT
+            out = {"jsonrpc": "2.0", "id": body.get("id"), "result": {"tools": [{"name": n} for n in names]}}
         self.send_response(200 if ok else 401)
         self.send_header("content-type", "application/json")
         self.end_headers()
-        self.wfile.write(b"{}")
+        self.wfile.write(json.dumps(out).encode())
     def log_message(self, *a):
         pass
 s = HTTPServer(("127.0.0.1", 0), H)
@@ -73,6 +82,7 @@ no_secret add
 f="$(inst hosted)"
 [ -f "$f" ] || fail "add stores instance hosted"
 grep -q 'crm-hosted' "$out" || fail "add names the crm-hosted entry"
+grep -q 'catalog tools (7 tools)' "$out" || fail "add checks the meta-mode tool list ($(cat "$out"))"
 grep -q 'hermes-reload' "$out" || fail "add says to run make hermes-reload"
 [ "$(jget "$f" url)" = "\"$URL\"" ] || fail "add stores the URL without a trailing slash"
 [ "$(jget "$f" workspace_url)" = "\"$URL/\"" ] || fail "add defaults the workspace URL to the instance"
@@ -207,6 +217,12 @@ printf '%s\n' "$@" >> "$CURL_LOG"
 for a in "$@"; do
   case "$a" in @*) cat "${a#@}" >> "$CURL_LOG.headers" ;; esac
 done
+# With CURL_BODY set, a tools/list call gets it as the response body.
+prev=""
+for a in "$@"; do
+  if [ "$prev" = -o ] && [ "$a" != /dev/null ] && [ -n "${CURL_BODY:-}" ]; then printf '%s' "$CURL_BODY" > "$a"; fi
+  prev="$a"
+done
 printf '%s' "${CURL_CODE:-200}"
 exit "${CURL_EXIT:-0}"
 SH
@@ -263,9 +279,19 @@ hook bad_value '{"url":"https://u:pw-SECRET@crm.example.com","access":"read","ke
 hook "done" '{"url":"https://crm.example.com","access":"write","key_rw":"k-SECRET","key_ro":"k2-SECRET"}' connect --slug x --json
 grep -q 'Authorization: Bearer k-SECRET' "$CURL_LOG.headers" || fail "the key goes to curl in a header file"
 grep -q 'https://crm.example.com/mcp' "$CURL_LOG" || fail "connect checks <url>/mcp"
-[ "$(grep -c 'https://crm.example.com/mcp' "$CURL_LOG")" = 2 ] || fail "connect checks both keys"
+[ "$(grep -c '"method":"initialize"' "$CURL_LOG")" = 2 ] || fail "connect checks both keys"
+grep -q 'https://crm.example.com/mcp?mode=meta' "$CURL_LOG" || fail "connect checks the meta-mode URL Hermes registers"
+grep -q '"method":"tools/list"' "$CURL_LOG" || fail "connect lists the tools"
+grep -q "couldn't check the tools" "$tmp/err" || fail "an unreadable tool list is a warning, not a failure"
 printf '%s' "$last" | grep -q '"account": *"x"' || fail "done carries account"
 printf '%s' "$last" | grep -q '"mcp": *\["crm-x"\]' || fail "done carries mcp"
+CATALOG='{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"get_tool_catalog"},{"name":"learn_tools"},{"name":"execute_tool"},{"name":"list_skills"}]}}'
+DIRECT='{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"list_skills"},{"name":"find_many_people"},{"name":"delete_one_person"}]}}'
+CURL_BODY="$CATALOG" hook "done" '{"url":"https://crm.example.com","access":"read","key_ro":"k-SECRET"}' connect --slug x --json
+grep -q 'catalog tools (4 tools)' "$out" || fail "connect reports the tool count ($(cat "$out"))"
+CURL_BODY="$(printf 'event: message\ndata: %s\n' "$CATALOG")" hook "done" '{"url":"https://crm.example.com","access":"read","key_ro":"k-SECRET"}' connect --slug x --json
+CURL_BODY="$DIRECT" hook no_catalog '{"url":"https://crm.example.com","access":"read","key_ro":"k-SECRET"}' connect --slug x --json
+grep -q 'lists 3 tools but not get_tool_catalog learn_tools execute_tool' "$out" || fail "no_catalog names the count and missing tools ($(cat "$out"))"
 ENV_FILE="$LOCAL_ON" hook "done" '{"url":"http://twenty-server:3000","local":true,"access":"read","key_ro":"k-SECRET"}' connect --slug x --json
 grep -q 'http://127.0.0.1:3000/mcp' "$CURL_LOG" || fail "a local instance is checked on the published port"
 [ "$(cd "$store" && find . | sort)" = "$before_store" ] || fail "connect writes nothing to the store"
