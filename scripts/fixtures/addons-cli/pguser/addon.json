@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "title": "Pguser",
   "tagline": "Test add-on that uses postgres, which disable never stops",
-  "description": "Not a real add-on. scripts/test-addon-cli.sh disables it to check that a uses name without a compose mapping is never stopped, against stub docker and make.",
+  "description": "Not a real add-on. scripts/test-addon-cli.sh disables it to check that a uses name without a compose mapping is never stopped, and removes it to check that data.schemas are dropped, against stub docker, make and db.sh.",
   "publisher": {
     "name": "sovereign-agent-stack",
     "url": "https://github.com/kaxline/sovereign-agent-stack"
@@ -30,5 +30,10 @@
     "egress": [],
     "exposesToAgent": true,
     "cron": false
+  },
+  "data": {
+    "schemas": [
+      "pguser_db"
+    ]
   }
 }

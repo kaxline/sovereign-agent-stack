@@ -29,7 +29,10 @@
 #
 # remove --delete-data refuses (bad_input) while the add-on is enabled. It
 # runs `docker compose rm -f -s` on every service and one-shot, removes each
-# compose volume in data.volumes that exists, and deletes each data.paths
+# compose volume in data.volumes that exists, drops each data.schemas schema
+# and its svc_<schema> role with `scripts/db.sh service-remove` (starting
+# postgres-db for it, and stopping it after, when it isn't running), and
+# deletes each data.paths
 # directory and data/addons/<short-id>, all as step delete. A data path is its
 # env from the caller's environment, then .env, else its default, made
 # absolute against the repo root without resolving symlinks. It is deleted
@@ -900,13 +903,14 @@ ev_kept() {
 # go from plan-remove to delete-path one per line: plan-remove refuses a path
 # with a control character.
 remove_data() {
-  local sid="$1" line services=() volumes=() paths=() project vol path msg
+  local sid="$1" line services=() volumes=() schemas=() paths=() project vol schema path msg started=0
   data_env_json "$sid"
   cli_checked "" plan-remove "$sid" --env "$DATA_ENV_JSON" --flags "$(env_flags_json)" --repo "$ROOT" --lines
   while IFS= read -r line; do
     case "$line" in
       "service "*) services+=("${line#service }") ;;
       "volume "*) volumes+=("${line#volume }") ;;
+      "schema "*) schemas+=("${line#schema }") ;;
       "delete "*) paths+=("${line#delete }") ;;
       "kept "*) line="${line#kept }"; ev_kept "${line#*$'\t'}" "${line%%$'\t'*}" ;;
     esac
@@ -925,6 +929,25 @@ EOF_PLAN
         || { EV_TARGET="$vol"; ev_fail compose_failed delete "docker volume rm ${project}_${vol} failed" "$EV_LAST_LOG"; }
     fi
   done
+  # Schemas in the shared Postgres. postgres-db is named explicitly, which
+  # starts it even when no active profile includes it; it is stopped again
+  # only when this call started it.
+  if [[ ${#schemas[@]} -gt 0 ]]; then
+    if [[ -z "$(docker ps -q --filter "label=com.docker.compose.project=${project}" \
+      --filter label=com.docker.compose.service=postgres-db --filter status=running 2> /dev/null)" ]]; then
+      run_step delete postgres-db docker compose up -d --wait postgres-db \
+        || { EV_TARGET=postgres-db; ev_fail compose_failed delete "starting postgres-db to drop ${schemas[*]} failed" "$EV_LAST_LOG"; }
+      started=1
+    fi
+    for schema in "${schemas[@]}"; do
+      run_step delete "$schema" "${ROOT}/scripts/db.sh" service-remove "$schema" --yes \
+        || { EV_TARGET="$schema"; ev_fail command_failed delete "dropping schema ${schema} failed" "$EV_LAST_LOG"; }
+    done
+    if [[ "$started" == 1 ]]; then
+      run_step delete postgres-db docker compose stop postgres-db \
+        || { EV_TARGET=postgres-db; ev_fail compose_failed delete "docker compose stop postgres-db failed" "$EV_LAST_LOG"; }
+    fi
+  fi
   for path in ${paths[@]+"${paths[@]}"}; do
     if ! run_step delete "$path" cli delete-path "$path" --repo "$ROOT" --sid "$sid" < /dev/null; then
       msg=""

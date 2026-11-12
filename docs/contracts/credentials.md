@@ -66,7 +66,8 @@ broker and scrub filled values. See [agent](agent.md#browser-and-credential-fill
 These parts are specific to the current implementation and not part of the interface:
 
 - Sharing the `hermes` network namespace, which ties the broker's lifecycle to the `hermes`
-  container. A browser service of its own, planned, would remove it.
+  container, and the `port` field in `POST /fill`, which only works for Hermes' own Chromium. A
+  browser service of its own, planned, would remove both; see [browser](browser.md).
 - Where an account is defined: the add-on instance store (`instances/<slug>.json`, read directly
   by the broker), with each `client_id` in `secrets/<slug>/client_id`, and the local account in
   `broker/local-account.json`.

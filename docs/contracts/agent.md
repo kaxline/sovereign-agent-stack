@@ -74,8 +74,7 @@ data and lists it. Access levels come from each manifest's `mcp.profiles`, or
 for an instance from its `bind`; for an `ro` profile the plans leave out
 `writeTools`, and with `mcp.instances` the `ro` profile gets the instance's
 `ro` key or URL. Core servers draw the same line
-in the bootstrap: CalDAV gets 8 read-only tools on `api-server`, `sql` connects
-there as the `agent_ro` role, and `opencode` is never registered there.
+in the bootstrap: `opencode` is never registered on `api-server`.
 Independent agents created with `make agent-create` are further profiles
 ([agents.md](../agents.md)). Profile settings are in
 [hermes.md](../hermes.md#api-server-profile-api-server) and
@@ -84,11 +83,17 @@ Independent agents created with `make agent-create` are further profiles
 ### Scheduler
 
 Hermes cron jobs run on a profile. A job with its own `enabled_toolsets` gets
-those; one without gets `platform_toolsets.cron`. While a fenced server is
-registered on a profile, `fence_mail_from_cron` pins `platform_toolsets.cron`
-to Hermes' default cron tools plus every MCP server not fenced. The fence
-covers mail, messages, and each add-on whose `permissions.cron` is not `true`,
-matched by MCP name or by the scheme, host and port of its URL. A `vaultBackend`
+those; one without gets `platform_toolsets.cron`. `fence_mail_from_cron`
+pins `platform_toolsets.cron` on every profile it runs on to the toolsets
+Hermes' `hermes-cron` bundle turns on, without `browser`, plus every MCP
+server not fenced. It names the toolsets one by one because the bundle
+includes the browser, and reads them from Hermes at each run. The fence
+covers the browser, mail, messages, and each add-on whose `permissions.cron`
+is not `true`, matched by MCP name or by the scheme, host and port of its URL.
+A job gets a fenced toolset or server by naming it in its own
+`enabled_toolsets`. A hand-written list keeps its entries, minus the fenced
+ones, with a bundle that includes the browser (`hermes-cron`, `hermes-cli`)
+replaced by its toolsets. A `vaultBackend`
 toolset is kept out by listing it in `known_plugin_toolsets.cron`. The list the
 bootstrap wrote is recorded in `.mail-cron-toolsets.json` beside `config.yaml`.
 
@@ -155,12 +160,12 @@ above.
   edit files under `/opt/hermes` at container start and are anchored to the
   pinned Hermes tag (`v0.23.1`). `make hermes-image-test` runs their tests
   against a new image.
-- **The adapter's own reach.** Core MCP servers (`searxng`, `caldav-<slug>`,
-  `sql`, `opencode`, `todos`) are registered by the bootstrap
-  directly, not from manifests. The add-on store mounts for the
+- **The adapter's own reach.** Core MCP servers (`searxng`, `opencode`) are
+  registered by the bootstrap directly, not from manifests. The add-on store mounts for the
   bootstraps are written per add-on in `docker-compose.yml`. Manifests name
   identities by Hermes profile name.
 
 A neutral client API, which Boundary would use in place of the dashboard
 WebSocket, and a browser service separate from the agent container are
-planned. Neither is designed yet.
+planned. The interface a browser provider has to meet is on the
+[browser](browser.md) page.

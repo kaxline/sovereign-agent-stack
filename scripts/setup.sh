@@ -285,14 +285,8 @@ setup_neo4j_profile() {
 setup_calendar_profile() {
   append_compose_profile calendar
   upsert_env .env CALDAV_MCP_ENABLED 1
-  mkdir -p compose/caldav-mcp/accounts
-  if [[ ! -f compose/caldav-mcp/accounts/personal.env ]]; then
-    cp compose/caldav-mcp/account.env.example compose/caldav-mcp/accounts/personal.env
-    log "Created compose/caldav-mcp/accounts/personal.env — fill CALDAV_* credentials (iCloud: app-specific password)"
-  fi
   log "Enabled CalDAV MCP registration (CALDAV_MCP_ENABLED=1)"
-  log "Add more accounts: cp compose/caldav-mcp/account.env.example compose/caldav-mcp/accounts/<name>.env"
-  log "Then: make hermes-reload"
+  log "After make up, connect each account: scripts/addon.sh connect caldav --instance <slug> < account.json (docs/calendar.md)"
 }
 
 # Shared Postgres + SQL MCP. The secrets are generated for every install (see
@@ -832,6 +826,9 @@ set_env_if_placeholder .env N8N_USER_MANAGEMENT_JWT_SECRET "$(rand_hex 16)"
 set_env_if_placeholder .env HERMES_DASHBOARD_PASSWORD "$(rand_hex 16)"
 set_env_if_placeholder .env HERMES_DASHBOARD_AUTH_SECRET "$(rand_hex 32)"
 set_env_if_placeholder .env HERMES_DASHBOARD_HANDOFF_SECRET "$(rand_hex 32)"
+# Client gateway bearer token (profile client-gateway), generated for every
+# install so enabling the profile needs no extra step.
+set_env_if_placeholder .env CLIENT_API_TOKEN "$(rand_hex 32)"
 set_env_if_placeholder .env LLM_PROXY_ADMIN_TOKEN "$(rand_hex 32)"
 # Shared Postgres (db profile). Hex, so they drop into connection URLs as-is.
 # Generated whether or not db is on, like POSTGRES_PASSWORD for n8n.

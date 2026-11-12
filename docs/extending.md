@@ -677,8 +677,15 @@ Dependencies aren't built, so `hermes` is never rebuilt this way.
 `list --json` objects carry `id`, `shortId`, `title`, `tagline`,
 `permissions`, `platform`, `enabled` (the flag in `.env`), `settings`,
 `instances` (slug to values), `services`, `missing`, `data`, `backup`,
-`hooks`, `errors` and `schema`, plus `postInstallMessage` (Markdown from
-the manifest) when the manifest has a non-empty one. `missing` lists what
+`hooks`, `web`, `errors` and `schema`, plus `postInstallMessage` (Markdown
+from the manifest) when the manifest has a non-empty one. `web` is null
+without a `web` field in the manifest, else `{"service", "path", "url"}`.
+`url` is `http://localhost:<port><path>`, with the host port compose
+publishes for that service (from `docker compose config`, so `.env` port
+overrides apply), or the bound address when it isn't loopback or every
+address. `url` is null when compose config failed, the port isn't published,
+or the service's gate flag is off. Open it only while `enabled` is true; for
+Vikunja it is `/login-local`, which signs the browser in. `missing` lists what
 `enable` would refuse on: a top-level setting by name, an instance setting
 as `<slug>.<name>`, and `instances:<name>` (the manifest's `instances.name`)
 when the add-on needs an instance and has none. A manifest with
@@ -962,7 +969,15 @@ one `done` line whose `action` is `disable`. Step `delete` does, in order:
 2. `docker volume rm <project>_<volume>` for each volume in `data.volumes`
    that exists. The project is `COMPOSE_PROJECT_NAME` from the environment,
    then `.env`, else the directory name.
-3. Deletion of each `data.paths` directory, then `data/addons/<short-id>`.
+3. For each schema in `data.schemas`: `scripts/db.sh service-remove
+   <schema> --yes`, which drops the schema `CASCADE`, everything role
+   `svc_<schema>` owns and the role, then deletes
+   `compose/postgres/services/<schema>.env`. When `postgres-db` isn't
+   running, `docker compose up -d --wait postgres-db` starts it first and
+   `docker compose stop postgres-db` stops it after, each a `delete` step
+   with target `postgres-db`. A failed drop is `command_failed` with the
+   schema as target.
+4. Deletion of each `data.paths` directory, then `data/addons/<short-id>`.
 
 A `data.paths` entry is `{"env": <NAME>, "default": "./data/..."}`. Its path
 is the value of `NAME` from the environment, then `.env`, else the default,

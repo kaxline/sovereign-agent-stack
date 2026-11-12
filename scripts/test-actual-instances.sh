@@ -106,7 +106,7 @@ export ACTUAL_MCP_ENABLED TWENTY_MCP_ENABLED
 log() { :; }
 record="${tmp}/record"
 : > "$record"
-caldav_profile_env_file() { echo "${tmp}/env/${1:-default}.env"; }
+profile_env_file() { echo "${tmp}/env/${1:-default}.env"; }
 register_mcp_server() { printf 'register:%s:%s:%s:%s;' "${1:-default}" "$2" "$4" "$(shift 6; echo "$*")" >> "$record"; }
 write_bearer_mcp_entry() { printf 'bearer:%s;' "$2" >> "$record"; }
 upsert_env() { printf 'env:%s;' "$2" >> "$record"; }

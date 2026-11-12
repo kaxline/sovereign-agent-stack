@@ -126,12 +126,13 @@ def image_available(tag: str) -> bool:
 
 
 def run_driver(driver: str, stdin: str = "", tag: str = "", mounts=(), image: str = "",
-               python: str = "/opt/hermes/.venv/bin/python") -> None:
+               python: str = "/opt/hermes/.venv/bin/python", docker_args=()) -> None:
     """Run ``driver``; it must print "image ok" on success.
 
     ``mounts`` adds read-only ``(host_path, container_path)`` bind mounts.
     ``image`` names another image in place of the Hermes one, with ``python``
-    as its interpreter.
+    as its interpreter. ``docker_args`` go to ``docker run`` before the image
+    (for example ``--network none``).
     """
     image = image or f"nousresearch/hermes-agent:{tag or image_tag()}"
     extra = []
@@ -139,7 +140,7 @@ def run_driver(driver: str, stdin: str = "", tag: str = "", mounts=(), image: st
         extra += ["-v", f"{host}:{container}:ro"]
     cmd = [
         "docker", "run", "--rm", "-i", "--entrypoint", python,
-        "-v", f"{HERMES_DIR}:/bootstrap:ro", *extra, image, "-c", driver,
+        "-v", f"{HERMES_DIR}:/bootstrap:ro", *extra, *docker_args, image, "-c", driver,
     ]
     out = subprocess.run(cmd, input=stdin, capture_output=True, text=True)
     if out.returncode != 0 or "image ok" not in out.stdout:
