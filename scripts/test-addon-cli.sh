@@ -34,6 +34,7 @@ printf 'COMPOSE_PROJECT_NAME=fixtureproj\n' >> "${root}/.env"
 # DOCKER_UP_DELAY=N makes `compose up` sleep N seconds first.
 # DOCKER_FAIL_RUN=N makes `docker compose run` exit N after printing a line.
 # DOCKER_FAIL_ONESHOT=1 makes `compose up --no-deps --exit-code-from` exit 1.
+# `ps -q` prints a container id when STUB_PG_RUNNING=1 (postgres-db running).
 # `compose build` prints a line on stdout; DOCKER_FAIL_BUILD=1 makes it print
 # "failed to solve: boom" on stderr and exit 1.
 # `compose ps -a --format json` prints the file PS_ANSWER names, if any.
@@ -65,6 +66,10 @@ if [ "$1 $2 $3" = "manifest inspect --verbose" ]; then
 fi
 if [ "$1" = version ]; then
   echo "${STUB_PLATFORM:-linux/arm64}"
+  exit 0
+fi
+if [ "$1 $2" = "ps -q" ]; then
+  [ "${STUB_PG_RUNNING:-0}" = 1 ] && echo 0123456789ab
   exit 0
 fi
 if [ "$1 $2 $3 $4" = "compose ps -a --format" ]; then
@@ -145,6 +150,14 @@ printf 'vault.sh %s\n' "$*" >> "${STUB_LOG}"
 exit 0
 VAULT_EOF
 chmod +x "${root}/scripts/vault.sh"
+# scripts/db.sh stub: logs its argv; DB_SH_FAIL=1 makes it exit 1.
+cat > "${root}/scripts/db.sh" <<'DB_EOF'
+#!/bin/sh
+printf 'db.sh %s\n' "$*" >> "${STUB_LOG}"
+[ "${DB_SH_FAIL:-0}" = 1 ] && { echo "[db] ERROR: drop failed"; exit 1; }
+exit 0
+DB_EOF
+chmod +x "${root}/scripts/db.sh"
 
 # Guard: addon_cli.py runs in the Hermes container in production, which mounts
 # only the repo, the data root and ADDONS_DIR (${tmp}/dataroot is the data root
@@ -1103,6 +1116,32 @@ CONFIG_SERVICES="${tmp}/services-none" addon_json disable pguser --json
 expect_rc "disable pguser" 0
 if logged "compose stop pguser-worker" && ! logged "postgres"; then ok "an unmapped uses name is never stopped"; else bad "an unmapped uses name is never stopped"; cat "$STUB_LOG"; fi
 
+# data.schemas: remove drops each schema with db.sh service-remove, starting
+# postgres-db for it (and stopping it after) only when it isn't running.
+at() { grep -n -x -- "$1" "$STUB_LOG" | head -1 | cut -d: -f1; }
+: > "$STUB_LOG"
+addon_json remove pguser --delete-data --json
+expect_rc "remove pguser --delete-data" 0
+r=0; json_ok "$out" "done" '[l.get("target") for l in lines if l["phase"] == "setup" and l["status"] == "done" and l["step"] == "delete"][:4] == [None, "postgres-db", "pguser_db", "postgres-db"]' || r=1
+check "remove prints delete steps for postgres-db and the schema" "$r"
+a="$(at 'compose rm -f -s pguser-worker')"; b="$(at 'compose up -d --wait postgres-db')"
+c="$(at 'db.sh service-remove pguser_db --yes')"; d="$(at 'compose stop postgres-db')"
+if [ -n "$a" ] && [ -n "$b" ] && [ -n "$c" ] && [ -n "$d" ] && [ "$a" -lt "$b" ] && [ "$b" -lt "$c" ] && [ "$c" -lt "$d" ]; then
+  ok "remove stops the services, starts postgres-db, drops the schema, stops postgres-db"
+else bad "remove stops the services, starts postgres-db, drops the schema, stops postgres-db"; cat "$STUB_LOG"; fi
+: > "$STUB_LOG"
+STUB_PG_RUNNING=1 addon_json remove pguser --delete-data --json
+expect_rc "remove pguser with postgres-db running" 0
+if logged "db.sh service-remove pguser_db --yes" && ! logged "compose up -d --wait postgres-db" && ! logged "compose stop postgres-db"; then
+  ok "a running postgres-db is left as it was"
+else bad "a running postgres-db is left as it was"; cat "$STUB_LOG"; fi
+: > "$STUB_LOG"
+DB_SH_FAIL=1 addon_json remove pguser --delete-data --json
+expect_rc "remove pguser when the drop fails" 4
+r=0; json_ok "$out" "error" 'last.get("error") == "command_failed" and last.get("step") == "delete" and last.get("target") == "pguser_db"' || r=1
+check "a failed drop is an error at step delete naming the schema" "$r"
+unset DB_SH_FAIL STUB_PG_RUNNING
+
 # remove --delete-data. Every path these checks delete is under $root, except
 # for the ASSISTANT_DATA_ROOT case under ${tmp}/dataroot. The `/` and `..`
 # cases run remove only after plan-remove has reported the path as kept.
@@ -1141,7 +1180,7 @@ n=$((n + 1)); out="${tmp}/out/${n}"
 python3 "${root}/scripts/lib/addon_cli.py" --addons-dir "$ADDONS_DIR" --data-root "${root}/data" data-envs fixture > "$out" 2>&1 || true
 if grep -qx FIXTURE_DATA_DIR "$out"; then ok "data-envs names the env of each data path"; else bad "data-envs names the env of each data path"; sed 's/^/    /' "$out"; fi
 plan_remove '{}' '{}'
-r=0; plan_is 'p == {"services": ["fixture-seed", "fixture-worker", "fixture-extra"], "volumes": ["fixture_cache"], "delete": [r + "/data/fixture", r + "/data/addons/fixture"], "kept": []}' || r=1
+r=0; plan_is 'p == {"services": ["fixture-seed", "fixture-worker", "fixture-extra"], "volumes": ["fixture_cache"], "schemas": [], "delete": [r + "/data/fixture", r + "/data/addons/fixture"], "kept": []}' || r=1
 check "plan-remove lists services, volumes and the paths to delete" "$r"
 plan_remove '{}' '{"FIXTURE_ADDON_ENABLED":"1"}'
 if grep -q '^error: .*enabled' "$out"; then ok "plan-remove refuses an enabled add-on"; else bad "plan-remove refuses an enabled add-on"; sed 's/^/    /' "$out"; fi

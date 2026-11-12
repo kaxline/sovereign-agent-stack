@@ -49,8 +49,7 @@ Rules a reader of the plans can rely on, all enforced by `validate`:
   `rw`. For an `ro` identity, plans leave out the entry's `writeTools`.
 - A service that mounts `secrets` may not be an MCP service.
 - Two `mcp` entries may not share a service, and an `mcp.name` may not take
-  a name or prefix core registers itself (`searxng`, `opencode`, `sql`,
-  `vikunja`, `messages`, `caldav-`).
+  a name core registers itself (`searxng`, `opencode`, `messages`).
 
 ### Removed in 0.3.14
 

@@ -28,11 +28,6 @@ PROFILE_MEMORY_NUDGE="${HERMES_MEMORY_NUDGE_INTERVAL:-10}"
 SEARXNG_MCP_URL="${SEARXNG_MCP_URL:-http://mcp-searxng:3000/mcp}"
 SEARXNG_MCP_TIMEOUT="${SEARXNG_MCP_TIMEOUT:-60}"
 SEARXNG_MCP_CONNECT_TIMEOUT="${SEARXNG_MCP_CONNECT_TIMEOUT:-30}"
-CALDAV_MCP_URL="${CALDAV_MCP_URL:-http://caldav-mcp:8080/mcp}"
-CALDAV_MCP_TIMEOUT="${CALDAV_MCP_TIMEOUT:-60}"
-CALDAV_MCP_CONNECT_TIMEOUT="${CALDAV_MCP_CONNECT_TIMEOUT:-30}"
-CALDAV_MCP_ENABLED="${CALDAV_MCP_ENABLED:-0}"
-CALDAV_MCP_ACCOUNTS_DIR="${CALDAV_MCP_ACCOUNTS_DIR:-/bootstrap/caldav-accounts}"
 # The mail and drafts servers register from addons/email-local/addon.json,
 # which reads MAIL_MCP_ENABLED, MAIL_DRAFTS_ENABLED and the MAIL_*_URL and
 # timeout overrides from the environment. The URLs stay here for
@@ -108,7 +103,7 @@ sha256_stdin() {
 # bootstrap runs on every stack start. A run is skipped when two hashes match
 # what the last complete run recorded:
 #
-# - inputs: this script, the profile's env file, the CalDAV accounts, the
+# - inputs: this script, the profile's env file, the
 #   add-on instances (key files by name and mtime), the add-on manifests and their reader, the
 #   image, and every environment variable this container gets. One stamp per
 #   profile under STAMP_DIR.
@@ -127,12 +122,6 @@ bootstrap_inputs_hash() {
     cat "$SOURCE_ENV"
     echo "image ${HERMES_AGENT_IMAGE_TAG:-}"
     cat /opt/hermes/pyproject.toml 2>/dev/null || true
-    echo "caldav"
-    for _bih_f in "$CALDAV_MCP_ACCOUNTS_DIR"/*; do
-      [ -f "$_bih_f" ] || continue
-      echo "$_bih_f"
-      cat "$_bih_f"
-    done
     # A new, removed or re-keyed add-on instance (a Twenty workspace) changes
     # what gets registered. Key files count by name and mtime, never content.
     echo "addon-instances"
@@ -820,8 +809,8 @@ PY
 
 # Set parked_retry_interval on every MCP entry that points at a stack sidecar,
 # a client's entry on the same URL included (Boundary's calendar-<slug> on
-# caldav-mcp). Entries for other URLs, such as Boundary's own server, are left
-# alone.
+# caldav-mcp, which addon_mcp_urls lists). Entries for other URLs, such as
+# Boundary's own server, are left alone.
 #
 # Usage: set_stack_mcp_parked_retry <profile>
 set_stack_mcp_parked_retry() {
@@ -831,7 +820,6 @@ set_stack_mcp_parked_retry() {
   # One argument per add-on URL.
   # shellcheck disable=SC2046
   _out="$(python3 - "$_cfg" "$MCP_PARKED_RETRY_INTERVAL" "$SEARXNG_MCP_URL" \
-    "$CALDAV_MCP_URL" \
     "$MAIL_MCP_URL" "$MAIL_DRAFTS_MCP_URL" "$MESSAGES_MCP_URL" \
     $(addon_mcp_urls) $(addon_instance_urls "$1") <<'PY'
 import sys
@@ -1042,7 +1030,7 @@ register_addon_mcp_servers() {
         drop_mcp_entries_for_url "$_ram_profile" "" "$_ram_u"
       done
       if [ -n "$_ram_keyenv" ]; then
-        remove_env_key "$(caldav_profile_env_file "$_ram_profile")" "$_ram_keyenv"
+        remove_env_key "$(profile_env_file "$_ram_profile")" "$_ram_keyenv"
       fi
       continue
     fi
@@ -1055,7 +1043,7 @@ register_addon_mcp_servers() {
       # Like an instance with auth: the token goes into the profile's .env
       # and config.yaml holds only the header that references it. No
       # tools.include: the token's scopes decide which tools the server lists.
-      _ram_env="$(caldav_profile_env_file "$_ram_profile")"
+      _ram_env="$(profile_env_file "$_ram_profile")"
       mkdir -p "$(dirname "$_ram_env")"
       upsert_env "$_ram_env" "$_ram_keyenv" "$_ram_key"
       _ram_key=""
@@ -1299,9 +1287,69 @@ PY
   if [ -n "$_out" ]; then log "$_out"; fi
 }
 
+# Write mcp_servers.<key> with the headers an mcp.instances.headers block
+# filled in (a JSON object; a secret is already a ${<env-key>} reference),
+# replacing any headers the entry had, and the tool allowlist. hermes config
+# set cannot write a header map.
+#
+# Usage: write_headers_mcp_entry <profile> <key> <url> <timeout> <connect-timeout> <headers-json> [tool...]
+write_headers_mcp_entry() {
+  _whm_cfg="$(config_path_for "$1")"
+  _whm_key="$2"
+  _whm_url="$3"
+  _whm_timeout="$4"
+  _whm_connect="$5"
+  _whm_headers="$6"
+  shift 6
+  _out="$(python3 - "$_whm_cfg" "$_whm_key" "$_whm_url" "$_whm_timeout" "$_whm_connect" \
+    "$_whm_headers" "$@" <<'PY'
+import json
+import sys
+sys.path.insert(0, "/opt/hermes")
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import hermes_yaml as yaml
+from utils import atomic_yaml_write
+
+cfg_path, key, url, timeout, connect_timeout, headers = sys.argv[1:7]
+tools = sys.argv[7:]
+try:
+    with open(cfg_path) as fh:
+        config = yaml.safe_load(fh) or {}
+except FileNotFoundError:
+    print(f"ERROR: {cfg_path} not found")
+    raise SystemExit(1)
+
+servers = config.get("mcp_servers")
+if not isinstance(servers, dict):
+    servers = {}
+    config["mcp_servers"] = servers
+entry = servers.get(key)
+if not isinstance(entry, dict):
+    entry = {}
+entry["url"] = url
+entry["timeout"] = int(timeout) if str(timeout).isdigit() else timeout
+entry["connect_timeout"] = int(connect_timeout) if str(connect_timeout).isdigit() else connect_timeout
+entry["headers"] = json.loads(headers)
+if tools:
+    tools_block = entry.get("tools")
+    if not isinstance(tools_block, dict):
+        tools_block = {}
+    tools_block["include"] = tools
+    entry["tools"] = tools_block
+servers[key] = entry
+atomic_yaml_write(cfg_path, config)
+print(f"Wrote mcp_servers.{key} ({len(tools)} tools)" if tools else f"Wrote mcp_servers.{key}")
+PY
+)"
+  if [ -n "$_out" ]; then log "$_out"; fi
+}
+
 # Drop entries whose name starts with an add-on's instance prefix (crm-) and
 # isn't in the keep list: an instance that is gone or no longer registers on
-# this profile. Their <NAME>_KEY and tool pins go with them, and with no entry
+# this profile. Their key (<NAME>_KEY, or <NAME>_<SUFFIX> for a prefix listed
+# in _rai_keysfx as <prefix>=<SUFFIX>) and tool pins go with them, and with no entry
 # left under a prefix, that add-on's bare tool names leave the pins too. Only
 # entries under the prefixes are ours; entries a client added under another
 # name stay, even at the same URL.
@@ -1386,11 +1434,20 @@ for key in ours:
 PY
 )"
   [ -n "$_out" ] || return 0
-  _rais_env="$(caldav_profile_env_file "$_rais_profile")"
+  _rais_env="$(profile_env_file "$_rais_profile")"
   printf '%s\n' "$_out" | while IFS= read -r _rais_line; do
     case "$_rais_line" in
       REMOVED\ *)
-        remove_env_key "$_rais_env" "$(addon_instance_key_env "${_rais_line#REMOVED }")"
+        _rais_name="${_rais_line#REMOVED }"
+        remove_env_key "$_rais_env" "$(addon_instance_key_env "$_rais_name")"
+        for _rais_sfx in ${_rai_keysfx:-}; do
+          case "$_rais_name" in
+            "${_rais_sfx%%=*}"*)
+              remove_env_key "$_rais_env" \
+                "$(printf '%s_%s' "$_rais_name" "${_rais_sfx#*=}" | tr '[:lower:]-' '[:upper:]_')"
+              ;;
+          esac
+        done
         ;;
       SEEN\ crm-*)
         # Twenty only, for the 0.3.13 upgrade: a crm-* entry still in the
@@ -1426,12 +1483,14 @@ register_addon_instance_servers() {
     return 0
   fi
   [ -n "$_rai_plan" ] || return 0
-  _rai_env="$(caldav_profile_env_file "$_rai_profile")"
+  _rai_env="$(profile_env_file "$_rai_profile")"
   _rai_specs=""
+  _rai_keysfx=""
   _rai_keep=""
   _rai_title=""
   while IFS='|' read -r _rai_name _rai_t _rai_on _rai_url _rai_keyenv _rai_keyfile \
-      _rai_timeout _rai_connect _rai_pins _rai_reason _rai_header _rai_scheme _rai_tools; do
+      _rai_timeout _rai_connect _rai_pins _rai_reason _rai_header _rai_scheme _rai_tools \
+      _rai_headers; do
     case "$_rai_name" in
       '') continue ;;
       *'*')
@@ -1443,6 +1502,11 @@ register_addon_instance_servers() {
         _rai_seen=0
         _rai_quiet=0
         _rai_specs="${_rai_specs} ${_rai_name%\*}=$(printf '%s' "$_rai_pins" | tr ' ' ',')"
+        # The add-on line's keyenv is its key suffix (PASSWORD for CalDAV).
+        case "$_rai_keyenv" in
+          ''|KEY) ;;
+          *) _rai_keysfx="${_rai_keysfx} ${_rai_name%\*}=${_rai_keyenv}" ;;
+        esac
         if [ "$_rai_on" != 1 ]; then
           case "$_rai_reason" in
             *' '*) log "Skipping ${_rai_t} MCP registration (${_rai_reason})" ;;
@@ -1472,7 +1536,24 @@ register_addon_instance_servers() {
       esac
       continue
     fi
-    if [ -z "$_rai_keyfile" ]; then
+    if [ -n "$_rai_headers" ]; then
+      # mcp.instances.headers (CalDAV): the account rides in the headers, and
+      # its secret, if any, in the profile's .env.
+      if [ -n "$_rai_keyfile" ]; then
+        _rai_key="$(cat "$_rai_keyfile" 2>/dev/null)" || _rai_key=""
+        if [ -z "$_rai_key" ]; then
+          log "WARNING: Skipping ${_rai_t} instance '${_rai_name}' - cannot read its key file"
+          continue
+        fi
+        mkdir -p "$(dirname "$_rai_env")"
+        upsert_env "$_rai_env" "$_rai_keyenv" "$_rai_key"
+        _rai_key=""
+      fi
+      log "Registering ${_rai_t} MCP server '${_rai_name}' for profile '${_rai_profile:-default}' at ${_rai_url}"
+      # shellcheck disable=SC2086
+      write_headers_mcp_entry "$_rai_profile" "$_rai_name" "$_rai_url" "$_rai_timeout" \
+        "$_rai_connect" "$_rai_headers" $_rai_tools
+    elif [ -z "$_rai_keyfile" ]; then
       # shellcheck disable=SC2086
       register_mcp_server "$_rai_profile" "$_rai_name" "$_rai_t" \
         "$_rai_url" "$_rai_timeout" "$_rai_connect" $_rai_tools
@@ -1621,15 +1702,19 @@ PY
   if [ -n "$_out" ]; then log "$_out"; fi
 }
 
-# Keep the mail and messages tools, and every add-on whose manifest doesn't
-# set permissions.cron true, away from cron jobs that didn't ask for them.
+# Keep the browser, the mail and messages tools, and every add-on whose
+# manifest doesn't set permissions.cron true, away from cron jobs that didn't
+# ask for them.
 #
 # Cron runs unattended, and a job without its own tool list gets every MCP
 # server, mail and messages included, next to web search, the browser and a
-# shell. While one of the fenced servers is registered on a profile, pin
-# platform_toolsets.cron to Hermes's default cron tools plus every other MCP
-# server. A job that names a fenced server in its own enabled_toolsets (make
-# mail-triage-cron, make messages-triage-cron) still gets it. Add-ons are
+# shell. Pin platform_toolsets.cron to Hermes's default cron toolsets without
+# browser, plus every MCP server not fenced. hermes-cron is a bundle that
+# includes the browser, so the list names its toolsets one by one, read from
+# Hermes at each run so a new Hermes toolset appears after a bump. The browser
+# can drive signed-in sessions (docs/contracts/browser.md). A job that names a
+# fenced toolset or server in its own enabled_toolsets (make mail-triage-cron,
+# make messages-triage-cron) still gets it. Add-ons are
 # matched by MCP name, or by the scheme, host and port of a URL
 # (addon_manifest.cron_fence), so a connected Actual budget's write entry on
 # actual-mcp-rw is fenced while its -ro entry on actual-mcp-ro is not.
@@ -1643,8 +1728,9 @@ PY
 # cron turn either way.
 #
 # A list we wrote is recorded in .mail-cron-toolsets.json next to config.yaml,
-# so it can be refreshed or removed later. A list you wrote yourself is kept;
-# only the fenced servers are taken out of it.
+# so it can be refreshed later. A list you wrote yourself is kept; the fenced
+# servers and browser are taken out of it, and a bundle in it that includes the
+# browser (hermes-cron, hermes-cli) is replaced by its toolsets without browser.
 fence_mail_from_cron() {
   _fmc_cfg="$(config_path_for "$1")"
   [ -f "$_fmc_cfg" ] || return 0
@@ -1655,6 +1741,15 @@ import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
+# Importing Hermes' toolset code writes SOUL.md, auth.lock and a config backup
+# into HERMES_HOME. Every path here comes from argv, so give it a scratch home.
+import atexit
+import os
+import shutil
+import tempfile
+
+os.environ["HERMES_HOME"] = tempfile.mkdtemp(prefix="cron-fence-")
+atexit.register(shutil.rmtree, os.environ["HERMES_HOME"], True)
 sys.path.insert(0, "/opt/hermes")
 try:
     import yaml
@@ -1665,7 +1760,38 @@ except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
 from utils import atomic_yaml_write
 
 MAIL_URLS = ("mail-mcp:8000", "mail-drafts-mcp:8000", "messages-mcp:8000")
+BROWSER = "browser"
 cfg_path = Path(sys.argv[1])
+
+try:
+    from hermes_cli.tools_config import _configurable_keys, _get_platform_tools
+    from toolsets import TOOLSETS
+    CONFIGURABLE = set(_configurable_keys())
+except Exception as exc:  # an upstream rename: keep the old fence, say so
+    print(f"warning: Hermes toolset lookup unavailable, browser stays in cron: {exc}")
+    CONFIGURABLE = None
+
+
+def without_browser(entries):
+    """entries minus browser, with each Hermes bundle that includes the browser
+    replaced by the toolsets it turns on for cron, browser left out."""
+    out = []
+    for entry in entries:
+        name = str(entry)
+        if name == BROWSER:
+            continue
+        if name in TOOLSETS and name not in CONFIGURABLE:
+            parts = _get_platform_tools({"platform_toolsets": {"cron": [name]}}, "cron",
+                                        include_default_mcp_servers=False) & CONFIGURABLE
+            if BROWSER in parts:
+                out += [t for t in sorted(parts - {BROWSER}) if t not in out]
+                continue
+        if entry not in out:
+            out.append(entry)
+    return out
+
+
+CRON_CORE = without_browser(["hermes-cron"]) if CONFIGURABLE is not None else ["hermes-cron"]
 
 
 def origin(url):
@@ -1767,7 +1893,7 @@ if not fence_known and managed and current is not None:
     notes.append(f"kept platform_toolsets.cron on {profile} as it was")
     finish()
 
-if not mail:
+if not mail and CONFIGURABLE is None:
     if managed and current is not None:
         platform.pop("cron", None)
         config["platform_toolsets"] = platform
@@ -1781,317 +1907,39 @@ if not mail:
         notes.append(f"took {', '.join(sorted(listed_ts))} out of your platform_toolsets.cron on {profile}")
     finish()
 
+fenced = sorted(mail) + ([BROWSER] if CONFIGURABLE is not None else [])
 if current is None or managed:
-    desired = ["hermes-cron"] + others
+    desired = CRON_CORE + others
 else:
     desired = [t for t in current if t not in mail and str(t) not in listed_ts]
+    if CONFIGURABLE is not None:
+        desired = without_browser(desired)
     if not set(desired) & (enabled | {"no_mcp"}):
         # A list naming no MCP server gets all of them, mail included.
         desired += others
 if desired == current:
-    notes.append(f"cron jobs on {profile} already can't reach {', '.join(sorted(mail))} unless they ask")
+    notes.append(f"cron jobs on {profile} already can't reach {', '.join(fenced)} unless they ask")
     finish()
 platform["cron"] = desired
 config["platform_toolsets"] = platform
 dirty = True
 if current is None or managed:
-    notes.append(f"pinned platform_toolsets.cron on {profile} without {', '.join(sorted(mail))}: {', '.join(desired)}")
+    notes.append(f"pinned platform_toolsets.cron on {profile} without {', '.join(fenced)}: {', '.join(desired)}")
     finish(lambda: state_path.write_text(json.dumps(desired)))
-notes.append(f"took {', '.join(sorted(mail | listed_ts))} out of your platform_toolsets.cron on {profile}")
+notes.append(f"took {', '.join(sorted(set(fenced) | listed_ts))} out of your platform_toolsets.cron on {profile}")
 finish()
 PY
 )"
   if [ -n "$_out" ]; then log "$_out"; fi
 }
 
-# Slug personal -> CALDAV_PERSONAL_PASSWORD. Hyphens become underscores.
-caldav_password_env_key() {
-  _cpek_slug="$1"
-  _cpek_name="$(printf '%s' "$_cpek_slug" | tr '[:lower:]-' '[:upper:]_')"
-  printf 'CALDAV_%s_PASSWORD' "$_cpek_name"
-}
-
 # Default profile secrets live in HERMES_HOME/.env. Named profiles do not
 # inherit that file, so each registration writes its own copy.
-caldav_profile_env_file() {
+profile_env_file() {
   if [ -z "$1" ]; then
     printf '%s\n' "$DEFAULT_ENV"
   else
     printf '%s/profiles/%s/.env\n' "$HERMES_HOME" "$1"
-  fi
-}
-
-# Register one CalDAV account as mcp_servers.caldav-<slug> with X-Caldav-* headers.
-# hermes config set cannot write nested header maps, so this uses atomic_yaml_write.
-# The password argument is a ${CALDAV_<SLUG>_PASSWORD} reference, not the secret.
-#
-# Usage: register_caldav_account <profile> <slug> <url> <username> <password-ref> <timeout> <connect_timeout> [tool...]
-register_caldav_account() {
-  _rca_profile="$1"
-  _rca_slug="$2"
-  _rca_url="$3"
-  _rca_user="$4"
-  _rca_pass_ref="$5"
-  _rca_timeout="$6"
-  _rca_connect="$7"
-  shift 7
-  _rca_key="caldav-${_rca_slug}"
-  _rca_cfg="$(config_path_for "$_rca_profile")"
-  log "Registering CalDAV MCP server '${_rca_key}' for profile '${_rca_profile:-default}'"
-  _out="$(python3 - "$_rca_cfg" "$_rca_key" "$CALDAV_MCP_URL" "$_rca_url" "$_rca_user" "$_rca_pass_ref" \
-    "$_rca_timeout" "$_rca_connect" "$@" <<'PY'
-import sys
-sys.path.insert(0, "/opt/hermes")
-try:
-    import yaml
-except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
-    import sys as _sys
-    _sys.path.insert(0, "/opt/hermes")
-    import hermes_yaml as yaml
-from utils import atomic_yaml_write
-
-cfg_path, key, mcp_url, caldav_url, username, password_ref, timeout, connect_timeout = sys.argv[1:9]
-tools = sys.argv[9:]
-
-try:
-    with open(cfg_path) as fh:
-        config = yaml.safe_load(fh) or {}
-except FileNotFoundError:
-    print(f"ERROR: {cfg_path} not found")
-    raise SystemExit(1)
-
-servers = config.setdefault("mcp_servers", {})
-if not isinstance(servers, dict):
-    servers = {}
-    config["mcp_servers"] = servers
-
-entry = servers.get(key)
-if not isinstance(entry, dict):
-    entry = {}
-entry["url"] = mcp_url
-entry["timeout"] = int(timeout) if str(timeout).isdigit() else timeout
-entry["connect_timeout"] = int(connect_timeout) if str(connect_timeout).isdigit() else connect_timeout
-entry["headers"] = {
-    "X-Caldav-Url": caldav_url,
-    "X-Caldav-Username": username,
-    "X-Caldav-Password": password_ref,
-}
-if tools:
-    tools_block = entry.get("tools")
-    if not isinstance(tools_block, dict):
-        tools_block = {}
-    tools_block["include"] = list(tools)
-    entry["tools"] = tools_block
-servers[key] = entry
-atomic_yaml_write(cfg_path, config)
-print(f"Wrote mcp_servers.{key} ({len(tools)} tools)" if tools else f"Wrote mcp_servers.{key}")
-PY
-)"
-  if [ -n "$_out" ]; then log "$_out"; fi
-  if [ "$#" -gt 0 ]; then
-    pin_mcp_tools "$_rca_profile" "$_rca_key" "$@"
-  fi
-}
-# Drop caldav-* entries whose account file is gone, and their password key.
-#
-# Only caldav-* entries are ours. Clients register their own CalDAV entries
-# through the Hermes gateway (mcp.servers.add) under another prefix, at the
-# same caldav-mcp URL: Boundary uses calendar-<slug> with BOUNDARY_CALENDAR_*
-# keys (docs/calendar.md). Never match by URL here, as drop_mcp_entries_for_url
-# does for other services: every one of those entries would go with ours.
-#
-# Usage: reconcile_caldav_accounts <profile> <slug...>
-reconcile_caldav_accounts() {
-  _rec_profile="$1"
-  shift
-  _rec_cfg="$(config_path_for "$_rec_profile")"
-  _out="$(python3 - "$_rec_cfg" "$@" <<'PY'
-import sys
-sys.path.insert(0, "/opt/hermes")
-try:
-    import yaml
-except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
-    import sys as _sys
-    _sys.path.insert(0, "/opt/hermes")
-    import hermes_yaml as yaml
-from utils import atomic_yaml_write
-
-cfg_path = sys.argv[1]
-keep_slugs = set(sys.argv[2:])
-keep_keys = {f"caldav-{s}" for s in keep_slugs}
-
-try:
-    with open(cfg_path) as fh:
-        config = yaml.safe_load(fh) or {}
-except FileNotFoundError:
-    raise SystemExit(0)
-
-servers = config.get("mcp_servers")
-if not isinstance(servers, dict):
-    raise SystemExit(0)
-
-removed = []
-for key in list(servers):
-    if not key.startswith("caldav-"):
-        continue
-    if key in keep_keys:
-        continue
-    del servers[key]
-    removed.append(key[len("caldav-"):])
-
-if removed:
-    atomic_yaml_write(cfg_path, config)
-    print("Removed stale CalDAV MCP entries: " + ", ".join("caldav-" + s for s in sorted(removed)))
-    for slug in sorted(removed):
-        print("REMOVED_SLUG " + slug)
-PY
-)"
-  if [ -n "$_out" ]; then
-    _rec_env="$(caldav_profile_env_file "$_rec_profile")"
-    printf '%s\n' "$_out" | while IFS= read -r _rec_line; do
-      case "$_rec_line" in
-        REMOVED_SLUG\ *)
-          _rec_slug="${_rec_line#REMOVED_SLUG }"
-          _rec_key="$(caldav_password_env_key "$_rec_slug")"
-          remove_env_key "$_rec_env" "$_rec_key"
-          log "Removed ${_rec_key} from ${_rec_env}"
-          ;;
-        *)
-          log "$_rec_line"
-          ;;
-      esac
-    done
-  fi
-}
-
-# Discover compose/caldav-mcp/accounts/*.env and register each as caldav-<slug>.
-# api-server gets the read-only allowlist; default and browser get all tools.
-# With CALDAV_MCP_ENABLED unset this touches nothing, including entries other
-# clients registered (see reconcile_caldav_accounts).
-register_caldav_mcp_servers() {
-  _rcms_profile="$1"
-  case "$CALDAV_MCP_ENABLED" in
-    1|true|TRUE|yes|YES) ;;
-    *)
-      log "Skipping CalDAV MCP registration (CALDAV_MCP_ENABLED=${CALDAV_MCP_ENABLED})"
-      return 0
-      ;;
-  esac
-
-  if [ ! -d "$CALDAV_MCP_ACCOUNTS_DIR" ]; then
-    log "WARNING: CalDAV accounts dir missing (${CALDAV_MCP_ACCOUNTS_DIR}) - skip registration"
-    return 0
-  fi
-
-  # Read-only tools for unattended api-server; full surface elsewhere.
-  if [ "$_rcms_profile" = "api-server" ]; then
-    set -- \
-      caldav_list_calendars \
-      caldav_get_events \
-      caldav_get_today_events \
-      caldav_get_week_events \
-      caldav_get_event_by_uid \
-      caldav_search_events \
-      caldav_get_freebusy \
-      caldav_list_attendees
-  else
-    set -- \
-      caldav_list_calendars \
-      caldav_get_events \
-      caldav_get_today_events \
-      caldav_get_week_events \
-      caldav_get_event_by_uid \
-      caldav_search_events \
-      caldav_get_freebusy \
-      caldav_list_attendees \
-      caldav_create_event \
-      caldav_update_event \
-      caldav_delete_event \
-      caldav_move_event \
-      caldav_add_attendee \
-      caldav_remove_attendee
-  fi
-
-  _rcms_slugs=""
-  _rcms_count=0
-  for _rcms_file in "$CALDAV_MCP_ACCOUNTS_DIR"/*.env; do
-    [ -f "$_rcms_file" ] || continue
-    _rcms_base="$(basename "$_rcms_file")"
-    case "$_rcms_base" in
-      *.example|.*) continue ;;
-    esac
-    _rcms_slug="${_rcms_base%.env}"
-    case "$_rcms_slug" in
-      *[!a-z0-9-]*|'')
-        log "WARNING: Skipping CalDAV account '${_rcms_base}' - slug must match [a-z0-9-]+"
-        continue
-        ;;
-    esac
-
-    _rcms_url=""
-    _rcms_user=""
-    _rcms_pass=""
-    while IFS= read -r _rcms_line || [ -n "$_rcms_line" ]; do
-      case "$_rcms_line" in
-        ''|'#'*) continue ;;
-        *=*)
-          _rcms_k="${_rcms_line%%=*}"
-          _rcms_v="${_rcms_line#*=}"
-          case "$_rcms_v" in
-            *' #'*) _rcms_v="${_rcms_v%% #*}" ;;
-          esac
-          # Trim CR and surrounding quotes.
-          _rcms_v="$(printf '%s' "$_rcms_v" | tr -d '\r')"
-          case "$_rcms_v" in
-            \"*\") _rcms_v="${_rcms_v#\"}"; _rcms_v="${_rcms_v%\"}" ;;
-            \'*\') _rcms_v="${_rcms_v#\'}"; _rcms_v="${_rcms_v%\'}" ;;
-          esac
-          case "$_rcms_k" in
-            CALDAV_URL) _rcms_url="$_rcms_v" ;;
-            CALDAV_USERNAME) _rcms_user="$_rcms_v" ;;
-            CALDAV_PASSWORD) _rcms_pass="$_rcms_v" ;;
-          esac
-          ;;
-      esac
-    done < "$_rcms_file"
-
-    if [ -z "$_rcms_url" ] || [ -z "$_rcms_user" ] || [ -z "$_rcms_pass" ]; then
-      log "WARNING: Skipping CalDAV account '${_rcms_slug}' - missing CALDAV_URL/USERNAME/PASSWORD"
-      continue
-    fi
-    case "$_rcms_pass" in
-      xxxx-xxxx-xxxx-xxxx|change-me*|changeme*|your-*|placeholder*)
-        log "WARNING: Skipping CalDAV account '${_rcms_slug}' - password still looks like a placeholder"
-        continue
-        ;;
-    esac
-    case "$_rcms_user" in
-      you@icloud.com|your-*|change-me*|user@example.com)
-        log "WARNING: Skipping CalDAV account '${_rcms_slug}' - username still looks like a placeholder"
-        continue
-        ;;
-    esac
-
-    _rcms_env_key="$(caldav_password_env_key "$_rcms_slug")"
-    _rcms_pass_ref="\${${_rcms_env_key}}"
-    _rcms_env_file="$(caldav_profile_env_file "$_rcms_profile")"
-    mkdir -p "$(dirname "$_rcms_env_file")"
-    upsert_env "$_rcms_env_file" "$_rcms_env_key" "$_rcms_pass"
-    register_caldav_account "$_rcms_profile" "$_rcms_slug" \
-      "$_rcms_url" "$_rcms_user" "$_rcms_pass_ref" \
-      "$CALDAV_MCP_TIMEOUT" "$CALDAV_MCP_CONNECT_TIMEOUT" "$@"
-    _rcms_slugs="${_rcms_slugs} ${_rcms_slug}"
-    _rcms_count=$((_rcms_count + 1))
-  done
-
-  # shellcheck disable=SC2086
-  reconcile_caldav_accounts "$_rcms_profile" $_rcms_slugs
-
-  if [ "$_rcms_count" -eq 0 ]; then
-    log "WARNING: CALDAV_MCP_ENABLED=1 but no valid accounts in ${CALDAV_MCP_ACCOUNTS_DIR}"
-    log "  Copy compose/caldav-mcp/account.env.example to accounts/<slug>.env and fill credentials"
-  else
-    log "Registered ${_rcms_count} CalDAV account(s) on profile '${_rcms_profile:-default}'"
   fi
 }
 
@@ -2135,7 +1983,6 @@ if is_true "$BOOTSTRAP_SHARED"; then
   # Same rationale as the skills registration: dashboard and CLI sessions get URL
   # reading whether or not the API server profile is ever configured.
   register_web_mcp_servers ""
-  register_caldav_mcp_servers ""
   register_messages_mcp_servers ""
   register_addon_mcp_servers ""
   register_addon_vault_backends ""
@@ -2337,7 +2184,6 @@ fi
 # Same web-reading servers as the default profile above; profiles carry their
 # own config.yaml, so the earlier registration does not reach API sessions.
 register_web_mcp_servers "$PROFILE"
-register_caldav_mcp_servers "$PROFILE"
 register_messages_mcp_servers "$PROFILE"
 register_addon_mcp_servers "$PROFILE"
 register_addon_vault_backends "$PROFILE"

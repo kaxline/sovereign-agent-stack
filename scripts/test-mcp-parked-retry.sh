@@ -18,9 +18,10 @@ hermes_image_gate "${1:-}" "MCP parked retry"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 {
-  grep -E '^(SEARXNG|CALDAV|SQL|MAIL|MAIL_DRAFTS|MESSAGES)_MCP(_RO|_RW)?_URL=' "$bootstrap"
-  # LightRAG's URL comes from its manifest (addon_mcp_urls), not from a variable;
-  # instance URLs come from addon_instance_urls.
+  grep -E '^(SEARXNG|SQL|MAIL|MAIL_DRAFTS|MESSAGES)_MCP(_RO|_RW)?_URL=' "$bootstrap"
+  # LightRAG's, CalDAV's and OpenCode's URLs come from their manifests
+  # (addon_mcp_urls), not from a variable; per-instance URLs come from
+  # addon_instance_urls.
   for fn in addon_mcp_urls addon_instances_plan addon_instance_urls set_stack_mcp_parked_retry; do
     fn_source "$bootstrap" "$fn"
   done

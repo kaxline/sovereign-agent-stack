@@ -8,8 +8,63 @@ the stack under another app.
 
 ## Unreleased
 
+### Upgrade steps
+
+- Cron jobs no longer get the browser unless they ask. A Hermes cron job
+  that browses and has no `enabled_toolsets` of its own loses `browser_exec`,
+  `browser_cdp`, `browser_dialog` and `browser_vault` after the bootstraps
+  run. Give such a job its own `enabled_toolsets` that includes `browser`,
+  plus the other toolsets and MCP servers it needs.
+- CalDAV accounts moved from `compose/caldav-mcp/accounts/<slug>.env` to the
+  `caldav` add-on's store, and nothing reads the old files. Connect each one
+  again with `scripts/addon.sh connect caldav --instance <slug>`, JSON on
+  stdin with `url`, `username` and `password` (docs/calendar.md), then delete
+  the old file; `make doctor` warns while one is left. There is no migration
+  code: the add-on is experimental. Boundary's `calendar-<slug>` entries are
+  not affected.
+
 ### Changes
 
+- The bootstraps' cron fence now keeps the `browser` toolset out of
+  `platform_toolsets.cron` on every profile they run on, and pins that list
+  even when no mail, messages or fenced add-on server is registered. The list
+  names Hermes' cron toolsets one by one (`clarify`, `code_execution`, …,
+  `web`) instead of `hermes-cron`, because that bundle includes the browser.
+  A list the bootstrap wrote earlier is rewritten. A hand-written list loses
+  `browser`, and a `hermes-cron` or `hermes-cli` in it is replaced by its
+  toolsets without `browser`. Cron runs unattended, and the browser can drive
+  signed-in sessions.
+- New, opt-in: the client gateway (compose profile `client-gateway`), which
+  serves ACP v1 over a WebSocket on `127.0.0.1:${CLIENT_GATEWAY_PORT:-8650}`
+  at `/acp` (the built-in assistant) and `/acp/agents/<slug>`, backed by
+  Hermes' dashboard `/api/ws`. It needs `CLIENT_API_TOKEN` (32 characters or
+  more; `scripts/setup.sh` generates it) sent as `Authorization: Bearer` on the
+  upgrade; a browser `Origin` must be listed in `CLIENT_API_ALLOWED_ORIGINS`.
+  Phase 1 covers sessions, prompt turns, cancel, approvals and clarify; secret
+  and vault prompts are declined until a later release. Nothing changes for
+  clients on `/api/ws`, and Boundary has no step yet. ACP pin and versions:
+  `compose/client-gateway/ACP.md`.
+- CalDAV calendars are a built-in add-on (`addons/caldav/addon.json`, title
+  "CalDAV calendars"), so `addon.sh list`, `enable caldav`, `connect caldav`
+  and `disconnect caldav` work on them. The flag (`CALDAV_MCP_ENABLED`), the
+  compose profile (`calendar`), the server names (`caldav-<slug>`), the
+  `caldav-mcp` URL, the `X-Caldav-*` headers, the `CALDAV_<SLUG>_PASSWORD`
+  keys and the tools on the default and browser profiles are unchanged.
+  Three differences, all from the manifest's `permissions.reads:
+  ["calendar"]`: `api-server` no longer gets the 8 read tools, cron jobs no
+  longer get `caldav-*` (a job that names one in its own `enabled_toolsets`
+  still does), and with the flag off the bootstrap removes `caldav-*` entries
+  and their keys instead of leaving them. `CALDAV_MCP_URL` and
+  `CALDAV_MCP_ACCOUNTS_DIR` are gone; the timeout variables stay.
+  `setup.sh --calendar` and `make ensure-local` no longer create a
+  placeholder account file.
+- Add-on manifests: `mcp.instances.headers`, a map from header name to a
+  template over instance settings with at most one `{secret:<name>}`, in
+  place of `auth`. With it, `url` may be the same for every instance.
+  `instances-plan` lines gain a fourteenth field, `headers`, and the add-on
+  line's `keyenv` carries the key suffix of an entry with a secret header.
+  `mcp-urls` lists an `mcp.instances` URL that has no placeholder. `caldav-`
+  is no longer a core prefix.
 - OpenCode is a built-in add-on (`addons/opencode/addon.json`), so
   `addon.sh list`, `enable opencode` and `disable opencode` work on it. The
   flag (`OPENCODE_MCP_ENABLED`), the compose profile (`coding`), the server
@@ -65,6 +120,20 @@ the stack under another app.
 - Add-on manifests: `hooks.prepare`, a script `addon.sh enable` runs on every
   enable before step `flags`. `enable --json` then starts with step
   `prepare`, and a failed prepare leaves the add-on as it was.
+- Add-on manifests: `web` (`{service, path}`) names the page a person opens,
+  and `addon.sh list --json` gains `web` on every add-on: null, or
+  `{service, path, url}` with `url` built from the host port compose
+  publishes for that service (null while its gate is off). Vikunja's is
+  `http://localhost:3456/login-local`, signed in (Boundary CR 0032 R3);
+  Twenty, Actual and n8n give their web apps at `/`.
+- Add-on manifests: `data.schemas` lists shared-Postgres schemas, and
+  `addon.sh remove --delete-data` drops each one with its `svc_<schema>`
+  role, starting `postgres-db` for it when it isn't running. Vikunja declares
+  `vikunja`, so removing its data now deletes the lists (Boundary CR 0032
+  R4). `plan-remove` output gains `schemas`.
+- `scripts/db.sh service-remove <slug> --yes` drops a service schema, its
+  role and `compose/postgres/services/<slug>.env`, replacing the hand-run SQL
+  in `docs/database.md`.
 - `todo.sh prepare` and `todo.sh init` take `--json`: progress goes to stderr,
   and `init` ends with a `done` line naming the account and `todos`.
 - The SQL MCP is a built-in add-on (`addons/sql/addon.json`), so

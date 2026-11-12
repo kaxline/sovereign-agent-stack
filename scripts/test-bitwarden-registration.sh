@@ -126,12 +126,26 @@ run_all() {
 tree() { (cd /h && find . -type f | LC_ALL=C sort | xargs sha256sum); }
 
 export BITWARDEN_ENABLED=0
+# Hermes' cron toolsets without browser: the fence pins them on every profile
+# whether or not the flag is on (test-addon-cron-fence.sh covers that).
+HERMES_HOME="$(mktemp -d)" python3 -c 'import sys; sys.path.insert(0, "/opt/hermes")
+from hermes_cli.tools_config import _get_platform_tools, _configurable_keys
+t = _get_platform_tools({"platform_toolsets": {"cron": ["hermes-cron"]}}, "cron", include_default_mcp_servers=False)
+print("core=" + ",".join(sorted((t & set(_configurable_keys())) - {"browser"})))'
+run_all
+python3 /w/profile_config.py off
+# Only the cron fence touched the configs; a second run with the flag off
+# changes nothing.
+for p in default browser api-server; do
+  f=/h/config.yaml; [ "$p" = default ] || f="/h/profiles/$p/config.yaml"
+  cp "$f" "/w/base/$p.yaml"
+done
 run_all
 cmp -s /h/config.yaml /w/base/default.yaml \
   && cmp -s /h/profiles/browser/config.yaml /w/base/browser.yaml \
   && cmp -s /h/profiles/api-server/config.yaml /w/base/api-server.yaml \
   && echo "off-identical"
-[ "$(cd /h && find . -type f | wc -l)" = 3 ] && echo "off-no-new-files"
+[ "$(cd /h && find . -type f ! -name .mail-cron-toolsets.json | wc -l)" = 3 ] && echo "off-no-new-files"
 
 # A copy in a profile's own plugins dir would shadow the bundled one.
 mkdir -p /h/profiles/browser/plugins/bwbroker /h/plugins/disk-cleanup
@@ -447,8 +461,12 @@ for p in default browser api-server; do
   expect "on:$p:bitwarden=False" "$p sets vault.bitwarden.enabled false"
 done
 expect 'on:default:onepassword=False' "other vault keys are kept"
-expect 'on:default:cron=hermes-cron,searxng' "the bitwarden toolset is taken out of a hand-written cron list"
-expect 'on:browser:cron=' "no cron list is pinned for the plugin alone"
+core="$(printf '%s\n' "$out" | sed -n 's/^core=//p')"
+[ -n "$core" ] || fail "no core toolset line (output: $out)"
+expect "off:default:cron=$core,bitwarden,searxng" "with the flag off a hand-written list keeps bitwarden, browser out"
+expect "off:default:known_cron=" "with the flag off nothing goes into known_plugin_toolsets"
+expect "on:default:cron=$core,searxng" "the bitwarden toolset is taken out of a hand-written cron list"
+expect "on:browser:cron=$core,searxng" "browser's cron list is the core toolsets without browser"
 expect 'on-idempotent' "a second run changes nothing"
 expect 'bundled-installed-flag-off' "the install step puts the plugin in Hermes's bundled dir with the flag off"
 expect 'bundled-replaced' "the install step replaces an earlier copy"

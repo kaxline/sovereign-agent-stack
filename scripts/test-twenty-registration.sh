@@ -32,7 +32,7 @@ calls=""
 logs=""
 log() { logs="${logs}$*
 "; }
-caldav_profile_env_file() { printf 'env:%s\n' "${1:-default}"; }
+profile_env_file() { printf 'env:%s\n' "${1:-default}"; }
 mkdir() { :; }
 upsert_env() { calls="${calls}upsert:${1}:${2}=${3};"; }
 remove_env_key() { calls="${calls}remove:${1}:${2};"; }

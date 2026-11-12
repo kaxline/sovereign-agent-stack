@@ -12,7 +12,8 @@ containers that hold the account passwords, registered as `email` and
 `email-drafts`); both email add-ons are described in
 [docs/email.md](../docs/email.md). The AI text detector (`detector/`) is
 described in [docs/detector.md](../docs/detector.md). The SQL MCP (`sql/`)
-is described in [docs/database.md](../docs/database.md), and OpenCode
+is described in [docs/database.md](../docs/database.md), CalDAV calendars
+(`caldav/`) in [docs/calendar.md](../docs/calendar.md) and OpenCode
 (`opencode/`) in [docs/opencode.md](../docs/opencode.md). The other optional
 services are still wired by hand.
 
@@ -85,6 +86,19 @@ except where noted:
     `<scheme> ${<NAME>_KEY}`. A profile whose key is missing gets no entry.
     Without `auth` the entry takes no key, and the bootstrap writes
     `tools.include`: `tools` less `writeTools` at `ro`.
+  - `headers` (optional, not with `auth`): a map from header name to a
+    template. `{setting:<name>}` names a `url` or `string` instance setting
+    and is filled verbatim; `{secret:<name>}`, at most once across all
+    headers, names a stored `secret` instance setting (not `transient`). The
+    bootstrap writes that secret into the profile's `.env` as
+    `<NAME>_<SETTING>` (`caldav-work-cal` and `password` give
+    `CALDAV_WORK_CAL_PASSWORD`) and the header carries `${<NAME>_<SETTING>}`.
+    It replaces the entry's headers and writes `tools.include` as without
+    `auth`. An instance whose secret file is missing, or whose header would be
+    empty or hold a control character, gets no entry. When a header names a
+    setting, `url` may be the same for every instance; `mcp-urls` then lists
+    it. CalDAV uses it: one `caldav-mcp` URL, the account in `X-Caldav-*`
+    headers.
   - `gate` (optional): `{setting, flag}`. An instance whose bool `setting` is
     true registers only while `flag` (`builtin.flag` or a gate) is on.
   With `auth` the bootstrap writes no `tools.include`, and `tools` only bounds
@@ -92,7 +106,7 @@ except where noted:
   `env` it reads `timeout` and `connectTimeout`; `env.url` is ignored.
   The entry needs a top-level `instances` block that declares the settings it
   names. Removing an instance drops its entries and keys on the next
-  bootstrap. Twenty and Actual use it.
+  bootstrap. Twenty, Actual and CalDAV use it.
 - `bind`, per instance: an instance file may hold `bind`, a map from profile to
   `ro` or `rw` that replaces `mcp.profiles` for that instance. It is the
   stack's, not a setting: no schema may declare it, and `addon.sh connect` and
@@ -145,10 +159,16 @@ except where noted:
   enable` runs `prepare` every time, before it sets the flag or starts
   anything, so it must be safe to re-run; it runs `init` once, after the
   services start. `connect` and `disconnect` come from `instances`.
-- `data`: `{"paths": [{"env", "default"}], "volumes": [<compose volume>]}`.
-  `addon.sh remove --delete-data` deletes them. A path's
-  `default` is `./data/...` and must be a bind-mount source in
-  `docker-compose.yml`, or its parent.
+- `data`: `{"paths": [{"env", "default"}], "volumes": [<compose volume>],
+  "schemas": [<schema>]}`. `addon.sh remove --delete-data` deletes them. A
+  path's `default` is `./data/...` and must be a bind-mount source in
+  `docker-compose.yml`, or its parent. A schema is one in the shared Postgres,
+  dropped with its `svc_<schema>` role by `scripts/db.sh service-remove`; it
+  needs `uses: ["postgres"]`, and no two add-ons may declare the same one.
+- `web`: `{"service", "path"}`, the page a person opens. `service` is a key
+  of `services` that has a `port`. `addon.sh list --json` resolves it to
+  `web.url`, `http://localhost:<host port><path>`, from the port compose
+  publishes for that container port. Vikunja, Twenty, Actual and n8n set it.
 - `backup`: `{"secrets": [<env name>], "recommended": [<env name>]}`, listed
   by `addon.sh list --json` for callers that offer a backup.
 - `host`: a part that runs on the host instead of in Docker, with
