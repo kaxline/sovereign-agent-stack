@@ -1,5 +1,6 @@
 #!/bin/sh
 # shellcheck disable=SC2034  # read by the eval'd bootstrap functions
+# shellcheck disable=SC2218  # the real mkdir runs before the stub below replaces it for the bootstrap functions
 # Which Hermes profiles get which Twenty workspace, and with which key: the
 # bootstrap's generic mcp.instances registration, run on the host against the
 # real addons/twenty/addon.json and a synthetic instance store. The YAML

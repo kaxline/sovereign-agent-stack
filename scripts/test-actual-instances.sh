@@ -1,5 +1,6 @@
 #!/bin/sh
 # shellcheck disable=SC2034  # read by the eval'd bootstrap functions
+# shellcheck disable=SC2015  # "A && B || fail" is the check: fail runs when either test is false
 # Connected Actual budgets (<data root>/addons/actual/instances) as Hermes MCP
 # entries through the generic mcp.instances path: addon_manifest.py
 # instances-plan on a synthetic store with the real Actual manifest, the cron
