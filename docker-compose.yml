@@ -2240,7 +2240,10 @@ services:
     security_opt: ["no-new-privileges:true"]
     tmpfs: ["/tmp"]
     environment:
-      - CLIENT_API_TOKEN=${CLIENT_API_TOKEN:?set CLIENT_API_TOKEN in .env (scripts/setup.sh generates it)}
+      # Not :? — compose interpolates every service, so a required variable would
+      # break installs that never enable this profile. The gateway exits with a
+      # message when the token is missing, short or the placeholder.
+      - CLIENT_API_TOKEN=${CLIENT_API_TOKEN:-}
       - CLIENT_API_ALLOWED_ORIGINS=${CLIENT_API_ALLOWED_ORIGINS:-}
       - CLIENT_GATEWAY_HERMES_URL=http://hermes:9119
       - HERMES_DASHBOARD_USER=${HERMES_DASHBOARD_USER:-admin}

@@ -80,6 +80,9 @@ def compose_checks(c: Checks) -> None:
     c.expect(svc.get("profiles") == ["client-gateway"], f"profile client-gateway: {svc.get('profiles')}")
     absent = compose_config.render("core", {"CLIENT_API_TOKEN": kit.TOKEN})["services"]
     c.expect("client-gateway" not in absent, "client-gateway is off without its profile")
+    # An install that never set the token must still render (compose interpolates
+    # every service, active or not).
+    compose_config.render("core", drop=("CLIENT_API_TOKEN",), env={"CLIENT_API_TOKEN": ""})
 
 
 def main() -> None:
