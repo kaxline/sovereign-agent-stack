@@ -1022,10 +1022,11 @@ new watermark before the run.
 its own gets every MCP server on its profile, and a list that names no MCP
 server gets them all too. So while mail or drafts is registered on a
 profile, the bootstraps set `platform_toolsets.cron` to Hermes's default cron
-tools plus every other MCP server, leaving out `mail` and `drafts`. That
-list is recorded in `.mail-cron-toolsets.json` beside the profile's
-`config.yaml`, and refreshed or removed on later runs. If you wrote your own
-`platform_toolsets.cron`, it's kept with only mail and drafts taken out. Add
+toolsets (without `browser`) plus every other MCP server, leaving out `mail`
+and `drafts`. That list is recorded in `.mail-cron-toolsets.json` beside the
+profile's `config.yaml`, and refreshed on later runs. If you wrote your own
+`platform_toolsets.cron`, it's kept with only mail, drafts and `browser` taken
+out. Add
 an MCP server by hand and re-run the bootstraps so cron jobs get it too.
 Add-ons whose manifest doesn't set `permissions.cron` to `true` are left out
 of the same list (see [addons/README.md](../addons/README.md)).

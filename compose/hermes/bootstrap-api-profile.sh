@@ -1757,15 +1757,19 @@ PY
   if [ -n "$_out" ]; then log "$_out"; fi
 }
 
-# Keep the mail and messages tools, and every add-on whose manifest doesn't
-# set permissions.cron true, away from cron jobs that didn't ask for them.
+# Keep the browser, the mail and messages tools, and every add-on whose
+# manifest doesn't set permissions.cron true, away from cron jobs that didn't
+# ask for them.
 #
 # Cron runs unattended, and a job without its own tool list gets every MCP
 # server, mail and messages included, next to web search, the browser and a
-# shell. While one of the fenced servers is registered on a profile, pin
-# platform_toolsets.cron to Hermes's default cron tools plus every other MCP
-# server. A job that names a fenced server in its own enabled_toolsets (make
-# mail-triage-cron, make messages-triage-cron) still gets it. Add-ons are
+# shell. Pin platform_toolsets.cron to Hermes's default cron toolsets without
+# browser, plus every MCP server not fenced. hermes-cron is a bundle that
+# includes the browser, so the list names its toolsets one by one, read from
+# Hermes at each run so a new Hermes toolset appears after a bump. The browser
+# can drive signed-in sessions (docs/contracts/browser.md). A job that names a
+# fenced toolset or server in its own enabled_toolsets (make mail-triage-cron,
+# make messages-triage-cron) still gets it. Add-ons are
 # matched by MCP name, or by the scheme, host and port of a URL
 # (addon_manifest.cron_fence), so a connected Actual budget's write entry on
 # actual-mcp-rw is fenced while its -ro entry on actual-mcp-ro is not.
@@ -1779,8 +1783,9 @@ PY
 # cron turn either way.
 #
 # A list we wrote is recorded in .mail-cron-toolsets.json next to config.yaml,
-# so it can be refreshed or removed later. A list you wrote yourself is kept;
-# only the fenced servers are taken out of it.
+# so it can be refreshed later. A list you wrote yourself is kept; the fenced
+# servers and browser are taken out of it, and a bundle in it that includes the
+# browser (hermes-cron, hermes-cli) is replaced by its toolsets without browser.
 fence_mail_from_cron() {
   _fmc_cfg="$(config_path_for "$1")"
   [ -f "$_fmc_cfg" ] || return 0
@@ -1791,6 +1796,15 @@ import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
+# Importing Hermes' toolset code writes SOUL.md, auth.lock and a config backup
+# into HERMES_HOME. Every path here comes from argv, so give it a scratch home.
+import atexit
+import os
+import shutil
+import tempfile
+
+os.environ["HERMES_HOME"] = tempfile.mkdtemp(prefix="cron-fence-")
+atexit.register(shutil.rmtree, os.environ["HERMES_HOME"], True)
 sys.path.insert(0, "/opt/hermes")
 try:
     import yaml
@@ -1801,7 +1815,38 @@ except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
 from utils import atomic_yaml_write
 
 MAIL_URLS = ("mail-mcp:8000", "mail-drafts-mcp:8000", "messages-mcp:8000")
+BROWSER = "browser"
 cfg_path = Path(sys.argv[1])
+
+try:
+    from hermes_cli.tools_config import _configurable_keys, _get_platform_tools
+    from toolsets import TOOLSETS
+    CONFIGURABLE = set(_configurable_keys())
+except Exception as exc:  # an upstream rename: keep the old fence, say so
+    print(f"warning: Hermes toolset lookup unavailable, browser stays in cron: {exc}")
+    CONFIGURABLE = None
+
+
+def without_browser(entries):
+    """entries minus browser, with each Hermes bundle that includes the browser
+    replaced by the toolsets it turns on for cron, browser left out."""
+    out = []
+    for entry in entries:
+        name = str(entry)
+        if name == BROWSER:
+            continue
+        if name in TOOLSETS and name not in CONFIGURABLE:
+            parts = _get_platform_tools({"platform_toolsets": {"cron": [name]}}, "cron",
+                                        include_default_mcp_servers=False) & CONFIGURABLE
+            if BROWSER in parts:
+                out += [t for t in sorted(parts - {BROWSER}) if t not in out]
+                continue
+        if entry not in out:
+            out.append(entry)
+    return out
+
+
+CRON_CORE = without_browser(["hermes-cron"]) if CONFIGURABLE is not None else ["hermes-cron"]
 
 
 def origin(url):
@@ -1903,7 +1948,7 @@ if not fence_known and managed and current is not None:
     notes.append(f"kept platform_toolsets.cron on {profile} as it was")
     finish()
 
-if not mail:
+if not mail and CONFIGURABLE is None:
     if managed and current is not None:
         platform.pop("cron", None)
         config["platform_toolsets"] = platform
@@ -1917,23 +1962,26 @@ if not mail:
         notes.append(f"took {', '.join(sorted(listed_ts))} out of your platform_toolsets.cron on {profile}")
     finish()
 
+fenced = sorted(mail) + ([BROWSER] if CONFIGURABLE is not None else [])
 if current is None or managed:
-    desired = ["hermes-cron"] + others
+    desired = CRON_CORE + others
 else:
     desired = [t for t in current if t not in mail and str(t) not in listed_ts]
+    if CONFIGURABLE is not None:
+        desired = without_browser(desired)
     if not set(desired) & (enabled | {"no_mcp"}):
         # A list naming no MCP server gets all of them, mail included.
         desired += others
 if desired == current:
-    notes.append(f"cron jobs on {profile} already can't reach {', '.join(sorted(mail))} unless they ask")
+    notes.append(f"cron jobs on {profile} already can't reach {', '.join(fenced)} unless they ask")
     finish()
 platform["cron"] = desired
 config["platform_toolsets"] = platform
 dirty = True
 if current is None or managed:
-    notes.append(f"pinned platform_toolsets.cron on {profile} without {', '.join(sorted(mail))}: {', '.join(desired)}")
+    notes.append(f"pinned platform_toolsets.cron on {profile} without {', '.join(fenced)}: {', '.join(desired)}")
     finish(lambda: state_path.write_text(json.dumps(desired)))
-notes.append(f"took {', '.join(sorted(mail | listed_ts))} out of your platform_toolsets.cron on {profile}")
+notes.append(f"took {', '.join(sorted(set(fenced) | listed_ts))} out of your platform_toolsets.cron on {profile}")
 finish()
 PY
 )"

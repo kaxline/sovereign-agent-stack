@@ -1,6 +1,7 @@
 #!/bin/sh
-# The bootstrap's cron fence (fence_mail_from_cron) keeps add-ons whose
-# manifest doesn't set permissions.cron true out of platform_toolsets.cron.
+# The bootstrap's cron fence (fence_mail_from_cron) keeps the browser, and
+# add-ons whose manifest doesn't set permissions.cron true, out of
+# platform_toolsets.cron.
 #
 #   sh scripts/test-addon-cron-fence.sh [--host-only | --image]
 #
@@ -79,12 +80,41 @@ seed_crm() {
   rm -f /h/.mail-cron-toolsets.json
   printf 'mcp_servers:\n  crm-main:\n    url: http://twenty-server:3000/mcp\n  searxng:\n    url: http://searxng-mcp:8000/mcp\n' > /h/config.yaml
 }
-cron_list() { tr -d '\n ' < /h/config.yaml | sed -n 's/.*cron:\(.*\)/\1/p'; }
+cron_list() {
+  python3 -c 'import sys; sys.path.insert(0, "/opt/hermes"); import hermes_yaml as y
+c = (y.safe_load(open("/h/config.yaml")) or {}).get("platform_toolsets") or {}
+print(",".join(map(str, c.get("cron") or [])))'
+}
+# What Hermes resolves for cron from a list, as the scheduler sees it.
+cron_resolves() {
+  python3 -c 'import sys; sys.path.insert(0, "/opt/hermes"); import hermes_yaml as y
+from hermes_cli.tools_config import _get_platform_tools
+print(",".join(sorted(_get_platform_tools(y.safe_load(open("/h/config.yaml")), "cron", include_default_mcp_servers=False))))'
+}
+seed_list() {
+  rm -f /h/.mail-cron-toolsets.json
+  printf 'mcp_servers:\n  searxng:\n    url: http://searxng-mcp:8000/mcp\nplatform_toolsets:\n  cron:\n' > /h/config.yaml
+  for t in "$@"; do printf '  - %s\n' "$t" >> /h/config.yaml; done
+}
 
 ADDON_MANIFEST_PY=/bootstrap/addon_manifest.py
 ADDON_DATA_DIR=/w/addon-data
 ADDONS_DIR=/bootstrap/addons; seed; fence_mail_from_cron ""
 echo "true:$(cron_list)"
+echo "resolves:$(cron_resolves)"
+# A list an earlier bootstrap pinned (bundle and all) is rewritten.
+printf '["hermes-cron", "searxng"]' > /h/.mail-cron-toolsets.json
+printf 'mcp_servers:\n  searxng:\n    url: http://searxng-mcp:8000/mcp\nplatform_toolsets:\n  cron:\n  - hermes-cron\n  - searxng\n' > /h/config.yaml
+fence_mail_from_cron ""
+echo "old-pin:$(cron_list)"
+seed_list hermes-cron searxng; fence_mail_from_cron ""
+echo "own-bundle:$(cron_list)"
+seed_list terminal browser searxng; fence_mail_from_cron ""
+echo "own-browser:$(cron_list)"
+seed_list terminal web; fence_mail_from_cron ""
+echo "own-no-mcp:$(cron_list)"
+first="$(cat /h/config.yaml)"; fence_mail_from_cron "" >/dev/null
+[ "$(cat /h/config.yaml)" = "$first" ] && echo "own-idempotent"
 ADDONS_DIR=/w/addons-off; seed; fence_mail_from_cron ""
 echo "false:$(cron_list)"
 ADDONS_DIR=/bootstrap/addons; seed_budget http://actual-mcp-ro:3000/main/mcp; fence_mail_from_cron ""
@@ -108,12 +138,23 @@ out="$(docker run --rm --entrypoint /bin/sh \
   -v "$work:/w" -v "$work/home:/h" "$IMAGE" /w/run.sh 2>&1)" || fail "fence run failed: $out"
 
 expect() { printf '%s\n' "$out" | grep -qx -- "$1" || fail "$2 (output: $out)"; }
-expect 'true:' "cron true leaves platform_toolsets.cron unset"
-expect 'false:-hermes-cron-searxng' "cron false pins a cron list without gptr"
-expect 'ro-at-ro:' "a budget (cron ro) registered at its ro URL stays in cron"
-expect 'ro-at-rw:-hermes-cron-searxng' "a budget (cron ro) registered at its rw URL is fenced"
-expect 'crm-ro:' "Twenty (cron true) leaves crm-* entries in cron, as before 0.3.13"
-expect 'crm-false:-hermes-cron-searxng' "an instances add-on with cron false fences crm-main"
-expect 'missing:-hermes-cron-searxng' "a missing module keeps the list it wrote"
-expect 'back:' "the list is removed once the manifest allows cron"
+# Hermes' cron toolsets without browser, as the fence reads them from the image.
+core="$(printf '%s\n' "$out" | sed -n 's/^true:\(.*\),gptr,searxng$/\1/p')"
+[ -n "$core" ] || fail "cron true pins the core toolsets plus gptr and searxng (output: $out)"
+case ",$core," in *,browser,*) fail "the pinned list holds browser: $core" ;; esac
+case ",$core," in *,terminal,*) ;; *) fail "the pinned list lost Hermes' other cron toolsets: $core" ;; esac
+printf '%s\n' "$out" | grep -q '^resolves:.*browser' && fail "Hermes still resolves browser for cron (output: $out)"
+printf '%s\n' "$out" | grep -q '^resolves:.*terminal' || fail "Hermes resolves the pinned list (output: $out)"
+expect "false:$core,searxng" "cron false pins a cron list without gptr"
+expect "ro-at-ro:$core,budget-main,searxng" "a budget (cron ro) registered at its ro URL stays in cron"
+expect "ro-at-rw:$core,searxng" "a budget (cron ro) registered at its rw URL is fenced"
+expect "crm-ro:$core,crm-main,searxng" "Twenty (cron true) leaves crm-* entries in cron"
+expect "crm-false:$core,searxng" "an instances add-on with cron false fences crm-main"
+expect "missing:$core,searxng" "a missing module keeps the list it wrote"
+expect "back:$core,crm-main,searxng" "crm-main comes back once the manifest allows cron; browser stays out"
+expect "old-pin:$core,searxng" "a list an earlier bootstrap pinned is rewritten without browser"
+expect "own-bundle:$core,searxng" "a hand-written hermes-cron is replaced by its toolsets without browser"
+expect "own-browser:terminal,searxng" "browser is taken out of a hand-written list"
+expect "own-no-mcp:terminal,web,searxng" "a hand-written list naming no MCP server gets the unfenced ones"
+expect "own-idempotent" "a second run leaves a hand-written list alone"
 echo "ok: image ($IMAGE)"

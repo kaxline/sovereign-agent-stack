@@ -8,7 +8,25 @@ the stack under another app.
 
 ## Unreleased
 
+### Upgrade steps
+
+- Cron jobs no longer get the browser unless they ask. A Hermes cron job
+  that browses and has no `enabled_toolsets` of its own loses `browser_exec`,
+  `browser_cdp`, `browser_dialog` and `browser_vault` after the bootstraps
+  run. Give such a job its own `enabled_toolsets` that includes `browser`,
+  plus the other toolsets and MCP servers it needs.
+
 ### Changes
+
+- The bootstraps' cron fence now keeps the `browser` toolset out of
+  `platform_toolsets.cron` on every profile they run on, and pins that list
+  even when no mail, messages or fenced add-on server is registered. The list
+  names Hermes' cron toolsets one by one (`clarify`, `code_execution`, …,
+  `web`) instead of `hermes-cron`, because that bundle includes the browser.
+  A list the bootstrap wrote earlier is rewritten. A hand-written list loses
+  `browser`, and a `hermes-cron` or `hermes-cli` in it is replaced by its
+  toolsets without `browser`. Cron runs unattended, and the browser can drive
+  signed-in sessions.
 
 - The SQL MCP is a built-in add-on (`addons/sql/addon.json`), so
   `addon.sh list`, `enable sql` and `disable sql` work on it. The flag
