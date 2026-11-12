@@ -188,6 +188,10 @@ Another overlay lets a dashboard client tell a slow turn from a lost one without
 
 **`gateway.capabilities`** adds `turn_heartbeat` (bool), `turn_heartbeat_s` (seconds) and `session_live_status: true`. Check them before relying on either feature, so the same client still works against an unpatched gateway.
 
+### The reply a client shows
+
+`message.complete.text` is the turn's final reply. `message.delta` frames are a preview of it, and some turns send none: a profile with a plugin that holds the stream (a `hold_stream` transform) shows its reply only in `message.complete`, and so does a tool-loop guardrail stop in such a profile. This stack loads no such plugin, so a guardrail stop also streams as deltas here. A client that builds the reply from deltas shows `text` when no delta arrived, with two exceptions: `response_previewed: true` means the reply was already shown as a `message.interim`, and a bot-mode session sends `text: ""` when it withheld a silence marker, in which case the streamed text stands. `response_transformed: true` means `text` replaces whatever streamed. Upstream sends these fields; this stack doesn't change them.
+
 ## API server profile (`api-server`)
 
 A one-shot `hermes-api-bootstrap` service runs ahead of the main Hermes container, creating or updating an isolated **`api-server`** profile with:

@@ -89,6 +89,23 @@ the stack under another app.
 
 ### Changes
 
+- Twenty workspaces are registered at `<url>/mcp?mode=meta` (Boundary CR 0029
+  R1). Since Twenty 2.56 bare `/mcp` lists every record tool and none of the
+  catalog tools the stack pins; a hosted workspace listed 309. 2.55 answers
+  `?mode=meta` with the same seven tools as before. The next bootstrap run
+  rewrites existing `crm-<slug>` entries. `crm.sh connect` (and `crm-add`)
+  lists the tools with one key and fails with a new error, `no_catalog`, when
+  `get_tool_catalog`, `learn_tools` or `execute_tool` is missing; its message
+  names the tool count and the missing tools. **Boundary:** `no_catalog` is a
+  new `error` from `addon.sh connect twenty`. `make doctor` prints each
+  workspace's tool count and whether the catalog tools are there.
+- Pinned MCP tool names longer than 64 characters now match the shortened
+  name Hermes registers (the first 55 characters, `_` and 8 hex digits of the
+  name's SHA-256) (CR 0029 R2). Before, such a pin matched nothing. A Twenty
+  slug of 28 or more characters hit this on `list_object_metadata_names`.
+- [docs/hermes.md](docs/hermes.md#the-reply-a-client-shows) states which
+  reply a gateway client shows: `message.complete.text` when no
+  `message.delta` arrived, unless `response_previewed` is set (CR 0029 R3).
 - Manifests take an optional `store` block (Boundary CR 0027 R4). Its one
   field, `store.dataLeaves`, says what leaves this Mac and where it goes, and
   `validate` requires it when `permissions.egress` includes `internet`. Every
