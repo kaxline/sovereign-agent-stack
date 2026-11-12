@@ -17,7 +17,12 @@ image's python3, mounted at /bootstrap/addon_manifest.py.
         For each entry of each add-on's `mcp` block (one object, or a list of
         objects), print one line, in list order, that the bootstrap's
         register_addon_mcp_servers reads, fields separated by "|":
-        name|title|enabled|access|url|timeout|connect_timeout|transport|tools|pins|all_urls
+        name|title|enabled|access|url|timeout|connect_timeout|transport|tools|pins|all_urls|keysrc|keyenv|header|scheme
+        For an entry with `auth`, keysrc is the env var holding the token for
+        this profile's access (empty when the profile gets no entry), keyenv
+        the profile .env key the bootstrap copies it to (instance_key_env of
+        the name), and header and scheme come from auth; without auth all
+        four are empty. Token values are never printed.
         `title` is the entry's own "title", else the manifest's. `enabled` is 1
         or 0 from the flag in the environment: the entry's `when.gate` flag when
         it has one, else builtin.flag. `access`
@@ -71,7 +76,9 @@ be a core server name or prefix. The entry keeps transport, timeout,
 connectTimeout, env, tools, pin, writeTools and profiles. mcp-plan skips it;
 instances-plan (instances_plan()) lists one line per instance in the add-on's
 store for the bootstrap to register. `services.<name>.mounts` and
-`commands` are checked as validate() describes them. `data.volumes` lists the
+`commands` are checked as validate() describes them. An entry without
+instances may carry auth, {header, scheme, env: {ro, rw}} naming the env vars
+that hold its tokens (_validate_mcp_auth()). `data.volumes` lists the
 compose volume names `scripts/addon.sh disable --purge` removes;
 scripts/test-addon-manifests.py checks they exist in docker-compose.yml.
 
@@ -94,7 +101,7 @@ MANIFEST_VERSION = 1
 
 # Names core still registers itself. An add-on may not take one, or start
 # with one of the prefixes core uses for per-instance entries.
-CORE_MCP_NAMES = {"searxng", "opencode", "vikunja", "messages"}
+CORE_MCP_NAMES = {"searxng", "opencode", "messages"}
 CORE_MCP_PREFIXES = ("caldav-",)
 # Names of the login backends core ships; an add-on's vaultBackend may not take one.
 CORE_VAULT_NAMES = {"vault", "op", "bw"}
@@ -136,7 +143,10 @@ DATA_PATH_RE = re.compile(r"^\./data(?:/(?!\.{1,2}(?:/|\Z))[^\s/]+)+\Z")
 # Error names every add-on's instance hooks share (spec, "instances.connect").
 SHARED_ERRORS = {"bad_slug", "exists", "not_found", "login_refused", "token_expired", "no_access",
                  "timeout", "server_unreachable"}
-HOOK_NAMES = ("init",)
+# prepare runs on the host on every enable, before any service starts (an
+# add-on's schema in the shared Postgres, a bind-mount directory); init runs
+# once, after the services start.
+HOOK_NAMES = ("prepare", "init")
 INSTANCE_HOOKS = ("connect", "disconnect")
 # Fields removed in 0.3.14. A manifest that still has one is refused with a
 # pointer, rather than having the field silently ignored.
@@ -467,6 +477,8 @@ def validate(manifest, repo=_AUTO) -> list[str]:
                 if hname in hooks:
                     errors.extend(_validate_hook(hooks[hname], f"hooks.{hname}",
                                                  hook_commands, repo))
+            if isinstance(hooks.get("prepare"), dict) and "script" not in hooks["prepare"]:
+                err("hooks.prepare must be a script: it runs before the add-on's services exist")
     if isinstance(instances, dict):
         for hname in INSTANCE_HOOKS:
             if hname in instances:
@@ -848,6 +860,11 @@ def _validate_mcp(mcp, services: dict, reads: bool,
             err(f"mcp.profiles.{prof} must be ro or rw")
     if reads and UNATTENDED_PROFILE in profiles:
         err(f"an add-on that reads personal data may not be on {UNATTENDED_PROFILE}")
+    if "auth" in mcp:
+        if per_instance:
+            err("mcp.auth is for an entry without instances; use mcp.instances.auth")
+        else:
+            errors.extend(_validate_mcp_auth(mcp["auth"], profiles))
     if "unmanaged" in mcp:
         err("mcp.unmanaged was removed in 0.3.14; the bootstrap manages every profile in mcp.profiles")
     env = mcp.get("env", {})
@@ -857,6 +874,35 @@ def _validate_mcp(mcp, services: dict, reads: bool,
         elif not isinstance(env, dict) or set(env) - {"url", "timeout", "connectTimeout"} \
                 or not all(isinstance(v, str) and ENV_RE.match(v) for v in env.values()):
             err("mcp.env maps url, timeout and connectTimeout to env var names")
+    return errors
+
+
+def _validate_mcp_auth(auth, profiles: dict) -> list[str]:
+    """mcp.auth on an entry without instances: {header, scheme, env: {ro, rw}},
+    env naming the variable that holds the token for each access level
+    mcp.profiles uses. The token's scopes are the boundary, so the bootstrap
+    writes no tools.include for such an entry."""
+    if not isinstance(auth, dict):
+        return ["mcp.auth must be {header, scheme, env}"]
+    errors: list[str] = []
+    err = errors.append
+    stray = set(auth) - {"header", "scheme", "env"}
+    if stray:
+        err(f"mcp.auth has unknown fields: {', '.join(sorted(stray))}")
+    if not (isinstance(auth.get("header"), str) and HEADER_RE.match(auth["header"])):
+        err("mcp.auth.header must be an HTTP header name")
+    if not (isinstance(auth.get("scheme"), str) and HEADER_RE.match(auth["scheme"])):
+        err("mcp.auth.scheme must be a word such as Bearer")
+    env = auth.get("env")
+    if not (isinstance(env, dict) and env and set(env) <= ACCESS
+            and all(isinstance(v, str) and ENV_RE.match(v) for v in env.values())):
+        err("mcp.auth.env must map ro and rw to env var names")
+        return errors
+    missing = sorted({level for level in profiles.values() if level in ACCESS} - set(env))
+    if missing:
+        err(f"mcp.auth.env names no token for {', '.join(missing)}, which mcp.profiles uses")
+    if len(env) == 2 and env["ro"] == env["rw"]:
+        err("mcp.auth.env must name a different variable for ro and rw")
     return errors
 
 
@@ -1209,7 +1255,7 @@ def cron_fence_toolsets(addons_dir: Path) -> list[tuple[str, str]]:
 
 def mcp_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
     lines = []
-    drops = []  # (position in lines, name, title, urls) of fail-closed drop-only lines
+    drops = []  # (position in lines, name, title, urls, keyenv) of fail-closed drop-only lines
     managed = set()  # URLs a valid manifest registers or manages on this profile
     for path, manifest, errors in checked_dir(addons_dir):
         if errors:
@@ -1221,7 +1267,8 @@ def mcp_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
             for entry, urls in _raw_mcp_urls(manifest, environ):
                 name = entry.get("name") if isinstance(entry.get("name"), str) else path.parent.name
                 title = entry.get("title") if isinstance(entry.get("title"), str) else name
-                drops.append((len(lines), name, title, urls))
+                keyenv = instance_key_env(name) if isinstance(entry.get("auth"), dict) else ""
+                drops.append((len(lines), name, title, urls, keyenv))
                 lines.append(None)
             continue
         for mcp in mcp_entries(manifest):
@@ -1241,9 +1288,13 @@ def mcp_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
                 write = set(mcp.get("writeTools", []))
                 tools = [t for t in tools if t not in write]
                 pins = [t for t in pins if t not in write]
+            auth = mcp.get("auth")
+            keysrc = auth["env"][access] if auth and access else ""
+            keyenv = instance_key_env(mcp["name"]) if auth else ""
+            header, scheme = (auth["header"], auth["scheme"]) if auth else ("", "")
             fields = [mcp["name"], mcp.get("title", manifest["title"]), enabled, access, url, timeout, connect,
                       mcp["transport"], " ".join(tools), " ".join(pins),
-                      " ".join(sorted(set(urls.values())))]
+                      " ".join(sorted(set(urls.values()))), keysrc, keyenv, header, scheme]
             if any("|" in f or "\n" in f for f in fields):
                 print(f"warning: skipping {path.parent.name}: a value contains | or a newline",
                       file=sys.stderr)
@@ -1252,10 +1303,11 @@ def mcp_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
             lines.append("|".join(fields))
     # An invalid manifest's drop-only line must not undo a valid add-on's
     # registration at the same URL: leave out the URLs a valid manifest manages.
-    for pos, name, title, urls in drops:
+    for pos, name, title, urls, keyenv in drops:
         urls = [u for u in urls if u.rstrip("/") not in managed]
         if urls:
-            fields = [name, title, "0", "", urls[0], "0", "0", "http", "", "", " ".join(urls)]
+            fields = [name, title, "0", "", urls[0], "0", "0", "http", "", "", " ".join(urls),
+                      "", keyenv, "", ""]
             if not any("|" in f or "\n" in f for f in fields):
                 lines[pos] = "|".join(fields)
     return [l for l in lines if l is not None]

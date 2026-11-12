@@ -4,7 +4,7 @@
   "version": "2.0.0",
   "title": "Hooked",
   "tagline": "Test add-on with a script init hook",
-  "description": "Not a real add-on. scripts/test-addon-cli.sh enables it to run a script init hook, and connects and disconnects its instances through script hooks, against stub docker and make.",
+  "description": "Not a real add-on. scripts/test-addon-cli.sh enables it to run a script prepare hook and a script init hook, and connects and disconnects its instances through script hooks, against stub docker and make.",
   "publisher": {
     "name": "sovereign-agent-stack",
     "url": "https://github.com/kaxline/sovereign-agent-stack"
@@ -21,6 +21,11 @@
     }
   },
   "hooks": {
+    "prepare": {
+      "script": [
+        "scripts/fixture-prepare.sh"
+      ]
+    },
     "init": {
       "script": [
         "scripts/fixture-init.sh",

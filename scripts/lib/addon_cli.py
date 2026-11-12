@@ -47,7 +47,7 @@ runs in the Hermes image through stack_python, so the host needs no python3.
         Prints the compose service, then the command's argv, one per line, with
         `--account SLUG` appended when the command takes an instance.
     plan-hook SID HOOK [--slug SLUG] [--reinit] [--replace]
-        HOOK is init, connect or disconnect. Prints
+        HOOK is prepare, init, connect or disconnect. Prints
         `script` and then the script's argv, or `service <compose name>` and
         then the command's argv, one item per line, ending in `--json`
         (`--slug SLUG --json` for connect and disconnect, which need --slug;

@@ -52,6 +52,11 @@ except where noted:
   removed in 0.3.15 (use `mcp.instances` with `{access}` in its `url`). On every profile in `profiles`
   the bootstrap registers the entry and removes any other entry at the same
   URL; on every other profile it removes entries at that URL.
+- `mcp.auth`: `{header, scheme, env: {ro, rw}}` on an entry without
+  `instances`. `env` names the `.env` variable holding the token for each
+  level `mcp.profiles` uses, and `ro` and `rw` must name different variables.
+  The bootstrap writes no `tools.include` for the entry; `tools` and
+  `writeTools` still decide the pins. Vikunja uses it.
 - `mcp.instances`: an `mcp` entry that registers one
   server per instance in the add-on's store, instead of one fixed server. It
   has no `service`, `path` or `name`. Its fields, besides the usual
@@ -132,10 +137,12 @@ except where noted:
   `argv` in the named service, and appends `--account <slug>` when `instance`
   is true. An add-on that reads personal data may not run a command in an MCP
   service.
-- `hooks`: `init`, `{"script": [argv]}` (`scripts/<name>.sh` plus arguments,
-  run on the host) or `{"command": <name>}` (an entry of `commands` with
-  `instance: false`). `addon.sh` runs `init` on `enable`, and `connect` and
-  `disconnect` from `instances`.
+- `hooks`: `prepare` and `init`, each `{"script": [argv]}` (`scripts/<name>.sh`
+  plus arguments, run on the host) or `{"command": <name>}` (an entry of
+  `commands` with `instance: false`). `prepare` must be a script. `addon.sh
+  enable` runs `prepare` every time, before it sets the flag or starts
+  anything, so it must be safe to re-run; it runs `init` once, after the
+  services start. `connect` and `disconnect` come from `instances`.
 - `data`: `{"paths": [{"env", "default"}], "volumes": [<compose volume>]}`.
   `addon.sh remove --delete-data` deletes them. A path's
   `default` is `./data/...` and must be a bind-mount source in

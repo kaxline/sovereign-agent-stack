@@ -768,6 +768,15 @@ was removed are dropped. Field rules and the prefix rule across add-ons are in
 [addons/README.md](../addons/README.md); Twenty ([docs/crm.md](crm.md)) and
 Actual ([docs/budget.md](budget.md)) use it.
 
+An `mcp` entry without `instances` may carry `auth` as `{header, scheme, env:
+{ro, rw}}`, naming the `.env` variable that holds the token for each level
+`mcp.profiles` uses. The bootstrap copies the token into each profile's `.env`
+as `<NAME>_KEY` (`TODOS_KEY`) and writes a header that references it. Such an
+entry gets no `tools.include`, because the token's scopes decide which tools
+the server lists; `tools` and `writeTools` still decide the pins. A profile
+whose token variable is empty gets no entry, with a warning in the bootstrap
+log. Vikunja ([docs/todo.md](todo.md)) uses it.
+
 `disable` keeps `data/addons/<short-id>/`; `disable --purge` deletes it, as
 described under [Removing data](#removing-data).
 
@@ -806,7 +815,8 @@ bytes summed over layers, at most one per service per second, and ends with
 
 A `setup` line is `{"phase":"setup","step":<name>,"status":"running"|"done"|"error"}`.
 A step that runs per service, volume or path adds `"target"`. Steps run in this
-order: `flags` (write `.env`, sync `COMPOSE_PROFILES`), `start` (one-shots,
+order: `prepare` (the `prepare` hook, when the manifest has one), `flags`
+(write `.env`, sync `COMPOSE_PROFILES`), `start` (one-shots,
 then the services), `stop` (gated services whose gate is off), `init`,
 `reload`. `disable` runs `flags`, `stop`, `reload`, then `delete` with
 `--purge`. `connect` and `disconnect`
@@ -885,13 +895,18 @@ tools, reach new sessions only. A bootstrap failure is `compose_failed`; a
 
 ### Hooks
 
-A manifest declares `hooks.init`, `instances.connect` and `instances.disconnect`.
+A manifest declares `hooks.prepare`, `hooks.init`, `instances.connect` and
+`instances.disconnect`.
 A hook is `{"script": [argv]}`, run from the repo root on the host, or
 `{"command": <name>}`, one of the manifest's `commands`, run in its service
 with `docker compose run --rm --no-deps -T`. `addon.sh` appends `--json`, and
 `--slug <slug> --json` for connect and disconnect (`--slug <slug> --replace
 --json` for a connect that replaces an instance).
 
+- `prepare` runs on every `enable`, before step `flags`, so a failure leaves
+  the add-on as it was. It must be a script and safe to re-run. Vikunja's
+  registers its schema in the shared Postgres, which the `db-provision`
+  one-shot in step `start` then creates.
 - `init` runs once, in `enable`. `data/addons/<short-id>/state.json` records the
   manifest version and time after it succeeds. `enable --reinit` runs it again.
 - `connect` reads the staged instance values on stdin. A secret setting marked

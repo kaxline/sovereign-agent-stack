@@ -18,7 +18,9 @@
 #
 # configure reads one JSON object on stdin. Secret values go only to
 # data/addons/<short-id>/secrets; bool settings with a flag write that flag to
-# .env while the add-on is enabled. enable checks every required setting, sets builtin.flag=1 (and each
+# .env while the add-on is enabled. enable checks every required setting, runs
+# the manifest's prepare hook (every time, as step prepare, before anything
+# changes), sets builtin.flag=1 (and each
 # gate flag a stored setting owns), syncs COMPOSE_PROFILES, builds and starts the
 # services whose gate is on, runs the manifest's init hook once (--reinit runs
 # it again; data/addons/<short-id>/state.json records it) and reloads Hermes. disable sets the flag and every
@@ -760,6 +762,8 @@ $list
 EOF_STOPS
   pull_images ${services[@]+"${services[@]}"} ${oneshots[@]+"${oneshots[@]}"}
   rollback_record "$plan"
+  # Before the flags: a failed prepare leaves the add-on as it was.
+  run_hook prepare "$sid" prepare
   run_step flags "" apply_flags "$plan" \
     || ev_fail command_failed flags "writing the flags or syncing COMPOSE_PROFILES failed" "$EV_LAST_LOG"
   # One-shots run to completion first: a service may depend on one.
