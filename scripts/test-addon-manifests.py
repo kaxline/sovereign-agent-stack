@@ -730,13 +730,13 @@ with tempfile.TemporaryDirectory() as tmp:
           and rows["crm-*"][8] == TW_PINS and rows["crm-*"][9] == "TWENTY_MCP_ENABLED", str(rows.get("crm-*")))
     m = rows.get("crm-main", [])
     check("default: crm-main is on at twenty-server/mcp with CRM_MAIN_KEY and key_rw",
-          m[2:6] == ["1", "http://twenty-server:3000/mcp", "CRM_MAIN_KEY",
+          m[2:6] == ["1", "http://twenty-server:3000/mcp?mode=meta", "CRM_MAIN_KEY",
                      str(data / "twenty" / "secrets" / "main.key_rw")], str(m))
     check("crm-main carries timeouts, the seven pins and the Bearer header",
           m[6:8] == ["60", "30"] and m[8] == TW_PINS and m[9] == "" and m[10:12] == ["Authorization", "Bearer"]
           and m[12] == " ".join(TW["mcp"]["tools"]), str(m))
     check("a trailing slash on the url is dropped",
-          rows.get("crm-remote", [""] * 4)[3] == "https://crm.example.com/mcp", str(rows.get("crm-remote")))
+          rows.get("crm-remote", [""] * 4)[3] == "https://crm.example.com/mcp?mode=meta", str(rows.get("crm-remote")))
     check("access read gives default the ro key",
           rows.get("crm-lookup", [""] * 6)[5].endswith("lookup.key_ro"), str(rows.get("crm-lookup")))
     r = rows.get("crm-rdonly", [])
@@ -749,7 +749,14 @@ with tempfile.TemporaryDirectory() as tmp:
     check("a non-http url is off", f[2:3] == ["0"] and f[9].startswith("url "), str(f))
     w = rows.get("crm-withmcp", [])
     check("a stored url already ending in /mcp is not doubled",
-          w[2:4] == ["1", "https://crm.example.com/mcp"], str(w))
+          w[2:4] == ["1", "https://crm.example.com/mcp?mode=meta"], str(w))
+    url_schema = {"url": {"type": "url"}}
+    for stored, want in (("https://x.example.com", "https://x.example.com/mcp?mode=meta"),
+                         ("https://x.example.com/mcp/", "https://x.example.com/mcp?mode=meta"),
+                         ("https://x.example.com/mcp?mode=meta", "https://x.example.com/mcp?mode=meta"),
+                         ("https://x.example.com/base/mcp", "https://x.example.com/base/mcp?mode=meta")):
+        got = am._fill_url("{setting:url}/mcp?mode=meta", {"url": stored}, url_schema)
+        check(f"_fill_url keeps one /mcp and the query for {stored}", got == want, got)
     c = rows.get("crm-creds", [])
     check("a url with a user name or password is off, and the reason holds no URL",
           c[2:4] == ["0", ""] and c[9].startswith("url ") and "example" not in c[9] and "pw" not in c[9], str(c))

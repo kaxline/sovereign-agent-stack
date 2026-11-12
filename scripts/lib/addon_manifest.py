@@ -1320,7 +1320,9 @@ def _instance_values(store: Path, slug: str, schema: dict) -> dict | None:
 def _fill_url(template: str, values: dict, schema: dict) -> str:
     """Fill {setting:<name>} refs. A url setting loses trailing slashes, and
     the literal text after its ref when it already ends with it, so a stored
-    https://crm.example.com/mcp in "{setting:url}/mcp" stays .../mcp."""
+    https://crm.example.com/mcp in "{setting:url}/mcp" stays .../mcp. When that
+    text has a query, a value ending in its path alone loses the path too, so
+    the same URL in "{setting:url}/mcp?mode=meta" gives .../mcp?mode=meta."""
     out, pos = [], 0
     for m in SETTING_REF_RE.finditer(template):
         out.append(template[pos:m.start()])
@@ -1332,8 +1334,11 @@ def _fill_url(template: str, values: dict, schema: dict) -> str:
             v = v.rstrip("/")
             nxt = SETTING_REF_RE.search(template, m.end())
             after = template[m.end():nxt.start() if nxt else len(template)].rstrip("/")
-            if after and v.endswith(after):
-                v = v[:-len(after)]
+            path = after.split("?", 1)[0].rstrip("/")
+            for suffix in (after, path):
+                if suffix and v.endswith(suffix):
+                    v = v[:-len(suffix)].rstrip("/")
+                    break
         out.append(v)
         pos = m.end()
     out.append(template[pos:])

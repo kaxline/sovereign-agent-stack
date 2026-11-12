@@ -33,7 +33,8 @@ make hermes-reload
 ```
 
 `crm-add` runs an MCP `initialize` with each key and writes nothing if Twenty
-rejects one or the URL doesn't answer. The read-only key is optional. Without
+rejects one, the URL doesn't answer, or the server lacks the catalog tools
+Hermes uses (see [What Hermes sees](#what-hermes-sees)). The read-only key is optional. Without
 one, unattended runs (`api-server`) don't get this CRM at all. For a
 non-interactive run, put `TWENTY_KEY_RW`, `TWENTY_KEY_RO` and, if you want them,
 `TWENTY_ACCESS` and `TWENTY_WORKSPACE_URL` in the environment; nothing is asked.
@@ -46,7 +47,8 @@ stdin: `url`, `access` (`read` or `write`), `local`, `key_ro` and `key_rw`.
 The bundled instance's URL, `http://twenty-server:3000`, needs `"local": true`,
 and `local: true` needs that URL; either one alone fails with
 `local_mismatch`. The manifest's connect hook runs `crm.sh connect`, which
-checks each key with an MCP `initialize` before anything is stored. `disconnect` removes the
+checks each key with an MCP `initialize`, and the tool list with one of them
+(see [What Hermes sees](#what-hermes-sees)), before anything is stored. `disconnect` removes the
 instance and its keys. `crm.sh add`, `remove` and `access` write the same
 store.
 
@@ -169,13 +171,28 @@ about a second, and open chats can use it on their next turn.
 
 ### What Hermes sees
 
-Twenty's MCP lists seven tools however many objects the workspace has:
-`get_tool_catalog`, `learn_tools`, `execute_tool`,
-`list_object_metadata_names`, `list_skills`, `load_skills` and
-`search_help_center`. All seven are pinned. Record tools such as
-`find_many_people` or `create_one_company` are listed by `get_tool_catalog`,
+Hermes registers each workspace at `<url>/mcp?mode=meta`, where Twenty lists
+seven tools however many objects the workspace has: `get_tool_catalog`,
+`learn_tools`, `execute_tool`, `list_object_metadata_names`, `list_skills`,
+`load_skills` and `search_help_center`. All seven are pinned. Record tools such
+as `find_many_people` or `create_one_company` are listed by `get_tool_catalog`,
 described by `learn_tools` and run through `execute_tool`. On the read-only
 key, write tools are missing from the catalog.
+
+Since Twenty 2.56, bare `/mcp` lists every record tool directly instead: a
+hosted workspace listed 309, 47 of them deletes, with no catalog tools. 2.55
+lists the catalog on bare `/mcp` and treats `?mode=meta` the same way, so one
+URL works on both. `crm-add` and `addon.sh connect` list the tools with the
+first key and refuse a workspace whose list lacks `get_tool_catalog`,
+`learn_tools` or `execute_tool` (`no_catalog`, naming the tool count and the
+missing tools). When the list can't be read they warn and go on. `make doctor`
+prints each workspace's tool count and the same check.
+
+Hermes cuts a tool name longer than 64 characters with its `mcp__crm_<slug>__`
+prefix to 55 characters plus `_` and 8 hex digits of its SHA-256, and logs
+`exceeds the 64-char provider limit`. The tool stays callable under that name,
+and the pins use it. Of the seven tools, only `list_object_metadata_names` gets
+that long, with a slug of 28 or more characters.
 
 ## Single and multi-workspace
 

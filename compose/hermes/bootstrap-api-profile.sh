@@ -736,9 +736,17 @@ pin_tool_search_always_include() {
 # Usage: pin_mcp_tools <profile> <server_key> <tool...>
 # The name Hermes registers an MCP tool under: mcp__<server>__<tool>, with each
 # character outside [A-Za-z0-9_] replaced by _ (sanitize_mcp_name_component in
-# tools/mcp_tool_schema.py). crm-main's tools are mcp__crm_main__*.
+# tools/mcp_tool_schema.py). crm-main's tools are mcp__crm_main__*. A name
+# over 64 characters is cut to 55 and given "_" and the first 8 hex digits of
+# the full name's SHA-256, as mcp_prefixed_tool_name does, so its pin matches.
 mcp_tool_name() {
-  printf 'mcp__%s__%s' "$(printf '%s' "$1" | sed 's/[^A-Za-z0-9_]/_/g')" "$(printf '%s' "$2" | sed 's/[^A-Za-z0-9_]/_/g')"
+  _mtn="mcp__$(printf '%s' "$1" | sed 's/[^A-Za-z0-9_]/_/g')__$(printf '%s' "$2" | sed 's/[^A-Za-z0-9_]/_/g')"
+  if [ "${#_mtn}" -le 64 ]; then
+    printf '%s' "$_mtn"
+    return 0
+  fi
+  printf '%s_%s' "$(printf '%s' "$_mtn" | cut -c1-55)" \
+    "$(printf '%s' "$_mtn" | python3 -c 'import hashlib, sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:8])')"
 }
 
 pin_mcp_tools() {

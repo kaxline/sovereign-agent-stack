@@ -428,13 +428,55 @@ mcp_status() {
   # shellcheck disable=SC2064  # the path is fixed now
   trap "rm -f '$hdr'" EXIT
   printf 'Authorization: Bearer %s\nContent-Type: application/json\nAccept: application/json, text/event-stream\n' "$2" > "$hdr"
-  code="$(curl -s -o /dev/null -m 20 -w '%{http_code}' -H @"$hdr" -X POST "${1}/mcp" \
+  code="$(curl -s -o /dev/null -m 20 -w '%{http_code}' -H @"$hdr" -X POST "${1}/mcp?mode=meta" \
     --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"crm.sh","version":"0"}}}' 2>/dev/null)" || rc=$?
   rm -f "$hdr"
   if [[ "$rc" -eq 28 ]]; then
     printf 'timeout'
   else
     printf '%s' "${code:-000}"
+  fi
+}
+
+# The tools Hermes reaches records through. Since Twenty 2.56 bare /mcp lists
+# every record tool instead; ?mode=meta (what Hermes registers) lists these.
+CATALOG_TOOLS="get_tool_catalog learn_tools execute_tool"
+
+# tools/list at <url>/mcp?mode=meta with one key, as one line:
+#   ok <count>                  every catalog tool is listed
+#   missing <count> <tools...>  the server lists tools but not those
+#   unknown <reason>            no readable tool list (left to the caller)
+# The key goes to curl in a 0600 header file, as in mcp_status. Call it in
+# $(...): the EXIT trap belongs to that subshell.
+catalog_check() {
+  local dir code rc=0 name value count="" missing="" err=""
+  dir="$(umask 077 && mktemp -d)"
+  # shellcheck disable=SC2064  # the path is fixed now
+  trap "rm -rf '$dir'" EXIT
+  printf 'Authorization: Bearer %s\nContent-Type: application/json\nAccept: application/json, text/event-stream\n' "$2" > "${dir}/hdr"
+  code="$(curl -s -o "${dir}/body" -m 20 -w '%{http_code}' -H @"${dir}/hdr" -X POST "${1}/mcp?mode=meta" \
+    --data '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' 2>/dev/null)" || rc=$?
+  rm -f "${dir}/hdr"
+  if [[ "$rc" -ne 0 || "$code" != 200 ]]; then
+    printf 'unknown tools/list answered HTTP %s' "${code:-000}"
+    return 0
+  fi
+  # shellcheck disable=SC2086  # one argument per tool name
+  while IFS="$(printf '\t')" read -r name value; do
+    case "$name" in
+      count) count="$value" ;;
+      missing) missing="$value" ;;
+      error) err="$value" ;;
+    esac
+  done <<EOF
+$(stack_python --mount "$dir" -I "${ROOT}/scripts/lib/mcp_tools_list.py" "${dir}/body" $CATALOG_TOOLS 2>/dev/null)
+EOF
+  if [[ -z "$count" ]]; then
+    printf 'unknown %s' "${err:-no tool list in the answer}"
+  elif [[ -n "$missing" ]]; then
+    printf 'missing %s %s' "$count" "$missing"
+  else
+    printf 'ok %s' "$count"
   fi
 }
 
@@ -558,6 +600,20 @@ EOF
       *) fail_with server_unreachable "${url}/mcp answered HTTP ${code} for ${kind}" ;;
     esac
   done
+  for kind in key_rw key_ro; do
+    [[ -f "${tmpd}/${kind}" ]] || continue
+    phase running "checking the tools Twenty lists"
+    local tools
+    tools="$(catalog_check "$check" "$(cat "${tmpd}/${kind}")")"
+    case "$tools" in
+      ok\ *) phase "done" "Twenty lists the catalog tools (${tools#ok } tools)" ;;
+      missing\ *)
+        tools="${tools#missing }"
+        fail_with no_catalog "${url}/mcp?mode=meta lists ${tools%% *} tools but not ${tools#* }; Hermes reaches records through those" ;;
+      *) warn "couldn't check the tools Twenty lists: ${tools#unknown }" ;;
+    esac
+    break
+  done
   printf '{"phase":"done","account":"%s","mcp":["crm-%s"]}\n' "$slug" "$slug" >&3
 }
 
@@ -651,6 +707,15 @@ cmd_add() {
       *) die "${url}/mcp answered HTTP ${code} for TWENTY_KEY_${kind}; nothing written" ;;
     esac
   done
+  local tools
+  tools="$(catalog_check "$url" "${rw:-$ro}")"
+  case "$tools" in
+    ok\ *) log "Twenty lists the catalog tools (${tools#ok } tools)" ;;
+    missing\ *)
+      tools="${tools#missing }"
+      die "${url}/mcp?mode=meta lists ${tools%% *} tools but not ${tools#* }; Hermes reaches records through those; nothing written" ;;
+    *) warn "couldn't check the tools Twenty lists: ${tools#unknown }" ;;
+  esac
 
   local local_=false
   [[ "$url" == "$LOCAL_URL" ]] && local_=true

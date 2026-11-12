@@ -19,11 +19,19 @@ cat > "$tmp/bin/docker" <<'SH'
 #!/usr/bin/env bash
 exit 1
 SH
-# curl: argv holds no key; prints the status in $STUB_HTTP (default 200).
+# curl: argv holds no key; prints the status in $STUB_HTTP (default 200), and
+# writes $STUB_BODY to -o's file for a tools/list call.
 cat > "$tmp/bin/curl" <<'SH'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >> "$STUB_LOG"
+prev=""
+for a in "$@"; do
+  if [[ "$prev" == -o && "$a" != /dev/null && -n "${STUB_BODY:-}" ]]; then printf '%s' "$STUB_BODY" > "$a"; fi
+  prev="$a"
+done
 echo "${STUB_HTTP:-200}"
 SH
+export STUB_LOG="$tmp/curl.log"
 chmod +x "$tmp/bin/"*
 export PATH="$tmp/bin:$PATH"
 
@@ -80,6 +88,15 @@ doctor
 has "keys present" "crm-main: access write, keys present: ro rw"
 has "probe ok" "crm-main: MCP answers with the rw key"
 hasnt "no failure" " FAIL "
+grep -qF 'https://crm.example.com/mcp?mode=meta' "$STUB_LOG" || fail "the probe uses the meta-mode URL Hermes registers"
+has "unreadable tool list warns" "crm-main: couldn't list its tools"
+CATALOG='{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"get_tool_catalog"},{"name":"learn_tools"},{"name":"execute_tool"},{"name":"list_skills"}]}}'
+STUB_BODY="$CATALOG" doctor
+has "tool count" "crm-main: Twenty lists 4 tools, the catalog tools among them"
+hasnt "no failure with the catalog" " FAIL "
+[[ "$(grep -c 'crm-main: Twenty lists' "$out")" == 1 ]] || fail "one tools/list per workspace ($(cat "$out"))"
+STUB_BODY='{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"list_skills"},{"name":"find_many_people"}]}}' doctor
+has "missing catalog" "crm-main: Twenty lists 2 tools but not get_tool_catalog learn_tools execute_tool"
 
 # Read access without a read key.
 instance main read https://crm.example.com

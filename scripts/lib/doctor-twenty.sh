@@ -149,7 +149,10 @@ doctor_twenty() {
       if [[ "$local_" == true || "$probe" == http://twenty-server:3000* ]]; then
         probe="http://127.0.0.1:${twenty_port}"
       fi
-      probe="${probe%/mcp}/mcp"
+      # ?mode=meta, as Hermes registers it: Twenty 2.56+ lists every record
+      # tool on bare /mcp.
+      probe="${probe%/mcp}/mcp?mode=meta"
+      listed=0
       for kind in rw ro; do
         k="${store}/secrets/${slug}.key_${kind}"
         [[ "$kind" == rw && "$has_rw" -eq 1 ]] || [[ "$kind" == ro && "$has_ro" -eq 1 ]] || continue
@@ -160,6 +163,21 @@ doctor_twenty() {
         printf 'Authorization: Bearer %s\nContent-Type: application/json\nAccept: application/json, text/event-stream\n' "$key" > "$hdr"
         code="$(curl -s -o /dev/null -m 15 -w '%{http_code}' -H @"$hdr" -X POST "$probe" \
           --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"doctor","version":"0"}}}' 2>/dev/null || true)"
+        # One tools/list per workspace: the catalog tools Hermes pins, and
+        # the server's tool count.
+        tools=""
+        if [[ "$code" == 200 && "$listed" -eq 0 ]]; then
+          listed=1
+          body="$(mktemp)"
+          chmod 600 "$body"
+          lcode="$(curl -s -o "$body" -m 15 -w '%{http_code}' -H @"$hdr" -X POST "$probe" \
+            --data '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' 2>/dev/null || true)"
+          if [[ "$lcode" == 200 ]]; then
+            tools="$(python3 -I "${ROOT}/scripts/lib/mcp_tools_list.py" "$body" get_tool_catalog learn_tools execute_tool 2>/dev/null || true)"
+          fi
+          rm -f "$body"
+          [[ -n "$tools" ]] || tools="error	tools/list answered HTTP ${lcode:-000}"
+        fi
         rm -f "$hdr"
         key=""
         case "$code" in
@@ -168,6 +186,17 @@ doctor_twenty() {
           000) warn "crm-${slug}: no answer from ${probe}" ;;
           *) warn "crm-${slug}: MCP answered HTTP ${code} at ${probe}" ;;
         esac
+        if [[ -n "$tools" ]]; then
+          count="$(printf '%s\n' "$tools" | awk -F'\t' '$1 == "count" { print $2 }')"
+          missing="$(printf '%s\n' "$tools" | awk -F'\t' '$1 == "missing" { print $2 }')"
+          if [[ -z "$count" ]]; then
+            warn "crm-${slug}: couldn't list its tools: $(printf '%s\n' "$tools" | awk -F'\t' '$1 == "error" { print $2 }')"
+          elif [[ -n "$missing" ]]; then
+            bad "crm-${slug}: Twenty lists ${count} tools but not ${missing} — Hermes reaches records through those"
+          else
+            ok "crm-${slug}: Twenty lists ${count} tools, the catalog tools among them"
+          fi
+        fi
       done
       for pair in "default:data/hermes/config.yaml:data/hermes/.env" \
         "api-server:data/hermes/profiles/api-server/config.yaml:data/hermes/profiles/api-server/.env" \
