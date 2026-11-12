@@ -32,6 +32,11 @@ the stack under another app.
   `addon.sh enable opencode` doesn't check them; Compose still stops with its
   own message when either is empty. `opencode` is no longer on the validator's
   list of names core registers.
+- OpenCode is on by default. `.env.example` has `OPENCODE_MCP_ENABLED=1`, and
+  `scripts/setup.sh` writes 1 when `.env` has no `OPENCODE_MCP_ENABLED` line
+  (it wrote 0). An `.env` that already sets the flag keeps its value. Setup
+  already asked for `OPENCODE_WORKSPACE_HOST` and generated
+  `OPENCODE_SERVER_PASSWORD` on every run.
 - `BITWARDEN_LOCAL_ENABLED` (profile `vault`) moved from `sync-profiles.sh`'s
   own table into `addons/bitwarden/addon.json` as a gate, with `vaultwarden`
   and `vaultwarden-tls` as its services. `make up` and `sync-profiles.sh` turn

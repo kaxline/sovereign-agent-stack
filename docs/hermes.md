@@ -372,7 +372,7 @@ The `hermes-api-bootstrap` service registers these for you. Each one sets indivi
 | `searxng` | default + `api-server` / `browser` | `searxng_web_search`, `web_url_read` | Always (on `core`) |
 | `caldav-<slug>` | default + `api-server` / `browser` | Full 14 on default/browser; 8 read-only on `api-server` | `CALDAV_MCP_ENABLED=1` (`calendar` profile; setup `--calendar`) |
 | `sql` | default + `api-server` / `browser` | `list_schemas`, `list_objects`, `get_object_details`, `execute_sql`, `explain_query`. `sql-mcp-ro` (`agent_ro`) on `api-server`, `sql-mcp-rw` (`agent_rw`) elsewhere | `SQL_MCP_ENABLED=1` (`db` profile; setup `--db`) |
-| `opencode` | default + `browser` only | `coding_list_roots`, `coding_start_task`, `coding_get_task_status`, `coding_wait_for_task`, `coding_get_task_result`, `coding_continue_task` | `OPENCODE_MCP_ENABLED=1` (`coding` profile; setup `--coding`) |
+| `opencode` | default + `browser` only | `coding_list_roots`, `coding_start_task`, `coding_get_task_status`, `coding_wait_for_task`, `coding_get_task_result`, `coding_continue_task` | `OPENCODE_MCP_ENABLED=1` (`coding` profile; on by default) |
 
 These filters serve different purposes. LightRAG's and CalDAV's on `api-server` are **safety boundaries**: mutating tools do not belong in unattended n8n sessions. OpenCode coding tools are also mutating and are **never** registered on `api-server`. The `sql` entry draws its boundary in Postgres instead: the same five tools everywhere, but `api-server` connects as a role that can only read (see [Shared database](database.md)). The web filters just keep the tool count down, since both of those servers are read-only against the public internet.
 

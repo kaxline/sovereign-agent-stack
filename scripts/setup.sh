@@ -998,8 +998,9 @@ set_env_if_missing .env MAIL_MCP_ENABLED 0
 set_env_if_missing .env MAIL_DRAFTS_ENABLED 0
 set_env_if_missing .env MESSAGES_MCP_ENABLED 0
 
-# OpenCode MCP stays off until coding is enabled.
-set_env_if_missing .env OPENCODE_MCP_ENABLED 0
+# OpenCode is part of the default stack: a missing flag is written as 1. An
+# install that set it to 0 keeps it off.
+set_env_if_missing .env OPENCODE_MCP_ENABLED 1
 set_env_if_missing .env CODING_EXTRA_ROOTS ""
 set_env_if_missing .env CONTEXT_EXTRA_ROOTS ""
 set_env_if_missing .env HERMES_TERMINAL_BACKEND ssh

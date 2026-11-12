@@ -26,8 +26,8 @@ jobs:
           sed -i 's/^LLM_PROXY_ADMIN_TOKEN=.*/LLM_PROXY_ADMIN_TOKEN=ci-llm-proxy-admin-token/' .env
           sed -i 's|^OPENCODE_WORKSPACE_HOST=.*|OPENCODE_WORKSPACE_HOST=/tmp/opencode-workspace|' .env
           mkdir -p /tmp/opencode-workspace
-          # coding MCP off unless profile includes coding; compose still interpolates these.
-          grep -q '^OPENCODE_MCP_ENABLED=' .env || echo 'OPENCODE_MCP_ENABLED=0' >> .env
+          # .env.example turns OpenCode on; CI keeps it off. Compose still interpolates these.
+          sed -i 's/^OPENCODE_MCP_ENABLED=.*/OPENCODE_MCP_ENABLED=0/' .env
           grep -q '^CODING_EXTRA_ROOTS=' .env || echo 'CODING_EXTRA_ROOTS=' >> .env
           grep -q '^CONTEXT_EXTRA_ROOTS=' .env || echo 'CONTEXT_EXTRA_ROOTS=' >> .env
           cp searxng/settings.yml searxng/settings.local.yml

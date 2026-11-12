@@ -4,12 +4,7 @@
 
 Isolated AI coding agent with a browser UI and an OpenAPI server, backed by your local model server.
 
-[OpenCode](https://opencode.ai) runs as an isolated AI coding agent, serving a browser UI and an OpenAPI server on the same port. Enable it with the **`coding`** profile, and keep `core` around for SearXNG MCP:
-
-```bash
-./scripts/setup.sh --coding
-# or set OPENCODE_MCP_ENABLED=1 in .env, then make up
-```
+[OpenCode](https://opencode.ai) runs as an isolated AI coding agent, serving a browser UI and an OpenAPI server on the same port, under the **`coding`** profile. It is on by default: setup writes `OPENCODE_MCP_ENABLED=1` when `.env` doesn't have the flag, and asks for `OPENCODE_WORKSPACE_HOST`. To leave it out, set `OPENCODE_MCP_ENABLED=0` and run `make up`. `scripts/addon.sh enable opencode` and `disable opencode` set the same flag.
 
 It calls `llm-proxy` (`http://llm-proxy:4000/v1`) with the placeholder `local-llm`. The proxy holds `LLM_BINDING_API_KEY` and forwards to `LLM_BINDING_HOST`. Setup copies tracked `opencode/opencode.json` to gitignored `opencode.local.json` (compose mounts the local file) and points every provider `baseURL` and `apiKey` at the proxy. Edit the local overlay for the provider id and model ids. The tracked template stays a placeholder.
 
@@ -125,7 +120,7 @@ curl -u opencode:$OPENCODE_SERVER_PASSWORD http://localhost:4096/global/health
 
 ## Hermes delegation
 
-With the `coding` profile, Hermes can run coding jobs through OpenCode without opening the OpenCode UI. Setup sets `OPENCODE_MCP_ENABLED=1`, which registers an `opencode` MCP server on the **default** and **browser** profiles (not `api-server`).
+With the `coding` profile, Hermes can run coding jobs through OpenCode without opening the OpenCode UI. `OPENCODE_MCP_ENABLED=1` registers an `opencode` MCP server on the **default** and **browser** profiles (not `api-server`).
 
 | Piece | Role |
 |---|---|
