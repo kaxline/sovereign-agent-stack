@@ -6,7 +6,11 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
-## Unreleased
+## v0.3.14 — 2026-11-11
+
+Not run on a live stack yet: the Bitwarden broker reading the instance store
+(on Linux in particular), Actual budgets under per-instance `bind`, and the
+detector add-on with a real provider key. Every test for them uses stubs.
 
 ### Upgrade steps
 
