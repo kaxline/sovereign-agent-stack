@@ -153,7 +153,7 @@ above.
   `configure_messages_webhook` in the bootstrap.
 - **Overlays in `compose/hermes`.** The `patch-*.py` scripts and their modules
   edit files under `/opt/hermes` at container start and are anchored to the
-  pinned Hermes tag (`v0.22.7`). `make hermes-image-test` runs their tests
+  pinned Hermes tag (`v0.23.1`). `make hermes-image-test` runs their tests
   against a new image.
 - **The adapter's own reach.** Core MCP servers (`searxng`, `caldav-<slug>`,
   `sql`, `opencode`, `todos`, `messages`) are registered by the bootstrap

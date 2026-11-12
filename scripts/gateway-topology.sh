@@ -37,7 +37,7 @@ done
 
 home="data/hermes"
 [ -f "$home/config.yaml" ] || { echo "gateway-topology: no config.yaml in $home" >&2; exit 1; }
-image="nousresearch/hermes-agent:$(env_get HERMES_AGENT_IMAGE_TAG v0.22.7)"
+image="nousresearch/hermes-agent:$(env_get HERMES_AGENT_IMAGE_TAG v0.23.1)"
 current="$(gateway_topology)"
 echo "gateway-topology: ${current} -> ${target}"
 

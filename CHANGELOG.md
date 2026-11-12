@@ -66,6 +66,19 @@ the stack under another app.
    `budget.sh access` and connect report `mcp: ["budget-<slug>"]` instead of
    `budget-<slug>-ro` and `budget-<slug>`, and a row's write access is read
    from `bind`.
+9. Hermes Agent v0.23.1 (from v0.22.7); WebUI stays at 0.52.544, still the
+   latest stable release. Back up `data/hermes` with `hermes` stopped, then run
+   `make hermes-upgrade AGENT=v0.23.1 WEBUI=0.52.544` and the verification
+   block in [docs/hermes-webui.md](docs/hermes-webui.md#verification). The
+   first start migrates each profile's `config.yaml` from `_config_version`
+   52 to 53; the bootstraps write nothing else different. The overlays still
+   apply to v0.22.7, so an app that pins `HERMES_AGENT_IMAGE_TAG=v0.22.7`
+   keeps working on this release. The stack never calls `hermes mcp serve`
+   (now the `mcp-serve` plugin), names none of the merged Office skills, and
+   leaves `plugins.auto_apply` at its default (off).
+   Every `hermes` CLI call in the v0.23.1 container prints `install out of
+   sync (pnpm: not installed or outdated)`. It comes from the upstream image's
+   package check; the gateways, dashboard and WebUI ran normally with it.
 
 ### New services
 
@@ -89,6 +102,17 @@ the stack under another app.
 
 ### Changes
 
+- Hermes v0.23.1 overlay fixes. Three anchors moved, and each patch now
+  accepts both the v0.22.7 and the v0.23 shape. `patch-kanban-wake`:
+  `_kb_poll_board` gained upstream's stray-delegate reclaim arguments.
+  `patch-bitwarden-broker-fill`: `_fill_bound_page` takes `with_identifier`.
+  On v0.23's `target='preview'` (Hermes Desktop's in-app browser) a
+  `bwbroker:` fill refuses with `supervisor_required` rather than write into
+  the managed browser's tab. `patch-intent-ack`: v0.23 already ignores tool
+  results from earlier turns (#69778), so on v0.23 the overlay only raises
+  the reply limit from 1,200 to 4,000 characters for a reply that opens with
+  an ack. New `scripts/test-intent-ack.py`; until now that overlay had no
+  test and failed only at container start, with a warning.
 - Manifests take an optional `store` block (Boundary CR 0027 R4). Its one
   field, `store.dataLeaves`, says what leaves this Mac and where it goes, and
   `validate` requires it when `permissions.egress` includes `internet`. Every

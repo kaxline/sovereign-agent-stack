@@ -27,7 +27,7 @@ on a bump: [actual-mcp](../../compose/actual-mcp/VENDORED.md),
 
 ## Hermes
 
-`nousresearch/hermes-agent` at `v0.22.7` (`HERMES_AGENT_IMAGE_TAG`), unmodified as an image.
+`nousresearch/hermes-agent` at `v0.23.1` (`HERMES_AGENT_IMAGE_TAG`), unmodified as an image.
 The stack changes it at container start: cont-init scripts in `compose/hermes/` run patch
 scripts that edit files under `/opt/hermes`, copy modules beside them and install the `bwbroker`
 plugin. Each patch anchors on text in the pinned release, so a bump means running the re-test
