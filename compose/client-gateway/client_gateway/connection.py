@@ -215,7 +215,7 @@ async def _initialize(conn: Connection, params: dict) -> dict:
             "loadSession": True,
             "promptCapabilities": {"image": False, "audio": False, "embeddedContext": True},
             "mcpCapabilities": {"http": True, "sse": False},
-            "sessionCapabilities": {"list": {}, "resume": {}, "close": {}, "delete": {}},
+            "sessionCapabilities": {"list": {}, "resume": {}, "close": {}, "delete": {}, "systemPrompt": {}},
             "_meta": {NS: {"extensions": dict(EXTENSIONS)}},
         },
         "authMethods": [],
