@@ -1,0 +1,87 @@
+{
+  "manifestVersion": 1,
+  "id": "io.github.kaxline.stack.opencode",
+  "version": "1.0.0",
+  "title": "OpenCode",
+  "tagline": "Hand coding tasks to an OpenCode agent working in your code folder",
+  "description": "Runs OpenCode (web UI on OPENCODE_PORT, default 4096) and opencode-mcp, which Hermes uses to start, wait on and continue coding tasks. OpenCode reads and writes OPENCODE_WORKSPACE_HOST, mounted at the same path in the container; Hermes may hand it paths under the coding roots only. Registered as opencode on the default and browser profiles, never on api-server. OPENCODE_WORKSPACE_HOST and OPENCODE_SERVER_PASSWORD are read from .env, which setup writes. See docs/opencode.md.",
+  "publisher": {
+    "name": "sovereign-agent-stack",
+    "url": "https://github.com/kaxline/sovereign-agent-stack"
+  },
+  "minStackVersion": "0.3.15",
+  "builtin": {
+    "flag": "OPENCODE_MCP_ENABLED",
+    "profile": "coding",
+    "seed": false
+  },
+  "services": {
+    "mcp": {
+      "compose": "opencode-mcp",
+      "port": 8000
+    },
+    "server": {
+      "compose": "opencode",
+      "port": 4096
+    }
+  },
+  "uses": [
+    "llm",
+    "search"
+  ],
+  "mcp": {
+    "service": "mcp",
+    "transport": "sse",
+    "path": "/sse",
+    "name": "opencode",
+    "title": "OpenCode",
+    "timeout": 600,
+    "connectTimeout": 30,
+    "env": {
+      "url": "OPENCODE_MCP_URL",
+      "timeout": "OPENCODE_MCP_TIMEOUT",
+      "connectTimeout": "OPENCODE_MCP_CONNECT_TIMEOUT"
+    },
+    "tools": [
+      "coding_list_roots",
+      "coding_start_task",
+      "coding_get_task_status",
+      "coding_wait_for_task",
+      "coding_get_task_result",
+      "coding_continue_task"
+    ],
+    "pin": [
+      "coding_list_roots",
+      "coding_start_task",
+      "coding_get_task_status",
+      "coding_wait_for_task",
+      "coding_get_task_result",
+      "coding_continue_task"
+    ],
+    "writeTools": [
+      "coding_start_task",
+      "coding_continue_task"
+    ],
+    "profiles": {
+      "default": "rw",
+      "browser": "rw"
+    }
+  },
+  "permissions": {
+    "reads": [],
+    "writes": [
+      "external:workspace"
+    ],
+    "sends": false,
+    "egress": [
+      "llm-proxy",
+      "search",
+      "internet"
+    ],
+    "exposesToAgent": true,
+    "cron": true
+  },
+  "store": {
+    "dataLeaves": "OpenCode's webfetch tool can request any URL a coding task names, and the model it uses gets the code it reads through llm-proxy."
+  }
+}

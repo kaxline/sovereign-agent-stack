@@ -399,12 +399,46 @@ cfg = {"services": {
 }}
 fig = st.service_figures(cfg)
 check("service_figures prefers deploy.resources over mem_*",
-      fig["a"] == {"image": "x:1", "reservation": 100, "limit": 1073741824}, str(fig.get("a")))
+      fig["a"] == {"image": "x:1", "reservation": 100, "limit": 1073741824, "ports": {}}, str(fig.get("a")))
 check("service_figures falls back to mem_limit and mem_reservation",
-      fig["b"] == {"image": "y:2", "reservation": 7, "limit": 536870912}, str(fig.get("b")))
+      fig["b"] == {"image": "y:2", "reservation": 7, "limit": 536870912, "ports": {}}, str(fig.get("b")))
 check("service_figures gives None for what compose leaves out",
-      fig["c"] == {"image": None, "reservation": None, "limit": None}, str(fig.get("c")))
+      fig["c"] == {"image": None, "reservation": None, "limit": None, "ports": {}}, str(fig.get("c")))
 check("service_figures tolerates a config without services", st.service_figures({}) == {})
+ports = st.service_figures({"services": {"p": {"ports": [
+    {"target": 8080, "published": "3456", "host_ip": "127.0.0.1"},
+    {"target": 8080, "published": "9999"},
+    {"target": 9000, "published": "9000-9001"},
+    {"target": 22},
+    "8443:443"]}}})["p"]["ports"]
+check("service_figures keeps the first published binding per container port, no ranges",
+      ports == {8080: ("127.0.0.1", 3456)}, str(ports))
+WEB = {"id": "io.example.web", "services": {
+    "proxy": {"compose": "w-proxy", "port": 8080},
+    "gated": {"compose": "w-gated", "port": 80, "when": {"gate": "W_LOCAL"}}},
+    "web": {"service": "proxy", "path": "/login-local"}}
+
+
+def web_fig(name, binding):
+    return {"services": {name: {"ports": {binding[0]: binding[1]}}}}
+
+
+check("web_view is None without a web field", st.web_view({"services": {}}, {}, None) is None)
+check("web_view resolves loopback to localhost",
+      st.web_view(WEB, {}, web_fig("w-proxy", (8080, ("127.0.0.1", 3456))))
+      == {"service": "proxy", "path": "/login-local", "url": "http://localhost:3456/login-local"})
+check("web_view uses a non-loopback host_ip as the host",
+      st.web_view(WEB, {}, web_fig("w-proxy", (8080, ("10.0.0.5", 80))))["url"] == "http://10.0.0.5:80/login-local")
+check("web_view brackets an IPv6 host_ip",
+      st.web_view(WEB, {}, web_fig("w-proxy", (8080, ("fd00::1", 80))))["url"] == "http://[fd00::1]:80/login-local")
+check("web_view url is null without figures or a published port",
+      st.web_view(WEB, {}, None)["url"] is None
+      and st.web_view(WEB, {}, web_fig("w-proxy", (9999, ("", 1))))["url"] is None)
+gated = {**WEB, "web": {"service": "gated", "path": "/"}}
+check("web_view url is null while the service's gate is off",
+      st.web_view(gated, {"W_LOCAL": "0"}, web_fig("w-gated", (80, ("", 8081))))["url"] is None)
+check("web_view resolves a gated service while its gate is on",
+      st.web_view(gated, {"W_LOCAL": "1"}, web_fig("w-gated", (80, ("", 8081))))["url"] == "http://localhost:8081/")
 with tempfile.TemporaryDirectory() as tmp:
     bare = st.listing(FIXTURE, Path(tmp), {})
     check("listing without figures lists services with null image and memory",

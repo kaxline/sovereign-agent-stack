@@ -19,9 +19,34 @@ the stack under another app.
   there with no `enabled_toolsets` of its own that reads mail or messages, or
   uses the browser or a fenced add-on, loses those tools after
   hermes-api-bootstrap runs. Give it its own `enabled_toolsets`.
+- CalDAV accounts moved from `compose/caldav-mcp/accounts/<slug>.env` to the
+  `caldav` add-on's store, and nothing reads the old files. Connect each one
+  again with `scripts/addon.sh connect caldav --instance <slug>`, JSON on
+  stdin with `url`, `username` and `password` (docs/calendar.md), then delete
+  the old file; `make doctor` warns while one is left. There is no migration
+  code: the add-on is experimental. Boundary's `calendar-<slug>` entries are
+  not affected.
 
 ### Changes
 
+- The Messages MCP is a built-in add-on (`addons/messages/addon.json`), so
+  `addon.sh list`, `enable messages` and `disable messages` work on it. The
+  flag (`MESSAGES_MCP_ENABLED`), the compose profile (`messages`), the server
+  name (`messages`), the URL and timeout variables and the registered entries
+  are unchanged: the bootstraps write the same `config.yaml` on every profile
+  as before, with the flag on and off. The manifest declares
+  `reads: ["messages"]`, `cron: false` and `sends: false`, registers on
+  `default` (`rw`, with `messages_triage_batch`) and `browser` (`ro`, read
+  tools only), never on `api-server`, and describes the Messages reader app
+  and its Full Disk Access grant under `host`. `addon.sh enable messages`
+  sets the flag, starts `messages-mcp` and reloads Hermes. It doesn't create
+  `MESSAGES_WEBHOOK_SECRET` or `messages-index.toml`, or install the reader
+  app: `setup.sh --messages` and [docs/messages.md](docs/messages.md) still
+  cover those. The new-message webhook route stays in the bootstrap
+  (`configure_messages_webhook`), keyed on the flag. `messages` is no longer a
+  core MCP name, so the manifest's uniqueness check now keeps other add-ons off
+  it. Messages hasn't been tested on a live install since v0.3.6, and this
+  port wasn't tested live either.
 - The bootstraps' cron fence now keeps the `browser` toolset out of
   `platform_toolsets.cron` on every profile they run on, and pins that list
   even when no mail, messages or fenced add-on server is registered. The list
@@ -37,7 +62,108 @@ the stack under another app.
   messages, fenced add-ons and the browser. hermes-api-bootstrap fences them
   on its next run; each profile adds about 1.6 seconds to a run that isn't
   skipped.
+- New, opt-in: the client gateway (compose profile `client-gateway`), which
+  serves ACP v1 over a WebSocket on `127.0.0.1:${CLIENT_GATEWAY_PORT:-8650}`
+  at `/acp` (the built-in assistant) and `/acp/agents/<slug>`, backed by
+  Hermes' dashboard `/api/ws`. It needs `CLIENT_API_TOKEN` (32 characters or
+  more; `scripts/setup.sh` generates it) sent as `Authorization: Bearer` on the
+  upgrade; a browser `Origin` must be listed in `CLIENT_API_ALLOWED_ORIGINS`.
+  Phase 1 covers sessions, prompt turns, cancel, approvals and clarify; secret
+  and vault prompts are declined until a later release. Nothing changes for
+  clients on `/api/ws`, and Boundary has no step yet. ACP pin and versions:
+  `compose/client-gateway/ACP.md`.
+- CalDAV calendars are a built-in add-on (`addons/caldav/addon.json`, title
+  "CalDAV calendars"), so `addon.sh list`, `enable caldav`, `connect caldav`
+  and `disconnect caldav` work on them. The flag (`CALDAV_MCP_ENABLED`), the
+  compose profile (`calendar`), the server names (`caldav-<slug>`), the
+  `caldav-mcp` URL, the `X-Caldav-*` headers, the `CALDAV_<SLUG>_PASSWORD`
+  keys and the tools on the default and browser profiles are unchanged.
+  Three differences, all from the manifest's `permissions.reads:
+  ["calendar"]`: `api-server` no longer gets the 8 read tools, cron jobs no
+  longer get `caldav-*` (a job that names one in its own `enabled_toolsets`
+  still does), and with the flag off the bootstrap removes `caldav-*` entries
+  and their keys instead of leaving them. `CALDAV_MCP_URL` and
+  `CALDAV_MCP_ACCOUNTS_DIR` are gone; the timeout variables stay.
+  `setup.sh --calendar` and `make ensure-local` no longer create a
+  placeholder account file.
+- Add-on manifests: `mcp.instances.headers`, a map from header name to a
+  template over instance settings with at most one `{secret:<name>}`, in
+  place of `auth`. With it, `url` may be the same for every instance.
+  `instances-plan` lines gain a fourteenth field, `headers`, and the add-on
+  line's `keyenv` carries the key suffix of an entry with a secret header.
+  `mcp-urls` lists an `mcp.instances` URL that has no placeholder. `caldav-`
+  is no longer a core prefix.
+- OpenCode is a built-in add-on (`addons/opencode/addon.json`), so
+  `addon.sh list`, `enable opencode` and `disable opencode` work on it. The
+  flag (`OPENCODE_MCP_ENABLED`), the compose profile (`coding`), the server
+  name (`opencode`), its URL and timeout variables, the six pinned
+  `coding_*` tools and the profiles that get it (default and browser, not
+  api-server) are unchanged, and it stays in cron jobs. With the flag on, the
+  bootstraps write the same `config.yaml` on default and browser as before.
+  Three differences, all removals of `opencode` entries (the
+  `tools.tool_search.always_include` pins stay, as before):
+  - api-server no longer keeps the `opencode` entry it copied from default
+    when the profile was created. The old code skipped registering it there
+    but never removed the copy, so api-server sessions could call the coding
+    tools.
+  - Turning the flag off removes the entry from default and browser. Before,
+    it stayed until removed by hand.
+  - With the flag on, a profile keeps no entry other than `opencode` at
+    `opencode-mcp`'s URL.
 
+  `OPENCODE_WORKSPACE_HOST` and `OPENCODE_SERVER_PASSWORD` stay in `.env`, so
+  `addon.sh enable opencode` doesn't check them; Compose still stops with its
+  own message when either is empty. `opencode` is no longer on the validator's
+  list of names core registers.
+- OpenCode is on by default. `.env.example` has `OPENCODE_MCP_ENABLED=1`, and
+  `scripts/setup.sh` writes 1 when `.env` has no `OPENCODE_MCP_ENABLED` line
+  (it wrote 0). An `.env` that already sets the flag keeps its value. Setup
+  already asked for `OPENCODE_WORKSPACE_HOST` and generated
+  `OPENCODE_SERVER_PASSWORD` on every run.
+- `BITWARDEN_LOCAL_ENABLED` (profile `vault`) moved from `sync-profiles.sh`'s
+  own table into `addons/bitwarden/addon.json` as a gate, with `vaultwarden`
+  and `vaultwarden-tls` as its services. `make up` and `sync-profiles.sh` turn
+  the same profiles on and off as before, and an existing `COMPOSE_PROFILES`
+  is left as it is; a sync that adds both `bitwarden` and `vault` now writes
+  them in that order. `addon.sh disable bitwarden` now also sets
+  `BITWARDEN_LOCAL_ENABLED=0` and stops both Vaultwarden services, and
+  `enable` doesn't turn local mode back on.
+- Vikunja todo lists are a built-in add-on (`addons/vikunja/addon.json`,
+  title "Todo lists"), so `addon.sh list`, `enable vikunja` and `disable
+  vikunja` work on them (Boundary CR 0032 R1 and R2). `enable` registers the
+  schema, starts `vikunja` and `vikunja-proxy`, creates the account and both
+  tokens, and reloads Hermes, with no `make`. The flag
+  (`VIKUNJA_MCP_ENABLED`), the compose profile (`todo`), the server name
+  (`todos`), its URL, the pins and which token each profile gets are
+  unchanged. Two differences: the profile `.env` key that holds the token is
+  now `TODOS_KEY` (was `VIKUNJA_MCP_TOKEN`, which is left in place and no
+  longer read), and the first `addon.sh enable vikunja` on an install set up
+  with `make todo-init` runs `todo.sh init` once more, which replaces both
+  tokens. The manifest declares `uses: postgres` and `exposesToAgent: true`:
+  the SQL add-on's roles can read the `vikunja` schema.
+- Add-on manifests: an `mcp` entry without `instances` may carry `auth`
+  (`{header, scheme, env: {ro, rw}}`), naming the `.env` variable that holds
+  each level's token. `mcp-plan` lines gain four fields (`keysrc`, `keyenv`,
+  `header`, `scheme`) after `all_urls`.
+- Add-on manifests: `hooks.prepare`, a script `addon.sh enable` runs on every
+  enable before step `flags`. `enable --json` then starts with step
+  `prepare`, and a failed prepare leaves the add-on as it was.
+- Add-on manifests: `web` (`{service, path}`) names the page a person opens,
+  and `addon.sh list --json` gains `web` on every add-on: null, or
+  `{service, path, url}` with `url` built from the host port compose
+  publishes for that service (null while its gate is off). Vikunja's is
+  `http://localhost:3456/login-local`, signed in (Boundary CR 0032 R3);
+  Twenty, Actual and n8n give their web apps at `/`.
+- Add-on manifests: `data.schemas` lists shared-Postgres schemas, and
+  `addon.sh remove --delete-data` drops each one with its `svc_<schema>`
+  role, starting `postgres-db` for it when it isn't running. Vikunja declares
+  `vikunja`, so removing its data now deletes the lists (Boundary CR 0032
+  R4). `plan-remove` output gains `schemas`.
+- `scripts/db.sh service-remove <slug> --yes` drops a service schema, its
+  role and `compose/postgres/services/<slug>.env`, replacing the hand-run SQL
+  in `docs/database.md`.
+- `todo.sh prepare` and `todo.sh init` take `--json`: progress goes to stderr,
+  and `init` ends with a `done` line naming the account and `todos`.
 - The SQL MCP is a built-in add-on (`addons/sql/addon.json`), so
   `addon.sh list`, `enable sql` and `disable sql` work on it. The flag
   (`SQL_MCP_ENABLED`), the compose profile (`db`), the server name (`sql`),

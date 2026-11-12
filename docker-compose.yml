@@ -395,7 +395,7 @@ services:
   # Profile: calendar
   # MCP:     http://caldav-mcp:8080/mcp   (compose-internal only)
   # Upstream: https://github.com/gelse/caldav-mcp
-  # Accounts: compose/caldav-mcp/accounts/<slug>.env (registered by bootstrap)
+  # Accounts: data/addons/caldav (addons/caldav/addon.json; docs/calendar.md)
   # Built from upstream's v0.1.1 commit with upstream's Dockerfile: the
   # published ghcr image is linux/amd64 only, and a local build is native on
   # Apple Silicon. Moving versions means changing the commit and the tag below.
@@ -412,7 +412,7 @@ services:
       - CALDAV_MCP_PATH=/mcp
       - TZ=${TZ:-UTC}
     # No CALDAV_URL/USERNAME/PASSWORD — credentials come per-request from
-    # Hermes mcp_servers headers (one account file → one MCP registration).
+    # Hermes mcp_servers headers (one connected account → one MCP registration).
     # No host ports — compose-internal only.
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import socket; s=socket.create_connection(('127.0.0.1',8080),5); s.close()\""]
@@ -1531,12 +1531,10 @@ services:
       - LIGHTRAG_MCP_ENABLED=${LIGHTRAG_MCP_ENABLED:-0}
       - LIGHTRAG_MCP_TIMEOUT=${LIGHTRAG_MCP_TIMEOUT:-120}
       - LIGHTRAG_MCP_CONNECT_TIMEOUT=${LIGHTRAG_MCP_CONNECT_TIMEOUT:-30}
-      # CalDAV MCP (calendar profile); accounts mounted below.
-      - CALDAV_MCP_URL=${CALDAV_MCP_URL:-http://caldav-mcp:8080/mcp}
+      # CalDAV calendars: one MCP entry per account in the add-on's instance store. docs/calendar.md
       - CALDAV_MCP_ENABLED=${CALDAV_MCP_ENABLED:-0}
       - CALDAV_MCP_TIMEOUT=${CALDAV_MCP_TIMEOUT:-60}
       - CALDAV_MCP_CONNECT_TIMEOUT=${CALDAV_MCP_CONNECT_TIMEOUT:-30}
-      - CALDAV_MCP_ACCOUNTS_DIR=/bootstrap/caldav-accounts
       # Twenty CRM: one MCP entry per workspace in the add-on's instance store. docs/crm.md
       - TWENTY_MCP_ENABLED=${TWENTY_MCP_ENABLED:-0}
       - TWENTY_MCP_TIMEOUT=${TWENTY_MCP_TIMEOUT:-60}
@@ -1609,7 +1607,6 @@ services:
       - ./data/hermes:/opt/data
       - ./compose/hermes/api-server.env:/bootstrap/api-server.env:ro
       - ./compose/hermes/bootstrap-api-profile.sh:/bootstrap/bootstrap-api-profile.sh:ro
-      - ./compose/caldav-mcp/accounts:/bootstrap/caldav-accounts:ro
       # Twenty's workspaces: instances/<slug>.json and secrets/<slug>.key_ro|key_rw.
       # Only this add-on's directory; other add-ons keep secrets under data/addons.
       - ${ASSISTANT_DATA_ROOT:-./data}/addons/twenty:/bootstrap/addon-data/twenty:ro
@@ -1617,6 +1614,8 @@ services:
       # scripts/addon-dirs.sh (setup.sh, make ensure-local) creates the
       # add-on directories, so this works with Twenty and Actual off.
       - ${ASSISTANT_DATA_ROOT:-./data}/addons/actual/instances:/bootstrap/addon-data/actual/instances:ro
+      # CalDAV accounts: instances/<slug>.json and secrets/<slug>.password.
+      - ${ASSISTANT_DATA_ROOT:-./data}/addons/caldav:/bootstrap/addon-data/caldav:ro
       # Built-in add-on manifests and the reader for them (GPT Researcher so far).
       - ./addons:/bootstrap/addons:ro
       - ./scripts/lib/addon_manifest.py:/bootstrap/addon_manifest.py:ro
@@ -1666,11 +1665,9 @@ services:
       - LIGHTRAG_MCP_ENABLED=${LIGHTRAG_MCP_ENABLED:-0}
       - LIGHTRAG_MCP_TIMEOUT=${LIGHTRAG_MCP_TIMEOUT:-120}
       - LIGHTRAG_MCP_CONNECT_TIMEOUT=${LIGHTRAG_MCP_CONNECT_TIMEOUT:-30}
-      - CALDAV_MCP_URL=${CALDAV_MCP_URL:-http://caldav-mcp:8080/mcp}
       - CALDAV_MCP_ENABLED=${CALDAV_MCP_ENABLED:-0}
       - CALDAV_MCP_TIMEOUT=${CALDAV_MCP_TIMEOUT:-60}
       - CALDAV_MCP_CONNECT_TIMEOUT=${CALDAV_MCP_CONNECT_TIMEOUT:-30}
-      - CALDAV_MCP_ACCOUNTS_DIR=/bootstrap/caldav-accounts
       # Twenty CRM: one MCP entry per workspace in the add-on's instance store. docs/crm.md
       - TWENTY_MCP_ENABLED=${TWENTY_MCP_ENABLED:-0}
       - TWENTY_MCP_TIMEOUT=${TWENTY_MCP_TIMEOUT:-60}
@@ -1741,7 +1738,6 @@ services:
       - ./data/hermes:/opt/data
       - ./compose/hermes/browser.env:/bootstrap/browser.env:ro
       - ./compose/hermes/bootstrap-api-profile.sh:/bootstrap/bootstrap-api-profile.sh:ro
-      - ./compose/caldav-mcp/accounts:/bootstrap/caldav-accounts:ro
       # Twenty's workspaces: instances/<slug>.json and secrets/<slug>.key_ro|key_rw.
       # Only this add-on's directory; other add-ons keep secrets under data/addons.
       - ${ASSISTANT_DATA_ROOT:-./data}/addons/twenty:/bootstrap/addon-data/twenty:ro
@@ -1749,6 +1745,8 @@ services:
       # scripts/addon-dirs.sh (setup.sh, make ensure-local) creates the
       # add-on directories, so this works with Twenty and Actual off.
       - ${ASSISTANT_DATA_ROOT:-./data}/addons/actual/instances:/bootstrap/addon-data/actual/instances:ro
+      # CalDAV accounts: instances/<slug>.json and secrets/<slug>.password.
+      - ${ASSISTANT_DATA_ROOT:-./data}/addons/caldav:/bootstrap/addon-data/caldav:ro
       # Built-in add-on manifests and the reader for them (GPT Researcher so far).
       - ./addons:/bootstrap/addons:ro
       - ./scripts/lib/addon_manifest.py:/bootstrap/addon_manifest.py:ro
@@ -2215,6 +2213,50 @@ services:
       retries: 6
       start_period: 60s
       start_interval: 2s
+
+  # ----------------------------------------------------------------------
+  # client-gateway — ACP v1 over a WebSocket for Boundary and other ACP clients
+  # Profile: client-gateway (until Boundary moves off the dashboard's /api/ws)
+  # Port:    127.0.0.1:${CLIENT_GATEWAY_PORT:-8650} (/acp, /acp/agents/<slug>)
+  # Auth:    Authorization: Bearer ${CLIENT_API_TOKEN} on the upgrade; an
+  #          Origin header must be listed in CLIENT_API_ALLOWED_ORIGINS.
+  # Talks to hermes' dashboard /api/ws with the dashboard login. Never logs
+  # message text, tool arguments or results.
+  # ----------------------------------------------------------------------
+  client-gateway:
+    profiles: ["client-gateway"]
+    container_name: ${CONTAINER_PREFIX:-}client-gateway
+    build:
+      context: ./compose/client-gateway
+      args:
+        HERMES_AGENT_IMAGE_TAG: ${HERMES_AGENT_IMAGE_TAG:-v0.23.1}
+    image: ${IMAGE_PREFIX:-assistant}-client-gateway:local
+    restart: unless-stopped
+    user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+    environment:
+      # Not :? — compose interpolates every service, so a required variable would
+      # break installs that never enable this profile. The gateway exits with a
+      # message when the token is missing, short or the placeholder.
+      - CLIENT_API_TOKEN=${CLIENT_API_TOKEN:-}
+      - CLIENT_API_ALLOWED_ORIGINS=${CLIENT_API_ALLOWED_ORIGINS:-}
+      - CLIENT_GATEWAY_HERMES_URL=http://hermes:9119
+      - HERMES_DASHBOARD_USER=${HERMES_DASHBOARD_USER:-admin}
+      - HERMES_DASHBOARD_PASSWORD=${HERMES_DASHBOARD_PASSWORD:?set HERMES_DASHBOARD_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:${CLIENT_GATEWAY_PORT:-8650}:8650"
+    depends_on:
+      hermes:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8650/health', timeout=5)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
 
   # ----------------------------------------------------------------------
   # Bitwarden broker — vault access for browser sign-ins (docs/bitwarden.md)

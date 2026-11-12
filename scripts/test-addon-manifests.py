@@ -71,10 +71,13 @@ refused("an image in a built-in manifest", variant(services__server__image="x@sh
         "keeps its image in docker-compose.yml")
 refused("pin outside tools", variant(mcp__pin=["nope"]), "mcp.pin")
 refused("writeTools outside tools", variant(mcp__writeTools=["nope"]), "mcp.writeTools")
-refused("core name collision", variant(mcp__name="messages"), "collides")
+refused("core name collision", variant(mcp__name="searxng"), "collides")
 check("mail and drafts are add-on names now (email-local), not core ones",
       not {"mail", "drafts"} & am.CORE_MCP_NAMES, str(am.CORE_MCP_NAMES))
-refused("core prefix collision", variant(mcp__name="caldav-main"), "collides")
+check("messages is an add-on name now (addons/messages), not a core one",
+      "messages" not in am.CORE_MCP_NAMES, str(am.CORE_MCP_NAMES))
+check("caldav- is an add-on prefix now (addons/caldav), not a core one",
+      am.CORE_MCP_PREFIXES == (), str(am.CORE_MCP_PREFIXES))
 check("crm- is no longer a core prefix", "crm-" not in am.CORE_MCP_PREFIXES, str(am.CORE_MCP_PREFIXES))
 refused("mcp.unmanaged is refused", variant(mcp__unmanaged=["default"]), "mcp.unmanaged was removed")
 refused("onToggle is refused", variant(onToggle={"recreate": ["hermes"]}), "onToggle was removed")
@@ -119,6 +122,20 @@ refused("reader with a default path",
         "may not have a default")
 refused("reader in cron", variant(permissions__reads=["mail"], permissions__cron=True,
                                   mcp__profiles={"default": "ro"}), "cron false")
+
+# The same three checks against the shipped Messages manifest.
+MESSAGES = json.loads((ROOT / "addons" / "messages" / "addon.json").read_text())
+check("addons/messages is valid as built-in", am.validate(MESSAGES) == [], str(am.validate(MESSAGES)))
+msg_sends = copy.deepcopy(MESSAGES)
+msg_sends["permissions"]["sends"] = True
+refused("messages with sends: true", msg_sends, "may not send")
+msg_api = copy.deepcopy(MESSAGES)
+msg_api["mcp"]["profiles"]["api-server"] = "ro"
+refused("messages with api-server in mcp.profiles", msg_api,
+        "an add-on that reads personal data may not be on api-server")
+msg_path = copy.deepcopy(MESSAGES)
+msg_path["settings"] = {"store": {"type": "path", "default": "./data/messages/store"}}
+refused("messages with a default store path", msg_path, "may not have a default")
 # --- credentials and vaultBackend ---------------------------------------------
 VAULT = {"name": "bwbroker", "plugin": "compose/hermes/plugins/bwbroker", "toolset": "bitwarden",
          "tools": ["bitwarden_request_access", "bitwarden_release_access"],
@@ -222,7 +239,7 @@ env = {"GPTR_MCP_ENABLED": "1"}
 plan = am.mcp_plan(ROOT / "addons", "browser", env)
 want = ("gptr|GPT Researcher|1|rw|http://gptr-mcp:8000/sse|900|30|sse|"
         "deep_research quick_search write_report get_research_sources get_research_context|"
-        "deep_research quick_search write_report|http://gptr-mcp:8000/sse")
+        "deep_research quick_search write_report|http://gptr-mcp:8000/sse||||")
 check("plan for browser with the flag on", want in plan, str(plan))
 plan = am.mcp_plan(ROOT / "addons", "api-server", env)
 check("plan leaves api-server without access", any(line.startswith("gptr|GPT Researcher|1||") for line in plan),
@@ -263,7 +280,7 @@ with tempfile.TemporaryDirectory() as tmp:
             plan = am.mcp_plan(Path(tmp), "api-server", e)
             row = plan[0].split("|") if len(plan) == 1 else []
             check(f"invalid manifest drops {url} on api-server (flag {flag})",
-                  len(row) == 11 and row[2] == "0" and row[3] == "" and row[4] == url
+                  len(row) == 15 and row[2] == "0" and row[3] == "" and row[4] == url
                   and row[10] == url, str(plan))
     _plan = am.mcp_plan(Path(tmp), "default", {})
     check("invalid manifest drops LightRAG on default too",
@@ -485,7 +502,7 @@ with tempfile.TemporaryDirectory() as tmp:
     check("mcp-plan prints one line per entry", len(plan) == 2, str(plan))
     check("the first entry follows builtin.flag", first[:3] == ["gptr", "GPT Researcher", "0"], str(plan))
     check("the second entry follows its gate and title", second[:3] == ["gptr-extra", "Extra", "1"], str(plan))
-    check("each line keeps the 11 fields", len(first) == 11 and len(second) == 11, str(plan))
+    check("each line keeps the 15 fields", len(first) == 15 and len(second) == 15, str(plan))
     plan = am.mcp_plan(Path(tmp), "default", {"GPTR_MCP_ENABLED": "1"})
     check("a gate that is unset is off", [p.split("|")[2] for p in plan] == ["1", "0"], str(plan))
 
@@ -493,6 +510,94 @@ for prof in ("default", "api-server", "browser"):
     fixture = (ROOT / "scripts" / "fixtures" / f"addon-mcp-plan-{prof}.txt").read_text().splitlines()
     check(f"mcp-plan over addons/ for {prof} matches the fixture",
           am.mcp_plan(ROOT / "addons", prof, {}) == fixture, str(am.mcp_plan(ROOT / "addons", prof, {})))
+
+# --- mcp.auth on an entry without instances -----------------------------------
+VK = json.loads((ROOT / "addons" / "vikunja" / "addon.json").read_text())
+
+
+def vk_variant(**auth):
+    m = copy.deepcopy(VK)
+    for k, v in auth.items():
+        if v is None:
+            m["mcp"]["auth"].pop(k, None)
+        else:
+            m["mcp"]["auth"][k] = v
+    return m
+
+
+check("vikunja manifest is valid", am.validate(VK) == [], str(am.validate(VK)))
+refused("auth.env must cover every level in mcp.profiles",
+        vk_variant(env={"rw": "VIKUNJA_MCP_TOKEN_RW"}), "names no token for ro")
+refused("auth.env ro and rw must differ",
+        vk_variant(env={"ro": "VIKUNJA_MCP_TOKEN_RW", "rw": "VIKUNJA_MCP_TOKEN_RW"}), "different variable")
+refused("auth.env values are env var names", vk_variant(env={"ro": "lower", "rw": "X"}), "mcp.auth.env")
+refused("auth.env keys are ro and rw", vk_variant(env={"admin": "X", "rw": "Y"}), "mcp.auth.env")
+refused("auth.header is a header name", vk_variant(header="Bad Header"), "mcp.auth.header")
+refused("auth takes no unknown fields", vk_variant(secret={"ro": "a", "rw": "b"}), "mcp.auth has unknown fields")
+refused("auth must be an object", {**copy.deepcopy(VK), "mcp": {**VK["mcp"], "auth": "Bearer"}}, "mcp.auth must be")
+
+# web: the page a person opens (Boundary CR 0032 R3).
+check("web naming a service with a port is accepted",
+      am.validate(variant(web={"service": "server", "path": "/login-local"})) == [],
+      str(am.validate(variant(web={"service": "server", "path": "/login-local"}))))
+refused("web.service must be one of services", variant(web={"service": "nope", "path": "/"}), "web.service")
+refused("web.service needs a port",
+        variant(services={"server": {"compose": "gptr-mcp"}}, web={"service": "server", "path": "/"}),
+        "web.service")
+for bad in ("login", "/a?b=1", "/a b", "", 5):
+    refused(f"web.path {bad!r} is refused", variant(web={"service": "server", "path": bad}), "web.path")
+refused("web takes no unknown fields", variant(web={"service": "server", "path": "/", "port": 1}),
+        "web has unknown fields")
+refused("web must be an object", variant(web="/"), "web must be")
+
+# data.schemas: shared-Postgres schemas remove --delete-data drops (CR 0032 R4).
+PG = dict(uses=["postgres"], permissions__exposesToAgent=True)
+check("data.schemas with uses postgres is accepted",
+      am.validate(variant(data={"schemas": ["todo_x"]}, **PG), repo=None) == [],
+      str(am.validate(variant(data={"schemas": ["todo_x"]}, **PG), repo=None)))
+refused("data.schemas needs uses postgres", variant(data={"schemas": ["todo_x"]}), "uses must include postgres")
+for bad in (["agent"], ["public"], ["information_schema"], ["pg_x"], ["Bad"], ["a-b"], ["x" * 59], [], ["a", "a"], "a"):
+    refused(f"data.schemas {bad!r} is refused", variant(data={"schemas": bad}, **PG), "data.schemas")
+check("data_schemas reads data.schemas",
+      am.data_schemas(variant(data={"schemas": ["todo_x"]})) == ["todo_x"] and am.data_schemas(BASE) == [])
+with tempfile.TemporaryDirectory() as tmp:
+    d = Path(tmp)
+    for sid in ("one", "two"):
+        m = variant(id=f"io.example.{sid}", data={"schemas": ["shared_x"]}, **PG)
+        (d / sid).mkdir()
+        (d / sid / "addon.json").write_text(am.canonical(m))
+    conflicts = am.dir_conflicts(am.load_dir(d))
+    check("two add-ons may not declare the same schema",
+          all(any("data.schemas 'shared_x'" in e for e in conflicts.get(d / sid / "addon.json", []))
+              for sid in ("one", "two")), str(conflicts))
+with tempfile.TemporaryDirectory() as tmp:
+    (Path(tmp) / "vikunja").mkdir()
+    (Path(tmp) / "vikunja" / "addon.json").write_text(am.canonical(VK))
+    on = {"VIKUNJA_MCP_ENABLED": "1", "VIKUNJA_MCP_TOKEN_RO": "secret-ro", "VIKUNJA_MCP_TOKEN_RW": "secret-rw"}
+    rows = {p: am.mcp_plan(Path(tmp), p, on)[0].split("|") for p in ("api-server", "browser", "other")}
+    check("auth: api-server names the ro token variable",
+          rows["api-server"][11:] == ["VIKUNJA_MCP_TOKEN_RO", "TODOS_KEY", "Authorization", "Bearer"],
+          str(rows["api-server"]))
+    check("auth: browser names the rw token variable", rows["browser"][11] == "VIKUNJA_MCP_TOKEN_RW",
+          str(rows["browser"]))
+    check("auth: a profile without access gets no variable but keeps keyenv",
+          rows["other"][3] == "" and rows["other"][11:13] == ["", "TODOS_KEY"], str(rows["other"]))
+    check("auth: write pins stay off the ro profile",
+          "tasks_create" not in rows["api-server"][9].split(), rows["api-server"][9])
+    check("auth: token values are never printed",
+          not any("secret-" in f for r in rows.values() for f in r), str(rows))
+    # Not canonical, so invalid: the drop-only line still names the key to remove.
+    (Path(tmp) / "vikunja" / "addon.json").write_text(json.dumps(VK))
+    row = am.mcp_plan(Path(tmp), "browser", on)[0].split("|")
+    check("auth: an invalid manifest's drop line carries keyenv",
+          row[2] == "0" and row[11:] == ["", "TODOS_KEY", "", ""], str(row))
+
+# --- hooks.prepare ------------------------------------------------------------
+check("prepare is a hook name", "prepare" in am.HOOK_NAMES)
+refused("prepare must be a script",
+        {**copy.deepcopy(VK), "commands": {"x": {"service": "proxy", "instance": False, "argv": ["true"]}},
+         "hooks": {"prepare": {"command": "x"}}}, "hooks.prepare must be a script")
+check("vikunja's prepare hook is todo.sh prepare", am.hook(VK, "prepare") == {"script": ["scripts/todo.sh", "prepare"]})
 
 got = fence_of({"gptr": am.canonical(two_entry(permissions__cron=False))}, env)
 check("cron false fences every entry", got[0] == ["gptr", "gptr-extra"], str(got))
@@ -563,13 +668,10 @@ refused("mcp.instances name with {slug} twice", inst_manifest({"instances__name"
         "mcp.instances.name")
 refused("mcp.instances prefix collides with a core name", inst_manifest({"instances__name": "searxng-{slug}"}),
         "collides")
-refused("mcp.instances prefix collides with a core prefix", inst_manifest({"instances__name": "caldav-{slug}"}),
-        "collides")
 # The bootstrap drops every entry under an instance prefix that has no
-# instance, so a prefix that overlaps a core name or prefix in either
-# direction would drop core entries (searxng, opencode, caldav-*).
-for bad_name in ("s{slug}", "op{slug}", "searx{slug}", "cal{slug}", "caldav-x-{slug}",
-                 "messag{slug}", "messages-{slug}"):
+# instance, so a prefix that overlaps a core name in either direction would
+# drop core entries (searxng).
+for bad_name in ("s{slug}", "searx{slug}"):
     refused(f"mcp.instances prefix overlapping a core name or prefix ({bad_name})",
             inst_manifest({"instances__name": bad_name}), "collides with a server core registers")
 check("mcp.instances prefix crm- is accepted", am.validate(inst_manifest()) == [])
@@ -705,13 +807,19 @@ def plan_rows(data: Path, profile: str, environ: dict) -> dict[str, list[str]]:
     rows = {}
     for line in lines:
         fields = line.split("|")
-        check(f"instances-plan line has 13 fields ({fields[0]})", len(fields) == 13, line)
+        check(f"instances-plan line has 14 fields ({fields[0]})", len(fields) == 14, line)
         if fields[0].startswith("crm-"):
             rows[fields[0]] = fields
     return rows
 
 
 TW_ON = {"TWENTY_MCP_ENABLED": "1", "TWENTY_LOCAL_ENABLED": "1"}
+CD_READ = ["caldav_list_calendars", "caldav_get_events", "caldav_get_today_events",
+           "caldav_get_week_events", "caldav_get_event_by_uid", "caldav_search_events",
+           "caldav_get_freebusy", "caldav_list_attendees"]
+CD_WRITE = ["caldav_create_event", "caldav_update_event", "caldav_delete_event",
+            "caldav_move_event", "caldav_add_attendee", "caldav_remove_attendee"]
+CD_TOOLS = CD_READ + CD_WRITE
 with tempfile.TemporaryDirectory() as tmp:
     data = tw_store(Path(tmp), {
         "main": {"url": "http://twenty-server:3000", "access": "write", "local": True},
@@ -855,8 +963,10 @@ with tempfile.TemporaryDirectory() as tmp:
                           str(ROOT / "addons"), str(Path(tmp) / "missing"), "default"],
                          capture_output=True, text=True, env={"TWENTY_MCP_ENABLED": "1"}).stdout.splitlines()
           == ["budget-*|Actual Budget|0||||120|60|get-accounts get-grouped-categories get-transactions "
-              "monthly-summary get-budget-month get-payees|ACTUAL_MCP_ENABLED|||",
-              "crm-*|Twenty CRM|1||||60|30|" + TW_PINS + "|TWENTY_MCP_ENABLED|||"])
+              "monthly-summary get-budget-month get-payees|ACTUAL_MCP_ENABLED||||",
+              "caldav-*|CalDAV calendars|0||PASSWORD||60|30|" + " ".join(CD_TOOLS)
+              + "|CALDAV_MCP_ENABLED||||",
+              "crm-*|Twenty CRM|1||||60|30|" + TW_PINS + "|TWENTY_MCP_ENABLED||||"])
 
 # A broken manifest with mcp.instances still names its prefix, off, so the
 # bootstrap drops its entries.
@@ -923,6 +1033,16 @@ with tempfile.TemporaryDirectory() as tmp:
     errs = {p.parent.name: e for p, _m, e in am.checked_dir(d)}
     check("email-local's mail under another add-on's instance prefix is refused",
           any("'mail'" in e and "mai's instance prefix" in e for e in errs["email-local"]), str(errs))
+
+# opencode left CORE_MCP_NAMES for addons/opencode the same way.
+op = copy.deepcopy(mai)
+op["id"] = "io.example.op"
+op["mcp"]["instances"]["name"] = "op{slug}"
+with tempfile.TemporaryDirectory() as tmp:
+    d = conflict_dir(Path(tmp), {"op": op})
+    errs = {p.parent.name: e for p, _m, e in am.checked_dir(d)}
+    check("opencode under another add-on's instance prefix is refused",
+          any("'opencode'" in e and "op's instance prefix" in e for e in errs["opencode"]), str(errs))
 
 # A second add-on that takes email-local's fixed name "mail" refuses both.
 dup = copy.deepcopy(BASE)
@@ -1504,6 +1624,127 @@ for svc in ("hermes-api-bootstrap", "hermes-browser-bootstrap"):
           "- ${ASSISTANT_DATA_ROOT:-./data}/addons/twenty:/bootstrap/addon-data/twenty:ro" in block)
     check(f"{svc} sets ADDON_DATA_DIR", "- ADDON_DATA_DIR=/bootstrap/addon-data" in block)
     check(f"{svc} no longer mounts the workspace files", "twenty-workspaces" not in block)
+
+# --- mcp.instances.headers ------------------------------------------------------
+HDR_SETTINGS = {"url": {"type": "url"}, "username": {"type": "string"},
+                "password": {"type": "secret"}, "local": {"type": "bool", "default": False}}
+HDR = {"X-Dav-Url": "{setting:url}", "X-Dav-User": "{setting:username}",
+       "X-Dav-Password": "{secret:password}"}
+
+
+def hdr_manifest(headers=HDR, settings=HDR_SETTINGS, **changes):
+    c = {"instances__headers": headers, "instances__url": "http://example.com/mcp",
+         "instances__auth": None, "instances__access": None, "instances__gate": None}
+    c.update(changes)
+    return inst_manifest(c, instances_settings=settings)
+
+
+check("mcp.instances.headers with a fixed url is valid", am.validate(hdr_manifest()) == [],
+      str(am.validate(hdr_manifest())))
+refused("mcp.instances.headers with no setting still needs a per-instance url",
+        hdr_manifest({"X-Static": "yes"}), "mcp.instances.url")
+refused("mcp.instances.headers and auth together",
+        hdr_manifest(instances__auth={"header": "Authorization", "scheme": "Bearer",
+                                      "secret": {"ro": "password", "rw": "password"}}),
+        "auth or headers")
+refused("mcp.instances.headers must not be empty", hdr_manifest({}), "mcp.instances.headers")
+refused("mcp.instances.headers with a bad header name", hdr_manifest({"X Dav": "{setting:url}"}),
+        "HTTP header name")
+refused("mcp.instances.headers naming a header twice",
+        hdr_manifest({"X-Dav": "{setting:url}", "x-dav": "{setting:username}"}), "HTTP header name")
+refused("mcp.instances.headers naming a bool setting", hdr_manifest({"X-Dav": "{setting:local}"}),
+        "not a url or string")
+refused("mcp.instances.headers {secret:} naming a string", hdr_manifest({"X-Dav": "{secret:username}"}),
+        "stored secret")
+refused("mcp.instances.headers {secret:} naming a transient secret",
+        hdr_manifest({"X-Dav": "{setting:url}", "X-Tok": "{secret:token}"},
+                     settings={**HDR_SETTINGS, "token": {"type": "secret", "transient": True,
+                                                         "optional": True}}), "stored secret")
+refused("mcp.instances.headers with two secrets",
+        hdr_manifest({"X-Dav": "{setting:url}", "X-A": "{secret:password}", "X-B": "{secret:password}"}),
+        "one {secret:<name>}")
+refused("mcp.instances.headers with an unknown placeholder", hdr_manifest({"X-Dav": "{slug}"}),
+        "the only placeholders")
+check("instance_key_env takes a suffix",
+      am.instance_key_env("caldav-work-cal", "password") == "CALDAV_WORK_CAL_PASSWORD"
+      and am.instance_key_env("crm-sales-eu") == "CRM_SALES_EU_KEY")
+
+# --- CalDAV ------------------------------------------------------------------
+cd_path = ROOT / "addons" / "caldav" / "addon.json"
+cd = json.loads(cd_path.read_text())
+check("caldav manifest is canonical JSON", cd_path.read_text() == am.canonical(cd))
+check("caldav manifest is valid as built-in", am.validate(cd) == [], str(am.validate(cd)))
+check("caldav: flag CALDAV_MCP_ENABLED on profile calendar, not seeded",
+      cd["builtin"] == {"flag": "CALDAV_MCP_ENABLED", "profile": "calendar", "seed": False})
+check("caldav: reads calendar, no cron, no api-server",
+      cd["permissions"]["reads"] == ["calendar"] and cd["permissions"]["cron"] is False
+      and cd["mcp"]["profiles"] == {"default": "rw", "browser": "rw"})
+check("caldav: 14 tools, all pinned, 6 of them writes",
+      cd["mcp"]["tools"] == CD_TOOLS and cd["mcp"]["pin"] == CD_TOOLS
+      and cd["mcp"]["writeTools"] == CD_WRITE)
+check("caldav: mcp-urls lists the shared caldav-mcp URL",
+      "http://caldav-mcp:8080/mcp" in am.mcp_urls(ROOT / "addons", {}))
+
+with tempfile.TemporaryDirectory() as tmp:
+    data = Path(tmp) / "addon-data"
+    (data / "caldav" / "instances").mkdir(parents=True)
+    (data / "caldav" / "secrets").mkdir()
+    for slug, url in (("personal", "https://caldav.example.com/"), ("work-cal", "https://dav.example.com/w")):
+        (data / "caldav" / "instances" / f"{slug}.json").write_text(
+            json.dumps({"url": url, "username": f"{slug}@example.com"}))
+        (data / "caldav" / "secrets" / f"{slug}.password").write_text(f"fake-{slug}")
+    (data / "caldav" / "instances" / "nokey.json").write_text(
+        json.dumps({"url": "https://caldav.example.com/", "username": "n@example.com"}))
+    (data / "caldav" / "instances" / "ctrl.json").write_text(
+        json.dumps({"url": "https://caldav.example.com/", "username": "a\tb"}))
+    (data / "caldav" / "secrets" / "ctrl.password").write_text("fake-ctrl")
+    on = {"CALDAV_MCP_ENABLED": "1"}
+
+    def cd_rows(profile, environ):
+        out = {}
+        for line in am.instances_plan(ROOT / "addons", data, profile, environ):
+            f = line.split("|")
+            check(f"caldav plan line has 14 fields ({f[0]})", len(f) == 14, line)
+            if f[0].startswith("caldav-"):
+                out[f[0]] = f
+        return out
+
+    text = "\n".join(am.instances_plan(ROOT / "addons", data, "default", on))
+    check("caldav plan never prints a password", "fake-" not in text, text)
+    rows = cd_rows("default", on)
+    check("caldav add-on line carries the PASSWORD key suffix",
+          rows["caldav-*"][2] == "1" and rows["caldav-*"][4] == "PASSWORD", str(rows["caldav-*"]))
+    p = rows["caldav-personal"]
+    check("caldav-personal: on, shared URL, key CALDAV_PERSONAL_PASSWORD from secrets/personal.password",
+          p[2:6] == ["1", "http://caldav-mcp:8080/mcp", "CALDAV_PERSONAL_PASSWORD",
+                     str(data / "caldav" / "secrets" / "personal.password")], str(p))
+    check("caldav-personal: all 14 tools and pins, no auth header",
+          p[12] == " ".join(CD_TOOLS) and p[8] == " ".join(CD_TOOLS) and p[10:12] == ["", ""], str(p))
+    check("caldav-personal: headers carry the URL verbatim, the username and a password reference",
+          json.loads(p[13]) == {"X-Caldav-Url": "https://caldav.example.com/",
+                                "X-Caldav-Username": "personal@example.com",
+                                "X-Caldav-Password": "${CALDAV_PERSONAL_PASSWORD}"}, p[13])
+    w = rows["caldav-work-cal"]
+    check("caldav-work-cal: key CALDAV_WORK_CAL_PASSWORD",
+          w[2] == "1" and w[4] == "CALDAV_WORK_CAL_PASSWORD"
+          and json.loads(w[13])["X-Caldav-Password"] == "${CALDAV_WORK_CAL_PASSWORD}", str(w))
+    n = rows["caldav-nokey"]
+    check("caldav: an account without a password file is off",
+          n[2] == "0" and n[9] == "key password is missing" and n[13] == "", str(n))
+    c = rows["caldav-ctrl"]
+    check("caldav: a header with a control character is off",
+          c[2] == "0" and c[9].startswith("header X-Caldav-Username"), str(c))
+    rows = cd_rows("api-server", on)
+    check("caldav: api-server gets no account",
+          all(r[2] == "0" and r[9] == "profile not in the manifest's mcp.profiles"
+              for k, r in rows.items() if k != "caldav-*"), str(rows))
+    rows = cd_rows("default", {"CALDAV_MCP_ENABLED": "0"})
+    check("caldav: flag off turns every account off",
+          rows["caldav-*"][2] == "0" and all(r[2] == "0" for r in rows.values()), str(rows))
+    names, _urls = am.cron_fence(ROOT / "addons", {}, data_dir=data)
+    check("caldav: every account is fenced from cron by name, not by URL",
+          {"caldav-personal", "caldav-work-cal"} <= set(names)
+          and "http://caldav-mcp:8080/mcp" not in _urls, str(names))
 
 # --- Actual Budget -----------------------------------------------------------
 ac_path = ROOT / "addons" / "actual" / "addon.json"

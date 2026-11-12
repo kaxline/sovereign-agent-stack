@@ -17,6 +17,9 @@ export STACK_PYTHON=host
 load_fns "$bootstrap" addon_mcp_plan addon_mcp_pin_args register_addon_mcp_servers mcp_tool_name
 
 log() { :; }
+# The todos entry (mcp.auth) removes its profile key while Vikunja is off.
+profile_env_file() { :; }
+remove_env_key() { :; }
 
 [ -f "${ADDONS_DIR}/email/addon.json" ] || fail "addons/email/addon.json is missing"
 

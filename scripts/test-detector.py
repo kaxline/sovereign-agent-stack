@@ -230,6 +230,10 @@ set_provider("pangram")
 internal = server.serve(0, require_token=False)
 host = server.serve(0, require_token=True)
 IPORT, HPORT = internal.server_address[1], host.server_address[1]
+# Handler threads log after replying; non-daemon threads let server_close()
+# join them, so none is still writing to stderr at interpreter shutdown.
+for srv in (internal, host):
+    srv.daemon_threads = False
 
 
 def call(port, path="/check", body=None, headers=None, method=None):
@@ -281,4 +285,7 @@ c.expect("w57" not in logged and "First sentence" not in logged and "tok-123" no
          f"the log holds no text and no token: {logged!r}")
 c.expect("POST /check 401 unauthorized" in logged, f"the log names method, path, status and code: {logged!r}")
 
+for srv in (internal, host):
+    srv.shutdown()
+    srv.server_close()
 c.finish("ok detector service")

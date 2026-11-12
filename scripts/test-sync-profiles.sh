@@ -152,7 +152,8 @@ expect "manifest row removes its profile when off" COMPOSE_PROFILES core
 
 # Bitwarden's row comes from addons/bitwarden/addon.json with seed false: a
 # missing flag stays unwritten, and BITWARDEN_ENABLED=1 turns on the broker's
-# profile. BITWARDEN_LOCAL_ENABLED (vault) is a SERVICES_CORE row.
+# profile. BITWARDEN_LOCAL_ENABLED (vault) is the manifest's gate, so its row
+# follows the builtin row and works without BITWARDEN_ENABLED.
 # Capture first: under pipefail, grep -q exiting on the match can SIGPIPE the
 # table writer and fail the pipeline on a loaded machine.
 table="$("${tmp}/scripts/sync-profiles.sh" --table)"
@@ -169,7 +170,7 @@ expect "missing BITWARDEN_ENABLED is not written" BITWARDEN_ENABLED ""
 expect "missing BITWARDEN_ENABLED leaves profiles alone" COMPOSE_PROFILES core
 printf 'COMPOSE_PROFILES=core\nBITWARDEN_ENABLED=1\nBITWARDEN_LOCAL_ENABLED=1\n' > "${tmp}/.env"
 sync
-expect "BITWARDEN_ENABLED=1 and BITWARDEN_LOCAL_ENABLED=1 add bitwarden and vault" COMPOSE_PROFILES core,vault,bitwarden
+expect "BITWARDEN_ENABLED=1 and BITWARDEN_LOCAL_ENABLED=1 add bitwarden and vault" COMPOSE_PROFILES core,bitwarden,vault
 sed -i.bak 's/^BITWARDEN_ENABLED=1/BITWARDEN_ENABLED=0/' "${tmp}/.env"
 sync
 expect "BITWARDEN_ENABLED=0 removes bitwarden only" COMPOSE_PROFILES core,vault

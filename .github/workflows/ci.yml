@@ -26,8 +26,8 @@ jobs:
           sed -i 's/^LLM_PROXY_ADMIN_TOKEN=.*/LLM_PROXY_ADMIN_TOKEN=ci-llm-proxy-admin-token/' .env
           sed -i 's|^OPENCODE_WORKSPACE_HOST=.*|OPENCODE_WORKSPACE_HOST=/tmp/opencode-workspace|' .env
           mkdir -p /tmp/opencode-workspace
-          # coding MCP off unless profile includes coding; compose still interpolates these.
-          grep -q '^OPENCODE_MCP_ENABLED=' .env || echo 'OPENCODE_MCP_ENABLED=0' >> .env
+          # .env.example turns OpenCode on; CI keeps it off. Compose still interpolates these.
+          sed -i 's/^OPENCODE_MCP_ENABLED=.*/OPENCODE_MCP_ENABLED=0/' .env
           grep -q '^CODING_EXTRA_ROOTS=' .env || echo 'CODING_EXTRA_ROOTS=' >> .env
           grep -q '^CONTEXT_EXTRA_ROOTS=' .env || echo 'CONTEXT_EXTRA_ROOTS=' >> .env
           cp searxng/settings.yml searxng/settings.local.yml
@@ -38,12 +38,7 @@ jobs:
           # browser.env example already has a placeholder key line — ensure set
           sed -i 's/^API_SERVER_KEY=.*/API_SERVER_KEY=ci-browser-key-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/' compose/hermes/browser.env
           mkdir -p data/hermes/memories data/hermes/profiles/api-server data/hermes/profiles/browser \
-            data/voice data/projects data/memory data/inputs/my-kb data/rag_storage/my-kb \
-            compose/caldav-mcp/accounts
-          cp compose/caldav-mcp/account.env.example compose/caldav-mcp/accounts/personal.env
-          # Non-placeholder so bootstrap would accept the file if run; compose config only needs the path present.
-          sed -i 's/^CALDAV_USERNAME=.*/CALDAV_USERNAME=ci@example.com/' compose/caldav-mcp/accounts/personal.env
-          sed -i 's/^CALDAV_PASSWORD=.*/CALDAV_PASSWORD=ci-caldav-app-password/' compose/caldav-mcp/accounts/personal.env
+            data/voice data/projects data/memory data/inputs/my-kb data/rag_storage/my-kb
           mkdir -p compose/hermes/worker/ssh
           ssh-keygen -t ed25519 -f compose/hermes/worker/ssh/id_ed25519 -N "" -C ci-hermes-worker
       - name: Validate compose configs
