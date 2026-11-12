@@ -1,0 +1,110 @@
+{
+  "manifestVersion": 1,
+  "id": "io.github.kaxline.stack.sql",
+  "version": "1.0.0",
+  "title": "SQL",
+  "tagline": "Query and keep data in the shared Postgres database from chat",
+  "description": "Registers postgres-mcp as the sql server: sql-mcp-ro (role agent_ro, SELECT only, restricted mode) on api-server, and sql-mcp-rw (role agent_rw, which can also create and write tables in schema agent) on the default and browser profiles. Postgres grants draw the read/write line, so both get the same five tools. The index and health analysers postgres-mcp ships are not registered. Disabling keeps the data in DB_DATA_DIR. See docs/database.md.",
+  "publisher": {
+    "name": "sovereign-agent-stack",
+    "url": "https://github.com/kaxline/sovereign-agent-stack"
+  },
+  "minStackVersion": "0.3.15",
+  "builtin": {
+    "flag": "SQL_MCP_ENABLED",
+    "profile": "db",
+    "seed": false
+  },
+  "services": {
+    "ro": {
+      "compose": "sql-mcp-ro",
+      "port": 8000
+    },
+    "rw": {
+      "compose": "sql-mcp-rw",
+      "port": 8000
+    }
+  },
+  "uses": [
+    "postgres"
+  ],
+  "mcp": [
+    {
+      "service": "ro",
+      "transport": "sse",
+      "path": "/sse",
+      "name": "sql",
+      "title": "SQL (read-only, agent_ro)",
+      "timeout": 60,
+      "connectTimeout": 30,
+      "env": {
+        "url": "SQL_MCP_RO_URL",
+        "timeout": "SQL_MCP_TIMEOUT",
+        "connectTimeout": "SQL_MCP_CONNECT_TIMEOUT"
+      },
+      "tools": [
+        "list_schemas",
+        "list_objects",
+        "get_object_details",
+        "execute_sql",
+        "explain_query"
+      ],
+      "pin": [
+        "list_schemas",
+        "list_objects",
+        "get_object_details",
+        "execute_sql",
+        "explain_query"
+      ],
+      "writeTools": [],
+      "profiles": {
+        "api-server": "ro"
+      }
+    },
+    {
+      "service": "rw",
+      "transport": "sse",
+      "path": "/sse",
+      "name": "sql",
+      "title": "SQL (agent_rw)",
+      "timeout": 60,
+      "connectTimeout": 30,
+      "env": {
+        "url": "SQL_MCP_RW_URL",
+        "timeout": "SQL_MCP_TIMEOUT",
+        "connectTimeout": "SQL_MCP_CONNECT_TIMEOUT"
+      },
+      "tools": [
+        "list_schemas",
+        "list_objects",
+        "get_object_details",
+        "execute_sql",
+        "explain_query"
+      ],
+      "pin": [
+        "list_schemas",
+        "list_objects",
+        "get_object_details",
+        "execute_sql",
+        "explain_query"
+      ],
+      "writeTools": [],
+      "profiles": {
+        "default": "rw",
+        "browser": "rw"
+      }
+    }
+  ],
+  "permissions": {
+    "reads": [],
+    "writes": [
+      "external:database"
+    ],
+    "sends": false,
+    "egress": [
+      "postgres"
+    ],
+    "exposesToAgent": true,
+    "cron": true
+  }
+}

@@ -6,6 +6,24 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
+## Unreleased
+
+### Changes
+
+- The SQL MCP is a built-in add-on (`addons/sql/addon.json`), so
+  `addon.sh list`, `enable sql` and `disable sql` work on it. The flag
+  (`SQL_MCP_ENABLED`), the compose profile (`db`), the server name (`sql`),
+  the URL and timeout variables and the registered entries are unchanged: the
+  bootstraps write the same `config.yaml` on every profile as before, with the
+  flag on and off. One difference: with the flag on, a profile keeps no entry
+  other than `sql` at either sidecar's URL. Before, only `api-server` removed
+  such entries, and only at `sql-mcp-rw`; a hand-added copy under another key
+  is now removed on every profile.
+- Add-on manifests: two `mcp` entries may share a `name` when their
+  `mcp.profiles` have no profile in common. Before, names had to be unique
+  within an add-on. `sql` is no longer on the validator's list of names core
+  registers; the directory check keeps other add-ons off it instead.
+
 ## v0.3.14 — 2026-11-11
 
 Not run on a live stack yet: the Bitwarden broker reading the instance store

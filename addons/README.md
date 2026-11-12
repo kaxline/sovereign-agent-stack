@@ -11,8 +11,9 @@ Mail.app `mail` and `drafts` servers) and Email over IMAP (`email/`:
 containers that hold the account passwords, registered as `email` and
 `email-drafts`); both email add-ons are described in
 [docs/email.md](../docs/email.md). The AI text detector (`detector/`) is
-described in [docs/detector.md](../docs/detector.md). The other optional services are still
-wired by hand.
+described in [docs/detector.md](../docs/detector.md). The SQL MCP (`sql/`)
+is described in [docs/database.md](../docs/database.md). The other optional
+services are still wired by hand.
 
 What reads a manifest:
 
@@ -41,9 +42,12 @@ except where noted:
   line, because `sync-profiles.sh` reads them line by line with `sed`.
 - `mcp`: one object or a non-empty list of them. Each entry may set its own
   `title` and `when: {"gate": FLAG}`; the entry is registered while that gate
-  flag is on, else while `builtin.flag` is on. Names must be unique within the
-  add-on, and each entry needs its own service: two entries may not name the
-  same service key, because the bootstrap drops stale registrations by URL.
+  flag is on, else while `builtin.flag` is on. Two entries may share a name
+  only when their `mcp.profiles` have no profile in common, so each profile
+  gets one entry under that name; SQL uses this to register `sql` at
+  `sql-mcp-ro` on `api-server` and at `sql-mcp-rw` elsewhere. Each entry needs
+  its own service: two entries may not name the same service key, because the
+  bootstrap drops stale registrations by URL.
   `service` is one service key; the `{ro, rw}` map and `env.access` were
   removed in 0.3.15 (use `mcp.instances` with `{access}` in its `url`). On every profile in `profiles`
   the bootstrap registers the entry and removes any other entry at the same

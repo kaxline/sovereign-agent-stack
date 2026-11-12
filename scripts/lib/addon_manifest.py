@@ -94,7 +94,7 @@ MANIFEST_VERSION = 1
 
 # Names core still registers itself. An add-on may not take one, or start
 # with one of the prefixes core uses for per-instance entries.
-CORE_MCP_NAMES = {"searxng", "opencode", "sql", "vikunja", "messages"}
+CORE_MCP_NAMES = {"searxng", "opencode", "vikunja", "messages"}
 CORE_MCP_PREFIXES = ("caldav-",)
 # Names of the login backends core ships; an add-on's vaultBackend may not take one.
 CORE_VAULT_NAMES = {"vault", "op", "bw"}
@@ -348,9 +348,19 @@ def validate(manifest, repo=_AUTO) -> list[str]:
                             and "ro" in inst_entry["auth"]["secret"]))):
                 err('permissions.cron "ro" needs an mcp.instances entry with an {access} URL '
                     'or an ro key: cron ro needs an ro service')
-        names = [e["name"] for e in entries if isinstance(e, dict) and isinstance(e.get("name"), str)]
-        if len(names) != len(set(names)):
-            err("mcp names must be unique within an add-on")
+        # Two entries may share a name when no profile gets both: each profile
+        # then has one entry under that name (SQL: sql-mcp-ro on api-server,
+        # sql-mcp-rw elsewhere). An entry not on a profile drops its URL there,
+        # which never touches the other entry's registration.
+        named = [e for e in entries if isinstance(e, dict) and isinstance(e.get("name"), str)]
+        for i, a in enumerate(named):
+            for b in named[i + 1:]:
+                if a["name"] != b["name"]:
+                    continue
+                pa, pb = a.get("profiles"), b.get("profiles")
+                if not (isinstance(pa, dict) and isinstance(pb, dict)) or set(pa) & set(pb):
+                    err(f"mcp entries named {a['name']!r} share a profile; a name may repeat "
+                        "only on entries whose mcp.profiles don't overlap")
         # The bootstrap drops stale entries by URL, so two entries on one
         # service would drop each other's live registration.
         keys = [_mcp_service_keys(e) for e in entries]

@@ -31,7 +31,7 @@ new chat: *What's on my reading list?*
 | `sql-mcp-ro` | [postgres-mcp](https://github.com/crystaldba/postgres-mcp) as `agent_ro`, restricted mode, `http://sql-mcp-ro:8000/sse` |
 | `sql-mcp-rw` | postgres-mcp as `agent_rw`, unrestricted mode, `http://sql-mcp-rw:8000/sse` |
 | `db` network | Internal (no internet). Members: the four services above, `hermes`, and integrations that store data |
-| Hermes bootstrap | Registers `mcp_servers.sql` when `SQL_MCP_ENABLED=1` |
+| Hermes bootstrap | Registers `mcp_servers.sql` when `SQL_MCP_ENABLED=1`, from the add-on manifest `addons/sql/addon.json` |
 | `database` skill | Tells the agent how to find data and where it may write (`compose/hermes/skills/database/`) |
 
 ### One database, a schema per owner
@@ -213,9 +213,10 @@ provisioner applies it and the sidecars restart with the new URI). The admin
 password is fixed at first initialisation. Change it with `ALTER ROLE postgres
 PASSWORD ...` in `make db-psql` before editing `.env`.
 
-To turn the feature off, set `SQL_MCP_ENABLED=0`, then run `make ensure-local`
-(which removes the `db` profile) and `make hermes-reload`. The bootstraps remove the `sql`
-entries. The data stays in `DB_DATA_DIR`.
+To turn the feature off, run `./scripts/addon.sh disable sql`, or set
+`SQL_MCP_ENABLED=0`, then run `make ensure-local` (which removes the `db`
+profile) and `make hermes-reload`. The bootstraps remove every entry at either
+sidecar's URL. The data stays in `DB_DATA_DIR`.
 
 ## Troubleshooting
 

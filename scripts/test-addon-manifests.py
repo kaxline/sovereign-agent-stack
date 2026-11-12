@@ -439,7 +439,13 @@ two_bad_gate["mcp"][1]["when"] = {"gate": "NOPE_ENABLED"}
 refused("when names an unknown gate", two_bad_gate, "when.gate")
 two_dup = two_entry()
 two_dup["mcp"][1]["name"] = "gptr"
-refused("two entries share a name", two_dup, "mcp names must be unique")
+refused("two entries share a name and a profile", two_dup, "mcp entries named 'gptr' share a profile")
+two_split = two_entry()
+two_split["mcp"][1]["name"] = "gptr"
+two_split["mcp"][0]["profiles"] = {"default": "rw", "browser": "rw"}
+two_split["mcp"][1]["profiles"] = {"api-server": "ro"}
+check("two entries may share a name on disjoint profiles", am.validate(two_split) == [],
+      str(am.validate(two_split)))
 two_shared = two_entry()
 two_shared["mcp"][1]["service"] = "server"
 refused("two entries share a service", two_shared, "mcp entries 0 and 1 share service 'server'")
@@ -555,14 +561,14 @@ refused("mcp.instances name with a bad character", inst_manifest({"instances__na
         "mcp.instances.name")
 refused("mcp.instances name with {slug} twice", inst_manifest({"instances__name": "a-{slug}-{slug}"}),
         "mcp.instances.name")
-refused("mcp.instances prefix collides with a core name", inst_manifest({"instances__name": "sql-{slug}"}),
+refused("mcp.instances prefix collides with a core name", inst_manifest({"instances__name": "searxng-{slug}"}),
         "collides")
 refused("mcp.instances prefix collides with a core prefix", inst_manifest({"instances__name": "caldav-{slug}"}),
         "collides")
 # The bootstrap drops every entry under an instance prefix that has no
 # instance, so a prefix that overlaps a core name or prefix in either
-# direction would drop core entries (sql, searxng, caldav-*).
-for bad_name in ("s{slug}", "sq{slug}", "searx{slug}", "cal{slug}", "caldav-x-{slug}",
+# direction would drop core entries (searxng, opencode, caldav-*).
+for bad_name in ("s{slug}", "op{slug}", "searx{slug}", "cal{slug}", "caldav-x-{slug}",
                  "messag{slug}", "messages-{slug}"):
     refused(f"mcp.instances prefix overlapping a core name or prefix ({bad_name})",
             inst_manifest({"instances__name": bad_name}), "collides with a server core registers")
@@ -1300,6 +1306,26 @@ def service_block(name: str) -> str:
     return m.group(1) if m else ""
 
 
+def service_profiles(block: str) -> list[str]:
+    """A service's compose profiles, following a `<<: *anchor` merge into a
+    top-level x- block and a `profiles: *alias` to an x- list (the SQL
+    sidecars use both)."""
+    m = re.search(r"^    profiles: (.*)$", block, re.M)
+    if not m:
+        merge = re.search(r"^    <<: \*([A-Za-z0-9_-]+)$", block, re.M)
+        anchor = merge and re.search(rf"^x-[A-Za-z0-9_-]+: &{re.escape(merge.group(1))}\n(.*?)(?=^\S|\Z)",
+                                     compose, re.M | re.S)
+        m = anchor and re.search(r"^  profiles: (.*)$", anchor.group(1), re.M)
+    if not m:
+        return []
+    value = m.group(1).strip()
+    if value.startswith("*"):
+        alias = re.search(rf"^x-[A-Za-z0-9_-]+: &{re.escape(value[1:])} (\[.*\])$", compose, re.M)
+        value = alias.group(1) if alias else "[]"
+    inner = re.fullmatch(r"\[(.*)\]", value)
+    return [p.strip().strip('"') for p in inner.group(1).split(",")] if inner else []
+
+
 def mount_problems(sid: str, manifest: dict, compose_text: str) -> list[str]:
     """Each service with `mounts` must mount exactly the fixed container paths
     from data/addons/<sid>/ with the declared mode."""
@@ -1402,8 +1428,7 @@ for path, manifest, parse_error in am.load_dir(ROOT / "addons"):
     for name, svc in manifest["services"].items():
         block = service_block(svc["compose"])
         check(f"{sid}: compose service {svc['compose']} exists", bool(block))
-        profiles = re.search(r"^    profiles: \[(.*)\]$", block, re.M)
-        listed = [p.strip().strip('"') for p in profiles.group(1).split(",")] if profiles else []
+        listed = service_profiles(block)
         # A service behind a gate runs under the gate's profile; builtin.profile
         # may then be a name no service uses (Twenty: crm-mcp).
         want_profile = b["profile"]
