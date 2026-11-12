@@ -7,7 +7,7 @@ include:
     project_directory: .
 
 x-n8n: &service-n8n
-  image: ${N8N_IMAGE:-n8nio/n8n:2.43.7}
+  image: ${N8N_IMAGE:-n8nio/n8n:2.47.4}
   # Allowlist. The root .env stays on the host for Compose interpolation and
   # is not mounted into the container. A mapping, so a service that adds keys
   # merges it with `<<: *n8n-env` instead of replacing it.
@@ -366,7 +366,7 @@ services:
   mcp-searxng:
     profiles: ["core"]
     container_name: ${CONTAINER_PREFIX:-}mcp-searxng
-    image: ${MCP_SEARXNG_IMAGE:-isokoliuk/mcp-searxng:2.7.0}
+    image: ${MCP_SEARXNG_IMAGE:-isokoliuk/mcp-searxng:2.10.1}
     restart: unless-stopped
     environment:
       - SEARXNG_URL=${WEB_SEARCH_URL:-http://searxng:8080}
@@ -404,8 +404,8 @@ services:
     profiles: ["calendar"]
     container_name: ${CONTAINER_PREFIX:-}caldav-mcp
     build:
-      context: https://github.com/gelse/caldav-mcp.git#ce880c5ed93f1435b4f63f33afb584b3ffea2815
-    image: ${IMAGE_PREFIX:-assistant}-caldav-mcp:0.1.1
+      context: https://github.com/gelse/caldav-mcp.git#d95eaece29dd910abe3b19cd5719eecd4ef5bcc7
+    image: ${IMAGE_PREFIX:-assistant}-caldav-mcp:0.2.1
     restart: unless-stopped
     environment:
       - CALDAV_MCP_PORT=8080
@@ -733,7 +733,7 @@ services:
   vikunja:
     profiles: ["todo"]
     container_name: ${CONTAINER_PREFIX:-}vikunja
-    image: ${VIKUNJA_IMAGE:-vikunja/vikunja:2.7.0}
+    image: ${VIKUNJA_IMAGE:-vikunja/vikunja:2.8.0}
     restart: unless-stopped
     user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
     # No host port: vikunja-proxy publishes the web UI.
@@ -1504,7 +1504,7 @@ services:
   # ----------------------------------------------------------------------
   hermes-api-bootstrap:
     profiles: ["core"]
-    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v0.22.7}
+    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v0.23.1}
     restart: "no"
     user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
     environment:
@@ -1516,7 +1516,7 @@ services:
       - HERMES_API_MAX_TURNS=${HERMES_API_MAX_TURNS:-20}
       - HERMES_API_SERVER_PORT=${HERMES_API_SERVER_PORT:-8643}
       # Part of the bootstrap's stamp: a new image runs the full bootstrap.
-      - HERMES_AGENT_IMAGE_TAG=${HERMES_AGENT_IMAGE_TAG:-v0.22.7}
+      - HERMES_AGENT_IMAGE_TAG=${HERMES_AGENT_IMAGE_TAG:-v0.23.1}
       # 1 runs the full bootstrap even when nothing changed.
       - HERMES_BOOTSTRAP_FORCE=${HERMES_BOOTSTRAP_FORCE:-0}
       # Gateway topology (019-pin-profile-gateways.sh); decides what the default
@@ -1631,7 +1631,7 @@ services:
   # at http://hermes:8644.
   hermes-browser-bootstrap:
     profiles: ["core"]
-    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v0.22.7}
+    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v0.23.1}
     restart: "no"
     user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
     environment:
@@ -1644,7 +1644,7 @@ services:
       # unattended cap would only truncate useful work mid-task.
       - HERMES_API_MAX_TURNS=${HERMES_BROWSER_MAX_TURNS:-60}
       - HERMES_API_SERVER_PORT=${HERMES_BROWSER_API_PORT:-8644}
-      - HERMES_AGENT_IMAGE_TAG=${HERMES_AGENT_IMAGE_TAG:-v0.22.7}
+      - HERMES_AGENT_IMAGE_TAG=${HERMES_AGENT_IMAGE_TAG:-v0.23.1}
       - HERMES_BOOTSTRAP_FORCE=${HERMES_BOOTSTRAP_FORCE:-0}
       # hermes-api-bootstrap has already set up the default profile and every
       # other profile; this run does the browser profile only.
@@ -1767,7 +1767,7 @@ services:
       service: hermes-${HERMES_TERMINAL_BACKEND:-ssh}
     profiles: ["core"]
     container_name: ${CONTAINER_PREFIX:-}hermes
-    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v0.22.7}
+    image: nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG:-v0.23.1}
     restart: unless-stopped
     command: ["gateway", "run"]
     ports:
@@ -2334,7 +2334,7 @@ services:
   vaultwarden:
     profiles: ["vault"]
     container_name: ${CONTAINER_PREFIX:-}vaultwarden
-    image: vaultwarden/server:1.37.4@sha256:efb3cde962015fcc036b2ea625242248611943b27212ebf4392841fb30fad055
+    image: vaultwarden/server:1.37.5@sha256:4fe17f415f90087377d37c755e0ea3cf189dcc6794e49cdd2a9adbb4937d9e1f
     restart: unless-stopped
     ports:
       - "127.0.0.1:${VAULTWARDEN_PORT:-8222}:80"

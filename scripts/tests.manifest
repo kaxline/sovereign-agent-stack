@@ -62,6 +62,7 @@ scripts/test-gptr-mcp-registration.sh           ci
 scripts/test-hermes-topology.py                 image
 scripts/test-history-budget.py                  ci image
 scripts/test-hosted-rooms.py                    image
+scripts/test-intent-ack.py                      ci image
 scripts/test-kanban-edit.py                     image
 scripts/test-kanban-guards.py                   ci image
 scripts/test-kanban-wake.py                     ci image

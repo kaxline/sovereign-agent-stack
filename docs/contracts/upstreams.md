@@ -27,7 +27,7 @@ on a bump: [actual-mcp](../../compose/actual-mcp/VENDORED.md),
 
 ## Hermes
 
-`nousresearch/hermes-agent` at `v0.22.7` (`HERMES_AGENT_IMAGE_TAG`), unmodified as an image.
+`nousresearch/hermes-agent` at `v0.23.1` (`HERMES_AGENT_IMAGE_TAG`), unmodified as an image.
 The stack changes it at container start: cont-init scripts in `compose/hermes/` run patch
 scripts that edit files under `/opt/hermes`, copy modules beside them and install the `bwbroker`
 plugin. Each patch anchors on text in the pinned release, so a bump means running the re-test
@@ -79,7 +79,7 @@ Overlays with no re-test command fail only as a warning in the container log.
 |---|---:|---|---|---|---|
 | `text-tool-call-recovery` | 329 | Parses Python- or XML-style tool calls in assistant text into structured `tool_calls` before dispatch. | adapter | stays in the adapter | none (apply-time anchor only); `scripts/test-tool-eval-trace.py` exercises the call site |
 | `tool-call-flat-args` | 190 | Normalises weak-model `tool_call` shapes: flat siblings, nested name, short MCP aliases, stringified `calls`. | adapter | stays in the adapter | none |
-| `intent-ack-continuation` | 130 | Lets `looks_like_codex_intermediate_ack` continue a turn after earlier tool messages and past 1,200 characters. | upstream | draft, not filed | none (`scripts/test-fabricated-result.py` only mentions it) |
+| `intent-ack-continuation` | 146 | Lets `looks_like_codex_intermediate_ack` continue a turn past 1,200 characters (up to 4,000) when the reply opens with an ack and `require_workspace` is off. Before v0.23.0 it also stops earlier turns' tool messages from blocking it; v0.23.0 does that upstream (#69778). | upstream | draft, not filed | `scripts/test-intent-ack.py` |
 | `tool-search-visible` | 126 | `tool_search` also returns already-visible core tools, with a call-directly hint. | upstream | draft, not filed | none |
 | `tool-search-always-include` | 95 | Honors `tools.tool_search.always_include` so stack MCP pins (SearXNG, LightRAG, OpenCode) stay eager. | upstream | draft, not filed | `docker compose exec hermes grep -F 'assistant-stack: honor always_include' /opt/hermes/tools/tool_search.py` (docs/hermes.md) |
 | `tool-loop-notes` | 72 | Queues loop warnings and halt notices on `plugin_live_notes` so they land outside `<untrusted_tool_result>`. | upstream | draft, not filed | `scripts/test-tool-loop-notes.py` |

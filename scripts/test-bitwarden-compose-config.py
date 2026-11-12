@@ -23,8 +23,8 @@ from testkit import Checks  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 SERVICES = ("bitwarden-broker", "bitwarden-setup")
 LOCAL_SERVICES = ("vaultwarden", "vaultwarden-tls")
-VAULTWARDEN_IMAGE = ("vaultwarden/server:1.37.4@sha256:"
-                     "efb3cde962015fcc036b2ea625242248611943b27212ebf4392841fb30fad055")
+VAULTWARDEN_IMAGE = ("vaultwarden/server:1.37.5@sha256:"
+                     "4fe17f415f90087377d37c755e0ea3cf189dcc6794e49cdd2a9adbb4937d9e1f")
 LOCAL_NAME = "vaultwarden.vault.internal"
 ADDON_DATA = "addons/bitwarden"
 SYNC_DIR = "/run/bitwarden-sync"

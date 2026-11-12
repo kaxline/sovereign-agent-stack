@@ -19,7 +19,7 @@ source "$ROOT/scripts/lib/env.sh"
 # ASSISTANT_DATA_ROOT says; that setting moves user content, not Hermes state.
 src="${1:-data/hermes}"
 [ -f "$src/config.yaml" ] || { echo "gateway-preflight: no config.yaml in $src" >&2; exit 1; }
-image="nousresearch/hermes-agent:$(env_get HERMES_AGENT_IMAGE_TAG v0.22.7)"
+image="nousresearch/hermes-agent:$(env_get HERMES_AGENT_IMAGE_TAG v0.23.1)"
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/hermes-preflight.XXXXXX")"
 trap 'rm -rf "$work"' EXIT

@@ -11,9 +11,10 @@ agent.intent_ack_continuation=true (require_workspace=False path).
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
-TARGET = Path("/opt/hermes/agent/agent_runtime_helpers.py")
+TARGET = Path(os.environ.get("HERMES_ROOT", "/opt/hermes")) / "agent" / "agent_runtime_helpers.py"
 MARKER = "# assistant-stack: intent-ack relaxed for require_workspace=False"
 
 # v2026.9.x — compressed length check on one line.
@@ -53,6 +54,23 @@ NEW_V9 = """    assistant_text = agent._strip_think_blocks(assistant_content or 
         )
         max_ack_chars = 4000 if has_early_ack else 1200
 
+    if len(assistant_text) > max_ack_chars:
+        return False"""
+
+# v0.23.0+: upstream already limits the tool check to this turn (#69778). What is
+# left of this overlay is the longer limit for a reply that opens with an ack.
+OLD_V23 = """    assistant_text = agent._strip_think_blocks(assistant_content or "").strip().lower()
+    if not assistant_text or len(assistant_text) > 1200:
+        return False"""
+
+NEW_V23 = """    assistant_text = agent._strip_think_blocks(assistant_content or "").strip().lower()
+    if not assistant_text:
+        return False
+    # assistant-stack: intent-ack relaxed for require_workspace=False
+    # Qwen often bundles "Let me search…" with a partial answer in one reply.
+    max_ack_chars = 1200
+    if not require_workspace and _ACK_FUTURE_RE.search(assistant_text[:500]):
+        max_ack_chars = 4000
     if len(assistant_text) > max_ack_chars:
         return False"""
 
@@ -105,6 +123,10 @@ def main() -> None:
     text = TARGET.read_text()
     if MARKER in text:
         print(f"[patch-intent-ack] already applied ({TARGET})")
+        return
+    if text.count(OLD_V23) == 1 and "reanchor_current_turn_user_idx" in text and "_ACK_FUTURE_RE = " in text:
+        TARGET.write_text(text.replace(OLD_V23, NEW_V23, 1))
+        print(f"[patch-intent-ack] patched {TARGET}")
         return
     if OLD_V9 in text:
         TARGET.write_text(text.replace(OLD_V9, NEW_V9, 1))

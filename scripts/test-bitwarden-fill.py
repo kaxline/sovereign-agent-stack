@@ -44,7 +44,8 @@ def test_overlay_order() -> None:
                f"{name} runs before the fill overlay")
     patch = (ROOT / "compose" / "hermes" / "patch-bitwarden-broker-fill.py").read_text()
     for name in ("_ensure_supervisor", "focus_page", "_page_session_id",
-                 "return _fill_bound_page(backend, handle, meta, page_origin, effective_task_id)"):
+                 "return _fill_bound_page(backend, handle, meta, page_origin, effective_task_id)",
+                 "return _fill_bound_page(backend, handle, meta, page_origin, effective_task_id, with_identifier)"):
         expect(name in patch, f"NEEDED names {name}")
 
 IMAGE_DRIVER = r'''
@@ -254,12 +255,29 @@ scrubbed = redact.redact_registered_vault_values(f"page says {PASSWORD} here")
 assert PASSWORD not in scrubbed and "«redacted-vault-secret»" in scrubbed, "the digest entry is registered"
 redact.clear_vault_redaction_values()
 
+# --- test_preview_target_refused (v0.23+) -------------------------------------
+# With target='preview' the operation runs on the Desktop in-app page; the broker can only write
+# into the managed browser's tab, so it must refuse rather than fill there.
+try:
+    from tools import browser_vault_preview as bvp
+except ImportError:
+    bvp = None
+if bvp is not None:
+    before = len(STATE["fills"])
+    token = bvp._page.set(object())
+    try:
+        res = json.loads(bvt._bwbroker_fill(H_PLAIN, object(), ORIGIN, TASK))
+    finally:
+        bvp._page.reset(token)
+    assert res.get("error_type") == "supervisor_required", res
+    assert len(STATE["fills"]) == before, "the broker was not called"
+
 # A vault_ handle takes core's path, which resolves its own password.
 core_calls = []
 real_fill_bound = bvt._fill_bound_page
-def record_core(backend, handle, meta, page_origin, task_id):
+def record_core(backend, handle, meta, page_origin, task_id, *rest):  # v0.23 adds with_identifier
     core_calls.append(handle)
-    return real_fill_bound(backend, handle, meta, page_origin, task_id)
+    return real_fill_bound(backend, handle, meta, page_origin, task_id, *rest)
 bvt._fill_bound_page = record_core
 before = len(STATE["fills"])
 res = tool(bvt.browser_vault_fill, "vault_abc", task_id=TASK)

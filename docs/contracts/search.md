@@ -73,7 +73,7 @@ and what counts as a failure.
 | Service | Image or source | Role |
 |---|---|---|
 | `searxng` | `docker.io/searxng/searxng` (pinned by `SEARXNG_IMAGE`) | the HTTP search API, `core` profile, published on `127.0.0.1:${SEARXNG_PORT:-8080}` |
-| `mcp-searxng` | `isokoliuk/mcp-searxng:2.7.0` (`MCP_SEARXNG_IMAGE`) | the MCP server, `core` profile, compose-internal |
+| `mcp-searxng` | `isokoliuk/mcp-searxng:2.10.1` (`MCP_SEARXNG_IMAGE`) | the MCP server, `core` profile, compose-internal |
 | `search-gate` | `compose/search-gate/search_gate.py`, vendored from lead-gen | optional pacing proxy, `search-gate` profile, compose-internal |
 
 SearXNG reads `searxng/settings.local.yml`, which setup writes from the tracked
