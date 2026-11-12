@@ -75,6 +75,9 @@ SH
 
 # Connected budgets: budget.sh status reads these (python on the host).
 export STACK_PYTHON=host BUDGET_DATA_ROOT="$tmp/data"
+# budget.sh cds to the repo root, so without this it reads the checkout's own
+# .env (ACTUAL_LOCAL_ENABLED and the rest) instead of the test's.
+export ENV_FILE="$tmp/work/.env"
 sec="$tmp/data/addons/actual/secrets"
 mkdir -p "$sec" "$tmp/data/addons/actual/instances"
 
