@@ -88,7 +88,7 @@ printf '{"url": "https://crm.example.com", "access": "write"}\n' > "$ADDON_DATA_
 printf 'rw-ws-key-4821' > "$ADDON_DATA_DIR/twenty/secrets/main.key_rw"
 printf 'ro-ws-key-4821' > "$ADDON_DATA_DIR/twenty/secrets/main.key_ro"
 log() { printf '%s\n' "$1" >> "$work/bootstrap.log"; }
-caldav_profile_env_file() { echo "$work/profile.env"; }
+profile_env_file() { echo "$work/profile.env"; }
 write_bearer_mcp_entry() { printf '%s\n' "$*" >> "$work/bootstrap.log"; }
 pin_mcp_tools() { printf '%s\n' "$*" >> "$work/bootstrap.log"; }
 reconcile_addon_instance_servers() { printf '%s\n' "$*" >> "$work/bootstrap.log"; }

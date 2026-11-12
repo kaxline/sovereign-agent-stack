@@ -285,8 +285,8 @@ chat.db ──(Full Disk Access, read-only)──▶ messages helper (host, sign
   a contact. It has no send, react or mark-read tools.
 - Message text is untrusted input. Tool results mark it as quoted data from
   a third party, the same as mail.
-- Unattended (webhook-started) sessions get an allowlist like the CalDAV and
-  LightRAG ones: the read tools, plus whatever the turn is meant to do
+- Unattended (webhook-started) sessions get an allowlist like the LightRAG
+  one: the read tools, plus whatever the turn is meant to do
   (e.g. notify you on Signal). A stranger's text must not be able to steer a
   session that holds write tools.
 

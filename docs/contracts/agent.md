@@ -74,8 +74,7 @@ data and lists it. Access levels come from each manifest's `mcp.profiles`, or
 for an instance from its `bind`; for an `ro` profile the plans leave out
 `writeTools`, and with `mcp.instances` the `ro` profile gets the instance's
 `ro` key or URL. Core servers draw the same line
-in the bootstrap: CalDAV gets 8 read-only tools on `api-server`, `sql` connects
-there as the `agent_ro` role, and `opencode` is never registered there.
+in the bootstrap: `opencode` is never registered on `api-server`.
 Independent agents created with `make agent-create` are further profiles
 ([agents.md](../agents.md)). Profile settings are in
 [hermes.md](../hermes.md#api-server-profile-api-server) and
@@ -155,9 +154,8 @@ above.
   edit files under `/opt/hermes` at container start and are anchored to the
   pinned Hermes tag (`v0.23.1`). `make hermes-image-test` runs their tests
   against a new image.
-- **The adapter's own reach.** Core MCP servers (`searxng`, `caldav-<slug>`,
-  `sql`, `opencode`, `todos`, `messages`) are registered by the bootstrap
-  directly, not from manifests. The add-on store mounts for the
+- **The adapter's own reach.** Core MCP servers (`searxng`, `opencode`,
+  `messages`) are registered by the bootstrap directly, not from manifests. The add-on store mounts for the
   bootstraps are written per add-on in `docker-compose.yml`. Manifests name
   identities by Hermes profile name.
 

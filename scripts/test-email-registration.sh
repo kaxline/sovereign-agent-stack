@@ -18,7 +18,7 @@ load_fns "$bootstrap" addon_mcp_plan addon_mcp_pin_args register_addon_mcp_serve
 
 log() { :; }
 # The todos entry (mcp.auth) removes its profile key while Vikunja is off.
-caldav_profile_env_file() { :; }
+profile_env_file() { :; }
 remove_env_key() { :; }
 
 [ -f "${ADDONS_DIR}/email/addon.json" ] || fail "addons/email/addon.json is missing"

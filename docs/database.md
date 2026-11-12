@@ -59,7 +59,7 @@ data, but nothing depends on it obeying them.
 | default | dashboard, CLI | `sql-mcp-rw` (`agent_rw`) |
 | `browser` | Hermes WebUI | `sql-mcp-rw` (`agent_rw`) |
 
-This mirrors the CalDAV read/write split. The API profile is cloned from
+The API profile is cloned from
 default, so the bootstrap re-points its `sql` entry at the read-only sidecar
 and drops any other entry that still points at `sql-mcp-rw`.
 

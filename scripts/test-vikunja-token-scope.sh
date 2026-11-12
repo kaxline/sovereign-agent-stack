@@ -28,7 +28,7 @@ trap 'rm -rf "$record" "$ADDONS_DIR"' EXIT
 run() {
   register_addon_mcp_servers "$1" > /dev/null
 }
-caldav_profile_env_file() { printf '%s/%s.env\n' "$ADDONS_DIR" "${1:-default}"; }
+profile_env_file() { printf '%s/%s.env\n' "$ADDONS_DIR" "${1:-default}"; }
 register_mcp_server() { printf 'register:%s:%s;' "${1:-default}" "$2" >> "$record"; }
 write_bearer_mcp_entry() { printf 'bearer:%s:%s:%s:%s:%s:%s:%s %s;' "${1:-default}" "$2" "$3" "$4" "$5" "$6" "$7" "$8" >> "$record"; }
 upsert_env() { printf 'env:%s:%s=%s;' "$(basename "$1" .env)" "$2" "$3" >> "$record"; }

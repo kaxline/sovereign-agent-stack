@@ -8,8 +8,39 @@ the stack under another app.
 
 ## Unreleased
 
+### Upgrade steps
+
+- CalDAV accounts moved from `compose/caldav-mcp/accounts/<slug>.env` to the
+  `caldav` add-on's store, and nothing reads the old files. Connect each one
+  again with `scripts/addon.sh connect caldav --instance <slug>`, JSON on
+  stdin with `url`, `username` and `password` (docs/calendar.md), then delete
+  the old file; `make doctor` warns while one is left. There is no migration
+  code: the add-on is experimental. Boundary's `calendar-<slug>` entries are
+  not affected.
+
 ### Changes
 
+- CalDAV calendars are a built-in add-on (`addons/caldav/addon.json`, title
+  "CalDAV calendars"), so `addon.sh list`, `enable caldav`, `connect caldav`
+  and `disconnect caldav` work on them. The flag (`CALDAV_MCP_ENABLED`), the
+  compose profile (`calendar`), the server names (`caldav-<slug>`), the
+  `caldav-mcp` URL, the `X-Caldav-*` headers, the `CALDAV_<SLUG>_PASSWORD`
+  keys and the tools on the default and browser profiles are unchanged.
+  Three differences, all from the manifest's `permissions.reads:
+  ["calendar"]`: `api-server` no longer gets the 8 read tools, cron jobs no
+  longer get `caldav-*` (a job that names one in its own `enabled_toolsets`
+  still does), and with the flag off the bootstrap removes `caldav-*` entries
+  and their keys instead of leaving them. `CALDAV_MCP_URL` and
+  `CALDAV_MCP_ACCOUNTS_DIR` are gone; the timeout variables stay.
+  `setup.sh --calendar` and `make ensure-local` no longer create a
+  placeholder account file.
+- Add-on manifests: `mcp.instances.headers`, a map from header name to a
+  template over instance settings with at most one `{secret:<name>}`, in
+  place of `auth`. With it, `url` may be the same for every instance.
+  `instances-plan` lines gain a fourteenth field, `headers`, and the add-on
+  line's `keyenv` carries the key suffix of an entry with a secret header.
+  `mcp-urls` lists an `mcp.instances` URL that has no placeholder. `caldav-`
+  is no longer a core prefix.
 - Vikunja todo lists are a built-in add-on (`addons/vikunja/addon.json`,
   title "Todo lists"), so `addon.sh list`, `enable vikunja` and `disable
   vikunja` work on them (Boundary CR 0032 R1 and R2). `enable` registers the
