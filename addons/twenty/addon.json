@@ -114,7 +114,7 @@
   "mcp": {
     "instances": {
       "name": "crm-{slug}",
-      "url": "{setting:url}/mcp",
+      "url": "{setting:url}/mcp?mode=meta",
       "access": "{setting:access}",
       "auth": {
         "header": "Authorization",

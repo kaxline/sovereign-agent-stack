@@ -85,19 +85,19 @@ for profile in "" browser; do
   run "$profile"
   p="${profile:-default}"
   has "upsert:env:${p}:CRM_MAIN_KEY=rw-secret-main;" || fail "${p}: main gets the read/write key ($calls)"
-  has "write:${p}:crm-main:http://twenty-server:3000/mcp:CRM_MAIN_KEY:60:30:Authorization:Bearer;" \
+  has "write:${p}:crm-main:http://twenty-server:3000/mcp?mode=meta:CRM_MAIN_KEY:60:30:Authorization:Bearer;" \
     || fail "${p}: crm-main at twenty-server with a Bearer header from CRM_MAIN_KEY ($calls)"
   has "pin:${p}:crm-main:${PINS};" || fail "${p}: crm-main pins the seven tools"
   has "upsert:env:${p}:CRM_REMOTE_KEY=rw-secret-remote;" || fail "${p}: remote gets its read/write key"
-  has "write:${p}:crm-remote:https://crm.example.com/mcp:CRM_REMOTE_KEY:" || fail "${p}: trailing slash stripped ($calls)"
-  has "write:${p}:crm-withmcp:https://crm.example.com/mcp:CRM_WITHMCP_KEY:" \
+  has "write:${p}:crm-remote:https://crm.example.com/mcp?mode=meta:CRM_REMOTE_KEY:" || fail "${p}: trailing slash stripped ($calls)"
+  has "write:${p}:crm-withmcp:https://crm.example.com/mcp?mode=meta:CRM_WITHMCP_KEY:" \
     || fail "${p}: a URL already ending in /mcp is used as is ($calls)"
   has "reconcile:${p}:${SPEC} crm-main crm-remote crm-withmcp;" || fail "${p}: reconcile keeps main remote withmcp ($calls)"
 done
 
 run api-server
 has "upsert:env:api-server:CRM_MAIN_KEY=ro-secret-main;" || fail "api-server: main gets the read-only key ($calls)"
-has "write:api-server:crm-main:http://twenty-server:3000/mcp:CRM_MAIN_KEY:" || fail "api-server: crm-main registered"
+has "write:api-server:crm-main:http://twenty-server:3000/mcp?mode=meta:CRM_MAIN_KEY:" || fail "api-server: crm-main registered"
 if has "crm-remote:"; then fail "api-server: remote has no read-only key, so no entry ($calls)"; fi
 if has "rw-secret"; then fail "api-server must never receive a read/write key ($calls)"; fi
 has "reconcile:api-server:${SPEC} crm-main;" || fail "api-server: reconcile keeps only crm-main, dropping any old crm-remote ($calls)"
@@ -124,7 +124,7 @@ case "$logs" in *admin*) fail "the log must not echo the unknown access value" ;
 run api-server
 has "upsert:env:api-server:CRM_LOOKUP_KEY=ro-secret-lookup;" || fail "api-server keeps the read-only key with access read"
 if has "crm-odd:"; then fail "api-server: an unknown access gives no entry either ($calls)"; fi
-[ "$(addon_instance_urls browser | sort -u | tr '\n' ' ')" = "http://twenty-server:3000/mcp https://crm.example.com/mcp " ] \
+[ "$(addon_instance_urls browser | sort -u | tr '\n' ' ')" = "http://twenty-server:3000/mcp?mode=meta https://crm.example.com/mcp?mode=meta " ] \
   || fail "instance URLs for the parked retry ($(addon_instance_urls browser | tr '\n' ' '))"
 rm "${store}/instances/lookup.json" "${store}/instances/rdonly.json" "${store}/instances/odd.json"
 
@@ -180,7 +180,7 @@ TWENTY_LOCAL_ENABLED=1
 export TWENTY_MCP_TIMEOUT=90 TWENTY_MCP_CONNECT_TIMEOUT=10
 run ""
 unset TWENTY_MCP_TIMEOUT TWENTY_MCP_CONNECT_TIMEOUT
-has "write:default:crm-main:http://twenty-server:3000/mcp:CRM_MAIN_KEY:90:10:" || fail "TWENTY_MCP_TIMEOUT and TWENTY_MCP_CONNECT_TIMEOUT apply ($calls)"
+has "write:default:crm-main:http://twenty-server:3000/mcp?mode=meta:CRM_MAIN_KEY:90:10:" || fail "TWENTY_MCP_TIMEOUT and TWENTY_MCP_CONNECT_TIMEOUT apply ($calls)"
 
 # Disabled: nothing written, every crm-* entry dropped by the reconcile.
 TWENTY_MCP_ENABLED=0
