@@ -1030,7 +1030,8 @@ profile's `config.yaml`, and refreshed on later runs. If you wrote your own
 out. Add
 an MCP server by hand and re-run the bootstraps so cron jobs get it too.
 Add-ons whose manifest doesn't set `permissions.cron` to `true` are left out
-of the same list (see [addons/README.md](../addons/README.md)).
+of the same list (see [addons/README.md](../addons/README.md)). Diagrams of
+the fence are in [cron-fence.md](cron-fence.md).
 
 A job with its own `enabled_toolsets` isn't covered by that list. If it
 names no MCP server it still gets mail, so give it the MCP servers it needs

@@ -56,7 +56,7 @@ make hermes-buzz-employee PROFILE=software-engineer DISPLAY_NAME="Software Engin
 hermes-api-bootstrap runs before hermes starts, so `make hermes-recreate`
 above also fences the new profile's cron jobs like every other profile's: no mail, messages,
 browser or fenced add-on unless a job names them
-([contracts/agent.md](contracts/agent.md#scheduler)).
+([cron-fence.md](cron-fence.md)).
 
 Edit `data/hermes/profiles/<name>/SOUL.md` after create to refine the role.
 Content **outside** the sibling markers is yours; sync only rewrites the marker

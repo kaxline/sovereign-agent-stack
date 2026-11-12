@@ -98,6 +98,7 @@ ones, with a bundle that includes the browser (`hermes-cron`, `hermes-cli`)
 replaced by its toolsets. A `vaultBackend`
 toolset is kept out by listing it in `known_plugin_toolsets.cron`. The list the
 bootstrap wrote is recorded in `.mail-cron-toolsets.json` beside `config.yaml`.
+Diagrams of these rules are in [cron-fence.md](../cron-fence.md).
 
 ### Chat API
 
