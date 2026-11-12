@@ -25,6 +25,24 @@ the stack under another app.
 
 ### Changes
 
+- The Messages MCP is a built-in add-on (`addons/messages/addon.json`), so
+  `addon.sh list`, `enable messages` and `disable messages` work on it. The
+  flag (`MESSAGES_MCP_ENABLED`), the compose profile (`messages`), the server
+  name (`messages`), the URL and timeout variables and the registered entries
+  are unchanged: the bootstraps write the same `config.yaml` on every profile
+  as before, with the flag on and off. The manifest declares
+  `reads: ["messages"]`, `cron: false` and `sends: false`, registers on
+  `default` (`rw`, with `messages_triage_batch`) and `browser` (`ro`, read
+  tools only), never on `api-server`, and describes the Messages reader app
+  and its Full Disk Access grant under `host`. `addon.sh enable messages`
+  sets the flag, starts `messages-mcp` and reloads Hermes. It doesn't create
+  `MESSAGES_WEBHOOK_SECRET` or `messages-index.toml`, or install the reader
+  app: `setup.sh --messages` and [docs/messages.md](docs/messages.md) still
+  cover those. The new-message webhook route stays in the bootstrap
+  (`configure_messages_webhook`), keyed on the flag. `messages` is no longer a
+  core MCP name, so the manifest's uniqueness check now keeps other add-ons off
+  it. Messages hasn't been tested on a live install since v0.3.6, and this
+  port wasn't tested live either.
 - The bootstraps' cron fence now keeps the `browser` toolset out of
   `platform_toolsets.cron` on every profile they run on, and pins that list
   even when no mail, messages or fenced add-on server is registered. The list

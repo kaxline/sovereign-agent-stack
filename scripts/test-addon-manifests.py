@@ -71,9 +71,11 @@ refused("an image in a built-in manifest", variant(services__server__image="x@sh
         "keeps its image in docker-compose.yml")
 refused("pin outside tools", variant(mcp__pin=["nope"]), "mcp.pin")
 refused("writeTools outside tools", variant(mcp__writeTools=["nope"]), "mcp.writeTools")
-refused("core name collision", variant(mcp__name="messages"), "collides")
+refused("core name collision", variant(mcp__name="searxng"), "collides")
 check("mail and drafts are add-on names now (email-local), not core ones",
       not {"mail", "drafts"} & am.CORE_MCP_NAMES, str(am.CORE_MCP_NAMES))
+check("messages is an add-on name now (addons/messages), not a core one",
+      "messages" not in am.CORE_MCP_NAMES, str(am.CORE_MCP_NAMES))
 check("caldav- is an add-on prefix now (addons/caldav), not a core one",
       am.CORE_MCP_PREFIXES == (), str(am.CORE_MCP_PREFIXES))
 check("crm- is no longer a core prefix", "crm-" not in am.CORE_MCP_PREFIXES, str(am.CORE_MCP_PREFIXES))
@@ -120,6 +122,20 @@ refused("reader with a default path",
         "may not have a default")
 refused("reader in cron", variant(permissions__reads=["mail"], permissions__cron=True,
                                   mcp__profiles={"default": "ro"}), "cron false")
+
+# The same three checks against the shipped Messages manifest.
+MESSAGES = json.loads((ROOT / "addons" / "messages" / "addon.json").read_text())
+check("addons/messages is valid as built-in", am.validate(MESSAGES) == [], str(am.validate(MESSAGES)))
+msg_sends = copy.deepcopy(MESSAGES)
+msg_sends["permissions"]["sends"] = True
+refused("messages with sends: true", msg_sends, "may not send")
+msg_api = copy.deepcopy(MESSAGES)
+msg_api["mcp"]["profiles"]["api-server"] = "ro"
+refused("messages with api-server in mcp.profiles", msg_api,
+        "an add-on that reads personal data may not be on api-server")
+msg_path = copy.deepcopy(MESSAGES)
+msg_path["settings"] = {"store": {"type": "path", "default": "./data/messages/store"}}
+refused("messages with a default store path", msg_path, "may not have a default")
 # --- credentials and vaultBackend ---------------------------------------------
 VAULT = {"name": "bwbroker", "plugin": "compose/hermes/plugins/bwbroker", "toolset": "bitwarden",
          "tools": ["bitwarden_request_access", "bitwarden_release_access"],
@@ -654,8 +670,8 @@ refused("mcp.instances prefix collides with a core name", inst_manifest({"instan
         "collides")
 # The bootstrap drops every entry under an instance prefix that has no
 # instance, so a prefix that overlaps a core name in either direction would
-# drop core entries (searxng, messages).
-for bad_name in ("s{slug}", "searx{slug}", "messag{slug}", "messages-{slug}"):
+# drop core entries (searxng).
+for bad_name in ("s{slug}", "searx{slug}"):
     refused(f"mcp.instances prefix overlapping a core name or prefix ({bad_name})",
             inst_manifest({"instances__name": bad_name}), "collides with a server core registers")
 check("mcp.instances prefix crm- is accepted", am.validate(inst_manifest()) == [])

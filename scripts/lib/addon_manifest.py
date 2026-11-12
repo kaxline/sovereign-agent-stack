@@ -108,7 +108,7 @@ MANIFEST_VERSION = 1
 
 # Names core still registers itself. An add-on may not take one, or start
 # with one of the prefixes core uses for per-instance entries.
-CORE_MCP_NAMES = {"searxng", "messages"}
+CORE_MCP_NAMES = {"searxng"}
 CORE_MCP_PREFIXES: tuple[str, ...] = ()
 # Names of the login backends core ships; an add-on's vaultBackend may not take one.
 CORE_VAULT_NAMES = {"vault", "op", "bw"}
