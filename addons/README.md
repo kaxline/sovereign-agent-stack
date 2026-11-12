@@ -39,7 +39,8 @@ except where noted:
 - `gates`: a list of `{flag, profile, seed}` for built-in add-ons, each one
   more flag-to-profile row after `builtin`, so a second flag can switch on
   part of an add-on. A gate flag must differ from `builtin.flag` and from the
-  other gates. Keys appear in the order `flag`, `profile`, `seed`, one per
+  other gates. Bitwarden's `BITWARDEN_LOCAL_ENABLED` (profile `vault`, the
+  local Vaultwarden) is one. Keys appear in the order `flag`, `profile`, `seed`, one per
   line, because `sync-profiles.sh` reads them line by line with `sed`.
 - `mcp`: one object or a non-empty list of them. Each entry may set its own
   `title` and `when: {"gate": FLAG}`; the entry is registered while that gate

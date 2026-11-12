@@ -15,10 +15,29 @@
     "profile": "bitwarden",
     "seed": false
   },
+  "gates": [
+    {
+      "flag": "BITWARDEN_LOCAL_ENABLED",
+      "profile": "vault",
+      "seed": false
+    }
+  ],
   "services": {
     "broker": {
       "compose": "bitwarden-broker",
       "port": 8099
+    },
+    "vaultwarden": {
+      "compose": "vaultwarden",
+      "when": {
+        "gate": "BITWARDEN_LOCAL_ENABLED"
+      }
+    },
+    "tls": {
+      "compose": "vaultwarden-tls",
+      "when": {
+        "gate": "BITWARDEN_LOCAL_ENABLED"
+      }
     }
   },
   "uses": [],

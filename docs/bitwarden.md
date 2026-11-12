@@ -417,7 +417,9 @@ reload-plugins`), and the Bitwarden tools are gone from new sessions. If the gat
 answer, `make restart` applies the change. It leaves
 `vault.bitwarden.enabled: false`, which it wrote while the add-on was on, so Hermes' own `bw:`
 backend stays off until you remove that line. Instance files and data stay. Turn local mode off with
-`BITWARDEN_LOCAL_ENABLED=0`.
+`BITWARDEN_LOCAL_ENABLED=0`. `scripts/addon.sh disable bitwarden` sets both flags to 0 and stops
+the broker, `vaultwarden` and `vaultwarden-tls`; `addon.sh enable bitwarden` turns only
+`BITWARDEN_ENABLED` back on, so set `BITWARDEN_LOCAL_ENABLED=1` again for local mode.
 
 ## Troubleshooting
 

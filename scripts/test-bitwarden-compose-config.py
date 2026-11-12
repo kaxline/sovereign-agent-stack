@@ -364,7 +364,9 @@ def check_local(cfg: dict) -> None:
     for name, service in services.items():
         if name not in allowed and any(f"{ADDON_DATA}/secrets" in str(v.get("source", "")) for v in mounts(service)):
             checks.fail(f"{name} mounts the Bitwarden secrets")
-    rows = (ROOT / "scripts/sync-profiles.sh").read_text(encoding="utf-8").splitlines()
+    # The row comes from addons/bitwarden/addon.json's gate; --table lists it.
+    rows = subprocess.run([str(ROOT / "scripts/sync-profiles.sh"), "--table"], capture_output=True,
+                          text=True, check=True).stdout.splitlines()
     if "BITWARDEN_LOCAL_ENABLED vault 0" not in rows:
         checks.fail("sync-profiles.sh must map BITWARDEN_LOCAL_ENABLED to vault, default off")
 

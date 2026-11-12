@@ -32,6 +32,14 @@ the stack under another app.
   `addon.sh enable opencode` doesn't check them; Compose still stops with its
   own message when either is empty. `opencode` is no longer on the validator's
   list of names core registers.
+- `BITWARDEN_LOCAL_ENABLED` (profile `vault`) moved from `sync-profiles.sh`'s
+  own table into `addons/bitwarden/addon.json` as a gate, with `vaultwarden`
+  and `vaultwarden-tls` as its services. `make up` and `sync-profiles.sh` turn
+  the same profiles on and off as before, and an existing `COMPOSE_PROFILES`
+  is left as it is; a sync that adds both `bitwarden` and `vault` now writes
+  them in that order. `addon.sh disable bitwarden` now also sets
+  `BITWARDEN_LOCAL_ENABLED=0` and stops both Vaultwarden services, and
+  `enable` doesn't turn local mode back on.
 - Vikunja todo lists are a built-in add-on (`addons/vikunja/addon.json`,
   title "Todo lists"), so `addon.sh list`, `enable vikunja` and `disable
   vikunja` work on them (Boundary CR 0032 R1 and R2). `enable` registers the
