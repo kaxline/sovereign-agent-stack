@@ -2217,6 +2217,47 @@ services:
       start_interval: 2s
 
   # ----------------------------------------------------------------------
+  # client-gateway — ACP v1 over a WebSocket for Boundary and other ACP clients
+  # Profile: client-gateway (until Boundary moves off the dashboard's /api/ws)
+  # Port:    127.0.0.1:${CLIENT_GATEWAY_PORT:-8650} (/acp, /acp/agents/<slug>)
+  # Auth:    Authorization: Bearer ${CLIENT_API_TOKEN} on the upgrade; an
+  #          Origin header must be listed in CLIENT_API_ALLOWED_ORIGINS.
+  # Talks to hermes' dashboard /api/ws with the dashboard login. Never logs
+  # message text, tool arguments or results.
+  # ----------------------------------------------------------------------
+  client-gateway:
+    profiles: ["client-gateway"]
+    container_name: ${CONTAINER_PREFIX:-}client-gateway
+    build:
+      context: ./compose/client-gateway
+      args:
+        HERMES_AGENT_IMAGE_TAG: ${HERMES_AGENT_IMAGE_TAG:-v0.23.1}
+    image: ${IMAGE_PREFIX:-assistant}-client-gateway:local
+    restart: unless-stopped
+    user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+    environment:
+      - CLIENT_API_TOKEN=${CLIENT_API_TOKEN:?set CLIENT_API_TOKEN in .env (scripts/setup.sh generates it)}
+      - CLIENT_API_ALLOWED_ORIGINS=${CLIENT_API_ALLOWED_ORIGINS:-}
+      - CLIENT_GATEWAY_HERMES_URL=http://hermes:9119
+      - HERMES_DASHBOARD_USER=${HERMES_DASHBOARD_USER:-admin}
+      - HERMES_DASHBOARD_PASSWORD=${HERMES_DASHBOARD_PASSWORD:?set HERMES_DASHBOARD_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:${CLIENT_GATEWAY_PORT:-8650}:8650"
+    depends_on:
+      hermes:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8650/health', timeout=5)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+  # ----------------------------------------------------------------------
   # Bitwarden broker — vault access for browser sign-ins (docs/bitwarden.md)
   # Profile: bitwarden (BITWARDEN_ENABLED=1)
   # API:     http://127.0.0.1:8099 inside hermes' network namespace only
