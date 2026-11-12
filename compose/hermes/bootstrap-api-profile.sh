@@ -37,20 +37,6 @@ OPENCODE_MCP_URL="${OPENCODE_MCP_URL:-http://opencode-mcp:8000/sse}"
 OPENCODE_MCP_TIMEOUT="${OPENCODE_MCP_TIMEOUT:-600}"
 OPENCODE_MCP_CONNECT_TIMEOUT="${OPENCODE_MCP_CONNECT_TIMEOUT:-30}"
 OPENCODE_MCP_ENABLED="${OPENCODE_MCP_ENABLED:-0}"
-VIKUNJA_MCP_ENABLED="${VIKUNJA_MCP_ENABLED:-0}"
-VIKUNJA_MCP_URL="${VIKUNJA_MCP_URL:-http://vikunja:3456/api/v2/mcp}"
-VIKUNJA_MCP_TIMEOUT="${VIKUNJA_MCP_TIMEOUT:-60}"
-VIKUNJA_MCP_CONNECT_TIMEOUT="${VIKUNJA_MCP_CONNECT_TIMEOUT:-30}"
-VIKUNJA_MCP_TOKEN_RO="${VIKUNJA_MCP_TOKEN_RO:-}"
-VIKUNJA_MCP_TOKEN_RW="${VIKUNJA_MCP_TOKEN_RW:-}"
-# Vikunja serves ~26 tools and filters them by the token's scopes. Pin only the
-# everyday ones; the rest stay reachable through tool search.
-# Hermes server key. Users talk about "todos", so the agent's tools are named
-# mcp__todos__* rather than after the engine. Not "todo": Hermes aliases each MCP
-# server name to its toolset, and "todo" is the built-in toolset disabled below.
-VIKUNJA_MCP_KEY="todos"
-VIKUNJA_MCP_PIN_RO="tasks_list tasks_read projects_list"
-VIKUNJA_MCP_PIN_RW="tasks_list tasks_read tasks_create tasks_update projects_list"
 # The mail and drafts servers register from addons/email-local/addon.json,
 # which reads MAIL_MCP_ENABLED, MAIL_DRAFTS_ENABLED and the MAIL_*_URL and
 # timeout overrides from the environment. The URLs stay here for
@@ -849,7 +835,7 @@ set_stack_mcp_parked_retry() {
   # One argument per add-on URL.
   # shellcheck disable=SC2046
   _out="$(python3 - "$_cfg" "$MCP_PARKED_RETRY_INTERVAL" "$SEARXNG_MCP_URL" \
-    "$CALDAV_MCP_URL" "$OPENCODE_MCP_URL" "$VIKUNJA_MCP_URL" \
+    "$CALDAV_MCP_URL" "$OPENCODE_MCP_URL" \
     "$MAIL_MCP_URL" "$MAIL_DRAFTS_MCP_URL" "$MESSAGES_MCP_URL" \
     $(addon_mcp_urls) $(addon_instance_urls "$1") <<'PY'
 import sys
@@ -889,11 +875,6 @@ PY
 reconcile_stack_eager_tools() {
   _rst_profile="$1"
   _rst_args="session_search web_url_read searxng_web_search mcp__searxng__web_url_read mcp__searxng__searxng_web_search"
-  if vikunja_mcp_token_for "$_rst_profile" >/dev/null; then
-    for _rst_t in $(vikunja_mcp_pins_for "$_rst_profile"); do
-      _rst_args="${_rst_args} ${_rst_t} mcp__${VIKUNJA_MCP_KEY}__${_rst_t}"
-    done
-  fi
   case "$MESSAGES_MCP_ENABLED" in
     1|true|TRUE|yes|YES)
       if [ "$_rst_profile" != "api-server" ]; then
@@ -1035,110 +1016,6 @@ PY
   if [ -n "$_out" ]; then log "$_out"; fi
 }
 
-# Vikunja token for a profile: read-only on api-server, read/write elsewhere.
-# Prints nothing and fails when the todo profile is off or the token is unset.
-vikunja_mcp_token_for() {
-  case "$VIKUNJA_MCP_ENABLED" in
-    1|true|TRUE|yes|YES) ;;
-    *) return 1 ;;
-  esac
-  if [ "$1" = "api-server" ]; then
-    _vmt_token="$VIKUNJA_MCP_TOKEN_RO"
-  else
-    _vmt_token="$VIKUNJA_MCP_TOKEN_RW"
-  fi
-  [ -n "$_vmt_token" ] || return 1
-  printf '%s\n' "$_vmt_token"
-}
-
-vikunja_mcp_pins_for() {
-  if [ "$1" = "api-server" ]; then
-    printf '%s\n' "$VIKUNJA_MCP_PIN_RO"
-  else
-    printf '%s\n' "$VIKUNJA_MCP_PIN_RW"
-  fi
-}
-
-# Vikunja todo lists (todo compose profile), registered as mcp_servers.todos
-# (VIKUNJA_MCP_KEY). Before that key existed it was mcp_servers.vikunja; the
-# same-URL cleanup below removes that entry.
-# The boundary is the token's scopes, which Vikunja enforces server-side (tools
-# outside them are neither listed nor callable), so no tools.include here.
-# make todo-init mints both tokens: api-server gets the read-only one, default
-# and browser the read/write one. Same split as SQL and CalDAV.
-#
-# The token goes into the profile's .env as VIKUNJA_MCP_TOKEN, and config.yaml
-# holds only the ${VIKUNJA_MCP_TOKEN} reference. Hermes resolves it per profile.
-register_vikunja_mcp_servers() {
-  _rvms_profile="$1"
-  _rvms_env="$(caldav_profile_env_file "$_rvms_profile")"
-  if ! _rvms_token="$(vikunja_mcp_token_for "$_rvms_profile")"; then
-    case "$VIKUNJA_MCP_ENABLED" in
-      1|true|TRUE|yes|YES)
-        log "WARNING: VIKUNJA_MCP_ENABLED=1 but no token for '${_rvms_profile:-default}' - run make todo-init"
-        ;;
-      *)
-        log "Skipping Vikunja MCP registration (VIKUNJA_MCP_ENABLED=${VIKUNJA_MCP_ENABLED})"
-        ;;
-    esac
-    # Undo an earlier registration so sessions do not wait out connect_timeout.
-    drop_mcp_entries_for_url "$_rvms_profile" "" "$VIKUNJA_MCP_URL"
-    remove_env_key "$_rvms_env" VIKUNJA_MCP_TOKEN
-    return 0
-  fi
-  mkdir -p "$(dirname "$_rvms_env")"
-  upsert_env "$_rvms_env" VIKUNJA_MCP_TOKEN "$_rvms_token"
-  log "Registering todo lists (Vikunja) MCP server '${VIKUNJA_MCP_KEY}' for profile '${_rvms_profile:-default}' at ${VIKUNJA_MCP_URL}"
-  # hermes config set cannot write a header map.
-  _out="$(python3 - "$(config_path_for "$_rvms_profile")" "$VIKUNJA_MCP_KEY" "$VIKUNJA_MCP_URL" \
-    "$VIKUNJA_MCP_TIMEOUT" "$VIKUNJA_MCP_CONNECT_TIMEOUT" <<'PY'
-import sys
-sys.path.insert(0, "/opt/hermes")
-try:
-    import yaml
-except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
-    import sys as _sys
-    _sys.path.insert(0, "/opt/hermes")
-    import hermes_yaml as yaml
-from utils import atomic_yaml_write
-
-cfg_path, key, url, timeout, connect_timeout = sys.argv[1:6]
-
-try:
-    with open(cfg_path) as fh:
-        config = yaml.safe_load(fh) or {}
-except FileNotFoundError:
-    print(f"ERROR: {cfg_path} not found")
-    raise SystemExit(1)
-
-servers = config.get("mcp_servers")
-if not isinstance(servers, dict):
-    servers = {}
-    config["mcp_servers"] = servers
-entry = servers.get(key)
-if not isinstance(entry, dict):
-    entry = {}
-entry["url"] = url
-entry["timeout"] = int(timeout) if str(timeout).isdigit() else timeout
-entry["connect_timeout"] = int(connect_timeout) if str(connect_timeout).isdigit() else connect_timeout
-headers = entry.get("headers")
-if not isinstance(headers, dict):
-    headers = {}
-headers["Authorization"] = "Bearer ${VIKUNJA_MCP_TOKEN}"
-entry["headers"] = headers
-servers[key] = entry
-atomic_yaml_write(cfg_path, config)
-print(f"Wrote mcp_servers.{key}")
-PY
-)"
-  if [ -n "$_out" ]; then log "$_out"; fi
-  # One entry per profile: drops the pre-rename mcp_servers.vikunja, and on
-  # api-server any hand-added copy that could carry a read/write token.
-  drop_mcp_entries_for_url "$_rvms_profile" "$VIKUNJA_MCP_KEY" "$VIKUNJA_MCP_URL"
-  # shellcheck disable=SC2046
-  pin_mcp_tools "$_rvms_profile" "$VIKUNJA_MCP_KEY" $(vikunja_mcp_pins_for "$_rvms_profile")
-}
-
 # Built-in add-ons with an mcp block, from addons/*/addon.json
 # (scripts/lib/addon_manifest.py mcp-plan). Each line of the plan says whether
 # the add-on's flag is on and what access this profile gets; a profile the
@@ -1162,8 +1039,14 @@ addon_mcp_urls() {
 # for reconcile_stack_eager_tools.
 addon_mcp_pin_args() {
   addon_mcp_plan "$1" 2>/dev/null | while IFS='|' read -r _amp_name _amp_title _amp_on _amp_access \
-      _amp_url _amp_timeout _amp_connect _amp_transport _amp_tools _amp_pins _amp_all_urls; do
+      _amp_url _amp_timeout _amp_connect _amp_transport _amp_tools _amp_pins _amp_all_urls \
+      _amp_keysrc _amp_rest; do
     { [ "$_amp_on" = 1 ] && [ -n "$_amp_access" ]; } || continue
+    if [ -n "$_amp_keysrc" ]; then
+      eval "_amp_key=\${${_amp_keysrc}:-}"
+      [ -n "$_amp_key" ] || continue
+      _amp_key=""
+    fi
     for _amp_t in $_amp_pins; do
       printf ' %s %s' "$_amp_t" "$(mcp_tool_name "$_amp_name" "$_amp_t")"
     done
@@ -1180,19 +1063,28 @@ register_addon_mcp_servers() {
   fi
   [ -n "$_ram_plan" ] || return 0
   printf '%s\n' "$_ram_plan" | while IFS='|' read -r _ram_name _ram_title _ram_on _ram_access \
-      _ram_url _ram_timeout _ram_connect _ram_transport _ram_tools _ram_pins _ram_all_urls; do
+      _ram_url _ram_timeout _ram_connect _ram_transport _ram_tools _ram_pins _ram_all_urls \
+      _ram_keysrc _ram_keyenv _ram_header _ram_scheme; do
+    _ram_skip=""
     if [ "$_ram_on" != 1 ]; then
-      log "Skipping ${_ram_title} MCP registration (add-on flag is off)"
-      for _ram_u in $_ram_all_urls; do
-        drop_mcp_entries_for_url "$_ram_profile" "" "$_ram_u"
-      done
-      continue
+      _ram_skip="Skipping ${_ram_title} MCP registration (add-on flag is off)"
+    elif [ -z "$_ram_access" ]; then
+      _ram_skip="Skipping ${_ram_title} MCP on '${_ram_profile:-default}' (not in the manifest's mcp.profiles)"
+    elif [ -n "$_ram_keysrc" ]; then
+      # mcp.auth: the token is in the variable the plan names (validated as
+      # [A-Z][A-Z0-9_]*, so the eval only reads it).
+      eval "_ram_key=\${${_ram_keysrc}:-}"
+      [ -n "$_ram_key" ] \
+        || _ram_skip="WARNING: ${_ram_title} is on but ${_ram_keysrc} is empty; no '${_ram_name}' on '${_ram_profile:-default}'"
     fi
-    if [ -z "$_ram_access" ]; then
-      log "Skipping ${_ram_title} MCP on '${_ram_profile:-default}' (not in the manifest's mcp.profiles)"
+    if [ -n "$_ram_skip" ]; then
+      log "$_ram_skip"
       for _ram_u in $_ram_all_urls; do
         drop_mcp_entries_for_url "$_ram_profile" "" "$_ram_u"
       done
+      if [ -n "$_ram_keyenv" ]; then
+        remove_env_key "$(caldav_profile_env_file "$_ram_profile")" "$_ram_keyenv"
+      fi
       continue
     fi
     # An add-on with a service per access level has a second URL, which this
@@ -1200,9 +1092,22 @@ register_addon_mcp_servers() {
     for _ram_u in $_ram_all_urls; do
       [ "$_ram_u" = "$_ram_url" ] || drop_mcp_entries_for_url "$_ram_profile" "" "$_ram_u"
     done
-    # shellcheck disable=SC2086
-    register_mcp_server "$_ram_profile" "$_ram_name" "$_ram_title" \
-      "$_ram_url" "$_ram_timeout" "$_ram_connect" $_ram_tools
+    if [ -n "$_ram_keysrc" ]; then
+      # Like an instance with auth: the token goes into the profile's .env
+      # and config.yaml holds only the header that references it. No
+      # tools.include: the token's scopes decide which tools the server lists.
+      _ram_env="$(caldav_profile_env_file "$_ram_profile")"
+      mkdir -p "$(dirname "$_ram_env")"
+      upsert_env "$_ram_env" "$_ram_keyenv" "$_ram_key"
+      _ram_key=""
+      log "Registering ${_ram_title} MCP server '${_ram_name}' for profile '${_ram_profile:-default}' at ${_ram_url}"
+      write_bearer_mcp_entry "$_ram_profile" "$_ram_name" "$_ram_url" "$_ram_keyenv" \
+        "$_ram_timeout" "$_ram_connect" "$_ram_header" "$_ram_scheme"
+    else
+      # shellcheck disable=SC2086
+      register_mcp_server "$_ram_profile" "$_ram_name" "$_ram_title" \
+        "$_ram_url" "$_ram_timeout" "$_ram_connect" $_ram_tools
+    fi
     # A profile cloned from default can carry another key at this URL, with
     # its own (unfiltered) tool list.
     drop_mcp_entries_for_url "$_ram_profile" "$_ram_name" "$_ram_url"
@@ -2273,7 +2178,6 @@ if is_true "$BOOTSTRAP_SHARED"; then
   register_web_mcp_servers ""
   register_caldav_mcp_servers ""
   register_opencode_mcp_servers ""
-  register_vikunja_mcp_servers ""
   register_messages_mcp_servers ""
   register_addon_mcp_servers ""
   register_addon_vault_backends ""
@@ -2477,7 +2381,6 @@ fi
 register_web_mcp_servers "$PROFILE"
 register_caldav_mcp_servers "$PROFILE"
 register_opencode_mcp_servers "$PROFILE"
-register_vikunja_mcp_servers "$PROFILE"
 register_messages_mcp_servers "$PROFILE"
 register_addon_mcp_servers "$PROFILE"
 register_addon_vault_backends "$PROFILE"

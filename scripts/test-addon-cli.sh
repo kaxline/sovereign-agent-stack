@@ -16,7 +16,7 @@ tmp="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$tmp"' EXIT
 root="${tmp}/stack"
 mkdir -p "${root}/scripts/lib" "${tmp}/bin" "${tmp}/out"
-cp "${REPO}/scripts/addon.sh" "${REPO}/scripts/sync-profiles.sh" "${REPO}/scripts/fixture-init.sh" "${REPO}/scripts/fixture-connect.sh" "${root}/scripts/" 2>/dev/null || true
+cp "${REPO}/scripts/addon.sh" "${REPO}/scripts/sync-profiles.sh" "${REPO}/scripts/fixture-init.sh" "${REPO}/scripts/fixture-prepare.sh" "${REPO}/scripts/fixture-connect.sh" "${root}/scripts/" 2>/dev/null || true
 for f in env.sh data-root.sh python.sh addon-events.sh addon_cli.py addon_manifest.py addon_store.py; do
   cp "${REPO}/scripts/lib/${f}" "${root}/scripts/lib/" 2>/dev/null || true
 done
@@ -625,12 +625,27 @@ addon_in '{"host":"h"}' configure hooked --instance main
 : > "$STUB_LOG"
 addon_json enable hooked --json
 expect_rc "enable with a script init hook" 0
-r=0; json_ok "$out" "done" 'steps == [("flags","running"),("flags","done"),("start","running"),("start","done"),("init","running"),("init","running"),("init","done"),("reload","running"),("reload","done")] and last == {"phase":"done","id":"hooked","action":"enable","restart":[],"mcp":[],"account":"main"} and [l["phase"] for l in lines].count("done") == 1' || r=1
+r=0; json_ok "$out" "done" 'steps == [("prepare","running"),("prepare","done"),("flags","running"),("flags","done"),("start","running"),("start","done"),("init","running"),("init","running"),("init","done"),("reload","running"),("reload","done")] and last == {"phase":"done","id":"hooked","action":"enable","restart":[],"mcp":[],"account":"main"} and [l["phase"] for l in lines].count("done") == 1' || r=1
 check "a script hook's done line gives the account, once" "$r"
 r=0; json_ok "$out" "done" '[i for i, l in enumerate(lines) if l.get("message") == "creating budget"] == [[i for i, l in enumerate(lines) if l.get("step") == "init" and l.get("status") == "running"][0] + 1] and lines[[i for i, l in enumerate(lines) if l.get("message") == "creating budget"][0]]["step"] == "init"' || r=1
 check "the hook's progress line sits inside the init step with step set" "$r"
 if logged "compose run --rm --no-deps -T"; then bad "a script hook does not use compose run"; else ok "a script hook does not use compose run"; fi
+if logged "prepare --json flag=" && ! logged "prepare --json flag=1"; then ok "prepare runs with --json before step flags"; else bad "prepare runs with --json before step flags"; cat "$STUB_LOG"; fi
 addon disable hooked
+# prepare runs on every enable, init only on the first.
+: > "$STUB_LOG"
+addon_json enable hooked --json
+if logged "prepare --json" && ! grep -q 'fixture-init' "$STUB_LOG"; then ok "a second enable runs prepare again"; else bad "a second enable runs prepare again"; cat "$STUB_LOG"; fi
+addon disable hooked
+# A failed prepare changes nothing: the flag stays off and nothing starts.
+: > "$STUB_LOG"
+FIXTURE_PREPARE_FAIL=1 addon_json enable hooked --json
+# An assignment before a function call outlives it in sh.
+unset FIXTURE_PREPARE_FAIL
+expect_rc "a failed prepare exits 4" 4
+r=0; json_ok "$out" error 'last["step"] == "prepare" and last["message"] == "prepare says no" and ("flags","running") not in steps' || r=1
+check "a failed prepare is an error at step prepare, before flags" "$r"
+if [ "$(envval HOOKED_ADDON_ENABLED)" != 1 ] && ! logged "compose up"; then ok "a failed prepare leaves the flag off and starts nothing"; else bad "a failed prepare leaves the flag off and starts nothing"; cat "$STUB_LOG"; fi
 for mode in exit5 error; do
   rm -f "${root}/data/addons/hooked/state.json"
   case "$mode" in

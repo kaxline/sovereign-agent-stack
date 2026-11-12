@@ -10,6 +10,28 @@ the stack under another app.
 
 ### Changes
 
+- Vikunja todo lists are a built-in add-on (`addons/vikunja/addon.json`,
+  title "Todo lists"), so `addon.sh list`, `enable vikunja` and `disable
+  vikunja` work on them (Boundary CR 0032 R1 and R2). `enable` registers the
+  schema, starts `vikunja` and `vikunja-proxy`, creates the account and both
+  tokens, and reloads Hermes, with no `make`. The flag
+  (`VIKUNJA_MCP_ENABLED`), the compose profile (`todo`), the server name
+  (`todos`), its URL, the pins and which token each profile gets are
+  unchanged. Two differences: the profile `.env` key that holds the token is
+  now `TODOS_KEY` (was `VIKUNJA_MCP_TOKEN`, which is left in place and no
+  longer read), and the first `addon.sh enable vikunja` on an install set up
+  with `make todo-init` runs `todo.sh init` once more, which replaces both
+  tokens. The manifest declares `uses: postgres` and `exposesToAgent: true`:
+  the SQL add-on's roles can read the `vikunja` schema.
+- Add-on manifests: an `mcp` entry without `instances` may carry `auth`
+  (`{header, scheme, env: {ro, rw}}`), naming the `.env` variable that holds
+  each level's token. `mcp-plan` lines gain four fields (`keysrc`, `keyenv`,
+  `header`, `scheme`) after `all_urls`.
+- Add-on manifests: `hooks.prepare`, a script `addon.sh enable` runs on every
+  enable before step `flags`. `enable --json` then starts with step
+  `prepare`, and a failed prepare leaves the add-on as it was.
+- `todo.sh prepare` and `todo.sh init` take `--json`: progress goes to stderr,
+  and `init` ends with a `done` line naming the account and `todos`.
 - The SQL MCP is a built-in add-on (`addons/sql/addon.json`), so
   `addon.sh list`, `enable sql` and `disable sql` work on it. The flag
   (`SQL_MCP_ENABLED`), the compose profile (`db`), the server name (`sql`),

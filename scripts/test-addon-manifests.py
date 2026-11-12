@@ -222,7 +222,7 @@ env = {"GPTR_MCP_ENABLED": "1"}
 plan = am.mcp_plan(ROOT / "addons", "browser", env)
 want = ("gptr|GPT Researcher|1|rw|http://gptr-mcp:8000/sse|900|30|sse|"
         "deep_research quick_search write_report get_research_sources get_research_context|"
-        "deep_research quick_search write_report|http://gptr-mcp:8000/sse")
+        "deep_research quick_search write_report|http://gptr-mcp:8000/sse||||")
 check("plan for browser with the flag on", want in plan, str(plan))
 plan = am.mcp_plan(ROOT / "addons", "api-server", env)
 check("plan leaves api-server without access", any(line.startswith("gptr|GPT Researcher|1||") for line in plan),
@@ -263,7 +263,7 @@ with tempfile.TemporaryDirectory() as tmp:
             plan = am.mcp_plan(Path(tmp), "api-server", e)
             row = plan[0].split("|") if len(plan) == 1 else []
             check(f"invalid manifest drops {url} on api-server (flag {flag})",
-                  len(row) == 11 and row[2] == "0" and row[3] == "" and row[4] == url
+                  len(row) == 15 and row[2] == "0" and row[3] == "" and row[4] == url
                   and row[10] == url, str(plan))
     _plan = am.mcp_plan(Path(tmp), "default", {})
     check("invalid manifest drops LightRAG on default too",
@@ -485,7 +485,7 @@ with tempfile.TemporaryDirectory() as tmp:
     check("mcp-plan prints one line per entry", len(plan) == 2, str(plan))
     check("the first entry follows builtin.flag", first[:3] == ["gptr", "GPT Researcher", "0"], str(plan))
     check("the second entry follows its gate and title", second[:3] == ["gptr-extra", "Extra", "1"], str(plan))
-    check("each line keeps the 11 fields", len(first) == 11 and len(second) == 11, str(plan))
+    check("each line keeps the 15 fields", len(first) == 15 and len(second) == 15, str(plan))
     plan = am.mcp_plan(Path(tmp), "default", {"GPTR_MCP_ENABLED": "1"})
     check("a gate that is unset is off", [p.split("|")[2] for p in plan] == ["1", "0"], str(plan))
 
@@ -493,6 +493,59 @@ for prof in ("default", "api-server", "browser"):
     fixture = (ROOT / "scripts" / "fixtures" / f"addon-mcp-plan-{prof}.txt").read_text().splitlines()
     check(f"mcp-plan over addons/ for {prof} matches the fixture",
           am.mcp_plan(ROOT / "addons", prof, {}) == fixture, str(am.mcp_plan(ROOT / "addons", prof, {})))
+
+# --- mcp.auth on an entry without instances -----------------------------------
+VK = json.loads((ROOT / "addons" / "vikunja" / "addon.json").read_text())
+
+
+def vk_variant(**auth):
+    m = copy.deepcopy(VK)
+    for k, v in auth.items():
+        if v is None:
+            m["mcp"]["auth"].pop(k, None)
+        else:
+            m["mcp"]["auth"][k] = v
+    return m
+
+
+check("vikunja manifest is valid", am.validate(VK) == [], str(am.validate(VK)))
+refused("auth.env must cover every level in mcp.profiles",
+        vk_variant(env={"rw": "VIKUNJA_MCP_TOKEN_RW"}), "names no token for ro")
+refused("auth.env ro and rw must differ",
+        vk_variant(env={"ro": "VIKUNJA_MCP_TOKEN_RW", "rw": "VIKUNJA_MCP_TOKEN_RW"}), "different variable")
+refused("auth.env values are env var names", vk_variant(env={"ro": "lower", "rw": "X"}), "mcp.auth.env")
+refused("auth.env keys are ro and rw", vk_variant(env={"admin": "X", "rw": "Y"}), "mcp.auth.env")
+refused("auth.header is a header name", vk_variant(header="Bad Header"), "mcp.auth.header")
+refused("auth takes no unknown fields", vk_variant(secret={"ro": "a", "rw": "b"}), "mcp.auth has unknown fields")
+refused("auth must be an object", {**copy.deepcopy(VK), "mcp": {**VK["mcp"], "auth": "Bearer"}}, "mcp.auth must be")
+with tempfile.TemporaryDirectory() as tmp:
+    (Path(tmp) / "vikunja").mkdir()
+    (Path(tmp) / "vikunja" / "addon.json").write_text(am.canonical(VK))
+    on = {"VIKUNJA_MCP_ENABLED": "1", "VIKUNJA_MCP_TOKEN_RO": "secret-ro", "VIKUNJA_MCP_TOKEN_RW": "secret-rw"}
+    rows = {p: am.mcp_plan(Path(tmp), p, on)[0].split("|") for p in ("api-server", "browser", "other")}
+    check("auth: api-server names the ro token variable",
+          rows["api-server"][11:] == ["VIKUNJA_MCP_TOKEN_RO", "TODOS_KEY", "Authorization", "Bearer"],
+          str(rows["api-server"]))
+    check("auth: browser names the rw token variable", rows["browser"][11] == "VIKUNJA_MCP_TOKEN_RW",
+          str(rows["browser"]))
+    check("auth: a profile without access gets no variable but keeps keyenv",
+          rows["other"][3] == "" and rows["other"][11:13] == ["", "TODOS_KEY"], str(rows["other"]))
+    check("auth: write pins stay off the ro profile",
+          "tasks_create" not in rows["api-server"][9].split(), rows["api-server"][9])
+    check("auth: token values are never printed",
+          not any("secret-" in f for r in rows.values() for f in r), str(rows))
+    # Not canonical, so invalid: the drop-only line still names the key to remove.
+    (Path(tmp) / "vikunja" / "addon.json").write_text(json.dumps(VK))
+    row = am.mcp_plan(Path(tmp), "browser", on)[0].split("|")
+    check("auth: an invalid manifest's drop line carries keyenv",
+          row[2] == "0" and row[11:] == ["", "TODOS_KEY", "", ""], str(row))
+
+# --- hooks.prepare ------------------------------------------------------------
+check("prepare is a hook name", "prepare" in am.HOOK_NAMES)
+refused("prepare must be a script",
+        {**copy.deepcopy(VK), "commands": {"x": {"service": "proxy", "instance": False, "argv": ["true"]}},
+         "hooks": {"prepare": {"command": "x"}}}, "hooks.prepare must be a script")
+check("vikunja's prepare hook is todo.sh prepare", am.hook(VK, "prepare") == {"script": ["scripts/todo.sh", "prepare"]})
 
 got = fence_of({"gptr": am.canonical(two_entry(permissions__cron=False))}, env)
 check("cron false fences every entry", got[0] == ["gptr", "gptr-extra"], str(got))
