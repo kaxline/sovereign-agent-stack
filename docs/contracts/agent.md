@@ -163,4 +163,5 @@ above.
 
 A neutral client API, which Boundary would use in place of the dashboard
 WebSocket, and a browser service separate from the agent container are
-planned. Neither is designed yet.
+planned. The interface a browser provider has to meet is on the
+[browser](browser.md) page.
