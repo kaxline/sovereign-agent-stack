@@ -43,11 +43,11 @@ OPENCODE_MCP_ENABLED="${OPENCODE_MCP_ENABLED:-0}"
 # set_stack_mcp_parked_retry.
 MAIL_MCP_URL="${MAIL_MCP_URL:-http://mail-mcp:8000/mcp}"
 MAIL_DRAFTS_MCP_URL="${MAIL_DRAFTS_MCP_URL:-http://mail-drafts-mcp:8000/mcp}"
+# The messages server registers from addons/messages/addon.json. The flag
+# stays here for configure_messages_webhook, the URL for
+# set_stack_mcp_parked_retry.
 MESSAGES_MCP_ENABLED="${MESSAGES_MCP_ENABLED:-0}"
 MESSAGES_MCP_URL="${MESSAGES_MCP_URL:-http://messages-mcp:8000/mcp}"
-MESSAGES_MCP_TIMEOUT="${MESSAGES_MCP_TIMEOUT:-60}"
-MESSAGES_MCP_CONNECT_TIMEOUT="${MESSAGES_MCP_CONNECT_TIMEOUT:-30}"
-MESSAGES_MCP_TOOLS="messages_status messages_chats messages_search messages_conversation messages_get"
 # Built-in add-ons (GPT Researcher so far) come from addons/<id>/addon.json.
 ADDONS_DIR="${ADDONS_DIR:-/bootstrap/addons}"
 ADDON_MANIFEST_PY="${ADDON_MANIFEST_PY:-/bootstrap/addon_manifest.py}"
@@ -59,9 +59,6 @@ ADDON_DATA_DIR="${ADDON_DATA_DIR:-/bootstrap/addon-data}"
 # so one still booting parks and comes back on the next probe. Empty leaves
 # the Hermes default.
 MCP_PARKED_RETRY_INTERVAL="${MCP_PARKED_RETRY_INTERVAL-15}"
-# messages_triage_batch moves the triage cursor, so only the default profile,
-# where the messages-triage cron job runs, registers it, and it isn't pinned.
-MESSAGES_TRIAGE_TOOL="messages_triage_batch"
 # Shared with messages-mcp's forwarder; the webhook route checks it.
 MESSAGES_WEBHOOK_SECRET="${MESSAGES_WEBHOOK_SECRET:-}"
 MESSAGES_WEBHOOK_PORT="${MESSAGES_WEBHOOK_PORT:-8646}"
@@ -875,15 +872,6 @@ PY
 reconcile_stack_eager_tools() {
   _rst_profile="$1"
   _rst_args="session_search web_url_read searxng_web_search mcp__searxng__web_url_read mcp__searxng__searxng_web_search"
-  case "$MESSAGES_MCP_ENABLED" in
-    1|true|TRUE|yes|YES)
-      if [ "$_rst_profile" != "api-server" ]; then
-        for _rst_t in $MESSAGES_MCP_TOOLS; do
-          _rst_args="${_rst_args} ${_rst_t} mcp__messages__${_rst_t}"
-        done
-      fi
-      ;;
-  esac
   _rst_args="${_rst_args} $(addon_mcp_pin_args "$_rst_profile")"
   _rst_args="${_rst_args} $(addon_instance_pin_args "$_rst_profile")"
   case "$OPENCODE_MCP_ENABLED" in
@@ -1542,36 +1530,6 @@ EOF
   reconcile_addon_instance_servers "$_rai_profile" $_rai_specs $_rai_keep
 }
 
-# Read-only Messages index (messages compose profile), registered as
-# mcp_servers.messages on the interactive profiles only, like mail: a stranger
-# can text you, so unattended api-server sessions never get it. The default
-# profile also gets messages_triage_batch for the messages-triage cron job.
-register_messages_mcp_servers() {
-  _rmsg_profile="$1"
-  case "$MESSAGES_MCP_ENABLED" in
-    1|true|TRUE|yes|YES) ;;
-    *)
-      log "Skipping messages MCP registration (MESSAGES_MCP_ENABLED=${MESSAGES_MCP_ENABLED})"
-      drop_mcp_entries_for_url "$_rmsg_profile" "" "$MESSAGES_MCP_URL"
-      return 0
-      ;;
-  esac
-  if [ "$_rmsg_profile" = "api-server" ]; then
-    log "Skipping messages MCP on api-server profile (unattended sessions)"
-    drop_mcp_entries_for_url "$_rmsg_profile" "" "$MESSAGES_MCP_URL"
-    return 0
-  fi
-  _rmsg_tools="$MESSAGES_MCP_TOOLS"
-  if [ -z "$_rmsg_profile" ]; then
-    _rmsg_tools="${_rmsg_tools} ${MESSAGES_TRIAGE_TOOL}"
-  fi
-  # shellcheck disable=SC2086
-  register_mcp_server "$_rmsg_profile" messages "Messages (read-only)" \
-    "$MESSAGES_MCP_URL" "$MESSAGES_MCP_TIMEOUT" "$MESSAGES_MCP_CONNECT_TIMEOUT" $_rmsg_tools
-  # shellcheck disable=SC2086
-  pin_mcp_tools "$_rmsg_profile" messages $MESSAGES_MCP_TOOLS
-}
-
 # New-message events reach Hermes as signed POSTs from messages-mcp's
 # forwarder to a webhook route on the default profile, which fires the
 # messages-triage cron job (make messages-triage-cron). The route's prompt
@@ -2178,7 +2136,6 @@ if is_true "$BOOTSTRAP_SHARED"; then
   register_web_mcp_servers ""
   register_caldav_mcp_servers ""
   register_opencode_mcp_servers ""
-  register_messages_mcp_servers ""
   register_addon_mcp_servers ""
   register_addon_vault_backends ""
   register_addon_instance_servers ""
@@ -2381,7 +2338,6 @@ fi
 register_web_mcp_servers "$PROFILE"
 register_caldav_mcp_servers "$PROFILE"
 register_opencode_mcp_servers "$PROFILE"
-register_messages_mcp_servers "$PROFILE"
 register_addon_mcp_servers "$PROFILE"
 register_addon_vault_backends "$PROFILE"
 register_addon_instance_servers "$PROFILE"

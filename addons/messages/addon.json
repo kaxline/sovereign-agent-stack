@@ -1,0 +1,80 @@
+{
+  "manifestVersion": 1,
+  "id": "io.github.kaxline.stack.messages",
+  "version": "1.0.0",
+  "title": "Messages",
+  "tagline": "Read-only iMessage and SMS history for Hermes, indexed on this Mac",
+  "description": "The Messages reader app builds a scoped index of the chats you choose, and the messages-mcp sidecar serves it to Hermes read-only. The app holds Full Disk Access; nothing in a container reads the Messages folder, and the index's store path has no default. The default profile also gets messages_triage_batch, which moves the triage cursor for the messages-triage cron job; browser gets the read tools only, and neither api-server nor cron gets any. New-message alerts reach the default profile through a webhook route the bootstrap sets while MESSAGES_WEBHOOK_SECRET is set. Nothing is ever sent. See docs/messages.md.",
+  "publisher": {
+    "name": "sovereign-agent-stack",
+    "url": "https://github.com/kaxline/sovereign-agent-stack"
+  },
+  "minStackVersion": "0.3.15",
+  "builtin": {
+    "flag": "MESSAGES_MCP_ENABLED",
+    "profile": "messages",
+    "seed": false
+  },
+  "services": {
+    "reader": {
+      "compose": "messages-mcp",
+      "port": 8000
+    }
+  },
+  "mcp": {
+    "name": "messages",
+    "title": "Messages (read-only)",
+    "service": "reader",
+    "transport": "http",
+    "path": "/mcp",
+    "timeout": 60,
+    "connectTimeout": 30,
+    "env": {
+      "url": "MESSAGES_MCP_URL",
+      "timeout": "MESSAGES_MCP_TIMEOUT",
+      "connectTimeout": "MESSAGES_MCP_CONNECT_TIMEOUT"
+    },
+    "tools": [
+      "messages_status",
+      "messages_chats",
+      "messages_search",
+      "messages_conversation",
+      "messages_get",
+      "messages_triage_batch"
+    ],
+    "pin": [
+      "messages_status",
+      "messages_chats",
+      "messages_search",
+      "messages_conversation",
+      "messages_get"
+    ],
+    "writeTools": [
+      "messages_triage_batch"
+    ],
+    "profiles": {
+      "default": "rw",
+      "browser": "ro"
+    }
+  },
+  "permissions": {
+    "reads": [
+      "messages"
+    ],
+    "writes": [],
+    "sends": false,
+    "egress": [],
+    "exposesToAgent": false,
+    "cron": false
+  },
+  "host": {
+    "platform": "macos",
+    "install": "imessage/macos/build.sh && imessage/macos/install.sh --config \"$PWD/messages-index.toml\"",
+    "uninstall": "imessage/macos/install.sh uninstall",
+    "grants": [
+      "full-disk-access"
+    ],
+    "grantTarget": "~/Applications/Assistant Messages Reader.app",
+    "check": "make messages-index-doctor"
+  }
+}
