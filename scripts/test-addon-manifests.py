@@ -518,6 +518,41 @@ refused("auth.env keys are ro and rw", vk_variant(env={"admin": "X", "rw": "Y"})
 refused("auth.header is a header name", vk_variant(header="Bad Header"), "mcp.auth.header")
 refused("auth takes no unknown fields", vk_variant(secret={"ro": "a", "rw": "b"}), "mcp.auth has unknown fields")
 refused("auth must be an object", {**copy.deepcopy(VK), "mcp": {**VK["mcp"], "auth": "Bearer"}}, "mcp.auth must be")
+
+# web: the page a person opens (Boundary CR 0032 R3).
+check("web naming a service with a port is accepted",
+      am.validate(variant(web={"service": "server", "path": "/login-local"})) == [],
+      str(am.validate(variant(web={"service": "server", "path": "/login-local"}))))
+refused("web.service must be one of services", variant(web={"service": "nope", "path": "/"}), "web.service")
+refused("web.service needs a port",
+        variant(services={"server": {"compose": "gptr-mcp"}}, web={"service": "server", "path": "/"}),
+        "web.service")
+for bad in ("login", "/a?b=1", "/a b", "", 5):
+    refused(f"web.path {bad!r} is refused", variant(web={"service": "server", "path": bad}), "web.path")
+refused("web takes no unknown fields", variant(web={"service": "server", "path": "/", "port": 1}),
+        "web has unknown fields")
+refused("web must be an object", variant(web="/"), "web must be")
+
+# data.schemas: shared-Postgres schemas remove --delete-data drops (CR 0032 R4).
+PG = dict(uses=["postgres"], permissions__exposesToAgent=True)
+check("data.schemas with uses postgres is accepted",
+      am.validate(variant(data={"schemas": ["todo_x"]}, **PG), repo=None) == [],
+      str(am.validate(variant(data={"schemas": ["todo_x"]}, **PG), repo=None)))
+refused("data.schemas needs uses postgres", variant(data={"schemas": ["todo_x"]}), "uses must include postgres")
+for bad in (["agent"], ["public"], ["information_schema"], ["pg_x"], ["Bad"], ["a-b"], ["x" * 59], [], ["a", "a"], "a"):
+    refused(f"data.schemas {bad!r} is refused", variant(data={"schemas": bad}, **PG), "data.schemas")
+check("data_schemas reads data.schemas",
+      am.data_schemas(variant(data={"schemas": ["todo_x"]})) == ["todo_x"] and am.data_schemas(BASE) == [])
+with tempfile.TemporaryDirectory() as tmp:
+    d = Path(tmp)
+    for sid in ("one", "two"):
+        m = variant(id=f"io.example.{sid}", data={"schemas": ["shared_x"]}, **PG)
+        (d / sid).mkdir()
+        (d / sid / "addon.json").write_text(am.canonical(m))
+    conflicts = am.dir_conflicts(am.load_dir(d))
+    check("two add-ons may not declare the same schema",
+          all(any("data.schemas 'shared_x'" in e for e in conflicts.get(d / sid / "addon.json", []))
+              for sid in ("one", "two")), str(conflicts))
 with tempfile.TemporaryDirectory() as tmp:
     (Path(tmp) / "vikunja").mkdir()
     (Path(tmp) / "vikunja" / "addon.json").write_text(am.canonical(VK))

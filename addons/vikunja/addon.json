@@ -106,6 +106,10 @@
       "api-server": "ro"
     }
   },
+  "web": {
+    "service": "proxy",
+    "path": "/login-local"
+  },
   "hooks": {
     "prepare": {
       "script": [
@@ -126,6 +130,9 @@
         "env": "VIKUNJA_FILES_DIR",
         "default": "./data/vikunja/files"
       }
+    ],
+    "schemas": [
+      "vikunja"
     ]
   },
   "backup": {

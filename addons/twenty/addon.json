@@ -162,6 +162,10 @@
       "api-server": "ro"
     }
   },
+  "web": {
+    "service": "server",
+    "path": "/"
+  },
   "hooks": {
     "init": {
       "script": [

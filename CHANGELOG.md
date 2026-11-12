@@ -30,6 +30,20 @@ the stack under another app.
 - Add-on manifests: `hooks.prepare`, a script `addon.sh enable` runs on every
   enable before step `flags`. `enable --json` then starts with step
   `prepare`, and a failed prepare leaves the add-on as it was.
+- Add-on manifests: `web` (`{service, path}`) names the page a person opens,
+  and `addon.sh list --json` gains `web` on every add-on: null, or
+  `{service, path, url}` with `url` built from the host port compose
+  publishes for that service (null while its gate is off). Vikunja's is
+  `http://localhost:3456/login-local`, signed in (Boundary CR 0032 R3);
+  Twenty, Actual and n8n give their web apps at `/`.
+- Add-on manifests: `data.schemas` lists shared-Postgres schemas, and
+  `addon.sh remove --delete-data` drops each one with its `svc_<schema>`
+  role, starting `postgres-db` for it when it isn't running. Vikunja declares
+  `vikunja`, so removing its data now deletes the lists (Boundary CR 0032
+  R4). `plan-remove` output gains `schemas`.
+- `scripts/db.sh service-remove <slug> --yes` drops a service schema, its
+  role and `compose/postgres/services/<slug>.env`, replacing the hand-run SQL
+  in `docs/database.md`.
 - `todo.sh prepare` and `todo.sh init` take `--json`: progress goes to stderr,
   and `init` ends with a `done` line naming the account and `todos`.
 - The SQL MCP is a built-in add-on (`addons/sql/addon.json`), so
