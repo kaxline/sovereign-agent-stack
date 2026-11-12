@@ -241,6 +241,73 @@ async def checks(c: Checks) -> None:
         c.expect(r["stopReason"] == "end_turn", "turn after reconnect")
         c.expect(fake.logins >= 2, "a fresh login and ticket after the drop")
 
+        # A bare error at admission ends the turn.
+        await expect_error(c, prompt(a, sid, "admitfail"), -32603, "turn_failed", "admission refusal")
+
+        # $/cancel_request on a running prompt: -32800, Hermes is interrupted, and the
+        # next prompt gets its own reply, not the cancelled turn's.
+        rid, hang = a.start_request("session/prompt", {"sessionId": sid, "prompt": [{"type": "text", "text": "hang"}]})
+        await asyncio.sleep(0.3)
+        interrupts = fake.methods().count("session.interrupt")
+        await a.notify("$/cancel_request", {"requestId": rid})
+        try:
+            await asyncio.wait_for(hang, 5)
+            c.fail("$/cancel_request: prompt answered without an error")
+        except Exception as exc:  # noqa: BLE001
+            c.expect(getattr(exc, "code", None) == -32800, f"$/cancel_request gives -32800: {exc}")
+        await asyncio.sleep(0.3)
+        c.expect(fake.methods().count("session.interrupt") == interrupts + 1, "the abandoned turn was interrupted")
+        a.updates.clear()
+        r = await prompt(a, sid, "hi")
+        c.expect(r["stopReason"] == "end_turn" and text_of(a, sid, "agent_message_chunk") == "Hello world",
+                 f"next prompt after cancel_request: {r} {text_of(a, sid, 'agent_message_chunk')!r}")
+
+        # A watcher that disconnects during a permission request doesn't stop the
+        # other watcher from answering it.
+        d = await kit.client(url)
+        await d.initialize()
+        await d.request("session/load", {"sessionId": sid, "cwd": "/", "mcpServers": [], "_meta": {NS: {"omitMessages": True}}})
+
+        async def never(_p):
+            await asyncio.sleep(3600)
+
+        async def deny_later(_p):
+            await asyncio.sleep(0.8)
+            return {"outcome": {"outcome": "selected", "optionId": "deny"}}
+
+        d.handlers["session/request_permission"] = never
+        a.handlers["session/request_permission"] = deny_later
+        _, appr = a.start_request("session/prompt", {"sessionId": sid, "prompt": [{"type": "text", "text": "approve"}]})
+        await asyncio.sleep(0.3)
+        await d.close()
+        r = await asyncio.wait_for(appr, 10)
+        c.expect(fake.answers[-1] == ("approval", {"choice": "deny"}), f"surviving watcher answered: {fake.answers[-1:]}")
+
+        # session/close during a running turn ends the prompt as cancelled.
+        e = await kit.client(url)
+        await e.initialize()
+        esid = (await e.request("session/new", {"cwd": "/", "mcpServers": []}))["sessionId"]
+        _, hang = e.start_request("session/prompt", {"sessionId": esid, "prompt": [{"type": "text", "text": "hang"}]})
+        await asyncio.sleep(0.3)
+        await e.request("session/close", {"sessionId": esid})
+        r = await asyncio.wait_for(hang, 5)
+        c.expect(r["stopReason"] == "cancelled", f"close ends the running turn: {r}")
+
+        # A network blip (Hermes keeps running the turn): the client gets
+        # runtime_restarted, and on the next call the leftover turn is interrupted
+        # so the new prompt runs and gets its own reply.
+        _, hang = a.start_request("session/prompt", {"sessionId": sid, "prompt": [{"type": "text", "text": "hang"}]})
+        await asyncio.sleep(0.3)
+        await fake.blip()
+        await expect_error(c, asyncio.wait_for(hang, 5), -32603, "runtime_restarted", "blip mid-turn")
+        await asyncio.wait_for(backend.upstream.connected.wait(), 10)
+        interrupts = fake.methods().count("session.interrupt")
+        a.updates.clear()
+        r = await prompt(a, sid, "hi")
+        c.expect(fake.methods().count("session.interrupt") == interrupts + 1, "leftover turn interrupted after the blip")
+        c.expect(r["stopReason"] == "end_turn" and text_of(a, sid, "agent_message_chunk") == "Hello world",
+                 f"prompt after blip: {r} {text_of(a, sid, 'agent_message_chunk')!r}")
+
         # Delete.
         await b.request("session/close", {"sessionId": sid})
         await a.request("session/delete", {"sessionId": sid})

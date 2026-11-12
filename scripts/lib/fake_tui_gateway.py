@@ -8,7 +8,8 @@ way Hermes' ``extra="forbid"`` contracts do (error 4000), with the stack
 overlays' fields (``context``, ``history_budget``, ``profile``) added.
 
 What a turn does depends on the prompt text: ``tool``, ``approve``,
-``clarify``, ``hang`` (until interrupted), ``nostream``, ``fail``; anything
+``clarify``, ``hang`` (until interrupted), ``nostream``, ``fail``,
+``admitfail`` (a bare ``error`` event and nothing else); anything
 else streams "Hello" and " world". All data is synthetic.
 """
 
@@ -104,6 +105,13 @@ class FakeTuiGateway:
             task.cancel()
         self.epoch = secrets.token_hex(16)
 
+    async def blip(self) -> None:
+        """Close every socket but keep sessions and running turns, as a network
+        drop without a Hermes restart would. A resume reattaches a runtime id."""
+        for ws in list(self._sockets):
+            await ws.close()
+        self._owner.clear()
+
     def reap(self, stored_id: str) -> None:
         """Forget a session's runtime id, so calls with it answer 4001."""
         for rid, sid in list(self.runtime.items()):
@@ -160,7 +168,7 @@ class FakeTuiGateway:
     # -- wire helpers -------------------------------------------------------
 
     async def _send(self, ws, frame: dict) -> None:
-        if not ws.closed:
+        if ws is not None and not ws.closed:
             await ws.send_str(json.dumps(frame))
 
     def _event(self, etype: str, runtime_id: str, payload: dict | None) -> dict:
@@ -257,7 +265,8 @@ class FakeTuiGateway:
         live = [r for r, sid in self.runtime.items() if sid == s.stored_id]
         rid = live[0] if live else self._new_runtime(ws, s.stored_id)
         self._owner[rid] = ws
-        out = {"session_id": rid, "resumed": s.stored_id, "message_count": len(s.messages)}
+        out = {"session_id": rid, "resumed": s.stored_id, "message_count": len(s.messages),
+               "running": rid in self._running}
         if not p.get("omit_messages"):
             out["messages"] = list(s.messages)
         return out
@@ -325,7 +334,8 @@ class FakeTuiGateway:
             if self._running.get(rid) is task:
                 del self._running[rid]
             queue = self._queue.get(rid)
-            if queue and not _t.cancelled():
+            # session.interrupt already dropped the prompts queued before it.
+            if queue:
                 self._start_turn(rid, s, queue.pop(0))
 
         task.add_done_callback(done)
@@ -334,6 +344,10 @@ class FakeTuiGateway:
         s.messages.append({"role": "user", "text": text, "row_id": next(self._rows)})
         usage = {"input": 10, "output": 5, "context_used": 15, "context_max": 32000, "avg_tps": 40.0}
         turn_id = f"t{next(self._ids)}"
+        if text == "admitfail":
+            # A refusal at admission: a bare error event, no message.start or complete.
+            await self.emit(rid, "error", {"message": "slot refused"})
+            return
         if text == "fail":
             await self.emit(rid, "message.start", {"turn_id": turn_id})
             await self.emit(rid, "message.complete", {"text": "", "status": "error", "failure_reason": "provider", "usage": usage})

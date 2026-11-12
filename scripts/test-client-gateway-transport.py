@@ -22,7 +22,8 @@ async def socket_checks(c: Checks) -> None:
     from client_gateway.auth import SettingsError, load_settings
     from fake_backend import FakeBackend
 
-    for env, why in (({}, "unset"), ({"CLIENT_API_TOKEN": "short"}, "short")):
+    placeholder = {"CLIENT_API_TOKEN": "change-me-generate-with-openssl-rand-hex-32"}
+    for env, why in (({}, "unset"), ({"CLIENT_API_TOKEN": "short"}, "short"), (placeholder, "placeholder")):
         try:
             load_settings(env)
             c.fail(f"load_settings accepted a {why} token")

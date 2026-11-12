@@ -30,6 +30,8 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
     token = env.get("CLIENT_API_TOKEN", "")
     if not token:
         raise SettingsError("CLIENT_API_TOKEN is not set; run scripts/setup.sh or set it in .env")
+    if token.lower().startswith(("change-me", "change_me")):
+        raise SettingsError("CLIENT_API_TOKEN is still the .env.example placeholder; run scripts/setup.sh")
     if len(token) < MIN_TOKEN_LEN:
         raise SettingsError(
             f"CLIENT_API_TOKEN is {len(token)} characters; it needs at least {MIN_TOKEN_LEN}"

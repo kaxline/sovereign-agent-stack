@@ -59,10 +59,16 @@ class SessionHub:
                 done, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
                 for fut in done:
                     pending.pop(fut)
-                    if winner is None and not fut.cancelled() and fut.exception() is None:
+                    # A watcher that disconnected (cancelled) or answered with an error
+                    # doesn't count; the others can still answer.
+                    if fut.cancelled():
+                        continue
+                    if fut.exception() is not None:
+                        if not isinstance(fut.exception(), AcpError):
+                            log.debug("%s to a watcher failed: %s", method, type(fut.exception()).__name__)
+                        continue
+                    if winner is None:
                         winner = fut.result()
-                    elif fut.exception() is not None and not isinstance(fut.exception(), AcpError):
-                        log.debug("%s to a watcher failed: %s", method, type(fut.exception()).__name__)
         finally:
             # The other clients' requests end: $/cancel_request tells them to stop asking.
             for fut in pending:

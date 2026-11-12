@@ -31,6 +31,15 @@ READY_TIMEOUT_S = 10.0
 BACKOFF_MAX_S = 30.0
 
 
+def _describe(exc: BaseException) -> str:
+    """An exception for the log, without URLs: a failed upgrade's message carries
+    ``?ticket=``."""
+    if isinstance(exc, (HermesError, UpstreamDown)):
+        return str(exc)
+    status = getattr(exc, "status", None)
+    return type(exc).__name__ + (f" status {status}" if status else "")
+
+
 class HermesError(Exception):
     def __init__(self, method: str, code: int, message: str, data: object = None) -> None:
         super().__init__(f"{method}: {code} {message}")
@@ -111,7 +120,10 @@ class Upstream:
         async with self._http.post(f"{self.base_url}/api/auth/ws-ticket") as r:
             if r.status != 200:
                 raise UpstreamDown(f"ws-ticket answered {r.status}")
-            return (await r.json())["ticket"]
+            body = await r.json()
+            if not isinstance(body, dict) or not isinstance(body.get("ticket"), str):
+                raise UpstreamDown("ws-ticket answer has no ticket")
+            return body["ticket"]
 
     async def _connect_once(self) -> None:
         assert self._http is not None
@@ -120,6 +132,7 @@ class Upstream:
         self._ws = await self._http.ws_connect(ws_url, params={"ticket": ticket}, heartbeat=None, max_msg_size=0)
         first = await asyncio.wait_for(self._ws.receive(), READY_TIMEOUT_S)
         frame = json.loads(first.data) if first.type == aiohttp.WSMsgType.TEXT else {}
+        frame = frame if isinstance(frame, dict) else {}
         params = frame.get("params") or {}
         if frame.get("method") != "event" or params.get("type") != "gateway.ready":
             raise UpstreamDown("first frame was not gateway.ready")
@@ -134,8 +147,10 @@ class Upstream:
         while not self._stopping:
             try:
                 await self._connect_once()
-            except (OSError, aiohttp.ClientError, asyncio.TimeoutError, UpstreamDown, ValueError) as exc:
-                log.warning("upstream connect failed: %s; retry in %.1fs", exc, delay)
+            except Exception as exc:  # the loop must not die
+                log.warning("upstream connect failed: %s; retry in %.1fs", _describe(exc), delay)
+                if self._ws is not None and not self._ws.closed:
+                    await self._ws.close()
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, BACKOFF_MAX_S)
                 continue
@@ -145,14 +160,17 @@ class Upstream:
                 await self._call_raw("client.capabilities", {"server_requests": True}, timeout=10)
                 self.connected.set()
                 log.info("upstream connected")
-                await self.on_up()
+                try:
+                    await self.on_up()
+                except Exception:
+                    log.exception("on_up failed")
                 pinger = asyncio.create_task(self._ping())
                 try:
                     await reader
                 finally:
                     pinger.cancel()
-            except (UpstreamDown, HermesError, asyncio.TimeoutError) as exc:
-                log.warning("upstream handshake failed: %s", exc)
+            except Exception as exc:
+                log.warning("upstream handshake failed: %s", _describe(exc))
                 reader.cancel()
             self.connected.clear()
             self._fail_pending()
@@ -161,7 +179,10 @@ class Upstream:
             if self._stopping:
                 return
             log.warning("upstream dropped")
-            await self.on_down()
+            try:
+                await self.on_down()
+            except Exception:
+                log.exception("on_down failed")
             await asyncio.sleep(delay)
 
     async def _ping(self) -> None:
@@ -188,6 +209,8 @@ class Upstream:
             try:
                 frame = json.loads(msg.data)
             except ValueError:
+                continue
+            if not isinstance(frame, dict):
                 continue
             method = frame.get("method")
             if method == "event":

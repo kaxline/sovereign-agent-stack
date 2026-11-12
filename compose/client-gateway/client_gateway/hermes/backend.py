@@ -8,7 +8,10 @@ agents (the built-in assistant sends none, as Boundary does today).
 
 A turn is resolved by ``message.complete`` (or a bare ``error`` before the turn
 started). Hermes queues a prompt sent during a turn when it carries
-``queued: true``, so turns per session are a FIFO.
+``queued: true``, so turns per session are a FIFO. Upstream events are handled
+one at a time per session (a queue and a worker each), so the FIFO's head can't
+change under a handler. A turn whose prompt the client cancelled stays in the
+FIFO, marked abandoned, until Hermes completes it; its updates are dropped.
 """
 
 from __future__ import annotations
@@ -41,6 +44,7 @@ class Turn:
     stream: projection.TurnStream = field(default_factory=projection.TurnStream)
     started: bool = False
     queued: bool = False
+    abandoned: bool = False
 
 
 @dataclass
@@ -50,6 +54,10 @@ class HSession:
     runtime_id: str | None = None
     last_seq: int = 0
     turns: deque = field(default_factory=deque)
+    # A turn may still be running in Hermes after an upstream drop.
+    dirty: bool = False
+    events: asyncio.Queue = field(default_factory=asyncio.Queue)
+    worker: asyncio.Task | None = None
 
 
 class HermesBackend(Backend):
@@ -63,7 +71,7 @@ class HermesBackend(Backend):
             on_down=self._on_down,
             on_up=self._on_up,
         )
-        self._sessions: dict[str, HSession] = {}
+        self._sessions: dict[tuple[str, str], HSession] = {}  # (profile, stored id)
         self._by_runtime: dict[str, HSession] = {}
         self._requests: dict[str, asyncio.Task] = {}
 
@@ -72,6 +80,9 @@ class HermesBackend(Backend):
 
     async def stop(self) -> None:
         await self.upstream.stop()
+        for s in self._sessions.values():
+            if s.worker is not None:
+                s.worker.cancel()
 
     # -- upstream plumbing ---------------------------------------------------
 
@@ -90,11 +101,19 @@ class HermesBackend(Backend):
         return {} if identity.slug is None else {"profile": identity.profile}
 
     def _session(self, identity: Identity, sid: str) -> HSession:
-        s = self._sessions.get(sid)
-        if s is None or s.identity.profile != identity.profile:
+        key = (identity.profile, sid)
+        s = self._sessions.get(key)
+        if s is None:
             s = HSession(stored_id=sid, identity=identity)
-            self._sessions[sid] = s
+            s.worker = asyncio.create_task(self._event_worker(s))
+            self._sessions[key] = s
         return s
+
+    def _forget(self, s: HSession) -> None:
+        self._unbind_runtime(s)
+        self._sessions.pop((s.identity.profile, s.stored_id), None)
+        if s.worker is not None:
+            s.worker.cancel()
 
     def _bind_runtime(self, s: HSession, runtime_id: str) -> None:
         if s.runtime_id and s.runtime_id != runtime_id:
@@ -117,7 +136,45 @@ class HermesBackend(Backend):
         }
         res = await self._call("session.resume", params)
         self._bind_runtime(s, res["session_id"])
+        if s.dirty:
+            s.dirty = False
+            if res.get("running") and not s.turns:
+                # The turn that was running when the upstream dropped is still going.
+                # Its client already got runtime_restarted; stop it, and keep a
+                # placeholder at the FIFO's head for its message.complete.
+                done = asyncio.get_running_loop().create_future()
+                done.cancel()
+                s.turns.append(Turn(future=done, started=True, abandoned=True))
+                await self._quiet_interrupt(s)
         return res
+
+    async def _quiet_interrupt(self, s: HSession) -> None:
+        if s.runtime_id is None:
+            return
+        try:
+            await self.upstream.call("session.interrupt", {"session_id": s.runtime_id}, timeout=30)
+        except (UpstreamDown, HermesError, asyncio.TimeoutError) as exc:
+            log.info("session.interrupt failed: %s", type(exc).__name__)
+
+    async def _interrupt(self, s: HSession) -> None:
+        """Interrupt the running turn. Hermes drops the queued prompts, so they end
+        here (before the await, so a message.complete handled meanwhile can't move
+        one to the head); the running turn ends with its own message.complete."""
+        queued = list(s.turns)[1:]
+        for turn in queued:
+            s.turns.remove(turn)
+            if not turn.future.done():
+                turn.future.set_result(("cancelled", None))
+        await self._quiet_interrupt(s)
+
+    def _end_turns(self, s: HSession, exc: Exception | None = None) -> None:
+        while s.turns:
+            turn = s.turns.popleft()
+            if not turn.future.done():
+                if exc is None:
+                    turn.future.set_result(("cancelled", None))
+                else:
+                    turn.future.set_exception(exc)
 
     async def _live_call(self, s: HSession, method: str, params: dict) -> dict:
         """A call on the session's runtime id, resuming first when there is none or
@@ -139,12 +196,11 @@ class HermesBackend(Backend):
     async def _on_down(self) -> None:
         for s in list(self._sessions.values()):
             self._unbind_runtime(s)
-            while s.turns:
-                turn = s.turns.popleft()
-                if not turn.future.done():
-                    turn.future.set_exception(
-                        AcpError(INTERNAL_ERROR, "Hermes restarted during the turn", "runtime_restarted")
-                    )
+            if s.turns:
+                s.dirty = True
+            self._end_turns(s, AcpError(INTERNAL_ERROR, "Hermes restarted during the turn", "runtime_restarted"))
+            while not s.events.empty():
+                s.events.get_nowait()
         for task in self._requests.values():
             task.cancel()
 
@@ -266,8 +322,13 @@ class HermesBackend(Backend):
         return {"_meta": {NS: stack}} if stack else {}
 
     async def close_session(self, identity: Identity, session_id: str) -> None:
-        s = self._sessions.get(session_id)
-        if s is None or s.runtime_id is None:
+        s = self._sessions.get((identity.profile, session_id))
+        if s is None:
+            return
+        if s.turns:
+            await self._interrupt(s)
+            self._end_turns(s)
+        if s.runtime_id is None:
             return
         try:
             await self.upstream.call("session.close", {"session_id": s.runtime_id}, timeout=30)
@@ -278,7 +339,9 @@ class HermesBackend(Backend):
     async def delete_session(self, identity: Identity, session_id: str) -> None:
         await self.close_session(identity, session_id)
         await self._call("session.delete", {"session_id": session_id, **self._profile(identity)})
-        self._sessions.pop(session_id, None)
+        s = self._sessions.get((identity.profile, session_id))
+        if s is not None:
+            self._forget(s)
 
     # -- turns -----------------------------------------------------------------
 
@@ -313,21 +376,32 @@ class HermesBackend(Backend):
         if context is not None:
             submit["context"] = context
         turn = Turn(future=asyncio.get_running_loop().create_future())
+        if s.runtime_id is None:
+            # Resume first: after an upstream drop it may find a leftover turn,
+            # which makes this prompt a queued one.
+            await self._resume(s)
         if s.turns:
             submit["queued"] = True
         s.turns.append(turn)
         try:
             res = await self._live_call(s, "prompt.submit", submit)
         except BaseException:
+            # Not submitted, so Hermes has no turn for it.
             if turn in s.turns:
                 s.turns.remove(turn)
             raise
         turn.queued = res.get("status") == "queued"
         try:
-            stop, usage = await turn.future
-        finally:
-            if turn in s.turns:
-                s.turns.remove(turn)
+            stop, usage = await asyncio.shield(turn.future)
+        except asyncio.CancelledError:
+            # $/cancel_request or a closed socket: Hermes still runs the turn. Stop it
+            # if it's the running one; either way it stays in the FIFO, abandoned,
+            # until its message.complete arrives.
+            turn.abandoned = True
+            turn.future.cancel()
+            if s.turns and s.turns[0] is turn:
+                asyncio.create_task(self._interrupt(s))
+            raise
         stack: dict = {}
         if turn.queued:
             stack["queued"] = True
@@ -339,28 +413,41 @@ class HermesBackend(Backend):
         return out
 
     async def cancel(self, identity: Identity, session_id: str) -> None:
-        s = self._sessions.get(session_id)
+        s = self._sessions.get((identity.profile, session_id))
         if s is None or s.runtime_id is None or not s.turns:
             return
-        await self._call("session.interrupt", {"session_id": s.runtime_id})
-        # Hermes drops queued prompts on interrupt; only the running turn gets a
-        # message.complete, so the queued ones end here.
-        for turn in list(s.turns)[1:]:
-            if not turn.future.done():
-                turn.future.set_result(("cancelled", None))
+        await self._interrupt(s)
 
     # -- events ----------------------------------------------------------------
 
     async def _on_event(self, params: dict) -> None:
-        etype = params.get("type")
-        if etype == "request.cancel":
+        """Called once per upstream event, in arrival order. Hands the event to its
+        session's queue without awaiting, so the order holds."""
+        if params.get("type") == "request.cancel":
             task = self._requests.get(str((params.get("payload") or {}).get("id")))
             if task is not None:
                 task.cancel()
             return
         s = self._by_runtime.get(params.get("session_id") or "")
-        if s is None:
+        if s is not None:
+            s.events.put_nowait(params)
+
+    async def _event_worker(self, s: HSession) -> None:
+        while True:
+            params = await s.events.get()
+            try:
+                await self._handle_event(s, params)
+            except Exception:
+                log.exception("event %s for a session failed", params.get("type"))
+
+    async def _emit(self, s: HSession, turn: Turn | None, updates: list[dict]) -> None:
+        if turn is not None and turn.abandoned:
             return
+        for update in updates:
+            await self.sink.update(s.stored_id, update)
+
+    async def _handle_event(self, s: HSession, params: dict) -> None:
+        etype = params.get("type")
         if isinstance(params.get("seq"), int):
             s.last_seq = max(s.last_seq, params["seq"])
         payload = params.get("payload") or {}
@@ -371,10 +458,11 @@ class HermesBackend(Backend):
         if etype == "message.complete":
             if turn is None:
                 return
-            for update in turn.stream.finish(payload):
-                await self.sink.update(s.stored_id, update)
             s.turns.popleft()
+            await self._emit(s, turn, turn.stream.finish(payload))
             status = payload.get("status")
+            if turn.future.done():
+                return
             if status == "error":
                 turn.future.set_exception(
                     AcpError(
@@ -384,7 +472,7 @@ class HermesBackend(Backend):
                         failureReason=payload.get("failure_reason") or payload.get("error"),
                     )
                 )
-            elif not turn.future.done():
+            else:
                 turn.future.set_result((projection.STOP_REASONS.get(status, "end_turn"), payload.get("usage")))
             return
         if etype == "error":
@@ -394,6 +482,8 @@ class HermesBackend(Backend):
                     turn.future.set_exception(AcpError(INTERNAL_ERROR, "the turn failed", "turn_failed"))
             return
         if etype == "tool.generating":
+            if turn is not None and turn.abandoned:
+                return
             await self.sink.notify(
                 s.stored_id,
                 f"_{NS}/tool.generating",
@@ -401,8 +491,7 @@ class HermesBackend(Backend):
             )
             return
         stream = turn.stream if turn is not None else projection.TurnStream()
-        for update in stream.project(etype, payload):
-            await self.sink.update(s.stored_id, update)
+        await self._emit(s, turn, stream.project(etype, payload))
 
     async def _on_request(self, rid: str, method: str, params: dict) -> dict:
         s = self._by_runtime.get(params.get("session_id") or "")

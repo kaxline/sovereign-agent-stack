@@ -137,6 +137,13 @@ class Connection:
             return
         if "method" in frame:
             if "id" in frame:
+                if frame["id"] in self._incoming:
+                    await self._send({
+                        "jsonrpc": "2.0",
+                        "id": frame["id"],
+                        "error": error_obj(INVALID_REQUEST, "request id already in use", "duplicate_request_id"),
+                    })
+                    return
                 task = asyncio.create_task(self._serve(frame))
                 self._incoming[frame["id"]] = task
                 task.add_done_callback(lambda _t, rid=frame["id"]: self._incoming.pop(rid, None))
