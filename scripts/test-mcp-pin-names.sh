@@ -1,4 +1,5 @@
 #!/bin/sh
+# shellcheck disable=SC2015  # "A && B || fail" is the check: fail runs when either test is false
 # Pinned MCP tool names must match what Hermes registers: mcp__<server>__<tool>
 # with every character outside [A-Za-z0-9_] in the server name turned into _
 # (tools/mcp_tool_schema.py sanitize_mcp_name_component). crm-main's tools are
