@@ -12,8 +12,12 @@ containers that hold the account passwords, registered as `email` and
 `email-drafts`); both email add-ons are described in
 [docs/email.md](../docs/email.md). The AI text detector (`detector/`) is
 described in [docs/detector.md](../docs/detector.md). The SQL MCP (`sql/`)
-is described in [docs/database.md](../docs/database.md). The other optional
-services are still wired by hand.
+is described in [docs/database.md](../docs/database.md). Messages
+(`messages/`) is described in [docs/messages.md](../docs/messages.md); its
+new-message webhook route is still set by the bootstrap's
+`configure_messages_webhook`, keyed on `MESSAGES_MCP_ENABLED`, because no
+other add-on needs a webhook yet. The other optional services are still
+wired by hand.
 
 What reads a manifest:
 
@@ -153,7 +157,8 @@ except where noted:
   `platform`, `install`, `uninstall`, `grants`, `grantTarget` and `check`.
   `addon.sh list --json` reports `platform` (`any` when there is no `host`);
   nothing installs the host part.
-  `email-local` uses it for the Mail.app helper apps.
+  `email-local` uses it for the Mail.app helper apps and `messages` for the
+  Messages reader app.
 
 `scripts/addon.sh` reads these; see [docs/extending.md](../docs/extending.md#add-ons-scriptsaddonsh).
 

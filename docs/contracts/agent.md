@@ -156,7 +156,7 @@ above.
   pinned Hermes tag (`v0.23.1`). `make hermes-image-test` runs their tests
   against a new image.
 - **The adapter's own reach.** Core MCP servers (`searxng`, `caldav-<slug>`,
-  `sql`, `opencode`, `todos`, `messages`) are registered by the bootstrap
+  `sql`, `opencode`, `todos`) are registered by the bootstrap
   directly, not from manifests. The add-on store mounts for the
   bootstraps are written per add-on in `docker-compose.yml`. Manifests name
   identities by Hermes profile name.
