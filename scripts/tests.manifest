@@ -104,6 +104,7 @@ scripts/test-testkit.sh                         ci
 scripts/test-tool-eval-trace.py                 ci
 scripts/test-tool-loop-notes.py                 image
 scripts/test-tool-loop-replay.py                ci image
+scripts/test-guardrail-halt-stream.py           ci image
 scripts/test-turn-speaker.py                    ci image
 scripts/test-twenty-addon-cli.sh                ci
 scripts/test-twenty-compose-config.py           ci docker
