@@ -160,6 +160,10 @@ with tempfile.TemporaryDirectory() as tmp:
     check("listing header", lst["id"] == MANIFEST["id"] and lst["shortId"] == "mailer"
           and lst["title"] == MANIFEST["title"] and lst["platform"] == "any" and lst["enabled"] is True
           and lst["permissions"] == MANIFEST["permissions"] and lst["tagline"] == MANIFEST["tagline"])
+    check("listing carries description and store",
+          lst["description"] == MANIFEST["description"] and lst["store"] == MANIFEST["store"])
+    no_store = {k: v for k, v in MANIFEST.items() if k != "store"}
+    check("listing store is {} without a store block", st.listing(no_store, root, {})["store"] == {})
     check("listing enabled false when flag unset", st.listing(MANIFEST, root, {})["enabled"] is False)
     check("listing value and default", lst["settings"]["interval"] == 600 and lst["settings"]["tags"] == ["a b", "c"])
     check("listing bool is bool", lst["settings"]["drafts"] is False)

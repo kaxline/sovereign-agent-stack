@@ -66,5 +66,8 @@
     ],
     "exposesToAgent": false,
     "cron": true
+  },
+  "store": {
+    "dataLeaves": "Research queries go to outside search engines through the stack's search, and the pages they find are fetched from the web."
   }
 }

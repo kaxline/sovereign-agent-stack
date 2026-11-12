@@ -17,7 +17,7 @@ from testkit import Checks  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 
 # Every profile that publishes a service we want to see in one config.
-PROFILES = "core,rag,neo4j,calendar,automation,research,coding,ollama,searxng-prod,search-gate,db,todo,crm,mail,mail-drafts,email,email-drafts,messages,bitwarden,bitwarden-tools,budget,budget-local"
+PROFILES = "core,rag,neo4j,calendar,automation,research,coding,ollama,searxng-prod,search-gate,db,todo,crm,mail,mail-drafts,email,email-drafts,messages,bitwarden,bitwarden-tools,budget,budget-local,detector,detector-agent"
 
 # Secret-bearing environment keys, and the services allowed to carry them.
 # An empty set means the key must not appear on any service.
@@ -295,6 +295,78 @@ def check_email(services: dict, networks: dict) -> list[str]:
     return errors
 
 
+# The detector add-on. detector holds the provider keys (files under
+# /run/addon/secrets) and the bearer token; :8000 takes requests without a
+# token, so only detector-mcp shares its network. hermes reaches detector-mcp
+# on detector-agent and never joins detector. The host port is 127.0.0.1 only.
+DETECTOR_ENV = {
+    "detector": set(),
+    "detector-mcp": {"DETECTOR_BACKEND_URL", "MCP_HOST", "MCP_PORT"},
+}
+DETECTOR_NETS = {
+    "detector": {"detector", "detector-egress"},
+    "detector-mcp": {"detector", "detector-agent"},
+}
+DETECTOR_BOOTSTRAP_KEYS = {"DETECTOR_ENABLED", "DETECTOR_AGENT_ENABLED"}
+
+
+def check_detector(services: dict, networks: dict) -> list[str]:
+    errors = []
+    for net in ("detector", "detector-agent"):
+        if not networks.get(net):
+            errors.append(f"network {net} missing from compose config")
+        elif not networks[net].get("internal"):
+            errors.append(f"network {net} must be internal")
+    if "detector-egress" not in networks:
+        errors.append("network detector-egress missing from compose config")
+    for name, allowed in DETECTOR_ENV.items():
+        service = services.get(name)
+        if not service:
+            errors.append(f"service {name} missing from compose config")
+            continue
+        env = set(env_map(service))
+        for key in sorted(env - allowed):
+            errors.append(f"{name} environment includes {key}")
+        for key in sorted(allowed - env):
+            errors.append(f"{name} environment is missing {key}")
+        if service.get("env_file"):
+            errors.append(f"{name} has an env_file")
+        nets = set(service.get("networks") or {})
+        if nets != DETECTOR_NETS[name]:
+            errors.append(f"{name} networks are {sorted(nets)}, want {sorted(DETECTOR_NETS[name])}")
+    if services.get("detector-mcp", {}).get("ports"):
+        errors.append("detector-mcp publishes a host port")
+    ports = services.get("detector", {}).get("ports") or []
+    if len(ports) != 1:
+        errors.append(f"detector publishes {len(ports)} ports, want 1")
+    for port in ports:
+        if not isinstance(port, dict) or port.get("host_ip") != "127.0.0.1" or str(port.get("target")) != "8001":
+            errors.append(f"detector must publish only 127.0.0.1:<port>:8001, got {port}")
+    for name, service in services.items():
+        nets = set(service.get("networks") or {})
+        if name not in DETECTOR_ENV and nets & {"detector", "detector-egress"}:
+            errors.append(f"{name} joins {sorted(nets & {'detector', 'detector-egress'})}")
+        if name not in DETECTOR_ENV and name != "hermes" and "detector-agent" in nets:
+            errors.append(f"{name} joins the detector-agent network")
+        if name != "detector":
+            for vol in service.get("volumes") or []:
+                source = vol.get("source", "") if isinstance(vol, dict) else str(vol).split(":", 1)[0]
+                if "addons/detector/secrets" in source:
+                    errors.append(f"{name} mounts {source}; only detector may")
+        if name in DETECTOR_ENV:
+            continue
+        keys = {k for k in env_map(service) if k.startswith("DETECTOR_")}
+        allowed = DETECTOR_BOOTSTRAP_KEYS if name in EMAIL_BOOTSTRAPS else set()
+        for key in sorted(keys - allowed):
+            errors.append(f"{name} environment includes {key}")
+        if name in EMAIL_BOOTSTRAPS:
+            for key in sorted(DETECTOR_BOOTSTRAP_KEYS - keys):
+                errors.append(f"{name} environment is missing {key}")
+    if "detector-agent" not in set(services.get("hermes", {}).get("networks") or {}):
+        errors.append("hermes is not on detector-agent")
+    return errors
+
+
 def check_proxy(services: dict) -> list[str]:
     errors = []
     service = services.get("llm-proxy")
@@ -380,7 +452,7 @@ DB_BRIDGES = {"hermes", "vikunja"}
 # vault, the internal network the Bitwarden broker reaches the local Vaultwarden
 # through, on budget for the Actual Budget MCPs, and on email for email-mcp and
 # email-drafts-mcp.
-BRIDGE_EXTRA_NETS = {"hermes": {"budget", "email", "vault"}}
+BRIDGE_EXTRA_NETS = {"hermes": {"budget", "email", "vault", "detector-agent"}}
 
 
 def check_db_network(services: dict, networks: dict) -> list[str]:
@@ -471,6 +543,7 @@ def main() -> None:
     errors += check_n8n_store(services)
     errors += check_actual(services)
     errors += check_email(services, config.get("networks") or {})
+    errors += check_detector(services, config.get("networks") or {})
     checks = Checks()
     for err in errors:
         checks.fail(err)

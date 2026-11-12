@@ -1,0 +1,113 @@
+{
+  "manifestVersion": 1,
+  "id": "io.github.kaxline.stack.detector",
+  "version": "1.0.0",
+  "title": "AI Text Detector",
+  "tagline": "Score how likely a passage is to be AI-written, with Pangram or GPTZero",
+  "description": "Runs detector, which holds the Pangram or GPTZero API key and sends text to that provider for an AI-writing score. Boundary calls it on 127.0.0.1 with a per-install token (data/addons/detector/secrets/http_token), without a chat turn. The agent setting (DETECTOR_AGENT_ENABLED, off by default) adds detector-mcp, which offers check_text on the default and browser profiles and holds no key; it is never offered to api-server or cron. Each check costs money on the provider account. See docs/detector.md.",
+  "publisher": {
+    "name": "sovereign-agent-stack",
+    "url": "https://github.com/kaxline/sovereign-agent-stack"
+  },
+  "minStackVersion": "0.3.14",
+  "builtin": {
+    "flag": "DETECTOR_ENABLED",
+    "profile": "detector",
+    "seed": false
+  },
+  "gates": [
+    {
+      "flag": "DETECTOR_AGENT_ENABLED",
+      "profile": "detector-agent",
+      "seed": false
+    }
+  ],
+  "services": {
+    "server": {
+      "compose": "detector",
+      "port": 8000,
+      "mounts": {
+        "secrets": "ro",
+        "config": "ro"
+      }
+    },
+    "mcp": {
+      "compose": "detector-mcp",
+      "port": 8000,
+      "when": {
+        "gate": "DETECTOR_AGENT_ENABLED"
+      }
+    }
+  },
+  "mcp": {
+    "name": "detector",
+    "title": "AI text detector",
+    "service": "mcp",
+    "when": {
+      "gate": "DETECTOR_AGENT_ENABLED"
+    },
+    "transport": "http",
+    "path": "/mcp",
+    "timeout": 90,
+    "connectTimeout": 30,
+    "tools": [
+      "check_text"
+    ],
+    "pin": [
+      "check_text"
+    ],
+    "writeTools": [],
+    "profiles": {
+      "default": "rw",
+      "browser": "rw"
+    }
+  },
+  "permissions": {
+    "reads": [],
+    "writes": [],
+    "sends": false,
+    "egress": [
+      "internet"
+    ],
+    "exposesToAgent": false,
+    "cron": false
+  },
+  "settings": {
+    "provider": {
+      "type": "choice",
+      "options": [
+        "pangram",
+        "gptzero"
+      ],
+      "default": "pangram",
+      "label": "Detector service"
+    },
+    "pangram_key": {
+      "type": "secret",
+      "optional": true,
+      "label": "Pangram API key"
+    },
+    "gptzero_key": {
+      "type": "secret",
+      "optional": true,
+      "label": "GPTZero API key"
+    },
+    "agent": {
+      "type": "bool",
+      "default": false,
+      "flag": "DETECTOR_AGENT_ENABLED",
+      "label": "Let the agent use check_text (each call costs money)"
+    }
+  },
+  "hooks": {
+    "init": {
+      "script": [
+        "scripts/detector.sh",
+        "init"
+      ]
+    }
+  },
+  "store": {
+    "dataLeaves": "The text you check is sent to the detector you chose, Pangram or GPTZero, under your account with them."
+  }
+}

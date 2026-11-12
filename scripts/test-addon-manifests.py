@@ -83,6 +83,13 @@ refused("services.<k>.volumes is refused", variant(services__server__volumes=["a
         "services.<name>.volumes was removed")
 refused("hooks.upgrade is refused", variant(hooks={"upgrade": {"script": ["scripts/crm.sh"]}}),
         "hooks has unknown fields: upgrade")
+refused("internet egress needs store.dataLeaves", variant(store=None), "store.dataLeaves")
+refused("internet egress needs dataLeaves inside store", variant(store={}), "store.dataLeaves")
+refused("store.dataLeaves may not be blank", variant(store={"dataLeaves": " "}), "store.dataLeaves")
+refused("store must be an object", variant(store="x"), "store must be an object")
+refused("store refuses unknown fields", variant(store={"dataLeaves": "x", "colour": "red"}), "unknown fields")
+check("no internet egress needs no store",
+      am.validate(variant(store=None, permissions__egress=["llm-proxy"])) == [])
 check("postInstallMessage as a string is valid", am.validate(variant(postInstallMessage="Open it.")) == [])
 refused("postInstallMessage must be a string", variant(postInstallMessage=5), "postInstallMessage")
 refused("postInstallMessage may not be blank", variant(postInstallMessage=" "), "postInstallMessage")

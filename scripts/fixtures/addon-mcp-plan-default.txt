@@ -1,3 +1,4 @@
+detector|AI text detector|0|rw|http://detector-mcp:8000/mcp|90|30|http|check_text|check_text|http://detector-mcp:8000/mcp
 email|Email (read-only)|0|rw|http://email-mcp:8000/mcp|60|30|http|mail_status mail_search mail_get mail_thread|mail_status mail_search mail_get mail_thread|http://email-mcp:8000/mcp
 email-drafts|Email drafts (no sending)|0|rw|http://email-drafts-mcp:8000/mcp|60|30|http|mail_draft_create mail_draft_status|mail_draft_create mail_draft_status|http://email-drafts-mcp:8000/mcp
 mail|Mail (read-only)|0|rw|http://mail-mcp:8000/mcp|60|30|http|mail_status mail_search mail_get mail_thread|mail_status mail_search mail_get mail_thread|http://mail-mcp:8000/mcp

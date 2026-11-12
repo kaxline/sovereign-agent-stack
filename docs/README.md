@@ -14,6 +14,7 @@ Per-service setup, usage, and verification guides. See the [project README](../R
 | [Calendar](calendar.md) | `calendar` — `caldav-mcp` | CalDAV calendars (iCloud, Nextcloud, …), multi-account |
 | [Shared database](database.md) | `db` — `postgres-db`, `sql-mcp-ro`, `sql-mcp-rw` | Schema per integration, agent roles, SQL MCP, backups |
 | [Email](email.md) | `email` — `email-mcp` (+ `email-indexer`); `email-drafts` — `email-drafts-mcp` (+ `email-outbox`); `mail` — `mail-mcp` (+ host indexer); `mail-drafts` — `mail-drafts-mcp` (+ host helper) | Read-only search over IMAP accounts in containers, or over Apple Mail indexed on the host, and drafts saved for you to send; design and synthetic tests |
+| [AI text detector](detector.md) | `detector` — `detector`; `detector-agent` — `detector-mcp` | Pangram or GPTZero scores for a passage, from Boundary over a 127.0.0.1 port with a token, or as an agent tool when turned on |
 | [Messages from iMessage](messages.md) | `messages` — `messages-mcp` (+ host app) | iMessage/SMS history indexed on the host, read-only tools, alerts that fire a triage job; design and synthetic tests |
 | [Todo lists](todo.md) | `todo` — `vikunja` (+ shared Postgres) | Vikunja web app + MCP, read-only token for unattended sessions |
 | [CRM](crm.md) | `crm` — `twenty-server`, `twenty-worker`, `twenty-db`, `twenty-redis`; or a remote Twenty | Twenty web app + MCP per workspace, single or multi-workspace, read-only key for unattended sessions |

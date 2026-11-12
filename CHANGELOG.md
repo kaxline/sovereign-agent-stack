@@ -67,8 +67,35 @@ the stack under another app.
    `budget-<slug>-ro` and `budget-<slug>`, and a row's write access is read
    from `bind`.
 
+### New services
+
+- `detector` and `detector-mcp`, the AI text detector add-on (Boundary CR
+  0030 R1–R2, [docs/detector.md](docs/detector.md)). Off by default; turn it
+  on with `./scripts/addon.sh enable detector`. `detector` sends checked text
+  to Pangram or GPTZero under the user's key and publishes
+  `127.0.0.1:${DETECTOR_PORT:-8790}` for `POST /check`, which needs the bearer
+  token in `data/addons/detector/secrets/http_token` (written by
+  `enable`). The token is not in `.env`, so Hermes profiles never see it.
+  `detector-mcp` starts only with the add-on's agent setting
+  (`DETECTOR_AGENT_ENABLED`) and offers `check_text` on the default and
+  browser profiles, never on `api-server` or in cron. `hermes` joins the new
+  internal `detector-agent` network. Neither provider adapter has run against
+  the real API; GPTZero's field names come from third-party descriptions.
+
+### New optional `.env` keys
+
+- `DETECTOR_ENABLED`, `DETECTOR_AGENT_ENABLED` (set by `addon.sh`) and
+  `DETECTOR_PORT` (default 8790).
+
 ### Changes
 
+- Manifests take an optional `store` block (Boundary CR 0027 R4). Its one
+  field, `store.dataLeaves`, says what leaves this Mac and where it goes, and
+  `validate` requires it when `permissions.egress` includes `internet`. Every
+  built-in add-on with `internet` has one. `addon.sh list --json` now returns
+  `description` and `store` on each entry (R5), `store` as `{}` when a
+  manifest has none. R1–R3 (category, keywords, example questions) are not
+  done.
 - The `email` add-on has now had its first run on a real IMAP account
   (INBOX, a ten-day `since` window): `run email mailboxes` listed the
   mailboxes and the first pass indexed every message in scope with none
