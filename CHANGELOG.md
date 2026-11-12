@@ -15,6 +15,10 @@ the stack under another app.
   `browser_cdp`, `browser_dialog` and `browser_vault` after the bootstraps
   run. Give such a job its own `enabled_toolsets` that includes `browser`,
   plus the other toolsets and MCP servers it needs.
+- Cron jobs on agent profiles (`make agent-create`) are now fenced too. A job
+  there with no `enabled_toolsets` of its own that reads mail or messages, or
+  uses the browser or a fenced add-on, loses those tools after
+  hermes-api-bootstrap runs. Give it its own `enabled_toolsets`.
 
 ### Changes
 
@@ -27,6 +31,12 @@ the stack under another app.
   `browser`, and a `hermes-cron` or `hermes-cli` in it is replaced by its
   toolsets without `browser`. Cron runs unattended, and the browser can drive
   signed-in sessions.
+- The cron fence now runs on every profile under `data/hermes/profiles/`, not
+  only the default profile, `api-server` and `browser`. Agents made with
+  `make agent-create` were never fenced, so their cron jobs could reach mail,
+  messages, fenced add-ons and the browser. hermes-api-bootstrap fences them
+  on its next run; each profile adds about 1.6 seconds to a run that isn't
+  skipped.
 
 - The SQL MCP is a built-in add-on (`addons/sql/addon.json`), so
   `addon.sh list`, `enable sql` and `disable sql` work on it. The flag

@@ -1020,8 +1020,9 @@ new watermark before the run.
 
 **Other cron jobs don't get mail.** A Hermes cron job with no tool list of
 its own gets every MCP server on its profile, and a list that names no MCP
-server gets them all too. So while mail or drafts is registered on a
-profile, the bootstraps set `platform_toolsets.cron` to Hermes's default cron
+server gets them all too. So on every profile, the default and each
+one under `data/hermes/profiles/` (agents from `make agent-create` included),
+the bootstraps set `platform_toolsets.cron` to Hermes's default cron
 toolsets (without `browser`) plus every other MCP server, leaving out `mail`
 and `drafts`. That list is recorded in `.mail-cron-toolsets.json` beside the
 profile's `config.yaml`, and refreshed on later runs. If you wrote your own

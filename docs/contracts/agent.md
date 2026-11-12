@@ -85,7 +85,8 @@ Independent agents created with `make agent-create` are further profiles
 
 Hermes cron jobs run on a profile. A job with its own `enabled_toolsets` gets
 those; one without gets `platform_toolsets.cron`. `fence_mail_from_cron`
-pins `platform_toolsets.cron` on every profile it runs on to the toolsets
+pins `platform_toolsets.cron` on every profile, the default and each one
+under `profiles/` (agents from `make agent-create` included), to the toolsets
 Hermes' `hermes-cron` bundle turns on, without `browser`, plus every MCP
 server not fenced. It names the toolsets one by one because the bundle
 includes the browser, and reads them from Hermes at each run. The fence
