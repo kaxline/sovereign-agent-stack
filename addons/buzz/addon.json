@@ -1,0 +1,36 @@
+{
+  "manifestVersion": 1,
+  "id": "io.github.kaxline.stack.buzz",
+  "version": "1.0.0",
+  "title": "Buzz",
+  "tagline": "Put independent Hermes agents in a Buzz community",
+  "description": "Turns on the Hermes Buzz adapter for each agent profile listed in HERMES_BUZZ_PROFILES, so those agents join the community at BUZZ_RELAY_URL with their own Nostr keys and answer @mentions. The default, browser and api-server profiles never run Buzz. There is no container: the adapter runs in hermes, and a loopback relay URL is proxied to the host. Profiles, keys and the buzz CLI come from make agent-create WITH=buzz and make buzz-cli-install; make bootstrap-buzz sets up a local relay. Disabling turns the adapters off and keeps the profiles and keys. See docs/buzz.md.",
+  "publisher": {
+    "name": "sovereign-agent-stack",
+    "url": "https://github.com/kaxline/sovereign-agent-stack"
+  },
+  "minStackVersion": "0.3.15",
+  "builtin": {
+    "flag": "HERMES_BUZZ_ENABLED",
+    "profile": "buzz",
+    "seed": false
+  },
+  "gateway": {
+    "platform": "buzz",
+    "sync": "scripts/sync-buzz-profile.sh"
+  },
+  "permissions": {
+    "reads": [],
+    "writes": [],
+    "sends": true,
+    "egress": [
+      "internet"
+    ],
+    "exposesToAgent": false,
+    "cron": false
+  },
+  "store": {
+    "dataLeaves": "Agents post to the Buzz relay at BUZZ_RELAY_URL, and everything they write there is readable by the community's members and its operator."
+  },
+  "postInstallMessage": "Run `make hermes-recreate` so each agent profile's gateway starts its Buzz adapter."
+}

@@ -4,6 +4,8 @@
 
 Hermes joins a [Buzz](https://buzz.xyz) community as a normal member (Nostr keypair) via the **native gateway platform** (Hermes docs path ③). There is no compose sidecar — unlike [Signal](signal.md), Buzz talks to your community relay over HTTPS/WSS from inside the `hermes` container.
 
+Buzz is a built-in add-on (`addons/buzz/addon.json`) with no container and no MCP server: `scripts/addon.sh enable buzz` and `disable buzz` set `HERMES_BUZZ_ENABLED`, run `scripts/sync-buzz-profile.sh` and reload Hermes, and `make hermes-recreate` then starts or stops the adapters.
+
 Buzz is an optional **messaging transport** for [independent agents](agents.md). Agents are operator-local Hermes profiles under `data/hermes/profiles/<name>/` (gitignored). Create them with `make agent-create`; attach Buzz with `WITH=buzz` or `./scripts/agent-attach-buzz.sh`.
 
 ## Architecture

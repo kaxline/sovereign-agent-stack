@@ -24,6 +24,7 @@ scripts/test-actual-instances.sh                ci
 scripts/test-addon-cli.sh                       ci
 scripts/test-addon-cron-fence.sh                ci image
 scripts/test-addon-dirs.sh                      ci
+scripts/test-addon-gateway.sh                   ci
 scripts/test-addon-manifests.py                 ci
 scripts/test-addon-store.py                     ci
 scripts/test-bash32.sh

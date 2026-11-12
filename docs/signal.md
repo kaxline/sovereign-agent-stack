@@ -4,7 +4,7 @@
 
 Hermes can receive Signal messages, reply in chat, deliver cron output, and send from WebUI via a compose-managed [`signal-cli`](https://github.com/AsamK/signal-cli) HTTP daemon (native `daemon --http`, **not** [`signal-cli-rest-api`](https://github.com/bbernhard/signal-cli-rest-api)).
 
-Enable with the **`signal`** profile (paired with **`core`**). The toggle is `HERMES_SIGNAL_ENABLED` in root `.env`; `make ensure-local` syncs `COMPOSE_PROFILES` and seeds Hermes env files.
+Enable with the **`signal`** profile (paired with **`core`**). The toggle is `HERMES_SIGNAL_ENABLED` in root `.env`; `make ensure-local` syncs `COMPOSE_PROFILES` and seeds Hermes env files. Signal is also a built-in add-on (`addons/signal/addon.json`), so `scripts/addon.sh enable signal` and `disable signal` set the flag, run `scripts/sync-signal-profile.sh`, start or stop `signal-cli` and reload Hermes; run `make hermes-recreate` afterwards so the gateways load the change. The manifest declares that it reads messages and contacts and sends, and has no MCP server.
 
 ```bash
 HERMES_SIGNAL_ENABLED=1
@@ -105,7 +105,7 @@ make ensure-local
 docker compose up -d   # or: docker compose stop signal-cli
 ```
 
-Sync removes `signal` from `COMPOSE_PROFILES` and clears seeded `SIGNAL_*` keys from `data/hermes/.env` and `data/hermes/profiles/browser/.env`.
+`sync-profiles.sh` removes `signal` from `COMPOSE_PROFILES`, and `sync-signal-profile.sh` clears seeded `SIGNAL_*` keys from `data/hermes/.env` and `data/hermes/profiles/browser/.env`.
 
 ## Verify
 

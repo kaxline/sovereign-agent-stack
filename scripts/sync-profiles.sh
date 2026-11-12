@@ -12,7 +12,7 @@
 # A profile written into COMPOSE_PROFILES by hand while its flag is 0 keeps
 # running, with a warning, as it did before this script existed. Profiles with
 # no flag (core, n8n-postgres-legacy, anything from an override file) are never
-# touched. The signal profile is synced by sync-signal-profile.sh.
+# touched.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -188,8 +188,6 @@ if [[ "${1:-}" == "--list" ]]; then
     fi
     printf '%-22s %-14s %s\n' "$flag" "$profile" "$state"
   done <<< "$SERVICES"
-  if csv_has "$profiles" signal; then state=on; else state=off; fi
-  printf '%-22s %-14s %s\n' HERMES_SIGNAL_ENABLED signal "$state"
   echo
   echo "COMPOSE_PROFILES=${profiles}"
   exit 0

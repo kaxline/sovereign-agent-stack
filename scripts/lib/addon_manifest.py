@@ -88,6 +88,8 @@ scripts/test-addon-manifests.py checks they exist in docker-compose.yml.
 svc_<schema> roles (needs uses postgres; no two add-ons may share one).
 `web` ({service, path}) is the page a person opens: addon.sh list resolves
 it to a URL on the port compose publishes for that service's `port`.
+`gateway` ({platform, sync}) marks a Hermes chat platform; addon.sh runs
+its sync script when the flags change (_validate_gateway()).
 
 Policy follows docs/private/addon-manifest-spec.md (draft). Only built-in
 add-ons (manifests in addons/) are accepted; packaged add-ons and feeds are
@@ -216,7 +218,8 @@ def validate(manifest, repo=_AUTO) -> list[str]:
     err = errors.append
 
     for key in REQUIRED:
-        if key not in manifest:
+        # A gateway add-on (a Hermes chat platform) may run no container of its own.
+        if key not in manifest and not (key == "services" and "gateway" in manifest):
             err(f"missing required field {key!r}")
     if manifest.get("manifestVersion", MANIFEST_VERSION) != MANIFEST_VERSION:
         err(f"manifestVersion must be {MANIFEST_VERSION}")
@@ -344,9 +347,15 @@ def validate(manifest, repo=_AUTO) -> list[str]:
     errors.extend(_validate_store(manifest.get("store"),
                                   internet=_is_str_list(egress) and "internet" in egress))
 
+    gateway = manifest.get("gateway")
+    if gateway is not None:
+        errors.extend(_validate_gateway(gateway, repo))
     if reads:
-        if sends:
-            err("an add-on that reads personal data may not send; ship the send path as its own add-on")
+        # A chat platform's job is to receive and send; with no mcp entry the
+        # agent gets no tool over the store it reads.
+        if sends and not (gateway is not None and manifest.get("mcp") is None):
+            err("an add-on that reads personal data may not send; ship the send path as its own add-on "
+                "(a gateway add-on with no mcp entry may)")
         if cron:
             err("an add-on that reads personal data needs permissions.cron false")
     if {"postgres", "neo4j"} & set(uses) and perms.get("exposesToAgent") is not True:
@@ -543,6 +552,27 @@ def _validate_script(argv, where: str, repo) -> list[str]:
         errors.append(f"{where}[0]: {argv[0]} does not exist in the repo")
     if not all(a and "\n" not in a and "\r" not in a for a in argv):
         errors.append(f"{where} items must be non-empty strings without line breaks")
+    return errors
+
+
+def _validate_gateway(gateway, repo) -> list[str]:
+    """`gateway`: {platform, sync}. platform is the Hermes gateway platform the
+    add-on switches (platforms.<platform> in a profile's config.yaml); sync is
+    the host script (no arguments) that seeds or clears it from the flags in
+    .env."""
+    if not isinstance(gateway, dict):
+        return ["gateway must be an object {platform, sync}"]
+    errors: list[str] = []
+    extra = set(gateway) - {"platform", "sync"}
+    if extra:
+        errors.append(f"gateway has unknown fields: {', '.join(sorted(extra))}")
+    if not (isinstance(gateway.get("platform"), str) and NAME_RE.match(gateway["platform"])):
+        errors.append("gateway.platform must be a Hermes platform name: lowercase letters, digits and -")
+    sync = gateway.get("sync")
+    if not (isinstance(sync, str) and HOOK_SCRIPT_RE.match(sync)):
+        errors.append("gateway.sync must be scripts/<name>.sh with lowercase letters, digits and -")
+    elif repo is not None and not (Path(repo) / sync).is_file():
+        errors.append(f"gateway.sync: {sync} does not exist in the repo")
     return errors
 
 

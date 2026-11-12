@@ -21,10 +21,11 @@
 # .env while the add-on is enabled. enable checks every required setting, runs
 # the manifest's prepare hook (every time, as step prepare, before anything
 # changes), sets builtin.flag=1 (and each
-# gate flag a stored setting owns), syncs COMPOSE_PROFILES, builds and starts the
+# gate flag a stored setting owns), runs gateway.sync when the manifest has a
+# gateway, syncs COMPOSE_PROFILES, builds and starts the
 # services whose gate is on, runs the manifest's init hook once (--reinit runs
 # it again; data/addons/<short-id>/state.json records it) and reloads Hermes. disable sets the flag and every
-# gate flag to 0, syncs, stops the services and reloads; --purge then runs
+# gate flag to 0, runs gateway.sync, syncs, stops the services and reloads; --purge then runs
 # remove --delete-data's work in the same lock, and prints one done line.
 #
 # remove --delete-data refuses (bad_input) while the add-on is enabled. It
@@ -360,9 +361,19 @@ on_exit() {
   fi
 }
 
-# apply_flags PLAN: writes the plan's flags to .env and syncs COMPOSE_PROFILES.
+# plan_sync PLAN: the plan's gateway.sync script, or nothing.
+plan_sync() {
+  printf '%s' "$1" | sed -n 's/.*"sync":"\(scripts\/[a-z0-9-]*\.sh\)".*/\1/p'
+}
+
+# apply_flags PLAN: writes the plan's flags to .env, runs a gateway add-on's
+# sync script (which reads them from .env) and syncs COMPOSE_PROFILES.
 apply_flags() {
+  local sync
   write_flags "$1"
+  sync="$(plan_sync "$1")"
+  # Explicit returns: run_step calls this from an || list, where set -e is off.
+  [[ -z "$sync" ]] || "${ROOT}/${sync}" || return 1
   "${ROOT}/scripts/sync-profiles.sh"
 }
 
@@ -372,6 +383,7 @@ apply_flags() {
 ROLLBACK_FLAGS=""
 ROLLBACK_STOP=0
 ROLLBACK_SERVICES=""
+ROLLBACK_SYNC=""
 rollback_record() {
   local plan="$1" flag value line builtin
   ROLLBACK_FLAGS=""
@@ -389,6 +401,7 @@ EOF_FLAGS
   ROLLBACK_STOP=0
   truthy "$(env_get "$builtin")" || ROLLBACK_STOP=1
   ROLLBACK_SERVICES="$(json_list services "$plan" | sed 's/@.*//')"$'\n'"$(json_list oneshots "$plan" | sed 's/@.*//')"
+  ROLLBACK_SYNC="$(plan_sync "$plan")"
   EV_ON_FAIL=rollback
 }
 
@@ -415,6 +428,7 @@ rollback_apply() {
 $ROLLBACK_FLAGS
 EOF_FLAGS
   EV_ROLLED_BACK=1
+  [[ -z "$ROLLBACK_SYNC" ]] || "${ROOT}/${ROLLBACK_SYNC}" || true
   "${ROOT}/scripts/sync-profiles.sh" || true
   if [[ "$ROLLBACK_STOP" == 1 ]]; then
     while IFS= read -r flag; do
