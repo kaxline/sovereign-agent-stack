@@ -23,6 +23,17 @@ the stack under another app.
   `mcp.profiles` have no profile in common. Before, names had to be unique
   within an add-on. `sql` is no longer on the validator's list of names core
   registers; the directory check keeps other add-ons off it instead.
+- A tool-loop guardrail stop now reaches dashboard gateway clients as
+  `message.delta` (Boundary CR 0029 R3). Upstream Hermes streams the stop
+  note only to the CLI's display callback; the gateway's `message.delta`
+  sender is a different callback, so the note arrived only as
+  `message.complete.text`, and a client that builds the reply from deltas
+  showed an empty turn. The new overlay `patch-guardrail-halt-stream.py`
+  sends it to both, except while a `hold_stream` plugin holds the turn.
+  Clients should still show `message.complete.text` when no delta arrived
+  ([docs/hermes.md](docs/hermes.md#the-reply-a-client-shows)). That section
+  as of v0.3.14 said a guardrail stop already streamed on this stack; it
+  didn't, and the section is corrected.
 
 ## v0.3.14 — 2026-11-11
 

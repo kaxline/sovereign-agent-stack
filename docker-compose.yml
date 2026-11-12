@@ -1990,6 +1990,7 @@ services:
       - ./compose/hermes/vault_capture_secret.py:/bootstrap/vault_capture_secret.py:ro
       - ./compose/hermes/patch-tool-loop-notes.py:/bootstrap/patch-tool-loop-notes.py:ro
       - ./compose/hermes/patch-tool-loop-replay.py:/bootstrap/patch-tool-loop-replay.py:ro
+      - ./compose/hermes/patch-guardrail-halt-stream.py:/bootstrap/patch-guardrail-halt-stream.py:ro
       - ./compose/hermes/patch-searxng-pause-browser.py:/bootstrap/patch-searxng-pause-browser.py:ro
       - ./compose/hermes/blocked_fetch_hint.py:/bootstrap/blocked_fetch_hint.py:ro
       - ./compose/hermes/patch-blocked-fetch-hint.py:/bootstrap/patch-blocked-fetch-hint.py:ro

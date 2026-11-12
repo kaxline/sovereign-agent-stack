@@ -33,6 +33,9 @@ run_patch /bootstrap/patch-tool-loop-notes.py
 # Halt a turn that keeps re-running calls whose results it has already seen,
 # whatever the cycle length (upstream catches cycles of at most 4 calls).
 run_patch /bootstrap/patch-tool-loop-replay.py
+# Stream the guardrail stop note to gateway clients as message.delta, not
+# only in message.complete (upstream streams it to stream_delta_callback only).
+run_patch /bootstrap/patch-guardrail-halt-stream.py
 # While the searxng MCP server is paused (circuit breaker), say how to search
 # with browser_exec instead.
 run_patch /bootstrap/patch-searxng-pause-browser.py
