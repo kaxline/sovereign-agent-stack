@@ -11,8 +11,8 @@ image's python3, mounted at /bootstrap/addon_manifest.py.
         Print every MCP URL of every valid built-in add-on, one per line,
         whatever the flag or `profiles` say (mcp.env.url applies).
         For tuning entries that already exist; registers nothing. An
-        mcp.instances entry has no fixed URL and is left out; instances-plan
-        gives each instance's.
+        mcp.instances entry is listed only when its url has no placeholder
+        (CalDAV); instances-plan gives each instance's.
     addon_manifest.py mcp-plan <addons-dir> <profile>
         For each entry of each add-on's `mcp` block (one object, or a list of
         objects), print one line, in list order, that the bootstrap's
@@ -67,8 +67,11 @@ ADDON_<SHORT>_<NAME> key (differing only by case, - or _) are refused. Two
 {setting:<url or string setting>}, {access} (ro or rw, the level the profile
 gets) and {slug}, access?: "{setting:<choice setting offering only read and
 write>}" that caps the level, auth?: {header, scheme, secret: {ro, rw}} naming
-secret instance settings, gate?: {setting: a bool instance setting, flag:
-builtin.flag or a gate}}. Without auth the entry takes no key. An instance file
+secret instance settings, headers?: {<header>: a template with
+{setting:<url or string setting>} and at most one {secret:<secret setting>}
+across all headers}, in place of auth, gate?: {setting: a bool instance
+setting, flag: builtin.flag or a gate}}. Without auth or a secret header the
+entry takes no key. With headers the url may be the same for every instance. An instance file
 may hold `bind`, the stack's per-instance binding: a map from profile to ro or
 rw that replaces mcp.profiles for that instance (bind_problem() has the
 rules). The name's prefix may not
@@ -102,7 +105,7 @@ MANIFEST_VERSION = 1
 # Names core still registers itself. An add-on may not take one, or start
 # with one of the prefixes core uses for per-instance entries.
 CORE_MCP_NAMES = {"searxng", "opencode", "messages"}
-CORE_MCP_PREFIXES = ("caldav-",)
+CORE_MCP_PREFIXES: tuple[str, ...] = ()
 # Names of the login backends core ships; an add-on's vaultBackend may not take one.
 CORE_VAULT_NAMES = {"vault", "op", "bw"}
 
@@ -907,6 +910,7 @@ def _validate_mcp_auth(auth, profiles: dict) -> list[str]:
 
 
 SETTING_REF_RE = re.compile(r"\{setting:([^{}:]+)\}")
+SECRET_REF_RE = re.compile(r"\{secret:([^{}:]+)\}")
 HEADER_RE = re.compile(r"^[A-Za-z0-9-]+$")
 # The options an instance's access setting may offer, and the level each maps to.
 INSTANCE_ACCESS_LEVELS = {"read": "ro", "write": "rw"}
@@ -914,13 +918,14 @@ INSTANCE_ACCESS_LEVELS = {"read": "ro", "write": "rw"}
 
 def _validate_mcp_instances(inst, instances, gate_flags: set[str],
                             builtin_flag: str | None) -> list[str]:
-    """Check mcp.instances: {name, url, access, auth, gate?}. Every
-    {setting:<name>} refers to a setting in the top-level instances.settings."""
+    """Check mcp.instances: {name, url, access?, auth?, headers?, gate?}. Every
+    {setting:<name>} and {secret:<name>} refers to a setting in the top-level
+    instances.settings."""
     errors: list[str] = []
     err = errors.append
     if not isinstance(inst, dict):
         return ["mcp.instances must be an object"]
-    extra = set(inst) - {"name", "url", "access", "auth", "gate"}
+    extra = set(inst) - {"name", "url", "access", "auth", "headers", "gate"}
     if extra:
         err(f"mcp.instances has unknown fields: {', '.join(sorted(extra))}")
     settings = instances.get("settings") if isinstance(instances, dict) else None
@@ -946,14 +951,51 @@ def _validate_mcp_instances(inst, instances, gate_flags: set[str],
                 or any(p.startswith(prefix) for p in CORE_MCP_PREFIXES)):
             err(f"mcp.instances.name prefix {prefix!r} collides with a server core registers")
 
+    headers = inst.get("headers")
+    header_refs = False  # a header names a setting, so instances can share one URL
+    if "headers" not in inst:
+        pass
+    elif not (isinstance(headers, dict) and headers):
+        err("mcp.instances.headers must map header names to templates")
+    else:
+        if "auth" in inst:
+            err("mcp.instances may have auth or headers, not both")
+        seen, secrets = set(), []
+        for hname, template in headers.items():
+            if not HEADER_RE.match(hname) or hname.lower() in seen:
+                err(f"mcp.instances.headers: {hname!r} must be an HTTP header name, once")
+            seen.add(hname.lower())
+            if not (isinstance(template, str) and template):
+                err(f"mcp.instances.headers.{hname} must be a non-empty string")
+                continue
+            srefs = SETTING_REF_RE.findall(template)
+            xrefs = SECRET_REF_RE.findall(template)
+            rest = SECRET_REF_RE.sub("", SETTING_REF_RE.sub("", template))
+            if "{" in rest or "}" in rest:
+                err(f"mcp.instances.headers.{hname}: the only placeholders are "
+                    "{setting:<name>} and {secret:<name>}")
+                continue
+            for ref in srefs:
+                if setting_type(ref) not in ("url", "string"):
+                    err(f"mcp.instances.headers.{hname}: {ref!r} is not a url or string instance setting")
+            for ref in xrefs:
+                spec = settings.get(ref)
+                if setting_type(ref) != "secret" or (isinstance(spec, dict) and spec.get("transient")):
+                    err(f"mcp.instances.headers.{hname}: {ref!r} is not a stored secret instance setting")
+            secrets.extend(xrefs)
+            header_refs = header_refs or bool(srefs or xrefs)
+        if len(secrets) > 1:
+            err("mcp.instances.headers may name one {secret:<name>} in all")
+
     url = inst.get("url")
     refs = SETTING_REF_RE.findall(url) if isinstance(url, str) else []
     rest = SETTING_REF_RE.sub("", url) if isinstance(url, str) else ""
     rest = rest.replace("{access}", "").replace("{slug}", "")
     if not (isinstance(url, str) and url and "{" not in rest and "}" not in rest
-            and (refs or "{slug}" in url)):
+            and (refs or "{slug}" in url or header_refs)):
         err("mcp.instances.url must be a string whose only placeholders are {setting:<name>}, "
-            "{access} and {slug}, with {slug} or a setting so each instance has its own URL")
+            "{access} and {slug}, with {slug} or a setting so each instance has its own URL, "
+            "unless headers name a setting")
     else:
         for ref in refs:
             if setting_type(ref) not in ("url", "string"):
@@ -1324,7 +1366,12 @@ def mcp_urls(addons_dir: Path, environ=os.environ) -> list[str]:
             continue
         for mcp in mcp_entries(manifest):
             if "instances" in mcp:
-                continue  # no fixed URL: each instance's comes from its store
+                # Each instance's URL comes from its store, unless the template
+                # has no placeholder (CalDAV): then every instance shares it.
+                u = mcp["instances"]["url"]
+                if "{" not in u and u not in urls:
+                    urls.append(u)
+                continue
             for u in sorted(set(_mcp_urls(manifest, mcp, environ).values())):
                 if u not in urls:
                     urls.append(u)
@@ -1361,10 +1408,21 @@ def _store_slugs(store: Path) -> tuple[list[str], list[str]]:
     return good, bad
 
 
-def instance_key_env(name: str) -> str:
+def instance_key_env(name: str, suffix: str = "KEY") -> str:
     """crm-sales-eu -> CRM_SALES_EU_KEY, the profile .env key holding an
-    instance's key. The bootstrap's addon_instance_key_env does the same."""
-    return re.sub(r"[^A-Za-z0-9]", "_", name).upper() + "_KEY"
+    instance's key. The bootstrap's addon_instance_key_env does the same. A
+    secret header names its key after the secret setting instead
+    (caldav-personal, password -> CALDAV_PERSONAL_PASSWORD)."""
+    return re.sub(r"[^A-Za-z0-9]", "_", f"{name}_{suffix}").upper()
+
+
+def _header_secret(inst: dict) -> str | None:
+    """The secret setting an mcp.instances.headers block names, if any."""
+    for template in (inst.get("headers") or {}).values():
+        m = SECRET_REF_RE.search(template)
+        if m:
+            return m.group(1)
+    return None
 
 
 def _instance_values(store: Path, slug: str, schema: dict) -> dict | None:
@@ -1448,11 +1506,13 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
     """One line per instance of each add-on with mcp.instances, after a line for
     the add-on itself:
 
-        name|title|on|url|keyenv|keyfile|timeout|connect|pins|reason|header|scheme|tools
+        name|title|on|url|keyenv|keyfile|timeout|connect|pins|reason|header|scheme|tools|headers
 
     The add-on's line has name "<prefix>*", on set from its flag, pins the
-    names to unpin once no entry with the prefix is left, and reason the
-    flag's name. An instance line is on (1) when the flag is on, the profile is
+    names to unpin once no entry with the prefix is left, reason the flag's
+    name, and keyenv, for an entry with a secret header, the suffix of its
+    instances' key names (PASSWORD for CalDAV), so the bootstrap can drop a
+    removed instance's key; it is empty otherwise. An instance line is on (1) when the flag is on, the profile is
     in the instance's `bind` (mcp.profiles when it has none), the url is
     http(s), the gate (if any) lets it through, the access setting (if any) is
     read or write and the key file it needs (if any) holds one line. Otherwise
@@ -1462,6 +1522,12 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
     {access} in the url. tools is the entry's tool list, less writeTools at ro;
     an entry without auth has empty keyenv, keyfile, header and scheme.
     keyfile is a path under data_dir; key values are never printed.
+
+    headers is empty unless the entry has mcp.instances.headers. Then it is a
+    JSON object of the filled headers, with the secret as ${<keyenv>}, and
+    keyenv and keyfile name the secret's key as for auth; header and scheme
+    stay empty. An instance whose header would be empty or hold a control
+    character is off with reason header.
 
     An invalid manifest still gives its add-on line, off, when its
     mcp.instances.name is readable, so the bootstrap drops its entries."""
@@ -1485,7 +1551,7 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
                     pins = entry.get("pin") if isinstance(entry, dict) else None
                     pins = [p for p in pins if TOOL_RE.match(p)] if _is_str_list(pins) else []
                     emit([template.split("{slug}")[0] + "*", sid_dir, "0", "", "", "", "", "",
-                          " ".join(pins), "invalid manifest", "", "", ""], sid_dir)
+                          " ".join(pins), "invalid manifest", "", "", "", ""], sid_dir)
             continue
         for mcp in mcp_entries(manifest):
             if "instances" not in mcp:
@@ -1501,9 +1567,12 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
             default_level = mcp["profiles"].get(profile, "")
             auth = inst.get("auth")
             header, scheme = (auth["header"], auth["scheme"]) if auth else ("", "")
+            header_secret = _header_secret(inst)
+            key_suffix = "KEY" if auth else (header_secret.upper() if header_secret else "")
             reads = bool(manifest.get("permissions", {}).get("reads"))
-            emit([template.split("{slug}")[0] + "*", title, "1" if flag_on else "0", "", "", "", timeout,
-                  connect, " ".join(mcp.get("pin", [])), flag, "", "", ""], sid_dir)
+            emit([template.split("{slug}")[0] + "*", title, "1" if flag_on else "0", "",
+                  re.sub(r"[^A-Za-z0-9]", "_", key_suffix) if header_secret else "", "", timeout,
+                  connect, " ".join(mcp.get("pin", [])), flag, "", "", "", ""], sid_dir)
 
             schema = manifest["instances"]["settings"]
             store = data_dir / sid_dir
@@ -1517,9 +1586,12 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
             for slug in slugs:
                 name = template.replace("{slug}", slug)
 
-                def line(on: str, url="", keyfile="", pins="", reason="", tools="") -> None:
-                    emit([name, title, on, url, instance_key_env(name) if auth else "", keyfile,
-                          timeout, connect, pins, reason, header, scheme, tools], f"{sid_dir}/{slug}")
+                keyenv = instance_key_env(name, key_suffix) if key_suffix else ""
+
+                def line(on: str, url="", keyfile="", pins="", reason="", tools="", headers="") -> None:
+                    emit([name, title, on, url, keyenv, keyfile,
+                          timeout, connect, pins, reason, header, scheme, tools, headers],
+                         f"{sid_dir}/{slug}")
 
                 values = _instance_values(store, slug, schema)
                 if not flag_on:
@@ -1566,7 +1638,29 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
                     if gated and not truthy(environ.get(gate["flag"])):
                         line("0", url=url, reason=f"gate {gate['setting']} is set and {gate['flag']} is off")
                         continue
+                filled = ""
+                if "headers" in inst:
+                    filled_map, empty = {}, ""
+                    for hname, htemplate in inst["headers"].items():
+                        value = SETTING_REF_RE.sub(
+                            lambda m: values.get(m.group(1)) if isinstance(values.get(m.group(1)), str) else "",
+                            htemplate)
+                        value = SECRET_REF_RE.sub(lambda m: "${" + keyenv + "}", value)
+                        if not value or not KEY_TEXT_RE.match(value):
+                            empty = hname
+                            break
+                        filled_map[hname] = value
+                    if empty:
+                        line("0", url=url, reason=f"header {empty} is empty or holds a control character")
+                        continue
+                    filled = json.dumps(filled_map, ensure_ascii=False, separators=(",", ":"))
                 keyfile = ""
+                if header_secret:
+                    keyfile = store / "secrets" / f"{slug}.{header_secret}"
+                    problem = _key_problem(keyfile)
+                    if problem:
+                        line("0", url=url, reason=f"key {header_secret} is {problem}")
+                        continue
                 if auth:
                     secret = auth["secret"][use]
                     keyfile = store / "secrets" / f"{slug}.{secret}"
@@ -1582,7 +1676,8 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
                     write = set(mcp.get("writeTools", []))
                     pins = [t for t in pins if t not in write]
                     tools = [t for t in tools if t not in write]
-                line("1", url=url, keyfile=str(keyfile), pins=" ".join(pins), tools=" ".join(tools))
+                line("1", url=url, keyfile=str(keyfile) if keyfile else "", pins=" ".join(pins),
+                     tools=" ".join(tools), headers=filled)
     return lines
 
 

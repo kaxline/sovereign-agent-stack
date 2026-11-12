@@ -35,7 +35,6 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 # manifest's builtin block; this list keeps the services that have no
 # manifest yet. docs/private/addon-manifest-spec.md
 SERVICES_CORE="NEO4J_ENABLED neo4j 0
-CALDAV_MCP_ENABLED calendar 0
 MESSAGES_MCP_ENABLED messages 0
 OPENCODE_MCP_ENABLED coding 0
 BITWARDEN_LOCAL_ENABLED vault 0

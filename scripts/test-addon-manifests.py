@@ -74,7 +74,8 @@ refused("writeTools outside tools", variant(mcp__writeTools=["nope"]), "mcp.writ
 refused("core name collision", variant(mcp__name="messages"), "collides")
 check("mail and drafts are add-on names now (email-local), not core ones",
       not {"mail", "drafts"} & am.CORE_MCP_NAMES, str(am.CORE_MCP_NAMES))
-refused("core prefix collision", variant(mcp__name="caldav-main"), "collides")
+check("caldav- is an add-on prefix now (addons/caldav), not a core one",
+      am.CORE_MCP_PREFIXES == (), str(am.CORE_MCP_PREFIXES))
 check("crm- is no longer a core prefix", "crm-" not in am.CORE_MCP_PREFIXES, str(am.CORE_MCP_PREFIXES))
 refused("mcp.unmanaged is refused", variant(mcp__unmanaged=["default"]), "mcp.unmanaged was removed")
 refused("onToggle is refused", variant(onToggle={"recreate": ["hermes"]}), "onToggle was removed")
@@ -616,13 +617,10 @@ refused("mcp.instances name with {slug} twice", inst_manifest({"instances__name"
         "mcp.instances.name")
 refused("mcp.instances prefix collides with a core name", inst_manifest({"instances__name": "searxng-{slug}"}),
         "collides")
-refused("mcp.instances prefix collides with a core prefix", inst_manifest({"instances__name": "caldav-{slug}"}),
-        "collides")
 # The bootstrap drops every entry under an instance prefix that has no
-# instance, so a prefix that overlaps a core name or prefix in either
-# direction would drop core entries (searxng, opencode, caldav-*).
-for bad_name in ("s{slug}", "op{slug}", "searx{slug}", "cal{slug}", "caldav-x-{slug}",
-                 "messag{slug}", "messages-{slug}"):
+# instance, so a prefix that overlaps a core name in either direction would
+# drop core entries (searxng, opencode, messages).
+for bad_name in ("s{slug}", "op{slug}", "searx{slug}", "messag{slug}", "messages-{slug}"):
     refused(f"mcp.instances prefix overlapping a core name or prefix ({bad_name})",
             inst_manifest({"instances__name": bad_name}), "collides with a server core registers")
 check("mcp.instances prefix crm- is accepted", am.validate(inst_manifest()) == [])
@@ -758,13 +756,19 @@ def plan_rows(data: Path, profile: str, environ: dict) -> dict[str, list[str]]:
     rows = {}
     for line in lines:
         fields = line.split("|")
-        check(f"instances-plan line has 13 fields ({fields[0]})", len(fields) == 13, line)
+        check(f"instances-plan line has 14 fields ({fields[0]})", len(fields) == 14, line)
         if fields[0].startswith("crm-"):
             rows[fields[0]] = fields
     return rows
 
 
 TW_ON = {"TWENTY_MCP_ENABLED": "1", "TWENTY_LOCAL_ENABLED": "1"}
+CD_READ = ["caldav_list_calendars", "caldav_get_events", "caldav_get_today_events",
+           "caldav_get_week_events", "caldav_get_event_by_uid", "caldav_search_events",
+           "caldav_get_freebusy", "caldav_list_attendees"]
+CD_WRITE = ["caldav_create_event", "caldav_update_event", "caldav_delete_event",
+            "caldav_move_event", "caldav_add_attendee", "caldav_remove_attendee"]
+CD_TOOLS = CD_READ + CD_WRITE
 with tempfile.TemporaryDirectory() as tmp:
     data = tw_store(Path(tmp), {
         "main": {"url": "http://twenty-server:3000", "access": "write", "local": True},
@@ -908,8 +912,10 @@ with tempfile.TemporaryDirectory() as tmp:
                           str(ROOT / "addons"), str(Path(tmp) / "missing"), "default"],
                          capture_output=True, text=True, env={"TWENTY_MCP_ENABLED": "1"}).stdout.splitlines()
           == ["budget-*|Actual Budget|0||||120|60|get-accounts get-grouped-categories get-transactions "
-              "monthly-summary get-budget-month get-payees|ACTUAL_MCP_ENABLED|||",
-              "crm-*|Twenty CRM|1||||60|30|" + TW_PINS + "|TWENTY_MCP_ENABLED|||"])
+              "monthly-summary get-budget-month get-payees|ACTUAL_MCP_ENABLED||||",
+              "caldav-*|CalDAV calendars|0||PASSWORD||60|30|" + " ".join(CD_TOOLS)
+              + "|CALDAV_MCP_ENABLED||||",
+              "crm-*|Twenty CRM|1||||60|30|" + TW_PINS + "|TWENTY_MCP_ENABLED||||"])
 
 # A broken manifest with mcp.instances still names its prefix, off, so the
 # bootstrap drops its entries.
@@ -1557,6 +1563,127 @@ for svc in ("hermes-api-bootstrap", "hermes-browser-bootstrap"):
           "- ${ASSISTANT_DATA_ROOT:-./data}/addons/twenty:/bootstrap/addon-data/twenty:ro" in block)
     check(f"{svc} sets ADDON_DATA_DIR", "- ADDON_DATA_DIR=/bootstrap/addon-data" in block)
     check(f"{svc} no longer mounts the workspace files", "twenty-workspaces" not in block)
+
+# --- mcp.instances.headers ------------------------------------------------------
+HDR_SETTINGS = {"url": {"type": "url"}, "username": {"type": "string"},
+                "password": {"type": "secret"}, "local": {"type": "bool", "default": False}}
+HDR = {"X-Dav-Url": "{setting:url}", "X-Dav-User": "{setting:username}",
+       "X-Dav-Password": "{secret:password}"}
+
+
+def hdr_manifest(headers=HDR, settings=HDR_SETTINGS, **changes):
+    c = {"instances__headers": headers, "instances__url": "http://example.com/mcp",
+         "instances__auth": None, "instances__access": None, "instances__gate": None}
+    c.update(changes)
+    return inst_manifest(c, instances_settings=settings)
+
+
+check("mcp.instances.headers with a fixed url is valid", am.validate(hdr_manifest()) == [],
+      str(am.validate(hdr_manifest())))
+refused("mcp.instances.headers with no setting still needs a per-instance url",
+        hdr_manifest({"X-Static": "yes"}), "mcp.instances.url")
+refused("mcp.instances.headers and auth together",
+        hdr_manifest(instances__auth={"header": "Authorization", "scheme": "Bearer",
+                                      "secret": {"ro": "password", "rw": "password"}}),
+        "auth or headers")
+refused("mcp.instances.headers must not be empty", hdr_manifest({}), "mcp.instances.headers")
+refused("mcp.instances.headers with a bad header name", hdr_manifest({"X Dav": "{setting:url}"}),
+        "HTTP header name")
+refused("mcp.instances.headers naming a header twice",
+        hdr_manifest({"X-Dav": "{setting:url}", "x-dav": "{setting:username}"}), "HTTP header name")
+refused("mcp.instances.headers naming a bool setting", hdr_manifest({"X-Dav": "{setting:local}"}),
+        "not a url or string")
+refused("mcp.instances.headers {secret:} naming a string", hdr_manifest({"X-Dav": "{secret:username}"}),
+        "stored secret")
+refused("mcp.instances.headers {secret:} naming a transient secret",
+        hdr_manifest({"X-Dav": "{setting:url}", "X-Tok": "{secret:token}"},
+                     settings={**HDR_SETTINGS, "token": {"type": "secret", "transient": True,
+                                                         "optional": True}}), "stored secret")
+refused("mcp.instances.headers with two secrets",
+        hdr_manifest({"X-Dav": "{setting:url}", "X-A": "{secret:password}", "X-B": "{secret:password}"}),
+        "one {secret:<name>}")
+refused("mcp.instances.headers with an unknown placeholder", hdr_manifest({"X-Dav": "{slug}"}),
+        "the only placeholders")
+check("instance_key_env takes a suffix",
+      am.instance_key_env("caldav-work-cal", "password") == "CALDAV_WORK_CAL_PASSWORD"
+      and am.instance_key_env("crm-sales-eu") == "CRM_SALES_EU_KEY")
+
+# --- CalDAV ------------------------------------------------------------------
+cd_path = ROOT / "addons" / "caldav" / "addon.json"
+cd = json.loads(cd_path.read_text())
+check("caldav manifest is canonical JSON", cd_path.read_text() == am.canonical(cd))
+check("caldav manifest is valid as built-in", am.validate(cd) == [], str(am.validate(cd)))
+check("caldav: flag CALDAV_MCP_ENABLED on profile calendar, not seeded",
+      cd["builtin"] == {"flag": "CALDAV_MCP_ENABLED", "profile": "calendar", "seed": False})
+check("caldav: reads calendar, no cron, no api-server",
+      cd["permissions"]["reads"] == ["calendar"] and cd["permissions"]["cron"] is False
+      and cd["mcp"]["profiles"] == {"default": "rw", "browser": "rw"})
+check("caldav: 14 tools, all pinned, 6 of them writes",
+      cd["mcp"]["tools"] == CD_TOOLS and cd["mcp"]["pin"] == CD_TOOLS
+      and cd["mcp"]["writeTools"] == CD_WRITE)
+check("caldav: mcp-urls lists the shared caldav-mcp URL",
+      "http://caldav-mcp:8080/mcp" in am.mcp_urls(ROOT / "addons", {}))
+
+with tempfile.TemporaryDirectory() as tmp:
+    data = Path(tmp) / "addon-data"
+    (data / "caldav" / "instances").mkdir(parents=True)
+    (data / "caldav" / "secrets").mkdir()
+    for slug, url in (("personal", "https://caldav.example.com/"), ("work-cal", "https://dav.example.com/w")):
+        (data / "caldav" / "instances" / f"{slug}.json").write_text(
+            json.dumps({"url": url, "username": f"{slug}@example.com"}))
+        (data / "caldav" / "secrets" / f"{slug}.password").write_text(f"fake-{slug}")
+    (data / "caldav" / "instances" / "nokey.json").write_text(
+        json.dumps({"url": "https://caldav.example.com/", "username": "n@example.com"}))
+    (data / "caldav" / "instances" / "ctrl.json").write_text(
+        json.dumps({"url": "https://caldav.example.com/", "username": "a\tb"}))
+    (data / "caldav" / "secrets" / "ctrl.password").write_text("fake-ctrl")
+    on = {"CALDAV_MCP_ENABLED": "1"}
+
+    def cd_rows(profile, environ):
+        out = {}
+        for line in am.instances_plan(ROOT / "addons", data, profile, environ):
+            f = line.split("|")
+            check(f"caldav plan line has 14 fields ({f[0]})", len(f) == 14, line)
+            if f[0].startswith("caldav-"):
+                out[f[0]] = f
+        return out
+
+    text = "\n".join(am.instances_plan(ROOT / "addons", data, "default", on))
+    check("caldav plan never prints a password", "fake-" not in text, text)
+    rows = cd_rows("default", on)
+    check("caldav add-on line carries the PASSWORD key suffix",
+          rows["caldav-*"][2] == "1" and rows["caldav-*"][4] == "PASSWORD", str(rows["caldav-*"]))
+    p = rows["caldav-personal"]
+    check("caldav-personal: on, shared URL, key CALDAV_PERSONAL_PASSWORD from secrets/personal.password",
+          p[2:6] == ["1", "http://caldav-mcp:8080/mcp", "CALDAV_PERSONAL_PASSWORD",
+                     str(data / "caldav" / "secrets" / "personal.password")], str(p))
+    check("caldav-personal: all 14 tools and pins, no auth header",
+          p[12] == " ".join(CD_TOOLS) and p[8] == " ".join(CD_TOOLS) and p[10:12] == ["", ""], str(p))
+    check("caldav-personal: headers carry the URL verbatim, the username and a password reference",
+          json.loads(p[13]) == {"X-Caldav-Url": "https://caldav.example.com/",
+                                "X-Caldav-Username": "personal@example.com",
+                                "X-Caldav-Password": "${CALDAV_PERSONAL_PASSWORD}"}, p[13])
+    w = rows["caldav-work-cal"]
+    check("caldav-work-cal: key CALDAV_WORK_CAL_PASSWORD",
+          w[2] == "1" and w[4] == "CALDAV_WORK_CAL_PASSWORD"
+          and json.loads(w[13])["X-Caldav-Password"] == "${CALDAV_WORK_CAL_PASSWORD}", str(w))
+    n = rows["caldav-nokey"]
+    check("caldav: an account without a password file is off",
+          n[2] == "0" and n[9] == "key password is missing" and n[13] == "", str(n))
+    c = rows["caldav-ctrl"]
+    check("caldav: a header with a control character is off",
+          c[2] == "0" and c[9].startswith("header X-Caldav-Username"), str(c))
+    rows = cd_rows("api-server", on)
+    check("caldav: api-server gets no account",
+          all(r[2] == "0" and r[9] == "profile not in the manifest's mcp.profiles"
+              for k, r in rows.items() if k != "caldav-*"), str(rows))
+    rows = cd_rows("default", {"CALDAV_MCP_ENABLED": "0"})
+    check("caldav: flag off turns every account off",
+          rows["caldav-*"][2] == "0" and all(r[2] == "0" for r in rows.values()), str(rows))
+    names, _urls = am.cron_fence(ROOT / "addons", {}, data_dir=data)
+    check("caldav: every account is fenced from cron by name, not by URL",
+          {"caldav-personal", "caldav-work-cal"} <= set(names)
+          and "http://caldav-mcp:8080/mcp" not in _urls, str(names))
 
 # --- Actual Budget -----------------------------------------------------------
 ac_path = ROOT / "addons" / "actual" / "addon.json"
