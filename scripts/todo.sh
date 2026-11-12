@@ -204,8 +204,29 @@ for group, actions in typed.items():
 # The preset leaves out kanban: project views and their buckets. Both tokens
 # read them; the read/write one also creates, renames and deletes buckets and
 # moves tasks between them. Views themselves stay read-only on both.
-bucket_reads = ["views_buckets", "views_buckets_tasks_get"]
-bucket_writes = ["views_buckets_put", "views_buckets_post", "views_buckets_delete", "views_buckets_tasks"]
+# Bucket permission keys are looked up by route: Vikunja 2.7.1 renamed them,
+# and "views_buckets_tasks" went from the POST that moves a task (2.7.0) to
+# the GET that lists bucket tasks (2.8.0).
+project_routes = (call("GET", "/api/v1/routes", token=jwt) or {}).get("projects") or {}
+
+
+def bucket_key(method, suffix):
+    for key, route in project_routes.items():
+        if route.get("method") == method and route.get("path", "").endswith(suffix):
+            return key
+    sys.exit(f"this Vikunja has no {method} route ending in {suffix}")
+
+
+bucket_reads = [
+    bucket_key("GET", "/views/:view/buckets"),
+    bucket_key("GET", "/views/:view/buckets/tasks"),
+]
+bucket_writes = [
+    bucket_key("PUT", "/views/:view/buckets"),
+    bucket_key("POST", "/buckets/:bucket"),
+    bucket_key("DELETE", "/buckets/:bucket"),
+    bucket_key("POST", "/buckets/:bucket/tasks"),
+]
 for perms, extra in ((rw, bucket_reads + bucket_writes), (ro, bucket_reads)):
     projects = perms.setdefault("projects", [])
     projects.extend(a for a in extra if a not in projects)

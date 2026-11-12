@@ -29,7 +29,7 @@ which signs the browser in and keeps it signed in; bookmark it. In WebUI:
 
 | Piece | Role |
 |---|---|
-| `vikunja` | [Vikunja](https://github.com/go-vikunja/vikunja) 2.7 (AGPL-3.0). No host port. MCP at `http://vikunja:3456/api/v2/mcp`, Streamable HTTP with a bearer token |
+| `vikunja` | [Vikunja](https://github.com/go-vikunja/vikunja) 2.8 (AGPL-3.0). No host port. MCP at `http://vikunja:3456/api/v2/mcp`, Streamable HTTP with a bearer token |
 | `vikunja-proxy` | nginx in front of Vikunja on `127.0.0.1:${VIKUNJA_PORT}` (default 3456). Passes everything through and adds `/login-local` (`compose/vikunja-proxy/`). About 4 MiB of RAM, capped at half a CPU, well under a millisecond per request |
 | Schema `vikunja` | Owned by role `svc_vikunja` in the shared database. `compose/postgres/services/vikunja.env` holds its login (gitignored, written by `setup.sh --todo`) |
 | `VIKUNJA_FILES_DIR` | Task attachments, default `./data/vikunja/files` |
@@ -167,7 +167,7 @@ SQL. Vikunja owns its tables, and `agent_rw` cannot write them.
 | `VIKUNJA_MCP_TOKEN_RW` / `_RO` | empty | Written by `make todo-init` |
 | `VIKUNJA_MCP_URL` | `http://vikunja:3456/api/v2/mcp` | Endpoint the bootstrap registers |
 | `VIKUNJA_MCP_TIMEOUT` / `_CONNECT_TIMEOUT` | `60` / `30` | Hermes MCP timeouts |
-| `VIKUNJA_IMAGE` | `vikunja/vikunja:2.7.0` | MCP needs 2.7.0 or later |
+| `VIKUNJA_IMAGE` | `vikunja/vikunja:2.8.0` | MCP needs 2.7.0 or later |
 | `VIKUNJA_PROXY_IMAGE` | `nginx:1.30.6-alpine` | The loopback proxy |
 
 ## Backup
@@ -213,7 +213,7 @@ web app is a client of the same REST API, which any other UI can use:
 
 Vikunja is licensed [AGPL-3.0-or-later](https://github.com/go-vikunja/vikunja/blob/main/LICENSE).
 This stack runs the unmodified upstream image (`VIKUNJA_IMAGE`, default
-`vikunja/vikunja:2.7.0`), which Docker pulls from Docker Hub. Its source is the
+`vikunja/vikunja:2.8.0`), which Docker pulls from Docker Hub. Its source is the
 matching tag at <https://github.com/go-vikunja/vikunja>. The repo's own files
 for this profile are MIT, like the rest of the repo, because they are separate
 programs that only use Vikunja's HTTP API:

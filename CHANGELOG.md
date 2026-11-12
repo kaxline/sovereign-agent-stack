@@ -66,7 +66,17 @@ the stack under another app.
    `budget.sh access` and connect report `mcp: ["budget-<slug>"]` instead of
    `budget-<slug>-ro` and `budget-<slug>`, and a row's write access is read
    from `bind`.
-9. Hermes Agent v0.23.1 (from v0.22.7); WebUI stays at 0.52.544, still the
+9. Image pins moved for security fixes (see Changes). If `.env` sets
+   `N8N_IMAGE`, `VIKUNJA_IMAGE` or `MCP_SEARXNG_IMAGE`, update it or delete
+   the line. n8n 2.47.4 and Vikunja 2.8.0 migrate their databases on first
+   start, forward only, so back up first: copy n8n's directory as in
+   v0.3.3's step 13 (`docker compose --profile automation cp
+   n8n:/home/node/.n8n ./n8n-before-2.47.4`), and run `./scripts/db.sh
+   backup` for Vikunja's schema in the shared database.
+   Existing Vikunja MCP tokens keep working, because Vikunja renames their
+   stored permission keys during the upgrade. With `calendar` enabled, run
+   `docker compose --profile calendar build caldav-mcp` before `up`.
+10. Hermes Agent v0.23.1 (from v0.22.7); WebUI stays at 0.52.544, still the
    latest stable release. Back up `data/hermes` with `hermes` stopped, then run
    `make hermes-upgrade AGENT=v0.23.1 WEBUI=0.52.544` and the verification
    block in [docs/hermes-webui.md](docs/hermes-webui.md#verification). The
@@ -113,6 +123,28 @@ the stack under another app.
   the reply limit from 1,200 to 4,000 characters for a reply that opens with
   an ack. New `scripts/test-intent-ack.py`; until now that overlay had no
   test and failed only at container start, with a warning.
+- Security pin bumps:
+  - **n8n** 2.43.7 → 2.47.4, past the 2026-10-28 advisories fixed in 2.45.5
+    and 2.46.1 (two of them high: workflow expression isolation, the
+    GraphicsMagick config). Since 2.44, n8n refuses to create or update
+    workflows that use deprecated nodes.
+  - **Vikunja** 2.7.0 → 2.8.0, which carries the 41 security fixes from 2.7.1
+    and 19 from 2.8.0. `todo.sh` now looks up bucket permission keys in
+    `/api/v1/routes`, because 2.7.1 renamed them and 2.8.0 rejects the old
+    names when minting tokens. `views_buckets_tasks` changed meaning: it was
+    the POST that moves a task and is now the GET that lists bucket tasks.
+    Checked against throwaway 2.7.0 and 2.8.0 servers, including tokens
+    minted on 2.7.0 and then upgraded.
+  - **Vaultwarden** 1.37.4 → 1.37.5 (digest-pinned), for two medium
+    advisories (website icons, which the stack turns off, and emergency
+    access). 1.37.5 refuses to start on invalid config values.
+  - **mcp-searxng** 2.7.0 → 2.10.1. Images before 2.8.1 bundle a Node runtime
+    with a high-severity Brotli decoder advisory. The later releases only add
+    options.
+  - **caldav-mcp** 0.1.1 → 0.2.1 (`gelse/caldav-mcp` at `d95eaec`). Fixes
+    `caldav_update_event` failing with "Internal error" when it changes start
+    or end. 0.2.0's breaking credential change applies only when `CALDAV_URL`
+    is set on the server, and the stack sends credentials as headers.
 - Manifests take an optional `store` block (Boundary CR 0027 R4). Its one
   field, `store.dataLeaves`, says what leaves this Mac and where it goes, and
   `validate` requires it when `permissions.egress` includes `internet`. Every
