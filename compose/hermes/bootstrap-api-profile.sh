@@ -230,11 +230,23 @@ config_path_for() {
 # wrong by definition (bare path or stringified JSON array alike) and gets
 # replaced. A real list is either already correct or a considered hand-edit, so
 # those are left alone with a warning.
+#
+# --exact replaces any list that differs, for keys the stack owns outright.
+# An MCP tool allowlist is one: a profile cloned from default starts with
+# default's list, and keeping that longer list would give a read-only profile
+# default's write tools.
+#
+# Usage: set_yaml_list [--exact] <config> <dotted-key> [item...]
 set_yaml_list() {
+  _syl_exact=0
+  if [ "$1" = "--exact" ]; then
+    _syl_exact=1
+    shift
+  fi
   _cfg="$1"
   _dotted="$2"
   shift 2
-  _out="$(python3 - "$_cfg" "$_dotted" "$@" <<'PY'
+  _out="$(python3 - "$_syl_exact" "$_cfg" "$_dotted" "$@" <<'PY'
 import sys
 from pathlib import Path
 
@@ -247,8 +259,9 @@ except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
     import hermes_yaml as yaml
 from utils import atomic_yaml_write
 
-cfg_path, dotted = sys.argv[1], sys.argv[2]
-desired = sys.argv[3:]
+exact = sys.argv[1] == "1"
+cfg_path, dotted = sys.argv[2], sys.argv[3]
+desired = sys.argv[4:]
 
 # The same key is written to several profiles, so name the profile in the log.
 parent = Path(cfg_path).parent
@@ -279,6 +292,11 @@ elif current == [] or not isinstance(current, list):
     node[leaf] = list(desired)
     atomic_yaml_write(cfg_path, config)
     print(f"{'Setting' if current in (None, []) else 'Repairing'} {label}")
+elif exact:
+    node[leaf] = list(desired)
+    atomic_yaml_write(cfg_path, config)
+    dropped = [item for item in current if item not in desired]
+    print(f"Replacing {label}" + (f" (dropped {', '.join(map(str, dropped))})" if dropped else ""))
 elif all(item in current for item in desired):
     # A longer list that still covers everything we need was added on purpose,
     # so leave it. Match on exact membership rather than substring, or
@@ -871,7 +889,8 @@ reconcile_stack_eager_tools() {
 # Individual keys are set rather than the whole mapping so MCP servers the user
 # added by hand survive. Any trailing arguments become the tool allowlist, which
 # must go through set_yaml_list: `hermes config set` stores its argument
-# verbatim and cannot produce a YAML list (see the comment above it).
+# verbatim and cannot produce a YAML list (see the comment above it). The
+# allowlist is written exactly (--exact), so a hand-edited list is replaced.
 #
 # Usage: register_mcp_server <profile> <key> <display> <url> <timeout> <connect_timeout> [tool...]
 register_mcp_server() {
@@ -887,7 +906,7 @@ register_mcp_server() {
   hermes_config_set "$_rms_profile" "mcp_servers.${_rms_key}.timeout" "$_rms_timeout"
   hermes_config_set "$_rms_profile" "mcp_servers.${_rms_key}.connect_timeout" "$_rms_connect_timeout"
   if [ "$#" -gt 0 ]; then
-    set_yaml_list "$(config_path_for "$_rms_profile")" "mcp_servers.${_rms_key}.tools.include" "$@"
+    set_yaml_list --exact "$(config_path_for "$_rms_profile")" "mcp_servers.${_rms_key}.tools.include" "$@"
   fi
 }
 
