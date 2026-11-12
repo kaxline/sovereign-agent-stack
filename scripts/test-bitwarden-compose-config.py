@@ -238,7 +238,9 @@ def check_tools(cfg: dict) -> None:
             checks.fail(f"bitwarden-setup needs {key}={want}")
     for vol in mounts(setup):
         source = str(vol.get("source", ""))
-        if "hermes" in source:
+        # Hermes' own data (data/hermes and below), not any path that happens
+        # to contain the word, such as a worktree's directory name.
+        if re.search(r"(^|/)data/hermes(/|$)", source):
             checks.fail(f"bitwarden-setup mounts {source}")
     if setup.get("user") != HOST_USER:
         checks.fail(f"bitwarden-setup runs as HERMES_UID:HERMES_GID ({HOST_USER}), not {setup.get('user')!r}")
