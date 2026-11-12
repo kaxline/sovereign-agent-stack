@@ -38,12 +38,18 @@ def _edit(path: Path, label: str, edits: list[tuple[str, str, int]]) -> None:
         print(f"{TAG} already applied ({label})")
         return
     for old, new, count in edits:
-        found = text.count(old)
-        if found != count:
+        # A tuple of (old, new) pairs lists the shapes of one anchor across
+        # supported Hermes tags; the first that matches is used.
+        variants = old if isinstance(old, tuple) else ((old, new),)
+        for old_v, new_v in variants:
+            found = text.count(old_v)
+            if found == count:
+                break
+        else:
             raise SystemExit(
-                f"{TAG} expected {count} x {old.strip()[:60]!r} in {path}, found {found}. "
+                f"{TAG} expected {count} x {variants[0][0].strip()[:60]!r} in {path}, found {found}. "
                 "Hermes image may have changed — update this patch.")
-        text = text.replace(old, new)
+        text = text.replace(old_v, new_v)
     path.write_text(text)
     print(f"{TAG} patched {label}")
 
@@ -63,8 +69,15 @@ FORMATTERS_NEW = (
     "\n"
 ) + FORMATTERS_OLD
 
-POLL_SIG_OLD = "def _kb_poll_board(_kb, slug: str, session_key: str) -> list:\n"
-POLL_SIG_NEW = "def _kb_poll_board(_kb, slug: str, session_key: str, session: dict | None = None) -> list:\n"
+POLL_SIG = (
+    # v0.22.7
+    ("def _kb_poll_board(_kb, slug: str, session_key: str) -> list:\n",
+     "def _kb_poll_board(_kb, slug: str, session_key: str, session: dict | None = None) -> list:\n"),
+    # v0.23.0+: upstream reclaims subscriptions stranded on delegate subagents (#150198)
+    ("def _kb_poll_board(_kb, slug: str, session_key: str, stray: tuple = (), unreclaimed: list | None = None) -> list:\n",
+     "def _kb_poll_board(_kb, slug: str, session_key: str, stray: tuple = (), unreclaimed: list | None = None,\n"
+     "                   session: dict | None = None) -> list:\n"),
+)
 
 PRECHECK_OLD = (
     "    with contextlib.suppress(Exception):\n"
@@ -86,8 +99,13 @@ PRECHECK_NEW = (
 FILTER_OLD = "            if (sub.get(\"platform\") or \"\").lower() != \"tui\" or sub.get(\"chat_id\") != session_key:\n"
 FILTER_NEW = "            if (sub.get(\"platform\") or \"\").lower() != \"tui\" or sub.get(\"chat_id\") not in _assistant_keys:\n"
 
-CALL_OLD = "    return [t for slug in unique.values() for t in _kb_poll_board(_kb, slug, session_key)]\n"
-CALL_NEW = "    return [t for slug in unique.values() for t in _kb_poll_board(_kb, slug, session_key, session)]\n"
+CALL = (
+    ("    return [t for slug in unique.values() for t in _kb_poll_board(_kb, slug, session_key)]\n",
+     "    return [t for slug in unique.values() for t in _kb_poll_board(_kb, slug, session_key, session)]\n"),
+    ("    texts = [t for slug in unique.values() for t in _kb_poll_board(_kb, slug, session_key, stray, unreclaimed)]\n",
+     "    texts = [t for slug in unique.values()\n"
+     "             for t in _kb_poll_board(_kb, slug, session_key, stray, unreclaimed, session=session)]\n"),
+)
 
 
 def main() -> None:
@@ -95,10 +113,10 @@ def main() -> None:
     _edit(ROOT / "tui_gateway" / "session_notifications.py", "session notifications", [
         (GAVE_UP_OLD, GAVE_UP_NEW, 1),
         (FORMATTERS_OLD, FORMATTERS_NEW, 1),
-        (POLL_SIG_OLD, POLL_SIG_NEW, 1),
+        (POLL_SIG, None, 1),
         (PRECHECK_OLD, PRECHECK_NEW, 1),
         (FILTER_OLD, FILTER_NEW, 1),
-        (CALL_OLD, CALL_NEW, 1),
+        (CALL, None, 1),
     ])
 
 
