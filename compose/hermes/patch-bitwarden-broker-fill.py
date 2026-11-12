@@ -32,7 +32,13 @@ TOOLS = ROOT / "tools"
 TAG = "[patch-bitwarden-broker-fill]"
 MARKER = "# assistant-stack: bitwarden broker fill"
 
-FILL_ANCHOR = "        return _fill_bound_page(backend, handle, meta, page_origin, effective_task_id)\n"
+# v0.22.7, then v0.23.0+ (with_identifier for the Desktop key button; the broker fills the password only).
+# On v0.23's target='preview' path _page_backend() returns the in-app page, so _bwbroker_fill refuses
+# with supervisor_required instead of writing into the managed browser's tab.
+FILL_ANCHORS = (
+    "        return _fill_bound_page(backend, handle, meta, page_origin, effective_task_id)\n",
+    "        return _fill_bound_page(backend, handle, meta, page_origin, effective_task_id, with_identifier)\n",
+)
 FILL = (
     f"        {MARKER} (route)\n"
     "        if _bwbroker_owns(backend, handle):\n"
@@ -335,8 +341,12 @@ NEEDED = {
         "def session_for_task(task_id: Optional[str]) -> dict[str, Any]:",
     ),
 }
+def _pick(text: str, variants: tuple[str, ...]) -> str:
+    """The one variant *text* holds exactly once, else the first (so the count check reports it)."""
+    return next((v for v in variants if text.count(v) == 1), variants[0])
+
+
 ANCHORS = {
-    "fill": FILL_ANCHOR,
     "meta none": META_NONE_ANCHOR,
     "enter_code": CODE_ANCHOR,
     "list": LIST_ANCHOR,
@@ -354,13 +364,15 @@ def main() -> None:
                "browser_supervisor.py": (TOOLS / "browser_supervisor.py").read_text(encoding="utf-8"),
                "browser_session.py": (TOOLS / "browser_session.py").read_text(encoding="utf-8")}
     missing = [f"{name}: {n.strip()}" for name, needed in NEEDED.items() for n in needed if n not in sources[name]]
-    bad = [name for name, anchor in ANCHORS.items() if text.count(anchor) != 1]
+    fill_anchor = _pick(text, FILL_ANCHORS)
+    anchors = {"fill": fill_anchor, **ANCHORS}
+    bad = [name for name, anchor in anchors.items() if text.count(anchor) != 1]
     if missing or bad:
         raise SystemExit(
             f"{TAG} expected code missing in {TOOLS}: {missing + bad}. "
             "Hermes image may have changed — update this patch."
         )
-    text = text.replace(FILL_ANCHOR, FILL + FILL_ANCHOR, 1)
+    text = text.replace(fill_anchor, FILL + fill_anchor, 1)
     text = text.replace(META_NONE_ANCHOR, META_NONE + META_NONE_ANCHOR, 1)
     text = text.replace(CODE_ANCHOR, CODE + CODE_ANCHOR, 1)
     text = text.replace(LIST_ANCHOR, LIST, 1)
