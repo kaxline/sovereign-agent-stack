@@ -150,9 +150,11 @@ class HermesBackend(Backend):
 
     async def _quiet_interrupt(self, s: HSession) -> None:
         if s.runtime_id is None:
+            log.info("session.interrupt skipped: no runtime id")
             return
         try:
-            await self.upstream.call("session.interrupt", {"session_id": s.runtime_id}, timeout=30)
+            res = await self.upstream.call("session.interrupt", {"session_id": s.runtime_id}, timeout=30)
+            log.info("session.interrupt %s (turns held: %d)", res.get("status"), len(s.turns))
         except (UpstreamDown, HermesError, asyncio.TimeoutError) as exc:
             log.info("session.interrupt failed: %s", type(exc).__name__)
 
@@ -380,8 +382,12 @@ class HermesBackend(Backend):
             # Resume first: after an upstream drop it may find a leftover turn,
             # which makes this prompt a queued one.
             await self._resume(s)
-        if s.turns:
-            submit["queued"] = True
+        # Always queued: Hermes reads it only on its busy path, and it clears
+        # `running` after message.complete, so a prompt sent right after a turn can
+        # find the session still busy. Without queued, Hermes' default busy mode
+        # interrupts and redirects instead of queueing (seen live 2026-11-12).
+        submit["queued"] = True
+        ahead = bool(s.turns)
         s.turns.append(turn)
         try:
             res = await self._live_call(s, "prompt.submit", submit)
@@ -390,7 +396,7 @@ class HermesBackend(Backend):
             if turn in s.turns:
                 s.turns.remove(turn)
             raise
-        turn.queued = res.get("status") == "queued"
+        turn.queued = ahead and res.get("status") == "queued"
         try:
             stop, usage = await asyncio.shield(turn.future)
         except asyncio.CancelledError:
@@ -415,6 +421,7 @@ class HermesBackend(Backend):
     async def cancel(self, identity: Identity, session_id: str) -> None:
         s = self._sessions.get((identity.profile, session_id))
         if s is None or s.runtime_id is None or not s.turns:
+            log.info("session/cancel with no running turn")
             return
         await self._interrupt(s)
 

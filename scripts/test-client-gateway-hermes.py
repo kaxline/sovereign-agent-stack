@@ -120,6 +120,14 @@ async def checks(c: Checks) -> None:
         msg_ids = {u.get("messageId") for u in updates_of(a, sid, "agent_message_chunk")}
         c.expect(len(msg_ids) == 1 and None not in msg_ids, f"chunks share a messageId: {msg_ids}")
 
+        # Back to back: Hermes still reports the first turn running for a moment
+        # after message.complete; the second prompt must queue, not interrupt.
+        a.updates.clear()
+        r = await prompt(a, sid, "hi twice")
+        c.expect(r["stopReason"] == "end_turn" and fake.busy_interrupts == 0,
+                 f"back-to-back prompt queued, not redirected: {r} busy_interrupts={fake.busy_interrupts}")
+        c.expect(not r.get("_meta", {}).get(NS, {}).get("queued"), "not reported queued (nothing ahead in the gateway)")
+
         # Tool calls.
         a.updates.clear()
         await prompt(a, sid, "tool")

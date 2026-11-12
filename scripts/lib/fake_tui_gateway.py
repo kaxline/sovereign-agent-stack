@@ -72,6 +72,7 @@ class FakeTuiGateway:
         self._seq: dict[str, int] = {}
         self._owner: dict[str, web.WebSocketResponse] = {}
         self.logins = 0
+        self.busy_interrupts = 0
         self.runner: web.AppRunner | None = None
         self.url = ""
 
@@ -318,7 +319,11 @@ class FakeTuiGateway:
             raise _RpcError(4080, "context too long")
         if rid in self._running:
             if not p.get("queued"):
-                raise _RpcError(4009, "busy (the fake only queues)")
+                # Hermes' default busy mode: interrupt the live turn, run this one next.
+                self.busy_interrupts += 1
+                self._queue.setdefault(rid, []).insert(0, p.get("text", ""))
+                self._running[rid].cancel()
+                return {"status": "redirected"}
             self._queue.setdefault(rid, []).append(p.get("text", ""))
             return {"status": "queued"}
         self._start_turn(rid, s, p.get("text", ""))
@@ -341,6 +346,7 @@ class FakeTuiGateway:
         task.add_done_callback(done)
 
     async def _turn(self, rid: str, s: FakeSession, text: str) -> None:
+        completed = False
         s.messages.append({"role": "user", "text": text, "row_id": next(self._rows)})
         usage = {"input": 10, "output": 5, "context_used": 15, "context_max": 32000, "avg_tps": 40.0}
         turn_id = f"t{next(self._ids)}"
@@ -383,8 +389,12 @@ class FakeTuiGateway:
             await self.emit(rid, "session.usage", {"usage": usage})
             s.messages.append({"role": "assistant", "text": reply, "row_id": next(self._rows)})
             await self.emit(rid, "message.complete", {"text": reply, "status": "complete", "usage": usage})
+            # Hermes clears `running` in the turn's finally, after message.complete.
+            completed = True
+            await asyncio.sleep(0.2)
         except asyncio.CancelledError:
-            await self.emit(rid, "message.complete", {"text": "", "status": "interrupted", "usage": usage})
+            if not completed:
+                await self.emit(rid, "message.complete", {"text": "", "status": "interrupted", "usage": usage})
             raise
 
 
