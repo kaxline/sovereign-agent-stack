@@ -2,7 +2,7 @@
 """Stream the tool-guardrail stop note to gateway clients.
 
 Compatibility overlay until upstream fixes it (draft:
-docs/private/hermes-upstream/03-guardrail-halt-stream.md). When the tool-loop
+docs/private/hermes-upstream/13-guardrail-halt-stream.md). When the tool-loop
 guardrail halts a turn, agent/turn_tool_round.py streams the stop note only
 through agent.stream_delta_callback. The dashboard gateway
 (tui_gateway/prompt_turn.py) passes its message.delta emitter as
