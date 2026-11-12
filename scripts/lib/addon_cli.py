@@ -47,7 +47,7 @@ runs in the Hermes image through stack_python, so the host needs no python3.
         Prints the compose service, then the command's argv, one per line, with
         `--account SLUG` appended when the command takes an instance.
     plan-hook SID HOOK [--slug SLUG] [--reinit] [--replace]
-        HOOK is init, connect or disconnect. Prints
+        HOOK is prepare, init, connect or disconnect. Prints
         `script` and then the script's argv, or `service <compose name>` and
         then the command's argv, one item per line, ending in `--json`
         (`--slug SLUG --json` for connect and disconnect, which need --slug;
@@ -80,9 +80,10 @@ runs in the Hermes image through stack_python, so the host needs no python3.
         first, one per line. addon.sh passes only these to plan-remove.
     plan-remove SID --env JSON --flags JSON --repo DIR [--lines]
         Exits 2 while SID's builtin flag is "1" in --flags (the .env flags).
-        Prints {"services": [...], "volumes": [...], "delete": [...],
-        "kept": [{"path", "reason"}]}: every one-shot and service, the
-        compose volumes, and SID's data.paths sorted into those to delete and
+        Prints {"services": [...], "volumes": [...], "schemas": [...],
+        "delete": [...], "kept": [{"path", "reason"}]}: every one-shot and
+        service, the compose volumes, the shared-Postgres schemas (data.schemas,
+        which no other add-on may declare), and SID's data.paths sorted into those to delete and
         those to keep. A path is the value of its env in --env (addon.sh puts
         the caller's environment first, then .env), else its default, joined
         to DIR (the repo root) and normalised lexically: symlinks are never
@@ -93,7 +94,7 @@ runs in the Hermes image through stack_python, so the host needs no python3.
         directory and itself, or overlaps a path that another add-on whose
         builtin flag is "1" declares. data/addons/SID is always the last item
         of "delete". --lines prints `service NAME`, `volume NAME`,
-        `delete PATH` and `kept REASON<tab>PATH` lines instead, for addon.sh;
+        `schema NAME`, `delete PATH` and `kept REASON<tab>PATH` lines instead, for addon.sh;
         a path with a control character is refused (exit 2).
     delete-path PATH --repo DIR --sid SID
         Deletes PATH: a symlink or file is unlinked, a directory removed with
@@ -735,8 +736,10 @@ def cmd_plan_remove(args) -> None:
         name = _compose(manifest, key)
         (oneshots if name in runs_once else services).append(name)
     volumes = am.data_volumes(manifest)
+    schemas = am.data_schemas(manifest)
     if not args.lines:
-        _dump({"services": oneshots + services, "volumes": volumes, "delete": delete, "kept": kept})
+        _dump({"services": oneshots + services, "volumes": volumes, "schemas": schemas,
+               "delete": delete, "kept": kept})
         return
     for item in delete + [k["path"] for k in kept]:
         if any(unicodedata.category(c) == "Cc" for c in item):
@@ -745,6 +748,8 @@ def cmd_plan_remove(args) -> None:
         print(f"service {name}")
     for name in volumes:
         print(f"volume {name}")
+    for name in schemas:
+        print(f"schema {name}")
     for item in delete:
         print(f"delete {item}")
     for k in kept:

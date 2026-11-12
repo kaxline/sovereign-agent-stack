@@ -855,8 +855,8 @@ fi
 
 # --- CalDAV calendar ---
 caldav_enabled="$(env_get CALDAV_MCP_ENABLED 0)"
-if [[ "$caldav_enabled" == "1" || "$caldav_enabled" == "true" || "$caldav_enabled" == "TRUE" || "$caldav_enabled" == "yes" ]] \
-  || has_profile calendar; then
+case "$caldav_enabled" in 1|true|TRUE|yes|YES) caldav_on=1 ;; *) caldav_on=0 ;; esac
+if [[ "$caldav_on" -eq 1 ]] || has_profile calendar; then
   echo
   echo "--- CalDAV calendar ---"
   if has_profile calendar; then
@@ -864,138 +864,66 @@ if [[ "$caldav_enabled" == "1" || "$caldav_enabled" == "true" || "$caldav_enable
   else
     bad "CALDAV_MCP_ENABLED=1 but 'calendar' not in COMPOSE_PROFILES — run make ensure-local"
   fi
-  if [[ "$caldav_enabled" == "1" || "$caldav_enabled" == "true" || "$caldav_enabled" == "TRUE" || "$caldav_enabled" == "yes" ]]; then
+  if [[ "$caldav_on" -eq 1 ]]; then
     ok "CALDAV_MCP_ENABLED=1"
   else
     warn "calendar profile on but CALDAV_MCP_ENABLED is not 1 — Hermes will skip CalDAV MCP registration"
   fi
-  accounts_dir="compose/caldav-mcp/accounts"
-  valid_accounts=0
-  caldav_ready_slugs=()
-  if [[ -d "$accounts_dir" ]]; then
-    for acc in "$accounts_dir"/*.env; do
-      [[ -f "$acc" ]] || continue
-      base="$(basename "$acc")"
-      slug="${base%.env}"
-      url="$(grep -E '^CALDAV_URL=' "$acc" 2>/dev/null | head -1 | cut -d= -f2- || true)"
-      user="$(grep -E '^CALDAV_USERNAME=' "$acc" 2>/dev/null | head -1 | cut -d= -f2- || true)"
-      pass="$(grep -E '^CALDAV_PASSWORD=' "$acc" 2>/dev/null | head -1 | cut -d= -f2- || true)"
-      if [[ -z "$url" || -z "$user" || -z "$pass" ]]; then
-        warn "CalDAV account ${slug}: incomplete CALDAV_URL/USERNAME/PASSWORD"
-        continue
-      fi
-      if [[ "$pass" == "xxxx-xxxx-xxxx-xxxx" || "$user" == "you@icloud.com" ]]; then
-        warn "CalDAV account ${slug}: still has placeholder credentials — edit ${acc}"
-        continue
-      fi
-      ok "CalDAV account ${slug} looks filled in"
-      valid_accounts=$((valid_accounts + 1))
-      caldav_ready_slugs+=("$slug")
-    done
-  fi
-  if [[ "$valid_accounts" -eq 0 ]]; then
-    bad "No valid CalDAV accounts in ${accounts_dir}/ — copy account.env.example to accounts/<slug>.env"
+  # Account files from before 0.3.15. Nothing reads them now.
+  for acc in compose/caldav-mcp/accounts/*.env; do
+    [[ -f "$acc" ]] || continue
+    warn "${acc} is no longer read — connect it with scripts/addon.sh connect caldav (docs/calendar.md), then delete it"
+  done
+  # ASSISTANT_DATA_ROOT from the environment wins over .env, as in compose and addon.sh.
+  caldav_store="${ASSISTANT_DATA_ROOT:-$(env_get ASSISTANT_DATA_ROOT ./data)}/addons/caldav"
+  caldav_slugs=()
+  for inst in "${caldav_store}"/instances/*.json; do
+    [[ -f "$inst" ]] || continue
+    slug="$(basename "$inst" .json)"
+    if [[ -s "${caldav_store}/secrets/${slug}.password" ]]; then
+      caldav_slugs+=("$slug")
+    else
+      bad "CalDAV account ${slug} has no password — connect it again with scripts/addon.sh connect caldav --instance ${slug} --force"
+    fi
+  done
+  if [[ ${#caldav_slugs[@]} -eq 0 ]]; then
+    bad "No CalDAV account connected — scripts/addon.sh connect caldav --instance <slug> < account.json (docs/calendar.md)"
   else
-    ok "${valid_accounts} CalDAV account file(s) ready"
+    ok "${#caldav_slugs[@]} CalDAV account(s) connected: ${caldav_slugs[*]}"
   fi
-  if [[ ${#caldav_ready_slugs[@]} -gt 0 && -f compose/hermes/bootstrap-api-profile.sh ]]; then
-    # shellcheck disable=SC1090
-    eval "$(sed -n '/^caldav_password_env_key() {/,/^}/p' compose/hermes/bootstrap-api-profile.sh)"
-    for slug in "${caldav_ready_slugs[@]}"; do
-      key="$(caldav_password_env_key "$slug")"
-      ref="\${${key}}"
-      check_caldav_profile_ref() {
-        local label="$1" cfg="$2" envfile="$3" header="" rc=0
-        [[ -f "$cfg" ]] || return 0
-        header="$(python3 - "$cfg" "$slug" <<'PY'
+  # Each account's entry on default and browser must send the password as a
+  # reference to the profile's .env (addons/caldav/addon.json headers).
+  for slug in ${caldav_slugs[@]+"${caldav_slugs[@]}"}; do
+    key="CALDAV_$(printf '%s' "$slug" | tr '[:lower:]-' '[:upper:]_')_PASSWORD"
+    for pair in default:data/hermes browser:data/hermes/profiles/browser; do
+      label="${pair%%:*}"
+      dir="${pair#*:}"
+      [[ -f "${dir}/config.yaml" ]] || continue
+      header="$(python3 - "${dir}/config.yaml" "caldav-${slug}" <<'PY' 2>/dev/null || true
+import re
 import sys
-path, slug = sys.argv[1], sys.argv[2]
-target = f"caldav-{slug}"
-in_server = False
-server_indent = None
-try:
-    lines = open(path, encoding="utf-8").read().splitlines()
-except OSError:
-    sys.exit(2)
-for line in lines:
-    stripped = line.lstrip(" ")
-    if not in_server:
-        if stripped.startswith(target + ":") and stripped.split(":", 1)[0].strip() == target:
-            in_server = True
-            server_indent = len(line) - len(stripped)
-        continue
-    if not line.strip():
-        continue
-    indent = len(line) - len(line.lstrip(" "))
-    if indent <= server_indent:
-        break
-    body = line.strip()
-    prefix = "X-Caldav-Password:"
-    if body.startswith(prefix):
-        value = body[len(prefix):].strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
-            value = value[1:-1]
-        sys.stdout.write(value)
-        sys.exit(0)
-sys.exit(3)
+text = open(sys.argv[1], encoding="utf-8").read()
+m = re.search(r"^( *)" + re.escape(sys.argv[2]) + r": *$", text, re.M)
+if m:
+    rest = text[m.end():]
+    end = re.search(r"^ {0,%d}\S" % len(m.group(1)), rest, re.M)
+    block = rest[:end.start()] if end else rest
+    h = re.search(r"X-Caldav-Password:\s*['\"]?([^'\"\n]*)", block)
+    print(h.group(1).strip() if h else "")
 PY
-)" || rc=$?
-        case "$rc" in
-          0)
-            if [[ "$header" == "$ref" ]]; then
-              if [[ -f "$envfile" ]] && grep -q "^${key}=" "$envfile"; then
-                ok "caldav-${slug} password on ${label} is a profile env reference"
-              else
-                bad "caldav-${slug} header references ${key} but ${envfile} does not set it"
-              fi
-            else
-              warn "caldav-${slug} X-Caldav-Password in ${cfg} is not \${${key}} — run make hermes-reload"
-            fi
-            ;;
-          2) ;;
-          3)
-            warn "caldav-${slug} in ${cfg} has no X-Caldav-Password reference — run make hermes-reload"
-            ;;
-          *)
-            warn "could not read CalDAV headers in ${cfg}"
-            ;;
-        esac
-      }
-      check_caldav_profile_ref default \
-        data/hermes/config.yaml \
-        data/hermes/.env
-      check_caldav_profile_ref api-server \
-        data/hermes/profiles/api-server/config.yaml \
-        data/hermes/profiles/api-server/.env
-      check_caldav_profile_ref browser \
-        data/hermes/profiles/browser/config.yaml \
-        data/hermes/profiles/browser/.env
+)"
+      if [[ "$header" == "\${${key}}" ]] && grep -q "^${key}=" "${dir}/.env" 2>/dev/null; then
+        ok "caldav-${slug} on ${label} sends its password from ${key}"
+      else
+        warn "caldav-${slug} on ${label} is missing or doesn't reference ${key} — run make hermes-reload"
+      fi
     done
-  fi
+  done
   if docker info >/dev/null 2>&1; then
     if docker compose ps --status running caldav-mcp 2>/dev/null | grep -q caldav-mcp; then
       ok "caldav-mcp container is running"
     else
       warn "caldav-mcp not running — make up with calendar in COMPOSE_PROFILES"
-    fi
-    if docker compose ps --status running hermes 2>/dev/null | grep -q hermes; then
-      for acc in "$accounts_dir"/*.env; do
-        [[ -f "$acc" ]] || continue
-        slug="$(basename "$acc" .env)"
-        pass="$(grep -E '^CALDAV_PASSWORD=' "$acc" 2>/dev/null | head -1 | cut -d= -f2- || true)"
-        user="$(grep -E '^CALDAV_USERNAME=' "$acc" 2>/dev/null | head -1 | cut -d= -f2- || true)"
-        [[ "$pass" == "xxxx-xxxx-xxxx-xxxx" || "$user" == "you@icloud.com" ]] && continue
-        if docker compose exec -T hermes hermes mcp list 2>/dev/null | grep -q "caldav-${slug}"; then
-          ok "Hermes default profile has mcp caldav-${slug}"
-        else
-          warn "Hermes missing caldav-${slug} — run make hermes-reload after filling credentials"
-        fi
-      done
-      if docker compose exec -T hermes hermes -p api-server mcp list 2>/dev/null | grep -q 'caldav-'; then
-        ok "api-server profile has at least one caldav-* MCP entry"
-      else
-        warn "api-server has no caldav-* MCP — run make hermes-reload"
-      fi
     fi
   fi
 fi

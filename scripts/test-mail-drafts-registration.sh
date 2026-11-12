@@ -19,6 +19,9 @@ export STACK_PYTHON=host
 load_fns "$bootstrap" addon_mcp_plan addon_mcp_pin_args register_addon_mcp_servers mcp_tool_name
 
 log() { :; }
+# The todos entry (mcp.auth) removes its profile key while Vikunja is off.
+profile_env_file() { :; }
+remove_env_key() { :; }
 
 # The real addons/ dir: other add-ons add their own calls, so the stubs record
 # only calls about the two mail servers. The plan is read in a pipeline, so

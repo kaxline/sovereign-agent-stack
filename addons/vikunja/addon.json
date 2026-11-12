@@ -1,0 +1,155 @@
+{
+  "manifestVersion": 1,
+  "id": "io.github.kaxline.stack.vikunja",
+  "version": "1.0.0",
+  "title": "Todo lists",
+  "tagline": "Keep todo lists you and Hermes both edit",
+  "description": "Runs Vikunja (vikunja, with vikunja-proxy publishing its web app on 127.0.0.1:VIKUNJA_PORT) and registers its MCP server as todos. Tasks live in schema vikunja in the shared Postgres, so the SQL add-on can read them; attachments live in VIKUNJA_FILES_DIR. The prepare hook registers the schema before anything starts; the init hook creates the account with a generated password and mints two API tokens, read/write for the default and browser profiles and read-only for api-server. The token's scopes are the boundary: the bootstrap writes no tools.include, and Vikunja lists only the tools a token may call. See docs/todo.md. The server is named todos, not todo: Hermes aliases each MCP server name to its toolset, and todo is the built-in session-only toolset the bootstrap disables.",
+  "publisher": {
+    "name": "sovereign-agent-stack",
+    "url": "https://github.com/kaxline/sovereign-agent-stack"
+  },
+  "minStackVersion": "0.3.15",
+  "builtin": {
+    "flag": "VIKUNJA_MCP_ENABLED",
+    "profile": "todo",
+    "seed": false
+  },
+  "services": {
+    "server": {
+      "compose": "vikunja",
+      "port": 3456
+    },
+    "proxy": {
+      "compose": "vikunja-proxy",
+      "port": 8080
+    }
+  },
+  "uses": [
+    "postgres"
+  ],
+  "mcp": {
+    "service": "server",
+    "transport": "http",
+    "path": "/api/v2/mcp",
+    "name": "todos",
+    "timeout": 60,
+    "connectTimeout": 30,
+    "env": {
+      "url": "VIKUNJA_MCP_URL",
+      "timeout": "VIKUNJA_MCP_TIMEOUT",
+      "connectTimeout": "VIKUNJA_MCP_CONNECT_TIMEOUT"
+    },
+    "auth": {
+      "header": "Authorization",
+      "scheme": "Bearer",
+      "env": {
+        "ro": "VIKUNJA_MCP_TOKEN_RO",
+        "rw": "VIKUNJA_MCP_TOKEN_RW"
+      }
+    },
+    "tools": [
+      "do_action",
+      "filter_syntax",
+      "find_action",
+      "labels_create",
+      "labels_delete",
+      "labels_list",
+      "labels_read",
+      "labels_update",
+      "projects_create",
+      "projects_delete",
+      "projects_list",
+      "projects_read",
+      "projects_update",
+      "task_assignees_create",
+      "task_assignees_delete",
+      "task_assignees_list",
+      "task_comments_create",
+      "task_comments_delete",
+      "task_comments_list",
+      "task_comments_read",
+      "task_comments_update",
+      "tasks_create",
+      "tasks_delete",
+      "tasks_list",
+      "tasks_read",
+      "tasks_update",
+      "users_search"
+    ],
+    "pin": [
+      "tasks_list",
+      "tasks_read",
+      "tasks_create",
+      "tasks_update",
+      "projects_list"
+    ],
+    "writeTools": [
+      "labels_create",
+      "labels_delete",
+      "labels_update",
+      "projects_create",
+      "projects_delete",
+      "projects_update",
+      "task_assignees_create",
+      "task_assignees_delete",
+      "task_comments_create",
+      "task_comments_delete",
+      "task_comments_update",
+      "tasks_create",
+      "tasks_delete",
+      "tasks_update"
+    ],
+    "profiles": {
+      "default": "rw",
+      "browser": "rw",
+      "api-server": "ro"
+    }
+  },
+  "web": {
+    "service": "proxy",
+    "path": "/login-local"
+  },
+  "hooks": {
+    "prepare": {
+      "script": [
+        "scripts/todo.sh",
+        "prepare"
+      ]
+    },
+    "init": {
+      "script": [
+        "scripts/todo.sh",
+        "init"
+      ]
+    }
+  },
+  "data": {
+    "paths": [
+      {
+        "env": "VIKUNJA_FILES_DIR",
+        "default": "./data/vikunja/files"
+      }
+    ],
+    "schemas": [
+      "vikunja"
+    ]
+  },
+  "backup": {
+    "recommended": [
+      "VIKUNJA_SECRET"
+    ]
+  },
+  "permissions": {
+    "reads": [],
+    "writes": [
+      "external:todos"
+    ],
+    "sends": false,
+    "egress": [
+      "postgres"
+    ],
+    "exposesToAgent": true,
+    "cron": true
+  }
+}

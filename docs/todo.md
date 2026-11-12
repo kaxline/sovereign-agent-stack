@@ -19,6 +19,13 @@ make doctor
 make todo-open        # the web app, already signed in
 ```
 
+Or, without `make` (the route Boundary takes), one command does the setup,
+the account, the tokens and the Hermes reload:
+
+```bash
+./scripts/addon.sh enable vikunja
+```
+
 There is no password to choose or remember. `make todo-open` opens
 **[http://localhost:3456/login-local](http://localhost:3456/login-local)**,
 which signs the browser in and keeps it signed in; bookmark it. In WebUI:
@@ -34,15 +41,16 @@ which signs the browser in and keeps it signed in; bookmark it. In WebUI:
 | Schema `vikunja` | Owned by role `svc_vikunja` in the shared database. `compose/postgres/services/vikunja.env` holds its login (gitignored, written by `setup.sh --todo`) |
 | `VIKUNJA_FILES_DIR` | Task attachments, default `./data/vikunja/files` |
 | `make todo-init` | Creates the account (or adopts the only existing one) with a generated password, mints two API tokens, and writes all of it to `.env` |
-| Hermes bootstrap | Registers `mcp_servers.todos` when `VIKUNJA_MCP_ENABLED=1` and the profile's token is set. The key is named for what users call it; tools show up as `mcp__todos__tasks_list` and so on |
+| `addons/vikunja/addon.json` | The add-on manifest. `addon.sh enable vikunja` runs `todo.sh prepare` (hook `prepare`), starts both containers and runs `todo.sh init` once (hook `init`) |
+| Hermes bootstrap | Registers `mcp_servers.todos` from the manifest when `VIKUNJA_MCP_ENABLED=1` and the profile's token is set. The key is named for what users call it; tools show up as `mcp__todos__tasks_list` and so on |
 | `living-todos` skill | Routes "add to my todo list" to Vikunja when its tools are present, and to the markdown file otherwise (`compose/hermes/skills/living-todos/`) |
 
 ### Two tokens, enforced by Vikunja
 
 | Hermes profile | Used by | Token | Tools |
 |---|---|---|---|
-| `api-server` | unattended API / n8n / Boundary | `VIKUNJA_MCP_TOKEN_RO` | 11: list and read tasks, projects, labels, comments, assignees; kanban views and buckets via `find_action` |
-| default | dashboard, CLI | `VIKUNJA_MCP_TOKEN_RW` | 26: the above plus create, update, delete; also create, rename and delete buckets and move tasks between them |
+| `api-server` | unattended API / n8n / Boundary | `VIKUNJA_MCP_TOKEN_RO` | 12 on 2.8.0: list and read tasks, projects, labels, comments, assignees; kanban views and buckets via `find_action` |
+| default | dashboard, CLI | `VIKUNJA_MCP_TOKEN_RW` | 28 on 2.8.0: the above plus create, update, delete; also create, rename and delete buckets and move tasks between them |
 | `browser` | Hermes WebUI | `VIKUNJA_MCP_TOKEN_RW` | same as default |
 
 Vikunja filters the tool list by the token's scopes and refuses any call
@@ -56,14 +64,15 @@ half of each. Neither can create, change or delete views. Neither has access
 to account settings, webhooks, sharing, or teams.
 
 Bootstrap writes each token into that profile's `.env` under `data/hermes/` as
-`VIKUNJA_MCP_TOKEN`. `config.yaml` carries only the reference:
+`TODOS_KEY` (the manifest's `mcp.auth`). `config.yaml` carries only the
+reference:
 
 ```yaml
 mcp_servers:
   todos:
     url: http://vikunja:3456/api/v2/mcp
     headers:
-      Authorization: Bearer ${VIKUNJA_MCP_TOKEN}
+      Authorization: Bearer ${TODOS_KEY}
 ```
 
 Pinned (always visible) tools: `tasks_list`, `tasks_read`, `projects_list`,
@@ -178,9 +187,17 @@ Attachments are files under `VIKUNJA_FILES_DIR`; copy that directory too.
 ## Turning it off
 
 Set `VIKUNJA_MCP_ENABLED=0`, then run `make ensure-local` (which removes the
-`todo` profile) and `make hermes-reload`. The bootstrap drops the `todos` MCP
-entry and the token from each profile. The schema and its data stay in
-Postgres until you drop them ([database.md](database.md#adding-an-integration)).
+`todo` profile) and `make hermes-reload`, or run `./scripts/addon.sh disable
+vikunja`. The bootstrap drops the `todos` MCP entry and the token from each
+profile. The schema and its data stay in Postgres.
+
+`./scripts/addon.sh remove vikunja --delete-data`, while the add-on is off,
+deletes the lists: it drops the `vikunja` schema and role
+(`db.sh service-remove`), deletes `compose/postgres/services/vikunja.env`,
+the files directory and `data/addons/vikunja`. The next `enable` starts with
+an empty account. `VIKUNJA_USERNAME`, `VIKUNJA_PASSWORD` and both token
+variables stay in `.env`; that `enable` runs `init` again, which replaces the
+tokens.
 
 ## Troubleshooting
 
