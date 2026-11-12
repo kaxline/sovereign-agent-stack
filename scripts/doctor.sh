@@ -903,7 +903,7 @@ if [[ "$caldav_on" -eq 1 ]] || has_profile calendar; then
 import re
 import sys
 text = open(sys.argv[1], encoding="utf-8").read()
-m = re.search(r"^(\s*)" + re.escape(sys.argv[2]) + r":\s*$", text, re.M)
+m = re.search(r"^( *)" + re.escape(sys.argv[2]) + r": *$", text, re.M)
 if m:
     rest = text[m.end():]
     end = re.search(r"^ {0,%d}\S" % len(m.group(1)), rest, re.M)
