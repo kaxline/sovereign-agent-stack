@@ -1400,6 +1400,7 @@ def test_fill_refuses_sign_in_only() -> None:
 # --- Sign-in routes, with a fake signer on a temp socket --------------------
 
 SIGNIN_ORIGIN = "https://login.example.com"
+SIGNIN_URI = "https://login.example.com/signin?next=/home"
 IDP_ORIGIN = "https://sso.example.com"
 
 
@@ -1537,7 +1538,7 @@ def signin_vault() -> dict:
     """Item A on login.example.com with a TOTP key; item E on good.example.com with an IdP origin."""
     data = vault_data()
     data["items"] = [
-        login_item("A", FOLDER_AGENT, uris=[(SIGNIN_ORIGIN, None)], totp=TOTP_SEED),
+        login_item("A", FOLDER_AGENT, uris=[(SIGNIN_URI, None)], totp=TOTP_SEED),
         login_item("E", FOLDER_AGENT, uris=[("https://good.example.com", None)], in_page=False, fields=[
             {"name": "agent-signin-idp", "value": IDP_ORIGIN, "type": 0}]),
     ]
@@ -1615,6 +1616,46 @@ def test_no_route_returns_canary() -> None:
         expect_no_canaries(b.bodies, written, "/signin routes")
         b.stop()
         b.expect_clean(extra_secrets=codes)
+
+
+def test_sequence_opens_the_item_uri() -> None:
+    """The item's URI names a path, so the sign-in opens that page, not the site root."""
+    with broker_run(vault=signin_vault()) as b:
+        b.add_account("personal")
+        b.start(unlocked=["personal"])
+        with fake_signer(b) as fake:
+            got = b.call("POST", "/signin/start", signin_body(handle=handle("personal", "A")))
+            expect(got[0] == 200, f"/signin/start {got}")
+            opened = fake.bodies("/session/open")[0]
+            expect(opened["url"] == SIGNIN_URI, f"opened {opened['url']!r}, want {SIGNIN_URI!r}")
+            # The signer loads a URL only when its normalized origin is in allowed
+            # (signer/session.py:url_allowed), which the item's first origin is.
+            expect(origins.normalize_origin(opened["url"]) == SIGNIN_ORIGIN
+                   and opened["allowed"][0] == SIGNIN_ORIGIN,
+                   f"the URI is not on an allowed origin: {opened}")
+            status, items = b.call("GET", "/items")
+            listed = next(i for i in items if i["handle"] == handle("personal", "A"))
+            expect(listed["origins"] == [SIGNIN_ORIGIN], f"/items still lists origins: {listed}")
+        b.stop()
+        b.expect_clean()
+
+
+def test_handover_keeps_the_signers_cookie_rule() -> None:
+    """The handover applies the signer's cookie rule again, with the same outcome."""
+    sys.path.insert(0, str(ROOT / "compose" / "bitwarden-signin"))
+    from signer import cookies as signer_cookies  # the signer runs in its own container, so this is a copy
+
+    item_origins = ("https://app.example.com", "https://login.example.com:8443")
+    jar = [{"name": n, "value": "v", "domain": d} for n, d in (
+        ("exact", "app.example.com"), ("parent", ".example.com"), ("ported", "login.example.com"),
+        ("sibling", "other.example.com"), ("idp", "sso.idp.test"), ("idp-domain", ".idp.test"),
+        ("hostonly-parent", "example.com"), ("tld", ".com"), ("empty", ""))]
+    kept = [c["name"] for c in signer_cookies.select(jar, item_origins)]
+    hosts = origins.origin_hosts(item_origins)
+    mine = [c["name"] for c in cdp._cookie_params(jar, hosts)]
+    expect(kept == ["exact", "parent", "ported"], f"the signer keeps {kept}")
+    expect(mine == kept, f"the handover keeps {mine}, the signer {kept}")
+    expect(cdp._cookie_params(jar, set()) == [], "no item host, no cookie")
 
 
 def test_fill_uses_item_origins_only() -> None:
@@ -2093,7 +2134,9 @@ def test_auto_sequence_two_step() -> None:
              ax_page(SIGNIN_ORIGIN, ax_node(1, "StaticText", "", "Signed in as user-a"))]
     export = {"origin": SIGNIN_ORIGIN,
               "cookies": [{"name": "sess", "value": "s-1", "domain": "login.example.com", "path": "/",
-                           "httpOnly": True, "secure": True, "sameSite": "Lax", "expires": -1}],
+                           "httpOnly": True, "secure": True, "sameSite": "Lax", "expires": -1},
+                          # Not on an item origin: the handover drops it even though the signer sent it.
+                          {"name": "idp", "value": "i-1", "domain": "sso.example.com", "path": "/"}],
               "localStorage": [["token", "t-1"]], "sessionStorage": [["tab", "x-1"]]}
     with broker_run(vault=signin_vault()) as b, fake_cdp([{"id": TARGET, "url": LOGIN_URL}]) as cdp_fake:
         b.add_account("personal")
@@ -2116,7 +2159,8 @@ def test_auto_sequence_two_step() -> None:
         expect("Network.setCookies" in methods and methods[-1] == "Target.detachFromTarget",
                f"handover commands {methods}")
         cookies = [m for m in cdp_fake.messages if m.get("method") == "Network.setCookies"][0]
-        expect([c["name"] for c in cookies["params"]["cookies"]] == ["sess"], f"cookies {cookies['params']}")
+        expect([c["name"] for c in cookies["params"]["cookies"]] == ["sess"],
+               f"the IdP cookie reached the tab: {cookies['params']}")
         expect("expires" not in cookies["params"]["cookies"][0], "a session cookie keeps no expiry")
         call = [m for m in cdp_fake.messages if m.get("method") == "Runtime.callFunctionOn"][0]
         args = [a.get("value") for a in call["params"]["arguments"]]
@@ -2283,22 +2327,30 @@ try:
     cookie = {"name": "sess", "value": "s-1", "domain": "127.0.0.1", "path": "/", "httpOnly": True,
               "secure": False, "sameSite": "Lax", "expires": -1}
     result = cdp.handover(port, target_id, (A,), [cookie], [], [])
-    expect(result == cdp.HandoverResult(True, A, None), "cookie handover: %r" % (result,))
+    expect(result == cdp.HandoverResult(True, A, None, 1), "cookie handover: %r" % (result,))
     wait_for("signed in", "the cookie handover did not sign the tab in")
     hidden = call("Runtime.evaluate", {"expression": "document.cookie", "returnByValue": True})
     expect("sess" not in ((hidden.get("result") or {}).get("value") or ""), "the HttpOnly cookie is page-readable")
+
+    # A cookie outside the item's origins is dropped before the write.
+    foreign = dict(cookie, name="other", value="o-1", domain="other.example.com")
+    result = cdp.handover(port, target_id, (A,), [foreign], [], [])
+    expect(result == cdp.HandoverResult(True, A, None, 0), "foreign cookie handover: %r" % (result,))
+    got = call("Runtime.evaluate", {"expression": "document.cookie", "returnByValue": True})
+    expect("other" not in ((got.get("result") or {}).get("value") or ""), "a foreign cookie was written")
 
     # Flow 2: a token in localStorage and a sessionStorage entry.
     go(A + "/token")
     expect("no token" in text(), "the token page starts empty: " + repr(text()))
     result = cdp.handover(port, target_id, (A,), [], [["token", "t-1"]], [["tab", "x-1"]])
-    expect(result == cdp.HandoverResult(True, A, None), "storage handover: %r" % (result,))
+    expect(result == cdp.HandoverResult(True, A, None, 0), "storage handover: %r" % (result,))
     wait_for("token t-1 tab x-1", "the storage handover did not reach the tab")
 
     # A tab on another origin: refused, and nothing is written.
     go(B + "/token")
     result = cdp.handover(port, target_id, (A,), [cookie], [["token", "t-2"]], [["tab", "x-2"]])
-    expect(result == cdp.HandoverResult(False, B, "handover_refused"), "refused handover: %r" % (result,))
+    expect(result == cdp.HandoverResult(False, B, "handover_refused", 0),
+           "refused handover: %r" % (result,))
     time.sleep(0.5)
     expect("no token" in text(), "a refused handover wrote storage: " + repr(text()))
     got = call("Runtime.evaluate", {"expression": "localStorage.length + ':' + document.cookie",
@@ -2396,6 +2448,8 @@ def main() -> None:
     test_fill_refuses_sign_in_only()
     test_signin_routes_keep_tcp_checks()
     test_no_route_returns_canary()
+    test_sequence_opens_the_item_uri()
+    test_handover_keeps_the_signers_cookie_rule()
     test_fill_uses_item_origins_only()
     test_auto_sequence_returns_snapshot_on_unknown_page()
     test_redirect_off_origin_then_cancel()

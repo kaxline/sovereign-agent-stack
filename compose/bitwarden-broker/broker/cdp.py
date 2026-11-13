@@ -32,7 +32,7 @@ import socket
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
-from .origins import normalize_origin
+from .origins import cookie_domain_allowed, normalize_origin, origin_hosts
 
 TARGET_NOT_FOUND = "target_not_found"
 ORIGIN_MISMATCH = "origin_mismatch"
@@ -47,6 +47,8 @@ _BROWSER_PATH = re.compile(r"/devtools/browser/[A-Za-z0-9-]{1,64}")
 _MAX_BODY = 4 << 20
 _MAX_HEADERS = 64 << 10
 _MAX_MESSAGE = 4 << 20
+
+LOG = logging.getLogger("broker.cdp")
 
 # websockets logs frames at DEBUG, and a frame can hold the value.
 _WS_LOGGER = logging.getLogger("broker.cdp.websocket")
@@ -198,6 +200,7 @@ class HandoverResult:
     done: bool
     origin: str
     error: str | None
+    cookies: int = 0  # how many were written; 0 unless the handover went through
 
 
 class _Fail(Exception):
@@ -295,7 +298,7 @@ async def handover_async(port: int, target_id: str, allowed_origins: tuple[str, 
     if isinstance(allowed_origins, str):
         raise TypeError("allowed_origins must be a collection of origins, not one string")
     allowed = {o for o in (normalize_origin(a) for a in allowed_origins) if o}
-    params = _cookie_params(cookies)
+    params = _cookie_params(cookies, origin_hosts(allowed))
     entries = (_entries(local), _entries(session))
 
     loop = asyncio.get_running_loop()
@@ -313,7 +316,7 @@ async def handover_async(port: int, target_id: str, allowed_origins: tuple[str, 
         code = CDP_UNAVAILABLE
     except Exception:  # noqa: BLE001 - any other failure is the endpoint's, and its text stays out
         code = CDP_UNAVAILABLE
-    return HandoverResult(code is None, seen["origin"], code)
+    return HandoverResult(code is None, seen["origin"], code, len(params) if code is None else 0)
 
 
 async def _handover(port, target_id, allowed, params, entries, budget, cleanup, seen) -> None:
@@ -351,17 +354,23 @@ async def _handover(port, target_id, allowed, params, entries, budget, cleanup, 
             raise _Fail(PAGE_ERROR)
 
 
-def _cookie_params(cookies) -> list[dict]:
+def _cookie_params(cookies, hosts: set[str]) -> list[dict]:
     """The signer's cookie records as Network.setCookies parameters, field by field.
 
     A record comes from a page's jar, so each field is taken only in the type and
     range CDP takes: a bad one would fail the whole call. ``expires`` is left out
-    for a session cookie, which CDP reports as -1.
+    for a session cookie, which CDP reports as -1. A cookie whose domain is not
+    one of ``hosts`` or a parent of one is dropped: the signer selects on the same
+    rule, and this is the call that writes into the agent's browser.
     """
     out = []
+    dropped = 0
     for cookie in cookies or ():
         if not isinstance(cookie, dict) or not isinstance(cookie.get("name"), str) \
                 or not isinstance(cookie.get("value"), str):
+            continue
+        if not cookie_domain_allowed(cookie.get("domain"), hosts):
+            dropped += 1
             continue
         param = {"name": cookie["name"], "value": cookie["value"]}
         for key in ("domain", "path"):
@@ -376,6 +385,8 @@ def _cookie_params(cookies) -> list[dict]:
         if isinstance(expires, (int, float)) and not isinstance(expires, bool) and expires > 0:
             param["expires"] = float(expires)
         out.append(param)
+    if dropped:
+        LOG.info("handover dropped %d cookie(s) outside the item's origins", dropped)
     return out
 
 

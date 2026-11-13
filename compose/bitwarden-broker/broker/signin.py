@@ -40,6 +40,7 @@ LOG = logging.getLogger("broker.signin")
 
 HANDOVER_TIMEOUT = 10.0
 ROUNDS = 4
+MAX_URL = 8192  # the signer refuses a longer one (signer/server.py)
 # Snapshot roles, lowercased: the signer's field roles (signer/snapshot.py) and
 # the roles Chromium gives a button.
 FIELD_ROLES = {"textbox", "searchbox", "combobox", "spinbutton", "textfield"}
@@ -174,9 +175,18 @@ class SignIn:
         return state if state in ("ready", "busy", "sandbox_unavailable") else "down"
 
     def end_stale(self) -> None:
-        """At startup: end the session a previous broker run left in the signer."""
+        """At startup: end the session a previous broker run left in the signer.
+
+        Under the lock, and only with no session of this run: a ``start`` that
+        lands while this call is out must not have its new session ended.
+        """
         try:
-            status, body = self.client.call("POST", "/session/end", {})
+            with self._guard():
+                if self._item is not None:
+                    return
+                status, body = self.client.call("POST", "/session/end", {})
+        except SignInError:
+            return  # a call got there first and owns the signer's session
         except SignerUnavailable:
             return
         if status == 200 and body.get("ended"):
@@ -242,8 +252,12 @@ class SignIn:
     # --- actions ------------------------------------------------------------
 
     def _open(self, item) -> dict:
+        # The item's first URI, so a sign-in opens the page the person saved
+        # (https://host/login) and not the site root. Its origin is origins[0],
+        # which is in allowed, so the signer takes it.
+        url = item.first_uri if item.first_uri and len(item.first_uri) <= MAX_URL else item.origins[0]
         try:
-            return self._call("/session/open", {"url": item.origins[0], "allowed": self._allowed(item)})
+            return self._call("/session/open", {"url": url, "allowed": self._allowed(item)})
         except SignInError:
             # The signer keeps the session of an open that failed, and a session it
             # already had refuses this one; either way the next sign-in gets a browser.
@@ -267,6 +281,8 @@ class SignIn:
                                   else "unavailable") from None
             if not value:
                 raise SignInError("unavailable")
+            if self.vault.get(item.handle) is None:
+                raise SignInError("unknown_handle")  # a release landed while bw ran; it wins
             if self.touch is not None:
                 self.touch(item.account)
             body = {"ref": ref, "field": field, "value": value, "allowed": list(item.origins)}
@@ -284,8 +300,7 @@ class SignIn:
         except SignInError:
             self._abandon()
             raise
-        cookies = exported.get("cookies") or []
-        result = cdp.handover(port, target_id, tuple(item.origins), cookies,
+        result = cdp.handover(port, target_id, tuple(item.origins), exported.get("cookies") or [],
                               exported.get("localStorage") or [], exported.get("sessionStorage") or [],
                               timeout=HANDOVER_TIMEOUT)
         if result.error == cdp.HANDOVER_REFUSED:
@@ -295,7 +310,7 @@ class SignIn:
         if result.error is not None:
             LOG.info("handover failed (%s)", result.error)
             raise SignInError("page_error")
-        return {"done": True, "origin": result.origin, "cookies": len(cookies)}
+        return {"done": True, "origin": result.origin, "cookies": result.cookies}
 
     # --- session and transport ----------------------------------------------
 

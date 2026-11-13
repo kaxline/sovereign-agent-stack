@@ -36,6 +36,10 @@ class ItemMeta:
     item_id: str
     in_page_fill: bool = False
     idp_origins: tuple[str, ...] = ()
+    # The item's first fill URI as the person wrote it, so a sign-in opens the
+    # page it names (https://host/login), not the site root. Its origin is
+    # origins[0], so it passes the signer's check.
+    first_uri: str | None = None
 
 
 def parse_handle(handle: str) -> tuple[str, str] | None:
@@ -47,15 +51,28 @@ def parse_handle(handle: str) -> tuple[str, str] | None:
     return slug, item_id
 
 
-def fill_origins(uris: list[dict]) -> tuple[str, ...]:
-    out: list[str] = []
+def _fill_uris(uris: list[dict]):
+    """The item's fill URIs as ``(uri, origin)``, in the item's order."""
     for uri in uris:
         if uri.get("match") == MATCH_NEVER:
             continue
-        origin = normalize_origin(uri.get("uri"))
-        if origin and origin.startswith(("http://", "https://")) and origin not in out:
+        raw = uri.get("uri")
+        origin = normalize_origin(raw)
+        if origin and origin.startswith(("http://", "https://")):
+            yield raw.strip(), origin
+
+
+def fill_origins(uris: list[dict]) -> tuple[str, ...]:
+    out: list[str] = []
+    for _, origin in _fill_uris(uris):
+        if origin not in out:
             out.append(origin)
     return tuple(out)
+
+
+def first_fill_uri(uris: list[dict]) -> str | None:
+    """The first fill URI whole, path and query kept; its origin is ``fill_origins``' first."""
+    return next((uri for uri, _ in _fill_uris(uris)), None)
 
 
 class Denylist:
@@ -131,6 +148,7 @@ class Vault:
                 handle=handle, label=item["name"] or item_origins[0], username=item["username"] or None,
                 origins=item_origins, has_totp=item["has_totp"], account=slug, item_id=item["id"],
                 in_page_fill=item["in_page_fill"], idp_origins=tuple(item["idp_origins"]),
+                first_uri=first_fill_uri(item["uris"]),
             ))
         return out
 
