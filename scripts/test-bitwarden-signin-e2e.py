@@ -30,8 +30,11 @@ value and of its CR/LF-stripped form) is looked for in:
     canaries from the stand-in, which does not hold them either;
   - ``docker logs`` of every container in the run.
 
-A control value the site puts in every page and prints once at startup must be found on each of
-those surfaces, so a run with no canary hit cannot pass because the search reached nothing.
+A control value must be found on each of those surfaces, so a run with no canary hit cannot pass
+because the search reached nothing. The site puts it in a meta tag and in ``localStorage`` on
+every page, prints it once at startup, and the stand-in carries it in the tab's URL; Chromium
+writes the last two into its profile, where a page body never lands because the site answers
+``Cache-Control: no-store``.
 
 Expected: each flow signs in and there is no hit anywhere. Containers, networks,
 volumes and built images are removed by name on success and on failure. Exit 77
@@ -75,15 +78,42 @@ LOGIN_USER = "canary@example.com"
 FLOWS = ("one_page", "two_step", "totp", "local_token", "idp")
 TASK = "signin-e2e"
 B32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
-# The overlays 05-patch-tool-calling.sh runs on tools/browser_vault_tool.py, in its order.
-PATCHES = ("patch-browser-exec-hint.py", "patch-vault-create-login.py", "patch-vault-capture-secret.py",
-           "patch-digest-redaction.py", "patch-bitwarden-broker-fill.py", "patch-bitwarden-signin.py")
+# The overlays this test applies, which overlay_patches() must find in 05-patch-tool-calling.sh.
+KNOWN_PATCHES = ("patch-browser-exec-hint.py", "patch-vault-create-login.py",
+                 "patch-vault-capture-secret.py", "patch-digest-redaction.py",
+                 "patch-bitwarden-broker-fill.py", "patch-bitwarden-signin.py")
+# Not an editor of tools/browser_vault_tool.py, but the fill overlay needs the module it installs.
+EXTRA_PATCHES = ("patch-digest-redaction.py",)
+VAULT_TOOL = "browser_vault_tool.py"
 DRIVER_SECONDS = 900
 
 
 def skip(reason: str) -> None:
     print(f"SKIP {reason}")
     raise SystemExit(77)
+
+
+def overlay_patches() -> list[str]:
+    """The overlays to apply, in 05-patch-tool-calling.sh order.
+
+    Read out of the runner rather than listed here, so an overlay added later that also edits
+    tools/browser_vault_tool.py is applied by this test as it is in the real container. An
+    overlay that stops being run, or stops editing that file, fails here instead.
+    """
+    import re
+
+    runner = (HERMES_SRC / "05-patch-tool-calling.sh").read_text()
+    names = re.findall(r"run_patch\s+/bootstrap/([A-Za-z0-9._-]+\.py)", runner)
+    found = []
+    for name in names:
+        script = HERMES_SRC / name
+        if name in found or not script.is_file():
+            continue
+        if name in EXTRA_PATCHES or VAULT_TOOL in script.read_text():
+            found.append(name)
+    missing = [name for name in KNOWN_PATCHES if name not in found]
+    expect(not missing, f"05-patch-tool-calling.sh no longer runs {missing} on {VAULT_TOOL}")
+    return found
 
 
 def canary_patterns(values: dict[str, str]) -> list[dict]:
@@ -141,12 +171,16 @@ def totp_ok(value):
 
 
 def page(body, script=""):
-    tail = f"<script>{script}</script>" if script else ""
-    # The control value: a string the search must find on every surface it covers. Without it a
-    # run with no canary hit could mean the search reached nothing.
+    """A page carrying the control value, which the search must find on every surface it covers.
+
+    It is in the DOM as a meta tag and in localStorage, which Chromium writes into its profile
+    directory when it stops. Without it a run with no canary hit could mean the search reached
+    nothing. The control is not a secret: only the canaries must stay off the agent side.
+    """
+    control = f"try {{ localStorage.setItem('e2e-control', {json.dumps(CONF['control'])}); }} catch (e) {{}}"
     return ("<!doctype html><html><head><meta charset=utf-8><title>e2e</title>"
             f'<meta name="e2e-control" content="{CONF["control"]}"></head>'
-            f"<body>{body}{tail}</body></html>")
+            f"<body>{body}<script>{control}\n{script}</script></body></html>")
 
 
 def field(label, name, kind="text", extra=""):
@@ -463,6 +497,9 @@ import glob, json, os, subprocess, sys, tempfile, time, urllib.request
 
 CONF = json.load(open("/test/config.json"))
 SITE, IDP, TASK = CONF["site_origin"], CONF["idp_origin"], CONF["task_id"]
+# Not a canary: the stand-in may hold it. Carried in the tab's URL so it also reaches the
+# profile's history, beside the localStorage entry the site's pages write.
+CONTROL = CONF["control"]
 STATUS, GO, CAPTURE = "/tmp/e2e-status.json", "/tmp/e2e-go", "/tmp/e2e-capture.jsonl"
 notes = []
 
@@ -536,12 +573,18 @@ def tool(args):
     return json.loads(bvt._handle_vault(args, task_id=TASK))
 
 
-def wait_for_text(want, seconds=45):
+def wait_for_text(want, seconds=45, forbidden=None):
+    """Wait for the tab's text to hold ``want`` and not ``forbidden``.
+
+    SIGNED-IN is a substring of NOT-SIGNED-IN, which is what the tab shows until the handover's
+    reload commits, so waiting for the one without excluding the other would end the wait on the
+    page it is meant to wait out.
+    """
     end = time.time() + seconds
     last = ""
     while time.time() < end:
         last = cdp.evaluate(TAB, "document.body ? document.body.innerText : ''") or ""
-        if want in last:
+        if want in last and (forbidden is None or forbidden not in last):
             return last
         time.sleep(0.25)
     raise AssertionError(f"the agent tab never showed {want!r} (it showed {last[:120]!r})")
@@ -563,7 +606,7 @@ say("ok: browser_vault action=fill refuses the item with sign_in_only")
 
 def run_flow(name):
     http_get(f"{SITE}/control?flow={name}")
-    cdp.navigate(TAB, f"{SITE}/home")
+    cdp.navigate(TAB, f"{SITE}/home?control={CONTROL}")
     wait_for_text("NOT-SIGNED-IN")
     result = tool({"action": "sign_in", "handle": HANDLE})
     if name == "idp":
@@ -582,8 +625,7 @@ def run_flow(name):
     assert result.get("success") is True and result.get("done") is True, result
     assert result.get("origin") == SITE, result
     assert isinstance(result.get("cookies"), int), result
-    body = wait_for_text("SIGNED-IN")
-    assert "NOT-SIGNED-IN" not in body, body
+    body = wait_for_text("SIGNED-IN", forbidden="NOT-SIGNED-IN")
     seen = json.loads(http_get(f"{SITE}/seen"))
     assert seen["username_ok"] and seen["password_ok"], f"{name}: the site did not get the login: {seen}"
     assert seen["totp_ok"] == (name == "totp"), f"{name}: totp_ok {seen['totp_ok']}"
@@ -833,6 +875,13 @@ def signer_flags(service: dict) -> list[str]:
     return flags
 
 
+def expect_control(report: dict, *surfaces: str) -> None:
+    """Every named surface must have shown the control value, or its canary search reached nothing."""
+    missing = sorted(set(surfaces) - set(report.get("control_surfaces") or ()))
+    expect(not missing, f"the control value was not found on {missing}; the canary search does "
+                        "not reach those surfaces, so a clean run there means nothing")
+
+
 def wait_for(what: str, probe, seconds: float, detail=lambda: "") -> None:
     end = time.monotonic() + seconds
     while time.monotonic() < end:
@@ -975,12 +1024,13 @@ def main() -> None:
                f"the broker lists the item as {listed}")
         print("ok: the broker lists the item, sign-in only, with a TOTP key")
 
-        for name in PATCHES:
+        patches = overlay_patches()
+        for name in patches:
             out = docker("exec", "-u", "0", "-e", "DIGEST_REDACTION_BOOTSTRAP=/broker-src/broker",
                          agent, PYTHON, f"/bootstrap/{name}", timeout=300)
             expect(out.returncode == 0 and "warn:" not in out.stdout,
                    f"{name}: exit {out.returncode}: {(out.stdout + out.stderr).strip()[-400:]}")
-        print(f"ok: the {len(PATCHES)} overlays applied in 05-patch-tool-calling.sh order")
+        print(f"ok: the {len(patches)} overlays applied in 05-patch-tool-calling.sh order")
 
         # The gateway stand-in, as the hermes user: it never holds a canary.
         docker("exec", "-d", "-u", "hermes", agent, "/bin/sh", "-c",
@@ -1020,9 +1070,7 @@ def main() -> None:
                               text=True, timeout=900)
         expect(live.returncode == 0, f"the live search failed: {(live.stdout + live.stderr)[-600:]}")
         live_report = json.loads(live.stdout)
-        missing = {"capture", "browser", "memory"} - set(live_report["control_surfaces"])
-        expect(not missing, f"the control value was not found on {sorted(missing)}; the canary "
-                            "search does not reach those surfaces, so a clean run means nothing")
+        expect_control(live_report, "capture", "browser", "memory")
         print(f"ok: searched the agent browser and the stand-in's memory ({live_report['stats']})")
 
         docker("exec", agent, "/bin/sh", "-c", "touch /tmp/e2e-go")
@@ -1035,6 +1083,9 @@ def main() -> None:
         expect(profile.returncode == 0,
                f"the profile search failed: {(profile.stdout + profile.stderr)[-600:]}")
         profile_report = json.loads(profile.stdout)
+        # The file count alone proves nothing: Chromium writes Local State, Preferences and cache
+        # shards whether or not a byte from a page lands on disk.
+        expect_control(profile_report, "profile")
         print(f"ok: searched the agent Chromium's profile ({profile_report['stats']})")
 
         log_hits = scan_text(provision_output, patterns, "the provisioning container's output")
@@ -1042,6 +1093,8 @@ def main() -> None:
         logs = kit.container_logs(site, agent, signer, broker)
         for name, text in logs.items():
             log_hits += scan_text(text, patterns, f"docker logs {name.rsplit('-', 1)[1]}")
+        expect(not kit.log_errors,
+               f"docker logs could not be read for {kit.log_errors}; those logs went unsearched")
         expect(scan_text(logs[site], control_patterns, "site"),
                "docker logs of the site container does not even hold the control value")
         print(f"ok: searched docker logs of {len(logs)} containers, the provisioning output "

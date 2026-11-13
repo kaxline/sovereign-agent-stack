@@ -80,6 +80,8 @@ class Vaultwarden:
         self._containers = [self.gen, self.tls, self.vw]
         self._networks = [self.net, self.back]
         self.output: list[str] = []
+        # Containers whose docker logs could not be read, by name; see container_logs.
+        self.log_errors: dict[str, str] = {}
 
     # --- the broker image and setup.py --------------------------------------
 
@@ -155,9 +157,17 @@ class Vaultwarden:
         self._containers[:0] = containers
 
     def container_logs(self, *names: str) -> dict[str, str]:
+        """``docker logs`` of each container, plus the vault pair.
+
+        A call that failed (a removed or renamed container) leaves docker's own message in the
+        text, which reads like an empty log to a caller searching it, so each failure is also
+        recorded in ``log_errors`` for the caller to check.
+        """
         out = {}
         for name in (*names, self.tls, self.vw):
             proc = docker("logs", name, timeout=120)
+            if proc.returncode != 0:
+                self.log_errors[name] = proc.stderr.strip()[-200:] or f"exit {proc.returncode}"
             out[name] = proc.stdout + proc.stderr
         return out
 
