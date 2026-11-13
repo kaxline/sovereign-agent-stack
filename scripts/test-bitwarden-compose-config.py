@@ -19,6 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 import compose_config  # noqa: E402
+import hermes_image  # noqa: E402
 from testkit import Checks  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -262,6 +263,22 @@ def check_signin(cfg: dict) -> None:
         checks.fail(f"volume {SIGNIN_VOLUME} must be a tmpfs, mode 0700, owned by HERMES_UID:HERMES_GID, not {opts!r}")
 
 
+def check_signin_dockerfile() -> None:
+    """The signer's base tag: one pin. The Dockerfile's ARG default is only for
+    a bare docker build, so it must equal docker-compose.yml's, which a Hermes
+    bump changes."""
+    text = (ROOT / "compose/bitwarden-signin/Dockerfile").read_text(encoding="utf-8")
+    m = re.search(r"^ARG HERMES_AGENT_IMAGE_TAG=(\S+)$", text, re.M)
+    if not m:
+        checks.fail("compose/bitwarden-signin/Dockerfile has no ARG HERMES_AGENT_IMAGE_TAG=<tag> default")
+    elif m.group(1) != hermes_image.compose_default_tag():
+        checks.fail(f"compose/bitwarden-signin/Dockerfile pins {m.group(1)}, "
+                    f"docker-compose.yml pins {hermes_image.compose_default_tag()}")
+    if not re.search(r"^FROM nousresearch/hermes-agent:\$\{HERMES_AGENT_IMAGE_TAG\}$", text, re.M):
+        checks.fail("compose/bitwarden-signin/Dockerfile must build FROM "
+                    "nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG}")
+
+
 def check_signin_follows_uid() -> None:
     """The socket volume's owner and the signer's user follow HERMES_UID:HERMES_GID."""
     cfg = compose_config.render("core,bitwarden", {"HERMES_UID": "1234", "HERMES_GID": "1235"})
@@ -483,6 +500,7 @@ def main() -> None:
     check_signin(config("core,bitwarden"))
     check_signin(config("core,bitwarden,bitwarden-tools,vault"))
     check_signin_follows_uid()
+    check_signin_dockerfile()
     check_store_follows_data_root()
     for backend in ("ssh", "local"):
         cfg = config("core,bitwarden,bitwarden-tools", backend)

@@ -10,6 +10,9 @@ on:
   pull_request:
     paths:
       - "compose/hermes/**"
+      # The signer and its seccomp profile: the image tests are the only ones
+      # that run Chromium under the profile.
+      - "compose/bitwarden-signin/**"
       - "docker-compose.yml"
       - "scripts/lib/**"
       - "scripts/test-*"
@@ -21,6 +24,7 @@ on:
     branches: [main, master]
     paths:
       - "compose/hermes/**"
+      - "compose/bitwarden-signin/**"
       - "docker-compose.yml"
 
 jobs:
