@@ -63,6 +63,12 @@ PY
 mkdir -p "$work/addon-data/actual/instances"
 printf '{"server": "local", "sync_id": "s1", "bind": {"default": "rw"}}\n' > "$work/addon-data/actual/instances/main.json"
 fn_source "$BOOTSTRAP" fence_mail_from_cron > "$work/fence.sh"
+for fn in is_true config_path_for fence_mail_from_cron_all_profiles; do
+  fn_source "$BOOTSTRAP" "$fn" >> "$work/sweep.sh"
+done
+# A Hermes home with the bootstrap's own profile, an agent made by
+# make agent-create, and a profile directory without a config.yaml.
+mkdir -p "$work/hh/profiles/api-server" "$work/hh/profiles/orchestrator" "$work/hh/profiles/bare"
 cat > "$work/run.sh" <<'EOF'
 set -eu
 log() { printf '%s\n' "$*"; }
@@ -130,6 +136,29 @@ ADDON_MANIFEST_PY=/nope.py; fence_mail_from_cron "" >/dev/null
 echo "missing:$(cron_list)"
 ADDON_MANIFEST_PY=/bootstrap/addon_manifest.py; ADDONS_DIR=/bootstrap/addons; fence_mail_from_cron ""
 echo "back:$(cron_list)"
+
+# The sweep: every profile under profiles/ is fenced, not only the default and
+# this bootstrap's own.
+. /w/sweep.sh
+HERMES_HOME=/w/hh
+seed_home() {
+  find /w/hh -name .mail-cron-toolsets.json -delete
+  for c in /w/hh/config.yaml /w/hh/profiles/api-server/config.yaml /w/hh/profiles/orchestrator/config.yaml; do
+    printf 'mcp_servers:\n  mail:\n    url: http://mail-mcp:8000/mcp\n  searxng:\n    url: http://searxng-mcp:8000/mcp\n' > "$c"
+  done
+}
+home_lists() {
+  for c in /w/hh/config.yaml /w/hh/profiles/api-server/config.yaml /w/hh/profiles/orchestrator/config.yaml; do
+    printf '%s %s\n' "$c" "$(python3 -c 'import sys; sys.path.insert(0, "/opt/hermes"); import hermes_yaml as y
+c = (y.safe_load(open(sys.argv[1])) or {}).get("platform_toolsets") or {}
+print(",".join(map(str, c.get("cron") or [])))' "$c")"
+  done
+}
+seed_home; PROFILE=api-server BOOTSTRAP_SHARED=1 fence_mail_from_cron_all_profiles >/dev/null
+home_lists | sed 's/^/shared:/'
+[ ! -e /w/hh/profiles/bare/config.yaml ] && echo "bare-untouched"
+seed_home; PROFILE=api-server BOOTSTRAP_SHARED=0 fence_mail_from_cron_all_profiles >/dev/null
+home_lists | sed 's/^/own:/'
 EOF
 
 out="$(docker run --rm --entrypoint /bin/sh \
@@ -157,4 +186,10 @@ expect "own-bundle:$core,searxng" "a hand-written hermes-cron is replaced by its
 expect "own-browser:terminal,searxng" "browser is taken out of a hand-written list"
 expect "own-no-mcp:terminal,web,searxng" "a hand-written list naming no MCP server gets the unfenced ones"
 expect "own-idempotent" "a second run leaves a hand-written list alone"
+expect "shared:/w/hh/config.yaml $core,searxng" "the sweep fences the default profile"
+expect "shared:/w/hh/profiles/api-server/config.yaml $core,searxng" "the sweep fences the bootstrap's own profile"
+expect "shared:/w/hh/profiles/orchestrator/config.yaml $core,searxng" "the sweep fences an agent profile from make agent-create"
+expect "bare-untouched" "a profile without config.yaml is skipped, not created"
+expect "own:/w/hh/profiles/api-server/config.yaml $core,searxng" "a bootstrap not running the shared steps fences its own profile"
+expect "own:/w/hh/profiles/orchestrator/config.yaml " "a bootstrap not running the shared steps leaves other profiles to the one that does"
 echo "ok: image ($IMAGE)"

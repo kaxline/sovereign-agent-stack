@@ -22,6 +22,7 @@ Per-service setup, usage, and verification guides. See the [project README](../R
 | [Budget](budget.md) | `budget` — `actual-mcp-rw`, `actual-mcp-ro`; `budget-local` — `actual-server`; or a remote Actual server | Actual Budget MCP with a read/write and a read-only instance, read-only access for unattended sessions |
 | [Signal](signal.md) | `signal` (+ `core`) | Linked-device messaging, WebUI send, cron delivery |
 | [Buzz](buzz.md) | `core` (optional) | Messaging transport for independent agents |
+| [Cron fence](cron-fence.md) | `core` / Hermes | Which tools unattended cron jobs get, and how the bootstraps fence each profile |
 | [Independent agents](agents.md) | `core` | Multi-role Hermes profiles, three memory tiers, registry |
 | [Hermes WebUI](hermes-webui.md) | `core` | Chat UI via lean browser gateway |
 | [Tool-calling eval](tool-eval.md) | `core` | Prompt pack + JSONL traces to score WebUI tool use |

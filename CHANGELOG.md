@@ -15,6 +15,10 @@ the stack under another app.
   `browser_cdp`, `browser_dialog` and `browser_vault` after the bootstraps
   run. Give such a job its own `enabled_toolsets` that includes `browser`,
   plus the other toolsets and MCP servers it needs.
+- Cron jobs on agent profiles (`make agent-create`) are now fenced too. A job
+  there with no `enabled_toolsets` of its own that reads mail or messages, or
+  uses the browser or a fenced add-on, loses those tools after
+  hermes-api-bootstrap runs. Give it its own `enabled_toolsets`.
 - CalDAV accounts moved from `compose/caldav-mcp/accounts/<slug>.env` to the
   `caldav` add-on's store, and nothing reads the old files. Connect each one
   again with `scripts/addon.sh connect caldav --instance <slug>`, JSON on
@@ -61,6 +65,12 @@ the stack under another app.
   `browser`, and a `hermes-cron` or `hermes-cli` in it is replaced by its
   toolsets without `browser`. Cron runs unattended, and the browser can drive
   signed-in sessions.
+- The cron fence now runs on every profile under `data/hermes/profiles/`, not
+  only the default profile, `api-server` and `browser`. Agents made with
+  `make agent-create` were never fenced, so their cron jobs could reach mail,
+  messages, fenced add-ons and the browser. hermes-api-bootstrap fences them
+  on its next run; each profile adds about 1.6 seconds to a run that isn't
+  skipped.
 - New, opt-in: the client gateway (compose profile `client-gateway`), which
   serves ACP v1 over a WebSocket on `127.0.0.1:${CLIENT_GATEWAY_PORT:-8650}`
   at `/acp` (the built-in assistant) and `/acp/agents/<slug>`, backed by

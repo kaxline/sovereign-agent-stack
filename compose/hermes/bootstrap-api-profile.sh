@@ -1910,6 +1910,28 @@ PY
   if [ -n "$_out" ]; then log "$_out"; fi
 }
 
+# The fence on the default profile, this bootstrap's profile and every other
+# profile under profiles/ (make agent-create's agents among them), so their
+# cron jobs are fenced the same way. hermes-browser-bootstrap does only its own.
+fence_mail_from_cron_all_profiles() {
+  if ! is_true "$BOOTSTRAP_SHARED"; then
+    fence_mail_from_cron "$PROFILE"
+    return 0
+  fi
+  fence_mail_from_cron ""
+  if [ -n "$PROFILE" ]; then
+    fence_mail_from_cron "$PROFILE"
+  fi
+  if [ -d "${HERMES_HOME}/profiles" ]; then
+    for _fca_dir in "${HERMES_HOME}/profiles"/*; do
+      [ -d "$_fca_dir" ] || continue
+      _fca_name="$(basename "$_fca_dir")"
+      [ "$_fca_name" = "$PROFILE" ] && continue
+      fence_mail_from_cron "$_fca_name"
+    done
+  fi
+}
+
 # Default profile secrets live in HERMES_HOME/.env. Named profiles do not
 # inherit that file, so each registration writes its own copy.
 profile_env_file() {
@@ -2207,10 +2229,9 @@ PY
 fi
 
 if is_true "$BOOTSTRAP_SHARED"; then
-  fence_mail_from_cron ""
   configure_messages_webhook
 fi
-fence_mail_from_cron "$PROFILE"
+fence_mail_from_cron_all_profiles
 
 apply_terminal_backend_all_profiles
 apply_model_proxy_all_profiles
