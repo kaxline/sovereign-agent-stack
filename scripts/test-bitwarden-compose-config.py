@@ -286,6 +286,32 @@ def check_signin_dockerfile() -> None:
                     "nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG}")
 
 
+def check_broker_rebuild_documented() -> None:
+    """The release that introduces bitwarden-signin must tell operators to rebuild
+    the broker.
+
+    The broker's image is built from compose/bitwarden-broker and tagged
+    <prefix>-bitwarden-broker:local. ``docker compose up`` reuses a tag it already
+    has, so an install upgrading into this release keeps a broker with no
+    /signin/ routes while bitwarden-signin starts and reports ready. Only the
+    CHANGELOG's upgrade steps close that gap. The check applies to the topmost
+    section, named Unreleased before the tag and v0.3.16 after it, and retires
+    itself once a later section no longer introduces the signer."""
+    text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    sections = re.split(r"(?m)^## ", text)
+    if len(sections) < 2:
+        checks.fail("CHANGELOG.md has no '## ' section")
+        return
+    top = sections[1]
+    if SIGNIN not in top:
+        return
+    if not re.search(r"--build\s+bitwarden-broker", top):
+        checks.fail("CHANGELOG.md's newest section introduces bitwarden-signin but its "
+                    "upgrade steps never say to rebuild bitwarden-broker "
+                    "(--build bitwarden-broker); an upgraded install keeps a broker "
+                    "with no /signin/ routes")
+
+
 def check_signin_follows_uid() -> None:
     """The socket volume's owner and the signer's user follow HERMES_UID:HERMES_GID."""
     cfg = compose_config.render("core,bitwarden", {"HERMES_UID": "1234", "HERMES_GID": "1235"})
@@ -578,6 +604,7 @@ def main() -> None:
     check_signin_healthcheck(config("core,bitwarden"))
     check_signin(config("core,bitwarden,bitwarden-tools,vault"))
     check_signin_follows_uid()
+    check_broker_rebuild_documented()
     check_signin_dockerfile()
     check_store_follows_data_root()
     for backend in ("ssh", "local"):

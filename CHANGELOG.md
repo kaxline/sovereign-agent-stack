@@ -17,6 +17,14 @@ the stack under another app.
   `sign_in_only`, and the agent signs in through the new `bitwarden-signin`
   browser instead. No existing item has the field, so every Bitwarden login
   changes path at this upgrade.
+- Rebuild the Bitwarden broker on this upgrade:
+  `docker compose --profile core --profile bitwarden up -d --build
+  bitwarden-broker`. The broker's image carries the whole sign-in API, and
+  `make up` reuses the `bitwarden-broker:local` image it already has. A broker
+  built before this release answers none of the `/signin/` routes, so every
+  `browser_vault` sign-in action fails while `bitwarden-signin` starts and
+  reports `ready`; `scripts/vault.sh status --json` shows that broker as
+  `{"signer":"down"}`.
 - The Bitwarden add-on starts a second container, `bitwarden-signin`, under
   the existing `bitwarden` compose profile, with a named volume
   (`bitwarden_signin`) and a bridge network (`signin`) that compose creates.
