@@ -22,8 +22,10 @@ the handover's cookie count, or a fixed text per error code. Nothing from a
 broker reply reaches the agent unchecked: the origin must normalize to itself,
 node fields are rebuilt by type and the error code must be one of the fixed set.
 
-In a cron turn the backend lists no items, so sign_in finds no handle and no
-session can be opened; there is no separate cron fence here.
+A cron turn gets the no-such-login refusal on all seven actions. The backend
+already lists no items there, which stops sign_in, but the broker's session is
+one per stack and bound to no task, so a cron turn running beside a person's
+sign-in could otherwise drive that session and take its cookies.
 
 Installed as /opt/hermes/tools/vault_bitwarden_signin.py by
 patch-bitwarden-signin.py. Run scripts/test-bitwarden-fill.py on Hermes bumps.
@@ -83,9 +85,10 @@ SCHEMA_SENTENCE = (
     "the latest snapshot)."
 )
 
-# The origin of the last snapshot a broker reply carried: the tab signin_finish hands over to.
-# One sign-in session runs at a time in the broker, so one value is right for the process.
-_last_origin: Optional[str] = None
+# Per task, the origin of the last snapshot a broker reply carried: the tab signin_finish hands
+# over to. Keyed by task, so a second task's finish never uses the first task's origin.
+_last_origin: dict[str, str] = {}
+MAX_TASKS = 64
 
 
 # ── schema ────────────────────────────────────────────────────────────────────────────────────
@@ -129,31 +132,31 @@ def _node(raw: Any) -> Optional[dict]:
     return out
 
 
-def _result(payload: Any) -> str:
+def _result(payload: Any, tid: str) -> str:
     """The tool result for a 200 reply: a snapshot, the handover, or the cancel."""
-    global _last_origin
-
     from tools.browser_vault_tool import _bwbroker_origin
 
     if not isinstance(payload, dict):
         return _refusal("unavailable")
     if payload.get("cancelled") is not None:
-        _last_origin = None
+        _last_origin.pop(tid, None)
         return json.dumps({"success": True, "cancelled": bool(payload.get("cancelled"))})
     origin = _bwbroker_origin(payload.get("origin"))
     if payload.get("done") is True:
-        _last_origin = None
+        _last_origin.pop(tid, None)
         cookies = payload.get("cookies")
         return json.dumps({"success": True, "done": True, "origin": origin or "",
                            "cookies": cookies if isinstance(cookies, int) and not isinstance(cookies, bool) else 0,
                            "next": NEXT_DONE})
     nodes = [n for n in map(_node, payload.get("nodes") or ()) if n is not None][:MAX_NODES]
     if origin:
-        _last_origin = origin
+        if len(_last_origin) >= MAX_TASKS and tid not in _last_origin:
+            _last_origin.clear()  # a long-lived worker's tasks, not a cache worth keeping
+        _last_origin[tid] = origin
     return json.dumps({"success": True, "origin": origin or "", "nodes": nodes, "next": NEXT_SNAPSHOT})
 
 
-def _call(path: str, body: dict) -> str:
+def _call(path: str, body: dict, tid: str) -> str:
     from tools.browser_vault_tool import _bwbroker_call, _bwbroker_code
 
     reply = _bwbroker_call("POST", path, body, timeout=CALL_TIMEOUT)
@@ -162,7 +165,7 @@ def _call(path: str, body: dict) -> str:
     status, payload = reply
     if status != 200:
         return _refusal(_bwbroker_code(payload))
-    return _result(payload)
+    return _result(payload, tid)
 
 
 # ── actions ───────────────────────────────────────────────────────────────────────────────────
@@ -199,30 +202,56 @@ def _tab(task_id: str, origin: str) -> Any:
     return _bwbroker_tab(task_id, origin, "")
 
 
-def _sign_in(args: dict, task_id: str) -> str:
+def _in_cron_turn() -> bool:
+    """True in a cron turn, and when that cannot be told.
+
+    The broker holds one sign-in session for the whole stack, bound to no task, so a cron turn
+    could otherwise drive a session a person's turn opened and finish its cookies into its own
+    tab. The backend's own fence only hides items, which stops sign_in alone.
+    """
+    import sys
+
+    module = next((m for name, m in list(sys.modules.items())
+                   if name.rsplit(".", 1)[-1] == "bitwarden_broker_backend"
+                   and hasattr(m, "in_cron_turn")), None)
+    if module is None:
+        try:
+            from importlib import import_module
+            module = import_module("plugins.bwbroker.bitwarden_broker_backend")
+        except Exception:  # health: allow BLE001 -- without the backend there is no sign-in anyway
+            logger.debug("bitwarden sign-in: no backend module to read the cron turn from", exc_info=True)
+            return True
+    try:
+        return bool(module.in_cron_turn())
+    except Exception:  # health: allow BLE001 -- can't tell: refuse
+        logger.debug("bitwarden sign-in: cron check failed", exc_info=True)
+        return True
+
+
+def _sign_in(args: dict, tid: str) -> str:
     handle = str(args.get("handle") or "")
     origins = _item_origins(handle)
     if origins is None:
         return _refusal("unknown_handle")
-    tab = _tab(task_id, origins[0])
+    tab = _tab(tid, origins[0])
     if isinstance(tab, dict):
         return json.dumps(tab)
-    return _call("/signin/start", {"handle": handle, "target_id": tab[0], "port": tab[1]})
+    return _call("/signin/start", {"handle": handle, "target_id": tab[0], "port": tab[1]}, tid)
 
 
-def _finish(task_id: str) -> str:
-    origin = _last_origin
+def _finish(tid: str) -> str:
+    origin = _last_origin.get(tid)
     if origin is None:
-        # No snapshot yet this process (a restarted worker, or a session started elsewhere):
+        # No snapshot in this task yet (a restarted worker, or a session started elsewhere):
         # ask the broker where the page is, which also reports no_session.
-        raw = _call("/signin/snapshot", {})
-        if _last_origin is None:
+        raw = _call("/signin/snapshot", {}, tid)
+        origin = _last_origin.get(tid)
+        if origin is None:
             return raw
-        origin = _last_origin
-    tab = _tab(task_id, origin)
+    tab = _tab(tid, origin)
     if isinstance(tab, dict):
         return json.dumps(tab)
-    return _call("/signin/finish", {"target_id": tab[0], "port": tab[1]})
+    return _call("/signin/finish", {"target_id": tab[0], "port": tab[1]}, tid)
 
 
 def _ref(args: dict) -> Any:
@@ -237,12 +266,14 @@ def _ref(args: dict) -> Any:
 def handle_action(action: str, args: dict, task_id: Optional[str]) -> str:
     """browser_vault's dispatch entry for the sign-in actions."""
     tid = task_id or "default"
+    if _in_cron_turn():
+        return _refusal("unknown_handle")
     if action == "sign_in":
         return _sign_in(args, tid)
     if action == "signin_snapshot":
-        return _call("/signin/snapshot", {})
+        return _call("/signin/snapshot", {}, tid)
     if action == "signin_cancel":
-        return _call("/signin/cancel", {})
+        return _call("/signin/cancel", {}, tid)
     if action == "signin_finish":
         return _finish(tid)
     ref = _ref(args)
@@ -250,17 +281,17 @@ def handle_action(action: str, args: dict, task_id: Optional[str]) -> str:
         return json.dumps({"success": False, "error_type": "bad_request",
                            "error": "ref must be a node number from the latest snapshot."})
     if action == "signin_click":
-        return _call("/signin/click", {"ref": ref})
+        return _call("/signin/click", {"ref": ref}, tid)
     if action == "signin_type":
         text = args.get("text")
         if not isinstance(text, str) or not text or len(text) > MAX_TYPE_TEXT:
             return json.dumps({"success": False, "error_type": "bad_request",
                                "error": "text must be the text to type, and never a secret."})
-        return _call("/signin/type", {"ref": ref, "text": text})
+        return _call("/signin/type", {"ref": ref, "text": text}, tid)
     if action == "signin_fill":
         field = str(args.get("field") or "password")
         if field not in FIELDS:
             return json.dumps({"success": False, "error_type": "bad_request",
                                "error": "field must be 'password' or 'totp'."})
-        return _call("/signin/fill", {"ref": ref, "field": field})
+        return _call("/signin/fill", {"ref": ref, "field": field}, tid)
     return json.dumps({"success": False, "error": f"Unknown action {action!r}."})

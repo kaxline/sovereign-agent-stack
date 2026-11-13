@@ -508,20 +508,70 @@ flags = {i["handle"]: i.get("sign_in_only") for i in listing["items"]}
 assert flags == {"vault_abc": None, H_OTP: True, H_PLAIN: False}, flags
 
 # --- test_signin_in_cron_turn_unknown_handle --------------------------------
-# A cron turn lists no items, so there is no handle to sign in with and no session to act on.
+# The broker holds one session for the whole stack, bound to no task, so a cron turn must not
+# reach any action: not sign_in (no items are listed) and not the six that drive an open session.
 CRON_BW = PluginLoginBackend("bwbroker", bwb.BrokerLoginBackend(in_cron=lambda: True))
 set_backends(Local(), CRON_BW)
+real_in_cron = bwb.in_cron_turn
+bwb.in_cron_turn = lambda: True
 STATE["posts"].clear()
-res = tool(bvt._handle_vault, {"action": "sign_in", "handle": H_OTP}, task_id=TASK)
-assert res["success"] is False and res["error_type"] == "unknown_handle", res
-assert STATE["posts"] == [], "a cron turn never starts a session"
-STATE["signin_mode"] = "no_session"  # the broker's answer with no session open
-for action in bvs.ACTIONS[1:]:
-    args = {"action": action, "ref": 1, "text": "x", "field": "password"}
-    res = tool(bvt._handle_vault, args, task_id=TASK)
-    assert res["success"] is False and res["error_type"] in ("no_session", "unknown_handle"), (action, res)
-STATE["signin_mode"] = "ok"
-set_backends(Local(), BW)
+try:
+    for action in bvs.ACTIONS:
+        args = {"action": action, "handle": H_OTP, "ref": 1, "text": "x", "field": "password"}
+        res = tool(bvt._handle_vault, args, task_id=TASK)
+        assert res == {"success": False, "error_type": "unknown_handle",
+                       "error": "No Bitwarden login with that handle. Use browser_vault action=list."}, (action, res)
+    assert STATE["posts"] == [], "a cron turn never reaches the broker"
+finally:
+    bwb.in_cron_turn = real_in_cron
+    set_backends(Local(), BW)
+# The signer's own task keeps its finish origin: a second task does not inherit it.
+assert bvs._last_origin.get(TASK) is None, bvs._last_origin
+res = tool(bvt._handle_vault, {"action": "signin_snapshot"}, task_id=TASK)
+assert bvs._last_origin == {TASK: ORIGIN}, bvs._last_origin
+STATE["posts"].clear()
+res = tool(bvt._handle_vault, {"action": "signin_finish"}, task_id="other-task")
+assert [p[0] for p in STATE["posts"]] == ["/signin/snapshot", "/signin/finish"], STATE["posts"]
+assert bvs._last_origin[TASK] == ORIGIN, "the other task's finish left this task's origin alone"
+res = tool(bvt._handle_vault, {"action": "signin_cancel"}, task_id=TASK)
+assert bvs._last_origin == {}, bvs._last_origin
+
+# --- test_upstream_actions_survive_a_missing_schema_anchor ------------------
+# A Hermes bump that moves the schema anchor must not break page_ops: the dispatch entries name
+# the actions themselves and import the module inside the lambda.
+fake = "/tmp/fake-hermes"
+os.makedirs(fake + "/tools", exist_ok=True)
+# Same import, written differently: the schema needle no longer matches, the file still runs.
+open(fake + "/tools/browser_vault_tool.py", "w").write(
+    src_before_signin.replace("from tools.registry import no_cache_check_fn, registry",
+                              "from tools.registry import registry, no_cache_check_fn", 1))
+out = subprocess.run([sys.executable, "/bootstrap/patch-bitwarden-signin.py"], capture_output=True,
+                     text=True, env=dict(env, HERMES_ROOT=fake))
+assert out.returncode == 0, out.stdout + out.stderr
+assert "warn: sign-in schema needle missing" in out.stdout, out.stdout
+assert "patched: sign-in dispatch" in out.stdout, out.stdout
+partial = open(fake + "/tools/browser_vault_tool.py").read()
+assert "# assistant-stack: bitwarden sign-in (schema)" not in partial, "the schema hook did not apply"
+# Run that file's _handle_vault on its own, with stubs for what it calls.
+body = partial[partial.index("def _handle_vault("):partial.index("\nfrom tools.registry import")]
+calls = []
+# The slice also carries the other overlays' schema hooks, which run against a copy.
+scope = {"json": json, "_fenced_page_op": lambda tid, fn: fn(),
+         "BROWSER_VAULT_SCHEMA": json.loads(json.dumps(bvt.BROWSER_VAULT_SCHEMA)),
+         "logger": logging.getLogger("page_ops")}
+for name in ("browser_vault_list", "browser_vault_unlock", "browser_vault_fill",
+             "browser_vault_save_login", "browser_vault_enter_code"):
+    scope[name] = (lambda name=name: lambda *a, **k: calls.append(name) or "{}")()
+exec(compile(body, "<page_ops>", "exec"), scope)
+for action in ("list", "unlock", "fill", "save_login", "enter_code"):
+    scope["_handle_vault"]({"action": action}, task_id=TASK)
+assert calls == ["browser_vault_list", "browser_vault_unlock", "browser_vault_fill",
+                 "browser_vault_save_login", "browser_vault_enter_code"], calls
+# The sign-in actions still route, through the import inside the lambda.
+res = json.loads(scope["_handle_vault"]({"action": "sign_in", "handle": "bwbroker:gone/item"}, task_id=TASK))
+assert res["error_type"] == "unknown_handle", res
+assert calls == ["browser_vault_list", "browser_vault_unlock", "browser_vault_fill",
+                 "browser_vault_save_login", "browser_vault_enter_code"], "no upstream handler ran for it"
 
 # --- test_origin_normalization_matches_core ---------------------------------
 URLS = [
