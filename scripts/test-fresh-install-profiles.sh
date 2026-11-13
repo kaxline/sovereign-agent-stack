@@ -151,6 +151,10 @@ mkdir -p "${tmp}/img"
 printf '%s\n' "$shell_fn" > "${tmp}/img/fn.sh"
 cat > "${tmp}/img/run.sh" <<'EOF'
 set -u
+# The image's hermes shim drops root to the hermes user, which owns its home in
+# a real install. Hand the scratch home to it, and back to the caller on exit
+# so the host can delete it (Linux bind mounts keep these owners).
+trap 'chown -R "$HOST_IDS" /t' EXIT
 for f in /opt/hermes/cli-config.yaml.example /opt/hermes/.env.example /opt/hermes/docker/SOUL.md; do
   [ -f "$f" ] || { echo "FAIL first-boot seed $f missing from the image; the bootstrap seeds from it"; exit 1; }
 done
@@ -161,6 +165,7 @@ printf 'model:\n  default: test\n' > "$HERMES_HOME/config.yaml"
 
 # Upstream behaviour this fix depends on; re-check on Hermes bumps.
 mkdir -p "$HERMES_HOME/profiles/api-server/memories"
+chown -R hermes:hermes "$HERMES_HOME"
 if hermes profile create api-server --clone >/t/refused.log 2>&1; then
   echo "UPSTREAM: create over an empty shell succeeded; the cleanup may be unneeded"
 else
@@ -172,7 +177,8 @@ hermes profile create api-server --clone >/t/create.log 2>&1 || { cat /t/create.
 hermes profile list 2>/dev/null | grep -q api-server || { echo "FAIL api-server not listed after create"; exit 1; }
 echo "image ok"
 EOF
-out="$(docker run --rm --network none --entrypoint sh -v "${tmp}/img:/t" "$HERMES_IMAGE" /t/run.sh 2>&1)" \
+out="$(docker run --rm --network none --entrypoint sh -e HOST_IDS="$(id -u):$(id -g)" \
+  -v "${tmp}/img:/t" "$HERMES_IMAGE" /t/run.sh 2>&1)" \
   || { printf '%s\n' "$out" >&2; fail "image part"; }
 printf '%s\n' "$out" | grep -q '^image ok' || { printf '%s\n' "$out" >&2; fail "image part"; }
 printf '%s\n' "$out" | grep '^UPSTREAM' || true
