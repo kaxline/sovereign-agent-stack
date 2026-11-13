@@ -29,6 +29,16 @@ the stack under another app.
 
 ### Changes
 
+- Fresh installs on Hermes v0.23.1 get their `api-server` and `browser`
+  profiles again. `setup.sh` no longer creates `data/hermes/profiles/api-server`
+  and `profiles/browser`, and the bootstraps remove a profile directory that
+  holds only empty directories (hermes' `memories/` bind mounts leave one)
+  before `hermes profile create`, which refuses an existing directory with no
+  profile identity file. A directory with files in it stops the bootstrap with
+  a message naming it.
+- `HERMES_API_SERVER_PORT` changes only the host port of the api-server
+  gateway. hermes-api-bootstrap used it as the in-container port, so any value
+  but 8643 left the gateway on a port the healthcheck never probes.
 - The Messages MCP is a built-in add-on (`addons/messages/addon.json`), so
   `addon.sh list`, `enable messages` and `disable messages` work on it. The
   flag (`MESSAGES_MCP_ENABLED`), the compose profile (`messages`), the server

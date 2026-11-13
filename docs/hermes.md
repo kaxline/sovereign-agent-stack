@@ -198,7 +198,7 @@ A one-shot `hermes-api-bootstrap` service runs ahead of the main Hermes containe
 
 | Setting | Value |
 |---|---|
-| Port | **8643** (`HERMES_API_SERVER_PORT`) |
+| Port | **8643** in the container; `HERMES_API_SERVER_PORT` changes the host port only |
 | Max tool turns | **20** (`HERMES_API_MAX_TURNS`) |
 | Tool-loop hard stop | **on** for every profile (`HERMES_TOOL_LOOP_HARD_STOP`): a turn ends after 5 back-to-back repeats of the same call, 5 laps of an identical cycle of up to 4 calls, or the third time it re-runs one call and gets back a result it had already seen that turn (any cycle length; pollers exempt) |
 | Tools | **`hermes-api-server`** (aligned with dashboard chat; no interactive-only tools) |

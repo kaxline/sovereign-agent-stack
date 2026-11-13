@@ -1987,12 +1987,33 @@ if [ ! -f "$SOURCE_ENV" ]; then
 fi
 
 # --- Create profile if missing ---
+# clear_empty_profile_shell DIR: removes DIR when it holds nothing but empty
+# directories, and returns 1 when it holds anything else. Since v0.23.1,
+# `hermes profile create` refuses an existing directory without a profile
+# identity file, and a fresh install has one: hermes' memories/ bind mounts
+# create profiles/<name>/memories on the host each time the container starts
+# (setup.sh before 0.3.15 also made profiles/api-server and profiles/browser).
+clear_empty_profile_shell() {
+  [ -d "$1" ] || return 0
+  [ -z "$(find "$1" ! -type d -print 2>/dev/null | head -n 1)" ] || return 1
+  find "$1" -depth -type d -exec rmdir {} \; 2>/dev/null
+  [ ! -e "$1" ]
+}
+
 # The clone copies the default profile's config, so apply its queued keys first.
 config_flush
 profile_list="$(hermes profile list 2>/dev/null || true)"
 case "$profile_list" in
   *"$PROFILE"*) log "Profile '${PROFILE}' already exists" ;;
   *)
+    if [ -d "$PROFILE_DIR" ]; then
+      if clear_empty_profile_shell "$PROFILE_DIR"; then
+        log "Removed ${PROFILE_DIR}: empty directories only, no profile identity"
+      else
+        log "${PROFILE_DIR} exists and holds files but is not a Hermes profile; move it aside, then run the bootstrap again"
+        exit 1
+      fi
+    fi
     log "Creating profile '${PROFILE}' (clone from default)"
     hermes profile create "$PROFILE" --clone
     ;;

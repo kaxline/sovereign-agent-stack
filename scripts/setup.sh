@@ -914,9 +914,7 @@ fi
 mkdir -p "${DATA_ROOT}/inputs/${WORKSPACE}" "${DATA_ROOT}/rag_storage/${WORKSPACE}" \
   "${DATA_ROOT}/voice" "${DATA_ROOT}/projects" "${DATA_ROOT}/memory/notes" \
   "${DATA_ROOT}/corpora" \
-  "data/hermes/memories" \
-  "data/hermes/profiles/api-server" \
-  "data/hermes/profiles/browser"
+  "data/hermes/memories"
 if [[ ! -f "${DATA_ROOT}/inputs/${WORKSPACE}/getting-started.md" ]]; then
   create_getting_started "$WORKSPACE"
 fi

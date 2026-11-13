@@ -60,9 +60,11 @@ scripts/test-email-addon.py                     ci
 scripts/test-email-e2e.py                       docker
 scripts/test-email-registration.sh              ci
 scripts/test-fabricated-result.py               ci image
+scripts/test-fresh-install-profiles.sh          ci image
 scripts/test-gateway-liveness.py                ci image
 scripts/test-gateway-multiplex.py               image
 scripts/test-gptr-mcp-registration.sh           ci
+scripts/test-hermes-api-port.py                 ci docker
 scripts/test-hermes-topology.py                 image
 scripts/test-history-budget.py                  ci image
 scripts/test-hosted-rooms.py                    image
