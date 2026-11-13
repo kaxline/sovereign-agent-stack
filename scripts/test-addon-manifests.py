@@ -136,6 +136,48 @@ refused("messages with api-server in mcp.profiles", msg_api,
 msg_path = copy.deepcopy(MESSAGES)
 msg_path["settings"] = {"store": {"type": "path", "default": "./data/messages/store"}}
 refused("messages with a default store path", msg_path, "may not have a default")
+
+# --- gateway: Hermes chat platforms (Signal, Buzz) ---------------------------
+SIGNAL = json.loads((ROOT / "addons" / "signal" / "addon.json").read_text())
+BUZZ = json.loads((ROOT / "addons" / "buzz" / "addon.json").read_text())
+check("addons/signal is valid as built-in", am.validate(SIGNAL) == [], str(am.validate(SIGNAL)))
+check("addons/buzz is valid as built-in", am.validate(BUZZ) == [], str(am.validate(BUZZ)))
+check("mcp is optional: neither gateway add-on has one", "mcp" not in SIGNAL and "mcp" not in BUZZ)
+check("signal declares that it reads and sends messages",
+      "messages" in SIGNAL["permissions"]["reads"] and SIGNAL["permissions"]["sends"] is True
+      and SIGNAL["permissions"]["cron"] is False)
+check("signal declares no data paths: remove --delete-data never touches the signal-cli store",
+      "data" not in SIGNAL)
+check("signal and buzz keep their flags", (SIGNAL["builtin"]["flag"], BUZZ["builtin"]["flag"])
+      == ("HERMES_SIGNAL_ENABLED", "HERMES_BUZZ_ENABLED"))
+check("a gateway add-on may leave out services", "services" not in BUZZ and am.validate(BUZZ) == [])
+no_svc = copy.deepcopy(BASE)
+no_svc.pop("services")
+no_svc.pop("mcp")
+refused("an add-on without gateway still needs services", no_svc, "missing required field 'services'")
+sig_mcp = copy.deepcopy(SIGNAL)
+sig_mcp["mcp"] = copy.deepcopy(MESSAGES["mcp"])
+sig_mcp["services"]["reader"] = {"compose": "messages-mcp", "port": 8000}
+refused("a gateway add-on with an mcp entry may not read and send", sig_mcp, "may not send")
+sig_nogw = copy.deepcopy(SIGNAL)
+sig_nogw.pop("gateway")
+refused("reads and sends without a gateway is refused", sig_nogw, "may not send")
+sig_cron = copy.deepcopy(SIGNAL)
+sig_cron["permissions"]["cron"] = True
+refused("a gateway add-on that reads still needs cron false", sig_cron, "cron false")
+for label, gw, needle in (
+        ("gateway is a string", "signal", "gateway must be an object"),
+        ("gateway has an unknown field", {**SIGNAL["gateway"], "restart": "hermes"}, "gateway has unknown fields"),
+        ("gateway.platform is not a name", {**SIGNAL["gateway"], "platform": "Signal"}, "gateway.platform"),
+        ("gateway.sync is missing", {"platform": "signal"}, "gateway.sync must be"),
+        ("gateway.sync is an argv list", {**SIGNAL["gateway"], "sync": ["scripts/sync-signal-profile.sh"]},
+         "gateway.sync must be"),
+        ("gateway.sync is outside scripts/", {**SIGNAL["gateway"], "sync": "bin/sync.sh"}, "gateway.sync must be"),
+        ("gateway.sync does not exist", {**SIGNAL["gateway"], "sync": "scripts/no-such-sync.sh"},
+         "does not exist in the repo")):
+    m = copy.deepcopy(SIGNAL)
+    m["gateway"] = gw
+    refused(label, m, needle)
 # --- credentials and vaultBackend ---------------------------------------------
 VAULT = {"name": "bwbroker", "plugin": "compose/hermes/plugins/bwbroker", "toolset": "bitwarden",
          "tools": ["bitwarden_request_access", "bitwarden_release_access"],
@@ -1450,7 +1492,7 @@ def mount_problems(sid: str, manifest: dict, compose_text: str) -> list[str]:
     """Each service with `mounts` must mount exactly the fixed container paths
     from data/addons/<sid>/ with the declared mode."""
     problems = []
-    for name, svc in manifest["services"].items():
+    for name, svc in manifest.get("services", {}).items():
         mounts = svc.get("mounts")
         if not mounts:
             continue
@@ -1479,7 +1521,7 @@ def volume_problems(manifest: dict, compose_text: str) -> list[str]:
 
 def volume_owner_problems(manifest: dict, compose_text: str) -> list[str]:
     """Compose services outside the add-on that mount one of its data volumes."""
-    own = {svc["compose"] for svc in manifest["services"].values()}
+    own = {svc["compose"] for svc in manifest.get("services", {}).values()}
     top = re.split(r"^volumes:\n", compose_text, maxsplit=1, flags=re.M)[0]
     problems = []
     for m in re.finditer(r"^  ([A-Za-z0-9_-]+):\n(.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)", top, re.M | re.S):
@@ -1545,7 +1587,7 @@ for path, manifest, parse_error in am.load_dir(ROOT / "addons"):
     seed = "1" if b["seed"] else "0"
     check(f"{sid}: sync-profiles maps {b['flag']} to {b['profile']}", [b["flag"], b["profile"], seed] in rows,
           table.stdout)
-    for name, svc in manifest["services"].items():
+    for name, svc in manifest.get("services", {}).items():
         block = service_block(svc["compose"])
         check(f"{sid}: compose service {svc['compose']} exists", bool(block))
         listed = service_profiles(block)

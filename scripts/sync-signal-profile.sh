@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# Sync COMPOSE_PROFILES and data/hermes/.env from HERMES_SIGNAL_ENABLED.
-# Called by make ensure-local and scripts/setup.sh.
+# Seed or clear the Signal adapter's variables in the default and browser
+# Hermes profiles from HERMES_SIGNAL_ENABLED. This is the Signal add-on's
+# gateway.sync (addons/signal/addon.json): scripts/addon.sh runs it after
+# writing the flag, and make ensure-local and scripts/setup.sh run it before
+# sync-profiles.sh, which adds or removes the signal compose profile.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -67,44 +70,6 @@ remove_env_key() {
   fi
 }
 
-profiles_list() {
-  local current
-  current="$(env_get COMPOSE_PROFILES core)"
-  current="${current//hermes-webui/}"
-  current="${current// /}"
-  echo "$current" | tr ',' '\n' | sed '/^$/d'
-}
-
-append_profile() {
-  local profile="$1"
-  if profiles_list | grep -qx "$profile"; then
-    return 0
-  fi
-  local joined
-  joined="$(profiles_list | paste -sd, -)"
-  if [[ -z "$joined" ]]; then
-    upsert_env .env COMPOSE_PROFILES "$profile"
-  else
-    upsert_env .env COMPOSE_PROFILES "${joined},${profile}"
-  fi
-  log "Appended '${profile}' to COMPOSE_PROFILES"
-}
-
-remove_profile() {
-  local profile="$1"
-  local filtered
-  filtered="$(profiles_list | grep -vx "$profile" | paste -sd, - || true)"
-  if [[ -z "$filtered" ]]; then
-    filtered="core"
-  fi
-  local before
-  before="$(env_get COMPOSE_PROFILES)"
-  upsert_env .env COMPOSE_PROFILES "$filtered"
-  if [[ "$before" != "$filtered" ]]; then
-    log "Removed '${profile}' from COMPOSE_PROFILES"
-  fi
-}
-
 [[ -f .env ]] || die ".env missing — run ./scripts/setup.sh first"
 
 enabled="$(env_get HERMES_SIGNAL_ENABLED 0)"
@@ -137,8 +102,6 @@ if [[ "$enabled" -eq 1 ]]; then
     upsert_env .env SIGNAL_CLI_GID "$(id -g)"
     log "Set SIGNAL_CLI_GID=$(id -g) to match host file ownership"
   fi
-
-  append_profile signal
 
   mkdir -p data/hermes
 
@@ -177,7 +140,6 @@ if [[ "$enabled" -eq 1 ]]; then
   log "Seeded Signal adapter vars in data/hermes/.env (SIGNAL_HTTP_URL=http://signal-cli:8080)"
   log "Stop any host signal-cli daemon before make up — only one receiver per account"
 else
-  remove_profile signal
   clear_hermes_signal_env() {
     local hermes_env="$1"
     [[ -f "$hermes_env" ]] || return 0

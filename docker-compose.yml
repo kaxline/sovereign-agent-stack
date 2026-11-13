@@ -1442,7 +1442,7 @@ services:
 
   # ----------------------------------------------------------------------
   # signal-cli — native HTTP JSON-RPC daemon for Hermes Signal messaging
-  # Profile: signal (toggled by HERMES_SIGNAL_ENABLED via scripts/sync-signal-profile.sh)
+  # Profile: signal (toggled by HERMES_SIGNAL_ENABLED; addons/signal/addon.json)
   #
   # Hermes expects the real signal-cli daemon (--http), not
   # bbernhard/signal-cli-rest-api. Bind-mount the host linked store

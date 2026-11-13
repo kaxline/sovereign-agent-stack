@@ -29,6 +29,32 @@ the stack under another app.
 
 ### Changes
 
+- Signal and Buzz are built-in add-ons (`addons/signal/addon.json`,
+  `addons/buzz/addon.json`), so `addon.sh list`, `enable` and `disable` work
+  on them. The flags (`HERMES_SIGNAL_ENABLED`, `HERMES_BUZZ_ENABLED`), every
+  `SIGNAL_*` and `BUZZ_*` variable, and what lands in the Hermes profiles'
+  `.env` and `config.yaml` files are unchanged. Neither has an MCP server.
+  A new manifest field, `gateway: {platform, sync}`, names the Hermes chat
+  platform and the host script that seeds or clears it
+  (`scripts/sync-signal-profile.sh`, `scripts/sync-buzz-profile.sh`);
+  `addon.sh enable` and `disable` run that script after writing the flag, and
+  run it again when an enable rolls back. A gateway add-on may leave out
+  `services`; Buzz has no container. `addon.sh` still doesn't recreate
+  `hermes`, so run `make hermes-recreate` after enabling or disabling either
+  one for the gateways to pick it up; both manifests say so in
+  `postInstallMessage`. Signal declares `reads: ["messages", "contacts"]` and
+  `sends: true`: the validator now allows reads together with sends on a
+  gateway add-on that has no `mcp` entry, and still requires `cron: false`.
+  Signal declares no `data` paths, so `remove --delete-data signal` never
+  touches `SIGNAL_CLI_DATA_DIR`. `sync-profiles.sh` now adds and removes the
+  `signal` compose profile (and a new `buzz` profile that no service uses)
+  from the flag, recording it in `COMPOSE_PROFILES_MANAGED`;
+  `sync-signal-profile.sh` no longer touches `COMPOSE_PROFILES`. One
+  difference: an install that turns `HERMES_SIGNAL_ENABLED` off before any
+  `make ensure-local` has run on this version keeps `signal` in
+  `COMPOSE_PROFILES`, with a warning, because the profile was never recorded
+  as managed. Remove it from `COMPOSE_PROFILES` by hand in that case. Neither
+  port was tested on a live install.
 - The Messages MCP is a built-in add-on (`addons/messages/addon.json`), so
   `addon.sh list`, `enable messages` and `disable messages` work on it. The
   flag (`MESSAGES_MCP_ENABLED`), the compose profile (`messages`), the server
