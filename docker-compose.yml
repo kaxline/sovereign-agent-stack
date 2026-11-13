@@ -2085,7 +2085,10 @@ services:
         condition: service_completed_successfully
       # cont-init.d/02-reconcile-profiles reads each profile's gateway_state.json
       # once at container start, so the browser profile has to exist before
-      # hermes boots or its gateway stays down until the next restart.
+      # hermes boots or its gateway stays down until the next restart. The
+      # profiles must also exist before the memories/ bind mounts below make
+      # empty profiles/<name>/ directories, which `hermes profile create`
+      # refuses; on a fresh install the bootstraps seed config.yaml for that.
       hermes-browser-bootstrap:
         condition: service_completed_successfully
       llm-proxy:

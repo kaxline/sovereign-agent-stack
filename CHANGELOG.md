@@ -30,12 +30,16 @@ the stack under another app.
 ### Changes
 
 - Fresh installs on Hermes v0.23.1 get their `api-server` and `browser`
-  profiles again. `setup.sh` no longer creates `data/hermes/profiles/api-server`
-  and `profiles/browser`, and the bootstraps remove a profile directory that
-  holds only empty directories (hermes' `memories/` bind mounts leave one)
-  before `hermes profile create`, which refuses an existing directory with no
-  profile identity file. A directory with files in it stops the bootstrap with
-  a message naming it.
+  profiles again, and the first `make up` brings hermes up healthy. The
+  bootstraps used to exit without a `config.yaml`, so hermes started first and
+  its `memories/` bind mounts left empty `profiles/<name>/` directories, which
+  `hermes profile create` refuses and Docker Desktop does not let anyone delete
+  while the hermes container exists. Now the bootstraps seed `config.yaml`,
+  `.env` and `SOUL.md` from the image as its first boot would, `setup.sh` no
+  longer creates `data/hermes/profiles/api-server` and `profiles/browser`, and
+  the bootstraps remove a profile directory that holds only empty directories.
+  A directory with files in it stops the bootstrap with a message naming it.
+  An install already stuck this way: `docker compose rm -sf hermes && make up`.
 - `HERMES_API_SERVER_PORT` changes only the host port of the api-server
   gateway. hermes-api-bootstrap used it as the in-container port, so any value
   but 8643 left the gateway on a port the healthcheck never probes.

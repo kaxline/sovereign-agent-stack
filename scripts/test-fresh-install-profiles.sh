@@ -9,6 +9,10 @@
 # whenever the container starts. The bootstrap removes a shell that holds only
 # empty directories and refuses one that holds a file.
 #
+# On a fresh install the bootstraps run before hermes has ever started, so they
+# seed config.yaml themselves from the image, as its first boot would, and
+# create the profiles before the bind mounts can leave a shell.
+#
 # The host part runs the whole bootstrap with stub `hermes` and `python3`; the
 # stub refuses an existing directory the way v0.23.1 does. The image part runs
 # the bootstrap's cleanup and the real `hermes profile create` in the pinned
@@ -81,9 +85,28 @@ run_bootstrap() {
     BOOTSTRAP_API_ENV="${tmp}/bootstrap/api-server.env" \
     ADDON_DATA_DIR="${tmp}/addon-data" \
     HERMES_AGENT_IMAGE_TAG=v0.23.1 \
+    HERMES_INSTALL_DIR="${tmp}/install" \
     "$BOOTSTRAP_SH" "$bootstrap" > "${tmp}/out" 2>&1 || _status=$?
   return "$_status"
 }
+
+# The image's first-boot seeds (stage2-hook.sh seed_one).
+mkdir -p "${tmp}/install/docker"
+printf 'model:\n  default: seeded\n' > "${tmp}/install/cli-config.yaml.example"
+printf 'SEEDED=1\n' > "${tmp}/install/.env.example"
+printf 'seeded soul\n' > "${tmp}/install/docker/SOUL.md"
+
+# hermes has never started: the bootstrap seeds the default profile and
+# creates its own, so hermes' bind mounts find the profile already there.
+rm -rf "${tmp:?}/home" "${tmp:?}/created"
+mkdir -p "${tmp}/home"
+run_bootstrap || { cat "${tmp}/out" >&2; fail "bootstrap failed on a home hermes never started in"; }
+grep -q 'default: seeded' "${tmp}/home/config.yaml" 2>/dev/null \
+  || fail "bootstrap did not seed config.yaml from the image"
+grep -q 'SEEDED=1' "${tmp}/home/.env" 2>/dev/null || fail "bootstrap did not seed .env from the image"
+[ -f "${tmp}/home/SOUL.md" ] || fail "bootstrap did not seed SOUL.md from the image"
+grep -q 'created api-server' "${tmp}/created" 2>/dev/null \
+  || fail "bootstrap did not create profile api-server on a home hermes never started in"
 
 # An empty shell with the memories/ mount target in it, as hermes leaves it.
 fresh_home
@@ -128,6 +151,9 @@ mkdir -p "${tmp}/img"
 printf '%s\n' "$shell_fn" > "${tmp}/img/fn.sh"
 cat > "${tmp}/img/run.sh" <<'EOF'
 set -u
+for f in /opt/hermes/cli-config.yaml.example /opt/hermes/.env.example /opt/hermes/docker/SOUL.md; do
+  [ -f "$f" ] || { echo "FAIL first-boot seed $f missing from the image; the bootstrap seeds from it"; exit 1; }
+done
 . /t/fn.sh
 export HERMES_HOME=/t/home
 mkdir -p "$HERMES_HOME/memories"

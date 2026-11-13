@@ -9,6 +9,8 @@
 set -e
 
 HERMES_HOME="${HERMES_HOME:-/opt/data}"
+# The image's install tree, for first-boot seeds.
+HERMES_INSTALL_DIR="${HERMES_INSTALL_DIR:-/opt/hermes}"
 PROFILE="${HERMES_API_PROFILE_NAME:-api-server}"
 MAX_TURNS="${HERMES_API_MAX_TURNS:-20}"
 TOOL_LOOP_HARD_STOP="${HERMES_TOOL_LOOP_HARD_STOP:-true}"
@@ -1923,6 +1925,22 @@ profile_env_file() {
   fi
 }
 
+# A fresh install: hermes has never started, so seed the default profile from
+# the image the way its first boot does (stage2-hook.sh seed_one). The profiles
+# have to exist before hermes starts: its memories/ bind mounts would otherwise
+# leave profiles/<name>/memories behind, which Docker Desktop will not let
+# anyone delete while the hermes container exists.
+if [ ! -f "${HERMES_HOME}/config.yaml" ] && [ -f "${HERMES_INSTALL_DIR}/cli-config.yaml.example" ]; then
+  log "No ${HERMES_HOME}/config.yaml; seeding the default profile from ${HERMES_INSTALL_DIR}"
+  for _seed in ".env:.env.example" "config.yaml:cli-config.yaml.example" "SOUL.md:docker/SOUL.md"; do
+    _dest="${HERMES_HOME}/${_seed%%:*}"
+    _src="${HERMES_INSTALL_DIR}/${_seed#*:}"
+    if [ ! -e "$_dest" ] && [ -f "$_src" ]; then
+      cp "$_src" "$_dest"
+    fi
+  done
+fi
+
 if [ ! -f "${HERMES_HOME}/config.yaml" ]; then
   log "No ${HERMES_HOME}/config.yaml — run setup first:"
   log "  docker compose --profile hermes run --rm hermes setup"
@@ -1988,16 +2006,18 @@ fi
 
 # --- Create profile if missing ---
 # clear_empty_profile_shell DIR: removes DIR when it holds nothing but empty
-# directories, and returns 1 when it holds anything else. Since v0.23.1,
-# `hermes profile create` refuses an existing directory without a profile
-# identity file, and a fresh install has one: hermes' memories/ bind mounts
-# create profiles/<name>/memories on the host each time the container starts
-# (setup.sh before 0.3.15 also made profiles/api-server and profiles/browser).
+# directories. Returns 1 when it holds anything else, 2 when removing it failed.
+# Since v0.23.1, `hermes profile create` refuses an existing directory without
+# a profile identity file. hermes' memories/ bind mounts create
+# profiles/<name>/memories when the container starts before its profile
+# exists, and setup.sh before 0.3.15 made profiles/api-server and
+# profiles/browser. Docker Desktop denies deleting a bind-mount target while
+# the container that mounts it exists, stopped or not.
 clear_empty_profile_shell() {
   [ -d "$1" ] || return 0
   [ -z "$(find "$1" ! -type d -print 2>/dev/null | head -n 1)" ] || return 1
   find "$1" -depth -type d -exec rmdir {} \; 2>/dev/null
-  [ ! -e "$1" ]
+  [ ! -e "$1" ] || return 2
 }
 
 # The clone copies the default profile's config, so apply its queued keys first.
@@ -2007,12 +2027,18 @@ case "$profile_list" in
   *"$PROFILE"*) log "Profile '${PROFILE}' already exists" ;;
   *)
     if [ -d "$PROFILE_DIR" ]; then
-      if clear_empty_profile_shell "$PROFILE_DIR"; then
-        log "Removed ${PROFILE_DIR}: empty directories only, no profile identity"
-      else
-        log "${PROFILE_DIR} exists and holds files but is not a Hermes profile; move it aside, then run the bootstrap again"
-        exit 1
-      fi
+      _shell_status=0
+      clear_empty_profile_shell "$PROFILE_DIR" || _shell_status=$?
+      case "$_shell_status" in
+        0) log "Removed ${PROFILE_DIR}: empty directories only, no profile identity" ;;
+        1)
+          log "${PROFILE_DIR} holds files but is not a Hermes profile; move it aside, then run the bootstrap again"
+          exit 1 ;;
+        *)
+          log "Could not remove the empty ${PROFILE_DIR}: the hermes container still mounts into it."
+          log "Remove that container and start again: docker compose rm -sf hermes && make up"
+          exit 1 ;;
+      esac
     fi
     log "Creating profile '${PROFILE}' (clone from default)"
     hermes profile create "$PROFILE" --clone
