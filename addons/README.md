@@ -18,8 +18,9 @@ is described in [docs/database.md](../docs/database.md), CalDAV calendars
 (`messages/`) is described in [docs/messages.md](../docs/messages.md); its
 new-message webhook route is still set by the bootstrap's
 `configure_messages_webhook`, keyed on `MESSAGES_MCP_ENABLED`, because no
-other add-on needs a webhook yet. The other optional services are still
-wired by hand.
+other add-on needs a webhook yet. Signal (`signal/`) and Buzz (`buzz/`) are
+Hermes chat platforms rather than MCP servers, described in
+[docs/signal.md](../docs/signal.md) and [docs/buzz.md](../docs/buzz.md).
 
 What reads a manifest:
 
@@ -28,11 +29,28 @@ What reads a manifest:
 - Both `hermes-*-bootstrap` services mount this directory and
   `scripts/lib/addon_manifest.py`, and register the `mcp` block on each
   profile listed in `mcp.profiles` while the flag is on. A profile left out
-  gets no entry, and turning the flag off drops the entries.
+  gets no entry, and turning the flag off drops the entries. `mcp` is
+  optional: Bitwarden, n8n, Signal and Buzz have none.
 
 Optional fields beyond the basics, checked by `addon_manifest.py validate`
 except where noted:
 
+- `gateway`: `{platform, sync}` for an add-on that switches a Hermes chat
+  platform instead of (or besides) registering an MCP server. `platform` is
+  the Hermes platform name (`platforms.<platform>` in a profile's
+  `config.yaml`); nothing reads it yet besides the validator. `sync` is a
+  host script, `scripts/<name>.sh` with no arguments, that reads the flags
+  from `.env` and seeds or clears the platform's variables in the Hermes
+  profiles. `addon.sh enable` and `disable` run it after writing the flags
+  and before `sync-profiles.sh`, and again after an enable rolls the flags
+  back; it must be safe to re-run, and a non-zero exit fails the step
+  `flags`. `make ensure-local` and `setup.sh` run the two existing scripts by
+  name. `addon.sh` doesn't recreate `hermes`, so the gateways pick the change
+  up at the next `make hermes-recreate`. A manifest with `gateway` may leave
+  out `services` (Buzz runs in `hermes` and has no container). An add-on
+  that reads personal data may send only when it has a `gateway` and no `mcp`
+  entry, so the agent gets no tool over the store it reads; it still needs
+  `cron: false`. Signal and Buzz use it.
 - `postInstallMessage`: a non-empty string of Markdown. `addon.sh list --json`
   passes it through as `postInstallMessage`; nothing else reads it, and the
   key is absent from the listing when the manifest has none.
@@ -194,9 +212,11 @@ python3 scripts/test-addon-manifests.py
 ```
 
 It validates every manifest, including the personal-data rules (an add-on
-that reads mail or messages may not send, run in cron or register on
-`api-server`), and checks each one against `docker-compose.yml` and
-`sync-profiles.sh`.
+that reads mail or messages may not run in cron or register on `api-server`,
+and may send only as a `gateway` add-on with no `mcp` entry), and checks each
+one against `docker-compose.yml` and `sync-profiles.sh`.
+`sh scripts/test-addon-gateway.sh` runs `addon.sh enable` and `disable` on
+Signal and Buzz with stub docker and synthetic values.
 
 The bootstraps fence add-on MCP servers out of cron jobs with the same
 `platform_toolsets.cron` list that keeps mail and messages out (see

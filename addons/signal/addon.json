@@ -1,0 +1,45 @@
+{
+  "manifestVersion": 1,
+  "id": "io.github.kaxline.stack.signal",
+  "version": "1.0.0",
+  "title": "Signal",
+  "tagline": "Chat with Hermes over Signal, from a signal-cli device linked to your account",
+  "description": "Runs the signal-cli daemon on the compose network (http://signal-cli:8080, no host port) with the host store in SIGNAL_CLI_DATA_DIR bind-mounted, so the daemon can read every message and contact of the linked account. The default profile's gateway receives direct messages from SIGNAL_ALLOWED_USERS, replies, and delivers cron output to SIGNAL_HOME_CHANNEL; the browser profile gets the same variables for WebUI sends, with its Signal adapter disabled so only one gateway receives. api-server gets nothing. There is no MCP server: the agent has no tool that searches the store. Before enabling, link signal-cli on the host and set SIGNAL_ACCOUNT in .env. Disabling clears the seeded variables and never touches the store. See docs/signal.md.",
+  "publisher": {
+    "name": "sovereign-agent-stack",
+    "url": "https://github.com/kaxline/sovereign-agent-stack"
+  },
+  "minStackVersion": "0.3.15",
+  "builtin": {
+    "flag": "HERMES_SIGNAL_ENABLED",
+    "profile": "signal",
+    "seed": false
+  },
+  "services": {
+    "daemon": {
+      "compose": "signal-cli",
+      "port": 8080
+    }
+  },
+  "gateway": {
+    "platform": "signal",
+    "sync": "scripts/sync-signal-profile.sh"
+  },
+  "permissions": {
+    "reads": [
+      "messages",
+      "contacts"
+    ],
+    "writes": [],
+    "sends": true,
+    "egress": [
+      "internet"
+    ],
+    "exposesToAgent": false,
+    "cron": false
+  },
+  "store": {
+    "dataLeaves": "Messages to and from the linked Signal account go through Signal's servers, end-to-end encrypted, and replies the agent writes are sent from that account."
+  },
+  "postInstallMessage": "Run `make hermes-recreate` so the default and browser gateways load the Signal variables. Stop any signal-cli daemon on the host first: only one process may receive for the account."
+}

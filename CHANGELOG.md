@@ -43,6 +43,32 @@ the stack under another app.
 - `HERMES_API_SERVER_PORT` changes only the host port of the api-server
   gateway. hermes-api-bootstrap used it as the in-container port, so any value
   but 8643 left the gateway on a port the healthcheck never probes.
+- Signal and Buzz are built-in add-ons (`addons/signal/addon.json`,
+  `addons/buzz/addon.json`), so `addon.sh list`, `enable` and `disable` work
+  on them. The flags (`HERMES_SIGNAL_ENABLED`, `HERMES_BUZZ_ENABLED`), every
+  `SIGNAL_*` and `BUZZ_*` variable, and what lands in the Hermes profiles'
+  `.env` and `config.yaml` files are unchanged. Neither has an MCP server.
+  A new manifest field, `gateway: {platform, sync}`, names the Hermes chat
+  platform and the host script that seeds or clears it
+  (`scripts/sync-signal-profile.sh`, `scripts/sync-buzz-profile.sh`);
+  `addon.sh enable` and `disable` run that script after writing the flag, and
+  run it again when an enable rolls back. A gateway add-on may leave out
+  `services`; Buzz has no container. `addon.sh` still doesn't recreate
+  `hermes`, so run `make hermes-recreate` after enabling or disabling either
+  one for the gateways to pick it up; both manifests say so in
+  `postInstallMessage`. Signal declares `reads: ["messages", "contacts"]` and
+  `sends: true`: the validator now allows reads together with sends on a
+  gateway add-on that has no `mcp` entry, and still requires `cron: false`.
+  Signal declares no `data` paths, so `remove --delete-data signal` never
+  touches `SIGNAL_CLI_DATA_DIR`. `sync-profiles.sh` now adds and removes the
+  `signal` compose profile (and a new `buzz` profile that no service uses)
+  from the flag, recording it in `COMPOSE_PROFILES_MANAGED`;
+  `sync-signal-profile.sh` no longer touches `COMPOSE_PROFILES`. One
+  difference: an install that turns `HERMES_SIGNAL_ENABLED` off before any
+  `make ensure-local` has run on this version keeps `signal` in
+  `COMPOSE_PROFILES`, with a warning, because the profile was never recorded
+  as managed. Remove it from `COMPOSE_PROFILES` by hand in that case. Neither
+  port was tested on a live install.
 - The Messages MCP is a built-in add-on (`addons/messages/addon.json`), so
   `addon.sh list`, `enable messages` and `disable messages` work on it. The
   flag (`MESSAGES_MCP_ENABLED`), the compose profile (`messages`), the server
@@ -61,6 +87,15 @@ the stack under another app.
   core MCP name, so the manifest's uniqueness check now keeps other add-ons off
   it. Messages hasn't been tested on a live install since v0.3.6, and this
   port wasn't tested live either.
+- Fixed: a profile cloned from `default` (`browser`, `api-server`) kept
+  default's longer `tools.include` for an MCP entry it registers with fewer
+  tools, so with `MESSAGES_MCP_ENABLED=1` at a fresh install `browser` held
+  `messages_triage_batch`, and an Actual budget bound `ro` on `browser` or
+  `api-server` kept default's write tools there (its URL was the ro sidecar).
+  The bootstraps now write every stack-registered MCP allowlist exactly, on
+  fresh installs and re-runs, which also replaces a hand-edited
+  `tools.include` on those entries. The next bootstrap run repairs an
+  existing install. `scripts/test-addon-clone-tools.sh` covers it.
 - The bootstraps' cron fence now keeps the `browser` toolset out of
   `platform_toolsets.cron` on every profile they run on, and pins that list
   even when no mail, messages or fenced add-on server is registered. The list
@@ -151,7 +186,7 @@ the stack under another app.
   (`todos`), its URL, the pins and which token each profile gets are
   unchanged. Two differences: the profile `.env` key that holds the token is
   now `TODOS_KEY` (was `VIKUNJA_MCP_TOKEN`, which is left in place and no
-  longer read), and the first `addon.sh enable vikunja` on an install set up
+  longer read; `make doctor` checks `TODOS_KEY`), and the first `addon.sh enable vikunja` on an install set up
   with `make todo-init` runs `todo.sh init` once more, which replaces both
   tokens. The manifest declares `uses: postgres` and `exposesToAgent: true`:
   the SQL add-on's roles can read the `vikunja` schema.

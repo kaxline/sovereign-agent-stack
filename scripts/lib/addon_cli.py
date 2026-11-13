@@ -31,7 +31,8 @@ runs in the Hermes image through stack_python, so the host needs no python3.
         "oneshots" (services another compose service depends on with condition
         service_completed_successfully in docker-compose.yml), "uses" (the
         compose service of each `uses` name in USES_COMPOSE) and "mcp" (each
-        mcp name, "name@FLAG" when the entry has a gate). "mounts" lists the
+        mcp name, "name@FLAG" when the entry has a gate), "sync" (gateway.sync,
+        or "" without a gateway). "mounts" lists the
         services that declare `mounts` and "hermesUser" those whose compose
         `user:` is HERMES_UID; with either, the add-on's store directories
         are created first, and addon.sh checks HERMES_UID and HERMES_GID on
@@ -39,8 +40,8 @@ runs in the Hermes image through stack_python, so the host needs no python3.
     plan-disable SID [--flags JSON]
         Prints {"builtin": FLAG, "flags": {...}, "services": [...], "volumes": [...]}: builtin.flag
         and every gate flag at "0", every compose service, and the compose
-        volumes the manifest declares, plus "uses" and "mcp" as plan-enable
-        prints them. First, a bool setting whose flag is a gate
+        volumes the manifest declares, plus "uses", "mcp" and "sync" as
+        plan-enable prints them. First, a bool setting whose flag is a gate
         that is "1" in --flags (the .env flags) and that isn't stored is
         stored as true, so plan-enable restores the flag.
     plan-run SID COMMAND [--instance SLUG]
@@ -350,8 +351,9 @@ def _plan_fields(manifest: dict) -> dict:
             continue  # an `instances` entry is named per instance; only connect reports the names
         gate = entry.get("when", {}).get("gate")
         names.append(f"{entry['name']}@{gate}" if gate else entry["name"])
+    gateway = manifest.get("gateway")
     return {"uses": [USES_COMPOSE[u] for u in manifest.get("uses", []) if u in USES_COMPOSE],
-            "mcp": names}
+            "mcp": names, "sync": gateway["sync"] if gateway else ""}
 
 
 def cmd_plan_enable(args) -> None:
@@ -369,7 +371,7 @@ def cmd_plan_enable(args) -> None:
             flags[spec["flag"]] = "1" if stored[name] else "0"
     services, oneshots, gated, mounts, hermes_user = [], [], [], [], []
     runs_once, as_hermes = _oneshots(), _hermes_user()
-    for key, svc in manifest["services"].items():
+    for key, svc in manifest.get("services", {}).items():
         name = _compose(manifest, key)
         gate = svc.get("when", {}).get("gate")
         (oneshots if name in runs_once else services).append(f"{name}@{gate}" if gate else name)
@@ -402,7 +404,7 @@ def cmd_plan_disable(args) -> None:
     if keep:
         store.apply_settings(manifest, args.data_root, keep)
     flags = {f: "0" for f in [manifest["builtin"]["flag"], *_gate_flags(manifest)]}
-    services = [_compose(manifest, key) for key in manifest["services"]]
+    services = [_compose(manifest, key) for key in manifest.get("services", {})]
     _dump({"builtin": manifest["builtin"]["flag"], "flags": flags, "services": services,
            "volumes": am.data_volumes(manifest),
            **_plan_fields(manifest)})
@@ -732,7 +734,7 @@ def cmd_plan_remove(args) -> None:
     delete.append(own)
     services, oneshots = [], []
     runs_once = _oneshots()
-    for key in manifest["services"]:
+    for key in manifest.get("services", {}):
         name = _compose(manifest, key)
         (oneshots if name in runs_once else services).append(name)
     volumes = am.data_volumes(manifest)
