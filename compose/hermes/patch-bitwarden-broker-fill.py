@@ -14,7 +14,11 @@ tools/browser_vault_tool.py this:
 - sends enter_code for a bwbroker: login with a TOTP key the same way with
   field "totp"; a login without one keeps core's ask-the-user path;
 - adds a "bitwarden" entry to browser_vault_list naming locked accounts and
-  make vault-unlock, or {"unavailable": true} when the broker does not answer.
+  make vault-unlock, or {"unavailable": true} when the broker does not answer,
+  and sets sign_in_only on each listed bwbroker: item from /items.
+
+_bwbroker_tab picks the tab a broker write lands in; patch-bitwarden-signin.py
+uses it for the sign-in actions.
 
 A bwbroker: fill whose metadata read came back empty because the broker is
 down gets the "Bitwarden is unavailable" result instead of core's unknown-handle
@@ -106,6 +110,7 @@ _BWBROKER_ERRORS = {
     "cdp_unavailable": "Bitwarden could not finish the fill in this tab. Check the form, then retry once.",
     "unknown_handle": "No Bitwarden login with that handle. Use browser_vault action=list.",
     "no_totp": "This Bitwarden login has no authenticator key. Call enter_code without a handle so the user is asked.",
+    "sign_in_only": "This Bitwarden login is set up for sign_in. Call browser_vault action=sign_in with this handle.",
     "account_locked": "The Bitwarden account holding this login is locked. Ask the user to run "
                       "make vault-unlock SLUG={slug}.",
 }
@@ -239,6 +244,37 @@ def _bwbroker_refusal(code: str, handle: str, meta: Any, found: Optional[str], f
     return {"success": False, "error_type": code, "error": text}
 
 
+def _bwbroker_tab(task_id: str, page_origin: str, accept_kind: str) -> Any:
+    """``(target_id, port)`` of the task's tab on ``page_origin``, or the refusal dict to return.
+
+    ``accept_kind`` keys _TAB_PROBES ("login", "otp"); any other value focuses the first tab on the
+    origin. The broker and the signer both write through this tab, so it is picked the same way for a
+    fill and for a sign-in handover."""
+    supervisor = None
+    if _page_backend(task_id) is None:  # a plugin browser has no CDP endpoint the broker could reach
+        try:
+            supervisor = _ensure_supervisor(task_id)
+        except Exception:  # health: allow BLE001 -- reported as supervisor_required
+            supervisor = None
+    if supervisor is None:
+        return {"success": False, "error_type": "supervisor_required",
+                "error": ("Vault fill requires the supervised browser session (direct CDP WebSocket), "
+                          "and this task has none. Open the page with browser_exec and retry.")}
+    # On failure the previous page session stays; the broker re-reads the tab's URL before it writes.
+    supervisor.focus_page(page_origin, accept=_TAB_PROBES.get(accept_kind))
+    target_id, port = _bwbroker_target_id(supervisor), _bwbroker_cdp_port(supervisor, task_id)
+    if not target_id or not port:
+        return {"success": False, "error_type": "cdp_unavailable", "error": _BWBROKER_ERRORS["cdp_unavailable"]}
+    # Re-admit at the write, as _eval_js_secret does: a human may have taken over the screen.
+    if _bot_desktop_browser_session(task_id):
+        from tools.bot_desktop import lease as _bd_lease
+        try:
+            _bd_lease.assert_agent_may_act()
+        except _bd_lease.HumanHasControl as exc:
+            return {"success": False, "error_type": "human_has_control", "error": str(exc)}
+    return target_id, port
+
+
 def _bwbroker_fill(handle: str, meta: Any, page_origin: str, task_id: str, field: str = "password") -> str:
     """Have the broker write ``field`` ("password" or "totp") of a bwbroker: login into the task's tab on
     ``page_origin``. Runs where core resolves and writes: after the origin pre-check, inside fill_context.
@@ -250,28 +286,10 @@ def _bwbroker_fill(handle: str, meta: Any, page_origin: str, task_id: str, field
         base = vault_redaction_base()
     except Exception:  # health: allow BLE001 -- without the digest overlay a filled value could not be scrubbed
         return json.dumps({"success": False, "error": _BWBROKER_UNAVAILABLE})
-    supervisor = None
-    if _page_backend(task_id) is None:  # a plugin browser has no CDP endpoint the broker could reach
-        try:
-            supervisor = _ensure_supervisor(task_id)
-        except Exception:  # health: allow BLE001 -- reported as supervisor_required
-            supervisor = None
-    if supervisor is None:
-        return json.dumps({"success": False, "error_type": "supervisor_required",
-                           "error": ("Vault fill requires the supervised browser session (direct CDP WebSocket), "
-                                     "and this task has none. Open the page with browser_exec and retry.")})
-    # On failure the previous page session stays; the broker re-reads the tab's URL before it writes.
-    supervisor.focus_page(page_origin, accept=_TAB_PROBES.get("login" if field == "password" else "otp"))
-    target_id, port = _bwbroker_target_id(supervisor), _bwbroker_cdp_port(supervisor, task_id)
-    if not target_id or not port:
-        return json.dumps(_bwbroker_refusal("cdp_unavailable", handle, meta, None, field))
-    # Re-admit at the write, as _eval_js_secret does: a human may have taken over the screen.
-    if _bot_desktop_browser_session(task_id):
-        from tools.bot_desktop import lease as _bd_lease
-        try:
-            _bd_lease.assert_agent_may_act()
-        except _bd_lease.HumanHasControl as exc:
-            return json.dumps({"success": False, "error_type": "human_has_control", "error": str(exc)})
+    tab = _bwbroker_tab(task_id, page_origin, "login" if field == "password" else "otp")
+    if isinstance(tab, dict):
+        return json.dumps(tab)
+    target_id, port = tab
 
     reply = _bwbroker_call("POST", "/fill", {"handle": handle, "target_id": target_id, "port": port,
                                              "field": field, "base": base})
@@ -290,14 +308,30 @@ def _bwbroker_fill(handle: str, meta: Any, page_origin: str, task_id: str, field
     return json.dumps(_bwbroker_refusal(_bwbroker_code(payload), handle, meta, found, field))
 
 
+def _bwbroker_sign_in_only(out: dict[str, Any]) -> None:
+    """Mark each listed bwbroker: item the broker reports as sign-in only: without the item's
+    ``agent-in-page-fill`` field, fill_login and enter_code refuse it and sign_in is the way in."""
+    reply = _bwbroker_call("GET", "/items", timeout=_BWBROKER_STATUS_TIMEOUT)
+    entries = reply[1] if reply is not None and reply[0] == 200 else None
+    if not isinstance(entries, list):
+        return
+    flags = {e["handle"]: bool(e.get("sign_in_only")) for e in entries
+             if isinstance(e, dict) and isinstance(e.get("handle"), str)}
+    for item in out.get("items") or ():
+        if isinstance(item, dict) and item.get("handle") in flags:
+            item["sign_in_only"] = flags[item["handle"]]
+
+
 def _bwbroker_list_hint(out: dict[str, Any]) -> None:
-    """Add ``bitwarden`` to a browser_vault_list result when the bwbroker backend is enabled. Never raises."""
+    """Add ``bitwarden`` to a browser_vault_list result when the bwbroker backend is enabled, and the
+    sign-in-only flag to its items. Never raises."""
     import re
 
     try:
         from agent.vault_backends import enabled_backends
         if not any(getattr(b, "name", None) == _BWBROKER_NAME for b in enabled_backends()):
             return
+        _bwbroker_sign_in_only(out)
         reply = _bwbroker_call("GET", "/accounts", timeout=_BWBROKER_STATUS_TIMEOUT)
         accounts = reply[1] if reply is not None and reply[0] == 200 else None
         if not isinstance(accounts, list):

@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""Checks for the Bitwarden fill overlay (patch-bitwarden-broker-fill.py).
+"""Checks for the Bitwarden fill and sign-in overlays.
+
+(patch-bitwarden-broker-fill.py and patch-bitwarden-signin.py.)
 
 Host part checks the wiring. With the pinned Hermes image present (or
 --image), the image driver applies the overlays twice, launches the image's
 headless Chromium on a local login page and runs a stub broker on
 127.0.0.1:8099 that writes through the real broker/cdp.py. It checks that a
 bwbroker: fill reaches the stub with the supervisor's target id and CDP port,
+that the seven sign-in actions are in the schema and route to the /signin/
+routes with the right bodies, that a sign_in_only item's fill_login and
+enter_code carry the fixed refusal, that list marks those items,
 that PluginLoginBackend.resolve_password never runs, that the redaction entry
 is registered, that a vault_ handle still takes core's path, the broker-down
 results, the TOTP routing and fallback, an unpatched save_login, and that the
@@ -47,6 +52,21 @@ def test_overlay_order() -> None:
                  "return _fill_bound_page(backend, handle, meta, page_origin, effective_task_id)",
                  "return _fill_bound_page(backend, handle, meta, page_origin, effective_task_id, with_identifier)"):
         expect(name in patch, f"NEEDED names {name}")
+    expect(runner.index("patch-bitwarden-broker-fill.py") < runner.index("patch-bitwarden-signin.py"),
+           "the sign-in overlay runs after the fill overlay")
+    compose = (ROOT / "docker-compose.yml").read_text()
+    for name in ("patch-bitwarden-signin.py", "vault_bitwarden_signin.py"):
+        expect(f"./compose/hermes/{name}:/bootstrap/{name}:ro" in compose, f"{name} is mounted under /bootstrap")
+
+
+def test_signin_patch_touches_one_upstream_file() -> None:
+    """The fork cap: the sign-in patch edits tools/browser_vault_tool.py and installs its own module."""
+    import re
+
+    patch = (ROOT / "compose" / "hermes" / "patch-bitwarden-signin.py").read_text()
+    edited = set(re.findall(r'"([a-z_]+\.py)"', patch)) | set(re.findall(r'/ "([a-z_/]+\.py)"', patch))
+    expect(edited <= {"browser_vault_tool.py", "vault_bitwarden_signin.py"},
+           f"only browser_vault_tool.py is edited, not {sorted(edited)}")
 
 IMAGE_DRIVER = r'''
 import json, logging, os, secrets, socket, string, subprocess, sys, tempfile, threading, time, urllib.request
@@ -63,9 +83,25 @@ for script in ("/bootstrap/patch-digest-redaction.py", "/bootstrap/patch-bitward
         out = subprocess.run([sys.executable, script], capture_output=True, text=True, env=env)
         assert out.returncode == 0, out.stdout + out.stderr
     assert "already applied" in out.stdout, out.stdout
+src_before_signin = open("/opt/hermes/tools/browser_vault_tool.py").read()
+for _ in range(2):
+    out = subprocess.run([sys.executable, "/bootstrap/patch-bitwarden-signin.py"], capture_output=True,
+                         text=True, env=env)
+    assert out.returncode == 0 and "warn:" not in out.stdout, out.stdout + out.stderr
+assert "already patched" in out.stdout, out.stdout
 src = open("/opt/hermes/tools/browser_vault_tool.py").read()
 assert src.count("# assistant-stack: bitwarden broker fill\n") == 1, "one helper block"
 assert src.count("# assistant-stack: bitwarden broker fill (") == 4, "four call sites"
+
+# --- test_patch_line_count ---------------------------------------------------
+ADDED = len(src.splitlines()) - len(src_before_signin.splitlines())
+assert ADDED <= 50, f"the sign-in patch inserts {ADDED} upstream lines"
+
+# --- test_fill_behavior_unchanged_after_extract ------------------------------
+# _bwbroker_fill gets its tab through the extracted helper; the fill checks below are unchanged.
+assert "def _bwbroker_tab(" in src, "the tab helper is extracted"
+fill_body = src[src.index("def _bwbroker_fill("):src.index("def _bwbroker_list_hint(")]
+assert "_bwbroker_tab(" in fill_body, "_bwbroker_fill calls the extracted helper"
 
 sys.path.insert(0, "/opt/hermes")
 sys.path.insert(0, "/broker-src")
@@ -154,14 +190,22 @@ PASSWORD = "Pw+" + "".join(secrets.choice(string.ascii_letters + string.digits) 
 TOTP = "".join(secrets.choice(string.digits) for _ in range(6))
 H_OTP, H_PLAIN = "bwbroker:acme/item-otp", "bwbroker:acme/item-plain"
 ITEMS = [
-    {"handle": H_OTP, "label": "Acme", "username": "agent@example.com", "origins": [ORIGIN], "has_totp": True},
-    {"handle": H_PLAIN, "label": "Acme plain", "username": "agent2@example.com", "origins": [ORIGIN], "has_totp": False},
+    {"handle": H_OTP, "label": "Acme", "username": "agent@example.com", "origins": [ORIGIN], "has_totp": True,
+     "sign_in_only": True},
+    {"handle": H_PLAIN, "label": "Acme plain", "username": "agent2@example.com", "origins": [ORIGIN],
+     "has_totp": False, "sign_in_only": False},
 ]
-STATE = {"fills": [], "accounts": [{"slug": "acme", "mode": "cloud", "scope": "folder", "state": "unlocked",
-                                    "error_class": None},
-                                   {"slug": "home", "mode": "cloud", "scope": "folder", "state": "locked",
-                                    "error_class": None}],
-         "fill_mode": "real"}
+SNAPSHOT = {"origin": ORIGIN, "nodes": [{"ref": 1, "role": "textbox", "name": "Password", "text": ""},
+                                        {"ref": 2, "role": "button", "name": "Sign in", "text": "Sign in"}]}
+SIGNIN_STATUS = {"busy": 409, "no_session": 409, "stale_ref": 409, "origin_mismatch": 403,
+                 "not_a_secret_field": 422, "no_totp": 400, "handover_refused": 409, "page_error": 502,
+                 "timeout": 504, "signer_unavailable": 503, "sandbox_unavailable": 503,
+                 "account_locked": 503, "unknown_handle": 404, "unavailable": 503}
+STATE = {"fills": [], "posts": [], "accounts": [{"slug": "acme", "mode": "cloud", "scope": "folder",
+                                                 "state": "unlocked", "error_class": None},
+                                                {"slug": "home", "mode": "cloud", "scope": "folder",
+                                                 "state": "locked", "error_class": None}],
+         "fill_mode": "real", "signin_mode": "ok"}
 class Broker(BaseHTTPRequestHandler):
     def _send(self, status, payload, raw=None):
         data = raw if raw is not None else json.dumps(payload).encode()
@@ -177,7 +221,12 @@ class Broker(BaseHTTPRequestHandler):
         self._send(404, {"error": "not_found"})
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        STATE["posts"].append((self.path, body))
+        if self.path.startswith("/signin/"):
+            return self.signin(self.path[len("/signin/"):], body)
         STATE["fills"].append(body)
+        if STATE["fill_mode"] == "sign_in_only":
+            return self._send(409, {"error": "sign_in_only"})
         if STATE["fill_mode"] == "html":
             return self._send(500, None, raw=b"<html>Internal Server Error " + PASSWORD.encode() + b"</html>")
         if STATE["fill_mode"] == "code":
@@ -195,6 +244,27 @@ class Broker(BaseHTTPRequestHandler):
             redaction = build_entry(value, body["base"])
         self._send(200, {"filled": result.filled, "origin": result.origin, "error": result.error,
                          "redaction": redaction})
+    def signin(self, name, body):
+        mode = STATE["signin_mode"]
+        if mode != "ok":
+            return self._send(SIGNIN_STATUS[mode], {"error": mode})
+        if name == "start":
+            assert set(body) == {"handle", "target_id", "port"}, sorted(body)
+        elif name == "finish":
+            assert set(body) == {"target_id", "port"}, sorted(body)
+        elif name == "click":
+            assert set(body) == {"ref"}, sorted(body)
+        elif name == "type":
+            assert set(body) == {"ref", "text"}, sorted(body)
+        elif name == "fill":
+            assert set(body) == {"ref", "field"}, sorted(body)
+        else:
+            assert body == {}, body
+        if name == "cancel":
+            return self._send(200, {"cancelled": True})
+        if name == "finish":
+            return self._send(200, {"done": True, "origin": ORIGIN, "cookies": 3})
+        self._send(200, dict(SNAPSHOT))
     def log_message(self, *a):
         pass
 broker = ThreadingHTTPServer(("127.0.0.1", 8099), Broker)
@@ -364,6 +434,95 @@ unlock.get_save_login_prompt_callback = lambda: (lambda origin, host: None)
 res = tool(bvt.browser_vault_save_login, task_id=TASK)
 assert res.get("error_type") == "save_declined", res
 
+def snapshot_result(res):
+    """A sign-in result without its next-step hint (every result but the cancel carries one)."""
+    hint = res.pop("next", None)
+    assert hint or not res.get("success") or "cancelled" in res, res
+    return res
+
+
+# --- test_schema_has_signin_actions -----------------------------------------
+import tools.vault_bitwarden_signin as bvs
+props = bvt.BROWSER_VAULT_SCHEMA["parameters"]["properties"]
+assert bvs.ACTIONS == ("sign_in", "signin_snapshot", "signin_click", "signin_type", "signin_fill",
+                       "signin_finish", "signin_cancel"), bvs.ACTIONS
+for action in bvs.ACTIONS:
+    assert action in props["action"]["enum"], (action, props["action"]["enum"])
+assert props["ref"]["type"] == "integer" and props["text"]["type"] == "string", props
+assert set(props["field"]["enum"]) == {"password", "totp"}, props["field"]
+for action in ("list", "fill", "save_login", "enter_code", "unlock"):
+    assert action in props["action"]["enum"], "the upstream actions are kept"
+
+# --- test_dispatch_routes_each_action ---------------------------------------
+STATE["posts"].clear()
+res = tool(bvt._handle_vault, {"action": "sign_in", "handle": H_OTP}, task_id=TASK)
+assert snapshot_result(res) == {"success": True, "origin": ORIGIN, "nodes": SNAPSHOT["nodes"]}, res
+route, body = STATE["posts"][-1]
+assert route == "/signin/start", route
+# No form probe: the handover tab is the first open tab on the item's origin.
+SITE_TARGETS = {t["id"] for t in cdp_json("/json/list") if t.get("url", "").startswith(ORIGIN)}
+assert body == {"handle": H_OTP, "target_id": body["target_id"], "port": CDP_PORT}, body
+assert body["target_id"] in SITE_TARGETS, (body, SITE_TARGETS)
+SIGNIN_TAB = body["target_id"]
+for action, route, body, want in (
+        ("signin_snapshot", "/signin/snapshot", {}, {"success": True, "origin": ORIGIN, "nodes": SNAPSHOT["nodes"]}),
+        ("signin_click", "/signin/click", {"ref": 2}, {"success": True, "origin": ORIGIN, "nodes": SNAPSHOT["nodes"]}),
+        ("signin_type", "/signin/type", {"ref": 1, "text": "agent@example.com"},
+         {"success": True, "origin": ORIGIN, "nodes": SNAPSHOT["nodes"]}),
+        ("signin_fill", "/signin/fill", {"ref": 1, "field": "password"},
+         {"success": True, "origin": ORIGIN, "nodes": SNAPSHOT["nodes"]}),
+        ("signin_finish", "/signin/finish", {"target_id": SIGNIN_TAB, "port": CDP_PORT},
+         {"success": True, "done": True, "origin": ORIGIN, "cookies": 3}),
+        ("signin_cancel", "/signin/cancel", {}, {"success": True, "cancelled": True})):
+    args = {"action": action}
+    if action == "signin_click":
+        args["ref"] = 2
+    if action == "signin_type":
+        args["ref"], args["text"] = 1, "agent@example.com"
+    if action == "signin_fill":
+        args["ref"], args["field"] = 1, "password"
+    res = tool(bvt._handle_vault, args, task_id=TASK)
+    assert snapshot_result(res) == want, (action, res)
+    assert STATE["posts"][-1] == (route, body), (action, STATE["posts"][-1])
+# Every sign-in action reached the broker on its own route.
+assert [p[0] for p in STATE["posts"]] == ["/signin/start", "/signin/snapshot", "/signin/click", "/signin/type",
+                                          "/signin/fill", "/signin/finish", "/signin/cancel"], STATE["posts"]
+# A broker code comes back as fixed text with the code as error_type, and never as page text.
+STATE["signin_mode"] = "not_a_secret_field"
+res = tool(bvt._handle_vault, {"action": "signin_fill", "ref": 1, "field": "password"}, task_id=TASK)
+assert res["success"] is False and res["error_type"] == "not_a_secret_field" and res["error"], res
+STATE["signin_mode"] = "ok"
+
+# --- test_fill_login_sign_in_only_text / test_enter_code_sign_in_only_text ---
+SIGN_IN_ONLY = ("This Bitwarden login is set up for sign_in. Call browser_vault action=sign_in with this handle.")
+STATE["fill_mode"] = "sign_in_only"
+res = tool(bvt.browser_vault_fill, H_PLAIN, task_id=TASK)
+assert res == {"success": False, "error_type": "sign_in_only", "error": SIGN_IN_ONLY}, res
+res = tool(bvt.browser_vault_enter_code, H_OTP, task_id=TASK)
+assert res == {"success": False, "error_type": "sign_in_only", "error": SIGN_IN_ONLY}, res
+STATE["fill_mode"] = "real"
+
+# --- test_list_sign_in_only_flag --------------------------------------------
+listing = tool(bvt.browser_vault_list)
+flags = {i["handle"]: i.get("sign_in_only") for i in listing["items"]}
+assert flags == {"vault_abc": None, H_OTP: True, H_PLAIN: False}, flags
+
+# --- test_signin_in_cron_turn_unknown_handle --------------------------------
+# A cron turn lists no items, so there is no handle to sign in with and no session to act on.
+CRON_BW = PluginLoginBackend("bwbroker", bwb.BrokerLoginBackend(in_cron=lambda: True))
+set_backends(Local(), CRON_BW)
+STATE["posts"].clear()
+res = tool(bvt._handle_vault, {"action": "sign_in", "handle": H_OTP}, task_id=TASK)
+assert res["success"] is False and res["error_type"] == "unknown_handle", res
+assert STATE["posts"] == [], "a cron turn never starts a session"
+STATE["signin_mode"] = "no_session"  # the broker's answer with no session open
+for action in bvs.ACTIONS[1:]:
+    args = {"action": action, "ref": 1, "text": "x", "field": "password"}
+    res = tool(bvt._handle_vault, args, task_id=TASK)
+    assert res["success"] is False and res["error_type"] in ("no_session", "unknown_handle"), (action, res)
+STATE["signin_mode"] = "ok"
+set_backends(Local(), BW)
+
 # --- test_origin_normalization_matches_core ---------------------------------
 URLS = [
     "https://example.com", "https://example.com/", "https://example.com:443/login?x=1#f", "http://example.com:80",
@@ -390,6 +549,7 @@ os.write(1, b"image ok\n")
 
 def main() -> None:
     test_overlay_order()
+    test_signin_patch_touches_one_upstream_file()
     print("ok")
     driver = f"EARLIER_VAULT_OVERLAYS = {EARLIER_VAULT_OVERLAYS!r}\n" + IMAGE_DRIVER
     hermes_image.maybe_run(driver, mounts=[(str(BROKER_SRC), "/broker-src")])

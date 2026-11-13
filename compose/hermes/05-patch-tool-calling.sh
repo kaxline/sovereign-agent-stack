@@ -48,6 +48,9 @@ run_patch /bootstrap/patch-digest-redaction.py
 # Fills of bwbroker: handles go to the Bitwarden broker, which writes the page
 # itself, so the gateway never holds the value.
 run_patch /bootstrap/patch-bitwarden-broker-fill.py
+# browser_vault sign_in and the signin_* actions: the broker signs in in its own
+# browser and hands the site's session to the agent's tab.
+run_patch /bootstrap/patch-bitwarden-signin.py
 # HERMES_WEB_SEARCH_MODE: serve searxng search and page reads from SearXNG,
 # Hermes' keyless ring, or one with the other as fallback.
 run_patch /bootstrap/patch-web-search-mode.py
