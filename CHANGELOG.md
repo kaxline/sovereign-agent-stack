@@ -73,6 +73,15 @@ the stack under another app.
   core MCP name, so the manifest's uniqueness check now keeps other add-ons off
   it. Messages hasn't been tested on a live install since v0.3.6, and this
   port wasn't tested live either.
+- Fixed: a profile cloned from `default` (`browser`, `api-server`) kept
+  default's longer `tools.include` for an MCP entry it registers with fewer
+  tools, so with `MESSAGES_MCP_ENABLED=1` at a fresh install `browser` held
+  `messages_triage_batch`, and an Actual budget bound `ro` on `browser` or
+  `api-server` kept default's write tools there (its URL was the ro sidecar).
+  The bootstraps now write every stack-registered MCP allowlist exactly, on
+  fresh installs and re-runs, which also replaces a hand-edited
+  `tools.include` on those entries. The next bootstrap run repairs an
+  existing install. `scripts/test-addon-clone-tools.sh` covers it.
 - The bootstraps' cron fence now keeps the `browser` toolset out of
   `platform_toolsets.cron` on every profile they run on, and pins that list
   even when no mail, messages or fenced add-on server is registered. The list
