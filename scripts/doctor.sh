@@ -1224,6 +1224,16 @@ if [[ "$bw_on" -eq 1 || "$bw_local" -eq 1 || "$bw_files" -gt 0 || "$bw_old" -gt 
         bad "Bitwarden broker does not list its accounts — docker compose logs bitwarden-broker"
       else
         ok "Bitwarden broker answers /health from hermes"
+        # The sign-in signer (bitwarden-signin), which the broker reaches over a
+        # Unix socket. down also covers a broker too old to know the state.
+        bw_signer="$(compose_with_profile bitwarden exec -T bitwarden-broker python3 -m broker.cli signer 2>/dev/null || true)"
+        case "$bw_signer" in
+          ready | busy) ok "Bitwarden sign-in browser: ${bw_signer}" ;;
+          sandbox_unavailable)
+            warn "Bitwarden sign-in browser: Chromium's sandbox does not start on this host, so sign-ins are refused (in-page fills still work) — docker compose logs bitwarden-signin" ;;
+          *)
+            warn "Bitwarden sign-in browser: down — docker compose --profile core --profile bitwarden up -d --no-deps bitwarden-signin" ;;
+        esac
         bw_seen=" "
         bw_refused=" "
         while IFS=$'\t' read -r bw_slug bw_mode bw_scope bw_state bw_class _; do

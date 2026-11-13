@@ -1,10 +1,14 @@
 # Bitwarden
 
 Hermes signs in to websites with logins kept in Bitwarden. A sidecar, `bitwarden-broker`, holds
-each account's `bw` data, API key and session key, and writes passwords and one-time codes into the
-page itself. The Hermes gateway lists metadata only (handle, label, username, origins, whether the
-item has a TOTP key) and never holds a value. The agent keeps the `browser_vault_*` tools and the
-`browser-login` skill; Bitwarden logins appear in `browser_vault` `list` with `bwbroker:` handles.
+each account's `bw` data, API key and session key. A second container, `bitwarden-signin`, runs the
+browser the password is typed into, so the value never enters `hermes`; the broker hands the site's
+session to the agent's tab afterwards (see [Sign-in](#sign-in)). An item marked
+`agent-in-page-fill` keeps the older path, where the broker writes the value into the agent's own
+page. The Hermes gateway lists metadata only (handle, label, username, origins, whether the item has
+a TOTP key, whether it is `sign_in_only`) and never holds a value. The agent keeps the
+`browser_vault_*` tools and the `browser-login` skill; Bitwarden logins appear in `browser_vault`
+`list` with `bwbroker:` handles.
 
 The add-on is on the `default` and `browser` profiles only. It is never on `api-server`. Cron jobs
 get no Bitwarden logins and no fills; the two access tools stay out of cron's tool list unless a job
@@ -205,6 +209,94 @@ moves the ones you pick. **A move into an organization collection transfers the 
 personal vault to the organization**, and every member with access to the collection can see it.
 Setup says so before the first such move.
 
+## Sign-in
+
+`bitwarden-signin` holds a Chromium of its own in a container the agent cannot reach. The broker
+hands it the password or the current one-time code at the moment it is written into a field, and
+takes it back; the agent drives that browser through fixed actions that return page snapshots and
+never a value. When the site is signed in, the broker copies that page's cookies and storage into
+the agent's tab and the signer kills its Chromium.
+
+The agent's side is `browser_vault`: `sign_in` with the handle, then `signin_snapshot`,
+`signin_click`, `signin_type`, `signin_fill`, `signin_finish` and `signin_cancel`. The
+`browser-login` skill gives the order. `sign_in` opens the login's first URI in the signer's
+browser, types the username, fills the password and, when the site asks for a code and the item has
+an authenticator key, the code, and submits. Where it cannot carry on it returns the page as a
+snapshot — role, name, visible text and a ref per actionable node, no input values — and the agent
+continues a step at a time. `signin_fill` is the only action that writes a password or a code, and
+only into a password field or a one-time-code field; `signin_type` refuses a password field.
+
+As built:
+
+- One session at a time for the whole stack; a second `sign_in` gets `busy`. Chromium starts with a
+  fresh profile in a tmpfs when a session opens, and is killed, with its profile deleted, on finish,
+  on cancel, after `BITWARDEN_SIGNIN_IDLE_MINUTES` without an action, and when the broker or the
+  signer restarts. One action is bounded by `BITWARDEN_SIGNIN_ACTION_SECONDS`.
+- Every action refuses with `origin_mismatch` unless the page is on one of the item's origins or one
+  of its `agent-signin-idp` origins. A fill and the handover need an item origin; an IdP origin is
+  not enough.
+- A page that needs you — a CAPTCHA, a link sent by email, a new-device check — ends the attempt.
+  The skill tells the agent to cancel the session and say so.
+- Cron turns get no sign-in: all seven actions answer as though the handle were unknown, whether or
+  not a job names the `bitwarden` toolset.
+- The signer never starts Chromium with `--no-sandbox`. Where its namespace sandbox cannot start,
+  the signer reports `sandbox_unavailable` and refuses every session; items marked
+  `agent-in-page-fill` can still be filled, and nothing else can be signed in.
+
+### The two custom fields
+
+Two optional custom fields on a Bitwarden login change what the agent may do with it.
+
+| Field | Type | Effect |
+|---|---|---|
+| `agent-in-page-fill` | boolean, `true` | `browser_vault` `fill` and `enter_code` write the value into the agent's own tab, as before this version. Without the field both refuse with `sign_in_only`, and `sign_in` is the only way in |
+| `agent-signin-idp` | text, origins separated by commas | Origins the sign-in may also visit, for a redirect to an identity provider (`https://accounts.example-sso.com`). Nothing is filled and no session is handed over on them |
+
+`browser_vault` `list` carries `sign_in_only: true` for every item without `agent-in-page-fill`, so
+the agent picks the right action before it opens anything.
+
+No item in an existing vault has `agent-in-page-fill`, so after upgrading, every Bitwarden login is
+signed in through the signer until you add the field to the ones you want filled in the page.
+
+### What the handover carries
+
+On `signin_finish`, and at the end of a `sign_in` that finished the form itself:
+
+1. The signer keeps the cookies whose domain is the host of an item origin, or a parent domain of
+   that host for a domain cookie. Cookies on an IdP origin stay in the signer.
+2. It reads the top-level page's `localStorage` and `sessionStorage` when that page is on an item
+   origin.
+3. The broker checks the agent tab's origin and refuses with `handover_refused` unless it is an item
+   origin. The session stays open then, so the agent can open the page and finish again.
+4. It writes the cookies with `Network.setCookies` and the storage entries as arguments of a
+   function call on the page, never as source, and reloads the tab.
+
+The result is `{done: true, origin, cookies: <count>}`. A site that binds its session to an IP
+address or a device key shows its login page again after the reload. The skill tells the agent to
+report that the site refused the handover and stop, with no retry.
+
+### The signer's container
+
+- Its own network, `signin`, which no other service joins. **That network has unrestricted egress**:
+  from it, a page reaches the internet and anything else routable from this host, your LAN included.
+  A hostile sign-in page runs there. The container listens on no network interface; its only inbound
+  path is the Unix socket in the `bitwarden_signin` volume, mode 0600, which only it and the broker
+  mount.
+- `read_only: true`, every capability dropped, `no-new-privileges`, `mem_limit: 768m`, a 512 MB
+  tmpfs at `/tmp` that holds the per-session Chromium profile, and the host user
+  (`HERMES_UID:HERMES_GID`).
+- `compose/bitwarden-signin/seccomp.json`, Docker's default profile with two changes, because the
+  default blocks the user namespace Chromium's sandbox needs: `clone` and `unshare` are allowed for
+  the namespace flag sets the sandbox uses, and `chroot` no longer needs `CAP_SYS_CHROOT`. The
+  kernel still refuses both outside a user namespace the process itself created. On s390 and s390x
+  the sandbox does not start and the signer reports `sandbox_unavailable`.
+- Before a snapshot leaves the signer it is scrubbed for every value written in this session, in the
+  five encodings the digest redaction uses (raw, base64, hex, percent-encoded and reversed) with and
+  without CR and LF; a match becomes `«redacted-vault-secret»`. Sign-in returns no redaction digests.
+- The image is built `FROM` the pinned Hermes image, so its Chromium build and user agent match the
+  agent's browser. A Hermes bump rebuilds it: `make hermes-upgrade` runs that build while
+  `BITWARDEN_ENABLED=1`.
+
 ## Access requests
 
 The agent cannot add an item to its own scope: a request to "move my bank login into your vault"
@@ -255,7 +347,7 @@ unlock reads `{master_password}`.
 
 | Command | Output |
 |---|---|
-| `status --json` | One line per account (each instance file, and `local`), sorted by slug: `slug`, `mode`, `scope`, `unlock`, `state`, `error`, `retry_after`. A refused account is `file`, `slug`, `state`, `error` instead |
+| `status --json` | One line per account (each instance file, and `local`), sorted by slug: `slug`, `mode`, `scope`, `unlock`, `state`, `error`, `retry_after`. A refused account is `file`, `slug`, `state`, `error` instead. A last line, `{"signer":"<state>"}`, carries the sign-in signer's state |
 | `unlock --slug S --json` | `{"phase":"done"}`, or an error line; one attempt, no prompt |
 | `lock --slug S --json` | `{"phase":"done"}`, or an error line |
 | `sync --json` | The broker's reply on one line: `synced` (slugs), and `busy` or `reason` (`busy`, `recent`) when set |
@@ -265,6 +357,9 @@ unlock reads `{master_password}`.
 `add --json` refuses an existing slug with `exists`. `add --replace --json`, which `addon.sh
 connect --force` runs, replaces the account: the old instance file and secrets stay as backups
 until the new key signs in, and a failed check puts them back and says so in the error message.
+
+The signer's state is `ready`, `busy`, `sandbox_unavailable`, or `down` when the broker is not
+running or does not answer for it.
 
 `state` is `unlocked`, `locked`, `offline`, `error` (passed through from the broker) or `refused`;
 `locked` is a normal state for a `manual` account. `error` is `login_refused`, `server_unreachable`,
@@ -300,16 +395,36 @@ entry. `vault.sh` never calls `addon.sh`.
 
 ## What the agent can and cannot see
 
-The agent drives the page the password is typed into, so code it writes can read the field. Origin
-binding limits which pages that can happen on, and digest redaction removes the value and four
-encodings of it from what the model sees. It does not stop page script from sending the value
-elsewhere, so the agent's folder or collection should hold only logins you are willing to have used
-that way. The broker cannot tell browser-harness's Chromium from a CDP endpoint that agent code
-starts on the same loopback and that reports any URL it likes, so this exposure does not depend on
-the agent reaching the real site; the broker checks the origin to keep fills off the wrong page, not
-to keep the value from agent code.
+In a sign-in, the password and the one-time code are written in the signer's browser, in a
+container the agent has no route to. They do not enter `hermes`: not the agent's Chromium, not
+gateway memory, not a tool result, not a file. The agent's actions return snapshots without input
+values, scrubbed for every value the session has written, and the sign-in path returns no redaction
+digests.
 
-Redaction works without the value. For each fill the broker returns, for the raw value, its
+What the agent does get is the site's session: the cookies and the `localStorage` and
+`sessionStorage` entries the handover writes into its tab. Agent code can read all of it, send it
+anywhere and keep using it after the turn, so a sign-in gives the agent the account for as long as
+that session lives. The guarantee covers the password and the TOTP secret, not the session. Cookies
+on an identity provider's origin are not handed over: they stay in the signer and die with its
+Chromium.
+
+Three things keep their older exposure:
+
+- **An item marked `agent-in-page-fill`.** The broker writes the value into the agent's own tab, so
+  code the agent writes can read the field, and page script can send the value elsewhere. Origin
+  binding limits which pages that happens on, and digest redaction removes the value and four
+  encodings of it from what the model sees; neither stops the page. The broker cannot tell
+  browser-harness's Chromium from a CDP endpoint that agent code starts on the same loopback and
+  that reports any URL it likes, so this exposure does not depend on the agent reaching the real
+  site: the origin check keeps fills off the wrong page, not the value from agent code. Mark only
+  logins you are willing to have used that way.
+- **Sign-up.** `create_login` and `capture_secret` generate the password in the agent's page
+  (`browser-signup`), which this does not change.
+- **A site the signer cannot finish.** When the agent has to take over at a CAPTCHA or an emailed
+  link, the sign-in is cancelled and you sign in yourself; nothing is filled anywhere.
+
+Redaction, for an `agent-in-page-fill` item, works without the value. For each fill the broker
+returns, for the raw value, its
 standard base64, hex, percent-encoded and reversed forms (and the same forms of the value with CR
 and LF removed), each form's length, the low 20 bits of its Rabin-Karp fingerprint and an
 HMAC-SHA256 under a fresh key.
@@ -329,6 +444,14 @@ Other limits, as built:
   refuses a `Host` other than `127.0.0.1:8099` or `localhost:8099`, any request with an `Origin`
   header, and a POST whose `Content-Type` is not `application/json`, so a web page in the agent's
   browser cannot call it.
+- The `/signin` routes are on that same API, so code the agent runs in `hermes` can start a
+  sign-in itself, in cron as well, and have the session written into a tab it names. It gets no
+  password or code that way: the values go to the signer and no route returns one. The cron fence
+  on the seven `browser_vault` sign-in actions is in the tool, not in the broker.
+- While a session is open, the signer holds the values written in it (to scrub them from snapshots)
+  and the site's cookies. A renderer exploit on the sign-in page is what the container, the
+  dropped capabilities, the read-only root and Chromium's own sandbox stand against. The values and
+  the profile go when the session ends.
 - A TOTP fill's redaction entry is in the `/fill` response, so whoever gets that response can
   recover the 6-digit code from it by trying all of them. The code is valid only for its time step.
 - If the broker writes the page but its `/fill` reply is lost (a timeout), no redaction entry is
@@ -359,6 +482,8 @@ Other limits, as built:
 | `BITWARDEN_LOCAL_ENABLED` | `0` | Starts `vaultwarden` and `vaultwarden-tls` (profile `vault`). `make vault-init` sets it |
 | `BITWARDEN_SYNC_MINUTES` | `10` | `bw sync` interval per unlocked account; must be above 0 or the broker does not start |
 | `BITWARDEN_IDLE_LOCK_MINUTES` | `0` | Lock `manual` accounts after this long without a fill or unlock; 0 never |
+| `BITWARDEN_SIGNIN_IDLE_MINUTES` | `5` | End a sign-in session, and kill its Chromium, after this long with no action |
+| `BITWARDEN_SIGNIN_ACTION_SECONDS` | `30` | Bound on one sign-in action; a longer one gets `timeout` and the session ends |
 | `BITWARDEN_HOST_DATA_DIR` | `./data/addons/bitwarden` | `bw/`, `broker/`, `secrets/`, `local/` and `vaultwarden/`. Not moved by `ASSISTANT_DATA_ROOT` |
 | `VAULTWARDEN_PORT` | `8222` | Web vault port, bound to `127.0.0.1` |
 | `VAULTWARDEN_TLS_IMAGE` | `nginx:1.30.6-alpine` | The TLS sidecar's image |
@@ -366,7 +491,7 @@ Other limits, as built:
 
 `bw` 2026.10.1 is pinned in `compose/bitwarden-broker/Dockerfile` by the `BW_CLI_VERSION` build
 argument and a SHA-256 per architecture; a new version needs both digests. Run `make bitwarden-test`
-after a `bw` or Hermes bump; [Hermes](hermes.md#model-suitability-agentic-tool-use) lists what the two overlays anchor on.
+after a `bw` or Hermes bump; [Hermes](hermes.md#model-suitability-agentic-tool-use) lists what the overlays anchor on. `bitwarden-signin` is built from the same Hermes image tag, so a bump rebuilds it too.
 
 With both flags off, the add-on starts nothing and writes nothing into Hermes profiles.
 
@@ -410,7 +535,7 @@ None of this has been run on a Linux host.
 
 ## Turning it off
 
-Set `BITWARDEN_ENABLED=0` and run `make up`. The broker stops, and the next bootstrap takes
+Set `BITWARDEN_ENABLED=0` and run `make up`. The broker and `bitwarden-signin` stop, and the next bootstrap takes
 `bwbroker` out of each profile's `plugins.enabled` and removes `vault.bwbroker`. `hermes` is not
 recreated: `make up` asks the running gateway to reload its plugins (`scripts/vault.sh
 reload-plugins`), and the Bitwarden tools are gone from new sessions. If the gateway does not
@@ -418,19 +543,22 @@ answer, `make restart` applies the change. It leaves
 `vault.bitwarden.enabled: false`, which it wrote while the add-on was on, so Hermes' own `bw:`
 backend stays off until you remove that line. Instance files and data stay. Turn local mode off with
 `BITWARDEN_LOCAL_ENABLED=0`. `scripts/addon.sh disable bitwarden` sets both flags to 0 and stops
-the broker, `vaultwarden` and `vaultwarden-tls`; `addon.sh enable bitwarden` turns only
+the broker, `bitwarden-signin`, `vaultwarden` and `vaultwarden-tls`; `addon.sh enable bitwarden` turns only
 `BITWARDEN_ENABLED` back on, so set `BITWARDEN_LOCAL_ENABLED=1` again for local mode.
 
 ## Troubleshooting
 
-`make doctor` has a Bitwarden section: the broker's health, each account's state (`unlocked`,
-`locked`, `offline`, `error` with an error class), refused accounts, a `scope` `all` warning, account
-files from earlier versions, and local mode's files.
+`make doctor` has a Bitwarden section: the broker's health, the sign-in browser's state, each
+account's state (`unlocked`, `locked`, `offline`, `error` with an error class), refused accounts, a
+`scope` `all` warning, account files from earlier versions, and local mode's files.
 
 | Symptom | Cause and fix |
 |---|---|
 | `browser_vault` `list` shows `"bitwarden": {"unavailable": true}`; fills say "Bitwarden is unavailable right now" | The broker is not answering. `make up`; `docker compose logs bitwarden-broker` |
 | `"bitwarden": {"locked": [...]}` | A manual account is locked: `make vault-unlock SLUG=…` |
+| `fill` answers `sign_in_only` | The item has no `agent-in-page-fill` field, so it is signed in through the signer; the agent should call `sign_in` ([Sign-in](#sign-in)). Add the field to fill it in the page instead |
+| doctor: `Bitwarden sign-in browser: down` | `bitwarden-signin` is not running: `docker compose --profile core --profile bitwarden up -d --no-deps bitwarden-signin`; `docker compose logs bitwarden-signin` |
+| doctor: `Chromium's sandbox does not start on this host` | The seccomp profile does not allow the user namespaces Chromium needs on this kernel. Sign-ins are refused; `agent-in-page-fill` items still fill |
 | doctor: `<slug>: error (auth)` | Bitwarden refused the API key or master password: `make vault-add SLUG=… MODE=… FORCE=1` |
 | doctor: `<slug>: offline (rate_limited)` | Bitwarden answered 429. The broker waits 60 s (or the server's `Retry-After`) and keeps serving the last synced items |
 | doctor: `the broker refused an account (<cause>)` | See the causes under [Instance files](#instance-files); the message names the file and the setting |

@@ -27,6 +27,9 @@
       "compose": "bitwarden-broker",
       "port": 8099
     },
+    "signin": {
+      "compose": "bitwarden-signin"
+    },
     "vaultwarden": {
       "compose": "vaultwarden",
       "when": {

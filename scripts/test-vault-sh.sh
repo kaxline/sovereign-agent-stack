@@ -55,6 +55,7 @@ case " $* " in
   *" broker.cli accounts "*)
     [ -f "$STUB/record-ps" ] && { ps -ax -o args= >> "$STUB/ps" 2>/dev/null || true; }
     cat "$STUB/accounts" 2>/dev/null; exit "$(rc_of accounts)" ;;
+  *" broker.cli signer "*) cat "$STUB/signer" 2>/dev/null; exit "$(rc_of signer)" ;;
   *" broker.cli requests --json "*) cat "$STUB/requests.json"; exit 0 ;;
   *" broker.cli requests "*) echo "No pending access requests."; exit 0 ;;
   *" broker.cli sync --json "*) cat "$STUB/sync.json"; exit "$(rc_of sync)" ;;
@@ -542,7 +543,8 @@ jfield() { sed -n "${1}p" "$out" | python3 -c "import json,sys; v=json.load(sys.
 run status && fail "status without --json is a usage error"
 touch "$STUB/broker-running"
 run status --json || fail "status --json with no accounts"
-[ ! -s "$out" ] || fail "no accounts gives no output"
+# The signer line is the only one with no accounts.
+[ "$(cat "$out")" = '{"signer":"down"}' ] || fail "no accounts gives the signer line alone"
 st_inst work cloud folder:Work stored
 st_inst home selfhosted collection:abc manual
 printf '{\n  "scope": "collection:c-agent"\n}\n' > "$D/broker/local-account.json"
@@ -553,7 +555,7 @@ printf 'work\tcloud\tfolder\tunlocked\t-\t1\t\nhome\tselfhosted\tcollection\tloc
 st_inst Bad_File cloud folder:Agent manual
 run status --json || fail "status --json"
 js || fail "status lines parse as JSON"
-[ "$(wc -l < "$out" | tr -d ' ')" = 6 ] || fail "one line per account, the .env file left out"
+[ "$(wc -l < "$out" | tr -d ' ')" = 7 ] || fail "one line per account plus the signer line, the .env file left out"
 [ "$(jfield 1 slug)" = null ] && [ "$(jfield 1 file)" = Bad_File.json ] || fail "a file name outside the slug rule"
 [ "$(jfield 1 state)" = refused ] && [ "$(jfield 1 error)" = bad_slug ] || fail "a bad slug is refused as bad_slug"
 [ "$(jfield 2 slug)" = bad ] && [ "$(jfield 2 error)" = login_refused ] && [ "$(jfield 2 retry_after)" = 12 ] || fail "auth maps to login_refused with retry_after"
@@ -587,7 +589,7 @@ printf 'work\tcloud\tfolder\tunlocked\t-\t1\t\n' > "$STUB/accounts"
 chmod 000 "$INST/home.json"
 run status --json || fail "status --json with an unreadable file and an unloaded file"
 js || fail "unreadable-file lines parse as JSON"
-[ "$(grep -c '^{' "$out")" = 5 ] || fail "one line per account despite an unreadable one"
+[ "$(grep -c '^{' "$out")" = 6 ] || fail "one line per account plus the signer line despite an unreadable one"
 grep -q '"slug":"fresh".*"state":"offline","error":"not_loaded","retry_after":null' "$out" || fail "an instance the running broker has not loaded is not_loaded"
 grep -q '"file":"home.json","slug":"home","state":"refused","error":"bad_file"' "$out" || fail "an unreadable file is reported as bad_file"
 chmod 644 "$INST/home.json"
@@ -595,8 +597,31 @@ rm -f "$INST/fresh.json"
 rm -f "$STUB/broker-running"
 run status --json || fail "status --json with the broker down exits 0"
 js || fail "broker-down lines parse as JSON"
-[ "$(wc -l < "$out" | tr -d ' ')" = 4 ] || fail "broker down: one line per account"
+[ "$(wc -l < "$out" | tr -d ' ')" = 5 ] || fail "broker down: one line per account plus the signer line"
 [ "$(jfield 1 state)" = offline ] && [ "$(jfield 1 error)" = broker_down ] && [ "$(jfield 1 retry_after)" = null ] || fail "broker down fields"
+
+# --- status --json: the signer line ----------------------------------------------
+# The state comes from broker.cli signer; down with no broker, and for anything
+# but the four states the broker reports.
+grep -q '^{"signer":"down"}$' "$out" || fail "the signer is down with the broker down"
+touch "$STUB/broker-running"
+printf 'work\tcloud\tfolder\tunlocked\t-\t1\t\n' > "$STUB/accounts"
+printf 'busy\n' > "$STUB/signer"
+run status --json || fail "status --json with a signer state"
+js || fail "the signer line parses as JSON"
+grep -q '^{"signer":"busy"}$' "$out" || fail "status --json does not carry the signer state"
+[ "$(tail -n 1 "$out")" = '{"signer":"busy"}' ] || fail "the signer line is not last"
+printf 'sandbox_unavailable\n' > "$STUB/signer"
+run status --json || fail "status --json with sandbox_unavailable"
+grep -q '^{"signer":"sandbox_unavailable"}$' "$out" || fail "sandbox_unavailable is not passed on"
+printf 'nonsense\n' > "$STUB/signer"
+run status --json || fail "status --json with an unknown signer state"
+grep -q '^{"signer":"down"}$' "$out" || fail "an unknown signer state is not reported as down"
+echo 1 > "$STUB/rc.signer"
+run status --json || fail "status --json with broker.cli signer failing"
+grep -q '^{"signer":"down"}$' "$out" || fail "a failing broker.cli signer is not down"
+rm -f "$STUB/rc.signer" "$STUB/signer" "$STUB/broker-running"
+
 rm -rf "$INST"
 rm -f "$D/broker/local-account.json"
 [ ! -d "$tmp/inst-kept" ] || mv "$tmp/inst-kept" "$INST"

@@ -10,6 +10,20 @@ the stack under another app.
 
 ### Upgrade steps
 
+- Bitwarden logins are no longer filled into the agent's own page unless you
+  say so per item. Add a custom field `agent-in-page-fill` of type boolean,
+  value true, to each Bitwarden item you want filled the old way; without it
+  `browser_vault` `fill` and `enter_code` refuse that item with
+  `sign_in_only`, and the agent signs in through the new `bitwarden-signin`
+  browser instead. No existing item has the field, so every Bitwarden login
+  changes path at this upgrade.
+- The Bitwarden add-on starts a second container, `bitwarden-signin`, under
+  the existing `bitwarden` compose profile, with a named volume
+  (`bitwarden_signin`) and a bridge network (`signin`) that compose creates.
+  `make up` and `scripts/addon.sh enable bitwarden` start it; nothing has to
+  be created first. Its image is built `FROM` the pinned Hermes agent image,
+  so the first `make up` after this upgrade builds it, and `make hermes-upgrade`
+  rebuilds it on a Hermes bump while `BITWARDEN_ENABLED=1`.
 - Cron jobs no longer get the browser unless they ask. A Hermes cron job
   that browses and has no `enabled_toolsets` of its own loses `browser_exec`,
   `browser_cdp`, `browser_dialog` and `browser_vault` after the bootstraps
@@ -29,6 +43,41 @@ the stack under another app.
 
 ### Changes
 
+- The agent signs in to a website without the password reaching it. A new
+  service, `bitwarden-signin` (profile `bitwarden`), runs a Chromium of its
+  own on its own network, with a read-only root, no capabilities, a 768 MB
+  limit and a seccomp profile that lets Chromium's namespace sandbox start; it
+  never runs with `--no-sandbox`. The broker reaches it over a Unix socket in
+  the `bitwarden_signin` volume (mode 0600) and hands it the password or the
+  current TOTP code only at the moment it is written into a field. The agent
+  drives it through seven `browser_vault` actions — `sign_in`,
+  `signin_snapshot`, `signin_click`, `signin_type`, `signin_fill`,
+  `signin_finish` and `signin_cancel` — which return page snapshots with no
+  input values, scrubbed of every value the session wrote. On finish the
+  broker copies the item's cookies and the page's `localStorage` and
+  `sessionStorage` into the agent's tab and the signer destroys its Chromium
+  and profile. The agent's browser then holds the site's session and can read
+  it; the password and the TOTP code do not enter `hermes` at all. Identity
+  provider cookies stay in the signer. One session runs at a time;
+  `BITWARDEN_SIGNIN_IDLE_MINUTES` (default 5) ends an idle one and
+  `BITWARDEN_SIGNIN_ACTION_SECONDS` (default 30) bounds one action. Cron turns
+  get no sign-in. `docs/bitwarden.md` has the whole path, including that the
+  `signin` network has unrestricted egress by design.
+- `browser_vault` `fill` and `enter_code` refuse a Bitwarden item that has no
+  `agent-in-page-fill` custom field, with `sign_in_only`, and `list` marks
+  those items `sign_in_only: true`. A second optional field,
+  `agent-signin-idp` (origins separated by commas), lets a sign-in follow a
+  redirect to an identity provider; nothing is filled and no session is handed
+  over on those origins.
+- `scripts/vault.sh status --json` ends with one more line,
+  `{"signer":"<state>"}`: `ready`, `busy`, `sandbox_unavailable`, or `down`
+  when the broker is not running or does not answer for it. Account lines are
+  unchanged, so a client that reads them by key is unaffected. The broker's
+  `GET /health` carries the same state, `python3 -m broker.cli signer` prints
+  it, and `make doctor` reports it in the Bitwarden section.
+- `addons/bitwarden/addon.json` lists `bitwarden-signin` among the add-on's
+  services, so `addon.sh enable bitwarden` builds and starts it and `disable`
+  stops it.
 - Fresh installs on Hermes v0.23.1 get their `api-server` and `browser`
   profiles again, and the first `make up` brings hermes up healthy. The
   bootstraps used to exit without a `config.yaml`, so hermes started first and

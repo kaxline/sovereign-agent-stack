@@ -2339,7 +2339,8 @@ services:
       retries: 3
       start_period: 20s
 
-  # Sign-in Chromium for items marked agent-in-page-fill (docs/bitwarden.md).
+  # Sign-in Chromium for Bitwarden logins, which is every item except the ones
+  # marked agent-in-page-fill (docs/bitwarden.md).
   # The broker sends it the password or TOTP code over a Unix socket; it fills
   # the login page in its own Chromium and hands the session cookies back, so
   # agent code never holds the secret. Its own network (signin, with egress),

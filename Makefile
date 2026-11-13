@@ -674,6 +674,11 @@ hermes-upgrade:
 	docker compose pull hermes hermes-webui
 	$(MAKE) hermes-reload
 	docker compose up -d hermes-webui
+	@# bitwarden-signin is built FROM the agent image, so the new tag needs a
+	@# rebuild or its Chromium stops matching the agent's.
+	@if grep -qE '^BITWARDEN_ENABLED=1[[:space:]]*$$' .env; then \
+		docker compose --profile core --profile bitwarden up -d --no-deps --build bitwarden-signin; \
+	fi
 	@echo
 	@echo "Upgraded. Now run the verification block in docs/hermes-webui.md —"
 	@echo "the tool filters and skills.external_dirs are what silently regress."

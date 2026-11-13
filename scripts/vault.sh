@@ -1094,6 +1094,10 @@ cmd_sync() {
 # read, or whose file name breaks the slug rule) is
 # {"file","slug","state":"refused","error"} with error bad_file, bad_slug or
 # missing_client_id; slug is null when the file name gives none.
+#
+# A last line, {"signer":"<state>"}, carries the sign-in signer's state from
+# the broker: ready, busy, sandbox_unavailable, or down when the broker is not
+# running, does not answer or reports anything else.
 cmd_status() {
   local json=0
   while [[ $# -gt 0 ]]; do
@@ -1181,6 +1185,15 @@ cmd_status() {
     # mode, scope and unlock are JSON string contents already (json_get).
     emit_line "{\"slug\":${sj},\"mode\":\"${mode}\",\"scope\":\"${scope}\",\"unlock\":\"${unlock}\",\"state\":$(json_str "$st"),\"error\":${err},\"retry_after\":${retry}}"
   done <<< "$(printf '%s' "$list" | LC_ALL=C sort -t $'\t' -k1,1)"
+  local signer=down
+  if [[ "$up" == 1 ]]; then
+    signer="$(broker_cli signer 2>/dev/null || true)"
+    case "$signer" in
+      ready | busy | sandbox_unavailable) ;;
+      *) signer=down ;;
+    esac
+  fi
+  emit_line "{\"signer\":\"${signer}\"}"
   return 0
 }
 
