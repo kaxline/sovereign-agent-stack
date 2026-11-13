@@ -53,31 +53,39 @@ def test_scrub_replaces_each_form() -> None:
     expect(s.apply("abc") == "abc", "empty value ignored")
 
 
-def _node(i, role, name="", *, value=None, name_from=None, ignored=False, backend=None, children=()):
-    n = {"nodeId": str(i), "ignored": ignored, "role": {"value": role}, "name": {"value": name},
-         "childIds": [str(c) for c in children], "backendDOMNodeId": backend if backend is not None else 100 + i}
+def _name(value, sources):
+    return {"type": "computedString", "value": value, "sources": sources}
+
+
+def _node(i, role, name="", *, sources=(), value=None, ignored=False, backend=None, children=()):
+    """A node in the shape Accessibility.getFullAXTree returns (string nodeIds)."""
+    n = {"nodeId": str(i), "ignored": ignored, "role": {"type": "role", "value": role},
+         "name": _name(name, list(sources)), "childIds": [str(c) for c in children],
+         "backendDOMNodeId": backend if backend is not None else 100 + i}
     if value is not None:
-        n["value"] = {"value": value}
-    props = []
-    if name_from:
-        props.append({"name": "nameFrom", "value": {"value": name_from}})
-    if value is not None:
-        props.append({"name": "value", "value": {"value": value}})
-    if props:
-        n["properties"] = props
+        n["value"] = {"type": "string", "value": value}
     return n
+
+
+LABEL = [{"type": "attribute", "attribute": "aria-label", "value": {"type": "computedString", "value": "x"}}]
+PLACEHOLDER = [{"type": "attribute", "attribute": "aria-label", "superseded": True},
+               {"type": "placeholder", "attribute": "placeholder", "value": {"type": "computedString", "value": "x"}}]
+CONTENTS = [{"type": "contents", "value": {"type": "computedString", "value": "x"}}]
 
 
 def _fixture() -> list[dict]:
     return [
-        _node(1, "RootWebArea", "Sign in"),
-        _node(2, "generic", "", ignored=True),
-        _node(3, "textbox", "Password", value="CANARY-pw", name_from="attribute"),
-        _node(4, "textbox", "CANARY-user", value="CANARY-user", name_from="contents"),
-        _node(5, "searchbox", "CANARY-q", value="CANARY-q", name_from="value"),
+        _node(1, "RootWebArea", "Sign in", children=[3, 4, 5, 6, 7, 8]),
+        _node(2, "generic", ignored=True),
+        _node(3, "textbox", "Password", sources=LABEL, value="CANARY-pw", children=[9]),
+        _node(4, "textbox", "CANARY-user", sources=CONTENTS, value="CANARY-user"),
+        _node(5, "searchbox", "CANARY-q", sources=[], value="CANARY-q"),
         _node(6, "combobox", "CANARY-c", value="CANARY-c"),
-        _node(7, "button", "Continue", name_from="contents"),
+        _node(7, "button", "Continue", sources=CONTENTS),
         _node(8, "StaticText", "Welcome back"),
+        _node(9, "generic", children=[10]),
+        _node(10, "StaticText", "CANARY-pw", children=[11]),
+        _node(11, "InlineTextBox", "CANARY-pw"),
     ]
 
 
@@ -92,12 +100,39 @@ def test_reduce_drops_values() -> None:
     expect(refs[items[1]["ref"]] == 103, "ref maps to backendDOMNodeId")
 
 
+def test_reduce_skips_field_descendants() -> None:
+    items, _ = snapshot.reduce(_fixture())
+    expect([i["role"] for i in items] == ["RootWebArea", "textbox", "textbox", "searchbox", "combobox", "button",
+                                          "StaticText"], f"field children skipped: {items}")
+
+
+def test_reduce_placeholder_name_kept() -> None:
+    items, _ = snapshot.reduce([_node(1, "textbox", "Search", sources=PLACEHOLDER, value="CANARY")])
+    expect(items[0]["name"] == "Search", "placeholder name kept")
+
+
+def test_reduce_real_chromium_tree() -> None:
+    # Captured from the Hermes image's Chromium (nousresearch/hermes-agent:v0.23.1) on a page with a
+    # labelled input holding a value, a password input, a placeholder input with a value, a
+    # placeholder-only input, a labelled textarea with a value and a button.
+    nodes = json.loads((ROOT / "scripts" / "fixtures" / "bitwarden-signer-ax.json").read_text())
+    raw = json.dumps(nodes, ensure_ascii=False)
+    expect("CANARY-user" in raw and "CANARY-pass" not in raw.replace("\u2022", "") or "CANARY" in raw,
+           "fixture holds typed values")
+    items, refs = snapshot.reduce(nodes)
+    out = json.dumps(items, ensure_ascii=False)
+    expect("CANARY" not in out and "\u2022" not in out and "•" not in out, f"no typed text: {out}")
+    names = {i["name"] for i in items if i["role"] == "textbox"}
+    expect(names == {"Username", "Password", "Search site", "Only placeholder", "Notes"}, f"labels kept: {names}")
+    expect(any(i["role"] == "button" and i["name"] == "Continue" for i in items), "button kept")
+    expect(len(refs) == len(items), "every item has a backend id")
+
+
 def test_reduce_refs_stable_order() -> None:
     a, ra = snapshot.reduce(_fixture())
     b, rb = snapshot.reduce(_fixture())
     expect(a == b and ra == rb, "same input, same refs")
     expect([i["ref"] for i in a] == list(range(1, len(a) + 1)), "refs numbered from 1 in order")
-    expect(len(a) == 7, "ignored node skipped")
     expect(ra[1] == 101 and ra[2] == 103, "ignored node takes no ref")
 
 
