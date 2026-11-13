@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Resolved compose config for the Bitwarden services: profiles, the broker's
-sandbox, what hermes and bitwarden-setup can and cannot reach, and the local
-Vaultwarden with its TLS sidecar (profile vault).
+sandbox, the sign-in signer's hardening and socket volume, what hermes and
+bitwarden-setup can and cannot reach, and the local Vaultwarden with its TLS
+sidecar (profile vault).
 
 Needs a .env that satisfies compose interpolation, as CI writes. Prints no
 environment values.
@@ -22,6 +23,7 @@ from testkit import Checks  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 SERVICES = ("bitwarden-broker", "bitwarden-setup")
+SIGNIN = "bitwarden-signin"
 LOCAL_SERVICES = ("vaultwarden", "vaultwarden-tls")
 VAULTWARDEN_IMAGE = ("vaultwarden/server:1.37.5@sha256:"
                      "4fe17f415f90087377d37c755e0ea3cf189dcc6794e49cdd2a9adbb4937d9e1f")
@@ -29,6 +31,10 @@ LOCAL_NAME = "vaultwarden.vault.internal"
 ADDON_DATA = "addons/bitwarden"
 SYNC_DIR = "/run/bitwarden-sync"
 HOST_USER = "1000:1000"  # HERMES_UID:HERMES_GID's defaults
+SIGNIN_DIR = "/run/bitwarden-signin"
+SIGNIN_SOCKET = f"{SIGNIN_DIR}/signin.sock"
+SIGNIN_VOLUME = "bitwarden_signin"
+SIGNIN_SECCOMP = "compose/bitwarden-signin/seccomp.json"
 checks = Checks()
 
 
@@ -101,7 +107,7 @@ def check_profile_flags() -> None:
 
 def check_off() -> None:
     services = config("core").get("services", {})
-    for name in SERVICES + LOCAL_SERVICES:
+    for name in SERVICES + LOCAL_SERVICES + (SIGNIN,):
         if name in services:
             checks.fail(f"{name} is in the core profile")
     services = config("core,bitwarden,bitwarden-tools").get("services", {})
@@ -157,15 +163,114 @@ def check_broker(services: dict) -> None:
             checks.fail(f"bitwarden-broker {target} comes from {vol.get('source')!r}, want .../{source}")
         if bool(vol.get("read_only")) != read_only:
             checks.fail(f"bitwarden-broker {target} must be {'read-only' if read_only else 'writable'}")
-    extra = {v.get("target") for v in mounts(broker)} - set(want)
+    extra = {v.get("target") for v in mounts(broker)} - set(want) - {SIGNIN_DIR}
     if extra:
         checks.fail(f"bitwarden-broker mounts more than it needs: {sorted(extra)}")
+    vol = mount_at(broker, SIGNIN_DIR)
+    if vol is None or vol.get("type") != "volume" or vol.get("source") != SIGNIN_VOLUME or not vol.get("read_only"):
+        checks.fail(f"bitwarden-broker mounts the {SIGNIN_VOLUME} volume read-only at {SIGNIN_DIR}, not {vol!r}")
+    if env_value(broker, "BITWARDEN_SIGNIN_SOCKET") != SIGNIN_SOCKET:
+        checks.fail(f"bitwarden-broker needs BITWARDEN_SIGNIN_SOCKET={SIGNIN_SOCKET}")
     if mount_at(broker, "/accounts") is not None or "compose/bitwarden/" in str(broker.get("volumes")):
         checks.fail("bitwarden-broker still mounts the account files")
     if env_value(broker, "BITWARDEN_INSTANCES_DIR") != "/store/instances":
         checks.fail("bitwarden-broker needs BITWARDEN_INSTANCES_DIR=/store/instances")
     if env_value(broker, "BITWARDEN_ACCOUNTS_DIR") is not None:
         checks.fail("bitwarden-broker still sets BITWARDEN_ACCOUNTS_DIR")
+
+
+def check_signin(cfg: dict) -> None:
+    """The sign-in Chromium: hardened, alone on its egress network, reached
+    only over the socket volume it shares with the broker."""
+    services = cfg.get("services", {})
+    signin = services.get(SIGNIN)
+    if signin is None:
+        checks.fail(f"{SIGNIN} missing from core,bitwarden")
+        return
+    if signin.get("profiles") != ["bitwarden"]:
+        checks.fail(f"{SIGNIN} profiles are {signin.get('profiles')!r}, want ['bitwarden']")
+    if signin.get("image") != "assistant-bitwarden-signin:local":
+        checks.fail(f"{SIGNIN} image is {signin.get('image')!r}, want assistant-bitwarden-signin:local")
+    build = signin.get("build") or {}
+    if not str(build.get("context", "")).endswith("compose/bitwarden-signin"):
+        checks.fail(f"{SIGNIN} builds from {build.get('context')!r}, want compose/bitwarden-signin")
+    hermes_image = (services.get("hermes") or {}).get("image", "")
+    tag = (build.get("args") or {}).get("HERMES_AGENT_IMAGE_TAG")
+    if not tag or hermes_image != f"nousresearch/hermes-agent:{tag}":
+        checks.fail(f"{SIGNIN} builds FROM hermes-agent:{tag}, but hermes runs {hermes_image!r}")
+    if signin.get("user") != HOST_USER:
+        checks.fail(f"{SIGNIN} runs as HERMES_UID:HERMES_GID ({HOST_USER}), not {signin.get('user')!r}")
+    if signin.get("read_only") is not True:
+        checks.fail(f"{SIGNIN} needs read_only: true")
+    if signin.get("cap_drop") != ["ALL"]:
+        checks.fail(f"{SIGNIN} cap_drop is {signin.get('cap_drop')!r}, want ['ALL']")
+    if signin.get("cap_add"):
+        checks.fail(f"{SIGNIN} adds capabilities {signin.get('cap_add')!r}")
+    if signin.get("privileged"):
+        checks.fail(f"{SIGNIN} is privileged")
+    opts = signin.get("security_opt") or []
+    if sorted(opts) != sorted(["no-new-privileges:true", f"seccomp=./{SIGNIN_SECCOMP}"]):
+        checks.fail(f"{SIGNIN} security_opt is {opts!r}, want no-new-privileges and seccomp=./{SIGNIN_SECCOMP}")
+    if not (ROOT / SIGNIN_SECCOMP).is_file():
+        checks.fail(f"{SIGNIN_SECCOMP} is missing")
+    if signin.get("tmpfs") != ["/tmp:size=512m"]:
+        checks.fail(f"{SIGNIN} tmpfs is {signin.get('tmpfs')!r}, want ['/tmp:size=512m']")
+    if str(signin.get("mem_limit")) != str(768 * 1024 * 1024):
+        checks.fail(f"{SIGNIN} mem_limit is {signin.get('mem_limit')!r}, want 768m")
+    if signin.get("init") is not True:
+        checks.fail(f"{SIGNIN} needs init: true to reap Chromium's crashpad handlers")
+    if networks(signin) != {"signin"}:
+        checks.fail(f"{SIGNIN} networks are {sorted(networks(signin))}, want ['signin']")
+    if signin.get("network_mode"):
+        checks.fail(f"{SIGNIN} must not use network_mode")
+    if signin.get("ports") or signin.get("expose"):
+        checks.fail(f"{SIGNIN} publishes or exposes a port")
+    if signin.get("env_file"):
+        checks.fail(f"{SIGNIN} reads an env_file")
+    for key, want in (("BITWARDEN_SIGNIN_SOCKET", SIGNIN_SOCKET), ("BITWARDEN_SIGNIN_IDLE_MINUTES", "5"),
+                      ("BITWARDEN_SIGNIN_ACTION_SECONDS", "30")):
+        if env_value(signin, key) != want:
+            checks.fail(f"{SIGNIN} needs {key}={want}, not {env_value(signin, key)!r}")
+    vols = signin.get("volumes") or []
+    want_vol = {"type": "volume", "source": SIGNIN_VOLUME, "target": SIGNIN_DIR}
+    if len(vols) != 1 or {k: vols[0].get(k) for k in want_vol} != want_vol or vols[0].get("read_only"):
+        checks.fail(f"{SIGNIN} mounts {vols!r}, want only {SIGNIN_VOLUME} read-write at {SIGNIN_DIR}")
+    test = (signin.get("healthcheck") or {}).get("test") or []
+    joined = " ".join(test)
+    if test[:1] != ["CMD"] or "AF_UNIX" not in joined or SIGNIN_SOCKET not in joined \
+            or "'GET', '/health'" not in joined:
+        checks.fail(f"{SIGNIN} healthcheck must GET /health over {SIGNIN_SOCKET}")
+
+    net = (cfg.get("networks") or {}).get("signin")
+    if net is None:
+        checks.fail("network signin missing from compose config")
+    elif net.get("internal"):
+        checks.fail("network signin carries the signer's egress, so it is not internal")
+    for name, service in services.items():
+        if name != SIGNIN and "signin" in networks(service):
+            checks.fail(f"{name} joins the signin network")
+        uses = any(v.get("type") == "volume" and v.get("source") == SIGNIN_VOLUME for v in mounts(service))
+        if uses != (name in ("bitwarden-broker", SIGNIN)):
+            checks.fail(f"{name} {'mounts' if uses else 'does not mount'} the {SIGNIN_VOLUME} volume")
+    # A tmpfs owned by HERMES_UID, shared by the two containers: the owner
+    # follows HERMES_UID at run time, which an image-made folder cannot.
+    vol = (cfg.get("volumes") or {}).get(SIGNIN_VOLUME) or {}
+    opts = vol.get("driver_opts") or {}
+    o = set(str(opts.get("o", "")).split(","))
+    if opts.get("type") != "tmpfs" or opts.get("device") != "tmpfs" \
+            or not {"uid=1000", "gid=1000", "mode=0700"} <= o:
+        checks.fail(f"volume {SIGNIN_VOLUME} must be a tmpfs, mode 0700, owned by HERMES_UID:HERMES_GID, not {opts!r}")
+
+
+def check_signin_follows_uid() -> None:
+    """The socket volume's owner and the signer's user follow HERMES_UID:HERMES_GID."""
+    cfg = compose_config.render("core,bitwarden", {"HERMES_UID": "1234", "HERMES_GID": "1235"})
+    o = set(str((((cfg.get("volumes") or {}).get(SIGNIN_VOLUME) or {}).get("driver_opts") or {}).get("o", "")).split(","))
+    if not {"uid=1234", "gid=1235"} <= o:
+        checks.fail(f"volume {SIGNIN_VOLUME} owner does not follow HERMES_UID:HERMES_GID: {sorted(o)}")
+    user = ((cfg.get("services") or {}).get(SIGNIN) or {}).get("user")
+    if user != "1234:1235":
+        checks.fail(f"{SIGNIN} user does not follow HERMES_UID:HERMES_GID: {user!r}")
 
 
 def check_store_follows_data_root() -> None:
@@ -375,6 +480,9 @@ def main() -> None:
     check_off()
     check_profile_flags()
     check_broker(config("core,bitwarden").get("services", {}))
+    check_signin(config("core,bitwarden"))
+    check_signin(config("core,bitwarden,bitwarden-tools,vault"))
+    check_signin_follows_uid()
     check_store_follows_data_root()
     for backend in ("ssh", "local"):
         cfg = config("core,bitwarden,bitwarden-tools", backend)

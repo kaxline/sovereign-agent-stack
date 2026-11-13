@@ -98,7 +98,14 @@ BROKER_ENV = {
     "BITWARDEN_IDLE_LOCK_MINUTES",
     "BITWARDEN_LISTEN",
     "BITWARDEN_SYNC_SOCKET",
+    "BITWARDEN_SIGNIN_SOCKET",
     "NODE_EXTRA_CA_CERTS",
+}
+# bitwarden-signin (the sign-in Chromium) may carry only these, all of them.
+SIGNIN_ENV = {
+    "BITWARDEN_SIGNIN_SOCKET",
+    "BITWARDEN_SIGNIN_IDLE_MINUTES",
+    "BITWARDEN_SIGNIN_ACTION_SECONDS",
 }
 # Actual Budget services may carry only these keys. The MCP containers get
 # their credentials from the /app/.env file, never from the environment.
@@ -426,6 +433,18 @@ def check_broker(services: dict) -> list[str]:
     return errors
 
 
+def check_signin(services: dict) -> list[str]:
+    service = services.get("bitwarden-signin")
+    if not service:
+        return ["service bitwarden-signin missing from compose config"]
+    keys = set(env_map(service))
+    errors = [f"bitwarden-signin environment includes {key}" for key in sorted(keys - SIGNIN_ENV)]
+    errors += [f"bitwarden-signin environment is missing {key}" for key in sorted(SIGNIN_ENV - keys)]
+    if service.get("env_file"):
+        errors.append("bitwarden-signin reads an env_file")
+    return errors
+
+
 def check_loopback(services: dict) -> list[str]:
     errors = []
     for name, service in services.items():
@@ -539,6 +558,7 @@ def main() -> None:
     services = config.get("services") or {}
     errors = check_secrets(services) + check_worker(services) + check_proxy(services) + check_loopback(services)
     errors += check_broker(services)
+    errors += check_signin(services)
     errors += check_db_network(services, config.get("networks") or {})
     errors += check_n8n_store(services)
     errors += check_actual(services)

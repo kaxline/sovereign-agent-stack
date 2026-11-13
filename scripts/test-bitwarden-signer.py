@@ -8,8 +8,8 @@ digest_redaction.FORMS so the two copies stay equal. Values are synthetic.
 Image part (IMAGE_DRIVER): the signer's socket server, sessions and the Hermes
 image's Chromium with its sandbox on, against a test site the driver serves on
 127.0.0.1 and localhost (two origins) inside the same container. The container
-runs as a non-root user with seccomp=unconfined so the namespace sandbox can
-start; Task 4 replaces that with the service's seccomp profile.
+runs as a non-root user under the service's seccomp profile
+(compose/bitwarden-signin/seccomp.json), which lets the namespace sandbox start.
 """
 
 from __future__ import annotations
@@ -166,9 +166,9 @@ def test_select_parent_domain_and_excludes_sibling_and_idp() -> None:
 
 
 # Chromium's namespace sandbox refuses to start as root and needs clone/unshare with
-# CLONE_NEWUSER, which Docker's default seccomp profile blocks.
+# CLONE_NEWUSER, which Docker's default seccomp profile blocks and the service's allows.
 IMAGE_DOCKER_ARGS = ("--network", "none", "--user", "10001:10001", "-e", "HOME=/tmp",
-                     "--security-opt", "seccomp=unconfined")
+                     "--security-opt", f"seccomp={SIGNER_SRC / 'seccomp.json'}")
 
 IMAGE_DRIVER = r'''
 import glob

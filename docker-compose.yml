@@ -2317,6 +2317,7 @@ services:
       - BITWARDEN_IDLE_LOCK_MINUTES=${BITWARDEN_IDLE_LOCK_MINUTES:-0}
       - BITWARDEN_LISTEN=127.0.0.1:8099
       - BITWARDEN_SYNC_SOCKET=/run/bitwarden-sync/sync.sock
+      - BITWARDEN_SIGNIN_SOCKET=/run/bitwarden-signin/signin.sock
       # The local Vaultwarden's CA, written by make vault-init. bw starts with
       # a warning when the file is absent, so cloud accounts work without it.
       - NODE_EXTRA_CA_CERTS=/secrets/local/tls/ca.crt
@@ -2326,12 +2327,74 @@ services:
       - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/secrets:/secrets:ro
       - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/bw:/data/bw
       - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/broker:/data/broker
+      # bitwarden-signin's socket. Read-only: connecting needs no write access
+      # to the mount, and the broker cannot replace the socket.
+      - bitwarden_signin:/run/bitwarden-signin:ro
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8099/health', timeout=3)"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 20s
+
+  # Sign-in Chromium for items marked agent-in-page-fill (docs/bitwarden.md).
+  # The broker sends it the password or TOTP code over a Unix socket; it fills
+  # the login page in its own Chromium and hands the session cookies back, so
+  # agent code never holds the secret. Its own network (signin, with egress),
+  # no port, and the socket volume shared only with the broker. Built FROM the
+  # Hermes image hermes runs, so its Chromium matches the agent's.
+  bitwarden-signin:
+    profiles: ["bitwarden"]
+    container_name: ${CONTAINER_PREFIX:-}bitwarden-signin
+    build:
+      context: ./compose/bitwarden-signin
+      args:
+        HERMES_AGENT_IMAGE_TAG: ${HERMES_AGENT_IMAGE_TAG:-v0.23.1}
+    image: ${IMAGE_PREFIX:-assistant}-bitwarden-signin:local
+    restart: unless-stopped
+    # Reaps Chromium's crashpad handlers, which call setsid and so leave the
+    # process group the signer kills at the end of a session.
+    init: true
+    user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
+    read_only: true
+    # The per-session Chromium profile (HOME, TMPDIR, cache, crash files).
+    tmpfs:
+      - /tmp:size=512m
+    mem_limit: 768m
+    cap_drop: [ALL]
+    # Docker's default profile plus the clone, unshare and chroot cases
+    # Chromium's namespace sandbox needs (see the comment key in the file).
+    # The signer never starts Chromium with --no-sandbox; under a profile that
+    # blocks the sandbox, /health reports sandbox_unavailable.
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=./compose/bitwarden-signin/seccomp.json
+    environment:
+      - BITWARDEN_SIGNIN_SOCKET=/run/bitwarden-signin/signin.sock
+      - BITWARDEN_SIGNIN_IDLE_MINUTES=${BITWARDEN_SIGNIN_IDLE_MINUTES:-5}
+      - BITWARDEN_SIGNIN_ACTION_SECONDS=${BITWARDEN_SIGNIN_ACTION_SECONDS:-30}
+    networks: [signin]
+    volumes:
+      - bitwarden_signin:/run/bitwarden-signin
+    # GET /health over the socket. Healthy while ready or busy; unhealthy
+    # when the sandbox cannot start (sandbox_unavailable) or nothing answers.
+    healthcheck:
+      test:
+        - CMD
+        - /opt/hermes/.venv/bin/python
+        - -c
+        - >-
+          import http.client, json, socket, sys;
+          c = http.client.HTTPConnection('localhost', timeout=3);
+          c.sock = socket.socket(socket.AF_UNIX);
+          c.sock.settimeout(3);
+          c.sock.connect('/run/bitwarden-signin/signin.sock');
+          c.request('GET', '/health');
+          sys.exit(json.load(c.getresponse()).get('status') not in ('ready', 'busy'))
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
   # One-shot, interactive: unlocks the user's own account to create the
   # agent's folder or collection and move items into it (make vault-init,
@@ -2485,6 +2548,8 @@ networks:
     internal: true
   # detector only: its route to the provider and the host port.
   detector-egress: {}
+  # bitwarden-signin only: its Chromium's route to the sites it signs in to.
+  signin: {}
 
 # Twenty's secrets as files (CR 0020 R8). Unset, they point at an empty file
 # that nothing reads: the *_FILE variables inside the containers stay empty.
@@ -2514,3 +2579,16 @@ volumes:
   # scripts/addon.sh disable email --purge.
   email_index:
   email_drafts:
+  # bitwarden-signin's socket folder, mounted by it and bitwarden-broker only.
+  # A tmpfs owned by HERMES_UID:HERMES_GID at mode 0700: both containers run
+  # as that user, and the owner follows it at run time, which a folder made in
+  # the image cannot. The local driver mounts one tmpfs that both containers
+  # share; it is emptied when neither is running. After HERMES_UID or
+  # HERMES_GID changes, compose asks whether to recreate it and keeps the old
+  # owner unless told yes (or the volume is removed with docker volume rm), and
+  # the signer then cannot create its socket.
+  bitwarden_signin:
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "uid=${HERMES_UID:-1000},gid=${HERMES_GID:-1000},mode=0700,size=1m"

@@ -1,0 +1,4 @@
+# The build copies signer/ only; seccomp.json is read by compose, not the image.
+*
+!signer/
+**/__pycache__
