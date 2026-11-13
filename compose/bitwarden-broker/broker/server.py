@@ -8,6 +8,11 @@ digests of it (``digest_redaction.build_entry``). The Unix socket at
 calls that handle values: ``POST /unlock`` and ``POST /lock`` for ``manual``
 accounts (``python3 -m broker.unlock``).
 
+The ``/signin/*`` routes drive the signer's own Chromium over the socket at
+``BITWARDEN_SIGNIN_SOCKET`` (broker/signin.py): the password and the TOTP code
+go to the signer, never to a reply, and ``/signin/finish`` writes the site's
+session into the agent's tab. ``/health`` reports the signer's state.
+
 Request bodies are JSON objects of at most 64 KiB, with no duplicate keys and
 no keys a route does not take. Every error body is ``{"error": "<code>"}`` with
 a fixed code. The access log has one line per request: method, route, status
@@ -42,10 +47,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import cdp, digest_redaction
+from . import cdp, digest_redaction, signin
 from .accounts import load_all
 from .bwcli import Bw, BwError
 from .requests_store import RequestError, Store
+from .signin_client import SignerClient
 from .vault import HANDLE_PREFIX, Denylist, Vault, parse_handle
 
 ACCESS_LOG = logging.getLogger("broker.access")
@@ -56,6 +62,8 @@ MAX_DRAIN = 1 << 20
 FILL_TIMEOUT = 10.0
 DEFAULT_LISTEN = "127.0.0.1:8099"
 DEFAULT_SOCKET = "/run/bitwarden-sync/sync.sock"
+DEFAULT_SIGNIN_SOCKET = "/run/bitwarden-signin/signin.sock"
+MAX_TEXT = 4096  # the signer's limit for typed text
 # Fill errors for which no setter ran in the page, so no redaction entry is returned.
 # Every other outcome returns one, write_unconfirmed and a timeout included. An entry
 # carries its HMAC key, so whoever reads the response can brute-force a short value
@@ -91,6 +99,7 @@ class Config:
     idle_seconds: float
     listen: tuple[str, int]
     socket_path: Path
+    signin_socket: Path
     bw_path: str
     sync_min_seconds: float = 30.0
 
@@ -109,6 +118,7 @@ class Config:
             idle_seconds=_minutes(env, "BITWARDEN_IDLE_LOCK_MINUTES", "0", allow_zero=True),
             listen=_listen(env.get("BITWARDEN_LISTEN") or DEFAULT_LISTEN),
             socket_path=Path(env.get("BITWARDEN_SYNC_SOCKET") or DEFAULT_SOCKET),
+            signin_socket=Path(env.get("BITWARDEN_SIGNIN_SOCKET") or DEFAULT_SIGNIN_SOCKET),
             bw_path=env.get("BITWARDEN_BW") or "bw",
             # Test hook: scripts/test-bitwarden-*.py set 0 to sync back to back.
             sync_min_seconds=_seconds(env, "BITWARDEN_SYNC_MIN_SECONDS", SYNC_MIN_INTERVAL),
@@ -161,6 +171,19 @@ def _fields(body, required=(), optional=()) -> dict:
     return body
 
 
+def _tab(target_id, port) -> None:
+    """The agent tab a fill or a handover writes into."""
+    if (not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535
+            or not isinstance(target_id, str)):
+        raise HttpError(400, "bad_request")
+
+
+def _ref(ref) -> int:
+    if not isinstance(ref, int) or isinstance(ref, bool) or ref <= 0:
+        raise HttpError(400, "bad_request")
+    return ref
+
+
 def _parse_json(raw: bytes):
     def pairs(items):
         out = {}
@@ -210,6 +233,8 @@ class Broker:
         self._syncing = {slug: threading.Lock() for slug in self.bws}  # one bw sync per account at a time
         self._sync_call = threading.Lock()  # one POST /sync at a time
         self._sync_result: tuple[float, dict] | None = None  # (monotonic end, result) of the last POST /sync
+        self.signin = signin.SignIn(self.vault, self.bws, SignerClient(config.signin_socket),
+                                    touch=self._touch)
 
     # --- TCP routes ---------------------------------------------------------
 
@@ -224,6 +249,7 @@ class Broker:
 
     def get_health(self, _body) -> dict:
         return {"status": "ok", "accounts": [{"slug": s, "state": self.bws[s].state} for s in sorted(self.bws)],
+                "signer": self.signin.status(),
                 "account_errors": list(self.account_errors),
                 "refused": [{"file": r.file, "error": r.cause, "message": r.message} for r in self.refused]}
 
@@ -271,6 +297,52 @@ class Broker:
                     "redaction": redaction}
         finally:
             value = None
+
+    # --- Sign-in routes -----------------------------------------------------
+
+    def post_signin_start(self, body) -> dict:
+        _fields(body, required=("handle", "target_id", "port"))
+        _tab(body["target_id"], body["port"])
+        if not isinstance(body["handle"], str):
+            raise HttpError(400, "bad_request")
+        return self._signin(lambda: self.signin.start(body["handle"], body["target_id"], body["port"]))
+
+    def post_signin_snapshot(self, body) -> dict:
+        _fields(body)
+        return self._signin(self.signin.snapshot)
+
+    def post_signin_click(self, body) -> dict:
+        _fields(body, required=("ref",))
+        return self._signin(lambda: self.signin.click(_ref(body["ref"])))
+
+    def post_signin_type(self, body) -> dict:
+        _fields(body, required=("ref", "text"))
+        text = body["text"]
+        if not isinstance(text, str) or len(text) > MAX_TEXT:
+            raise HttpError(400, "bad_request")
+        return self._signin(lambda: self.signin.type(_ref(body["ref"]), text))
+
+    def post_signin_fill(self, body) -> dict:
+        _fields(body, required=("ref",), optional=("field",))
+        field = body.get("field", "password")
+        if field not in cdp.FIELDS:
+            raise HttpError(400, "bad_request")
+        return self._signin(lambda: self.signin.fill(_ref(body["ref"]), field))
+
+    def post_signin_finish(self, body) -> dict:
+        _fields(body, required=("target_id", "port"))
+        _tab(body["target_id"], body["port"])
+        return self._signin(lambda: self.signin.finish(body["target_id"], body["port"]))
+
+    def post_signin_cancel(self, body) -> dict:
+        _fields(body)
+        return self._signin(self.signin.cancel)
+
+    def _signin(self, call):
+        try:
+            return call()
+        except signin.SignInError as exc:
+            raise HttpError(exc.status, exc.code) from None
 
     def post_sync(self, body) -> dict:
         """Sync every account now. A call while another runs gets ``{"synced": false,
@@ -494,7 +566,10 @@ class Broker:
         stop = threading.Event()
         threads = [threading.Thread(target=tcp.serve_forever, name="tcp", daemon=True),
                    threading.Thread(target=unix.serve_forever, name="unix", daemon=True),
-                   threading.Thread(target=self.run_loop, args=(stop,), name="sync", daemon=True)]
+                   threading.Thread(target=self.run_loop, args=(stop,), name="sync", daemon=True),
+                   # A session the signer kept from a previous broker run would refuse the
+                   # next sign-in with busy; ending it does not hold up serving.
+                   threading.Thread(target=self.signin.end_stale, name="signin-end", daemon=True)]
         threads += [threading.Thread(target=self.unlock_stored, args=(slug,), name=f"unlock-{slug}", daemon=True)
                     for slug, a in sorted(self.accounts.items()) if a.unlock == "stored"]
         threads += [threading.Thread(target=self.login_manual, args=(slug,), name=f"login-{slug}", daemon=True)
@@ -655,6 +730,13 @@ class _TcpHandler(_Handler):
         "/requests": {"GET": "get_requests", "POST": "post_requests"},
         "/release": {"POST": "post_release"},
         "/health": {"GET": "get_health"},
+        "/signin/start": {"POST": "post_signin_start"},
+        "/signin/snapshot": {"POST": "post_signin_snapshot"},
+        "/signin/click": {"POST": "post_signin_click"},
+        "/signin/type": {"POST": "post_signin_type"},
+        "/signin/fill": {"POST": "post_signin_fill"},
+        "/signin/finish": {"POST": "post_signin_finish"},
+        "/signin/cancel": {"POST": "post_signin_cancel"},
     }
 
 

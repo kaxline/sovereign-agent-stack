@@ -8,6 +8,11 @@ with the value as a ``Runtime.callFunctionOn`` argument. The value is never part
 of an expression or function source. ``field="password"`` writes a password
 field; ``field="totp"`` writes a one-time code the way core's enter_code does.
 
+``handover`` writes a sign-in session the signer exported into the same tab:
+the same origin check (an origin outside the item's is ``handover_refused``),
+then ``Network.setCookies``, one ``Runtime.callFunctionOn`` that writes both
+storages from arguments, and a reload.
+
 ``FillResult.error`` is one of six fixed texts. ``write_unconfirmed`` means a
 setter ran but the field was empty afterwards (a page handler cleared it, say),
 so the page may hold the value. Nothing from the page, from a
@@ -19,6 +24,7 @@ bookworm's websockets 10.4 has.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import re
@@ -34,6 +40,7 @@ NO_FIELD = "no_field"
 WRITE_UNCONFIRMED = "write_unconfirmed"
 PAGE_ERROR = "page_error"
 CDP_UNAVAILABLE = "cdp_unavailable"
+HANDOVER_REFUSED = "handover_refused"
 
 _TARGET_ID = re.compile(r"[A-Za-z0-9]{1,64}")
 _BROWSER_PATH = re.compile(r"/devtools/browser/[A-Za-z0-9-]{1,64}")
@@ -163,6 +170,22 @@ _TOTP_FUNCTION = r"""function (expectedOrigin, value) {
 FIELDS = {"password": _FILL_FUNCTION, "totp": _TOTP_FUNCTION}
 
 
+# Called on the document with (expectedOrigin, local, session), each storage's
+# entries a list of [key, value] pairs passed as arguments. Storage access
+# throws on a page where it is blocked, which is reported as a failed write.
+_STORAGE_FUNCTION = """function (expectedOrigin, local, session) {
+  if (window.location.origin !== expectedOrigin) return { refused: "origin_changed" };
+  try {
+    for (const entry of local) window.localStorage.setItem(entry[0], entry[1]);
+    for (const entry of session) window.sessionStorage.setItem(entry[0], entry[1]);
+    return { wrote: 1 };
+  } catch (e) {
+    // The message can quote a key or value; report only that the write failed.
+    return { refused: "write_failed" };
+  }
+}"""
+
+
 @dataclass(frozen=True)
 class FillResult:
     filled: bool
@@ -170,8 +193,15 @@ class FillResult:
     error: str | None
 
 
+@dataclass(frozen=True)
+class HandoverResult:
+    done: bool
+    origin: str
+    error: str | None
+
+
 class _Fail(Exception):
-    """Internal: carries one of the fixed error texts to ``fill_async``."""
+    """Internal: carries one of the fixed error texts to ``fill_async`` or ``handover_async``."""
 
     def __init__(self, code: str):
         super().__init__(code)
@@ -240,7 +270,128 @@ async def _fill(port, target_id, allowed, value, budget, cleanup, seen, function
     await _write(port, path, target_id, origin, value, budget, cleanup, function)
 
 
-async def _write(port, path, target_id, origin, value, budget, cleanup, function) -> None:
+def handover(port: int, target_id: str, allowed_origins: tuple[str, ...], cookies, local, session,
+             timeout: float = 10.0) -> HandoverResult:
+    """Write a sign-in session into ``target_id``. Call from a thread with no running event loop."""
+    return asyncio.run(handover_async(port, target_id, allowed_origins, cookies, local, session, timeout))
+
+
+async def handover_async(port: int, target_id: str, allowed_origins: tuple[str, ...], cookies, local,
+                         session, timeout: float = 10.0) -> HandoverResult:
+    """Set ``cookies`` and both storages in the tab, then reload it.
+
+    The tab's origin is read first and must be one of ``allowed_origins`` (the item's
+    origins, never an IdP's): anything else is ``handover_refused`` and nothing is
+    written. ``cookies`` are CDP cookie records from the signer; ``local`` and
+    ``session`` are lists of ``[key, value]`` pairs, passed as arguments, never as
+    source. The deadline and the connection are ``fill_async``'s.
+    """
+    if not _valid_port(port):
+        return HandoverResult(False, "", CDP_UNAVAILABLE)
+    if not isinstance(target_id, str) or not _TARGET_ID.fullmatch(target_id):
+        return HandoverResult(False, "", TARGET_NOT_FOUND)
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not timeout > 0:
+        raise ValueError("timeout must be a positive number")
+    if isinstance(allowed_origins, str):
+        raise TypeError("allowed_origins must be a collection of origins, not one string")
+    allowed = {o for o in (normalize_origin(a) for a in allowed_origins) if o}
+    params = _cookie_params(cookies)
+    entries = (_entries(local), _entries(session))
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    cleanup = min(1.0, timeout / 5)
+    budget = deadline - 2 * cleanup - loop.time()
+    seen = {"origin": ""}
+    code = None
+    try:
+        await asyncio.wait_for(_handover(port, target_id, allowed, params, entries, budget, cleanup, seen),
+                               budget)
+    except _Fail as exc:
+        code = exc.code
+    except asyncio.TimeoutError:
+        code = CDP_UNAVAILABLE
+    except Exception:  # noqa: BLE001 - any other failure is the endpoint's, and its text stays out
+        code = CDP_UNAVAILABLE
+    return HandoverResult(code is None, seen["origin"], code)
+
+
+async def _handover(port, target_id, allowed, params, entries, budget, cleanup, seen) -> None:
+    listing = await _get_json(port, "/json/list")
+    target = None
+    if isinstance(listing, list):
+        target = next((t for t in listing if isinstance(t, dict) and t.get("id") == target_id
+                       and t.get("type") == "page"), None)
+    if target is None:
+        raise _Fail(TARGET_NOT_FOUND)
+    origin = normalize_origin(target.get("url")) or ""
+    seen["origin"] = origin
+    if not origin or origin not in allowed:
+        raise _Fail(HANDOVER_REFUSED)
+
+    version = await _get_json(port, "/json/version")
+    ws_url = version.get("webSocketDebuggerUrl") if isinstance(version, dict) else None
+    path = urlsplit(ws_url).path if isinstance(ws_url, str) else ""
+    if not _BROWSER_PATH.fullmatch(path):
+        raise _Fail(CDP_UNAVAILABLE)
+
+    async with _attached(port, path, target_id, budget, cleanup) as (conn, session):
+        if params:
+            reply = await conn.call("Network.setCookies", {"cookies": params}, session)
+            if "error" in reply:
+                raise _Fail(PAGE_ERROR)
+        outcome = await _call_on_document(conn, session, _STORAGE_FUNCTION,
+                                          [{"value": origin}, {"value": entries[0]}, {"value": entries[1]}])
+        if outcome.get("refused") == "origin_changed":
+            raise _Fail(HANDOVER_REFUSED)
+        if outcome.get("wrote") != 1:
+            raise _Fail(PAGE_ERROR)
+        reloaded = await conn.call("Page.reload", {"ignoreCache": False}, session)
+        if "error" in reloaded:
+            raise _Fail(PAGE_ERROR)
+
+
+def _cookie_params(cookies) -> list[dict]:
+    """The signer's cookie records as Network.setCookies parameters, field by field.
+
+    A record comes from a page's jar, so each field is taken only in the type and
+    range CDP takes: a bad one would fail the whole call. ``expires`` is left out
+    for a session cookie, which CDP reports as -1.
+    """
+    out = []
+    for cookie in cookies or ():
+        if not isinstance(cookie, dict) or not isinstance(cookie.get("name"), str) \
+                or not isinstance(cookie.get("value"), str):
+            continue
+        param = {"name": cookie["name"], "value": cookie["value"]}
+        for key in ("domain", "path"):
+            if isinstance(cookie.get(key), str):
+                param[key] = cookie[key]
+        for key in ("httpOnly", "secure"):
+            if isinstance(cookie.get(key), bool):
+                param[key] = cookie[key]
+        if cookie.get("sameSite") in ("Strict", "Lax", "None"):
+            param["sameSite"] = cookie["sameSite"]
+        expires = cookie.get("expires")
+        if isinstance(expires, (int, float)) and not isinstance(expires, bool) and expires > 0:
+            param["expires"] = float(expires)
+        out.append(param)
+    return out
+
+
+def _entries(items) -> list[list[str]]:
+    """``[key, value]`` string pairs from the signer's storage lists."""
+    out = []
+    for item in items or ():
+        if isinstance(item, (list, tuple)) and len(item) == 2 \
+                and all(isinstance(part, str) for part in item):
+            out.append([item[0], item[1]])
+    return out
+
+
+@contextlib.asynccontextmanager
+async def _attached(port, path, target_id, budget, cleanup):
+    """A browser websocket with a flat session attached to ``target_id``, closed on the way out."""
     try:
         import websockets
     except ImportError:
@@ -270,30 +421,7 @@ async def _write(port, path, target_id, origin, value, budget, cleanup, function
         if not isinstance(found, str) or not found:
             raise _Fail(TARGET_NOT_FOUND)
         session = found
-
-        doc = await conn.call("Runtime.evaluate", {"expression": "document", "returnByValue": False,
-                                                   "silent": True}, session)
-        object_id = _result(doc).get("objectId")
-        if not isinstance(object_id, str):
-            raise _Fail(PAGE_ERROR)
-
-        called = await conn.call("Runtime.callFunctionOn", {
-            "objectId": object_id,
-            "functionDeclaration": function,
-            "arguments": [{"value": origin}, {"value": value}],
-            "returnByValue": True,
-            "silent": True,
-        }, session)
-        outcome = _result(called).get("value")
-        if not isinstance(outcome, dict):
-            raise _Fail(PAGE_ERROR)
-        if outcome.get("refused") == "origin_changed":
-            raise _Fail(ORIGIN_MISMATCH)
-        if outcome.get("refused") == "write_failed":
-            raise _Fail(PAGE_ERROR)
-        if outcome.get("filled") != 1:
-            # wrote: a setter ran, so the value may be in the page even though the field reads empty.
-            raise _Fail(WRITE_UNCONFIRMED if outcome.get("wrote") == 1 else NO_FIELD)
+        yield conn, session
     finally:
         try:
             if session is not None:
@@ -310,6 +438,39 @@ async def _write(port, path, target_id, origin, value, budget, cleanup, function
                 # Cancelled again during cleanup: drop the connection, then let the cancel through.
                 ws.transport.abort()
                 raise
+
+
+async def _call_on_document(conn, session, function, arguments) -> dict:
+    """Call ``function`` on the page's document and return what it reported."""
+    doc = await conn.call("Runtime.evaluate", {"expression": "document", "returnByValue": False,
+                                               "silent": True}, session)
+    object_id = _result(doc).get("objectId")
+    if not isinstance(object_id, str):
+        raise _Fail(PAGE_ERROR)
+    called = await conn.call("Runtime.callFunctionOn", {
+        "objectId": object_id,
+        "functionDeclaration": function,
+        "arguments": arguments,
+        "returnByValue": True,
+        "silent": True,
+    }, session)
+    outcome = _result(called).get("value")
+    if not isinstance(outcome, dict):
+        raise _Fail(PAGE_ERROR)
+    return outcome
+
+
+async def _write(port, path, target_id, origin, value, budget, cleanup, function) -> None:
+    async with _attached(port, path, target_id, budget, cleanup) as (conn, session):
+        outcome = await _call_on_document(conn, session, function,
+                                          [{"value": origin}, {"value": value}])
+        if outcome.get("refused") == "origin_changed":
+            raise _Fail(ORIGIN_MISMATCH)
+        if outcome.get("refused") == "write_failed":
+            raise _Fail(PAGE_ERROR)
+        if outcome.get("filled") != 1:
+            # wrote: a setter ran, so the value may be in the page even though the field reads empty.
+            raise _Fail(WRITE_UNCONFIRMED if outcome.get("wrote") == 1 else NO_FIELD)
 
 
 def _result(reply: dict) -> dict:

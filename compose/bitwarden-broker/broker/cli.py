@@ -3,6 +3,7 @@
     python3 -m broker.cli accounts
     python3 -m broker.cli requests [--json]
     python3 -m broker.cli sync
+    python3 -m broker.cli signer
 
 The API listens on ``BITWARDEN_LISTEN`` (127.0.0.1:8099) inside hermes' network
 namespace, so the host reaches it only through the broker container.
@@ -12,7 +13,8 @@ state, error class or ``-``, logged in ``1`` or ``0``, retry after or empty), th
 ``refused<TAB><message><TAB><cause>`` for each instance file the broker refused at
 start (cause ``bad_file``, ``bad_slug`` or ``missing_client_id``). ``requests`` prints the pending access
 requests for a person; ``--json`` prints ``GET /requests`` as the broker sent
-it. ``sync`` runs ``POST /sync``.
+it. ``sync`` runs ``POST /sync``. ``signer`` prints the sign-in signer's state from
+``GET /health``: ``ready``, ``busy``, ``down`` or ``sandbox_unavailable``.
 
 Exit codes: 0 done, 1 the broker is not reachable, 2 bad usage or the broker
 refused the call.
@@ -119,6 +121,13 @@ def cmd_sync(form: str | None = None) -> None:
         print(f"Already syncing: {', '.join(reply['busy'])}")
 
 
+def cmd_signer(form: str | None = None) -> None:
+    state = _call("GET", "/health").get("signer")
+    if not isinstance(state, str):
+        state = "down"
+    print(json.dumps({"signer": state}) if form == "--json" else state)
+
+
 def main(argv: list[str]) -> int:
     try:
         if argv == ["accounts"]:
@@ -127,8 +136,11 @@ def main(argv: list[str]) -> int:
             cmd_requests(argv[1] if len(argv) == 2 else None)
         elif argv in (["sync"], ["sync", "--json"]):
             cmd_sync(argv[1] if len(argv) == 2 else None)
+        elif argv in (["signer"], ["signer", "--json"]):
+            cmd_signer(argv[1] if len(argv) == 2 else None)
         else:
-            print("usage: python3 -m broker.cli accounts | requests [--json] | sync [--json]", file=sys.stderr)
+            print("usage: python3 -m broker.cli accounts | requests [--json] | sync [--json] | "
+                  "signer [--json]", file=sys.stderr)
             return 2
     except Unreachable:
         print("The Bitwarden broker is not reachable.", file=sys.stderr)

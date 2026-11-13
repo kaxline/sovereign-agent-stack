@@ -23,11 +23,14 @@ import json
 import logging
 import os
 import secrets
+import socketserver
 import stat
 import sys
 import tempfile
+import threading
 import time
 import traceback
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -1111,6 +1114,7 @@ class Broker:
         self.instances_dir = run.tmp / "instances"
         self.instances_dir.mkdir(exist_ok=True)
         self.socket = run.tmp / "sync" / "sync.sock"
+        self.signin_socket = run.tmp / "signin" / "signin.sock"
         self.stderr_path = run.tmp / "broker-stderr.log"
         self.port = free_port()
         self.bodies: list[str] = []
@@ -1130,6 +1134,7 @@ class Broker:
             "BITWARDEN_IDLE_LOCK_MINUTES": idle_minutes,
             "BITWARDEN_LISTEN": f"127.0.0.1:{self.port}",
             "BITWARDEN_SYNC_SOCKET": str(self.socket),
+            "BITWARDEN_SIGNIN_SOCKET": str(self.signin_socket),
             "BITWARDEN_BW": str(wrapper),
             "BITWARDEN_SYNC_MIN_SECONDS": "0",  # test_sync_coalesced sets 30
         }
@@ -1388,6 +1393,350 @@ def test_fill_refuses_sign_in_only() -> None:
             got = b.call("POST", "/fill", fill_body(e, field))
             expect(got == (409, {"error": "sign_in_only"}), f"/fill {field} on a sign-in-only item: {got}")
         expect(len(b.run.log_lines()) == before, "a refused /fill ran bw")
+        b.stop()
+        b.expect_clean()
+
+
+# --- Sign-in routes, with a fake signer on a temp socket --------------------
+
+SIGNIN_ORIGIN = "https://login.example.com"
+IDP_ORIGIN = "https://sso.example.com"
+
+
+def ax_node(ref, role, name="", text="") -> dict:
+    return {"ref": ref, "role": role, "name": name, "text": text}
+
+
+def ax_page(origin, *nodes) -> dict:
+    return {"origin": origin, "nodes": list(nodes)}
+
+
+def ax_error(code, status) -> dict:
+    return {"error": code, "status": status}
+
+
+UNKNOWN_PAGE = ax_page(SIGNIN_ORIGIN, ax_node(1, "StaticText", "", "Nothing to sign in to"))
+
+
+class FakeSigner:
+    """The signer's socket API with scripted pages, on a Unix socket.
+
+    ``pages`` is what the session shows: ``/session/open`` returns the first,
+    ``/session/click`` moves to the next and returns it, and the other session
+    routes return the current one. A page from ``ax_error`` answers with that
+    code instead. Every request is kept in ``calls`` as ``(route, body)``.
+    """
+
+    def __init__(self, path, pages=(), health="ready", export=None, open_session=False):
+        self.path = Path(path)
+        self.pages = list(pages) or [UNKNOWN_PAGE]
+        self.health = health
+        self.export = export or {"origin": SIGNIN_ORIGIN, "cookies": [], "localStorage": [],
+                                 "sessionStorage": []}
+        self.calls: list[tuple[str, dict]] = []
+        self.session = open_session
+        self.index = 0
+        self.server = None
+        self.lock = threading.Lock()
+
+    # --- the API -----------------------------------------------------------
+
+    def reply(self, route, body) -> tuple[int, dict]:
+        with self.lock:
+            self.calls.append((route, body))
+            if route == "/health":
+                return 200, {"status": "busy" if self.session and self.health == "ready" else self.health}
+            if route == "/session/end":
+                ended, self.session, self.index = self.session, False, 0
+                return 200, {"ended": ended}
+            if route == "/session/open":
+                if self.session:
+                    return 409, {"error": "busy"}
+                self.session, self.index = True, 0
+                return self._page()
+            if not self.session:
+                return 409, {"error": "no_session"}
+            if route == "/session/export":
+                return 200, dict(self.export)
+            if route == "/session/click":
+                self.index = min(self.index + 1, len(self.pages) - 1)
+            return self._page()
+
+    def _page(self) -> tuple[int, dict]:
+        page = self.pages[self.index]
+        if "error" in page:
+            return page["status"], {"error": page["error"]}
+        return 200, json.loads(json.dumps(page))
+
+    def routes(self) -> list[str]:
+        return [route for route, _ in self.calls]
+
+    def bodies(self, route: str) -> list[dict]:
+        return [body for name, body in self.calls if name == route]
+
+    # --- serving -----------------------------------------------------------
+
+    def start(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.server = _SignerServer(str(self.path), _SignerHandler)
+        self.server.fake = self
+        threading.Thread(target=self.server.serve_forever, name="fake-signer", daemon=True).start()
+
+    def stop(self) -> None:
+        if self.server is None:
+            return
+        self.server.shutdown()
+        self.server.server_close()
+        self.server = None
+        try:
+            os.unlink(self.path)
+        except OSError:
+            pass
+
+
+class _SignerHandler(BaseHTTPRequestHandler):
+    def address_string(self) -> str:
+        return "unix"
+
+    def log_message(self, format, *args) -> None:  # noqa: A002 - the stdlib's signature
+        pass
+
+    def _dispatch(self) -> None:
+        length = int(self.headers.get("Content-Length") or "0")
+        raw = self.rfile.read(length) if length else b""
+        try:
+            body = json.loads(raw.decode("utf-8")) if raw else {}
+        except ValueError:
+            body = {}
+        status, payload = self.server.fake.reply(self.path.split("?")[0], body)
+        data = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    do_GET = do_POST = _dispatch
+
+
+class _SignerServer(socketserver.ThreadingUnixStreamServer):
+    daemon_threads = True
+
+
+@contextlib.contextmanager
+def fake_signer(b: Broker, **kwargs):
+    fake = FakeSigner(b.signin_socket, **kwargs)
+    fake.start()
+    try:
+        yield fake
+    finally:
+        fake.stop()
+
+
+def signin_vault() -> dict:
+    """Item A on login.example.com with a TOTP key; item E on good.example.com with an IdP origin."""
+    data = vault_data()
+    data["items"] = [
+        login_item("A", FOLDER_AGENT, uris=[(SIGNIN_ORIGIN, None)], totp=TOTP_SEED),
+        login_item("E", FOLDER_AGENT, uris=[("https://good.example.com", None)], in_page=False, fields=[
+            {"name": "agent-signin-idp", "value": IDP_ORIGIN, "type": 0}]),
+    ]
+    return data
+
+
+def signin_body(**extra) -> dict:
+    return {"target_id": TARGET, "port": free_port(), **extra}
+
+
+def expect_no_canaries(texts, values, msg: str) -> None:
+    """None of ``values`` appears in ``texts``, in any encoding the digest redaction scrubs."""
+    from broker import digest_redaction
+    blob = "\n".join(texts).encode("utf-8", "surrogatepass")
+    for value in values:
+        for form in digest_redaction.FORMS:
+            expect(digest_redaction._encode(value, form) not in blob,
+                   f"{msg}: the {form} form of a value appeared in a reply")
+
+
+def test_signin_routes_keep_tcp_checks() -> None:
+    with broker_run(vault=signin_vault()) as b:
+        b.add_account("personal")
+        b.start(unlocked=["personal"])
+        with fake_signer(b) as fake:
+            for host in ("evil.example.com", f"evil.example.com:{b.port}", f"127.0.0.1:{b.port + 1}"):
+                got = b.call("POST", "/signin/cancel", {}, headers={"Host": host})
+                expect(got == (403, {"error": "bad_host"}), f"Host {host!r}: {got}")
+            got = b.call("POST", "/signin/cancel", {}, headers={"Origin": "https://evil.example.com"})
+            expect(got == (403, {"error": "origin_refused"}), f"a request with Origin: {got}")
+            got = b.call("POST", "/signin/cancel", {}, headers={"Content-Type": "text/plain"})
+            expect(got == (415, {"error": "unsupported_media_type"}), f"a POST without JSON: {got}")
+            expect(b.call("GET", "/signin/cancel") == (405, {"error": "method_not_allowed"}), "GET /signin/cancel")
+            for body, route in (({"ref": 1, "extra": 1}, "/signin/click"), ({}, "/signin/click"),
+                                ({"ref": 0}, "/signin/click"), ({"ref": True}, "/signin/click"),
+                                ({"ref": 1, "text": 7}, "/signin/type"),
+                                ({"ref": 1, "field": "username"}, "/signin/fill"),
+                                ({"handle": 7, "target_id": TARGET, "port": 8}, "/signin/start"),
+                                ({"handle": "x", "target_id": TARGET, "port": "8"}, "/signin/start"),
+                                ({"port": 8}, "/signin/finish"),
+                                ({"target_id": TARGET, "port": 0}, "/signin/finish")):
+                got = b.call("POST", route, body)
+                expect(got[0] == 400 and got[1] == {"error": "bad_request"}, f"{route} {body}: {got}")
+            expect(fake.calls == [], f"a refused request reached the signer: {fake.routes()}")
+            expect(b.call("POST", "/signin/cancel", {}) == (200, {"cancelled": True}), "/signin/cancel")
+            expect(fake.routes() == ["/session/end"], f"cancel sent {fake.routes()}")
+        b.stop()
+        b.expect_clean()
+
+
+def test_no_route_returns_canary() -> None:
+    """Every /signin/ route, with the fake signer scripted to need a password and a TOTP code."""
+    pages = [ax_page(SIGNIN_ORIGIN, ax_node(1, "textbox", "Password"), ax_node(2, "button", "Sign in")),
+             ax_page(SIGNIN_ORIGIN, ax_node(1, "textbox", "One-time code"), ax_node(2, "button", "Verify")),
+             # An IdP origin at the end, so the sequence stops there and the session stays
+             # open for the routes the test drives by hand.
+             ax_page(IDP_ORIGIN, ax_node(1, "StaticText", "", "Continue"))]
+    with broker_run(vault=signin_vault()) as b:
+        b.add_account("personal")
+        b.start(unlocked=["personal"])
+        a = handle("personal", "A")
+        with fake_signer(b, pages=pages) as fake:
+            b.call("POST", "/signin/start", signin_body(handle=a))
+            b.call("POST", "/signin/snapshot", {})
+            b.call("POST", "/signin/click", {"ref": 2})
+            b.call("POST", "/signin/type", {"ref": 1, "text": "someone@example.com"})
+            b.call("POST", "/signin/fill", {"ref": 1, "field": "password"})
+            b.call("POST", "/signin/fill", {"ref": 1, "field": "totp"})
+            b.call("POST", "/signin/finish", signin_body())
+            b.call("POST", "/signin/cancel", {})
+            written = [body["value"] for body in fake.bodies("/session/fill")]
+        expect(ITEM_PASSWORDS["A"] in written, f"the password never reached the signer: {len(written)} fills")
+        codes = [v for v in written if v != ITEM_PASSWORDS["A"]]
+        expect(codes and all(c.isdigit() for c in codes), f"no TOTP code reached the signer: {len(codes)}")
+        expect_no_canaries(b.bodies, written, "/signin routes")
+        b.stop()
+        b.expect_clean(extra_secrets=codes)
+
+
+def test_fill_uses_item_origins_only() -> None:
+    """The IdP origin is allowed for a click and left out of a fill and the export."""
+    with broker_run(vault=signin_vault()) as b:
+        b.add_account("personal")
+        b.start(unlocked=["personal"])
+        e = handle("personal", "E")
+        with fake_signer(b, pages=[ax_page("https://good.example.com",
+                                           ax_node(1, "StaticText", "", "Hello"))]) as fake:
+            status, _ = b.call("POST", "/signin/start", signin_body(handle=e))
+            expect(status == 200, f"/signin/start {status}")
+            b.call("POST", "/signin/click", {"ref": 1})
+            b.call("POST", "/signin/fill", {"ref": 1, "field": "password"})
+            b.call("POST", "/signin/finish", signin_body())
+            allowed = {route: body["allowed"] for route, body in fake.calls if "allowed" in body}
+        both = ["https://good.example.com", IDP_ORIGIN]
+        expect(allowed["/session/open"] == both, f"open allowed {allowed['/session/open']}")
+        expect(allowed["/session/click"] == both, f"click allowed {allowed['/session/click']}")
+        expect(allowed["/session/fill"] == ["https://good.example.com"],
+               f"fill allowed {allowed['/session/fill']}")
+        expect(allowed["/session/export"] == ["https://good.example.com"],
+               f"export allowed {allowed['/session/export']}")
+        b.stop()
+        b.expect_clean()
+
+
+def test_auto_sequence_returns_snapshot_on_unknown_page() -> None:
+    with broker_run(vault=signin_vault()) as b:
+        b.add_account("personal")
+        b.start(unlocked=["personal"])
+        with fake_signer(b) as fake:
+            got = b.call("POST", "/signin/start", signin_body(handle=handle("personal", "A")))
+            expect(got == (200, UNKNOWN_PAGE), f"/signin/start on an unknown page: {got}")
+            expect(fake.routes() == ["/session/open"], f"the sequence acted: {fake.routes()}")
+            # The session stays open, so the agent can drive it with the other routes.
+            expect(b.call("POST", "/signin/snapshot", {}) == (200, UNKNOWN_PAGE), "/signin/snapshot")
+        b.stop()
+        b.expect_clean()
+
+
+def test_redirect_off_origin_then_cancel() -> None:
+    """A click that lands off the item's and IdP's origins refuses, and cancel still ends the session."""
+    pages = [ax_page(SIGNIN_ORIGIN, ax_node(1, "textbox", "Username"), ax_node(2, "button", "Next")),
+             ax_error("origin_mismatch", 403)]
+    with broker_run(vault=signin_vault()) as b:
+        b.add_account("personal")
+        b.start(unlocked=["personal"])
+        with fake_signer(b, pages=pages) as fake:
+            got = b.call("POST", "/signin/start", signin_body(handle=handle("personal", "A")))
+            expect(got == (403, {"error": "origin_mismatch"}), f"/signin/start after a redirect: {got}")
+            expect("/session/end" not in fake.routes(), f"the session was ended: {fake.routes()}")
+            expect(b.call("POST", "/signin/snapshot", {}) == (403, {"error": "origin_mismatch"}),
+                   "/signin/snapshot off origin")
+            expect(b.call("POST", "/signin/cancel", {}) == (200, {"cancelled": True}), "/signin/cancel")
+            expect(fake.session is False, "cancel left the signer session open")
+        b.stop()
+        b.expect_clean()
+
+
+def test_busy_and_cancel_from_any_caller() -> None:
+    with broker_run(vault=signin_vault()) as b:
+        b.add_account("personal")
+        b.start(unlocked=["personal"])
+        a = handle("personal", "A")
+        with fake_signer(b) as fake:
+            expect(b.call("POST", "/signin/start", signin_body(handle=a))[0] == 200, "the first sign-in")
+            got = b.call("POST", "/signin/start", signin_body(handle=a))
+            expect(got == (409, {"error": "busy"}), f"a second sign-in: {got}")
+            expect(b.call("POST", "/signin/cancel", {}) == (200, {"cancelled": True}), "/signin/cancel")
+            expect(fake.session is False, "the signer session is still open after cancel")
+            expect(b.call("POST", "/signin/start", signin_body(handle=a))[0] == 200, "sign-in after cancel")
+            expect(b.call("POST", "/signin/cancel", {})[0] == 200, "cancel again")
+            # With no session open, the other routes refuse without calling the signer.
+            before = len(fake.calls)
+            for route, body in (("/signin/snapshot", {}), ("/signin/click", {"ref": 1}),
+                                ("/signin/type", {"ref": 1, "text": "x"}),
+                                ("/signin/fill", {"ref": 1, "field": "password"}),
+                                ("/signin/finish", signin_body())):
+                got = b.call("POST", route, body)
+                expect(got == (409, {"error": "no_session"}), f"{route} with no session: {got}")
+            expect(len(fake.calls) == before, f"a no_session route called the signer: {fake.routes()}")
+        b.stop()
+        b.expect_clean()
+
+
+def test_startup_ends_stale_session() -> None:
+    """A session left by a crashed turn is ended when the broker starts."""
+    with broker_run(vault=signin_vault()) as b:
+        b.add_account("personal")
+        fake = FakeSigner(b.signin_socket, open_session=True)
+        fake.start()
+        try:
+            b.start(unlocked=["personal"])
+            b.wait_for(lambda: "/session/end" in fake.routes(), "the broker ended the stale session")
+            expect(fake.session is False, "the stale session is still open")
+            got = b.call("POST", "/signin/start", signin_body(handle=handle("personal", "A")))
+            expect(got[0] == 200, f"a sign-in after the stale session was ended: {got}")
+        finally:
+            fake.stop()
+        b.stop()
+        b.expect_clean()
+
+
+def test_health_signer_down() -> None:
+    with broker_run(vault=signin_vault()) as b:
+        b.add_account("personal")
+        b.start(unlocked=["personal"])
+        status, health = b.call("GET", "/health")
+        expect(status == 200 and health["signer"] == "down", f"/health without a signer: {health}")
+        code, out, err = broker_cli(b, "signer")
+        expect(code == 0 and out.strip() == "down", f"cli signer with no signer: {code} {out!r} {err}")
+        with fake_signer(b):
+            expect(b.call("GET", "/health")[1]["signer"] == "ready", "/health with the signer ready")
+            code, out, err = broker_cli(b, "signer")
+            expect(code == 0 and out.strip() == "ready", f"cli signer: {code} {out!r} {err}")
+            b.call("POST", "/signin/start", signin_body(handle=handle("personal", "A")))
+            expect(b.call("GET", "/health")[1]["signer"] == "busy", "/health with a session open")
+            b.call("POST", "/signin/cancel", {})
+        with fake_signer(b, health="sandbox_unavailable"):
+            expect(b.call("GET", "/health")[1]["signer"] == "sandbox_unavailable",
+                   "/health with no sandbox")
         b.stop()
         b.expect_clean()
 
@@ -1736,10 +2085,75 @@ def test_api_fill_write_unconfirmed() -> None:
         b.expect_clean()
 
 
+def test_auto_sequence_two_step() -> None:
+    """A username page, a password page, a TOTP page, then the account page: one handover."""
+    pages = [ax_page(SIGNIN_ORIGIN, ax_node(1, "textbox", "Username"), ax_node(2, "button", "Next")),
+             ax_page(SIGNIN_ORIGIN, ax_node(1, "textbox", "Password"), ax_node(2, "button", "Sign in")),
+             ax_page(SIGNIN_ORIGIN, ax_node(1, "textbox", "One-time code"), ax_node(2, "button", "Verify")),
+             ax_page(SIGNIN_ORIGIN, ax_node(1, "StaticText", "", "Signed in as user-a"))]
+    export = {"origin": SIGNIN_ORIGIN,
+              "cookies": [{"name": "sess", "value": "s-1", "domain": "login.example.com", "path": "/",
+                           "httpOnly": True, "secure": True, "sameSite": "Lax", "expires": -1}],
+              "localStorage": [["token", "t-1"]], "sessionStorage": [["tab", "x-1"]]}
+    with broker_run(vault=signin_vault()) as b, fake_cdp([{"id": TARGET, "url": LOGIN_URL}]) as cdp_fake:
+        b.add_account("personal")
+        b.start(unlocked=["personal"])
+        with fake_signer(b, pages=pages, export=export) as fake:
+            got = b.call("POST", "/signin/start", {"handle": handle("personal", "A"), "target_id": TARGET,
+                                                   "port": cdp_fake.port})
+            expect(got == (200, {"done": True, "origin": SIGNIN_ORIGIN, "cookies": 1}),
+                   f"the automatic sequence: {got}")
+            expect(fake.routes() == ["/session/open", "/session/type", "/session/click", "/session/fill",
+                                     "/session/click", "/session/fill", "/session/click", "/session/export",
+                                     "/session/end"], f"signer calls {fake.routes()}")
+            expect(fake.bodies("/session/type")[0]["text"] == "user-a@example.com", "the username was typed")
+            fills = fake.bodies("/session/fill")
+            expect([f["field"] for f in fills] == ["password", "totp"], f"fills {[f['field'] for f in fills]}")
+            expect(fills[0]["value"] == ITEM_PASSWORDS["A"], "the item's password reached the signer")
+            values = [f["value"] for f in fills]
+        # The handover: cookies, then both storages as arguments, then a reload.
+        methods = cdp_fake.methods()
+        expect("Network.setCookies" in methods and methods[-1] == "Target.detachFromTarget",
+               f"handover commands {methods}")
+        cookies = [m for m in cdp_fake.messages if m.get("method") == "Network.setCookies"][0]
+        expect([c["name"] for c in cookies["params"]["cookies"]] == ["sess"], f"cookies {cookies['params']}")
+        expect("expires" not in cookies["params"]["cookies"][0], "a session cookie keeps no expiry")
+        call = [m for m in cdp_fake.messages if m.get("method") == "Runtime.callFunctionOn"][0]
+        args = [a.get("value") for a in call["params"]["arguments"]]
+        expect(args == [SIGNIN_ORIGIN, [["token", "t-1"]], [["tab", "x-1"]]], f"storage arguments {args}")
+        expect(methods.index("Page.reload") > methods.index("Runtime.callFunctionOn"), "reload after the write")
+        expect_no_canaries(b.bodies, values, "the automatic sequence")
+        b.stop()
+        b.expect_clean(extra_secrets=[v for v in values if v != ITEM_PASSWORDS["A"]])
+
+
+def test_finish_refused_keeps_session() -> None:
+    """The agent's tab is off the item's origin: handover_refused, and the session stays open."""
+    with broker_run(vault=signin_vault()) as b, \
+            fake_cdp([{"id": TARGET, "url": "https://evil.example.com/landing"}]) as cdp_fake:
+        b.add_account("personal")
+        b.start(unlocked=["personal"])
+        with fake_signer(b) as fake:
+            start = b.call("POST", "/signin/start", {"handle": handle("personal", "A"), "target_id": TARGET,
+                                                     "port": cdp_fake.port})
+            expect(start == (200, UNKNOWN_PAGE), f"/signin/start: {start}")
+            got = b.call("POST", "/signin/finish", {"target_id": TARGET, "port": cdp_fake.port})
+            expect(got == (409, {"error": "handover_refused"}), f"/signin/finish off origin: {got}")
+            expect(cdp_fake.connections == 0, "the broker opened a CDP connection to a refused tab")
+            expect("/session/end" not in fake.routes(), f"the session was ended: {fake.routes()}")
+            expect(b.call("POST", "/signin/snapshot", {}) == (200, UNKNOWN_PAGE),
+                   "the session is gone after a refused handover")
+            expect(b.call("POST", "/signin/cancel", {}) == (200, {"cancelled": True}), "/signin/cancel")
+        b.stop()
+        b.expect_clean()
+
+
 def run_api_cdp_tests() -> None:
     """The /fill tests that need the fake DevTools server, so websockets. Run inside the Hermes image."""
     test_api_fill_through_cdp()
     test_api_fill_write_unconfirmed()
+    test_auto_sequence_two_step()
+    test_finish_refused_keeps_session()
 
 
 CDP_DRIVER = r"""
@@ -1750,6 +2164,150 @@ ns["run_cdp_tests"]()
 ns["run_api_cdp_tests"]()
 print("image ok")
 """
+
+
+# Chromium's namespace sandbox refuses to start as root and needs the clone and unshare
+# cases the service's seccomp profile allows (scripts/test-bitwarden-signer.py says the same).
+HANDOVER_DOCKER_ARGS = ("--network", "none", "--user", "10001:10001", "-e", "HOME=/tmp",
+                        "--security-opt",
+                        f"seccomp={ROOT / 'compose' / 'bitwarden-signin' / 'seccomp.json'}")
+
+# cdp.handover against the image's Chromium, standing in for the agent's browser:
+# the spike's two flows (a cookie session and a token in localStorage) and a tab
+# that is not on an allowed origin.
+HANDOVER_DRIVER = r'''
+import json
+import os
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+sys.path.insert(0, "/work/compose/bitwarden-broker")
+sys.path.insert(0, "/signin-src")
+from broker import cdp
+from signer import browser
+
+
+def fail(msg):
+    sys.stdout.flush()
+    print(f"FAIL {msg}", file=sys.stderr, flush=True)
+    raise SystemExit(1)
+
+
+def expect(cond, msg):
+    if not cond:
+        fail(msg)
+
+
+APP = """<html><body><p id=s>%s</p></body></html>"""
+TOKEN = """<html><body><p id=s>reading</p><script>
+var t = localStorage.getItem("token");
+document.getElementById("s").textContent = t ? "token " + t + " tab " + sessionStorage.getItem("tab")
+                                             : "no token";
+</script></body></html>"""
+
+
+class Site(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        path = self.path.split("?")[0]
+        signed = "sess=s-1" in (self.headers.get("Cookie") or "")
+        if path == "/token":
+            body = TOKEN
+        else:
+            body = APP % ("signed in" if signed else "login required")
+        data = body.encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+
+PORTS = []
+for _ in range(2):
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), Site)
+    PORTS.append(srv.server_address[1])
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+A = "http://127.0.0.1:%d" % PORTS[0]
+B = "http://127.0.0.1:%d" % PORTS[1]
+
+chrome = browser.Chromium.start()
+try:
+    with open(os.path.join(chrome.profile, "DevToolsActivePort"), encoding="ascii") as fh:
+        port = int(fh.read().split()[0])
+
+    def call(method, params=None):
+        chrome.deadline = time.monotonic() + 30
+        try:
+            return chrome.page(method, params)
+        finally:
+            chrome.deadline = None
+
+    def targets():
+        chrome.deadline = time.monotonic() + 30
+        try:
+            return chrome.call("Target.getTargets")["targetInfos"]
+        finally:
+            chrome.deadline = None
+
+    target_id = next(t["targetId"] for t in targets() if t.get("type") == "page")
+
+    def text():
+        got = call("Runtime.evaluate", {"expression": "document.body.innerText", "returnByValue": True})
+        return (got.get("result") or {}).get("value") or ""
+
+    def go(url):
+        call("Page.navigate", {"url": url})
+        for _ in range(100):
+            if text().strip():
+                return
+            time.sleep(0.1)
+        fail("the page did not load: " + url)
+
+    def wait_for(want, msg):
+        for _ in range(100):
+            if want in text():
+                return
+            time.sleep(0.1)
+        fail(msg + ": the page says " + repr(text()))
+
+    # Flow 1: a session cookie.
+    go(A + "/app")
+    expect("login required" in text(), "the test site starts signed out: " + repr(text()))
+    cookie = {"name": "sess", "value": "s-1", "domain": "127.0.0.1", "path": "/", "httpOnly": True,
+              "secure": False, "sameSite": "Lax", "expires": -1}
+    result = cdp.handover(port, target_id, (A,), [cookie], [], [])
+    expect(result == cdp.HandoverResult(True, A, None), "cookie handover: %r" % (result,))
+    wait_for("signed in", "the cookie handover did not sign the tab in")
+    hidden = call("Runtime.evaluate", {"expression": "document.cookie", "returnByValue": True})
+    expect("sess" not in ((hidden.get("result") or {}).get("value") or ""), "the HttpOnly cookie is page-readable")
+
+    # Flow 2: a token in localStorage and a sessionStorage entry.
+    go(A + "/token")
+    expect("no token" in text(), "the token page starts empty: " + repr(text()))
+    result = cdp.handover(port, target_id, (A,), [], [["token", "t-1"]], [["tab", "x-1"]])
+    expect(result == cdp.HandoverResult(True, A, None), "storage handover: %r" % (result,))
+    wait_for("token t-1 tab x-1", "the storage handover did not reach the tab")
+
+    # A tab on another origin: refused, and nothing is written.
+    go(B + "/token")
+    result = cdp.handover(port, target_id, (A,), [cookie], [["token", "t-2"]], [["tab", "x-2"]])
+    expect(result == cdp.HandoverResult(False, B, "handover_refused"), "refused handover: %r" % (result,))
+    time.sleep(0.5)
+    expect("no token" in text(), "a refused handover wrote storage: " + repr(text()))
+    got = call("Runtime.evaluate", {"expression": "localStorage.length + ':' + document.cookie",
+                                    "returnByValue": True})
+    expect((got.get("result") or {}).get("value") == "0:", "a refused handover left data: %r" % (got,))
+finally:
+    chrome.stop()
+print("image ok")
+'''
 
 
 def test_tcp_request_checks() -> None:
@@ -1836,6 +2394,14 @@ def main() -> None:
     test_api_returns_no_values()
     test_items_sign_in_only_flag()
     test_fill_refuses_sign_in_only()
+    test_signin_routes_keep_tcp_checks()
+    test_no_route_returns_canary()
+    test_fill_uses_item_origins_only()
+    test_auto_sequence_returns_snapshot_on_unknown_page()
+    test_redirect_off_origin_then_cancel()
+    test_busy_and_cancel_from_any_caller()
+    test_startup_ends_stale_session()
+    test_health_signer_down()
     test_socket_serves_no_secrets()
     test_unlock_over_socket()
     test_manual_login_at_start()
@@ -1853,9 +2419,15 @@ def main() -> None:
     # the broker image's own Python and websockets instead of the Hermes image's.
     broker_image = os.environ.get("BITWARDEN_TEST_IMAGE", "")
     if broker_image:
+        # The broker image has no Chromium, so the handover driver stays on the Hermes image.
         hermes_image.run_driver(CDP_DRIVER, mounts=mounts, image=broker_image, python="python3")
     else:
-        hermes_image.maybe_run(CDP_DRIVER, mounts=mounts)
+        tag = hermes_image.image_gate()
+        if tag is not None:
+            hermes_image.run_driver(CDP_DRIVER, tag=tag, mounts=mounts)
+            hermes_image.run_driver(HANDOVER_DRIVER, tag=tag,
+                                    mounts=mounts + [(ROOT / "compose" / "bitwarden-signin", "/signin-src")],
+                                    docker_args=HANDOVER_DOCKER_ARGS)
     print("ok")
 
 
