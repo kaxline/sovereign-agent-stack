@@ -6,10 +6,31 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
-## Unreleased
+## v0.3.15 — 2026-11-13
 
 ### Upgrade steps
 
+- Run `make hermes-reload` once after moving the pin. It runs both bootstraps
+  with `HERMES_BOOTSTRAP_FORCE=1`, which fences cron on agent profiles, writes
+  the exact MCP tool allowlists and moves the todos token to `TODOS_KEY`, then
+  recreates `hermes`, which applies the new guardrail halt-stream overlay.
+  Without `make`: run `hermes-api-bootstrap` and `hermes-browser-bootstrap`
+  with `HERMES_BOOTSTRAP_FORCE=1`, then `docker compose up -d
+  --force-recreate hermes`. A `hermes` that is only restarted, not recreated,
+  runs without the overlay.
+- The bootstraps now write every stack-registered MCP entry's
+  `tools.include` exactly (Messages, Actual and the other add-ons), so a
+  hand-edited list on one of those entries is replaced on the next run. Drop
+  such edits.
+- Vikunja: the profile `.env` key for the todos token is now `TODOS_KEY`. The
+  next bootstrap run with `VIKUNJA_MCP_ENABLED=1` writes it; the old
+  `VIKUNJA_MCP_TOKEN` line stays and nothing reads it, so delete it. Anything
+  outside the stack that read `VIKUNJA_MCP_TOKEN` from a profile `.env` must
+  read `TODOS_KEY`. `make doctor` checks `TODOS_KEY`.
+- OpenCode is on by default for an `.env` that has no `OPENCODE_MCP_ENABLED`
+  line: `scripts/setup.sh` now writes 1 there, which needs
+  `OPENCODE_WORKSPACE_HOST` and `OPENCODE_SERVER_PASSWORD`. To keep it off,
+  set `OPENCODE_MCP_ENABLED=0` before running setup.
 - Cron jobs no longer get the browser unless they ask. A Hermes cron job
   that browses and has no `enabled_toolsets` of its own loses `browser_exec`,
   `browser_cdp`, `browser_dialog` and `browser_vault` after the bootstraps
