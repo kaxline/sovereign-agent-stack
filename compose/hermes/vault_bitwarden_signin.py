@@ -197,12 +197,12 @@ def _item_origins(handle: str) -> Optional[tuple[str, ...]]:
     return tuple(saved_origins(meta)) or None
 
 
-def _tab(task_id: str, origin: str) -> Any:
+def _tab(task_id: str, origin: str, require_origin: bool = False) -> Any:
     """``(target_id, port)`` of the tab the session is handed to, or the refusal to return."""
     from tools.browser_vault_tool import _bwbroker_tab
 
     # No probe: the agent's tab on the origin need not hold a login form.
-    return _bwbroker_tab(task_id, origin, "")
+    return _bwbroker_tab(task_id, origin, "", require_origin)
 
 
 def _in_cron_turn() -> bool:
@@ -236,7 +236,10 @@ def _sign_in(args: dict, tid: str) -> str:
     origins = _item_origins(handle)
     if origins is None:
         return _refusal("unknown_handle")
-    tab = _tab(tid, origins[0])
+    # require_origin: the signer types the password into the live site before anything checks
+    # where the session can go, so a start with no tab on the item's origin signs in for nothing
+    # and ends in handover_refused. Refuse here instead, with no session opened.
+    tab = _tab(tid, origins[0], require_origin=True)
     if isinstance(tab, dict):
         return json.dumps(tab)
     return _call("/signin/start", {"handle": handle, "target_id": tab[0], "port": tab[1]}, tid)

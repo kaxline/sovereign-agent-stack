@@ -244,12 +244,17 @@ def _bwbroker_refusal(code: str, handle: str, meta: Any, found: Optional[str], f
     return {"success": False, "error_type": code, "error": text}
 
 
-def _bwbroker_tab(task_id: str, page_origin: str, accept_kind: str) -> Any:
+def _bwbroker_tab(task_id: str, page_origin: str, accept_kind: str, require_origin: bool = False) -> Any:
     """``(target_id, port)`` of the task's tab on ``page_origin``, or the refusal dict to return.
 
     ``accept_kind`` keys _TAB_PROBES ("login", "otp"); any other value focuses the first tab on the
     origin. The broker and the signer both write through this tab, so it is picked the same way for a
-    fill and for a sign-in handover."""
+    fill and for a sign-in handover.
+
+    ``require_origin`` refuses when no tab is on ``page_origin``. A fill leaves it off: core has
+    already checked the page's origin, so a focus_page that misses means the right tab is attached
+    already. A sign_in turns it on, because nothing checked first and the cost of guessing wrong is a
+    whole real sign-in on the site that is then refused at the handover."""
     supervisor = None
     if _page_backend(task_id) is None:  # a plugin browser has no CDP endpoint the broker could reach
         try:
@@ -261,7 +266,11 @@ def _bwbroker_tab(task_id: str, page_origin: str, accept_kind: str) -> Any:
                 "error": ("Vault fill requires the supervised browser session (direct CDP WebSocket), "
                           "and this task has none. Open the page with browser_exec and retry.")}
     # On failure the previous page session stays; the broker re-reads the tab's URL before it writes.
-    supervisor.focus_page(page_origin, accept=_TAB_PROBES.get(accept_kind))
+    focused = supervisor.focus_page(page_origin, accept=_TAB_PROBES.get(accept_kind))
+    if require_origin and not (isinstance(focused, dict) and focused.get("ok")):
+        return {"success": False, "error_type": "no_page",
+                "error": (f"Open the login page first: this task has no browser tab on {page_origin}. "
+                          "Open it with browser_exec, then call sign_in again. Nothing was signed in.")}
     target_id, port = _bwbroker_target_id(supervisor), _bwbroker_cdp_port(supervisor, task_id)
     if not target_id or not port:
         return {"success": False, "error_type": "cdp_unavailable", "error": _BWBROKER_ERRORS["cdp_unavailable"]}

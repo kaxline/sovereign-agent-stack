@@ -326,6 +326,10 @@ class SignIn:
                               timeout=HANDOVER_TIMEOUT)
         if result.error == cdp.HANDOVER_REFUSED:
             # The session stays open: the agent can open the item's page and finish again.
+            # The origin is the one thing that says why, and the agent's own snapshots
+            # already carry it, so it goes in the log: without it a refusal is unreadable.
+            LOG.info("handover refused: the agent's tab is on %r, not an item origin %r",
+                     result.origin, sorted(item.origins))
             raise SignInError("handover_refused")
         self._abandon()
         if result.error is not None:

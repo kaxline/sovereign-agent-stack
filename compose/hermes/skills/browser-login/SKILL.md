@@ -138,6 +138,7 @@ gets `busy`. A session with no action for five minutes is dropped.
 | `origin_mismatch` | The page left the login's origins. `signin_cancel`, tell the user. |
 | `not_a_secret_field` | That ref is not a password or one-time-code field. Snapshot and pick another. |
 | `no_totp` | The login has no authenticator key, so there is no code to fill. Ask the user for the code, or cancel. |
+| `no_page` | `sign_in` refused because this task has no tab on the login's origin. Open that page with `browser_exec`, then `sign_in` again. Nothing was signed in. |
 | `handover_refused` | Your tab is not on the login's origin. Open that page, then `signin_finish` again. |
 | `page_error`, `timeout` | Snapshot to see where the page is; cancel if it is stuck. |
 | `signer_unavailable`, `sandbox_unavailable` | The sign-in browser is not running on this host. Tell the user to sign in themselves and to check `make doctor`. |

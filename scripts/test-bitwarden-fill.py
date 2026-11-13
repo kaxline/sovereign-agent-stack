@@ -189,11 +189,16 @@ time.sleep(0.5)
 PASSWORD = "Pw+" + "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(21))
 TOTP = "".join(secrets.choice(string.digits) for _ in range(6))
 H_OTP, H_PLAIN = "bwbroker:acme/item-otp", "bwbroker:acme/item-plain"
+H_ELSEWHERE = "bwbroker:acme/item-elsewhere"
+ELSEWHERE = "https://elsewhere.invalid"
 ITEMS = [
     {"handle": H_OTP, "label": "Acme", "username": "agent@example.com", "origins": [ORIGIN], "has_totp": True,
      "sign_in_only": True},
     {"handle": H_PLAIN, "label": "Acme plain", "username": "agent2@example.com", "origins": [ORIGIN],
      "has_totp": False, "sign_in_only": False},
+    # No tab is ever opened on this origin, so sign_in must refuse before the broker is called.
+    {"handle": H_ELSEWHERE, "label": "Elsewhere", "username": "agent3@example.com",
+     "origins": [ELSEWHERE], "has_totp": False, "sign_in_only": True},
 ]
 SNAPSHOT = {"origin": ORIGIN, "nodes": [{"ref": 1, "role": "textbox", "name": "Password", "text": ""},
                                         {"ref": 2, "role": "button", "name": "Sign in", "text": "Sign in"}]}
@@ -397,7 +402,7 @@ broker = ThreadingHTTPServer(("127.0.0.1", 8099), Broker)
 threading.Thread(target=broker.serve_forever, daemon=True).start()
 listing = tool(bvt.browser_vault_list)
 assert listing["bitwarden"] == {"locked": ["home"], "unlock": "make vault-unlock SLUG=<slug>"}, listing
-assert {i["handle"] for i in listing["items"]} == {"vault_abc", H_OTP, H_PLAIN}, listing
+assert {i["handle"] for i in listing["items"]} == {"vault_abc", H_OTP, H_PLAIN, H_ELSEWHERE}, listing
 set_backends(Local())
 assert "bitwarden" not in tool(bvt.browser_vault_list), "no hint without the bwbroker backend"
 set_backends(Local(), BW)
@@ -464,6 +469,18 @@ SITE_TARGETS = {t["id"] for t in cdp_json("/json/list") if t.get("url", "").star
 assert body == {"handle": H_OTP, "target_id": body["target_id"], "port": CDP_PORT}, body
 assert body["target_id"] in SITE_TARGETS, (body, SITE_TARGETS)
 SIGNIN_TAB = body["target_id"]
+
+# --- test_sign_in_refuses_without_a_tab_on_the_item_origin ------------------
+# The signer types the password into the live site before anything checks where the session
+# can go, so a sign_in started with no tab on the item's origin signs in for nothing and ends
+# in handover_refused at the end of the sequence. It must refuse first, with no call to the
+# broker. Found on the live stack: three starts, two complete real sign-ins, all refused.
+_posts_before = len(STATE["posts"])
+res = tool(bvt._handle_vault, {"action": "sign_in", "handle": H_ELSEWHERE}, task_id=TASK)
+assert res == {"success": False, "error_type": "no_page",
+               "error": (f"Open the login page first: this task has no browser tab on {ELSEWHERE}. "
+                         "Open it with browser_exec, then call sign_in again. Nothing was signed in.")}, res
+assert len(STATE["posts"]) == _posts_before, STATE["posts"][_posts_before:]
 for action, route, body, want in (
         ("signin_snapshot", "/signin/snapshot", {}, {"success": True, "origin": ORIGIN, "nodes": SNAPSHOT["nodes"]}),
         ("signin_click", "/signin/click", {"ref": 2}, {"success": True, "origin": ORIGIN, "nodes": SNAPSHOT["nodes"]}),
@@ -505,7 +522,7 @@ STATE["fill_mode"] = "real"
 # --- test_list_sign_in_only_flag --------------------------------------------
 listing = tool(bvt.browser_vault_list)
 flags = {i["handle"]: i.get("sign_in_only") for i in listing["items"]}
-assert flags == {"vault_abc": None, H_OTP: True, H_PLAIN: False}, flags
+assert flags == {"vault_abc": None, H_OTP: True, H_PLAIN: False, H_ELSEWHERE: True}, flags
 
 # --- test_signin_in_cron_turn_unknown_handle --------------------------------
 # The broker holds one session for the whole stack, bound to no task, so a cron turn must not

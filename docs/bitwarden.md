@@ -226,6 +226,11 @@ snapshot — role, name, visible text and a ref per actionable node, no input va
 continues a step at a time. `signin_fill` is the only action that writes a password or a code, and
 only into a password field or a one-time-code field; `signin_type` refuses a password field.
 
+Open the login page in the agent's own browser first. The session is handed to that tab at the
+end, so `sign_in` refuses with `no_page`, before it opens a session at all, when no tab of the
+task is on the item's first origin. Without that check the signer would type the password into the
+live site and the handover would refuse the finished session.
+
 As built:
 
 - One session at a time for the whole stack; a second `sign_in` gets `busy`. Chromium starts with a
