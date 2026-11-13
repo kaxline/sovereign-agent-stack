@@ -10,11 +10,15 @@ environment values.
 
 from __future__ import annotations
 
+import http.server
+import json
 import os
 import re
+import socketserver
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
@@ -241,6 +245,9 @@ def check_signin(cfg: dict) -> None:
     if test[:1] != ["CMD"] or "AF_UNIX" not in joined or SIGNIN_SOCKET not in joined \
             or "'GET', '/health'" not in joined:
         checks.fail(f"{SIGNIN} healthcheck must GET /health over {SIGNIN_SOCKET}")
+    if "'sandbox_unavailable'" not in joined:
+        checks.fail(f"{SIGNIN} healthcheck must count sandbox_unavailable as up: a signer that answers "
+                    "refuses sessions but still serves in-page fills, and compose up --wait fails otherwise")
 
     net = (cfg.get("networks") or {}).get("signin")
     if net is None:
@@ -493,11 +500,82 @@ def check_local(cfg: dict) -> None:
         checks.fail("sync-profiles.sh must map BITWARDEN_LOCAL_ENABLED to vault, default off")
 
 
+class _HealthHandler(http.server.BaseHTTPRequestHandler):
+    """Answers the healthcheck's GET /health with the body the server carries."""
+
+    protocol_version = "HTTP/1.0"
+
+    def do_GET(self) -> None:  # noqa: N802 -- BaseHTTPRequestHandler's name
+        body = self.server.body
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args) -> None:
+        pass
+
+
+class _HealthServer(socketserver.ThreadingUnixStreamServer):
+    body = b"{}"
+
+
+def run_healthcheck(script: str, socket_path: Path, status: str | None) -> int:
+    """The healthcheck command's exit code against a signer that answers with
+    ``status``, or (status None) against a socket nothing listens on."""
+    server = None
+    thread = None
+    # ThreadingUnixStreamServer leaves the socket file behind, and bind refuses an
+    # existing path, so each run starts from none.
+    socket_path.unlink(missing_ok=True)
+    if status is not None:
+        server = _HealthServer(str(socket_path), _HealthHandler)
+        server.body = json.dumps({"status": status}).encode()
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+    try:
+        proc = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=30)
+        return proc.returncode
+    finally:
+        if server is not None:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+
+def check_signin_healthcheck(cfg: dict) -> None:
+    """Run the compose healthcheck command itself: a signer that answers is up,
+    sandbox_unavailable included; anything else is unhealthy."""
+    signin = (cfg.get("services") or {}).get(SIGNIN) or {}
+    test = (signin.get("healthcheck") or {}).get("test") or []
+    if len(test) < 4 or test[0] != "CMD":
+        checks.fail(f"{SIGNIN} healthcheck is {test!r}, want a CMD with an inline script")
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "signin.sock"
+        script = test[-1].replace(SIGNIN_SOCKET, str(path))
+        if str(path) not in script:
+            checks.fail(f"{SIGNIN} healthcheck does not name {SIGNIN_SOCKET}")
+            return
+        for status in ("ready", "busy", "sandbox_unavailable"):
+            code = run_healthcheck(script, path, status)
+            if code != 0:
+                checks.fail(f"{SIGNIN} healthcheck exits {code} for status {status}, want 0")
+        for status in ("stopped", "down"):
+            code = run_healthcheck(script, path, status)
+            if code == 0:
+                checks.fail(f"{SIGNIN} healthcheck passes for status {status}")
+        if run_healthcheck(script, path, None) == 0:
+            checks.fail(f"{SIGNIN} healthcheck passes with nothing listening on the socket")
+
+
 def main() -> None:
     check_off()
     check_profile_flags()
     check_broker(config("core,bitwarden").get("services", {}))
     check_signin(config("core,bitwarden"))
+    check_signin_healthcheck(config("core,bitwarden"))
     check_signin(config("core,bitwarden,bitwarden-tools,vault"))
     check_signin_follows_uid()
     check_signin_dockerfile()

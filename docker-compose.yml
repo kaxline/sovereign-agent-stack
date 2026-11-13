@@ -2379,8 +2379,10 @@ services:
     networks: [signin]
     volumes:
       - bitwarden_signin:/run/bitwarden-signin
-    # GET /health over the socket. Healthy while ready or busy; unhealthy
-    # when the sandbox cannot start (sandbox_unavailable) or nothing answers.
+    # GET /health over the socket. A signer that answers is up, including
+    # sandbox_unavailable: it refuses sessions then, but in-page fills still
+    # work and `make doctor` and vault.sh status report the state. Unhealthy
+    # only when nothing answers or the status is not one of the three.
     healthcheck:
       test:
         - CMD
@@ -2393,7 +2395,7 @@ services:
           c.sock.settimeout(3);
           c.sock.connect('/run/bitwarden-signin/signin.sock');
           c.request('GET', '/health');
-          sys.exit(json.load(c.getresponse()).get('status') not in ('ready', 'busy'))
+          sys.exit(json.load(c.getresponse()).get('status') not in ('ready', 'busy', 'sandbox_unavailable'))
       interval: 30s
       timeout: 5s
       retries: 3

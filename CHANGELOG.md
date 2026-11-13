@@ -53,8 +53,8 @@ the stack under another app.
   drives it through seven `browser_vault` actions — `sign_in`,
   `signin_snapshot`, `signin_click`, `signin_type`, `signin_fill`,
   `signin_finish` and `signin_cancel` — which return page snapshots with no
-  input values, scrubbed of every value the session wrote. On finish the
-  broker copies the item's cookies and the page's `localStorage` and
+  input values, scrubbed of every password and code the session filled. On
+  finish the broker copies the item's cookies and the page's `localStorage` and
   `sessionStorage` into the agent's tab and the signer destroys its Chromium
   and profile. The agent's browser then holds the site's session and can read
   it; the password and the TOTP code do not enter `hermes` at all. Identity

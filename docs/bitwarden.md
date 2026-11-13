@@ -290,9 +290,10 @@ report that the site refused the handover and stop, with no retry.
   the namespace flag sets the sandbox uses, and `chroot` no longer needs `CAP_SYS_CHROOT`. The
   kernel still refuses both outside a user namespace the process itself created. On s390 and s390x
   the sandbox does not start and the signer reports `sandbox_unavailable`.
-- Before a snapshot leaves the signer it is scrubbed for every value written in this session, in the
-  five encodings the digest redaction uses (raw, base64, hex, percent-encoded and reversed) with and
-  without CR and LF; a match becomes `«redacted-vault-secret»`. Sign-in returns no redaction digests.
+- Before a snapshot leaves the signer it is scrubbed for every password and code `signin_fill` wrote
+  in this session, in the five encodings the digest redaction uses (raw, base64, hex, percent-encoded
+  and reversed) with and without CR and LF; a match becomes `«redacted-vault-secret»`. Text the agent
+  sent with `signin_type` is its own and is not scrubbed. Sign-in returns no redaction digests.
 - The image is built `FROM` the pinned Hermes image, so its Chromium build and user agent match the
   agent's browser. A Hermes bump rebuilds it: `make hermes-upgrade` runs that build while
   `BITWARDEN_ENABLED=1`.
@@ -398,8 +399,8 @@ entry. `vault.sh` never calls `addon.sh`.
 In a sign-in, the password and the one-time code are written in the signer's browser, in a
 container the agent has no route to. They do not enter `hermes`: not the agent's Chromium, not
 gateway memory, not a tool result, not a file. The agent's actions return snapshots without input
-values, scrubbed for every value the session has written, and the sign-in path returns no redaction
-digests.
+values, scrubbed for every password and code the session filled, and the sign-in path returns no
+redaction digests.
 
 What the agent does get is the site's session: the cookies and the `localStorage` and
 `sessionStorage` entries the handover writes into its tab. Agent code can read all of it, send it

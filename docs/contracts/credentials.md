@@ -66,8 +66,8 @@ so it can reach Chromium's loopback CDP port, and listens on `127.0.0.1:8099`. R
 The `/signin` routes drive a second container, `bitwarden-signin`, over a Unix socket in the
 `bitwarden_signin` volume (mode 0600, mounted by the broker and the signer only). One session runs
 at a time (`busy`), one action is bounded, and the session's Chromium and profile are destroyed on
-finish, on cancel, on the idle timeout and on a restart. The signer scrubs every value the session
-wrote out of the snapshots it returns. The handover writes the item's cookies with
+finish, on cancel, on the idle timeout and on a restart. The signer scrubs every password and code the
+session filled out of the snapshots it returns. The handover writes the item's cookies with
 `Network.setCookies` and the page's storage entries as call arguments, after checking the target
 tab's origin (`handover_refused` otherwise). Codes: `busy`, `no_session`, `stale_ref`,
 `origin_mismatch`, `not_a_secret_field`, `no_totp`, `handover_refused`, `page_error`, `timeout`,
