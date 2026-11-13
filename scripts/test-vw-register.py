@@ -43,6 +43,8 @@ sys.path.insert(0, str(ROOT / "scripts" / "lib"))
 # file is mounted. host_main checks the two still agree.
 LOCAL_NAME = "vaultwarden.vault.internal"
 BASE = f"https://{LOCAL_NAME}"
+# Password grants a minute per address, which check 4 spends on purpose.
+LOGIN_BURST = 60
 AGENT_EMAIL = "agent@vault.localhost"
 OWNER_EMAIL = "owner@example.com"
 STRANGER_EMAIL = "stranger@example.com"
@@ -62,7 +64,7 @@ def host_main() -> int:
         print(f"FAIL: vw_testkit serves {vw_testkit.BASE}, this test expects {BASE}")
         return 1
     src = Path(os.environ.get("BITWARDEN_TEST_SRC") or vw_testkit.BROKER_SRC).resolve()
-    kit = vw_testkit.Vaultwarden(prefix="bwtest-vw", src=src)
+    kit = vw_testkit.Vaultwarden(prefix="bwtest-vw", src=src, login_burst=LOGIN_BURST)
     drv = f"{kit.prefix}-drv"
     kit.also_remove(drv)
     tmp, local, secrets_dir = kit.tmp, kit.local, kit.secrets_dir
