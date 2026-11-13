@@ -50,7 +50,7 @@ _USERNAME = re.compile(r"user|e-?mail|login|account|phone", re.I)
 _PASSWORD = re.compile(r"pass(word|phrase)?\b|pwd", re.I)
 _OTP = re.compile(r"one[\s-]?time|verification|two[\s-]?factor|2fa|mfa|totp|otp|passcode"
                   r"|authenticat|security code|\bcode\b|\bdigit", re.I)
-_SUBMIT = re.compile(r"sign in|log in|next|continue|submit", re.I)
+_SUBMIT = re.compile(r"sign[\s_-]?(in|on)\b|log[\s_-]?in\b|next|continue|submit|verify", re.I)
 
 STATUS = {
     "busy": 409, "no_session": 409, "stale_ref": 409, "origin_mismatch": 403,
@@ -94,14 +94,31 @@ def _find(nodes, kind: str) -> int | None:
     return None
 
 
-def _submit(nodes) -> int | None:
-    """The form's submit control: a button named like one, else the first button."""
+def _last_field(nodes) -> int | None:
+    """The ref of the last field the sequence recognises, or None."""
+    refs = [n["ref"] for n in nodes or () if _kind(n) is not None]
+    return max(refs) if refs else None
+
+
+def _submit(nodes, after: int | None = None) -> int | None:
+    """The form's submit control: a button named like one, else the first button.
+
+    Refs run in document order, so a button after the sign-in fields is part of
+    the form while an earlier one belongs to the page's navigation. Buttons
+    after ``after`` are therefore searched first, by name and then by position,
+    before the page's buttons as a whole.
+    """
     buttons = [n for n in nodes or () if isinstance(n, dict) and isinstance(n.get("ref"), int)
                and str(n.get("role") or "").lower() in BUTTON_ROLES]
-    for node in buttons:
-        if _SUBMIT.search(f"{node.get('name') or ''} {node.get('text') or ''}"):
-            return node["ref"]
-    return buttons[0]["ref"] if buttons else None
+    below = buttons if after is None else [n for n in buttons if n["ref"] > after]
+    for group in (below, buttons):
+        for node in group:
+            if _SUBMIT.search(f"{node.get('name') or ''} {node.get('text') or ''}"):
+                return node["ref"]
+    for group in (below, buttons):
+        if group:
+            return group[0]["ref"]
+    return None
 
 
 class SignIn:
@@ -239,7 +256,7 @@ class SignIn:
                 break
             if not acted:
                 break
-            ref = _submit(nodes)
+            ref = _submit(nodes, _last_field(nodes))
             if ref is None:
                 break
             snapshot = self._action("/session/click", {"ref": ref, "allowed": self._allowed(item)})

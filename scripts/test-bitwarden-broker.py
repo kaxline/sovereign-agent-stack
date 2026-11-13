@@ -39,7 +39,7 @@ sys.path.insert(0, str(ROOT / "scripts" / "lib"))
 from testkit import expect, fail  # noqa: E402
 
 import hermes_image  # noqa: E402
-from broker import accounts, bwcli, cdp, origins, vault  # noqa: E402
+from broker import accounts, bwcli, cdp, origins, signin, vault  # noqa: E402
 
 FAKE_BW = ROOT / "scripts" / "fixtures" / "fake-bw.py"
 
@@ -1689,6 +1689,56 @@ def test_fill_uses_item_origins_only() -> None:
         b.expect_clean()
 
 
+def test_submit_prefers_the_form_button_over_the_navigation() -> None:
+    """Real login pages: a one-word button name, and a navigation button above the form.
+
+    practice.expandtesting.com/login puts a "Demos" menu button before the
+    fields and names its submit "Login". The sequence used to match neither
+    name and fall back to the first button on the page, so it clicked the menu.
+    """
+    nav_then_form = [ax_node(1, "button", "Demos"), ax_node(2, "textbox", "Username"),
+                     ax_node(3, "textbox", "Password"), ax_node(4, "button", "Login")]
+    expect(signin._last_field(nav_then_form) == 3, "the last field the sequence recognises")
+    expect(signin._submit(nav_then_form, signin._last_field(nav_then_form)) == 4,
+           "the submit button after the fields, not the navigation above them")
+    for name in ("Login", "Log in", "Signin", "Sign in", "Sign On", "Submit", "Next",
+                 "Continue", "Verify"):
+        nodes = [ax_node(1, "textbox", "Password"), ax_node(2, "button", name)]
+        expect(signin._submit(nodes, 1) == 2, f"a button named {name!r} is a submit")
+    for name in ("Demos", "Sign up", "Register", "Help"):
+        expect(not signin._SUBMIT.search(name), f"a button named {name!r} is not a submit")
+    # No name matches: the first button after the fields, not the first on the page.
+    unnamed = [ax_node(1, "button", "Demos"), ax_node(2, "textbox", "Password"),
+               ax_node(3, "button", ""), ax_node(4, "button", "")]
+    expect(signin._submit(unnamed, 2) == 3, "the first button below the fields")
+    # Nothing below them: the page's buttons as a whole, named first.
+    above = [ax_node(1, "button", "Demos"), ax_node(2, "button", "Log in"),
+             ax_node(3, "textbox", "Password")]
+    expect(signin._submit(above, 3) == 2, "a named button above the fields when none is below")
+    expect(signin._submit([ax_node(1, "textbox", "Password")], 1) is None, "no button, no ref")
+
+
+def test_auto_sequence_clicks_the_form_button_not_the_navigation() -> None:
+    """End to end through the broker: the click lands on the form's own button."""
+    login = ax_page(SIGNIN_ORIGIN, ax_node(1, "button", "Demos"),
+                    ax_node(2, "textbox", "Username"), ax_node(3, "textbox", "Password"),
+                    ax_node(4, "button", "Login"))
+    # Off the item's origins, so the sequence returns the snapshot and needs no handover.
+    after = ax_page(IDP_ORIGIN, ax_node(1, "StaticText", "", "Signed in"))
+    with broker_run(vault=signin_vault()) as b:
+        b.add_account("personal")
+        b.start(unlocked=["personal"])
+        with fake_signer(b, pages=[login, after]) as fake:
+            got = b.call("POST", "/signin/start", signin_body(handle=handle("personal", "A")))
+            expect(got == (200, after), f"/signin/start: {got}")
+            clicks = [body["ref"] for body in fake.bodies("/session/click")]
+            expect(clicks == [4], f"the sequence clicked {clicks}, want the Login button (4)")
+            expect(fake.bodies("/session/type")[0]["ref"] == 2, "the username field")
+            expect(fake.bodies("/session/fill")[0]["ref"] == 3, "the password field")
+        b.stop()
+        b.expect_clean()
+
+
 def test_auto_sequence_returns_snapshot_on_unknown_page() -> None:
     with broker_run(vault=signin_vault()) as b:
         b.add_account("personal")
@@ -2480,6 +2530,8 @@ def main() -> None:
     test_sequence_opens_the_item_uri()
     test_handover_keeps_the_signers_cookie_rule()
     test_fill_uses_item_origins_only()
+    test_submit_prefers_the_form_button_over_the_navigation()
+    test_auto_sequence_clicks_the_form_button_not_the_navigation()
     test_auto_sequence_returns_snapshot_on_unknown_page()
     test_auto_sequence_returns_snapshot_when_the_password_is_on_an_idp_origin()
     test_redirect_off_origin_then_cancel()
