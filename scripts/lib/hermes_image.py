@@ -171,7 +171,7 @@ def image_gate(argv: list[str] | None = None) -> str | None:
     return None
 
 
-def maybe_run(driver: str, stdin: str = "", argv: list[str] | None = None, mounts=()) -> None:
+def maybe_run(driver: str, stdin: str = "", argv: list[str] | None = None, mounts=(), docker_args=()) -> None:
     tag = image_gate(argv)
     if tag is not None:
-        run_driver(driver, stdin, tag, mounts)
+        run_driver(driver, stdin, tag, mounts, docker_args=docker_args)

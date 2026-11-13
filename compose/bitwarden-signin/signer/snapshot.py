@@ -15,16 +15,18 @@ leak:
   gives a filled input a generic child holding a StaticText and InlineTextBox
   with the typed value (bullets for a password input).
 
-Text comes from StaticText, text and InlineTextBox nodes outside fields (the
-node's name goes in ``text``, ``name`` stays empty). Refs are numbered from 1 in
-list order and map to backendDOMNodeId.
+Text comes from StaticText and text nodes outside fields (the node's name goes
+in ``text``, ``name`` stays empty). InlineTextBox nodes are skipped: each
+repeats part of its StaticText parent and has no DOM node to act on. Refs are
+numbered from 1 in list order and map to backendDOMNodeId.
 """
 
 from __future__ import annotations
 
 _FIELD_ROLES = {"textbox", "searchbox", "combobox", "spinbutton", "textField", "TextField"}
 _LABEL_SOURCE_TYPES = {"attribute", "relatedElement", "placeholder"}
-_TEXT_ROLES = {"StaticText", "text", "InlineTextBox"}
+_TEXT_ROLES = {"StaticText", "text"}
+_SKIP_ROLES = {"InlineTextBox"}
 
 
 def _val(obj) -> str:
@@ -71,6 +73,8 @@ def reduce(ax_nodes: list[dict]) -> tuple[list[dict], dict[int, int]]:
         if not isinstance(node, dict) or node.get("ignored") or str(node.get("nodeId")) in skip:
             continue
         role = _val(node.get("role"))
+        if role in _SKIP_ROLES:
+            continue
         name = _val(node.get("name"))
         if role in _FIELD_ROLES and not _label_named(node):
             name = ""
