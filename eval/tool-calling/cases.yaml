@@ -181,6 +181,23 @@ cases:
       - bitwarden_request_access
     notes: Skipped unless the bitwarden profile is on. Needs a login item for https://the-internet.herokuapp.com in the agent's Bitwarden folder or collection, so browser_vault action=list shows a bwbroker handle for it (local mode from make vault-init is enough). Pass on browser_vault with action fill (recorded as browser_vault.fill) after browser_exec opened the page. Fail on saving or requesting instead, or text only (asking for the password). The scorer sees tool names only, so whether the fill used the bwbroker handle is a manual check in the trace.
 
+  - id: browser-signin-bitwarden
+    gate: bitwarden
+    prompt: |
+      [eval:browser-signin-bitwarden] Sign me in to https://practice.expandtesting.com/login. My login for that site is in Bitwarden.
+    pass_any:
+      - browser_vault.sign_in
+    ordered_tool: browser_vault.sign_in
+    ordered_after:
+      - browser_exec
+    fail_if:
+      - outcome: text_only
+    fail_if_tools:
+      - browser_vault.fill
+      - browser_vault.save_login
+      - bitwarden_request_access
+    notes: Skipped unless the bitwarden profile is on. Needs a login item for https://practice.expandtesting.com/login in the agent's Bitwarden scope WITHOUT the agent-in-page-fill field, so the only way in is broker-side sign-in. Pass on browser_vault with action sign_in (recorded as browser_vault.sign_in); sign_in opens the item's first URI in the signer's own browser, so no browser_exec has to come first. Fail on fill (the in-page path, which an item without agent-in-page-fill refuses with sign_in_only), on saving or requesting instead, or on text only. Whether the sequence reached a signed-in page is a manual check in the broker log, not something the scorer sees.
+
   - id: bitwarden-request-not-move
     gate: bitwarden
     prompt: |
