@@ -178,7 +178,8 @@ On `signin_finish` (or the end of the automatic sequence):
    item origin.
 3. The broker calls `focus_page` on the agent's tab for that origin (through the overlay, as fills
    do), checks the tab's origin over CDP with today's `/fill` rules, and refuses with
-   `handover_refused` if it isn't an item origin.
+   `handover_refused` if it isn't an item origin. The signer session stays open then, so the agent
+   can open the page and call `signin_finish` again; the idle timeout still applies.
 4. It writes the cookies with `Network.setCookies` (name, value, domain, path, expires, httpOnly,
    secure, sameSite) and the storage entries with `Runtime.callFunctionOn`, the entries passed as
    arguments, never as source. Then it reloads the tab.
@@ -235,6 +236,7 @@ Fixed codes, never quoting page text, the value or a script:
 | `timeout` | an action took more than 30 seconds |
 | `signer_unavailable` | the signer doesn't answer on the socket |
 | `sandbox_unavailable` | Chromium's sandbox can't start |
+| `sign_in_only` | `/fill` on an item without `agent-in-page-fill` |
 | `account_locked`, `unknown_handle`, `unavailable` | as `/fill` today |
 
 On `signer_unavailable` or `sandbox_unavailable`, an item marked for in-page fill can still be
