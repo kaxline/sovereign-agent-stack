@@ -34,6 +34,8 @@ class ItemMeta:
     has_totp: bool
     account: str
     item_id: str
+    in_page_fill: bool = False
+    idp_origins: tuple[str, ...] = ()
 
 
 def parse_handle(handle: str) -> tuple[str, str] | None:
@@ -128,6 +130,7 @@ class Vault:
             out.append(ItemMeta(
                 handle=handle, label=item["name"] or item_origins[0], username=item["username"] or None,
                 origins=item_origins, has_totp=item["has_totp"], account=slug, item_id=item["id"],
+                in_page_fill=item["in_page_fill"], idp_origins=tuple(item["idp_origins"]),
             ))
         return out
 

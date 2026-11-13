@@ -32,6 +32,7 @@ import time
 from pathlib import Path
 
 from .accounts import ID_RE, Account
+from .origins import normalize_origin
 
 ERROR_CLASSES = ("auth", "locked", "network", "rate_limited", "unknown")
 TIMEOUT_SECONDS = 120
@@ -144,8 +145,30 @@ def run_bw(bw_path: str, data_dir: Path | str, args: list[str], secret_env: dict
     return proc.returncode, proc.stdout or "", proc.stderr or ""
 
 
+def _signin_fields(fields) -> tuple[bool, list[str]]:
+    """Read the two sign-in custom fields; every other field name and value is ignored.
+
+    ``agent-in-page-fill`` counts only as a boolean field (type 2) with the value "true".
+    ``agent-signin-idp`` is a comma-separated origin list; non-http(s) entries are dropped.
+    """
+    in_page_fill = False
+    idp_origins: list[str] = []
+    for field in fields if isinstance(fields, list) else []:
+        if not isinstance(field, dict):
+            continue
+        name, value = field.get("name"), field.get("value")
+        if name == "agent-in-page-fill":
+            in_page_fill = field.get("type") == 2 and value == "true"
+        elif name == "agent-signin-idp" and isinstance(value, str):
+            for part in value.split(","):
+                origin = normalize_origin(part.strip())
+                if origin and origin.startswith(("http://", "https://")) and origin not in idp_origins:
+                    idp_origins.append(origin)
+    return in_page_fill, idp_origins
+
+
 def _sanitize(item: dict) -> dict | None:
-    """Keep the metadata the broker lists; drop the password, TOTP seed, notes and fields."""
+    """Keep the metadata the broker lists; drop the password, TOTP seed, notes and custom fields (bar the two sign-in flags)."""
     if not isinstance(item, dict) or not isinstance(item.get("id"), str):
         return None
     login = item.get("login") if isinstance(item.get("login"), dict) else {}
@@ -154,6 +177,7 @@ def _sanitize(item: dict) -> dict | None:
         if isinstance(uri, dict) and isinstance(uri.get("uri"), str):
             uris.append({"uri": uri["uri"], "match": uri.get("match")})
     collections = item.get("collectionIds")
+    in_page_fill, idp_origins = _signin_fields(item.get("fields"))
     return {
         "id": item["id"],
         "type": item.get("type"),
@@ -163,6 +187,8 @@ def _sanitize(item: dict) -> dict | None:
         "username": login.get("username") if isinstance(login.get("username"), str) else None,
         "uris": uris,
         "has_totp": bool(login.get("totp")),
+        "in_page_fill": in_page_fill,
+        "idp_origins": idp_origins,
     }
 
 

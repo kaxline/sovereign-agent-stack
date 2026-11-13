@@ -65,7 +65,8 @@ def item_id(name: str) -> str:
     return f"{name.lower() * 8}-0000-4000-8000-000000000000"
 
 
-def login_item(name, folder=None, collections=(), uris=(), totp=None, kind=1):
+def login_item(name, folder=None, collections=(), uris=(), totp=None, kind=1, in_page=True, fields=None):
+    """in_page sets agent-in-page-fill (true by default, so /fill tests exercise the in-page path)."""
     item = {
         "object": "item",
         "id": item_id(name),
@@ -84,6 +85,8 @@ def login_item(name, folder=None, collections=(), uris=(), totp=None, kind=1):
             "totp": totp,
             "uris": None if uris is None else [{"match": m, "uri": u} for u, m in uris],
         }
+        item["fields"] = ([{"name": "agent-in-page-fill", "value": "true", "type": 2}] if in_page else []) + list(
+            fields or [])
     return item
 
 
@@ -1267,7 +1270,8 @@ def test_api_returns_no_values() -> None:
         expect(status == 200 and sorted(i["handle"] for i in items) == [a, handle("personal", "E")], f"/items {items}")
         expect(next(i for i in items if i["handle"] == a) == {
             "handle": a, "label": "Item A", "username": "user-a@example.com",
-            "origins": ["https://login.example.com"], "has_totp": True}, "item A metadata")
+            "origins": ["https://login.example.com"], "has_totp": True, "sign_in_only": False},
+            "item A metadata")
         status, health = b.call("GET", "/health")
         expect(status == 200 and health["status"] == "ok", f"/health {health}")
         expect(b.call("POST", "/sync", {}) == (200, {"synced": ["personal"]}), "/sync")
@@ -1331,6 +1335,61 @@ def test_api_returns_no_values() -> None:
         expect("GET /nope" not in stderr and "debug" not in stderr, "the access log repeats an unknown path")
         b.stop()
         b.expect_clean(extra_secrets=[STACK_VALUE])
+
+
+def test_sanitize_keeps_only_signin_fields() -> None:
+    item = login_item("A", uris=[("https://login.example.com", None)], fields=[
+        {"name": "agent-signin-idp", "value": "https://sso.example.com, ftp://x, junk", "type": 0},
+        {"name": "other", "value": "CANARY", "type": 1},
+    ])
+    out = bwcli._sanitize(item)
+    expect(out["in_page_fill"] is True, f"in_page_fill {out['in_page_fill']!r}")
+    expect(out["idp_origins"] == ["https://sso.example.com"], f"idp_origins {out['idp_origins']!r}")
+    expect("CANARY" not in json.dumps(out), "a custom field value survived _sanitize")
+    for value, type_ in (("false", 2), ("true", 0), ("TRUE", 2), (True, 2)):
+        item["fields"][0] = {"name": "agent-in-page-fill", "value": value, "type": type_}
+        expect(bwcli._sanitize(item)["in_page_fill"] is False, f"in_page_fill for {value!r} type {type_}")
+    item["fields"] = "junk"
+    out = bwcli._sanitize(item)
+    expect(out["in_page_fill"] is False and out["idp_origins"] == [], "malformed fields")
+    del item["fields"]
+    expect(bwcli._sanitize(item)["in_page_fill"] is False, "no fields")
+
+
+def sign_in_vault() -> dict:
+    data = vault_data()
+    data["items"] = [
+        login_item("A", FOLDER_AGENT, uris=[("https://login.example.com", None)]),
+        login_item("E", FOLDER_AGENT, uris=[("https://good.example.com", None)], in_page=False, fields=[
+            {"name": "agent-signin-idp", "value": "https://sso.example.com", "type": 0}]),
+    ]
+    return data
+
+
+def test_items_sign_in_only_flag() -> None:
+    with broker_run(vault=sign_in_vault()) as b:
+        b.add_account("personal")
+        b.start(unlocked=["personal"])
+        status, items = b.call("GET", "/items")
+        flags = {i["handle"]: i["sign_in_only"] for i in items}
+        expect(status == 200 and flags == {handle("personal", "A"): False, handle("personal", "E"): True},
+               f"/items sign_in_only {flags}")
+        b.stop()
+        b.expect_clean()
+
+
+def test_fill_refuses_sign_in_only() -> None:
+    with broker_run(vault=sign_in_vault()) as b:
+        b.add_account("personal")
+        b.start(unlocked=["personal"])
+        e = handle("personal", "E")
+        before = len(b.run.log_lines())
+        for field in ("password", "totp"):
+            got = b.call("POST", "/fill", fill_body(e, field))
+            expect(got == (409, {"error": "sign_in_only"}), f"/fill {field} on a sign-in-only item: {got}")
+        expect(len(b.run.log_lines()) == before, "a refused /fill ran bw")
+        b.stop()
+        b.expect_clean()
 
 
 def test_socket_serves_no_secrets() -> None:
@@ -1773,7 +1832,10 @@ def main() -> None:
     test_fill_cdp_down()
     test_fill_bounded_by_timeout()
     test_totp_page_write()
+    test_sanitize_keeps_only_signin_fields()
     test_api_returns_no_values()
+    test_items_sign_in_only_flag()
+    test_fill_refuses_sign_in_only()
     test_socket_serves_no_secrets()
     test_unlock_over_socket()
     test_manual_login_at_start()

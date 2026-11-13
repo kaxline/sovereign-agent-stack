@@ -220,7 +220,7 @@ class Broker:
 
     def get_items(self, _body) -> list:
         return [{"handle": m.handle, "label": m.label, "username": m.username, "origins": list(m.origins),
-                 "has_totp": m.has_totp} for m in self.vault.items()]
+                 "has_totp": m.has_totp, "sign_in_only": not m.in_page_fill} for m in self.vault.items()]
 
     def get_health(self, _body) -> dict:
         return {"status": "ok", "accounts": [{"slug": s, "state": self.bws[s].state} for s in sorted(self.bws)],
@@ -242,6 +242,8 @@ class Broker:
         meta = self.vault.get(handle)
         if meta is None:
             raise HttpError(404, "unknown_handle")
+        if not meta.in_page_fill:
+            raise HttpError(409, "sign_in_only")
         if field == "totp" and not meta.has_totp:
             raise HttpError(400, "no_totp")
         bw = self.bws[meta.account]
