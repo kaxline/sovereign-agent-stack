@@ -12,8 +12,10 @@ and a copy of the bitwarden_signin tmpfs volume. Then:
   mounted read-only), reaches the socket, which is mode 0600 and owned by
   HERMES_UID; another uid cannot;
 - the same container under Docker's default seccomp profile reports
-  sandbox_unavailable and its healthcheck fails, so the profile is what lets
-  the sandbox start and the signer does not fall back to --no-sandbox.
+  sandbox_unavailable, so the profile is what lets the sandbox start and the
+  signer does not fall back to --no-sandbox. Its healthcheck still passes: a
+  signer that answers is up, it refuses sessions in that state, and
+  make doctor and vault.sh status report it.
 
 Uses throwaway names (container, volume, image tag) and removes them. Never
 touches the running stack. Exit 77 without Docker or the Hermes image.
@@ -166,14 +168,17 @@ def main() -> None:
         expect(out.returncode != 0, "another uid cannot reach the socket")
         docker("rm", "-f", signer)
 
-        # Docker's default profile: the sandbox cannot start, and nothing falls back.
+        # Docker's default profile: the sandbox cannot start, nothing falls back, and the
+        # signer stays healthy because it still answers.
         no_profile = run_args(service, profile=False)
         expect(not any("seccomp" in f for f in no_profile), f"default-profile flags {no_profile}")
         docker("run", "-d", "--name", default_sc, *no_profile, *mount, IMAGE)
         wait_for_socket(default_sc)
         got = health(default_sc)
         expect(got == {"status": "sandbox_unavailable"}, f"/health under Docker's default profile: {got}")
-        expect(healthcheck_exit(default_sc, test) != 0, "the healthcheck fails when the sandbox is unavailable")
+        expect(healthcheck_exit(default_sc, test) == 0,
+               "the healthcheck passes with the sandbox unavailable: the signer answers, and refusing "
+               "sign-ins is a state doctor and status --json report, not an unhealthy container")
     finally:
         for name in (signer, default_sc, client):
             docker("rm", "-f", name, check=False)
