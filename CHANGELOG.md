@@ -24,22 +24,6 @@ the stack under another app.
   be created first. Its image is built `FROM` the pinned Hermes agent image,
   so the first `make up` after this upgrade builds it, and `make hermes-upgrade`
   rebuilds it on a Hermes bump while `BITWARDEN_ENABLED=1`.
-- Cron jobs no longer get the browser unless they ask. A Hermes cron job
-  that browses and has no `enabled_toolsets` of its own loses `browser_exec`,
-  `browser_cdp`, `browser_dialog` and `browser_vault` after the bootstraps
-  run. Give such a job its own `enabled_toolsets` that includes `browser`,
-  plus the other toolsets and MCP servers it needs.
-- Cron jobs on agent profiles (`make agent-create`) are now fenced too. A job
-  there with no `enabled_toolsets` of its own that reads mail or messages, or
-  uses the browser or a fenced add-on, loses those tools after
-  hermes-api-bootstrap runs. Give it its own `enabled_toolsets`.
-- CalDAV accounts moved from `compose/caldav-mcp/accounts/<slug>.env` to the
-  `caldav` add-on's store, and nothing reads the old files. Connect each one
-  again with `scripts/addon.sh connect caldav --instance <slug>`, JSON on
-  stdin with `url`, `username` and `password` (docs/calendar.md), then delete
-  the old file; `make doctor` warns while one is left. There is no migration
-  code: the add-on is experimental. Boundary's `calendar-<slug>` entries are
-  not affected.
 
 ### Changes
 
@@ -78,6 +62,51 @@ the stack under another app.
 - `addons/bitwarden/addon.json` lists `bitwarden-signin` among the add-on's
   services, so `addon.sh enable bitwarden` builds and starts it and `disable`
   stops it.
+
+## v0.3.15 — 2026-11-13
+
+### Upgrade steps
+
+- Run `make hermes-reload` once after moving the pin. It runs both bootstraps
+  with `HERMES_BOOTSTRAP_FORCE=1`, which fences cron on agent profiles, writes
+  the exact MCP tool allowlists and moves the todos token to `TODOS_KEY`, then
+  recreates `hermes`, which applies the new guardrail halt-stream overlay.
+  Without `make`: run `hermes-api-bootstrap` and `hermes-browser-bootstrap`
+  with `HERMES_BOOTSTRAP_FORCE=1`, then `docker compose up -d
+  --force-recreate hermes`. A `hermes` that is only restarted, not recreated,
+  runs without the overlay.
+- The bootstraps now write every stack-registered MCP entry's
+  `tools.include` exactly (Messages, Actual and the other add-ons), so a
+  hand-edited list on one of those entries is replaced on the next run. Drop
+  such edits.
+- Vikunja: the profile `.env` key for the todos token is now `TODOS_KEY`. The
+  next bootstrap run with `VIKUNJA_MCP_ENABLED=1` writes it; the old
+  `VIKUNJA_MCP_TOKEN` line stays and nothing reads it, so delete it. Anything
+  outside the stack that read `VIKUNJA_MCP_TOKEN` from a profile `.env` must
+  read `TODOS_KEY`. `make doctor` checks `TODOS_KEY`.
+- OpenCode is on by default for an `.env` that has no `OPENCODE_MCP_ENABLED`
+  line: `scripts/setup.sh` now writes 1 there, which needs
+  `OPENCODE_WORKSPACE_HOST` and `OPENCODE_SERVER_PASSWORD`. To keep it off,
+  set `OPENCODE_MCP_ENABLED=0` before running setup.
+- Cron jobs no longer get the browser unless they ask. A Hermes cron job
+  that browses and has no `enabled_toolsets` of its own loses `browser_exec`,
+  `browser_cdp`, `browser_dialog` and `browser_vault` after the bootstraps
+  run. Give such a job its own `enabled_toolsets` that includes `browser`,
+  plus the other toolsets and MCP servers it needs.
+- Cron jobs on agent profiles (`make agent-create`) are now fenced too. A job
+  there with no `enabled_toolsets` of its own that reads mail or messages, or
+  uses the browser or a fenced add-on, loses those tools after
+  hermes-api-bootstrap runs. Give it its own `enabled_toolsets`.
+- CalDAV accounts moved from `compose/caldav-mcp/accounts/<slug>.env` to the
+  `caldav` add-on's store, and nothing reads the old files. Connect each one
+  again with `scripts/addon.sh connect caldav --instance <slug>`, JSON on
+  stdin with `url`, `username` and `password` (docs/calendar.md), then delete
+  the old file; `make doctor` warns while one is left. There is no migration
+  code: the add-on is experimental. Boundary's `calendar-<slug>` entries are
+  not affected.
+
+### Changes
+
 - Fresh installs on Hermes v0.23.1 get their `api-server` and `browser`
   profiles again, and the first `make up` brings hermes up healthy. The
   bootstraps used to exit without a `config.yaml`, so hermes started first and

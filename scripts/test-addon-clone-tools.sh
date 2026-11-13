@@ -60,6 +60,8 @@ printf '%s\n' "$flags" > "$work/flags.env"
 
 cat > "$work/run.sh" <<'EOF'
 set -eu
+# Files made here are root's; on Linux the runner couldn't delete them.
+trap 'chown -R "$HOST_IDS" /w' EXIT
 log() { :; }
 hermes_config_set() { :; }
 pin_mcp_tools() { :; }
@@ -129,7 +131,7 @@ have browser "budget-home=" | grep -q 'budget-home=get-' && echo "browser-budget
 have browser "budget-home=" | grep -q create-transaction || echo "browser-budget-ro"
 EOF
 
-out="$(docker run --rm --entrypoint /bin/sh \
+out="$(docker run --rm --entrypoint /bin/sh -e HOST_IDS="$(id -u):$(id -g)" \
   -v "$ROOT/addons:/bootstrap/addons:ro" \
   -v "$ROOT/scripts/lib/addon_manifest.py:/bootstrap/addon_manifest.py:ro" \
   -v "$work:/w" -v "$work/home:/h" "$IMAGE" ${TRACE:+-x} /w/run.sh 2>&1)" || fail "registration run failed: $out"

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2015  # "A && B || fail" is the check: fail runs when either test is false
 # scripts/db.sh service-remove against a stub docker: it needs --yes and a
 # valid slug, passes the schema and role to psql, removes the service file
 # only after the drop succeeds, and keeps it when psql fails.

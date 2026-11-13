@@ -66,6 +66,11 @@ def compose_checks(c: Checks) -> None:
     if not shutil.which("docker"):
         print("skip compose checks (no docker)")
         return
+    if not (ROOT / ".env").exists():
+        # compose interpolates the whole file, which needs .env's required keys.
+        # ci.yml writes a stub .env and runs these; hermes-image.yml has none.
+        print("skip compose checks (no .env)")
+        return
     import compose_config
 
     services = compose_config.render("core,client-gateway", {"CLIENT_API_TOKEN": kit.TOKEN})["services"]
