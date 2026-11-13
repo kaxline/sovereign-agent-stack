@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Checks for the Bitwarden sign-in signer's pure parts (compose/bitwarden-signin/signer).
 
-Host part: scrub.py, snapshot.py and cookies.py run without a browser. The
-scrub test compares the signer's encodings with the broker's
-digest_redaction.FORMS so the two copies stay equal. Values are synthetic.
+Host part: scrub.py, snapshot.py and cookies.py run without a browser. Two
+tests compare the signer's copies with the broker's originals so they stay
+equal: the scrub encodings against digest_redaction.FORMS, and
+cookies.normalize_origin against origins.normalize_origin. Values are synthetic.
 
 Image part (IMAGE_DRIVER): the signer's socket server, sessions and the Hermes
 image's Chromium with its sandbox on, against a test site the driver serves on
@@ -28,7 +29,7 @@ BROKER_SRC = ROOT / "compose" / "bitwarden-broker"
 sys.path.insert(0, str(SIGNER_SRC))
 sys.path.insert(0, str(BROKER_SRC))
 
-from broker import digest_redaction  # noqa: E402
+from broker import digest_redaction, origins  # noqa: E402
 from signer import cookies, scrub, snapshot  # noqa: E402
 
 MARKER = "«redacted-vault-secret»"
@@ -42,6 +43,20 @@ def test_scrub_matches_digest_forms() -> None:
     want = {digest_redaction._encode(v, f) for v in (SECRET, stripped) for f in digest_redaction.FORMS}
     expect(s.patterns() == want, "scrubber encodings equal the broker's digest forms")
     expect(scrub.MARKER == MARKER, "marker")
+
+
+# The cases scripts/test-bitwarden-broker.py runs over broker/origins.py:normalize_origin. The
+# signer carries its own copy of that function because it cannot import the broker, so the two are
+# compared here the way the scrub encodings are.
+ORIGIN_CASES = ("https://Example.COM:443/path?q=1", "http://example.com:80", "https://example.com:8443/",
+                "  https://example.com  ", "androidapp://com.example.app", "example.com", "",
+                "https://", "https://example.com:99999", "https://[::1", None)
+
+
+def test_normalize_origin_matches_broker() -> None:
+    for url in ORIGIN_CASES:
+        got, want = cookies.normalize_origin(url), origins.normalize_origin(url)
+        expect(got == want, f"signer normalize_origin({url!r}) = {got!r}, broker's = {want!r}")
 
 
 def test_scrub_replaces_each_form() -> None:
@@ -220,6 +235,8 @@ PAGES = {
 <label for=p>Password</label><input id=p type=password autocomplete=current-password>
 <button id=show onclick="var p=document.getElementById('p');p.type=p.type==='password'?'text':'password'">Show password</button>
 <label for=n>Notes</label><input id=n type=text>
+<label for=d>Locked password</label><input id=d type=password disabled>
+<label for=r>Fixed password</label><input id=r type=password readonly>
 <div id=err></div>
 <script>
 function enc(s) {
@@ -395,7 +412,8 @@ def test_open_snapshot_has_no_values():
     snap = open_page("/login")
     expect(set(snap) == {"origin", "nodes"} and snap["origin"] == A, f"keys {snap.keys()}")
     names = {n["name"] for n in snap["nodes"] if n["role"] == "textbox"}
-    expect(names == {"Username", "Password", "Notes"}, f"labels {names}")
+    expect(names == {"Username", "Password", "Notes", "Locked password", "Fixed password"},
+           f"labels {names}")
     user = ref_of(snap, "textbox", "Username")
     status, snap = call(SOCK, "/session/type", {"ref": user, "text": "CANARY-user-typed", "allowed": [A]})
     expect(status == 200, f"type: {status} {snap}")
@@ -430,7 +448,11 @@ def test_fill_refuses_text_input():
     snap = open_page("/login")
     notes = ref_of(snap, "textbox", "Notes")
     pw = ref_of(snap, "textbox", "Password")
-    for ref, field in ((notes, "password"), (notes, "totp"), (pw, "totp")):
+    # A disabled or read-only password input is no target either: the write would be dropped.
+    locked = ref_of(snap, "textbox", "Locked password")
+    fixed = ref_of(snap, "textbox", "Fixed password")
+    for ref, field in ((notes, "password"), (notes, "totp"), (pw, "totp"),
+                       (locked, "password"), (fixed, "password")):
         status, body = call(SOCK, "/session/fill", {"ref": ref, "field": field, "value": CANARY, "allowed": [A]})
         expect((status, body) == (422, {"error": "not_a_secret_field"}), f"fill {field} on {ref}: {status} {body}")
     status, body = call(SOCK, "/session/fill", {"ref": pw, "field": "x", "value": "v", "allowed": [A]})
@@ -719,7 +741,8 @@ os.write(1, b"image ok\n")
 
 
 def main() -> None:
-    for fn in (test_scrub_matches_digest_forms, test_scrub_replaces_each_form, test_reduce_drops_values,
+    for fn in (test_scrub_matches_digest_forms, test_normalize_origin_matches_broker,
+               test_scrub_replaces_each_form, test_reduce_drops_values,
                test_reduce_skips_field_descendants, test_reduce_placeholder_name_kept,
                test_reduce_real_chromium_tree, test_reduce_refs_stable_order,
                test_select_parent_domain_and_excludes_sibling_and_idp):

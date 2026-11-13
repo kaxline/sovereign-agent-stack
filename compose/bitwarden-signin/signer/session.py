@@ -63,7 +63,7 @@ CLASSIFY_FUNCTION = "function () {" + _RUN_HELPERS + r"""
                 first: false };
   if (!(el instanceof HTMLInputElement)) return out;
   out.input = true;
-  out.password = el.type === "password";
+  out.password = el.type === "password" && !el.disabled && !el.readOnly;
   const tokens = String(el.autocomplete || "").toLowerCase().split(/\s+/);
   out.otp = tokens.includes("one-time-code") && !skipped.includes(el.type) && !el.disabled && !el.readOnly;
   if (isBox(el)) {

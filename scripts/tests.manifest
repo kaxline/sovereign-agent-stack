@@ -36,7 +36,7 @@ scripts/test-bitwarden-connect.sh
 scripts/test-bitwarden-fill.py                  ci image
 scripts/test-bitwarden-registration.sh          ci image
 scripts/test-bitwarden-setup.sh                 ci
-scripts/test-bitwarden-signer.py                 ci image
+scripts/test-bitwarden-signer.py                ci image
 scripts/test-bitwarden-signin-e2e.py            docker image
 scripts/test-bitwarden-signin-sandbox.py        docker image
 scripts/test-blocked-fetch-hint.py              ci image

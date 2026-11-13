@@ -15,7 +15,10 @@ _KEEP = ("name", "value", "domain", "path", "expires", "httpOnly", "secure", "sa
 
 
 def normalize_origin(url: str) -> str | None:
-    """Copy of broker/origins.py:normalize_origin (the signer cannot import the broker)."""
+    """Copy of broker/origins.py:normalize_origin (the signer cannot import the broker).
+
+    scripts/test-bitwarden-signer.py compares the two over the broker's cases.
+    """
     value = (url or "").strip() if isinstance(url, str) else ""
     if not value or "://" not in value:
         return None

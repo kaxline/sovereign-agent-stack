@@ -101,12 +101,15 @@ def extend_schema(schema: dict) -> None:
     for name in ACTIONS:
         if name not in enum:
             enum.append(name)
-    props["ref"] = {"type": "integer", "description": (
-        "signin_click / signin_type / signin_fill: a ref from the latest snapshot.")}
-    props["text"] = {"type": "string", "description": (
-        "signin_type only: the text to type. Never a password, code or other secret.")}
-    field = props.get("field")
-    if not isinstance(field, dict):
+    # Each property is left alone when the schema already defines it, so a Hermes bump that adds
+    # `ref`, `text` or `field` keeps its own type and description.
+    if not isinstance(props.get("ref"), dict):
+        props["ref"] = {"type": "integer", "description": (
+            "signin_click / signin_type / signin_fill: a ref from the latest snapshot.")}
+    if not isinstance(props.get("text"), dict):
+        props["text"] = {"type": "string", "description": (
+            "signin_type only: the text to type. Never a password, code or other secret.")}
+    if not isinstance(props.get("field"), dict):
         props["field"] = {"type": "string", "enum": list(FIELDS), "description": (
             "signin_fill only: 'password' or 'totp' (the saved authenticator code).")}
     if SCHEMA_SENTENCE.strip() not in schema.get("description", ""):

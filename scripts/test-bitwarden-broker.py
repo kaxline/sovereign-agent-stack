@@ -1425,16 +1425,19 @@ class FakeSigner:
     ``pages`` is what the session shows: ``/session/open`` returns the first,
     ``/session/click`` moves to the next and returns it, and the other session
     routes return the current one. A page from ``ax_error`` answers with that
-    code instead. Every request is kept in ``calls`` as ``(route, body)``.
+    code instead. ``refuse`` maps a session route other than open and end to a
+    ``(code, status)`` it always answers with, for a route the page alone
+    cannot make fail. Every request is kept in ``calls`` as ``(route, body)``.
     """
 
-    def __init__(self, path, pages=(), health="ready", export=None, open_session=False):
+    def __init__(self, path, pages=(), health="ready", export=None, open_session=False, refuse=None):
         self.path = Path(path)
         self.pages = list(pages) or [UNKNOWN_PAGE]
         self.health = health
         self.export = export or {"origin": SIGNIN_ORIGIN, "cookies": [], "localStorage": [],
                                  "sessionStorage": []}
         self.calls: list[tuple[str, dict]] = []
+        self.refuse = dict(refuse or {})
         self.session = open_session
         self.index = 0
         self.server = None
@@ -1457,6 +1460,9 @@ class FakeSigner:
                 return self._page()
             if not self.session:
                 return 409, {"error": "no_session"}
+            if route in self.refuse:
+                code, status = self.refuse[route]
+                return status, {"error": code}
             if route == "/session/export":
                 return 200, dict(self.export)
             if route == "/session/click":
@@ -1693,6 +1699,29 @@ def test_auto_sequence_returns_snapshot_on_unknown_page() -> None:
             expect(fake.routes() == ["/session/open"], f"the sequence acted: {fake.routes()}")
             # The session stays open, so the agent can drive it with the other routes.
             expect(b.call("POST", "/signin/snapshot", {}) == (200, UNKNOWN_PAGE), "/signin/snapshot")
+        b.stop()
+        b.expect_clean()
+
+
+def test_auto_sequence_returns_snapshot_when_the_password_is_on_an_idp_origin() -> None:
+    """A password field on the IdP origin ends the sequence with the snapshot, not a 403.
+
+    The signer takes a secret only for an item origin, so the fill is refused with
+    origin_mismatch. The sequence cannot continue, and the spec has it return the
+    page it is on so the agent can carry on with the other routes.
+    """
+    page = ax_page(IDP_ORIGIN, ax_node(1, "textbox", "Password"), ax_node(2, "button", "Sign in"))
+    with broker_run(vault=signin_vault()) as b:
+        b.add_account("personal")
+        b.start(unlocked=["personal"])
+        with fake_signer(b, pages=[page], refuse={"/session/fill": ("origin_mismatch", 403)}) as fake:
+            got = b.call("POST", "/signin/start", signin_body(handle=handle("personal", "E")))
+            expect(got == (200, page), f"/signin/start with the password on the IdP origin: {got}")
+            expect("/session/fill" in fake.routes(), f"the fill was not tried: {fake.routes()}")
+            expect("/session/end" not in fake.routes(), f"the session was ended: {fake.routes()}")
+            # The session stays open: the agent drives the rest with the other routes.
+            expect(b.call("POST", "/signin/snapshot", {}) == (200, page), "/signin/snapshot")
+            expect(b.call("POST", "/signin/cancel", {}) == (200, {"cancelled": True}), "/signin/cancel")
         b.stop()
         b.expect_clean()
 
@@ -2452,6 +2481,7 @@ def main() -> None:
     test_handover_keeps_the_signers_cookie_rule()
     test_fill_uses_item_origins_only()
     test_auto_sequence_returns_snapshot_on_unknown_page()
+    test_auto_sequence_returns_snapshot_when_the_password_is_on_an_idp_origin()
     test_redirect_off_origin_then_cancel()
     test_busy_and_cancel_from_any_caller()
     test_startup_ends_stale_session()

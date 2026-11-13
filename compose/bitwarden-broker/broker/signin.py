@@ -226,8 +226,12 @@ class SignIn:
                 try:
                     snapshot = self._fill(item, ref, field)
                 except SignInError as exc:
-                    if exc.code in ("not_a_secret_field", "stale_ref"):
-                        return snapshot  # the page is not what it looked like; the agent takes over
+                    # not_a_secret_field / stale_ref: the page is not what it looked like.
+                    # origin_mismatch: the field is on an IdP origin, where _fill will not write a
+                    # secret. Either way the sequence cannot continue, so it returns the snapshot
+                    # and the agent carries on with the other routes.
+                    if exc.code in ("not_a_secret_field", "stale_ref", "origin_mismatch"):
+                        return snapshot
                     raise
                 filled.add(field)
                 acted = True

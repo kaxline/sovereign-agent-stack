@@ -7,10 +7,20 @@ On throwaway networks it starts the whole chain: a Vaultwarden behind the
 stack's TLS sidecar (scripts/lib/vw_testkit.py) holding one account and one
 login item whose password and TOTP seed are canaries generated for this run;
 the signer image built from the pinned Hermes image, run with the compose
-service's hardening; the broker in the agent container's network namespace, as
-``network_mode: service:hermes`` puts it; a Hermes-image container running the
-agent's own Chromium with the sign-in overlays applied; and a local login site
-on two origins.
+service's per-container hardening (``signer_flags`` below); the broker in the
+agent container's network namespace, as ``network_mode: service:hermes`` puts
+it; a Hermes-image container running the agent's own Chromium with the sign-in
+overlays applied; and a local login site on two origins.
+
+``signer_flags`` reproduces what confines the signer container: read_only, init,
+cap_drop, security_opt with the service's seccomp profile, tmpfs, mem_limit and
+the environment. It fails on a service key it does not translate, so hardening
+added to the service later cannot go missing here unnoticed. Two things differ
+from compose on purpose: the container runs as the host user, so it can write
+the throwaway socket volume, and it joins the test's vault network, so it can
+reach the Vaultwarden and the login site. That the real service's ``signin``
+network holds nothing else is checked by
+scripts/test-bitwarden-compose-config.py, not here.
 
 The site serves five flows on one origin: a one-page form, a two-step form, a
 TOTP step, a ``localStorage`` token, and a redirect through an IdP origin that
@@ -154,7 +164,7 @@ SITE, IDP = CONF["site_origin"], CONF["idp_origin"]
 USER, PASSWORD, SEED = SECRET["login_user"], SECRET["password"], SECRET["totp_seed"]
 IDP_HOST = urlsplit(IDP).hostname
 BLANK = {"username_ok": False, "password_ok": False, "totp_ok": False, "idp_visited": False}
-STATE = {"flow": "one_page", "sessions": set(), "tokens": set(), "half": set(), "codes": set(),
+STATE = {"flow": "one_page", "sessions": set(), "tokens": set(), "half": set(),
          "seen": dict(BLANK)}
 
 
@@ -853,8 +863,27 @@ def write_scripts(folder: Path, secret_folder: Path, config: dict, canaries: dic
     os.chmod(secret_file, 0o600)
 
 
+# Keys of the rendered bitwarden-signin service that signer_flags turns into docker run flags.
+SIGNER_TRANSLATED = ("read_only", "init", "cap_drop", "security_opt", "tmpfs", "mem_limit",
+                     "environment")
+# Keys that carry no per-container confinement, or that this test supplies itself: the image comes
+# from the build below, the network and volume are the throwaway pair the run creates, and the
+# container runs as the host user (USER) so it can write that volume, not as HERMES_UID:HERMES_GID.
+SIGNER_IGNORED = ("build", "image", "container_name", "profiles", "restart", "healthcheck",
+                  "networks", "volumes", "user")
+
+
 def signer_flags(service: dict) -> list[str]:
-    """docker run flags for the bitwarden-signin service's hardening, from the rendered config."""
+    """docker run flags for the bitwarden-signin service's hardening, from the rendered config.
+
+    Fails on a key it neither translates nor ignores, so a hardening option
+    added to the compose service later cannot be dropped here without notice.
+    """
+    present = {key for key, value in service.items() if value is not None}
+    unknown = sorted(present - set(SIGNER_TRANSLATED) - set(SIGNER_IGNORED))
+    expect(not unknown, f"the {SIGNIN_SERVICE} service has keys this test does not translate into "
+                        f"docker run flags: {unknown}. Translate them in signer_flags, or add them "
+                        "to SIGNER_IGNORED if they confine nothing.")
     flags = ["--user", USER]
     if service.get("read_only"):
         flags.append("--read-only")
