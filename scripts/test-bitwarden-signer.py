@@ -252,6 +252,24 @@ document.addEventListener("input", () => {
 localStorage.setItem("token", "t-1"); sessionStorage.setItem("tab", "x-1");
 </script></body></html>""",
     "/hang": """<html><body><button onclick="while (true) {}">Hang</button></body></html>""",
+    "/store": """<html><body>
+<label for=p>Password</label><input id=p type=password>
+<button onclick="store()">Sign in</button><div id=done></div>
+<script>
+function store() {
+  const v = document.getElementById("p").value;
+  const b = new TextEncoder().encode(v);
+  localStorage.setItem("pw", v);
+  localStorage.setItem("pw64", btoa(String.fromCharCode(...b)));
+  localStorage.setItem(Array.from(b, (x) => x.toString(16).padStart(2, "0")).join(""), "by-key");
+  sessionStorage.setItem("rev", v.split("").reverse().join(""));
+  localStorage.setItem("token", "t-2");
+  sessionStorage.setItem("tab", "x-2");
+  document.cookie = "pwc=" + encodeURIComponent(v) + "; path=/";
+  document.cookie = "sess=s-2; path=/";
+  document.getElementById("done").textContent = "Stored";
+}
+</script></body></html>""",
 }
 
 PORTS = {}
@@ -487,6 +505,87 @@ def test_export_cookie_and_storage():
     end()
 
 
+def test_export_drops_written_values():
+    snap = open_page("/store")
+    pw = ref_of(snap, "textbox", "Password")
+    status, snap = call(SOCK, "/session/fill", {"ref": pw, "field": "password", "value": CANARY, "allowed": [A]})
+    expect(status == 200, f"fill: {status} {snap}")
+    status, snap = call(SOCK, "/session/click", {"ref": ref_of(snap, "button", "Sign in"), "allowed": [A]})
+    expect(status == 200 and "Stored" in texts(snap), f"store: {status} {snap}")
+    status, out = call(SOCK, "/session/export", {"allowed": [A], "item_origins": [A]})
+    expect(status == 200, f"export: {status} {out}")
+    no_canary(json.dumps(out, ensure_ascii=False), "export")
+    expect([(c["name"], c["value"]) for c in out["cookies"]] == [("sess", "s-2")], f"cookies {out['cookies']}")
+    expect(out["localStorage"] == [["token", "t-2"]], f"localStorage {out['localStorage']}")
+    expect(out["sessionStorage"] == [["tab", "x-2"]], f"sessionStorage {out['sessionStorage']}")
+    end()
+
+
+def test_snapshot_origin_recheck():
+    """A navigation committing between the origin check and the tree read is refused.
+
+    The race is forced: the tree call is wrapped so it navigates to the other
+    origin, and waits for the commit, right after the tree comes back.
+    """
+    from signer import session as signer_session
+    chromium = browser.Chromium.start()
+    try:
+        s = signer_session.Session(chromium, 30)
+        s.open(A + "/landing", [A])
+        real = chromium.page
+        race = {"to": None}
+
+        def racing(method, params=None):
+            out = real(method, params)
+            if method == "Accessibility.getFullAXTree" and race["to"]:
+                real("Page.navigate", {"url": race["to"] + "/landing"})
+                end_at = time.monotonic() + 10
+                while time.monotonic() < end_at:
+                    if real("Page.getFrameTree")["frameTree"]["frame"]["url"].startswith(race["to"]):
+                        break
+                    time.sleep(0.05)
+            return out
+
+        chromium.page = racing
+        for start, to, allowed in ((A, B, [A, B]), (B, A, [A, B]), (A, B, [A])):
+            race["to"] = to
+            try:
+                s.snapshot(allowed)
+            except signer_session.SessionError as exc:
+                expect(exc.code == "origin_mismatch", f"{start}->{to} {allowed}: {exc.code}")
+            else:
+                fail(f"{start}->{to} with {allowed}: snapshot returned")
+            if to == A:
+                continue
+            race["to"] = None
+            time.sleep(0.3)
+            if allowed == [A, B]:
+                expect(s.snapshot(allowed)["origin"] == B, "no race, same origin, snapshot returned")
+        s.end()
+    finally:
+        chromium.stop()
+
+
+def crashpad_handlers():
+    return [(int(e), open(f"/proc/{e}/cmdline", "rb").read().split(b"\0")) for e in os.listdir("/proc")
+            if e.isdigit() and os.path.exists(f"/proc/{e}/cmdline")
+            and open(f"/proc/{e}/cmdline", "rb").read().split(b"\0")[0].endswith(b"/chrome_crashpad_handler")]
+
+
+def test_crashpad_contained():
+    open_page("/landing")
+    found = profiles()
+    expect(len(found) == 1, f"one profile: {found}")
+    want = f"--database={found[0]}/crash".encode()
+    handlers = crashpad_handlers()
+    # This Chromium build starts crashpad whatever the flags; its database must be in the profile.
+    expect(all(want in argv for _, argv in handlers), f"crashpad database outside the profile: {handlers}")
+    end()
+    expect(crashpad_handlers() == [], f"crashpad left after end: {crashpad_handlers()}")
+    expect(not os.path.exists("/tmp/.config/chromium") and not glob.glob("/tmp/org.chromium.*"),
+           f"Chromium wrote outside the profile: {os.listdir('/tmp')}")
+
+
 def test_busy_second_open():
     open_page("/landing")
     status, body = call(SOCK, "/session/open", {"url": A + "/login", "allowed": [A]})
@@ -604,13 +703,16 @@ for test in (test_config_rejects_invalid, test_start_never_disables_sandbox, tes
              test_end_without_session, test_bad_requests, test_open_snapshot_has_no_values,
              test_fill_password_then_snapshot_scrubbed, test_fill_refuses_text_input,
              test_type_refuses_password_input, test_fill_totp_targets, test_origin_mismatch_after_redirect,
-             test_stale_ref, test_export_cookie_and_storage, test_busy_second_open, test_idle_end_wipes_profile,
+             test_stale_ref, test_export_cookie_and_storage, test_export_drops_written_values,
+             test_snapshot_origin_recheck, test_crashpad_contained, test_busy_second_open, test_idle_end_wipes_profile,
              test_action_timeout_ends_session, test_sandbox_unavailable):
     test()
     print(f"pass {test.__name__}", flush=True)
 
 expect(profiles() == [], f"profiles left: {profiles()}")
 expect(not chrome_running(), "no Chromium process left")
+expect(not os.path.exists("/tmp/.config/chromium") and not glob.glob("/tmp/org.chromium.*"),
+       f"Chromium wrote outside its profiles: {os.listdir('/tmp')}")
 MAIN.shutdown()
 os.write(1, b"image ok\n")
 '''

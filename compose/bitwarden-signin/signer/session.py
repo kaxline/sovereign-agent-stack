@@ -14,10 +14,13 @@ document gets ``stale_ref``.
 
 ``fill`` classifies the element with a function that takes no value, adds the
 value to the scrubber, then writes it with ``Runtime.callFunctionOn`` passing
-the value only as an argument. Snapshots are scrubbed string by string before
-they leave, so a value echoed by the page (in an error line, a title, or a
-field whose type a script flipped from password to text) comes back as the
-marker.
+the value only as an argument. ``export`` drops any cookie or storage entry
+whose name or value holds a written value in any scrub encoding, so a site
+that keeps the password in a cookie or storage cannot pass it on in the
+handover. Snapshots are scrubbed string by string before they leave, so a
+value echoed by the page (in an error line, a title, or a field whose type a
+script flipped from password to text) comes back as the marker. The origin is
+read again after the tree, so a navigation that commits in between is refused.
 
 Errors are ``SessionError`` with a fixed code. ``ends_session`` is set when the
 session cannot go on (timeout, Chromium gone); the server then ends it.
@@ -193,14 +196,16 @@ class Session:
         with self._action():
             origin = self._origin(allowed)
             jar = self.chromium.call("Storage.getCookies").get("cookies") or []
-            out = {"origin": origin, "cookies": cookies.select(jar, tuple(item_origins)),
-                   "localStorage": [], "sessionStorage": []}
+            kept = [c for c in cookies.select(jar, tuple(item_origins))
+                    if not self._holds_value(c.get("name"), c.get("value"))]
+            out = {"origin": origin, "cookies": kept, "localStorage": [], "sessionStorage": []}
             if origin in item_origins:
                 self.chromium.page("DOMStorage.enable")
                 for key, local in (("localStorage", True), ("sessionStorage", False)):
                     items = self.chromium.page("DOMStorage.getDOMStorageItems", {
                         "storageId": {"securityOrigin": origin, "isLocalStorage": local}}).get("entries") or []
-                    out[key] = [[k, v] for k, v in items if isinstance(k, str) and isinstance(v, str)]
+                    out[key] = [[k, v] for k, v in items if isinstance(k, str) and isinstance(v, str)
+                                and not self._holds_value(k, v)]
             return out
 
     def end(self) -> dict:
@@ -306,5 +311,18 @@ class Session:
     def _snapshot(self, allowed: list[str]) -> dict:
         origin = self._origin(allowed)
         nodes = self.chromium.page("Accessibility.getFullAXTree").get("nodes") or []
+        # A navigation can commit between the first check and the tree read; the tree
+        # is only returned when the page is still on the origin it is labelled with.
+        if self._origin(allowed) != origin:
+            raise SessionError("origin_mismatch")
         items, self._refs = snapshot.reduce(nodes)
         return {"origin": origin, "nodes": _scrubbed(items, self.scrubber)}
+
+    def _holds_value(self, *texts) -> bool:
+        """True when any text contains a written value in any scrub encoding."""
+        patterns = self.scrubber.patterns()
+        for text in texts:
+            data = text.encode("utf-8", "surrogatepass") if isinstance(text, str) else b""
+            if any(p in data for p in patterns):
+                return True
+        return False

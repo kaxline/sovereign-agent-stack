@@ -13,7 +13,17 @@ session) raises ``Timeout``. A protocol error raises ``CdpError`` carrying only
 the method name, never the error text, which can quote page content or an
 argument. A lost connection raises ``BrowserGone``.
 
-``stop`` kills the process group it created and deletes the profile.
+Chromium's own files all go under the profile: HOME, TMPDIR and the XDG
+directories point into it, and BREAKPAD_DUMP_LOCATION puts the crash database
+(where a renderer minidump, which could hold a written value, would land) in
+``<profile>/crash``. This build starts ``chrome_crashpad_handler`` whatever
+the flags (``--disable-crash-reporter`` and ``--disable-breakpad`` are passed
+but do not stop it), and the handler calls setsid, so it is outside the process
+group.
+
+``stop`` kills the process group it created, then the crashpad handlers whose
+``--database`` is this profile's crash directory (by PID, found in /proc), and
+deletes the profile.
 """
 
 from __future__ import annotations
@@ -34,6 +44,7 @@ CHROME_GLOB = "/opt/hermes/tools/chromium-*/chrome-linux/chrome"
 PROFILE_PREFIX = "bitwarden-signin-"
 START_SECONDS = 20.0
 MAX_MESSAGE = 64 * 1024 * 1024
+CRASH_DIR = "crash"
 
 
 class StartError(Exception):
@@ -74,11 +85,18 @@ class Chromium:
             raise ValueError("the signer never runs Chromium without its sandbox")
         chrome = _chrome_path()
         profile = tempfile.mkdtemp(prefix=PROFILE_PREFIX, dir="/tmp")
+        env = dict(os.environ)
+        for name, sub in (("HOME", "home"), ("TMPDIR", "tmp"), ("XDG_CONFIG_HOME", "home/.config"),
+                          ("XDG_CACHE_HOME", "home/.cache"), ("XDG_DATA_HOME", "home/.local/share"),
+                          ("BREAKPAD_DUMP_LOCATION", CRASH_DIR)):
+            env[name] = os.path.join(profile, sub)
+            os.makedirs(env[name], mode=0o700, exist_ok=True)
         args = [chrome, "--headless=new", "--disable-dev-shm-usage", "--no-first-run",
+                "--disable-crash-reporter", "--disable-breakpad",
                 "--remote-debugging-port=0", f"--user-data-dir={profile}", "about:blank"]
         try:
             proc = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.DEVNULL, start_new_session=True)
+                                    stderr=subprocess.DEVNULL, start_new_session=True, env=env)
         except OSError:
             shutil.rmtree(profile, ignore_errors=True)
             raise StartError() from None
@@ -175,4 +193,30 @@ class Chromium:
             self.proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             pass
+        for pid in crashpad_pids(self.profile):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
         shutil.rmtree(self.profile, ignore_errors=True)
+
+
+def crashpad_pids(profile: str) -> list[int]:
+    """PIDs of crashpad handlers whose database is ``profile``'s crash directory.
+
+    The profile path is a fresh mkdtemp name, so the exact ``--database``
+    argument identifies the handlers this Chromium started and no others.
+    """
+    want = f"--database={os.path.join(profile, CRASH_DIR)}".encode()
+    found = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/cmdline", "rb") as fh:
+                argv = fh.read().split(b"\0")
+        except OSError:
+            continue
+        if argv and argv[0].endswith(b"/chrome_crashpad_handler") and want in argv:
+            found.append(int(entry))
+    return found
