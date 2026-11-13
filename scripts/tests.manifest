@@ -22,6 +22,7 @@ scripts/test-actual-compose.sh                  ci docker
 scripts/test-actual-doctor.sh                   ci
 scripts/test-actual-instances.sh                ci
 scripts/test-addon-cli.sh                       ci
+scripts/test-addon-clone-tools.sh               ci image
 scripts/test-addon-cron-fence.sh                ci image
 scripts/test-addon-dirs.sh                      ci
 scripts/test-addon-manifests.py                 ci
