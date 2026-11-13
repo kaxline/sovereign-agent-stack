@@ -231,6 +231,7 @@ Fixed codes, never quoting page text, the value or a script:
 | `origin_mismatch` | the page is not on an item or IdP origin |
 | `not_a_secret_field` | `signin_fill` on, or `signin_type` into, the wrong kind of field |
 | `no_totp` | `field: "totp"` on an item without a key, or `bw get totp` fails |
+| `no_page` | `sign_in` with no tab of the task on the item's first origin |
 | `handover_refused` | the agent's tab is not on an item origin |
 | `page_error` | a page exception or a CDP error in the signer |
 | `timeout` | an action took more than 30 seconds |

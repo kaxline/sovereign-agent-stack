@@ -14,7 +14,7 @@
 
 - Targets stack 0.3.16. Nothing lands on `main` until 0.3.15 is tagged; `land` runs only on Keith's approval.
 - No broker or signer response, log line or error text ever contains a password, TOTP code, page text or script. Errors are fixed codes.
-- Fixed codes (spec, Failure codes): `busy`, `no_session`, `stale_ref`, `origin_mismatch`, `not_a_secret_field`, `no_totp`, `handover_refused`, `page_error`, `timeout`, `signer_unavailable`, `sandbox_unavailable`, plus `/fill`'s existing `account_locked`, `unknown_handle`, `unavailable`. New in this plan: `sign_in_only` (the `/fill` refusal).
+- Fixed codes (spec, Failure codes): `busy`, `no_session`, `stale_ref`, `origin_mismatch`, `not_a_secret_field`, `no_totp`, `handover_refused`, `page_error`, `timeout`, `signer_unavailable`, `sandbox_unavailable`, plus `/fill`'s existing `account_locked`, `unknown_handle`, `unavailable`. New in this plan: `sign_in_only` (the `/fill` refusal) and `no_page` (`sign_in` with no tab of the task on the item's first origin).
 - Custom field names: `agent-in-page-fill` (boolean), `agent-signin-idp` (comma-separated origins).
 - Socket: `/run/bitwarden-signin/signin.sock`, mode 0600, volume `bitwarden_signin`. Network: `signin`. Service: `bitwarden-signin`, profile `bitwarden`, `user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"`, `read_only`, `cap_drop: [ALL]`, `no-new-privileges`, tmpfs `/tmp` 512 MB, `mem_limit: 768m`.
 - Idle timeout `BITWARDEN_SIGNIN_IDLE_MINUTES`, default 5. Per-action bound 30 s.
