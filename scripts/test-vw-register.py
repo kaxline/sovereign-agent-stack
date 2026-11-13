@@ -32,52 +32,41 @@ import json
 import os
 import re
 import secrets
-import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-BROKER_SRC = ROOT / "compose/bitwarden-broker"
-TEMPLATE = ROOT / "compose/bitwarden-tls/default.conf.template"
-VW_IMAGE = ("vaultwarden/server:1.37.5@sha256:"
-            "4fe17f415f90087377d37c755e0ea3cf189dcc6794e49cdd2a9adbb4937d9e1f")
-NGINX_IMAGE = "nginx:1.30.6-alpine"
+sys.path.insert(0, str(ROOT / "scripts" / "lib"))
+
+# Repeated from scripts/lib/vw_testkit.py: the driver runs in a container where only this
+# file is mounted. host_main checks the two still agree.
 LOCAL_NAME = "vaultwarden.vault.internal"
 BASE = f"https://{LOCAL_NAME}"
-# Compose runs the broker and bitwarden-setup as HERMES_UID:HERMES_GID, the host user; the image has
-# no passwd entry for it.
-USER = f"{os.getuid()}:{os.getgid()}"
 AGENT_EMAIL = "agent@vault.localhost"
 OWNER_EMAIL = "owner@example.com"
 STRANGER_EMAIL = "stranger@example.com"
 DRIVER_TIMEOUT = 900
-LOGIN_BURST = 60
 
 
 # Host side
 
-def docker(*args: str, timeout: int = 300) -> subprocess.CompletedProcess:
-    return subprocess.run(["docker", *args], capture_output=True, text=True, timeout=timeout)
-
-
 def host_main() -> int:
-    if shutil.which("docker") is None or docker("info", timeout=30).returncode != 0:
+    import vw_testkit
+    from vw_testkit import USER, docker
+
+    if not vw_testkit.available():
         print("SKIP vw-register: Docker is not available")
         return 77
-    src = Path(os.environ.get("BITWARDEN_TEST_SRC") or BROKER_SRC).resolve()
-    tag = secrets.token_hex(4)
-    net, back, vw, tls, gen, drv = (f"bwtest-{kind}-{tag}" for kind in ("net", "back", "vw", "tls", "gen", "drv"))
-    image = os.environ.get("BITWARDEN_TEST_IMAGE") or f"bwtest-broker:{tag}"
-    built = False
-    tmp = Path(tempfile.mkdtemp(prefix="bwtest-vw-"))
-    # bitwarden-setup's /local and /secrets, as BITWARDEN_HOST_DATA_DIR/local and /secrets.
-    local, secrets_dir = tmp / "local", tmp / "secrets"
-    for d in (local, secrets_dir):
-        d.mkdir(mode=0o700)
-        os.chmod(d, 0o700)  # the containers write here as the host user, as compose runs them
-    (tmp / "vwdata").mkdir()
+    if (vw_testkit.BASE, vw_testkit.LOCAL_NAME) != (BASE, LOCAL_NAME):
+        print(f"FAIL: vw_testkit serves {vw_testkit.BASE}, this test expects {BASE}")
+        return 1
+    src = Path(os.environ.get("BITWARDEN_TEST_SRC") or vw_testkit.BROKER_SRC).resolve()
+    kit = vw_testkit.Vaultwarden(prefix="bwtest-vw", src=src)
+    drv = f"{kit.prefix}-drv"
+    kit.also_remove(drv)
+    tmp, local, secrets_dir = kit.tmp, kit.local, kit.secrets_dir
+    image, vw, tls = kit.image, kit.vw, kit.tls
     synthetic = {
         "agent_pw": secrets.token_urlsafe(24),
         "owner_pw": f"syn-{secrets.token_urlsafe(12)}+/%é",
@@ -85,7 +74,7 @@ def host_main() -> int:
     }
     (tmp / "synthetic.json").write_text(json.dumps(synthetic), encoding="utf-8")
     os.chmod(tmp / "synthetic.json", 0o644)
-    output: list[str] = []
+    output = kit.output
     failed = False
     admin_token = ""
 
@@ -94,20 +83,14 @@ def host_main() -> int:
         print(text, flush=True)
 
     def broker_run(*args: str) -> subprocess.CompletedProcess:
-        proc = docker("run", "--rm", "--name", gen, "--user", USER, "--read-only", "--tmpfs", "/tmp",
-                      "--entrypoint", "python3", "-v", f"{src}:/app:ro", "-v", f"{local}:/local",
-                      "-v", f"{secrets_dir}:/secrets",
-                      image, "/app/setup/setup.py", *args)
-        output.append(proc.stdout + proc.stderr)
-        return proc
+        return kit.setup_run(*args)
 
     try:
-        if not os.environ.get("BITWARDEN_TEST_IMAGE"):
-            proc = docker("build", "-q", "-t", image, str(BROKER_SRC), timeout=900)
-            if proc.returncode != 0:
-                note(f"FAIL: docker build {BROKER_SRC}: {proc.stderr.strip().splitlines()[-1:]}")
-                return 1
-            built = True
+        try:
+            kit.build()
+        except vw_testkit.StartError as exc:
+            note(f"FAIL: {exc}")
+            return 1
 
         # TLS material and the admin token, as vault.sh init makes them, with setup.py's default folders.
         for args in (("tls",), ("admin-token",)):
@@ -157,45 +140,17 @@ def host_main() -> int:
             failed = True
         else:
             note("ok: tls refuses a half-present server pair")
-        admin_token = (local / "admin_token").read_text(encoding="utf-8").strip()
+        admin_token = kit.admin_token
 
-        # As in compose (Ruling R20): net stands for vault (the sidecar and the driver, which plays the
-        # broker and bitwarden-setup), back for vault-backend (vaultwarden and the sidecar).
-        for name in (net, back):
-            proc = docker("network", "create", "--internal", name)
-            if proc.returncode != 0:
-                note(f"FAIL: docker network create: {proc.stderr.strip()}")
-                return 1
-        proc = docker("run", "-d", "--name", vw, "--network", back, "--network-alias", "vaultwarden",
-                      "-e", "SIGNUPS_ALLOWED=false", "-e", "INVITATIONS_ALLOWED=true",
-                      "-e", "DOMAIN=http://localhost:8222", "-e", "DISABLE_ICON_DOWNLOAD=true",
-                      "--security-opt", "no-new-privileges:true",
-                      # The one setting the vaultwarden service leaves at its default (10 password grants
-                      # a minute per address): this sequence signs in more often, and check 4 spends the
-                      # allowance on purpose.
-                      "-e", f"LOGIN_RATELIMIT_MAX_BURST={LOGIN_BURST}",
-                      "-e", "ADMIN_TOKEN_FILE=/run/vaultwarden/admin_token.phc",
-                      "-v", f"{tmp / 'vwdata'}:/data",
-                      "-v", f"{local / 'vaultwarden'}:/run/vaultwarden:ro", VW_IMAGE)
-        if proc.returncode != 0:
-            note(f"FAIL: start Vaultwarden: {proc.stderr.strip()}")
-            return 1
-        proc = docker("run", "-d", "--name", tls, "--network", net, "--network-alias", LOCAL_NAME,
-                      "--security-opt", "no-new-privileges:true",
-                      "-e", "NGINX_ENVSUBST_FILTER=^VAULTWARDEN_TLS_",
-                      "-v", f"{TEMPLATE}:/etc/nginx/templates/default.conf.template:ro",
-                      "-v", f"{server}:/etc/nginx/tls:ro", NGINX_IMAGE)
-        if proc.returncode != 0:
-            note(f"FAIL: start the TLS sidecar: {proc.stderr.strip()}")
-            return 1
-        proc = docker("network", "connect", back, tls)
-        if proc.returncode != 0:
-            note(f"FAIL: connect the TLS sidecar to the backend network: {proc.stderr.strip()}")
+        try:
+            kit.start()
+        except vw_testkit.StartError as exc:
+            note(f"FAIL: {exc}")
             return 1
 
         try:
             proc = subprocess.run(
-                ["docker", "run", "--rm", "--name", drv, "--network", net, "--user", USER,
+                ["docker", "run", "--rm", "--name", drv, "--network", kit.net, "--user", USER,
                  "--read-only", "--tmpfs", "/tmp", "--entrypoint", "python3",
                  "-e", "HOME=/tmp", "-e", "NODE_EXTRA_CA_CERTS=/secrets/local/tls/ca.crt",
                  "-e", f"VW_TEST_SIDECAR={tls}",
@@ -215,8 +170,7 @@ def host_main() -> int:
         if code != 0:
             failed = True
             for name in (vw, tls):
-                state = docker("inspect", "-f", "{{.State.Status}} exit {{.State.ExitCode}}", name)
-                note(f"  {name}: {state.stdout.strip()}")
+                note(f"  {name}: {kit.state(name)}")
             tail = docker("logs", "--tail", "8", vw)
             note("  Vaultwarden's last log lines:\n" + "\n".join(
                 f"  | {ln}" for ln in (tail.stdout + tail.stderr).strip().splitlines()))
@@ -235,25 +189,9 @@ def host_main() -> int:
             failed = True
         else:
             note("ok: the vaultwarden healthcheck command passes")
-        logs = docker("logs", tls)
-        output.append(logs.stdout + logs.stderr)
-        logs = docker("logs", vw)
-        output.append(logs.stdout + logs.stderr)
+        output.extend(kit.container_logs().values())
     finally:
-        # One try per call, so a failing removal never skips the others.
-        cleanup = [("rm", "-f", name) for name in (drv, tls, vw, gen)]
-        cleanup += [("network", "rm", name) for name in (net, back)]
-        if built:
-            cleanup.append(("image", "rm", image))
-        for args in cleanup:
-            try:
-                docker(*args, timeout=120)
-            except (OSError, subprocess.SubprocessError):
-                print(f"warning: docker {' '.join(args)} failed; remove it by that name")
-        try:
-            shutil.rmtree(tmp, ignore_errors=True)
-        except OSError:
-            pass
+        kit.cleanup()
 
     text = "\n".join(output)
     leaked = [k for k, v in {**synthetic, "admin_token": admin_token}.items() if v and v in text]
