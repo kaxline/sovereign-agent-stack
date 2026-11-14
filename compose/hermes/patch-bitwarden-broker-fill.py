@@ -111,6 +111,7 @@ _BWBROKER_ERRORS = {
     "unknown_handle": "No Bitwarden login with that handle. Use browser_vault action=list.",
     "no_totp": "This Bitwarden login has no authenticator key. Call enter_code without a handle so the user is asked.",
     "sign_in_only": "This Bitwarden login is set up for sign_in. Call browser_vault action=sign_in with this handle.",
+    "no_password": "This Bitwarden login has no password the agent account can read. Retrying will not help: tell the user to check the item has a password, and that the collection holding it does not hide passwords from the agent's account.",
     "account_locked": "The Bitwarden account holding this login is locked. Ask the user to run "
                       "make vault-unlock SLUG={slug}.",
 }

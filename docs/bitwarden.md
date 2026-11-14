@@ -266,6 +266,26 @@ As built:
   the signer reports `sandbox_unavailable` and refuses every session; items marked
   `agent-in-page-fill` can still be filled, and nothing else can be signed in.
 
+### Vault freshness
+
+`bw` reads a local copy of the vault, so a change you make in Bitwarden — a new login, a changed
+password, a collection permission — reaches the agent only after a `bw sync`. The broker syncs each
+unlocked account every `BITWARDEN_SYNC_MINUTES` (10 by default), and two paths sync sooner:
+
+- Listing items syncs first when the local copy is at least `BITWARDEN_ITEMS_SYNC_SECONDS` old
+  (60 by default). The agent reads that listing once per turn, so a login you have just added is
+  there rather than up to ten minutes later. A listing inside the interval uses the copy it has.
+- A read that finds no password for the item syncs that account once and reads again, then
+  refuses with `no_password` if there is still none. Both `sign_in` and in-page `fill` do this.
+
+`make vault-sync` syncs every account now.
+
+A `no_password` refusal means the agent's own Bitwarden account cannot read that item's password,
+and that a retry will not change it. Two causes: the item has no password saved, or it is in an
+organization collection the agent's account holds with **Hide Passwords** ticked, which returns the
+item and its username but not the password. The broker signs in as an API-key user, so check that
+user's or group's access entry on the collection.
+
 ### The two custom fields
 
 Two optional custom fields on a Bitwarden login change what the agent may do with it.
@@ -505,6 +525,7 @@ Other limits, as built:
 | `BITWARDEN_ENABLED` | `0` | Starts the broker (profile `bitwarden`) and registers the backend on `default` and `browser` |
 | `BITWARDEN_LOCAL_ENABLED` | `0` | Starts `vaultwarden` and `vaultwarden-tls` (profile `vault`). `make vault-init` sets it |
 | `BITWARDEN_SYNC_MINUTES` | `10` | `bw sync` interval per unlocked account; must be above 0 or the broker does not start |
+| `BITWARDEN_ITEMS_SYNC_SECONDS` | `60` | Listing items syncs first when the local vault copy is at least this old; 0 syncs on every listing |
 | `BITWARDEN_IDLE_LOCK_MINUTES` | `0` | Lock `manual` accounts after this long without a fill or unlock; 0 never |
 | `BITWARDEN_SIGNIN_IDLE_MINUTES` | `5` | End a sign-in session, and kill its Chromium, after this long with no action |
 | `BITWARDEN_SIGNIN_ACTION_SECONDS` | `30` | Bound on one sign-in action; a longer one gets `timeout` and the session ends |

@@ -8,6 +8,24 @@ the stack under another app.
 
 ## v0.3.16 — 2026-11-14
 
+### Vault freshness
+
+- `GET /items` on the broker syncs the vault first when its local copy may be
+  older than `BITWARDEN_ITEMS_SYNC_SECONDS` (60 by default). Before this, an
+  item added or changed in Bitwarden was invisible to the agent until the next
+  `BITWARDEN_SYNC_MINUTES` tick, up to 10 minutes later. A listing inside the
+  interval serves the copy it has, so the cost is one `bw sync` per turn at most.
+- A read that finds no password for an item now syncs that account once and
+  reads again, instead of refusing on a copy that may be stale. This covers both
+  `sign_in` and the opt-in in-page `fill`, which read the same local copy.
+- A login whose password the agent's account cannot read refuses with the new
+  code `no_password` (HTTP 422 on `/fill` and the sign-in routes), not
+  `unavailable`. `unavailable` tells the agent to try
+  again shortly, which is wrong for a permission: Bitwarden's per-collection
+  Hide Passwords leaves the item and its username readable and the password not,
+  and no retry clears it. The message names both that and an item saved without
+  a password.
+
 ### Upgrade steps
 
 - Bitwarden logins are no longer filled into the agent's own page unless you

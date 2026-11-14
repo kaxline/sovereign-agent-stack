@@ -64,12 +64,20 @@ COLLECTION = "0c0c0000-0000-4000-8000-00000000000c"
 ORG = "0e0e0000-0000-4000-8000-00000000000e"
 
 
+_KEEP = object()  # login_item: "leave the generated password alone"
+
+
 def item_id(name: str) -> str:
     return f"{name.lower() * 8}-0000-4000-8000-000000000000"
 
 
-def login_item(name, folder=None, collections=(), uris=(), totp=None, kind=1, in_page=True, fields=None):
-    """in_page sets agent-in-page-fill (true by default, so /fill tests exercise the in-page path)."""
+def login_item(name, folder=None, collections=(), uris=(), totp=None, kind=1, in_page=True, fields=None,
+               password=_KEEP):
+    """in_page sets agent-in-page-fill (true by default, so /fill tests exercise the in-page path).
+
+    ``password=None`` builds a login with no password, as Bitwarden returns for an item in a
+    collection the account holds with Hide Passwords: username and item readable, password not.
+    """
     item = {
         "object": "item",
         "id": item_id(name),
@@ -84,7 +92,7 @@ def login_item(name, folder=None, collections=(), uris=(), totp=None, kind=1, in
     if kind == 1:
         item["login"] = {
             "username": f"user-{name.lower()}@example.com",
-            "password": ITEM_PASSWORDS[name],
+            "password": ITEM_PASSWORDS[name] if password is _KEEP else password,
             "totp": totp,
             "uris": None if uris is None else [{"match": m, "uri": u} for u, m in uris],
         }
@@ -471,7 +479,7 @@ def _test_bw_invocation() -> None:
         expect(bw.get_password(item_id("H")) == ITEM_PASSWORDS["H"], "get_password strips only bw's newline")
         code = bw.get_totp(item_id("A"))
         expect(len(code) == 6 and code.isdigit(), "get_totp")
-        expect_bw_error(run, lambda: bw.get_totp(item_id("B")), "unknown", "no TOTP on item B")
+        expect_bw_error(run, lambda: bw.get_totp(item_id("B")), "absent", "no TOTP on item B")
         expect_bw_error(run, lambda: bw.get_password("--help"), "unknown", "item id that looks like a flag")
 
         lines = run.log_lines()
@@ -582,6 +590,115 @@ def test_no_uri_items_hidden() -> None:
         for name in "DFG":
             expect(item_id(name) not in ids, f"item {name} listed")
             expect(v.get(f"bwbroker:personal/{item_id(name)}") is None, f"item {name} returned by get")
+        run.expect_clean(out.getvalue())
+
+
+class StubSigner:
+    """A signer that answers every call 200 with an empty body and records the paths only.
+
+    The bodies carry the password, so keeping them would put a secret in the test's own
+    memory and in the text expect_clean searches.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def call(self, method, path, body):
+        self.calls.append(path)
+        return 200, {}
+
+
+def signin_over(run, bw, resync=None):
+    """A SignIn on the run's fake vault with a stub signer; returns (vault, signin, signer)."""
+    v = vault.Vault({"personal": bw}, vault.Denylist(run.tmp / "denylist.json"))
+    signer = StubSigner()
+    return v, signin.SignIn(v, {"personal": bw}, signer, resync=resync), signer
+
+
+def hidden_password_run(tmp):
+    """A run whose only item is a login with no readable password, as Hide Passwords returns."""
+    return Run(Path(tmp), items=[login_item("A", FOLDER_AGENT, password=None,
+                                            uris=[("https://a.example.com", None)])])
+
+
+def reveal_password(run) -> None:
+    """Put the password back in the fake vault, as a sync from the server would."""
+    data = json.loads(run.vault_file.read_text(encoding="utf-8"))
+    data["items"][0]["login"]["password"] = ITEM_PASSWORDS["A"]
+    run.vault_file.write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_fill_syncs_once_when_the_password_is_not_readable() -> None:
+    """The local vault lags the server by up to a sync interval, so a password a sync reveals still fills."""
+    with tempfile.TemporaryDirectory() as tmp, captured() as out:
+        run = hidden_password_run(tmp)
+        bw = run.bw(run.account("personal"))
+        bw.login()
+        bw.unlock()
+        syncs: list[str] = []
+
+        def resync(slug):
+            syncs.append(slug)
+            reveal_password(run)  # the server held it all along; the local copy was stale
+            bw.sync()
+            return True
+
+        v, si, signer = signin_over(run, bw, resync=resync)
+        item = v.get(f"bwbroker:personal/{item_id('A')}")
+        expect(item is not None, "the item is listed")
+        si._fill(item, 3, "password")
+        expect(syncs == ["personal"], f"one sync of the item's account, got {syncs}")
+        expect(signer.calls == ["/session/fill"], f"the fill reached the signer: {signer.calls}")
+        run.expect_clean(out.getvalue())
+
+
+def test_fill_refuses_a_password_a_sync_does_not_reveal() -> None:
+    """Hide Passwords is a permission, not a transient failure, so the agent is not told to retry."""
+    with tempfile.TemporaryDirectory() as tmp, captured() as out:
+        run = hidden_password_run(tmp)
+        bw = run.bw(run.account("personal"))
+        bw.login()
+        bw.unlock()
+        syncs: list[str] = []
+
+        def resync(slug):
+            syncs.append(slug)
+            bw.sync()  # a real sync that changes nothing: the server will not yield it either
+            return True
+
+        v, si, signer = signin_over(run, bw, resync=resync)
+        item = v.get(f"bwbroker:personal/{item_id('A')}")
+        try:
+            si._fill(item, 3, "password")
+        except signin.SignInError as exc:
+            run.record(exc)
+            expect(exc.code == "no_password", f"got {exc.code}, want no_password")
+            expect(exc.status != 503, f"no_password must not read as a transient 503, got {exc.status}")
+        else:
+            fail("a password the account cannot read was filled")
+        expect(syncs == ["personal"], f"exactly one sync, not a loop: {syncs}")
+        expect(signer.calls == [], f"nothing reached the signer: {signer.calls}")
+        expect(bw.state == "unlocked", f"the account moved to {bw.state}")
+        run.expect_clean(out.getvalue())
+
+
+def test_fill_does_not_sync_without_a_hook() -> None:
+    """SignIn is built without resync in tests and by bitwarden-setup; the refusal must still be the honest one."""
+    with tempfile.TemporaryDirectory() as tmp, captured() as out:
+        run = hidden_password_run(tmp)
+        bw = run.bw(run.account("personal"))
+        bw.login()
+        bw.unlock()
+        v, si, signer = signin_over(run, bw)
+        item = v.get(f"bwbroker:personal/{item_id('A')}")
+        try:
+            si._fill(item, 3, "password")
+        except signin.SignInError as exc:
+            run.record(exc)
+            expect(exc.code == "no_password", f"got {exc.code}, want no_password")
+        else:
+            fail("a password the account cannot read was filled")
+        expect(signer.calls == [], f"nothing reached the signer: {signer.calls}")
         run.expect_clean(out.getvalue())
 
 
@@ -707,15 +824,43 @@ def test_node_warning_noise() -> None:
         bw = run.bw(run.account("personal"))
         bw.login()
         bw.unlock()
-        expect_bw_error(run, lambda: bw.get_totp(item_id("B")), "unknown", "no TOTP behind a Node warning")
-        expect_bw_error(run, lambda: bw.get_password("ffffffff-0000-4000-8000-000000000000"), "unknown",
+        expect_bw_error(run, lambda: bw.get_totp(item_id("B")), "absent", "no TOTP behind a Node warning")
+        # 99999999-... is in no fixture vault. ffffffff-... used to stand in for it, but that is item F,
+        # a secure note, so the read answered "No password available" and passed as unknown by accident.
+        expect_bw_error(run, lambda: bw.get_password("99999999-0000-4000-8000-000000000000"), "unknown",
                         "not found behind a Node warning")
+        expect_bw_error(run, lambda: bw.get_password(item_id("F")), "absent",
+                        "a non-login item holds no password")
         expect("4014290" in run.offered_stderr(), "the fake did not print the warning")
         expect(bw.state == "unlocked" and bw.error_class == "" and bw.retry_at is None, "account state changed")
         expect(bw.get_password(item_id("A")) == ITEM_PASSWORDS["A"], "session kept")
         manual = run.bw(run.account("manual", unlock="manual"))
         manual.login()
         expect_bw_error(run, lambda: manual.unlock(WRONG_PASSWORD), "auth", "wrong password behind a warning")
+        run.expect_clean(out.getvalue())
+
+
+def test_absent_is_its_own_class() -> None:
+    """bw's "this item holds no such value" text is classified, so a caller can tell it from a broken call."""
+    expect(bwcli.classify("No password available for this login.") == ("absent", None),
+           "a login whose password the account cannot read")
+    expect(bwcli.classify(NODE_WARNING + "No TOTP available for this login.") == ("absent", None),
+           "a login with no TOTP seed, behind a Node warning")
+    expect(bwcli.classify("Not found.") == ("unknown", None), "an id bw does not have stays unknown")
+
+
+def test_absent_leaves_the_account_alone() -> None:
+    """A value one item does not hold says nothing about the account, so neither state nor error_class moves."""
+    with tempfile.TemporaryDirectory() as tmp, captured() as out:
+        run = Run(Path(tmp), items=[login_item("A", FOLDER_AGENT, password=None,
+                                               uris=[("https://a.example.com", None)])])
+        bw = run.bw(run.account("personal"))
+        bw.login()
+        bw.unlock()
+        expect_bw_error(run, lambda: bw.get_password(item_id("A")), "absent",
+                        "a password the account cannot read")
+        expect(bw.state == "unlocked", f"state moved to {bw.state}")
+        expect(bw.error_class == "", f"error_class moved to {bw.error_class!r}")
         run.expect_clean(out.getvalue())
 
 
@@ -2662,6 +2807,50 @@ def test_sync_coalesced() -> None:
         b.expect_clean()
 
 
+def _sync_calls(b) -> int:
+    return sum(1 for line in b.run.log_lines() if line["argv"][:1] == ["sync"])
+
+
+def test_items_syncs_a_stale_listing() -> None:
+    """The agent picks what to sign in to from /items, so a listing older than the floor syncs first."""
+    with broker_run() as b:
+        b.env["BITWARDEN_ITEMS_SYNC_SECONDS"] = "0"  # every listing counts as stale
+        b.add_account("personal")
+        b.start(unlocked=["personal"])
+        before = _sync_calls(b)
+        status, body = b.call("GET", "/items")
+        expect(status == 200 and isinstance(body, list), f"/items answered {status}: {body!r}")
+        expect(_sync_calls(b) == before + 1, f"a stale listing synced once: {before} -> {_sync_calls(b)}")
+        b.expect_clean()
+
+
+def test_items_does_not_sync_a_fresh_listing() -> None:
+    """A sync costs seconds, so a listing within the floor serves the vault it has."""
+    with broker_run() as b:
+        b.env["BITWARDEN_ITEMS_SYNC_SECONDS"] = "600"
+        b.add_account("personal")
+        b.start(unlocked=["personal"])
+        b.call("GET", "/items")
+        before = _sync_calls(b)
+        b.call("GET", "/items")
+        b.call("GET", "/items")
+        expect(_sync_calls(b) == before, f"a fresh listing ran bw sync: {before} -> {_sync_calls(b)}")
+        b.expect_clean()
+
+
+def test_in_page_fill_syncs_once_before_refusing() -> None:
+    """In-page fill reads the same local vault, so it gets the same one sync and the same honest code."""
+    hidden = login_item("A", FOLDER_AGENT, password=None, uris=[("https://a.example.com", None)])
+    with broker_run(vault=vault_data(items=[hidden])) as b:
+        b.add_account("personal")
+        b.start(unlocked=["personal"])
+        before = _sync_calls(b)
+        status, got = b.call("POST", "/fill", fill_body(handle("personal", "A")))
+        expect(_sync_calls(b) == before + 1, f"one sync before refusing: {before} -> {_sync_calls(b)}")
+        expect((status, got) == (422, {"error": "no_password"}), f"/fill answered {status} {got}")
+        b.expect_clean()
+
+
 def main() -> None:
     test_instance_store()
     test_normalize_origin()
@@ -2671,11 +2860,16 @@ def main() -> None:
     test_scope_filtering()
     test_mixed_uris()
     test_no_uri_items_hidden()
+    test_fill_syncs_once_when_the_password_is_not_readable()
+    test_fill_refuses_a_password_a_sync_does_not_reveal()
+    test_fill_does_not_sync_without_a_hook()
     test_429_backoff()
     test_errors_carry_no_text()
     test_exception_context_holds_no_secrets()
     test_real_bw_stderr()
     test_node_warning_noise()
+    test_absent_is_its_own_class()
+    test_absent_leaves_the_account_alone()
     test_manual_unlock_and_lock()
     test_denylist()
     test_fill_rejects_bad_arguments()
@@ -2716,6 +2910,9 @@ def main() -> None:
     test_sync_loop_and_idle_lock()
     test_tcp_request_checks()
     test_sync_coalesced()
+    test_in_page_fill_syncs_once_before_refusing()
+    test_items_syncs_a_stale_listing()
+    test_items_does_not_sync_a_fresh_listing()
     mounts = [
         (ROOT / "scripts", "/work/scripts"),
         (ROOT / "compose" / "bitwarden-broker", "/work/compose/bitwarden-broker"),

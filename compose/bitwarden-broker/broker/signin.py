@@ -32,7 +32,7 @@ import logging
 import re
 import threading
 
-from . import cdp
+from . import bwcli, cdp
 from . import origins as origins_mod
 from .bwcli import BwError
 from .signin_client import HEALTH_TIMEOUT_SECONDS, SignerUnavailable
@@ -58,6 +58,8 @@ STATUS = {
     "not_a_secret_field": 422, "no_totp": 400, "handover_refused": 409, "page_error": 502,
     "timeout": 504, "signer_unavailable": 503, "sandbox_unavailable": 503,
     "account_locked": 503, "unknown_handle": 404, "unavailable": 503,
+    # Not transient: the item yields no password even after a sync, so a retry is pointless.
+    "no_password": 422,
 }
 # Codes the signer raises after ending its own session.
 ENDED_BY_SIGNER = ("timeout", "page_error")
@@ -126,13 +128,17 @@ def _submit(nodes, after: int | None = None) -> int | None:
 
 
 class SignIn:
-    def __init__(self, vault, bws, client, touch=None):
+    def __init__(self, vault, bws, client, touch=None, resync=None):
         self.vault = vault
         self.bws = bws
         self.client = client
         # Called with an account slug after a value is read, so the idle lock does
         # not lock a manual account in the middle of a sign-in (Broker._touch).
         self.touch = touch
+        # Called with an account slug when the local vault holds no value for an
+        # item, returning True once that account's copy is fresh (Broker._resync).
+        # Without it a stale copy is indistinguishable from a standing permission.
+        self.resync = resync
         self._lock = threading.Lock()
         self._item = None  # the ItemMeta of the open session, or None
 
@@ -332,6 +338,21 @@ class SignIn:
                 raise
         return snapshot
 
+    def _read(self, bw, item, field: str) -> str:
+        """Read the item's secret through ``bwcli.read_value``, as the agent's codes."""
+        resync = (lambda: self.resync(item.account)) if self.resync is not None else None
+        try:
+            return bwcli.read_value(bw, item.item_id, field, resync=resync)
+        except BwError as exc:
+            # An unclassified failure on a TOTP read has always meant "no authenticator key";
+            # "absent" now names the same thing, and both keep the agent's own code.
+            if field == "totp" and exc.error_class in ("unknown", "absent"):
+                raise SignInError("no_totp") from None
+            if exc.error_class == "absent":
+                raise SignInError("no_password") from None
+            raise SignInError("account_locked" if exc.error_class in ("locked", "auth")
+                              else "unavailable") from None
+
     def _fill(self, item, ref: int, field: str) -> dict:
         if field == "totp" and not item.has_totp:
             raise SignInError("no_totp")
@@ -340,13 +361,7 @@ class SignIn:
         bw = self.bws[item.account]
         value = None
         try:
-            try:
-                value = bw.get_totp(item.item_id) if field == "totp" else bw.get_password(item.item_id)
-            except BwError as exc:
-                if field == "totp" and exc.error_class == "unknown":
-                    raise SignInError("no_totp") from None
-                raise SignInError("account_locked" if exc.error_class in ("locked", "auth")
-                                  else "unavailable") from None
+            value = self._read(bw, item, field)
             if not value:
                 raise SignInError("unavailable")
             if self.vault.get(item.handle) is None:

@@ -47,7 +47,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import cdp, digest_redaction, signin
+from . import bwcli, cdp, digest_redaction, signin
 from .accounts import load_all
 from .bwcli import Bw, BwError
 from .requests_store import RequestError, Store
@@ -71,6 +71,9 @@ MAX_TEXT = 4096  # the signer's limit for typed text
 # keeps a bad target id from handing out entries for any in-scope item.
 NOTHING_WRITTEN = (cdp.TARGET_NOT_FOUND, cdp.ORIGIN_MISMATCH, cdp.NO_FIELD)
 METHODS = ("GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS")
+# GET /items syncs when the local vault may be older than this many seconds.
+ITEMS_SYNC_INTERVAL = 60.0
+
 # POST /sync runs at most once at a time and at most once per this many
 # seconds (Config.sync_min_seconds); a call inside the interval gets the last
 # result back.
@@ -102,6 +105,10 @@ class Config:
     signin_socket: Path
     bw_path: str
     sync_min_seconds: float = 30.0
+    # GET /items syncs first when the local vault may be older than this. The agent
+    # chooses what to sign in to from that listing, so an item added or changed on the
+    # server should not be invisible for a whole BITWARDEN_SYNC_MINUTES.
+    items_sync_seconds: float = 60.0
 
     @classmethod
     def from_env(cls, env) -> Config:
@@ -122,6 +129,7 @@ class Config:
             bw_path=env.get("BITWARDEN_BW") or "bw",
             # Test hook: scripts/test-bitwarden-*.py set 0 to sync back to back.
             sync_min_seconds=_seconds(env, "BITWARDEN_SYNC_MIN_SECONDS", SYNC_MIN_INTERVAL),
+            items_sync_seconds=_seconds(env, "BITWARDEN_ITEMS_SYNC_SECONDS", ITEMS_SYNC_INTERVAL),
         )
 
 
@@ -234,7 +242,7 @@ class Broker:
         self._sync_call = threading.Lock()  # one POST /sync at a time
         self._sync_result: tuple[float, dict] | None = None  # (monotonic end, result) of the last POST /sync
         self.signin = signin.SignIn(self.vault, self.bws, SignerClient(config.signin_socket),
-                                    touch=self._touch)
+                                    touch=self._touch, resync=self._resync)
 
     # --- TCP routes ---------------------------------------------------------
 
@@ -244,6 +252,7 @@ class Broker:
                  "retry_after": self.bws[slug].retry_after()} for slug, a in sorted(self.accounts.items())]
 
     def get_items(self, _body) -> list:
+        self._sync_if_stale()
         return [{"handle": m.handle, "label": m.label, "username": m.username, "origins": list(m.origins),
                  "has_totp": m.has_totp, "sign_in_only": not m.in_page_fill} for m in self.vault.items()]
 
@@ -276,12 +285,15 @@ class Broker:
         value = failure = None
         try:
             try:
-                value = bw.get_totp(meta.item_id) if field == "totp" else bw.get_password(meta.item_id)
+                value = bwcli.read_value(bw, meta.item_id, field, resync=lambda: self._resync(meta.account))
             except BwError as exc:
                 failure = exc.error_class
             if failure is not None:
-                if field == "totp" and failure == "unknown":
+                if field == "totp" and failure in ("unknown", "absent"):
                     raise HttpError(400, "no_totp")
+                if failure == "absent":
+                    # A sync did not reveal it, so this is the item or a permission, not a blip.
+                    raise HttpError(422, "no_password")
                 raise HttpError(503, "account_locked" if failure in ("locked", "auth") else "unavailable")
             if not value:
                 raise HttpError(400, "no_value")
@@ -476,6 +488,29 @@ class Broker:
             return True
         finally:
             guard.release()
+
+    def _sync_if_stale(self) -> None:
+        """Sync any account whose local vault may be older than ``items_sync_seconds``.
+
+        An account that has never synced counts as stale. ``sync_account`` answers None
+        when the sync loop is already syncing one, which needs no second run.
+        """
+        now = time.monotonic()
+        with self._guard:
+            stale = [slug for slug in sorted(self.bws)
+                     if now - self._last_sync.get(slug, -math.inf) >= self.config.items_sync_seconds]
+        for slug in stale:
+            self.sync_account(slug)
+
+    def _resync(self, slug: str) -> bool:
+        """Sync one account for a sign-in that read no value. True when its vault is now fresh."""
+        done = self.sync_account(slug)
+        if done is None:
+            # The sync loop is syncing this account now. Waiting for it is the whole
+            # point of the call; refusing on data about to be replaced is not.
+            with self._syncing[slug]:
+                return True
+        return done
 
     def sync_account(self, slug: str) -> bool | None:
         """True when the account synced, False when it failed, None when another

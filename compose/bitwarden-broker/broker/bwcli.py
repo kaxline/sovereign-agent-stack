@@ -34,7 +34,9 @@ from pathlib import Path
 from .accounts import ID_RE, Account
 from .origins import normalize_origin
 
-ERROR_CLASSES = ("auth", "locked", "network", "rate_limited", "unknown")
+ERROR_CLASSES = ("auth", "locked", "network", "rate_limited", "absent", "unknown")
+# Classes that are about the one call, not the account: they leave state and error_class alone.
+PER_CALL_CLASSES = ("absent", "unknown")
 TIMEOUT_SECONDS = 120
 DEFAULT_RETRY_AFTER = 60
 MAX_RETRY_AFTER = 3600
@@ -59,6 +61,9 @@ _PATTERNS = tuple((cls, re.compile("|".join(parts))) for cls, parts in (
               r"you are not logged in", r"\b401\b\s*unauthorized", r"\bunauthorized\b\s*\(?401\b",
               r"\b(?:status|http|code)\b\D{0,3}401\b")),
     ("locked", (r"vault is locked", r"session key is invalid")),
+    # bw's text when the item holds no such value, which is also what an item in a collection
+    # the account holds with Hide Passwords returns: the item and its username read fine.
+    ("absent", (r"\bno (?:password|totp) available for this login\b",)),
     ("network", (r"\b(?:econnrefused|econnreset|enotfound|etimedout|eai_again|ehostunreach|enetunreach)\b",
                  r"\bgetaddrinfo\b", r"fetch failed", r"socket hang up",
                  r"unable to verify the first certificate", r"self[- ]signed certificate",
@@ -108,6 +113,25 @@ def classify(stderr: str, unlock: bool = False) -> tuple[str, int | None]:
     if unlock and _UNLOCK_AUTH.search(text):
         return "auth", None
     return "unknown", None
+
+
+def read_value(bw, item_id: str, field: str, resync=None) -> str:
+    """Read an item's password or TOTP, syncing once when bw has no such value for it.
+
+    bw answers "No password available for this login." both for an item saved without a
+    password and for one in a collection the account holds with Hide Passwords, and the
+    local vault copy can be a whole sync interval behind the server either way. ``resync``
+    returns True once that account's copy is fresh; one sync tells a stale copy from a
+    standing permission, and a second would not, so the retry is bounded at one. A value
+    still absent after it raises ``BwError("absent")``, which no retry will clear.
+    """
+    get = bw.get_totp if field == "totp" else bw.get_password
+    try:
+        return get(item_id)
+    except BwError as exc:
+        if exc.error_class != "absent" or resync is None or not resync():
+            raise
+    return get(item_id)
 
 
 def run_bw(bw_path: str, data_dir: Path | str, args: list[str], secret_env: dict[str, str],
@@ -272,9 +296,9 @@ class Bw:
         return run_bw(self.bw_path, self.data_dir, args, secret_env, stdin, self.extra_env)
 
     def _fail(self, error_class: str) -> BwError:
-        # An "unknown" failure on an unlocked account is about one call (an item
+        # A per-call failure on an unlocked account is about one call (an item
         # with no TOTP, say), not the account, so it leaves error_class alone.
-        if error_class != "unknown" or self._session is None:
+        if error_class not in PER_CALL_CLASSES or self._session is None:
             self._error_class = error_class
         if error_class in ("locked", "auth"):
             self._session = None

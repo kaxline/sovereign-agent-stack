@@ -231,6 +231,7 @@ Fixed codes, never quoting page text, the value or a script:
 | `origin_mismatch` | the page is not on an item or IdP origin |
 | `not_a_secret_field` | `signin_fill` on, or `signin_type` into, the wrong kind of field |
 | `no_totp` | `field: "totp"` on an item without a key, or `bw get totp` fails |
+| `no_password` | the item yields no password the account can read, and a sync did not change that |
 | `no_page` | `sign_in` with no tab of the task on the item's first origin |
 | `handover_refused` | the agent's tab is not on an item origin |
 | `page_error` | a page exception or a CDP error in the signer |
@@ -242,6 +243,36 @@ Fixed codes, never quoting page text, the value or a script:
 
 On `signer_unavailable` or `sandbox_unavailable`, an item marked for in-page fill can still be
 filled the old way; any other item fails and the agent tells the user.
+
+`no_password` is the one refusal a retry cannot clear, so its message says so instead of asking the
+agent to try again. bw returns the same text for an item saved without a password and for one in a
+collection the account holds with Hide Passwords, and the broker cannot tell them apart without
+reading the user's vault; the message names both.
+
+## Vault freshness
+
+`bw` reads a local copy of the vault, so a change made on the server is invisible until the next
+`bw sync`. The sync thread runs one per unlocked account every `BITWARDEN_SYNC_MINUTES` (10 by
+default), which leaves a window where the agent acts on a stale copy. Two places close it:
+
+- `GET /items` syncs first when the local copy may be older than `BITWARDEN_ITEMS_SYNC_SECONDS`
+  (60 by default), so an item added or changed on the server is not invisible for a whole interval.
+  The agent chooses what to sign in to from this listing, and it is read once per turn.
+- A read that finds no value for an item syncs that one account once and reads again. One sync
+  tells a stale copy from a standing permission; a second would not, so the retry is bounded at one
+  and a refusal after it is `no_password`. Both read paths share it (`bwcli.read_value`): `sign_in`
+  and the opt-in in-page `/fill` read the same local copy, so the same staleness reaches both.
+
+Neither Bitwarden nor Vaultwarden offers a push for vault changes, so polling is the only lever.
+The sign-in path pays nothing when the local copy is already right.
+
+The cost of syncing on `GET /items` is that listing now makes a network call. `bw sync` took 2-5
+seconds against a reachable server in the live checks; its own ceiling is `TIMEOUT_SECONDS` (120),
+above the agent's 45-second call timeout. With the server unreachable, a listing that used to answer
+from the local copy can therefore time out. `sync_account` stamps `_last_sync` before it runs, so a
+failed sync still counts as an attempt and the next 60 seconds of listings serve the local copy:
+the stall is one listing per interval, not every listing. A sign-in would fail against an
+unreachable server anyway, so the window where this loses the agent something it had is narrow.
 
 ## Hermes side
 

@@ -60,6 +60,9 @@ ERRORS = {
     "not_a_secret_field": "That element is not a field this value may go into. Take a snapshot, pick the right "
                           "field, or cancel.",
     "no_totp": "This Bitwarden login has no authenticator key.",
+    "no_password": "This Bitwarden login has no password the agent account can read. Retrying will not help: "
+                   "tell the user to check the item has a password, and that the collection holding it does not "
+                   "hide passwords from the agent's account.",
     "handover_refused": "The browser tab is not on the login's origin, so nothing was handed over. Open the "
                         "login's page in the tab and call signin_finish again.",
     "page_error": "The sign-in page failed. Call browser_vault action=signin_cancel and tell the user.",
