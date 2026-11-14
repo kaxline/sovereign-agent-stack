@@ -517,6 +517,7 @@ class Broker:
         sync of it is running."""
         lock = self._syncing[slug]
         if not lock.acquire(blocking=False):
+            LOG.info("%s: sync already running", slug)
             return None
         try:
             return self._sync_account(slug)
@@ -529,9 +530,11 @@ class Broker:
             self._last_sync[slug] = time.monotonic()
         if bw.state != "unlocked":
             return account.unlock == "stored" and self.unlock_stored(slug)
+        started = time.monotonic()
         try:
             bw.sync()
             ok = True
+            LOG.info("%s: synced (%.1fs)", slug, time.monotonic() - started)
         except BwError:
             ok = False
             LOG.info("%s: sync failed (%s)", slug, bw.error_class or "unknown")

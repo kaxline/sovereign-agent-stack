@@ -2838,6 +2838,44 @@ def test_items_does_not_sync_a_fresh_listing() -> None:
         b.expect_clean()
 
 
+def test_sync_logs_a_completed_sync() -> None:
+    """A sync that worked used to log nothing, so a stale vault looked the same as a fresh one."""
+    with broker_run() as b:
+        b.add_account("personal")
+        b.add_account("manual", unlock="manual")  # never unlocked, so no bw sync runs for it
+        b.start(unlocked=["personal"])
+        before = len(b.stderr())
+        got = b.call("POST", "/sync", {})
+        expect(got == (200, {"synced": ["personal"]}), f"/sync answered {got}")
+        after = b.stderr()[before:]
+        expect("personal: synced" in after, f"a completed sync logged nothing: {after!r}")
+        expect("manual: synced" not in after, f"logged a sync that never ran: {after!r}")
+        b.expect_clean()
+
+
+def test_sync_logs_an_account_another_sync_holds() -> None:
+    """The line a diagnosis needs when no sync line appears: this account was already syncing."""
+    with broker_run() as b:
+        b.env["BITWARDEN_ITEMS_SYNC_SECONDS"] = "0"  # every listing counts as stale
+        b.add_account("personal")
+        b.start(unlocked=["personal"])
+        b.run.vault_file.write_text(json.dumps(vault_data(slow_sync=2)), encoding="utf-8")
+        first: list = []
+        worker = threading.Thread(target=lambda: first.append(b.call("POST", "/sync", {})))
+        worker.start()
+        try:
+            time.sleep(0.5)
+            before = len(b.stderr())
+            b.call("GET", "/items")
+            after = b.stderr()[before:]
+        finally:
+            worker.join(30)
+        expect("personal: sync already running" in after, f"the held account logged nothing: {after!r}")
+        expect("personal: synced" not in after, f"logged a sync it skipped: {after!r}")
+        expect(first == [(200, {"synced": ["personal"]})], f"the /sync holding the lock: {first}")
+        b.expect_clean()
+
+
 def test_in_page_fill_syncs_once_before_refusing() -> None:
     """In-page fill reads the same local vault, so it gets the same one sync and the same honest code."""
     hidden = login_item("A", FOLDER_AGENT, password=None, uris=[("https://a.example.com", None)])
@@ -2913,6 +2951,8 @@ def main() -> None:
     test_in_page_fill_syncs_once_before_refusing()
     test_items_syncs_a_stale_listing()
     test_items_does_not_sync_a_fresh_listing()
+    test_sync_logs_a_completed_sync()
+    test_sync_logs_an_account_another_sync_holds()
     mounts = [
         (ROOT / "scripts", "/work/scripts"),
         (ROOT / "compose" / "bitwarden-broker", "/work/compose/bitwarden-broker"),

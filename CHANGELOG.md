@@ -25,6 +25,10 @@ the stack under another app.
   Hide Passwords leaves the item and its username readable and the password not,
   and no retry clears it. The message names both that and an item saved without
   a password.
+- `docker logs bitwarden-broker` now carries a line per completed sync
+  (`<account>: synced (1.2s)`), and one when a sync is skipped because another
+  sync of that account is already running. A sync that worked used to log
+  nothing, so a vault that had not synced could not be told from one that had.
 
 ### Upgrade steps
 
