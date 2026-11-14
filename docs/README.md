@@ -33,3 +33,4 @@ Per-service setup, usage, and verification guides. See the [project README](../R
 | [Extending the stack](extending.md) | downstream | Second copies, overlay mounts, worker mounts, model key rotation |
 | [Contracts](contracts/README.md) | downstream | Each category's interface and current implementation, for swapping one out |
 | [Releasing](releasing.md) | maintainers | Version tags and the changelog |
+| [Upstream proposals](upstream/client-context.md) | maintainers | Drafts for moving gateway overlays into Hermes ([history budget](upstream/history-budget.md)); not filed |
