@@ -121,6 +121,20 @@ TLS to `host.docker.internal` may fail hostname verification, because Bridge's
 certificate may not name that host. On Linux, `host-gateway` is the Docker
 bridge address, so it doesn't reach a Bridge that listens only on loopback.
 
+Bridge in a container is not supported here, and the published image is no
+shortcut to it: `shenxn/protonmail-bridge:build` stopped at Bridge 3.19.0
+because upstream's build has failed since 3.22, which needs libfido2. A local
+build of 3.27.1 worked in 2026-10 with upstream's `build/Dockerfile`,
+`entrypoint.sh` and `gpgparams` at commit 5874fde, the libfido2 and libcbor
+packages added, a `golang:1.26-trixie` builder (3.27 needs Go 1.26) and
+`debian:trixie-slim` at runtime, keeping upstream's entrypoint and `/root`
+volume layout so an existing Bridge volume still reads. Bridge upgrades its
+vault on first start and an older Bridge may not read it back, so copy the
+volume first. Inside the container Bridge binds `127.0.0.1` only, so another
+container needs socat in front of it, and one Bridge instance runs at a time,
+so the Mac app has to be quit. Those three build files and a compose service
+for them are on the local tag `archive/protonmail-bridge-3.27.1`.
+
 ### Calling order
 
 The order Boundary uses, which you can follow by hand:
