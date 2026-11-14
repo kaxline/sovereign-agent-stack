@@ -15,7 +15,8 @@ scripts/test-bitwarden-signer.py does for the scrub encodings.
 
 from __future__ import annotations
 
-from urllib.parse import urlsplit
+import re
+from urllib.parse import parse_qsl, urlsplit
 
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 
@@ -65,3 +66,80 @@ def cookie_domain_allowed(domain, hosts: set[str]) -> bool:
     if name in hosts:
         return True
     return domain_cookie and "." in name and any(h.endswith("." + name) for h in hosts)
+
+_TOKEN_PARAM = re.compile(r"^(token|code|invite|invitation|key|secret|otp|magic|confirm|"
+                          r"confirmation|reset|verify|verification|activation|auth|signature|sig|"
+                          r"hash)$", re.I)
+
+_SINGLE_USE = re.compile(r"^(invite|invites|invitation|accept|activate|activation|reset|verify|"
+                         r"verification|confirm|confirmation|magic|token|tokens)$", re.I)
+
+# The site's own login page, for an item whose URIs do not reach one.
+# Five, not six: the origin root always takes a slot, and the ladder's cap is six
+# navigations, so a sixth path here could never be reached.
+WELL_KNOWN_LOGIN_PATHS = ("/login", "/signin", "/sign-in", "/auth/login", "/users/sign_in")
+
+MAX_URL = 8192  # the signer refuses a longer one (compose/bitwarden-signin/signer/server.py)
+
+
+def single_use_uri(uri: str) -> bool:
+    """True for a URI that looks like a one-time link rather than a reusable login page.
+
+    Navigating to one can spend it, so the sign-in ladder never opens these: an
+    invitation, a password reset, an email confirmation, a magic link. The marks
+    are a path segment naming one of those flows, an opaque segment of 20
+    characters or more with no dot in it (how such links carry their token), a
+    query parameter named for a token, or a long opaque fragment.
+
+    A query alone is not a mark. ``/login?next=/home`` and ``?returnUrl=`` are
+    ordinary login URLs, and skipping them would skip the page the person saved.
+    """
+    value = (uri or "").strip() if isinstance(uri, str) else ""
+    if not value:
+        return False
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return False
+    for name, _ in parse_qsl(parts.query, keep_blank_values=True):
+        if _TOKEN_PARAM.match(name):
+            return True
+    if len(parts.fragment) >= 20 and "." not in parts.fragment:
+        return True
+    for segment in parts.path.split("/"):
+        if not segment:
+            continue
+        if _SINGLE_USE.match(segment):
+            return True
+        if len(segment) >= 20 and "." not in segment:
+            return True
+    return False
+
+
+def login_candidates(uris, origin: str, limit: int = 6) -> list[str]:
+    """URLs to try for ``origin``'s login page, best first and at most ``limit``.
+
+    The item's own reusable URIs come first, since a saved ``/login`` is the page
+    the person meant. Then the origin root, which most applications redirect to
+    their login page, then the well-known paths.
+    """
+    root = (normalize_origin(origin) or "").rstrip("/")
+    if not root:
+        return []
+    out: list[str] = []
+    for uri in list(uris or ()):
+        if isinstance(uri, str) and uri.strip() and not single_use_uri(uri):
+            out.append(uri.strip())
+    out.append(root + "/")
+    out.extend(root + path for path in WELL_KNOWN_LOGIN_PATHS)
+    seen: set[str] = set()
+    picked: list[str] = []
+    for url in out:
+        key = url.rstrip("/") or url
+        if key in seen or len(url) > MAX_URL:
+            continue
+        seen.add(key)
+        picked.append(url)
+        if len(picked) == limit:
+            break
+    return picked

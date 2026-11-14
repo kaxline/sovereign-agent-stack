@@ -40,6 +40,9 @@ class ItemMeta:
     # page it names (https://host/login), not the site root. Its origin is
     # origins[0], so it passes the signer's check.
     first_uri: str | None = None
+    # Every fill URI as the person wrote it, in stored order, for the sign-in
+    # ladder (signin.py:_open). first_uri is uris[0] when there is one.
+    uris: tuple[str, ...] = ()
 
 
 def parse_handle(handle: str) -> tuple[str, str] | None:
@@ -60,6 +63,11 @@ def _fill_uris(uris: list[dict]):
         origin = normalize_origin(raw)
         if origin and origin.startswith(("http://", "https://")):
             yield raw.strip(), origin
+
+
+def fill_uri_list(uris: list[dict]) -> tuple[str, ...]:
+    """Every fill URI whole, path and query kept, in stored order."""
+    return tuple(uri for uri, _ in _fill_uris(uris))
 
 
 def fill_origins(uris: list[dict]) -> tuple[str, ...]:
@@ -148,7 +156,7 @@ class Vault:
                 handle=handle, label=item["name"] or item_origins[0], username=item["username"] or None,
                 origins=item_origins, has_totp=item["has_totp"], account=slug, item_id=item["id"],
                 in_page_fill=item["in_page_fill"], idp_origins=tuple(item["idp_origins"]),
-                first_uri=first_fill_uri(item["uris"]),
+                first_uri=first_fill_uri(item["uris"]), uris=fill_uri_list(item["uris"]),
             ))
         return out
 

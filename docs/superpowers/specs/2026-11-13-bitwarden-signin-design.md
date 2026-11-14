@@ -279,6 +279,101 @@ from inside `hermes`. So in 0.3.16:
   request for its relay. Until then sign-in works only in the in-container Chromium, as fills do
   today.
 
+## Finding the login page
+
+Added 2026-11-13, after live check 2 opened an expired invitation page and signed in
+nowhere. The item's URI is evidence about which site, not an instruction about which
+page — the same reading Bitwarden's extension takes when it offers autofill anywhere on
+the domain. `sign_in` therefore finds the login page itself.
+
+### Why
+
+People save a login the first time they see a login screen, so the stored URI is often
+an invitation, a password reset, an SSO landing page or a deep link with a one-time
+token. `_open` navigated to that URI and the signer landed on a page with no login form.
+In-page `fill` had the same blind spot; nothing recovered from it.
+
+### Candidates
+
+`_open` builds an ordered list and keeps the first page that holds a login form:
+
+1. The item's fill URIs, in stored order, minus the ones that look single-use (see
+   below).
+2. The origin root, `origins[0]`.
+3. `/login`, `/signin`, `/sign-in`, `/auth/login`, `/users/sign_in` on `origins[0]`. Five, not
+   more: the root takes a slot and the cap is six, so a sixth path could never be reached.
+
+At most six navigations in one `sign_in`, and every candidate goes through the signer's
+existing `url_allowed` check, so nothing outside the item's own origins is ever opened.
+
+A page holds a login form when its snapshot has a password field or a username field:
+`_find(nodes, "password") or _find(nodes, "username")`. The username case matters because
+two-step logins ask for the identifier on one page and the password on the next, which
+the fill sequence already handles.
+
+### Single-use URIs are never navigated to
+
+A URI is treated as single-use when a path segment matches `invite`, `accept`, `activate`,
+`reset`, `verify`, `confirm`, `magic` or `token`, when a path segment is opaque — 20
+characters or more with no dot — when a query parameter is named for a token (`token`,
+`code`, `key`, `secret`, `otp`, and the rest of `_TOKEN_PARAM`), or when the fragment is
+long and opaque.
+
+A query alone is not a mark: `/login?next=/home` and `?returnUrl=` are ordinary login
+URLs, and the project's own test fixture is one of them. Those URIs still count as origin
+evidence, and the signer never opens them.
+
+My call, not Keith's: navigating to a one-time link can consume it, so a stale invite
+stays stale and a live reset link is not spent on a sign-in attempt. The cost is an item
+whose login URL carries a token-named parameter it does not actually spend; the origin
+root and the well-known paths cover that case, and if they do not, the agent still gets a
+snapshot.
+
+### When nothing matches
+
+The last snapshot is returned, as a snapshot, not an error. That is the existing "nothing
+left to fill" path, so no new agent-visible failure code appears and the error table
+above is unchanged. The agent carries on with `signin_click`, `signin_type` and
+`signin_fill`, which is what the `browser-login` skill already tells it to do.
+
+The skill gains one line for the shape live check 2 hit: when the page is not the login
+form but the snapshot holds a link or button back to it, `signin_click` that ref instead
+of `signin_cancel`. In live check 2 the snapshot offered a "Back to Sign In" button and
+the agent cancelled, then tried to click it in its own tab with `browser_exec`.
+
+### Signer surface
+
+One route, `/session/navigate`, taking `{"url", "allowed"}` like `/session/open` but
+requiring a session that is already open. `Session.open` already navigates the existing
+page and already raises `origin_mismatch` through `url_allowed`, so the route is a
+session-scoped alias for it: `no_session` without a session, the same `page_error` and
+`timeout` behavior, and no new way to reach a URL that `/session/open` could not.
+
+The broker calls `/session/open` for the first candidate and `/session/navigate` for
+each one after it.
+
+### Approaches considered
+
+- **A better single guess, up front.** Drop to the origin root when the stored URI looks
+  single-use, keep one navigation, add no signer surface. Rejected as the primary: it
+  guesses without checking, so a site whose root is a marketing page still fails.
+- **The verified ladder above.** Chosen. It is the only option that handles a site
+  nobody has met yet, and the check is `_find`, which is already written.
+- **Leave it to the agent.** `signin_click` and the skill alone. Rejected as the whole
+  answer: an invite page with no link back leaves the agent nowhere, and it puts
+  page-finding in the model's hands, which this design narrowed on purpose. Kept as the
+  fallback and the skill line above.
+
+### Scope
+
+Goals: a sign-in that reaches the login form on a site whose saved URI does not.
+Non-goals: searching outside the item's origins, reading or returning page values,
+following redirects the browser would not follow on its own, and writing a working URL
+back to the vault. Anti-goal: a one-time link spent by a sign-in attempt.
+
+Ships in 0.3.16, on this branch, before landing — Keith's call. Live check 2 re-runs
+against it.
+
 ## Boundary
 
 For the 0.3.16 contract, sent to the sessions "Pin 0.3.14 in labs.11" and "Bitwarden integration

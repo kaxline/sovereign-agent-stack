@@ -219,12 +219,30 @@ the agent's tab and the signer kills its Chromium.
 
 The agent's side is `browser_vault`: `sign_in` with the handle, then `signin_snapshot`,
 `signin_click`, `signin_type`, `signin_fill`, `signin_finish` and `signin_cancel`. The
-`browser-login` skill gives the order. `sign_in` opens the login's first URI in the signer's
+`browser-login` skill gives the order. `sign_in` finds the site's login page in the signer's
 browser, types the username, fills the password and, when the site asks for a code and the item has
 an authenticator key, the code, and submits. Where it cannot carry on it returns the page as a
 snapshot — role, name, visible text and a ref per actionable node, no input values — and the agent
 continues a step at a time. `signin_fill` is the only action that writes a password or a code, and
 only into a password field or a one-time-code field; `signin_type` refuses a password field.
+
+### Which page the signer opens
+
+A login is usually saved the first time someone sees a login screen, so the item's URI is often an
+invitation, a password reset or a deep link that opens no form. `sign_in` therefore treats the URI
+as evidence about the site, not an instruction about the page: it tries the item's reusable URIs in
+stored order, then the site root, which most applications redirect to their own login page, then
+`/login`, `/signin`, `/sign-in`, `/auth/login` and `/users/sign_in`. It keeps the first page whose
+snapshot holds a password field or an identifier field, at most six pages in all, and every one on
+an origin the item allows.
+
+A URI that looks single-use is never opened, because navigating to one can spend it: a path segment
+naming an invitation, reset, activation, verification, confirmation or magic link, an opaque path
+segment of 20 characters or more, a query parameter named for a token, or a long opaque fragment. A
+plain query does not count — `/login?next=/home` is an ordinary login page.
+
+When no candidate holds a login form, `sign_in` returns the last page as a snapshot rather than an
+error, and the agent carries on with `signin_click` and the rest.
 
 Open the login page in the agent's own browser first. The session is handed to that tab at the
 end, so `sign_in` refuses with `no_page`, before it opens a session at all, when no tab of the

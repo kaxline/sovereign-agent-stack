@@ -99,8 +99,8 @@ one step at a time, and the steps return page snapshots, never a value.
 1. **Open the site in your own browser first**, as in step 1 above. The
    session is handed to that tab at the end, and there is nothing to hand it
    to otherwise.
-2. `browser_vault(action="sign_in", handle="bwbroker:…")`. The broker opens
-   the login's first URI in its own browser and works through the form. The
+2. `browser_vault(action="sign_in", handle="bwbroker:…")`. The broker finds
+   the site's login page in its own browser and works through the form. The
    result is either `done: true` with the origin and a cookie count, or a
    snapshot: `origin` and a list of nodes with `ref`, `role`, `name` and
    `text`.
@@ -111,6 +111,9 @@ one step at a time, and the steps return page snapshots, never a value.
    - `signin_fill` with `field="password"` or `field="totp"` is the **only**
      way a password or a code is entered. `signin_type` is for text you have,
      such as a username, and refuses a password field.
+   - **A page that is not the login form** — an expired invitation, a landing
+     page — still has a way on: if the snapshot holds a link or button back to
+     signing in, `signin_click` that ref. Cancel only when there is none.
    - `signin_finish` ends the flow and hands the session over when the site
      is signed in but `sign_in` returned a snapshot. `signin_cancel` ends the
      session and throws the browser away.

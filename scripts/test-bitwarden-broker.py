@@ -393,6 +393,44 @@ def test_normalize_origin() -> None:
     expect(origins.normalize_origin(None) is None, "None input")
 
 
+def test_single_use_uri() -> None:
+    single = ("https://x.test/invite/abc", "https://x.test/accept", "https://x.test/activate/1",
+              "https://x.test/password/reset", "https://x.test/verify/9", "https://x.test/confirm",
+              "https://x.test/magic", "https://x.test/token/zz",
+              "https://x.test/login?token=AAAAAAAAAAAA", "https://x.test/signin?code=99",
+              "https://x.test/go#AAAAAAAAAAAAAAAAAAAAAA", "https://x.test/s/AAAAAAAAAAAAAAAAAAAAAA")
+    for uri in single:
+        expect(origins.single_use_uri(uri), f"single-use: {uri}")
+    reusable = ("https://x.test/login", "https://x.test/", "https://x.test",
+                "https://x.test/users/sign_in", "https://x.test/auth/login",
+                "https://x.test/static/app.bundle.min.js",
+                "https://x.test/login?next=/home", "https://x.test/login?returnUrl=%2Fa",
+                "https://x.test/login#form")
+    for uri in reusable:
+        expect(not origins.single_use_uri(uri), f"reusable: {uri}")
+
+
+def test_login_candidates_order_and_cap() -> None:
+    got = origins.login_candidates(("https://x.test/invite/abc", "https://x.test/signin"), "https://x.test")
+    expect(got[0] == "https://x.test/signin", f"stored reusable URI first: {got}")
+    expect(got[1] == "https://x.test/", f"origin root second: {got}")
+    expect("https://x.test/login" in got, f"well-known paths: {got}")
+    expect(not any("invite" in uri for uri in got), f"no single-use URI: {got}")
+    expect(len(got) <= 6, f"cap: {got}")
+    expect(len(set(got)) == len(got), f"no duplicates: {got}")
+
+    stored_login = origins.login_candidates(("https://x.test/login",), "https://x.test")
+    expect(stored_login.count("https://x.test/login") == 1, f"stored path not repeated: {stored_login}")
+
+    none_usable = origins.login_candidates(("https://x.test/invite/abc",), "https://x.test")
+    expect(none_usable[0] == "https://x.test/", f"root first when every URI is single-use: {none_usable}")
+    expect(none_usable == ["https://x.test/"] + ["https://x.test" + p for p in origins.WELL_KNOWN_LOGIN_PATHS],
+           f"every well-known path is reachable under the cap: {none_usable}")
+
+    long_uri = "https://x.test/" + "a" * 9000
+    expect(long_uri not in origins.login_candidates((long_uri,), "https://x.test"), "URL over MAX_URL dropped")
+
+
 def test_bw_invocation() -> None:
     planted = {"LEAKY_TOKEN": LEAKY_ENV, "BW_SESSION": LEAKY_ENV, "BW_PASSWORD": LEAKY_ENV,
                "FAKE_BW_LOG": "/nonexistent/broker-env.log", "LC_ALL": "C.UTF-8"}
@@ -1423,8 +1461,9 @@ class FakeSigner:
     """The signer's socket API with scripted pages, on a Unix socket.
 
     ``pages`` is what the session shows: ``/session/open`` returns the first,
-    ``/session/click`` moves to the next and returns it, and the other session
-    routes return the current one. A page from ``ax_error`` answers with that
+    ``/session/click`` and ``/session/navigate`` move to the next and return it,
+    and the other session routes return the current one. A page answering
+    ``timeout`` ends the session, as the signer's does. A page from ``ax_error`` answers with that
     code instead. ``refuse`` maps a session route other than open and end to a
     ``(code, status)`` it always answers with, for a route the page alone
     cannot make fail. Every request is kept in ``calls`` as ``(route, body)``.
@@ -1465,9 +1504,12 @@ class FakeSigner:
                 return status, {"error": code}
             if route == "/session/export":
                 return 200, dict(self.export)
-            if route == "/session/click":
+            if route in ("/session/click", "/session/navigate"):
                 self.index = min(self.index + 1, len(self.pages) - 1)
-            return self._page()
+            status, body = self._page()
+            if body.get("error") == "timeout":
+                self.session, self.index = False, 0
+            return status, body
 
     def _page(self) -> tuple[int, dict]:
         page = self.pages[self.index]
@@ -1646,6 +1688,85 @@ def test_sequence_opens_the_item_uri() -> None:
         b.expect_clean()
 
 
+LADDER_LOGIN = ax_page(SIGNIN_ORIGIN, ax_node(1, "textbox", "Username"),
+                       ax_node(2, "textbox", "Password"), ax_node(3, "button", "Log in"))
+LADDER_USERNAME_ONLY = ax_page(SIGNIN_ORIGIN, ax_node(1, "textbox", "Email"),
+                               ax_node(2, "button", "Next"))
+INVITE_URI = "https://login.example.com/invite/AAAAAAAAAAAAAAAAAAAA"
+
+
+def invite_vault(extra_uris=()) -> dict:
+    """Item A whose only saved URI is a single-use invitation link."""
+    data = vault_data()
+    uris = [(INVITE_URI, None)] + [(uri, None) for uri in extra_uris]
+    data["items"] = [login_item("A", FOLDER_AGENT, uris=uris, in_page=False)]
+    return data
+
+
+def ladder_start(fake_kwargs, vault=None):
+    """One /signin/start against ``vault``, returning (status, body, fake)."""
+    with broker_run(vault=vault or invite_vault()) as b:
+        b.add_account("personal")
+        b.start(unlocked=["personal"])
+        with fake_signer(b, **fake_kwargs) as fake:
+            got = b.call("POST", "/signin/start", signin_body(handle=handle("personal", "A")))
+            urls = [body["url"] for route, body in fake.calls
+                    if route in ("/session/open", "/session/navigate")]
+            routes = [r for r in fake.routes() if r in ("/session/open", "/session/navigate")]
+            status_body = got
+        b.stop()
+        b.expect_clean()
+    return status_body, urls, routes
+
+
+def test_open_walks_to_the_first_page_with_a_login_form() -> None:
+    """The item's only URI is an invitation, so the ladder walks on to the login page."""
+    (status, body), urls, routes = ladder_start({"pages": [UNKNOWN_PAGE, LADDER_LOGIN]})
+    expect(status == 200, f"/signin/start: {status} {body}")
+    expect(not any("invite" in url for url in urls), f"a single-use URI was opened: {urls}")
+    expect(urls[0] == SIGNIN_ORIGIN + "/", f"the origin root is first: {urls}")
+    expect(urls[1] == SIGNIN_ORIGIN + "/login", f"then the first well-known path: {urls}")
+    expect(routes == ["/session/open", "/session/navigate"], f"one open then navigates: {routes}")
+
+
+def test_open_stops_at_a_username_only_page() -> None:
+    """A two-step login shows the identifier field first; that is a login form."""
+    (status, body), urls, routes = ladder_start({"pages": [LADDER_USERNAME_ONLY, LADDER_LOGIN]})
+    expect(status == 200, f"/signin/start: {status} {body}")
+    expect(routes == ["/session/open"], f"the ladder stopped at the first page: {routes}")
+
+
+def test_open_carries_on_past_page_error_and_origin_mismatch() -> None:
+    """A candidate that will not load is a miss, not the end of the sign-in."""
+    pages = [ax_error("page_error", 502), ax_error("origin_mismatch", 403), LADDER_LOGIN]
+    (status, body), urls, routes = ladder_start({"pages": pages})
+    expect(status == 200, f"/signin/start after two bad candidates: {status} {body}")
+    expect(len(routes) == 3, f"every candidate tried: {routes}")
+
+
+def test_open_stops_the_ladder_on_timeout() -> None:
+    """timeout ends the signer's session, so the ladder cannot navigate again."""
+    pages = [UNKNOWN_PAGE, ax_error("timeout", 504), LADDER_LOGIN]
+    (status, body), urls, routes = ladder_start({"pages": pages})
+    expect((status, body) == (504, {"error": "timeout"}), f"timeout surfaces: {status} {body}")
+    expect(len(routes) == 2, f"no navigate after timeout: {routes}")
+
+
+def test_open_caps_navigations() -> None:
+    """Six navigations at most, however many candidates an item has."""
+    extra = tuple(f"https://login.example.com/p{n}" for n in range(8))
+    (status, body), urls, routes = ladder_start({"pages": [UNKNOWN_PAGE]},
+                                                vault=invite_vault(extra_uris=extra))
+    expect(len(routes) == 6, f"capped at six navigations: {routes}")
+    expect(status == 200, f"the last snapshot is returned: {status} {body}")
+
+
+def test_open_returns_the_last_snapshot_when_nothing_matches() -> None:
+    """No login form anywhere: the agent gets a snapshot to carry on from, not an error."""
+    (status, body), urls, routes = ladder_start({"pages": [UNKNOWN_PAGE]})
+    expect((status, body) == (200, UNKNOWN_PAGE), f"snapshot, not an error: {status} {body}")
+
+
 def test_handover_keeps_the_signers_cookie_rule() -> None:
     """The handover applies the signer's cookie rule again, with the same outcome."""
     sys.path.insert(0, str(ROOT / "compose" / "bitwarden-signin"))
@@ -1746,7 +1867,10 @@ def test_auto_sequence_returns_snapshot_on_unknown_page() -> None:
         with fake_signer(b) as fake:
             got = b.call("POST", "/signin/start", signin_body(handle=handle("personal", "A")))
             expect(got == (200, UNKNOWN_PAGE), f"/signin/start on an unknown page: {got}")
-            expect(fake.routes() == ["/session/open"], f"the sequence acted: {fake.routes()}")
+            # The ladder walks the candidates; what this test pins is that the
+            # sequence itself took no action on a page it does not understand.
+            acted = [r for r in fake.routes() if r not in ("/session/open", "/session/navigate")]
+            expect(acted == [], f"the sequence acted: {acted}")
             # The session stays open, so the agent can drive it with the other routes.
             expect(b.call("POST", "/signin/snapshot", {}) == (200, UNKNOWN_PAGE), "/signin/snapshot")
         b.stop()
@@ -2506,6 +2630,8 @@ def test_sync_coalesced() -> None:
 def main() -> None:
     test_instance_store()
     test_normalize_origin()
+    test_single_use_uri()
+    test_login_candidates_order_and_cap()
     test_bw_invocation()
     test_scope_filtering()
     test_mixed_uris()
@@ -2528,6 +2654,12 @@ def main() -> None:
     test_signin_routes_keep_tcp_checks()
     test_no_route_returns_canary()
     test_sequence_opens_the_item_uri()
+    test_open_walks_to_the_first_page_with_a_login_form()
+    test_open_stops_at_a_username_only_page()
+    test_open_carries_on_past_page_error_and_origin_mismatch()
+    test_open_stops_the_ladder_on_timeout()
+    test_open_caps_navigations()
+    test_open_returns_the_last_snapshot_when_nothing_matches()
     test_handover_keeps_the_signers_cookie_rule()
     test_fill_uses_item_origins_only()
     test_submit_prefers_the_form_button_over_the_navigation()

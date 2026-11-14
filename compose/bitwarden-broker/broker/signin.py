@@ -33,6 +33,7 @@ import re
 import threading
 
 from . import cdp
+from . import origins as origins_mod
 from .bwcli import BwError
 from .signin_client import HEALTH_TIMEOUT_SECONDS, SignerUnavailable
 
@@ -61,6 +62,9 @@ STATUS = {
 # Codes the signer raises after ending its own session.
 ENDED_BY_SIGNER = ("timeout", "page_error")
 # Codes that leave the session usable, so the agent can go on, retry or cancel.
+# A candidate the signer would not load: try the next one rather than give up.
+_LADDER_MISS = ("page_error", "origin_mismatch")
+
 KEEPS_SESSION = ("origin_mismatch", "stale_ref", "not_a_secret_field", "no_totp", "handover_refused")
 
 
@@ -264,6 +268,14 @@ class SignIn:
                 return self._finish(item, target_id, port)
         return snapshot
 
+    def _has_login_form(self, snapshot: dict) -> bool:
+        """A page the ladder can stop on: it asks for a password, or for an identifier.
+
+        The username case is a two-step login, which ``_sequence`` already drives.
+        """
+        nodes = snapshot.get("nodes") or []
+        return _find(nodes, "password") is not None or _find(nodes, "username") is not None
+
     def _needs_secret(self, item, snapshot: dict) -> bool:
         nodes = snapshot.get("nodes") or []
         if _find(nodes, "password") is not None:
@@ -273,17 +285,37 @@ class SignIn:
     # --- actions ------------------------------------------------------------
 
     def _open(self, item) -> dict:
-        # The item's first URI, so a sign-in opens the page the person saved
-        # (https://host/login) and not the site root. Its origin is origins[0],
-        # which is in allowed, so the signer takes it.
-        url = item.first_uri if item.first_uri and len(item.first_uri) <= MAX_URL else item.origins[0]
-        try:
-            return self._call("/session/open", {"url": url, "allowed": self._allowed(item)})
-        except SignInError:
-            # The signer keeps the session of an open that failed, and a session it
-            # already had refuses this one; either way the next sign-in gets a browser.
+        """Walk the item's candidate login pages, keeping the first with a login form.
+
+        People save a login the first time they see one, so the stored URI is often
+        an invitation or a reset link that opens no form. ``login_candidates`` puts
+        the item's reusable URIs first, then the site root, then the well-known
+        login paths; every one is on an origin the signer allows. A candidate that
+        will not load is a miss, and when none holds a form the last snapshot is
+        returned for the agent to carry on from.
+        """
+        candidates = origins_mod.login_candidates(item.uris or (), item.origins[0])
+        allowed = self._allowed(item)
+        snapshot = None
+        last_error = None
+        for index, url in enumerate(candidates):
+            route = "/session/open" if index == 0 else "/session/navigate"
+            try:
+                snapshot = self._call(route, {"url": url, "allowed": allowed})
+            except SignInError as exc:
+                if exc.code in _LADDER_MISS:
+                    last_error = exc
+                    continue
+                # The signer keeps the session of an open that failed, and a session it
+                # already had refuses this one; either way the next sign-in gets a browser.
+                self._end_session()
+                raise
+            if self._has_login_form(snapshot):
+                return snapshot
+        if snapshot is None:
             self._end_session()
-            raise
+            raise last_error or SignInError("page_error")
+        return snapshot
 
     def _fill(self, item, ref: int, field: str) -> dict:
         if field == "totp" and not item.has_totp:

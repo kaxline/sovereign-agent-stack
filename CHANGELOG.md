@@ -55,6 +55,15 @@ the stack under another app.
   `BITWARDEN_SIGNIN_ACTION_SECONDS` (default 30) bounds one action. Cron turns
   get no sign-in. `docs/bitwarden.md` has the whole path, including that the
   `signin` network has unrestricted egress by design.
+- `sign_in` finds the site's login page rather than trusting the item's saved URI, which is
+  often an invitation, a password reset or a deep link that opens no form. It tries the
+  item's reusable URIs in stored order, then the site root, then `/login`, `/signin`,
+  `/sign-in`, `/auth/login` and `/users/sign_in`, and keeps the first page holding a
+  password or identifier field — at most six pages, each on an origin the item allows. A
+  URI that looks single-use is never opened, since navigating to one can spend it. When no
+  candidate holds a login form the last page comes back as a snapshot, as before, for the
+  agent to carry on from. The signer gained one route for this, `POST /session/navigate`,
+  which moves an open session to another allowed URL and starts no second browser.
 - `browser_vault` `fill` and `enter_code` refuse a Bitwarden item that has no
   `agent-in-page-fill` custom field, with `sign_in_only`, and `list` marks
   those items `sign_in_only: true`. A second optional field,
