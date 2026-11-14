@@ -71,6 +71,8 @@ _TOKEN_PARAM = re.compile(r"^(token|code|invite|invitation|key|secret|otp|magic|
                           r"confirmation|reset|verify|verification|activation|auth|signature|sig|"
                           r"hash)$", re.I)
 
+_SEGMENT_PARTS = re.compile(r"[-_.]+")
+
 _SINGLE_USE = re.compile(r"^(invite|invites|invitation|accept|activate|activation|reset|verify|"
                          r"verification|confirm|confirmation|magic|token|tokens)$", re.I)
 
@@ -87,9 +89,14 @@ def single_use_uri(uri: str) -> bool:
 
     Navigating to one can spend it, so the sign-in ladder never opens these: an
     invitation, a password reset, an email confirmation, a magic link. The marks
-    are a path segment naming one of those flows, an opaque segment of 20
-    characters or more with no dot in it (how such links carry their token), a
-    query parameter named for a token, or a long opaque fragment.
+    are a path segment naming one of those flows (in whole or in part, so
+    ``accept-invite`` counts), an opaque *last* segment of 20 characters or more
+    with no dot in it (how such links carry their token), a query parameter named
+    for a token, or a long opaque fragment.
+
+    An opaque segment with more path after it is a tenant, realm or workspace id,
+    as in Entra's ``/<tenant-guid>/oauth2/v2.0/authorize``. Those are reusable
+    login pages, and treating them as spent would leave the item nothing to open.
 
     A query alone is not a mark. ``/login?next=/home`` and ``?returnUrl=`` are
     ordinary login URLs, and skipping them would skip the page the person saved.
@@ -106,13 +113,17 @@ def single_use_uri(uri: str) -> bool:
             return True
     if len(parts.fragment) >= 20 and "." not in parts.fragment:
         return True
-    for segment in parts.path.split("/"):
-        if not segment:
-            continue
-        if _SINGLE_USE.match(segment):
+    segments = [segment for segment in parts.path.split("/") if segment]
+    for segment in segments:
+        # accept-invite, reset-password, verify_email: the flow names itself in
+        # part of a segment, so match the parts, not the segment whole.
+        if any(_SINGLE_USE.match(part) for part in _SEGMENT_PARTS.split(segment)):
             return True
-        if len(segment) >= 20 and "." not in segment:
-            return True
+    # An opaque last segment is the link's token. An opaque segment with more path
+    # after it is a tenant, realm or workspace id -- the Entra and Okta login URLs
+    # are shaped that way -- and discarding those would leave the item no login page.
+    if segments and len(segments[-1]) >= 20 and "." not in segments[-1]:
+        return True
     return False
 
 

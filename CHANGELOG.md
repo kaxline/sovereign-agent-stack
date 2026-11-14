@@ -60,7 +60,9 @@ the stack under another app.
   item's reusable URIs in stored order, then the site root, then `/login`, `/signin`,
   `/sign-in`, `/auth/login` and `/users/sign_in`, and keeps the first page holding a
   password or identifier field — at most six pages, each on an origin the item allows. A
-  URI that looks single-use is never opened, since navigating to one can spend it. When no
+  URI that looks single-use is never opened, since navigating to one can spend it: an
+  invitation, reset, activation, verification or magic link, named in whole or in part by a
+  path segment, or a token in the last path segment, a query parameter or the fragment. When no
   candidate holds a login form the last page comes back as a snapshot, as before, for the
   agent to carry on from. The signer gained one route for this, `POST /session/navigate`,
   which moves an open session to another allowed URL and starts no second browser.

@@ -297,24 +297,39 @@ class SignIn:
         candidates = origins_mod.login_candidates(item.uris or (), item.origins[0])
         allowed = self._allowed(item)
         snapshot = None
-        last_error = None
-        for index, url in enumerate(candidates):
-            route = "/session/open" if index == 0 else "/session/navigate"
+        opened = False
+        stale = False
+        for url in candidates:
             try:
-                snapshot = self._call(route, {"url": url, "allowed": allowed})
+                snapshot = self._call("/session/navigate" if opened else "/session/open",
+                                      {"url": url, "allowed": allowed})
             except SignInError as exc:
-                if exc.code in _LADDER_MISS:
-                    last_error = exc
+                # A miss is worth another candidate only when a browser is there to
+                # navigate. The signer keeps the session of a navigation that failed,
+                # but an open that failed before Chromium started has none, and
+                # walking on would answer no_session instead of the real error.
+                if exc.code in _LADDER_MISS and (opened or self.status() == "busy"):
+                    opened, stale = True, True
                     continue
                 # The signer keeps the session of an open that failed, and a session it
                 # already had refuses this one; either way the next sign-in gets a browser.
                 self._end_session()
                 raise
+            opened, stale = True, False
             if self._has_login_form(snapshot):
                 return snapshot
-        if snapshot is None:
-            self._end_session()
-            raise last_error or SignInError("page_error")
+        if snapshot is None or stale:
+            # The last candidate missed, and a miss can leave the page elsewhere, so
+            # the snapshot kept from an earlier one no longer describes what the agent
+            # would be acting on. Ask, and let a refusal surface as itself.
+            try:
+                return self._call("/session/snapshot", {"allowed": allowed})
+            except SignInError:
+                # _open raising leaves _item unset, so a session kept here would
+                # answer no_session to the agent's own cancel and sit until the
+                # idle reaper. Every other failed open ends it; so does this one.
+                self._end_session()
+                raise
         return snapshot
 
     def _fill(self, item, ref: int, field: str) -> dict:

@@ -313,11 +313,15 @@ the fill sequence already handles.
 
 ### Single-use URIs are never navigated to
 
-A URI is treated as single-use when a path segment matches `invite`, `accept`, `activate`,
-`reset`, `verify`, `confirm`, `magic` or `token`, when a path segment is opaque — 20
-characters or more with no dot — when a query parameter is named for a token (`token`,
-`code`, `key`, `secret`, `otp`, and the rest of `_TOKEN_PARAM`), or when the fragment is
-long and opaque.
+A URI is treated as single-use when part of a path segment matches `invite`, `accept`,
+`activate`, `reset`, `verify`, `confirm`, `magic` or `token` — in part, so `accept-invite`
+and `reset-password` count — when the *last* path segment is opaque (20 characters or more
+with no dot), when a query parameter is named for a token (`token`, `code`, `key`,
+`secret`, `otp`, and the rest of `_TOKEN_PARAM`), or when the fragment is long and opaque.
+
+Only the last segment, because an opaque segment with more path after it is a tenant,
+realm or workspace id: Entra's `/<tenant-guid>/oauth2/v2.0/authorize` is a reusable login
+page, and discarding it would leave that item nothing to open.
 
 A query alone is not a mark: `/login?next=/home` and `?returnUrl=` are ordinary login
 URLs, and the project's own test fixture is one of them. Those URIs still count as origin

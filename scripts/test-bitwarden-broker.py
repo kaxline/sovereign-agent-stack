@@ -398,14 +398,22 @@ def test_single_use_uri() -> None:
               "https://x.test/password/reset", "https://x.test/verify/9", "https://x.test/confirm",
               "https://x.test/magic", "https://x.test/token/zz",
               "https://x.test/login?token=AAAAAAAAAAAA", "https://x.test/signin?code=99",
-              "https://x.test/go#AAAAAAAAAAAAAAAAAAAAAA", "https://x.test/s/AAAAAAAAAAAAAAAAAAAAAA")
+              "https://x.test/go#AAAAAAAAAAAAAAAAAAAAAA", "https://x.test/s/AAAAAAAAAAAAAAAAAAAAAA",
+              # The hyphenated forms these flows actually use.
+              "https://app.example.com/accept-invite/7f3a", "https://app.example.com/reset-password?t=ab12",
+              "https://app.example.com/verify-email/9f2", "https://app.example.com/magic-link/ab12",
+              "https://app.example.com/invite_accept/7f3a")
     for uri in single:
         expect(origins.single_use_uri(uri), f"single-use: {uri}")
     reusable = ("https://x.test/login", "https://x.test/", "https://x.test",
                 "https://x.test/users/sign_in", "https://x.test/auth/login",
                 "https://x.test/static/app.bundle.min.js",
                 "https://x.test/login?next=/home", "https://x.test/login?returnUrl=%2Fa",
-                "https://x.test/login#form")
+                "https://x.test/login#form",
+                # An opaque segment with more path after it is a tenant, realm or
+                # workspace id, not a token: this is a real SSO login page.
+                "https://login.microsoftonline.com/72f988bf-86f1-41af-91ab-2d7cd011db47/oauth2/v2.0/authorize",
+                "https://acme.okta.com/oauth2/ausWb3m0kaIq7Tfj8x7/v1/authorize")
     for uri in reusable:
         expect(not origins.single_use_uri(uri), f"reusable: {uri}")
 
@@ -1467,9 +1475,14 @@ class FakeSigner:
     code instead. ``refuse`` maps a session route other than open and end to a
     ``(code, status)`` it always answers with, for a route the page alone
     cannot make fail. Every request is kept in ``calls`` as ``(route, body)``.
+
+    ``session_on_failed_open`` False models the signer's Chromium failing to
+    start: the open answers its error with no session behind it, as
+    signer/server.py:_open does when _start_browser raises.
     """
 
-    def __init__(self, path, pages=(), health="ready", export=None, open_session=False, refuse=None):
+    def __init__(self, path, pages=(), health="ready", export=None, open_session=False, refuse=None,
+                 session_on_failed_open=True):
         self.path = Path(path)
         self.pages = list(pages) or [UNKNOWN_PAGE]
         self.health = health
@@ -1477,6 +1490,7 @@ class FakeSigner:
                                  "sessionStorage": []}
         self.calls: list[tuple[str, dict]] = []
         self.refuse = dict(refuse or {})
+        self.session_on_failed_open = session_on_failed_open
         self.session = open_session
         self.index = 0
         self.server = None
@@ -1495,8 +1509,10 @@ class FakeSigner:
             if route == "/session/open":
                 if self.session:
                     return 409, {"error": "busy"}
-                self.session, self.index = True, 0
-                return self._page()
+                self.index = 0
+                status, body = self._page()
+                self.session = "error" not in body or self.session_on_failed_open
+                return status, body
             if not self.session:
                 return 409, {"error": "no_session"}
             if route in self.refuse:
@@ -1712,7 +1728,8 @@ def ladder_start(fake_kwargs, vault=None):
             got = b.call("POST", "/signin/start", signin_body(handle=handle("personal", "A")))
             urls = [body["url"] for route, body in fake.calls
                     if route in ("/session/open", "/session/navigate")]
-            routes = [r for r in fake.routes() if r in ("/session/open", "/session/navigate")]
+            routes = [r for r in fake.routes()
+                      if r in ("/session/open", "/session/navigate", "/session/snapshot")]
             status_body = got
         b.stop()
         b.expect_clean()
@@ -1765,6 +1782,24 @@ def test_open_returns_the_last_snapshot_when_nothing_matches() -> None:
     """No login form anywhere: the agent gets a snapshot to carry on from, not an error."""
     (status, body), urls, routes = ladder_start({"pages": [UNKNOWN_PAGE]})
     expect((status, body) == (200, UNKNOWN_PAGE), f"snapshot, not an error: {status} {body}")
+
+
+def test_open_raises_the_real_error_when_the_browser_never_started() -> None:
+    """Chromium failing to start is page_error; the next candidate must not turn it into no_session."""
+    (status, body), urls, routes = ladder_start(
+        {"pages": [ax_error("page_error", 502), LADDER_LOGIN], "session_on_failed_open": False})
+    expect((status, body) == (502, {"error": "page_error"}), f"page_error surfaces: {status} {body}")
+    expect(routes == ["/session/open"], f"no navigate without a session: {routes}")
+
+
+def test_open_does_not_return_a_snapshot_of_a_page_the_signer_left() -> None:
+    """A miss can leave the browser elsewhere, so the snapshot kept from an earlier
+    candidate is stale: the broker asks what the signer shows now instead."""
+    pages = [UNKNOWN_PAGE, ax_error("origin_mismatch", 403)]
+    (status, body), urls, routes = ladder_start({"pages": pages})
+    expect((status, body) == (403, {"error": "origin_mismatch"}),
+           f"the real state surfaces instead of a stale 200: {status} {body}")
+    expect("/session/snapshot" in routes, f"the signer was asked for the current page: {routes}")
 
 
 def test_handover_keeps_the_signers_cookie_rule() -> None:
@@ -2660,6 +2695,8 @@ def main() -> None:
     test_open_stops_the_ladder_on_timeout()
     test_open_caps_navigations()
     test_open_returns_the_last_snapshot_when_nothing_matches()
+    test_open_raises_the_real_error_when_the_browser_never_started()
+    test_open_does_not_return_a_snapshot_of_a_page_the_signer_left()
     test_handover_keeps_the_signers_cookie_rule()
     test_fill_uses_item_origins_only()
     test_submit_prefers_the_form_button_over_the_navigation()
