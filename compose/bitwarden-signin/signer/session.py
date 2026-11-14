@@ -149,6 +149,15 @@ class Session:
             self._settle()
             return self._snapshot(allowed)
 
+    def navigate(self, url: str, allowed: list[str]) -> dict:
+        """Move this session's page to another allowed URL, with no new browser.
+
+        The broker walks a site's candidate login pages this way. ``open`` only
+        navigates the page it already has, so this is that call under a name the
+        server routes while a session is open.
+        """
+        return self.open(url, allowed)
+
     def snapshot(self, allowed: list[str]) -> dict:
         with self._action():
             return self._snapshot(allowed)

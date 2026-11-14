@@ -617,6 +617,36 @@ def test_busy_second_open():
     expect(call(SOCK, "/health", method="GET")[1] == {"status": "ready"}, "health ready after end")
 
 
+def test_navigate_without_a_session_is_no_session():
+    status, body = call(SOCK, "/session/navigate", {"url": A + "/landing", "allowed": [A]})
+    expect((status, body) == (409, {"error": "no_session"}), f"navigate without a session: {status} {body}")
+    expect(profiles() == [], f"no browser started: {profiles()}")
+
+
+def test_navigate_moves_an_open_session():
+    open_page("/login")
+    before = profiles()
+    expect(len(before) == 1, f"one profile while open: {before}")
+    status, snap = call(SOCK, "/session/navigate", {"url": A + "/landing", "allowed": [A]})
+    expect(status == 200, f"navigate: {status} {snap}")
+    expect("Landing page" in texts(snap), f"landing page nodes: {snap}")
+    expect(snap["origin"] == A, f"origin {snap}")
+    expect(profiles() == before, f"same profile after navigate: {profiles()} was {before}")
+    expect(end() == {"ended": True}, "ended")
+
+
+def test_navigate_refuses_an_origin_outside_allowed():
+    open_page("/login")
+    status, body = call(SOCK, "/session/navigate", {"url": B + "/landing", "allowed": [A]})
+    expect((status, body) == (403, {"error": "origin_mismatch"}), f"off-origin navigate: {status} {body}")
+    status, snap = call(SOCK, "/session/snapshot", {"allowed": [A]})
+    expect(status == 200, f"session survives a refused navigate: {status} {snap}")
+    # The refusal comes before Page.navigate, so the browser never left the login page.
+    # A check made after navigating would answer origin_mismatch here too.
+    expect("Password" in texts(snap), f"still on the login page: {snap}")
+    expect(end() == {"ended": True}, "ended")
+
+
 def test_end_without_session():
     expect(end() == {"ended": False}, "nothing to end")
     for route, body in (("/session/snapshot", {"allowed": [A]}), ("/session/click", {"ref": 1, "allowed": [A]}),
@@ -725,7 +755,9 @@ for test in (test_config_rejects_invalid, test_start_never_disables_sandbox, tes
              test_end_without_session, test_bad_requests, test_open_snapshot_has_no_values,
              test_fill_password_then_snapshot_scrubbed, test_fill_refuses_text_input,
              test_type_refuses_password_input, test_fill_totp_targets, test_origin_mismatch_after_redirect,
-             test_stale_ref, test_export_cookie_and_storage, test_export_drops_written_values,
+             test_stale_ref, test_navigate_without_a_session_is_no_session, test_navigate_moves_an_open_session,
+             test_navigate_refuses_an_origin_outside_allowed,
+             test_export_cookie_and_storage, test_export_drops_written_values,
              test_snapshot_origin_recheck, test_crashpad_contained, test_busy_second_open, test_idle_end_wipes_profile,
              test_action_timeout_ends_session, test_sandbox_unavailable):
     test()

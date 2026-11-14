@@ -6,9 +6,10 @@ with exactly the keys the route takes. Every error is ``{"error": "<code>"}``
 with a fixed code. The log has one line per request: method, route, status and
 code. Bodies, URLs, refs' targets and values are never logged.
 
-Routes: ``GET /health``, and ``POST /session/{open,snapshot,click,type,fill,
-export,end}``. ``open`` starts Chromium and refuses with ``busy`` while a
-session is open; the other session routes get ``no_session`` without one;
+Routes: ``GET /health``, and ``POST /session/{open,navigate,snapshot,click,
+type,fill,export,end}``. ``open`` starts Chromium and refuses with ``busy``
+while a session is open; ``navigate`` moves the session Chromium already has to
+another allowed URL; the other session routes get ``no_session`` without one;
 ``end`` returns ``{"ended": false}`` then. An action that runs past
 ``BITWARDEN_SIGNIN_ACTION_SECONDS`` gets ``timeout`` and ends the session, and
 a session with no action for ``BITWARDEN_SIGNIN_IDLE_MINUTES`` is ended by the
@@ -63,6 +64,7 @@ _FIELD = "field"
 ROUTES = {
     "/health": ("GET", None),
     "/session/open": ("POST", {"url": _URL, "allowed": _ORIGINS}),
+    "/session/navigate": ("POST", {"url": _URL, "allowed": _ORIGINS}),
     "/session/snapshot": ("POST", {"allowed": _ORIGINS}),
     "/session/click": ("POST", {"ref": _REF, "allowed": _ORIGINS}),
     "/session/type": ("POST", {"ref": _REF, "text": _TEXT, "allowed": _ORIGINS}),
