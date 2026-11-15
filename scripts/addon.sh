@@ -113,6 +113,8 @@ source "${ROOT}/scripts/lib/data-root.sh"
 source "${ROOT}/scripts/lib/python.sh"
 # shellcheck source=lib/addon-events.sh
 source "${ROOT}/scripts/lib/addon-events.sh"
+# shellcheck source=lib/stack-lock.sh
+source "${ROOT}/scripts/lib/stack-lock.sh"
 
 # usage: the synopsis from the header, on stdout.
 usage() { sed -n '9,17s/^# *//p' "${BASH_SOURCE[0]}"; }
@@ -272,56 +274,22 @@ stage_stdin() {
   cat > "$STAGED" || ev_fail command_failed "" "reading the values on stdin failed" ""
 }
 
-# The lock: data/addons/.lock, a symlink whose target is the owner's PID.
-# `ln -s` creates it and its PID in one atomic step, so a lock always names
-# its owner. A lock whose PID no longer runs is taken over under a guard
-# directory, data/addons/.lock.takeover: whoever makes the guard re-reads the
-# link, replaces it only if it still names the same dead PID, and removes the
-# guard. A guard older than 10 seconds belongs to a takeover that died and is
-# removed. Anything else (a live owner, a held guard, a link replaced in the
-# meantime) is busy. addon_unlock, from the EXIT trap, removes the link only
-# while it still names this process, and the guard if this process holds it.
-LOCK_PATH=""
-LOCK_GUARD=""
-# path_age PATH: seconds since PATH's mtime.
-path_age() {
-  local m
-  m="$(stat -c %Y "$1" 2> /dev/null || stat -f %m "$1" 2> /dev/null)" || return 1
-  [[ "$m" =~ ^[0-9]+$ ]] || return 1
-  echo $(($(date +%s) - m))
-}
-lock_busy() {
-  ev_fail busy "" "another add-on change is running${1:+ (pid $1)}" ""
-}
+# The lock: data/addons/.lock, shared with scripts/env.sh. scripts/lib/stack-lock.sh
+# has the format, the takeover of a dead holder's lock, STACK_CLIENT and
+# STACK_LOCK_TIMEOUT. A busy error names the holder in its message and, in
+# JSON mode, as "holder".
 addon_lock() {
-  local lock="${DATA_ROOT}/addons/.lock" guard="${DATA_ROOT}/addons/.lock.takeover" pid age took=0
-  mkdir -p "${DATA_ROOT}/addons"
-  # ln -s onto a directory would create the link inside it.
-  if [[ -e "$lock" && ! -L "$lock" ]]; then
-    ev_fail busy "" "${lock} exists and is not a lock symlink; remove it if no add-on change is running" ""
-  fi
-  if ln -sn "$$" "$lock" 2> /dev/null; then
-    LOCK_PATH="$lock"
-    clear_staging
-    return 0
-  fi
-  pid="$(readlink "$lock" 2> /dev/null || true)"
-  [[ "$pid" =~ ^[0-9]+$ ]] || lock_busy "$pid"
-  kill -0 "$pid" 2> /dev/null && lock_busy "$pid"
-  if age="$(path_age "$guard")" && [[ "$age" -gt 10 ]]; then
-    rmdir "$guard" 2> /dev/null || true
-  fi
-  mkdir "$guard" 2> /dev/null || lock_busy ""
-  LOCK_GUARD="$guard"
-  if [[ "$(readlink "$lock" 2> /dev/null || true)" == "$pid" ]] && rm -f "$lock" \
-    && ln -sn "$$" "$lock" 2> /dev/null; then
-    took=1
-    LOCK_PATH="$lock"
-  fi
-  rmdir "$guard" 2> /dev/null || true
-  LOCK_GUARD=""
-  [[ "$took" == 1 ]] || lock_busy ""
-  clear_staging
+  local lock="${DATA_ROOT}/addons/.lock" rc=0
+  stack_lock "$lock" || rc=$?
+  case "$rc" in
+    0) clear_staging ;;
+    2) ev_fail busy "" "${lock} exists and is not a lock symlink; remove it if no add-on change is running" "" ;;
+    *)
+      EV_HOLDER="$(stack_lock_holder_json)"
+      local who
+      who="$(stack_lock_busy_text)"
+      ev_fail busy "" "another add-on change is running${who:+ (${who})}" "" ;;
+  esac
 }
 # clear_staging: deletes data/addons/.staging.* left by a connect that was
 # killed before its EXIT trap ran. They hold plaintext values. Only the lock
@@ -329,16 +297,7 @@ addon_lock() {
 clear_staging() {
   rm -f "${DATA_ROOT}/addons"/.staging.*
 }
-addon_unlock() {
-  if [[ -n "$LOCK_PATH" && "$(readlink "$LOCK_PATH" 2> /dev/null || true)" == "$$" ]]; then
-    rm -f "$LOCK_PATH"
-  fi
-  LOCK_PATH=""
-  if [[ -n "$LOCK_GUARD" ]]; then
-    rmdir "$LOCK_GUARD" 2> /dev/null || true
-  fi
-  LOCK_GUARD=""
-}
+addon_unlock() { stack_unlock; }
 # on_exit: the EXIT trap. A run that exits non-zero without an error line (a
 # `set -e` exit) while enable's rollback is armed, or in JSON mode, gets one
 # here: the rollback runs and the error is command_failed (exit 4).

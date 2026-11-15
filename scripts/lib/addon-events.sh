@@ -240,7 +240,8 @@ ev_fail() {
 # busy or a usage error). LOGFILE may be empty. A non-empty EV_TARGET (the
 # compose service that failed) adds "target" to the error line. A non-empty
 # EV_RETRY_AFTER (a positive integer, set by addon.sh's run_hook) adds
-# "retryAfter" after it. addon.sh's
+# "retryAfter" after it. A non-empty EV_HOLDER (a JSON object, set on busy)
+# adds "holder". addon.sh's
 # EXIT trap calls it directly, as exit there would skip the rest of the trap.
 ev_error() {
   local code="$1" step="$2" message="$3" log="${4:-}" hook="$EV_ON_FAIL" tail="[]" stepjson=null extra=""
@@ -255,6 +256,7 @@ ev_error() {
     [[ "$EV_ROLLED_BACK" == 1 ]] && extra=',"rolledBack":true'
     [[ -n "${EV_TARGET:-}" ]] && extra="${extra},\"target\":$(json_str "$EV_TARGET")"
     [[ -n "${EV_RETRY_AFTER:-}" ]] && extra="${extra},\"retryAfter\":${EV_RETRY_AFTER}"
+    [[ -n "${EV_HOLDER:-}" ]] && extra="${extra},\"holder\":${EV_HOLDER}"
     printf '{"phase":"error","error":%s,"step":%s,"message":%s,"logTail":%s%s}\n' \
       "$(json_str "$code")" "$stepjson" "$(json_str "$message")" "$tail" "$extra" >&3 || true
   fi

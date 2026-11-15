@@ -41,7 +41,8 @@ upsert_env "${tmp}/link.env" X 2
 stack="${tmp}/stack"
 mkdir -p "${stack}/scripts/lib"
 cp "${ROOT}/scripts/env.sh" "${stack}/scripts/"
-cp "${ROOT}/scripts/lib/env.sh" "${ROOT}/scripts/lib/json-lines.sh" "${stack}/scripts/lib/"
+cp "${ROOT}/scripts/lib/env.sh" "${ROOT}/scripts/lib/json-lines.sh" "${ROOT}/scripts/lib/data-root.sh" \
+  "${ROOT}/scripts/lib/stack-lock.sh" "${stack}/scripts/lib/"
 printf 'HERMES_AGENT_IMAGE_TAG=v1\nLLM_PROXY_ADMIN_TOKEN=secret\n' > "${stack}/.env"
 run() { (cd "$stack" && bash scripts/env.sh "$@"); }
 
@@ -89,5 +90,52 @@ grep -q '^LLM_PROXY_ADMIN_TOKEN=secret$' "${stack}/.env" || fail "refused set ch
 # Human mode prints nothing on stdout.
 out="$(run set LLM_MODEL m2)"
 [ -z "$out" ] || fail "human mode stdout: $out"
+
+# --- the config lock ----------------------------------------------------------
+lock="${stack}/data/addons/.lock"
+mkdir -p "${stack}/data/addons"
+{ [ ! -e "$lock" ] && [ ! -L "$lock" ]; } || fail "env.sh left the lock behind"
+
+# A live holder with a client name: busy at once, and the error names it.
+sleep 30 &
+holder=$!
+ln -s "${holder}:laptop:1700000000" "$lock"
+set +e
+out="$(cd "$stack" && STACK_CLIENT=phone bash scripts/env.sh set LLM_MODEL x --json 2> /dev/null)"
+rc=$?
+set -e
+[ "$rc" = 1 ] || fail "busy exit $rc"
+python3 - "$out" "$holder" << 'EOF' || fail "busy line: $out"
+import json, sys
+d = json.loads(sys.argv[1])
+assert d["phase"] == "error" and d["error"] == "busy", d
+assert d["holder"] == {"pid": int(sys.argv[2]), "client": "laptop", "since": "2023-11-14T22:13:20Z"}, d
+assert "client laptop" in d["message"], d
+EOF
+[ "$(readlink "$lock")" = "${holder}:laptop:1700000000" ] || fail "busy touched the holder's lock"
+
+# With STACK_LOCK_TIMEOUT the call waits for the holder to let go.
+( sleep 2; rm -f "$lock" ) &
+out="$(cd "$stack" && STACK_LOCK_TIMEOUT=10 bash scripts/env.sh set LLM_MODEL waited --json)" \
+  || fail "waiting for the lock failed: $out"
+grep -q '^LLM_MODEL=waited$' "${stack}/.env" || fail "the waiting call did not write"
+kill "$holder" 2> /dev/null || true
+
+# A dead holder's lock (a bare PID, as before 0.3.17) is taken over.
+ln -s 999999 "$lock"
+run set LLM_MODEL tookover --json > /dev/null || fail "dead holder's lock not taken over"
+[ ! -L "$lock" ] || fail "lock left after a takeover"
+
+# Ten clients at once, each its own key: every change lands.
+pids=""
+for n in 0 1 2 3 4 5 6 7 8 9; do
+  (cd "$stack" && STACK_CLIENT="c${n}" STACK_LOCK_TIMEOUT=30 bash scripts/env.sh set "LLM_CONCURRENT_${n}" "v${n}" --json > /dev/null) &
+  pids="${pids} $!"
+done
+for pid in $pids; do wait "$pid" || fail "a concurrent set failed"; done
+for n in 0 1 2 3 4 5 6 7 8 9; do
+  grep -q "^LLM_CONCURRENT_${n}=v${n}$" "${stack}/.env" || fail "concurrent set ${n} lost: $(cat "${stack}/.env")"
+done
+[ ! -L "$lock" ] || fail "lock left after the concurrent sets"
 
 echo "ok env.sh"

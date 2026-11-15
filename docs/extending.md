@@ -741,7 +741,10 @@ belong to `scripts/addon.sh`. The script starts and stops nothing: recreate the
 affected services for a change to take effect.
 
 The file is replaced atomically, so a run stopped halfway leaves the previous
-`.env`.
+`.env`. The script holds the add-on [lock](#lock-and-rollback) while it writes,
+so changes from several clients apply one after the other; set `STACK_CLIENT`
+and `STACK_LOCK_TIMEOUT` as described there. A lock still busy is `busy`
+(exit 1).
 
 ## Add-ons: scripts/addon.sh
 
@@ -978,12 +981,17 @@ are dropped, a tab becomes a space, and a log line is cut to 500 characters.
 ### Lock and rollback
 
 `configure`, `enable`, `disable`, `connect`, `disconnect` and `remove` hold
-`data/addons/.lock` while they run. It is a symlink whose target is the
-holder's PID, so it is created together with its owner. A second call while the
-holder is alive fails at once with `busy`. A lock whose process has died is
-taken over under a guard directory, `data/addons/.lock.takeover`; a guard
-older than 10 seconds is treated as left by a takeover that died. `list` and
-`run` take no lock.
+`data/addons/.lock` while they run, as does `scripts/env.sh`. It is a symlink
+whose target names the holder, `PID:CLIENT:EPOCH`, so it is created together
+with its owner. Set `STACK_CLIENT` to a name for the calling app or device
+(letters, digits, `.`, `_` and `-`) so others can see who holds it. A second
+call while the holder is alive fails with `busy`, at once or, with
+`STACK_LOCK_TIMEOUT=SECONDS`, after retrying once a second for that long. The
+`busy` line names the holder in `message` and as `"holder":{"pid":N,
+"client":NAME|null,"since":"2026-11-15T17:15:03Z"|null}`. A lock whose process
+has died is taken over under a guard directory, `data/addons/.lock.takeover`;
+a guard older than 10 seconds is treated as left by a takeover that died.
+`list` and `run` take no lock.
 
 An `enable` that fails or is interrupted (SIGINT, SIGTERM) restores each flag
 it changed to its earlier `.env` line, syncs `COMPOSE_PROFILES` and, if the

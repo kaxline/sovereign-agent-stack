@@ -45,6 +45,12 @@ the stack under another app.
   `sovereign-agent-stack-vX.Y.Z.tar.gz` and its `.sha256`
   (`.github/workflows/release.yml`). See
   [docs/extending.md](docs/extending.md#install-on-another-host).
+- The add-on lock (`data/addons/.lock`) names its holder's client, from
+  `STACK_CLIENT`, and `STACK_LOCK_TIMEOUT=SECONDS` waits for a busy lock
+  instead of failing at once. A `busy` error from `addon.sh` or `env.sh` adds
+  `"holder":{"pid","client","since"}`. `scripts/env.sh` takes the same lock. A
+  lock written by an older `addon.sh` (a bare PID) is still read. See
+  [docs/extending.md](docs/extending.md#lock-and-rollback).
 - `make up` and `make ensure-local` run the new `scripts/up.sh`, so hosts without
   `make` can start the stack the same way.
 

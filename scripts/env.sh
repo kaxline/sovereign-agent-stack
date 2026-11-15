@@ -10,7 +10,11 @@
 # scripts/addon.sh, which also syncs profiles and starts or stops services.
 #
 # Each change replaces .env atomically (scripts/lib/env.sh replace_file), and
-# running the same command twice leaves the same file. The change takes effect
+# running the same command twice leaves the same file. It holds the config
+# lock addon.sh uses (scripts/lib/stack-lock.sh) while it writes, so two
+# clients changing .env at once apply one after the other: set STACK_CLIENT to
+# name the caller and STACK_LOCK_TIMEOUT to wait for a busy lock. A lock still
+# busy then is error busy (exit 1) with "holder":{"pid","client","since"}. The change takes effect
 # the next time the affected services are recreated; this script starts and
 # stops nothing.
 #
@@ -28,6 +32,10 @@ cd "$ROOT"
 source "${ROOT}/scripts/lib/env.sh"
 # shellcheck source=lib/json-lines.sh
 source "${ROOT}/scripts/lib/json-lines.sh"
+# shellcheck source=lib/data-root.sh
+source "${ROOT}/scripts/lib/data-root.sh"
+# shellcheck source=lib/stack-lock.sh
+source "${ROOT}/scripts/lib/stack-lock.sh"
 jl_init
 
 args=()
@@ -72,6 +80,20 @@ raw_value() { grep -m 1 -E "^$1=" .env | cut -d= -f2-; }
 
 done_line() { jl_done "\"key\":\"$1\",\"changed\":$2"; }
 
+# lock: takes the config lock, or ends with busy.
+lock() {
+  local data_root rc=0 who
+  data_root="$(resolve_data_root_path "${ASSISTANT_DATA_ROOT:-$(env_get ASSISTANT_DATA_ROOT)}")"
+  stack_lock "${data_root}/addons/.lock" || rc=$?
+  case "$rc" in
+    0) trap stack_unlock EXIT ;;
+    2) jl_fail busy "" "${data_root}/addons/.lock is not a lock symlink; remove it if no change is running" ;;
+    *)
+      who="$(stack_lock_busy_text)"
+      jl_fail busy "" "another config change is running${who:+ (${who})}" "" ",\"holder\":$(stack_lock_holder_json)" ;;
+  esac
+}
+
 [[ ${#args[@]} -ge 2 ]] || usage
 cmd="${args[0]}"
 key="${args[1]}"
@@ -83,6 +105,7 @@ case "$cmd" in
     case "$value" in
       *$'\n'* | *$'\r'*) die bad_input "the value for ${key} has a line break" ;;
     esac
+    lock
     if has_key "$key" && [[ "$(raw_value "$key")" == "$value" ]] \
       && [[ "$(grep -c -E "^${key}=" .env)" == 1 ]]; then
       done_line "$key" false
@@ -94,6 +117,7 @@ case "$cmd" in
   unset)
     [[ ${#args[@]} -eq 2 ]] || usage
     check_key "$key"
+    lock
     if ! has_key "$key"; then
       done_line "$key" false
       exit 0

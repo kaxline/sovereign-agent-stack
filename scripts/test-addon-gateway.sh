@@ -20,7 +20,7 @@ mkdir -p "${root}/scripts/lib" "${tmp}/bin" "${tmp}/out" "${tmp}/synthetic-signa
 for f in addon.sh sync-profiles.sh sync-signal-profile.sh sync-buzz-profile.sh; do
   cp "${REPO}/scripts/${f}" "${root}/scripts/"
 done
-for f in env.sh data-root.sh python.sh addon-events.sh addon_cli.py addon_manifest.py addon_store.py hermes-yaml.sh; do
+for f in env.sh data-root.sh python.sh addon-events.sh stack-lock.sh addon_cli.py addon_manifest.py addon_store.py hermes-yaml.sh; do
   cp "${REPO}/scripts/lib/${f}" "${root}/scripts/lib/"
 done
 cp -R "${REPO}/addons" "${root}/addons"
