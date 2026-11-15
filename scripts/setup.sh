@@ -149,7 +149,7 @@ upsert_env() {
   touch "$file"
   if grep -q "^${key}=" "$file" 2>/dev/null; then
     local tmp
-    tmp="$(mktemp)"
+    tmp="$(mktemp "$(dirname "$file")/.$(basename "$file").XXXXXX")"
     while IFS= read -r line || [[ -n "$line" ]]; do
       if [[ "$line" == "${key}="* ]]; then
         printf '%s=%s\n' "$key" "$value"
@@ -508,7 +508,7 @@ sync_searxng_secret() {
   local settings="$ROOT/searxng/settings.local.yml"
   [[ -f "$template" ]] || die "Missing $template"
   local tmp
-  tmp="$(mktemp)"
+  tmp="$(mktemp "$(dirname "$settings")/.$(basename "$settings").XXXXXX")"
   while IFS= read -r line || [[ -n "$line" ]]; do
     if [[ "$line" =~ ^[[:space:]]*secret_key:[[:space:]]* ]]; then
       printf '  secret_key: "%s"\n' "$secret"

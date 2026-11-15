@@ -20,25 +20,72 @@ env_get() {
   fi
 }
 
-upsert_env() {
-  local file="$1"
-  local key="$2"
-  local value="$3"
-  touch "$file"
-  if grep -q "^${key}=" "$file" 2>/dev/null; then
-    local tmp
-    tmp="$(mktemp)"
+# env_target FILE: FILE, or what it links to when it is a symlink (a worktree
+# links main's .env), so a replacement keeps the link. One level, which is all
+# the stack makes; BSD readlink has no -f.
+env_target() {
+  local f="$1" t
+  if [[ -L "$f" ]]; then
+    t="$(readlink "$f")"
+    [[ "$t" == /* ]] || t="$(dirname "$f")/${t}"
+    f="$t"
+  fi
+  printf '%s\n' "$f"
+}
+
+# replace_file FILE CMD...: runs CMD with stdout to a temp file beside FILE,
+# then renames it over FILE, keeping FILE's mode. The temp file is in the same
+# directory so the rename is atomic: a run stopped halfway leaves FILE as it
+# was. A temp file in $TMPDIR would make mv a copy wherever /tmp is another
+# filesystem.
+replace_file() {
+  local f tmp mode rc=0
+  f="$(env_target "$1")"
+  shift
+  tmp="$(mktemp "$(dirname "$f")/.$(basename "$f").XXXXXX")" || return 1
+  "$@" > "$tmp" || rc=$?
+  if [[ "$rc" != 0 ]]; then
+    rm -f "$tmp"
+    return "$rc"
+  fi
+  if [[ -e "$f" ]]; then
+    mode="$(stat -c %a "$f" 2>/dev/null || stat -f %Lp "$f")"
+    chmod "$mode" "$tmp"
+  else
+    chmod "$(printf '%o' $((0666 & ~$(umask))))" "$tmp"
+  fi
+  mv -f "$tmp" "$f"
+}
+
+_env_rewrite() {
+  local file="$1" key="$2" value="$3" line seen=0
+  if [[ -f "$file" ]]; then
     while IFS= read -r line || [[ -n "$line" ]]; do
       if [[ "$line" == "${key}="* ]]; then
-        printf '%s=%s\n' "$key" "$value"
+        [[ "$seen" == 1 ]] || printf '%s=%s\n' "$key" "$value"
+        seen=1
       else
         printf '%s\n' "$line"
       fi
-    done < "$file" > "$tmp"
-    mv "$tmp" "$file"
-  else
-    printf '%s=%s\n' "$key" "$value" >> "$file"
+    done < "$file"
   fi
+  [[ "$seen" == 1 ]] || printf '%s=%s\n' "$key" "$value"
+}
+
+_env_drop() {
+  grep -v -E "^$2=" "$1" || true
+}
+
+# upsert_env FILE KEY VALUE: sets KEY=VALUE, replacing the first KEY= line
+# (and dropping later duplicates) or appending one. Atomic (replace_file).
+upsert_env() {
+  replace_file "$1" _env_rewrite "$(env_target "$1")" "$2" "$3"
+}
+
+# remove_env FILE KEY: deletes every KEY= line. Atomic (replace_file).
+remove_env() {
+  [[ -f "$1" ]] || return 0
+  replace_file "$1" _env_drop "$(env_target "$1")" "$2"
 }
 
 has_compose_profile() {

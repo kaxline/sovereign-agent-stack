@@ -36,7 +36,7 @@ upsert_env() {
   local key="$1" value="$2"
   if grep -qE "^${key}=" "$ENV_FILE" 2>/dev/null; then
     local tmp
-    tmp="$(mktemp)"
+    tmp="$(mktemp "$(dirname "$ENV_FILE")/.$(basename "$ENV_FILE").XXXXXX")"
     awk -v k="$key" -v v="$value" '
       BEGIN { done=0 }
       $0 ~ "^" k "=" { print k "=" v; done=1; next }
@@ -93,7 +93,7 @@ ensure_override() {
 ensure_service_mount() {
   local svc="$1" mount_path="$2"
   local tmp
-  tmp="$(mktemp)"
+  tmp="$(mktemp "$(dirname "$OVERRIDE")/.$(basename "$OVERRIDE").XXXXXX")"
 
   python3 - "$OVERRIDE" "$svc" "$mount_path" "$tmp" <<'PY'
 import sys

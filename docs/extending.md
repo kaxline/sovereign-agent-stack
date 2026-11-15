@@ -642,6 +642,24 @@ failed attempt. They park the same way, so the reconnect call and
 This is an overlay on the pinned Hermes image (`patch-mcp-wake.py`). The route,
 key and response fields stay stable across pin moves. Changes are additive.
 
+## Client-writable `.env` keys
+
+`scripts/env.sh set KEY VALUE --json` and `scripts/env.sh unset KEY --json`
+change one key in the project `.env`, so an app doesn't depend on that file's
+layout. Allowed keys: `LLM_*` except `LLM_PROXY_ADMIN_TOKEN`, `*_IMAGE`,
+`*_IMAGE_TAG`, `HERMES_TERMINAL_BACKEND`, `CODING_*` and `CONTEXT_*`.
+
+The result is one line, `{"event":"done","key":K,"changed":true|false}`.
+`changed` is false when the file already said that. A refused call prints
+`{"event":"error","error":REASON,"message":TEXT}` and exits 2, with `REASON`
+one of `bad_input` (not a key name, or a value with a line break),
+`not_allowed`, or `use_addon_sh` for `*_ENABLED` and `COMPOSE_PROFILES`, which
+belong to `scripts/addon.sh`. The script starts and stops nothing: recreate the
+affected services for a change to take effect.
+
+The file is replaced atomically, so a run stopped halfway leaves the previous
+`.env`.
+
 ## Add-ons: scripts/addon.sh
 
 Boundary lists, configures, enables and disables built-in add-ons

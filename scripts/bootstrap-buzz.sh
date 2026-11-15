@@ -42,7 +42,7 @@ upsert_env() {
   touch "$file"
   if grep -q "^${key}=" "$file" 2>/dev/null; then
     local tmp
-    tmp="$(mktemp)"
+    tmp="$(mktemp "$(dirname "$file")/.$(basename "$file").XXXXXX")"
     while IFS= read -r line || [[ -n "$line" ]]; do
       if [[ "$line" == "${key}="* ]]; then
         printf '%s=%s\n' "$key" "$value"

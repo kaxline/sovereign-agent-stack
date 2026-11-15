@@ -57,7 +57,7 @@ upsert_env() {
   local value="$3"
   local tmp seen=0
   touch "$file"
-  tmp="$(mktemp)"
+  tmp="$(mktemp "$(dirname "$file")/.$(basename "$file").XXXXXX")"
   while IFS= read -r line || [[ -n "$line" ]]; do
     if [[ "$line" == "${key}="* ]]; then
       if [[ "$seen" -eq 0 ]]; then

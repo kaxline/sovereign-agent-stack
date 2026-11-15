@@ -441,15 +441,6 @@ EOF_SERVICES
   return 0
 }
 
-# remove_env FILE KEY: deletes every KEY= line.
-remove_env() {
-  local tmp
-  [[ -f "$1" ]] || return 0
-  tmp="$(mktemp)"
-  grep -v -E "^$2=" "$1" > "$tmp" || true
-  mv "$tmp" "$1"
-}
-
 # gate_on PLAN GATE: the gate's value after the plan's flags are written.
 gate_on() {
   local v

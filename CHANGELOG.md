@@ -6,6 +6,22 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
+## Unreleased
+
+### Changes
+
+- `.env` writes are atomic. `upsert_env` and `remove_env` (`scripts/lib/env.sh`)
+  and the scripts with their own copies write a temp file beside the target and
+  rename it, keeping the file's mode and, for a symlinked `.env`, the link.
+  Before, the temp file was in `$TMPDIR`, so on a host where `/tmp` is another
+  filesystem the final `mv` was a copy that a stopped run could leave half
+  written, and the file's mode became 0600.
+- New `scripts/env.sh set|unset KEY [VALUE] [--json]` for the `.env` keys a
+  client may change: `LLM_*` (not `LLM_PROXY_ADMIN_TOKEN`), `*_IMAGE`,
+  `*_IMAGE_TAG`, `HERMES_TERMINAL_BACKEND`, `CODING_*` and `CONTEXT_*`. Add-on
+  switches and `COMPOSE_PROFILES` are refused with `use_addon_sh`. See
+  [docs/extending.md](docs/extending.md#client-writable-env-keys).
+
 ## v0.3.16 — 2026-11-14
 
 ### Vault freshness
