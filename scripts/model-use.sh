@@ -308,7 +308,6 @@ if [[ "$RESTART" -eq 1 ]]; then
   if docker compose ps hermes -q 2>/dev/null | grep -q .; then
     log "Restarting Hermes…"
     docker compose restart hermes
-    follow_hermes
   fi
 fi
 

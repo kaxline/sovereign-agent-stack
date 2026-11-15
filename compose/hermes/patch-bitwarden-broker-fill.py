@@ -2,15 +2,14 @@
 """Route browser_vault fills of bwbroker: handles to the Bitwarden broker.
 
 Compatibility overlay (not upstream). The broker (compose/bitwarden-broker)
-shares the hermes container's network namespace and writes the value into the
-page over its own CDP connection, so the gateway never holds it. In
-tools/browser_vault_tool.py this:
+runs in its own container and writes the value into the page over its own CDP
+connection, so the gateway never holds it. In tools/browser_vault_tool.py this:
 
 - sends a bwbroker: fill, after core's origin pre-check and inside the
   backend's fill_context, to POST /fill with the CDP target id of the tab the
-  supervisor focused and the port from the task's cdp_url, registers the
-  returned redaction entry with agent.redact (patch-digest-redaction.py), and
-  shapes the result like core's;
+  supervisor focused and the name of the browser provider the task's cdp_url
+  points at, registers the returned redaction entry with agent.redact
+  (patch-digest-redaction.py), and shapes the result like core's;
 - sends enter_code for a bwbroker: login with a TOTP key the same way with
   field "totp"; a login without one keeps core's ask-the-user path;
 - adds a "bitwarden" entry to browser_vault_list naming locked accounts and
@@ -90,11 +89,12 @@ LIST = (
 )
 
 HELPERS_ANCHOR = "def _confirm_payment_fill(label: str, origin: str) -> bool:\n"
-HELPERS = f"{MARKER}\n" + r'''# A bwbroker: login is filled by the Bitwarden broker on 127.0.0.1:8099, in this container's network
-# namespace. It writes the value into the tab over its own CDP connection and returns a digest entry
-# that agent.redact scrubs by, so the value never reaches the gateway. Results use core's shapes. From a
-# broker reply only the fixed error code and a well-formed origin are passed on.
-_BWBROKER_URL = "http://127.0.0.1:8099"
+HELPERS = f"{MARKER}\n" + r'''# A bwbroker: login is filled by the Bitwarden broker, a container of its own on the internal
+# credentials network. It writes the value into the tab over its own CDP connection and returns a
+# digest entry that agent.redact scrubs by, so the value never reaches the gateway. Results use core's
+# shapes. From a broker reply only the fixed error code and a well-formed origin are passed on.
+_BWBROKER_URL = "http://bitwarden-broker:8099"
+_BWBROKER_TOKEN_FILE = "/run/bitwarden/api-token"  # mounted read-only; without it every call is 401
 _BWBROKER_NAME = "bwbroker"
 _BWBROKER_PREFIX = "bwbroker:"
 _BWBROKER_FILL_TIMEOUT = 30.0  # the broker's own CDP deadline is 10 s, after bw has returned the value
@@ -127,6 +127,15 @@ def _bwbroker_owns(backend: Any, handle: Any) -> bool:
     return getattr(backend, "name", None) == _BWBROKER_NAME and str(handle or "").startswith(_BWBROKER_PREFIX)
 
 
+def _bwbroker_token() -> str:
+    """The broker's bearer token, or "" when the file is missing or unreadable."""
+    try:
+        with open(_BWBROKER_TOKEN_FILE, encoding="utf-8") as handle:
+            return handle.read(4096).strip()
+    except OSError:
+        return ""
+
+
 def _bwbroker_call(method: str, path: str, body: Optional[dict] = None, *,
                    timeout: float = _BWBROKER_FILL_TIMEOUT) -> Optional[tuple[int, Any]]:
     """(HTTP status, decoded JSON) from the broker, or None when it did not answer with JSON."""
@@ -135,9 +144,10 @@ def _bwbroker_call(method: str, path: str, body: Optional[dict] = None, *,
     import urllib.request
 
     data = None if body is None else json.dumps(body).encode()
-    request = urllib.request.Request(_BWBROKER_URL + path, data=data, method=method,
-                                     headers={"Content-Type": "application/json"} if data is not None else {})
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # loopback never goes through a proxy
+    headers = {"Content-Type": "application/json"} if data is not None else {}
+    headers["Authorization"] = "Bearer " + _bwbroker_token()
+    request = urllib.request.Request(_BWBROKER_URL + path, data=data, method=method, headers=headers)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # never through a proxy
     try:
         try:
             with opener.open(request, timeout=timeout) as resp:
@@ -200,20 +210,27 @@ def _bwbroker_target_id(supervisor: Any) -> Optional[str]:
     return target_id if isinstance(target_id, str) and target_id else None
 
 
-def _bwbroker_cdp_port(supervisor: Any, task_id: str) -> Optional[int]:
-    """The DevTools port of the task's browser. The broker connects only to 127.0.0.1, so a browser
-    elsewhere gives None."""
+# The browsers the broker can be asked to write in, by the host in the task's cdp_url
+# (docs/contracts/browser.md). The names are the broker's BROWSER_PROVIDERS keys: the broker holds
+# each one's endpoint and token, so nothing here needs them. A host that is not listed -- a browser
+# this stack launched on loopback, say, which the broker no longer shares a namespace with -- has no
+# provider, and the fill is refused as cdp_unavailable.
+_BWBROKER_BROWSERS = {"web-browser": "stack", "host.docker.internal": "boundary"}
+
+
+def _bwbroker_browser(supervisor: Any, task_id: str) -> Optional[str]:
+    """The provider name of the task's browser, or None when the broker cannot reach it."""
     from urllib.parse import urlsplit
     from tools.browser_session import session_for_task
 
     for url in (session_for_task(task_id).get("cdp_url"), getattr(supervisor, "cdp_url", "")):
         try:
-            parts = urlsplit(str(url or ""))
-            port = parts.port
+            host = urlsplit(str(url or "")).hostname
         except ValueError:
             continue
-        if port and parts.hostname in ("127.0.0.1", "localhost", "::1"):
-            return port
+        name = _BWBROKER_BROWSERS.get(host or "")
+        if name:
+            return name
     return None
 
 
@@ -246,7 +263,7 @@ def _bwbroker_refusal(code: str, handle: str, meta: Any, found: Optional[str], f
 
 
 def _bwbroker_tab(task_id: str, page_origin: str, accept_kind: str, require_origin: bool = False) -> Any:
-    """``(target_id, port)`` of the task's tab on ``page_origin``, or the refusal dict to return.
+    """``(target_id, browser)`` of the task's tab on ``page_origin``, or the refusal dict to return.
 
     ``accept_kind`` keys _TAB_PROBES ("login", "otp"); any other value focuses the first tab on the
     origin. The broker and the signer both write through this tab, so it is picked the same way for a
@@ -272,8 +289,8 @@ def _bwbroker_tab(task_id: str, page_origin: str, accept_kind: str, require_orig
         return {"success": False, "error_type": "no_page",
                 "error": (f"Open the login page first: this task has no browser tab on {page_origin}. "
                           "Open it with browser_exec, then call sign_in again. Nothing was signed in.")}
-    target_id, port = _bwbroker_target_id(supervisor), _bwbroker_cdp_port(supervisor, task_id)
-    if not target_id or not port:
+    target_id, browser = _bwbroker_target_id(supervisor), _bwbroker_browser(supervisor, task_id)
+    if not target_id or not browser:
         return {"success": False, "error_type": "cdp_unavailable", "error": _BWBROKER_ERRORS["cdp_unavailable"]}
     # Re-admit at the write, as _eval_js_secret does: a human may have taken over the screen.
     if _bot_desktop_browser_session(task_id):
@@ -282,7 +299,7 @@ def _bwbroker_tab(task_id: str, page_origin: str, accept_kind: str, require_orig
             _bd_lease.assert_agent_may_act()
         except _bd_lease.HumanHasControl as exc:
             return {"success": False, "error_type": "human_has_control", "error": str(exc)}
-    return target_id, port
+    return target_id, browser
 
 
 def _bwbroker_fill(handle: str, meta: Any, page_origin: str, task_id: str, field: str = "password") -> str:
@@ -297,18 +314,17 @@ def _bwbroker_fill(handle: str, meta: Any, page_origin: str, task_id: str, field
     except Exception:  # health: allow BLE001 -- without the digest overlay a filled value could not be scrubbed
         return json.dumps({"success": False, "error": _BWBROKER_UNAVAILABLE})
     # Before the tab: a sign-in-only item has one way in, and this is the refusal that names it.
-    # The checks in _bwbroker_tab cannot pass for a browser the broker has no address for
-    # (Boundary's is on host.docker.internal, not loopback), and their refusals read as "retry the
-    # fill", which is advice this item can never satisfy.
+    # The tab helper's own refusals read as "retry the fill", which is advice this item can never
+    # satisfy, so they must not come first.
     flags = _bwbroker_sign_in_flags()
     if flags is not None and flags.get(handle):
         return json.dumps(_bwbroker_refusal("sign_in_only", handle, meta, None, field))
     tab = _bwbroker_tab(task_id, page_origin, "login" if field == "password" else "otp")
     if isinstance(tab, dict):
         return json.dumps(tab)
-    target_id, port = tab
+    target_id, browser = tab
 
-    reply = _bwbroker_call("POST", "/fill", {"handle": handle, "target_id": target_id, "port": port,
+    reply = _bwbroker_call("POST", "/fill", {"handle": handle, "target_id": target_id, "browser": browser,
                                              "field": field, "base": base})
     if reply is None:
         return json.dumps({"success": False, "error": _BWBROKER_UNAVAILABLE})

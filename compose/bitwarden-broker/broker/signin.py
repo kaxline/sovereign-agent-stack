@@ -144,7 +144,7 @@ class SignIn:
 
     # --- routes -------------------------------------------------------------
 
-    def start(self, handle: str, target_id: str, port: int) -> dict:
+    def start(self, handle: str, target_id: str, endpoint: str) -> dict:
         with self._guard():
             if self._item is not None:
                 raise SignInError("busy")
@@ -154,7 +154,7 @@ class SignIn:
             snapshot = self._open(item)
             self._item = item
             try:
-                return self._sequence(item, snapshot, target_id, port)
+                return self._sequence(item, snapshot, target_id, endpoint)
             except SignInError as exc:
                 if exc.code not in KEEPS_SESSION:
                     self._abandon()
@@ -179,9 +179,9 @@ class SignIn:
         with self._guard():
             return self._fill(self._session(), ref, field)
 
-    def finish(self, target_id: str, port: int) -> dict:
+    def finish(self, target_id: str, endpoint: str) -> dict:
         with self._guard():
-            return self._finish(self._session(), target_id, port)
+            return self._finish(self._session(), target_id, endpoint)
 
     def cancel(self) -> dict:
         with self._guard():
@@ -221,7 +221,7 @@ class SignIn:
 
     # --- the automatic sequence ---------------------------------------------
 
-    def _sequence(self, item, snapshot: dict, target_id: str, port: int) -> dict:
+    def _sequence(self, item, snapshot: dict, target_id: str, endpoint: str) -> dict:
         """Type the username, fill the password and the code, submit after each.
 
         A round that has nothing left to fill ends it: the page is handed over
@@ -271,7 +271,7 @@ class SignIn:
                 break
             snapshot = self._action("/session/click", {"ref": ref, "allowed": self._allowed(item)})
             if not self._needs_secret(item, snapshot) and snapshot.get("origin") in item.origins:
-                return self._finish(item, target_id, port)
+                return self._finish(item, target_id, endpoint)
         return snapshot
 
     def _has_login_form(self, snapshot: dict) -> bool:
@@ -376,14 +376,14 @@ class SignIn:
         finally:
             value = None
 
-    def _finish(self, item, target_id: str, port: int) -> dict:
+    def _finish(self, item, target_id: str, endpoint: str) -> dict:
         try:
             exported = self._action("/session/export", {"allowed": list(item.origins),
                                                         "item_origins": list(item.origins)})
         except SignInError:
             self._abandon()
             raise
-        result = cdp.handover(port, target_id, tuple(item.origins), exported.get("cookies") or [],
+        result = cdp.handover(endpoint, target_id, tuple(item.origins), exported.get("cookies") or [],
                               exported.get("localStorage") or [], exported.get("sessionStorage") or [],
                               timeout=HANDOVER_TIMEOUT)
         if result.error == cdp.HANDOVER_REFUSED:

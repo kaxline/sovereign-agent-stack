@@ -37,7 +37,8 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 SERVICES_CORE="NEO4J_ENABLED neo4j 0
 OLLAMA_ENABLED ollama 1
 SEARXNG_PROD_ENABLED searxng-prod 1
-SEARCH_GATE_ENABLED search-gate 1"
+SEARCH_GATE_ENABLED search-gate 1
+WEB_BROWSER_ENABLED web-browser 0"
 
 # One "flag profile seed" row per addons/*/addon.json. No python3 here (first
 # run, scripts/test-no-host-python.sh), so the builtin block is read with awk.

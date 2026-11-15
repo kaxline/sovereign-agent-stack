@@ -15,6 +15,7 @@
 	db-backup db-service-add db-psql todo-init todo-open dashboard-open \
 	crm-init crm-add crm-remove crm-access crm-open crm-mode \
 	vault-init vault-add vault-unlock vault-lock vault-sync vault-requests vault-remove vault-open \
+	web-browser-build web-browser-viewer web-browser-test \
 	bitwarden-test addon-list addon-test test hermes-image-test actual-mcp-test \
 	budget-open budget-access budget-connect budget-disconnect \
 	coding-root-list coding-root-add \
@@ -198,6 +199,24 @@ vault-remove:
 vault-open:
 	@./scripts/vault.sh open
 
+# The browser service (docs/contracts/browser.md), off unless
+# WEB_BROWSER_ENABLED=1.
+#   make web-browser-build    build the image (Chromium plus the CDP gateway)
+#   make web-browser-viewer   print the viewer URL and where its password is
+#   make web-browser-test     the gateway and compose-config tests
+web-browser-build:
+	@docker compose --profile web-browser build web-browser
+
+web-browser-viewer:
+	@$(resolve_data_root); \
+	port=$$(grep -E '^WEB_BROWSER_VIEWER_PORT=' .env 2>/dev/null | head -1 | cut -d= -f2-); \
+	port=$${port:-6080}; \
+	echo "Viewer:   http://127.0.0.1:$$port/vnc.html"; \
+	echo "Password: $$DATA_ROOT/web-browser/secrets/viewer"
+
+web-browser-test:
+	@$(RUN_TESTS) scripts/test-web-browser-
+
 # Every Bitwarden add-on test, through scripts/run-tests.py. Image parts run
 # when the pinned Hermes image is present; test-vw-register.py and the compose
 # config check need Docker, and the compose check a .env that satisfies
@@ -329,12 +348,8 @@ logs:
 ps:
 	docker compose ps
 
-# Compose restarts bitwarden-broker with hermes (depends_on restart: true);
-# vault.sh follow-hermes repairs a broker left in a removed hermes namespace
-# and lists the manual accounts to unlock.
 restart:
-	@rc=0; docker compose restart hermes hermes-webui || rc=$$?; \
-	./scripts/vault.sh follow-hermes; exit $$rc
+	docker compose restart hermes hermes-webui
 
 # Re-apply Hermes config after changing .env, MCP tokens or servers, skills, or
 # the compose file: both profile bootstraps, then recreate hermes so every
@@ -344,14 +359,12 @@ hermes-reload: ensure-local
 	docker compose run --rm -e HERMES_BOOTSTRAP_FORCE=1 hermes-api-bootstrap
 	docker compose run --rm --no-deps -e HERMES_BOOTSTRAP_FORCE=1 hermes-browser-bootstrap
 	docker compose up -d --no-deps --force-recreate hermes
-	@./scripts/vault.sh follow-hermes
 
-# Recreate hermes alone, so s6 picks up new profiles and gateways, then move the
-# Bitwarden broker into its new network namespace. Runs no bootstrap.
+# Recreate hermes alone, so s6 picks up new profiles and gateways. Runs no
+# bootstrap. The Bitwarden broker has its own networks and keeps running.
 #   make hermes-recreate
 hermes-recreate: ensure-local
 	docker compose up -d --force-recreate hermes
-	@./scripts/vault.sh follow-hermes
 
 # Corpus lifecycle (requires rag profile). One hot WORKSPACE at a time.
 #   make corpus-create SLUG=demo-a

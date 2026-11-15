@@ -73,14 +73,16 @@ Usage: scripts/vault.sh <command> [options]
 
   pre-up            Create the instance store's folder and bw/, broker/ and
                     secrets/ before docker compose up (make up runs it)
-  follow-hermes     Recreate the broker in hermes' current network namespace and
-                    list the manual accounts to unlock (run after hermes is
-                    recreated or restarted; make hermes-reload runs it)
+  api-token [--print]
+                    Create the broker's API bearer token if it is missing, in
+                    broker-api/api-token under the add-on's data dir (make
+                    ensure-local runs it); --print writes the path
   reload-plugins    Ask the running gateway to reload its plugins for each
                     profile whose add-on login backends a bootstrap changed
                     (make up runs it through up-hook)
 
-pre-up and follow-hermes are silent while BITWARDEN_ENABLED is off.
+pre-up is silent while BITWARDEN_ENABLED is off; api-token runs either way,
+because hermes mounts that folder whatever the add-on's state.
 reload-plugins is silent while no profile is marked.
 After add or remove: make up. make doctor shows each account's state.
 
@@ -1345,21 +1347,30 @@ cmd_pre_up() {
   fi
 }
 
-# Run after hermes is recreated or restarted (scripts/lib/bitwarden.sh). The
-# broker shares hermes' network namespace; up recreates it when the namespace
-# it joined belongs to a removed container, and leaves it alone otherwise.
-# Silent while BITWARDEN_ENABLED is off or the broker container does not exist.
-cmd_follow_hermes() {
-  is_true "$(env_get BITWARDEN_ENABLED 0)" || return 0
-  command -v docker >/dev/null 2>&1 || return 0
-  compose_with_profile bitwarden ps -a -q bitwarden-broker 2>/dev/null | grep -q . || return 0
-  compose_with_profile bitwarden up -d --no-deps bitwarden-broker >/dev/null \
-    || die "bitwarden-broker did not start — docker compose --profile core --profile bitwarden up -d --no-deps bitwarden-broker"
-  if ! wait_for_broker; then
-    log "The Bitwarden broker does not answer yet; make doctor"
-    return 0
+# The bearer token for the broker's API, in its own folder under the add-on's
+# data dir: the broker reads it, and hermes mounts that one folder read-only, so
+# the plugin can send it without seeing any other secret. Created whatever
+# BITWARDEN_ENABLED says, because hermes mounts it on the core profile and
+# compose refuses to start a service whose bind-mount source is missing.
+# make ensure-local (and so make up) and scripts/setup.sh run this.
+cmd_api_token() {
+  local dir file data
+  data="$(data_dir)"
+  dir="${data}/broker-api"
+  file="${dir}/api-token"
+  if [[ -e "$dir" && ! -d "$dir" ]]; then
+    die "${dir} exists and is not a folder"
   fi
-  note_locked_manual ""
+  if [[ ! -d "$dir" ]]; then
+    (umask 077 && mkdir -p "$dir") 2>/dev/null || die "could not create ${dir}; run once: $(own_fix)"
+  fi
+  if [[ ! -s "$file" ]]; then
+    (umask 077 && openssl rand -hex 32 > "$file") 2>/dev/null \
+      || die "could not write ${file}; run once: $(own_fix)"
+    log "Created the broker API token (${file})"
+  fi
+  chmod 600 "$file" 2>/dev/null || true
+  if [[ "${1:-}" == "--print" ]]; then printf '%s\n' "$file"; fi
 }
 
 # The bootstraps leave $PLUGINS_MARKER in a profile's home when they change its
@@ -1648,7 +1659,7 @@ case "${1:-}" in
   open) shift; cmd_open "$@" ;;
   up-hook) cmd_up_hook ;;
   pre-up) cmd_pre_up ;;
-  follow-hermes) cmd_follow_hermes ;;
+  api-token) shift; cmd_api_token "$@" ;;
   reload-plugins) cmd_reload_plugins ;;
   backup) shift; cmd_backup "$@" ;;
   restore) shift; cmd_restore "$@" ;;

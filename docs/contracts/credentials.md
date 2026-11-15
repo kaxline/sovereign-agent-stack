@@ -42,21 +42,30 @@ agent adapter, and `cron_fence_toolsets()` keeps the toolset out of scheduled ru
 (cloud, self-hosted or the local Vaultwarden) and serves only the items in each account's agent
 folder or collection. [Bitwarden](../bitwarden.md) covers accounts, modes, unlock and setup.
 
-The broker runs in the `hermes` container's network namespace (`network_mode: "service:hermes"`)
-so it can reach Chromium's loopback CDP port, and listens on `127.0.0.1:8099`. Routes, from
+The broker runs in a container of its own on two internal networks: `credentials`, which carries
+its API and which only `hermes` joins, and `browser`, the route to a browser provider's CDP
+gateway. It listens on `0.0.0.0:8099` and every call must carry the bearer token in
+`<add-on data dir>/broker-api/api-token`, which `./scripts/vault.sh api-token` creates and
+`hermes` mounts read-only at `/run/bitwarden/api-token`.
+
+A write names a browser provider, never an address: `browser` is a key of `BROWSER_PROVIDERS`,
+which holds each provider's CDP endpoint (or the file its own client writes it to) and the file
+holding the broker's token for it. `stack` is the `web-browser` service, `boundary` Boundary's
+relay; an unknown name is refused with `unknown_browser`, and a provider that is not running or
+has written no token yet reads as `cdp_unavailable`. Routes, from
 `compose/bitwarden-broker/broker/server.py`:
 
 | Route | Operation |
 |---|---|
 | `GET /items` | list logins; a handle is `bwbroker:<account slug>/<item id>` |
-| `POST /fill` | `{handle, target_id, port, field?, base?}`; `field` is `password` (default) or `totp`; `base` is the redaction base the gateway sends |
+| `POST /fill` | `{handle, target_id, browser, field?, base?}`; `field` is `password` (default) or `totp`; `base` is the redaction base the gateway sends |
 | `GET /requests`, `POST /requests` | pending and recent access requests; `{site, account?, reason?}` |
-| `POST /signin/start` | `{handle, target_id, port}`; opens the item's first URI in the signer and runs the automatic sequence. Returns the handover or a snapshot |
+| `POST /signin/start` | `{handle, target_id, browser}`; opens the item's first URI in the signer and runs the automatic sequence. Returns the handover or a snapshot |
 | `POST /signin/snapshot` | `{}`; the page's accessibility tree as role, name, text and a ref per actionable node, with the origin and no input values |
 | `POST /signin/click` | `{ref}` |
 | `POST /signin/type` | `{ref, text}`; agent text, refused on a password field |
 | `POST /signin/fill` | `{ref, field}`; `field` is `password` or `totp`, written into a password or one-time-code field only |
-| `POST /signin/finish` | `{target_id, port}`; hands the session to that tab and ends the session |
+| `POST /signin/finish` | `{target_id, browser}`; hands the session to that tab and ends the session |
 | `POST /signin/cancel` | `{}` |
 | `POST /release` | `{handle}` |
 | `GET /accounts` | each account's slug, mode, scope, state, error class and retry time |
@@ -71,8 +80,8 @@ session filled out of the snapshots it returns. The handover writes the item's c
 `Network.setCookies` and the page's storage entries as call arguments, after checking the target
 tab's origin (`handover_refused` otherwise). Codes: `busy`, `no_session`, `stale_ref`,
 `origin_mismatch`, `not_a_secret_field`, `no_totp`, `handover_refused`, `page_error`, `timeout`,
-`signer_unavailable`, `sandbox_unavailable` and `sign_in_only`, which `/fill` returns for an item
-with no `agent-in-page-fill` custom field.
+`signer_unavailable`, `sandbox_unavailable`, `unknown_browser`, `cdp_unavailable` and
+`sign_in_only`, which `/fill` returns for an item with no `agent-in-page-fill` custom field.
 
 Bodies are JSON objects of at most 64 KiB with no unknown or duplicate keys, and an error body is
 `{"error": "<code>"}` with a fixed code. The access log records method, route, status and handle,
@@ -88,11 +97,10 @@ broker and scrub filled values. See [agent](agent.md#browser-and-credential-fill
 
 These parts are specific to the current implementation and not part of the interface:
 
-- Sharing the `hermes` network namespace, which ties the broker's lifecycle to the `hermes`
-  container, and the `port` field in `POST /fill` and `/signin/start`, which only works for Hermes'
-  own Chromium. A browser service of its own, planned, would remove both; see [browser](browser.md).
-  The handover also needs `Network.setCookies` on the credential client's connection, which the
-  browser contract refuses today, so sign-in works only in the in-container Chromium.
+- The provider table (`BROWSER_PROVIDERS`), its names and the bearer token's path. The handover
+  needs `Network.setCookies` and `Page.reload` on the credential client's connection, which the
+  browser contract refuses for the agent client; a provider has to allow them for the credential
+  client (`compose/web-browser/gateway/rules.py` does). See [browser](browser.md).
 - The two custom fields the sign-in reads from an item, `agent-in-page-fill` and
   `agent-signin-idp`, and `sign_in_only` in the item metadata.
 - Where an account is defined: the add-on instance store (`instances/<slug>.json`, read directly

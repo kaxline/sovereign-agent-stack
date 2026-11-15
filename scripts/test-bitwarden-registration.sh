@@ -7,8 +7,8 @@
 # The host part checks the wiring in the bootstrap and compose. The image
 # part runs the bootstrap's functions, the hermes container's plugin install
 # and the plugin itself in nousresearch/hermes-agent, against scratch
-# profiles, a synthetic Bitwarden manifest and a fake broker on
-# 127.0.0.1:8099. It is skipped when Docker or the image is missing unless
+# profiles, a synthetic Bitwarden manifest and a fake broker that checks the
+# bearer token. It is skipped when Docker or the image is missing unless
 # --image or HERMES_IMAGE_REQUIRED=1 is given.
 set -eu
 
@@ -271,7 +271,10 @@ cat > "$work/backend.py" <<'PY'
 """The bwbroker backend and tools against a fake broker, through the objects Hermes holds."""
 import json
 import logging
+import os
+import secrets
 import sys
+import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -301,7 +304,12 @@ ITEMS = [
     {"handle": "vault_9999", "label": "Outside the namespace", "username": "x",
      "origins": ["https://example.com"], "has_totp": False},
 ]
-state = {"mode": "json", "posts": []}
+state = {"mode": "json", "posts": [], "unauthorized": 0}
+# The broker's bearer token: it answers on a network now, not on loopback in this container.
+API_TOKEN = secrets.token_hex(32)
+TOKEN_PATH = os.path.join(tempfile.mkdtemp(), "api-token")
+with open(TOKEN_PATH, "w") as handle:
+    handle.write(API_TOKEN + "\n")
 # Longer than a short client timeout: GET /items syncs the vault first when the
 # local copy is stale, and a real sync of a self-hosted vault takes ~10 s.
 SLOW_ITEMS_SECONDS = 8.0
@@ -319,7 +327,16 @@ class Fake(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _authorized(self):
+        if self.headers.get("Authorization") == "Bearer " + API_TOKEN:
+            return True
+        state["unauthorized"] += 1
+        self._send(401, {"error": "unauthorized"})
+        return False
+
     def do_GET(self):
+        if not self._authorized():
+            return
         if self.path != "/items":
             return self._send(404, {"error": "not_found"})
         if state["mode"] == "html":
@@ -329,6 +346,8 @@ class Fake(BaseHTTPRequestHandler):
         return self._send(200, ITEMS)
 
     def do_POST(self):
+        if not self._authorized():
+            return
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         state["posts"].append((self.path, body))
         if self.path == "/requests":
@@ -348,6 +367,10 @@ server = ThreadingHTTPServer(("127.0.0.1", 8099), Fake)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 
 discover_plugins()
+# Compose points the module at bitwarden-broker and /run/bitwarden/api-token; point it here instead.
+broker_mod = next(m for name, m in list(sys.modules.items()) if name.endswith("bitwarden_broker_backend"))
+broker_mod.BROKER_URL = "http://127.0.0.1:8099"
+broker_mod.TOKEN_FILE = TOKEN_PATH
 backend = next(b for b in enabled_backends() if b.name == "bwbroker")
 raw = _registry.merged()["bwbroker"]
 
@@ -449,6 +472,7 @@ check("a broker that is down lists nothing", backend.list_items() == [])
 check("a broker that is down gives no metadata", backend.get_meta("bwbroker:work/1111") is None)
 got = call("bitwarden_request_access", {"site": "example.com", "reason": "r"})
 check("a request with the broker down", got == {"success": False, "error": "broker_unavailable"}, got)
+check("every call carried the broker's bearer token", state["unauthorized"] == 0, state["unauthorized"])
 sys.exit(1 if failures else 0)
 PY
 

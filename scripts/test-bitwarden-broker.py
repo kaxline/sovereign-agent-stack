@@ -50,6 +50,8 @@ ITEM_PASSWORDS = {name: secrets.token_urlsafe(16) for name in "ABCDEFGH"}
 ITEM_PASSWORDS["H"] += "\n"  # a password that really ends in a newline
 LEAKY_ENV = "leaky-" + secrets.token_urlsafe(18)
 TOTP_SEED = base64.b32encode(secrets.token_bytes(10)).decode("ascii")
+API_TOKEN = secrets.token_hex(32)
+BROWSER_TOKEN = secrets.token_hex(32)
 SECRETS = [MASTER, CLIENT_SECRET, WRONG_PASSWORD, TOTP_SEED, LEAKY_ENV, *(v.strip() for v in ITEM_PASSWORDS.values())]
 BROKER_DIR = str(ROOT / "compose" / "bitwarden-broker" / "broker")
 NODE_WARNING = (
@@ -910,12 +912,16 @@ CDP_TOKEN = secrets.token_urlsafe(16)
 # Review Focus 3 characters, so the JSON transport has to carry them intact.
 CDP_VALUE = f"pw+/%é{CDP_TOKEN}\nend"
 TARGET = "A1B2C3D4E5F60718293A4B5C6D7E8F90"
+CDP_TOKEN_QUERY = "?token=" + "t" * 40
 LOGIN_URL = "https://login.example.com/session?next=/home"
 SESSION = "5E55104D"
 
 
 class FakeCdp:
-    """A DevTools endpoint on one port: /json/list and /json/version over HTTP, CDP over websocket.
+    """A provider endpoint on one port: CDP over a websocket and no HTTP route at all.
+
+    The broker reaches a browser only through the WebSocket URL it was given, so a
+    provider serving neither /json/list nor /json/version has to work.
 
     ``page`` picks what the fill function reports: ok, navigated, no_field, cleared (a setter
     ran and a page handler emptied the field), write_failed, exception or hang. Before each real reply it sends an event and two decoy replies that
@@ -934,27 +940,8 @@ class FakeCdp:
 
     async def start(self):
         import websockets
-        self.server = await websockets.serve(self.handle, "127.0.0.1", 0, process_request=self.http)
+        self.server = await websockets.serve(self.handle, "127.0.0.1", 0)
         self.port = self.server.sockets[0].getsockname()[1]
-
-    def http(self, *args):
-        # websockets 13+ passes (connection, request); 10.4 to 12 pass (path, headers).
-        legacy = isinstance(args[0], str)
-        path = args[0] if legacy else args[1].path
-        if path == "/json/list":
-            body = [{"id": t["id"], "type": t.get("type", "page"), "url": t["url"], "title": "Sign in",
-                     "webSocketDebuggerUrl": f"ws://127.0.0.1:{self.port}/devtools/page/{t['id']}"}
-                    for t in self.targets]
-        elif path == "/json/version":
-            # Chromium reports whatever host it was asked on; the broker must ignore it.
-            body = {"Browser": "HeadlessChrome/140.0.0.0",
-                    "webSocketDebuggerUrl": "ws://chromium.invalid:9222/devtools/browser/0f1e2d3c-4b5a-6978"}
-        else:
-            return None
-        if legacy:
-            from http import HTTPStatus
-            return HTTPStatus.OK, [("Content-Type", "application/json")], json.dumps(body).encode()
-        return args[0].respond(200, json.dumps(body))
 
     async def handle(self, ws):
         self.connections += 1
@@ -972,7 +959,14 @@ class FakeCdp:
             if msg.get("sessionId"):
                 reply["sessionId"] = msg["sessionId"]
             method, params = msg.get("method"), msg.get("params", {})
-            if method == "Target.attachToTarget":
+            if method == "Target.getTargetInfo":
+                target = next((x for x in self.targets if x["id"] == params.get("targetId")), None)
+                if target is None:
+                    reply["error"] = {"code": -32602, "message": "No target with given id found"}
+                else:
+                    reply["result"] = {"targetInfo": {"targetId": target["id"], "url": target["url"],
+                                                      "type": target.get("type", "page"), "attached": False}}
+            elif method == "Target.attachToTarget":
                 if not self.closed_on_attach and any(t["id"] == params.get("targetId") for t in self.targets):
                     reply["result"] = {"sessionId": SESSION}
                 else:
@@ -1045,9 +1039,14 @@ def expect_detached(fake: FakeCdp, msg: str) -> None:
     expect(methods[-1] == "Target.detachFromTarget", f"{msg}: detach is not the last command")
 
 
+def endpoint_for(port: int) -> str:
+    """The provider endpoint for the credential client, token and all."""
+    return f"ws://127.0.0.1:{port}/devtools/browser/credentials{CDP_TOKEN_QUERY}"
+
+
 def run_fill(fake, allowed=("https://login.example.com",), target=TARGET, timeout=10.0):
     with captured() as out:
-        result = cdp.fill(fake.port, target, tuple(allowed), CDP_VALUE, timeout=timeout)
+        result = cdp.fill(endpoint_for(fake.port), target, tuple(allowed), CDP_VALUE, timeout=timeout)
     return result, out.getvalue()
 
 
@@ -1062,9 +1061,12 @@ def test_fill_writes_value() -> None:
     expect([a.get("value") for a in args] == ["https://login.example.com", CDP_VALUE],
            "the expected origin and the value arrive as callFunctionOn arguments")
     expect(calls[0]["params"].get("objectId") == "1.2.3", "called on the evaluated document")
-    attach = fake.messages[0]
-    expect(attach.get("method") == "Target.attachToTarget"
-           and attach["params"] == {"targetId": TARGET, "flatten": True}, "attaches flattened")
+    # The tab's URL comes from Target.getTargetInfo on the browser connection: the broker needs no
+    # /json route (docs/contracts/browser.md), so that is the first message, then the attach.
+    expect(fake.messages[0].get("method") == "Target.getTargetInfo"
+           and fake.messages[0]["params"] == {"targetId": TARGET}, "asks the browser for the tab")
+    attach = next((m for m in fake.messages if m.get("method") == "Target.attachToTarget"), {})
+    expect(attach.get("params") == {"targetId": TARGET, "flatten": True}, "attaches flattened")
     expect(all(m.get("sessionId") == SESSION for m in fake.messages
                if m.get("method", "").startswith("Runtime.")), "Runtime commands use the session")
     for m in fake.messages:
@@ -1084,7 +1086,10 @@ def test_origin_refused() -> None:
     expect(result == cdp.FillResult(filled=False, origin="https://evil.example.com", error="origin_mismatch"),
            f"refused result {result!r}")
     expect("Runtime.callFunctionOn" not in fake.methods(), "no callFunctionOn on a refused origin")
-    expect(fake.connections == 0, "no CDP websocket for a refused origin")
+    # The URL now comes from Target.getTargetInfo, so the refusal costs one browser connection and
+    # no page session: nothing is attached to and nothing is written.
+    expect(fake.methods() == ["Target.getTargetInfo"], f"only the tab lookup ran: {fake.methods()}")
+    expect(fake.connections == 1, f"one CDP websocket, not {fake.connections}")
     expect_no_value([out, repr(result)], "origin refused")
 
 
@@ -1100,13 +1105,18 @@ def test_target_closed() -> None:
     with fake_cdp([{"id": "0FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", "url": LOGIN_URL}]) as fake:
         result, out = run_fill(fake)
     expect(result == cdp.FillResult(filled=False, origin="", error="target_not_found"), f"closed result {result!r}")
-    expect(fake.connections == 0, "no CDP websocket for a missing target")
-    # Closed after /json/list was read: attach fails, and there is no session to detach.
+    # One browser connection for the tab lookup, no page session: Target.getTargetInfo is where a
+    # closed tab is found now.
+    expect(fake.methods() == ["Target.getTargetInfo"], f"only the tab lookup ran: {fake.methods()}")
+    expect(fake.connections == 1, f"one CDP websocket, not {fake.connections}")
+    # Closed between the tab lookup and the attach: the attach fails, and there is no session to
+    # detach.
     with fake_cdp([{"id": TARGET, "url": LOGIN_URL}]) as fake:
         fake.closed_on_attach = True
         result, out2 = run_fill(fake)
     expect(not result.filled and result.error == "target_not_found", f"closed-on-attach result {result!r}")
-    expect(fake.methods() == ["Target.attachToTarget"], f"only the attach was sent: {fake.methods()}")
+    expect(fake.methods() == ["Target.getTargetInfo", "Target.attachToTarget"],
+           f"the lookup and the attach, nothing else: {fake.methods()}")
     expect_no_value([out, out2, repr(result)], "target closed")
 
 
@@ -1168,37 +1178,52 @@ def run_cdp_tests() -> None:
 
 
 def test_fill_rejects_bad_arguments() -> None:
-    """Port and target id are checked before any I/O, so these need no server."""
+    """The endpoint and the target id are checked before any I/O, so these need no server."""
+    import contextlib as _contextlib
+
+    @_contextlib.asynccontextmanager
     async def must_not_connect(*a, **k):
         fail("fill did I/O before validating its arguments")
-    real = cdp._get_json
-    cdp._get_json = must_not_connect
+        yield  # unreachable; keeps this a generator
+
+    real = cdp._connected
+    cdp._connected = must_not_connect
+    good = endpoint_for(9222)
     try:
-        for port in (0, 65536, -1, "9222", True, 9222.0):
-            got = cdp.fill(port, TARGET, ("https://login.example.com",), CDP_VALUE)
-            expect(got == cdp.FillResult(False, "", "cdp_unavailable"), f"port {port!r}: {got!r}")
+        for ep in ("", "ws://127.0.0.1:9222/json/version", "ws://127.0.0.1/devtools/browser/credentials",
+                   "http://127.0.0.1:9222/devtools/browser/credentials",
+                   "wss://127.0.0.1:9222/devtools/browser/credentials",
+                   "ws://127.0.0.1:9222/devtools/page/ABC", "ws://127.0.0.1:9222/", None, 9222,
+                   "ws://127.0.0.1:9222/devtools/browser/" + "c" * 65):
+            got = cdp.fill(ep, TARGET, ("https://login.example.com",), CDP_VALUE)
+            expect(got == cdp.FillResult(False, "", "cdp_unavailable"), f"endpoint {ep!r}: {got!r}")
         for target in ("", "A" * 65, "../json", "abc-def", "abc\n", None, 7):
-            got = cdp.fill(9222, target, ("https://login.example.com",), CDP_VALUE)
+            got = cdp.fill(good, target, ("https://login.example.com",), CDP_VALUE)
             expect(got == cdp.FillResult(False, "", "target_not_found"), f"target {target!r}: {got!r}")
     finally:
-        cdp._get_json = real
+        cdp._connected = real
 
 
 def test_fill_cdp_down() -> None:
+    """A provider that is not running refuses the connection rather than hanging."""
     import socket
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
     with captured() as out:
-        got = cdp.fill(port, TARGET, ("https://login.example.com",), CDP_VALUE, timeout=2.0)
+        got = cdp.fill(endpoint_for(port), TARGET, ("https://login.example.com",), CDP_VALUE, timeout=2.0)
     expect(got == cdp.FillResult(False, "", "cdp_unavailable"), f"closed port: {got!r}")
     expect_no_value([out.getvalue(), repr(got)], "closed port")
+    # A name that does not resolve is the same: no value, no stall.
+    with captured() as out:
+        got = cdp.fill("ws://web-browser.invalid:9222/devtools/browser/credentials", TARGET,
+                       ("https://login.example.com",), CDP_VALUE, timeout=2.0)
+    expect(got == cdp.FillResult(False, "", "cdp_unavailable"), f"unresolvable host: {got!r}")
 
 
 @contextlib.contextmanager
-def drip_endpoint(drip_path: str):
-    """An HTTP endpoint on 127.0.0.1 that sends headers for ``drip_path`` and then one body byte
-    every 0.9 s; ``/json/list`` otherwise answers at once with the login target."""
+def silent_endpoint():
+    """A TCP port that accepts and then says nothing, so the websocket handshake hangs."""
     import socket
     import threading
 
@@ -1207,19 +1232,7 @@ def drip_endpoint(drip_path: str):
     srv.listen(8)
     srv.settimeout(0.2)
     stop = threading.Event()
-
-    def answer(conn):
-        with conn:
-            path = conn.recv(4096).split(b" ")[1].decode("ascii", "replace")
-            if path == drip_path:
-                conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n")
-                for _ in range(8):
-                    if stop.wait(0.9):
-                        return
-                    conn.sendall(b" ")
-            else:
-                body = json.dumps([{"id": TARGET, "type": "page", "url": LOGIN_URL}]).encode()
-                conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n%s" % (len(body), body))
+    held = []
 
     def serve():
         while not stop.is_set():
@@ -1227,34 +1240,34 @@ def drip_endpoint(drip_path: str):
                 conn, _ = srv.accept()
             except OSError:
                 continue
-            threading.Thread(target=answer, args=(conn,), daemon=True).start()
+            held.append(conn)  # kept open and unanswered
 
     threading.Thread(target=serve, daemon=True).start()
     try:
         yield srv.getsockname()[1]
     finally:
         stop.set()
+        for conn in held:
+            conn.close()
         srv.close()
 
 
 def test_fill_bounded_by_timeout() -> None:
-    """A slow body on either GET, through fill and fill_async, ends at the deadline."""
+    """A provider that accepts the connection and never completes the handshake ends at the deadline."""
     import asyncio
     calls = {
-        "fill": lambda port: cdp.fill(port, TARGET, ("https://login.example.com",), CDP_VALUE, timeout=2.0),
-        "fill_async": lambda port: asyncio.run(
-            cdp.fill_async(port, TARGET, ("https://login.example.com",), CDP_VALUE, timeout=2.0)),
+        "fill": lambda ep: cdp.fill(ep, TARGET, ("https://login.example.com",), CDP_VALUE, timeout=2.0),
+        "fill_async": lambda ep: asyncio.run(
+            cdp.fill_async(ep, TARGET, ("https://login.example.com",), CDP_VALUE, timeout=2.0)),
     }
-    for drip_path in ("/json/list", "/json/version"):
-        for name, call in calls.items():
-            with drip_endpoint(drip_path) as port, captured() as out:
-                start = time.monotonic()
-                got = call(port)
-                elapsed = time.monotonic() - start
-            want_origin = "" if drip_path == "/json/list" else "https://login.example.com"
-            expect(got == cdp.FillResult(False, want_origin, "cdp_unavailable"), f"{name} drip {drip_path}: {got!r}")
-            expect(elapsed < 2.5, f"{name} drip {drip_path}: took {elapsed:.2f}s with a 2s timeout")
-            expect_no_value([out.getvalue(), repr(got)], f"{name} drip {drip_path}")
+    for name, call in calls.items():
+        with silent_endpoint() as port, captured() as out:
+            start = time.monotonic()
+            got = call(endpoint_for(port))
+            elapsed = time.monotonic() - start
+        expect(got == cdp.FillResult(False, "", "cdp_unavailable"), f"{name} silent endpoint: {got!r}")
+        expect(elapsed < 2.5, f"{name} silent endpoint: took {elapsed:.2f}s with a 2s timeout")
+        expect_no_value([out.getvalue(), repr(got)], f"{name} silent endpoint")
 
 
 # --- Broker server ----------------------------------------------------------
@@ -1308,6 +1321,15 @@ class Broker:
         self.signin_socket = run.tmp / "signin" / "signin.sock"
         self.stderr_path = run.tmp / "broker-stderr.log"
         self.port = free_port()
+        # The browser provider the fills use: its URL goes in a file, which the
+        # broker reads per call, so a test can point it at a fake started later.
+        self.browser_url_file = run.tmp / "stack.url"
+        self.browser_url_file.write_text(f"ws://127.0.0.1:{free_port()}/devtools/browser/credentials",
+                                         encoding="utf-8")
+        self.browser_token_file = run.tmp / "stack.token"
+        self.browser_token_file.write_text(BROWSER_TOKEN, encoding="utf-8")
+        self.api_token_file = run.tmp / "api-token"
+        self.api_token_file.write_text(API_TOKEN, encoding="utf-8")
         self.bodies: list[str] = []
         self.proc = None
         wrapper = run.tmp / "bw-wrapper"
@@ -1328,7 +1350,17 @@ class Broker:
             "BITWARDEN_SIGNIN_SOCKET": str(self.signin_socket),
             "BITWARDEN_BW": str(wrapper),
             "BITWARDEN_SYNC_MIN_SECONDS": "0",  # test_sync_coalesced sets 30
+            "BITWARDEN_API_TOKEN_FILE": str(self.api_token_file),
+            "BROWSER_PROVIDERS": json.dumps({
+                "stack": {"url_file": str(self.browser_url_file),
+                          "token_file": str(self.browser_token_file)},
+            }),
         }
+
+    def point_browser(self, port: int, client: str = "credentials") -> None:
+        """Point the ``stack`` provider at ``port`` for the next call."""
+        self.browser_url_file.write_text(f"ws://127.0.0.1:{port}/devtools/browser/{client}",
+                                         encoding="utf-8")
 
     def add_account(self, slug, scope="folder:Agent", unlock="stored", extra=None) -> None:
         """An instance file as addon_store writes it, and secrets/<slug>/ with the client_id."""
@@ -1392,7 +1424,9 @@ class Broker:
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=timeout)
         try:
             data = raw if raw is not None else (None if body is None else json.dumps(body).encode("utf-8"))
-            conn.request(method, path, body=data, headers={"Content-Type": "application/json", **(headers or {})})
+            sent = {"Content-Type": "application/json", "Authorization": f"Bearer {API_TOKEN}",
+                    **(headers or {})}
+            conn.request(method, path, body=data, headers={k: v for k, v in sent.items() if v is not None})
             resp = conn.getresponse()
             text = resp.read().decode("utf-8", "replace")
         finally:
@@ -1445,8 +1479,8 @@ def broker_run(**kwargs):
             b.stop()
 
 
-def fill_body(h, field="password", base=BASE, port=None, target=TARGET) -> dict:
-    body = {"handle": h, "target_id": target, "port": port or free_port(), "field": field}
+def fill_body(h, field="password", base=BASE, browser="stack", target=TARGET) -> dict:
+    body = {"handle": h, "target_id": target, "browser": browser, "field": field}
     if base is not None:
         body["base"] = base
     return body
@@ -1499,7 +1533,9 @@ def test_api_returns_no_values() -> None:
             (fill_body(handle("personal", "B")), 404, "unknown_handle"),
             (fill_body("bwbroker:nobody/x"), 404, "unknown_handle"),
             ({**fill_body(a), "extra": 1}, 400, "bad_request"),
-            ({**fill_body(a), "port": "9222"}, 400, "bad_request"),
+            ({**fill_body(a), "browser": 9222}, 400, "bad_request"),
+            ({**fill_body(a), "browser": ""}, 400, "bad_request"),
+            (fill_body(a, browser="boundary"), 400, "unknown_browser"),
         ]
         before = len(b.run.log_lines())
         for body, want_status, want_error in refusals:
@@ -1755,7 +1791,7 @@ def signin_vault() -> dict:
 
 
 def signin_body(**extra) -> dict:
-    return {"target_id": TARGET, "port": free_port(), **extra}
+    return {"target_id": TARGET, "browser": "stack", **extra}
 
 
 def expect_no_canaries(texts, values, msg: str) -> None:
@@ -1773,9 +1809,9 @@ def test_signin_routes_keep_tcp_checks() -> None:
         b.add_account("personal")
         b.start(unlocked=["personal"])
         with fake_signer(b) as fake:
-            for host in ("evil.example.com", f"evil.example.com:{b.port}", f"127.0.0.1:{b.port + 1}"):
-                got = b.call("POST", "/signin/cancel", {}, headers={"Host": host})
-                expect(got == (403, {"error": "bad_host"}), f"Host {host!r}: {got}")
+            for auth in (None, "", f"Bearer {API_TOKEN}x", "Bearer", f"Basic {API_TOKEN}"):
+                got = b.call("POST", "/signin/cancel", {}, headers={"Authorization": auth or ""})
+                expect(got == (401, {"error": "unauthorized"}), f"Authorization {auth!r}: {got}")
             got = b.call("POST", "/signin/cancel", {}, headers={"Origin": "https://evil.example.com"})
             expect(got == (403, {"error": "origin_refused"}), f"a request with Origin: {got}")
             got = b.call("POST", "/signin/cancel", {}, headers={"Content-Type": "text/plain"})
@@ -1785,10 +1821,10 @@ def test_signin_routes_keep_tcp_checks() -> None:
                                 ({"ref": 0}, "/signin/click"), ({"ref": True}, "/signin/click"),
                                 ({"ref": 1, "text": 7}, "/signin/type"),
                                 ({"ref": 1, "field": "username"}, "/signin/fill"),
-                                ({"handle": 7, "target_id": TARGET, "port": 8}, "/signin/start"),
-                                ({"handle": "x", "target_id": TARGET, "port": "8"}, "/signin/start"),
-                                ({"port": 8}, "/signin/finish"),
-                                ({"target_id": TARGET, "port": 0}, "/signin/finish")):
+                                ({"handle": 7, "target_id": TARGET, "browser": "stack"}, "/signin/start"),
+                                ({"handle": "x", "target_id": TARGET, "browser": 8}, "/signin/start"),
+                                ({"browser": "stack"}, "/signin/finish"),
+                                ({"target_id": TARGET, "browser": ""}, "/signin/finish")):
                 got = b.call("POST", route, body)
                 expect(got[0] == 400 and got[1] == {"error": "bad_request"}, f"{route} {body}: {got}")
             expect(fake.calls == [], f"a refused request reached the signer: {fake.routes()}")
@@ -2226,7 +2262,9 @@ def test_unlock_over_socket() -> None:
 
 def broker_cli(b: Broker, *args):
     import subprocess
-    env = {"PATH": b.env["PATH"], "PYTHONDONTWRITEBYTECODE": "1", "BITWARDEN_LISTEN": b.env["BITWARDEN_LISTEN"]}
+    # The same two variables the broker container sets, which is where vault.sh runs this.
+    env = {"PATH": b.env["PATH"], "PYTHONDONTWRITEBYTECODE": "1", "BITWARDEN_LISTEN": b.env["BITWARDEN_LISTEN"],
+           "BITWARDEN_API_TOKEN_FILE": b.env["BITWARDEN_API_TOKEN_FILE"]}
     out = subprocess.run([sys.executable, "-m", "broker.cli", *args], cwd=BROKER_PKG, env=env,
                          capture_output=True, text=True, timeout=60)
     b.bodies.append(out.stdout + out.stderr)
@@ -2467,7 +2505,8 @@ def test_api_fill_through_cdp() -> None:
         b.add_account("personal")
         b.start(unlocked=["personal"])
         a = handle("personal", "A")
-        status, got = b.call("POST", "/fill", fill_body(a, port=fake.port))
+        b.point_browser(fake.port)
+        status, got = b.call("POST", "/fill", fill_body(a))
         expect(status == 200 and got["filled"] is True and got["origin"] == "https://login.example.com"
                and got["error"] is None, f"/fill password: {status} {got}")
         calls = [m for m in fake.messages if m.get("method") == "Runtime.callFunctionOn"]
@@ -2478,7 +2517,7 @@ def test_api_fill_through_cdp() -> None:
         scrubbed = digest_redaction.scrub(f"page said {ITEM_PASSWORDS['A']}!", [got["redaction"]], "[REDACTED]")
         expect(scrubbed == "page said [REDACTED]!", f"the redaction entry scrubs the value: {scrubbed!r}")
 
-        status, got = b.call("POST", "/fill", fill_body(a, field="totp", port=fake.port))
+        status, got = b.call("POST", "/fill", fill_body(a, field="totp"))
         expect(status == 200 and got["filled"] is True, f"/fill totp: {status} {got}")
         calls = [m for m in fake.messages if m.get("method") == "Runtime.callFunctionOn"]
         code = calls[-1]["params"]["arguments"][1]["value"]
@@ -2486,7 +2525,7 @@ def test_api_fill_through_cdp() -> None:
         expect(calls[-1]["params"]["functionDeclaration"] == cdp._TOTP_FUNCTION, "the TOTP write function")
         expect(digest_redaction.scrub(code, [got["redaction"]], "[R]") == "[R]", "the TOTP redaction scrubs the code")
 
-        status, got = b.call("POST", "/fill", fill_body(a, port=fake.port, target="0FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"))
+        status, got = b.call("POST", "/fill", fill_body(a, target="0FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"))
         expect(status == 200 and got == {"filled": False, "origin": "", "error": "target_not_found",
                                          "redaction": None}, f"closed target: {got}")
         b.stop()
@@ -2499,7 +2538,8 @@ def test_api_fill_write_unconfirmed() -> None:
     with broker_run() as b, fake_cdp([{"id": TARGET, "url": LOGIN_URL}], page="cleared") as fake:
         b.add_account("personal")
         b.start(unlocked=["personal"])
-        status, got = b.call("POST", "/fill", fill_body(handle("personal", "A"), port=fake.port))
+        b.point_browser(fake.port)
+        status, got = b.call("POST", "/fill", fill_body(handle("personal", "A")))
         expect(status == 200 and got["filled"] is False and got["error"] == "write_unconfirmed",
                f"/fill on a cleared field: {status} {got}")
         expect(got["redaction"] is not None
@@ -2525,8 +2565,9 @@ def test_auto_sequence_two_step() -> None:
         b.add_account("personal")
         b.start(unlocked=["personal"])
         with fake_signer(b, pages=pages, export=export) as fake:
+            b.point_browser(cdp_fake.port)
             got = b.call("POST", "/signin/start", {"handle": handle("personal", "A"), "target_id": TARGET,
-                                                   "port": cdp_fake.port})
+                                                   "browser": "stack"})
             expect(got == (200, {"done": True, "origin": SIGNIN_ORIGIN, "cookies": 1}),
                    f"the automatic sequence: {got}")
             expect(fake.routes() == ["/session/open", "/session/type", "/session/click", "/session/fill",
@@ -2561,12 +2602,16 @@ def test_finish_refused_keeps_session() -> None:
         b.add_account("personal")
         b.start(unlocked=["personal"])
         with fake_signer(b) as fake:
+            b.point_browser(cdp_fake.port)
             start = b.call("POST", "/signin/start", {"handle": handle("personal", "A"), "target_id": TARGET,
-                                                     "port": cdp_fake.port})
+                                                     "browser": "stack"})
             expect(start == (200, UNKNOWN_PAGE), f"/signin/start: {start}")
-            got = b.call("POST", "/signin/finish", {"target_id": TARGET, "port": cdp_fake.port})
+            got = b.call("POST", "/signin/finish", {"target_id": TARGET, "browser": "stack"})
             expect(got == (409, {"error": "handover_refused"}), f"/signin/finish off origin: {got}")
-            expect(cdp_fake.connections == 0, "the broker opened a CDP connection to a refused tab")
+            wrote = [m for m in cdp_fake.messages
+                     if m.get("method") in ("Network.setCookies", "Runtime.callFunctionOn",
+                                            "Target.attachToTarget", "Page.reload")]
+            expect(not wrote, f"a refused handover touched the tab: {[m.get('method') for m in wrote]}")
             expect("/session/end" not in fake.routes(), f"the session was ended: {fake.routes()}")
             expect(b.call("POST", "/signin/snapshot", {}) == (200, UNKNOWN_PAGE),
                    "the session is gone after a refused handover")
@@ -2667,7 +2712,10 @@ B = "http://127.0.0.1:%d" % PORTS[1]
 chrome = browser.Chromium.start()
 try:
     with open(os.path.join(chrome.profile, "DevToolsActivePort"), encoding="ascii") as fh:
-        port = int(fh.read().split()[0])
+        lines = fh.read().split()
+    # Chromium writes the port and its own browser websocket path; together they are
+    # the endpoint a provider would hand out, with no token.
+    ENDPOINT = "ws://127.0.0.1:%d%s" % (int(lines[0]), lines[1])
 
     def call(method, params=None):
         chrome.deadline = time.monotonic() + 30
@@ -2709,7 +2757,7 @@ try:
     expect("login required" in text(), "the test site starts signed out: " + repr(text()))
     cookie = {"name": "sess", "value": "s-1", "domain": "127.0.0.1", "path": "/", "httpOnly": True,
               "secure": False, "sameSite": "Lax", "expires": -1}
-    result = cdp.handover(port, target_id, (A,), [cookie], [], [])
+    result = cdp.handover(ENDPOINT, target_id, (A,), [cookie], [], [])
     expect(result == cdp.HandoverResult(True, A, None, 1), "cookie handover: %r" % (result,))
     wait_for("signed in", "the cookie handover did not sign the tab in")
     hidden = call("Runtime.evaluate", {"expression": "document.cookie", "returnByValue": True})
@@ -2717,7 +2765,7 @@ try:
 
     # A cookie outside the item's origins is dropped before the write.
     foreign = dict(cookie, name="other", value="o-1", domain="other.example.com")
-    result = cdp.handover(port, target_id, (A,), [foreign], [], [])
+    result = cdp.handover(ENDPOINT, target_id, (A,), [foreign], [], [])
     expect(result == cdp.HandoverResult(True, A, None, 0), "foreign cookie handover: %r" % (result,))
     got = call("Runtime.evaluate", {"expression": "document.cookie", "returnByValue": True})
     expect("other" not in ((got.get("result") or {}).get("value") or ""), "a foreign cookie was written")
@@ -2725,13 +2773,13 @@ try:
     # Flow 2: a token in localStorage and a sessionStorage entry.
     go(A + "/token")
     expect("no token" in text(), "the token page starts empty: " + repr(text()))
-    result = cdp.handover(port, target_id, (A,), [], [["token", "t-1"]], [["tab", "x-1"]])
+    result = cdp.handover(ENDPOINT, target_id, (A,), [], [["token", "t-1"]], [["tab", "x-1"]])
     expect(result == cdp.HandoverResult(True, A, None, 0), "storage handover: %r" % (result,))
     wait_for("token t-1 tab x-1", "the storage handover did not reach the tab")
 
     # A tab on another origin: refused, and nothing is written.
     go(B + "/token")
-    result = cdp.handover(port, target_id, (A,), [cookie], [["token", "t-2"]], [["tab", "x-2"]])
+    result = cdp.handover(ENDPOINT, target_id, (A,), [cookie], [["token", "t-2"]], [["tab", "x-2"]])
     expect(result == cdp.HandoverResult(False, B, "handover_refused", 0),
            "refused handover: %r" % (result,))
     time.sleep(0.5)
@@ -2746,14 +2794,24 @@ print("image ok")
 
 
 def test_tcp_request_checks() -> None:
-    """Host must name the loopback address and port, no Origin, JSON on POST."""
+    """Every TCP route needs the bearer token, no Origin, and JSON on POST."""
     with broker_run() as b:
         b.add_account("personal")
         b.start(unlocked=["personal"])
-        expect(b.call("GET", "/health", headers={"Host": f"localhost:{b.port}"})[0] == 200, "Host localhost:<port>")
-        for host in ("evil.example.com", f"evil.example.com:{b.port}", f"127.0.0.1:{b.port + 1}", "127.0.0.1"):
-            got = b.call("GET", "/items", headers={"Host": host})
-            expect(got == (403, {"error": "bad_host"}), f"Host {host!r}: {got}")
+        # The Host header no longer decides anything: the broker answers on a compose
+        # network under its service name, and the token is the check.
+        expect(b.call("GET", "/health", headers={"Host": "bitwarden-broker:8099"})[0] == 200,
+               "a request naming the compose host")
+        for auth in (None, "", f"Bearer {API_TOKEN}x", f"Bearer {API_TOKEN[:-1]}", "Bearer",
+                     API_TOKEN, f"Basic {API_TOKEN}"):
+            got = b.call("GET", "/items", headers={"Authorization": auth or ""})
+            expect(got == (401, {"error": "unauthorized"}), f"Authorization {auth!r}: {got}")
+        for ok in (f"bearer {API_TOKEN}", f"Bearer  {API_TOKEN} "):
+            expect(b.call("GET", "/items", headers={"Authorization": ok})[0] == 200,
+                   f"an accepted header form: {ok[:8]!r}")
+        # A refused request reads no body and reaches no route.
+        got = b.call("POST", "/fill", fill_body(handle("personal", "A")), headers={"Authorization": "Bearer x"})
+        expect(got == (401, {"error": "unauthorized"}), f"an unauthorized /fill: {got}")
         got = b.call("GET", "/items", headers={"Origin": "https://evil.example.com"})
         expect(got == (403, {"error": "origin_refused"}), f"a request with Origin: {got}")
         got = b.call("POST", "/requests", {"account": "personal", "site": "a.example.com"},
@@ -2773,12 +2831,14 @@ def test_tcp_request_checks() -> None:
         import urllib.request
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         for base in (f"http://127.0.0.1:{b.port}", f"http://localhost:{b.port}"):
+            auth = {"Authorization": f"Bearer {API_TOKEN}"}
             req = urllib.request.Request(base + "/requests", data=json.dumps(
                 {"account": "personal", "site": "b.example.com"}).encode(), method="POST",
-                headers={"Content-Type": "application/json"})
+                headers={"Content-Type": "application/json", **auth})
             with opener.open(req, timeout=10) as resp:
                 expect(resp.status == 200 and "request_id" in json.loads(resp.read()), f"urllib POST via {base}")
-            with opener.open(urllib.request.Request(base + "/accounts", method="GET"), timeout=10) as resp:
+            with opener.open(urllib.request.Request(base + "/accounts", method="GET", headers=auth),
+                             timeout=10) as resp:
                 expect(resp.status == 200, f"urllib GET via {base}")
         b.expect_clean()
 

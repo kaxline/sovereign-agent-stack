@@ -438,12 +438,18 @@ fi
 # --- Browser ---
 # browser_exec drives the Chromium build shipped in the image under
 # /opt/hermes/tools. A volume mounted over that directory hides it.
+web_browser_on="$(env_get WEB_BROWSER_ENABLED 0)"
+case "$web_browser_on" in 1|true|TRUE|yes|YES) web_browser_on=1 ;; *) web_browser_on=0 ;; esac
 if has_profile core \
   && docker compose version >/dev/null 2>&1 \
   && docker compose ps --status running hermes 2>/dev/null | grep -q hermes; then
   echo
   echo "--- Browser ---"
-  if docker compose exec -T -u hermes hermes /opt/hermes/.venv/bin/python -c \
+  if [ "$web_browser_on" -eq 1 ]; then
+    # The browser is the web-browser service, reached over CDP; the image's own
+    # Chromium is not what browser_exec drives (docs/contracts/browser.md).
+    ok "the browser is the web-browser service (WEB_BROWSER_ENABLED=1)"
+  elif docker compose exec -T -u hermes hermes /opt/hermes/.venv/bin/python -c \
     'import os, sys; sys.path.insert(0, "/opt/hermes"); from hermes_cli.browser_runtime import chromium_executable; p = chromium_executable(); sys.exit(0 if p and os.access(p, os.X_OK) else 1)' \
     >/dev/null 2>&1; then
     ok "hermes user can exec the image's Chromium"
@@ -1208,17 +1214,16 @@ if [[ "$bw_on" -eq 1 || "$bw_local" -eq 1 || "$bw_files" -gt 0 || "$bw_old" -gt 
       source "$ROOT/scripts/lib/env.sh"
       bw_cid="$(compose_with_profile bitwarden ps --status running -q bitwarden-broker 2>/dev/null || true)"
       bw_hermes="$(docker compose ps --status running -q hermes 2>/dev/null || true)"
-      bw_netns=""
-      [[ -n "$bw_cid" ]] && bw_netns="$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$bw_cid" 2>/dev/null || true)"
-      bw_fix="docker compose --profile core --profile bitwarden up -d --no-deps bitwarden-broker"
+      # The API is on the internal credentials network and takes the bearer token hermes mounts.
+      bw_probe="import urllib.request;
+token = open('/run/bitwarden/api-token').read().strip();
+urllib.request.urlopen(urllib.request.Request('http://bitwarden-broker:8099/health',
+headers={'Authorization': 'Bearer ' + token}), timeout=3)"
       if [[ -z "$bw_cid" ]]; then
         warn "bitwarden-broker not running — make up"
       elif [[ -z "$bw_hermes" ]]; then
-        warn "hermes is not running, so the Bitwarden broker has no network — make up"
-      elif [[ "$bw_netns" != "container:${bw_hermes}" ]]; then
-        # The broker kept the namespace of a hermes container that was recreated.
-        bad "bitwarden-broker is not in the running hermes container's network namespace — ${bw_fix}"
-      elif ! docker compose exec -T hermes python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8099/health', timeout=3)" >/dev/null 2>&1; then
+        warn "hermes is not running, so nothing can reach the Bitwarden broker — make up"
+      elif ! docker compose exec -T hermes python3 -c "$bw_probe" >/dev/null 2>&1; then
         bad "Bitwarden broker does not answer /health from hermes — docker compose logs bitwarden-broker"
       elif ! bw_rows="$(compose_with_profile bitwarden exec -T bitwarden-broker python3 -m broker.cli accounts 2>/dev/null)"; then
         bad "Bitwarden broker does not list its accounts — docker compose logs bitwarden-broker"

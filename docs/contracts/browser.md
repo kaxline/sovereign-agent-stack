@@ -19,7 +19,7 @@ A browser provider gives each client:
 | Authentication | A token per client, at least 128 bits, compared in constant time. A request with an `Origin` header is refused. The agent and the credential backend never share a token |
 | Concurrent clients | Several connections at once: a driver, a dialog supervisor and the credential backend. A CDP session one client creates is private to it; any client may attach to a page target by id |
 | Refused methods | Whole-jar cookie reads and writes (`Network.getAllCookies`, `Network.getCookies`, `Network.setCookie(s)`, `Storage.getCookies`, `Storage.setCookies`), `DOMStorage.*`, `IndexedDB.*`, `CacheStorage.*`, `Fetch.*`, `IO.read`, `Target.exposeDevToolsProtocol` and `Target.attachToBrowserTarget`. The refusal is a CDP error the agent can report |
-| `Fetch` exception | `Fetch.enable` and the calls that answer paused requests pass when every pattern is `http://hermes-dialog-bridge.invalid/` and auth interception is off; Hermes answers page dialogs through it |
+| `Fetch` exception | `Fetch.enable` and the calls that answer paused requests pass when every pattern is a URL under `http://hermes-dialog-bridge.invalid/` and auth interception is off; Hermes answers page dialogs through it. Hermes sends `http://hermes-dialog-bridge.invalid/*`, so a provider matches on the host prefix, not the exact string |
 | `Browser.close` | Disconnects that client only; the browser keeps running |
 | URLs | `file:` and browser-internal schemes (`chrome:`, `chrome-extension:`, `devtools:`) are refused for navigation and new targets |
 | Lifetime | The browser outlives agent restarts and sessions. A provider that isn't running refuses the connection rather than holding it open |
@@ -41,30 +41,33 @@ attaches to the target and checks the page's origin before writing. See
 
 ## Current implementation
 
-There are two browsers, chosen per Hermes profile by `browser.cdp_url`.
+There are three browsers, chosen per Hermes profile by `browser.cdp_url`.
 
 | Browser | Where | Selected by |
 |---|---|---|
 | Hermes' Chromium | Launched by browser-harness (`browser_exec`) inside the `hermes` container, from the build shipped in the image under `/opt/hermes/tools`, with a random CDP port on the container's loopback and a fresh profile | no `browser.cdp_url` |
+| `web-browser` | A container of its own (`compose/web-browser/`), Debian's Chromium headful on Xvfb behind a CDP gateway that checks one token per client and refuses the methods above. Off by default (`WEB_BROWSER_ENABLED=0`) | `browser.cdp_url` = `ws://web-browser:9222/devtools/browser/stack?token=${WEB_BROWSER_AGENT_TOKEN}`, written by the bootstrap on the attended profiles it manages |
 | Boundary's agent browser | Google Chrome on the Mac with its own profile, behind the relay in Boundary's host bridge, which meets the interface above and adds a site allowlist and blocklist the user edits | `browser.cdp_url` set by Boundary to `ws://host.docker.internal:<port>/devtools/browser/boundary?token=…`, with the token in each profile's `.env` as `BOUNDARY_BROWSER_TOKEN` |
 
 Hermes' Chromium has no separate endpoint and no token: only processes in the `hermes` network
-namespace reach it. The Bitwarden broker shares that namespace for this reason
-(`network_mode: "service:hermes"`), and `POST /fill` takes the CDP `port` instead of a provider.
-The broker connects only to `127.0.0.1`, so it fills in Hermes' Chromium and refuses a page in
-Boundary's browser. See [credentials](credentials.md#current-implementation).
+namespace reach it, and the Bitwarden broker is no longer one of them, so a login cannot be
+filled in it. The broker reaches the other two by provider name: `stack` is the `web-browser`
+service's credential client, `boundary` the relay. See
+[credentials](credentials.md#current-implementation).
+
+The bootstrap writes the `web-browser` endpoint only on the profiles it manages (the default and
+`browser`), never on the unattended `api-server` one, and records what it wrote in
+`.web-browser-cdp-url` beside `config.yaml`, so a value Boundary or a person set is left as it is.
+The token goes into each of those profiles' `.env`.
 
 The browser tools, the dialog supervisor and the vault actions are described in
-[hermes.md](../hermes.md#browser-tools). `./scripts/doctor.sh` checks that the `hermes` user can
-run the image's Chromium.
-
-A stack browser service, a container that serves the interface with its own tokens and network
-so the broker no longer shares the `hermes` namespace, is planned and not built.
+[hermes.md](../hermes.md#browser-tools). With the service off, `./scripts/doctor.sh` checks that
+the `hermes` user can run the image's Chromium.
 
 ## Consumers
 
 | Consumer | Uses |
 |---|---|
 | Hermes, every profile | `browser_exec`, `browser_cdp`, `browser_dialog` and `browser_vault` through the profile's endpoint or its own Chromium |
-| Bitwarden broker | `Target.attachToTarget`, `Runtime.evaluate`, `Runtime.callFunctionOn` and `Target.detachFromTarget` on the page a fill names, in Hermes' Chromium only |
+| Bitwarden broker | `Target.getTargetInfo`, `Target.attachToTarget`, `Runtime.evaluate`, `Runtime.callFunctionOn` and `Target.detachFromTarget` on the page a fill names, plus `Network.setCookies` and `Page.reload` for a sign-in handover, in the provider the request names |
 | Boundary | Sets `browser.cdp_url` on the profiles it manages when its agent browser is on |

@@ -5,9 +5,10 @@
 
 Host part checks the wiring. With the pinned Hermes image present (or
 --image), the image driver applies the overlays twice, launches the image's
-headless Chromium on a local login page and runs a stub broker on
-127.0.0.1:8099 that writes through the real broker/cdp.py. It checks that a
-bwbroker: fill reaches the stub with the supervisor's target id and CDP port,
+headless Chromium on a local login page and runs a stub broker that writes
+through the real broker/cdp.py and refuses a call without the bearer token. It
+checks that a fill reaches the stub with the supervisor's target id and the
+browser provider name the task's cdp_url maps to,
 that the seven sign-in actions are in the schema and route to the /signin/
 routes with the right bodies, that a sign_in_only item's fill_login and
 enter_code carry the fixed refusal, that list marks those items,
@@ -67,6 +68,29 @@ def test_signin_patch_touches_one_upstream_file() -> None:
     edited = set(re.findall(r'"([a-z_]+\.py)"', patch)) | set(re.findall(r'/ "([a-z_/]+\.py)"', patch))
     expect(edited <= {"browser_vault_tool.py", "vault_bitwarden_signin.py"},
            f"only browser_vault_tool.py is edited, not {sorted(edited)}")
+
+def test_the_broker_is_addressed_by_service_name_with_its_token() -> None:
+    """The broker is a container of its own now, reached over the credentials network."""
+    compose = (ROOT / "docker-compose.yml").read_text()
+    for path in (ROOT / "compose" / "hermes" / "patch-bitwarden-broker-fill.py",
+                 ROOT / "compose" / "hermes" / "bitwarden_broker_backend.py"):
+        src = path.read_text()
+        expect("http://bitwarden-broker:8099" in src, f"{path.name} calls the service by name")
+        expect("127.0.0.1:8099" not in src, f"{path.name} does not call loopback")
+        expect("/run/bitwarden/api-token" in src, f"{path.name} reads the bearer token")
+    expect("/run/bitwarden:ro" in compose, "hermes mounts the token folder read-only")
+
+
+def test_cdp_url_hosts_map_to_provider_names() -> None:
+    """The broker takes a provider name; the overlay has one per browser it can reach."""
+    patch = (ROOT / "compose" / "hermes" / "patch-bitwarden-broker-fill.py").read_text()
+    table = patch[patch.index("_BWBROKER_BROWSERS = {"):].split("}", 1)[0]
+    for host, name in (("web-browser", "stack"), ("host.docker.internal", "boundary")):
+        expect(f'"{host}": "{name}"' in table, f"{host} maps to {name}")
+    expect("127.0.0.1" not in table and "localhost" not in table,
+           "a loopback browser has no provider: the broker is not in its namespace")
+    expect('"port"' not in patch and "'port'" not in patch, "no request body still sends a port")
+
 
 def test_the_shared_tab_refusal_fits_both_callers() -> None:
     """_bwbroker_tab serves fill and sign_in, so its supervisor_required text must suit both.
@@ -197,6 +221,13 @@ LOGIN_TARGET = pages[0]["id"]
 time.sleep(0.5)
 
 # --- stub broker on 8099: real cdp.fill, synthetic values -------------------
+# The broker's bearer token, in a file the overlay and the backend are pointed at, and the one
+# browser provider the stub knows: "stack", which here is the test's own Chromium.
+API_TOKEN = secrets.token_hex(32)
+TOKEN_PATH = os.path.join(tempfile.mkdtemp(), "api-token")
+with open(TOKEN_PATH, "w") as handle:
+    handle.write(API_TOKEN + "\n")
+BROKER_BASE = "http://127.0.0.1:8099"
 PASSWORD = "Pw+" + "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(21))
 TOTP = "".join(secrets.choice(string.digits) for _ in range(6))
 H_OTP, H_PLAIN = "bwbroker:acme/item-otp", "bwbroker:acme/item-plain"
@@ -227,13 +258,21 @@ STATE = {"fills": [], "posts": [], "accounts": [{"slug": "acme", "mode": "cloud"
                                                  "state": "unlocked", "error_class": None},
                                                 {"slug": "home", "mode": "cloud", "scope": "folder",
                                                  "state": "locked", "error_class": None}],
-         "fill_mode": "real", "signin_mode": "ok"}
+         "fill_mode": "real", "signin_mode": "ok", "unauthorized": 0}
 class Broker(BaseHTTPRequestHandler):
     def _send(self, status, payload, raw=None):
         data = raw if raw is not None else json.dumps(payload).encode()
         self.send_response(status); self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
+    def _authorized(self):
+        if self.headers.get("Authorization") == "Bearer " + API_TOKEN:
+            return True
+        STATE["unauthorized"] += 1
+        self._send(401, {"error": "unauthorized"})
+        return False
     def do_GET(self):
+        if not self._authorized():
+            return
         if self.path == "/items":
             return self._send(200, ITEMS)
         if self.path == "/accounts":
@@ -242,6 +281,8 @@ class Broker(BaseHTTPRequestHandler):
             return self._send(200, {"status": "ok"})
         self._send(404, {"error": "not_found"})
     def do_POST(self):
+        if not self._authorized():
+            return
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         STATE["posts"].append((self.path, body))
         if self.path.startswith("/signin/"):
@@ -253,14 +294,16 @@ class Broker(BaseHTTPRequestHandler):
             return self._send(500, None, raw=b"<html>Internal Server Error " + PASSWORD.encode() + b"</html>")
         if STATE["fill_mode"] == "code":
             return self._send(200, {"filled": False, "origin": "", "error": STATE["code"], "redaction": STATE.get("red")})
-        assert set(body) == {"handle", "target_id", "port", "field", "base"}, sorted(body)
+        assert set(body) == {"handle", "target_id", "browser", "field", "base"}, sorted(body)
         item = next((i for i in ITEMS if i["handle"] == body["handle"]), None)
         if item is None:
             return self._send(404, {"error": "unknown_handle"})
         if body["field"] == "totp" and not item["has_totp"]:
             return self._send(400, {"error": "no_totp"})
         value = TOTP if body["field"] == "totp" else PASSWORD
-        result = cdp.fill(body["port"], body["target_id"], tuple(item["origins"]), value, field=body["field"])
+        endpoint = BROWSERS.get(body["browser"])
+        assert endpoint, body  # the real broker answers unknown_browser; nothing here sends one
+        result = cdp.fill(endpoint, body["target_id"], tuple(item["origins"]), value, field=body["field"])
         redaction = None
         if result.filled or result.error not in (cdp.TARGET_NOT_FOUND, cdp.ORIGIN_MISMATCH, cdp.NO_FIELD):
             redaction = build_entry(value, body["base"])
@@ -271,9 +314,9 @@ class Broker(BaseHTTPRequestHandler):
         if mode != "ok":
             return self._send(SIGNIN_STATUS[mode], {"error": mode})
         if name == "start":
-            assert set(body) == {"handle", "target_id", "port"}, sorted(body)
+            assert set(body) == {"handle", "target_id", "browser"}, sorted(body)
         elif name == "finish":
-            assert set(body) == {"target_id", "port"}, sorted(body)
+            assert set(body) == {"target_id", "browser"}, sorted(body)
         elif name == "click":
             assert set(body) == {"ref"}, sorted(body)
         elif name == "type":
@@ -298,7 +341,9 @@ def refuse_resolve(self, handle):
     resolve_calls.append(handle)
     raise AssertionError("resolve_password must not run for a bwbroker handle")
 PluginLoginBackend.resolve_password = refuse_resolve
-BW = PluginLoginBackend("bwbroker", bwb.BrokerLoginBackend(in_cron=lambda: False))
+bvt._BWBROKER_URL = BROKER_BASE
+bvt._BWBROKER_TOKEN_FILE = bwb.TOKEN_FILE = TOKEN_PATH
+BW = PluginLoginBackend("bwbroker", bwb.BrokerLoginBackend(in_cron=lambda: False, base_url=BROKER_BASE))
 
 class Local(vbase.LoginBackend):
     name, display_name, prefix = "local", "Local vault", "vault_"
@@ -322,6 +367,21 @@ vb.backend_for_handle = vbase.backend_for_handle = lambda h: next((b for b in BA
 bsession.session_for_task = lambda task_id: {"cdp_url": WS_URL}
 TASK = "fill-test"
 
+# --- test_cdp_url_maps_to_a_provider_name -----------------------------------
+# The broker holds each provider's endpoint and token and is asked for one by name, so the overlay
+# turns the task's cdp_url into a name. A host with no provider -- this test's loopback Chromium
+# among them, now that the broker has its own network namespace -- gives None.
+for url, want in (("ws://web-browser:9222/devtools/browser/stack?token=t", "stack"),
+                  ("ws://host.docker.internal:19222/devtools/browser/boundary", "boundary"),
+                  (WS_URL, None), ("", None), (None, None)):
+    bsession.session_for_task = lambda task_id, u=url: {"cdp_url": u}
+    got = bvt._bwbroker_browser(None, TASK)
+    assert got == want, (url, got, want)
+bsession.session_for_task = lambda task_id: {"cdp_url": WS_URL}
+# The rest of this run writes into that loopback Chromium, which the stub serves as "stack".
+bvt._BWBROKER_BROWSERS["127.0.0.1"] = "stack"
+BROWSERS = {"stack": WS_URL}
+
 def page_value(selector):
     sup = SUPERVISOR_REGISTRY.get(TASK)
     res = sup.evaluate_runtime(f"document.querySelector({json.dumps(selector)}).value.length")
@@ -340,7 +400,7 @@ assert not resolve_calls, "PluginLoginBackend.resolve_password was called"
 assert len(STATE["fills"]) == 1, STATE["fills"]
 fill = STATE["fills"][-1]
 assert fill["target_id"] == LOGIN_TARGET, (fill["target_id"], LOGIN_TARGET)
-assert fill["port"] == CDP_PORT and fill["field"] == "password" and fill["handle"] == H_PLAIN, fill
+assert fill["browser"] == "stack" and fill["field"] == "password" and fill["handle"] == H_PLAIN, fill
 assert fill["base"] == redact.vault_redaction_base(), "the profile's base is sent"
 assert page_value("input[type=password]") == len(PASSWORD), "the broker wrote the page"
 scrubbed = redact.redact_registered_vault_values(f"page says {PASSWORD} here")
@@ -441,7 +501,7 @@ res = tool(bvt.browser_vault_enter_code, H_OTP, task_id=TASK)
 assert not asked, "has_otp true never asks the user"
 assert res.get("success") is True and res.get("filled") == ["totp"] and res.get("origin") == ORIGIN, res
 fill = STATE["fills"][-1]
-assert fill["field"] == "totp" and fill["target_id"] == otp_target and fill["port"] == CDP_PORT, fill
+assert fill["field"] == "totp" and fill["target_id"] == otp_target and fill["browser"] == "stack", fill
 assert page_value("input[name=otp]") == len(TOTP), "the code was written"
 assert TOTP not in redact.redact_registered_vault_values(f"code {TOTP}"), "the code's digest is registered"
 assert not resolve_calls
@@ -483,7 +543,7 @@ route, body = STATE["posts"][-1]
 assert route == "/signin/start", route
 # No form probe: the handover tab is the first open tab on the item's origin.
 SITE_TARGETS = {t["id"] for t in cdp_json("/json/list") if t.get("url", "").startswith(ORIGIN)}
-assert body == {"handle": H_OTP, "target_id": body["target_id"], "port": CDP_PORT}, body
+assert body == {"handle": H_OTP, "target_id": body["target_id"], "browser": "stack"}, body
 assert body["target_id"] in SITE_TARGETS, (body, SITE_TARGETS)
 SIGNIN_TAB = body["target_id"]
 
@@ -505,7 +565,7 @@ for action, route, body, want in (
          {"success": True, "origin": ORIGIN, "nodes": SNAPSHOT["nodes"]}),
         ("signin_fill", "/signin/fill", {"ref": 1, "field": "password"},
          {"success": True, "origin": ORIGIN, "nodes": SNAPSHOT["nodes"]}),
-        ("signin_finish", "/signin/finish", {"target_id": SIGNIN_TAB, "port": CDP_PORT},
+        ("signin_finish", "/signin/finish", {"target_id": SIGNIN_TAB, "browser": "stack"},
          {"success": True, "done": True, "origin": ORIGIN, "cookies": 3}),
         ("signin_cancel", "/signin/cancel", {}, {"success": True, "cancelled": True})):
     args = {"action": action}
@@ -624,6 +684,22 @@ res = json.loads(scope["_handle_vault"]({"action": "sign_in", "handle": "bwbroke
 assert res["error_type"] == "unknown_handle", res
 assert calls == ["browser_vault_list", "browser_vault_unlock", "browser_vault_fill",
                  "browser_vault_save_login", "browser_vault_enter_code"], "no upstream handler ran for it"
+
+# --- test_a_call_without_the_token_is_refused -------------------------------
+# The broker answers on a network, not on loopback inside this container, so the bearer token is
+# what tells it the call is hermes'. Without the file the call is refused and nothing is written.
+assert STATE["unauthorized"] == 0, "every call so far carried the token"
+before = page_value("input[type=password]")
+bvt._BWBROKER_TOKEN_FILE = "/nonexistent/api-token"
+try:
+    res = tool(bvt.browser_vault_fill, H_PLAIN, task_id=TASK)
+    # More than one: the sign-in-only gate reads /items before the fill, and that is refused too.
+    assert res.get("success") is not True and STATE["unauthorized"], (res, STATE["unauthorized"])
+    assert page_value("input[type=password]") == before, "a refused call wrote nothing"
+finally:
+    bvt._BWBROKER_TOKEN_FILE = TOKEN_PATH
+STATE["unauthorized"] = 0
+redact.clear_vault_redaction_values()
 
 # --- test_origin_normalization_matches_core ---------------------------------
 URLS = [

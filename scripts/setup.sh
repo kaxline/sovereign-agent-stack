@@ -467,6 +467,25 @@ ensure_hermes_worker_key() {
   chmod 644 "${key}.pub"
 }
 
+# Client tokens for the browser service (docs/contracts/browser.md), generated
+# for every install so turning WEB_BROWSER_ENABLED on needs no extra step. One
+# file per client: the agent runtime, the credential broker, and the viewer
+# password, which is the person's and never goes into a Hermes profile. A file
+# that exists is kept, so a token survives a re-run.
+ensure_web_browser_secrets() {
+  local dir file
+  dir="$(resolve_data_root_path "$(data_root_env_get WEB_BROWSER_DATA_DIR ./data/web-browser)")/secrets"
+  mkdir -p "$dir"
+  chmod 700 "$dir"
+  for file in agent credentials viewer; do
+    if [[ ! -s "${dir}/${file}" ]]; then
+      (umask 077; rand_hex 32 > "${dir}/${file}")
+      log "Created browser-service token ${dir}/${file}"
+    fi
+    chmod 600 "${dir}/${file}"
+  done
+}
+
 ensure_hermes_env_files() {
   local hermes_env="$ROOT/compose/hermes/api-server.env"
   local browser_env="$ROOT/compose/hermes/browser.env"
@@ -960,6 +979,8 @@ fi
 ensure_hermes_env_files
 ensure_hermes_worker_key
 ensure_opencode_local_config
+# The browser service's token files are a bind-mount source when its profile is on.
+ensure_web_browser_secrets
 
 # LightRAG MCP stays off until rag is enabled (avoids connect timeouts on core-only).
 set_env_if_missing .env LIGHTRAG_MCP_ENABLED 0
@@ -978,6 +999,10 @@ set_env_if_missing .env VIKUNJA_MCP_ENABLED 0
 # Every add-on's store under <data root>/addons, created now so core
 # services' bind mounts find it, whether or not the add-on is enabled.
 ./scripts/addon-dirs.sh
+
+# The Bitwarden broker's API token. hermes mounts its folder on the core
+# profile, so the file has to exist before compose reads the mount.
+./scripts/vault.sh api-token
 
 # Twenty CRM stays off until crm is enabled (local) or a remote is added.
 set_env_if_missing .env TWENTY_LOCAL_ENABLED 0

@@ -15,8 +15,6 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-# shellcheck source=lib/bitwarden.sh
-source "${ROOT}/scripts/lib/bitwarden.sh"
 
 PREPARE_ONLY=0
 RELOAD=0
@@ -44,6 +42,7 @@ copy_example compose/hermes/browser.env compose/hermes/browser.env.example \
   "Created compose/hermes/browser.env — set API_SERVER_KEY"
 mkdir -p compose/postgres/services
 ./scripts/addon-dirs.sh
+./scripts/vault.sh api-token
 ./scripts/todo.sh ensure
 ./scripts/crm.sh ensure
 ./scripts/budget.sh ensure
@@ -68,5 +67,4 @@ if [[ "$RELOAD" == 1 ]]; then
   docker compose run --rm -e HERMES_BOOTSTRAP_FORCE=1 hermes-api-bootstrap
   docker compose run --rm --no-deps -e HERMES_BOOTSTRAP_FORCE=1 hermes-browser-bootstrap
   docker compose up -d --no-deps --force-recreate hermes
-  follow_hermes
 fi

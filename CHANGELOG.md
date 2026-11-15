@@ -97,8 +97,65 @@ the stack under another app.
   the call as a fill. `sign_in` goes through the same helper, so the text now
   names neither action.
 
+### Browser as a service
+
+- New optional service `web-browser` (compose profile `web-browser`,
+  `WEB_BROWSER_ENABLED=0` by default): Debian's Chromium, headful on Xvfb in a
+  container of its own, behind a CDP gateway that gives each client its own
+  token and refuses whole-jar cookie and storage reads, `Fetch` beyond Hermes'
+  dialog bridge, and `file:` or browser-internal URLs. A noVNC viewer on
+  `127.0.0.1:6080` shows the screen for a sign-in by hand or a CAPTCHA;
+  `make web-browser-viewer` prints the URL and the password's path. The
+  browser interface it serves is [docs/contracts/browser.md](docs/contracts/browser.md).
+- With the service on, the bootstraps point the attended profiles they manage
+  (the default and `browser`) at it through `browser.cdp_url`, never the
+  unattended `api-server` one, and put that client's token in each profile's
+  `.env`. Only a value the stack wrote is replaced or removed — it records it in
+  `.web-browser-cdp-url` beside `config.yaml` — so an endpoint Boundary or you
+  set is left alone. With the service off, the next bootstrap run takes the
+  stack's own value back out.
+- The Bitwarden broker no longer shares the `hermes` container's network
+  namespace. It joins two internal networks of its own: `credentials`, which
+  carries its API and which only `hermes` joins, and `browser`, the route to a
+  browser provider. Recreating or restarting `hermes` now leaves the broker
+  running, with its `manual` accounts still unlocked, and nothing has to follow
+  `hermes` afterwards: `./scripts/vault.sh follow-hermes` is gone, as is the
+  `make doctor` check for a broker in the wrong namespace.
+- The broker's API takes a bearer token, from `broker-api/api-token` under the
+  add-on's data dir. `make ensure-local` and `scripts/setup.sh` create it, and
+  `hermes` mounts that one folder read-only so the plugin and the fill overlay
+  can send it. The API no longer checks the `Host` header; it still refuses a
+  request with an `Origin` header and a POST that is not `application/json`.
+- A fill and a sign-in handover name a browser provider instead of a CDP port:
+  `POST /fill`, `/signin/start` and `/signin/finish` take `browser`, a key of
+  the broker's provider table, and the broker holds each provider's endpoint
+  and its own token for it. `stack` is the `web-browser` service, `boundary`
+  Boundary's relay, which writes its endpoint and token into
+  `secrets/boundary.url` and `secrets/boundary.token` under the add-on's data
+  dir. An unknown name is refused with `unknown_browser`. Before this a fill
+  only worked in the Chromium inside `hermes`, so a Boundary chat could neither
+  fill nor sign in.
+- A fill reads the tab's URL with `Target.getTargetInfo` on the browser
+  connection instead of the `/json/list` HTTP route, so a provider does not
+  have to serve one.
+
+### New optional `.env` keys
+
+- `WEB_BROWSER_ENABLED` (default 0) turns the browser service on.
+- `WEB_BROWSER_VIEWER_PORT` (default 6080) is the host port for its noVNC
+  viewer, published on `127.0.0.1` only. `WEB_BROWSER_MEM_LIMIT` (default 2g),
+  `WEB_BROWSER_SCREEN` and `WEB_BROWSER_WINDOW` size the container and its
+  screen.
+
 ### Upgrade steps
 
+- The Bitwarden broker needs recreating on this upgrade, together with
+  `hermes`: `make ensure-local` writes the broker's new API token, and both
+  containers read it at start. `make up` does both.
+- To use the new browser service, set `WEB_BROWSER_ENABLED=1`, run `make up`,
+  and run the bootstraps (`make hermes-reload`) so the profiles pick up
+  `browser.cdp_url`. Keep it off to stay on the Chromium inside `hermes` or on
+  Boundary's browser; nothing changes for either.
 - Bitwarden logins are no longer filled into the agent's own page unless you
   say so per item. Add a custom field `agent-in-page-fill` of type boolean,
   value true, to each Bitwarden item you want filled the old way; without it

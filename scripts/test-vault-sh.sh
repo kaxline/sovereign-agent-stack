@@ -451,43 +451,48 @@ ASSISTANT_DATA_ROOT="$tmp/root-preup" BITWARDEN_HOST_DATA_DIR="$tmp/bw-preup" ru
 [ "$(mode_of "$tmp/bw-preup/secrets")" = 711 ] || fail "pre-up creates secrets/, mode 711"
 [ ! -s "$STUB/log" ] || fail "pre-up runs no docker"
 
-# --- follow-hermes: after hermes is recreated or restarted ---------------------
+# --- api-token: the broker API's bearer token ------------------------------------
+# Created whatever BITWARDEN_ENABLED says: hermes mounts that folder on the core profile, and
+# compose refuses to start a service whose bind-mount source is missing.
 reset_stub
-printf 'BITWARDEN_ENABLED=0\n' > "$ENV_FILE"
-touch "$STUB/broker-running"
-run follow-hermes || fail "follow-hermes while off"
-[ ! -s "$out" ] || fail "follow-hermes prints nothing while BITWARDEN_ENABLED=0"
-[ ! -s "$STUB/log" ] || fail "follow-hermes runs docker while BITWARDEN_ENABLED=0"
-(. "${ROOT}/scripts/lib/bitwarden.sh"; follow_hermes) < /dev/null > "$out" 2>&1 || fail "follow_hermes while off"
-{ [ ! -s "$out" ] && [ ! -s "$STUB/log" ]; } || fail "the follow_hermes helper is a no-op while BITWARDEN_ENABLED=0"
-printf 'BITWARDEN_ENABLED=1\n' > "$ENV_FILE"
-rm -f "$STUB/broker-running"
-run follow-hermes || fail "follow-hermes with no broker container"
-logged " up " && fail "follow-hermes starts a broker that was never created"
-reset_stub
-touch "$STUB/broker-running"
-inst handson '{"mode":"cloud","unlock":"manual"}'
-printf 'handson\tcloud\tfolder\tlocked\t-\nlocal\tlocal\tcollection\tunlocked\t-\n' > "$STUB/accounts"
-(. "${ROOT}/scripts/lib/bitwarden.sh"; follow_hermes) < /dev/null > "$out" 2>&1 || fail "follow_hermes while on"
-logged "--profile bitwarden up -d --no-deps bitwarden-broker" || fail "follow_hermes brings the broker up in hermes' namespace"
-logged "force-recreate" && fail "follow_hermes leaves a broker in the current namespace alone (no --force-recreate)"
-said "handson is locked after the restart: make vault-unlock SLUG=handson" || fail "follow_hermes lists manual accounts to unlock"
-rm -f "$INST/handson.json"
+for flag in 0 1; do
+  printf 'BITWARDEN_ENABLED=%s\n' "$flag" > "$ENV_FILE"
+  d="$tmp/bw-token-$flag"
+  BITWARDEN_HOST_DATA_DIR="$d" run api-token || fail "api-token with BITWARDEN_ENABLED=$flag"
+  [ -s "$d/broker-api/api-token" ] || fail "api-token writes broker-api/api-token (BITWARDEN_ENABLED=$flag)"
+  [ "$(mode_of "$d/broker-api/api-token")" = 600 ] || fail "the token file is mode 600"
+  [ "$(mode_of "$d/broker-api")" = 700 ] || fail "broker-api/ is mode 700"
+  [ "$(wc -c < "$d/broker-api/api-token")" -ge 32 ] || fail "the token is at least 32 characters"
+done
+[ ! -s "$STUB/log" ] || fail "api-token runs no docker"
+d="$tmp/bw-token-1"
+first="$(cat "$d/broker-api/api-token")"
+BITWARDEN_HOST_DATA_DIR="$d" run api-token || fail "api-token again"
+[ "$(cat "$d/broker-api/api-token")" = "$first" ] || fail "api-token leaves an existing token alone"
+BITWARDEN_HOST_DATA_DIR="$d" run api-token --print || fail "api-token --print"
+said "$d/broker-api/api-token" || fail "api-token --print writes the path"
 
-# Every command that recreates or restarts hermes follows it with the broker.
-grep -A4 -E '^hermes-reload:' "${ROOT}/Makefile" | grep -q 'vault.sh follow-hermes' || fail "make hermes-reload follows hermes"
-grep -A3 -E '^hermes-recreate:' "${ROOT}/Makefile" | grep -q 'vault.sh follow-hermes' || fail "make hermes-recreate follows hermes"
-grep -A3 -E '^restart:' "${ROOT}/Makefile" | grep -q 'vault.sh follow-hermes' || fail "make restart follows hermes"
-for f in corpus.sh model-use.sh; do
-  grep -q 'follow_hermes' "${ROOT}/scripts/$f" || fail "scripts/$f calls follow_hermes after it recreates or restarts hermes"
+# make ensure-local (scripts/up.sh --prepare) creates it, so make up has it
+# before compose reads the mount.
+grep -A1 -E '^ensure-local:' "${ROOT}/Makefile" | grep -q 'scripts/up.sh --prepare' \
+  || fail "make ensure-local runs scripts/up.sh --prepare"
+awk '/vault.sh api-token/ { a = NR } /PREPARE_ONLY" == 1/ { p = NR } END { exit !(a && p && a < p) }' "${ROOT}/scripts/up.sh" \
+  || fail "scripts/up.sh runs vault.sh api-token before --prepare stops"
+grep -q 'ensure_web_browser_secrets\|api-token' "${ROOT}/scripts/setup.sh" \
+  || fail "scripts/setup.sh creates the token too"
+
+# --- nothing follows hermes any more --------------------------------------------
+# The broker had to be recreated in hermes' new network namespace after every restart. It has its
+# own networks now, so the subcommand, the helper and every call site are gone.
+reset_stub
+run follow-hermes && fail "follow-hermes must fail as an unknown command"
+grep -q 'follow_hermes' "${ROOT}/scripts/lib/bitwarden.sh" && fail "the follow_hermes helper is gone"
+for f in "${ROOT}"/Makefile "${ROOT}"/scripts/*.sh; do
+  case "$(basename "$f")" in test-*) continue ;; esac
+  grep -q 'follow-hermes\|follow_hermes' "$f" && fail "$(basename "$f") still follows hermes"
 done
 for f in agent-create.sh bootstrap-buzz.sh agent-attach-buzz.sh; do
   grep -q 'make hermes-recreate' "${ROOT}/scripts/$f" || fail "scripts/$f tells you to run make hermes-recreate"
-done
-# No script recreates hermes, or tells you to, without following it.
-bare="$(grep -lE 'force-recreate[^|;&]* hermes( |$|")' "${ROOT}"/scripts/*.sh 2>/dev/null | grep -v '/test-' || true)"
-for f in $bare; do
-  grep -q 'follow_hermes' "$f" || fail "$(basename "$f") recreates hermes without follow_hermes"
 done
 
 # --- secrets-sync is gone --------------------------------------------------------
