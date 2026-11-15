@@ -15,6 +15,7 @@
 	db-backup db-service-add db-psql todo-init todo-open dashboard-open \
 	crm-init crm-add crm-remove crm-access crm-open crm-mode \
 	vault-init vault-add vault-unlock vault-lock vault-sync vault-requests vault-remove vault-open \
+	web-browser-build web-browser-viewer web-browser-test \
 	bitwarden-test addon-list addon-test test hermes-image-test actual-mcp-test \
 	budget-open budget-access budget-connect budget-disconnect \
 	coding-root-list coding-root-add \
@@ -210,6 +211,24 @@ vault-remove:
 
 vault-open:
 	@./scripts/vault.sh open
+
+# The browser service (docs/contracts/browser.md), off unless
+# WEB_BROWSER_ENABLED=1.
+#   make web-browser-build    build the image (Chromium plus the CDP gateway)
+#   make web-browser-viewer   print the viewer URL and where its password is
+#   make web-browser-test     the gateway and compose-config tests
+web-browser-build:
+	@docker compose --profile web-browser build web-browser
+
+web-browser-viewer:
+	@$(resolve_data_root); \
+	port=$$(grep -E '^WEB_BROWSER_VIEWER_PORT=' .env 2>/dev/null | head -1 | cut -d= -f2-); \
+	port=$${port:-6080}; \
+	echo "Viewer:   http://127.0.0.1:$$port/vnc.html"; \
+	echo "Password: $$DATA_ROOT/web-browser/secrets/viewer"
+
+web-browser-test:
+	@$(RUN_TESTS) scripts/test-web-browser-
 
 # Every Bitwarden add-on test, through scripts/run-tests.py. Image parts run
 # when the pinned Hermes image is present; test-vw-register.py and the compose
