@@ -25,6 +25,13 @@ the stack under another app.
   host's OS, and each enabled service's state and published ports. Read-only,
   and it works with the stack stopped. See
   [docs/extending.md](docs/extending.md#stack-status).
+- New `scripts/backup.sh` (`create`, `restore --from DIR`): archives the stack
+  directory with its `.env` and local configs, `data/`, `ASSISTANT_DATA_ROOT`,
+  any `*DATA_DIR` outside both, and the stateful named volumes, into
+  `./backups/<timestamp>-<version>/` (`BACKUP_DIR` or `--dest` to change).
+  It refuses while the stack runs unless given `--stop`. Restore moves each
+  data directory aside rather than deleting it. See
+  [docs/data-dir.md](docs/data-dir.md#backups).
 
 ## v0.3.16 — 2026-11-14
 

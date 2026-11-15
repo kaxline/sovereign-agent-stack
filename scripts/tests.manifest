@@ -28,6 +28,7 @@ scripts/test-addon-dirs.sh                      ci
 scripts/test-addon-gateway.sh                   ci
 scripts/test-addon-manifests.py                 ci
 scripts/test-addon-store.py                     ci
+scripts/test-backup-sh.sh                       ci
 scripts/test-bash32.sh
 scripts/test-bitwarden-access.py                ci
 scripts/test-bitwarden-broker.py                ci image

@@ -73,6 +73,44 @@ make down && make up
 Container paths stay the same (`/opt/projects`, `/opt/voice`, …). Only the host
 side of the bind changes.
 
+## Backups
+
+`scripts/backup.sh` writes `./backups/<UTC timestamp>-<version>/` (set
+`BACKUP_DIR` or pass `--dest DIR` to put it elsewhere), with one `.tar.gz` per
+part and a `manifest.json` listing them:
+
+| Part | What |
+| --- | --- |
+| `stack` | the stack directory without `data/`, `backups/` and `.git`: code, `.env`, the override file and the other local configs |
+| `data` | `./data`, without `*.bak-*` folders, `backups/`, `worktree-backups/` and the host mail and Messages indexes (`mail/`, `messages/`, `messages-events/`), which the host helpers rebuild |
+| `data-root` | `ASSISTANT_DATA_ROOT`, when it is not `./data` |
+| `dir-KEY` | each `*DATA_DIR` in `.env` that points outside the stack and both roots, such as `SIGNAL_CLI_DATA_DIR` |
+| `volume-NAME` | the named volumes that hold state: `n8n_storage`, `neo4j_data`, `opencode_config`, `opencode_data`, `gptr_outputs`, `email_drafts` |
+
+The Postgres of the `db` add-on, Vikunja and Twenty, and Hermes' SQLite files,
+live under `data/`, and a copy of them is consistent only with the stack
+stopped. `backup.sh` refuses while any service runs; `--stop` stops the stack
+and starts the same services again afterwards. `--plan` lists the parts
+without writing anything. tar runs as root in the pinned Hermes image, so it
+can read files the database containers own on Linux, and keeps their owners.
+
+A backup holds every secret in the stack. The folder is created with mode 700;
+keep copies as private as `.env`.
+
+```bash
+scripts/backup.sh --stop
+scripts/backup.sh restore --from backups/20261115T171503Z-v0.3.17 --stop
+```
+
+`restore` moves each data directory to `PATH.pre-restore-<timestamp>` before
+unpacking, then moves back what the backup left out (mail indexes, older
+backups). It saves each volume's current contents under
+`<backup>/pre-restore-<timestamp>/` before emptying it. Nothing is deleted;
+remove the `.pre-restore-*` copies once the restored stack works. The stack
+stays stopped afterwards. `stack.tar.gz` is not restored; unpack it by hand
+if you need an old `.env` or config. `--json` on either command prints event
+lines (`step`, then `done` or `error`).
+
 ## `make clean`
 
 `make clean` runs `docker compose down -v` and removes the **repo** `./data/`

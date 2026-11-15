@@ -62,3 +62,6 @@ build/
 
 # Version stamp a release tarball carries (scripts/status.sh reads it)
 /.stack-version
+
+# scripts/backup.sh output
+/backups/
