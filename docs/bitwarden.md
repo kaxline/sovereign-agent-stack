@@ -112,16 +112,10 @@ on one of them.
   mounts, through `docker compose exec`. The broker uses it for one `bw unlock` and drops it. The account stays unlocked until the
   broker restarts, `make vault-lock SLUG=…`, or `BITWARDEN_IDLE_LOCK_MINUTES` without a fill or
   unlock (default 0, never). While it is locked its items are not listed, and `browser_vault` `list`
-  carries `"bitwarden": {"locked": ["<slug>"], "unlock": "make vault-unlock SLUG=<slug>"}`. The broker
-  shares `hermes`' network namespace (`network_mode: service:hermes`). Compose restarts it when it
-  restarts `hermes` (`make restart`, `docker compose restart hermes`), but not when `hermes` alone is
-  recreated (`docker compose up -d --force-recreate hermes`): the broker keeps the removed
-  container's namespace, Hermes gets `broker_unavailable`, and `docker compose restart
-  bitwarden-broker` leaves it exited. `make hermes-reload`, `make hermes-recreate`, `make restart`
-  and the stack scripts that recreate `hermes` run `./scripts/vault.sh follow-hermes`, which runs
-  `up -d --no-deps bitwarden-broker` with the profiles in `.env` plus `bitwarden` and lists the
-  manual accounts to unlock. Run it yourself after recreating `hermes` any other way. A manual account
-  needs unlocking again after any of these.
+  carries `"bitwarden": {"locked": ["<slug>"], "unlock": "make vault-unlock SLUG=<slug>"}`. The
+  broker has a container and networks of its own, so recreating or restarting `hermes` leaves it
+  running and its accounts unlocked. Restarting the broker itself locks every `manual` account
+  again.
 
 A `manual` account is signed in with its API key (`bw login --apikey`) each time the broker starts,
 and stays locked. `bw` keeps its login across broker restarts, so that sign-in checks a `manual`
@@ -483,11 +477,17 @@ the entry alone does not determine a long random value.
 
 Other limits, as built:
 
-- The broker's API on `127.0.0.1:8099` has no authentication. Agent code in `hermes` can call it,
-  which is why no route returns a value; `hermes-worker` and other containers cannot reach it. It
-  refuses a `Host` other than `127.0.0.1:8099` or `localhost:8099`, any request with an `Origin`
-  header, and a POST whose `Content-Type` is not `application/json`, so a web page in the agent's
-  browser cannot call it.
+- The broker's API is on the internal `credentials` network, which only `hermes` joins
+  (`http://bitwarden-broker:8099`), and every call must carry the bearer token in
+  `<add-on data dir>/broker-api/api-token`. `hermes` mounts that one folder read-only, so agent
+  code in `hermes` can read the token and call the API, which is why no route returns a value;
+  `hermes-worker` and other containers reach neither the network nor the token. The API also
+  refuses any request with an `Origin` header and a POST whose `Content-Type` is not
+  `application/json`, so a web page in the agent's browser cannot call it.
+- A fill names a browser by provider name, and the broker holds each provider's endpoint and its
+  own token for it, so agent code cannot send a fill to an endpoint of its own. What it can still
+  do is read a filled field through CDP in the browser it shares with the fill; see "What the
+  agent can and cannot see".
 - The `/signin` routes are on that same API, so code the agent runs in `hermes` can start a
   sign-in itself, in cron as well, and have the session written into a tab it names. It gets no
   password or code that way: the values go to the signer and no route returns one. The cron fence
@@ -609,7 +609,8 @@ account's state (`unlocked`, `locked`, `offline`, `error` with an error class), 
 | doctor: `the broker refused an account (<cause>)` | See the causes under [Instance files](#instance-files); the message names the file and the setting |
 | doctor: `compose/bitwarden/accounts/ holds … account file(s)` | Files from an earlier version, which nothing reads. Connect those accounts again (`make vault-add` or Boundary), then delete the folder |
 | doctor: `<slug>: not loaded by the broker yet` | The broker reads the instance store at start: `docker compose --profile core --profile bitwarden up -d --no-deps --force-recreate bitwarden-broker` |
-| doctor: `bitwarden-broker is not in the running hermes container's network namespace` | `hermes` was recreated and the broker was not: `docker compose --profile core --profile bitwarden up -d --no-deps bitwarden-broker` (or `./scripts/vault.sh follow-hermes`) |
+| Hermes reports `broker_unavailable` and `make doctor` says the broker does not answer `/health` from hermes | The bearer token is missing or stale: `./scripts/vault.sh api-token --print` names the file, and the broker and `hermes` both have to be recreated after it changes |
+| `unknown_browser` from a fill or a sign-in | The profile's `browser.cdp_url` points at a browser the broker has no provider for. Only the `web-browser` service and Boundary's relay are providers |
 | A login is in the folder but not listed | It has no `http`/`https` URI, or only URIs with match type "Never"; or the agent released it and it is still denylisted. `make vault-sync` re-reads |
 | doctor: `… is a folder (Docker made it for a missing file)` | A container started before `make vault-init` wrote that file. Remove the folder and run `make vault-init` again |
 | `make vault-init` stops waiting for you | Register in the web vault with the invited address, then `make vault-init` again |

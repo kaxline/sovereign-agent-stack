@@ -89,7 +89,8 @@ SECRET_KEYS = {
 # hermes-worker may carry only these. Any other key, including a secret, fails.
 WORKER_ENV = {"HERMES_UID", "HERMES_GID", "TZ"}
 
-# bitwarden-broker shares hermes' network namespace and may carry only these.
+# bitwarden-broker runs on the internal credentials and browser networks and
+# may carry only these.
 BROKER_ENV = {
     "BITWARDEN_INSTANCES_DIR",
     "BITWARDEN_DATA_DIR",
@@ -98,6 +99,8 @@ BROKER_ENV = {
     "BITWARDEN_ITEMS_SYNC_SECONDS",
     "BITWARDEN_IDLE_LOCK_MINUTES",
     "BITWARDEN_LISTEN",
+    "BITWARDEN_API_TOKEN_FILE",
+    "BROWSER_PROVIDERS",
     "BITWARDEN_SYNC_SOCKET",
     "BITWARDEN_SIGNIN_SOCKET",
     "NODE_EXTRA_CA_CERTS",
@@ -472,7 +475,8 @@ DB_BRIDGES = {"hermes", "vikunja"}
 # vault, the internal network the Bitwarden broker reaches the local Vaultwarden
 # through, on budget for the Actual Budget MCPs, and on email for email-mcp and
 # email-drafts-mcp.
-BRIDGE_EXTRA_NETS = {"hermes": {"budget", "email", "vault", "detector-agent"}}
+BRIDGE_EXTRA_NETS = {"hermes": {"budget", "email", "vault", "detector-agent", "browser",
+                                "credentials"}}
 
 
 def check_db_network(services: dict, networks: dict) -> list[str]:

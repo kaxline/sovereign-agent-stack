@@ -1522,6 +1522,9 @@ services:
       - HERMES_AGENT_IMAGE_TAG=${HERMES_AGENT_IMAGE_TAG:-v0.23.1}
       # 1 runs the full bootstrap even when nothing changed.
       - HERMES_BOOTSTRAP_FORCE=${HERMES_BOOTSTRAP_FORCE:-0}
+      # With the browser service on, the bootstrap points this profile's
+      # browser.cdp_url at it (compose/hermes/bootstrap-api-profile.sh).
+      - WEB_BROWSER_ENABLED=${WEB_BROWSER_ENABLED:-0}
       # Gateway topology (019-pin-profile-gateways.sh); decides what the default
       # profile's .env keeps for its API server.
       - HERMES_GATEWAY_TOPOLOGY=${HERMES_GATEWAY_TOPOLOGY:-}
@@ -1610,6 +1613,10 @@ services:
       - ./data/hermes:/opt/data
       - ./compose/hermes/api-server.env:/bootstrap/api-server.env:ro
       - ./compose/hermes/bootstrap-api-profile.sh:/bootstrap/bootstrap-api-profile.sh:ro
+      # The web-browser service's agent client token, which the bootstrap puts
+      # into each attended profile's .env so browser.cdp_url resolves it. The
+      # credential client's token is the broker's and is not mounted here.
+      - ${ASSISTANT_DATA_ROOT:-./data}/web-browser/secrets/agent:/run/web-browser/agent:ro
       # Twenty's workspaces: instances/<slug>.json and secrets/<slug>.key_ro|key_rw.
       # Only this add-on's directory; other add-ons keep secrets under data/addons.
       - ${ASSISTANT_DATA_ROOT:-./data}/addons/twenty:/bootstrap/addon-data/twenty:ro
@@ -1648,6 +1655,9 @@ services:
       - HERMES_API_SERVER_PORT=${HERMES_BROWSER_API_PORT:-8644}
       - HERMES_AGENT_IMAGE_TAG=${HERMES_AGENT_IMAGE_TAG:-v0.23.1}
       - HERMES_BOOTSTRAP_FORCE=${HERMES_BOOTSTRAP_FORCE:-0}
+      # With the browser service on, the bootstrap points this profile's
+      # browser.cdp_url at it (compose/hermes/bootstrap-api-profile.sh).
+      - WEB_BROWSER_ENABLED=${WEB_BROWSER_ENABLED:-0}
       # hermes-api-bootstrap has already set up the default profile and every
       # other profile; this run does the browser profile only.
       - HERMES_BOOTSTRAP_SHARED=0
@@ -1741,6 +1751,10 @@ services:
       - ./data/hermes:/opt/data
       - ./compose/hermes/browser.env:/bootstrap/browser.env:ro
       - ./compose/hermes/bootstrap-api-profile.sh:/bootstrap/bootstrap-api-profile.sh:ro
+      # The web-browser service's agent client token, which the bootstrap puts
+      # into each attended profile's .env so browser.cdp_url resolves it. The
+      # credential client's token is the broker's and is not mounted here.
+      - ${ASSISTANT_DATA_ROOT:-./data}/web-browser/secrets/agent:/run/web-browser/agent:ro
       # Twenty's workspaces: instances/<slug>.json and secrets/<slug>.key_ro|key_rw.
       # Only this add-on's directory; other add-ons keep secrets under data/addons.
       - ${ASSISTANT_DATA_ROOT:-./data}/addons/twenty:/bootstrap/addon-data/twenty:ro

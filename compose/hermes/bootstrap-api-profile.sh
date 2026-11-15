@@ -1944,6 +1944,93 @@ profile_env_file() {
   fi
 }
 
+# --- The browser service (docs/contracts/browser.md) -------------------------
+# With WEB_BROWSER_ENABLED=1 the agent's browser is the web-browser container,
+# reached over CDP as the "stack" client. The endpoint carries that client's
+# token by reference; Hermes resolves ${VAR} in browser.cdp_url from the
+# profile's own .env, which is where the value goes.
+#
+# Only a value this stack wrote is replaced or removed. The marker file beside
+# config.yaml records what was written, as the cron toolsets do, so another
+# provider's endpoint (Boundary's relay) and anything set by hand survive both
+# a run with the service on and a run with it off.
+WEB_BROWSER_CDP_URL='ws://web-browser:9222/devtools/browser/stack?token=${WEB_BROWSER_AGENT_TOKEN}'
+WEB_BROWSER_TOKEN_FILE="${WEB_BROWSER_TOKEN_FILE:-/run/web-browser/agent}"
+
+set_browser_cdp_url() {
+  _sbc_profile="$1"
+  _sbc_cfg="$(config_path_for "$_sbc_profile")"
+  if [ ! -f "$_sbc_cfg" ]; then
+    log "No config at ${_sbc_cfg}; browser.cdp_url was not written"
+    return 0
+  fi
+  _sbc_env="$(profile_env_file "$_sbc_profile")"
+  _sbc_token=""
+  if is_true "${WEB_BROWSER_ENABLED:-0}"; then
+    _sbc_token="$(cat "$WEB_BROWSER_TOKEN_FILE" 2>/dev/null || true)"
+    if [ -z "$_sbc_token" ]; then
+      log "No web-browser client token at ${WEB_BROWSER_TOKEN_FILE}; left browser.cdp_url on '${_sbc_profile:-default}' alone"
+      return 0
+    fi
+    _sbc_mode=on
+  else
+    _sbc_mode=off
+  fi
+  _sbc_out="$(python3 - "$_sbc_cfg" "$WEB_BROWSER_CDP_URL" "$_sbc_mode" <<'INNER'
+import sys
+from pathlib import Path
+
+try:
+    import yaml
+except ImportError:  # Hermes v0.22+ ships ruamel only; hermes_yaml wraps it
+    import sys as _sys
+    _sys.path.insert(0, "/opt/hermes")
+    import hermes_yaml as yaml
+from utils import atomic_yaml_write
+
+path, want, mode = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+marker = path.parent / ".web-browser-cdp-url"
+data = yaml.safe_load(path.read_text()) or {}
+browser = data.get("browser")
+browser = browser if isinstance(browser, dict) else {}
+current = browser.get("cdp_url")
+current = current.strip() if isinstance(current, str) else ""
+ours = marker.read_text().strip() if marker.exists() else ""
+
+if current and current != want and current != ours:
+    print("foreign")  # another browser provider, or an endpoint set by hand
+elif mode == "on":
+    if current == want:
+        print("unchanged")
+    else:
+        browser["cdp_url"] = want
+        data["browser"] = browser
+        atomic_yaml_write(path, data)
+        print("wrote")
+    marker.write_text(want + "\n")
+elif not current:
+    if marker.exists():
+        marker.unlink()
+    print("absent")
+else:
+    browser.pop("cdp_url", None)
+    if browser:
+        data["browser"] = browser
+    else:
+        data.pop("browser", None)
+    atomic_yaml_write(path, data)
+    if marker.exists():
+        marker.unlink()
+    print("removed")
+INNER
+)" || return 1
+  log "browser.cdp_url on '${_sbc_profile:-default}': ${_sbc_out} (service ${_sbc_mode})"
+  case "$_sbc_out" in
+    wrote|unchanged) upsert_env "$_sbc_env" "WEB_BROWSER_AGENT_TOKEN" "$_sbc_token" ;;
+    removed|absent) remove_env_key "$_sbc_env" "WEB_BROWSER_AGENT_TOKEN" ;;
+  esac
+}
+
 # A fresh install: hermes has never started, so seed the default profile from
 # the image the way its first boot does (stage2-hook.sh seed_one). The profiles
 # have to exist before hermes starts: its memories/ bind mounts would otherwise
@@ -2278,6 +2365,16 @@ fi
 if is_true "$BOOTSTRAP_SHARED"; then
   configure_messages_webhook
 fi
+
+# The attended profiles this bootstrap manages. The shared run owns the default
+# profile, and its own is the unattended api-server identity, which gets no
+# browser of its own; a bootstrap of its own (browser) writes its profile's.
+if is_true "$BOOTSTRAP_SHARED"; then
+  set_browser_cdp_url ""
+else
+  set_browser_cdp_url "$PROFILE"
+fi
+
 fence_mail_from_cron_all_profiles
 
 apply_terminal_backend_all_profiles
