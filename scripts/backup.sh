@@ -39,11 +39,12 @@
 # instead (tests). Backups hold every secret the stack has: keep them as
 # private as .env.
 #
-# --json prints one JSON object per line: {"event":"step","step":PART,...}
-# per part, then {"event":"done",...} or {"event":"error","error":REASON,
-# "message":TEXT}. REASON is bad_input, stack_running or command_failed.
-# --plan prints the parts create would write, as {"event":"part",...} lines,
-# and writes nothing.
+# --json prints JSON lines in addon.sh's shapes (docs/extending.md "JSON
+# lines"): {"phase":"setup","step":PART,"status":"done",...} per part, then
+# {"phase":"done",...} or {"phase":"error","error":REASON,"step":PART|null,
+# "message":TEXT,"logTail":[...]}. REASON is bad_input (exit 2),
+# stack_running (exit 1) or command_failed (exit 4). --plan prints the parts
+# create would write, as {"phase":"part",...} lines, and writes nothing.
 #
 # bash 3.2 compatible.
 set -euo pipefail
@@ -56,12 +57,14 @@ source "${ROOT}/scripts/lib/env.sh"
 source "${ROOT}/scripts/lib/data-root.sh"
 # shellcheck source=lib/python.sh
 source "${ROOT}/scripts/lib/python.sh"
+# shellcheck source=lib/json-lines.sh
+source "${ROOT}/scripts/lib/json-lines.sh"
+jl_init
 
 STATEFUL_VOLUMES="n8n_storage neo4j_data opencode_config opencode_data gptr_outputs email_drafts"
 DATA_EXCLUDES="./backups ./worktree-backups ./*.bak-* ./mail ./messages ./messages-events"
 
 CMD=create
-JSON=0
 STOP=0
 PLAN=0
 DEST=""
@@ -72,39 +75,26 @@ if [[ $# -gt 0 && ( "$1" == create || "$1" == restore ) ]]; then
   shift
 fi
 
-json_escape() {
-  local s="$1"
-  s="${s//\\/\\\\}"
-  s="${s//\"/\\\"}"
-  s="${s//$'\t'/ }"
-  s="${s//$'\n'/ }"
-  printf '%s' "$s"
-}
+emit() { jl_emit "$1"; }
+say() { [[ "$JL_JSON" == 1 ]] || printf '%s\n' "$1" >&2; }
 
-# Event lines go to fd 3, the original stdout, so a function run inside $(...)
-# still reaches the caller.
-exec 3>&1
-emit() { [[ "$JSON" == 1 ]] && printf '%s\n' "$1" >&3; return 0; }
-say() { [[ "$JSON" == 1 ]] || printf '%s\n' "$1" >&2; }
-
-fail() {
-  local reason="$1" msg="$2"
-  emit "{\"event\":\"error\",\"error\":\"${reason}\",\"message\":\"$(json_escape "$msg")\"}"
-  printf 'error: %s\n' "$msg" >&2
-  exit "${3:-1}"
-}
+# fail CODE MESSAGE: the error line for the part being worked on (STEP), with
+# its log (FAIL_LOG) as logTail.
+STEP=""
+FAIL_LOG=""
+fail() { jl_fail "$1" "$STEP" "$2" "$FAIL_LOG"; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --json) JSON=1; shift ;;
+    --json) JL_JSON=1; shift ;;
     --stop) STOP=1; shift ;;
     --plan) PLAN=1; shift ;;
-    --dest) DEST="${2:-}"; shift 2 || fail bad_input "--dest needs a directory" 2 ;;
-    --from) FROM="${2:-}"; shift 2 || fail bad_input "--from needs a directory" 2 ;;
-    --compose-file) files+=("${2:-}"); shift 2 || fail bad_input "--compose-file needs a file" 2 ;;
-    --project) export COMPOSE_PROJECT_NAME="${2:-}"; shift 2 || fail bad_input "--project needs a name" 2 ;;
+    --dest) DEST="${2:-}"; shift 2 || fail bad_input "--dest needs a directory" ;;
+    --from) FROM="${2:-}"; shift 2 || fail bad_input "--from needs a directory" ;;
+    --compose-file) files+=("${2:-}"); shift 2 || fail bad_input "--compose-file needs a file" ;;
+    --project) export COMPOSE_PROJECT_NAME="${2:-}"; shift 2 || fail bad_input "--project needs a name" ;;
     -h | --help) sed -n '2,49p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) fail bad_input "unknown option $1" 2 ;;
+    *) fail bad_input "unknown option $1" ;;
   esac
 done
 if [[ ${#files[@]} -gt 0 ]]; then
@@ -283,7 +273,7 @@ cmd_create() {
   local i excl
   if [[ "$PLAN" == 1 ]]; then
     for i in "${!P_KIND[@]}"; do
-      emit "{\"event\":\"part\",\"part\":\"${P_NAME[$i]}\",\"kind\":\"${P_KIND[$i]}\",\"source\":\"$(json_escape "${P_SRC[$i]}")\",\"exclude\":\"$(json_escape "${P_EXCL[$i]}")\"}"
+      emit "{\"phase\":\"part\",\"part\":$(jl_str "${P_NAME[$i]}"),\"kind\":\"${P_KIND[$i]}\",\"source\":$(jl_str "${P_SRC[$i]}"),\"exclude\":$(jl_str "${P_EXCL[$i]}")}"
       say "${P_NAME[$i]}: ${P_SRC[$i]}${P_EXCL[$i]:+ (without ${P_EXCL[$i]})}"
     done
     return 0
@@ -306,33 +296,38 @@ cmd_create() {
     read -r -a ex <<< "${P_EXCL[$i]}"
     for excl in ${ex[@]+"${ex[@]}"}; do args+=("--exclude=${excl}"); done
     say "Backing up ${P_NAME[$i]}"
+    STEP="${P_NAME[$i]}"
+    FAIL_LOG="${out}/.log"
+    jl_setup "$STEP" "running"
     if ! tar_create "${P_KIND[$i]}" "${P_SRC[$i]}" "$out" "${P_NAME[$i]}.tar.gz" \
       ${args[@]+"${args[@]}"} > "${out}/.log" 2>&1; then
-      cat "${out}/.log" >&2
+      [[ "$JL_JSON" == 1 ]] || cat "${out}/.log" >&2
       fail command_failed "backing up ${P_NAME[$i]} (${P_SRC[$i]}) failed; the partial backup is in ${out}"
     fi
     bytes="$(file_bytes "${out}/${P_NAME[$i]}.tar.gz")"
     total=$((total + bytes))
     printf '%s\t%s\t%s\t%s.tar.gz\n' "${P_KIND[$i]}" "${P_NAME[$i]}" "${P_SRC[$i]}" "${P_NAME[$i]}" >> "${out}/parts.tsv"
-    emit "{\"event\":\"step\",\"step\":\"${P_NAME[$i]}\",\"status\":\"done\",\"bytes\":${bytes}}"
+    jl_setup "$STEP" "done" ",\"bytes\":${bytes}"
   done
   rm -f "${out}/.log"
+  STEP=""
+  FAIL_LOG=""
 
   {
-    printf '{"version":"%s","created":"%s","project":"%s","parts":[' \
-      "$(json_escape "$version")" "$stamp" "$(json_escape "$PROJECT")"
+    printf '{"version":%s,"created":"%s","project":%s,"parts":[' \
+      "$(jl_str "$version")" "$stamp" "$(jl_str "$PROJECT")"
     local first=1 kind name src file
     while IFS=$'\t' read -r kind name src file; do
       [[ "$first" == 1 ]] || printf ','
       first=0
-      printf '{"kind":"%s","name":"%s","source":"%s","file":"%s","bytes":%s}' \
-        "$kind" "$name" "$(json_escape "$src")" "$file" "$(file_bytes "${out}/${file}")"
+      printf '{"kind":"%s","name":"%s","source":%s,"file":"%s","bytes":%s}' \
+        "$kind" "$name" "$(jl_str "$src")" "$file" "$(file_bytes "${out}/${file}")"
     done < "${out}/parts.tsv"
     printf ']}\n'
   } > "${out}/manifest.json"
 
   restart_stopped
-  emit "{\"event\":\"done\",\"path\":\"$(json_escape "$out")\",\"version\":\"$(json_escape "$version")\",\"parts\":${#P_KIND[@]},\"bytes\":${total}}"
+  jl_done "\"path\":$(jl_str "$out"),\"version\":$(jl_str "$version"),\"parts\":${#P_KIND[@]},\"bytes\":${total}"
   say "Backup written to ${out}"
 }
 
@@ -353,9 +348,9 @@ restore_left_out() {
 }
 
 cmd_restore() {
-  [[ -n "$FROM" ]] || fail bad_input "restore needs --from DIR" 2
+  [[ -n "$FROM" ]] || fail bad_input "restore needs --from DIR"
   FROM="$(abs_path "$FROM")"
-  [[ -f "${FROM}/parts.tsv" ]] || fail bad_input "${FROM} has no parts.tsv; not a backup from scripts/backup.sh" 2
+  [[ -f "${FROM}/parts.tsv" ]] || fail bad_input "${FROM} has no parts.tsv; not a backup from scripts/backup.sh"
   PROJECT="$(project_name)"
   [[ -n "$PROJECT" ]] || fail command_failed "could not work out the compose project name"
   require_stopped > /dev/null || exit $?
@@ -364,8 +359,11 @@ cmd_restore() {
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   while IFS=$'\t' read -r kind name src file; do
     [[ "$name" == stack ]] && continue
-    [[ -f "${FROM}/${file}" ]] || fail bad_input "${FROM}/${file} is missing" 2
+    [[ -f "${FROM}/${file}" ]] || fail bad_input "${FROM}/${file} is missing"
     say "Restoring ${name}"
+    STEP="$name"
+    FAIL_LOG="${FROM}/.log"
+    jl_setup "$STEP" "running"
     if [[ "$kind" == dir ]]; then
       aside=""
       if [[ -e "$src" ]]; then
@@ -374,11 +372,11 @@ cmd_restore() {
       fi
       mkdir -p "$src"
       tar_extract dir "$src" "${FROM}/${file}" > /dev/null 2>"${FROM}/.log" || {
-        cat "${FROM}/.log" >&2
+        [[ "$JL_JSON" == 1 ]] || cat "${FROM}/.log" >&2
         fail command_failed "unpacking ${name} into ${src} failed; the previous copy is ${aside:-absent}"
       }
       [[ -n "$aside" && "$name" == data ]] && restore_left_out "$aside" "$src"
-      emit "{\"event\":\"step\",\"step\":\"${name}\",\"status\":\"done\",\"aside\":\"$(json_escape "$aside")\"}"
+      jl_setup "$STEP" "done" ",\"aside\":$(jl_str_or_null "$aside")"
     else
       vol="${name#volume-}"
       vol="$(volume_for "$vol")"
@@ -393,15 +391,17 @@ cmd_restore() {
           || fail command_failed "saving the current ${vol} failed; nothing changed in it"
       fi
       tar_extract volume "$vol" "${FROM}/${file}" > /dev/null 2>"${FROM}/.log" || {
-        cat "${FROM}/.log" >&2
+        [[ "$JL_JSON" == 1 ]] || cat "${FROM}/.log" >&2
         fail command_failed "unpacking ${name} into volume ${vol} failed"
       }
-      emit "{\"event\":\"step\",\"step\":\"${name}\",\"status\":\"done\"}"
+      jl_setup "$STEP" "done"
     fi
     n=$((n + 1))
   done < "${FROM}/parts.tsv"
   rm -f "${FROM}/.log"
-  emit "{\"event\":\"done\",\"from\":\"$(json_escape "$FROM")\",\"parts\":${n}}"
+  STEP=""
+  FAIL_LOG=""
+  jl_done "\"from\":$(jl_str "$FROM"),\"parts\":${n}"
   say "Restored ${n} part(s) from ${FROM}; the stack is stopped. Start it with make up."
 }
 

@@ -41,16 +41,16 @@ upsert_env "${tmp}/link.env" X 2
 stack="${tmp}/stack"
 mkdir -p "${stack}/scripts/lib"
 cp "${ROOT}/scripts/env.sh" "${stack}/scripts/"
-cp "${ROOT}/scripts/lib/env.sh" "${stack}/scripts/lib/"
+cp "${ROOT}/scripts/lib/env.sh" "${ROOT}/scripts/lib/json-lines.sh" "${stack}/scripts/lib/"
 printf 'HERMES_AGENT_IMAGE_TAG=v1\nLLM_PROXY_ADMIN_TOKEN=secret\n' > "${stack}/.env"
 run() { (cd "$stack" && bash scripts/env.sh "$@"); }
 
 out="$(run set HERMES_AGENT_IMAGE_TAG v2 --json)" || fail "set pin failed: $out"
-[ "$out" = '{"event":"done","key":"HERMES_AGENT_IMAGE_TAG","changed":true}' ] \
+[ "$out" = '{"phase":"done","key":"HERMES_AGENT_IMAGE_TAG","changed":true}' ] \
   || fail "set result: $out"
 before="$(cat "${stack}/.env")"
 out="$(run set HERMES_AGENT_IMAGE_TAG v2 --json)"
-[ "$out" = '{"event":"done","key":"HERMES_AGENT_IMAGE_TAG","changed":false}' ] \
+[ "$out" = '{"phase":"done","key":"HERMES_AGENT_IMAGE_TAG","changed":false}' ] \
   || fail "second set result: $out"
 [ "$(cat "${stack}/.env")" = "$before" ] || fail "second set changed the file"
 
@@ -60,10 +60,10 @@ run set HERMES_TERMINAL_BACKEND local --json > /dev/null || fail "terminal backe
 grep -q '^LLM_MODEL=qwen$' "${stack}/.env" || fail "LLM_MODEL not written"
 
 out="$(run unset LLM_MODEL --json)" || fail "unset failed: $out"
-[ "$out" = '{"event":"done","key":"LLM_MODEL","changed":true}' ] || fail "unset result: $out"
+[ "$out" = '{"phase":"done","key":"LLM_MODEL","changed":true}' ] || fail "unset result: $out"
 grep -q '^LLM_MODEL=' "${stack}/.env" && fail "unset left LLM_MODEL"
 out="$(run unset LLM_MODEL --json)"
-[ "$out" = '{"event":"done","key":"LLM_MODEL","changed":false}' ] || fail "second unset: $out"
+[ "$out" = '{"phase":"done","key":"LLM_MODEL","changed":false}' ] || fail "second unset: $out"
 
 expect_refused() {
   key="$1" reason="$2"
@@ -74,7 +74,7 @@ expect_refused() {
   set -e
   [ "$rc" = 2 ] || fail "set $key exit $rc, want 2"
   case "$out" in
-    *'"event":"error"'*"\"error\":\"${reason}\""*) ;;
+    *'"phase":"error"'*"\"error\":\"${reason}\""*) ;;
     *) fail "set $key: want error ${reason}, got $out" ;;
   esac
 }

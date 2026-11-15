@@ -15,7 +15,7 @@ new_stack() {
   stack="${tmp}/$1"
   mkdir -p "${stack}/scripts/lib" "${stack}/upgrades"
   cp "${ROOT}/scripts/upgrade.sh" "${stack}/scripts/"
-  cp "${ROOT}/scripts/lib/env.sh" "${stack}/scripts/lib/"
+  cp "${ROOT}/scripts/lib/env.sh" "${ROOT}/scripts/lib/json-lines.sh" "${stack}/scripts/lib/"
   cp "${ROOT}/upgrades/lib.sh" "${stack}/upgrades/"
   # shellcheck disable=SC2016  # expanded by the stub
   printf '#!/bin/sh\necho "$*" > "$(dirname "$0")/../up.args"\n' > "${stack}/scripts/up.sh"
@@ -46,12 +46,12 @@ done_line="$(printf '%s\n' "$out" | tail -1)"
 python3 - "$done_line" << 'EOF' || fail "done line: $done_line"
 import json, sys
 d = json.loads(sys.argv[1])
-assert d["event"] == "done", d
+assert d["phase"] == "done", d
 assert d["hooks"] == ["v0.3.10", "v0.3.11"], d  # numeric order, v0.3.9 excluded
 assert d["needs_user"] == [{"id": "ten-id", "message": "ten: do a thing", "version": "v0.3.10"}], d
 assert [n["message"] for n in d["notices"]] == ["eleven"], d
 EOF
-printf '%s\n' "$out" | grep -q '"step":"start"' || fail "no start step"
+printf '%s\n' "$out" | grep -q '"step":"start","status":"done"' || fail "no start step"
 
 # Same version: no hooks, still starts. --no-start doesn't.
 rm -f "${stack}/ran" "${stack}/up.args"
@@ -84,11 +84,11 @@ expect_error 2 bad_input --to v0.3.11
 # A failing hook stops the upgrade before the start.
 hook v0.3.12 'echo "broken step" >&2; exit 3'
 rm -f "${stack}/up.args"
-expect_error 1 command_failed --from v0.3.11 --to v0.3.12
-case "$out" in *'"step":"hook v0.3.12"'*'broken step'* | *'broken step'*'"step":"hook v0.3.12"'*) ;; *) fail "hook failure: $out" ;; esac
+expect_error 4 command_failed --from v0.3.11 --to v0.3.12
+case "$(printf '%s\n' "$out" | tail -1)" in *'"step":"hook"'*'v0.3.12 failed: broken step'*'"logTail":["broken step"]'*) ;; *) fail "hook failure: $out" ;; esac
 [ ! -e "${stack}/up.args" ] || fail "started after a failed hook"
 hook v0.3.12 'echo "bogus thing"'
-expect_error 1 command_failed --from v0.3.11 --to v0.3.12
+expect_error 4 command_failed --from v0.3.11 --to v0.3.12
 
 # --- the shipped hooks ---------------------------------------------------------
 new_stack shipped

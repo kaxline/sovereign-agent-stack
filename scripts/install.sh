@@ -35,13 +35,14 @@
 # --compose-file and --project set COMPOSE_FILE and COMPOSE_PROJECT_NAME for
 # every step, for an app that runs the stack under its own overlay.
 #
-# --json prints one JSON object per line: {"event":"step","step":S,
-# "status":"running"|"done"} per step, then {"event":"done","version":V,
-# "previous_version":P|null,"fresh":B,"backup":PATH|null,"needs_user":[...],
-# "notices":[...],"doctor":"passed"} or {"event":"error","error":REASON,
-# "message":TEXT,"step":S,"logTail":TEXT,"rolledBack":B,"backup":PATH|null}.
-# REASON is bad_input, unsupported_host, checksum_mismatch, busy,
-# command_failed or doctor_failed. doctor_failed leaves the new stack running.
+# --json prints JSON lines in addon.sh's shapes (docs/extending.md "JSON
+# lines"): {"phase":"setup","step":S,"status":"running"|"done"} per step,
+# then {"phase":"done","version":V,"previous_version":P|null,"fresh":B,
+# "backup":PATH|null,"needs_user":[...],"notices":[...],"doctor":"passed"} or
+# {"phase":"error","error":REASON,"step":S|null,"message":TEXT,
+# "logTail":[...],"rolledBack":B,"backup":PATH|null}. REASON is bad_input
+# (exit 2), command_failed (exit 4), or unsupported_host, checksum_mismatch,
+# busy or doctor_failed (exit 1). doctor_failed leaves the new stack running.
 set -euo pipefail
 
 VERSION=""
@@ -78,16 +79,26 @@ ROLLED_BACK=false
 WORK=""
 LOCK=""
 
-json_escape() {
-  local s="$1"
-  s="${s//\\/\\\\}"
-  s="${s//\"/\\\"}"
-  s="${s//$'\t'/ }"
-  s="${s//$'\r'/}"
-  s="${s//$'\n'/\\n}"
-  printf '%s' "$s"
+# The JSON helpers are a copy of scripts/lib/json-lines.sh, as this script
+# runs without the stack.
+jstr_raw() {
+  local t
+  t="$(printf '%s' "$1" | LC_ALL=C tr '\t' ' ' | LC_ALL=C tr -d '\000-\010\012-\037\177' | cut -c1-500)"
+  t="${t//\\/\\\\}"
+  t="${t//\"/\\\"}"
+  printf '"%s"' "$t"
 }
-jstr() { if [[ -n "$1" ]]; then printf '"%s"' "$(json_escape "$1")"; else printf 'null'; fi; }
+jstr() { if [[ -n "$1" ]]; then jstr_raw "$1"; else printf 'null'; fi; }
+jtail() {
+  local line out="" first=1
+  [[ -n "$1" && -s "$1" ]] || { printf '[]'; return; }
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$first" == 1 ]] || out="${out},"
+    first=0
+    out="${out}$(jstr_raw "$line")"
+  done < <(tail -20 "$1")
+  printf '[%s]' "$out"
+}
 emit() { [[ "$JSON" == 1 ]] && printf '%s\n' "$1" >&3; return 0; }
 say() { [[ "$JSON" == 1 ]] || printf '%s\n' "$1" >&2; }
 
@@ -98,20 +109,23 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# fail REASON MESSAGE: the error line, with the current step's log as logTail.
 fail() {
-  local reason="$1" msg="$2" tail=""
-  [[ -n "$LOG" && -s "$LOG" ]] && tail="$(tail -20 "$LOG")"
-  emit "{\"event\":\"error\",\"error\":\"${reason}\",\"message\":$(jstr "$msg"),\"step\":$(jstr "$STEP"),\"logTail\":$(jstr "$tail"),\"rolledBack\":${ROLLED_BACK},\"backup\":$(jstr "$BACKUP")}"
+  local reason="$1" msg="$2" code=1
+  emit "{\"phase\":\"error\",\"error\":\"${reason}\",\"step\":$(jstr "$STEP"),\"message\":$(jstr_raw "$msg"),\"logTail\":$(jtail "$LOG"),\"rolledBack\":${ROLLED_BACK},\"backup\":$(jstr "$BACKUP")}"
   printf 'error: %s\n' "$msg" >&2
-  [[ "$JSON" == 1 || -z "$tail" ]] || printf '%s\n' "$tail" >&2
-  exit "${3:-1}"
+  case "$reason" in
+    bad_input) code=2 ;;
+    command_failed) code=4 ;;
+  esac
+  exit "$code"
 }
 
 # step NAME CMD...: runs CMD in DIR with output to the step's log.
 step() {
   STEP="$1"
   shift
-  emit "{\"event\":\"step\",\"step\":\"${STEP}\",\"status\":\"running\"}"
+  emit "{\"phase\":\"setup\",\"step\":\"${STEP}\",\"status\":\"running\"}"
   say "== ${STEP}"
   LOG="${WORK}/${STEP}.log"
   if [[ "$JSON" == 1 ]]; then
@@ -121,7 +135,7 @@ step() {
     return "${PIPESTATUS[0]}"
   fi
 }
-step_done() { emit "{\"event\":\"step\",\"step\":\"${STEP}\",\"status\":\"done\"}"; }
+step_done() { emit "{\"phase\":\"setup\",\"step\":\"${STEP}\",\"status\":\"done\"}"; }
 
 version_key() {
   [[ "$1" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || return 1
@@ -138,19 +152,19 @@ sha256_of() {
 
 # --- arguments and host --------------------------------------------------------
 
-[[ -n "$VERSION" ]] || fail bad_input "--version vX.Y.Z is required" 2
-new_key="$(version_key "$VERSION")" || fail bad_input "--version ${VERSION} is not vX.Y.Z" 2
-[[ -n "$DIR" ]] || fail bad_input "--dir DIR is required" 2
+[[ -n "$VERSION" ]] || fail bad_input "--version vX.Y.Z is required"
+new_key="$(version_key "$VERSION")" || fail bad_input "--version ${VERSION} is not vX.Y.Z"
+[[ -n "$DIR" ]] || fail bad_input "--dir DIR is required"
 [[ "$DIR" == /* ]] || DIR="$(pwd)/${DIR}"
 DIR="${DIR%/}"
-[[ -e "${DIR}/.git" ]] && fail bad_input "${DIR} is a git checkout; upgrade it with git checkout ${VERSION}, scripts/setup.sh and scripts/upgrade.sh" 2
+[[ -e "${DIR}/.git" ]] && fail bad_input "${DIR} is a git checkout; upgrade it with git checkout ${VERSION}, scripts/setup.sh and scripts/upgrade.sh"
 
 OS="$(uname -s)"
 STEP=check
 for a in ${setup_args[@]+"${setup_args[@]}"}; do
   case "$a" in
     --mail | --mail-drafts | --messages)
-      [[ "$OS" == Darwin ]] || fail unsupported_host "${a#--} reads host-built Apple Mail or Messages indexes and needs macOS" 2 ;;
+      [[ "$OS" == Darwin ]] || fail unsupported_host "${a#--} reads host-built Apple Mail or Messages indexes and needs macOS" ;;
   esac
 done
 for c in tar gzip docker; do
@@ -176,9 +190,9 @@ PREV=""
 if [[ -f "${DIR}/.stack-version" ]]; then
   PREV="$(head -1 "${DIR}/.stack-version" | tr -d '[:space:]')"
   prev_key="$(version_key "$PREV")" || fail bad_input "${DIR}/.stack-version says ${PREV}, not vX.Y.Z"
-  [[ ! "$new_key" < "$prev_key" ]] || fail bad_input "${DIR} has ${PREV}, newer than ${VERSION}; downgrades are not supported" 2
+  [[ ! "$new_key" < "$prev_key" ]] || fail bad_input "${DIR} has ${PREV}, newer than ${VERSION}; downgrades are not supported"
 elif [[ -n "$(find "$DIR" -mindepth 1 -maxdepth 1 ! -name .install.lock ! -name '.install-tmp.*' | head -1)" ]]; then
-  fail bad_input "${DIR} is not empty and has no .stack-version, so it is not an install this script made" 2
+  fail bad_input "${DIR} is not empty and has no .stack-version, so it is not an install this script made"
 fi
 step_done
 
@@ -187,7 +201,7 @@ step_done
 name="sovereign-agent-stack-${VERSION}"
 if [[ -z "$TARBALL" ]]; then
   STEP=fetch
-  emit '{"event":"step","step":"fetch","status":"running"}'
+  emit '{"phase":"setup","step":"fetch","status":"running"}'
   command -v curl > /dev/null 2>&1 || fail unsupported_host "curl is needed to download the release; or pass --tarball"
   base="${STACK_RELEASE_BASE:-https://github.com/kaxline/sovereign-agent-stack/releases/download}"
   TARBALL="${WORK}/${name}.tar.gz"
@@ -201,9 +215,9 @@ if [[ -z "$TARBALL" ]]; then
   step_done
 fi
 STEP=verify
-[[ -f "$TARBALL" ]] || fail bad_input "${TARBALL} does not exist" 2
+[[ -f "$TARBALL" ]] || fail bad_input "${TARBALL} does not exist"
 if [[ -z "$SHA" ]]; then
-  [[ -f "${TARBALL}.sha256" ]] || fail bad_input "no checksum: pass --sha256 or put ${TARBALL}.sha256 beside it" 2
+  [[ -f "${TARBALL}.sha256" ]] || fail bad_input "no checksum: pass --sha256 or put ${TARBALL}.sha256 beside it"
   SHA="$(cut -d' ' -f1 < "${TARBALL}.sha256")"
 fi
 got="$(sha256_of "$TARBALL")"
@@ -216,7 +230,7 @@ NEW="${WORK}/unpacked/${name}"
   || fail bad_input "${TARBALL} is not a stack release (no ${name}/.stack-version or .stack-files)"
 [[ "$(head -1 "${NEW}/.stack-version" | tr -d '[:space:]')" == "$VERSION" ]] \
   || fail bad_input "${TARBALL} is $(head -1 "${NEW}/.stack-version"), not ${VERSION}"
-emit '{"event":"step","step":"verify","status":"done"}'
+emit '{"phase":"setup","step":"verify","status":"done"}'
 
 # --- install the files -----------------------------------------------------------
 
@@ -237,7 +251,7 @@ needs='[]'
 notices='[]'
 upgrade_result() {
   local line
-  line="$(grep '"event":"done"' "$LOG" | tail -1 || true)"
+  line="$(grep '"phase":"done"' "$LOG" | tail -1 || true)"
   [[ -n "$line" ]] || return 0
   needs="$(printf '%s' "$line" | sed -n 's/.*"needs_user":\(\[.*\]\),"notices".*/\1/p')"
   notices="$(printf '%s' "$line" | sed -n 's/.*"notices":\(\[.*\]\)}$/\1/p')"
@@ -254,7 +268,7 @@ run_doctor() {
 }
 
 finish() {
-  emit "{\"event\":\"done\",\"version\":\"${VERSION}\",\"previous_version\":$(jstr "$PREV"),\"fresh\":$1,\"backup\":$(jstr "$BACKUP"),\"needs_user\":${needs},\"notices\":${notices},\"doctor\":\"passed\"}"
+  emit "{\"phase\":\"done\",\"version\":\"${VERSION}\",\"previous_version\":$(jstr "$PREV"),\"fresh\":$1,\"backup\":$(jstr "$BACKUP"),\"needs_user\":${needs},\"notices\":${notices},\"doctor\":\"passed\"}"
   say "Installed ${VERSION} in ${DIR}"
 }
 
@@ -277,7 +291,7 @@ step_done
 if [[ "$PREV" != "$VERSION" ]]; then
   step backup bash scripts/backup.sh create --dest "${DIR}/backups" --json \
     || fail command_failed "the backup failed; nothing was changed"
-  BACKUP="$(sed -n 's/.*"event":"done","path":"\([^"]*\)".*/\1/p' "$LOG" | tail -1)"
+  BACKUP="$(sed -n 's/.*"phase":"done","path":"\([^"]*\)".*/\1/p' "$LOG" | tail -1)"
   [[ -n "$BACKUP" && -f "${BACKUP}/stack.tar.gz" ]] || fail command_failed "the backup reported no stack archive; nothing was changed"
   step_done
 fi
@@ -304,7 +318,7 @@ STEP=files
 cp "${DIR}/.stack-files" "${WORK}/old-files" 2> /dev/null || : > "${WORK}/old-files"
 remove_dropped "${WORK}/old-files" "${NEW}/.stack-files"
 copy_release "$NEW" || upgrade_fail command_failed "copying the release into ${DIR} failed"
-emit '{"event":"step","step":"files","status":"done"}'
+emit '{"phase":"setup","step":"files","status":"done"}'
 
 step setup bash scripts/setup.sh --non-interactive ${setup_args[@]+"${setup_args[@]}"} \
   || upgrade_fail command_failed "scripts/setup.sh failed"

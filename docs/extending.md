@@ -678,13 +678,15 @@ re-runs setup, the start and doctor. An older version is refused, as is a git
 checkout (upgrade those with `git checkout`, `scripts/setup.sh` and
 `scripts/upgrade.sh --from <old tag>`).
 
-`--json` prints a `step` line per step, then
-`{"event":"done","version":V,"previous_version":P,"fresh":B,"backup":PATH,
+`--json` prints [JSON lines](#json-lines) in `addon.sh`'s shapes: a `setup`
+line per step (`check`, `fetch`, `verify`, `stop`, `backup`, `files`, `setup`,
+`start` or `upgrade`, `doctor`), then
+`{"phase":"done","version":V,"previous_version":P,"fresh":B,"backup":PATH,
 "needs_user":[{"id","message","version"}],"notices":[...],"doctor":"passed"}`,
-or an `error` line with `error` (`bad_input`, `unsupported_host`,
-`checksum_mismatch`, `busy`, `command_failed`, `doctor_failed`), `message`,
-`step`, `logTail`, `rolledBack` and `backup`. `doctor_failed` leaves the new
-stack running. `needs_user` lists what only the user can do after an upgrade;
+or an `error` line that adds `rolledBack` and `backup`. Errors are `bad_input`
+(exit 2), `command_failed` (exit 4), and `unsupported_host`,
+`checksum_mismatch`, `busy` and `doctor_failed` (exit 1). `doctor_failed`
+leaves the new stack running. `needs_user` lists what only the user can do after an upgrade;
 show it to them.
 
 Published ports bind 127.0.0.1, as in `docker-compose.yml`; forward them over
@@ -730,9 +732,9 @@ change one key in the project `.env`, so an app doesn't depend on that file's
 layout. Allowed keys: `LLM_*` except `LLM_PROXY_ADMIN_TOKEN`, `*_IMAGE`,
 `*_IMAGE_TAG`, `HERMES_TERMINAL_BACKEND`, `CODING_*` and `CONTEXT_*`.
 
-The result is one line, `{"event":"done","key":K,"changed":true|false}`.
-`changed` is false when the file already said that. A refused call prints
-`{"event":"error","error":REASON,"message":TEXT}` and exits 2, with `REASON`
+The result is one line, `{"phase":"done","key":K,"changed":true|false}`.
+`changed` is false when the file already said that. A refused call prints an
+[`error` line](#json-lines) and exits 2, with `error`
 one of `bad_input` (not a key name, or a value with a line break),
 `not_allowed`, or `use_addon_sh` for `*_ENABLED` and `COMPOSE_PROFILES`, which
 belong to `scripts/addon.sh`. The script starts and stops nothing: recreate the

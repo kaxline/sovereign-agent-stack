@@ -15,7 +15,7 @@ stack="${tmp}/stack"
 mkdir -p "${stack}/scripts/lib" "${tmp}/bin"
 cp "${ROOT}/scripts/backup.sh" "${stack}/scripts/"
 cp "${ROOT}/scripts/lib/env.sh" "${ROOT}/scripts/lib/data-root.sh" \
-  "${ROOT}/scripts/lib/python.sh" "${stack}/scripts/lib/"
+  "${ROOT}/scripts/lib/python.sh" "${ROOT}/scripts/lib/json-lines.sh" "${stack}/scripts/lib/"
 
 # Synthetic data: a Hermes state file, a Postgres dir, things create leaves
 # out, a data root and a *DATA_DIR outside the stack.
@@ -89,7 +89,7 @@ case "$out" in *'"error":"stack_running"'*) ;; *) fail "running stack: $out" ;; 
 out="$(run --stop --json)" || fail "create failed: $out"
 [ "$(sort "${FAKE}/running" | tr '\n' ' ')" = "hermes postgres-db " ] \
   || fail "services not started again: $(cat "${FAKE}/running")"
-case "$out" in *'"event":"done"'*'"parts":5'*) ;; *) fail "done line: $out" ;; esac
+case "$out" in *'"phase":"done"'*'"parts":5'*) ;; *) fail "done line: $out" ;; esac
 bdir="$(printf '%s' "$out" | sed -n 's/.*"path":"\([^"]*\)".*/\1/p')"
 [ -f "${bdir}/manifest.json" ] || fail "no manifest in ${bdir}"
 python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); assert [p["name"] for p in m["parts"]]==["stack","data","data-root","dir-SIGNAL_CLI_DATA_DIR","volume-n8n_storage"], m' \
@@ -133,7 +133,7 @@ out="$(run restore --from "$bdir" --stop --json)" || fail "restore failed: $out"
 aside="$(find "$stack" -maxdepth 1 -name "data.pre-restore-*" | head -1)"
 { [ -n "$aside" ] && [ "$(cat "${aside}/hermes/state.txt")" = state-v2 ]; } || fail "previous data not kept aside"
 ls "${bdir}"/pre-restore-*/volume-n8n_storage.tar.gz > /dev/null 2>&1 || fail "previous volume not saved"
-case "$out" in *'"event":"done"'*'"parts":4'*) ;; *) fail "restore done line: $out" ;; esac
+case "$out" in *'"phase":"done"'*'"parts":4'*) ;; *) fail "restore done line: $out" ;; esac
 
 # A missing volume is created with compose's labels.
 rm -rf "${FAKE}/volumes/proj_n8n_storage"

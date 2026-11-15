@@ -35,7 +35,7 @@ release() {
   src="${tmp}/src-$1"
   mkdir -p "${src}/scripts/lib" "${src}/upgrades"
   cp "${ROOT}/scripts/backup.sh" "${ROOT}/scripts/upgrade.sh" "${src}/scripts/"
-  cp "${ROOT}/scripts/lib/env.sh" "${ROOT}/scripts/lib/data-root.sh" "${ROOT}/scripts/lib/python.sh" \
+  cp "${ROOT}/scripts/lib/env.sh" "${ROOT}/scripts/lib/data-root.sh" "${ROOT}/scripts/lib/python.sh" "${ROOT}/scripts/lib/json-lines.sh" \
     "${src}/scripts/lib/"
   cp "${ROOT}/upgrades/lib.sh" "${src}/upgrades/"
   printf '%s\n' "$2" > "${src}/code.txt"
@@ -91,7 +91,7 @@ expect_error 1 checksum_mismatch --version v0.0.1 --tarball "$(tarball v0.0.1)" 
 touch "${FAKE}/podman"
 expect_error 1 unsupported_host --version v0.0.1 --tarball "$(tarball v0.0.1)"
 rm "${FAKE}/podman"
-expect_error 1 bad_input --version v0.0.2 --tarball "$(tarball v0.0.1)" --sha256 "$(cut -d' ' -f1 < "$(tarball v0.0.1).sha256")"
+expect_error 2 bad_input --version v0.0.2 --tarball "$(tarball v0.0.1)" --sha256 "$(cut -d' ' -f1 < "$(tarball v0.0.1).sha256")"
 [ ! -e "${DIR}/code.txt" ] || fail "a refused install wrote files"
 
 # --- fresh install, downloaded over file:// -----------------------------------------
@@ -133,7 +133,7 @@ expect_error 2 bad_input --version v0.0.1 --tarball "$(tarball v0.0.1)"
 
 # --- a failed upgrade rolls back the files and starts the old release -------------
 : > "$CALLS"
-expect_error 1 command_failed --version v0.0.3 --tarball "$(tarball v0.0.3)"
+expect_error 4 command_failed --version v0.0.3 --tarball "$(tarball v0.0.3)"
 [ "$(jget "$out" 'd["rolledBack"], d["step"]')" = "(True, 'upgrade')" ] || fail "rollback error: $out"
 case "$out" in *'backup.sh restore --from'*) ;; *) fail "rollback message names no backup: $out" ;; esac
 [ "$(cat "${DIR}/code.txt")" = two ] || fail "files not rolled back"

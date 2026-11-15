@@ -108,8 +108,9 @@ backups). It saves each volume's current contents under
 `<backup>/pre-restore-<timestamp>/` before emptying it. Nothing is deleted;
 remove the `.pre-restore-*` copies once the restored stack works. The stack
 stays stopped afterwards. `stack.tar.gz` is not restored; unpack it by hand
-if you need an old `.env` or config. `--json` on either command prints event
-lines (`step`, then `done` or `error`).
+if you need an old `.env` or config. `--json` on either command prints
+[JSON lines](extending.md#json-lines) in `addon.sh`'s shapes: a `setup` line
+per part, then `done` (with `path` on `create`) or `error`.
 
 ## `make clean`
 

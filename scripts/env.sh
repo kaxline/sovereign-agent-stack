@@ -14,10 +14,10 @@
 # the next time the affected services are recreated; this script starts and
 # stops nothing.
 #
-# --json prints one line: {"event":"done","key":K,"changed":true|false}, or
-# {"event":"error","error":REASON,"message":TEXT} and exit 2 for bad_input,
-# not_allowed and use_addon_sh. Without --json stdout is empty and errors go to
-# stderr.
+# --json prints one line in addon.sh's shapes: {"phase":"done","key":K,
+# "changed":true|false}, or {"phase":"error","error":REASON,"step":null,
+# "message":TEXT,"logTail":[]} and exit 2 for bad_input, not_allowed and
+# use_addon_sh. Without --json stdout is empty and errors go to stderr.
 #
 # bash 3.2 compatible.
 set -euo pipefail
@@ -26,31 +26,20 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 # shellcheck source=lib/env.sh
 source "${ROOT}/scripts/lib/env.sh"
+# shellcheck source=lib/json-lines.sh
+source "${ROOT}/scripts/lib/json-lines.sh"
+jl_init
 
-JSON=0
 args=()
+# shellcheck disable=SC2034  # JL_JSON is read by lib/json-lines.sh
 for a in "$@"; do
   case "$a" in
-    --json) JSON=1 ;;
+    --json) JL_JSON=1 ;;
     *) args+=("$a") ;;
   esac
 done
 
-json_escape() {
-  local s="$1"
-  s="${s//\\/\\\\}"
-  s="${s//\"/\\\"}"
-  printf '%s' "$s"
-}
-
-die() {
-  local reason="$1" msg="$2"
-  if [[ "$JSON" == 1 ]]; then
-    printf '{"event":"error","error":"%s","message":"%s"}\n' "$reason" "$(json_escape "$msg")"
-  fi
-  printf 'error: %s\n' "$msg" >&2
-  exit 2
-}
+die() { jl_fail "$1" "" "$2"; }
 
 usage() {
   printf 'Usage: scripts/env.sh set KEY VALUE [--json] | unset KEY [--json]\n' >&2
@@ -81,10 +70,7 @@ check_key() {
 has_key() { [[ -f .env ]] && grep -q -E "^$1=" .env; }
 raw_value() { grep -m 1 -E "^$1=" .env | cut -d= -f2-; }
 
-done_line() {
-  [[ "$JSON" == 1 ]] || return 0
-  printf '{"event":"done","key":"%s","changed":%s}\n' "$1" "$2"
-}
+done_line() { jl_done "\"key\":\"$1\",\"changed\":$2"; }
 
 [[ ${#args[@]} -ge 2 ]] || usage
 cmd="${args[0]}"
