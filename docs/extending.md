@@ -722,6 +722,22 @@ config. `health` appears when the service has a healthcheck and is running.
 The script reads no secrets and changes nothing. It needs the compose CLI but
 not a running stack.
 
+## Credentials
+
+`scripts/credentials.sh --json` prints the secrets a client needs, as one
+object:
+
+```json
+{"HERMES_DASHBOARD_PASSWORD": "…", "HERMES_DASHBOARD_HANDOFF_SECRET": "…",
+ "API_SERVER_KEY": "…", "LLM_PROXY_ADMIN_TOKEN": null}
+```
+
+`API_SERVER_KEY` comes from `compose/hermes/api-server.env`, the others from
+`.env`. A value that is missing, empty or still an example placeholder
+(`change-me…`) is `null`, and a missing file is not an error. The script is
+read-only and works with the stack stopped. Its output is as sensitive as
+`.env`: over SSH, read it into the app's keychain and don't log it.
+
 ## Client-writable `.env` keys
 
 `scripts/env.sh set KEY VALUE --json` and `scripts/env.sh unset KEY --json`
