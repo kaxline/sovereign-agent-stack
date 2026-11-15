@@ -30,6 +30,7 @@ grant of the same item lists it again.
 
 from __future__ import annotations
 
+import hmac
 import ipaddress
 import json
 import logging
@@ -47,7 +48,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import bwcli, cdp, digest_redaction, signin
+from . import browsers, bwcli, cdp, digest_redaction, signin
 from .accounts import load_all
 from .bwcli import Bw, BwError
 from .requests_store import RequestError, Store
@@ -61,6 +62,8 @@ MAX_BODY = 64 * 1024
 MAX_DRAIN = 1 << 20
 FILL_TIMEOUT = 10.0
 DEFAULT_LISTEN = "127.0.0.1:8099"
+# 32 bytes of hex from scripts/setup.sh; shorter is a placeholder.
+API_TOKEN_MIN = 32
 DEFAULT_SOCKET = "/run/bitwarden-sync/sync.sock"
 DEFAULT_SIGNIN_SOCKET = "/run/bitwarden-signin/signin.sock"
 MAX_TEXT = 4096  # the signer's limit for typed text
@@ -101,6 +104,8 @@ class Config:
     sync_seconds: float
     idle_seconds: float
     listen: tuple[str, int]
+    api_token: str
+    browsers: dict
     socket_path: Path
     signin_socket: Path
     bw_path: str
@@ -117,13 +122,15 @@ class Config:
             if not env.get(name):
                 raise ConfigError(f"{name} is required")
             dirs[name] = Path(env[name])
-        return cls(
+        config = cls(
             instances_dir=dirs["BITWARDEN_INSTANCES_DIR"],
             data_dir=dirs["BITWARDEN_DATA_DIR"],
             secrets_dir=dirs["BITWARDEN_SECRETS_DIR"],
             sync_seconds=_minutes(env, "BITWARDEN_SYNC_MINUTES", "10", allow_zero=False),
             idle_seconds=_minutes(env, "BITWARDEN_IDLE_LOCK_MINUTES", "0", allow_zero=True),
             listen=_listen(env.get("BITWARDEN_LISTEN") or DEFAULT_LISTEN),
+            api_token=_api_token(env.get("BITWARDEN_API_TOKEN_FILE") or ""),
+            browsers=browsers.load(env.get("BROWSER_PROVIDERS")),
             socket_path=Path(env.get("BITWARDEN_SYNC_SOCKET") or DEFAULT_SOCKET),
             signin_socket=Path(env.get("BITWARDEN_SIGNIN_SOCKET") or DEFAULT_SIGNIN_SOCKET),
             bw_path=env.get("BITWARDEN_BW") or "bw",
@@ -131,6 +138,10 @@ class Config:
             sync_min_seconds=_seconds(env, "BITWARDEN_SYNC_MIN_SECONDS", SYNC_MIN_INTERVAL),
             items_sync_seconds=_seconds(env, "BITWARDEN_ITEMS_SYNC_SECONDS", ITEMS_SYNC_INTERVAL),
         )
+        if not config.api_token and not ipaddress.ip_address(config.listen[0]).is_loopback:
+            raise ConfigError("BITWARDEN_LISTEN off loopback needs BITWARDEN_API_TOKEN_FILE: "
+                              "without it anything on the network could call the API")
+        return config
 
 
 def _seconds(env, name: str, default: float) -> float:
@@ -158,16 +169,39 @@ def _minutes(env, name: str, default: str, allow_zero: bool) -> float:
 
 
 def _listen(raw: str) -> tuple[str, int]:
+    """The API's address and port.
+
+    An address off loopback (0.0.0.0 on the credentials network) is allowed, and
+    then a bearer token is required: ``Config.from_env`` refuses one without the
+    other, so the API is never reachable from a network with no check on it.
+    """
     host, sep, port = raw.strip().rpartition(":")
     host = host.strip("[]")
     try:
-        loopback = bool(sep) and ipaddress.ip_address(host).is_loopback
+        ipaddress.ip_address(host)
         number = int(port)
     except ValueError:
-        loopback, number = False, -1
-    if not loopback or not 0 <= number <= 65535:
-        raise ConfigError("BITWARDEN_LISTEN must be a loopback address and port, such as 127.0.0.1:8099")
+        host, number = "", -1
+    if not sep or not host or not 0 <= number <= 65535:
+        raise ConfigError("BITWARDEN_LISTEN must be an address and port, such as 127.0.0.1:8099")
     return host, number
+
+
+def _api_token(path: str) -> str:
+    """The bearer token every TCP request must carry, from BITWARDEN_API_TOKEN_FILE.
+
+    Empty when no file is configured, which only a loopback listen allows.
+    """
+    if not path:
+        return ""
+    try:
+        token = Path(path).read_text(encoding="utf-8", errors="strict").strip()
+    except (OSError, UnicodeDecodeError):
+        raise ConfigError(f"BITWARDEN_API_TOKEN_FILE ({path}) cannot be read") from None
+    if len(token) < API_TOKEN_MIN or any(c.isspace() for c in token):
+        raise ConfigError(f"the token in {path} must be at least {API_TOKEN_MIN} characters "
+                          "with no whitespace")
+    return token
 
 
 def _fields(body, required=(), optional=()) -> dict:
@@ -179,10 +213,9 @@ def _fields(body, required=(), optional=()) -> dict:
     return body
 
 
-def _tab(target_id, port) -> None:
-    """The agent tab a fill or a handover writes into."""
-    if (not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535
-            or not isinstance(target_id, str)):
+def _tab(target_id, browser) -> None:
+    """The agent tab a fill or a handover writes into: a target id in a named provider."""
+    if not isinstance(target_id, str) or not isinstance(browser, str) or not browser:
         raise HttpError(400, "bad_request")
 
 
@@ -263,17 +296,18 @@ class Broker:
                 "refused": [{"file": r.file, "error": r.cause, "message": r.message} for r in self.refused]}
 
     def post_fill(self, body) -> dict:
-        _fields(body, required=("handle", "target_id", "port"), optional=("field", "base"))
+        _fields(body, required=("handle", "target_id", "browser"), optional=("field", "base"))
         field = body.get("field", "password")
         if field not in cdp.FIELDS:
             raise HttpError(400, "invalid_field")
         base = body.get("base")
         if not digest_redaction._valid_base(base):
             raise HttpError(400, "invalid_base")
-        port, target_id, handle = body["port"], body["target_id"], body["handle"]
-        if (not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535
-                or not isinstance(target_id, str) or not isinstance(handle, str)):
+        target_id, handle = body["target_id"], body["handle"]
+        _tab(target_id, body["browser"])
+        if not isinstance(handle, str):
             raise HttpError(400, "bad_request")
+        endpoint = self._endpoint(body["browser"])
         meta = self.vault.get(handle)
         if meta is None:
             raise HttpError(404, "unknown_handle")
@@ -300,7 +334,7 @@ class Broker:
             # A release can land while bw ran; it wins.
             if self.vault.get(handle) is None:
                 raise HttpError(404, "unknown_handle")
-            result = cdp.fill(port, target_id, meta.origins, value, timeout=FILL_TIMEOUT, field=field)
+            result = cdp.fill(endpoint, target_id, meta.origins, value, timeout=FILL_TIMEOUT, field=field)
             self._touch(meta.account)
             redaction = None
             if result.filled or result.error not in NOTHING_WRITTEN:
@@ -313,11 +347,12 @@ class Broker:
     # --- Sign-in routes -----------------------------------------------------
 
     def post_signin_start(self, body) -> dict:
-        _fields(body, required=("handle", "target_id", "port"))
-        _tab(body["target_id"], body["port"])
+        _fields(body, required=("handle", "target_id", "browser"))
+        _tab(body["target_id"], body["browser"])
         if not isinstance(body["handle"], str):
             raise HttpError(400, "bad_request")
-        return self._signin(lambda: self.signin.start(body["handle"], body["target_id"], body["port"]))
+        endpoint = self._endpoint(body["browser"])
+        return self._signin(lambda: self.signin.start(body["handle"], body["target_id"], endpoint))
 
     def post_signin_snapshot(self, body) -> dict:
         _fields(body)
@@ -342,13 +377,26 @@ class Broker:
         return self._signin(lambda: self.signin.fill(_ref(body["ref"]), field))
 
     def post_signin_finish(self, body) -> dict:
-        _fields(body, required=("target_id", "port"))
-        _tab(body["target_id"], body["port"])
-        return self._signin(lambda: self.signin.finish(body["target_id"], body["port"]))
+        _fields(body, required=("target_id", "browser"))
+        _tab(body["target_id"], body["browser"])
+        endpoint = self._endpoint(body["browser"])
+        return self._signin(lambda: self.signin.finish(body["target_id"], endpoint))
 
     def post_signin_cancel(self, body) -> dict:
         _fields(body)
         return self._signin(self.signin.cancel)
+
+    def _endpoint(self, browser: str) -> str:
+        """The named provider's endpoint for the credential client.
+
+        An unknown name is the agent naming a browser this install does not have:
+        ``unknown_browser``, not a fill that tried and failed. A known provider that
+        cannot be read right now returns "", and cdp reports ``cdp_unavailable``.
+        """
+        provider = self.config.browsers.get(browser)
+        if provider is None:
+            raise HttpError(400, "unknown_browser")
+        return provider.endpoint()
 
     def _signin(self, call):
         try:
@@ -741,18 +789,21 @@ class _Handler(BaseHTTPRequestHandler):
 
 class _TcpHandler(_Handler):
     def _check(self) -> None:
-        """Only local clients that name the broker by its loopback address.
+        """A bearer token, no Origin, and JSON bodies.
 
-        A web page cannot set these: a DNS-rebound name fails the Host check, a
-        browser sends Origin on cross-origin requests, and a form post cannot send
-        application/json. Agent code in hermes is not stopped by any of them.
+        The broker is on the internal credentials network with hermes, so the token
+        is what separates it from anything else that lands on that network; hermes
+        mounts the same file the broker reads. A web page cannot reach it: an
+        Authorization header makes a cross-origin request preflight, and OPTIONS has
+        no route. Agent code in hermes can read the token file, as it could call the
+        API through the shared namespace before (docs/bitwarden.md).
         """
-        port = self.server.server_address[1]
-        listen = self.server.broker.config.listen[0]
-        names = {"127.0.0.1", "localhost", f"[{listen}]" if ":" in listen else listen}
-        host = (self.headers.get("Host") or "").strip().lower()
-        if host not in {f"{name}:{port}" for name in names}:
-            raise HttpError(403, "bad_host")
+        token = self.server.broker.config.api_token
+        if token:
+            given = (self.headers.get("Authorization") or "").strip()
+            scheme, _, value = given.partition(" ")
+            if scheme.lower() != "bearer" or not hmac.compare_digest(value.strip(), token):
+                raise HttpError(401, "unauthorized")
         if self.headers.get("Origin") is not None:
             raise HttpError(403, "origin_refused")
         if self.command == "POST":

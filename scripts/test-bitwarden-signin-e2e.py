@@ -7,10 +7,16 @@ On throwaway networks it starts the whole chain: a Vaultwarden behind the
 stack's TLS sidecar (scripts/lib/vw_testkit.py) holding one account and one
 login item whose password and TOTP seed are canaries generated for this run;
 the signer image built from the pinned Hermes image, run with the compose
-service's per-container hardening (``signer_flags`` below); the broker in the
-agent container's network namespace, as ``network_mode: service:hermes`` puts
-it; a Hermes-image container running the agent's own Chromium with the sign-in
+service's per-container hardening (``signer_flags`` below); the broker, which
+reaches the agent's browser by provider name (``BROWSER_PROVIDERS``) and gets
+its endpoint from the file the driver writes, as Boundary's relay does; a
+Hermes-image container running the agent's own Chromium with the sign-in
 overlays applied; and a local login site on two origins.
+
+The broker shares the agent container's network namespace here, so its API and
+the agent's Chromium are both on loopback and no CDP gateway is needed. Compose
+gives it networks of its own instead; what this test exercises is the request
+shape and the handover, not the route.
 
 ``signer_flags`` reproduces what confines the signer container: read_only, init,
 cap_drop, security_opt with the service's seccomp profile, tmpfs, mem_limit and
@@ -511,6 +517,8 @@ SITE, IDP, TASK = CONF["site_origin"], CONF["idp_origin"], CONF["task_id"]
 # profile's history, beside the localStorage entry the site's pages write.
 CONTROL = CONF["control"]
 STATUS, GO, CAPTURE = "/tmp/e2e-status.json", "/tmp/e2e-go", "/tmp/e2e-capture.jsonl"
+# The volume the broker reads this browser's endpoint from, and the broker's API on loopback.
+PROVIDER_DIR, BROKER_BASE = "/run/browser", "http://127.0.0.1:8099"
 notes = []
 
 
@@ -547,6 +555,15 @@ port_text, ws_path = open(active).read().split()[:2]
 PORT = int(port_text)
 WS_URL = f"ws://127.0.0.1:{PORT}{ws_path}"
 
+# The broker is given this browser as the provider "stack" and reads its endpoint from this file,
+# the way it reads Boundary's. The token it appends is ignored by a bare Chromium; a real provider's
+# gateway checks it.
+os.makedirs(PROVIDER_DIR, exist_ok=True)
+with open(f"{PROVIDER_DIR}/stack.url", "w") as handle:
+    handle.write(WS_URL + "\n")
+with open(f"{PROVIDER_DIR}/stack.token", "w") as handle:
+    handle.write("e2e-provider-token\n")
+
 __CDP__
 
 cdp = Cdp(WS_URL)
@@ -571,8 +588,14 @@ import tools.browser_vault_tool as bvt
 from agent.vault_backends.plugin import PluginLoginBackend
 from tools.browser_supervisor import SUPERVISOR_REGISTRY
 
-BW = PluginLoginBackend("bwbroker", bwb.BrokerLoginBackend(in_cron=lambda: False))
+# The broker is in this container's network namespace, on loopback, and takes no bearer token
+# there; compose puts it on the credentials network with one.
+bvt._BWBROKER_URL = BROKER_BASE
+BW = PluginLoginBackend("bwbroker", bwb.BrokerLoginBackend(in_cron=lambda: False, base_url=BROKER_BASE))
 BACKENDS = [BW]
+# The overlay turns the task's cdp_url into a provider name; this browser is on loopback, which no
+# provider covers in production (the broker is not in its namespace there).
+bvt._BWBROKER_BROWSERS["127.0.0.1"] = "stack"
 vb.enabled_backends = vbase.enabled_backends = lambda: list(BACKENDS)
 vb.backend_for_handle = vbase.backend_for_handle = lambda h: next((b for b in BACKENDS if b.owns(h)), None)
 bsession.session_for_task = lambda task_id: {"cdp_url": WS_URL}
@@ -953,6 +976,8 @@ def main() -> None:
     containers = [prov, broker, signer, agent, site]
     kit.also_remove(*containers)
     volume = f"{kit.prefix}-signin-vol"
+    # The provider volume: the driver writes the agent browser's endpoint, the broker reads it.
+    provider_volume = f"{kit.prefix}-provider-vol"
     signin_image = f"{kit.prefix}-signin:local"
     scripts, secret_folder = kit.tmp / "t", kit.tmp / "secret"
     store, data = kit.tmp / "store/instances", kit.tmp / "data"
@@ -992,11 +1017,18 @@ def main() -> None:
                "-v", f"{scripts}:/test:ro", "-v", f"{secret_folder}:/secret:ro",
                f"nousresearch/hermes-agent:{hermes_image.image_tag()}", "/test/site.py")
 
+        # The driver writes it as the image's hermes user (uid 10000); the broker, which runs as
+        # the host user here, only reads it, so the folder is not 0700.
+        opts = dict(volume_opts)
+        opts["o"] = "uid=10000,gid=10000,mode=0755,size=1m"
+        docker("volume", "create", *[a for k, v in opts.items() for a in ("--opt", f"{k}={v}")],
+               provider_volume)
+
         # The agent container: root so the overlays can be applied, the driver runs as hermes.
         docker("run", "-d", "--name", agent, "--network", kit.net, "--user", "0:0",
                "--entrypoint", PYTHON,
                "-v", f"{HERMES_SRC}:/bootstrap:ro", "-v", f"{BROKER_SRC}:/broker-src:ro",
-               "-v", f"{scripts}:/test:ro",
+               "-v", f"{scripts}:/test:ro", "-v", f"{provider_volume}:/run/browser",
                f"nousresearch/hermes-agent:{hermes_image.image_tag()}",
                "-c", "import time; time.sleep(10800)")
         expect(docker("inspect", "-f", "{{.State.Running}}", agent).stdout.strip() == "true",
@@ -1014,13 +1046,16 @@ def main() -> None:
                "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
                "-e", "BITWARDEN_INSTANCES_DIR=/store/instances", "-e", "BITWARDEN_DATA_DIR=/data",
                "-e", "BITWARDEN_SECRETS_DIR=/secrets", "-e", "BITWARDEN_LISTEN=127.0.0.1:8099",
+               "-e", ('BROWSER_PROVIDERS={"stack": {"url_file": "/run/browser/stack.url", '
+                      '"token_file": "/run/browser/stack.token"}}'),
                "-e", "BITWARDEN_SYNC_SOCKET=/run/bitwarden-sync/sync.sock",
                "-e", "BITWARDEN_SIGNIN_SOCKET=/run/bitwarden-signin/signin.sock",
                "-e", "BITWARDEN_SYNC_MINUTES=10", "-e", "BITWARDEN_IDLE_LOCK_MINUTES=0",
                "-e", "NODE_EXTRA_CA_CERTS=/secrets/local/tls/ca.crt", "-e", "HOME=/tmp",
                "-v", f"{store}:/store/instances:ro", "-v", f"{kit.secrets_dir}:/secrets:ro",
                "-v", f"{data / 'bw'}:/data/bw", "-v", f"{data / 'broker'}:/data/broker",
-               "-v", f"{volume}:/run/bitwarden-signin:ro", kit.image)
+               "-v", f"{volume}:/run/bitwarden-signin:ro",
+               "-v", f"{provider_volume}:/run/browser:ro", kit.image)
 
         def broker_health() -> dict:
             out = docker("exec", agent, PYTHON, "-c",
@@ -1136,7 +1171,7 @@ def main() -> None:
             fail(f"{len(set(found))} canary hit(s); a value reached the agent side")
     finally:
         kit.cleanup()
-        docker("volume", "rm", "-f", volume, timeout=120)
+        docker("volume", "rm", "-f", volume, provider_volume, timeout=120)
         docker("image", "rm", "-f", signin_image, timeout=300)
     print("ok")
 

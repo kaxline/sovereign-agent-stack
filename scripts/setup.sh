@@ -1000,6 +1000,10 @@ set_env_if_missing .env VIKUNJA_MCP_ENABLED 0
 # services' bind mounts find it, whether or not the add-on is enabled.
 ./scripts/addon-dirs.sh
 
+# The Bitwarden broker's API token. hermes mounts its folder on the core
+# profile, so the file has to exist before compose reads the mount.
+./scripts/vault.sh api-token
+
 # Twenty CRM stays off until crm is enabled (local) or a remote is added.
 set_env_if_missing .env TWENTY_LOCAL_ENABLED 0
 set_env_if_missing .env TWENTY_MCP_ENABLED 0

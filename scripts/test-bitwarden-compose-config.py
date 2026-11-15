@@ -34,6 +34,10 @@ VAULTWARDEN_IMAGE = ("vaultwarden/server:1.37.5@sha256:"
                      "4fe17f415f90087377d37c755e0ea3cf189dcc6794e49cdd2a9adbb4937d9e1f")
 LOCAL_NAME = "vaultwarden.vault.internal"
 ADDON_DATA = "addons/bitwarden"
+API_TOKEN_DIR = "/run/bitwarden"
+API_TOKEN_FILE = f"{API_TOKEN_DIR}/api-token"
+STACK_TOKEN_FILE = "/run/browser/stack.token"
+STACK_PROVIDER_URL = "ws://web-browser:9222/devtools/browser/credentials"
 SYNC_DIR = "/run/bitwarden-sync"
 HOST_USER = "1000:1000"  # HERMES_UID:HERMES_GID's defaults
 SIGNIN_DIR = "/run/bitwarden-signin"
@@ -86,7 +90,7 @@ def helper_profiles(env_profiles: str | None, caller: str | None = None) -> list
 
 def check_profile_flags() -> None:
     """--profile bitwarden on its own replaces COMPOSE_PROFILES and drops core,
-    so compose rejects the project: bitwarden-broker depends on hermes. The
+    so the project renders without hermes and the broker has nothing to serve. The
     scripts go through compose_with_profile, which keeps the enabled profiles."""
     pattern = re.compile(r"docker compose --profile bitwarden(\s|$)")
     for rel in ("scripts/vault.sh", "scripts/doctor.sh"):
@@ -126,13 +130,21 @@ def check_broker(services: dict) -> None:
     if broker is None:
         checks.fail("bitwarden-broker missing from core,bitwarden")
         return
-    if broker.get("network_mode") != "service:hermes":
-        checks.fail(f"bitwarden-broker network_mode is {broker.get('network_mode')!r}, want 'service:hermes'")
-    dep = (broker.get("depends_on") or {}).get("hermes") or {}
-    if dep.get("condition") != "service_started" or dep.get("restart") is not True:
-        checks.fail(f"bitwarden-broker depends_on.hermes is {dep!r}, want condition service_started and restart true")
-    if broker.get("networks"):
-        checks.fail("bitwarden-broker joins networks of its own")
+    # Its own networks, not hermes' namespace: credentials carries the API (hermes alone joins it),
+    # browser is the route to a provider's CDP gateway. A recreate of hermes now leaves it running.
+    if broker.get("network_mode"):
+        checks.fail(f"bitwarden-broker must not use network_mode, got {broker.get('network_mode')!r}")
+    if broker.get("depends_on"):
+        checks.fail(f"bitwarden-broker does not depend on hermes any more, got {broker.get('depends_on')!r}")
+    if sorted(broker.get("networks") or {}) != ["browser", "credentials"]:
+        checks.fail(f"bitwarden-broker networks are {sorted(broker.get('networks') or {})!r}, "
+                    "want ['browser', 'credentials']")
+    if env_value(broker, "BITWARDEN_LISTEN") != "0.0.0.0:8099":
+        checks.fail(f"bitwarden-broker needs BITWARDEN_LISTEN=0.0.0.0:8099, got "
+                    f"{env_value(broker, 'BITWARDEN_LISTEN')!r}")
+    if env_value(broker, "BITWARDEN_API_TOKEN_FILE") != API_TOKEN_FILE:
+        checks.fail(f"bitwarden-broker needs BITWARDEN_API_TOKEN_FILE={API_TOKEN_FILE}")
+    check_providers(broker)
     if broker.get("ports"):
         checks.fail("bitwarden-broker publishes a port")
     if broker.get("read_only") is not True:
@@ -153,11 +165,15 @@ def check_broker(services: dict) -> None:
     test = " ".join((broker.get("healthcheck") or {}).get("test") or [])
     if "python3" not in test or "http://127.0.0.1:8099/health" not in test:
         checks.fail("bitwarden-broker healthcheck GETs http://127.0.0.1:8099/health with python3")
+    if API_TOKEN_FILE not in test:
+        checks.fail("bitwarden-broker healthcheck sends the bearer token: the API refuses a call without it")
     want = {
         "/store/instances": (True, f"{ADDON_DATA}/instances"),
         "/secrets": (True, f"{ADDON_DATA}/secrets"),
         "/data/bw": (False, f"{ADDON_DATA}/bw"),
         "/data/broker": (False, f"{ADDON_DATA}/broker"),
+        API_TOKEN_DIR: (True, f"{ADDON_DATA}/broker-api"),
+        STACK_TOKEN_FILE: (True, "web-browser/secrets/credentials"),
     }
     for target, (read_only, source) in want.items():
         vol = mount_at(broker, target)
@@ -182,6 +198,37 @@ def check_broker(services: dict) -> None:
         checks.fail("bitwarden-broker needs BITWARDEN_INSTANCES_DIR=/store/instances")
     if env_value(broker, "BITWARDEN_ACCOUNTS_DIR") is not None:
         checks.fail("bitwarden-broker still sets BITWARDEN_ACCOUNTS_DIR")
+
+
+def check_providers(broker: dict) -> None:
+    """BROWSER_PROVIDERS: the browsers a fill or a handover may be sent to, by name.
+
+    The broker holds each one's endpoint and token, so nothing in hermes needs them. stack is this
+    stack's web-browser service; boundary's relay writes its own endpoint and token into the files
+    under secrets/, which the broker already mounts."""
+    raw = env_value(broker, "BROWSER_PROVIDERS")
+    if raw is None:
+        checks.fail("bitwarden-broker needs BROWSER_PROVIDERS")
+        return
+    try:
+        providers = json.loads(raw)
+    except ValueError as exc:
+        checks.fail(f"BROWSER_PROVIDERS is not JSON: {exc}")
+        return
+    if sorted(providers) != ["boundary", "stack"]:
+        checks.fail(f"BROWSER_PROVIDERS names {sorted(providers)!r}, want ['boundary', 'stack']")
+        return
+    stack = providers["stack"]
+    if stack.get("url") != STACK_PROVIDER_URL:
+        checks.fail(f"the stack provider is {stack.get('url')!r}, want {STACK_PROVIDER_URL}")
+    if stack.get("token_file") != STACK_TOKEN_FILE:
+        checks.fail(f"the stack provider's token is {stack.get('token_file')!r}, want {STACK_TOKEN_FILE}")
+    boundary = providers["boundary"]
+    # Boundary's relay endpoint is not known until it writes it, so the broker reads it from a file.
+    if not str(boundary.get("url_file", "")).startswith("/secrets/"):
+        checks.fail(f"the boundary provider reads its endpoint from /secrets/..., not {boundary!r}")
+    if not str(boundary.get("token_file", "")).startswith("/secrets/"):
+        checks.fail(f"the boundary provider reads its token from /secrets/..., not {boundary!r}")
 
 
 def check_signin(cfg: dict) -> None:
@@ -345,8 +392,25 @@ def check_hermes(cfg: dict, backend: str) -> None:
     hermes = services.get("hermes") or {}
     for vol in mounts(hermes):
         source = str(vol.get("source", ""))
+        if source.endswith(f"{ADDON_DATA}/broker-api"):
+            continue  # the API's bearer token, below
         if ADDON_DATA in source or "compose/bitwarden/" in source:
             checks.fail(f"hermes ({backend}) mounts {source}")
+    # The one Bitwarden folder hermes reads: the bearer token for the broker's API, which the
+    # plugin and the fill overlay send. Its own folder, so no other secret comes with it, and
+    # mounted whatever BITWARDEN_ENABLED says, because compose needs the bind source to exist.
+    vol = mount_at(hermes, API_TOKEN_DIR)
+    if vol is None or not str(vol.get("source", "")).endswith(f"{ADDON_DATA}/broker-api"):
+        checks.fail(f"hermes ({backend}) mounts {ADDON_DATA}/broker-api at {API_TOKEN_DIR}, not {vol!r}")
+    elif not vol.get("read_only"):
+        checks.fail(f"hermes ({backend}) must mount {API_TOKEN_DIR} read-only")
+    if "credentials" not in networks(hermes):
+        checks.fail(f"hermes ({backend}) is not on the credentials network, which carries the broker API")
+    credentials = (cfg.get("networks") or {}).get("credentials")
+    if not credentials:
+        checks.fail("network credentials missing from compose config")
+    elif not credentials.get("internal"):
+        checks.fail("network credentials must be internal")
     if "vault" not in networks(hermes):
         checks.fail(f"hermes ({backend}) is not on the vault network")
     vault = (cfg.get("networks") or {}).get("vault")

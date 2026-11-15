@@ -2057,6 +2057,12 @@ services:
       - ./compose/hermes/plugins/bwbroker:/bootstrap/plugins/bwbroker:ro
       - ./compose/hermes/bitwarden_broker_backend.py:/bootstrap/bitwarden_broker_backend.py:ro
       - ./compose/hermes/14-install-bwbroker-plugin.sh:/etc/cont-init.d/14-install-bwbroker-plugin:ro
+      # The broker's API token, read by the plugin and the fill overlay. Its own
+      # folder, so this mount holds no other Bitwarden secret, and read-only.
+      # Agent code in hermes can read it, as it could call the API through the
+      # shared network namespace before (docs/bitwarden.md). Mounted whatever
+      # BITWARDEN_ENABLED says; scripts/vault.sh api-token creates the file.
+      - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/broker-api:/run/bitwarden:ro
       # Per-profile gateways and kept sessions on Hermes v0.22+. Runs before the
       # image's 02-reconcile-profiles. See the script header.
       - ./compose/hermes/019-pin-profile-gateways.sh:/etc/cont-init.d/019-pin-profile-gateways:ro
@@ -2347,7 +2353,8 @@ services:
   # ----------------------------------------------------------------------
   # Bitwarden broker — vault access for browser sign-ins (docs/bitwarden.md)
   # Profile: bitwarden (BITWARDEN_ENABLED=1)
-  # API:     http://127.0.0.1:8099 inside hermes' network namespace only
+  # API:     http://bitwarden-broker:8099 on the internal credentials network
+  #          (hermes only), with the bearer token in broker-api/api-token
   # Data:    BITWARDEN_HOST_DATA_DIR (default ./data/addons/bitwarden): bw/,
   #          broker/ and secrets/. Accounts: the add-on instance store,
   #          ${ASSISTANT_DATA_ROOT}/addons/bitwarden/instances/<slug>.json
@@ -2363,19 +2370,11 @@ services:
       context: ./compose/bitwarden-broker
     image: &bitwarden-image ${IMAGE_PREFIX:-assistant}-bitwarden-broker:local
     restart: unless-stopped
-    # hermes' namespace and nothing else: the broker reaches Chromium's
-    # loopback CDP port, and hermes-worker cannot reach the broker. With
-    # depends_on restart, compose restarts the broker when it restarts hermes.
-    # It does not when hermes alone is recreated (up --force-recreate hermes):
-    # the broker keeps the removed container's namespace, and a restart then
-    # fails. Recover with docker compose --profile bitwarden up -d --no-deps
-    # bitwarden-broker, which make hermes-reload, make hermes-recreate and
-    # scripts/vault.sh follow-hermes run.
-    network_mode: "service:hermes"
-    depends_on:
-      hermes:
-        condition: service_started
-        restart: true
+    # credentials (internal) carries the API, shared with hermes alone; browser
+    # (internal) is the route to a browser provider's CDP gateway. Neither is
+    # joined by hermes-worker, the agent's shell. The broker no longer shares
+    # hermes' network namespace, so a recreate of hermes leaves it running.
+    networks: [credentials, browser]
     # The host user, as email-imap and the Hermes readers of instances/ run:
     # the store keeps instances/ at 0700, owned by that user.
     user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
@@ -2396,7 +2395,19 @@ services:
       - BITWARDEN_SYNC_MINUTES=${BITWARDEN_SYNC_MINUTES:-10}
       - BITWARDEN_ITEMS_SYNC_SECONDS=${BITWARDEN_ITEMS_SYNC_SECONDS:-60}
       - BITWARDEN_IDLE_LOCK_MINUTES=${BITWARDEN_IDLE_LOCK_MINUTES:-0}
-      - BITWARDEN_LISTEN=127.0.0.1:8099
+      # On the credentials network, so the bearer token is the check (the broker
+      # refuses to start off loopback without BITWARDEN_API_TOKEN_FILE).
+      - BITWARDEN_LISTEN=0.0.0.0:8099
+      - BITWARDEN_API_TOKEN_FILE=/run/bitwarden/api-token
+      # The browsers a fill or a sign-in handover may be sent to, by name
+      # (docs/contracts/browser.md). stack is this stack's web-browser service.
+      # boundary is Boundary's relay, which writes its own endpoint and the
+      # broker's token into secrets/boundary.url and secrets/boundary.token;
+      # until it does, a fill naming it reports cdp_unavailable.
+      - |
+        BROWSER_PROVIDERS={"stack": {"url": "ws://web-browser:9222/devtools/browser/credentials",
+        "token_file": "/run/browser/stack.token"}, "boundary": {"url_file": "/secrets/boundary.url",
+        "token_file": "/secrets/boundary.token"}}
       - BITWARDEN_SYNC_SOCKET=/run/bitwarden-sync/sync.sock
       - BITWARDEN_SIGNIN_SOCKET=/run/bitwarden-signin/signin.sock
       # The local Vaultwarden's CA, written by make vault-init. bw starts with
@@ -2408,11 +2419,26 @@ services:
       - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/secrets:/secrets:ro
       - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/bw:/data/bw
       - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/broker:/data/broker
+      # The API's bearer token, in its own folder so the one hermes mounts holds
+      # nothing else. scripts/vault.sh api-token creates it (make ensure-local).
+      - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/broker-api:/run/bitwarden:ro
+      # The credential client's token for the web-browser service, the one file
+      # of its three the broker may read. Absent, the stack provider is unusable
+      # and a fill naming it reports cdp_unavailable.
+      - ${ASSISTANT_DATA_ROOT:-./data}/web-browser/secrets/credentials:/run/browser/stack.token:ro
       # bitwarden-signin's socket. Read-only: connecting needs no write access
       # to the mount, and the broker cannot replace the socket.
       - bitwarden_signin:/run/bitwarden-signin:ro
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8099/health', timeout=3)"]
+      test:
+        - CMD
+        - python3
+        - -c
+        - >-
+          import urllib.request;
+          token = open("/run/bitwarden/api-token").read().strip();
+          urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:8099/health",
+          headers={"Authorization": "Bearer " + token}), timeout=3)
       interval: 30s
       timeout: 5s
       retries: 3

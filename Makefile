@@ -48,6 +48,7 @@ ensure-local:
 	@test -f compose/hermes/browser.env || (cp compose/hermes/browser.env.example compose/hermes/browser.env && echo "Created compose/hermes/browser.env — set API_SERVER_KEY")
 	@mkdir -p compose/postgres/services
 	@./scripts/addon-dirs.sh
+	@./scripts/vault.sh api-token
 	@./scripts/todo.sh ensure
 	@./scripts/crm.sh ensure
 	@./scripts/budget.sh ensure
@@ -364,12 +365,8 @@ logs:
 ps:
 	docker compose ps
 
-# Compose restarts bitwarden-broker with hermes (depends_on restart: true);
-# vault.sh follow-hermes repairs a broker left in a removed hermes namespace
-# and lists the manual accounts to unlock.
 restart:
-	@rc=0; docker compose restart hermes hermes-webui || rc=$$?; \
-	./scripts/vault.sh follow-hermes; exit $$rc
+	docker compose restart hermes hermes-webui
 
 # Re-apply Hermes config after changing .env, MCP tokens or servers, skills, or
 # the compose file: both profile bootstraps, then recreate hermes so every
@@ -379,14 +376,12 @@ hermes-reload: ensure-local
 	docker compose run --rm -e HERMES_BOOTSTRAP_FORCE=1 hermes-api-bootstrap
 	docker compose run --rm --no-deps -e HERMES_BOOTSTRAP_FORCE=1 hermes-browser-bootstrap
 	docker compose up -d --no-deps --force-recreate hermes
-	@./scripts/vault.sh follow-hermes
 
-# Recreate hermes alone, so s6 picks up new profiles and gateways, then move the
-# Bitwarden broker into its new network namespace. Runs no bootstrap.
+# Recreate hermes alone, so s6 picks up new profiles and gateways. Runs no
+# bootstrap. The Bitwarden broker has its own networks and keeps running.
 #   make hermes-recreate
 hermes-recreate: ensure-local
 	docker compose up -d --force-recreate hermes
-	@./scripts/vault.sh follow-hermes
 
 # Corpus lifecycle (requires rag profile). One hot WORKSPACE at a time.
 #   make corpus-create SLUG=demo-a

@@ -14,8 +14,9 @@ agent's side of the broker's /signin/ routes:
     signin_finish   POST /signin/finish     hands the session to the agent's tab
     signin_cancel   POST /signin/cancel     ends the session
 
-sign_in and signin_finish carry the CDP target id and port of the agent's tab,
-from the fill overlay's _bwbroker_tab: sign_in for the item's first origin,
+sign_in and signin_finish carry the CDP target id of the agent's tab and the
+name of the browser provider it runs in, from the fill overlay's _bwbroker_tab:
+sign_in for the item's first origin,
 signin_finish for the origin the last snapshot reported. Results carry the
 snapshot the broker returned (origin, and role, name, text and ref per node),
 the handover's cookie count, or a fixed text per error code. Nothing from a
@@ -245,7 +246,7 @@ def _sign_in(args: dict, tid: str) -> str:
     tab = _tab(tid, origins[0], require_origin=True)
     if isinstance(tab, dict):
         return json.dumps(tab)
-    return _call("/signin/start", {"handle": handle, "target_id": tab[0], "port": tab[1]}, tid)
+    return _call("/signin/start", {"handle": handle, "target_id": tab[0], "browser": tab[1]}, tid)
 
 
 def _finish(tid: str) -> str:
@@ -260,7 +261,7 @@ def _finish(tid: str) -> str:
     tab = _tab(tid, origin)
     if isinstance(tab, dict):
         return json.dumps(tab)
-    return _call("/signin/finish", {"target_id": tab[0], "port": tab[1]}, tid)
+    return _call("/signin/finish", {"target_id": tab[0], "browser": tab[1]}, tid)
 
 
 def _ref(args: dict) -> Any:

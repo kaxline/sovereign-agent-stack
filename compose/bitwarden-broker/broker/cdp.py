@@ -1,10 +1,11 @@
 """Write a value into a browser page over the Chrome DevTools Protocol.
 
-The broker runs in the Hermes container's network namespace and fills the page
-itself, so the gateway never holds the value. ``fill`` reads ``/json/list`` on
-``127.0.0.1:<port>``, refuses a target whose origin is not allowed, attaches to
-it through the browser websocket, and calls a function on the page's document
-with the value as a ``Runtime.callFunctionOn`` argument. The value is never part
+The broker fills the page itself, so the agent never holds the value. ``fill``
+opens the browser provider's CDP endpoint (``docs/contracts/browser.md``: one
+WebSocket URL per client, with the broker's own token in it), reads the target's
+URL with ``Target.getTargetInfo``, refuses a target whose origin is not allowed,
+attaches a flat session to it, and calls a function on the page's document with
+the value as a ``Runtime.callFunctionOn`` argument. The value is never part
 of an expression or function source. ``field="password"`` writes a password
 field; ``field="totp"`` writes a one-time code the way core's enter_code does.
 
@@ -12,6 +13,9 @@ field; ``field="totp"`` writes a one-time code the way core's enter_code does.
 the same origin check (an origin outside the item's is ``handover_refused``),
 then ``Network.setCookies``, one ``Runtime.callFunctionOn`` that writes both
 storages from arguments, and a reload.
+
+No HTTP route is used: ``/json/list`` and ``/json/version`` are not part of the
+contract, and a provider may serve neither.
 
 ``FillResult.error`` is one of six fixed texts. ``write_unconfirmed`` means a
 setter ran but the field was empty afterwards (a page handler cleared it, say),
@@ -43,9 +47,7 @@ CDP_UNAVAILABLE = "cdp_unavailable"
 HANDOVER_REFUSED = "handover_refused"
 
 _TARGET_ID = re.compile(r"[A-Za-z0-9]{1,64}")
-_BROWSER_PATH = re.compile(r"/devtools/browser/[A-Za-z0-9-]{1,64}")
-_MAX_BODY = 4 << 20
-_MAX_HEADERS = 64 << 10
+_BROWSER_PATH = re.compile(r"/devtools/browser/[A-Za-z0-9_-]{1,64}")
 _MAX_MESSAGE = 4 << 20
 
 LOG = logging.getLogger("broker.cdp")
@@ -211,17 +213,21 @@ class _Fail(Exception):
         self.code = code
 
 
-def fill(port: int, target_id: str, allowed_origins: tuple[str, ...], value: str, timeout: float = 10.0,
+def fill(endpoint: str, target_id: str, allowed_origins: tuple[str, ...], value: str, timeout: float = 10.0,
          field: str = "password") -> FillResult:
-    """Fill ``field`` ("password" or "totp") in ``target_id``. Call from a thread with no running event loop."""
-    return asyncio.run(fill_async(port, target_id, allowed_origins, value, timeout, field=field))
+    """Fill ``field`` ("password" or "totp") in ``target_id`` at ``endpoint``.
+
+    ``endpoint`` is a provider's CDP WebSocket URL for the credential client, token
+    and all. Call from a thread with no running event loop.
+    """
+    return asyncio.run(fill_async(endpoint, target_id, allowed_origins, value, timeout, field=field))
 
 
-async def fill_async(port: int, target_id: str, allowed_origins: tuple[str, ...], value: str,
+async def fill_async(endpoint: str, target_id: str, allowed_origins: tuple[str, ...], value: str,
                      timeout: float = 10.0, field: str = "password") -> FillResult:
     if field not in FIELDS:
         raise ValueError('field must be "password" or "totp"')
-    if not _valid_port(port):
+    if not valid_endpoint(endpoint):
         return FillResult(False, "", CDP_UNAVAILABLE)
     if not isinstance(target_id, str) or not _TARGET_ID.fullmatch(target_id):
         return FillResult(False, "", TARGET_NOT_FOUND)
@@ -242,7 +248,8 @@ async def fill_async(port: int, target_id: str, allowed_origins: tuple[str, ...]
     seen = {"origin": ""}
     code = None
     try:
-        await asyncio.wait_for(_fill(port, target_id, allowed, value, budget, cleanup, seen, FIELDS[field]), budget)
+        await asyncio.wait_for(_fill(endpoint, target_id, allowed, value, budget, cleanup, seen,
+                                     FIELDS[field]), budget)
     except _Fail as exc:
         code = exc.code
     except asyncio.TimeoutError:
@@ -252,34 +259,22 @@ async def fill_async(port: int, target_id: str, allowed_origins: tuple[str, ...]
     return FillResult(code is None, seen["origin"], code)
 
 
-async def _fill(port, target_id, allowed, value, budget, cleanup, seen, function) -> None:
-    listing = await _get_json(port, "/json/list")
-    target = None
-    if isinstance(listing, list):
-        target = next((t for t in listing if isinstance(t, dict) and t.get("id") == target_id
-                       and t.get("type") == "page"), None)
-    if target is None:
-        raise _Fail(TARGET_NOT_FOUND)
-    origin = normalize_origin(target.get("url")) or ""
-    seen["origin"] = origin
-    if not origin or origin not in allowed:
-        raise _Fail(ORIGIN_MISMATCH)
-
-    version = await _get_json(port, "/json/version")
-    ws_url = version.get("webSocketDebuggerUrl") if isinstance(version, dict) else None
-    path = urlsplit(ws_url).path if isinstance(ws_url, str) else ""
-    if not _BROWSER_PATH.fullmatch(path):
-        raise _Fail(CDP_UNAVAILABLE)
-    await _write(port, path, target_id, origin, value, budget, cleanup, function)
+async def _fill(endpoint, target_id, allowed, value, budget, cleanup, seen, function) -> None:
+    async with _connected(endpoint, budget, cleanup) as conn:
+        origin = await _target_origin(conn, target_id)
+        seen["origin"] = origin
+        if not origin or origin not in allowed:
+            raise _Fail(ORIGIN_MISMATCH)
+        await _write(conn, target_id, origin, value, cleanup, function)
 
 
-def handover(port: int, target_id: str, allowed_origins: tuple[str, ...], cookies, local, session,
+def handover(endpoint: str, target_id: str, allowed_origins: tuple[str, ...], cookies, local, session,
              timeout: float = 10.0) -> HandoverResult:
-    """Write a sign-in session into ``target_id``. Call from a thread with no running event loop."""
-    return asyncio.run(handover_async(port, target_id, allowed_origins, cookies, local, session, timeout))
+    """Write a sign-in session into ``target_id`` at ``endpoint``. Call from a thread with no running event loop."""
+    return asyncio.run(handover_async(endpoint, target_id, allowed_origins, cookies, local, session, timeout))
 
 
-async def handover_async(port: int, target_id: str, allowed_origins: tuple[str, ...], cookies, local,
+async def handover_async(endpoint: str, target_id: str, allowed_origins: tuple[str, ...], cookies, local,
                          session, timeout: float = 10.0) -> HandoverResult:
     """Set ``cookies`` and both storages in the tab, then reload it.
 
@@ -289,7 +284,7 @@ async def handover_async(port: int, target_id: str, allowed_origins: tuple[str, 
     ``session`` are lists of ``[key, value]`` pairs, passed as arguments, never as
     source. The deadline and the connection are ``fill_async``'s.
     """
-    if not _valid_port(port):
+    if not valid_endpoint(endpoint):
         return HandoverResult(False, "", CDP_UNAVAILABLE)
     if not isinstance(target_id, str) or not _TARGET_ID.fullmatch(target_id):
         return HandoverResult(False, "", TARGET_NOT_FOUND)
@@ -308,7 +303,7 @@ async def handover_async(port: int, target_id: str, allowed_origins: tuple[str, 
     seen = {"origin": ""}
     code = None
     try:
-        await asyncio.wait_for(_handover(port, target_id, allowed, params, entries, budget, cleanup, seen),
+        await asyncio.wait_for(_handover(endpoint, target_id, allowed, params, entries, budget, cleanup, seen),
                                budget)
     except _Fail as exc:
         code = exc.code
@@ -319,26 +314,17 @@ async def handover_async(port: int, target_id: str, allowed_origins: tuple[str, 
     return HandoverResult(code is None, seen["origin"], code, len(params) if code is None else 0)
 
 
-async def _handover(port, target_id, allowed, params, entries, budget, cleanup, seen) -> None:
-    listing = await _get_json(port, "/json/list")
-    target = None
-    if isinstance(listing, list):
-        target = next((t for t in listing if isinstance(t, dict) and t.get("id") == target_id
-                       and t.get("type") == "page"), None)
-    if target is None:
-        raise _Fail(TARGET_NOT_FOUND)
-    origin = normalize_origin(target.get("url")) or ""
-    seen["origin"] = origin
-    if not origin or origin not in allowed:
-        raise _Fail(HANDOVER_REFUSED)
+async def _handover(endpoint, target_id, allowed, params, entries, budget, cleanup, seen) -> None:
+    async with _connected(endpoint, budget, cleanup) as conn:
+        origin = await _target_origin(conn, target_id)
+        seen["origin"] = origin
+        if not origin or origin not in allowed:
+            raise _Fail(HANDOVER_REFUSED)
+        await _handover_write(conn, target_id, origin, params, entries, cleanup)
 
-    version = await _get_json(port, "/json/version")
-    ws_url = version.get("webSocketDebuggerUrl") if isinstance(version, dict) else None
-    path = urlsplit(ws_url).path if isinstance(ws_url, str) else ""
-    if not _BROWSER_PATH.fullmatch(path):
-        raise _Fail(CDP_UNAVAILABLE)
 
-    async with _attached(port, path, target_id, budget, cleanup) as (conn, session):
+async def _handover_write(conn, target_id, origin, params, entries, cleanup) -> None:
+    async with _attached(conn, target_id, cleanup) as session:
         if params:
             reply = await conn.call("Network.setCookies", {"cookies": params}, session)
             if "error" in reply:
@@ -400,55 +386,102 @@ def _entries(items) -> list[list[str]]:
     return out
 
 
+def valid_endpoint(endpoint) -> bool:
+    """True for a provider endpoint this module can open: ``ws://host:port/devtools/browser/<name>``.
+
+    ``wss`` is refused for now: no provider serves it, and a TLS client here would
+    need its own trust decision. A query string (the client's token) is allowed and
+    never logged.
+    """
+    if not isinstance(endpoint, str) or not endpoint or len(endpoint) > 2048:
+        return False
+    try:
+        parts = urlsplit(endpoint)
+        port = parts.port
+    except ValueError:
+        return False
+    return bool(parts.scheme == "ws" and parts.hostname and port
+                and _BROWSER_PATH.fullmatch(parts.path))
+
+
 @contextlib.asynccontextmanager
-async def _attached(port, path, target_id, budget, cleanup):
-    """A browser websocket with a flat session attached to ``target_id``, closed on the way out."""
+async def _connected(endpoint, budget, cleanup):
+    """An open browser websocket to ``endpoint``, closed on the way out."""
     try:
         import websockets
     except ImportError:
         raise _Fail(CDP_UNAVAILABLE) from None
 
+    parts = urlsplit(endpoint)
     loop = asyncio.get_running_loop()
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.setblocking(False)
     try:
-        await loop.sock_connect(sock, ("127.0.0.1", port))
-        # A connected socket keeps websockets on 127.0.0.1 and skips its proxy lookup,
-        # whatever host the browser reported in webSocketDebuggerUrl.
-        ws = await websockets.connect(
-            f"ws://127.0.0.1:{port}{path}", sock=sock, max_size=_MAX_MESSAGE, compression=None,
-            open_timeout=budget, close_timeout=cleanup, ping_interval=None, logger=_WS_LOGGER,
-        )
-    except BaseException:
-        sock.close()
-        raise
+        # Resolved and connected here, so websockets skips its proxy lookup whatever
+        # the environment holds, and so a name with several addresses is tried in turn.
+        infos = await loop.getaddrinfo(parts.hostname, parts.port, type=socket.SOCK_STREAM)
+    except OSError:
+        raise _Fail(CDP_UNAVAILABLE) from None
+    ws = None
+    for family, kind, proto, _canon, address in infos:
+        sock = socket.socket(family, kind, proto)
+        sock.setblocking(False)
+        try:
+            await loop.sock_connect(sock, address)
+            ws = await websockets.connect(
+                endpoint, sock=sock, max_size=_MAX_MESSAGE, compression=None,
+                open_timeout=budget, close_timeout=cleanup, ping_interval=None, logger=_WS_LOGGER,
+            )
+            break
+        except (OSError, asyncio.TimeoutError, Exception):  # noqa: BLE001 - try the next address
+            sock.close()
+            continue
+        except BaseException:
+            sock.close()
+            raise
+    if ws is None:
+        raise _Fail(CDP_UNAVAILABLE)
 
-    conn = _Connection(ws)
-    session = None
     try:
-        attached = await conn.call("Target.attachToTarget", {"targetId": target_id, "flatten": True})
-        body = attached.get("result")
-        found = body.get("sessionId") if "error" not in attached and isinstance(body, dict) else None
-        if not isinstance(found, str) or not found:
-            raise _Fail(TARGET_NOT_FOUND)
-        session = found
-        yield conn, session
+        yield _Connection(ws)
     finally:
         try:
-            if session is not None:
-                try:
-                    await asyncio.wait_for(conn.call("Target.detachFromTarget", {"sessionId": session}), cleanup)
-                except Exception:  # noqa: BLE001 - the session ends with the socket anyway
-                    pass
-        finally:
-            try:
-                await asyncio.wait_for(ws.close(), cleanup)
-            except Exception:  # noqa: BLE001 - a close that fails or times out does not change the result
-                ws.transport.abort()
-            except BaseException:
-                # Cancelled again during cleanup: drop the connection, then let the cancel through.
-                ws.transport.abort()
-                raise
+            await asyncio.wait_for(ws.close(), cleanup)
+        except Exception:  # noqa: BLE001 - a close that fails or times out does not change the result
+            ws.transport.abort()
+        except BaseException:
+            # Cancelled again during cleanup: drop the connection, then let the cancel through.
+            ws.transport.abort()
+            raise
+
+
+async def _target_origin(conn, target_id: str) -> str:
+    """The origin of page ``target_id``, through ``Target.getTargetInfo`` on the browser connection.
+
+    A target that is not a page, or that the provider does not show this client, is
+    ``target_not_found``: nothing is attached and nothing is written.
+    """
+    reply = await conn.call("Target.getTargetInfo", {"targetId": target_id})
+    body = reply.get("result") if "error" not in reply else None
+    info = body.get("targetInfo") if isinstance(body, dict) else None
+    if not isinstance(info, dict) or info.get("type") != "page":
+        raise _Fail(TARGET_NOT_FOUND)
+    return normalize_origin(info.get("url")) or ""
+
+
+@contextlib.asynccontextmanager
+async def _attached(conn, target_id, cleanup):
+    """A flat CDP session on ``target_id``, detached on the way out."""
+    attached = await conn.call("Target.attachToTarget", {"targetId": target_id, "flatten": True})
+    body = attached.get("result")
+    found = body.get("sessionId") if "error" not in attached and isinstance(body, dict) else None
+    if not isinstance(found, str) or not found:
+        raise _Fail(TARGET_NOT_FOUND)
+    try:
+        yield found
+    finally:
+        try:
+            await asyncio.wait_for(conn.call("Target.detachFromTarget", {"sessionId": found}), cleanup)
+        except Exception:  # noqa: BLE001 - the session ends with the socket anyway
+            pass
 
 
 async def _call_on_document(conn, session, function, arguments) -> dict:
@@ -471,8 +504,8 @@ async def _call_on_document(conn, session, function, arguments) -> dict:
     return outcome
 
 
-async def _write(port, path, target_id, origin, value, budget, cleanup, function) -> None:
-    async with _attached(port, path, target_id, budget, cleanup) as (conn, session):
+async def _write(conn, target_id, origin, value, cleanup, function) -> None:
+    async with _attached(conn, target_id, cleanup) as session:
         outcome = await _call_on_document(conn, session, function,
                                           [{"value": origin}, {"value": value}])
         if outcome.get("refused") == "origin_changed":
@@ -518,61 +551,3 @@ class _Connection:
                 raise _Fail(CDP_UNAVAILABLE) from None
             if isinstance(reply, dict) and reply.get("id") == self.next_id and reply.get("sessionId") == session:
                 return reply
-
-
-async def _get_json(port: int, path: str):
-    """GET ``path`` from 127.0.0.1:<port> and parse the body as JSON.
-
-    asyncio streams rather than http.client in a thread: a thread cannot be cancelled, so a
-    slow endpoint could hold it past the deadline. No proxy from the environment applies.
-    """
-    reader = writer = None
-    try:
-        reader, writer = await asyncio.open_connection("127.0.0.1", port, limit=_MAX_HEADERS)
-        writer.write(f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
-                     .encode("ascii"))
-        await writer.drain()
-        head = await reader.readuntil(b"\r\n\r\n")
-        body = await _read_body(reader, head)
-    except (OSError, EOFError, asyncio.IncompleteReadError, asyncio.LimitOverrunError, ValueError):
-        body = None
-    finally:
-        if writer is not None:
-            writer.transport.abort()
-    if body is None:
-        raise _Fail(CDP_UNAVAILABLE)
-    try:
-        return json.loads(body)
-    except ValueError:
-        raise _Fail(CDP_UNAVAILABLE) from None
-
-
-async def _read_body(reader: asyncio.StreamReader, head: bytes) -> bytes | None:
-    """The body for a 200 response with Content-Length or read-to-close framing, capped at _MAX_BODY."""
-    lines = head.decode("latin-1").split("\r\n")
-    status = lines[0].split(" ")
-    if len(status) < 2 or not status[0].startswith("HTTP/1.") or status[1] != "200":
-        return None
-    headers = {}
-    for line in lines[1:]:
-        name, sep, val = line.partition(":")
-        if sep:
-            headers[name.strip().lower()] = val.strip()
-    if "transfer-encoding" in headers:
-        return None  # DevTools sends Content-Length; chunked framing is not needed
-    if "content-length" in headers:
-        length = int(headers["content-length"])
-        if not 0 <= length <= _MAX_BODY:
-            return None
-        return await reader.readexactly(length)
-    body = b""
-    while len(body) <= _MAX_BODY:
-        more = await reader.read(_MAX_BODY + 1 - len(body))
-        if not more:
-            return body
-        body += more
-    return None
-
-
-def _valid_port(port) -> bool:
-    return isinstance(port, int) and not isinstance(port, bool) and 1 <= port <= 65535

@@ -1,10 +1,12 @@
-"""Hermes login backend over the Bitwarden broker's loopback API (bwbroker).
+"""Hermes login backend over the Bitwarden broker's API (bwbroker).
 
-The broker (compose/bitwarden-broker) shares the hermes container's network
-namespace and listens on 127.0.0.1:8099. No route on that port returns a
-password, TOTP code or seed, so this backend lists metadata only and every
-resolve_* call raises. Fills reach the broker through the fill overlay, which
-calls POST /fill and lets the broker write the page itself.
+The broker (compose/bitwarden-broker) runs in its own container and answers on
+the internal credentials network, which only hermes joins. Every call carries
+the bearer token the broker was given, read from the one file hermes mounts for
+it. No route returns a password, TOTP code or seed, so this backend lists
+metadata only and every resolve_* call raises. Fills reach the broker through
+the fill overlay, which calls POST /fill and lets the broker write the page
+itself.
 
 The bwbroker plugin (compose/hermes/plugins/bwbroker) imports this module from
 beside its __init__.py; 14-install-bwbroker-plugin.sh puts both there.
@@ -29,7 +31,10 @@ from typing import Any, Callable, Optional
 from agent.vault_backends.base import LoginBackend
 from agent.vault_store import VaultItemMeta
 
-BROKER_URL = "http://127.0.0.1:8099"
+BROKER_URL = "http://bitwarden-broker:8099"
+# The broker's bearer token. docker-compose.yml mounts the folder holding it
+# read-only; without the file every call comes back 401.
+TOKEN_FILE = "/run/bitwarden/api-token"
 TIMEOUT = 5
 # GET /items syncs the vault before it answers when the local copy is at least
 # BITWARDEN_ITEMS_SYNC_SECONDS old, and a sync of a self-hosted vault takes ten
@@ -44,19 +49,30 @@ MAX_REPLY = 8 * 1024 * 1024
 # The broker's error codes; anything else in an error body is not passed on.
 ERROR_CODE = re.compile(r"[a-z][a-z_]{0,39}")
 
-# No proxy: an HTTP(S)_PROXY in the container must not see loopback calls.
+# No proxy: an HTTP(S)_PROXY in the container must not see these calls.
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def token() -> str:
+    """The broker's bearer token, or "" when the file is missing or unreadable."""
+    try:
+        with open(TOKEN_FILE, encoding="utf-8") as handle:
+            return handle.read(4096).strip()
+    except OSError:
+        return ""
 
 
 class BrokerUnavailable(Exception):
     """The broker did not answer, or answered with something other than JSON."""
 
 
-def call(method: str, path: str, body: Optional[dict] = None, *, base: str = BROKER_URL,
+def call(method: str, path: str, body: Optional[dict] = None, *, base: Optional[str] = None,
          timeout: float = TIMEOUT) -> tuple[int, Any]:
     """(HTTP status, decoded JSON) for one broker call; BrokerUnavailable otherwise."""
+    base = base or BROKER_URL  # read here, so a test can point the module at its own stub
     data = None if body is None else json.dumps(body).encode()
     headers = {"Content-Type": "application/json"} if data is not None else {}
+    headers["Authorization"] = "Bearer " + token()
     request = urllib.request.Request(base + path, data=data, method=method, headers=headers)
     try:
         try:
@@ -122,7 +138,7 @@ class BrokerLoginBackend(LoginBackend):
     display_name = "Bitwarden"
     needs_unlock = False
 
-    def __init__(self, in_cron: Callable[[], bool] = in_cron_turn, base_url: str = BROKER_URL):
+    def __init__(self, in_cron: Callable[[], bool] = in_cron_turn, base_url: Optional[str] = None):
         self._in_cron = in_cron
         self._base = base_url
 

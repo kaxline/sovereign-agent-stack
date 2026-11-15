@@ -1,11 +1,7 @@
 # Bitwarden helpers for stack scripts.
 # Source from a script that sets ROOT:  source "${ROOT}/scripts/lib/bitwarden.sh"
 
-# Call after every command that recreates or restarts hermes. bitwarden-broker
-# runs in hermes' network namespace (network_mode: service:hermes); after a
-# recreate it is left in the removed container's namespace, unreachable. This
-# recreates it in the current one and prints the manual accounts that need
-# make vault-unlock. A no-op while BITWARDEN_ENABLED is off.
-follow_hermes() {
-  "${ROOT}/scripts/vault.sh" follow-hermes
-}
+# The broker used to share hermes' network namespace, so every recreate of
+# hermes needed scripts/vault.sh follow-hermes to put it back. It now has its own
+# networks (browser and credentials) and its own lifecycle, so nothing has to
+# follow hermes; this file stays for the helpers the stack scripts still source.

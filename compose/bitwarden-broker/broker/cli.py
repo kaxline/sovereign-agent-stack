@@ -5,8 +5,9 @@
     python3 -m broker.cli sync
     python3 -m broker.cli signer
 
-The API listens on ``BITWARDEN_LISTEN`` (127.0.0.1:8099) inside hermes' network
-namespace, so the host reaches it only through the broker container.
+The API listens on ``BITWARDEN_LISTEN`` (0.0.0.0:8099 on the internal credentials
+network), so the host reaches it only through the broker container. Requests carry
+the bearer token in ``BITWARDEN_API_TOKEN_FILE``, the file the broker reads.
 
 ``accounts`` prints one tab-separated line per account (slug, mode, scope kind,
 state, error class or ``-``, logged in ``1`` or ``0``, retry after or empty), then
@@ -40,12 +41,32 @@ class Refused(Exception):
     pass
 
 
+def _token() -> str:
+    """The API's bearer token, from the same file the broker reads."""
+    path = os.environ.get("BITWARDEN_API_TOKEN_FILE") or ""
+    if not path:
+        return ""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return handle.read(512).strip()
+    except OSError:
+        raise Refused(f"the API token file ({path}) cannot be read") from None
+
+
 def _call(method: str, path: str):
     host, _, port = (os.environ.get("BITWARDEN_LISTEN") or DEFAULT_LISTEN).rpartition(":")
-    conn = http.client.HTTPConnection(host or "127.0.0.1", int(port), timeout=TIMEOUT_SECONDS)
+    host = host.strip("[]")
+    # The listen address is where the server binds; a client reaches it on loopback.
+    if host in ("", "0.0.0.0", "::", "*"):
+        host = "127.0.0.1"
+    conn = http.client.HTTPConnection(host, int(port), timeout=TIMEOUT_SECONDS)
+    token = _token()
     try:
         body = b"{}" if method == "POST" else None
-        conn.request(method, path, body=body, headers={"Content-Type": "application/json"})
+        headers = {"Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        conn.request(method, path, body=body, headers=headers)
         resp = conn.getresponse()
         text = resp.read().decode("utf-8", "replace")
     except (OSError, http.client.HTTPException):

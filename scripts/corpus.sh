@@ -378,7 +378,6 @@ cmd_use() {
   else
     log "Switching WORKSPACE ${prev:-'(unset)'} -> ${slug}"
     docker compose up -d --force-recreate lightrag lightrag-mcp hermes
-    follow_hermes
   fi
   wait_lightrag_healthy
   log "active = ${slug}"
