@@ -91,7 +91,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Run shellcheck
         run: |
-          shellcheck -x -e SC1090,SC1091 scripts/*.sh
+          shellcheck -x -e SC1090,SC1091 scripts/*.sh upgrades/*.sh
           shellcheck -s sh -e SC1090,SC1091 compose/hermes/bootstrap-api-profile.sh
           shellcheck -s sh compose/hermes/007-profile-ownership.sh
           shellcheck -s sh -e SC1090,SC1091 n8n/import-demo-data.sh || true

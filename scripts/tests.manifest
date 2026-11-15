@@ -129,6 +129,7 @@ scripts/test-twenty-doctor.sh                   ci
 scripts/test-twenty-reconcile.sh                image
 scripts/test-twenty-registration.sh             ci
 scripts/test-twenty-secrets.sh                  ci
+scripts/test-upgrade-sh.sh                      ci
 scripts/test-vault-capture-secret.py            ci image
 scripts/test-vault-create-login.py              ci image
 scripts/test-vault-sh.sh                        ci

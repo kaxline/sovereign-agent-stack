@@ -39,6 +39,22 @@ git log --oneline "$(git describe --tags --abbrev=0)"..HEAD
 git diff "$(git describe --tags --abbrev=0)" -- docker-compose.yml docker-compose.hermes-terminal.yml compose/hermes/terminal-ssh.yml .env.example scripts/setup.sh
 ```
 
+## Upgrade hooks
+
+Every item under **Upgrade steps** is code in `upgrades/vX.Y.Z.sh`, named for
+the release that needs it, or is reported there as `needs_user` when only the
+user can do it (re-entering a credential, changing an item in their vault). A
+release whose upgrade steps are prose only is not tagged. `scripts/upgrade.sh`
+runs the hooks an upgrade crosses, so an install that skips releases still runs
+each one; hooks must be idempotent. `upgrades/lib.sh` lists the directives a
+hook can print (`rebuild`, `reload_hermes`, `needs_user`, `notice`).
+
+Experimental add-ons still get no migration code. When an upgrade leaves one
+needing the user's help, its hook says so with `needs_user` instead.
+
+`scripts/test-upgrade-sh.sh` runs the shipped hooks on a synthetic stack; add a
+case there for a new hook's directives.
+
 ## Check
 
 Run `make bash32-test` on a Mac before tagging. It runs the host scripts under
@@ -50,7 +66,7 @@ version flags different things, so a newer local shellcheck can pass what CI
 fails:
 
 ```bash
-docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:v0.9.0 -x -e SC1090,SC1091 scripts/*.sh
+docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:v0.9.0 -x -e SC1090,SC1091 scripts/*.sh upgrades/*.sh
 ```
 
 ## Tag

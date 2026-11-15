@@ -32,6 +32,14 @@ the stack under another app.
   It refuses while the stack runs unless given `--stop`. Restore moves each
   data directory aside rather than deleting it. See
   [docs/data-dir.md](docs/data-dir.md#backups).
+- Upgrade steps are now hooks. `scripts/upgrade.sh --from VERSION [--json]`
+  runs `upgrades/vX.Y.Z.sh` for every release after VERSION, starts the stack
+  with the rebuilds and Hermes reload they ask for, and reports what only the
+  user can do as `needs_user`. The v0.3.15 and v0.3.16 steps are hooks. In a
+  git checkout: `git checkout vX.Y.Z && scripts/setup.sh && scripts/upgrade.sh
+  --from <previous tag>`. See [docs/releasing.md](docs/releasing.md#upgrade-hooks).
+- `make up` and `make ensure-local` run the new `scripts/up.sh`, so hosts without
+  `make` can start the stack the same way.
 
 ## v0.3.16 — 2026-11-14
 

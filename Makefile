@@ -41,20 +41,7 @@ setup:
 	./scripts/setup.sh
 
 ensure-local:
-	@test -f searxng/settings.local.yml || cp searxng/settings.yml searxng/settings.local.yml
-	@test -f opencode/opencode.local.json || cp opencode/opencode.json opencode/opencode.local.json
-	@test -f compose/hermes/api-server.env || (cp compose/hermes/api-server.env.example compose/hermes/api-server.env && echo "Created compose/hermes/api-server.env — set API_SERVER_KEY")
-	@test -f compose/hermes/browser.env || (cp compose/hermes/browser.env.example compose/hermes/browser.env && echo "Created compose/hermes/browser.env — set API_SERVER_KEY")
-	@mkdir -p compose/postgres/services
-	@./scripts/addon-dirs.sh
-	@./scripts/todo.sh ensure
-	@./scripts/crm.sh ensure
-	@./scripts/budget.sh ensure
-	@./scripts/sync-signal-profile.sh
-	@./scripts/sync-buzz-profile.sh
-	@./scripts/sync-terminal-backend.sh
-	@./scripts/sync-profiles.sh
-	@./scripts/sync-n8n-credentials.sh
+	@./scripts/up.sh --prepare
 
 doctor:
 	./scripts/doctor.sh
@@ -330,11 +317,8 @@ model-defaults-reload:
 services:
 	@./scripts/sync-profiles.sh --list
 
-up: ensure-local
-	@echo "Profiles: $$(grep -E '^COMPOSE_PROFILES=' .env | head -1 | cut -d= -f2-)"
-	@./scripts/vault.sh pre-up
-	docker compose up -d
-	@./scripts/vault.sh up-hook
+up:
+	./scripts/up.sh
 
 down:
 	docker compose down
