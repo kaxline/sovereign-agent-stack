@@ -75,6 +75,7 @@ scripts/test-hermes-api-port.py                 ci docker
 scripts/test-hermes-topology.py                 image
 scripts/test-history-budget.py                  ci image
 scripts/test-hosted-rooms.py                    image
+scripts/test-install-sh.sh                      ci
 scripts/test-intent-ack.py                      ci image
 scripts/test-kanban-edit.py                     image
 scripts/test-kanban-guards.py                   ci image

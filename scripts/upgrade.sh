@@ -141,12 +141,12 @@ if [[ "$START" == 1 ]]; then
   [[ "$reload" == 1 ]] && args+=(--reload-hermes)
   say "Starting the stack"
   if [[ "$JSON" == 1 ]]; then
-    ./scripts/up.sh ${args[@]+"${args[@]}"} > "$log" 2>&1 || {
+    bash ./scripts/up.sh ${args[@]+"${args[@]}"} > "$log" 2>&1 || {
       cat "$log" >&2
       fail command_failed "starting the stack failed: $(tail -1 "$log")" start
     }
   else
-    ./scripts/up.sh ${args[@]+"${args[@]}"} >&2 || fail command_failed "starting the stack failed" start
+    bash ./scripts/up.sh ${args[@]+"${args[@]}"} >&2 || fail command_failed "starting the stack failed" start
   fi
   emit '{"event":"step","step":"start"}'
 fi

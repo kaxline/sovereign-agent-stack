@@ -1,0 +1,63 @@
+name: install-test
+
+# scripts/install.sh on a fresh Ubuntu 24.04 runner with Docker: install the
+# checked-out tree as a release, put a marker in Hermes state and the data
+# root, upgrade to a second release built from the same tree, and check the
+# markers survived and both doctor runs passed. Run by hand: it pulls every
+# core image and takes a while.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  install-upgrade:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build two releases from this commit
+        run: |
+          git tag v99.0.0
+          git tag v99.0.1
+          scripts/release-tarball.sh v99.0.0 "$RUNNER_TEMP/rel"
+          scripts/release-tarball.sh v99.0.1 "$RUNNER_TEMP/rel"
+      - name: Fresh install
+        run: |
+          scripts/install.sh --version v99.0.0 --dir "$HOME/stack" \
+            --tarball "$RUNNER_TEMP/rel/sovereign-agent-stack-v99.0.0.tar.gz" --json \
+            | tee "$RUNNER_TEMP/install.json"
+          tail -1 "$RUNNER_TEMP/install.json" | grep -q '"event":"done"'
+      - name: Status and loopback ports
+        run: |
+          cd "$HOME/stack"
+          bash scripts/status.sh --json | tee "$RUNNER_TEMP/status.json"
+          python3 - "$RUNNER_TEMP/status.json" << 'EOF'
+          import json, sys
+          d = json.load(open(sys.argv[1]))
+          assert d["version"] == "v99.0.0", d["version"]
+          ports = [p for s in d["services"] for p in s["ports"]]
+          assert ports and all(p["host_ip"] == "127.0.0.1" for p in ports), ports
+          EOF
+      - name: Markers in Hermes state and the data root
+        run: |
+          cd "$HOME/stack"
+          # data/hermes belongs to the Hermes user on Linux.
+          echo marker | sudo tee data/hermes/install-test-marker > /dev/null
+          root="$(grep -E '^ASSISTANT_DATA_ROOT=' .env | cut -d= -f2- || true)"
+          sudo mkdir -p "${root:-./data}/memory"
+          echo marker | sudo tee "${root:-./data}/memory/install-test-marker.md" > /dev/null
+      - name: Upgrade
+        run: |
+          scripts/install.sh --version v99.0.1 --dir "$HOME/stack" \
+            --tarball "$RUNNER_TEMP/rel/sovereign-agent-stack-v99.0.1.tar.gz" --json \
+            | tee "$RUNNER_TEMP/upgrade.json"
+          tail -1 "$RUNNER_TEMP/upgrade.json" | grep -q '"previous_version":"v99.0.0"'
+      - name: Markers survived
+        run: |
+          cd "$HOME/stack"
+          test "$(sudo cat data/hermes/install-test-marker)" = marker
+          root="$(grep -E '^ASSISTANT_DATA_ROOT=' .env | cut -d= -f2- || true)"
+          test "$(sudo cat "${root:-./data}/memory/install-test-marker.md")" = marker
+          test "$(cat .stack-version)" = v99.0.1
+          ls backups/*/stack.tar.gz

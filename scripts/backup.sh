@@ -210,7 +210,7 @@ collect_parts() {
   root="$(resolve_data_root_path)"
   root="${root%/}"
 
-  local stack_excl="./data ./backups ./.git ./.claude/worktrees"
+  local stack_excl="./data ./backups ./.git ./.claude/worktrees ./.install-tmp.* ./.install.lock"
   if inside "$DEST" "$ROOT" && [[ "$DEST" != "${ROOT}/backups" ]]; then
     dest_rel="./${DEST#"${ROOT}"/}"
     stack_excl="${stack_excl} ${dest_rel}"
@@ -301,8 +301,10 @@ cmd_create() {
   : > "${out}/parts.tsv"
 
   for i in "${!P_KIND[@]}"; do
-    local args=()
-    for excl in ${P_EXCL[$i]}; do args+=("--exclude=${excl}"); done
+    local args=() ex=()
+    # read -a splits without globbing: the patterns are for tar, not the shell.
+    read -r -a ex <<< "${P_EXCL[$i]}"
+    for excl in ${ex[@]+"${ex[@]}"}; do args+=("--exclude=${excl}"); done
     say "Backing up ${P_NAME[$i]}"
     if ! tar_create "${P_KIND[$i]}" "${P_SRC[$i]}" "$out" "${P_NAME[$i]}.tar.gz" \
       ${args[@]+"${args[@]}"} > "${out}/.log" 2>&1; then
@@ -338,8 +340,9 @@ cmd_create() {
 
 # The top-level entries create leaves out of data/, moved back after a restore.
 restore_left_out() {
-  local aside="$1" dst="$2" pat entry name
-  for pat in $DATA_EXCLUDES; do
+  local aside="$1" dst="$2" pat entry name pats=()
+  read -r -a pats <<< "$DATA_EXCLUDES"
+  for pat in "${pats[@]}"; do
     pat="${pat#./}"
     for entry in "${aside}"/$pat; do
       [[ -e "$entry" ]] || continue

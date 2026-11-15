@@ -642,6 +642,56 @@ failed attempt. They park the same way, so the reconnect call and
 This is an overlay on the pinned Hermes image (`patch-mcp-wake.py`). The route,
 key and response fields stay stable across pin moves. Changes are additive.
 
+## Install on another host
+
+`scripts/install.sh` installs a release into a folder on a host the app
+doesn't manage, such as a Linux server reached over SSH, and upgrades that
+install later. It runs on Linux with Docker Engine and on macOS with Docker
+Desktop; Podman is refused, since nothing runs the stack on it. It needs bash,
+tar, gzip, sha256sum or shasum, and curl when it downloads.
+
+```bash
+scripts/install.sh --version v0.3.17 --dir ~/stack --json -- --coding
+```
+
+It is self-contained, so it can be copied to the host alone. The release is
+the tarball the release workflow attaches to each tag
+(`sovereign-agent-stack-vX.Y.Z.tar.gz`, built by `scripts/release-tarball.sh`).
+`--tarball FILE` installs a copy the app uploaded, with `--sha256 HEX` or
+`FILE.sha256` beside it; otherwise it downloads the tarball and its `.sha256`
+from GitHub (`STACK_RELEASE_BASE` changes the URL prefix). The checksum is
+always checked; it shows the file is intact, not who made it. Arguments after
+`--` go to `scripts/setup.sh --non-interactive`. `--mail`, `--mail-drafts` and
+`--messages` are refused on Linux.
+
+A fresh install unpacks the release, runs setup, `scripts/up.sh` and
+`scripts/doctor.sh`. An upgrade stops the stack, backs it up into
+`DIR/backups` ([backups](data-dir.md#backups)), removes the files the old
+release shipped and the new one doesn't, unpacks the new release over the
+folder, runs setup and `scripts/upgrade.sh` (the
+[upgrade hooks](releasing.md#upgrade-hooks), then the start), and doctor.
+`.env`, `data/` and local config files stay where they are. When a step after
+the backup fails, the old release's files and config come back from the backup
+and the old release starts again; data changes the hooks made are not undone,
+and the error names the backup to restore them from. The same version again
+re-runs setup, the start and doctor. An older version is refused, as is a git
+checkout (upgrade those with `git checkout`, `scripts/setup.sh` and
+`scripts/upgrade.sh --from <old tag>`).
+
+`--json` prints a `step` line per step, then
+`{"event":"done","version":V,"previous_version":P,"fresh":B,"backup":PATH,
+"needs_user":[{"id","message","version"}],"notices":[...],"doctor":"passed"}`,
+or an `error` line with `error` (`bad_input`, `unsupported_host`,
+`checksum_mismatch`, `busy`, `command_failed`, `doctor_failed`), `message`,
+`step`, `logTail`, `rolledBack` and `backup`. `doctor_failed` leaves the new
+stack running. `needs_user` lists what only the user can do after an upgrade;
+show it to them.
+
+Published ports bind 127.0.0.1, as in `docker-compose.yml`; forward them over
+SSH. `--compose-file` and `--project` work as in [stack status](#stack-status).
+The `install-test` workflow (run by hand) installs and upgrades on Ubuntu
+24.04.
+
 ## Stack status
 
 `scripts/status.sh --json` prints one object:

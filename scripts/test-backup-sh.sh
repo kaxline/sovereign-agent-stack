@@ -131,7 +131,7 @@ out="$(run restore --from "$bdir" --stop --json)" || fail "restore failed: $out"
 [ "$(cat "${stack}/data/mail/index.txt")" = index ] || fail "mail index not moved back"
 [ -d "${stack}/data/hermes.bak-old" ] || fail "older backup not moved back"
 aside="$(find "$stack" -maxdepth 1 -name "data.pre-restore-*" | head -1)"
-[ -n "$aside" ] && [ "$(cat "${aside}/hermes/state.txt")" = state-v2 ] || fail "previous data not kept aside"
+{ [ -n "$aside" ] && [ "$(cat "${aside}/hermes/state.txt")" = state-v2 ]; } || fail "previous data not kept aside"
 ls "${bdir}"/pre-restore-*/volume-n8n_storage.tar.gz > /dev/null 2>&1 || fail "previous volume not saved"
 case "$out" in *'"event":"done"'*'"parts":4'*) ;; *) fail "restore done line: $out" ;; esac
 

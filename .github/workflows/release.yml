@@ -1,0 +1,38 @@
+name: release
+
+# Publishes the tarball scripts/install.sh installs, with its .sha256, on the
+# GitHub release for each pushed v* tag (creating the release if needed).
+# Run it by hand for an older tag with the tag input.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish, e.g. v0.3.17"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  tarball:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build the tarball
+        run: scripts/release-tarball.sh "$TAG" dist
+      - name: Attach it to the release
+        run: |
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --verify-tag --title "$TAG" \
+              --notes "See [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/CHANGELOG.md)."
+          fi

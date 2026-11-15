@@ -38,6 +38,13 @@ the stack under another app.
   user can do as `needs_user`. The v0.3.15 and v0.3.16 steps are hooks. In a
   git checkout: `git checkout vX.Y.Z && scripts/setup.sh && scripts/upgrade.sh
   --from <previous tag>`. See [docs/releasing.md](docs/releasing.md#upgrade-hooks).
+- New `scripts/install.sh --version vX.Y.Z --dir DIR [--json]` installs a
+  release on a host the app doesn't manage, or upgrades it there: checksum,
+  backup, file swap, setup, upgrade hooks, start and doctor, with a rollback of
+  the files when a step fails. Each pushed tag now gets a GitHub release with
+  `sovereign-agent-stack-vX.Y.Z.tar.gz` and its `.sha256`
+  (`.github/workflows/release.yml`). See
+  [docs/extending.md](docs/extending.md#install-on-another-host).
 - `make up` and `make ensure-local` run the new `scripts/up.sh`, so hosts without
   `make` can start the stack the same way.
 
