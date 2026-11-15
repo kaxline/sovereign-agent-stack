@@ -1,10 +1,11 @@
 name: install-test
 
 # scripts/install.sh on a fresh Ubuntu 24.04 runner with Docker: install the
-# checked-out tree as a release, put a marker in Hermes state and the data
-# root, upgrade to a second release built from the same tree, and check the
-# markers survived and both doctor runs passed. Run by hand: it pulls every
-# core image and takes a while.
+# checked-out tree as a release with the db and automation add-ons, put a
+# marker in Hermes state and the data root, an n8n workflow (n8n_storage
+# volume) and a row in postgres-db (data/db), upgrade to a second release
+# built from the same tree, and check all four survived and both doctor runs
+# passed. Run by hand: it pulls every core image and takes a while.
 
 on:
   workflow_dispatch:
@@ -26,8 +27,8 @@ jobs:
         run: |
           scripts/install.sh --version v99.0.0 --dir "$HOME/stack" \
             --tarball "$RUNNER_TEMP/rel/sovereign-agent-stack-v99.0.0.tar.gz" --json \
-            | tee "$RUNNER_TEMP/install.json"
-          tail -1 "$RUNNER_TEMP/install.json" | grep -q '"event":"done"'
+            -- --db --automation | tee "$RUNNER_TEMP/install.json"
+          tail -1 "$RUNNER_TEMP/install.json" | grep -q '"phase":"done"'
       - name: Status and loopback ports
         run: |
           cd "$HOME/stack"
@@ -47,6 +48,14 @@ jobs:
           root="$(grep -E '^ASSISTANT_DATA_ROOT=' .env | cut -d= -f2- || true)"
           sudo mkdir -p "${root:-./data}/memory"
           echo marker | sudo tee "${root:-./data}/memory/install-test-marker.md" > /dev/null
+      - name: An n8n workflow and a db row
+        run: |
+          cd "$HOME/stack"
+          printf '%s' '[{"id":"installTestWf0001","name":"install-test-workflow","nodes":[],"connections":{},"active":false,"settings":{}}]' \
+            | docker compose exec -T n8n sh -c 'cat > /tmp/install-test-wf.json && n8n import:workflow --input=/tmp/install-test-wf.json'
+          docker compose exec -T n8n n8n list:workflow | grep -q install-test-workflow
+          docker compose exec -T postgres-db sh -c \
+            'psql -v ON_ERROR_STOP=1 -U postgres -d "$POSTGRES_DB" -c "CREATE TABLE install_test (v text); INSERT INTO install_test VALUES ('"'"'marker'"'"');"'
       - name: Upgrade
         run: |
           scripts/install.sh --version v99.0.1 --dir "$HOME/stack" \
@@ -60,4 +69,14 @@ jobs:
           root="$(grep -E '^ASSISTANT_DATA_ROOT=' .env | cut -d= -f2- || true)"
           test "$(sudo cat "${root:-./data}/memory/install-test-marker.md")" = marker
           test "$(cat .stack-version)" = v99.0.1
-          ls backups/*/stack.tar.gz
+          ls backups/*/stack.tar.gz backups/*/volume-n8n_storage.tar.gz
+          for i in $(seq 1 30); do
+            docker compose exec -T n8n n8n list:workflow > "$RUNNER_TEMP/workflows.txt" 2>&1 && break
+            sleep 5
+          done
+          grep -q install-test-workflow "$RUNNER_TEMP/workflows.txt"
+          for i in $(seq 1 30); do
+            docker compose exec -T postgres-db pg_isready -U postgres > /dev/null 2>&1 && break
+            sleep 2
+          done
+          test "$(docker compose exec -T postgres-db sh -c 'psql -tA -U postgres -d "$POSTGRES_DB" -c "SELECT v FROM install_test"')" = marker

@@ -28,7 +28,9 @@ the stack under another app.
   [docs/extending.md](docs/extending.md#stack-status).
 - New `scripts/backup.sh` (`create`, `restore --from DIR`): archives the stack
   directory with its `.env` and local configs, `data/`, `ASSISTANT_DATA_ROOT`,
-  any `*DATA_DIR` outside both, and the stateful named volumes, into
+  any `*DATA_DIR` outside both, and every named volume in
+  `docker compose --profile '*' config` except caches, `neo4j_logs`,
+  `bitwarden_signin`, `email_index` and `search_gate_data`, into
   `./backups/<timestamp>-<version>/` (`BACKUP_DIR` or `--dest` to change).
   It refuses while the stack runs unless given `--stop`. Restore moves each
   data directory aside rather than deleting it, and restores parts outside the

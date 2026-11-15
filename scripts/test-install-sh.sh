@@ -24,7 +24,7 @@ case "$1 $2" in
   "info "*|"compose version") exit 0 ;;
   "compose stop") echo "docker compose stop" >> "$CALLS" ;;
   "compose config") printf '{\n  "name": "inst",\n  "services": {}\n}\n' ;;
-  "compose ps"|"volume ls") exit 0 ;;
+  "compose ps"|"volume ls"|"compose --profile") exit 0 ;;
   *) echo "unexpected docker $*" >&2; exit 1 ;;
 esac
 EOF

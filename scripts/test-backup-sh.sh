@@ -39,12 +39,21 @@ printf 'local override\n' > "${stack}/docker-compose.override.yml"
 # Fake docker: volumes are folders under $FAKE/volumes, running services a
 # file, and every compose call is logged.
 FAKE="${tmp}/fake"
-mkdir -p "${FAKE}/volumes/proj_n8n_storage"
+mkdir -p "${FAKE}/volumes/proj_n8n_storage" "${FAKE}/volumes/proj_neo4j_data" \
+  "${FAKE}/volumes/proj_email_index" "${FAKE}/volumes/proj_search_gate_data" \
+  "${FAKE}/volumes/proj_hermes_uv_cache"
 printf 'workflow\n' > "${FAKE}/volumes/proj_n8n_storage/db.sqlite"
+printf 'graph\n' > "${FAKE}/volumes/proj_neo4j_data/store"
+# Compose's volume list: two to back up, three on the skip list, and one
+# (postgres_storage) that was never created.
+printf 'n8n_storage\nemail_index\nneo4j_data\nhermes_uv_cache\npostgres_storage\nsearch_gate_data\n' > "${FAKE}/compose-volumes"
 : > "${FAKE}/running"
 cat > "${tmp}/bin/docker" << 'EOF'
 #!/bin/sh
 echo "$*" >> "${FAKE}/log"
+case "$*" in
+  "compose --profile * config --volumes") [ -f "${FAKE}/compose-down" ] && exit 1; cat "${FAKE}/compose-volumes"; exit 0 ;;
+esac
 case "$1 $2" in
   "compose config") printf '{\n  "name": "proj",\n  "services": {}\n}\n' ;;
   "compose ps") cat "${FAKE}/running" ;;
@@ -71,9 +80,21 @@ listing() { tar -tzf "$1" | sed 's|^\./||; s|/$||' | sort; }
 # --plan writes nothing and names every part.
 out="$(run --plan --json)"
 [ ! -d "${stack}/backups" ] || fail "--plan wrote a backup"
-for p in stack data data-root dir-SIGNAL_CLI_DATA_DIR volume-n8n_storage; do
+for p in stack data data-root dir-SIGNAL_CLI_DATA_DIR volume-n8n_storage volume-neo4j_data; do
   case "$out" in *"\"part\":\"${p}\""*) ;; *) fail "--plan lacks ${p}: $out" ;; esac
 done
+for p in email_index search_gate_data hermes_uv_cache postgres_storage; do
+  case "$out" in *"volume-${p}"*) fail "--plan has volume-${p}: $out" ;; esac
+done
+# Without compose's volume list nothing is written.
+touch "${FAKE}/compose-down"
+set +e
+out="$(run --plan --json 2> /dev/null)"
+rc=$?
+set -e
+rm "${FAKE}/compose-down"
+[ "$rc" = 4 ] || fail "compose config failure: exit $rc ($out)"
+case "$out" in *'"error":"command_failed"'*) ;; *) fail "compose config failure: $out" ;; esac
 case "$out" in *dir-TWENTY_DATA_DIR*) fail "a DATA_DIR inside data/ got its own part" ;; esac
 
 # A running stack is refused without --stop.
@@ -89,10 +110,10 @@ case "$out" in *'"error":"stack_running"'*) ;; *) fail "running stack: $out" ;; 
 out="$(run --stop --json)" || fail "create failed: $out"
 [ "$(sort "${FAKE}/running" | tr '\n' ' ')" = "hermes postgres-db " ] \
   || fail "services not started again: $(cat "${FAKE}/running")"
-case "$out" in *'"phase":"done"'*'"parts":5'*) ;; *) fail "done line: $out" ;; esac
+case "$out" in *'"phase":"done"'*'"parts":6'*) ;; *) fail "done line: $out" ;; esac
 bdir="$(printf '%s' "$out" | sed -n 's/.*"path":"\([^"]*\)".*/\1/p')"
 [ -f "${bdir}/manifest.json" ] || fail "no manifest in ${bdir}"
-python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); assert [p["name"] for p in m["parts"]]==["stack","data","data-root","dir-SIGNAL_CLI_DATA_DIR","volume-n8n_storage"], m' \
+python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); assert [p["name"] for p in m["parts"]]==["stack","data","data-root","dir-SIGNAL_CLI_DATA_DIR","volume-n8n_storage","volume-neo4j_data"], m' \
   "${bdir}/manifest.json" || fail "manifest parts"
 mode="$(stat -c %a "$bdir" 2> /dev/null || stat -f %Lp "$bdir")"
 [ "$mode" = 700 ] || fail "backup dir mode $mode"
@@ -134,7 +155,7 @@ out="$(run restore --from "$bdir" --stop --json)" || fail "restore failed: $out"
 aside="$(find "$stack" -maxdepth 1 -name "data.pre-restore-*" | head -1)"
 { [ -n "$aside" ] && [ "$(cat "${aside}/hermes/state.txt")" = state-v2 ]; } || fail "previous data not kept aside"
 ls "${bdir}"/pre-restore-*/volume-n8n_storage.tar.gz > /dev/null 2>&1 || fail "previous volume not saved"
-case "$out" in *'"phase":"done"'*'"parts":3'*) ;; *) fail "restore done line: $out" ;; esac
+case "$out" in *'"phase":"done"'*'"parts":4'*) ;; *) fail "restore done line: $out" ;; esac
 # A part outside the stack is left alone unless asked for.
 [ "$(cat "${tmp}/signal/account")" = acct-v2 ] || fail "signal store restored without --with-dirs"
 run restore --from "$bdir" --with-dirs --json > /dev/null || fail "restore --with-dirs failed"

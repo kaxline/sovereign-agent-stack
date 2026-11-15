@@ -14,11 +14,12 @@
 #               mail and Messages indexes (mail/, messages/, messages-events/)
 #   data-root   ASSISTANT_DATA_ROOT, when it is not ./data
 #   dir-KEY     a *DATA_DIR in .env that points outside both of the above
-#   volume-NAME each stateful named volume that exists: n8n_storage,
-#               neo4j_data, opencode_config, opencode_data, gptr_outputs,
-#               email_drafts. Caches (hermes_uv_cache, the Actual MCP caches,
-#               search_gate_data, valkey_data, email_index, ollama_data) are
-#               left out.
+#   volume-NAME each named volume in `docker compose --profile '*' config`
+#               that exists, so a disabled add-on's volume is kept too. Left
+#               out: the caches (hermes_uv_cache, actual_mcp_ro_cache,
+#               actual_mcp_rw_cache), neo4j_logs and bitwarden_signin, and
+#               email_index and search_gate_data, which hold mail and agents'
+#               search history and can be rebuilt (SKIP_VOLUMES).
 #
 # Postgres (the db add-on, Vikunja, Twenty) and Hermes' SQLite files live in
 # data/, so a copy is consistent only with the stack stopped. Both commands
@@ -65,7 +66,7 @@ source "${ROOT}/scripts/lib/python.sh"
 source "${ROOT}/scripts/lib/json-lines.sh"
 jl_init
 
-STATEFUL_VOLUMES="n8n_storage neo4j_data opencode_config opencode_data gptr_outputs email_drafts"
+SKIP_VOLUMES="hermes_uv_cache actual_mcp_ro_cache actual_mcp_rw_cache neo4j_logs bitwarden_signin email_index search_gate_data"
 DATA_EXCLUDES="./backups ./worktree-backups ./*.bak-* ./mail ./messages ./messages-events"
 
 CMD=create
@@ -96,7 +97,7 @@ while [[ $# -gt 0 ]]; do
     --with-dirs) WITH_DIRS=1; shift ;;
     --dest) DEST="${2:-}"; shift 2 || fail bad_input "--dest needs a directory" ;;
     --from) FROM="${2:-}"; shift 2 || fail bad_input "--from needs a directory" ;;
-    -h | --help) sed -n '2,48p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h | --help) sed -n '2,52p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) fail bad_input "unknown option $1" ;;
   esac
 done
@@ -230,8 +231,11 @@ collect_parts() {
     done < <(grep -E '^[A-Z][A-Z0-9_]*DATA_DIR=' .env || true)
   fi
 
-  local v vol
-  for v in $STATEFUL_VOLUMES; do
+  local names v vol
+  names="$(docker compose --profile '*' config --volumes 2> /dev/null | LC_ALL=C sort)" \
+    || fail command_failed "docker compose config failed, so the named volumes are unknown"
+  for v in $names; do
+    case " ${SKIP_VOLUMES} " in *" ${v} "*) continue ;; esac
     vol="$(volume_for "$v")"
     [[ -n "$vol" ]] && add_part volume "volume-${v}" "$vol" ""
   done

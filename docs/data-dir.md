@@ -85,7 +85,7 @@ part and a `manifest.json` listing them:
 | `data` | `./data`, without `*.bak-*` folders, `backups/`, `worktree-backups/` and the host mail and Messages indexes (`mail/`, `messages/`, `messages-events/`), which the host helpers rebuild |
 | `data-root` | `ASSISTANT_DATA_ROOT`, when it is not `./data` |
 | `dir-KEY` | each `*DATA_DIR` in `.env` that points outside the stack and both roots, such as `SIGNAL_CLI_DATA_DIR` |
-| `volume-NAME` | the named volumes that hold state: `n8n_storage`, `neo4j_data`, `opencode_config`, `opencode_data`, `gptr_outputs`, `email_drafts` |
+| `volume-NAME` | each named volume in `docker compose --profile '*' config` that exists, so a disabled add-on's volume is kept too. Left out: the caches (`hermes_uv_cache`, `actual_mcp_ro_cache`, `actual_mcp_rw_cache`), `neo4j_logs`, `bitwarden_signin`, and `email_index` and `search_gate_data`, which hold mail and agents' search history and can be rebuilt. `ollama_data` (downloaded models) is included and can be large |
 
 The Postgres of the `db` add-on, Vikunja and Twenty, and Hermes' SQLite files,
 live under `data/`, and a copy of them is consistent only with the stack
