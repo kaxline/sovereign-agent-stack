@@ -18,7 +18,8 @@ the stack under another app.
   written, and the file's mode became 0600.
 - New `scripts/env.sh set|unset KEY [VALUE] [--json]` for the `.env` keys a
   client may change: `LLM_*` (not `LLM_PROXY_ADMIN_TOKEN`), `*_IMAGE`,
-  `*_IMAGE_TAG`, `HERMES_TERMINAL_BACKEND`, `CODING_*` and `CONTEXT_*`. Add-on
+  `*_IMAGE_TAG`, `HERMES_TERMINAL_BACKEND`, `CODING_*`, `CONTEXT_*` and
+  `CALDAV_TZ`. Add-on
   switches and `COMPOSE_PROFILES` are refused with `use_addon_sh`. See
   [docs/extending.md](docs/extending.md#client-writable-env-keys).
 - New `scripts/status.sh --json`: the stack's version, Hermes image pins, the
@@ -54,6 +55,10 @@ the stack under another app.
   [docs/extending.md](docs/extending.md#lock-and-rollback).
 - `make up` and `make ensure-local` run the new `scripts/up.sh`, so hosts without
   `make` can start the stack the same way.
+- New `CALDAV_TZ` sets caldav-mcp's time zone without moving Hermes, the
+  bootstraps or web-browser. It falls back to `TZ`, then UTC, so installs
+  without it are unchanged. `scripts/env.sh` accepts it. See
+  [docs/calendar.md](docs/calendar.md#how-it-works).
 - `install.sh`, `status.sh` and `backup.sh` take no compose-file or project
   flags. The stack runs under its default project name with `.env` as its only
   config; a second copy sets `COMPOSE_PROJECT_NAME` and `COMPOSE_FILE` there

@@ -410,7 +410,8 @@ services:
     environment:
       - CALDAV_MCP_PORT=8080
       - CALDAV_MCP_PATH=/mcp
-      - TZ=${TZ:-UTC}
+      # CALDAV_TZ sets caldav-mcp's zone alone; TZ also moves Hermes and the browser.
+      - TZ=${CALDAV_TZ:-${TZ:-UTC}}
     # No CALDAV_URL/USERNAME/PASSWORD — credentials come per-request from
     # Hermes mcp_servers headers (one connected account → one MCP registration).
     # No host ports — compose-internal only.

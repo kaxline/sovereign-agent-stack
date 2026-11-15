@@ -26,6 +26,8 @@ In WebUI: *What's on my personal calendar today?*
 | `data/addons/caldav/` | The add-on's store: `instances/<slug>.json` holds `url` and `username`, `secrets/<slug>.password` the password (mode 600) |
 | Hermes bootstrap | Registers `mcp_servers.caldav-<slug>` on the default and `browser` profiles through the manifest's `mcp.instances.headers`. URL and username are literal headers. The password header is `${CALDAV_<SLUG>_PASSWORD}`, and the secret is written to that profile's `.env` |
 
+caldav-mcp resolves dates such as "today" in its container's zone: `CALDAV_TZ` in `.env`, else `TZ`, else UTC. Set `CALDAV_TZ` when the calendar's zone should differ from the one Hermes and the browser use (`TZ`), then recreate caldav-mcp (`docker compose up -d caldav-mcp`). A client can set it with `scripts/env.sh set CALDAV_TZ <zone>` ([docs/extending.md](extending.md#client-writable-env-keys)).
+
 Upstream: [gelse/caldav-mcp](https://github.com/gelse/caldav-mcp). Credentials are **not** baked into the sidecar; each Hermes MCP entry sends account headers on every call.
 
 ## Multi-account

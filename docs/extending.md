@@ -727,7 +727,8 @@ not a running stack.
 `scripts/env.sh set KEY VALUE --json` and `scripts/env.sh unset KEY --json`
 change one key in the project `.env`, so an app doesn't depend on that file's
 layout. Allowed keys: `LLM_*` except `LLM_PROXY_ADMIN_TOKEN`, `*_IMAGE`,
-`*_IMAGE_TAG`, `HERMES_TERMINAL_BACKEND`, `CODING_*` and `CONTEXT_*`.
+`*_IMAGE_TAG`, `HERMES_TERMINAL_BACKEND`, `CODING_*`, `CONTEXT_*` and
+`CALDAV_TZ`.
 
 The result is one line, `{"phase":"done","key":K,"changed":true|false}`.
 `changed` is false when the file already said that. A refused call prints an

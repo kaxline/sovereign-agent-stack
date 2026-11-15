@@ -59,7 +59,7 @@ usage() {
 client_writable() {
   case "$1" in
     LLM_PROXY_ADMIN_TOKEN) return 1 ;;
-    LLM_* | *_IMAGE | *_IMAGE_TAG | HERMES_TERMINAL_BACKEND | CODING_* | CONTEXT_*) return 0 ;;
+    LLM_* | *_IMAGE | *_IMAGE_TAG | HERMES_TERMINAL_BACKEND | CODING_* | CONTEXT_* | CALDAV_TZ) return 0 ;;
   esac
   return 1
 }

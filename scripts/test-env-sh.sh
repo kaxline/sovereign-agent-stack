@@ -58,6 +58,8 @@ out="$(run set HERMES_AGENT_IMAGE_TAG v2 --json)"
 run set LLM_MODEL qwen --json > /dev/null || fail "LLM_MODEL refused"
 run set CODING_EXTRA_ROOTS "/a,/b" --json > /dev/null || fail "CODING_ refused"
 run set HERMES_TERMINAL_BACKEND local --json > /dev/null || fail "terminal backend refused"
+run set CALDAV_TZ America/Chicago --json > /dev/null || fail "CALDAV_TZ refused"
+grep -q '^CALDAV_TZ=America/Chicago$' "${stack}/.env" || fail "CALDAV_TZ not written"
 grep -q '^LLM_MODEL=qwen$' "${stack}/.env" || fail "LLM_MODEL not written"
 
 out="$(run unset LLM_MODEL --json)" || fail "unset failed: $out"
