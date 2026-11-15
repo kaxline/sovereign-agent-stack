@@ -29,6 +29,13 @@ the stack under another app.
   (`<account>: synced (1.2s)`), and one when a sync is skipped because another
   sync of that account is already running. A sync that worked used to log
   nothing, so a vault that had not synced could not be told from one that had.
+- The agent's Bitwarden listing no longer comes back empty while the vault
+  syncs. `GET /items` syncs first when the local copy is stale, which takes ten
+  seconds or more against a self-hosted server, and the Hermes-side backend gave
+  that call five seconds and listed nothing when it ran out — so the first
+  `browser_vault` `list` of a turn reported a vault with no logins in it, with
+  nothing in any log. That one route now gets 45 seconds, the deadline the
+  sign-in actions already used.
 
 ### Upgrade steps
 

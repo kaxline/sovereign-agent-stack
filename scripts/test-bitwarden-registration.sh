@@ -273,6 +273,7 @@ import json
 import logging
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 logging.disable(logging.WARNING)
@@ -301,6 +302,9 @@ ITEMS = [
      "origins": ["https://example.com"], "has_totp": False},
 ]
 state = {"mode": "json", "posts": []}
+# Longer than a short client timeout: GET /items syncs the vault first when the
+# local copy is stale, and a real sync of a self-hosted vault takes ~10 s.
+SLOW_ITEMS_SECONDS = 8.0
 
 
 class Fake(BaseHTTPRequestHandler):
@@ -320,6 +324,8 @@ class Fake(BaseHTTPRequestHandler):
             return self._send(404, {"error": "not_found"})
         if state["mode"] == "html":
             return self._send(200, None, b"<html>not json</html>")
+        if state["mode"] == "slow":
+            time.sleep(SLOW_ITEMS_SECONDS)
         return self._send(200, ITEMS)
 
     def do_POST(self):
@@ -392,6 +398,16 @@ with delegated_child_context():
 state["mode"] = "html"
 check("a non-JSON reply lists nothing", backend.list_items() == [])
 check("a non-JSON reply gives no metadata", backend.get_meta("bwbroker:work/1111") is None)
+
+# /items is the one route that may sync before it answers, so its deadline must
+# outlast a sync. At the old 5 s the listing came back empty with nothing logged.
+state["mode"] = "slow"
+started = time.monotonic()
+slow = [m.id for m in backend.list_items()]
+waited = time.monotonic() - started
+check("a listing that waits on a sync still lists its items",
+      slow == ["bwbroker:work/1111", "bwbroker:work/2222"], repr(slow))
+check("it really waited for the slow reply", waited >= SLOW_ITEMS_SECONDS, f"{waited:.1f}s")
 state["mode"] = "json"
 
 

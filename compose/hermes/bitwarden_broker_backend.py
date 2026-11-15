@@ -31,6 +31,12 @@ from agent.vault_store import VaultItemMeta
 
 BROKER_URL = "http://127.0.0.1:8099"
 TIMEOUT = 5
+# GET /items syncs the vault before it answers when the local copy is at least
+# BITWARDEN_ITEMS_SYNC_SECONDS old, and a sync of a self-hosted vault takes ten
+# seconds or more, so that one route gets the sign-in helper's deadline. At
+# TIMEOUT the first listing of a turn timed out and listed nothing, which reads
+# in the conversation as a vault with no logins in it.
+ITEMS_TIMEOUT = 45
 HANDLE_PREFIX = "bwbroker:"
 NO_VALUES = "bwbroker never returns values"
 # Replies are small JSON; /items for a large vault stays well under this.
@@ -130,7 +136,7 @@ class BrokerLoginBackend(LoginBackend):
         if self._cron():
             return []
         try:
-            status, payload = call("GET", "/items", base=self._base)
+            status, payload = call("GET", "/items", base=self._base, timeout=ITEMS_TIMEOUT)
         except BrokerUnavailable:
             return []
         if status != 200 or not isinstance(payload, list):

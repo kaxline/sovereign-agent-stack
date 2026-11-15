@@ -321,6 +321,8 @@ def _bwbroker_fill(handle: str, meta: Any, page_origin: str, task_id: str, field
 def _bwbroker_sign_in_only(out: dict[str, Any]) -> None:
     """Mark each listed bwbroker: item the broker reports as sign-in only: without the item's
     ``agent-in-page-fill`` field, fill_login and enter_code refuse it and sign_in is the way in."""
+    # The status deadline is enough here although /items can sync: the backend listed the items
+    # first, with ITEMS_TIMEOUT, so the local copy is fresh and this call answers from it.
     reply = _bwbroker_call("GET", "/items", timeout=_BWBROKER_STATUS_TIMEOUT)
     entries = reply[1] if reply is not None and reply[0] == 200 else None
     if not isinstance(entries, list):
