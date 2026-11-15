@@ -245,7 +245,7 @@ If a container is killed for memory under heavier use, raise its limit in
 
 | Variable | Default | Effect |
 |---|---|---|
-| `TWENTY_LOCAL_ENABLED` | `0` | Starts the local instance (profile `crm`). While `0`, Hermes gets no entry for local workspaces |
+| `TWENTY_LOCAL_ENABLED` | `0` | Starts the local instance (profile `crm`). While `0`, Hermes gets no entry for local workspaces. The add-on's `local` setting owns it once stored: change it with `scripts/addon.sh configure twenty` and `enable twenty` (see [Turning it off](#turning-it-off)), not by hand |
 | `TWENTY_MCP_ENABLED` | `0` | Registers every stored workspace in Hermes (profile `crm-mcp`, which selects no service). `crm-init` and `crm-add` set it to `1` |
 | `TWENTY_MCP_TIMEOUT`, `TWENTY_MCP_CONNECT_TIMEOUT` | manifest: 60 and 30 | Seconds Hermes waits for a call and for the first connection, on every `crm-*` server |
 | `TWENTY_MULTIWORKSPACE` | `0` | Local instance: one workspace (`0`) or several on subdomains (`1`). Change it with `make crm-mode` |
@@ -275,7 +275,7 @@ The Hermes API keys stay in each profile's `.env`, as every MCP key does.
 
 `make db-backup` covers the shared Postgres, not Twenty. `TWENTY_DATA_DIR`
 holds a live Postgres data folder, so copy it only with the instance stopped
-(`TWENTY_LOCAL_ENABLED=0`, `make up`), or dump it while it runs:
+(see [Turning it off](#turning-it-off)), or dump it while it runs:
 
 ```bash
 docker compose exec -T twenty-db pg_dump -U twenty twenty > twenty-$(date +%F).sql
@@ -289,12 +289,24 @@ and `data/addons/twenty/` are worth keeping too, but can be recreated:
 
 ## Turning it off
 
-Set `TWENTY_LOCAL_ENABLED=0` and run `make up` to stop the local instance;
-its data stays in `TWENTY_DATA_DIR`. The bootstraps that `make up` reruns
-then drop the `crm-*` entries and keys of every local workspace, and keep
-the store. Remote workspaces stay
+Stop the local instance with
+
+```bash
+echo '{"local": false}' | scripts/addon.sh configure twenty
+scripts/addon.sh enable twenty
+```
+
+`enable` sets `TWENTY_LOCAL_ENABLED=0`, syncs `COMPOSE_PROFILES`, stops
+twenty-server, twenty-worker, twenty-db and twenty-redis, and reloads Hermes,
+which drops the `crm-*` entries and keys of every local workspace and keeps
+the store. The data stays in `TWENTY_DATA_DIR`. Remote workspaces stay
 registered, so moving to a hosted Twenty needs only `make crm-add` and this.
-Setting it back to `1` registers the local workspaces again. Set `TWENTY_MCP_ENABLED=0` and run
+`{"local": true}` and `enable twenty` start it and register the local
+workspaces again; `scripts/setup.sh --crm` also turns it on and updates a
+stored setting. Editing `TWENTY_LOCAL_ENABLED` in `.env` by hand works until
+the next `enable twenty`, which writes the stored setting back.
+`disable twenty` keeps the setting, so a later `enable` restores the local
+instance as it was. Set `TWENTY_MCP_ENABLED=0` and run
 `make hermes-reload` to remove every `crm-*` entry and key from Hermes.
 `make crm-remove SLUG=name` and `make hermes-reload` remove one workspace
 only.

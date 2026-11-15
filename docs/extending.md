@@ -845,6 +845,15 @@ and the next `enable` writes the flag from it. A gate flag changed through
 `configure` takes effect at the next `enable`, so call `enable` after
 `configure`. Instance `configure` never writes flags.
 
+Actual's and Twenty's `local` settings are such bools: they own
+`ACTUAL_LOCAL_ENABLED` and `TWENTY_LOCAL_ENABLED`, which start the bundled
+server. To stop Twenty's local instance and keep hosted workspaces registered,
+send `{"local": false}` to `configure twenty`, then run `enable twenty`: it
+syncs `COMPOSE_PROFILES`, stops twenty-server, twenty-worker, twenty-db and
+twenty-redis, and reloads Hermes. While `local` has never been stored, `list`
+shows its default (`false`) even when the flag is on in `.env`, and `enable`
+leaves the flag as it is.
+
 `configure` takes the same lock as `enable` (see [Lock and
 rollback](#lock-and-rollback)), so a call made while another change runs fails
 with `busy`.

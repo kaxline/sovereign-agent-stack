@@ -380,6 +380,14 @@ setup_automation_profile() {
 setup_crm_profile() {
   upsert_env .env TWENTY_LOCAL_ENABLED 1
   upsert_env .env TWENTY_MCP_ENABLED 1
+  # The add-on's local setting owns TWENTY_LOCAL_ENABLED once stored
+  # (addon.sh configure twenty), and addon.sh enable applies it; keep a stored
+  # one in step so the next enable doesn't turn the local instance off again.
+  local settings
+  settings="$(resolve_data_root_path)/addons/twenty/config/settings.env"
+  if [[ -f "$settings" ]] && grep -q '^ADDON_TWENTY_LOCAL=' "$settings"; then
+    upsert_env "$settings" ADDON_TWENTY_LOCAL 1
+  fi
   log "Enabled Twenty CRM (crm profile). After make up: make crm-init. See docs/crm.md"
 }
 

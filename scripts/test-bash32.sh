@@ -81,6 +81,14 @@ check "setup.sh --crm turns on both Twenty flags and generates its secrets" \
   sh -c 'grep -qx "TWENTY_LOCAL_ENABLED=1" .env && grep -qx "TWENTY_MCP_ENABLED=1" .env \
     && grep -qx "TWENTY_MULTIWORKSPACE_BOOL=false" .env && grep -qE "^TWENTY_ENCRYPTION_KEY=.{40,}" .env \
     && grep -qE "^TWENTY_DB_PASSWORD=[0-9a-f]{64}$" .env'
+# shellcheck disable=SC2016  # expanded by the bash under test
+twenty_settings="$(bash -c 'ROOT=$PWD; . scripts/lib/env.sh; . scripts/lib/data-root.sh; resolve_data_root_path')/addons/twenty/config/settings.env"
+mkdir -p "$(dirname "$twenty_settings")"
+printf 'ADDON_TWENTY_LOCAL=0\n' > "$twenty_settings"
+# shellcheck disable=SC2016  # $1 is expanded by sh -c
+check "setup.sh --crm sets a stored Twenty local setting to 1" \
+  sh -c './scripts/setup.sh --non-interactive --workspace demo --crm >/dev/null 2>&1 && grep -qx "ADDON_TWENTY_LOCAL=1" "$1"' sh "$twenty_settings"
+rm -f "$twenty_settings"
 printf 'x\n' > "${tmp}/key"
 sed -i.bak -e 's|^TWENTY_ENCRYPTION_KEY=.*|TWENTY_ENCRYPTION_KEY=|' -e 's|^TWENTY_DB_PASSWORD=.*|TWENTY_DB_PASSWORD=|' .env
 printf 'TWENTY_ENCRYPTION_KEY_FILE=%s\nTWENTY_DB_PASSWORD_FILE=%s\n' "${tmp}/key" "${tmp}/key" >> .env

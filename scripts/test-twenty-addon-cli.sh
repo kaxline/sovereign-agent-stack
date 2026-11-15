@@ -8,7 +8,9 @@
 # connect and disconnect run crm.sh's hooks (a bad value or a local mismatch
 # comes back as crm.sh's error, a schema violation as addon.sh's bad_input);
 # disconnect of a local instance carries the hook's "still exists in Twenty"
-# message; remove --delete-data deletes the instance store and the local data dir, and
+# message; the add-on's local setting owns TWENTY_LOCAL_ENABLED (disable then
+# enable keeps it, configure {"local": false} then enable stops the local
+# services and keeps hosted workspaces); remove --delete-data deletes the instance store and the local data dir, and
 # is refused while Twenty is enabled. No fake key may appear in any output or
 # argv.
 #
@@ -235,6 +237,49 @@ addon disconnect twenty --instance home --json < /dev/null
 expect_rc "disconnect of the local instance exits 0" 0
 t "disconnect of a local instance says it still exists in Twenty" \
   json_ok "done" '"still exist" in last.get("message", "")'
+
+# --- the local setting owns TWENTY_LOCAL_ENABLED -------------------------------------
+# The local instance on, as setup.sh --crm leaves it, with no setting stored.
+# plan-disable stores local=true before zeroing the gate, so plan-enable turns
+# it back on (disable then enable used to lose it).
+sed 's/^TWENTY_LOCAL_ENABLED=.*/TWENTY_LOCAL_ENABLED=1/' "${root}/.env" > "${tmp}/env.local"
+cp "${tmp}/env.local" "${root}/.env"
+(cd "$root" && "$BASH_UNDER_TEST" scripts/sync-profiles.sh > /dev/null)
+t "sync-profiles adds crm with the local instance on" has_line '^COMPOSE_PROFILES=.*,crm\(,\|$\)' "${root}/.env"
+settings="${store}/config/settings.env"
+t "no local setting stored yet" lacks_line '^ADDON_TWENTY_LOCAL=' "$settings" 2> /dev/null
+cli_plan() {
+  python3 "${root}/scripts/lib/addon_cli.py" --addons-dir "${root}/addons" --data-root "$data" "$@" > "${tmp}/plan.json"
+}
+cli_plan plan-disable twenty --flags '{"TWENTY_MCP_ENABLED":"1","TWENTY_LOCAL_ENABLED":"1"}'
+t "plan-disable zeroes TWENTY_LOCAL_ENABLED" json_file "${tmp}/plan.json" 'v["flags"]["TWENTY_LOCAL_ENABLED"] == "0"'
+t "plan-disable stores local=true" has_line '^ADDON_TWENTY_LOCAL=1$' "$settings"
+cli_plan plan-enable twenty
+t "plan-enable after it sets TWENTY_LOCAL_ENABLED=1" json_file "${tmp}/plan.json" 'v["flags"].get("TWENTY_LOCAL_ENABLED") == "1"'
+t "plan-enable lists the four local services under stop" \
+  json_file "${tmp}/plan.json" 'sorted(v["stop"]) == sorted(f"twenty-{s}@TWENTY_LOCAL_ENABLED" for s in ("server", "worker", "db", "redis"))'
+
+# configure {"local": false} on the enabled add-on stores the setting and
+# writes the flag; enable then resyncs COMPOSE_PROFILES, stops the local
+# services and keeps the hosted workspace registered.
+addon_in '{"local":false}' configure twenty
+expect_rc "configure local false exits 0" 0
+t "configure stores local=false" has_line '^ADDON_TWENTY_LOCAL=0$' "$settings"
+t "configure sets TWENTY_LOCAL_ENABLED=0" has_line '^TWENTY_LOCAL_ENABLED=0$' "${root}/.env"
+: > "$STUB_LOG"
+# --reinit runs crm.sh init again, whose done line names the registered workspaces.
+addon enable twenty --reinit --json < /dev/null
+expect_rc "enable after local false exits 0" 0
+t "enable stops twenty-server, twenty-worker, twenty-db and twenty-redis" \
+  has_line 'compose stop twenty-server twenty-worker twenty-db twenty-redis$' "$STUB_LOG"
+t "enable starts no local service" lacks_line "compose up.*twenty-" "$STUB_LOG"
+t "TWENTY_LOCAL_ENABLED stays 0" has_line '^TWENTY_LOCAL_ENABLED=0$' "${root}/.env"
+t "enable drops crm from COMPOSE_PROFILES" lacks_line '^COMPOSE_PROFILES=.*,crm\(,\|$\)' "${root}/.env"
+t "the hosted workspace stays registered" json_ok "done" '"crm-legacy" in last.get("mcp", [])'
+t "the hosted workspace's store stays" present "${store}/instances/legacy.json"
+no_keys "enable after local false"
+# Back to the earlier state for the rest.
+cp "${tmp}/env.saved" "${root}/.env"
 
 # --- disable, then remove --delete-data ---------------------------------------------
 # The local instance's data dir, which remove deletes with the store.

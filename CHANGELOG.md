@@ -66,6 +66,13 @@ the stack under another app.
   bootstraps or web-browser. It falls back to `TZ`, then UTC, so installs
   without it are unchanged. `scripts/env.sh` accepts it. See
   [docs/calendar.md](docs/calendar.md#how-it-works).
+- Twenty has an add-on-level `local` setting that owns `TWENTY_LOCAL_ENABLED`,
+  as Actual's owns `ACTUAL_LOCAL_ENABLED`. `configure twenty` with
+  `{"local": false}` followed by `enable twenty` stops twenty-server,
+  twenty-worker, twenty-db and twenty-redis, syncs `COMPOSE_PROFILES` and keeps
+  hosted workspaces registered. `disable twenty` then `enable twenty` no longer
+  loses `TWENTY_LOCAL_ENABLED=1`. `setup.sh --crm` updates a stored setting. See
+  [docs/crm.md](docs/crm.md#turning-it-off).
 - `install.sh`, `status.sh` and `backup.sh` take no compose-file or project
   flags. The stack runs under its default project name with `.env` as its only
   config; a second copy sets `COMPOSE_PROJECT_NAME` and `COMPOSE_FILE` there
