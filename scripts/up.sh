@@ -15,6 +15,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+# shellcheck source=lib/bitwarden.sh
+source "${ROOT}/scripts/lib/bitwarden.sh"
 
 PREPARE_ONLY=0
 RELOAD=0
@@ -66,5 +68,5 @@ if [[ "$RELOAD" == 1 ]]; then
   docker compose run --rm -e HERMES_BOOTSTRAP_FORCE=1 hermes-api-bootstrap
   docker compose run --rm --no-deps -e HERMES_BOOTSTRAP_FORCE=1 hermes-browser-bootstrap
   docker compose up -d --no-deps --force-recreate hermes
-  ./scripts/vault.sh follow-hermes
+  follow_hermes
 fi

@@ -19,10 +19,11 @@ JL_JSON="${JL_JSON:-0}"
 jl_init() { exec 3>&1; }
 
 # jl_str TEXT: TEXT as a JSON string: backslash and quote escaped, tab to a
-# space, other control characters dropped, cut to 500 bytes.
+# space, other control characters dropped, cut to 500 bytes without leaving
+# half a UTF-8 character.
 jl_str() {
   local s
-  s="$(printf '%s' "$1" | LC_ALL=C tr '\t' ' ' | LC_ALL=C tr -d '\000-\010\012-\037\177' | cut -c1-500)"
+  s="$(printf '%s' "$1" | LC_ALL=C tr '\t' ' ' | LC_ALL=C tr -d '\000-\010\012-\037\177' | LC_ALL=C cut -b1-500 | { iconv -c -f UTF-8 -t UTF-8 2> /dev/null || cat; })"
   s="${s//\\/\\\\}"
   s="${s//\"/\\\"}"
   printf '"%s"' "$s"

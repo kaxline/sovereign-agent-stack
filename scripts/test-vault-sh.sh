@@ -405,9 +405,11 @@ find "$INST" | sort > "$tmp/inst.before"
 run up-hook || fail "up-hook, enabled"
 { [ ! -s "$out" ] && [ ! -s "$STUB/log" ]; } || fail "up-hook prints or runs something with no profile marked"
 find "$INST" | sort | cmp -s - "$tmp/inst.before" || fail "up-hook changed the instance store"
-grep -A5 -E '^up:' "${ROOT}/Makefile" | grep -q 'vault.sh up-hook' || fail "make up calls vault.sh up-hook"
-grep -A5 -E '^up:' "${ROOT}/Makefile" | awk '/vault.sh pre-up/ { p = NR } /docker compose up -d/ { u = NR } END { exit !(p && u && p < u) }' \
-  || fail "make up runs vault.sh pre-up before docker compose up"
+# make up runs scripts/up.sh, which holds the start sequence.
+grep -A2 -E '^up:' "${ROOT}/Makefile" | grep -q 'scripts/up.sh' || fail "make up runs scripts/up.sh"
+grep -q 'vault.sh up-hook' "${ROOT}/scripts/up.sh" || fail "up.sh calls vault.sh up-hook"
+awk '/vault.sh pre-up/ { p = NR } /^docker compose up -d$/ { u = NR } END { exit !(p && u && p < u) }' "${ROOT}/scripts/up.sh" \
+  || fail "up.sh runs vault.sh pre-up before docker compose up"
 
 # --- reload-plugins: the running gateway after a bootstrap changed a profile ---
 mkdir -p "$VAULT_HERMES_DATA_DIR/profiles/browser" "$VAULT_HERMES_DATA_DIR/profiles/api-server"

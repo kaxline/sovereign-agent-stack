@@ -102,9 +102,15 @@ scripts/backup.sh --stop
 scripts/backup.sh restore --from backups/20261115T171503Z-v0.3.17 --stop
 ```
 
-`restore` moves each data directory to `PATH.pre-restore-<timestamp>` before
-unpacking, then moves back what the backup left out (mail indexes, older
-backups). It saves each volume's current contents under
+`restore` unpacks `data` into `./data` and `data-root` into the current
+`ASSISTANT_DATA_ROOT`, wherever the stack was when the backup was made.
+`dir-KEY` parts, which sit outside the stack (such as signal-cli's store, where
+an older copy can break a linked device's sessions), are skipped unless you
+pass `--with-dirs`, and then only while `.env` still names the same path. A
+backup stored inside a directory restore would replace is refused; move it out
+first. Each directory is moved to `PATH.pre-restore-<timestamp>` before
+unpacking, then what the backup left out (mail indexes, older backups) is moved
+back. It saves each volume's current contents under
 `<backup>/pre-restore-<timestamp>/` before emptying it. Nothing is deleted;
 remove the `.pre-restore-*` copies once the restored stack works. The stack
 stays stopped afterwards. `stack.tar.gz` is not restored; unpack it by hand

@@ -2,7 +2,7 @@
 # Back up the stack's data, or restore a backup.
 #
 #   scripts/backup.sh [create] [--dest DIR] [--stop] [--plan] [--json]
-#   scripts/backup.sh restore --from DIR [--stop] [--json]
+#   scripts/backup.sh restore --from DIR [--stop] [--with-dirs] [--json]
 #   common: [--compose-file FILE]... [--project NAME]
 #
 # create writes DIR/<UTC timestamp>-<version>/ (DIR defaults to BACKUP_DIR,
@@ -27,9 +27,14 @@
 # create then starts the services it stopped again, and restore leaves them
 # stopped.
 #
-# restore moves each data directory aside to PATH.pre-restore-<timestamp>
-# before unpacking, then moves the parts create left out (mail indexes, older
-# backups) back from there; it deletes nothing. A volume's current contents are
+# restore unpacks each part into where it belongs now: data into ./data,
+# data-root into the current ASSISTANT_DATA_ROOT, whatever path the backup
+# recorded. dir-KEY parts are outside the stack (signal-cli's store, say) and
+# are restored only with --with-dirs, and only while .env still names the same
+# path. It refuses a backup stored inside a directory it would replace. Each
+# directory is moved aside to PATH.pre-restore-<timestamp> before unpacking,
+# then what create left out (mail indexes, older backups) is moved back from
+# there; it deletes nothing. A volume's current contents are
 # saved to <backup>/pre-restore-<timestamp>/ before it is emptied and unpacked.
 # The stack part is not restored; unpack stack.tar.gz by hand if needed.
 #
@@ -65,6 +70,7 @@ STATEFUL_VOLUMES="n8n_storage neo4j_data opencode_config opencode_data gptr_outp
 DATA_EXCLUDES="./backups ./worktree-backups ./*.bak-* ./mail ./messages ./messages-events"
 
 CMD=create
+WITH_DIRS=0
 STOP=0
 PLAN=0
 DEST=""
@@ -89,6 +95,7 @@ while [[ $# -gt 0 ]]; do
     --json) JL_JSON=1; shift ;;
     --stop) STOP=1; shift ;;
     --plan) PLAN=1; shift ;;
+    --with-dirs) WITH_DIRS=1; shift ;;
     --dest) DEST="${2:-}"; shift 2 || fail bad_input "--dest needs a directory" ;;
     --from) FROM="${2:-}"; shift 2 || fail bad_input "--from needs a directory" ;;
     --compose-file) files+=("${2:-}"); shift 2 || fail bad_input "--compose-file needs a file" ;;
@@ -136,7 +143,7 @@ project_name() {
 # volume_for NAME: the project's volume for compose volume NAME, if it exists.
 volume_for() {
   docker volume ls -q --filter "label=com.docker.compose.project=${PROJECT}" \
-    --filter "label=com.docker.compose.volume=$1" 2> /dev/null | head -1
+    --filter "label=com.docker.compose.volume=$1" 2> /dev/null | head -1 || true
 }
 
 running_services() {
@@ -333,10 +340,11 @@ cmd_create() {
 
 # --- restore ----------------------------------------------------------------
 
-# The top-level entries create leaves out of data/, moved back after a restore.
+# restore_left_out ASIDE DST PATTERNS: moves the top-level entries create left
+# out (PATTERNS, its excludes) from ASIDE back into DST.
 restore_left_out() {
   local aside="$1" dst="$2" pat entry name pats=()
-  read -r -a pats <<< "$DATA_EXCLUDES"
+  read -r -a pats <<< "$3"
   for pat in "${pats[@]}"; do
     pat="${pat#./}"
     for entry in "${aside}"/$pat; do
@@ -355,11 +363,41 @@ cmd_restore() {
   [[ -n "$PROJECT" ]] || fail command_failed "could not work out the compose project name"
   require_stopped > /dev/null || exit $?
 
-  local stamp kind name src file aside vol n=0
+  local stamp kind name src file aside vol n=0 key want excl plan
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  local data_now root_now
+  data_now="${ROOT}/data"
+  root_now="$(resolve_data_root_path)"
+  root_now="${root_now%/}"
+
+  # First pass: where each part goes now, and whether to restore it.
+  plan="$(mktemp)"
   while IFS=$'\t' read -r kind name src file; do
-    [[ "$name" == stack ]] && continue
+    case "$name" in
+      stack) continue ;;
+      data) src="$data_now"; excl="$DATA_EXCLUDES" ;;
+      data-root) src="$root_now"; excl="./backups" ;;
+      dir-*)
+        key="${name#dir-}"
+        want="$(env_get "$key")"
+        [[ -n "$want" ]] && want="$(abs_path "$want")"
+        if [[ "$WITH_DIRS" != 1 ]]; then
+          say "Skipping ${name} (${src}): outside the stack; pass --with-dirs to restore it"
+          continue
+        fi
+        [[ "$want" == "$src" ]] \
+          || fail bad_input "${name} was backed up from ${src}, but .env now says ${key}=${want:-unset}; not restoring it"
+        excl="" ;;
+      *) excl="" ;;
+    esac
     [[ -f "${FROM}/${file}" ]] || fail bad_input "${FROM}/${file} is missing"
+    if [[ "$kind" == dir ]] && inside "$FROM" "$src"; then
+      fail bad_input "the backup is inside ${src}, which restore replaces; move it elsewhere first"
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\n' "$kind" "$name" "$src" "$file" "$excl" >> "$plan"
+  done < "${FROM}/parts.tsv"
+
+  while IFS=$'\t' read -r kind name src file excl; do
     say "Restoring ${name}"
     STEP="$name"
     FAIL_LOG="${FROM}/.log"
@@ -368,6 +406,8 @@ cmd_restore() {
       aside=""
       if [[ -e "$src" ]]; then
         aside="${src}.pre-restore-${stamp}"
+        local k=1
+        while [[ -e "$aside" ]]; do aside="${src}.pre-restore-${stamp}-${k}"; k=$((k + 1)); done
         mv "$src" "$aside" || fail command_failed "cannot move ${src} aside"
       fi
       mkdir -p "$src"
@@ -375,7 +415,7 @@ cmd_restore() {
         [[ "$JL_JSON" == 1 ]] || cat "${FROM}/.log" >&2
         fail command_failed "unpacking ${name} into ${src} failed; the previous copy is ${aside:-absent}"
       }
-      [[ -n "$aside" && "$name" == data ]] && restore_left_out "$aside" "$src"
+      [[ -n "$aside" && -n "$excl" ]] && restore_left_out "$aside" "$src" "$excl"
       jl_setup "$STEP" "done" ",\"aside\":$(jl_str_or_null "$aside")"
     else
       vol="${name#volume-}"
@@ -397,8 +437,8 @@ cmd_restore() {
       jl_setup "$STEP" "done"
     fi
     n=$((n + 1))
-  done < "${FROM}/parts.tsv"
-  rm -f "${FROM}/.log"
+  done < "$plan"
+  rm -f "$plan" "${FROM}/.log"
   STEP=""
   FAIL_LOG=""
   jl_done "\"from\":$(jl_str "$FROM"),\"parts\":${n}"

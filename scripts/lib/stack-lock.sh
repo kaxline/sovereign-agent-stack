@@ -76,7 +76,9 @@ _stack_lock_try() {
   _stack_lock_holder "$target"
   pid="$STACK_LOCK_HOLDER_PID"
   [[ -n "$pid" ]] || return 1
-  kill -0 "$pid" 2> /dev/null && return 1
+  # kill -0 fails for a live process another user owns (an addon.sh under
+  # sudo); ps sees it either way.
+  { kill -0 "$pid" 2> /dev/null || ps -p "$pid" > /dev/null 2>&1; } && return 1
   if age="$(path_age "$guard")" && [[ "$age" -gt 10 ]]; then
     rmdir "$guard" 2> /dev/null || true
   fi

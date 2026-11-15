@@ -30,7 +30,8 @@ the stack under another app.
   any `*DATA_DIR` outside both, and the stateful named volumes, into
   `./backups/<timestamp>-<version>/` (`BACKUP_DIR` or `--dest` to change).
   It refuses while the stack runs unless given `--stop`. Restore moves each
-  data directory aside rather than deleting it. See
+  data directory aside rather than deleting it, and restores parts outside the
+  stack (`SIGNAL_CLI_DATA_DIR`, say) only with `--with-dirs`. See
   [docs/data-dir.md](docs/data-dir.md#backups).
 - Upgrade steps are now hooks. `scripts/upgrade.sh --from VERSION [--json]`
   runs `upgrades/vX.Y.Z.sh` for every release after VERSION, starts the stack

@@ -83,7 +83,7 @@ LOCK=""
 # runs without the stack.
 jstr_raw() {
   local t
-  t="$(printf '%s' "$1" | LC_ALL=C tr '\t' ' ' | LC_ALL=C tr -d '\000-\010\012-\037\177' | cut -c1-500)"
+  t="$(printf '%s' "$1" | LC_ALL=C tr '\t' ' ' | LC_ALL=C tr -d '\000-\010\012-\037\177' | LC_ALL=C cut -b1-500 | { iconv -c -f UTF-8 -t UTF-8 2> /dev/null || cat; })"
   t="${t//\\/\\\\}"
   t="${t//\"/\\\"}"
   printf '"%s"' "$t"
@@ -240,11 +240,12 @@ copy_release() { (cd "$1" && tar -cf - .) | (cd "$DIR" && tar -xf -); }
 # remove_dropped OLD_LIST NEW_LIST: deletes DIR/path for each path in OLD_LIST
 # and not in NEW_LIST. Paths that leave DIR are skipped.
 remove_dropped() {
-  local p
-  LC_ALL=C comm -23 <(LC_ALL=C sort "$1") <(LC_ALL=C sort "$2") | while IFS= read -r p; do
+  local p failed=0
+  while IFS= read -r p; do
     case "/${p}/" in */../* | //*) continue ;; esac
-    rm -f "${DIR}/${p}"
-  done
+    rm -f "${DIR}/${p}" 2> /dev/null || failed=1
+  done < <(LC_ALL=C comm -23 <(LC_ALL=C sort "$1") <(LC_ALL=C sort "$2"))
+  return "$failed"
 }
 
 needs='[]'
@@ -274,7 +275,9 @@ finish() {
 
 if [[ -z "$PREV" ]]; then
   STEP=files
+  emit '{"phase":"setup","step":"files","status":"running"}'
   copy_release "$NEW" || fail command_failed "copying the release into ${DIR} failed"
+  emit '{"phase":"setup","step":"files","status":"done"}'
   step setup bash scripts/setup.sh --non-interactive ${setup_args[@]+"${setup_args[@]}"} \
     || fail command_failed "scripts/setup.sh failed"
   step_done
@@ -289,8 +292,11 @@ fi
 step stop docker compose stop || fail command_failed "stopping the stack failed"
 step_done
 if [[ "$PREV" != "$VERSION" ]]; then
-  step backup bash scripts/backup.sh create --dest "${DIR}/backups" --json \
-    || fail command_failed "the backup failed; nothing was changed"
+  if ! step backup bash scripts/backup.sh create --dest "${DIR}/backups" --json; then
+    (cd "$DIR" && bash scripts/up.sh) > /dev/null 2>&1 \
+      || fail command_failed "the backup failed and starting ${PREV} again failed too; nothing else was changed"
+    fail command_failed "the backup failed; ${PREV} was started again and nothing else was changed"
+  fi
   BACKUP="$(sed -n 's/.*"phase":"done","path":"\([^"]*\)".*/\1/p' "$LOG" | tail -1)"
   [[ -n "$BACKUP" && -f "${BACKUP}/stack.tar.gz" ]] || fail command_failed "the backup reported no stack archive; nothing was changed"
   step_done
@@ -300,11 +306,11 @@ fi
 rollback() {
   [[ -n "$BACKUP" ]] || return 0
   say "Rolling back to ${PREV}"
-  remove_dropped "${NEW}/.stack-files" "${WORK}/old-files"
+  remove_dropped "${NEW}/.stack-files" "${WORK}/old-files" || true
   if tar -xzf "${BACKUP}/stack.tar.gz" -C "$DIR" > /dev/null 2>&1; then
     ROLLED_BACK=true
-    (cd "$DIR" && bash scripts/up.sh) > "${WORK}/rollback-start.log" 2>&1 \
-      || printf 'warning: starting %s again failed; see %s\n' "$PREV" "${WORK}/rollback-start.log" >&2
+    (cd "$DIR" && bash scripts/up.sh) > "${BACKUP}/rollback-start.log" 2>&1 \
+      || printf 'warning: starting %s again failed; see %s\n' "$PREV" "${BACKUP}/rollback-start.log" >&2
   fi
 }
 
@@ -316,7 +322,9 @@ upgrade_fail() {
 
 STEP=files
 cp "${DIR}/.stack-files" "${WORK}/old-files" 2> /dev/null || : > "${WORK}/old-files"
-remove_dropped "${WORK}/old-files" "${NEW}/.stack-files"
+emit '{"phase":"setup","step":"files","status":"running"}'
+remove_dropped "${WORK}/old-files" "${NEW}/.stack-files" \
+  || upgrade_fail command_failed "removing files ${PREV} shipped and ${VERSION} doesn't failed (permissions?)"
 copy_release "$NEW" || upgrade_fail command_failed "copying the release into ${DIR} failed"
 emit '{"phase":"setup","step":"files","status":"done"}'
 

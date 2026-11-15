@@ -115,6 +115,7 @@ listing "${bdir}/volume-n8n_storage.tar.gz" | grep -qx db.sqlite || fail "volume
 printf 'state-v2\n' > "${stack}/data/hermes/state.txt"
 printf 'new\n' > "${stack}/data/hermes/new.txt"
 printf 'memory-v2\n' > "${tmp}/userdata/memory/m.md"
+printf 'acct-v2\n' > "${tmp}/signal/account"
 printf 'workflow-v2\n' > "${FAKE}/volumes/proj_n8n_storage/db.sqlite"
 printf 'hermes\n' > "${FAKE}/running"
 set +e
@@ -133,7 +134,19 @@ out="$(run restore --from "$bdir" --stop --json)" || fail "restore failed: $out"
 aside="$(find "$stack" -maxdepth 1 -name "data.pre-restore-*" | head -1)"
 { [ -n "$aside" ] && [ "$(cat "${aside}/hermes/state.txt")" = state-v2 ]; } || fail "previous data not kept aside"
 ls "${bdir}"/pre-restore-*/volume-n8n_storage.tar.gz > /dev/null 2>&1 || fail "previous volume not saved"
-case "$out" in *'"phase":"done"'*'"parts":4'*) ;; *) fail "restore done line: $out" ;; esac
+case "$out" in *'"phase":"done"'*'"parts":3'*) ;; *) fail "restore done line: $out" ;; esac
+# A part outside the stack is left alone unless asked for.
+[ "$(cat "${tmp}/signal/account")" = acct-v2 ] || fail "signal store restored without --with-dirs"
+run restore --from "$bdir" --with-dirs --json > /dev/null || fail "restore --with-dirs failed"
+[ "$(cat "${tmp}/signal/account")" = acct ] || fail "--with-dirs did not restore the signal store"
+# ... and refused once .env names another path for it.
+sed "s|^SIGNAL_CLI_DATA_DIR=.*|SIGNAL_CLI_DATA_DIR=${tmp}/elsewhere|" "${stack}/.env" > "${tmp}/env.tmp" && mv "${tmp}/env.tmp" "${stack}/.env"
+set +e
+out="$(run restore --from "$bdir" --with-dirs --json 2> /dev/null)"
+rc=$?
+set -e
+[ "$rc" = 2 ] || fail "dir part with a changed .env path: exit $rc ($out)"
+sed "s|^SIGNAL_CLI_DATA_DIR=.*|SIGNAL_CLI_DATA_DIR=${tmp}/signal|" "${stack}/.env" > "${tmp}/env.tmp" && mv "${tmp}/env.tmp" "${stack}/.env"
 
 # A missing volume is created with compose's labels.
 rm -rf "${FAKE}/volumes/proj_n8n_storage"
@@ -141,6 +154,26 @@ run restore --from "$bdir" --json > /dev/null || fail "restore into a new volume
 [ -f "${FAKE}/volumes/proj_n8n_storage/db.sqlite" ] || fail "new volume not filled"
 grep -q 'volume create --label com.docker.compose.project=proj --label com.docker.compose.volume=n8n_storage proj_n8n_storage' "${FAKE}/log" \
   || fail "volume created without compose labels"
+
+# A backup stored inside data/ is refused before anything moves.
+inner="$(run --dest data/backups --json | sed -n 's/.*"path":"\([^"]*\)".*/\1/p')"
+[ -n "$inner" ] || fail "no backup inside data/"
+set +e
+out="$(run restore --from "$inner" --json 2> /dev/null)"
+rc=$?
+set -e
+[ "$rc" = 2 ] || fail "backup inside data/: exit $rc ($out)"
+[ -f "${stack}/data/hermes/state.txt" ] || fail "refused restore moved data/"
+rm -rf "${stack}/data/backups"
+
+# A stack moved after the backup restores into its new place.
+mv "$stack" "${tmp}/moved"
+stack="${tmp}/moved"
+bdir="${stack}/backups/$(basename "$bdir")"
+printf 'moved-v2\n' > "${stack}/data/hermes/state.txt"
+run restore --from "$bdir" --json > /dev/null || fail "restore into a moved stack failed"
+[ "$(cat "${stack}/data/hermes/state.txt")" = state-v1 ] || fail "moved stack's data not restored"
+[ ! -d "${tmp}/stack/data" ] || fail "restore recreated the old stack path"
 
 # Not a backup.
 set +e
