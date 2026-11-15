@@ -264,7 +264,7 @@ def _bwbroker_tab(task_id: str, page_origin: str, accept_kind: str, require_orig
             supervisor = None
     if supervisor is None:
         return {"success": False, "error_type": "supervisor_required",
-                "error": ("Vault fill requires the supervised browser session (direct CDP WebSocket), "
+                "error": ("Bitwarden needs the supervised browser session (direct CDP WebSocket), "
                           "and this task has none. Open the page with browser_exec and retry.")}
     # On failure the previous page session stays; the broker re-reads the tab's URL before it writes.
     focused = supervisor.focus_page(page_origin, accept=_TAB_PROBES.get(accept_kind))
@@ -296,6 +296,13 @@ def _bwbroker_fill(handle: str, meta: Any, page_origin: str, task_id: str, field
         base = vault_redaction_base()
     except Exception:  # health: allow BLE001 -- without the digest overlay a filled value could not be scrubbed
         return json.dumps({"success": False, "error": _BWBROKER_UNAVAILABLE})
+    # Before the tab: a sign-in-only item has one way in, and this is the refusal that names it.
+    # The checks in _bwbroker_tab cannot pass for a browser the broker has no address for
+    # (Boundary's is on host.docker.internal, not loopback), and their refusals read as "retry the
+    # fill", which is advice this item can never satisfy.
+    flags = _bwbroker_sign_in_flags()
+    if flags is not None and flags.get(handle):
+        return json.dumps(_bwbroker_refusal("sign_in_only", handle, meta, None, field))
     tab = _bwbroker_tab(task_id, page_origin, "login" if field == "password" else "otp")
     if isinstance(tab, dict):
         return json.dumps(tab)
@@ -318,17 +325,26 @@ def _bwbroker_fill(handle: str, meta: Any, page_origin: str, task_id: str, field
     return json.dumps(_bwbroker_refusal(_bwbroker_code(payload), handle, meta, found, field))
 
 
-def _bwbroker_sign_in_only(out: dict[str, Any]) -> None:
-    """Mark each listed bwbroker: item the broker reports as sign-in only: without the item's
-    ``agent-in-page-fill`` field, fill_login and enter_code refuse it and sign_in is the way in."""
-    # The status deadline is enough here although /items can sync: the backend listed the items
-    # first, with ITEMS_TIMEOUT, so the local copy is fresh and this call answers from it.
+def _bwbroker_sign_in_flags() -> Optional[Dict[str, bool]]:
+    """``{handle: sign_in_only}`` as the broker reports it, or None when it cannot be read.
+
+    The status deadline is enough here although /items can sync: both callers run after the backend
+    listed the items, with ITEMS_TIMEOUT, so the local copy is fresh and this call answers from it.
+    None leaves the caller with the behaviour it had before this lookup existed."""
     reply = _bwbroker_call("GET", "/items", timeout=_BWBROKER_STATUS_TIMEOUT)
     entries = reply[1] if reply is not None and reply[0] == 200 else None
     if not isinstance(entries, list):
+        return None
+    return {e["handle"]: bool(e.get("sign_in_only")) for e in entries
+            if isinstance(e, dict) and isinstance(e.get("handle"), str)}
+
+
+def _bwbroker_sign_in_only(out: dict[str, Any]) -> None:
+    """Mark each listed bwbroker: item the broker reports as sign-in only: without the item's
+    ``agent-in-page-fill`` field, fill_login and enter_code refuse it and sign_in is the way in."""
+    flags = _bwbroker_sign_in_flags()
+    if flags is None:
         return
-    flags = {e["handle"]: bool(e.get("sign_in_only")) for e in entries
-             if isinstance(e, dict) and isinstance(e.get("handle"), str)}
     for item in out.get("items") or ():
         if isinstance(item, dict) and item.get("handle") in flags:
             item["sign_in_only"] = flags[item["handle"]]

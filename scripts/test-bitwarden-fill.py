@@ -68,6 +68,17 @@ def test_signin_patch_touches_one_upstream_file() -> None:
     expect(edited <= {"browser_vault_tool.py", "vault_bitwarden_signin.py"},
            f"only browser_vault_tool.py is edited, not {sorted(edited)}")
 
+def test_the_shared_tab_refusal_fits_both_callers() -> None:
+    """_bwbroker_tab serves fill and sign_in, so its supervisor_required text must suit both.
+
+    vault_bitwarden_signin._tab calls it for a sign-in; text naming a fill sent the agent back to
+    fill_login instead of sign_in."""
+    patch = (ROOT / "compose" / "hermes" / "patch-bitwarden-broker-fill.py").read_text()
+    block = patch[patch.index("def _bwbroker_tab("):patch.index("def _bwbroker_fill(")]
+    expect("Vault fill requires" not in block,
+           "the supervisor_required text does not describe the call as a fill")
+
+
 IMAGE_DRIVER = r'''
 import json, logging, os, secrets, socket, string, subprocess, sys, tempfile, threading, time, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -190,10 +201,16 @@ PASSWORD = "Pw+" + "".join(secrets.choice(string.ascii_letters + string.digits) 
 TOTP = "".join(secrets.choice(string.digits) for _ in range(6))
 H_OTP, H_PLAIN = "bwbroker:acme/item-otp", "bwbroker:acme/item-plain"
 H_ELSEWHERE = "bwbroker:acme/item-elsewhere"
+H_SIO = "bwbroker:acme/item-signin-only"
 ELSEWHERE = "https://elsewhere.invalid"
 ITEMS = [
+    # in-page fillable: its /fill succeeds below, and the broker derives the listing flag from the
+    # same in_page_fill that gates /fill, so it cannot report this one as sign-in only.
     {"handle": H_OTP, "label": "Acme", "username": "agent@example.com", "origins": [ORIGIN], "has_totp": True,
-     "sign_in_only": True},
+     "sign_in_only": False},
+    # Sign-in only on the open page's origin, so a fill reaches the item's own policy.
+    {"handle": H_SIO, "label": "Acme SSO", "username": "agent4@example.com", "origins": [ORIGIN],
+     "has_totp": False, "sign_in_only": True},
     {"handle": H_PLAIN, "label": "Acme plain", "username": "agent2@example.com", "origins": [ORIGIN],
      "has_totp": False, "sign_in_only": False},
     # No tab is ever opened on this origin, so sign_in must refuse before the broker is called.
@@ -402,7 +419,7 @@ broker = ThreadingHTTPServer(("127.0.0.1", 8099), Broker)
 threading.Thread(target=broker.serve_forever, daemon=True).start()
 listing = tool(bvt.browser_vault_list)
 assert listing["bitwarden"] == {"locked": ["home"], "unlock": "make vault-unlock SLUG=<slug>"}, listing
-assert {i["handle"] for i in listing["items"]} == {"vault_abc", H_OTP, H_PLAIN, H_ELSEWHERE}, listing
+assert {i["handle"] for i in listing["items"]} == {"vault_abc", H_OTP, H_SIO, H_PLAIN, H_ELSEWHERE}, listing
 set_backends(Local())
 assert "bitwarden" not in tool(bvt.browser_vault_list), "no hint without the bwbroker backend"
 set_backends(Local(), BW)
@@ -519,10 +536,28 @@ res = tool(bvt.browser_vault_enter_code, H_OTP, task_id=TASK)
 assert res == {"success": False, "error_type": "sign_in_only", "error": SIGN_IN_ONLY}, res
 STATE["fill_mode"] = "real"
 
+# --- test_sign_in_only_survives_a_tab_refusal -------------------------------
+# Boundary's browser is on host.docker.internal, where _bwbroker_cdp_port finds no loopback port
+# and the tab helper refuses. The item's own sign_in_only is still what the agent must be told:
+# it is the one refusal that names sign_in, and a plumbing error sends the agent back to a fill.
+# fill_mode stays "real", so only the gate can produce this refusal, not the stub's 409.
+_real_tab = bvt._bwbroker_tab
+bvt._bwbroker_tab = lambda *a, **k: {"success": False, "error_type": "cdp_unavailable",
+                                     "error": bvt._BWBROKER_ERRORS["cdp_unavailable"]}
+try:
+    res = tool(bvt.browser_vault_fill, H_SIO, task_id=TASK)
+    assert res == {"success": False, "error_type": "sign_in_only", "error": SIGN_IN_ONLY}, res
+    # A fillable item keeps the plumbing refusal: for it the tab error is the real answer.
+    res = tool(bvt.browser_vault_fill, H_PLAIN, task_id=TASK)
+    assert res["error_type"] == "cdp_unavailable", res
+finally:
+    bvt._bwbroker_tab = _real_tab
+
 # --- test_list_sign_in_only_flag --------------------------------------------
 listing = tool(bvt.browser_vault_list)
 flags = {i["handle"]: i.get("sign_in_only") for i in listing["items"]}
-assert flags == {"vault_abc": None, H_OTP: True, H_PLAIN: False, H_ELSEWHERE: True}, flags
+assert flags == {"vault_abc": None, H_OTP: False, H_SIO: True, H_PLAIN: False,
+                 H_ELSEWHERE: True}, flags
 
 # --- test_signin_in_cron_turn_unknown_handle --------------------------------
 # The broker holds one session for the whole stack, bound to no task, so a cron turn must not
@@ -617,6 +652,7 @@ os.write(1, b"image ok\n")
 def main() -> None:
     test_overlay_order()
     test_signin_patch_touches_one_upstream_file()
+    test_the_shared_tab_refusal_fits_both_callers()
     print("ok")
     driver = f"EARLIER_VAULT_OVERLAYS = {EARLIER_VAULT_OVERLAYS!r}\n" + IMAGE_DRIVER
     hermes_image.maybe_run(driver, mounts=[(str(BROKER_SRC), "/broker-src")])

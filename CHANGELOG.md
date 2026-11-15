@@ -36,6 +36,17 @@ the stack under another app.
   `browser_vault` `list` of a turn reported a vault with no logins in it, with
   nothing in any log. That one route now gets 45 seconds, the deadline the
   sign-in actions already used.
+- A sign-in-only login now refuses a `fill` with `sign_in_only` even when the
+  broker has no way to reach the agent's browser. The refusal is the one that
+  names `sign_in`, and it was unreachable: `_bwbroker_fill` ran its tab and CDP
+  checks first, so where those fail the agent was told to open the page and
+  retry a fill instead — advice a sign-in-only item can never satisfy. Seen live
+  from a Boundary chat, where the agent tried `fill` twice and never reached
+  `sign_in`. A login that is in-page fillable still gets the tab error, which is
+  the real answer for it.
+- The refusal when a task has no supervised browser session no longer describes
+  the call as a fill. `sign_in` goes through the same helper, so the text now
+  names neither action.
 
 ### Upgrade steps
 
