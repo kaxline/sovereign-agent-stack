@@ -108,6 +108,7 @@ scripts/test-search-gate.py                     ci
 scripts/test-searxng-pause-browser.py           image
 scripts/test-send-message-tool.py               image
 scripts/test-sql-mcp-registration.sh            ci
+scripts/test-status-sh.sh                       ci
 scripts/test-sync-n8n-credentials.sh            ci
 scripts/test-sync-profiles.sh                   ci
 scripts/test-synthetic-mail.py

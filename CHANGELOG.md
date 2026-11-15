@@ -21,6 +21,10 @@ the stack under another app.
   `*_IMAGE_TAG`, `HERMES_TERMINAL_BACKEND`, `CODING_*` and `CONTEXT_*`. Add-on
   switches and `COMPOSE_PROFILES` are refused with `use_addon_sh`. See
   [docs/extending.md](docs/extending.md#client-writable-env-keys).
+- New `scripts/status.sh --json`: the stack's version, Hermes image pins, the
+  host's OS, and each enabled service's state and published ports. Read-only,
+  and it works with the stack stopped. See
+  [docs/extending.md](docs/extending.md#stack-status).
 
 ## v0.3.16 — 2026-11-14
 

@@ -642,6 +642,37 @@ failed attempt. They park the same way, so the reconnect call and
 This is an overlay on the pinned Hermes image (`patch-mcp-wake.py`). The route,
 key and response fields stay stable across pin moves. Changes are additive.
 
+## Stack status
+
+`scripts/status.sh --json` prints one object:
+
+```json
+{
+  "version": "v0.3.17",
+  "images": {"hermes_agent": "v0.23.1", "hermes_webui": "0.52.544"},
+  "project": "boundary-assistant",
+  "host": {"os": "linux", "arch": "x86_64"},
+  "engine": true,
+  "services": [
+    {"name": "hermes", "state": "running", "health": "healthy",
+     "ports": [{"host_ip": "127.0.0.1", "host": 8642, "container": 8642, "protocol": "tcp"}]}
+  ]
+}
+```
+
+`version` is the `.stack-version` file a release tarball carries, else
+`git describe --tags` in a checkout, else `unknown`. `services` lists the
+services `COMPOSE_PROFILES` enables. `state` is `running`, `stopped`,
+`restarting` or `paused`, or `unknown` for every service when the container
+engine doesn't answer, which also sets `engine` to false. A running service's
+ports are the ones the engine published; a stopped one's come from the compose
+config. `health` appears when the service has a healthcheck and is running.
+
+The script reads no secrets and changes nothing. It needs the compose CLI but
+not a running stack. `--compose-file FILE` (repeatable) and `--project NAME`
+set `COMPOSE_FILE` and `COMPOSE_PROJECT_NAME` for an app that runs the stack
+under its own overlay; the same variables in the environment work too.
+
 ## Client-writable `.env` keys
 
 `scripts/env.sh set KEY VALUE --json` and `scripts/env.sh unset KEY --json`
