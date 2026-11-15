@@ -690,8 +690,7 @@ leaves the new stack running. `needs_user` lists what only the user can do after
 show it to them.
 
 Published ports bind 127.0.0.1, as in `docker-compose.yml`; forward them over
-SSH. `--compose-file` and `--project` work as in [stack status](#stack-status).
-The `install-test` workflow (run by hand) installs and upgrades on Ubuntu
+SSH. The `install-test` workflow (run by hand) installs and upgrades on Ubuntu
 24.04.
 
 ## Stack status
@@ -721,9 +720,7 @@ ports are the ones the engine published; a stopped one's come from the compose
 config. `health` appears when the service has a healthcheck and is running.
 
 The script reads no secrets and changes nothing. It needs the compose CLI but
-not a running stack. `--compose-file FILE` (repeatable) and `--project NAME`
-set `COMPOSE_FILE` and `COMPOSE_PROJECT_NAME` for an app that runs the stack
-under its own overlay; the same variables in the environment work too.
+not a running stack.
 
 ## Client-writable `.env` keys
 

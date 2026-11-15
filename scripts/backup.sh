@@ -3,7 +3,6 @@
 #
 #   scripts/backup.sh [create] [--dest DIR] [--stop] [--plan] [--json]
 #   scripts/backup.sh restore --from DIR [--stop] [--with-dirs] [--json]
-#   common: [--compose-file FILE]... [--project NAME]
 #
 # create writes DIR/<UTC timestamp>-<version>/ (DIR defaults to BACKUP_DIR,
 # else ./backups), holding one .tar.gz per part, parts.tsv and manifest.json:
@@ -75,7 +74,6 @@ STOP=0
 PLAN=0
 DEST=""
 FROM=""
-files=()
 if [[ $# -gt 0 && ( "$1" == create || "$1" == restore ) ]]; then
   CMD="$1"
   shift
@@ -98,16 +96,10 @@ while [[ $# -gt 0 ]]; do
     --with-dirs) WITH_DIRS=1; shift ;;
     --dest) DEST="${2:-}"; shift 2 || fail bad_input "--dest needs a directory" ;;
     --from) FROM="${2:-}"; shift 2 || fail bad_input "--from needs a directory" ;;
-    --compose-file) files+=("${2:-}"); shift 2 || fail bad_input "--compose-file needs a file" ;;
-    --project) export COMPOSE_PROJECT_NAME="${2:-}"; shift 2 || fail bad_input "--project needs a name" ;;
-    -h | --help) sed -n '2,49p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h | --help) sed -n '2,48p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) fail bad_input "unknown option $1" ;;
   esac
 done
-if [[ ${#files[@]} -gt 0 ]]; then
-  COMPOSE_FILE="$(IFS=:; printf '%s' "${files[*]}")"
-  export COMPOSE_FILE
-fi
 
 abs_path() {
   local p="$1"

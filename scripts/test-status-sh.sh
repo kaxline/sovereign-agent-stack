@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # scripts/status.sh with a fake docker: stopped, running, engine down, a
-# tarball install's .stack-version, and --compose-file/--project reaching
-# compose.
+# tarball install's .stack-version, and the removed overlay flags refused.
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -18,13 +17,11 @@ cp "${ROOT}/scripts/lib/env.sh" "${ROOT}/scripts/lib/python.sh" \
 cp "${ROOT}/docker-compose.yml" "${stack}/"
 printf 'HERMES_AGENT_IMAGE_TAG=v9.9.9\n' > "${stack}/.env"
 
-# The fake docker answers from files under $FAKE and records the compose
-# environment it saw.
+# The fake docker answers from files under $FAKE.
 FAKE="${tmp}/fake"
 mkdir -p "$FAKE"
 cat > "${tmp}/bin/docker" << 'EOF'
 #!/bin/sh
-printf '%s|%s\n' "${COMPOSE_FILE:-}" "${COMPOSE_PROJECT_NAME:-}" > "${FAKE}/env"
 case "$1 $2" in
   "info "*) [ -f "${FAKE}/engine-down" ] && exit 1; exit 0 ;;
   "compose config") cat "${FAKE}/config.json" ;;
@@ -86,12 +83,14 @@ out="$(run --json)"
   || fail "engine down states: $out"
 rm "${FAKE}/engine-down"
 
-# A tarball install's version stamp, and the overlay flags.
+# A tarball install's version stamp.
 printf 'v0.3.17\n' > "${stack}/.stack-version"
-out="$(run --json --compose-file docker-compose.yml --compose-file docker-compose.boundary.yml --project boundary-assistant)"
+out="$(run --json)"
 [ "$(printf '%s' "$out" | field 'd["version"]')" = v0.3.17 ] || fail "stamp version: $out"
-[ "$(cat "${FAKE}/env")" = "docker-compose.yml:docker-compose.boundary.yml|boundary-assistant" ] \
-  || fail "compose env: $(cat "${FAKE}/env")"
+
+# The overlay flags are gone: the stack runs with its default project and .env.
+if run --json --project boundary-assistant > /dev/null 2>&1; then fail "--project accepted"; fi
+if run --json --compose-file docker-compose.yml > /dev/null 2>&1; then fail "--compose-file accepted"; fi
 
 # JSON only.
 if run > /dev/null 2>&1; then fail "status without --json succeeded"; fi

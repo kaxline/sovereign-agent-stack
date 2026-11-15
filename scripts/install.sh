@@ -2,8 +2,7 @@
 # Install the stack at a release into a folder, or upgrade that install.
 #
 #   scripts/install.sh --version vX.Y.Z --dir DIR
-#       [--tarball FILE [--sha256 HEX]] [--compose-file FILE]... [--project NAME]
-#       [--json] [-- SETUP_ARGS...]
+#       [--tarball FILE [--sha256 HEX]] [--json] [-- SETUP_ARGS...]
 #
 # Self-contained: it can run on its own, copied to a host that has no stack
 # yet. It needs bash, tar, gzip, sha256sum or shasum, the Docker CLI with
@@ -32,9 +31,6 @@
 # scripts/upgrade.sh).
 #
 # Published ports bind 127.0.0.1, as docker-compose.yml has them.
-# --compose-file and --project set COMPOSE_FILE and COMPOSE_PROJECT_NAME for
-# every step, for an app that runs the stack under its own overlay.
-#
 # --json prints JSON lines in addon.sh's shapes (docs/extending.md "JSON
 # lines"): {"phase":"setup","step":S,"status":"running"|"done"} per step,
 # then {"phase":"done","version":V,"previous_version":P|null,"fresh":B,
@@ -50,7 +46,6 @@ DIR=""
 TARBALL=""
 SHA=""
 JSON=0
-files=()
 setup_args=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -58,18 +53,12 @@ while [[ $# -gt 0 ]]; do
     --dir) DIR="${2:-}"; shift 2 || shift ;;
     --tarball) TARBALL="${2:-}"; shift 2 || shift ;;
     --sha256) SHA="${2:-}"; shift 2 || shift ;;
-    --compose-file) files+=("${2:-}"); shift 2 || shift ;;
-    --project) export COMPOSE_PROJECT_NAME="${2:-}"; shift 2 || shift ;;
     --json) JSON=1; shift ;;
     --) shift; setup_args=("$@"); break ;;
-    -h | --help) sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h | --help) sed -n '2,41p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) printf 'error: unknown option %s\n' "$1" >&2; exit 2 ;;
   esac
 done
-if [[ ${#files[@]} -gt 0 ]]; then
-  COMPOSE_FILE="$(IFS=:; printf '%s' "${files[*]}")"
-  export COMPOSE_FILE
-fi
 
 exec 3>&1
 STEP=""

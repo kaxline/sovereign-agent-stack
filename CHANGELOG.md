@@ -54,6 +54,10 @@ the stack under another app.
   [docs/extending.md](docs/extending.md#lock-and-rollback).
 - `make up` and `make ensure-local` run the new `scripts/up.sh`, so hosts without
   `make` can start the stack the same way.
+- `install.sh`, `status.sh` and `backup.sh` take no compose-file or project
+  flags. The stack runs under its default project name with `.env` as its only
+  config; a second copy sets `COMPOSE_PROJECT_NAME` and `COMPOSE_FILE` there
+  ([docs/extending.md](docs/extending.md#run-a-second-copy)).
 
 ## v0.3.16 — 2026-11-14
 

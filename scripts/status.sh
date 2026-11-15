@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 # The stack's version, image pins, services and published ports, as JSON.
 #
-#   scripts/status.sh --json [--compose-file FILE]... [--project NAME]
+#   scripts/status.sh --json
 #
 # Read-only, and it works with the stack stopped. It needs the compose CLI;
 # with the container engine down, every service's state is "unknown" and
 # "engine" is false. Services are the ones COMPOSE_PROFILES enables.
 #
 # A running service's ports are what the engine published; a stopped one's come
-# from the compose config. --compose-file and --project set COMPOSE_FILE and
-# COMPOSE_PROJECT_NAME for an app that runs the stack under its own overlay.
+# from the compose config.
 #
 # The version is the .stack-version file a release tarball carries, else
 # `git describe --tags` in a checkout, else "unknown". The JSON is built by
@@ -27,21 +26,14 @@ source "${ROOT}/scripts/lib/env.sh"
 source "${ROOT}/scripts/lib/python.sh"
 
 JSON=0
-files=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --json) JSON=1; shift ;;
-    --compose-file) files+=("$2"); shift 2 ;;
-    --project) export COMPOSE_PROJECT_NAME="$2"; shift 2 ;;
-    -h | --help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h | --help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) printf 'error: unknown option %s\n' "$1" >&2; exit 2 ;;
   esac
 done
 [[ "$JSON" == 1 ]] || { printf 'error: status.sh prints JSON only; pass --json\n' >&2; exit 2; }
-if [[ ${#files[@]} -gt 0 ]]; then
-  COMPOSE_FILE="$(IFS=:; printf '%s' "${files[*]}")"
-  export COMPOSE_FILE
-fi
 
 stack_version() {
   local v=""
