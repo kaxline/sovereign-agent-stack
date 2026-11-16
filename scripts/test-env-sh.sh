@@ -23,8 +23,16 @@ TMPDIR="${tmp}/elsewhere-does-not-exist" upsert_env "$f" B 3 \
 [ "$(cat "$f")" = "$(printf 'A=1\nB=3')" ] || fail "upsert_env replace: $(cat "$f")"
 mode="$(stat -c %a "$f" 2>/dev/null || stat -f %Lp "$f")"
 [ "$mode" = 640 ] || fail "upsert_env kept mode 640, got $mode"
+ino_before="$(ls -i "$f" | awk '{print $1}')"
 upsert_env "$f" C 4
 [ "$(tail -1 "$f")" = "C=4" ] || fail "upsert_env append"
+# An append replaces the file too, rather than writing into it.
+[ "$(ls -i "$f" | awk '{print $1}')" != "$ino_before" ] || fail "upsert_env append wrote in place"
+
+# Scripts use lib/env.sh's upsert_env; a local copy is how in-place appends
+# to .env came back before.
+copies="$(grep -l '^upsert_env() {' "${ROOT}"/scripts/*.sh | grep -v '/test-' || true)"
+[ -z "$copies" ] || fail "scripts define their own upsert_env: ${copies}"
 remove_env "$f" A
 grep -q '^A=' "$f" && fail "remove_env left A"
 [ -z "$(find "$tmp" -name '.a.env.*')" ] || fail "temp file left behind"

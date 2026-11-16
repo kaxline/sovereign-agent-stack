@@ -25,14 +25,37 @@ printf 'state-v1\n' > "${stack}/data/hermes/state.txt"
 printf 'pg-v1\n' > "${stack}/data/db/PG_VERSION"
 printf 'index\n' > "${stack}/data/mail/index.txt"
 printf 'old\n' > "${stack}/data/hermes.bak-old/x"
-mkdir -p "${tmp}/userdata/memory" "${tmp}/signal"
+mkdir -p "${tmp}/userdata/memory" "${tmp}/signal" "${tmp}/vikunja-files" "${tmp}/mail-index"
 printf 'memory-v1\n' > "${tmp}/userdata/memory/m.md"
 printf 'acct\n' > "${tmp}/signal/account"
+printf 'attachment\n' > "${tmp}/vikunja-files/1"
+printf 'index\n' > "${tmp}/mail-index/i"
 cat > "${stack}/.env" << EOF
 ASSISTANT_DATA_ROOT=${tmp}/userdata
 SIGNAL_CLI_DATA_DIR=${tmp}/signal
 TWENTY_DATA_DIR=./data/twenty
+VIKUNJA_FILES_DIR=${tmp}/vikunja-files
+MAIL_INDEX_DIR=${tmp}/mail-index
+LIGHTRAG_KEY=${tmp}/vikunja-files
 SECRET_TOKEN=s3cret
+EOF
+# Bind sources from .env: VIKUNJA_FILES_DIR is found here though its name is no
+# *DATA_DIR; MAIL_INDEX_DIR is on the skip list; an environment entry is no
+# bind mount.
+mkdir -p "${stack}/compose/vikunja"
+cat > "${stack}/docker-compose.yml" << 'EOF'
+services:
+  mail:
+    volumes:
+      - ${MAIL_INDEX_DIR:-./data/mail}:/data/mail
+    environment:
+      - ${LIGHTRAG_KEY:-x}
+EOF
+cat > "${stack}/compose/vikunja/compose.yml" << 'EOF'
+services:
+  vikunja:
+    volumes:
+      - "${VIKUNJA_FILES_DIR:-./data/vikunja/files}:/app/vikunja/files"
 EOF
 printf 'local override\n' > "${stack}/docker-compose.override.yml"
 
@@ -80,12 +103,13 @@ listing() { tar -tzf "$1" | sed 's|^\./||; s|/$||' | sort; }
 # --plan writes nothing and names every part.
 out="$(run --plan --json)"
 [ ! -d "${stack}/backups" ] || fail "--plan wrote a backup"
-for p in stack data data-root dir-SIGNAL_CLI_DATA_DIR volume-n8n_storage volume-neo4j_data; do
+for p in stack data data-root dir-SIGNAL_CLI_DATA_DIR dir-VIKUNJA_FILES_DIR volume-n8n_storage volume-neo4j_data; do
   case "$out" in *"\"part\":\"${p}\""*) ;; *) fail "--plan lacks ${p}: $out" ;; esac
 done
 for p in email_index search_gate_data hermes_uv_cache postgres_storage; do
   case "$out" in *"volume-${p}"*) fail "--plan has volume-${p}: $out" ;; esac
 done
+case "$out" in *dir-MAIL_INDEX_DIR* | *dir-LIGHTRAG_KEY*) fail "--plan has a skipped or non-bind key: $out" ;; esac
 # Without compose's volume list nothing is written.
 touch "${FAKE}/compose-down"
 set +e
@@ -110,10 +134,10 @@ case "$out" in *'"error":"stack_running"'*) ;; *) fail "running stack: $out" ;; 
 out="$(run --stop --json)" || fail "create failed: $out"
 [ "$(sort "${FAKE}/running" | tr '\n' ' ')" = "hermes postgres-db " ] \
   || fail "services not started again: $(cat "${FAKE}/running")"
-case "$out" in *'"phase":"done"'*'"parts":6'*) ;; *) fail "done line: $out" ;; esac
+case "$out" in *'"phase":"done"'*'"parts":7'*) ;; *) fail "done line: $out" ;; esac
 bdir="$(printf '%s' "$out" | sed -n 's/.*"path":"\([^"]*\)".*/\1/p')"
 [ -f "${bdir}/manifest.json" ] || fail "no manifest in ${bdir}"
-python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); assert [p["name"] for p in m["parts"]]==["stack","data","data-root","dir-SIGNAL_CLI_DATA_DIR","volume-n8n_storage","volume-neo4j_data"], m' \
+python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); assert [p["name"] for p in m["parts"]]==["stack","data","data-root","dir-SIGNAL_CLI_DATA_DIR","dir-VIKUNJA_FILES_DIR","volume-n8n_storage","volume-neo4j_data"], m' \
   "${bdir}/manifest.json" || fail "manifest parts"
 mode="$(stat -c %a "$bdir" 2> /dev/null || stat -f %Lp "$bdir")"
 [ "$mode" = 700 ] || fail "backup dir mode $mode"

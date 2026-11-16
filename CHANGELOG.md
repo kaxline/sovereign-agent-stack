@@ -11,8 +11,10 @@ the stack under another app.
 ### Changes
 
 - `.env` writes are atomic. `upsert_env` and `remove_env` (`scripts/lib/env.sh`)
-  and the scripts with their own copies write a temp file beside the target and
-  rename it, keeping the file's mode and, for a symlinked `.env`, the link.
+  write a temp file beside the target and rename it, for a new key as well as
+  a changed one, and keep the file's mode and, for a symlinked `.env`, the
+  link. The scripts that kept their own copies (`setup.sh`, `data-dir.sh`,
+  `corpus.sh` and others) now use them; those appended a new key in place.
   Before, the temp file was in `$TMPDIR`, so on a host where `/tmp` is another
   filesystem the final `mv` was a copy that a stopped run could leave half
   written, and the file's mode became 0600.
@@ -28,7 +30,9 @@ the stack under another app.
   [docs/extending.md](docs/extending.md#stack-status).
 - New `scripts/backup.sh` (`create`, `restore --from DIR`): archives the stack
   directory with its `.env` and local configs, `data/`, `ASSISTANT_DATA_ROOT`,
-  any `*DATA_DIR` outside both, and every named volume in
+  each directory outside both that a compose bind mount takes from `.env`
+  (`VIKUNJA_FILES_DIR`, `SIGNAL_CLI_DATA_DIR` and the like, not the mail and
+  Messages indexes or OpenCode's workspace), and every named volume in
   `docker compose --profile '*' config` except caches, `neo4j_logs`,
   `bitwarden_signin`, `email_index` and `search_gate_data`, into
   `./backups/<timestamp>-<version>/` (`BACKUP_DIR` or `--dest` to change).
@@ -71,7 +75,8 @@ the stack under another app.
   `{"local": false}` followed by `enable twenty` stops twenty-server,
   twenty-worker, twenty-db and twenty-redis, syncs `COMPOSE_PROFILES` and keeps
   hosted workspaces registered. `disable twenty` then `enable twenty` no longer
-  loses `TWENTY_LOCAL_ENABLED=1`. `setup.sh --crm` updates a stored setting. See
+  loses `TWENTY_LOCAL_ENABLED=1`. `setup.sh --crm` updates a stored setting,
+  and `setup.sh --budget` now does the same for Actual's. See
   [docs/crm.md](docs/crm.md#turning-it-off).
 - `install.sh`, `status.sh` and `backup.sh` take no compose-file or project
   flags. The stack runs under its default project name with `.env` as its only

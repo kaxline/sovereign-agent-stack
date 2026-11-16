@@ -89,6 +89,13 @@ printf 'ADDON_TWENTY_LOCAL=0\n' > "$twenty_settings"
 check "setup.sh --crm sets a stored Twenty local setting to 1" \
   sh -c './scripts/setup.sh --non-interactive --workspace demo --crm >/dev/null 2>&1 && grep -qx "ADDON_TWENTY_LOCAL=1" "$1"' sh "$twenty_settings"
 rm -f "$twenty_settings"
+actual_settings="${twenty_settings%/twenty/config/settings.env}/actual/config/settings.env"
+mkdir -p "$(dirname "$actual_settings")"
+printf 'ADDON_ACTUAL_LOCAL=0\n' > "$actual_settings"
+# shellcheck disable=SC2016  # $1 is expanded by sh -c
+check "setup.sh --budget sets a stored Actual local setting to 1" \
+  sh -c './scripts/setup.sh --non-interactive --workspace demo --budget >/dev/null 2>&1 && grep -qx "ADDON_ACTUAL_LOCAL=1" "$1"' sh "$actual_settings"
+rm -f "$actual_settings"
 printf 'x\n' > "${tmp}/key"
 sed -i.bak -e 's|^TWENTY_ENCRYPTION_KEY=.*|TWENTY_ENCRYPTION_KEY=|' -e 's|^TWENTY_DB_PASSWORD=.*|TWENTY_DB_PASSWORD=|' .env
 printf 'TWENTY_ENCRYPTION_KEY_FILE=%s\nTWENTY_DB_PASSWORD_FILE=%s\n' "${tmp}/key" "${tmp}/key" >> .env

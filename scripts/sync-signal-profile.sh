@@ -8,6 +8,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+# shellcheck source=lib/env.sh
+source "${ROOT}/scripts/lib/env.sh"
 
 # shellcheck source=lib/hermes-yaml.sh
 source "${ROOT}/scripts/lib/hermes-yaml.sh"
@@ -30,27 +32,6 @@ env_get() {
     echo "$default"
   else
     echo "$val"
-  fi
-}
-
-upsert_env() {
-  local file="$1"
-  local key="$2"
-  local value="$3"
-  touch "$file"
-  if grep -q "^${key}=" "$file" 2>/dev/null; then
-    local tmp
-    tmp="$(mktemp "$(dirname "$file")/.$(basename "$file").XXXXXX")"
-    while IFS= read -r line || [[ -n "$line" ]]; do
-      if [[ "$line" == "${key}="* ]]; then
-        printf '%s=%s\n' "$key" "$value"
-      else
-        printf '%s\n' "$line"
-      fi
-    done < "$file" > "$tmp"
-    mv "$tmp" "$file"
-  else
-    printf '%s=%s\n' "$key" "$value" >> "$file"
   fi
 }
 
