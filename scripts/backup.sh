@@ -13,7 +13,12 @@
 #               *.bak-* folders, backups/, worktree-backups/, and the host
 #               mail and Messages indexes (mail/, messages/, messages-events/)
 #   data-root   ASSISTANT_DATA_ROOT, when it is not ./data
-#   dir-KEY     a *DATA_DIR in .env that points outside both of the above
+#   dir-KEY     a directory outside all of the above that a bind mount takes
+#               from .env: each ${KEY:-default} source in docker-compose.yml
+#               and compose/ (VIKUNJA_FILES_DIR, MAIL_DRAFTS_DIR, DB_DATA_DIR,
+#               ...), plus any *DATA_DIR in .env. Left out: the mail and
+#               Messages indexes, the uv cache and OpenCode's workspace
+#               (SKIP_DIR_KEYS).
 #   volume-NAME each named volume in `docker compose --profile '*' config`
 #               that exists, so a disabled add-on's volume is kept too. Left
 #               out: the caches (hermes_uv_cache, actual_mcp_ro_cache,
@@ -66,6 +71,10 @@ source "${ROOT}/scripts/lib/python.sh"
 source "${ROOT}/scripts/lib/json-lines.sh"
 jl_init
 
+# Bind-mount keys whose directories are left out: the data root (its own
+# part), caches, the host mail and Messages indexes (rebuildable, and they hold
+# message content) and OpenCode's workspace (code, kept in its own repos).
+SKIP_DIR_KEYS="ASSISTANT_DATA_ROOT HERMES_UV_CACHE_DIR MAIL_INDEX_DIR MESSAGES_INDEX_DIR MESSAGES_EVENTS_DIR OPENCODE_WORKSPACE_HOST"
 SKIP_VOLUMES="hermes_uv_cache actual_mcp_ro_cache actual_mcp_rw_cache neo4j_logs bitwarden_signin email_index search_gate_data"
 DATA_EXCLUDES="./backups ./worktree-backups ./*.bak-* ./mail ./messages ./messages-events"
 
@@ -97,7 +106,7 @@ while [[ $# -gt 0 ]]; do
     --with-dirs) WITH_DIRS=1; shift ;;
     --dest) DEST="${2:-}"; shift 2 || fail bad_input "--dest needs a directory" ;;
     --from) FROM="${2:-}"; shift 2 || fail bad_input "--from needs a directory" ;;
-    -h | --help) sed -n '2,52p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h | --help) sed -n '2,57p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) fail bad_input "unknown option $1" ;;
   esac
 done
@@ -141,6 +150,32 @@ volume_for() {
 
 running_services() {
   docker compose ps --services --status running 2> /dev/null || true
+}
+
+# dir_keys: KEY<TAB>DEFAULT for each .env key that names a host directory: every
+# ${KEY:-DEFAULT} that starts a bind mount's source in docker-compose.yml or
+# compose/, so a mount added later is found, plus any *DATA_DIR set in .env.
+# SKIP_DIR_KEYS are left out. Sorted, one line per key.
+dir_keys() {
+  local files=()
+  [[ -f docker-compose.yml ]] && files+=(docker-compose.yml)
+  if [[ -d compose ]]; then
+    while IFS= read -r f; do files+=("$f"); done < <(find compose -name '*.yml' -o -name '*.yaml' | LC_ALL=C sort)
+  fi
+  {
+    if [[ ${#files[@]} -gt 0 ]]; then
+      grep -hoE '^[[:space:]]*-[[:space:]]*"?\$\{[A-Z][A-Z0-9_]*(:?-[^}]*)?\}[^:" ]*:' "${files[@]}" 2> /dev/null \
+        | sed -E 's/^[[:space:]]*-[[:space:]]*"?\$\{([A-Z0-9_]+)(:?-([^}]*))?\}.*$/\1\t\3/' || true
+    fi
+    if [[ -f .env ]]; then
+      grep -oE '^[A-Z][A-Z0-9_]*DATA_DIR=' .env | sed 's/=$//' || true
+    fi
+  } | awk -F'\t' -v skip=" ${SKIP_DIR_KEYS} " '
+      index(skip, " " $1 " ") { next }
+      !($1 in seen) { seen[$1] = 1; def[$1] = $2; order[n++] = $1; next }
+      def[$1] == "" { def[$1] = $2 }
+      END { for (i = 0; i < n; i++) printf "%s\t%s\n", order[i], def[order[i]] }' \
+    | LC_ALL=C sort
 }
 
 # --- the tar runner ----------------------------------------------------------
@@ -217,19 +252,18 @@ collect_parts() {
     add_part dir data-root "$root" "$root_excl"
   fi
 
-  if [[ -f .env ]]; then
-    while IFS= read -r line; do
-      key="${line%%=*}"
-      val="$(env_get "$key")"
-      [[ -n "$val" ]] || continue
-      path="$(abs_path "$val")"
-      [[ -d "$path" ]] || continue
-      inside "$path" "$data" && continue
-      inside "$path" "$root" && continue
-      inside "$path" "$ROOT" && continue
-      add_part dir "dir-${key}" "$path" ""
-    done < <(grep -E '^[A-Z][A-Z0-9_]*DATA_DIR=' .env || true)
-  fi
+  while IFS=$'\t' read -r key def; do
+    [[ -n "$key" ]] || continue
+    val="$(env_get "$key")"
+    [[ -n "$val" ]] || val="$def"
+    [[ -n "$val" ]] || continue
+    path="$(abs_path "$val")"
+    [[ -d "$path" ]] || continue
+    inside "$path" "$data" && continue
+    inside "$path" "$root" && continue
+    inside "$path" "$ROOT" && continue
+    add_part dir "dir-${key}" "$path" ""
+  done < <(dir_keys)
 
   local names v vol
   names="$(docker compose --profile '*' config --volumes 2> /dev/null | LC_ALL=C sort)" \
