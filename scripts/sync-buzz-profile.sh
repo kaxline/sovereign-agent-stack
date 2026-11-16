@@ -6,6 +6,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+# shellcheck source=lib/env.sh
+source "${ROOT}/scripts/lib/env.sh"
 
 # shellcheck source=lib/hermes-yaml.sh
 source "${ROOT}/scripts/lib/hermes-yaml.sh"
@@ -35,29 +37,6 @@ env_get() {
 }
 
 # Upsert KEY=VALUE, keeping a single occurrence (first wins; later dupes dropped).
-upsert_env() {
-  local file="$1"
-  local key="$2"
-  local value="$3"
-  local tmp seen=0
-  touch "$file"
-  tmp="$(mktemp "$(dirname "$file")/.$(basename "$file").XXXXXX")"
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    if [[ "$line" == "${key}="* ]]; then
-      if [[ "$seen" -eq 0 ]]; then
-        printf '%s=%s\n' "$key" "$value"
-        seen=1
-      fi
-    else
-      printf '%s\n' "$line"
-    fi
-  done < "$file" > "$tmp"
-  if [[ "$seen" -eq 0 ]]; then
-    printf '%s=%s\n' "$key" "$value" >> "$tmp"
-  fi
-  mv "$tmp" "$file"
-}
-
 # s6 reconciler only auto-starts profiles whose gateway_state is "running".
 mark_gateway_running() {
   local profile_name="$1"

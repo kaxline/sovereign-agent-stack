@@ -9,6 +9,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=lib/env.sh
+source "${ROOT}/scripts/lib/env.sh"
 ENV_FILE="${ROOT}/.env"
 OVERRIDE="${ROOT}/docker-compose.override.yml"
 OVERRIDE_EXAMPLE="${ROOT}/docker-compose.override.yml.example"
@@ -30,23 +32,6 @@ env_get() {
   val="${val%\'}"
   val="${val#\'}"
   echo "$val"
-}
-
-upsert_env() {
-  local key="$1" value="$2"
-  if grep -qE "^${key}=" "$ENV_FILE" 2>/dev/null; then
-    local tmp
-    tmp="$(mktemp "$(dirname "$ENV_FILE")/.$(basename "$ENV_FILE").XXXXXX")"
-    awk -v k="$key" -v v="$value" '
-      BEGIN { done=0 }
-      $0 ~ "^" k "=" { print k "=" v; done=1; next }
-      { print }
-      END { if (!done) print k "=" v }
-    ' "$ENV_FILE" >"$tmp"
-    mv "$tmp" "$ENV_FILE"
-  else
-    printf '\n%s=%s\n' "$key" "$value" >>"$ENV_FILE"
-  fi
 }
 
 validate_path() {
@@ -240,7 +225,7 @@ cmd_add() {
   fi
   [[ "$extras" == :* ]] || extras=":$extras"
 
-  upsert_env CODING_EXTRA_ROOTS "$extras"
+  upsert_env "$ENV_FILE" CODING_EXTRA_ROOTS "$extras"
   ensure_override_mount "$path"
 
   echo
