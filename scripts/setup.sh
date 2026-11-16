@@ -361,15 +361,21 @@ setup_automation_profile() {
 setup_crm_profile() {
   upsert_env .env TWENTY_LOCAL_ENABLED 1
   upsert_env .env TWENTY_MCP_ENABLED 1
-  # The add-on's local setting owns TWENTY_LOCAL_ENABLED once stored
-  # (addon.sh configure twenty), and addon.sh enable applies it; keep a stored
-  # one in step so the next enable doesn't turn the local instance off again.
-  local settings
-  settings="$(resolve_data_root_path)/addons/twenty/config/settings.env"
-  if [[ -f "$settings" ]] && grep -q '^ADDON_TWENTY_LOCAL=' "$settings"; then
-    upsert_env "$settings" ADDON_TWENTY_LOCAL 1
-  fi
+  keep_stored_local_setting twenty
   log "Enabled Twenty CRM (crm profile). After make up: make crm-init. See docs/crm.md"
+}
+
+# keep_stored_local_setting SHORT_ID: an add-on's local setting owns its
+# *_LOCAL_ENABLED flag once stored (addon.sh configure), and addon.sh enable
+# applies it. When one is stored, set it to 1 as well, so the next enable
+# doesn't turn the local instance off again.
+keep_stored_local_setting() {
+  local id="$1" settings key
+  key="ADDON_$(printf '%s' "$id" | tr '[:lower:]-' '[:upper:]_')_LOCAL"
+  settings="$(resolve_data_root_path)/addons/${id}/config/settings.env"
+  if [[ -f "$settings" ]] && grep -q "^${key}=" "$settings"; then
+    upsert_env "$settings" "$key" 1
+  fi
 }
 
 # Local Actual Budget server and its MCP servers. The server password and a
@@ -378,6 +384,7 @@ setup_crm_profile() {
 setup_budget_profile() {
   upsert_env .env ACTUAL_LOCAL_ENABLED 1
   upsert_env .env ACTUAL_MCP_ENABLED 1
+  keep_stored_local_setting actual
   log "Enabled Actual Budget (budget-local and budget profiles). After make up: scripts/addon.sh enable actual, then make budget-connect. See docs/budget.md"
 }
 

@@ -75,7 +75,8 @@ the stack under another app.
   `{"local": false}` followed by `enable twenty` stops twenty-server,
   twenty-worker, twenty-db and twenty-redis, syncs `COMPOSE_PROFILES` and keeps
   hosted workspaces registered. `disable twenty` then `enable twenty` no longer
-  loses `TWENTY_LOCAL_ENABLED=1`. `setup.sh --crm` updates a stored setting. See
+  loses `TWENTY_LOCAL_ENABLED=1`. `setup.sh --crm` updates a stored setting,
+  and `setup.sh --budget` now does the same for Actual's. See
   [docs/crm.md](docs/crm.md#turning-it-off).
 - `install.sh`, `status.sh` and `backup.sh` take no compose-file or project
   flags. The stack runs under its default project name with `.env` as its only
