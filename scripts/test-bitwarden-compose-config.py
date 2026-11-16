@@ -125,7 +125,8 @@ def check_off() -> None:
             checks.fail(f"{name} starts without the vault profile")
 
 
-def check_broker(services: dict) -> None:
+def check_broker(cfg: dict) -> None:
+    services = cfg.get("services", {})
     broker = services.get("bitwarden-broker")
     if broker is None:
         checks.fail("bitwarden-broker missing from core,bitwarden")
@@ -136,9 +137,20 @@ def check_broker(services: dict) -> None:
         checks.fail(f"bitwarden-broker must not use network_mode, got {broker.get('network_mode')!r}")
     if broker.get("depends_on"):
         checks.fail(f"bitwarden-broker does not depend on hermes any more, got {broker.get('depends_on')!r}")
-    if sorted(broker.get("networks") or {}) != ["browser", "credentials"]:
-        checks.fail(f"bitwarden-broker networks are {sorted(broker.get('networks') or {})!r}, "
-                    "want ['browser', 'credentials']")
+    # vault reaches the local Vaultwarden; bitwarden-egress, the broker's alone, reaches Bitwarden's
+    # servers for bw login, unlock and sync, and the host, where Boundary's relay listens (CR 0038).
+    want = ["bitwarden-egress", "browser", "credentials", "vault"]
+    if sorted(broker.get("networks") or {}) != want:
+        checks.fail(f"bitwarden-broker networks are {sorted(broker.get('networks') or {})!r}, want {want!r}")
+    nets = cfg.get("networks") or {}
+    if "bitwarden-egress" not in nets or (nets.get("bitwarden-egress") or {}).get("internal"):
+        checks.fail("network bitwarden-egress carries the broker's egress, so it exists and is not internal")
+    for name, service in services.items():
+        if name != "bitwarden-broker" and "bitwarden-egress" in networks(service):
+            checks.fail(f"{name} joins bitwarden-egress")
+    if "host.docker.internal=host-gateway" not in (broker.get("extra_hosts") or []) \
+            and "host.docker.internal:host-gateway" not in (broker.get("extra_hosts") or []):
+        checks.fail(f"bitwarden-broker needs host.docker.internal:host-gateway, got {broker.get('extra_hosts')!r}")
     if env_value(broker, "BITWARDEN_LISTEN") != "0.0.0.0:8099":
         checks.fail(f"bitwarden-broker needs BITWARDEN_LISTEN=0.0.0.0:8099, got "
                     f"{env_value(broker, 'BITWARDEN_LISTEN')!r}")
@@ -229,6 +241,10 @@ def check_providers(broker: dict) -> None:
         checks.fail(f"the boundary provider reads its endpoint from /secrets/..., not {boundary!r}")
     if not str(boundary.get("token_file", "")).startswith("/secrets/"):
         checks.fail(f"the boundary provider reads its token from /secrets/..., not {boundary!r}")
+    # The broker has egress, so the endpoint Boundary writes must name the host or the token stays put.
+    if sorted(boundary.get("hosts") or []) != ["host.containers.internal", "host.docker.internal"]:
+        checks.fail(f"the boundary provider's hosts are {boundary.get('hosts')!r}, "
+                    "want host.docker.internal and host.containers.internal")
 
 
 def check_signin(cfg: dict) -> None:
@@ -663,7 +679,7 @@ def check_signin_healthcheck(cfg: dict) -> None:
 def main() -> None:
     check_off()
     check_profile_flags()
-    check_broker(config("core,bitwarden").get("services", {}))
+    check_broker(config("core,bitwarden"))
     check_signin(config("core,bitwarden"))
     check_signin_healthcheck(config("core,bitwarden"))
     check_signin(config("core,bitwarden,bitwarden-tools,vault"))

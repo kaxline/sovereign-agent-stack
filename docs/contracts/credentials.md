@@ -42,17 +42,30 @@ agent adapter, and `cron_fence_toolsets()` keeps the toolset out of scheduled ru
 (cloud, self-hosted or the local Vaultwarden) and serves only the items in each account's agent
 folder or collection. [Bitwarden](../bitwarden.md) covers accounts, modes, unlock and setup.
 
-The broker runs in a container of its own on two internal networks: `credentials`, which carries
-its API and which only `hermes` joins, and `browser`, the route to a browser provider's CDP
-gateway. It listens on `0.0.0.0:8099` and every call must carry the bearer token in
-`<add-on data dir>/broker-api/api-token`, which `./scripts/vault.sh api-token` creates and
+The broker runs in a container of its own on three internal networks: `credentials`, which carries
+its API and which only `hermes` joins, `browser`, the route to the `web-browser` service's CDP
+gateway, and `vault`, the route to the local Vaultwarden. `bitwarden-egress`, which only the broker
+joins, is its route to Bitwarden's servers and, through `host.docker.internal`
+(`extra_hosts: host-gateway`), to Boundary's relay on the host's loopback. It listens on
+`0.0.0.0:8099` and every call must carry the bearer token in `<add-on data dir>/broker-api/api-token`, which `./scripts/vault.sh api-token` creates and
 `hermes` mounts read-only at `/run/bitwarden/api-token`.
+
+The add-on's `secrets/` folder (`<add-on data dir>/secrets`) holds each account's `client_id`, the
+local account's API key and master password, the local Vaultwarden's CA certificate, and
+Boundary's `boundary.url` and `boundary.token`, which let their holder run script in, and set
+cookies for, pages in Boundary's browser. Two services mount
+it: `bitwarden-broker` read-only, and `bitwarden-setup` read-write, a one-shot container the user
+starts through `scripts/vault.sh` and `make` targets. `hermes` mounts only `broker-api/`.
+`scripts/test-bitwarden-compose-config.py` fails if any other service mounts `secrets/`; a change
+to that list is announced in the [changelog](../../CHANGELOG.md) before it ships.
 
 A write names a browser provider, never an address: `browser` is a key of `BROWSER_PROVIDERS`,
 which holds each provider's CDP endpoint (or the file its own client writes it to) and the file
 holding the broker's token for it. `stack` is the `web-browser` service, `boundary` Boundary's
-relay; an unknown name is refused with `unknown_browser`, and a provider that is not running or
-has written no token yet reads as `cdp_unavailable`. Routes, from
+relay. The `boundary` entry's `hosts` limits the endpoint Boundary writes to `host.docker.internal`
+or `host.containers.internal`; any other host reads as `cdp_unavailable`, so the token never leaves
+for another address. An unknown name is refused with `unknown_browser`, and a provider that is not
+running or has written no token yet reads as `cdp_unavailable`. Routes, from
 `compose/bitwarden-broker/broker/server.py`:
 
 | Route | Operation |

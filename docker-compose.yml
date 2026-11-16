@@ -2386,10 +2386,15 @@ services:
     image: &bitwarden-image ${IMAGE_PREFIX:-assistant}-bitwarden-broker:local
     restart: unless-stopped
     # credentials (internal) carries the API, shared with hermes alone; browser
-    # (internal) is the route to a browser provider's CDP gateway. Neither is
-    # joined by hermes-worker, the agent's shell. The broker no longer shares
-    # hermes' network namespace, so a recreate of hermes leaves it running.
-    networks: [credentials, browser]
+    # (internal) is the route to the web-browser service's CDP gateway; vault
+    # (internal) reaches the local Vaultwarden through vaultwarden-tls.
+    # bitwarden-egress, which only the broker joins, is its route to Bitwarden's
+    # servers (bw login, unlock and sync) and, through host.docker.internal, to
+    # Boundary's relay on the host's loopback. None is joined by hermes-worker,
+    # the agent's shell. The broker no longer shares hermes' network namespace,
+    # so a recreate of hermes leaves it running.
+    networks: [credentials, browser, vault, bitwarden-egress]
+    extra_hosts: ["host.docker.internal:host-gateway"]
     # The host user, as email-imap and the Hermes readers of instances/ run:
     # the store keeps instances/ at 0700, owned by that user.
     user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
@@ -2418,11 +2423,13 @@ services:
       # (docs/contracts/browser.md). stack is this stack's web-browser service.
       # boundary is Boundary's relay, which writes its own endpoint and the
       # broker's token into secrets/boundary.url and secrets/boundary.token;
-      # until it does, a fill naming it reports cdp_unavailable.
+      # until it does, a fill naming it reports cdp_unavailable. Its endpoint
+      # must name the host (hosts), so the broker's egress never carries the
+      # token anywhere else.
       - |
         BROWSER_PROVIDERS={"stack": {"url": "ws://web-browser:9222/devtools/browser/credentials",
         "token_file": "/run/browser/stack.token"}, "boundary": {"url_file": "/secrets/boundary.url",
-        "token_file": "/secrets/boundary.token"}}
+        "token_file": "/secrets/boundary.token", "hosts": ["host.docker.internal", "host.containers.internal"]}}
       - BITWARDEN_SYNC_SOCKET=/run/bitwarden-sync/sync.sock
       - BITWARDEN_SIGNIN_SOCKET=/run/bitwarden-signin/signin.sock
       # The local Vaultwarden's CA, written by make vault-init. bw starts with
@@ -2642,8 +2649,8 @@ networks:
   # twenty-worker.
   crm:
     internal: true
-  # Internal: the local Vaultwarden (profile vault). hermes joins it, so the
-  # broker in hermes' namespace reaches vaultwarden-tls; so does bitwarden-setup.
+  # Internal: the local Vaultwarden (profile vault), reached through
+  # vaultwarden-tls by bitwarden-broker, bitwarden-setup and hermes.
   vault:
     internal: true
   # Internal: vaultwarden and vaultwarden-tls only (Ruling R20).
@@ -2653,6 +2660,10 @@ networks:
   vault-host:
   # bitwarden-setup's route to Bitwarden's servers, apart from hermes.
   bitwarden-setup:
+  # bitwarden-broker only: its route to Bitwarden's servers and to the host
+  # (Boundary's relay), apart from hermes, whose credentials network carries the
+  # broker's API.
+  bitwarden-egress: {}
   # Dedicated to actual-mcp-rw and actual-mcp-ro, which take requests without
   # auth, plus hermes and actual-server. Not internal: the MCP servers may
   # need to reach a remote Actual server.

@@ -11,11 +11,16 @@ or restarting a provider on another port needs no restart here.
     {"stack": {"url": "ws://web-browser:9222/devtools/browser/credentials",
                "token_file": "/run/browser/stack.token"},
      "boundary": {"url_file": "/secrets/boundary.url",
-                  "token_file": "/secrets/boundary.token"}}
+                  "token_file": "/secrets/boundary.token",
+                  "hosts": ["host.docker.internal", "host.containers.internal"]}}
 
 ``url`` is a fixed address (a compose service); ``url_file`` is for a provider
 whose address its own client writes, such as Boundary's relay on a port it picks
 at start. Exactly one of the two per entry. Neither file is ever logged.
+
+``hosts``, optional, lists the host names an endpoint may name. The broker has a
+route off the host, so a ``url_file`` naming another host would send the
+provider's token there; with ``hosts`` set, such an endpoint reads as unusable.
 """
 
 from __future__ import annotations
@@ -23,7 +28,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from . import cdp
 
@@ -42,6 +47,7 @@ class Provider:
     url: str
     url_file: Path | None
     token_file: Path
+    hosts: frozenset[str] = frozenset()
 
     def endpoint(self) -> str:
         """``<url>?token=<token>``, or "" when the URL or the token cannot be read.
@@ -55,6 +61,8 @@ class Provider:
             url = _read(self.url_file, URL_MAX)
         token = _read(self.token_file, TOKEN_MAX)
         if not url or not token or not cdp.valid_endpoint(url):
+            return ""
+        if self.hosts and (urlsplit(url).hostname or "").lower() not in self.hosts:
             return ""
         separator = "&" if "?" in url else "?"
         return f"{url}{separator}token={quote(token, safe='')}"
@@ -98,7 +106,7 @@ def _entry(name, entry) -> Provider:
         raise ProviderError(f"BROWSER_PROVIDERS: {name!r} is not a usable provider name")
     if not isinstance(entry, dict):
         raise ProviderError(f"BROWSER_PROVIDERS: {name} must be an object")
-    extra = set(entry) - {"url", "url_file", "token_file"}
+    extra = set(entry) - {"url", "url_file", "token_file", "hosts"}
     if extra:
         raise ProviderError(f"BROWSER_PROVIDERS: {name} has no field {', '.join(sorted(extra))}")
     url, url_file = entry.get("url") or "", entry.get("url_file") or ""
@@ -112,5 +120,11 @@ def _entry(name, entry) -> Provider:
         raise ProviderError(f"BROWSER_PROVIDERS: {name} needs token_file, an absolute path")
     if url_file and (not isinstance(url_file, str) or not url_file.startswith("/")):
         raise ProviderError(f"BROWSER_PROVIDERS: {name}'s url_file must be an absolute path")
+    hosts = entry.get("hosts", [])
+    if not isinstance(hosts, list) or not all(isinstance(h, str) and h and h == h.strip() for h in hosts):
+        raise ProviderError(f"BROWSER_PROVIDERS: {name}'s hosts must be a list of host names")
+    hosts = frozenset(h.lower() for h in hosts)
+    if url and hosts and (urlsplit(url).hostname or "").lower() not in hosts:
+        raise ProviderError(f"BROWSER_PROVIDERS: {name}'s url names a host outside its hosts")
     return Provider(name=name, url=url, url_file=Path(url_file) if url_file else None,
-                    token_file=Path(token_file))
+                    token_file=Path(token_file), hosts=hosts)

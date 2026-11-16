@@ -481,7 +481,9 @@ Other limits, as built:
   (`http://bitwarden-broker:8099`), and every call must carry the bearer token in
   `<add-on data dir>/broker-api/api-token`. `hermes` mounts that one folder read-only, so agent
   code in `hermes` can read the token and call the API, which is why no route returns a value;
-  `hermes-worker` and other containers reach neither the network nor the token. The API also
+  `hermes-worker` and other containers reach neither the network nor the token. The broker's own
+  route out is `bitwarden-egress`, which no other service joins: it reaches Bitwarden's servers and
+  the host (`host.docker.internal`), where Boundary's relay listens. The API also
   refuses any request with an `Origin` header and a POST whose `Content-Type` is not
   `application/json`, so a web page in the agent's browser cannot call it.
 - A fill names a browser by provider name, and the broker holds each provider's endpoint and its

@@ -39,7 +39,7 @@ sys.path.insert(0, str(ROOT / "scripts" / "lib"))
 from testkit import expect, fail  # noqa: E402
 
 import hermes_image  # noqa: E402
-from broker import accounts, bwcli, cdp, origins, signin, vault  # noqa: E402
+from broker import accounts, browsers, bwcli, cdp, origins, signin, vault  # noqa: E402
 
 FAKE_BW = ROOT / "scripts" / "fixtures" / "fake-bw.py"
 
@@ -382,6 +382,43 @@ def test_instance_store() -> None:
                 expect(exc.cause == cause, f"load_account {slug}: {exc.cause}")
             else:
                 fail(f"load_account {slug} loaded")
+
+
+def test_provider_hosts() -> None:
+    """A provider with hosts reads an endpoint naming another host as unusable, so the
+    broker's route off the host never carries the provider's token elsewhere."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        url_file, token_file = Path(tmp, "url"), Path(tmp, "token")
+        token_file.write_text("t0k\n", encoding="utf-8")
+        table = browsers.load(json.dumps({"boundary": {
+            "url_file": str(url_file), "token_file": str(token_file),
+            "hosts": ["host.docker.internal", "host.containers.internal"]}}))
+        provider = table["boundary"]
+        url_file.write_text("ws://host.docker.internal:9333/devtools/browser/credentials", encoding="utf-8")
+        expect(provider.endpoint() == "ws://host.docker.internal:9333/devtools/browser/credentials?token=t0k",
+               f"endpoint on an allowed host: {provider.endpoint()!r}")
+        url_file.write_text("ws://HOST.containers.internal:9333/devtools/browser/credentials", encoding="utf-8")
+        expect(provider.endpoint().startswith("ws://HOST.containers.internal:9333/"),
+               "host names compare without case")
+        url_file.write_text("ws://attacker.example:9333/devtools/browser/credentials", encoding="utf-8")
+        expect(provider.endpoint() == "", "an endpoint outside hosts must read as unusable")
+        # Without hosts any host passes, as the stack provider's fixed url does.
+        open_table = browsers.load(json.dumps({"x": {"url_file": str(url_file), "token_file": str(token_file)}}))
+        expect(open_table["x"].endpoint().startswith("ws://attacker.example:9333/"), "no hosts, no host check")
+        for bad in ("host.docker.internal", [""], [" h "], [1]):
+            try:
+                browsers.load(json.dumps({"b": {"url_file": "/u", "token_file": "/t", "hosts": bad}}))
+            except browsers.ProviderError:
+                continue
+            fail(f"hosts={bad!r} must be refused")
+        try:
+            browsers.load(json.dumps({"b": {"url": "ws://web-browser:9222/devtools/browser/credentials",
+                                            "token_file": "/t", "hosts": ["host.docker.internal"]}}))
+        except browsers.ProviderError:
+            pass
+        else:
+            fail("a fixed url outside its own hosts must be refused at start")
 
 
 def test_normalize_origin() -> None:
@@ -2958,6 +2995,7 @@ def main() -> None:
     test_scope_filtering()
     test_mixed_uris()
     test_no_uri_items_hidden()
+    test_provider_hosts()
     test_fill_syncs_once_when_the_password_is_not_readable()
     test_fill_refuses_a_password_a_sync_does_not_reveal()
     test_fill_does_not_sync_without_a_hook()

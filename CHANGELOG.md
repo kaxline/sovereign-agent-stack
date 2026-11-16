@@ -138,9 +138,12 @@ the stack under another app.
   set is left alone. With the service off, the next bootstrap run takes the
   stack's own value back out.
 - The Bitwarden broker no longer shares the `hermes` container's network
-  namespace. It joins two internal networks of its own: `credentials`, which
-  carries its API and which only `hermes` joins, and `browser`, the route to a
-  browser provider. Recreating or restarting `hermes` now leaves the broker
+  namespace. It joins three internal networks: `credentials`, which carries its
+  API and which only `hermes` joins, `browser`, the route to the `web-browser`
+  service, and `vault`, the route to the local Vaultwarden. A fourth network,
+  `bitwarden-egress`, which only the broker joins, carries `bw login`, `unlock`
+  and `sync` to Bitwarden's servers and, through `host.docker.internal`
+  (`extra_hosts: host-gateway`), reaches Boundary's relay on the host. Recreating or restarting `hermes` now leaves the broker
   running, with its `manual` accounts still unlocked, and nothing has to follow
   `hermes` afterwards: `./scripts/vault.sh follow-hermes` is gone, as is the
   `make doctor` check for a broker in the wrong namespace.
@@ -155,7 +158,10 @@ the stack under another app.
   and its own token for it. `stack` is the `web-browser` service, `boundary`
   Boundary's relay, which writes its endpoint and token into
   `secrets/boundary.url` and `secrets/boundary.token` under the add-on's data
-  dir. An unknown name is refused with `unknown_browser`. Before this a fill
+  dir. The endpoint Boundary writes must name `host.docker.internal` or
+  `host.containers.internal`; any other host reads as `cdp_unavailable`, so the
+  broker's egress never carries the token elsewhere. An unknown name is refused
+  with `unknown_browser`. Before this a fill
   only worked in the Chromium inside `hermes`, so a Boundary chat could neither
   fill nor sign in.
 - A fill reads the tab's URL with `Target.getTargetInfo` on the browser
