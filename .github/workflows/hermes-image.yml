@@ -37,5 +37,7 @@ jobs:
           tag="$(sed -n 's/.*hermes-agent:\${HERMES_AGENT_IMAGE_TAG:-\([^}]*\)}.*/\1/p' docker-compose.yml | head -1)"
           test -n "$tag"
           docker pull "nousresearch/hermes-agent:${tag}"
+      - name: Stub local overlays and secrets for compose config
+        run: scripts/ci-stub-env.sh
       - name: Hermes image tests
         run: make hermes-image-test

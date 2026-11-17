@@ -40,7 +40,8 @@ import time
 from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import connect
 
-CHROME_GLOB = "/opt/hermes/tools/chromium-*/chrome-linux/chrome"
+# The directory is chrome-linux on arm64 and chrome-linux64 on x64.
+CHROME_GLOB = "/opt/hermes/tools/chromium-*/chrome-linux*/chrome"
 PROFILE_PREFIX = "bitwarden-signin-"
 START_SECONDS = 20.0
 MAX_MESSAGE = 64 * 1024 * 1024

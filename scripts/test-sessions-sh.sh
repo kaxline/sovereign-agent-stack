@@ -77,7 +77,7 @@ grep -qxF '{"phase":"profile","profile":"coder","sessions":2,"messages":7}' "${t
   || fail "export coder line"
 grep -q '^{"phase":"done","action":"export",.*"sessions":7,"messages":19}$' "${tmp}/export.jsonl" \
   || fail "export done line: $(tail -1 "${tmp}/export.jsonl")"
-[ -f "${out}/manifest.json" ] && [ -f "${out}/writer.jsonl" ] || fail "export files missing"
+{ [ -f "${out}/manifest.json" ] && [ -f "${out}/writer.jsonl" ]; } || fail "export files missing"
 [ "$(stat -c %a "${out}/default.jsonl" 2> /dev/null || stat -f %Lp "${out}/default.jsonl")" = 600 ] \
   || fail "export file is not mode 600"
 SESSIONS_PY="$(py_in "$src")" "${ROOT}/scripts/sessions.sh" export --dest "$out" --json > /dev/null 2>&1 \

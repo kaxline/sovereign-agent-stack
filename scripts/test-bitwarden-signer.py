@@ -684,7 +684,7 @@ def chrome_running(_profile=None):
         except OSError:
             continue
         argv0 = cmd.split(b"\0")[0]
-        if b"/chrome-linux/" in argv0:
+        if b"/chrome-linux/" in argv0 or b"/chrome-linux64/" in argv0:
             found.append((proc[6:], state, argv0[-40:].decode(errors="replace")))
     return found
 
