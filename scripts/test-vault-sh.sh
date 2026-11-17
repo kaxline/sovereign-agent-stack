@@ -478,7 +478,7 @@ grep -A1 -E '^ensure-local:' "${ROOT}/Makefile" | grep -q 'scripts/up.sh --prepa
   || fail "make ensure-local runs scripts/up.sh --prepare"
 awk '/vault.sh api-token/ { a = NR } /PREPARE_ONLY" == 1/ { p = NR } END { exit !(a && p && a < p) }' "${ROOT}/scripts/up.sh" \
   || fail "scripts/up.sh runs vault.sh api-token before --prepare stops"
-grep -q 'ensure_web_browser_secrets\|api-token' "${ROOT}/scripts/setup.sh" \
+grep -q 'api-token' "${ROOT}/scripts/setup.sh" \
   || fail "scripts/setup.sh creates the token too"
 
 # --- nothing follows hermes any more --------------------------------------------

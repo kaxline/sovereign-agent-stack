@@ -2297,7 +2297,8 @@ services:
   #          on the internal browser network only; no host port
   # Viewer:  http://127.0.0.1:${WEB_BROWSER_VIEWER_PORT:-6080}/vnc.html
   #          (noVNC, password data/web-browser/secrets/viewer)
-  # Data:    data/web-browser/secrets (client tokens, written by setup.sh) and
+  # Data:    ${ASSISTANT_DATA_ROOT}/web-browser/secrets (client tokens, written by
+  #          scripts/web-browser-secrets.sh from setup.sh and make ensure-local) and
   #          the web_browser_profile volume (Chromium's profile: the sites a
   #          person signed in to through the viewer)
   # Debian's Chromium, headful on an Xvfb display, behind the token-checking

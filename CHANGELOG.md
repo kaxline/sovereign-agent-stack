@@ -10,6 +10,17 @@ the stack under another app.
 
 ### Changes
 
+- `make ensure-local` (`scripts/up.sh --prepare`) now creates the browser
+  service's client tokens (`agent`, `credentials`, `viewer`) under
+  `${ASSISTANT_DATA_ROOT}/web-browser/secrets`, through the new
+  `scripts/web-browser-secrets.sh`, which `setup.sh` runs too. Before, only
+  `setup.sh` wrote them, so an install set up before the browser service had
+  none, and recreating `hermes` or `bitwarden-broker`, which bind-mount two of
+  them, left Docker-created directories at those paths. `setup.sh` also wrote
+  them under `WEB_BROWSER_DATA_DIR` (default `./data/web-browser`), which
+  nothing mounts, so with `ASSISTANT_DATA_ROOT` set the containers never saw
+  them. If a token path is already a directory, the script warns and names the
+  `rmdir` to run with the stack stopped.
 - `.env` writes are atomic. `upsert_env` and `remove_env` (`scripts/lib/env.sh`)
   write a temp file beside the target and rename it, for a new key as well as
   a changed one, and keep the file's mode and, for a symlinked `.env`, the

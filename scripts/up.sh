@@ -42,6 +42,7 @@ copy_example compose/hermes/browser.env compose/hermes/browser.env.example \
   "Created compose/hermes/browser.env — set API_SERVER_KEY"
 mkdir -p compose/postgres/services
 ./scripts/addon-dirs.sh
+./scripts/web-browser-secrets.sh
 ./scripts/vault.sh api-token
 ./scripts/todo.sh ensure
 ./scripts/crm.sh ensure
