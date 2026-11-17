@@ -1954,6 +1954,7 @@ profile_env_file() {
 # config.yaml records what was written, as the cron toolsets do, so another
 # provider's endpoint (Boundary's relay) and anything set by hand survive both
 # a run with the service on and a run with it off.
+# shellcheck disable=SC2016 # Hermes expands the reference, not this shell
 WEB_BROWSER_CDP_URL='ws://web-browser:9222/devtools/browser/stack?token=${WEB_BROWSER_AGENT_TOKEN}'
 WEB_BROWSER_TOKEN_FILE="${WEB_BROWSER_TOKEN_FILE:-/run/web-browser/agent}"
 

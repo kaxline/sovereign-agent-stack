@@ -18,159 +18,147 @@ the stack under another app.
   `profile_missing`, never folded into another. `--json` prints counts and
   session ids only. Attachments and cached media are not carried. See
   [docs/sessions.md](docs/sessions.md).
-- `make ensure-local` (`scripts/up.sh --prepare`) now creates the browser
-  service's client tokens (`agent`, `credentials`, `viewer`) under
-  `${ASSISTANT_DATA_ROOT}/web-browser/secrets`, through the new
-  `scripts/web-browser-secrets.sh`, which `setup.sh` runs too. Before, only
-  `setup.sh` wrote them, so an install set up before the browser service had
-  none, and recreating `hermes` or `bitwarden-broker`, which bind-mount two of
-  them, left Docker-created directories at those paths. `setup.sh` also wrote
-  them under `WEB_BROWSER_DATA_DIR` (default `./data/web-browser`), which
-  nothing mounts, so with `ASSISTANT_DATA_ROOT` set the containers never saw
-  them. If a token path is already a directory, the script warns and names the
-  `rmdir` to run with the stack stopped.
-- `.env` writes are atomic. `upsert_env` and `remove_env` (`scripts/lib/env.sh`)
-  write a temp file beside the target and rename it, for a new key as well as
-  a changed one, and keep the file's mode and, for a symlinked `.env`, the
-  link. The scripts that kept their own copies (`setup.sh`, `data-dir.sh`,
-  `corpus.sh` and others) now use them; those appended a new key in place.
-  Before, the temp file was in `$TMPDIR`, so on a host where `/tmp` is another
-  filesystem the final `mv` was a copy that a stopped run could leave half
-  written, and the file's mode became 0600.
-- New `scripts/env.sh set|unset KEY [VALUE] [--json]` for the `.env` keys a
-  client may change: `LLM_*` (not `LLM_PROXY_ADMIN_TOKEN`), `*_IMAGE`,
-  `*_IMAGE_TAG`, `HERMES_TERMINAL_BACKEND`, `CODING_*`, `CONTEXT_*` and
-  `CALDAV_TZ`. Add-on
-  switches and `COMPOSE_PROFILES` are refused with `use_addon_sh`. See
-  [docs/extending.md](docs/extending.md#client-writable-env-keys).
-- New `scripts/status.sh --json`: the stack's version, Hermes image pins, the
-  host's OS, and each enabled service's state and published ports. Read-only,
-  and it works with the stack stopped. See
-  [docs/extending.md](docs/extending.md#stack-status).
-- New `scripts/backup.sh` (`create`, `restore --from DIR`): archives the stack
-  directory with its `.env` and local configs, `data/`, `ASSISTANT_DATA_ROOT`,
-  each directory outside both that a compose bind mount takes from `.env`
-  (`VIKUNJA_FILES_DIR`, `SIGNAL_CLI_DATA_DIR` and the like, not the mail and
-  Messages indexes or OpenCode's workspace), and every named volume in
-  `docker compose --profile '*' config` except caches, `neo4j_logs`,
-  `bitwarden_signin`, `email_index` and `search_gate_data`, into
-  `./backups/<timestamp>-<version>/` (`BACKUP_DIR` or `--dest` to change).
-  It refuses while the stack runs unless given `--stop`. Restore moves each
-  data directory aside rather than deleting it, and restores parts outside the
-  stack (`SIGNAL_CLI_DATA_DIR`, say) only with `--with-dirs`. See
-  [docs/data-dir.md](docs/data-dir.md#backups).
-- Upgrade steps are now hooks. `scripts/upgrade.sh --from VERSION [--json]`
-  runs `upgrades/vX.Y.Z.sh` for every release after VERSION, starts the stack
-  with the rebuilds and Hermes reload they ask for, and reports what only the
-  user can do as `needs_user`. The v0.3.15 and v0.3.16 steps are hooks. In a
-  git checkout: `git checkout vX.Y.Z && scripts/setup.sh && scripts/upgrade.sh
-  --from <previous tag>`. See [docs/releasing.md](docs/releasing.md#upgrade-hooks).
-- New `scripts/install.sh --version vX.Y.Z --dir DIR [--json]` installs a
-  release on a host the app doesn't manage, or upgrades it there: checksum,
-  backup, file swap, setup, upgrade hooks, start and doctor, with a rollback of
-  the files when a step fails. Each pushed tag now gets a GitHub release with
-  `sovereign-agent-stack-vX.Y.Z.tar.gz` and its `.sha256`
-  (`.github/workflows/release.yml`). See
-  [docs/extending.md](docs/extending.md#install-on-another-host).
-- The add-on lock (`data/addons/.lock`) names its holder's client, from
-  `STACK_CLIENT`, and `STACK_LOCK_TIMEOUT=SECONDS` waits for a busy lock
-  instead of failing at once. A `busy` error from `addon.sh` or `env.sh` adds
-  `"holder":{"pid","client","since"}`. `scripts/env.sh` takes the same lock. A
-  lock written by an older `addon.sh` (a bare PID) is still read. See
-  [docs/extending.md](docs/extending.md#lock-and-rollback).
-- `make up` and `make ensure-local` run the new `scripts/up.sh`, so hosts without
-  `make` can start the stack the same way.
-- New `scripts/credentials.sh --json` prints `HERMES_DASHBOARD_PASSWORD`,
-  `HERMES_DASHBOARD_HANDOFF_SECRET`, `API_SERVER_KEY` and
-  `LLM_PROXY_ADMIN_TOKEN` as one JSON object, with `null` for a missing value
-  or a `change-me` placeholder. See
-  [docs/extending.md](docs/extending.md#credentials).
-- New `CALDAV_TZ` sets caldav-mcp's time zone without moving Hermes, the
-  bootstraps or web-browser. It falls back to `TZ`, then UTC, so installs
-  without it are unchanged. `scripts/env.sh` accepts it. See
+
+## v0.3.16 — 2026-11-17
+
+### Upgrade steps
+
+- Upgrade with the new hook runner: `git checkout v0.3.16 && scripts/setup.sh
+  && scripts/upgrade.sh --from v0.3.15`. On a host the app doesn't manage,
+  `scripts/install.sh --version v0.3.16 --dir DIR` runs the same steps.
+  Both are new in this release; see Changes.
+- With `BITWARDEN_ENABLED=1`, `upgrades/v0.3.16.sh` rebuilds
+  `bitwarden-broker`. The broker's image carries the whole sign-in API, and
+  `make up` alone reuses the `bitwarden-broker:local` image it already has. A
+  broker built before this release answers none of the `/signin/` routes, so
+  every `browser_vault` sign-in action fails while `bitwarden-signin` reports
+  `ready`, and `scripts/vault.sh status --json` shows `{"signer":"down"}`.
+  `upgrade.sh` then starts the stack through `scripts/up.sh`, which writes the
+  broker's new API token and recreates `bitwarden-broker` and `hermes`, both of
+  which read it at start. Without `upgrade.sh`: `scripts/up.sh --build
+  bitwarden-broker`.
+- Bitwarden logins are no longer filled into the agent's own page unless you
+  say so per item. Add a custom field `agent-in-page-fill` of type boolean,
+  value true, to each Bitwarden item you want filled the old way; without it
+  `browser_vault` `fill` and `enter_code` refuse that item with
+  `sign_in_only`, and the agent signs in through the new `bitwarden-signin`
+  browser instead. No existing item has the field, so every Bitwarden login
+  changes path at this upgrade. The hook reports this as `needs_user`
+  `bitwarden-in-page-fill`.
+
+### New services
+
+- `bitwarden-signin` (profile `bitwarden`) signs the agent in to a website
+  without the password reaching it. It runs a Chromium of its own on its own
+  network, with a read-only root, no capabilities, a 768 MB limit and a
+  seccomp profile that lets Chromium's namespace sandbox start; it never runs
+  with `--no-sandbox`. The broker reaches it over a Unix socket in the
+  `bitwarden_signin` volume (mode 0600) and hands it the password or the
+  current TOTP code only at the moment it is written into a field. The agent
+  drives it through seven `browser_vault` actions (`sign_in`,
+  `signin_snapshot`, `signin_click`, `signin_type`, `signin_fill`,
+  `signin_finish` and `signin_cancel`), which return page snapshots with no
+  input values, scrubbed of every password and code the session filled. On
+  finish the broker copies the item's cookies and the page's `localStorage`
+  and `sessionStorage` into the agent's tab, and the signer destroys its
+  Chromium and profile. The agent's browser then holds the site's session and
+  can read it; the password and the TOTP code never enter `hermes`. Identity
+  provider cookies stay in the signer. One session runs at a time, and cron
+  turns get no sign-in. `docs/bitwarden.md` has the whole path, including that
+  the `signin` network has unrestricted egress by design. Compose creates its
+  volume (`bitwarden_signin`) and network (`signin`); `make up` and
+  `scripts/addon.sh enable bitwarden` build and start it. Its image is built
+  `FROM` the pinned Hermes agent image, so the first `make up` after this
+  upgrade builds it, and `make hermes-upgrade` rebuilds it on a Hermes bump
+  while `BITWARDEN_ENABLED=1`.
+- `web-browser` (profile `web-browser`, off by default): Debian's Chromium,
+  headful on Xvfb in a container of its own, behind a CDP gateway that gives
+  each client its own token and refuses whole-jar cookie and storage reads,
+  `Fetch` beyond Hermes' dialog bridge, and `file:` or browser-internal URLs. A
+  noVNC viewer on `127.0.0.1:6080` shows the screen for a sign-in by hand or a
+  CAPTCHA; `make web-browser-viewer` prints the URL and the password's path.
+  The browser interface it serves is
+  [docs/contracts/browser.md](docs/contracts/browser.md). To use it, set
+  `WEB_BROWSER_ENABLED=1`, run `make up`, then `make hermes-reload` so the
+  profiles pick up `browser.cdp_url`. Left off, Hermes keeps the Chromium
+  inside `hermes` or Boundary's browser, unchanged.
+
+### New optional `.env` keys
+
+- `WEB_BROWSER_ENABLED` (default 0) turns the browser service on.
+- `WEB_BROWSER_VIEWER_PORT` (default 6080) is the host port for its noVNC
+  viewer, published on `127.0.0.1` only. `WEB_BROWSER_MEM_LIMIT` (default 2g),
+  `WEB_BROWSER_SCREEN` and `WEB_BROWSER_WINDOW` size the container and its
+  screen.
+- `BITWARDEN_ITEMS_SYNC_SECONDS` (default 60): how old the broker's local
+  vault copy may be before `GET /items` syncs first. 0 syncs on every listing.
+- `BITWARDEN_SIGNIN_IDLE_MINUTES` (default 5) ends an idle sign-in session;
+  `BITWARDEN_SIGNIN_ACTION_SECONDS` (default 30) bounds one sign-in action.
+- `CALDAV_TZ` sets caldav-mcp's time zone without moving Hermes, the
+  bootstraps or web-browser. Unset, it falls back to `TZ`, then UTC, so
+  installs without it are unchanged. `scripts/env.sh` accepts it. See
   [docs/calendar.md](docs/calendar.md#how-it-works).
-- Twenty has an add-on-level `local` setting that owns `TWENTY_LOCAL_ENABLED`,
-  as Actual's owns `ACTUAL_LOCAL_ENABLED`. `configure twenty` with
-  `{"local": false}` followed by `enable twenty` stops twenty-server,
-  twenty-worker, twenty-db and twenty-redis, syncs `COMPOSE_PROFILES` and keeps
-  hosted workspaces registered. `disable twenty` then `enable twenty` no longer
-  loses `TWENTY_LOCAL_ENABLED=1`. `setup.sh --crm` updates a stored setting,
-  and `setup.sh --budget` now does the same for Actual's. See
-  [docs/crm.md](docs/crm.md#turning-it-off).
-- `install.sh`, `status.sh` and `backup.sh` take no compose-file or project
-  flags. The stack runs under its default project name with `.env` as its only
-  config; a second copy sets `COMPOSE_PROJECT_NAME` and `COMPOSE_FILE` there
-  ([docs/extending.md](docs/extending.md#run-a-second-copy)).
 
-## v0.3.16 — 2026-11-14
+### Host requirements
 
-### Vault freshness
+- `scripts/install.sh` needs `tar`, `gzip`, `docker`, and `sha256sum` or
+  `shasum`, plus `curl` unless given `--tarball`. It refuses Podman. Nothing
+  else on the host changes; `setup.sh` and `make` call no new commands.
 
-- `GET /items` on the broker syncs the vault first when its local copy may be
-  older than `BITWARDEN_ITEMS_SYNC_SECONDS` (60 by default). Before this, an
-  item added or changed in Bitwarden was invisible to the agent until the next
-  `BITWARDEN_SYNC_MINUTES` tick, up to 10 minutes later. A listing inside the
-  interval serves the copy it has, so the cost is one `bw sync` per turn at most.
-- A read that finds no password for an item now syncs that account once and
-  reads again, instead of refusing on a copy that may be stale. This covers both
-  `sign_in` and the opt-in in-page `fill`, which read the same local copy.
-- A login whose password the agent's account cannot read refuses with the new
-  code `no_password` (HTTP 422 on `/fill` and the sign-in routes), not
-  `unavailable`. `unavailable` tells the agent to try
-  again shortly, which is wrong for a permission: Bitwarden's per-collection
-  Hide Passwords leaves the item and its username readable and the password not,
-  and no retry clears it. The message names both that and an item saved without
-  a password.
-- `docker logs bitwarden-broker` now carries a line per completed sync
-  (`<account>: synced (1.2s)`), and one when a sync is skipped because another
-  sync of that account is already running. A sync that worked used to log
-  nothing, so a vault that had not synced could not be told from one that had.
-- The agent's Bitwarden listing no longer comes back empty while the vault
-  syncs. `GET /items` syncs first when the local copy is stale, which takes ten
-  seconds or more against a self-hosted server, and the Hermes-side backend gave
-  that call five seconds and listed nothing when it ran out — so the first
-  `browser_vault` `list` of a turn reported a vault with no logins in it, with
-  nothing in any log. That one route now gets 45 seconds, the deadline the
-  sign-in actions already used.
-- A sign-in-only login now refuses a `fill` with `sign_in_only` even when the
-  broker has no way to reach the agent's browser. The refusal is the one that
-  names `sign_in`, and it was unreachable: `_bwbroker_fill` ran its tab and CDP
-  checks first, so where those fail the agent was told to open the page and
-  retry a fill instead — advice a sign-in-only item can never satisfy. Seen live
-  from a Boundary chat, where the agent tried `fill` twice and never reached
-  `sign_in`. A login that is in-page fillable still gets the tab error, which is
-  the real answer for it.
-- The refusal when a task has no supervised browser session no longer describes
-  the call as a fill. `sign_in` goes through the same helper, so the text now
-  names neither action.
+### Changes
 
-### Browser as a service
+Bitwarden sign-in:
 
-- New optional service `web-browser` (compose profile `web-browser`,
-  `WEB_BROWSER_ENABLED=0` by default): Debian's Chromium, headful on Xvfb in a
-  container of its own, behind a CDP gateway that gives each client its own
-  token and refuses whole-jar cookie and storage reads, `Fetch` beyond Hermes'
-  dialog bridge, and `file:` or browser-internal URLs. A noVNC viewer on
-  `127.0.0.1:6080` shows the screen for a sign-in by hand or a CAPTCHA;
-  `make web-browser-viewer` prints the URL and the password's path. The
-  browser interface it serves is [docs/contracts/browser.md](docs/contracts/browser.md).
-- With the service on, the bootstraps point the attended profiles they manage
-  (the default and `browser`) at it through `browser.cdp_url`, never the
-  unattended `api-server` one, and put that client's token in each profile's
-  `.env`. Only a value the stack wrote is replaced or removed — it records it in
-  `.web-browser-cdp-url` beside `config.yaml` — so an endpoint Boundary or you
-  set is left alone. With the service off, the next bootstrap run takes the
-  stack's own value back out.
-- The Bitwarden broker no longer shares the `hermes` container's network
-  namespace. It joins three internal networks: `credentials`, which carries its
-  API and which only `hermes` joins, `browser`, the route to the `web-browser`
+- `sign_in` finds the site's login page rather than trusting the item's saved
+  URI, which is often an invitation, a password reset or a deep link that
+  opens no form. It tries the item's reusable URIs in stored order, then the
+  site root, then `/login`, `/signin`, `/sign-in`, `/auth/login` and
+  `/users/sign_in`, and keeps the first page holding a password or identifier
+  field: at most six pages, each on an origin the item allows. A URI that
+  looks single-use is never opened, since navigating to one can spend it: an
+  invitation, reset, activation, verification or magic link, named in whole or
+  in part by a path segment, or a token in the last path segment, a query
+  parameter or the fragment. When no candidate holds a login form the last
+  page comes back as a snapshot for the agent to carry on from. The signer
+  gained one route for this, `POST /session/navigate`, which moves an open
+  session to another allowed URL and starts no second browser.
+- `browser_vault` `fill` and `enter_code` refuse a Bitwarden item that has no
+  `agent-in-page-fill` custom field, with `sign_in_only`, and `list` marks
+  those items `sign_in_only: true`. A second optional field,
+  `agent-signin-idp` (origins separated by commas), lets a sign-in follow a
+  redirect to an identity provider; nothing is filled and no session is handed
+  over on those origins.
+- A sign-in-only login refuses a `fill` with `sign_in_only` even when the
+  broker has no way to reach the agent's browser. `_bwbroker_fill` used to run
+  its tab and CDP checks first, so where those failed the agent was told to
+  open the page and retry a fill, which a sign-in-only item can never satisfy.
+  Seen live from a Boundary chat, where the agent tried `fill` twice and never
+  reached `sign_in`. A login that is in-page fillable still gets the tab error.
+- The refusal when a task has no supervised browser session no longer
+  describes the call as a fill; `sign_in` goes through the same helper.
+- `scripts/vault.sh status --json` ends with one more line,
+  `{"signer":"<state>"}`: `ready`, `busy`, `sandbox_unavailable`, or `down`
+  when the broker is not running or does not answer for it. Account lines are
+  unchanged, so a client that reads them by key is unaffected. The broker's
+  `GET /health` carries the same state, `python3 -m broker.cli signer` prints
+  it, and `make doctor` reports it in the Bitwarden section.
+- `addons/bitwarden/addon.json` lists `bitwarden-signin` among the add-on's
+  services, so `addon.sh enable bitwarden` builds and starts it and `disable`
+  stops it.
+
+Bitwarden broker:
+
+- The broker no longer shares the `hermes` container's network namespace. It
+  joins three internal networks: `credentials`, which carries its API and
+  which only `hermes` joins, `browser`, the route to the `web-browser`
   service, and `vault`, the route to the local Vaultwarden. A fourth network,
-  `bitwarden-egress`, which only the broker joins, carries `bw login`, `unlock`
-  and `sync` to Bitwarden's servers and, through `host.docker.internal`
-  (`extra_hosts: host-gateway`), reaches Boundary's relay on the host. Recreating or restarting `hermes` now leaves the broker
-  running, with its `manual` accounts still unlocked, and nothing has to follow
-  `hermes` afterwards: `./scripts/vault.sh follow-hermes` is gone, as is the
-  `make doctor` check for a broker in the wrong namespace.
+  `bitwarden-egress`, which only the broker joins, carries `bw login`,
+  `unlock` and `sync` to Bitwarden's servers and, through
+  `host.docker.internal` (`extra_hosts: host-gateway`), reaches Boundary's
+  relay on the host. Recreating or restarting `hermes` now leaves the broker
+  running, with its `manual` accounts still unlocked, and nothing has to
+  follow `hermes` afterwards: `./scripts/vault.sh follow-hermes` is gone, as
+  is the `make doctor` check for a broker in the wrong namespace.
 - The broker's API takes a bearer token, from `broker-api/api-token` under the
   add-on's data dir. `make ensure-local` and `scripts/setup.sh` create it, and
   `hermes` mounts that one folder read-only so the plugin and the fill overlay
@@ -183,103 +171,132 @@ the stack under another app.
   Boundary's relay, which writes its endpoint and token into
   `secrets/boundary.url` and `secrets/boundary.token` under the add-on's data
   dir. The endpoint Boundary writes must name `host.docker.internal` or
-  `host.containers.internal`; any other host reads as `cdp_unavailable`, so the
-  broker's egress never carries the token elsewhere. An unknown name is refused
-  with `unknown_browser`. Before this a fill
-  only worked in the Chromium inside `hermes`, so a Boundary chat could neither
-  fill nor sign in.
+  `host.containers.internal`; any other host reads as `cdp_unavailable`, so
+  the broker's egress never carries the token elsewhere. An unknown name is
+  refused with `unknown_browser`. Before this a fill only worked in the
+  Chromium inside `hermes`, so a Boundary chat could neither fill nor sign in.
 - A fill reads the tab's URL with `Target.getTargetInfo` on the browser
   connection instead of the `/json/list` HTTP route, so a provider does not
   have to serve one.
 
-### New optional `.env` keys
+Vault freshness:
 
-- `WEB_BROWSER_ENABLED` (default 0) turns the browser service on.
-- `WEB_BROWSER_VIEWER_PORT` (default 6080) is the host port for its noVNC
-  viewer, published on `127.0.0.1` only. `WEB_BROWSER_MEM_LIMIT` (default 2g),
-  `WEB_BROWSER_SCREEN` and `WEB_BROWSER_WINDOW` size the container and its
-  screen.
+- `GET /items` on the broker syncs the vault first when its local copy may be
+  older than `BITWARDEN_ITEMS_SYNC_SECONDS`. Before this, an item added or
+  changed in Bitwarden was invisible to the agent until the next
+  `BITWARDEN_SYNC_MINUTES` tick, up to 10 minutes later. A listing inside the
+  interval serves the copy it has, so the cost is one `bw sync` per turn at
+  most.
+- The agent's Bitwarden listing no longer comes back empty while the vault
+  syncs. That sync takes ten seconds or more against a self-hosted server, and
+  the Hermes-side backend gave the call five seconds and listed nothing when
+  it ran out, so the first `browser_vault` `list` of a turn reported a vault
+  with no logins, with nothing in any log. That route now gets 45 seconds, the
+  deadline the sign-in actions already used.
+- A read that finds no password for an item syncs that account once and reads
+  again, instead of refusing on a copy that may be stale. This covers both
+  `sign_in` and the opt-in in-page `fill`, which read the same local copy.
+- A login whose password the agent's account cannot read refuses with the new
+  code `no_password` (HTTP 422 on `/fill` and the sign-in routes), not
+  `unavailable`. `unavailable` tells the agent to try again shortly, which is
+  wrong for a permission: Bitwarden's per-collection Hide Passwords leaves the
+  item and its username readable and the password not, and no retry clears
+  it. The message names both that and an item saved without a password.
+- `docker logs bitwarden-broker` carries a line per completed sync
+  (`<account>: synced (1.2s)`), and one when a sync is skipped because another
+  sync of that account is already running. A sync that worked used to log
+  nothing, so a vault that had not synced could not be told from one that had.
 
-### Upgrade steps
+Browser service:
 
-- The Bitwarden broker needs recreating on this upgrade, together with
-  `hermes`: `make ensure-local` writes the broker's new API token, and both
-  containers read it at start. `make up` does both.
-- To use the new browser service, set `WEB_BROWSER_ENABLED=1`, run `make up`,
-  and run the bootstraps (`make hermes-reload`) so the profiles pick up
-  `browser.cdp_url`. Keep it off to stay on the Chromium inside `hermes` or on
-  Boundary's browser; nothing changes for either.
-- Bitwarden logins are no longer filled into the agent's own page unless you
-  say so per item. Add a custom field `agent-in-page-fill` of type boolean,
-  value true, to each Bitwarden item you want filled the old way; without it
-  `browser_vault` `fill` and `enter_code` refuse that item with
-  `sign_in_only`, and the agent signs in through the new `bitwarden-signin`
-  browser instead. No existing item has the field, so every Bitwarden login
-  changes path at this upgrade.
-- Rebuild the Bitwarden broker on this upgrade:
-  `docker compose --profile core --profile bitwarden up -d --build
-  bitwarden-broker`. The broker's image carries the whole sign-in API, and
-  `make up` reuses the `bitwarden-broker:local` image it already has. A broker
-  built before this release answers none of the `/signin/` routes, so every
-  `browser_vault` sign-in action fails while `bitwarden-signin` starts and
-  reports `ready`; `scripts/vault.sh status --json` shows that broker as
-  `{"signer":"down"}`.
-- The Bitwarden add-on starts a second container, `bitwarden-signin`, under
-  the existing `bitwarden` compose profile, with a named volume
-  (`bitwarden_signin`) and a bridge network (`signin`) that compose creates.
-  `make up` and `scripts/addon.sh enable bitwarden` start it; nothing has to
-  be created first. Its image is built `FROM` the pinned Hermes agent image,
-  so the first `make up` after this upgrade builds it, and `make hermes-upgrade`
-  rebuilds it on a Hermes bump while `BITWARDEN_ENABLED=1`.
+- With `web-browser` on, the bootstraps point the attended profiles they
+  manage (the default and `browser`) at it through `browser.cdp_url`, never
+  the unattended `api-server` one, and put that client's token in each
+  profile's `.env`. Only a value the stack wrote is replaced or removed; it
+  records it in `.web-browser-cdp-url` beside `config.yaml`, so an endpoint
+  Boundary or you set is left alone. With the service off, the next bootstrap
+  run takes the stack's own value back out.
+- `make ensure-local` (`scripts/up.sh --prepare`) creates the browser
+  service's client tokens (`agent`, `credentials`, `viewer`) under
+  `${ASSISTANT_DATA_ROOT}/web-browser/secrets`, through the new
+  `scripts/web-browser-secrets.sh`, which `setup.sh` runs too. Before, only
+  `setup.sh` wrote them, so an install set up before the browser service had
+  none, and recreating `hermes` or `bitwarden-broker`, which bind-mount two of
+  them, left Docker-created directories at those paths. `setup.sh` also wrote
+  them under `WEB_BROWSER_DATA_DIR` (default `./data/web-browser`), which
+  nothing mounts, so with `ASSISTANT_DATA_ROOT` set the containers never saw
+  them. If a token path is already a directory, the script warns and names the
+  `rmdir` to run with the stack stopped.
 
-### Changes
+Host scripts:
 
-- The agent signs in to a website without the password reaching it. A new
-  service, `bitwarden-signin` (profile `bitwarden`), runs a Chromium of its
-  own on its own network, with a read-only root, no capabilities, a 768 MB
-  limit and a seccomp profile that lets Chromium's namespace sandbox start; it
-  never runs with `--no-sandbox`. The broker reaches it over a Unix socket in
-  the `bitwarden_signin` volume (mode 0600) and hands it the password or the
-  current TOTP code only at the moment it is written into a field. The agent
-  drives it through seven `browser_vault` actions — `sign_in`,
-  `signin_snapshot`, `signin_click`, `signin_type`, `signin_fill`,
-  `signin_finish` and `signin_cancel` — which return page snapshots with no
-  input values, scrubbed of every password and code the session filled. On
-  finish the broker copies the item's cookies and the page's `localStorage` and
-  `sessionStorage` into the agent's tab and the signer destroys its Chromium
-  and profile. The agent's browser then holds the site's session and can read
-  it; the password and the TOTP code do not enter `hermes` at all. Identity
-  provider cookies stay in the signer. One session runs at a time;
-  `BITWARDEN_SIGNIN_IDLE_MINUTES` (default 5) ends an idle one and
-  `BITWARDEN_SIGNIN_ACTION_SECONDS` (default 30) bounds one action. Cron turns
-  get no sign-in. `docs/bitwarden.md` has the whole path, including that the
-  `signin` network has unrestricted egress by design.
-- `sign_in` finds the site's login page rather than trusting the item's saved URI, which is
-  often an invitation, a password reset or a deep link that opens no form. It tries the
-  item's reusable URIs in stored order, then the site root, then `/login`, `/signin`,
-  `/sign-in`, `/auth/login` and `/users/sign_in`, and keeps the first page holding a
-  password or identifier field — at most six pages, each on an origin the item allows. A
-  URI that looks single-use is never opened, since navigating to one can spend it: an
-  invitation, reset, activation, verification or magic link, named in whole or in part by a
-  path segment, or a token in the last path segment, a query parameter or the fragment. When no
-  candidate holds a login form the last page comes back as a snapshot, as before, for the
-  agent to carry on from. The signer gained one route for this, `POST /session/navigate`,
-  which moves an open session to another allowed URL and starts no second browser.
-- `browser_vault` `fill` and `enter_code` refuse a Bitwarden item that has no
-  `agent-in-page-fill` custom field, with `sign_in_only`, and `list` marks
-  those items `sign_in_only: true`. A second optional field,
-  `agent-signin-idp` (origins separated by commas), lets a sign-in follow a
-  redirect to an identity provider; nothing is filled and no session is handed
-  over on those origins.
-- `scripts/vault.sh status --json` ends with one more line,
-  `{"signer":"<state>"}`: `ready`, `busy`, `sandbox_unavailable`, or `down`
-  when the broker is not running or does not answer for it. Account lines are
-  unchanged, so a client that reads them by key is unaffected. The broker's
-  `GET /health` carries the same state, `python3 -m broker.cli signer` prints
-  it, and `make doctor` reports it in the Bitwarden section.
-- `addons/bitwarden/addon.json` lists `bitwarden-signin` among the add-on's
-  services, so `addon.sh enable bitwarden` builds and starts it and `disable`
-  stops it.
+- Upgrade steps are hooks. `scripts/upgrade.sh --from VERSION [--json]` runs
+  `upgrades/vX.Y.Z.sh` for every release after VERSION, starts the stack with
+  the rebuilds and Hermes reload they ask for, and reports what only the user
+  can do as `needs_user`. The v0.3.15 and v0.3.16 steps are hooks. See
+  [docs/releasing.md](docs/releasing.md#upgrade-hooks).
+- New `scripts/install.sh --version vX.Y.Z --dir DIR [--json]` installs a
+  release on a host the app doesn't manage, or upgrades it there: checksum,
+  backup, file swap, setup, upgrade hooks, start and doctor, with a rollback
+  of the files when a step fails. Each pushed tag now gets a GitHub release
+  with `sovereign-agent-stack-vX.Y.Z.tar.gz` and its `.sha256`
+  (`.github/workflows/release.yml`). See
+  [docs/extending.md](docs/extending.md#install-on-another-host).
+- New `scripts/backup.sh` (`create`, `restore --from DIR`): archives the stack
+  directory with its `.env` and local configs, `data/`, `ASSISTANT_DATA_ROOT`,
+  each directory outside both that a compose bind mount takes from `.env`
+  (`VIKUNJA_FILES_DIR`, `SIGNAL_CLI_DATA_DIR` and the like, not the mail and
+  Messages indexes or OpenCode's workspace), and every named volume in
+  `docker compose --profile '*' config` except caches, `neo4j_logs`,
+  `bitwarden_signin`, `email_index` and `search_gate_data`, into
+  `./backups/<timestamp>-<version>/` (`BACKUP_DIR` or `--dest` to change).
+  It refuses while the stack runs unless given `--stop`. Restore moves each
+  data directory aside rather than deleting it, and restores parts outside the
+  stack (`SIGNAL_CLI_DATA_DIR`, say) only with `--with-dirs`. See
+  [docs/data-dir.md](docs/data-dir.md#backups).
+- New `scripts/status.sh --json`: the stack's version, Hermes image pins, the
+  host's OS, and each enabled service's state and published ports. Read-only,
+  and it works with the stack stopped. See
+  [docs/extending.md](docs/extending.md#stack-status).
+- New `scripts/env.sh set|unset KEY [VALUE] [--json]` for the `.env` keys a
+  client may change: `LLM_*` (not `LLM_PROXY_ADMIN_TOKEN`), `*_IMAGE`,
+  `*_IMAGE_TAG`, `HERMES_TERMINAL_BACKEND`, `CODING_*`, `CONTEXT_*` and
+  `CALDAV_TZ`. Add-on switches and `COMPOSE_PROFILES` are refused with
+  `use_addon_sh`. See
+  [docs/extending.md](docs/extending.md#client-writable-env-keys).
+- New `scripts/credentials.sh --json` prints `HERMES_DASHBOARD_PASSWORD`,
+  `HERMES_DASHBOARD_HANDOFF_SECRET`, `API_SERVER_KEY` and
+  `LLM_PROXY_ADMIN_TOKEN` as one JSON object, with `null` for a missing value
+  or a `change-me` placeholder. See
+  [docs/extending.md](docs/extending.md#credentials).
+- `make up` and `make ensure-local` run the new `scripts/up.sh`, so hosts
+  without `make` can start the stack the same way.
+- `install.sh`, `status.sh` and `backup.sh` take no compose-file or project
+  flags. The stack runs under its default project name with `.env` as its only
+  config; a second copy sets `COMPOSE_PROJECT_NAME` and `COMPOSE_FILE` there
+  ([docs/extending.md](docs/extending.md#run-a-second-copy)).
+- The add-on lock (`data/addons/.lock`) names its holder's client, from
+  `STACK_CLIENT`, and `STACK_LOCK_TIMEOUT=SECONDS` waits for a busy lock
+  instead of failing at once. A `busy` error from `addon.sh` or `env.sh` adds
+  `"holder":{"pid","client","since"}`. `scripts/env.sh` takes the same lock. A
+  lock written by an older `addon.sh` (a bare PID) is still read. See
+  [docs/extending.md](docs/extending.md#lock-and-rollback).
+- `.env` writes are atomic. `upsert_env` and `remove_env`
+  (`scripts/lib/env.sh`) write a temp file beside the target and rename it,
+  for a new key as well as a changed one, and keep the file's mode and, for a
+  symlinked `.env`, the link. The scripts that kept their own copies
+  (`setup.sh`, `data-dir.sh`, `corpus.sh` and others) now use them; those
+  appended a new key in place. Before, the temp file was in `$TMPDIR`, so on a
+  host where `/tmp` is another filesystem the final `mv` was a copy that a
+  stopped run could leave half written, and the file's mode became 0600.
+- Twenty has an add-on-level `local` setting that owns `TWENTY_LOCAL_ENABLED`,
+  as Actual's owns `ACTUAL_LOCAL_ENABLED`. `configure twenty` with
+  `{"local": false}` followed by `enable twenty` stops twenty-server,
+  twenty-worker, twenty-db and twenty-redis, syncs `COMPOSE_PROFILES` and
+  keeps hosted workspaces registered. `disable twenty` then `enable twenty` no
+  longer loses `TWENTY_LOCAL_ENABLED=1`. `setup.sh --crm` updates a stored
+  setting, and `setup.sh --budget` now does the same for Actual's. See
+  [docs/crm.md](docs/crm.md#turning-it-off).
 
 ## v0.3.15 — 2026-11-13
 
