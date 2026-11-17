@@ -134,7 +134,7 @@ case "$out" in *'"error":"stack_running"'*) ;; *) fail "running stack: $out" ;; 
 out="$(run --stop --json)" || fail "create failed: $out"
 [ "$(sort "${FAKE}/running" | tr '\n' ' ')" = "hermes postgres-db " ] \
   || fail "services not started again: $(cat "${FAKE}/running")"
-case "$out" in *'"phase":"done"'*'"parts":7'*) ;; *) fail "done line: $out" ;; esac
+case "$out" in *'"phase":"done"'*'"parts":7'*'"skipped":[]'*) ;; *) fail "done line: $out" ;; esac
 bdir="$(printf '%s' "$out" | sed -n 's/.*"path":"\([^"]*\)".*/\1/p')"
 [ -f "${bdir}/manifest.json" ] || fail "no manifest in ${bdir}"
 python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); assert [p["name"] for p in m["parts"]]==["stack","data","data-root","dir-SIGNAL_CLI_DATA_DIR","dir-VIKUNJA_FILES_DIR","volume-n8n_storage","volume-neo4j_data"], m' \
@@ -219,6 +219,31 @@ printf 'moved-v2\n' > "${stack}/data/hermes/state.txt"
 run restore --from "$bdir" --json > /dev/null || fail "restore into a moved stack failed"
 [ "$(cat "${stack}/data/hermes/state.txt")" = state-v1 ] || fail "moved stack's data not restored"
 [ ! -d "${tmp}/stack/data" ] || fail "restore recreated the old stack path"
+
+# --skip-volume leaves a named volume out and says so, and restore leaves that
+# volume as it is. A name compose doesn't know is refused.
+out="$(run --plan --skip-volume neo4j_data --json)"
+case "$out" in *volume-neo4j_data*) fail "--plan still has the skipped volume: $out" ;; esac
+case "$out" in *'"phase":"skip","volume":"neo4j_data"'*) ;; *) fail "--plan does not show the skip: $out" ;; esac
+out="$(run --skip-volume neo4j_data --skip-volume postgres_storage --json)" || fail "create --skip-volume failed: $out"
+case "$out" in *'"phase":"done"'*'"skipped":["neo4j_data","postgres_storage"]'*) ;; *) fail "skip done line: $out" ;; esac
+sbdir="$(printf '%s' "$out" | sed -n 's/.*"path":"\([^"]*\)".*/\1/p')"
+[ ! -e "${sbdir}/volume-neo4j_data.tar.gz" ] || fail "skipped volume was backed up"
+[ -f "${sbdir}/volume-n8n_storage.tar.gz" ] || fail "--skip-volume dropped another volume"
+python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); assert m["skipped"]==["neo4j_data","postgres_storage"], m' \
+  "${sbdir}/manifest.json" || fail "manifest skipped"
+printf 'graph-v2\n' > "${FAKE}/volumes/proj_neo4j_data/store"
+run restore --from "$sbdir" --json > /dev/null || fail "restore of a backup with a skipped volume failed"
+[ "$(cat "${FAKE}/volumes/proj_neo4j_data/store")" = graph-v2 ] || fail "restore touched the skipped volume"
+for bad in "--skip-volume nosuch" "--skip-volume"; do
+  set +e
+  # shellcheck disable=SC2086
+  out="$(run --json $bad 2> /dev/null)"
+  rc=$?
+  set -e
+  [ "$rc" = 2 ] || fail "${bad}: exit $rc ($out)"
+  case "$out" in *'"error":"bad_input"'*) ;; *) fail "${bad}: $out" ;; esac
+done
 
 # Not a backup.
 set +e

@@ -24,7 +24,8 @@ case "$1 $2" in
   "info "*|"compose version") exit 0 ;;
   "compose stop") echo "docker compose stop" >> "$CALLS" ;;
   "compose config") printf '{\n  "name": "inst",\n  "services": {}\n}\n' ;;
-  "compose ps"|"volume ls"|"compose --profile") exit 0 ;;
+  "compose ps"|"volume ls") exit 0 ;;
+  "compose --profile") printf 'n8n_storage\nollama_data\n' ;;
   *) echo "unexpected docker $*" >&2; exit 1 ;;
 esac
 EOF
@@ -76,6 +77,7 @@ release v0.0.3 three '' 1
 
 # --- refusals before anything is written ----------------------------------------
 expect_error 2 bad_input --version 1.0
+expect_error 2 bad_input --version v0.0.1 --skip-volume
 expect_error 2 bad_input --version v0.0.1 --tarball "$(tarball v0.0.1)" --sha256 x --dir ""
 mkdir -p "${tmp}/gitdir/.git"
 set +e
@@ -98,7 +100,7 @@ expect_error 2 bad_input --version v0.0.2 --tarball "$(tarball v0.0.1)" --sha256
 mkdir -p "${tmp}/rel/v0.0.1"
 cp "$(tarball v0.0.1)" "$(tarball v0.0.1).sha256" "${tmp}/rel/v0.0.1/"
 : > "$CALLS"
-out="$(STACK_RELEASE_BASE="file://${tmp}/rel" inst --version v0.0.1 -- --coding)" || fail "fresh install: $out"
+out="$(STACK_RELEASE_BASE="file://${tmp}/rel" inst --version v0.0.1 --skip-volume ollama_data -- --coding)" || fail "fresh install: $out"
 [ "$(jget "$out" 'd["fresh"], d["previous_version"], d["doctor"]')" = "(True, None, 'passed')" ] || fail "fresh done: $out"
 { [ "$(cat "${DIR}/code.txt")" = one ] && [ -f "${DIR}/gone.txt" ]; } || fail "fresh files"
 [ "$(cat "$CALLS")" = "$(printf 'setup --non-interactive --coding\nup v0.0.1 \ndoctor')" ] || fail "fresh calls: $(cat "$CALLS")"
@@ -115,7 +117,7 @@ printf 'SETUP=1\nMINE=keep\n' > "${DIR}/.env"
 printf 'override\n' > "${DIR}/docker-compose.override.yml"
 printf 'chats\n' > "${DIR}/data/hermes/state.txt"
 : > "$CALLS"
-out="$(inst --version v0.0.2 --tarball "$(tarball v0.0.2)")" || fail "upgrade: $out"
+out="$(inst --version v0.0.2 --tarball "$(tarball v0.0.2)" --skip-volume ollama_data)" || fail "upgrade: $out"
 [ "$(cat "${DIR}/code.txt")" = two ] || fail "upgrade code"
 [ ! -e "${DIR}/gone.txt" ] || fail "a file v0.0.2 dropped is still there"
 grep -q '^MINE=keep$' "${DIR}/.env" || fail ".env lost"
@@ -128,8 +130,18 @@ backup="$(jget "$out" 'd["backup"]')"
 { [ -f "${backup}/stack.tar.gz" ] && [ -f "${backup}/data.tar.gz" ]; } || fail "no backup at ${backup}"
 tar -tzf "${backup}/stack.tar.gz" | grep -q 'install-tmp' && fail "backup holds the install temp dir"
 head -1 "$CALLS" | grep -qx 'docker compose stop' || fail "upgrade did not stop first: $(cat "$CALLS")"
+python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); assert m["skipped"]==["ollama_data"], m' \
+  "${backup}/manifest.json" || fail "--skip-volume did not reach the backup"
 
 expect_error 2 bad_input --version v0.0.1 --tarball "$(tarball v0.0.1)"
+
+# A volume name the backup refuses fails as bad_input, with the old release
+# started again and nothing changed.
+: > "$CALLS"
+expect_error 2 bad_input --version v0.0.3 --tarball "$(tarball v0.0.3)" --skip-volume nosuch
+[ "$(jget "$out" 'd["step"], d["rolledBack"]')" = "('backup', False)" ] || fail "bad skip name: $out"
+[ "$(cat "${DIR}/code.txt")" = two ] || fail "a refused backup changed files"
+tail -1 "$CALLS" | grep -q '^up v0.0.2' || fail "old release not started after a refused backup: $(cat "$CALLS")"
 
 # --- a failed upgrade rolls back the files and starts the old release -------------
 : > "$CALLS"

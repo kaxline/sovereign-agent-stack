@@ -2,7 +2,8 @@
 # Install the stack at a release into a folder, or upgrade that install.
 #
 #   scripts/install.sh --version vX.Y.Z --dir DIR
-#       [--tarball FILE [--sha256 HEX]] [--json] [-- SETUP_ARGS...]
+#       [--tarball FILE [--sha256 HEX]] [--skip-volume NAME]... [--json]
+#       [-- SETUP_ARGS...]
 #
 # Self-contained: it can run on its own, copied to a host that has no stack
 # yet. It needs bash, tar, gzip, sha256sum or shasum, the Docker CLI with
@@ -25,6 +26,10 @@
 # step after the backup fails, the old release's files and config come back
 # from the backup and the old stack is started again. Data is not rolled back:
 # the error names the backup to restore with `scripts/backup.sh restore`.
+# --skip-volume NAME, repeatable, is passed to that backup, which leaves the
+# named volume out (one of downloaded models, say); a fresh install ignores
+# it. A name the backup refuses fails the upgrade as bad_input before anything
+# changes.
 #
 # The same VERSION again re-runs setup, the start and doctor. An older VERSION
 # is refused, as is a DIR that is a git checkout (upgrade those with git and
@@ -47,15 +52,20 @@ TARBALL=""
 SHA=""
 JSON=0
 setup_args=()
+skip_args=()
+SKIP_BAD=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --version) VERSION="${2:-}"; shift 2 || shift ;;
     --dir) DIR="${2:-}"; shift 2 || shift ;;
     --tarball) TARBALL="${2:-}"; shift 2 || shift ;;
     --sha256) SHA="${2:-}"; shift 2 || shift ;;
+    --skip-volume)
+      [[ -n "${2:-}" && "$2" != -* ]] || { SKIP_BAD=1; shift; continue; }
+      skip_args+=(--skip-volume "$2"); shift 2 ;;
     --json) JSON=1; shift ;;
     --) shift; setup_args=("$@"); break ;;
-    -h | --help) sed -n '2,41p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h | --help) sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) printf 'error: unknown option %s\n' "$1" >&2; exit 2 ;;
   esac
 done
@@ -146,6 +156,7 @@ new_key="$(version_key "$VERSION")" || fail bad_input "--version ${VERSION} is n
 [[ -n "$DIR" ]] || fail bad_input "--dir DIR is required"
 [[ "$DIR" == /* ]] || DIR="$(pwd)/${DIR}"
 DIR="${DIR%/}"
+[[ "$SKIP_BAD" == 0 ]] || fail bad_input "--skip-volume needs a volume name"
 [[ -e "${DIR}/.git" ]] && fail bad_input "${DIR} is a git checkout; upgrade it with git checkout ${VERSION}, scripts/setup.sh and scripts/upgrade.sh"
 
 OS="$(uname -s)"
@@ -281,9 +292,13 @@ fi
 step stop docker compose stop || fail command_failed "stopping the stack failed"
 step_done
 if [[ "$PREV" != "$VERSION" ]]; then
-  if ! step backup bash scripts/backup.sh create --dest "${DIR}/backups" --json; then
+  if ! step backup bash scripts/backup.sh create --dest "${DIR}/backups" ${skip_args[@]+"${skip_args[@]}"} --json; then
     (cd "$DIR" && bash scripts/up.sh) > /dev/null 2>&1 \
       || fail command_failed "the backup failed and starting ${PREV} again failed too; nothing else was changed"
+    # backup.sh refusing its input (a --skip-volume name) is the caller's to fix.
+    if grep -q '"error":"bad_input"' "$LOG"; then
+      fail bad_input "the backup refused its input; ${PREV} was started again and nothing else was changed"
+    fi
     fail command_failed "the backup failed; ${PREV} was started again and nothing else was changed"
   fi
   BACKUP="$(sed -n 's/.*"phase":"done","path":"\([^"]*\)".*/\1/p' "$LOG" | tail -1)"

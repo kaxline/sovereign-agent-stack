@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Back up the stack's data, or restore a backup.
 #
-#   scripts/backup.sh [create] [--dest DIR] [--stop] [--plan] [--json]
+#   scripts/backup.sh [create] [--dest DIR] [--stop] [--skip-volume NAME]...
+#       [--plan] [--json]
 #   scripts/backup.sh restore --from DIR [--stop] [--with-dirs] [--json]
 #
 # create writes DIR/<UTC timestamp>-<version>/ (DIR defaults to BACKUP_DIR,
@@ -25,6 +26,10 @@
 #               actual_mcp_rw_cache), neo4j_logs and bitwarden_signin, and
 #               email_index and search_gate_data, which hold mail and agents'
 #               search history and can be rebuilt (SKIP_VOLUMES).
+#               --skip-volume NAME, repeatable, leaves out NAME as well (a
+#               volume of models that can be pulled again, say). NAME must be
+#               a named volume in that config, else bad_input. The names are
+#               listed as "skipped" in manifest.json and the done line.
 #
 # Postgres (the db add-on, Vikunja, Twenty) and Hermes' SQLite files live in
 # data/, so a copy is consistent only with the stack stopped. Both commands
@@ -39,7 +44,8 @@
 # path. It refuses a backup stored inside a directory it would replace. Each
 # directory is moved aside to PATH.pre-restore-<timestamp> before unpacking,
 # then what create left out (mail indexes, older backups) is moved back from
-# there; it deletes nothing. A volume's current contents are
+# there; it deletes nothing. A volume the backup has no part for, skipped or
+# not, is left as it is. A volume's current contents are
 # saved to <backup>/pre-restore-<timestamp>/ before it is emptied and unpacked.
 # The stack part is not restored; unpack stack.tar.gz by hand if needed.
 #
@@ -54,7 +60,8 @@
 # {"phase":"done",...} or {"phase":"error","error":REASON,"step":PART|null,
 # "message":TEXT,"logTail":[...]}. REASON is bad_input (exit 2),
 # stack_running (exit 1) or command_failed (exit 4). --plan prints the parts
-# create would write, as {"phase":"part",...} lines, and writes nothing.
+# create would write, as {"phase":"part",...} lines, and a
+# {"phase":"skip","volume":NAME} line per --skip-volume, and writes nothing.
 #
 # bash 3.2 compatible.
 set -euo pipefail
@@ -84,6 +91,7 @@ STOP=0
 PLAN=0
 DEST=""
 FROM=""
+SKIP_REQUESTED=""
 if [[ $# -gt 0 && ( "$1" == create || "$1" == restore ) ]]; then
   CMD="$1"
   shift
@@ -106,7 +114,11 @@ while [[ $# -gt 0 ]]; do
     --with-dirs) WITH_DIRS=1; shift ;;
     --dest) DEST="${2:-}"; shift 2 || fail bad_input "--dest needs a directory" ;;
     --from) FROM="${2:-}"; shift 2 || fail bad_input "--from needs a directory" ;;
-    -h | --help) sed -n '2,57p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --skip-volume)
+      [[ -n "${2:-}" && "$2" != -* ]] || fail bad_input "--skip-volume needs a volume name"
+      case " ${SKIP_REQUESTED} " in *" $2 "*) ;; *) SKIP_REQUESTED="${SKIP_REQUESTED:+${SKIP_REQUESTED} }$2" ;; esac
+      shift 2 ;;
+    -h | --help) sed -n '2,64p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) fail bad_input "unknown option $1" ;;
   esac
 done
@@ -268,8 +280,12 @@ collect_parts() {
   local names v vol
   names="$(docker compose --profile '*' config --volumes 2> /dev/null | LC_ALL=C sort)" \
     || fail command_failed "docker compose config failed, so the named volumes are unknown"
+  for v in $SKIP_REQUESTED; do
+    printf '%s\n' "$names" | grep -qxF -- "$v" \
+      || fail bad_input "--skip-volume ${v}: no named volume ${v} in docker compose --profile '*' config"
+  done
   for v in $names; do
-    case " ${SKIP_VOLUMES} " in *" ${v} "*) continue ;; esac
+    case " ${SKIP_VOLUMES} ${SKIP_REQUESTED} " in *" ${v} "*) continue ;; esac
     vol="$(volume_for "$v")"
     [[ -n "$vol" ]] && add_part volume "volume-${v}" "$vol" ""
   done
@@ -307,11 +323,17 @@ cmd_create() {
   [[ -n "$PROJECT" ]] || fail command_failed "could not work out the compose project name"
   collect_parts
 
-  local i excl
+  local i excl v skipped=""
+  for v in $SKIP_REQUESTED; do skipped="${skipped:+${skipped},}$(jl_str "$v")"; done
+  skipped="[${skipped}]"
   if [[ "$PLAN" == 1 ]]; then
     for i in "${!P_KIND[@]}"; do
       emit "{\"phase\":\"part\",\"part\":$(jl_str "${P_NAME[$i]}"),\"kind\":\"${P_KIND[$i]}\",\"source\":$(jl_str "${P_SRC[$i]}"),\"exclude\":$(jl_str "${P_EXCL[$i]}")}"
       say "${P_NAME[$i]}: ${P_SRC[$i]}${P_EXCL[$i]:+ (without ${P_EXCL[$i]})}"
+    done
+    for v in $SKIP_REQUESTED; do
+      emit "{\"phase\":\"skip\",\"volume\":$(jl_str "$v")}"
+      say "volume-${v}: left out (--skip-volume)"
     done
     return 0
   fi
@@ -360,11 +382,11 @@ cmd_create() {
       printf '{"kind":"%s","name":"%s","source":%s,"file":"%s","bytes":%s}' \
         "$kind" "$name" "$(jl_str "$src")" "$file" "$(file_bytes "${out}/${file}")"
     done < "${out}/parts.tsv"
-    printf ']}\n'
+    printf '],"skipped":%s}\n' "$skipped"
   } > "${out}/manifest.json"
 
   restart_stopped
-  jl_done "\"path\":$(jl_str "$out"),\"version\":$(jl_str "$version"),\"parts\":${#P_KIND[@]},\"bytes\":${total}"
+  jl_done "\"path\":$(jl_str "$out"),\"version\":$(jl_str "$version"),\"parts\":${#P_KIND[@]},\"bytes\":${total},\"skipped\":${skipped}"
   say "Backup written to ${out}"
 }
 

@@ -662,7 +662,11 @@ the tarball the release workflow attaches to each tag
 from GitHub (`STACK_RELEASE_BASE` changes the URL prefix). The checksum is
 always checked; it shows the file is intact, not who made it. Arguments after
 `--` go to `scripts/setup.sh --non-interactive`. `--mail`, `--mail-drafts` and
-`--messages` are refused on Linux.
+`--messages` are refused on Linux. `--skip-volume NAME`, repeatable, is
+passed to the backup an upgrade runs, which leaves that volume out
+(`--skip-volume ollama_data` for a host that serves its own models); a fresh
+install ignores it, and a name the backup refuses fails the upgrade with
+`bad_input` before anything changes.
 
 A fresh install unpacks the release, runs setup, `scripts/up.sh` and
 `scripts/doctor.sh`. An upgrade stops the stack, backs it up into

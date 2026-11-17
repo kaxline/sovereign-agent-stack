@@ -85,13 +85,20 @@ part and a `manifest.json` listing them:
 | `data` | `./data`, without `*.bak-*` folders, `backups/`, `worktree-backups/` and the host mail and Messages indexes (`mail/`, `messages/`, `messages-events/`), which the host helpers rebuild |
 | `data-root` | `ASSISTANT_DATA_ROOT`, when it is not `./data` |
 | `dir-KEY` | each directory a bind mount takes from `.env` that is outside the stack and both roots: every `${KEY:-default}` bind source in `docker-compose.yml` and `compose/` (`SIGNAL_CLI_DATA_DIR`, `VIKUNJA_FILES_DIR`, `MAIL_DRAFTS_DIR`, `DB_DATA_DIR` and so on), plus any `*DATA_DIR` set in `.env`. Left out: the mail and Messages indexes, the uv cache and OpenCode's workspace |
-| `volume-NAME` | each named volume in `docker compose --profile '*' config` that exists, so a disabled add-on's volume is kept too. Left out: the caches (`hermes_uv_cache`, `actual_mcp_ro_cache`, `actual_mcp_rw_cache`), `neo4j_logs`, `bitwarden_signin`, and `email_index` and `search_gate_data`, which hold mail and agents' search history and can be rebuilt. `ollama_data` (downloaded models) is included and can be large |
+| `volume-NAME` | each named volume in `docker compose --profile '*' config` that exists, so a disabled add-on's volume is kept too. Left out: the caches (`hermes_uv_cache`, `actual_mcp_ro_cache`, `actual_mcp_rw_cache`), `neo4j_logs`, `bitwarden_signin`, and `email_index` and `search_gate_data`, which hold mail and agents' search history and can be rebuilt. `ollama_data` (downloaded models) is included and can be large; `--skip-volume ollama_data` leaves it out |
 
 The Postgres of the `db` add-on, Vikunja and Twenty, and Hermes' SQLite files,
 live under `data/`, and a copy of them is consistent only with the stack
 stopped. `backup.sh` refuses while any service runs; `--stop` stops the stack
 and starts the same services again afterwards. `--plan` lists the parts
-without writing anything. tar runs as root in the pinned Hermes image, so it
+without writing anything.
+
+`--skip-volume NAME`, repeatable, leaves out one more named volume, such as
+`ollama_data` when the models can be pulled again. A name that isn't a named
+volume in `docker compose --profile '*' config` exits 2 with `bad_input`.
+`manifest.json` and the `done` line list the names under `skipped`, so a
+backup shows that a volume was left out on request and isn't missing.
+`restore` leaves a skipped volume as it is. tar runs as root in the pinned Hermes image, so it
 can read files the database containers own on Linux, and keeps their owners.
 
 A backup holds every secret in the stack. The folder is created with mode 700;

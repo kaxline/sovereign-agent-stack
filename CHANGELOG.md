@@ -237,7 +237,10 @@ Host scripts:
   `docker compose --profile '*' config` except caches, `neo4j_logs`,
   `bitwarden_signin`, `email_index` and `search_gate_data`, into
   `./backups/<timestamp>-<version>/` (`BACKUP_DIR` or `--dest` to change).
-  It refuses while the stack runs unless given `--stop`. Restore moves each
+  It refuses while the stack runs unless given `--stop`. `--skip-volume NAME`
+  (repeatable) leaves out one more volume, such as `ollama_data`, and the
+  manifest and `done` line list it under `skipped`; `install.sh
+  --skip-volume NAME` passes it to the backup an upgrade runs. Restore moves each
   data directory aside rather than deleting it, and restores parts outside the
   stack (`SIGNAL_CLI_DATA_DIR`, say) only with `--with-dirs`. See
   [docs/data-dir.md](docs/data-dir.md#backups).
