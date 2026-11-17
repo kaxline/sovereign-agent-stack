@@ -230,7 +230,7 @@ add_part() {
 }
 
 collect_parts() {
-  local data root dest_rel="" line key val path
+  local data root dest_rel="" key def val path
   data="${ROOT}/data"
   root="$(resolve_data_root_path)"
   root="${root%/}"

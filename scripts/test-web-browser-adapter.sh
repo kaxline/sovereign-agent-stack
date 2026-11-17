@@ -23,6 +23,7 @@ IMAGE="$HERMES_IMAGE"
 # The unattended identity gets no browser: the api bootstrap runs the shared
 # steps, so it writes the default profile's value and never its own.
 grep -q 'set_browser_cdp_url ""' "$BOOTSTRAP" || fail "the bootstrap writes the default profile's browser.cdp_url"
+# shellcheck disable=SC2016 # matches the literal "$PROFILE" in the bootstrap
 grep -q 'set_browser_cdp_url "$PROFILE"' "$BOOTSTRAP" || fail "a bootstrap of its own writes its profile's browser.cdp_url"
 
 # Both bootstraps read the agent token, and no other service does: it is the
@@ -114,6 +115,7 @@ EOF
 out="$(docker run --rm --entrypoint /bin/sh -v "$work:/w" -v "$work/hh:/h" "$IMAGE" /w/run.sh 2>&1)" \
   || fail "the adapter run failed: $out"
 said() { printf '%s\n' "$out" | grep -qx -- "$1" || fail "$2 (output: $out)"; }
+# shellcheck disable=SC2016 # the adapter writes the token as an unexpanded reference
 WANT='ws://web-browser:9222/devtools/browser/stack?token=${WEB_BROWSER_AGENT_TOKEN}'
 BOUNDARY='ws://host.docker.internal:40000/devtools/browser/boundary?token=abc'
 said "off-empty url= token=0 marker=no" "with the service off there is nothing to write"
