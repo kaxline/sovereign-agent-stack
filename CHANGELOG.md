@@ -6,19 +6,6 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
-## Unreleased
-
-### Changes
-
-- `scripts/sessions.sh export --dest DIR` and `import --from DIR` move chat
-  history between installs (CR 0039 R1-R3). Export writes one JSON lines file
-  per Hermes profile and a manifest; import loads each into the profile of the
-  same name through Hermes' `SessionDB.import_sessions`, with session ids
-  kept, while the gateway runs. A profile the target lacks is reported as
-  `profile_missing`, never folded into another. `--json` prints counts and
-  session ids only. Attachments and cached media are not carried. See
-  [docs/sessions.md](docs/sessions.md).
-
 ## v0.3.16 — 2026-11-17
 
 ### Upgrade steps
@@ -272,6 +259,14 @@ Host scripts:
   `LLM_PROXY_ADMIN_TOKEN` as one JSON object, with `null` for a missing value
   or a `change-me` placeholder. See
   [docs/extending.md](docs/extending.md#credentials).
+- `scripts/sessions.sh export --dest DIR` and `import --from DIR` move chat
+  history between installs (CR 0039 R1-R3). Export writes one JSON lines file
+  per Hermes profile and a manifest; import loads each into the profile of the
+  same name through Hermes' `SessionDB.import_sessions`, with session ids
+  kept, while the gateway runs. A profile the target lacks is reported as
+  `profile_missing`, never folded into another. `--json` prints counts and
+  session ids only. Attachments and cached media are not carried. See
+  [docs/sessions.md](docs/sessions.md).
 - `make up` and `make ensure-local` run the new `scripts/up.sh`, so hosts
   without `make` can start the stack the same way.
 - `install.sh`, `status.sh` and `backup.sh` take no compose-file or project
