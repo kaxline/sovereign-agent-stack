@@ -14,7 +14,15 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 hermes_image_gate "${1:-}" "sessions.sh"
 
 tmp="$(mktemp -d)"
-trap '[ -n "${KEEP:-}" ] || rm -rf "$tmp"' EXIT
+# The image writes as the hermes user; on a Linux bind mount the caller could
+# not delete those files, so hand everything back before removing it.
+cleanup() {
+  [ -z "${KEEP:-}" ] || return 0
+  docker run --rm -u 0 -v "${tmp}:/t" --entrypoint chown "$HERMES_IMAGE" -R "$(id -u):$(id -g)" /t \
+    > /dev/null 2>&1 || true
+  rm -rf "$tmp"
+}
+trap cleanup EXIT
 src="${tmp}/src"
 dst="${tmp}/dst"
 mkdir -p "${src}/profiles/coder" "${src}/profiles/writer" "${dst}/profiles/coder"
@@ -103,8 +111,10 @@ if grep -q 'SECRET-' "${tmp}/export.jsonl" "${tmp}/import.jsonl" "${tmp}/export.
   fail "output carries titles or message text"
 fi
 
-# The target holds the same rows as the source.
-$(py_in "$tmp") - <<'PY' || fail "target rows differ from the source"
+# The target holds the same rows as the source. src and dst are mounted on
+# their own: $tmp is the caller's mode-700 directory, closed to the hermes user.
+docker run --rm -i -u hermes -v "${src}:/opt/data/src" -v "${dst}:/opt/data/dst" -w /opt/hermes \
+  --entrypoint /opt/hermes/.venv/bin/python "$HERMES_IMAGE" - <<'PY' || fail "target rows differ from the source"
 import sqlite3
 def rows(path):
     c = sqlite3.connect(path)

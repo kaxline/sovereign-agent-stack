@@ -269,6 +269,14 @@ Host scripts:
   [docs/sessions.md](docs/sessions.md).
 - `make up` and `make ensure-local` run the new `scripts/up.sh`, so hosts
   without `make` can start the stack the same way.
+- On Linux, `setup.sh` writes the caller's uid and gid to `HERMES_UID` and
+  `HERMES_GID` when it creates `.env`. With the example's 1000 on a host whose
+  user is not uid 1000, `hermes-api-bootstrap` could not write `data/hermes`
+  and a fresh install stopped at its first start. An existing `.env` keeps its
+  values; on Linux they must still equal the user who runs the stack.
+- When a one-shot service such as a bootstrap exits non-zero during `up.sh`,
+  the last 15 lines of its log follow Compose's error, so `install.sh`'s
+  `logTail` carries the reason.
 - `install.sh`, `status.sh` and `backup.sh` take no compose-file or project
   flags. The stack runs under its default project name with `.env` as its only
   config; a second copy sets `COMPOSE_PROJECT_NAME` and `COMPOSE_FILE` there

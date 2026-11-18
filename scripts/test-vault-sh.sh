@@ -408,7 +408,7 @@ find "$INST" | sort | cmp -s - "$tmp/inst.before" || fail "up-hook changed the i
 # make up runs scripts/up.sh, which holds the start sequence.
 grep -A2 -E '^up:' "${ROOT}/Makefile" | grep -q 'scripts/up.sh' || fail "make up runs scripts/up.sh"
 grep -q 'vault.sh up-hook' "${ROOT}/scripts/up.sh" || fail "up.sh calls vault.sh up-hook"
-awk '/vault.sh pre-up/ { p = NR } /^docker compose up -d$/ { u = NR } END { exit !(p && u && p < u) }' "${ROOT}/scripts/up.sh" \
+awk '/vault.sh pre-up/ { p = NR } /^(if ! )?docker compose up -d(; then)?$/ { u = NR } END { exit !(p && u && p < u) }' "${ROOT}/scripts/up.sh" \
   || fail "up.sh runs vault.sh pre-up before docker compose up"
 
 # --- reload-plugins: the running gateway after a bootstrap changed a profile ---

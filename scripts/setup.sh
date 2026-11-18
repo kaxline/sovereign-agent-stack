@@ -802,6 +802,14 @@ fi
 if [[ ! -f .env ]]; then
   cp .env.example .env
   log "Created .env from .env.example"
+  # On Linux the Hermes services run as HERMES_UID:HERMES_GID over bind mounts
+  # this user creates, so the two must be this user's ids. Docker Desktop maps
+  # ownership and keeps the example's 1000. An existing .env is left alone.
+  if [[ "$(uname -s)" == Linux ]]; then
+    upsert_env .env HERMES_UID "$(id -u)"
+    upsert_env .env HERMES_GID "$(id -g)"
+    log "Set HERMES_UID=$(id -u) and HERMES_GID=$(id -g) for this user"
+  fi
 else
   log "Using existing .env"
 fi

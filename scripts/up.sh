@@ -57,7 +57,17 @@ mkdir -p compose/postgres/services
 
 echo "Profiles: $(grep -E '^COMPOSE_PROFILES=' .env | head -1 | cut -d= -f2-)"
 ./scripts/vault.sh pre-up
-docker compose up -d
+# A one-shot service that exits non-zero (a bootstrap, say) fails the whole
+# `up` with only its name; print the end of its log, which says why.
+if ! docker compose up -d; then
+  docker compose ps -a --status exited --format '{{.Service}} {{.ExitCode}}' 2> /dev/null \
+    | while read -r svc code; do
+      [[ -n "$svc" && "$code" != 0 ]] || continue
+      echo "--- ${svc} exited ${code}; the end of its log:" >&2
+      docker compose logs --no-color --no-log-prefix --tail 15 "$svc" >&2 || true
+    done
+  exit 1
+fi
 ./scripts/vault.sh up-hook
 
 if [[ ${#builds[@]} -gt 0 ]]; then

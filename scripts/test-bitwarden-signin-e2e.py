@@ -511,6 +511,15 @@ Writes /tmp/e2e-status.json when the flows are done and then waits for
 """
 import glob, json, os, subprocess, sys, tempfile, time, urllib.request
 
+# The searcher reads this process's memory from a separate `docker exec`, not
+# as its parent. Under Yama ptrace_scope 1 (Ubuntu, GitHub's runners) that is
+# refused unless this process names a tracer; Docker Desktop has no Yama.
+try:
+    import ctypes
+    ctypes.CDLL(None, use_errno=True).prctl(0x59616D61, ctypes.c_ulong(-1), ctypes.c_ulong(0), ctypes.c_ulong(0), ctypes.c_ulong(0))  # PR_SET_PTRACER, ANY
+except (OSError, AttributeError):
+    pass
+
 CONF = json.load(open("/test/config.json"))
 SITE, IDP, TASK = CONF["site_origin"], CONF["idp_origin"], CONF["task_id"]
 # Not a canary: the stand-in may hold it. Carried in the tab's URL so it also reaches the
@@ -931,7 +940,8 @@ def expect_control(report: dict, *surfaces: str) -> None:
     """Every named surface must have shown the control value, or its canary search reached nothing."""
     missing = sorted(set(surfaces) - set(report.get("control_surfaces") or ()))
     expect(not missing, f"the control value was not found on {missing}; the canary search does "
-                        "not reach those surfaces, so a clean run there means nothing")
+                        "not reach those surfaces, so a clean run there means nothing "
+                        f"(stats {report.get('stats')})")
 
 
 def wait_for(what: str, probe, seconds: float, detail=lambda: "") -> None:

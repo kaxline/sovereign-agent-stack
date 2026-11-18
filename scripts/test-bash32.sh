@@ -96,6 +96,26 @@ printf 'ADDON_ACTUAL_LOCAL=0\n' > "$actual_settings"
 check "setup.sh --budget sets a stored Actual local setting to 1" \
   sh -c './scripts/setup.sh --non-interactive --workspace demo --budget >/dev/null 2>&1 && grep -qx "ADDON_ACTUAL_LOCAL=1" "$1"' sh "$actual_settings"
 rm -f "$actual_settings"
+# On Linux a new .env gets this user's ids for HERMES_UID/GID; an existing one
+# keeps its own. A uname stub stands in for Linux.
+cp .env "${tmp}/env.keep"
+mkdir -p "${tmp}/linux-bin"
+printf '#!/bin/sh\necho Linux\n' > "${tmp}/linux-bin/uname"
+chmod +x "${tmp}/linux-bin/uname"
+rm -f .env
+# shellcheck disable=SC2016  # $1 is expanded by sh -c
+check "setup.sh on Linux writes this user's ids to a new .env" \
+  sh -c 'PATH="$1:$PATH" ./scripts/setup.sh --non-interactive --workspace demo >/dev/null 2>&1 \
+    && grep -qx "HERMES_UID=$(id -u)" .env && grep -qx "HERMES_GID=$(id -g)" .env' sh "${tmp}/linux-bin"
+sed -i.bak -e 's/^HERMES_UID=.*/HERMES_UID=4242/' .env
+# shellcheck disable=SC2016  # $1 is expanded by sh -c
+check "setup.sh on Linux keeps HERMES_UID in an existing .env" \
+  sh -c 'PATH="$1:$PATH" ./scripts/setup.sh --non-interactive --workspace demo >/dev/null 2>&1 \
+    && grep -qx "HERMES_UID=4242" .env' sh "${tmp}/linux-bin"
+rm -f .env
+check "setup.sh elsewhere keeps the example's HERMES_UID" \
+  sh -c './scripts/setup.sh --non-interactive --workspace demo >/dev/null 2>&1 && grep -qx "HERMES_UID=1000" .env'
+cp "${tmp}/env.keep" .env
 printf 'x\n' > "${tmp}/key"
 sed -i.bak -e 's|^TWENTY_ENCRYPTION_KEY=.*|TWENTY_ENCRYPTION_KEY=|' -e 's|^TWENTY_DB_PASSWORD=.*|TWENTY_DB_PASSWORD=|' .env
 printf 'TWENTY_ENCRYPTION_KEY_FILE=%s\nTWENTY_DB_PASSWORD_FILE=%s\n' "${tmp}/key" "${tmp}/key" >> .env

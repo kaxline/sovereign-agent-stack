@@ -80,3 +80,12 @@ jobs:
             sleep 2
           done
           test "$(docker compose exec -T postgres-db sh -c 'psql -tA -U postgres -d "$POSTGRES_DB" -c "SELECT v FROM install_test"')" = marker
+      - name: Container state and logs on failure
+        if: failure()
+        run: |
+          cd "$HOME/stack" 2> /dev/null || exit 0
+          docker compose ps -a
+          for svc in $(docker compose ps -a --status exited --format '{{.Service}}'); do
+            echo "--- ${svc}"
+            docker compose logs --no-color --tail 60 "$svc"
+          done
