@@ -6,50 +6,7 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
-## Unreleased
-
-### Upgrade steps
-
-- Run `make ensure-local` (or `scripts/up.sh`), then recreate the terminal
-  service (`hermes-worker`, or `hermes` with `HERMES_TERMINAL_BACKEND=local`)
-  and `hermes`. The first writes `ASSISTANT_STACK_DIR`; the recreates pick up
-  the new mount and environment hint. An app that drives `docker compose`
-  without `scripts/up.sh` sets `ASSISTANT_STACK_DIR` to the checkout's
-  absolute path itself. Unset, the mask lands on `/opt/assistant-stack/data`
-  and hides nothing.
-
-### New `.env` keys
-
-- `ASSISTANT_STACK_DIR`: absolute path of the checkout, written by
-  `scripts/sync-terminal-backend.sh` when unset or no longer a checkout. It
-  isn't written through a symlinked `.env`, so a worktree sharing main's
-  `.env` leaves it pointing at main.
-
-### Changes
-
-- **Persona location (Boundary CR 0040 R1)**: `HERMES_ENVIRONMENT_HINT` says
-  that the identity text at the top of the prompt is the profile's `SOUL.md`.
-  Asked to show it, the agent quotes that text; asked to change it, the agent
-  writes nothing and points the person to their client or to
-  `data/hermes/profiles/<profile>/SOUL.md` on the host. The hint also says
-  that `/opt/data` exists only in the `hermes` container, so with the ssh
-  backend the file and terminal tools can't see it. Before this, agents denied that SOUL.md
-  existed, looked for it under `/opt/data` on the worker, or overwrote another
-  checkout's `SOUL.md` found through a coding root. CR 0040 R2 (a read-only
-  copy of each `SOUL.md` in the worker) is not done: the prompt already
-  carries the text.
-- **Checkout `data/` hidden from the terminal backend**: `hermes-worker` (or
-  `hermes` on the local backend) mounts the empty read-only
-  `compose/hermes/worker/masked` over `$ASSISTANT_STACK_DIR/data`. When the
-  repo sits under a coding root, the agent's file and terminal tools
-  previously reached `state.db`, profile `.env` files and every `SOUL.md`
-  through the host path. OpenCode's mounts are unchanged; shadow its secrets
-  as before ([docs/opencode.md](docs/opencode.md#hiding-secrets-from-the-agent)).
-  `make doctor` checks `ASSISTANT_STACK_DIR` and warns about any other
-  stack checkout (a directory with `docker-compose.yml` and `data/hermes`)
-  within four levels of a coding root.
-
-## v0.3.16 — 2026-11-17
+## v0.3.16 — 2026-11-18
 
 ### Upgrade steps
 
@@ -75,6 +32,14 @@ the stack under another app.
   browser instead. No existing item has the field, so every Bitwarden login
   changes path at this upgrade. The hook reports this as `needs_user`
   `bitwarden-in-page-fill`.
+- The terminal service (`hermes-worker`, or `hermes` with
+  `HERMES_TERMINAL_BACKEND=local`) and `hermes` are recreated with a new mount
+  and environment hint (CR 0040 R1, under Changes). `upgrade.sh` does both: it
+  starts the stack through `scripts/up.sh`, which writes `ASSISTANT_STACK_DIR`
+  and then recreates them. An app that drives `docker compose` without
+  `scripts/up.sh` sets `ASSISTANT_STACK_DIR` to the checkout's absolute path
+  itself; unset, the mask lands on `/opt/assistant-stack/data` and hides
+  nothing.
 
 ### New services
 
@@ -124,6 +89,11 @@ the stack under another app.
   vault copy may be before `GET /items` syncs first. 0 syncs on every listing.
 - `BITWARDEN_SIGNIN_IDLE_MINUTES` (default 5) ends an idle sign-in session;
   `BITWARDEN_SIGNIN_ACTION_SECONDS` (default 30) bounds one sign-in action.
+- `ASSISTANT_STACK_DIR`: the checkout's absolute path, which the terminal
+  backend's mask over `data/` needs. `scripts/sync-terminal-backend.sh`
+  (run by `make ensure-local` and `scripts/up.sh`) writes it when unset or no
+  longer a checkout, but not through a symlinked `.env`, so a worktree sharing
+  main's `.env` leaves it pointing at main.
 - `CALDAV_TZ` sets caldav-mcp's time zone without moving Hermes, the
   bootstraps or web-browser. Unset, it falls back to `TZ`, then UTC, so
   installs without it are unchanged. `scripts/env.sh` accepts it. See
@@ -257,6 +227,29 @@ Browser service:
   nothing mounts, so with `ASSISTANT_DATA_ROOT` set the containers never saw
   them. If a token path is already a directory, the script warns and names the
   `rmdir` to run with the stack stopped.
+
+Hermes prompt and terminal (Boundary CR 0040 R1):
+
+- `HERMES_ENVIRONMENT_HINT` says that the identity text at the top of the
+  prompt is the profile's `SOUL.md`. Asked to show it, the agent quotes that
+  text; asked to change it, the agent writes nothing and points the person to
+  their client or to `data/hermes/profiles/<profile>/SOUL.md` on the host. The
+  hint also says that `/opt/data` exists only in the `hermes` container, so
+  with the ssh backend the file and terminal tools can't see it. Before this,
+  agents denied that `SOUL.md` existed, looked for it under `/opt/data` on the
+  worker, or overwrote another checkout's `SOUL.md` found through a coding
+  root. CR 0040 R2 (a read-only copy of each `SOUL.md` in the worker) is not
+  done: the prompt already carries the text.
+- The terminal backend (`hermes-worker`, or `hermes` on the local backend)
+  mounts the empty read-only `compose/hermes/worker/masked` over
+  `$ASSISTANT_STACK_DIR/data`. When the repo sits under a coding root, the
+  agent's file and terminal tools previously reached `state.db`, profile
+  `.env` files and every `SOUL.md` through the host path. OpenCode's mounts
+  are unchanged; shadow its secrets as before
+  ([docs/opencode.md](docs/opencode.md#hiding-secrets-from-the-agent)).
+  `make doctor` checks `ASSISTANT_STACK_DIR` and warns about any other stack
+  checkout (a directory with `docker-compose.yml` and `data/hermes`) within
+  four levels of a coding root.
 
 Host scripts:
 
