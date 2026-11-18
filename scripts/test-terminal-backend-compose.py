@@ -21,8 +21,25 @@ KEY_TARGET = "/opt/hermes-ssh/id_ed25519"
 KEY_INIT = "/etc/cont-init.d/09-install-worker-key"
 
 
+STACK_DIR = "/Users/you/code/assistant"
+MASK_TARGET = f"{STACK_DIR}/data"
+
+
 def load_config(backend: str) -> dict:
-    return compose_config.render("core", {"HERMES_TERMINAL_BACKEND": backend})
+    return compose_config.render(
+        "core", {"HERMES_TERMINAL_BACKEND": backend, "ASSISTANT_STACK_DIR": STACK_DIR})
+
+
+def check_mask(label: str, service: dict) -> list[str]:
+    vol = by_target(service, MASK_TARGET)
+    if vol is None:
+        return [f"{label}: checkout data/ is not masked at {MASK_TARGET}"]
+    errors = []
+    if not read_only(vol):
+        errors.append(f"{label}: data/ mask must be read-only")
+    if not str(vol.get("source") or "").endswith("/compose/hermes/worker/masked"):
+        errors.append(f"{label}: data/ mask has the wrong source")
+    return errors
 
 
 def binds(service: dict) -> list[dict]:
@@ -96,6 +113,9 @@ def check_ssh(config: dict) -> list[str]:
         errors.append("ssh: hermes must not mount the coding workspace")
     if worker.get("ports"):
         errors.append("ssh: hermes-worker publishes a host port")
+    errors += check_mask("ssh: hermes-worker", worker)
+    if by_target(hermes, MASK_TARGET):
+        errors.append("ssh: hermes must not mount the data/ mask")
     return errors
 
 
@@ -129,6 +149,7 @@ def check_local(config: dict) -> list[str]:
         errors.append("local: hermes must not mount the worker private key")
     if by_target(hermes, KEY_INIT):
         errors.append("local: hermes must not install the worker key")
+    errors += check_mask("local: hermes", hermes)
     return errors
 
 

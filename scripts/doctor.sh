@@ -1605,6 +1605,31 @@ elif [[ "$terminal_backend" == "local" ]]; then
   ok "local terminal backend does not use the worker key"
 fi
 
+# The terminal backend hides this checkout's data/ at ASSISTANT_STACK_DIR/data.
+# Other stack checkouts under a coding root stay reachable unless masked by hand.
+stack_dir="$(env_get ASSISTANT_STACK_DIR)"
+if [[ "$stack_dir" == "$ROOT" ]] || { [[ -n "$stack_dir" ]] && [[ "$stack_dir/docker-compose.yml" -ef "$ROOT/docker-compose.yml" ]]; }; then
+  ok "ASSISTANT_STACK_DIR names this checkout (data/ hidden from the terminal backend)"
+elif [[ -n "$stack_dir" && -f "$stack_dir/docker-compose.yml" ]]; then
+  ok "ASSISTANT_STACK_DIR=${stack_dir} (shared .env; this worktree's data/ is not masked)"
+else
+  warn "ASSISTANT_STACK_DIR unset or stale — run make ensure-local, then recreate the terminal service"
+fi
+coding_roots=("$(env_get OPENCODE_WORKSPACE_HOST)")
+IFS=':' read -r -a _extra_roots <<< "$(env_get CODING_EXTRA_ROOTS)"
+coding_roots+=(${_extra_roots[@]+"${_extra_roots[@]}"})
+for _root in "${coding_roots[@]}"; do
+  [[ -n "$_root" && -d "$_root" ]] || continue
+  while IFS= read -r _hermes_dir; do
+    _checkout="${_hermes_dir%/data/hermes}"
+    [[ -f "$_checkout/docker-compose.yml" ]] || continue
+    [[ "$_checkout/docker-compose.yml" -ef "$ROOT/docker-compose.yml" ]] && continue
+    [[ -n "$stack_dir" && "$_checkout" == "$stack_dir" ]] && continue
+    warn "coding root exposes another stack's Hermes state: ${_checkout}/data"
+    warn "  hide it on $( [[ "$terminal_backend" == local ]] && echo hermes || echo hermes-worker ) in docker-compose.override.yml (docs/opencode.md#hiding-secrets-from-the-agent)"
+  done < <(find "$_root" -maxdepth 4 \( -name node_modules -o -name .git -o -name worktrees \) -prune -o -type d -path '*/data/hermes' -print 2>/dev/null)
+done
+
 # Profile config.yaml must match the env var or the shell runs in the wrong place.
 if [[ -n "$terminal_backend" ]]; then
   backend_mismatch="$(python3 - "$terminal_backend" <<'PY'

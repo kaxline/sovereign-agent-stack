@@ -35,6 +35,18 @@ case "$backend" in
   *) die "HERMES_TERMINAL_BACKEND must be ssh or local (got ${backend})" ;;
 esac
 
+# The terminal service mounts an empty directory over this checkout's data/ at
+# its host path, so a coding root that contains the repo can't reach Hermes
+# state. Compose has no variable for the project directory, so record it.
+# A value that still points at a stack checkout is kept, and a symlinked .env
+# (a git worktree sharing main's) is left alone, so a worktree never repoints
+# the mask away from main.
+stack_dir="$(env_get ASSISTANT_STACK_DIR)"
+if [[ ! -L .env ]] && [[ -z "$stack_dir" || ! -f "$stack_dir/docker-compose.yml" ]]; then
+  upsert_env .env ASSISTANT_STACK_DIR "$ROOT"
+  log "Set ASSISTANT_STACK_DIR=$ROOT"
+fi
+
 coding="$(env_get CODING_EXTRA_ROOTS)"
 context="$(env_get CONTEXT_EXTRA_ROOTS)"
 override="$ROOT/docker-compose.override.yml"

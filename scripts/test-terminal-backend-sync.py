@@ -139,6 +139,39 @@ def main() -> None:
             errors.append(f"defaulting backend failed: {proc.stderr or proc.stdout}")
         elif "HERMES_TERMINAL_BACKEND=ssh" not in (root / ".env").read_text():
             errors.append("missing backend was not defaulted to ssh")
+        elif f"ASSISTANT_STACK_DIR={root}" not in (root / ".env").read_text():
+            errors.append("missing ASSISTANT_STACK_DIR was not set to the checkout")
+
+        # A worktree shares main's .env: a value naming another checkout stays.
+        with tempfile.TemporaryDirectory() as other:
+            (Path(other) / "docker-compose.yml").write_text("services: {}\n")
+            write_env(root, "ssh", "", "")
+            with (root / ".env").open("a") as fh:
+                fh.write(f"ASSISTANT_STACK_DIR={other}\n")
+            proc = run_sync(root)
+            if proc.returncode != 0:
+                errors.append(f"sync with a valid ASSISTANT_STACK_DIR failed: {proc.stderr}")
+            elif f"ASSISTANT_STACK_DIR={other}" not in (root / ".env").read_text():
+                errors.append("sync repointed an ASSISTANT_STACK_DIR that names a checkout")
+
+        # A symlinked .env (a worktree sharing main's) is never written.
+        with tempfile.TemporaryDirectory() as main_dir:
+            real = Path(main_dir) / ".env"
+            real.write_text("HERMES_TERMINAL_BACKEND=ssh\n")
+            (root / ".env").unlink()
+            (root / ".env").symlink_to(real)
+            proc = run_sync(root)
+            if proc.returncode != 0 or "ASSISTANT_STACK_DIR" in real.read_text():
+                errors.append("sync wrote ASSISTANT_STACK_DIR through a symlinked .env")
+            (root / ".env").unlink()
+
+        # A stale value (no checkout there any more) is replaced.
+        write_env(root, "ssh", "", "")
+        with (root / ".env").open("a") as fh:
+            fh.write("ASSISTANT_STACK_DIR=/nonexistent/old-checkout\n")
+        proc = run_sync(root)
+        if proc.returncode != 0 or f"ASSISTANT_STACK_DIR={root}" not in (root / ".env").read_text():
+            errors.append("sync kept a stale ASSISTANT_STACK_DIR")
 
     checks = Checks()
     for err in errors:
