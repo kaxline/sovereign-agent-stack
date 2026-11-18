@@ -558,6 +558,13 @@ preamble, no sycophancy, no hype). Then start a **new** WebUI thread; the
 system prompt is built at session start, so continuing an old chat will not
 pick up the edit. No Hermes restart is required.
 
+With the ssh terminal backend (the default) the agent can't reach its own
+`SOUL.md`: its file and terminal tools run in `hermes-worker`, which has no
+`/opt/data`, and the worker hides this checkout's `data/` at its host path.
+`HERMES_ENVIRONMENT_HINT` tells the agent that its identity text is the
+profile's `SOUL.md`: asked to show it, the agent quotes the prompt; asked to
+change it, it points you to this file or your client and writes nothing.
+
 `/personality` presets are session overlays on top of soul. Fine for a one-off
 mode switch; a poor loop for shaping the baseline, and this lean WebUI (gateway
 mode, no agent source in the UI container) is a weak place to drive them.

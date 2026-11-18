@@ -28,3 +28,9 @@ services:
       - ${ASSISTANT_DATA_ROOT:-./data}/voice:/opt/voice
       - ${ASSISTANT_DATA_ROOT:-./data}/memory:/opt/memory
       - ${OPENCODE_WORKSPACE_HOST}:${OPENCODE_WORKSPACE_HOST}
+      # Hides this checkout's data/ at its host path, as on hermes-worker
+      # (compose/hermes/terminal-ssh.yml says why).
+      - type: bind
+        source: ./compose/hermes/worker/masked
+        target: ${ASSISTANT_STACK_DIR:-/opt/assistant-stack}/data
+        read_only: true

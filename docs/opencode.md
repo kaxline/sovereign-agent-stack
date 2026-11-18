@@ -92,6 +92,8 @@ find "$OPENCODE_WORKSPACE_HOST" -name '.env' -not -path '*/node_modules/*'
 
 Two caveats come with this. The list is a point-in-time snapshot: a new `.env` in a new project stays exposed until you add it, so re-run that `find` whenever you add repos. And a shadowed `.env` really is empty as far as the agent is concerned, which means OpenCode cannot debug anything that depends on real values. `.env.example` stays readable, so it can still see the expected shape.
 
+The Hermes terminal backend (`hermes-worker`, or `hermes` with the local backend) already hides this checkout's `data/`: it mounts the empty read-only `compose/hermes/worker/masked` over `$ASSISTANT_STACK_DIR/data`, which `make ensure-local` records. That covers Hermes' `state.db`, profile `.env` files and `SOUL.md` files, for that service only. Another stack checkout under a coding root isn't covered; `make doctor` names any it finds within four levels, and you hide each one the same way under that service in `docker-compose.override.yml`.
+
 ## Web search and deep research (MCP)
 
 OpenCode is pre-configured with two MCP sidecars in `opencode/opencode.local.json`:

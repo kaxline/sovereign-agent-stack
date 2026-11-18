@@ -48,6 +48,11 @@ def main() -> int:
     check("Project folders that are also host folders" not in hint, "dev: alias sentence without aliases")
     check("make coding-root-add" not in hint, "dev: coding access should defer to the needs_access hint")
     check("follow the hint in that result" in hint, "dev: needs_access deferral missing")
+    check("hermes-worker, which has no /opt/data" in hint, "dev: /opt/data reach sentence missing")
+    check("is your\n" not in hint and "Hermes profile's SOUL.md" in hint.replace("\n", " "),
+          "dev: persona source sentence missing")
+    check("write nothing" in hint, "dev: SOUL.md change rule missing")
+    check("data/hermes/profiles/<profile>/SOUL.md" in hint, "dev: SOUL.md host path missing")
     mcp = env_of(dev["opencode-mcp"])
     check(not mcp.get("CODING_ROOTS_APP_MANAGED"), "dev: opencode-mcp flag should be empty")
     check(not mcp.get("CODING_PATH_ALIASES"), "dev: opencode-mcp aliases should be empty")

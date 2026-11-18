@@ -1884,7 +1884,17 @@ services:
       # y when V is unset but V's own value when set. The set branch therefore
       # wraps that value: "(CONTEXT_ROOTS_APP_MANAGED=1)".
       - "HERMES_ENVIRONMENT_HINT=Mount layout: /opt/data holds Hermes' own config
-        and state, not the user's work. The user's material lives on separate mounts
+        and state, not the user's work. /opt/data exists only in the hermes
+        container: when the terminal backend is ssh, your file and terminal
+        tools run in hermes-worker, which has no /opt/data.
+        Your persona: the identity text at the start of this prompt is your
+        Hermes profile's SOUL.md, kept in the profile's home under /opt/data.
+        Asked to show it, quote that text from this prompt. Asked to change it,
+        write nothing: tell the person to edit it from their client, or on the
+        host at data/hermes/profiles/<profile>/SOUL.md (data/hermes/SOUL.md for
+        the default profile). Never search for a SOUL.md and never write one; a
+        SOUL.md under /opt/projects, /opt/memory or a coding root belongs to
+        something else. The user's material lives on separate mounts
         that no path under /opt/data can reach: /opt/projects (per-project working
         directories, read-write), /opt/voice (writing-voice corpora, read-write),
         /opt/memory (curated long-form notes, read-write), and /opt/skills

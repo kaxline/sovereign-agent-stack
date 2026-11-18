@@ -24,6 +24,14 @@ services:
       - ${ASSISTANT_DATA_ROOT:-./data}/memory:/opt/memory
       - ${OPENCODE_WORKSPACE_HOST}:${OPENCODE_WORKSPACE_HOST}
       - ./compose/hermes/skills:/opt/skills:ro
+      # This checkout's data/ (Hermes state.db, profile .env files, every
+      # SOUL.md) sits under a coding root when the repo lives inside one.
+      # An empty read-only directory hides it at its host path. scripts/
+      # sync-terminal-backend.sh records the checkout in ASSISTANT_STACK_DIR.
+      - type: bind
+        source: ./compose/hermes/worker/masked
+        target: ${ASSISTANT_STACK_DIR:-/opt/assistant-stack}/data
+        read_only: true
     healthcheck:
       test: ["CMD", "nc", "-z", "127.0.0.1", "22"]
       interval: 5s
