@@ -471,7 +471,7 @@ if has_profile core; then
     bad "browser.env has no HERMES_WEBUI_GATEWAY_API_KEY — re-run ./scripts/setup.sh"
   fi
   for _env in compose/hermes/api-server.env compose/hermes/browser.env; do
-    _key="$(grep -E '^API_SERVER_KEY=' "$_env" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+    _key="$(env_get_file "$_env" API_SERVER_KEY)"
     if [[ ${#_key} -ge 16 ]]; then
       ok "${_env##*/} API_SERVER_KEY has 16+ characters"
     else

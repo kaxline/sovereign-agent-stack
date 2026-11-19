@@ -61,6 +61,22 @@ check_get DUP 'first'
 [ "$(ENV_FILE="${tmp}/none.env" env_get PLAIN dflt)" = dflt ] || fail "env_get without a file"
 (cd "$tmp" && cp "$g" .env && [ "$(env_get DQ)" = 'a b' ]) || fail "env_get reads ./.env by default"
 rm -f "${tmp}/.env"
+[ "$(env_get_file "$g" SQ)" = 'a b' ] || fail "env_get_file"
+
+# These read .env through lib/env.sh alone (AS-0006). install.sh keeps its
+# own reader because it runs before the checkout exists; the local copies in
+# the buzz, cron and sync scripts are still to be moved over.
+for s in scripts/doctor.sh scripts/coding-root.sh scripts/context-root.sh \
+  scripts/agent-create.sh scripts/lib/data-root.sh scripts/setup.sh scripts/up.sh \
+  scripts/lib/python.sh Makefile; do
+  if grep -q '^ *env_get() {' "${ROOT}/${s}"; then
+    fail "${s} defines its own env_get"
+  fi
+  # A KEY= reader; doctor's bw_get reads another format (spaces around =).
+  if grep -E -q '\^[A-Za-z_${}]+=.*cut -d= -f2-' "${ROOT}/${s}"; then
+    fail "${s} reads .env with grep | cut instead of env_get"
+  fi
+done
 
 # --- lib/env.sh: upsert_env and remove_env -------------------------------
 
