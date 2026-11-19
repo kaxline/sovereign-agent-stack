@@ -17,6 +17,13 @@ warn() { printf ' WARN %s\n' "$1"; WARN=$((WARN + 1)); }
 source "$ROOT/scripts/lib/env.sh"
 # shellcheck source=lib/python.sh
 source "$ROOT/scripts/lib/python.sh"
+# shellcheck source=lib/data-root.sh
+source "$ROOT/scripts/lib/data-root.sh"
+
+# The user data root as written, and as an absolute path. ASSISTANT_DATA_ROOT
+# from the environment wins over .env, as in compose, addon.sh and vault.sh.
+DATA_ROOT_RAW="${ASSISTANT_DATA_ROOT:-$(env_get ASSISTANT_DATA_ROOT ./data)}"
+DATA_ROOT="$(expand_user_path "$DATA_ROOT_RAW")"
 
 profiles_csv="$(env_get COMPOSE_PROFILES core)"
 IFS=',' read -r -a PROFILES <<< "$profiles_csv"
@@ -103,16 +110,10 @@ if has_profile core; then
 fi
 
 # --- User data root ---
-_DR="$(env_get ASSISTANT_DATA_ROOT ./data)"
-if [[ "$_DR" != /* ]]; then
-  _DR_ABS="${ROOT}/${_DR#./}"
+if [[ -d "$DATA_ROOT" ]]; then
+  ok "ASSISTANT_DATA_ROOT=${DATA_ROOT_RAW} (${DATA_ROOT})"
 else
-  _DR_ABS="$_DR"
-fi
-if [[ -d "$_DR_ABS" ]]; then
-  ok "ASSISTANT_DATA_ROOT=${_DR} (${_DR_ABS})"
-else
-  warn "ASSISTANT_DATA_ROOT=${_DR} missing — run: make data-dir-set DIR=${_DR}"
+  warn "ASSISTANT_DATA_ROOT=${DATA_ROOT_RAW} missing — run: make data-dir-set DIR=${DATA_ROOT_RAW}"
 fi
 if [[ -d "${ROOT}/data/hermes" ]]; then
   ok "Hermes state at ./data/hermes"
@@ -123,7 +124,7 @@ fi
 # --- Project file context ---
 echo
 echo "--- Project file context ---"
-_PROJ="${_DR_ABS}/projects"
+_PROJ="${DATA_ROOT}/projects"
 _CODING_PRIMARY="$(env_get OPENCODE_WORKSPACE_HOST)"
 _CODING_EXTRA="$(env_get CODING_EXTRA_ROOTS)"
 _CONTEXT_EXTRA="$(env_get CONTEXT_EXTRA_ROOTS)"
@@ -189,7 +190,7 @@ for vol in cfg.get("services", {}).get("hermes", {}).get("volumes", []):
       || true
   )
 fi
-unset _DR _DR_ABS _PROJ _CODING_PRIMARY _CODING_EXTRA _CONTEXT_EXTRA \
+unset _PROJ _CODING_PRIMARY _CODING_EXTRA _CONTEXT_EXTRA \
   _any_project _child _slug _idx_err _lvl _msg
 
 # --- Tool-search pins (browser / default) ---
@@ -756,12 +757,7 @@ if [[ "$buzz_enabled" -eq 1 ]]; then
   fi
   local_buzz="$(env_get BUZZ_LOCAL_DIR_PATH)"
   if [[ -n "$local_buzz" ]]; then
-    expanded_local="$local_buzz"
-    if [[ "$expanded_local" == "~" ]]; then
-      expanded_local="$HOME"
-    elif [[ "$expanded_local" == \~/* ]]; then
-      expanded_local="$HOME/${expanded_local#\~/}"
-    fi
+    expanded_local="$(expand_user_path "$local_buzz")"
     if [[ -d "$expanded_local" ]]; then
       ok "BUZZ_LOCAL_DIR_PATH is set"
     else
@@ -865,8 +861,7 @@ if [[ "$caldav_on" -eq 1 ]] || has_profile calendar; then
     [[ -f "$acc" ]] || continue
     warn "${acc} is no longer read — connect it with scripts/addon.sh connect caldav (docs/calendar.md), then delete it"
   done
-  # ASSISTANT_DATA_ROOT from the environment wins over .env, as in compose and addon.sh.
-  caldav_store="${ASSISTANT_DATA_ROOT:-$(env_get ASSISTANT_DATA_ROOT ./data)}/addons/caldav"
+  caldav_store="${DATA_ROOT}/addons/caldav"
   caldav_slugs=()
   for inst in "${caldav_store}"/instances/*.json; do
     [[ -f "$inst" ]] || continue
@@ -1104,15 +1099,7 @@ case "$bw_on" in 1|true|TRUE|yes|YES) bw_on=1 ;; *) bw_on=0 ;; esac
 bw_local="$(env_get BITWARDEN_LOCAL_ENABLED 0)"
 case "$bw_local" in 1|true|TRUE|yes|YES) bw_local=1 ;; *) bw_local=0 ;; esac
 # The add-on instance store, which the broker reads (instances/<slug>.json).
-# ASSISTANT_DATA_ROOT from the environment wins over .env, as in compose, addon.sh and vault.sh.
-bw_store="${ASSISTANT_DATA_ROOT:-$(env_get ASSISTANT_DATA_ROOT ./data)}"
-case "$bw_store" in
-  "~") bw_store="$HOME" ;;
-  \~/*) bw_store="$HOME/${bw_store#\~/}" ;;
-  /*) ;;
-  *) bw_store="${ROOT}/${bw_store#./}" ;;
-esac
-bw_instances="${bw_store}/addons/bitwarden/instances"
+bw_instances="${DATA_ROOT}/addons/bitwarden/instances"
 bw_files=0
 for f in "$bw_instances"/*.json; do [[ -f "$f" ]] && bw_files=$((bw_files + 1)); done
 # Account files from before the instance store; nothing reads them.
@@ -1131,13 +1118,7 @@ bw_json_get() {
 if [[ "$bw_on" -eq 1 || "$bw_local" -eq 1 || "$bw_files" -gt 0 || "$bw_old" -gt 0 ]]; then
   echo
   echo "--- Bitwarden ---"
-  bw_data="$(env_get BITWARDEN_HOST_DATA_DIR ./data/addons/bitwarden)"
-  case "$bw_data" in
-    "~") bw_data="$HOME" ;;
-    \~/*) bw_data="$HOME/${bw_data#\~/}" ;;
-    /*) ;;
-    *) bw_data="${ROOT}/${bw_data#./}" ;;
-  esac
+  bw_data="$(expand_user_path "$(env_get BITWARDEN_HOST_DATA_DIR ./data/addons/bitwarden)")"
   # The broker and bitwarden-setup run as HERMES_UID:HERMES_GID, which on Linux
   # must be you: earlier versions gave these folders to uid 10001.
   bw_own_fix="sudo chown -R \"\$(id -u):\$(id -g)\" ${bw_data}"
@@ -1494,11 +1475,6 @@ if has_profile rag; then
   echo
   echo "--- Knowledge corpus ---"
   WS="$(env_get WORKSPACE)"
-  DATA_ROOT="$(env_get ASSISTANT_DATA_ROOT ./data)"
-  # Resolve relative to repo root for existence checks
-  if [[ "$DATA_ROOT" != /* ]]; then
-    DATA_ROOT="${ROOT}/${DATA_ROOT#./}"
-  fi
   if [[ -n "$WS" ]]; then
     ok "active WORKSPACE=${WS}"
     if [[ -d "${DATA_ROOT}/inputs/${WS}" ]]; then

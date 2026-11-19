@@ -44,32 +44,14 @@ EOF
 log() { printf '[data-dir] %s\n' "$1"; }
 die() { printf '[data-dir] ERROR: %s\n' "$1" >&2; exit 1; }
 
-expand_user_path() {
-  local raw="$1"
-  [[ -n "$raw" ]] || die "path required"
-  if [[ "$raw" == "~" ]]; then
-    raw="$HOME"
-  elif [[ "$raw" == \~/* ]]; then
-    raw="$HOME/${raw#\~/}"
-  fi
-  if [[ "$raw" != /* ]]; then
-    raw="${ROOT}/${raw#./}"
-  fi
-  # Drop trailing slash
-  raw="${raw%/}"
-  if [[ -d "$raw" ]]; then
-    (cd "$raw" && pwd -P)
-  else
-    local parent base
-    parent="$(dirname "$raw")"
-    base="$(basename "$raw")"
-    if [[ -d "$parent" ]]; then
-      echo "$(cd "$parent" && pwd -P)/${base}"
-    else
-      mkdir -p "$parent"
-      echo "$(cd "$parent" && pwd -P)/${base}"
-    fi
-  fi
+# resolve_dir_arg PATH: PATH from the command line as an absolute, resolved
+# path. Creates its parent so the result is stable; never PATH itself.
+resolve_dir_arg() {
+  local path
+  [[ -n "$1" ]] || die "path required"
+  path="$(expand_user_path "$1")"
+  mkdir -p "$(dirname "$path")"
+  resolve_data_root_path "$path"
 }
 
 current_data_root() {
@@ -239,7 +221,7 @@ cmd_set() {
   [[ -n "$raw" ]] || die "Usage: data-dir.sh set <path>"
   local prev new
   prev="$(current_data_root)"
-  new="$(expand_user_path "$raw")"
+  new="$(resolve_dir_arg "$raw")"
   validate_data_root_path "$new" || exit 1
 
   ensure_user_data_layout "$new"
@@ -279,8 +261,8 @@ cmd_migrate() {
   fi
 
   local from to
-  from="$(expand_user_path "$from_raw")"
-  to="$(expand_user_path "$to_raw")"
+  from="$(resolve_dir_arg "$from_raw")"
+  to="$(resolve_dir_arg "$to_raw")"
   validate_data_root_path "$to" || exit 1
 
   if path_is_inside "$to" "$from" || path_is_inside "$from" "$to"; then

@@ -871,22 +871,9 @@ upsert_env .env OPENCODE_WORKSPACE_HOST "$OPENCODE_WORKSPACE_HOST"
 # gets there first it creates them owned by root. Hermes state stays under the
 # repo's data/hermes regardless of ASSISTANT_DATA_ROOT.
 if [[ -n "$ASSISTANT_DATA_ROOT_ARG" ]]; then
-  DATA_ROOT="$ASSISTANT_DATA_ROOT_ARG"
-  if [[ "$DATA_ROOT" == "~" ]]; then
-    DATA_ROOT="$HOME"
-  elif [[ "$DATA_ROOT" == \~/* ]]; then
-    DATA_ROOT="$HOME/${DATA_ROOT#\~/}"
-  fi
-  if [[ "$DATA_ROOT" != /* ]]; then
-    DATA_ROOT="${ROOT}/${DATA_ROOT#./}"
-  fi
-  DATA_ROOT="${DATA_ROOT%/}"
-  if [[ -d "$DATA_ROOT" ]]; then
-    DATA_ROOT="$(cd "$DATA_ROOT" && pwd -P)"
-  else
-    mkdir -p "$DATA_ROOT"
-    DATA_ROOT="$(cd "$DATA_ROOT" && pwd -P)"
-  fi
+  DATA_ROOT="$(expand_user_path "$ASSISTANT_DATA_ROOT_ARG")"
+  mkdir -p "$DATA_ROOT"
+  DATA_ROOT="$(resolve_data_root_path "$DATA_ROOT")"
 else
   existing="$(data_root_env_get ASSISTANT_DATA_ROOT "")"
   if [[ -n "$existing" && "$existing" != "./data" ]]; then

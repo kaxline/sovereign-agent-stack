@@ -27,18 +27,10 @@
 # scripts/lib/env.sh's env_get_file like every stack script.
 ENV_GET = bash -c '. scripts/lib/env.sh && env_get_file .env "$$@"' env-get
 
-# Resolve ASSISTANT_DATA_ROOT from .env (default ./data) to an absolute path.
+# Resolve ASSISTANT_DATA_ROOT from .env (default ./data) to an absolute path
+# with scripts/lib/data-root.sh's expand_user_path.
 define resolve_data_root
-ROOT_DIR=$$(pwd); \
-DR=$$($(ENV_GET) ASSISTANT_DATA_ROOT ./data); \
-case "$$DR" in \
-  "~") DR="$$HOME" ;; \
-  "~/"*) DR="$$HOME/$${DR#~/}" ;; \
-esac; \
-case "$$DR" in \
-  /*) DATA_ROOT="$$DR" ;; \
-  *) DATA_ROOT="$$ROOT_DIR/$${DR#./}" ;; \
-esac
+DATA_ROOT=$$(bash -c 'ROOT="$$PWD"; . scripts/lib/data-root.sh && expand_user_path "$$(data_root_env_get ASSISTANT_DATA_ROOT ./data)"')
 endef
 
 setup:

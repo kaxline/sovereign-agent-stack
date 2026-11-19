@@ -123,15 +123,6 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-abs_path() {
-  local p="$1"
-  [[ "$p" == "~" ]] && p="$HOME"
-  # shellcheck disable=SC2088  # a literal ~/ prefix from .env
-  [[ "${p:0:2}" == "~/" ]] && p="${HOME}/${p:2}"
-  [[ "$p" == /* ]] || p="${ROOT}/${p#./}"
-  printf '%s\n' "${p%/}"
-}
-
 # inside PATH DIR: whether PATH is DIR or under it.
 inside() { [[ "$1" == "$2" || "$1" == "$2/"* ]]; }
 
@@ -269,7 +260,7 @@ collect_parts() {
     val="$(env_get "$key")"
     [[ -n "$val" ]] || val="$def"
     [[ -n "$val" ]] || continue
-    path="$(abs_path "$val")"
+    path="$(expand_user_path "$val")"
     [[ -d "$path" ]] || continue
     inside "$path" "$data" && continue
     inside "$path" "$root" && continue
@@ -318,7 +309,7 @@ require_stopped() {
 }
 
 cmd_create() {
-  DEST="$(abs_path "${DEST:-${BACKUP_DIR:-./backups}}")"
+  DEST="$(expand_user_path "${DEST:-${BACKUP_DIR:-./backups}}")"
   PROJECT="$(project_name)"
   [[ -n "$PROJECT" ]] || fail command_failed "could not work out the compose project name"
   collect_parts
@@ -409,7 +400,7 @@ restore_left_out() {
 
 cmd_restore() {
   [[ -n "$FROM" ]] || fail bad_input "restore needs --from DIR"
-  FROM="$(abs_path "$FROM")"
+  FROM="$(expand_user_path "$FROM")"
   [[ -f "${FROM}/parts.tsv" ]] || fail bad_input "${FROM} has no parts.tsv; not a backup from scripts/backup.sh"
   PROJECT="$(project_name)"
   [[ -n "$PROJECT" ]] || fail command_failed "could not work out the compose project name"
@@ -432,7 +423,7 @@ cmd_restore() {
       dir-*)
         key="${name#dir-}"
         want="$(env_get "$key")"
-        [[ -n "$want" ]] && want="$(abs_path "$want")"
+        [[ -n "$want" ]] && want="$(expand_user_path "$want")"
         if [[ "$WITH_DIRS" != 1 ]]; then
           say "Skipping ${name} (${src}): outside the stack; pass --with-dirs to restore it"
           continue

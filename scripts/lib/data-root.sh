@@ -13,27 +13,33 @@ data_root_env_get() {
   env_get_file "${ROOT}/.env" "$@"
 }
 
-# Expand ~ and relative paths to absolute. Empty → default ./data under ROOT.
+# expand_user_path PATH: PATH as an absolute path, without touching the disk.
+# A leading ~ or ~/ becomes $HOME, a relative path is taken from ROOT (a leading
+# ./ dropped) and a trailing slash is dropped. Symlinks and .. are left alone.
+expand_user_path() {
+  local raw="$1"
+  if [[ "$raw" == "~" ]]; then
+    raw="$HOME"
+  elif [[ "$raw" == \~/* ]]; then
+    raw="$HOME/${raw#\~/}"
+  fi
+  [[ "$raw" == /* ]] || raw="${ROOT}/${raw#./}"
+  [[ "$raw" == / ]] || raw="${raw%/}"
+  printf '%s\n' "$raw"
+}
+
+# resolve_data_root_path [PATH]: expand_user_path, then resolve symlinks and ..
+# in PATH (or in its parent when PATH does not exist yet). Empty PATH means
+# ASSISTANT_DATA_ROOT from ${ROOT}/.env, default ./data.
 resolve_data_root_path() {
   local raw="${1:-}"
   if [[ -z "$raw" ]]; then
     raw="$(data_root_env_get ASSISTANT_DATA_ROOT ./data)"
   fi
-  # Expand leading ~
-  if [[ "$raw" == "~" ]]; then
-    raw="$HOME"
-  elif [[ "$raw" == "~/"* ]]; then
-    raw="$HOME/${raw#~/}"
-  fi
-  if [[ "$raw" != /* ]]; then
-    # Relative to repo root
-    raw="${ROOT}/${raw#./}"
-  fi
-  # Normalize (resolve .. and symlinks when the path exists; else clean manually)
+  raw="$(expand_user_path "$raw")"
   if [[ -d "$raw" ]]; then
     (cd "$raw" && pwd -P)
   else
-    # Strip trailing slash for consistency; parent may not exist yet
     local parent base
     parent="$(dirname "$raw")"
     base="$(basename "$raw")"

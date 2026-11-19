@@ -10,6 +10,13 @@ the stack under another app.
 
 ### Changes
 
+- `make doctor` resolves `ASSISTANT_DATA_ROOT` once and uses that path in
+  every section. With a root of `~` or `~/…` it used to warn that the root was
+  missing and check the projects dir and corpus inputs under the repo
+  (`./~/…`), and with an exported `ASSISTANT_DATA_ROOT` its data-root,
+  projects and corpus lines read `.env` instead. The line formats are
+  unchanged. `data-dir.sh`, `setup.sh --data-root`, `backup.sh` and the
+  Makefile now share `expand_user_path` in `scripts/lib/data-root.sh`.
 - `make coding-root-add` and `make context-root-add` quote a mount whose path
   contains a space, `#` or tab, as `make ensure-local` already did. A path
   with ` #` used to be written unquoted, and YAML read the rest of the line
