@@ -376,16 +376,36 @@ def load_sources(project_root: Path) -> tuple[list[Source], bool]:
     return sources_from_data(data), True
 
 
-def resolve_source_root(project_root: Path, spec: Source) -> Path:
+def _source_root_path(project_root: Path, spec: Source) -> Path:
     raw = spec.path
     if raw.startswith("~/"):
-        root = Path(raw).expanduser()
-    elif raw == "~":
+        return Path(raw).expanduser()
+    if raw == "~":
         raise SourcesError(f"source {spec.id}: path must not be $HOME alone")
-    elif raw == "." or not raw.startswith("/"):
-        root = (project_root / raw).resolve()
-    else:
-        root = Path(raw).expanduser()
+    if raw == "." or not raw.startswith("/"):
+        return (project_root / raw).resolve()
+    return Path(raw).expanduser()
+
+
+def is_project_local(project_root: Path, spec: Source) -> bool:
+    """True when the source is a relative path that stays inside the project.
+
+    Absolute and ~ paths are extra host roots, even if they happen to point
+    into the project, because containers mount the project elsewhere.
+    """
+    raw = spec.path
+    if raw.startswith(("/", "~")):
+        return False
+    root = project_root.resolve()
+    try:
+        (root / raw).resolve().relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def resolve_source_root(project_root: Path, spec: Source) -> Path:
+    root = _source_root_path(project_root, spec)
     if not root.is_dir():
         raise SourcesError(f"source {spec.id}: path is not a directory: {root}")
     return root.resolve()
@@ -474,16 +494,20 @@ def build_catalog(
     project_root: Path,
     *,
     cap: int = INDEX_CAP_PER_SOURCE,
+    local_only: bool = False,
 ) -> tuple[list[IndexedFile], list[str], bool]:
     """Walk sources and return (files, warnings, grouped).
 
     grouped is True when sources.yaml was present (INDEX should use source headings).
+    local_only skips sources outside the project (see is_project_local).
     """
     root = project_root.resolve()
     sources, explicit = load_sources(root)
     files: list[IndexedFile] = []
     warnings: list[str] = []
     for spec in sources:
+        if local_only and not is_project_local(root, spec):
+            continue
         source_root = resolve_source_root(root, spec)
         found = iter_source_files(source_root, spec)
         if cap and len(found) > cap:
@@ -575,7 +599,27 @@ def write_index(project_root: Path, *, cap: int = INDEX_CAP_PER_SOURCE) -> list[
     return warnings
 
 
-def catalog_is_fresh(project_root: Path, *, cap: int = INDEX_CAP_PER_SOURCE) -> bool:
+def _is_local_row(item: Any, local_ids: set[str]) -> bool:
+    if not isinstance(item, dict):
+        return True  # malformed; let the comparison report it stale
+    if "source_id" in item:
+        return item["source_id"] in local_ids
+    # Version 1 manifests have no source_id; extra roots used absolute paths.
+    return not str(item.get("path") or "").startswith("/")
+
+
+def catalog_is_fresh(
+    project_root: Path,
+    *,
+    cap: int = INDEX_CAP_PER_SOURCE,
+    local_only: bool = False,
+) -> bool:
+    """Compare the manifest with a fresh walk of the sources.
+
+    local_only checks only sources inside the project and ignores manifest rows
+    from the others, for callers that cannot see extra host roots
+    (hermes-webui's project-brief-prefill.py).
+    """
     manifest_path = project_root / MANIFEST_NAME
     if not manifest_path.is_file() or not (project_root / INDEX_NAME).is_file():
         return False
@@ -586,7 +630,13 @@ def catalog_is_fresh(project_root: Path, *, cap: int = INDEX_CAP_PER_SOURCE) -> 
     recorded = payload.get("files") if isinstance(payload, dict) else None
     if not isinstance(recorded, list):
         return False
-    current, _, _ = build_catalog(project_root, cap=cap)
+    if local_only:
+        sources, _ = load_sources(project_root.resolve())
+        local_ids = {
+            spec.id for spec in sources if is_project_local(project_root, spec)
+        }
+        recorded = [item for item in recorded if _is_local_row(item, local_ids)]
+    current, _, _ = build_catalog(project_root, cap=cap, local_only=local_only)
     if len(recorded) != len(current):
         return False
     by_path = {item.path: item for item in current}

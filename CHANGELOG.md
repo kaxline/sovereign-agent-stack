@@ -20,6 +20,13 @@ the stack under another app.
   file to drop these options on Podman can stop once it pins this release.
   `scripts/test-compose-tmpfs-options.py` now fails any service tmpfs option
   that Docker or Podman refuses.
+- WebUI chat no longer adds "INDEX.md may be out of date" on every turn for a
+  project with `.txt` sources, hidden files or a custom `include`/`exclude`
+  in `sources.yaml` (AS-0001). The prefill script now calls the same
+  `catalog_is_fresh` check as `make project-index-check`, limited to sources
+  inside the project. `hermes-webui` gains one read-only mount,
+  `scripts/lib/project_sources.py` at `/bootstrap/project_sources.py`, and is
+  recreated on the next `make up`.
 
 ## v0.3.16 — 2026-11-18
 
