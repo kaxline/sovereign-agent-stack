@@ -20,6 +20,10 @@ the stack under another app.
   file to drop these options on Podman can stop once it pins this release.
   `scripts/test-compose-tmpfs-options.py` now fails any service tmpfs option
   that Docker or Podman refuses.
+- `addon.sh list` prints the error text when it skips an invalid add-on
+  manifest, as `warning: skipping <id>: <message>`. It used to print the
+  message wrapped in a Python list (`['...']`). The JSON on stdout is
+  unchanged.
 
 ## v0.3.16 — 2026-11-18
 

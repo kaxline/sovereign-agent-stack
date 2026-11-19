@@ -165,16 +165,10 @@ class Fail(Exception):
         self.code = code
 
 
-def _load(addons_dir: Path):
-    """(path, manifest, parse error) for each manifest under addons_dir. Every
-    command that reads manifests loads them here, through am.checked_dir."""
-    return am.checked_dir(addons_dir)
-
-
 def _manifest(addons_dir: Path, sid: str) -> dict:
     if not SID_RE.match(sid):
         raise Fail(f"unknown add-on {sid!r}")
-    for path, manifest, errors in _load(addons_dir):
+    for path, manifest, errors in am.checked_dir(addons_dir):
         if path.parent.name != sid:
             continue
         if errors:
@@ -239,8 +233,7 @@ def _compose_config() -> dict:
 
 def _listed(addons_dir: Path):
     """(manifest) for each valid built-in, warning about the rest."""
-    for path, manifest, parse_error in _load(addons_dir):
-        errors = am.check_builtin_file(path, manifest, parse_error)
+    for path, manifest, errors in am.checked_dir(addons_dir):
         if errors:
             print(f"warning: skipping {path.parent.name}: {errors[0]}", file=sys.stderr)
             continue
@@ -592,7 +585,7 @@ def _data_paths(manifest) -> list[dict]:
 def cmd_data_envs(args) -> None:
     manifest = _manifest(args.addons_dir, args.sid)
     names = [p["env"] for p in _data_paths(manifest) if isinstance(p.get("env"), str)]
-    for _path, other, _err in _load(args.addons_dir):
+    for _path, other, _err in am.checked_dir(args.addons_dir):
         names += [p["env"] for p in _data_paths(other) if isinstance(p.get("env"), str)]
     for name in dict.fromkeys(n for n in names if am.ENV_RE.match(n)):
         print(name)
@@ -702,7 +695,7 @@ def cmd_plan_remove(args) -> None:
     # Paths other enabled add-ons declare. A manifest that fails its checks
     # still counts while it parses: keeping too much is the safe side.
     used: list[tuple[str, str]] = []
-    for path, other, _err in _load(args.addons_dir):
+    for path, other, _err in am.checked_dir(args.addons_dir):
         builtin = other.get("builtin") if isinstance(other, dict) else None
         flag = builtin.get("flag") if isinstance(builtin, dict) else None
         if path.parent.name == args.sid or not isinstance(flag, str) or flags.get(flag) != "1":
