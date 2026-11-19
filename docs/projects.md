@@ -131,8 +131,10 @@ On each turn the script:
 3. Otherwise emits the brief as a `system` message (subject to
    `HERMES_WEBUI_PREFILL_CONTEXT_MAX_CHARS`, default 8000).
 4. If `INDEX.md` + `.index-manifest.json` exist and look stale **relative to
-   files under this project folder**, appends a one-line warning. Extra source
-   roots (absolute INDEX paths) are not checked in the WebUI container.
+   sources inside this project folder**, appends a one-line warning. The check
+   is `make project-index-check`'s (same `include`, `exclude` and skip rules),
+   mounted as `/bootstrap/project_sources.py`. Extra source roots (absolute
+   or `~` paths in `sources.yaml`) are not checked in the WebUI container.
 
 CLI and dashboard sessions can still load `AGENTS.md` natively when the working
 directory is the project. Use the same filename so both paths stay in sync.

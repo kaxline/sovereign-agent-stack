@@ -63,6 +63,12 @@ check_get DUP 'first'
 rm -f "${tmp}/.env"
 [ "$(env_get_file "$g" SQ)" = 'a b' ] || fail "env_get_file"
 
+# env_get keeps a trailing " # comment" as part of the value (compose drops
+# it), and setup.sh copies .env.example to .env, so comments go on their own
+# line there.
+inline="$(grep -nE '^[A-Za-z_][A-Za-z0-9_]*=[^"'"'"'#]*[[:space:]]#' "${ROOT}/.env.example" || true)"
+[ -z "$inline" ] || fail ".env.example has inline comments: ${inline}"
+
 # These read .env through lib/env.sh alone (AS-0006). install.sh keeps its
 # own reader because it runs before the checkout exists; the local copies in
 # the buzz, cron and sync scripts are still to be moved over.
