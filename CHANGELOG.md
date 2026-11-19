@@ -10,6 +10,12 @@ the stack under another app.
 
 ### Changes
 
+- `make coding-root-add` and `make context-root-add` quote a mount whose path
+  contains a space, `#` or tab, as `make ensure-local` already did. A path
+  with ` #` used to be written unquoted, and YAML read the rest of the line
+  as a comment, so the bind pointed at the wrong host path. Other paths are
+  written byte for byte as before. All three now share one editor,
+  `scripts/lib/override_mounts.py`.
 - `bitwarden-broker` starts on Podman (CR 0041). Its `/run/bitwarden-sync`
   tmpfs was `mode=0700,uid=…,gid=…`, and Podman refuses `uid=` and `gid=` on a
   service tmpfs, so `docker compose up` failed with `unknown mount option`
@@ -42,6 +48,12 @@ the stack under another app.
   inside the project. `hermes-webui` gains one read-only mount,
   `scripts/lib/project_sources.py` at `/bootstrap/project_sources.py`, and is
   recreated on the next `make up`.
+- `docker-compose.yml` defines the add-on sidecars' hardening (`read_only`,
+  `cap_drop`, `security_opt`, `tmpfs`) and their `:8000` `/health` check once,
+  as the `x-hardened` and `x-mcp-health` anchors (AS-0011). Every service
+  renders exactly as before; `docker compose config` output gains those two
+  top-level `x-` keys, beside the existing `x-n8n` and `x-gptr`. No container
+  is recreated.
 
 ## v0.3.16 — 2026-11-18
 
