@@ -21,8 +21,8 @@ One or two sentences: what this body of work is for, and what “good” looks l
 3. Extra source roots are read-only notes; write drafts under this project.
 4. Prefer source notes over anything under `drafts/`.
 5. If `INDEX.md` looks wrong or incomplete, list the project directory and read
-   files directly. Extra roots need `make context-root-add` plus a Hermes recreate
-   before they are visible.
+   files directly. Extra roots need `make context-root-add` plus the recreate
+   command it prints before they are visible.
 
 ## Out of scope
 
