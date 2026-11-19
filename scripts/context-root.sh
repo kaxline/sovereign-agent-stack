@@ -13,21 +13,11 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 source "${ROOT}/scripts/lib/env.sh"
 ENV_FILE="${ROOT}/.env"
 OVERRIDE="${ROOT}/docker-compose.override.yml"
-OVERRIDE_EXAMPLE="${ROOT}/docker-compose.override.yml.example"
 
 die() { echo "error: $*" >&2; exit 1; }
 
-validate_path() {
-  local path="$1"
-  [[ -n "$path" ]] || die "path is required"
-  [[ "$path" == /* ]] || die "path must be absolute: $path"
-  [[ "$path" != "/" ]] || die "path must not be /"
-  [[ "$path" != */ ]] || die "path must not end with a slash: $path"
-  local home="${HOME:-}"
-  [[ -n "$home" && "$path" == "$home" ]] && die "path must not be \$HOME alone (too broad): $path"
-  [[ -e "$path" ]] || die "path does not exist: $path"
-  [[ -d "$path" ]] || die "path must be a directory: $path"
-}
+# shellcheck source=lib/roots.sh
+source "${ROOT}/scripts/lib/roots.sh"
 
 # True if candidate is under any already-mounted coding or context root.
 path_visible() {
@@ -71,108 +61,6 @@ path_covered_by_coding() {
   return 1
 }
 
-ensure_override() {
-  if [[ ! -f "$OVERRIDE" ]]; then
-    cp "$OVERRIDE_EXAMPLE" "$OVERRIDE"
-    echo "Created $OVERRIDE from example"
-  fi
-}
-
-terminal_service() {
-  local backend
-  backend="$(env_get HERMES_TERMINAL_BACKEND ssh)"
-  case "$backend" in
-    ssh) printf '%s\n' hermes-worker ;;
-    local) printf '%s\n' hermes ;;
-    *) die "HERMES_TERMINAL_BACKEND must be ssh or local (got ${backend})" ;;
-  esac
-}
-
-# Ensure a read-only volume line exists under the terminal service.
-ensure_hermes_ro_mount() {
-  local mount_path="$1"
-  local service tmp
-  service="$(terminal_service)"
-  tmp="$(mktemp "$(dirname "$OVERRIDE")/.$(basename "$OVERRIDE").XXXXXX")"
-
-  python3 - "$OVERRIDE" "$service" "$mount_path" "$tmp" <<'PY'
-import sys
-from pathlib import Path
-
-src = Path(sys.argv[1])
-service = sys.argv[2]
-mount_path = sys.argv[3]
-out = Path(sys.argv[4])
-entry = f"      - {mount_path}:{mount_path}:ro"
-
-text = src.read_text() if src.exists() else "services:\n"
-if "services:" not in text:
-    text = "services:\n" + text
-lines = text.splitlines(keepends=True)
-
-def find_service(lines, name):
-    header = f"  {name}:"
-    for i, line in enumerate(lines):
-        if line.rstrip("\n") == header:
-            return i
-    return None
-
-def service_end(lines, start):
-    i = start + 1
-    while i < len(lines):
-        line = lines[i]
-        if line.startswith("  ") and not line.startswith("    ") and line.strip() and line.rstrip("\n").endswith(":"):
-            return i
-        i += 1
-    return len(lines)
-
-def mount_present(block, path):
-    compact = path + ":" + path
-    for line in block:
-        stripped = line.replace(" ", "")
-        if compact in stripped:
-            return True
-        if f"{path}:{path}" in line:
-            return True
-    return False
-
-idx = find_service(lines, service)
-if idx is None:
-    if not text.rstrip().endswith("\n"):
-        lines.append("\n")
-    lines.append(f"  {service}:\n")
-    lines.append("    volumes:\n")
-    lines.append(entry + "\n")
-    out.write_text("".join(lines))
-    print(f"added service {service} with mount {mount_path} (ro)")
-    raise SystemExit(0)
-
-end = service_end(lines, idx)
-block = lines[idx:end]
-if mount_present(block, mount_path):
-    out.write_text("".join(lines))
-    print(f"mount already present for {service}: {mount_path}")
-    raise SystemExit(0)
-
-vol_rel = None
-for j, line in enumerate(block):
-    if line.rstrip("\n") == "    volumes:":
-        vol_rel = j
-        break
-
-if vol_rel is None:
-    insert_at = idx + 1
-    lines.insert(insert_at, "    volumes:\n")
-    lines.insert(insert_at + 1, entry + "\n")
-else:
-    lines.insert(idx + vol_rel + 1, entry + "\n")
-
-out.write_text("".join(lines))
-print(f"added mount for {service}: {mount_path} (ro)")
-PY
-  mv "$tmp" "$OVERRIDE"
-}
-
 cmd_list() {
   local extras
   extras="$(env_get CONTEXT_EXTRA_ROOTS)"
@@ -208,6 +96,8 @@ cmd_add() {
   local path="${1:-}"
   validate_path "$path"
   [[ -f "$ENV_FILE" ]] || die "missing $ENV_FILE — run ./scripts/setup.sh first"
+  local service
+  service="$(terminal_service)"
 
   if path_covered_by_coding "$path"; then
     echo "Already visible via a coding root (writable): $path"
@@ -236,7 +126,7 @@ cmd_add() {
 
   upsert_env "$ENV_FILE" CONTEXT_EXTRA_ROOTS "$extras"
   ensure_override
-  ensure_hermes_ro_mount "$path"
+  add_mount "$service" "$path" --ro
 
   echo
   echo "Added context root: $path"
