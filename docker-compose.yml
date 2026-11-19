@@ -2413,9 +2413,12 @@ services:
     tmpfs:
       - /tmp
       # The Unix socket for manual unlocks (python3 -m broker.unlock, run with
-      # docker compose exec as the same user). A tmpfs, so its owner follows
-      # HERMES_UID; nothing else mounts it.
-      - /run/bitwarden-sync:mode=0700,uid=${HERMES_UID:-1000},gid=${HERMES_GID:-1000}
+      # docker compose exec as the same user); nothing else mounts it. The
+      # broker creates the socket mode 0600 as HERMES_UID, which is the check;
+      # the sticky bit keeps another user from removing it. No uid= or gid=:
+      # Podman refuses both on a service tmpfs, and Docker refuses Podman's U
+      # (CR 0041).
+      - /run/bitwarden-sync:mode=1777
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true

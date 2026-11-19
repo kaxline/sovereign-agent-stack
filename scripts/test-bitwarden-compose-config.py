@@ -165,11 +165,12 @@ def check_broker(cfg: dict) -> None:
         checks.fail(f"bitwarden-broker cap_drop is {broker.get('cap_drop')!r}, want ['ALL']")
     if broker.get("user") != HOST_USER:
         checks.fail(f"bitwarden-broker runs as HERMES_UID:HERMES_GID ({HOST_USER}), not {broker.get('user')!r}")
-    # The manual-unlock socket's folder: a tmpfs owned by that user, so no
-    # volume keeps an image owner that differs from it.
+    # The manual-unlock socket's folder: a sticky tmpfs any user can write, as
+    # Podman refuses uid=/gid= on it (CR 0041). The socket's own mode 0600
+    # keeps other users out.
     sync = next((t for t in broker.get("tmpfs") or [] if t.split(":")[0] == SYNC_DIR), "")
-    if sync != f"{SYNC_DIR}:mode=0700,uid=1000,gid=1000":
-        checks.fail(f"bitwarden-broker needs a mode 0700 tmpfs at {SYNC_DIR} owned by HERMES_UID, not {sync!r}")
+    if sync != f"{SYNC_DIR}:mode=1777":
+        checks.fail(f"bitwarden-broker needs a mode 1777 tmpfs at {SYNC_DIR}, not {sync!r}")
     if "no-new-privileges:true" not in (broker.get("security_opt") or []):
         checks.fail("bitwarden-broker needs no-new-privileges:true")
     if "/tmp" not in [t.split(":")[0] for t in broker.get("tmpfs") or []]:

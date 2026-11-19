@@ -1052,7 +1052,7 @@ def main() -> None:
 
         docker("run", "-d", "--name", broker, "--network", f"container:{agent}", "--user", USER,
                "--read-only", "--tmpfs", "/tmp",
-               "--tmpfs", f"/run/bitwarden-sync:mode=0700,uid={uid},gid={gid}",
+               "--tmpfs", "/run/bitwarden-sync:mode=1777",
                "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
                "-e", "BITWARDEN_INSTANCES_DIR=/store/instances", "-e", "BITWARDEN_DATA_DIR=/data",
                "-e", "BITWARDEN_SECRETS_DIR=/secrets", "-e", "BITWARDEN_LISTEN=127.0.0.1:8099",

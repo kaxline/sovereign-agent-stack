@@ -6,6 +6,21 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
+## Unreleased
+
+### Changes
+
+- `bitwarden-broker` starts on Podman (CR 0041). Its `/run/bitwarden-sync`
+  tmpfs was `mode=0700,uid=…,gid=…`, and Podman refuses `uid=` and `gid=` on a
+  service tmpfs, so `docker compose up` failed with `unknown mount option`
+  before the broker was created; this has been the case since v0.3.14. The
+  entry is now `mode=1777`. The broker still creates `sync.sock` mode 0600 as
+  `HERMES_UID`, and the sticky bit stops another user from removing it. The
+  broker is recreated on the next `make up`. An app that adds its own compose
+  file to drop these options on Podman can stop once it pins this release.
+  `scripts/test-compose-tmpfs-options.py` now fails any service tmpfs option
+  that Docker or Podman refuses.
+
 ## v0.3.16 — 2026-11-18
 
 ### Upgrade steps
