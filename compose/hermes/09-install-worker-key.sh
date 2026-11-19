@@ -26,9 +26,22 @@ chmod 600 "$dest"
 
 # Seed known_hosts so the first shell does not stop on a host-key prompt.
 # The worker is a dependency and should already be accepting connections.
+# /opt/data persists, so replace the worker's entries rather than appending a
+# copy on every start. A failed scan leaves the existing entries alone, and
+# entries for other hosts are never touched.
+known=/opt/data/.ssh/known_hosts
 mkdir -p /opt/data/.ssh
 if command -v ssh-keyscan >/dev/null 2>&1; then
-  ssh-keyscan -T 5 -p 22 hermes-worker >> /opt/data/.ssh/known_hosts 2>/dev/null || true
+  scan="$(mktemp)"
+  if ssh-keyscan -T 5 -p 22 hermes-worker > "$scan" 2>/dev/null && [ -s "$scan" ]; then
+    if [ -f "$known" ]; then
+      ssh-keygen -R hermes-worker -f "$known" >/dev/null 2>&1 || true
+      rm -f "${known}.old"
+    fi
+    cat "$scan" >> "$known"
+  fi
+  rm -f "$scan"
+  touch "$known"
   chown "${uid}:${gid}" /opt/data/.ssh /opt/data/.ssh/known_hosts 2>/dev/null || true
   chmod 700 /opt/data/.ssh 2>/dev/null || true
   chmod 600 /opt/data/.ssh/known_hosts 2>/dev/null || true

@@ -24,6 +24,11 @@ the stack under another app.
   manifest, as `warning: skipping <id>: <message>`. It used to print the
   message wrapped in a Python list (`['...']`). The JSON on stdout is
   unchanged.
+- Hermes no longer appends the `hermes-worker` host keys to
+  `data/hermes/.ssh/known_hosts` on every container start. The start script
+  now replaces the worker's entries with the fresh scan and leaves other
+  hosts' entries alone; a failed scan changes nothing. An existing file with
+  repeated worker lines is cleaned up on the next start.
 
 ## v0.3.16 — 2026-11-18
 
