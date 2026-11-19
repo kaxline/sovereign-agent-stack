@@ -71,6 +71,25 @@ x-gptr: &gptr-env
   MAX_ITERATIONS: ${GPTR_MAX_ITERATIONS:-2}
   LOGGING_LEVEL: INFO
 
+# Hardening shared by the add-on sidecars: no writable root filesystem, no
+# capabilities, no privilege gain, and a tmpfs /tmp. Merge it with
+# `<<: *hardened`. Keep `user:` and `depends_on` written out in each service:
+# addon_manifest.compose_hermes_user and compose_oneshots read the raw text
+# and do not see merge keys.
+x-hardened: &hardened
+  read_only: true
+  cap_drop: ["ALL"]
+  security_opt: ["no-new-privileges:true"]
+  tmpfs: ["/tmp"]
+
+# /health on :8000, the port the MCP sidecars listen on.
+x-mcp-health: &mcp-health
+  test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)\""]
+  interval: 15s
+  timeout: 5s
+  retries: 6
+  start_period: 15s
+
 services:
   # ----------------------------------------------------------------------
   # llm-proxy — OpenAI-compatible front for the model keys
@@ -437,10 +456,7 @@ services:
     restart: unless-stopped
     # Same uid as the host user that owns the 0700 index folder.
     user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
-    read_only: true
-    cap_drop: ["ALL"]
-    security_opt: ["no-new-privileges:true"]
-    tmpfs: ["/tmp"]
+    <<: *hardened
     environment:
       - MAIL_INDEX_PATH=/data/mail/${MAIL_INDEX_FILE:-index.sqlite}
       - MCP_HOST=0.0.0.0
@@ -448,12 +464,7 @@ services:
     volumes:
       - ${MAIL_INDEX_DIR:-./data/mail}:/data/mail:ro
     # No host ports — compose-internal only.
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)\""]
-      interval: 15s
-      timeout: 5s
-      retries: 6
-      start_period: 15s
+    healthcheck: *mcp-health
 
   # ----------------------------------------------------------------------
   # mail-drafts-mcp — queues email drafts for the host helper (docs/email.md)
@@ -471,10 +482,7 @@ services:
     restart: unless-stopped
     # Same uid as the host user that owns the 0700 drafts folder.
     user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
-    read_only: true
-    cap_drop: ["ALL"]
-    security_opt: ["no-new-privileges:true"]
-    tmpfs: ["/tmp"]
+    <<: *hardened
     environment:
       - MAIL_DRAFTS_PATH=/data/mail-drafts
       - MCP_HOST=0.0.0.0
@@ -482,12 +490,7 @@ services:
     volumes:
       - ${MAIL_DRAFTS_DIR:-./data/mail-drafts}:/data/mail-drafts
     # No host ports — compose-internal only.
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)\""]
-      interval: 15s
-      timeout: 5s
-      retries: 6
-      start_period: 15s
+    healthcheck: *mcp-health
 
   # ----------------------------------------------------------------------
   # email add-on (addons/email/addon.json): IMAP accounts, docs/email.md
@@ -508,10 +511,7 @@ services:
     restart: unless-stopped
     command: ["python", "-I", "-B", "/app/scripts/lib/email_addon.py", "index"]
     user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
-    read_only: true
-    cap_drop: ["ALL"]
-    security_opt: ["no-new-privileges:true"]
-    tmpfs: ["/tmp"]
+    <<: *hardened
     # The index's only writer. The image's /data/index is mode 1777, and this
     # container mounts email_index first (email-mcp depends on it), so the new
     # volume takes that mode and any HERMES_UID can write it.
@@ -533,10 +533,7 @@ services:
     image: ${IMAGE_PREFIX:-assistant}-mail-mcp:local
     restart: unless-stopped
     user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
-    read_only: true
-    cap_drop: ["ALL"]
-    security_opt: ["no-new-privileges:true"]
-    tmpfs: ["/tmp"]
+    <<: *hardened
     environment:
       - MAIL_INDEX_PATH=/data/mail/index.sqlite
       - MCP_HOST=0.0.0.0
@@ -548,12 +545,7 @@ services:
       email-indexer:
         condition: service_started
     # No host ports — compose-internal only.
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)\""]
-      interval: 15s
-      timeout: 5s
-      retries: 6
-      start_period: 15s
+    healthcheck: *mcp-health
 
   email-drafts-mcp:
     profiles: ["email-drafts"]
@@ -563,10 +555,7 @@ services:
     image: ${IMAGE_PREFIX:-assistant}-mail-drafts-mcp:local
     restart: unless-stopped
     user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
-    read_only: true
-    cap_drop: ["ALL"]
-    security_opt: ["no-new-privileges:true"]
-    tmpfs: ["/tmp"]
+    <<: *hardened
     environment:
       - MAIL_DRAFTS_PATH=/data/mail-drafts
       - MCP_HOST=0.0.0.0
@@ -578,12 +567,7 @@ services:
       email-outbox:
         condition: service_started
     # No host ports — compose-internal only.
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)\""]
-      interval: 15s
-      timeout: 5s
-      retries: 6
-      start_period: 15s
+    healthcheck: *mcp-health
 
   email-outbox:
     profiles: ["email-drafts"]
@@ -594,10 +578,7 @@ services:
     restart: unless-stopped
     command: ["python", "-I", "-B", "/app/scripts/lib/email_addon.py", "outbox"]
     user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
-    read_only: true
-    cap_drop: ["ALL"]
-    security_opt: ["no-new-privileges:true"]
-    tmpfs: ["/tmp"]
+    <<: *hardened
     # Saves queued drafts to each account's Drafts mailbox over IMAP; never
     # sends. Mounts email_drafts before email-drafts-mcp does, so the new
     # volume takes the image's 1777 /data/drafts.
@@ -626,10 +607,7 @@ services:
     image: ${IMAGE_PREFIX:-assistant}-detector:local
     restart: unless-stopped
     user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
-    read_only: true
-    cap_drop: ["ALL"]
-    security_opt: ["no-new-privileges:true"]
-    tmpfs: ["/tmp"]
+    <<: *hardened
     volumes:
       - ${ASSISTANT_DATA_ROOT:-./data}/addons/detector/secrets:/run/addon/secrets:ro
       - ${ASSISTANT_DATA_ROOT:-./data}/addons/detector/config:/run/addon/config:ro
@@ -637,10 +615,7 @@ services:
       - "127.0.0.1:${DETECTOR_PORT:-8790}:8001"
     networks: [detector, detector-egress]
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)\""]
-      interval: 15s
-      timeout: 5s
-      retries: 6
+      <<: *mcp-health
       start_period: 10s
 
   # ----------------------------------------------------------------------
@@ -658,10 +633,7 @@ services:
     restart: unless-stopped
     command: ["python", "mcp_server.py"]
     user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
-    read_only: true
-    cap_drop: ["ALL"]
-    security_opt: ["no-new-privileges:true"]
-    tmpfs: ["/tmp"]
+    <<: *hardened
     environment:
       - DETECTOR_BACKEND_URL=http://detector:8000
       - MCP_HOST=0.0.0.0
@@ -671,12 +643,7 @@ services:
       detector:
         condition: service_started
     # No host ports — compose-internal only.
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)\""]
-      interval: 15s
-      timeout: 5s
-      retries: 6
-      start_period: 15s
+    healthcheck: *mcp-health
 
   # ----------------------------------------------------------------------
   # messages-mcp — read-only MCP over the host-built Messages index, plus the
@@ -698,10 +665,7 @@ services:
     restart: unless-stopped
     # Same uid as the host user that owns the 0700 index and events folders.
     user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
-    read_only: true
-    cap_drop: ["ALL"]
-    security_opt: ["no-new-privileges:true"]
-    tmpfs: ["/tmp"]
+    <<: *hardened
     environment:
       - MESSAGES_INDEX_PATH=/data/messages/${MESSAGES_INDEX_FILE:-index.sqlite}
       - MESSAGES_EVENTS_DIR=/data/messages-events
@@ -713,12 +677,7 @@ services:
       - ${MESSAGES_INDEX_DIR:-./data/messages}:/data/messages:ro
       - ${MESSAGES_EVENTS_DIR:-./data/messages-events}:/data/messages-events
     # No host ports — compose-internal only.
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)\""]
-      interval: 15s
-      timeout: 5s
-      retries: 6
-      start_period: 15s
+    healthcheck: *mcp-health
 
   # ----------------------------------------------------------------------
   # vikunja — todo lists with a built-in MCP server
@@ -2277,10 +2236,7 @@ services:
     image: ${IMAGE_PREFIX:-assistant}-client-gateway:local
     restart: unless-stopped
     user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
-    read_only: true
-    cap_drop: ["ALL"]
-    security_opt: ["no-new-privileges:true"]
-    tmpfs: ["/tmp"]
+    <<: *hardened
     environment:
       # Not :? — compose interpolates every service, so a required variable would
       # break installs that never enable this profile. The gateway exits with a
