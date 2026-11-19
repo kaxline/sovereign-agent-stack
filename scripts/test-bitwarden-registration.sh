@@ -478,6 +478,7 @@ PY
 
 out="$(docker run --rm --entrypoint /bin/sh \
   -v "$ROOT/scripts/lib/addon_manifest.py:/bootstrap/addon_manifest.py:ro" \
+  -v "$ROOT/compose/hermes/profile_config.py:/bootstrap/profile_config.py:ro" \
   -v "$ROOT/compose/hermes/plugins/bwbroker:/bootstrap/plugins/bwbroker:ro" \
   -v "$ROOT/compose/hermes/bitwarden_broker_backend.py:/bootstrap/bitwarden_broker_backend.py:ro" \
   -v "$ROOT/$INSTALL:/etc/cont-init.d/14-install-bwbroker-plugin:ro" \

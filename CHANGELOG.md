@@ -54,6 +54,16 @@ the stack under another app.
   renders exactly as before; `docker compose config` output gains those two
   top-level `x-` keys, beside the existing `x-n8n` and `x-gptr`. No container
   is recreated.
+- The Hermes bootstrap edits `config.yaml` through one helper,
+  `compose/hermes/profile_config.py`, mounted read-only at
+  `/bootstrap/profile_config.py` in `hermes-api-bootstrap` and
+  `hermes-browser-bootstrap` (AS-0009). The config it writes is unchanged. The
+  browser profile's Signal pin now writes atomically and accepts a config with
+  a duplicate `platforms:` block, which made the old pin fail.
+  `scripts/sync-signal-profile.sh` and `sync-buzz-profile.sh` pin their
+  adapters through the same helper and now write atomically too. The
+  bootstrap's inputs hash covers the helper, so the first start after
+  upgrading runs the full bootstrap once.
 
 ## v0.3.16 — 2026-11-18
 

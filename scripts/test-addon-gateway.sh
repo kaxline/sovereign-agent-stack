@@ -113,7 +113,7 @@ for f in data/hermes/.env data/hermes/profiles/browser/.env; do
   fi
 done
 if [ ! -e data/hermes/profiles/api-server/.env ]; then ok "api-server gets no Signal variables"; else bad "api-server gets no Signal variables"; fi
-if grep -q 'nousresearch/hermes-agent:.* - browser signal' "$STUB_LOG"; then ok "the browser profile's Signal adapter is pinned off"; else bad "the browser profile's Signal adapter is pinned off"; cat "$STUB_LOG"; fi
+if grep -q 'nousresearch/hermes-agent:.* /bootstrap/profile_config.py platform-disabled /opt/data/profiles/browser/config.yaml signal --name browser' "$STUB_LOG"; then ok "the browser profile's Signal adapter is pinned off"; else bad "the browser profile's Signal adapter is pinned off"; cat "$STUB_LOG"; fi
 if logged "compose up -d --wait signal-cli"; then ok "enable starts signal-cli"; else bad "enable starts signal-cli"; cat "$STUB_LOG"; fi
 if logged "vault.sh reload-plugins"; then ok "enable reloads Hermes"; else bad "enable reloads Hermes"; fi
 if logged "compose up -d --force-recreate hermes" || logged "compose restart hermes"; then bad "enable does not recreate hermes"; else ok "enable does not recreate hermes"; fi

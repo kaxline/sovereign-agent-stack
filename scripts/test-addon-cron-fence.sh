@@ -163,6 +163,7 @@ EOF
 
 out="$(docker run --rm --entrypoint /bin/sh \
   -v "$ROOT/addons:/bootstrap/addons:ro" \
+  -v "$ROOT/compose/hermes/profile_config.py:/bootstrap/profile_config.py:ro" \
   -v "$ROOT/scripts/lib/addon_manifest.py:/bootstrap/addon_manifest.py:ro" \
   -v "$work:/w" -v "$work/home:/h" "$IMAGE" /w/run.sh 2>&1)" || fail "fence run failed: $out"
 

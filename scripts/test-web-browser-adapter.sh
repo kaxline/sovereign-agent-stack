@@ -112,7 +112,8 @@ WEB_BROWSER_ENABLED=1 set_browser_cdp_url bare >/dev/null
 [ -f /h/profiles/bare/config.yaml ] && echo "bare-created" || echo "bare-untouched"
 EOF
 
-out="$(docker run --rm --entrypoint /bin/sh -v "$work:/w" -v "$work/hh:/h" "$IMAGE" /w/run.sh 2>&1)" \
+out="$(docker run --rm --entrypoint /bin/sh \
+  -v "$ROOT/compose/hermes/profile_config.py:/bootstrap/profile_config.py:ro" -v "$work:/w" -v "$work/hh:/h" "$IMAGE" /w/run.sh 2>&1)" \
   || fail "the adapter run failed: $out"
 said() { printf '%s\n' "$out" | grep -qx -- "$1" || fail "$2 (output: $out)"; }
 # shellcheck disable=SC2016 # the adapter writes the token as an unexpanded reference

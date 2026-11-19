@@ -37,6 +37,8 @@ EOF
 cat > "${tmp}/bin/python3" <<EOF
 #!/bin/sh
 [ "\${1:-}" = "-c" ] && exec "$REAL_PYTHON" "\$@"
+# A script file (profile_config.py) brings no stdin to read.
+if [ "\${1:-}" != "-" ]; then echo "python3" >> "${tmp}/spawns"; exit 0; fi
 script="\$(cat)"
 case "\$script" in
   *set_config_value*)

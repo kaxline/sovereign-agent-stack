@@ -71,6 +71,7 @@ upsert_env() { :; }
 HERMES_HOME=/h
 ADDONS_DIR=/bootstrap/addons
 ADDON_MANIFEST_PY=/bootstrap/addon_manifest.py
+PROFILE_CONFIG_PY=/bootstrap/profile_config.py
 ADDON_DATA_DIR=/w/addon-data
 set -a
 . /w/flags.env
@@ -133,6 +134,7 @@ EOF
 
 out="$(docker run --rm --entrypoint /bin/sh -e HOST_IDS="$(id -u):$(id -g)" \
   -v "$ROOT/addons:/bootstrap/addons:ro" \
+  -v "$ROOT/compose/hermes/profile_config.py:/bootstrap/profile_config.py:ro" \
   -v "$ROOT/scripts/lib/addon_manifest.py:/bootstrap/addon_manifest.py:ro" \
   -v "$work:/w" -v "$work/home:/h" "$IMAGE" ${TRACE:+-x} /w/run.sh 2>&1)" || fail "registration run failed: $out"
 

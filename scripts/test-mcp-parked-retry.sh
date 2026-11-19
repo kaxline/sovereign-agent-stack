@@ -55,7 +55,8 @@ chmod -R a+rwX "$tmp"
 # run <MCP_PARKED_RETRY_INTERVAL> [profile]: prints the log line, then the config.
 run() {
   docker run --rm --network none -v "${tmp}:/t" -v "${ROOT}/addons:/a:ro" \
-    -v "${ROOT}/scripts/lib:/l:ro" --entrypoint /bin/sh "$image" -c \
+    -v "${ROOT}/scripts/lib:/l:ro" \
+    -v "${ROOT}/compose/hermes/profile_config.py:/bootstrap/profile_config.py:ro" --entrypoint /bin/sh "$image" -c \
     "MCP_PARKED_RETRY_INTERVAL='$1'; . /t/fn.sh; set_stack_mcp_parked_retry '${2:-}'; echo ---; cat /t/config.yaml"
 }
 

@@ -21,79 +21,18 @@ hermes_python() {
 }
 
 # hermes_set_platform_disabled PROFILE PLATFORM
-# Pins platforms.<PLATFORM>.enabled=false in profiles/<PROFILE>/config.yaml.
-# No-op when the file is missing. Merges into an existing platforms: mapping.
+# Pins platforms.<PLATFORM>.enabled=false in profiles/<PROFILE>/config.yaml
+# through compose/hermes/profile_config.py, which merges a duplicate
+# platforms: block that older setup runs appended. No-op when the file is
+# missing.
 hermes_set_platform_disabled() {
-  hermes_python "$1" "$2" <<'PY'
-import sys
-from pathlib import Path
-# Older setup runs appended a second platforms: block when hermes was not
-# running. Plain safe_load keeps only the last one (PyYAML) or refuses the file
-# (ruamel), so merge duplicate keys.
-def merge(a, b):
-    if isinstance(a, dict) and isinstance(b, dict):
-        out = dict(a)
-        for k, v in b.items():
-            out[k] = merge(out[k], v) if k in out else v
-        return out
-    return b
-
-def construct_mapping(loader, node, deep=False):
-    loader.flatten_mapping(node)
-    out = {}
-    for key_node, value_node in node.value:
-        key = loader.construct_object(key_node, deep=True)
-        value = loader.construct_object(value_node, deep=True)
-        out[key] = merge(out[key], value) if key in out else value
-    return out
-
-try:
-    import yaml
-except ImportError:  # Hermes v0.22+ ships ruamel only
-    sys.path.insert(0, "/opt/hermes")
-    import hermes_yaml
-    from ruamel.yaml import YAML
-    from ruamel.yaml.constructor import SafeConstructor
-
-    class MergingConstructor(SafeConstructor):
-        def construct_mapping(self, node, deep=False):
-            return construct_mapping(self, node, deep)
-
-    _y = YAML(typ="safe", pure=True)
-    _y.Constructor = MergingConstructor
-    load = _y.load
-    top_level_keys = lambda raw: len(_y.compose(raw).value)
-    dump = lambda data: hermes_yaml.safe_dump(data, sort_keys=False, default_flow_style=False)
-else:
-    class MergingLoader(yaml.SafeLoader):
-        pass
-
-    MergingLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, construct_mapping)
-    load = lambda raw: yaml.load(raw, Loader=MergingLoader)
-    top_level_keys = lambda raw: len(yaml.compose(raw).value)
-    dump = lambda data: yaml.safe_dump(data, sort_keys=False, default_flow_style=False)
-
-name, platform = sys.argv[1], sys.argv[2]
-path = Path(f"/opt/data/profiles/{name}/config.yaml")
-if not path.is_file():
-    raise SystemExit(0)
-raw = path.read_text()
-data = load(raw) or {}
-# Rewrite when the file had duplicate top-level keys, even if nothing changed.
-dupes = top_level_keys(raw) != len(data) if raw.strip() else False
-platforms = data.get("platforms")
-if not isinstance(platforms, dict):
-    platforms = {}
-entry = platforms.get(platform)
-if not isinstance(entry, dict):
-    entry = {}
-if entry.get("enabled") is False and not dupes:
-    print(f"platforms.{platform}.enabled already false on {name}")
-    raise SystemExit(0)
-entry["enabled"] = False
-platforms[platform] = entry
-data["platforms"] = platforms
-path.write_text(dump(data))
-print(f"pinned platforms.{platform}.enabled=false on {name}")
-PY
+  local image
+  image="$(ROOT="${ROOT:-$PWD}" stack_hermes_image)"
+  docker run --rm \
+    --user "$(id -u):$(id -g)" \
+    -v "$(pwd)/data/hermes:/opt/data" \
+    -v "$(pwd)/compose/hermes/profile_config.py:/bootstrap/profile_config.py:ro" \
+    --entrypoint python3 \
+    "$image" /bootstrap/profile_config.py platform-disabled \
+    "/opt/data/profiles/$1/config.yaml" "$2" --name "$1"
 }

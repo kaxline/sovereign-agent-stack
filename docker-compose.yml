@@ -1573,6 +1573,7 @@ services:
       - ./data/hermes:/opt/data
       - ./compose/hermes/api-server.env:/bootstrap/api-server.env:ro
       - ./compose/hermes/bootstrap-api-profile.sh:/bootstrap/bootstrap-api-profile.sh:ro
+      - ./compose/hermes/profile_config.py:/bootstrap/profile_config.py:ro
       # The web-browser service's agent client token, which the bootstrap puts
       # into each attended profile's .env so browser.cdp_url resolves it. The
       # credential client's token is the broker's and is not mounted here.
@@ -1711,6 +1712,7 @@ services:
       - ./data/hermes:/opt/data
       - ./compose/hermes/browser.env:/bootstrap/browser.env:ro
       - ./compose/hermes/bootstrap-api-profile.sh:/bootstrap/bootstrap-api-profile.sh:ro
+      - ./compose/hermes/profile_config.py:/bootstrap/profile_config.py:ro
       # The web-browser service's agent client token, which the bootstrap puts
       # into each attended profile's .env so browser.cdp_url resolves it. The
       # credential client's token is the broker's and is not mounted here.

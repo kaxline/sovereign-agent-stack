@@ -32,6 +32,7 @@ config_path_for() { echo /t/config.yaml; }
 profile_env_file() { echo /t/.env; }
 ADDONS_DIR=/addons
 ADDON_MANIFEST_PY=/addon_manifest.py
+PROFILE_CONFIG_PY=/bootstrap/profile_config.py
 ADDON_DATA_DIR=/t/addon-data
 EOF2
 } > "${tmp}/fn.sh"
@@ -73,6 +74,7 @@ EOF2
 run() {
   docker run --rm --entrypoint sh -v "${tmp}:/t" -v "${ROOT}/addons:/addons:ro" \
     -v "${ROOT}/scripts/lib/addon_manifest.py:/addon_manifest.py:ro" \
+    -v "${ROOT}/compose/hermes/profile_config.py:/bootstrap/profile_config.py:ro" \
     -e TWENTY_MCP_ENABLED="$1" -e TWENTY_LOCAL_ENABLED=1 "$image" \
     -c ". /t/fn.sh && register_addon_instance_servers ''" > "${tmp}/out" 2>&1 \
     || { cat "${tmp}/out" >&2; printf 'FAIL register exited non-zero\n' >&2; exit 1; }

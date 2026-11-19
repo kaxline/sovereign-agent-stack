@@ -65,6 +65,8 @@ EOF
 cat > "${tmp}/bin/python3" <<EOF
 #!/bin/sh
 [ "\${1:-}" = "-c" ] && exec "$REAL_PYTHON" "\$@"
+# A script file (profile_config.py) brings no stdin to drain.
+[ "\${1:-}" = "-" ] || exit 0
 cat >/dev/null
 exit 0
 EOF
