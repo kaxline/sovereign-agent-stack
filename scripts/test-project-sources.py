@@ -219,6 +219,22 @@ def test_visibility_helpers() -> None:
     )
 
 
+def test_template_points_at_context_root_add_recreate() -> None:
+    """The project template must not name a service to recreate: with the
+    default ssh backend the bind lands on hermes-worker, and context-root.sh
+    prints the right command itself (AS-0005)."""
+    template = ROOT / "compose" / "hermes" / "project-template"
+    for name in ("sources.yaml", "AGENTS.md", "INDEX.md"):
+        text = (template / name).read_text()
+        flat = " ".join(text.split())
+        expect("--force-recreate hermes" not in flat, f"{name} names the hermes service to recreate")
+        expect("Hermes recreate" not in flat, f"{name} says 'a Hermes recreate'")
+        expect("recreate command it prints" in flat, f"{name} does not point at context-root-add's recreate command")
+    script = (ROOT / "scripts" / "context-root.sh").read_text()
+    expect("--force-recreate $(terminal_service)" in script,
+           "context-root.sh no longer prints the terminal service recreate the template points at")
+
+
 def main() -> int:
     tests = [
         test_default_walk_skips_drafts,
@@ -230,6 +246,7 @@ def main() -> int:
         test_unknown_retrieval_refused,
         test_indexer_cli_roundtrip,
         test_visibility_helpers,
+        test_template_points_at_context_root_add_recreate,
     ]
     for fn in tests:
         fn()

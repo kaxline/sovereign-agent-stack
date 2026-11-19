@@ -29,6 +29,12 @@ the stack under another app.
   now replaces the worker's entries with the fresh scan and leaves other
   hosts' entries alone; a failed scan changes nothing. An existing file with
   repeated worker lines is cleaned up on the next start.
+- The project template (`sources.yaml`, `AGENTS.md`, `INDEX.md`) no longer
+  says to run `docker compose up -d --force-recreate hermes` after
+  `make context-root-add`. With the default ssh backend the bind lands on
+  `hermes-worker`, so that command recreated the wrong container. The template
+  now points at the recreate command `context-root-add` prints. Projects
+  created earlier keep their old copy.
 
 ## v0.3.16 — 2026-11-18
 
