@@ -20,6 +20,21 @@ the stack under another app.
   file to drop these options on Podman can stop once it pins this release.
   `scripts/test-compose-tmpfs-options.py` now fails any service tmpfs option
   that Docker or Podman refuses.
+- `addon.sh list` prints the error text when it skips an invalid add-on
+  manifest, as `warning: skipping <id>: <message>`. It used to print the
+  message wrapped in a Python list (`['...']`). The JSON on stdout is
+  unchanged.
+- Hermes no longer appends the `hermes-worker` host keys to
+  `data/hermes/.ssh/known_hosts` on every container start. The start script
+  now replaces the worker's entries with the fresh scan and leaves other
+  hosts' entries alone; a failed scan changes nothing. An existing file with
+  repeated worker lines is cleaned up on the next start.
+- The project template (`sources.yaml`, `AGENTS.md`, `INDEX.md`) no longer
+  says to run `docker compose up -d --force-recreate hermes` after
+  `make context-root-add`. With the default ssh backend the bind lands on
+  `hermes-worker`, so that command recreated the wrong container. The template
+  now points at the recreate command `context-root-add` prints. Projects
+  created earlier keep their old copy.
 - WebUI chat no longer adds "INDEX.md may be out of date" on every turn for a
   project with `.txt` sources, hidden files or a custom `include`/`exclude`
   in `sources.yaml` (AS-0001). The prefill script now calls the same

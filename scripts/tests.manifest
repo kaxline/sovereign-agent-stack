@@ -145,3 +145,4 @@ scripts/test-web-browser-compose-config.py      ci docker
 scripts/test-web-browser-gateway.py             ci docker
 scripts/test-web-browser-secrets.sh             ci
 scripts/test-web-search-mode.py                 ci image
+scripts/test-worker-known-hosts.py              ci

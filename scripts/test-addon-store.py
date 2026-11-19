@@ -557,6 +557,20 @@ check("hook-events sends other phases, done, error and plain text to the step lo
       len(logged) == 4 and '"progress"' in logged[0] and '"done"' in logged[1]
       and '"error"' in logged[2] and logged[3] == "plain text", repr(logged))
 
+# --- addon_cli _listed: a skipped manifest's warning is the error text (AS-0003) ---
+with tempfile.TemporaryDirectory() as tmp:
+    bad_dir = Path(tmp) / "broken"
+    bad_dir.mkdir()
+    (bad_dir / "addon.json").write_text("{not json", encoding="utf-8")
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        listed = list(addon_cli._listed(Path(tmp)))
+    lines = err.getvalue().splitlines()
+    check("_listed skips an unreadable manifest", listed == [], repr(listed))
+    check("_listed warns once with the error text, not a list repr",
+          len(lines) == 1 and lines[0].startswith("warning: skipping broken: ")
+          and "['" not in lines[0] and "[\"" not in lines[0], repr(lines))
+
 if failures:
     print(f"{failures} failed")
     sys.exit(1)
