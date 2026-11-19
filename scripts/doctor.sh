@@ -13,23 +13,8 @@ ok() { printf '  OK  %s\n' "$1"; PASS=$((PASS + 1)); }
 bad() { printf ' FAIL %s\n' "$1"; FAIL=$((FAIL + 1)); }
 warn() { printf ' WARN %s\n' "$1"; WARN=$((WARN + 1)); }
 
-env_get() {
-  local key="$1"
-  local default="${2:-}"
-  local val=""
-  if [[ -f .env ]]; then
-    val="$(grep -E "^${key}=" .env 2>/dev/null | head -1 | cut -d= -f2- || true)"
-    val="${val%\"}"
-    val="${val#\"}"
-    val="${val%\'}"
-    val="${val#\'}"
-  fi
-  if [[ -z "$val" ]]; then
-    echo "$default"
-  else
-    echo "$val"
-  fi
-}
+# shellcheck source=lib/env.sh
+source "$ROOT/scripts/lib/env.sh"
 
 profiles_csv="$(env_get COMPOSE_PROFILES core)"
 IFS=',' read -r -a PROFILES <<< "$profiles_csv"
@@ -476,8 +461,6 @@ fi
 if has_profile core; then
   echo ""
   echo "--- Gateway topology ---"
-  # shellcheck source=lib/env.sh
-  source "$ROOT/scripts/lib/env.sh"
   topology="$(gateway_topology)"
   ok "topology: ${topology}"
   # The WebUI's _reload_dotenv copies API_SERVER_KEY from data/hermes/.env,
@@ -1210,8 +1193,6 @@ if [[ "$bw_on" -eq 1 || "$bw_local" -eq 1 || "$bw_files" -gt 0 || "$bw_old" -gt 
   done
   if [[ "$bw_on" -eq 1 ]]; then
     if docker info >/dev/null 2>&1; then
-      # shellcheck source=lib/env.sh
-      source "$ROOT/scripts/lib/env.sh"
       bw_cid="$(compose_with_profile bitwarden ps --status running -q bitwarden-broker 2>/dev/null || true)"
       bw_hermes="$(docker compose ps --status running -q hermes 2>/dev/null || true)"
       # The API is on the internal credentials network and takes the bearer token hermes mounts.
