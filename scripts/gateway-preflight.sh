@@ -14,12 +14,14 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 # shellcheck source=lib/env.sh
 source "$ROOT/scripts/lib/env.sh"
+# shellcheck source=lib/python.sh
+source "$ROOT/scripts/lib/python.sh"
 
 # docker-compose.yml mounts ./data/hermes as /opt/data whatever
 # ASSISTANT_DATA_ROOT says; that setting moves user content, not Hermes state.
 src="${1:-data/hermes}"
 [ -f "$src/config.yaml" ] || { echo "gateway-preflight: no config.yaml in $src" >&2; exit 1; }
-image="nousresearch/hermes-agent:$(env_get HERMES_AGENT_IMAGE_TAG v0.23.1)"
+image="$(stack_hermes_image)"
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/hermes-preflight.XXXXXX")"
 trap 'rm -rf "$work"' EXIT

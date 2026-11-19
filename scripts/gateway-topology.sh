@@ -19,6 +19,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 # shellcheck source=lib/env.sh
 source "$ROOT/scripts/lib/env.sh"
+# shellcheck source=lib/python.sh
+source "$ROOT/scripts/lib/python.sh"
 
 usage() { echo "Usage: $0 standalone|multiplex [--no-backup] [--no-restart]" >&2; exit 2; }
 
@@ -37,7 +39,7 @@ done
 
 home="data/hermes"
 [ -f "$home/config.yaml" ] || { echo "gateway-topology: no config.yaml in $home" >&2; exit 1; }
-image="nousresearch/hermes-agent:$(env_get HERMES_AGENT_IMAGE_TAG v0.23.1)"
+image="$(stack_hermes_image)"
 current="$(gateway_topology)"
 echo "gateway-topology: ${current} -> ${target}"
 

@@ -7,17 +7,17 @@
 # running container and no compose project name, so it behaves the same under
 # a custom -p / COMPOSE_PROJECT_NAME and before the stack's first start.
 
+# shellcheck source=python.sh
+declare -F stack_hermes_image > /dev/null || source "$(dirname "${BASH_SOURCE[0]}")/python.sh"
+
 hermes_python() {
-  local tag="${HERMES_AGENT_IMAGE_TAG:-}"
-  if [[ -z "$tag" && -f .env ]]; then
-    tag="$(grep -E '^HERMES_AGENT_IMAGE_TAG=' .env 2>/dev/null | head -1 | cut -d= -f2- || true)"
-  fi
-  tag="${tag:-v0.23.1}"
+  local image
+  image="$(ROOT="${ROOT:-$PWD}" stack_hermes_image)"
   docker run --rm -i \
     --user "$(id -u):$(id -g)" \
     -v "$(pwd)/data/hermes:/opt/data" \
     --entrypoint python3 \
-    "nousresearch/hermes-agent:${tag}" - "$@"
+    "$image" - "$@"
 }
 
 # hermes_set_platform_disabled PROFILE PLATFORM

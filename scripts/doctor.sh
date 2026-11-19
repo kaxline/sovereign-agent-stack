@@ -15,6 +15,8 @@ warn() { printf ' WARN %s\n' "$1"; WARN=$((WARN + 1)); }
 
 # shellcheck source=lib/env.sh
 source "$ROOT/scripts/lib/env.sh"
+# shellcheck source=lib/python.sh
+source "$ROOT/scripts/lib/python.sh"
 
 profiles_csv="$(env_get COMPOSE_PROFILES core)"
 IFS=',' read -r -a PROFILES <<< "$profiles_csv"
@@ -91,7 +93,7 @@ if has_profile core; then
   # left in .env from before that boots with every overlay skipped.
   agent_tag="$(env_get HERMES_AGENT_IMAGE_TAG)"
   if [[ "$agent_tag" =~ ^v20[0-9][0-9]\. ]]; then
-    bad "HERMES_AGENT_IMAGE_TAG=${agent_tag} predates the overlays — make hermes-upgrade AGENT=v0.23.1 WEBUI=0.52.544"
+    bad "HERMES_AGENT_IMAGE_TAG=${agent_tag} predates the overlays — make hermes-upgrade AGENT=$(compose_image_default HERMES_AGENT_IMAGE_TAG) WEBUI=$(compose_image_default HERMES_WEBUI_IMAGE_TAG)"
   fi
   search_mode="$(env_get HERMES_WEB_SEARCH_MODE private | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
   case "$search_mode" in
