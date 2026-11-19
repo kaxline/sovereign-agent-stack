@@ -4,22 +4,13 @@
 # Subdirectories that live under ASSISTANT_DATA_ROOT (not ./data/hermes).
 USER_DATA_SUBDIRS=(projects voice memory inputs rag_storage corpora)
 
+# shellcheck source=env.sh
+declare -F env_get_file > /dev/null || source "$(dirname "${BASH_SOURCE[0]}")/env.sh"
+
+# data_root_env_get KEY [DEFAULT]: env_get on ${ROOT}/.env, whatever the
+# current directory or ENV_FILE.
 data_root_env_get() {
-  local key="$1"
-  local default="${2:-}"
-  local val=""
-  if [[ -f "${ROOT}/.env" ]]; then
-    val="$(grep -E "^${key}=" "${ROOT}/.env" 2>/dev/null | head -1 | cut -d= -f2- || true)"
-    val="${val%\"}"
-    val="${val#\"}"
-    val="${val%\'}"
-    val="${val#\'}"
-  fi
-  if [[ -z "$val" ]]; then
-    echo "$default"
-  else
-    echo "$val"
-  fi
+  env_get_file "${ROOT}/.env" "$@"
 }
 
 # Expand ~ and relative paths to absolute. Empty → default ./data under ROOT.

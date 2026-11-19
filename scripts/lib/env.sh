@@ -7,10 +7,12 @@
 # gives DEFAULT, as compose's ${KEY:-DEFAULT} does. Every stack script reads
 # .env through this (install.sh keeps a self-contained copy).
 env_get() {
-  local key="$1"
-  local default="${2:-}"
-  local val=""
-  local env_file="${ENV_FILE:-.env}"
+  env_get_file "${ENV_FILE:-.env}" "$@"
+}
+
+# env_get_file FILE KEY [DEFAULT]: env_get on FILE.
+env_get_file() {
+  local env_file="$1" key="$2" default="${3:-}" val=""
   if [[ -f "$env_file" ]]; then
     val="$(grep -E "^${key}=" "$env_file" 2>/dev/null | head -1 | cut -d= -f2- || true)"
     if [[ ${#val} -ge 2 ]]; then
