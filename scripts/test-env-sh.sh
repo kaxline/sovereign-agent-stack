@@ -11,9 +11,58 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-# --- lib/env.sh: upsert_env and remove_env -------------------------------
 # shellcheck source=lib/env.sh
 . "${ROOT}/scripts/lib/env.sh"
+
+# --- lib/env.sh: env_get ---------------------------------------------------
+# First match wins; one layer of matching quotes comes off.
+g="${tmp}/get.env"
+cat > "$g" <<'EOF'
+PLAIN=abc
+DQ="a b"
+SQ='a b'
+NESTED="'x'"
+NESTED2='"x"'
+LEAD_DQ="abc
+TRAIL_DQ=abc"
+LEAD_SQ='abc
+MIXED="abc'
+INNER=Keith's KB
+EQ="a=b"
+QUOTE_ONLY="
+EMPTY_DQ=""
+EMPTY=
+DUP=first
+DUP=second
+EOF
+eg() { ENV_FILE="$g" env_get "$@"; }
+check_get() {
+  local got
+  got="$(eg "$1" "${3:-}")"
+  [ "$got" = "$2" ] || fail "env_get $1: want [$2], got [$got]"
+}
+check_get PLAIN 'abc'
+check_get DQ 'a b'
+check_get SQ 'a b'
+check_get NESTED "'x'"
+check_get NESTED2 '"x"'
+check_get LEAD_DQ '"abc'
+check_get TRAIL_DQ 'abc"'
+check_get LEAD_SQ "'abc"
+check_get MIXED "\"abc'"
+check_get INNER "Keith's KB"
+check_get EQ 'a=b'
+check_get QUOTE_ONLY '"'
+check_get EMPTY_DQ 'dflt' dflt
+check_get EMPTY 'dflt' dflt
+check_get MISSING 'dflt' dflt
+check_get MISSING ''
+check_get DUP 'first'
+[ "$(ENV_FILE="${tmp}/none.env" env_get PLAIN dflt)" = dflt ] || fail "env_get without a file"
+(cd "$tmp" && cp "$g" .env && [ "$(env_get DQ)" = 'a b' ]) || fail "env_get reads ./.env by default"
+rm -f "${tmp}/.env"
+
+# --- lib/env.sh: upsert_env and remove_env -------------------------------
 
 f="${tmp}/a.env"
 printf 'A=1\nB=2\n' > "$f"
