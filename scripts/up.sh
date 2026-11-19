@@ -15,6 +15,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+# shellcheck source=lib/env.sh
+source "${ROOT}/scripts/lib/env.sh"
 
 PREPARE_ONLY=0
 RELOAD=0
@@ -55,7 +57,7 @@ mkdir -p compose/postgres/services
 
 [[ "$PREPARE_ONLY" == 1 ]] && exit 0
 
-echo "Profiles: $(grep -E '^COMPOSE_PROFILES=' .env | head -1 | cut -d= -f2-)"
+echo "Profiles: $(env_get_file .env COMPOSE_PROFILES)"
 ./scripts/vault.sh pre-up
 # A one-shot service that exits non-zero (a bootstrap, say) fails the whole
 # `up` with only its name; print the end of its log, which says why.

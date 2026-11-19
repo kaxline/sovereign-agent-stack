@@ -17,6 +17,9 @@ require_python3() {
   fi
 }
 
+# shellcheck source=env.sh
+declare -F env_get_file > /dev/null || source "$(dirname "${BASH_SOURCE[0]}")/env.sh"
+
 # This checkout, whatever ROOT a caller points at (tests use a temp ROOT).
 STACK_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
@@ -31,7 +34,7 @@ compose_image_default() {
 stack_hermes_image() {
   local tag="${HERMES_AGENT_IMAGE_TAG:-}"
   if [[ -z "$tag" && -f "${ROOT:?}/.env" ]]; then
-    tag="$(grep -E '^HERMES_AGENT_IMAGE_TAG=' "${ROOT}/.env" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+    tag="$(env_get_file "${ROOT}/.env" HERMES_AGENT_IMAGE_TAG)"
   fi
   printf 'nousresearch/hermes-agent:%s\n' "${tag:-$(compose_image_default HERMES_AGENT_IMAGE_TAG)}"
 }

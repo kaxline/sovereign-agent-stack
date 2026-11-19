@@ -1,17 +1,25 @@
 # Shared .env helpers for stack scripts.
 # Source from the repo root:  source "$(dirname "$0")/lib/env.sh"
 
+# env_get KEY [DEFAULT]: KEY's value in ${ENV_FILE:-.env}. The first KEY= line
+# wins, and one layer of matching quotes ("v" or 'v') is stripped; a value
+# with a quote at one end only is kept as it is. An empty or missing value
+# gives DEFAULT, as compose's ${KEY:-DEFAULT} does. Every stack script reads
+# .env through this (install.sh keeps a self-contained copy).
 env_get() {
-  local key="$1"
-  local default="${2:-}"
-  local val=""
-  local env_file="${ENV_FILE:-.env}"
+  env_get_file "${ENV_FILE:-.env}" "$@"
+}
+
+# env_get_file FILE KEY [DEFAULT]: env_get on FILE.
+env_get_file() {
+  local env_file="$1" key="$2" default="${3:-}" val=""
   if [[ -f "$env_file" ]]; then
     val="$(grep -E "^${key}=" "$env_file" 2>/dev/null | head -1 | cut -d= -f2- || true)"
-    val="${val%\"}"
-    val="${val#\"}"
-    val="${val%\'}"
-    val="${val#\'}"
+    if [[ ${#val} -ge 2 ]]; then
+      case "$val" in
+        \"*\" | \'*\') val="${val:1:${#val}-2}" ;;
+      esac
+    fi
   fi
   if [[ -z "$val" ]]; then
     echo "$default"

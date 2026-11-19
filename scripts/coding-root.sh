@@ -17,23 +17,6 @@ OVERRIDE_EXAMPLE="${ROOT}/docker-compose.override.yml.example"
 
 die() { echo "error: $*" >&2; exit 1; }
 
-env_get() {
-  local key="$1" default="${2:-}"
-  [[ -f "$ENV_FILE" ]] || { echo "$default"; return; }
-  local line
-  line="$(grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | head -1 || true)"
-  if [[ -z "$line" ]]; then
-    echo "$default"
-    return
-  fi
-  local val="${line#*=}"
-  val="${val%\"}"
-  val="${val#\"}"
-  val="${val%\'}"
-  val="${val#\'}"
-  echo "$val"
-}
-
 validate_path() {
   local path="$1"
   [[ -n "$path" ]] || die "path is required"

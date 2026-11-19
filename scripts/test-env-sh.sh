@@ -11,9 +11,74 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-# --- lib/env.sh: upsert_env and remove_env -------------------------------
 # shellcheck source=lib/env.sh
 . "${ROOT}/scripts/lib/env.sh"
+
+# --- lib/env.sh: env_get ---------------------------------------------------
+# First match wins; one layer of matching quotes comes off.
+g="${tmp}/get.env"
+cat > "$g" <<'EOF'
+PLAIN=abc
+DQ="a b"
+SQ='a b'
+NESTED="'x'"
+NESTED2='"x"'
+LEAD_DQ="abc
+TRAIL_DQ=abc"
+LEAD_SQ='abc
+MIXED="abc'
+INNER=Keith's KB
+EQ="a=b"
+QUOTE_ONLY="
+EMPTY_DQ=""
+EMPTY=
+DUP=first
+DUP=second
+EOF
+eg() { ENV_FILE="$g" env_get "$@"; }
+check_get() {
+  local got
+  got="$(eg "$1" "${3:-}")"
+  [ "$got" = "$2" ] || fail "env_get $1: want [$2], got [$got]"
+}
+check_get PLAIN 'abc'
+check_get DQ 'a b'
+check_get SQ 'a b'
+check_get NESTED "'x'"
+check_get NESTED2 '"x"'
+check_get LEAD_DQ '"abc'
+check_get TRAIL_DQ 'abc"'
+check_get LEAD_SQ "'abc"
+check_get MIXED "\"abc'"
+check_get INNER "Keith's KB"
+check_get EQ 'a=b'
+check_get QUOTE_ONLY '"'
+check_get EMPTY_DQ 'dflt' dflt
+check_get EMPTY 'dflt' dflt
+check_get MISSING 'dflt' dflt
+check_get MISSING ''
+check_get DUP 'first'
+[ "$(ENV_FILE="${tmp}/none.env" env_get PLAIN dflt)" = dflt ] || fail "env_get without a file"
+(cd "$tmp" && cp "$g" .env && [ "$(env_get DQ)" = 'a b' ]) || fail "env_get reads ./.env by default"
+rm -f "${tmp}/.env"
+[ "$(env_get_file "$g" SQ)" = 'a b' ] || fail "env_get_file"
+
+# These read .env through lib/env.sh alone (AS-0006). install.sh keeps its
+# own reader because it runs before the checkout exists; the local copies in
+# the buzz, cron and sync scripts are still to be moved over.
+for s in scripts/doctor.sh scripts/coding-root.sh scripts/context-root.sh \
+  scripts/agent-create.sh scripts/lib/data-root.sh scripts/setup.sh scripts/up.sh \
+  scripts/lib/python.sh Makefile; do
+  if grep -q '^ *env_get() {' "${ROOT}/${s}"; then
+    fail "${s} defines its own env_get"
+  fi
+  # A KEY= reader; doctor's bw_get reads another format (spaces around =).
+  if grep -E -q '\^[A-Za-z_${}]+=.*cut -d= -f2-' "${ROOT}/${s}"; then
+    fail "${s} reads .env with grep | cut instead of env_get"
+  fi
+done
+
+# --- lib/env.sh: upsert_env and remove_env -------------------------------
 
 f="${tmp}/a.env"
 printf 'A=1\nB=2\n' > "$f"

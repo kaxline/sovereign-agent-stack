@@ -149,11 +149,7 @@ set_env_if_placeholder() {
   local key="$2"
   local new_value="$3"
   local current=""
-  current="$(grep -E "^${key}=" "$file" 2>/dev/null | head -1 | cut -d= -f2- || true)"
-  current="${current%\"}"
-  current="${current#\"}"
-  current="${current#\'}"
-  current="${current%\'}"
+  current="$(env_get_file "$file" "$key")"
 
   case "$current" in
     ""|change-me*|change_me*|n8n-local-*)
@@ -169,9 +165,7 @@ set_env_if_placeholder() {
 append_compose_profile() {
   local profile="$1"
   local current=""
-  current="$(grep '^COMPOSE_PROFILES=' .env 2>/dev/null | head -1 | cut -d= -f2- || true)"
-  current="${current%\"}"
-  current="${current#\"}"
+  current="$(env_get_file .env COMPOSE_PROFILES)"
   # Migrate pre-core profile names to `core`.
   current="${current//hermes-webui/}"
   current="${current//hermes/}"
@@ -391,7 +385,7 @@ setup_budget_profile() {
 # Twenty reads true/false; the stack's flag is 0/1 like every other.
 sync_twenty_multiworkspace_bool() {
   local value
-  value="$(grep -E '^TWENTY_MULTIWORKSPACE=' .env 2>/dev/null | head -1 | cut -d= -f2- || true)"
+  value="$(env_get_file .env TWENTY_MULTIWORKSPACE)"
   case "$value" in
     1|true|TRUE|yes|YES) upsert_env .env TWENTY_MULTIWORKSPACE_BOOL true ;;
     *) upsert_env .env TWENTY_MULTIWORKSPACE_BOOL false ;;
@@ -485,7 +479,7 @@ ensure_hermes_env_files() {
     # present and matches. WebUI's _reload_dotenv overwrites API_SERVER_KEY from
     # HERMES_HOME/.env; HERMES_WEBUI_GATEWAY_API_KEY survives that reload.
     local existing
-    existing="$(grep -E '^API_SERVER_KEY=' "$browser_env" | head -1 | cut -d= -f2- || true)"
+    existing="$(env_get_file "$browser_env" API_SERVER_KEY)"
     existing="${existing%% #*}"
     existing="$(printf '%s' "$existing" | tr -d '\r')"
     if [[ -n "$existing" ]]; then
@@ -779,11 +773,7 @@ fi
 # --- Workspace ---
 if [[ -z "$WORKSPACE" ]]; then
   if [[ -f .env ]] && grep -q '^WORKSPACE=' .env; then
-    WORKSPACE="$(grep '^WORKSPACE=' .env | head -1 | cut -d= -f2-)"
-    WORKSPACE="${WORKSPACE%\"}"
-    WORKSPACE="${WORKSPACE#\"}"
-    WORKSPACE="${WORKSPACE#\'}"
-    WORKSPACE="${WORKSPACE%\'}"
+    WORKSPACE="$(env_get_file .env WORKSPACE)"
   else
     WORKSPACE="$(prompt_default "Knowledge-base slug (WORKSPACE)" "my-kb")"
   fi
@@ -792,7 +782,7 @@ validate_workspace "$WORKSPACE"
 
 if [[ -z "$WEBUI_TITLE" ]]; then
   if [[ -f .env ]] && grep -q '^WEBUI_TITLE=' .env; then
-    WEBUI_TITLE="$(grep '^WEBUI_TITLE=' .env | head -1 | cut -d= -f2- | tr -d "'\"")"
+    WEBUI_TITLE="$(env_get_file .env WEBUI_TITLE)"
   else
     WEBUI_TITLE="$(prompt_default "Web UI title (WEBUI_TITLE)" "My Knowledge Base")"
   fi
@@ -854,7 +844,7 @@ if ! grep -qE '^TWENTY_DB_PASSWORD_FILE=.+' .env 2>/dev/null; then
   set_env_if_placeholder .env TWENTY_DB_PASSWORD "$(rand_hex 32)"
 fi
 
-SEARXNG_SECRET="$(grep '^SEARXNG_SECRET=' .env | head -1 | cut -d= -f2- || true)"
+SEARXNG_SECRET="$(env_get_file .env SEARXNG_SECRET)"
 if [[ -z "$SEARXNG_SECRET" || "$SEARXNG_SECRET" == change-me* ]]; then
   SEARXNG_SECRET="$(rand_hex 24)"
   upsert_env .env SEARXNG_SECRET "$SEARXNG_SECRET"
@@ -865,9 +855,7 @@ sync_searxng_secret "$SEARXNG_SECRET"
 # --- OpenCode workspace host ---
 if [[ -z "$OPENCODE_WORKSPACE_HOST" ]]; then
   if grep -q '^OPENCODE_WORKSPACE_HOST=' .env; then
-    OPENCODE_WORKSPACE_HOST="$(grep '^OPENCODE_WORKSPACE_HOST=' .env | head -1 | cut -d= -f2-)"
-    OPENCODE_WORKSPACE_HOST="${OPENCODE_WORKSPACE_HOST%\"}"
-    OPENCODE_WORKSPACE_HOST="${OPENCODE_WORKSPACE_HOST#\"}"
+    OPENCODE_WORKSPACE_HOST="$(env_get_file .env OPENCODE_WORKSPACE_HOST)"
   fi
   if [[ -z "$OPENCODE_WORKSPACE_HOST" || "$OPENCODE_WORKSPACE_HOST" == /Users/you/* ]]; then
     default_opencode="${HOME}/code"
@@ -952,7 +940,7 @@ log "Created ${DATA_ROOT}/{inputs,rag_storage,voice,projects,memory,corpora} and
 if ! grep -q '^COMPOSE_PROFILES=' .env 2>/dev/null; then
   upsert_env .env COMPOSE_PROFILES core
   log "Set COMPOSE_PROFILES=core"
-elif [[ -z "$(grep '^COMPOSE_PROFILES=' .env | head -1 | cut -d= -f2-)" ]]; then
+elif [[ -z "$(env_get_file .env COMPOSE_PROFILES)" ]]; then
   upsert_env .env COMPOSE_PROFILES core
   log "Set COMPOSE_PROFILES=core"
 else
@@ -1072,7 +1060,7 @@ fi
 # automation is turned on later) ---
 ./scripts/sync-n8n-credentials.sh --force
 
-PROFILES_NOW="$(grep '^COMPOSE_PROFILES=' .env | head -1 | cut -d= -f2- || echo core)"
+PROFILES_NOW="$(env_get_file .env COMPOSE_PROFILES core)"
 
 cat <<EOF
 

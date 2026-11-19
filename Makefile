@@ -23,11 +23,14 @@
 	kb-eval-fixture kb-eval-fixture-remove \
 	tool-eval-reset tool-eval-run tool-eval-score tool-eval-list
 
+# $$($(ENV_GET) KEY [DEFAULT]) in a recipe: KEY from .env, read by
+# scripts/lib/env.sh's env_get_file like every stack script.
+ENV_GET = bash -c '. scripts/lib/env.sh && env_get_file .env "$$@"' env-get
+
 # Resolve ASSISTANT_DATA_ROOT from .env (default ./data) to an absolute path.
 define resolve_data_root
 ROOT_DIR=$$(pwd); \
-DR=$$(grep -E '^ASSISTANT_DATA_ROOT=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'"); \
-DR=$${DR:-./data}; \
+DR=$$($(ENV_GET) ASSISTANT_DATA_ROOT ./data); \
 case "$$DR" in \
   "~") DR="$$HOME" ;; \
   "~/"*) DR="$$HOME/$${DR#~/}" ;; \
@@ -209,8 +212,7 @@ web-browser-build:
 
 web-browser-viewer:
 	@$(resolve_data_root); \
-	port=$$(grep -E '^WEB_BROWSER_VIEWER_PORT=' .env 2>/dev/null | head -1 | cut -d= -f2-); \
-	port=$${port:-6080}; \
+	port=$$($(ENV_GET) WEB_BROWSER_VIEWER_PORT 6080); \
 	echo "Viewer:   http://127.0.0.1:$$port/vnc.html"; \
 	echo "Password: $$DATA_ROOT/web-browser/secrets/viewer"
 
