@@ -41,6 +41,13 @@ the stack under another app.
   `hermes-worker`, so that command recreated the wrong container. The template
   now points at the recreate command `context-root-add` prints. Projects
   created earlier keep their old copy.
+- WebUI chat no longer adds "INDEX.md may be out of date" on every turn for a
+  project with `.txt` sources, hidden files or a custom `include`/`exclude`
+  in `sources.yaml` (AS-0001). The prefill script now calls the same
+  `catalog_is_fresh` check as `make project-index-check`, limited to sources
+  inside the project. `hermes-webui` gains one read-only mount,
+  `scripts/lib/project_sources.py` at `/bootstrap/project_sources.py`, and is
+  recreated on the next `make up`.
 
 ## v0.3.16 — 2026-11-18
 

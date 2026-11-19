@@ -104,6 +104,7 @@ scripts/test-mirror-exclude.py                  image
 scripts/test-no-host-python.sh                  ci
 scripts/test-opencode-mcp-roots.py              ci
 scripts/test-profile-ownership.sh               ci
+scripts/test-project-brief-prefill.py           ci
 scripts/test-project-sources.py                 ci
 scripts/test-reasoning-promotion-gate.py        image
 scripts/test-root-add.py                        ci
