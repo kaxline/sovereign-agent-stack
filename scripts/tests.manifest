@@ -106,6 +106,7 @@ scripts/test-opencode-mcp-roots.py              ci
 scripts/test-profile-ownership.sh               ci
 scripts/test-project-sources.py                 ci
 scripts/test-reasoning-promotion-gate.py        image
+scripts/test-root-add.py                        ci
 scripts/test-root-access-hint.py                ci docker
 scripts/test-run-tests.py                       ci
 scripts/test-search-gate.py                     ci

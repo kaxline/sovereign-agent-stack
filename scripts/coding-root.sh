@@ -13,21 +13,11 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 source "${ROOT}/scripts/lib/env.sh"
 ENV_FILE="${ROOT}/.env"
 OVERRIDE="${ROOT}/docker-compose.override.yml"
-OVERRIDE_EXAMPLE="${ROOT}/docker-compose.override.yml.example"
 
 die() { echo "error: $*" >&2; exit 1; }
 
-validate_path() {
-  local path="$1"
-  [[ -n "$path" ]] || die "path is required"
-  [[ "$path" == /* ]] || die "path must be absolute: $path"
-  [[ "$path" != "/" ]] || die "path must not be /"
-  [[ "$path" != */ ]] || die "path must not end with a slash: $path"
-  local home="${HOME:-}"
-  [[ -n "$home" && "$path" == "$home" ]] && die "path must not be \$HOME alone (too broad): $path"
-  [[ -e "$path" ]] || die "path does not exist: $path"
-  [[ -d "$path" ]] || die "path must be a directory: $path"
-}
+# shellcheck source=lib/roots.sh
+source "${ROOT}/scripts/lib/roots.sh"
 
 path_covered() {
   local candidate="$1"
@@ -48,112 +38,6 @@ path_covered() {
     fi
   done
   return 1
-}
-
-ensure_override() {
-  if [[ ! -f "$OVERRIDE" ]]; then
-    cp "$OVERRIDE_EXAMPLE" "$OVERRIDE"
-    echo "Created $OVERRIDE from example"
-  fi
-}
-
-# Ensure a volume line exists under services.<svc>.volumes in the override file.
-ensure_service_mount() {
-  local svc="$1" mount_path="$2"
-  local tmp
-  tmp="$(mktemp "$(dirname "$OVERRIDE")/.$(basename "$OVERRIDE").XXXXXX")"
-
-  python3 - "$OVERRIDE" "$svc" "$mount_path" "$tmp" <<'PY'
-import sys
-from pathlib import Path
-
-src = Path(sys.argv[1])
-service = sys.argv[2]
-mount_path = sys.argv[3]
-out = Path(sys.argv[4])
-entry = f"      - {mount_path}:{mount_path}"
-
-text = src.read_text() if src.exists() else "services:\n"
-if "services:" not in text:
-    text = "services:\n" + text
-lines = text.splitlines(keepends=True)
-
-def find_service(lines, name):
-    header = f"  {name}:"
-    for i, line in enumerate(lines):
-        if line.rstrip("\n") == header:
-            return i
-    return None
-
-def service_end(lines, start):
-    i = start + 1
-    while i < len(lines):
-        line = lines[i]
-        # Next top-level service under services: (two-space indent, not empty)
-        if line.startswith("  ") and not line.startswith("    ") and line.strip() and line.rstrip("\n").endswith(":"):
-            return i
-        i += 1
-    return len(lines)
-
-idx = find_service(lines, service)
-if idx is None:
-    if not text.rstrip().endswith("\n"):
-        lines.append("\n")
-    lines.append(f"  {service}:\n")
-    lines.append("    volumes:\n")
-    lines.append(entry + "\n")
-    out.write_text("".join(lines))
-    print(f"added service {service} with mount {mount_path}")
-    raise SystemExit(0)
-
-end = service_end(lines, idx)
-block = lines[idx:end]
-# already present?
-for line in block:
-    if mount_path + ":" + mount_path in line.replace(" ", ""):
-        out.write_text("".join(lines))
-        print(f"mount already present for {service}: {mount_path}")
-        raise SystemExit(0)
-    if f"{mount_path}:{mount_path}" in line:
-        out.write_text("".join(lines))
-        print(f"mount already present for {service}: {mount_path}")
-        raise SystemExit(0)
-
-vol_rel = None
-for j, line in enumerate(block):
-    if line.rstrip("\n") == "    volumes:":
-        vol_rel = j
-        break
-
-if vol_rel is None:
-    # Insert volumes after service header
-    insert_at = idx + 1
-    lines.insert(insert_at, "    volumes:\n")
-    lines.insert(insert_at + 1, entry + "\n")
-else:
-    lines.insert(idx + vol_rel + 1, entry + "\n")
-
-out.write_text("".join(lines))
-print(f"added mount for {service}: {mount_path}")
-PY
-  mv "$tmp" "$OVERRIDE"
-}
-
-terminal_service() {
-  local backend
-  backend="$(env_get HERMES_TERMINAL_BACKEND ssh)"
-  case "$backend" in
-    ssh) printf '%s\n' hermes-worker ;;
-    local) printf '%s\n' hermes ;;
-    *) die "HERMES_TERMINAL_BACKEND must be ssh or local (got ${backend})" ;;
-  esac
-}
-
-ensure_override_mount() {
-  local path="$1"
-  ensure_override
-  ensure_service_mount "$(terminal_service)" "$path"
-  ensure_service_mount opencode "$path"
 }
 
 cmd_list() {
@@ -186,9 +70,10 @@ cmd_add() {
   validate_path "$path"
   [[ -f "$ENV_FILE" ]] || die "missing $ENV_FILE — run ./scripts/setup.sh first"
 
-  local primary
+  local primary service
   primary="$(env_get OPENCODE_WORKSPACE_HOST)"
   [[ -n "$primary" ]] || die "OPENCODE_WORKSPACE_HOST is unset"
+  service="$(terminal_service)"
 
   if path_covered "$path"; then
     echo "Already covered by an existing coding root: $path"
@@ -209,7 +94,9 @@ cmd_add() {
   [[ "$extras" == :* ]] || extras=":$extras"
 
   upsert_env "$ENV_FILE" CODING_EXTRA_ROOTS "$extras"
-  ensure_override_mount "$path"
+  ensure_override
+  add_mount "$service" "$path"
+  add_mount opencode "$path"
 
   echo
   echo "Added coding root: $path"
