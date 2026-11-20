@@ -23,6 +23,17 @@ the stack under another app.
   volume created with another one. The script no longer sources `.env` as
   shell, and passes the password to `cypher-shell` as a parameter, so quotes
   in it no longer break the query.
+- On macOS's `/bin/bash` (3.2), `make neo4j-reset-password` broke on any
+  password with a `'` in it: the quoting left a stray backslash that closed the
+  Cypher string early. It now quotes the same under bash 3.2 and 5.
+- `make doctor` reports a running `neo4j` whose healthcheck fails. When it
+  fails on auth, the line names `make neo4j-reset-password`
+  ([knowledge bases](docs/knowledge-bases.md#neo4j-password-mismatch)). A
+  healthy or stopped `neo4j` adds no line.
+- `HERMES_BUZZ_ENABLED` and `HERMES_SIGNAL_ENABLED` accept the same values as
+  the add-on manifests (`1`, `true`, `yes`, `on`, any case, spaces at either
+  end ignored) in `sync-buzz-profile.sh`, `sync-signal-profile.sh` and
+  `agent-create.sh`; `on` used to read as off.
 - `scripts/budget.sh` honours an `ASSISTANT_DATA_ROOT` exported in its
   environment over the one in `.env`, as `crm.sh`, `addon.sh` and compose
   already did. The test-only `BUDGET_DATA_ROOT` is gone.

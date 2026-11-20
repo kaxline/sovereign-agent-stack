@@ -91,10 +91,7 @@ case "$(echo "${WITH}" | tr '[:upper:]' '[:lower:]')" in
   buzz|1|true|yes) attach_buzz=1 ;;
 esac
 
-buzz_enabled="$(env_get HERMES_BUZZ_ENABLED 0)"
-case "$(echo "$buzz_enabled" | tr '[:upper:]' '[:lower:]')" in
-  1|true|yes) attach_buzz=1 ;;
-esac
+env_true HERMES_BUZZ_ENABLED && attach_buzz=1
 
 if [[ "$attach_buzz" -eq 1 ]]; then
   log "Attaching Buzz transport for '${NAME}'…"

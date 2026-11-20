@@ -477,6 +477,20 @@ if has_profile rag || has_profile neo4j; then
       *) ok "${key} is set" ;;
     esac
   done
+  # Silent unless neo4j is running and unhealthy. An auth failure means the
+  # volume kept the password it was created with.
+  if docker info >/dev/null 2>&1; then
+    _neo_cid="$(docker compose ps -q neo4j 2>/dev/null || true)"
+    if [[ -n "$_neo_cid" ]] \
+      && [[ "$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$_neo_cid" 2>/dev/null || true)" == unhealthy ]]; then
+      if docker inspect -f '{{range .State.Health.Log}}{{.Output}}{{end}}' "$_neo_cid" 2>/dev/null \
+        | grep -E -i -q 'unauthorized|authentication failure'; then
+        bad "neo4j healthcheck fails on auth: NEO4J_PASSWORD does not match the neo4j_data volume — run make neo4j-reset-password"
+      else
+        bad "neo4j is unhealthy — docker compose logs neo4j"
+      fi
+    fi
+  fi
 fi
 if has_profile automation; then
   check_port "$(env_get N8N_HOST_PORT 5678)" "n8n"

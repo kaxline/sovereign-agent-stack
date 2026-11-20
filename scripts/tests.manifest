@@ -113,6 +113,7 @@ scripts/test-profile-ownership.sh               ci
 scripts/test-project-brief-prefill.py           ci
 scripts/test-project-sources.py                 ci
 scripts/test-reasoning-promotion-gate.py        image
+scripts/test-reset-neo4j-password.sh            ci
 scripts/test-root-add.py                        ci
 scripts/test-root-access-hint.py                ci docker
 scripts/test-run-tests.py                       ci

@@ -18,11 +18,11 @@ NEO4J_PASSWORD="$(env_get NEO4J_PASSWORD)"
 NEO4J_USERNAME="$(env_get NEO4J_USERNAME neo4j)"
 [[ -n "$NEO4J_PASSWORD" ]] || die "NEO4J_PASSWORD is not set in .env"
 
-# cypher_string VALUE: VALUE as a single-quoted Cypher string literal.
+# cypher_string VALUE: VALUE as a single-quoted Cypher string literal, with \
+# and ' escaped. sed, not ${v//pat/rep}: macOS's bash 3.2 keeps the backslash
+# in a \\\' replacement that bash 5 drops, which closed the literal early.
 cypher_string() {
-  local v="${1//\\/\\\\}"
-  v="${v//\'/\\\'}"
-  printf "'%s'" "$v"
+  printf "'%s'" "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e "s/'/\\\\'/g")"
 }
 
 log "Stopping neo4j service"

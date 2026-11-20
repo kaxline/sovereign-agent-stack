@@ -35,12 +35,8 @@ remove_env_key() {
 
 [[ -f .env ]] || die ".env missing — run ./scripts/setup.sh first"
 
-enabled="$(env_get HERMES_SIGNAL_ENABLED 0)"
-# Accept 1/true/yes (case-insensitive).
-case "$(echo "$enabled" | tr '[:upper:]' '[:lower:]')" in
-  1|true|yes) enabled=1 ;;
-  *) enabled=0 ;;
-esac
+enabled=0
+env_true HERMES_SIGNAL_ENABLED && enabled=1
 
 if [[ "$enabled" -eq 1 ]]; then
   account="$(env_get SIGNAL_ACCOUNT)"
