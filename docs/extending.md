@@ -954,7 +954,8 @@ bytes summed over layers, at most one per service per second, and ends with
 A `setup` line is `{"phase":"setup","step":<name>,"status":"running"|"done"|"error"}`.
 A step that runs per service, volume or path adds `"target"`. Steps run in this
 order: `prepare` (the `prepare` hook, when the manifest has one), `flags`
-(write `.env`, sync `COMPOSE_PROFILES`), `start` (one-shots,
+(write the manifest's `generate` secrets that `.env` lacks and the flags to
+`.env`, sync `COMPOSE_PROFILES`), `start` (one-shots,
 then the services), `stop` (gated services whose gate is off), `init`,
 `reload`. `disable` runs `flags`, `stop`, `reload`, then `delete` with
 `--purge`. `connect` and `disconnect`

@@ -36,7 +36,8 @@ runs in the Hermes image through stack_python, so the host needs no python3.
         services that declare `mounts` and "hermesUser" those whose compose
         `user:` is HERMES_UID; with either, the add-on's store directories
         are created first, and addon.sh checks HERMES_UID and HERMES_GID on
-        Linux.
+        Linux. "generate" lists the manifest's generated .env secrets as
+        "ENV:encoding:bytes".
     plan-disable SID [--flags JSON]
         Prints {"builtin": FLAG, "flags": {...}, "services": [...], "volumes": [...]}: builtin.flag
         and every gate flag at "0", every compose service, and the compose
@@ -380,7 +381,7 @@ def cmd_plan_enable(args) -> None:
     # whose gate is off once the flags are written.
     _dump({"builtin": manifest["builtin"]["flag"], "flags": flags, "services": services,
            "oneshots": oneshots, "stop": gated, "mounts": mounts, "hermesUser": hermes_user,
-           **_plan_fields(manifest)})
+           "generate": am.generated_env(manifest), **_plan_fields(manifest)})
 
 
 def cmd_plan_disable(args) -> None:

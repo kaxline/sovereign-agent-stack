@@ -1437,6 +1437,19 @@ check("data.paths is not checked against compose when there is no repo",
 life_refused("backup.secrets entries are env names", life(backup={"secrets": ["lower"]}), "backup.secrets")
 life_refused("backup.recommended entries are env names",
              life(backup={"recommended": ["lower"]}), "backup.recommended")
+GEN = {"env": "FIXTURE_KEY", "encoding": "hex", "bytes": 32}
+check("a generate entry {env, encoding, bytes} is accepted",
+      not life_errors(life(generate=[GEN])), str(life_errors(life(generate=[GEN]))))
+check("generated_env gives ENV:encoding:bytes",
+      am.generated_env(life(generate=[GEN, {**GEN, "env": "B", "encoding": "base64"}]))
+      == ["FIXTURE_KEY:hex:32", "B:base64:32"])
+life_refused("generate must be a non-empty list", life(generate=[]), "generate must be")
+life_refused("generate.env is an env name", life(generate=[{**GEN, "env": "lower"}]), "generate[0].env")
+life_refused("generate lists an env once", life(generate=[GEN, GEN]), "listed twice")
+life_refused("generate.encoding is hex or base64", life(generate=[{**GEN, "encoding": "raw"}]), "generate[0].encoding")
+life_refused("generate.bytes is 16 to 64", life(generate=[{**GEN, "bytes": 8}]), "generate[0].bytes")
+life_refused("generate.bytes is not a bool", life(generate=[{**GEN, "bytes": True}]), "generate[0].bytes")
+life_refused("generate entries have no unknown fields", life(generate=[{**GEN, "x": 1}]), "unknown fields")
 life_refused("backup with an unknown key fails", life(backup={"keys": []}), "backup has unknown")
 
 FIXTURE_DIR = ROOT / "scripts" / "fixtures" / "addons-cli"

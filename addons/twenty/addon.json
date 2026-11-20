@@ -214,5 +214,17 @@
   },
   "store": {
     "dataLeaves": "With a remote workspace, CRM data is read from and written to that workspace's server. The bundled local workspace keeps it on this Mac."
-  }
+  },
+  "generate": [
+    {
+      "env": "TWENTY_ENCRYPTION_KEY",
+      "encoding": "base64",
+      "bytes": 32
+    },
+    {
+      "env": "TWENTY_DB_PASSWORD",
+      "encoding": "hex",
+      "bytes": 32
+    }
+  ]
 }

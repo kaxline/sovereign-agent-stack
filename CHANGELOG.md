@@ -10,6 +10,13 @@ the stack under another app.
 
 ### Changes
 
+- `addon.sh enable twenty` generates `TWENTY_ENCRYPTION_KEY` and
+  `TWENTY_DB_PASSWORD` when `.env` has none (CR 0043), and `enable vikunja`
+  generates `VIKUNJA_SECRET`. Only `setup.sh` wrote them before, so on a
+  stack whose `.env` predates v0.3.10 the local Twenty never started
+  (`twenty-db` refused to initialise) and Vikunja logged everyone out on each
+  restart. A value that is set, or whose `_FILE` form is set, is left alone.
+  The new manifest field `generate` lists these secrets for any add-on.
 - `scripts/env.sh` accepts `LIGHTRAG_LLM_*` and `EMBEDDING_*` (CR 0037 R6),
   the LightRAG and embedding model keys `setup.sh` writes beside `LLM_*`. A
   client that wrote them to `.env` directly can move them to `env.sh`, inside
