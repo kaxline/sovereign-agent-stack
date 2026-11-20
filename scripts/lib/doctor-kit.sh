@@ -3,7 +3,7 @@
 # so a section runs against the same ok/bad/warn it gets in doctor.
 # shellcheck shell=bash
 
-# shellcheck source=env.sh
+# shellcheck source=lib/env.sh
 source "$(dirname "${BASH_SOURCE[0]}")/env.sh"
 
 PASS="${PASS:-0}"
