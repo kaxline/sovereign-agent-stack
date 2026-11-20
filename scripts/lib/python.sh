@@ -23,7 +23,7 @@ require_python3() {
   fi
 }
 
-# shellcheck source=env.sh
+# shellcheck source=lib/env.sh
 declare -F env_get_file > /dev/null || source "$(dirname "${BASH_SOURCE[0]}")/env.sh"
 
 # This checkout, whatever ROOT a caller points at (tests use a temp ROOT).

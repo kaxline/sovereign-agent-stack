@@ -7,7 +7,7 @@
 # running container and no compose project name, so it behaves the same under
 # a custom -p / COMPOSE_PROJECT_NAME and before the stack's first start.
 
-# shellcheck source=python.sh
+# shellcheck source=lib/python.sh
 declare -F stack_hermes_image > /dev/null || source "$(dirname "${BASH_SOURCE[0]}")/python.sh"
 
 hermes_python() {
