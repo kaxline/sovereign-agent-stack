@@ -45,7 +45,10 @@ POLL_INTERVAL_SEC = float(os.environ.get("TASK_POLL_INTERVAL_SEC", "2.0"))
 
 mcp = FastMCP(name="OpenCode Coding")
 
-# task_id -> task state
+# Finished tasks kept for coding_get_task_result; older ones are dropped.
+FINISHED_TASKS_KEPT = 50
+
+# task_id -> task state, in start order
 _tasks: Dict[str, Dict[str, Any]] = {}
 _tasks_lock = threading.Lock()
 
@@ -276,7 +279,6 @@ def _run_prompt(
     )
     if async_resp.status_code in (200, 204):
         deadline = time.time() + TASK_DEFAULT_TIMEOUT
-        poll_n = 0
         while time.time() < deadline:
             busy = _session_busy(client, session_id)
             messages = _list_messages(client, session_id, directory)
@@ -288,17 +290,8 @@ def _run_prompt(
                         progress = progress or "OpenCode session busy…"
                     _tasks[task_id]["progress"] = (progress or "")[:500]
 
-            finished = _prompt_finished(before_id, snap)
-            poll_n += 1
-            if finished:
+            if _prompt_finished(before_id, snap):
                 return {"raw": None, "text": snap.get("text") or ""}
-
-            # If status API reports idle and we already have a newer assistant
-            # message (even mid tool-calls), keep waiting for finish=stop.
-            if busy is False and snap.get("id") and snap.get("id") != before_id:
-                finish = str(snap.get("finish") or "").lower()
-                if finish in ("stop", "end_turn"):
-                    return {"raw": None, "text": snap.get("text") or ""}
 
             time.sleep(POLL_INTERVAL_SEC)
 
@@ -380,6 +373,55 @@ def _worker(task_id: str) -> None:
             _tasks[task_id]["finished_at"] = time.time()
 
 
+def _new_task(
+    directory: str,
+    prompt: str,
+    session_id: Optional[str] = None,
+    parent_task_id: Optional[str] = None,
+) -> str:
+    """Register a pending task, drop the oldest finished ones past the cap, return its id."""
+    task_id = str(uuid.uuid4())
+    task: Dict[str, Any] = {
+        "status": "pending",
+        "directory": directory,
+        "prompt": prompt.strip(),
+        "session_id": session_id,
+        "result_text": None,
+        "diff": None,
+        "error": None,
+        "progress": None,
+        "started_at": time.time(),
+        "finished_at": None,
+    }
+    if parent_task_id:
+        task["parent_task_id"] = parent_task_id
+    with _tasks_lock:
+        _tasks[task_id] = task
+        finished = [tid for tid, t in _tasks.items() if t["status"] in ("completed", "failed")]
+        for tid in finished[: max(0, len(finished) - FINISHED_TASKS_KEPT)]:
+            del _tasks[tid]
+    return task_id
+
+
+def _status_view(task_id: str, include_progress: bool) -> Dict[str, Any]:
+    """Status payload for a task. The caller holds _tasks_lock."""
+    task = _tasks.get(task_id)
+    if not task:
+        return {"ok": False, "error": f"unknown task_id: {task_id}"}
+    out: Dict[str, Any] = {
+        "ok": True,
+        "task_id": task_id,
+        "status": task["status"],
+        "directory": task["directory"],
+        "session_id": task.get("session_id"),
+    }
+    if task.get("error"):
+        out["error"] = task["error"]
+    if include_progress and task.get("progress"):
+        out["progress"] = task["progress"]
+    return out
+
+
 def _start_worker(task_id: str) -> None:
     thread = threading.Thread(target=_worker, args=(task_id,), daemon=True)
     thread.start()
@@ -413,20 +455,7 @@ def coding_start_task(directory: str, prompt: str) -> Dict[str, Any]:
         payload = _needs_access_payload(directory)
         return payload
 
-    task_id = str(uuid.uuid4())
-    with _tasks_lock:
-        _tasks[task_id] = {
-            "status": "pending",
-            "directory": directory,
-            "prompt": prompt.strip(),
-            "session_id": None,
-            "result_text": None,
-            "diff": None,
-            "error": None,
-            "progress": None,
-            "started_at": time.time(),
-            "finished_at": None,
-        }
+    task_id = _new_task(directory, prompt)
     _start_worker(task_id)
     out = {
         "ok": True,
@@ -445,21 +474,7 @@ def coding_get_task_status(
 ) -> Dict[str, Any]:
     """Return status of a coding task: pending, running, completed, or failed."""
     with _tasks_lock:
-        task = _tasks.get(task_id)
-        if not task:
-            return {"ok": False, "error": f"unknown task_id: {task_id}"}
-        out: Dict[str, Any] = {
-            "ok": True,
-            "task_id": task_id,
-            "status": task["status"],
-            "directory": task["directory"],
-            "session_id": task.get("session_id"),
-        }
-        if task.get("error"):
-            out["error"] = task["error"]
-        if include_progress and task.get("progress"):
-            out["progress"] = task["progress"]
-        return out
+        return _status_view(task_id, include_progress)
 
 
 @mcp.tool()
@@ -476,10 +491,8 @@ def coding_wait_for_task(
             task = _tasks.get(task_id)
             if not task:
                 return {"ok": False, "error": f"unknown task_id: {task_id}"}
-            status = task["status"]
-            if status in ("completed", "failed"):
-                out = coding_get_task_status(task_id, include_progress=include_progress)
-                return out
+            if task["status"] in ("completed", "failed"):
+                return _status_view(task_id, include_progress)
         time.sleep(POLL_INTERVAL_SEC)
     return {
         "ok": True,
@@ -545,21 +558,7 @@ def coding_continue_task(task_id: str, prompt: str) -> Dict[str, Any]:
                 "error": "parent task has no session_id yet; wait for it to start",
             }
 
-    new_id = str(uuid.uuid4())
-    with _tasks_lock:
-        _tasks[new_id] = {
-            "status": "pending",
-            "directory": directory,
-            "prompt": prompt.strip(),
-            "session_id": session_id,
-            "result_text": None,
-            "diff": None,
-            "error": None,
-            "progress": None,
-            "started_at": time.time(),
-            "finished_at": None,
-            "parent_task_id": task_id,
-        }
+    new_id = _new_task(directory, prompt, session_id=session_id, parent_task_id=task_id)
     _start_worker(new_id)
     return {
         "ok": True,
