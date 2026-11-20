@@ -106,7 +106,7 @@ scripts/test-messages-mcp-registration.sh
 scripts/test-messages-webhook-config.py         image
 scripts/test-mirror-exclude.py                  image
 scripts/test-no-host-python.sh                  ci
-scripts/test-opencode-mcp-roots.py              ci
+scripts/test-opencode-mcp.py                    ci
 scripts/test-profile-config.py                  ci image
 scripts/test-profile-ownership.sh               ci
 scripts/test-project-brief-prefill.py           ci
