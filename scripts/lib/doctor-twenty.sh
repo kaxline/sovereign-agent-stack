@@ -34,12 +34,10 @@ twenty_key_problem() {
 }
 
 doctor_twenty() {
-  local twenty_local twenty_mcp twenty_port data_root store f slug pair
+  local twenty_local twenty_mcp twenty_port store f slug pair
   if env_true TWENTY_LOCAL_ENABLED; then twenty_local=1; else twenty_local=0; fi
   if env_true TWENTY_MCP_ENABLED; then twenty_mcp=1; else twenty_mcp=0; fi
-  data_root="$(env_get ASSISTANT_DATA_ROOT ./data)"
-  [[ "$data_root" == /* ]] || data_root="${ROOT}/${data_root#./}"
-  store="${data_root}/addons/twenty"
+  store="${DATA_ROOT}/addons/twenty"
 
   if has_profile crm || [[ "$twenty_local" -eq 1 || "$twenty_mcp" -eq 1 ]]; then
     echo

@@ -93,20 +93,6 @@ die() {
   exit 1
 }
 
-is_true() {
-  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
-    1 | true | yes | on) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-# A regex, not a glob: bash 3.2 bracket ranges follow the locale, where [a-z]
-# also matches uppercase letters. addon_store's rule: a letter first, at most
-# 31 characters.
-valid_slug() {
-  [[ "$1" =~ ^[a-z][a-z0-9-]{0,30}$ ]]
-}
-
 # True when a value can go into the JSON crm.sh builds: no quote, backslash
 # or control character. URLs, workspace ids and Twenty's keys never have one.
 json_safe() {
@@ -211,7 +197,7 @@ data_dir() {
 }
 
 sync_bool() {
-  if is_true "$(env_get TWENTY_MULTIWORKSPACE 0)"; then
+  if env_true TWENTY_MULTIWORKSPACE; then
     upsert_env "$ENV_PATH" TWENTY_MULTIWORKSPACE_BOOL true
   else
     upsert_env "$ENV_PATH" TWENTY_MULTIWORKSPACE_BOOL false
@@ -343,14 +329,14 @@ cmd_init() {
     fail_with bad_slug "slug '${slug}' must use lowercase letters, digits and hyphens"
   fi
   valid_slug "$slug" || die "slug '${slug}' must use lowercase letters, digits and hyphens"
-  if [[ -n "$json" ]] && ! is_true "$(env_get TWENTY_LOCAL_ENABLED 0)"; then
+  if [[ -n "$json" ]] && ! env_true TWENTY_LOCAL_ENABLED; then
     printf '{"phase":"done","message":"local instance off","mcp":[%s]}\n' "$(registered_mcp_json "$(env_get TWENTY_MCP_ENABLED 0)")" >&3
     exit 0
   fi
   # addon.sh enable runs init without --slug. In single-workspace mode the
   # local instance holds one workspace, and the stored one may have any slug;
   # init with main would refuse it as a second one.
-  if [[ -z "$slug_given" ]] && ! is_true "$(env_get TWENTY_MULTIWORKSPACE 0)"; then
+  if [[ -z "$slug_given" ]] && ! env_true TWENTY_MULTIWORKSPACE; then
     load_rows
     if ! is_local_slug "$slug"; then
       local first
@@ -408,7 +394,7 @@ cmd_init() {
     crm_admin "${args[@]}"
   fi
 
-  if ! is_true "$(env_get TWENTY_MCP_ENABLED 0)"; then
+  if ! env_true TWENTY_MCP_ENABLED; then
     upsert_env "$ENV_PATH" TWENTY_MCP_ENABLED 1
     log "Set TWENTY_MCP_ENABLED=1"
   fi
@@ -571,7 +557,7 @@ EOF
   if [[ "$local_" == 0 && "$is_local_url" == 1 ]]; then
     fail_with local_mismatch "${LOCAL_URL} is the local instance; send local: true"
   fi
-  if [[ "$local_" == 1 ]] && ! is_true "$(env_get TWENTY_LOCAL_ENABLED 0)"; then
+  if [[ "$local_" == 1 ]] && ! env_true TWENTY_LOCAL_ENABLED; then
     fail_with local_off "the local instance is off (TWENTY_LOCAL_ENABLED=0)"
   fi
   if [[ "$access" == write && "$has_rw" != 1 ]]; then
@@ -751,7 +737,7 @@ cmd_add() {
   [[ -n "$ro" ]] || rm -f "${STORE}/secrets/${slug}.key_ro"
   [[ -n "$rw" ]] || rm -f "${STORE}/secrets/${slug}.key_rw"
   log "Wrote ${STORE}/instances/${slug}.json (crm-${slug})"
-  if ! is_true "$(env_get TWENTY_MCP_ENABLED 0)"; then
+  if ! env_true TWENTY_MCP_ENABLED; then
     upsert_env "$ENV_PATH" TWENTY_MCP_ENABLED 1
     log "Set TWENTY_MCP_ENABLED=1"
   fi
@@ -941,7 +927,7 @@ cmd_ensure() {
     warn "couldn't set ${STORE}, its instances and its secrets to 0700 (another user, often root, owns one); run sudo chown -R \"\$(id -u):\$(id -g)\" '${STORE}'"
   fi
   sync_bool
-  is_true "$(env_get TWENTY_LOCAL_ENABLED 0)" || return 0
+  env_true TWENTY_LOCAL_ENABLED || return 0
   local dir
   dir="$(data_dir)"
   # Created here so Docker doesn't create them root-owned on Linux.

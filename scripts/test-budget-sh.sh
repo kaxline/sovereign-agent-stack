@@ -154,7 +154,7 @@ budget_entry() { # groupId name [deleted] [encryptKeyId]
 brc=0
 budgets_run() {
   brc=0
-  printf '%s' "$1" | STACK_PYTHON=host BUDGET_DATA_ROOT="$tmp/data" "$budget" budgets --json > "$tmp/jout" 2> "$tmp/jerr" || brc=$?
+  printf '%s' "$1" | STACK_PYTHON=host ASSISTANT_DATA_ROOT="$tmp/data" "$budget" budgets --json > "$tmp/jout" 2> "$tmp/jerr" || brc=$?
   cat "$tmp/jout" "$tmp/jerr" >> "$all"
 }
 jlines_ok() { python3 -c 'import json,sys; [json.loads(l) for l in sys.stdin]' < "$tmp/jout"; }
@@ -260,7 +260,7 @@ connect_run() { # SLUG INPUT
   brc=0
   # CONNECT_FLAGS: extra flags, split on spaces.
   # shellcheck disable=SC2086
-  printf '%s' "$2" | STACK_PYTHON=host BUDGET_DATA_ROOT="$tmp/data" "$budget" connect --slug "$1" ${CONNECT_FLAGS:-} --json > "$tmp/jout" 2> "$tmp/jerr" || brc=$?
+  printf '%s' "$2" | STACK_PYTHON=host ASSISTANT_DATA_ROOT="$tmp/data" "$budget" connect --slug "$1" ${CONNECT_FLAGS:-} --json > "$tmp/jout" 2> "$tmp/jerr" || brc=$?
   cat "$tmp/jout" "$tmp/jerr" >> "$all"
 }
 nofiles() { ! ls "$sec"/main.* > /dev/null 2>&1; }
@@ -395,7 +395,7 @@ rm -f "$sec"/main.*
 # --- disconnect ---
 disconnect_run() { # SLUG
   brc=0
-  STACK_PYTHON=host BUDGET_DATA_ROOT="$tmp/data" "$budget" disconnect --slug "$1" --json < /dev/null > "$tmp/jout" 2> "$tmp/jerr" || brc=$?
+  STACK_PYTHON=host ASSISTANT_DATA_ROOT="$tmp/data" "$budget" disconnect --slug "$1" --json < /dev/null > "$tmp/jout" 2> "$tmp/jerr" || brc=$?
   cat "$tmp/jout" "$tmp/jerr" >> "$all"
 }
 printf 'tok-1' > "$sec/main.session_token"; printf 'enc-SECRET' > "$sec/main.encryption_password"
@@ -430,7 +430,7 @@ inst() { # SLUG ACCESS [SERVER]: ACCESS write binds default and browser rw,
 }
 status_run() { # [ARGS...]
   brc=0
-  STACK_PYTHON=host BUDGET_DATA_ROOT="$tmp/data" "$budget" status "$@" --json < /dev/null > "$tmp/jout" 2> "$tmp/jerr" || brc=$?
+  STACK_PYTHON=host ASSISTANT_DATA_ROOT="$tmp/data" "$budget" status "$@" --json < /dev/null > "$tmp/jout" 2> "$tmp/jerr" || brc=$?
   cat "$tmp/jout" "$tmp/jerr" >> "$all"
 }
 inst main write
@@ -554,7 +554,7 @@ SH
 chmod +x "$tmp/bin/addon-stub" "$tmp/bin/vault-stub"
 access_run() { # ARGS...
   brc=0
-  STACK_PYTHON=host BUDGET_DATA_ROOT="$tmp/data" BUDGET_ADDON_SH="$tmp/bin/addon-stub" BUDGET_VAULT_SH="$tmp/bin/vault-stub" \
+  STACK_PYTHON=host ASSISTANT_DATA_ROOT="$tmp/data" BUDGET_ADDON_SH="$tmp/bin/addon-stub" BUDGET_VAULT_SH="$tmp/bin/vault-stub" \
     "$budget" access "$@" < /dev/null > "$tmp/jout" 2> "$tmp/jerr" || brc=$?
   cat "$tmp/jout" "$tmp/jerr" >> "$all"
 }
@@ -595,12 +595,12 @@ run open && fail "open with the local server off must fail"
 grep -q 'ACTUAL_LOCAL_ENABLED' "$out" || fail "open says the local server is off ($(cat "$out"))"
 printf 'COMPOSE_PROFILES=core\nACTUAL_LOCAL_ENABLED=1\nACTUAL_PORT=5099\n' > "$ENV_FILE"
 mkdir -p "$tmp/open-data/addons/actual/secrets"
-BUDGET_DATA_ROOT="$tmp/open-data" run open || fail "open without a stored password ($(cat "$out"))"
+ASSISTANT_DATA_ROOT="$tmp/open-data" run open || fail "open without a stored password ($(cat "$out"))"
 grep -qx 'http://localhost:5099/' "$STUB/opened" || fail "open opens the local web app on ACTUAL_PORT"
 [ ! -e "$STUB/clip" ] || fail "open copies nothing without a stored password"
 grep -q -- '--reinit' "$out" || fail "open says how to get a stored password ($(cat "$out"))"
 printf 'open-SECRET' > "$tmp/open-data/addons/actual/secrets/server_password"
-BUDGET_DATA_ROOT="$tmp/open-data" run open || fail "open ($(cat "$out"))"
+ASSISTANT_DATA_ROOT="$tmp/open-data" run open || fail "open ($(cat "$out"))"
 [ "$(cat "$STUB/clip")" = open-SECRET ] || fail "open copies the stored server password"
 grep -q 'clipboard' "$out" || fail "open says the password is on the clipboard"
 run open --x && fail "open takes no options"
@@ -611,7 +611,7 @@ so_data="$tmp/so-data"
 so_secrets="$so_data/addons/actual/secrets"
 so_run() { # ARGS...
   brc=0
-  STACK_PYTHON=host BUDGET_DATA_ROOT="$so_data" "$budget" init --server-only "$@" < /dev/null > "$tmp/jout" 2> "$tmp/jerr" || brc=$?
+  STACK_PYTHON=host ASSISTANT_DATA_ROOT="$so_data" "$budget" init --server-only "$@" < /dev/null > "$tmp/jout" 2> "$tmp/jerr" || brc=$?
   cat "$tmp/jout" "$tmp/jerr" >> "$all"
 }
 so_reset() {
@@ -731,7 +731,7 @@ pws="$pws $(cat "$STUB/server_pw")"
 cli_run() { # ARGS... (environment as set by the caller)
   brc=0
   rm -f "$STUB/addon.argv" "$STUB/addon.stdin"
-  STACK_PYTHON=host BUDGET_DATA_ROOT="$tmp/data" BUDGET_ADDON_SH="$tmp/bin/addon-stub" \
+  STACK_PYTHON=host ASSISTANT_DATA_ROOT="$tmp/data" BUDGET_ADDON_SH="$tmp/bin/addon-stub" \
     "$budget" connect-cli "$@" < /dev/null > "$tmp/jout" 2> "$tmp/jerr" || brc=$?
   cat "$tmp/jout" "$tmp/jerr" >> "$all"
 }
@@ -812,7 +812,7 @@ rm -f "$STUB/addon.out" "$STUB/addon.err" "$STUB/addon.rc"
 dcli_run() { # ARGS...
   brc=0
   rm -f "$STUB/addon.argv"
-  STACK_PYTHON=host BUDGET_DATA_ROOT="$tmp/data" BUDGET_ADDON_SH="$tmp/bin/addon-stub" \
+  STACK_PYTHON=host ASSISTANT_DATA_ROOT="$tmp/data" BUDGET_ADDON_SH="$tmp/bin/addon-stub" \
     "$budget" disconnect-cli "$@" < /dev/null > "$tmp/jout" 2> "$tmp/jerr" || brc=$?
   cat "$tmp/jout" "$tmp/jerr" >> "$all"
 }

@@ -80,9 +80,22 @@ for k in A B C D E F G H I J; do
   sh=0; ENV_FILE="$t" env_true "$k" && sh=1
   [ "$py" = "$sh" ] || fail "env_true $k=[$v]: shell $sh, addon_manifest.truthy $py"
 done
-# No inline copies of the rule left in doctor or the upgrade hooks.
-for s in scripts/doctor.sh scripts/lib/doctor-*.sh upgrades/lib.sh; do
-  if grep -E -q '1 ?\| ?true ?\| ?(TRUE|yes)' "$s"; then fail "${s} spells truthiness inline; use env_true"; fi
+# No inline copies of the rule left in doctor, the upgrade hooks or the
+# add-on scripts.
+for s in scripts/doctor.sh scripts/lib/doctor-*.sh upgrades/lib.sh scripts/crm.sh scripts/budget.sh scripts/vault.sh; do
+  if grep -E -q '1 ?\| ?true ?\| ?(TRUE|yes)' "${ROOT}/${s}"; then fail "${s} spells truthiness inline; use env_true"; fi
+done
+
+# --- lib/env.sh: valid_slug ---------------------------------------------------
+# addon_store.SLUG_RE: a lowercase letter, then at most 30 of a-z, 0-9 and -.
+for v in a main my-budget-2 "a$(printf '%030d' 0)"; do
+  valid_slug "$v" || fail "valid_slug [$v]: want valid"
+done
+for v in "" 1a -a Main a_b "a b" "a$(printf '%031d' 0)" "$(printf 'a\nb')"; do
+  if valid_slug "$v"; then fail "valid_slug [$v]: want invalid"; fi
+done
+for s in scripts/crm.sh scripts/budget.sh scripts/vault.sh; do
+  if grep -q 'a-z\]\[a-z0-9-\]' "${ROOT}/${s}"; then fail "${s} spells the slug rule inline; use valid_slug"; fi
 done
 
 # env_get keeps a trailing " # comment" as part of the value (compose drops

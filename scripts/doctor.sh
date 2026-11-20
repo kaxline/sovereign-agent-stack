@@ -9,18 +9,12 @@ PASS=0
 FAIL=0
 WARN=0
 
-# ok, bad, warn, has_profile, svc_running; sources lib/env.sh.
+# ok, bad, warn, has_profile, svc_running, DATA_ROOT and DATA_ROOT_RAW;
+# sources lib/env.sh and lib/data-root.sh.
 # shellcheck source=lib/doctor-kit.sh
 source "$ROOT/scripts/lib/doctor-kit.sh"
 # shellcheck source=lib/python.sh
 source "$ROOT/scripts/lib/python.sh"
-# shellcheck source=lib/data-root.sh
-source "$ROOT/scripts/lib/data-root.sh"
-
-# The user data root as written, and as an absolute path. ASSISTANT_DATA_ROOT
-# from the environment wins over .env, as in compose, addon.sh and vault.sh.
-DATA_ROOT_RAW="${ASSISTANT_DATA_ROOT:-$(env_get ASSISTANT_DATA_ROOT ./data)}"
-DATA_ROOT="$(expand_user_path "$DATA_ROOT_RAW")"
 
 # doctor_py [--mount PATH]... ARGS...: python3 for doctor's checks. The host's
 # python3 when it works (fastest: the project-index checks walk source trees,
