@@ -104,13 +104,13 @@ PY
 SESSIONS_PY="$(py_in "$src")" "${ROOT}/scripts/sessions.sh" export --dest "$out" --json > /dev/null 2>&1 \
   && fail "export into a non-empty directory succeeded"
 
-# An oversized session and a malformed line beside the real ones.
-$(py_in "$src") -c 'import json; print(json.dumps({"id": "s-huge", "messages": [{"role": "user", "content": "x"}] * 10001}))' \
-  >> "${out}/default.jsonl"
-printf 'not json\n' >> "${out}/default.jsonl"
-# A session whose title s-arch, earlier in the same import, already takes.
-$(py_in "$src") -c 'import json, time; print(json.dumps({"id": "s-dup", "source": "cli", "title": "SECRET-TITLE s-arch", "started_at": time.time(), "messages": [{"role": "user", "content": "SECRET-TEXT dup"}]}))' \
-  >> "${out}/default.jsonl"
+# An oversized session, a malformed line, and a session whose title s-arch,
+# earlier in the same import, already takes, beside the real ones.
+{
+  $(py_in "$src") -c 'import json; print(json.dumps({"id": "s-huge", "messages": [{"role": "user", "content": "x"}] * 10001}))'
+  printf 'not json\n'
+  $(py_in "$src") -c 'import json, time; print(json.dumps({"id": "s-dup", "source": "cli", "title": "SECRET-TITLE s-arch", "started_at": time.time(), "messages": [{"role": "user", "content": "SECRET-TEXT dup"}]}))'
+} >> "${out}/default.jsonl"
 
 SESSIONS_PY="$(py_in "$dst")" "${ROOT}/scripts/sessions.sh" import --from "$out" --json \
   > "${tmp}/import.jsonl" 2> "${tmp}/import.err" || { cat "${tmp}/import.err" >&2; fail "import exited non-zero"; }
