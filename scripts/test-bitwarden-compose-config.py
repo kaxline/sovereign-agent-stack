@@ -358,19 +358,15 @@ def check_broker_rebuild_documented() -> None:
     <prefix>-bitwarden-broker:local. ``docker compose up`` reuses a tag it already
     has, so an install upgrading into this release keeps a broker with no
     /signin/ routes while bitwarden-signin starts and reports ready. Only the
-    CHANGELOG's upgrade steps close that gap. The check applies to the topmost
-    section, named Unreleased before the tag and v0.3.16 after it, and retires
-    itself once a later section no longer introduces the signer."""
+    CHANGELOG's upgrade steps close that gap. The signer shipped in v0.3.16, so
+    the check reads that section; later sections may name the signer freely."""
     text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    sections = re.split(r"(?m)^## ", text)
-    if len(sections) < 2:
-        checks.fail("CHANGELOG.md has no '## ' section")
+    section = next((s for s in re.split(r"(?m)^## ", text) if s.startswith("v0.3.16 ")), None)
+    if section is None:
+        checks.fail("CHANGELOG.md has no v0.3.16 section, the release that introduced bitwarden-signin")
         return
-    top = sections[1]
-    if SIGNIN not in top:
-        return
-    if not re.search(r"--build\s+bitwarden-broker", top):
-        checks.fail("CHANGELOG.md's newest section introduces bitwarden-signin but its "
+    if not re.search(r"--build\s+bitwarden-broker", section):
+        checks.fail("CHANGELOG.md's v0.3.16 section introduces bitwarden-signin but its "
                     "upgrade steps never say to rebuild bitwarden-broker "
                     "(--build bitwarden-broker); an upgraded install keeps a broker "
                     "with no /signin/ routes")
