@@ -4,6 +4,8 @@
 # enable succeeds with no workspace stored (the instances are optional) and
 # runs crm.sh init (local instance off) with one remote workspace already
 # stored, and its done line carries the init hook's mcp names and message;
+# enable generates the Twenty secrets .env lacks, skips one whose _FILE form
+# is set and keeps a generated one on the next enable;
 # connect follows;
 # connect and disconnect run crm.sh's hooks (a bad value or a local mismatch
 # comes back as crm.sh's error, a schema violation as addon.sh's bad_input);
@@ -148,6 +150,10 @@ json_file() { python3 -c "import json, sys; v = json.load(open(sys.argv[1])); sy
 # --- enable first, with no workspace stored ----------------------------------------
 # Twenty's instances are optional, so enable succeeds. Its init hook runs
 # crm.sh init --json, which reports the stored legacy instance.
+# The example .env has neither Twenty secret (a stack set up before v0.3.10):
+# enable generates the encryption key, and skips the password, whose _FILE
+# form is set (CR 0043).
+printf 'TWENTY_DB_PASSWORD_FILE=/run/secrets/twenty-db\n' >> "${root}/.env"
 addon enable twenty --json < /dev/null
 expect_rc "enable with no workspace stored exits 0" 0
 t "enable ends with done after the init step" \
@@ -161,6 +167,12 @@ t "enable's done carries the init hook's message" \
   json_ok "done" 'last.get("message") == "local instance off"'
 t "enable sets TWENTY_MCP_ENABLED=1" has_line '^TWENTY_MCP_ENABLED=1$' "${root}/.env"
 t "enable starts no service with TWENTY_LOCAL_ENABLED=0" lacks_line "compose up" "$STUB_LOG"
+t "enable generates TWENTY_ENCRYPTION_KEY, 32 bytes in base64" \
+  has_line '^TWENTY_ENCRYPTION_KEY=[A-Za-z0-9+/]\{43\}=$' "${root}/.env"
+t "enable skips TWENTY_DB_PASSWORD while its _FILE form is set" \
+  has_line '^TWENTY_DB_PASSWORD=$' "${root}/.env"
+gen_key="$(grep '^TWENTY_ENCRYPTION_KEY=' "${root}/.env" | cut -d= -f2-)"
+t "enable doesn't print the generated key" lacks_line "$gen_key" "$out"
 
 # --- connect sales: curl 200 ---------------------------------------------------
 CURL_CODE=200
@@ -195,8 +207,14 @@ expect_rc "remove while enabled exits 2" 2
 t "remove while enabled is bad_input" json_ok error 'last.get("error") == "bad_input"'
 t "a refused remove keeps the instance store" test -d "$store"
 t "state.json records init" json_file "${store}/state.json" '"init" in v'
+grep -v '^TWENTY_DB_PASSWORD_FILE=' "${root}/.env" > "${tmp}/env.nofile"
+cp "${tmp}/env.nofile" "${root}/.env"
 addon enable twenty --reinit --json < /dev/null
 expect_rc "enable --reinit exits 0" 0
+t "a later enable keeps the generated TWENTY_ENCRYPTION_KEY" \
+  has_line "^TWENTY_ENCRYPTION_KEY=${gen_key}\$" "${root}/.env"
+t "a later enable generates TWENTY_DB_PASSWORD once its _FILE form is gone, in hex" \
+  has_line '^TWENTY_DB_PASSWORD=[0-9a-f]\{64\}$' "${root}/.env"
 t "enable --reinit passes the init message and mcp through" \
   json_ok "done" 'last.get("message") == "local instance off" and last.get("mcp") == ["crm-legacy", "crm-sales"]'
 no_keys "enable --reinit"

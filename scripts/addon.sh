@@ -20,7 +20,8 @@
 # data/addons/<short-id>/secrets; bool settings with a flag write that flag to
 # .env while the add-on is enabled. enable checks every required setting, runs
 # the manifest's prepare hook (every time, as step prepare, before anything
-# changes), sets builtin.flag=1 (and each
+# changes), writes each manifest `generate` secret that .env lacks, sets
+# builtin.flag=1 (and each
 # gate flag a stored setting owns), runs gateway.sync when the manifest has a
 # gateway, syncs COMPOSE_PROFILES, builds and starts the
 # services whose gate is on, runs the manifest's init hook once (--reinit runs
@@ -334,6 +335,47 @@ apply_flags() {
   # Explicit returns: run_step calls this from an || list, where set -e is off.
   [[ -z "$sync" ]] || "${ROOT}/${sync}" || return 1
   "${ROOT}/scripts/sync-profiles.sh"
+}
+
+# random_value ENCODING BYTES: BYTES random bytes as hex or base64, from
+# /dev/urandom (the host may lack openssl).
+random_value() {
+  if [[ "$1" == hex ]]; then
+    od -An -v -tx1 -N "$2" /dev/urandom | tr -d ' \n'
+  else
+    head -c "$2" /dev/urandom | base64 | tr -d '\n'
+  fi
+}
+
+# generate_secrets PLAN: writes each of the manifest's `generate` secrets to
+# .env when its value is empty or a placeholder, as setup.sh does, and skips
+# one whose _FILE form is set. A set value is never replaced. Not rolled back:
+# a failed enable may already have started a service with the value.
+generate_secrets() {
+  local entry key encoding size value
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    key="${entry%%:*}"
+    encoding="${entry#*:}"
+    size="${encoding#*:}"
+    encoding="${encoding%%:*}"
+    [[ -z "$(env_get "${key}_FILE")" ]] || continue
+    case "$(env_get "$key")" in
+      "" | change-me* | change_me*) ;;
+      *) continue ;;
+    esac
+    value="$(random_value "$encoding" "$size")" && [[ -n "$value" ]] || return 1
+    upsert_env .env "$key" "$value" || return 1
+    echo "Set $key"
+  done <<EOF_GENERATE
+$(json_list generate "$1")
+EOF_GENERATE
+}
+
+# enable_env PLAN: the generated secrets, then the flags (step flags).
+enable_env() {
+  generate_secrets "$1" || return 1
+  apply_flags "$1"
 }
 
 # Rollback for enable. rollback_record PLAN saves each plan flag's .env line
@@ -731,8 +773,8 @@ EOF_STOPS
   rollback_record "$plan"
   # Before the flags: a failed prepare leaves the add-on as it was.
   run_hook prepare "$sid" prepare
-  run_step flags "" apply_flags "$plan" \
-    || ev_fail command_failed flags "writing the flags or syncing COMPOSE_PROFILES failed" "$EV_LAST_LOG"
+  run_step flags "" enable_env "$plan" \
+    || ev_fail command_failed flags "writing the generated secrets or the flags, or syncing COMPOSE_PROFILES, failed" "$EV_LAST_LOG"
   # One-shots run to completion first: a service may depend on one.
   local rc
   for name in ${oneshots[@]+"${oneshots[@]}"}; do

@@ -151,5 +151,12 @@
     ],
     "exposesToAgent": true,
     "cron": true
-  }
+  },
+  "generate": [
+    {
+      "env": "VIKUNJA_SECRET",
+      "encoding": "hex",
+      "bytes": 32
+    }
+  ]
 }

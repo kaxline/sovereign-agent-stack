@@ -518,6 +518,9 @@ def validate(manifest, repo=_AUTO) -> list[str]:
     if "backup" in manifest:
         errors.extend(_validate_backup(manifest["backup"]))
 
+    if "generate" in manifest:
+        errors.extend(_validate_generate(manifest["generate"]))
+
     return errors
 
 
@@ -654,6 +657,44 @@ def _validate_data(data, repo) -> list[str]:
                     err(f"{at}.default {default!r} is not a bind mount source, or the parent of one, "
                         "in docker-compose.yml")
     return errors
+
+
+GENERATE_ENCODINGS = {"hex", "base64"}
+
+
+def _validate_generate(generate) -> list[str]:
+    """`generate`: .env secrets `addon.sh enable` writes when .env has none
+    (Boundary CR 0043). Each entry is {env, encoding, bytes}."""
+    if not isinstance(generate, list) or not generate:
+        return ["generate must be a non-empty list of {env, encoding, bytes}"]
+    errors: list[str] = []
+    seen: set[str] = set()
+    for i, entry in enumerate(generate):
+        at = f"generate[{i}]"
+        if not isinstance(entry, dict):
+            errors.append(f"{at} must be an object {{env, encoding, bytes}}")
+            continue
+        env = entry.get("env")
+        if not (isinstance(env, str) and ENV_RE.match(env)):
+            errors.append(f"{at}.env must be an env var name")
+        elif env in seen:
+            errors.append(f"{at}.env {env} is listed twice")
+        else:
+            seen.add(env)
+        if entry.get("encoding") not in GENERATE_ENCODINGS:
+            errors.append(f"{at}.encoding must be hex or base64")
+        size = entry.get("bytes")
+        if not (isinstance(size, int) and not isinstance(size, bool) and 16 <= size <= 64):
+            errors.append(f"{at}.bytes must be an integer from 16 to 64")
+        extra = set(entry) - {"env", "encoding", "bytes"}
+        if extra:
+            errors.append(f"{at} has unknown fields: {', '.join(sorted(extra))}")
+    return errors
+
+
+def generated_env(manifest: dict) -> list[str]:
+    """`generate` as "ENV:encoding:bytes" strings, for plan-enable."""
+    return [f"{g['env']}:{g['encoding']}:{g['bytes']}" for g in manifest.get("generate", [])]
 
 
 def _validate_backup(backup) -> list[str]:

@@ -10,6 +10,17 @@ the stack under another app.
 
 ### Changes
 
+- `addon.sh enable twenty` generates `TWENTY_ENCRYPTION_KEY` and
+  `TWENTY_DB_PASSWORD` when `.env` has none (CR 0043), and `enable vikunja`
+  generates `VIKUNJA_SECRET`. Only `setup.sh` wrote them before, so on a
+  stack whose `.env` predates v0.3.10 the local Twenty never started
+  (`twenty-db` refused to initialise) and Vikunja logged everyone out on each
+  restart. A value that is set, or whose `_FILE` form is set, is left alone.
+  The new manifest field `generate` lists these secrets for any add-on.
+- `scripts/env.sh` accepts `LIGHTRAG_LLM_*` and `EMBEDDING_*` (CR 0037 R6),
+  the LightRAG and embedding model keys `setup.sh` writes beside `LLM_*`. A
+  client that wrote them to `.env` directly can move them to `env.sh`, inside
+  the config lock.
 - `make doctor` no longer needs `python3` on the host. Its Python checks use
   the host's `python3` when it works and otherwise run in the pinned Hermes
   image through `stack_python`, and its YAML checks share one reader,
@@ -18,6 +29,31 @@ the stack under another app.
   those are repo tests, which `make test` and CI run, and without `python3`
   they were reported as failures. On a host with neither the image nor
   `python3`, doctor warns once and skips the checks that read Hermes config.
+
+## v0.3.17 — 2026-11-19
+
+### Upgrade steps
+
+- `git checkout v0.3.17 && scripts/setup.sh && scripts/upgrade.sh --from
+  v0.3.16`, or `scripts/install.sh --version v0.3.17 --dir DIR`. This release
+  ships no upgrade hook. `upgrade.sh` starts the stack through
+  `scripts/up.sh`, which recreates `bitwarden-broker` and `hermes-webui` for
+  their changed mounts and runs the full Hermes bootstrap once (see Changes).
+- An app that adds its own compose file to drop `uid=` and `gid=` from the
+  `bitwarden-broker` tmpfs on Podman can remove it once it pins this release.
+
+### Changes
+
+- Host scripts read `.env` through one reader, `env_get` in
+  `scripts/lib/env.sh` (AS-0006): `setup.sh`, `up.sh`, `doctor.sh`, the
+  data-root, coding-root, context-root and agent-create scripts, and the
+  Makefile. The first `KEY=` line still wins. One pair of matching quotes is
+  stripped (`"v"` or `'v'`); a value with a quote at one end only now keeps
+  it, where the old readers removed it. Readers that stripped no quotes
+  before now do, so a quoted `HERMES_AGENT_IMAGE_TAG`,
+  `WEB_BROWSER_VIEWER_PORT` or `API_SERVER_KEY` reads the same as an unquoted
+  one; doctor's `API_SERVER_KEY` length check no longer counts the quotes.
+  The Makefile's data-root read used to delete every quote in the value.
 - `make doctor` resolves `ASSISTANT_DATA_ROOT` once and uses that path in
   every section. With a root of `~` or `~/…` it used to warn that the root was
   missing and check the projects dir and corpus inputs under the repo
@@ -37,8 +73,7 @@ the stack under another app.
   before the broker was created; this has been the case since v0.3.14. The
   entry is now `mode=1777`. The broker still creates `sync.sock` mode 0600 as
   `HERMES_UID`, and the sticky bit stops another user from removing it. The
-  broker is recreated on the next `make up`. An app that adds its own compose
-  file to drop these options on Podman can stop once it pins this release.
+  broker is recreated on the next `make up`.
   `scripts/test-compose-tmpfs-options.py` now fails any service tmpfs option
   that Docker or Podman refuses.
 - `addon.sh list` prints the error text when it skips an invalid add-on

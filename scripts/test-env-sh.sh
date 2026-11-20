@@ -139,6 +139,12 @@ run set LLM_MODEL qwen --json > /dev/null || fail "LLM_MODEL refused"
 run set CODING_EXTRA_ROOTS "/a,/b" --json > /dev/null || fail "CODING_ refused"
 run set HERMES_TERMINAL_BACKEND local --json > /dev/null || fail "terminal backend refused"
 run set CALDAV_TZ America/Chicago --json > /dev/null || fail "CALDAV_TZ refused"
+out="$(run set LIGHTRAG_LLM_MODEL m --json)" || fail "LIGHTRAG_LLM_MODEL refused: $out"
+[ "$out" = '{"phase":"done","key":"LIGHTRAG_LLM_MODEL","changed":true}' ] || fail "lightrag result: $out"
+out="$(run set LIGHTRAG_LLM_BINDING_API_KEY '' --json)" || fail "blank LightRAG key refused: $out"
+case "$out" in '{"phase":"done"'*) ;; *) fail "blank LightRAG key: $out" ;; esac
+run set EMBEDDING_MODEL e --json > /dev/null || fail "EMBEDDING_MODEL refused"
+grep -q '^EMBEDDING_MODEL=e$' "${stack}/.env" || fail "EMBEDDING_MODEL not written"
 grep -q '^CALDAV_TZ=America/Chicago$' "${stack}/.env" || fail "CALDAV_TZ not written"
 grep -q '^LLM_MODEL=qwen$' "${stack}/.env" || fail "LLM_MODEL not written"
 

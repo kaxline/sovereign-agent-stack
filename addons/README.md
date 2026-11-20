@@ -193,6 +193,13 @@ except where noted:
   publishes for that container port. Vikunja, Twenty, Actual and n8n set it.
 - `backup`: `{"secrets": [<env name>], "recommended": [<env name>]}`, listed
   by `addon.sh list --json` for callers that offer a backup.
+- `generate`: `[{"env", "encoding", "bytes"}]`, secrets `addon.sh enable`
+  writes to `.env` at step `flags`. `encoding` is `hex` or `base64` and
+  `bytes` 16 to 64, read from `/dev/urandom`. An entry is written only when
+  its value is empty or a `change-me` placeholder and its `<env>_FILE` is
+  unset, so a set value is never replaced; a failed enable keeps what it
+  wrote. Twenty and Vikunja use it for stacks whose `.env` predates their
+  `setup.sh` lines.
 - `host`: a part that runs on the host instead of in Docker, with
   `platform`, `install`, `uninstall`, `grants`, `grantTarget` and `check`.
   `addon.sh list --json` reports `platform` (`any` when there is no `host`);

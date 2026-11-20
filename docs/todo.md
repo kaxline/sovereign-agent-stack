@@ -207,7 +207,7 @@ tokens.
 | `vikunja` logs `password authentication failed for user "svc_vikunja"` | `docker compose run --rm db-provision`, then `docker compose restart vikunja`. `make doctor` checks `services/vikunja.env` |
 | Hermes reports a 401 from `todos` | The token was revoked or rotated. Run `make todo-init` again, then `make hermes-reload` |
 | Hermes still writes the markdown file | `todos` is missing from `hermes mcp list` for that profile. Re-run the bootstrap for that profile and restart `hermes` |
-| Logged out after every restart | `VIKUNJA_SECRET` is empty. Re-run `./scripts/setup.sh` |
+| Logged out after every restart | `VIKUNJA_SECRET` is empty. Run `scripts/addon.sh enable vikunja` or `./scripts/setup.sh` |
 | `/login-local` says automatic sign-in failed | `make todo-init` has not run, or `.env` changed since. Run it again; it recreates `vikunja-proxy` |
 | `/login-local` returns 403 | Open it as `localhost` or `127.0.0.1`, not another host name |
 

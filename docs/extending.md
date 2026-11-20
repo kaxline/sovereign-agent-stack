@@ -748,8 +748,8 @@ read-only and works with the stack stopped. Its output is as sensitive as
 
 `scripts/env.sh set KEY VALUE --json` and `scripts/env.sh unset KEY --json`
 change one key in the project `.env`, so an app doesn't depend on that file's
-layout. Allowed keys: `LLM_*` except `LLM_PROXY_ADMIN_TOKEN`, `*_IMAGE`,
-`*_IMAGE_TAG`, `HERMES_TERMINAL_BACKEND`, `CODING_*`, `CONTEXT_*` and
+layout. Allowed keys: `LLM_*` except `LLM_PROXY_ADMIN_TOKEN`, `LIGHTRAG_LLM_*`,
+`EMBEDDING_*`, `*_IMAGE`, `*_IMAGE_TAG`, `HERMES_TERMINAL_BACKEND`, `CODING_*`, `CONTEXT_*` and
 `CALDAV_TZ`.
 
 The result is one line, `{"phase":"done","key":K,"changed":true|false}`.
@@ -956,7 +956,8 @@ bytes summed over layers, at most one per service per second, and ends with
 A `setup` line is `{"phase":"setup","step":<name>,"status":"running"|"done"|"error"}`.
 A step that runs per service, volume or path adds `"target"`. Steps run in this
 order: `prepare` (the `prepare` hook, when the manifest has one), `flags`
-(write `.env`, sync `COMPOSE_PROFILES`), `start` (one-shots,
+(write the manifest's `generate` secrets that `.env` lacks and the flags to
+`.env`, sync `COMPOSE_PROFILES`), `start` (one-shots,
 then the services), `stop` (gated services whose gate is off), `init`,
 `reload`. `disable` runs `flags`, `stop`, `reload`, then `delete` with
 `--purge`. `connect` and `disconnect`
