@@ -1,4 +1,6 @@
-"""browser_vault sign-in actions for bwbroker: logins (CR 0033).
+"""browser_vault sign-in actions for bwbroker: logins.
+
+Design: docs/superpowers/specs/2026-11-13-bitwarden-signin-design.md.
 
 The Bitwarden broker signs the agent in with its own Chromium, in a container
 the agent cannot reach, and hands the site's session to the agent's tab. The
