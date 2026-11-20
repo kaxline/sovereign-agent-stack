@@ -10,6 +10,10 @@ the stack under another app.
 
 ### Changes
 
+- `scripts/env.sh` accepts `LIGHTRAG_LLM_*` and `EMBEDDING_*` (CR 0037 R6),
+  the LightRAG and embedding model keys `setup.sh` writes beside `LLM_*`. A
+  client that wrote them to `.env` directly can move them to `env.sh`, inside
+  the config lock.
 - `make doctor` resolves `ASSISTANT_DATA_ROOT` once and uses that path in
   every section. With a root of `~` or `~/…` it used to warn that the root was
   missing and check the projects dir and corpus inputs under the repo

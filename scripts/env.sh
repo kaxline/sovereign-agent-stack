@@ -55,11 +55,12 @@ usage() {
 }
 
 # client_writable KEY: whether a client may set KEY. Secrets the stack
-# generates (LLM_PROXY_ADMIN_TOKEN) stay out.
+# generates (LLM_PROXY_ADMIN_TOKEN) stay out. LIGHTRAG_LLM_* and EMBEDDING_*
+# are the model choices setup.sh writes beside LLM_* (CR 0037 R6).
 client_writable() {
   case "$1" in
     LLM_PROXY_ADMIN_TOKEN) return 1 ;;
-    LLM_* | *_IMAGE | *_IMAGE_TAG | HERMES_TERMINAL_BACKEND | CODING_* | CONTEXT_* | CALDAV_TZ) return 0 ;;
+    LLM_* | LIGHTRAG_LLM_* | EMBEDDING_* | *_IMAGE | *_IMAGE_TAG | HERMES_TERMINAL_BACKEND | CODING_* | CONTEXT_* | CALDAV_TZ) return 0 ;;
   esac
   return 1
 }
