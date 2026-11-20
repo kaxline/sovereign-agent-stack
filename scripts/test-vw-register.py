@@ -532,7 +532,7 @@ def inside_main() -> int:
 
         def agent_lists():
             agent.sync()
-            names = sorted(i["name"] for i in agent.list_items())
+            names = sorted(i["name"] for i in agent.cached_items())
             raw = sorted(i["name"] for i in json.loads(bw_ok(agent_dir, ["list", "items"], agent_env())))
             expect(names == ["linkedin"], f"broker list {names}")
             expect(raw == ["linkedin"], f"bw list items {raw}")
@@ -551,7 +551,7 @@ def inside_main() -> int:
             expect(item.get("collectionIds") == [], f"collectionIds {item.get('collectionIds')}")
             expect(item.get("organizationId") == st["org"], "the item left the organization")
             agent.sync()
-            expect(agent.list_items() == [], "the agent still lists the item")
+            expect(agent.cached_items() == [], "the agent still lists the item")
             return Detail("the item is in the organization with no collection and the agent's sync drops it")
 
         step("check 1: the Owner's bw edit item-collections with [] on stdin removes the item from Agent",
@@ -577,7 +577,7 @@ def inside_main() -> int:
                                   replies=((b"Site to give", site), (b"Move which", "1"), (b"Site to give", "")))
             expect(code == 0 and f'Moved "{name}"' in out, f"setup.py seed exit {code}")
             agent.sync()
-            names = sorted(i["name"] for i in agent.list_items())
+            names = sorted(i["name"] for i in agent.cached_items())
             expect(name in names, f"agent lists {names}")
 
         step("setup.py seed: bw move of a personal item into Agent; the agent sees it",
