@@ -45,6 +45,12 @@ the stack under another app.
   refuses it; an app that adds it on Podman keeps doing so.
   `scripts/test-compose-tmpfs-options.py` now also checks the options of every
   named volume of type `tmpfs`.
+- opencode-mcp: `coding_wait_for_task` returns once the task has finished.
+  Before, waiting on a completed or failed task never returned, because the
+  wait took the task lock twice and called another tool directly. opencode-mcp
+  now keeps the 50 most recent finished tasks; for an older task,
+  `coding_get_task_result` answers `unknown task_id`. Tool names and result
+  shapes are unchanged. Recreate `opencode-mcp` to pick this up.
 
 ## v0.3.17 — 2026-11-19
 

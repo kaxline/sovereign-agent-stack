@@ -7,7 +7,7 @@
 
 : "${ROOT:?ROOT must be set before sourcing agent-registry.sh}"
 
-# shellcheck source=python.sh
+# shellcheck source=lib/python.sh
 source "${ROOT}/scripts/lib/python.sh"
 require_python3
 
