@@ -324,14 +324,14 @@ def check_signin(cfg: dict) -> None:
         uses = any(v.get("type") == "volume" and v.get("source") == SIGNIN_VOLUME for v in mounts(service))
         if uses != (name in ("bitwarden-broker", SIGNIN)):
             checks.fail(f"{name} {'mounts' if uses else 'does not mount'} the {SIGNIN_VOLUME} volume")
-    # A tmpfs owned by HERMES_UID, shared by the two containers: the owner
-    # follows HERMES_UID at run time, which an image-made folder cannot.
+    # A sticky 1777 tmpfs shared by the two containers; the signer makes the
+    # socket 0600 as HERMES_UID. No uid= or gid=: Podman drops them (CR 0042).
     vol = (cfg.get("volumes") or {}).get(SIGNIN_VOLUME) or {}
     opts = vol.get("driver_opts") or {}
     o = set(str(opts.get("o", "")).split(","))
-    if opts.get("type") != "tmpfs" or opts.get("device") != "tmpfs" \
-            or not {"uid=1000", "gid=1000", "mode=0700"} <= o:
-        checks.fail(f"volume {SIGNIN_VOLUME} must be a tmpfs, mode 0700, owned by HERMES_UID:HERMES_GID, not {opts!r}")
+    if opts.get("type") != "tmpfs" or opts.get("device") != "tmpfs" or "mode=1777" not in o \
+            or any(opt.startswith(("uid=", "gid=")) for opt in o):
+        checks.fail(f"volume {SIGNIN_VOLUME} must be a tmpfs at mode 1777 with no uid= or gid=, not {opts!r}")
 
 
 def check_signin_dockerfile() -> None:
@@ -358,30 +358,23 @@ def check_broker_rebuild_documented() -> None:
     <prefix>-bitwarden-broker:local. ``docker compose up`` reuses a tag it already
     has, so an install upgrading into this release keeps a broker with no
     /signin/ routes while bitwarden-signin starts and reports ready. Only the
-    CHANGELOG's upgrade steps close that gap. The check applies to the topmost
-    section, named Unreleased before the tag and v0.3.16 after it, and retires
-    itself once a later section no longer introduces the signer."""
+    CHANGELOG's upgrade steps close that gap. The signer shipped in v0.3.16, so
+    the check reads that section; later sections may name the signer freely."""
     text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    sections = re.split(r"(?m)^## ", text)
-    if len(sections) < 2:
-        checks.fail("CHANGELOG.md has no '## ' section")
+    section = next((s for s in re.split(r"(?m)^## ", text) if s.startswith("v0.3.16 ")), None)
+    if section is None:
+        checks.fail("CHANGELOG.md has no v0.3.16 section, the release that introduced bitwarden-signin")
         return
-    top = sections[1]
-    if SIGNIN not in top:
-        return
-    if not re.search(r"--build\s+bitwarden-broker", top):
-        checks.fail("CHANGELOG.md's newest section introduces bitwarden-signin but its "
+    if not re.search(r"--build\s+bitwarden-broker", section):
+        checks.fail("CHANGELOG.md's v0.3.16 section introduces bitwarden-signin but its "
                     "upgrade steps never say to rebuild bitwarden-broker "
                     "(--build bitwarden-broker); an upgraded install keeps a broker "
                     "with no /signin/ routes")
 
 
 def check_signin_follows_uid() -> None:
-    """The socket volume's owner and the signer's user follow HERMES_UID:HERMES_GID."""
+    """The signer's user follows HERMES_UID:HERMES_GID; the socket it creates is that user's."""
     cfg = compose_config.render("core,bitwarden", {"HERMES_UID": "1234", "HERMES_GID": "1235"})
-    o = set(str((((cfg.get("volumes") or {}).get(SIGNIN_VOLUME) or {}).get("driver_opts") or {}).get("o", "")).split(","))
-    if not {"uid=1234", "gid=1235"} <= o:
-        checks.fail(f"volume {SIGNIN_VOLUME} owner does not follow HERMES_UID:HERMES_GID: {sorted(o)}")
     user = ((cfg.get("services") or {}).get(SIGNIN) or {}).get("user")
     if user != "1234:1235":
         checks.fail(f"{SIGNIN} user does not follow HERMES_UID:HERMES_GID: {user!r}")

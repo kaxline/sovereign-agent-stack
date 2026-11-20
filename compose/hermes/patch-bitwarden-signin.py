@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""browser_vault sign-in actions for bwbroker: logins (CR 0033).
+"""browser_vault sign-in actions for bwbroker: logins.
+
+Design: docs/superpowers/specs/2026-11-13-bitwarden-signin-design.md.
 
 tools/browser_vault_tool.py gains two things: the schema hook that adds the
 seven actions and their arguments, and one dispatch entry per action. Both call

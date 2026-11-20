@@ -996,7 +996,6 @@ def main() -> None:
         os.chmod(folder, 0o700)
     write_scripts(scripts, secret_folder, config, canaries)
 
-    uid, gid = USER.split(":")
     status: dict = {}
     try:
         kit.prepare()
@@ -1044,9 +1043,8 @@ def main() -> None:
         expect(docker("inspect", "-f", "{{.State.Running}}", agent).stdout.strip() == "true",
                f"the agent container did not start: {docker('logs', agent).stderr.strip()[-400:]}")
 
-        opts = dict(volume_opts)
-        opts["o"] = f"uid={uid},gid={gid},mode=0700,size=1m"
-        docker("volume", "create", *[a for k, v in opts.items() for a in ("--opt", f"{k}={v}")], volume)
+        docker("volume", "create", *[a for k, v in volume_opts.items() for a in ("--opt", f"{k}={v}")],
+               volume)
         docker("run", "-d", "--name", signer, "--network", kit.net, *signer_flags(service),
                "-v", f"{volume}:/run/bitwarden-signin", signin_image)
 

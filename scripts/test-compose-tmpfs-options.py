@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""Every service tmpfs uses options both Docker and Podman accept (CR 0041).
+"""Every tmpfs uses options both Docker and Podman apply the same way.
 
-Podman refuses uid= and gid= on a service tmpfs ("unknown mount option"), and
-Docker refuses Podman's U, so one entry with either stops `docker compose up`
-on that engine before the container exists. Renders every profile.
+Service tmpfs entries (CR 0041): Podman refuses uid= and gid= ("unknown mount
+option"), and Docker refuses Podman's U, so one entry with either stops
+`docker compose up` on that engine before the container exists.
+
+Named volumes with driver_opts.type tmpfs (CR 0042): Podman takes uid= and gid=
+out of a local volume's o and mounts the tmpfs root-owned, while Docker passes
+o to mount whole, so the same volume has a different owner on each engine.
+They get the same option list. Renders every profile.
 """
 
 from __future__ import annotations
@@ -22,19 +27,31 @@ VALUED = {"size", "mode"}
 checks = Checks()
 
 
+def check_options(where: str, opts: str) -> None:
+    for opt in filter(None, opts.split(",")):
+        key = opt.split("=", 1)[0]
+        if not (opt in FLAGS or ("=" in opt and key in VALUED)):
+            checks.fail(f"{where} has option {opt!r}, which Docker and Podman do not apply the same way")
+
+
 def main() -> None:
-    services = compose_config.render("*").get("services") or {}
+    cfg = compose_config.render("*")
     seen = 0
-    for name, service in sorted(services.items()):
+    for name, service in sorted((cfg.get("services") or {}).items()):
         for entry in service.get("tmpfs") or []:
             seen += 1
             path, _, opts = entry.partition(":")
-            for opt in filter(None, opts.split(",")):
-                key = opt.split("=", 1)[0]
-                if not (opt in FLAGS or ("=" in opt and key in VALUED)):
-                    checks.fail(f"{name} tmpfs {path} has option {opt!r}, which Docker or Podman refuses")
+            check_options(f"{name} tmpfs {path}", opts)
     if not seen:
         checks.fail("no service tmpfs found; the render is missing services")
+    seen = 0
+    for name, volume in sorted((cfg.get("volumes") or {}).items()):
+        driver_opts = (volume or {}).get("driver_opts") or {}
+        if driver_opts.get("type") == "tmpfs":
+            seen += 1
+            check_options(f"volume {name}", str(driver_opts.get("o", "")))
+    if not seen:
+        checks.fail("no tmpfs volume found; the render is missing volumes")
     checks.finish()
 
 
