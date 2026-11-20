@@ -324,14 +324,14 @@ def check_signin(cfg: dict) -> None:
         uses = any(v.get("type") == "volume" and v.get("source") == SIGNIN_VOLUME for v in mounts(service))
         if uses != (name in ("bitwarden-broker", SIGNIN)):
             checks.fail(f"{name} {'mounts' if uses else 'does not mount'} the {SIGNIN_VOLUME} volume")
-    # A tmpfs owned by HERMES_UID, shared by the two containers: the owner
-    # follows HERMES_UID at run time, which an image-made folder cannot.
+    # A sticky 1777 tmpfs shared by the two containers; the signer makes the
+    # socket 0600 as HERMES_UID. No uid= or gid=: Podman drops them (CR 0042).
     vol = (cfg.get("volumes") or {}).get(SIGNIN_VOLUME) or {}
     opts = vol.get("driver_opts") or {}
     o = set(str(opts.get("o", "")).split(","))
-    if opts.get("type") != "tmpfs" or opts.get("device") != "tmpfs" \
-            or not {"uid=1000", "gid=1000", "mode=0700"} <= o:
-        checks.fail(f"volume {SIGNIN_VOLUME} must be a tmpfs, mode 0700, owned by HERMES_UID:HERMES_GID, not {opts!r}")
+    if opts.get("type") != "tmpfs" or opts.get("device") != "tmpfs" or "mode=1777" not in o \
+            or any(opt.startswith(("uid=", "gid=")) for opt in o):
+        checks.fail(f"volume {SIGNIN_VOLUME} must be a tmpfs at mode 1777 with no uid= or gid=, not {opts!r}")
 
 
 def check_signin_dockerfile() -> None:
@@ -377,11 +377,8 @@ def check_broker_rebuild_documented() -> None:
 
 
 def check_signin_follows_uid() -> None:
-    """The socket volume's owner and the signer's user follow HERMES_UID:HERMES_GID."""
+    """The signer's user follows HERMES_UID:HERMES_GID; the socket it creates is that user's."""
     cfg = compose_config.render("core,bitwarden", {"HERMES_UID": "1234", "HERMES_GID": "1235"})
-    o = set(str((((cfg.get("volumes") or {}).get(SIGNIN_VOLUME) or {}).get("driver_opts") or {}).get("o", "")).split(","))
-    if not {"uid=1234", "gid=1235"} <= o:
-        checks.fail(f"volume {SIGNIN_VOLUME} owner does not follow HERMES_UID:HERMES_GID: {sorted(o)}")
     user = ((cfg.get("services") or {}).get(SIGNIN) or {}).get("user")
     if user != "1234:1235":
         checks.fail(f"{SIGNIN} user does not follow HERMES_UID:HERMES_GID: {user!r}")
