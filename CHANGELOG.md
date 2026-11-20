@@ -6,7 +6,21 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
-## Unreleased
+## v0.3.17 — 2026-11-20
+
+### Upgrade steps
+
+- `git checkout v0.3.17 && scripts/setup.sh && scripts/upgrade.sh --from
+  v0.3.16`, or `scripts/install.sh --version v0.3.17 --dir DIR`.
+  `upgrade.sh` runs the `upgrades/v0.3.17.sh` hook, which rebuilds
+  `opencode-mcp` when OpenCode is on, removes the inline comments described
+  under Changes from `.env`, and reports an old `bitwarden_signin` volume as
+  `needs_user`. It then starts the stack through `scripts/up.sh`, which
+  recreates `bitwarden-broker` and `hermes-webui` for their changed mounts
+  and runs the full Hermes bootstrap once (see Changes).
+- An app that adds its own compose file to drop `uid=` and `gid=` from the
+  `bitwarden-broker` tmpfs or the `bitwarden_signin` volume on Podman can
+  remove it once it pins this release.
 
 ### Changes
 
@@ -64,8 +78,9 @@ the stack under another app.
   leaves an old owner behind. An existing `bitwarden_signin` volume keeps its
   old options until it is removed (`docker compose rm -sf bitwarden-signin
   bitwarden-broker`, then `docker volume rm` on the project's
-  `bitwarden_signin` volume): compose asks before
-  recreating it, and keeps the old one with no terminal. On Docker the old
+  `bitwarden_signin` volume): compose asks before recreating it, and keeps
+  the old one with no terminal. The upgrade hook reports an old volume as
+  `needs_user` (`bitwarden-signin-volume`). On Docker the old
   volume still works. Its only contents are the socket, so removing it loses
   nothing. `context=` for SELinux is not set, because a kernel without SELinux
   refuses it; an app that adds it on Podman keeps doing so.
@@ -76,22 +91,16 @@ the stack under another app.
   wait took the task lock twice and called another tool directly. opencode-mcp
   now keeps the 50 most recent finished tasks; for an older task,
   `coding_get_task_result` answers `unknown task_id`. Tool names and result
-  shapes are unchanged. Recreate `opencode-mcp` to pick this up.
-
-## v0.3.17 — 2026-11-19
-
-### Upgrade steps
-
-- `git checkout v0.3.17 && scripts/setup.sh && scripts/upgrade.sh --from
-  v0.3.16`, or `scripts/install.sh --version v0.3.17 --dir DIR`. This release
-  ships no upgrade hook. `upgrade.sh` starts the stack through
-  `scripts/up.sh`, which recreates `bitwarden-broker` and `hermes-webui` for
-  their changed mounts and runs the full Hermes bootstrap once (see Changes).
-- An app that adds its own compose file to drop `uid=` and `gid=` from the
-  `bitwarden-broker` tmpfs on Podman can remove it once it pins this release.
-
-### Changes
-
+  shapes are unchanged. The upgrade hook rebuilds `opencode-mcp` when
+  `OPENCODE_MCP_ENABLED` is on.
+- `.env.example` puts its comments on their own line. Five values used to
+  carry a trailing ` # comment` (`LLM_BINDING_API_KEY`, `NEO4J_URI`,
+  `NEO4J_USERNAME`, `NEO4J_PASSWORD`, `GPTR_MCP_URL`). Compose drops it, but
+  `env_get` returns it as part of the value, so in a `.env` made from the old
+  example `sync-n8n-credentials.sh` and `corpus.sh` read a `NEO4J_USERNAME`
+  with the comment in it. The upgrade hook removes an unquoted trailing
+  comment from those five keys, as compose reads them; quoted values are left
+  alone. `scripts/test-env-sh.sh` fails on an inline comment in the example.
 - Host scripts read `.env` through one reader, `env_get` in
   `scripts/lib/env.sh` (AS-0006): `setup.sh`, `up.sh`, `doctor.sh`, the
   data-root, coding-root, context-root and agent-create scripts, and the
