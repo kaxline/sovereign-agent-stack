@@ -54,26 +54,18 @@ jobs:
           BASH32_REQUIRED: "1"
         run: sh scripts/test-bash32.sh
 
+  # Both lint jobs run scripts/lint.sh, which pins the linter images; `make
+  # lint` and `make test` (scripts/test-lint.sh) run the same thing locally.
   shellcheck:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install shellcheck
-        run: sudo apt-get update && sudo apt-get install -y shellcheck
-      - name: Run shellcheck
-        run: |
-          shellcheck -x -e SC1090,SC1091 scripts/*.sh upgrades/*.sh
-          shellcheck -s sh -e SC1090,SC1091 compose/hermes/bootstrap-api-profile.sh
-          shellcheck -s sh compose/hermes/007-profile-ownership.sh
-          shellcheck -s sh -e SC1090,SC1091 n8n/import-demo-data.sh || true
+      - name: shellcheck (version pinned in scripts/lint.sh)
+        run: scripts/lint.sh shellcheck
 
   hadolint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: hadolint/hadolint-action@v3.1.0
-        with:
-          dockerfile: "compose/**/Dockerfile"
-          recursive: true
-          failure-threshold: warning
-          ignore: DL3008,DL3018,DL3009
+      - name: hadolint (version pinned in scripts/lint.sh)
+        run: scripts/lint.sh hadolint
