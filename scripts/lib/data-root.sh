@@ -4,7 +4,7 @@
 # Subdirectories that live under ASSISTANT_DATA_ROOT (not ./data/hermes).
 USER_DATA_SUBDIRS=(projects voice memory inputs rag_storage corpora)
 
-# shellcheck source=env.sh
+# shellcheck source=lib/env.sh
 declare -F env_get_file > /dev/null || source "$(dirname "${BASH_SOURCE[0]}")/env.sh"
 
 # data_root_env_get KEY [DEFAULT]: env_get on ${ROOT}/.env, whatever the

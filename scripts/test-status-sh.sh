@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# scripts/status.sh with a fake docker: stopped, running, engine down, a
-# tarball install's .stack-version, and the removed overlay flags refused.
+# scripts/status.sh with a fake docker: stopped, running, engine down, the
+# Hermes image missing (host python3, or awk without it), a tarball install's
+# .stack-version, and the removed overlay flags refused.
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -13,7 +14,8 @@ stack="${tmp}/stack"
 mkdir -p "${stack}/scripts/lib" "${tmp}/bin"
 cp "${ROOT}/scripts/status.sh" "${stack}/scripts/"
 cp "${ROOT}/scripts/lib/env.sh" "${ROOT}/scripts/lib/python.sh" \
-  "${ROOT}/scripts/lib/stack_status.py" "${stack}/scripts/lib/"
+  "${ROOT}/scripts/lib/stack_status.py" "${ROOT}/scripts/lib/stack_status.awk" \
+  "${stack}/scripts/lib/"
 cp "${ROOT}/docker-compose.yml" "${stack}/"
 printf 'HERMES_AGENT_IMAGE_TAG=v9.9.9\n' > "${stack}/.env"
 
@@ -25,7 +27,8 @@ cat > "${tmp}/bin/docker" << 'EOF'
 case "$1 $2" in
   "info "*) [ -f "${FAKE}/engine-down" ] && exit 1; exit 0 ;;
   "compose config") cat "${FAKE}/config.json" ;;
-  "compose ps") cat "${FAKE}/ps.json" ;;
+  "compose ps") [ -f "${FAKE}/engine-down" ] && exit 1; cat "${FAKE}/ps.json" ;;
+  "image inspect") [ -f "${FAKE}/image-pulled" ] && exit 0; exit 1 ;;
   *) exit 1 ;;
 esac
 EOF
@@ -81,7 +84,67 @@ out="$(run --json)"
 [ "$(printf '%s' "$out" | field 'd["engine"]')" = False ] || fail "engine down: $out"
 [ "$(printf '%s' "$out" | field '{s["state"] for s in d["services"]}')" = "{'unknown'}" ] \
   || fail "engine down states: $out"
+
+# Without STACK_PYTHON=host: the engine down (docker run would fail too), so
+# the host's python3 builds it.
+out="$(STACK_PYTHON='' run --json)" || fail "engine down, host python3: $out"
+[ "$(printf '%s' "$out" | field 'd["engine"]')" = False ] || fail "engine down, host python3: $out"
+py_down="$out"
+
+# No usable python3 either (a macOS stub that exits 1): awk builds the same
+# JSON, from compact and from indented config.
+mkdir -p "${tmp}/nopy"
+printf '#!/bin/sh\nexit 1\n' > "${tmp}/nopy/python3"
+chmod +x "${tmp}/nopy/python3"
+nopy() { PATH="${tmp}/nopy:${PATH}" STACK_PYTHON='' run "$@"; }
+out="$(nopy --json)" || fail "engine down, no python3: $out"
+[ "$out" = "$py_down" ] || fail "awk output differs:
+ awk: $out
+ py:  $py_down"
+cp "${FAKE}/config.json" "${FAKE}/config.compact"
+python3 -m json.tool "${FAKE}/config.compact" > "${FAKE}/config.json"
+out="$(nopy --json)" || fail "indented config, no python3: $out"
+[ "$out" = "$py_down" ] || fail "awk output differs on indented config: $out"
+
+# The awk reader against stack_status.py on edge cases: a port with no
+# published port or a range is dropped, missing host_ip and protocol default,
+# names sort by byte, a "ports" key outside services is ignored, and strings
+# with escapes and JSON punctuation don't derail it.
+cat > "${FAKE}/config.json" << 'EOF'
+{"name":"p","x":{"ports":[{"published":"1","target":2}]},"services":{
+ "b-svc":{"image":"a\"b\\","labels":{"k":"{[,:]}"},"ports":[
+   {"target":9000,"protocol":"udp"},{"target":9001,"published":"9001-9002"},
+   {"target":53,"published":5353},{"target":1,"published":"0"}]},
+ "a_svc":{"command":["--ports","1"],"ports":[]},
+ "B":{}}}
+EOF
+py_edge="$(STACK_PYTHON='' run --json)" || fail "edge config, python3: $py_edge"
+out="$(nopy --json)" || fail "edge config, no python3: $out"
+[ "$out" = "$py_edge" ] || fail "awk output differs on edge config:
+ awk: $out
+ py:  $py_edge"
+[ "$(printf '%s' "$out" | field '[s["name"] for s in d["services"]]')" = "['B', 'a_svc', 'b-svc']" ] \
+  || fail "edge names: $out"
+mv "${FAKE}/config.compact" "${FAKE}/config.json"
 rm "${FAKE}/engine-down"
+
+# Engine up, Hermes image not pulled (docker run fails): the host's python3
+# builds the normal output.
+out="$(STACK_PYTHON='' run --json)" || fail "image missing, host python3: $out"
+[ "$(printf '%s' "$out" | field 'd["engine"]')" = True ] || fail "image missing engine: $out"
+[ "$(printf '%s' "$out" | field 'd["services"][2]["state"]')" = running ] || fail "image missing states: $out"
+
+# Engine up, image missing, no python3: engine true, states unknown.
+out="$(nopy --json)" || fail "image missing, no python3: $out"
+[ "$(printf '%s' "$out" | field 'd["engine"]')" = True ] || fail "image missing, no python3 engine: $out"
+[ "$(printf '%s' "$out" | field '{s["state"] for s in d["services"]}')" = "{'unknown'}" ] \
+  || fail "image missing, no python3 states: $out"
+
+# Image pulled: the image path runs it, so the fake's failing `docker run`
+# shows as a failure (the engine-up path is unchanged).
+touch "${FAKE}/image-pulled"
+if STACK_PYTHON='' run --json > /dev/null 2>&1; then fail "image path not taken"; fi
+rm "${FAKE}/image-pulled"
 
 # A tarball install's version stamp.
 printf 'v0.3.17\n' > "${stack}/.stack-version"

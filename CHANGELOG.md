@@ -33,6 +33,14 @@ the stack under another app.
   the LightRAG and embedding model keys `setup.sh` writes beside `LLM_*`. A
   client that wrote them to `.env` directly can move them to `env.sh`, inside
   the config lock.
+- `scripts/status.sh --json` prints its JSON with the container engine down
+  or the Hermes image not pulled (CR 0037 R7). It used to run its JSON
+  builder in the Hermes image whatever the engine's state, so it printed
+  nothing and exited non-zero. It now uses the image only when the engine is
+  up and has it, then the host's `python3` 3.9 or later, then awk, which
+  needs no Python. With the engine up but neither the image nor `python3`,
+  `engine` is true and every `state` is `unknown`. With the engine up and
+  the image pulled, the output is unchanged.
 - `make doctor` no longer needs `python3` on the host. Its Python checks use
   the host's `python3` when it works and otherwise run in the pinned Hermes
   image through `stack_python`, and its YAML checks share one reader,
@@ -41,6 +49,12 @@ the stack under another app.
   those are repo tests, which `make test` and CI run, and without `python3`
   they were reported as failures. On a host with neither the image nor
   `python3`, doctor warns once and skips the checks that read Hermes config.
+- opencode-mcp: `coding_wait_for_task` returns once the task has finished.
+  Before, waiting on a completed or failed task never returned, because the
+  wait took the task lock twice and called another tool directly. opencode-mcp
+  now keeps the 50 most recent finished tasks; for an older task,
+  `coding_get_task_result` answers `unknown task_id`. Tool names and result
+  shapes are unchanged. Recreate `opencode-mcp` to pick this up.
 
 ## v0.3.17 — 2026-11-19
 
