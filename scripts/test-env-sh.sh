@@ -63,6 +63,28 @@ check_get DUP 'first'
 rm -f "${tmp}/.env"
 [ "$(env_get_file "$g" SQ)" = 'a b' ] || fail "env_get_file"
 
+# --- lib/env.sh: env_true ---------------------------------------------------
+# addon_manifest.truthy's rule: 1, true, yes, on, any case, ends trimmed.
+t="${tmp}/true.env"
+printf '%s\n' 'A=1' 'B=True' 'C=YES' 'D=on' 'E=" on "' 'F=0' 'G=off' 'H=nope' 'I=' 'J=t rue' > "$t"
+for k in A B C D E; do ENV_FILE="$t" env_true "$k" || fail "env_true $k: want true"; done
+for k in F G H I J MISSING; do
+  if ENV_FILE="$t" env_true "$k"; then fail "env_true $k: want false"; fi
+done
+ENV_FILE="$t" env_true MISSING yes || fail "env_true default yes: want true"
+if ENV_FILE="$t" env_true I 0; then fail "env_true empty with default 0: want false"; fi
+# Python's own rule agrees on every value above.
+for k in A B C D E F G H I J; do
+  v="$(ENV_FILE="$t" env_get "$k")"
+  py="$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import addon_manifest as m; print(int(m.truthy(sys.argv[2])))' "${ROOT}/scripts/lib" "$v")"
+  sh=0; ENV_FILE="$t" env_true "$k" && sh=1
+  [ "$py" = "$sh" ] || fail "env_true $k=[$v]: shell $sh, addon_manifest.truthy $py"
+done
+# No inline copies of the rule left in doctor or the upgrade hooks.
+for s in scripts/doctor.sh scripts/lib/doctor-*.sh upgrades/lib.sh; do
+  if grep -E -q '1 ?\| ?true ?\| ?(TRUE|yes)' "$s"; then fail "${s} spells truthiness inline; use env_true"; fi
+done
+
 # env_get keeps a trailing " # comment" as part of the value (compose drops
 # it), and setup.sh copies .env.example to .env, so comments go on their own
 # line there.

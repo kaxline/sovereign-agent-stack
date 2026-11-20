@@ -10,6 +10,12 @@ the stack under another app.
 
 ### Changes
 
+- `make doctor` and the upgrade hooks read on/off flags with one rule, the
+  add-on manifest's: `1`, `true`, `yes` or `on` in any case. Before, doctor
+  took `on` only for `MAIL_MCP_ENABLED` and `MAIL_DRAFTS_ENABLED`, and took
+  `True` (mixed case) only for those two, Signal, Buzz and OpenCode. So
+  `HERMES_SIGNAL_ENABLED=on` or `VIKUNJA_MCP_ENABLED=True` now turn on doctor's
+  Signal and Vikunja checks, as they already turned on the add-ons.
 - `addon.sh enable twenty` generates `TWENTY_ENCRYPTION_KEY` and
   `TWENTY_DB_PASSWORD` when `.env` has none (CR 0043), and `enable vikunja`
   generates `VIKUNJA_SECRET`. Only `setup.sh` wrote them before, so on a
