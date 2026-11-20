@@ -151,11 +151,8 @@ clear_seeded_buzz_env() {
 
 [[ -f .env ]] || die ".env missing — run ./scripts/setup.sh first"
 
-enabled="$(env_get HERMES_BUZZ_ENABLED 0)"
-case "$(echo "$enabled" | tr '[:upper:]' '[:lower:]')" in
-  1|true|yes) enabled=1 ;;
-  *) enabled=0 ;;
-esac
+enabled=0
+env_true HERMES_BUZZ_ENABLED && enabled=1
 
 # A stack that never configured Buzz has nothing to sync. Hermes's adapter needs
 # a relay URL and a private key before it connects, so no pin is needed either.

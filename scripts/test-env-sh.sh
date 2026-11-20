@@ -82,7 +82,10 @@ for k in A B C D E F G H I J; do
 done
 # No inline copies of the rule left in doctor, the upgrade hooks or the
 # add-on scripts.
-for s in scripts/doctor.sh scripts/lib/doctor-*.sh upgrades/lib.sh scripts/crm.sh scripts/budget.sh scripts/vault.sh; do
+# agent-create.sh is left out: its WITH=buzz|1|true|yes is an argument, not a
+# .env flag.
+for s in scripts/doctor.sh scripts/lib/doctor-*.sh upgrades/lib.sh scripts/crm.sh scripts/budget.sh scripts/vault.sh \
+  scripts/sync-buzz-profile.sh scripts/sync-signal-profile.sh scripts/mail-triage-cron.sh scripts/messages-triage-cron.sh; do
   if grep -E -q '1 ?\| ?true ?\| ?(TRUE|yes)' "${ROOT}/${s}"; then fail "${s} spells truthiness inline; use env_true"; fi
 done
 
@@ -121,6 +124,10 @@ for s in scripts/doctor.sh scripts/coding-root.sh scripts/context-root.sh \
   # shellcheck disable=SC2016  # a regex: $ and {} match those characters
   if grep -E -q '\^[A-Za-z_${}]+=.*cut -d= -f2-' "${ROOT}/${s}"; then
     fail "${s} reads .env with grep | cut instead of env_get"
+  fi
+  # Sourcing runs .env as shell, which compose's format is not.
+  if grep -E -q '(^|[;&[:space:]])(source|\.)[[:space:]]+"?[^[:space:]"]*\.env"?([[:space:];]|$)' "${ROOT}/${s}"; then
+    fail "${s} sources .env instead of reading it with env_get"
   fi
 done
 

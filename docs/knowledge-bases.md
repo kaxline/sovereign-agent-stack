@@ -87,6 +87,16 @@ make corpus-destroy SLUG=old-corpus
 # type the slug to confirm
 ```
 
+## Neo4j password mismatch
+
+Neo4j sets its admin password once, when the `neo4j_data` volume is first created. If `NEO4J_PASSWORD` in `.env` changes after that, or the volume came from another install, Neo4j's healthcheck fails on auth and LightRAG never starts. `make doctor` reports it and names the fix:
+
+```bash
+make neo4j-reset-password
+```
+
+It stops `neo4j`, starts a temporary container on the same volume with auth off, sets the password of `NEO4J_USERNAME` (default `neo4j`) to `NEO4J_PASSWORD`, then starts `neo4j` again and waits for its healthcheck. The graph data is kept.
+
 ## Related
 
 - [Projects](projects.md) — file context (`INDEX.md` + two files) before you graduate a tree to ingest
