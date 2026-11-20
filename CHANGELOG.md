@@ -45,10 +45,12 @@ the stack under another app.
   Bitwarden backups made before the instance store, and no longer prints a
   note telling you to connect those accounts again. It ignores the folder; it
   never restored from it.
-- The Bitwarden sign-in signer reads the body of a request it refuses (unknown
-  route, wrong method, body over 64 KiB) before it answers, up to 1 MiB.
-  Before, a client still sending the body could get a broken pipe
-  or a reset instead of the error reply.
+- The Bitwarden broker and sign-in signer read the body of a request they
+  refuse for an unknown route, a wrong method or a body over 64 KiB before
+  they answer, up to 1 MiB. Before, a client still sending the body could get
+  a broken pipe or a reset instead of the error reply. The broker already
+  read it for an oversize body and for a request its TCP checks (token,
+  Origin, Content-Type) refused.
 
 ## v0.3.17 — 2026-11-20
 

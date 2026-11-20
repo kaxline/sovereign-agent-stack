@@ -1475,6 +1475,26 @@ class Broker:
         except ValueError:
             fail(f"{method} {path}: response is not JSON")
 
+    def slow_call(self, request_line: str, body: bytes, headers: dict | None = None):
+        """Send the headers and all but 1 KiB of the body, wait until the broker has answered, then send the rest.
+
+        A broker that answers without reading the body closes with body bytes still
+        unread, so the kernel resets the connection and the reply is lost.
+        """
+        import socket
+        sent = {"Host": "127.0.0.1", "Content-Type": "application/json", "Authorization": f"Bearer {API_TOKEN}",
+                "Content-Length": str(len(body)), **(headers or {})}
+        head = "".join(f"{k}: {v}\r\n" for k, v in sent.items() if v is not None)
+        with socket.create_connection(("127.0.0.1", self.port), timeout=30) as s:
+            s.sendall(f"{request_line} HTTP/1.1\r\n{head}\r\n".encode() + body[:-1024])
+            time.sleep(0.3)
+            s.sendall(body[-1024:])
+            raw = b""
+            while chunk := s.recv(65536):
+                raw += chunk
+        status_line, _, rest = raw.partition(b"\r\n")
+        return int(status_line.split()[1]), json.loads(rest.partition(b"\r\n\r\n")[2])
+
     def sock_call(self, method, path, body=None):
         from broker.unlock import UnixHTTPConnection
         conn = UnixHTTPConnection(str(self.socket), timeout=30)
@@ -1596,6 +1616,17 @@ def test_api_returns_no_values() -> None:
         expect(b.call("POST", "/requests", raw=b"x" * (64 * 1024 + 1)) == (413, {"error": "too_large"}),
                "a body over 64 KiB")
         expect(b.call("GET", "/items?debug=1")[0] == 200, "a query string is ignored")
+        pad = json.dumps({"pad": "x" * (48 * 1024)}).encode()
+        for line, body, headers, want in (
+                ("POST /nope", pad, None, (404, {"error": "not_found"})),
+                ("PUT /items", pad, None, (405, {"error": "method_not_allowed"})),
+                ("POST /requests", b"x" * (100 * 1024), None, (413, {"error": "too_large"})),
+                ("POST /requests", pad, {"Authorization": None}, (401, {"error": "unauthorized"}))):
+            try:
+                got = b.slow_call(line, body, headers)
+            except OSError as exc:
+                fail(f"{line}: the broker closed before reading the body ({type(exc).__name__})")
+            expect(got == want, f"{line} with a late body: {got}")
 
         expect(b.call("POST", "/release", {"handle": handle("personal", "E")})
                == (200, {"released": True}), "/release")

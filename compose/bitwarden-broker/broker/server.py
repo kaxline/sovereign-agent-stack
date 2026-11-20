@@ -696,16 +696,22 @@ class _Handler(BaseHTTPRequestHandler):
         """Refuse a request before routing; the TCP handler adds its checks."""
 
     def _drain(self) -> None:
-        """Read a small unread body so closing the connection does not reset it."""
+        """Read a body the request was refused before reading, so closing does not reset the connection."""
+        if self.headers.get("Transfer-Encoding"):
+            return
         try:
             length = int(self.headers.get("Content-Length") or "0")
         except ValueError:
             return
         if 0 < length <= MAX_DRAIN:
-            self.rfile.read(length)
+            try:
+                self.rfile.read(length)
+            except OSError:
+                pass
 
     def _dispatch(self) -> None:
         self._route = self._handle = None
+        self._body_read = False
         try:
             path = urlsplit(self.path).path
         except ValueError:
@@ -714,11 +720,7 @@ class _Handler(BaseHTTPRequestHandler):
         if route is not None:
             self._route = path
         try:
-            try:
-                self._check()
-            except HttpError:
-                self._drain()
-                raise
+            self._check()
             if route is None:
                 raise HttpError(404, "not_found")
             name = route.get(self.command)
@@ -730,6 +732,8 @@ class _Handler(BaseHTTPRequestHandler):
             status, payload = 200, getattr(self.server.broker, name)(body)
         except HttpError as exc:
             status, payload = exc.status, {"error": exc.code}
+            if not self._body_read:
+                self._drain()
         except Exception as exc:  # noqa: BLE001 - the text could hold anything; only the type is logged
             LOG.warning("%s %s failed (%s)", self.command, self._route, type(exc).__name__)
             status, payload = 500, {"error": "internal"}
@@ -747,9 +751,8 @@ class _Handler(BaseHTTPRequestHandler):
         if length < 0:
             raise HttpError(400, "bad_request")
         if length > MAX_BODY:
-            if length <= MAX_DRAIN:
-                self.rfile.read(length)  # read it so the close does not reset the connection
             raise HttpError(413, "too_large")
+        self._body_read = True
         raw = self.rfile.read(length) if length else b""
         if len(raw) != length:
             raise HttpError(400, "bad_request")
