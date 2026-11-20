@@ -79,6 +79,7 @@ for s in scripts/doctor.sh scripts/coding-root.sh scripts/context-root.sh \
     fail "${s} defines its own env_get"
   fi
   # A KEY= reader; doctor's bw_get reads another format (spaces around =).
+  # shellcheck disable=SC2016  # a regex: $ and {} match those characters
   if grep -E -q '\^[A-Za-z_${}]+=.*cut -d= -f2-' "${ROOT}/${s}"; then
     fail "${s} reads .env with grep | cut instead of env_get"
   fi
