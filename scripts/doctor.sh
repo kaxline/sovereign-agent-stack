@@ -25,6 +25,32 @@ source "$ROOT/scripts/lib/data-root.sh"
 DATA_ROOT_RAW="${ASSISTANT_DATA_ROOT:-$(env_get ASSISTANT_DATA_ROOT ./data)}"
 DATA_ROOT="$(expand_user_path "$DATA_ROOT_RAW")"
 
+# doctor_py [--mount PATH]... ARGS...: python3 for doctor's checks. stack_python
+# in the pinned Hermes image when it is pulled, else the host's python3 when
+# there is one (Docker down), else nothing: the call fails and the check
+# reports what it would on a failed read. STACK_PYTHON=host forces the host.
+if [[ "${STACK_PYTHON:-}" == host ]]; then
+  DOCTOR_PY=host
+elif docker image inspect "$(stack_hermes_image)" >/dev/null 2>&1; then
+  DOCTOR_PY=image
+elif (STACK_PYTHON=host stack_python -c '') >/dev/null 2>&1; then
+  DOCTOR_PY=host
+else
+  DOCTOR_PY=none
+fi
+doctor_py() {
+  case "$DOCTOR_PY" in
+    image) stack_python "$@" ;;
+    host) STACK_PYTHON=host stack_python "$@" ;;
+    *) return 1 ;;
+  esac
+}
+# doctor_check COMMAND ARGS...: scripts/lib/doctor_checks.py, stdin closed so
+# a call inside a while-read loop leaves the loop's input alone.
+doctor_check() {
+  doctor_py "${ROOT}/scripts/lib/doctor_checks.py" "$@" < /dev/null
+}
+
 profiles_csv="$(env_get COMPOSE_PROFILES core)"
 IFS=',' read -r -a PROFILES <<< "$profiles_csv"
 has_profile() {
@@ -58,6 +84,9 @@ if docker info >/dev/null 2>&1; then
   ok "Docker daemon is running"
 else
   bad "Docker daemon is not running"
+fi
+if [[ "$DOCTOR_PY" == none ]]; then
+  warn "no python3 here and $(stack_hermes_image) is not pulled; checks that read Hermes config are skipped or warn"
 fi
 
 # --- Required files ---
@@ -132,25 +161,23 @@ if [[ ! -d "$_PROJ" ]]; then
   warn "projects dir missing (${_PROJ})"
 else
   ok "projects dir ${_PROJ}"
+  # The image sees host paths only when mounted: the projects dir and the
+  # existing coding and context roots that sources.yaml files may point into.
+  _SRC_MOUNTS=(--mount "$_PROJ")
+  IFS=':' read -r -a _srcs <<< "${_CODING_PRIMARY}:${_CODING_EXTRA}:${_CONTEXT_EXTRA}"
+  for _src in ${_srcs[@]+"${_srcs[@]}"}; do
+    [[ -n "$_src" ]] || continue
+    _src="$(expand_user_path "$_src")"
+    if [[ -d "$_src" ]]; then
+      _SRC_MOUNTS+=(--mount "$_src")
+    fi
+  done
   # Under ssh, hermes mounts the projects dir read-only. Docker cannot create a
   # mount point inside a read-only mount, so a nested bind such as
   # /opt/projects/<slug> needs <projects dir>/<slug> to exist on the host.
   if [[ "$(env_get HERMES_TERMINAL_BACKEND ssh)" == "ssh" ]]; then
-    _nested_missing="$(docker compose config --format json 2>/dev/null | python3 -c '
-import json, sys
-from pathlib import Path
-try:
-    cfg = json.load(sys.stdin)
-except ValueError:
-    sys.exit(0)
-proj = Path(sys.argv[1])
-for vol in cfg.get("services", {}).get("hermes", {}).get("volumes", []):
-    target = vol.get("target", "")
-    if vol.get("type") == "bind" and target.startswith("/opt/projects/"):
-        rel = target[len("/opt/projects/"):]
-        if not (proj / rel).is_dir():
-            print(f"{target} needs {proj / rel}")
-' "$_PROJ" || true)"
+    _nested_missing="$(docker compose config --format json 2>/dev/null \
+      | doctor_py --mount "$_PROJ" "${ROOT}/scripts/lib/doctor_checks.py" nested-binds "$_PROJ" || true)"
     if [[ -n "$_nested_missing" ]]; then
       while IFS= read -r line; do
         [[ -n "$line" ]] && bad "nested project bind on read-only /opt/projects: ${line} (mkdir -p it)"
@@ -164,10 +191,11 @@ for vol in cfg.get("services", {}).get("hermes", {}).get("volumes", []):
     _any_project=1
     _slug="$(basename "$_child")"
     if [[ -f "${_child}/INDEX.md" || -f "${_child}/sources.yaml" ]]; then
-      if python3 "${ROOT}/scripts/project-index.py" --root "$_child" --check >/dev/null 2>&1; then
+      if _idx_err="$(doctor_py ${_SRC_MOUNTS[@]+"${_SRC_MOUNTS[@]}"} "${ROOT}/scripts/project-index.py" \
+        --root "$_child" --check 2>&1 < /dev/null)"; then
         ok "INDEX fresh: ${_slug}"
       else
-        _idx_err="$(python3 "${ROOT}/scripts/project-index.py" --root "$_child" --check 2>&1 | tr '\n' ' ' || true)"
+        _idx_err="$(printf '%s\n' "$_idx_err" | tr '\n' ' ')"
         warn "INDEX stale or invalid (${_slug}) — run: make project-index PROJECT=${_slug}"
         [[ -n "$_idx_err" ]] && warn "  ${_idx_err}"
       fi
@@ -185,12 +213,12 @@ for vol in cfg.get("services", {}).get("hermes", {}).get("volumes", []):
       warn "$_msg"
     fi
   done < <(
-    python3 "${ROOT}/scripts/lib/project_sources.py" doctor-visibility \
+    doctor_py ${_SRC_MOUNTS[@]+"${_SRC_MOUNTS[@]}"} "${ROOT}/scripts/lib/project_sources.py" doctor-visibility \
       "$_PROJ" "${_CODING_PRIMARY}" "${_CODING_EXTRA}" "${_CONTEXT_EXTRA}" \
       || true
   )
 fi
-unset _PROJ _CODING_PRIMARY _CODING_EXTRA _CONTEXT_EXTRA \
+unset _PROJ _CODING_PRIMARY _CODING_EXTRA _CONTEXT_EXTRA _SRC_MOUNTS _srcs _src \
   _any_project _child _slug _idx_err _lvl _msg
 
 # --- Tool-search pins (browser / default) ---
@@ -201,52 +229,10 @@ unset _PROJ _CODING_PRIMARY _CODING_EXTRA _CONTEXT_EXTRA \
 if has_profile core; then
   echo
   echo "--- Tool-search pins ---"
+  # yaml_list_has FILE DOTTED ITEM: ITEM (or one of a|b) is in the list.
   yaml_list_has() {
-    python3 - "$1" "$2" "$3" <<'PY'
-import sys
-from pathlib import Path
-
-cfg, dotted, want = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
-text = cfg.read_text()
-parts = dotted.split(".")
-lines = text.splitlines()
-idx = 0
-min_indent = 0
-for part in parts:
-    found = False
-    while idx < len(lines):
-        line = lines[idx]
-        stripped = line.lstrip(" ")
-        indent = len(line) - len(stripped)
-        if stripped.startswith("#") or not stripped:
-            idx += 1
-            continue
-        if indent < min_indent:
-            break
-        if indent == min_indent and stripped.startswith(part + ":"):
-            found = True
-            idx += 1
-            min_indent = indent + 2
-            break
-        idx += 1
-    if not found:
-        raise SystemExit(1)
-while idx < len(lines):
-    line = lines[idx]
-    stripped = line.lstrip(" ")
-    indent = len(line) - len(stripped)
-    if stripped.startswith("#") or not stripped:
-        idx += 1
-        continue
-    if indent < min_indent:
-        break
-    if stripped.startswith("- "):
-        item = stripped[2:].strip().strip("'\"")
-        if item == want:
-            raise SystemExit(0)
-    idx += 1
-raise SystemExit(1)
-PY
+    local missing
+    missing="$(doctor_check yaml-list-missing "$1" "$2" "$3")" && [[ -z "$missing" ]]
   }
   check_always_include() {
     local cfg="$1"
@@ -256,17 +242,14 @@ PY
       warn "${label} config missing (${cfg}) — run hermes-browser-bootstrap"
       return 0
     fi
-    local missing=()
-    local want
-    for want in "$@"; do
-      if ! yaml_list_has "$cfg" "tools.tool_search.always_include" "$want"; then
-        missing+=("$want")
-      fi
-    done
-    if [[ ${#missing[@]} -eq 0 ]]; then
+    local missing
+    if ! missing="$(doctor_check yaml-list-missing "$cfg" tools.tool_search.always_include "$@")"; then
+      missing="$*"
+    fi
+    if [[ -z "$missing" ]]; then
       ok "${label} tools.tool_search.always_include has SearXNG + session_search"
     else
-      warn "${label} always_include missing: ${missing[*]} — run make hermes-reload"
+      warn "${label} always_include missing: $(printf '%s\n' "$missing" | paste -sd ' ' -) — run make hermes-reload"
     fi
   }
   check_always_include "data/hermes/profiles/browser/config.yaml" "browser" \
@@ -284,27 +267,7 @@ PY
       warn "${label} tools.tool_search.defer still lists session_search — re-run hermes-*-bootstrap"
       return 0
     fi
-    if python3 - "$cfg" <<'PY'
-import sys
-from pathlib import Path
-text = Path(sys.argv[1]).read_text()
-in_tool_search = False
-min_indent = 0
-for line in text.splitlines():
-    stripped = line.lstrip(" ")
-    indent = len(line) - len(stripped)
-    if stripped.startswith("tool_search:"):
-        in_tool_search = True
-        min_indent = indent + 2
-        continue
-    if in_tool_search:
-        if stripped and indent < min_indent and not stripped.startswith("#"):
-            break
-        if stripped.startswith("defer:"):
-            raise SystemExit(0)
-raise SystemExit(1)
-PY
-    then
+    if doctor_check yaml-get "$cfg" tools.tool_search.defer > /dev/null; then
       ok "${label} tools.tool_search.defer omits session_search"
     else
       warn "${label} tools.tool_search.defer unset (curated default defers session_search) — re-run hermes-*-bootstrap"
@@ -318,29 +281,9 @@ PY
       warn "default config missing (${cfg}) — run make hermes-reload"
       return 0
     fi
-    if python3 - "$cfg" <<'PY'
-import sys
-from pathlib import Path
-text = Path(sys.argv[1]).read_text()
-in_agent = False
-min_indent = 0
-for line in text.splitlines():
-    stripped = line.lstrip(" ")
-    indent = len(line) - len(stripped)
-    if stripped.startswith("agent:"):
-        in_agent = True
-        min_indent = indent + 2
-        continue
-    if not in_agent:
-        continue
-    if stripped and indent < min_indent and not stripped.startswith("#"):
-        break
-    if stripped.startswith("intent_ack_continuation:"):
-        val = stripped.split(":", 1)[1].strip().strip("'\"")
-        raise SystemExit(0 if val.lower() in ("true", "yes", "on", "always") else 1)
-raise SystemExit(1)
-PY
-    then
+    local ack
+    ack="$(doctor_check yaml-get "$cfg" agent.intent_ack_continuation | tr '[:upper:]' '[:lower:]' || true)"
+    if [[ "$ack" == true || "$ack" == yes || "$ack" == on || "$ack" == always ]]; then
       ok "default agent.intent_ack_continuation is on"
     else
       warn "default agent.intent_ack_continuation is off — run make hermes-reload"
@@ -352,9 +295,7 @@ PY
       1|true|yes)
         if [[ -f data/hermes/profiles/browser/config.yaml ]]; then
           if yaml_list_has "data/hermes/profiles/browser/config.yaml" \
-            "tools.tool_search.always_include" "coding_start_task" \
-            || yaml_list_has "data/hermes/profiles/browser/config.yaml" \
-            "tools.tool_search.always_include" "mcp__opencode__coding_start_task"; then
+            "tools.tool_search.always_include" "coding_start_task|mcp__opencode__coding_start_task"; then
             ok "browser always_include has OpenCode coding_* pins"
           else
             warn "browser always_include missing coding_* — re-run hermes-browser-bootstrap with OPENCODE_MCP_ENABLED=1"
@@ -370,9 +311,7 @@ PY
           _lr_missing=()
           for _lr_want in query_document get_documents; do
             if ! yaml_list_has "data/hermes/profiles/browser/config.yaml" \
-              "tools.tool_search.always_include" "${_lr_want}" \
-              && ! yaml_list_has "data/hermes/profiles/browser/config.yaml" \
-              "tools.tool_search.always_include" "mcp__lightrag__${_lr_want}"; then
+              "tools.tool_search.always_include" "${_lr_want}|mcp__lightrag__${_lr_want}"; then
               _lr_missing+=("${_lr_want}")
             fi
           done
@@ -679,7 +618,7 @@ if [[ "$signal_enabled" -eq 1 ]]; then
   fi
   browser_jobs="data/hermes/profiles/browser/cron/jobs.json"
   if [[ -f "$browser_jobs" ]]; then
-    _cron_err_jobs="$(python3 -I "${ROOT}/scripts/lib/cron_delivery_errors.py" "$browser_jobs" | tr '\n' ' ')"
+    _cron_err_jobs="$(doctor_py -I "${ROOT}/scripts/lib/cron_delivery_errors.py" "$browser_jobs" < /dev/null | tr '\n' ' ' || true)"
     if [[ -n "${_cron_err_jobs// /}" ]]; then
       warn "browser cron jobs have api_server delivery errors (${_cron_err_jobs% }) — recreate hermes and re-run jobs"
     fi
@@ -731,18 +670,7 @@ if [[ -f data/hermes/agents/registry.json ]]; then
       bad "registry lists '${name}' but data/hermes/profiles/${name} is missing"
     fi
   done < <(
-    python3 - <<'PY' 2>/dev/null || true
-import json
-from pathlib import Path
-path = Path("data/hermes/agents/registry.json")
-try:
-    data = json.loads(path.read_text())
-except Exception:
-    raise SystemExit(0)
-for a in data.get("agents", []):
-    if isinstance(a, dict) and a.get("name"):
-        print(a["name"])
-PY
+    doctor_check agents 2>/dev/null || true
   )
 fi
 
@@ -795,21 +723,7 @@ if [[ "$buzz_enabled" -eq 1 ]]; then
           warn "profile ${name} needs a real BUZZ_PRIVATE_KEY — re-run: make agent-create NAME=${name} WITH=buzz"
         fi
         if [[ -f data/hermes/agents/registry.json ]]; then
-          if NAME="$name" python3 - <<'PY' 2>/dev/null
-import json, os, sys
-from pathlib import Path
-name = os.environ["NAME"]
-path = Path("data/hermes/agents/registry.json")
-try:
-    data = json.loads(path.read_text())
-except Exception:
-    sys.exit(1)
-for a in data.get("agents", []):
-    if isinstance(a, dict) and a.get("name") == name:
-        sys.exit(0)
-sys.exit(1)
-PY
-          then
+          if doctor_check agents 2>/dev/null | grep -qxF -- "$name"; then
             ok "agent ${name} is in data/hermes/agents/registry.json"
           else
             warn "Buzz profile ${name} not in agent registry — make agent-create NAME=${name} (or ignore if legacy)"
@@ -885,19 +799,7 @@ if [[ "$caldav_on" -eq 1 ]] || has_profile calendar; then
       label="${pair%%:*}"
       dir="${pair#*:}"
       [[ -f "${dir}/config.yaml" ]] || continue
-      header="$(python3 - "${dir}/config.yaml" "caldav-${slug}" <<'PY' 2>/dev/null || true
-import re
-import sys
-text = open(sys.argv[1], encoding="utf-8").read()
-m = re.search(r"^( *)" + re.escape(sys.argv[2]) + r": *$", text, re.M)
-if m:
-    rest = text[m.end():]
-    end = re.search(r"^ {0,%d}\S" % len(m.group(1)), rest, re.M)
-    block = rest[:end.start()] if end else rest
-    h = re.search(r"X-Caldav-Password:\s*['\"]?([^'\"\n]*)", block)
-    print(h.group(1).strip() if h else "")
-PY
-)"
+      header="$(doctor_check yaml-get "${dir}/config.yaml" "mcp_servers.caldav-${slug}.headers.X-Caldav-Password" 2>/dev/null || true)"
       if [[ "$header" == "\${${key}}" ]] && grep -q "^${key}=" "${dir}/.env" 2>/dev/null; then
         ok "caldav-${slug} on ${label} sends its password from ${key}"
       else
@@ -1307,7 +1209,7 @@ if has_profile mail || [[ "$mail_on" -eq 1 ]]; then
     bad "api-server registers the mail MCP — run make hermes-reload (unattended sessions must not read mail)"
   fi
   # Cron runs unattended: a job that can read mail should have nothing else.
-  if mail_cron="$(python3 scripts/check-mail-cron.py --hermes-home data/hermes 2>&1)"; then
+  if mail_cron="$(doctor_py scripts/check-mail-cron.py --hermes-home data/hermes 2>&1 < /dev/null)"; then
     ok "no cron job can read mail alongside other tools"
   else
     while IFS= read -r line; do
@@ -1388,7 +1290,7 @@ if has_profile messages || [[ "$messages_on" -eq 1 ]]; then
   # Cron runs unattended: a job that can read messages should have nothing else.
   # The mail section runs the same check when mail is on.
   if ! { has_profile mail || [[ "$mail_on" -eq 1 ]]; }; then
-    if msg_cron="$(python3 scripts/check-mail-cron.py --hermes-home data/hermes 2>&1)"; then
+    if msg_cron="$(doctor_py scripts/check-mail-cron.py --hermes-home data/hermes 2>&1 < /dev/null)"; then
       ok "no cron job can read messages alongside other tools"
     else
       while IFS= read -r line; do
@@ -1495,17 +1397,8 @@ if has_profile rag; then
   fi
   REG="${DATA_ROOT}/corpora/registry.json"
   if [[ -f "$REG" && -n "$WS" ]]; then
-    REG_DIM="$(python3 - "$REG" "$WS" <<'PY'
-import json, sys
-from pathlib import Path
-path, slug = Path(sys.argv[1]), sys.argv[2]
-data = json.loads(path.read_text())
-for c in data.get("corpora", []):
-    if c.get("slug") == slug:
-        print(c.get("embedding_dim") or "")
-        break
-PY
-)"
+    REG_DIM="$(doctor_py --mount "${DATA_ROOT}/corpora" "${ROOT}/scripts/lib/doctor_checks.py" \
+      corpus-dim "$REG" "$WS" < /dev/null || true)"
     CUR_DIM="$(env_get EMBEDDING_DIM)"
     if [[ -n "$REG_DIM" && -n "$CUR_DIM" && "$REG_DIM" != "$CUR_DIM" ]]; then
       bad "active corpus dim=${REG_DIM} but EMBEDDING_DIM=${CUR_DIM} — mismatch corrupts vectors"
@@ -1530,16 +1423,6 @@ if [[ -f .env ]] && docker compose version >/dev/null 2>&1; then
     ok "docker compose config validates"
   else
     bad "docker compose config failed — check .env and local overlay files"
-  fi
-  if python3 scripts/test-compose-env-allowlist.py; then
-    ok "compose service env allowlists"
-  else
-    bad "compose service env allowlists"
-  fi
-  if python3 scripts/test-terminal-backend-compose.py; then
-    ok "terminal backend compose layouts"
-  else
-    bad "terminal backend compose layouts"
   fi
 fi
 
@@ -1590,49 +1473,12 @@ for _root in "${coding_roots[@]}"; do
 done
 
 # Profile config.yaml must match the env var or the shell runs in the wrong place.
-if [[ -n "$terminal_backend" ]]; then
-  backend_mismatch="$(python3 - "$terminal_backend" <<'PY'
-import sys
-from pathlib import Path
-
-want = sys.argv[1]
-paths = [Path("data/hermes/config.yaml")]
-profiles = Path("data/hermes/profiles")
-if profiles.is_dir():
-    paths.extend(sorted(profiles.glob("*/config.yaml")))
-
-def backend(path: Path):
-    in_terminal = False
-    for line in path.read_text(errors="replace").splitlines():
-        if line.startswith("terminal:"):
-            in_terminal = True
-            continue
-        if in_terminal:
-            if line and not line.startswith(" "):
-                break
-            stripped = line.strip()
-            if stripped.startswith("backend:"):
-                return stripped.split(":", 1)[1].strip().strip("'\"")
-    return ""
-
-bad = []
-saw = False
-for path in paths:
-    if not path.is_file():
-        continue
-    saw = True
-    got = backend(path)
-    if got != want:
-        label = "default" if path.parent.name == "hermes" else path.parent.name
-        bad.append(f"{label} terminal.backend is {got or 'unset'}")
-if not saw:
-    print("NOCONFIG")
-else:
-    print("\n".join(bad))
-PY
-)"
+if [[ -n "$terminal_backend" && "$DOCTOR_PY" != none ]]; then
+  backend_mismatch="$(doctor_check terminal-backend "$terminal_backend")" || backend_mismatch=UNREAD
   if [[ "$backend_mismatch" == "NOCONFIG" ]]; then
     :
+  elif [[ "$backend_mismatch" == "UNREAD" ]]; then
+    warn "could not read terminal.backend from the Hermes profiles"
   elif [[ -n "$backend_mismatch" ]]; then
     warn "Hermes terminal backend does not match HERMES_TERMINAL_BACKEND=${terminal_backend}"
     warn "  run make hermes-reload"
@@ -1646,33 +1492,11 @@ fi
 
 # ssh: extra host binds on hermes undo the secret split.
 # local: those binds belong on hermes; a leftover hermes-worker block breaks compose.
-if [[ -f docker-compose.override.yml && -n "$terminal_backend" ]]; then
+if [[ -f docker-compose.override.yml && -n "$terminal_backend" && "$DOCTOR_PY" != none ]]; then
   if [[ "$terminal_backend" == "ssh" ]]; then
-    leftover="$(python3 - docker-compose.override.yml <<'PY'
-import sys
-from pathlib import Path
-
-text = Path(sys.argv[1]).read_text()
-lines = text.splitlines()
-in_hermes = False
-found = []
-for line in lines:
-    stripped = line.strip()
-    if line.startswith("  ") and not line.startswith("    ") and stripped.endswith(":"):
-        in_hermes = stripped == "hermes:"
-        continue
-    if not in_hermes or stripped.startswith("#"):
-        continue
-    if not stripped.startswith("- "):
-        continue
-    spec = stripped[2:].strip().strip("'\"")
-    src = spec.split(":", 1)[0]
-    if src.startswith("/"):
-        found.append(src)
-print("\n".join(found))
-PY
-)"
-    if [[ -n "$leftover" ]]; then
+    if ! leftover="$(doctor_py "${ROOT}/scripts/lib/doctor_checks.py" override-mounts - hermes --host-only < docker-compose.override.yml)"; then
+      warn "could not read docker-compose.override.yml"
+    elif [[ -n "$leftover" ]]; then
       warn "docker-compose.override.yml still mounts a host path on hermes; run make ensure-local"
       while IFS= read -r path; do
         [[ -n "$path" ]] && warn "  leftover hermes mount: $path"
@@ -1681,27 +1505,9 @@ PY
       ok "no leftover host-path mounts on hermes"
     fi
   else
-    worker_mounts="$(python3 - docker-compose.override.yml <<'PY'
-import sys
-from pathlib import Path
-
-text = Path(sys.argv[1]).read_text()
-lines = text.splitlines()
-in_worker = False
-found = []
-for line in lines:
-    stripped = line.strip()
-    if line.startswith("  ") and not line.startswith("    ") and stripped.endswith(":"):
-        in_worker = stripped == "hermes-worker:"
-        continue
-    if not in_worker or stripped.startswith("#"):
-        continue
-    if stripped.startswith("- "):
-        found.append(stripped[2:].strip().strip("'\""))
-print("\n".join(found))
-PY
-)"
-    if [[ -n "$worker_mounts" ]]; then
+    if ! worker_mounts="$(doctor_py "${ROOT}/scripts/lib/doctor_checks.py" override-mounts - hermes-worker < docker-compose.override.yml)"; then
+      warn "could not read docker-compose.override.yml"
+    elif [[ -n "$worker_mounts" ]]; then
       warn "docker-compose.override.yml still mounts paths on hermes-worker; run make ensure-local"
       while IFS= read -r path; do
         [[ -n "$path" ]] && warn "  leftover hermes-worker mount: $path"
@@ -1715,56 +1521,11 @@ fi
 # Clients must call llm-proxy. A profile still pointing at the model server
 # keeps the real key in Hermes config or OpenCode's local file.
 PROXY_URL="http://llm-proxy:4000/v1"
-proxy_mismatch="$(python3 - "$PROXY_URL" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-want = sys.argv[1]
-bad = []
-
-def base_url(path: Path):
-    in_model = False
-    for line in path.read_text(errors="replace").splitlines():
-        stripped = line.strip()
-        if line.startswith("model:") or stripped == "model:":
-            in_model = True
-            continue
-        if in_model and line and not line.startswith(" ") and not line.startswith("\t"):
-            in_model = False
-        if not in_model or not stripped.startswith("base_url:"):
-            continue
-        value = stripped.split(":", 1)[1].strip().strip("'\"")
-        return value
-    return None
-
-configs = [Path("data/hermes/config.yaml")]
-profiles = Path("data/hermes/profiles")
-if profiles.is_dir():
-    configs.extend(sorted(profiles.glob("*/config.yaml")))
-for cfg in configs:
-    if not cfg.is_file():
-        continue
-    found = base_url(cfg)
-    if found != want:
-        bad.append(f"hermes {cfg}")
-
-local = Path("opencode/opencode.local.json")
-if local.is_file():
-    try:
-        data = json.loads(local.read_text())
-    except json.JSONDecodeError:
-        bad.append("opencode/opencode.local.json")
-    else:
-        for name, block in (data.get("provider") or {}).items():
-            options = block.get("options") if isinstance(block, dict) else None
-            url = options.get("baseURL") if isinstance(options, dict) else None
-            if url != want:
-                bad.append(f"opencode provider {name}")
-print("\n".join(bad))
-PY
-)"
-if [[ -n "$proxy_mismatch" ]]; then
+if [[ "$DOCTOR_PY" == none ]]; then
+  :
+elif ! proxy_mismatch="$(doctor_check proxy-mismatch "$PROXY_URL")"; then
+  warn "could not read the model clients' base URLs"
+elif [[ -n "$proxy_mismatch" ]]; then
   warn "a model client is not pointed at ${PROXY_URL}"
   while IFS= read -r item; do
     [[ -n "$item" ]] && warn "  ${item}"

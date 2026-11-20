@@ -10,6 +10,14 @@ the stack under another app.
 
 ### Changes
 
+- `make doctor` no longer needs `python3` on the host. Its Python checks run
+  in the pinned Hermes image through `stack_python` (the host's `python3` when
+  the image is not pulled, as while Docker is down), and its YAML checks share
+  one reader, `scripts/lib/doctor_checks.py`. Doctor no longer prints
+  `compose service env allowlists` and `terminal backend compose layouts`:
+  those are repo tests, which `make test` and CI run, and without `python3`
+  they were reported as failures. On a host with neither the image nor
+  `python3`, doctor warns once and skips the checks that read Hermes config.
 - `make doctor` resolves `ASSISTANT_DATA_ROOT` once and uses that path in
   every section. With a root of `~` or `~/…` it used to warn that the root was
   missing and check the projects dir and corpus inputs under the repo

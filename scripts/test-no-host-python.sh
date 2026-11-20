@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# The first run (setup.sh, then crm.sh, todo.sh and budget.sh init) needs only bash,
-# the base system's tools and the container engine: no python3, node or make
-# on the host. See CHANGELOG.md v0.3.11 and docs/extending.md.
+# The first run (setup.sh, then crm.sh, todo.sh and budget.sh init, then make
+# doctor, install.sh's last step) needs only bash, the base system's tools and
+# the container engine: no python3, node or make on the host. See CHANGELOG.md
+# v0.3.11 and docs/extending.md.
 #
 # 1. Source check: the scripts on that path never call python3 or node
 #    directly, outside the STACK_PYTHON=host / N8N_NODE=host branches.
@@ -22,7 +23,7 @@ bad() { printf 'FAIL %s\n' "$*" >&2; fail=1; }
 FIRST_RUN="scripts/setup.sh scripts/sync-profiles.sh scripts/sync-signal-profile.sh
 scripts/sync-buzz-profile.sh scripts/sync-terminal-backend.sh scripts/sync-n8n-credentials.sh
 scripts/todo.sh scripts/crm.sh scripts/vault.sh scripts/budget.sh scripts/db.sh scripts/lib/env.sh scripts/lib/data-root.sh
-scripts/lib/hermes-yaml.sh scripts/addon.sh"
+scripts/lib/hermes-yaml.sh scripts/addon.sh scripts/doctor.sh"
 
 # A command position (line start, after ; & | ( or a keyword, after VAR=value
 # prefixes) followed by python3, python or node.

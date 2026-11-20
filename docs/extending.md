@@ -25,8 +25,10 @@ the host's `node`, for development and tests. `scripts/test-no-host-python.sh`
 checks the first-run scripts for host `python3` and `node` calls, and runs the
 container path with them removed from `PATH`.
 
-Other scripts still use the host's `python3`: `make doctor`, `coding-root.sh`
-and `context-root.sh`, the mail and Messages tools, Buzz agent management, and
+`make doctor` runs its Python checks the same way, in the pinned image when it
+is pulled and otherwise with the host's `python3`, so it also works while Docker
+is down. Other scripts still use the host's `python3`: `coding-root.sh` and
+`context-root.sh`, the mail and Messages tools, Buzz agent management, and
 the eval and corpus scripts.
 
 ## Run a second copy

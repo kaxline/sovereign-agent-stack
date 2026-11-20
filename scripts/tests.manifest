@@ -65,6 +65,7 @@ scripts/test-data-dir-sh.sh                     ci
 scripts/test-db-service-remove.sh               ci
 scripts/test-detector.py                        ci
 scripts/test-digest-redaction.py                ci image
+scripts/test-doctor-checks.py                   ci
 scripts/test-doctor-data-root.sh                ci
 scripts/test-email-addon.py                     ci
 scripts/test-email-e2e.py                       docker
