@@ -24,6 +24,11 @@ Hermes' own import paths use, " (<last 12 characters of the id>)", and is
 counted as renamed once imported. A batch that still raises is retried one
 session at a time, so only the sessions that raise again are failed.
 
+The import's profile line lists every id it read under exactly one of
+imported_ids, skipped_ids, refused_ids, too_large_ids, invalid_ids and
+failed_ids (a repeated id is also in invalid_ids); renamed_ids is a subset
+of imported_ids. export's summary lists the ids it wrote, for the manifest.
+
 Only counts and session ids reach stdout; titles and message text never do.
 Anything Hermes prints while working goes to stderr.
 """
@@ -75,6 +80,7 @@ def cmd_export(name):
     out = _real_stdout()
     path = _db_path(name)
     sessions = messages = 0
+    ids = []
     if path.is_file():
         from hermes_state import SessionDB
         db = SessionDB(db_path=path, read_only=True)
@@ -83,10 +89,13 @@ def cmd_export(name):
                 out.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
                 sessions += 1
                 messages += len(row.get("messages") or [])
+                ids.append(str(row.get("id") or ""))
         finally:
             db.close()
     out.flush()
-    print(SUMMARY_TAG + json.dumps({"sessions": sessions, "messages": messages}, separators=(",", ":")), file=sys.stderr)
+    # session_ids last: sessions.sh takes everything after it as the list.
+    summary = {"sessions": sessions, "messages": messages, "session_ids": ids}
+    print(SUMMARY_TAG + json.dumps(summary, ensure_ascii=False, separators=(",", ":")), file=sys.stderr)
 
 
 def _measure(raw):
@@ -147,8 +156,8 @@ def cmd_import(name):
     out = _real_stdout()
     result = {"phase": "profile", "profile": name, "sessions": 0, "imported": 0, "skipped": 0,
               "detached": 0, "renamed": 0, "refused": 0, "too_large": 0, "invalid": 0, "failed": 0,
-              "refused_ids": [], "too_large_ids": [], "invalid_ids": [], "failed_ids": [],
-              "renamed_ids": []}
+              "imported_ids": [], "skipped_ids": [], "refused_ids": [], "too_large_ids": [],
+              "invalid_ids": [], "failed_ids": [], "renamed_ids": []}
 
     def add(kind, sid):
         result[kind] += 1
@@ -182,7 +191,7 @@ def cmd_import(name):
             taken = {r[0] for r in conn.execute("SELECT title FROM sessions WHERE title IS NOT NULL")}
             for sid, raw in rows:
                 if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (sid,)).fetchone():
-                    result["skipped"] += 1
+                    add("skipped", sid)
                 elif retired_in(conn, sid):
                     add("refused", sid)
                 else:
@@ -233,12 +242,13 @@ def _import_batch(db, batch, result, add, renamed=frozenset()):
                 add("failed", sid)
             return
         if res.get("ok"):
-            result["imported"] += res.get("imported", 0)
-            result["skipped"] += res.get("skipped", 0)
-            result["detached"] += res.get("detached", 0)
             for sid in res.get("imported_ids") or []:
+                add("imported", sid)
                 if sid in renamed:
                     add("renamed", sid)
+            for sid in res.get("skipped_ids") or []:  # created here since the id check
+                add("skipped", sid)
+            result["detached"] += res.get("detached", 0)
             return
         bad = {err["index"] for err in res.get("errors") or [] if isinstance(err, dict) and "index" in err}
         if attempt == 2 or not bad or len(bad) != len(res.get("errors") or []):

@@ -5,7 +5,9 @@
 # reported; deleted, oversized and malformed entries are counted; a title the
 # target or an earlier session already holds gets Hermes' id-tail suffix and
 # is counted as renamed; a batch that raises is retried one session at a time;
-# a second import imports nothing; output never carries titles or message text.
+# a second import imports nothing; the manifest names each profile's session
+# ids, and an import's id lists hold every one of them once (CR 0039 R6);
+# output never carries titles or message text.
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -91,6 +93,12 @@ grep -qxF '{"phase":"profile","profile":"coder","sessions":2,"messages":7}' "${t
 grep -q '^{"phase":"done","action":"export",.*"sessions":7,"messages":19}$' "${tmp}/export.jsonl" \
   || fail "export done line: $(tail -1 "${tmp}/export.jsonl")"
 { [ -f "${out}/manifest.json" ] && [ -f "${out}/writer.jsonl" ]; } || fail "export files missing"
+python3 - "${out}/manifest.json" <<'PY' || fail "manifest session_ids: $(cat "${out}/manifest.json")"
+import json, sys
+ids = {p["name"]: p["session_ids"] for p in json.load(open(sys.argv[1]))["profiles"]}
+assert sorted(ids["default"]) == ["s-arch", "s-child", "s-deleted", "s-parent"], ids
+assert sorted(ids["coder"]) == ["c-1", "c-2"] and ids["writer"] == ["w-1"], ids
+PY
 [ "$(stat -c %a "${out}/default.jsonl" 2> /dev/null || stat -f %Lp "${out}/default.jsonl")" = 600 ] \
   || fail "export file is not mode 600"
 SESSIONS_PY="$(py_in "$src")" "${ROOT}/scripts/sessions.sh" export --dest "$out" --json > /dev/null 2>&1 \
@@ -106,7 +114,7 @@ $(py_in "$src") -c 'import json, time; print(json.dumps({"id": "s-dup", "source"
 
 SESSIONS_PY="$(py_in "$dst")" "${ROOT}/scripts/sessions.sh" import --from "$out" --json \
   > "${tmp}/import.jsonl" 2> "${tmp}/import.err" || { cat "${tmp}/import.err" >&2; fail "import exited non-zero"; }
-grep -q '^{"phase":"profile","profile":"default","sessions":7,"imported":4,"skipped":0,"detached":0,"renamed":2,"refused":1,"too_large":1,"invalid":1,"failed":0,"refused_ids":\["s-deleted"\],"too_large_ids":\["s-huge"\],"invalid_ids":\[\],"failed_ids":\[\],"renamed_ids":\["s-parent","s-dup"\]}$' \
+grep -q '^{"phase":"profile","profile":"default","sessions":7,"imported":4,"skipped":0,"detached":0,"renamed":2,"refused":1,"too_large":1,"invalid":1,"failed":0,"imported_ids":\[[^]]*\],"skipped_ids":\[\],"refused_ids":\["s-deleted"\],"too_large_ids":\["s-huge"\],"invalid_ids":\[\],"failed_ids":\[\],"renamed_ids":\["s-parent","s-dup"\]}$' \
   "${tmp}/import.jsonl" || fail "import default line: $(cat "${tmp}/import.jsonl")"
 grep -q '^{"phase":"profile","profile":"coder","sessions":2,"imported":2,' "${tmp}/import.jsonl" \
   || fail "import coder line"
@@ -115,6 +123,29 @@ grep -qxF '{"phase":"profile","profile":"writer","sessions":1,"status":"profile_
 grep -q '^{"phase":"done","action":"import","imported":6,"skipped":0,"detached":0,"renamed":2,"refused":1,"too_large":1,"invalid":1,"failed":0,"profile_missing":\["writer"\]}$' "${tmp}/import.jsonl" \
   || fail "import done line: $(tail -1 "${tmp}/import.jsonl")"
 [ ! -e "${dst}/profiles/writer" ] || fail "import created the missing profile"
+# id_lists IMPORT_JSONL PROFILE IMPORTED SKIPPED: the profile line lists those
+# ids (comma-separated, any order), and every manifest id of every imported
+# profile is in exactly one of its six id lists.
+id_lists() {
+  python3 - "${out}/manifest.json" "$@" <<'PY'
+import json, sys
+manifest = {p["name"]: p["session_ids"] for p in json.load(open(sys.argv[1]))["profiles"]}
+rows = [json.loads(line) for line in open(sys.argv[2])]
+for row in rows:
+    if row.get("phase") != "profile" or "status" in row:
+        continue
+    held = [sid for k in ("imported_ids", "skipped_ids", "refused_ids", "too_large_ids",
+                          "invalid_ids", "failed_ids") for sid in row[k]]
+    assert len(held) == len(set(held)), (row["profile"], held)
+    assert not set(manifest[row["profile"]]) - set(held), (row["profile"], held)
+    if row["profile"] == sys.argv[3]:
+        want = lambda arg: sorted(filter(None, arg.split(",")))
+        assert sorted(row["imported_ids"]) == want(sys.argv[4]), row
+        assert sorted(row["skipped_ids"]) == want(sys.argv[5]), row
+PY
+}
+id_lists "${tmp}/import.jsonl" default "s-arch,s-child,s-dup,s-parent" "" \
+  || fail "import id lists: $(head -1 "${tmp}/import.jsonl")"
 if grep -q 'SECRET-' "${tmp}/export.jsonl" "${tmp}/import.jsonl" "${tmp}/export.err" "${tmp}/import.err"; then
   fail "output carries titles or message text"
 fi
@@ -150,6 +181,8 @@ SESSIONS_PY="$(py_in "$dst")" "${ROOT}/scripts/sessions.sh" import --from "$out"
   > "${tmp}/again.jsonl" 2> /dev/null || fail "second import exited non-zero"
 grep -q '^{"phase":"done","action":"import","imported":0,"skipped":6,"detached":0,"renamed":0,' "${tmp}/again.jsonl" \
   || fail "second import done line: $(tail -1 "${tmp}/again.jsonl")"
+id_lists "${tmp}/again.jsonl" default "" "s-arch,s-child,s-dup,s-parent" \
+  || fail "second import id lists: $(head -1 "${tmp}/again.jsonl")"
 
 # A batch that raises is retried one session at a time, so only the session
 # that raises again is failed. A stub store stands in for SessionDB.
@@ -169,7 +202,7 @@ class Stub:
         return {"ok": True, "imported": len(ids), "skipped": 0, "detached": 0, "imported_ids": ids}
 
 result = {k: 0 for k in ("imported", "skipped", "detached", "renamed", "invalid", "failed")}
-result.update(invalid_ids=[], failed_ids=[], renamed_ids=[])
+result.update(imported_ids=[], skipped_ids=[], invalid_ids=[], failed_ids=[], renamed_ids=[])
 def add(kind, sid):
     result[kind] += 1
     result[kind + "_ids"].append(sid)

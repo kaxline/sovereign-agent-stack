@@ -24,14 +24,19 @@
 # holds is imported under that title plus " (<last 12 characters of its id>)"
 # and counted as renamed (titles are unique in a Hermes store).
 #
+# Each id read appears in exactly one of an import line's first six id lists
+# (a repeated id also in invalid_ids); renamed_ids is a subset of imported_ids. The manifest's profile entries carry
+# session_ids, so the sessions of a profile_missing profile can be named too.
+#
 # --json prints JSON lines (docs/extending.md "JSON lines") holding counts and
 # session ids only, never titles or message text:
 #
 #   {"phase":"profile","profile":P,"sessions":N,"messages":M}          export
 #   {"phase":"profile","profile":P,"sessions":N,"imported":N,"skipped":N,
 #    "detached":N,"renamed":N,"refused":N,"too_large":N,"invalid":N,
-#    "failed":N,"refused_ids":[...],"too_large_ids":[...],
-#    "invalid_ids":[...],"failed_ids":[...],"renamed_ids":[...]}      import
+#    "failed":N,"imported_ids":[...],"skipped_ids":[...],"refused_ids":[...],
+#    "too_large_ids":[...],"invalid_ids":[...],"failed_ids":[...],
+#    "renamed_ids":[...]}                                              import
 #   {"phase":"profile","profile":P,"sessions":N,"status":"profile_missing"}
 #   {"phase":"done","action":"export","dest":DIR,"sessions":N,"messages":M}
 #   {"phase":"done","action":"import","imported":N,...,"profile_missing":[P]}
@@ -137,7 +142,7 @@ cmd_export() {
   mkdir -p "$DEST" || fail command_failed "cannot create ${DEST}"
   chmod 700 "$DEST"
 
-  local name entries="" total_s=0 total_m=0 summary s m found=0
+  local name entries="" total_s=0 total_m=0 summary s m ids found=0
   while IFS= read -r name; do
     if [[ -z "$name" ]] || ! selected "$name"; then continue; fi
     found=$((found + 1))
@@ -149,9 +154,12 @@ cmd_export() {
     [[ -n "$summary" ]] || { cat "${TMP}/err" >> "$LOG"; fail command_failed "export of profile ${name} gave no summary"; }
     s="$(num sessions "$summary")"
     m="$(num messages "$summary")"
+    # The JSON list after "session_ids", the summary's last key.
+    ids="$(printf '%s' "$summary" | sed -n 's/.*,"session_ids":\(\[.*\]\)}$/\1/p')"
+    [[ -n "$ids" ]] || { cat "${TMP}/err" >> "$LOG"; fail command_failed "export of profile ${name} gave no session ids"; }
     total_s=$((total_s + s))
     total_m=$((total_m + m))
-    entries="${entries:+${entries},}{\"name\":$(jl_str "$name"),\"file\":$(jl_str "${name}.jsonl"),\"sessions\":${s},\"messages\":${m}}"
+    entries="${entries:+${entries},}{\"name\":$(jl_str "$name"),\"file\":$(jl_str "${name}.jsonl"),\"sessions\":${s},\"messages\":${m},\"session_ids\":${ids}}"
     jl_emit "{\"phase\":\"profile\",\"profile\":$(jl_str "$name"),\"sessions\":${s},\"messages\":${m}}"
     say "${name}: ${s} session(s), ${m} message(s)"
   done <<< "$names"

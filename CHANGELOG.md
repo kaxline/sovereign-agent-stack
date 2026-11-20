@@ -17,6 +17,11 @@ the stack under another app.
   ` (<last 12 characters of the id>)` and listed under the new `renamed` and
   `renamed_ids` fields of the profile line (`renamed` also in the done line).
   A batch that still raises is retried one session at a time.
+- `scripts/sessions.sh` names the sessions it moves (CR 0039 R6). Each
+  profile entry in an export's `manifest.json` lists its `session_ids`, and
+  each import profile line adds `imported_ids` and `skipped_ids`, so with the
+  existing error lists every id in the manifest is accounted for, including
+  the sessions of a `profile_missing` profile.
 - `addon.sh enable twenty` generates `TWENTY_ENCRYPTION_KEY` and
   `TWENTY_DB_PASSWORD` when `.env` has none (CR 0043), and `enable vikunja`
   generates `VIKUNJA_SECRET`. Only `setup.sh` wrote them before, so on a
