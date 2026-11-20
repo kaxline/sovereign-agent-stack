@@ -25,22 +25,27 @@ source "$ROOT/scripts/lib/data-root.sh"
 DATA_ROOT_RAW="${ASSISTANT_DATA_ROOT:-$(env_get ASSISTANT_DATA_ROOT ./data)}"
 DATA_ROOT="$(expand_user_path "$DATA_ROOT_RAW")"
 
-# doctor_py [--mount PATH]... ARGS...: python3 for doctor's checks. stack_python
-# in the pinned Hermes image when it is pulled, else the host's python3 when
-# there is one (Docker down), else nothing: the call fails and the check
-# reports what it would on a failed read. STACK_PYTHON=host forces the host.
-if [[ "${STACK_PYTHON:-}" == host ]]; then
-  DOCTOR_PY=host
-elif docker image inspect "$(stack_hermes_image)" >/dev/null 2>&1; then
-  DOCTOR_PY=image
-elif (STACK_PYTHON=host stack_python -c '') >/dev/null 2>&1; then
-  DOCTOR_PY=host
-else
-  DOCTOR_PY=none
-fi
+# doctor_py [--mount PATH]... ARGS...: python3 for doctor's checks. The host's
+# python3 when it works (fastest: the project-index checks walk source trees,
+# which is slow through bind mounts), else stack_python in the pinned Hermes
+# image when it is pulled, else nothing: the call fails and the check reports
+# what it would on a failed read. STACK_PYTHON=host or STACK_PYTHON=image
+# forces one.
+case "${STACK_PYTHON:-}" in
+  host | image) DOCTOR_PY="$STACK_PYTHON" ;;
+  *)
+    if (STACK_PYTHON=host stack_python -c '') >/dev/null 2>&1; then
+      DOCTOR_PY=host
+    elif docker image inspect "$(stack_hermes_image)" >/dev/null 2>&1; then
+      DOCTOR_PY=image
+    else
+      DOCTOR_PY=none
+    fi
+    ;;
+esac
 doctor_py() {
   case "$DOCTOR_PY" in
-    image) stack_python "$@" ;;
+    image) STACK_PYTHON='' stack_python "$@" ;;
     host) STACK_PYTHON=host stack_python "$@" ;;
     *) return 1 ;;
   esac
