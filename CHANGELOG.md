@@ -21,6 +21,14 @@ the stack under another app.
   the LightRAG and embedding model keys `setup.sh` writes beside `LLM_*`. A
   client that wrote them to `.env` directly can move them to `env.sh`, inside
   the config lock.
+- `scripts/status.sh --json` prints its JSON with the container engine down
+  or the Hermes image not pulled (CR 0037 R7). It used to run its JSON
+  builder in the Hermes image whatever the engine's state, so it printed
+  nothing and exited non-zero. It now uses the image only when the engine is
+  up and has it, then the host's `python3` 3.9 or later, then awk, which
+  needs no Python. With the engine up but neither the image nor `python3`,
+  `engine` is true and every `state` is `unknown`. With the engine up and
+  the image pulled, the output is unchanged.
 - `make doctor` no longer needs `python3` on the host. Its Python checks use
   the host's `python3` when it works and otherwise run in the pinned Hermes
   image through `stack_python`, and its YAML checks share one reader,
