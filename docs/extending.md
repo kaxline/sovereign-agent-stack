@@ -726,7 +726,11 @@ ports are the ones the engine published; a stopped one's come from the compose
 config. `health` appears when the service has a healthcheck and is running.
 
 The script reads no secrets and changes nothing. It needs the compose CLI but
-not a running stack.
+not a running stack, the Hermes image or a host `python3`. It builds the JSON
+in the pinned Hermes image when the engine is up and has it, else on the
+host's `python3` 3.9 or later, else with awk. The awk path can't read
+container states, so on a host whose engine is up but has neither the image
+nor `python3`, `engine` is true and every `state` is `unknown`.
 
 ## Credentials
 
