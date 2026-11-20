@@ -486,8 +486,7 @@ grep -q 'api-token' "${ROOT}/scripts/setup.sh" \
 # own networks now, so the subcommand, the helper and every call site are gone.
 reset_stub
 run follow-hermes && fail "follow-hermes must fail as an unknown command"
-grep -q 'follow_hermes' "${ROOT}/scripts/lib/bitwarden.sh" && fail "the follow_hermes helper is gone"
-for f in "${ROOT}"/Makefile "${ROOT}"/scripts/*.sh; do
+for f in "${ROOT}"/Makefile "${ROOT}"/scripts/*.sh "${ROOT}"/scripts/lib/*.sh; do
   case "$(basename "$f")" in test-*) continue ;; esac
   grep -q 'follow-hermes\|follow_hermes' "$f" && fail "$(basename "$f") still follows hermes"
 done

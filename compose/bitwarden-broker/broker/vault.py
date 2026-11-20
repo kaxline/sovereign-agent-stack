@@ -36,12 +36,8 @@ class ItemMeta:
     item_id: str
     in_page_fill: bool = False
     idp_origins: tuple[str, ...] = ()
-    # The item's first fill URI as the person wrote it, so a sign-in opens the
-    # page it names (https://host/login), not the site root. Its origin is
-    # origins[0], so it passes the signer's check.
-    first_uri: str | None = None
     # Every fill URI as the person wrote it, in stored order, for the sign-in
-    # ladder (signin.py:_open). first_uri is uris[0] when there is one.
+    # ladder (signin.py:_open).
     uris: tuple[str, ...] = ()
 
 
@@ -76,11 +72,6 @@ def fill_origins(uris: list[dict]) -> tuple[str, ...]:
         if origin not in out:
             out.append(origin)
     return tuple(out)
-
-
-def first_fill_uri(uris: list[dict]) -> str | None:
-    """The first fill URI whole, path and query kept; its origin is ``fill_origins``' first."""
-    return next((uri for uri, _ in _fill_uris(uris)), None)
 
 
 class Denylist:
@@ -156,7 +147,7 @@ class Vault:
                 handle=handle, label=item["name"] or item_origins[0], username=item["username"] or None,
                 origins=item_origins, has_totp=item["has_totp"], account=slug, item_id=item["id"],
                 in_page_fill=item["in_page_fill"], idp_origins=tuple(item["idp_origins"]),
-                first_uri=first_fill_uri(item["uris"]), uris=fill_uri_list(item["uris"]),
+                uris=fill_uri_list(item["uris"]),
             ))
         return out
 

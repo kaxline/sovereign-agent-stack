@@ -10,8 +10,6 @@ cd "$ROOT"
 source "$ROOT/scripts/lib/env.sh"
 # shellcheck source=lib/hermes-yaml.sh
 source "$ROOT/scripts/lib/hermes-yaml.sh"
-# shellcheck source=lib/bitwarden.sh
-source "$ROOT/scripts/lib/bitwarden.sh"
 
 MODEL=""
 FROM_LMSTUDIO=0

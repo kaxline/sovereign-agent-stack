@@ -431,7 +431,7 @@ async def _connected(endpoint, budget, cleanup):
                 open_timeout=budget, close_timeout=cleanup, ping_interval=None, logger=_WS_LOGGER,
             )
             break
-        except (OSError, asyncio.TimeoutError, Exception):  # noqa: BLE001 - try the next address
+        except Exception:  # noqa: BLE001 - try the next address
             sock.close()
             continue
         except BaseException:

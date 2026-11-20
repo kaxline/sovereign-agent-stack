@@ -761,7 +761,7 @@ def test_429_backoff() -> None:
             expect_bw_error(run, bw.sync, "rate_limited", "sync during backoff")
             expect(len(run.log_lines()) == calls, "sync during backoff ran bw")
             expect(v.items() == first, "items served from the last list during backoff")
-            expect(bw.list_items() == cached, "list_items during backoff")
+            expect(bw.cached_items() == cached, "the cached list survives the backoff")
             expect(len(run.log_lines()) == calls, "listing during backoff ran bw")
             expect(bw.state == "unlocked" and bw.error_class == "rate_limited", f"{bw.state}/{bw.error_class}")
             run.expect_clean(out.getvalue())
@@ -812,8 +812,9 @@ def test_exception_context_holds_no_secrets() -> None:
         data = json.loads(run.vault_file.read_text(encoding="utf-8"))
         data["truncate_lists"] = True
         run.vault_file.write_text(json.dumps(data), encoding="utf-8")
-        exc = expect_bw_error(run, bw.list_items, "unknown", "truncated list JSON")
+        exc = expect_bw_error(run, bw.sync, "unknown", "truncated list JSON")
         expect(ITEM_PASSWORDS["A"] not in reachable_text(exc), "bw list output reachable from BwError")
+        expect(len(bw.cached_items()) == 4, "a sync with a truncated list keeps the last list")
 
         failed = run.bw(run.account("wrong", master=WRONG_PASSWORD))
         failed.login()

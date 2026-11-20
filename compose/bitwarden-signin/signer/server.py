@@ -44,6 +44,7 @@ DEFAULT_SOCKET = "/run/bitwarden-signin/signin.sock"
 DEFAULT_IDLE_MINUTES = 5.0
 DEFAULT_ACTION_SECONDS = 30.0
 MAX_BODY = 64 * 1024
+MAX_DRAIN = 1 << 20  # a larger unread body is left; the client may see a reset
 MAX_ORIGINS = 64
 MAX_TEXT = 4096
 MAX_URL = 8192
@@ -262,6 +263,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _dispatch(self) -> None:
         self._route = None
+        self._body_read = False
         code = None
         try:
             path = urlsplit(self.path).path
@@ -283,10 +285,26 @@ class _Handler(BaseHTTPRequestHandler):
             status, payload = 200, self.server.signer.handle(path, body)
         except HttpError as exc:
             status, payload, code = exc.status, {"error": exc.code}, exc.code
+            if not self._body_read:
+                self._drain()
         except Exception as exc:  # noqa: BLE001 - the text could hold anything; only the type is logged
             LOG.warning("%s %s failed (%s)", self.command, self._route, type(exc).__name__)
             status, payload, code = 500, {"error": "internal"}, "internal"
         self._send(status, payload, code)
+
+    def _drain(self) -> None:
+        """Read a body the request was refused before reading, so closing does not reset the connection."""
+        if self.headers.get("Transfer-Encoding"):
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or "0")
+        except ValueError:
+            return
+        if 0 < length <= MAX_DRAIN:
+            try:
+                self.rfile.read(length)
+            except OSError:
+                pass
 
     do_GET = do_POST = do_PUT = do_DELETE = do_PATCH = do_HEAD = do_OPTIONS = _dispatch
 
@@ -301,6 +319,7 @@ class _Handler(BaseHTTPRequestHandler):
             raise HttpError("bad_request")
         if length > MAX_BODY:
             raise HttpError("too_large")
+        self._body_read = True
         raw = self.rfile.read(length) if length else b""
         if len(raw) != length:
             raise HttpError("bad_request")

@@ -1631,9 +1631,6 @@ cmd_restore() {
     ensure_store_dir
     cp -Rp "${dir}/instances/." "$(store_dir)/instances/"
   fi
-  # A backup from before the instance store has accounts/<slug>.env, which nothing reads now.
-  [[ ! -d "${dir}/accounts" ]] \
-    || log "${dir}/accounts holds account files from an earlier version, which are not read any more; connect those accounts again (make vault-add)"
   log "Restored from ${dir}. Next: make up"
 }
 

@@ -9,8 +9,6 @@ cd "$ROOT"
 source "${ROOT}/scripts/lib/env.sh"
 # shellcheck source=lib/data-root.sh
 source "${ROOT}/scripts/lib/data-root.sh"
-# shellcheck source=lib/bitwarden.sh
-source "${ROOT}/scripts/lib/bitwarden.sh"
 
 DATA_ROOT="$(resolve_data_root_path "")"
 REGISTRY="${DATA_ROOT}/corpora/registry.json"

@@ -41,7 +41,6 @@ LOG = logging.getLogger("broker.signin")
 
 HANDOVER_TIMEOUT = 10.0
 ROUNDS = 4
-MAX_URL = 8192  # the signer refuses a longer one (signer/server.py)
 # Snapshot roles, lowercased: the signer's field roles (signer/snapshot.py) and
 # the roles Chromium gives a button.
 FIELD_ROLES = {"textbox", "searchbox", "combobox", "spinbutton", "textfield"}
@@ -63,10 +62,9 @@ STATUS = {
 }
 # Codes the signer raises after ending its own session.
 ENDED_BY_SIGNER = ("timeout", "page_error")
-# Codes that leave the session usable, so the agent can go on, retry or cancel.
-# A candidate the signer would not load: try the next one rather than give up.
+# Codes for a candidate the signer would not load: try the next one rather than give up.
 _LADDER_MISS = ("page_error", "origin_mismatch")
-
+# Codes that leave the session usable, so the agent can go on, retry or cancel.
 KEEPS_SESSION = ("origin_mismatch", "stale_ref", "not_a_secret_field", "no_totp", "handover_refused")
 
 

@@ -444,18 +444,6 @@ class Bw:
             self._error_class = ""
             self._refresh()
 
-    def list_items(self) -> list[dict]:
-        """List login-item metadata within the account's scope, without passwords or TOTP seeds.
-
-        During a 429 backoff this returns the last list without running bw.
-        """
-        with self._lock:
-            if self._session is None:
-                raise self._fail("locked")
-            if self._items is not None and self.retry_at is not None and time.monotonic() < self.retry_at:
-                return [dict(i) for i in self._items]
-            return self._refresh()
-
     def _get(self, what: str, item_id: str) -> str:
         if not isinstance(item_id, str) or not ID_RE.fullmatch(item_id):
             raise BwError("unknown")

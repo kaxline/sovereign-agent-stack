@@ -670,6 +670,42 @@ def test_bad_requests():
     expect((status, body) == (404, {"error": "not_found"}), f"unknown route: {status} {body}")
 
 
+def raw_call(sock_path, request_line, body):
+    """Send the headers, wait until the signer has answered them, then send the body.
+
+    A signer that answers without reading the body closes first, so the body
+    write fails (BrokenPipe) or the reply is reset.
+    """
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(30)
+    s.connect(sock_path)
+    try:
+        s.sendall(f"{request_line} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n"
+                  f"Content-Length: {len(body)}\r\n\r\n".encode())
+        time.sleep(0.3)
+        s.sendall(body)
+        raw = b""
+        while chunk := s.recv(65536):
+            raw += chunk
+    finally:
+        s.close()
+    head, _, payload = raw.partition(b"\r\n\r\n")
+    return int(head.split()[1]), json.loads(payload)
+
+
+def test_refused_bodies_are_read():
+    pad = json.dumps({"pad": "x" * 100}).encode()
+    big = json.dumps({"pad": "x" * (100 * 1024)}).encode()
+    for line, body, want in (("POST /nope", pad, (404, {"error": "not_found"})),
+                             ("PUT /session/open", pad, (405, {"error": "method_not_allowed"})),
+                             ("POST /session/open", big, (413, {"error": "too_large"}))):
+        try:
+            got = raw_call(SOCK, line, body)
+        except OSError as exc:
+            fail(f"{line}: the signer closed before reading the body ({type(exc).__name__})")
+        expect(got == want, f"{line}: {got}")
+
+
 def profiles():
     return glob.glob(PROFILES)
 
@@ -752,7 +788,8 @@ def test_config_rejects_invalid():
 
 
 for test in (test_config_rejects_invalid, test_start_never_disables_sandbox, test_health_and_socket_mode,
-             test_end_without_session, test_bad_requests, test_open_snapshot_has_no_values,
+             test_end_without_session, test_bad_requests, test_refused_bodies_are_read,
+             test_open_snapshot_has_no_values,
              test_fill_password_then_snapshot_scrubbed, test_fill_refuses_text_input,
              test_type_refuses_password_input, test_fill_totp_targets, test_origin_mismatch_after_redirect,
              test_stale_ref, test_navigate_without_a_session_is_no_session, test_navigate_moves_an_open_session,

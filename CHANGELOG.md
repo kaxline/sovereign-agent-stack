@@ -30,6 +30,14 @@ the stack under another app.
   root as the rest of doctor. Before, it read `.env` itself, so a `~/` root or
   an exported `ASSISTANT_DATA_ROOT` sent it to the wrong directory and it
   reported no workspaces.
+- `scripts/vault.sh restore` no longer looks for the `accounts/` folder of
+  Bitwarden backups made before the instance store, and no longer prints a
+  note telling you to connect those accounts again. It ignores the folder; it
+  never restored from it.
+- The Bitwarden sign-in signer reads the body of a request it refuses (unknown
+  route, wrong method, body over 64 KiB) before it answers, up to 1 MiB.
+  Before, a client still sending the body could get a broken pipe
+  or a reset instead of the error reply.
 
 ## v0.3.17 — 2026-11-20
 
