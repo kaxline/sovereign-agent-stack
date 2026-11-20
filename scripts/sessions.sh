@@ -19,22 +19,31 @@
 # already present is skipped, so a second import of the same export imports
 # nothing. A session deleted on the target is refused, one over Hermes'
 # per-session limits (10,000 messages or 5 MB) is too_large, and a child whose
-# parent is in neither the target nor the export is imported detached.
+# parent is in neither the target nor the export is imported detached. A
+# session whose title the target, or an earlier session in the import, already
+# holds is imported under that title plus " (<last 12 characters of its id>)"
+# and counted as renamed (titles are unique in a Hermes store).
+#
+# Each id read appears in exactly one of an import line's first six id lists
+# (a repeated id also in invalid_ids); renamed_ids is a subset of imported_ids. The manifest's profile entries carry
+# session_ids, so the sessions of a profile_missing profile can be named too.
 #
 # --json prints JSON lines (docs/extending.md "JSON lines") holding counts and
 # session ids only, never titles or message text:
 #
 #   {"phase":"profile","profile":P,"sessions":N,"messages":M}          export
 #   {"phase":"profile","profile":P,"sessions":N,"imported":N,"skipped":N,
-#    "detached":N,"refused":N,"too_large":N,"invalid":N,"failed":N,
-#    "refused_ids":[...],"too_large_ids":[...],"invalid_ids":[...],
-#    "failed_ids":[...]}                                               import
+#    "detached":N,"renamed":N,"refused":N,"too_large":N,"invalid":N,
+#    "failed":N,"imported_ids":[...],"skipped_ids":[...],"refused_ids":[...],
+#    "too_large_ids":[...],"invalid_ids":[...],"failed_ids":[...],
+#    "renamed_ids":[...]}                                              import
 #   {"phase":"profile","profile":P,"sessions":N,"status":"profile_missing"}
 #   {"phase":"done","action":"export","dest":DIR,"sessions":N,"messages":M}
 #   {"phase":"done","action":"import","imported":N,...,"profile_missing":[P]}
 #
-# or {"phase":"error",...} with bad_input (exit 2), hermes_not_running or
-# command_failed (exit 4). An import whose done line has failed > 0 exits 1.
+# or {"phase":"error",...} with bad_input (exit 2), hermes_not_running
+# (exit 1) or command_failed (exit 4). An import whose done line has
+# failed > 0 exits 1.
 #
 # bash 3.2 compatible.
 set -euo pipefail
@@ -133,7 +142,7 @@ cmd_export() {
   mkdir -p "$DEST" || fail command_failed "cannot create ${DEST}"
   chmod 700 "$DEST"
 
-  local name entries="" total_s=0 total_m=0 summary s m found=0
+  local name entries="" total_s=0 total_m=0 summary s m ids found=0
   while IFS= read -r name; do
     if [[ -z "$name" ]] || ! selected "$name"; then continue; fi
     found=$((found + 1))
@@ -145,9 +154,12 @@ cmd_export() {
     [[ -n "$summary" ]] || { cat "${TMP}/err" >> "$LOG"; fail command_failed "export of profile ${name} gave no summary"; }
     s="$(num sessions "$summary")"
     m="$(num messages "$summary")"
+    # The JSON list after "session_ids", the summary's last key.
+    ids="$(printf '%s' "$summary" | sed -n 's/.*,"session_ids":\(\[.*\]\)}$/\1/p')"
+    [[ -n "$ids" ]] || { cat "${TMP}/err" >> "$LOG"; fail command_failed "export of profile ${name} gave no session ids"; }
     total_s=$((total_s + s))
     total_m=$((total_m + m))
-    entries="${entries:+${entries},}{\"name\":$(jl_str "$name"),\"file\":$(jl_str "${name}.jsonl"),\"sessions\":${s},\"messages\":${m}}"
+    entries="${entries:+${entries},}{\"name\":$(jl_str "$name"),\"file\":$(jl_str "${name}.jsonl"),\"sessions\":${s},\"messages\":${m},\"session_ids\":${ids}}"
     jl_emit "{\"phase\":\"profile\",\"profile\":$(jl_str "$name"),\"sessions\":${s},\"messages\":${m}}"
     say "${name}: ${s} session(s), ${m} message(s)"
   done <<< "$names"
@@ -172,7 +184,7 @@ cmd_import() {
   names="$(target_profiles)" || exit $?
 
   local name file count line missing="" k
-  local imported=0 skipped=0 detached=0 refused=0 too_large=0 invalid=0 failed=0
+  local imported=0 skipped=0 detached=0 renamed=0 refused=0 too_large=0 invalid=0 failed=0
   while IFS=$'\t' read -r name file count; do
     if [[ -z "$name" ]] || ! selected "$name"; then continue; fi
     STEP="$name"
@@ -188,14 +200,14 @@ cmd_import() {
     [[ "$line" == '{"phase":"profile"'* ]] \
       || fail command_failed "import into profile ${name} gave no result"
     jl_emit "$line"
-    for k in imported skipped detached refused too_large invalid failed; do
+    for k in imported skipped detached renamed refused too_large invalid failed; do
       eval "$k=\$(( $k + $(num "$k" "$line") ))"
     done
-    say "${name}: $(num imported "$line") imported, $(num skipped "$line") skipped, $(num refused "$line") refused, $(num too_large "$line") too large, $(num failed "$line") failed"
+    say "${name}: $(num imported "$line") imported (renamed $(num renamed "$line")), $(num skipped "$line") skipped, $(num refused "$line") refused, $(num too_large "$line") too large, $(num failed "$line") failed"
   done <<< "$plan"
   STEP=""
 
-  jl_done "\"action\":\"import\",\"imported\":${imported},\"skipped\":${skipped},\"detached\":${detached},\"refused\":${refused},\"too_large\":${too_large},\"invalid\":${invalid},\"failed\":${failed},\"profile_missing\":[${missing}]"
+  jl_done "\"action\":\"import\",\"imported\":${imported},\"skipped\":${skipped},\"detached\":${detached},\"renamed\":${renamed},\"refused\":${refused},\"too_large\":${too_large},\"invalid\":${invalid},\"failed\":${failed},\"profile_missing\":[${missing}]"
   say "Imported ${imported} session(s), skipped ${skipped}"
   [[ "$failed" -eq 0 ]] || exit 1
 }

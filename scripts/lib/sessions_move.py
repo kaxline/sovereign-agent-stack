@@ -17,6 +17,18 @@ present ids are skipped, ids deleted here are refused, and sessions over
 Hermes' per-session limits are reported as too_large. Parents go before their
 children, so a child whose parent landed in an earlier batch still attaches.
 
+Titles are unique in a store, and import_sessions inserts them unchanged, so
+one clash raises and rolls back the whole call. A session whose title the
+target or an earlier session in the import already holds gets the suffix
+Hermes' own import paths use, " (<last 12 characters of the id>)", and is
+counted as renamed once imported. A batch that still raises is retried one
+session at a time, so only the sessions that raise again are failed.
+
+The import's profile line lists every id it read under exactly one of
+imported_ids, skipped_ids, refused_ids, too_large_ids, invalid_ids and
+failed_ids (a repeated id is also in invalid_ids); renamed_ids is a subset
+of imported_ids. export's summary lists the ids it wrote, for the manifest.
+
 Only counts and session ids reach stdout; titles and message text never do.
 Anything Hermes prints while working goes to stderr.
 """
@@ -68,6 +80,7 @@ def cmd_export(name):
     out = _real_stdout()
     path = _db_path(name)
     sessions = messages = 0
+    ids = []
     if path.is_file():
         from hermes_state import SessionDB
         db = SessionDB(db_path=path, read_only=True)
@@ -76,10 +89,13 @@ def cmd_export(name):
                 out.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
                 sessions += 1
                 messages += len(row.get("messages") or [])
+                ids.append(str(row.get("id") or ""))
         finally:
             db.close()
     out.flush()
-    print(SUMMARY_TAG + json.dumps({"sessions": sessions, "messages": messages}, separators=(",", ":")), file=sys.stderr)
+    # session_ids last: sessions.sh takes everything after it as the list.
+    summary = {"sessions": sessions, "messages": messages, "session_ids": ids}
+    print(SUMMARY_TAG + json.dumps(summary, ensure_ascii=False, separators=(",", ":")), file=sys.stderr)
 
 
 def _measure(raw):
@@ -108,6 +124,19 @@ def _parents_first(items):
     return ordered
 
 
+def _free_title(title, sid, taken, max_len):
+    """TITLE, or with the id-tail suffix (cut to fit MAX_TITLE_LENGTH, as
+    import_moved_session does) when TAKEN already holds it."""
+    if not isinstance(title, str) or title not in taken:
+        return title
+    suffix = f" ({sid[-12:]})"
+    renamed = title[:max_len - len(suffix)] + suffix
+    if renamed in taken:  # the suffixed title is taken too: fall back to the whole id
+        suffix = f" ({sid})"
+        renamed = title[:max(0, max_len - len(suffix))] + suffix
+    return renamed
+
+
 def _batches(items, db):
     batch, nbytes, nmsgs = [], 0, 0
     for sid, raw, size in items:
@@ -126,8 +155,9 @@ def _batches(items, db):
 def cmd_import(name):
     out = _real_stdout()
     result = {"phase": "profile", "profile": name, "sessions": 0, "imported": 0, "skipped": 0,
-              "detached": 0, "refused": 0, "too_large": 0, "invalid": 0, "failed": 0,
-              "refused_ids": [], "too_large_ids": [], "invalid_ids": [], "failed_ids": []}
+              "detached": 0, "renamed": 0, "refused": 0, "too_large": 0, "invalid": 0, "failed": 0,
+              "imported_ids": [], "skipped_ids": [], "refused_ids": [], "too_large_ids": [],
+              "invalid_ids": [], "failed_ids": [], "renamed_ids": []}
 
     def add(kind, sid):
         result[kind] += 1
@@ -158,15 +188,20 @@ def cmd_import(name):
     try:
         pending = []
         with db._read_ctx() as conn:
+            taken = {r[0] for r in conn.execute("SELECT title FROM sessions WHERE title IS NOT NULL")}
             for sid, raw in rows:
                 if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (sid,)).fetchone():
-                    result["skipped"] += 1
+                    add("skipped", sid)
                 elif retired_in(conn, sid):
                     add("refused", sid)
                 else:
                     pending.append((sid, raw))
-        sized = []
+        sized, renamed = [], set()
         for sid, raw in _parents_first(pending):
+            title = _free_title(raw.get("title"), sid, taken, db.MAX_TITLE_LENGTH)
+            clash = title != raw.get("title")
+            if clash:
+                raw = {**raw, "title": title}
             try:
                 size = _measure(raw)
             except (TypeError, ValueError):
@@ -175,30 +210,44 @@ def cmd_import(name):
             if (size > db._IMPORT_MAX_SESSION_BYTES
                     or len(raw.get("messages") or []) > db._IMPORT_MAX_MESSAGES_PER_SESSION):
                 add("too_large", sid)
-            else:
-                sized.append((sid, raw, size))
+                continue
+            if isinstance(title, str):
+                taken.add(title)
+            if clash:
+                renamed.add(sid)
+            sized.append((sid, raw, size))
         for batch in _batches(sized, db):
-            _import_batch(db, batch, result, add)
+            _import_batch(db, batch, result, add, renamed)
     finally:
         db.close()
     out.write(json.dumps(result, separators=(",", ":")) + "\n")
     out.flush()
 
 
-def _import_batch(db, batch, result, add):
+def _import_batch(db, batch, result, add, renamed=frozenset()):
     """import_sessions on BATCH; entries it rejects as invalid are dropped and
-    the rest retried once. Any other refusal fails the batch."""
+    the rest retried once. A batch of more than one session that raises is
+    retried one session at a time. Any other refusal fails the batch. Ids in
+    RENAMED that get imported are counted as renamed."""
     for attempt in (1, 2):
         try:
             res = db.import_sessions([raw for _, raw in batch])
-        except Exception as exc:  # sqlite lock timeout, a cap we mismeasured
+        except Exception as exc:  # sqlite lock timeout, a cap we mismeasured, a constraint
             print(f"import batch failed: {type(exc).__name__}", file=sys.stderr)
+            if len(batch) > 1:
+                for item in batch:
+                    _import_batch(db, [item], result, add, renamed)
+                return
             for sid, _ in batch:
                 add("failed", sid)
             return
         if res.get("ok"):
-            result["imported"] += res.get("imported", 0)
-            result["skipped"] += res.get("skipped", 0)
+            for sid in res.get("imported_ids") or []:
+                add("imported", sid)
+                if sid in renamed:
+                    add("renamed", sid)
+            for sid in res.get("skipped_ids") or []:  # created here since the id check
+                add("skipped", sid)
             result["detached"] += res.get("detached", 0)
             return
         bad = {err["index"] for err in res.get("errors") or [] if isinstance(err, dict) and "index" in err}

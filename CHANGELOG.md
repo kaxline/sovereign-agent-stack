@@ -10,6 +10,24 @@ the stack under another app.
 
 ### Changes
 
+- `scripts/sessions.sh import` no longer fails a whole batch when a session's
+  title is already in the target (CR 0039 R5). Hermes keeps titles unique, so
+  one clash rolled back up to 500 sessions, and running the import again
+  failed the same way. Such a session is now imported under its title plus
+  ` (<last 12 characters of the id>)` and listed under the new `renamed` and
+  `renamed_ids` fields of the profile line (`renamed` also in the done line).
+  A batch that still raises is retried one session at a time.
+- `scripts/sessions.sh` names the sessions it moves (CR 0039 R6). Each
+  profile entry in an export's `manifest.json` lists its `session_ids`, and
+  each import profile line adds `imported_ids` and `skipped_ids`, so with the
+  existing error lists every id in the manifest is accounted for, including
+  the sessions of a `profile_missing` profile.
+- `make doctor` and the upgrade hooks read on/off flags with one rule, the
+  add-on manifest's: `1`, `true`, `yes` or `on` in any case. Before, doctor
+  took `on` only for `MAIL_MCP_ENABLED` and `MAIL_DRAFTS_ENABLED`, and took
+  `True` (mixed case) only for those two, Signal, Buzz and OpenCode. So
+  `HERMES_SIGNAL_ENABLED=on` or `VIKUNJA_MCP_ENABLED=True` now turn on doctor's
+  Signal and Vikunja checks, as they already turned on the add-ons.
 - `addon.sh enable twenty` generates `TWENTY_ENCRYPTION_KEY` and
   `TWENTY_DB_PASSWORD` when `.env` has none (CR 0043), and `enable vikunja`
   generates `VIKUNJA_SECRET`. Only `setup.sh` wrote them before, so on a
@@ -21,6 +39,14 @@ the stack under another app.
   the LightRAG and embedding model keys `setup.sh` writes beside `LLM_*`. A
   client that wrote them to `.env` directly can move them to `env.sh`, inside
   the config lock.
+- `scripts/status.sh --json` prints its JSON with the container engine down
+  or the Hermes image not pulled (CR 0037 R7). It used to run its JSON
+  builder in the Hermes image whatever the engine's state, so it printed
+  nothing and exited non-zero. It now uses the image only when the engine is
+  up and has it, then the host's `python3` 3.9 or later, then awk, which
+  needs no Python. With the engine up but neither the image nor `python3`,
+  `engine` is true and every `state` is `unknown`. With the engine up and
+  the image pulled, the output is unchanged.
 - `make doctor` no longer needs `python3` on the host. Its Python checks use
   the host's `python3` when it works and otherwise run in the pinned Hermes
   image through `stack_python`, and its YAML checks share one reader,
@@ -29,6 +55,22 @@ the stack under another app.
   those are repo tests, which `make test` and CI run, and without `python3`
   they were reported as failures. On a host with neither the image nor
   `python3`, doctor warns once and skips the checks that read Hermes config.
+- The `bitwarden_signin` volume's options are `mode=1777,size=1m` (CR 0042
+  R2), without `uid=` and `gid=`. Podman drops both from a local volume's
+  options and mounts the tmpfs root-owned at 0700, so the signer could not
+  create its socket. The signer still creates `signin.sock` mode 0600 as
+  `HERMES_UID`, and the sticky bit stops another user from removing it. The
+  volume's owner no longer follows `HERMES_UID`, so changing it no longer
+  leaves an old owner behind. An existing `bitwarden_signin` volume keeps its
+  old options until it is removed (`docker compose rm -sf bitwarden-signin
+  bitwarden-broker`, then `docker volume rm` on the project's
+  `bitwarden_signin` volume): compose asks before
+  recreating it, and keeps the old one with no terminal. On Docker the old
+  volume still works. Its only contents are the socket, so removing it loses
+  nothing. `context=` for SELinux is not set, because a kernel without SELinux
+  refuses it; an app that adds it on Podman keeps doing so.
+  `scripts/test-compose-tmpfs-options.py` now also checks the options of every
+  named volume of type `tmpfs`.
 - opencode-mcp: `coding_wait_for_task` returns once the task has finished.
   Before, waiting on a completed or failed task never returned, because the
   wait took the task lock twice and called another tool directly. opencode-mcp

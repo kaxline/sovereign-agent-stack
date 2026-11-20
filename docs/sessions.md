@@ -20,7 +20,8 @@ the script's header (`scripts/sessions.sh --help`).
 
 `export` writes one `<profile>.jsonl` per profile, `default` for the store at
 the Hermes home, plus `manifest.json` with each file's session and message
-counts, the stack version and the Hermes image. The destination must be empty
+counts and session ids (`session_ids`), the stack version and the Hermes
+image. The destination must be empty
 or new. Each line is one session from `SessionDB.export_all(include_inactive=True)`,
 the shape `hermes sessions export --format jsonl` writes: every stored message
 row with its `active` and `compacted` flags, so turns that compaction archived
@@ -45,10 +46,23 @@ keyed by session id still applies. Per profile it reports:
   rows or 5 MB. They can't be imported at all.
 - `detached`: children whose parent is in neither the target nor the export;
   they're imported as top-level sessions.
+- `renamed`: imported sessions whose title the target, or an earlier session
+  in the same import, already held. Titles are unique in a Hermes store, so
+  the import adds ` (<last 12 characters of the id>)`, as Hermes' own import
+  paths do, cut to fit the 100-character title limit. `renamed_ids` lists them.
 - `invalid`: lines that aren't a session, or that Hermes rejects.
-- `failed`: sessions in a batch that failed for another reason, such as a
-  write lock held past Hermes' retry. The run exits 1 when any failed; run it
-  again to retry them.
+- `failed`: sessions that failed for another reason, such as a write lock
+  held past Hermes' retry. A batch that raises is retried one session at a
+  time, so only the sessions that fail again are counted. The run exits 1
+  when any failed; run it again to retry them.
+
+Each count except `detached` and `renamed` comes with an id list
+(`imported_ids`, `skipped_ids`, `refused_ids`, `too_large_ids`,
+`invalid_ids`, `failed_ids`), and every session id the import read is in
+exactly one of them, so together they account for every id in the
+profile's manifest entry. A line with no id counts as `invalid` without an
+entry in `invalid_ids`, and a second line with an id already read is listed
+in `invalid_ids` as well as wherever the first one went.
 
 A profile the target doesn't have is skipped and reported with
 `"status":"profile_missing"` and its session count. Its sessions never go into

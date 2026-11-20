@@ -59,15 +59,8 @@ export PATH="$tmp/bin:$PATH"
 # The doctor.sh helpers the block uses.
 cat > "$tmp/harness.sh" <<'SH'
 set -euo pipefail
-ok() { printf '  OK  %s\n' "$1"; }
-bad() { printf ' FAIL %s\n' "$1"; }
-warn() { printf ' WARN %s\n' "$1"; }
-env_get() {
-  local val=""
-  [[ -f .env ]] && val="$(grep -E "^${1}=" .env | head -1 | cut -d= -f2- || true)"
-  echo "${val:-${2:-}}"
-}
-has_profile() { [[ ",$(env_get COMPOSE_PROFILES core)," == *",$1,"* ]]; }
+# shellcheck source=lib/doctor-kit.sh
+source "${ROOT}/scripts/lib/doctor-kit.sh"
 # shellcheck source=lib/doctor-actual.sh
 source "${ROOT}/scripts/lib/doctor-actual.sh"
 doctor_actual

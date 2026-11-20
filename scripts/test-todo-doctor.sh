@@ -17,14 +17,8 @@ mkdir -p "$work/data/hermes/profiles/api-server" "$work/data/hermes/profiles/bro
 
 cat > "$tmp/harness.sh" <<'SH'
 set -euo pipefail
-ok() { printf '  OK  %s\n' "$1"; }
-bad() { printf ' FAIL %s\n' "$1"; }
-warn() { printf ' WARN %s\n' "$1"; }
-env_get() {
-  local val=""
-  [[ -f .env ]] && val="$(grep -E "^${1}=" .env | head -1 | cut -d= -f2- || true)"
-  echo "${val:-${2:-}}"
-}
+# shellcheck source=lib/doctor-kit.sh
+source "${ROOT}/scripts/lib/doctor-kit.sh"
 # shellcheck source=lib/doctor-todo.sh
 source "${ROOT}/scripts/lib/doctor-todo.sh"
 todo_profile_checks

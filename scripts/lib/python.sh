@@ -1,6 +1,12 @@
 # Python for stack scripts: in the Hermes image (stack_python), or a host python3 check.
 # Source from repo-root scripts:  source "${ROOT}/scripts/lib/python.sh"
 
+# True when python3 on PATH runs and is 3.9 or later.
+python3_usable() {
+  command -v python3 >/dev/null 2>&1 \
+    && python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1
+}
+
 # Fails unless a working python3 >= 3.9 is on PATH. Runs the interpreter
 # instead of trusting command -v: on a Mac without the Command Line Tools,
 # /usr/bin/python3 is a stub that opens an install dialog and exits non-zero.
@@ -10,7 +16,7 @@ require_python3() {
     printf 'error: python3 not found. %s\n' "$hint" >&2
     exit 1
   fi
-  if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1; then
+  if ! python3_usable; then
     printf 'error: python3 is missing, a stub, or older than 3.9 (%s). %s\n' \
       "$(command -v python3)" "$hint" >&2
     exit 1

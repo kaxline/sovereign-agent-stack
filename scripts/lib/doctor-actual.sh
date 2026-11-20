@@ -1,11 +1,7 @@
 # make doctor's Actual Budget block. Sourced by scripts/doctor.sh, which
-# provides ok, warn, bad, env_get and has_profile and runs from the repo root;
-# scripts/test-actual-doctor.sh runs it against stubs.
+# runs from the repo root and provides the helpers in doctor-kit.sh;
+# scripts/test-actual-doctor.sh sources doctor-kit.sh and runs it against stubs.
 # shellcheck shell=bash
-
-actual_is_true() {
-  case "$1" in 1 | true | TRUE | yes | YES) return 0 ;; *) return 1 ;; esac
-}
 
 # Health of a compose service: healthy, starting, a state, or empty when it
 # isn't running.
@@ -63,9 +59,9 @@ actual_has_rows() {
 }
 
 doctor_actual() {
-  actual_is_true "$(env_get ACTUAL_MCP_ENABLED 0)" || return 0
+  env_true ACTUAL_MCP_ENABLED || return 0
   local local_on=0
-  actual_is_true "$(env_get ACTUAL_LOCAL_ENABLED 0)" && local_on=1
+  env_true ACTUAL_LOCAL_ENABLED && local_on=1
   echo
   echo "--- Budget (Actual) ---"
 
