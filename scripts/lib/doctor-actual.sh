@@ -47,7 +47,7 @@ SH
 # exists. The data root is resolved as budget.sh does, BUDGET_DATA_ROOT first.
 actual_has_rows() {
   (
-    # shellcheck source=data-root.sh
+    # shellcheck source=lib/data-root.sh
     source "${ROOT}/scripts/lib/data-root.sh"
     data="$(resolve_data_root_path "${BUDGET_DATA_ROOT:-}")"
     validate_data_root_path "$data" 2>/dev/null || exit 1

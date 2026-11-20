@@ -87,6 +87,7 @@ scripts/test-kanban-edit.py                     image
 scripts/test-kanban-guards.py                   ci image
 scripts/test-kanban-wake.py                     ci image
 scripts/test-lightrag-mcp-registration.sh       ci
+scripts/test-lint.sh                            docker
 scripts/test-llm-proxy.py                       ci
 scripts/test-mail-apps.py                       macos
 scripts/test-mail-cron.py
