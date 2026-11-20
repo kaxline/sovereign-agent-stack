@@ -28,6 +28,21 @@ env_get_file() {
   fi
 }
 
+# env_true KEY [DEFAULT]: whether KEY's value (env_get, DEFAULT 0) is 1, true,
+# yes or on, in any case, ignoring spaces at either end. The rule of
+# addon_manifest.truthy, so a flag means the same to the scripts and the
+# add-on manifest.
+env_true() {
+  local v
+  v="$(env_get "$1" "${2:-0}" | tr '[:upper:]' '[:lower:]')"
+  v="${v#"${v%%[![:space:]]*}"}"
+  v="${v%"${v##*[![:space:]]}"}"
+  case "$v" in
+    1 | true | yes | on) return 0 ;;
+  esac
+  return 1
+}
+
 # env_target FILE: FILE, or what it links to when it is a symlink (a worktree
 # links main's .env), so a replacement keeps the link. One level, which is all
 # the stack makes; BSD readlink has no -f.

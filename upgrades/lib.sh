@@ -21,13 +21,8 @@ reload_hermes() { printf 'reload_hermes\n'; }
 needs_user() { printf 'needs_user\t%s\t%s\n' "$1" "$2"; }
 notice() { printf 'notice\t%s\n' "$1"; }
 
-# enabled FLAG: whether .env turns FLAG on (1, true, yes, on).
-enabled() {
-  case "$(env_get "$1" 0 | tr '[:upper:]' '[:lower:]')" in
-    1 | true | yes | on) return 0 ;;
-  esac
-  return 1
-}
+# enabled FLAG: whether .env turns FLAG on (env_true: 1, true, yes, on).
+enabled() { env_true "$1"; }
 
 # hermes_env_files: the default profile's .env and each named profile's.
 hermes_env_files() {

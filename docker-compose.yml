@@ -2704,16 +2704,18 @@ volumes:
   # sites a person signed in to through the viewer. Survives a restart;
   # removing it signs every site out.
   web_browser_profile:
-  # bitwarden-signin's socket folder, mounted by it and bitwarden-broker only.
-  # A tmpfs owned by HERMES_UID:HERMES_GID at mode 0700: both containers run
-  # as that user, and the owner follows it at run time, which a folder made in
-  # the image cannot. The local driver mounts one tmpfs that both containers
-  # share; it is emptied when neither is running. After HERMES_UID or
-  # HERMES_GID changes, compose asks whether to recreate it and keeps the old
-  # owner unless told yes (or the volume is removed with docker volume rm), and
-  # the signer then cannot create its socket.
+  # bitwarden-signin's socket folder, mounted by it and bitwarden-broker
+  # (read-only) only. The local driver mounts one tmpfs that both containers
+  # share; it is emptied when neither is running. Root-owned at mode 1777: the
+  # signer creates signin.sock under umask 0177 and chmods it 0600 as
+  # HERMES_UID (_unix_server in compose/bitwarden-signin/signer/server.py),
+  # which is the check, and the sticky bit keeps another user from removing
+  # it. No uid= or gid=: Podman drops both from a local volume's o and mounts
+  # the tmpfs root-owned, so the signer could not create its socket (CR 0042,
+  # as CR 0041 did for /run/bitwarden-sync). A volume created with other
+  # options keeps them until it is removed with docker volume rm.
   bitwarden_signin:
     driver_opts:
       type: tmpfs
       device: tmpfs
-      o: "uid=${HERMES_UID:-1000},gid=${HERMES_GID:-1000},mode=0700,size=1m"
+      o: "mode=1777,size=1m"

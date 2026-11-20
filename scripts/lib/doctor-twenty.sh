@@ -1,6 +1,6 @@
 # make doctor's CRM (Twenty) block. Sourced by scripts/doctor.sh, which
-# provides ok, warn, bad, env_get and has_profile and runs from the repo root;
-# scripts/test-twenty-doctor.sh runs it against stubs.
+# runs from the repo root and provides the helpers in doctor-kit.sh;
+# scripts/test-twenty-doctor.sh sources doctor-kit.sh and runs it against stubs.
 # shellcheck shell=bash
 
 # A string field from an instance file, without a JSON parser.
@@ -35,10 +35,8 @@ twenty_key_problem() {
 
 doctor_twenty() {
   local twenty_local twenty_mcp twenty_port data_root store f slug pair
-  twenty_local="$(env_get TWENTY_LOCAL_ENABLED 0)"
-  case "$twenty_local" in 1 | true | TRUE | yes | YES) twenty_local=1 ;; *) twenty_local=0 ;; esac
-  twenty_mcp="$(env_get TWENTY_MCP_ENABLED 0)"
-  case "$twenty_mcp" in 1 | true | TRUE | yes | YES) twenty_mcp=1 ;; *) twenty_mcp=0 ;; esac
+  if env_true TWENTY_LOCAL_ENABLED; then twenty_local=1; else twenty_local=0; fi
+  if env_true TWENTY_MCP_ENABLED; then twenty_mcp=1; else twenty_mcp=0; fi
   data_root="$(env_get ASSISTANT_DATA_ROOT ./data)"
   [[ "$data_root" == /* ]] || data_root="${ROOT}/${data_root#./}"
   store="${data_root}/addons/twenty"

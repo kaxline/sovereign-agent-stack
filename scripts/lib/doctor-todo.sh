@@ -1,5 +1,5 @@
 # make doctor's per-profile Vikunja checks. Sourced by scripts/doctor.sh, which
-# provides ok, warn, bad and env_get and runs from the repo root;
+# runs from the repo root and provides the helpers in doctor-kit.sh;
 # scripts/test-todo-doctor.sh runs it against profile files.
 # shellcheck shell=bash
 

@@ -22,6 +22,12 @@ the stack under another app.
   each import profile line adds `imported_ids` and `skipped_ids`, so with the
   existing error lists every id in the manifest is accounted for, including
   the sessions of a `profile_missing` profile.
+- `make doctor` and the upgrade hooks read on/off flags with one rule, the
+  add-on manifest's: `1`, `true`, `yes` or `on` in any case. Before, doctor
+  took `on` only for `MAIL_MCP_ENABLED` and `MAIL_DRAFTS_ENABLED`, and took
+  `True` (mixed case) only for those two, Signal, Buzz and OpenCode. So
+  `HERMES_SIGNAL_ENABLED=on` or `VIKUNJA_MCP_ENABLED=True` now turn on doctor's
+  Signal and Vikunja checks, as they already turned on the add-ons.
 - `addon.sh enable twenty` generates `TWENTY_ENCRYPTION_KEY` and
   `TWENTY_DB_PASSWORD` when `.env` has none (CR 0043), and `enable vikunja`
   generates `VIKUNJA_SECRET`. Only `setup.sh` wrote them before, so on a
@@ -49,6 +55,22 @@ the stack under another app.
   those are repo tests, which `make test` and CI run, and without `python3`
   they were reported as failures. On a host with neither the image nor
   `python3`, doctor warns once and skips the checks that read Hermes config.
+- The `bitwarden_signin` volume's options are `mode=1777,size=1m` (CR 0042
+  R2), without `uid=` and `gid=`. Podman drops both from a local volume's
+  options and mounts the tmpfs root-owned at 0700, so the signer could not
+  create its socket. The signer still creates `signin.sock` mode 0600 as
+  `HERMES_UID`, and the sticky bit stops another user from removing it. The
+  volume's owner no longer follows `HERMES_UID`, so changing it no longer
+  leaves an old owner behind. An existing `bitwarden_signin` volume keeps its
+  old options until it is removed (`docker compose rm -sf bitwarden-signin
+  bitwarden-broker`, then `docker volume rm` on the project's
+  `bitwarden_signin` volume): compose asks before
+  recreating it, and keeps the old one with no terminal. On Docker the old
+  volume still works. Its only contents are the socket, so removing it loses
+  nothing. `context=` for SELinux is not set, because a kernel without SELinux
+  refuses it; an app that adds it on Podman keeps doing so.
+  `scripts/test-compose-tmpfs-options.py` now also checks the options of every
+  named volume of type `tmpfs`.
 - opencode-mcp: `coding_wait_for_task` returns once the task has finished.
   Before, waiting on a completed or failed task never returned, because the
   wait took the task lock twice and called another tool directly. opencode-mcp
