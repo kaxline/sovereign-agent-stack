@@ -151,6 +151,15 @@ has "key with a line break" "main.key_ro holds a line break or control character
 hasnt "no probe with a refused key" "MCP answers with the ro key"
 setkeys main "$KEY_RO" "$KEY_RW"
 
+# The store comes from doctor's DATA_ROOT: a ~/ root in .env is under HOME,
+# and an exported ASSISTANT_DATA_ROOT wins over .env's.
+printf 'COMPOSE_PROFILES=core,crm-mcp\nTWENTY_MCP_ENABLED=1\nASSISTANT_DATA_ROOT=~/data\n' > "$tmp/work/.env"
+(cd "$tmp/work" && HOME="$tmp" ROOT="$ROOT" bash "$tmp/harness.sh") > "$out" 2>&1 || fail "~ root: non-zero ($(cat "$out"))"
+hasnt "a ~/ root finds the store under HOME" "no workspaces in"
+printf 'COMPOSE_PROFILES=core,crm-mcp\nTWENTY_MCP_ENABLED=1\nASSISTANT_DATA_ROOT=%s\n' "$tmp/elsewhere" > "$tmp/work/.env"
+(cd "$tmp/work" && ASSISTANT_DATA_ROOT="$tmp/data" ROOT="$ROOT" bash "$tmp/harness.sh") > "$out" 2>&1 || fail "exported root: non-zero ($(cat "$out"))"
+hasnt "an exported ASSISTANT_DATA_ROOT wins over .env" "no workspaces in"
+
 for k in "$KEY_RO" "$KEY_RW"; do
   if grep -qF -- "$k" "$all"; then fail "a key shows in the output"; fi
 done

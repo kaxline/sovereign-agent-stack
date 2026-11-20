@@ -44,6 +44,7 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS / "lib"))
 import addon_store  # noqa: E402
+from addon_manifest import truthy  # noqa: E402
 
 LOCAL_URL = "http://twenty-server:3000"
 KEY_EXPIRY = "2126-01-01T00:00:00Z"
@@ -293,10 +294,6 @@ class Workspaces:
         return self.dir / "instances" / f"{slug}.json"
 
 
-def is_true(value: str | None) -> bool:
-    return (value or "").strip().lower() in ("1", "true", "yes", "on")
-
-
 def owner_password(env) -> tuple[str, str]:
     """The owner password and where it is kept, for the summary line.
 
@@ -335,7 +332,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     if not email or not (env.get("TWENTY_PASSWORD") or env.get("TWENTY_PASSWORD_FILE")):
         raise TwentyError("TWENTY_USERNAME and TWENTY_PASSWORD (or TWENTY_PASSWORD_FILE) must be set")
     store = Workspaces(env)
-    multi = is_true(env.get("TWENTY_MULTIWORKSPACE"))
+    multi = truthy(env.get("TWENTY_MULTIWORKSPACE"))
 
     stored = store.get(slug)
     existing = stored or {}

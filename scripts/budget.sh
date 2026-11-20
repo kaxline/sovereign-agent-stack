@@ -16,6 +16,9 @@ source "${ROOT}/scripts/lib/env.sh"
 source "${ROOT}/scripts/lib/data-root.sh"
 # shellcheck source=lib/python.sh
 source "${ROOT}/scripts/lib/python.sh"
+# ASSISTANT_DATA_ROOT from the environment wins over the env file, as it does
+# for compose and crm.sh.
+DATA_ROOT="$(resolve_data_root_path "${ASSISTANT_DATA_ROOT:-$(env_get ASSISTANT_DATA_ROOT)}")"
 
 LOCAL_URL="http://actual-server:5006"
 
@@ -410,13 +413,13 @@ hook_args() {
     shift
   done
   [[ "$JSON" == 1 ]] || die "$usage"
-  [[ "$slug" =~ ^[a-z][a-z0-9-]{0,30}$ ]] || emit_error bad_slug "slug must be 1-31 characters of a-z, 0-9 and -, starting with a letter"
+  valid_slug "$slug" || emit_error bad_slug "slug must be 1-31 characters of a-z, 0-9 and -, starting with a letter"
 }
 
 # secrets_dir: sets sdir to <data root>/addons/actual/secrets.
 secrets_dir() {
   local root
-  root="$(resolve_data_root_path "${BUDGET_DATA_ROOT:-}")"
+  root="$DATA_ROOT"
   validate_data_root_path "$root" 2> "${WORK}/root.err" \
     || emit_error not_found "$(cat "${WORK}/root.err")"
   sdir="${root}/addons/actual/secrets"
@@ -593,13 +596,6 @@ cmd_init() {
   init_server_only
 }
 
-# truthy VALUE: 1, true, yes or on (any case), as addon.sh reads .env flags.
-truthy() {
-  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
-    1 | true | yes | on) return 0 ;;
-    *) return 1 ;;
-  esac
-}
 
 # init --server-only: the local server's password lives in
 # <data root>/addons/actual/secrets/server_password (mode 600), a budget is
@@ -609,7 +605,7 @@ truthy() {
 # turning the server on later takes addon.sh enable actual --reinit.
 init_server_only() {
   local sdir="" pwf pw="" resp files n sync="" name=""
-  if ! truthy "$(env_get ACTUAL_LOCAL_ENABLED 0)"; then
+  if ! env_true ACTUAL_LOCAL_ENABLED; then
     note "ACTUAL_LOCAL_ENABLED is off, so there is no local server to set up; after turning it on, run scripts/addon.sh enable actual --reinit"
     # shellcheck disable=SC2119
     emit_done
@@ -667,7 +663,7 @@ init_server_only() {
 # clipboard (pbcopy) when there is one.
 cmd_open() {
   [[ $# -eq 0 ]] || die "open takes no options"
-  truthy "$(env_get ACTUAL_LOCAL_ENABLED 0)" \
+  env_true ACTUAL_LOCAL_ENABLED \
     || die "open is for the bundled server, and ACTUAL_LOCAL_ENABLED is off; open a remote server's web app at its own URL"
   local url sdir="" pwf
   url="http://localhost:$(env_get ACTUAL_PORT 5006)/"
@@ -722,7 +718,7 @@ print("i_access=%s" % ("write" if rw else "read"))
   tf="${sdir}/${s}.session_token"
   ef="${sdir}/${s}.encryption_password"
   # A local row while the local server is off: no sign-in, no Actual check.
-  if [[ "$i_server" == local ]] && ! truthy "$(env_get ACTUAL_LOCAL_ENABLED 0)"; then
+  if [[ "$i_server" == local ]] && ! env_true ACTUAL_LOCAL_ENABLED; then
     state=server_off
   fi
   if [[ -z "$state" && ! -s "$tf" ]]; then
@@ -758,9 +754,8 @@ cmd_status() {
     shift
   done
   [[ "$JSON" == 1 ]] || die "usage: budget.sh status [--slug SLUG] --json"
-  slug_check() { [[ "$1" =~ ^[a-z][a-z0-9-]{0,30}$ ]]; }
   if [[ -n "$slug" ]]; then
-    slug_check "$slug" || emit_error bad_slug "slug must be 1-31 characters of a-z, 0-9 and -, starting with a letter"
+    valid_slug "$slug" || emit_error bad_slug "slug must be 1-31 characters of a-z, 0-9 and -, starting with a letter"
   fi
   instances_dir
   if [[ -n "$slug" ]]; then
@@ -770,7 +765,7 @@ cmd_status() {
     for f in "${idir}"/*.json; do
       [[ -e "$f" ]] || continue
       s="$(basename "$f" .json)"
-      slug_check "$s" || continue
+      valid_slug "$s" || continue
       status_row "$s"
     done
   fi
@@ -799,7 +794,7 @@ cmd_access() {
     esac
   done
   [[ "$n" == 2 ]] || die "usage: budget.sh access SLUG read|write [--json]"
-  [[ "$slug" =~ ^[a-z][a-z0-9-]{0,30}$ ]] || emit_error bad_slug "slug must be 1-31 characters of a-z, 0-9 and -, starting with a letter"
+  valid_slug "$slug" || emit_error bad_slug "slug must be 1-31 characters of a-z, 0-9 and -, starting with a letter"
   case "$want" in
     read | write) ;;
     *) emit_error bad_access "access must be read or write" ;;
@@ -830,7 +825,7 @@ cmd_access() {
 cmd_ensure() {
   [[ $# -eq 0 ]] || die "ensure takes no options"
   local root store
-  root="$(resolve_data_root_path "${BUDGET_DATA_ROOT:-}")"
+  root="$DATA_ROOT"
   if ! validate_data_root_path "$root" 2> "${WORK}/root.err"; then
     printf '[budget] warning: %s; addons/actual not created\n' "$(cat "${WORK}/root.err")" >&2
     return 0
@@ -876,7 +871,7 @@ cmd_connect_cli() {
   esac
   # addon.sh connect stores the row either way, but Hermes registers nothing
   # for it while the add-on is off.
-  truthy "$(env_get ACTUAL_MCP_ENABLED 0)" \
+  env_true ACTUAL_MCP_ENABLED \
     || emit_error not_found "the Actual add-on is off; run scripts/addon.sh enable actual first"
   local pw="" enc=""
   if [[ "$url" != local ]]; then

@@ -22,8 +22,6 @@ HERMES_DATA_DIR="${VAULT_HERMES_DATA_DIR:-${ROOT}/data/hermes}"
 PLUGINS_MARKER=.addon-plugins-changed
 INIT_WAIT_SECONDS=600
 # Regexes live in variables: bash 3.2 parses some unquoted ones in [[ =~ ]] differently.
-# The add-on store's rule (scripts/lib/addon_store.py SLUG_RE), which the broker applies too.
-SLUG_RE='^[a-z][a-z0-9-]{0,30}$'
 SLUG_RULE="--slug must start with a lowercase letter and have at most 31 of a-z, 0-9 and -"
 # The contents of a JSON string as json.dumps writes it: no quote, backslash
 # or control character except as an escape.
@@ -113,17 +111,9 @@ die() {
   exit 1
 }
 
-is_true() {
-  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
-    1 | true | yes | on) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
 # A regex, not a glob: bash 3.2 bracket ranges follow the locale.
-valid_slug() { [[ "$1" =~ $SLUG_RE ]]; }
 valid_email() { [[ "$1" =~ $EMAIL_RE ]]; }
 need_slug() { valid_slug "$1" || die "$SLUG_RULE"; }
 # Options that take a value: need_value "$@" before reading $2.
@@ -677,7 +667,7 @@ cmd_add() {
     check_account_json "$slug" "$unlock"
     return 0
   fi
-  if ! is_true "$(env_get BITWARDEN_ENABLED 0)"; then
+  if ! env_true BITWARDEN_ENABLED; then
     upsert_env "$ENV_PATH" BITWARDEN_ENABLED 1
     log "Set BITWARDEN_ENABLED=1"
   fi
@@ -1320,7 +1310,7 @@ local_url() { printf 'http://localhost:%s' "$(env_get VAULTWARDEN_PORT 8222)"; }
 
 cmd_open() {
   [[ $# -eq 0 ]] || die "open takes no options"
-  is_true "$(env_get BITWARDEN_LOCAL_ENABLED 0)" \
+  env_true BITWARDEN_LOCAL_ENABLED \
     || die "local mode is off (BITWARDEN_LOCAL_ENABLED=0); make vault-init sets it up"
   local url
   url="$(local_url)"
@@ -1337,7 +1327,7 @@ cmd_open() {
 # Every folder the broker mounts exists before compose starts it: on Linux,
 # Docker would create a missing one as root, which HERMES_UID cannot write.
 cmd_pre_up() {
-  is_true "$(env_get BITWARDEN_ENABLED 0)" || return 0
+  env_true BITWARDEN_ENABLED || return 0
   ensure_store_dir
   local data new
   data="$(data_dir)"
@@ -1459,7 +1449,7 @@ cmd_init() {
   step="$STATE_VALUE"
   state_get OWNER_EMAIL
   recorded="$(lower "$STATE_VALUE")"
-  if ! is_true "$(env_get BITWARDEN_LOCAL_ENABLED 0)"; then
+  if ! env_true BITWARDEN_LOCAL_ENABLED; then
     upsert_env "$ENV_PATH" BITWARDEN_LOCAL_ENABLED 1
     log "Set BITWARDEN_LOCAL_ENABLED=1"
   fi
@@ -1519,7 +1509,7 @@ cmd_init() {
 }
 
 finish_init() {
-  if ! is_true "$(env_get BITWARDEN_ENABLED 0)"; then
+  if ! env_true BITWARDEN_ENABLED; then
     upsert_env "$ENV_PATH" BITWARDEN_ENABLED 1
     log "Set BITWARDEN_ENABLED=1"
   fi

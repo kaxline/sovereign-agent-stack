@@ -44,18 +44,14 @@ SH
 }
 
 # Whether any connected budget (<data root>/addons/actual/instances/*.json)
-# exists. The data root is resolved as budget.sh does, BUDGET_DATA_ROOT first.
+# exists.
 actual_has_rows() {
-  (
-    # shellcheck source=lib/data-root.sh
-    source "${ROOT}/scripts/lib/data-root.sh"
-    data="$(resolve_data_root_path "${BUDGET_DATA_ROOT:-}")"
-    validate_data_root_path "$data" 2>/dev/null || exit 1
-    for f in "${data}/addons/actual/instances/"*.json; do
-      [[ -e "$f" ]] && exit 0
-    done
-    exit 1
-  )
+  local f
+  validate_data_root_path "$DATA_ROOT" 2>/dev/null || return 1
+  for f in "${DATA_ROOT}/addons/actual/instances/"*.json; do
+    [[ -e "$f" ]] && return 0
+  done
+  return 1
 }
 
 doctor_actual() {

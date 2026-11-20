@@ -23,6 +23,13 @@ the stack under another app.
   volume created with another one. The script no longer sources `.env` as
   shell, and passes the password to `cypher-shell` as a parameter, so quotes
   in it no longer break the query.
+- `scripts/budget.sh` honours an `ASSISTANT_DATA_ROOT` exported in its
+  environment over the one in `.env`, as `crm.sh`, `addon.sh` and compose
+  already did. The test-only `BUDGET_DATA_ROOT` is gone.
+- `make doctor`'s CRM (Twenty) section looks for workspaces under the same data
+  root as the rest of doctor. Before, it read `.env` itself, so a `~/` root or
+  an exported `ASSISTANT_DATA_ROOT` sent it to the wrong directory and it
+  reported no workspaces.
 
 ## v0.3.17 — 2026-11-20
 

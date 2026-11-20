@@ -43,6 +43,16 @@ env_true() {
   return 1
 }
 
+# valid_slug SLUG: an add-on instance slug by addon_store.SLUG_RE's rule, a
+# lowercase letter then at most 30 of a-z, 0-9 and -. A regex, not a glob:
+# bash 3.2 bracket ranges follow the locale, where [a-z] also matches
+# uppercase. The regex sits in a variable because bash 3.2 parses some
+# unquoted ones in [[ =~ ]] differently.
+ENV_SLUG_RE='^[a-z][a-z0-9-]{0,30}$'
+valid_slug() {
+  [[ "$1" =~ $ENV_SLUG_RE ]]
+}
+
 # env_target FILE: FILE, or what it links to when it is a symlink (a worktree
 # links main's .env), so a replacement keeps the link. One level, which is all
 # the stack makes; BSD readlink has no -f.

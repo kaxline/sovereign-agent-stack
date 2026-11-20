@@ -1,10 +1,19 @@
 # Helpers shared by scripts/doctor.sh and its sections (scripts/lib/doctor-*.sh).
-# doctor.sh sources this from the repo root; the section tests source it too,
-# so a section runs against the same ok/bad/warn it gets in doctor.
+# doctor.sh sources this from the repo root with ROOT set; the section tests
+# source it too, so a section runs against the same ok/bad/warn and DATA_ROOT
+# it gets in doctor.
 # shellcheck shell=bash
 
 # shellcheck source=lib/env.sh
 source "$(dirname "${BASH_SOURCE[0]}")/env.sh"
+# shellcheck source=lib/data-root.sh
+source "$(dirname "${BASH_SOURCE[0]}")/data-root.sh"
+
+# The user data root as written, and as an absolute path. ASSISTANT_DATA_ROOT
+# from the environment wins over .env, as in compose, addon.sh and vault.sh.
+DATA_ROOT_RAW="${ASSISTANT_DATA_ROOT:-$(env_get ASSISTANT_DATA_ROOT ./data)}"
+# shellcheck disable=SC2034  # read by doctor.sh and the sections
+DATA_ROOT="$(expand_user_path "$DATA_ROOT_RAW")"
 
 PASS="${PASS:-0}"
 FAIL="${FAIL:-0}"
