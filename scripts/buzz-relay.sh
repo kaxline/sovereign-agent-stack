@@ -11,6 +11,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+# shellcheck source=lib/env.sh
+source "${ROOT}/scripts/lib/env.sh"
 
 STATE_DIR="${ROOT}/data/hermes/.cache/buzz-relay"
 PIDFILE="${STATE_DIR}/relay.pid"
@@ -58,24 +60,6 @@ Typical make wrappers:
   make buzz-relay-status
   make buzz-relay-logs
 EOF
-}
-
-env_get() {
-  local key="$1"
-  local default="${2:-}"
-  local val=""
-  if [[ -f .env ]]; then
-    val="$(grep -E "^${key}=" .env 2>/dev/null | head -1 | cut -d= -f2- || true)"
-    val="${val%\"}"
-    val="${val#\"}"
-    val="${val%\'}"
-    val="${val#\'}"
-  fi
-  if [[ -z "$val" ]]; then
-    echo "$default"
-  else
-    echo "$val"
-  fi
 }
 
 expand_user_path() {

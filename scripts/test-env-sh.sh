@@ -91,12 +91,16 @@ done
 inline="$(grep -nE '^[A-Za-z_][A-Za-z0-9_]*=[^"'"'"'#]*[[:space:]]#' "${ROOT}/.env.example" || true)"
 [ -z "$inline" ] || fail ".env.example has inline comments: ${inline}"
 
-# These read .env through lib/env.sh alone (AS-0006). install.sh keeps its
-# own reader because it runs before the checkout exists; the local copies in
-# the buzz, cron and sync scripts are still to be moved over.
+# These read .env through lib/env.sh alone (AS-0006, AS-0014). install.sh
+# keeps its own reader because it runs before the checkout exists.
 for s in scripts/doctor.sh scripts/coding-root.sh scripts/context-root.sh \
   scripts/agent-create.sh scripts/lib/data-root.sh scripts/setup.sh scripts/up.sh \
-  scripts/lib/python.sh Makefile; do
+  scripts/lib/python.sh Makefile scripts/corpus.sh scripts/kb-eval-fixture.sh \
+  scripts/opencode-smoke-fixture.sh scripts/reset-neo4j-password.sh \
+  scripts/agent-attach-buzz.sh scripts/bootstrap-buzz.sh scripts/buzz-admin.sh \
+  scripts/buzz-relay.sh scripts/install-buzz-cli.sh scripts/sync-buzz-profile.sh \
+  scripts/sync-signal-profile.sh scripts/mail-triage-cron.sh \
+  scripts/messages-triage-cron.sh; do
   if grep -q '^ *env_get() {' "${ROOT}/${s}"; then
     fail "${s} defines its own env_get"
   fi

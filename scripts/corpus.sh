@@ -37,24 +37,6 @@ EOF
 log() { printf '[corpus] %s\n' "$1"; }
 die() { printf '[corpus] ERROR: %s\n' "$1" >&2; exit 1; }
 
-env_get() {
-  local key="$1"
-  local default="${2:-}"
-  local val=""
-  if [[ -f .env ]]; then
-    val="$(grep -E "^${key}=" .env 2>/dev/null | head -1 | cut -d= -f2- || true)"
-    val="${val%\"}"
-    val="${val#\"}"
-    val="${val%\'}"
-    val="${val#\'}"
-  fi
-  if [[ -z "$val" ]]; then
-    echo "$default"
-  else
-    echo "$val"
-  fi
-}
-
 validate_slug() {
   local slug="$1"
   [[ "$slug" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]{0,62}$ ]] \
@@ -106,24 +88,16 @@ EOF
 ensure_registry() {
   mkdir -p "${DATA_ROOT}/corpora"
   local out
-  out="$(python3 - "$REGISTRY" "$DATA_ROOT" "$ROOT" <<'PY'
+  out="$(CORPUS_WORKSPACE="$(env_get WORKSPACE)" \
+    CORPUS_EMBEDDING_MODEL="$(env_get EMBEDDING_MODEL)" \
+    CORPUS_EMBEDDING_DIM="$(env_get EMBEDDING_DIM)" \
+    python3 - "$REGISTRY" "$DATA_ROOT" <<'PY'
 import json, os, sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 registry_path = Path(sys.argv[1])
 data_root = Path(sys.argv[2])
-repo_root = Path(sys.argv[3])
-
-def env_get(key, default=""):
-    env_file = repo_root / ".env"
-    if not env_file.is_file():
-        return default
-    for line in env_file.read_text().splitlines():
-        if line.startswith(key + "="):
-            val = line.split("=", 1)[1].strip().strip("'\"")
-            return val or default
-    return default
 
 def load():
     if registry_path.is_file():
@@ -137,13 +111,13 @@ def load():
 
 data = load()
 slugs = {c.get("slug") for c in data["corpora"] if isinstance(c, dict)}
-workspace = env_get("WORKSPACE")
+workspace = os.environ["CORPUS_WORKSPACE"]
 inputs = data_root / "inputs"
 if workspace and workspace not in slugs and (inputs / workspace).is_dir():
     data["corpora"].append({
         "slug": workspace,
-        "embedding_model": env_get("EMBEDDING_MODEL"),
-        "embedding_dim": env_get("EMBEDDING_DIM"),
+        "embedding_model": os.environ["CORPUS_EMBEDDING_MODEL"],
+        "embedding_dim": os.environ["CORPUS_EMBEDDING_DIM"],
         "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     })
     registry_path.parent.mkdir(parents=True, exist_ok=True)

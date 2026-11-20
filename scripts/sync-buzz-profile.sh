@@ -18,24 +18,6 @@ log() { printf '==> %s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
-env_get() {
-  local key="$1"
-  local default="${2:-}"
-  local val=""
-  if [[ -f .env ]]; then
-    val="$(grep -E "^${key}=" .env 2>/dev/null | head -1 | cut -d= -f2- || true)"
-    val="${val%\"}"
-    val="${val#\"}"
-    val="${val%\'}"
-    val="${val#\'}"
-  fi
-  if [[ -z "$val" ]]; then
-    echo "$default"
-  else
-    echo "$val"
-  fi
-}
-
 # Upsert KEY=VALUE, keeping a single occurrence (first wins; later dupes dropped).
 # s6 reconciler only auto-starts profiles whose gateway_state is "running".
 mark_gateway_running() {

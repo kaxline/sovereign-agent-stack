@@ -2,7 +2,7 @@
 	bootstrap-buzz buzz-cli-install agent-create hermes-buzz-employee \
 	buzz-relay-start buzz-relay-stop buzz-relay-status buzz-relay-logs buzz-relay-restart \
 	buzz-admin \
-	corpus-create corpus-use corpus-list corpus-ingest corpus-destroy \
+	corpus-create corpus-use corpus-list corpus-ingest corpus-destroy neo4j-reset-password \
 	project-init project-index project-index-check project-sources-test bash32-test lint synthetic-mail-test synthetic-messages-test \
 	messages-index messages-index-doctor messages-index-chats messages-index-test \
 	messages-watch messages-notify-test messages-watch-test messages-app messages-app-test \
@@ -383,6 +383,11 @@ corpus-ingest:
 corpus-destroy:
 	@test -n "$(SLUG)" || (echo "Usage: make corpus-destroy SLUG=<slug>"; exit 1)
 	./scripts/corpus.sh destroy "$(SLUG)"
+
+# Sets the Neo4j user's password to NEO4J_PASSWORD in .env, for a data volume
+# created with another one (healthcheck auth failures). Restarts neo4j.
+neo4j-reset-password:
+	./scripts/reset-neo4j-password.sh
 
 # Per-project working dirs under ASSISTANT_DATA_ROOT/projects/. See docs/projects.md.
 #   make project-init PROJECT=my-project

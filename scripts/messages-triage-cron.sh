@@ -16,10 +16,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+# shellcheck source=lib/env.sh
+source "${ROOT}/scripts/lib/env.sh"
 
 die() { printf 'messages-triage-cron: %s\n' "$1" >&2; exit 1; }
 usage() { sed -n '4,6p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
-env_get() { grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d= -f2- | sed -e 's/^"//' -e 's/"$//'; }
 
 [[ $# -ge 1 ]] || usage
 action="$1"; shift
@@ -39,10 +40,7 @@ done
 
 [[ -f .env ]] || die "no .env; run ./scripts/setup.sh first"
 if [[ "$action" == "create" ]]; then
-  case "$(env_get MESSAGES_MCP_ENABLED)" in
-    1|true|TRUE|yes|YES) ;;
-    *) die "MESSAGES_MCP_ENABLED isn't 1; run ./scripts/setup.sh --messages first" ;;
-  esac
+  env_true MESSAGES_MCP_ENABLED || die "MESSAGES_MCP_ENABLED is off; run ./scripts/setup.sh --messages first"
   grep -qs 'messages-mcp:8000' data/hermes/config.yaml \
     || die "the default Hermes profile has no messages MCP; run make hermes-reload"
   grep -qs 'messages_triage_batch' data/hermes/config.yaml \

@@ -14,10 +14,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+# shellcheck source=lib/env.sh
+source "${ROOT}/scripts/lib/env.sh"
 
 die() { printf 'mail-triage-cron: %s\n' "$1" >&2; exit 1; }
 usage() { sed -n '4,6p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
-env_get() { grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d= -f2- | sed -e 's/^"//' -e 's/"$//'; }
 
 [[ $# -ge 1 ]] || usage
 action="$1"; shift
@@ -37,11 +38,7 @@ done
 
 [[ -f .env ]] || die "no .env; run ./scripts/setup.sh first"
 if [[ "$action" == "create" ]]; then
-  # Same values as sync-profiles.sh and addon_manifest.truthy: 1, true, yes, on, any case.
-  case "$(env_get MAIL_MCP_ENABLED | tr '[:upper:]' '[:lower:]')" in
-    1|true|yes|on) ;;
-    *) die "MAIL_MCP_ENABLED is off; run ./scripts/setup.sh --mail first" ;;
-  esac
+  env_true MAIL_MCP_ENABLED || die "MAIL_MCP_ENABLED is off; run ./scripts/setup.sh --mail first"
   grep -qs 'mail-mcp:8000' data/hermes/config.yaml \
     || die "the default Hermes profile has no mail MCP; re-run hermes-api-bootstrap and hermes-browser-bootstrap"
   [[ -f "$prompt_file" ]] || die "prompt file not found: $prompt_file"

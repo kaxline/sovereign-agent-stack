@@ -9,13 +9,21 @@ cd "$ROOT"
 log() { printf '[neo4j-reset] %s\n' "$1"; }
 die() { printf '[neo4j-reset] ERROR: %s\n' "$1" >&2; exit 1; }
 
+# shellcheck source=lib/env.sh
+source "${ROOT}/scripts/lib/env.sh"
+
 [[ -f .env ]] || die "Missing .env — run ./scripts/setup.sh first"
 
-# shellcheck disable=SC1091
-source .env
+NEO4J_PASSWORD="$(env_get NEO4J_PASSWORD)"
+NEO4J_USERNAME="$(env_get NEO4J_USERNAME neo4j)"
+[[ -n "$NEO4J_PASSWORD" ]] || die "NEO4J_PASSWORD is not set in .env"
 
-[[ -n "${NEO4J_PASSWORD:-}" ]] || die "NEO4J_PASSWORD is not set in .env"
-NEO4J_USERNAME="${NEO4J_USERNAME:-neo4j}"
+# cypher_string VALUE: VALUE as a single-quoted Cypher string literal.
+cypher_string() {
+  local v="${1//\\/\\\\}"
+  v="${v//\'/\\\'}"
+  printf "'%s'" "$v"
+}
 
 log "Stopping neo4j service"
 docker compose stop neo4j
@@ -46,9 +54,13 @@ for _ in $(seq 1 60); do
 done
 [[ "$ready" -eq 1 ]] || die "Timed out waiting for temporary Neo4j"
 
-log "Setting neo4j user password to match .env"
-docker exec "$RESET_CONTAINER" cypher-shell -u "$NEO4J_USERNAME" \
-  "ALTER USER ${NEO4J_USERNAME} SET PASSWORD '${NEO4J_PASSWORD}'"
+log "Setting ${NEO4J_USERNAME}'s password to match .env"
+# Both values go in on stdin as parameters, so neither is parsed as Cypher nor
+# shows up in the docker exec command line.
+# shellcheck disable=SC2016  # $user and $pw are Cypher parameters
+printf ':param user => %s\n:param pw => %s\nALTER USER $user SET PASSWORD $pw;\n' \
+  "$(cypher_string "$NEO4J_USERNAME")" "$(cypher_string "$NEO4J_PASSWORD")" \
+  | docker exec -i "$RESET_CONTAINER" cypher-shell -u "$NEO4J_USERNAME" -d system --format plain >/dev/null
 
 docker rm -f "$RESET_CONTAINER" >/dev/null
 RESET_CONTAINER=""

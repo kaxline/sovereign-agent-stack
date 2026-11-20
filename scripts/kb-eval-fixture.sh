@@ -13,6 +13,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+# shellcheck source=lib/env.sh
+source "${ROOT}/scripts/lib/env.sh"
 # shellcheck source=lib/data-root.sh
 source "${ROOT}/scripts/lib/data-root.sh"
 
@@ -32,24 +34,6 @@ Usage: ./scripts/kb-eval-fixture.sh <install|remove|status>
 The scripted harness (make tool-eval-run CASE=kb-query) calls install/remove
 around the case. WebUI: install, paste the prompt, then remove.
 EOF
-}
-
-env_get() {
-  local key="$1"
-  local default="${2:-}"
-  local val=""
-  if [[ -f .env ]]; then
-    val="$(grep -E "^${key}=" .env 2>/dev/null | head -1 | cut -d= -f2- || true)"
-    val="${val%\"}"
-    val="${val#\"}"
-    val="${val%\'}"
-    val="${val#\'}"
-  fi
-  if [[ -z "$val" ]]; then
-    echo "$default"
-  else
-    echo "$val"
-  fi
 }
 
 log() { printf '[kb-eval-fixture] %s\n' "$1"; }

@@ -9,6 +9,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+# shellcheck source=lib/env.sh
+source "${ROOT}/scripts/lib/env.sh"
 
 log() { printf '[buzz-admin] %s\n' "$*"; }
 die() { printf '[buzz-admin] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -36,24 +38,6 @@ Note: GNU Make treats leading --flags as its own options, so use
   make buzz-admin -- add-member --pubkey …
 when passing dashed buzz-admin flags.
 EOF
-}
-
-env_get() {
-  local key="$1"
-  local default="${2:-}"
-  local val=""
-  if [[ -f .env ]]; then
-    val="$(grep -E "^${key}=" .env 2>/dev/null | head -1 | cut -d= -f2- || true)"
-    val="${val%\"}"
-    val="${val#\"}"
-    val="${val%\'}"
-    val="${val#\'}"
-  fi
-  if [[ -z "$val" ]]; then
-    echo "$default"
-  else
-    echo "$val"
-  fi
 }
 
 expand_user_path() {

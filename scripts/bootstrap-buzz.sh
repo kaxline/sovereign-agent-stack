@@ -19,24 +19,6 @@ log() { printf '[bootstrap-buzz] %s\n' "$*"; }
 die() { printf '[bootstrap-buzz] ERROR: %s\n' "$*" >&2; exit 1; }
 warn() { printf '[bootstrap-buzz] warning: %s\n' "$*" >&2; }
 
-env_get() {
-  local key="$1"
-  local default="${2:-}"
-  local val=""
-  if [[ -f .env ]]; then
-    val="$(grep -E "^${key}=" .env 2>/dev/null | head -1 | cut -d= -f2- || true)"
-    val="${val%\"}"
-    val="${val#\"}"
-    val="${val%\'}"
-    val="${val#\'}"
-  fi
-  if [[ -z "$val" ]]; then
-    echo "$default"
-  else
-    echo "$val"
-  fi
-}
-
 # Set key only when missing or empty in file.
 upsert_env_if_empty() {
   local file="$1"

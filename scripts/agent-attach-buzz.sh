@@ -16,43 +16,6 @@ log() { printf '==> %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
 
-env_get() {
-  local key="$1"
-  local default="${2:-}"
-  local val=""
-  if [[ -f .env ]]; then
-    val="$(grep -E "^${key}=" .env 2>/dev/null | head -1 | cut -d= -f2- || true)"
-    val="${val%\"}"
-    val="${val#\"}"
-    val="${val%\'}"
-    val="${val#\'}"
-  fi
-  if [[ -z "$val" ]]; then
-    echo "$default"
-  else
-    echo "$val"
-  fi
-}
-
-file_env_get() {
-  local file="$1"
-  local key="$2"
-  local default="${3:-}"
-  local val=""
-  if [[ -f "$file" ]]; then
-    val="$(grep -E "^${key}=" "$file" 2>/dev/null | head -1 | cut -d= -f2- || true)"
-    val="${val%\"}"
-    val="${val#\"}"
-    val="${val%\'}"
-    val="${val#\'}"
-  fi
-  if [[ -z "$val" ]]; then
-    echo "$default"
-  else
-    echo "$val"
-  fi
-}
-
 expand_user_path() {
   local raw="$1"
   [[ -n "$raw" ]] || return 1
@@ -98,9 +61,7 @@ resolve_channel_id() {
   if [[ -n "$raw" ]]; then
     buzz_dir="$(expand_user_path "$raw")"
     if [[ -f "${buzz_dir}/.env" ]]; then
-      dburl="$(grep -E '^DATABASE_URL=' "${buzz_dir}/.env" 2>/dev/null | head -1 | cut -d= -f2- || true)"
-      dburl="${dburl%\"}"
-      dburl="${dburl#\"}"
+      dburl="$(env_get_file "${buzz_dir}/.env" DATABASE_URL)"
       if [[ -n "$dburl" ]] && command -v psql >/dev/null 2>&1 \
         && [[ "$name_or_id" =~ ^[A-Za-z0-9][A-Za-z0-9_\ -]*$ ]]; then
         local id
@@ -358,8 +319,8 @@ resolve_operator_key() {
 ensure_agent_key() {
   local profile_env="$1"
   local existing existing_pub
-  existing="$(file_env_get "$profile_env" BUZZ_PRIVATE_KEY)"
-  existing_pub="$(file_env_get "$profile_env" BUZZ_PUBLIC_KEY)"
+  existing="$(env_get_file "$profile_env" BUZZ_PRIVATE_KEY)"
+  existing_pub="$(env_get_file "$profile_env" BUZZ_PUBLIC_KEY)"
   if [[ -n "$existing" && "$existing" != "CHANGE_ME" ]]; then
     AGENT_SEC="$existing"
     log "Keeping existing BUZZ_PRIVATE_KEY in ${profile_env}"

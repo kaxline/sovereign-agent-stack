@@ -4,20 +4,10 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-ENV_FILE="${ROOT_DIR}/.env"
+# shellcheck source=lib/env.sh
+source "${ROOT_DIR}/scripts/lib/env.sh"
 
-env_get() {
-  local key="$1" default="${2:-}"
-  [[ -f "$ENV_FILE" ]] || { echo "$default"; return; }
-  local line
-  line="$(grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | head -1 || true)"
-  [[ -z "$line" ]] && { echo "$default"; return; }
-  local val="${line#*=}"
-  val="${val%\"}"; val="${val#\"}"
-  echo "$val"
-}
-
-PRIMARY="$(env_get OPENCODE_WORKSPACE_HOST)"
+PRIMARY="$(env_get_file "${ROOT_DIR}/.env" OPENCODE_WORKSPACE_HOST)"
 [[ -n "$PRIMARY" ]] || { echo "error: OPENCODE_WORKSPACE_HOST unset in .env" >&2; exit 1; }
 [[ "$PRIMARY" == /* ]] || { echo "error: OPENCODE_WORKSPACE_HOST must be absolute" >&2; exit 1; }
 

@@ -6,6 +6,24 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
+## Unreleased
+
+### Changes
+
+- The Buzz, Signal, corpus, KB-eval fixture, OpenCode smoke fixture and
+  mail/messages triage cron scripts read `.env` through `scripts/lib/env.sh`
+  instead of their own copies. Values follow its rules: the first `KEY=` line
+  wins (the triage cron scripts used the last), and quotes are stripped only
+  when they match at both ends.
+- `messages-triage-cron.sh` accepts the same values for
+  `MESSAGES_MCP_ENABLED` as the add-on manifests (`1`, `true`, `yes`, `on`, any
+  case); it used to reject `on` and mixed case.
+- `make neo4j-reset-password` runs `scripts/reset-neo4j-password.sh`, which
+  sets the Neo4j user's password to `NEO4J_PASSWORD` in `.env` for a data
+  volume created with another one. The script no longer sources `.env` as
+  shell, and passes the password to `cypher-shell` as a parameter, so quotes
+  in it no longer break the query.
+
 ## v0.3.17 — 2026-11-20
 
 ### Upgrade steps

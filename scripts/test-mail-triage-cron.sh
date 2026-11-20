@@ -10,8 +10,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "${ROOT}/scripts/lib/testkit.sh"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-mkdir "${tmp}/scripts"
+mkdir -p "${tmp}/scripts/lib"
 cp "${ROOT}/scripts/mail-triage-cron.sh" "${tmp}/scripts/"
+cp "${ROOT}/scripts/lib/env.sh" "${tmp}/scripts/lib/"
 
 create() {
   printf 'MAIL_MCP_ENABLED=%s\n' "$1" > "${tmp}/.env"
