@@ -45,9 +45,14 @@ keyed by session id still applies. Per profile it reports:
   rows or 5 MB. They can't be imported at all.
 - `detached`: children whose parent is in neither the target nor the export;
   they're imported as top-level sessions.
+- `renamed`: imported sessions whose title the target, or an earlier session
+  in the same import, already held. Titles are unique in a Hermes store, so
+  the import adds ` (<last 12 characters of the id>)`, as Hermes' own import
+  paths do, cut to fit the 100-character title limit. `renamed_ids` lists them.
 - `invalid`: lines that aren't a session, or that Hermes rejects.
-- `failed`: sessions in a batch that failed for another reason, such as a
-  write lock held past Hermes' retry. The run exits 1 when any failed; run it
+- `failed`: sessions that failed for another reason, such as a write lock
+  held past Hermes' retry. A batch that raises is retried one session at a
+  time, so only the sessions that fail again are counted. The run exits 1 when any failed; run it
   again to retry them.
 
 A profile the target doesn't have is skipped and reported with

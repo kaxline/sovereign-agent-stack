@@ -10,6 +10,13 @@ the stack under another app.
 
 ### Changes
 
+- `scripts/sessions.sh import` no longer fails a whole batch when a session's
+  title is already in the target (CR 0039 R5). Hermes keeps titles unique, so
+  one clash rolled back up to 500 sessions, and running the import again
+  failed the same way. Such a session is now imported under its title plus
+  ` (<last 12 characters of the id>)` and listed under the new `renamed` and
+  `renamed_ids` fields of the profile line (`renamed` also in the done line).
+  A batch that still raises is retried one session at a time.
 - `addon.sh enable twenty` generates `TWENTY_ENCRYPTION_KEY` and
   `TWENTY_DB_PASSWORD` when `.env` has none (CR 0043), and `enable vikunja`
   generates `VIKUNJA_SECRET`. Only `setup.sh` wrote them before, so on a

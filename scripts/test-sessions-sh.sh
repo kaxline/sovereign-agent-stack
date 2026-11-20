@@ -2,8 +2,10 @@
 # scripts/sessions.sh export and import between two synthetic Hermes homes, in
 # throwaway containers of the pinned image (SESSIONS_PY): ids, message counts,
 # parent links and archived rows survive; a profile the target lacks is
-# reported; deleted, oversized and malformed entries are counted; a second
-# import imports nothing; output never carries titles or message text.
+# reported; deleted, oversized and malformed entries are counted; a title the
+# target or an earlier session already holds gets Hermes' id-tail suffix and
+# is counted as renamed; a batch that raises is retried one session at a time;
+# a second import imports nothing; output never carries titles or message text.
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -74,6 +76,9 @@ assert db.import_sessions([{"id": "s-deleted", "source": "cli", "started_at": ti
                             "messages": [{"role": "user", "content": "x"}]}])["ok"]
 db.delete_session("s-deleted")
 assert retired_session(db, "s-deleted"), "delete_session did not fence the id"
+# A local chat whose title the source's s-parent also has (CR 0039 R5).
+assert db.import_sessions([{"id": "t-local", "source": "cli", "title": "SECRET-TITLE s-parent",
+                            "started_at": time.time(), "messages": [{"role": "user", "content": "x"}]}])["ok"]
 PY
 
 out="${tmp}/out"
@@ -95,16 +100,19 @@ SESSIONS_PY="$(py_in "$src")" "${ROOT}/scripts/sessions.sh" export --dest "$out"
 $(py_in "$src") -c 'import json; print(json.dumps({"id": "s-huge", "messages": [{"role": "user", "content": "x"}] * 10001}))' \
   >> "${out}/default.jsonl"
 printf 'not json\n' >> "${out}/default.jsonl"
+# A session whose title s-arch, earlier in the same import, already takes.
+$(py_in "$src") -c 'import json, time; print(json.dumps({"id": "s-dup", "source": "cli", "title": "SECRET-TITLE s-arch", "started_at": time.time(), "messages": [{"role": "user", "content": "SECRET-TEXT dup"}]}))' \
+  >> "${out}/default.jsonl"
 
 SESSIONS_PY="$(py_in "$dst")" "${ROOT}/scripts/sessions.sh" import --from "$out" --json \
   > "${tmp}/import.jsonl" 2> "${tmp}/import.err" || { cat "${tmp}/import.err" >&2; fail "import exited non-zero"; }
-grep -q '^{"phase":"profile","profile":"default","sessions":6,"imported":3,"skipped":0,"detached":0,"refused":1,"too_large":1,"invalid":1,"failed":0,"refused_ids":\["s-deleted"\],"too_large_ids":\["s-huge"\]' \
+grep -q '^{"phase":"profile","profile":"default","sessions":7,"imported":4,"skipped":0,"detached":0,"renamed":2,"refused":1,"too_large":1,"invalid":1,"failed":0,"refused_ids":\["s-deleted"\],"too_large_ids":\["s-huge"\],"invalid_ids":\[\],"failed_ids":\[\],"renamed_ids":\["s-parent","s-dup"\]}$' \
   "${tmp}/import.jsonl" || fail "import default line: $(cat "${tmp}/import.jsonl")"
 grep -q '^{"phase":"profile","profile":"coder","sessions":2,"imported":2,' "${tmp}/import.jsonl" \
   || fail "import coder line"
 grep -qxF '{"phase":"profile","profile":"writer","sessions":1,"status":"profile_missing"}' "${tmp}/import.jsonl" \
   || fail "writer not reported profile_missing"
-grep -q '^{"phase":"done","action":"import","imported":5,"skipped":0,"detached":0,"refused":1,"too_large":1,"invalid":1,"failed":0,"profile_missing":\["writer"\]}$' "${tmp}/import.jsonl" \
+grep -q '^{"phase":"done","action":"import","imported":6,"skipped":0,"detached":0,"renamed":2,"refused":1,"too_large":1,"invalid":1,"failed":0,"profile_missing":\["writer"\]}$' "${tmp}/import.jsonl" \
   || fail "import done line: $(tail -1 "${tmp}/import.jsonl")"
 [ ! -e "${dst}/profiles/writer" ] || fail "import created the missing profile"
 if grep -q 'SECRET-' "${tmp}/export.jsonl" "${tmp}/import.jsonl" "${tmp}/export.err" "${tmp}/import.err"; then
@@ -125,18 +133,53 @@ for name, keep in (("state.db", {"s-parent", "s-child", "s-arch"}), ("profiles/c
     s1, m1 = rows(f"/opt/data/src/{name}")
     s2, m2 = rows(f"/opt/data/dst/{name}")
     for sid in keep:
-        assert s1[sid] == s2[sid], (name, sid, s1[sid], s2[sid])
+        assert s1[sid][:2] == s2[sid][:2], (name, sid, s1[sid], s2[sid])
         assert m1[sid] == m2[sid], (name, sid, m1[sid], m2[sid])
 s2, m2 = rows("/opt/data/dst/state.db")
 assert s2["s-child"][1] == "s-parent", s2["s-child"]
+assert s2["s-child"][2] == "SECRET-TITLE s-child", s2["s-child"]
+assert s2["t-local"][2] == "SECRET-TITLE s-parent", s2["t-local"]
+assert s2["s-parent"][2] == "SECRET-TITLE s-parent (s-parent)", s2["s-parent"]
+assert s2["s-arch"][2] == "SECRET-TITLE s-arch", s2["s-arch"]
+assert s2["s-dup"][2] == "SECRET-TITLE s-arch (s-dup)", s2["s-dup"]
 assert m2["s-arch"] == (4, 2), m2["s-arch"]
 assert "s-deleted" not in s2 and "s-huge" not in s2
 PY
 
 SESSIONS_PY="$(py_in "$dst")" "${ROOT}/scripts/sessions.sh" import --from "$out" --json \
   > "${tmp}/again.jsonl" 2> /dev/null || fail "second import exited non-zero"
-grep -q '^{"phase":"done","action":"import","imported":0,"skipped":5,' "${tmp}/again.jsonl" \
+grep -q '^{"phase":"done","action":"import","imported":0,"skipped":6,"detached":0,"renamed":0,' "${tmp}/again.jsonl" \
   || fail "second import done line: $(tail -1 "${tmp}/again.jsonl")"
+
+# A batch that raises is retried one session at a time, so only the session
+# that raises again is failed. A stub store stands in for SessionDB.
+docker run --rm -i -u hermes -v "${ROOT}/scripts/lib:/lib-stack:ro" -w /opt/hermes \
+  --entrypoint /opt/hermes/.venv/bin/python "$HERMES_IMAGE" - <<'PY' || fail "batch retry"
+import sqlite3, sys
+sys.path.insert(0, "/lib-stack")
+import sessions_move as sm
+
+class Stub:
+    calls = []
+    def import_sessions(self, sessions):
+        ids = [s["id"] for s in sessions]
+        self.calls.append(ids)
+        if "bad" in ids:
+            raise sqlite3.IntegrityError("UNIQUE constraint failed")
+        return {"ok": True, "imported": len(ids), "skipped": 0, "detached": 0, "imported_ids": ids}
+
+result = {k: 0 for k in ("imported", "skipped", "detached", "renamed", "invalid", "failed")}
+result.update(invalid_ids=[], failed_ids=[], renamed_ids=[])
+def add(kind, sid):
+    result[kind] += 1
+    result[kind + "_ids"].append(sid)
+db = Stub()
+batch = [(sid, {"id": sid}) for sid in ("a", "bad", "c")]
+sm._import_batch(db, batch, result, add, renamed={"a", "bad"})
+assert db.calls == [["a", "bad", "c"], ["a"], ["bad"], ["c"]], db.calls
+assert result["imported"] == 2 and result["failed_ids"] == ["bad"], result
+assert result["renamed_ids"] == ["a"], result
+PY
 
 SESSIONS_PY="$(py_in "$dst")" "${ROOT}/scripts/sessions.sh" import --from "${tmp}/nowhere" --json > "${tmp}/bad.jsonl" 2> /dev/null \
   && fail "import without a manifest succeeded"
