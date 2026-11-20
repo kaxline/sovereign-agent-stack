@@ -120,4 +120,37 @@ out="$(run --from v0.3.14 --to v0.3.16 --json)"
 [ "$(cat "${stack}/up.args")" = "--reload-hermes" ] || fail "no-bitwarden args: $(cat "${stack}/up.args")"
 case "$out" in *'"needs_user":[]'*) ;; *) fail "no-bitwarden needs_user: $out" ;; esac
 
+# --- v0.3.17 -------------------------------------------------------------------
+# A docker stub: compose config names the project, one bitwarden_signin volume
+# whose options come from $VOL_OPTS.
+new_stack v317
+cp "${ROOT}"/upgrades/v*.sh "${stack}/upgrades/"
+mkdir -p "${stack}/bin"
+cat > "${stack}/bin/docker" << 'EOF'
+#!/bin/sh
+case "$1 $2" in
+  "compose config") echo "name: proj" ;;
+  "volume ls") echo proj_bitwarden_signin ;;
+  "volume inspect") echo "$VOL_OPTS" ;;
+esac
+EOF
+chmod +x "${stack}/bin/docker"
+printf '%s\n' 'OPENCODE_MCP_ENABLED=1' 'BITWARDEN_ENABLED=1' \
+  'NEO4J_USERNAME=neo4j                  # Neo4j requires the admin user' \
+  'NEO4J_PASSWORD=pw#1   # >= 8 chars' "GPTR_MCP_URL='http://g:8000/sse # kept'" \
+  'LLM_BINDING_API_KEY=local-llm' > "${stack}/.env"
+v317() { (cd "$stack" && PATH="${stack}/bin:${PATH}" VOL_OPTS="$1" bash scripts/upgrade.sh --from v0.3.16 --to v0.3.17 --json); }
+out="$(v317 'uid=1000,gid=1000,mode=0700,size=1m')" || fail "v0.3.17 hook failed: $out"
+[ "$(cat "${stack}/up.args")" = "--build opencode-mcp" ] || fail "v0.3.17 up.sh args: $(cat "${stack}/up.args")"
+case "$out" in *'"needs_user":[{"id":"bitwarden-signin-volume"'*'proj_bitwarden_signin'*) ;; *) fail "v0.3.17 volume needs_user: $out" ;; esac
+grep -qx 'NEO4J_USERNAME=neo4j' "${stack}/.env" || fail "NEO4J_USERNAME comment kept: $(cat "${stack}/.env")"
+grep -qx 'NEO4J_PASSWORD=pw#1' "${stack}/.env" || fail "NEO4J_PASSWORD: $(cat "${stack}/.env")"
+grep -qx "GPTR_MCP_URL='http://g:8000/sse # kept'" "${stack}/.env" || fail "quoted value changed: $(cat "${stack}/.env")"
+grep -qx 'LLM_BINDING_API_KEY=local-llm' "${stack}/.env" || fail "plain value changed"
+# The new volume options ask for nothing; a second run changes nothing.
+cp "${stack}/.env" "${tmp}/env.before"
+out="$(v317 'mode=1777,size=1m')"
+case "$out" in *'"needs_user":[]'*) ;; *) fail "v0.3.17 new volume needs_user: $out" ;; esac
+cmp -s "${stack}/.env" "${tmp}/env.before" || fail "v0.3.17 not idempotent on .env"
+
 echo "ok upgrade.sh"
