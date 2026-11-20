@@ -1,6 +1,6 @@
 # make doctor's Actual Budget block. Sourced by scripts/doctor.sh, which
-# provides ok, warn, bad, env_get and has_profile and runs from the repo root;
-# scripts/test-actual-doctor.sh runs it against stubs.
+# runs from the repo root and provides the helpers in doctor-kit.sh;
+# scripts/test-actual-doctor.sh sources doctor-kit.sh and runs it against stubs.
 # shellcheck shell=bash
 
 # Health of a compose service: healthy, starting, a state, or empty when it

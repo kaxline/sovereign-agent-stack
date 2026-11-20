@@ -9,12 +9,9 @@ PASS=0
 FAIL=0
 WARN=0
 
-ok() { printf '  OK  %s\n' "$1"; PASS=$((PASS + 1)); }
-bad() { printf ' FAIL %s\n' "$1"; FAIL=$((FAIL + 1)); }
-warn() { printf ' WARN %s\n' "$1"; WARN=$((WARN + 1)); }
-
-# shellcheck source=lib/env.sh
-source "$ROOT/scripts/lib/env.sh"
+# ok, bad, warn, has_profile, svc_running; sources lib/env.sh.
+# shellcheck source=lib/doctor-kit.sh
+source "$ROOT/scripts/lib/doctor-kit.sh"
 # shellcheck source=lib/python.sh
 source "$ROOT/scripts/lib/python.sh"
 # shellcheck source=lib/data-root.sh
@@ -57,16 +54,6 @@ doctor_check() {
 }
 
 profiles_csv="$(env_get COMPOSE_PROFILES core)"
-IFS=',' read -r -a PROFILES <<< "$profiles_csv"
-has_profile() {
-  local want="$1"
-  local p
-  for p in "${PROFILES[@]}"; do
-    p="$(echo "$p" | tr -d '[:space:]')"
-    [[ "$p" == "$want" ]] && return 0
-  done
-  return 1
-}
 
 echo "=== Local agent stack doctor ==="
 echo "Profiles: ${profiles_csv}"
@@ -323,7 +310,7 @@ if has_profile core; then
     fi
   fi
   if docker compose version >/dev/null 2>&1 \
-    && docker compose ps --status running hermes 2>/dev/null | grep -q hermes; then
+    && svc_running hermes; then
     if docker compose exec -T hermes python3 - <<'PY'
 import sys
 sys.path.insert(0, "/opt/hermes")
@@ -365,7 +352,7 @@ fi
 if env_true WEB_BROWSER_ENABLED; then web_browser_on=1; else web_browser_on=0; fi
 if has_profile core \
   && docker compose version >/dev/null 2>&1 \
-  && docker compose ps --status running hermes 2>/dev/null | grep -q hermes; then
+  && svc_running hermes; then
   echo
   echo "--- Browser ---"
   if [ "$web_browser_on" -eq 1 ]; then
@@ -425,7 +412,7 @@ if has_profile core; then
       ok "no profile pinned gateway.standalone: true"
     fi
     unset _pinned
-    if docker compose ps --status running hermes 2>/dev/null | grep -q hermes; then
+    if svc_running hermes; then
       _browser_port="$(env_get HERMES_BROWSER_API_PORT 8644)"
       for _check in "8642/health:default listener" "8642/p/api-server/health:api-server at /p/api-server" \
         "8642/p/browser/health:browser at /p/browser" "8643/health:compat proxy 8643 -> api-server" \
@@ -442,7 +429,7 @@ if has_profile core; then
     fi
   fi
   if env_true HERMES_SIGNAL_ENABLED \
-    && docker compose ps --status running hermes 2>/dev/null | grep -q hermes; then
+    && svc_running hermes; then
     # Two Signal adapters in one gateway process fight over the account lock.
     if docker compose exec -T hermes /opt/hermes/.venv/bin/python - <<'PY' >/dev/null 2>&1
 import sys
@@ -524,7 +511,7 @@ if [[ "$gptr_on" -eq 1 ]]; then
     bad "GPTR_MCP_ENABLED=1 but 'research' not in COMPOSE_PROFILES — run make ensure-local"
   fi
   if docker info >/dev/null 2>&1; then
-    if docker compose ps --status running gptr-mcp 2>/dev/null | grep -q gptr-mcp; then
+    if svc_running gptr-mcp; then
       ok "gptr-mcp container is running"
     else
       warn "gptr-mcp not running — make up"
@@ -540,7 +527,7 @@ if has_profile coding; then
   else
     warn "coding profile on but OPENCODE_MCP_ENABLED is not 1 — Hermes will not register coding_* tools"
   fi
-  if docker compose ps --status running --services 2>/dev/null | grep -qx opencode-mcp; then
+  if svc_running opencode-mcp; then
     ok "opencode-mcp container is running"
   else
     warn "opencode-mcp is not running (start with coding profile: docker compose up -d opencode-mcp)"
@@ -615,7 +602,7 @@ if [[ "$signal_enabled" -eq 1 ]]; then
     fi
   fi
   if docker info >/dev/null 2>&1; then
-    if docker compose ps --status running hermes 2>/dev/null | grep -q hermes; then
+    if svc_running hermes; then
       if docker compose exec -T hermes grep -q 'assistant-stack: reject undeliverable cron origin' /opt/hermes/cron/scheduler_delivery.py 2>/dev/null \
         || docker compose exec -T hermes grep -q 'assistant-stack: reject undeliverable cron origin' /opt/hermes/cron/scheduler.py 2>/dev/null; then
         if docker compose exec -T hermes grep -q 'assistant-stack: cron synthesize Signal' /opt/hermes/cron/scheduler.py 2>/dev/null \
@@ -628,7 +615,7 @@ if [[ "$signal_enabled" -eq 1 ]]; then
         warn "Hermes cron Signal patches missing — make hermes-recreate"
       fi
     fi
-    if docker compose ps --status running signal-cli 2>/dev/null | grep -q signal-cli; then
+    if svc_running signal-cli; then
       if docker compose exec -T hermes curl -sf --max-time 5 http://signal-cli:8080/api/v1/check >/dev/null 2>&1; then
         ok "signal-cli healthy (reachable from hermes)"
       elif docker compose exec -T signal-cli bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080' >/dev/null 2>&1; then
@@ -732,7 +719,7 @@ if [[ "$buzz_enabled" -eq 1 ]]; then
     fi
   done
   if docker info >/dev/null 2>&1 \
-    && docker compose ps --status running hermes 2>/dev/null | grep -q hermes; then
+    && svc_running hermes; then
     if docker compose exec -T hermes buzz --help >/dev/null 2>&1; then
       ok "hermes container can exec buzz"
     else
@@ -794,7 +781,7 @@ if [[ "$caldav_on" -eq 1 ]] || has_profile calendar; then
     done
   done
   if docker info >/dev/null 2>&1; then
-    if docker compose ps --status running caldav-mcp 2>/dev/null | grep -q caldav-mcp; then
+    if svc_running caldav-mcp; then
       ok "caldav-mcp container is running"
     else
       warn "caldav-mcp not running — make up with calendar in COMPOSE_PROFILES"
@@ -806,7 +793,7 @@ fi
 if env_true SQL_MCP_ENABLED; then sql_on=1; else sql_on=0; fi
 db_running=0
 if docker info >/dev/null 2>&1 \
-  && docker compose ps --status running postgres-db 2>/dev/null | grep -q postgres-db; then
+  && svc_running postgres-db; then
   db_running=1
 fi
 if has_profile db || [[ "$sql_on" -eq 1 || "$db_running" -eq 1 ]]; then
@@ -898,7 +885,7 @@ if has_profile db || [[ "$sql_on" -eq 1 || "$db_running" -eq 1 ]]; then
       warn "postgres-db not running — make up with db or todo in COMPOSE_PROFILES"
     fi
     for svc in sql-mcp-ro sql-mcp-rw; do
-      if docker compose ps --status running "$svc" 2>/dev/null | grep -q "$svc"; then
+      if svc_running "$svc"; then
         ok "${svc} container is running"
       elif [[ "$sql_on" -eq 1 ]]; then
         warn "${svc} not running — Hermes SQL tools will fail to connect"
@@ -951,9 +938,9 @@ if has_profile todo || [[ "$vikunja_on" -eq 1 ]]; then
     warn "Vikunja MCP tokens not set — after make up, run make todo-init"
   fi
   if docker info >/dev/null 2>&1; then
-    if docker compose ps --status running vikunja 2>/dev/null | grep -q vikunja; then
+    if svc_running vikunja; then
       ok "vikunja container is running"
-      if docker compose ps --status running vikunja-proxy 2>/dev/null | grep -q vikunja-proxy; then
+      if svc_running vikunja-proxy; then
         ok "vikunja-proxy container is running"
       else
         warn "vikunja-proxy not running — make up (it publishes the web UI)"
@@ -1199,7 +1186,7 @@ if has_profile mail || [[ "$mail_on" -eq 1 ]]; then
     bad "  re-run hermes-api-bootstrap and hermes-browser-bootstrap (keeps mail away from cron jobs that don't ask for it); give jobs with their own tool list one without mail. See docs/email.md"
   fi
   if docker info >/dev/null 2>&1; then
-    if docker compose ps --status running mail-mcp 2>/dev/null | grep -q mail-mcp; then
+    if svc_running mail-mcp; then
       ok "mail-mcp container is running"
       # mail-mcp is built locally and `make up` doesn't rebuild it, so code
       # changes can sit unused. The watermark route is the newest addition.
@@ -1302,7 +1289,7 @@ if has_profile messages || [[ "$messages_on" -eq 1 ]]; then
     fi
   fi
   if docker info >/dev/null 2>&1; then
-    if docker compose ps --status running messages-mcp 2>/dev/null | grep -q messages-mcp; then
+    if svc_running messages-mcp; then
       ok "messages-mcp container is running"
     elif has_profile messages; then
       warn "messages-mcp not running — make up with messages in COMPOSE_PROFILES"
@@ -1343,7 +1330,7 @@ if has_profile mail-drafts || [[ "$drafts_on" -eq 1 ]]; then
     bad "api-server registers the mail drafts MCP — run make hermes-reload"
   fi
   if docker info >/dev/null 2>&1; then
-    if docker compose ps --status running mail-drafts-mcp 2>/dev/null | grep -q mail-drafts-mcp; then
+    if svc_running mail-drafts-mcp; then
       ok "mail-drafts-mcp container is running"
     elif has_profile mail-drafts; then
       warn "mail-drafts-mcp not running — make up with mail-drafts in COMPOSE_PROFILES"

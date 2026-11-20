@@ -37,12 +37,8 @@ export PATH="$tmp/bin:$PATH"
 
 cat > "$tmp/harness.sh" <<'SH'
 set -euo pipefail
-ok() { printf '  OK  %s\n' "$1"; }
-bad() { printf ' FAIL %s\n' "$1"; }
-warn() { printf ' WARN %s\n' "$1"; }
-# shellcheck source=lib/env.sh
-source "${ROOT}/scripts/lib/env.sh"
-has_profile() { [[ ",$(env_get COMPOSE_PROFILES core)," == *",$1,"* ]]; }
+# shellcheck source=lib/doctor-kit.sh
+source "${ROOT}/scripts/lib/doctor-kit.sh"
 # shellcheck source=lib/doctor-twenty.sh
 source "${ROOT}/scripts/lib/doctor-twenty.sh"
 doctor_twenty

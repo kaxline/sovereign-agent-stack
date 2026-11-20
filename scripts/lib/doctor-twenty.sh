@@ -1,6 +1,6 @@
 # make doctor's CRM (Twenty) block. Sourced by scripts/doctor.sh, which
-# provides ok, warn, bad, env_get and has_profile and runs from the repo root;
-# scripts/test-twenty-doctor.sh runs it against stubs.
+# runs from the repo root and provides the helpers in doctor-kit.sh;
+# scripts/test-twenty-doctor.sh sources doctor-kit.sh and runs it against stubs.
 # shellcheck shell=bash
 
 # A string field from an instance file, without a JSON parser.
