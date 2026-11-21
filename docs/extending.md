@@ -15,13 +15,12 @@ interface and its current implementation.
 bash, the tools macOS and Linux ship in `/bin` and `/usr/bin` (`grep`, `sed`,
 `awk`, `curl`, `openssl`, `ssh-keygen`), and the container engine. They need
 no `python3`, `node` or `make` on the host: their Python runs in the pinned
-Hermes image, and the n8n credentials step runs Node in the n8n image. Both
-images are pulled anyway, so the first such step may spend a few minutes
-pulling. Run the scripts with `bash` directly, as the `make` targets do.
+Hermes image, which is pulled anyway, so the first such step may spend a few
+minutes pulling. Run the scripts with `bash` directly, as the `make` targets do.
 
 Each container runs as the calling user, with the repo mounted at its own host
-path. `STACK_PYTHON=host` runs the host's `python3` instead and `N8N_NODE=host`
-the host's `node`, for development and tests. `scripts/test-no-host-python.sh`
+path. `STACK_PYTHON=host` runs the host's `python3` instead, for development
+and tests. `scripts/test-no-host-python.sh`
 checks the first-run scripts for host `python3` and `node` calls, and runs the
 container path with them removed from `PATH`.
 

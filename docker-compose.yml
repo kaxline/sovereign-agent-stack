@@ -13,7 +13,7 @@ x-n8n: &service-n8n
   # merges it with `<<: *n8n-env` instead of replacing it.
   # Compose interpolates every service, including ones whose profile is off,
   # so a `:?` here would make these keys mandatory on installs without n8n.
-  # scripts/sync-n8n-credentials.sh (make ensure-local) refuses to go on when
+  # scripts/check-n8n-keys.sh (make ensure-local) refuses to go on when
   # automation is on and either key is empty, and make doctor checks them.
   environment: &n8n-env
     DB_TYPE: sqlite
@@ -1188,7 +1188,9 @@ services:
     command: ["--access-mode=unrestricted", "--transport=sse", "--sse-host=0.0.0.0", "--sse-port=8000"]
 
   # ----------------------------------------------------------------------
-  # n8n-import — one-shot seed of demo credentials + workflows (starter-kit pattern)
+  # n8n-import — one-shot seed of demo credentials + workflows (starter-kit pattern).
+  # It generates the credentials itself; make n8n-reimport runs it against an
+  # existing store.
   # Profile: automation
   # Seeds only when n8n's SQLite database does not exist yet, so it never
   # opens a database a running n8n holds. It must mount the same

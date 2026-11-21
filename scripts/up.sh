@@ -53,7 +53,7 @@ mkdir -p compose/postgres/services
 ./scripts/sync-buzz-profile.sh
 ./scripts/sync-terminal-backend.sh
 ./scripts/sync-profiles.sh
-./scripts/sync-n8n-credentials.sh
+./scripts/check-n8n-keys.sh
 
 [[ "$PREPARE_ONLY" == 1 ]] && exit 0
 

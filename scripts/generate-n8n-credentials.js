@@ -1,13 +1,11 @@
 #!/usr/bin/env node
 /**
- * Regenerate n8n/demo-data/credentials/*.json when secrets change.
+ * Write n8n's demo credentials, encrypted with N8N_ENCRYPTION_KEY, as one JSON
+ * file each into N8N_CREDENTIALS_OUT. n8n/import-demo-data.sh runs it inside
+ * the n8n-import container and imports the files from there.
  *
- * Usage:
- *   N8N_ENCRYPTION_KEY=... LIGHTRAG_API_KEY=... NEO4J_PASSWORD=... \
- *     node scripts/generate-n8n-credentials.js
- *
- * N8N_CREDENTIALS_OUT sets the output directory (n8n-import uses it to write
- * into the container's /tmp). Without it the files go to n8n/demo-data/credentials.
+ *   N8N_CREDENTIALS_OUT=/tmp/n8n-credentials N8N_ENCRYPTION_KEY=... \
+ *     LIGHTRAG_API_KEY=... NEO4J_PASSWORD=... node generate-n8n-credentials.js
  */
 const crypto = require("crypto");
 const fs = require("fs");
@@ -18,7 +16,10 @@ const lightragApiKey = process.env.LIGHTRAG_API_KEY;
 const neo4jPassword = process.env.NEO4J_PASSWORD || "change-me-please";
 const neo4jUser = process.env.NEO4J_USERNAME || "neo4j";
 
+const outDir = process.env.N8N_CREDENTIALS_OUT;
+
 const missing = [
+  ["N8N_CREDENTIALS_OUT", outDir],
   ["N8N_ENCRYPTION_KEY", encryptionKey],
   ["LIGHTRAG_API_KEY", lightragApiKey],
 ]
@@ -48,9 +49,6 @@ function encrypt(data) {
   return Buffer.concat([Buffer.from("Salted__"), salt, encrypted]).toString("base64");
 }
 
-const outDir =
-  process.env.N8N_CREDENTIALS_OUT ||
-  path.join(__dirname, "..", "n8n", "demo-data", "credentials");
 fs.mkdirSync(outDir, { recursive: true });
 const now = new Date().toISOString();
 

@@ -5,7 +5,7 @@
 # v0.3.11 and docs/extending.md.
 #
 # 1. Source check: the scripts on that path never call python3 or node
-#    directly, outside the STACK_PYTHON=host / N8N_NODE=host branches.
+#    directly, outside the STACK_PYTHON=host branch.
 # 2. Live check, when docker and the pinned Hermes image are available: with a
 #    PATH built from /bin and /usr/bin minus python3, node and make, plus
 #    docker, stack_python runs a script and sync-terminal-backend.sh writes
@@ -21,7 +21,7 @@ fail=0
 bad() { printf 'FAIL %s\n' "$*" >&2; fail=1; }
 
 FIRST_RUN="scripts/setup.sh scripts/sync-profiles.sh scripts/sync-signal-profile.sh
-scripts/sync-buzz-profile.sh scripts/sync-terminal-backend.sh scripts/sync-n8n-credentials.sh
+scripts/sync-buzz-profile.sh scripts/sync-terminal-backend.sh scripts/check-n8n-keys.sh
 scripts/todo.sh scripts/crm.sh scripts/vault.sh scripts/budget.sh scripts/db.sh scripts/lib/env.sh scripts/lib/data-root.sh
 scripts/lib/hermes-yaml.sh scripts/addon.sh scripts/doctor.sh"
 
@@ -30,9 +30,8 @@ scripts/lib/hermes-yaml.sh scripts/addon.sh scripts/doctor.sh"
 cmd='(^|[;&|(]|\bthen|\bdo|\belse|\bif|\belif|\bwhile|\buntil|!)[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*(python3?|node)([[:space:]]|$)'
 for f in $FIRST_RUN; do
   [[ -f "$f" ]] || { bad "${f} is listed but missing"; continue; }
-  # Drop comments, then the two host-mode branches, which are opt-in.
-  hits="$(sed -e 's/^[[:space:]]*#.*//' "$f" | grep -nE "$cmd" \
-    | grep -vE 'N8N_NODE|node "\$@"' || true)"
+  # Drop comments, then the host-mode branch, which is opt-in.
+  hits="$(sed -e 's/^[[:space:]]*#.*//' "$f" | grep -nE "$cmd" || true)"
   [[ -z "$hits" ]] || bad "${f} runs host python3/node: ${hits}"
   if grep -nE '^[[:space:]]*require_python3' "$f" >/dev/null; then
     bad "${f} calls require_python3"

@@ -48,7 +48,7 @@ The volume name is `<compose project>_n8n_storage`; check it with `docker volume
 
 ## First-time n8n setup
 
-1. Run `./scripts/setup.sh --automation` (add `--rag` if you want the LightRAG/Neo4j demos). Setup sets secrets and regenerates encrypted credentials under `n8n/demo-data/credentials/`.
+1. Run `./scripts/setup.sh --automation` (add `--rag` if you want the LightRAG/Neo4j demos). Setup generates the n8n keys in `.env`.
 
 2. Start the stack: `make up`
 
@@ -64,28 +64,22 @@ The volume name is `<compose project>_n8n_storage`; check it with `docker volume
 
 ## Credentials
 
-`n8n-import` does not read `n8n/demo-data/credentials/` on the host. It writes its own copy to `/tmp/n8n-credentials` in the container, so enabling n8n needs no host-side step.
+On the first `make up` with `automation` on, `n8n-import` runs `scripts/generate-n8n-credentials.js` in the n8n image, which writes the credentials encrypted with `N8N_ENCRYPTION_KEY` to `/tmp/n8n-credentials` in the container, and imports them. Nothing is written on the host. `make up` stops before starting anything if `N8N_ENCRYPTION_KEY`, `N8N_USER_MANAGEMENT_JWT_SECRET` or `LIGHTRAG_API_KEY` is empty, and `make doctor` reports them.
 
-The host copy under `n8n/demo-data/credentials/` is **gitignored**, used for re-importing into an existing database (below), and created locally by `scripts/sync-n8n-credentials.sh`, which runs Node in the n8n image, so the host needs none (`N8N_NODE=host` uses the host's `node`). `./scripts/setup.sh` rewrites the files when `automation` is on, and `make up` writes them if `automation` is on and none exist yet. With `automation` off, neither runs. The files are encrypted with `N8N_ENCRYPTION_KEY` so they line up with your `.env` secrets. Never commit them.
+Releases up to v0.3.17 also wrote a copy under `n8n/demo-data/credentials/` on every setup. Nothing reads it now; delete it if you like.
 
 | Credential | Type | Matches `.env` key |
 |---|---|---|
 | LightRAG API | Header Auth (`X-API-Key`) | `LIGHTRAG_API_KEY` |
 | Neo4j | Basic Auth | `NEO4J_USERNAME` / `NEO4J_PASSWORD` |
 
-If you change `LIGHTRAG_API_KEY`, `NEO4J_PASSWORD`, or `N8N_ENCRYPTION_KEY` after first boot, regenerate and re-import:
+If you change `LIGHTRAG_API_KEY` or `NEO4J_PASSWORD` after first boot, re-import the credentials:
 
 ```bash
-# Regenerate encrypted credential JSON (reads from your .env)
-export $(grep -E '^(N8N_ENCRYPTION_KEY|LIGHTRAG_API_KEY|NEO4J_PASSWORD|NEO4J_USERNAME)=' .env | xargs)
-node scripts/generate-n8n-credentials.js
-
-# Re-import credentials into the existing database, with n8n stopped
-docker compose stop n8n
-docker compose run --rm --no-deps --entrypoint /bin/sh n8n-import -c \
-  'n8n import:credentials --separate --input=/demo-data/credentials'
-docker compose up -d n8n
+make n8n-reimport
 ```
+
+It stops n8n, regenerates the credentials from `.env` inside the `n8n-import` container, imports them over the existing ones, and starts n8n again.
 
 `N8N_ENCRYPTION_KEY` has to match the key in `/home/node/.n8n/config` on the volume. n8n 2.x refuses to start when they differ ("Mismatching encryption keys"). 1.x starts with the `.env` key and then can't decrypt credentials saved under the other one.
 
@@ -104,14 +98,10 @@ docker volume rm assistant_postgres_storage   # optional
 
 Downstream overlays: bind `n8n-import`'s `/home/node/.n8n` to the same place as n8n's, and drop any override of the `postgres` service. The service is kept, under a profile nothing enables, only so those overrides still parse; it will be removed in a later release.
 
-An existing install never got the starter workflows in n8n. To add them (IDs that already exist are overwritten):
+An existing install never got the starter workflows in n8n. To add them with the demo credentials (IDs that already exist are overwritten):
 
 ```bash
-./scripts/setup.sh            # regenerates n8n/demo-data/credentials
-docker compose stop n8n
-docker compose run --rm --no-deps --entrypoint /bin/sh n8n-import -c \
-  'n8n import:credentials --separate --input=/demo-data/credentials && n8n import:workflow --separate --input=/demo-data/workflows'
-docker compose up -d n8n
+make n8n-reimport WORKFLOWS=1
 ```
 
 ## HTTP Request patterns

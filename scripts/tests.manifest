@@ -47,6 +47,7 @@ scripts/test-browser-unresolvable-host.py       image
 scripts/test-budget-sh.sh                       ci
 scripts/test-buzz-sync-gate.sh                  ci
 scripts/test-caldav-foreign-entries.py          image
+scripts/test-check-n8n-keys.sh                  ci
 scripts/test-client-context.py                  ci image
 scripts/test-client-gateway-connection.py       image
 scripts/test-client-gateway-hermes.py           image
@@ -123,7 +124,6 @@ scripts/test-send-message-tool.py               image
 scripts/test-sessions-sh.sh                     docker image
 scripts/test-sql-mcp-registration.sh            ci
 scripts/test-status-sh.sh                       ci
-scripts/test-sync-n8n-credentials.sh            ci
 scripts/test-sync-profiles.sh                   ci
 scripts/test-synthetic-mail.py
 scripts/test-terminal-backend-compose.py        ci docker

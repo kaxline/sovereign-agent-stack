@@ -51,6 +51,19 @@ the stack under another app.
   a broken pipe or a reset instead of the error reply. The broker already
   read it for an oversize body and for a request its TCP checks (token,
   Origin, Content-Type) refused.
+- `scripts/setup.sh` and `make up` no longer write n8n's demo credentials to
+  `n8n/demo-data/credentials/` on the host, so they no longer pull the n8n
+  image or run Node for it. `n8n-import` has generated its own copy inside
+  the container since v0.3.13, and nothing read the host files except the
+  manual re-import. That is now `make n8n-reimport` (`WORKFLOWS=1` adds the
+  starter workflows), which generates them in the container.
+  `scripts/sync-n8n-credentials.sh` is replaced by `scripts/check-n8n-keys.sh`,
+  which keeps only the check that stops `make up` when automation is on and
+  a key is empty. `make doctor` no longer reports missing credential files,
+  and reports an empty `LIGHTRAG_API_KEY` when automation is on.
+  `N8N_NODE` is no longer read, so a `node` stub for
+  `generate-n8n-credentials.js` is no longer called. Files an earlier release
+  wrote under `n8n/demo-data/credentials/` stay gitignored and can be deleted.
 
 ## v0.3.17 — 2026-11-20
 

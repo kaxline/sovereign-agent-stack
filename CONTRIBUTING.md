@@ -38,14 +38,7 @@ Default: `COMPOSE_PROFILES=core`. Add with setup flags (`--rag`, `--calendar`, `
 
 ## Changing secrets
 
-If you rotate `LIGHTRAG_API_KEY`, `NEO4J_PASSWORD`, or `N8N_ENCRYPTION_KEY` after n8n has been initialized:
-
-```bash
-./scripts/sync-n8n-credentials.sh --force
-
-docker compose run --rm --entrypoint /bin/sh n8n-import -c \
-  'n8n import:credentials --separate --input=/demo-data/credentials'
-```
+If you rotate `LIGHTRAG_API_KEY` or `NEO4J_PASSWORD` after n8n has been initialized, run `make n8n-reimport` ([docs/n8n.md](docs/n8n.md#credentials)).
 
 ## Pull requests
 

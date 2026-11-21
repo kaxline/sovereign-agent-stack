@@ -1043,10 +1043,6 @@ fi
 # COMPOSE_PROFILES follows the *_ENABLED flags from here on (README.md#profiles).
 ./scripts/sync-profiles.sh
 
-# --- n8n credentials (automation only; make ensure-local writes them if
-# automation is turned on later) ---
-./scripts/sync-n8n-credentials.sh --force
-
 PROFILES_NOW="$(env_get_file .env COMPOSE_PROFILES core)"
 
 cat <<EOF

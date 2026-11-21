@@ -505,10 +505,10 @@ if has_profile automation; then
       *) ok "${key} is set" ;;
     esac
   done
-  if compgen -G "n8n/demo-data/credentials/*.json" >/dev/null; then
-    ok "n8n demo credentials exist"
-  else
-    bad "n8n demo credentials missing — run make ensure-local"
+  # n8n-import encrypts the demo credentials with it on a new store; rag
+  # checks it above.
+  if ! has_profile rag && [[ -z "$(env_get LIGHTRAG_API_KEY)" ]]; then
+    bad "LIGHTRAG_API_KEY is empty and automation is on — run ./scripts/setup.sh"
   fi
 fi
 if env_true GPTR_MCP_ENABLED; then gptr_on=1; else gptr_on=0; fi

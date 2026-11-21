@@ -2,7 +2,7 @@
 	bootstrap-buzz buzz-cli-install agent-create hermes-buzz-employee \
 	buzz-relay-start buzz-relay-stop buzz-relay-status buzz-relay-logs buzz-relay-restart \
 	buzz-admin \
-	corpus-create corpus-use corpus-list corpus-ingest corpus-destroy neo4j-reset-password \
+	corpus-create corpus-use corpus-list corpus-ingest corpus-destroy neo4j-reset-password n8n-reimport \
 	project-init project-index project-index-check project-sources-test bash32-test lint synthetic-mail-test synthetic-messages-test \
 	messages-index messages-index-doctor messages-index-chats messages-index-test \
 	messages-watch messages-notify-test messages-watch-test messages-app messages-app-test \
@@ -388,6 +388,16 @@ corpus-destroy:
 # created with another one (healthcheck auth failures). Restarts neo4j.
 neo4j-reset-password:
 	./scripts/reset-neo4j-password.sh
+
+# Re-imports n8n's demo credentials into its existing store, after
+# N8N_ENCRYPTION_KEY, LIGHTRAG_API_KEY or NEO4J_PASSWORD changed in .env.
+# n8n is stopped for the import and started again even when it fails.
+# WORKFLOWS=1 re-imports the starter workflows too. See docs/n8n.md.
+n8n-reimport:
+	docker compose stop n8n
+	@status=0; docker compose run --rm --no-deps n8n-import /scripts/import-demo-data.sh \
+		$(if $(filter 1,$(WORKFLOWS)),all,credentials) || status=$$?; \
+	docker compose up -d n8n; exit $$status
 
 # Per-project working dirs under ASSISTANT_DATA_ROOT/projects/. See docs/projects.md.
 #   make project-init PROJECT=my-project
