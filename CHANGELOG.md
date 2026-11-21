@@ -16,6 +16,14 @@ the stack under another app.
   a new one. Before, depending on the command, it was either replaced
   silently, dropping the rows of other corpora, or the command stopped with a
   Python traceback.
+- `addon.sh enable bitwarden` creates every folder `bitwarden-broker`
+  bind-mounts before `docker compose up`, so the first enable on a fresh
+  Podman install no longer fails (CR 0035). The add-on's new `prepare` hook
+  runs `vault.sh prepare`, which creates `instances/` in the add-on store and
+  `bw/`, `broker/`, `secrets/` and `broker-api/api-token` under
+  `BITWARDEN_HOST_DATA_DIR`, whatever `BITWARDEN_ENABLED` says. Modes match
+  `vault.sh pre-up`: `secrets/` 0711, the others 0700. A folder it can't
+  create fails enable at step `prepare` with the add-on left off.
 - `vault.sh add` without `--json` now waits for a manual-unlock account to
   sign in, as `add --json` does, instead of stopping at the broker's first
   `locked` row. A key Bitwarden refuses after that row is now removed with an

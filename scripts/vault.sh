@@ -73,6 +73,8 @@ Usage: scripts/vault.sh <command> [options]
 
   pre-up            Create the instance store's folder and bw/, broker/ and
                     secrets/ before docker compose up (make up runs it)
+  prepare [--json]  pre-up whatever BITWARDEN_ENABLED says, then api-token
+                    (addon.sh enable bitwarden runs it before compose up)
   api-token [--print]
                     Create the broker's API bearer token if it is missing, in
                     broker-api/api-token under the add-on's data dir (make
@@ -1340,11 +1342,10 @@ cmd_open() {
   fi
 }
 
-# Run by make up before docker compose up. Silent while BITWARDEN_ENABLED is off.
 # Every folder the broker mounts exists before compose starts it: on Linux,
-# Docker would create a missing one as root, which HERMES_UID cannot write.
-cmd_pre_up() {
-  env_true BITWARDEN_ENABLED || return 0
+# Docker would create a missing one as root, which HERMES_UID cannot write, and
+# Podman refuses to start the broker (CR 0035). broker-api/ is api-token's.
+broker_dirs() {
   ensure_store_dir
   local data new
   data="$(data_dir)"
@@ -1352,6 +1353,25 @@ cmd_pre_up() {
   if printf '%s\n' "$new" | grep -qxF "${data}/secrets"; then
     chmod_own 711 "${data}/secrets"
   fi
+}
+
+# Run by make up before docker compose up. Silent while BITWARDEN_ENABLED is off.
+cmd_pre_up() {
+  env_true BITWARDEN_ENABLED || return 0
+  broker_dirs
+}
+
+# The add-on's prepare hook: addon.sh enable runs it before it writes
+# BITWARDEN_ENABLED, so it does not read the flag. Creates what the broker
+# mounts from the add-on's data dir, the API token included.
+cmd_prepare() {
+  case "${1:-}" in
+    "") ;;
+    --json) JSON=1; JSON_DIE=1 ;;
+    *) usage >&2; exit 1 ;;
+  esac
+  broker_dirs
+  cmd_api_token
 }
 
 # The bearer token for the broker's API, in its own folder under the add-on's
@@ -1653,6 +1673,7 @@ case "${1:-}" in
   open) shift; cmd_open "$@" ;;
   up-hook) cmd_up_hook ;;
   pre-up) cmd_pre_up ;;
+  prepare) shift; cmd_prepare "$@" ;;
   api-token) shift; cmd_api_token "$@" ;;
   reload-plugins) cmd_reload_plugins ;;
   backup) shift; cmd_backup "$@" ;;
