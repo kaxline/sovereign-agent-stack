@@ -9,20 +9,21 @@ capability flags are installed at runtime, not edited.
 from __future__ import annotations
 
 import os
-import shutil
 from pathlib import Path
 
-ROOT = Path(os.environ.get("HERMES_ROOT", "/opt/hermes"))
+from overlay_patch import ROOT, edit, fail, install
+
 AGENT = ROOT / "agent"
 GATEWAY = ROOT / "tui_gateway"
 BOOTSTRAP = Path(os.environ.get("TURN_SPEAKER_BOOTSTRAP", "/bootstrap"))
 
-TAG = "# assistant-stack: turn speaker"
+MARKER = "# assistant-stack: turn speaker"
+TAG = "[patch-turn-speaker]"
 ANCHOR = "_m.register(sys.modules[__name__])\ndel _m\n"
 
 INSTALL = f'''
 
-{TAG}
+{MARKER}
 try:
     from agent.turn_speaker import install as _turn_speaker_install
     _turn_speaker_install(sys.modules[__name__])
@@ -32,26 +33,11 @@ except Exception:
 
 
 def main() -> None:
-    src = BOOTSTRAP / "turn_speaker.py"
-    if not src.is_file():
-        raise SystemExit(f"[patch-turn-speaker] missing {src}")
-    shutil.copyfile(src, AGENT / "turn_speaker.py")
-    print(f"[patch-turn-speaker] installed {AGENT / 'turn_speaker.py'}")
-
+    install(BOOTSTRAP / "turn_speaker.py", AGENT / "turn_speaker.py", TAG)
     if not (GATEWAY / "contracts" / "registry.py").is_file():
-        raise SystemExit("[patch-turn-speaker] pre-v2026.9 gateway (no contracts); not supported")
-    server = GATEWAY / "server.py"
-    text = server.read_text()
-    if TAG in text:
-        print("[patch-turn-speaker] already applied (server install)")
-    else:
-        if ANCHOR not in text:
-            raise SystemExit(
-                "[patch-turn-speaker] split-module registration loop missing in server.py. "
-                "Hermes image may have changed — update this patch."
-            )
-        server.write_text(text.rstrip("\n") + "\n" + INSTALL)
-        print("[patch-turn-speaker] patched server install")
+        fail(TAG, "pre-v2026.9 gateway (no contracts/registry.py): not supported")
+    edit(GATEWAY / "server.py", [], MARKER, TAG, label="server install", append=INSTALL,
+         requires=[ANCHOR])
 
 
 if __name__ == "__main__":

@@ -9,20 +9,21 @@ capability flags are installed at runtime, not edited.
 from __future__ import annotations
 
 import os
-import shutil
 from pathlib import Path
 
-ROOT = Path(os.environ.get("HERMES_ROOT", "/opt/hermes"))
+from overlay_patch import ROOT, edit, fail, install
+
 AGENT = ROOT / "agent"
 GATEWAY = ROOT / "tui_gateway"
 BOOTSTRAP = Path(os.environ.get("CLIENT_CONTEXT_BOOTSTRAP", "/bootstrap"))
 
-TAG = "# assistant-stack: client context"
+MARKER = "# assistant-stack: client context"
+TAG = "[patch-client-context]"
 ANCHOR = "_m.register(sys.modules[__name__])\ndel _m\n"
 
 INSTALL = f'''
 
-{TAG}
+{MARKER}
 try:
     from agent.client_context import install as _client_context_install
     _client_context_install(sys.modules[__name__])
@@ -32,26 +33,11 @@ except Exception:
 
 
 def main() -> None:
-    src = BOOTSTRAP / "client_context.py"
-    if not src.is_file():
-        raise SystemExit(f"[patch-client-context] missing {src}")
-    shutil.copyfile(src, AGENT / "client_context.py")
-    print(f"[patch-client-context] installed {AGENT / 'client_context.py'}")
-
+    install(BOOTSTRAP / "client_context.py", AGENT / "client_context.py", TAG)
     if not (GATEWAY / "contracts" / "registry.py").is_file():
-        raise SystemExit("[patch-client-context] pre-v2026.9 gateway (no contracts); not supported")
-    server = GATEWAY / "server.py"
-    text = server.read_text()
-    if TAG in text:
-        print("[patch-client-context] already applied (server install)")
-    else:
-        if ANCHOR not in text:
-            raise SystemExit(
-                "[patch-client-context] split-module registration loop missing in server.py. "
-                "Hermes image may have changed — update this patch."
-            )
-        server.write_text(text.rstrip("\n") + "\n" + INSTALL)
-        print("[patch-client-context] patched server install")
+        fail(TAG, "pre-v2026.9 gateway (no contracts/registry.py): not supported")
+    edit(GATEWAY / "server.py", [], MARKER, TAG, label="server install", append=INSTALL,
+         requires=[ANCHOR])
 
 
 if __name__ == "__main__":
