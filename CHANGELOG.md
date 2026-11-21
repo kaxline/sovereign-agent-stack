@@ -10,6 +10,9 @@ the stack under another app.
 
 ### Changes
 
+- `addon.sh configure --instance` accepts `trust` (`trusted` or `untrusted`), a
+  stack-owned instance field stored beside `bind`. Instances without it stay
+  `trusted`. (Boundary CR 0044 R3)
 - Add-on manifests take a `share` block (Boundary CR 0044 R1): the levels an
   instance can be shared at, the credential each uses, and the methods, path,
   query parameters and headers a provider's gateway may forward.

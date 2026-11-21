@@ -24,6 +24,7 @@ import shlex
 import tempfile
 import unicodedata
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import addon_manifest as am
 
@@ -348,27 +349,42 @@ def _validated_instance(schema: dict, values, connect: bool = True) -> dict:
     return clean
 
 
-_NO_BIND = object()
+TRUST_VALUES = ("trusted", "untrusted")
 
 
-def _split_bind(manifest: dict, values):
-    """(VALUES less `bind`, the checked bind or _NO_BIND). `bind` is the
-    stack's per-instance binding, a map from profile to ro or rw that replaces
-    mcp.profiles for the instance; addon_manifest.bind_problem has the rules."""
-    if not isinstance(values, dict) or "bind" not in values:
-        return values, _NO_BIND
-    rest = {k: v for k, v in values.items() if k != "bind"}
-    entries = [e for e in am.mcp_entries(manifest) if "instances" in e]
-    if not entries:
-        raise InputError("bind: this add-on registers no MCP server per instance", "bind")
-    profiles: dict = {}
-    for e in entries:
-        profiles.update(e.get("profiles", {}))
-    reads = bool(manifest.get("permissions", {}).get("reads"))
-    problem = am.bind_problem(values["bind"], profiles, reads)
-    if problem:
-        raise InputError(f"bind: {problem}", "bind")
-    return rest, dict(values["bind"])
+def _split_stack_fields(manifest: dict, values):
+    """(VALUES less the stack-owned fields, {field: checked value} for those
+    given). `bind` is the per-instance binding, a map from profile to ro or rw
+    that replaces mcp.profiles for the instance (addon_manifest.bind_problem
+    has the rules). `trust` is trusted or untrusted. `endpoint` is refused
+    here: only apply_endpoint_instance stores it."""
+    if not isinstance(values, dict) or not (am.STACK_INSTANCE_FIELDS & values.keys()):
+        return values, {}
+    rest = {k: v for k, v in values.items() if k not in am.STACK_INSTANCE_FIELDS}
+    fields: dict = {}
+    if "endpoint" in values:
+        raise InputError("endpoint: only connect --endpoint sets it", "endpoint")
+    if "bind" in values:
+        entries = [e for e in am.mcp_entries(manifest) if "instances" in e]
+        if not entries:
+            raise InputError("bind: this add-on registers no MCP server per instance", "bind")
+        profiles: dict = {}
+        for e in entries:
+            profiles.update(e.get("profiles", {}))
+        reads = bool(manifest.get("permissions", {}).get("reads"))
+        problem = am.bind_problem(values["bind"], profiles, reads)
+        if problem:
+            raise InputError(f"bind: {problem}", "bind")
+        fields["bind"] = dict(values["bind"])
+    if "trust" in values:
+        fields["trust"] = _checked_trust(values["trust"])
+    return rest, fields
+
+
+def _checked_trust(trust) -> str:
+    if trust not in TRUST_VALUES:
+        raise InputError("trust must be trusted or untrusted", "trust")
+    return trust
 
 
 def check_instance(manifest: dict, values: dict) -> None:
@@ -376,7 +392,7 @@ def check_instance(manifest: dict, values: dict) -> None:
     setting known and well-typed, and every required one given. Writes
     nothing; `connect` calls it before the hook sees the values."""
     schema = _inst_schema(manifest)
-    values, _bind = _split_bind(manifest, values)
+    values, _fields = _split_stack_fields(manifest, values)
     clean = _validated_instance(schema, values, _has_connect(manifest))
     for name, spec in schema.items():
         if _required(spec) and name not in clean:
@@ -388,10 +404,11 @@ def apply_instance(manifest: dict, data_root: Path, slug: str, values: dict,
     """Write VALUES into instance SLUG, merged over what it holds. With
     REPLACE (connect --force) the instance is VALUES alone: settings left out
     fall back to their defaults and this slug's stored secrets left out are
-    deleted. VALUES may carry `bind` (_split_bind), stored beside the settings."""
+    deleted. VALUES may carry `bind` and `trust` (_split_stack_fields), stored
+    beside the settings."""
     slug = _slug(slug)
     schema = _inst_schema(manifest)
-    values, bind = _split_bind(manifest, values)
+    values, fields = _split_stack_fields(manifest, values)
     clean = _validated_instance(schema, values, _has_connect(manifest))
     d = addon_dir(data_root, manifest)
     # A transient secret was checked above and goes to the connect hook only.
@@ -399,8 +416,7 @@ def apply_instance(manifest: dict, data_root: Path, slug: str, values: dict,
     _mkdir_addon(d)
     merged = {} if replace else _instance_values(d, slug)
     merged.update(plain)
-    if bind is not _NO_BIND:
-        merged["bind"] = bind
+    merged.update(fields)
     _write(d / "instances" / f"{slug}.json", json.dumps(merged, indent=2) + "\n", 0o644)
     for name, value in clean.items():
         if schema[name]["type"] == "secret" and not schema[name].get("transient"):
@@ -412,6 +428,71 @@ def apply_instance(manifest: dict, data_root: Path, slug: str, values: dict,
                     (d / "secrets" / f"{slug}.{name}").unlink()
                 except FileNotFoundError:
                     pass
+
+
+def _checked_endpoint(endpoint) -> str:
+    bad = InputError("endpoint must be an http or https URL with a host and no credentials", "endpoint")
+    if not isinstance(endpoint, str) or not endpoint or _has_line_break(endpoint) \
+            or any(c.isspace() for c in endpoint):
+        raise bad
+    try:
+        u = urlsplit(endpoint)
+        host, _port = u.hostname, u.port
+    except ValueError:
+        raise bad from None
+    if u.scheme not in ("http", "https") or not host or u.username is not None or u.password is not None:
+        raise bad
+    return endpoint
+
+
+def apply_endpoint_instance(manifest: dict, data_root: Path, slug: str, endpoint: str, access: str,
+                            trust: str, credentials: dict, replace: bool) -> bool:
+    """Store SLUG as an endpoint instance: a share some other stack serves at
+    ENDPOINT. It skips the instance settings schema and holds `endpoint`,
+    `access`, `trust` and the credentials, each in secrets/<slug>.<name> where
+    mcp.instances.auth.secret names it for the credential key (ro, rw).
+    Without REPLACE an existing SLUG is refused ("exists"); with it, the old
+    instance's file and secrets are removed first. Returns whether an instance
+    was replaced."""
+    slug = _slug(slug)
+    share = am.share_block(manifest)
+    if share is None:
+        name = manifest.get("id", "this add-on")
+        raise InputError(f"{am.short_id(name) if isinstance(name, str) else name} can't be shared", "slug")
+    endpoint = _checked_endpoint(endpoint)
+    trust = _checked_trust(trust)
+    if access not in share["levels"]:
+        raise InputError(f"access must be {' or '.join(sorted(share['levels']))}", "access")
+    if not isinstance(credentials, dict):
+        raise InputError("credentials must be an object", "credentials")
+    entries = [e for e in am.mcp_entries(manifest) if "instances" in e]
+    secret_names = {}
+    for e in entries:
+        auth = e["instances"].get("auth")
+        if isinstance(auth, dict) and isinstance(auth.get("secret"), dict):
+            secret_names.update(auth["secret"])
+    needed = ["ro"] + (["rw"] if access == "write" else [])
+    for key in needed:
+        value = credentials.get(key)
+        if not (isinstance(value, str) and value):
+            raise InputError(f"an {key} credential is required" if key == "ro"
+                             else "write access needs an rw credential", key)
+        if _has_line_break(value):
+            raise InputError(f"{key} credential may not contain a line break", key)
+        if key not in secret_names:
+            raise InputError(f"this add-on names no secret for the {key} credential", key)
+    d = addon_dir(data_root, manifest)
+    exists = slug in slugs(d)
+    if exists and not replace:
+        raise InputError("exists", "slug")
+    _mkdir_addon(d)
+    if exists:
+        remove_instance(manifest, data_root, slug)
+    _write(d / "instances" / f"{slug}.json",
+           json.dumps({"endpoint": endpoint, "access": access, "trust": trust}, indent=2) + "\n", 0o644)
+    for key in needed:
+        _write(d / "secrets" / f"{slug}.{secret_names[key]}", credentials[key], 0o600)
+    return exists
 
 
 def remove_instance(manifest: dict, data_root: Path, slug: str) -> None:

@@ -16,6 +16,11 @@ runs in the Hermes image through stack_python, so the host needs no python3.
         while builtin.flag is 1 in --flags (the .env flags, as for list).
         Always {} for an instance or a disabled add-on; plan-enable restores
         gate flags from the stored settings.
+    connect-endpoint SID SLUG --endpoint URL [--replace]
+        Stores SLUG as an endpoint instance (addon_store.apply_endpoint_instance)
+        from the JSON {"access", "trust", "ro", "rw"} on stdin; trust defaults
+        to trusted, rw is needed only for write access. Prints {"replaced":
+        BOOL}. An existing SLUG without --replace exits 2 with "slug: exists".
     remove-instance SID SLUG
         Deletes the instance's file and secrets.
     check-instance SID SLUG [--slug-only]
@@ -297,6 +302,18 @@ def cmd_configure(args) -> None:
         store.apply_instance(manifest, args.data_root, args.instance, values, replace=args.replace)
         flags = {}
     _dump({"flags": flags})
+
+
+def cmd_connect_endpoint(args) -> None:
+    manifest = _manifest(args.addons_dir, args.sid)
+    spec = _stdin_object()
+    if not set(spec) <= {"access", "trust", "ro", "rw"}:
+        raise Fail("stdin may hold only access, trust, ro and rw")
+    creds = {k: spec[k] for k in ("ro", "rw") if k in spec}
+    replaced = store.apply_endpoint_instance(
+        manifest, args.data_root, args.slug, args.endpoint, spec.get("access", ""),
+        spec.get("trust", "trusted"), creds, args.replace)
+    _dump({"replaced": replaced})
 
 
 def cmd_remove_instance(args) -> None:
@@ -947,6 +964,12 @@ def main(argv: list[str]) -> int:
     s.add_argument("--flags", default="{}")
     s.add_argument("--replace", action="store_true")
     s.set_defaults(func=cmd_configure)
+    s = sub.add_parser("connect-endpoint")
+    s.add_argument("sid")
+    s.add_argument("slug")
+    s.add_argument("--endpoint", required=True)
+    s.add_argument("--replace", action="store_true")
+    s.set_defaults(func=cmd_connect_endpoint)
     s = sub.add_parser("remove-instance")
     s.add_argument("sid")
     s.add_argument("slug")

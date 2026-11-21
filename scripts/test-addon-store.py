@@ -571,6 +571,101 @@ with tempfile.TemporaryDirectory() as tmp:
           len(lines) == 1 and lines[0].startswith("warning: skipping broken: ")
           and "['" not in lines[0] and "[\"" not in lines[0], repr(lines))
 
+# --- stack-owned trust and endpoint instance fields (CR 0044 R3) ---
+TWENTY = json.loads((ROOT / "addons" / "twenty" / "addon.json").read_text())
+with tempfile.TemporaryDirectory() as tmp:
+    root = Path(tmp)
+    st.apply_instance(MANIFEST, root, "work", {"host": "imap.example.com"})
+    st.apply_instance(MANIFEST, root, "work", {"trust": "untrusted"})
+    wf = st.addon_dir(root, MANIFEST) / "instances" / "work.json"
+    check("trust is stored beside the settings, which stay",
+          json.loads(wf.read_text()) == {"host": "imap.example.com", "trust": "untrusted"}, wf.read_text())
+    raises("trust other than trusted or untrusted is refused", st.InputError,
+           lambda: st.apply_instance(MANIFEST, root, "work", {"trust": "maybe"}), "trust")
+    try:
+        st.apply_instance(MANIFEST, root, "work", {"trust": "maybe"})
+    except st.InputError as e:
+        check("trust refusal message", "trust must be trusted or untrusted" in str(e), str(e))
+    raises("endpoint is not accepted through plain configure", st.InputError,
+           lambda: st.apply_instance(MANIFEST, root, "work", {"endpoint": "http://h:1"}), "endpoint")
+    raises("check_instance validates trust", st.InputError,
+           lambda: st.check_instance(MANIFEST, {"host": "h", "trust": 5}), "trust")
+
+with tempfile.TemporaryDirectory() as tmp:
+    root = Path(tmp)
+    d = st.addon_dir(root, TWENTY)
+    ep = "http://host.docker.internal:45123"
+    st.apply_endpoint_instance(TWENTY, root, "shared-a", ep, "read", "untrusted", {"ro": "t-ro"}, False)
+    got = json.loads((d / "instances" / "shared-a.json").read_text())
+    check("endpoint instance file holds endpoint, access and trust only",
+          got == {"endpoint": ep, "access": "read", "trust": "untrusted"}, str(got))
+    kf = d / "secrets" / "shared-a.key_ro"
+    check("endpoint ro credential in secrets/<slug>.key_ro at 0600",
+          kf.read_text() == "t-ro" and stat.S_IMODE(kf.stat().st_mode) == 0o600)
+    check("no key_rw for a read endpoint", not (d / "secrets" / "shared-a.key_rw").exists())
+    ret = st.apply_endpoint_instance(TWENTY, root, "shared-a", ep, "write", "trusted",
+                                     {"ro": "t-ro2", "rw": "t-rw"}, True)
+    check("replacing reports True", ret is True)
+    check("write endpoint writes key_rw", (d / "secrets" / "shared-a.key_rw").read_text() == "t-rw"
+          and stat.S_IMODE((d / "secrets" / "shared-a.key_rw").stat().st_mode) == 0o600)
+    check("fresh endpoint reports False",
+          st.apply_endpoint_instance(TWENTY, root, "shared-b", ep, "read", "trusted", {"ro": "x"}, False) is False)
+    raises("existing slug without replace is refused as exists", st.InputError,
+           lambda: st.apply_endpoint_instance(TWENTY, root, "shared-b", ep, "read", "trusted", {"ro": "x"}, False),
+           "slug")
+    raises("write access without rw is refused", st.InputError,
+           lambda: st.apply_endpoint_instance(TWENTY, root, "shared-c", ep, "write", "trusted", {"ro": "x"}, False))
+    raises("missing ro is refused", st.InputError,
+           lambda: st.apply_endpoint_instance(TWENTY, root, "shared-c", ep, "read", "trusted", {}, False))
+    for bad in ("ftp://x", "http://u:p@h:1", "", "http://h:1/\nx", "http://h:1/ x", "host:1"):
+        raises(f"endpoint {bad!r} is refused", st.InputError,
+               lambda bad=bad: st.apply_endpoint_instance(TWENTY, root, "shared-c", bad, "read", "trusted",
+                                                          {"ro": "x"}, False), "endpoint")
+    raises("bad access is refused", st.InputError,
+           lambda: st.apply_endpoint_instance(TWENTY, root, "shared-c", ep, "admin", "trusted", {"ro": "x"}, False))
+    raises("bad trust is refused", st.InputError,
+           lambda: st.apply_endpoint_instance(TWENTY, root, "shared-c", ep, "read", "meh", {"ro": "x"}, False), "trust")
+    raises("credential with a line break is refused, value not echoed", st.InputError,
+           lambda: st.apply_endpoint_instance(TWENTY, root, "shared-c", ep, "read", "trusted",
+                                              {"ro": "a\nSECRETVAL"}, False), None, "SECRETVAL")
+    check("refusals leave no shared-c files",
+          not (d / "instances" / "shared-c.json").exists() and not list((d / "secrets").glob("shared-c.*")))
+    gptr = json.loads((ROOT / "addons" / "gptr" / "addon.json").read_text())
+    raises("an add-on without share can't be shared", st.InputError,
+           lambda: st.apply_endpoint_instance(gptr, root, "shared-c", ep, "read", "trusted", {"ro": "x"}, False))
+    no_write = copy.deepcopy(TWENTY)
+    del no_write["share"]["levels"]["write"]
+    raises("write access needs a write level in share.levels", st.InputError,
+           lambda: st.apply_endpoint_instance(no_write, root, "shared-c", ep, "write", "trusted",
+                                              {"ro": "x", "rw": "y"}, False))
+    # replace over an ordinary instance drops its url and old key_rw
+    st.apply_instance(TWENTY, root, "plain", {"url": "http://crm:3000", "access": "write",
+                                              "key_ro": "k1", "key_rw": "k2"})
+    check("ordinary twenty instance has key_rw", (d / "secrets" / "plain.key_rw").exists())
+    st.apply_endpoint_instance(TWENTY, root, "plain", ep, "read", "untrusted", {"ro": "n"}, True)
+    pj = json.loads((d / "instances" / "plain.json").read_text())
+    check("replace drops url", "url" not in pj and pj["endpoint"] == ep, str(pj))
+    check("replace drops the old key_rw", not (d / "secrets" / "plain.key_rw").exists())
+
+# connect-endpoint through the CLI
+import subprocess  # noqa: E402
+with tempfile.TemporaryDirectory() as tmp:
+    def cli(*args, stdin):
+        return subprocess.run([sys.executable, str(ROOT / "scripts" / "lib" / "addon_cli.py"),
+                               "--addons-dir", str(ROOT / "addons"), "--data-root", tmp, *args],
+                              input=stdin, capture_output=True, text=True)
+    body = json.dumps({"access": "read", "trust": "untrusted", "ro": "cli-secret-ro"})
+    r = cli("connect-endpoint", "twenty", "sh-cli", "--endpoint", "http://h:1", stdin=body)
+    check("connect-endpoint prints replaced false", r.returncode == 0 and json.loads(r.stdout) == {"replaced": False},
+          r.stdout + r.stderr)
+    r = cli("connect-endpoint", "twenty", "sh-cli", "--endpoint", "http://h:1", stdin=body)
+    check("connect-endpoint without --replace refuses an existing slug",
+          r.returncode == 2 and "exists" in r.stderr and "cli-secret-ro" not in r.stderr, r.stderr)
+    r = cli("connect-endpoint", "twenty", "sh-cli", "--endpoint", "http://h:1", "--replace", stdin=body)
+    check("connect-endpoint --replace prints replaced true", r.returncode == 0 and json.loads(r.stdout) == {"replaced": True},
+          r.stdout + r.stderr)
+    check("connect-endpoint output holds no secret", "cli-secret-ro" not in r.stdout + r.stderr)
+
 if failures:
     print(f"{failures} failed")
     sys.exit(1)
