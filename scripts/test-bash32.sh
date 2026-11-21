@@ -127,5 +127,6 @@ check "make ensure-local adds the crm profile and Twenty's data dirs" \
 check "crm.sh tests" ./scripts/test-crm-sh.sh
 check "vault.sh tests" ./scripts/test-vault-sh.sh
 check "sync-profiles tests" ./scripts/test-sync-profiles.sh
+check "ssh-listener.sh tests" ./scripts/test-ssh-listener-sh.sh
 
 exit "$fail"
