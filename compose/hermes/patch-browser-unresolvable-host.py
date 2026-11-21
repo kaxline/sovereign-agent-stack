@@ -17,9 +17,10 @@ Run scripts/test-browser-unresolvable-host.py on Hermes bumps.
 """
 from __future__ import annotations
 
-from pathlib import Path
+from overlay_patch import ROOT, edit
 
-POLICY = Path("/opt/hermes/tools/browser_url_policy.py")
+POLICY = ROOT / "tools" / "browser_url_policy.py"
+TAG = "[patch-browser-unresolvable-host]"
 MARKER = "# assistant-stack: name hostnames that don't resolve"
 
 OLD = '        return _err("Blocked: URL targets a private or internal address")\n'
@@ -51,20 +52,9 @@ def _unresolvable_host_error(url: str) -> Optional[dict]:
 
 
 def main() -> None:
-    if not POLICY.is_file():
-        print(f"[patch-browser-unresolvable-host] skip: {POLICY} missing")
-        return
-    text = POLICY.read_text(encoding="utf-8")
-    if MARKER in text:
-        print("[patch-browser-unresolvable-host] already applied")
-        return
-    for needed in (OLD, "\nimport socket\n", "    _parse_ip,\n", "    _url_hostname,\n", "from typing import Callable, Optional\n"):
-        if text.count(needed) != 1:
-            print(f"[patch-browser-unresolvable-host] anchor missing, not patched: {needed.strip()}")
-            return
-    text = text.replace(OLD, NEW).rstrip("\n") + "\n" + HELPER
-    POLICY.write_text(text, encoding="utf-8")
-    print(f"[patch-browser-unresolvable-host] patched {POLICY}")
+    # HELPER reads these upstream names; each must occur once.
+    needed = ("\nimport socket\n", "    _parse_ip,\n", "    _url_hostname,\n", "from typing import Callable, Optional\n")
+    edit(POLICY, [(OLD, NEW), *((n, n) for n in needed)], MARKER, TAG, append=HELPER)
 
 
 if __name__ == "__main__":

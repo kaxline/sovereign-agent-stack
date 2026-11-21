@@ -10,9 +10,10 @@ does not invite another web_search/web_extract attempt.
 """
 from __future__ import annotations
 
-from pathlib import Path
+from overlay_patch import ROOT, edit
 
-TARGET = Path("/opt/hermes/model_tools.py")
+TARGET = ROOT / "model_tools.py"
+TAG = "[patch-block-native-web-tools]"
 MARKER = "# assistant-stack: rewrite native web tools to mcp"
 
 NEEDLE = '''    function_args = coerce_tool_args(function_name, function_args)
@@ -77,18 +78,7 @@ PATCH = '''    function_args = coerce_tool_args(function_name, function_args)
 
 
 def main() -> None:
-    if not TARGET.is_file():
-        print(f"[patch-block-native-web-tools] skip missing {TARGET}")
-        return
-    text = TARGET.read_text(encoding="utf-8")
-    if MARKER in text:
-        print(f"[patch-block-native-web-tools] already applied ({TARGET})")
-        return
-    if NEEDLE not in text:
-        print(f"[patch-block-native-web-tools] needle missing in {TARGET}")
-        return
-    TARGET.write_text(text.replace(NEEDLE, PATCH, 1), encoding="utf-8")
-    print(f"[patch-block-native-web-tools] patched {TARGET}")
+    edit(TARGET, [(NEEDLE, PATCH)], MARKER, TAG)
 
 
 if __name__ == "__main__":

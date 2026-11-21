@@ -9,9 +9,10 @@ curated default defer list (e.g. session_search).
 """
 from __future__ import annotations
 
-from pathlib import Path
+from overlay_patch import ROOT, edit
 
-TARGET = Path("/opt/hermes/tools/tool_search.py")
+TARGET = ROOT / "tools" / "tool_search.py"
+TAG = "[patch-tool-search-always-include]"
 MARKER = "# assistant-stack: honor always_include"
 
 OLD_FIELD = '''    # None = curated default; an explicit list replaces it wholesale ([] = defer no core tools).
@@ -66,30 +67,11 @@ def _always_include_names() -> frozenset:
 '''
 
 
-def main() -> int:
-    if not TARGET.is_file():
-        print(f"[patch-tool-search-always-include] skip: missing {TARGET}")
-        return 0
-    text = TARGET.read_text(encoding="utf-8")
-    if MARKER in text:
-        print(f"[patch-tool-search-always-include] already applied ({TARGET})")
-        return 0
-    if OLD_FIELD not in text or OLD_FROM_RAW not in text or OLD_IS_DEFERRABLE not in text:
-        print(f"[patch-tool-search-always-include] warn: expected needles missing in {TARGET}")
-        return 0
-    text = text.replace(OLD_FIELD, NEW_FIELD, 1)
-    text = text.replace(OLD_FROM_RAW, NEW_FROM_RAW, 1)
-    # Insert helper just before is_deferrable_tool_name.
+def main() -> None:
     needle = "def is_deferrable_tool_name("
-    if needle not in text:
-        print(f"[patch-tool-search-always-include] warn: is_deferrable_tool_name missing")
-        return 0
-    text = text.replace(needle, HELPER + needle, 1)
-    text = text.replace(OLD_IS_DEFERRABLE, NEW_IS_DEFERRABLE, 1)
-    TARGET.write_text(text, encoding="utf-8")
-    print(f"[patch-tool-search-always-include] patched {TARGET}")
-    return 0
+    edit(TARGET, [(OLD_FIELD, NEW_FIELD), (OLD_FROM_RAW, NEW_FROM_RAW), (needle, HELPER + needle),
+                  (OLD_IS_DEFERRABLE, NEW_IS_DEFERRABLE)], MARKER, TAG)
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()
