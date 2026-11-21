@@ -223,22 +223,6 @@ RELAY_TAIL_LEGACY = '''        if transport is not None and transport.is_relay:
 NEW_LEGACY = SYNTH_BLOCK + RELAY_TAIL_LEGACY
 
 
-def _replace_existing_synth_block(text: str) -> str | None:
-    """Replace a previously patched synthesize block (any version) with CURRENT."""
-    start = text.find(SYNTH_MARKER)
-    if start == -1:
-        return None
-    line_start = text.rfind("\n", 0, start) + 1
-    for needle in (
-        "\n    if transport is not None and (transport.is_relay or pconfig is None):",
-        "\n        if transport is not None and transport.is_relay:",
-    ):
-        relay = text.find(needle, start)
-        if relay != -1:
-            return text[:line_start] + SYNTH_BLOCK + text[relay + 1 :]
-    return None
-
-
 def _patch_origin(text: str, target: Path) -> tuple[str, str]:
     if ORIGIN_MARKER in text:
         return text, f"already patched (origin): {target}"
@@ -264,17 +248,7 @@ def _patch_origin(text: str, target: Path) -> tuple[str, str]:
 
 def _patch_synth(text: str, target: Path) -> tuple[str, str]:
     if SYNTH_MARKER in text:
-        needs_upgrade = (
-            "_assistant_stack_dbg" in text
-            or "from gateway.config import HomeChannel, PlatformConfig, get_secret" in text
-            or "from agent.secret_scope import get_secret" not in text
-        )
-        if not needs_upgrade:
-            return text, f"already patched (synth): {target}"
-        upgraded = _replace_existing_synth_block(text)
-        if upgraded is None:
-            return text, f"skip: could not upgrade existing synth block in {target}"
-        return upgraded, f"upgraded (synth): {target}"
+        return text, f"already patched (synth): {target}"
     if OLD_V9 in text:
         return text.replace(OLD_V9, NEW_V9, 1), f"patched (synth): {target}"
     if OLD_LEGACY in text:
@@ -295,7 +269,7 @@ def main() -> int:
     print(msg_synth)
 
     changed = any(
-        msg.startswith(("patched", "upgraded"))
+        msg.startswith("patched")
         for msg in (msg_origin, msg_synth)
     )
     if changed:
