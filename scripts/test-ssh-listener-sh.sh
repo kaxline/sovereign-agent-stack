@@ -47,6 +47,9 @@ case "$1" in
   start) echo running > "$FAKE/container" ;;
   run | exec)
     touch "$FAKE/volume"
+    case " $* " in
+      *" -d "*" img:new "*) if [ -f "$FAKE/run-fails" ]; then echo "exec format error" >&2; exit 125; fi ;;
+    esac
     case " $* " in *" -d "*) echo running > "$FAKE/container"; echo cid; exit 0 ;; esac
     running=false
     for a in "$@"; do
@@ -140,6 +143,15 @@ L setup --sshd 10.0.0.2:2222 --json > /dev/null
 not_called pull
 called "run --rm --network host -v sovereign-ssh-listener-data:/data img:new init --default-sshd 127.0.0.1:22 --json --sshd 10.0.0.2:2222"
 not_called volume\ rm
+
+# A new container that won't start: the old image runs again.
+: > "$CALLS"
+touch "$FAKE/run-fails"
+expect 4 command_failed setup
+called "run -d --name sovereign-ssh-listener --restart unless-stopped --network host -v sovereign-ssh-listener-data:/data --label org.sovereign-agent-stack.ssh-listener=1 img:old serve"
+case "$out" in *"img:old runs again"*) ;; *) fail "failed setup message: $out" ;; esac
+[ "$(cat "$FAKE/container")" = running ] || fail "the old image is not running after a failed setup"
+rm "$FAKE/run-fails"
 
 touch "$FAKE/init-fails"
 expect 2 bad_input setup --sshd x

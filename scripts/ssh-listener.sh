@@ -198,6 +198,13 @@ status_out() {
   pass_through "$out" "$rc"
 }
 
+# run_listener IMAGE: start the listener container.
+run_listener() {
+  # shellcheck disable=SC2046  # net_args is zero or two words
+  docker run -d --name "$CONTAINER" --restart unless-stopped $(net_args) \
+    -v "${VOLUME}:/data" --label "org.sovereign-agent-stack.ssh-listener=1" "$1" serve
+}
+
 # --- commands -------------------------------------------------------------------
 
 cmd_setup() {
@@ -230,11 +237,20 @@ cmd_setup() {
 
   # Removing the old container cuts a connection made through it; SIGHUP is
   # ignored above, and nothing is printed until the end.
+  # If the new container doesn't start, the old image runs again, so the host
+  # stays reachable.
+  local old_image=""
+  old_image="$(docker container inspect -f '{{.Config.Image}}' "$CONTAINER" 2> /dev/null)" || old_image=""
   docker rm -f "$CONTAINER" > /dev/null 2>&1 || true
-  # shellcheck disable=SC2046  # net_args is zero or two words
-  out="$(docker run -d --name "$CONTAINER" --restart unless-stopped $(net_args) \
-    -v "${VOLUME}:/data" --label "org.sovereign-agent-stack.ssh-listener=1" "$IMAGE" serve 2>&1)" \
-    || fail command_failed "starting the listener failed: ${out##*$'\n'}"
+  if ! out="$(run_listener "$IMAGE" 2>&1)"; then
+    local why="${out##*$'\n'}"
+    if [[ -n "$old_image" ]]; then
+      docker rm -f "$CONTAINER" > /dev/null 2>&1 || true
+      run_listener "$old_image" > /dev/null 2>&1 \
+        && fail command_failed "starting the listener on ${IMAGE} failed, so ${old_image} runs again: ${why}"
+    fi
+    fail command_failed "starting the listener failed: ${why}"
+  fi
 
   if [[ -f "${BASH_SOURCE[0]}" ]]; then
     mkdir -p "$(dirname "$COMMAND_COPY")"
