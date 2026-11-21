@@ -12,14 +12,6 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 
 Estimate = Callable[[Sequence[Dict[str, Any]]], int]
 
-REPORT_KEYS = (
-    "history_budget",
-    "history_tokens",
-    "history_first_row_id",
-    "history_summarised",
-)
-
-
 def empty_report(budget: Optional[int] = None) -> Dict[str, Any]:
     return {
         "history_budget": budget,
@@ -55,7 +47,7 @@ def agent_has_history_budget(agent: Any) -> bool:
         return False
     attrs = getattr(agent, "__dict__", {})
     if isinstance(attrs, dict) and "history_budget" in attrs:
-        return _positive(attrs.get("history_budget"))
+        return is_positive_int(attrs.get("history_budget"))
     db = getattr(agent, "session_db", None)
     sid = getattr(agent, "session_id", None)
     getter = getattr(db, "get_session_model_config_value", None)
@@ -65,7 +57,7 @@ def agent_has_history_budget(agent: Any) -> bool:
         stored = getter(sid, "history_budget")
     except Exception:
         return False
-    return _positive(stored)
+    return is_positive_int(stored)
 
 
 @dataclass
@@ -286,5 +278,5 @@ def _truncate_to_tokens(text: str, cap: int, estimate: Estimate) -> str:
     return best.strip()
 
 
-def _positive(value: Any) -> bool:
+def is_positive_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0

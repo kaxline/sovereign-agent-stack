@@ -73,6 +73,10 @@ the stack under another app.
   mounted at `/bootstrap/overlay_patch.py`. An app with its own compose file
   that mounts the patch scripts one by one needs that mount and
   `/bootstrap/vault_prompt_slot.py`, or every overlay exits 1 at import.
+  `patch-tool-call-flat-args` and `patch-tool-eval-trace` also install
+  `compose/hermes/stack_tool_aliases.py`, mounted at
+  `/bootstrap/stack_tool_aliases.py`; without that mount both exit 1 with
+  `source missing`.
   Each overlay checks every anchor in every file it edits before writing
   any of them, so a moved anchor leaves Hermes as shipped.
 - A missing anchor or target file exits 1 with one line,

@@ -16,6 +16,8 @@ from overlay_patch import ROOT, edit, install
 
 HELPER_SRC = Path("/bootstrap/tool_eval_trace.py")
 HELPER_DST = ROOT / "agent" / "tool_eval_trace.py"
+ALIASES_SRC = Path("/bootstrap/stack_tool_aliases.py")
+ALIASES_DST = ROOT / "tools" / "stack_tool_aliases.py"
 LOOP_TARGET = ROOT / "agent" / "conversation_loop.py"
 MODEL_TOOLS = ROOT / "model_tools.py"
 MARKER = "# assistant-stack: tool-eval turn trace"
@@ -64,6 +66,7 @@ REWRITE_PATCH = """        if _rewrite_name:
 
 def main() -> None:
     install(HELPER_SRC, HELPER_DST, TAG)
+    install(ALIASES_SRC, ALIASES_DST, TAG)
     # The trace goes after the recovery block, so patch-text-tool-call-recovery.py runs first.
     edit(LOOP_TARGET, [(ANCHOR_V9, ANCHOR_V9 + TRACE_V9)], MARKER, TAG, label=f"loop {LOOP_TARGET}",
          requires=[RECOVERY_MARKER])

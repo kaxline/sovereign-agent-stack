@@ -11,8 +11,9 @@ recorded. A patch over about 50 lines or touching more than one upstream file ne
 first: accept the limitation, contribute upstream, or build the feature in the stack. Several
 Hermes overlays predate that rule and exceed it; they are marked below by their line counts.
 A count covers the overlay's patch script and the modules it installs. The shared helper
-`compose/hermes/overlay_patch.py` (134 lines) and the vault actions' `compose/hermes/vault_prompt_slot.py`
-(81 lines) are in no row.
+`compose/hermes/overlay_patch.py` (134 lines), the vault actions' `compose/hermes/vault_prompt_slot.py`
+(81 lines) and the alias map `compose/hermes/stack_tool_aliases.py` (20 lines), which
+`tool-call-flat-args` and `tool-eval-trace` both install, are in no row.
 
 ## Vendored adapters
 
@@ -54,7 +55,7 @@ Overlays with no re-test command fail only as a warning in the container log.
 | `client-context` | 318 | `context` on session.create/resume/prompt.submit; refuses a mismatched `profile` on prompt.submit (4080-4083); `client_context` capability. | upstream | draft, not filed | `scripts/test-client-context.py` |
 | `gateway-liveness` | 268 | `turn.heartbeat` event and `session.live_status` method; extends `gateway.capabilities`. | upstream | draft, not filed | `scripts/test-gateway-liveness.py` |
 | `turn-speaker` | 291 | `speaker {id, display_name}` on prompt.submit; stamped on assistant rows and in the `api_content` sidecar (4084-4086); `turn_speaker` capability. | client API | becomes a client API method | `scripts/test-turn-speaker.py`, `scripts/test-hosted-rooms.py` |
-| `history-budget` | 979 | `history_budget` on session.create/resume windows the prompt without archiving rows; `session.context_breakdown` fields; error 4028. | client API | becomes a client API method | `scripts/test-history-budget.py` |
+| `history-budget` | 968 | `history_budget` on session.create/resume windows the prompt without archiving rows; `session.context_breakdown` fields; error 4028. | client API | becomes a client API method | `scripts/test-history-budget.py` |
 | `mcp-wake` | 343 | `POST /v1/mcp/servers/{name}/reconnect` wakes a parked MCP server in every gateway process; `mcp_servers.<name>.parked_retry_interval`; parks a server once when another profile just parked it. | client API | becomes a client API method | `scripts/test-mcp-wake.py`, `scripts/test-mcp-parked-retry.sh` |
 | `dashboard-handoff` | 220 | `GET /auth/handoff?code=` one-time sign-in link, HMAC code, off until `HERMES_DASHBOARD_HANDOFF_SECRET` is set; `make dashboard-open`. | client API | becomes a client API method | `scripts/test-dashboard-handoff.py` |
 | `mirror-exclude` | 110 | `mirror_exclude` glob list on `profiles.create` removes keys from the mirrored `.env`; result lists `mirrored.env_excluded`; fails closed. | upstream | draft, not filed | `scripts/test-mirror-exclude.py` |
@@ -81,7 +82,7 @@ Overlays with no re-test command fail only as a warning in the container log.
 | Overlay | Lines | What it changes | Class | Upstream | Re-test |
 |---|---:|---|---|---|---|
 | `text-tool-call-recovery` | 284 | Parses Python- or XML-style tool calls in assistant text into structured `tool_calls` before dispatch. | adapter | stays in the adapter | none (apply-time anchor only); `scripts/test-tool-eval-trace.py` exercises the call site |
-| `tool-call-flat-args` | 117 | Normalises weak-model `tool_call` shapes: flat siblings, nested name, short MCP aliases, stringified `calls`. | adapter | stays in the adapter | none |
+| `tool-call-flat-args` | 112 | Normalises weak-model `tool_call` shapes: flat siblings, nested name, short MCP aliases, stringified `calls`. | adapter | stays in the adapter | none |
 | `intent-ack-continuation` | 42 | Lets `looks_like_codex_intermediate_ack` continue a turn past 1,200 characters (up to 4,000) when the reply opens with an ack and `require_workspace` is off. Before v0.23.0 it also stops earlier turns' tool messages from blocking it; v0.23.0 does that upstream (#69778). | upstream | draft, not filed | `scripts/test-intent-ack.py` |
 | `tool-search-visible` | 113 | `tool_search` also returns already-visible core tools, with a call-directly hint. | upstream | draft, not filed | none |
 | `tool-search-always-include` | 77 | Honors `tools.tool_search.always_include` so stack MCP pins (SearXNG, LightRAG, OpenCode) stay eager. | upstream | draft, not filed | `docker compose exec hermes grep -F 'assistant-stack: honor always_include' /opt/hermes/tools/tool_search.py` (docs/hermes.md) |
@@ -89,7 +90,7 @@ Overlays with no re-test command fail only as a warning in the container log.
 | `tool-loop-replay` | 114 | Counts stale replays per (tool, arguments) per turn; notes the second, halts the third (`stale_replay_halt`). | upstream | draft, not filed | `scripts/test-tool-loop-replay.py` |
 | `guardrail-halt-stream` | 52 | Streams the guardrail stop note through `_deliver_to_stream_callbacks`, so dashboard gateway clients get it as `message.delta`, not only in `message.complete`. | upstream | draft, not filed | `scripts/test-guardrail-halt-stream.py` |
 | `compaction-tool-facts` | 239 | Gives the compaction summarizer the original tool bodies (4,000 chars each, 60,000 total) instead of prune stubs; adds a `## Findings` section. | upstream | draft, not filed | `scripts/test-compaction-tool-facts.py` |
-| `tool-eval-trace` | 438 | JSONL turn traces for the tool-calling eval; records web rewrites. | adapter | stays in the adapter | `scripts/test-tool-eval-trace.py` |
+| `tool-eval-trace` | 432 | JSONL turn traces for the tool-calling eval; records web rewrites. | adapter | stays in the adapter | `scripts/test-tool-eval-trace.py` |
 | `block-native-web-tools` | 85 | Rewrites hallucinated `web_search` / `web_extract` to the SearXNG MCP tools, or returns a terminal error. | adapter | stays in the adapter | none; `scripts/test-tool-eval-trace.py` logs the rewrite path |
 | `send-message tools` | 419 | Synthesises a Signal platform config from `SIGNAL_*` with the adapter disabled (`signal_env.py`, shared with cron delivery); registers `send_message` as an agent-callable tool and keeps it in the schema. | adapter | stays in the adapter | `scripts/test-send-message-tool.py` |
 | `cron-scheduler-delivery` | 108 | (1) Rejects `api_server` cron origins and falls back to home channels. (2) Synthesises Signal config for cron delivery through `signal_env.py`. | adapter | stays in the adapter | `scripts/test-cron-delivery-errors.py` |
@@ -98,7 +99,7 @@ Overlays with no re-test command fail only as a warning in the container log.
 
 | Overlay | Lines | What it changes | Class | Upstream | Re-test |
 |---|---:|---|---|---|---|
-| `web-search-mode` | 409 | `HERMES_WEB_SEARCH_MODE` serves `searxng_web_search` and `web_url_read` from SearXNG, Hermes' keyless ring, or both. | adapter | stays in the adapter | `scripts/test-web-search-mode.py --image` |
+| `web-search-mode` | 410 | `HERMES_WEB_SEARCH_MODE` serves `searxng_web_search` and `web_url_read` from SearXNG, Hermes' keyless ring, or both. | adapter | stays in the adapter | `scripts/test-web-search-mode.py --image` |
 | `blocked-fetch-hint` | 197 | On 403/429/503, empty JS-only page or bot-check from searxng `web_url_read`, queues a note to open the URL with `browser_exec`. | adapter | stays in the adapter | `scripts/test-blocked-fetch-hint.py` |
 | `searxng-pause-browser` | 58 | Adds how to search with `browser_exec` to the searxng circuit-breaker pause error. | adapter | stays in the adapter | `scripts/test-searxng-pause-browser.py` |
 | `browser-unresolvable-host` | 61 | When a blocked browser URL's hostname has no DNS answer, the error names the host and says the address is probably wrong. | upstream | draft, not filed | `scripts/test-browser-unresolvable-host.py` |

@@ -18,25 +18,19 @@ Hermes v2026.9+ routes parsing through ``normalize_tool_call_entries``.
 """
 from __future__ import annotations
 
-from overlay_patch import ROOT, edit
+from pathlib import Path
+
+from overlay_patch import ROOT, edit, install
 
 TARGET = ROOT / "tools" / "tool_search_validation.py"
 MARKER = "# assistant-stack: tool_call arg shape fixes"
 TAG = "[patch-tool-call-flat-args]"
 
+ALIASES_SRC = Path("/bootstrap/stack_tool_aliases.py")
+ALIASES_DST = ROOT / "tools" / "stack_tool_aliases.py"
+
 STACK_ALIASES = '''
-_STACK_TOOL_ALIASES = {
-    "web_search": "mcp__searxng__searxng_web_search",
-    "web_extract": "mcp__searxng__web_url_read",
-    "searxng_web_search": "mcp__searxng__searxng_web_search",
-    "web_url_read": "mcp__searxng__web_url_read",
-    "coding_list_roots": "mcp__opencode__coding_list_roots",
-    "coding_start_task": "mcp__opencode__coding_start_task",
-    "coding_get_task_status": "mcp__opencode__coding_get_task_status",
-    "coding_wait_for_task": "mcp__opencode__coding_wait_for_task",
-    "coding_get_task_result": "mcp__opencode__coding_get_task_result",
-    "coding_continue_task": "mcp__opencode__coding_continue_task",
-}
+from tools.stack_tool_aliases import STACK_TOOL_ALIASES as _STACK_TOOL_ALIASES
 '''
 
 # Insert just before entries.append in normalize_tool_call_entries.
@@ -107,6 +101,7 @@ NEW_CALLS_LIST_CHECK = '''    # assistant-stack: tool_call stringified calls
 '''
 
 def main() -> None:
+    install(ALIASES_SRC, ALIASES_DST, TAG)
     anchor = "def normalize_tool_call_entries("
     edit(TARGET, [(anchor, STACK_ALIASES + "\n" + anchor), (OLD_APPEND, NEW_APPEND),
                   (OLD_LEGACY_SINGLE, NEW_LEGACY_SINGLE), (OLD_CALLS_LIST_CHECK, NEW_CALLS_LIST_CHECK)],

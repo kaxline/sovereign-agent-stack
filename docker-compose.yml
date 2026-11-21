@@ -1975,6 +1975,7 @@ services:
       - ./compose/hermes/patch-block-native-web-tools.py:/bootstrap/patch-block-native-web-tools.py:ro
       - ./compose/hermes/patch-tool-call-flat-args.py:/bootstrap/patch-tool-call-flat-args.py:ro
       - ./compose/hermes/tool_eval_trace.py:/bootstrap/tool_eval_trace.py:ro
+      - ./compose/hermes/stack_tool_aliases.py:/bootstrap/stack_tool_aliases.py:ro
       - ./compose/hermes/patch-tool-eval-trace.py:/bootstrap/patch-tool-eval-trace.py:ro
       - ./compose/hermes/patch-browser-exec-hint.py:/bootstrap/patch-browser-exec-hint.py:ro
       - ./compose/hermes/browser_exec_hints.py:/bootstrap/browser_exec_hints.py:ro

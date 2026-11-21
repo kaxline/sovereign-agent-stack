@@ -68,7 +68,8 @@ def is_tool_error(result: Any) -> bool:
     return isinstance(data, dict) and "error" in data
 
 
-def _result_text(result: Any) -> str:
+def _result_field(result: Any) -> str:
+    """The ``result`` field of a ``{"result": ...}`` envelope as text, a plain string as is, else ""."""
     data = _parsed(result)
     if isinstance(data, dict):
         value = data.get("result")
@@ -96,7 +97,7 @@ def search_failed(result: Any) -> bool:
     """SearXNG unavailable (breaker, transport, engines blocked, gate busy); not an argument error."""
     if is_tool_error(result):
         return bool(_SEARCH_UNAVAILABLE.search(_error_text(result)))
-    text = _result_text(result)
+    text = _result_field(result)
     inner = _parsed(text)
     if isinstance(inner, dict) and "results" in inner:
         return not inner.get("results") and bool(inner.get("unresponsive_engines"))
@@ -114,7 +115,7 @@ def fetch_failed(args: Any, result: Any) -> bool:
 def _reason(result: Any) -> str:
     """Why a side failed, in words that match none of the pause or blocked-fetch hints' patterns."""
     error = _error_text(result)
-    text = error or _result_text(result)
+    text = error or _result_field(result)
     status = re.search(r"Error \((\d{3})\)", text)
     if re.search(_MCP_DOWN, text):
         return "the searxng MCP server is paused or unreachable"
@@ -223,7 +224,7 @@ def _failure_text(result: Any) -> str:
     data = _parsed(result)
     if isinstance(data, dict) and "error" in data:
         return str(data["error"])
-    return _result_text(result)
+    return _result_field(result)
 
 
 def _with_note(result: str, note: str) -> str:

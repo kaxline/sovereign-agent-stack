@@ -23,19 +23,10 @@ TRACE_PATH = Path(os.environ.get("HERMES_EVAL_TRACE_PATH", "/opt/data/eval/trace
 EVAL_ID_RE = re.compile(r"\[eval:([a-zA-Z0-9_-]+)\]")
 BRIDGE_TOOLS = frozenset({"tool_search", "tool_describe", "tool_call"})
 
-# Same short-name map as patch-tool-call-flat-args.py so score sees MCP names.
-_STACK_TOOL_ALIASES = {
-    "web_search": "mcp__searxng__searxng_web_search",
-    "web_extract": "mcp__searxng__web_url_read",
-    "searxng_web_search": "mcp__searxng__searxng_web_search",
-    "web_url_read": "mcp__searxng__web_url_read",
-    "coding_list_roots": "mcp__opencode__coding_list_roots",
-    "coding_start_task": "mcp__opencode__coding_start_task",
-    "coding_get_task_status": "mcp__opencode__coding_get_task_status",
-    "coding_wait_for_task": "mcp__opencode__coding_wait_for_task",
-    "coding_get_task_result": "mcp__opencode__coding_get_task_result",
-    "coding_continue_task": "mcp__opencode__coding_continue_task",
-}
+try:  # installed beside the overlay in /opt/hermes/tools; on the host, from compose/hermes
+    from tools.stack_tool_aliases import STACK_TOOL_ALIASES
+except ImportError:
+    from stack_tool_aliases import STACK_TOOL_ALIASES
 
 # Tools that dispatch on an ``action`` argument record as ``<tool>.<action>``, so a case can
 # expect browser_vault.save_login rather than any vault call. A bare-name expectation still
@@ -131,7 +122,7 @@ def _inner_tool_call_names(name: str, args: Any) -> list[str]:
         if not raw:
             continue
         key = str(raw).strip()
-        inner.append(qualified_name(_STACK_TOOL_ALIASES.get(key, key), call.get("arguments")))
+        inner.append(qualified_name(STACK_TOOL_ALIASES.get(key, key), call.get("arguments")))
     return inner
 
 

@@ -18,6 +18,7 @@ from agent.history_budget import (
     agent_has_history_budget,
     apply_history_budget,
     empty_report,
+    is_positive_int,
     message_row_id,
 )
 
@@ -31,7 +32,7 @@ def stamp_agent_budget(agent: Any, session: Any, session_db: Any, session_id: An
     budget = _budget_from_session(session)
     if budget is None and not (isinstance(session, dict) and "history_budget" in session):
         budget = _budget_from_db(session_db, session_id)
-    if not _positive(budget):
+    if not is_positive_int(budget):
         budget = None
     agent.history_budget = budget
     compressor = getattr(agent, "context_compressor", None)
@@ -310,18 +311,14 @@ def _estimate(messages: list) -> int:
     return int(estimate_messages_tokens_rough(messages))
 
 
-def _positive(value: Any) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value > 0
-
-
 def _positive_or_none(value: Any) -> Optional[int]:
-    return value if _positive(value) else None
+    return value if is_positive_int(value) else None
 
 
 # ── gateway install ───────────────────────────────────────────────────────────
 
 BUDGET_METHODS = ("session.create", "session.resume")
-REPORT_FIELDS = ("history_budget", "history_tokens", "history_first_row_id", "history_summarised")
+REPORT_FIELDS = tuple(empty_report())
 
 
 def declare_contracts() -> None:
