@@ -150,14 +150,22 @@ def call(method, params):
     return resp["result"]
 
 
-def wait_settled(room_id, settled, timeout=120):
+def wait_discussions(room_id, closed, timeout=120):
+    """Wait until ``closed`` discussions have a room.activity event and the driver is idle.
+
+    The driver's settled-task count can reach the target between two members' turns of
+    one discussion; a user message sent then supersedes the turn still running.
+    """
     deadline = time.time() + timeout
     while time.time() < deadline:
+        events = call("groups.log", {"room_id": room_id, "limit": 100})["events"]
+        done = sum(1 for e in events if e["kind"] == "room.activity"
+                   and e["payload"].get("status") in ("settled", "bounded"))
         st = call("groups.state", {"room_id": room_id})["driver_status"]
-        if not st["working"] and st["counts"].get("settled", 0) >= settled:
+        if done >= closed and not st["working"]:
             return st
         time.sleep(0.5)
-    raise AssertionError(f"room did not settle {settled} tasks: {st}")
+    raise AssertionError(f"room did not close {closed} discussions: {st}")
 
 
 def tools_of(body):
@@ -195,10 +203,10 @@ call("groups.create", {"room_id": "room1", "name": "Spike", "members": [
 ]})
 call("groups.send", {"room_id": "room1", "event_id": "e1",
                      "payload": {"thread_id": "t1", "text": "@helper @orch save a note"}})
-wait_settled("room1", 2)
+wait_discussions("room1", 1)
 call("groups.send", {"room_id": "room1", "event_id": "e2",
                      "payload": {"thread_id": "t1", "text": "Anything else?"}})
-wait_settled("room1", 4)
+wait_discussions("room1", 2)
 
 by = {"HELPER": [b for w, b in turns if w == "HELPER"], "ORCH": [b for w, b in turns if w == "ORCH"]}
 assert len(by["HELPER"]) == 2, f"helper ran twice, got {len(by['HELPER'])}"
