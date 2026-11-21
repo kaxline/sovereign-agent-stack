@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # scripts/ssh-listener.sh with a fake docker: the engine checks, the docker
 # commands each subcommand runs on Docker Engine and Docker Desktop, that setup
-# keeps the volume, the refusals, and scripts/release-ssh-listener.sh writing
+# keeps the volume and rolls back a new image that won't start or crashes, the
+# refusals, and scripts/release-ssh-listener.sh writing
 # the image and version into the release copy. The listener's own commands are
 # tested in compose/ssh-listener/test (scripts/test-ssh-listener.sh).
 set -eu
@@ -32,6 +33,10 @@ case "$1" in
   container)
     [ -f "$FAKE/container" ] || exit 1
     case "$4" in
+      *RestartCount*)
+        # A crashing new image restarts once; anything else runs or is stopped.
+        if [ -f "$FAKE/crash" ] && [ "$(cat "$FAKE/container-image")" = img:new ]; then echo "true 1"
+        elif [ "$(cat "$FAKE/container")" = running ]; then echo "true 0"; else echo "false 0"; fi ;;
       *Running*) if [ "$(cat "$FAKE/container")" = running ]; then echo true; else echo false; fi ;;
       *Image*) echo img:old ;;
     esac ;;
@@ -43,6 +48,9 @@ case "$1" in
   image) [ -f "$FAKE/image" ] || exit 1 ;;
   pull) touch "$FAKE/image" ;;
   rm) rm -f "$FAKE/container" ;;
+  logs)
+    if [ -f "$FAKE/crash" ] && [ "$(cat "$FAKE/container-image")" = img:new ]; then echo "Error: boom"
+    elif [ ! -f "$FAKE/silent" ]; then echo "2026-11-21T00:00:00.000Z listening on pk, passing streams to x"; fi ;;
   stop) echo stopped > "$FAKE/container" ;;
   start) echo running > "$FAKE/container" ;;
   run | exec)
@@ -50,7 +58,12 @@ case "$1" in
     case " $* " in
       *" -d "*" img:new "*) if [ -f "$FAKE/run-fails" ]; then echo "exec format error" >&2; exit 125; fi ;;
     esac
-    case " $* " in *" -d "*) echo running > "$FAKE/container"; echo cid; exit 0 ;; esac
+    case " $* " in
+      *" -d "*)
+        echo running > "$FAKE/container"
+        for a in "$@"; do case "$a" in img:*) echo "$a" > "$FAKE/container-image" ;; esac; done
+        echo cid; exit 0 ;;
+    esac
     running=false
     for a in "$@"; do
       if [ "${prev:-}" = --running ]; then running="$a"; fi
@@ -152,6 +165,25 @@ called "run -d --name sovereign-ssh-listener --restart unless-stopped --network 
 case "$out" in *"img:old runs again"*) ;; *) fail "failed setup message: $out" ;; esac
 [ "$(cat "$FAKE/container")" = running ] || fail "the old image is not running after a failed setup"
 rm "$FAKE/run-fails"
+
+# A new container that starts and then crashes: the old image runs again.
+: > "$CALLS"
+touch "$FAKE/crash"
+expect 4 command_failed setup
+called "logs --tail 5 sovereign-ssh-listener"
+called "run -d --name sovereign-ssh-listener --restart unless-stopped --network host -v sovereign-ssh-listener-data:/data --label org.sovereign-agent-stack.ssh-listener=1 img:old serve"
+case "$out" in *"img:old runs again: the listener exited after it started: Error: boom"*) ;; *) fail "crashed setup message: $out" ;; esac
+[ "$(cat "$FAKE/container-image")" = img:old ] || fail "the old image is not running after a crashed setup"
+rm "$FAKE/crash"
+
+# A new container that runs but hasn't listened yet: it stays, with a warning.
+: > "$CALLS"
+touch "$FAKE/silent"
+SSH_LISTENER_START_WAIT=1 L setup --json > /dev/null
+grep -q 'status --running true .*--warning the listener has not reported listening yet' "$CALLS" \
+  || fail "slow setup: no warning: $(cat "$CALLS")"
+[ "$(cat "$FAKE/container-image")" = img:new ] || fail "slow setup rolled back"
+rm "$FAKE/silent"
 
 touch "$FAKE/init-fails"
 expect 2 bad_input setup --sshd x

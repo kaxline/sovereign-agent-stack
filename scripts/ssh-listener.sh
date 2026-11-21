@@ -21,7 +21,9 @@
 # keys live in the volume sovereign-ssh-listener-data.
 #
 # setup pulls the release's image, makes the key pair the first time, and
-# (re)creates the container, keeping the key pair and allowed keys. It copies
+# (re)creates the container, keeping the key pair and allowed keys. If the new
+# container fails to start, or exits before its server listens, the previous
+# image runs again (wait_listening). It copies
 # this script to ~/.local/bin/sovereign-ssh-listener for later commands. The
 # sshd address defaults to 127.0.0.1:22 with host networking on Docker Engine,
 # and host.docker.internal:22 on Docker Desktop, where the container can't
@@ -205,6 +207,30 @@ run_listener() {
     -v "${VOLUME}:/data" --label "org.sovereign-agent-stack.ssh-listener=1" "$1" serve
 }
 
+# wait_listening: whether the new container's server got as far as listening.
+# `docker run -d` succeeds once the container starts, so a server that then
+# crashes shows up only as an exited container or a restart. Returns 0 once
+# the log says "listening on", 1 when the container exited or restarted
+# (CRASH_LOG holds its last log lines), and 2 when it still runs without
+# listening after SSH_LISTENER_START_WAIT seconds (20 by default), which a
+# slow DHT bootstrap can cause; that container is left running.
+CRASH_LOG=""
+wait_listening() {
+  local waited=0 limit="${SSH_LISTENER_START_WAIT:-20}" state
+  while :; do
+    state="$(docker container inspect -f '{{.State.Running}} {{.RestartCount}}' "$CONTAINER" 2> /dev/null)" || state="false 0"
+    if [[ "$state" != "true 0" ]]; then
+      # Each restart repeats the same lines; keep one of each.
+      CRASH_LOG="$(docker logs --tail 5 "$CONTAINER" 2>&1 | awk '!seen[$0]++' | tr '\n' ' ')"
+      return 1
+    fi
+    docker logs "$CONTAINER" 2>&1 | grep -q ' listening on ' && return 0
+    [[ "$waited" -lt "$limit" ]] || return 2
+    sleep 1
+    waited=$((waited + 1))
+  done
+}
+
 # --- commands -------------------------------------------------------------------
 
 cmd_setup() {
@@ -237,15 +263,28 @@ cmd_setup() {
 
   # Removing the old container cuts a connection made through it; SIGHUP is
   # ignored above, and nothing is printed until the end.
-  # If the new container doesn't start, the old image runs again, so the host
-  # stays reachable.
-  local old_image=""
+  # If the new container doesn't start, or exits or restarts before its server
+  # listens, the old image runs again, so the host stays reachable.
+  local old_image="" why="" started=0
   old_image="$(docker container inspect -f '{{.Config.Image}}' "$CONTAINER" 2> /dev/null)" || old_image=""
   docker rm -f "$CONTAINER" > /dev/null 2>&1 || true
-  if ! out="$(run_listener "$IMAGE" 2>&1)"; then
-    local why="${out##*$'\n'}"
+  if out="$(run_listener "$IMAGE" 2>&1)"; then
+    wait_listening || rc=$?
+    case "$rc" in
+      0) started=1 ;;
+      2)
+        started=1
+        warnings+=(--warning "the listener has not reported listening yet; check status again in a minute")
+        ;;
+      *) why="the listener exited after it started: ${CRASH_LOG}" ;;
+    esac
+    rc=0
+  else
+    why="${out##*$'\n'}"
+  fi
+  if [[ "$started" == 0 ]]; then
+    docker rm -f "$CONTAINER" > /dev/null 2>&1 || true
     if [[ -n "$old_image" ]]; then
-      docker rm -f "$CONTAINER" > /dev/null 2>&1 || true
       run_listener "$old_image" > /dev/null 2>&1 \
         && fail command_failed "starting the listener on ${IMAGE} failed, so ${old_image} runs again: ${why}"
     fi
