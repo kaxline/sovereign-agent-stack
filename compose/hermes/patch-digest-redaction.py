@@ -16,10 +16,10 @@ Run scripts/test-digest-redaction.py on Hermes bumps.
 from __future__ import annotations
 
 import os
-import shutil
 from pathlib import Path
 
-ROOT = Path(os.environ.get("HERMES_ROOT", "/opt/hermes"))
+from overlay_patch import ROOT, FileEdit, edit_files, install
+
 AGENT = ROOT / "agent"
 BOOTSTRAP = Path(os.environ.get("DIGEST_REDACTION_BOOTSTRAP", "/bootstrap"))
 TAG = "[patch-digest-redaction]"
@@ -118,49 +118,17 @@ REEXPORT = (
 )
 
 
-def fail(target: Path, problems: list) -> None:
-    raise SystemExit(
-        f"{TAG} expected code missing in {target}: {problems}. "
-        "Hermes image may have changed — update this patch."
-    )
-
-
 def main() -> None:
-    src = BOOTSTRAP / "digest_redaction.py"
-    if not src.is_file():
-        raise SystemExit(f"{TAG} missing {src}")
-    shutil.copyfile(src, AGENT / "digest_redaction.py")
-    print(f"{TAG} installed {AGENT / 'digest_redaction.py'}")
-
+    install(BOOTSTRAP / "digest_redaction.py", AGENT / "digest_redaction.py", TAG)
     redact = AGENT / "redact.py"
     split = (AGENT / VAULT_MODULE).is_file()
-    target = AGENT / VAULT_MODULE if split else redact
-    text = target.read_text(encoding="utf-8")
-    redact_text = redact.read_text(encoding="utf-8") if split else ""
-    done = MARKER in text
-    reexport_done = not split or MARKER in redact_text
-    if done and reexport_done:
-        print(f"{TAG} already applied")
-        return
-    # Check every anchor before writing either file, so a changed image is
-    # never left half-patched.
-    if not done:
-        missing = [n.strip() for n in NEEDED if n not in text]
-        anchors = {"registry": REGISTRY_ANCHOR, "clear": CLEAR_ANCHOR, "scrub": SCRUB_ANCHOR}
-        bad = [name for name, anchor in anchors.items() if text.count(anchor) != 1]
-        if missing or bad:
-            fail(target, missing + bad)
-    if not reexport_done and redact_text.count(REEXPORT_ANCHOR) != 1:
-        fail(redact, ["re-export"])
-    if not done:
-        text = text.replace(CLEAR_ANCHOR, CLEAR, 1)
-        text = text.replace(SCRUB_ANCHOR, SCRUB, 1)
-        text = text.replace(REGISTRY_ANCHOR, REGISTRY + REGISTRY_ANCHOR, 1)
-        target.write_text(text, encoding="utf-8")
-        print(f"{TAG} patched {target}")
-    if not reexport_done:
-        redact.write_text(redact_text.replace(REEXPORT_ANCHOR, REEXPORT + REEXPORT_ANCHOR, 1), encoding="utf-8")
-        print(f"{TAG} patched {redact}")
+    files = [FileEdit(AGENT / VAULT_MODULE if split else redact,
+                      [(CLEAR_ANCHOR, CLEAR), (SCRUB_ANCHOR, SCRUB), (REGISTRY_ANCHOR, REGISTRY + REGISTRY_ANCHOR)],
+                      requires=NEEDED)]
+    if split:
+        files.append(FileEdit(redact, [(REEXPORT_ANCHOR, REEXPORT + REEXPORT_ANCHOR)]))
+    # Every anchor in both files is checked before either is written.
+    edit_files(files, MARKER, TAG)
 
 
 if __name__ == "__main__":

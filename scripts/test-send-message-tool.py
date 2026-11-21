@@ -87,7 +87,8 @@ for want in ("patched", "already patched"):
     if out.returncode != 0:
         raise SystemExit(f"FAIL cron patch: {out.stdout}{out.stderr}")
     synth = [line for line in out.stdout.splitlines() if "(synth)" in line]
-    assert len(synth) == 1 and synth[0].startswith(want), out.stdout
+    cron_want = "[patch-cron-scheduler-delivery] " + ("patched" if want == "patched" else "already applied")
+    assert len(synth) == 1 and synth[0].startswith(cron_want), out.stdout
 from pathlib import Path
 cron_path = next(p for p in (Path("/opt/hermes/cron/scheduler_delivery.py"), Path("/opt/hermes/cron/scheduler.py"))
                  if p.is_file())
