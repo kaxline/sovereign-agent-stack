@@ -44,6 +44,9 @@ the stack under another app.
 
 ### Changes
 
+- `scripts/crm.sh`'s hook JSON lines (`connect`, `disconnect`, `init --json`)
+  now escape quotes and backslashes in `message` instead of turning them into
+  apostrophes. Other characters, fields and exit codes are unchanged.
 - New SSH listener ([docs/ssh-listener.md](docs/ssh-listener.md)) for hosts
   a client can't reach on port 22. It runs as its own container, apart from
   the stack, and passes HyperDHT streams from allowed client keys to the

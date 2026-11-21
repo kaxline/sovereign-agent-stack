@@ -72,9 +72,13 @@ EOF
 log() { printf '[crm] %s\n' "$1"; }
 warn() { printf '[crm] %s\n' "$1" >&2; }
 
-# JSON string content: quotes and backslashes become ', control characters go.
+# JSON string content: backslashes and quotes escaped, control characters
+# dropped. Unlike lib/json-lines.sh's jl_str, tabs go too and nothing is cut.
 json_text() {
-  printf '%s' "$1" | tr "\"\\\\" "''" | tr -d '\000-\037'
+  local s
+  s="$(printf '%s' "$1" | tr -d '\000-\037')"
+  s="${s//\\/\\\\}"
+  printf '%s' "${s//\"/\\\"}"
 }
 
 # --json: everything a command prints goes to stderr, and fd 3 (the real

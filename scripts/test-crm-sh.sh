@@ -233,6 +233,26 @@ CURL_CODE=000 CURL_EXIT=28 hook timeout '{"url":"https://crm.example.com","acces
 CURL_CODE=502 hook server_unreachable '{"url":"https://crm.example.com","access":"read","key_ro":"k-SECRET"}' connect --slug x --json
 grep -q 502 "$out" || fail "an unexpected HTTP code is named in the message"
 hook bad_slug '{"url":"https://crm.example.com","access":"read","key_ro":"k-SECRET"}' connect --slug Bad_1 --json
+# Messages keep quotes and backslashes (escaped); control characters go.
+# msg_is TEXT: the last line's message, decoded, is TEXT.
+msg_is() {
+  python3 -I -c 'import json,sys; m=json.loads(sys.argv[1])["message"]; sys.exit(0 if m == sys.argv[2] else 1)' "$last" "$1"
+}
+for sub in connect disconnect; do
+  hook bad_slug '{"url":"https://crm.example.com","access":"read","key_ro":"k-SECRET"}' "$sub" --slug 'q"b\s' --json
+  msg_is "slug 'q\"b\\s' must use lowercase letters, digits and hyphens, a letter first" \
+    || fail "$sub keeps a quote and backslash in its message: $last"
+done
+hook bad_slug '' disconnect --slug "$(printf 'a\tb')" --json
+msg_is "slug 'ab' must use lowercase letters, digits and hyphens, a letter first" || fail "a tab in a message is dropped: $last"
+# Lines without quotes or backslashes are byte-for-byte as before.
+hook bad_slug '' disconnect --slug Bad_1 --json
+[ "$last" = '{"phase":"error","error":"bad_slug","message":"slug '\''Bad_1'\'' must use lowercase letters, digits and hyphens, a letter first"}' ] \
+  || fail "bad_slug line changed: $last"
+CURL_CODE=401 hook login_refused '{"url":"https://crm.example.com","access":"read","key_ro":"k-SECRET"}' connect --slug x --json
+[ "$(cat "$out")" = '{"phase":"setup","status":"running","message":"key_ro: checking"}
+{"phase":"error","error":"login_refused","message":"Twenty rejects key_ro (HTTP 401)"}' ] \
+  || fail "login_refused lines changed: $(cat "$out")"
 hook bad_value '{"url":"https://crm.example.com","access":"read","key_ro":"k SECRET"}' connect --slug x --json
 hook bad_value '{"url":"https://crm.example.com","access":"write","key_rw":"k\tSECRET"}' connect --slug x --json
 hook bad_value '{"url":"https://u:pw-SECRET@crm.example.com","access":"read","key_ro":"k-SECRET"}' connect --slug x --json
