@@ -126,6 +126,16 @@ the stack under another app.
   `N8N_NODE` is no longer read, so a `node` stub for
   `generate-n8n-credentials.js` is no longer called. Files an earlier release
   wrote under `n8n/demo-data/credentials/` stay gitignored and can be deleted.
+- An invalid `HERMES_GATEWAY_TOPOLOGY` (anything but `standalone` or
+  `multiplex`, ignoring case and surrounding spaces) now means `standalone`
+  on the host as well as in the container, and the host scripts print a
+  warning on stderr. Before, `scripts/lib/env.sh` ignored the bad value and
+  fell back to `HERMES_PIN_STANDALONE_GATEWAYS`, so with that at `0`
+  `make doctor`, `gateway-topology.sh` and `check-hermes-standalone.sh` said
+  `multiplex` while the container ran standalone. Valid values and their
+  output are unchanged. Inside the container, `gateway-compat-proxy` now reads
+  the topology that `019-pin-profile-gateways` resolved, from
+  `/run/hermes-gateway-topology`, instead of resolving it again.
 
 ## v0.3.17 — 2026-11-20
 

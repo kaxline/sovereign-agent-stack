@@ -2002,14 +2002,23 @@ remove_env_key "$PROFILE_ENV" "HERMES_MAX_ITERATIONS"
 
 if is_true "$BOOTSTRAP_SHARED"; then
   # --- Default profile's API server, per gateway topology ---
-  # Same resolution as compose/hermes/019-pin-profile-gateways.sh.
-  GATEWAY_TOPOLOGY="$(printf '%s' "${HERMES_GATEWAY_TOPOLOGY:-}" | tr '[:upper:]' '[:lower:]')"
-  if [ -z "$GATEWAY_TOPOLOGY" ]; then
-    case "$(printf '%s' "${HERMES_PIN_STANDALONE_GATEWAYS:-1}" | tr '[:upper:]' '[:lower:]')" in
-      0|false|no|off) GATEWAY_TOPOLOGY=multiplex ;;
-      *) GATEWAY_TOPOLOGY=standalone ;;
-    esac
-  fi
+  # Same rule as compose/hermes/019-pin-profile-gateways.sh. This container
+  # finishes before hermes starts, so 019's /run/hermes-gateway-topology does
+  # not exist yet and the variables are resolved here.
+  GATEWAY_TOPOLOGY="$(printf '%s' "${HERMES_GATEWAY_TOPOLOGY:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+  case "$GATEWAY_TOPOLOGY" in
+    standalone|multiplex) ;;
+    "")
+      case "$(printf '%s' "${HERMES_PIN_STANDALONE_GATEWAYS:-1}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" in
+        0|false|no|off) GATEWAY_TOPOLOGY=multiplex ;;
+        *) GATEWAY_TOPOLOGY=standalone ;;
+      esac
+      ;;
+    *)
+      log "warning: HERMES_GATEWAY_TOPOLOGY='${GATEWAY_TOPOLOGY}' is not standalone or multiplex; using standalone"
+      GATEWAY_TOPOLOGY=standalone
+      ;;
+  esac
   touch "$DEFAULT_ENV"
   if [ "$GATEWAY_TOPOLOGY" = multiplex ]; then
     # The default listener (8642) serves every profile at /p/<profile>/ and

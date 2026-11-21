@@ -11,12 +11,21 @@ With the image present (or --image):
   writes no standalone pins, generates the default profile's API_SERVER_KEY
   (mode 0600) once, parks a profile that never ran a gateway and leaves a
   running one served, does not re-park a profile unparked later, and warns
-  about a profile still pinned standalone.
+  about a profile still pinned standalone. It writes the resolved topology to
+  HERMES_GATEWAY_TOPOLOGY_FILE; an invalid HERMES_GATEWAY_TOPOLOGY warns and
+  writes standalone even with HERMES_PIN_STANDALONE_GATEWAYS=0.
+- s6/gateway-compat-proxy run and finish read /run/hermes-gateway-topology:
+  standalone, missing or empty leaves the slot down (run 0, finish 125);
+  multiplex lets finish restart it (0).
 
 With --boot, also boots the image under s6 with that home and
 HERMES_GATEWAY_TOPOLOGY=multiplex and checks the real listener: one gateway
 serves the profiles at :8642/p/<profile>/, each with its own key, and the
-proxy answers on 8643 and 8644. About a minute.
+proxy answers on 8643 and 8644. Then boots it again with an invalid
+HERMES_GATEWAY_TOPOLOGY and HERMES_PIN_STANDALONE_GATEWAYS=0 and checks that
+the container runs standalone: 019 warns and writes standalone, the proxy slot
+stays down, and the api-server profile's own gateway answers on 8643. About
+two minutes.
 """
 
 from __future__ import annotations
@@ -158,15 +167,18 @@ for name, state, cfg in (("api-server", "running", "model:\n  default: m\n"),
 
 script = Path("/bootstrap/019-pin-profile-gateways.sh").read_text()
 body = script.split("<<'PY'", 1)[1].split("\n", 1)[1].split("\nPY\n", 1)[0]
-env = {**os.environ, "HERMES_HOME": str(home), "HERMES_GATEWAY_TOPOLOGY": "multiplex"}
+topology_file = Path("/tmp/multiplex-topology")
+env = {**os.environ, "HERMES_HOME": str(home), "HERMES_GATEWAY_TOPOLOGY": "multiplex",
+       "HERMES_GATEWAY_TOPOLOGY_FILE": str(topology_file)}
 
-def run019():
+def run019(env=env):
     out = subprocess.run([sys.executable, "-c", body], env=env, capture_output=True, text=True)
     assert out.returncode == 0, out.stdout + out.stderr
     return out.stdout
 
 first = run019()
 assert "topology: multiplex" in first, first
+assert topology_file.read_text() == "multiplex\n", topology_file.read_text()
 assert "pinned keeps gateway.standalone: true" in first, first
 parked = {p.parent.name for p in home.glob("profiles/*/gateway.parked")}
 assert parked == {"orchestrator", "idle", "pinned"}, parked
@@ -200,7 +212,32 @@ from hermes_cli.profiles import profiles_to_serve
 os.environ["HERMES_HOME"] = str(home)
 served = sorted(name for name, _ in profiles_to_serve(True))
 assert "orchestrator" in served and "idle" not in served and "pinned" not in served, served
+
+# An invalid topology warns and means standalone, whatever the older pin says.
+bad_home = Path("/tmp/bad-topology-home")
+bad_home.mkdir()
+(bad_home / "config.yaml").write_text("model:\n  default: m\n")
+out = run019({**os.environ, "HERMES_HOME": str(bad_home), "HERMES_GATEWAY_TOPOLOGY": "Multi-plex",
+              "HERMES_PIN_STANDALONE_GATEWAYS": "0", "HERMES_GATEWAY_TOPOLOGY_FILE": str(topology_file)})
+assert "warn: HERMES_GATEWAY_TOPOLOGY='multi-plex'" in out and "topology: standalone" in out, out
+assert topology_file.read_text() == "standalone\n", topology_file.read_text()
+assert not (bad_home / ".env").exists(), "standalone generates no default key"
 print("019 ok")
+
+# --- s6/gateway-compat-proxy run and finish read 019's file ---
+run_file = Path("/run/hermes-gateway-topology")
+s6_dir = "/bootstrap/s6/gateway-compat-proxy"
+def slot(script):
+    return subprocess.run(["sh", f"{s6_dir}/{script}"], capture_output=True, text=True).returncode
+for content in (None, "", "standalone\n", "bogus\n"):
+    run_file.unlink(missing_ok=True)
+    if content is not None:
+        run_file.write_text(content)
+    assert (slot("run"), slot("finish")) == (0, 125), content
+run_file.write_text("multiplex\n")
+assert slot("finish") == 0
+run_file.unlink()
+print("s6 slot ok")
 print("image ok")
 '''
 
@@ -251,16 +288,48 @@ print("served_profiles:", state.get("served_profiles"), "standalone_reason:", st
 sys.exit(1 if bad else 0)
 '''
 
+# Invalid HERMES_GATEWAY_TOPOLOGY with HERMES_PIN_STANDALONE_GATEWAYS=0: standalone.
+BOOT_CHECK_STANDALONE = r'''
+import subprocess, sys, time, urllib.request, urllib.error
+from pathlib import Path
 
-def seed_home(path: Path) -> None:
-    for name, key, state in (("api-server", "key-api-0123456789abcdef", "running"), ("browser", "key-browser-0123456789abcdef", "running"),
-                             ("orchestrator", None, None)):
+def get(url):
+    try:
+        with urllib.request.urlopen(url, timeout=5) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code
+    except OSError:
+        return None
+
+deadline = time.time() + 120
+while time.time() < deadline and get("http://127.0.0.1:8643/health") != 200:
+    time.sleep(2)
+up = subprocess.run(["/command/s6-svstat", "-o", "up", "/run/service/gateway-compat-proxy"],
+                    capture_output=True, text=True)
+checks = {
+    "/run/hermes-gateway-topology": (Path("/run/hermes-gateway-topology").read_text(), "standalone\n"),
+    "gateway-compat-proxy up": (up.stdout.strip(), "false"),
+    "8643 /health (api-server's own gateway)": (get("http://127.0.0.1:8643/health"), 200),
+}
+bad = {k: v for k, v in checks.items() if v[0] != v[1]}
+for k, (got, want) in checks.items():
+    print(f"{'ok ' if got == want else 'BAD'} {k}: {got!r} (want {want!r})")
+sys.exit(1 if bad else 0)
+'''
+
+
+def seed_home(path: Path, standalone: bool = False) -> None:
+    for name, key, state, port in (("api-server", "key-api-0123456789abcdef", "running", 8643),
+                                   ("browser", "key-browser-0123456789abcdef", "running", 8644),
+                                   ("orchestrator", None, None, None)):
         p = path / "profiles" / name
         p.mkdir(parents=True)
         (p / "SOUL.md").write_text("synthetic\n")
         (p / "config.yaml").write_text("model:\n  default: m\n")
         if key:
-            (p / ".env").write_text(f"API_SERVER_KEY={key}\nAPI_SERVER_ENABLED=true\n")
+            port_line = f"API_SERVER_PORT={port}\nAPI_SERVER_HOST=0.0.0.0\n" if standalone else ""
+            (p / ".env").write_text(f"API_SERVER_KEY={key}\nAPI_SERVER_ENABLED=true\n{port_line}")
         if state:
             (p / "gateway_state.json").write_text(json.dumps({"desired_state": state}))
     (path / "config.yaml").write_text("model:\n  default: m\n")
@@ -268,18 +337,18 @@ def seed_home(path: Path) -> None:
     (path / "gateway_state.json").write_text(json.dumps({"desired_state": "running"}))
 
 
-def boot() -> None:
+def boot(env: list[str], check: str, standalone: bool = False, log_has: str = "") -> None:
     image = f"nousresearch/hermes-agent:{hermes_image.image_tag()}"
     hermes = ROOT / "compose" / "hermes"
     name = f"gateway-multiplex-test-{int(time.time())}"
     with tempfile.TemporaryDirectory() as tmp:
         seed = Path(tmp) / "seed"
-        seed_home(seed)
+        seed_home(seed, standalone)
         init = Path(tmp) / "0011-seed"
         init.write_text(BOOT_SEED)
         init.chmod(0o755)
         cmd = ["docker", "run", "-d", "--name", name,
-               "-e", "HERMES_GATEWAY_TOPOLOGY=multiplex", "-e", "HERMES_CONTROL_SOCKET_IN_TMP=1",
+               *[a for e in env for a in ("-e", e)], "-e", "HERMES_CONTROL_SOCKET_IN_TMP=1",
                "-v", f"{seed}:/seed:ro",
                "-v", f"{init}:/etc/cont-init.d/0011-seed:ro",
                "-v", f"{hermes / '019-pin-profile-gateways.sh'}:/etc/cont-init.d/019-pin-profile-gateways:ro",
@@ -290,15 +359,19 @@ def boot() -> None:
                image, "gateway", "run"]
         subprocess.run(cmd, check=True, capture_output=True)
         try:
-            out = subprocess.run(["docker", "exec", name, "/opt/hermes/.venv/bin/python", "-c", BOOT_CHECK],
+            out = subprocess.run(["docker", "exec", name, "/opt/hermes/.venv/bin/python", "-c", check],
                                  capture_output=True, text=True, timeout=180)
             print(out.stdout, end="")
+            logs = subprocess.run(["docker", "logs", name], capture_output=True, text=True)
+            if log_has and log_has not in logs.stdout + logs.stderr:
+                print(f"BAD container log has no {log_has!r}")
+                out.returncode = 1
             if out.returncode != 0:
                 logs = subprocess.run(["docker", "logs", "--tail", "60", name], capture_output=True, text=True)
                 print(f"FAIL boot checks\n{out.stderr}\n--- container log ---\n{logs.stdout}{logs.stderr}",
                       file=sys.stderr)
                 raise SystemExit(1)
-            print(f"boot ok ({image})")
+            print(f"boot ok ({image}, {' '.join(env)})")
         finally:
             subprocess.run(["docker", "rm", "-f", name], capture_output=True)
 
@@ -306,7 +379,9 @@ def boot() -> None:
 def main() -> None:
     hermes_image.maybe_run(IMAGE_DRIVER)
     if "--boot" in sys.argv[1:]:
-        boot()
+        boot(["HERMES_GATEWAY_TOPOLOGY=multiplex"], BOOT_CHECK)
+        boot(["HERMES_GATEWAY_TOPOLOGY=bogus", "HERMES_PIN_STANDALONE_GATEWAYS=0"], BOOT_CHECK_STANDALONE,
+             standalone=True, log_has="HERMES_GATEWAY_TOPOLOGY='bogus' is not standalone or multiplex")
 
 
 if __name__ == "__main__":
