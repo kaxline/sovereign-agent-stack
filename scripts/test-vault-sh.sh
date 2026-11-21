@@ -54,7 +54,10 @@ case " $* " in
     exit "$(rc_of up)" ;;
   *" broker.cli accounts "*)
     [ -f "$STUB/record-ps" ] && { ps -ax -o args= >> "$STUB/ps" 2>/dev/null || true; }
-    cat "$STUB/accounts" 2>/dev/null; exit "$(rc_of accounts)" ;;
+    cat "$STUB/accounts" 2>/dev/null
+    # The broker moving on between polls: the next call reads accounts.next.
+    [ -f "$STUB/accounts.next" ] && mv "$STUB/accounts.next" "$STUB/accounts"
+    exit "$(rc_of accounts)" ;;
   *" broker.cli signer "*) cat "$STUB/signer" 2>/dev/null; exit "$(rc_of signer)" ;;
   *" broker.cli requests --json "*) cat "$STUB/requests.json"; exit 0 ;;
   *" broker.cli requests "*) echo "No pending access requests."; exit 0 ;;
@@ -947,5 +950,59 @@ if command -v sqlite3 >/dev/null 2>&1; then
 else
   echo "skip: backup and restore (no sqlite3)"
 fi
+
+# --- The broker's account rows: one reader, one poll loop ---------------------
+# add and add --json wait for a manual account the same way: until it has
+# signed in (logged_in 1) or left "locked". add used to stop at the first
+# locked row, so a key Bitwarden refused a moment later was kept.
+reset_stub
+touch "$STUB/broker-running"
+export VAULT_BROKER_WAIT=5
+polls() { grep -c "broker.cli accounts" "$STUB/log" 2>/dev/null || true; }
+printf 'wm\tcloud\tfolder\tlocked\t-\t0\t\n' > "$STUB/accounts"
+printf 'wm\tcloud\tfolder\terror\tauth\t0\t\n' > "$STUB/accounts.next"
+run_in "user.wm"$'\n'"$SECRET"$'\n' add --slug wm --mode cloud --unlock manual \
+  && fail "add kept a manual account whose sign-in failed after a locked row"
+said "Bitwarden refused the API key or master password for wm (auth); nothing was kept" \
+  || fail "add does not report the auth error that followed the locked row"
+[ ! -e "$INST/wm.json" ] && [ ! -e "$BITWARDEN_HOST_DATA_DIR/secrets/wm" ] || fail "add kept wm after the auth error"
+: > "$STUB/log"
+printf 'wm\tcloud\tfolder\tlocked\t-\t0\t\n' > "$STUB/accounts"
+printf 'wm\tcloud\tfolder\tlocked\t-\t1\t\n' > "$STUB/accounts.next"
+run_in "user.wm"$'\n'"$SECRET"$'\n' add --slug wm --mode cloud --unlock manual || fail "add manual that signs in on the second poll"
+said "wm: added; it stays locked until make vault-unlock SLUG=wm" || fail "add manual after the sign-in"
+# Two polls for wm, then note_locked_manual's read.
+[ "$(polls)" = 3 ] || fail "add did not wait for logged_in (polls: $(polls))"
+rm -f "$INST/wm.json"; rm -rf "$BITWARDEN_HOST_DATA_DIR/secrets/wm"
+: > "$STUB/log"
+printf 'wj\tcloud\tfolder\tlocked\t-\t0\t\n' > "$STUB/accounts"
+printf 'wj\tcloud\tfolder\terror\tauth\t0\t\n' > "$STUB/accounts.next"
+[ "$(ja "$MANUAL" wj)" = 4 ] && [ "$(jlast error)" = login_refused ] || fail "add --json with an auth error after a locked row"
+gone wj "add --json auth error after a locked row"
+: > "$STUB/log"
+printf 'wj\tcloud\tfolder\tlocked\t-\t0\t\n' > "$STUB/accounts"
+printf 'wj\tcloud\tfolder\tlocked\t-\t1\t\n' > "$STUB/accounts.next"
+[ "$(ja "$MANUAL" wj)" = 0 ] && [ "$(jlast phase)" = "done" ] || fail "add --json manual that signs in on the second poll"
+[ "$(polls)" = 3 ] || fail "add --json did not poll the same way as add (polls: $(polls))"
+rm -f "$INST/wj.json"; rm -rf "$BITWARDEN_HOST_DATA_DIR/secrets/wj"
+export VAULT_BROKER_WAIT=0
+
+# A broker refusal row has three cells, so an account whose slug is "refused"
+# is an account, not a refusal; a refusal with no cause is bad_file.
+reset_stub
+touch "$STUB/broker-running"
+mv "$INST" "$tmp/inst-rows" 2>/dev/null || true
+mkdir -p "$INST"
+rm -f "$BITWARDEN_HOST_DATA_DIR/broker/local-account.json"
+inst refused '{"mode":"cloud","unlock":"stored"}'
+inst nocause '{"mode":"cloud","unlock":"manual"}'
+printf 'refused\tcloud\tfolder\tunlocked\t-\t1\t\nrefused\tnocause.json: unreadable\t\n' > "$STUB/accounts"
+run status --json || fail "status --json with a slug named refused"
+grep -q '^{"slug":"refused","mode":"cloud","scope":"folder:Agent","unlock":"stored","state":"unlocked","error":null,"retry_after":null}$' "$out" \
+  || fail "status --json reads the account named refused"
+grep -q '^{"file":"nocause.json","slug":"nocause","state":"refused","error":"bad_file"}$' "$out" \
+  || fail "a refusal row with no cause is bad_file"
+rm -rf "$INST"
+mv "$tmp/inst-rows" "$INST" 2>/dev/null || mkdir -p "$INST"
 
 printf 'OK vault.sh\n'

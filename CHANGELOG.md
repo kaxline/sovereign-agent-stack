@@ -18,6 +18,12 @@ the stack under another app.
   `BITWARDEN_HOST_DATA_DIR`, whatever `BITWARDEN_ENABLED` says. Modes match
   `vault.sh pre-up`: `secrets/` 0711, the others 0700. A folder it can't
   create fails enable at step `prepare` with the add-on left off.
+- `vault.sh add` without `--json` now waits for a manual-unlock account to
+  sign in, as `add --json` does, instead of stopping at the broker's first
+  `locked` row. A key Bitwarden refuses after that row is now removed with an
+  auth error rather than kept as added. `vault.sh status --json` also lists an
+  account whose slug is `refused` with its real state; it showed as
+  `not_loaded` before.
 - `scripts/setup.sh`, `crm.sh init`, `todo.sh init`, `budget.sh`, `db.sh
   service-add`, `vault.sh api-token` and `web-browser-secrets.sh` no longer
   need `openssl` on the host: every generated secret now comes from

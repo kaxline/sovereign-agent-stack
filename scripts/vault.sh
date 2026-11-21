@@ -261,18 +261,67 @@ broker_cli() { broker_exec python3 -m broker.cli "$@"; }
 # bitwarden-setup takes the terminal for its hidden prompts (tty: true in compose).
 setup_run() { docker compose --profile bitwarden-tools run --rm bitwarden-setup "$@"; }
 
-# "<state> <error_class>" for a slug from the broker, or nothing.
-broker_state() {
-  local rows="$1" slug="$2"
-  printf '%s\n' "$rows" | awk -F '\t' -v s="$slug" '$1 == s { print $4 " " $5; exit }'
+# --- The broker's account rows ---------------------------------------------
+#
+# `broker.cli accounts` prints one tab-separated row per account,
+#   slug  mode  scope  state  error_class  logged_in  retry_after
+# with "-" for an empty cell and an empty retry_after for none, then one
+# "refused  <file>: <reason>  <cause>" row per instance file it refused. A
+# refused row has three cells, so an account whose slug is "refused" is still
+# read as an account. Only the functions below know the column order.
+
+ACCOUNTS=""
+# load_accounts: ACCOUNTS from the broker, returning broker.cli's status.
+load_accounts() { ACCOUNTS="$(broker_cli accounts 2>/dev/null)"; }
+
+# account_row SLUG: sets A_STATE, A_CLASS (empty for none), A_LOGGED (1 or 0)
+# and A_RETRY from SLUG's row in ACCOUNTS. Returns 1, with all four empty, when
+# ACCOUNTS has no row for SLUG.
+A_STATE=""
+A_CLASS=""
+A_LOGGED=""
+A_RETRY=""
+account_row() {
+  local c
+  while IFS=$'\t' read -r -a c; do
+    [[ "${#c[@]}" -gt 3 && "${c[0]}" == "$1" ]] || continue
+    A_STATE="${c[3]}"
+    A_CLASS="${c[4]:-}"
+    A_LOGGED="${c[5]:-}"
+    A_RETRY="${c[6]:-}"
+    [[ "$A_CLASS" != - ]] || A_CLASS=""
+    return 0
+  done <<< "$ACCOUNTS"
+  A_STATE=""; A_CLASS=""; A_LOGGED=""; A_RETRY=""
+  return 1
+}
+
+# account_slugs: the slug of each account row in ACCOUNTS, one per line.
+account_slugs() {
+  local c
+  while IFS=$'\t' read -r -a c; do
+    [[ "${#c[@]}" -gt 3 ]] && printf '%s\n' "${c[0]}"
+  done <<< "$ACCOUNTS"
+  return 0
+}
+
+# refused_cause FILE: the cause the broker gave for refusing instance file
+# FILE, bad_file when it gave none; nothing when it did not refuse FILE.
+refused_cause() {
+  local c
+  while IFS=$'\t' read -r -a c; do
+    [[ "${#c[@]}" -gt 1 && "${#c[@]}" -le 3 && "${c[0]}" == refused && "${c[1]%%:*}" == "$1" ]] || continue
+    printf '%s' "${c[2]:-bad_file}"
+    return 0
+  done <<< "$ACCOUNTS"
+  return 0
 }
 
 # True unless the running broker's account list leaves out the slug; a list
 # that cannot be read counts as holding it.
 broker_may_hold() {
-  local rows
-  rows="$(broker_cli accounts 2>/dev/null)" || return 0
-  printf '%s\n' "$rows" | awk -F '\t' -v s="$1" '$1 == s { f = 1 } END { exit !f }'
+  load_accounts || return 0
+  account_row "$1"
 }
 
 # A recreate, not a restart: a restart keeps the network namespace of the
@@ -292,22 +341,22 @@ wait_for_broker() {
   done
 }
 
-# Polls the broker until SLUG leaves "locked" (stored accounts unlock at start)
-# or VAULT_BROKER_WAIT seconds pass. Prints "<state> <error_class>".
+# wait_for_account SLUG UNLOCK: polls the broker in this shell (so a signal
+# stops it within one poll) until SLUG has signed in: out of "locked" for
+# stored unlock (stored accounts unlock at start), logged_in or out of "locked"
+# for manual. account_row's A_* hold the last poll's row. Returns 1 when
+# VAULT_BROKER_WAIT seconds pass first.
 wait_for_account() {
-  local slug="$1" unlock="$2" wait="${VAULT_BROKER_WAIT:-60}" start rows got
+  local slug="$1" unlock="$2" wait="${VAULT_BROKER_WAIT:-60}" start
   start="$(date +%s)"
   while :; do
-    rows="$(broker_cli accounts 2>/dev/null || true)"
-    got="$(broker_state "$rows" "$slug")"
-    if [[ -n "$got" && ( "$unlock" == manual || "${got%% *}" != locked ) ]]; then
-      printf '%s' "$got"
-      return 0
+    load_accounts || true
+    if account_row "$slug"; then
+      if [[ "$A_STATE" != locked ]] || [[ "$unlock" == manual && "$A_LOGGED" == 1 ]]; then
+        return 0
+      fi
     fi
-    if [[ $(( $(date +%s) - start )) -ge "$wait" ]]; then
-      printf '%s' "$got"
-      return 0
-    fi
+    [[ $(( $(date +%s) - start )) -lt "$wait" ]] || return 1
     sleep 2
   done
 }
@@ -780,33 +829,6 @@ add_rollback() {
   return 0
 }
 
-# Polls the broker in this shell (so a signal stops it within one poll) until
-# SLUG has signed in: unlocked for stored unlock, logged_in or no longer
-# locked for manual. Sets W_STATE, W_CLASS (empty for none), W_LOGGED and
-# W_RETRY from the last row seen. Returns 1 when VAULT_BROKER_WAIT seconds
-# pass first.
-W_STATE=""
-W_CLASS=""
-W_LOGGED=""
-W_RETRY=""
-wait_for_login() {
-  local slug="$1" unlock="$2" wait="${VAULT_BROKER_WAIT:-60}" start rows row
-  start="$(date +%s)"
-  while :; do
-    rows="$(broker_cli accounts 2>/dev/null || true)"
-    row="$(printf '%s\n' "$rows" | awk -F '\t' -v s="$slug" '$1 == s { print; exit }')"
-    if [[ -n "$row" ]]; then
-      IFS=$'\t' read -r _ _ _ W_STATE W_CLASS W_LOGGED W_RETRY <<< "$row"
-      [[ "$W_CLASS" != "-" ]] || W_CLASS=""
-      if [[ "$W_STATE" != locked ]] || [[ "$unlock" == manual && "$W_LOGGED" == 1 ]]; then
-        return 0
-      fi
-    fi
-    [[ $(( $(date +%s) - start )) -lt "$wait" ]] || return 1
-    sleep 2
-  done
-}
-
 # add --json: recreate the broker so it signs in with the new key, and keep
 # the account only when it has: unlocked (stored unlock), or locked with
 # logged_in=1 and no error (manual). Anything else rolls back and ends with an
@@ -825,11 +847,10 @@ check_account_json() {
     add_rollback "$slug"
     emit_error command_failed "the broker did not restart (docker compose --profile core --profile bitwarden up -d --no-deps bitwarden-broker); ${kept}"
   fi
-  W_STATE=""; W_CLASS=""; W_LOGGED=""; W_RETRY=""
-  wait_for_login "$slug" "$unlock" || timed_out=1
-  if [[ "$timed_out" == 0 && -z "$W_CLASS" ]]; then
-    if [[ "$unlock" == stored && "$W_STATE" == unlocked ]] \
-      || [[ "$unlock" == manual && "$W_STATE" == locked && "$W_LOGGED" == 1 ]]; then
+  wait_for_account "$slug" "$unlock" || timed_out=1
+  if [[ "$timed_out" == 0 && -z "$A_CLASS" ]]; then
+    if [[ "$unlock" == stored && "$A_STATE" == unlocked ]] \
+      || [[ "$unlock" == manual && "$A_STATE" == locked && "$A_LOGGED" == 1 ]]; then
       [[ "$ADD_STAGE" != replaced ]] || drop_backup "$slug"
       ADD_STAGE=finished
       emit_line '{"phase":"setup","step":"check","status":"done"}'
@@ -847,12 +868,12 @@ check_account_json() {
     fi
   fi
   add_rollback "$slug"
-  case "$W_CLASS" in
+  case "$A_CLASS" in
     auth) emit_error login_refused "Bitwarden refused the API key or master password for ${slug}; ${kept}" ;;
     network) emit_error server_unreachable "the broker could not reach the Bitwarden server for ${slug}; ${kept}" ;;
     rate_limited)
-      if [[ "$W_RETRY" =~ $RETRY_RE ]]; then
-        emit_error rate_limited "Bitwarden is limiting sign-ins for ${slug}; try again in ${W_RETRY} s. ${kept_s}" "$W_RETRY"
+      if [[ "$A_RETRY" =~ $RETRY_RE ]]; then
+        emit_error rate_limited "Bitwarden is limiting sign-ins for ${slug}; try again in ${A_RETRY} s. ${kept_s}" "$A_RETRY"
       fi
       emit_error rate_limited "Bitwarden is limiting sign-ins for ${slug}; try again later. ${kept_s}"
       ;;
@@ -860,7 +881,7 @@ check_account_json() {
   if [[ "$timed_out" == 1 ]]; then
     emit_error timeout "the broker did not finish signing in to ${slug} within ${wait} s; ${kept}"
   fi
-  emit_error command_failed "the broker reports ${slug} as ${W_STATE:-not loaded}${W_CLASS:+ (${W_CLASS})}; ${kept}"
+  emit_error command_failed "the broker reports ${slug} as ${A_STATE:-not loaded}${A_CLASS:+ (${A_CLASS})}; ${kept}"
 }
 
 # Creating the folder or collection and moving items into it need your own
@@ -902,7 +923,7 @@ offer_setup() {
 # With the broker up, restart it so it loads the new instance, and report what it
 # makes of the credentials. An auth error removes what add wrote.
 check_account() {
-  local slug="$1" unlock="$2" got state class
+  local slug="$1" unlock="$2" state class
   if ! broker_running; then
     log "The broker checks the API key when it starts: make up, then make doctor"
     if [[ "$ADD_STAGE" == replaced ]]; then
@@ -913,10 +934,11 @@ check_account() {
   fi
   log "Restarting the broker so it loads ${slug}"
   restart_broker
-  got="$(wait_for_account "$slug" "$unlock")"
+  wait_for_account "$slug" "$unlock" || true
+  # The row's own "-" for no error class, as these messages have always shown it.
+  state="$A_STATE"
+  class="${A_CLASS:--}"
   note_locked_manual "$slug"
-  state="${got%% *}"
-  class="${got#* }"
   case "$state" in
     unlocked) log "${slug}: signed in and unlocked" ;;
     locked)
@@ -960,15 +982,16 @@ locked_sentence() {
   printf 'The broker restart locked %s; unlock them again.' "${names// /, }"
 }
 note_locked_manual() {
-  local skip="$1" rows s st
-  rows="$(broker_cli accounts 2>/dev/null || true)"
-  while IFS=$'\t' read -r s _ _ st _; do
-    [[ -n "$s" && "$s" != "$skip" && "$s" != local && "$st" == locked ]] || continue
+  local skip="$1" s
+  load_accounts || true
+  while IFS= read -r s; do
+    [[ -n "$s" && "$s" != "$skip" && "$s" != local ]] || continue
+    account_row "$s" && [[ "$A_STATE" == locked ]] || continue
     if [[ "$(instance_unlock "$s")" == manual ]]; then
       log "${s} is locked after the restart: make vault-unlock SLUG=${s}"
       LOCKED_MANUAL="${LOCKED_MANUAL} ${s}"
     fi
-  done <<< "$rows"
+  done <<< "$(account_slugs)"
   return 0
 }
 
@@ -1104,15 +1127,10 @@ cmd_status() {
   done
   [[ "$json" == 1 ]] || { usage >&2; exit 1; }
   JSON=1
-  local rows="" up=0
-  if broker_running && rows="$(broker_cli accounts 2>/dev/null)"; then
+  local up=0
+  if broker_running && load_accounts; then
     up=1
   fi
-  # "<file>\t<cause>" per account the running broker refused.
-  local refused="" a b c
-  while IFS=$'\t' read -r a b c _; do
-    [[ "$a" == refused ]] && refused="${refused}${b%%:*}"$'\t'"${c:-bad_file}"$'\n'
-  done <<< "$rows"
   local list="" f lf
   for f in "$(store_dir)"/instances/*.json; do
     [[ -e "$f" ]] || continue
@@ -1123,7 +1141,7 @@ cmd_status() {
   if [[ -e "$lf" ]]; then
     list="${list}local"$'\t'"broker/local-account.json"$'\n'
   fi
-  local slug name sj cause text row mode scope unlock st ec retry err
+  local slug name sj cause text mode scope unlock st ec retry err
   while IFS=$'\t' read -r slug name; do
     [[ -n "$slug" ]] || continue
     cause=""
@@ -1149,7 +1167,7 @@ cmd_status() {
       [[ -n "$unlock" ]] || unlock=manual
     fi
     if [[ -z "$cause" && "$up" == 1 ]]; then
-      cause="$(printf '%s' "$refused" | awk -F '\t' -v f="$name" '$1 == f { print $2; exit }')"
+      cause="$(refused_cause "$name")"
       case "$cause" in
         "" | bad_file | bad_slug | missing_client_id) ;;
         *) cause=bad_file ;;
@@ -1161,14 +1179,8 @@ cmd_status() {
     fi
     scope="$(json_get scope "$text")"
     [[ -n "$scope" ]] || scope="folder:Agent"
-    row=""
-    [[ "$up" == 1 ]] && row="$(printf '%s\n' "$rows" | awk -F '\t' -v s="$slug" '$1 == s && $1 != "refused" { print; exit }')"
-    if [[ -z "$row" ]]; then
-      st=offline; retry=null
-      if [[ "$up" == 1 ]]; then err='"not_loaded"'; else err='"broker_down"'; fi
-    else
-      IFS=$'\t' read -r _ _ _ st ec _ retry <<< "$row"
-      [[ "$ec" == "-" ]] && ec=""
+    if [[ "$up" == 1 ]] && account_row "$slug"; then
+      st="$A_STATE"; ec="$A_CLASS"; retry="$A_RETRY"
       case "$ec" in
         auth) err='"login_refused"' ;;
         network) err='"server_unreachable"' ;;
@@ -1177,6 +1189,9 @@ cmd_status() {
         *) err=null ;;
       esac
       if [[ "$retry" =~ $RETRY_RE ]]; then :; else retry=null; fi
+    else
+      st=offline; retry=null
+      if [[ "$up" == 1 ]]; then err='"not_loaded"'; else err='"broker_down"'; fi
     fi
     # mode, scope and unlock are JSON string contents already (json_get).
     emit_line "{\"slug\":${sj},\"mode\":\"${mode}\",\"scope\":\"${scope}\",\"unlock\":\"${unlock}\",\"state\":$(json_str "$st"),\"error\":${err},\"retry_after\":${retry}}"
