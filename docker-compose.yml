@@ -7,7 +7,7 @@ include:
     project_directory: .
 
 x-n8n: &service-n8n
-  image: ${N8N_IMAGE:-n8nio/n8n:2.47.4}
+  image: ${N8N_IMAGE:-n8nio/n8n:2.48.7}
   # Allowlist. The root .env stays on the host for Compose interpolation and
   # is not mounted into the container. A mapping, so a service that adds keys
   # merges it with `<<: *n8n-env` instead of replacing it.

@@ -24,6 +24,10 @@ the stack under another app.
 
 ### Changes
 
+- **n8n** 2.47.4 → 2.48.7, the current `stable` tag. 2.48.3 fixed the
+  2026-11-13 advisories, among them a custom instance role with
+  user-management permissions taking over the owner account (high), and
+  AWS Bedrock nodes skipping SSRF protection for custom endpoints.
 - **Ollama** (`ollama` profile) 0.40.11 → 0.40.17. Since 0.40.14 the
   OpenAI-compatible endpoints keep a model's packaged sampling defaults when
   the client sends no `temperature` or `top_p`, instead of forcing 1.0, as
