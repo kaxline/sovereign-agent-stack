@@ -30,6 +30,19 @@ the stack under another app.
   without the `coding_*` names, an older cron Signal block). Each now checks
   only its marker. A container still carrying one of those blocks keeps it
   until `make hermes-recreate`.
+- Cron delivery to Signal reads `SIGNAL_HTTP_URL`, `SIGNAL_ACCOUNT`,
+  `SIGNAL_HOME_CHANNEL` and `SIGNAL_HOME_CHANNEL_NAME` the way `send_message`
+  does: from the owning profile's secret scope, falling back to the process
+  env only where Hermes allows it. Before, cron read the process env first,
+  so under `HERMES_GATEWAY_TOPOLOGY=multiplex` a profile's cron job could
+  deliver through the launch profile's Signal account, and
+  `SIGNAL_HOME_CHANNEL_NAME` set only in a profile's `.env` was ignored. Both
+  overlays now install and call `compose/hermes/signal_env.py`, mounted at
+  `/bootstrap/signal_env.py`; an app with its own compose file needs that
+  mount, or the Signal synth prints `skip` and cron and `send_message` lose
+  Signal while the adapter is off. In standalone mode the only difference is
+  that a value in the profile's `.env` now wins over a different value in
+  the process env, as it already did for `send_message`.
 - Hermes v0.23.2 overlay fixes. Each patch accepts the v0.23.1 and the
   v0.23.2 shape. `patch-digest-redaction`: the vault redaction registry moved
   to `agent/redact_vault_values.py`; the overlay patches it there and

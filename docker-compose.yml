@@ -1960,6 +1960,7 @@ services:
       - ./compose/hermes/patch-tool-search-visible.py:/bootstrap/patch-tool-search-visible.py:ro
       - ./compose/hermes/patch-tool-search-always-include.py:/bootstrap/patch-tool-search-always-include.py:ro
       - ./compose/hermes/patch-cron-scheduler-delivery.py:/bootstrap/patch-cron-scheduler-delivery.py:ro
+      - ./compose/hermes/signal_env.py:/bootstrap/signal_env.py:ro
       - ./compose/hermes/04-patch-signal-send.sh:/etc/cont-init.d/04-patch-signal-send:ro
       # Weak-model text tool-call recovery.
       # Compatibility overlays — Hermes upstream closed content promotion (#29115).
