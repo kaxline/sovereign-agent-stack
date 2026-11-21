@@ -18,10 +18,8 @@ Without ``mirror_exclude`` nothing changes.
 """
 from __future__ import annotations
 
-import os
-from pathlib import Path
+from overlay_patch import ROOT, FileEdit, edit_files
 
-ROOT = Path(os.environ.get("HERMES_ROOT", "/opt/hermes"))
 CONTRACT = ROOT / "tui_gateway" / "contracts" / "profiles_vault_complete_foreign_subagents.py"
 METHODS = ROOT / "tui_gateway" / "methods_profiles.py"
 MARKER = "# assistant-stack: mirror exclude"
@@ -96,33 +94,16 @@ HELPER = f'''def _assistant_mirror_exclude(env_path, patterns, mirrored: dict) -
 '''
 
 
-def patch(path: Path, edits: list[tuple[str, str, str]]) -> None:
-    text = path.read_text()
-    if MARKER in text:
-        print(f"{TAG} already applied ({path.name})")
-        return
-    for old, _, label in edits:
-        if text.count(old) != 1:
-            raise SystemExit(f"{TAG} expected 1 x {label} in {path}, found {text.count(old)}. "
-                             "Hermes image may have changed — update this patch.")
-    for old, new, _ in edits:
-        text = text.replace(old, new)
-    path.write_text(text)
-    print(f"{TAG} patched {path.name}")
-
-
 def main() -> None:
-    patch(CONTRACT, [(PARAMS_OLD, PARAMS_NEW, "mirror_credentials param"),
-                     (RESULT_OLD, RESULT_NEW, "ProfileMirrored fields")])
-    methods = METHODS.read_text()
-    if "\nimport logging\n" not in methods and MARKER not in methods:
-        raise SystemExit(f"{TAG} 'import logging' missing in {METHODS}. Hermes image may have changed — update this patch.")
+    methods = METHODS.read_text(encoding="utf-8") if METHODS.is_file() else ""
     if HELPER_ANCHOR in methods:  # v0.23.1 and earlier: mirroring in the handler module
-        patch(METHODS, [(CALL_OLD, CALL_NEW, "channel strip call"),
-                        (HELPER_ANCHOR, HELPER + HELPER_ANCHOR, "_mirror_launch_credentials")])
+        method_edits = [(CALL_OLD, CALL_NEW), (HELPER_ANCHOR, HELPER + HELPER_ANCHOR)]
     else:
-        patch(METHODS, [(PROVISION_OLD, PROVISION_NEW, "provision_profile call"),
-                        (CREATE_ANCHOR, HELPER + CREATE_ANCHOR, "profiles.create handler")])
+        method_edits = [(PROVISION_OLD, PROVISION_NEW), (CREATE_ANCHOR, HELPER + CREATE_ANCHOR)]
+    edit_files([
+        FileEdit(CONTRACT, [(PARAMS_OLD, PARAMS_NEW), (RESULT_OLD, RESULT_NEW)], label=CONTRACT.name),
+        FileEdit(METHODS, method_edits, label=METHODS.name, requires=["\nimport logging\n"]),
+    ], MARKER, TAG)
 
 
 if __name__ == "__main__":

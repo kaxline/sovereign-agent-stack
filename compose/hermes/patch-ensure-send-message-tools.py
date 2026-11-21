@@ -11,11 +11,11 @@ cont-init also clears tool_discovery_cache.json after these apply.
 """
 from __future__ import annotations
 
-from pathlib import Path
+from overlay_patch import ROOT, edit, one_of
 
-TARGET = Path("/opt/hermes/model_tools.py")
+TARGET = ROOT / "model_tools.py"
+TAG = "[patch-ensure-send-message-tools]"
 FORCE_MARKER = "# assistant-stack: force-import send_message_tool"
-ENSURE_MARKER = "# assistant-stack: ensure send_message in tool defs"
 
 FORCE_OLD = """discover_builtin_tools()
 """
@@ -76,14 +76,6 @@ ENSURE_NEW = (
 )
 
 
-def _patch_force_import(text: str) -> tuple[str, str]:
-    if FORCE_MARKER in text:
-        return text, f"already patched (force-import): {TARGET}"
-    if FORCE_OLD not in text:
-        return text, f"skip: force-import snippet not found in {TARGET}"
-    return text.replace(FORCE_OLD, FORCE_NEW, 1), f"patched (force-import): {TARGET}"
-
-
 # v0.23.2 filters the result through the hosted-tool allowlist before
 # returning, so the block goes ahead of that filter: a hosted scope still
 # drops send_message when its allowlist leaves it out.
@@ -104,28 +96,12 @@ ENSURE_NEW_HOSTED = (
 )
 
 
-def _patch_ensure(text: str) -> tuple[str, str]:
-    if ENSURE_MARKER in text:
-        return text, f"already patched (ensure): {TARGET}"
-    for old, new in ((ENSURE_OLD, ENSURE_NEW), (ENSURE_OLD_HOSTED, ENSURE_NEW_HOSTED)):
-        if old in text:
-            return text.replace(old, new, 1), f"patched (ensure): {TARGET}"
-    return text, f"skip: ensure snippet not found in {TARGET}"
-
-
-def main() -> int:
-    if not TARGET.is_file():
-        print(f"skip: missing {TARGET}")
-        return 0
-    text = TARGET.read_text(encoding="utf-8")
-    text, msg_force = _patch_force_import(text)
-    print(msg_force)
-    text, msg_ensure = _patch_ensure(text)
-    print(msg_ensure)
-    if msg_force.startswith("patched") or msg_ensure.startswith("patched"):
-        TARGET.write_text(text, encoding="utf-8")
-    return 0
+def main() -> None:
+    # Both edits or neither, so FORCE_MARKER alone says whether the file is patched.
+    edit(TARGET, [(FORCE_OLD, FORCE_NEW),
+                  one_of((ENSURE_OLD, ENSURE_NEW), (ENSURE_OLD_HOSTED, ENSURE_NEW_HOSTED))],
+         FORCE_MARKER, TAG, label=f"{TARGET} (force-import, ensure)")
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

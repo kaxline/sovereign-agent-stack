@@ -11,9 +11,10 @@ call-directly hint.
 """
 from __future__ import annotations
 
-from pathlib import Path
+from overlay_patch import ROOT, edit
 
-TARGET = Path("/opt/hermes/tools/tool_search.py")
+TARGET = ROOT / "tools" / "tool_search.py"
+TAG = "[patch-tool-search-visible]"
 MARKER = "# assistant-stack: also search visible/core tools"
 
 # v0.22 multi-query dispatch.
@@ -104,23 +105,9 @@ def _deferrable_in(tool_defs: list[dict[str, Any]]) -> list[dict[str, Any]]:
 '''
 
 
-def main() -> int:
-    if not TARGET.is_file():
-        print(f"skip: missing {TARGET}")
-        return 0
-    text = TARGET.read_text(encoding="utf-8")
-    if MARKER in text:
-        print(f"already patched: {TARGET}")
-        return 0
-    if OLD in text and HELPER_NEEDLE in text:
-        text = text.replace(HELPER_NEEDLE, HELPER_INSERT, 1)
-        text = text.replace(OLD, NEW, 1)
-        TARGET.write_text(text, encoding="utf-8")
-        print(f"patched: {TARGET}")
-        return 0
-    print(f"skip: expected snippet not found in {TARGET}")
-    return 0
+def main() -> None:
+    edit(TARGET, [(HELPER_NEEDLE, HELPER_INSERT), (OLD, NEW)], MARKER, TAG)
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

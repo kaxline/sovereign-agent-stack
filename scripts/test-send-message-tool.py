@@ -31,12 +31,12 @@ for want in ("patched", "already patched"):
         raise SystemExit(f"FAIL patch: {out.stdout}{out.stderr}")
     lines = out.stdout.strip().splitlines()
     assert len(lines) == 3 and all(line.startswith(want) for line in lines), out.stdout
-    # patch-ensure-send-message-tools.py skips softly too (model_tools.py anchors).
+    # patch-ensure-send-message-tools.py exits non-zero when a model_tools.py anchor moves.
     out = subprocess.run([sys.executable, "/bootstrap/patch-ensure-send-message-tools.py"], capture_output=True, text=True)
     if out.returncode != 0:
         raise SystemExit(f"FAIL ensure patch: {out.stdout}{out.stderr}")
-    lines = out.stdout.strip().splitlines()
-    assert len(lines) == 2 and all(line.startswith(want) for line in lines), out.stdout
+    ensure_want = "[patch-ensure-send-message-tools] " + ("patched" if want == "patched" else "already applied")
+    assert out.stdout.strip().startswith(ensure_want) and len(out.stdout.strip().splitlines()) == 1, out.stdout
 
 os.environ.update(HERMES_HOME="/tmp/hermes-home", SIGNAL_HTTP_URL="http://signal.example:8080",
                   SIGNAL_ACCOUNT="+15550100", SIGNAL_HOME_CHANNEL="+15550101")
