@@ -82,131 +82,23 @@ EOF
   log "Wrote $dest"
 }
 
+# registry CMD ARGS: scripts/lib/corpus_registry.py on REGISTRY.
+registry() { python3 "${ROOT}/scripts/lib/corpus_registry.py" "$REGISTRY" "$@"; }
+
 # Ensure registry exists; backfill current WORKSPACE if dirs exist but registry does not.
 ensure_registry() {
   mkdir -p "${DATA_ROOT}/corpora"
   local out
-  out="$(CORPUS_WORKSPACE="$(env_get WORKSPACE)" \
-    CORPUS_EMBEDDING_MODEL="$(env_get EMBEDDING_MODEL)" \
-    CORPUS_EMBEDDING_DIM="$(env_get EMBEDDING_DIM)" \
-    python3 - "$REGISTRY" "$DATA_ROOT" <<'PY'
-import json, os, sys
-from datetime import datetime, timezone
-from pathlib import Path
-
-registry_path = Path(sys.argv[1])
-data_root = Path(sys.argv[2])
-
-def load():
-    if registry_path.is_file():
-        try:
-            data = json.loads(registry_path.read_text())
-            if isinstance(data, dict) and isinstance(data.get("corpora"), list):
-                return data
-        except json.JSONDecodeError:
-            pass
-    return {"corpora": []}
-
-data = load()
-slugs = {c.get("slug") for c in data["corpora"] if isinstance(c, dict)}
-workspace = os.environ["CORPUS_WORKSPACE"]
-inputs = data_root / "inputs"
-if workspace and workspace not in slugs and (inputs / workspace).is_dir():
-    data["corpora"].append({
-        "slug": workspace,
-        "embedding_model": os.environ["CORPUS_EMBEDDING_MODEL"],
-        "embedding_dim": os.environ["CORPUS_EMBEDDING_DIM"],
-        "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-    })
-    registry_path.parent.mkdir(parents=True, exist_ok=True)
-    registry_path.write_text(json.dumps(data, indent=2) + "\n")
-    print(f"backfilled:{workspace}")
-elif not registry_path.is_file():
-    registry_path.parent.mkdir(parents=True, exist_ok=True)
-    registry_path.write_text(json.dumps(data, indent=2) + "\n")
-PY
-)"
+  out="$(registry ensure "$DATA_ROOT" "$(env_get WORKSPACE)" "$(env_get EMBEDDING_MODEL)" "$(env_get EMBEDDING_DIM)")"
   if [[ "$out" == backfilled:* ]]; then
     log "Backfilled registry with existing WORKSPACE '${out#backfilled:}'"
   fi
 }
 
-registry_has() {
-  local slug="$1"
-  python3 - "$REGISTRY" "$slug" <<'PY'
-import json, sys
-from pathlib import Path
-path, slug = Path(sys.argv[1]), sys.argv[2]
-if not path.is_file():
-    raise SystemExit(1)
-data = json.loads(path.read_text())
-raise SystemExit(0 if any(c.get("slug") == slug for c in data.get("corpora", [])) else 1)
-PY
-}
-
-registry_add() {
-  local slug="$1"
-  local model dim
-  model="$(env_get EMBEDDING_MODEL)"
-  dim="$(env_get EMBEDDING_DIM)"
-  python3 - "$REGISTRY" "$slug" "$model" "$dim" <<'PY'
-import json, sys
-from datetime import datetime, timezone
-from pathlib import Path
-
-path = Path(sys.argv[1])
-slug, model, dim = sys.argv[2], sys.argv[3], sys.argv[4]
-data = {"corpora": []}
-if path.is_file():
-    try:
-        data = json.loads(path.read_text())
-        if not isinstance(data.get("corpora"), list):
-            data = {"corpora": []}
-    except json.JSONDecodeError:
-        data = {"corpora": []}
-if any(c.get("slug") == slug for c in data["corpora"]):
-    raise SystemExit(0)
-data["corpora"].append({
-    "slug": slug,
-    "embedding_model": model,
-    "embedding_dim": dim,
-    "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-})
-path.parent.mkdir(parents=True, exist_ok=True)
-path.write_text(json.dumps(data, indent=2) + "\n")
-PY
-}
-
-registry_remove() {
-  local slug="$1"
-  python3 - "$REGISTRY" "$slug" <<'PY'
-import json, sys
-from pathlib import Path
-path, slug = Path(sys.argv[1]), sys.argv[2]
-if not path.is_file():
-    raise SystemExit(0)
-data = json.loads(path.read_text())
-data["corpora"] = [c for c in data.get("corpora", []) if c.get("slug") != slug]
-path.write_text(json.dumps(data, indent=2) + "\n")
-PY
-}
-
-registry_dim_for() {
-  local slug="$1"
-  python3 - "$REGISTRY" "$slug" <<'PY'
-import json, sys
-from pathlib import Path
-path, slug = Path(sys.argv[1]), sys.argv[2]
-if not path.is_file():
-    raise SystemExit(0)
-data = json.loads(path.read_text())
-for c in data.get("corpora", []):
-    if c.get("slug") == slug:
-        print(c.get("embedding_dim") or "")
-        raise SystemExit(0)
-raise SystemExit(0)
-PY
-}
+registry_has() { registry has "$1"; }
+registry_add() { registry add "$1" "$(env_get EMBEDDING_MODEL)" "$(env_get EMBEDDING_DIM)"; }
+registry_remove() { registry remove "$1"; }
+registry_dim_for() { registry dim "$1"; }
 
 corpus_dirs_exist() {
   local slug="$1"
@@ -235,46 +127,7 @@ cmd_list() {
   ensure_registry
   local active
   active="$(env_get WORKSPACE)"
-  python3 - "$REGISTRY" "$DATA_ROOT" "$active" <<'PY'
-import json, sys
-from pathlib import Path
-
-registry_path, data_root, active = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
-inputs = data_root / "inputs"
-slugs = set()
-rows = {}
-if registry_path.is_file():
-    data = json.loads(registry_path.read_text())
-    for c in data.get("corpora", []):
-        slug = c.get("slug")
-        if slug:
-            slugs.add(slug)
-            rows[slug] = c
-if inputs.is_dir():
-    try:
-        for p in inputs.iterdir():
-            if p.is_dir() and not p.name.startswith("."):
-                slugs.add(p.name)
-    except PermissionError:
-        pass
-
-if not slugs:
-    print("(no corpora)")
-    raise SystemExit(0)
-
-for slug in sorted(slugs):
-    mark = "*" if slug == active else " "
-    row = rows.get(slug, {})
-    dim = row.get("embedding_dim") or "?"
-    model = row.get("embedding_model") or "?"
-    try:
-        on_disk = "yes" if (inputs / slug).is_dir() else "missing"
-    except PermissionError:
-        on_disk = "?"
-    print(f"{mark} {slug}  dim={dim}  model={model}  inputs={on_disk}")
-if active:
-    print(f"\nactive WORKSPACE={active}")
-PY
+  registry list "$DATA_ROOT" "$active"
 }
 
 wait_lightrag_healthy() {

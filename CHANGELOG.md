@@ -44,7 +44,12 @@ the stack under another app.
   their own approval prompt can reach the user. On v0.23.2,
   `can_prompt_here` takes the prompt it is asked about; before, it always
   checked the unlock prompt, which a chat surface may not install.
-
+- `corpus.sh` no longer overwrites a `corpora/registry.json` that is not
+  valid JSON or not a `{"corpora": [...]}` object. It warns, reads the file as
+  empty, and on its next write moves it to `registry.json.bad` before starting
+  a new one. Before, depending on the command, it was either replaced
+  silently, dropping the rows of other corpora, or the command stopped with a
+  Python traceback.
 - `addon.sh enable bitwarden` creates every folder `bitwarden-broker`
   bind-mounts before `docker compose up`, so the first enable on a fresh
   Podman install no longer fails (CR 0035). The add-on's new `prepare` hook
