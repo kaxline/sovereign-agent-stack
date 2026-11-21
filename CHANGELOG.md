@@ -24,6 +24,12 @@ the stack under another app.
 
 ### Changes
 
+- `patch-block-native-web-tools`, `patch-tool-call-flat-args` and
+  `patch-cron-scheduler-delivery` no longer rewrite blocks that their builds
+  from before v0.1.0 left in `/opt/hermes` (debug helpers, an alias map
+  without the `coding_*` names, an older cron Signal block). Each now checks
+  only its marker. A container still carrying one of those blocks keeps it
+  until `make hermes-recreate`.
 - Hermes v0.23.2 overlay fixes. Each patch accepts the v0.23.1 and the
   v0.23.2 shape. `patch-digest-redaction`: the vault redaction registry moved
   to `agent/redact_vault_values.py`; the overlay patches it there and

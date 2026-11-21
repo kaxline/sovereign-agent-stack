@@ -47,52 +47,57 @@ def load_cases(path: str | Path) -> dict:
     return _parse_simple(text)
 
 
+def _indent_of(s: str) -> int:
+    return len(s) - len(s.lstrip(" "))
+
+
+def _strip_comment(s: str) -> str:
+    """Cut a trailing # comment, keeping # inside single or double quotes."""
+    in_sq = in_dq = False
+    out = []
+    for ch in s:
+        if ch == "'" and not in_dq:
+            in_sq = not in_sq
+        elif ch == '"' and not in_sq:
+            in_dq = not in_dq
+        elif ch == "#" and not in_sq and not in_dq:
+            break
+        out.append(ch)
+    return "".join(out).rstrip()
+
+
+def _parse_scalar(raw: str) -> Any:
+    """Booleans, null/~/empty as None, quoted strings unquoted, else the raw text."""
+    raw = raw.strip()
+    if raw in ("true", "True"):
+        return True
+    if raw in ("false", "False"):
+        return False
+    if raw in ("null", "~", ""):
+        return None
+    if (raw.startswith('"') and raw.endswith('"')) or (
+        raw.startswith("'") and raw.endswith("'")
+    ):
+        return raw[1:-1]
+    return raw
+
+
 def _parse_simple(text: str) -> dict:
     lines = text.splitlines()
     root: dict[str, Any] = {}
     i = 0
     n = len(lines)
 
-    def indent_of(s: str) -> int:
-        return len(s) - len(s.lstrip(" "))
-
-    def strip_comment(s: str) -> str:
-        in_sq = in_dq = False
-        out = []
-        for ch in s:
-            if ch == "'" and not in_dq:
-                in_sq = not in_sq
-            elif ch == '"' and not in_sq:
-                in_dq = not in_dq
-            elif ch == "#" and not in_sq and not in_dq:
-                break
-            out.append(ch)
-        return "".join(out).rstrip()
-
-    def parse_scalar(raw: str) -> Any:
-        raw = raw.strip()
-        if raw in ("true", "True"):
-            return True
-        if raw in ("false", "False"):
-            return False
-        if raw in ("null", "~", ""):
-            return None
-        if (raw.startswith('"') and raw.endswith('"')) or (
-            raw.startswith("'") and raw.endswith("'")
-        ):
-            return raw[1:-1]
-        return raw
-
     while i < n:
         raw = lines[i]
         if not raw.strip() or raw.lstrip().startswith("#"):
             i += 1
             continue
-        line = strip_comment(raw)
+        line = _strip_comment(raw)
         if not line.strip():
             i += 1
             continue
-        ind = indent_of(line)
+        ind = _indent_of(line)
         if ind != 0:
             raise ValueError(f"unexpected indent at line {i + 1}: {raw}")
         if ":" not in line:
@@ -116,7 +121,7 @@ def _parse_simple(text: str) -> dict:
             root[key] = None
             i += 1
             continue
-        root[key] = parse_scalar(rest)
+        root[key] = _parse_scalar(rest)
         i += 1
     return root
 
@@ -149,34 +154,13 @@ def _parse_list(lines: list[str], start: int, base_indent: int) -> tuple[list[An
     i = start
     n = len(lines)
 
-    def indent_of(s: str) -> int:
-        return len(s) - len(s.lstrip(" "))
-
-    def strip_comment(s: str) -> str:
-        if "#" in s:
-            # Good enough for our files (no # in values).
-            return s.split("#", 1)[0].rstrip()
-        return s.rstrip()
-
-    def parse_scalar(raw: str) -> Any:
-        raw = raw.strip()
-        if raw in ("true", "True"):
-            return True
-        if raw in ("false", "False"):
-            return False
-        if (raw.startswith('"') and raw.endswith('"')) or (
-            raw.startswith("'") and raw.endswith("'")
-        ):
-            return raw[1:-1]
-        return raw
-
     while i < n:
         raw = lines[i]
         if not raw.strip() or raw.lstrip().startswith("#"):
             i += 1
             continue
-        line = strip_comment(raw)
-        ind = indent_of(line)
+        line = _strip_comment(raw)
+        ind = _indent_of(line)
         if ind < base_indent + 2 and not line.lstrip().startswith("- "):
             break
         if ind < base_indent:
@@ -219,7 +203,7 @@ def _parse_list(lines: list[str], start: int, base_indent: int) -> tuple[list[An
                     obj[k] = None
                     i += 1
             else:
-                obj[k] = parse_scalar(v)
+                obj[k] = _parse_scalar(v)
                 i += 1
             # Continue reading siblings of this mapping at greater indent
             while i < n:
@@ -227,8 +211,8 @@ def _parse_list(lines: list[str], start: int, base_indent: int) -> tuple[list[An
                 if not raw2.strip() or raw2.lstrip().startswith("#"):
                     i += 1
                     continue
-                line2 = strip_comment(raw2)
-                ind2 = indent_of(line2)
+                line2 = _strip_comment(raw2)
+                ind2 = _indent_of(line2)
                 if ind2 <= item_indent:
                     break
                 if line2.lstrip().startswith("- "):
@@ -254,12 +238,12 @@ def _parse_list(lines: list[str], start: int, base_indent: int) -> tuple[list[An
                         obj[k2] = None
                         i += 1
                 else:
-                    obj[k2] = parse_scalar(v2)
+                    obj[k2] = _parse_scalar(v2)
                     i += 1
             items.append(obj)
             continue
         # plain scalar list item
-        items.append(parse_scalar(body))
+        items.append(_parse_scalar(body))
         i += 1
     return items, i
 
