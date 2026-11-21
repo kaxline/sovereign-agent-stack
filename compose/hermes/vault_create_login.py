@@ -16,7 +16,6 @@ callback is a ContextVar, so tool workers started with ``propagate_context_to_th
 """
 from __future__ import annotations
 
-import contextvars
 import json
 import logging
 import re
@@ -24,6 +23,11 @@ import secrets
 import string
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
+
+try:
+    from tools.vault_prompt_slot import PromptSlot
+except ImportError:  # host tests import this module from compose/hermes
+    from vault_prompt_slot import PromptSlot
 
 logger = logging.getLogger(__name__)
 
@@ -50,21 +54,15 @@ _CLASSES = {"lower": LOWER, "upper": UPPER, "digit": DIGIT, "special": SPECIAL,
             "ascii-printable": ASCII_PRINTABLE, "unicode": ASCII_PRINTABLE}
 
 PromptCallback = Callable[..., Optional[dict]]
-_prompt_callback: contextvars.ContextVar[Optional[PromptCallback]] = contextvars.ContextVar(
-    "assistant_stack_vault_create_login_prompt", default=None)
+PROMPT_SLOT = PromptSlot("create_login")
 
 
-def set_prompt_callback(cb: Optional[PromptCallback]) -> contextvars.Token:
-    """Install this turn's create_login prompt; returns the token for reset_prompt_callback."""
-    return _prompt_callback.set(cb)
-
-
-def reset_prompt_callback(token: contextvars.Token) -> None:
-    _prompt_callback.reset(token)
-
-
-def get_prompt_callback() -> Optional[PromptCallback]:
-    return _prompt_callback.get()
+def make_prompt(ask: Callable[[str, dict, float], Any]) -> PromptCallback:
+    """This turn's create_login prompt: the vault.create_login request through the gateway's ask()."""
+    def create_login_prompt(origin, site, identifier, regenerate=False):
+        return parse_answer(ask(PROMPT_METHOD, {"origin": origin, "site": site, "identifier": identifier,
+                                                "regenerate": bool(regenerate)}, PROMPT_TIMEOUT_S))
+    return create_login_prompt
 
 
 def parse_answer(raw: Any) -> Optional[dict]:
@@ -473,7 +471,7 @@ def browser_vault_create_login(identifier: str = "", label: str = "", handle: st
         return _err("No new-password field on the current page. Open the sign-up form at the step that asks for a "
                     "password. For a sign-in form, use action list and fill, or save_login.", "no_new_password_field")
 
-    prompt = get_prompt_callback()
+    prompt = PROMPT_SLOT.get()
     if prompt is None or not _can_prompt_here(can_prompt_here, prompt):
         return _err(f"This session cannot ask the user to approve a new login (headless/cron/API). Tell them to create "
                     f"the account for {origin} in their own browser, then sign in with the browser-login steps.",

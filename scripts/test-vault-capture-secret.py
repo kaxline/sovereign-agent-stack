@@ -87,11 +87,13 @@ def run(script):
 
 run("/bootstrap/patch-vault-create-login.py")
 first = run("/bootstrap/patch-vault-capture-secret.py")
-for part in ("capture_secret schema", "capture_secret dispatch", "capture_secret prompt", "vault.take method",
-             "capture_secret request contract", "vault.take contract"):
-    assert f"patched: {part}" in first, first
+for part in ("capture_secret schema and dispatch", "vault.take method", "capture_secret request contract",
+             "vault.take contract"):
+    assert f"patched {part}" in first, first
+# The prompt-scope edit is shared; patch-vault-create-login.py made it.
+assert "already applied (vault prompt slots)" in first, first
 again = run("/bootstrap/patch-vault-capture-secret.py")
-assert "patched" not in again.replace("already patched", ""), again
+assert "patched" not in again, again
 
 os.chdir("/opt/hermes")
 sys.path.insert(0, "/opt/hermes")
@@ -240,8 +242,8 @@ try:
     out = json.loads(in_turn({"action": "capture_secret", "name": "X_API_KEY", "destination": "env"}))
     assert out["error_type"] == "no_secret_found", out
 
-    from tools.vault_capture_secret import get_prompt_callback
-    assert get_prompt_callback() is None
+    from tools.vault_capture_secret import PROMPT_SLOT
+    assert PROMPT_SLOT.get() is None
 finally:
     SUPERVISOR_REGISTRY.stop_all()
     from tools.browser_session_lifecycle import cleanup_all_browsers

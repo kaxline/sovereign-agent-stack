@@ -4,25 +4,31 @@
 - tools/browser_vault_tool.py: the schema gains the action and its arguments (name, destination,
   selector, candidate), and the dispatcher routes it to tools/vault_capture_secret.py (copied from
   /bootstrap).
-- gateway/session_vault_prompt.py: a local viewer's turn also installs the approval prompt, which sends
-  the ``vault.capture_secret`` server request.
+- gateway/session_vault_prompt.py: a local viewer's turn also installs the stack's vault prompts
+  (vault_prompt_slot.py, an edit shared with patch-vault-create-login.py); capture_secret's sends the
+  ``vault.capture_secret`` server request.
 - tui_gateway/methods_vault.py: ``vault.take {id}`` returns a capture made for the viewer once and
   deletes it.
 - tui_gateway/contracts: the request's and the method's contracts.
 
-Independent of patch-vault-create-login.py: every anchor here is one that patch leaves as it was, so
-the two apply in either order. Idempotent; each part reports ok / patched / warn on its own.
+The two vault overlays apply in either order: apart from the shared prompt-scope edit, every anchor
+here is one patch-vault-create-login.py leaves as it was. Idempotent: a file that holds its marker is
+reported as already applied.
 """
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
-HERMES = Path("/opt/hermes")
+from overlay_patch import ROOT as HERMES, FileEdit, edit_files, install
+from vault_prompt_slot import PROMPT_SCOPE_EDITS, PROMPT_SCOPE_MARKER
+
+TAG = "[patch-vault-capture-secret]"
 HELPER_SRC = Path("/bootstrap/vault_capture_secret.py")
 HELPER_DST = HERMES / "tools" / "vault_capture_secret.py"
 VAULT_TOOL = HERMES / "tools" / "browser_vault_tool.py"
 PROMPT_SCOPE = HERMES / "gateway" / "session_vault_prompt.py"
+SLOT_SRC = Path("/bootstrap/vault_prompt_slot.py")
+SLOT_DST = HERMES / "tools" / "vault_prompt_slot.py"
 METHODS = HERMES / "tui_gateway" / "methods_vault.py"
 REQUEST_CONTRACTS = HERMES / "tui_gateway" / "contracts" / "server_requests.py"
 METHOD_CONTRACTS = HERMES / "tui_gateway" / "contracts" / "profiles_vault_complete_foreign_subagents.py"
@@ -48,35 +54,6 @@ NEW_DISPATCH = (
     ".handle_action(args, tid),\n"
 )
 
-OLD_CODE_PROMPT = "    def code_prompt(site, hint):\n"
-NEW_CODE_PROMPT = (
-    "    # assistant-stack: vault capture_secret (prompt)\n"
-    "    def capture_secret_prompt(**params):\n"
-    "        from tools.vault_capture_secret import PROMPT_METHOD, PROMPT_TIMEOUT_S, parse_answer\n"
-    "        return parse_answer(ask(PROMPT_METHOD, params, PROMPT_TIMEOUT_S))\n"
-    "\n"
-    "    try:\n"
-    "        from tools.vault_capture_secret import reset_prompt_callback as _stack_reset_capture\n"
-    "        from tools.vault_capture_secret import set_prompt_callback as _stack_set_capture\n"
-    "    except Exception:  # health: allow BLE001 -- capture_secret then reports prompt_unavailable\n"
-    "        logger.debug(\"vault capture_secret prompt overlay unavailable\", exc_info=True)\n"
-    "        _stack_set_capture = _stack_reset_capture = None\n"
-    "\n"
-    "    def code_prompt(site, hint):\n"
-)
-
-OLD_INSTALL = "    unlock.set_code_prompt_callback(code_prompt)\n"
-NEW_INSTALL = (
-    "    _stack_capture_token = _stack_set_capture(capture_secret_prompt) if _stack_set_capture else None\n"
-    "    unlock.set_code_prompt_callback(code_prompt)\n"
-)
-
-OLD_RESTORE = "        unlock.set_code_prompt_callback(previous[2])\n"
-NEW_RESTORE = (
-    "        if _stack_capture_token is not None:\n"
-    "            _stack_reset_capture(_stack_capture_token)\n"
-    "        unlock.set_code_prompt_callback(previous[2])\n"
-)
 
 TAKE_METHOD = '''
 
@@ -143,72 +120,22 @@ method("vault.take", params=VaultTakeParams, result=VaultTakeResult,
 '''
 
 
-def _apply(text: str, old: str, new: str, marker: str, label: str, path: Path) -> str:
-    if marker in text:
-        print(f"ok: {label} already patched")
-        return text
-    if old not in text:
-        print(f"warn: {label} needle missing in {path}")
-        return text
-    print(f"patched: {label} in {path}")
-    return text.replace(old, new, 1)
-
-
-def _patch_file(path: Path, steps: list[tuple[str, str, str, str]]) -> None:
-    if not path.exists():
-        print(f"skip: {path} missing")
-        return
-    text = path.read_text()
-    patched = text
-    for old, new, marker, label in steps:
-        patched = _apply(patched, old, new, marker, label, path)
-    if patched != text:
-        path.write_text(patched)
-
-
-def _append(path: Path, block: str, marker: str, anchors: tuple[str, ...], label: str) -> None:
-    if not path.exists():
-        print(f"skip: {path} missing")
-        return
-    text = path.read_text()
-    if marker in text:
-        print(f"ok: {label} already patched")
-    elif all(a in text for a in anchors):
-        path.write_text(text.rstrip("\n") + "\n" + block)
-        print(f"patched: {label} in {path}")
-    else:
-        print(f"warn: {label} anchors missing in {path}")
-
-
 def main() -> None:
-    if not HELPER_SRC.is_file():
-        print(f"warn: {HELPER_SRC} missing; capture_secret off")
-        return
-    shutil.copyfile(HELPER_SRC, HELPER_DST)
-    print(f"installed: {HELPER_DST}")
-    _patch_file(VAULT_TOOL, [
-        (OLD_REGISTER, NEW_REGISTER, f"{MARKER} (schema)", "capture_secret schema"),
-        (OLD_DISPATCH, NEW_DISPATCH, f"{MARKER} (dispatch)", "capture_secret dispatch"),
-    ])
-    # The prompt's three edits are one unit: install without restore would leak the callback.
-    if PROMPT_SCOPE.exists():
-        text = PROMPT_SCOPE.read_text()
-        if f"{MARKER} (prompt)" in text:
-            print("ok: capture_secret prompt already patched")
-        elif all(text.count(old) == 1 for old in (OLD_CODE_PROMPT, OLD_INSTALL, OLD_RESTORE)):
-            text = (text.replace(OLD_CODE_PROMPT, NEW_CODE_PROMPT, 1).replace(OLD_INSTALL, NEW_INSTALL, 1)
-                    .replace(OLD_RESTORE, NEW_RESTORE, 1))
-            PROMPT_SCOPE.write_text(text)
-            print(f"patched: capture_secret prompt in {PROMPT_SCOPE}")
-        else:
-            print(f"warn: capture_secret prompt needles missing in {PROMPT_SCOPE}")
-    else:
-        print(f"skip: {PROMPT_SCOPE} missing")
-    _append(METHODS, TAKE_METHOD, f"{MARKER} (take)", ("@method(\"vault.remove\")", "_profile_scoped"), "vault.take method")
-    _append(REQUEST_CONTRACTS, REQUEST_CONTRACT, f"{MARKER} (request contract)",
-            ("class ServerRequestParams", "server_request("), "capture_secret request contract")
-    _append(METHOD_CONTRACTS, METHOD_CONTRACT, f"{MARKER} (method contract)",
-            ("method(\"vault.remove\"", "ProfileParams"), "vault.take contract")
+    install(HELPER_SRC, HELPER_DST, TAG)
+    install(SLOT_SRC, SLOT_DST, TAG)
+    # Every anchor in all five files is checked before any is written. The prompt-scope
+    # edit is shared with patch-vault-create-login.py; whichever runs second finds it applied.
+    edit_files([
+        FileEdit(VAULT_TOOL, [(OLD_REGISTER, NEW_REGISTER), (OLD_DISPATCH, NEW_DISPATCH)],
+                 label="capture_secret schema and dispatch"),
+        FileEdit(PROMPT_SCOPE, PROMPT_SCOPE_EDITS, label="vault prompt slots", marker=PROMPT_SCOPE_MARKER),
+        FileEdit(METHODS, [], label="vault.take method", append=TAKE_METHOD,
+                 requires=["@method(\"vault.remove\")", "_profile_scoped"]),
+        FileEdit(REQUEST_CONTRACTS, [], label="capture_secret request contract", append=REQUEST_CONTRACT,
+                 requires=["class ServerRequestParams", "server_request("]),
+        FileEdit(METHOD_CONTRACTS, [], label="vault.take contract", append=METHOD_CONTRACT,
+                 requires=["method(\"vault.remove\"", "ProfileParams"]),
+    ], MARKER, TAG)
 
 
 if __name__ == "__main__":

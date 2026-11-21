@@ -25,7 +25,6 @@ Installed as /opt/hermes/tools/vault_capture_secret.py by patch-vault-capture-se
 """
 from __future__ import annotations
 
-import contextvars
 import json
 import math
 import re
@@ -34,6 +33,11 @@ import time
 from collections import Counter
 from datetime import UTC, datetime
 from typing import Any, Callable, Optional
+
+try:
+    from tools.vault_prompt_slot import PromptSlot
+except ImportError:  # host tests import this module from compose/hermes
+    from vault_prompt_slot import PromptSlot
 
 ACTION = "capture_secret"
 PROMPT_METHOD = "vault.capture_secret"
@@ -53,20 +57,14 @@ RESERVED_NAMES = frozenset({"PATH", "HOME", "SHELL", "USER", "LANG", "TZ", "PWD"
                             "NO_PROXY", "ALL_PROXY"})
 
 PromptCallback = Callable[..., bool]
-_prompt_callback: contextvars.ContextVar[Optional[PromptCallback]] = contextvars.ContextVar(
-    "assistant_stack_vault_capture_prompt", default=None)
+PROMPT_SLOT = PromptSlot("capture")
 
 
-def set_prompt_callback(cb: Optional[PromptCallback]) -> contextvars.Token:
-    return _prompt_callback.set(cb)
-
-
-def reset_prompt_callback(token: contextvars.Token) -> None:
-    _prompt_callback.reset(token)
-
-
-def get_prompt_callback() -> Optional[PromptCallback]:
-    return _prompt_callback.get()
+def make_prompt(ask: Callable[[str, dict, float], Any]) -> PromptCallback:
+    """This turn's capture_secret prompt: the vault.capture_secret request through the gateway's ask()."""
+    def capture_secret_prompt(**params):
+        return parse_answer(ask(PROMPT_METHOD, params, PROMPT_TIMEOUT_S))
+    return capture_secret_prompt
 
 
 def parse_answer(raw: Any) -> bool:
@@ -364,7 +362,7 @@ def browser_vault_capture_secret(name: str = "", destination: str = "", selector
         except Exception:  # health: allow BLE001 -- an unreadable .env only loses the replace warning
             replaces = False
 
-    prompt = get_prompt_callback()
+    prompt = PROMPT_SLOT.get()
     if prompt is None or not _can_prompt_here(can_prompt_here, prompt):
         return _err("This session cannot ask the user to approve storing the value (headless/cron/API). Tell them "
                     "where the key is on the page so they can copy it into the app themselves.", "prompt_unavailable")
