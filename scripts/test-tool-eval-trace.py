@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
-"""Checks how tool_eval_trace names tool calls for scoring (stdlib only, no Hermes import)."""
+"""Checks how tool_eval_trace names tool calls for scoring (stdlib only, no Hermes import).
+
+With the image present (or --image), patch-tool-eval-trace.py:
+
+- exits with "update this patch" when the recovery patch has not run;
+- after the recovery patch, lands the trace after the v9 phase call, applies
+  once, and the patched block writes a recovered_then_dispatched trace line;
+- still applies when the recovery patch's inserted comments change;
+- applies to a synthetic pre-v2026.9 (legacy) loop, between recovery and the
+  dispatch check.
+"""
 
 from __future__ import annotations
 
@@ -9,12 +19,109 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 from testkit import Checks  # noqa: E402
+import hermes_image  # noqa: E402
 from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "compose" / "hermes"))
 
 import tool_eval_trace as tt  # noqa: E402
+
+IMAGE_DRIVER = r'''
+import json
+import os
+import shutil
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
+from types import SimpleNamespace
+
+LOOP = Path("/opt/hermes/agent/conversation_loop.py")
+PRISTINE = LOOP.read_text()
+RECOVERY = "# assistant-stack: text-mimicked tool-call recovery"
+TRACE = "# assistant-stack: tool-eval turn trace"
+PHASE = "            _v = _run_phase(\n"
+
+def run(script, ok=True):
+    out = subprocess.run([sys.executable, script], capture_output=True, text=True)
+    if ok and out.returncode != 0:
+        raise SystemExit(f"FAIL {script}: {out.stdout}{out.stderr}")
+    return out
+
+# Trace patch alone: fails loudly, leaves the loop as shipped.
+out = run("/bootstrap/patch-tool-eval-trace.py", ok=False)
+assert out.returncode != 0 and "update this patch" in out.stdout + out.stderr, out.stdout + out.stderr
+assert LOOP.read_text() == PRISTINE, "loop untouched without recovery"
+
+# Patch order from 05-patch-tool-calling.sh.
+run("/bootstrap/patch-text-tool-call-recovery.py")
+run("/bootstrap/patch-block-native-web-tools.py")
+out = run("/bootstrap/patch-tool-eval-trace.py").stdout
+assert "patched loop" in out and "patched web rewrite log" in out, out
+assert "loop already applied" in run("/bootstrap/patch-tool-eval-trace.py").stdout
+text = LOOP.read_text()
+assert text.count(TRACE) == 1, text.count(TRACE)
+assert text.index(RECOVERY) < text.index(PHASE) < text.index(TRACE), "recovery, phase, trace"
+
+# Run the patched block (recovery, phase, trace) on a text-mimicked call.
+lines = text.splitlines(keepends=True)
+start = next(i for i, ln in enumerate(lines) if RECOVERY in ln)
+end = next(i for i, ln in enumerate(lines) if "tool-eval turn trace failed" in ln)
+block = textwrap.dedent("".join(lines[start:end + 1]))
+
+os.environ["HERMES_EVAL_TRACE_PATH"] = "/tmp/eval/traces.jsonl"
+sys.path.insert(0, "/opt/hermes")
+import logging
+agent = SimpleNamespace(valid_tool_names={"search_files"}, _current_streamed_assistant_text="",
+                        session_id="trace-test", _emit_status=lambda *a, **k: None)
+msg = SimpleNamespace(content='search_files(pattern="todo")', tool_calls=None,
+                      reasoning=None, reasoning_content=None)
+s = SimpleNamespace(assistant_message=msg,
+                    messages=[{"role": "user", "content": "[eval:trace-recover] find my todos"}])
+phases = []
+def _run_phase(fn, agent, s):
+    phases.append(fn)
+    return SimpleNamespace(action=None, result=None)
+ns = dict(agent=agent, s=s, logger=logging.getLogger("trace-test"), _run_phase=_run_phase,
+          run_tool_round="run_tool_round", finish_text_response="finish_text_response")
+exec(block, ns)
+assert phases == ["run_tool_round"], phases
+rows = [json.loads(ln) for ln in Path("/tmp/eval/traces.jsonl").read_text().splitlines()]
+assert len(rows) == 1, rows
+row = rows[0]
+assert row["kind"] == "assistant_turn" and row["eval_id"] == "trace-recover", row
+assert row["outcome"] == "recovered_then_dispatched", row
+
+# A comment edit in the recovery patch's inserted block does not break the trace patch.
+LOOP.write_text(PRISTINE)
+src = Path("/bootstrap/patch-text-tool-call-recovery.py").read_text()
+marker_line = '            ' + RECOVERY + '\n'
+assert src.count(marker_line) == 2, "recovery patch inserts its marker in both shapes"
+edited = src.replace(marker_line, marker_line + "            # an edited comment\n")
+Path("/tmp/recovery-edited.py").write_text(edited)
+run("/tmp/recovery-edited.py")
+assert "# an edited comment" in LOOP.read_text()
+assert "patched loop" in run("/bootstrap/patch-tool-eval-trace.py").stdout
+text = LOOP.read_text()
+assert text.index("# an edited comment") < text.index(PHASE) < text.index(TRACE), "edited recovery, phase, trace"
+
+# Legacy loop shape (synthetic): trace between recovery and the dispatch check.
+LOOP.write_text(
+    "def loop(agent, assistant_message):\n"
+    "        while True:\n"
+    "            # Check for tool calls\n"
+    "            if assistant_message.tool_calls:\n"
+    "                pass\n"
+)
+run("/bootstrap/patch-text-tool-call-recovery.py")
+assert "patched loop" in run("/bootstrap/patch-tool-eval-trace.py").stdout
+text = LOOP.read_text()
+assert text.index(RECOVERY) < text.index(TRACE) < text.index("# Check for tool calls"), text
+compile(text, str(LOOP), "exec")
+
+os.write(1, b"image ok\n")
+'''
 
 checks = Checks()
 
@@ -50,3 +157,4 @@ names = tt.tool_call_names([bridged])
 checks.expect(names == ["tool_call", "browser_vault.enter_code", "mcp__searxng__searxng_web_search"], f"bridge: {names}")
 
 checks.finish("tool_eval_trace: ok")
+hermes_image.maybe_run(IMAGE_DRIVER)
