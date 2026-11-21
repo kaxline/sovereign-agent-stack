@@ -13,6 +13,8 @@ source "${ROOT}/scripts/lib/data-root.sh"
 source "${ROOT}/scripts/lib/secret.sh"
 # shellcheck source=lib/python.sh
 source "${ROOT}/scripts/lib/python.sh"
+# shellcheck source=lib/mcp-probe.sh
+source "${ROOT}/scripts/lib/mcp-probe.sh"
 
 ENV_PATH="${ENV_FILE:-.env}"
 LOCAL_URL="http://twenty-server:3000"
@@ -406,68 +408,6 @@ cmd_init() {
   fi
 }
 
-# HTTP status of an MCP initialize with one key, or "timeout" when curl gave
-# up (exit 28). The key goes to curl in a 0600 header file, not argv, so ps
-# never shows it. Call it in $(...): the EXIT trap that removes the header
-# file belongs to that subshell.
-mcp_status() {
-  local hdr code rc=0
-  hdr="$(umask 077 && mktemp)"
-  # shellcheck disable=SC2064  # the path is fixed now
-  trap "rm -f '$hdr'" EXIT
-  printf 'Authorization: Bearer %s\nContent-Type: application/json\nAccept: application/json, text/event-stream\n' "$2" > "$hdr"
-  code="$(curl -s -o /dev/null -m 20 -w '%{http_code}' -H @"$hdr" -X POST "${1}/mcp?mode=meta" \
-    --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"crm.sh","version":"0"}}}' 2>/dev/null)" || rc=$?
-  rm -f "$hdr"
-  if [[ "$rc" -eq 28 ]]; then
-    printf 'timeout'
-  else
-    printf '%s' "${code:-000}"
-  fi
-}
-
-# The tools Hermes reaches records through. Since Twenty 2.56 bare /mcp lists
-# every record tool instead; ?mode=meta (what Hermes registers) lists these.
-CATALOG_TOOLS="get_tool_catalog learn_tools execute_tool"
-
-# tools/list at <url>/mcp?mode=meta with one key, as one line:
-#   ok <count>                  every catalog tool is listed
-#   missing <count> <tools...>  the server lists tools but not those
-#   unknown <reason>            no readable tool list (left to the caller)
-# The key goes to curl in a 0600 header file, as in mcp_status. Call it in
-# $(...): the EXIT trap belongs to that subshell.
-catalog_check() {
-  local dir code rc=0 name value count="" missing="" err=""
-  dir="$(umask 077 && mktemp -d)"
-  # shellcheck disable=SC2064  # the path is fixed now
-  trap "rm -rf '$dir'" EXIT
-  printf 'Authorization: Bearer %s\nContent-Type: application/json\nAccept: application/json, text/event-stream\n' "$2" > "${dir}/hdr"
-  code="$(curl -s -o "${dir}/body" -m 20 -w '%{http_code}' -H @"${dir}/hdr" -X POST "${1}/mcp?mode=meta" \
-    --data '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' 2>/dev/null)" || rc=$?
-  rm -f "${dir}/hdr"
-  if [[ "$rc" -ne 0 || "$code" != 200 ]]; then
-    printf 'unknown tools/list answered HTTP %s' "${code:-000}"
-    return 0
-  fi
-  # shellcheck disable=SC2086  # one argument per tool name
-  while IFS="$(printf '\t')" read -r name value; do
-    case "$name" in
-      count) count="$value" ;;
-      missing) missing="$value" ;;
-      error) err="$value" ;;
-    esac
-  done <<EOF
-$(stack_python --mount "$dir" -I "${ROOT}/scripts/lib/mcp_tools_list.py" "${dir}/body" $CATALOG_TOOLS 2>/dev/null)
-EOF
-  if [[ -z "$count" ]]; then
-    printf 'unknown %s' "${err:-no tool list in the answer}"
-  elif [[ -n "$missing" ]]; then
-    printf 'missing %s %s' "$count" "$missing"
-  else
-    printf 'ok %s' "$count"
-  fi
-}
-
 # Values for addon_cli configure, from stdin JSON, parsed in the Hermes image
 # (stack_python) so the host needs no python3. Prints "name<TAB>value" lines
 # with shell-safe values only: url ("-" when unusable), access, local (1, 0,
@@ -572,18 +512,16 @@ EOF
   # The host reaches the local instance on its published port.
   local check="$url"
   [[ "$local_" == 1 ]] && check="http://127.0.0.1:$(env_get TWENTY_PORT 3000)"
-  local kind key code
+  local kind code
   for kind in key_rw key_ro; do
     [[ -f "${tmpd}/${kind}" ]] || continue
-    key="$(cat "${tmpd}/${kind}")"
     phase running "${kind}: checking"
-    code="$(mcp_status "$check" "$key")"
-    key=""
+    code="$(mcp_status "$check" "${tmpd}/${kind}")"
     case "$code" in
       200) phase "done" "${kind}: Twenty accepts it" ;;
       401) fail_with login_refused "Twenty rejects ${kind} (HTTP 401)" ;;
       403) fail_with no_access "Twenty refuses ${kind} (HTTP 403)" ;;
-      timeout) fail_with timeout "no answer from ${url}/mcp within 20 seconds" ;;
+      timeout) fail_with timeout "no answer from ${url}/mcp within ${MCP_PROBE_TIMEOUT} seconds" ;;
       000) fail_with server_unreachable "no answer from ${url}/mcp; check the URL" ;;
       *) fail_with server_unreachable "${url}/mcp answered HTTP ${code} for ${kind}" ;;
     esac
@@ -592,7 +530,7 @@ EOF
     [[ -f "${tmpd}/${kind}" ]] || continue
     phase running "checking the tools Twenty lists"
     local tools
-    tools="$(catalog_check "$check" "$(cat "${tmpd}/${kind}")")"
+    tools="$(catalog_check "$check" "${tmpd}/${kind}")"
     case "$tools" in
       ok\ *) phase "done" "Twenty lists the catalog tools (${tools#ok } tools)" ;;
       missing\ *)
@@ -687,7 +625,8 @@ cmd_add() {
   for kind in RW RO; do
     key="$rw"; [[ "$kind" == RO ]] && key="$ro"
     [[ -n "$key" ]] || continue
-    code="$(mcp_status "$url" "$key")"
+    # printf is a builtin: no process's argv holds the key.
+    code="$(mcp_status "$url" <(printf '%s' "$key"))"
     case "$code" in
       200) log "TWENTY_KEY_${kind}: Twenty accepts it" ;;
       000 | timeout) die "no answer from ${url}/mcp — check the URL; nothing written" ;;
@@ -696,7 +635,7 @@ cmd_add() {
     esac
   done
   local tools
-  tools="$(catalog_check "$url" "${rw:-$ro}")"
+  tools="$(catalog_check "$url" <(printf '%s' "${rw:-$ro}"))"
   case "$tools" in
     ok\ *) log "Twenty lists the catalog tools (${tools#ok } tools)" ;;
     missing\ *)

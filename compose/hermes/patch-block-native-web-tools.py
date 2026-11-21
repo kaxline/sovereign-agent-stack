@@ -14,13 +14,6 @@ from pathlib import Path
 
 TARGET = Path("/opt/hermes/model_tools.py")
 MARKER = "# assistant-stack: rewrite native web tools to mcp"
-OLD_MARKERS = (
-    MARKER,
-    "# assistant-stack: block native web tools (mcp-only)",
-    "# assistant-stack: block native web tools when disabled",
-    "# assistant-stack: debug-5de041 web tool log",
-    "# assistant-stack: debug-53781c native web block",
-)
 
 NEEDLE = '''    function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
@@ -83,62 +76,15 @@ PATCH = '''    function_args = coerce_tool_args(function_name, function_args)
 '''
 
 
-def _strip_marked_blocks(text: str) -> str:
-    """Remove previously applied assistant-stack web-tool patches."""
-    for marker in OLD_MARKERS:
-        while marker in text:
-            start = text.find(marker)
-            if start < 0:
-                break
-            region_start = text.rfind("\n", 0, start)
-            # Prefer folding an enclosing #region … #endregion if present
-            region_open = text.rfind("# #region", 0, start)
-            if region_open >= 0 and region_open > region_start:
-                end = text.find("# #endregion", start)
-                if end >= 0:
-                    end = text.find("\n", end)
-                    if end >= 0:
-                        text = text[:region_open] + text[end + 1 :]
-                        continue
-            # Rewrite / block form: drop from marker through blank line after return
-            end = text.find("\n\n", start)
-            if end < 0:
-                break
-            text = text[: region_start + 1] + text[end + 1 :]
-    return text
-
-
-def _strip_debug_helper(text: str) -> str:
-    """Remove orphaned session-53781c debug helper if present."""
-    anchor = "\ndef _agent_debug_53781c("
-    while anchor in text:
-        start = text.find(anchor)
-        # helper ends at next top-level def
-        nxt = text.find("\ndef ", start + 1)
-        if nxt < 0:
-            break
-        text = text[:start] + text[nxt:]
-    return text
-
-
 def main() -> None:
     if not TARGET.is_file():
         print(f"[patch-block-native-web-tools] skip missing {TARGET}")
         return
     text = TARGET.read_text(encoding="utf-8")
-    if (
-        MARKER in text
-        and "Do not call web_search or web_extract again" in text
-        and "_agent_debug_53781c(" not in text
-    ):
+    if MARKER in text:
         print(f"[patch-block-native-web-tools] already applied ({TARGET})")
         return
-    text = _strip_marked_blocks(text)
-    text = _strip_debug_helper(text)
     if NEEDLE not in text:
-        if MARKER in text:
-            print(f"[patch-block-native-web-tools] already applied ({TARGET})")
-            return
         print(f"[patch-block-native-web-tools] needle missing in {TARGET}")
         return
     TARGET.write_text(text.replace(NEEDLE, PATCH, 1), encoding="utf-8")

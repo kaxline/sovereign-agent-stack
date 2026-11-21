@@ -3,6 +3,9 @@
 # scripts/test-twenty-doctor.sh sources doctor-kit.sh and runs it against stubs.
 # shellcheck shell=bash
 
+# shellcheck source=lib/mcp-probe.sh
+source "$(dirname "${BASH_SOURCE[0]}")/mcp-probe.sh"
+
 # A string field from an instance file, without a JSON parser.
 twenty_json_get() {
   sed -n "s/.*\"${2}\": *\"\\([^\"]*\\)\".*/\\1/p" "$1" 2>/dev/null | head -1 || true
@@ -69,19 +72,9 @@ doctor_twenty() {
       fi
     done
     if docker info >/dev/null 2>&1; then
-      local svc cid health
+      local svc
       for svc in twenty-server twenty-worker twenty-db twenty-redis; do
-        cid="$(docker compose ps -q "$svc" 2>/dev/null || true)"
-        health=""
-        if [[ -n "$cid" ]]; then
-          health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid" 2>/dev/null || true)"
-        fi
-        case "$health" in
-          healthy) ok "${svc} is healthy" ;;
-          starting) warn "${svc} is starting (the first start runs Twenty's migrations)" ;;
-          "") warn "${svc} not running — make up" ;;
-          *) bad "${svc} is ${health} — docker compose logs ${svc}" ;;
-        esac
+        check_service_health "$svc" "the first start runs Twenty's migrations"
       done
     fi
     if [[ ! -f "$(env_get TWENTY_DATA_DIR ./data/twenty)/.crm-init-done" ]]; then
@@ -91,7 +84,11 @@ doctor_twenty() {
 
   if [[ "$twenty_mcp" -eq 1 ]]; then
     ok "TWENTY_MCP_ENABLED=1"
-    local twenty_count=0 url access local_ rw_f has_ro has_rw why key kind k probe hdr code label cfg env_key rw
+    local twenty_count=0 url access local_ rw_f has_ro has_rw why kind k base probe code label cfg env_key rw
+    local tools listed py=host
+    # The tool list's Python follows doctor's choice (doctor_py): the host's
+    # python3 unless doctor settled on the Hermes image.
+    [[ "${DOCTOR_PY:-host}" == image ]] && py=""
     for f in "$store/instances"/*.json; do
       [[ -f "$f" ]] || continue
       slug="$(basename "$f" .json)"
@@ -141,58 +138,39 @@ doctor_twenty() {
       ok "crm-${slug}: access ${access}, keys present: $([[ $has_ro -eq 1 ]] && echo ro)$([[ $has_ro -eq 1 && $has_rw -eq 1 ]] && echo ' ')$([[ $has_rw -eq 1 ]] && echo rw)"
       # The local instance is checked through its host port; the key alone
       # selects the workspace, whatever the hostname.
-      probe="${url%/}"
-      if [[ "$local_" == true || "$probe" == http://twenty-server:3000* ]]; then
-        probe="http://127.0.0.1:${twenty_port}"
+      base="${url%/}"
+      if [[ "$local_" == true || "$base" == http://twenty-server:3000* ]]; then
+        base="http://127.0.0.1:${twenty_port}"
       fi
-      # ?mode=meta, as Hermes registers it: Twenty 2.56+ lists every record
-      # tool on bare /mcp.
-      probe="${probe%/mcp}/mcp?mode=meta"
+      # mcp_status and catalog_check probe this, as Hermes registers it:
+      # Twenty 2.56+ lists every record tool on bare /mcp.
+      base="${base%/mcp}"
+      probe="${base}/mcp?mode=meta"
       listed=0
       for kind in rw ro; do
         k="${store}/secrets/${slug}.key_${kind}"
         [[ "$kind" == rw && "$has_rw" -eq 1 ]] || [[ "$kind" == ro && "$has_ro" -eq 1 ]] || continue
-        key="$(cat "$k")"
-        # The key goes in a header file, not argv, so ps never shows it.
-        hdr="$(mktemp)"
-        chmod 600 "$hdr"
-        printf 'Authorization: Bearer %s\nContent-Type: application/json\nAccept: application/json, text/event-stream\n' "$key" > "$hdr"
-        code="$(curl -s -o /dev/null -m 15 -w '%{http_code}' -H @"$hdr" -X POST "$probe" \
-          --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"doctor","version":"0"}}}' 2>/dev/null || true)"
+        code="$(mcp_status "$base" "$k")"
         # One tools/list per workspace: the catalog tools Hermes pins, and
         # the server's tool count.
         tools=""
         if [[ "$code" == 200 && "$listed" -eq 0 ]]; then
           listed=1
-          body="$(mktemp)"
-          chmod 600 "$body"
-          lcode="$(curl -s -o "$body" -m 15 -w '%{http_code}' -H @"$hdr" -X POST "$probe" \
-            --data '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' 2>/dev/null || true)"
-          if [[ "$lcode" == 200 ]]; then
-            tools="$(python3 -I "${ROOT}/scripts/lib/mcp_tools_list.py" "$body" get_tool_catalog learn_tools execute_tool 2>/dev/null || true)"
-          fi
-          rm -f "$body"
-          [[ -n "$tools" ]] || tools="error	tools/list answered HTTP ${lcode:-000}"
+          tools="$(STACK_PYTHON="$py" catalog_check "$base" "$k")"
         fi
-        rm -f "$hdr"
-        key=""
         case "$code" in
           200) ok "crm-${slug}: MCP answers with the ${kind} key (${probe})" ;;
           401 | 403) bad "crm-${slug}: Twenty rejects the ${kind} key — make crm-init ROTATE=1, or new keys with make crm-add FORCE=1" ;;
-          000) warn "crm-${slug}: no answer from ${probe}" ;;
+          000 | timeout) warn "crm-${slug}: no answer from ${probe}" ;;
           *) warn "crm-${slug}: MCP answered HTTP ${code} at ${probe}" ;;
         esac
-        if [[ -n "$tools" ]]; then
-          count="$(printf '%s\n' "$tools" | awk -F'\t' '$1 == "count" { print $2 }')"
-          missing="$(printf '%s\n' "$tools" | awk -F'\t' '$1 == "missing" { print $2 }')"
-          if [[ -z "$count" ]]; then
-            warn "crm-${slug}: couldn't list its tools: $(printf '%s\n' "$tools" | awk -F'\t' '$1 == "error" { print $2 }')"
-          elif [[ -n "$missing" ]]; then
-            bad "crm-${slug}: Twenty lists ${count} tools but not ${missing} — Hermes reaches records through those"
-          else
-            ok "crm-${slug}: Twenty lists ${count} tools, the catalog tools among them"
-          fi
-        fi
+        case "$tools" in
+          ok\ *) ok "crm-${slug}: Twenty lists ${tools#ok } tools, the catalog tools among them" ;;
+          missing\ *)
+            tools="${tools#missing }"
+            bad "crm-${slug}: Twenty lists ${tools%% *} tools but not ${tools#* } — Hermes reaches records through those" ;;
+          unknown\ *) warn "crm-${slug}: couldn't list its tools: ${tools#unknown }" ;;
+        esac
       done
       for pair in "default:data/hermes/config.yaml:data/hermes/.env" \
         "api-server:data/hermes/profiles/api-server/config.yaml:data/hermes/profiles/api-server/.env" \
