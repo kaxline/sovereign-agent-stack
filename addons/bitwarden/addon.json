@@ -44,6 +44,14 @@
     }
   },
   "uses": [],
+  "hooks": {
+    "prepare": {
+      "script": [
+        "scripts/vault.sh",
+        "prepare"
+      ]
+    }
+  },
   "vaultBackend": {
     "name": "bwbroker",
     "plugin": "compose/hermes/plugins/bwbroker",

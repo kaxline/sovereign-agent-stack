@@ -10,6 +10,14 @@ the stack under another app.
 
 ### Changes
 
+- `addon.sh enable bitwarden` creates every folder `bitwarden-broker`
+  bind-mounts before `docker compose up`, so the first enable on a fresh
+  Podman install no longer fails (CR 0035). The add-on's new `prepare` hook
+  runs `vault.sh prepare`, which creates `instances/` in the add-on store and
+  `bw/`, `broker/`, `secrets/` and `broker-api/api-token` under
+  `BITWARDEN_HOST_DATA_DIR`, whatever `BITWARDEN_ENABLED` says. Modes match
+  `vault.sh pre-up`: `secrets/` 0711, the others 0700. A folder it can't
+  create fails enable at step `prepare` with the add-on left off.
 - `scripts/setup.sh`, `crm.sh init`, `todo.sh init`, `budget.sh`, `db.sh
   service-add`, `vault.sh api-token` and `web-browser-secrets.sh` no longer
   need `openssl` on the host: every generated secret now comes from

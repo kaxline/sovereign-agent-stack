@@ -34,6 +34,7 @@ scripts/test-bitwarden-access.py                ci
 scripts/test-bitwarden-broker.py                ci image
 scripts/test-bitwarden-compose-config.py        ci docker
 scripts/test-bitwarden-connect.sh
+scripts/test-bitwarden-enable-dirs.sh           ci
 scripts/test-bitwarden-fill.py                  ci image
 scripts/test-bitwarden-registration.sh          ci image
 scripts/test-bitwarden-setup.sh                 ci
