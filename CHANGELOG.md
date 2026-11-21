@@ -24,6 +24,9 @@ the stack under another app.
 
 ### Changes
 
+- **mcp-searxng** 2.10.1 → 2.11.0. `searxng_web_search` with
+  `categories="images"` and `result_detail="full"` now returns image
+  results with their resolution and URLs; other output keeps its shape.
 - **n8n** 2.47.4 → 2.48.7, the current `stable` tag. 2.48.3 fixed the
   2026-11-13 advisories, among them a custom instance role with
   user-management permissions taking over the owner account (high), and
