@@ -17,7 +17,7 @@ trap 'rm -rf "$tmp"' EXIT
 root="${tmp}/stack"
 mkdir -p "${root}/scripts/lib" "${tmp}/bin" "${tmp}/out"
 cp "${REPO}/scripts/addon.sh" "${REPO}/scripts/sync-profiles.sh" "${REPO}/scripts/fixture-init.sh" "${REPO}/scripts/fixture-prepare.sh" "${REPO}/scripts/fixture-connect.sh" "${root}/scripts/" 2>/dev/null || true
-for f in env.sh data-root.sh python.sh addon-events.sh stack-lock.sh addon_cli.py addon_manifest.py addon_store.py; do
+for f in env.sh data-root.sh secret.sh python.sh addon-events.sh stack-lock.sh addon_cli.py addon_manifest.py addon_store.py; do
   cp "${REPO}/scripts/lib/${f}" "${root}/scripts/lib/" 2>/dev/null || true
 done
 cp -R "${REPO}/addons" "${root}/addons"

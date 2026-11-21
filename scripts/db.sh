@@ -7,6 +7,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 # shellcheck source=lib/data-root.sh
 source "${ROOT}/scripts/lib/data-root.sh"
+# shellcheck source=lib/secret.sh
+source "${ROOT}/scripts/lib/secret.sh"
 
 SERVICES_DIR="${ROOT}/compose/postgres/services"
 
@@ -74,7 +76,7 @@ cmd_service_add() {
   [[ ! -e "$file" ]] || die "${file} already exists — edit or delete it instead"
   mkdir -p "$SERVICES_DIR"
   local password
-  password="$(openssl rand -hex 24)"
+  password="$(random_value hex 24)"
   (
     umask 077
     cat > "$file" <<EOF

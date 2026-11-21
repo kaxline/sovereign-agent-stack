@@ -14,7 +14,7 @@ trap 'rm -rf "$tmp"' EXIT
 stack="${tmp}/stack"
 mkdir -p "${stack}/scripts/lib" "${stack}/compose/postgres/services" "${tmp}/bin"
 cp "${ROOT}/scripts/db.sh" "${stack}/scripts/"
-cp "${ROOT}/scripts/lib/env.sh" "${ROOT}/scripts/lib/data-root.sh" "${stack}/scripts/lib/"
+cp "${ROOT}/scripts/lib/env.sh" "${ROOT}/scripts/lib/data-root.sh" "${ROOT}/scripts/lib/secret.sh" "${stack}/scripts/lib/"
 printf 'DB_NAME=testdb\n' > "${stack}/.env"
 
 # docker stub: `info` succeeds; `compose exec` logs its argv and stdin, and

@@ -8,6 +8,8 @@ cd "$ROOT"
 source "${ROOT}/scripts/lib/env.sh"
 # shellcheck source=lib/data-root.sh
 source "${ROOT}/scripts/lib/data-root.sh"
+# shellcheck source=lib/secret.sh
+source "${ROOT}/scripts/lib/secret.sh"
 # shellcheck source=lib/python.sh
 source "${ROOT}/scripts/lib/python.sh"
 
@@ -107,11 +109,12 @@ require_cmd() {
 }
 
 rand_hex() {
-  openssl rand -hex "$1"
+  random_value hex "$1"
 }
 
+# 32 letters and digits, for values that go unquoted into URLs and configs.
 rand_secret() {
-  openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 32
+  random_value base64 32 | tr -dc 'A-Za-z0-9' | head -c 32
 }
 
 validate_workspace() {
@@ -762,7 +765,6 @@ EOF
 
 # --- Preflight ---
 require_cmd docker
-require_cmd openssl
 require_cmd ssh-keygen
 docker compose version >/dev/null 2>&1 || die "docker compose is not available"
 
@@ -838,7 +840,7 @@ set_env_if_placeholder .env VIKUNJA_SECRET "$(rand_hex 32)"
 # Skipped when the secret comes from a file: a value as well would stop the
 # containers at start.
 if ! grep -qE '^TWENTY_ENCRYPTION_KEY_FILE=.+' .env 2>/dev/null; then
-  set_env_if_placeholder .env TWENTY_ENCRYPTION_KEY "$(openssl rand -base64 32)"
+  set_env_if_placeholder .env TWENTY_ENCRYPTION_KEY "$(random_value base64 32)"
 fi
 if ! grep -qE '^TWENTY_DB_PASSWORD_FILE=.+' .env 2>/dev/null; then
   set_env_if_placeholder .env TWENTY_DB_PASSWORD "$(rand_hex 32)"

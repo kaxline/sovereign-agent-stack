@@ -13,7 +13,7 @@ interface and its current implementation.
 
 `scripts/setup.sh`, `scripts/crm.sh init` and `scripts/todo.sh init` need
 bash, the tools macOS and Linux ship in `/bin` and `/usr/bin` (`grep`, `sed`,
-`awk`, `curl`, `openssl`, `ssh-keygen`), and the container engine. They need
+`awk`, `curl`, `od`, `base64`, `ssh-keygen`), and the container engine. They need
 no `python3`, `node` or `make` on the host: their Python runs in the pinned
 Hermes image, and the n8n credentials step runs Node in the n8n image. Both
 images are pulled anyway, so the first such step may spend a few minutes

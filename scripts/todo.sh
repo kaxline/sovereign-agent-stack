@@ -9,6 +9,8 @@ cd "$ROOT"
 source "${ROOT}/scripts/lib/env.sh"
 # shellcheck source=lib/data-root.sh
 source "${ROOT}/scripts/lib/data-root.sh"
+# shellcheck source=lib/secret.sh
+source "${ROOT}/scripts/lib/secret.sh"
 # shellcheck source=lib/python.sh
 source "${ROOT}/scripts/lib/python.sh"
 
@@ -145,13 +147,13 @@ cmd_init() {
   local user_id
   user_id="$(printf '%s\n' "$users" | awk -v u="$username" '$2 == u { print $1 }')"
   if [[ -z "$user_id" ]]; then
-    [[ -n "$password" ]] || password="$(openssl rand -hex 24)"
+    [[ -n "$password" ]] || password="$(random_value hex 24)"
     log "Creating Vikunja account '${username}'"
     vikunja_cli user create -u "$username" -e "${username}@localhost.localdomain" -p "$password" >/dev/null \
       || die "vikunja user create failed (docker compose logs vikunja)"
   elif [[ -z "$password" || "$(login_status "$base" "$username" "$password")" != 200 ]]; then
     # An account made by hand (or a stale .env): give it a managed password.
-    password="$(openssl rand -hex 24)"
+    password="$(random_value hex 24)"
     log "Setting a generated password on '${username}' (kept in .env)"
     vikunja_cli user reset-password "$user_id" --direct -p "$password" >/dev/null \
       || die "vikunja user reset-password failed (docker compose logs vikunja)"
