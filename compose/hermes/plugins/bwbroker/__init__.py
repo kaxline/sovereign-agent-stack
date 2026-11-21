@@ -84,7 +84,7 @@ def request_access(args: dict, **_kwargs) -> str:
 
 def release_access(args: dict, **_kwargs) -> str:
     handle = args.get("handle")
-    if not isinstance(handle, str) or not handle.startswith(broker.HANDLE_PREFIX):
+    if not isinstance(handle, str) or not handle.startswith(broker.PREFIX):
         return _refused("unknown_handle")
     try:
         status, payload = broker.call("POST", "/release", {"handle": handle})

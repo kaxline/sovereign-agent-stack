@@ -132,6 +132,13 @@ the stack under another app.
   `N8N_NODE` is no longer read, so a `node` stub for
   `generate-n8n-credentials.js` is no longer called. Files an earlier release
   wrote under `n8n/demo-data/credentials/` stay gitignored and can be deleted.
+- Client gateway: when Hermes doesn't answer a call made on a live session
+  (`prompt.submit`, `session.cwd.set`) within 180 seconds, the client now gets
+  the same error as for any other call, code -32603 with reason
+  `runtime_timeout`. Before, the timeout escaped unmapped and the client got a
+  generic internal error; for a `cwd` on `session/new` that failed the whole
+  request instead of reporting `cwd: {"applied": false, "reason":
+  "runtime_timeout"}`.
 
 ## v0.3.17 — 2026-11-20
 

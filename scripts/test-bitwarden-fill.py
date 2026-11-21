@@ -72,13 +72,23 @@ def test_signin_patch_touches_one_upstream_file() -> None:
 def test_the_broker_is_addressed_by_service_name_with_its_token() -> None:
     """The broker is a container of its own now, reached over the credentials network."""
     compose = (ROOT / "docker-compose.yml").read_text()
-    for path in (ROOT / "compose" / "hermes" / "patch-bitwarden-broker-fill.py",
-                 ROOT / "compose" / "hermes" / "bitwarden_broker_backend.py"):
-        src = path.read_text()
-        expect("http://bitwarden-broker:8099" in src, f"{path.name} calls the service by name")
-        expect("127.0.0.1:8099" not in src, f"{path.name} does not call loopback")
-        expect("/run/bitwarden/api-token" in src, f"{path.name} reads the bearer token")
+    backend = (ROOT / "compose" / "hermes" / "bitwarden_broker_backend.py").read_text()
+    expect("http://bitwarden-broker:8099" in backend, "the backend calls the service by name")
+    expect("127.0.0.1:8099" not in backend, "the backend does not call loopback")
+    expect("/run/bitwarden/api-token" in backend, "the backend reads the bearer token")
     expect("/run/bitwarden:ro" in compose, "hermes mounts the token folder read-only")
+
+
+def test_one_broker_client() -> None:
+    """The backend module is the only broker client; the fill and sign-in code import it."""
+    hermes = ROOT / "compose" / "hermes"
+    fill = (hermes / "patch-bitwarden-broker-fill.py").read_text()
+    signin = (hermes / "vault_bitwarden_signin.py").read_text()
+    for name, src in (("patch-bitwarden-broker-fill.py", fill), ("vault_bitwarden_signin.py", signin)):
+        expect("from plugins.bwbroker import bitwarden_broker_backend" in src, f"{name} imports the backend")
+        for copy in ("bitwarden-broker:8099", "/run/bitwarden/api-token", "build_opener", "MAX_REPLY",
+                     '"bwbroker:"', "sys.modules"):
+            expect(copy not in src, f"{name} keeps no copy of the client ({copy})")
 
 
 def test_cdp_url_hosts_map_to_provider_names() -> None:
@@ -138,12 +148,15 @@ assert "def _bwbroker_tab(" in src, "the tab helper is extracted"
 fill_body = src[src.index("def _bwbroker_fill("):src.index("def _bwbroker_list_hint(")]
 assert "_bwbroker_tab(" in fill_body, "_bwbroker_fill calls the extracted helper"
 
+# The fill and sign-in code import the broker client from the installed bwbroker plugin.
+out = subprocess.run(["sh", "/bootstrap/14-install-bwbroker-plugin.sh"], capture_output=True, text=True)
+assert out.returncode == 0 and "warn:" not in out.stdout, out.stdout + out.stderr
 sys.path.insert(0, "/opt/hermes")
 sys.path.insert(0, "/broker-src")
 sys.path.insert(0, "/bootstrap")
 from broker import cdp
 from broker.origins import normalize_origin as broker_normalize
-import bitwarden_broker_backend as bwb
+from plugins.bwbroker import bitwarden_broker_backend as bwb
 import agent.vault_backends as vb
 import agent.vault_backends.base as vbase
 from agent.vault_backends.plugin import PluginLoginBackend
@@ -341,8 +354,8 @@ def refuse_resolve(self, handle):
     resolve_calls.append(handle)
     raise AssertionError("resolve_password must not run for a bwbroker handle")
 PluginLoginBackend.resolve_password = refuse_resolve
-bvt._BWBROKER_URL = BROKER_BASE
-bvt._BWBROKER_TOKEN_FILE = bwb.TOKEN_FILE = TOKEN_PATH
+bwb.BROKER_URL = BROKER_BASE
+bwb.TOKEN_FILE = TOKEN_PATH
 BW = PluginLoginBackend("bwbroker", bwb.BrokerLoginBackend(in_cron=lambda: False, base_url=BROKER_BASE))
 
 class Local(vbase.LoginBackend):
@@ -690,14 +703,14 @@ assert calls == ["browser_vault_list", "browser_vault_unlock", "browser_vault_fi
 # what tells it the call is hermes'. Without the file the call is refused and nothing is written.
 assert STATE["unauthorized"] == 0, "every call so far carried the token"
 before = page_value("input[type=password]")
-bvt._BWBROKER_TOKEN_FILE = "/nonexistent/api-token"
+bwb.TOKEN_FILE = "/nonexistent/api-token"
 try:
     res = tool(bvt.browser_vault_fill, H_PLAIN, task_id=TASK)
     # More than one: the sign-in-only gate reads /items before the fill, and that is refused too.
     assert res.get("success") is not True and STATE["unauthorized"], (res, STATE["unauthorized"])
     assert page_value("input[type=password]") == before, "a refused call wrote nothing"
 finally:
-    bvt._BWBROKER_TOKEN_FILE = TOKEN_PATH
+    bwb.TOKEN_FILE = TOKEN_PATH
 STATE["unauthorized"] = 0
 redact.clear_vault_redaction_values()
 
@@ -729,6 +742,9 @@ def main() -> None:
     test_overlay_order()
     test_signin_patch_touches_one_upstream_file()
     test_the_shared_tab_refusal_fits_both_callers()
+    test_the_broker_is_addressed_by_service_name_with_its_token()
+    test_one_broker_client()
+    test_cdp_url_hosts_map_to_provider_names()
     print("ok")
     driver = f"EARLIER_VAULT_OVERLAYS = {EARLIER_VAULT_OVERLAYS!r}\n" + IMAGE_DRIVER
     hermes_image.maybe_run(driver, mounts=[(str(BROKER_SRC), "/broker-src")])
