@@ -1415,7 +1415,7 @@ services:
   signal-cli:
     profiles: ["signal"]
     container_name: ${CONTAINER_PREFIX:-}signal-cli
-    image: ${SIGNAL_CLI_IMAGE:-registry.gitlab.com/packaging/signal-cli/signal-cli-jre:v0-14-9-2}
+    image: ${SIGNAL_CLI_IMAGE:-registry.gitlab.com/packaging/signal-cli/signal-cli-jre:v0-14-10-1}
     restart: unless-stopped
     # Match the Mac/Linux user that owns SIGNAL_CLI_DATA_DIR.
     # scripts/sync-signal-profile.sh sets these from `id -u` / `id -g` when enabling.

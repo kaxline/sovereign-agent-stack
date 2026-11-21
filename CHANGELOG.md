@@ -24,6 +24,11 @@ the stack under another app.
 
 ### Changes
 
+- **signal-cli** `signal-cli-jre:v0-14-9-2` → `v0-14-10-1` (signal-cli
+  0.14.10), to keep the client current with Signal's service. It fixes a race
+  between stopping and starting the receive thread, accepts group invitations
+  addressed to the PNI, and rotates the account's sender key when a group
+  member leaves or is removed. The linked account store is read as before.
 - Hermes v0.23.2 overlay fixes. Each patch accepts the v0.23.1 and the
   v0.23.2 shape. `patch-digest-redaction`: the vault redaction registry moved
   to `agent/redact_vault_values.py`; the overlay patches it there and
