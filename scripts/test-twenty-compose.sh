@@ -57,7 +57,7 @@ if grep -qF -- '/bootstrap/twenty-workspaces' "$compose"; then fail "no service 
 # install so enabling crm later needs no extra step, and never replaced.
 setup="${ROOT}/scripts/setup.sh"
 grep -qE '^    --crm\) SETUP_CRM=1; shift ;;$' "$setup" || fail "setup.sh accepts --crm"
-grep -qF 'set_env_if_placeholder .env TWENTY_ENCRYPTION_KEY "$(openssl rand -base64 32)"' "$setup" \
+grep -qF 'set_env_if_placeholder .env TWENTY_ENCRYPTION_KEY "$(random_value base64 32)"' "$setup" \
   || fail "setup.sh generates TWENTY_ENCRYPTION_KEY once"
 grep -qF 'set_env_if_placeholder .env TWENTY_DB_PASSWORD "$(rand_hex 32)"' "$setup" \
   || fail "setup.sh generates a hex TWENTY_DB_PASSWORD once"

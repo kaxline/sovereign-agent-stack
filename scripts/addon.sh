@@ -110,6 +110,8 @@ cd "$ROOT"
 source "${ROOT}/scripts/lib/env.sh"
 # shellcheck source=lib/data-root.sh
 source "${ROOT}/scripts/lib/data-root.sh"
+# shellcheck source=lib/secret.sh
+source "${ROOT}/scripts/lib/secret.sh"
 # shellcheck source=lib/python.sh
 source "${ROOT}/scripts/lib/python.sh"
 # shellcheck source=lib/addon-events.sh
@@ -337,16 +339,6 @@ apply_flags() {
   "${ROOT}/scripts/sync-profiles.sh"
 }
 
-# random_value ENCODING BYTES: BYTES random bytes as hex or base64, from
-# /dev/urandom (the host may lack openssl).
-random_value() {
-  if [[ "$1" == hex ]]; then
-    od -An -v -tx1 -N "$2" /dev/urandom | tr -d ' \n'
-  else
-    head -c "$2" /dev/urandom | base64 | tr -d '\n'
-  fi
-}
-
 # generate_secrets PLAN: writes each of the manifest's `generate` secrets to
 # .env when its value is empty or a placeholder, as setup.sh does, and skips
 # one whose _FILE form is set. A set value is never replaced. Not rolled back:
@@ -364,7 +356,7 @@ generate_secrets() {
       "" | change-me* | change_me*) ;;
       *) continue ;;
     esac
-    value="$(random_value "$encoding" "$size")" && [[ -n "$value" ]] || return 1
+    value="$(random_value "$encoding" "$size")" || return 1
     upsert_env .env "$key" "$value" || return 1
     echo "Set $key"
   done <<EOF_GENERATE

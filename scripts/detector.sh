@@ -17,34 +17,26 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 # shellcheck source=lib/data-root.sh
 source "${ROOT}/scripts/lib/data-root.sh"
+# shellcheck source=lib/secret.sh
+source "${ROOT}/scripts/lib/secret.sh"
 
 root="$(resolve_data_root_path "${ASSISTANT_DATA_ROOT:-}")"
 validate_data_root_path "$root"
 secrets="${root}/addons/detector/secrets"
 token_file="${secrets}/http_token"
 
-new_token() {
-  mkdir -p "$secrets"
-  chmod 700 "$secrets"
-  local tmp
-  tmp="$(mktemp "${secrets}/.http_token.XXXXXX")"
-  chmod 600 "$tmp"
-  # 32 random bytes as hex.
-  od -An -N32 -tx1 /dev/urandom | tr -d ' \n' > "$tmp"
-  mv -f "$tmp" "$token_file"
-}
-
+# The token is 64 hex characters with no newline, as it always was.
 case "${1:-}" in
   init)
-    if [[ -s "$token_file" ]]; then
-      echo "[detector] token exists; kept" >&2
-    else
-      new_token
+    ensure_secret_file "$token_file" die bare
+    if [[ "$SECRET_FILE_CREATED" == 1 ]]; then
       echo "[detector] token written to ${token_file}" >&2
+    else
+      echo "[detector] token exists; kept" >&2
     fi
     ;;
   rotate)
-    new_token
+    write_secret_file "$token_file" die bare
     echo "[detector] new token written to ${token_file}" >&2
     ;;
   check)

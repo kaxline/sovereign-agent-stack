@@ -10,6 +10,14 @@ the stack under another app.
 
 ### Changes
 
+- `scripts/setup.sh`, `crm.sh init`, `todo.sh init`, `budget.sh`, `db.sh
+  service-add`, `vault.sh api-token` and `web-browser-secrets.sh` no longer
+  need `openssl` on the host: every generated secret now comes from
+  `scripts/lib/secret.sh`, which reads `/dev/urandom`. Formats and lengths
+  are unchanged, and existing secrets are never rewritten. The broker API
+  token and the browser-service tokens are now written to a temporary file and
+  renamed into place, and `vault.sh api-token` stops with an error when a
+  directory sits at the token's path instead of keeping it.
 - The Buzz, Signal, corpus, KB-eval fixture, OpenCode smoke fixture and
   mail/messages triage cron scripts read `.env` through `scripts/lib/env.sh`
   instead of their own copies. Values follow its rules: the first `KEY=` line

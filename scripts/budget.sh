@@ -14,6 +14,8 @@ cd "$ROOT"
 source "${ROOT}/scripts/lib/env.sh"
 # shellcheck source=lib/data-root.sh
 source "${ROOT}/scripts/lib/data-root.sh"
+# shellcheck source=lib/secret.sh
+source "${ROOT}/scripts/lib/secret.sh"
 # shellcheck source=lib/python.sh
 source "${ROOT}/scripts/lib/python.sh"
 # ASSISTANT_DATA_ROOT from the environment wins over the env file, as it does
@@ -621,7 +623,7 @@ init_server_only() {
     if [[ -s "$pwf" ]]; then
       pw="$(cat "$pwf")"
     else
-      pw="$(openssl rand -hex 24)"
+      pw="$(random_value hex 24)"
       write_secret server_password "$pw"
     fi
     bootstrap_server "$pw"

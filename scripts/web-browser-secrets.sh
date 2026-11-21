@@ -15,6 +15,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 # shellcheck source=lib/data-root.sh
 source "${ROOT}/scripts/lib/data-root.sh"
+# shellcheck source=lib/secret.sh
+source "${ROOT}/scripts/lib/secret.sh"
 
 # ASSISTANT_DATA_ROOT from the environment wins over .env, as it does for
 # compose.
@@ -24,27 +26,19 @@ if ! err="$(validate_data_root_path "$root" 2>&1)"; then
   exit 0
 fi
 
-dir="${root}/web-browser/secrets"
-if ! mkdir -p "$dir" 2> /dev/null || ! chmod 700 "$dir" 2> /dev/null; then
-  printf "[web-browser-secrets] warning: could not create %s at 0700; run sudo chown -R \"\$(id -u):\$(id -g)\" '%s'\n" \
-    "$dir" "${root}/web-browser" >&2
-  exit 0
-fi
+warn() { printf '[web-browser-secrets] warning: %s\n' "$1" >&2; }
+# shellcheck disable=SC2034 # read by lib/secret.sh
+SECRET_FILE_FIX="run sudo chown -R \"\$(id -u):\$(id -g)\" '${root}/web-browser'"
 
+dir="${root}/web-browser/secrets"
+ensure_secret_dir "$dir" warn || exit 0
+
+# A directory at a token's path (a container started before this ran left one
+# at the bind source) is warned about and skipped.
 for file in agent credentials viewer; do
   path="${dir}/${file}"
-  if [[ -d "$path" ]]; then
-    # A container started before this ran left a directory at the bind source.
-    printf "[web-browser-secrets] warning: %s is a directory, so no token was written; stop the stack, remove it (sudo rmdir '%s') and run this again\n" \
-      "$path" "$path" >&2
-    continue
-  fi
-  if [[ ! -s "$path" ]]; then
-    if ! (umask 077; openssl rand -hex 32 > "$path") 2> /dev/null; then
-      printf '[web-browser-secrets] warning: could not write %s\n' "$path" >&2
-      continue
-    fi
+  ensure_secret_file "$path" warn || continue
+  if [[ "$SECRET_FILE_CREATED" == 1 ]]; then
     printf 'Created browser-service token %s\n' "$path"
   fi
-  chmod 600 "$path" 2> /dev/null || true
 done

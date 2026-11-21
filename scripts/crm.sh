@@ -9,6 +9,8 @@ cd "$ROOT"
 source "${ROOT}/scripts/lib/env.sh"
 # shellcheck source=lib/data-root.sh
 source "${ROOT}/scripts/lib/data-root.sh"
+# shellcheck source=lib/secret.sh
+source "${ROOT}/scripts/lib/secret.sh"
 # shellcheck source=lib/python.sh
 source "${ROOT}/scripts/lib/python.sh"
 
@@ -370,7 +372,7 @@ cmd_init() {
   if [[ -z "$password" && -z "$password_file" ]]; then
     # Saved before any call, so a failed run signs in next time instead of
     # creating a second account. Twenty accepts 8 to 50 characters.
-    password="$(openssl rand -hex 16)Aa1!"
+    password="$(random_value hex 16)Aa1!"
     upsert_env "$ENV_PATH" TWENTY_PASSWORD "$password"
     log "Generated the owner password (TWENTY_PASSWORD in .env)"
   fi

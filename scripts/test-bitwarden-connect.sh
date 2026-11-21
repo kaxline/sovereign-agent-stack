@@ -22,7 +22,7 @@ trap 'chmod -R u+rwx "$tmp" 2>/dev/null; rm -rf "$tmp"' EXIT
 root="${tmp}/stack"
 mkdir -p "${root}/scripts/lib" "${tmp}/bin" "${tmp}/stub" "${tmp}/hosttmp"
 cp "${REPO}/scripts/addon.sh" "${REPO}/scripts/vault.sh" "${root}/scripts/"
-for f in env.sh data-root.sh python.sh addon-events.sh stack-lock.sh addon_cli.py addon_manifest.py addon_store.py; do
+for f in env.sh data-root.sh secret.sh python.sh addon-events.sh stack-lock.sh addon_cli.py addon_manifest.py addon_store.py; do
   cp "${REPO}/scripts/lib/${f}" "${root}/scripts/lib/"
 done
 cp -R "${REPO}/addons" "${root}/addons"

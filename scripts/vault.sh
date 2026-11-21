@@ -13,6 +13,8 @@ cd "$ROOT"
 source "${ROOT}/scripts/lib/env.sh"
 # shellcheck source=lib/data-root.sh
 source "${ROOT}/scripts/lib/data-root.sh"
+# shellcheck source=lib/secret.sh
+source "${ROOT}/scripts/lib/secret.sh"
 # shellcheck source=lib/python.sh
 source "${ROOT}/scripts/lib/python.sh"
 
@@ -1344,22 +1346,12 @@ cmd_pre_up() {
 # compose refuses to start a service whose bind-mount source is missing.
 # make ensure-local (and so make up) and scripts/setup.sh run this.
 cmd_api_token() {
-  local dir file data
-  data="$(data_dir)"
-  dir="${data}/broker-api"
-  file="${dir}/api-token"
-  if [[ -e "$dir" && ! -d "$dir" ]]; then
-    die "${dir} exists and is not a folder"
-  fi
-  if [[ ! -d "$dir" ]]; then
-    (umask 077 && mkdir -p "$dir") 2>/dev/null || die "could not create ${dir}; run once: $(own_fix)"
-  fi
-  if [[ ! -s "$file" ]]; then
-    (umask 077 && openssl rand -hex 32 > "$file") 2>/dev/null \
-      || die "could not write ${file}; run once: $(own_fix)"
-    log "Created the broker API token (${file})"
-  fi
-  chmod 600 "$file" 2>/dev/null || true
+  local file
+  file="$(data_dir)/broker-api/api-token"
+  # shellcheck disable=SC2034 # read by lib/secret.sh
+  SECRET_FILE_FIX="run once: $(own_fix)"
+  ensure_secret_file "$file" die
+  [[ "$SECRET_FILE_CREATED" == 0 ]] || log "Created the broker API token (${file})"
   if [[ "${1:-}" == "--print" ]]; then printf '%s\n' "$file"; fi
 }
 

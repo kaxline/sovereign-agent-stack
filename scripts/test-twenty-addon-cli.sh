@@ -38,7 +38,7 @@ chmod +x "${root}/scripts/vault.sh"
 for f in addon.sh sync-profiles.sh crm.sh twenty_admin.py; do
   cp "${REPO}/scripts/${f}" "${root}/scripts/"
 done
-for f in env.sh data-root.sh python.sh addon-events.sh stack-lock.sh addon_cli.py addon_manifest.py addon_store.py; do
+for f in env.sh data-root.sh secret.sh python.sh addon-events.sh stack-lock.sh addon_cli.py addon_manifest.py addon_store.py; do
   cp "${REPO}/scripts/lib/${f}" "${root}/scripts/lib/"
 done
 cp -R "${REPO}/addons" "${root}/addons"
