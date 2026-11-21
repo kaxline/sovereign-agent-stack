@@ -95,7 +95,7 @@ SCRUB = (
     "    return text\n"
 )
 
-# Names the inserted code reads from agent/redact.py.
+# Names the inserted code reads from the module that holds the registry.
 NEEDED = (
     "def redact_registered_vault_values(text: str) -> str:\n",
     "def clear_vault_redaction_values() -> None:\n",
@@ -105,6 +105,25 @@ NEEDED = (
     REDACTION_MARKER,
 )
 
+# Since v0.23.2 the registry lives in agent/redact_vault_values.py and
+# agent/redact.py re-exports it. Callers (patch-bitwarden-broker-fill.py)
+# import the two new names from agent.redact, so they are re-exported too.
+VAULT_MODULE = "redact_vault_values.py"
+REEXPORT_ANCHOR = (
+    "from agent.redact_vault_values import (  # re-exported: callers import these from agent.redact\n"
+)
+REEXPORT = (
+    "from agent.redact_vault_values import register_vault_redaction_digest, vault_redaction_base"
+    f"  {MARKER}\n"
+)
+
+
+def fail(target: Path, problems: list) -> None:
+    raise SystemExit(
+        f"{TAG} expected code missing in {target}: {problems}. "
+        "Hermes image may have changed — update this patch."
+    )
+
 
 def main() -> None:
     src = BOOTSTRAP / "digest_redaction.py"
@@ -113,24 +132,35 @@ def main() -> None:
     shutil.copyfile(src, AGENT / "digest_redaction.py")
     print(f"{TAG} installed {AGENT / 'digest_redaction.py'}")
 
-    target = AGENT / "redact.py"
+    redact = AGENT / "redact.py"
+    split = (AGENT / VAULT_MODULE).is_file()
+    target = AGENT / VAULT_MODULE if split else redact
     text = target.read_text(encoding="utf-8")
-    if MARKER in text:
+    redact_text = redact.read_text(encoding="utf-8") if split else ""
+    done = MARKER in text
+    reexport_done = not split or MARKER in redact_text
+    if done and reexport_done:
         print(f"{TAG} already applied")
         return
-    missing = [n.strip() for n in NEEDED if n not in text]
-    anchors = {"registry": REGISTRY_ANCHOR, "clear": CLEAR_ANCHOR, "scrub": SCRUB_ANCHOR}
-    bad = [name for name, anchor in anchors.items() if text.count(anchor) != 1]
-    if missing or bad:
-        raise SystemExit(
-            f"{TAG} expected code missing in {target}: {missing + bad}. "
-            "Hermes image may have changed — update this patch."
-        )
-    text = text.replace(CLEAR_ANCHOR, CLEAR, 1)
-    text = text.replace(SCRUB_ANCHOR, SCRUB, 1)
-    text = text.replace(REGISTRY_ANCHOR, REGISTRY + REGISTRY_ANCHOR, 1)
-    target.write_text(text, encoding="utf-8")
-    print(f"{TAG} patched {target}")
+    # Check every anchor before writing either file, so a changed image is
+    # never left half-patched.
+    if not done:
+        missing = [n.strip() for n in NEEDED if n not in text]
+        anchors = {"registry": REGISTRY_ANCHOR, "clear": CLEAR_ANCHOR, "scrub": SCRUB_ANCHOR}
+        bad = [name for name, anchor in anchors.items() if text.count(anchor) != 1]
+        if missing or bad:
+            fail(target, missing + bad)
+    if not reexport_done and redact_text.count(REEXPORT_ANCHOR) != 1:
+        fail(redact, ["re-export"])
+    if not done:
+        text = text.replace(CLEAR_ANCHOR, CLEAR, 1)
+        text = text.replace(SCRUB_ANCHOR, SCRUB, 1)
+        text = text.replace(REGISTRY_ANCHOR, REGISTRY + REGISTRY_ANCHOR, 1)
+        target.write_text(text, encoding="utf-8")
+        print(f"{TAG} patched {target}")
+    if not reexport_done:
+        redact.write_text(redact_text.replace(REEXPORT_ANCHOR, REEXPORT + REEXPORT_ANCHOR, 1), encoding="utf-8")
+        print(f"{TAG} patched {redact}")
 
 
 if __name__ == "__main__":

@@ -487,7 +487,7 @@ set_backends(Local(), BW)
 # --- test_totp_fallback -----------------------------------------------------
 import agent.vault_backends.unlock as unlock
 asked = []
-unlock.can_prompt_here = lambda: True
+unlock.can_prompt_here = lambda prompt=None: True  # v0.23.2 passes the prompt
 unlock.get_code_prompt_callback = lambda: (lambda site, hint: asked.append(site) or "")
 cdp_json(f"/json/new?{ORIGIN}/otp", method="PUT")
 time.sleep(1.0)

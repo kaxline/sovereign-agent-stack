@@ -6,7 +6,7 @@
 # The default is only for a bare docker build; compose always passes the arg.
 # scripts/test-bitwarden-compose-config.py fails when it and the compose
 # default drift apart, so a Hermes bump cannot leave a stale base here.
-ARG HERMES_AGENT_IMAGE_TAG=v0.23.1
+ARG HERMES_AGENT_IMAGE_TAG=v0.23.2
 FROM nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG}
 
 COPY --chown=root:root --chmod=u=rwX,go=rX signer/ /opt/bitwarden-signin/signer/

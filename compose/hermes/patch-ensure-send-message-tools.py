@@ -24,8 +24,14 @@ FORCE_NEW = """discover_builtin_tools()
 # assistant-stack: force-import send_message_tool
 # Bypass stale tool_discovery_cache registers=False entries so WebUI always
 # gets the re-registered send_message tool.
+# v0.23.2 moved it to gateway.outbound.send.
 try:
     import tools.send_message_tool  # noqa: F401
+except ImportError:
+    try:
+        import gateway.outbound.send  # noqa: F401
+    except Exception:
+        pass
 except Exception:
     pass
 """
@@ -39,7 +45,10 @@ ENSURE_BLOCK = """    # assistant-stack: ensure send_message in tool defs
         }
         if "send_message" not in _names:
             try:
-                import tools.send_message_tool  # noqa: F401
+                try:
+                    import tools.send_message_tool  # noqa: F401
+                except ImportError:
+                    import gateway.outbound.send  # noqa: F401
             except Exception as _imp_err:
                 logger.warning("assistant-stack send_message import failed: %s", _imp_err)
             _extra = registry.get_definitions({"send_message"}, quiet=True) or []
@@ -75,12 +84,33 @@ def _patch_force_import(text: str) -> tuple[str, str]:
     return text.replace(FORCE_OLD, FORCE_NEW, 1), f"patched (force-import): {TARGET}"
 
 
+# v0.23.2 filters the result through the hosted-tool allowlist before
+# returning, so the block goes ahead of that filter: a hosted scope still
+# drops send_message when its allowlist leaves it out.
+ENSURE_OLD_HOSTED = """    except Exception as e:  # pragma: no cover — never break tool loading
+        logger.warning("Tool search assembly skipped: %s", e)
+
+    from tools.hosted_tool_policy import hosted_tool_refusal
+"""
+
+ENSURE_NEW_HOSTED = (
+    """    except Exception as e:  # pragma: no cover — never break tool loading
+        logger.warning("Tool search assembly skipped: %s", e)
+
+"""
+    + ENSURE_BLOCK
+    + """    from tools.hosted_tool_policy import hosted_tool_refusal
+"""
+)
+
+
 def _patch_ensure(text: str) -> tuple[str, str]:
     if ENSURE_MARKER in text:
         return text, f"already patched (ensure): {TARGET}"
-    if ENSURE_OLD not in text:
-        return text, f"skip: ensure snippet not found in {TARGET}"
-    return text.replace(ENSURE_OLD, ENSURE_NEW, 1), f"patched (ensure): {TARGET}"
+    for old, new in ((ENSURE_OLD, ENSURE_NEW), (ENSURE_OLD_HOSTED, ENSURE_NEW_HOSTED)):
+        if old in text:
+            return text.replace(old, new, 1), f"patched (ensure): {TARGET}"
+    return text, f"skip: ensure snippet not found in {TARGET}"
 
 
 def main() -> int:

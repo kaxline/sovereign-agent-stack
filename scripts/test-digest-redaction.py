@@ -227,12 +227,20 @@ for _ in range(2):
     out = subprocess.run([sys.executable, "/bootstrap/patch-digest-redaction.py"], capture_output=True, text=True, env=env)
     assert out.returncode == 0, out.stdout + out.stderr
 assert "already applied" in out.stdout, out.stdout
-src = open("/opt/hermes/agent/redact.py").read()
+# v0.23.2 moved the registry to agent/redact_vault_values.py; agent.redact re-exports it.
+split = os.path.isfile("/opt/hermes/agent/redact_vault_values.py")
+src = open("/opt/hermes/agent/redact_vault_values.py" if split else "/opt/hermes/agent/redact.py").read()
 assert src.count("# assistant-stack: digest redaction") == 1, "one registry block"
+if split:
+    assert open("/opt/hermes/agent/redact.py").read().count("# assistant-stack: digest redaction") == 1, "one re-export"
 
 sys.path.insert(0, "/opt/hermes")
 from agent import redact
 from agent.digest_redaction import build_entry
+if split:
+    from agent import redact_vault_values as registry
+else:
+    registry = redact
 
 value = "pässwörd+/%x"
 b64 = base64.b64encode(value.encode()).decode()
@@ -252,16 +260,16 @@ assert redact.redact_registered_vault_values(text) == "field=«redacted-vault-se
 assert redact.redact_sensitive_text(text) == "field=«redacted-vault-secret»;", "through redact_sensitive_text"
 redact.clear_vault_redaction_values()
 assert redact.redact_registered_vault_values(text) == text, "clear drops digests"
-assert redact.vault_redaction_base() is not None and redact._VAULT_REDACTION_BASES, "base recreated lazily"
+assert redact.vault_redaction_base() is not None and registry._VAULT_REDACTION_BASES, "base recreated lazily"
 
 redact.register_vault_redaction_value("Plain-Fill-Value-42")
 assert redact.redact_registered_vault_values("x Plain-Fill-Value-42 y") == "x «redacted-vault-secret» y", "exact pass"
 redact.clear_vault_redaction_values()
 
-for _ in range(redact._VAULT_REDACTION_MAX_PER_PROFILE + 5):
+for _ in range(registry._VAULT_REDACTION_MAX_PER_PROFILE + 5):
     redact.register_vault_redaction_digest(build_entry(os.urandom(12).hex(), redact.vault_redaction_base()))
-bucket = redact._VAULT_REDACTION_DIGESTS[redact._vault_scope()]
-assert len(bucket) == redact._VAULT_REDACTION_MAX_PER_PROFILE, len(bucket)
+bucket = registry._VAULT_REDACTION_DIGESTS[registry._vault_scope()]
+assert len(bucket) == registry._VAULT_REDACTION_MAX_PER_PROFILE, len(bucket)
 redact.clear_vault_redaction_values()
 os.write(1, b"image ok\n")
 '''

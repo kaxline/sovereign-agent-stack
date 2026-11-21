@@ -705,7 +705,7 @@ SSH. The `install-test` workflow (run by hand) installs and upgrades on Ubuntu
 ```json
 {
   "version": "v0.3.17",
-  "images": {"hermes_agent": "v0.23.1", "hermes_webui": "0.52.544"},
+  "images": {"hermes_agent": "v0.23.2", "hermes_webui": "0.52.702"},
   "project": "boundary-assistant",
   "host": {"os": "linux", "arch": "x86_64"},
   "engine": true,

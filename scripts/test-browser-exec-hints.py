@@ -227,7 +227,7 @@ import agent.vault_store as store
 import tools.browser_vault_tool as vt
 vt._focus_bound_origin = lambda *a, **k: None
 vt._current_page_origin = lambda task_id: "https://www.linkedin.com"
-unlock.can_prompt_here = lambda: True
+unlock.can_prompt_here = lambda prompt=None: True  # v0.23.2 passes the prompt
 unlock.get_save_login_prompt_callback = lambda: (lambda origin, host: {"identifier": "keith@axline.io", "password": "x"})
 store.get_vault_store = lambda: SimpleNamespace(add_item=lambda *a, **k: SimpleNamespace(id="vault_b47b899a7fe7"))
 for fill_ok in (False, True):

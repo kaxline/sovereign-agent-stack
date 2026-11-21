@@ -365,7 +365,7 @@ def browser_vault_capture_secret(name: str = "", destination: str = "", selector
             replaces = False
 
     prompt = get_prompt_callback()
-    if prompt is None or not can_prompt_here():
+    if prompt is None or not _can_prompt_here(can_prompt_here, prompt):
         return _err("This session cannot ask the user to approve storing the value (headless/cron/API). Tell them "
                     "where the key is on the page so they can copy it into the app themselves.", "prompt_unavailable")
     host = origin.split("://", 1)[-1]
@@ -407,3 +407,12 @@ def handle_action(args: dict, task_id: Optional[str]) -> str:
                                         destination=str(args.get("destination") or ""),
                                         selector=str(args.get("selector") or ""),
                                         candidate=args.get("candidate"), task_id=task_id)
+
+
+def _can_prompt_here(can_prompt_here, prompt) -> bool:
+    """Ask about the callback this action uses. v0.23.2 takes it as an argument; before, the
+    check always looked at the unlock prompt, which a chat surface may not install."""
+    import inspect
+    if inspect.signature(can_prompt_here).parameters:
+        return can_prompt_here(prompt)
+    return can_prompt_here()

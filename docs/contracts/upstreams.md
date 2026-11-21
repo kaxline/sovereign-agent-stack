@@ -27,7 +27,7 @@ on a bump: [actual-mcp](../../compose/actual-mcp/VENDORED.md),
 
 ## Hermes
 
-`nousresearch/hermes-agent` at `v0.23.1` (`HERMES_AGENT_IMAGE_TAG`), unmodified as an image.
+`nousresearch/hermes-agent` at `v0.23.2` (`HERMES_AGENT_IMAGE_TAG`), unmodified as an image.
 The stack changes it at container start: cont-init scripts in `compose/hermes/` run patch
 scripts that edit files under `/opt/hermes`, copy modules beside them and install the `bwbroker`
 plugin. Each patch anchors on text in the pinned release, so a bump means running the re-test
@@ -54,7 +54,7 @@ Overlays with no re-test command fail only as a warning in the container log.
 | `history-budget` | 1074 | `history_budget` on session.create/resume windows the prompt without archiving rows; `session.context_breakdown` fields; error 4028. | client API | becomes a client API method | `scripts/test-history-budget.py` |
 | `mcp-wake` | 369 | `POST /v1/mcp/servers/{name}/reconnect` wakes a parked MCP server in every gateway process; `mcp_servers.<name>.parked_retry_interval`; parks a server once when another profile just parked it. | client API | becomes a client API method | `scripts/test-mcp-wake.py`, `scripts/test-mcp-parked-retry.sh` |
 | `dashboard-handoff` | 251 | `GET /auth/handoff?code=` one-time sign-in link, HMAC code, off until `HERMES_DASHBOARD_HANDOFF_SECRET` is set; `make dashboard-open`. | client API | becomes a client API method | `scripts/test-dashboard-handoff.py` |
-| `mirror-exclude` | 116 | `mirror_exclude` glob list on `profiles.create` removes keys from the mirrored `.env`; result lists `mirrored.env_excluded`; fails closed. | upstream | draft, not filed | `scripts/test-mirror-exclude.py` |
+| `mirror-exclude` | 129 | `mirror_exclude` glob list on `profiles.create` removes keys from the mirrored `.env`; result lists `mirrored.env_excluded`; fails closed. | upstream | draft, not filed | `scripts/test-mirror-exclude.py` |
 | `mcp-trust-details` | 160 | Structured `mcp: {server, tool, arguments, tool_call_id}` on trust-gate approval entries via a new `details` keyword on `request_elicitation_consent`. | upstream | draft, not filed | `scripts/test-mcp-trust-details.py` |
 | `kanban-guards` | 313 | Refuses unbuildable worktree/dir workspaces at filing; gives up at once (`retryable: false`) on final workspace errors; creator-comment wrap. | adapter | stays in the adapter | `scripts/test-kanban-guards.py` |
 | `kanban-edit` | 374 | Workspace fields on the dashboard's `PATCH /tasks/{id}`; `kanban_update` and `kanban_archive` tools. | adapter | stays in the adapter | `scripts/test-kanban-edit.py` |
@@ -67,7 +67,7 @@ Overlays with no re-test command fail only as a warning in the container log.
 | Overlay | Lines | What it changes | Class | Upstream | Re-test |
 |---|---:|---|---|---|---|
 | `bitwarden-broker-fill` | 373 | Routes `browser_vault` fills and `enter_code` of `bwbroker:` handles to the broker's `POST /fill`; adds a `bitwarden` entry to `browser_vault list`. | adapter | stays in the adapter | `scripts/test-bitwarden-fill.py`, `make bitwarden-test` |
-| `digest-redaction` | 137 | `register_vault_redaction_digest` and digest scrub in `agent/redact.py`, so values the gateway never held are still scrubbed from output. | adapter | stays in the adapter | `scripts/test-digest-redaction.py` |
+| `digest-redaction` | 167 | `register_vault_redaction_digest` and digest scrub in `agent/redact_vault_values.py` (`agent/redact.py` before v0.23.2), so values the gateway never held are still scrubbed from output. | adapter | stays in the adapter | `scripts/test-digest-redaction.py` |
 | `bwbroker plugin + install` | 289 | Bundled `bwbroker` login-backend plugin copied into `/opt/hermes/plugins` on every start. | adapter | stays in the adapter | `sh scripts/test-bitwarden-registration.sh --image`, `make bitwarden-test` |
 | `vault-create-login` | 712 | `browser_vault` action `create_login` (generated password the model never sees) and the `vault.create_login` server request. | client API | becomes a client API method | `scripts/test-vault-create-login.py --image` |
 | `vault-capture-secret` | 624 | `browser_vault` action `capture_secret`, the `vault.capture_secret` request and the `vault.take` RPC. | client API | becomes a client API method | `scripts/test-vault-capture-secret.py --image` |
@@ -88,7 +88,7 @@ Overlays with no re-test command fail only as a warning in the container log.
 | `compaction-tool-facts` | 248 | Gives the compaction summarizer the original tool bodies (4,000 chars each, 60,000 total) instead of prune stubs; adds a `## Findings` section. | upstream | draft, not filed | `scripts/test-compaction-tool-facts.py` |
 | `tool-eval-trace` | 498 | JSONL turn traces for the tool-calling eval; records web rewrites. | adapter | stays in the adapter | `scripts/test-tool-eval-trace.py` |
 | `block-native-web-tools` | 149 | Rewrites hallucinated `web_search` / `web_extract` to the SearXNG MCP tools, or returns a terminal error. | adapter | stays in the adapter | none; `scripts/test-tool-eval-trace.py` logs the rewrite path |
-| `send-message tools` | 343 | Synthesises a Signal platform config from `SIGNAL_*` with the adapter disabled; registers `send_message` as an agent-callable tool and keeps it in the schema. | adapter | stays in the adapter | `scripts/test-send-message-tool.py` |
+| `send-message tools` | 377 | Synthesises a Signal platform config from `SIGNAL_*` with the adapter disabled; registers `send_message` as an agent-callable tool and keeps it in the schema. | adapter | stays in the adapter | `scripts/test-send-message-tool.py` |
 | `cron-scheduler-delivery` | 307 | (1) Rejects `api_server` cron origins and falls back to home channels. (2) Synthesises Signal config for cron delivery. | adapter | stays in the adapter | `scripts/test-cron-delivery-errors.py` |
 
 ### Search and browser hints

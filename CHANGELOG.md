@@ -8,7 +8,42 @@ the stack under another app.
 
 ## Unreleased
 
+### Upgrade steps
+
+- Hermes Agent v0.23.2 (from v0.23.1) and WebUI 0.52.702 (from 0.52.544).
+  v0.23.2 fixes GHSA-p22p-9ph6-gmrh (High): Bot Desktop inside a `docker` or
+  `ssh` terminal backend could pass values from its screen `env` file to
+  processes on the agent machine. Back up `data/hermes` with `hermes`
+  stopped, then run `make hermes-upgrade AGENT=v0.23.2 WEBUI=0.52.702` and
+  the verification block in
+  [docs/hermes-webui.md](docs/hermes-webui.md#verification). `_config_version`
+  stays at 53, so profiles are not migrated. The overlays still apply to
+  v0.23.1, so an app that pins `HERMES_AGENT_IMAGE_TAG=v0.23.1` keeps
+  working. Don't move to Agent v0.23.3 yet: WebUI 0.52.702's release notes
+  say it doesn't fully support v0.23.3's new conversation storage.
+
 ### Changes
+
+- Hermes v0.23.2 overlay fixes. Each patch accepts the v0.23.1 and the
+  v0.23.2 shape. `patch-digest-redaction`: the vault redaction registry moved
+  to `agent/redact_vault_values.py`; the overlay patches it there and
+  re-exports `register_vault_redaction_digest` and `vault_redaction_base` from
+  `agent.redact`, where the broker-fill overlay imports them. Without this fix
+  every `bwbroker:` fill would be refused as unavailable.
+  `patch-mirror-exclude`: profile creation moved into
+  `hermes_cli/profile_provision.py`; the `mirror_exclude` filter now runs in
+  the `profiles.create` handler right after `provision_profile`.
+  `patch-send-message-tool` and `patch-ensure-send-message-tools`:
+  `tools/send_message_tool.py` moved to `gateway/outbound/send.py`, and
+  `get_tool_definitions` now ends with a hosted-tool allowlist filter;
+  `send_message` is added before that filter. Both overlays print `skip`
+  rather than fail when an anchor is missing, so on v0.23.2 without this fix
+  the agent would have lost `send_message` with no warning at container start.
+  `scripts/test-send-message-tool.py` now checks the ensure overlay too.
+- `browser_vault` `create_login` and `capture_secret` ask Hermes whether
+  their own approval prompt can reach the user. On v0.23.2,
+  `can_prompt_here` takes the prompt it is asked about; before, it always
+  checked the unlock prompt, which a chat surface may not install.
 
 - `addon.sh enable bitwarden` creates every folder `bitwarden-broker`
   bind-mounts before `docker compose up`, so the first enable on a fresh
