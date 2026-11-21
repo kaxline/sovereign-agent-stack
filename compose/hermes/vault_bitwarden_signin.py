@@ -39,11 +39,13 @@ import json
 import logging
 from typing import Any, Optional
 
+# The broker client, from the bwbroker plugin that 14-install-bwbroker-plugin.sh installs.
+from plugins.bwbroker import bitwarden_broker_backend as broker
+
 logger = logging.getLogger(__name__)
 
 ACTIONS = ("sign_in", "signin_snapshot", "signin_click", "signin_type", "signin_fill",
            "signin_finish", "signin_cancel")
-HANDLE_PREFIX = "bwbroker:"
 BACKEND_NAME = "bwbroker"
 # The broker bounds one action at 30 s; this leaves room for its own call to the signer.
 CALL_TIMEOUT = 45.0
@@ -166,14 +168,12 @@ def _result(payload: Any, tid: str) -> str:
 
 
 def _call(path: str, body: dict, tid: str) -> str:
-    from tools.browser_vault_tool import _bwbroker_call, _bwbroker_code
-
-    reply = _bwbroker_call("POST", path, body, timeout=CALL_TIMEOUT)
-    if reply is None:
+    try:
+        status, payload = broker.call("POST", path, body, timeout=CALL_TIMEOUT)
+    except broker.BrokerUnavailable:
         return json.dumps({"success": False, "error": UNAVAILABLE})
-    status, payload = reply
     if status != 200:
-        return _refusal(_bwbroker_code(payload))
+        return _refusal(broker.error_code(payload))
     return _result(payload, tid)
 
 
@@ -188,7 +188,7 @@ def _item_origins(handle: str) -> Optional[tuple[str, ...]]:
     from agent.vault_backends import backend_for_handle
     from tools.browser_vault_context import saved_origins
 
-    if not handle.startswith(HANDLE_PREFIX):
+    if not handle.startswith(broker.PREFIX):
         return None
     try:
         backend = backend_for_handle(handle)
@@ -218,20 +218,8 @@ def _in_cron_turn() -> bool:
     could otherwise drive a session a person's turn opened and finish its cookies into its own
     tab. The backend's own fence only hides items, which stops sign_in alone.
     """
-    import sys
-
-    module = next((m for name, m in list(sys.modules.items())
-                   if name.rsplit(".", 1)[-1] == "bitwarden_broker_backend"
-                   and hasattr(m, "in_cron_turn")), None)
-    if module is None:
-        try:
-            from importlib import import_module
-            module = import_module("plugins.bwbroker.bitwarden_broker_backend")
-        except Exception:  # health: allow BLE001 -- without the backend there is no sign-in anyway
-            logger.debug("bitwarden sign-in: no backend module to read the cron turn from", exc_info=True)
-            return True
     try:
-        return bool(module.in_cron_turn())
+        return bool(broker.in_cron_turn())
     except Exception:  # health: allow BLE001 -- can't tell: refuse
         logger.debug("bitwarden sign-in: cron check failed", exc_info=True)
         return True

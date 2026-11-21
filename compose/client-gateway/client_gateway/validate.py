@@ -43,15 +43,20 @@ class Validator:
             self._cache[name] = Draft202012Validator({"$defs": self._defs, "$ref": f"#/$defs/{name}"})
         return self._cache[name]
 
-    def _check(self, method: str, kind: str, value: object) -> list[str]:
+    def _schema_name(self, method: str, kind: str) -> str | None:
         if method.startswith("_"):
-            name = self._stack_methods.get(method, {}).get(kind)
-            if not name:
-                return []
-        else:
-            name = (self._params if kind == "params" else self._results).get(method)
-            if not name:
-                return [f"no schema for {method} {kind}"]
+            return self._stack_methods.get(method, {}).get(kind)
+        return (self._params if kind == "params" else self._results).get(method)
+
+    def has_schema(self, method: str, kind: str) -> bool:
+        """Whether ``method``'s ``kind`` ("params" or "result") has a definition."""
+        return bool(self._schema_name(method, kind))
+
+    def _check(self, method: str, kind: str, value: object) -> list[str]:
+        name = self._schema_name(method, kind)
+        if not name:
+            # Extension methods without a definition pass, as ACP allows.
+            return [] if method.startswith("_") else [f"no schema for {method} {kind}"]
         v = self._validator(name)
         return [f"{method} {kind}: {e.json_path}: {e.message[:200]}" for e in v.iter_errors(value)]
 

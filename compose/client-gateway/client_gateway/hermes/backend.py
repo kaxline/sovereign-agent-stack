@@ -21,13 +21,14 @@ import logging
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import NoReturn
 
 from ..auth import Settings
 from ..backend import Backend, Identity, RequestCancelled
 from ..errors import INTERNAL_ERROR, INVALID_PARAMS, NS, AcpError
 from . import projection
 from .errors import to_acp
-from .upstream import HermesError, Upstream, UpstreamDown
+from .upstream import UPSTREAM_TIMEOUT_S, HermesError, Upstream, UpstreamDown
 
 log = logging.getLogger("client_gateway.hermes")
 
@@ -36,6 +37,19 @@ LISTED_SOURCES = {None, "", "boundary"}
 CONTEXT_URI = "stack:context"
 MAX_CONTEXT_CHARS = 16_000
 DEFAULT_IDENTITY = Identity(slug=None, name="hermes", title="Assistant", profile="default")
+
+# What Upstream.call raises; _raise_acp turns each into the client's error.
+UPSTREAM_ERRORS = (HermesError, UpstreamDown, asyncio.TimeoutError)
+
+
+def _raise_acp(exc: Exception, method: str) -> NoReturn:
+    if isinstance(exc, HermesError):
+        raise to_acp(method, exc.code, exc.message) from None
+    if isinstance(exc, UpstreamDown):
+        raise AcpError(INTERNAL_ERROR, "Hermes is not reachable", "runtime_unavailable") from None
+    if isinstance(exc, asyncio.TimeoutError):
+        raise AcpError(INTERNAL_ERROR, f"Hermes did not answer {method}", "runtime_timeout") from None
+    raise exc
 
 
 @dataclass
@@ -61,6 +75,8 @@ class HSession:
 
 
 class HermesBackend(Backend):
+    call_timeout = UPSTREAM_TIMEOUT_S  # the hermes test shortens it
+
     def __init__(self, settings: Settings, upstream: Upstream | None = None) -> None:
         self.upstream = upstream or Upstream(
             settings.hermes_url,
@@ -86,15 +102,11 @@ class HermesBackend(Backend):
 
     # -- upstream plumbing ---------------------------------------------------
 
-    async def _call(self, method: str, params: dict, timeout: float = 180.0) -> dict:
+    async def _call(self, method: str, params: dict) -> dict:
         try:
-            return await self.upstream.call(method, params, timeout)
-        except HermesError as exc:
-            raise to_acp(method, exc.code, exc.message) from None
-        except UpstreamDown:
-            raise AcpError(INTERNAL_ERROR, "Hermes is not reachable", "runtime_unavailable") from None
-        except asyncio.TimeoutError:
-            raise AcpError(INTERNAL_ERROR, f"Hermes did not answer {method}", "runtime_timeout") from None
+            return await self.upstream.call(method, params, self.call_timeout)
+        except UPSTREAM_ERRORS as exc:
+            _raise_acp(exc, method)
 
     @staticmethod
     def _profile(identity: Identity) -> dict:
@@ -155,7 +167,7 @@ class HermesBackend(Backend):
         try:
             res = await self.upstream.call("session.interrupt", {"session_id": s.runtime_id}, timeout=30)
             log.info("session.interrupt %s (turns held: %d)", res.get("status"), len(s.turns))
-        except (UpstreamDown, HermesError, asyncio.TimeoutError) as exc:
+        except UPSTREAM_ERRORS as exc:
             log.info("session.interrupt failed: %s", type(exc).__name__)
 
     async def _interrupt(self, s: HSession) -> None:
@@ -185,14 +197,12 @@ class HermesBackend(Backend):
             if s.runtime_id is None:
                 await self._resume(s)
             try:
-                return await self.upstream.call(method, {"session_id": s.runtime_id, **params})
-            except HermesError as exc:
-                if exc.code == 4001 and attempt == 0:
+                return await self.upstream.call(method, {"session_id": s.runtime_id, **params}, self.call_timeout)
+            except UPSTREAM_ERRORS as exc:
+                if isinstance(exc, HermesError) and exc.code == 4001 and attempt == 0:
                     self._unbind_runtime(s)
                     continue
-                raise to_acp(method, exc.code, exc.message) from None
-            except UpstreamDown:
-                raise AcpError(INTERNAL_ERROR, "Hermes is not reachable", "runtime_unavailable") from None
+                _raise_acp(exc, method)
         raise AssertionError("unreachable")
 
     async def _on_down(self) -> None:
@@ -217,7 +227,7 @@ class HermesBackend(Backend):
             return DEFAULT_IDENTITY
         try:
             res = await self.upstream.call("profiles.list", {"include_sessions": False}, timeout=10)
-        except (UpstreamDown, HermesError, asyncio.TimeoutError):
+        except UPSTREAM_ERRORS:
             # Can't tell; accept the upgrade and let calls fail with a reason.
             return Identity(slug=slug, name=slug, title=slug, profile=slug)
         for p in res.get("profiles") or []:
@@ -274,7 +284,7 @@ class HermesBackend(Backend):
         try:
             res = await self.upstream.call("profiles.describe", {"name": identity.profile}, timeout=30)
             registered = {m.get("name") for m in res.get("mcp_servers") or [] if m.get("enabled", True)}
-        except (UpstreamDown, HermesError, asyncio.TimeoutError):
+        except UPSTREAM_ERRORS:
             pass
         return {
             "applied": [n for n in names if n in registered],
@@ -334,7 +344,7 @@ class HermesBackend(Backend):
             return
         try:
             await self.upstream.call("session.close", {"session_id": s.runtime_id}, timeout=30)
-        except (UpstreamDown, HermesError, asyncio.TimeoutError) as exc:
+        except UPSTREAM_ERRORS as exc:
             log.info("session.close failed: %s", type(exc).__name__)
         self._unbind_runtime(s)
 

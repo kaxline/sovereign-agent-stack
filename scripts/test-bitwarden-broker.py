@@ -2895,8 +2895,8 @@ def test_tcp_request_checks() -> None:
         expect(got[0] == 200, f"JSON with a charset parameter: {got}")
         status, got = b.call("GET", "/requests")
         expect([r["site"] for r in got["pending"]] == ["a.example.com"], f"refused POSTs stored nothing: {got}")
-        # The Hermes backend and the fill overlay send urllib requests built this way
-        # (bitwarden_broker_backend.call, _bwbroker_call); broker.cli is covered below.
+        # Hermes sends urllib requests built this way (bitwarden_broker_backend.call, which the
+        # fill overlay and the sign-in actions use too); broker.cli is covered below.
         import urllib.request
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         for base in (f"http://127.0.0.1:{b.port}", f"http://localhost:{b.port}"):
