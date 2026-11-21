@@ -57,6 +57,7 @@ scripts/test-compaction-tool-facts.py           ci image
 scripts/test-compose-env-allowlist.py           ci docker
 scripts/test-compose-tmpfs-options.py           ci docker
 scripts/test-cont-init-env.py                   ci docker
+scripts/test-corpus-registry.py                 ci
 scripts/test-credentials-sh.sh                  ci
 scripts/test-crm-script.py                      ci
 scripts/test-crm-sh.sh                          ci

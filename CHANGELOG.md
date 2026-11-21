@@ -10,6 +10,12 @@ the stack under another app.
 
 ### Changes
 
+- `corpus.sh` no longer overwrites a `corpora/registry.json` that is not
+  valid JSON or not a `{"corpora": [...]}` object. It warns, reads the file as
+  empty, and on its next write moves it to `registry.json.bad` before starting
+  a new one. Before, depending on the command, it was either replaced
+  silently, dropping the rows of other corpora, or the command stopped with a
+  Python traceback.
 - `vault.sh add` without `--json` now waits for a manual-unlock account to
   sign in, as `add --json` does, instead of stopping at the broker's first
   `locked` row. A key Bitwarden refuses after that row is now removed with an
