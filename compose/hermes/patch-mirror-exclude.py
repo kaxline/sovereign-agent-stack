@@ -53,9 +53,19 @@ CALL_NEW = f"""        _best_effort(lambda: _lazy("hermes_cli.profile_channels",
         _assistant_mirror_exclude(path / ".env", params["mirror_exclude"], mirrored)
     if not share_auth:"""
 
+# v0.23.2 moved credential mirroring into hermes_cli/profile_provision.py, so
+# the filter runs in the handler right after provision_profile, before the
+# receipt and the reply read result.mirrored.
+PROVISION_OLD = "        result = provision_profile(request)\n"
+PROVISION_NEW = PROVISION_OLD + f"""        if result.mirrored.get("env") and params.get("mirror_exclude"):  {MARKER}
+            _assistant_mirror_exclude(result.path / ".env", params["mirror_exclude"], result.mirrored)
+"""
+CREATE_ANCHOR = '@method("profiles.create")\n'
+
 HELPER_ANCHOR = "def _mirror_launch_credentials(path, params: dict) -> dict:\n"
 HELPER = f'''def _assistant_mirror_exclude(env_path, patterns, mirrored: dict) -> None:  {MARKER}
     """Drop .env assignments whose key matches a ``mirror_exclude`` glob; fail closed."""
+    import contextlib
     import fnmatch
     import re
     try:
@@ -105,11 +115,14 @@ def main() -> None:
     patch(CONTRACT, [(PARAMS_OLD, PARAMS_NEW, "mirror_credentials param"),
                      (RESULT_OLD, RESULT_NEW, "ProfileMirrored fields")])
     methods = METHODS.read_text()
-    for needed in ("\nimport contextlib\n", "\nimport logging\n"):
-        if needed not in methods and MARKER not in methods:
-            raise SystemExit(f"{TAG} {needed.strip()!r} missing in {METHODS}. Hermes image may have changed — update this patch.")
-    patch(METHODS, [(CALL_OLD, CALL_NEW, "channel strip call"),
-                    (HELPER_ANCHOR, HELPER + HELPER_ANCHOR, "_mirror_launch_credentials")])
+    if "\nimport logging\n" not in methods and MARKER not in methods:
+        raise SystemExit(f"{TAG} 'import logging' missing in {METHODS}. Hermes image may have changed — update this patch.")
+    if HELPER_ANCHOR in methods:  # v0.23.1 and earlier: mirroring in the handler module
+        patch(METHODS, [(CALL_OLD, CALL_NEW, "channel strip call"),
+                        (HELPER_ANCHOR, HELPER + HELPER_ANCHOR, "_mirror_launch_credentials")])
+    else:
+        patch(METHODS, [(PROVISION_OLD, PROVISION_NEW, "provision_profile call"),
+                        (CREATE_ANCHOR, HELPER + CREATE_ANCHOR, "profiles.create handler")])
 
 
 if __name__ == "__main__":

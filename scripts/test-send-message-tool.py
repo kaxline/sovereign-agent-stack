@@ -30,12 +30,21 @@ for want in ("patched", "already patched"):
         raise SystemExit(f"FAIL patch: {out.stdout}{out.stderr}")
     lines = out.stdout.strip().splitlines()
     assert len(lines) == 3 and all(line.startswith(want) for line in lines), out.stdout
+    # patch-ensure-send-message-tools.py skips softly too (model_tools.py anchors).
+    out = subprocess.run([sys.executable, "/bootstrap/patch-ensure-send-message-tools.py"], capture_output=True, text=True)
+    if out.returncode != 0:
+        raise SystemExit(f"FAIL ensure patch: {out.stdout}{out.stderr}")
+    lines = out.stdout.strip().splitlines()
+    assert len(lines) == 2 and all(line.startswith(want) for line in lines), out.stdout
 
 os.environ.update(HERMES_HOME="/tmp/hermes-home", SIGNAL_HTTP_URL="http://signal.example:8080",
                   SIGNAL_ACCOUNT="+15550100", SIGNAL_HOME_CHANNEL="+15550101")
 os.makedirs("/tmp/hermes-home", exist_ok=True)
 sys.path.insert(0, "/opt/hermes")
-from tools import send_message_tool as smt
+try:
+    from tools import send_message_tool as smt
+except ImportError:  # v0.23.2 moved it
+    from gateway.outbound import send as smt
 from tools.registry import registry
 import toolsets
 

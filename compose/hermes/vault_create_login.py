@@ -474,7 +474,7 @@ def browser_vault_create_login(identifier: str = "", label: str = "", handle: st
                     "password. For a sign-in form, use action list and fill, or save_login.", "no_new_password_field")
 
     prompt = get_prompt_callback()
-    if prompt is None or not can_prompt_here():
+    if prompt is None or not _can_prompt_here(can_prompt_here, prompt):
         return _err(f"This session cannot ask the user to approve a new login (headless/cron/API). Tell them to create "
                     f"the account for {origin} in their own browser, then sign in with the browser-login steps.",
                     "prompt_unavailable")
@@ -551,3 +551,12 @@ def handle_action(args: dict, task_id: Optional[str]) -> str:
     return browser_vault_create_login(identifier=str(args.get("identifier") or ""),
                                       label=str(args.get("label") or ""),
                                       handle=str(args.get("handle") or ""), task_id=task_id)
+
+
+def _can_prompt_here(can_prompt_here, prompt) -> bool:
+    """Ask about the callback this action uses. v0.23.2 takes it as an argument; before, the
+    check always looked at the unlock prompt, which a chat surface may not install."""
+    import inspect
+    if inspect.signature(can_prompt_here).parameters:
+        return can_prompt_here(prompt)
+    return can_prompt_here()

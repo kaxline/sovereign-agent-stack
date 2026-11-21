@@ -1,7 +1,7 @@
 # The client gateway runs on the pinned Hermes image: Starlette, uvicorn,
 # websockets, aiohttp and jsonschema are already in its venv (checked on
-# v0.23.1), and phase 3 imports hermes_cli.config from it.
-ARG HERMES_AGENT_IMAGE_TAG=v0.23.1
+# v0.23.1 and v0.23.2), and phase 3 imports hermes_cli.config from it.
+ARG HERMES_AGENT_IMAGE_TAG=v0.23.2
 FROM nousresearch/hermes-agent:${HERMES_AGENT_IMAGE_TAG}
 
 ENV PYTHONUNBUFFERED=1 \

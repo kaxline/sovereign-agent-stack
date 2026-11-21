@@ -12,7 +12,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-TOOL_TARGET = Path("/opt/hermes/tools/send_message_tool.py")
+# v0.23.2 moved tools/send_message_tool.py to gateway/outbound/send.py unchanged
+# where these anchors sit.
+TOOL_TARGET = next((p for p in (Path("/opt/hermes/tools/send_message_tool.py"),
+                                Path("/opt/hermes/gateway/outbound/send.py")) if p.is_file()),
+                   Path("/opt/hermes/gateway/outbound/send.py"))
 TOOLSETS_TARGET = Path("/opt/hermes/toolsets.py")
 
 SIGNAL_MARKER = "# assistant-stack: synthesize Signal from env when adapter disabled"

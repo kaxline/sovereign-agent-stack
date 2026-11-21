@@ -66,7 +66,11 @@ assert err is None, f"ladder path raised {err!r}"
 assert verdict.action == "continue", verdict.action
 assert verdict.final_response in (None, ""), verdict.final_response
 assert not any("Reasoning-only clean stop" in r for r in records), records
-assert messages[-1]["role"] == "user" and messages[-1].get("_empty_recovery_synthetic"), messages[-1]
+# v0.23.1 appends a synthetic user nudge; v0.23.2 sends it as a retry hint on the next request.
+from agent.conversation_loop import _EMPTY_TOOL_RESPONSE_NUDGE
+nudged = (messages[-1]["role"] == "user" and messages[-1].get("_empty_recovery_synthetic")) or (
+    getattr(agent, "_empty_response_retry_hint", None) == _EMPTY_TOOL_RESPONSE_NUDGE)
+assert nudged, (messages[-1], getattr(agent, "_empty_response_retry_hint", None))
 
 # 2. Plain reasoning is not promoted on this route either.
 agent, msg, messages, verdict, err = drive(0, "Your feed has three new posts.")
