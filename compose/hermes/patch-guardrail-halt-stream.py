@@ -21,9 +21,10 @@ on Hermes bumps.
 """
 from __future__ import annotations
 
-from pathlib import Path
+from overlay_patch import ROOT, edit
 
-TARGET = Path("/opt/hermes/agent/turn_tool_round.py")
+TARGET = ROOT / "agent" / "turn_tool_round.py"
+TAG = "[patch-guardrail-halt-stream]"
 MARKER = "# assistant-stack: guardrail halt reaches every stream callback"
 
 OLD = (
@@ -44,18 +45,7 @@ NEW = (
 
 
 def main() -> None:
-    if not TARGET.is_file():
-        print(f"[patch-guardrail-halt-stream] skip: {TARGET} missing")
-        return
-    text = TARGET.read_text(encoding="utf-8")
-    if MARKER in text:
-        print("[patch-guardrail-halt-stream] already applied")
-        return
-    if text.count(OLD) != 1:
-        print("[patch-guardrail-halt-stream] anchor missing in turn_tool_round.py, not patched")
-        return
-    TARGET.write_text(text.replace(OLD, NEW), encoding="utf-8")
-    print(f"[patch-guardrail-halt-stream] patched {TARGET}")
+    edit(TARGET, [(OLD, NEW)], MARKER, TAG)
 
 
 if __name__ == "__main__":

@@ -14,10 +14,10 @@ Run scripts/test-web-search-mode.py on Hermes bumps.
 from __future__ import annotations
 
 import os
-import shutil
 from pathlib import Path
 
-ROOT = Path(os.environ.get("HERMES_ROOT", "/opt/hermes"))
+from overlay_patch import ROOT, edit, install
+
 AGENT = ROOT / "agent"
 BOOTSTRAP = Path(os.environ.get("WEB_SEARCH_MODE_BOOTSTRAP", "/bootstrap"))
 TAG = "[patch-web-search-mode]"
@@ -52,29 +52,10 @@ NEEDED = ("\nlogger = logging.getLogger(\"tools.mcp_tool\")\n",)
 
 
 def main() -> None:
-    for name in ("web_search_mode.py", "blocked_fetch_hint.py"):
-        src = BOOTSTRAP / name
-        if not src.is_file():
-            raise SystemExit(f"{TAG} missing {src}")
-        shutil.copyfile(src, AGENT / name)
-    print(f"{TAG} installed {AGENT / 'web_search_mode.py'}")
-
-    handlers = ROOT / "tools" / "mcp_tool_handlers.py"
-    text = handlers.read_text(encoding="utf-8")
-    if MARKER in text:
-        print(f"{TAG} already applied")
-        return
-    missing = [n.strip() for n in NEEDED if n not in text]
-    if text.count(DEF_ANCHOR) != 1:
-        missing.append("_make_tool_handler signature")
-    if text.count(RETURN_ANCHOR) != 1:
-        missing.append("_make_tool_handler return")
-    if missing:
-        raise SystemExit(f"{TAG} expected code missing in {handlers}: {missing}. "
-                         "Upstream changed; update the anchors and scripts/test-web-search-mode.py.")
-    text = text.replace(DEF_ANCHOR, HELPER + DEF_ANCHOR).replace(RETURN_ANCHOR, RETURN_NEW)
-    handlers.write_text(text, encoding="utf-8")
-    print(f"{TAG} patched {handlers}")
+    install(BOOTSTRAP / "web_search_mode.py", AGENT / "web_search_mode.py", TAG)
+    install(BOOTSTRAP / "blocked_fetch_hint.py", AGENT / "blocked_fetch_hint.py", TAG)
+    edit(ROOT / "tools" / "mcp_tool_handlers.py", [(DEF_ANCHOR, HELPER + DEF_ANCHOR), (RETURN_ANCHOR, RETURN_NEW)],
+         MARKER, TAG, requires=NEEDED)
 
 
 if __name__ == "__main__":

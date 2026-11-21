@@ -8,10 +8,10 @@ See compaction_tool_facts.py for what the install wraps and why.
 from __future__ import annotations
 
 import os
-import shutil
 from pathlib import Path
 
-ROOT = Path(os.environ.get("HERMES_ROOT", "/opt/hermes"))
+from overlay_patch import ROOT, edit, fail, install
+
 AGENT = ROOT / "agent"
 BOOTSTRAP = Path(os.environ.get("COMPACTION_TOOL_FACTS_BOOTSTRAP", "/bootstrap"))
 TAG = "[patch-compaction-tool-facts]"
@@ -39,26 +39,17 @@ REQUIRED = (
 
 
 def main() -> None:
-    src = BOOTSTRAP / "compaction_tool_facts.py"
-    if not src.is_file():
-        raise SystemExit(f"{TAG} missing {src}")
-    shutil.copyfile(src, AGENT / "compaction_tool_facts.py")
-    print(f"{TAG} installed {AGENT / 'compaction_tool_facts.py'}")
-
+    install(BOOTSTRAP / "compaction_tool_facts.py", AGENT / "compaction_tool_facts.py", TAG)
     compressor = AGENT / "context_compressor.py"
-    text = compressor.read_text()
-    sources = text + "".join(p.read_text() for p in AGENT.glob("context_compressor_*.py"))
-    missing = [needle for needle in REQUIRED if needle not in sources]
-    if missing or "class ContextCompressor" not in text:
-        raise SystemExit(
-            f"{TAG} expected code missing: {missing or ['class ContextCompressor']}. "
-            "Hermes image may have changed — update this patch."
-        )
-    if INSTALL_TAG in text:
-        print(f"{TAG} already applied")
-        return
-    compressor.write_text(text.rstrip("\n") + "\n" + INSTALL)
-    print(f"{TAG} patched context_compressor.py")
+    # The wrapped methods may live in context_compressor_*.py split modules.
+    sources = "".join(p.read_text(encoding="utf-8") for p in AGENT.glob("context_compressor_*.py"))
+    if compressor.is_file():
+        sources += compressor.read_text(encoding="utf-8")
+    for needle in REQUIRED:
+        if needle not in sources:
+            fail(TAG, f"anchor missing in {AGENT}/context_compressor*.py: expected {needle!r}, found 0")
+    edit(compressor, [], INSTALL_TAG, TAG, label="context_compressor.py", append=INSTALL,
+         requires=["class ContextCompressor"])
 
 
 if __name__ == "__main__":

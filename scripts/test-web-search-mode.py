@@ -320,7 +320,7 @@ open(f"{tmp}/tools/mcp_tool_handlers.py", "w").write(src.replace("# assistant-st
     "    return _wrap_web_search_mode(server_name, tool_name, _handler)\n", "    return _handlerX\n"))
 out = subprocess.run([sys.executable, "/bootstrap/patch-web-search-mode.py"], capture_output=True, text=True,
                      env={**os.environ, "HERMES_ROOT": tmp})
-assert out.returncode != 0 and "expected code missing" in (out.stdout + out.stderr), out.stdout + out.stderr
+assert out.returncode != 0 and "anchor missing" in out.stderr and "_mcp_result_with_native_images" in out.stderr, out.stdout + out.stderr
 os.write(1, b"image ok\n")
 '''
 

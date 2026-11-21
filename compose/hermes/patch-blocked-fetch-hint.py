@@ -11,10 +11,10 @@ Run scripts/test-blocked-fetch-hint.py on Hermes bumps.
 from __future__ import annotations
 
 import os
-import shutil
 from pathlib import Path
 
-ROOT = Path(os.environ.get("HERMES_ROOT", "/opt/hermes"))
+from overlay_patch import ROOT, edit, install
+
 AGENT = ROOT / "agent"
 BOOTSTRAP = Path(os.environ.get("BLOCKED_FETCH_HINT_BOOTSTRAP", "/bootstrap"))
 TAG = "[patch-blocked-fetch-hint]"
@@ -43,25 +43,8 @@ NEEDED = (
 
 
 def main() -> None:
-    src = BOOTSTRAP / "blocked_fetch_hint.py"
-    if not src.is_file():
-        raise SystemExit(f"{TAG} missing {src}")
-    shutil.copyfile(src, AGENT / "blocked_fetch_hint.py")
-    print(f"{TAG} installed {AGENT / 'blocked_fetch_hint.py'}")
-
-    executor = AGENT / "tool_executor.py"
-    text = executor.read_text(encoding="utf-8")
-    if MARKER in text:
-        print(f"{TAG} already applied")
-        return
-    missing = [n.strip() for n in NEEDED if n not in text]
-    if missing or text.count(ANCHOR) != 1:
-        raise SystemExit(
-            f"{TAG} expected code missing in {executor}: {missing or ['live-notes attach anchor']}. "
-            "Hermes image may have changed — update this patch."
-        )
-    executor.write_text(text.replace(ANCHOR, INSERT + ANCHOR, 1), encoding="utf-8")
-    print(f"{TAG} patched {executor}")
+    install(BOOTSTRAP / "blocked_fetch_hint.py", AGENT / "blocked_fetch_hint.py", TAG)
+    edit(AGENT / "tool_executor.py", [(ANCHOR, INSERT + ANCHOR)], MARKER, TAG, requires=NEEDED)
 
 
 if __name__ == "__main__":

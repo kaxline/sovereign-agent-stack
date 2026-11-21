@@ -12,9 +12,10 @@ Run scripts/test-tool-loop-notes.py on Hermes bumps.
 """
 from __future__ import annotations
 
-from pathlib import Path
+from overlay_patch import ROOT, edit
 
-RUN_AGENT = Path("/opt/hermes/run_agent.py")
+RUN_AGENT = ROOT / "run_agent.py"
+TAG = "[patch-tool-loop-notes]"
 MARKER = "# assistant-stack: tool-loop notes outside the untrusted wrapper"
 
 OLD_DECISION = (
@@ -48,24 +49,7 @@ NEW_NOTICE = (
 
 
 def main() -> None:
-    if not RUN_AGENT.is_file():
-        print(f"[patch-tool-loop-notes] skip: {RUN_AGENT} missing")
-        return
-    text = RUN_AGENT.read_text(encoding="utf-8")
-    if MARKER in text:
-        print("[patch-tool-loop-notes] already applied")
-        return
-    for old, new in (
-        (OLD_DECISION, NEW_DECISION),
-        (OLD_STREAK, NEW_STREAK),
-        (OLD_NOTICE, NEW_NOTICE),
-    ):
-        if text.count(old) != 1:
-            print(f"[patch-tool-loop-notes] anchor missing, not patched: {old.strip()}")
-            return
-        text = text.replace(old, new)
-    RUN_AGENT.write_text(text, encoding="utf-8")
-    print(f"[patch-tool-loop-notes] patched {RUN_AGENT}")
+    edit(RUN_AGENT, [(OLD_DECISION, NEW_DECISION), (OLD_STREAK, NEW_STREAK), (OLD_NOTICE, NEW_NOTICE)], MARKER, TAG)
 
 
 if __name__ == "__main__":

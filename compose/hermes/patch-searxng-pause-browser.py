@@ -16,9 +16,10 @@ Run scripts/test-searxng-pause-browser.py on Hermes bumps.
 """
 from __future__ import annotations
 
-from pathlib import Path
+from overlay_patch import ROOT, edit
 
-HANDLERS = Path("/opt/hermes/tools/mcp_tool_handlers.py")
+HANDLERS = ROOT / "tools" / "mcp_tool_handlers.py"
+TAG = "[patch-searxng-pause-browser]"
 MARKER = "# assistant-stack: searxng pause points at browser search"
 ANCHOR = "def _check_circuit_breaker(server_name: str) -> Optional[str]:\n"
 
@@ -48,20 +49,9 @@ def _check_circuit_breaker(server_name: str) -> Optional[str]:
 
 
 def main() -> None:
-    if not HANDLERS.is_file():
-        print(f"[patch-searxng-pause-browser] skip: {HANDLERS} missing")
-        return
-    text = HANDLERS.read_text(encoding="utf-8")
-    if MARKER in text:
-        print("[patch-searxng-pause-browser] already applied")
-        return
-    # The wrapper relies on these upstream names; check them before writing.
-    for needed in (ANCHOR, "\nimport json\n", "import invalidate_check_fn_cache, tool_error\n"):
-        if text.count(needed) != 1:
-            print(f"[patch-searxng-pause-browser] anchor missing, not patched: {needed.strip()}")
-            return
-    HANDLERS.write_text(text.rstrip("\n") + "\n" + WRAPPER, encoding="utf-8")
-    print(f"[patch-searxng-pause-browser] patched {HANDLERS}")
+    # The wrapper relies on these upstream names; each must occur once.
+    needed = (ANCHOR, "\nimport json\n", "import invalidate_check_fn_cache, tool_error\n")
+    edit(HANDLERS, [(n, n) for n in needed], MARKER, TAG, append=WRAPPER)
 
 
 if __name__ == "__main__":
