@@ -13,14 +13,16 @@ into /opt/hermes/agent/ and:
 """
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
+from overlay_patch import ROOT, FileEdit, edit_files, install
+
 HELPER_SRC = Path("/bootstrap/fabricated_result.py")
-HELPER_DST = Path("/opt/hermes/agent/fabricated_result.py")
-TURN_FINAL = Path("/opt/hermes/agent/turn_final_response.py")
-PERSIST = Path("/opt/hermes/agent/session_persistence.py")
-COMPRESSOR = Path("/opt/hermes/agent/context_compressor.py")
+HELPER_DST = ROOT / "agent" / "fabricated_result.py"
+TURN_FINAL = ROOT / "agent" / "turn_final_response.py"
+PERSIST = ROOT / "agent" / "session_persistence.py"
+COMPRESSOR = ROOT / "agent" / "context_compressor.py"
+TAG = "[patch-fabricated-result]"
 MARKER = "# assistant-stack: fabricated result without a tool call"
 
 OLD_FLAGS = """_EPHEMERAL_SCAFFOLDING_FLAGS = (
@@ -150,50 +152,12 @@ NEW_COMPRESS = """        from agent.conversation_loop import (
 """
 
 def main() -> None:
-    if not HELPER_SRC.is_file():
-        raise SystemExit(f"[patch-fabricated-result] missing {HELPER_SRC}")
-    HELPER_DST.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(HELPER_SRC, HELPER_DST)
-    print(f"[patch-fabricated-result] installed {HELPER_DST}")
-
-    turn = TURN_FINAL.read_text()
-    persist = PERSIST.read_text()
-    compress = COMPRESSOR.read_text()
-    turn_done = MARKER in turn
-    persist_done = "_fabricated_result_nudge" in persist
-    compress_done = "FABRICATED_RESULT_NUDGE" in compress
-    if turn_done and persist_done and compress_done:
-        print(f"[patch-fabricated-result] already applied ({TURN_FINAL})")
-        return
-
-    missing = []
-    if not turn_done:
-        if OLD_FLAGS not in turn:
-            missing.append(f"ephemeral flags in {TURN_FINAL}")
-        if OLD_GENUINE not in turn:
-            missing.append(f"genuine-turn-end in {TURN_FINAL}")
-    if not persist_done and OLD_PERSIST not in persist:
-        missing.append(f"ephemeral flags in {PERSIST}")
-    if not compress_done and OLD_COMPRESS not in compress:
-        missing.append(f"synthetic-nudge set in {COMPRESSOR}")
-    if missing:
-        raise SystemExit(
-            "[patch-fabricated-result] expected block missing: "
-            + "; ".join(missing)
-            + ". Hermes image may have changed — update this patch."
-        )
-
-    if not turn_done:
-        TURN_FINAL.write_text(
-            turn.replace(OLD_FLAGS, NEW_FLAGS, 1).replace(OLD_GENUINE, NEW_GENUINE, 1)
-        )
-        print(f"[patch-fabricated-result] patched {TURN_FINAL}")
-    if not persist_done:
-        PERSIST.write_text(persist.replace(OLD_PERSIST, NEW_PERSIST, 1))
-        print(f"[patch-fabricated-result] patched {PERSIST}")
-    if not compress_done:
-        COMPRESSOR.write_text(compress.replace(OLD_COMPRESS, NEW_COMPRESS, 1))
-        print(f"[patch-fabricated-result] patched {COMPRESSOR}")
+    install(HELPER_SRC, HELPER_DST, TAG)
+    edit_files([
+        FileEdit(TURN_FINAL, [(OLD_FLAGS, NEW_FLAGS), (OLD_GENUINE, NEW_GENUINE)]),
+        FileEdit(PERSIST, [(OLD_PERSIST, NEW_PERSIST)], marker="_fabricated_result_nudge"),
+        FileEdit(COMPRESSOR, [(OLD_COMPRESS, NEW_COMPRESS)], marker="FABRICATED_RESULT_NUDGE"),
+    ], MARKER, TAG)
 
 
 if __name__ == "__main__":

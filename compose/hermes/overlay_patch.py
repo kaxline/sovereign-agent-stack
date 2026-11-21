@@ -7,7 +7,8 @@ the patch scripts, which import it from their own directory.
 list of text edits to one upstream file, ``edit_files`` to several at once.
 Every anchor in every file is checked before anything is written, so a moved
 anchor leaves Hermes as shipped. A file that already holds the overlay's
-marker is left alone and reported as "already applied".
+marker (or its FileEdit's own marker) is left alone and reported as "already
+applied".
 
 An edit is ``(old, new)`` (``old`` must occur exactly once), ``(old, new,
 count)``, or ``one_of((old, new), ...)`` for an anchor whose upstream text
@@ -44,6 +45,7 @@ class FileEdit(NamedTuple):
     label: str | None = None
     append: str = ""
     requires: Sequence[str] = ()
+    marker: str | None = None  # overrides edit_files' marker for this file
 
 
 class _Missing(Exception):
@@ -100,7 +102,7 @@ def edit_files(files: Sequence[FileEdit], marker: str, tag: str, optional: bool 
         if not path.is_file():
             return fail(tag, f"target missing: {path}", optional)
         text = path.read_text(encoding="utf-8")
-        if marker in text:
+        if (f.marker or marker) in text:
             pending.append((f, None))
             continue
         try:

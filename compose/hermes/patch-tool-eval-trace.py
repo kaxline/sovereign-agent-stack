@@ -10,13 +10,14 @@ rewrite path to log rewrites.
 """
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
+from overlay_patch import ROOT, edit, install
+
 HELPER_SRC = Path("/bootstrap/tool_eval_trace.py")
-HELPER_DST = Path("/opt/hermes/agent/tool_eval_trace.py")
-LOOP_TARGET = Path("/opt/hermes/agent/conversation_loop.py")
-MODEL_TOOLS = Path("/opt/hermes/model_tools.py")
+HELPER_DST = ROOT / "agent" / "tool_eval_trace.py"
+LOOP_TARGET = ROOT / "agent" / "conversation_loop.py"
+MODEL_TOOLS = ROOT / "model_tools.py"
 MARKER = "# assistant-stack: tool-eval turn trace"
 REWRITE_MARKER = "# assistant-stack: tool-eval web rewrite log"
 
@@ -45,24 +46,6 @@ TRACE_V9 = """
                 logger.debug("tool-eval turn trace failed", exc_info=True)
 """
 
-# Pre-v2026.9 loop: trace before the dispatch check.
-ANCHOR_LEGACY = """            # Check for tool calls
-            if assistant_message.tool_calls:
-"""
-TRACE_LEGACY = """            # assistant-stack: tool-eval turn trace
-            try:
-                from agent.tool_eval_trace import record_assistant_turn
-
-                record_assistant_turn(
-                    agent,
-                    assistant_message,
-                    messages=getattr(agent, "messages", None),
-                )
-            except Exception:
-                logger.debug("tool-eval turn trace failed", exc_info=True)
-
-"""
-
 REWRITE_NEEDLE = """        if _rewrite_name:
             return handle_function_call(
 """
@@ -79,56 +62,13 @@ REWRITE_PATCH = """        if _rewrite_name:
 """
 
 
-def _patch_loop() -> None:
-    text = LOOP_TARGET.read_text(encoding="utf-8")
-    if MARKER in text:
-        print(f"{TAG} loop already applied ({LOOP_TARGET})")
-        return
-    if RECOVERY_MARKER not in text:
-        raise SystemExit(
-            f"{TAG} text-tool-call recovery not applied in {LOOP_TARGET}; run "
-            "patch-text-tool-call-recovery.py first, or the Hermes image may have changed — update this patch."
-        )
-    if text.count(ANCHOR_V9) == 1:
-        text = text.replace(ANCHOR_V9, ANCHOR_V9 + TRACE_V9, 1)
-    elif text.count(ANCHOR_LEGACY) == 1:
-        text = text.replace(ANCHOR_LEGACY, TRACE_LEGACY + ANCHOR_LEGACY, 1)
-    else:
-        raise SystemExit(
-            f"{TAG} expected 1 x tool_calls dispatch in {LOOP_TARGET}, found "
-            f"{text.count(ANCHOR_V9)} (v9) / {text.count(ANCHOR_LEGACY)} (legacy). "
-            "Hermes image may have changed — update this patch."
-        )
-    LOOP_TARGET.write_text(text, encoding="utf-8")
-    print(f"{TAG} patched loop {LOOP_TARGET}")
-
-
-def _patch_web_rewrite() -> None:
-    if not MODEL_TOOLS.is_file():
-        print(f"[patch-tool-eval-trace] skip web rewrite log: missing {MODEL_TOOLS}")
-        return
-    text = MODEL_TOOLS.read_text(encoding="utf-8")
-    if REWRITE_MARKER in text:
-        print(f"[patch-tool-eval-trace] web rewrite log already applied")
-        return
-    if REWRITE_NEEDLE not in text:
-        print(f"[patch-tool-eval-trace] warn: web rewrite needle missing (apply block-native first)")
-        return
-    MODEL_TOOLS.write_text(text.replace(REWRITE_NEEDLE, REWRITE_PATCH, 1), encoding="utf-8")
-    print(f"[patch-tool-eval-trace] patched web rewrite log in {MODEL_TOOLS}")
-
-
 def main() -> None:
-    if not HELPER_SRC.is_file():
-        raise SystemExit(f"[patch-tool-eval-trace] missing {HELPER_SRC}")
-    HELPER_DST.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(HELPER_SRC, HELPER_DST)
-    print(f"[patch-tool-eval-trace] installed {HELPER_DST}")
-    if not LOOP_TARGET.is_file():
-        print(f"[patch-tool-eval-trace] skip missing {LOOP_TARGET}")
-        return
-    _patch_loop()
-    _patch_web_rewrite()
+    install(HELPER_SRC, HELPER_DST, TAG)
+    # The trace goes after the recovery block, so patch-text-tool-call-recovery.py runs first.
+    edit(LOOP_TARGET, [(ANCHOR_V9, ANCHOR_V9 + TRACE_V9)], MARKER, TAG, label=f"loop {LOOP_TARGET}",
+         requires=[RECOVERY_MARKER])
+    # REWRITE_NEEDLE is patch-block-native-web-tools.py's code, so that runs first too.
+    edit(MODEL_TOOLS, [(REWRITE_NEEDLE, REWRITE_PATCH)], REWRITE_MARKER, TAG, label=f"web rewrite log in {MODEL_TOOLS}")
 
 
 if __name__ == "__main__":

@@ -6,9 +6,7 @@ With the image present (or --image), patch-tool-eval-trace.py:
 - exits with "update this patch" when the recovery patch has not run;
 - after the recovery patch, lands the trace after the v9 phase call, applies
   once, and the patched block writes a recovered_then_dispatched trace line;
-- still applies when the recovery patch's inserted comments change;
-- applies to a synthetic pre-v2026.9 (legacy) loop, between recovery and the
-  dispatch check.
+- still applies when the recovery patch's inserted comments change.
 """
 
 from __future__ import annotations
@@ -59,7 +57,7 @@ run("/bootstrap/patch-text-tool-call-recovery.py")
 run("/bootstrap/patch-block-native-web-tools.py")
 out = run("/bootstrap/patch-tool-eval-trace.py").stdout
 assert "patched loop" in out and "patched web rewrite log" in out, out
-assert "loop already applied" in run("/bootstrap/patch-tool-eval-trace.py").stdout
+assert "already applied (loop " in run("/bootstrap/patch-tool-eval-trace.py").stdout
 text = LOOP.read_text()
 assert text.count(TRACE) == 1, text.count(TRACE)
 assert text.index(RECOVERY) < text.index(PHASE) < text.index(TRACE), "recovery, phase, trace"
@@ -97,28 +95,15 @@ assert row["outcome"] == "recovered_then_dispatched", row
 LOOP.write_text(PRISTINE)
 src = Path("/bootstrap/patch-text-tool-call-recovery.py").read_text()
 marker_line = '            ' + RECOVERY + '\n'
-assert src.count(marker_line) == 2, "recovery patch inserts its marker in both shapes"
+assert src.count(marker_line) == 1, "recovery patch inserts its marker once"
 edited = src.replace(marker_line, marker_line + "            # an edited comment\n")
 Path("/tmp/recovery-edited.py").write_text(edited)
+Path("/tmp/overlay_patch.py").write_text(Path("/bootstrap/overlay_patch.py").read_text())
 run("/tmp/recovery-edited.py")
 assert "# an edited comment" in LOOP.read_text()
 assert "patched loop" in run("/bootstrap/patch-tool-eval-trace.py").stdout
 text = LOOP.read_text()
 assert text.index("# an edited comment") < text.index(PHASE) < text.index(TRACE), "edited recovery, phase, trace"
-
-# Legacy loop shape (synthetic): trace between recovery and the dispatch check.
-LOOP.write_text(
-    "def loop(agent, assistant_message):\n"
-    "        while True:\n"
-    "            # Check for tool calls\n"
-    "            if assistant_message.tool_calls:\n"
-    "                pass\n"
-)
-run("/bootstrap/patch-text-tool-call-recovery.py")
-assert "patched loop" in run("/bootstrap/patch-tool-eval-trace.py").stdout
-text = LOOP.read_text()
-assert text.index(RECOVERY) < text.index(TRACE) < text.index("# Check for tool calls"), text
-compile(text, str(LOOP), "exec")
 
 os.write(1, b"image ok\n")
 '''

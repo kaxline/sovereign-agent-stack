@@ -21,9 +21,9 @@ Hermes bumps.
 """
 from __future__ import annotations
 
-from pathlib import Path
+from overlay_patch import ROOT as HERMES, FileEdit, edit_files
 
-HERMES = Path("/opt/hermes")
+TAG = "[patch-tool-loop-replay]"
 GUARDRAILS = HERMES / "agent" / "tool_guardrails.py"
 RUN_AGENT = HERMES / "run_agent.py"
 METRICS = HERMES / "hermes_cli" / "observability" / "shared_metrics_harness.py"
@@ -100,32 +100,14 @@ METRICS_EDITS = [
 ]
 
 
-def _plan(path: Path, edits: list[tuple[str, str]]) -> str | None:
-    text = path.read_text(encoding="utf-8")
-    for old, new in edits:
-        if text.count(old) != 1:
-            print(f"[patch-tool-loop-replay] anchor missing in {path.name}, not patched: {old.strip()}")
-            return None
-        text = text.replace(old, new)
-    return text
-
-
 def main() -> None:
-    files = ((GUARDRAILS, GUARDRAIL_EDITS), (RUN_AGENT, RUN_AGENT_EDITS), (METRICS, METRICS_EDITS))
-    missing = [str(p) for p, _ in files if not p.is_file()]
-    if missing:
-        print(f"[patch-tool-loop-replay] skip: {', '.join(missing)} missing")
-        return
-    if MARKER in GUARDRAILS.read_text(encoding="utf-8"):
-        print("[patch-tool-loop-replay] already applied")
-        return
-    # Check every anchor before writing anything, so a Hermes bump never leaves a half-patched guard.
-    planned = [(path, _plan(path, edits)) for path, edits in files]
-    if any(text is None for _, text in planned):
-        return
-    for path, text in planned:
-        path.write_text(text, encoding="utf-8")
-    print(f"[patch-tool-loop-replay] patched {GUARDRAILS}, {RUN_AGENT.name}, {METRICS.name}")
+    # Every anchor in all three files is checked before any is written, so a
+    # Hermes bump never leaves a half-patched guard.
+    edit_files([
+        FileEdit(GUARDRAILS, GUARDRAIL_EDITS),
+        FileEdit(RUN_AGENT, RUN_AGENT_EDITS, marker='"identical_cycle_halt", "stale_replay_halt"'),
+        FileEdit(METRICS, METRICS_EDITS, marker='"stale_replay_halt": "stale_replay"'),
+    ], MARKER, TAG)
 
 
 if __name__ == "__main__":
