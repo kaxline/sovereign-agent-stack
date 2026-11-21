@@ -1680,8 +1680,106 @@ for svc in ("hermes-api-bootstrap", "hermes-browser-bootstrap"):
     check(f"{svc} sets ADDON_DATA_DIR", "- ADDON_DATA_DIR=/bootstrap/addon-data" in block)
     check(f"{svc} no longer mounts the workspace files", "twenty-workspaces" not in block)
 
+# --- share (CR 0044 R1) ---------------------------------------------------------
+TW_SHARE = json.loads((ROOT / "addons" / "twenty" / "addon.json").read_text())
+ACTUAL_M = json.loads((ROOT / "addons" / "actual" / "addon.json").read_text())
+
+
+def tw_share(**changes):
+    """Twenty's manifest with share's fields changed (None drops one; a__b reaches into a)."""
+    m = copy.deepcopy(TW_SHARE)
+    node = m.setdefault("share", {})
+    for dotted, value in changes.items():
+        n = node
+        keys = dotted.split("__")
+        for k in keys[:-1]:
+            n = n[k]
+        if value is None:
+            n.pop(keys[-1], None)
+        else:
+            n[keys[-1]] = value
+    return m
+
+
+check("twenty: share block is valid", am.validate(TW_SHARE) == [], str(am.validate(TW_SHARE)))
+check("twenty: share offers read on key_ro and write on key_rw",
+      TW_SHARE.get("share", {}).get("levels") == {"read": "ro", "write": "rw"},
+      str(TW_SHARE.get("share")))
+check("twenty: share forwards POST and keeps mode",
+      TW_SHARE.get("share", {}).get("forward") == {
+          "methods": ["POST"], "path": "", "query": ["mode"],
+          "headers": {"request": [], "response": []}}, str(TW_SHARE.get("share")))
+check("twenty: share has no handout yet", TW_SHARE.get("share", {}).get("handout") is False)
+check("share_block gives Twenty's block", am.share_block(TW_SHARE) == TW_SHARE.get("share"))
+check("share_block is None for an add-on without share", am.share_block(BASE) is None)
+check("share_block is None for an invalid block",
+      am.share_block(tw_share(levels={"write": "rw"})) is None)
+
+refused("share not an object", tw_share() | {"share": "yes"}, "share must be an object")
+refused("share with an unknown field", tw_share(extra=1), "share has unknown fields: extra")
+refused("share.levels without read", tw_share(levels={"write": "rw"}), "share.levels must offer read")
+refused("share.levels with an unknown level", tw_share(levels={"read": "ro", "admin": "rw"}),
+        "share.levels may offer read and write only")
+refused("share.levels names a secret auth lacks", tw_share(levels={"read": "xx"}),
+        "share.levels.read must be ro or rw")
+actual_share = copy.deepcopy(ACTUAL_M)
+actual_share["share"] = copy.deepcopy(TW_SHARE.get("share", {}))
+refused("share without mcp.instances.auth", actual_share,
+        "share needs an mcp entry with instances.auth")
+refused("share without forward", tw_share(forward=None), "share.forward must be an object")
+refused("forward with an unknown field", tw_share(forward__x=1), "share.forward has unknown fields: x")
+refused("forward without POST", tw_share(forward__methods=["GET"]),
+        "share.forward.methods must include POST")
+refused("forward method PUT", tw_share(forward__methods=["POST", "PUT"]),
+        "share.forward.methods may be POST, GET and DELETE")
+refused("forward method twice", tw_share(forward__methods=["POST", "POST"]),
+        "share.forward.methods lists a method twice")
+check("forward with GET and DELETE is valid",
+      am.validate(tw_share(forward__methods=["POST", "GET", "DELETE"])) == [])
+refused("forward path with ..", tw_share(forward__path="/../x"), "share.forward.path")
+refused("forward path not starting with /", tw_share(forward__path="mcp"), "share.forward.path")
+check("forward path /mcp is valid", am.validate(tw_share(forward__path="/mcp")) == [])
+refused("forward query not a list of names", tw_share(forward__query=["a b"]), "share.forward.query")
+refused("forward headers with an unknown side", tw_share(forward__headers={"request": [], "both": []}),
+        "share.forward.headers")
+refused("forward header that isn't a header name",
+        tw_share(forward__headers={"request": ["X Y"], "response": []}), "share.forward.headers.request")
+check("forward headers may name Mcp-Session-Id both ways",
+      am.validate(tw_share(forward__headers={"request": ["Mcp-Session-Id"],
+                                             "response": ["Mcp-Session-Id"]})) == [])
+refused("memberKeys not an object", tw_share(memberKeys=["scripts/crm.sh"]),
+        "share.memberKeys must be an object")
+refused("memberKeys without revoke", tw_share(memberKeys={"create": ["scripts/crm.sh", "key", "create"]}),
+        "share.memberKeys needs create and revoke")
+refused("memberKeys with an unknown command",
+        tw_share(memberKeys={"create": ["scripts/crm.sh"], "revoke": ["scripts/crm.sh"],
+                             "rotate": ["scripts/crm.sh"]}),
+        "share.memberKeys has unknown fields: rotate")
+refused("memberKeys script outside repo",
+        tw_share(memberKeys={"create": ["/bin/sh", "-c", "x"], "revoke": ["scripts/crm.sh", "key", "revoke"]}),
+        "share.memberKeys.create")
+check("memberKeys naming crm.sh is valid",
+      am.validate(tw_share(memberKeys={"create": ["scripts/crm.sh", "key", "create"],
+                                       "revoke": ["scripts/crm.sh", "key", "revoke"],
+                                       "list": ["scripts/crm.sh", "key", "list"]})) == [])
+refused("handout not bool", tw_share(handout="yes"), "share.handout must be true or false")
+for reserved_name in ("bind", "trust", "endpoint"):
+    m = copy.deepcopy(TW_SHARE)
+    m["instances"]["settings"][reserved_name] = {"type": "string", "optional": True}
+    refused(f"instances setting named {reserved_name}", m,
+            f"instances.settings.{reserved_name}: {reserved_name!r} is reserved")
+check("the stack-owned instance fields are bind, trust and endpoint",
+      am.STACK_INSTANCE_FIELDS == {"bind", "trust", "endpoint"})
+
+with tempfile.TemporaryDirectory() as tmp:
+    tw_listing = addon_store.listing(TW_SHARE, Path(tmp), {})
+    check("listing carries Twenty's share block", tw_listing.get("share") == TW_SHARE.get("share"),
+          str(tw_listing.get("share")))
+    check("listing has no share key for an add-on without one",
+          "share" not in addon_store.listing(BASE, Path(tmp), {}))
+
 # --- mcp.instances.headers ------------------------------------------------------
-HDR_SETTINGS = {"url": {"type": "url"}, "username": {"type": "string"},
+HDR_SETTINGS ={"url": {"type": "url"}, "username": {"type": "string"},
                 "password": {"type": "secret"}, "local": {"type": "bool", "default": False}}
 HDR = {"X-Dav-Url": "{setting:url}", "X-Dav-User": "{setting:username}",
        "X-Dav-Password": "{secret:password}"}

@@ -138,6 +138,29 @@ except where noted:
   reads personal data may not name `api-server` at all. `{}` gives the
   instance to no profile. `addon.sh list --json` shows each instance's
   `bind`.
+  `trust` and `endpoint` are reserved the same way for shared instances (CR
+  0044), so no schema may declare a setting with either name.
+- `share`: whether a provider may share one instance with a Circle through
+  Boundary's gateway (CR 0044). An add-on without it can't be shared.
+  `{"levels", "forward", "memberKeys", "handout"}`:
+  - `levels` maps `read` (required) and optionally `write` to a key of
+    `mcp.instances.auth.secret`, the credential the gateway puts on a request
+    at that level. An add-on needs an mcp entry with `instances.auth` to
+    declare `share`.
+  - `forward` is what the gateway may pass on: `methods` (must include
+    `POST`; `GET` and `DELETE` are allowed for servers that keep sessions),
+    `path` (empty, or a path from `/` under the instance's MCP endpoint, with
+    no `..` segment), `query` (the parameter names kept) and
+    `headers.request` and `headers.response` (header names passed each way).
+  - `memberKeys`, optional: `create` and `revoke` (both required) and `list`,
+    each the argv of a `scripts/<name>.sh` that Boundary runs directly to
+    manage one person's credential. They are not hooks, so a token never goes
+    through the hook pipeline.
+  - `handout`, optional, default `false`: whether a member may hold a
+    credential `memberKeys` created.
+
+  `addon.sh list --json` includes the block for an add-on that has one. Twenty
+  shares `read` and `write`, forwarding `POST` with `mode` kept.
 - `services.<name>.when`: `{"gate": FLAG}`, so the service starts only while
   that gate flag is on. `mounts` maps `secrets`, `config` and `instances` to
   `ro` or `rw`; they mount the directories `data/addons/<short-id>/secrets`,

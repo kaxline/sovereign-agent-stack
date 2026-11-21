@@ -650,6 +650,9 @@ def listing(manifest: dict, data_root: Path, environ, figures=None) -> dict:
     message = manifest.get("postInstallMessage")
     if isinstance(message, str) and message.strip():
         out["postInstallMessage"] = message
+    share = am.share_block(manifest)
+    if share is not None:
+        out["share"] = share
     for slug in slugs(d):
         vals = _instance_values(d, slug)
         view = _view(_inst_schema(manifest), vals, lambda n, s=slug: d / "secrets" / f"{s}.{n}")

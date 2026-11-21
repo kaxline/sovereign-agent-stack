@@ -120,8 +120,16 @@ READ_CLASSES = {"mail", "messages", "contacts", "calendar", "projects", "memory"
 EGRESS_WORDS = {"llm-proxy", "search", "postgres", "internet"}
 STACK_SERVICES = {"llm", "search", "storage", "postgres", "neo4j", "redis", "secrets", "scheduler"}
 SETTING_TYPES = {"string", "int", "bool", "choice", "port", "secret", "url", "path", "list", "date"}
+# Instance fields the stack owns and stores beside an instance's settings
+# (instances/<slug>.json): bind (profiles), trust and endpoint (CR 0044).
+STACK_INSTANCE_FIELDS = {"bind", "trust", "endpoint"}
 # Setting names the stack fills in itself; a schema may not declare them.
-RESERVED_SETTINGS = {"slug", "bind"}
+RESERVED_SETTINGS = {"slug"} | STACK_INSTANCE_FIELDS
+# share (CR 0044 R1): the levels an instance may be shared at, and the HTTP
+# methods a provider's gateway may forward to its MCP endpoint.
+SHARE_LEVELS = {"read", "write"}
+SHARE_METHODS = {"POST", "GET", "DELETE"}
+SHARE_KEY_COMMANDS = {"create", "revoke", "list"}
 # services.<name>.mounts keys and the fixed container path each one names.
 MOUNT_PATHS = {"secrets": "/run/addon/secrets", "config": "/run/addon/config",
                "instances": "/run/addon/instances"}
@@ -521,7 +529,127 @@ def validate(manifest, repo=_AUTO) -> list[str]:
     if "generate" in manifest:
         errors.extend(_validate_generate(manifest["generate"]))
 
+    if "share" in manifest:
+        errors.extend(_validate_share(manifest["share"],
+                                      mcp_entries(manifest) if isinstance(mcp, (dict, list)) else [],
+                                      repo))
+
     return errors
+
+
+QUERY_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+\Z")
+
+
+def _share_auth_secrets(entries: list) -> dict | None:
+    """The `mcp.instances.auth.secret` map of the first entry that has one."""
+    for entry in entries:
+        inst = entry.get("instances") if isinstance(entry, dict) else None
+        auth = inst.get("auth") if isinstance(inst, dict) else None
+        secret = auth.get("secret") if isinstance(auth, dict) else None
+        if isinstance(secret, dict) and secret:
+            return secret
+    return None
+
+
+def _validate_share(share, entries: list, repo) -> list[str]:
+    """`share` (CR 0044 R1): whether and how a provider's gateway may share one
+    instance with a Circle. {levels, forward, memberKeys?, handout?}.
+
+    levels maps read (required) and write to a key of mcp.instances.auth.secret,
+    so an add-on without instance auth can't declare one yet. forward lists what
+    the gateway may pass on: methods (POST, and GET and DELETE for servers that
+    keep sessions), a path relative to the instance's MCP endpoint, the query
+    parameters kept and the headers passed each way. memberKeys names host
+    scripts Boundary runs directly to create, revoke and list one person's
+    credential; they are not hooks, so a token never goes through the hook
+    pipeline."""
+    if not isinstance(share, dict):
+        return ["share must be an object {levels, forward, memberKeys, handout}"]
+    errors: list[str] = []
+    err = errors.append
+    extra = set(share) - {"levels", "forward", "memberKeys", "handout"}
+    if extra:
+        err(f"share has unknown fields: {', '.join(sorted(extra))}")
+    secrets = _share_auth_secrets(entries)
+    if secrets is None:
+        err("share needs an mcp entry with instances.auth: each level names its credential there")
+    levels = share.get("levels")
+    if not (isinstance(levels, dict) and levels):
+        err("share.levels must map read (and optionally write) to an mcp.instances.auth.secret key")
+    else:
+        if set(levels) - SHARE_LEVELS:
+            err("share.levels may offer read and write only")
+        if "read" not in levels:
+            err("share.levels must offer read")
+        if secrets is not None:
+            for level in sorted(set(levels) & SHARE_LEVELS):
+                if not (isinstance(levels[level], str) and levels[level] in secrets):
+                    err(f"share.levels.{level} must be {' or '.join(sorted(secrets))}, "
+                        "a key of mcp.instances.auth.secret")
+    errors.extend(_validate_share_forward(share.get("forward")))
+    if "memberKeys" in share:
+        keys = share["memberKeys"]
+        if not isinstance(keys, dict):
+            err("share.memberKeys must be an object {create, revoke, list} of host script argv")
+        else:
+            stray = set(keys) - SHARE_KEY_COMMANDS
+            if stray:
+                err(f"share.memberKeys has unknown fields: {', '.join(sorted(stray))}")
+            if not {"create", "revoke"} <= set(keys):
+                err("share.memberKeys needs create and revoke")
+            for name in sorted(set(keys) & SHARE_KEY_COMMANDS):
+                errors.extend(_validate_script(keys[name], f"share.memberKeys.{name}", repo))
+    if "handout" in share and not isinstance(share["handout"], bool):
+        err("share.handout must be true or false")
+    return errors
+
+
+def _validate_share_forward(forward) -> list[str]:
+    if not isinstance(forward, dict):
+        return ["share.forward must be an object {methods, path, query, headers}"]
+    errors: list[str] = []
+    err = errors.append
+    extra = set(forward) - {"methods", "path", "query", "headers"}
+    if extra:
+        err(f"share.forward has unknown fields: {', '.join(sorted(extra))}")
+    methods = forward.get("methods")
+    if not (_is_str_list(methods) and methods):
+        err("share.forward.methods must be a non-empty list")
+    else:
+        if set(methods) - SHARE_METHODS:
+            err("share.forward.methods may be POST, GET and DELETE")
+        if "POST" not in methods:
+            err("share.forward.methods must include POST")
+        if len(set(methods)) != len(methods):
+            err("share.forward.methods lists a method twice")
+    path = forward.get("path")
+    if not (isinstance(path, str) and (path == "" or (
+            WEB_PATH_RE.match(path) and ".." not in path.split("/")))):
+        err("share.forward.path must be empty or a path from / under the MCP endpoint, "
+            "without .. segments")
+    query = forward.get("query")
+    if not (_is_str_list(query) and all(QUERY_NAME_RE.match(q) for q in query)):
+        err("share.forward.query must be a list of query parameter names")
+    headers = forward.get("headers")
+    if not (isinstance(headers, dict) and set(headers) == {"request", "response"}):
+        err("share.forward.headers must be {request, response}, each a list of header names")
+    else:
+        for side in ("request", "response"):
+            names = headers[side]
+            if not (_is_str_list(names) and all(HEADER_RE.match(h) for h in names)):
+                err(f"share.forward.headers.{side} must be a list of HTTP header names")
+    return errors
+
+
+def share_block(manifest: dict) -> dict | None:
+    """The manifest's share block when it is valid, else None."""
+    share = manifest.get("share")
+    if not isinstance(share, dict):
+        return None
+    if _validate_share(share, mcp_entries(manifest) if isinstance(manifest.get("mcp"), (dict, list)) else [],
+                       None):
+        return None
+    return share
 
 
 def _validate_store(store, *, internet: bool) -> list[str]:
