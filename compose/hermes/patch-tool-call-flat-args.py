@@ -18,12 +18,11 @@ Hermes v2026.9+ routes parsing through ``normalize_tool_call_entries``.
 """
 from __future__ import annotations
 
-from pathlib import Path
+from overlay_patch import ROOT, edit
 
-TARGET = Path("/opt/hermes/tools/tool_search_validation.py")
-TARGET_LEGACY = Path("/opt/hermes/tools/tool_search.py")
+TARGET = ROOT / "tools" / "tool_search_validation.py"
 MARKER = "# assistant-stack: tool_call arg shape fixes"
-MARKER_STRING_CALLS = "# assistant-stack: tool_call stringified calls"
+TAG = "[patch-tool-call-flat-args]"
 
 STACK_ALIASES = '''
 _STACK_TOOL_ALIASES = {
@@ -107,46 +106,12 @@ NEW_CALLS_LIST_CHECK = '''    # assistant-stack: tool_call stringified calls
         return [], "tool_call 'calls' must be a non-empty array of {name, arguments}"
 '''
 
-def main() -> int:
-    if not TARGET.is_file():
-        if TARGET_LEGACY.is_file():
-            print(f"[patch-tool-call-flat-args] skip: {TARGET} missing; legacy path not auto-applied")
-            return 0
-        print(f"[patch-tool-call-flat-args] skip missing {TARGET}")
-        return 0
-
-    text = TARGET.read_text(encoding="utf-8")
-    changed = False
-
-    if "_STACK_TOOL_ALIASES" not in text:
-        anchor = "def normalize_tool_call_entries("
-        if anchor not in text:
-            print("[patch-tool-call-flat-args] normalize_tool_call_entries missing")
-            return 0
-        text = text.replace(anchor, STACK_ALIASES + "\n" + anchor, 1)
-        changed = True
-
-    if MARKER not in text and OLD_APPEND in text:
-        text = text.replace(OLD_APPEND, NEW_APPEND, 1)
-        changed = True
-    if OLD_LEGACY_SINGLE in text:
-        text = text.replace(OLD_LEGACY_SINGLE, NEW_LEGACY_SINGLE, 1)
-        changed = True
-
-    if MARKER_STRING_CALLS not in text:
-        if OLD_CALLS_LIST_CHECK not in text:
-            print("[patch-tool-call-flat-args] calls-list needle missing")
-        else:
-            text = text.replace(OLD_CALLS_LIST_CHECK, NEW_CALLS_LIST_CHECK, 1)
-            changed = True
-
-    if changed:
-        TARGET.write_text(text, encoding="utf-8")
-        print(f"[patch-tool-call-flat-args] patched {TARGET}")
-    else:
-        print(f"[patch-tool-call-flat-args] already applied ({TARGET})")
-    return 0
+def main() -> None:
+    anchor = "def normalize_tool_call_entries("
+    edit(TARGET, [(anchor, STACK_ALIASES + "\n" + anchor), (OLD_APPEND, NEW_APPEND),
+                  (OLD_LEGACY_SINGLE, NEW_LEGACY_SINGLE), (OLD_CALLS_LIST_CHECK, NEW_CALLS_LIST_CHECK)],
+         MARKER, TAG)
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()
