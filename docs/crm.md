@@ -29,17 +29,17 @@ role that can read and write records and the other a read-only role. Then:
 
 ```bash
 make crm-add SLUG=hosted URL=https://crm.example.com   # asks for both keys
-make hermes-reload
 ```
 
-`crm-add` runs an MCP `initialize` with each key and writes nothing if Twenty
-rejects one, the URL doesn't answer, or the server lacks the catalog tools
-Hermes uses (see [What Hermes sees](#what-hermes-sees)). The read-only key is optional. Without
+`crm-add` asks for the keys and runs `scripts/addon.sh connect twenty`, which
+checks each with an MCP `initialize` and writes nothing if Twenty rejects one,
+the URL doesn't answer, or the server lacks the catalog tools Hermes uses (see
+[What Hermes sees](#what-hermes-sees)). It then reloads Hermes. The read-only key is optional. Without
 one, unattended runs (`api-server`) don't get this CRM at all. For a
 non-interactive run, put `TWENTY_KEY_RW`, `TWENTY_KEY_RO` and, if you want them,
 `TWENTY_ACCESS` and `TWENTY_WORKSPACE_URL` in the environment; nothing is asked.
 No containers start for a remote workspace. `make crm-remove SLUG=hosted`
-forgets it again.
+forgets it again through `addon.sh disconnect twenty`, which also reloads Hermes.
 
 An app that manages add-ons connects a workspace through
 `scripts/addon.sh connect twenty --instance <slug>`, with a JSON object on
@@ -48,9 +48,10 @@ The bundled instance's URL, `http://twenty-server:3000`, needs `"local": true`,
 and `local: true` needs that URL; either one alone fails with
 `local_mismatch`. The manifest's connect hook runs `crm.sh connect`, which
 checks each key with an MCP `initialize`, and the tool list with one of them
-(see [What Hermes sees](#what-hermes-sees)), before anything is stored. `disconnect` removes the
-instance and its keys. `crm.sh add`, `remove` and `access` write the same
-store.
+(see [What Hermes sees](#what-hermes-sees)), before anything is stored. `--force` replaces a
+stored workspace with the new values. `disconnect` removes the instance and its
+keys. `make crm-add` and `crm-remove` run `connect` and `disconnect`, and
+`crm-access` runs `configure twenty --instance <slug>`.
 
 ## How it works
 
@@ -104,11 +105,10 @@ To change it later, without the keys at hand:
 
 ```bash
 make crm-access SLUG=main ACCESS=read   # or ACCESS=write
-make hermes-reload
 ```
 
-`crm-access` refuses `read` when the workspace has no read-only key, and
-`write` when it has no read/write key. `make crm-init ROTATE=1` mints new keys
+`crm-access` stores the setting and reloads Hermes. It refuses `read` when the
+workspace has no read-only key, and `write` when it has no read/write key. `make crm-init ROTATE=1` mints new keys
 and keeps the access setting.
 
 The Hermes bootstraps read the workspaces from the add-on's instance store
@@ -182,10 +182,10 @@ key, write tools are missing from the catalog.
 Since Twenty 2.56, bare `/mcp` lists every record tool directly instead: a
 hosted workspace listed 309, 47 of them deletes, with no catalog tools. 2.55
 lists the catalog on bare `/mcp` and treats `?mode=meta` the same way, so one
-URL works on both. `crm-add` and `addon.sh connect` list the tools with the
-first key and refuse a workspace whose list lacks `get_tool_catalog`,
+URL works on both. `addon.sh connect`, which `crm-add` runs, lists the tools
+with the first key and refuses a workspace whose list lacks `get_tool_catalog`,
 `learn_tools` or `execute_tool` (`no_catalog`, naming the tool count and the
-missing tools). When the list can't be read they warn and go on. `make doctor`
+missing tools). When the list can't be read it warns and goes on. `make doctor`
 prints each workspace's tool count and the same check.
 
 Hermes cuts a tool name longer than 64 characters with its `mcp__crm_<slug>__`
@@ -308,8 +308,7 @@ the next `enable twenty`, which writes the stored setting back.
 `disable twenty` keeps the setting, so a later `enable` restores the local
 instance as it was. Set `TWENTY_MCP_ENABLED=0` and run
 `make hermes-reload` to remove every `crm-*` entry and key from Hermes.
-`make crm-remove SLUG=name` and `make hermes-reload` remove one workspace
-only.
+`make crm-remove SLUG=name` removes one workspace only.
 
 ## Troubleshooting
 

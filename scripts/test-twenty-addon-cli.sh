@@ -6,7 +6,8 @@
 # stored, and its done line carries the init hook's mcp names and message;
 # enable generates the Twenty secrets .env lacks, skips one whose _FILE form
 # is set and keeps a generated one on the next enable;
-# connect follows;
+# connect follows; connect --force replaces an instance; crm.sh add, access
+# and remove run through addon.sh;
 # connect and disconnect run crm.sh's hooks (a bad value or a local mismatch
 # comes back as crm.sh's error, a schema violation as addon.sh's bad_input);
 # disconnect of a local instance carries the hook's "still exists in Twenty"
@@ -38,7 +39,7 @@ chmod +x "${root}/scripts/vault.sh"
 for f in addon.sh sync-profiles.sh crm.sh twenty_admin.py; do
   cp "${REPO}/scripts/${f}" "${root}/scripts/"
 done
-for f in env.sh data-root.sh secret.sh python.sh mcp-probe.sh addon-events.sh stack-lock.sh addon_cli.py addon_manifest.py addon_store.py; do
+for f in env.sh data-root.sh secret.sh python.sh mcp-probe.sh addon-human.sh addon-events.sh stack-lock.sh addon_cli.py addon_manifest.py addon_store.py; do
   cp "${REPO}/scripts/lib/${f}" "${root}/scripts/lib/"
 done
 cp -R "${REPO}/addons" "${root}/addons"
@@ -191,6 +192,58 @@ t "connect writes no key_rw it wasn't given" absent "${store}/secrets/sales.key_
 t "sales.json holds the url, read access and local false" \
   json_file "${store}/instances/sales.json" 'v["url"] == "https://crm.example.com" and v["access"] == "read" and v["local"] is False'
 t "the hook checked the key against <url>/mcp" has_line "crm.example.com/mcp" "$STUB_LOG"
+
+# --- connect --force on an existing slug: the hook takes --replace ----------------
+addon_in '{"url":"https://crm.example.com","access":"read","local":false,"key_ro":"fake-ro-key"}' connect twenty --instance sales --force --json
+expect_rc "connect --force on an existing slug exits 0" 0
+t "connect --force ends with done and replaced" json_ok "done" 'last.get("replaced") is True and last.get("mcp") == ["crm-sales"]'
+no_keys "connect --force"
+
+# --- crm.sh add, access and remove go through addon.sh ------------------------------
+# crm SCRIPT-ARGS...: crm.sh in the scratch stack, stdout in $out, stderr in $err.
+crm() {
+  n=$((n + 1))
+  out="${tmp}/out/${n}"
+  err="${tmp}/out/${n}.err"
+  rc=0
+  "$BASH_UNDER_TEST" "${root}/scripts/crm.sh" "$@" < /dev/null > "$out" 2> "$err" || rc=$?
+  # In sh, VAR=value before a function call outlives the call.
+  unset TWENTY_ACCESS TWENTY_KEY_RO TWENTY_KEY_RW
+  CURL_CODE=200
+}
+TWENTY_ACCESS=read TWENTY_KEY_RO=fake-ro-key crm add --slug viacrm --url https://crm2.example.com/
+expect_rc "crm.sh add exits 0" 0
+t "crm.sh add prints a [crm] line naming crm-viacrm" has_line '^\[crm\] Connected viacrm; Hermes entries: crm-viacrm$' "$out"
+no_keys "crm.sh add"
+t "crm.sh add stores the url without the slash, read access and the workspace url" \
+  json_file "${store}/instances/viacrm.json" 'v["url"] == "https://crm2.example.com" and v["access"] == "read" and v["workspace_url"] == "https://crm2.example.com/" and v["local"] is False'
+t "crm.sh add stores the key" test "$(cat "${store}/secrets/viacrm.key_ro")" = fake-ro-key
+TWENTY_ACCESS=read TWENTY_KEY_RO=fake-ro-key crm add --slug viacrm --url https://crm2.example.com
+expect_rc "crm.sh add on an existing slug exits 1" 1
+t "crm.sh add on an existing slug names FORCE=1" has_line 'FORCE=1' "$err"
+TWENTY_KEY_RW=fake-ro-key crm add --slug viacrm --url https://crm2.example.com --force
+expect_rc "crm.sh add --force exits 0" 0
+t "crm.sh add --force stores access write and drops the read-only key" \
+  json_file "${store}/instances/viacrm.json" 'v["access"] == "write"'
+t "crm.sh add --force drops the read-only key it wasn't given" absent "${store}/secrets/viacrm.key_ro"
+CURL_CODE=401 TWENTY_KEY_RW=fake-refused-key crm add --slug nope --url https://crm2.example.com
+expect_rc "crm.sh add with a refused key exits 4" 4
+t "crm.sh add with a refused key says so on a [crm] line" has_line '^\[crm\] ERROR: .*(login_refused)$' "$err"
+t "crm.sh add with a refused key writes nothing" absent "${store}/instances/nope.json"
+no_keys "crm.sh add refused"
+crm access --slug viacrm read
+expect_rc "crm.sh access read without a read-only key exits 1" 1
+: > "$STUB_LOG"
+crm access --slug viacrm write
+expect_rc "crm.sh access write exits 0" 0
+t "crm.sh access reloads Hermes" has_line 'compose run --rm -e HERMES_BOOTSTRAP_FORCE=1 hermes-api-bootstrap' "$STUB_LOG"
+t "crm.sh access keeps its [crm] line" has_line '^\[crm\] Set TWENTY_ACCESS=write for viacrm$' "$out"
+crm remove --slug viacrm
+expect_rc "crm.sh remove exits 0" 0
+t "crm.sh remove prints a [crm] line" has_line '^\[crm\] Disconnected viacrm$' "$out"
+t "crm.sh remove deletes the instance and its key" absent "${store}/instances/viacrm.json" "${store}/secrets/viacrm.key_rw"
+crm remove --slug viacrm
+expect_rc "crm.sh remove of an unknown slug exits 2" 2
 
 # --- connect refused: curl 401 ---------------------------------------------------
 CURL_CODE=401

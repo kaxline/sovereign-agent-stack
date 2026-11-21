@@ -5,15 +5,12 @@
 # Under standalone those profiles bind the ports themselves, so this exits 0
 # and ./finish exits 125, which leaves the slot down (same as the image's
 # dashboard service). See compose/hermes/gateway-compat-proxy.py.
+#
+# cont-init.d/019-pin-profile-gateways writes the topology to
+# /run/hermes-gateway-topology before this starts; a missing or empty file
+# means standalone.
 
-topology="$(printf '%s' "${HERMES_GATEWAY_TOPOLOGY:-}" | tr '[:upper:]' '[:lower:]')"
-if [ -z "$topology" ]; then
-    case "$(printf '%s' "${HERMES_PIN_STANDALONE_GATEWAYS:-1}" | tr '[:upper:]' '[:lower:]')" in
-        0|false|no|off) topology=multiplex ;;
-        *) topology=standalone ;;
-    esac
-fi
-[ "$topology" = multiplex ] || exit 0
+[ "$(cat /run/hermes-gateway-topology 2>/dev/null)" = multiplex ] || exit 0
 
 [ "$(id -u)" = 0 ] || exec /opt/hermes/.venv/bin/python /bootstrap/gateway-compat-proxy.py
 exec s6-setuidgid hermes /opt/hermes/.venv/bin/python /bootstrap/gateway-compat-proxy.py

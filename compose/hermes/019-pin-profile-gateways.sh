@@ -22,7 +22,13 @@
 #   recorded in gateway_topology.json so a profile unparked later stays
 #   unparked. gateway-compat-proxy keeps 8643 and 8644 answering.
 #
-# Unset, HERMES_PIN_STANDALONE_GATEWAYS=0 (the older name) means multiplex.
+# Unset, HERMES_PIN_STANDALONE_GATEWAYS=0 (the older name) means multiplex. Any
+# other value warns and means standalone (scripts/lib/env.sh gateway_topology
+# on the host follows the same rule). The result goes to
+# /run/hermes-gateway-topology, which s6/gateway-compat-proxy reads; that
+# service depends on base, which holds legacy-cont-init, so it starts after
+# this script. The bootstrap containers run before this one and resolve the
+# variables themselves.
 #
 # sessions.auto_prune defaults to true and deletes ended sessions inactive for
 # retention_days (90) at startup. Pinning it false keeps every session, which
@@ -34,16 +40,17 @@ set -u
 
 [ -x /opt/hermes/.venv/bin/python ] || exit 0
 
+# The Python below runs as hermes, which cannot create files in /run.
+HERMES_GATEWAY_TOPOLOGY_FILE=/run/hermes-gateway-topology
+export HERMES_GATEWAY_TOPOLOGY_FILE
+: > "$HERMES_GATEWAY_TOPOLOGY_FILE" && chown hermes "$HERMES_GATEWAY_TOPOLOGY_FILE"
+
 s6-setuidgid hermes /opt/hermes/.venv/bin/python - <<'PY' || echo "[019-pin-profile-gateways] warn: exited $?"
 import json
 import os
 import secrets
 import sys
 from pathlib import Path
-
-sys.path.insert(0, "/opt/hermes")
-from hermes_cli.config import read_user_config_raw  # noqa: E402
-from utils import atomic_roundtrip_yaml_update  # noqa: E402
 
 TAG = "[019-pin-profile-gateways]"
 home = Path(os.environ.get("HERMES_HOME", "/opt/data"))
@@ -61,6 +68,17 @@ def topology() -> str:
         print(f"{TAG} warn: HERMES_GATEWAY_TOPOLOGY={value!r} is not standalone or multiplex; using standalone")
         return "standalone"
     return "standalone" if enabled("HERMES_PIN_STANDALONE_GATEWAYS") else "multiplex"
+
+
+# Resolved and handed off before anything below can fail.
+mode = topology()
+print(f"{TAG} topology: {mode}")
+if os.environ.get("HERMES_GATEWAY_TOPOLOGY_FILE"):
+    Path(os.environ["HERMES_GATEWAY_TOPOLOGY_FILE"]).write_text(mode + "\n")
+
+sys.path.insert(0, "/opt/hermes")
+from hermes_cli.config import read_user_config_raw  # noqa: E402
+from utils import atomic_roundtrip_yaml_update  # noqa: E402
 
 
 def read_cfg(cfg_path: Path):
@@ -128,8 +146,6 @@ def park_idle(named: list) -> None:
         os.replace(tmp, record_path)
 
 
-mode = topology()
-print(f"{TAG} topology: {mode}")
 named = []
 root = home / "profiles"
 if root.is_dir():

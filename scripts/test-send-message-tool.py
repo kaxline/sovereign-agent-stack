@@ -6,7 +6,8 @@ the agent-callable send_message tool. With the image present (or --image), the
 patch is applied twice: the first run must patch all three parts, the second
 must find them applied. Then send_message must be registered, sit in the
 hermes-cli toolset, and Signal must be synthesized from SIGNAL_* env, with a profile's secret
-scope winning over the process env.
+scope winning over the process env. patch-cron-scheduler-delivery.py must build cron's Signal
+config through the same signal_env module.
 """
 
 from __future__ import annotations
@@ -77,6 +78,36 @@ try:
 finally:
     reset_secret_scope(token)
 assert scoped.extra == {"http_url": "http://signal-b.example:8080", "account": "+15550102"}, scoped.extra
+
+# Cron delivery builds the same config through the same module (AS-0036): the
+# patch applies, the patched module still imports, and the inserted block calls
+# signal_env rather than reading os.environ itself.
+for want in ("patched", "already patched"):
+    out = subprocess.run([sys.executable, "/bootstrap/patch-cron-scheduler-delivery.py"], capture_output=True, text=True)
+    if out.returncode != 0:
+        raise SystemExit(f"FAIL cron patch: {out.stdout}{out.stderr}")
+    synth = [line for line in out.stdout.splitlines() if "(synth)" in line]
+    assert len(synth) == 1 and synth[0].startswith(want), out.stdout
+from pathlib import Path
+cron_path = next(p for p in (Path("/opt/hermes/cron/scheduler_delivery.py"), Path("/opt/hermes/cron/scheduler.py"))
+                 if p.is_file())
+cron_src = cron_path.read_text(encoding="utf-8")
+assert "from agent.signal_env import signal_env_pconfig" in cron_src
+assert 'os.getenv("SIGNAL_' not in cron_src, "cron must not read SIGNAL_* past the profile scope"
+import importlib
+importlib.import_module(f"cron.{cron_path.stem}")
+
+from agent.signal_env import signal_env_pconfig
+token = set_secret_scope({"SIGNAL_HTTP_URL": "http://signal-b.example:8080", "SIGNAL_ACCOUNT": "+15550102",
+                          "SIGNAL_HOME_CHANNEL": "+15550103", "SIGNAL_HOME_CHANNEL_NAME": "Ops"})
+try:
+    cfg = signal_env_pconfig()
+finally:
+    reset_secret_scope(token)
+assert cfg.extra["account"] == "+15550102", cfg.extra
+assert (cfg.home_channel.chat_id, cfg.home_channel.name) == ("+15550103", "Ops"), cfg.home_channel
+os.environ.pop("SIGNAL_ACCOUNT")
+assert signal_env_pconfig() is None, "no account, no config"
 os.write(1, b"image ok\n")
 '''
 

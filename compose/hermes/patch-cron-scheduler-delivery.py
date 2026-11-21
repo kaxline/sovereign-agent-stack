@@ -5,13 +5,18 @@
    (upstream #69304). Redundant on Hermes v0.22+, whose _resolve_origin already
    drops api_server origins (_NON_PUSH_ORIGIN_PLATFORMS); kept while it applies.
 2. Synthesize Signal PlatformConfig from SIGNAL_* env when the browser adapter
-   is disabled (same outbound-only model as send_message_tool).
+   is disabled, through signal_env.py (installed here and by
+   patch-send-message-tool.py, so both read the same secrets the same way).
 
 Formerly patch-cron-api-server-origin.py + patch-cron-signal-synthesize.py.
 """
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
+
+SIGNAL_ENV_SRC = Path("/bootstrap/signal_env.py")
+SIGNAL_ENV_DST = Path("/opt/hermes/agent/signal_env.py")
 
 CANDIDATES = (
     Path("/opt/hermes/cron/scheduler_delivery.py"),
@@ -130,33 +135,8 @@ BARE_NEW = '''    platform_name = deliver_value
 
 SYNTH_BLOCK = '''        # assistant-stack: cron synthesize Signal from env when adapter disabled
         if platform_name == "signal" and (not pconfig or not pconfig.enabled):
-            import os
-            from gateway.config import HomeChannel, PlatformConfig
-            from agent.secret_scope import get_secret
-            signal_url = (
-                os.getenv("SIGNAL_HTTP_URL", "") or get_secret("SIGNAL_HTTP_URL", "")
-            ).strip()
-            signal_account = (
-                os.getenv("SIGNAL_ACCOUNT", "") or get_secret("SIGNAL_ACCOUNT", "")
-            ).strip()
-            if signal_url and signal_account:
-                pconfig = PlatformConfig(
-                    enabled=True,
-                    extra={
-                        "http_url": signal_url,
-                        "account": signal_account,
-                    },
-                )
-                signal_home = (
-                    os.getenv("SIGNAL_HOME_CHANNEL", "")
-                    or get_secret("SIGNAL_HOME_CHANNEL", "")
-                ).strip()
-                if signal_home:
-                    pconfig.home_channel = HomeChannel(
-                        platform=platform,
-                        chat_id=signal_home,
-                        name=os.getenv("SIGNAL_HOME_CHANNEL_NAME", "Home"),
-                    )
+            from agent.signal_env import signal_env_pconfig
+            pconfig = signal_env_pconfig() or pconfig
 
 '''
 
@@ -247,6 +227,9 @@ def _patch_origin(text: str, target: Path) -> tuple[str, str]:
 
 
 def _patch_synth(text: str, target: Path) -> tuple[str, str]:
+    if not SIGNAL_ENV_SRC.is_file():
+        return text, f"skip: missing {SIGNAL_ENV_SRC}"
+    shutil.copyfile(SIGNAL_ENV_SRC, SIGNAL_ENV_DST)
     if SYNTH_MARKER in text:
         return text, f"already patched (synth): {target}"
     if OLD_V9 in text:

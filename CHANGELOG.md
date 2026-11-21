@@ -64,12 +64,39 @@ the stack under another app.
   between stopping and starting the receive thread, accepts group invitations
   addressed to the PNI, and rotates the account's sender key when a group
   member leaves or is removed. The linked account store is read as before.
+- `make crm-add`, `crm-remove` and `crm-access` run `scripts/addon.sh`
+  (`connect twenty`, `disconnect twenty` and `configure twenty --instance`)
+  and reload Hermes themselves, so no `make hermes-reload` follows them
+  (`crm-add` still asks for one when it turns `TWENTY_MCP_ENABLED` on).
+  `crm-add` and `crm-remove` print `[crm] Connected <slug>; Hermes entries:
+  crm-<slug>` and `[crm] Disconnected <slug>`; a failure prints
+  `[crm] ERROR: <message> (<error>)` with addon.sh's error name and exits with
+  its code: 2 when addon.sh refuses the input (an unknown workspace, an
+  access other than read or write), 4 when the connect hook refuses it.
+  `crm-add` now refuses the local instance's URL while
+  `TWENTY_LOCAL_ENABLED=0` (`local_off`), as `addon.sh connect` always did.
+- `addon.sh connect twenty --force` replaces a stored workspace. The Twenty
+  connect hook (`crm.sh connect`) used to refuse the `--replace` argument
+  addon.sh passes it, so the replace failed.
 - `patch-block-native-web-tools`, `patch-tool-call-flat-args` and
   `patch-cron-scheduler-delivery` no longer rewrite blocks that their builds
   from before v0.1.0 left in `/opt/hermes` (debug helpers, an alias map
   without the `coding_*` names, an older cron Signal block). Each now checks
   only its marker. A container still carrying one of those blocks keeps it
   until `make hermes-recreate`.
+- Cron delivery to Signal reads `SIGNAL_HTTP_URL`, `SIGNAL_ACCOUNT`,
+  `SIGNAL_HOME_CHANNEL` and `SIGNAL_HOME_CHANNEL_NAME` the way `send_message`
+  does: from the owning profile's secret scope, falling back to the process
+  env only where Hermes allows it. Before, cron read the process env first,
+  so under `HERMES_GATEWAY_TOPOLOGY=multiplex` a profile's cron job could
+  deliver through the launch profile's Signal account, and
+  `SIGNAL_HOME_CHANNEL_NAME` set only in a profile's `.env` was ignored. Both
+  overlays now install and call `compose/hermes/signal_env.py`, mounted at
+  `/bootstrap/signal_env.py`; an app with its own compose file needs that
+  mount, or the Signal synth prints `skip` and cron and `send_message` lose
+  Signal while the adapter is off. In standalone mode the only difference is
+  that a value in the profile's `.env` now wins over a different value in
+  the process env, as it already did for `send_message`.
 - Hermes v0.23.2 overlay fixes. Each patch accepts the v0.23.1 and the
   v0.23.2 shape. `patch-digest-redaction`: the vault redaction registry moved
   to `agent/redact_vault_values.py`; the overlay patches it there and
@@ -172,6 +199,16 @@ the stack under another app.
   `N8N_NODE` is no longer read, so a `node` stub for
   `generate-n8n-credentials.js` is no longer called. Files an earlier release
   wrote under `n8n/demo-data/credentials/` stay gitignored and can be deleted.
+- An invalid `HERMES_GATEWAY_TOPOLOGY` (anything but `standalone` or
+  `multiplex`, ignoring case and surrounding spaces) now means `standalone`
+  on the host as well as in the container, and the host scripts print a
+  warning on stderr. Before, `scripts/lib/env.sh` ignored the bad value and
+  fell back to `HERMES_PIN_STANDALONE_GATEWAYS`, so with that at `0`
+  `make doctor`, `gateway-topology.sh` and `check-hermes-standalone.sh` said
+  `multiplex` while the container ran standalone. Valid values and their
+  output are unchanged. Inside the container, `gateway-compat-proxy` now reads
+  the topology that `019-pin-profile-gateways` resolved, from
+  `/run/hermes-gateway-topology`, instead of resolving it again.
 - Client gateway: when Hermes doesn't answer a call made on a live session
   (`prompt.submit`, `session.cwd.set`) within 180 seconds, the client now gets
   the same error as for any other call, code -32603 with reason
