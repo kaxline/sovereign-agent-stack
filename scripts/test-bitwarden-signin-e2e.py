@@ -589,7 +589,7 @@ if TAB is None:
 # --- Hermes wiring -----------------------------------------------------------
 sys.path.insert(0, "/opt/hermes")
 sys.path.insert(0, "/bootstrap")
-import bitwarden_broker_backend as bwb
+from plugins.bwbroker import bitwarden_broker_backend as bwb
 import agent.vault_backends as vb
 import agent.vault_backends.base as vbase
 import tools.browser_session as bsession
@@ -599,7 +599,7 @@ from tools.browser_supervisor import SUPERVISOR_REGISTRY
 
 # The broker is in this container's network namespace, on loopback, and takes no bearer token
 # there; compose puts it on the credentials network with one.
-bvt._BWBROKER_URL = BROKER_BASE
+bwb.BROKER_URL = BROKER_BASE
 BW = PluginLoginBackend("bwbroker", bwb.BrokerLoginBackend(in_cron=lambda: False, base_url=BROKER_BASE))
 BACKENDS = [BW]
 # The overlay turns the task's cdp_url into a provider name; this browser is on loopback, which no
@@ -1103,6 +1103,10 @@ def main() -> None:
             expect(out.returncode == 0 and "warn:" not in out.stdout,
                    f"{name}: exit {out.returncode}: {(out.stdout + out.stderr).strip()[-400:]}")
         print(f"ok: the {len(patches)} overlays applied in 05-patch-tool-calling.sh order")
+        # The fill and sign-in code import the broker client from the installed bwbroker plugin.
+        out = docker("exec", "-u", "0", agent, "sh", "/bootstrap/14-install-bwbroker-plugin.sh")
+        expect(out.returncode == 0 and "warn:" not in out.stdout,
+               f"plugin install: {(out.stdout + out.stderr).strip()[-400:]}")
 
         # The gateway stand-in, as the hermes user: it never holds a canary.
         docker("exec", "-d", "-u", "hermes", agent, "/bin/sh", "-c",
