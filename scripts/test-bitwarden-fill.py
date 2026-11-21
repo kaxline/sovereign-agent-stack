@@ -133,7 +133,7 @@ for _ in range(2):
     out = subprocess.run([sys.executable, "/bootstrap/patch-bitwarden-signin.py"], capture_output=True,
                          text=True, env=env)
     assert out.returncode == 0 and "warn:" not in out.stdout, out.stdout + out.stderr
-assert "already patched" in out.stdout, out.stdout
+assert "already applied (sign-in dispatch)" in out.stdout, out.stdout
 src = open("/opt/hermes/tools/browser_vault_tool.py").read()
 assert src.count("# assistant-stack: bitwarden broker fill\n") == 1, "one helper block"
 assert src.count("# assistant-stack: bitwarden broker fill (") == 4, "four call sites"
@@ -673,8 +673,8 @@ open(fake + "/tools/browser_vault_tool.py", "w").write(
 out = subprocess.run([sys.executable, "/bootstrap/patch-bitwarden-signin.py"], capture_output=True,
                      text=True, env=dict(env, HERMES_ROOT=fake))
 assert out.returncode == 0, out.stdout + out.stderr
-assert "warn: sign-in schema needle missing" in out.stdout, out.stdout
-assert "patched: sign-in dispatch" in out.stdout, out.stdout
+assert "skipped: anchor missing" in out.stdout and "'from tools.registry import no_cache_check_fn, registry'" in out.stdout, out.stdout
+assert "patched sign-in dispatch" in out.stdout, out.stdout
 partial = open(fake + "/tools/browser_vault_tool.py").read()
 assert "# assistant-stack: bitwarden sign-in (schema)" not in partial, "the schema hook did not apply"
 # Run that file's _handle_vault on its own, with stubs for what it calls.

@@ -15,15 +15,16 @@ hook that did not apply can break ``page_ops``: the upstream actions keep
 working and a sign-in action is what fails.
 
 Runs after patch-bitwarden-broker-fill.py, whose helpers the module calls.
-Idempotent; each part reports ok / patched / warn.
+Idempotent. Each part degrades on its own (optional=True): a missing anchor prints a
+skip line and the script still exits 0 (docs/hermes.md).
 """
 from __future__ import annotations
 
-import os
-import shutil
 from pathlib import Path
 
-HERMES = Path(os.environ.get("HERMES_ROOT", "/opt/hermes"))
+from overlay_patch import ROOT as HERMES, edit, fail, install
+
+TAG = "[patch-bitwarden-signin]"
 HELPER_SRC = Path("/bootstrap/vault_bitwarden_signin.py")
 HELPER_DST = HERMES / "tools" / "vault_bitwarden_signin.py"
 VAULT_TOOL = HERMES / "tools" / "browser_vault_tool.py"
@@ -61,36 +62,16 @@ NEW_DISPATCH = (
 )
 
 
-def _apply(text: str, old: str, new: str, marker: str, label: str, path: Path) -> str:
-    if marker in text:
-        print(f"ok: {label} already patched")
-        return text
-    if old not in text:
-        print(f"warn: {label} needle missing in {path}")
-        return text
-    print(f"patched: {label} in {path}")
-    return text.replace(old, new, 1)
-
-
 def main() -> None:
-    if not HELPER_SRC.is_file():
-        print(f"warn: {HELPER_SRC} missing; browser_vault sign-in off")
-        return
-    if not VAULT_TOOL.exists():
-        print(f"skip: {VAULT_TOOL} missing")
-        return
-    helper = HELPER_SRC.read_text()
+    helper = HELPER_SRC.read_text() if HELPER_SRC.is_file() else ""
     missing = [a for a in ACTIONS if f'"{a}"' not in helper]
     if missing:
-        print(f"warn: {HELPER_SRC} has no {missing}; browser_vault sign-in off")
+        fail(TAG, f"{HELPER_SRC} has no {missing}: browser_vault sign-in off", optional=True)
         return
-    shutil.copyfile(HELPER_SRC, HELPER_DST)
-    print(f"installed: {HELPER_DST}")
-    text = VAULT_TOOL.read_text()
-    patched = _apply(text, OLD_SCHEMA, NEW_SCHEMA, f"{MARKER} (schema)", "sign-in schema", VAULT_TOOL)
-    patched = _apply(patched, OLD_DISPATCH, NEW_DISPATCH, f"{MARKER} (dispatch)", "sign-in dispatch", VAULT_TOOL)
-    if patched != text:
-        VAULT_TOOL.write_text(patched)
+    install(HELPER_SRC, HELPER_DST, TAG)
+    edit(VAULT_TOOL, [(OLD_SCHEMA, NEW_SCHEMA)], f"{MARKER} (schema)", TAG, optional=True, label="sign-in schema")
+    edit(VAULT_TOOL, [(OLD_DISPATCH, NEW_DISPATCH)], f"{MARKER} (dispatch)", TAG, optional=True,
+         label="sign-in dispatch")
 
 
 if __name__ == "__main__":
