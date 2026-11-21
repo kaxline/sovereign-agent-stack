@@ -24,6 +24,12 @@ the stack under another app.
 
 ### Changes
 
+- **OpenCode** 1.17.6 → 1.19.6, the last 1.x release, on its next
+  `docker compose build opencode`. The `opencode` service now sets
+  `OPENCODE_DISABLE_AUTOUPDATE=1`: 1.19.6 offers to download and install
+  OpenCode 2, which converts sessions, so the Dockerfile's pin stays the only
+  way to change version. The endpoints `opencode-mcp` calls answer as on
+  1.17.6. OpenCode 2.x is held for a separate check.
 - **mcp-searxng** 2.10.1 → 2.11.0. `searxng_web_search` with
   `categories="images"` and `result_detail="full"` now returns image
   results with their resolution and URLs; other output keeps its shape.
