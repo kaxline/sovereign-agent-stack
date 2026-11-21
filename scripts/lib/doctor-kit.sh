@@ -37,3 +37,25 @@ has_profile() {
 svc_running() {
   docker compose ps --status running "$1" 2>/dev/null | grep -q "$1"
 }
+
+# service_health SERVICE: its container's healthcheck status, else its state
+# (running, exited...), or nothing when compose has no container for it.
+service_health() {
+  local cid
+  cid="$(docker compose ps -q "$1" 2>/dev/null || true)"
+  [[ -n "$cid" ]] || return 0
+  docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid" 2>/dev/null || true
+}
+
+# check_service_health SERVICE [NOTE]: one doctor line for SERVICE's health.
+# NOTE, when given, explains a "starting" state in parentheses.
+check_service_health() {
+  local state
+  state="$(service_health "$1")"
+  case "$state" in
+    healthy) ok "${1} is healthy" ;;
+    starting) warn "${1} is starting${2:+ ($2)}" ;;
+    "") warn "${1} not running — make up" ;;
+    *) bad "${1} is ${state} — docker compose logs ${1}" ;;
+  esac
+}

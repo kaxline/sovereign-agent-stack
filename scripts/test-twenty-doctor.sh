@@ -15,15 +15,29 @@ store="$tmp/data/addons/twenty"
 
 fail() { printf 'FAIL %s\n' "$1" >&2; exit 1; }
 
+# docker: down unless $STUB_HEALTH is set. Then `compose ps -q SVC` prints an
+# id for each SVC=STATE word in it, and inspect prints that STATE.
 cat > "$tmp/bin/docker" <<'SH'
 #!/usr/bin/env bash
+[[ -n "${STUB_HEALTH:-}" ]] || exit 1
+case "$*" in
+  info) exit 0 ;;
+  "compose ps -q "*)
+    for w in $STUB_HEALTH; do [[ "${w%%=*}" == "${*: -1}" ]] && echo "cid-${w%%=*}"; done
+    exit 0 ;;
+  "inspect "*)
+    for w in $STUB_HEALTH; do [[ "cid-${w%%=*}" == "${*: -1}" ]] && echo "${w#*=}"; done
+    exit 0 ;;
+esac
 exit 1
 SH
 # curl: argv holds no key; prints the status in $STUB_HTTP (default 200), and
-# writes $STUB_BODY to -o's file for a tools/list call.
+# writes $STUB_BODY to -o's file for a tools/list call. A URL on
+# slow.example times out: 000 and exit 28, as curl -m does.
 cat > "$tmp/bin/curl" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$STUB_LOG"
+if [[ "$*" == *slow.example* ]]; then echo 000; exit 28; fi
 prev=""
 for a in "$@"; do
   if [[ "$prev" == -o && "$a" != /dev/null && -n "${STUB_BODY:-}" ]]; then printf '%s' "$STUB_BODY" > "$a"; fi
@@ -42,6 +56,10 @@ source "${ROOT}/scripts/lib/doctor-kit.sh"
 # shellcheck source=lib/doctor-twenty.sh
 source "${ROOT}/scripts/lib/doctor-twenty.sh"
 doctor_twenty
+# Nothing the block uses leaks into doctor.sh.
+for v in count missing tools listed body lcode key hdr code probe base; do
+  [[ -z "${!v+x}" ]] || echo "LEAKED $v"
+done
 SH
 
 out="$tmp/out"
@@ -160,6 +178,48 @@ printf 'COMPOSE_PROFILES=core,crm-mcp\nTWENTY_MCP_ENABLED=1\nASSISTANT_DATA_ROOT
 (cd "$tmp/work" && ASSISTANT_DATA_ROOT="$tmp/data" ROOT="$ROOT" bash "$tmp/harness.sh") > "$out" 2>&1 || fail "exported root: non-zero ($(cat "$out"))"
 hasnt "an exported ASSISTANT_DATA_ROOT wins over .env" "no workspaces in"
 
+# The whole block, line for line: the local containers' health, a workspace
+# that answers with the catalog, one that times out, and one whose tool list
+# is unreadable.
+rm -f "$store/instances/"* "$store/secrets/"*
+printf 'COMPOSE_PROFILES=core,crm\nTWENTY_MCP_ENABLED=1\nTWENTY_LOCAL_ENABLED=1\nTWENTY_ENCRYPTION_KEY=x\nASSISTANT_DATA_ROOT=%s\n' "$tmp/data" > "$tmp/work/.env"
+instance main write https://crm.example.com
+setkeys main "$KEY_RO" "$KEY_RW"
+instance slow read https://slow.example.com/mcp
+setkeys slow "$KEY_RO" ""
+instance zed read https://zed.example.com
+setkeys zed "$KEY_RO" ""
+STUB_HEALTH="twenty-server=healthy twenty-worker=starting twenty-db=exited" STUB_BODY="$CATALOG" doctor
+doctor_body="$(cat "$out")"
+STUB_BODY='{"jsonrpc":"2.0","id":2,"error":{"message":"stub failure"}}' doctor
+doctor_body="${doctor_body}
+$(grep 'crm-zed' "$out")"
+expected="
+--- CRM (Twenty) ---
+  OK  COMPOSE_PROFILES includes crm
+  OK  TWENTY_ENCRYPTION_KEY is set
+ FAIL TWENTY_DB_PASSWORD is unset — run ./scripts/setup.sh
+  OK  twenty-server is healthy
+ WARN twenty-worker is starting (the first start runs Twenty's migrations)
+ FAIL twenty-db is exited — docker compose logs twenty-db
+ WARN twenty-redis not running — make up
+ WARN no local workspace yet — after make up, run make crm-init
+  OK  TWENTY_MCP_ENABLED=1
+  OK  crm-main: access write, keys present: ro rw
+  OK  crm-main: MCP answers with the rw key (https://crm.example.com/mcp?mode=meta)
+  OK  crm-main: Twenty lists 4 tools, the catalog tools among them
+  OK  crm-main: MCP answers with the ro key (https://crm.example.com/mcp?mode=meta)
+  OK  crm-slow: access read, keys present: ro
+ WARN crm-slow: no answer from https://slow.example.com/mcp?mode=meta
+  OK  crm-zed: access read, keys present: ro
+  OK  crm-zed: MCP answers with the ro key (https://zed.example.com/mcp?mode=meta)
+  OK  crm-zed: Twenty lists 4 tools, the catalog tools among them
+  OK  crm-zed: access read, keys present: ro
+  OK  crm-zed: MCP answers with the ro key (https://zed.example.com/mcp?mode=meta)
+ WARN crm-zed: couldn't list its tools: tools/list failed: stub failure"
+[[ "$doctor_body" == "$expected" ]] || fail "the block's output changed: $(diff <(printf '%s\n' "$expected") <(printf '%s\n' "$doctor_body"))"
+
+if grep -q LEAKED "$all"; then fail "the block leaks variables: $(grep LEAKED "$all" | sort -u)"; fi
 for k in "$KEY_RO" "$KEY_RW"; do
   if grep -qF -- "$k" "$all"; then fail "a key shows in the output"; fi
 done

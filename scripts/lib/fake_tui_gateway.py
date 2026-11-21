@@ -73,6 +73,7 @@ class FakeTuiGateway:
         self._owner: dict[str, web.WebSocketResponse] = {}
         self.logins = 0
         self.busy_interrupts = 0
+        self.silent: set[str] = set()  # methods recorded but never answered
         self.runner: web.AppRunner | None = None
         self.url = ""
 
@@ -215,6 +216,8 @@ class FakeTuiGateway:
             if extra:
                 await self._send(ws, self._err(rid, 4000, f"unknown param {sorted(extra)[0]}"))
                 return
+        if method in self.silent:
+            return
         try:
             result = await getattr(self, "_m_" + method.replace(".", "_"))(ws, params)
             await self._send(ws, {"jsonrpc": "2.0", "id": rid, "result": result})

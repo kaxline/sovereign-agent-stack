@@ -18,7 +18,6 @@ Hermes v2026.9+ routes parsing through ``normalize_tool_call_entries``.
 """
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 TARGET = Path("/opt/hermes/tools/tool_search_validation.py")
@@ -108,33 +107,6 @@ NEW_CALLS_LIST_CHECK = '''    # assistant-stack: tool_call stringified calls
         return [], "tool_call 'calls' must be a non-empty array of {name, arguments}"
 '''
 
-_AGENT_LOG_RE = re.compile(
-    r"[ \t]*# #region agent log\n.*?[ \t]*# #endregion\n",
-    re.S,
-)
-
-
-def _ensure_coding_aliases(text: str) -> str:
-    if "coding_start_task" in text and "_STACK_TOOL_ALIASES" in text:
-        # Expand an older alias map that lacks coding_* entries.
-        old = '''_STACK_TOOL_ALIASES = {
-    "web_search": "mcp__searxng__searxng_web_search",
-    "web_extract": "mcp__searxng__web_url_read",
-    "searxng_web_search": "mcp__searxng__searxng_web_search",
-    "web_url_read": "mcp__searxng__web_url_read",
-}
-'''
-        if old in text:
-            return text.replace(old, STACK_ALIASES.lstrip("\n"), 1)
-        return text
-    return text
-
-
-def _strip_debug_ingest(text: str) -> str:
-    """Remove temporary debug-session POSTs left by earlier patch builds."""
-    return _AGENT_LOG_RE.sub("", text)
-
-
 def main() -> int:
     if not TARGET.is_file():
         if TARGET_LEGACY.is_file():
@@ -146,11 +118,6 @@ def main() -> int:
     text = TARGET.read_text(encoding="utf-8")
     changed = False
 
-    cleaned = _strip_debug_ingest(text)
-    if cleaned != text:
-        text = cleaned
-        changed = True
-
     if "_STACK_TOOL_ALIASES" not in text:
         anchor = "def normalize_tool_call_entries("
         if anchor not in text:
@@ -158,11 +125,6 @@ def main() -> int:
             return 0
         text = text.replace(anchor, STACK_ALIASES + "\n" + anchor, 1)
         changed = True
-    else:
-        new_text = _ensure_coding_aliases(text)
-        if new_text != text:
-            text = new_text
-            changed = True
 
     if MARKER not in text and OLD_APPEND in text:
         text = text.replace(OLD_APPEND, NEW_APPEND, 1)
