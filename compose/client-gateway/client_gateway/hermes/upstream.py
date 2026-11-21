@@ -29,6 +29,8 @@ log = logging.getLogger("client_gateway.hermes.upstream")
 PING_INTERVAL_S = 15.0
 READY_TIMEOUT_S = 10.0
 BACKOFF_MAX_S = 30.0
+# How long a call waits for Hermes' answer before giving up.
+UPSTREAM_TIMEOUT_S = 180.0
 
 
 def _describe(exc: BaseException) -> str:
@@ -262,7 +264,7 @@ class Upstream:
         finally:
             self._pending.pop(rid, None)
 
-    async def call(self, method: str, params: dict, timeout: float = 180.0) -> dict:
+    async def call(self, method: str, params: dict, timeout: float = UPSTREAM_TIMEOUT_S) -> dict:
         """One request. Raises HermesError for an error answer and UpstreamDown when
         the socket is down or drops before the answer."""
         if not self.connected.is_set():
