@@ -9,7 +9,11 @@ the fill overlay, which calls POST /fill and lets the broker write the page
 itself.
 
 The bwbroker plugin (compose/hermes/plugins/bwbroker) imports this module from
-beside its __init__.py; 14-install-bwbroker-plugin.sh puts both there.
+beside its __init__.py; 14-install-bwbroker-plugin.sh puts both there. This is
+the one broker client: the fill overlay (patch-bitwarden-broker-fill.py) and the
+sign-in actions (vault_bitwarden_signin.py) import it as
+plugins.bwbroker.bitwarden_broker_backend and use its call(), error_code() and
+PREFIX.
 
 A broker that is down, or answers with something other than JSON, lists no
 items and gives no metadata rather than raising: a raise would surface in
@@ -42,9 +46,10 @@ TIMEOUT = 5
 # TIMEOUT the first listing of a turn timed out and listed nothing, which reads
 # in the conversation as a vault with no logins in it.
 ITEMS_TIMEOUT = 45
-HANDLE_PREFIX = "bwbroker:"
+PREFIX = "bwbroker:"  # every handle this backend lists starts with it
 NO_VALUES = "bwbroker never returns values"
-# Replies are small JSON; /items for a large vault stays well under this.
+# Replies are small JSON; /items for a large vault stays well under this. Only a memory bound:
+# every caller reads /items, and a lower cap anywhere would drop a large vault's items there only.
 MAX_REPLY = 8 * 1024 * 1024
 # The broker's error codes; anything else in an error body is not passed on.
 ERROR_CODE = re.compile(r"[a-z][a-z_]{0,39}")
@@ -121,7 +126,7 @@ def item_meta(entry: Any) -> Optional[VaultItemMeta]:
         return None
     handle, label, username = entry.get("handle"), entry.get("label"), entry.get("username")
     origins, has_totp = entry.get("origins"), entry.get("has_totp")
-    if not (type(handle) is str and handle.startswith(HANDLE_PREFIX) and type(label) is str
+    if not (type(handle) is str and handle.startswith(PREFIX) and type(label) is str
             and (username is None or type(username) is str) and type(has_totp) is bool
             and isinstance(origins, list) and all(type(o) is str for o in origins)):
         return None
@@ -134,7 +139,7 @@ def item_meta(entry: Any) -> Optional[VaultItemMeta]:
 class BrokerLoginBackend(LoginBackend):
     # Plain class attributes: Hermes refuses descriptors on these three.
     name = "bwbroker"
-    prefix = "bwbroker:"
+    prefix = PREFIX
     display_name = "Bitwarden"
     needs_unlock = False
 
