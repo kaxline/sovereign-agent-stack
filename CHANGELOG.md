@@ -24,6 +24,13 @@ the stack under another app.
 
 ### Changes
 
+- New SSH listener ([docs/ssh-listener.md](docs/ssh-listener.md)) for hosts
+  a client can't reach on port 22. It runs as its own container, apart from
+  the stack, and passes HyperDHT streams from allowed client keys to the
+  host's sshd. Releases attach `ssh-listener.sh`, which sets it up on a host
+  with no stack, and push its image to
+  `ghcr.io/kaxline/sovereign-agent-stack/ssh-listener` for amd64 and arm64.
+  The stack itself doesn't change.
 - `patch-block-native-web-tools`, `patch-tool-call-flat-args` and
   `patch-cron-scheduler-delivery` no longer rewrite blocks that their builds
   from before v0.1.0 left in `/opt/hermes` (debug helpers, an alias map
