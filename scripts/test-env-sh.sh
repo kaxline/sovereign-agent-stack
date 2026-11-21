@@ -63,6 +63,33 @@ check_get DUP 'first'
 rm -f "${tmp}/.env"
 [ "$(env_get_file "$g" SQ)" = 'a b' ] || fail "env_get_file"
 
+# --- lib/env.sh: gateway_topology ------------------------------------------
+# 019-pin-profile-gateways' rule: a valid topology wins, an invalid one warns
+# and means standalone, unset falls back to HERMES_PIN_STANDALONE_GATEWAYS.
+topo_env="${tmp}/topology.env"
+check_topology() { # want topology pin [env-file topology]
+  local got err
+  : > "$topo_env"
+  [ -z "${4:-}" ] || printf 'HERMES_GATEWAY_TOPOLOGY=%s\n' "$4" > "$topo_env"
+  got="$(ENV_FILE="$topo_env" HERMES_GATEWAY_TOPOLOGY="$2" HERMES_PIN_STANDALONE_GATEWAYS="$3" \
+    gateway_topology 2> "${tmp}/topology.err")"
+  err="$(cat "${tmp}/topology.err")"
+  [ "$got" = "$1" ] || fail "gateway_topology [$2] pin [$3] file [${4:-}]: want $1, got [$got]"
+  case "$2${4:-}" in
+    *bogus*) [ -n "$err" ] || fail "gateway_topology [$2${4:-}]: no warning" ;;
+    *) [ -z "$err" ] || fail "gateway_topology [$2] pin [$3]: unexpected stderr [$err]" ;;
+  esac
+}
+check_topology standalone '' 1
+check_topology multiplex '' 0
+check_topology multiplex '' off
+check_topology multiplex ' Multiplex ' 1
+check_topology standalone standalone 0
+check_topology standalone bogus 0
+check_topology standalone bogus 1
+check_topology standalone '' 0 bogus
+check_topology multiplex '' 1 multiplex
+
 # --- lib/env.sh: env_true ---------------------------------------------------
 # addon_manifest.truthy's rule: 1, true, yes, on, any case, ends trimmed.
 t="${tmp}/true.env"

@@ -88,8 +88,8 @@ Overlays with no re-test command fail only as a warning in the container log.
 | `compaction-tool-facts` | 248 | Gives the compaction summarizer the original tool bodies (4,000 chars each, 60,000 total) instead of prune stubs; adds a `## Findings` section. | upstream | draft, not filed | `scripts/test-compaction-tool-facts.py` |
 | `tool-eval-trace` | 498 | JSONL turn traces for the tool-calling eval; records web rewrites. | adapter | stays in the adapter | `scripts/test-tool-eval-trace.py` |
 | `block-native-web-tools` | 95 | Rewrites hallucinated `web_search` / `web_extract` to the SearXNG MCP tools, or returns a terminal error. | adapter | stays in the adapter | none; `scripts/test-tool-eval-trace.py` logs the rewrite path |
-| `send-message tools` | 377 | Synthesises a Signal platform config from `SIGNAL_*` with the adapter disabled; registers `send_message` as an agent-callable tool and keeps it in the schema. | adapter | stays in the adapter | `scripts/test-send-message-tool.py` |
-| `cron-scheduler-delivery` | 281 | (1) Rejects `api_server` cron origins and falls back to home channels. (2) Synthesises Signal config for cron delivery. | adapter | stays in the adapter | `scripts/test-cron-delivery-errors.py` |
+| `send-message tools` | 419 | Synthesises a Signal platform config from `SIGNAL_*` with the adapter disabled (`signal_env.py`, shared with cron delivery); registers `send_message` as an agent-callable tool and keeps it in the schema. | adapter | stays in the adapter | `scripts/test-send-message-tool.py` |
+| `cron-scheduler-delivery` | 264 | (1) Rejects `api_server` cron origins and falls back to home channels. (2) Synthesises Signal config for cron delivery through `signal_env.py`. | adapter | stays in the adapter | `scripts/test-cron-delivery-errors.py` |
 
 ### Search and browser hints
 

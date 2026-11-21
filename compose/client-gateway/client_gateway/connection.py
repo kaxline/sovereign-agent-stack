@@ -178,9 +178,9 @@ class Connection:
         rid, method, params = frame["id"], frame["method"], frame.get("params") or {}
         started = time.monotonic()
         try:
-            if self.validator is not None:
+            if self.validator is not None and self.validator.has_schema(method, "params"):
                 problems = self.validator.params_errors(method, params)
-                if problems and not problems[0].startswith("no schema"):
+                if problems:
                     raise AcpError(INVALID_PARAMS, "invalid params", "invalid_params", details=problems[:5])
             handler = HANDLERS.get(method)
             if handler is None:

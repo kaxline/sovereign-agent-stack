@@ -3,6 +3,8 @@
 
 1. Synthesize Signal PlatformConfig from SIGNAL_* env when the browser
    adapter is disabled (default owns the SSE lock; WebUI still needs outbound).
+   Installs signal_env.py (shared with patch-cron-scheduler-delivery.py) and
+   calls it from a _signal_env_pconfig helper beside Weixin's.
 2. Re-register send_message as an agent-callable tool and include it in core
    toolsets (upstream leaves it unregistered on purpose).
 
@@ -10,7 +12,11 @@ Formerly patch-signal-send-disabled-adapter.py + patch-reregister-send-message.p
 """
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
+
+SIGNAL_ENV_SRC = Path("/bootstrap/signal_env.py")
+SIGNAL_ENV_DST = Path("/opt/hermes/agent/signal_env.py")
 
 # v0.23.2 moved tools/send_message_tool.py to gateway/outbound/send.py unchanged
 # where these anchors sit.
@@ -54,24 +60,8 @@ SIGNAL_HELPER = '''def _weixin_env_pconfig():
 def _signal_env_pconfig():
     """Synthesize a Signal PlatformConfig from env when adapter is disabled."""
     # assistant-stack: synthesize Signal from env when adapter disabled
-    signal_url = get_secret("SIGNAL_HTTP_URL", "").strip()
-    signal_account = get_secret("SIGNAL_ACCOUNT", "").strip()
-    if not (signal_url and signal_account):
-        return None
-    from gateway.config import HomeChannel, PlatformConfig
-    pconfig = PlatformConfig(
-        enabled=True,
-        extra={"http_url": signal_url, "account": signal_account},
-    )
-    signal_home = get_secret("SIGNAL_HOME_CHANNEL", "").strip()
-    if signal_home:
-        from gateway.config import Platform
-        pconfig.home_channel = HomeChannel(
-            platform=Platform.SIGNAL,
-            chat_id=signal_home,
-            name=get_secret("SIGNAL_HOME_CHANNEL_NAME", "") or "Home",
-        )
-    return pconfig
+    from agent.signal_env import signal_env_pconfig
+    return signal_env_pconfig()
 
 
 '''
@@ -171,9 +161,20 @@ TOOLSETS_NEW = '''    "clarify",
 '''
 
 
+def _install_signal_env() -> str | None:
+    """Copy signal_env.py into the agent package; a skip message when it can't."""
+    if not SIGNAL_ENV_SRC.is_file():
+        return f"skip: missing {SIGNAL_ENV_SRC}"
+    shutil.copyfile(SIGNAL_ENV_SRC, SIGNAL_ENV_DST)
+    return None
+
+
 def _patch_signal_synth() -> str:
     if not TOOL_TARGET.is_file():
         return f"skip: missing {TOOL_TARGET}"
+    skip = _install_signal_env()
+    if skip:
+        return skip
     text = TOOL_TARGET.read_text(encoding="utf-8")
     if SIGNAL_MARKER in text:
         return f"already patched (signal synth): {TOOL_TARGET}"

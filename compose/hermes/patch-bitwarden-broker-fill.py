@@ -17,7 +17,9 @@ connection, so the gateway never holds it. In tools/browser_vault_tool.py this:
   and sets sign_in_only on each listed bwbroker: item from /items.
 
 _bwbroker_tab picks the tab a broker write lands in; patch-bitwarden-signin.py
-uses it for the sign-in actions.
+uses it for the sign-in actions. Broker calls go through the bwbroker plugin's
+backend module (bitwarden_broker_backend.py); only the agent-facing texts are
+kept here.
 
 A bwbroker: fill whose metadata read came back empty because the broker is
 down gets the "Bitwarden is unavailable" result instead of core's unknown-handle
@@ -93,13 +95,12 @@ HELPERS = f"{MARKER}\n" + r'''# A bwbroker: login is filled by the Bitwarden bro
 # credentials network. It writes the value into the tab over its own CDP connection and returns a
 # digest entry that agent.redact scrubs by, so the value never reaches the gateway. Results use core's
 # shapes. From a broker reply only the fixed error code and a well-formed origin are passed on.
-_BWBROKER_URL = "http://bitwarden-broker:8099"
-_BWBROKER_TOKEN_FILE = "/run/bitwarden/api-token"  # mounted read-only; without it every call is 401
+# The broker client (URL, bearer token, reply cap, error-code check) is the bwbroker plugin's backend
+# module, which 14-install-bwbroker-plugin.sh always installs; _bwbroker() imports it on first use, so
+# this module still imports when the plugin is missing.
 _BWBROKER_NAME = "bwbroker"
-_BWBROKER_PREFIX = "bwbroker:"
 _BWBROKER_FILL_TIMEOUT = 30.0  # the broker's own CDP deadline is 10 s, after bw has returned the value
 _BWBROKER_STATUS_TIMEOUT = 2.0
-_BWBROKER_MAX_REPLY = 1 << 20
 _BWBROKER_UNAVAILABLE = "Bitwarden is unavailable right now. Try again shortly, or ask the user to check make doctor."
 _BWBROKER_OTHER = "Bitwarden could not fill this login. Try again shortly, or ask the user to check make doctor."
 _BWBROKER_ERRORS = {
@@ -123,41 +124,24 @@ _BWBROKER_OTHER_ACCOUNT = ("If this page asks for the code of a different accoun
                            "handle so the user is asked.")
 
 
+def _bwbroker() -> Any:
+    """The bwbroker plugin's backend module, which holds the broker client."""
+    from plugins.bwbroker import bitwarden_broker_backend
+
+    return bitwarden_broker_backend
+
+
 def _bwbroker_owns(backend: Any, handle: Any) -> bool:
-    return getattr(backend, "name", None) == _BWBROKER_NAME and str(handle or "").startswith(_BWBROKER_PREFIX)
-
-
-def _bwbroker_token() -> str:
-    """The broker's bearer token, or "" when the file is missing or unreadable."""
-    try:
-        with open(_BWBROKER_TOKEN_FILE, encoding="utf-8") as handle:
-            return handle.read(4096).strip()
-    except OSError:
-        return ""
+    return getattr(backend, "name", None) == _BWBROKER_NAME and str(handle or "").startswith(_bwbroker().PREFIX)
 
 
 def _bwbroker_call(method: str, path: str, body: Optional[dict] = None, *,
                    timeout: float = _BWBROKER_FILL_TIMEOUT) -> Optional[tuple[int, Any]]:
     """(HTTP status, decoded JSON) from the broker, or None when it did not answer with JSON."""
-    import http.client
-    import urllib.error
-    import urllib.request
-
-    data = None if body is None else json.dumps(body).encode()
-    headers = {"Content-Type": "application/json"} if data is not None else {}
-    headers["Authorization"] = "Bearer " + _bwbroker_token()
-    request = urllib.request.Request(_BWBROKER_URL + path, data=data, method=method, headers=headers)
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # never through a proxy
+    broker = _bwbroker()
     try:
-        try:
-            with opener.open(request, timeout=timeout) as resp:
-                status, raw = resp.status, resp.read(_BWBROKER_MAX_REPLY + 1)
-        except urllib.error.HTTPError as exc:
-            status, raw = exc.code, exc.read(_BWBROKER_MAX_REPLY + 1)
-        if len(raw) > _BWBROKER_MAX_REPLY:
-            return None
-        return status, json.loads(raw)
-    except (OSError, http.client.HTTPException, ValueError):
+        return broker.call(method, path, body, timeout=timeout)
+    except broker.BrokerUnavailable:
         return None
 
 
@@ -165,17 +149,10 @@ def _bwbroker_down() -> bool:
     return _bwbroker_call("GET", "/health", timeout=_BWBROKER_STATUS_TIMEOUT) is None
 
 
-def _bwbroker_code(payload: Any) -> str:
-    import re
-
-    code = payload.get("error") if isinstance(payload, dict) else None
-    return code if isinstance(code, str) and re.fullmatch(r"[a-z][a-z_]{0,39}", code) else "unavailable"
-
-
 def _bwbroker_slug(handle: str) -> str:
     import re
 
-    slug = handle[len(_BWBROKER_PREFIX):].partition("/")[0]
+    slug = handle[len(_bwbroker().PREFIX):].partition("/")[0]
     return slug if re.fullmatch(r"[a-z0-9-]{1,64}", slug) else "<slug>"
 
 
@@ -338,7 +315,7 @@ def _bwbroker_fill(handle: str, meta: Any, page_origin: str, task_id: str, field
         if payload.get("filled") is True:
             origin = found if found in saved_origins(meta) else page_origin
             return json.dumps({"success": True, "filled": [field], "origin": origin, "next": _BWBROKER_NEXT[field]})
-    return json.dumps(_bwbroker_refusal(_bwbroker_code(payload), handle, meta, found, field))
+    return json.dumps(_bwbroker_refusal(_bwbroker().error_code(payload), handle, meta, found, field))
 
 
 def _bwbroker_sign_in_flags() -> Optional[Dict[str, bool]]:
