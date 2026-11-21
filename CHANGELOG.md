@@ -24,6 +24,10 @@ the stack under another app.
 
 ### Changes
 
+- **Ollama** (`ollama` profile) 0.40.11 → 0.40.17. Since 0.40.14 the
+  OpenAI-compatible endpoints keep a model's packaged sampling defaults when
+  the client sends no `temperature` or `top_p`, instead of forcing 1.0, as
+  `/api/chat` already did.
 - **nginx** (`vikunja-proxy`, `vaultwarden-tls`) 1.30.6-alpine →
   1.30.7-alpine, for the 2026-11-18 security fixes (HTTP/2 flow-control
   overflow, use-after-free with `resolver`, and others).
