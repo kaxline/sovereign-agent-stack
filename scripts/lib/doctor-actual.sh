@@ -3,15 +3,6 @@
 # scripts/test-actual-doctor.sh sources doctor-kit.sh and runs it against stubs.
 # shellcheck shell=bash
 
-# Health of a compose service: healthy, starting, a state, or empty when it
-# isn't running.
-actual_service_state() {
-  local cid
-  cid="$(docker compose ps -q "$1" 2>/dev/null || true)"
-  [[ -n "$cid" ]] || return 0
-  docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid" 2>/dev/null || true
-}
-
 # The write tools named in the add-on manifest, one per line. sed, not jq or
 # python3: the host may have neither.
 actual_write_tools() {
@@ -84,16 +75,10 @@ doctor_actual() {
 
 # The containers' health.
 actual_services() {
-  local svc state services="actual-mcp-rw actual-mcp-ro"
+  local svc services="actual-mcp-rw actual-mcp-ro"
   [[ "$local_on" -eq 1 ]] && services="actual-server ${services}"
   for svc in $services; do
-    state="$(actual_service_state "$svc")"
-    case "$state" in
-      healthy) ok "${svc} is healthy" ;;
-      starting) warn "${svc} is starting" ;;
-      "") warn "${svc} not running — make up" ;;
-      *) bad "${svc} is ${state} — docker compose logs ${svc}" ;;
-    esac
+    check_service_health "$svc"
   done
 }
 

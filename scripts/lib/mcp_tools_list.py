@@ -9,7 +9,7 @@ lines hold one. Prints tab-separated lines, never tool descriptions:
     missing<TAB><required tools the server doesn't list, space-separated>
     error<TAB><why the response couldn't be read>
 
-crm.sh runs it in the Hermes image (stack_python), doctor on the host.
+scripts/lib/mcp-probe.sh runs it through stack_python, for crm.sh and doctor.
 """
 
 import json
