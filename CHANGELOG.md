@@ -64,6 +64,12 @@ the stack under another app.
   between stopping and starting the receive thread, accepts group invitations
   addressed to the PNI, and rotates the account's sender key when a group
   member leaves or is removed. The linked account store is read as before.
+- `patch-block-native-web-tools`, `patch-tool-call-flat-args` and
+  `patch-cron-scheduler-delivery` no longer rewrite blocks that their builds
+  from before v0.1.0 left in `/opt/hermes` (debug helpers, an alias map
+  without the `coding_*` names, an older cron Signal block). Each now checks
+  only its marker. A container still carrying one of those blocks keeps it
+  until `make hermes-recreate`.
 - Hermes v0.23.2 overlay fixes. Each patch accepts the v0.23.1 and the
   v0.23.2 shape. `patch-digest-redaction`: the vault redaction registry moved
   to `agent/redact_vault_values.py`; the overlay patches it there and
@@ -166,6 +172,13 @@ the stack under another app.
   `N8N_NODE` is no longer read, so a `node` stub for
   `generate-n8n-credentials.js` is no longer called. Files an earlier release
   wrote under `n8n/demo-data/credentials/` stay gitignored and can be deleted.
+- Client gateway: when Hermes doesn't answer a call made on a live session
+  (`prompt.submit`, `session.cwd.set`) within 180 seconds, the client now gets
+  the same error as for any other call, code -32603 with reason
+  `runtime_timeout`. Before, the timeout escaped unmapped and the client got a
+  generic internal error; for a `cwd` on `session/new` that failed the whole
+  request instead of reporting `cwd: {"applied": false, "reason":
+  "runtime_timeout"}`.
 
 ## v0.3.17 — 2026-11-20
 

@@ -2,9 +2,9 @@
 """Client gateway over a scripted Hermes (tasks 1.4–1.7): upstream login and
 tickets, sessions (create with systemPrompt, cwd and mcpServers; list; load with
 replay; resume; delete), prompt turns and their stream mapping, queued
-prompts, cancel, approvals, clarify, the error table, a reaped runtime id, an
-upstream drop mid-turn (reason runtime_restarted), and no prompt text in the
-gateway's logs. Every frame validates against the ACP schema. Runs inside the
+prompts, cancel, approvals, clarify, the error table, a live call that times
+out (reason runtime_timeout), a reaped runtime id, an upstream drop mid-turn
+(reason runtime_restarted), and no prompt text in the gateway's logs. Every frame validates against the ACP schema. Runs inside the
 pinned Hermes image against scripts/lib/fake_tui_gateway.py."""
 
 from __future__ import annotations
@@ -102,6 +102,14 @@ async def checks(c: Checks) -> None:
         mcp = res["_meta"][NS]["mcpServers"]
         c.expect(mcp["applied"] == ["boundary"], f"registered server applied: {mcp}")
         c.expect(mcp["skipped"] == [{"name": "calendar-mac", "reason": "mcp_server_not_registered"}], f"skipped: {mcp}")
+        # A live call Hermes never answers ends as runtime_timeout, like any other call.
+        fake.silent.add("session.cwd.set")
+        backend.call_timeout = 0.5
+        res = await a.request("session/new", {"cwd": "/slow", "mcpServers": []})
+        c.expect(res["_meta"][NS].get("cwd") == {"applied": False, "reason": "runtime_timeout"},
+                 f"live-call timeout: {res['_meta'][NS]}")
+        fake.silent.clear()
+        backend.call_timeout = HermesBackend.call_timeout
         await expect_error(c, a.request("session/new", {
             "cwd": "/", "mcpServers": [], "systemPrompt": {"mode": "override", "content": [{"type": "text", "text": "x"}]},
         }), -32602, "system_prompt_mode_unsupported", "override mode")

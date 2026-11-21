@@ -78,7 +78,7 @@ Overlays with no re-test command fail only as a warning in the container log.
 | Overlay | Lines | What it changes | Class | Upstream | Re-test |
 |---|---:|---|---|---|---|
 | `text-tool-call-recovery` | 329 | Parses Python- or XML-style tool calls in assistant text into structured `tool_calls` before dispatch. | adapter | stays in the adapter | none (apply-time anchor only); `scripts/test-tool-eval-trace.py` exercises the call site |
-| `tool-call-flat-args` | 190 | Normalises weak-model `tool_call` shapes: flat siblings, nested name, short MCP aliases, stringified `calls`. | adapter | stays in the adapter | none |
+| `tool-call-flat-args` | 152 | Normalises weak-model `tool_call` shapes: flat siblings, nested name, short MCP aliases, stringified `calls`. | adapter | stays in the adapter | none |
 | `intent-ack-continuation` | 146 | Lets `looks_like_codex_intermediate_ack` continue a turn past 1,200 characters (up to 4,000) when the reply opens with an ack and `require_workspace` is off. Before v0.23.0 it also stops earlier turns' tool messages from blocking it; v0.23.0 does that upstream (#69778). | upstream | draft, not filed | `scripts/test-intent-ack.py` |
 | `tool-search-visible` | 126 | `tool_search` also returns already-visible core tools, with a call-directly hint. | upstream | draft, not filed | none |
 | `tool-search-always-include` | 95 | Honors `tools.tool_search.always_include` so stack MCP pins (SearXNG, LightRAG, OpenCode) stay eager. | upstream | draft, not filed | `docker compose exec hermes grep -F 'assistant-stack: honor always_include' /opt/hermes/tools/tool_search.py` (docs/hermes.md) |
@@ -87,9 +87,9 @@ Overlays with no re-test command fail only as a warning in the container log.
 | `guardrail-halt-stream` | 62 | Streams the guardrail stop note through `_deliver_to_stream_callbacks`, so dashboard gateway clients get it as `message.delta`, not only in `message.complete`. | upstream | draft, not filed | `scripts/test-guardrail-halt-stream.py` |
 | `compaction-tool-facts` | 248 | Gives the compaction summarizer the original tool bodies (4,000 chars each, 60,000 total) instead of prune stubs; adds a `## Findings` section. | upstream | draft, not filed | `scripts/test-compaction-tool-facts.py` |
 | `tool-eval-trace` | 498 | JSONL turn traces for the tool-calling eval; records web rewrites. | adapter | stays in the adapter | `scripts/test-tool-eval-trace.py` |
-| `block-native-web-tools` | 149 | Rewrites hallucinated `web_search` / `web_extract` to the SearXNG MCP tools, or returns a terminal error. | adapter | stays in the adapter | none; `scripts/test-tool-eval-trace.py` logs the rewrite path |
+| `block-native-web-tools` | 95 | Rewrites hallucinated `web_search` / `web_extract` to the SearXNG MCP tools, or returns a terminal error. | adapter | stays in the adapter | none; `scripts/test-tool-eval-trace.py` logs the rewrite path |
 | `send-message tools` | 377 | Synthesises a Signal platform config from `SIGNAL_*` with the adapter disabled; registers `send_message` as an agent-callable tool and keeps it in the schema. | adapter | stays in the adapter | `scripts/test-send-message-tool.py` |
-| `cron-scheduler-delivery` | 307 | (1) Rejects `api_server` cron origins and falls back to home channels. (2) Synthesises Signal config for cron delivery. | adapter | stays in the adapter | `scripts/test-cron-delivery-errors.py` |
+| `cron-scheduler-delivery` | 281 | (1) Rejects `api_server` cron origins and falls back to home channels. (2) Synthesises Signal config for cron delivery. | adapter | stays in the adapter | `scripts/test-cron-delivery-errors.py` |
 
 ### Search and browser hints
 
