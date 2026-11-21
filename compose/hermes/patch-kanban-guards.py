@@ -16,40 +16,13 @@ See kanban_guards.py for the design and docs/extending.md for the contract.
 from __future__ import annotations
 
 import os
-import shutil
 from pathlib import Path
 
-ROOT = Path(os.environ.get("HERMES_ROOT", "/opt/hermes"))
+from overlay_patch import ROOT, edit, install
+
 BOOTSTRAP = Path(os.environ.get("KANBAN_GUARDS_BOOTSTRAP", "/bootstrap"))
 MARKER = "# assistant-stack: kanban guards"
 TAG = "[patch-kanban-guards]"
-
-
-def _install() -> None:
-    src, dst = BOOTSTRAP / "kanban_guards.py", ROOT / "hermes_cli" / "kanban_guards.py"
-    if not src.is_file():
-        raise SystemExit(f"{TAG} missing {src}")
-    shutil.copyfile(src, dst)
-    print(f"{TAG} installed {dst}")
-
-
-def _edit(path: Path, label: str, edits: list[tuple[str, str, int]], append: str = "") -> None:
-    """Apply (old, new, expected_count) edits to *path* once; MARKER makes it idempotent."""
-    text = path.read_text()
-    if MARKER in text:
-        print(f"{TAG} already applied ({label})")
-        return
-    for old, new, count in edits:
-        found = text.count(old)
-        if found != count:
-            raise SystemExit(
-                f"{TAG} expected {count} x {old.strip()[:60]!r} in {path}, found {found}. "
-                "Hermes image may have changed — update this patch.")
-        text = text.replace(old, new)
-    if append:
-        text = text.rstrip("\n") + "\n" + append
-    path.write_text(text)
-    print(f"{TAG} patched {label}")
 
 
 def _patch_create() -> None:
@@ -63,9 +36,8 @@ def _patch_create() -> None:
         "    )\n"
         "\n"
     )
-    _edit(ROOT / "hermes_cli" / "kanban_db.py", "create_task workspace check", [
-        (anchor, check + anchor, 1),
-    ])
+    edit(ROOT / "hermes_cli" / "kanban_db.py", [(anchor, check + anchor)], MARKER, TAG,
+         label="create_task workspace check")
 
 
 def _patch_dispatch() -> None:
@@ -90,7 +62,7 @@ def _patch_dispatch() -> None:
     provider_old = 'event_payload_extra={"pid": pid, "claimer": claimer, "terminal_provider": True},\n'
     provider_new = ('event_payload_extra={"pid": pid, "claimer": claimer, "terminal_provider": True,\n'
                     '                                     "retryable": False},\n')
-    install = (
+    install_call = (
         f"\n{MARKER}: comment on the creator task when a task gives up.\n"
         "try:\n"
         "    from hermes_cli import kanban_guards as _assistant_kanban_guards\n"
@@ -99,14 +71,12 @@ def _patch_dispatch() -> None:
         "    import logging as _assistant_logging\n"
         "    _assistant_logging.getLogger(__name__).exception(\"kanban guards overlay failed to install\")\n"
     )
-    _edit(ROOT / "hermes_cli" / "kanban_db_dispatch.py", "dispatcher give-up", [
-        (spawn_old, spawn_new, 1),
-        (provider_old, provider_new, 1),
-    ], append=install)
+    edit(ROOT / "hermes_cli" / "kanban_db_dispatch.py", [(spawn_old, spawn_new), (provider_old, provider_new)],
+         MARKER, TAG, label="dispatcher give-up", append=install_call)
 
 
 def main() -> None:
-    _install()
+    install(BOOTSTRAP / "kanban_guards.py", ROOT / "hermes_cli" / "kanban_guards.py", TAG)
     _patch_create()
     _patch_dispatch()
 

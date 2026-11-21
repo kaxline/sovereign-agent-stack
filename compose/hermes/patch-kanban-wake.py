@@ -14,44 +14,13 @@ See kanban_wake.py for the design and docs/extending.md for the contract.
 from __future__ import annotations
 
 import os
-import shutil
 from pathlib import Path
 
-ROOT = Path(os.environ.get("HERMES_ROOT", "/opt/hermes"))
+from overlay_patch import ROOT, edit, install, one_of
+
 BOOTSTRAP = Path(os.environ.get("KANBAN_WAKE_BOOTSTRAP", "/bootstrap"))
 MARKER = "# assistant-stack: kanban wake"
 TAG = "[patch-kanban-wake]"
-
-
-def _install() -> None:
-    src, dst = BOOTSTRAP / "kanban_wake.py", ROOT / "agent" / "kanban_wake.py"
-    if not src.is_file():
-        raise SystemExit(f"{TAG} missing {src}")
-    shutil.copyfile(src, dst)
-    print(f"{TAG} installed {dst}")
-
-
-def _edit(path: Path, label: str, edits: list[tuple[str, str, int]]) -> None:
-    """Apply (old, new, expected_count) edits to *path* once; MARKER makes it idempotent."""
-    text = path.read_text()
-    if MARKER in text:
-        print(f"{TAG} already applied ({label})")
-        return
-    for old, new, count in edits:
-        # A tuple of (old, new) pairs lists the shapes of one anchor across
-        # supported Hermes tags; the first that matches is used.
-        variants = old if isinstance(old, tuple) else ((old, new),)
-        for old_v, new_v in variants:
-            found = text.count(old_v)
-            if found == count:
-                break
-        else:
-            raise SystemExit(
-                f"{TAG} expected {count} x {variants[0][0].strip()[:60]!r} in {path}, found {found}. "
-                "Hermes image may have changed — update this patch.")
-        text = text.replace(old_v, new_v)
-    path.write_text(text)
-    print(f"{TAG} patched {label}")
 
 
 GAVE_UP_OLD = (
@@ -69,7 +38,7 @@ FORMATTERS_NEW = (
     "\n"
 ) + FORMATTERS_OLD
 
-POLL_SIG = (
+POLL_SIG = one_of(
     # v0.22.7
     ("def _kb_poll_board(_kb, slug: str, session_key: str) -> list:\n",
      "def _kb_poll_board(_kb, slug: str, session_key: str, session: dict | None = None) -> list:\n"),
@@ -99,7 +68,7 @@ PRECHECK_NEW = (
 FILTER_OLD = "            if (sub.get(\"platform\") or \"\").lower() != \"tui\" or sub.get(\"chat_id\") != session_key:\n"
 FILTER_NEW = "            if (sub.get(\"platform\") or \"\").lower() != \"tui\" or sub.get(\"chat_id\") not in _assistant_keys:\n"
 
-CALL = (
+CALL = one_of(
     ("    return [t for slug in unique.values() for t in _kb_poll_board(_kb, slug, session_key)]\n",
      "    return [t for slug in unique.values() for t in _kb_poll_board(_kb, slug, session_key, session)]\n"),
     ("    texts = [t for slug in unique.values() for t in _kb_poll_board(_kb, slug, session_key, stray, unreclaimed)]\n",
@@ -109,15 +78,15 @@ CALL = (
 
 
 def main() -> None:
-    _install()
-    _edit(ROOT / "tui_gateway" / "session_notifications.py", "session notifications", [
-        (GAVE_UP_OLD, GAVE_UP_NEW, 1),
-        (FORMATTERS_OLD, FORMATTERS_NEW, 1),
-        (POLL_SIG, None, 1),
-        (PRECHECK_OLD, PRECHECK_NEW, 1),
-        (FILTER_OLD, FILTER_NEW, 1),
-        (CALL, None, 1),
-    ])
+    install(BOOTSTRAP / "kanban_wake.py", ROOT / "agent" / "kanban_wake.py", TAG)
+    edit(ROOT / "tui_gateway" / "session_notifications.py", [
+        (GAVE_UP_OLD, GAVE_UP_NEW),
+        (FORMATTERS_OLD, FORMATTERS_NEW),
+        POLL_SIG,
+        (PRECHECK_OLD, PRECHECK_NEW),
+        (FILTER_OLD, FILTER_NEW),
+        CALL,
+    ], MARKER, TAG, label="session notifications")
 
 
 if __name__ == "__main__":

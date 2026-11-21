@@ -17,30 +17,11 @@ See docs/extending.md ("Dashboard links") for the contract.
 """
 from __future__ import annotations
 
-import os
-from pathlib import Path
+from overlay_patch import ROOT, edit
 
-ROOT = Path(os.environ.get("HERMES_ROOT", "/opt/hermes"))
 MARKER = "assistant-stack: board links"
 EMBED_MARKER = "assistant-stack: board embed"
 TAG = "[patch-dashboard-board]"
-
-
-def _edit(path: Path, label: str, marker: str, edits: list[tuple[str, str, int]]) -> None:
-    """Apply (old, new, expected_count) edits to *path* once; *marker* makes it idempotent."""
-    text = path.read_text()
-    if marker in text:
-        print(f"{TAG} already applied ({label})")
-        return
-    for old, new, count in edits:
-        found = text.count(old)
-        if found != count:
-            raise SystemExit(
-                f"{TAG} expected {count} x {old.strip()[:60]!r} in {path}, found {found}. "
-                "Hermes image may have changed — update this patch.")
-        text = text.replace(old, new)
-    path.write_text(text)
-    print(f"{TAG} patched {label}")
 
 
 HELPERS = f"""\
@@ -98,18 +79,18 @@ def _patch_kanban() -> None:
     ws = "    // --- WebSocket ---------------------------------------------------------\n"
     close = "          onClose: function () { setSelectedTaskId(null); },\n"
     switch = "      setBoard(nextSlug);\n"
-    _edit(ROOT / "plugins" / "kanban" / "dashboard" / "dist" / "index.js", "kanban task links", MARKER, [
-        ("  function withBoard(url, board) {\n", HELPERS + "  function withBoard(url, board) {\n", 1),
+    edit(ROOT / "plugins" / "kanban" / "dashboard" / "dist" / "index.js", [
+        ("  function withBoard(url, board) {\n", HELPERS + "  function withBoard(url, board) {\n"),
         ("const [board, setBoard] = useState(() => readSelectedBoard() || null);",
-         'const [board, setBoard] = useState(() => readLinkParam("board") || readSelectedBoard() || null);', 1),
+         'const [board, setBoard] = useState(() => readLinkParam("board") || readSelectedBoard() || null);'),
         ("const [selectedTaskId, setSelectedTaskId] = useState(null);\n",
          "const [selectedTaskId, setSelectedTaskId] = useState(null);\n"
-         '    const linkTaskRef = useRef(readLinkParam("task"));\n', 1),
-        (ws, OPEN_LINKED + ws, 1),
-        (close, '          onClose: function () { setSelectedTaskId(null); dropLinkParam("task"); },\n', 1),
+         '    const linkTaskRef = useRef(readLinkParam("task"));\n'),
+        (ws, OPEN_LINKED + ws),
+        (close, '          onClose: function () { setSelectedTaskId(null); dropLinkParam("task"); },\n'),
         # Picking another board in the switcher replaces the link's board.
-        (switch, switch + '      dropLinkParam("board");\n', 1),
-    ])
+        (switch, switch + '      dropLinkParam("board");\n'),
+    ], MARKER, TAG, label="kanban task links")
 
 
 # The selectors are the shell's own landmarks in web/src/App.tsx and
@@ -123,9 +104,8 @@ EMBED = f"""\
 
 
 def _patch_index() -> None:
-    _edit(ROOT / "hermes_cli" / "web_dist" / "index.html", "dashboard embed", EMBED_MARKER, [
-        ("  </head>\n", EMBED + "  </head>\n", 1),
-    ])
+    edit(ROOT / "hermes_cli" / "web_dist" / "index.html", [("  </head>\n", EMBED + "  </head>\n")],
+         EMBED_MARKER, TAG, label="dashboard embed")
 
 
 def main() -> None:

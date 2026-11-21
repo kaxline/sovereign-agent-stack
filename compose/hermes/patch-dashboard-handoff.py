@@ -15,50 +15,18 @@ dashboard_handoff.py for the design and docs/extending.md for the contract.
 from __future__ import annotations
 
 import os
-import shutil
 from pathlib import Path
 
-ROOT = Path(os.environ.get("HERMES_ROOT", "/opt/hermes"))
+from overlay_patch import ROOT, edit, install
+
 BOOTSTRAP = Path(os.environ.get("DASHBOARD_HANDOFF_BOOTSTRAP", "/bootstrap"))
 MARKER = "# assistant-stack: dashboard handoff"
 TAG = "[patch-dashboard-handoff]"
 AUTH = ROOT / "hermes_cli" / "dashboard_auth"
 
 
-def _install() -> None:
-    src, dst = BOOTSTRAP / "dashboard_handoff.py", ROOT / "hermes_cli" / "dashboard_handoff.py"
-    if not src.is_file():
-        raise SystemExit(f"{TAG} missing {src}")
-    shutil.copyfile(src, dst)
-    print(f"{TAG} installed {dst}")
-
-
-def _edit(path: Path, label: str, edits: list[tuple[str, str, int]], append: str = "") -> None:
-    """Apply (old, new, expected_count) edits to *path* once; MARKER makes it idempotent."""
-    text = path.read_text()
-    if MARKER in text:
-        print(f"{TAG} already applied ({label})")
-        return
-    for old, new, count in edits:
-        found = text.count(old)
-        if found != count:
-            raise SystemExit(
-                f"{TAG} expected {count} x {old.strip()[:60]!r} in {path}, found {found}. "
-                "Hermes image may have changed — update this patch.")
-        text = text.replace(old, new)
-    if append:
-        text = text.rstrip("\n") + "\n" + append
-    path.write_text(text)
-    print(f"{TAG} patched {label}")
-
-
 def _patch_routes() -> None:
-    path = AUTH / "routes.py"
-    text = path.read_text()
-    if MARKER not in text and ("\nrouter = APIRouter()\n" not in text or "\ndef _complete_login(" not in text):
-        raise SystemExit(f"{TAG} {path} has no module-level router or _complete_login. "
-                         "Hermes image may have changed — update this patch.")
-    install = (
+    install_call = (
         f"\n\n{MARKER}: GET /auth/handoff (one-time sign-in links).\n"
         "try:\n"
         "    import sys as _assistant_sys\n"
@@ -67,17 +35,18 @@ def _patch_routes() -> None:
         "except Exception:\n"
         "    _log.exception(\"dashboard handoff overlay failed to install\")\n"
     )
-    _edit(path, "handoff route", [], append=install)
+    edit(AUTH / "routes.py", [], MARKER, TAG, label="handoff route", append=install_call,
+         requires=["\nrouter = APIRouter()\n", "\ndef _complete_login("])
 
 
 def _patch_gate() -> None:
     old = '    "/auth/native/refresh", "/auth/password-login", "/auth/logout", "/login",\n'
     new = old + f'    "/auth/handoff",  {MARKER}\n'
-    _edit(AUTH / "middleware.py", "public handoff path", [(old, new, 1)])
+    edit(AUTH / "middleware.py", [(old, new)], MARKER, TAG, label="public handoff path")
 
 
 def main() -> None:
-    _install()
+    install(BOOTSTRAP / "dashboard_handoff.py", ROOT / "hermes_cli" / "dashboard_handoff.py", TAG)
     _patch_routes()
     _patch_gate()
 

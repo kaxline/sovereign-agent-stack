@@ -103,7 +103,7 @@ class Dashboard:
     def __init__(self, tag: str, env: dict[str, str]) -> None:
         self.name = f"assistant-test-dashboard-{os.getpid()}-{secrets.token_hex(3)}"
         mounts = []
-        for name in ("patch-dashboard-board.py", "dashboard_handoff.py", "patch-dashboard-handoff.py"):
+        for name in ("overlay_patch.py", "patch-dashboard-board.py", "dashboard_handoff.py", "patch-dashboard-handoff.py"):
             mounts += ["-v", f"{HERMES_DIR / name}:/bootstrap/{name}:ro"]
         mounts += ["-v", f"{HERMES_DIR / '13-patch-dashboard.sh'}:/etc/cont-init.d/13-patch-dashboard:ro"]
         env_args = []
