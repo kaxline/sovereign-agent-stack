@@ -390,14 +390,17 @@ neo4j-reset-password:
 	./scripts/reset-neo4j-password.sh
 
 # Re-imports n8n's demo credentials into its existing store, after
-# N8N_ENCRYPTION_KEY, LIGHTRAG_API_KEY or NEO4J_PASSWORD changed in .env.
-# n8n is stopped for the import and started again even when it fails.
-# WORKFLOWS=1 re-imports the starter workflows too. See docs/n8n.md.
+# LIGHTRAG_API_KEY or NEO4J_PASSWORD changed in .env. A running n8n is
+# stopped for the import and started again (only n8n, not its dependencies),
+# even when the import fails. WORKFLOWS=1 re-imports the starter workflows
+# too. See docs/n8n.md.
 n8n-reimport:
-	docker compose stop n8n
-	@status=0; docker compose run --rm --no-deps n8n-import /scripts/import-demo-data.sh \
+	@n8n="$$(docker compose ps -q --status running n8n 2>/dev/null)"; \
+	if [ -n "$$n8n" ]; then echo "Stopping n8n"; docker stop "$$n8n" >/dev/null || exit 1; fi; \
+	status=0; docker compose run --rm --no-deps n8n-import /scripts/import-demo-data.sh \
 		$(if $(filter 1,$(WORKFLOWS)),all,credentials) || status=$$?; \
-	docker compose up -d n8n; exit $$status
+	if [ -n "$$n8n" ]; then echo "Starting n8n"; docker start "$$n8n" >/dev/null || status=1; fi; \
+	exit $$status
 
 # Per-project working dirs under ASSISTANT_DATA_ROOT/projects/. See docs/projects.md.
 #   make project-init PROJECT=my-project

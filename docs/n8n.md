@@ -79,7 +79,7 @@ If you change `LIGHTRAG_API_KEY` or `NEO4J_PASSWORD` after first boot, re-import
 make n8n-reimport
 ```
 
-It stops n8n, regenerates the credentials from `.env` inside the `n8n-import` container, imports them over the existing ones, and starts n8n again.
+It stops n8n if it is running, regenerates the credentials from `.env` inside the `n8n-import` container, imports them over the existing ones, and starts n8n again if it was running. The store must exist already; on a new one, `make up` seeds it.
 
 `N8N_ENCRYPTION_KEY` has to match the key in `/home/node/.n8n/config` on the volume. n8n 2.x refuses to start when they differ ("Mismatching encryption keys"). 1.x starts with the `.env` key and then can't decrypt credentials saved under the other one.
 
