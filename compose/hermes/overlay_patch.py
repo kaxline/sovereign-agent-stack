@@ -95,29 +95,36 @@ def _apply(path: Path, text: str, f: FileEdit) -> str:
 
 
 def edit_files(files: Sequence[FileEdit], marker: str, tag: str, optional: bool = False) -> bool:
-    """Apply each FileEdit, checking every file and anchor before writing any of them."""
-    pending: list[tuple[FileEdit, str | None]] = []
+    """Apply each FileEdit, checking every file and anchor before writing any of them.
+
+    FileEdits on the same path apply in order to one text, written once.
+    """
+    original: dict[Path, str] = {}
+    current: dict[Path, str] = {}
+    lines: list[str] = []
     for f in files:
         path = Path(f.path)
-        if not path.is_file():
-            return fail(tag, f"target missing: {path}", optional)
-        text = path.read_text(encoding="utf-8")
+        if path not in current:
+            if not path.is_file():
+                return fail(tag, f"target missing: {path}", optional)
+            original[path] = current[path] = path.read_text(encoding="utf-8")
+        text = current[path]
+        label = f.label or str(path)
         if (f.marker or marker) in text:
-            pending.append((f, None))
+            lines.append(f"{tag} already applied ({label})")
             continue
         try:
             new = _apply(path, text, f)
         except _Missing as exc:
             return fail(tag, str(exc), optional)
         if new != text:  # a FileEdit with only ``requires`` is a check, never written
-            pending.append((f, new))
-    for f, text in pending:
-        label = f.label or str(f.path)
-        if text is None:
-            print(f"{tag} already applied ({label})")
-        else:
-            Path(f.path).write_text(text, encoding="utf-8")
-            print(f"{tag} patched {label}")
+            current[path] = new
+            lines.append(f"{tag} patched {label}")
+    for path, text in current.items():
+        if text != original[path]:
+            path.write_text(text, encoding="utf-8")
+    for line in lines:
+        print(line)
     return True
 
 

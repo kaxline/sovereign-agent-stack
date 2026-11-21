@@ -124,6 +124,14 @@ out, after = case("""
 """, {"a.py": A, "b.py": B})
 check("a requires-only FileEdit is a check: no write, no line",
       out.returncode == 0 and after["b.py"] == B and "b.py" not in out.stdout, out.stdout + out.stderr)
+out, after = case("""
+    edit_files([FileEdit(T / "a.py", [("def a():\\n", "def a():  # one\\n")], label="one", marker="# one"),
+                FileEdit(T / "a.py", [("return 1\\n", "return 2  # two\\n")], label="two", marker="# two")],
+               MARKER, TAG)
+""", {"a.py": A})
+check("FileEdits on one path chain into one write",
+      after["a.py"] == "def a():  # one\n    return 2  # two\n" and "patched one" in out.stdout
+      and "patched two" in out.stdout, out.stdout + out.stderr + repr(after))
 out, _ = case("""
     install(T / "nope.py", T / "dst.py", TAG)
 """, {})
