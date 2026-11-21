@@ -6,21 +6,65 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
-## Unreleased
+## v0.3.18 — 2026-11-21
 
 ### Upgrade steps
+
+- `git checkout v0.3.18 && scripts/setup.sh && scripts/upgrade.sh --from
+  v0.3.17`, or `scripts/install.sh --version v0.3.18 --dir DIR`.
+  `upgrade.sh` runs the `upgrades/v0.3.18.sh` hook, which does the steps
+  below that need no person, then starts the stack with the rebuilds and the
+  Hermes reload it asks for. Each backup it makes is skipped when it already
+  exists, and a backup that fails stops the upgrade before the start, so
+  nothing has migrated.
 
 - Hermes Agent v0.23.2 (from v0.23.1) and WebUI 0.52.702 (from 0.52.544).
   v0.23.2 fixes GHSA-p22p-9ph6-gmrh (High): Bot Desktop inside a `docker` or
   `ssh` terminal backend could pass values from its screen `env` file to
-  processes on the agent machine. Back up `data/hermes` with `hermes`
-  stopped, then run `make hermes-upgrade AGENT=v0.23.2 WEBUI=0.52.702` and
-  the verification block in
-  [docs/hermes-webui.md](docs/hermes-webui.md#verification). `_config_version`
-  stays at 53, so profiles are not migrated. The overlays still apply to
-  v0.23.1, so an app that pins `HERMES_AGENT_IMAGE_TAG=v0.23.1` keeps
-  working. Don't move to Agent v0.23.3 yet: WebUI 0.52.702's release notes
-  say it doesn't fully support v0.23.3's new conversation storage.
+  processes on the agent machine. When `.env` sets
+  `HERMES_AGENT_IMAGE_TAG=v0.23.1` or doesn't set it, the hook stops `hermes`
+  and `hermes-webui`, copies `data/hermes` to
+  `data/hermes.bak-<date>-pre-v0.23.2`, and moves both tags in `.env` that
+  still hold the v0.23.1 / 0.52.544 values. A copy it can't make (files
+  owned by root on Linux) stops the upgrade; make it yourself under that
+  name and run the upgrade again. Both bootstraps run again on the start
+  whatever the tag, for the overlay changes below. Then run the verification
+  block in [docs/hermes-webui.md](docs/hermes-webui.md#verification); the
+  hook prints a notice for it. `_config_version` stays at 53, so profiles
+  are not migrated. The overlays still apply to v0.23.1, so an app that pins
+  `HERMES_AGENT_IMAGE_TAG=v0.23.1` keeps working. Don't move to Agent v0.23.3
+  yet: WebUI 0.52.702's release notes say it doesn't fully support v0.23.3's
+  new conversation storage. Without `upgrade.sh`: back up `data/hermes` with
+  `hermes` stopped, then `make hermes-upgrade AGENT=v0.23.2 WEBUI=0.52.702`.
+
+- Image pins moved (see Changes). `.env` lines override the compose
+  defaults, so the hook moves `SIGNAL_CLI_IMAGE` (setup.sh writes it),
+  `N8N_IMAGE`, `MCP_SEARXNG_IMAGE`, `VIKUNJA_PROXY_IMAGE`,
+  `VAULTWARDEN_TLS_IMAGE` and `OLLAMA_IMAGE` when they still hold
+  v0.3.17's value. A value of your own stays, and the hook prints a notice
+  naming it. n8n migrates its database on first start, forward only: with
+  `AUTOMATION_ENABLED` on and the n8n image about to change, the hook stops
+  `n8n` and writes its `n8n_storage` volume to
+  `data/backups/n8n-before-2.48.7-<date>.tar` (tar run in place of n8n's
+  entrypoint, so n8n doesn't start). It rebuilds `bitwarden-broker` (whose
+  image `bitwarden-setup` shares) and `bitwarden-signin` when Bitwarden is
+  on, and `opencode` when OpenCode is on.
+
+- Twenty (`crm` profile) v2.55.0 → v2.60.3. Twenty migrates its database
+  on the first start and can't go back. With `TWENTY_LOCAL_ENABLED` on, the
+  hook dumps it to
+  `<TWENTY_DATA_DIR>/backups/twenty-before-v2.60.3-<date>.sql` with
+  `pg_dump`, starting `twenty-db` alone if it isn't running (its image
+  doesn't change; `twenty-server`, which migrates, stays stopped). It skips
+  the dump when that file exists or `twenty-server` already runs the new
+  image, and stops the upgrade when the dump fails or comes back empty. Keep
+  `TWENTY_ENCRYPTION_KEY` and `TWENTY_DB_PASSWORD` with the dump
+  ([docs/crm.md](docs/crm.md#backup)). A `TWENTY_IMAGE` line that still says
+  `twentycrm/twenty:v2.55.0` moves to v2.60.3. When a local workspace is
+  stored, the hook reports `needs_user` `twenty-crm-init`: once the stack is
+  up, run `make crm-init ROTATE=1` (it re-applies the read-only role's
+  per-object permissions, see Changes, and mints new keys), then
+  `make hermes-reload`.
 
 ### Changes
 
@@ -60,6 +104,71 @@ the stack under another app.
   `tool-eval-trace`, `cron-scheduler-delivery`'s older origin and Signal
   blocks and its `cron/scheduler.py` fallback, and `history-budget`'s
   `_make_agent` in `server.py`. The overlays apply to v0.23.1 and v0.23.2.
+- `scripts/crm.sh`'s hook JSON lines (`connect`, `disconnect`, `init --json`)
+  now escape quotes and backslashes in `message` instead of turning them into
+  apostrophes. Other characters, fields and exit codes are unchanged.
+- New SSH listener ([docs/ssh-listener.md](docs/ssh-listener.md)) for hosts
+  a client can't reach on port 22. It runs as its own container, apart from
+  the stack, and passes HyperDHT streams from allowed client keys to the
+  host's sshd. Releases attach `ssh-listener.sh`, which sets it up on a host
+  with no stack, and push its image to
+  `ghcr.io/kaxline/sovereign-agent-stack/ssh-listener` for amd64 and arm64.
+  The stack itself doesn't change.
+- **OpenCode** 1.17.6 → 1.19.6, the last 1.x release, on its next
+  `docker compose build opencode`. The `opencode` service now sets
+  `OPENCODE_DISABLE_AUTOUPDATE=1`: 1.19.6 offers to download and install
+  OpenCode 2, which converts sessions, so the Dockerfile's pin stays the only
+  way to change version. The endpoints `opencode-mcp` calls answer as on
+  1.17.6. OpenCode 2.x is held for a separate check.
+- **mcp-searxng** 2.10.1 → 2.11.0. `searxng_web_search` with
+  `categories="images"` and `result_detail="full"` now returns image
+  results with their resolution and URLs; other output keeps its shape.
+- **n8n** 2.47.4 → 2.48.7, the current `stable` tag. 2.48.3 fixed the
+  2026-11-13 advisories, among them a custom instance role with
+  user-management permissions taking over the owner account (high), and
+  AWS Bedrock nodes skipping SSRF protection for custom endpoints.
+- **Ollama** (`ollama` profile) 0.40.11 → 0.40.17. Since 0.40.14 the
+  OpenAI-compatible endpoints keep a model's packaged sampling defaults when
+  the client sends no `temperature` or `top_p`, instead of forcing 1.0, as
+  `/api/chat` already did.
+- **nginx** (`vikunja-proxy`, `vaultwarden-tls`) 1.30.6-alpine →
+  1.30.7-alpine, for the 2026-11-18 security fixes (HTTP/2 flow-control
+  overflow, use-after-free with `resolver`, and others).
+- **Bitwarden CLI** (`bitwarden-broker`, `bitwarden-setup`) 2026.10.1 →
+  2026.11.0. Bitwarden renamed the commercial-license zips in this release
+  (`bw-linux-*` is now `bw-bit-linux-*`), so the Dockerfile's asset names
+  change with the version and both SHA-256 digests. The next
+  `docker compose --profile bitwarden build` picks it up.
+- **signal-cli** `signal-cli-jre:v0-14-9-2` → `v0-14-10-1` (signal-cli
+  0.14.10), to keep the client current with Signal's service. It fixes a race
+  between stopping and starting the receive thread, accepts group invitations
+  addressed to the PNI, and rotates the account's sender key when a group
+  member leaves or is removed. The linked account store is read as before.
+- **Twenty** v2.55.0 → v2.60.3. The upgrade jumps straight from 2.55 and
+  migrated a test workspace with no failures; the server used about 815 MiB
+  and the worker about 270 MiB after boot, inside the existing limits.
+  `/mcp?mode=meta` still lists the same 7 tools on both keys (bare `/mcp`
+  now lists 43).
+- `make crm-init` now gives the Twenty read-only role a read-only
+  permission on every active object, including those Twenty marks read-only
+  in its own UI, and leaves read off only where the object disables it. It
+  used to skip the UI-read-only objects, which on Twenty v2.60 let a
+  read-only key update and delete `agentChatThreadTarget` rows. Existing
+  workspaces pick this up on `make crm-init ROTATE=1`.
+- `make crm-add`, `crm-remove` and `crm-access` run `scripts/addon.sh`
+  (`connect twenty`, `disconnect twenty` and `configure twenty --instance`)
+  and reload Hermes themselves, so no `make hermes-reload` follows them
+  (`crm-add` still asks for one when it turns `TWENTY_MCP_ENABLED` on).
+  `crm-add` and `crm-remove` print `[crm] Connected <slug>; Hermes entries:
+  crm-<slug>` and `[crm] Disconnected <slug>`; a failure prints
+  `[crm] ERROR: <message> (<error>)` with addon.sh's error name and exits with
+  its code: 2 when addon.sh refuses the input (an unknown workspace, an
+  access other than read or write), 4 when the connect hook refuses it.
+  `crm-add` now refuses the local instance's URL while
+  `TWENTY_LOCAL_ENABLED=0` (`local_off`), as `addon.sh connect` always did.
+- `addon.sh connect twenty --force` replaces a stored workspace. The Twenty
+  connect hook (`crm.sh connect`) used to refuse the `--replace` argument
+  addon.sh passes it, so the replace failed.
 - `patch-block-native-web-tools`, `patch-tool-call-flat-args` and
   `patch-cron-scheduler-delivery` no longer rewrite blocks that their builds
   from before v0.1.0 left in `/opt/hermes` (debug helpers, an alias map
@@ -181,6 +290,16 @@ the stack under another app.
   `N8N_NODE` is no longer read, so a `node` stub for
   `generate-n8n-credentials.js` is no longer called. Files an earlier release
   wrote under `n8n/demo-data/credentials/` stay gitignored and can be deleted.
+- An invalid `HERMES_GATEWAY_TOPOLOGY` (anything but `standalone` or
+  `multiplex`, ignoring case and surrounding spaces) now means `standalone`
+  on the host as well as in the container, and the host scripts print a
+  warning on stderr. Before, `scripts/lib/env.sh` ignored the bad value and
+  fell back to `HERMES_PIN_STANDALONE_GATEWAYS`, so with that at `0`
+  `make doctor`, `gateway-topology.sh` and `check-hermes-standalone.sh` said
+  `multiplex` while the container ran standalone. Valid values and their
+  output are unchanged. Inside the container, `gateway-compat-proxy` now reads
+  the topology that `019-pin-profile-gateways` resolved, from
+  `/run/hermes-gateway-topology`, instead of resolving it again.
 - Client gateway: when Hermes doesn't answer a call made on a live session
   (`prompt.submit`, `session.cwd.set`) within 180 seconds, the client now gets
   the same error as for any other call, code -32603 with reason

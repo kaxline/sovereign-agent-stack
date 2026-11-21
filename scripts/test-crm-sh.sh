@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# scripts/crm.sh subcommands that need no running stack: add (remote
-# workspaces), access, remove, mode, the connect/disconnect hooks and argument
+# scripts/crm.sh subcommands that need no running stack: add, access and
+# remove against a stub addon.sh (scripts/test-twenty-addon-cli.sh runs them
+# through the real one), mode, the connect/disconnect hooks and argument
 # checks. Uses a temp .env and data root, and host python3.
 set -euo pipefail
 
@@ -42,140 +43,110 @@ seed() {
   [ -z "$6" ] || printf '%s' "$6" > "$s/secrets/$2.key_rw"
 }
 
-# A stub Twenty 2.56+ MCP: answers 200 for keys starting "good-", 401 otherwise.
-# tools/list gives the catalog tools at ?mode=meta and record tools without it.
-cat > "$tmp/stub.py" <<'PY'
-import json, sys
-from http.server import BaseHTTPRequestHandler, HTTPServer
-CATALOG = ["get_tool_catalog", "learn_tools", "execute_tool", "list_object_metadata_names",
-           "list_skills", "load_skills", "search_help_center"]
-DIRECT = ["list_skills", "find_many_people", "delete_one_person"]
-class H(BaseHTTPRequestHandler):
-    def do_POST(self):
-        body = json.loads(self.rfile.read(int(self.headers.get("content-length") or 0)) or b"{}")
-        path, _, query = self.path.partition("?")
-        ok = path == "/mcp" and self.headers.get("authorization", "").startswith("Bearer good-")
-        out = {}
-        if body.get("method") == "tools/list":
-            names = CATALOG if query == "mode=meta" else DIRECT
-            out = {"jsonrpc": "2.0", "id": body.get("id"), "result": {"tools": [{"name": n} for n in names]}}
-        self.send_response(200 if ok else 401)
-        self.send_header("content-type", "application/json")
-        self.end_headers()
-        self.wfile.write(json.dumps(out).encode())
-    def log_message(self, *a):
-        pass
-s = HTTPServer(("127.0.0.1", 0), H)
-print(s.server_port, flush=True)
-s.serve_forever()
-PY
-python3 -I "$tmp/stub.py" > "$tmp/port" &
-stub_pid=$!
-trap 'kill "$stub_pid" 2>/dev/null; wait "$stub_pid" 2>/dev/null || true; rm -rf "$tmp"' EXIT
-for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$tmp/port" ] && break; sleep 0.2; done
-URL="http://127.0.0.1:$(cat "$tmp/port")"
 
-# add: values from the environment, no prompts; both keys checked first.
-TWENTY_KEY_RW=good-rw-SECRET TWENTY_KEY_RO=good-ro-SECRET run add --slug hosted --url "$URL/" \
+# add, remove and access run addon.sh (connect, disconnect, configure); a
+# stub stands in for it (ADDON_SH, lib/addon-human.sh's test hook) and logs
+# its argv and stdin. It prints $ADDON_OUT and exits $ADDON_RC. docker is a
+# stub too, for access's Hermes reload, and so is vault.sh.
+mkdir -p "$tmp/abin"
+cat > "$tmp/abin/addon.sh" <<'SH'
+#!/bin/sh
+printf '%s\n' "$*" >> "$ADDON_LOG"
+cat > "$ADDON_LOG.stdin"
+printf '%s\n' "${ADDON_OUT:-{\"phase\":\"done\",\"mcp\":[\"crm-x\"]\}}"
+exit "${ADDON_RC:-0}"
+SH
+cat > "$tmp/abin/docker" <<'SH'
+#!/bin/sh
+printf 'docker %s\n' "$*" >> "$ADDON_LOG"
+exit "${DOCKER_RC:-0}"
+SH
+cat > "$tmp/abin/vault.sh" <<'SH'
+#!/bin/sh
+printf 'vault %s\n' "$*" >> "$ADDON_LOG"
+exit 0
+SH
+chmod +x "$tmp/abin/"*
+export ADDON_SH="$tmp/abin/addon.sh" VAULT_SH="$tmp/abin/vault.sh" ADDON_LOG="$tmp/addon.log"
+arun() { # arun ARGS...: run with the stubs, a fresh log
+  rm -f "$ADDON_LOG" "$ADDON_LOG.stdin"
+  PATH="$tmp/abin:$PATH" run "$@"
+}
+stdin_json() { python3 -I -c 'import json,sys; v=json.load(open(sys.argv[1])); sys.exit(0 if eval(sys.argv[2]) else 1)' "$ADDON_LOG.stdin" "$1"; }
+
+# add: values from the environment, no prompts.
+ADDON_OUT='{"phase":"done","account":"hosted","mcp":["crm-hosted"]}' \
+  TWENTY_KEY_RW=good-rw-SECRET TWENTY_KEY_RO=good-ro-SECRET arun add --slug hosted --url "https://crm.example.com/mcp/" \
   || fail "add should succeed ($(cat "$out"))"
 no_secret add
-f="$(inst hosted)"
-[ -f "$f" ] || fail "add stores instance hosted"
-grep -q 'crm-hosted' "$out" || fail "add names the crm-hosted entry"
-grep -q 'catalog tools (7 tools)' "$out" || fail "add checks the meta-mode tool list ($(cat "$out"))"
-grep -q 'hermes-reload' "$out" || fail "add says to run make hermes-reload"
-[ "$(jget "$f" url)" = "\"$URL\"" ] || fail "add stores the URL without a trailing slash"
-[ "$(jget "$f" workspace_url)" = "\"$URL/\"" ] || fail "add defaults the workspace URL to the instance"
-[ "$(jget "$f" access)" = '"write"' ] || fail "add stores access write by default"
-[ "$(jget "$f" local)" = false ] || fail "add stores local false for a remote URL"
-[ "$(secret hosted.key_rw)" = good-rw-SECRET ] || fail "add stores the read/write key"
-[ "$(secret hosted.key_ro)" = good-ro-SECRET ] || fail "add stores the read-only key"
-[ "$(mode_of "$store/secrets/hosted.key_rw")" = 600 ] || fail "key files are mode 600"
+grep -qx 'connect twenty --instance hosted --json' "$ADDON_LOG" || fail "add runs addon.sh connect ($(cat "$ADDON_LOG"))"
+grep -qx '\[crm\] Connected hosted; Hermes entries: crm-hosted' "$out" || fail "add prints a [crm] line ($(cat "$out"))"
+stdin_json 'v == {"url": "https://crm.example.com", "access": "write", "local": False, "workspace_url": "https://crm.example.com/", "key_ro": "good-ro-SECRET", "key_rw": "good-rw-SECRET"}' \
+  || fail "add sends the workspace's JSON ($(cat "$ADDON_LOG.stdin"))"
+grep -qx 'TWENTY_MCP_ENABLED=1' "$ENV_FILE" || fail "add sets TWENTY_MCP_ENABLED=1"
+grep -q 'hermes-reload' "$out" || fail "add says to reload when it switched the flag on"
+TWENTY_ACCESS=read TWENTY_KEY_RO='good"q\SECRET' TWENTY_WORKSPACE_URL=https://acme.crm.example.com/ \
+  arun add --slug lookup --url http://twenty-server:3000 || fail "add read ($(cat "$out"))"
+stdin_json 'v == {"url": "http://twenty-server:3000", "access": "read", "local": True, "workspace_url": "https://acme.crm.example.com/", "key_ro": "good\"q\\SECRET"}' \
+  || fail "add escapes the JSON, sends local true for the local URL and the given workspace URL ($(cat "$ADDON_LOG.stdin"))"
+grep -q 'hermes-reload' "$out" && fail "add with the flag already on says nothing about reloading"
+TWENTY_KEY_RW=good-rw arun add --slug x --url https://crm.example.com --force || fail "add --force"
+grep -qx 'connect twenty --instance x --force --json' "$ADDON_LOG" || fail "add --force passes --force ($(cat "$ADDON_LOG"))"
+# addon.sh's error line becomes a [crm] line, and its exit code crm.sh's.
+ADDON_RC=4 ADDON_OUT='{"phase":"error","error":"login_refused","message":"Twenty rejects key_rw (HTTP 401)"}' \
+  TWENTY_KEY_RW=bad-SECRET arun add --slug x --url https://crm.example.com && rc=0 || rc=$?
+[ "$rc" = 4 ] || fail "add exits with addon.sh's code ($rc)"
+grep -qx '\[crm\] ERROR: Twenty rejects key_rw (HTTP 401) (login_refused)' "$out" || fail "add prints addon.sh's error ($(cat "$out"))"
+no_secret "refused add"
 
-# A key Twenty rejects: nothing written, and the error names the key.
-if TWENTY_KEY_RW=good-rw-SECRET TWENTY_KEY_RO=bad-ro-SECRET run add --slug rejected --url "$URL"; then
-  fail "a rejected read-only key must fail"
-fi
-grep -q 'TWENTY_KEY_RO' "$out" || fail "the error names the rejected key"
-no_secret "rejected key"
-[ ! -e "$(inst rejected)" ] || fail "a rejected key writes nothing"
-if TWENTY_KEY_RW=good-x run add --slug down --url http://127.0.0.1:9; then fail "an unreachable URL must fail"; fi
-grep -q 'no answer from' "$out" || fail "an unreachable URL says no answer"
-[ ! -e "$(inst down)" ] || fail "an unreachable URL writes nothing"
-
-# TWENTY_ACCESS=read needs only the read-only key; the workspace URL can be given.
-TWENTY_ACCESS=read TWENTY_KEY_RO=good-ro-SECRET TWENTY_WORKSPACE_URL=https://acme.crm.example.com/ \
-  run add --slug lookup --url "$URL" || fail "read access with only a read-only key ($(cat "$out"))"
-[ "$(jget "$(inst lookup)" access)" = '"read"' ] || fail "add stores access read"
-[ "$(jget "$(inst lookup)" workspace_url)" = '"https://acme.crm.example.com/"' ] \
-  || fail "add stores the given workspace URL"
-[ ! -e "$store/secrets/lookup.key_rw" ] || fail "an omitted key writes no key file"
-if TWENTY_ACCESS=read TWENTY_KEY_RW=good-rw run add --slug noro --url "$URL"; then
-  fail "read access without a read-only key must fail"
-fi
-if TWENTY_ACCESS=admin TWENTY_KEY_RW=good-rw run add --slug odd --url "$URL"; then fail "TWENTY_ACCESS=admin accepted"; fi
-
-# add refuses to overwrite, bad slugs, bad URLs, and a missing key with no terminal.
-if TWENTY_KEY_RW=good-x run add --slug hosted --url "$URL"; then fail "add must not overwrite"; fi
-grep -q -- '--force' "$out" || fail "the refusal mentions --force"
-TWENTY_KEY_RW=good-new-SECRET run add --slug hosted --url "$URL" --force || fail "--force overwrites"
-[ "$(secret hosted.key_rw)" = good-new-SECRET ] || fail "--force writes the new key"
-[ ! -e "$store/secrets/hosted.key_ro" ] || fail "--force drops a read-only key it wasn't given"
-# A --force whose store write fails keeps the old workspace and its keys. A
-# directory where key_ro goes makes configure fail after it wrote the JSON.
-mkdir "$store/secrets/hosted.key_ro"
-if TWENTY_ACCESS=read TWENTY_KEY_RW=good-other-SECRET TWENTY_KEY_RO=good-ro2-SECRET \
-  TWENTY_WORKSPACE_URL=https://changed.example.com/ run add --slug hosted --url "$URL" --force; then
-  fail "a --force whose write fails must fail"
-fi
-no_secret "failed --force"
-rmdir "$store/secrets/hosted.key_ro"
-[ "$(jget "$f" access)" = '"write"' ] || fail "a failed --force keeps the old access"
-[ "$(jget "$f" workspace_url)" = "\"$URL/\"" ] || fail "a failed --force keeps the old workspace URL"
-[ "$(secret hosted.key_rw)" = good-new-SECRET ] || fail "a failed --force keeps the old key"
-[ ! -e "$store/secrets/hosted.key_ro" ] || fail "a failed --force adds no key"
-
-# Keys with whitespace or control characters and URLs with user:password@ are refused.
-if TWENTY_KEY_RW='good x-SECRET' run add --slug spacey --url "$URL"; then fail "a key with a space accepted"; fi
-no_secret "key with a space"
-[ ! -e "$(inst spacey)" ] || fail "a key with a space writes nothing"
-if TWENTY_KEY_RW="good-$(printf '\t')x" run add --slug tabby --url "$URL"; then fail "a key with a tab accepted"; fi
-if TWENTY_KEY_RW=good-x run add --slug creds --url "https://u:pw-SECRET@crm.example.com"; then
-  fail "a URL with user:password@ accepted"
-fi
-no_secret "URL with a password"
-[ ! -e "$(inst creds)" ] || fail "a URL with a password writes nothing"
-
-if TWENTY_KEY_RW=good-x run add --slug Bad_1 --url "$URL"; then fail "bad slug accepted"; fi
+# Refused before addon.sh: a stored slug without --force, no key and no
+# terminal, a bad slug, no URL.
+seed "$ASSISTANT_DATA_ROOT" hosted https://crm.example.com write '' rw-SECRET
+if TWENTY_KEY_RW=good-x arun add --slug hosted --url https://crm.example.com; then fail "add must not overwrite"; fi
+grep -q 'FORCE=1' "$out" || fail "the refusal mentions FORCE=1"
+if arun add --slug nokey --url https://crm.example.com; then fail "no key and no terminal must fail"; fi
+grep -q 'set TWENTY_KEY_RW' "$out" || fail "no key and no terminal names TWENTY_KEY_RW"
+if TWENTY_ACCESS="read" arun add --slug nokey --url https://crm.example.com; then fail "read with no key and no terminal must fail"; fi
+grep -q 'set TWENTY_KEY_RO' "$out" || fail "read with no key and no terminal names TWENTY_KEY_RO"
+if TWENTY_KEY_RW=good-x arun add --slug Bad_1 --url https://crm.example.com; then fail "bad slug accepted"; fi
 # bash 3.2 bracket ranges follow the locale's collation, where [a-z] matches A-Y.
 for slug in Sales SALES; do
-  if LC_ALL=en_US.UTF-8 TWENTY_KEY_RW=good-x run add --slug "$slug" --url "$URL"; then
+  if LC_ALL=en_US.UTF-8 TWENTY_KEY_RW=good-x arun add --slug "$slug" --url https://crm.example.com; then
     fail "uppercase slug ${slug} accepted"
   fi
 done
-if TWENTY_KEY_RW=good-x run add --slug ok --url crm.example.com; then fail "URL without http(s) accepted"; fi
-if run add --slug nokey --url "$URL"; then fail "no key and no terminal must fail"; fi
-[ ! -e "$(inst nokey)" ] || fail "a failed add writes nothing"
+if TWENTY_KEY_RW=good-x arun add --slug ok; then fail "add without --url accepted"; fi
+[ ! -e "$ADDON_LOG" ] || fail "a refused add runs no addon.sh ($(cat "$ADDON_LOG"))"
 
-# access: sets access when the instance holds the key it calls for.
-# hosted has only an RW key; lookup has only an RO key.
-run access --slug lookup write && fail "write access without a read/write key must fail"
-[ "$(jget "$(inst lookup)" access)" = '"read"' ] || fail "a refused access change leaves the instance alone"
-run access --slug hosted read && fail "read access without a read-only key must fail"
-run access --slug lookup read || fail "access read ($(cat "$out"))"
-# A local workspace with both keys.
+# remove: addon.sh disconnect; the hook's message is a [crm] line.
+ADDON_OUT='{"phase":"done","message":"The workspace and its keys still exist in Twenty"}' arun remove --slug hosted || fail "remove ($(cat "$out"))"
+grep -qx 'disconnect twenty --instance hosted --json' "$ADDON_LOG" || fail "remove runs addon.sh disconnect ($(cat "$ADDON_LOG"))"
+grep -qx '\[crm\] Disconnected hosted' "$out" || fail "remove prints a [crm] line ($(cat "$out"))"
+grep -qx '\[crm\] The workspace and its keys still exist in Twenty' "$out" || fail "remove prints the hook's message"
+ADDON_RC=2 ADDON_OUT='{"phase":"error","error":"not_found","message":"twenty has no instance gone"}' arun remove --slug gone && rc=0 || rc=$?
+[ "$rc" = 2 ] || fail "remove of an unknown slug exits 2 ($rc)"
+if arun remove; then fail "remove needs --slug"; fi
+
+# access: addon.sh configure, then the Hermes reload; refused when the
+# workspace lacks the key it calls for. hosted has only an RW key.
+seed "$ASSISTANT_DATA_ROOT" lookup https://crm.example.com read ro-SECRET ''
 seed "$ASSISTANT_DATA_ROOT" both http://twenty-server:3000 write ro-SECRET rw-SECRET
-run access --slug both read || fail "access read ($(cat "$out"))"
+arun access --slug lookup write && fail "write access without a read/write key must fail"
+arun access --slug hosted read && fail "read access without a read-only key must fail"
+[ ! -e "$ADDON_LOG" ] || fail "a refused access runs no addon.sh"
+arun access --slug both read || fail "access read ($(cat "$out"))"
 no_secret access
+grep -qx 'configure twenty --instance both' "$ADDON_LOG" || fail "access runs addon.sh configure ($(cat "$ADDON_LOG"))"
+stdin_json 'v == {"access": "read"}' || fail "access sends the access setting"
 grep -q 'Set TWENTY_ACCESS=read for both' "$out" || fail "access keeps its log line"
-[ "$(jget "$(inst both)" access)" = '"read"' ] || fail "access read stores read"
-run access --slug both write || fail "access write ($(cat "$out"))"
-[ "$(jget "$(inst both)" access)" = '"write"' ] || fail "access write stores write"
-[ "$(secret both.key_ro)" = ro-SECRET ] || fail "access keeps the keys"
-grep -q 'hermes-reload' "$out" || fail "access says to run make hermes-reload"
-run access --slug both admin && fail "access takes read or write"
-run access --slug missing read && fail "access on a missing workspace must fail"
-run access --slug both && fail "access needs read or write"
+grep -q 'docker compose run --rm -e HERMES_BOOTSTRAP_FORCE=1 hermes-api-bootstrap' "$ADDON_LOG" || fail "access reloads Hermes"
+grep -q 'vault reload-plugins' "$ADDON_LOG" || fail "access reloads the plugins"
+if DOCKER_RC=1 arun access --slug both write; then fail "a failed bootstrap fails access"; fi
+grep -q 'a Hermes bootstrap failed' "$out" || fail "access names the failed bootstrap"
+arun access --slug both admin && fail "access takes read or write"
+arun access --slug missing read && fail "access on a missing workspace must fail"
+arun access --slug both && fail "access needs read or write"
+rm -f "$(inst both)" "$store/secrets/both.key_ro" "$store/secrets/both.key_rw"
 
 # login-link: refused before any container runs for remote and unknown workspaces.
 "$crm" login-link --slug lookup < /dev/null > "$out" 2> "$tmp/err" && fail "login-link on a remote workspace must fail"
@@ -185,16 +156,6 @@ run login-link --slug missing && fail "login-link on a missing workspace must fa
 run login-link --slug Bad_1 && fail "login-link checks the slug"
 run login-link --frob && fail "login-link rejects unknown options"
 
-# remove: deletes the instance and its keys; unknown slugs fail.
-run remove --slug lookup || fail "remove ($(cat "$out"))"
-[ ! -e "$(inst lookup)" ] || fail "remove deletes the instance"
-[ ! -e "$store/secrets/lookup.key_ro" ] || fail "remove deletes the instance's keys"
-grep -q 'hermes-reload' "$out" || fail "remove says to run make hermes-reload"
-if run remove --slug lookup; then fail "removing a missing workspace must fail"; fi
-if run remove --slug Bad_1; then fail "remove checks the slug"; fi
-run remove --slug both || fail "remove a local workspace ($(cat "$out"))"
-grep -q 'still exist in Twenty' "$out" || fail "removing a local workspace says it still exists in Twenty"
-
 # mode: flips both flags; refuses single mode with two local workspaces.
 run mode 1 || fail "mode 1 ($(cat "$out"))"
 grep -qx 'TWENTY_MULTIWORKSPACE=1' "$ENV_FILE" || fail "mode 1 sets TWENTY_MULTIWORKSPACE=1"
@@ -203,7 +164,7 @@ seed "$ASSISTANT_DATA_ROOT" main http://twenty-server:3000 write '' a
 seed "$ASSISTANT_DATA_ROOT" sales http://twenty-server:3000 write '' b
 if run mode 0; then fail "mode 0 with two local workspaces must be refused"; fi
 grep -qx 'TWENTY_MULTIWORKSPACE=1' "$ENV_FILE" || fail "a refused mode change leaves .env alone"
-run remove --slug sales || fail "remove sales"
+rm -f "$(inst sales)" "$store/secrets/sales.key_rw"
 run mode 0 || fail "mode 0 with one local workspace (plus a remote) ($(cat "$out"))"
 grep -qx 'TWENTY_MULTIWORKSPACE_BOOL=false' "$ENV_FILE" || fail "mode 0 sets TWENTY_MULTIWORKSPACE_BOOL=false"
 if run mode 2; then fail "mode takes 0 or 1"; fi
@@ -272,6 +233,26 @@ CURL_CODE=000 CURL_EXIT=28 hook timeout '{"url":"https://crm.example.com","acces
 CURL_CODE=502 hook server_unreachable '{"url":"https://crm.example.com","access":"read","key_ro":"k-SECRET"}' connect --slug x --json
 grep -q 502 "$out" || fail "an unexpected HTTP code is named in the message"
 hook bad_slug '{"url":"https://crm.example.com","access":"read","key_ro":"k-SECRET"}' connect --slug Bad_1 --json
+# Messages keep quotes and backslashes (escaped); control characters go.
+# msg_is TEXT: the last line's message, decoded, is TEXT.
+msg_is() {
+  python3 -I -c 'import json,sys; m=json.loads(sys.argv[1])["message"]; sys.exit(0 if m == sys.argv[2] else 1)' "$last" "$1"
+}
+for sub in connect disconnect; do
+  hook bad_slug '{"url":"https://crm.example.com","access":"read","key_ro":"k-SECRET"}' "$sub" --slug 'q"b\s' --json
+  msg_is "slug 'q\"b\\s' must use lowercase letters, digits and hyphens, a letter first" \
+    || fail "$sub keeps a quote and backslash in its message: $last"
+done
+hook bad_slug '' disconnect --slug "$(printf 'a\tb')" --json
+msg_is "slug 'ab' must use lowercase letters, digits and hyphens, a letter first" || fail "a tab in a message is dropped: $last"
+# Lines without quotes or backslashes are byte-for-byte as before.
+hook bad_slug '' disconnect --slug Bad_1 --json
+[ "$last" = '{"phase":"error","error":"bad_slug","message":"slug '\''Bad_1'\'' must use lowercase letters, digits and hyphens, a letter first"}' ] \
+  || fail "bad_slug line changed: $last"
+CURL_CODE=401 hook login_refused '{"url":"https://crm.example.com","access":"read","key_ro":"k-SECRET"}' connect --slug x --json
+[ "$(cat "$out")" = '{"phase":"setup","status":"running","message":"key_ro: checking"}
+{"phase":"error","error":"login_refused","message":"Twenty rejects key_ro (HTTP 401)"}' ] \
+  || fail "login_refused lines changed: $(cat "$out")"
 hook bad_value '{"url":"https://crm.example.com","access":"read","key_ro":"k SECRET"}' connect --slug x --json
 hook bad_value '{"url":"https://crm.example.com","access":"write","key_rw":"k\tSECRET"}' connect --slug x --json
 hook bad_value '{"url":"https://u:pw-SECRET@crm.example.com","access":"read","key_ro":"k-SECRET"}' connect --slug x --json

@@ -17,6 +17,7 @@
 	vault-init vault-add vault-unlock vault-lock vault-sync vault-requests vault-remove vault-open \
 	web-browser-build web-browser-viewer web-browser-test \
 	bitwarden-test addon-list addon-test test hermes-image-test actual-mcp-test \
+	ssh-listener-image ssh-listener-test \
 	budget-open budget-access budget-connect budget-disconnect \
 	coding-root-list coding-root-add \
 	context-root-list context-root-add opencode-smoke-fixture \
@@ -655,6 +656,16 @@ hermes-image-test:
 # the host needs no node.
 actual-mcp-test:
 	docker build --target test compose/actual-mcp
+
+# The SSH listener image as sovereign-ssh-listener:local, for running
+# scripts/ssh-listener.sh from a checkout (SSH_LISTENER_IMAGE=sovereign-ssh-listener:local).
+# Releases use the image the release workflow pushes to GHCR.
+ssh-listener-image:
+	docker build --build-arg VERSION=dev -t sovereign-ssh-listener:local compose/ssh-listener
+
+# The SSH listener's tests, in the image's test stage.
+ssh-listener-test:
+	./scripts/test-ssh-listener.sh
 
 # Hermes' multiplex migration preflight, run against a throwaway copy of the
 # Hermes home with gateway.standalone removed. Changes nothing.

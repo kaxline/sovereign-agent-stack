@@ -150,13 +150,20 @@ compose_with_profile() {
 
 # Gateway topology: HERMES_GATEWAY_TOPOLOGY (standalone|multiplex) from the
 # environment or .env; unset, HERMES_PIN_STANDALONE_GATEWAYS=0 means multiplex.
-# Same rule as compose/hermes/019-pin-profile-gateways.sh.
+# Any other value warns on stderr and means standalone. Same rule as
+# compose/hermes/019-pin-profile-gateways.sh.
 gateway_topology() {
   local t pin
   t="${HERMES_GATEWAY_TOPOLOGY:-$(env_get HERMES_GATEWAY_TOPOLOGY)}"
-  t="$(printf '%s' "$t" | tr '[:upper:]' '[:lower:]')"
+  t="$(printf '%s' "$t" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
   case "$t" in
     standalone | multiplex) echo "$t"; return ;;
+    "") ;;
+    *)
+      echo "warning: HERMES_GATEWAY_TOPOLOGY='${t}' is not standalone or multiplex; using standalone" >&2
+      echo standalone
+      return
+      ;;
   esac
   pin="${HERMES_PIN_STANDALONE_GATEWAYS:-$(env_get HERMES_PIN_STANDALONE_GATEWAYS 1)}"
   case "$(printf '%s' "$pin" | tr '[:upper:]' '[:lower:]')" in

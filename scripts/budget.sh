@@ -18,6 +18,13 @@ source "${ROOT}/scripts/lib/data-root.sh"
 source "${ROOT}/scripts/lib/secret.sh"
 # shellcheck source=lib/python.sh
 source "${ROOT}/scripts/lib/python.sh"
+# shellcheck source=lib/addon-human.sh
+source "${ROOT}/scripts/lib/addon-human.sh"
+# Test hooks for addon-human.sh's addon.sh and vault.sh.
+# shellcheck disable=SC2034  # read by lib/addon-human.sh
+ADDON_SH="${BUDGET_ADDON_SH:-${ROOT}/scripts/addon.sh}"
+# shellcheck disable=SC2034  # read by lib/addon-human.sh
+VAULT_SH="${BUDGET_VAULT_SH:-${ROOT}/scripts/vault.sh}"
 # ASSISTANT_DATA_ROOT from the environment wins over the env file, as it does
 # for compose and crm.sh.
 DATA_ROOT="$(resolve_data_root_path "${ASSISTANT_DATA_ROOT:-$(env_get ASSISTANT_DATA_ROOT)}")"
@@ -778,8 +785,7 @@ cmd_status() {
 # access SLUG read|write [--json]: one connected budget's bind. read binds
 # every profile ro; write binds default and browser rw (api-server stays ro).
 # addon.sh configure stores the bind but doesn't reload Hermes, so this runs
-# both bootstraps and vault.sh reload-plugins itself. BUDGET_ADDON_SH and
-# BUDGET_VAULT_SH are test hooks.
+# hermes_reload (lib/addon-human.sh) itself.
 cmd_access() {
   local slug="" want="" arg n=0 idir="" sdir=""
   for arg in "$@"; do
@@ -806,17 +812,13 @@ cmd_access() {
   local rw=ro
   [[ "$want" == write ]] && rw=rw
   printf '{"bind":{"default":"%s","browser":"%s","api-server":"ro"}}' "$rw" "$rw" \
-    | "${BUDGET_ADDON_SH:-${ROOT}/scripts/addon.sh}" configure actual --instance "$slug" > /dev/null 2> "${WORK}/addon.err" \
+    | "$ADDON_SH" configure actual --instance "$slug" > /dev/null 2> "${WORK}/addon.err" \
     || emit_error server_unreachable "couldn't save the access: $(grep -v '^[[:space:]]*$' "${WORK}/addon.err" | tail -1 || true)"
   local rrc=0
-  docker compose run --rm -e HERMES_BOOTSTRAP_FORCE=1 hermes-api-bootstrap > /dev/null 2> "${WORK}/reload.err" < /dev/null || rrc=1
-  if [[ "$rrc" == 0 ]]; then
-    docker compose run --rm --no-deps -e HERMES_BOOTSTRAP_FORCE=1 hermes-browser-bootstrap > /dev/null 2>> "${WORK}/reload.err" < /dev/null || rrc=1
-  fi
-  [[ "$rrc" == 0 ]] \
+  hermes_reload "${WORK}/reload.err" || rrc=$?
+  [[ "$rrc" != 1 ]] \
     || emit_error server_unreachable "saved the access, but a Hermes bootstrap failed: $(grep -v '^[[:space:]]*$' "${WORK}/reload.err" | tail -1 || true)"
-  "${BUDGET_VAULT_SH:-${ROOT}/scripts/vault.sh}" reload-plugins > /dev/null 2>&1 < /dev/null \
-    || log "WARNING: vault.sh reload-plugins failed; run make hermes-reload"
+  [[ "$rrc" != 2 ]] || log "WARNING: vault.sh reload-plugins failed; run make hermes-reload"
   [[ "$JSON" == 1 ]] || log "Set access ${want} for ${slug}"
   emit_done mcp "[$(json_str "budget-${slug}")]"
 }
@@ -901,39 +903,7 @@ cmd_connect_cli() {
   [[ "$access" != write ]] || body="${body},\"bind\":{\"default\":\"rw\",\"browser\":\"rw\",\"api-server\":\"ro\"}"
   [[ -z "$pw" ]] || body="${body},\"password\":\"$(json_escape_exact "$pw")\""
   [[ -z "$enc" ]] || body="${body},\"encryption_password\":\"$(json_escape_exact "$enc")\""
-  printf '%s}' "$body" | addon_human connect "$slug" ${force:+"$force"}
-}
-
-# addon_human ACTION SLUG [--force]: runs addon.sh ACTION actual --instance
-# SLUG [--force] --json with this stdin and turns its JSON lines into [budget] lines for a person.
-# Exits with addon.sh's code. BUDGET_ADDON_SH is a test hook.
-addon_human() {
-  local rc=0 lines
-  lines="$("${BUDGET_ADDON_SH:-${ROOT}/scripts/addon.sh}" "$1" actual --instance "$2" ${3:+"$3"} --json 2> "${WORK}/addon.err")" || rc=$?
-  printf '%s\n' "$lines" | stack_python -c '
-import json, sys
-action, slug = sys.argv[1], sys.argv[2]
-seen = 0
-for line in sys.stdin:
-    try:
-        d = json.loads(line)
-    except ValueError:
-        continue
-    if not isinstance(d, dict):
-        continue
-    if d.get("phase") == "done":
-        seen = 1
-        if action == "connect":
-            mcp = ", ".join(m for m in d.get("mcp") or [] if isinstance(m, str))
-            print("[budget] Connected %s%s" % (slug, "; Hermes entries: " + mcp if mcp else ""))
-        else:
-            print("[budget] Disconnected %s" % slug)
-    elif d.get("phase") == "error":
-        seen = 1
-        print("[budget] ERROR: %s (%s)" % (d.get("message") or "addon.sh failed", d.get("error")), file=sys.stderr)
-sys.exit(0 if seen else 3)
-' "$1" "$2" || grep -v '^[[:space:]]*$' "${WORK}/addon.err" >&2 || true
-  return "$rc"
+  printf '%s}' "$body" | addon_human budget actual connect "$slug" ${force:+"$force"}
 }
 
 # disconnect-cli --slug SLUG (make budget-disconnect): addon.sh disconnect,
@@ -942,7 +912,7 @@ cmd_disconnect_cli() {
   local slug="" usage="usage: budget.sh disconnect-cli --slug SLUG"
   [[ $# -eq 2 && "$1" == --slug && -n "$2" ]] || die "$usage"
   slug="$2"
-  addon_human disconnect "$slug" < /dev/null
+  addon_human budget actual disconnect "$slug" < /dev/null
 }
 
 case "${1:-}" in

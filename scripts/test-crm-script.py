@@ -31,6 +31,28 @@ PASSWORD = "pw-SECRET-0123!Aa1"
 OP = re.compile(r"^\s*(?:mutation|query)?\s*(?:\([^)]*\))?\s*\{\s*(\w+)", re.S)
 
 
+ALL_ACTIONS = ["canCreateObjectRecords", "canDestroyObjectRecords", "canReadObjectRecords",
+               "canSoftDeleteObjectRecords", "canUpdateObjectRecords"]
+WRITES = [a for a in ALL_ACTIONS if a != "canReadObjectRecords"]
+# Shapes seen on Twenty v2.60.3 (v2.55 has the same field). agentChatThreadTarget
+# is isUIReadOnly but has no disabled actions, so its write tools reach a role
+# with no permission on it. Twenty refuses a grant of a disabled action.
+OBJECTS = [
+    {"id": "obj-person", "nameSingular": "person", "isUIReadOnly": False, "isActive": True,
+     "disabledObjectPermissionActions": None},
+    {"id": "obj-notetarget", "nameSingular": "noteTarget", "isUIReadOnly": False, "isActive": True,
+     "disabledObjectPermissionActions": None},
+    {"id": "obj-threadtarget", "nameSingular": "agentChatThreadTarget", "isUIReadOnly": True, "isActive": True,
+     "disabledObjectPermissionActions": None},
+    {"id": "obj-participant", "nameSingular": "agentChatThreadParticipant", "isUIReadOnly": True,
+     "isActive": True, "disabledObjectPermissionActions": WRITES},
+    {"id": "obj-agentturn", "nameSingular": "agentTurn", "isUIReadOnly": True, "isActive": True,
+     "disabledObjectPermissionActions": ALL_ACTIONS},
+    {"id": "obj-old", "nameSingular": "old", "isUIReadOnly": False, "isActive": False,
+     "disabledObjectPermissionActions": None},
+]
+
+
 class Stub:
     """Canned Twenty answers; records the first field of every operation."""
 
@@ -84,13 +106,14 @@ class Stub:
             self.roles.append(role)
             return {"data": {"createOneRole": role}}
         if op == "objects":
-            return {"data": {"objects": {"edges": [
-                {"node": {"id": "obj-person", "nameSingular": "person", "isUIReadOnly": False, "isActive": True}},
-                {"node": {"id": "obj-notetarget", "nameSingular": "noteTarget", "isUIReadOnly": False, "isActive": True}},
-                {"node": {"id": "obj-agentturn", "nameSingular": "agentTurn", "isUIReadOnly": True, "isActive": True}},
-                {"node": {"id": "obj-old", "nameSingular": "old", "isUIReadOnly": False, "isActive": False}},
-            ]}}}
+            return {"data": {"objects": {"edges": [{"node": dict(n)} for n in OBJECTS]}}}
         if op == "upsertObjectPermissions":
+            by_id = {n["id"]: n for n in OBJECTS}
+            for p in variables["i"]["objectPermissions"]:
+                obj = by_id[p["objectMetadataId"]]
+                disabled = obj["disabledObjectPermissionActions"] or []
+                if any(p.get(a) for a in disabled):
+                    return {"errors": [{"message": "Validation errors occurred while upserting object permissions"}]}
             self.upserts.append(variables["i"])
             return {"data": {"upsertObjectPermissions": [
                 {"objectMetadataId": o["objectMetadataId"]} for o in variables["i"]["objectPermissions"]]}}
@@ -216,20 +239,30 @@ class CrmInit(unittest.TestCase):
         ro, rw = self.stub.roles
         self.assertEqual((ro["label"], rw["label"]), ("Hermes read-only", "Hermes read-write"))
 
-    def test_read_only_role_denies_writes_object_by_object(self):
-        # Twenty v2.55 lets a role without canUpdateAllObjectRecords still write
-        # junction objects (noteTarget, attachment...) unless each object carries
-        # its own permission. It refuses permissions on isUIReadOnly objects.
-        self.run_init()
+    def _ro_upsert(self) -> dict[str, dict]:
         self.assertEqual(len(self.stub.upserts), 1)
         upsert = self.stub.upserts[0]
         self.assertEqual(upsert["roleId"], self.stub.roles[0]["id"])  # read-only, never read-write
-        perms = {p["objectMetadataId"]: p for p in upsert["objectPermissions"]}
-        self.assertEqual(set(perms), {"obj-person", "obj-notetarget"})
-        for p in perms.values():
-            self.assertEqual((p["canReadObjectRecords"], p["canUpdateObjectRecords"],
-                              p["canSoftDeleteObjectRecords"], p["canDestroyObjectRecords"]),
-                             (True, False, False, False))
+        return {p["objectMetadataId"]: p for p in upsert["objectPermissions"]}
+
+    @staticmethod
+    def _actions(p: dict) -> tuple:
+        return (p["canReadObjectRecords"], p["canUpdateObjectRecords"],
+                p["canSoftDeleteObjectRecords"], p["canDestroyObjectRecords"])
+
+    def test_read_only_role_denies_writes_object_by_object(self):
+        # Twenty lets a role without canUpdateAllObjectRecords still write
+        # junction objects (noteTarget, attachment...) and, from v2.60, the
+        # isUIReadOnly agentChatThreadTarget, unless each object carries its own
+        # permission. Read is granted only where the object doesn't disable it.
+        proc = self.run_init()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        perms = self._ro_upsert()
+        self.assertEqual(set(perms), {"obj-person", "obj-notetarget", "obj-threadtarget",
+                                      "obj-participant", "obj-agentturn"})
+        for oid in ("obj-person", "obj-notetarget", "obj-threadtarget", "obj-participant"):
+            self.assertEqual(self._actions(perms[oid]), (True, False, False, False), oid)
+        self.assertEqual(self._actions(perms["obj-agentturn"]), (False, False, False, False))
 
     def test_rerun_signs_in(self):
         self.stub.sign_up_error = "User already exists"

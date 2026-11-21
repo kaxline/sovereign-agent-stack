@@ -177,7 +177,7 @@ SQL. Vikunja owns its tables, and `agent_rw` cannot write them.
 | `VIKUNJA_MCP_URL` | `http://vikunja:3456/api/v2/mcp` | Endpoint the bootstrap registers |
 | `VIKUNJA_MCP_TIMEOUT` / `_CONNECT_TIMEOUT` | `60` / `30` | Hermes MCP timeouts |
 | `VIKUNJA_IMAGE` | `vikunja/vikunja:2.8.0` | MCP needs 2.7.0 or later |
-| `VIKUNJA_PROXY_IMAGE` | `nginx:1.30.6-alpine` | The loopback proxy |
+| `VIKUNJA_PROXY_IMAGE` | `nginx:1.30.7-alpine` | The loopback proxy |
 
 ## Backup
 

@@ -80,3 +80,12 @@ Push the tag only when the release is meant to be public:
 ```bash
 git push origin v0.2.0
 ```
+
+The pushed tag runs the release workflow. It pushes the
+[SSH listener](ssh-listener.md) image to
+`ghcr.io/kaxline/sovereign-agent-stack/ssh-listener` for amd64 and arm64,
+then attaches the tarball, `ssh-listener.sh` with that image pinned by
+digest, and a `.sha256` for each. GHCR makes a new package private, so after
+the first release that pushes the image, set the `ssh-listener` package to
+public in its **Package settings**, or hosts can't pull it. Later releases
+keep that setting.

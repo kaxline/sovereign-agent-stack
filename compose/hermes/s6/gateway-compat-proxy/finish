@@ -1,14 +1,8 @@
 #!/command/with-contenv sh
 # shellcheck shell=sh
-# Companion to ./run: 125 tells s6-supervise not to restart the slot when the
-# topology is standalone. Under multiplex a crash restarts the proxy.
+# Companion to ./run, reading the same file: 125 tells s6-supervise not to
+# restart the slot when the topology is standalone. Under multiplex a crash
+# restarts the proxy.
 
-topology="$(printf '%s' "${HERMES_GATEWAY_TOPOLOGY:-}" | tr '[:upper:]' '[:lower:]')"
-if [ -z "$topology" ]; then
-    case "$(printf '%s' "${HERMES_PIN_STANDALONE_GATEWAYS:-1}" | tr '[:upper:]' '[:lower:]')" in
-        0|false|no|off) topology=multiplex ;;
-        *) topology=standalone ;;
-    esac
-fi
-[ "$topology" = multiplex ] && exit 0
+[ "$(cat /run/hermes-gateway-topology 2>/dev/null)" = multiplex ] && exit 0
 exit 125

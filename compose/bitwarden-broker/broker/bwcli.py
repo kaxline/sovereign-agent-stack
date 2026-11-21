@@ -52,7 +52,7 @@ _NOISE = re.compile(r"^\s*(\(node:\d+\)|\(use `node|$)", re.IGNORECASE)
 
 # Checked in order against bw's lower-cased stderr with the noise lines removed.
 _PATTERNS = tuple((cls, re.compile("|".join(parts))) for cls, parts in (
-    # bw 2026.10.1 prints "Rate limit exceeded. Try again later." for Vaultwarden's 429, with no Retry-After.
+    # bw 2026.10.1 and 2026.11.0 print "Rate limit exceeded. Try again later." for Vaultwarden's 429, with no Retry-After.
     ("rate_limited", (r"too many requests", r"rate limit exceeded", r"\b(?:status|http|code)\b\D{0,3}429\b",
                       r"\b429\b\s*too many")),
     ("auth", (r"invalid master password", r"username or password is incorrect",
@@ -70,7 +70,7 @@ _PATTERNS = tuple((cls, re.compile("|".join(parts))) for cls, parts in (
                  r"certificate has expired")),
 ))
 
-# bw 2026.10.1's unlock with a wrong password: "Cryptography error, The decryption operation failed".
+# bw 2026.10.1 and 2026.11.0: unlock with a wrong password: "Cryptography error, The decryption operation failed".
 # Any other command printing it has an item that does not decrypt, which is not an auth failure.
 _UNLOCK_AUTH = re.compile(r"the decryption operation failed")
 

@@ -15,6 +15,8 @@ source "${ROOT}/scripts/lib/secret.sh"
 source "${ROOT}/scripts/lib/python.sh"
 # shellcheck source=lib/mcp-probe.sh
 source "${ROOT}/scripts/lib/mcp-probe.sh"
+# shellcheck source=lib/addon-human.sh
+source "${ROOT}/scripts/lib/addon-human.sh"
 
 ENV_PATH="${ENV_FILE:-.env}"
 LOCAL_URL="http://twenty-server:3000"
@@ -43,35 +45,40 @@ Usage: scripts/crm.sh <command> [options]
   add --slug S --url URL [--force]
         A workspace on a remote Twenty. Keys come from TWENTY_KEY_RW and
         TWENTY_KEY_RO, or are asked for (hidden) when run in a terminal.
-        TWENTY_ACCESS=read gives Hermes chats the read-only key. Each key is
-        checked with an MCP initialize; nothing is written if one fails.
-  remove --slug S   Delete a workspace and its keys from the store
-                    (make hermes-reload drops it)
+        TWENTY_ACCESS=read gives Hermes chats the read-only key. Runs
+        addon.sh connect twenty: each key is checked with an MCP initialize,
+        nothing is written if one fails, and Hermes is reloaded.
+  remove --slug S   Delete a workspace and its keys from the store and reload
+                    Hermes (addon.sh disconnect twenty)
   access --slug S read|write
         What chats may do in a workspace: look things up (read) or make
-        changes (write). crm init keeps it.
+        changes (write). Reloads Hermes. crm init keeps it.
   open [--slug S]   Open a workspace in the browser, signed in when it's local
   login-link [--slug S]
         Local workspace: print a URL that signs a browser in as the owner,
         good for 15 minutes. Only the URL goes to stdout.
   mode 0|1          Single- (0) or multi-workspace (1) local instance
   ensure            Create data dirs and sync flags (run by make ensure-local)
-  connect --slug S --json
+  connect --slug S [--replace] --json
                     addon.sh's connect hook: checks the values on stdin (JSON)
                     and each key with an MCP initialize. Stores nothing.
   disconnect --slug S --json
                     addon.sh's disconnect hook. Stores nothing.
 
-After init, add or mode: make hermes-reload
+After init or mode: make hermes-reload
 EOF
 }
 
 log() { printf '[crm] %s\n' "$1"; }
 warn() { printf '[crm] %s\n' "$1" >&2; }
 
-# JSON string content: quotes and backslashes become ', control characters go.
+# JSON string content: backslashes and quotes escaped, control characters
+# dropped. Unlike lib/json-lines.sh's jl_str, tabs go too and nothing is cut.
 json_text() {
-  printf '%s' "$1" | tr "\"\\\\" "''" | tr -d '\000-\037'
+  local s
+  s="$(printf '%s' "$1" | tr -d '\000-\037')"
+  s="${s//\\/\\\\}"
+  printf '%s' "${s//\"/\\\"}"
 }
 
 # --json: everything a command prints goes to stderr, and fd 3 (the real
@@ -106,18 +113,6 @@ json_safe() {
   [[ "$1" != *[[:cntrl:]]* ]]
 }
 
-# A key goes into a curl header file and a secret file as is, so it may not
-# hold whitespace or a control character.
-key_ok() {
-  [[ "$1" != *[[:space:][:cntrl:]]* ]]
-}
-
-# True when an http(s) URL carries user:password@ before the host. Such URLs
-# are refused, so no credential reaches a message or the store.
-has_userinfo() {
-  [[ "$1" =~ ^[A-Za-z]+://[^/?#]*@ ]]
-}
-
 # A Twenty URL as the store keeps it: no trailing slash, no /mcp.
 norm_url() {
   local url="$1"
@@ -134,19 +129,6 @@ addon_cli() {
   path_is_inside "$ADDONS" "$ROOT" || mounts+=(--mount "$ADDONS")
   stack_python "${mounts[@]}" "${ROOT}/scripts/lib/addon_cli.py" \
     --addons-dir "$ADDONS" --data-root "$DATA_ROOT" "$@"
-}
-
-# The JSON object addon_cli configure takes for one instance, on stdout.
-# Args: url access local(true|false) workspace_url workspace_id key_ro key_rw;
-# empty optional values are left out. Callers check each value with json_safe.
-instance_json() {
-  local out
-  out="{\"url\":\"$1\",\"access\":\"$2\",\"local\":$3"
-  [[ -n "$4" ]] && out="${out},\"workspace_url\":\"$4\""
-  [[ -n "$5" ]] && out="${out},\"workspace_id\":\"$5\""
-  [[ -n "$6" ]] && out="${out},\"key_ro\":\"$6\""
-  [[ -n "$7" ]] && out="${out},\"key_rw\":\"$7\""
-  printf '%s}' "$out"
 }
 
 stored() {
@@ -458,6 +440,9 @@ cmd_connect() {
     case "$1" in
       --slug) slug="${2:-}"; shift 2 ;;
       --json) json=1; shift ;;
+      # addon.sh connect --force: the hook checks the new values as for a
+      # new workspace, and addon.sh replaces the stored one.
+      --replace) shift ;;
       *) die "unknown option for connect: $1" ;;
     esac
   done
@@ -567,33 +552,40 @@ cmd_disconnect() {
   fi
 }
 
+# JSON string content for values crm.sh sends on: backslash and quote
+# escaped. A control character is left as it is, so the JSON doesn't parse
+# and addon.sh refuses it.
+json_escape() {
+  local v="$1"
+  v="${v//\\/\\\\}"
+  v="${v//\"/\\\"}"
+  printf '%s' "$v"
+}
+
+# add (make crm-add): asks for the keys in a terminal and pipes the
+# workspace's JSON to addon.sh connect, which checks it, runs the connect hook
+# (each key's MCP initialize and the catalog tools), stores it and reloads
+# Hermes. TWENTY_KEY_RW and TWENTY_KEY_RO in the environment are used instead
+# of asking, and the keys travel on pipes only.
 cmd_add() {
   local slug="" url="" force=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --slug) slug="${2:-}"; shift 2 ;;
       --url) url="${2:-}"; shift 2 ;;
-      --force) force=1; shift ;;
+      --force) force=--force; shift ;;
       *) die "unknown option for add: $1" ;;
     esac
   done
   valid_slug "$slug" || die "--slug must use lowercase letters, digits and hyphens"
-  case "$url" in
-    http://* | https://*) ;;
-    *) die "--url must start with http:// or https://" ;;
-  esac
-  has_userinfo "$url" && die "--url must not hold a user name or password before the host"
-  url="$(norm_url "$url")"
-  local access="${TWENTY_ACCESS:-write}"
-  case "$access" in
-    read | write) ;;
-    *) die "TWENTY_ACCESS must be read or write" ;;
-  esac
+  [[ -n "$url" ]] || die "usage: crm.sh add --slug S --url URL [--force]"
+  # Before asking for keys, which addon.sh would refuse to store anyway.
   if stored "$slug" && [[ -z "$force" ]]; then
     die "workspace '${slug}' exists (${STORE}/instances/${slug}.json); pass --force (make crm-add FORCE=1) to replace it"
   fi
+  url="$(norm_url "$url")"
+  local access="${TWENTY_ACCESS:-write}"
 
-  # With the keys in the environment nothing is asked, so addon.sh can call this.
   local rw="${TWENTY_KEY_RW:-}" ro="${TWENTY_KEY_RO:-}"
   if [[ -z "$rw" && -z "${TWENTY_KEY_RW+x}" && -t 0 ]]; then
     printf 'Read/write API key for %s%s: ' "$slug" "$( [[ "$access" == read ]] && echo ' (Enter to skip)')" >&2
@@ -605,86 +597,31 @@ cmd_add() {
     IFS= read -rs ro
     printf '\n' >&2
   fi
-  if [[ "$access" == write && -z "$rw" ]]; then
-    [[ -t 0 ]] || die "set TWENTY_KEY_RW (no terminal to ask in)"
-    die "a read/write key is required with TWENTY_ACCESS=write"
-  fi
-  if [[ "$access" == read && -z "$ro" ]]; then
-    die "TWENTY_ACCESS=read needs TWENTY_KEY_RO"
-  fi
-  local ws_url="${TWENTY_WORKSPACE_URL:-${url}/}"
-  if ! { json_safe "$url" && json_safe "$ws_url"; }; then
-    die "the URL holds a quote, backslash or control character"
-  fi
-  if ! { json_safe "$rw" && json_safe "$ro" && key_ok "$rw" && key_ok "$ro"; }; then
-    die "a key holds whitespace, a quote, a backslash or a control character"
+  if [[ ! -t 0 ]] && { [[ "$access" == write && -z "$rw" ]] || [[ "$access" == read && -z "$ro" ]]; }; then
+    die "set TWENTY_KEY_$([[ "$access" == write ]] && echo RW || echo RO) (no terminal to ask in)"
   fi
 
-  # Check every key before writing anything.
-  local kind key code
-  for kind in RW RO; do
-    key="$rw"; [[ "$kind" == RO ]] && key="$ro"
-    [[ -n "$key" ]] || continue
-    # printf is a builtin: no process's argv holds the key.
-    code="$(mcp_status "$url" <(printf '%s' "$key"))"
-    case "$code" in
-      200) log "TWENTY_KEY_${kind}: Twenty accepts it" ;;
-      000 | timeout) die "no answer from ${url}/mcp — check the URL; nothing written" ;;
-      401 | 403) die "Twenty rejects TWENTY_KEY_${kind} (HTTP ${code}); nothing written" ;;
-      *) die "${url}/mcp answered HTTP ${code} for TWENTY_KEY_${kind}; nothing written" ;;
-    esac
-  done
-  local tools
-  tools="$(catalog_check "$url" <(printf '%s' "${rw:-$ro}"))"
-  case "$tools" in
-    ok\ *) log "Twenty lists the catalog tools (${tools#ok } tools)" ;;
-    missing\ *)
-      tools="${tools#missing }"
-      die "${url}/mcp?mode=meta lists ${tools%% *} tools but not ${tools#* }; Hermes reaches records through those; nothing written" ;;
-    *) warn "couldn't check the tools Twenty lists: ${tools#unknown }" ;;
-  esac
-
-  local local_=false
+  local local_=false body
   [[ "$url" == "$LOCAL_URL" ]] && local_=true
-  # --force: the old instance is copied aside and restored if configure
-  # fails, so a failed replace keeps the old workspace and its keys.
-  local backup="" name
-  if stored "$slug"; then
-    backup="$(umask 077 && mktemp -d)"
-    # shellcheck disable=SC2064  # the path is fixed now
-    trap "rm -rf '$backup'" EXIT
-    cp -p "${STORE}/instances/${slug}.json" "${backup}/instance.json"
-    for name in key_ro key_rw; do
-      [[ -f "${STORE}/secrets/${slug}.${name}" ]] && cp -p "${STORE}/secrets/${slug}.${name}" "${backup}/${name}"
-    done
-  fi
-  if ! instance_json "$url" "$access" "$local_" "$ws_url" "" "$ro" "$rw" \
-    | addon_cli configure twenty --instance "$slug" > /dev/null; then
-    if [[ -n "$backup" ]]; then
-      cp -p "${backup}/instance.json" "${STORE}/instances/${slug}.json" || true
-      for name in key_ro key_rw; do
-        if [[ -f "${backup}/${name}" ]]; then
-          cp -p "${backup}/${name}" "${STORE}/secrets/${slug}.${name}" 2>/dev/null || true
-        else
-          rm -f "${STORE}/secrets/${slug}.${name}" 2>/dev/null || true
-        fi
-      done
-      die "couldn't store workspace '${slug}' in ${STORE}; kept the old one"
-    fi
-    addon_cli remove-instance twenty "$slug" > /dev/null 2>&1 || true
-    die "couldn't store workspace '${slug}' in ${STORE}"
-  fi
-  # configure merges, so drop a key the new values don't set.
-  [[ -n "$ro" ]] || rm -f "${STORE}/secrets/${slug}.key_ro"
-  [[ -n "$rw" ]] || rm -f "${STORE}/secrets/${slug}.key_rw"
-  log "Wrote ${STORE}/instances/${slug}.json (crm-${slug})"
+  body="{\"url\":\"$(json_escape "$url")\",\"access\":\"$(json_escape "$access")\",\"local\":${local_}"
+  body="${body},\"workspace_url\":\"$(json_escape "${TWENTY_WORKSPACE_URL:-${url}/}")\""
+  [[ -z "$ro" ]] || body="${body},\"key_ro\":\"$(json_escape "$ro")\""
+  [[ -z "$rw" ]] || body="${body},\"key_rw\":\"$(json_escape "$rw")\""
+  local rc=0
+  printf '%s}' "$body" | addon_human crm twenty connect "$slug" ${force:+"$force"} || rc=$?
+  rw=""; ro=""; body=""
+  [[ "$rc" == 0 ]] || exit "$rc"
+  # addon.sh registers the workspace while the add-on's flag is on; with it
+  # off, set it and reload by hand.
   if ! env_true TWENTY_MCP_ENABLED; then
     upsert_env "$ENV_PATH" TWENTY_MCP_ENABLED 1
     log "Set TWENTY_MCP_ENABLED=1"
+    log "Next: make hermes-reload"
   fi
-  log "Next: make hermes-reload"
 }
 
+# remove (make crm-remove): addon.sh disconnect, which removes the workspace
+# and its keys and reloads Hermes.
 cmd_remove() {
   local slug=""
   while [[ $# -gt 0 ]]; do
@@ -693,19 +630,13 @@ cmd_remove() {
       *) die "unknown option for remove: $1" ;;
     esac
   done
-  valid_slug "$slug" || die "--slug must use lowercase letters, digits and hyphens"
-  stored "$slug" || die "no workspace '${slug}' in ${STORE}"
-  load_rows
-  local was_local=""
-  is_local_slug "$slug" && was_local=1
-  addon_cli remove-instance twenty "$slug" || die "couldn't remove workspace '${slug}'"
-  log "Removed workspace ${slug} and its keys from ${STORE}"
-  if [[ -n "$was_local" ]]; then
-    log "The workspace and its keys still exist in Twenty; delete them there if you're done with them"
-  fi
-  log "Next: make hermes-reload (drops crm-${slug} from Hermes)"
+  [[ -n "$slug" ]] || die "usage: crm.sh remove --slug S"
+  addon_human crm twenty disconnect "$slug" < /dev/null
 }
 
+# access (make crm-access): stores the access setting with addon.sh configure
+# and reloads Hermes, as budget.sh access does. Refused when the workspace
+# lacks the key that access calls for.
 cmd_access() {
   local slug="" access=""
   while [[ $# -gt 0 ]]; do
@@ -725,10 +656,16 @@ cmd_access() {
   if [[ "$access" == write && "$(row_get "$slug" 8)" != 1 ]]; then
     die "${slug} has no TWENTY_KEY_RW; write access needs one"
   fi
-  printf '{"access":"%s"}' "$access" | addon_cli configure twenty --instance "$slug" > /dev/null \
-    || die "couldn't store the access setting for ${slug}"
+  local errf rrc=0
+  errf="$(mktemp)"
+  # shellcheck disable=SC2064  # the path is fixed now
+  trap "rm -f '$errf'" EXIT
+  printf '{"access":"%s"}' "$access" | "${ADDON_SH:-${ROOT}/scripts/addon.sh}" configure twenty --instance "$slug" > /dev/null 2> "$errf" \
+    || die "couldn't store the access setting for ${slug}: $(grep -v '^[[:space:]]*$' "$errf" | tail -1 || true)"
   log "Set TWENTY_ACCESS=${access} for ${slug}"
-  log "Next: make hermes-reload"
+  hermes_reload "$errf" || rrc=$?
+  [[ "$rrc" != 1 ]] || die "stored the access, but a Hermes bootstrap failed: $(grep -v '^[[:space:]]*$' "$errf" | tail -1 || true)"
+  [[ "$rrc" != 2 ]] || warn "vault.sh reload-plugins failed; run make hermes-reload"
 }
 
 # The slug open and login-link use without --slug: main, else the only

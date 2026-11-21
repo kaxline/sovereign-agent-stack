@@ -7,7 +7,7 @@ include:
     project_directory: .
 
 x-n8n: &service-n8n
-  image: ${N8N_IMAGE:-n8nio/n8n:2.47.4}
+  image: ${N8N_IMAGE:-n8nio/n8n:2.48.7}
   # Allowlist. The root .env stays on the host for Compose interpolation and
   # is not mounted into the container. A mapping, so a service that adds keys
   # merges it with `<<: *n8n-env` instead of replacing it.
@@ -385,7 +385,7 @@ services:
   mcp-searxng:
     profiles: ["core"]
     container_name: ${CONTAINER_PREFIX:-}mcp-searxng
-    image: ${MCP_SEARXNG_IMAGE:-isokoliuk/mcp-searxng:2.10.1}
+    image: ${MCP_SEARXNG_IMAGE:-isokoliuk/mcp-searxng:2.11.0}
     restart: unless-stopped
     environment:
       - SEARXNG_URL=${WEB_SEARCH_URL:-http://searxng:8080}
@@ -744,7 +744,7 @@ services:
   vikunja-proxy:
     profiles: ["todo"]
     container_name: ${CONTAINER_PREFIX:-}vikunja-proxy
-    image: ${VIKUNJA_PROXY_IMAGE:-nginx:1.30.6-alpine}
+    image: ${VIKUNJA_PROXY_IMAGE:-nginx:1.30.7-alpine}
     restart: unless-stopped
     ports:
       - "127.0.0.1:${VIKUNJA_PORT:-3456}:8080"
@@ -784,7 +784,7 @@ services:
   twenty-server:
     profiles: ["crm"]
     container_name: ${CONTAINER_PREFIX:-}twenty-server
-    image: ${TWENTY_IMAGE:-twentycrm/twenty:v2.55.0}
+    image: ${TWENTY_IMAGE:-twentycrm/twenty:v2.60.3}
     restart: unless-stopped
     ports:
       - "127.0.0.1:${TWENTY_PORT:-3000}:3000"
@@ -838,7 +838,7 @@ services:
   twenty-worker:
     profiles: ["crm"]
     container_name: ${CONTAINER_PREFIX:-}twenty-worker
-    image: ${TWENTY_IMAGE:-twentycrm/twenty:v2.55.0}
+    image: ${TWENTY_IMAGE:-twentycrm/twenty:v2.60.3}
     restart: unless-stopped
     entrypoint: ["/bin/sh", "/opt/stack/secrets-entrypoint.sh"]
     command: ["yarn", "worker:prod"]
@@ -1328,6 +1328,8 @@ services:
       - "127.0.0.1:${OPENCODE_PORT:-4096}:4096"
     environment:
       - OPENCODE_CONFIG=/etc/opencode/opencode.json
+      # The Dockerfile pins the version; 1.19.6 otherwise offers OpenCode 2.
+      - OPENCODE_DISABLE_AUTOUPDATE=1
       - OPENCODE_SERVER_USERNAME=${OPENCODE_SERVER_USERNAME:-opencode}
       - OPENCODE_SERVER_PASSWORD=${OPENCODE_SERVER_PASSWORD:?set OPENCODE_SERVER_PASSWORD in .env}
     # Mounted at its own host path so paths in the UI match paths in your terminal.
@@ -1365,7 +1367,7 @@ services:
   ollama:
     profiles: ["ollama"]
     container_name: ${CONTAINER_PREFIX:-}ollama
-    image: ${OLLAMA_IMAGE:-ollama/ollama:0.40.11}
+    image: ${OLLAMA_IMAGE:-ollama/ollama:0.40.17}
     restart: unless-stopped
     ports:
       - "127.0.0.1:${OLLAMA_HOST_PORT:-11434}:11434"
@@ -1382,7 +1384,7 @@ services:
   #   docker compose --profile ollama run --rm ollama-pull
   ollama-pull:
     profiles: ["ollama"]
-    image: ${OLLAMA_IMAGE:-ollama/ollama:0.40.11}
+    image: ${OLLAMA_IMAGE:-ollama/ollama:0.40.17}
     container_name: ${CONTAINER_PREFIX:-}ollama-pull
     restart: "no"
     environment:
@@ -1415,7 +1417,7 @@ services:
   signal-cli:
     profiles: ["signal"]
     container_name: ${CONTAINER_PREFIX:-}signal-cli
-    image: ${SIGNAL_CLI_IMAGE:-registry.gitlab.com/packaging/signal-cli/signal-cli-jre:v0-14-9-2}
+    image: ${SIGNAL_CLI_IMAGE:-registry.gitlab.com/packaging/signal-cli/signal-cli-jre:v0-14-10-1}
     restart: unless-stopped
     # Match the Mac/Linux user that owns SIGNAL_CLI_DATA_DIR.
     # scripts/sync-signal-profile.sh sets these from `id -u` / `id -g` when enabling.
@@ -2590,7 +2592,7 @@ services:
   vaultwarden-tls:
     profiles: ["vault"]
     container_name: ${CONTAINER_PREFIX:-}vaultwarden-tls
-    image: ${VAULTWARDEN_TLS_IMAGE:-nginx:1.30.6-alpine}
+    image: ${VAULTWARDEN_TLS_IMAGE:-nginx:1.30.7-alpine}
     restart: unless-stopped
     # nginx keeps its default capabilities: its master process starts as root
     # to read the mode-600 server key, then the workers drop to the nginx user.

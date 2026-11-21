@@ -698,6 +698,11 @@ Published ports bind 127.0.0.1, as in `docker-compose.yml`; forward them over
 SSH. The `install-test` workflow (run by hand) installs and upgrades on Ubuntu
 24.04.
 
+A host the app can't reach on port 22, such as one behind a home router, can
+run the [SSH listener](ssh-listener.md) first. It carries SSH over HyperDHT
+by public key, runs apart from the stack, and stays up through installs and
+upgrades.
+
 ## Stack status
 
 `scripts/status.sh --json` prints one object:

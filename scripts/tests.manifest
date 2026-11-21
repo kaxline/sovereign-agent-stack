@@ -127,6 +127,8 @@ scripts/test-secret-sh.sh                       ci
 scripts/test-send-message-tool.py               image
 scripts/test-sessions-sh.sh                     docker image
 scripts/test-sql-mcp-registration.sh            ci
+scripts/test-ssh-listener-sh.sh                 ci
+scripts/test-ssh-listener.sh                    ci docker
 scripts/test-status-sh.sh                       ci
 scripts/test-sync-profiles.sh                   ci
 scripts/test-synthetic-mail.py
