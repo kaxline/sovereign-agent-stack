@@ -24,6 +24,11 @@ the stack under another app.
 
 ### Changes
 
+- **Bitwarden CLI** (`bitwarden-broker`, `bitwarden-setup`) 2026.10.1 →
+  2026.11.0. Bitwarden renamed the commercial-license zips in this release
+  (`bw-linux-*` is now `bw-bit-linux-*`), so the Dockerfile's asset names
+  change with the version and both SHA-256 digests. The next
+  `docker compose --profile bitwarden build` picks it up.
 - **signal-cli** `signal-cli-jre:v0-14-9-2` → `v0-14-10-1` (signal-cli
   0.14.10), to keep the client current with Signal's service. It fixes a race
   between stopping and starting the receive thread, accepts group invitations

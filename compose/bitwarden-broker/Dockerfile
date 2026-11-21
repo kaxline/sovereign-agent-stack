@@ -7,9 +7,9 @@ FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d
 # Digests are GitHub's asset digests for the cli-v${BW_CLI_VERSION} release
 # (gh api repos/bitwarden/clients/releases/tags/cli-v<version>). Change all
 # three together.
-ARG BW_CLI_VERSION=2026.10.1
-ARG BW_SHA256_ARM64=79ecb3293fb259660961c949d3e32fdab8682b2bcff0f6764ce38a411ca1ac5d
-ARG BW_SHA256_X64=eb09c3715291c21cf744819b873a255c1247b1b8b45bae138621a644ec7ad8f5
+ARG BW_CLI_VERSION=2026.11.0
+ARG BW_SHA256_ARM64=39e8336376739bbe5306471df0667793757ef1e243df3846461f66be9166e9d8
+ARG BW_SHA256_X64=bfc7643cbc20f970bf04b994f96489703fcf77217a2384f1743e43848363b0ba
 ARG TARGETARCH
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -18,12 +18,13 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# The x64 asset carries no architecture in its name.
+# The x64 asset carries no architecture in its name. From 2026.11.0 the
+# commercial-license zips (the build used before) carry a `bit` prefix.
 WORKDIR /tmp
 RUN set -eu; \
     case "${TARGETARCH:-$(dpkg --print-architecture)}" in \
-      arm64) asset="bw-linux-arm64-${BW_CLI_VERSION}.zip"; sum="${BW_SHA256_ARM64}" ;; \
-      amd64) asset="bw-linux-${BW_CLI_VERSION}.zip"; sum="${BW_SHA256_X64}" ;; \
+      arm64) asset="bw-bit-linux-arm64-${BW_CLI_VERSION}.zip"; sum="${BW_SHA256_ARM64}" ;; \
+      amd64) asset="bw-bit-linux-${BW_CLI_VERSION}.zip"; sum="${BW_SHA256_X64}" ;; \
       *) echo "no bw build for ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     curl -fsSL -o "$asset" "https://github.com/bitwarden/clients/releases/download/cli-v${BW_CLI_VERSION}/${asset}"; \
@@ -33,7 +34,7 @@ RUN set -eu; \
 
 FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 
-ARG BW_CLI_VERSION=2026.10.1
+ARG BW_CLI_VERSION=2026.11.0
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates python3 python3-websockets \

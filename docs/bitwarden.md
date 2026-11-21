@@ -536,8 +536,9 @@ Other limits, as built:
 | `VAULTWARDEN_TLS_IMAGE` | `nginx:1.30.6-alpine` | The TLS sidecar's image |
 | `VAULT_OWNER_EMAIL` | unset | Your address for `make vault-init` |
 
-`bw` 2026.10.1 is pinned in `compose/bitwarden-broker/Dockerfile` by the `BW_CLI_VERSION` build
-argument and a SHA-256 per architecture; a new version needs both digests. Run `make bitwarden-test`
+`bw` 2026.11.0 is pinned in `compose/bitwarden-broker/Dockerfile` by the `BW_CLI_VERSION` build
+argument and a SHA-256 per architecture; a new version needs both digests. The Dockerfile downloads
+the commercial-license zips, named `bw-bit-linux-*` from 2026.11.0 on. Run `make bitwarden-test`
 after a `bw` or Hermes bump; [Hermes](hermes.md#model-suitability-agentic-tool-use) lists what the overlays anchor on. `bitwarden-signin` is built from the same Hermes image tag, so a bump rebuilds it too.
 
 With both flags off, the add-on starts nothing and writes nothing into Hermes profiles.
