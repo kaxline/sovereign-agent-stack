@@ -9,7 +9,7 @@ PASS=0
 FAIL=0
 WARN=0
 
-# ok, bad, warn, has_profile, svc_running, DATA_ROOT and DATA_ROOT_RAW;
+# ok, bad, warn, has_profile, svc_running, check_service_health, DATA_ROOT and DATA_ROOT_RAW;
 # sources lib/env.sh and lib/data-root.sh.
 # shellcheck source=lib/doctor-kit.sh
 source "$ROOT/scripts/lib/doctor-kit.sh"

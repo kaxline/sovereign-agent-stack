@@ -56,6 +56,10 @@ source "${ROOT}/scripts/lib/doctor-kit.sh"
 # shellcheck source=lib/doctor-twenty.sh
 source "${ROOT}/scripts/lib/doctor-twenty.sh"
 doctor_twenty
+# Nothing the block uses leaks into doctor.sh.
+for v in count missing tools listed body lcode key hdr code probe base; do
+  [[ -z "${!v+x}" ]] || echo "LEAKED $v"
+done
 SH
 
 out="$tmp/out"
@@ -215,6 +219,7 @@ expected="
  WARN crm-zed: couldn't list its tools: tools/list failed: stub failure"
 [[ "$doctor_body" == "$expected" ]] || fail "the block's output changed: $(diff <(printf '%s\n' "$expected") <(printf '%s\n' "$doctor_body"))"
 
+if grep -q LEAKED "$all"; then fail "the block leaks variables: $(grep LEAKED "$all" | sort -u)"; fi
 for k in "$KEY_RO" "$KEY_RW"; do
   if grep -qF -- "$k" "$all"; then fail "a key shows in the output"; fi
 done
