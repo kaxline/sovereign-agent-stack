@@ -24,6 +24,20 @@ the stack under another app.
 
 ### Changes
 
+- `make crm-add`, `crm-remove` and `crm-access` run `scripts/addon.sh`
+  (`connect twenty`, `disconnect twenty` and `configure twenty --instance`)
+  and reload Hermes themselves, so no `make hermes-reload` follows them
+  (`crm-add` still asks for one when it turns `TWENTY_MCP_ENABLED` on).
+  `crm-add` and `crm-remove` print `[crm] Connected <slug>; Hermes entries:
+  crm-<slug>` and `[crm] Disconnected <slug>`; a failure prints
+  `[crm] ERROR: <message> (<error>)` with addon.sh's error name and exits with
+  its code: 2 when addon.sh refuses the input (an unknown workspace, an
+  access other than read or write), 4 when the connect hook refuses it.
+  `crm-add` now refuses the local instance's URL while
+  `TWENTY_LOCAL_ENABLED=0` (`local_off`), as `addon.sh connect` always did.
+- `addon.sh connect twenty --force` replaces a stored workspace. The Twenty
+  connect hook (`crm.sh connect`) used to refuse the `--replace` argument
+  addon.sh passes it, so the replace failed.
 - Hermes v0.23.2 overlay fixes. Each patch accepts the v0.23.1 and the
   v0.23.2 shape. `patch-digest-redaction`: the vault redaction registry moved
   to `agent/redact_vault_values.py`; the overlay patches it there and
