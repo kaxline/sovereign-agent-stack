@@ -226,5 +226,25 @@
       "encoding": "hex",
       "bytes": 32
     }
-  ]
+  ],
+  "share": {
+    "levels": {
+      "read": "ro",
+      "write": "rw"
+    },
+    "forward": {
+      "methods": [
+        "POST"
+      ],
+      "path": "",
+      "query": [
+        "mode"
+      ],
+      "headers": {
+        "request": [],
+        "response": []
+      }
+    },
+    "handout": false
+  }
 }

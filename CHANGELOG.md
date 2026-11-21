@@ -6,6 +6,17 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
+## Unreleased
+
+### Changes
+
+- Add-on manifests take a `share` block (Boundary CR 0044 R1): the levels an
+  instance can be shared at, the credential each uses, and the methods, path,
+  query parameters and headers a provider's gateway may forward.
+  `addon.sh list --json` includes it. Twenty declares one with `read` and
+  `write`. Manifests may no longer declare an instance setting named `trust`
+  or `endpoint`; no built-in add-on did. See `addons/README.md`.
+
 ## v0.3.18 — 2026-11-21
 
 ### Upgrade steps
