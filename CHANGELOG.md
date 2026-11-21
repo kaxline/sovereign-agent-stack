@@ -6,41 +6,65 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
-## Unreleased
+## v0.3.18 — 2026-11-21
 
 ### Upgrade steps
+
+- `git checkout v0.3.18 && scripts/setup.sh && scripts/upgrade.sh --from
+  v0.3.17`, or `scripts/install.sh --version v0.3.18 --dir DIR`.
+  `upgrade.sh` runs the `upgrades/v0.3.18.sh` hook, which does the steps
+  below that need no person, then starts the stack with the rebuilds and the
+  Hermes reload it asks for. Each backup it makes is skipped when it already
+  exists, and a backup that fails stops the upgrade before the start, so
+  nothing has migrated.
 
 - Hermes Agent v0.23.2 (from v0.23.1) and WebUI 0.52.702 (from 0.52.544).
   v0.23.2 fixes GHSA-p22p-9ph6-gmrh (High): Bot Desktop inside a `docker` or
   `ssh` terminal backend could pass values from its screen `env` file to
-  processes on the agent machine. Back up `data/hermes` with `hermes`
-  stopped, then run `make hermes-upgrade AGENT=v0.23.2 WEBUI=0.52.702` and
-  the verification block in
-  [docs/hermes-webui.md](docs/hermes-webui.md#verification). `_config_version`
-  stays at 53, so profiles are not migrated. The overlays still apply to
-  v0.23.1, so an app that pins `HERMES_AGENT_IMAGE_TAG=v0.23.1` keeps
-  working. Don't move to Agent v0.23.3 yet: WebUI 0.52.702's release notes
-  say it doesn't fully support v0.23.3's new conversation storage.
+  processes on the agent machine. When `.env` sets
+  `HERMES_AGENT_IMAGE_TAG=v0.23.1` or doesn't set it, the hook stops `hermes`
+  and `hermes-webui`, copies `data/hermes` to
+  `data/hermes.bak-<date>-pre-v0.23.2`, and moves both tags in `.env` that
+  still hold the v0.23.1 / 0.52.544 values. A copy it can't make (files
+  owned by root on Linux) stops the upgrade; make it yourself under that
+  name and run the upgrade again. Both bootstraps run again on the start
+  whatever the tag, for the overlay changes below. Then run the verification
+  block in [docs/hermes-webui.md](docs/hermes-webui.md#verification); the
+  hook prints a notice for it. `_config_version` stays at 53, so profiles
+  are not migrated. The overlays still apply to v0.23.1, so an app that pins
+  `HERMES_AGENT_IMAGE_TAG=v0.23.1` keeps working. Don't move to Agent v0.23.3
+  yet: WebUI 0.52.702's release notes say it doesn't fully support v0.23.3's
+  new conversation storage. Without `upgrade.sh`: back up `data/hermes` with
+  `hermes` stopped, then `make hermes-upgrade AGENT=v0.23.2 WEBUI=0.52.702`.
 
 - Image pins moved (see Changes). `.env` lines override the compose
-  defaults: if yours sets `SIGNAL_CLI_IMAGE` (setup.sh writes it), change it
-  to `registry.gitlab.com/packaging/signal-cli/signal-cli-jre:v0-14-10-1`;
-  likewise update or delete `N8N_IMAGE`, `MCP_SEARXNG_IMAGE`,
-  `VIKUNJA_PROXY_IMAGE`, `VAULTWARDEN_TLS_IMAGE` or `OLLAMA_IMAGE` if set.
-  n8n migrates its database on first start, forward only: back up first with
-  `docker compose --profile automation cp n8n:/home/node/.n8n
-  ./n8n-before-2.48.7`. Rebuild `bitwarden-broker`, `bitwarden-setup` and
-  `opencode` to pick up their new versions.
+  defaults, so the hook moves `SIGNAL_CLI_IMAGE` (setup.sh writes it),
+  `N8N_IMAGE`, `MCP_SEARXNG_IMAGE`, `VIKUNJA_PROXY_IMAGE`,
+  `VAULTWARDEN_TLS_IMAGE` and `OLLAMA_IMAGE` when they still hold
+  v0.3.17's value. A value of your own stays, and the hook prints a notice
+  naming it. n8n migrates its database on first start, forward only: with
+  `AUTOMATION_ENABLED` on and the n8n image about to change, the hook stops
+  `n8n` and writes its `n8n_storage` volume to
+  `data/backups/n8n-before-2.48.7-<date>.tar` (tar run in place of n8n's
+  entrypoint, so n8n doesn't start). It rebuilds `bitwarden-broker` (whose
+  image `bitwarden-setup` shares) and `bitwarden-signin` when Bitwarden is
+  on, and `opencode` when OpenCode is on.
 
 - Twenty (`crm` profile) v2.55.0 → v2.60.3. Twenty migrates its database
-  on the first start and can't go back, so dump it first with the instance
-  running ([docs/crm.md](docs/crm.md#backup)):
-  `docker compose exec -T twenty-db pg_dump -U twenty twenty >
-  twenty-before-2.60.3.sql`, and keep `TWENTY_ENCRYPTION_KEY` and
-  `TWENTY_DB_PASSWORD` with it. If your `.env` sets `TWENTY_IMAGE`, change it
-  to `twentycrm/twenty:v2.60.3` or delete the line. Then run `make up`,
-  `make crm-init ROTATE=1` (it re-applies the read-only role's per-object
-  permissions, see Changes, and mints new keys) and `make hermes-reload`.
+  on the first start and can't go back. With `TWENTY_LOCAL_ENABLED` on, the
+  hook dumps it to
+  `<TWENTY_DATA_DIR>/backups/twenty-before-v2.60.3-<date>.sql` with
+  `pg_dump`, starting `twenty-db` alone if it isn't running (its image
+  doesn't change; `twenty-server`, which migrates, stays stopped). It skips
+  the dump when that file exists or `twenty-server` already runs the new
+  image, and stops the upgrade when the dump fails or comes back empty. Keep
+  `TWENTY_ENCRYPTION_KEY` and `TWENTY_DB_PASSWORD` with the dump
+  ([docs/crm.md](docs/crm.md#backup)). A `TWENTY_IMAGE` line that still says
+  `twentycrm/twenty:v2.55.0` moves to v2.60.3. When a local workspace is
+  stored, the hook reports `needs_user` `twenty-crm-init`: once the stack is
+  up, run `make crm-init ROTATE=1` (it re-applies the read-only role's
+  per-object permissions, see Changes, and mints new keys), then
+  `make hermes-reload`.
 
 ### Changes
 

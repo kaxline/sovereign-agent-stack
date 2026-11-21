@@ -15,7 +15,8 @@ new_stack() {
   stack="${tmp}/$1"
   mkdir -p "${stack}/scripts/lib" "${stack}/upgrades"
   cp "${ROOT}/scripts/upgrade.sh" "${stack}/scripts/"
-  cp "${ROOT}/scripts/lib/env.sh" "${ROOT}/scripts/lib/json-lines.sh" "${stack}/scripts/lib/"
+  cp "${ROOT}/scripts/lib/env.sh" "${ROOT}/scripts/lib/json-lines.sh" "${ROOT}/scripts/lib/data-root.sh" \
+    "${stack}/scripts/lib/"
   cp "${ROOT}/upgrades/lib.sh" "${stack}/upgrades/"
   # shellcheck disable=SC2016  # expanded by the stub
   printf '#!/bin/sh\necho "$*" > "$(dirname "$0")/../up.args"\n' > "${stack}/scripts/up.sh"
@@ -152,5 +153,99 @@ cp "${stack}/.env" "${tmp}/env.before"
 out="$(v317 'mode=1777,size=1m')"
 case "$out" in *'"needs_user":[]'*) ;; *) fail "v0.3.17 new volume needs_user: $out" ;; esac
 cmp -s "${stack}/.env" "${tmp}/env.before" || fail "v0.3.17 not idempotent on .env"
+
+# --- v0.3.18 -------------------------------------------------------------------
+# A docker stub backed by files in stub/: <service>.image means its container
+# exists, <service>.running that it runs, n8n_storage that the volume exists.
+# Every call is logged to docker.log; DUMP_FAIL=1 makes pg_dump fail.
+new_stack v318
+cp "${ROOT}"/upgrades/v*.sh "${stack}/upgrades/"
+mkdir -p "${stack}/bin" "${stack}/stub" "${stack}/data/hermes" "${stack}/data/addons/twenty/instances"
+cat > "${stack}/bin/docker" << 'EOF'
+#!/bin/sh
+d="$(dirname "$0")/../stub"
+echo "$*" >> "$d/../docker.log"
+svc="$(printf '%s\n' "$@" | sed -n 's/^label=com.docker.compose.service=//p')"
+case "$*" in
+  "compose config") echo "name: proj" ;;
+  "volume ls"*) [ -e "$d/n8n_storage" ] && echo proj_n8n_storage ;;
+  ps*status=running*) [ -e "$d/${svc}.running" ] && echo "id-${svc}" ;;
+  ps*) [ -e "$d/${svc}.image" ] && echo "id-${svc}" ;;
+  inspect*) cat "$d/${4#id-}.image" ;;
+  "stop "*) rm -f "$d/${2#id-}.running" ;;
+  compose*" exec -T twenty-db pg_dump "*) [ -z "${DUMP_FAIL:-}" ] || exit 1; echo "-- DUMP" ;;
+  compose*" run "*" tar n8n "*) echo TAR ;;
+esac
+exit 0
+EOF
+chmod +x "${stack}/bin/docker"
+echo state > "${stack}/data/hermes/state.txt"
+echo '{"local": true}' > "${stack}/data/addons/twenty/instances/main.json"
+echo nousresearch/hermes-agent:v0.23.1 > "${stack}/stub/hermes.image"
+: > "${stack}/stub/hermes.running"
+echo n8nio/n8n:2.47.4 > "${stack}/stub/n8n.image"
+: > "${stack}/stub/n8n.running"
+: > "${stack}/stub/n8n_storage"
+echo twentycrm/twenty:v2.55.0 > "${stack}/stub/twenty-server.image"
+printf '%s\n' 'COMPOSE_PROFILES=core,crm' 'HERMES_AGENT_IMAGE_TAG=v0.23.1' 'HERMES_WEBUI_IMAGE_TAG=0.52.544' \
+  'SIGNAL_CLI_IMAGE=registry.gitlab.com/packaging/signal-cli/signal-cli-jre:v0-14-9-2' \
+  'N8N_IMAGE=n8nio/n8n:2.47.4' 'OLLAMA_IMAGE=ollama/ollama:0.40.12' 'TWENTY_IMAGE=twentycrm/twenty:v2.55.0' \
+  'TWENTY_LOCAL_ENABLED=1' 'AUTOMATION_ENABLED=1' 'BITWARDEN_ENABLED=1' 'OPENCODE_MCP_ENABLED=1' > "${stack}/.env"
+v318() { (cd "$stack" && PATH="${stack}/bin:${PATH}" bash scripts/upgrade.sh --from v0.3.17 --to v0.3.18 --json); }
+count() { find "${stack}/$1" -maxdepth 1 -name "$2" 2> /dev/null | wc -l | tr -d ' '; }
+
+out="$(v318)" || fail "v0.3.18 hook failed: $out"
+for want in HERMES_AGENT_IMAGE_TAG=v0.23.2 HERMES_WEBUI_IMAGE_TAG=0.52.702 \
+  SIGNAL_CLI_IMAGE=registry.gitlab.com/packaging/signal-cli/signal-cli-jre:v0-14-10-1 \
+  N8N_IMAGE=n8nio/n8n:2.48.7 OLLAMA_IMAGE=ollama/ollama:0.40.12 TWENTY_IMAGE=twentycrm/twenty:v2.60.3; do
+  grep -qx "$want" "${stack}/.env" || fail "v0.3.18 .env lacks ${want}: $(cat "${stack}/.env")"
+done
+grep -q MCP_SEARXNG_IMAGE "${stack}/.env" && fail "v0.3.18 added an unset pin"
+[ "$(cat "${stack}"/data/hermes.bak-*-pre-v0.23.2/state.txt)" = state ] || fail "no Hermes backup"
+[ "$(cat "${stack}"/data/backups/n8n-before-2.48.7-*.tar)" = TAR ] || fail "no n8n backup"
+[ "$(cat "${stack}"/data/twenty/backups/twenty-before-v2.60.3-*.sql)" = "-- DUMP" ] || fail "no Twenty dump"
+grep -qx 'stop id-hermes' "${stack}/docker.log" || fail "hermes not stopped for its backup"
+grep -qx 'stop id-n8n' "${stack}/docker.log" || fail "n8n not stopped for its backup"
+grep -q 'up -d --wait twenty-db$' "${stack}/docker.log" || fail "twenty-db not started for the dump"
+[ "$(cat "${stack}/up.args")" = "--build bitwarden-broker --build bitwarden-signin --build opencode --reload-hermes" ] \
+  || fail "v0.3.18 up.sh args: $(cat "${stack}/up.args")"
+python3 - "$(printf '%s\n' "$out" | tail -1)" << 'EOF' || fail "v0.3.18 done line: $out"
+import json, sys
+d = json.loads(sys.argv[1])
+assert [n["id"] for n in d["needs_user"]] == ["twenty-crm-init"], d
+assert "crm-init ROTATE=1" in d["needs_user"][0]["message"], d
+notes = " ".join(n["message"] for n in d["notices"])
+assert "OLLAMA_IMAGE=ollama/ollama:0.40.12" in notes and "twenty-before-v2.60.3-" in notes, d
+EOF
+
+# A second run makes no new backup and leaves .env alone.
+cp "${stack}/.env" "${tmp}/env.before"
+: > "${stack}/stub/hermes.running"
+rm "${stack}/docker.log"
+out="$(v318)" || fail "v0.3.18 second run failed: $out"
+cmp -s "${stack}/.env" "${tmp}/env.before" || fail "v0.3.18 not idempotent on .env"
+[ "$(count data 'hermes.bak-*')" = 1 ] || fail "second Hermes backup"
+grep -Eq '^(stop|compose.* (run|exec|up) )' "${stack}/docker.log" && fail "second run touched containers: $(cat "${stack}/docker.log")"
+
+# A failed dump stops the upgrade before the start and leaves no dump behind.
+rm -f "${stack}"/data/twenty/backups/*.sql "${stack}/up.args"
+set +e
+out="$( (cd "$stack" && PATH="${stack}/bin:${PATH}" DUMP_FAIL=1 bash scripts/upgrade.sh --from v0.3.17 --to v0.3.18 --json 2> /dev/null))"
+rc=$?
+set -e
+[ "$rc" = 4 ] || fail "failed dump exit ${rc}: $out"
+case "$out" in *'pg_dump of twenty-db failed'*) ;; *) fail "failed dump message: $out" ;; esac
+[ "$(count data/twenty/backups 'twenty-*')" = 0 ] || fail "failed dump left a file"
+[ ! -e "${stack}/up.args" ] || fail "started after a failed dump"
+
+# twenty-server already on the new image: nothing to dump. Without the local
+# instance or a stored local workspace there is no crm-init step.
+echo twentycrm/twenty:v2.60.3 > "${stack}/stub/twenty-server.image"
+out="$(cd "$stack" && PATH="${stack}/bin:${PATH}" DUMP_FAIL=1 bash scripts/upgrade.sh --from v0.3.17 --to v0.3.18 --json)" \
+  || fail "v0.3.18 on a migrated Twenty: $out"
+printf 'TWENTY_LOCAL_ENABLED=0\n' > "${stack}/.env"
+out="$(v318)" || fail "v0.3.18 without Twenty: $out"
+case "$out" in *'"needs_user":[]'*) ;; *) fail "v0.3.18 without Twenty needs_user: $out" ;; esac
+[ "$(cat "${stack}/up.args")" = "--reload-hermes" ] || fail "v0.3.18 bare up.sh args: $(cat "${stack}/up.args")"
 
 echo "ok upgrade.sh"
