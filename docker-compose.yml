@@ -784,7 +784,7 @@ services:
   twenty-server:
     profiles: ["crm"]
     container_name: ${CONTAINER_PREFIX:-}twenty-server
-    image: ${TWENTY_IMAGE:-twentycrm/twenty:v2.55.0}
+    image: ${TWENTY_IMAGE:-twentycrm/twenty:v2.60.3}
     restart: unless-stopped
     ports:
       - "127.0.0.1:${TWENTY_PORT:-3000}:3000"
@@ -838,7 +838,7 @@ services:
   twenty-worker:
     profiles: ["crm"]
     container_name: ${CONTAINER_PREFIX:-}twenty-worker
-    image: ${TWENTY_IMAGE:-twentycrm/twenty:v2.55.0}
+    image: ${TWENTY_IMAGE:-twentycrm/twenty:v2.60.3}
     restart: unless-stopped
     entrypoint: ["/bin/sh", "/opt/stack/secrets-entrypoint.sh"]
     command: ["yarn", "worker:prod"]

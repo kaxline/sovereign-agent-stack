@@ -32,6 +32,16 @@ the stack under another app.
   ./n8n-before-2.48.7`. Rebuild `bitwarden-broker`, `bitwarden-setup` and
   `opencode` to pick up their new versions.
 
+- Twenty (`crm` profile) v2.55.0 → v2.60.3. Twenty migrates its database
+  on the first start and can't go back, so dump it first with the instance
+  running ([docs/crm.md](docs/crm.md#backup)):
+  `docker compose exec -T twenty-db pg_dump -U twenty twenty >
+  twenty-before-2.60.3.sql`, and keep `TWENTY_ENCRYPTION_KEY` and
+  `TWENTY_DB_PASSWORD` with it. If your `.env` sets `TWENTY_IMAGE`, change it
+  to `twentycrm/twenty:v2.60.3` or delete the line. Then run `make up`,
+  `make crm-init ROTATE=1` (it re-applies the read-only role's per-object
+  permissions, see Changes, and mints new keys) and `make hermes-reload`.
+
 ### Changes
 
 - New SSH listener ([docs/ssh-listener.md](docs/ssh-listener.md)) for hosts
@@ -71,6 +81,11 @@ the stack under another app.
   between stopping and starting the receive thread, accepts group invitations
   addressed to the PNI, and rotates the account's sender key when a group
   member leaves or is removed. The linked account store is read as before.
+- **Twenty** v2.55.0 → v2.60.3. The upgrade jumps straight from 2.55 and
+  migrated a test workspace with no failures; the server used about 815 MiB
+  and the worker about 270 MiB after boot, inside the existing limits.
+  `/mcp?mode=meta` still lists the same 7 tools on both keys (bare `/mcp`
+  now lists 43).
 - `make crm-init` now gives the Twenty read-only role a read-only
   permission on every active object, including those Twenty marks read-only
   in its own UI, and leaves read off only where the object disables it. It
