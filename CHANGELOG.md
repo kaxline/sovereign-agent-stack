@@ -24,6 +24,42 @@ the stack under another app.
 
 ### Changes
 
+- The Hermes overlay scripts (`compose/hermes/patch-*.py`, apart from
+  `patch-projects-library.py`) share `compose/hermes/overlay_patch.py`,
+  mounted at `/bootstrap/overlay_patch.py`. An app with its own compose file
+  that mounts the patch scripts one by one needs that mount and
+  `/bootstrap/vault_prompt_slot.py`, or every overlay exits 1 at import.
+  Each overlay checks every anchor in every file it edits before writing
+  any of them, so a moved anchor leaves Hermes as shipped.
+- A missing anchor or target file exits 1 with one line,
+  `[patch-NAME] anchor missing in FILE: expected …; not patched. Hermes image
+  may have changed: update this patch.`, and the cont-init runner logs
+  `warn: … exited 1`; the container still starts. These overlays used to
+  print a skip or warn line and exit 0, so a failure now also adds the
+  runner's `warn:` line: `tool-loop-notes`, `tool-loop-replay`,
+  `searxng-pause-browser`, `guardrail-halt-stream`, `tool-search-visible`,
+  `tool-search-always-include`, `browser-unresolvable-host`,
+  `block-native-web-tools`, `tool-call-flat-args`,
+  `ensure-send-message-tools`, `send-message-tool`,
+  `cron-scheduler-delivery`, `browser-exec-hint`, `vault-create-login`,
+  `vault-capture-secret` and the web rewrite part of `tool-eval-trace`.
+  `bitwarden-signin` still exits 0 and keeps the part that applied
+  (docs/hermes.md); its skip line now reads `[patch-bitwarden-signin]
+  skipped: anchor missing …`.
+- Applied and already-applied lines in the container log read
+  `[patch-NAME] patched LABEL` and `[patch-NAME] already applied (LABEL)`;
+  for example `patched: result hints in …` is now
+  `[patch-browser-exec-hint] patched result hints`. On v0.23.1 and v0.23.2
+  the patched files are the same as before, apart from the next item.
+- `browser_vault` `create_login` and `capture_secret` install their prompts
+  through one shared edit to `gateway/session_vault_prompt.py` (10 added
+  lines, from 31) and `tools/vault_prompt_slot.py`. Their behaviour is
+  unchanged.
+- Overlay shapes for Hermes builds before v0.23.1 are removed: intent-ack's
+  pre-v0.23 checks, the pre-v2026.9 loop in `text-tool-call-recovery` and
+  `tool-eval-trace`, `cron-scheduler-delivery`'s older origin and Signal
+  blocks and its `cron/scheduler.py` fallback, and `history-budget`'s
+  `_make_agent` in `server.py`. The overlays apply to v0.23.1 and v0.23.2.
 - `patch-block-native-web-tools`, `patch-tool-call-flat-args` and
   `patch-cron-scheduler-delivery` no longer rewrite blocks that their builds
   from before v0.1.0 left in `/opt/hermes` (debug helpers, an alias map
@@ -39,8 +75,8 @@ the stack under another app.
   `SIGNAL_HOME_CHANNEL_NAME` set only in a profile's `.env` was ignored. Both
   overlays now install and call `compose/hermes/signal_env.py`, mounted at
   `/bootstrap/signal_env.py`; an app with its own compose file needs that
-  mount, or the Signal synth prints `skip` and cron and `send_message` lose
-  Signal while the adapter is off. In standalone mode the only difference is
+  mount, or both overlays exit 1 with `source missing` and cron and
+  `send_message` lose Signal while the adapter is off. In standalone mode the only difference is
   that a value in the profile's `.env` now wins over a different value in
   the process env, as it already did for `send_message`.
 - Hermes v0.23.2 overlay fixes. Each patch accepts the v0.23.1 and the

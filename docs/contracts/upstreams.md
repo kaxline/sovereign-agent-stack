@@ -10,6 +10,9 @@ Before a patch to an upstream tool lands, it is filed upstream or the reason it 
 recorded. A patch over about 50 lines or touching more than one upstream file needs a decision
 first: accept the limitation, contribute upstream, or build the feature in the stack. Several
 Hermes overlays predate that rule and exceed it; they are marked below by their line counts.
+A count covers the overlay's patch script and the modules it installs. The shared helper
+`compose/hermes/overlay_patch.py` (134 lines) and the vault actions' `compose/hermes/vault_prompt_slot.py`
+(81 lines) are in no row.
 
 ## Vendored adapters
 
@@ -48,65 +51,65 @@ Overlays with no re-test command fail only as a warning in the container log.
 
 | Overlay | Lines | What it changes | Class | Upstream | Re-test |
 |---|---:|---|---|---|---|
-| `client-context` | 332 | `context` on session.create/resume/prompt.submit; refuses a mismatched `profile` on prompt.submit (4080-4083); `client_context` capability. | upstream | draft, not filed | `scripts/test-client-context.py` |
-| `gateway-liveness` | 282 | `turn.heartbeat` event and `session.live_status` method; extends `gateway.capabilities`. | upstream | draft, not filed | `scripts/test-gateway-liveness.py` |
-| `turn-speaker` | 305 | `speaker {id, display_name}` on prompt.submit; stamped on assistant rows and in the `api_content` sidecar (4084-4086); `turn_speaker` capability. | client API | becomes a client API method | `scripts/test-turn-speaker.py`, `scripts/test-hosted-rooms.py` |
-| `history-budget` | 1074 | `history_budget` on session.create/resume windows the prompt without archiving rows; `session.context_breakdown` fields; error 4028. | client API | becomes a client API method | `scripts/test-history-budget.py` |
-| `mcp-wake` | 369 | `POST /v1/mcp/servers/{name}/reconnect` wakes a parked MCP server in every gateway process; `mcp_servers.<name>.parked_retry_interval`; parks a server once when another profile just parked it. | client API | becomes a client API method | `scripts/test-mcp-wake.py`, `scripts/test-mcp-parked-retry.sh` |
-| `dashboard-handoff` | 251 | `GET /auth/handoff?code=` one-time sign-in link, HMAC code, off until `HERMES_DASHBOARD_HANDOFF_SECRET` is set; `make dashboard-open`. | client API | becomes a client API method | `scripts/test-dashboard-handoff.py` |
-| `mirror-exclude` | 129 | `mirror_exclude` glob list on `profiles.create` removes keys from the mirrored `.env`; result lists `mirrored.env_excluded`; fails closed. | upstream | draft, not filed | `scripts/test-mirror-exclude.py` |
-| `mcp-trust-details` | 160 | Structured `mcp: {server, tool, arguments, tool_call_id}` on trust-gate approval entries via a new `details` keyword on `request_elicitation_consent`. | upstream | draft, not filed | `scripts/test-mcp-trust-details.py` |
-| `kanban-guards` | 313 | Refuses unbuildable worktree/dir workspaces at filing; gives up at once (`retryable: false`) on final workspace errors; creator-comment wrap. | adapter | stays in the adapter | `scripts/test-kanban-guards.py` |
-| `kanban-edit` | 374 | Workspace fields on the dashboard's `PATCH /tasks/{id}`; `kanban_update` and `kanban_archive` tools. | adapter | stays in the adapter | `scripts/test-kanban-edit.py` |
-| `kanban-wake` | 211 | Re-keys `kanban_notify_subs` through the compression lineage so `tui` subscriptions keep receiving events; repairable `gave_up` text. | adapter | stays in the adapter | `scripts/test-kanban-wake.py` |
-| `dashboard-board` | 137 | Kanban page honours `?task=<id>&board=<slug>`; `?embed=1` hides sidebar and headers. | adapter | stays in the adapter | `scripts/test-dashboard-handoff.py` (covers the same container start; no dedicated board test) |
+| `client-context` | 318 | `context` on session.create/resume/prompt.submit; refuses a mismatched `profile` on prompt.submit (4080-4083); `client_context` capability. | upstream | draft, not filed | `scripts/test-client-context.py` |
+| `gateway-liveness` | 268 | `turn.heartbeat` event and `session.live_status` method; extends `gateway.capabilities`. | upstream | draft, not filed | `scripts/test-gateway-liveness.py` |
+| `turn-speaker` | 291 | `speaker {id, display_name}` on prompt.submit; stamped on assistant rows and in the `api_content` sidecar (4084-4086); `turn_speaker` capability. | client API | becomes a client API method | `scripts/test-turn-speaker.py`, `scripts/test-hosted-rooms.py` |
+| `history-budget` | 979 | `history_budget` on session.create/resume windows the prompt without archiving rows; `session.context_breakdown` fields; error 4028. | client API | becomes a client API method | `scripts/test-history-budget.py` |
+| `mcp-wake` | 343 | `POST /v1/mcp/servers/{name}/reconnect` wakes a parked MCP server in every gateway process; `mcp_servers.<name>.parked_retry_interval`; parks a server once when another profile just parked it. | client API | becomes a client API method | `scripts/test-mcp-wake.py`, `scripts/test-mcp-parked-retry.sh` |
+| `dashboard-handoff` | 220 | `GET /auth/handoff?code=` one-time sign-in link, HMAC code, off until `HERMES_DASHBOARD_HANDOFF_SECRET` is set; `make dashboard-open`. | client API | becomes a client API method | `scripts/test-dashboard-handoff.py` |
+| `mirror-exclude` | 110 | `mirror_exclude` glob list on `profiles.create` removes keys from the mirrored `.env`; result lists `mirrored.env_excluded`; fails closed. | upstream | draft, not filed | `scripts/test-mirror-exclude.py` |
+| `mcp-trust-details` | 137 | Structured `mcp: {server, tool, arguments, tool_call_id}` on trust-gate approval entries via a new `details` keyword on `request_elicitation_consent`. | upstream | draft, not filed | `scripts/test-mcp-trust-details.py` |
+| `kanban-guards` | 283 | Refuses unbuildable worktree/dir workspaces at filing; gives up at once (`retryable: false`) on final workspace errors; creator-comment wrap. | adapter | stays in the adapter | `scripts/test-kanban-guards.py` |
+| `kanban-edit` | 341 | Workspace fields on the dashboard's `PATCH /tasks/{id}`; `kanban_update` and `kanban_archive` tools. | adapter | stays in the adapter | `scripts/test-kanban-edit.py` |
+| `kanban-wake` | 180 | Re-keys `kanban_notify_subs` through the compression lineage so `tui` subscriptions keep receiving events; repairable `gave_up` text. | adapter | stays in the adapter | `scripts/test-kanban-wake.py` |
+| `dashboard-board` | 117 | Kanban page honours `?task=<id>&board=<slug>`; `?embed=1` hides sidebar and headers. | adapter | stays in the adapter | `scripts/test-dashboard-handoff.py` (covers the same container start; no dedicated board test) |
 | `projects-library` | 648 | Merges the `/opt/projects` folder library into `projects.list` / `projects.tree`; WebUI side patch. | adapter | stays in the adapter | `python3 scripts/test-project-sources.py` (`make project-sources-test`) |
 
 ### Credential handling
 
 | Overlay | Lines | What it changes | Class | Upstream | Re-test |
 |---|---:|---|---|---|---|
-| `bitwarden-broker-fill` | 373 | Routes `browser_vault` fills and `enter_code` of `bwbroker:` handles to the broker's `POST /fill`; adds a `bitwarden` entry to `browser_vault list`. | adapter | stays in the adapter | `scripts/test-bitwarden-fill.py`, `make bitwarden-test` |
-| `digest-redaction` | 167 | `register_vault_redaction_digest` and digest scrub in `agent/redact_vault_values.py` (`agent/redact.py` before v0.23.2), so values the gateway never held are still scrubbed from output. | adapter | stays in the adapter | `scripts/test-digest-redaction.py` |
+| `bitwarden-broker-fill` | 413 | Routes `browser_vault` fills and `enter_code` of `bwbroker:` handles to the broker's `POST /fill`; adds a `bitwarden` entry to `browser_vault list`. | adapter | stays in the adapter | `scripts/test-bitwarden-fill.py`, `make bitwarden-test` |
+| `digest-redaction` | 135 | `register_vault_redaction_digest` and digest scrub in `agent/redact_vault_values.py` (`agent/redact.py` before v0.23.2), so values the gateway never held are still scrubbed from output. | adapter | stays in the adapter | `scripts/test-digest-redaction.py` |
 | `bwbroker plugin + install` | 289 | Bundled `bwbroker` login-backend plugin copied into `/opt/hermes/plugins` on every start. | adapter | stays in the adapter | `sh scripts/test-bitwarden-registration.sh --image`, `make bitwarden-test` |
-| `vault-create-login` | 712 | `browser_vault` action `create_login` (generated password the model never sees) and the `vault.create_login` server request. | client API | becomes a client API method | `scripts/test-vault-create-login.py --image` |
-| `vault-capture-secret` | 624 | `browser_vault` action `capture_secret`, the `vault.capture_secret` request and the `vault.take` RPC. | client API | becomes a client API method | `scripts/test-vault-capture-secret.py --image` |
-| `fabricated-result` | 343 | Continues a stop turn that claims a tool result without calling a tool, or asks the user for a password in chat; hides the nudge from persistence and compaction. | adapter | stays in the adapter | `scripts/test-fabricated-result.py` |
+| `vault-create-login` | 639 | `browser_vault` action `create_login` (generated password the model never sees) and the `vault.create_login` server request. | client API | becomes a client API method | `scripts/test-vault-create-login.py --image` |
+| `vault-capture-secret` | 549 | `browser_vault` action `capture_secret`, the `vault.capture_secret` request and the `vault.take` RPC. | client API | becomes a client API method | `scripts/test-vault-capture-secret.py --image` |
+| `fabricated-result` | 307 | Continues a stop turn that claims a tool result without calling a tool, or asks the user for a password in chat; hides the nudge from persistence and compaction. | adapter | stays in the adapter | `scripts/test-fabricated-result.py` |
 
 ### Local-model and agent-loop behaviour
 
 | Overlay | Lines | What it changes | Class | Upstream | Re-test |
 |---|---:|---|---|---|---|
-| `text-tool-call-recovery` | 329 | Parses Python- or XML-style tool calls in assistant text into structured `tool_calls` before dispatch. | adapter | stays in the adapter | none (apply-time anchor only); `scripts/test-tool-eval-trace.py` exercises the call site |
-| `tool-call-flat-args` | 152 | Normalises weak-model `tool_call` shapes: flat siblings, nested name, short MCP aliases, stringified `calls`. | adapter | stays in the adapter | none |
-| `intent-ack-continuation` | 146 | Lets `looks_like_codex_intermediate_ack` continue a turn past 1,200 characters (up to 4,000) when the reply opens with an ack and `require_workspace` is off. Before v0.23.0 it also stops earlier turns' tool messages from blocking it; v0.23.0 does that upstream (#69778). | upstream | draft, not filed | `scripts/test-intent-ack.py` |
-| `tool-search-visible` | 126 | `tool_search` also returns already-visible core tools, with a call-directly hint. | upstream | draft, not filed | none |
-| `tool-search-always-include` | 95 | Honors `tools.tool_search.always_include` so stack MCP pins (SearXNG, LightRAG, OpenCode) stay eager. | upstream | draft, not filed | `docker compose exec hermes grep -F 'assistant-stack: honor always_include' /opt/hermes/tools/tool_search.py` (docs/hermes.md) |
-| `tool-loop-notes` | 72 | Queues loop warnings and halt notices on `plugin_live_notes` so they land outside `<untrusted_tool_result>`. | upstream | draft, not filed | `scripts/test-tool-loop-notes.py` |
-| `tool-loop-replay` | 132 | Counts stale replays per (tool, arguments) per turn; notes the second, halts the third (`stale_replay_halt`). | upstream | draft, not filed | `scripts/test-tool-loop-replay.py` |
-| `guardrail-halt-stream` | 62 | Streams the guardrail stop note through `_deliver_to_stream_callbacks`, so dashboard gateway clients get it as `message.delta`, not only in `message.complete`. | upstream | draft, not filed | `scripts/test-guardrail-halt-stream.py` |
-| `compaction-tool-facts` | 248 | Gives the compaction summarizer the original tool bodies (4,000 chars each, 60,000 total) instead of prune stubs; adds a `## Findings` section. | upstream | draft, not filed | `scripts/test-compaction-tool-facts.py` |
-| `tool-eval-trace` | 498 | JSONL turn traces for the tool-calling eval; records web rewrites. | adapter | stays in the adapter | `scripts/test-tool-eval-trace.py` |
-| `block-native-web-tools` | 95 | Rewrites hallucinated `web_search` / `web_extract` to the SearXNG MCP tools, or returns a terminal error. | adapter | stays in the adapter | none; `scripts/test-tool-eval-trace.py` logs the rewrite path |
+| `text-tool-call-recovery` | 284 | Parses Python- or XML-style tool calls in assistant text into structured `tool_calls` before dispatch. | adapter | stays in the adapter | none (apply-time anchor only); `scripts/test-tool-eval-trace.py` exercises the call site |
+| `tool-call-flat-args` | 117 | Normalises weak-model `tool_call` shapes: flat siblings, nested name, short MCP aliases, stringified `calls`. | adapter | stays in the adapter | none |
+| `intent-ack-continuation` | 42 | Lets `looks_like_codex_intermediate_ack` continue a turn past 1,200 characters (up to 4,000) when the reply opens with an ack and `require_workspace` is off. Before v0.23.0 it also stops earlier turns' tool messages from blocking it; v0.23.0 does that upstream (#69778). | upstream | draft, not filed | `scripts/test-intent-ack.py` |
+| `tool-search-visible` | 113 | `tool_search` also returns already-visible core tools, with a call-directly hint. | upstream | draft, not filed | none |
+| `tool-search-always-include` | 77 | Honors `tools.tool_search.always_include` so stack MCP pins (SearXNG, LightRAG, OpenCode) stay eager. | upstream | draft, not filed | `docker compose exec hermes grep -F 'assistant-stack: honor always_include' /opt/hermes/tools/tool_search.py` (docs/hermes.md) |
+| `tool-loop-notes` | 56 | Queues loop warnings and halt notices on `plugin_live_notes` so they land outside `<untrusted_tool_result>`. | upstream | draft, not filed | `scripts/test-tool-loop-notes.py` |
+| `tool-loop-replay` | 114 | Counts stale replays per (tool, arguments) per turn; notes the second, halts the third (`stale_replay_halt`). | upstream | draft, not filed | `scripts/test-tool-loop-replay.py` |
+| `guardrail-halt-stream` | 52 | Streams the guardrail stop note through `_deliver_to_stream_callbacks`, so dashboard gateway clients get it as `message.delta`, not only in `message.complete`. | upstream | draft, not filed | `scripts/test-guardrail-halt-stream.py` |
+| `compaction-tool-facts` | 239 | Gives the compaction summarizer the original tool bodies (4,000 chars each, 60,000 total) instead of prune stubs; adds a `## Findings` section. | upstream | draft, not filed | `scripts/test-compaction-tool-facts.py` |
+| `tool-eval-trace` | 438 | JSONL turn traces for the tool-calling eval; records web rewrites. | adapter | stays in the adapter | `scripts/test-tool-eval-trace.py` |
+| `block-native-web-tools` | 85 | Rewrites hallucinated `web_search` / `web_extract` to the SearXNG MCP tools, or returns a terminal error. | adapter | stays in the adapter | none; `scripts/test-tool-eval-trace.py` logs the rewrite path |
 | `send-message tools` | 419 | Synthesises a Signal platform config from `SIGNAL_*` with the adapter disabled (`signal_env.py`, shared with cron delivery); registers `send_message` as an agent-callable tool and keeps it in the schema. | adapter | stays in the adapter | `scripts/test-send-message-tool.py` |
-| `cron-scheduler-delivery` | 264 | (1) Rejects `api_server` cron origins and falls back to home channels. (2) Synthesises Signal config for cron delivery through `signal_env.py`. | adapter | stays in the adapter | `scripts/test-cron-delivery-errors.py` |
+| `cron-scheduler-delivery` | 108 | (1) Rejects `api_server` cron origins and falls back to home channels. (2) Synthesises Signal config for cron delivery through `signal_env.py`. | adapter | stays in the adapter | `scripts/test-cron-delivery-errors.py` |
 
 ### Search and browser hints
 
 | Overlay | Lines | What it changes | Class | Upstream | Re-test |
 |---|---:|---|---|---|---|
-| `web-search-mode` | 428 | `HERMES_WEB_SEARCH_MODE` serves `searxng_web_search` and `web_url_read` from SearXNG, Hermes' keyless ring, or both. | adapter | stays in the adapter | `scripts/test-web-search-mode.py --image` |
-| `blocked-fetch-hint` | 214 | On 403/429/503, empty JS-only page or bot-check from searxng `web_url_read`, queues a note to open the URL with `browser_exec`. | adapter | stays in the adapter | `scripts/test-blocked-fetch-hint.py` |
-| `searxng-pause-browser` | 68 | Adds how to search with `browser_exec` to the searxng circuit-breaker pause error. | adapter | stays in the adapter | `scripts/test-searxng-pause-browser.py` |
-| `browser-unresolvable-host` | 71 | When a blocked browser URL's hostname has no DNS answer, the error names the host and says the address is probably wrong. | upstream | draft, not filed | `scripts/test-browser-unresolvable-host.py` |
-| `browser-exec-hint` | 281 | Hints for bad helper imports, empty output and `.value` assignment in `js()`; prints a trailing bare expression; `save_login` next step. | adapter | stays in the adapter | `python3 scripts/test-browser-exec-hints.py` |
+| `web-search-mode` | 409 | `HERMES_WEB_SEARCH_MODE` serves `searxng_web_search` and `web_url_read` from SearXNG, Hermes' keyless ring, or both. | adapter | stays in the adapter | `scripts/test-web-search-mode.py --image` |
+| `blocked-fetch-hint` | 197 | On 403/429/503, empty JS-only page or bot-check from searxng `web_url_read`, queues a note to open the URL with `browser_exec`. | adapter | stays in the adapter | `scripts/test-blocked-fetch-hint.py` |
+| `searxng-pause-browser` | 58 | Adds how to search with `browser_exec` to the searxng circuit-breaker pause error. | adapter | stays in the adapter | `scripts/test-searxng-pause-browser.py` |
+| `browser-unresolvable-host` | 61 | When a blocked browser URL's hostname has no DNS answer, the error names the host and says the address is probably wrong. | upstream | draft, not filed | `scripts/test-browser-unresolvable-host.py` |
+| `browser-exec-hint` | 255 | Hints for bad helper imports, empty output and `.value` assignment in `js()`; prints a trailing bare expression; `save_login` next step. | adapter | stays in the adapter | `python3 scripts/test-browser-exec-hints.py` |
 | `buzz-localhost-proxy` | 166 | Forwards container `localhost:3000` to `host.docker.internal` so Buzz keeps the community host Desktop uses. | adapter | stays in the adapter | `scripts/test-buzz-sync-gate.sh` (gate only, not the proxy) |
 
 ### Platform plumbing
 
 | Overlay | Lines | What it changes | Class | Upstream | Re-test |
 |---|---:|---|---|---|---|
-| `control-socket-tmp` | 115 | Binds each gateway's control socket under `/tmp` (`HERMES_CONTROL_SOCKET_IN_TMP=1`) with a pointer file in `$HERMES_HOME`. | upstream | draft, not filed | `scripts/test-hermes-topology.py` |
+| `control-socket-tmp` | 92 | Binds each gateway's control socket under `/tmp` (`HERMES_CONTROL_SOCKET_IN_TMP=1`) with a pointer file in `$HERMES_HOME`. | upstream | draft, not filed | `scripts/test-hermes-topology.py` |
 | `gateway-compat-proxy` | 174 | Keeps ports 8643/8644 answering under the multiplexed gateway by forwarding to `/p/<profile>/`; bridges SSE and WebSocket. | adapter | stays in the adapter | `scripts/test-gateway-multiplex.py` |
 | `019-pin-profile-gateways` | 158 | Chooses standalone or multiplex topology; writes `gateway.standalone: true` and `sessions.auto_prune: false` where unset. | adapter | stays in the adapter | `scripts/test-hermes-topology.py`, `scripts/test-gateway-multiplex.py` |
 | `005-remap-hermes-uid` | 63 | Remaps the `hermes` user to `HERMES_UID`/`HERMES_GID` before the image's `01-hermes-setup`, so `usermod` does not chown `/opt/data`. | adapter | stays in the adapter | none (`docker compose up` on a fresh container; failure shows as exit 12 in 01-hermes-setup) |
