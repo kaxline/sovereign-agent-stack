@@ -22,6 +22,16 @@ the stack under another app.
   working. Don't move to Agent v0.23.3 yet: WebUI 0.52.702's release notes
   say it doesn't fully support v0.23.3's new conversation storage.
 
+- Image pins moved (see Changes). `.env` lines override the compose
+  defaults: if yours sets `SIGNAL_CLI_IMAGE` (setup.sh writes it), change it
+  to `registry.gitlab.com/packaging/signal-cli/signal-cli-jre:v0-14-10-1`;
+  likewise update or delete `N8N_IMAGE`, `MCP_SEARXNG_IMAGE`,
+  `VIKUNJA_PROXY_IMAGE`, `VAULTWARDEN_TLS_IMAGE` or `OLLAMA_IMAGE` if set.
+  n8n migrates its database on first start, forward only: back up first with
+  `docker compose --profile automation cp n8n:/home/node/.n8n
+  ./n8n-before-2.48.7`. Rebuild `bitwarden-broker`, `bitwarden-setup` and
+  `opencode` to pick up their new versions.
+
 ### Changes
 
 - **OpenCode** 1.17.6 → 1.19.6, the last 1.x release, on its next
