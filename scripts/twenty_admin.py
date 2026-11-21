@@ -203,23 +203,27 @@ def ensure_roles(tw: Twenty, access: str) -> dict[str, str]:
 def deny_writes_per_object(tw: Twenty, access: str, role_id: str) -> int:
     """Give the read-only role an explicit read-only permission on every object.
 
-    Twenty v2.55 lets a role without canUpdateAllObjectRecords still create
-    junction and system records (noteTarget, taskTarget, attachment, ...).
-    A per-object permission closes that. Twenty refuses one on isUIReadOnly
-    objects, which have no write tools anyway. Each call replaces the role's
-    whole set, so everything goes in one call. New objects need a re-run
-    (make crm-init ROTATE=1).
+    Twenty lets a role without canUpdateAllObjectRecords still create and
+    delete junction and system records (noteTarget, attachment, and from v2.60
+    the isUIReadOnly agentChatThreadTarget). A per-object permission closes
+    that. Twenty refuses a grant of any action an object lists in
+    disabledObjectPermissionActions, so read is granted only where it isn't
+    disabled. Each call replaces the role's whole set, so everything goes in
+    one call. New objects need a re-run (make crm-init ROTATE=1).
     """
-    d = tw.gql("query { objects(paging: { first: 1000 }) { edges { node { id isUIReadOnly isActive } } } }",
-               token=access)
+    d = tw.gql("query { objects(paging: { first: 1000 }) { edges { node { "
+               "id isActive disabledObjectPermissionActions } } } }", token=access)
     edges = ((d.get("objects") or {}).get("edges")) or []
-    perms = [
-        {"objectMetadataId": e["node"]["id"], "canReadObjectRecords": True, "canUpdateObjectRecords": False,
-         "canSoftDeleteObjectRecords": False, "canDestroyObjectRecords": False}
-        for e in edges
-        if isinstance(e, dict) and isinstance(e.get("node"), dict)
-        and e["node"].get("isActive") and not e["node"].get("isUIReadOnly")
-    ]
+    perms = []
+    for e in edges:
+        node = e.get("node") if isinstance(e, dict) else None
+        if not isinstance(node, dict) or not node.get("isActive"):
+            continue
+        disabled = node.get("disabledObjectPermissionActions") or []
+        perms.append({"objectMetadataId": node["id"],
+                      "canReadObjectRecords": "canReadObjectRecords" not in disabled,
+                      "canUpdateObjectRecords": False, "canSoftDeleteObjectRecords": False,
+                      "canDestroyObjectRecords": False})
     if not perms:
         raise TwentyError("unexpected answer from Twenty (no objects to restrict)")
     tw.gql("mutation($i: UpsertObjectPermissionsInput!) { "

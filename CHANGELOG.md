@@ -71,6 +71,12 @@ the stack under another app.
   between stopping and starting the receive thread, accepts group invitations
   addressed to the PNI, and rotates the account's sender key when a group
   member leaves or is removed. The linked account store is read as before.
+- `make crm-init` now gives the Twenty read-only role a read-only
+  permission on every active object, including those Twenty marks read-only
+  in its own UI, and leaves read off only where the object disables it. It
+  used to skip the UI-read-only objects, which on Twenty v2.60 let a
+  read-only key update and delete `agentChatThreadTarget` rows. Existing
+  workspaces pick this up on `make crm-init ROTATE=1`.
 - `make crm-add`, `crm-remove` and `crm-access` run `scripts/addon.sh`
   (`connect twenty`, `disconnect twenty` and `configure twenty --instance`)
   and reload Hermes themselves, so no `make hermes-reload` follows them

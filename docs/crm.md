@@ -132,16 +132,20 @@ On a local instance `make crm-init` creates two roles for those keys:
 - **Hermes read-write** reads, edits and soft-deletes records. It can't
   destroy records, change settings or run Twenty's own AI tools.
 
-On Twenty v2.55 the role-wide "no updates" setting doesn't cover junction
-and system objects such as `noteTarget`, `taskTarget` and `attachment`: a
-read-only key could still create them. `crm-init` closes that by giving the
-read-only role an explicit read-only permission on every object. Twenty
-refuses those permissions on objects it marks read-only in its own UI (agent
-messages, short links and a few others), and those objects have no write
-tools. A custom object you add later is covered by the role-wide setting. A
-new *system* object from a Twenty upgrade isn't covered until you run
-`make crm-init ROTATE=1`. For a remote instance, check what your read-only
-role can write before you trust it on unattended runs.
+Twenty's role-wide "no updates" setting doesn't cover junction and system
+objects such as `noteTarget`, `taskTarget`, `attachment` and, from v2.60,
+`agentChatThreadTarget`: a read-only key could still create or delete them.
+`crm-init` closes that by giving the read-only role an explicit read-only
+permission on every active object. Where an object disables reading for every
+role (agent messages, short links and a few others), the permission leaves
+read off too, since Twenty refuses to grant a disabled action. A custom object
+you add later is covered by the role-wide setting. A new *system* object from
+a Twenty upgrade isn't covered until you run `make crm-init ROTATE=1`.
+
+The read-only key's tool catalog still lists view and navigation-menu writes
+(`create_view`, `update_navigation_menu_item` and the like). Twenty refuses
+them, because the role has no layout permission. For a remote instance, check
+what your read-only role can write before you trust it on unattended runs.
 
 ### Signing in
 
