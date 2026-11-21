@@ -13,10 +13,10 @@ new ``details`` keyword, which merges it into the gateway approval entry. The
 from __future__ import annotations
 
 import os
-import shutil
 from pathlib import Path
 
-ROOT = Path(os.environ.get("HERMES_ROOT", "/opt/hermes"))
+from overlay_patch import ROOT, FileEdit, edit_files, install
+
 TOOLS = ROOT / "tools"
 BOOTSTRAP = Path(os.environ.get("MCP_TRUST_DETAILS_BOOTSTRAP", "/bootstrap"))
 HANDLERS = TOOLS / "mcp_tool_handlers.py"
@@ -53,37 +53,14 @@ DATA_OLD = 'notify_cb, {"command": message, "description": description,\n'
 DATA_NEW = 'notify_cb, {**(details or {}), "command": message, "description": description,\n'
 
 
-def patch(path: Path, edits: list[tuple[str, str, str]]) -> None:
-    text = path.read_text()
-    if MARKER in text:
-        print(f"{TAG} already applied ({path.name})")
-        return
-    for old, _, label in edits:
-        if text.count(old) != 1:
-            raise SystemExit(f"{TAG} expected 1 x {label} in {path}, found {text.count(old)}. "
-                             "Hermes image may have changed — update this patch.")
-    for old, new, _ in edits:
-        text = text.replace(old, new)
-    path.write_text(text)
-    print(f"{TAG} patched {path.name}")
-
-
 def main() -> None:
-    src = BOOTSTRAP / "mcp_trust_details.py"
-    if not src.is_file():
-        raise SystemExit(f"{TAG} missing {src}")
-    # Check both targets before touching either, so a moved anchor leaves Hermes as shipped.
-    handler_edits = [(ASK_SIG_OLD, ASK_SIG_NEW, "_ask_for_call signature"),
-                     (ASK_OLD, ASK_NEW, "consent call")]
-    for path, anchors in ((PROMPT, (KW_OLD, DATA_OLD)), (HANDLERS, [old for old, _, _ in handler_edits])):
-        text = path.read_text()
-        if MARKER not in text and any(text.count(a) != 1 for a in anchors):
-            raise SystemExit(f"{TAG} anchors missing in {path}. Hermes image may have changed — update this patch.")
-    shutil.copyfile(src, TOOLS / "mcp_trust_details.py")
-    print(f"{TAG} installed {TOOLS / 'mcp_trust_details.py'}")
-    patch(PROMPT, [(KW_OLD, KW_NEW, "request_elicitation_consent signature"),
-                   (DATA_OLD, DATA_NEW, "gateway approval data")])
-    patch(HANDLERS, handler_edits)
+    files = [
+        FileEdit(PROMPT, [(KW_OLD, KW_NEW), (DATA_OLD, DATA_NEW)], label=PROMPT.name),
+        FileEdit(HANDLERS, [(ASK_SIG_OLD, ASK_SIG_NEW), (ASK_OLD, ASK_NEW)], label=HANDLERS.name),
+    ]
+    install(BOOTSTRAP / "mcp_trust_details.py", TOOLS / "mcp_trust_details.py", TAG)
+    # Both targets are checked before either is written, so a moved anchor leaves Hermes as shipped.
+    edit_files(files, MARKER, TAG)
 
 
 if __name__ == "__main__":
