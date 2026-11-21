@@ -539,10 +539,10 @@ def check_local(cfg: dict) -> None:
     if "/alive" not in " ".join((vw.get("healthcheck") or {}).get("test") or []):
         checks.fail("vaultwarden healthcheck must GET /alive")
 
-    if tls.get("image") != "nginx:1.30.6-alpine":
+    if tls.get("image") != "nginx:1.30.7-alpine":
         checks.fail(f"vaultwarden-tls image is {tls.get('image')!r}, want the pinned nginx")
-    if "image: ${VAULTWARDEN_TLS_IMAGE:-nginx:1.30.6-alpine}" not in (ROOT / "docker-compose.yml").read_text():
-        checks.fail("vaultwarden-tls image must be ${VAULTWARDEN_TLS_IMAGE:-nginx:1.30.6-alpine}")
+    if "image: ${VAULTWARDEN_TLS_IMAGE:-nginx:1.30.7-alpine}" not in (ROOT / "docker-compose.yml").read_text():
+        checks.fail("vaultwarden-tls image must be ${VAULTWARDEN_TLS_IMAGE:-nginx:1.30.7-alpine}")
     if tls.get("ports"):
         checks.fail("vaultwarden-tls publishes a port")
     if networks(tls) != {"vault", "vault-backend"}:

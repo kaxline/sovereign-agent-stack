@@ -32,7 +32,7 @@ BROKER_SRC = ROOT / "compose/bitwarden-broker"
 TEMPLATE = ROOT / "compose/bitwarden-tls/default.conf.template"
 VW_IMAGE = ("vaultwarden/server:1.37.5@sha256:"
             "4fe17f415f90087377d37c755e0ea3cf189dcc6794e49cdd2a9adbb4937d9e1f")
-NGINX_IMAGE = "nginx:1.30.6-alpine"
+NGINX_IMAGE = "nginx:1.30.7-alpine"
 LOCAL_NAME = "vaultwarden.vault.internal"
 BASE = f"https://{LOCAL_NAME}"
 # Compose runs the broker and bitwarden-setup as HERMES_UID:HERMES_GID, the host user; the image has

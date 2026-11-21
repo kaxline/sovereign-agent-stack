@@ -22,6 +22,16 @@ the stack under another app.
   working. Don't move to Agent v0.23.3 yet: WebUI 0.52.702's release notes
   say it doesn't fully support v0.23.3's new conversation storage.
 
+- Image pins moved (see Changes). `.env` lines override the compose
+  defaults: if yours sets `SIGNAL_CLI_IMAGE` (setup.sh writes it), change it
+  to `registry.gitlab.com/packaging/signal-cli/signal-cli-jre:v0-14-10-1`;
+  likewise update or delete `N8N_IMAGE`, `MCP_SEARXNG_IMAGE`,
+  `VIKUNJA_PROXY_IMAGE`, `VAULTWARDEN_TLS_IMAGE` or `OLLAMA_IMAGE` if set.
+  n8n migrates its database on first start, forward only: back up first with
+  `docker compose --profile automation cp n8n:/home/node/.n8n
+  ./n8n-before-2.48.7`. Rebuild `bitwarden-broker`, `bitwarden-setup` and
+  `opencode` to pick up their new versions.
+
 ### Changes
 
 - New SSH listener ([docs/ssh-listener.md](docs/ssh-listener.md)) for hosts
@@ -31,6 +41,36 @@ the stack under another app.
   with no stack, and push its image to
   `ghcr.io/kaxline/sovereign-agent-stack/ssh-listener` for amd64 and arm64.
   The stack itself doesn't change.
+- **OpenCode** 1.17.6 → 1.19.6, the last 1.x release, on its next
+  `docker compose build opencode`. The `opencode` service now sets
+  `OPENCODE_DISABLE_AUTOUPDATE=1`: 1.19.6 offers to download and install
+  OpenCode 2, which converts sessions, so the Dockerfile's pin stays the only
+  way to change version. The endpoints `opencode-mcp` calls answer as on
+  1.17.6. OpenCode 2.x is held for a separate check.
+- **mcp-searxng** 2.10.1 → 2.11.0. `searxng_web_search` with
+  `categories="images"` and `result_detail="full"` now returns image
+  results with their resolution and URLs; other output keeps its shape.
+- **n8n** 2.47.4 → 2.48.7, the current `stable` tag. 2.48.3 fixed the
+  2026-11-13 advisories, among them a custom instance role with
+  user-management permissions taking over the owner account (high), and
+  AWS Bedrock nodes skipping SSRF protection for custom endpoints.
+- **Ollama** (`ollama` profile) 0.40.11 → 0.40.17. Since 0.40.14 the
+  OpenAI-compatible endpoints keep a model's packaged sampling defaults when
+  the client sends no `temperature` or `top_p`, instead of forcing 1.0, as
+  `/api/chat` already did.
+- **nginx** (`vikunja-proxy`, `vaultwarden-tls`) 1.30.6-alpine →
+  1.30.7-alpine, for the 2026-11-18 security fixes (HTTP/2 flow-control
+  overflow, use-after-free with `resolver`, and others).
+- **Bitwarden CLI** (`bitwarden-broker`, `bitwarden-setup`) 2026.10.1 →
+  2026.11.0. Bitwarden renamed the commercial-license zips in this release
+  (`bw-linux-*` is now `bw-bit-linux-*`), so the Dockerfile's asset names
+  change with the version and both SHA-256 digests. The next
+  `docker compose --profile bitwarden build` picks it up.
+- **signal-cli** `signal-cli-jre:v0-14-9-2` → `v0-14-10-1` (signal-cli
+  0.14.10), to keep the client current with Signal's service. It fixes a race
+  between stopping and starting the receive thread, accepts group invitations
+  addressed to the PNI, and rotates the account's sender key when a group
+  member leaves or is removed. The linked account store is read as before.
 - `make crm-add`, `crm-remove` and `crm-access` run `scripts/addon.sh`
   (`connect twenty`, `disconnect twenty` and `configure twenty --instance`)
   and reload Hermes themselves, so no `make hermes-reload` follows them
