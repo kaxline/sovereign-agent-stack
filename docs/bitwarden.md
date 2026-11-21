@@ -533,7 +533,7 @@ Other limits, as built:
 | `BITWARDEN_SIGNIN_ACTION_SECONDS` | `30` | Bound on one sign-in action; a longer one gets `timeout` and the session ends |
 | `BITWARDEN_HOST_DATA_DIR` | `./data/addons/bitwarden` | `bw/`, `broker/`, `secrets/`, `local/` and `vaultwarden/`. Not moved by `ASSISTANT_DATA_ROOT` |
 | `VAULTWARDEN_PORT` | `8222` | Web vault port, bound to `127.0.0.1` |
-| `VAULTWARDEN_TLS_IMAGE` | `nginx:1.30.6-alpine` | The TLS sidecar's image |
+| `VAULTWARDEN_TLS_IMAGE` | `nginx:1.30.7-alpine` | The TLS sidecar's image |
 | `VAULT_OWNER_EMAIL` | unset | Your address for `make vault-init` |
 
 `bw` 2026.11.0 is pinned in `compose/bitwarden-broker/Dockerfile` by the `BW_CLI_VERSION` build

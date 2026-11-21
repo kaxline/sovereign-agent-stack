@@ -744,7 +744,7 @@ services:
   vikunja-proxy:
     profiles: ["todo"]
     container_name: ${CONTAINER_PREFIX:-}vikunja-proxy
-    image: ${VIKUNJA_PROXY_IMAGE:-nginx:1.30.6-alpine}
+    image: ${VIKUNJA_PROXY_IMAGE:-nginx:1.30.7-alpine}
     restart: unless-stopped
     ports:
       - "127.0.0.1:${VIKUNJA_PORT:-3456}:8080"
@@ -2586,7 +2586,7 @@ services:
   vaultwarden-tls:
     profiles: ["vault"]
     container_name: ${CONTAINER_PREFIX:-}vaultwarden-tls
-    image: ${VAULTWARDEN_TLS_IMAGE:-nginx:1.30.6-alpine}
+    image: ${VAULTWARDEN_TLS_IMAGE:-nginx:1.30.7-alpine}
     restart: unless-stopped
     # nginx keeps its default capabilities: its master process starts as root
     # to read the mode-600 server key, then the workers drop to the nginx user.

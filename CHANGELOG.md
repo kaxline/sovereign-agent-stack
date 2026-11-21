@@ -24,6 +24,9 @@ the stack under another app.
 
 ### Changes
 
+- **nginx** (`vikunja-proxy`, `vaultwarden-tls`) 1.30.6-alpine →
+  1.30.7-alpine, for the 2026-11-18 security fixes (HTTP/2 flow-control
+  overflow, use-after-free with `resolver`, and others).
 - **Bitwarden CLI** (`bitwarden-broker`, `bitwarden-setup`) 2026.10.1 →
   2026.11.0. Bitwarden renamed the commercial-license zips in this release
   (`bw-linux-*` is now `bw-bit-linux-*`), so the Dockerfile's asset names
