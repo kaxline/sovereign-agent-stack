@@ -12,18 +12,20 @@ Formerly patch-signal-send-disabled-adapter.py + patch-reregister-send-message.p
 """
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
+from overlay_patch import ROOT, edit, fail, install
+
 SIGNAL_ENV_SRC = Path("/bootstrap/signal_env.py")
-SIGNAL_ENV_DST = Path("/opt/hermes/agent/signal_env.py")
+SIGNAL_ENV_DST = ROOT / "agent" / "signal_env.py"
+TAG = "[patch-send-message-tool]"
 
 # v0.23.2 moved tools/send_message_tool.py to gateway/outbound/send.py unchanged
 # where these anchors sit.
-TOOL_TARGET = next((p for p in (Path("/opt/hermes/tools/send_message_tool.py"),
-                                Path("/opt/hermes/gateway/outbound/send.py")) if p.is_file()),
-                   Path("/opt/hermes/gateway/outbound/send.py"))
-TOOLSETS_TARGET = Path("/opt/hermes/toolsets.py")
+TOOL_TARGET = next((p for p in (ROOT / "tools" / "send_message_tool.py",
+                                ROOT / "gateway" / "outbound" / "send.py") if p.is_file()),
+                   ROOT / "gateway" / "outbound" / "send.py")
+TOOLSETS_TARGET = ROOT / "toolsets.py"
 
 SIGNAL_MARKER = "# assistant-stack: synthesize Signal from env when adapter disabled"
 TOOL_MARKER = "# assistant-stack: re-register send_message for agent"
@@ -161,63 +163,16 @@ TOOLSETS_NEW = '''    "clarify",
 '''
 
 
-def _install_signal_env() -> str | None:
-    """Copy signal_env.py into the agent package; a skip message when it can't."""
-    if not SIGNAL_ENV_SRC.is_file():
-        return f"skip: missing {SIGNAL_ENV_SRC}"
-    shutil.copyfile(SIGNAL_ENV_SRC, SIGNAL_ENV_DST)
-    return None
-
-
-def _patch_signal_synth() -> str:
-    if not TOOL_TARGET.is_file():
-        return f"skip: missing {TOOL_TARGET}"
-    skip = _install_signal_env()
-    if skip:
-        return skip
+def main() -> None:
+    install(SIGNAL_ENV_SRC, SIGNAL_ENV_DST, TAG)
+    edit(TOOL_TARGET, [(WEIXIN_HELPER, SIGNAL_HELPER), (CALL_OLD, CALL_NEW)], SIGNAL_MARKER, TAG,
+         label=f"(signal synth) {TOOL_TARGET}")
     text = TOOL_TARGET.read_text(encoding="utf-8")
-    if SIGNAL_MARKER in text:
-        return f"already patched (signal synth): {TOOL_TARGET}"
-    if WEIXIN_HELPER in text and CALL_OLD in text:
-        text = text.replace(WEIXIN_HELPER, SIGNAL_HELPER, 1)
-        text = text.replace(CALL_OLD, CALL_NEW, 1)
-        TOOL_TARGET.write_text(text, encoding="utf-8")
-        return f"patched (signal synth): {TOOL_TARGET}"
-    return f"skip: signal synth snippet not found in {TOOL_TARGET}"
-
-
-def _patch_reregister() -> str:
-    if not TOOL_TARGET.is_file():
-        return f"skip: missing {TOOL_TARGET}"
-    text = TOOL_TARGET.read_text(encoding="utf-8")
-    if TOOL_MARKER in text:
-        return f"already patched (reregister): {TOOL_TARGET}"
-    if "SEND_MESSAGE_SCHEMA = {" in text:
-        return f"skip: upstream SEND_MESSAGE_SCHEMA present again, re-check {TOOL_TARGET}"
-    if NOTE not in text:
-        return f"skip: reregister snippet not found in {TOOL_TARGET}"
-    TOOL_TARGET.write_text(text.replace(NOTE, REGISTER_BLOCK, 1), encoding="utf-8")
-    return f"patched (reregister): {TOOL_TARGET}"
-
-
-def _patch_toolsets() -> str:
-    if not TOOLSETS_TARGET.is_file():
-        return f"skip: missing {TOOLSETS_TARGET}"
-    text = TOOLSETS_TARGET.read_text(encoding="utf-8")
-    if TOOLSETS_MARKER in text:
-        return f"already patched: {TOOLSETS_TARGET}"
-    if TOOLSETS_OLD in text:
-        TOOLSETS_TARGET.write_text(text.replace(TOOLSETS_OLD, TOOLSETS_NEW, 1), encoding="utf-8")
-        return f"patched: {TOOLSETS_TARGET}"
-    return f"skip: expected snippet not found in {TOOLSETS_TARGET}"
-
-
-def main() -> int:
-    print(_patch_signal_synth())
-    print(_patch_reregister())
-    print(_patch_toolsets())
-    return 0
+    if TOOL_MARKER not in text and "SEND_MESSAGE_SCHEMA = {" in text:
+        fail(TAG, f"upstream SEND_MESSAGE_SCHEMA present again in {TOOL_TARGET}: re-check the reregister block")
+    edit(TOOL_TARGET, [(NOTE, REGISTER_BLOCK)], TOOL_MARKER, TAG, label=f"(reregister) {TOOL_TARGET}")
+    edit(TOOLSETS_TARGET, [(TOOLSETS_OLD, TOOLSETS_NEW)], TOOLSETS_MARKER, TAG)
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

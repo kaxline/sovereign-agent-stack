@@ -180,12 +180,12 @@ def run(script):
     return out.stdout
 
 first = run("/bootstrap/patch-browser-exec-hint.py")
-assert "patched: result hints" in first, first
-assert "patched: expression echo" in first, first
-assert "patched: vault save next step" in first, first
+assert "patched result hints" in first, first
+assert "patched expression echo" in first, first
+assert "patched vault save next step" in first, first
 again = run("/bootstrap/patch-browser-exec-hint.py")
-assert "ok: result hints already patched" in again, again
-assert "patched" not in again.replace("already patched", ""), again
+assert "already applied (result hints)" in again, again
+assert "patched" not in again, again
 
 sys.path.insert(0, "/opt/hermes")
 import tools.browser_use_cli as bu

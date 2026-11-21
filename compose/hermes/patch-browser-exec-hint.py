@@ -13,15 +13,17 @@ The logic lives in browser_exec_hints.py, copied into /opt/hermes/tools/.
 """
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
-TARGET = Path("/opt/hermes/tools/browser_use_cli.py")
+from overlay_patch import ROOT, edit, install
+
+TAG = "[patch-browser-exec-hint]"
+TARGET = ROOT / "tools" / "browser_use_cli.py"
 HELPER_SRC = Path("/bootstrap/browser_exec_hints.py")
-HELPER_DST = Path("/opt/hermes/tools/browser_exec_hints.py")
+HELPER_DST = ROOT / "tools" / "browser_exec_hints.py"
 MARKER_RESULT = "# assistant-stack: browser_exec result hints"
 MARKER_ECHO = "# assistant-stack: print a trailing browser_exec expression"
-VAULT_TARGET = Path("/opt/hermes/tools/browser_vault_tool.py")
+VAULT_TARGET = ROOT / "tools" / "browser_vault_tool.py"
 MARKER_SAVE_NEXT = "# assistant-stack: vault save next step"
 
 OLD_RESULT = (
@@ -83,39 +85,11 @@ NEW_SAVE_NEXT = (
 )
 
 
-def _apply(text: str, old: str, new: str, marker: str, label: str, path: Path = TARGET) -> str:
-    if marker in text:
-        print(f"ok: {label} already patched")
-        return text
-    if old not in text:
-        print(f"warn: {label} needle missing in {path}")
-        return text
-    print(f"patched: {label} in {path}")
-    return text.replace(old, new, 1)
-
-
 def main() -> None:
-    if not TARGET.exists():
-        print(f"skip: {TARGET} missing")
-        return
-    if HELPER_SRC.is_file():
-        shutil.copyfile(HELPER_SRC, HELPER_DST)
-        print(f"installed: {HELPER_DST}")
-    else:
-        print(f"warn: {HELPER_SRC} missing; result hints off")
-    text = TARGET.read_text()
-    patched = _apply(text, OLD_RESULT, NEW_RESULT, MARKER_RESULT, "result hints")
-    patched = _apply(patched, OLD_ECHO, NEW_ECHO, MARKER_ECHO, "expression echo")
-    if patched != text:
-        TARGET.write_text(patched)
-    if VAULT_TARGET.exists():
-        vault = VAULT_TARGET.read_text()
-        vault_patched = _apply(vault, OLD_SAVE_NEXT, NEW_SAVE_NEXT, MARKER_SAVE_NEXT,
-                               "vault save next step", VAULT_TARGET)
-        if vault_patched != vault:
-            VAULT_TARGET.write_text(vault_patched)
-    else:
-        print(f"skip: {VAULT_TARGET} missing")
+    install(HELPER_SRC, HELPER_DST, TAG)
+    edit(TARGET, [(OLD_RESULT, NEW_RESULT)], MARKER_RESULT, TAG, label="result hints")
+    edit(TARGET, [(OLD_ECHO, NEW_ECHO)], MARKER_ECHO, TAG, label="expression echo")
+    edit(VAULT_TARGET, [(OLD_SAVE_NEXT, NEW_SAVE_NEXT)], MARKER_SAVE_NEXT, TAG, label="vault save next step")
 
 
 if __name__ == "__main__":

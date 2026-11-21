@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Checks for patch-send-message-tool.py in the pinned Hermes image.
 
-The patch skips softly when an anchor moves, so a Hermes bump can silently drop
+The patch exits non-zero when an anchor moves, which the runner only logs, so a Hermes bump can drop
 the agent-callable send_message tool. With the image present (or --image), the
 patch is applied twice: the first run must patch all three parts, the second
 must find them applied. Then send_message must be registered, sit in the
@@ -29,8 +29,9 @@ for want in ("patched", "already patched"):
     out = subprocess.run([sys.executable, "/bootstrap/patch-send-message-tool.py"], capture_output=True, text=True)
     if out.returncode != 0:
         raise SystemExit(f"FAIL patch: {out.stdout}{out.stderr}")
-    lines = out.stdout.strip().splitlines()
-    assert len(lines) == 3 and all(line.startswith(want) for line in lines), out.stdout
+    lines = [line for line in out.stdout.strip().splitlines() if " installed " not in line]
+    send_want = "[patch-send-message-tool] " + ("patched" if want == "patched" else "already applied")
+    assert len(lines) == 3 and all(line.startswith(send_want) for line in lines), out.stdout
     # patch-ensure-send-message-tools.py exits non-zero when a model_tools.py anchor moves.
     out = subprocess.run([sys.executable, "/bootstrap/patch-ensure-send-message-tools.py"], capture_output=True, text=True)
     if out.returncode != 0:
