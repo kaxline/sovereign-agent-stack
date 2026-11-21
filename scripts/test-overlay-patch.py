@@ -118,6 +118,12 @@ out, _ = case("""
     edit(T / "a.py", [], MARKER, TAG, append="X = 1\\n", requires=["def c():"])
 """, {"a.py": A})
 check("missing required name exits non-zero", out.returncode == 1 and "'def c():'" in out.stderr, out.stderr)
+out, after = case("""
+    edit_files([FileEdit(T / "a.py", [("return 1\\n", "return 1  " + MARKER + "\\n")]),
+                FileEdit(T / "b.py", requires=["def b():"])], MARKER, TAG)
+""", {"a.py": A, "b.py": B})
+check("a requires-only FileEdit is a check: no write, no line",
+      out.returncode == 0 and after["b.py"] == B and "b.py" not in out.stdout, out.stdout + out.stderr)
 out, _ = case("""
     install(T / "nope.py", T / "dst.py", TAG)
 """, {})

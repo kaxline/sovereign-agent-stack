@@ -106,9 +106,11 @@ def edit_files(files: Sequence[FileEdit], marker: str, tag: str, optional: bool 
             pending.append((f, None))
             continue
         try:
-            pending.append((f, _apply(path, text, f)))
+            new = _apply(path, text, f)
         except _Missing as exc:
             return fail(tag, str(exc), optional)
+        if new != text:  # a FileEdit with only ``requires`` is a check, never written
+            pending.append((f, new))
     for f, text in pending:
         label = f.label or str(f.path)
         if text is None:

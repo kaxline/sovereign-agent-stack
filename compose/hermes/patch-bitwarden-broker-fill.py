@@ -29,10 +29,8 @@ Run scripts/test-bitwarden-fill.py on Hermes bumps.
 """
 from __future__ import annotations
 
-import os
-from pathlib import Path
+from overlay_patch import ROOT, FileEdit, edit_files, one_of
 
-ROOT = Path(os.environ.get("HERMES_ROOT", "/opt/hermes"))
 TOOLS = ROOT / "tools"
 TAG = "[patch-bitwarden-broker-fill]"
 MARKER = "# assistant-stack: bitwarden broker fill"
@@ -396,44 +394,19 @@ NEEDED = {
         "def session_for_task(task_id: Optional[str]) -> dict[str, Any]:",
     ),
 }
-def _pick(text: str, variants: tuple[str, ...]) -> str:
-    """The one variant *text* holds exactly once, else the first (so the count check reports it)."""
-    return next((v for v in variants if text.count(v) == 1), variants[0])
-
-
-ANCHORS = {
-    "meta none": META_NONE_ANCHOR,
-    "enter_code": CODE_ANCHOR,
-    "list": LIST_ANCHOR,
-    "helpers": HELPERS_ANCHOR,
-}
-
-
 def main() -> None:
-    target = TOOLS / "browser_vault_tool.py"
-    text = target.read_text(encoding="utf-8")
-    if MARKER in text:
-        print(f"{TAG} already applied")
-        return
-    sources = {"browser_vault_tool.py": text,
-               "browser_supervisor.py": (TOOLS / "browser_supervisor.py").read_text(encoding="utf-8"),
-               "browser_session.py": (TOOLS / "browser_session.py").read_text(encoding="utf-8")}
-    missing = [f"{name}: {n.strip()}" for name, needed in NEEDED.items() for n in needed if n not in sources[name]]
-    fill_anchor = _pick(text, FILL_ANCHORS)
-    anchors = {"fill": fill_anchor, **ANCHORS}
-    bad = [name for name, anchor in anchors.items() if text.count(anchor) != 1]
-    if missing or bad:
-        raise SystemExit(
-            f"{TAG} expected code missing in {TOOLS}: {missing + bad}. "
-            "Hermes image may have changed — update this patch."
-        )
-    text = text.replace(fill_anchor, FILL + fill_anchor, 1)
-    text = text.replace(META_NONE_ANCHOR, META_NONE + META_NONE_ANCHOR, 1)
-    text = text.replace(CODE_ANCHOR, CODE + CODE_ANCHOR, 1)
-    text = text.replace(LIST_ANCHOR, LIST, 1)
-    text = text.replace(HELPERS_ANCHOR, HELPERS + HELPERS_ANCHOR, 1)
-    target.write_text(text, encoding="utf-8")
-    print(f"{TAG} patched {target}")
+    edit_files([
+        FileEdit(TOOLS / "browser_vault_tool.py", [
+            one_of(*((anchor, FILL + anchor) for anchor in FILL_ANCHORS)),
+            (META_NONE_ANCHOR, META_NONE + META_NONE_ANCHOR),
+            (CODE_ANCHOR, CODE + CODE_ANCHOR),
+            (LIST_ANCHOR, LIST),
+            (HELPERS_ANCHOR, HELPERS + HELPERS_ANCHOR),
+        ], requires=NEEDED["browser_vault_tool.py"]),
+        # Names the inserted code calls in modules it does not edit.
+        FileEdit(TOOLS / "browser_supervisor.py", requires=NEEDED["browser_supervisor.py"]),
+        FileEdit(TOOLS / "browser_session.py", requires=NEEDED["browser_session.py"]),
+    ], MARKER, TAG)
 
 
 if __name__ == "__main__":
