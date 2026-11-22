@@ -28,8 +28,8 @@ This is a **local development** stack. It is not hardened for internet-facing de
 | web-browser (optional) | compose-internal `:9222` (CDP) on the internal `browser` network; the noVNC viewer on `127.0.0.1:6080` (`WEB_BROWSER_VIEWER_PORT`) | One token per CDP client (`agent`, `credentials`) compared in constant time; refuses an `Origin` header, whole-jar cookie and storage reads, and `file:`/browser-internal URLs. The viewer asks for the password in `data/web-browser/secrets/viewer` (`make web-browser-viewer` prints both) and does not start when that file is empty |
 | bitwarden-broker (optional) | `:8099` on the internal `credentials` network, which only `hermes` joins; Unix socket in a tmpfs only it mounts; reaches Bitwarden's servers and the host on `bitwarden-egress`, which only it joins | A bearer token from `broker-api/api-token`, which `hermes` mounts read-only, so agent code in `hermes` can call the API; no route returns a password, code or session key. The socket takes manual unlocks and locks and answers `/health`; only the broker mounts it |
 | bitwarden-setup (optional, one-shot) | no port; its own network plus the internal `vault` network | Your master password in a hidden prompt, held for one run; listens on no port, shares only the internal `vault` network and no volume with `hermes` |
-| vaultwarden (optional) | `127.0.0.1:8222` (`VAULTWARDEN_PORT`), HTTPS through `vaultwarden-tls` with the local CA; Vaultwarden itself only on the internal `vault-backend` network | Vaultwarden accounts, sign-ups off; admin page behind a generated token. `hermes` and the broker cannot reach it directly |
-| vaultwarden-tls (optional) | compose-internal `:443` as `vaultwarden.vault.internal` on the internal `vault` network | TLS from a private CA only the broker and `bitwarden-setup` trust; sets `X-Real-IP` from the connecting address so Vaultwarden's login rate limit can't be bypassed |
+| vaultwarden (optional) | `127.0.0.1:8222` (`VAULTWARDEN_PORT`) as `https://vaultwarden.localhost:8222`, HTTPS through `vaultwarden-tls` with the local CA; Vaultwarden itself only on the internal `vault-backend` network | Vaultwarden accounts, sign-ups off; admin page behind a generated token. `hermes` and the broker cannot reach it directly |
+| vaultwarden-tls (optional) | compose-internal `:443` as `vaultwarden.vault.internal` on the internal `vault` network | TLS from a private CA that the broker, `bitwarden-setup` and the user's browser trust, name-constrained to `vaultwarden.vault.internal` and `vaultwarden.localhost`; sets `X-Real-IP` from the connecting address so Vaultwarden's login rate limit can't be bypassed |
 
 ## Reporting vulnerabilities
 
@@ -53,7 +53,7 @@ If you discover a security issue in this repository, please open a private advis
 - Put `DB_DATA_DIR` in a cloud-synced folder.
 - Give a Bitwarden account `BW_SCOPE=all`. The agent can then fill every login in that vault, and code it runs in the browser can read each filled password. Keep the scope to one folder or collection (`make doctor` warns about `all`).
 - Use `BW_UNLOCK=stored` with your personal account's master password unless you accept that the broker holds the key to your whole vault; the `folder:` scope only limits what it lists and fills. Prefer `collection:` with a separate member account. See [docs/bitwarden.md](docs/bitwarden.md#unlock).
-- Publish the Vaultwarden port beyond `127.0.0.1`. The web vault is plain HTTP and holds what you store in local mode, with no other copy unless you back it up (`scripts/vault.sh backup DIR`).
+- Publish the Vaultwarden port beyond `127.0.0.1`. The web vault holds what you store in local mode, with no other copy unless you back it up (`scripts/vault.sh backup DIR`).
 
 **Do:**
 

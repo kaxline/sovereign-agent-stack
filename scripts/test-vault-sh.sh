@@ -87,6 +87,13 @@ SH
 mkdir -p "$tmp/bin-nopy"
 printf '#!/bin/sh\nexit 1\n' > "$tmp/bin-nopy/python3"
 chmod +x "$tmp/bin/docker" "$tmp/bin/make" "$tmp/bin-nopy/python3"
+# getent: the host resolver, as getent ahosts prints it. Loopback unless
+# $STUB/resolve holds other lines (empty: the name does not resolve).
+cat > "$tmp/bin/getent" <<'SH'
+#!/bin/sh
+if [ -f "$STUB/resolve" ]; then cat "$STUB/resolve"; else printf '127.0.0.1       STREAM %s\n::1             STREAM %s\n' "$3" "$3"; fi
+SH
+chmod +x "$tmp/bin/getent"
 export PATH="$tmp/bin:$PATH"
 
 # jget FILE KEY: a top-level value of a JSON file, empty when missing.
@@ -355,7 +362,7 @@ done
 order="$(grep -nE 'bitwarden-setup (tls|admin-token|local-init|role)|up -d|dirs ready' "$STUB/log" \
   | sed -E 's/^[0-9]+://; s/.*bitwarden-setup ([a-z-]+).*/\1/; s/.* up -d.*/up/; s/stub: dirs ready at up/dirs/' | tr '\n' ' ')"
 [ "$order" = "tls admin-token up dirs local-init role " ] || fail "init order: ${order}"
-logged "local-init --owner owner@example.com --signup-url https://localhost:8222" || fail "local-init arguments"
+logged "local-init --owner owner@example.com --signup-url https://vaultwarden.localhost:8222" || fail "local-init arguments"
 logged "role --slug local --email owner@example.com" || fail "role arguments"
 said "trust the local CA in your browser once" || fail "init tells the user to trust the local CA before registering"
 logged "--profile vault up -d --wait vaultwarden vaultwarden-tls" || fail "init starts the vault profile"
@@ -394,6 +401,17 @@ run init || fail "init when done, without the local account"
 logged "local-init --owner owner@example.com" || fail "init does not write a missing local account"
 logged "bitwarden-setup role" && fail "init re-ran role to write the local account"
 logged "bitwarden-setup tls" && fail "init re-ran tls to write the local account"
+
+# The browser's name: no /etc/hosts line while it resolves to loopback only.
+said "/etc/hosts" && fail "init asks for an /etc/hosts line when the name resolves to loopback"
+said "https://vaultwarden.localhost:8222" || fail "init names the web vault at vaultwarden.localhost"
+printf '' > "$STUB/resolve"
+run init || fail "init when the browser's name does not resolve"
+said "echo '127.0.0.1 vaultwarden.localhost' | sudo tee -a /etc/hosts" || fail "init prints the /etc/hosts line when the name does not resolve"
+printf '203.0.113.7     STREAM vaultwarden.localhost\n' > "$STUB/resolve"
+run init || fail "init when the browser's name resolves elsewhere"
+said "sudo tee -a /etc/hosts" || fail "init prints the /etc/hosts line when the name resolves off this machine"
+rm -f "$STUB/resolve"
 
 # --- make up hook --------------------------------------------------------------
 # With no profile marked it does nothing: no store writes, no docker, no output.

@@ -2,20 +2,23 @@
 
 ``make_local_tls(dir)`` writes a private CA (``ca.crt``, ``ca.key``) and,
 in ``dir/server/``, a server certificate for ``vaultwarden.vault.internal``
-and ``localhost`` signed by it (``server.crt``, ``server.key``). The sidecar
-mounts only ``server/``. The broker and bitwarden-setup reach it by the first
-name; the user's browser reaches the web vault at ``https://localhost:<port>``,
-because the web vault refuses plain-HTTP servers, and trusts the CA once.
+and ``vaultwarden.localhost`` signed by it (``server.crt``, ``server.key``).
+The sidecar mounts only ``server/``. The broker and bitwarden-setup reach it
+by the first name; the user's browser reaches the web vault at
+``https://vaultwarden.localhost:<port>``, because the web vault refuses
+plain-HTTP servers, and trusts the CA once. A name of its own keeps the vault
+out of the cookie jar that every other ``localhost`` app shares.
 Keys are EC P-256. The CA is valid for 10 years, is limited by a critical name
-constraint to those two DNS names (and their subdomains), and the server
-certificate is valid for 825 days. Keys are mode 600 and certificates mode 644.
+constraint to exactly those two DNS names (and their subdomains), and the
+server certificate is valid for 825 days. Keys are mode 600 and certificates
+mode 644.
 
-A second run changes nothing. A missing server pair, or one without every
-name, is issued from the existing CA. A CA whose name constraint lacks a name
-is refused, since only a new CA can cover it and whatever trusts the old one
-must then trust the new one; ``rotate=True`` replaces all four files. A pair
-with one file missing is refused, since replacing the other file would break
-whatever trusts or serves it.
+A second run changes nothing. A missing server pair, or one whose names differ
+from the two, is issued from the existing CA. A CA whose name constraint
+permits any other set of names is refused, since only a new CA can change it
+and whatever trusts the old one must then trust the new one; ``rotate=True``
+replaces all four files. A pair with one file missing is refused, since
+replacing the other file would break whatever trusts or serves it.
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ from broker.atomic import write_atomic
 
 LOCAL_NAME = "vaultwarden.vault.internal"
 # The name the user's browser uses for the web vault (127.0.0.1:VAULTWARDEN_PORT).
-BROWSER_NAME = "localhost"
+BROWSER_NAME = "vaultwarden.localhost"
 CA_DAYS = 3650
 SERVER_DAYS = 825
 CA_CN = "Assistant local Vaultwarden CA"
@@ -80,11 +83,14 @@ def make_local_tls(dir: Path, name: str = LOCAL_NAME, rotate: bool = False) -> N
     if keep_ca:
         permitted = _permitted_names(x509.load_pem_x509_certificate((dir / "ca.crt").read_bytes()))
         missing = [n for n in names if n not in permitted]
-        if missing:
-            raise TlsError(f"The CA in {dir} does not cover {', '.join(missing)}; rotate to replace it, "
+        extra = sorted(permitted - set(names))
+        if missing or extra:
+            problem = "; ".join(filter(None, (missing and f"does not cover {', '.join(missing)}",
+                                              extra and f"also permits {', '.join(extra)}")))
+            raise TlsError(f"The CA in {dir} {problem}; rotate to replace it, "
                            "then trust the new ca.crt in your browser again.")
     keep_server = keep_ca and _pair(server_dir, "server", rotate) \
-        and set(names) <= _san_names(x509.load_pem_x509_certificate((server_dir / "server.crt").read_bytes()))
+        and set(names) == _san_names(x509.load_pem_x509_certificate((server_dir / "server.crt").read_bytes()))
     if keep_ca and keep_server:
         return
     if not keep_ca and not rotate and ((server_dir / "server.crt").exists() or (server_dir / "server.key").exists()):

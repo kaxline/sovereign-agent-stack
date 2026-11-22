@@ -499,7 +499,7 @@ def check_local(cfg: dict) -> None:
     if vw.get("ports"):
         checks.fail(f"vaultwarden publishes {vw.get('ports')!r}; the host port belongs to vaultwarden-tls")
     for key, want in (("SIGNUPS_ALLOWED", "false"), ("INVITATIONS_ALLOWED", "true"),
-                      ("DOMAIN", "https://localhost:8222"), ("DISABLE_ICON_DOWNLOAD", "true")):
+                      ("DOMAIN", "https://vaultwarden.localhost:8222"), ("DISABLE_ICON_DOWNLOAD", "true")):
         if env_value(vw, key) != want:
             checks.fail(f"vaultwarden {key} must be {want}")
     if env_value(vw, "ADMIN_TOKEN") is not None:

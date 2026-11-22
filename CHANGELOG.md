@@ -32,15 +32,17 @@ the stack under another app.
   extra source put Hermes state (cron output, logs, pastes) into `INDEX.md`,
   with each file's first heading. Such an index loses those rows on its next
   refresh.
-
-- Bitwarden local mode: the web vault is now `https://localhost:8222`,
-  served by `vaultwarden-tls`, because the web vault bundled with
-  Vaultwarden 1.37.5 refuses plain-HTTP servers, `localhost` included, and
-  registering the owner failed with "Insecure URL not allowed". Vaultwarden
-  no longer publishes a port, and its `DOMAIN` is the https address. The
-  local CA and server certificate now also cover `localhost`, and
+- Bitwarden local mode: the web vault is now
+  `https://vaultwarden.localhost:8222`, served by `vaultwarden-tls`, because
+  the web vault bundled with Vaultwarden 1.37.5 refuses plain-HTTP servers,
+  `localhost` included, and registering the owner failed with "Insecure URL
+  not allowed". It has a name of its own so it shares no cookies with other
+  apps on `localhost`. Vaultwarden no longer publishes a port, and its
+  `DOMAIN` is the https address. The local CA and server certificate cover
+  exactly `vaultwarden.vault.internal` and `vaultwarden.localhost`, and
   `make vault-init` prints how to trust the CA in the browser before you
-  register. A CA made before this is refused: run
+  register, plus an `/etc/hosts` line when `vaultwarden.localhost` does not
+  resolve to this machine. A CA for any other names is refused: run
   `docker compose --profile bitwarden-tools run --rm bitwarden-setup tls --rotate`,
   restart `vaultwarden-tls` and `bitwarden-broker`, and trust the new
   `ca.crt`.

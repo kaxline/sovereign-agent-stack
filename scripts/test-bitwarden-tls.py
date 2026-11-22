@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """setup/tls.py on the host: the names the local Vaultwarden's certificate and CA cover.
 
-The browser reaches the web vault as https://localhost:<port> and bw as
-https://vaultwarden.vault.internal, so the server certificate names both and the
-CA's name constraint permits both. A CA made before localhost was added is
-refused with a rotate hint; a server certificate without localhost is reissued
-from a CA that covers it. Runs on the host with the cryptography package and
+The browser reaches the web vault as https://vaultwarden.localhost:<port> and bw
+as https://vaultwarden.vault.internal, so the server certificate names exactly
+those two and the CA's name constraint permits exactly those two. A CA that
+lacks one (made before the browser name was added) or permits more (made when
+the browser name was bare localhost) is refused with a rotate hint; a server
+certificate whose names differ is reissued from the CA. Runs on the host with the cryptography package and
 skips without it; test-vw-register.py covers the same code in the broker image.
 """
 
@@ -34,7 +35,7 @@ except ImportError:
 
 import tls  # noqa: E402
 
-NAMES = {tls.LOCAL_NAME, "localhost"}
+NAMES = {tls.LOCAL_NAME, "vaultwarden.localhost"}
 
 
 def cert(path: Path) -> x509.Certificate:
@@ -45,8 +46,8 @@ def mode(path: Path) -> int:
     return stat.S_IMODE(path.stat().st_mode)
 
 
-def old_ca(dir: Path) -> None:
-    """A CA and server pair as setup.py tls made them before localhost: one name only."""
+def old_ca(dir: Path, names: list[str]) -> None:
+    """A CA permitting ``names`` and a placeholder server pair, as an older setup.py tls left them."""
     server = dir / tls.SERVER_DIR
     server.mkdir(parents=True)
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -56,7 +57,7 @@ def old_ca(dir: Path) -> None:
           .serial_number(x509.random_serial_number())
           .not_valid_before(now).not_valid_after(now + datetime.timedelta(days=30))
           .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
-          .add_extension(x509.NameConstraints(permitted_subtrees=[x509.DNSName(tls.LOCAL_NAME)],
+          .add_extension(x509.NameConstraints(permitted_subtrees=[x509.DNSName(n) for n in names],
                                               excluded_subtrees=None), critical=True)
           .sign(key, hashes.SHA256()))
     pem = serialization.Encoding.PEM
@@ -82,28 +83,38 @@ def test_fresh() -> None:
         expect({p: p.read_bytes() for p in dir.rglob("*") if p.is_file()} == before, "a second run changed files")
 
 
-def test_old_ca_refused_until_rotate() -> None:
+def check_refused_until_rotate(names: list[str], says: str) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         dir = Path(tmp) / "tls"
-        old_ca(dir)
+        old_ca(dir, names)
         before = {p: p.read_bytes() for p in dir.rglob("*") if p.is_file()}
         try:
             tls.make_local_tls(dir)
-            expect(False, "a CA without localhost was kept")
+            expect(False, f"a CA for {names} was kept")
         except tls.TlsError as exc:
-            expect("localhost" in str(exc) and "rotate" in str(exc), f"refusal says {exc}")
+            expect(says in str(exc) and "rotate" in str(exc), f"refusal says {exc}")
         expect({p: p.read_bytes() for p in dir.rglob("*") if p.is_file()} == before, "a refusal changed files")
         tls.make_local_tls(dir, rotate=True)
         expect(tls._permitted_names(cert(dir / "ca.crt")) == NAMES, "rotate makes a CA for both names")
         expect(tls._san_names(cert(dir / "server/server.crt")) == NAMES, "rotate issues for both names")
 
 
-def test_server_without_localhost_reissued() -> None:
+def test_ca_missing_a_name_refused() -> None:
+    check_refused_until_rotate([tls.LOCAL_NAME], "does not cover vaultwarden.localhost")
+
+
+def test_ca_with_extra_name_refused() -> None:
+    # As 519ac06 made it: bare localhost, which also permits every other *.localhost.
+    check_refused_until_rotate([tls.LOCAL_NAME, "localhost"], "also permits localhost")
+    check_refused_until_rotate([tls.LOCAL_NAME, "vaultwarden.localhost", "localhost"], "also permits localhost")
+
+
+def check_server_reissued(sans: list[str]) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         dir = Path(tmp) / "tls"
         tls.make_local_tls(dir)
         ca_before = (dir / "ca.crt").read_bytes()
-        # A server certificate for the internal name only, from the same CA.
+        # A server certificate for other names, from the same CA.
         ca_key = serialization.load_pem_private_key((dir / "ca.key").read_bytes(), password=None)
         ca = cert(dir / "ca.crt")
         now = datetime.datetime.now(datetime.timezone.utc)
@@ -112,7 +123,7 @@ def test_server_without_localhost_reissued() -> None:
                .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, tls.LOCAL_NAME)]))
                .issuer_name(ca.subject).public_key(key.public_key()).serial_number(x509.random_serial_number())
                .not_valid_before(now).not_valid_after(now + datetime.timedelta(days=30))
-               .add_extension(x509.SubjectAlternativeName([x509.DNSName(tls.LOCAL_NAME)]), critical=False)
+               .add_extension(x509.SubjectAlternativeName([x509.DNSName(n) for n in sans]), critical=False)
                .sign(ca_key, hashes.SHA256()))
         (dir / "server/server.crt").write_bytes(old.public_bytes(serialization.Encoding.PEM))
         tls.make_local_tls(dir)
@@ -120,10 +131,17 @@ def test_server_without_localhost_reissued() -> None:
         expect(tls._san_names(cert(dir / "server/server.crt")) == NAMES, "the server pair was not reissued")
 
 
+def test_server_names_differ_reissued() -> None:
+    check_server_reissued([tls.LOCAL_NAME])
+    check_server_reissued([tls.LOCAL_NAME, "localhost"])
+    check_server_reissued([tls.LOCAL_NAME, "vaultwarden.localhost", "localhost"])
+
+
 def main() -> int:
     test_fresh()
-    test_old_ca_refused_until_rotate()
-    test_server_without_localhost_reissued()
+    test_ca_missing_a_name_refused()
+    test_ca_with_extra_name_refused()
+    test_server_names_differ_reissued()
     print("ok")
     return 0
 
