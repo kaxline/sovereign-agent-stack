@@ -128,12 +128,19 @@ class Stub:
             return {"data": {"upsertObjectPermissions": [
                 {"objectMetadataId": o["objectMetadataId"]} for o in variables["i"]["objectPermissions"]]}}
         if op == "apiKeys":
-            return {"data": {"apiKeys": self.keys}}
+            # Twenty v2.60.3: ApiKeyResolver.apiKeys returns findActiveByWorkspaceId (revokedAt IS NULL).
+            return {"data": {"apiKeys": [k for k in self.keys if not k["revokedAt"]]}}
+        if op == "apiKey":
+            # ApiKeyResolver.apiKey: findById, revoked keys included, null when there is no such key.
+            found = [k for k in self.keys if k["id"] == variables["i"]["id"]]
+            return {"data": {"apiKey": found[0] if found else None}}
         if op == "revokeApiKey":
-            for k in self.keys:
-                if k["id"] == variables["i"]["id"]:
-                    k["revokedAt"] = "now"
-            return {"data": {"revokeApiKey": {"id": variables["i"]["id"]}}}
+            # ApiKeyService.revoke: null for an unknown id (no error); an already revoked key is updated again.
+            found = [k for k in self.keys if k["id"] == variables["i"]["id"]]
+            if not found:
+                return {"data": {"revokeApiKey": None}}
+            found[0]["revokedAt"] = "now"
+            return {"data": {"revokeApiKey": {"id": found[0]["id"]}}}
         if op == "createApiKey":
             key = {"id": f"key-{len(self.keys) + 1}", "name": variables["i"]["name"], "revokedAt": None,
                    "roleId": variables["i"].get("roleId")}
@@ -585,17 +592,15 @@ class CrmKey(unittest.TestCase):
         self.assertIn("revokeApiKey", self.stub.ops)
         self.assertEqual(self.stub.keys[2]["revokedAt"], "now")
 
-    def test_list_marks_revoked_keys_and_filters_by_name(self):
+    def test_list_shows_active_keys_with_that_name_and_omits_revoked_ones(self):
         self.key("create", "--name", "Ada", "--access", "read")
         self.key("create", "--name", "Ada", "--access", "write")
         self.key("create", "--name", "Bo", "--access", "read")
         self.key("revoke", "--id", "key-3")
         proc = self.key("list", "--name", "Ada", "--json")
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(self.lines(proc), [
-            {"id": "key-3", "name": "Ada", "revoked": True},
-            {"id": "key-4", "name": "Ada", "revoked": False},
-        ])
+        # Twenty's apiKeys query has no way to include revoked keys.
+        self.assertEqual(self.lines(proc), [{"id": "key-4", "name": "Ada", "revoked": False}])
 
     def test_wrong_password_is_login_refused_and_mints_nothing(self):
         self.stub.sign_in_error = "Wrong password"

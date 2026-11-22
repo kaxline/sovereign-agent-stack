@@ -62,7 +62,8 @@ Usage: scripts/crm.sh <command> [options]
   key list --name NAME [--slug S] --json
         One person's Twenty API key, for Boundary. create prints
         {"id","token"} on one line; revoke prints nothing; list prints
-        {"id","name","revoked"} per key with that name. A failure is one
+        {"id","name","revoked"} per active key with that name
+        (revoked keys are not listed). A failure is one
         {"error","message"} line on stdout and exit 4: login_refused,
         ambiguous_workspace, no_permission, unreachable, no_role, local_off,
         not_found or failed. Progress goes to

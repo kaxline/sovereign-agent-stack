@@ -606,7 +606,8 @@ def cmd_key(args: argparse.Namespace) -> int:
 
     create prints one JSON line {"id", "token"}; the token is the only secret
     that reaches stdout, from this command alone. revoke prints nothing. list
-    prints {"id", "name", "revoked"} for each key with the given name. A failure
+    prints {"id", "name", "revoked"} for each active key with the given name
+    (Twenty does not list revoked keys). A failure
     prints {"error", "message"} on stdout and exits 4 (login_refused,
     ambiguous_workspace, no_permission, unreachable, no_role, not_found, failed); progress goes to stderr.
     """
@@ -632,13 +633,18 @@ def cmd_key(args: argparse.Namespace) -> int:
             print(json.dumps({"id": key_id, "token": token}), flush=True)
         elif args.action == "revoke":
             # Idempotent, for deprovisioning: an already revoked key is a success.
-            d = _stage(lambda: tw.gql("query { apiKeys { id name revokedAt } }", token=access))
-            found = [k for k in d.get("apiKeys") or [] if k.get("id") == args.id]
+            # The apiKeys query omits revoked keys (Twenty v2.60.3), so look the id
+            # up with apiKey, which returns a key of any state and null for no key.
+            d = _stage(lambda: tw.gql("query($i: GetApiKeyInput!) { apiKey(input: $i) { id revokedAt } }",
+                                      {"i": {"id": args.id}}, token=access))
+            found = d.get("apiKey")
             if not found:
                 raise KeyFailure("not_found", f"no key with id {args.id}")
-            if not found[0].get("revokedAt"):
+            if not found.get("revokedAt"):
                 _stage(_revoke, tw, access, args.id)
         else:
+            # Twenty's apiKeys query returns only active keys and nothing else
+            # lists them, so a revoked key never appears here.
             d = _stage(lambda: tw.gql("query { apiKeys { id name revokedAt } }", token=access))
             for key in d.get("apiKeys") or []:
                 if key.get("name") == args.name:

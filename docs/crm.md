@@ -175,7 +175,9 @@ scripts/crm.sh key list --name NAME [--slug S] --json
 nowhere else. It uses the Hermes read-only or read-write role by label and
 creates both roles when the workspace has neither, as `crm-init` does. The key
 expires in 2126, so revoke it when access ends. `revoke` prints nothing.
-`list` prints `{"id","name","revoked"}` for each key with that name.
+`list` prints `{"id","name","revoked"}` for each active key with that name.
+Twenty lists only active keys, so a revoked key no longer appears and `revoked`
+is always `false`; to confirm a revoke, check that the id is gone from `list`.
 
 A failure is one line on stdout, `{"error": CODE, "message": TEXT}`, with exit
 4. The codes are:
