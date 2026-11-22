@@ -16,7 +16,7 @@ Environment:
   TWENTY_PASSWORD         owner account password, or
   TWENTY_PASSWORD_FILE    a file holding it; generated there (mode 600) when missing
   TWENTY_MULTIWORKSPACE   1 allows more than one local workspace
-  ADDONS_DATA_ROOT        the data root that holds addons/twenty/ (required)
+  ASSISTANT_DATA_ROOT     the data root that holds addons/twenty/ (required)
   ADDONS_DIR              the add-on manifests (default: addons/ next to scripts/)
   TWENTY_DATA_DIR         where .crm-init-done is written
   TWENTY_GRANT_ADMIN_CMD  executable run as `<cmd> grant-admin <email>` on every run
@@ -279,9 +279,9 @@ class Workspaces:
     adds key_ro and key_rw from secrets/ when they are set."""
 
     def __init__(self, env) -> None:
-        root = env.get("ADDONS_DATA_ROOT", "")
+        root = env.get("ASSISTANT_DATA_ROOT", "")
         if not root:
-            raise TwentyError("ADDONS_DATA_ROOT is not set")
+            raise TwentyError("ASSISTANT_DATA_ROOT is not set")
         addons = Path(env.get("ADDONS_DIR") or SCRIPTS.parent / "addons")
         try:
             self.manifest = json.loads((addons / "twenty" / "addon.json").read_text())

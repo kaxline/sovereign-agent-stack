@@ -222,6 +222,17 @@
         "/app/scripts/lib/email_addon.py",
         "mailboxes"
       ]
+    },
+    "status": {
+      "service": "indexer",
+      "instance": false,
+      "argv": [
+        "python",
+        "-I",
+        "-B",
+        "/app/scripts/lib/email_addon.py",
+        "status"
+      ]
     }
   },
   "data": {
