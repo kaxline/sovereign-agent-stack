@@ -22,6 +22,7 @@ source "${ROOT}/scripts/lib/env.sh"
 source "${ROOT}/scripts/lib/hermes-yaml.sh"
 # shellcheck source=lib/agent-registry.sh
 source "${ROOT}/scripts/lib/agent-registry.sh"
+require_python3
 
 NAME="${1:-${NAME:-}}"
 DISPLAY_NAME="${2:-${DISPLAY_NAME:-}}"

@@ -13,6 +13,8 @@ source "${ROOT}/scripts/lib/env.sh"
 source "${ROOT}/scripts/lib/hermes-yaml.sh"
 # shellcheck source=lib/python.sh
 source "${ROOT}/scripts/lib/python.sh"
+# shellcheck source=lib/agent-registry.sh
+source "${ROOT}/scripts/lib/agent-registry.sh"
 
 log() { printf '==> %s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
@@ -171,21 +173,8 @@ if [[ "$enabled" -eq 1 ]]; then
       warn "Buzz profile '${name}' not found at ${profile_dir} — create with: make agent-create NAME=${name} WITH=buzz"
       continue
     fi
-    if [[ -f data/hermes/agents/registry.json ]]; then
-      if ! NAME="$name" stack_python --env NAME - <<'PY'
-import json, os, sys
-from pathlib import Path
-name = os.environ["NAME"]
-try:
-    data = json.loads(Path("data/hermes/agents/registry.json").read_text())
-except Exception:
-    sys.exit(1)
-for a in data.get("agents", []):
-    if isinstance(a, dict) and a.get("name") == name:
-        sys.exit(0)
-sys.exit(1)
-PY
-      then
+    if [[ -f "$AGENT_REGISTRY_FILE" ]]; then
+      if ! agent_registry_has "$name"; then
         warn "Buzz profile '${name}' is not in data/hermes/agents/registry.json — make agent-create NAME=${name} (does not auto-create)"
       fi
     fi

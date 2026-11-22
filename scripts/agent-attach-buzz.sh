@@ -28,6 +28,7 @@ is_hex64() {
 
 # shellcheck source=lib/agent-registry.sh
 source "${ROOT}/scripts/lib/agent-registry.sh"
+require_python3
 
 resolve_channel_id() {
   local name_or_id="$1"

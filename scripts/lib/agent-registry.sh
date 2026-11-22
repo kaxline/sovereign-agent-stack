@@ -4,12 +4,15 @@
 #
 # Expects ROOT to be set to the assistant repo root.
 # Uses: log, warn (optional — falls back to printf).
+#
+# agent_registry_has runs through stack_python, so it needs no host python3.
+# The functions that write the registry or SOUL files run host python3; callers
+# of those run require_python3 first.
 
 : "${ROOT:?ROOT must be set before sourcing agent-registry.sh}"
 
 # shellcheck source=lib/python.sh
 source "${ROOT}/scripts/lib/python.sh"
-require_python3
 
 AGENT_REGISTRY_DIR="${ROOT}/data/hermes/agents"
 AGENT_REGISTRY_FILE="${AGENT_REGISTRY_DIR}/registry.json"
@@ -229,7 +232,7 @@ PY
 agent_registry_has() {
   local name="$1"
   [[ -f "$AGENT_REGISTRY_FILE" ]] || return 1
-  NAME="$name" REGISTRY="$AGENT_REGISTRY_FILE" python3 - <<'PY'
+  NAME="$name" REGISTRY="$AGENT_REGISTRY_FILE" stack_python --env NAME --env REGISTRY - <<'PY'
 import json, os, sys
 from pathlib import Path
 path = Path(os.environ["REGISTRY"])
