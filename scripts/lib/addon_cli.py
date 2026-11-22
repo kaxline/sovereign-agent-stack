@@ -23,11 +23,12 @@ runs in the Hermes image through stack_python, so the host needs no python3.
         BOOL}. An existing SLUG without --replace exits 2 with "slug: exists".
     remove-instance SID SLUG
         Deletes the instance's file and secrets.
-    check-instance SID SLUG [--slug-only]
+    check-instance SID SLUG [--slug-only] [--kind]
         Checks SLUG and the JSON object on stdin against instances.settings
         (unknown or ill-typed settings, a missing required one) without
         writing anything, then prints `exists` when SLUG already has an
         instance, else `new`. --slug-only reads no stdin and checks only SLUG.
+        With --kind an existing endpoint instance prints `endpoint`.
     plan-enable SID
         Exits 3 if a required setting is missing. Prints {"builtin": FLAG,
         "flags": {...}, "services": [...]}: builtin.flag at "1" plus the stored value of each
@@ -326,8 +327,13 @@ def cmd_check_instance(args) -> None:
     slug = store.slug(args.slug)
     if not args.slug_only:
         store.check_instance(manifest, _stdin_object())
-    exists = slug in store.slugs(store.addon_dir(args.data_root, manifest))
-    print("exists" if exists else "new")
+    d = store.addon_dir(args.data_root, manifest)
+    if slug not in store.slugs(d):
+        print("new")
+    elif args.kind and "endpoint" in store._instance_values(d, slug):
+        print("endpoint")
+    else:
+        print("exists")
 
 
 COMPOSE_FILE = Path(__file__).resolve().parent.parent.parent / "docker-compose.yml"
@@ -831,7 +837,9 @@ def _redactor(addons_dir: Path, sid: str, path: str):
     forms = set()
     for name, value in values.items():
         spec = schema.get(name)
-        if isinstance(spec, dict) and spec.get("type") == "secret" and isinstance(value, str) and value:
+        # connect --endpoint stages its credentials as ro and rw.
+        secret = (spec.get("type") == "secret") if isinstance(spec, dict) else name in ("ro", "rw")
+        if secret and isinstance(value, str) and value:
             forms.update({value, json.dumps(value)[1:-1], json.dumps(value, ensure_ascii=False)[1:-1]})
     ordered = sorted(forms, key=len, reverse=True)
 
@@ -978,6 +986,7 @@ def main(argv: list[str]) -> int:
     s.add_argument("sid")
     s.add_argument("slug")
     s.add_argument("--slug-only", action="store_true")
+    s.add_argument("--kind", action="store_true")
     s.set_defaults(func=cmd_check_instance)
     s = sub.add_parser("redact")
     s.add_argument("sid")

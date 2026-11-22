@@ -12,6 +12,7 @@
 #   scripts/addon.sh enable <short-id> [--reinit] [--json]
 #   scripts/addon.sh disable <short-id> [--purge] [--json]
 #   scripts/addon.sh connect <short-id> --instance <slug> [--force] [--json] < values.json
+#   scripts/addon.sh connect <short-id> --instance <slug> --endpoint <url> [--force] [--json] < credentials.json
 #   scripts/addon.sh disconnect <short-id> --instance <slug> [--json]
 #   scripts/addon.sh remove <short-id> --delete-data [--json]
 #   scripts/addon.sh run <short-id> <command> [--instance <slug>]
@@ -68,6 +69,19 @@
 # hook's output is redacted before it is logged or relayed: each secret value
 # from the staged values becomes [redacted]. An existing slug on connect is
 # exists (without --force), an unknown one on disconnect not_found, both exit 2.
+#
+# connect --endpoint registers a share that another stack serves at <url> (an
+# add-on with a `share` block). stdin is {"access": "read"|"write", "trust":
+# "trusted"|"untrusted", "ro": KEY, "rw": KEY}; access defaults to read, trust
+# to trusted, and rw is needed only for write. The instance holds the endpoint,
+# access and trust; the keys go to data/addons/<short-id>/secrets. Step register
+# writes it, step reload reloads Hermes; there is no check step and the
+# add-on's connect hook never runs. Its MCP URL is <url> plus the query of the
+# manifest's mcp.instances.url, and it registers whether or not the add-on is
+# enabled. --force replaces an existing slug (done has "replaced":true); a
+# refused endpoint, an add-on without `share` and a missing key are bad_input.
+# disconnect of an endpoint instance skips the add-on's disconnect hook and
+# removes the instance and its keys; disable leaves it registered.
 #
 # An init or connect hook's done line may carry "result", an object. Its
 # string, finite number and bool values under keys of a letter followed by up
@@ -976,19 +990,45 @@ cmd_remove() {
 # and INSTANCE_FORCE=1 for --force, which only connect takes.
 INSTANCE_SLUG=""
 INSTANCE_FORCE=0
+INSTANCE_ENDPOINT=""
+INSTANCE_ENDPOINT_SET=0
 instance_args() {
   local cmd="$1"
   shift
   INSTANCE_SLUG=""
   INSTANCE_FORCE=0
+  INSTANCE_ENDPOINT=""
+  INSTANCE_ENDPOINT_SET=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --instance) [[ $# -ge 2 && -n "$2" ]] || usage_error "--instance needs a slug"; INSTANCE_SLUG="$2"; shift 2 ;;
       --force) [[ "$cmd" == connect ]] || usage_error "${cmd}: unknown option $1"; INSTANCE_FORCE=1; shift ;;
+      --endpoint)
+        [[ "$cmd" == connect && $# -ge 2 ]] || usage_error "${cmd}: unknown option $1"
+        INSTANCE_ENDPOINT="$2"; INSTANCE_ENDPOINT_SET=1; shift 2 ;;
       *) usage_error "${cmd}: unknown option $1" ;;
     esac
   done
   [[ -n "$INSTANCE_SLUG" ]] || usage_error "${cmd} needs --instance <slug>"
+}
+
+# connect_endpoint SID SLUG: connect --endpoint, after the lock and the staging.
+# No check step: the add-on's connect hook belongs to its own connect.
+connect_endpoint() {
+  local sid="$1" slug="$2" replace=0 replace_args=()
+  cli_checked "" check-instance "$sid" "$slug" --slug-only
+  if [[ "$CLI_OUT" != new ]]; then
+    if [[ "$INSTANCE_FORCE" != 1 ]]; then
+      EV_EXIT=2
+      ev_fail exists "" "${sid} already has an instance ${slug}" ""
+    fi
+    replace_args=(--replace)
+  fi
+  CLI_IN="$STAGED" cli_step register connect-endpoint "$sid" "$slug" --endpoint "$INSTANCE_ENDPOINT" \
+    ${replace_args[@]+"${replace_args[@]}"}
+  case "$CLI_OUT" in *'"replaced":true'*) replace=1 ;; esac
+  reload_step
+  ev_done "$sid" connect "" "" "" "" "" "$replace"
 }
 
 cmd_connect() {
@@ -1001,6 +1041,10 @@ cmd_connect() {
   stage_stdin
   EV_REDACT="$STAGED"
   EV_REDACT_SID="$sid"
+  if [[ "$INSTANCE_ENDPOINT_SET" == 1 ]]; then
+    connect_endpoint "$sid" "$slug"
+    return 0
+  fi
   CLI_IN="$STAGED" cli_checked "" check-instance "$sid" "$slug"
   if [[ "$CLI_OUT" != new ]]; then
     if [[ "$INSTANCE_FORCE" != 1 ]]; then
@@ -1027,12 +1071,16 @@ cmd_disconnect() {
   instance_args disconnect "$@"
   slug="$INSTANCE_SLUG"
   addon_lock
-  cli_checked "" check-instance "$sid" "$slug" --slug-only
-  if [[ "$CLI_OUT" != exists ]]; then
+  cli_checked "" check-instance "$sid" "$slug" --slug-only --kind
+  if [[ "$CLI_OUT" == new ]]; then
     EV_EXIT=2
     ev_fail not_found "" "${sid} has no instance ${slug}" ""
   fi
-  run_hook check "$sid" disconnect --slug "$slug"
+  # An endpoint instance never ran the add-on's connect hook, so its
+  # disconnect hook has nothing to undo.
+  if [[ "$CLI_OUT" != endpoint ]]; then
+    run_hook check "$sid" disconnect --slug "$slug"
+  fi
   cli_step register remove-instance "$sid" "$slug"
   reload_step
   ev_done "$sid" disconnect "" "" "" "$HOOK_MESSAGE"

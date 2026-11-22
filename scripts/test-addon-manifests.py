@@ -2062,6 +2062,33 @@ with tempfile.TemporaryDirectory() as tmp:
     check("bitwarden: missing() is empty with no accounts",
           addon_store.missing(bw, Path(tmp) / "none") == [])
 
+# Endpoint instances (CR 0044 R3): the endpoint plus the template's query.
+check("endpoint_url keeps the template's query",
+      am.endpoint_url("http://h:1", "{setting:url}/mcp?mode=meta") == "http://h:1?mode=meta")
+check("endpoint_url drops a trailing slash and appends no path",
+      am.endpoint_url("http://h:1/", "http://actual-mcp-{access}:3000/{slug}/mcp") == "http://h:1")
+with tempfile.TemporaryDirectory() as tmp:
+    data = tw_store(Path(tmp), {"main": {"url": "http://twenty-server:3000", "access": "write",
+                                         "local": True}})
+    # The store writes under <root>/addons/twenty; the plan reads <data>/twenty.
+    addon_store.apply_endpoint_instance(TW, Path(tmp) / "root", "shared-a",
+                                        "http://host.docker.internal:45123", "read", "untrusted",
+                                        {"ro": "ro-fake-shared"}, False)
+    shutil.copytree(Path(tmp) / "root" / "addons" / "twenty", data / "twenty", dirs_exist_ok=True)
+    ep_url = "http://host.docker.internal:45123?mode=meta"
+    for label, env in (("the add-on on, TWENTY_LOCAL_ENABLED unset", {"TWENTY_MCP_ENABLED": "1"}),
+                       ("the add-on off", {})):
+        rows = plan_rows(data, "default", env)
+        e = rows.get("crm-shared-a", [])
+        check(f"endpoint instance is on at its endpoint's URL with {label}",
+              e[2:6] == ["1", ep_url, "CRM_SHARED_A_KEY", str(data / "twenty" / "secrets" / "shared-a.key_ro")],
+              str(e))
+    check("with the add-on off an ordinary instance is still off, reason flag",
+          rows["crm-main"][2] == "0" and rows["crm-main"][9].startswith("flag "), str(rows.get("crm-main")))
+    rows = plan_rows(data, "api-server", {})
+    check("an endpoint instance registers on api-server at ro",
+          rows.get("crm-shared-a", [""] * 3)[2] == "1", str(rows.get("crm-shared-a")))
+
 if failures:
     print(f"{failures} failed")
     sys.exit(1)

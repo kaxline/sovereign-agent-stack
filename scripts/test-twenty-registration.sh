@@ -190,6 +190,29 @@ run ""
 case "$logs" in *"Skipping Twenty CRM MCP registration (TWENTY_MCP_ENABLED is off)"*) ;; *) fail "disabled: logged ($logs)" ;; esac
 [ -z "$(addon_instance_pin_args "")" ] || fail "disabled: nothing to pin"
 
+# Endpoint instances (CR 0044 R3) register at their endpoint plus the template's
+# query, with Twenty's gate unset, and whether or not the add-on is on.
+instance shared-a '{"endpoint": "http://host.docker.internal:45123", "access": "read", "trust": "untrusted"}'
+key shared-a.key_ro ro-secret-shared
+EP="http://host.docker.internal:45123?mode=meta"
+WANT="write:default:crm-shared-a:${EP}:CRM_SHARED_A_KEY:"
+# The add-on off: only the endpoint instance is written and kept.
+run ""
+has "$WANT" || fail "add-on off: the endpoint instance is registered ($calls)"
+has "upsert:env:default:CRM_SHARED_A_KEY=ro-secret-shared;" || fail "add-on off: its key lands in the profile env ($calls)"
+has "reconcile:default:${SPEC} crm-shared-a;" || fail "add-on off: reconcile keeps crm-shared-a only ($calls)"
+if has "crm-main:"; then fail "add-on off: an ordinary instance stays unregistered ($calls)"; fi
+# The add-on on, TWENTY_LOCAL_ENABLED unset: the gate does not apply to it.
+TWENTY_MCP_ENABLED=1
+unset TWENTY_LOCAL_ENABLED
+run ""
+has "$WANT" || fail "gate unset: the endpoint instance is registered ($calls)"
+has "reconcile:default:${SPEC} crm-remote crm-shared-a;" || fail "gate unset: reconcile keeps remote and shared-a ($calls)"
+if logged "WARNING.*crm-shared-a"; then fail "no warning for the endpoint instance ($logs)"; fi
+rm "${store}/instances/shared-a.json" "${store}/secrets/shared-a.key_ro"
+TWENTY_MCP_ENABLED=0
+export TWENTY_LOCAL_ENABLED=1
+
 # No store (nothing connected) with the flag on: drop ours and warn.
 TWENTY_MCP_ENABLED=1
 ADDON_DATA_DIR="$tmp/none"

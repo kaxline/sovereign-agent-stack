@@ -19,6 +19,12 @@ the stack under another app.
   `addon.sh list --json` includes it. Twenty declares one with `read` and
   `write`. Manifests may no longer declare an instance setting named `trust`
   or `endpoint`; no built-in add-on did. See `addons/README.md`.
+- `addon.sh connect <short-id> --instance <slug> --endpoint <url>` registers an
+  instance of an add-on with a `share` block by its MCP endpoint, without the
+  add-on's connect hook or check. It replaces Boundary CR 0025 R2 (`crm.sh add
+  --no-check`), which won't be built. An endpoint instance registers while the
+  add-on is off, and `disconnect` skips the add-on's disconnect hook for it.
+  (Boundary CR 0044 R3)
 
 ## v0.3.18 — 2026-11-21
 

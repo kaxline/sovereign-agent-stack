@@ -792,7 +792,8 @@ a changelog entry.
 | `enable <short-id> [--reinit] [--json]` | Checks required settings, sets the add-on's flag and gate flags in `.env`, syncs compose profiles, starts the services whose gate is on, runs the `init` hook once, reloads Hermes |
 | `disable <short-id> [--purge] [--json]` | Sets the flag and every gate flag to `0`, stops the services, reloads Hermes. A gate flag that is on in `.env` while its `bool` setting isn't stored (set by hand) gets the setting stored as `true` first, so the next `enable` turns it back on. `--purge` then does what `remove --delete-data` does, under the same lock |
 | `connect <short-id> --instance <slug> [--force] [--json] < values.json` | Checks the values, runs the manifest's `instances.connect` hook, stores the instance, reloads Hermes. `--force` replaces an existing instance; see [Replacing an instance](#replacing-an-instance) |
-| `disconnect <short-id> --instance <slug> [--json]` | Runs `instances.disconnect`, removes the instance, reloads Hermes |
+| `connect <short-id> --instance <slug> --endpoint <url> [--force] [--json] < credentials.json` | Registers an instance of an add-on with a `share` block by the MCP endpoint another stack serves it at, without the `connect` hook or its check. See [Endpoint instances](#endpoint-instances) |
+| `disconnect <short-id> --instance <slug> [--json]` | Runs `instances.disconnect` (not for an endpoint instance), removes the instance, reloads Hermes |
 | `remove <short-id> --delete-data [--json]` | Deletes the add-on's containers, compose volumes and data. Refused while the add-on is enabled |
 | `run <short-id> <command> [--instance <slug>]` | Runs a manifest `commands` entry in its service with `docker compose run --rm --no-deps -T`, after building the service as described below the table |
 
@@ -1105,6 +1106,31 @@ defaults, and stored secrets left out are deleted. If the hook fails, the old
 instance stays as it was. If the reload fails after the rewrite, the new
 values stay. The `done` line has `"replaced":true`. On an unknown slug,
 `--force` is a plain `connect` and the hook gets no `--replace`.
+
+### Endpoint instances
+
+`connect --endpoint <url>` registers a share that another stack serves, such as
+a Twenty workspace a Circle member exposes through a gateway listener. The
+add-on needs a `share` block. stdin is a JSON object with `access` (`read`
+or `write`, default `read`), `trust` (`trusted` or `untrusted`, default
+`trusted`), `ro` (the read-only key) and `rw` (the read/write key, required for
+`write`). Steps are `register` and `reload`; the add-on's `connect` hook and its
+`check` step never run. The instance file holds `endpoint`, `access` and
+`trust`; the keys go to `secrets/<slug>.<name>` as `mcp.instances.auth.secret`
+names them. A bad endpoint (not http or https, a user name or password, a line
+break), a missing key and an add-on without `share` are `bad_input`. An
+existing slug is `exists`; `--force` replaces it and the `done` line has
+`"replaced":true`.
+
+The instance's MCP URL is the endpoint plus the query string of
+`mcp.instances.url`; no path is appended. Twenty's `{setting:url}/mcp?mode=meta`
+with `http://host.docker.internal:45123` gives
+`http://host.docker.internal:45123?mode=meta`. The instance skips the settings
+schema and the add-on's gate flags, and registers whether or not the add-on is
+enabled: `disable` leaves it registered, `disconnect` removes it. `disconnect`
+does not run `instances.disconnect`, since that belongs to the add-on's own
+`connect`. `configure --instance` on an endpoint instance accepts only `trust`
+and `bind`.
 
 ### Removing data
 

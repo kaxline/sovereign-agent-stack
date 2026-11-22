@@ -1728,6 +1728,14 @@ def _instance_url(template: str, values: dict, schema: dict, level: str, slug: s
     return _fill_url(template, values, schema).replace("{access}", level).replace("{slug}", slug)
 
 
+def endpoint_url(endpoint: str, template: str) -> str:
+    """The URL of an endpoint instance: ENDPOINT without trailing slashes plus
+    the ?query of the add-on's url TEMPLATE, if any. The template's path,
+    {access} and {slug} are not used; the other stack's listener owns them."""
+    query = template.split("?", 1)[1] if "?" in template else ""
+    return endpoint.rstrip("/") + (f"?{query}" if query else "")
+
+
 def bind_problem(bind, profiles: dict, reads: bool) -> str | None:
     """Why `bind` (an instance's per-profile binding) is refused, or None.
     It maps profiles named in mcp.profiles to ro or rw; rw is refused for the
@@ -1852,7 +1860,11 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
                          f"{sid_dir}/{slug}")
 
                 values = _instance_values(store, slug, schema)
-                if not flag_on:
+                # An endpoint instance registers whether or not the add-on is
+                # enabled; disconnect is its off switch.
+                endpoint = values.get("endpoint") if values is not None else None
+                is_endpoint = isinstance(endpoint, str)
+                if not flag_on and not is_endpoint:
                     line("0", reason=f"flag {flag} is off")
                     continue
                 if values is None:
@@ -1881,14 +1893,17 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
                         continue
                     if access == "read":
                         use = "ro"
-                url = _instance_url(inst["url"], values, schema, use, slug)
+                if is_endpoint:
+                    url = endpoint_url(endpoint, inst["url"])
+                else:
+                    url = _instance_url(inst["url"], values, schema, use, slug)
                 if not re.match(r"^https?://[^\s|]+\Z", url):
                     line("0", reason="url must start with http:// or https://")
                     continue
                 if "@" in url.split("://", 1)[1].split("/", 1)[0]:
                     line("0", reason="url must not carry a user name or password")
                     continue
-                if gate:
+                if gate and not is_endpoint:
                     gated = values.get(gate["setting"])
                     if not isinstance(gated, bool):
                         line("0", url=url, reason=f"gate {gate['setting']} must be true or false")

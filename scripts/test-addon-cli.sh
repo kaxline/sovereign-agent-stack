@@ -1701,6 +1701,52 @@ else
   bad "remove n8n removes the three containers, then each volume"; cat "$STUB_LOG"
 fi
 if logged gptr-mcp; then bad "remove n8n never names gptr-mcp"; else ok "remove n8n never names gptr-mcp"; fi
+# connect --endpoint (CR 0044 R3), against the real Twenty manifest. A crm.sh
+# stub logs every call: neither connect nor disconnect of an endpoint instance
+# may run it.
+cat > "${root}/scripts/crm.sh" <<'CRM_EOF'
+#!/bin/sh
+printf 'crm.sh %s\n' "$*" >> "${STUB_LOG}"
+CRM_EOF
+chmod +x "${root}/scripts/crm.sh"
+TW_STORE="${root}/data/addons/twenty"
+EP_JSON='{"access":"read","trust":"untrusted","ro":"ro-endpoint-secret"}'
+: > "$STUB_LOG"
+addon_json_in "$EP_JSON" connect twenty --instance shared-a --endpoint http://host.docker.internal:45123 --json
+expect_rc "connect --endpoint" 0
+r=0; json_ok "$out" "done" 'steps == [("register","running"),("register","done"),("reload","running"),("reload","done")] and last == {"phase":"done","id":"twenty","action":"connect","restart":[],"mcp":[]}' || r=1
+check "connect --endpoint prints register and reload, no check, then done" "$r"
+if python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])) == {"endpoint":"http://host.docker.internal:45123","access":"read","trust":"untrusted"} else 1)' "${TW_STORE}/instances/shared-a.json" \
+  && [ -f "${TW_STORE}/secrets/shared-a.key_ro" ]; then ok "connect --endpoint writes the instance and its key"; else bad "connect --endpoint writes the instance and its key"; fi
+if logged crm.sh; then bad "connect --endpoint never runs crm.sh"; cat "$STUB_LOG"; else ok "connect --endpoint never runs crm.sh"; fi
+if grep -q ro-endpoint-secret "$out" "$err"; then bad "connect --endpoint prints no key value"; else ok "connect --endpoint prints no key value"; fi
+no_staging "connect --endpoint"
+addon_json_in "$EP_JSON" connect twenty --instance shared-a --endpoint http://host.docker.internal:45123 --json
+expect_rc "connect --endpoint over an existing slug exits 2" 2
+r=0; json_ok "$out" error 'last["error"] == "exists"' || r=1
+check "connect --endpoint over an existing slug is exists" "$r"
+addon_json_in "$EP_JSON" connect twenty --instance shared-a --endpoint http://host.docker.internal:45124 --force --json
+expect_rc "connect --endpoint --force" 0
+r=0; json_ok "$out" "done" 'last["replaced"] is True' || r=1
+check "connect --endpoint --force's done line has replaced" "$r"
+if grep -q 45124 "${TW_STORE}/instances/shared-a.json"; then ok "connect --endpoint --force rewrites the endpoint"; else bad "connect --endpoint --force rewrites the endpoint"; fi
+addon_json_in "$EP_JSON" connect gptr --instance shared-a --endpoint http://host.docker.internal:45123 --json
+expect_rc "connect --endpoint on an add-on without share exits 2" 2
+r=0; json_ok "$out" error 'last["error"] == "bad_input"' || r=1
+check "connect --endpoint on an add-on without share is bad_input" "$r"
+addon_json_in "$EP_JSON" connect twenty --instance shared-b --endpoint 'http://u:p@h:1' --json
+expect_rc "connect --endpoint with a user name exits 2" 2
+r=0; json_ok "$out" error 'last["error"] == "bad_input"' || r=1
+check "connect --endpoint with a user name is bad_input" "$r"
+if [ ! -e "${TW_STORE}/instances/shared-b.json" ]; then ok "a refused endpoint writes no instance"; else bad "a refused endpoint writes no instance"; fi
+: > "$STUB_LOG"
+addon_json disconnect twenty --instance shared-a --json
+expect_rc "disconnect an endpoint instance" 0
+r=0; json_ok "$out" "done" 'steps == [("register","running"),("register","done"),("reload","running"),("reload","done")] and last["action"] == "disconnect"' || r=1
+check "disconnect of an endpoint instance prints register and reload, no check" "$r"
+if [ ! -e "${TW_STORE}/instances/shared-a.json" ] && [ -z "$(find "${TW_STORE}" -path '*/secrets/shared-a.*' 2> /dev/null)" ]; then ok "disconnect removes the endpoint instance and its keys"; else bad "disconnect removes the endpoint instance and its keys"; fi
+if logged crm.sh; then bad "disconnect of an endpoint instance skips crm.sh disconnect"; cat "$STUB_LOG"; else ok "disconnect of an endpoint instance skips crm.sh disconnect"; fi
+
 export ADDONS_DIR="$saved_addons_dir"
 cp "${REPO}/scripts/fixtures/addons-cli/docker-compose.yml" "${root}/docker-compose.yml"
 
