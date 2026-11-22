@@ -101,7 +101,8 @@ def main() -> None:
             f"add printed {out}",
         )
         checks.expect(host.is_dir(), "add made no folder")
-        checks.expect(oct(host.stat().st_mode & 0o7777) == "0o2775", f"folder mode {oct(host.stat().st_mode)}")
+        want_mode = 0o2775 if sys.platform.startswith("linux") else 0o775
+        checks.expect(host.stat().st_mode & 0o7777 == want_mode, f"folder mode {oct(host.stat().st_mode)}")
         reg = json.loads((root / "data" / "coding-roots" / "roots.json").read_text())
         checks.expect(
             [(r["id"], r["containerPath"], r["hostPath"]) for r in reg["roots"]] == [(UUID, CPATH, str(host))],

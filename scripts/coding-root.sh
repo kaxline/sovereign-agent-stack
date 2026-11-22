@@ -315,7 +315,11 @@ make_folder() {
   if [[ "$HOST_OS" == Linux && "$(id -g)" != "$gid" ]]; then
     chgrp "$gid" "$dir" || jl_fail command_failed "" "cannot give $dir to group HERMES_GID=${gid}"
   fi
-  chmod 2775 "$dir" || jl_fail command_failed "" "cannot set the mode of $dir"
+  # setgid keeps new files in HERMES_GID on Linux. BSD does that anyway, and
+  # macOS refuses it when the folder inherited a group the caller isn't in.
+  local mode=0775
+  [[ "$HOST_OS" == Linux ]] && mode=2775
+  chmod "$mode" "$dir" || jl_fail command_failed "" "cannot set the mode of $dir"
 }
 
 cmd_add_synced() {
