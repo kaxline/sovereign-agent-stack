@@ -590,7 +590,10 @@ def _role_id(tw: Twenty, access: str, kind: str) -> str:
     for role in roles if isinstance(roles, list) else []:
         if isinstance(role, dict) and role.get("label") == label and role.get("id"):
             return role["id"]
-    return _stage(ensure_roles, tw, access, role=True)[kind]
+    created = _stage(ensure_roles, tw, access, role=True)
+    # As crm init does: the read-only role also needs its per-object denials.
+    _stage(deny_writes_per_object, tw, access, created["ro"], role=True)
+    return created[kind]
 
 
 def _revoke(tw: Twenty, access: str, key_id: str) -> None:

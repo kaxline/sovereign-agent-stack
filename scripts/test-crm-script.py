@@ -553,6 +553,21 @@ class CrmKey(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(self.stub.ops.count("createOneRole"), 2)
 
+    def test_create_denies_writes_per_object_when_it_makes_the_roles(self):
+        self.stub.roles.clear()
+        self.stub.upserts.clear()
+        proc = self.key("create", "--name", "Ada", "--access", "read")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(len(self.stub.upserts), 1)
+        ro = next(r for r in self.stub.roles if r["label"] == "Hermes read-only")
+        self.assertEqual(self.stub.upserts[0]["roleId"], ro["id"])
+
+    def test_create_leaves_existing_roles_alone(self):
+        self.stub.upserts.clear()
+        proc = self.key("create", "--name", "Ada", "--access", "read")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.stub.upserts, [])
+
     def test_create_when_twenty_refuses_the_role_is_no_role(self):
         self.stub.roles.clear()
         self.stub.refuse["createOneRole"] = "Role creation refused"
