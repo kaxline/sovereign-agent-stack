@@ -109,6 +109,7 @@ import vw_register  # noqa: E402
 from broker.accounts import (  # noqa: E402
     ID_RE, LOCAL_FILE, LOCAL_SLUG, Account, AccountError, load_account, read_client_id,
 )
+from broker.atomic import write_atomic  # noqa: E402
 from broker.bwcli import BwError, classify, run_bw, sanitize_item  # noqa: E402
 from broker.vault import fill_origins  # noqa: E402
 
@@ -555,21 +556,10 @@ class Run:
             data["scope"] = scope
             st = path.stat()
             # The add-on store's own temp-file pattern and mode (scripts/lib/addon_store.py _write).
-            fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-            owner_note = False
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    f.write(json.dumps(data, indent=2) + "\n")
-                    if (st.st_uid, st.st_gid) != (os.getuid(), os.getgid()):
-                        try:
-                            os.fchown(f.fileno(), st.st_uid, st.st_gid)
-                        except PermissionError:
-                            owner_note = True
-                os.chmod(tmp, 0o644)
-                os.replace(tmp, path)
-            except BaseException:
-                os.unlink(tmp)
-                raise
+            owner = (st.st_uid, st.st_gid)
+            owner_note = not write_atomic(
+                path, json.dumps(data, indent=2) + "\n", 0o644, suffix=".tmp",
+                owner=None if owner == (os.getuid(), os.getgid()) else owner)
         except (OSError, ValueError):
             print(f"Could not update {path.name}; {fix}")
             return
@@ -709,19 +699,7 @@ def ask_password(bw: UserBw, email: str) -> list[str]:
 
 def _write_secret(path: Path, value: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(value + "\n")
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, path)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    write_atomic(path, value + "\n")
 
 
 def make_admin_token(dir: Path, rotate: bool = False) -> str:

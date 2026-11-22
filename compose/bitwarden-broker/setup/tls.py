@@ -16,8 +16,9 @@ all four files.
 from __future__ import annotations
 
 import datetime
-import os
 from pathlib import Path
+
+from broker.atomic import write_atomic
 
 LOCAL_NAME = "vaultwarden.vault.internal"
 CA_DAYS = 3650
@@ -32,19 +33,7 @@ class TlsError(Exception):
 
 def _write(path: Path, data: bytes, mode: int) -> None:
     """Write ``data`` to ``path`` through a temporary file in the same folder, with ``mode``."""
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-        os.chmod(tmp, mode)
-        os.replace(tmp, path)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    write_atomic(path, data, mode)
 
 
 def _pair(dir: Path, stem: str, rotate: bool) -> bool:
