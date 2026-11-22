@@ -2106,9 +2106,31 @@ with tempfile.TemporaryDirectory() as tmp:
           plan_rows(data, "default", {"TWENTY_MCP_ENABLED": "1", "TWENTY_LOCAL_ENABLED": "1"})["crm-main"][14] == "untrusted")
     check("with the add-on off an ordinary instance is still off, reason flag",
           rows["crm-main"][2] == "0" and rows["crm-main"][9].startswith("flag "), str(rows.get("crm-main")))
+    (data / "twenty" / "instances" / "shared-a.json").write_text(json.dumps(
+        {"endpoint": "http://host.docker.internal:45123", "access": "read", "trust": "untrusted"}))
     rows = plan_rows(data, "api-server", {})
-    check("an endpoint instance registers on api-server at ro",
-          rows.get("crm-shared-a", [""] * 3)[2] == "1", str(rows.get("crm-shared-a")))
+    e = rows.get("crm-shared-a", [""] * 10)
+    check("an endpoint instance is off on api-server with a profile reason",
+          e[2] == "0" and "profile" in e[9] and "api-server" in e[9], str(e))
+    rows = plan_rows(data, "api-server", TW_ON)
+    check("an ordinary instance is unchanged on api-server",
+          rows.get("crm-main", [""] * 3)[2] == "1", str(rows.get("crm-main")))
+    (data / "twenty" / "instances" / "shared-a.json").write_text(json.dumps(
+        {"endpoint": "http://host.docker.internal:45123", "access": "read", "trust": "untrusted",
+         "bind": {"api-server": "ro"}}))
+    check("an endpoint instance whose bind names api-server is on there at ro",
+          plan_rows(data, "api-server", {})["crm-shared-a"][2] == "1")
+    (data / "twenty" / "instances" / "shared-a.json").write_text(json.dumps(
+        {"endpoint": "http://host.docker.internal:45123", "access": "write", "trust": "untrusted",
+         "bind": {"api-server": "rw"}}))
+    e = plan_rows(data, "api-server", {})["crm-shared-a"]
+    check("a bind of api-server at rw keeps the bind refusal", e[2] == "0" and "ro" in e[9], str(e))
+    (data / "twenty" / "instances" / "shared-a.json").write_text(json.dumps(
+        {"endpoint": "http://host.docker.internal:45123", "access": "read"}))
+    for flag_env, label in ((TW_ON, "on"), ({}, "off")):
+        got = am.cron_fence(ROOT / "addons", flag_env, data)
+        check(f"cron_fence names the endpoint instance with the add-on flag {label}",
+              "crm-shared-a" in got[0] and "crm-main" not in got[0], str(got))
 
 # client_url and instances_view (CR 0044 R2).
 for label, url, published, want in (

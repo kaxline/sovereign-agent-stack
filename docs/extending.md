@@ -1134,6 +1134,12 @@ does not run `instances.disconnect`, since that belongs to the add-on's own
 `connect`. `configure --instance` on an endpoint instance accepts only `trust`
 and `bind`.
 
+A shared instance never reaches cron or the unattended profile (`api-server`).
+`cron_fence` fences the MCP name of every endpoint instance whatever
+`permissions.cron` and the add-on's flag say, and `instances-plan` turns the
+instance off on `api-server` unless its stored `bind` names that profile (and
+then only at `ro`, as for any bind).
+
 ### Removing data
 
 `remove --delete-data` refuses (`bad_input`) while the add-on is enabled.

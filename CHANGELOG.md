@@ -48,6 +48,8 @@ the stack under another app.
   add-on's connect hook or check. It replaces Boundary CR 0025 R2 (`crm.sh add
   --no-check`), which won't be built. An endpoint instance registers while the
   add-on is off, and `disconnect` skips the add-on's disconnect hook for it.
+  A shared instance never reaches cron or the `api-server` profile unless its
+  `bind` names `api-server`.
   (Boundary CR 0044 R3)
 
 ## v0.3.18 — 2026-11-21

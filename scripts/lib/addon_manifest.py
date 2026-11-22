@@ -1507,6 +1507,17 @@ def cron_fence(addons_dir: Path, environ=os.environ,
                                  for s in _store_slugs(Path(data_dir) / path.parent.name)[0])
             continue
         cron = manifest.get("permissions", {}).get("cron")
+        if data_dir is not None:
+            # A shared (endpoint) instance never reaches cron, whatever the
+            # add-on's cron setting and flag say.
+            for mcp in mcp_entries(manifest):
+                if "instances" not in mcp:
+                    continue
+                store = Path(data_dir) / path.parent.name
+                for s in _store_slugs(store)[0]:
+                    stored = _instance_values(store, s, manifest["instances"]["settings"])
+                    if stored is not None and isinstance(stored.get("endpoint"), str):
+                        names.append(mcp["instances"]["name"].replace("{slug}", s))
         if cron is True:
             continue
         for mcp in mcp_entries(manifest):
@@ -1876,6 +1887,11 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
                     continue
                 if values is None:
                     line("0", reason=f"file instances/{slug}.json is not a JSON object")
+                    continue
+                if (is_endpoint and profile == UNATTENDED_PROFILE
+                        and not (isinstance(values.get("bind"), dict) and profile in values["bind"])):
+                    line("0", reason=f"profile {profile} is not served by a shared instance "
+                                     "unless its bind names it")
                     continue
                 if "bind" in values:
                     problem = bind_problem(values["bind"], mcp["profiles"], reads)
