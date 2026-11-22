@@ -10,6 +10,27 @@ the stack under another app.
 
 ### Changes
 
+- Project indexes refresh themselves (#43). A generated `INDEX.md` (one with
+  `.index-manifest.json` beside it) is rewritten by the WebUI brief prefill on
+  a turn in that project when all its sources are inside the project, and by
+  the new `scripts/project-index-refresh.sh`, which `scripts/up.sh` runs
+  before each start. A client that starts the stack with `docker compose up`
+  directly can run that script (`--json` prints one object with `refreshed`,
+  `fresh`, `hand_written`, `failed`, and `error` when it couldn't run); it
+  always exits 0. An `INDEX.md` without a manifest is now treated as
+  hand-written: `make project-index` refuses to replace it (exit 3) unless
+  given `FORCE=1`, `make project-index-check` reports it as not checked with
+  exit 0, and nothing refreshes it. `make project-init` writes the first
+  index, and the template no longer ships `INDEX.md`. `make doctor` reports
+  project indexes in one line and warns only when an index can't be built.
+  New `scripts/project-index.py --refresh-all DIR` and `--check-all DIR`.
+- The project indexer no longer walks into `node_modules/`, or into the
+  `data/` folder of a checkout of this stack (`docker-compose.yml` beside
+  `data/hermes/`). A `sources.yaml` that names a whole stack checkout as an
+  extra source put Hermes state (cron output, logs, pastes) into `INDEX.md`,
+  with each file's first heading. Such an index loses those rows on its next
+  refresh.
+
 - Bitwarden local mode: the web vault is now `https://localhost:8222`,
   served by `vaultwarden-tls`, because the web vault bundled with
   Vaultwarden 1.37.5 refuses plain-HTTP servers, `localhost` included, and

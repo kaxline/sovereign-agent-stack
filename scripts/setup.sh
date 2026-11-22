@@ -622,7 +622,7 @@ required.
 | --- | --- |
 | `AGENTS.md` | Short always-on brief while this project is the WebUI workspace |
 | `sources.yaml` | Extra host directories to index (optional; default is this folder) |
-| `INDEX.md` | One-line map of source files — `make project-index PROJECT=my-project` |
+| `INDEX.md` | One-line map of source files; refreshes itself (`make project-index PROJECT=my-project` refreshes it now) |
 | Source notes | Put a `description:` field in YAML frontmatter for a better index |
 | `drafts/` / `applications/` / `artifacts/` | Generated output; skipped by the indexer |
 

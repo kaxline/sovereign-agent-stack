@@ -24,9 +24,10 @@ and tests. `scripts/test-no-host-python.sh`
 checks the first-run scripts for host `python3` and `node` calls, and runs the
 container path with them removed from `PATH`.
 
-`make doctor` uses the host's `python3` when it works, since its project-index
-checks walk source trees and are slow through bind mounts, and otherwise runs
-its Python checks in the pinned image. Other scripts still use the host's `python3`: `coding-root.sh` and
+`make doctor` and `scripts/project-index-refresh.sh` (which `scripts/up.sh`
+runs before each start) use the host's `python3` when it works, since the
+project-index checks walk source trees and are slow through bind mounts, and
+otherwise run in the pinned image. Other scripts still use the host's `python3`: `coding-root.sh` and
 `context-root.sh`, the mail and Messages tools, Buzz agent management, and
 the eval and corpus scripts.
 

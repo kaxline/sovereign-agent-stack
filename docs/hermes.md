@@ -742,7 +742,7 @@ make project-init PROJECT=my-project
 # optional extra host notes: edit sources.yaml, then
 # make context-root-add DIR=/absolute/path && docker compose up -d --force-recreate hermes-worker
 # (recreate hermes instead when HERMES_TERMINAL_BACKEND=local)
-make project-index PROJECT=my-project
+# INDEX.md refreshes itself on WebUI turns and on each start
 ```
 
 You can still reference a path in a prompt: `Using the notes in /opt/projects/my-project, draft ...`
