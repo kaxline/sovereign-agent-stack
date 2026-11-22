@@ -10,6 +10,9 @@ the stack under another app.
 
 ### Changes
 
+- Twenty's manifest `share` block names `crm.sh key create`, `revoke` and
+  `list` in `memberKeys` and sets `handout: true`, so a provider granting
+  access mints a key per person and level. (Boundary CR 0025 R1, R3)
 - `crm.sh key create --name N --access read|write`, `key revoke --id ID` and
   `key list --name N --json` mint, revoke and list one person's Twenty API key
   on the local instance (`--slug main`) or a hosted workspace (another slug,

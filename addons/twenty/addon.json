@@ -245,6 +245,23 @@
         "response": []
       }
     },
-    "handout": false
+    "memberKeys": {
+      "create": [
+        "scripts/crm.sh",
+        "key",
+        "create"
+      ],
+      "revoke": [
+        "scripts/crm.sh",
+        "key",
+        "revoke"
+      ],
+      "list": [
+        "scripts/crm.sh",
+        "key",
+        "list"
+      ]
+    },
+    "handout": true
   }
 }

@@ -1709,7 +1709,14 @@ check("twenty: share forwards POST and keeps mode",
       TW_SHARE.get("share", {}).get("forward") == {
           "methods": ["POST"], "path": "", "query": ["mode"],
           "headers": {"request": [], "response": []}}, str(TW_SHARE.get("share")))
-check("twenty: share has no handout yet", TW_SHARE.get("share", {}).get("handout") is False)
+check("twenty: share names the crm.sh key commands",
+      TW_SHARE.get("share", {}).get("memberKeys") == {
+          "create": ["scripts/crm.sh", "key", "create"],
+          "revoke": ["scripts/crm.sh", "key", "revoke"],
+          "list": ["scripts/crm.sh", "key", "list"]}, str(TW_SHARE.get("share")))
+check("twenty: share hands out per-person keys", TW_SHARE.get("share", {}).get("handout") is True)
+check("twenty: share keeps its key order",
+      list(TW_SHARE.get("share", {})) == ["levels", "forward", "memberKeys", "handout"])
 check("share_block gives Twenty's block", am.share_block(TW_SHARE) == TW_SHARE.get("share"))
 check("share_block is None for an add-on without share", am.share_block(BASE) is None)
 check("share_block is None for an invalid block",
