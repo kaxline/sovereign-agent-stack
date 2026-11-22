@@ -1155,6 +1155,9 @@ with tempfile.TemporaryDirectory() as tmp:
     got = am.cron_fence(addons, TW_ON, data)
     check("an instances add-on with cron false fences each instance's name",
           got[0] == ["crm-main", "crm-remote"], str(got))
+    check("an instances add-on with cron false fences each instance's URL",
+          {"http://twenty-server:3000/mcp?mode=meta",
+           "https://crm.example.com/mcp?mode=meta"} <= set(got[1]), str(got))
     fenced["permissions"]["sends"] = "maybe"
     (addons / "twenty" / "addon.json").write_text(am.canonical(fenced))
     got = am.cron_fence(addons, TW_ON, data)
@@ -1895,9 +1898,14 @@ with tempfile.TemporaryDirectory() as tmp:
     check("caldav: flag off turns every account off",
           rows["caldav-*"][2] == "0" and all(r[2] == "0" for r in rows.values()), str(rows))
     names, _urls = am.cron_fence(ROOT / "addons", {}, data_dir=data)
-    check("caldav: every account is fenced from cron by name, not by URL",
+    # By URL too, so a client's own entry at caldav-mcp (Boundary's
+    # calendar-<slug>) is fenced like the stack's caldav-<slug>.
+    check("caldav: every account is fenced from cron by name and by URL",
           {"caldav-personal", "caldav-work-cal"} <= set(names)
-          and "http://caldav-mcp:8080/mcp" not in _urls, str(names))
+          and "http://caldav-mcp:8080/mcp" in _urls, f"{names} {_urls}")
+    _names, _urls = am.cron_fence(ROOT / "addons", {})
+    check("caldav: caldav-mcp is fenced with no store and no accounts",
+          "http://caldav-mcp:8080/mcp" in _urls, str(_urls))
 
 # --- Actual Budget -----------------------------------------------------------
 ac_path = ROOT / "addons" / "actual" / "addon.json"

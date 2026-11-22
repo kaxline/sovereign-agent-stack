@@ -643,6 +643,42 @@ failed attempt. They park the same way, so the reconnect call and
 This is an overlay on the pinned Hermes image (`patch-mcp-wake.py`). The route,
 key and response fields stay stable across pin moves. Changes are additive.
 
+### Servers you add and cron jobs
+
+The bootstrap pins each profile's `platform_toolsets.cron` to a list that
+names the MCP servers it found there and leaves out the fenced ones
+([cron-fence.md](cron-fence.md)). Hermes treats that list as an allowlist, so a
+server you add to a profile's `mcp_servers` after the last bootstrap run
+doesn't reach cron jobs without their own `enabled_toolsets` until the fence
+runs again. The next stack start runs it, since your edit changes the
+bootstrap's state hash.
+
+Removing a server matters more. If it was the only MCP server on the list,
+the list names none, and Hermes then gives those jobs every enabled server,
+fenced ones included, until the fence runs again.
+
+After adding or removing servers, run this once your `config.yaml` writes have
+finished:
+
+```bash
+scripts/cron-fence.sh [--profile NAME]
+```
+
+It pins the list again on every profile, or on one (`default` for the default
+profile), and exits 0 when done, 1 when the bootstrap container failed, 2 on
+bad arguments and 3 when the profile has no `config.yaml`. Hermes rereads
+`config.yaml` on each cron run, so nothing restarts.
+
+A server at the address of a fenced add-on is fenced under any name: an entry
+at `http://caldav-mcp:8080/mcp` stays out of cron like the stack's own
+`caldav-<slug>` entries. Your own servers are not fenced, since the stack can't
+tell what they reach. Leave them off a profile whose cron jobs shouldn't have
+them.
+
+A job can name servers in its own `enabled_toolsets` instead. It then gets
+only the servers it names, fenced ones included, and the fence doesn't apply to
+it.
+
 ## Install on another host
 
 `scripts/install.sh` installs a release into a folder on a host the app

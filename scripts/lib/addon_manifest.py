@@ -51,8 +51,8 @@ every add-on whose permissions.cron is not true. With cron "ro" the add-on's nam
 only its URLs other than the ro service's are, so a cron job keeps the ro
 entry and loses the rw one. An invalid manifest is fenced by whatever MCP
 name it carries, so a broken manifest can't open cron. An mcp.instances entry
-is fenced by the name of each instance in the store (<data_dir>/<add-on
-directory>), except with cron "ro", where the entries stay in cron with the
+is fenced by the name and URL of each instance in the store (<data_dir>/<add-on
+directory>), and a URL without placeholders by itself, except with cron "ro", where the entries stay in cron with the
 key of the profile the job runs on; only api-server is held to the ro key. cron_fence_toolsets()
 does the same for the plugin toolsets of add-ons with a vaultBackend.
 
@@ -1515,12 +1515,26 @@ def cron_fence(addons_dir: Path, environ=os.environ,
                 # instance's rw URL is fenced, so a job never gets write tools.
                 # With keys and no {access}, a profile mapped to ro gets only
                 # the ro key (instances_plan).
+                #
+                # Otherwise each instance's name and URL are fenced, so an
+                # entry a client adds under its own name at the add-on's
+                # server is fenced too. A URL without placeholders (CalDAV's
+                # caldav-mcp) is the same for every instance and is fenced
+                # whether or not the store has any.
+                inst = mcp["instances"]
+                if cron != "ro" and "{" not in inst["url"]:
+                    urls.append(inst["url"])
                 if data_dir is None:
                     continue
-                inst = mcp["instances"]
                 store = Path(data_dir) / path.parent.name
                 if cron != "ro":
                     names.extend(inst["name"].replace("{slug}", s) for s in _store_slugs(store)[0])
+                    if "{" in inst["url"]:
+                        schema = manifest["instances"]["settings"]
+                        for s in _store_slugs(store)[0]:
+                            values = _instance_values(store, s, schema) or {}
+                            urls.extend(_instance_url(inst["url"], values, schema, level, s)
+                                        for level in ("ro", "rw"))
                 elif "{access}" in inst["url"]:
                     schema = manifest["instances"]["settings"]
                     for s in _store_slugs(store)[0]:

@@ -16,6 +16,19 @@ the stack under another app.
   `addon.sh list --json` includes it. Twenty declares one with `read` and
   `write`. Manifests may no longer declare an instance setting named `trust`
   or `endpoint`; no built-in add-on did. See `addons/README.md`.
+- `scripts/cron-fence.sh [--profile NAME]` reruns only the bootstrap's cron
+  fence on a running install (Boundary CR 0036 R1). Run it after adding or
+  removing MCP servers in a profile's `config.yaml`: until the fence runs
+  again, an added server is missing from cron jobs without their own
+  `enabled_toolsets`, and removing the only server on the pinned list gives
+  those jobs every enabled server. Hermes needs no restart. See
+  [docs/extending.md](docs/extending.md#servers-you-add-and-cron-jobs).
+- The cron fence matches add-ons whose MCP entries come from instances by URL
+  as well as name. Any entry at `http://caldav-mcp:8080/mcp` is now kept out of
+  cron, so Boundary's `calendar-<slug>` entries leave cron jobs without their
+  own `enabled_toolsets` at the next bootstrap run, as the stack's
+  `caldav-<slug>` entries already did. A job that names one in its own
+  `enabled_toolsets` still gets it.
 
 ## v0.3.18 — 2026-11-21
 

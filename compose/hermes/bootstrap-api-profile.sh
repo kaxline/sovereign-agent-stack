@@ -1859,6 +1859,38 @@ if [ ! -f "${HERMES_HOME}/config.yaml" ]; then
   exit 0
 fi
 
+# --- Cron fence only (scripts/cron-fence.sh) ---
+# HERMES_BOOTSTRAP_ONLY=cron-fence reruns fence_mail_from_cron and nothing
+# else, for MCP servers a client added since the last run. It writes no stamp:
+# the client's edit already changed the state hash, so the next start runs the
+# full bootstrap either way. HERMES_CRON_FENCE_PROFILE names one profile
+# ("default" for the default one); unset, every profile is fenced.
+if [ "${HERMES_BOOTSTRAP_ONLY:-}" = cron-fence ]; then
+  _cfo_profile="${HERMES_CRON_FENCE_PROFILE:-}"
+  case "$_cfo_profile" in
+    "")
+      BOOTSTRAP_SHARED=1
+      fence_mail_from_cron_all_profiles
+      ;;
+    *[!A-Za-z0-9_-]*|-*)
+      log "ERROR: not a profile name: ${_cfo_profile}"
+      exit 2
+      ;;
+    *)
+      [ "$_cfo_profile" = default ] && _cfo_profile=""
+      if [ ! -f "$(config_path_for "$_cfo_profile")" ]; then
+        log "ERROR: no profile ${HERMES_CRON_FENCE_PROFILE} (no $(config_path_for "$_cfo_profile"))"
+        exit 3
+      fi
+      fence_mail_from_cron "$_cfo_profile"
+      ;;
+  esac
+  exit 0
+elif [ -n "${HERMES_BOOTSTRAP_ONLY:-}" ]; then
+  log "ERROR: HERMES_BOOTSTRAP_ONLY must be cron-fence, not ${HERMES_BOOTSTRAP_ONLY}"
+  exit 2
+fi
+
 # --- Skip an unchanged run (see "Skipping an unchanged run" above) ---
 if [ -f "$SOURCE_ENV" ]; then
   INPUTS_HASH="$(bootstrap_inputs_hash)"
