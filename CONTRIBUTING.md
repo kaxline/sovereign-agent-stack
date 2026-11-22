@@ -10,7 +10,6 @@ cd assistant
 ./scripts/setup.sh
 make doctor
 # Point .env at a model server, or: ./scripts/setup.sh --ollama
-docker compose run --rm hermes setup   # first Hermes boot only
 make up
 ```
 

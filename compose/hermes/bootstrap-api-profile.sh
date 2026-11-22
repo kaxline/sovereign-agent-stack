@@ -59,6 +59,9 @@ MESSAGES_WEBHOOK_PORT="${MESSAGES_WEBHOOK_PORT:-8646}"
 # llm-proxy's real upstream. Only used to tell a local model server from a
 # cloud API; the key never reaches this container.
 LLM_BINDING_HOST="${LLM_BINDING_HOST:-http://host.docker.internal:1234/v1}"
+# The stack's chat model (.env LLM_MODEL). Fills model.default where the
+# image's placeholder is still in place; .env.example ships its own placeholder.
+STACK_MODEL="${LLM_MODEL:-}"
 # Empty = 300s for a local upstream, 180s for a cloud one.
 PROXY_STALE_TIMEOUT="${HERMES_PROXY_STALE_TIMEOUT:-}"
 # model.max_tokens for every profile on the proxy that has none. 0 = leave unset.
@@ -508,6 +511,30 @@ apply_terminal_backend_all_profiles() {
   for_each_profile "$_atb_fn"
 }
 
+# True when a profile's model.default is unset or still the value the image
+# seeds (cli-config.yaml.example), i.e. nobody has picked a model for it.
+# A model chosen with make model-use, the wizard or by hand is kept.
+model_default_is_seed() {
+  python3 - "$(config_path_for "$1")" "${HERMES_INSTALL_DIR}/cli-config.yaml.example" <<'PY'
+import sys
+
+sys.path.insert(0, "/bootstrap")
+from profile_config import load
+
+
+def default(path):
+    try:
+        model = load(path).get("model")
+    except (FileNotFoundError, AttributeError):
+        return None
+    return model.get("default") if isinstance(model, dict) else None
+
+
+current = default(sys.argv[1])
+raise SystemExit(0 if not current or current == default(sys.argv[2]) else 1)
+PY
+}
+
 # Model calls go to llm-proxy. The placeholder is not a secret. The real
 # key stays on the proxy. Same profile sweep as the SSH backend. Every
 # profile on the proxy also gets the stale-stream timeout sized below, and an
@@ -515,8 +542,16 @@ apply_terminal_backend_all_profiles() {
 configure_model_proxy() {
   _cmp_profile="$1"
   log "Model proxy for profile '${_cmp_profile:-default}'"
+  hermes_config_set "$_cmp_profile" model.provider custom
   hermes_config_set "$_cmp_profile" model.base_url http://llm-proxy:4000/v1
   hermes_config_set "$_cmp_profile" model.api_key local-llm
+  if model_default_is_seed "$_cmp_profile"; then
+    if [ -n "$STACK_MODEL" ] && [ "$STACK_MODEL" != your-chat-model ]; then
+      hermes_config_set "$_cmp_profile" model.default "$STACK_MODEL"
+    else
+      log "model.default on '${_cmp_profile:-default}' is the image placeholder and LLM_MODEL is unset; run make model-use"
+    fi
+  fi
   hermes_config_set "$_cmp_profile" agent.local_stream_stale_timeout "$STALE_TIMEOUT"
   if [ "$MODEL_MAX_TOKENS" != "0" ]; then
     if config_has_value "$_cmp_profile" model.max_tokens; then
@@ -1881,8 +1916,8 @@ if [ ! -f "${HERMES_HOME}/config.yaml" ] && [ -f "${HERMES_INSTALL_DIR}/cli-conf
 fi
 
 if [ ! -f "${HERMES_HOME}/config.yaml" ]; then
-  log "No ${HERMES_HOME}/config.yaml — run setup first:"
-  log "  docker compose --profile hermes run --rm hermes setup"
+  log "No ${HERMES_HOME}/config.yaml and no ${HERMES_INSTALL_DIR}/cli-config.yaml.example to seed it from"
+  log "  check HERMES_AGENT_IMAGE_TAG; this image does not ship the example config"
   exit 0
 fi
 

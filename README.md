@@ -9,8 +9,6 @@ A Docker Compose stack that runs a **capable AI agent on your own machine**, pri
 make doctor                 # Docker, ports, model server from inside a container
 # Start a host model server (OpenAI-compatible or Ollama) — or use --ollama
 make up
-# First Hermes boot only:
-docker compose run --rm hermes setup && make up
 ```
 
 Open **[http://localhost:8787](http://localhost:8787)** (Hermes WebUI). Dashboard: [http://localhost:9119](http://localhost:9119).

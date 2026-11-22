@@ -1456,7 +1456,7 @@ services:
   # ----------------------------------------------------------------------
   # Hermes Agent — persistent AI gateway + dashboard
   # Profile: core (default stack)
-  # Setup:   docker compose run --rm hermes setup   (after first ./scripts/setup.sh)
+  # Setup:   ./scripts/setup.sh; the bootstrap seeds config.yaml on first start
   # Gateway: http://localhost:8642 (default profile; dashboard)
   # API:     http://localhost:8643/v1 (api-server profile; see compose/hermes/)
   # Dashboard: http://localhost:9119 (localhost-bound)
@@ -1568,6 +1568,8 @@ services:
       - MESSAGES_WEBHOOK_PORT=${MESSAGES_WEBHOOK_PORT:-8646}
       # Upstream URL only (no key), to size the stale-stream timeout.
       - LLM_BINDING_HOST=${LLM_BINDING_HOST:-http://host.docker.internal:1234/v1}
+      # Seeds model.default on a fresh home (scripts/model-use.sh keeps it in sync after).
+      - LLM_MODEL=${LLM_MODEL:-}
       - HERMES_PROXY_STALE_TIMEOUT=${HERMES_PROXY_STALE_TIMEOUT:-}
       - HERMES_MAX_TOKENS=${HERMES_MAX_TOKENS:-16384}
       - HERMES_TOOL_LOOP_HARD_STOP=${HERMES_TOOL_LOOP_HARD_STOP:-true}
@@ -1706,6 +1708,8 @@ services:
       # Upstream URL only (no key), to size the stale-stream timeout and
       # decide whether auto-title may compete with the reply.
       - LLM_BINDING_HOST=${LLM_BINDING_HOST:-http://host.docker.internal:1234/v1}
+      # Seeds model.default on a fresh home (scripts/model-use.sh keeps it in sync after).
+      - LLM_MODEL=${LLM_MODEL:-}
       - HERMES_PROXY_STALE_TIMEOUT=${HERMES_PROXY_STALE_TIMEOUT:-}
       - HERMES_MAX_TOKENS=${HERMES_MAX_TOKENS:-16384}
       - HERMES_TOOL_LOOP_HARD_STOP=${HERMES_TOOL_LOOP_HARD_STOP:-true}
