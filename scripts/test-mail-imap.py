@@ -388,15 +388,19 @@ def test_one_failed_account_keeps_the_others() -> None:
 
 
 def test_every_account_failed() -> None:
-    """A pass where every account fails creates no index and, on an existing
-    one, leaves last_run alone, so mail_status doesn't read as "no new mail"."""
+    """A pass where every account fails records the failures, in a new empty
+    index when there's none, and leaves last_run alone, so mail_status doesn't
+    read as "no new mail"."""
     with tempfile.TemporaryDirectory() as d:
         t = TwoAccounts(Path(d))
         t.fails.update(home=mail_imap_conn.AuthFailed("home: the server rejected the user name or password"),
                        work=mail_imap_conn.ImapError("work: can't connect to 127.0.0.1:143 (ConnectionRefusedError)"))
         stats = t.run()
-        expect(stats.as_dict().get("failed") == {"home": 4, "work": 5} and not t.config.index.exists(),
-               f"no index is created when every account fails: {stats} {t.config.index.exists()}")
+        expect(stats.as_dict().get("failed") == {"home": 4, "work": 5}, f"both accounts failed: {stats}")
+        status = t.status()
+        expect(status["failed_accounts"] == {"home": 4, "work": 5} and status["messages"] == 0
+               and status["last_indexed"] is None and t.last_run() is None,
+               f"a first pass where every account fails records them in an empty index: {status}")
         t.fails.clear()
         t.run()
         db = sqlite3.connect(t.config.index)
@@ -411,6 +415,120 @@ def test_every_account_failed() -> None:
         status = t.status()
         expect(status["failed_accounts"] == {"home": 4, "work": 4} and status["messages"] == 3,
                f"mail_status lists both failed accounts and the kept rows: {status}")
+
+
+def load_cli():
+    """compose/email-imap/mail-index.py as a module (its name has a dash)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("mail_index_cli", HERE.parent / "compose" / "email-imap" / "mail-index.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_error_names() -> None:
+    """Each failure has one error name for --json-errors, with the exit code it always had."""
+    cli = load_cli()
+    cases = [
+        (mi.ConfigError("work: bad"), "bad_config", 2),
+        (mail_credentials.MissingPassword("work: no password"), "password_missing", 4),
+        (mail_imap_conn.AuthFailed("work: the server rejected the user name or password"), "login_refused", 4),
+        (mail_imap_conn.Unreachable("work: can't connect to 127.0.0.1:1 (ConnectionRefusedError: x)"),
+         "server_unreachable", 5),
+        (mail_imap_conn.ImapError("work: LIST failed: no"), "server_error", 5),
+        (KeyError("a subject line"), "failed", 1),
+    ]
+    import contextlib
+    import io
+    for exc, name, code in cases:
+        out, err = io.StringIO(), io.StringIO()
+
+        def boom(exc=exc):
+            raise exc
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            result, got = cli.guarded(boom, json_errors=True)
+        printed = json.loads(out.getvalue())
+        expect(got == code and printed["error"] == name and printed["error"] in cli.ERROR_NAMES
+               and err.getvalue().startswith("mail-index: "),
+               f"{type(exc).__name__} is {name} with exit {code}: {got} {printed} {err.getvalue()!r}")
+    expect("a subject line" not in json.dumps(printed), "an unexpected error prints its type name only")
+    with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
+        cli.guarded(lambda: (_ for _ in ()).throw(mail_imap_conn.AuthFailed("work: x")))
+    expect(out.getvalue() == "", "without json_errors nothing goes to stdout")
+
+    # A drop after the login, while listing, is a server_error naming the account.
+    class DropsOnStatus(FakeReader):
+        def status_count(self, box) -> int:
+            raise ConnectionResetError("synthetic drop")
+
+    src = mail_imap.ImapSource(mi.load_config(_one_account_config()),
+                               connect=lambda a, _s: DropsOnStatus(a, {1: fake_msg(1, a)}))
+    try:
+        src.mailboxes()
+        expect(False, "a dropped listing raises")
+    except mail_imap_conn.ImapError as exc:
+        expect(not isinstance(exc, mail_imap_conn.Unreachable) and str(exc).startswith("home: "),
+               f"a dropped listing is an ImapError naming the account: {exc!r}")
+
+
+def _one_account_config() -> Path:
+    d = Path(tempfile.mkdtemp())
+    path = d / "c.toml"
+    path.write_text(f'source = "imap"\nindex = "{d / "index.sqlite"}"\nsince = 2026-01-01\n'
+                    '[[accounts]]\nid = "home"\nhost = "127.0.0.1"\nsecurity = "plain"\nuser = "h@example.com"\n'
+                    'mailboxes = ["INBOX"]\n')
+    return path
+
+
+def test_addon_status() -> None:
+    """`email_addon.py status` (CR 0031 R1) after a pass where home's password was
+    refused: home is failed 4 with its kept rows, work has its count, an account
+    with no mailboxes yet is skipped with its reason, and nothing else is printed."""
+    import email_addon as ea
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        t = TwoAccounts(root)
+        run = root / "run"
+        for sub in ("config", "instances", "secrets"):
+            (run / sub).mkdir(parents=True)
+        (run / "config" / "settings.env").write_text("ADDON_EMAIL_SINCE=2026-01-01\n")
+        for slug, user in (("home", "h@example.com"), ("work", "w@example.com"), ("new", "n@example.com")):
+            inst = {"host": "127.0.0.1", "security": "plain", "user": user}
+            if slug != "new":
+                inst["mailboxes"] = ["INBOX"]
+            (run / "instances" / f"{slug}.json").write_text(json.dumps(inst))
+        lay = {"config": run / "config", "instances": run / "instances", "secrets": run / "secrets",
+               "index": str(t.config.index), "drafts": str(root / "drafts")}
+
+        out, code = ea.status(lay)
+        expect(code == 0 and out == {"last_indexed": None, "messages": 0,
+                                     "accounts": {"home": {"messages": 0, "failed": None},
+                                                  "new": {"messages": 0, "failed": None},
+                                                  "work": {"messages": 0, "failed": None}},
+                                     "skipped": {"new": "no mailboxes chosen yet"}},
+               f"before the first pass: nothing indexed, exit 0: {out}")
+
+        t.fails["home"] = mail_imap_conn.AuthFailed("home: the server rejected the user name or password")
+        t.fails["work"] = mail_imap_conn.AuthFailed("work: the server rejected the user name or password")
+        t.run()
+        out, code = ea.status(lay)
+        expect(code == 0 and out["last_indexed"] is None and out["accounts"]["home"]["failed"] == 4
+               and out["accounts"]["work"]["failed"] == 4,
+               f"a first pass where every password was refused shows both failed: {out}")
+
+        t.fails.clear()
+        t.run()
+        t.fails["home"] = mail_imap_conn.AuthFailed("home: the server rejected the user name or password")
+        t.boxes["work"][2] = fake_msg(2, "work")
+        t.run()
+        out, code = ea.status(lay)
+        expect(code == 0 and out["accounts"]["home"] == {"messages": 2, "failed": 4}
+               and out["accounts"]["work"] == {"messages": 2, "failed": None} and out["messages"] == 4
+               and re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", out["last_indexed"] or ""),
+               f"home failed 4, work's count given: {out}")
+        text = json.dumps(out)
+        expect(not any(w in text for w in ("example.com", "INBOX", "synthetic", "127.0.0.1")),
+               f"status prints no addresses, hosts, mailbox names or subjects: {text}")
 
 
 def test_drop_during_fetch() -> None:
@@ -835,6 +953,25 @@ def test_end_to_end(tmp: Path, port: int) -> None:
     expect({"account": "work", "mailbox": "Projects/Alpha", "messages": 1, "special_use": None} in listing,
            f"mailboxes lists IMAP mailboxes with counts: {listing}")
 
+    # Named errors from the listing (CR 0031 R2): one JSON object on stdout.
+    def listing_error(config: Path, password: str) -> tuple[int, dict | None, str]:
+        out = subprocess.run([sys.executable, "-I", str(HERE / "mail-index.py"), "--config", str(config),
+                              "mailboxes", "--account", "work", "--json-errors"], capture_output=True, text=True,
+                             env={**os.environ, PASSWORD_ENV: password})
+        lines = [x for x in out.stdout.splitlines() if x.startswith("{")]
+        return out.returncode, json.loads(lines[-1]) if lines else None, out.stdout + out.stderr
+
+    code, err, text = listing_error(tmp / "imap.toml", "wrong")
+    expect(code == 4 and err is not None and err["error"] == "login_refused" and "work" in err["message"]
+           and "wrong" not in text, f"a wrong password is login_refused, naming the account: {code} {text!r}")
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        closed = sock.getsockname()[1]
+    write_config(tmp, closed, {"work": ["INBOX"]}, index=tmp / "closed.sqlite", name="closed")
+    code, err, text = listing_error(tmp / "closed.toml", PASSWORD)
+    expect(code == 5 and err is not None and err["error"] == "server_unreachable" and PASSWORD not in text,
+           f"a closed port is server_unreachable: {code} {text!r}")
+
 
 def test_drafts(tmp: Path, port: int) -> None:
     """IMAP drafts: new and reply drafts land in Drafts, flagged \\Draft;
@@ -1001,6 +1138,8 @@ def main() -> int:
     test_one_failed_account_keeps_the_others()
     test_every_account_failed()
     test_drop_during_fetch()
+    test_error_names()
+    test_addon_status()
     with tempfile.TemporaryDirectory() as d:
         certs = make_certs(Path(d) / "certs")
         test_login_methods(certs)

@@ -273,6 +273,28 @@ with tempfile.TemporaryDirectory() as tmp:
     check("mailboxes for an account with no mailboxes gets past the config (fails only on connect)",
           proc.returncode == 5 and "config" not in proc.stderr and "nobox" in proc.stderr,
           f"rc={proc.returncode} err={proc.stderr!r}")
+    named = [json.loads(x) for x in proc.stdout.splitlines() if x.startswith("{")]
+    check("a refused connection prints server_unreachable naming the account (CR 0031 R2)",
+          len(named) == 1 and named[0]["error"] == "server_unreachable" and named[0]["message"].startswith("nobox: ")
+          and "synthetic" not in proc.stdout + proc.stderr, f"out={proc.stdout!r}")
+    proc = subprocess.run([*entry, "mailboxes", "--account", "public"], env=env, capture_output=True, text=True,
+                          timeout=60)
+    named = [json.loads(x) for x in proc.stdout.splitlines() if x.startswith("{")]
+    check("plain on a public host prints bad_config naming the account",
+          proc.returncode == 2 and len(named) == 1 and named[0]["error"] == "bad_config"
+          and named[0]["message"].startswith("public: "), f"rc={proc.returncode} out={proc.stdout!r}")
+
+    proc = subprocess.run([*entry, "status"], env=env, capture_output=True, text=True, timeout=60)
+    try:
+        got = json.loads(proc.stdout)
+    except ValueError:
+        got = None
+    check("status before the first pass prints last_indexed null, every account and the skipped ones, exit 0",
+          proc.returncode == 0 and got is not None and got["last_indexed"] is None and got["messages"] == 0
+          and set(got["accounts"]) == {"good", "nobox", "public"} and set(got["skipped"]) == {"nobox", "public"}
+          and "imap.example.com" not in proc.stdout, f"rc={proc.returncode} out={proc.stdout!r} err={proc.stderr!r}")
+    proc = subprocess.run([*entry, "status", "--account", "good"], env=env, capture_output=True, text=True, timeout=60)
+    check("status takes no --account", proc.returncode == 2, f"rc={proc.returncode}")
 
     proc = subprocess.run([*entry, "index", "--passes", "1"], env=env, capture_output=True, text=True, timeout=60)
     rendered = tomllib.loads((root / "tmp.toml").read_text())

@@ -4,7 +4,7 @@
 Usage:
   python3 scripts/mail-index.py --config mail-index.toml run
   python3 scripts/mail-index.py --config mail-index.toml doctor
-  python3 scripts/mail-index.py --config mail-index.toml mailboxes [--account ID]
+  python3 scripts/mail-index.py --config mail-index.toml mailboxes [--account ID] [--json-errors]
   python3 scripts/mail-index.py --config mail-index.toml run --every SECONDS [--passes N]
 
 The config may also come from MAIL_INDEX_CONFIG. The default source asks
@@ -16,7 +16,8 @@ Keychain or from the variable `password_env` names, never from the config.
 `run` and `doctor` print counts and timings only.
 `mailboxes` prints account ids and names and mailbox names (not message
 content) so you can write the config; it lists every account, so run it
-yourself.
+yourself. With --json-errors, a failed command also prints one JSON object
+on stdout, {"error": NAME, "message": TEXT}; ERROR_NAMES lists the names.
 """
 
 from __future__ import annotations
@@ -77,35 +78,57 @@ def _store_mailboxes(config: mi.Config) -> list[dict]:
     return sorted(out, key=lambda r: (r["account"], r["mailbox"].lower()))
 
 
-def guarded(fn) -> tuple[object, int]:
-    """Call fn and map its failures to an exit code, printing the `mail-index:` line.
-    Returns (result, 0) on success. The one place exceptions become exit codes."""
+# The names --json-errors prints, by the exception that failed the command.
+# Clients should treat a name they don't know like "failed".
+ERROR_NAMES = {
+    "bad_config": "the config or an account's settings are invalid (exit 2)",
+    "bad_layout": "Mail's store has a layout this version can't read (exit 3)",
+    "permission_denied": "macOS refused Automation or Full Disk Access (exit 4)",
+    "password_missing": "no password is stored for the account (exit 4)",
+    "login_refused": "the server rejected the user name or password (exit 4)",
+    "server_unreachable": "the connection or its TLS handshake failed (exit 5)",
+    "server_error": "the server refused a command after the login, or Mail failed (exit 5)",
+    "failed": "anything else (exit 1)",
+}
+
+
+def _classify(exc: BaseException) -> tuple[str, int, str]:
+    """(error name, exit code, the text after `mail-index: `) for a failure.
+    The texts name the account and never carry a password."""
+    if isinstance(exc, mi.ConfigError):
+        return "bad_config", 2, f"config: {exc}"
+    if isinstance(exc, mi.LayoutError):
+        return "bad_layout", 3, str(exc)
+    if isinstance(exc, ms.AutomationDenied):
+        return "permission_denied", 4, ("macOS didn't allow this program to control Mail. Allow it under"
+                                        " System Settings > Privacy & Security > Automation; see docs/email.md.")
+    if isinstance(exc, PermissionError):
+        return "permission_denied", 4, ("permission denied reading the store. With source = \"store\", macOS needs"
+                                        " Full Disk Access for the program running the indexer; see docs/email.md.")
+    if isinstance(exc, mail_credentials.MissingPassword):
+        return "password_missing", 4, str(exc)
+    if isinstance(exc, mail_imap.AuthFailed):
+        return "login_refused", 4, str(exc)
+    if isinstance(exc, mail_imap.Unreachable):
+        return "server_unreachable", 5, str(exc)
+    if isinstance(exc, (ms.ScriptError, mail_imap.ImapError)):
+        return "server_error", 5, str(exc)
+    # Type name only: the message or a traceback could carry message content.
+    return "failed", 1, f"unexpected {type(exc).__name__}"
+
+
+def guarded(fn, json_errors: bool = False) -> tuple[object, int]:
+    """Call fn and map its failures to an exit code, printing the `mail-index:` line
+    and, with json_errors, the JSON error object on stdout. Returns (result, 0) on
+    success. The one place exceptions become exit codes."""
     try:
         return fn(), 0
-    except mi.ConfigError as exc:
-        print(f"mail-index: config: {exc}", file=sys.stderr)
-        return None, 2
-    except mi.LayoutError as exc:
-        print(f"mail-index: {exc}", file=sys.stderr)
-        return None, 3
-    except ms.AutomationDenied:
-        print("mail-index: macOS didn't allow this program to control Mail. Allow it under"
-              " System Settings > Privacy & Security > Automation; see docs/email.md.", file=sys.stderr)
-        return None, 4
-    except PermissionError:
-        print("mail-index: permission denied reading the store. With source = \"store\", macOS needs"
-              " Full Disk Access for the program running the indexer; see docs/email.md.", file=sys.stderr)
-        return None, 4
-    except (mail_imap.AuthFailed, mail_credentials.MissingPassword) as exc:
-        print(f"mail-index: {exc}", file=sys.stderr)
-        return None, 4
-    except (ms.ScriptError, mail_imap.ImapError) as exc:
-        print(f"mail-index: {exc}", file=sys.stderr)
-        return None, 5
     except Exception as exc:  # noqa: BLE001 - the loop must outlive anything a pass throws
-        # Type name only: the message or a traceback could carry message content.
-        print(f"mail-index: unexpected {type(exc).__name__}", file=sys.stderr)
-        return None, 1
+        name, code, text = _classify(exc)
+        print(f"mail-index: {text}", file=sys.stderr, flush=True)
+        if json_errors:
+            print(json.dumps({"error": name, "message": text}), flush=True)
+        return None, code
 
 
 def pass_code(result: object) -> int:
@@ -122,12 +145,14 @@ def one_command(args) -> object:
         return mi.run(config).as_dict()
     if args.command == "doctor":
         return mi.doctor(config)
-    rows = list_mailboxes(config)
-    if args.account is not None:
-        if args.account not in {a.id for a in config.accounts}:
-            raise mi.ConfigError(f"no account {args.account}")
-        rows = [r for r in rows if r["account"] == args.account]
-    return rows
+    if args.account is None:
+        return list_mailboxes(config)
+    if args.account not in {a.id for a in config.accounts}:
+        raise mi.ConfigError(f"no account {args.account}")
+    # Log in to that IMAP account only, so another account's failure isn't
+    # reported as this one's. Mail.app and store listings cover every account.
+    config = replace(config, accounts=[a for a in config.accounts if a.source != "imap" or a.id == args.account])
+    return [r for r in list_mailboxes(config) if r["account"] == args.account]
 
 
 def run_loop(args) -> int:
@@ -162,6 +187,8 @@ def main() -> int:
     parser.add_argument("--every", type=float, metavar="SECONDS",
                         help="run: repeat every SECONDS until stopped, one JSON line per pass")
     parser.add_argument("--passes", type=int, metavar="N", help="run --every: stop after N passes")
+    parser.add_argument("--json-errors", action="store_true",
+                        help="on failure, also print {\"error\": NAME, \"message\": TEXT} on stdout")
     args = parser.parse_args()
     if args.account is not None and args.command != "mailboxes":
         parser.error("--account only applies to mailboxes")
@@ -173,10 +200,14 @@ def main() -> int:
         parser.error("--passes needs --every and a positive count")
     if not args.config:
         print("mail-index: pass --config or set MAIL_INDEX_CONFIG", file=sys.stderr)
+        if args.json_errors:
+            print(json.dumps({"error": "bad_config", "message": "pass --config or set MAIL_INDEX_CONFIG"}))
         return 2
+    if args.json_errors and args.every is not None:
+        parser.error("--json-errors doesn't apply to run --every")
     if args.every is not None:
         return run_loop(args)
-    result, code = guarded(lambda: one_command(args))
+    result, code = guarded(lambda: one_command(args), json_errors=args.json_errors)
     if code:
         return code
     print(json.dumps(result, indent=2))
