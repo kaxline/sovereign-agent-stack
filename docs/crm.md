@@ -178,16 +178,32 @@ expires in 2126, so revoke it when access ends. `revoke` prints nothing.
 `list` prints `{"id","name","revoked"}` for each key with that name.
 
 A failure is one line on stdout, `{"error": CODE, "message": TEXT}`, with exit
-4. The codes are `login_refused` (Twenty rejected the owner login),
-`no_permission` (Twenty refused a request), `unreachable`, `no_role` (Twenty
-refused to create a missing role) and `local_off` (the local Twenty isn't
-running). A bad or missing flag, or an unknown slug, is a usage error: a
+4. The codes are:
+
+- `login_refused`: Twenty rejected the owner login, or the owner can't enter
+  the workspace.
+- `ambiguous_workspace`: the instance has no stored `workspace_id` and the
+  owner can enter more than one workspace. Store the workspace ID on the
+  instance. With exactly one workspace the command uses it.
+- `no_permission`: Twenty refused a request with a permission error.
+- `unreachable`: Twenty didn't answer.
+- `no_role`: Twenty refused to create a missing Hermes role.
+- `not_found`: `revoke` got an id no key has.
+- `failed`: any other error from Twenty after sign-in, with its message. When
+  `create` fails after Twenty made the key, it revokes the key; if that fails
+  too, the message names the key id to revoke.
+- `local_off`: the local Twenty isn't running.
+
+`revoke` is idempotent: a key that is already revoked succeeds with no output.
+A bad or missing flag, or an unknown slug, is a usage error: a
 `[crm] ERROR:` line on stderr and exit 1.
 
 With `--slug main`, the default, the command signs in as the local owner from
 `.env`. Any other slug uses that workspace's stored `url`, with the owner login
 from `TWENTY_OWNER_EMAIL` and `TWENTY_OWNER_PASSWORD` in the environment.
-Those two are read only: nothing writes them to a file or prints them.
+Those two are read only: nothing writes them to a file or prints them. A
+local workspace under another slug also needs them, and the local Twenty
+running.
 
 ### Workspace files from before 0.3.13
 

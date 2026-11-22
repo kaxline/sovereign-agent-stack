@@ -188,6 +188,10 @@ TWENTY_OWNER_EMAIL=boss@example.com TWENTY_OWNER_PASSWORD=owner-pw-SECRET krun k
 [ "$rc" = 4 ] && grep -q '"unreachable"' "$out" || fail "another slug with a dead URL says unreachable ($rc $(cat "$out"))"
 if grep -q 'owner-pw-SECRET' "$out" "$tmp/err"; then fail "the owner password reached the output"; fi
 if grep -rq 'owner-pw-SECRET' "$store" "$ENV_FILE"; then fail "the owner password was written to a file"; fi
+seed "$ASSISTANT_DATA_ROOT" sales http://twenty-server:3000 write '' rw-SECRET
+TWENTY_OWNER_EMAIL=boss@example.com TWENTY_OWNER_PASSWORD=owner-pw-SECRET krun key list --name Ada --slug sales
+[ "$rc" = 4 ] && grep -q '"local_off"' "$out" || fail "a local slug other than main says local_off when the instance is stopped ($rc $(cat "$out"))"
+rm -f "$(inst sales)" "$store/secrets/sales.key_"*
 rm -f "$(inst main)" "$(inst dead)" "$store/secrets/main.key_"* "$store/secrets/dead.key_"*
 
 # mode: flips both flags; refuses single mode with two local workspaces.

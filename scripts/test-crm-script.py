@@ -70,6 +70,7 @@ class Stub:
         self.refuse: dict[str, str] = {}
         self.sign_in_error: str | None = None
         self.key_calls: list[dict] = []
+        self.login_tokens: list[str] = []
 
     def answer(self, query: str, variables: dict) -> dict:
         m = OP.match(query)
@@ -103,6 +104,7 @@ class Stub:
                 "workspace": {"id": f"ws{self.workspaces}", "workspaceUrls": {"subdomainUrl": url}},
             }}}
         if op == "getAuthTokensFromLoginToken":
+            self.login_tokens.append(variables.get("t"))
             return {"data": {"getAuthTokensFromLoginToken": {"tokens": {
                 "accessOrWorkspaceAgnosticToken": {"token": "access-SECRET"}}}}}
         if op == "activateWorkspace":
@@ -632,6 +634,85 @@ class CrmKey(unittest.TestCase):
         self.assertEqual(proc.stdout, "")
         self.assertEqual(self.stub.ops, [])
 
+
+    def hosted(self, **values) -> None:
+        addon_store.apply_instance(MANIFEST, self.droot, "hosted",
+                                   {"url": self.base, "local": False, "access": "write", "key_rw": "x", **values})
+
+    HOSTED_ENV = {"TWENTY_OWNER_EMAIL": "boss@example.com", "TWENTY_OWNER_PASSWORD": PASSWORD}
+
+    def test_no_stored_workspace_id_and_two_workspaces_is_ambiguous(self):
+        self.hosted()
+        self.stub.workspaces = 2
+        proc = self.key("create", "--name", "Ada", "--access", "read", "--slug", "hosted", **self.HOSTED_ENV)
+        self.assertEqual(proc.returncode, 4)
+        out = self.lines(proc)
+        self.assertEqual(out[0]["error"], "ambiguous_workspace")
+        self.assertIn("workspace ID", out[0]["message"])
+        self.assertNotIn("createApiKey", self.stub.ops)
+        self.assertNotIn("getAuthTokensFromLoginToken", self.stub.ops)
+
+    def test_stored_workspace_id_picks_that_workspace(self):
+        self.hosted(workspace_id="ws2")
+        self.stub.workspaces = 2
+        self.stub.login_tokens.clear()
+        proc = self.key("create", "--name", "Ada", "--access", "read", "--slug", "hosted", **self.HOSTED_ENV)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.stub.login_tokens, ["login-SECRET-2"])
+
+    def test_revoke_of_an_already_revoked_key_succeeds_silently(self):
+        self.key("create", "--name", "Ada", "--access", "read")
+        self.key("revoke", "--id", "key-3")
+        self.stub.ops.clear()
+        proc = self.key("revoke", "--id", "key-3")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "")
+        self.assertNotIn("revokeApiKey", self.stub.ops)
+
+    def test_revoke_of_an_unknown_key_is_not_found(self):
+        proc = self.key("revoke", "--id", "key-99")
+        self.assertEqual(proc.returncode, 4)
+        self.assertEqual(self.lines(proc)[0]["error"], "not_found")
+        self.assertNotIn("revokeApiKey", self.stub.ops)
+
+    def test_revoke_errors_are_no_permission_or_failed(self):
+        self.key("create", "--name", "Ada", "--access", "read")
+        self.stub.refuse["revokeApiKey"] = "Forbidden: you don't have permission"
+        proc = self.key("revoke", "--id", "key-3")
+        self.assertEqual((proc.returncode, self.lines(proc)[0]["error"]), (4, "no_permission"))
+        self.stub.refuse["revokeApiKey"] = "database exploded"
+        proc = self.key("revoke", "--id", "key-3")
+        self.assertEqual((proc.returncode, self.lines(proc)[0]["error"]), (4, "failed"))
+        self.assertIn("database exploded", self.lines(proc)[0]["message"])
+
+    def test_other_graphql_errors_on_list_and_create_are_failed(self):
+        self.stub.refuse["apiKeys"] = "internal error"
+        proc = self.key("list", "--name", "Ada", "--json")
+        self.assertEqual(self.lines(proc)[0]["error"], "failed")
+        del self.stub.refuse["apiKeys"]
+        self.stub.refuse["createApiKey"] = "internal error"
+        proc = self.key("create", "--name", "Ada", "--access", "read")
+        self.assertEqual(self.lines(proc)[0]["error"], "failed")
+
+    def test_a_token_failure_revokes_the_new_key(self):
+        self.stub.refuse["generateApiKeyToken"] = "token service down"
+        proc = self.key("create", "--name", "Ada", "--access", "read")
+        self.assertEqual(proc.returncode, 4)
+        out = self.lines(proc)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["error"], "failed")
+        self.assertIn("revokeApiKey", self.stub.ops)
+        self.assertEqual(self.stub.keys[-1]["revokedAt"], "now")
+        self.assertNotIn("key-3", out[0]["message"])
+
+    def test_a_token_failure_and_a_failed_revoke_names_the_key_id(self):
+        self.stub.refuse["generateApiKeyToken"] = "token service down"
+        self.stub.refuse["revokeApiKey"] = "still down"
+        proc = self.key("create", "--name", "Ada", "--access", "read")
+        self.assertEqual(proc.returncode, 4)
+        out = self.lines(proc)
+        self.assertEqual(out[0]["error"], "failed")
+        self.assertIn("key-3", out[0]["message"])
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

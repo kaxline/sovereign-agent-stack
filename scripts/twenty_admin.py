@@ -264,9 +264,13 @@ def mint_key(tw: Twenty, access: str, name: str, role_id: str) -> tuple[str, str
     d = tw.gql("mutation($i: CreateApiKeyInput!) { createApiKey(input: $i) { id } }",
                {"i": {"name": name, "expiresAt": KEY_EXPIRY, "roleId": role_id}}, token=access)
     key_id = _token(d, "createApiKey", "id")
-    d = tw.gql("mutation($k: UUID!, $e: String!) { generateApiKeyToken(apiKeyId: $k, expiresAt: $e) { token } }",
-               {"k": key_id, "e": KEY_EXPIRY}, token=access)
-    return key_id, _token(d, "generateApiKeyToken", "token")
+    try:
+        d = tw.gql("mutation($k: UUID!, $e: String!) { generateApiKeyToken(apiKeyId: $k, expiresAt: $e) { token } }",
+                   {"k": key_id, "e": KEY_EXPIRY}, token=access)
+        return key_id, _token(d, "generateApiKeyToken", "token")
+    except TwentyError as exc:
+        exc.key_id = key_id  # the key exists without a token; key create revokes it
+        raise
 
 
 class Workspaces:
@@ -542,7 +546,13 @@ def owner_session(env, slug: str) -> tuple[Twenty, str]:
     print(f"[crm] {slug}: signing in as {email}", file=sys.stderr, flush=True)
     try:
         _, available = sign_in(tw, email, password)
-        if not ws_id and available:
+        if not ws_id:
+            # Without a stored workspace_id only a single workspace is safe to
+            # pick; minting in the wrong one would hand out the wrong access.
+            if len(available) != 1:
+                raise KeyFailure("ambiguous_workspace",
+                                 f"the owner account can enter {len(available)} workspaces on {base}; "
+                                 f"store the workspace ID on the instance (workspace_id for '{slug}')")
             ws_id = available[0].get("id", "")
         return tw, workspace_access_token(tw, available, ws_id, origin.rstrip("/"))
     except Unreachable as exc:
@@ -551,26 +561,41 @@ def owner_session(env, slug: str) -> tuple[Twenty, str]:
         raise KeyFailure("login_refused", f"Twenty refused the sign-in: {exc}") from None
 
 
-def _stage(code: str, fn, *args):
-    """fn(*args), with a Twenty failure turned into a KeyFailure: unreachable
-    when Twenty can't be reached, else CODE."""
+PERMISSION = re.compile(r"permission|forbidden|not allowed|unauthori[sz]ed", re.I)
+
+
+def _failure(exc: TwentyError, role: bool = False) -> KeyFailure:
+    """The KeyFailure for a Twenty error after sign-in: unreachable, no_permission
+    for a refusal that reads as one, no_role for a refused role create, else failed."""
+    if isinstance(exc, Unreachable):
+        return KeyFailure("unreachable", str(exc))
+    if PERMISSION.search(str(exc)):
+        return KeyFailure("no_permission", str(exc))
+    return KeyFailure("no_role" if role else "failed", str(exc))
+
+
+def _stage(fn, *args, role: bool = False):
+    """fn(*args), with a Twenty failure turned into a KeyFailure."""
     try:
         return fn(*args)
-    except Unreachable as exc:
-        raise KeyFailure("unreachable", str(exc)) from None
     except TwentyError as exc:
-        raise KeyFailure(code, str(exc)) from None
+        raise _failure(exc, role) from None
 
 
 def _role_id(tw: Twenty, access: str, kind: str) -> str:
     """The Hermes role for KIND (ro or rw): found by label, else both roles are
     created as crm init creates them."""
     label = ROLES[kind]["label"]
-    roles = _stage("no_permission", lambda: tw.gql("query { getRoles { id label } }", token=access).get("getRoles"))
+    roles = _stage(lambda: tw.gql("query { getRoles { id label } }", token=access).get("getRoles"))
     for role in roles if isinstance(roles, list) else []:
         if isinstance(role, dict) and role.get("label") == label and role.get("id"):
             return role["id"]
-    return _stage("no_role", ensure_roles, tw, access)[kind]
+    return _stage(ensure_roles, tw, access, role=True)[kind]
+
+
+def _revoke(tw: Twenty, access: str, key_id: str) -> None:
+    tw.gql("mutation($i: RevokeApiKeyInput!) { revokeApiKey(input: $i) { id } }",
+           {"i": {"id": key_id}}, token=access)
 
 
 def cmd_key(args: argparse.Namespace) -> int:
@@ -579,7 +604,8 @@ def cmd_key(args: argparse.Namespace) -> int:
     create prints one JSON line {"id", "token"}; the token is the only secret
     that reaches stdout, from this command alone. revoke prints nothing. list
     prints {"id", "name", "revoked"} for each key with the given name. A failure
-    prints {"error", "message"} on stdout and exits 4; progress goes to stderr.
+    prints {"error", "message"} on stdout and exits 4 (login_refused,
+    ambiguous_workspace, no_permission, unreachable, no_role, not_found, failed); progress goes to stderr.
     """
     try:
         tw, access = owner_session(os.environ, args.slug)
@@ -587,17 +613,33 @@ def cmd_key(args: argparse.Namespace) -> int:
             kind = "ro" if args.access == "read" else "rw"
             role_id = _role_id(tw, access, kind)
             print(f"[crm] {args.slug}: creating key '{args.name}' ({args.access})", file=sys.stderr, flush=True)
-            key_id, token = _stage("no_permission", mint_key, tw, access, args.name, role_id)
+            try:
+                key_id, token = mint_key(tw, access, args.name, role_id)
+            except TwentyError as exc:
+                failure = _failure(exc)
+                orphan = getattr(exc, "key_id", None)
+                if orphan:
+                    # Created but never given a token: revoke it so it isn't left behind.
+                    try:
+                        _revoke(tw, access, orphan)
+                    except TwentyError:
+                        failure = KeyFailure(failure.code, f"{failure} (key {orphan} was created and "
+                                             f"couldn't be revoked; revoke it with key revoke --id {orphan})")
+                raise failure from None
             print(json.dumps({"id": key_id, "token": token}), flush=True)
         elif args.action == "revoke":
-            _stage("no_permission", lambda: tw.gql(
-                "mutation($i: RevokeApiKeyInput!) { revokeApiKey(input: $i) { id } }",
-                {"i": {"id": args.id}}, token=access))
+            # Idempotent, for deprovisioning: an already revoked key is a success.
+            d = _stage(lambda: tw.gql("query { apiKeys { id name revokedAt } }", token=access))
+            found = [k for k in d.get("apiKeys") or [] if k.get("id") == args.id]
+            if not found:
+                raise KeyFailure("not_found", f"no key with id {args.id}")
+            if not found[0].get("revokedAt"):
+                _stage(_revoke, tw, access, args.id)
         else:
-            d = _stage("no_permission", lambda: tw.gql("query { apiKeys { id name revokedAt } }", token=access))
+            d = _stage(lambda: tw.gql("query { apiKeys { id name revokedAt } }", token=access))
             for key in d.get("apiKeys") or []:
                 if key.get("name") == args.name:
-                    print(json.dumps({"id": key["id"], "name": key["name"], "revoked": bool(key.get("revokedAt"))}),
+                    print(json.dumps({"id": key.get("id"), "name": key["name"], "revoked": bool(key.get("revokedAt"))}),
                           flush=True)
     except UsageError as exc:
         print(f"[crm] ERROR: {exc}", file=sys.stderr)

@@ -18,8 +18,10 @@ the stack under another app.
   on the local instance (`--slug main`) or a hosted workspace (another slug,
   owner login from `TWENTY_OWNER_EMAIL` and `TWENTY_OWNER_PASSWORD`). `create`
   prints `{"id","token"}`; a failure is one `{"error","message"}` line and exit
-  4 (`login_refused`, `no_permission`, `unreachable`, `no_role`, `local_off`).
-  Boundary runs it directly. (Boundary CR 0025 R1, R3)
+  4 (`login_refused`, `ambiguous_workspace`, `no_permission`, `unreachable`,
+  `no_role`, `not_found`, `failed`, `local_off`). `revoke` succeeds on a key
+  that is already revoked. A local workspace under another slug also needs the
+  owner variables and a running local Twenty. Boundary runs it directly. (Boundary CR 0025 R1, R3)
 - `addon.sh instances <short-id> --json` prints each instance's MCP URL as the
   host reaches it, auth header and scheme, trust, and which of `ro` and `rw`
   have a key; `addon.sh secret <short-id> --instance <slug> --level ro|rw`
