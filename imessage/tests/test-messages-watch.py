@@ -89,7 +89,16 @@ def test_config(tmp: Path, root: Path) -> None:
         except mi.ConfigError:
             continue
         fail(f"[notify] with {name} must be refused")
-    ok = write_config(tmp / "ok.toml", root, notify=(
+    state_in_store = write_config(tmp / "bad-state-in-store.toml", root,
+                                  notify=f'chats = ["*"]\noutbox = "{tmp}/out"',
+                                  watch=f'state = "{root / "Messages" / "watch.json"}"')
+    try:
+        mw.load(state_in_store)
+    except mi.ConfigError as exc:
+        expect("watch.state" in str(exc), f"refusal names watch.state: {exc}")
+    else:
+        fail("[watch] state inside the Messages folder must be refused")
+    ok =write_config(tmp / "ok.toml", root, notify=(
         f'chats = ["*;-;*"]\nurl = "https://hooks.example.net/m"\nsecret_file = "{secret}"\n'
         f'outbox = "{tmp}/out"\nquiet_hours = "22:00-07:00"'), watch="poll_seconds = 1")
     _, watch, notify = mw.load(ok)

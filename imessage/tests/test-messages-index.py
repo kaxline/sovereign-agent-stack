@@ -77,6 +77,15 @@ def test_config_errors(tmp: Path, store: Path) -> None:
         except mi.ConfigError:
             continue
         fail(f"config with {name} must be refused")
+    for inside in (store, store / "index.sqlite", store / "a" / "b"):
+        try:
+            mi.ensure_outside_store(inside, store, "index")
+        except mi.ConfigError as exc:
+            expect("`index` must be outside" in str(exc), f"refusal names the key: {exc}")
+        else:
+            fail(f"{inside} is in the store and must be refused")
+    for outside in (store.parent, store.parent / "Messages-index.sqlite", tmp / "index.sqlite"):
+        mi.ensure_outside_store(outside, store, "index")
     example = HERE.parent / "messages-index.toml.example"
     try:
         mi.load_config(example)

@@ -21,6 +21,14 @@ the stack under another app.
   `docker compose --profile bitwarden-tools run --rm bitwarden-setup tls --rotate`,
   restart `vaultwarden-tls` and `bitwarden-broker`, and trust the new
   `ca.crt`.
+- A fresh install no longer needs `docker compose run --rm hermes setup`.
+  On an empty `data/hermes/` the bootstrap seeds the image's default config,
+  and it now sets `model.provider: custom` on every profile and fills
+  `model.default` from `LLM_MODEL` wherever it is still the image's
+  placeholder (`anthropic/claude-opus-4.6` on v0.23.2). A model picked with
+  `make model-use`, the wizard or by hand is kept. `hermes-api-bootstrap`
+  and `hermes-browser-bootstrap` now receive `LLM_MODEL`. Installs that ran
+  the wizard already have `provider: custom` and see no change.
 - `POST /runs/{run_id}/terminate` on the kanban dashboard takes `hold:
   true`: one transaction moves the task to a sticky `blocked` and ends the
   run, then the worker is stopped, so the dispatcher can't start the task

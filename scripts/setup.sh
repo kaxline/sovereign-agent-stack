@@ -1104,8 +1104,6 @@ fi
 
 
 cat <<'EOF'
-First Hermes boot (once):
-  docker compose run --rm hermes setup
-  make up
+Next: make up. The first start seeds Hermes config from .env (LLM_MODEL).
 
 EOF

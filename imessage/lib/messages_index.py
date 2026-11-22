@@ -92,11 +92,21 @@ class Config:
         return hashlib.sha256(json.dumps(scope).encode()).hexdigest()[:16]
 
 
-def _path(value, key: str, base: Path) -> Path:
+def resolve_path(value, key: str, base: Path) -> Path:
+    """Expand `~`, resolve a relative path against `base`, and refuse an empty value."""
     if not isinstance(value, str) or not value.strip():
         raise ConfigError(f"`{key}` is required and has no default")
     path = Path(value).expanduser()
     return (path if path.is_absolute() else base / path).resolve()
+
+
+def ensure_outside_store(path: Path, store: Path, label: str) -> None:
+    """Refuse a path that is the Messages folder or anything inside it.
+
+    The index, the watch state file and the event outbox are checked with it.
+    """
+    if path == store or store in path.parents:
+        raise ConfigError(f"`{label}` must be outside the Messages folder")
 
 
 def load_config(path: Path) -> Config:
@@ -114,10 +124,9 @@ def load_config(path: Path) -> Config:
     if unknown:
         raise ConfigError(f"unknown config keys: {', '.join(sorted(unknown))}")
 
-    store = _path(raw.get("store"), "store", base)
-    index = _path(raw.get("index"), "index", base)
-    if index == store or store in index.parents:
-        raise ConfigError("`index` must be outside the Messages folder")
+    store = resolve_path(raw.get("store"), "store", base)
+    index = resolve_path(raw.get("index"), "index", base)
+    ensure_outside_store(index, store, "index")
 
     since = raw.get("since")
     if isinstance(since, str):
@@ -139,11 +148,11 @@ def load_config(path: Path) -> Config:
         raise ConfigError('list the chats to index in `chats` (ids from the `chats` command, or'
                           ' patterns such as "*;-;*" for every 1:1 chat); nothing is indexed by default')
 
-    contacts = _path(raw["contacts"], "contacts", base) if raw.get("contacts") else None
+    contacts = resolve_path(raw["contacts"], "contacts", base) if raw.get("contacts") else None
     attachments = raw.get("attachments", False)
     if not isinstance(attachments, bool):
         raise ConfigError("`attachments` must be true or false")
-    root = (_path(raw["attachments_root"], "attachments_root", base) if raw.get("attachments_root")
+    root = (resolve_path(raw["attachments_root"], "attachments_root", base) if raw.get("attachments_root")
             else store / "Attachments")
     max_chars = raw.get("max_body_chars", 20_000)
     if not isinstance(max_chars, int) or isinstance(max_chars, bool) or max_chars <= 0:

@@ -72,7 +72,7 @@ exit 0
 EOF
 chmod +x "${tmp}/bin/hermes" "${tmp}/bin/python3"
 
-# fresh_home: a HERMES_HOME as hermes setup leaves it
+# fresh_home: a HERMES_HOME after a first boot
 fresh_home() {
   rm -rf "${tmp:?}/home" "${tmp:?}/created"
   mkdir -p "${tmp}/home/memories"
