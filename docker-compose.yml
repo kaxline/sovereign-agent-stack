@@ -1330,13 +1330,17 @@ services:
       - OPENCODE_CONFIG=/etc/opencode/opencode.json
       # The Dockerfile pins the version; 1.19.6 otherwise offers OpenCode 2.
       - OPENCODE_DISABLE_AUTOUPDATE=1
+      # entrypoint.sh drops from root to this user, so files the agent writes
+      # into coding roots belong to the host user, as hermes-worker's do.
+      - OPENCODE_UID=${HERMES_UID:-1000}
+      - OPENCODE_GID=${HERMES_GID:-1000}
       - OPENCODE_SERVER_USERNAME=${OPENCODE_SERVER_USERNAME:-opencode}
       - OPENCODE_SERVER_PASSWORD=${OPENCODE_SERVER_PASSWORD:?set OPENCODE_SERVER_PASSWORD in .env}
     # Mounted at its own host path so paths in the UI match paths in your terminal.
     working_dir: ${OPENCODE_WORKSPACE_HOST}
     volumes:
-      - opencode_config:/root/.config/opencode
-      - opencode_data:/root/.local/share/opencode
+      - opencode_config:/home/opencode/.config/opencode
+      - opencode_data:/home/opencode/.local/share/opencode
       - ${OPENCODE_WORKSPACE_HOST}:${OPENCODE_WORKSPACE_HOST}
       # opencode.local.json is written by setup (gitignored). Run make ensure-local first.
       - ./opencode/opencode.local.json:/etc/opencode/opencode.json:ro

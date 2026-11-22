@@ -46,6 +46,7 @@ run_shellcheck() {
     [ "$rc" = 0 ] || exit "$rc"
     shellcheck -s sh -e SC1090,SC1091 compose/hermes/bootstrap-api-profile.sh
     shellcheck -s sh compose/hermes/007-profile-ownership.sh
+    shellcheck -s sh compose/opencode/entrypoint.sh
     shellcheck -s sh -e SC1090,SC1091 n8n/import-demo-data.sh || true
   '
 }
