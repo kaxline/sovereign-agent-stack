@@ -50,22 +50,42 @@ def _resolve_workspace(raw: str) -> Path | None:
     return Path(workspace).expanduser().resolve()
 
 
-def _index_is_stale(root: Path) -> bool | None:
-    """Stale-check project-local INDEX rows only; None when there is no INDEX.
+STALE_NOTE = (
+    "Note: INDEX.md may be out of date relative to files under this project "
+    "folder; read source files directly rather than trusting the index."
+)
+EXTRA_ROOTS_NOTE = (
+    " It refreshes when the stack next starts. Extra source roots (absolute "
+    "paths in INDEX.md) are not checked here."
+)
 
-    hermes-webui does not mount CONTEXT_EXTRA_ROOTS. Extra-root freshness is
-    `make project-index-check` / doctor on the host.
+
+def _index_note(root: Path) -> str | None:
+    """Keep a generated INDEX.md current; return a note for the brief when it
+    can't be.
+
+    When every source is inside the project, a stale index is rewritten here
+    (/opt/projects is mounted read-write) and the brief gets no note.
+    hermes-webui does not mount CONTEXT_EXTRA_ROOTS, so a project with extra
+    roots is checked on its local rows only and left for the host-side refresh
+    in scripts/up.sh. A hand-written INDEX.md (no manifest) is never checked.
     """
-    if not (root / ps.MANIFEST_NAME).is_file() or not (root / ps.INDEX_NAME).is_file():
+    if ps.index_kind(root) != ps.GENERATED:
         return None
     try:
-        return not ps.catalog_is_fresh(root, local_only=True)
+        local_only = ps.all_sources_local(root)
+        if ps.catalog_is_fresh(root, local_only=True):
+            return None
+        if not local_only:
+            return STALE_NOTE + EXTRA_ROOTS_NOTE
+        ps.write_index(root)
+        return None
     except (ps.SourcesError, OSError) as exc:
         print(
-            f"project-brief-prefill: cannot check {root / ps.INDEX_NAME}: {exc}",
+            f"project-brief-prefill: cannot refresh {root / ps.INDEX_NAME}: {exc}",
             file=sys.stderr,
         )
-        return None
+        return STALE_NOTE
 
 
 def _max_chars() -> int:
@@ -107,15 +127,9 @@ def main() -> int:
         _emit([])
         return 0
 
-    stale = _index_is_stale(root)
-    if stale is True:
-        body = (
-            f"{body}\n\n"
-            "Note: INDEX.md may be out of date relative to files under this "
-            "project folder; read source files directly rather than trusting "
-            "the index. Extra source roots (absolute paths in INDEX.md) are "
-            "not checked here."
-        )
+    note = _index_note(root)
+    if note:
+        body = f"{body}\n\n{note}"
 
     limit = _max_chars()
     if limit and len(body) > limit:
