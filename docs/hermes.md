@@ -89,6 +89,7 @@ With `sessions.auto_prune: true`, Hermes deletes ended sessions that have been i
 Dashboard JSON-RPC clients (for example Boundary over the gateway WebSocket) can rely on this agent tag for:
 
 - `timestamp` and `row_id` on `session.history` / `session.resume` transcript rows
+- `result: {"task_id": "t_…"}` on `kanban_create` tool rows of those transcripts, when the call filed a task; no other tool row carries `result` (stack overlay `patch-history-task-ids.py`)
 - `prompt.submit` truncation: `truncate_before_row_id` (preferred), `truncate_before_message_id`, or `truncate_before_user_ordinal`, with `confirm_truncate`; result may include `survivor_row_id_map`
 - `session.branch` (fork a live session into a stored child) and `parent_session_id` on `session.create` / session list rows
 

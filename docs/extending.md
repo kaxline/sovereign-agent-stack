@@ -425,6 +425,31 @@ running task. Like `kanban_unblock`, dispatcher-spawned workers don't see
 either. These are an overlay (`patch-kanban-edit.py`); the fields, tool names
 and arguments stay stable across pin moves.
 
+### Stopping a run
+
+`POST /runs/{run_id}/terminate` stops the run's worker and, as in upstream,
+returns the task to `ready` (or `review`), so the dispatcher starts it again.
+To stop it and keep it stopped, send `hold`:
+
+```json
+{"hold": true, "reason": "stopped from Boundary"}
+```
+
+One transaction moves the task from `running` to `blocked` and ends the run,
+and the worker is stopped after it, so no dispatcher tick can start the task
+again. A worker that outlives the signals is refused by the board and ended by
+the dispatcher's sweep of finished runs. The answer is `{"ok": true, "run_id": …, "task_id": …, "status":
+"blocked"}`; `409` means the run already ended or is no longer the task's
+current run, `404` an unknown run.
+
+The block lasts until an operator unblocks the task (`PATCH /tasks/{id}` with
+`"status": "ready"`), which returns a held review run to `review`. The run ends
+with outcome `blocked`, and its `metadata` and the `blocked` event both carry
+`"operator_stop": true` and the `reason`, so an operator stop reads differently
+from a worker's own block, a crash (`crashed`) or a reclaim (`reclaimed`). This
+is an overlay (`patch-kanban-hold.py`); `hold` and `operator_stop` stay stable
+across pin moves.
+
 ### Telling the session that filed a task
 
 A dashboard session that calls `kanban_create` is subscribed to that task.

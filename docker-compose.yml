@@ -2015,6 +2015,8 @@ services:
       - ./compose/hermes/patch-turn-speaker.py:/bootstrap/patch-turn-speaker.py:ro
       - ./compose/hermes/cron_gated_sessions.py:/bootstrap/cron_gated_sessions.py:ro
       - ./compose/hermes/patch-cron-gated-sessions.py:/bootstrap/patch-cron-gated-sessions.py:ro
+      - ./compose/hermes/history_task_ids.py:/bootstrap/history_task_ids.py:ro
+      - ./compose/hermes/patch-history-task-ids.py:/bootstrap/patch-history-task-ids.py:ro
       - ./compose/hermes/patch-control-socket-tmp.py:/bootstrap/patch-control-socket-tmp.py:ro
       - ./compose/hermes/patch-mirror-exclude.py:/bootstrap/patch-mirror-exclude.py:ro
       - ./compose/hermes/mcp_trust_details.py:/bootstrap/mcp_trust_details.py:ro
@@ -2039,13 +2041,15 @@ services:
       # Kanban: refuse unbuildable workspaces at filing, give up on final
       # workspace errors, comment on the creator task; change a task's workspace
       # in place, kanban_update / kanban_archive; wake dashboard sessions after
-      # compression. See docs/extending.md.
+      # compression; stop a run and hold its task. See docs/extending.md.
       - ./compose/hermes/kanban_guards.py:/bootstrap/kanban_guards.py:ro
       - ./compose/hermes/patch-kanban-guards.py:/bootstrap/patch-kanban-guards.py:ro
       - ./compose/hermes/kanban_edit.py:/bootstrap/kanban_edit.py:ro
       - ./compose/hermes/patch-kanban-edit.py:/bootstrap/patch-kanban-edit.py:ro
       - ./compose/hermes/kanban_wake.py:/bootstrap/kanban_wake.py:ro
       - ./compose/hermes/patch-kanban-wake.py:/bootstrap/patch-kanban-wake.py:ro
+      - ./compose/hermes/kanban_hold.py:/bootstrap/kanban_hold.py:ro
+      - ./compose/hermes/patch-kanban-hold.py:/bootstrap/patch-kanban-hold.py:ro
       - ./compose/hermes/12-patch-kanban-guards.sh:/etc/cont-init.d/12-patch-kanban-guards:ro
       # Kanban task links (?task=, ?board=), ?embed=1 without the dashboard
       # shell, and one-time sign-in links (/auth/handoff). See docs/extending.md.

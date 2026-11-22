@@ -116,10 +116,10 @@ def load(path: Path) -> tuple[mi.Config, WatchConfig, NotifyConfig | None]:
         full_every_minutes=_number(w, "full_every_minutes", 60.0, 5.0),
         poll_seconds=_number(w, "poll_seconds", 5.0, 0.5),
         debounce_ms=int(_number(w, "debounce_ms", 250, 0)),
-        state=mi._path(w["state"], "watch.state", base) if w.get("state") else None,
+        state=mi.resolve_path(w["state"], "watch.state", base) if w.get("state") else None,
     )
-    if watch.state is not None and (watch.state == config.store or config.store in watch.state.parents):
-        raise mi.ConfigError("`watch.state` must be outside the Messages folder")
+    if watch.state is not None:
+        mi.ensure_outside_store(watch.state, config.store, "watch.state")
 
     n = raw.get("notify")
     if n is None:
@@ -137,16 +137,16 @@ def load(path: Path) -> tuple[mi.Config, WatchConfig, NotifyConfig | None]:
     if url:
         if not n.get("secret_file"):
             raise mi.ConfigError("`notify.url` needs `notify.secret_file` (the shared HMAC secret)")
-        secret_path = mi._path(n["secret_file"], "notify.secret_file", base)
+        secret_path = mi.resolve_path(n["secret_file"], "notify.secret_file", base)
         try:
             secret = secret_path.read_bytes().strip()
         except FileNotFoundError:
             raise mi.ConfigError(f"secret file not found: {secret_path}") from None
         if len(secret) < 16:
             raise mi.ConfigError("the notify secret must be at least 16 bytes")
-    outbox = mi._path(n["outbox"], "notify.outbox", base) if n.get("outbox") else None
-    if outbox is not None and (outbox == config.store or config.store in outbox.parents):
-        raise mi.ConfigError("`notify.outbox` must be outside the Messages folder")
+    outbox = mi.resolve_path(n["outbox"], "notify.outbox", base) if n.get("outbox") else None
+    if outbox is not None:
+        mi.ensure_outside_store(outbox, config.store, "notify.outbox")
     if not url and not outbox:
         raise mi.ConfigError("[notify] needs `url`, `outbox` or both")
     notify = NotifyConfig(chats=list(chats), url=url, secret=secret, outbox=outbox,

@@ -18,6 +18,16 @@ the stack under another app.
   `make model-use`, the wizard or by hand is kept. `hermes-api-bootstrap`
   and `hermes-browser-bootstrap` now receive `LLM_MODEL`. Installs that ran
   the wizard already have `provider: custom` and see no change.
+- `POST /runs/{run_id}/terminate` on the kanban dashboard takes `hold:
+  true`: one transaction moves the task to a sticky `blocked` and ends the
+  run, then the worker is stopped, so the dispatcher can't start the task
+  again before an operator unblocks it. The run ends with outcome `blocked`, and its
+  metadata and the `blocked` event carry `operator_stop: true` and the
+  reason. Without `hold`, terminate still returns the task to `ready`.
+  (Boundary CR 0005 R2)
+- `kanban_create` tool rows in `session.history` and resume transcripts
+  carry `result: {"task_id": "t_…"}` when the call filed a task. No other
+  tool row gets `result`. (Boundary CR 0005 R3)
 - `bootstrap-buzz.sh` now writes the default `BUZZ_RELAY_URL` when `.env` has
   `BUZZ_RELAY_URL=""` (quoted empty). It used to keep the empty value.
 - A cron fire that a gate skips (monitor output unchanged, `wakeAgent: false`,
