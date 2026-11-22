@@ -408,9 +408,13 @@ def apply_instance(manifest: dict, data_root: Path, slug: str, values: dict,
     beside the settings."""
     slug = _slug(slug)
     schema = _inst_schema(manifest)
+    d = addon_dir(data_root, manifest)
+    if not replace and isinstance(values, dict) and "endpoint" in _instance_values(d, slug) \
+            and not set(values) <= {"trust", "bind"}:
+        raise InputError("an endpoint instance takes only trust and bind; "
+                         "change the rest with connect --endpoint --force", "slug")
     values, fields = _split_stack_fields(manifest, values)
     clean = _validated_instance(schema, values, _has_connect(manifest))
-    d = addon_dir(data_root, manifest)
     # A transient secret was checked above and goes to the connect hook only.
     plain = {k: v for k, v in clean.items() if schema[k]["type"] != "secret"}
     _mkdir_addon(d)
@@ -532,6 +536,8 @@ def missing(manifest: dict, data_root: Path) -> list[str]:
             out.append(f"instances:{manifest['instances'].get('name') or 'instance'}")
         for slug in found:
             vals = _instance_values(d, slug)
+            if "endpoint" in vals:
+                continue  # an endpoint instance skips the settings schema
             for name, spec in _inst_schema(manifest).items():
                 if not _required(spec) or spec.get("transient"):
                     continue
@@ -736,7 +742,12 @@ def listing(manifest: dict, data_root: Path, environ, figures=None) -> dict:
         out["share"] = share
     for slug in slugs(d):
         vals = _instance_values(d, slug)
-        view = _view(_inst_schema(manifest), vals, lambda n, s=slug: d / "secrets" / f"{s}.{n}")
+        if "endpoint" in vals:
+            view = {k: vals[k] for k in ("endpoint", "access", "trust") if k in vals}
+        else:
+            view = _view(_inst_schema(manifest), vals, lambda n, s=slug: d / "secrets" / f"{s}.{n}")
+            if vals.get("trust") in TRUST_VALUES:
+                view["trust"] = vals["trust"]
         if isinstance(vals.get("bind"), dict):
             view["bind"] = vals["bind"]
         out["instances"][slug] = view

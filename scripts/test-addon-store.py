@@ -666,6 +666,35 @@ with tempfile.TemporaryDirectory() as tmp:
           r.stdout + r.stderr)
     check("connect-endpoint output holds no secret", "cli-secret-ro" not in r.stdout + r.stderr)
 
+# endpoint instances in missing(), listing() and later configure calls
+with tempfile.TemporaryDirectory() as tmp:
+    root = Path(tmp)
+    d = st.addon_dir(root, TWENTY)
+    ep = "http://host.docker.internal:45123"
+    st.apply_endpoint_instance(TWENTY, root, "ep", ep, "read", "untrusted", {"ro": "t-ro"}, False)
+    check("missing() is empty with only an endpoint instance", st.missing(TWENTY, root) == [], str(st.missing(TWENTY, root)))
+    view = st.listing(TWENTY, root, {})["instances"]["ep"]
+    check("listing shows an endpoint instance as endpoint, access and trust only",
+          view == {"endpoint": ep, "access": "read", "trust": "untrusted"}, str(view))
+    st.apply_instance(TWENTY, root, "ep", {"trust": "trusted"})
+    before = {p.name: p.read_text() for p in list((d / "instances").iterdir()) + list((d / "secrets").iterdir())}
+    check("trust changes on an endpoint instance, the rest stays",
+          json.loads((d / "instances" / "ep.json").read_text()) == {"endpoint": ep, "access": "read", "trust": "trusted"}
+          and (d / "secrets" / "ep.key_ro").read_text() == "t-ro")
+    before = {p.name: p.read_text() for p in list((d / "instances").iterdir()) + list((d / "secrets").iterdir())}
+    for bad in ({"access": "write"}, {"url": "http://crm:3000"}, {"local": True}):
+        try:
+            st.apply_instance(TWENTY, root, "ep", bad)
+            check(f"endpoint instance refuses {bad}", False, "no exception")
+        except st.InputError as e:
+            check(f"endpoint instance refuses {bad}", "only trust and bind" in str(e)
+                  and "connect --endpoint --force" in str(e), str(e))
+    after = {p.name: p.read_text() for p in list((d / "instances").iterdir()) + list((d / "secrets").iterdir())}
+    check("refused configure leaves the files unchanged", before == after)
+    st.apply_instance(TWENTY, root, "plain", {"url": "http://crm:3000", "trust": "untrusted"})
+    check("listing shows trust on an ordinary instance",
+          st.listing(TWENTY, root, {})["instances"]["plain"].get("trust") == "untrusted")
+
 if failures:
     print(f"{failures} failed")
     sys.exit(1)
