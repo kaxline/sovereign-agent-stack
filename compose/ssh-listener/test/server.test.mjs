@@ -3,7 +3,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import net from 'node:net'
 import { execFile } from 'node:child_process'
@@ -13,6 +12,7 @@ import HyperDHT from 'hyperdht'
 import createTestnet from 'hyperdht/testnet.js'
 import { startServer } from '../server.mjs'
 import { saveAllowed, saveConfig, loadStatus, loadKeyPair } from '../lib.mjs'
+import { tmpDir, connect, closed } from './helpers.mjs'
 
 const run = promisify(execFile)
 const LISTENER = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'listener.mjs')
@@ -38,37 +38,11 @@ async function fakeSshd() {
   }
 }
 
-function tmpDir() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'ssh-listener-'))
-}
-
-// connect(node, publicKey, keyPair): resolves with the open stream, rejects
-// when the listener refuses.
-function connect(node, publicKey, keyPair) {
-  return new Promise((resolve, reject) => {
-    const stream = node.connect(publicKey, { keyPair })
-    stream.once('open', () => resolve(stream))
-    stream.once('error', reject)
-  })
-}
-
 function echo(stream, text) {
   return new Promise((resolve, reject) => {
     stream.once('data', (data) => resolve(data.toString()))
     stream.once('error', reject)
     stream.write(text)
-  })
-}
-
-function closed(stream, ms) {
-  return new Promise((resolve, reject) => {
-    if (stream.destroyed) return resolve()
-    const timer = setTimeout(() => reject(new Error(`stream still open after ${ms} ms`)), ms)
-    stream.once('close', () => {
-      clearTimeout(timer)
-      resolve()
-    })
-    stream.on('error', () => {})
   })
 }
 

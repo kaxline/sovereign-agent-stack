@@ -5,11 +5,16 @@
   "description": "Passes HyperDHT streams from allowed client keys to the host's sshd",
   "type": "module",
   "license": "MIT",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
     "hyperdht": "6.36.0"
+  },
+  "devDependencies": {
+    "ssh2": "1.16.0"
   }
 }

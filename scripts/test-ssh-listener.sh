@@ -1,8 +1,9 @@
 #!/bin/sh
 # The SSH listener's own tests (compose/ssh-listener/test): allowed and refused
 # clients, allow and revoke without a restart, the stored key pair, and its
-# command line, against a local HyperDHT testnet. They run in the image's test
-# stage, so the host needs Docker but not Node.
+# command line, against a local HyperDHT testnet, plus an ssh2 client signing in
+# to a real OpenSSH sshd through the listener. They run in the image's test
+# stage, which has sshd and ssh2, so the host needs Docker but not Node.
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

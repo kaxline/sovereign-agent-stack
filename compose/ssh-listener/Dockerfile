@@ -10,8 +10,15 @@ RUN --mount=type=cache,target=/root/.npm npm ci --omit=dev
 COPY lib.mjs server.mjs listener.mjs ./
 
 # `make ssh-listener-test` and scripts/test-ssh-listener.sh build this stage,
-# which runs the tests against a local testnet. Nothing else uses it.
+# which runs the tests against a local testnet. Nothing else uses it. It adds
+# OpenSSH's sshd and the ssh2 client (a dev dependency) for
+# test/sshd.test.mjs; the release stage copies /app from build, without them.
 FROM build AS test
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends openssh-server \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /run/sshd
+RUN --mount=type=cache,target=/root/.npm npm ci
 COPY test ./test
 RUN node --test test/*.test.mjs
 

@@ -95,4 +95,4 @@ Errors print `{"error","message"}`: `bad_input` (exit 2), `command_failed` (exit
 
 ## From a checkout
 
-`scripts/ssh-listener.sh` in the repository has no image pinned. `make ssh-listener-image` builds `sovereign-ssh-listener:local`; run the script with `SSH_LISTENER_IMAGE=sovereign-ssh-listener:local`. `make ssh-listener-test` runs the listener's tests against a local HyperDHT testnet in the image's test stage. The source is in `compose/ssh-listener/`.
+`scripts/ssh-listener.sh` in the repository has no image pinned. `make ssh-listener-image` builds `sovereign-ssh-listener:local`; run the script with `SSH_LISTENER_IMAGE=sovereign-ssh-listener:local`. `make ssh-listener-test` runs the listener's tests against a local HyperDHT testnet in the image's test stage, including an `ssh2` client signing in to a real OpenSSH sshd through the listener (host key check, a command, SFTP, a port forward, and revoke ending the session). The source is in `compose/ssh-listener/`.
