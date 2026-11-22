@@ -69,11 +69,15 @@ def walk(data: dict, dotted: str, *, create: bool = True) -> tuple[dict | None, 
     return node, parts[-1]
 
 
+def profile_name(cfg_path: str | Path) -> str:
+    """The profile a config.yaml belongs to: its directory under profiles/, else 'default'."""
+    parent = Path(cfg_path).parent
+    return parent.name if parent.parent.name == "profiles" else "default"
+
+
 def profile_label(cfg_path: str | Path, dotted: str) -> str:
     """'<dotted> (<profile>)': one key is written to several profiles."""
-    parent = Path(cfg_path).parent
-    profile = parent.name if parent.parent.name == "profiles" else "default"
-    return f"{dotted} ({profile})"
+    return f"{dotted} ({profile_name(cfg_path)})"
 
 
 def _merge(a: Any, b: Any) -> Any:

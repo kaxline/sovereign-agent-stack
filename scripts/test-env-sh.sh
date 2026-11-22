@@ -116,6 +116,19 @@ for s in scripts/doctor.sh scripts/lib/doctor-*.sh upgrades/lib.sh scripts/crm.s
   if grep -E -q '1 ?\| ?true ?\| ?(TRUE|yes)' "${ROOT}/${s}"; then fail "${s} spells truthiness inline; use env_true"; fi
 done
 
+# --- lib/env.sh: has_compose_profile --------------------------------------------
+# Whitespace around entries doesn't hide them; a prefix doesn't match.
+p="${tmp}/profiles.env"
+ENV_FILE="${tmp}/none.env" has_compose_profile core || fail "has_compose_profile: core is the default"
+printf 'COMPOSE_PROFILES="a, b"\n' > "$p"
+ENV_FILE="$p" has_compose_profile a || fail "has_compose_profile a in \"a, b\""
+ENV_FILE="$p" has_compose_profile b || fail "has_compose_profile b in \"a, b\""
+if ENV_FILE="$p" has_compose_profile core; then fail "has_compose_profile: core listed in \"a, b\""; fi
+printf 'COMPOSE_PROFILES=core,mail-drafts\n' > "$p"
+if ENV_FILE="$p" has_compose_profile mail; then fail "has_compose_profile: mail matched mail-drafts"; fi
+# corpus.sh checks rag with it rather than matching the list inline.
+grep -q 'has_compose_profile rag' "${ROOT}/scripts/corpus.sh" || fail "corpus.sh: use has_compose_profile"
+
 # --- lib/env.sh: valid_slug ---------------------------------------------------
 # addon_store.SLUG_RE: a lowercase letter, then at most 30 of a-z, 0-9 and -.
 for v in a main my-budget-2 "a$(printf '%030d' 0)"; do

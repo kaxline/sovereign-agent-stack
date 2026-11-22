@@ -48,6 +48,10 @@ class AuthFailed(ImapError):
     """The server rejected the user name and password."""
 
 
+class Unreachable(ImapError):
+    """The connection or its TLS handshake failed before the login."""
+
+
 class Refused(RuntimeError):
     """This code asked for something it must never do. Always a bug."""
 
@@ -297,7 +301,7 @@ class Connection:
                 if s["security"] == "starttls":
                     imap.starttls(ssl_context=self._context())
         except (OSError, socket.timeout, ssl.SSLError, imaplib.IMAP4.error) as exc:
-            raise ImapError(f"{self.account_id}: can't connect to {s['host']}:{s['port']}"
+            raise Unreachable(f"{self.account_id}: can't connect to {s['host']}:{s['port']}"
                             f" ({type(exc).__name__}: {exc})") from None
         try:
             password = mail_credentials.password(self.account_id, s.get("password_env"))

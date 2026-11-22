@@ -23,15 +23,9 @@ ok() { printf '  OK  %s\n' "$1"; PASS=$((PASS + 1)); }
 bad() { printf ' FAIL %s\n' "$1"; FAIL=$((FAIL + 1)); }
 warn() { printf ' WARN %s\n' "$1"; WARN=$((WARN + 1)); }
 
-# has_profile NAME: whether .env's COMPOSE_PROFILES (default core) lists NAME.
-has_profile() {
-  local p IFS=','
-  for p in $(env_get COMPOSE_PROFILES core); do
-    p="${p//[[:space:]]/}"
-    [[ "$p" == "$1" ]] && return 0
-  done
-  return 1
-}
+# has_profile NAME: has_compose_profile under the name doctor.sh and the
+# sections use.
+has_profile() { has_compose_profile "$1"; }
 
 # svc_running SERVICE: whether compose has SERVICE running.
 svc_running() {

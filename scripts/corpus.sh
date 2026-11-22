@@ -42,12 +42,8 @@ validate_slug() {
 }
 
 require_rag_profile() {
-  local profiles
-  profiles="$(env_get COMPOSE_PROFILES core)"
-  case ",${profiles}," in
-    *,rag,*) ;;
-    *) die "rag profile is not enabled (COMPOSE_PROFILES=${profiles}). Enable it: ./scripts/addon.sh enable lightrag" ;;
-  esac
+  has_compose_profile rag \
+    || die "rag profile is not enabled (COMPOSE_PROFILES=$(env_get COMPOSE_PROFILES core)). Enable it: ./scripts/addon.sh enable lightrag"
 }
 
 refuse_backend_workspace_overrides() {

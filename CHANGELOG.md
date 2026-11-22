@@ -12,6 +12,19 @@ the stack under another app.
 
 - `bootstrap-buzz.sh` now writes the default `BUZZ_RELAY_URL` when `.env` has
   `BUZZ_RELAY_URL=""` (quoted empty). It used to keep the empty value.
+- `addon.sh run email status` prints one JSON object with `last_indexed`,
+  the message count, each configured account's count and failure code from
+  the last pass (4 or 5, else null) and the accounts left out of the passes
+  with their reasons. It runs in `email-indexer` and reads the index
+  read-only. (Boundary CR 0031 R1)
+- `addon.sh run email mailboxes` prints `{"error","message"}` on stdout when
+  it fails: `login_refused`, `password_missing`, `server_unreachable`,
+  `server_error`, `bad_config` or `failed`. `addon.sh` still exits 4.
+  `mail-index.py mailboxes --json-errors` prints the same, and `--account`
+  logs in to that IMAP account only. (Boundary CR 0031 R2)
+- A pass where every email account fails creates an empty index to record
+  the failures when there's none yet, so a first pass with a refused password
+  shows in `mail_status` as `failed_accounts`. `last_indexed` stays null.
 - Twenty's manifest `share` block names `crm.sh key create`, `revoke` and
   `list` in `memberKeys` and sets `handout: true`, so a provider granting
   access mints a key per person and level. (Boundary CR 0025 R1, R3)

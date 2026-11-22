@@ -197,7 +197,7 @@ class CrmInit(unittest.TestCase):
         env = {
             "PATH": os.environ["PATH"],
             "TWENTY_BASE_URL": f"http://127.0.0.1:{self.server.server_port}",
-            "ADDONS_DATA_ROOT": str(self.droot),
+            "ASSISTANT_DATA_ROOT": str(self.droot),
             "TWENTY_DATA_DIR": str(self.data),
             "TWENTY_USERNAME": "owner@crm.localhost",
             "TWENTY_PASSWORD": password,
@@ -363,7 +363,7 @@ class CrmInit(unittest.TestCase):
         env = {
             "PATH": os.environ["PATH"],
             "TWENTY_BASE_URL": f"http://127.0.0.1:{self.server.server_port}",
-            "ADDONS_DATA_ROOT": str(self.droot),
+            "ASSISTANT_DATA_ROOT": str(self.droot),
             "TWENTY_USERNAME": "owner@crm.localhost",
             "TWENTY_PASSWORD": PASSWORD,
             **extra,
@@ -474,7 +474,7 @@ class CrmInit(unittest.TestCase):
         self.put("hosted", {"url": "https://crm.example.com", "local": False, "access": "read",
                             "key_ro": "ro-SECRET"})
         proc = subprocess.run([sys.executable, "-I", str(ADMIN), "list"],
-                              env={"PATH": os.environ["PATH"], "ADDONS_DATA_ROOT": str(self.droot)},
+                              env={"PATH": os.environ["PATH"], "ASSISTANT_DATA_ROOT": str(self.droot)},
                               capture_output=True, text=True)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertNotIn("SECRET", proc.stdout + proc.stderr)
@@ -516,7 +516,7 @@ class CrmKey(unittest.TestCase):
 
     def run_init(self) -> None:
         env = {"PATH": os.environ["PATH"], "TWENTY_BASE_URL": self.base,
-               "ADDONS_DATA_ROOT": str(self.droot), "TWENTY_DATA_DIR": str(self.tmp / "data"),
+               "ASSISTANT_DATA_ROOT": str(self.droot), "TWENTY_DATA_DIR": str(self.tmp / "data"),
                "TWENTY_USERNAME": "owner@crm.localhost", "TWENTY_PASSWORD": PASSWORD}
         proc = subprocess.run([sys.executable, "-I", str(ADMIN), "init"], env=env,
                               capture_output=True, text=True)
@@ -524,7 +524,7 @@ class CrmKey(unittest.TestCase):
 
     def key(self, *args: str, base: str | None = None, **extra: str) -> subprocess.CompletedProcess:
         env = {"PATH": os.environ["PATH"], "TWENTY_BASE_URL": base or self.base,
-               "ADDONS_DATA_ROOT": str(self.droot), "TWENTY_USERNAME": "owner@crm.localhost",
+               "ASSISTANT_DATA_ROOT": str(self.droot), "TWENTY_USERNAME": "owner@crm.localhost",
                "TWENTY_PASSWORD": PASSWORD, **extra}
         proc = subprocess.run([sys.executable, "-I", str(ADMIN), "key", *args],
                               env=env, capture_output=True, text=True)

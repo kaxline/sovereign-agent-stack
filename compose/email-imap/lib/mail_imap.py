@@ -26,7 +26,7 @@ from typing import Iterator
 
 import mail_credentials
 import mail_index as mi
-from mail_imap_conn import (AuthFailed, Connection, ImapError, Mailbox, Refused,  # noqa: F401  (re-exported)
+from mail_imap_conn import (AuthFailed, Connection, ImapError, Mailbox, Refused, Unreachable,  # noqa: F401  (re-exported)
                             decode_mutf7, encode_mutf7, fetch_items, flags_of, parse_list, quote, uid_of)
 import mail_imap_conn
 
@@ -261,11 +261,16 @@ class ImapSource:
         """Every account's mailboxes with message counts, for writing the config."""
         out = []
         for scope, conn in self._accounts():
-            with conn:
-                for box in conn.list_mailboxes():
-                    if box.selectable:
-                        out.append({"account": scope.id, "mailbox": box.path, "messages": conn.status_count(box),
-                                    "special_use": sorted(box.special) or None})
+            try:
+                with conn:
+                    for box in conn.list_mailboxes():
+                        if box.selectable:
+                            out.append({"account": scope.id, "mailbox": box.path,
+                                        "messages": conn.status_count(box),
+                                        "special_use": sorted(box.special) or None})
+            except (imaplib.IMAP4.error, OSError) as exc:
+                # A drop after the login; the type name only, as in _failed.
+                raise ImapError(f"{scope.id}: the connection failed ({type(exc).__name__})") from None
         return out
 
     def doctor(self) -> dict:
