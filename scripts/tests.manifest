@@ -63,6 +63,7 @@ scripts/test-credentials-sh.sh                  ci
 scripts/test-crm-script.py                      ci
 scripts/test-crm-sh.sh                          ci
 scripts/test-cron-delivery-errors.py            ci
+scripts/test-cron-gated-sessions.py             ci image
 scripts/test-dashboard-handoff.py               ci image
 scripts/test-data-dir-sh.sh                     ci
 scripts/test-db-service-remove.sh               ci

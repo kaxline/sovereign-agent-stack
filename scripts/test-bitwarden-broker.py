@@ -39,7 +39,7 @@ sys.path.insert(0, str(ROOT / "scripts" / "lib"))
 from testkit import expect, fail  # noqa: E402
 
 import hermes_image  # noqa: E402
-from broker import accounts, browsers, bwcli, cdp, origins, signin, vault  # noqa: E402
+from broker import accounts, atomic, browsers, bwcli, cdp, origins, signin, vault  # noqa: E402
 
 FAKE_BW = ROOT / "scripts" / "fixtures" / "fake-bw.py"
 
@@ -1213,6 +1213,35 @@ def run_cdp_tests() -> None:
     test_write_unconfirmed()
     test_write_failed()
     test_fill_timeout()
+
+
+def test_write_atomic() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "f.json"
+        path.write_text("old\n", encoding="utf-8")
+        expect(atomic.write_atomic(path, "new\n", 0o644, suffix=".tmp") is True, "owner kept with no owner")
+        expect(path.read_text(encoding="utf-8") == "new\n", "content replaced")
+        expect(stat.S_IMODE(path.stat().st_mode) == 0o644, oct(path.stat().st_mode))
+        atomic.write_atomic(path, b"key\n")
+        expect(path.read_bytes() == b"key\n" and stat.S_IMODE(path.stat().st_mode) == 0o600, "bytes at mode 600")
+        expect(atomic.write_atomic(path, "x", owner=(os.getuid(), os.getgid())) is True, "own owner kept")
+        if os.getuid() != 0:
+            expect(atomic.write_atomic(path, "y", owner=(0, 0)) is False, "a refused chown reports False")
+            expect(path.read_text(encoding="utf-8") == "y", "a refused chown still writes")
+
+        class Boom(Exception):
+            pass
+
+        class Bad(str):
+            def encode(self, *a, **k):
+                raise Boom
+        try:
+            atomic.write_atomic(path, Bad("z"))
+            fail("write_atomic swallowed the error")
+        except Boom:
+            pass
+        expect(path.read_text(encoding="utf-8") == "y", "a failed write keeps the old content")
+        expect([p.name for p in Path(tmp).iterdir()] == ["f.json"], "no temp files left")
 
 
 def test_fill_rejects_bad_arguments() -> None:
@@ -3040,6 +3069,7 @@ def main() -> None:
     test_absent_leaves_the_account_alone()
     test_manual_unlock_and_lock()
     test_denylist()
+    test_write_atomic()
     test_fill_rejects_bad_arguments()
     test_fill_cdp_down()
     test_fill_bounded_by_timeout()
