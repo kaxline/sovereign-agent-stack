@@ -192,6 +192,14 @@ Another overlay lets a dashboard client tell a slow turn from a lost one without
 
 `message.complete.text` is the turn's final reply. `message.delta` frames are a preview of it, and some turns send none: a profile with a plugin that holds the stream (a `hold_stream` transform) shows its reply only in `message.complete`. Upstream Hermes also streams a tool-loop guardrail stop only to the CLI's display callback, which the dashboard gateway doesn't set, so over the gateway that note arrived only in `message.complete`; `patch-guardrail-halt-stream.py` streams it as `message.delta` too, except while a `hold_stream` plugin holds the turn. A client that builds the reply from deltas shows `text` when no delta arrived, with two exceptions: `response_previewed: true` means the reply was already shown as a `message.interim`, and a bot-mode session sends `text: ""` when it withheld a silence marker, in which case the streamed text stands. `response_transformed: true` means `text` replaces whatever streamed. Upstream sends these fields; this stack doesn't change them.
 
+### Cron sessions
+
+Every agent cron fire gets its own session with `source: "cron"`, created before the job's gates run. Upstream Hermes titles and ends that session only after the agent runs, so a fire that a gate skipped (monitor output unchanged, a wake script answering `wakeAgent: false`, an empty payload, a prompt the injection scanner blocked, a refused setup) left an untitled, empty session that never ended. `patch-cron-gated-sessions.py` settles those: when a fire never reached the agent and its session has no messages, the session gets the title a finished run gets (`<job name> · Nov 22 14:15`), `hidden: true` and `end_reason: "cron_skipped"`. The default `session.list` leaves it out; `include_hidden: true` still lists it, and it stays resumable. Fires that reached the agent are left to upstream, as before.
+
+A cron session is read-only. Upstream refuses a message only when the gateway runs it as a cron admission. With this overlay, `session.resume` on a stored session whose `source` is `cron` marks the live session, and `prompt.submit` on it answers error `4087` before any row is written. The message is upstream's `gateway.errors.cron_session_read_only` text in the profile's language, and `data.error_surface` is `{"layer": "gateway", "code": "cron_session_read_only", "retryable": false}`, the same descriptor the gateway's refusal carries. Offer the person a new chat.
+
+Sessions left by gated fires before this overlay are ended at the next restart (`end_reason: "startup_orphan_reap"`) and stay empty. The dashboard's **Delete empty** button (`DELETE /api/sessions/empty`) removes them, along with every other ended session that has no messages.
+
 ## API server profile (`api-server`)
 
 A one-shot `hermes-api-bootstrap` service runs ahead of the main Hermes container, creating or updating an isolated **`api-server`** profile with:
