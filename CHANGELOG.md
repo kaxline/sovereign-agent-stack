@@ -10,6 +10,13 @@ the stack under another app.
 
 ### Changes
 
+- Agent contract: `instances-plan` lines gain a fifteenth field, `trust`, which
+  is `untrusted` for an instance whose stored trust is `untrusted` and empty
+  otherwise; fields 1-14 are unchanged. The Hermes bootstrap sets
+  `trust: untrusted` on that instance's `mcp_servers` entry, so Hermes asks
+  before each call that is not read-only, and removes the key when the
+  instance is trusted again. Instances without `trust` register as before.
+  (Boundary CR 0044 R4)
 - `addon.sh configure --instance` accepts `trust` (`trusted` or `untrusted`), a
   stack-owned instance field stored beside `bind`. Instances without it stay
   `trusted`. (Boundary CR 0044 R3)

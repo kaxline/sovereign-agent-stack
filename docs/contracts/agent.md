@@ -40,7 +40,7 @@ profile only), before `hermes` starts. Both mount `addons/` and
 | Plan | Function |
 |---|---|
 | `mcp-plan` | `register_addon_mcp_servers` |
-| `instances-plan` | `register_addon_instance_servers`, which copies each key into the profile's `.env` as `<NAME>_KEY` and puts only a header that references it in `config.yaml` |
+| `instances-plan` | `register_addon_instance_servers`, which copies each key into the profile's `.env` as `<NAME>_KEY` and puts only a header that references it in `config.yaml`. Field 15, `trust`, is `untrusted` for an instance whose stored trust is `untrusted` and empty otherwise; the adapter makes the agent ask before each call that is not read-only on an untrusted one (Hermes: `mcp_servers.<name>.trust: untrusted`, written by `set_mcp_trust`, which deletes the key when the field is empty) |
 | `vault-plan` | `register_addon_vault_backends` |
 | `mcp-urls` | `set_stack_mcp_parked_retry` (through `addon_mcp_urls`) |
 | `cron_fence`, `cron_fence_toolsets` | `fence_mail_from_cron` |

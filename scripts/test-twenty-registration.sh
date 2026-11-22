@@ -38,6 +38,7 @@ upsert_env() { calls="${calls}upsert:${1}:${2}=${3};"; }
 remove_env_key() { calls="${calls}remove:${1}:${2};"; }
 write_bearer_mcp_entry() { calls="${calls}write:${1:-default}:${2}:${3}:${4}:${5}:${6}:${7}:${8};"; }
 pin_mcp_tools() { calls="${calls}pin:${1:-default}:${2}:$(shift 2; echo "$*");"; }
+set_mcp_trust() { calls="${calls}trust:${1:-default}:${2}:${3};"; }
 reconcile_addon_instance_servers() { calls="${calls}reconcile:${1:-default}:$(shift; echo "$*");"; }
 
 run() {
@@ -202,6 +203,16 @@ has "$WANT" || fail "add-on off: the endpoint instance is registered ($calls)"
 has "upsert:env:default:CRM_SHARED_A_KEY=ro-secret-shared;" || fail "add-on off: its key lands in the profile env ($calls)"
 has "reconcile:default:${SPEC} crm-shared-a;" || fail "add-on off: reconcile keeps crm-shared-a only ($calls)"
 if has "crm-main:"; then fail "add-on off: an ordinary instance stays unregistered ($calls)"; fi
+has "trust:default:crm-shared-a:untrusted;" || fail "an untrusted instance gets trust untrusted ($calls)"
+# A trusted or unmarked instance gets an empty trust, so a stale key is removed.
+instance shared-b '{"endpoint": "http://host.docker.internal:45124", "access": "read", "trust": "trusted"}'
+key shared-b.key_ro ro-secret-shared-b
+run ""
+has "trust:default:crm-shared-b:;" || fail "a trusted instance gets an empty trust ($calls)"
+instance shared-b '{"endpoint": "http://host.docker.internal:45124", "access": "read"}'
+run ""
+has "trust:default:crm-shared-b:;" || fail "an instance with no trust field gets an empty trust ($calls)"
+rm "${store}/instances/shared-b.json" "${store}/secrets/shared-b.key_ro"
 # The add-on on, TWENTY_LOCAL_ENABLED unset: the gate does not apply to it.
 TWENTY_MCP_ENABLED=1
 unset TWENTY_LOCAL_ENABLED

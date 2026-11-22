@@ -49,7 +49,7 @@ def func(name):
 helpers = "".join(func(n) for n in (
     "replace_file", "upsert_env", "remove_env_key", "config_path_for", "profile_env_file",
     "addon_instances_plan", "addon_instance_key_env", "addon_instances_warn_none",
-    "write_headers_mcp_entry", "reconcile_addon_instance_servers",
+    "write_headers_mcp_entry", "set_mcp_trust", "reconcile_addon_instance_servers",
     "register_addon_instance_servers"))
 
 home = Path(tempfile.mkdtemp())

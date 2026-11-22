@@ -65,6 +65,7 @@ trap 'chown -R "$HOST_IDS" /w' EXIT
 log() { :; }
 hermes_config_set() { :; }
 pin_mcp_tools() { :; }
+set_mcp_trust() { :; }
 profile_env_file() { echo /h/.env; }
 remove_env_key() { :; }
 upsert_env() { :; }

@@ -145,7 +145,7 @@ for each `mcp.instances` entry, one line for the add-on and then one per
 stored instance:
 
 ```text
-name|title|on|url|keyenv|keyfile|timeout|connect|pins|reason|header|scheme|tools
+name|title|on|url|keyenv|keyfile|timeout|connect|pins|reason|header|scheme|tools|headers|trust
 ```
 
 The add-on's line has `name` `<prefix>*`, `on` from its flag and `reason` the
@@ -160,6 +160,10 @@ variable name the key goes under (`crm-sales-eu` gives `CRM_SALES_EU_KEY`);
 `keyfile` is a path under `<data-dir>`. An entry without `auth` has empty
 `keyenv`, `keyfile`, `header` and `scheme`, and the adapter registers it with
 `tools`, which leaves out `writeTools` at `ro`. The plan never prints a key.
+`headers` is a JSON object of filled headers for an entry with
+`mcp.instances.headers`, else empty. `trust` is `untrusted` for an instance
+whose stored `trust` is `untrusted` and empty otherwise; an adapter makes the
+agent ask before each call that is not read-only on an untrusted instance.
 
 `addon_manifest.py vault-plan <addons-dir> <identity>` prints one line per
 add-on with a `vaultBackend`:

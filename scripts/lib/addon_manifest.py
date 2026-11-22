@@ -1772,7 +1772,7 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
     """One line per instance of each add-on with mcp.instances, after a line for
     the add-on itself:
 
-        name|title|on|url|keyenv|keyfile|timeout|connect|pins|reason|header|scheme|tools|headers
+        name|title|on|url|keyenv|keyfile|timeout|connect|pins|reason|header|scheme|tools|headers|trust
 
     The add-on's line has name "<prefix>*", on set from its flag, pins the
     names to unpin once no entry with the prefix is left, reason the flag's
@@ -1794,6 +1794,11 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
     keyenv and keyfile name the secret's key as for auth; header and scheme
     stay empty. An instance whose header would be empty or hold a control
     character is off with reason header.
+
+    trust is `untrusted` when the instance's stored trust is untrusted and
+    empty otherwise (trusted, unset, and the add-on's own line), so the
+    adapter asks before each call that is not read-only only on an untrusted
+    instance.
 
     An invalid manifest still gives its add-on line, off, when its
     mcp.instances.name is readable, so the bootstrap drops its entries."""
@@ -1817,7 +1822,7 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
                     pins = entry.get("pin") if isinstance(entry, dict) else None
                     pins = [p for p in pins if TOOL_RE.match(p)] if _is_str_list(pins) else []
                     emit([template.split("{slug}")[0] + "*", sid_dir, "0", "", "", "", "", "",
-                          " ".join(pins), "invalid manifest", "", "", "", ""], sid_dir)
+                          " ".join(pins), "invalid manifest", "", "", "", "", ""], sid_dir)
             continue
         for mcp in mcp_entries(manifest):
             if "instances" not in mcp:
@@ -1838,7 +1843,7 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
             reads = bool(manifest.get("permissions", {}).get("reads"))
             emit([template.split("{slug}")[0] + "*", title, "1" if flag_on else "0", "",
                   re.sub(r"[^A-Za-z0-9]", "_", key_suffix) if header_secret else "", "", timeout,
-                  connect, " ".join(mcp.get("pin", [])), flag, "", "", "", ""], sid_dir)
+                  connect, " ".join(mcp.get("pin", [])), flag, "", "", "", "", ""], sid_dir)
 
             schema = manifest["instances"]["settings"]
             store = data_dir / sid_dir
@@ -1856,7 +1861,8 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
 
                 def line(on: str, url="", keyfile="", pins="", reason="", tools="", headers="") -> None:
                     emit([name, title, on, url, keyenv, keyfile,
-                          timeout, connect, pins, reason, header, scheme, tools, headers],
+                          timeout, connect, pins, reason, header, scheme, tools, headers,
+                          "untrusted" if values and values.get("trust") == "untrusted" else ""],
                          f"{sid_dir}/{slug}")
 
                 values = _instance_values(store, slug, schema)

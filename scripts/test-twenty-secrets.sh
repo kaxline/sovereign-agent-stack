@@ -91,6 +91,7 @@ log() { printf '%s\n' "$1" >> "$work/bootstrap.log"; }
 profile_env_file() { echo "$work/profile.env"; }
 write_bearer_mcp_entry() { printf '%s\n' "$*" >> "$work/bootstrap.log"; }
 pin_mcp_tools() { printf '%s\n' "$*" >> "$work/bootstrap.log"; }
+set_mcp_trust() { :; }
 reconcile_addon_instance_servers() { printf '%s\n' "$*" >> "$work/bootstrap.log"; }
 for profile in "" api-server; do
   TWENTY_MCP_ENABLED=1 TWENTY_LOCAL_ENABLED=0 python3 "$ADDON_MANIFEST_PY" instances-plan \

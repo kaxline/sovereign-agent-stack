@@ -22,7 +22,7 @@ trap 'rm -rf "$tmp"' EXIT
 {
   for fn in addon_instances_plan addon_instance_key_env addon_instances_warn_none \
     register_addon_instance_servers write_bearer_mcp_entry reconcile_addon_instance_servers \
-    remove_env_key replace_file upsert_env pin_mcp_tools mcp_tool_name \
+    remove_env_key replace_file upsert_env pin_mcp_tools mcp_tool_name set_mcp_trust \
     pin_tool_search_always_include ensure_yaml_list_items; do
     fn_source "$bootstrap" "$fn"
   done
@@ -106,6 +106,25 @@ grep -q '^TWENTY_OLD_KEY=' "${tmp}/.env" && fail "legacy TWENTY_OLD_KEY removed"
 grep -q '^TWENTY_GONE_KEY=e$' "${tmp}/.env" || fail "a legacy key with no crm-* entry is left alone"
 grep -q '^OTHER=1$' "${tmp}/.env" || fail "other keys kept"
 no_key_leaks "enabled"
+
+# trust (CR 0044 R4): untrusted writes trust: untrusted on the entry; back to
+# trusted removes the key and leaves the headers alone.
+printf '{"url": "http://twenty-server:3000", "access": "write", "local": true, "trust": "untrusted"}\n' > "${store}/instances/main.json"
+run 1
+grep -q '^    trust: untrusted$' "${tmp}/config.yaml" || fail "untrusted instance: crm-main has trust: untrusted"
+# shellcheck disable=SC2016 # the literal reference
+grep -qF 'Authorization: Bearer ${CRM_MAIN_KEY}' "${tmp}/config.yaml" || fail "untrusted instance: the header stays"
+grep -q '^  my-crm:' "${tmp}/config.yaml" || fail "untrusted instance: a client's entry stays"
+if awk '/^  my-crm:/{f=1;next} /^  [a-z]/{f=0} f && /trust/{bad=1} END{exit !bad}' "${tmp}/config.yaml"; then
+  fail "untrusted instance: another entry got a trust key"
+fi
+no_key_leaks "untrusted"
+printf '{"url": "http://twenty-server:3000", "access": "write", "local": true}\n' > "${store}/instances/main.json"
+run 1
+grep -q 'trust' "${tmp}/config.yaml" && fail "trusted again: the trust key is removed"
+# shellcheck disable=SC2016 # the literal reference
+grep -qF 'Authorization: Bearer ${CRM_MAIN_KEY}' "${tmp}/config.yaml" || fail "trusted again: the header is unchanged"
+printf '{"url": "http://twenty-server:3000", "access": "write", "local": true}\n' > "${store}/instances/main.json"
 
 # The workspace is removed from the store: its entry, key and pins go.
 mv "${store}/instances/main.json" "${tmp}/main.json.away"

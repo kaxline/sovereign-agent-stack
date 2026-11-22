@@ -111,6 +111,7 @@ register_mcp_server() { printf 'register:%s:%s:%s:%s;' "${1:-default}" "$2" "$4"
 write_bearer_mcp_entry() { printf 'bearer:%s;' "$2" >> "$record"; }
 upsert_env() { printf 'env:%s;' "$2" >> "$record"; }
 pin_mcp_tools() { printf 'pin:%s:%s;' "$2" "$(shift 2; echo "$*")" >> "$record"; }
+set_mcp_trust() { :; }
 reconcile_addon_instance_servers() { printf 'reconcile:%s;' "$(shift; echo "$*")" >> "$record"; }
 register_addon_instance_servers ""
 calls="$(cat "$record")"

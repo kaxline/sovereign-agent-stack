@@ -849,7 +849,7 @@ def plan_rows(data: Path, profile: str, environ: dict) -> dict[str, list[str]]:
     rows = {}
     for line in lines:
         fields = line.split("|")
-        check(f"instances-plan line has 14 fields ({fields[0]})", len(fields) == 14, line)
+        check(f"instances-plan line has 15 fields ({fields[0]})", len(fields) == 15, line)
         if fields[0].startswith("crm-"):
             rows[fields[0]] = fields
     return rows
@@ -1005,10 +1005,10 @@ with tempfile.TemporaryDirectory() as tmp:
                           str(ROOT / "addons"), str(Path(tmp) / "missing"), "default"],
                          capture_output=True, text=True, env={"TWENTY_MCP_ENABLED": "1"}).stdout.splitlines()
           == ["budget-*|Actual Budget|0||||120|60|get-accounts get-grouped-categories get-transactions "
-              "monthly-summary get-budget-month get-payees|ACTUAL_MCP_ENABLED||||",
+              "monthly-summary get-budget-month get-payees|ACTUAL_MCP_ENABLED|||||",
               "caldav-*|CalDAV calendars|0||PASSWORD||60|30|" + " ".join(CD_TOOLS)
-              + "|CALDAV_MCP_ENABLED||||",
-              "crm-*|Twenty CRM|1||||60|30|" + TW_PINS + "|TWENTY_MCP_ENABLED||||"])
+              + "|CALDAV_MCP_ENABLED|||||",
+              "crm-*|Twenty CRM|1||||60|30|" + TW_PINS + "|TWENTY_MCP_ENABLED|||||"])
 
 # A broken manifest with mcp.instances still names its prefix, off, so the
 # bootstrap drops its entries.
@@ -1857,7 +1857,7 @@ with tempfile.TemporaryDirectory() as tmp:
         out = {}
         for line in am.instances_plan(ROOT / "addons", data, profile, environ):
             f = line.split("|")
-            check(f"caldav plan line has 14 fields ({f[0]})", len(f) == 14, line)
+            check(f"caldav plan line has 15 fields ({f[0]})", len(f) == 15, line)
             if f[0].startswith("caldav-"):
                 out[f[0]] = f
         return out
@@ -2083,6 +2083,20 @@ with tempfile.TemporaryDirectory() as tmp:
         check(f"endpoint instance is on at its endpoint's URL with {label}",
               e[2:6] == ["1", ep_url, "CRM_SHARED_A_KEY", str(data / "twenty" / "secrets" / "shared-a.key_ro")],
               str(e))
+    check("the endpoint instance's plan line has 15 fields and field 15 is untrusted",
+          len(e) == 15 and e[14] == "untrusted", str(e))
+    check("an instance without a stored trust has an empty field 15",
+          len(rows["crm-main"]) == 15 and rows["crm-main"][14] == "", str(rows.get("crm-main")))
+    check("the add-on's own line has 15 fields and an empty field 15",
+          len(rows["crm-*"]) == 15 and rows["crm-*"][14] == "", str(rows.get("crm-*")))
+    (data / "twenty" / "instances" / "shared-a.json").write_text(json.dumps(
+        {"endpoint": "http://host.docker.internal:45123", "access": "read", "trust": "trusted"}))
+    check("a stored trusted gives an empty field 15",
+          plan_rows(data, "default", {})["crm-shared-a"][14] == "")
+    (data / "twenty" / "instances" / "main.json").write_text(json.dumps(
+        {"url": "http://twenty-server:3000", "access": "write", "local": True, "trust": "untrusted"}))
+    check("a non-endpoint instance with trust untrusted has field 15 untrusted",
+          plan_rows(data, "default", {"TWENTY_MCP_ENABLED": "1", "TWENTY_LOCAL_ENABLED": "1"})["crm-main"][14] == "untrusted")
     check("with the add-on off an ordinary instance is still off, reason flag",
           rows["crm-main"][2] == "0" and rows["crm-main"][9].startswith("flag "), str(rows.get("crm-main")))
     rows = plan_rows(data, "api-server", {})

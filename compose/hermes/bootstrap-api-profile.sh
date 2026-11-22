@@ -1180,6 +1180,46 @@ PY
   if [ -n "$_out" ]; then log "$_out"; fi
 }
 
+# Set or clear mcp_servers.<key>.trust, the key Hermes reads (full or
+# untrusted; none means full). With "untrusted" the entry gets
+# trust: untrusted; with an empty value the key is deleted, since the writers
+# above keep unknown keys and a stale untrusted would survive. Other keys on
+# the entry stay, and a missing entry is left missing.
+#
+# Usage: set_mcp_trust <profile> <key> <untrusted|"">
+set_mcp_trust() {
+  _out="$(python3 - "$(config_path_for "$1")" "$2" "$3" <<'PY'
+import sys
+sys.path.insert(0, "/bootstrap")
+from profile_config import load, save
+
+cfg_path, key, trust = sys.argv[1:4]
+try:
+    config = load(cfg_path)
+except FileNotFoundError:
+    print(f"ERROR: {cfg_path} not found")
+    raise SystemExit(1)
+
+servers = config.get("mcp_servers")
+entry = servers.get(key) if isinstance(servers, dict) else None
+if not isinstance(entry, dict):
+    raise SystemExit(0)
+if trust == "untrusted":
+    if entry.get("trust") == "untrusted":
+        raise SystemExit(0)
+    entry["trust"] = "untrusted"
+    print(f"Set mcp_servers.{key}.trust to untrusted")
+else:
+    if "trust" not in entry:
+        raise SystemExit(0)
+    del entry["trust"]
+    print(f"Removed mcp_servers.{key}.trust")
+save(cfg_path, config)
+PY
+)"
+  if [ -n "$_out" ]; then log "$_out"; fi
+}
+
 # Drop entries whose name starts with an add-on's instance prefix (crm-) and
 # isn't in the keep list: an instance that is gone or no longer registers on
 # this profile. Their key (<NAME>_KEY, or <NAME>_<SUFFIX> for a prefix listed
@@ -1319,7 +1359,7 @@ register_addon_instance_servers() {
   _rai_title=""
   while IFS='|' read -r _rai_name _rai_t _rai_on _rai_url _rai_keyenv _rai_keyfile \
       _rai_timeout _rai_connect _rai_pins _rai_reason _rai_header _rai_scheme _rai_tools \
-      _rai_headers; do
+      _rai_headers _rai_trust; do
     case "$_rai_name" in
       '') continue ;;
       *'*')
@@ -1399,6 +1439,9 @@ register_addon_instance_servers() {
       write_bearer_mcp_entry "$_rai_profile" "$_rai_name" "$_rai_url" "$_rai_keyenv" \
         "$_rai_timeout" "$_rai_connect" "$_rai_header" "$_rai_scheme"
     fi
+    # An untrusted instance (another member's shared one) makes Hermes ask
+    # before each call that is not read-only; a trusted one carries no key.
+    set_mcp_trust "$_rai_profile" "$_rai_name" "$_rai_trust"
     # shellcheck disable=SC2086
     pin_mcp_tools "$_rai_profile" "$_rai_name" $_rai_pins
     _rai_keep="${_rai_keep} ${_rai_name}"
