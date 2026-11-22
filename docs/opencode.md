@@ -142,9 +142,9 @@ Hermes and OpenCode share the same absolute host paths:
 ```bash
 make coding-root-list
 make coding-root-add DIR=/absolute/path/to/repo
-# then recreate so binds apply:
-docker compose up -d --force-recreate hermes-worker opencode opencode-mcp
-# recreate hermes instead of hermes-worker when HERMES_TERMINAL_BACKEND=local
+# then recreate so the binds and HERMES_WRITE_SAFE_ROOT apply:
+docker compose up -d --force-recreate hermes-worker hermes opencode opencode-mcp
+# leave out hermes-worker when HERMES_TERMINAL_BACKEND=local
 ```
 
 If the user asks to work outside those roots, `coding_start_task` returns `needs_access: true` with a `hint`. Hermes follows the hint: it asks the user to confirm access and gives them `make coding-root-add DIR=...` and the containers to recreate. It does not remount Docker itself.

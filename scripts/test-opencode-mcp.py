@@ -186,6 +186,8 @@ def main() -> int:
     hint = out.get("hint", "")
     checks.expect("make coding-root-add DIR=/Users/you/elsewhere" in hint, f"dev hint: {hint}")
     checks.expect("hermes-worker" in hint, f"dev hint should name hermes-worker: {hint}")
+    # HERMES_WRITE_SAFE_ROOT is on hermes, so the new root needs it recreated too.
+    checks.expect("recreate hermes," in hint, f"dev hint should name hermes: {hint}")
     checks.expect(dev.coding_list_roots.fn()["aliases"] == {}, "dev: aliases should be empty")
 
     # App-managed: no commands, path named.

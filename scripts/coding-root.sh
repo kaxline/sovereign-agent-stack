@@ -40,6 +40,20 @@ path_covered() {
   return 1
 }
 
+# recreate_services: what to recreate after a coding root change. The binds sit
+# on the terminal service and opencode; CODING_EXTRA_ROOTS feeds opencode-mcp's
+# root check and hermes' HERMES_WRITE_SAFE_ROOT, which write_file and patch
+# check even when the shell runs on hermes-worker.
+recreate_services() {
+  local service
+  service="$(terminal_service)"
+  if [[ "$service" == hermes ]]; then
+    printf '%s\n' "hermes opencode opencode-mcp"
+  else
+    printf '%s\n' "${service} hermes opencode opencode-mcp"
+  fi
+}
+
 cmd_list() {
   local primary extras
   primary="$(env_get OPENCODE_WORKSPACE_HOST '(unset)')"
@@ -102,8 +116,8 @@ cmd_add() {
   echo "Added coding root: $path"
   echo "CODING_EXTRA_ROOTS=$extras"
   echo
-  echo "Recreate containers so the new bind mounts apply:"
-  echo "  docker compose up -d --force-recreate $(terminal_service) opencode opencode-mcp"
+  echo "Recreate containers so the new binds and HERMES_WRITE_SAFE_ROOT apply:"
+  echo "  docker compose up -d --force-recreate $(recreate_services)"
   echo "  # or: make down && make up"
   echo
   echo "If this tree has .env / credential files, shadow them (see docs/opencode.md):"

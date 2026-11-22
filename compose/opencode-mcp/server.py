@@ -133,9 +133,9 @@ def _needs_access_hint(directory: str) -> str:
     return (
         f"Path {directory!r} is outside the coding roots. Ask the user to grant "
         f"access, then have them run: make coding-root-add DIR={directory} "
-        f"(or the nearest parent they want to share), recreate opencode, "
-        f"opencode-mcp and hermes-worker (hermes when the terminal backend is "
-        f"local), and retry."
+        f"(or the nearest parent they want to share), recreate hermes, "
+        f"hermes-worker, opencode and opencode-mcp (no hermes-worker when the "
+        f"terminal backend is local), and retry."
     )
 
 

@@ -75,7 +75,7 @@ def main() -> None:
         checks.expect(override.read_text() == want, f"coding add wrote:\n{override.read_text()}")
         checks.expect(f"CODING_EXTRA_ROOTS=:{repo}\n" in (root / ".env").read_text(), "CODING_EXTRA_ROOTS not set")
         checks.expect("added service hermes-worker with mount" in proc.stdout, f"coding add said: {proc.stdout}")
-        checks.expect("--force-recreate hermes-worker opencode opencode-mcp" in proc.stdout, "recreate hint missing")
+        checks.expect("--force-recreate hermes-worker hermes opencode opencode-mcp" in proc.stdout, "recreate hint missing")
 
         # Re-adding the same root changes nothing.
         env_before, ov_before = (root / ".env").read_text(), override.read_text()
@@ -119,6 +119,13 @@ def main() -> None:
             == f"services:\n  hermes:\n    volumes:\n      - {repo}:{repo}:ro\n    environment:\n      FOO: bar\n",
             f"local context add wrote:\n{override.read_text()}",
         )
+
+        # local backend coding add: hermes once, no hermes-worker.
+        notes2 = base / "local-repo"
+        notes2.mkdir()
+        proc = run(root, "scripts/coding-root.sh", "add", str(notes2))
+        checks.expect(proc.returncode == 0, f"local coding add failed: {proc.stderr}")
+        checks.expect("--force-recreate hermes opencode opencode-mcp\n" in proc.stdout, f"local recreate hint: {proc.stdout}")
 
         # A bad backend stops before .env or the override is touched.
         root = checkout(base, env.replace("=ssh", "=docker"))
