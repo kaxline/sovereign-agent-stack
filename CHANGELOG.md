@@ -10,6 +10,14 @@ the stack under another app.
 
 ### Changes
 
+- A cron fire that a gate skips (monitor output unchanged, `wakeAgent: false`,
+  an empty payload, a blocked prompt) no longer leaves an empty, untitled
+  session in `session.list`. Its session is titled like a finished run,
+  hidden and ended with `end_reason: cron_skipped`; `include_hidden: true`
+  still lists it. (Boundary CR 0033 R1)
+- `prompt.submit` on a resumed session whose source is `cron` answers error
+  4087 with the `cron_session_read_only` text and `error_surface`, and
+  stores no message. (Boundary CR 0033 R2)
 - `addon.sh run email status` prints one JSON object with `last_indexed`,
   the message count, each configured account's count and failure code from
   the last pass (4 or 5, else null) and the accounts left out of the passes
