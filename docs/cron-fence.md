@@ -100,6 +100,12 @@ sequenceDiagram
 Each fenced profile costs about 1.6 s (one Python process that loads Hermes'
 toolset code).
 
+`scripts/cron-fence.sh [--profile NAME]` runs only the fence
+(`HERMES_BOOTSTRAP_ONLY=cron-fence` in hermes-api-bootstrap) on a running
+install, for servers a client added or removed since the last run. It writes no
+bootstrap stamp. See
+[extending.md](extending.md#servers-you-add-and-cron-jobs).
+
 ## What the fence does to one profile
 
 `fence_mail_from_cron <profile>` reads that profile's `config.yaml`.

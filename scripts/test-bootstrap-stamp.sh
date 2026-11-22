@@ -168,4 +168,29 @@ run api-server HERMES_BOOTSTRAP_FORCE=1 FLUSH_EXIT=1 && fail "failed flush exite
 [ -e "${home}/.bootstrap-stamps/api-server" ] && fail "failed run left a stamp"
 expect_full "run after a failed one was skipped" api-server
 
+# HERMES_BOOTSTRAP_ONLY=cron-fence (scripts/cron-fence.sh) runs only the fence,
+# one python3 per profile with a config.yaml, and leaves the stamps alone.
+printf 'model:\n  default: test\n' > "${home}/profiles/worker/config.yaml"
+expect_full "run after adding worker's config.yaml was skipped" api-server
+stamps="$(cat "${home}/.bootstrap-stamps/api-server" "${home}/.bootstrap-stamps/state")"
+fence_only() {
+  run api-server HERMES_BOOTSTRAP_ONLY=cron-fence "$@"
+}
+fence_only || fail "fence-only run exited non-zero: $(tail -5 "${tmp}/out")"
+if ! { [ "$(count hermes)" = 0 ] && [ "$(count flush)" = 0 ] && [ "$(count python3)" = 2 ]; }; then
+  fail "fence-only run should spawn two fences (default, worker), spawned: $(tr '\n' ';' < "${tmp}/spawns")"
+fi
+fence_only HERMES_CRON_FENCE_PROFILE=worker || fail "fence-only run for worker exited non-zero"
+[ "$(count python3)" = 1 ] || fail "fence-only run for worker spawned: $(tr '\n' ';' < "${tmp}/spawns")"
+fence_only HERMES_CRON_FENCE_PROFILE=default || fail "fence-only run for default exited non-zero"
+[ "$(count python3)" = 1 ] || fail "fence-only run for default spawned: $(tr '\n' ';' < "${tmp}/spawns")"
+_rc=0; fence_only HERMES_CRON_FENCE_PROFILE=browser || _rc=$?
+[ "$_rc" = 3 ] || fail "a profile without config.yaml should exit 3, got ${_rc}"
+_rc=0; fence_only HERMES_CRON_FENCE_PROFILE=../x || _rc=$?
+[ "$_rc" = 2 ] || fail "a bad profile name should exit 2, got ${_rc}"
+_rc=0; run api-server HERMES_BOOTSTRAP_ONLY=everything || _rc=$?
+[ "$_rc" = 2 ] || fail "an unknown HERMES_BOOTSTRAP_ONLY should exit 2, got ${_rc}"
+[ "$(cat "${home}/.bootstrap-stamps/api-server" "${home}/.bootstrap-stamps/state")" = "$stamps" ] \
+  || fail "fence-only runs changed the stamps"
+
 printf 'OK bootstrap stamp\n'

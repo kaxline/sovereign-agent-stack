@@ -97,6 +97,16 @@ ones, with a bundle that includes the browser (`hermes-cron`, `hermes-cli`)
 replaced by its toolsets. A `vaultBackend`
 toolset is kept out by listing it in `known_plugin_toolsets.cron`. The list the
 bootstrap wrote is recorded in `.mail-cron-toolsets.json` beside `config.yaml`.
+An add-on whose MCP entries come from instances is matched by each instance's
+name and URL, and a URL without placeholders (CalDAV's `caldav-mcp`) is fenced
+for any entry at it.
+
+The list names the servers present when the fence ran. A client that adds or
+removes servers in a profile's `mcp_servers` runs `scripts/cron-fence.sh
+[--profile NAME]` afterwards, or the change reaches cron at the next bootstrap
+run. Until then an added server is missing from cron, and removing the only
+server on the list gives cron jobs every enabled server
+([extending.md](../extending.md#servers-you-add-and-cron-jobs)).
 Diagrams of these rules are in [cron-fence.md](../cron-fence.md).
 
 ### Chat API

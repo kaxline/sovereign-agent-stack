@@ -136,6 +136,29 @@ ADDON_MANIFEST_PY=/nope.py; fence_mail_from_cron "" >/dev/null
 echo "missing:$(cron_list)"
 ADDON_MANIFEST_PY=/bootstrap/addon_manifest.py; ADDONS_DIR=/bootstrap/addons; fence_mail_from_cron ""
 echo "back:$(cron_list)"
+# A client adds a server after the list was pinned: it isn't on the list until
+# the fence runs again (scripts/cron-fence.sh), and is on it after.
+seed; fence_mail_from_cron "" >/dev/null
+python3 - <<'PY'
+import sys
+sys.path.insert(0, "/bootstrap")
+from pathlib import Path
+from profile_config import load, save
+c = load(Path("/h/config.yaml"))
+c["mcp_servers"]["example"] = {"url": "http://host.docker.internal:7777/mcp"}
+save(Path("/h/config.yaml"), c)
+PY
+# As the scheduler resolves it, every enabled server allowed (include_default_mcp_servers).
+echo "client-before:$(python3 -c 'import sys; sys.path.insert(0, "/opt/hermes"); import hermes_yaml as y
+from hermes_cli.tools_config import _get_platform_tools
+print(",".join(sorted(_get_platform_tools(y.safe_load(open("/h/config.yaml")), "cron"))))')"
+fence_mail_from_cron "" >/dev/null
+echo "client-after:$(cron_list)"
+# A client's own entry at caldav-mcp, under a name that isn't caldav-<slug>.
+rm -f /h/.mail-cron-toolsets.json
+printf 'mcp_servers:\n  calendar-personal:\n    url: http://caldav-mcp:8080/mcp\n  searxng:\n    url: http://searxng-mcp:8000/mcp\n' > /h/config.yaml
+fence_mail_from_cron ""
+echo "client-caldav:$(cron_list)"
 
 # The sweep: every profile under profiles/ is fenced, not only the default and
 # this bootstrap's own.
@@ -182,6 +205,11 @@ expect "crm-ro:$core,crm-main,searxng" "Twenty (cron true) leaves crm-* entries 
 expect "crm-false:$core,searxng" "an instances add-on with cron false fences crm-main"
 expect "missing:$core,searxng" "a missing module keeps the list it wrote"
 expect "back:$core,crm-main,searxng" "crm-main comes back once the manifest allows cron; browser stays out"
+printf '%s\n' "$out" | grep -q '^client-before:.*searxng' || fail "client-before resolved nothing (output: $out)"
+printf '%s\n' "$out" | grep -q '^client-before:.*example' \
+  && fail "a server added after the pin reached cron before the fence ran again (output: $out)"
+expect "client-after:$core,example,gptr,searxng" "a server added after the pin is on the list once the fence runs again"
+expect "client-caldav:$core,searxng" "a client's entry at caldav-mcp under its own name is fenced"
 expect "old-pin:$core,searxng" "a list an earlier bootstrap pinned is rewritten without browser"
 expect "own-bundle:$core,searxng" "a hand-written hermes-cron is replaced by its toolsets without browser"
 expect "own-browser:terminal,searxng" "browser is taken out of a hand-written list"
