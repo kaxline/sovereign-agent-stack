@@ -203,6 +203,8 @@ has "$WANT" || fail "add-on off: the endpoint instance is registered ($calls)"
 has "upsert:env:default:CRM_SHARED_A_KEY=ro-secret-shared;" || fail "add-on off: its key lands in the profile env ($calls)"
 has "reconcile:default:${SPEC} crm-shared-a;" || fail "add-on off: reconcile keeps crm-shared-a only ($calls)"
 if has "crm-main:"; then fail "add-on off: an ordinary instance stays unregistered ($calls)"; fi
+if logged "Skipping Twenty CRM MCP registration"; then fail "add-on off: no skip line while a shared instance registers ($logs)"; fi
+case "$logs" in *"only its shared instances"*) ;; *) fail "add-on off: logs that only shared instances register ($logs)" ;; esac
 has "trust:default:crm-shared-a:untrusted;" || fail "an untrusted instance gets trust untrusted ($calls)"
 # A trusted or unmarked instance gets an empty trust, so a stale key is removed.
 instance shared-b '{"endpoint": "http://host.docker.internal:45124", "access": "read", "trust": "trusted"}'

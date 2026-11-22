@@ -1339,6 +1339,10 @@ PY
 # the manifest leaves out, or no ro key on api-server.
 addon_instances_warn_none() {
   [ -n "$_rai_title" ] || return 0
+  if [ -n "$_rai_skip_log" ]; then
+    log "$_rai_skip_log"
+    _rai_skip_log=""
+  fi
   [ "$_rai_addon_on" = 1 ] && [ "$_rai_count" = 0 ] || return 0
   [ "$_rai_seen" = 0 ] || [ "$_rai_quiet" != "$_rai_seen" ] || return 0
   log "WARNING: ${_rai_title} is on but no instance registers on '${_rai_profile:-default}' - connect one, or add the key this profile needs"
@@ -1357,6 +1361,7 @@ register_addon_instance_servers() {
   _rai_keysfx=""
   _rai_keep=""
   _rai_title=""
+  _rai_skip_log=""
   while IFS='|' read -r _rai_name _rai_t _rai_on _rai_url _rai_keyenv _rai_keyfile \
       _rai_timeout _rai_connect _rai_pins _rai_reason _rai_header _rai_scheme _rai_tools \
       _rai_headers _rai_trust; do
@@ -1376,16 +1381,22 @@ register_addon_instance_servers() {
           ''|KEY) ;;
           *) _rai_keysfx="${_rai_keysfx} ${_rai_name%\*}=${_rai_keyenv}" ;;
         esac
+        # Held until the add-on's instance lines are read: a shared (endpoint)
+        # instance registers while the add-on is off.
         if [ "$_rai_on" != 1 ]; then
           case "$_rai_reason" in
-            *' '*) log "Skipping ${_rai_t} MCP registration (${_rai_reason})" ;;
-            *) log "Skipping ${_rai_t} MCP registration (${_rai_reason} is off)" ;;
+            *' '*) _rai_skip_log="Skipping ${_rai_t} MCP registration (${_rai_reason})" ;;
+            *) _rai_skip_log="Skipping ${_rai_t} MCP registration (${_rai_reason} is off)" ;;
           esac
         fi
         continue
         ;;
     esac
     _rai_seen=$((_rai_seen + 1))
+    if [ "$_rai_on" = 1 ] && [ -n "$_rai_skip_log" ]; then
+      log "${_rai_title} is off; registering only its shared instances"
+      _rai_skip_log=""
+    fi
     if [ "$_rai_on" != 1 ]; then
       case "$_rai_reason" in
         flag\ *) ;;
