@@ -89,6 +89,7 @@ scripts/test-install-sh.sh                      ci
 scripts/test-intent-ack.py                      ci image
 scripts/test-kanban-edit.py                     image
 scripts/test-kanban-guards.py                   ci image
+scripts/test-kanban-hold.py                     ci image
 scripts/test-kanban-wake.py                     ci image
 scripts/test-lightrag-mcp-registration.sh       ci
 scripts/test-lint.sh                            docker

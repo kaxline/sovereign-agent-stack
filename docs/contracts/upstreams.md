@@ -64,6 +64,7 @@ Overlays with no re-test command fail only as a warning in the container log.
 | `kanban-guards` | 283 | Refuses unbuildable worktree/dir workspaces at filing; gives up at once (`retryable: false`) on final workspace errors; creator-comment wrap. | adapter | stays in the adapter | `scripts/test-kanban-guards.py` |
 | `kanban-edit` | 341 | Workspace fields on the dashboard's `PATCH /tasks/{id}`; `kanban_update` and `kanban_archive` tools. | adapter | stays in the adapter | `scripts/test-kanban-edit.py` |
 | `kanban-wake` | 180 | Re-keys `kanban_notify_subs` through the compression lineage so `tui` subscriptions keep receiving events; repairable `gave_up` text. | adapter | stays in the adapter | `scripts/test-kanban-wake.py` |
+| `kanban-hold` | 122 | `hold: true` on the dashboard's `POST /runs/{run_id}/terminate` stops the worker and leaves the task sticky `blocked` in one transaction; run outcome `blocked` with `operator_stop`. One upstream file (`plugin_api.py`). | upstream | [draft](../upstream/kanban-terminate-hold.md), not filed | `scripts/test-kanban-hold.py --image` |
 | `dashboard-board` | 117 | Kanban page honours `?task=<id>&board=<slug>`; `?embed=1` hides sidebar and headers. | adapter | stays in the adapter | `scripts/test-dashboard-handoff.py` (covers the same container start; no dedicated board test) |
 | `projects-library` | 648 | Merges the `/opt/projects` folder library into `projects.list` / `projects.tree`; WebUI side patch. | adapter | stays in the adapter | `python3 scripts/test-project-sources.py` (`make project-sources-test`) |
 
