@@ -1325,15 +1325,42 @@ remove_cleanup() {
   return 0
 }
 
+# The web vault's name in the browser: its own, so it shares no cookies with
+# other localhost apps. setup/tls.py BROWSER_NAME.
+BROWSER_HOST=vaultwarden.localhost
+
 # HTTPS through vaultwarden-tls: the web vault refuses plain-HTTP servers, localhost included.
-local_url() { printf 'https://localhost:%s' "$(env_get VAULTWARDEN_PORT 8222)"; }
+local_url() { printf 'https://%s:%s' "$BROWSER_HOST" "$(env_get VAULTWARDEN_PORT 8222)"; }
+
+# The addresses the host's resolver gives for $1, one per line; nothing when it
+# gives none or there is no way to ask it.
+resolve_host() {
+  if command -v getent >/dev/null 2>&1; then
+    getent ahosts "$1" 2>/dev/null | awk '{ print $1 }'
+  elif command -v dscacheutil >/dev/null 2>&1; then
+    dscacheutil -q host -a name "$1" 2>/dev/null | awk '/_address:/ { print $2 }'
+  fi
+  return 0
+}
+
+# The /etc/hosts line to add when BROWSER_HOST does not resolve to loopback only.
+# A system setting, so vault.sh prints it and never runs it.
+hosts_hint() {
+  local addrs
+  addrs="$(resolve_host "$BROWSER_HOST" | sort -u)"
+  if [[ -n "$addrs" ]] && ! printf '%s\n' "$addrs" | grep -qvE '^(127\.|::1$)'; then
+    return 0
+  fi
+  log "${BROWSER_HOST} does not resolve to this machine, so your browser cannot reach $(local_url). Add it to /etc/hosts once:"
+  log "  echo '127.0.0.1 ${BROWSER_HOST}' | sudo tee -a /etc/hosts"
+}
 
 # How to trust the local CA in the browser, which the user does once before
 # registering. A security setting, so vault.sh prints it and never runs it.
 trust_hint() {
   local ca
   ca="$(data_dir)/secrets/local/tls/ca.crt"
-  log "Before you open $(local_url), trust the local CA in your browser once. It covers only vaultwarden.vault.internal and localhost."
+  log "Before you open $(local_url), trust the local CA in your browser once. It covers only vaultwarden.vault.internal and ${BROWSER_HOST}."
   if [[ "$(uname -s)" == Darwin ]]; then
     log "  security add-trusted-cert -r trustRoot -k ~/Library/Keychains/login.keychain-db '${ca}'"
     log "  (Safari, Chrome and other browsers that use the macOS keychain; Firefox imports it under Settings > Privacy & Security > View Certificates > Authorities.)"
@@ -1485,6 +1512,8 @@ cmd_init() {
   if printf '%s\n' "$new" | grep -qxF "${data}/secrets"; then
     chmod_own 711 "${data}/secrets"
   fi
+
+  hosts_hint
 
   local step recorded
   state_get STEP

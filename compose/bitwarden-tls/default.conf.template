@@ -1,7 +1,7 @@
 # TLS front for the local Vaultwarden (profile vault). bw and the web vault
 # both refuse plain-HTTP servers, so bw reaches it on the vault network as
 # https://vaultwarden.vault.internal and the user's browser on the host as
-# https://localhost:8222 (VAULTWARDEN_PORT, bound to 127.0.0.1). The
+# https://vaultwarden.localhost:8222 (VAULTWARDEN_PORT, bound to 127.0.0.1). The
 # certificate, for both names, comes from setup.py tls (make vault-init); the
 # broker and bitwarden-setup trust its CA, and the user trusts it once in the
 # browser.
@@ -19,7 +19,7 @@ log_format vaultwarden_tls '$remote_addr [$time_local] "$request_method $uri" $s
 
 server {
     listen 443 ssl;
-    server_name vaultwarden.vault.internal localhost;
+    server_name vaultwarden.vault.internal vaultwarden.localhost;
     access_log /var/log/nginx/access.log vaultwarden_tls;
 
     ssl_certificate /etc/nginx/tls/server.crt;

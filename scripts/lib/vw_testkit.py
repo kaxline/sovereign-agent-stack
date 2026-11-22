@@ -135,7 +135,7 @@ class Vaultwarden:
                 raise StartError(f"docker network create {name}: {proc.stderr.strip()}")
         proc = docker("run", "-d", "--name", self.vw, "--network", self.back, "--network-alias", "vaultwarden",
                       "-e", "SIGNUPS_ALLOWED=false", "-e", "INVITATIONS_ALLOWED=true",
-                      "-e", "DOMAIN=https://localhost:8222", "-e", "DISABLE_ICON_DOWNLOAD=true",
+                      "-e", "DOMAIN=https://vaultwarden.localhost:8222", "-e", "DISABLE_ICON_DOWNLOAD=true",
                       "--security-opt", "no-new-privileges:true",
                       "-e", f"LOGIN_RATELIMIT_MAX_BURST={self.login_burst}",
                       "-e", "ADMIN_TOKEN_FILE=/run/vaultwarden/admin_token.phc",

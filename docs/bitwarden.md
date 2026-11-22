@@ -129,7 +129,7 @@ writes the password. A `collection:` scope with a member account avoids this.
 
 `make vault-init` sets up a Vaultwarden in this stack, re-runnably:
 
-1. Generates a private CA and a server certificate for `vaultwarden.vault.internal` and `localhost`, and a random
+1. Generates a private CA and a server certificate for `vaultwarden.vault.internal` and `vaultwarden.localhost`, and a random
    Vaultwarden admin token with its Argon2id hash, in `local/` under `BITWARDEN_HOST_DATA_DIR`.
    Sets `BITWARDEN_LOCAL_ENABLED=1` and starts `vaultwarden` and `vaultwarden-tls` (profile `vault`).
 2. Registers the agent account `agent@vault.localhost` with a generated master password and stores
@@ -151,14 +151,23 @@ Each finished step is recorded in `local/state`. On a stack set up before the lo
 out of `compose/bitwarden/accounts/local.env`, `make vault-init` writes the two files from
 `local/state` without signing in. `make vault-init` then sets `BITWARDEN_ENABLED=1`;
 run `make up`. It starts the broker and asks the running gateway to reload its plugins, without
-recreating `hermes`; new sessions on `default` and `browser` get the Bitwarden tools. `make vault-open` opens the web vault at `https://localhost:8222`
-(`VAULTWARDEN_PORT`).
+recreating `hermes`; new sessions on `default` and `browser` get the Bitwarden tools. `make vault-open` opens the web vault at
+`https://vaultwarden.localhost:8222` (`VAULTWARDEN_PORT`).
 
 The web vault and `bw` both refuse servers that are not HTTPS, `localhost` included, so Vaultwarden
 is reached only through `vaultwarden-tls`, an nginx sidecar: the broker and `bitwarden-setup` as
 `https://vaultwarden.vault.internal`, trusting the private CA through `NODE_EXTRA_CA_CERTS`, and
-your browser as `https://localhost:8222` on `127.0.0.1`. Your browser needs to trust the CA once,
-before you register. On macOS:
+your browser as `https://vaultwarden.localhost:8222` on `127.0.0.1`. The name is the vault's own
+because cookies ignore ports: on bare `localhost` the vault would share a cookie jar with every other
+app on `localhost`. On macOS 26.6 the system resolver, which Safari uses, answers `*.localhost` with
+the loopback address, so no `/etc/hosts` entry is needed. `make vault-init` checks, and where the name
+does not resolve to this machine it prints the line to add:
+
+```bash
+echo '127.0.0.1 vaultwarden.localhost' | sudo tee -a /etc/hosts
+```
+
+Your browser needs to trust the CA once, before you register. On macOS:
 
 ```bash
 security add-trusted-cert -r trustRoot -k ~/Library/Keychains/login.keychain-db data/addons/bitwarden/secrets/local/tls/ca.crt
@@ -166,10 +175,11 @@ security add-trusted-cert -r trustRoot -k ~/Library/Keychains/login.keychain-db 
 
 That covers Safari, Chrome and other browsers that use the keychain; Firefox imports the file under
 Settings > Privacy & Security > View Certificates > Authorities. The CA's name constraint limits
-it to `vaultwarden.vault.internal`, `localhost` and their subdomains, so trusting it lets nothing
-but the holder of `local/tls/ca.key` impersonate those names.
+it to `vaultwarden.vault.internal`, `vaultwarden.localhost` and their subdomains, so trusting it
+lets nothing but the holder of `local/tls/ca.key` impersonate those names.
 
-A CA made before `localhost` was added is refused by `bitwarden-setup tls`. Replace it with
+A CA whose name constraint permits any other names, such as one made for bare `localhost`, is
+refused by `bitwarden-setup tls`. Replace it with
 `docker compose --profile bitwarden-tools run --rm bitwarden-setup tls --rotate`, restart
 `vaultwarden-tls` and `bitwarden-broker`, and trust the new `ca.crt`.
 
@@ -546,7 +556,7 @@ Other limits, as built:
 | `BITWARDEN_SIGNIN_IDLE_MINUTES` | `5` | End a sign-in session, and kill its Chromium, after this long with no action |
 | `BITWARDEN_SIGNIN_ACTION_SECONDS` | `30` | Bound on one sign-in action; a longer one gets `timeout` and the session ends |
 | `BITWARDEN_HOST_DATA_DIR` | `./data/addons/bitwarden` | `bw/`, `broker/`, `secrets/`, `local/` and `vaultwarden/`. Not moved by `ASSISTANT_DATA_ROOT` |
-| `VAULTWARDEN_PORT` | `8222` | Web vault HTTPS port on `vaultwarden-tls`, bound to `127.0.0.1` |
+| `VAULTWARDEN_PORT` | `8222` | Web vault HTTPS port on `vaultwarden-tls` (`https://vaultwarden.localhost:<port>`), bound to `127.0.0.1` |
 | `VAULTWARDEN_TLS_IMAGE` | `nginx:1.30.7-alpine` | The TLS sidecar's image |
 | `VAULT_OWNER_EMAIL` | unset | Your address for `make vault-init` |
 

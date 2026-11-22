@@ -2559,9 +2559,11 @@ services:
   # ----------------------------------------------------------------------
   # Local Vaultwarden for the Bitwarden broker's local mode (docs/bitwarden.md)
   # Profile: vault (BITWARDEN_LOCAL_ENABLED=1)
-  # Web vault: https://localhost:8222 through vaultwarden-tls (localhost-bound;
-  #          VAULTWARDEN_PORT). The web vault refuses plain HTTP, even on
-  #          localhost, so the browser must trust local/tls/ca.crt once.
+  # Web vault: https://vaultwarden.localhost:8222 through vaultwarden-tls
+  #          (localhost-bound; VAULTWARDEN_PORT). A name of its own keeps its
+  #          cookies apart from other localhost apps. The web vault refuses
+  #          plain HTTP, even on localhost, so the browser must trust
+  #          local/tls/ca.crt once.
   # Broker:  https://vaultwarden.vault.internal through vaultwarden-tls
   # Data:    BITWARDEN_HOST_DATA_DIR/vaultwarden. make vault-init writes the
   #          admin token, its hash and the TLS files under local/, which only
@@ -2579,7 +2581,7 @@ services:
     environment:
       - SIGNUPS_ALLOWED=false
       - INVITATIONS_ALLOWED=true
-      - DOMAIN=https://localhost:${VAULTWARDEN_PORT:-8222}
+      - DOMAIN=https://vaultwarden.localhost:${VAULTWARDEN_PORT:-8222}
       - DISABLE_ICON_DOWNLOAD=true
       # The Argon2id hash only; the plaintext stays in local/admin_token, which
       # only bitwarden-setup mounts. Vaultwarden reads any setting from <NAME>_FILE.
@@ -2600,14 +2602,15 @@ services:
       start_period: 20s
       start_interval: 2s
 
-  # TLS for the broker and bitwarden-setup: bw refuses plain-HTTP servers. No
-  # host port; the user's browser uses vaultwarden's own. compose/bitwarden-tls/
+  # TLS for the broker and bitwarden-setup, which reach it on vault-backend, and
+  # for the user's browser on the loopback port: bw and the web vault refuse
+  # plain-HTTP servers. compose/bitwarden-tls/
   vaultwarden-tls:
     profiles: ["vault"]
     container_name: ${CONTAINER_PREFIX:-}vaultwarden-tls
     image: ${VAULTWARDEN_TLS_IMAGE:-nginx:1.30.7-alpine}
     restart: unless-stopped
-    # The web vault for the user's browser, as https://localhost:8222.
+    # The web vault for the user's browser, as https://vaultwarden.localhost:8222.
     ports:
       - "127.0.0.1:${VAULTWARDEN_PORT:-8222}:443"
     # nginx keeps its default capabilities: its master process starts as root
