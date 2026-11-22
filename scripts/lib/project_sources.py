@@ -9,6 +9,7 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass
@@ -584,19 +585,56 @@ def render_index(files: Sequence[IndexedFile], *, grouped: bool) -> str:
     return "\n".join(lines)
 
 
+def _write_atomic(path: Path, text: str) -> None:
+    """Write through a temp file beside path, then rename over it, so a reader
+    or a concurrent refresh never sees a half-written file."""
+    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+
 def write_index(project_root: Path, *, cap: int = INDEX_CAP_PER_SOURCE) -> list[str]:
+    """Rewrite INDEX.md and the manifest. The manifest goes last: a failure
+    between the two leaves the index stale, and the next refresh redoes it."""
     files, warnings, grouped = build_catalog(project_root, cap=cap)
     index_text = render_index(files, grouped=grouped)
-    (project_root / INDEX_NAME).write_text(index_text, encoding="utf-8")
+    _write_atomic(project_root / INDEX_NAME, index_text)
     manifest = {
         "version": MANIFEST_VERSION,
         "files": [item.manifest_entry() for item in files],
     }
-    (project_root / MANIFEST_NAME).write_text(
+    _write_atomic(
+        project_root / MANIFEST_NAME,
         json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
     )
     return warnings
+
+
+GENERATED = "generated"
+HAND_WRITTEN = "hand-written"
+NO_INDEX = "none"
+
+
+def index_kind(project_root: Path) -> str:
+    """GENERATED when the manifest exists (the indexer wrote INDEX.md and owns
+    it), HAND_WRITTEN when INDEX.md exists without one (the user's file, never
+    overwritten or checked), NO_INDEX otherwise."""
+    if (project_root / MANIFEST_NAME).is_file():
+        return GENERATED
+    if (project_root / INDEX_NAME).is_file():
+        return HAND_WRITTEN
+    return NO_INDEX
+
+
+def all_sources_local(project_root: Path) -> bool:
+    """True when every source sits inside the project, so a container that
+    mounts only the project can rewrite the whole index."""
+    sources, _ = load_sources(project_root.resolve())
+    return all(is_project_local(project_root, spec) for spec in sources)
 
 
 def _is_local_row(item: Any, local_ids: set[str]) -> bool:

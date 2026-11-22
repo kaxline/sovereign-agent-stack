@@ -203,6 +203,104 @@ def test_indexer_cli_roundtrip() -> None:
         )
 
 
+def _run_indexer(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, str(INDEXER), *args],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+HAND_WRITTEN = "# My own index\n\nKept by hand.\n"
+
+
+def _projects_tree(base: Path) -> Path:
+    """projects/ with one fresh, one stale and one hand-written project, one
+    project with no index, and a hidden folder."""
+    projects = base / "projects"
+    projects.mkdir()
+    for name in ("fresh", "stale"):
+        shutil.copytree(FIXTURE, projects / name)
+        ps.write_index(projects / name)
+    (projects / "stale" / "notes" / "new.md").write_text("# Added later\n", encoding="utf-8")
+    hand = projects / "hand"
+    shutil.copytree(FIXTURE, hand)
+    (hand / ps.MANIFEST_NAME).unlink()
+    (hand / ps.INDEX_NAME).write_text(HAND_WRITTEN, encoding="utf-8")
+    (projects / "bare").mkdir()
+    (projects / ".hidden").mkdir()
+    return projects
+
+
+def test_index_kind() -> None:
+    with tempfile.TemporaryDirectory() as raw:
+        projects = _projects_tree(Path(raw))
+        expect(ps.index_kind(projects / "fresh") == ps.GENERATED, "fresh")
+        expect(ps.index_kind(projects / "hand") == ps.HAND_WRITTEN, "hand")
+        expect(ps.index_kind(projects / "bare") == ps.NO_INDEX, "bare")
+
+
+def test_hand_written_refused_without_force() -> None:
+    with tempfile.TemporaryDirectory() as raw:
+        hand = _projects_tree(Path(raw)) / "hand"
+        proc = _run_indexer("--root", str(hand))
+        expect(proc.returncode == 3, f"exit {proc.returncode}: {proc.stderr}")
+        expect("--force" in proc.stderr, proc.stderr)
+        expect((hand / ps.INDEX_NAME).read_text(encoding="utf-8") == HAND_WRITTEN,
+               "refused run changed the hand-written index")
+        check = _run_indexer("--root", str(hand), "--check")
+        expect(check.returncode == 0, f"--check exit {check.returncode}")
+        expect("hand-written (not checked)" in check.stdout, check.stdout)
+        forced = _run_indexer("--root", str(hand), "--force")
+        expect(forced.returncode == 0, forced.stderr)
+        expect(ps.index_kind(hand) == ps.GENERATED, "--force did not adopt the index")
+        expect(ps.catalog_is_fresh(hand), "--force left the index stale")
+
+
+def test_check_all_writes_nothing() -> None:
+    with tempfile.TemporaryDirectory() as raw:
+        projects = _projects_tree(Path(raw))
+        before = (projects / "stale" / ps.INDEX_NAME).read_text(encoding="utf-8")
+        proc = _run_indexer("--check-all", str(projects), "--json")
+        expect(proc.returncode == 0, proc.stderr)
+        result = json.loads(proc.stdout)
+        expect(result == {"fresh": ["fresh"], "stale": ["stale"],
+                          "hand_written": ["hand"], "failed": []}, result)
+        expect((projects / "stale" / ps.INDEX_NAME).read_text(encoding="utf-8") == before,
+               "--check-all rewrote an index")
+
+
+def test_refresh_all() -> None:
+    with tempfile.TemporaryDirectory() as raw:
+        projects = _projects_tree(Path(raw))
+        (projects / "broken").mkdir()
+        (projects / "broken" / ps.MANIFEST_NAME).write_text("{}\n", encoding="utf-8")
+        (projects / "broken" / "sources.yaml").write_text(
+            "version: 1\nsources:\n  - id: kb\n    path: .\n    retrieval: magic\n",
+            encoding="utf-8",
+        )
+        proc = _run_indexer("--refresh-all", str(projects), "--json")
+        expect(proc.returncode == 0, proc.stderr)
+        result = json.loads(proc.stdout)
+        expect(result["refreshed"] == ["stale"], result)
+        expect(result["fresh"] == ["fresh"], result)
+        expect(result["hand_written"] == ["hand"], result)
+        expect([f["project"] for f in result["failed"]] == ["broken"], result)
+        expect(ps.catalog_is_fresh(projects / "stale"), "stale project still stale")
+        expect("notes/new.md" in (projects / "stale" / ps.INDEX_NAME).read_text(encoding="utf-8"),
+               "refreshed index misses the new file")
+        expect((projects / "hand" / ps.INDEX_NAME).read_text(encoding="utf-8") == HAND_WRITTEN,
+               "--refresh-all touched the hand-written index")
+        expect(not (projects / "bare" / ps.INDEX_NAME).exists(), "--refresh-all indexed a bare folder")
+        leftovers = [p.name for p in projects.rglob(".*.tmp-*")]
+        expect(not leftovers, f"temp files left behind: {leftovers}")
+        human = _run_indexer("--refresh-all", str(projects))
+        expect("0 refreshed, 2 fresh, 1 hand-written, 1 failed" in human.stdout, human.stdout)
+        missing = _run_indexer("--refresh-all", str(projects / "nope"))
+        expect(missing.returncode == 2, f"missing dir exit {missing.returncode}")
+
+
 def test_visibility_helpers() -> None:
     prefixes = ps.visibility_prefixes(
         coding_primary="/Users/you/code",
@@ -224,7 +322,7 @@ def test_template_points_at_context_root_add_recreate() -> None:
     default ssh backend the bind lands on hermes-worker, and context-root.sh
     prints the right command itself (AS-0005)."""
     template = ROOT / "compose" / "hermes" / "project-template"
-    for name in ("sources.yaml", "AGENTS.md", "INDEX.md"):
+    for name in ("sources.yaml", "AGENTS.md"):
         text = (template / name).read_text()
         flat = " ".join(text.split())
         expect("--force-recreate hermes" not in flat, f"{name} names the hermes service to recreate")
@@ -245,6 +343,10 @@ def main() -> int:
         test_stdlib_yaml_flow_and_block,
         test_unknown_retrieval_refused,
         test_indexer_cli_roundtrip,
+        test_index_kind,
+        test_hand_written_refused_without_force,
+        test_check_all_writes_nothing,
+        test_refresh_all,
         test_visibility_helpers,
         test_template_points_at_context_root_add_recreate,
     ]

@@ -417,13 +417,14 @@ project-init:
 	fi; \
 	mkdir -p "$$DATA_ROOT/projects"; \
 	cp -R compose/hermes/project-template "$$dest"; \
-	echo "Created $$dest — edit AGENTS.md, then make project-index PROJECT=$(PROJECT)"
+	python3 scripts/project-index.py --root "$$dest" >/dev/null; \
+	echo "Created $$dest — edit AGENTS.md; INDEX.md refreshes itself (or run make project-index PROJECT=$(PROJECT))"
 
 project-index:
 	@test -n "$(PROJECT)" || (echo "Usage: make project-index PROJECT=<slug>"; exit 1)
 	@$(resolve_data_root); \
 	test -d "$$DATA_ROOT/projects/$(PROJECT)" || (echo "Missing $$DATA_ROOT/projects/$(PROJECT) — run make project-init first"; exit 1); \
-	python3 scripts/project-index.py --root "$$DATA_ROOT/projects/$(PROJECT)"
+	python3 scripts/project-index.py --root "$$DATA_ROOT/projects/$(PROJECT)" $(if $(FORCE),--force)
 
 project-index-check:
 	@test -n "$(PROJECT)" || (echo "Usage: make project-index-check PROJECT=<slug>"; exit 1)
