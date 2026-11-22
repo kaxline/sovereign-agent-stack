@@ -15,6 +15,10 @@ cd "$ROOT"
 source "$SCRIPT_DIR/lib/env.sh"
 # shellcheck source=lib/python.sh
 source "$SCRIPT_DIR/lib/python.sh"
+# shellcheck source=lib/data-root.sh
+source "$SCRIPT_DIR/lib/data-root.sh"
+# shellcheck source=lib/coding-roots.sh
+source "$SCRIPT_DIR/lib/coding-roots.sh"
 
 log() { printf '==> %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -47,10 +51,13 @@ if [[ ! -L .env ]] && [[ -z "$stack_dir" || ! -f "$stack_dir/docker-compose.yml"
   log "Set ASSISTANT_STACK_DIR=$ROOT"
 fi
 
-coding="$(env_get CODING_EXTRA_ROOTS)"
+# A synced coding root's folder sits in the data root and is bound at the
+# client's path, so CODING_EXTRA_ROOTS alone would give a same-path bind of a
+# path that doesn't exist here. The pairs name each root's host folder.
+pairs="$(coding_root_pairs)" || die "cannot read the synced coding roots in $(coding_roots_registry)"
 context="$(env_get CONTEXT_EXTRA_ROOTS)"
 override="$ROOT/docker-compose.override.yml"
 
 # The editor is piped in: inside the Hermes image only ROOT is mounted.
-stack_python - sync "$override" "$backend" "$coding" "$context" \
+stack_python - sync "$override" "$backend" "$pairs" "$context" \
   < "$SCRIPT_DIR/lib/override_mounts.py"

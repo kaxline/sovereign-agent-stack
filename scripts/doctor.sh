@@ -1399,9 +1399,11 @@ elif [[ -n "$stack_dir" && -f "$stack_dir/docker-compose.yml" ]]; then
 else
   warn "ASSISTANT_STACK_DIR unset or stale — run make ensure-local, then recreate the terminal service"
 fi
+# Host folders: a synced root's comes from the registry (lib/coding-roots.sh).
 coding_roots=("$(env_get OPENCODE_WORKSPACE_HOST)")
-IFS=':' read -r -a _extra_roots <<< "$(env_get CODING_EXTRA_ROOTS)"
-coding_roots+=(${_extra_roots[@]+"${_extra_roots[@]}"})
+while IFS=$'\t' read -r _host _; do
+  [[ -n "$_host" ]] && coding_roots+=("$_host")
+done < <(coding_root_pairs 2> /dev/null || true)
 for _root in "${coding_roots[@]}"; do
   [[ -n "$_root" && -d "$_root" ]] || continue
   while IFS= read -r _hermes_dir; do

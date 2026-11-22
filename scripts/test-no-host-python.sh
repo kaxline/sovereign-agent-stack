@@ -22,7 +22,7 @@ bad() { printf 'FAIL %s\n' "$*" >&2; fail=1; }
 
 FIRST_RUN="scripts/setup.sh scripts/sync-profiles.sh scripts/sync-signal-profile.sh
 scripts/sync-buzz-profile.sh scripts/sync-terminal-backend.sh scripts/check-n8n-keys.sh
-scripts/todo.sh scripts/crm.sh scripts/vault.sh scripts/budget.sh scripts/db.sh scripts/lib/env.sh scripts/lib/data-root.sh scripts/lib/secret.sh
+scripts/todo.sh scripts/crm.sh scripts/vault.sh scripts/budget.sh scripts/db.sh scripts/lib/env.sh scripts/lib/data-root.sh scripts/lib/secret.sh scripts/lib/coding-roots.sh
 scripts/lib/hermes-yaml.sh scripts/lib/mcp-probe.sh scripts/lib/addon-human.sh scripts/lib/doctor-twenty.sh scripts/addon.sh scripts/doctor.sh"
 
 # A command position (line start, after ; & | ( or a keyword, after VAR=value

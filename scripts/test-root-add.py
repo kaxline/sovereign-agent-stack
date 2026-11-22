@@ -28,6 +28,11 @@ FILES = (
     "scripts/lib/python.sh",
     "scripts/lib/roots.sh",
     "scripts/lib/override_mounts.py",
+    "scripts/lib/json-lines.sh",
+    "scripts/lib/data-root.sh",
+    "scripts/lib/stack-lock.sh",
+    "scripts/lib/coding-roots.sh",
+    "scripts/lib/coding_roots.py",
     "docker-compose.override.yml.example",
 )
 

@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
-"""Edit same-path bind mounts in a user's docker-compose.override.yml.
+"""Edit bind mounts in a user's docker-compose.override.yml.
 
 The file is the user's own, so it is edited as lines rather than parsed and
 re-dumped: comments, order and spacing outside the touched service stay as
-they are. A mount is a ``      - HOST:HOST`` (or ``:ro``) entry under
-``services.<name>.volumes``.
+they are. A mount is a ``      - HOST:CONTAINER`` (or ``:ro``) entry under
+``services.<name>.volumes``. SPEC below is PATH for a same-path bind, or
+HOST:CONTAINER for a synced coding root's folder bound at another path.
 
-    override_mounts.py add OVERRIDE SERVICE PATH [--ro]
+    override_mounts.py add OVERRIDE SERVICE SPEC [--ro]
         One mount on one service, for coding-root.sh and context-root.sh.
-    override_mounts.py remove OVERRIDE SERVICE PATH [--ro]
+    override_mounts.py remove OVERRIDE SERVICE SPEC [--ro]
         Drop that mount from one service, for coding-root.sh remove. A
         service block left with nothing else in it goes too.
-    override_mounts.py sync OVERRIDE BACKEND CODING CONTEXT
-        Project CODING_EXTRA_ROOTS and CONTEXT_EXTRA_ROOTS (colon lists) onto
-        the active terminal service, for sync-terminal-backend.sh.
+    override_mounts.py sync OVERRIDE BACKEND PAIRS CONTEXT
+        Project the coding roots (PAIRS, host<TAB>container lines from
+        coding_root_pairs in lib/coding-roots.sh) and CONTEXT_EXTRA_ROOTS (a
+        colon list) onto the active terminal service, for
+        sync-terminal-backend.sh.
 
 sync-terminal-backend.sh pipes this file to python3 on stdin, since in the
 Hermes image only its ROOT is mounted, so it imports nothing from scripts/lib.
@@ -58,15 +61,25 @@ def spec_of(line: str):
     return spec
 
 
-def mount_spec(path: str, readonly: bool) -> str:
-    spec = f"{path}:{path}"
+def parse_spec(arg: str) -> tuple[str, str]:
+    """PATH or HOST:CONTAINER as (host, container)."""
+    host, sep, container = arg.partition(":")
+    return (host, container) if sep else (arg, arg)
+
+
+def describe(host: str, container: str) -> str:
+    return host if host == container else f"{host} at {container}"
+
+
+def mount_spec(host: str, container: str, readonly: bool) -> str:
+    spec = f"{host}:{container}"
     if readonly:
         spec += ":ro"
     return spec
 
 
-def format_entry(path: str, readonly: bool) -> str:
-    spec = mount_spec(path, readonly)
+def format_entry(host: str, container: str, readonly: bool) -> str:
+    spec = mount_spec(host, container, readonly)
     if any(ch in spec for ch in " #\t"):
         escaped = spec.replace("\\", "\\\\").replace('"', '\\"')
         spec = f'"{escaped}"'
@@ -74,7 +87,8 @@ def format_entry(path: str, readonly: bool) -> str:
 
 
 def ensure_mount(
-    lines: list[str], service: str, path: str, readonly: bool, for_add: bool = False
+    lines: list[str], service: str, host: str, container: str, readonly: bool,
+    for_add: bool = False,
 ) -> tuple[list[str], str]:
     """Add the mount unless the service already has it.
 
@@ -85,9 +99,9 @@ def ensure_mount(
     writes a second mount at the same target, which Compose rejects; and an
     appended service block gets a blank line before it.
     """
-    spec = mount_spec(path, readonly)
-    present = {spec, mount_spec(path, not readonly)} if for_add else {spec}
-    entry = format_entry(path, readonly)
+    spec = mount_spec(host, container, readonly)
+    present = {spec, mount_spec(host, container, not readonly)} if for_add else {spec}
+    entry = format_entry(host, container, readonly)
     idx = find_service(lines, service)
     if idx is None:
         if for_add:
@@ -113,8 +127,10 @@ def ensure_mount(
     return lines, "added"
 
 
-def remove_mount(lines: list[str], service: str, path: str, readonly: bool) -> list[str]:
-    spec = mount_spec(path, readonly)
+def remove_mount(
+    lines: list[str], service: str, host: str, container: str, readonly: bool
+) -> list[str]:
+    spec = mount_spec(host, container, readonly)
     idx = find_service(lines, service)
     if idx is None:
         return lines
@@ -128,7 +144,7 @@ def remove_mount(lines: list[str], service: str, path: str, readonly: bool) -> l
         kept.append(line)
     if removed:
         lines = lines[:idx] + kept + lines[end:]
-        print(f"removed mount from {service}: {path}")
+        print(f"removed mount from {service}: {describe(host, container)}")
     return lines
 
 
@@ -173,9 +189,11 @@ def read_text(override: Path) -> str:
     return text
 
 
-def cmd_add(override: Path, service: str, path: str, readonly: bool) -> None:
+def cmd_add(override: Path, service: str, arg: str, readonly: bool) -> None:
+    host, container = parse_spec(arg)
+    path = describe(host, container)
     lines = read_text(override).splitlines(keepends=True)
-    lines, result = ensure_mount(lines, service, path, readonly, for_add=True)
+    lines, result = ensure_mount(lines, service, host, container, readonly, for_add=True)
     ro = " (ro)" if readonly else ""
     if result == "present":
         print(f"mount already present for {service}: {path}")
@@ -187,11 +205,12 @@ def cmd_add(override: Path, service: str, path: str, readonly: bool) -> None:
         print(f"added mount for {service}: {path}{ro}")
 
 
-def cmd_remove(override: Path, service: str, path: str, readonly: bool) -> None:
+def cmd_remove(override: Path, service: str, arg: str, readonly: bool) -> None:
     if not override.exists():
         return
+    host, container = parse_spec(arg)
     before = override.read_text()
-    lines = remove_mount(before.splitlines(keepends=True), service, path, readonly)
+    lines = remove_mount(before.splitlines(keepends=True), service, host, container, readonly)
     lines = strip_empty_volumes(lines, service)
     lines = drop_service_if_no_volumes(lines, service)
     text = "".join(lines)
@@ -203,11 +222,21 @@ def split_roots(raw: str) -> list[str]:
     return [part for part in raw.split(":") if part]
 
 
-def cmd_sync(override: Path, backend: str, coding_raw: str, context_raw: str) -> None:
+def split_pairs(raw: str) -> list[tuple[str, str]]:
+    pairs = []
+    for line in raw.splitlines():
+        host, sep, container = line.partition("\t")
+        if sep and host and container:
+            pairs.append((host, container))
+    return pairs
+
+
+def cmd_sync(override: Path, backend: str, pairs_raw: str, context_raw: str) -> None:
     active = "hermes" if backend == "local" else "hermes-worker"
     inactive = "hermes-worker" if backend == "local" else "hermes"
-    coding = split_roots(coding_raw)
-    context = [path for path in split_roots(context_raw) if path not in coding]
+    coding = split_pairs(pairs_raw)
+    targets = {container for _, container in coding}
+    context = [(path, path) for path in split_roots(context_raw) if path not in targets]
 
     if override.exists():
         text = read_text(override)
@@ -219,9 +248,10 @@ def cmd_sync(override: Path, backend: str, coding_raw: str, context_raw: str) ->
     before = "".join(lines)
 
     for roots, readonly in ((coding, False), (context, True)):
-        for path in roots:
-            lines = remove_mount(lines, inactive, path, readonly)
-            lines, result = ensure_mount(lines, active, path, readonly)
+        for host, container in roots:
+            path = describe(host, container)
+            lines = remove_mount(lines, inactive, host, container, readonly)
+            lines, result = ensure_mount(lines, active, host, container, readonly)
             if result == "service":
                 print(f"added service {active} with mount {path}")
             elif result == "added":

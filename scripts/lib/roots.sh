@@ -1,6 +1,9 @@
 # Shared by coding-root.sh and context-root.sh. The caller sets ROOT and
 # OVERRIDE, defines die, and sources lib/env.sh first.
 
+# shellcheck source=lib/python.sh
+declare -F fast_python > /dev/null || source "$(dirname "${BASH_SOURCE[0]}")/python.sh"
+
 validate_path() {
   local path="$1"
   [[ -n "$path" ]] || die "path is required"
@@ -30,12 +33,13 @@ ensure_override() {
   fi
 }
 
-# add_mount SERVICE PATH [--ro]: one same-path bind under services.SERVICE.
+# add_mount SERVICE SPEC [--ro]: one bind under services.SERVICE. SPEC is
+# PATH for a same-path bind, or HOST:CONTAINER.
 add_mount() {
-  python3 "${ROOT}/scripts/lib/override_mounts.py" add "$OVERRIDE" "$@"
+  fast_python - add "$OVERRIDE" "$@" < "${ROOT}/scripts/lib/override_mounts.py"
 }
 
-# remove_mount SERVICE PATH [--ro]: drop that bind from services.SERVICE.
+# remove_mount SERVICE SPEC [--ro]: drop that bind from services.SERVICE.
 remove_mount() {
-  python3 "${ROOT}/scripts/lib/override_mounts.py" remove "$OVERRIDE" "$@"
+  fast_python - remove "$OVERRIDE" "$@" < "${ROOT}/scripts/lib/override_mounts.py"
 }

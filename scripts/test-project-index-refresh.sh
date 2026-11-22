@@ -16,7 +16,7 @@ trap 'rm -rf "$tmp"' EXIT
 stack="${tmp}/stack"
 mkdir -p "${stack}/scripts/lib"
 cp "${ROOT}/scripts/project-index-refresh.sh" "${ROOT}/scripts/project-index.py" "${stack}/scripts/"
-for f in env.sh data-root.sh python.sh projects.sh project_sources.py; do
+for f in env.sh data-root.sh python.sh projects.sh coding-roots.sh coding_roots.py project_sources.py; do
   cp "${ROOT}/scripts/lib/${f}" "${stack}/scripts/lib/"
 done
 cp "${ROOT}/docker-compose.yml" "${stack}/"
