@@ -446,6 +446,8 @@ def _checked_endpoint(endpoint) -> str:
         raise bad from None
     if u.scheme not in ("http", "https") or not host or u.username is not None or u.password is not None:
         raise bad
+    if u.query or u.fragment or "?" in endpoint or "#" in endpoint:
+        raise InputError("endpoint may not carry a query or fragment", "endpoint")
     return endpoint
 
 

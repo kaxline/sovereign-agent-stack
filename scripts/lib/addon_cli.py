@@ -312,7 +312,7 @@ def cmd_connect_endpoint(args) -> None:
         raise Fail("stdin may hold only access, trust, ro and rw")
     creds = {k: spec[k] for k in ("ro", "rw") if k in spec}
     replaced = store.apply_endpoint_instance(
-        manifest, args.data_root, args.slug, args.endpoint, spec.get("access", ""),
+        manifest, args.data_root, args.slug, args.endpoint, spec.get("access", "read"),
         spec.get("trust", "trusted"), creds, args.replace)
     _dump({"replaced": replaced})
 
@@ -338,11 +338,15 @@ def cmd_secret(args) -> None:
         raise Fail(f"{args.sid} has no share block")
     if args.level not in ("ro", "rw"):
         raise Fail("level must be ro or rw")
+    if args.level not in manifest["share"]["levels"].values():
+        raise Fail(f"{args.sid} doesn't share at {args.level}")
     slug = store.slug(args.slug)
     d = store.addon_dir(args.data_root, manifest)
     if slug not in store.slugs(d):
         raise Fail(f"{args.sid} has no instance {slug}")
-    name = am._share_auth_secrets(am.mcp_entries(manifest))[args.level]
+    name = (am._share_auth_secrets(am.mcp_entries(manifest)) or {}).get(args.level)
+    if name is None:
+        raise Fail(f"{args.sid} names no key for {args.level}")
     path = d / "secrets" / f"{slug}.{name}"
     if am._key_problem(path):
         raise Fail(f"instance {slug} has no {args.level} key")
@@ -806,6 +810,9 @@ def cmd_plan_remove(args) -> None:
         print(f"delete {item}")
     for k in kept:
         print(f"kept {k['reason']}\t{k['path']}")
+    d = store.addon_dir(args.data_root, manifest)
+    if any("endpoint" in store._instance_values(d, slug) for slug in store.slugs(d)):
+        print("reload")
 
 
 def _own_sid(manifest: dict, sid: str) -> str:

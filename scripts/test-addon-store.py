@@ -617,7 +617,8 @@ with tempfile.TemporaryDirectory() as tmp:
            lambda: st.apply_endpoint_instance(TWENTY, root, "shared-c", ep, "write", "trusted", {"ro": "x"}, False))
     raises("missing ro is refused", st.InputError,
            lambda: st.apply_endpoint_instance(TWENTY, root, "shared-c", ep, "read", "trusted", {}, False))
-    for bad in ("ftp://x", "http://u:p@h:1", "", "http://h:1/\nx", "http://h:1/ x", "host:1"):
+    for bad in ("ftp://x", "http://u:p@h:1", "", "http://h:1/\nx", "http://h:1/ x", "host:1",
+                "http://h:1/?x=1", "http://h:1#f", "http://h:1?"):
         raises(f"endpoint {bad!r} is refused", st.InputError,
                lambda bad=bad: st.apply_endpoint_instance(TWENTY, root, "shared-c", bad, "read", "trusted",
                                                           {"ro": "x"}, False), "endpoint")
@@ -665,6 +666,37 @@ with tempfile.TemporaryDirectory() as tmp:
     check("connect-endpoint --replace prints replaced true", r.returncode == 0 and json.loads(r.stdout) == {"replaced": True},
           r.stdout + r.stderr)
     check("connect-endpoint output holds no secret", "cli-secret-ro" not in r.stdout + r.stderr)
+
+# secret: only an offered level, and a level the manifest names a key for
+with tempfile.TemporaryDirectory() as tmp:
+    def variant(name, edit):
+        m = copy.deepcopy(TWENTY)
+        edit(m)
+        d = Path(tmp) / name / "addons" / "twenty"
+        d.mkdir(parents=True)
+        (d / "addon.json").write_text(am.canonical(m))
+        return Path(tmp) / name
+    def secret_cli(base, level):
+        return subprocess.run([sys.executable, str(ROOT / "scripts" / "lib" / "addon_cli.py"),
+                               "--addons-dir", str(base / "addons"), "--data-root", str(base / "data"),
+                               "secret", "twenty", "sh", level], capture_output=True, text=True)
+    def read_only(m):
+        del m["share"]["levels"]["write"]
+    for label, edit, level in (("a level the share block doesn't offer", read_only, "rw"),):
+        base = variant(label.replace(" ", "-"), edit)
+        d = st.addon_dir(base / "data", json.loads((base / "addons" / "twenty" / "addon.json").read_text()))
+        (d / "instances").mkdir(parents=True)
+        (d / "secrets").mkdir()
+        (d / "instances" / "sh.json").write_text("{}")
+        (d / "secrets" / "sh.key_rw").write_text("variant-secret-rw")
+        (d / "secrets" / "sh.key_ro").write_text("variant-secret-ro")
+        r = secret_cli(base, level)
+        check(f"secret refuses {label} with exit 2 and no output",
+              r.returncode == 2 and r.stdout == "" and "Traceback" not in r.stderr
+              and "variant-secret" not in r.stderr, f"{r.returncode} {r.stdout!r} {r.stderr!r}")
+        r = secret_cli(base, "ro")
+        check("secret still prints an offered level", r.returncode == 0 and r.stdout == "variant-secret-ro",
+              f"{r.returncode} {r.stderr!r}")
 
 # endpoint instances in missing(), listing() and later configure calls
 with tempfile.TemporaryDirectory() as tmp:

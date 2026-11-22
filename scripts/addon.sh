@@ -917,7 +917,7 @@ ev_kept() {
 # go from plan-remove to delete-path one per line: plan-remove refuses a path
 # with a control character.
 remove_data() {
-  local sid="$1" line services=() volumes=() schemas=() paths=() project vol schema path msg started=0
+  local sid="$1" line services=() volumes=() schemas=() paths=() project vol schema path msg started=0 reload=0
   data_env_json "$sid"
   cli_checked "" plan-remove "$sid" --env "$DATA_ENV_JSON" --flags "$(env_flags_json)" --repo "$ROOT" --lines
   while IFS= read -r line; do
@@ -926,6 +926,7 @@ remove_data() {
       "volume "*) volumes+=("${line#volume }") ;;
       "schema "*) schemas+=("${line#schema }") ;;
       "delete "*) paths+=("${line#delete }") ;;
+      reload) reload=1 ;;
       "kept "*) line="${line#kept }"; ev_kept "${line#*$'\t'}" "${line%%$'\t'*}" ;;
     esac
   done <<EOF_PLAN
@@ -970,6 +971,9 @@ EOF_PLAN
       ev_fail command_failed delete "deleting ${path} failed${msg:+: ${msg}}" "$EV_LAST_LOG"
     fi
   done
+  # An endpoint instance registers while the add-on is off, so its removal
+  # needs a reload; the one disable ran came before the delete.
+  [[ "$reload" == 0 ]] || reload_step
 }
 
 cmd_remove() {
@@ -1006,7 +1010,8 @@ instance_args() {
       --instance) [[ $# -ge 2 && -n "$2" ]] || usage_error "--instance needs a slug"; INSTANCE_SLUG="$2"; shift 2 ;;
       --force) [[ "$cmd" == connect ]] || usage_error "${cmd}: unknown option $1"; INSTANCE_FORCE=1; shift ;;
       --endpoint)
-        [[ "$cmd" == connect && $# -ge 2 ]] || usage_error "${cmd}: unknown option $1"
+        [[ "$cmd" == connect ]] || usage_error "${cmd}: unknown option $1"
+        [[ $# -ge 2 && -n "$2" ]] || usage_error "--endpoint needs a URL"
         INSTANCE_ENDPOINT="$2"; INSTANCE_ENDPOINT_SET=1; shift 2 ;;
       *) usage_error "${cmd}: unknown option $1" ;;
     esac

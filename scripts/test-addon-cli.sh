@@ -1739,6 +1739,18 @@ expect_rc "connect --endpoint with a user name exits 2" 2
 r=0; json_ok "$out" error 'last["error"] == "bad_input"' || r=1
 check "connect --endpoint with a user name is bad_input" "$r"
 if [ ! -e "${TW_STORE}/instances/shared-b.json" ]; then ok "a refused endpoint writes no instance"; else bad "a refused endpoint writes no instance"; fi
+addon_json_in '{"ro":"ro-default-secret"}' connect twenty --instance shared-d --endpoint http://host.docker.internal:45125 --json
+expect_rc "connect --endpoint with no access exits 0" 0
+if python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d["access"]=="read" else 1)' "${TW_STORE}/instances/shared-d.json"; then ok "connect --endpoint defaults access to read"; else bad "connect --endpoint defaults access to read"; fi
+addon_json_in '{"access":"write","ro":"ro-x-secret"}' connect twenty --instance shared-e --endpoint http://host.docker.internal:45126 --json
+expect_rc "connect --endpoint write with no rw exits 2" 2
+r=0; json_ok "$out" error 'last["error"] == "bad_input"' || r=1
+check "connect --endpoint write with no rw is bad_input" "$r"
+addon_json_in '{"trust":"maybe","ro":"ro-x-secret"}' connect twenty --instance shared-e --endpoint http://host.docker.internal:45126 --json
+expect_rc "connect --endpoint with trust maybe exits 2" 2
+r=0; json_ok "$out" error 'last["error"] == "bad_input"' || r=1
+check "connect --endpoint with trust maybe is bad_input" "$r"
+rm -f "${TW_STORE}/instances/shared-d.json" "${TW_STORE}"/secrets/shared-d.*
 : > "$STUB_LOG"
 addon_json disconnect twenty --instance shared-a --json
 expect_rc "disconnect an endpoint instance" 0
@@ -1746,6 +1758,27 @@ r=0; json_ok "$out" "done" 'steps == [("register","running"),("register","done")
 check "disconnect of an endpoint instance prints register and reload, no check" "$r"
 if [ ! -e "${TW_STORE}/instances/shared-a.json" ] && [ -z "$(find "${TW_STORE}" -path '*/secrets/shared-a.*' 2> /dev/null)" ]; then ok "disconnect removes the endpoint instance and its keys"; else bad "disconnect removes the endpoint instance and its keys"; fi
 if logged crm.sh; then bad "disconnect of an endpoint instance skips crm.sh disconnect"; cat "$STUB_LOG"; else ok "disconnect of an endpoint instance skips crm.sh disconnect"; fi
+
+# --endpoint with no value is a missing value, not an unknown option.
+addon connect twenty --instance shared-g --endpoint
+expect_rc "connect --endpoint with no value exits 2" 2
+if grep -q -- "--endpoint needs a URL" "$out"; then ok "connect --endpoint with no value says it needs a URL"; else bad "connect --endpoint with no value says it needs a URL"; cat "$out"; fi
+addon disable twenty --endpoint x
+expect_rc "--endpoint on another command is an unknown option" 2
+# remove --delete-data reloads Hermes when an endpoint instance goes with the
+# data, or it stays registered.
+addon_json_in "$EP_JSON" connect twenty --instance shared-f --endpoint http://host.docker.internal:45127 --json
+expect_rc "connect an endpoint instance before remove" 0
+: > "$STUB_LOG"
+addon_json remove twenty --delete-data --json
+expect_rc "remove twenty --delete-data with an endpoint instance" 0
+if reloaded; then ok "remove --delete-data reloads hermes after deleting an endpoint instance"; else bad "remove --delete-data reloads hermes after deleting an endpoint instance"; cat "$STUB_LOG"; fi
+if [ ! -e "${TW_STORE}/instances/shared-f.json" ]; then ok "remove --delete-data deletes the endpoint instance"; else bad "remove --delete-data deletes the endpoint instance"; fi
+: > "$STUB_LOG"
+addon_json remove twenty --delete-data --json
+expect_rc "remove twenty --delete-data with no instance" 0
+if reloaded; then bad "remove --delete-data with no endpoint instance doesn't reload"; else ok "remove --delete-data with no endpoint instance doesn't reload"; fi
+: > "$STUB_LOG"
 
 # instances and secret (CR 0044 R2), against the real Twenty manifest. Synthetic
 # keys: neither command may print one except `secret` itself.
