@@ -12,6 +12,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -614,9 +615,15 @@ def render_index(files: Sequence[IndexedFile], *, grouped: bool) -> str:
 def _write_atomic(path: Path, text: str) -> None:
     """Write through a temp file beside path, then rename over it, so a reader
     or a concurrent refresh never sees a half-written file."""
-    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    # mkstemp, not a pid: python3 is pid 1 in every throwaway container, so
+    # two writers could share a pid-named temp file.
+    fd, raw = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.tmp-")
+    tmp = Path(raw)
     try:
-        tmp.write_text(text, encoding="utf-8")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        # Keep the old file's mode; mkstemp creates 0600.
+        os.chmod(tmp, path.stat().st_mode & 0o7777 if path.exists() else 0o644)
         os.replace(tmp, path)
     finally:
         if tmp.exists():
@@ -649,14 +656,32 @@ def index_kind(project_root: Path) -> str:
     """GENERATED when the manifest exists (the indexer wrote INDEX.md and owns
     it) or when sources.yaml asks for an index that hasn't been written yet,
     HAND_WRITTEN when INDEX.md exists without a manifest (the user's file,
-    never overwritten or checked), NO_INDEX otherwise."""
+    never overwritten or checked), NO_INDEX otherwise. The placeholder INDEX.md
+    that make project-init copied before it indexed new projects counts as
+    GENERATED: nobody wrote it by hand."""
     if (project_root / MANIFEST_NAME).is_file():
         return GENERATED
-    if (project_root / INDEX_NAME).is_file():
-        return HAND_WRITTEN
+    index = project_root / INDEX_NAME
+    if index.is_file():
+        return GENERATED if _is_old_template_index(index) else HAND_WRITTEN
     if (project_root / SOURCES_NAME).is_file():
         return GENERATED
     return NO_INDEX
+
+
+# The second line of every placeholder INDEX.md the project template shipped.
+_OLD_TEMPLATE_LINES = (
+    "Run from the repo root after you add or change source files or `sources.yaml`:",
+    "Run from the repo root after you add or change source markdown:",
+)
+
+
+def _is_old_template_index(index: Path) -> bool:
+    try:
+        lines = index.read_text(encoding="utf-8").splitlines()[:3]
+    except (OSError, ValueError):
+        return False
+    return len(lines) == 3 and lines[0] == "# Index" and lines[2] in _OLD_TEMPLATE_LINES
 
 
 def all_sources_local(project_root: Path) -> bool:
@@ -821,7 +846,7 @@ def survey_projects(projects_root: Path, *, refresh: bool) -> dict[str, list]:
                 if refresh:
                     write_index(child)
                 result[changed].append(child.name)
-        except (SourcesError, OSError) as exc:
+        except (SourcesError, OSError, ValueError) as exc:  # ValueError: a non-UTF-8 source
             result["failed"].append({"project": child.name, "error": str(exc)})
     return result
 

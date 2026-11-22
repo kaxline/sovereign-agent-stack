@@ -267,6 +267,37 @@ def test_index_kind() -> None:
         expect(ps.index_kind(projects / "fresh") == ps.GENERATED, "fresh")
         expect(ps.index_kind(projects / "hand") == ps.HAND_WRITTEN, "hand")
         expect(ps.index_kind(projects / "bare") == ps.NO_INDEX, "bare")
+        # The placeholder the old template shipped, never indexed.
+        old = projects / "old-template"
+        old.mkdir()
+        (old / ps.INDEX_NAME).write_text(
+            "# Index\n\nRun from the repo root after you add or change source files "
+            "or `sources.yaml`:\n\n```bash\nmake project-index PROJECT=x\n```\n",
+            encoding="utf-8",
+        )
+        expect(ps.index_kind(old) == ps.GENERATED, "old template placeholder")
+
+
+def test_unreadable_source_fails_one_project() -> None:
+    """A non-UTF-8 source fails its own project and the rest still refresh."""
+    with tempfile.TemporaryDirectory() as raw:
+        projects = _projects_tree(Path(raw))
+        (projects / "fresh" / "notes" / "bad.txt").write_bytes(b"\xff\xfe\x00bad")
+        proc = _run_indexer("--refresh-all", str(projects), "--json")
+        expect(proc.returncode == 0, proc.stderr)
+        result = json.loads(proc.stdout)
+        expect([f["project"] for f in result["failed"]] == ["fresh"], result)
+        expect(result["refreshed"] == ["stale"], result)
+
+
+def test_write_keeps_mode() -> None:
+    with tempfile.TemporaryDirectory() as raw:
+        project = Path(raw) / "p"
+        shutil.copytree(FIXTURE, project)
+        (project / ps.INDEX_NAME).chmod(0o664)
+        ps.write_index(project)
+        mode = (project / ps.INDEX_NAME).stat().st_mode & 0o777
+        expect(mode == 0o664, oct(mode))
 
 
 def test_hand_written_refused_without_force() -> None:
@@ -373,6 +404,8 @@ def main() -> int:
         test_unknown_retrieval_refused,
         test_indexer_cli_roundtrip,
         test_index_kind,
+        test_unreadable_source_fails_one_project,
+        test_write_keeps_mode,
         test_hand_written_refused_without_force,
         test_check_all_writes_nothing,
         test_refresh_all,

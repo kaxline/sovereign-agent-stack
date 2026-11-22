@@ -21,7 +21,9 @@ the stack under another app.
   hand-written: `make project-index` refuses to replace it (exit 3) unless
   given `FORCE=1`, `make project-index-check` reports it as not checked with
   exit 0, and nothing refreshes it. `make project-init` writes the first
-  index, and the template no longer ships `INDEX.md`. `make doctor` reports
+  index, and the template no longer ships `INDEX.md`; a project still holding
+  the old template's placeholder `INDEX.md` counts as generated and gets
+  indexed on its next refresh. `make doctor` reports
   project indexes in one line and warns only when an index can't be built.
   New `scripts/project-index.py --refresh-all DIR` and `--check-all DIR`.
 - The project indexer no longer walks into `node_modules/`, or into the

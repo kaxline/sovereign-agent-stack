@@ -35,8 +35,8 @@ if [[ ! -d "$projects" ]]; then
   exit 0
 fi
 project_source_mounts "$projects"
-if ! fast_python "${PROJECT_SOURCE_MOUNTS[@]}" "${ROOT}/scripts/project-index.py" \
-  --refresh-all "$projects" ${json[@]+"${json[@]}"} < /dev/null; then
+if ! (fast_python "${PROJECT_SOURCE_MOUNTS[@]}" "${ROOT}/scripts/project-index.py" \
+  --refresh-all "$projects" ${json[@]+"${json[@]}"} < /dev/null); then
   echo "warning: project index refresh did not run; generated INDEX.md files may be stale" >&2
   [[ ${#json[@]} -eq 0 ]] \
     || echo '{"error": "refresh did not run", "failed": [], "fresh": [], "hand_written": [], "refreshed": []}'

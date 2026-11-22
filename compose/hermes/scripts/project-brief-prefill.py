@@ -80,7 +80,7 @@ def _index_note(root: Path) -> str | None:
             return STALE_NOTE + EXTRA_ROOTS_NOTE
         ps.write_index(root)
         return None
-    except (ps.SourcesError, OSError) as exc:
+    except (ps.SourcesError, OSError, ValueError) as exc:
         print(
             f"project-brief-prefill: cannot refresh {root / ps.INDEX_NAME}: {exc}",
             file=sys.stderr,
