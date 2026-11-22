@@ -2,15 +2,20 @@
 
 ``make_local_tls(dir)`` writes a private CA (``ca.crt``, ``ca.key``) and,
 in ``dir/server/``, a server certificate for ``vaultwarden.vault.internal``
-signed by it (``server.crt``, ``server.key``). The sidecar mounts only
-``server/``. Keys are EC P-256. The CA is valid for 10 years, is limited by a
-critical name constraint to that one DNS name, and the server certificate is
-valid for 825 days. Keys are mode 600 and certificates mode 644.
+and ``localhost`` signed by it (``server.crt``, ``server.key``). The sidecar
+mounts only ``server/``. The broker and bitwarden-setup reach it by the first
+name; the user's browser reaches the web vault at ``https://localhost:<port>``,
+because the web vault refuses plain-HTTP servers, and trusts the CA once.
+Keys are EC P-256. The CA is valid for 10 years, is limited by a critical name
+constraint to those two DNS names (and their subdomains), and the server
+certificate is valid for 825 days. Keys are mode 600 and certificates mode 644.
 
-A second run changes nothing. A missing server pair is issued from the
-existing CA. A pair with one file missing is refused, since replacing the
-other file would break whatever trusts or serves it; ``rotate=True`` replaces
-all four files.
+A second run changes nothing. A missing server pair, or one without every
+name, is issued from the existing CA. A CA whose name constraint lacks a name
+is refused, since only a new CA can cover it and whatever trusts the old one
+must then trust the new one; ``rotate=True`` replaces all four files. A pair
+with one file missing is refused, since replacing the other file would break
+whatever trusts or serves it.
 """
 
 from __future__ import annotations
@@ -21,6 +26,8 @@ from pathlib import Path
 from broker.atomic import write_atomic
 
 LOCAL_NAME = "vaultwarden.vault.internal"
+# The name the user's browser uses for the web vault (127.0.0.1:VAULTWARDEN_PORT).
+BROWSER_NAME = "localhost"
 CA_DAYS = 3650
 SERVER_DAYS = 825
 CA_CN = "Assistant local Vaultwarden CA"
@@ -68,8 +75,16 @@ def make_local_tls(dir: Path, name: str = LOCAL_NAME, rotate: bool = False) -> N
     for f in ("server.crt", "server.key"):
         if (server_dir / f).is_dir():
             raise TlsError(f"{server_dir / f} is a folder; remove it and run again.")
+    names = list(dict.fromkeys([name, BROWSER_NAME]))
     keep_ca = _pair(dir, "ca", rotate)
-    keep_server = keep_ca and _pair(server_dir, "server", rotate)
+    if keep_ca:
+        permitted = _permitted_names(x509.load_pem_x509_certificate((dir / "ca.crt").read_bytes()))
+        missing = [n for n in names if n not in permitted]
+        if missing:
+            raise TlsError(f"The CA in {dir} does not cover {', '.join(missing)}; rotate to replace it, "
+                           "then trust the new ca.crt in your browser again.")
+    keep_server = keep_ca and _pair(server_dir, "server", rotate) \
+        and set(names) <= _san_names(x509.load_pem_x509_certificate((server_dir / "server.crt").read_bytes()))
     if keep_ca and keep_server:
         return
     if not keep_ca and not rotate and ((server_dir / "server.crt").exists() or (server_dir / "server.key").exists()):
@@ -99,8 +114,8 @@ def make_local_tls(dir: Path, name: str = LOCAL_NAME, rotate: bool = False) -> N
                                          key_encipherment=False, data_encipherment=False, key_agreement=False,
                                          key_cert_sign=True, crl_sign=True, encipher_only=False,
                                          decipher_only=False), critical=True)
-            .add_extension(x509.NameConstraints(permitted_subtrees=[x509.DNSName(name)], excluded_subtrees=None),
-                           critical=True)
+            .add_extension(x509.NameConstraints(permitted_subtrees=[x509.DNSName(n) for n in names],
+                                                excluded_subtrees=None), critical=True)
             .add_extension(x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()), critical=False)
             .sign(ca_key, hashes.SHA256())
         )
@@ -114,7 +129,7 @@ def make_local_tls(dir: Path, name: str = LOCAL_NAME, rotate: bool = False) -> N
         .serial_number(x509.random_serial_number())
         .not_valid_before(now - datetime.timedelta(minutes=5))
         .not_valid_after(now + datetime.timedelta(days=SERVER_DAYS))
-        .add_extension(x509.SubjectAlternativeName([x509.DNSName(name)]), critical=False)
+        .add_extension(x509.SubjectAlternativeName([x509.DNSName(n) for n in names]), critical=False)
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
         .add_extension(x509.KeyUsage(digital_signature=True, content_commitment=False, key_encipherment=False,
                                      data_encipherment=False, key_agreement=False, key_cert_sign=False,
@@ -130,6 +145,26 @@ def make_local_tls(dir: Path, name: str = LOCAL_NAME, rotate: bool = False) -> N
         _write(dir / "ca.crt", ca_cert.public_bytes(pem), 0o644)
     _write(server_dir / "server.key", key_bytes(server_key), 0o600)
     _write(server_dir / "server.crt", server_cert.public_bytes(pem), 0o644)
+
+
+def _permitted_names(ca_cert) -> set[str]:
+    """The DNS names in the CA's name constraint; empty when it has none."""
+    from cryptography import x509
+    try:
+        ext = ca_cert.extensions.get_extension_for_class(x509.NameConstraints).value
+    except x509.ExtensionNotFound:
+        return set()
+    return {t.value for t in ext.permitted_subtrees or [] if isinstance(t, x509.DNSName)}
+
+
+def _san_names(cert) -> set[str]:
+    """The DNS names in the certificate's subject alternative name; empty when it has none."""
+    from cryptography import x509
+    try:
+        return set(cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+                   .get_values_for_type(x509.DNSName))
+    except x509.ExtensionNotFound:
+        return set()
 
 
 def copy_ca(dir: Path, dest: Path) -> bool:

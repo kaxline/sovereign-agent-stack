@@ -495,12 +495,11 @@ def check_local(cfg: dict) -> None:
     local = f"{ADDON_DATA}/local"
     if vw.get("image") != VAULTWARDEN_IMAGE:
         checks.fail(f"vaultwarden image is {vw.get('image')!r}, want {VAULTWARDEN_IMAGE!r}")
-    ports = vw.get("ports") or []
-    want_port = [{"mode": "ingress", "host_ip": "127.0.0.1", "target": 80, "published": "8222", "protocol": "tcp"}]
-    if ports != want_port:
-        checks.fail(f"vaultwarden ports are {ports!r}, want only 127.0.0.1:8222:80")
+    # The web vault refuses plain HTTP, so the browser comes through vaultwarden-tls.
+    if vw.get("ports"):
+        checks.fail(f"vaultwarden publishes {vw.get('ports')!r}; the host port belongs to vaultwarden-tls")
     for key, want in (("SIGNUPS_ALLOWED", "false"), ("INVITATIONS_ALLOWED", "true"),
-                      ("DOMAIN", "http://localhost:8222"), ("DISABLE_ICON_DOWNLOAD", "true")):
+                      ("DOMAIN", "https://localhost:8222"), ("DISABLE_ICON_DOWNLOAD", "true")):
         if env_value(vw, key) != want:
             checks.fail(f"vaultwarden {key} must be {want}")
     if env_value(vw, "ADMIN_TOKEN") is not None:
@@ -521,8 +520,8 @@ def check_local(cfg: dict) -> None:
             checks.fail(f"{name} needs no-new-privileges:true")
 
     # Ruling R20: nothing on hermes' networks reaches vaultwarden except through the sidecar.
-    if networks(vw) != {"vault-backend", "vault-host"}:
-        checks.fail(f"vaultwarden networks are {sorted(networks(vw))}, want ['vault-backend', 'vault-host']")
+    if networks(vw) != {"vault-backend"}:
+        checks.fail(f"vaultwarden networks are {sorted(networks(vw))}, want ['vault-backend']")
     shared = networks(vw) & networks(services.get("hermes") or {})
     if shared:
         checks.fail(f"vaultwarden shares {sorted(shared)} with hermes")
@@ -532,7 +531,7 @@ def check_local(cfg: dict) -> None:
         checks.fail("network vault-host carries the host port, so it is not internal")
     for name, service in services.items():
         joined = networks(service)
-        if "vault-host" in joined and name != "vaultwarden":
+        if "vault-host" in joined and name != "vaultwarden-tls":
             checks.fail(f"{name} joins vault-host")
         if "vault-backend" in joined and name not in LOCAL_SERVICES:
             checks.fail(f"{name} joins vault-backend")
@@ -543,10 +542,12 @@ def check_local(cfg: dict) -> None:
         checks.fail(f"vaultwarden-tls image is {tls.get('image')!r}, want the pinned nginx")
     if "image: ${VAULTWARDEN_TLS_IMAGE:-nginx:1.30.7-alpine}" not in (ROOT / "docker-compose.yml").read_text():
         checks.fail("vaultwarden-tls image must be ${VAULTWARDEN_TLS_IMAGE:-nginx:1.30.7-alpine}")
-    if tls.get("ports"):
-        checks.fail("vaultwarden-tls publishes a port")
-    if networks(tls) != {"vault", "vault-backend"}:
-        checks.fail(f"vaultwarden-tls networks are {sorted(networks(tls))}, want ['vault', 'vault-backend']")
+    want_port = [{"mode": "ingress", "host_ip": "127.0.0.1", "target": 443, "published": "8222", "protocol": "tcp"}]
+    if (tls.get("ports") or []) != want_port:
+        checks.fail(f"vaultwarden-tls ports are {tls.get('ports')!r}, want only 127.0.0.1:8222:443")
+    if networks(tls) != {"vault", "vault-backend", "vault-host"}:
+        checks.fail(f"vaultwarden-tls networks are {sorted(networks(tls))}, "
+                    "want ['vault', 'vault-backend', 'vault-host']")
     aliases = ((tls.get("networks") or {}).get("vault") or {}).get("aliases") or []
     if LOCAL_NAME not in aliases:
         checks.fail(f"vaultwarden-tls needs the alias {LOCAL_NAME} on vault")

@@ -61,6 +61,7 @@ class Vaultwarden:
         self.prefix = f"{prefix}-{self.tag}"
         self.net = f"{self.prefix}-net"
         self.back = f"{self.prefix}-back"
+        self.host_net = f"{self.prefix}-host"
         self.vw = f"{self.prefix}-vw"
         self.tls = f"{self.prefix}-tls"
         self.gen = f"{self.prefix}-gen"
@@ -78,7 +79,7 @@ class Vaultwarden:
         (self.tmp / "vwdata").mkdir()
         # Containers and networks cleanup removes, in this order.
         self._containers = [self.gen, self.tls, self.vw]
-        self._networks = [self.net, self.back]
+        self._networks = [self.net, self.back, self.host_net]
         self.output: list[str] = []
         # Containers whose docker logs could not be read, by name; see container_logs.
         self.log_errors: dict[str, str] = {}
@@ -125,7 +126,8 @@ class Vaultwarden:
 
         As in compose (Ruling R20): ``net`` stands for the vault network, which the broker and
         bitwarden-setup are on, ``back`` for vault-backend, which only Vaultwarden and the sidecar
-        are on.
+        are on, and ``host_net`` for vault-host, which carries the sidecar's loopback port for the
+        browser (``https_port``).
         """
         for name in (self.net, self.back):
             proc = docker("network", "create", "--internal", name)
@@ -133,7 +135,7 @@ class Vaultwarden:
                 raise StartError(f"docker network create {name}: {proc.stderr.strip()}")
         proc = docker("run", "-d", "--name", self.vw, "--network", self.back, "--network-alias", "vaultwarden",
                       "-e", "SIGNUPS_ALLOWED=false", "-e", "INVITATIONS_ALLOWED=true",
-                      "-e", "DOMAIN=http://localhost:8222", "-e", "DISABLE_ICON_DOWNLOAD=true",
+                      "-e", "DOMAIN=https://localhost:8222", "-e", "DISABLE_ICON_DOWNLOAD=true",
                       "--security-opt", "no-new-privileges:true",
                       "-e", f"LOGIN_RATELIMIT_MAX_BURST={self.login_burst}",
                       "-e", "ADMIN_TOKEN_FILE=/run/vaultwarden/admin_token.phc",
@@ -141,16 +143,29 @@ class Vaultwarden:
                       "-v", f"{self.local / 'vaultwarden'}:/run/vaultwarden:ro", VW_IMAGE)
         if proc.returncode != 0:
             raise StartError(f"start Vaultwarden: {proc.stderr.strip()}")
-        proc = docker("run", "-d", "--name", self.tls, "--network", self.net, "--network-alias", LOCAL_NAME,
+        proc = docker("network", "create", self.host_net)
+        if proc.returncode != 0:
+            raise StartError(f"docker network create {self.host_net}: {proc.stderr.strip()}")
+        # Started on the host network, since a port published on an internal one is not reachable.
+        proc = docker("run", "-d", "--name", self.tls, "--network", self.host_net, "-p", "127.0.0.1::443",
                       "--security-opt", "no-new-privileges:true",
                       "-e", "NGINX_ENVSUBST_FILTER=^VAULTWARDEN_TLS_",
                       "-v", f"{TEMPLATE}:/etc/nginx/templates/default.conf.template:ro",
                       "-v", f"{self.local / 'tls/server'}:/etc/nginx/tls:ro", NGINX_IMAGE)
         if proc.returncode != 0:
             raise StartError(f"start the TLS sidecar: {proc.stderr.strip()}")
+        proc = docker("network", "connect", "--alias", LOCAL_NAME, self.net, self.tls)
+        if proc.returncode != 0:
+            raise StartError(f"connect the TLS sidecar to the vault network: {proc.stderr.strip()}")
         proc = docker("network", "connect", self.back, self.tls)
         if proc.returncode != 0:
             raise StartError(f"connect the TLS sidecar to the backend network: {proc.stderr.strip()}")
+
+    @property
+    def https_port(self) -> int:
+        """The sidecar's 443 on 127.0.0.1, as the browser reaches the web vault."""
+        out = docker("port", self.tls, "443/tcp").stdout.strip().splitlines()
+        return int(out[0].rsplit(":", 1)[1])
 
     def also_remove(self, *containers: str) -> None:
         """Containers the caller starts, removed before this instance's own."""

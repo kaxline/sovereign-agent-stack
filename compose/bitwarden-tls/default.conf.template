@@ -1,8 +1,10 @@
-# TLS front for the local Vaultwarden on the vault network (profile vault), so
-# bw, which refuses plain-HTTP servers, reaches it as
-# https://vaultwarden.vault.internal. The certificate comes from
-# setup.py tls (make vault-init); only the broker and bitwarden-setup trust
-# its CA. The user's browser uses Vaultwarden's own port, 127.0.0.1:8222.
+# TLS front for the local Vaultwarden (profile vault). bw and the web vault
+# both refuse plain-HTTP servers, so bw reaches it on the vault network as
+# https://vaultwarden.vault.internal and the user's browser on the host as
+# https://localhost:8222 (VAULTWARDEN_PORT, bound to 127.0.0.1). The
+# certificate, for both names, comes from setup.py tls (make vault-init); the
+# broker and bitwarden-setup trust its CA, and the user trusts it once in the
+# browser.
 #
 # The nginx image runs envsubst on this file at start. NGINX_ENVSUBST_FILTER
 # matches no variable, so nginx's own $variables stay as written.
@@ -17,7 +19,7 @@ log_format vaultwarden_tls '$remote_addr [$time_local] "$request_method $uri" $s
 
 server {
     listen 443 ssl;
-    server_name vaultwarden.vault.internal;
+    server_name vaultwarden.vault.internal localhost;
     access_log /var/log/nginx/access.log vaultwarden_tls;
 
     ssl_certificate /etc/nginx/tls/server.crt;

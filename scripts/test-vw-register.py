@@ -185,6 +185,16 @@ def host_main() -> int:
             failed = True
         else:
             note("ok: the vaultwarden-tls healthcheck command passes")
+        # The browser's route: https://localhost on the published port, trusted through the local CA
+        # alone, which only works when the certificate and the CA's name constraint cover localhost.
+        url = f"https://localhost:{kit.https_port}"
+        proc = subprocess.run(["curl", "-fsS", "--max-time", "20", "--cacert", str(local / "tls/ca.crt"), url + "/"],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
+        if proc.returncode != 0 or "<html" not in proc.stdout.lower():
+            note(f"FAIL: the web vault at {url} over the local CA: exit {proc.returncode} {proc.stderr.strip()[-200:]}")
+            failed = True
+        else:
+            note("ok: the web vault answers at https://localhost, trusted through the local CA")
         proc = docker("exec", vw, "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:80/alive")
         if proc.returncode != 0:
             note("FAIL: the vaultwarden healthcheck command fails")

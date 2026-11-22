@@ -129,7 +129,7 @@ writes the password. A `collection:` scope with a member account avoids this.
 
 `make vault-init` sets up a Vaultwarden in this stack, re-runnably:
 
-1. Generates a private CA and a server certificate for `vaultwarden.vault.internal`, and a random
+1. Generates a private CA and a server certificate for `vaultwarden.vault.internal` and `localhost`, and a random
    Vaultwarden admin token with its Argon2id hash, in `local/` under `BITWARDEN_HOST_DATA_DIR`.
    Sets `BITWARDEN_LOCAL_ENABLED=1` and starts `vaultwarden` and `vaultwarden-tls` (profile `vault`).
 2. Registers the agent account `agent@vault.localhost` with a generated master password and stores
@@ -138,8 +138,8 @@ writes the password. A `collection:` scope with a member account avoids this.
    `broker/local-account.json` (`{"scope": "collection:<Agent>"}`, mode 600) and
    `secrets/local/client_id`. The broker loads it as mode `local` with stored unlock. It stays out
    of the add-on instance store, so Boundary cannot disconnect it; `status --json` lists it.
-4. Invites your address (`VAULT_OWNER_EMAIL`, or asked) as an Owner and prints the web vault's
-   address. Register there with that address and a master password you choose; the stack never
+4. Invites your address (`VAULT_OWNER_EMAIL`, or asked) as an Owner, prints how to trust the local
+   CA in your browser (below) and the web vault's address. Register there with that address and a master password you choose; the stack never
    sees or stores it. Sign-ups are otherwise off.
 5. Waits up to 10 minutes for you to register, then confirms you in the organization. If you have
    not registered by then it stops; `make vault-init` again picks up from this step.
@@ -151,13 +151,27 @@ Each finished step is recorded in `local/state`. On a stack set up before the lo
 out of `compose/bitwarden/accounts/local.env`, `make vault-init` writes the two files from
 `local/state` without signing in. `make vault-init` then sets `BITWARDEN_ENABLED=1`;
 run `make up`. It starts the broker and asks the running gateway to reload its plugins, without
-recreating `hermes`; new sessions on `default` and `browser` get the Bitwarden tools. `make vault-open` opens the web vault at `http://localhost:8222`
+recreating `hermes`; new sessions on `default` and `browser` get the Bitwarden tools. `make vault-open` opens the web vault at `https://localhost:8222`
 (`VAULTWARDEN_PORT`).
 
-The web vault is plain HTTP on `127.0.0.1`, which a browser treats as a secure context. `bw` refuses
-any server that is not HTTPS, so the broker and `bitwarden-setup` reach Vaultwarden as
-`https://vaultwarden.vault.internal` through `vaultwarden-tls`, an nginx sidecar, and trust the
-private CA through `NODE_EXTRA_CA_CERTS`. Your browser never sees that certificate.
+The web vault and `bw` both refuse servers that are not HTTPS, `localhost` included, so Vaultwarden
+is reached only through `vaultwarden-tls`, an nginx sidecar: the broker and `bitwarden-setup` as
+`https://vaultwarden.vault.internal`, trusting the private CA through `NODE_EXTRA_CA_CERTS`, and
+your browser as `https://localhost:8222` on `127.0.0.1`. Your browser needs to trust the CA once,
+before you register. On macOS:
+
+```bash
+security add-trusted-cert -r trustRoot -k ~/Library/Keychains/login.keychain-db data/addons/bitwarden/secrets/local/tls/ca.crt
+```
+
+That covers Safari, Chrome and other browsers that use the keychain; Firefox imports the file under
+Settings > Privacy & Security > View Certificates > Authorities. The CA's name constraint limits
+it to `vaultwarden.vault.internal`, `localhost` and their subdomains, so trusting it lets nothing
+but the holder of `local/tls/ca.key` impersonate those names.
+
+A CA made before `localhost` was added is refused by `bitwarden-setup tls`. Replace it with
+`docker compose --profile bitwarden-tools run --rm bitwarden-setup tls --rotate`, restart
+`vaultwarden-tls` and `bitwarden-broker`, and trust the new `ca.crt`.
 
 The server certificate is valid for 825 days and the CA for 10 years. To renew the server
 certificate, remove `server.crt` and `server.key` from `local/tls/server/`, run
@@ -532,7 +546,7 @@ Other limits, as built:
 | `BITWARDEN_SIGNIN_IDLE_MINUTES` | `5` | End a sign-in session, and kill its Chromium, after this long with no action |
 | `BITWARDEN_SIGNIN_ACTION_SECONDS` | `30` | Bound on one sign-in action; a longer one gets `timeout` and the session ends |
 | `BITWARDEN_HOST_DATA_DIR` | `./data/addons/bitwarden` | `bw/`, `broker/`, `secrets/`, `local/` and `vaultwarden/`. Not moved by `ASSISTANT_DATA_ROOT` |
-| `VAULTWARDEN_PORT` | `8222` | Web vault port, bound to `127.0.0.1` |
+| `VAULTWARDEN_PORT` | `8222` | Web vault HTTPS port on `vaultwarden-tls`, bound to `127.0.0.1` |
 | `VAULTWARDEN_TLS_IMAGE` | `nginx:1.30.7-alpine` | The TLS sidecar's image |
 | `VAULT_OWNER_EMAIL` | unset | Your address for `make vault-init` |
 

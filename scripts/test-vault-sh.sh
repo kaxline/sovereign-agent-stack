@@ -355,8 +355,9 @@ done
 order="$(grep -nE 'bitwarden-setup (tls|admin-token|local-init|role)|up -d|dirs ready' "$STUB/log" \
   | sed -E 's/^[0-9]+://; s/.*bitwarden-setup ([a-z-]+).*/\1/; s/.* up -d.*/up/; s/stub: dirs ready at up/dirs/' | tr '\n' ' ')"
 [ "$order" = "tls admin-token up dirs local-init role " ] || fail "init order: ${order}"
-logged "local-init --owner owner@example.com --signup-url http://localhost:8222" || fail "local-init arguments"
+logged "local-init --owner owner@example.com --signup-url https://localhost:8222" || fail "local-init arguments"
 logged "role --slug local --email owner@example.com" || fail "role arguments"
+said "trust the local CA in your browser once" || fail "init tells the user to trust the local CA before registering"
 logged "--profile vault up -d --wait vaultwarden vaultwarden-tls" || fail "init starts the vault profile"
 grep -qx 'BITWARDEN_LOCAL_ENABLED=1' "$ENV_FILE" || fail "init sets BITWARDEN_LOCAL_ENABLED=1"
 said "nothing else has a copy unless you back it up" || fail "init's closing message says nothing else has a copy without a backup"

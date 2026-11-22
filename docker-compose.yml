@@ -2555,26 +2555,27 @@ services:
   # ----------------------------------------------------------------------
   # Local Vaultwarden for the Bitwarden broker's local mode (docs/bitwarden.md)
   # Profile: vault (BITWARDEN_LOCAL_ENABLED=1)
-  # Web vault: http://localhost:8222 (localhost-bound; VAULTWARDEN_PORT)
+  # Web vault: https://localhost:8222 through vaultwarden-tls (localhost-bound;
+  #          VAULTWARDEN_PORT). The web vault refuses plain HTTP, even on
+  #          localhost, so the browser must trust local/tls/ca.crt once.
   # Broker:  https://vaultwarden.vault.internal through vaultwarden-tls
   # Data:    BITWARDEN_HOST_DATA_DIR/vaultwarden. make vault-init writes the
   #          admin token, its hash and the TLS files under local/, which only
   #          bitwarden-setup mounts whole, and the CA certificate to
   #          secrets/local/tls/ca.crt for the broker.
   # Networks: hermes and the broker reach it only through vaultwarden-tls
-  #          (vault-backend); vault-host carries the loopback port.
+  #          (vault-backend). vaultwarden-tls publishes the loopback port
+  #          on vault-host.
   # ----------------------------------------------------------------------
   vaultwarden:
     profiles: ["vault"]
     container_name: ${CONTAINER_PREFIX:-}vaultwarden
     image: vaultwarden/server:1.37.5@sha256:4fe17f415f90087377d37c755e0ea3cf189dcc6794e49cdd2a9adbb4937d9e1f
     restart: unless-stopped
-    ports:
-      - "127.0.0.1:${VAULTWARDEN_PORT:-8222}:80"
     environment:
       - SIGNUPS_ALLOWED=false
       - INVITATIONS_ALLOWED=true
-      - DOMAIN=http://localhost:${VAULTWARDEN_PORT:-8222}
+      - DOMAIN=https://localhost:${VAULTWARDEN_PORT:-8222}
       - DISABLE_ICON_DOWNLOAD=true
       # The Argon2id hash only; the plaintext stays in local/admin_token, which
       # only bitwarden-setup mounts. Vaultwarden reads any setting from <NAME>_FILE.
@@ -2584,8 +2585,9 @@ services:
     volumes:
       - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/vaultwarden:/data
       - ${BITWARDEN_HOST_DATA_DIR:-./data/addons/bitwarden}/local/vaultwarden:/run/vaultwarden:ro
-    # Not default or vault: nothing on hermes' networks reaches it in plain HTTP.
-    networks: [vault-backend, vault-host]
+    # Not default or vault: nothing on hermes' networks reaches it in plain HTTP,
+    # and with no host port the browser comes through vaultwarden-tls too.
+    networks: [vault-backend]
     healthcheck:
       test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:80/alive"]
       interval: 30s
@@ -2601,6 +2603,9 @@ services:
     container_name: ${CONTAINER_PREFIX:-}vaultwarden-tls
     image: ${VAULTWARDEN_TLS_IMAGE:-nginx:1.30.7-alpine}
     restart: unless-stopped
+    # The web vault for the user's browser, as https://localhost:8222.
+    ports:
+      - "127.0.0.1:${VAULTWARDEN_PORT:-8222}:443"
     # nginx keeps its default capabilities: its master process starts as root
     # to read the mode-600 server key, then the workers drop to the nginx user.
     security_opt:
@@ -2619,6 +2624,7 @@ services:
       vault:
         aliases: [vaultwarden.vault.internal]
       vault-backend:
+      vault-host:
     depends_on:
       vaultwarden:
         condition: service_healthy
@@ -2645,7 +2651,7 @@ networks:
   # Internal: vaultwarden and vaultwarden-tls only (Ruling R20).
   vault-backend:
     internal: true
-  # vaultwarden's loopback port publish; nothing else joins it.
+  # vaultwarden-tls's loopback port publish; nothing else joins it.
   vault-host:
   # bitwarden-setup's route to Bitwarden's servers, apart from hermes.
   bitwarden-setup:

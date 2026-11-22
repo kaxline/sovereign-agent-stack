@@ -645,7 +645,7 @@ def local_run(st, d, extra=(), owner=LOCAL_OWNER):
            "LANG": "C.UTF-8", "BITWARDEN_BROKER_DIR": str(d / "broker"), "BITWARDEN_SECRETS_DIR": str(d / "secrets"),
            "BITWARDEN_LOCAL_DIR": str(d / "local"), "BITWARDEN_BW": str(wrapper),
            "BITWARDEN_LOCAL_POLL_SECONDS": "0.1", "BITWARDEN_RATE_LIMIT_WAIT": "0.2"}
-    argv = ["local-init", "--owner", owner, "--server", local_base, "--signup-url", "http://localhost:8222",
+    argv = ["local-init", "--owner", owner, "--server", local_base, "--signup-url", "https://localhost:8222",
             "--wait", "1", *extra]
     code, text = pty_run(argv, env, [])
     log_text = (d / "bw.log").read_text() if (d / "bw.log").exists() else ""
@@ -691,7 +691,7 @@ if HAVE_CRYPTO:
     # Registration refused and no token: exit 1, the sign-up fallback, no step recorded.
     code, out, argvs = local_run(local.st, d)
     check(code == 1, f"local-init refused registration: exit {code}\n{out}")
-    check(LOCAL_AGENT in out and "http://localhost:8222" in out and "master_password" in out,
+    check(LOCAL_AGENT in out and "https://localhost:8222" in out and "master_password" in out,
           f"local-init refused registration: no sign-up fallback\n{out}")
     check(not local_state(d).get("STEP"), f"local-init refused registration: state {local_state(d)}")
     pw_file = d / "secrets/local/master_password"
@@ -730,7 +730,7 @@ if HAVE_CRYPTO:
     check(cid.exists() and cid.read_text().strip() == "user.uid-agent" and oct(cid.stat().st_mode & 0o777) == "0o600",
           "local-init: secrets/local/client_id content or mode")
     check(not list(d.rglob("*.env")), f"local-init wrote an .env file: {list(d.rglob('*.env'))}")
-    check(LOCAL_OWNER in out and "http://localhost:8222" in out and "again" in out,
+    check(LOCAL_OWNER in out and "https://localhost:8222" in out and "again" in out,
           f"local-init: no sign-up address or re-run hint\n{out}")
 
     # A different owner than recorded: refused before any call.

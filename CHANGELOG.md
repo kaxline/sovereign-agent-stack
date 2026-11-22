@@ -10,6 +10,17 @@ the stack under another app.
 
 ### Changes
 
+- Bitwarden local mode: the web vault is now `https://localhost:8222`,
+  served by `vaultwarden-tls`, because the web vault bundled with
+  Vaultwarden 1.37.5 refuses plain-HTTP servers, `localhost` included, and
+  registering the owner failed with "Insecure URL not allowed". Vaultwarden
+  no longer publishes a port, and its `DOMAIN` is the https address. The
+  local CA and server certificate now also cover `localhost`, and
+  `make vault-init` prints how to trust the CA in the browser before you
+  register. A CA made before this is refused: run
+  `docker compose --profile bitwarden-tools run --rm bitwarden-setup tls --rotate`,
+  restart `vaultwarden-tls` and `bitwarden-broker`, and trust the new
+  `ca.crt`.
 - `POST /runs/{run_id}/terminate` on the kanban dashboard takes `hold:
   true`: one transaction moves the task to a sticky `blocked` and ends the
   run, then the worker is stopped, so the dispatcher can't start the task

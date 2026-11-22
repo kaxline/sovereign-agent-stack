@@ -126,7 +126,7 @@ LOCAL_COMMANDS = ("tls", "admin-token")
 LOCAL_DIR = "/local"
 LOCAL_SERVER = "https://vaultwarden.vault.internal"
 LOCAL_ORG_NAME = "Assistant"
-LOCAL_SIGNUP_URL = "http://localhost:8222"
+LOCAL_SIGNUP_URL = "https://localhost:8222"
 # "stack" and STACK_COLLECTION are no longer written. Older /local/state files still hold them.
 LOCAL_STEPS = ("registered", "api_key", "org", "stack", "account_file", "invited", "confirmed", "role")
 STATE_KEYS = ("STEP", "CLIENT_ID", "ORG_ID", "AGENT_COLLECTION", "STACK_COLLECTION", "OWNER_EMAIL")

@@ -1325,7 +1325,22 @@ remove_cleanup() {
   return 0
 }
 
-local_url() { printf 'http://localhost:%s' "$(env_get VAULTWARDEN_PORT 8222)"; }
+# HTTPS through vaultwarden-tls: the web vault refuses plain-HTTP servers, localhost included.
+local_url() { printf 'https://localhost:%s' "$(env_get VAULTWARDEN_PORT 8222)"; }
+
+# How to trust the local CA in the browser, which the user does once before
+# registering. A security setting, so vault.sh prints it and never runs it.
+trust_hint() {
+  local ca
+  ca="$(data_dir)/secrets/local/tls/ca.crt"
+  log "Before you open $(local_url), trust the local CA in your browser once. It covers only vaultwarden.vault.internal and localhost."
+  if [[ "$(uname -s)" == Darwin ]]; then
+    log "  security add-trusted-cert -r trustRoot -k ~/Library/Keychains/login.keychain-db '${ca}'"
+    log "  (Safari, Chrome and other browsers that use the macOS keychain; Firefox imports it under Settings > Privacy & Security > View Certificates > Authorities.)"
+  else
+    log "  Import ${ca} as a certificate authority in your browser's certificate settings."
+  fi
+}
 
 cmd_open() {
   [[ $# -eq 0 ]] || die "open takes no options"
@@ -1519,6 +1534,7 @@ cmd_init() {
     || die "Vaultwarden did not become healthy — docker compose logs vaultwarden vaultwarden-tls"
 
   if [[ "$step" != confirmed ]]; then
+    trust_hint
     local rc=0
     setup_run local-init --owner "$owner" --signup-url "$url" --wait "$wait" || rc=$?
     case "$rc" in
