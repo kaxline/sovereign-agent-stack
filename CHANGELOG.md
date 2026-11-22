@@ -10,6 +10,17 @@ the stack under another app.
 
 ### Changes
 
+- Synced coding roots (CR 0046 R1, R2): `scripts/coding-root.sh add
+  --container-path PATH --id ID [--json]` creates
+  `<data root>/coding-roots/ID/` and binds it at `PATH` on the terminal
+  service and `opencode`, for a client that syncs a copy of its own folder to
+  this host. `list --json` and `remove --id ID [--delete-folder] --json` go
+  with it. The registry is `<data root>/coding-roots/roots.json`;
+  `CODING_EXTRA_ROOTS` holds the container path. `backup.sh` leaves
+  `coding-roots/` out. See docs/opencode.md#synced-roots.
+- `coding-root.sh` add and remove hold the config lock, and their errors exit
+  2 (bad input) instead of 1. Its mount edits use the Hermes image's python3
+  when the host has none.
 - OpenCode runs as `HERMES_UID:HERMES_GID` instead of root. On a Linux host,
   files the coding agent wrote through OpenCode were owned by root, and the
   host user could not change or delete them without sudo. Its state volumes

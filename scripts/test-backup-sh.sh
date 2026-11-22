@@ -25,8 +25,11 @@ printf 'state-v1\n' > "${stack}/data/hermes/state.txt"
 printf 'pg-v1\n' > "${stack}/data/db/PG_VERSION"
 printf 'index\n' > "${stack}/data/mail/index.txt"
 printf 'old\n' > "${stack}/data/hermes.bak-old/x"
-mkdir -p "${tmp}/userdata/memory" "${tmp}/signal" "${tmp}/vikunja-files" "${tmp}/mail-index"
+mkdir -p "${tmp}/userdata/memory" "${tmp}/signal" "${tmp}/vikunja-files" "${tmp}/mail-index" \
+  "${tmp}/userdata/coding-roots/r1" "${stack}/data/coding-roots/r2"
 printf 'memory-v1\n' > "${tmp}/userdata/memory/m.md"
+printf 'synced\n' > "${tmp}/userdata/coding-roots/r1/f"
+printf 'synced\n' > "${stack}/data/coding-roots/r2/f"
 printf 'acct\n' > "${tmp}/signal/account"
 printf 'attachment\n' > "${tmp}/vikunja-files/1"
 printf 'index\n' > "${tmp}/mail-index/i"
@@ -146,9 +149,10 @@ data_list="$(listing "${bdir}/data.tar.gz")"
 for want in hermes/state.txt db/PG_VERSION; do
   printf '%s\n' "$data_list" | grep -qx "$want" || fail "data lacks ${want}"
 done
-for unwanted in mail hermes.bak-old worktree-backups; do
+for unwanted in mail hermes.bak-old worktree-backups coding-roots; do
   printf '%s\n' "$data_list" | grep -q "^${unwanted}" && fail "data has ${unwanted}"
 done
+listing "${bdir}/data-root.tar.gz" | grep -q '^coding-roots' && fail "data-root has coding-roots/"
 stack_list="$(listing "${bdir}/stack.tar.gz")"
 printf '%s\n' "$stack_list" | grep -qx .env || fail "stack lacks .env"
 printf '%s\n' "$stack_list" | grep -qx docker-compose.override.yml || fail "stack lacks the override"
@@ -173,6 +177,7 @@ out="$(run restore --from "$bdir" --stop --json)" || fail "restore failed: $out"
 [ "$(cat "${stack}/data/hermes/state.txt")" = state-v1 ] || fail "hermes state not restored"
 [ ! -e "${stack}/data/hermes/new.txt" ] || fail "restore kept a file newer than the backup"
 [ "$(cat "${tmp}/userdata/memory/m.md")" = memory-v1 ] || fail "data root not restored"
+[ -f "${tmp}/userdata/coding-roots/r1/f" ] || fail "synced coding roots not moved back"
 [ "$(cat "${FAKE}/volumes/proj_n8n_storage/db.sqlite")" = workflow ] || fail "volume not restored"
 [ "$(cat "${stack}/data/mail/index.txt")" = index ] || fail "mail index not moved back"
 [ -d "${stack}/data/hermes.bak-old" ] || fail "older backup not moved back"

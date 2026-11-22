@@ -12,8 +12,10 @@
 #               .claude/worktrees: code, .env and every local config file
 #   data        ./data, without what can be rebuilt or is a backup already:
 #               *.bak-* folders, backups/, worktree-backups/, and the host
-#               mail and Messages indexes (mail/, messages/, messages-events/)
-#   data-root   ASSISTANT_DATA_ROOT, when it is not ./data
+#               mail and Messages indexes (mail/, messages/, messages-events/),
+#               and the synced coding roots (coding-roots/)
+#   data-root   ASSISTANT_DATA_ROOT, when it is not ./data, without backups/
+#               and coding-roots/
 #   dir-KEY     a directory outside all of the above that a bind mount takes
 #               from .env: each ${KEY:-default} source in docker-compose.yml
 #               and compose/ (VIKUNJA_FILES_DIR, MAIL_DRAFTS_DIR, DB_DATA_DIR,
@@ -83,7 +85,10 @@ jl_init
 # message content) and OpenCode's workspace (code, kept in its own repos).
 SKIP_DIR_KEYS="ASSISTANT_DATA_ROOT HERMES_UV_CACHE_DIR MAIL_INDEX_DIR MESSAGES_INDEX_DIR MESSAGES_EVENTS_DIR OPENCODE_WORKSPACE_HOST"
 SKIP_VOLUMES="hermes_uv_cache actual_mcp_ro_cache actual_mcp_rw_cache neo4j_logs bitwarden_signin email_index search_gate_data"
-DATA_EXCLUDES="./backups ./worktree-backups ./*.bak-* ./mail ./messages ./messages-events"
+DATA_EXCLUDES="./backups ./worktree-backups ./*.bak-* ./mail ./messages ./messages-events ./coding-roots"
+# The data root's own part leaves out its backups and the synced coding roots
+# (coding-root.sh add --id), whose originals the client holds.
+ROOT_EXCLUDES="./backups ./coding-roots"
 
 CMD=create
 WITH_DIRS=0
@@ -250,7 +255,7 @@ collect_parts() {
   [[ -d "$data" ]] && add_part dir data "$data" "$data_excl"
 
   if [[ -d "$root" ]] && ! inside "$root" "$data"; then
-    local root_excl="./backups"
+    local root_excl="$ROOT_EXCLUDES"
     inside "$DEST" "$root" && root_excl="${root_excl} ./${DEST#"${root}"/}"
     add_part dir data-root "$root" "$root_excl"
   fi
@@ -419,7 +424,7 @@ cmd_restore() {
     case "$name" in
       stack) continue ;;
       data) src="$data_now"; excl="$DATA_EXCLUDES" ;;
-      data-root) src="$root_now"; excl="./backups" ;;
+      data-root) src="$root_now"; excl="$ROOT_EXCLUDES" ;;
       dir-*)
         key="${name#dir-}"
         want="$(env_get "$key")"

@@ -149,6 +149,22 @@ docker compose up -d --force-recreate hermes-worker hermes opencode opencode-mcp
 
 `make coding-root-remove DIR=...` takes an extra root out of `CODING_EXTRA_ROOTS` and drops its binds from both services; recreate the same containers afterwards. The folder stays, and so do any shadow mounts you added under it.
 
+#### Synced roots
+
+A client that keeps a copy of one of its own folders on this host (Boundary running the stack on a remote host over SSH) uses a synced root: a folder the stack creates and binds at the client's path, which doesn't exist on the host.
+
+```bash
+scripts/coding-root.sh add --container-path /Users/you/code/app --id ID --json
+scripts/coding-root.sh list --json [--no-size]
+scripts/coding-root.sh remove --id ID [--delete-folder] --json
+```
+
+`add` creates `<data root>/coding-roots/ID/` with mode `2775`, binds it at `--container-path` on the terminal service and `opencode`, adds the container path to `CODING_EXTRA_ROOTS` and records the pair in `<data root>/coding-roots/roots.json`. It prints the host folder and the services to recreate, the same four as above. A second `add` with the same ID and path changes nothing and prints the existing root; the same ID with another path is refused. The container path must be absolute, without a trailing slash, `..`, `:` or `,`, and is refused when it is inside or above the primary root, another coding root or a context root, inside the stack folder or the data root, or under a path the containers use (`/opt`, `/etc`, `/usr`, `/tmp`, `/var`, `/home/opencode` and the like).
+
+On Linux the folder belongs to `HERMES_UID:HERMES_GID`, so the coding agent and the user who runs `add` (the SSH user the client syncs as) can both write it. `add` refuses with `owner_mismatch` when that user isn't `HERMES_UID`. `remove --id` takes the root out of `CODING_EXTRA_ROOTS`, the binds and the registry; the folder stays unless `--delete-folder`. An unknown ID exits 0 with `"removed": false`. `scripts/backup.sh` leaves `coding-roots/` out: the client holds the original.
+
+`make up` re-projects the roots onto the terminal service on every start and reads the registry for synced ones, so it never binds the container path at its own path on the host.
+
 OpenCode runs as `HERMES_UID:HERMES_GID`, not root, so on a Linux host the files it writes in a coding root belong to the user who installed the stack, as the files `hermes-worker` writes do. Its entrypoint starts as root only to give that uid a passwd entry and hand it the state volumes, then drops to it.
 
 If the user asks to work outside those roots, `coding_start_task` returns `needs_access: true` with a `hint`. Hermes follows the hint: it asks the user to confirm access and gives them `make coding-root-add DIR=...` and the containers to recreate. It does not remount Docker itself.
