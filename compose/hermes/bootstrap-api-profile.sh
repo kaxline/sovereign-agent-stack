@@ -472,6 +472,29 @@ PY
   fi
 }
 
+# Run FN once per profile: only $PROFILE when the bootstrap isn't shared,
+# otherwise the default profile, then $PROFILE, then every other directory
+# under profiles/. FN gets the profile name ("" for the default).
+for_each_profile() {
+  _fep_fn="$1"
+  if ! is_true "$BOOTSTRAP_SHARED"; then
+    "$_fep_fn" "$PROFILE"
+    return 0
+  fi
+  "$_fep_fn" ""
+  if [ -n "$PROFILE" ]; then
+    "$_fep_fn" "$PROFILE"
+  fi
+  if [ -d "${HERMES_HOME}/profiles" ]; then
+    for _fep_dir in "${HERMES_HOME}/profiles"/*; do
+      [ -d "$_fep_dir" ] || continue
+      _fep_name="$(basename "$_fep_dir")"
+      [ "$_fep_name" = "$PROFILE" ] && continue
+      "$_fep_fn" "$_fep_name"
+    done
+  fi
+}
+
 apply_terminal_backend_all_profiles() {
   _atb_backend="${HERMES_TERMINAL_BACKEND:-ssh}"
   case "$_atb_backend" in
@@ -482,22 +505,7 @@ apply_terminal_backend_all_profiles() {
       exit 1
       ;;
   esac
-  if ! is_true "$BOOTSTRAP_SHARED"; then
-    "$_atb_fn" "$PROFILE"
-    return 0
-  fi
-  "$_atb_fn" ""
-  if [ -n "$PROFILE" ]; then
-    "$_atb_fn" "$PROFILE"
-  fi
-  if [ -d "${HERMES_HOME}/profiles" ]; then
-    for _atb_dir in "${HERMES_HOME}/profiles"/*; do
-      [ -d "$_atb_dir" ] || continue
-      _atb_name="$(basename "$_atb_dir")"
-      [ "$_atb_name" = "$PROFILE" ] && continue
-      "$_atb_fn" "$_atb_name"
-    done
-  fi
+  for_each_profile "$_atb_fn"
 }
 
 # Model calls go to llm-proxy. The placeholder is not a secret. The real
@@ -520,41 +528,22 @@ configure_model_proxy() {
 }
 
 apply_model_proxy_all_profiles() {
-  if ! is_true "$BOOTSTRAP_SHARED"; then
-    configure_model_proxy "$PROFILE"
-    return 0
-  fi
-  configure_model_proxy ""
-  if [ -n "$PROFILE" ]; then
-    configure_model_proxy "$PROFILE"
-  fi
-  if [ -d "${HERMES_HOME}/profiles" ]; then
-    for _amp_dir in "${HERMES_HOME}/profiles"/*; do
-      [ -d "$_amp_dir" ] || continue
-      _amp_name="$(basename "$_amp_dir")"
-      [ "$_amp_name" = "$PROFILE" ] && continue
-      configure_model_proxy "$_amp_name"
-    done
-  fi
+  for_each_profile configure_model_proxy
 }
 
 # Warn-only is the Hermes default on api_server, which treats the client as
 # someone able to stop a loop. A background turn has no such person.
+set_tool_loop_hard_stop() {
+  hermes_config_set "$1" tool_loop_guardrails.hard_stop_enabled "$TOOL_LOOP_HARD_STOP"
+}
+
 apply_tool_loop_hard_stop_all_profiles() {
-  if ! is_true "$BOOTSTRAP_SHARED"; then
+  if is_true "$BOOTSTRAP_SHARED"; then
+    log "Setting tool_loop_guardrails.hard_stop_enabled=${TOOL_LOOP_HARD_STOP} on every profile"
+  else
     log "Setting tool_loop_guardrails.hard_stop_enabled=${TOOL_LOOP_HARD_STOP} on profile '${PROFILE}'"
-    hermes_config_set "$PROFILE" tool_loop_guardrails.hard_stop_enabled "$TOOL_LOOP_HARD_STOP"
-    return 0
   fi
-  log "Setting tool_loop_guardrails.hard_stop_enabled=${TOOL_LOOP_HARD_STOP} on every profile"
-  for _ths_profile in "" $(
-    [ -d "${HERMES_HOME}/profiles" ] && ls "${HERMES_HOME}/profiles"
-  ); do
-    if [ -n "$_ths_profile" ] && [ ! -d "${HERMES_HOME}/profiles/${_ths_profile}" ]; then
-      continue
-    fi
-    hermes_config_set "$_ths_profile" tool_loop_guardrails.hard_stop_enabled "$TOOL_LOOP_HARD_STOP"
-  done
+  for_each_profile set_tool_loop_hard_stop
 }
 
 # Keep named tools in the model-visible schema when tool_search is active.
@@ -619,11 +608,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, "/bootstrap")
-from profile_config import load, save
+from profile_config import load, profile_name, save
 
 cfg_path = Path(sys.argv[1])
-parent = cfg_path.parent
-profile = parent.name if parent.parent.name == "profiles" else "default"
+profile = profile_name(cfg_path)
 label = f"tools.tool_search.defer ({profile})"
 
 try:
@@ -952,11 +940,11 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, "/bootstrap")
-from profile_config import load, save
+from profile_config import load, profile_name, save
 
 cfg_path = Path(sys.argv[1])
 plan = [line.split("|") for line in sys.argv[2].splitlines() if line.count("|") == 4]
-profile = cfg_path.parent.name if cfg_path.parent.parent.name == "profiles" else "default"
+profile = profile_name(cfg_path)
 config = load(cfg_path)
 changes = []  # config edits
 removed = []  # stale plugin copies
@@ -1600,7 +1588,7 @@ import tempfile
 os.environ["HERMES_HOME"] = tempfile.mkdtemp(prefix="cron-fence-")
 atexit.register(shutil.rmtree, os.environ["HERMES_HOME"], True)
 sys.path.insert(0, "/bootstrap")
-from profile_config import load, save
+from profile_config import load, profile_name, save
 
 MAIL_URLS = ("mail-mcp:8000", "mail-drafts-mcp:8000", "messages-mcp:8000")
 BROWSER = "browser"
@@ -1664,7 +1652,7 @@ except Exception as exc:  # no add-on is registered without the module either
     print(f"warning: add-on cron fence unavailable: {exc}")
     fence_known = False
 state_path = cfg_path.parent / ".mail-cron-toolsets.json"
-profile = cfg_path.parent.name if cfg_path.parent.parent.name == "profiles" else "default"
+profile = profile_name(cfg_path)
 
 config = load(cfg_path)
 notes = []
@@ -1780,22 +1768,7 @@ PY
 # profile under profiles/ (make agent-create's agents among them), so their
 # cron jobs are fenced the same way. hermes-browser-bootstrap does only its own.
 fence_mail_from_cron_all_profiles() {
-  if ! is_true "$BOOTSTRAP_SHARED"; then
-    fence_mail_from_cron "$PROFILE"
-    return 0
-  fi
-  fence_mail_from_cron ""
-  if [ -n "$PROFILE" ]; then
-    fence_mail_from_cron "$PROFILE"
-  fi
-  if [ -d "${HERMES_HOME}/profiles" ]; then
-    for _fca_dir in "${HERMES_HOME}/profiles"/*; do
-      [ -d "$_fca_dir" ] || continue
-      _fca_name="$(basename "$_fca_dir")"
-      [ "$_fca_name" = "$PROFILE" ] && continue
-      fence_mail_from_cron "$_fca_name"
-    done
-  fi
+  for_each_profile fence_mail_from_cron
 }
 
 # Default profile secrets live in HERMES_HOME/.env. Named profiles do not

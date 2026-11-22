@@ -121,11 +121,12 @@ remove_env() {
   replace_file "$1" _env_drop "$(env_target "$1")" "$2"
 }
 
+# has_compose_profile NAME: whether .env's COMPOSE_PROFILES (default core)
+# lists NAME. Whitespace around entries is ignored, so "core, todo" lists todo.
 has_compose_profile() {
-  local profile="$1"
   local profiles_csv
-  profiles_csv="$(env_get COMPOSE_PROFILES core)"
-  [[ ",${profiles_csv}," == *",${profile},"* ]]
+  profiles_csv=",$(env_get COMPOSE_PROFILES core),"
+  [[ "${profiles_csv//[[:space:]]/}" == *",$1,"* ]]
 }
 
 # docker compose with every profile COMPOSE_PROFILES enables (the caller's

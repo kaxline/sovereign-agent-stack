@@ -12,12 +12,11 @@ contributes no items.
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 
+from .atomic import write_atomic
 from .bwcli import Bw
 from .origins import normalize_origin
 
@@ -108,21 +107,7 @@ class Denylist:
 
     def _save(self, handles: set[str]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(prefix=".denylist-", dir=self.path.parent)  # created mode 600
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(sorted(handles), f)
-                f.write("\n")
-                f.flush()
-                os.fsync(f.fileno())
-            os.chmod(tmp, 0o600)
-            os.replace(tmp, self.path)
-        except BaseException:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
+        write_atomic(self.path, json.dumps(sorted(handles)) + "\n", prefix=".denylist-")
         self._handles = handles
 
 

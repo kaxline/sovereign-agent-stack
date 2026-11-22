@@ -63,7 +63,7 @@ PY
 mkdir -p "$work/addon-data/actual/instances"
 printf '{"server": "local", "sync_id": "s1", "bind": {"default": "rw"}}\n' > "$work/addon-data/actual/instances/main.json"
 fn_source "$BOOTSTRAP" fence_mail_from_cron > "$work/fence.sh"
-for fn in is_true config_path_for fence_mail_from_cron_all_profiles; do
+for fn in is_true config_path_for for_each_profile fence_mail_from_cron_all_profiles; do
   fn_source "$BOOTSTRAP" "$fn" >> "$work/sweep.sh"
 done
 # A Hermes home with the bootstrap's own profile, an agent made by

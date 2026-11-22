@@ -68,7 +68,8 @@ print("image ok")
 
 def test_bootstrap_covers_every_profile() -> None:
     script = (ROOT / "compose" / "hermes" / "bootstrap-api-profile.sh").read_text()
-    assert 'hermes_config_set "$_ths_profile" tool_loop_guardrails.hard_stop_enabled' in script
+    assert 'hermes_config_set "$1" tool_loop_guardrails.hard_stop_enabled' in script
+    assert "for_each_profile set_tool_loop_hard_stop" in script
     assert "\napply_tool_loop_hard_stop_all_profiles\n" in script
     compose = (ROOT / "docker-compose.yml").read_text()
     assert compose.count("HERMES_TOOL_LOOP_HARD_STOP=${HERMES_TOOL_LOOP_HARD_STOP:-true}") == 2
