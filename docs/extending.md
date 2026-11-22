@@ -435,9 +435,10 @@ To stop it and keep it stopped, send `hold`:
 {"hold": true, "reason": "stopped from Boundary"}
 ```
 
-The worker is stopped while the task still holds its claim, and the task then
-moves to `blocked` in one transaction, so no dispatcher tick can start it in
-between. The answer is `{"ok": true, "run_id": …, "task_id": …, "status":
+One transaction moves the task from `running` to `blocked` and ends the run,
+and the worker is stopped after it, so no dispatcher tick can start the task
+again. A worker that outlives the signals is refused by the board and ended by
+the dispatcher's sweep of finished runs. The answer is `{"ok": true, "run_id": …, "task_id": …, "status":
 "blocked"}`; `409` means the run already ended or is no longer the task's
 current run, `404` an unknown run.
 
