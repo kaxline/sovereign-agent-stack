@@ -10,6 +10,11 @@ the stack under another app.
 
 ### Changes
 
+- `addon.sh instances <short-id> --json` prints each instance's MCP URL as the
+  host reaches it, auth header and scheme, trust, and which of `ro` and `rw`
+  have a key; `addon.sh secret <short-id> --instance <slug> --level ro|rw`
+  prints one key, for add-ons with a `share` block only, and logs nothing.
+  For a provider's sharing gateway on the host. (Boundary CR 0044 R2)
 - Agent contract: `instances-plan` lines gain a fifteenth field, `trust`, which
   is `untrusted` for an instance whose stored trust is `untrusted` and empty
   otherwise; fields 1-14 are unchanged. The Hermes bootstrap sets

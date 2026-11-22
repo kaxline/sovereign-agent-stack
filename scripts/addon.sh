@@ -16,6 +16,8 @@
 #   scripts/addon.sh disconnect <short-id> --instance <slug> [--json]
 #   scripts/addon.sh remove <short-id> --delete-data [--json]
 #   scripts/addon.sh run <short-id> <command> [--instance <slug>]
+#   scripts/addon.sh instances <short-id> --json
+#   scripts/addon.sh secret <short-id> --instance <slug> --level ro|rw
 #
 # configure reads one JSON object on stdin. Secret values go only to
 # data/addons/<short-id>/secrets; bool settings with a flag write that flag to
@@ -134,7 +136,7 @@ source "${ROOT}/scripts/lib/addon-events.sh"
 source "${ROOT}/scripts/lib/stack-lock.sh"
 
 # usage: the synopsis from the header, on stdout.
-usage() { sed -n '9,17s/^# *//p' "${BASH_SOURCE[0]}"; }
+usage() { sed -n '9,20s/^# *//p' "${BASH_SOURCE[0]}"; }
 # usage_error REASON: `error: usage: REASON` and the synopsis on stderr, exit 2.
 # In JSON mode, a bad_input error line instead.
 usage_error() {
@@ -1109,6 +1111,41 @@ EOF_ARGV
   docker compose run --rm --no-deps -T "${argv[@]}" || exit 4
 }
 
+# cmd_instances <short-id> --json: one JSON object per instance on stdout, with
+# the MCP URL as a client on this host reaches it (compose services become
+# 127.0.0.1 on their published port, from `docker compose config`), and whether
+# each level's key exists. Never a key. Takes no lock.
+cmd_instances() {
+  local sid="${1:-}" config=""
+  [[ -n "$sid" ]] || usage_error "instances needs a short id"
+  shift
+  [[ "${1:-}" == --json && $# -eq 1 ]] || usage_error "instances takes --json only"
+  if ! config="$(docker compose --profile '*' config --format json 2> /dev/null)"; then
+    config=""
+    printf 'warning: docker compose config failed; instance URLs on compose services are null\n' >&2
+  fi
+  printf '%s' "$config" | cli instances "$sid" --flags "$(env_flags_json)"
+}
+
+# cmd_secret <short-id> --instance <slug> --level ro|rw: prints one key, no
+# newline, for an add-on with a share block. It takes no lock and does not
+# touch the event or log files, so the value goes only to stdout; every refusal
+# is exit 2 with the reason on stderr.
+cmd_secret() {
+  local sid="${1:-}" slug="" level=""
+  [[ -n "$sid" ]] || usage_error "secret needs a short id"
+  shift
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --instance) [[ $# -ge 2 && -n "$2" ]] || usage_error "--instance needs a slug"; slug="$2"; shift 2 ;;
+      --level) [[ $# -ge 2 && -n "$2" ]] || usage_error "--level needs ro or rw"; level="$2"; shift 2 ;;
+      *) usage_error "secret: unknown option $1" ;;
+    esac
+  done
+  [[ -n "$slug" && -n "$level" ]] || usage_error "secret needs --instance and --level"
+  cli secret "$sid" "$slug" "$level" < /dev/null
+}
+
 trap on_exit EXIT
 
 sub="${1:-}"
@@ -1146,6 +1183,8 @@ case "$sub" in
   disconnect) cmd_disconnect "$@" ;;
   remove) cmd_remove "$@" ;;
   run) cmd_run "$@" ;;
+  instances) cmd_instances "$@" ;;
+  secret) cmd_secret "$@" ;;
   -h | --help | help) usage ;;
   *) printf 'error: unknown command %s\n' "$sub" >&2; exit 2 ;;
 esac

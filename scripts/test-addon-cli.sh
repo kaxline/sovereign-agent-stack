@@ -1747,6 +1747,61 @@ check "disconnect of an endpoint instance prints register and reload, no check" 
 if [ ! -e "${TW_STORE}/instances/shared-a.json" ] && [ -z "$(find "${TW_STORE}" -path '*/secrets/shared-a.*' 2> /dev/null)" ]; then ok "disconnect removes the endpoint instance and its keys"; else bad "disconnect removes the endpoint instance and its keys"; fi
 if logged crm.sh; then bad "disconnect of an endpoint instance skips crm.sh disconnect"; cat "$STUB_LOG"; else ok "disconnect of an endpoint instance skips crm.sh disconnect"; fi
 
+# instances and secret (CR 0044 R2), against the real Twenty manifest. Synthetic
+# keys: neither command may print one except `secret` itself.
+cp "${root}/.env" "${tmp}/env.before-instances"
+grep -v '^TWENTY_MCP_ENABLED=' "${tmp}/env.before-instances" > "${root}/.env"
+printf 'TWENTY_MCP_ENABLED=1\n' >> "${root}/.env"
+mkdir -p "${TW_STORE}/instances" "${TW_STORE}/secrets"
+printf '%s' '{"url":"https://crm.example.com","access":"write","local":false}' > "${TW_STORE}/instances/hosted.json"
+printf '%s' '{"url":"https://ro.example.com","access":"read","local":false}' > "${TW_STORE}/instances/rdonly.json"
+printf '%s' 'synthetic-rw-key-hosted' > "${TW_STORE}/secrets/hosted.key_rw"
+printf '%s' 'synthetic-ro-key-hosted' > "${TW_STORE}/secrets/hosted.key_ro"
+printf '%s' 'synthetic-ro-key-rdonly' > "${TW_STORE}/secrets/rdonly.key_ro"
+: > "$STUB_LOG"
+addon_json instances twenty --json
+expect_rc "instances --json" 0
+r=0; python3 -c 'import json,sys
+rows = {}
+for l in open(sys.argv[1]).read().splitlines():
+    d = json.loads(l); rows[d["slug"]] = d
+h, ro = rows["hosted"], rows["rdonly"]
+sys.exit(0 if (sorted(rows) == ["hosted", "rdonly"] and h["url"] == "https://crm.example.com/mcp?mode=meta"
+  and h["header"] == "Authorization" and h["scheme"] == "Bearer" and h["levels"] == {"ro": True, "rw": True}
+  and h["on"] is True and h["trust"] == "trusted" and h["endpoint"] is False and h["access"] == "write"
+  and ro["levels"] == {"ro": True, "rw": False} and ro["access"] == "read") else 1)' "$out" || r=1
+check "instances --json prints one object per instance with url, header, scheme and levels" "$r"
+if grep -q synthetic- "$out" "$err"; then bad "instances --json never prints a key"; else ok "instances --json never prints a key"; fi
+if grep -q 'compose --profile \* config --format json' "$STUB_LOG"; then ok "instances reads compose config"; else bad "instances reads compose config"; cat "$STUB_LOG"; fi
+addon_json instances twenty
+expect_rc "instances without --json is a usage error" 2
+addon_json instances gptr --json
+expect_rc "instances for an add-on without instances prints nothing and exits 0" 0
+if [ ! -s "$out" ]; then ok "instances for an add-on without instances is empty"; else bad "instances for an add-on without instances is empty"; fi
+
+: > "$STUB_LOG"
+rc=0
+"$BASH_UNDER_TEST" "${root}/scripts/addon.sh" secret twenty --instance hosted --level rw < /dev/null > "${tmp}/sec.out" 2> "${tmp}/sec.err" || rc=$?
+if [ "$rc" = 0 ] && [ "$(cat "${tmp}/sec.out")" = synthetic-rw-key-hosted ] && [ "$(wc -c < "${tmp}/sec.out" | tr -d ' ')" = 23 ]; then ok "secret prints the key with no newline"; else bad "secret prints the key with no newline: rc=$rc"; fi
+if [ ! -s "${tmp}/sec.err" ]; then ok "secret writes nothing to stderr"; else bad "secret writes nothing to stderr"; fi
+# sec_refused LABEL ARGS...: exit 2, empty stdout, a reason on stderr, no key text.
+sec_refused() {
+  label="$1"
+  shift
+  rc=0
+  "$BASH_UNDER_TEST" "${root}/scripts/addon.sh" secret "$@" < /dev/null > "${tmp}/sec.out" 2> "${tmp}/sec.err" || rc=$?
+  if [ "$rc" = 2 ] && [ ! -s "${tmp}/sec.out" ] && [ -s "${tmp}/sec.err" ] && ! grep -q synthetic- "${tmp}/sec.err"; then ok "secret refuses ${label}"; else bad "secret refuses ${label}: rc=$rc"; cat "${tmp}/sec.out" "${tmp}/sec.err"; fi
+}
+sec_refused "a level with no key" twenty --instance rdonly --level rw
+sec_refused "an unknown slug" twenty --instance nosuch --level ro
+sec_refused "an add-on without share" gptr --instance hosted --level ro
+sec_refused "a bad level" twenty --instance hosted --level admin
+sec_refused "a bad slug" twenty --instance '../hosted' --level ro
+if grep -q synthetic- "$STUB_LOG"; then bad "secret never reaches the docker log"; else ok "secret never reaches the docker log"; fi
+if grep -rq synthetic- "${root}/data/addons/.log" "${root}/data/addons/"*.log 2> /dev/null; then bad "secret leaves no value in the add-on logs"; else ok "secret leaves no value in the add-on logs"; fi
+cp "${tmp}/env.before-instances" "${root}/.env"
+rm -f "${TW_STORE}/instances/hosted.json" "${TW_STORE}/instances/rdonly.json" "${TW_STORE}"/secrets/hosted.* "${TW_STORE}/secrets/rdonly.key_ro"
+
 export ADDONS_DIR="$saved_addons_dir"
 cp "${REPO}/scripts/fixtures/addons-cli/docker-compose.yml" "${root}/docker-compose.yml"
 

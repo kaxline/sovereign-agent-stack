@@ -317,6 +317,37 @@ def cmd_connect_endpoint(args) -> None:
     _dump({"replaced": replaced})
 
 
+def cmd_instances(args) -> None:
+    """One JSON object per instance of SID, from `docker compose config
+    --format json` on stdin (empty when it failed: no service has a port)."""
+    manifest = _manifest(args.addons_dir, args.sid)
+    published = {name: {t: port for t, (_ip, port) in fig["ports"].items()}
+                 for name, fig in _compose_config().items()}
+    for row in am.instances_view(args.addons_dir, args.data_root / "addons", args.sid, published,
+                                 _flags_arg(args.flags)):
+        _dump(row)
+
+
+def cmd_secret(args) -> None:
+    """Print one level's key of an instance, with no newline. Only an add-on
+    with a `share` block has one; nothing else here ever prints a key."""
+    manifest = _manifest(args.addons_dir, args.sid)
+    if am.share_block(manifest) is None:
+        raise Fail(f"{args.sid} has no share block")
+    if args.level not in ("ro", "rw"):
+        raise Fail("level must be ro or rw")
+    slug = store.slug(args.slug)
+    d = store.addon_dir(args.data_root, manifest)
+    if slug not in store.slugs(d):
+        raise Fail(f"{args.sid} has no instance {slug}")
+    name = am._share_auth_secrets(am.mcp_entries(manifest))[args.level]
+    path = d / "secrets" / f"{slug}.{name}"
+    if am._key_problem(path):
+        raise Fail(f"instance {slug} has no {args.level} key")
+    sys.stdout.write(path.read_text(encoding="utf-8"))
+    sys.stdout.flush()
+
+
 def cmd_remove_instance(args) -> None:
     manifest = _manifest(args.addons_dir, args.sid)
     store.remove_instance(manifest, args.data_root, args.slug)
@@ -978,6 +1009,15 @@ def main(argv: list[str]) -> int:
     s.add_argument("--endpoint", required=True)
     s.add_argument("--replace", action="store_true")
     s.set_defaults(func=cmd_connect_endpoint)
+    s = sub.add_parser("instances")
+    s.add_argument("sid")
+    s.add_argument("--flags", default="{}")
+    s.set_defaults(func=cmd_instances)
+    s = sub.add_parser("secret")
+    s.add_argument("sid")
+    s.add_argument("slug")
+    s.add_argument("level")
+    s.set_defaults(func=cmd_secret)
     s = sub.add_parser("remove-instance")
     s.add_argument("sid")
     s.add_argument("slug")

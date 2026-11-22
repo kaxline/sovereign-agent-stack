@@ -2103,6 +2103,56 @@ with tempfile.TemporaryDirectory() as tmp:
     check("an endpoint instance registers on api-server at ro",
           rows.get("crm-shared-a", [""] * 3)[2] == "1", str(rows.get("crm-shared-a")))
 
+# client_url and instances_view (CR 0044 R2).
+for label, url, published, want in (
+        ("an external URL is unchanged", "https://crm.example.com/mcp?mode=meta", {},
+         "https://crm.example.com/mcp?mode=meta"),
+        ("a compose service becomes its published loopback port", "http://twenty-server:3000/mcp?mode=meta",
+         {"twenty-server": {3000: 3000}}, "http://127.0.0.1:3000/mcp?mode=meta"),
+        ("a compose service on another host port", "http://twenty-server:3000/mcp",
+         {"twenty-server": {3000: 43000}}, "http://127.0.0.1:43000/mcp"),
+        ("a compose service with nothing published is None", "http://actual-mcp-ro:3000/a/mcp", {}, None),
+        ("a compose service with another port published is None", "http://actual-mcp-ro:3000/a/mcp",
+         {"actual-mcp-ro": {8080: 8080}}, None),
+        ("host.docker.internal becomes loopback", "http://host.docker.internal:45123?mode=meta", {},
+         "http://127.0.0.1:45123?mode=meta")):
+    check(f"client_url: {label}", am.client_url(url, published) == want, str(am.client_url(url, published)))
+
+with tempfile.TemporaryDirectory() as tmp:
+    data = tw_store(Path(tmp), {
+        "main": {"url": "http://twenty-server:3000", "access": "write", "local": True},
+        "remote": {"url": "https://crm.example.com/", "access": "write", "local": False},
+        "lookup": {"url": "https://lookup.example.com", "access": "read", "trust": "untrusted"},
+    })
+    (data / "twenty" / "instances" / "ep.json").write_text(json.dumps(
+        {"endpoint": "http://host.docker.internal:45123", "access": "read", "trust": "untrusted"}))
+    (data / "twenty" / "secrets" / "ep.key_ro").write_text("ro-fake-ep")
+    env = {"TWENTY_MCP_ENABLED": "1", "TWENTY_LOCAL_ENABLED": "1"}
+    view = {v["slug"]: v for v in am.instances_view(
+        ROOT / "addons", data, "twenty", {"twenty-server": {3000: 3000}}, env)}
+    check("instances_view lists every instance", sorted(view) == ["ep", "lookup", "main", "remote"], str(sorted(view)))
+    r = view.get("remote", {})
+    check("a hosted instance has its /mcp URL, header, scheme and levels",
+          r.get("url") == "https://crm.example.com/mcp?mode=meta" and r.get("header") == "Authorization"
+          and r.get("scheme") == "Bearer" and r.get("levels") == {"ro": False, "rw": True}
+          and r.get("on") is True and r.get("access") == "write" and r.get("trust") == "trusted"
+          and r.get("endpoint") is False, str(r))
+    check("a local instance's URL is its published loopback port",
+          view.get("main", {}).get("url") == "http://127.0.0.1:3000/mcp?mode=meta", str(view.get("main")))
+    e = view.get("ep", {})
+    check("an endpoint instance is on, untrusted, at loopback and flagged endpoint",
+          e.get("url") == "http://127.0.0.1:45123?mode=meta" and e.get("trust") == "untrusted"
+          and e.get("endpoint") is True and e.get("on") is True and e.get("levels") == {"ro": True, "rw": False}, str(e))
+    check("a read instance uses its stored trust", view.get("lookup", {}).get("trust") == "untrusted")
+    check("instances_view never holds a key value", "fake" not in json.dumps(view))
+    off = {v["slug"]: v for v in am.instances_view(ROOT / "addons", data, "twenty", {}, {})}
+    check("with the add-on off a hosted instance is off with no URL, an endpoint instance stays on",
+          off["remote"]["on"] is False and off["remote"]["url"] is None and off["ep"]["on"] is True, str(off))
+    check("an unpublished local service gives a null URL",
+          {v["slug"]: v for v in am.instances_view(ROOT / "addons", data, "twenty", {}, env)}["main"]["url"] is None)
+    check("an add-on without instances has no instance view",
+          am.instances_view(ROOT / "addons", data, "gptr", {}, env) == [])
+
 if failures:
     print(f"{failures} failed")
     sys.exit(1)

@@ -105,6 +105,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 MANIFEST_VERSION = 1
 
@@ -1958,6 +1959,70 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
                 line("1", url=url, keyfile=str(keyfile) if keyfile else "", pins=" ".join(pins),
                      tools=" ".join(tools), headers=filled)
     return lines
+
+
+def client_url(url: str, published: dict) -> str | None:
+    """URL as a client on the stack's host reaches it. `published` maps a
+    compose service to {container port: host port}. A host without a dot (other
+    than localhost) is a compose service: it becomes 127.0.0.1 on the published
+    host port, or None when that port isn't published. host.docker.internal
+    becomes 127.0.0.1. Any other host is unchanged."""
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    port = parts.port
+    if host == "host.docker.internal":
+        new_host, new_port = "127.0.0.1", port
+    elif host and "." not in host and ":" not in host and host != "localhost":
+        target = port or (443 if parts.scheme == "https" else 80)
+        new_port = (published.get(host) or {}).get(target)
+        if new_port is None:
+            return None
+        new_host = "127.0.0.1"
+    else:
+        return url
+    netloc = new_host + (f":{new_port}" if new_port is not None else "")
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
+def instances_view(addons_dir: Path, data_dir: Path, sid: str, published: dict,
+                   environ=os.environ) -> list[dict]:
+    """One dict per stored instance of add-on SID, from the default profile's
+    instances-plan line: slug, on, access, trust, url (client_url of the plan's
+    URL, None when it has none), header, scheme, levels ({"ro", "rw"}: whether
+    that level's key file exists) and endpoint. Key values are never read."""
+    manifest = None
+    for path, m, errors in checked_dir(addons_dir):
+        if path.parent.name == sid and not errors:
+            manifest = m
+    mcp = next((e for e in mcp_entries(manifest) if "instances" in e), None) if manifest else None
+    if mcp is None:
+        return []
+    inst = mcp["instances"]
+    schema = manifest["instances"]["settings"]
+    store = Path(data_dir) / sid
+    rows = {}
+    for line in instances_plan(addons_dir, data_dir, "default", environ):
+        fields = line.split("|")
+        rows[fields[0]] = fields
+    secrets = (inst.get("auth") or {}).get("secret") or {}
+    access_setting = SETTING_REF_RE.fullmatch(inst["access"]).group(1) if "access" in inst else None
+    out = []
+    for slug in _store_slugs(store)[0]:
+        fields = rows.get(inst["name"].replace("{slug}", slug))
+        if fields is None:
+            continue
+        values = _instance_values(store, slug, schema) or {}
+        access = values.get(access_setting) if access_setting else None
+        url = client_url(fields[3], published) if fields[3] else None
+        out.append({
+            "slug": slug, "on": fields[2] == "1",
+            "access": access if isinstance(access, str) else "",
+            "trust": "untrusted" if fields[14] == "untrusted" else "trusted",
+            "url": url, "header": fields[10], "scheme": fields[11],
+            "levels": {lv: bool(secrets.get(lv)) and (store / "secrets" / f"{slug}.{secrets[lv]}").is_file()
+                       for lv in ("ro", "rw")},
+            "endpoint": isinstance(values.get("endpoint"), str)})
+    return out
 
 
 def vault_plan(addons_dir: Path, profile: str, environ=os.environ) -> list[str]:
