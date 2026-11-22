@@ -71,32 +71,7 @@ def all_projects(projects: Path, *, refresh: bool, as_json: bool) -> int:
     if not projects.is_dir():
         print(f"project-index: not a directory: {projects}", file=sys.stderr)
         return 2
-    result: dict[str, list] = {
-        "fresh": [],
-        "refreshed" if refresh else "stale": [],
-        "hand_written": [],
-        "failed": [],
-    }
-    for child in sorted(projects.iterdir()):
-        if not child.is_dir() or child.name.startswith("."):
-            continue
-        kind = ps.index_kind(child)
-        if kind == ps.HAND_WRITTEN:
-            result["hand_written"].append(child.name)
-            continue
-        if kind != ps.GENERATED:
-            continue
-        try:
-            if ps.catalog_is_fresh(child):
-                result["fresh"].append(child.name)
-            elif refresh:
-                ps.write_index(child)
-                result["refreshed"].append(child.name)
-            else:
-                result["stale"].append(child.name)
-        except (ps.SourcesError, OSError) as exc:
-            result["failed"].append({"project": child.name, "error": str(exc)})
-
+    result = ps.survey_projects(projects, refresh=refresh)
     if as_json:
         print(json.dumps(result, sort_keys=True))
         return 0

@@ -57,6 +57,7 @@ mkdir -p compose/postgres/services
 
 [[ "$PREPARE_ONLY" == 1 ]] && exit 0
 
+./scripts/project-index-refresh.sh
 echo "Profiles: $(env_get_file .env COMPOSE_PROFILES)"
 ./scripts/vault.sh pre-up
 # A one-shot service that exits non-zero (a bootstrap, say) fails the whole

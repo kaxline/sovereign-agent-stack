@@ -111,3 +111,34 @@ stack_python() {
   done
   stack_container ${opts[@]+"${opts[@]}"} "$(stack_hermes_image)" python3 "$@"
 }
+
+# fast_python_mode: how fast_python runs python3. host when a usable python3 is
+# on PATH (no container start, and no bind mounts to read through: the
+# project-index checks walk whole source trees), else image when the pinned
+# Hermes image is pulled, else none. STACK_PYTHON=host or STACK_PYTHON=image
+# forces one.
+fast_python_mode() {
+  case "${STACK_PYTHON:-}" in
+    host | image) printf '%s\n' "$STACK_PYTHON" ;;
+    *)
+      if python3_usable; then
+        echo host
+      elif docker image inspect "$(stack_hermes_image)" >/dev/null 2>&1; then
+        echo image
+      else
+        echo none
+      fi
+      ;;
+  esac
+}
+
+# fast_python [stack_container options] ARGS...: python3 as fast_python_mode
+# picks it. With mode none it runs nothing and returns 1. Set FAST_PYTHON_MODE
+# to reuse a mode already worked out.
+fast_python() {
+  case "${FAST_PYTHON_MODE:-$(fast_python_mode)}" in
+    image) STACK_PYTHON='' stack_python "$@" ;;
+    host) STACK_PYTHON=host stack_python "$@" ;;
+    *) return 1 ;;
+  esac
+}

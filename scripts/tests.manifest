@@ -119,6 +119,7 @@ scripts/test-overlay-patch.py                   ci
 scripts/test-profile-config.py                  ci image
 scripts/test-profile-ownership.sh               ci
 scripts/test-project-brief-prefill.py           ci
+scripts/test-project-index-refresh.sh           ci
 scripts/test-project-sources.py                 ci
 scripts/test-reasoning-promotion-gate.py        image
 scripts/test-reset-neo4j-password.sh            ci

@@ -106,6 +106,34 @@ def test_extra_root_absolute_paths() -> None:
         expect("## vault" in rendered and "## project" in rendered, rendered)
 
 
+def test_extra_root_skips_stack_data_and_dependencies() -> None:
+    """A source that is a whole stack checkout never indexes its data/ (Hermes
+    state the terminal backend hides), and no source indexes node_modules."""
+    with tempfile.TemporaryDirectory() as raw:
+        tmp = Path(raw)
+        project = tmp / "proj"
+        stack = tmp / "stack"
+        project.mkdir()
+        for rel in ("docs/guide.md", "data/hermes/cron/output/run.md",
+                    "data/notes.md", "node_modules/pkg/README.txt", "web/node_modules/x/a.md"):
+            path = stack / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"# {rel}\n", encoding="utf-8")
+        (stack / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+        plain = tmp / "plain"
+        (plain / "data").mkdir(parents=True)
+        (plain / "data" / "kept.md").write_text("# Kept\n", encoding="utf-8")
+        (project / "sources.yaml").write_text(
+            "version: 1\nsources:\n"
+            f"  - id: stack\n    path: {stack}\n    retrieval: files\n"
+            f"  - id: plain\n    path: {plain}\n    retrieval: files\n",
+            encoding="utf-8",
+        )
+        paths = sorted(item.path for item in ps.build_catalog(project)[0])
+        expect(paths == [str((plain / "data" / "kept.md").resolve()),
+                         str((stack / "docs" / "guide.md").resolve())], paths)
+
+
 def test_retrieval_lightrag_refused() -> None:
     with tempfile.TemporaryDirectory() as raw:
         project = Path(raw)
@@ -338,6 +366,7 @@ def main() -> int:
         test_default_walk_skips_drafts,
         test_render_ungrouped_matches_fixture_table,
         test_extra_root_absolute_paths,
+        test_extra_root_skips_stack_data_and_dependencies,
         test_retrieval_lightrag_refused,
         test_retrieval_both_refused,
         test_stdlib_yaml_flow_and_block,

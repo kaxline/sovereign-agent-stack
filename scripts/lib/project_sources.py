@@ -31,7 +31,9 @@ SKIP_NAMES = frozenset(
         MANIFEST_NAME,
     }
 )
-SKIP_DIR_NAMES = frozenset({"templates", "applications", "artifacts", "drafts"})
+SKIP_DIR_NAMES = frozenset(
+    {"templates", "applications", "artifacts", "drafts", "node_modules"}
+)
 DEFAULT_INCLUDE = ("**/*.md", "**/*.txt")
 IMPLEMENTED_RETRIEVAL = "files"
 RESERVED_RETRIEVAL = frozenset({"lightrag", "both"})
@@ -440,11 +442,35 @@ def _should_skip_rel(rel: str) -> bool:
     return name.startswith(".")
 
 
+def is_stack_checkout(folder: Path) -> bool:
+    """True when folder is a checkout of this stack with its own state: a
+    docker-compose.yml beside data/hermes. Its data/ holds Hermes sessions,
+    cron output, logs and the mail and message indexes, which the terminal
+    backend already hides from the agent; an INDEX row would leak each file's
+    heading. Same marker as doctor's coding-root check."""
+    return (folder / "docker-compose.yml").is_file() and (folder / "data" / "hermes").is_dir()
+
+
 def iter_source_files(source_root: Path, spec: Source) -> list[Path]:
     files: list[Path] = []
     if not source_root.is_dir():
         return files
-    for path in sorted(source_root.rglob("*")):
+    # Walk without descending into folders _should_skip_rel would skip anyway
+    # (hidden ones such as .git, and SKIP_DIR_NAMES): an extra root can be a
+    # whole repository, and walking its .git and worktrees took ~30 s. Like
+    # rglob, this doesn't follow symlinked folders.
+    candidates: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(source_root):
+        base = Path(dirpath)
+        dirnames[:] = [
+            d
+            for d in dirnames
+            if not d.startswith(".")
+            and d not in SKIP_DIR_NAMES
+            and not (d == "data" and is_stack_checkout(base))
+        ]
+        candidates.extend(base / name for name in filenames)
+    for path in sorted(candidates):
         try:
             if not path.is_file():
                 continue
@@ -621,12 +647,15 @@ NO_INDEX = "none"
 
 def index_kind(project_root: Path) -> str:
     """GENERATED when the manifest exists (the indexer wrote INDEX.md and owns
-    it), HAND_WRITTEN when INDEX.md exists without one (the user's file, never
-    overwritten or checked), NO_INDEX otherwise."""
+    it) or when sources.yaml asks for an index that hasn't been written yet,
+    HAND_WRITTEN when INDEX.md exists without a manifest (the user's file,
+    never overwritten or checked), NO_INDEX otherwise."""
     if (project_root / MANIFEST_NAME).is_file():
         return GENERATED
     if (project_root / INDEX_NAME).is_file():
         return HAND_WRITTEN
+    if (project_root / SOURCES_NAME).is_file():
+        return GENERATED
     return NO_INDEX
 
 
@@ -769,14 +798,69 @@ def _doctor_visibility(
     return 0
 
 
+def survey_projects(projects_root: Path, *, refresh: bool) -> dict[str, list]:
+    """Check every project folder's index; with refresh, rewrite stale
+    generated ones. Returns project names under fresh, refreshed (or stale
+    without refresh) and hand_written, and {project, error} under failed.
+    Folders without an index are left out."""
+    changed = "refreshed" if refresh else "stale"
+    result: dict[str, list] = {"fresh": [], changed: [], "hand_written": [], "failed": []}
+    for child in sorted(projects_root.iterdir()):
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        kind = index_kind(child)
+        if kind == HAND_WRITTEN:
+            result["hand_written"].append(child.name)
+            continue
+        if kind != GENERATED:
+            continue
+        try:
+            if catalog_is_fresh(child):
+                result["fresh"].append(child.name)
+            else:
+                if refresh:
+                    write_index(child)
+                result[changed].append(child.name)
+        except (SourcesError, OSError) as exc:
+            result["failed"].append({"project": child.name, "error": str(exc)})
+    return result
+
+
+def _doctor_indexes(projects_root: Path) -> int:
+    """Print TAB-separated OK/WARN lines summing up the projects' indexes. A
+    stale generated index is no warning: the WebUI prefill and scripts/up.sh
+    refresh it. Only an index that can't be built warns."""
+    if not projects_root.is_dir():
+        return 0
+    r = survey_projects(projects_root, refresh=False)
+    if r["fresh"] or r["stale"] or r["hand_written"]:
+        parts = [f"{len(r['fresh'])} fresh"]
+        if r["stale"]:
+            parts.append(f"{len(r['stale'])} stale (refreshed on the next start or chat turn)")
+        if r["hand_written"]:
+            parts.append(f"{len(r['hand_written'])} hand-written (not checked)")
+        sys.stdout.write(f"OK\tproject indexes: {', '.join(parts)}\n")
+    for item in r["failed"]:
+        sys.stdout.write(
+            f"WARN\tINDEX cannot be built ({item['project']}): {item['error']}\n"
+        )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if not args or args[0] in ("-h", "--help"):
         sys.stderr.write(
             "Usage: project_sources.py doctor-visibility "
             "<projects-root> [coding-primary] [coding-extra] [context-extra]\n"
+            "       project_sources.py doctor-indexes <projects-root>\n"
         )
         return 2
+    if args[0] == "doctor-indexes":
+        if len(args) != 2:
+            sys.stderr.write("doctor-indexes requires a projects root\n")
+            return 2
+        return _doctor_indexes(Path(args[1]).expanduser())
     if args[0] == "doctor-visibility":
         if len(args) < 2:
             sys.stderr.write("doctor-visibility requires a projects root\n")

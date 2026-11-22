@@ -15,32 +15,15 @@ WARN=0
 source "$ROOT/scripts/lib/doctor-kit.sh"
 # shellcheck source=lib/python.sh
 source "$ROOT/scripts/lib/python.sh"
+# shellcheck source=lib/projects.sh
+source "$ROOT/scripts/lib/projects.sh"
 
-# doctor_py [--mount PATH]... ARGS...: python3 for doctor's checks. The host's
-# python3 when it works (fastest: the project-index checks walk source trees,
-# which is slow through bind mounts), else stack_python in the pinned Hermes
-# image when it is pulled, else nothing: the call fails and the check reports
-# what it would on a failed read. STACK_PYTHON=host or STACK_PYTHON=image
-# forces one.
-case "${STACK_PYTHON:-}" in
-  host | image) DOCTOR_PY="$STACK_PYTHON" ;;
-  *)
-    if (STACK_PYTHON=host stack_python -c '') >/dev/null 2>&1; then
-      DOCTOR_PY=host
-    elif docker image inspect "$(stack_hermes_image)" >/dev/null 2>&1; then
-      DOCTOR_PY=image
-    else
-      DOCTOR_PY=none
-    fi
-    ;;
-esac
-doctor_py() {
-  case "$DOCTOR_PY" in
-    image) STACK_PYTHON='' stack_python "$@" ;;
-    host) STACK_PYTHON=host stack_python "$@" ;;
-    *) return 1 ;;
-  esac
-}
+# doctor_py [--mount PATH]... ARGS...: python3 for doctor's checks, through
+# fast_python (lib/python.sh): the host's python3 when it works, else the
+# pinned Hermes image when it is pulled, else nothing, and the check reports
+# what it would on a failed read. The mode is worked out once, here.
+DOCTOR_PY="$(fast_python_mode)"
+doctor_py() { FAST_PYTHON_MODE="$DOCTOR_PY" fast_python "$@"; }
 # doctor_check COMMAND ARGS...: scripts/lib/doctor_checks.py, stdin closed so
 # a call inside a while-read loop leaves the loop's input alone.
 doctor_check() {
@@ -149,15 +132,7 @@ else
   ok "projects dir ${_PROJ}"
   # The image sees host paths only when mounted: the projects dir and the
   # existing coding and context roots that sources.yaml files may point into.
-  _SRC_MOUNTS=(--mount "$_PROJ")
-  IFS=':' read -r -a _srcs <<< "${_CODING_PRIMARY}:${_CODING_EXTRA}:${_CONTEXT_EXTRA}"
-  for _src in ${_srcs[@]+"${_srcs[@]}"}; do
-    [[ -n "$_src" ]] || continue
-    _src="$(expand_user_path "$_src")"
-    if [[ -d "$_src" ]]; then
-      _SRC_MOUNTS+=(--mount "$_src")
-    fi
-  done
+  project_source_mounts "$_PROJ"
   # Under ssh, hermes mounts the projects dir read-only. Docker cannot create a
   # mount point inside a read-only mount, so a nested bind such as
   # /opt/projects/<slug> needs <projects dir>/<slug> to exist on the host.
@@ -173,24 +148,15 @@ else
   _any_project=0
   shopt -s nullglob
   for _child in "$_PROJ"/*; do
-    [[ -d "$_child" ]] || continue
-    _any_project=1
-    _slug="$(basename "$_child")"
-    if [[ -f "${_child}/INDEX.md" || -f "${_child}/sources.yaml" ]]; then
-      if _idx_err="$(doctor_py ${_SRC_MOUNTS[@]+"${_SRC_MOUNTS[@]}"} "${ROOT}/scripts/project-index.py" \
-        --root "$_child" --check 2>&1 < /dev/null)"; then
-        ok "INDEX fresh: ${_slug}"
-      else
-        _idx_err="$(printf '%s\n' "$_idx_err" | tr '\n' ' ')"
-        warn "INDEX stale or invalid (${_slug}) — run: make project-index PROJECT=${_slug}"
-        [[ -n "$_idx_err" ]] && warn "  ${_idx_err}"
-      fi
-    fi
+    [[ -d "$_child" ]] && _any_project=1
   done
   shopt -u nullglob
   if [[ "$_any_project" -eq 0 ]]; then
     ok "no library projects yet"
   fi
+  # doctor-indexes sums the indexes up in one line. A stale generated index
+  # needs nothing from the user (the WebUI prefill and scripts/up.sh refresh
+  # it), so only an index that can't be built warns.
   while IFS=$'\t' read -r _lvl _msg || [[ -n "${_lvl:-}" ]]; do
     [[ -n "$_lvl" ]] || continue
     if [[ "$_lvl" == "OK" ]]; then
@@ -199,13 +165,15 @@ else
       warn "$_msg"
     fi
   done < <(
-    doctor_py ${_SRC_MOUNTS[@]+"${_SRC_MOUNTS[@]}"} "${ROOT}/scripts/lib/project_sources.py" doctor-visibility \
-      "$_PROJ" "${_CODING_PRIMARY}" "${_CODING_EXTRA}" "${_CONTEXT_EXTRA}" \
+    doctor_py "${PROJECT_SOURCE_MOUNTS[@]}" "${ROOT}/scripts/lib/project_sources.py" \
+      doctor-indexes "$_PROJ" < /dev/null || true
+    doctor_py "${PROJECT_SOURCE_MOUNTS[@]}" "${ROOT}/scripts/lib/project_sources.py" doctor-visibility \
+      "$_PROJ" "${_CODING_PRIMARY}" "${_CODING_EXTRA}" "${_CONTEXT_EXTRA}" < /dev/null \
       || true
   )
 fi
-unset _PROJ _CODING_PRIMARY _CODING_EXTRA _CONTEXT_EXTRA _SRC_MOUNTS _srcs _src \
-  _any_project _child _slug _idx_err _lvl _msg
+unset _PROJ _CODING_PRIMARY _CODING_EXTRA _CONTEXT_EXTRA PROJECT_SOURCE_MOUNTS \
+  _any_project _child _lvl _msg
 
 # --- Tool-search pins (browser / default) ---
 # always_include is written by bootstrap; a stack overlay makes it live for
