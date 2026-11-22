@@ -2011,6 +2011,8 @@ services:
       - ./compose/hermes/patch-turn-speaker.py:/bootstrap/patch-turn-speaker.py:ro
       - ./compose/hermes/cron_gated_sessions.py:/bootstrap/cron_gated_sessions.py:ro
       - ./compose/hermes/patch-cron-gated-sessions.py:/bootstrap/patch-cron-gated-sessions.py:ro
+      - ./compose/hermes/history_task_ids.py:/bootstrap/history_task_ids.py:ro
+      - ./compose/hermes/patch-history-task-ids.py:/bootstrap/patch-history-task-ids.py:ro
       - ./compose/hermes/patch-control-socket-tmp.py:/bootstrap/patch-control-socket-tmp.py:ro
       - ./compose/hermes/patch-mirror-exclude.py:/bootstrap/patch-mirror-exclude.py:ro
       - ./compose/hermes/mcp_trust_details.py:/bootstrap/mcp_trust_details.py:ro

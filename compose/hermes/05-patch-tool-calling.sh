@@ -74,6 +74,9 @@ run_patch /bootstrap/patch-turn-speaker.py
 # Gated cron fires leave no empty chat; prompt.submit refuses a resumed
 # cron session (Boundary CR 0033).
 run_patch /bootstrap/patch-cron-gated-sessions.py
+# kanban_create rows in session.history carry the filed task id (Boundary
+# CR 0005 R3).
+run_patch /bootstrap/patch-history-task-ids.py
 # Gateway control socket on /tmp: data/hermes (virtiofs) cannot hold a
 # connectable Unix socket, and v0.22 gateways coordinate through it.
 run_patch /bootstrap/patch-control-socket-tmp.py
