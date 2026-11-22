@@ -17,22 +17,6 @@ source "${ROOT}/scripts/lib/hermes-yaml.sh"
 log() { printf '==> %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
-remove_env_key() {
-  local file="$1"
-  local key="$2"
-  [[ -f "$file" ]] || return 0
-  if grep -q "^${key}=" "$file" 2>/dev/null; then
-    local tmp
-    tmp="$(mktemp "$(dirname "$file")/.$(basename "$file").XXXXXX")"
-    while IFS= read -r line || [[ -n "$line" ]]; do
-      if [[ "$line" != "${key}="* ]]; then
-        printf '%s\n' "$line"
-      fi
-    done < "$file" > "$tmp"
-    mv "$tmp" "$file"
-  fi
-}
-
 [[ -f .env ]] || die ".env missing — run ./scripts/setup.sh first"
 
 enabled=0
@@ -102,10 +86,10 @@ else
   clear_hermes_signal_env() {
     local hermes_env="$1"
     [[ -f "$hermes_env" ]] || return 0
-    remove_env_key "$hermes_env" SIGNAL_HTTP_URL
-    remove_env_key "$hermes_env" SIGNAL_ACCOUNT
-    remove_env_key "$hermes_env" SIGNAL_ALLOWED_USERS
-    remove_env_key "$hermes_env" SIGNAL_HOME_CHANNEL
+    remove_env "$hermes_env" SIGNAL_HTTP_URL
+    remove_env "$hermes_env" SIGNAL_ACCOUNT
+    remove_env "$hermes_env" SIGNAL_ALLOWED_USERS
+    remove_env "$hermes_env" SIGNAL_HOME_CHANNEL
   }
   clear_hermes_signal_env "data/hermes/.env"
   clear_hermes_signal_env "data/hermes/profiles/browser/.env"

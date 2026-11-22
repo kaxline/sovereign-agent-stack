@@ -13,6 +13,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 # shellcheck source=lib/env.sh
 source "${ROOT}/scripts/lib/env.sh"
+# shellcheck source=lib/buzz.sh
+source "${ROOT}/scripts/lib/buzz.sh"
 
 STATE_DIR="${ROOT}/data/hermes/.cache/buzz-relay"
 PIDFILE="${STATE_DIR}/relay.pid"
@@ -62,32 +64,9 @@ Typical make wrappers:
 EOF
 }
 
-expand_user_path() {
-  local raw="$1"
-  [[ -n "$raw" ]] || return 1
-  if [[ "$raw" == "~" ]]; then
-    raw="$HOME"
-  elif [[ "$raw" == \~/* ]]; then
-    raw="$HOME/${raw#\~/}"
-  fi
-  if [[ "$raw" != /* ]]; then
-    raw="${ROOT}/${raw#./}"
-  fi
-  raw="${raw%/}"
-  if [[ -d "$raw" ]]; then
-    (cd "$raw" && pwd -P)
-  else
-    echo "$raw"
-  fi
-}
-
 resolve_buzz_dir() {
-  local raw
-  raw="$(env_get BUZZ_LOCAL_DIR_PATH)"
-  [[ -n "$raw" ]] || die "BUZZ_LOCAL_DIR_PATH is unset — add it to .env (path to your Buzz checkout)"
   local dir
-  dir="$(expand_user_path "$raw")"
-  [[ -d "$dir" ]] || die "BUZZ_LOCAL_DIR_PATH does not exist: ${dir}"
+  dir="$(buzz_local_dir)" || exit 1
   [[ -f "${dir}/justfile" || -f "${dir}/Justfile" ]] \
     || die "No Justfile in ${dir} — is BUZZ_LOCAL_DIR_PATH the Buzz repo root?"
   command -v just >/dev/null 2>&1 || die "'just' not found on PATH — install https://github.com/casey/just"

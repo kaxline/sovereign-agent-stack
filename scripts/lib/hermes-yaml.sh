@@ -10,6 +10,16 @@
 # shellcheck source=lib/python.sh
 declare -F stack_hermes_image > /dev/null || source "$(dirname "${BASH_SOURCE[0]}")/python.sh"
 
+# mark_gateway_running PROFILE: writes profiles/<PROFILE>/gateway_state.json
+# as "running". The s6 reconciler in the hermes container starts a profile's
+# gateway only when this file says so, so a new or Buzz-enabled profile needs
+# it before its gateway comes up.
+mark_gateway_running() {
+  local dir="data/hermes/profiles/$1"
+  mkdir -p "$dir"
+  printf '{"gateway_state":"running"}\n' > "${dir}/gateway_state.json"
+}
+
 hermes_python() {
   local image
   image="$(ROOT="${ROOT:-$PWD}" stack_hermes_image)"

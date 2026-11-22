@@ -13,35 +13,12 @@ source "${ROOT}/scripts/lib/env.sh"
 source "${ROOT}/scripts/lib/hermes-yaml.sh"
 # shellcheck source=lib/python.sh
 source "${ROOT}/scripts/lib/python.sh"
+# shellcheck source=lib/agent-registry.sh
+source "${ROOT}/scripts/lib/agent-registry.sh"
 
 log() { printf '==> %s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
-
-# Upsert KEY=VALUE, keeping a single occurrence (first wins; later dupes dropped).
-# s6 reconciler only auto-starts profiles whose gateway_state is "running".
-mark_gateway_running() {
-  local profile_name="$1"
-  local state_file="data/hermes/profiles/${profile_name}/gateway_state.json"
-  mkdir -p "data/hermes/profiles/${profile_name}"
-  printf '{"gateway_state":"running"}\n' > "$state_file"
-}
-
-remove_env_key() {
-  local file="$1"
-  local key="$2"
-  [[ -f "$file" ]] || return 0
-  if grep -q "^${key}=" "$file" 2>/dev/null; then
-    local tmp
-    tmp="$(mktemp "$(dirname "$file")/.$(basename "$file").XXXXXX")"
-    while IFS= read -r line || [[ -n "$line" ]]; do
-      if [[ "$line" != "${key}="* ]]; then
-        printf '%s\n' "$line"
-      fi
-    done < "$file" > "$tmp"
-    mv "$tmp" "$file"
-  fi
-}
 
 # Disable Buzz adapter on a stack profile that must not hold a Buzz identity lock.
 disable_buzz_on_profile() {
@@ -144,9 +121,9 @@ clear_seeded_buzz_env() {
   local hermes_env="$1"
   [[ -f "$hermes_env" ]] || return 0
   # Keep BUZZ_PRIVATE_KEY — operator secret; only clear shared relay seed if we manage disable.
-  remove_env_key "$hermes_env" BUZZ_RELAY_URL
-  remove_env_key "$hermes_env" BUZZ_ALLOW_ALL_USERS
-  remove_env_key "$hermes_env" BUZZ_CLI_PATH
+  remove_env "$hermes_env" BUZZ_RELAY_URL
+  remove_env "$hermes_env" BUZZ_ALLOW_ALL_USERS
+  remove_env "$hermes_env" BUZZ_CLI_PATH
 }
 
 [[ -f .env ]] || die ".env missing — run ./scripts/setup.sh first"
@@ -196,21 +173,8 @@ if [[ "$enabled" -eq 1 ]]; then
       warn "Buzz profile '${name}' not found at ${profile_dir} — create with: make agent-create NAME=${name} WITH=buzz"
       continue
     fi
-    if [[ -f data/hermes/agents/registry.json ]]; then
-      if ! NAME="$name" stack_python --env NAME - <<'PY'
-import json, os, sys
-from pathlib import Path
-name = os.environ["NAME"]
-try:
-    data = json.loads(Path("data/hermes/agents/registry.json").read_text())
-except Exception:
-    sys.exit(1)
-for a in data.get("agents", []):
-    if isinstance(a, dict) and a.get("name") == name:
-        sys.exit(0)
-sys.exit(1)
-PY
-      then
+    if [[ -f "$AGENT_REGISTRY_FILE" ]]; then
+      if ! agent_registry_has "$name"; then
         warn "Buzz profile '${name}' is not in data/hermes/agents/registry.json — make agent-create NAME=${name} (does not auto-create)"
       fi
     fi

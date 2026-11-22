@@ -20,6 +20,8 @@ the stack under another app.
 - `kanban_create` tool rows in `session.history` and resume transcripts
   carry `result: {"task_id": "t_…"}` when the call filed a task. No other
   tool row gets `result`. (Boundary CR 0005 R3)
+- `bootstrap-buzz.sh` now writes the default `BUZZ_RELAY_URL` when `.env` has
+  `BUZZ_RELAY_URL=""` (quoted empty). It used to keep the empty value.
 - A cron fire that a gate skips (monitor output unchanged, `wakeAgent: false`,
   an empty payload, a blocked prompt) no longer leaves an empty, untitled
   session in `session.list`. Its session is titled like a finished run,
