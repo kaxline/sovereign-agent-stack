@@ -1773,6 +1773,12 @@ sys.exit(0 if (sorted(rows) == ["hosted", "rdonly"] and h["url"] == "https://crm
 check "instances --json prints one object per instance with url, header, scheme and levels" "$r"
 if grep -q synthetic- "$out" "$err"; then bad "instances --json never prints a key"; else ok "instances --json never prints a key"; fi
 if grep -q 'compose --profile \* config --format json' "$STUB_LOG"; then ok "instances reads compose config"; else bad "instances reads compose config"; cat "$STUB_LOG"; fi
+printf '%s' '{"url":"http://nas:8080","access":"read","local":false}' > "${TW_STORE}/instances/nas.json"
+addon_json instances twenty --json
+if grep -q '"url":"http://nas:8080/mcp?mode=meta"' "$out"; then ok "instances leaves a dotless non-compose host unchanged"; else bad "instances leaves a dotless non-compose host unchanged"; cat "$out"; fi
+DOCKER_FAIL_CONFIG=1 addon_json instances twenty --json
+if grep -q '"slug":"nas".*"url":null' "$out"; then ok "instances gives null for a dotless host when compose config fails"; else bad "instances gives null for a dotless host when compose config fails"; cat "$out"; fi
+rm -f "${TW_STORE}/instances/nas.json"
 addon_json instances twenty
 expect_rc "instances without --json is a usage error" 2
 addon_json instances gptr --json

@@ -2111,7 +2111,13 @@ for label, url, published, want in (
          {"twenty-server": {3000: 3000}}, "http://127.0.0.1:3000/mcp?mode=meta"),
         ("a compose service on another host port", "http://twenty-server:3000/mcp",
          {"twenty-server": {3000: 43000}}, "http://127.0.0.1:43000/mcp"),
-        ("a compose service with nothing published is None", "http://actual-mcp-ro:3000/a/mcp", {}, None),
+        ("a known compose service with nothing published is None", "http://actual-mcp-ro:3000/a/mcp",
+         {"actual-mcp-ro": {}}, None),
+        ("a dotless host that is not a known service is unchanged", "http://nas:8080/mcp",
+         {"twenty-server": {3000: 3000}}, "http://nas:8080/mcp"),
+        ("a dotless host is None when the service names are unknown", "http://nas:8080/mcp", None, None),
+        ("an external host is unchanged when the service names are unknown", "https://crm.example.com/mcp", None,
+         "https://crm.example.com/mcp"),
         ("a compose service with another port published is None", "http://actual-mcp-ro:3000/a/mcp",
          {"actual-mcp-ro": {8080: 8080}}, None),
         ("host.docker.internal becomes loopback", "http://host.docker.internal:45123?mode=meta", {},
@@ -2145,11 +2151,14 @@ with tempfile.TemporaryDirectory() as tmp:
           and e.get("endpoint") is True and e.get("on") is True and e.get("levels") == {"ro": True, "rw": False}, str(e))
     check("a read instance uses its stored trust", view.get("lookup", {}).get("trust") == "untrusted")
     check("instances_view never holds a key value", "fake" not in json.dumps(view))
-    off = {v["slug"]: v for v in am.instances_view(ROOT / "addons", data, "twenty", {}, {})}
-    check("with the add-on off a hosted instance is off with no URL, an endpoint instance stays on",
-          off["remote"]["on"] is False and off["remote"]["url"] is None and off["ep"]["on"] is True, str(off))
+    off = {v["slug"]: v for v in am.instances_view(ROOT / "addons", data, "twenty", {"twenty-server": {}}, {})}
+    check("with the add-on off a hosted instance is off but keeps its URL, an endpoint instance stays on",
+          off["remote"]["on"] is False and off["remote"]["url"] == "https://crm.example.com/mcp?mode=meta"
+          and off["ep"]["on"] is True, str(off))
+    check("with the add-on off a gated-off local instance has no URL",
+          off["main"]["on"] is False and off["main"]["url"] is None, str(off["main"]))
     check("an unpublished local service gives a null URL",
-          {v["slug"]: v for v in am.instances_view(ROOT / "addons", data, "twenty", {}, env)}["main"]["url"] is None)
+          {v["slug"]: v for v in am.instances_view(ROOT / "addons", data, "twenty", {"twenty-server": {}}, env)}["main"]["url"] is None)
     check("an add-on without instances has no instance view",
           am.instances_view(ROOT / "addons", data, "gptr", {}, env) == [])
 

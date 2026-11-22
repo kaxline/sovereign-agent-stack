@@ -321,8 +321,10 @@ def cmd_instances(args) -> None:
     """One JSON object per instance of SID, from `docker compose config
     --format json` on stdin (empty when it failed: no service has a port)."""
     manifest = _manifest(args.addons_dir, args.sid)
-    published = {name: {t: port for t, (_ip, port) in fig["ports"].items()}
-                 for name, fig in _compose_config().items()}
+    services = _compose_config()
+    # No services means compose config failed: the names are unknown.
+    published = ({name: {t: port for t, (_ip, port) in fig["ports"].items()}
+                  for name, fig in services.items()} if services else None)
     for row in am.instances_view(args.addons_dir, args.data_root / "addons", args.sid, published,
                                  _flags_arg(args.flags)):
         _dump(row)

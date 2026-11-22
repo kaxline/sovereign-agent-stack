@@ -1961,20 +1961,23 @@ def instances_plan(addons_dir: Path, data_dir: Path, profile: str, environ=os.en
     return lines
 
 
-def client_url(url: str, published: dict) -> str | None:
-    """URL as a client on the stack's host reaches it. `published` maps a
-    compose service to {container port: host port}. A host without a dot (other
-    than localhost) is a compose service: it becomes 127.0.0.1 on the published
-    host port, or None when that port isn't published. host.docker.internal
-    becomes 127.0.0.1. Any other host is unchanged."""
+def client_url(url: str, published: dict | None) -> str | None:
+    """URL as a client on the stack's host reaches it. `published` maps every
+    compose service to {container port: host port} ({} when it publishes
+    nothing); None means the service names are unknown. A host in `published`
+    is a compose service: it becomes 127.0.0.1 on the published host port, or
+    None when that port isn't published. With unknown names, a dotless host
+    other than localhost is taken for a compose service and gives None.
+    host.docker.internal becomes 127.0.0.1. Any other host is unchanged."""
     parts = urlsplit(url)
     host = parts.hostname or ""
     port = parts.port
     if host == "host.docker.internal":
         new_host, new_port = "127.0.0.1", port
-    elif host and "." not in host and ":" not in host and host != "localhost":
+    elif (host in published if published is not None
+          else bool(host) and "." not in host and ":" not in host and host != "localhost"):
         target = port or (443 if parts.scheme == "https" else 80)
-        new_port = (published.get(host) or {}).get(target)
+        new_port = ((published or {}).get(host) or {}).get(target)
         if new_port is None:
             return None
         new_host = "127.0.0.1"
@@ -1987,9 +1990,11 @@ def client_url(url: str, published: dict) -> str | None:
 def instances_view(addons_dir: Path, data_dir: Path, sid: str, published: dict,
                    environ=os.environ) -> list[dict]:
     """One dict per stored instance of add-on SID, from the default profile's
-    instances-plan line: slug, on, access, trust, url (client_url of the plan's
+    instances-plan line (an instance with no plan line is left out): slug, on, access, trust, url (client_url of the plan's
     URL, None when it has none), header, scheme, levels ({"ro", "rw"}: whether
-    that level's key file exists) and endpoint. Key values are never read."""
+    that level's key file exists) and endpoint. `on` uses ENVIRON; url uses a
+    copy with the add-on's builtin flag on, so an instance that is off only
+    because of the flag keeps its URL. Key values are never read."""
     manifest = None
     for path, m, errors in checked_dir(addons_dir):
         if path.parent.name == sid and not errors:
@@ -2000,10 +2005,12 @@ def instances_view(addons_dir: Path, data_dir: Path, sid: str, published: dict,
     inst = mcp["instances"]
     schema = manifest["instances"]["settings"]
     store = Path(data_dir) / sid
-    rows = {}
-    for line in instances_plan(addons_dir, data_dir, "default", environ):
-        fields = line.split("|")
-        rows[fields[0]] = fields
+    rows, url_rows = {}, {}
+    flag_on = {**environ, manifest["builtin"]["flag"]: "1"}
+    for target, env in ((rows, environ), (url_rows, flag_on)):
+        for line in instances_plan(addons_dir, data_dir, "default", env):
+            fields = line.split("|")
+            target[fields[0]] = fields
     secrets = (inst.get("auth") or {}).get("secret") or {}
     access_setting = SETTING_REF_RE.fullmatch(inst["access"]).group(1) if "access" in inst else None
     out = []
@@ -2013,7 +2020,8 @@ def instances_view(addons_dir: Path, data_dir: Path, sid: str, published: dict,
             continue
         values = _instance_values(store, slug, schema) or {}
         access = values.get(access_setting) if access_setting else None
-        url = client_url(fields[3], published) if fields[3] else None
+        raw_url = url_rows.get(fields[0], fields)[3]
+        url = client_url(raw_url, published) if raw_url else None
         out.append({
             "slug": slug, "on": fields[2] == "1",
             "access": access if isinstance(access, str) else "",
