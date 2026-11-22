@@ -10,6 +10,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 # shellcheck source=lib/env.sh
 source "${ROOT}/scripts/lib/env.sh"
+# shellcheck source=lib/data-root.sh
+source "${ROOT}/scripts/lib/data-root.sh"
 
 BUZZ_REPO_URL="${BUZZ_REPO_URL:-https://github.com/block/buzz.git}"
 DEFAULT_BUZZ_DIR="${HOME}/src/buzz"
@@ -18,37 +20,6 @@ DEFAULT_RELAY_URL="ws://localhost:3000"
 log() { printf '[bootstrap-buzz] %s\n' "$*"; }
 die() { printf '[bootstrap-buzz] ERROR: %s\n' "$*" >&2; exit 1; }
 warn() { printf '[bootstrap-buzz] warning: %s\n' "$*" >&2; }
-
-# Set key only when missing or empty in file.
-upsert_env_if_empty() {
-  local file="$1"
-  local key="$2"
-  local value="$3"
-  touch "$file"
-  if grep -q "^${key}=.\+" "$file" 2>/dev/null; then
-    return 0
-  fi
-  upsert_env "$file" "$key" "$value"
-}
-
-expand_user_path() {
-  local raw="$1"
-  [[ -n "$raw" ]] || return 1
-  if [[ "$raw" == "~" ]]; then
-    raw="$HOME"
-  elif [[ "$raw" == \~/* ]]; then
-    raw="$HOME/${raw#\~/}"
-  fi
-  if [[ "$raw" != /* ]]; then
-    raw="${ROOT}/${raw#./}"
-  fi
-  raw="${raw%/}"
-  if [[ -d "$raw" ]]; then
-    (cd "$raw" && pwd -P)
-  else
-    echo "$raw"
-  fi
-}
 
 [[ -f .env ]] || die ".env missing — run ./scripts/setup.sh first"
 
@@ -62,7 +33,7 @@ if [[ -z "$raw_path" ]]; then
   raw_path="$DEFAULT_BUZZ_DIR"
   log "BUZZ_LOCAL_DIR_PATH unset — defaulting to ${raw_path}"
 fi
-BUZZ_DIR="$(expand_user_path "$raw_path")"
+BUZZ_DIR="$(resolve_dir_path "$raw_path")"
 
 if [[ -f "${BUZZ_DIR}/Cargo.toml" && ( -f "${BUZZ_DIR}/Justfile" || -f "${BUZZ_DIR}/justfile" ) ]]; then
   log "Reusing existing Buzz checkout at ${BUZZ_DIR}"
@@ -80,7 +51,7 @@ fi
 [[ -f "${BUZZ_DIR}/Justfile" || -f "${BUZZ_DIR}/justfile" ]] || die "No Justfile in ${BUZZ_DIR}"
 
 upsert_env .env BUZZ_LOCAL_DIR_PATH "$BUZZ_DIR"
-upsert_env_if_empty .env BUZZ_RELAY_URL "$DEFAULT_RELAY_URL"
+[[ -n "$(env_get BUZZ_RELAY_URL)" ]] || upsert_env .env BUZZ_RELAY_URL "$DEFAULT_RELAY_URL"
 log "Wired assistant .env (BUZZ_LOCAL_DIR_PATH=${BUZZ_DIR})"
 
 # Hermit-pinned tools (lefthook, cargo wrappers) live under bin/. just bootstrap

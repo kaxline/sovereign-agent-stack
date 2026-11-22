@@ -18,31 +18,6 @@ log() { printf '==> %s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
-# Upsert KEY=VALUE, keeping a single occurrence (first wins; later dupes dropped).
-# s6 reconciler only auto-starts profiles whose gateway_state is "running".
-mark_gateway_running() {
-  local profile_name="$1"
-  local state_file="data/hermes/profiles/${profile_name}/gateway_state.json"
-  mkdir -p "data/hermes/profiles/${profile_name}"
-  printf '{"gateway_state":"running"}\n' > "$state_file"
-}
-
-remove_env_key() {
-  local file="$1"
-  local key="$2"
-  [[ -f "$file" ]] || return 0
-  if grep -q "^${key}=" "$file" 2>/dev/null; then
-    local tmp
-    tmp="$(mktemp "$(dirname "$file")/.$(basename "$file").XXXXXX")"
-    while IFS= read -r line || [[ -n "$line" ]]; do
-      if [[ "$line" != "${key}="* ]]; then
-        printf '%s\n' "$line"
-      fi
-    done < "$file" > "$tmp"
-    mv "$tmp" "$file"
-  fi
-}
-
 # Disable Buzz adapter on a stack profile that must not hold a Buzz identity lock.
 disable_buzz_on_profile() {
   local profile_name="$1"
@@ -144,9 +119,9 @@ clear_seeded_buzz_env() {
   local hermes_env="$1"
   [[ -f "$hermes_env" ]] || return 0
   # Keep BUZZ_PRIVATE_KEY — operator secret; only clear shared relay seed if we manage disable.
-  remove_env_key "$hermes_env" BUZZ_RELAY_URL
-  remove_env_key "$hermes_env" BUZZ_ALLOW_ALL_USERS
-  remove_env_key "$hermes_env" BUZZ_CLI_PATH
+  remove_env "$hermes_env" BUZZ_RELAY_URL
+  remove_env "$hermes_env" BUZZ_ALLOW_ALL_USERS
+  remove_env "$hermes_env" BUZZ_CLI_PATH
 }
 
 [[ -f .env ]] || die ".env missing — run ./scripts/setup.sh first"

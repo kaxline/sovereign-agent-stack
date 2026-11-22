@@ -11,29 +11,12 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 # shellcheck source=lib/env.sh
 source "${ROOT}/scripts/lib/env.sh"
+# shellcheck source=lib/data-root.sh
+source "${ROOT}/scripts/lib/data-root.sh"
 
 log() { printf '==> %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
-
-expand_user_path() {
-  local raw="$1"
-  [[ -n "$raw" ]] || return 1
-  if [[ "$raw" == "~" ]]; then
-    raw="$HOME"
-  elif [[ "$raw" == \~/* ]]; then
-    raw="$HOME/${raw#\~/}"
-  fi
-  if [[ "$raw" != /* ]]; then
-    raw="${ROOT}/${raw#./}"
-  fi
-  raw="${raw%/}"
-  if [[ -d "$raw" ]]; then
-    (cd "$raw" && pwd -P)
-  else
-    echo "$raw"
-  fi
-}
 
 is_uuid() {
   [[ "$1" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]
@@ -59,7 +42,7 @@ resolve_channel_id() {
   local buzz_dir raw dburl
   raw="$(env_get BUZZ_LOCAL_DIR_PATH)"
   if [[ -n "$raw" ]]; then
-    buzz_dir="$(expand_user_path "$raw")"
+    buzz_dir="$(resolve_dir_path "$raw")"
     if [[ -f "${buzz_dir}/.env" ]]; then
       dburl="$(env_get_file "${buzz_dir}/.env" DATABASE_URL)"
       if [[ -n "$dburl" ]] && command -v psql >/dev/null 2>&1 \
@@ -131,7 +114,7 @@ resolve_host_buzz_bin() {
   local raw dir
   raw="$(env_get BUZZ_LOCAL_DIR_PATH)"
   [[ -n "$raw" ]] || return 1
-  dir="$(expand_user_path "$raw")"
+  dir="$(resolve_dir_path "$raw")"
   if [[ -x "${dir}/target/release/buzz" ]]; then
     echo "${dir}/target/release/buzz"
     return 0
@@ -510,9 +493,8 @@ else
   upsert_env .env HERMES_BUZZ_PROFILES "${current},${NAME}"
 fi
 
+# sync-buzz-profile.sh marks the gateway running for every profile it enables.
 ./scripts/sync-buzz-profile.sh
-
-printf '{"gateway_state":"running"}\n' > "${profile_dir}/gateway_state.json"
 
 local_buzz="$(env_get BUZZ_LOCAL_DIR_PATH)"
 if [[ -z "$relay" ]]; then

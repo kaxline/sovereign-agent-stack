@@ -10,6 +10,8 @@ the stack under another app.
 
 ### Changes
 
+- `bootstrap-buzz.sh` now writes the default `BUZZ_RELAY_URL` when `.env` has
+  `BUZZ_RELAY_URL=""` (quoted empty). It used to keep the empty value.
 - Twenty's manifest `share` block names `crm.sh key create`, `revoke` and
   `list` in `memberKeys` and sets `handout: true`, so a provider granting
   access mints a key per person and level. (Boundary CR 0025 R1, R3)

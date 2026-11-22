@@ -18,6 +18,8 @@ warn() { printf 'warning: %s\n' "$*" >&2; }
 
 # shellcheck source=lib/env.sh
 source "${ROOT}/scripts/lib/env.sh"
+# shellcheck source=lib/hermes-yaml.sh
+source "${ROOT}/scripts/lib/hermes-yaml.sh"
 # shellcheck source=lib/agent-registry.sh
 source "${ROOT}/scripts/lib/agent-registry.sh"
 
@@ -80,7 +82,7 @@ else
   die "missing template ${template}"
 fi
 
-printf '{"gateway_state":"running"}\n' > "${profile_dir}/gateway_state.json"
+mark_gateway_running "$NAME"
 log "Marked gateway_state=running for '${NAME}'"
 
 agent_registry_upsert "$NAME" "$DISPLAY_NAME" "$ROLE_BLURB"

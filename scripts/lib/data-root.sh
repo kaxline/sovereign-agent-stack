@@ -28,6 +28,19 @@ expand_user_path() {
   printf '%s\n' "$raw"
 }
 
+# resolve_dir_path PATH: expand_user_path, then resolve symlinks and .. when
+# PATH is an existing directory. Returns 1 on an empty PATH.
+resolve_dir_path() {
+  [[ -n "${1:-}" ]] || return 1
+  local raw
+  raw="$(expand_user_path "$1")"
+  if [[ -d "$raw" ]]; then
+    (cd "$raw" && pwd -P)
+  else
+    printf '%s\n' "$raw"
+  fi
+}
+
 # resolve_data_root_path [PATH]: expand_user_path, then resolve symlinks and ..
 # in PATH (or in its parent when PATH does not exist yet). Empty PATH means
 # ASSISTANT_DATA_ROOT from ${ROOT}/.env, default ./data.
