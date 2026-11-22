@@ -505,6 +505,18 @@ def run(stack: Stack) -> None:
            f"home's {len(home_before)} rows remain in the index")
     status = json.loads(stack.exec_py("email-mcp", "import json, server; print(json.dumps(server.mail_status()))"))
     expect(status.get("failed_accounts") == {"home": 4}, f"mail_status lists home under failed_accounts ({status.get('failed_accounts')})")
+    # CR 0031: the same through addon.sh, for clients that can't reach email-mcp.
+    out = stack.addon_ok("run", "email", "status")
+    got = json.loads(out.stdout)
+    expect(got["accounts"].get("home", {}).get("failed") == 4 and got["accounts"].get("home", {}).get("messages")
+           == len(home_before) and got["accounts"].get("work", {}).get("failed") is None
+           and got["accounts"]["work"]["messages"] > 0 and got["last_indexed"],
+           f"run email status names home with failed 4 and gives work's count ({got})")
+    refused = stack.addon("run", "email", "mailboxes", "--instance", "home")
+    named = [json.loads(x) for x in refused.stdout.splitlines() if x.startswith("{")]
+    expect(refused.returncode == 4 and named and named[-1].get("error") == "login_refused"
+           and WRONG_PASSWORD not in refused.stdout + refused.stderr,
+           f"run email mailboxes for home prints login_refused and exits 4 ({refused.returncode} {named})")
 
     # Removing an instance drops it from the next pass.
     stack.addon_ok("configure", "email", "--instance", "home", "--remove")

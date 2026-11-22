@@ -164,8 +164,8 @@ load_rows() {
   if [[ -n "$any" ]]; then
     local mounts=(--mount "$DATA_ROOT")
     path_is_inside "$ADDONS" "$ROOT" || mounts+=(--mount "$ADDONS")
-    ROWS="$(ADDONS_DATA_ROOT="$DATA_ROOT" ADDONS_DIR="$ADDONS" stack_python "${mounts[@]}" \
-      --env ADDONS_DATA_ROOT --env ADDONS_DIR -I "${ROOT}/scripts/twenty_admin.py" list)" \
+    ROWS="$(ASSISTANT_DATA_ROOT="$DATA_ROOT" ADDONS_DIR="$ADDONS" stack_python "${mounts[@]}" \
+      --env ASSISTANT_DATA_ROOT --env ADDONS_DIR -I "${ROOT}/scripts/twenty_admin.py" list)" \
       || die "can't read the workspaces in ${STORE}"
   fi
   ROWS_LOADED=1
@@ -251,7 +251,7 @@ crm_admin() {
     opts+=(--mount "$(dirname "$pf")")
   fi
   for name in TWENTY_BASE_URL TWENTY_USERNAME TWENTY_PASSWORD TWENTY_PASSWORD_FILE \
-    TWENTY_MULTIWORKSPACE ADDONS_DATA_ROOT ADDONS_DIR TWENTY_DATA_DIR; do
+    TWENTY_MULTIWORKSPACE ASSISTANT_DATA_ROOT ADDONS_DIR TWENTY_DATA_DIR; do
     opts+=(--env "$name")
   done
   [[ "${STACK_PYTHON:-}" == host ]] && base="http://127.0.0.1:$(env_get TWENTY_PORT 3000)"
@@ -260,7 +260,7 @@ crm_admin() {
   TWENTY_PASSWORD="$password" \
   TWENTY_PASSWORD_FILE="$pf" \
   TWENTY_MULTIWORKSPACE="$(env_get TWENTY_MULTIWORKSPACE 0)" \
-  ADDONS_DATA_ROOT="$DATA_ROOT" \
+  ASSISTANT_DATA_ROOT="$DATA_ROOT" \
   ADDONS_DIR="$ADDONS" \
   TWENTY_DATA_DIR="$data" \
     stack_python "${opts[@]}" -I "${ROOT}/scripts/twenty_admin.py" "$@"
@@ -783,11 +783,11 @@ cmd_key() {
   fi
   [[ -n "${TWENTY_OWNER_EMAIL:-}" && -n "${TWENTY_OWNER_PASSWORD:-}" ]] \
     || die "set TWENTY_OWNER_EMAIL and TWENTY_OWNER_PASSWORD in the environment for workspace '${slug}'"
-  local opts=(--mount "$DATA_ROOT" --env ADDONS_DATA_ROOT --env ADDONS_DIR \
+  local opts=(--mount "$DATA_ROOT" --env ASSISTANT_DATA_ROOT --env ADDONS_DIR \
     --env TWENTY_OWNER_EMAIL --env TWENTY_OWNER_PASSWORD)
   path_is_inside "$ADDONS" "$ROOT" || opts+=(--mount "$ADDONS")
   is_local_slug "$slug" && opts+=(--network-of twenty-server)
-  ADDONS_DATA_ROOT="$DATA_ROOT" ADDONS_DIR="$ADDONS" \
+  ASSISTANT_DATA_ROOT="$DATA_ROOT" ADDONS_DIR="$ADDONS" \
     stack_python "${opts[@]}" -I "${ROOT}/scripts/twenty_admin.py" "${args[@]}"
 }
 

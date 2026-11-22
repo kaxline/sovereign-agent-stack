@@ -151,8 +151,11 @@ The order Boundary uses, which you can follow by hand:
    account's mailbox names, message counts and special-use flags, which fill
    the mailbox choice. It renders only that account, so it works before the
    account has `mailboxes` and whatever state the other accounts are in. Then
-   `configure` the account again with `mailboxes`.
+   `configure` the account again with `mailboxes`. When the listing fails, see
+   [Named errors](#named-errors).
 4. `scripts/addon.sh enable email`.
+5. `scripts/addon.sh run email status` shows how each account is doing; see
+   [Status](#status).
 
 To change `drafts` later, run `configure` and then `enable` again: a gate
 change takes effect at the next `enable`. `configure --instance <slug>
@@ -176,15 +179,57 @@ after `interval` as usual.
 The index keeps the last pass's failed accounts as ids and codes only, and
 `mail_status` returns them as `"failed_accounts": {"home": 4}`. An account
 drops out of it after a pass that reads it. When every account fails, the
-pass doesn't create the index and doesn't change `last_indexed`, so
-`mail_status` never shows a fresh pass that found nothing; on an existing
-index it records only `failed_accounts`.
+pass records only `failed_accounts` and doesn't change `last_indexed`, so
+`mail_status` never shows a fresh pass that found nothing. With no index yet,
+it creates an empty one to hold them.
 
 An account with no `mailboxes`, or with a setting the indexer would refuse
 (such as `security = "plain"` on another host), is left out of each index and
 outbox pass with one `email-indexer: <slug>: <reason>` or `email-outbox:
 <slug>: <reason>` line. The other accounts run. When every account is left
 out, the pass behaves as with no accounts.
+
+### Status
+
+`scripts/addon.sh run email status` prints one JSON object, for clients that
+can't reach `mail_status` (`email-mcp` publishes no port). It runs in a
+one-off `email-indexer` container, opens the index read-only and prints
+account ids, counts and reasons only:
+
+```json
+{"last_indexed": "2026-11-21T09:15:00Z", "messages": 412,
+ "accounts": {"home": {"messages": 300, "failed": 4}, "work": {"messages": 112, "failed": null}},
+ "skipped": {"new": "no mailboxes chosen yet"}}
+```
+
+`last_indexed` is the end of the last pass that read an account, or null
+before one has. `accounts` lists every configured account, with 0 messages
+until a pass indexes it; `failed` is the code from the last pass (4: password
+refused or missing, 5: server failed or unreachable) or null. `skipped` maps
+each account left out of the passes to the reason. It exits 0, including
+before the first pass. A settings file the renderer refuses prints
+`{"error": "bad_config", ...}` and an unreadable index `{"error":
+"index_unreadable", ...}`; `addon.sh` exits 4 for both.
+
+### Named errors
+
+When `scripts/addon.sh run email mailboxes --instance <slug>` fails, it prints
+one JSON object on stdout, `{"error": NAME, "message": TEXT}`, and `addon.sh`
+exits 4. The message names the account, never the password. The
+`mail-index:` line still goes to stderr.
+
+| `error` | Meaning |
+|---|---|
+| `login_refused` | The server rejected the user name or password |
+| `password_missing` | No password is stored for the account |
+| `server_unreachable` | The connection or its TLS handshake failed |
+| `server_error` | The server refused a command after the login, or the connection dropped |
+| `bad_config` | The account's settings are invalid, such as `security = "plain"` on another host |
+| `failed` | Anything else |
+
+Treat a name not in this table like `failed`. `mail-index.py mailboxes
+--json-errors` prints the same object, with `bad_layout` and
+`permission_denied` for the Mail.app sources.
 
 With `EMAIL_ENABLED=1` and no account, `email-indexer` writes no index and
 logs `no accounts configured` once per pass. Until a pass has written the
@@ -247,7 +292,8 @@ Run these yourself. Report pass or fail and counts, not messages, subjects or se
    account, `in_scope` is that account's count (with several it is the
    total); `mail_status` also reports a count per account. Compare the count
    with your mail client's count for the chosen mailboxes since the `since`
-   date, and report the two numbers and pass or fail.
+   date, and report the two numbers and pass or fail. `./scripts/addon.sh run
+   email status` should give the same count under `accounts`.
 
 These steps passed on one real account on 2026-11-11, INBOX only. Drafts
 and Proton haven't had a real run.
