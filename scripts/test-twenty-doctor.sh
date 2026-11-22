@@ -169,6 +169,20 @@ has "key with a line break" "main.key_ro holds a line break or control character
 hasnt "no probe with a refused key" "MCP answers with the ro key"
 setkeys main "$KEY_RO" "$KEY_RW"
 
+# An endpoint instance has no url: doctor names its endpoint and probes nothing.
+setenv
+rm -f "$store/instances/"*.json
+printf '{\n  "endpoint": "http://host.docker.internal:45123",\n  "access": "read",\n  "trust": "untrusted"\n}\n' > "$store/instances/shared-a.json"
+setkeys shared-a "$KEY_RO" ""
+: > "$STUB_LOG"
+doctor
+has "endpoint instance is reported as shared" "crm-shared-a: shared instance at http://host.docker.internal:45123"
+hasnt "no probe warning for an endpoint instance" "no answer from"
+[[ ! -s "$STUB_LOG" ]] || fail "an endpoint instance is not probed ($(cat "$STUB_LOG"))"
+rm -f "$store/instances/shared-a.json" "$store/secrets/shared-a.key_ro"
+instance main write https://crm.example.com
+setkeys main "$KEY_RO" "$KEY_RW"
+
 # The store comes from doctor's DATA_ROOT: a ~/ root in .env is under HOME,
 # and an exported ASSISTANT_DATA_ROOT wins over .env's.
 printf 'COMPOSE_PROFILES=core,crm-mcp\nTWENTY_MCP_ENABLED=1\nASSISTANT_DATA_ROOT=~/data\n' > "$tmp/work/.env"

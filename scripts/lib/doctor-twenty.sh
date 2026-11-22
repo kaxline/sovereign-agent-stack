@@ -84,7 +84,7 @@ doctor_twenty() {
 
   if [[ "$twenty_mcp" -eq 1 ]]; then
     ok "TWENTY_MCP_ENABLED=1"
-    local twenty_count=0 url access local_ rw_f has_ro has_rw why kind k base probe code label cfg env_key rw
+    local twenty_count=0 endpoint url access local_ rw_f has_ro has_rw why kind k base probe code label cfg env_key rw
     local tools listed py=host
     # The tool list's Python follows doctor's choice (doctor_py): the host's
     # python3 unless doctor settled on the Hermes image.
@@ -136,6 +136,16 @@ doctor_twenty() {
         continue
       fi
       ok "crm-${slug}: access ${access}, keys present: $([[ $has_ro -eq 1 ]] && echo ro)$([[ $has_ro -eq 1 && $has_rw -eq 1 ]] && echo ' ')$([[ $has_rw -eq 1 ]] && echo rw)"
+      # A shared instance is another stack's workspace behind a loopback
+      # listener; it has no url to probe here.
+      endpoint="$(twenty_json_get "$f" endpoint)"
+      if [[ -n "$endpoint" ]]; then
+        ok "crm-${slug}: shared instance at ${endpoint}"
+        if [[ -f data/hermes/config.yaml ]] && ! grep -qE "^  crm-${slug}:" data/hermes/config.yaml; then
+          warn "Hermes default profile has no crm-${slug} entry — run make hermes-reload"
+        fi
+        continue
+      fi
       # The local instance is checked through its host port; the key alone
       # selects the workspace, whatever the hostname.
       base="${url%/}"
