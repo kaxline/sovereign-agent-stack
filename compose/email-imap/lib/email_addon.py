@@ -5,6 +5,7 @@ add-on's files, then runs the indexer loop, a mailbox listing or the drafts outb
     email_addon.py index                    # render, index, sleep, repeat
     email_addon.py mailboxes --account SLUG
     email_addon.py outbox
+    email_addon.py status                   # one JSON object: counts and failures per account
 
 Reads settings.env (ADDON_EMAIL_<NAME>, shlex-quoted values) and
 instances/<slug>.json under /run/addon, and passwords through
@@ -19,6 +20,7 @@ import os
 import re
 import shlex
 import signal
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -150,14 +152,14 @@ def _account_lines(slug: str, path: Path, secrets: Path, *, listing: bool) -> li
 
 
 def render(config_dir: Path, instances_dir: Path, *, index_path: str, drafts_dir: str,
-           listing: bool = False, account: str | None = None, skipped: list[str] | None = None) -> str:
+           listing: bool = False, account: str | None = None, skipped: dict[str, str] | None = None) -> str:
     """TOML in mail-index.toml format. Never holds a password: the mail
     tools read those from MAIL_CREDENTIALS_DIR. drafts_dir is accepted for
     symmetry with the outbox command and isn't part of the config. With
     listing (the mailboxes command), a missing since becomes LISTING_SINCE.
     With account, only that instance is rendered. An instance that fails its
-    checks raises ValueError, or, when skipped is a list, is left out and its
-    reason ("<slug>: ...") appended to skipped."""
+    checks raises ValueError, or, when skipped is a dict, is left out and its
+    reason stored under its slug."""
     env = _setting_env(config_dir)
     lines = ['source = "imap"', f"index = {_q(index_path)}"]
     since = env.get("ADDON_EMAIL_SINCE") or (LISTING_SINCE if listing else None)
@@ -179,7 +181,8 @@ def render(config_dir: Path, instances_dir: Path, *, index_path: str, drafts_dir
         except ValueError as exc:
             if skipped is None:
                 raise
-            skipped.append(str(exc))
+            reason = str(exc)
+            skipped[path.stem] = reason.removeprefix(f"{path.stem}: ")
     return "\n".join(lines) + "\n"
 
 
@@ -208,10 +211,10 @@ def render_pass(lay: dict, tag: str) -> bool:
     """Render for one index or outbox pass, leaving out instances that fail their
     checks and logging one `<tag>: <slug>: <reason>` line for each. True when an
     account is left."""
-    skipped: list[str] = []
+    skipped: dict[str, str] = {}
     has_accounts = _render_to_file(lay, skipped=skipped)
-    for reason in skipped:
-        print(f"{tag}: {reason}", file=sys.stderr, flush=True)
+    for slug, reason in skipped.items():
+        print(f"{tag}: {slug}: {reason}", file=sys.stderr, flush=True)
     return has_accounts
 
 
@@ -311,6 +314,50 @@ def run_outbox(lay: dict, passes: int | None) -> int:
     return 0
 
 
+def _iso(ts: int) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
+
+
+def status(lay: dict) -> tuple[dict, int]:
+    """The add-on's state for clients that can't reach mail_status: the last
+    pass that read an account, the message count overall and per configured
+    account, the code each account failed with on the last pass (4: password
+    refused or missing, 5: server error or unreachable), and the reason each
+    account is left out of the config. Account ids, counts and reasons only.
+    Opens the index read-only; the indexer is its only writer."""
+    skipped: dict[str, str] = {}
+    try:
+        render(lay["config"], lay["instances"], index_path=lay["index"], drafts_dir=lay["drafts"], skipped=skipped)
+    except (ValueError, OSError) as exc:
+        return {"error": "bad_config", "message": str(exc)}, 2
+    slugs = sorted(p.stem for p in Path(lay["instances"]).glob("*.json"))
+    last_run, total, counts, failed = None, 0, {}, {}
+    index = Path(lay["index"])
+    if index.is_file():
+        try:
+            db = sqlite3.connect(index.resolve().as_uri() + "?mode=ro", uri=True, timeout=30)
+            try:
+                meta = dict(db.execute("SELECT key, value FROM meta"))
+                total = db.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+                counts = {str(a).upper(): n for a, n in
+                          db.execute("SELECT account, COUNT(*) FROM messages GROUP BY account")}
+            finally:
+                db.close()
+            last_run = int(meta["last_run"]) if meta.get("last_run") else None
+            codes = json.loads(meta.get("failed_accounts") or "{}")
+            if isinstance(codes, dict):
+                failed = {str(k).upper(): v for k, v in codes.items() if v in (4, 5)}
+        except (sqlite3.DatabaseError, ValueError):
+            return {"error": "index_unreadable", "message": "the mail index can't be read; the indexer rebuilds"
+                    " it on its next pass if it's deleted"}, 2
+    return {
+        "last_indexed": _iso(last_run) if last_run is not None else None,
+        "messages": total,
+        "accounts": {s: {"messages": counts.get(s.upper(), 0), "failed": failed.get(s.upper())} for s in slugs},
+        "skipped": skipped,
+    }, 0
+
+
 _last_check = [0.0]
 
 
@@ -321,7 +368,7 @@ def _changed(lay: dict, seen: str, every: int) -> bool:
         return False
     _last_check[0] = now
     try:
-        _render_to_file(lay, skipped=[])  # render_pass logs the skipped accounts on the next pass
+        _render_to_file(lay, skipped={})  # render_pass logs the skipped accounts on the next pass
         return lay["out"].read_text(encoding="utf-8") != seen
     except (ValueError, OSError):
         return False
@@ -329,13 +376,15 @@ def _changed(lay: dict, seen: str, every: int) -> bool:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("command", choices=("index", "mailboxes", "outbox"))
+    parser.add_argument("command", choices=("index", "mailboxes", "outbox", "status"))
     parser.add_argument("--account", help="mailboxes: the account slug")
     parser.add_argument("--passes", type=int, metavar="N", help="index: stop after N passes")
     args = parser.parse_args(argv)
     if args.command == "mailboxes" and not args.account:
         parser.error("mailboxes needs --account")
-    if args.passes is not None and (args.command == "mailboxes" or args.passes < 1):
+    if args.account and args.command != "mailboxes":
+        parser.error("--account only applies to mailboxes")
+    if args.passes is not None and (args.command in ("mailboxes", "status") or args.passes < 1):
         parser.error("--passes only applies to index and outbox, and must be positive")
     lay = _layout()
     os.environ["MAIL_CREDENTIALS_DIR"] = str(lay["secrets"])
@@ -343,13 +392,19 @@ def main(argv: list[str] | None = None) -> int:
         return run_index(lay, args.passes)
     if args.command == "outbox":
         return run_outbox(lay, args.passes)
+    if args.command == "status":
+        out, code = status(lay)
+        print(json.dumps(out), flush=True)
+        return code
     try:
         _render_to_file(lay, listing=True, account=args.account)
     except (ValueError, OSError) as exc:
+        # The same shape mail-index.py --json-errors prints for its failures.
         print(f"email-addon: {exc}", file=sys.stderr)
+        print(json.dumps({"error": "bad_config", "message": str(exc)}), flush=True)
         return 2
     cmd = _python(lay["scripts"] / "mail-index.py", "--config", str(lay["out"]),
-                  "mailboxes", "--account", args.account)
+                  "mailboxes", "--account", args.account, "--json-errors")
     os.execv(cmd[0], cmd)
 
 

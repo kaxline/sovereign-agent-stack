@@ -837,15 +837,16 @@ def run(config: Config, *, now: float | None = None, source=None, sources: list 
     # An account its source couldn't read this pass keeps its rows as they are.
     failed = {name.upper() for name in stats.failed}
     if config.accounts and all(a.id.upper() in failed for a in config.accounts):
-        # Nothing was read: don't create an index or move last_run, which would
-        # read as "indexed just now, no new mail". Only the failures are recorded.
-        if config.index.exists():
-            db = open_index(config.index)
-            try:
-                _record_failures(db, stats.failed)
-                db.commit()
-            finally:
-                db.close()
+        # Nothing was read: don't move last_run, which would read as "indexed
+        # just now, no new mail". Only the failures are recorded, in a new empty
+        # index when there's none yet, so a first pass with a refused password
+        # still shows up in mail_status and `email_addon.py status`.
+        db = open_index(config.index)
+        try:
+            _record_failures(db, stats.failed)
+            db.commit()
+        finally:
+            db.close()
         return stats
 
     db = open_index(config.index)
