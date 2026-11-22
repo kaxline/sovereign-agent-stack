@@ -156,6 +156,40 @@ run login-link --slug missing && fail "login-link on a missing workspace must fa
 run login-link --slug Bad_1 && fail "login-link checks the slug"
 run login-link --frob && fail "login-link rejects unknown options"
 
+# key: argument checks, then the refusals that need no Twenty. docker is a
+# stub with no running twenty-server, so main answers local_off. The owner
+# variables for another slug are never written anywhere.
+seed "$ASSISTANT_DATA_ROOT" main http://twenty-server:3000 write ro-SECRET rw-SECRET
+seed "$ASSISTANT_DATA_ROOT" dead http://127.0.0.1:1 write '' rw-SECRET
+krun() { # krun ARGS...: stdout in $out, stderr in $tmp/err, exit code in $rc
+  PATH="$tmp/abin:$PATH" "$crm" "$@" < /dev/null > "$out" 2> "$tmp/err" && rc=0 || rc=$?
+}
+krun key create --name Ada --access read
+[ "$rc" = 4 ] || fail "key create on a stopped local instance exits 4 ($rc)"
+[ "$(wc -l < "$out" | tr -d ' ')" = 1 ] || fail "key error is one stdout line ($(cat "$out"))"
+python3 -I -c 'import json,sys; v=json.load(open(sys.argv[1])); sys.exit(0 if v["error"]=="local_off" and v["message"] else 1)' "$out" \
+  || fail "key create says local_off ($(cat "$out"))"
+krun key list --name Ada --json
+[ "$rc" = 4 ] && grep -q '"local_off"' "$out" || fail "key list says local_off ($rc $(cat "$out"))"
+krun key revoke --id k1
+[ "$rc" = 4 ] && grep -q '"local_off"' "$out" || fail "key revoke says local_off ($rc $(cat "$out"))"
+for bad in "create --access read" "create --name Ada" "create --name Ada --access admin" "revoke" "list" \
+  "create --name Ada --access read --slug missing" "list --name Ada --slug Bad_1" "frob" "" "create --name Ada --access read --frob"; do
+  # shellcheck disable=SC2086
+  krun key $bad
+  [ "$rc" = 1 ] || fail "key $bad is a usage error, exit 1 ($rc)"
+  [ ! -s "$out" ] || fail "a key usage error prints nothing on stdout ($bad)"
+  grep -q '^\[crm\] ERROR:' "$tmp/err" || fail "key $bad names the problem on stderr"
+done
+krun key list --name Ada --slug dead
+[ "$rc" = 1 ] && grep -q 'TWENTY_OWNER_EMAIL' "$tmp/err" && grep -q 'TWENTY_OWNER_PASSWORD' "$tmp/err" \
+  || fail "another slug without the owner variables is a usage error naming them ($rc $(cat "$tmp/err"))"
+TWENTY_OWNER_EMAIL=boss@example.com TWENTY_OWNER_PASSWORD=owner-pw-SECRET krun key list --name Ada --slug dead
+[ "$rc" = 4 ] && grep -q '"unreachable"' "$out" || fail "another slug with a dead URL says unreachable ($rc $(cat "$out"))"
+if grep -q 'owner-pw-SECRET' "$out" "$tmp/err"; then fail "the owner password reached the output"; fi
+if grep -rq 'owner-pw-SECRET' "$store" "$ENV_FILE"; then fail "the owner password was written to a file"; fi
+rm -f "$(inst main)" "$(inst dead)" "$store/secrets/main.key_"* "$store/secrets/dead.key_"*
+
 # mode: flips both flags; refuses single mode with two local workspaces.
 run mode 1 || fail "mode 1 ($(cat "$out"))"
 grep -qx 'TWENTY_MULTIWORKSPACE=1' "$ENV_FILE" || fail "mode 1 sets TWENTY_MULTIWORKSPACE=1"

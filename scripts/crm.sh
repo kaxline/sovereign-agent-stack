@@ -57,6 +57,18 @@ Usage: scripts/crm.sh <command> [options]
   login-link [--slug S]
         Local workspace: print a URL that signs a browser in as the owner,
         good for 15 minutes. Only the URL goes to stdout.
+  key create --name NAME --access read|write [--slug S]
+  key revoke --id ID [--slug S]
+  key list --name NAME [--slug S] --json
+        One person's Twenty API key, for Boundary. create prints
+        {"id","token"} on one line; revoke prints nothing; list prints
+        {"id","name","revoked"} per key with that name. A failure is one
+        {"error","message"} line on stdout and exit 4: login_refused,
+        no_permission, unreachable, no_role or local_off. Progress goes to
+        stderr, and the token never does. Slug main (the default) is the
+        local instance, signed in as the owner from .env. Another slug uses
+        its stored url, with the owner login from TWENTY_OWNER_EMAIL and
+        TWENTY_OWNER_PASSWORD in the environment.
   mode 0|1          Single- (0) or multi-workspace (1) local instance
   ensure            Create data dirs and sync flags (run by make ensure-local)
   connect --slug S [--replace] --json
@@ -709,6 +721,74 @@ cmd_login_link() {
   crm_admin login-link --slug "$slug"
 }
 
+# One person's API key on the local instance or a hosted workspace, run by
+# Boundary. Its stdout is JSON lines only (see usage); a failure is one
+# {"error","message"} line and exit 4, a bad call is a usage error (die).
+key_error() { # key_error CODE MESSAGE
+  printf '{"error":"%s","message":"%s"}\n' "$1" "$(json_text "$2")"
+  exit 4
+}
+
+cmd_key() {
+  local action="${1:-}" name="" access="" id="" slug="main"
+  [[ $# -eq 0 ]] || shift
+  case "$action" in
+    create | revoke | list) ;;
+    *) die "usage: crm.sh key create|revoke|list (crm.sh --help)" ;;
+  esac
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --name) name="${2:-}"; shift 2 ;;
+      --access) access="${2:-}"; shift 2 ;;
+      --id) id="${2:-}"; shift 2 ;;
+      --slug) slug="${2:-}"; shift 2 ;;
+      --json) [[ "$action" == list ]] || die "unknown option for key ${action}: --json"; shift ;;
+      *) die "unknown option for key ${action}: $1" ;;
+    esac
+  done
+  valid_slug "$slug" || die "--slug must use lowercase letters, digits and hyphens"
+  local args=(key "$action" --slug "$slug")
+  case "$action" in
+    create)
+      [[ -n "$name" ]] || die "key create needs --name"
+      [[ "$access" == read || "$access" == write ]] || die "key create needs --access read or write"
+      [[ -z "$id" ]] || die "unknown option for key create: --id"
+      args+=(--name "$name" --access "$access") ;;
+    revoke)
+      [[ -n "$id" ]] || die "key revoke needs --id"
+      [[ -z "$name$access" ]] || die "key revoke takes only --id and --slug"
+      args+=(--id "$id") ;;
+    list)
+      [[ -n "$name" ]] || die "key list needs --name"
+      [[ -z "$id$access" ]] || die "key list takes only --name and --slug"
+      args+=(--name "$name") ;;
+  esac
+  load_rows
+  has_row "$slug" || die "no workspace '${slug}' — make crm-init or make crm-add"
+
+  if [[ "$slug" == main ]] || is_local_slug "$slug"; then
+    server_running || key_error local_off "the local Twenty isn't running; make up"
+  fi
+  if [[ "$slug" == main ]]; then
+    local username password password_file
+    username="$(env_get TWENTY_USERNAME)"
+    password="$(env_get TWENTY_PASSWORD)"
+    password_file="$(env_get TWENTY_PASSWORD_FILE)"
+    [[ -n "$username" && -n "${password}${password_file}" ]] \
+      || die "no owner account in ${ENV_PATH} — make crm-init"
+    crm_admin "${args[@]}"
+    return
+  fi
+  [[ -n "${TWENTY_OWNER_EMAIL:-}" && -n "${TWENTY_OWNER_PASSWORD:-}" ]] \
+    || die "set TWENTY_OWNER_EMAIL and TWENTY_OWNER_PASSWORD in the environment for workspace '${slug}'"
+  local opts=(--mount "$DATA_ROOT" --env ADDONS_DATA_ROOT --env ADDONS_DIR \
+    --env TWENTY_OWNER_EMAIL --env TWENTY_OWNER_PASSWORD)
+  path_is_inside "$ADDONS" "$ROOT" || opts+=(--mount "$ADDONS")
+  is_local_slug "$slug" && opts+=(--network-of twenty-server)
+  ADDONS_DATA_ROOT="$DATA_ROOT" ADDONS_DIR="$ADDONS" \
+    stack_python "${opts[@]}" -I "${ROOT}/scripts/twenty_admin.py" "${args[@]}"
+}
+
 cmd_open() {
   local slug=""
   while [[ $# -gt 0 ]]; do
@@ -818,6 +898,7 @@ case "${1:-}" in
   remove) shift; cmd_remove "$@" ;;
   access) shift; cmd_access "$@" ;;
   login-link) shift; cmd_login_link "$@" ;;
+  key) shift; cmd_key "$@" ;;
   open) shift; cmd_open "$@" ;;
   mode) shift; cmd_mode "$@" ;;
   ensure) cmd_ensure ;;

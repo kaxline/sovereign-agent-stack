@@ -10,6 +10,13 @@ the stack under another app.
 
 ### Changes
 
+- `crm.sh key create --name N --access read|write`, `key revoke --id ID` and
+  `key list --name N --json` mint, revoke and list one person's Twenty API key
+  on the local instance (`--slug main`) or a hosted workspace (another slug,
+  owner login from `TWENTY_OWNER_EMAIL` and `TWENTY_OWNER_PASSWORD`). `create`
+  prints `{"id","token"}`; a failure is one `{"error","message"}` line and exit
+  4 (`login_refused`, `no_permission`, `unreachable`, `no_role`, `local_off`).
+  Boundary runs it directly. (Boundary CR 0025 R1, R3)
 - `addon.sh instances <short-id> --json` prints each instance's MCP URL as the
   host reaches it, auth header and scheme, trust, and which of `ro` and `rw`
   have a key; `addon.sh secret <short-id> --instance <slug> --level ro|rw`

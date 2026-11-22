@@ -80,6 +80,22 @@ class TwentyError(Exception):
     """A GraphQL or transport error. The message never carries a secret."""
 
 
+class Unreachable(TwentyError):
+    """Twenty didn't answer, or answered with something that isn't GraphQL."""
+
+
+class UsageError(Exception):
+    """Bad flags or environment for a command; the caller fixes the call."""
+
+
+class KeyFailure(Exception):
+    """A key command's failure: a code for Boundary and a message. No secret."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 def step(msg: str) -> None:
     print(f"[crm] {msg}", flush=True)
 
@@ -100,11 +116,11 @@ class Twenty:
         except urllib.error.HTTPError as exc:
             raw = exc.read()
         except (urllib.error.URLError, OSError) as exc:
-            raise TwentyError(f"can't reach Twenty at {self.base_url}: {exc}") from None
+            raise Unreachable(f"can't reach Twenty at {self.base_url}: {exc}") from None
         try:
             data = json.loads(raw)
         except ValueError:
-            raise TwentyError("Twenty answered with something other than JSON") from None
+            raise Unreachable("Twenty answered with something other than JSON") from None
         if data.get("errors"):
             raise TwentyError("; ".join(str(e.get("message", "error")) for e in data["errors"]))
         if not isinstance(data.get("data"), dict):
@@ -243,13 +259,14 @@ def revoke_keys_named(tw: Twenty, access: str, name: str) -> int:
     return count
 
 
-def mint_key(tw: Twenty, access: str, name: str, role_id: str) -> str:
+def mint_key(tw: Twenty, access: str, name: str, role_id: str) -> tuple[str, str]:
+    """Create an API key and its token. Returns (key id, token)."""
     d = tw.gql("mutation($i: CreateApiKeyInput!) { createApiKey(input: $i) { id } }",
                {"i": {"name": name, "expiresAt": KEY_EXPIRY, "roleId": role_id}}, token=access)
     key_id = _token(d, "createApiKey", "id")
     d = tw.gql("mutation($k: UUID!, $e: String!) { generateApiKeyToken(apiKeyId: $k, expiresAt: $e) { token } }",
                {"k": key_id, "e": KEY_EXPIRY}, token=access)
-    return _token(d, "generateApiKeyToken", "token")
+    return key_id, _token(d, "generateApiKeyToken", "token")
 
 
 class Workspaces:
@@ -421,7 +438,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         if existing:
             # Rotation, or keys an interrupted run minted but never wrote down.
             revoke_keys_named(tw, access, name)
-        keys[kind] = mint_key(tw, access, name, role_id)
+        _, keys[kind] = mint_key(tw, access, name, role_id)
     step(f"{slug}: keys: done")
 
     store.write(slug, {
@@ -480,6 +497,117 @@ def cmd_login_link(args: argparse.Namespace) -> int:
     raise TwentyError(f"the owner account can't enter workspace {ws_id}")
 
 
+def owner_session(env, slug: str) -> tuple[Twenty, str]:
+    """Sign in as the owner of workspace SLUG. Returns (client, workspace access token).
+
+    main is the local instance: owner login and base URL as crm init uses them
+    (TWENTY_USERNAME, TWENTY_PASSWORD or TWENTY_PASSWORD_FILE, TWENTY_BASE_URL).
+    Any other slug uses the instance's stored url, with the owner login from
+    TWENTY_OWNER_EMAIL and TWENTY_OWNER_PASSWORD, which are only read.
+    Raises UsageError for a bad slug or missing settings, KeyFailure for a
+    sign-in Twenty refuses or can't be reached for.
+    """
+    if not SLUG.match(slug):
+        raise UsageError(f"slug '{slug}' must use lowercase letters, digits and hyphens")
+    values = Workspaces(env).get(slug)
+    if values is None:
+        raise UsageError(f"no workspace '{slug}'")
+    if slug == "main":
+        email = env.get("TWENTY_USERNAME", "")
+        password = env.get("TWENTY_PASSWORD", "")
+        password_file = env.get("TWENTY_PASSWORD_FILE", "")
+        if not password and password_file:
+            try:
+                password = Path(password_file).expanduser().read_text().strip()
+            except OSError:
+                raise UsageError(f"TWENTY_PASSWORD_FILE ({password_file}) can't be read; run make crm-init") from None
+        if not email or not password:
+            raise UsageError("TWENTY_USERNAME and TWENTY_PASSWORD (or TWENTY_PASSWORD_FILE) must be set")
+        base = env.get("TWENTY_BASE_URL", "http://127.0.0.1:3000")
+        ws_id = values.get("workspace_id", "")
+        origin = values.get("workspace_url", "")
+        if not ws_id or not origin:
+            raise UsageError(f"workspace '{slug}' has no workspace_id or workspace_url; run make crm-init")
+    else:
+        email = env.get("TWENTY_OWNER_EMAIL", "")
+        password = env.get("TWENTY_OWNER_PASSWORD", "")
+        if not email or not password:
+            raise UsageError(f"TWENTY_OWNER_EMAIL and TWENTY_OWNER_PASSWORD must be set for workspace '{slug}'")
+        base = values.get("url", "")
+        if not base:
+            raise UsageError(f"workspace '{slug}' has no url")
+        ws_id = values.get("workspace_id", "")
+        origin = values.get("workspace_url") or base
+    tw = Twenty(base)
+    print(f"[crm] {slug}: signing in as {email}", file=sys.stderr, flush=True)
+    try:
+        _, available = sign_in(tw, email, password)
+        if not ws_id and available:
+            ws_id = available[0].get("id", "")
+        return tw, workspace_access_token(tw, available, ws_id, origin.rstrip("/"))
+    except Unreachable as exc:
+        raise KeyFailure("unreachable", str(exc)) from None
+    except TwentyError as exc:
+        raise KeyFailure("login_refused", f"Twenty refused the sign-in: {exc}") from None
+
+
+def _stage(code: str, fn, *args):
+    """fn(*args), with a Twenty failure turned into a KeyFailure: unreachable
+    when Twenty can't be reached, else CODE."""
+    try:
+        return fn(*args)
+    except Unreachable as exc:
+        raise KeyFailure("unreachable", str(exc)) from None
+    except TwentyError as exc:
+        raise KeyFailure(code, str(exc)) from None
+
+
+def _role_id(tw: Twenty, access: str, kind: str) -> str:
+    """The Hermes role for KIND (ro or rw): found by label, else both roles are
+    created as crm init creates them."""
+    label = ROLES[kind]["label"]
+    roles = _stage("no_permission", lambda: tw.gql("query { getRoles { id label } }", token=access).get("getRoles"))
+    for role in roles if isinstance(roles, list) else []:
+        if isinstance(role, dict) and role.get("label") == label and role.get("id"):
+            return role["id"]
+    return _stage("no_role", ensure_roles, tw, access)[kind]
+
+
+def cmd_key(args: argparse.Namespace) -> int:
+    """Mint, revoke or list one person's API key. Boundary runs these directly.
+
+    create prints one JSON line {"id", "token"}; the token is the only secret
+    that reaches stdout, from this command alone. revoke prints nothing. list
+    prints {"id", "name", "revoked"} for each key with the given name. A failure
+    prints {"error", "message"} on stdout and exits 4; progress goes to stderr.
+    """
+    try:
+        tw, access = owner_session(os.environ, args.slug)
+        if args.action == "create":
+            kind = "ro" if args.access == "read" else "rw"
+            role_id = _role_id(tw, access, kind)
+            print(f"[crm] {args.slug}: creating key '{args.name}' ({args.access})", file=sys.stderr, flush=True)
+            key_id, token = _stage("no_permission", mint_key, tw, access, args.name, role_id)
+            print(json.dumps({"id": key_id, "token": token}), flush=True)
+        elif args.action == "revoke":
+            _stage("no_permission", lambda: tw.gql(
+                "mutation($i: RevokeApiKeyInput!) { revokeApiKey(input: $i) { id } }",
+                {"i": {"id": args.id}}, token=access))
+        else:
+            d = _stage("no_permission", lambda: tw.gql("query { apiKeys { id name revokedAt } }", token=access))
+            for key in d.get("apiKeys") or []:
+                if key.get("name") == args.name:
+                    print(json.dumps({"id": key["id"], "name": key["name"], "revoked": bool(key.get("revokedAt"))}),
+                          flush=True)
+    except UsageError as exc:
+        print(f"[crm] ERROR: {exc}", file=sys.stderr)
+        return 1
+    except KeyFailure as exc:
+        print(json.dumps({"error": exc.code, "message": str(exc)}), flush=True)
+        return 4
+    return 0
+
+
 def _field(value) -> str:
     """One tab-separated field: "-" when empty or unsafe for the shell's read."""
     if isinstance(value, bool):
@@ -515,9 +643,21 @@ def main(argv: list[str] | None = None) -> int:
                         help="stop after creating or signing in to the owner account")
     p_link = sub.add_parser("login-link", help="print a sign-in URL for a local workspace")
     p_link.add_argument("--slug", default="main")
+    p_key = sub.add_parser("key", help="create, revoke or list one person's API key")
+    ksub = p_key.add_subparsers(dest="action", required=True)
+    p_kc = ksub.add_parser("create")
+    p_kc.add_argument("--name", required=True)
+    p_kc.add_argument("--access", required=True, choices=("read", "write"))
+    p_kr = ksub.add_parser("revoke")
+    p_kr.add_argument("--id", required=True)
+    p_kl = ksub.add_parser("list")
+    p_kl.add_argument("--name", required=True)
+    p_kl.add_argument("--json", action="store_true")
+    for p in (p_kc, p_kr, p_kl):
+        p.add_argument("--slug", default="main")
     sub.add_parser("list", help="the stored workspaces, one tab-separated line each")
     args = parser.parse_args(argv)
-    run = {"login-link": cmd_login_link, "list": cmd_list}.get(args.cmd, cmd_init)
+    run = {"login-link": cmd_login_link, "list": cmd_list, "key": cmd_key}.get(args.cmd, cmd_init)
     try:
         return run(args)
     except (TwentyError, addon_store.InputError, subprocess.CalledProcessError, OSError) as exc:

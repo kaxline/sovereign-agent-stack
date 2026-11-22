@@ -159,6 +159,36 @@ browser an owner session, which includes server admin. Twenty accepts it for
 workspaces; sign in on their own Twenty. When it fails, `crm-open` opens the
 sign-in page and says where the password is.
 
+### Keys for one person
+
+`./scripts/crm.sh key` mints, revokes and lists API keys named for one person,
+so Twenty records their changes under that name. Boundary runs it when a
+provider grants someone access to a workspace.
+
+```bash
+scripts/crm.sh key create --name NAME --access read|write [--slug S]
+scripts/crm.sh key revoke --id ID [--slug S]
+scripts/crm.sh key list --name NAME [--slug S] --json
+```
+
+`create` prints one line, `{"id": ..., "token": ...}`, and the token appears
+nowhere else. It uses the Hermes read-only or read-write role by label and
+creates both roles when the workspace has neither, as `crm-init` does. The key
+expires in 2126, so revoke it when access ends. `revoke` prints nothing.
+`list` prints `{"id","name","revoked"}` for each key with that name.
+
+A failure is one line on stdout, `{"error": CODE, "message": TEXT}`, with exit
+4. The codes are `login_refused` (Twenty rejected the owner login),
+`no_permission` (Twenty refused a request), `unreachable`, `no_role` (Twenty
+refused to create a missing role) and `local_off` (the local Twenty isn't
+running). A bad or missing flag, or an unknown slug, is a usage error: a
+`[crm] ERROR:` line on stderr and exit 1.
+
+With `--slug main`, the default, the command signs in as the local owner from
+`.env`. Any other slug uses that workspace's stored `url`, with the owner login
+from `TWENTY_OWNER_EMAIL` and `TWENTY_OWNER_PASSWORD` in the environment.
+Those two are read only: nothing writes them to a file or prints them.
+
 ### Workspace files from before 0.3.13
 
 Since stack 0.3.14 nothing reads `compose/twenty/workspaces/<slug>.env`, and

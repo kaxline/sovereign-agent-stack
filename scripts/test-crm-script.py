@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import socket
 import stat
 import subprocess
 import sys
@@ -66,6 +67,9 @@ class Stub:
         self.workspaces = 0
         self.upserts: list[dict] = []
         self.passwords: list[str] = []
+        self.refuse: dict[str, str] = {}
+        self.sign_in_error: str | None = None
+        self.key_calls: list[dict] = []
 
     def answer(self, query: str, variables: dict) -> dict:
         m = OP.match(query)
@@ -74,6 +78,10 @@ class Stub:
         if op == self.fail_once:
             self.fail_once = None
             return {"errors": [{"message": f"stub failure in {op}"}]}
+        if op in self.refuse:
+            return {"errors": [{"message": self.refuse[op]}]}
+        if op == "signIn" and self.sign_in_error:
+            return {"errors": [{"message": self.sign_in_error}]}
         tokens = {"tokens": {"accessOrWorkspaceAgnosticToken": {"token": "agnostic-SECRET"}}}
         if op in ("signUp", "signIn"):
             self.passwords.append(variables.get("p"))
@@ -125,7 +133,9 @@ class Stub:
                     k["revokedAt"] = "now"
             return {"data": {"revokeApiKey": {"id": variables["i"]["id"]}}}
         if op == "createApiKey":
-            key = {"id": f"key-{len(self.keys) + 1}", "name": variables["i"]["name"], "revokedAt": None}
+            key = {"id": f"key-{len(self.keys) + 1}", "name": variables["i"]["name"], "revokedAt": None,
+                   "roleId": variables["i"].get("roleId")}
+            self.key_calls.append(variables["i"])
             self.keys.append(key)
             return {"data": {"createApiKey": key}}
         if op == "generateApiKeyToken":
@@ -475,6 +485,152 @@ class CrmInit(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0)
         # Only the workspace's identity is kept, for the resume; the bootstrap skips an instance without keys.
         self.assertEqual(set(self.file("main")), {"url", "local", "access", "workspace_url", "workspace_id"})
+
+
+class CrmKey(unittest.TestCase):
+    """crm.sh key create|revoke|list: one person's API key (Boundary CR 0025 R1, R3)."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.droot = self.tmp / "droot"
+        self.droot.mkdir()
+        self.stub = Stub()
+        self.server = serve(self.stub)
+        self.base = f"http://127.0.0.1:{self.server.server_port}"
+        # A local workspace with both roles in place, as crm init leaves it.
+        self.run_init()
+        self.stub.ops.clear()
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+    def run_init(self) -> None:
+        env = {"PATH": os.environ["PATH"], "TWENTY_BASE_URL": self.base,
+               "ADDONS_DATA_ROOT": str(self.droot), "TWENTY_DATA_DIR": str(self.tmp / "data"),
+               "TWENTY_USERNAME": "owner@crm.localhost", "TWENTY_PASSWORD": PASSWORD}
+        proc = subprocess.run([sys.executable, "-I", str(ADMIN), "init"], env=env,
+                              capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def key(self, *args: str, base: str | None = None, **extra: str) -> subprocess.CompletedProcess:
+        env = {"PATH": os.environ["PATH"], "TWENTY_BASE_URL": base or self.base,
+               "ADDONS_DATA_ROOT": str(self.droot), "TWENTY_USERNAME": "owner@crm.localhost",
+               "TWENTY_PASSWORD": PASSWORD, **extra}
+        proc = subprocess.run([sys.executable, "-I", str(ADMIN), "key", *args],
+                              env=env, capture_output=True, text=True)
+        # The token belongs on create's stdout line only; the password and the
+        # session token belong nowhere.
+        for secret in (PASSWORD, "access-SECRET", "agnostic-SECRET"):
+            self.assertNotIn(secret, proc.stdout + proc.stderr, "output leaks a secret")
+        self.assertNotIn("apikey-SECRET", proc.stderr, "the key token must stay off stderr")
+        return proc
+
+    def lines(self, proc: subprocess.CompletedProcess) -> list[dict]:
+        return [json.loads(line) for line in proc.stdout.splitlines()]
+
+    def test_create_read_prints_id_and_token_with_the_read_only_role(self):
+        proc = self.key("create", "--name", "Ada read", "--access", "read")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.lines(proc), [{"id": "key-3", "token": "apikey-SECRET-3"}])
+        self.assertEqual(len(proc.stdout.splitlines()), 1)
+        ro = next(r for r in self.stub.roles if r["label"] == "Hermes read-only")
+        self.assertEqual(self.stub.key_calls[-1]["roleId"], ro["id"])
+        self.assertEqual(self.stub.key_calls[-1]["name"], "Ada read")
+        self.assertEqual(self.stub.key_calls[-1]["expiresAt"], "2126-01-01T00:00:00Z")
+
+    def test_create_write_uses_the_read_write_role(self):
+        proc = self.key("create", "--name", "Ada write", "--access", "write")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        rw = next(r for r in self.stub.roles if r["label"] == "Hermes read-write")
+        self.assertEqual(self.stub.key_calls[-1]["roleId"], rw["id"])
+
+    def test_create_makes_missing_roles_as_crm_init_does(self):
+        self.stub.roles.clear()
+        proc = self.key("create", "--name", "Ada", "--access", "read")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.stub.ops.count("createOneRole"), 2)
+
+    def test_create_when_twenty_refuses_the_role_is_no_role(self):
+        self.stub.roles.clear()
+        self.stub.refuse["createOneRole"] = "Role creation refused"
+        proc = self.key("create", "--name", "Ada", "--access", "read")
+        self.assertEqual(proc.returncode, 4)
+        self.assertEqual(self.lines(proc)[0]["error"], "no_role")
+        self.assertNotIn("createApiKey", self.stub.ops)
+
+    def test_revoke_calls_revoke_and_prints_nothing(self):
+        self.key("create", "--name", "Ada", "--access", "read")
+        self.stub.ops.clear()
+        proc = self.key("revoke", "--id", "key-3")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "")
+        self.assertIn("revokeApiKey", self.stub.ops)
+        self.assertEqual(self.stub.keys[2]["revokedAt"], "now")
+
+    def test_list_marks_revoked_keys_and_filters_by_name(self):
+        self.key("create", "--name", "Ada", "--access", "read")
+        self.key("create", "--name", "Ada", "--access", "write")
+        self.key("create", "--name", "Bo", "--access", "read")
+        self.key("revoke", "--id", "key-3")
+        proc = self.key("list", "--name", "Ada", "--json")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.lines(proc), [
+            {"id": "key-3", "name": "Ada", "revoked": True},
+            {"id": "key-4", "name": "Ada", "revoked": False},
+        ])
+
+    def test_wrong_password_is_login_refused_and_mints_nothing(self):
+        self.stub.sign_in_error = "Wrong password"
+        proc = self.key("create", "--name", "Ada", "--access", "read")
+        self.assertEqual(proc.returncode, 4)
+        out = self.lines(proc)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["error"], "login_refused")
+        self.assertIsInstance(out[0]["message"], str)
+        self.assertNotIn("createApiKey", self.stub.ops)
+
+    def test_roles_refused_for_permissions_is_no_permission(self):
+        self.stub.refuse["getRoles"] = "Forbidden: you don't have permission"
+        proc = self.key("create", "--name", "Ada", "--access", "read")
+        self.assertEqual(proc.returncode, 4)
+        self.assertEqual(self.lines(proc)[0]["error"], "no_permission")
+        self.assertNotIn("createApiKey", self.stub.ops)
+
+    def test_connection_refused_is_unreachable(self):
+        dead = socket.socket()
+        dead.bind(("127.0.0.1", 0))
+        port = dead.getsockname()[1]
+        dead.close()
+        proc = self.key("list", "--name", "Ada", "--json", base=f"http://127.0.0.1:{port}")
+        self.assertEqual(proc.returncode, 4)
+        self.assertEqual(self.lines(proc)[0]["error"], "unreachable")
+
+    def test_other_slug_uses_the_stored_url_and_the_owner_variables(self):
+        addon_store.apply_instance(MANIFEST, self.droot, "hosted",
+                                   {"url": self.base, "local": False, "access": "write", "key_rw": "x"})
+        proc = self.key("create", "--name", "Ada", "--access", "read", "--slug", "hosted",
+                        base="http://127.0.0.1:1", TWENTY_USERNAME="", TWENTY_PASSWORD="",
+                        TWENTY_OWNER_EMAIL="boss@example.com", TWENTY_OWNER_PASSWORD=PASSWORD)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.lines(proc)[0]["id"], "key-3")
+        self.assertEqual(self.stub.passwords[-1], PASSWORD)
+
+    def test_other_slug_without_owner_variables_is_a_usage_error(self):
+        addon_store.apply_instance(MANIFEST, self.droot, "hosted",
+                                   {"url": self.base, "local": False, "access": "write", "key_rw": "x"})
+        proc = self.key("list", "--name", "Ada", "--slug", "hosted")
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(proc.stdout, "")
+        self.assertIn("TWENTY_OWNER_EMAIL", proc.stderr)
+        self.assertIn("TWENTY_OWNER_PASSWORD", proc.stderr)
+        self.assertEqual(self.stub.ops, [])
+
+    def test_unknown_slug_is_a_usage_error(self):
+        proc = self.key("list", "--name", "Ada", "--slug", "nope")
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(proc.stdout, "")
+        self.assertEqual(self.stub.ops, [])
 
 
 if __name__ == "__main__":
