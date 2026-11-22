@@ -34,3 +34,8 @@ ensure_override() {
 add_mount() {
   python3 "${ROOT}/scripts/lib/override_mounts.py" add "$OVERRIDE" "$@"
 }
+
+# remove_mount SERVICE PATH [--ro]: drop that bind from services.SERVICE.
+remove_mount() {
+  python3 "${ROOT}/scripts/lib/override_mounts.py" remove "$OVERRIDE" "$@"
+}

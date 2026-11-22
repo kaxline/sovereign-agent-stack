@@ -147,6 +147,10 @@ docker compose up -d --force-recreate hermes-worker hermes opencode opencode-mcp
 # leave out hermes-worker when HERMES_TERMINAL_BACKEND=local
 ```
 
+`make coding-root-remove DIR=...` takes an extra root out of `CODING_EXTRA_ROOTS` and drops its binds from both services; recreate the same containers afterwards. The folder stays, and so do any shadow mounts you added under it.
+
+OpenCode runs as `HERMES_UID:HERMES_GID`, not root, so on a Linux host the files it writes in a coding root belong to the user who installed the stack, as the files `hermes-worker` writes do. Its entrypoint starts as root only to give that uid a passwd entry and hand it the state volumes, then drops to it.
+
 If the user asks to work outside those roots, `coding_start_task` returns `needs_access: true` with a `hint`. Hermes follows the hint: it asks the user to confirm access and gives them `make coding-root-add DIR=...` and the containers to recreate. It does not remount Docker itself.
 
 An app that embeds the stack and grants roots in its own UI sets `CODING_ROOTS_APP_MANAGED=1`. The hint then says the app will ask the user to grant access to the path, and Hermes names the folder in one sentence and ends the turn without suggesting commands. `CONTEXT_ROOTS_APP_MANAGED=1` does the same for missing context roots. See [Extending the stack](extending.md#app-managed-roots).

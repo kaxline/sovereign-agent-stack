@@ -8,6 +8,9 @@ they are. A mount is a ``      - HOST:HOST`` (or ``:ro``) entry under
 
     override_mounts.py add OVERRIDE SERVICE PATH [--ro]
         One mount on one service, for coding-root.sh and context-root.sh.
+    override_mounts.py remove OVERRIDE SERVICE PATH [--ro]
+        Drop that mount from one service, for coding-root.sh remove. A
+        service block left with nothing else in it goes too.
     override_mounts.py sync OVERRIDE BACKEND CODING CONTEXT
         Project CODING_EXTRA_ROOTS and CONTEXT_EXTRA_ROOTS (colon lists) onto
         the active terminal service, for sync-terminal-backend.sh.
@@ -184,6 +187,18 @@ def cmd_add(override: Path, service: str, path: str, readonly: bool) -> None:
         print(f"added mount for {service}: {path}{ro}")
 
 
+def cmd_remove(override: Path, service: str, path: str, readonly: bool) -> None:
+    if not override.exists():
+        return
+    before = override.read_text()
+    lines = remove_mount(before.splitlines(keepends=True), service, path, readonly)
+    lines = strip_empty_volumes(lines, service)
+    lines = drop_service_if_no_volumes(lines, service)
+    text = "".join(lines)
+    if text != before:
+        override.write_text(text)
+
+
 def split_roots(raw: str) -> list[str]:
     return [part for part in raw.split(":") if part]
 
@@ -241,6 +256,8 @@ def cmd_sync(override: Path, backend: str, coding_raw: str, context_raw: str) ->
 def main(argv: list[str]) -> None:
     if len(argv) >= 4 and argv[0] == "add" and argv[4:] in ([], ["--ro"]):
         cmd_add(Path(argv[1]), argv[2], argv[3], argv[4:] == ["--ro"])
+    elif len(argv) >= 4 and argv[0] == "remove" and argv[4:] in ([], ["--ro"]):
+        cmd_remove(Path(argv[1]), argv[2], argv[3], argv[4:] == ["--ro"])
     elif len(argv) == 5 and argv[0] == "sync":
         cmd_sync(Path(argv[1]), argv[2], argv[3], argv[4])
     else:

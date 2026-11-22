@@ -127,6 +127,48 @@ def main() -> None:
         checks.expect(proc.returncode == 0, f"local coding add failed: {proc.stderr}")
         checks.expect("--force-recreate hermes opencode opencode-mcp\n" in proc.stdout, f"local recreate hint: {proc.stdout}")
 
+        # remove undoes add: no bind left on either service, .env back to empty,
+        # the repo folder untouched. A second remove and an unknown path change
+        # nothing; the primary root is refused.
+        root = checkout(base, env)
+        override = root / "docker-compose.override.yml"
+        run(root, "scripts/coding-root.sh", "add", str(repo))
+        proc = run(root, "scripts/coding-root.sh", "remove", str(repo))
+        checks.expect(proc.returncode == 0, f"coding remove failed: {proc.stderr}")
+        text = override.read_text()
+        checks.expect(f"{repo}:{repo}" not in text, f"coding remove left a bind:\n{text}")
+        checks.expect("  hermes-worker:\n" not in text, f"coding remove left an empty hermes-worker block:\n{text}")
+        checks.expect("  opencode:\n    volumes:\n      - ./compose/opencode/blank:" in text, f"coding remove dropped opencode's shadow mounts:\n{text}")
+        checks.expect("CODING_EXTRA_ROOTS=\n" in (root / ".env").read_text(), "coding remove left CODING_EXTRA_ROOTS set")
+        checks.expect("--force-recreate hermes-worker hermes opencode opencode-mcp" in proc.stdout, f"remove recreate hint: {proc.stdout}")
+        checks.expect(repo.is_dir(), "coding remove deleted the folder")
+        env_before, ov_before = (root / ".env").read_text(), override.read_text()
+        for args in ((str(repo),), (str(base / "never-added"),)):
+            proc = run(root, "scripts/coding-root.sh", "remove", *args)
+            checks.expect(proc.returncode == 0 and "Not an extra coding root" in proc.stdout, f"remove {args}: {proc.stdout}{proc.stderr}")
+        checks.expect((root / ".env").read_text() == env_before and override.read_text() == ov_before, "no-op remove changed a file")
+        proc = run(root, "scripts/coding-root.sh", "remove", str(ws))
+        checks.expect(proc.returncode != 0 and "primary coding root" in proc.stderr, f"primary remove: {proc.stdout}{proc.stderr}")
+
+        # Removing one of two roots keeps the other, and on the local backend
+        # keeps the rest of the hermes block.
+        other = base / "other-repo"
+        other.mkdir()
+        root = checkout(base, env.replace("=ssh", "=local"))
+        override = root / "docker-compose.override.yml"
+        override.write_text("services:\n  hermes:\n    environment:\n      FOO: bar\n")
+        run(root, "scripts/coding-root.sh", "add", str(repo))
+        run(root, "scripts/coding-root.sh", "add", str(other))
+        proc = run(root, "scripts/coding-root.sh", "remove", str(repo))
+        checks.expect(proc.returncode == 0, f"local remove failed: {proc.stderr}")
+        checks.expect(f"CODING_EXTRA_ROOTS=:{other}\n" in (root / ".env").read_text(), "local remove dropped the other root")
+        checks.expect(
+            override.read_text()
+            == f"services:\n  hermes:\n    volumes:\n      - {other}:{other}\n    environment:\n      FOO: bar\n"
+            f"\n  opencode:\n    volumes:\n      - {other}:{other}\n",
+            f"local remove wrote:\n{override.read_text()}",
+        )
+
         # A bad backend stops before .env or the override is touched.
         root = checkout(base, env.replace("=ssh", "=docker"))
         proc = run(root, "scripts/coding-root.sh", "add", str(repo))

@@ -10,6 +10,22 @@ the stack under another app.
 
 ### Changes
 
+- OpenCode runs as `HERMES_UID:HERMES_GID` instead of root. On a Linux host,
+  files the coding agent wrote through OpenCode were owned by root, and the
+  host user could not change or delete them without sudo. Its state volumes
+  move from `/root` to `/home/opencode` inside the container and are handed to
+  that uid on the first start, keeping their contents. Rebuild the
+  image (`docker compose build opencode`). Files OpenCode already wrote stay
+  root-owned; on Linux, `sudo chown -R "$(id -u):$(id -g)" DIR` for each
+  coding root fixes them.
+- `make coding-root-remove DIR=...` (`scripts/coding-root.sh remove DIR`)
+  takes an extra coding root back out of `CODING_EXTRA_ROOTS` and the
+  override's binds. The folder stays. Removing a path that isn't an extra root
+  exits 0 and says so.
+- The recreate command `coding-root.sh add` prints, and the `needs_access`
+  hint, now include `hermes`. `CODING_EXTRA_ROOTS` feeds
+  `HERMES_WRITE_SAFE_ROOT` on `hermes`, so without that recreate a new root
+  stayed unwritable through Hermes' `write_file` and `patch`.
 - Project indexes refresh themselves (#43). A generated `INDEX.md` (one with
   `.index-manifest.json` beside it) is rewritten by the WebUI brief prefill on
   a turn in that project when all its sources are inside the project, and by

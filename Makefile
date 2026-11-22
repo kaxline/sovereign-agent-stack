@@ -19,7 +19,7 @@
 	bitwarden-test addon-list addon-test test hermes-image-test actual-mcp-test \
 	ssh-listener-image ssh-listener-test \
 	budget-open budget-access budget-connect budget-disconnect \
-	coding-root-list coding-root-add \
+	coding-root-list coding-root-add coding-root-remove \
 	context-root-list context-root-add opencode-smoke-fixture \
 	kb-eval-fixture kb-eval-fixture-remove \
 	tool-eval-reset tool-eval-run tool-eval-score tool-eval-list
@@ -593,12 +593,17 @@ calendar-test:
 # Shared coding roots (Hermes + OpenCode). See docs/opencode.md.
 #   make coding-root-list
 #   make coding-root-add DIR=/absolute/path/to/repo
+#   make coding-root-remove DIR=/absolute/path/to/repo
 coding-root-list:
 	./scripts/coding-root.sh list
 
 coding-root-add:
 	@test -n "$(DIR)" || (echo "Usage: make coding-root-add DIR=/absolute/path"; exit 1)
 	./scripts/coding-root.sh add "$(DIR)"
+
+coding-root-remove:
+	@test -n "$(DIR)" || (echo "Usage: make coding-root-remove DIR=/absolute/path"; exit 1)
+	./scripts/coding-root.sh remove "$(DIR)"
 
 # Read-only context roots (Hermes only — notes Hermes can open, not coding targets).
 #   make context-root-list

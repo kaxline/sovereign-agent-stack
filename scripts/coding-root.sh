@@ -124,12 +124,58 @@ cmd_add() {
   echo "  find \"$path\" -name '.env' -not -path '*/node_modules/*'"
 }
 
+# cmd_remove DIR: the reverse of add for an extra root. The folder itself and
+# any shadow mounts under it in the override are left alone.
+cmd_remove() {
+  local path="${1:-}"
+  [[ -n "$path" ]] || die "path is required"
+  [[ "$path" == /* ]] || die "path must be absolute: $path"
+  [[ "$path" != */ ]] || die "path must not end with a slash: $path"
+  [[ -f "$ENV_FILE" ]] || die "missing $ENV_FILE — run ./scripts/setup.sh first"
+  local service
+  service="$(terminal_service)"
+  if [[ "$path" == "$(env_get OPENCODE_WORKSPACE_HOST)" ]]; then
+    die "$path is the primary coding root; change OPENCODE_WORKSPACE_HOST in .env instead"
+  fi
+
+  local extras kept="" root found=0
+  extras="$(env_get CODING_EXTRA_ROOTS)"
+  local IFS=':'
+  # shellcheck disable=SC2086
+  for root in $extras; do
+    [[ -z "$root" ]] && continue
+    if [[ "$root" == "$path" ]]; then
+      found=1
+    else
+      kept="${kept}:${root}"
+    fi
+  done
+  unset IFS
+  if [[ "$found" == 0 ]]; then
+    echo "Not an extra coding root: $path"
+    cmd_list
+    return 0
+  fi
+
+  upsert_env "$ENV_FILE" CODING_EXTRA_ROOTS "$kept"
+  remove_mount "$service" "$path"
+  remove_mount opencode "$path"
+
+  echo
+  echo "Removed coding root: $path"
+  echo "CODING_EXTRA_ROOTS=$kept"
+  echo
+  echo "Recreate containers so the binds and HERMES_WRITE_SAFE_ROOT drop it:"
+  echo "  docker compose up -d --force-recreate $(recreate_services)"
+}
+
 usage() {
   cat <<EOF
-Usage: $0 <list|add DIR>
+Usage: $0 <list|add DIR|remove DIR>
 
   list          Show primary and extra coding roots
   add DIR       Grant Hermes + OpenCode access to an absolute directory
+  remove DIR    Take an extra root away again (the folder stays)
 
 EOF
 }
@@ -141,6 +187,10 @@ main() {
     add)
       shift
       cmd_add "${1:-}"
+      ;;
+    remove)
+      shift
+      cmd_remove "${1:-}"
       ;;
     -h|--help|help) usage ;;
     "") usage; exit 1 ;;
