@@ -26,7 +26,7 @@ Setup pulls the release's image, which is pinned by digest, makes the listener's
 ~/.local/bin/sovereign-ssh-listener allow CLIENT_KEY --name laptop
 ```
 
-Running a newer release's `ssh-listener.sh setup` moves the listener to that release's image. The key pair and the allowed list stay, so clients keep working.
+Running a newer release's `ssh-listener.sh setup` moves the listener to that release's image. The key pair and the allowed list stay, so clients keep working. Setup waits up to 20 seconds for the new container to log that it is listening (`SSH_LISTENER_START_WAIT` changes the wait). If the container fails to start, or exits or restarts in that time, setup removes it, starts the previous image again and exits with `command_failed`. If it is still running but hasn't listened yet, which a slow DHT bootstrap can cause, setup keeps it and adds a warning to the status it prints.
 
 ### The sshd address
 
@@ -79,11 +79,13 @@ On Linux the listener starts with the Docker engine, so it answers on the same p
 
 On a Mac, Docker Desktop runs only while a user is logged in, so the listener does too, like the stack. After a restart the host is unreachable until someone logs in. Setup warns when Docker Desktop is set not to start at login; turn on **Start Docker Desktop when you sign in** in its settings. With FileVault on, a Mac waits at the unlock screen after any restart, so for an update you start yourself, `sudo fdesetup authrestart` unlocks the disk once for the next boot. **Start up automatically after a power failure** in System Settings > Energy brings the Mac back on, but it still waits for a login.
 
+A sleeping Mac is unreachable as well, since Docker Desktop's VM and the listener pause with it. On a Mac used as a host, turn on **Prevent automatic sleeping when the display is off** in System Settings > Energy.
+
 ## JSON output
 
 Every command takes `--json` and prints one object:
 
-- `setup`, `status`, `start` and `stop`: `{"running","setUp","publicKey","sshd","sshdReachable","allowed","version","natType","connections","warnings"}`. `setup` adds `"command"`, the path of the copied command. `warnings` lists what needs the user, such as Remote Login being off.
+- `setup`, `status`, `start` and `stop`: `{"running","setUp","publicKey","sshd","sshdReachable","allowed","version","natType","connections","warnings"}`. `setup` adds `"command"`, the path of the copied command. `warnings` lists what needs the user, such as Remote Login being off. `allowed` is null when the allowed list can't be read; the listener then refuses every client, and `warnings` says so.
 - `allow`: `{"key","name","added","alreadyAllowed"}`.
 - `revoke`: `{"key","revoked"}`. `revoked` is false when the key wasn't allowed.
 - `list`: `{"keys":[{"key","name","added"}]}`.
@@ -93,4 +95,4 @@ Errors print `{"error","message"}`: `bad_input` (exit 2), `command_failed` (exit
 
 ## From a checkout
 
-`scripts/ssh-listener.sh` in the repository has no image pinned. `make ssh-listener-image` builds `sovereign-ssh-listener:local`; run the script with `SSH_LISTENER_IMAGE=sovereign-ssh-listener:local`. `make ssh-listener-test` runs the listener's tests against a local HyperDHT testnet in the image's test stage. The source is in `compose/ssh-listener/`.
+`scripts/ssh-listener.sh` in the repository has no image pinned. `make ssh-listener-image` builds `sovereign-ssh-listener:local`; run the script with `SSH_LISTENER_IMAGE=sovereign-ssh-listener:local`. `make ssh-listener-test` runs the listener's tests against a local HyperDHT testnet in the image's test stage, including an `ssh2` client signing in to a real OpenSSH sshd through the listener (host key check, a command, SFTP, a port forward, and revoke ending the session). The source is in `compose/ssh-listener/`.
