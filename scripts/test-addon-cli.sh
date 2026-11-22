@@ -391,7 +391,7 @@ if python3 -c "import json,sys; ${svc_expr}sys.exit(0 if all('downloadSize' not 
 else
   bad "list --sizes leaves downloadSize out when the platform is not found"
 fi
-DOCKER_FAIL_CONFIG=1 addon_json list --json
+export DOCKER_FAIL_CONFIG=1; addon_json list --json; unset DOCKER_FAIL_CONFIG
 expect_rc "list --json with compose config failing" 0
 if python3 -c "import json,sys; ${svc_expr}sys.exit(0 if s['worker']['image'] is None and s['worker']['memory']=={'reservation':None,'limit':None} else 1)" "$out" && [ "$(grep -c '^warning:' "$err")" = 1 ]; then
   ok "list still prints the catalog with one warning when compose config fails"
@@ -1809,7 +1809,7 @@ if grep -q 'compose --profile \* config --format json' "$STUB_LOG"; then ok "ins
 printf '%s' '{"url":"http://nas:8080","access":"read","local":false}' > "${TW_STORE}/instances/nas.json"
 addon_json instances twenty --json
 if grep -q '"url":"http://nas:8080/mcp?mode=meta"' "$out"; then ok "instances leaves a dotless non-compose host unchanged"; else bad "instances leaves a dotless non-compose host unchanged"; cat "$out"; fi
-DOCKER_FAIL_CONFIG=1 addon_json instances twenty --json
+export DOCKER_FAIL_CONFIG=1; addon_json instances twenty --json; unset DOCKER_FAIL_CONFIG
 if grep -q '"slug":"nas".*"url":null' "$out"; then ok "instances gives null for a dotless host when compose config fails"; else bad "instances gives null for a dotless host when compose config fails"; cat "$out"; fi
 rm -f "${TW_STORE}/instances/nas.json"
 addon_json instances twenty

@@ -170,9 +170,9 @@ krun key create --name Ada --access read
 python3 -I -c 'import json,sys; v=json.load(open(sys.argv[1])); sys.exit(0 if v["error"]=="local_off" and v["message"] else 1)' "$out" \
   || fail "key create says local_off ($(cat "$out"))"
 krun key list --name Ada --json
-[ "$rc" = 4 ] && grep -q '"local_off"' "$out" || fail "key list says local_off ($rc $(cat "$out"))"
+if [ "$rc" != 4 ] || ! grep -q '"local_off"' "$out"; then fail "key list says local_off ($rc $(cat "$out"))"; fi
 krun key revoke --id k1
-[ "$rc" = 4 ] && grep -q '"local_off"' "$out" || fail "key revoke says local_off ($rc $(cat "$out"))"
+if [ "$rc" != 4 ] || ! grep -q '"local_off"' "$out"; then fail "key revoke says local_off ($rc $(cat "$out"))"; fi
 for bad in "create --access read" "create --name Ada" "create --name Ada --access admin" "revoke" "list" \
   "create --name Ada --access read --slug missing" "list --name Ada --slug Bad_1" "frob" "" "create --name Ada --access read --frob"; do
   # shellcheck disable=SC2086
@@ -182,15 +182,16 @@ for bad in "create --access read" "create --name Ada" "create --name Ada --acces
   grep -q '^\[crm\] ERROR:' "$tmp/err" || fail "key $bad names the problem on stderr"
 done
 krun key list --name Ada --slug dead
-[ "$rc" = 1 ] && grep -q 'TWENTY_OWNER_EMAIL' "$tmp/err" && grep -q 'TWENTY_OWNER_PASSWORD' "$tmp/err" \
-  || fail "another slug without the owner variables is a usage error naming them ($rc $(cat "$tmp/err"))"
+if [ "$rc" != 1 ] || ! grep -q 'TWENTY_OWNER_EMAIL' "$tmp/err" || ! grep -q 'TWENTY_OWNER_PASSWORD' "$tmp/err"; then
+  fail "another slug without the owner variables is a usage error naming them ($rc $(cat "$tmp/err"))"
+fi
 TWENTY_OWNER_EMAIL=boss@example.com TWENTY_OWNER_PASSWORD=owner-pw-SECRET krun key list --name Ada --slug dead
-[ "$rc" = 4 ] && grep -q '"unreachable"' "$out" || fail "another slug with a dead URL says unreachable ($rc $(cat "$out"))"
+if [ "$rc" != 4 ] || ! grep -q '"unreachable"' "$out"; then fail "another slug with a dead URL says unreachable ($rc $(cat "$out"))"; fi
 if grep -q 'owner-pw-SECRET' "$out" "$tmp/err"; then fail "the owner password reached the output"; fi
 if grep -rq 'owner-pw-SECRET' "$store" "$ENV_FILE"; then fail "the owner password was written to a file"; fi
 seed "$ASSISTANT_DATA_ROOT" sales http://twenty-server:3000 write '' rw-SECRET
 TWENTY_OWNER_EMAIL=boss@example.com TWENTY_OWNER_PASSWORD=owner-pw-SECRET krun key list --name Ada --slug sales
-[ "$rc" = 4 ] && grep -q '"local_off"' "$out" || fail "a local slug other than main says local_off when the instance is stopped ($rc $(cat "$out"))"
+if [ "$rc" != 4 ] || ! grep -q '"local_off"' "$out"; then fail "a local slug other than main says local_off when the instance is stopped ($rc $(cat "$out"))"; fi
 rm -f "$(inst sales)" "$store/secrets/sales.key_"*
 rm -f "$(inst main)" "$(inst dead)" "$store/secrets/main.key_"* "$store/secrets/dead.key_"*
 
