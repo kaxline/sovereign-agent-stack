@@ -8,6 +8,44 @@ the stack under another app.
 
 ## Unreleased
 
+### Upgrade steps
+
+- `git checkout v0.3.19 && scripts/setup.sh && scripts/upgrade.sh --from
+  v0.3.18`, or `scripts/install.sh --version v0.3.19 --dir DIR`.
+  `upgrade.sh` runs the `upgrades/v0.3.19.sh` hook, then starts the stack
+  with the rebuilds and the Hermes reload it asks for. No `.env` key changes.
+
+- Both Hermes bootstraps run again on the start, for the new overlays (cron
+  gated sessions, kanban hold, history task ids, `session.live_turns`) and
+  because they now read `LLM_MODEL`. Without `upgrade.sh`: `make
+  hermes-reload`.
+
+- With OpenCode on (`OPENCODE_MCP_ENABLED`), the hook rebuilds `opencode`
+  and `opencode-mcp`. `opencode` now drops to `HERMES_UID:HERMES_GID`, and
+  its state volumes move from `/root` to `/home/opencode`; the new entrypoint
+  hands them over on the first start and keeps their contents.
+  `opencode-mcp` gains `GET /tasks`, which `coding-root.sh --apply` reads.
+  On Linux the hook prints a notice: files OpenCode already wrote in a coding
+  root stay root-owned, and `sudo chown -R "$(id -u):$(id -g)" DIR` for each
+  coding root fixes them. Without `upgrade.sh`: `docker compose build
+  opencode opencode-mcp`, then `make up`.
+
+- With Bitwarden local mode on (`BITWARDEN_LOCAL_ENABLED`), the web vault
+  moves from `http://localhost:8222` to `https://vaultwarden.localhost:8222`
+  (or your `VAULTWARDEN_PORT`), and the hook prints a notice saying so. Its
+  certificate comes from the local CA that `make vault-init` made. A CA
+  whose name constraint isn't exactly `vaultwarden.localhost` and
+  `vaultwarden.vault.internal`, which is every CA made before this release,
+  gets `needs_user` `bitwarden-local-ca`: run `docker compose --profile
+  bitwarden-tools run --rm bitwarden-setup tls --rotate`, then `docker
+  compose restart vaultwarden-tls bitwarden-broker`, replace the CA your
+  browser trusts with `data/addons/bitwarden/local/tls/ca.crt`
+  ([docs/bitwarden.md](docs/bitwarden.md) has the macOS command), and open
+  the new address. The hook reads the CA with the host's `openssl`; without
+  it, the `needs_user` asks you to rotate only if the new address shows a
+  certificate error. An install that never ran `make vault-init` has no CA
+  and needs nothing.
+
 ### Changes
 
 - Synced coding roots (CR 0046 R1, R2): `scripts/coding-root.sh add
