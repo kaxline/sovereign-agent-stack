@@ -18,6 +18,21 @@ the stack under another app.
   with it. The registry is `<data root>/coding-roots/roots.json`;
   `CODING_EXTRA_ROOTS` holds the container path. `backup.sh` leaves
   `coding-roots/` out. See docs/opencode.md#synced-roots.
+- Applying a coding root change (CR 0046 R3): `--apply [--force]` on every
+  `coding-root.sh add` and `remove` form recreates the terminal service,
+  `hermes`, `opencode` and `opencode-mcp`. It first reads running coding tasks
+  from `opencode-mcp`'s new `GET /tasks` and live chat turns from the new
+  `session.live_turns` gateway method; when either is non-empty or unreadable
+  it stops with `busy` and writes nothing, unless `--force`. The `--json`
+  done line adds `recreated` and `interrupted`. The plain `add DIR` and
+  `remove DIR` forms now print a done line with `--json`. Rebuild
+  `opencode-mcp` (`docker compose build opencode-mcp`) and recreate `hermes`
+  before using `--apply`; without them it reports `busy` (cannot read).
+  See docs/opencode.md#applying-a-root-change.
+- `session.live_turns` on the dashboard gateway (gateway liveness overlay):
+  every live session with a turn in progress, with `session.live_status`'s
+  fields and no titles or previews. `gateway.capabilities` adds
+  `session_live_turns: true`.
 - `coding-root.sh` add and remove hold the config lock, and their errors exit
   2 (bad input) instead of 1. Its mount edits use the Hermes image's python3
   when the host has none.

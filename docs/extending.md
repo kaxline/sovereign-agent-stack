@@ -330,8 +330,9 @@ here removes it. The dashboard's `/api/ws` on 9119 does not change.
 ## Gateway turn liveness
 
 A client on the dashboard gateway WebSocket can watch a running turn with the
-`turn.heartbeat` event and ask about one session with `session.live_status`.
-`gateway.capabilities` says whether both are on. Fields and semantics are in
+`turn.heartbeat` event, ask about one session with `session.live_status`, and
+list the sessions with a turn in progress with `session.live_turns`.
+`gateway.capabilities` says whether each is on. Fields and semantics are in
 [hermes.md](hermes.md#turn-liveness).
 
 This is an overlay on the pinned Hermes image (`patch-gateway-liveness.py`). The

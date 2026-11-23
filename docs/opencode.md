@@ -165,6 +165,23 @@ On Linux the folder belongs to `HERMES_UID:HERMES_GID`, so the coding agent and 
 
 `make up` re-projects the roots onto the terminal service on every start and reads the registry for synced ones, so it never binds the container path at its own path on the host.
 
+#### Applying a root change
+
+`--apply` on any `add` or `remove` form recreates the four services as well, from the stack folder with `docker compose up -d --wait --force-recreate`, so `COMPOSE_FILE`, the project name and the override resolve as they do for `make up`. Recreating `opencode-mcp` loses its task table, so a coding task it was running can't be resumed or fetched with `coding_get_task_result`, and recreating `hermes` ends any chat turn in progress. Before it changes anything, `--apply` asks for both:
+
+- running coding tasks, from `opencode-mcp`'s `GET /tasks` (compose network only, like `/health`): `{"ok": true, "tasks": [{task_id, status, directory, started_at}]}` for tasks that are pending or running, with `started_at` in UTC ISO 8601;
+- live chat turns, from the dashboard gateway's `session.live_turns` ([turn liveness](hermes.md#turn-liveness)), which `scripts/lib/live_turns.py` calls from inside the `hermes` container. It returns ids, status and times only.
+
+If either list is non-empty, or a running service doesn't answer, `--apply` stops with error `busy` (exit 1), writes nothing, and adds `"tasks"` and `"turns"` to the error line (`null` for one it couldn't read). A stopped service counts as idle. `--force` recreates anyway. The done line then carries `"recreated"` (the services, or `[]` when the change was a no-op such as an unknown ID or an already covered path) and `"interrupted": {"tasks": [...], "turns": [...]}`, what was running when the recreate started:
+
+```json
+{"phase":"done","id":"ID","hostPath":"…/coding-roots/ID","containerPath":"/Users/you/code/app","created":true,
+ "recreate":["hermes-worker","hermes","opencode","opencode-mcp"],
+ "recreated":["hermes-worker","hermes","opencode","opencode-mcp"],"interrupted":{"tasks":[],"turns":[]}}
+```
+
+A repeated synced `add --apply` recreates again, so a client can make the change first and apply it later. If compose fails, the change stays written and the error is `compose_failed` with compose's last lines in `logTail`. The plain `add DIR` and `remove DIR` forms print `{"phase":"done","path":DIR,"changed":true|false,"recreate":[...]}` with `--json`.
+
 OpenCode runs as `HERMES_UID:HERMES_GID`, not root, so on a Linux host the files it writes in a coding root belong to the user who installed the stack, as the files `hermes-worker` writes do. Its entrypoint starts as root only to give that uid a passwd entry and hand it the state volumes, then drops to it.
 
 If the user asks to work outside those roots, `coding_start_task` returns `needs_access: true` with a `hint`. Hermes follows the hint: it asks the user to confirm access and gives them `make coding-root-add DIR=...` and the containers to recreate. It does not remount Docker itself.

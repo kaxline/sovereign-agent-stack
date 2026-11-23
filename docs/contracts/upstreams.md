@@ -53,7 +53,7 @@ Overlays with no re-test command fail only as a warning in the container log.
 | Overlay | Lines | What it changes | Class | Upstream | Re-test |
 |---|---:|---|---|---|---|
 | `client-context` | 318 | `context` on session.create/resume/prompt.submit; refuses a mismatched `profile` on prompt.submit (4080-4083); `client_context` capability. | upstream | draft, not filed | `scripts/test-client-context.py` |
-| `gateway-liveness` | 268 | `turn.heartbeat` event and `session.live_status` method; extends `gateway.capabilities`. | upstream | draft, not filed | `scripts/test-gateway-liveness.py` |
+| `gateway-liveness` | 268 | `turn.heartbeat` event, `session.live_status` and `session.live_turns` methods; extends `gateway.capabilities`. | upstream | draft, not filed | `scripts/test-gateway-liveness.py` |
 | `turn-speaker` | 291 | `speaker {id, display_name}` on prompt.submit; stamped on assistant rows and in the `api_content` sidecar (4084-4086); `turn_speaker` capability. | client API | becomes a client API method | `scripts/test-turn-speaker.py`, `scripts/test-hosted-rooms.py` |
 | `history-task-ids` | 85 | `result: {task_id}` on `kanban_create` rows of the history projection (`session.history`, resume). One upstream file (`tui_gateway/session_history.py`). | client API | [draft](../upstream/history-task-ids.md), not filed | `scripts/test-history-task-ids.py --image` |
 | `history-budget` | 968 | `history_budget` on session.create/resume windows the prompt without archiving rows; `session.context_breakdown` fields; error 4028. | client API | becomes a client API method | `scripts/test-history-budget.py` |
