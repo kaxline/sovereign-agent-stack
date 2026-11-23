@@ -19,6 +19,7 @@
 #   coding-root.sh add --container-path PATH --id ID [--apply [--force]] [--json]
 #   coding-root.sh remove DIR [--apply [--force]] [--json]
 #   coding-root.sh remove --id ID [--delete-folder] [--apply [--force]] [--json]
+#   coding-root.sh changes --id ID [--since CURSOR] [--exclude-dir NAME]... [--json]
 #
 # add and remove hold the stack's config lock (scripts/lib/stack-lock.sh)
 # while they change .env, the override and the registry. Without --apply they
@@ -43,6 +44,12 @@
 #           {"phase":"done","path":DIR,"changed":true|false,"recreate":[...]}
 #   list    {"phase":"done","roots":[{"kind":"primary"|"extra"|"synced",
 #            "id":ID|null,"hostPath":H,"containerPath":P,"bytes":N|null}]}
+#   changes {"phase":"done","id":ID,"cursor":C,"since":S|null,"reset":B,
+#            "full":B,"files":[FILE...],"deleted":[{"path":P}...],
+#            "unreadable":[P...]}
+#           FILE is {path,size,mtimeNs,sha256} or {path,size,mtimeNs,link:true,
+#           target}; sha256 is null for a file written while it was hashed.
+#           See cmd_changes in scripts/lib/coding_roots.py.
 # With --apply, add and remove's done line also has
 #   "recreated":[...],"interrupted":{"tasks":[TASK...]|null,
 #   "liveTurns":[TURN...]|null},"liveTurnsReason":TEXT|null
@@ -55,6 +62,8 @@
 # (exit 1, on Linux when the caller's uid isn't HERMES_UID), busy (exit 1;
 # from --apply it adds "tasks", "liveTurns" and "liveTurnsReason" as above), command_failed (exit 4),
 # compose_failed (exit 1: the recreate failed after the change was written).
+# changes adds bad_input for an unknown ID or a malformed cursor, and
+# command_failed when the root's folder is missing.
 # Everything else goes to stderr.
 #
 # bash 3.2 compatible.
@@ -603,6 +612,7 @@ cmd_remove_synced() {
     [[ "$(basename "$host")" == "$id" && "$(basename "$(dirname "$host")")" == coding-roots ]] \
       || jl_fail command_failed "" "not deleting $host: it isn't a coding-roots/${id} folder"
     rm -rf "$host" || jl_fail command_failed "" "cannot delete $host"
+    rm -rf "${dir}/${id}.manifest"
     deleted=true
   fi
   apply_recreate 1
@@ -621,9 +631,46 @@ cmd_remove_synced() {
   fi
 }
 
+# cmd_changes: the files in a synced root changed since a cursor, by a
+# stateless scan (coding_roots.py changes). Reads the registry without the
+# config lock; the scan locks the root's manifest folder itself.
+cmd_changes() {
+  local id="" opts=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --id) [[ $# -ge 2 ]] || die "--id needs an ID"; id="$2"; shift 2 ;;
+      --since) [[ $# -ge 2 ]] || die "--since needs a cursor"; opts+=(--since "$2"); shift 2 ;;
+      --exclude-dir)
+        [[ $# -ge 2 && -n "$2" && "$2" != */* ]] || die "--exclude-dir needs a directory name without a slash"
+        opts+=(--exclude-dir "$2"); shift 2 ;;
+      *) die "unknown option for changes: $1" ;;
+    esac
+  done
+  [[ -n "$id" ]] || die "changes needs --id ID"
+  local dir reg rc=0 err
+  dir="$(coding_roots_dir)"
+  reg="${dir}/roots.json"
+  [[ -s "$reg" ]] || die "no synced coding root with ID ${id}"
+  [[ "$JL_JSON" == 1 ]] || opts+=(--text)
+  err="$(mktemp)"
+  if [[ "$JL_JSON" == 1 ]]; then
+    coding_roots_py --mount "$dir" changes "$reg" "$id" ${opts[@]+"${opts[@]}"} 2> "$err" >&3 || rc=$?
+  else
+    coding_roots_py --mount "$dir" changes "$reg" "$id" ${opts[@]+"${opts[@]}"} 2> "$err" || rc=$?
+  fi
+  local msg
+  msg="$(tail -1 "$err")"
+  case "$rc" in
+    0) rm -f "$err" ;;
+    3 | 5) rm -f "$err"; die "$msg" ;;
+    4) rm -f "$err"; jl_fail command_failed "" "$msg" ;;
+    *) jl_fail command_failed "" "cannot list the changes in ${id}" "$err" ;;
+  esac
+}
+
 usage() {
   cat <<EOF
-Usage: $0 <list|add|remove> ...
+Usage: $0 <list|add|remove|changes> ...
 
   list [--json] [--no-size]
       Show the primary, extra and synced coding roots
@@ -636,6 +683,9 @@ Usage: $0 <list|add|remove> ...
       Take an extra root away again (the folder stays)
   remove --id ID [--delete-folder] [--json]
       Take a synced root away; the folder stays unless --delete-folder
+  changes --id ID [--since CURSOR] [--exclude-dir NAME]... [--json]
+      The files in a synced root created, changed or deleted since CURSOR,
+      or all of them without --since, and a new cursor
 
   add and remove take --apply to recreate the affected services as well.
   It refuses (busy) while a coding task or chat turn runs, and changes
@@ -677,6 +727,7 @@ main() {
         cmd_remove "${args[0]:-}"
       fi
       ;;
+    changes) cmd_changes ${args[@]+"${args[@]}"} ;;
     -h|--help|help) usage ;;
     "") usage; exit 1 ;;
     *) die "unknown command: $cmd" ;;

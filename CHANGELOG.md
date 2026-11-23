@@ -32,6 +32,16 @@ the stack under another app.
   opencode-mcp`) before using `--apply`, or it reports `busy` (cannot read
   the tasks); recreate `hermes` so live turns are read.
   See docs/opencode.md#applying-a-root-change.
+- Changes in a synced coding root (CR 0046 R4): `scripts/coding-root.sh
+  changes --id ID [--since CURSOR] [--exclude-dir NAME]... --json` lists the
+  files created, changed or deleted since a cursor, with size, mtime and
+  SHA-256, and a new cursor; without `--since`, or with a cursor the stack no
+  longer has (`"reset": true`), it lists every file. It is a scan, not a
+  watcher: each call compares size, mtime, ctime and inode with the stored
+  manifest and hashes only what moved. Manifests live in
+  `<data root>/coding-roots/ID.manifest/`, the two newest kept. Symbolic
+  links are listed with `link: true` and not followed. `add` now refuses IDs
+  ending in `.manifest`. See docs/opencode.md#changes-in-a-synced-root.
 - `session.live_turns` on the dashboard gateway (gateway liveness overlay):
   every live session with a turn in progress, as `session_id`, `status`,
   `turn_started_at` and `idle_s` only: no titles, previews or session keys. `gateway.capabilities` adds

@@ -165,6 +165,32 @@ On Linux the folder belongs to `HERMES_UID:HERMES_GID`, so the coding agent and 
 
 `make up` re-projects the roots onto the terminal service on every start and reads the registry for synced ones, so it never binds the container path at its own path on the host.
 
+#### Changes in a synced root
+
+A client that syncs a synced root asks which files changed on the host since it last looked:
+
+```bash
+scripts/coding-root.sh changes --id ID [--since CURSOR] [--exclude-dir NAME]... --json
+```
+
+Nothing watches the folder between calls. Each call stats every entry, compares `(size, mtime_ns, ctime_ns, inode)` with the manifest the cursor names, hashes (SHA-256) only the files whose stat moved, and stores a new manifest under a new cursor at `<data root>/coding-roots/ID.manifest/CURSOR.json.gz`. The two newest manifests are kept, so a client whose last reply was lost can repeat the call with the cursor before it. ctime and the inode catch a rewrite that keeps the size and lands within the mtime's resolution.
+
+```json
+{"phase":"done","id":"ID","cursor":"9f…","since":"4c…","reset":false,"full":false,
+ "files":[{"path":"src/app.ts","size":812,"mtimeNs":1795440819781423576,"sha256":"98ea…"},
+          {"path":"current","size":7,"mtimeNs":1795440819787413571,"link":true,"target":"v2/main"}],
+ "deleted":[{"path":"src/old.ts"}],"unreadable":[]}
+```
+
+- Without `--since`, `files` lists every file and `full` is true. With a cursor the stack no longer has, it does the same and sets `"reset": true`. With a known cursor, `files` holds what was created or changed and `deleted` what is gone. A rename is a delete and a create.
+- Paths are relative to the root and `/`-separated. Symbolic links are listed with `link: true` and their `target`, without a hash, and are not followed. Other special files (sockets, FIFOs) are left out.
+- `--exclude-dir NAME` skips every directory with that name, at any depth. Pass the same names on every call: a file the manifest holds that a new exclude now hides shows as deleted. Boundary should pass `node_modules`, `.git` (unless it syncs it) and its build output folders.
+- A file written while it is hashed is listed with its new size and mtime and `"sha256": null`, and listed again with its hash on the next call.
+- `unreadable` names entries that couldn't be listed or read (permissions, or a name that isn't UTF-8). Such an entry keeps its last listed state, so a folder that is briefly unreadable doesn't show its files as deleted; a name that isn't UTF-8 is never listed.
+- An unknown ID or a malformed cursor is `bad_input` (exit 2); a missing folder is `command_failed` (exit 4). Without `--json` it prints `created`, `changed`, `listed`, `deleted` or `unreadable` and a path per line, then `cursor<TAB>CURSOR`.
+
+`remove --id ID --delete-folder` deletes the manifests too. Measured on macOS (APFS, 10 cores, host python3) with `scripts/test-coding-root-changes.py --timing`: a full listing of 50,000 small files with no manifest took 1.8 s end to end, and 0.4 s once a manifest existed. Linux hosts haven't been measured.
+
 #### Applying a root change
 
 `--apply` on any `add` or `remove` form recreates the four services as well, from the stack folder with `docker compose up -d --wait --force-recreate`, so `COMPOSE_FILE`, the project name and the override resolve as they do for `make up`. Recreating `opencode-mcp` loses its task table, so a coding task it was running can't be resumed or fetched with `coding_get_task_result`, and recreating `hermes` ends any chat turn in progress. Before it changes anything, `--apply` asks for both:

@@ -28,17 +28,27 @@ container paths. What turns roots into binds reads the pairs instead.
         Removes the root; prints what get printed.
     coding_roots.py list REGISTRY
         id<TAB>container<TAB>host<TAB>created per root.
+    coding_roots.py changes REGISTRY ID [--since CURSOR] [--exclude-dir NAME]... [--text]
+        The files in root ID changed since CURSOR, as one JSON done line (see
+        cmd_changes), or one line per change with --text. Exits 3 for an
+        unknown ID, 4 when its folder is missing, 5 for a malformed cursor.
 
 Callers hold the stack's config lock (scripts/lib/stack-lock.sh) around a
-check and the writes after it. Read from stdin by scripts/lib/coding-roots.sh,
+check and the writes after it; changes takes its own lock on the root's
+manifest folder. Read from stdin by scripts/lib/coding-roots.sh,
 so it imports nothing from scripts/lib.
 """
 
 from __future__ import annotations
 
+import fcntl
+import gzip
+import hashlib
 import json
 import os
 import re
+import secrets
+import stat
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -52,6 +62,11 @@ SYSTEM_PATHS = (
     "/opt", "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32",
     "/proc", "/sys", "/dev", "/root", "/tmp", "/var", "/run", "/home/opencode",
 )
+
+
+CURSOR_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+MANIFEST_SUFFIX = ".manifest"
+KEEP_MANIFESTS = 2
 
 
 def load(path: Path) -> list[dict]:
@@ -118,6 +133,10 @@ def cmd_check(registry: Path, root_id: str, container: str, primary: str,
     if not ID_RE.match(root_id):
         print(f"error\tID must be 1-64 letters, digits, '.', '_' or '-', starting with a letter or digit: {root_id}")
         return
+    if root_id.endswith(MANIFEST_SUFFIX):
+        # <id>.manifest beside the folders holds another root's manifests.
+        print(f"error\tID must not end in {MANIFEST_SUFFIX}: {root_id}")
+        return
     problem = path_problem(container)
     if problem:
         print(f"error\t{problem}")
@@ -178,6 +197,261 @@ def cmd_pairs(extras: str, registry_text: str) -> None:
         print(f"{hosts.get(path, path)}\t{path}")
 
 
+# changes: a stateless scan (plan decision 7). Each call stats every entry,
+# compares (size, mtime_ns, ctime_ns, inode) with the manifest the cursor
+# names, hashes only what moved, writes a manifest under a new cursor and
+# keeps the two newest. ctime and inode catch a same-size rewrite within the
+# mtime's resolution; nothing runs between calls.
+#
+# Manifest: <data root>/coding-roots/<id>.manifest/<cursor>.json.gz,
+#     {"version": 1, "excludeDirs": [...], "entries": {PATH: ENTRY}}
+# with ENTRY [size, mtime_ns, ctime_ns, ino, sha256 | null] for a file and
+# [size, mtime_ns, ctime_ns, ino, null, target] for a symbolic link. A null
+# sha256 on a file means it changed while it was hashed; the next call hashes
+# it again and reports it.
+
+
+class Unreadable(Exception):
+    pass
+
+
+def stat_key(st: os.stat_result) -> list[int]:
+    return [st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_ino]
+
+
+def sha256_of(path: str) -> str:
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb", buffering=0) as f:
+            while True:
+                chunk = f.read(1 << 20)
+                if not chunk:
+                    break
+                h.update(chunk)
+    except OSError as e:
+        raise Unreadable(e.strerror or str(e)) from e
+    return h.hexdigest()
+
+
+def rel_name(rel: str) -> str | None:
+    """rel as text JSON can carry, or None when it isn't valid UTF-8."""
+    try:
+        rel.encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+    return rel
+
+
+def printable(rel: str) -> str:
+    return os.fsencode(rel).decode("utf-8", "backslashreplace")
+
+
+def scan(top: str, excludes: set[str], cache: dict, unreadable: list[str]) -> dict:
+    """Every file and symbolic link under top as manifest entries.
+
+    A file whose stat and inode match its cache entry keeps the cached hash;
+    any other file is hashed. Directories named in excludes are not entered,
+    links are not followed, and other file types are left out. Entries that
+    can't be listed or read go to unreadable and keep their cache entries, so
+    a passing permission problem doesn't read as a delete.
+    """
+    entries: dict[str, list] = {}
+
+    def keep(rel: str, tree: bool = False) -> None:
+        unreadable.append(printable(rel))
+        if tree:
+            prefix = f"{rel}/" if rel else ""
+            entries.update((p, e) for p, e in cache.items() if p.startswith(prefix))
+        elif rel in cache:
+            entries[rel] = cache[rel]
+
+    stack = [""]
+    while stack:
+        rel_dir = stack.pop()
+        try:
+            it = os.scandir(os.path.join(top, rel_dir) if rel_dir else top)
+        except OSError:
+            keep(rel_dir, tree=True)
+            continue
+        with it:
+            for entry in it:
+                rel = f"{rel_dir}/{entry.name}" if rel_dir else entry.name
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        if entry.name not in excludes:
+                            stack.append(rel)
+                        continue
+                    st = entry.stat(follow_symlinks=False)
+                except OSError:
+                    keep(rel)
+                    continue
+                if rel_name(rel) is None:
+                    unreadable.append(printable(rel))
+                    continue
+                key = stat_key(st)
+                old = cache.get(rel)
+                if stat.S_ISLNK(st.st_mode):
+                    try:
+                        target = os.readlink(entry.path)
+                    except OSError:
+                        keep(rel)
+                        continue
+                    entries[rel] = key + [None, printable(target)]
+                elif stat.S_ISREG(st.st_mode):
+                    if old is not None and len(old) == 5 and old[:4] == key and old[4]:
+                        entries[rel] = old
+                        continue
+                    try:
+                        digest = sha256_of(entry.path)
+                        after = os.stat(entry.path, follow_symlinks=False)
+                    except (Unreadable, OSError):
+                        keep(rel)
+                        continue
+                    if stat_key(after) != key or not stat.S_ISREG(after.st_mode):
+                        # Written while we read it: report the new stat with
+                        # no hash, and hash it again next time.
+                        entries[rel] = stat_key(after) + [None]
+                    else:
+                        entries[rel] = key + [digest]
+    return entries
+
+
+def public(rel: str, e: list) -> dict:
+    out = {"path": rel, "size": e[0], "mtimeNs": e[1]}
+    if len(e) == 6:
+        out["link"] = True
+        out["target"] = e[5]
+    else:
+        out["sha256"] = e[4]
+    return out
+
+
+def read_manifest(path: Path) -> dict | None:
+    try:
+        with gzip.open(path, "rt", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError, EOFError):
+        return None
+    if not isinstance(data, dict) or data.get("version") != 1 or not isinstance(data.get("entries"), dict):
+        return None
+    return data["entries"]
+
+
+def write_manifest(mdir: Path, cursor: str, entries: dict, excludes: list[str]) -> None:
+    fd, tmp = tempfile.mkstemp(dir=mdir, prefix=".tmp-", suffix=".json.gz")
+    try:
+        with os.fdopen(fd, "wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", compresslevel=1) as gz:
+            gz.write(json.dumps({"version": 1, "excludeDirs": excludes, "entries": entries},
+                                separators=(",", ":")).encode("utf-8"))
+        os.replace(tmp, mdir / f"{cursor}.json.gz")
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def manifests(mdir: Path) -> list[Path]:
+    """The root's manifests, newest first."""
+    found = []
+    for p in mdir.glob("*.json.gz"):
+        if CURSOR_RE.match(p.name[: -len(".json.gz")]):
+            try:
+                found.append((p.stat().st_mtime_ns, p))
+            except OSError:
+                pass
+    return [p for _, p in sorted(found, reverse=True)]
+
+
+def cmd_changes(registry: Path, root_id: str, since: str | None, excludes: list[str], text: bool) -> None:
+    host = next((r["hostPath"] for r in load(registry) if r["id"] == root_id), None)
+    if host is None:
+        print(f"no synced coding root with ID {root_id}", file=sys.stderr)
+        sys.exit(3)
+    if not os.path.isdir(host):
+        print(f"the folder of synced coding root {root_id} is missing: {host}", file=sys.stderr)
+        sys.exit(4)
+    if since is not None and not CURSOR_RE.match(since):
+        print(f"not a cursor: {since}", file=sys.stderr)
+        sys.exit(5)
+
+    mdir = registry.parent / f"{root_id}{MANIFEST_SUFFIX}"
+    mdir.mkdir(parents=True, exist_ok=True)
+    with open(mdir / ".lock", "a") as lock:
+        # One scan per root at a time, so pruning never drops a manifest
+        # another call has just handed out.
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        known = manifests(mdir)
+        base = None
+        if since is not None:
+            base = read_manifest(mdir / f"{since}.json.gz")
+        # Hashes come from the base, else the newest manifest, so a full
+        # listing after the first one hashes only what moved.
+        cache = base
+        if cache is None and known:
+            cache = read_manifest(known[0])
+        unreadable: list[str] = []
+        entries = scan(host, set(excludes), cache or {}, unreadable)
+
+        cursor = secrets.token_hex(12)
+        write_manifest(mdir, cursor, entries, excludes)
+        for old in manifests(mdir)[KEEP_MANIFESTS:]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+
+    reset = since is not None and base is None
+    if base is None:
+        changed = sorted(entries)
+        deleted: list[str] = []
+    else:
+        # An entry with no hash is reported every time until it has one.
+        changed = sorted(p for p, e in entries.items() if base.get(p) != e or (len(e) == 5 and not e[4]))
+        deleted = sorted(p for p in base if p not in entries)
+
+    if text:
+        for p in changed:
+            print(f"{'changed' if base is not None and p in base else 'listed' if base is None else 'created'}\t{p}")
+        for p in deleted:
+            print(f"deleted\t{p}")
+        for p in sorted(unreadable):
+            print(f"unreadable\t{p}")
+        print(f"cursor\t{cursor}" + ("\treset" if reset else ""))
+        return
+    out = {
+        "phase": "done",
+        "id": root_id,
+        "cursor": cursor,
+        "since": since,
+        "reset": reset,
+        "full": base is None,
+        "files": [public(p, entries[p]) for p in changed],
+        "deleted": [{"path": p} for p in deleted],
+        "unreadable": sorted(unreadable),
+    }
+    sys.stdout.write(json.dumps(out, separators=(",", ":"), ensure_ascii=False) + "\n")
+
+
+def parse_changes(args: list[str]) -> None:
+    if len(args) < 2:
+        sys.exit(__doc__)
+    registry, root_id, rest = Path(args[0]), args[1], args[2:]
+    since, excludes, text = None, [], False
+    while rest:
+        opt = rest.pop(0)
+        if opt == "--text":
+            text = True
+        elif opt in ("--since", "--exclude-dir") and rest:
+            val = rest.pop(0)
+            if opt == "--since":
+                since = val
+            else:
+                excludes.append(val)
+        else:
+            sys.exit(__doc__)
+    cmd_changes(registry, root_id, since, excludes, text)
+
+
 def main(argv: list[str]) -> None:
     cmd, args = (argv[0], argv[1:]) if argv else ("", [])
     if cmd == "pairs" and len(args) == 2:
@@ -192,6 +466,8 @@ def main(argv: list[str]) -> None:
         cmd_drop(Path(args[0]), args[1])
     elif cmd == "list" and len(args) == 1:
         cmd_list(Path(args[0]))
+    elif cmd == "changes":
+        parse_changes(args)
     else:
         sys.exit(__doc__)
 
