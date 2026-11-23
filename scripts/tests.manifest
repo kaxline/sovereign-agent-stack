@@ -55,6 +55,7 @@ scripts/test-client-gateway-connection.py       image
 scripts/test-client-gateway-hermes.py           image
 scripts/test-client-gateway-oracle.py           docker image
 scripts/test-client-gateway-transport.py        ci docker image
+scripts/test-coding-root-apply.py               ci
 scripts/test-coding-root-synced.py              ci
 scripts/test-compaction-tool-facts.py           ci image
 scripts/test-compose-env-allowlist.py           ci docker

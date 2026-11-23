@@ -11,6 +11,7 @@ directly fails here as it does in the container.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import os
 import sys
@@ -51,7 +52,7 @@ def install_stubs() -> None:
         "httpx": {},
         "starlette": {},
         "starlette.requests": {"Request": object},
-        "starlette.responses": {"JSONResponse": object},
+        "starlette.responses": {"JSONResponse": lambda content: content},
     }
     for name, attrs in stubs.items():
         if name in sys.modules:
@@ -172,6 +173,31 @@ def check_tasks(mod) -> None:
         checks.expect(first not in mod._tasks, "the oldest finished task should be evicted")
 
 
+def check_tasks_route(mod) -> None:
+    """GET /tasks lists pending and running tasks only, without prompt or progress."""
+    mod._start_worker = lambda task_id: None
+    out = asyncio.run(mod.tasks(None))
+    checks.expect(out == {"ok": True, "tasks": []}, f"/tasks with no tasks: {out}")
+    pending = mod.coding_start_task.fn("/Users/you/code/app", "secret prompt")["task_id"]
+    running = mod.coding_start_task.fn("/srv/bar", "another")["task_id"]
+    done = mod.coding_start_task.fn("/srv/bar", "finished")["task_id"]
+    with mod._tasks_lock:
+        mod._tasks[running].update(status="running", progress="secret progress")
+        mod._tasks[running]["started_at"] = 0.0
+        mod._tasks[done].update(status="completed", finished_at=time.time())
+    out = asyncio.run(mod.tasks(None))
+    rows = out.get("tasks") or []
+    checks.expect([r.get("task_id") for r in rows] == [pending, running], f"/tasks ids: {rows}")
+    for row in rows:
+        checks.expect(set(row) == {"task_id", "status", "directory", "started_at"}, f"/tasks keys: {row}")
+    if len(rows) == 2:
+        checks.expect(rows[0]["status"] == "pending" and rows[0]["directory"] == "/Users/you/code/app",
+                      f"/tasks pending row: {rows[0]}")
+        checks.expect(rows[1] == {"task_id": running, "status": "running", "directory": "/srv/bar",
+                                  "started_at": "1970-01-01T00:00:00Z"}, f"/tasks running row: {rows[1]}")
+    checks.expect("secret" not in repr(out), f"/tasks leaks task text: {out}")
+
+
 def main() -> int:
     install_stubs()
     base = {
@@ -244,6 +270,7 @@ def main() -> int:
     checks.expect(out.get("needs_access") is True, f"unaliased /opt path should need access: {out}")
 
     check_tasks(load(base))
+    check_tasks_route(load(base))
 
     checks.finish("ok")
 

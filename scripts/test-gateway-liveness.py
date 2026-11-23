@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Checks for the turn heartbeat and session.live_status overlay.
+"""Checks for the turn heartbeat, session.live_status and session.live_turns overlay.
 
 Host part is stdlib-only. With the pinned Hermes image present (or --image),
 the overlay is applied in the image (twice, for idempotency) and driven
@@ -76,6 +76,7 @@ from agent import gateway_liveness as gl
 registry.STRICT = True  # a result or payload off its contract raises
 assert server._gateway_liveness_installed
 assert "session.live_status" in registry.METHODS and "turn.heartbeat" in registry.EVENTS
+assert "session.live_turns" in registry.METHODS
 assert server._invoke_agent.__globals__["_start_usage_ticker"] is server._start_usage_ticker, \
     "the turn resolves the wrapped ticker"
 assert getattr(server._start_usage_ticker, "__wrapped__", None) is not None
@@ -174,15 +175,35 @@ assert call("session.live_status", {"session_key": "stored-2", "profile": "other
 assert call("session.live_status", {"session_id": "s2", "profile": "default"})["result"]["running"] is False
 assert call("session.live_status", {"session_id": "s1", "profile": "other"})["result"]["running"] is False
 
+# ── session.live_turns: every non-idle live session, ids and times only ──
+server._sessions["s3"] = session(session_key="stored-3", history=[{"role": "user", "content": "secret"}],
+                                 pending_title="secret title")
+server._sessions["s4"] = session(session_key="stored-4", running=True, _finalized=True)
+r = call("session.live_turns", {})["result"]
+rows = {row["session_id"]: row for row in r["sessions"]}
+assert set(rows) == {"s1", "s2"}, rows  # hb stopped running above; s3 idle; s4 finalized
+assert all(set(row) == FIELDS for row in r["sessions"]), r
+assert rows["s1"]["status"] == "working" and rows["s1"]["turn_started_at"] == 2000.0, rows["s1"]
+assert rows["s2"]["session_key"] == "stored-2", rows["s2"]
+assert "secret" not in repr(r), "live_turns leaks session content"
+registry.check_result(registry.METHODS["session.live_turns"], r)
+real_pending = server._session_pending_kind
+server._session_pending_kind = lambda sid: "approval.request" if sid == "s3" else ""
+assert "s3" in {row["session_id"] for row in call("session.live_turns", {})["result"]["sessions"]}, \
+    "a session waiting on an approval counts"
+server._session_pending_kind = real_pending
+
 def code(resp):
     return (resp.get("error") or {}).get("code")
 assert code(call("session.live_status", {})) == 4006
 assert code(call("session.live_status", {"session_id": "s1", "profile": "missing"})) == 4064
 assert code(call("session.live_status", {"session_id": "s1", "title": "x"})) == 4000, "unknown keys refused"
+assert code(call("session.live_turns", {"profile": "x"})) == 4000, "live_turns takes no params"
 
 # ── gateway.capabilities ──
 caps = call("gateway.capabilities", {})["result"]
 assert caps["turn_heartbeat"] is True and caps["turn_heartbeat_s"] == 0.2 and caps["session_live_status"] is True, caps
+assert caps["session_live_turns"] is True, caps
 assert "per_session_exclusive_submit" in caps
 registry.check_result(registry.METHODS["gateway.capabilities"], caps)
 os.environ["HERMES_TURN_HEARTBEAT_S"] = "0"

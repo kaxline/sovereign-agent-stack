@@ -422,6 +422,22 @@ def _status_view(task_id: str, include_progress: bool) -> Dict[str, Any]:
     return out
 
 
+def _running_tasks() -> List[Dict[str, Any]]:
+    """Tasks still pending or running, oldest first: id, status, directory and
+    start time (UTC, ISO 8601). No prompt, progress or result text."""
+    with _tasks_lock:
+        rows = [(tid, dict(t)) for tid, t in _tasks.items() if t["status"] in ("pending", "running")]
+    return [
+        {
+            "task_id": tid,
+            "status": t["status"],
+            "directory": t["directory"],
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t["started_at"])),
+        }
+        for tid, t in rows
+    ]
+
+
 def _start_worker(task_id: str) -> None:
     thread = threading.Thread(target=_worker, args=(task_id,), daemon=True)
     thread.start()
@@ -581,6 +597,14 @@ async def health(_request: Request) -> JSONResponse:
             "roots": _coding_roots(),
         }
     )
+
+
+# Running tasks for scripts/coding-root.sh --apply, which recreates this
+# service (and loses the task table) only when nothing is running. Like
+# /health, the port is reachable only on the compose network.
+@mcp.custom_route("/tasks", methods=["GET"])
+async def tasks(_request: Request) -> JSONResponse:
+    return JSONResponse({"ok": True, "tasks": _running_tasks()})
 
 
 if __name__ == "__main__":

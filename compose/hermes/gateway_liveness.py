@@ -11,7 +11,10 @@ which reads every live session's title and builds a transcript preview.
   can arrive after ``message.complete``.
 - ``session.live_status`` answers for one session from memory: no DB read, no
   title, no message text. A session that is not live answers ``idle``.
-- ``gateway.capabilities`` advertises both.
+- ``session.live_turns`` lists every live session that is not idle, with the
+  same fields, for a caller that has no session id (scripts/coding-root.sh
+  --apply, before it recreates hermes).
+- ``gateway.capabilities`` advertises all three.
 
 Contracts are declared at install time, so upstream contract files stay untouched.
 Payloads carry numbers and enum values only, never transcript content or the
@@ -33,6 +36,7 @@ HEARTBEAT_ENV = "HERMES_TURN_HEARTBEAT_S"
 DEFAULT_HEARTBEAT_S = 30.0
 EVENT = "turn.heartbeat"
 METHOD = "session.live_status"
+TURNS_METHOD = "session.live_turns"
 
 
 def heartbeat_interval() -> float:
@@ -125,6 +129,16 @@ def declare_contracts(server: Any) -> None:
         idle_s: float | None
         interval_s: float
 
+    class SessionLiveTurnsParams(base.Params):
+        pass
+
+    class SessionLiveTurnsResult(base.Result):
+        sessions: list[SessionLiveStatusResult]
+
+    if TURNS_METHOD not in registry.METHODS:
+        registry.method(
+            TURNS_METHOD, params=SessionLiveTurnsParams, result=SessionLiveTurnsResult,
+            doc="Every live session that is not idle, from memory (stack overlay). Ids, status and times only.")
     if METHOD not in registry.METHODS:
         registry.method(
             METHOD, params=SessionLiveStatusParams, result=SessionLiveStatusResult,
@@ -141,6 +155,7 @@ def declare_contracts(server: Any) -> None:
             turn_heartbeat: bool
             turn_heartbeat_s: float
             session_live_status: bool
+            session_live_turns: bool
 
         registry.METHODS[caps.name] = registry.MethodContract(caps.name, caps.params, GatewayCapabilitiesResult, caps.doc)
 
@@ -201,13 +216,29 @@ def live_status_handler(server: Any):
     return handler
 
 
+def live_turns_handler(server: Any):
+    def handler(rid, params: dict) -> dict:
+        with server._sessions_lock:
+            snapshot = list(server._sessions.items())
+        rows = []
+        for sid, session in snapshot:
+            state = live_state(server, sid, session)
+            if state["status"] == "idle":
+                continue
+            rows.append({"session_id": sid,
+                         "session_key": server._session_lookup_key(session, fallback=sid) or None, **state})
+        return server._ok(rid, {"sessions": rows})
+    return handler
+
+
 def wrap_capabilities(server: Any, handler):
     def _caps(rid, params: dict) -> dict:
         response = handler(rid, params)
         result = response.get("result") if isinstance(response, dict) else None
         if isinstance(result, dict):
             interval = heartbeat_interval()
-            result.update(turn_heartbeat=interval > 0, turn_heartbeat_s=interval, session_live_status=True)
+            result.update(turn_heartbeat=interval > 0, turn_heartbeat_s=interval, session_live_status=True,
+                          session_live_turns=True)
         return response
     _caps.__wrapped__ = handler
     return _caps
@@ -221,5 +252,6 @@ def install(server: Any) -> None:
     # resolves _start_usage_ticker here at call time.
     server._start_usage_ticker = wrap_usage_ticker(server, server._start_usage_ticker)
     server.register_method(METHOD, live_status_handler(server))
+    server.register_method(TURNS_METHOD, live_turns_handler(server))
     server.register_method("gateway.capabilities", wrap_capabilities(server, server._methods["gateway.capabilities"]))
     server._gateway_liveness_installed = True

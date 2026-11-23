@@ -15,25 +15,44 @@
 # folder.
 #
 #   coding-root.sh list [--json] [--no-size]
-#   coding-root.sh add DIR
-#   coding-root.sh add --container-path PATH --id ID [--json]
-#   coding-root.sh remove DIR
-#   coding-root.sh remove --id ID [--delete-folder] [--json]
+#   coding-root.sh add DIR [--apply [--force]] [--json]
+#   coding-root.sh add --container-path PATH --id ID [--apply [--force]] [--json]
+#   coding-root.sh remove DIR [--apply [--force]] [--json]
+#   coding-root.sh remove --id ID [--delete-folder] [--apply [--force]] [--json]
 #
 # add and remove hold the stack's config lock (scripts/lib/stack-lock.sh)
-# while they change .env, the override and the registry. Neither recreates
-# anything: they print the services to recreate.
+# while they change .env, the override and the registry. Without --apply they
+# recreate nothing and print the services to recreate.
+#
+# --apply recreates those services too (recreate_services), unless the change
+# was a no-op. Recreating opencode-mcp drops its task table and recreating
+# hermes ends live chat turns, so before changing anything it asks
+# opencode-mcp's GET /tasks for running coding tasks and the dashboard gateway's
+# session.live_turns for live turns (scripts/lib/live_turns.py). When either
+# is non-empty, or can't be read from a running service, it stops with busy
+# and changes nothing; --force goes ahead and reports what it interrupted.
 #
 # --json prints one line in addon.sh's shapes (scripts/lib/json-lines.sh):
 #   add     {"phase":"done","id":ID,"hostPath":H,"containerPath":P,
 #            "created":true|false,"recreate":[...]}
 #   remove  {"phase":"done","id":ID,"removed":true|false,"hostPath":H|null,
 #            "containerPath":P|null,"folderDeleted":true|false,"recreate":[...]}
+#   add DIR / remove DIR
+#           {"phase":"done","path":DIR,"changed":true|false,"recreate":[...]}
 #   list    {"phase":"done","roots":[{"kind":"primary"|"extra"|"synced",
 #            "id":ID|null,"hostPath":H,"containerPath":P,"bytes":N|null}]}
+# With --apply, add and remove's done line also has
+#   "recreated":[...],"interrupted":{"tasks":[TASK...]|null,"turns":[TURN...]|null}
+# where recreated is [] for a no-op, TASK is {task_id,status,directory,
+# started_at} from GET /tasks, TURN is {session_id,session_key,status,running,
+# turn_started_at,idle_s} from session.live_turns, and null means it couldn't
+# be read (only with --force). Interrupted lists what was running when the
+# recreate started.
 # or {"phase":"error","error":REASON,...}: bad_input (exit 2), owner_mismatch
-# (exit 1, on Linux when the caller's uid isn't HERMES_UID), busy (exit 1),
-# command_failed (exit 4). Everything else goes to stderr.
+# (exit 1, on Linux when the caller's uid isn't HERMES_UID), busy (exit 1;
+# from --apply it adds "tasks" and "turns" as above), command_failed (exit 4),
+# compose_failed (exit 1: the recreate failed after the change was written).
+# Everything else goes to stderr.
 #
 # bash 3.2 compatible.
 set -euo pipefail
@@ -105,6 +124,107 @@ recreate_json() {
     out="${out:+${out},}\"${s}\""
   done
   printf '[%s]' "$out"
+}
+
+# recreate_hint: after a change, what was recreated or what to recreate.
+recreate_hint() {
+  if [[ "$APPLY" == 1 ]]; then
+    echo "Recreated $(recreate_services)"
+  else
+    echo "Recreate containers so the binds and HERMES_WRITE_SAFE_ROOT apply, or rerun with --apply:"
+    echo "  docker compose up -d --force-recreate $(recreate_services)"
+  fi
+}
+
+APPLY=0
+FORCE=0
+LIVE_TURNS_PY="${ROOT}/scripts/lib/live_turns.py"
+APPLY_TASKS=null
+APPLY_TURNS=null
+
+# dc ARGS...: docker compose from the stack folder, so COMPOSE_FILE, the
+# project name and the override resolve as they do for addon.sh and make.
+dc() { (cd "$ROOT" && docker compose "$@"); }
+
+# service_running NAME: whether the compose service has a running container.
+service_running() {
+  dc ps --status running -q "$1" 2> /dev/null | grep -q .
+}
+
+# json_array TEXT: TEXT when it is one compact JSON array, else fails.
+json_array() {
+  [[ "$1" == \[*\] && "$1" != *$'\n'* ]] || return 1
+  printf '%s' "$1"
+}
+
+# running_tasks: opencode-mcp's running tasks as a JSON array; [] when the
+# service isn't running. Fails when it runs but doesn't answer.
+running_tasks() {
+  service_running opencode-mcp || { printf '[]'; return 0; }
+  local out
+  out="$(dc exec -T opencode-mcp python3 -c 'import json, urllib.request
+body = json.load(urllib.request.urlopen("http://127.0.0.1:8000/tasks", timeout=10))
+print(json.dumps(body["tasks"], separators=(",", ":")))' 2> /dev/null)" || return 1
+  json_array "$out"
+}
+
+# live_turns: the dashboard gateway's live turns as a JSON array; [] when
+# hermes isn't running. Fails when it runs but doesn't answer.
+live_turns() {
+  service_running hermes || { printf '[]'; return 0; }
+  local out
+  out="$(dc exec -T hermes /opt/hermes/.venv/bin/python - < "$LIVE_TURNS_PY" 2> /dev/null)" || return 1
+  json_array "$out"
+}
+
+# apply_guard: with --apply, reads running tasks and live turns into
+# APPLY_TASKS and APPLY_TURNS, and ends with busy when either is non-empty or
+# unreadable, unless --force. Call it before changing anything.
+apply_guard() {
+  [[ "$APPLY" == 1 ]] || return 0
+  local tasks turns why=""
+  tasks="$(running_tasks)" || tasks=null
+  turns="$(live_turns)" || turns=null
+  APPLY_TASKS="$tasks"
+  APPLY_TURNS="$turns"
+  [[ "$FORCE" == 1 ]] && return 0
+  case "$tasks" in
+    null) why="cannot read opencode-mcp's running tasks" ;;
+    "[]") ;;
+    *) why="a coding task is running" ;;
+  esac
+  case "$turns" in
+    null) why="${why:+${why}; }cannot read live chat turns from hermes" ;;
+    "[]") ;;
+    *) why="${why:+${why}; }a chat turn is running" ;;
+  esac
+  [[ -n "$why" ]] || return 0
+  [[ "$JL_JSON" == 1 ]] || printf 'running tasks: %s\nlive turns: %s\n' "$tasks" "$turns" >&2
+  jl_fail busy "" "${why}; recreating $(recreate_services) would stop it. Nothing was changed; retry later or pass --force" \
+    "" ",\"tasks\":${tasks},\"turns\":${turns}"
+}
+
+# apply_recreate CHANGED: with --apply, recreates the services when CHANGED is
+# 1 and sets APPLY_MEMBERS to the done line's apply members (leading comma).
+# Without --apply, APPLY_MEMBERS stays empty.
+APPLY_MEMBERS=""
+apply_recreate() {
+  [[ "$APPLY" == 1 ]] || return 0
+  local recreated="[]" log
+  if [[ "$1" == 1 ]]; then
+    echo "Recreating $(recreate_services)"
+    log="$(mktemp)"
+    # shellcheck disable=SC2046
+    if ! dc up -d --wait --force-recreate $(recreate_services) > "$log" 2>&1; then
+      jl_fail compose_failed "" "the change is written, but docker compose up failed for: $(recreate_services)" "$log"
+    fi
+    rm -f "$log"
+    recreated="$(recreate_json)"
+  else
+    APPLY_TASKS="[]"
+    APPLY_TURNS="[]"
+  fi
+  APPLY_MEMBERS=",\"recreated\":${recreated},\"interrupted\":{\"tasks\":${APPLY_TASKS},\"turns\":${APPLY_TURNS}}"
 }
 
 # lock: takes the config lock until exit, or ends with busy.
@@ -276,10 +396,14 @@ cmd_add() {
   lock
 
   if path_covered "$path"; then
+    apply_recreate 0
+    jl_done "\"path\":$(jl_str "$path"),\"changed\":false,\"recreate\":[]${APPLY_MEMBERS}"
+    [[ "$JL_JSON" == 1 ]] && return 0
     echo "Already covered by an existing coding root: $path"
     cmd_list --no-size
     return 0
   fi
+  apply_guard
 
   local extras
   extras="$(extras_with "$path")"
@@ -287,14 +411,20 @@ cmd_add() {
   ensure_override
   add_mount "$service" "$path"
   add_mount opencode "$path"
+  apply_recreate 1
+  jl_done "\"path\":$(jl_str "$path"),\"changed\":true,\"recreate\":$(recreate_json)${APPLY_MEMBERS}"
 
   echo
   echo "Added coding root: $path"
   echo "CODING_EXTRA_ROOTS=$extras"
   echo
-  echo "Recreate containers so the new binds and HERMES_WRITE_SAFE_ROOT apply:"
-  echo "  docker compose up -d --force-recreate $(recreate_services)"
-  echo "  # or: make down && make up"
+  if [[ "$APPLY" == 1 ]]; then
+    echo "Recreated $(recreate_services)"
+  else
+    echo "Recreate containers so the new binds and HERMES_WRITE_SAFE_ROOT apply:"
+    echo "  docker compose up -d --force-recreate $(recreate_services)"
+    echo "  # or: $0 add $path --apply"
+  fi
   echo
   echo "If this tree has .env / credential files, shadow them (see docs/opencode.md):"
   echo "  find \"$path\" -name '.env' -not -path '*/node_modules/*'"
@@ -353,6 +483,8 @@ cmd_add_synced() {
     *) jl_fail command_failed "" "unexpected answer from coding_roots.py: $verdict" ;;
   esac
 
+  # A repeated add applies too: an earlier add may have run without --apply.
+  apply_guard
   # Each step repeats safely, so a second add finishes one that stopped halfway.
   make_folder "$host"
   if [[ "$created" == true ]]; then
@@ -363,8 +495,9 @@ cmd_add_synced() {
   ensure_override
   add_mount "$service" "${host}:${path}"
   add_mount opencode "${host}:${path}"
+  apply_recreate 1
 
-  jl_done "\"id\":$(jl_str "$id"),\"hostPath\":$(jl_str "$host"),\"containerPath\":$(jl_str "$path"),\"created\":${created},\"recreate\":$(recreate_json)"
+  jl_done "\"id\":$(jl_str "$id"),\"hostPath\":$(jl_str "$host"),\"containerPath\":$(jl_str "$path"),\"created\":${created},\"recreate\":$(recreate_json)${APPLY_MEMBERS}"
   if [[ "$JL_JSON" != 1 ]]; then
     echo
     if [[ "$created" == true ]]; then
@@ -373,8 +506,7 @@ cmd_add_synced() {
       echo "Synced coding root ${id} already exists: ${host} at ${path}"
     fi
     echo
-    echo "Recreate containers so the new binds and HERMES_WRITE_SAFE_ROOT apply:"
-    echo "  docker compose up -d --force-recreate $(recreate_services)"
+    recreate_hint
   fi
 }
 
@@ -395,20 +527,29 @@ cmd_remove() {
   id="$(synced_id_at "$path")"
   [[ -z "$id" ]] || die "$path is synced coding root ${id}; use remove --id ${id}"
 
-  if ! drop_extra "$path"; then
-    echo "Not an extra coding root: $path"
-    cmd_list --no-size
-    return 0
-  fi
+  case ":$(env_get CODING_EXTRA_ROOTS):" in
+    *:"$path":*) ;;
+    *)
+      apply_recreate 0
+      jl_done "\"path\":$(jl_str "$path"),\"changed\":false,\"recreate\":[]${APPLY_MEMBERS}"
+      [[ "$JL_JSON" == 1 ]] && return 0
+      echo "Not an extra coding root: $path"
+      cmd_list --no-size
+      return 0
+      ;;
+  esac
+  apply_guard
+  drop_extra "$path"
   remove_mount "$service" "$path"
   remove_mount opencode "$path"
+  apply_recreate 1
+  jl_done "\"path\":$(jl_str "$path"),\"changed\":true,\"recreate\":$(recreate_json)${APPLY_MEMBERS}"
 
   echo
   echo "Removed coding root: $path"
   echo "CODING_EXTRA_ROOTS=$(env_get CODING_EXTRA_ROOTS)"
   echo
-  echo "Recreate containers so the binds and HERMES_WRITE_SAFE_ROOT drop it:"
-  echo "  docker compose up -d --force-recreate $(recreate_services)"
+  recreate_hint
 }
 
 cmd_remove_synced() {
@@ -433,12 +574,14 @@ cmd_remove_synced() {
     row="$(coding_roots_py --mount "$dir" get "$reg" "$id")" || jl_fail command_failed "" "cannot read $reg"
   fi
   if [[ -z "$row" ]]; then
-    jl_done "\"id\":$(jl_str "$id"),\"removed\":false,\"hostPath\":null,\"containerPath\":null,\"folderDeleted\":false,\"recreate\":[]"
+    apply_recreate 0
+    jl_done "\"id\":$(jl_str "$id"),\"removed\":false,\"hostPath\":null,\"containerPath\":null,\"folderDeleted\":false,\"recreate\":[]${APPLY_MEMBERS}"
     [[ "$JL_JSON" == 1 ]] || echo "No synced coding root with ID ${id}; nothing to remove"
     return 0
   fi
   container="${row%%$'\t'*}"
   host="${row#*$'\t'}"
+  apply_guard
 
   drop_extra "$container" || true
   remove_mount "$service" "${host}:${container}"
@@ -451,8 +594,9 @@ cmd_remove_synced() {
     rm -rf "$host" || jl_fail command_failed "" "cannot delete $host"
     deleted=true
   fi
+  apply_recreate 1
 
-  jl_done "\"id\":$(jl_str "$id"),\"removed\":true,\"hostPath\":$(jl_str "$host"),\"containerPath\":$(jl_str "$container"),\"folderDeleted\":${deleted},\"recreate\":$(recreate_json)"
+  jl_done "\"id\":$(jl_str "$id"),\"removed\":true,\"hostPath\":$(jl_str "$host"),\"containerPath\":$(jl_str "$container"),\"folderDeleted\":${deleted},\"recreate\":$(recreate_json)${APPLY_MEMBERS}"
   if [[ "$JL_JSON" != 1 ]]; then
     echo
     echo "Removed synced coding root ${id}: ${container}"
@@ -462,8 +606,7 @@ cmd_remove_synced() {
       echo "The folder stays: ${host}"
     fi
     echo
-    echo "Recreate containers so the binds and HERMES_WRITE_SAFE_ROOT drop it:"
-    echo "  docker compose up -d --force-recreate $(recreate_services)"
+    recreate_hint
   fi
 }
 
@@ -473,15 +616,19 @@ Usage: $0 <list|add|remove> ...
 
   list [--json] [--no-size]
       Show the primary, extra and synced coding roots
-  add DIR
+  add DIR [--json]
       Grant Hermes + OpenCode access to an absolute directory
   add --container-path PATH --id ID [--json]
       Create a synced root's folder under <data root>/coding-roots/ID and
       bind it at PATH, which needn't exist on this host
-  remove DIR
+  remove DIR [--json]
       Take an extra root away again (the folder stays)
   remove --id ID [--delete-folder] [--json]
       Take a synced root away; the folder stays unless --delete-folder
+
+  add and remove take --apply to recreate the affected services as well.
+  It refuses (busy) while a coding task or chat turn runs, and changes
+  nothing then; --force recreates anyway.
 
 EOF
 }
@@ -492,11 +639,17 @@ main() {
   for a in "$@"; do
     case "$a" in
       --json) JL_JSON=1 ;;
+      --apply) APPLY=1 ;;
+      --force) FORCE=1 ;;
       *) args+=("$a") ;;
     esac
   done
   # JSON goes to fd 3 (jl_init); the mount editors' chatter goes to stderr.
   [[ "$JL_JSON" == 1 ]] && exec 1>&2
+  if [[ "$APPLY" == 1 || "$FORCE" == 1 ]]; then
+    [[ "$cmd" == add || "$cmd" == remove ]] || die "--apply and --force go with add and remove"
+    [[ "$APPLY" == 1 ]] || die "--force needs --apply"
+  fi
   case "$cmd" in
     list) cmd_list ${args[@]+"${args[@]}"} ;;
     add)
