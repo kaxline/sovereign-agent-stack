@@ -29,8 +29,10 @@
 # hermes ends live chat turns, so before changing anything it asks
 # opencode-mcp's GET /tasks for running coding tasks and the dashboard gateway's
 # session.live_turns for live turns (scripts/lib/live_turns.py). When either
-# is non-empty, or can't be read from a running service, it stops with busy
-# and changes nothing; --force goes ahead and reports what it interrupted.
+# is non-empty, or the tasks can't be read from a running opencode-mcp, it
+# stops with busy and changes nothing; --force goes ahead and reports what it
+# interrupted. Live turns that can't be read (hermes stopped, or a gateway
+# without the method) don't block: they're reported as null with a reason.
 #
 # --json prints one line in addon.sh's shapes (scripts/lib/json-lines.sh):
 #   add     {"phase":"done","id":ID,"hostPath":H,"containerPath":P,
@@ -42,15 +44,16 @@
 #   list    {"phase":"done","roots":[{"kind":"primary"|"extra"|"synced",
 #            "id":ID|null,"hostPath":H,"containerPath":P,"bytes":N|null}]}
 # With --apply, add and remove's done line also has
-#   "recreated":[...],"interrupted":{"tasks":[TASK...]|null,"turns":[TURN...]|null}
+#   "recreated":[...],"interrupted":{"tasks":[TASK...]|null,
+#   "liveTurns":[TURN...]|null},"liveTurnsReason":TEXT|null
 # where recreated is [] for a no-op, TASK is {task_id,status,directory,
-# started_at} from GET /tasks, TURN is {session_id,session_key,status,running,
-# turn_started_at,idle_s} from session.live_turns, and null means it couldn't
-# be read (only with --force). Interrupted lists what was running when the
-# recreate started.
+# started_at} from GET /tasks, TURN is {session_id,status,turn_started_at,
+# idle_s} from session.live_turns, and null means it couldn't be read (tasks:
+# only with --force). liveTurnsReason says why liveTurns is null. Interrupted
+# lists what was running when the recreate started.
 # or {"phase":"error","error":REASON,...}: bad_input (exit 2), owner_mismatch
 # (exit 1, on Linux when the caller's uid isn't HERMES_UID), busy (exit 1;
-# from --apply it adds "tasks" and "turns" as above), command_failed (exit 4),
+# from --apply it adds "tasks", "liveTurns" and "liveTurnsReason" as above), command_failed (exit 4),
 # compose_failed (exit 1: the recreate failed after the change was written).
 # Everything else goes to stderr.
 #
@@ -141,6 +144,7 @@ FORCE=0
 LIVE_TURNS_PY="${ROOT}/scripts/lib/live_turns.py"
 APPLY_TASKS=null
 APPLY_TURNS=null
+APPLY_TURNS_REASON=null
 
 # dc ARGS...: docker compose from the stack folder, so COMPOSE_FILE, the
 # project name and the override resolve as they do for addon.sh and make.
@@ -168,23 +172,30 @@ print(json.dumps(body["tasks"], separators=(",", ":")))' 2> /dev/null)" || retur
   json_array "$out"
 }
 
-# live_turns: the dashboard gateway's live turns as a JSON array; [] when
-# hermes isn't running. Fails when it runs but doesn't answer.
+# live_turns: the dashboard gateway's live turns as a JSON array. Returns 2
+# when hermes isn't running and 1 when it doesn't answer (a gateway without
+# session.live_turns, a failed login).
 live_turns() {
-  service_running hermes || { printf '[]'; return 0; }
+  service_running hermes || return 2
   local out
   out="$(dc exec -T hermes /opt/hermes/.venv/bin/python - < "$LIVE_TURNS_PY" 2> /dev/null)" || return 1
   json_array "$out"
 }
 
 # apply_guard: with --apply, reads running tasks and live turns into
-# APPLY_TASKS and APPLY_TURNS, and ends with busy when either is non-empty or
-# unreadable, unless --force. Call it before changing anything.
+# APPLY_TASKS, APPLY_TURNS and APPLY_TURNS_REASON, and ends with busy when
+# either is non-empty or the tasks are unreadable, unless --force. Call it
+# before changing anything.
 apply_guard() {
   [[ "$APPLY" == 1 ]] || return 0
-  local tasks turns why=""
+  local tasks turns rc=0 why=""
   tasks="$(running_tasks)" || tasks=null
-  turns="$(live_turns)" || turns=null
+  turns="$(live_turns)" || rc=$?
+  case "$rc" in
+    0) ;;
+    2) turns=null; APPLY_TURNS_REASON="$(jl_str "hermes is not running")" ;;
+    *) turns=null; APPLY_TURNS_REASON="$(jl_str "hermes did not answer session.live_turns")" ;;
+  esac
   APPLY_TASKS="$tasks"
   APPLY_TURNS="$turns"
   [[ "$FORCE" == 1 ]] && return 0
@@ -194,14 +205,13 @@ apply_guard() {
     *) why="a coding task is running" ;;
   esac
   case "$turns" in
-    null) why="${why:+${why}; }cannot read live chat turns from hermes" ;;
-    "[]") ;;
+    null | "[]") ;;
     *) why="${why:+${why}; }a chat turn is running" ;;
   esac
   [[ -n "$why" ]] || return 0
   [[ "$JL_JSON" == 1 ]] || printf 'running tasks: %s\nlive turns: %s\n' "$tasks" "$turns" >&2
   jl_fail busy "" "${why}; recreating $(recreate_services) would stop it. Nothing was changed; retry later or pass --force" \
-    "" ",\"tasks\":${tasks},\"turns\":${turns}"
+    "" ",\"tasks\":${tasks},\"liveTurns\":${turns},\"liveTurnsReason\":${APPLY_TURNS_REASON}"
 }
 
 # apply_recreate CHANGED: with --apply, recreates the services when CHANGED is
@@ -223,8 +233,9 @@ apply_recreate() {
   else
     APPLY_TASKS="[]"
     APPLY_TURNS="[]"
+    APPLY_TURNS_REASON=null
   fi
-  APPLY_MEMBERS=",\"recreated\":${recreated},\"interrupted\":{\"tasks\":${APPLY_TASKS},\"turns\":${APPLY_TURNS}}"
+  APPLY_MEMBERS=",\"recreated\":${recreated},\"interrupted\":{\"tasks\":${APPLY_TASKS},\"liveTurns\":${APPLY_TURNS}},\"liveTurnsReason\":${APPLY_TURNS_REASON}"
 }
 
 # lock: takes the config lock until exit, or ends with busy.

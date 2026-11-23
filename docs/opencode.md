@@ -170,14 +170,15 @@ On Linux the folder belongs to `HERMES_UID:HERMES_GID`, so the coding agent and 
 `--apply` on any `add` or `remove` form recreates the four services as well, from the stack folder with `docker compose up -d --wait --force-recreate`, so `COMPOSE_FILE`, the project name and the override resolve as they do for `make up`. Recreating `opencode-mcp` loses its task table, so a coding task it was running can't be resumed or fetched with `coding_get_task_result`, and recreating `hermes` ends any chat turn in progress. Before it changes anything, `--apply` asks for both:
 
 - running coding tasks, from `opencode-mcp`'s `GET /tasks` (compose network only, like `/health`): `{"ok": true, "tasks": [{task_id, status, directory, started_at}]}` for tasks that are pending or running, with `started_at` in UTC ISO 8601;
-- live chat turns, from the dashboard gateway's `session.live_turns` ([turn liveness](hermes.md#turn-liveness)), which `scripts/lib/live_turns.py` calls from inside the `hermes` container. It returns ids, status and times only.
+- live chat turns, from the dashboard gateway's `session.live_turns` ([turn liveness](hermes.md#turn-liveness)), which `scripts/lib/live_turns.py` calls from inside the `hermes` container: `{session_id, status, turn_started_at, idle_s}` per turn, nothing else.
 
-If either list is non-empty, or a running service doesn't answer, `--apply` stops with error `busy` (exit 1), writes nothing, and adds `"tasks"` and `"turns"` to the error line (`null` for one it couldn't read). A stopped service counts as idle. `--force` recreates anyway. The done line then carries `"recreated"` (the services, or `[]` when the change was a no-op such as an unknown ID or an already covered path) and `"interrupted": {"tasks": [...], "turns": [...]}`, what was running when the recreate started:
+If either list is non-empty, or a running `opencode-mcp` doesn't answer, `--apply` stops with error `busy` (exit 1), writes nothing, and adds `"tasks"`, `"liveTurns"` and `"liveTurnsReason"` to the error line. A stopped `opencode-mcp` counts as no tasks. Live turns that can't be read don't block: `liveTurns` is `null` and `liveTurnsReason` says why (`hermes is not running`, or `hermes did not answer session.live_turns` for a gateway without the method). `--force` recreates anyway. The done line then carries `"recreated"` (the services, or `[]` when the change was a no-op such as an unknown ID or an already covered path), `"interrupted": {"tasks": [...], "liveTurns": [...]}`, what was running when the recreate started, and `"liveTurnsReason"`:
 
 ```json
 {"phase":"done","id":"ID","hostPath":"…/coding-roots/ID","containerPath":"/Users/you/code/app","created":true,
  "recreate":["hermes-worker","hermes","opencode","opencode-mcp"],
- "recreated":["hermes-worker","hermes","opencode","opencode-mcp"],"interrupted":{"tasks":[],"turns":[]}}
+ "recreated":["hermes-worker","hermes","opencode","opencode-mcp"],"interrupted":{"tasks":[],"liveTurns":[]},
+ "liveTurnsReason":null}
 ```
 
 A repeated synced `add --apply` recreates again, so a client can make the change first and apply it later. If compose fails, the change stays written and the error is `compose_failed` with compose's last lines in `logTail`. The plain `add DIR` and `remove DIR` forms print `{"phase":"done","path":DIR,"changed":true|false,"recreate":[...]}` with `--json`.

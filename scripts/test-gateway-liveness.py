@@ -182,9 +182,9 @@ server._sessions["s4"] = session(session_key="stored-4", running=True, _finalize
 r = call("session.live_turns", {})["result"]
 rows = {row["session_id"]: row for row in r["sessions"]}
 assert set(rows) == {"s1", "s2"}, rows  # hb stopped running above; s3 idle; s4 finalized
-assert all(set(row) == FIELDS for row in r["sessions"]), r
+assert all(set(row) == {"session_id", "status", "turn_started_at", "idle_s"} for row in r["sessions"]), r
 assert rows["s1"]["status"] == "working" and rows["s1"]["turn_started_at"] == 2000.0, rows["s1"]
-assert rows["s2"]["session_key"] == "stored-2", rows["s2"]
+assert "stored-" not in repr(r), "live_turns carries no session_key"
 assert "secret" not in repr(r), "live_turns leaks session content"
 registry.check_result(registry.METHODS["session.live_turns"], r)
 real_pending = server._session_pending_kind

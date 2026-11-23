@@ -11,9 +11,10 @@ which reads every live session's title and builds a transcript preview.
   can arrive after ``message.complete``.
 - ``session.live_status`` answers for one session from memory: no DB read, no
   title, no message text. A session that is not live answers ``idle``.
-- ``session.live_turns`` lists every live session that is not idle, with the
-  same fields, for a caller that has no session id (scripts/coding-root.sh
-  --apply, before it recreates hermes).
+- ``session.live_turns`` lists every live session that is not idle, by gateway
+  id with status and times only, for a caller that has no session id
+  (scripts/coding-root.sh --apply, before it recreates hermes). No
+  ``session_key``: a stored key can embed a platform handle.
 - ``gateway.capabilities`` advertises all three.
 
 Contracts are declared at install time, so upstream contract files stay untouched.
@@ -132,8 +133,14 @@ def declare_contracts(server: Any) -> None:
     class SessionLiveTurnsParams(base.Params):
         pass
 
+    class LiveTurn(base.Result):
+        session_id: str
+        status: sessions.LiveSessionStatus
+        turn_started_at: float | None
+        idle_s: float | None
+
     class SessionLiveTurnsResult(base.Result):
-        sessions: list[SessionLiveStatusResult]
+        sessions: list[LiveTurn]
 
     if TURNS_METHOD not in registry.METHODS:
         registry.method(
@@ -225,8 +232,8 @@ def live_turns_handler(server: Any):
             state = live_state(server, sid, session)
             if state["status"] == "idle":
                 continue
-            rows.append({"session_id": sid,
-                         "session_key": server._session_lookup_key(session, fallback=sid) or None, **state})
+            rows.append({"session_id": sid, "status": state["status"],
+                         "turn_started_at": state["turn_started_at"], "idle_s": state["idle_s"]})
         return server._ok(rid, {"sessions": rows})
     return handler
 

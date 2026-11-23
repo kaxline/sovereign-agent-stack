@@ -22,16 +22,19 @@ the stack under another app.
   `coding-root.sh add` and `remove` form recreates the terminal service,
   `hermes`, `opencode` and `opencode-mcp`. It first reads running coding tasks
   from `opencode-mcp`'s new `GET /tasks` and live chat turns from the new
-  `session.live_turns` gateway method; when either is non-empty or unreadable
-  it stops with `busy` and writes nothing, unless `--force`. The `--json`
-  done line adds `recreated` and `interrupted`. The plain `add DIR` and
-  `remove DIR` forms now print a done line with `--json`. Rebuild
-  `opencode-mcp` (`docker compose build opencode-mcp`) and recreate `hermes`
-  before using `--apply`; without them it reports `busy` (cannot read).
+  `session.live_turns` gateway method; when either is non-empty, or the tasks
+  are unreadable, it stops with `busy` and writes nothing, unless `--force`.
+  Live turns that can't be read (hermes stopped, or an image without the
+  method) don't block; the JSON reports `liveTurns: null` and a
+  `liveTurnsReason`. The `--json` done line adds `recreated`, `interrupted`
+  and `liveTurnsReason`. The plain `add DIR` and `remove DIR` forms now print
+  a done line with `--json`. Rebuild `opencode-mcp` (`docker compose build
+  opencode-mcp`) before using `--apply`, or it reports `busy` (cannot read
+  the tasks); recreate `hermes` so live turns are read.
   See docs/opencode.md#applying-a-root-change.
 - `session.live_turns` on the dashboard gateway (gateway liveness overlay):
-  every live session with a turn in progress, with `session.live_status`'s
-  fields and no titles or previews. `gateway.capabilities` adds
+  every live session with a turn in progress, as `session_id`, `status`,
+  `turn_started_at` and `idle_s` only: no titles, previews or session keys. `gateway.capabilities` adds
   `session_live_turns: true`.
 - `coding-root.sh` add and remove hold the config lock, and their errors exit
   2 (bad input) instead of 1. Its mount edits use the Hermes image's python3

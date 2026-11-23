@@ -42,8 +42,7 @@ UUID = "3f2b8c1e-7d4a-4e9b-9c2f-1a2b3c4d5e6f"
 CPATH = "/Users/you/code/app"
 RECREATE = ["hermes-worker", "hermes", "opencode", "opencode-mcp"]
 TASK = {"task_id": "t1", "status": "running", "directory": CPATH, "started_at": "2026-11-23T10:00:00Z"}
-TURN = {"session_id": "s1", "session_key": "k1", "status": "working", "running": True,
-        "turn_started_at": 1795000000.0, "idle_s": 1.5}
+TURN = {"session_id": "s1", "status": "working", "turn_started_at": 1795000000.0, "idle_s": 1.5}
 
 FAKE_DOCKER = r"""#!/usr/bin/env bash
 args="$*"
@@ -157,7 +156,8 @@ def main() -> None:
             proc = s.run(*add, "--apply", tasks=tasks, turns=turns)
             out = one_json(proc)
             checks.expect(proc.returncode == 1 and out.get("error") == "busy", f"busy add: rc={proc.returncode} {out}")
-            checks.expect(out.get("tasks") == tasks and out.get("turns") == turns, f"busy lists: {out}")
+            checks.expect(out.get("tasks") == tasks and out.get("liveTurns") == turns
+                      and out.get("liveTurnsReason") is None, f"busy lists: {out}")
             for word in words:
                 checks.expect(word in out.get("message", ""), f"busy message lacks {word!r}: {out}")
             checks.expect("Nothing was changed" in out.get("message", ""), f"busy message: {out}")
@@ -165,9 +165,8 @@ def main() -> None:
             checks.expect(s.state() == before, "busy add changed a file")
             checks.expect(not (s.root / "data/coding-roots" / UUID).exists(), "busy add made the folder")
 
-        # Unreadable answers count as busy; a stopped service counts as idle.
-        for kw, label in (({"tasks": "fail"}, "tasks probe failed"), ({"turns": "fail"}, "turns probe failed"),
-                          ({"tasks": "not json"}, "tasks probe garbled")):
+        # Unreadable tasks count as busy; a stopped opencode-mcp counts as idle.
+        for kw, label in (({"tasks": "fail"}, "tasks probe failed"), ({"tasks": "not json"}, "tasks probe garbled")):
             proc = s.run(*add, "--apply", **kw)
             out = one_json(proc)
             checks.expect(proc.returncode == 1 and out.get("error") == "busy" and "cannot read" in out.get("message", ""),
@@ -175,10 +174,21 @@ def main() -> None:
             checks.expect(s.state() == before, f"{label}: changed a file")
         proc = s.run(*add, "--apply", tasks="fail", turns="fail", FAKE_MCP_UP="0", FAKE_HERMES_UP="0")
         out = one_json(proc)
-        checks.expect(proc.returncode == 0 and out.get("interrupted") == {"tasks": [], "turns": []},
-                      f"stopped services are idle: {proc.stdout}{proc.stderr}")
+        checks.expect(proc.returncode == 0 and out.get("interrupted") == {"tasks": [], "liveTurns": None}
+                      and out.get("liveTurnsReason") == "hermes is not running",
+                      f"stopped services: {proc.stdout}{proc.stderr}")
         checks.expect(not any(c.startswith("compose exec") for c in s.calls()), "probed a stopped service")
         s.run(*remove)
+        # Unknown live turns (a gateway without session.live_turns) don't block.
+        proc = s.run(*add, "--apply", turns="fail")
+        out = one_json(proc)
+        checks.expect(proc.returncode == 0 and out.get("recreated") == RECREATE
+                      and out.get("interrupted") == {"tasks": [], "liveTurns": None}
+                      and out.get("liveTurnsReason") == "hermes did not answer session.live_turns",
+                      f"unknown turns: {proc.stdout}{proc.stderr}")
+        proc = s.run(*remove, "--apply", turns="not json")
+        checks.expect(proc.returncode == 0 and one_json(proc).get("liveTurnsReason") is not None,
+                      f"garbled turns: {proc.stdout}")
 
         # Idle: the change lands and the four services are recreated.
         proc = s.run(*add, "--apply")
@@ -186,7 +196,7 @@ def main() -> None:
         host = s.root / "data/coding-roots" / UUID
         checks.expect(
             out == {"phase": "done", "id": UUID, "hostPath": str(host), "containerPath": CPATH, "created": True,
-                    "recreate": RECREATE, "recreated": RECREATE, "interrupted": {"tasks": [], "turns": []}},
+                    "recreate": RECREATE, "recreated": RECREATE, "interrupted": {"tasks": [], "liveTurns": []}, "liveTurnsReason": None},
             f"idle add: {out} {proc.stderr}",
         )
         checks.expect(s.ups() == [UP], f"idle add compose calls: {s.calls()}")
@@ -207,14 +217,14 @@ def main() -> None:
         proc = s.run(*remove, "--apply", "--force", tasks=[TASK], turns=[TURN])
         out = one_json(proc)
         checks.expect(proc.returncode == 0 and out.get("removed") is True, f"forced remove: {out} {proc.stderr}")
-        checks.expect(out.get("recreated") == RECREATE and out.get("interrupted") == {"tasks": [TASK], "turns": [TURN]},
+        checks.expect(out.get("recreated") == RECREATE and out.get("interrupted") == {"tasks": [TASK], "liveTurns": [TURN]},
                       f"forced remove report: {out}")
         checks.expect(s.ups() == [UP], f"forced remove compose calls: {s.calls()}")
 
         # --force with unreadable answers goes ahead and reports null.
         proc = s.run(*add, "--apply", "--force", tasks="fail", turns="fail")
         out = one_json(proc)
-        checks.expect(proc.returncode == 0 and out.get("interrupted") == {"tasks": None, "turns": None},
+        checks.expect(proc.returncode == 0 and out.get("interrupted") == {"tasks": None, "liveTurns": None},
                       f"forced add, unreadable: {out}")
         s.run(*remove)
 
@@ -222,7 +232,7 @@ def main() -> None:
         proc = s.run("remove", "--id", "never", "--json", "--apply", tasks=[TASK])
         out = one_json(proc)
         checks.expect(proc.returncode == 0 and out.get("removed") is False and out.get("recreated") == []
-                      and out.get("interrupted") == {"tasks": [], "turns": []}, f"no-op remove: {out}")
+                      and out.get("interrupted") == {"tasks": [], "liveTurns": []}, f"no-op remove: {out}")
         checks.expect(s.calls() == [], f"no-op remove called docker: {s.calls()}")
 
         # Plain forms: busy, idle add, covered add, idle remove, absent remove.
@@ -232,7 +242,7 @@ def main() -> None:
         proc = s.run("add", str(plain), "--json", "--apply")
         out = one_json(proc)
         checks.expect(out == {"phase": "done", "path": str(plain), "changed": True, "recreate": RECREATE,
-                              "recreated": RECREATE, "interrupted": {"tasks": [], "turns": []}}, f"plain add: {out}")
+                              "recreated": RECREATE, "interrupted": {"tasks": [], "liveTurns": []}, "liveTurnsReason": None}, f"plain add: {out}")
         proc = s.run("add", str(plain / "sub"), "--json", "--apply", tasks=[TASK])
         out = one_json(proc)
         checks.expect(proc.returncode == 0 and out.get("changed") is False and out.get("recreated") == [],
