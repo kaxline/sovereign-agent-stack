@@ -248,4 +248,64 @@ out="$(v318)" || fail "v0.3.18 without Twenty: $out"
 case "$out" in *'"needs_user":[]'*) ;; *) fail "v0.3.18 without Twenty needs_user: $out" ;; esac
 [ "$(cat "${stack}/up.args")" = "--reload-hermes" ] || fail "v0.3.18 bare up.sh args: $(cat "${stack}/up.args")"
 
+# --- v0.3.19 -------------------------------------------------------------------
+# uname is stubbed so the Linux notice can be checked on any host. The CA files
+# are made with the host's openssl, named as tls.py names them.
+new_stack v319
+cp "${ROOT}"/upgrades/v*.sh "${stack}/upgrades/"
+mkdir -p "${stack}/bin" "${stack}/data/addons/bitwarden/local/tls"
+# shellcheck disable=SC2016  # expanded by the stub
+printf '#!/bin/sh\necho "${UNAME:-Darwin}"\n' > "${stack}/bin/uname"
+chmod +x "${stack}/bin/uname"
+make_ca() {
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 -subj /CN=test \
+    -keyout "${tmp}/ca.key" -out "${stack}/data/addons/bitwarden/local/tls/ca.crt" \
+    -addext "nameConstraints=critical,$(printf 'permitted;DNS:%s,' "$@" | sed 's/,$//')" 2> /dev/null \
+    || fail "openssl couldn't make a test CA"
+}
+printf '%s\n' 'OPENCODE_MCP_ENABLED=1' 'BITWARDEN_LOCAL_ENABLED=1' 'VAULTWARDEN_PORT=8333' > "${stack}/.env"
+v319() { (cd "$stack" && PATH="${stack}/bin:${PATH}" bash scripts/upgrade.sh --from v0.3.18 --to v0.3.19 --json); }
+
+# A CA from before this release: rotate it. On Linux, the chown notice.
+make_ca vaultwarden.vault.internal
+out="$(UNAME=Linux v319)" || fail "v0.3.19 hook failed: $out"
+[ "$(cat "${stack}/up.args")" = "--build opencode --build opencode-mcp --reload-hermes" ] \
+  || fail "v0.3.19 up.sh args: $(cat "${stack}/up.args")"
+python3 - "$(printf '%s\n' "$out" | tail -1)" << 'EOF' || fail "v0.3.19 done line: $out"
+import json, sys
+d = json.loads(sys.argv[1])
+assert [n["id"] for n in d["needs_user"]] == ["bitwarden-local-ca"], d
+assert "tls --rotate" in d["needs_user"][0]["message"], d
+assert "https://vaultwarden.localhost:8333" in d["needs_user"][0]["message"], d
+notes = " ".join(n["message"] for n in d["notices"])
+assert "chown" in notes and "https://vaultwarden.localhost:8333" in notes, d
+EOF
+
+# A CA with exactly the two names needs nothing; off Linux, no chown notice.
+# The hook writes nothing, so a second run is the same.
+make_ca vaultwarden.vault.internal vaultwarden.localhost
+cp "${stack}/.env" "${tmp}/env.before"
+for _ in 1 2; do
+  out="$(v319)" || fail "v0.3.19 with a new CA: $out"
+  case "$out" in *'"needs_user":[]'*) ;; *) fail "v0.3.19 new CA needs_user: $out" ;; esac
+  case "$out" in *chown*) fail "v0.3.19 chown notice off Linux: $out" ;; esac
+done
+cmp -s "${stack}/.env" "${tmp}/env.before" || fail "v0.3.19 changed .env"
+
+# A CA for bare localhost too (the unreleased 519ac06 one) is replaced as well.
+make_ca vaultwarden.vault.internal vaultwarden.localhost localhost
+out="$(v319)" || fail "v0.3.19 with a localhost CA: $out"
+case "$out" in *'"needs_user":[{"id":"bitwarden-local-ca"'*) ;; *) fail "v0.3.19 localhost CA: $out" ;; esac
+
+# Local mode on but never initialised: no CA, nothing to rotate.
+rm "${stack}/data/addons/bitwarden/local/tls/ca.crt"
+out="$(v319)" || fail "v0.3.19 without a CA: $out"
+case "$out" in *'"needs_user":[]'*) ;; *) fail "v0.3.19 without a CA needs_user: $out" ;; esac
+
+# Neither add-on: only the Hermes reload.
+: > "${stack}/.env"
+out="$(UNAME=Linux v319)" || fail "v0.3.19 bare: $out"
+case "$out" in *'"needs_user":[],"notices":[]'*) ;; *) fail "v0.3.19 bare result: $out" ;; esac
+[ "$(cat "${stack}/up.args")" = "--reload-hermes" ] || fail "v0.3.19 bare up.sh args: $(cat "${stack}/up.args")"
+
 echo "ok upgrade.sh"
