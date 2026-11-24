@@ -151,7 +151,7 @@ git commit -m "Register Mail.app mail and drafts from the email-local manifest"
 **Interfaces:**
 - Consumes: `mail_index.load_config`, and the instance file and `settings.env` formats in `scripts/lib/addon_store.py` (see Global Constraints). `email_addon.py` doesn't import `addon_store`; it parses the files itself. The tests build their fixtures with `addon_store.apply_settings` and `apply_instance`, so the two formats can't drift apart.
 - Produces:
-  - `render(config_dir: Path, instances_dir: Path, *, index_path: str, drafts_dir: str) -> str` returns TOML in `mail-index.toml` format. It reads `config_dir / "settings.env"`; a missing file means every setting takes its default.
+  - `render(config_dir: Path, instances_dir: Path, *, index_path: str) -> str` returns TOML in `mail-index.toml` format. It reads `config_dir / "settings.env"`; a missing file means every setting takes its default.
     - Top level: `source = "imap"`, `index`, `since`, `bodies`, `attachments`, `max_body_chars`.
     - One `[[accounts]]` per instance file, sorted by slug, with `id = slug` and the instance's `host`, `port`, `security`, `user`, `address`, `addresses`, `mailboxes` and `drafts_mailbox`.
     - When the instance has a `tls_ca` secret, `tls_ca = "/run/addon/secrets/<slug>.tls_ca"`.
