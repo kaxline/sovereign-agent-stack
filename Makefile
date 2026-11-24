@@ -523,16 +523,17 @@ email-unit-test:
 	@$(RUN_TESTS) scripts/test-email-addon.py scripts/test-email-registration.sh scripts/test-mail-triage-cron.sh
 
 # Mail drafts (host-side): saves drafts queued by mail-drafts-mcp to Mail's
-# Drafts. Never sends. See docs/email.md.
-MAIL_DRAFTS_DIR ?= ./data/mail-drafts
+# Drafts. Never sends. See docs/email.md. The folder is MAIL_DRAFTS_DIR from
+# the shell or make's command line, else from .env (as compose reads it).
+MAIL_DRAFTS = python3 scripts/mail-drafts.py --dir "$${MAIL_DRAFTS_DIR:-$$($(ENV_GET) MAIL_DRAFTS_DIR ./data/mail-drafts)}"
 mail-drafts:
-	python3 scripts/mail-drafts.py --dir "$(MAIL_DRAFTS_DIR)" run
+	$(MAIL_DRAFTS) run
 
 mail-drafts-watch:
-	python3 scripts/mail-drafts.py --dir "$(MAIL_DRAFTS_DIR)" watch
+	$(MAIL_DRAFTS) watch
 
 mail-drafts-doctor:
-	python3 scripts/mail-drafts.py --dir "$(MAIL_DRAFTS_DIR)" doctor
+	$(MAIL_DRAFTS) doctor
 
 mail-drafts-test:
 	@$(RUN_TESTS) scripts/test-mail-drafts.py scripts/test-mail-drafts-registration.sh
