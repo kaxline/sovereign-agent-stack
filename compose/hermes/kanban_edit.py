@@ -87,12 +87,9 @@ def set_task_workspace(
 
     if path is None and project_repo is None and kind in {"dir", "worktree"}:
         path = _clean(_kb._board_meta_for(board).get("default_workdir"))
-    try:
-        from hermes_cli.kanban_guards import check_filing_workspace
-    except ImportError:  # guards overlay not installed
-        check_filing_workspace = None
-    if check_filing_workspace is not None:
-        check_filing_workspace(workspace_kind=kind, workspace_path=path, project_repo=project_repo, board=board)
+    from hermes_cli.kanban_guards import check_filing_workspace
+
+    check_filing_workspace(workspace_kind=kind, workspace_path=path, project_repo=project_repo, board=board)
     if project_repo and kind == "worktree" and not path:
         path = os.path.join(project_repo, ".worktrees", task_id)
 
