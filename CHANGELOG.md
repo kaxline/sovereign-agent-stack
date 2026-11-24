@@ -248,6 +248,10 @@ the stack under another app.
   exported in the shell, so with a custom folder the host helper missed the
   drafts `mail-drafts-mcp` queued. A value in the shell or on make's command
   line still wins.
+- `make doctor` warns about a `compose/postgres/services/<slug>.env` named
+  `information_schema` or `pg_*`, which `db-provision` already skipped. Before,
+  doctor only knew `agent` and `public` as reserved and reported those files as
+  registered.
 
 ## v0.3.18 — 2026-11-21
 

@@ -59,6 +59,21 @@ valid_slug() {
   [[ "$1" =~ $ENV_SLUG_RE ]]
 }
 
+# db_slug_ok SLUG: a shared-Postgres service slug, which becomes both a schema
+# name and the svc_<slug> role suffix: a lowercase letter then at most 57 of
+# a-z, 0-9 and _, and not a reserved schema (agent, public,
+# information_schema, pg_*). compose/postgres/provision.sh runs in the
+# postgres container without this file, and addon_manifest.py checks
+# data.schemas in Python; both carry copies, and scripts/test-db-slug.sh
+# holds all three to the same list.
+DB_SLUG_RE='^[a-z][a-z0-9_]{0,57}$'
+db_slug_ok() {
+  [[ "$1" =~ $DB_SLUG_RE ]] || return 1
+  case "$1" in
+    agent | public | information_schema | pg_*) return 1 ;;
+  esac
+}
+
 # env_target FILE: FILE, or what it links to when it is a symlink (a worktree
 # links main's .env), so a replacement keeps the link. One level, which is all
 # the stack makes; BSD readlink has no -f.

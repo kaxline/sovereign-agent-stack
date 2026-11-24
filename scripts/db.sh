@@ -93,10 +93,9 @@ EOF
 }
 
 check_slug() {
-  [[ "$1" =~ ^[a-z][a-z0-9_]{0,57}$ ]] || die "slug must match [a-z][a-z0-9_]{0,57} (it becomes a schema name): $1"
-  case "$1" in
-    agent|public|information_schema|pg_*) die "'$1' is a reserved schema name" ;;
-  esac
+  db_slug_ok "$1" && return 0
+  [[ "$1" =~ $DB_SLUG_RE ]] || die "slug must match [a-z][a-z0-9_]{0,57} (it becomes a schema name): $1"
+  die "'$1' is a reserved schema name"
 }
 
 # Runs with postgres-db named explicitly, so it works while no active profile

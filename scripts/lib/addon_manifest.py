@@ -158,7 +158,8 @@ HOOK_SCRIPT_RE = re.compile(r"^scripts/[a-z0-9-]+\.sh\Z")
 ERROR_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*\Z")
 # ./data/ then one or more segments, none empty, "." or "..".
 # A shared-Postgres schema (data.schemas): what scripts/db.sh service-add
-# takes as a slug. The role is svc_<slug>.
+# takes as a slug. The role is svc_<slug>. Same rule as db_slug_ok in
+# scripts/lib/env.sh; scripts/test-db-slug.sh keeps them in step.
 SCHEMA_RE = re.compile(r"^[a-z][a-z0-9_]{0,57}\Z")
 RESERVED_SCHEMAS = {"agent", "public", "information_schema"}
 # web.path: an absolute URL path, no query or fragment.
