@@ -1,8 +1,48 @@
 # Shared by coding-root.sh and context-root.sh. The caller sets ROOT and
-# OVERRIDE, defines die, and sources lib/env.sh first.
+# OVERRIDE, defines die and busy (lock's failure: busy MESSAGE [JSON_MEMBERS]),
+# and sources lib/env.sh first.
 
 # shellcheck source=lib/python.sh
 declare -F fast_python > /dev/null || source "$(dirname "${BASH_SOURCE[0]}")/python.sh"
+# shellcheck source=lib/data-root.sh
+declare -F resolve_data_root_path > /dev/null || source "$(dirname "${BASH_SOURCE[0]}")/data-root.sh"
+# shellcheck source=lib/stack-lock.sh
+declare -F stack_lock > /dev/null || source "$(dirname "${BASH_SOURCE[0]}")/stack-lock.sh"
+
+# split_roots LIST...: each entry of the colon lists, one per line, skipping
+# empty ones.
+split_roots() {
+  local IFS=':' root
+  # shellcheck disable=SC2048,SC2086
+  for root in $*; do
+    [[ -z "$root" ]] || printf '%s\n' "$root"
+  done
+}
+
+# path_under_roots CANDIDATE ROOT...: true if CANDIDATE is a ROOT or inside
+# one. Each ROOT may be a colon list; empty entries are skipped.
+path_under_roots() {
+  local candidate="$1" root
+  shift
+  while IFS= read -r root; do
+    [[ "$candidate" == "$root" || "$candidate" == "$root"/* ]] && return 0
+  done < <(split_roots "$@")
+  return 1
+}
+
+# lock: takes the stack's config lock until exit, or ends with busy.
+lock() {
+  local lockfile rc=0 who
+  lockfile="$(resolve_data_root_path)/addons/.lock"
+  stack_lock "$lockfile" || rc=$?
+  case "$rc" in
+    0) trap stack_unlock EXIT ;;
+    2) busy "${lockfile} is not a lock symlink; remove it if no change is running" ;;
+    *)
+      who="$(stack_lock_busy_text)"
+      busy "another config change is running${who:+ (${who})}" ",\"holder\":$(stack_lock_holder_json)" ;;
+  esac
+}
 
 validate_path() {
   local path="$1"

@@ -39,6 +39,7 @@ if str(_LIB) not in sys.path:
 
 import mail_credentials  # noqa: E402
 import mail_imap  # noqa: E402
+import mail_imap_conn  # noqa: E402
 import mail_index as mi  # noqa: E402
 import mail_script as ms  # noqa: E402
 
@@ -107,11 +108,11 @@ def _classify(exc: BaseException) -> tuple[str, int, str]:
                                         " Full Disk Access for the program running the indexer; see docs/email.md.")
     if isinstance(exc, mail_credentials.MissingPassword):
         return "password_missing", 4, str(exc)
-    if isinstance(exc, mail_imap.AuthFailed):
+    if isinstance(exc, mail_imap_conn.AuthFailed):
         return "login_refused", 4, str(exc)
-    if isinstance(exc, mail_imap.Unreachable):
+    if isinstance(exc, mail_imap_conn.Unreachable):
         return "server_unreachable", 5, str(exc)
-    if isinstance(exc, (ms.ScriptError, mail_imap.ImapError)):
+    if isinstance(exc, (ms.ScriptError, mail_imap_conn.ImapError)):
         return "server_error", 5, str(exc)
     # Type name only: the message or a traceback could carry message content.
     return "failed", 1, f"unexpected {type(exc).__name__}"
