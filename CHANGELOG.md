@@ -273,6 +273,10 @@ the stack under another app.
 - `twenty_admin.py` no longer reads `TWENTY_GRANT_ADMIN_CMD`. Callers run
   `init --owner-only`, grant the owner server admin, then run `init`, as
   `crm.sh init` does.
+- `setup.sh` no longer accepts `--hermes`, a no-op since `core` took over
+  Hermes; passing it now stops with "Unknown option". Each add-on flag on
+  `setup.sh` sets its `*_ENABLED` key, and `sync-profiles.sh` writes
+  `COMPOSE_PROFILES` from those keys; the resulting profiles are unchanged.
 
 ## v0.3.18 — 2026-11-21
 
