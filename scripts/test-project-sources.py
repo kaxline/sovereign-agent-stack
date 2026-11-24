@@ -18,6 +18,7 @@ INDEXER = Path(__file__).resolve().parent / "project-index.py"
 if str(LIB) not in sys.path:
     sys.path.insert(0, str(LIB))
 
+import project_doctor as pd  # noqa: E402
 import project_sources as ps  # noqa: E402
 
 from testkit import expect, fail  # noqa: E402
@@ -361,7 +362,7 @@ def test_refresh_all() -> None:
 
 
 def test_visibility_helpers() -> None:
-    prefixes = ps.visibility_prefixes(
+    prefixes = pd.visibility_prefixes(
         coding_primary="/Users/you/code",
         coding_extra=":/Users/you/other",
         context_extra=":/Users/you/Notes",
@@ -369,9 +370,9 @@ def test_visibility_helpers() -> None:
     expect("/Users/you/Notes" in prefixes, prefixes)
     # path_is_visible resolves; use prefixes that exist in this run.
     here = ROOT.resolve()
-    expect(ps.path_is_visible(here / "scripts", [str(here)]), "repo should be visible")
+    expect(pd.path_is_visible(here / "scripts", [str(here)]), "repo should be visible")
     expect(
-        not ps.path_is_visible(here, ["/tmp/does-not-cover-repo"]),
+        not pd.path_is_visible(here, ["/tmp/does-not-cover-repo"]),
         "unrelated prefix should not cover",
     )
 

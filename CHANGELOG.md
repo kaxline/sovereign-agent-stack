@@ -234,6 +234,14 @@ the stack under another app.
   own `enabled_toolsets` at the next bootstrap run, as the stack's
   `caldav-<slug>` entries already did. A job that names one in its own
   `enabled_toolsets` still gets it.
+- Hermes-side flags take the add-on manifest's spellings: `1`, `true`,
+  `yes` or `on`, in any case, with spaces at either end ignored. The bootstrap
+  (`WEB_BROWSER_ENABLED` and the other flags it reads), the Buzz relay proxy
+  (`HERMES_BUZZ_ENABLED`) and `sync-profiles.sh` used to differ, so
+  `WEB_BROWSER_ENABLED=on` added the web-browser profile but left
+  `browser.cdp_url` unwritten, and `HERMES_BUZZ_ENABLED=on` skipped the relay
+  proxy. `HERMES_BROWSER_AUTO_TITLE` also takes `on` and `off`. Values that
+  were on stay on.
 - `make mail-drafts`, `mail-drafts-watch` and `mail-drafts-doctor` take
   `MAIL_DRAFTS_DIR` from `.env`, as compose, `setup.sh` and `doctor.sh`
   already did. Before, they used `./data/mail-drafts` unless the variable was

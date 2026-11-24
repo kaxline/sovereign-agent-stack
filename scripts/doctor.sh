@@ -124,7 +124,14 @@ echo
 echo "--- Project file context ---"
 _PROJ="${DATA_ROOT}/projects"
 _CODING_PRIMARY="$(env_get OPENCODE_WORKSPACE_HOST)"
-_CODING_EXTRA="$(env_get CODING_EXTRA_ROOTS)"
+# Host paths, as project_source_mounts uses: a synced coding root's
+# CODING_EXTRA_ROOTS entry is its container path, so take the host column.
+# Without a readable registry, the raw entries are the best guess.
+if _pairs="$(coding_root_pairs 2> /dev/null)"; then
+  _CODING_EXTRA="$(printf '%s\n' "$_pairs" | cut -f1 | tr '\n' ':')"
+else
+  _CODING_EXTRA="$(env_get CODING_EXTRA_ROOTS)"
+fi
 _CONTEXT_EXTRA="$(env_get CONTEXT_EXTRA_ROOTS)"
 if [[ ! -d "$_PROJ" ]]; then
   warn "projects dir missing (${_PROJ})"
@@ -165,14 +172,14 @@ else
       warn "$_msg"
     fi
   done < <(
-    doctor_py "${PROJECT_SOURCE_MOUNTS[@]}" "${ROOT}/scripts/lib/project_sources.py" \
+    doctor_py "${PROJECT_SOURCE_MOUNTS[@]}" "${ROOT}/scripts/lib/project_doctor.py" \
       doctor-indexes "$_PROJ" < /dev/null || true
-    doctor_py "${PROJECT_SOURCE_MOUNTS[@]}" "${ROOT}/scripts/lib/project_sources.py" doctor-visibility \
+    doctor_py "${PROJECT_SOURCE_MOUNTS[@]}" "${ROOT}/scripts/lib/project_doctor.py" doctor-visibility \
       "$_PROJ" "${_CODING_PRIMARY}" "${_CODING_EXTRA}" "${_CONTEXT_EXTRA}" < /dev/null \
       || true
   )
 fi
-unset _PROJ _CODING_PRIMARY _CODING_EXTRA _CONTEXT_EXTRA PROJECT_SOURCE_MOUNTS \
+unset _PROJ _CODING_PRIMARY _CODING_EXTRA _CONTEXT_EXTRA _pairs PROJECT_SOURCE_MOUNTS \
   _any_project _child _lvl _msg
 
 # --- Tool-search pins (browser / default) ---

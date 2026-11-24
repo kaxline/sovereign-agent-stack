@@ -7,9 +7,13 @@ set -euo pipefail
 log() { echo "[buzz-localhost-proxy] $*"; }
 
 # Only relevant when Buzz is enabled and the configured relay is loopback.
-enabled="${HERMES_BUZZ_ENABLED:-0}"
-case "$(echo "$enabled" | tr '[:upper:]' '[:lower:]')" in
-  1|true|yes) ;;
+# Flag rule of env_truthy in scripts/lib/env.sh (not mounted here): 1, true,
+# yes or on, any case, ends trimmed.
+enabled="$(printf '%s' "${HERMES_BUZZ_ENABLED:-0}" | tr '[:upper:]' '[:lower:]')"
+enabled="${enabled#"${enabled%%[![:space:]]*}"}"
+enabled="${enabled%"${enabled##*[![:space:]]}"}"
+case "$enabled" in
+  1|true|yes|on) ;;
   *)
     log "HERMES_BUZZ_ENABLED off — skip"
     exit 0

@@ -57,6 +57,8 @@ home = Path(os.environ.get("HERMES_HOME", "/opt/data"))
 
 
 def enabled(name: str) -> bool:
+    # A deny-list on purpose, unlike env_truthy in scripts/lib/env.sh: these
+    # flags default to on, so only an explicit 0/false/no/off turns one off.
     return os.environ.get(name, "1").strip().lower() not in ("0", "false", "no", "off")
 
 

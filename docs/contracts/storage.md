@@ -40,7 +40,7 @@ Some data stays outside the data root:
 | `DB_BACKUP_DIR` | `./data/db-backups` | `make db-backup` output |
 | `TWENTY_DATA_DIR` | `./data/twenty` | Twenty's own Postgres (`db/`) and file storage (`storage/`) |
 | `ACTUAL_DATA_DIR` | `./data/actual/server` | Actual Budget server data |
-| `BITWARDEN_HOST_DATA_DIR` | `./data/addons/bitwarden` | the Bitwarden add-on's `secrets/`, `bw/` and `broker/` |
+| `BITWARDEN_HOST_DATA_DIR` | `./data/addons/bitwarden` | the Bitwarden add-on's `secrets/`, `bw/`, `broker/` and `broker-api/` |
 | `SIGNAL_CLI_DATA_DIR` | set by the user | Signal session store; see [Signal](../signal.md) |
 
 Named Docker volumes hold the rest: `neo4j_data` and `neo4j_logs`, `n8n_storage` (n8n's SQLite
@@ -55,7 +55,7 @@ last dot-separated part of the manifest's `id`. `scripts/lib/addon_store.py` own
 | Path | Mode | Contents |
 |---|---|---|
 | `config/settings.env` | 0644 | `ADDON_<SHORT>_<NAME>=value` lines, secrets excluded |
-| `instances/<slug>.json` | 0644 | one instance's non-secret values |
+| `instances/<slug>.json` | 0644 | one instance's non-secret values, plus the stack's own `bind`, `trust` and `endpoint` fields when set |
 | `secrets/<name>`, `secrets/<slug>.<name>` | 0600 | one secret value per file |
 | `state.json` | 0600 | what the lifecycle recorded, such as `{"init": {"version", "at"}}` |
 
@@ -63,8 +63,8 @@ The add-on directory and `config/`, `instances/` and `secrets/` are 0700. Files 
 a temporary name in the same directory and renamed. `scripts/addon-dirs.sh` creates the three
 subdirectories for every manifest in `addons/`, enabled or not, before compose starts, because
 core services bind-mount some of them and a missing bind source would be created owned by
-root on Linux, or refused by Podman. The instance file format is on the tools page under
-[instance store](tools.md#instance-store).
+root on Linux, or refused by Podman. The `bind` field, the slug rule and the paths a service
+mounts the store at are on the tools page under [instance store](tools.md#instance-store).
 
 ### Shared Postgres
 
