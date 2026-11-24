@@ -27,7 +27,7 @@ ADDON_SH="${BUDGET_ADDON_SH:-${ROOT}/scripts/addon.sh}"
 VAULT_SH="${BUDGET_VAULT_SH:-${ROOT}/scripts/vault.sh}"
 # ASSISTANT_DATA_ROOT from the environment wins over the env file, as it does
 # for compose and crm.sh.
-DATA_ROOT="$(resolve_data_root_path "${ASSISTANT_DATA_ROOT:-$(env_get ASSISTANT_DATA_ROOT)}")"
+DATA_ROOT="$(resolve_data_root_path)"
 
 LOCAL_URL="http://actual-server:5006"
 

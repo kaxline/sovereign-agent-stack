@@ -804,7 +804,7 @@ if has_profile db || [[ "$sql_on" -eq 1 || "$db_running" -eq 1 ]]; then
       ok "${key} is set"
     fi
   done
-  db_dir="$(env_get DB_DATA_DIR ./data/db)"
+  db_dir="$(expand_user_path "$(env_get DB_DATA_DIR ./data/db)")"
   case "$db_dir" in
     *"Mobile Documents"*|*Dropbox*|*OneDrive*|*"Google Drive"*)
       warn "DB_DATA_DIR (${db_dir}) looks like a synced folder — Postgres files can corrupt there"
@@ -1133,7 +1133,7 @@ if has_profile mail || [[ "$mail_on" -eq 1 ]]; then
     warn "mail profile on but MAIL_MCP_ENABLED is off — Hermes will not register the mail tools"
   fi
   # Existence and permissions only; doctor never opens the index.
-  mail_dir="$(env_get MAIL_INDEX_DIR ./data/mail)"
+  mail_dir="$(expand_user_path "$(env_get MAIL_INDEX_DIR ./data/mail)")"
   mail_index="${mail_dir%/}/$(env_get MAIL_INDEX_FILE index.sqlite)"
   if [[ -f "$mail_index" ]]; then
     ok "mail index exists (${mail_index})"
@@ -1200,9 +1200,9 @@ if has_profile messages || [[ "$messages_on" -eq 1 ]]; then
     warn "messages profile on but MESSAGES_MCP_ENABLED is not 1 — Hermes will not register the messages tools"
   fi
   # Existence and permissions only; doctor never opens the index or reads events.
-  msg_dir="$(env_get MESSAGES_INDEX_DIR ./data/messages)"
+  msg_dir="$(expand_user_path "$(env_get MESSAGES_INDEX_DIR ./data/messages)")"
   msg_index="${msg_dir%/}/$(env_get MESSAGES_INDEX_FILE index.sqlite)"
-  msg_events="$(env_get MESSAGES_EVENTS_DIR ./data/messages-events)"
+  msg_events="$(expand_user_path "$(env_get MESSAGES_EVENTS_DIR ./data/messages-events)")"
   if [[ -f "$msg_index" ]]; then
     ok "messages index exists (${msg_index})"
   else
@@ -1292,7 +1292,7 @@ if has_profile mail-drafts || [[ "$drafts_on" -eq 1 ]]; then
     bad "MAIL_DRAFTS_ENABLED=${drafts_enabled} but 'mail-drafts' not in COMPOSE_PROFILES — run make ensure-local"
   fi
   [[ "$drafts_on" -eq 1 ]] || warn "mail-drafts profile on but MAIL_DRAFTS_ENABLED is off — Hermes will not register the draft tools"
-  drafts_dir="$(env_get MAIL_DRAFTS_DIR ./data/mail-drafts)"
+  drafts_dir="$(expand_user_path "$(env_get MAIL_DRAFTS_DIR ./data/mail-drafts)")"
   if [[ -d "$drafts_dir" ]]; then
     drafts_mode="$(stat -c '%a' "$drafts_dir" 2>/dev/null || stat -f '%Lp' "$drafts_dir" 2>/dev/null || echo '?')"
     if [[ "$drafts_mode" == "700" ]]; then

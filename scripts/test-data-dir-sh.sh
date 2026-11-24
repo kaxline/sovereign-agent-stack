@@ -39,6 +39,37 @@ check_expand '~other/x' '/repo/~other/x'
 [ ! -e /repo ] || fail "expand_user_path test needs /repo to not exist"
 printf 'ok: expand_user_path\n'
 
+# --- resolve_data_root_path with no argument: environment, then .env ---
+mkdir -p "${tmp}/env-root" "${tmp}/dotenv-root"
+printf 'ASSISTANT_DATA_ROOT=%s\n' "${tmp}/dotenv-root" > "${stack}/.env"
+resolve_root() { # ENV... : resolve_data_root_path from a cwd that is not ROOT
+  # shellcheck disable=SC2016  # expands in the inner bash
+  (cd "$tmp" && env "$@" ROOT="$stack" bash -c '. "$1" && resolve_data_root_path' sh "${stack}/scripts/lib/data-root.sh")
+}
+got="$(resolve_root -u ASSISTANT_DATA_ROOT)"
+[ "$got" = "${tmp}/dotenv-root" ] || fail "unset: got $got, want .env's root"
+got="$(resolve_root ASSISTANT_DATA_ROOT="${tmp}/env-root")"
+[ "$got" = "${tmp}/env-root" ] || fail "exported: got $got, want the exported root"
+printf '' > "${stack}/.env"
+got="$(resolve_root -u ASSISTANT_DATA_ROOT)"
+[ "$got" = "${stack}/data" ] || fail "no key: got $got, want ./data"
+# The Makefile macro follows the same order.
+mk() { # MAKE_ENV... : DATA_ROOT from the Makefile's resolve_data_root, run in the stack
+  # shellcheck disable=SC2016  # make syntax, not shell
+  printf 'include %s\nshow:\n\t@$(resolve_data_root); echo "$$DATA_ROOT"\n' "${tmp}/defs.mk" > "${tmp}/show.mk"
+  (cd "$stack" && env "$@" make -s -f "${tmp}/show.mk" show)
+}
+sed -n '/^define resolve_data_root/,/^endef/p' "${ROOT}/Makefile" > "${tmp}/defs.mk"
+printf 'ASSISTANT_DATA_ROOT=%s\n' "${tmp}/dotenv-root" > "${stack}/.env"
+[ "$(mk -u ASSISTANT_DATA_ROOT)" = "${tmp}/dotenv-root" ] || fail "Makefile, unset: got $(mk -u ASSISTANT_DATA_ROOT)"
+[ "$(mk ASSISTANT_DATA_ROOT="${tmp}/env-root")" = "${tmp}/env-root" ] || fail "Makefile, exported: got $(mk ASSISTANT_DATA_ROOT="${tmp}/env-root")"
+rm -f "${stack}/.env" "${tmp}/defs.mk" "${tmp}/show.mk"
+# No script patches the order inline; doctor-kit.sh reads the cwd .env as the
+# other doctor keys do.
+inline="$(grep -rln 'ASSISTANT_DATA_ROOT:-' "${ROOT}/scripts" --include='*.sh' | grep -v -e '/lib/data-root.sh$' -e '/lib/doctor-kit.sh$' -e '/test-' || true)"
+[ -z "$inline" ] || fail "inline \${ASSISTANT_DATA_ROOT:-...} in: ${inline}"
+printf 'ok: resolve_data_root_path honours an exported ASSISTANT_DATA_ROOT\n'
+
 # Fake docker: `compose ps --status running --services` prints $FAKE_RUNNING.
 cat > "${tmp}/bin/docker" << 'EOF'
 #!/bin/sh

@@ -248,6 +248,15 @@ the stack under another app.
   exported in the shell, so with a custom folder the host helper missed the
   drafts `mail-drafts-mcp` queued. A value in the shell or on make's command
   line still wins.
+- An `ASSISTANT_DATA_ROOT` exported in the shell now wins over `.env` in every
+  script and Makefile target, as it does in compose. Before, `backup.sh`,
+  `corpus.sh`, `kb-eval-fixture.sh`, `project-index-refresh.sh` and the
+  Makefile's data-root targets read `.env` only. Installs that don't export
+  the variable see no change.
+- `doctor.sh` expands a leading `~` in `MAIL_INDEX_DIR`, `MAIL_DRAFTS_DIR`,
+  `MESSAGES_INDEX_DIR`, `MESSAGES_EVENTS_DIR`, `DB_DATA_DIR` and
+  `TWENTY_DATA_DIR`, as `setup.sh` does, and prints those folders as absolute
+  paths.
 
 ## v0.3.18 — 2026-11-21
 

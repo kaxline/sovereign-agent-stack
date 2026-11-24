@@ -84,7 +84,7 @@ done_line() { jl_done "\"key\":\"$1\",\"changed\":$2"; }
 # lock: takes the config lock, or ends with busy.
 lock() {
   local data_root rc=0 who
-  data_root="$(resolve_data_root_path "${ASSISTANT_DATA_ROOT:-$(env_get ASSISTANT_DATA_ROOT)}")"
+  data_root="$(resolve_data_root_path)"
   stack_lock "${data_root}/addons/.lock" || rc=$?
   case "$rc" in
     0) trap stack_unlock EXIT ;;

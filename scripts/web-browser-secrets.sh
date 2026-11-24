@@ -20,7 +20,7 @@ source "${ROOT}/scripts/lib/secret.sh"
 
 # ASSISTANT_DATA_ROOT from the environment wins over .env, as it does for
 # compose.
-root="$(resolve_data_root_path "${ASSISTANT_DATA_ROOT:-}")"
+root="$(resolve_data_root_path)"
 if ! err="$(validate_data_root_path "$root" 2>&1)"; then
   printf '[web-browser-secrets] warning: %s; no browser-service tokens created\n' "$err" >&2
   exit 0

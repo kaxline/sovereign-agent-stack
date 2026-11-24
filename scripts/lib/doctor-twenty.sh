@@ -77,7 +77,7 @@ doctor_twenty() {
         check_service_health "$svc" "the first start runs Twenty's migrations"
       done
     fi
-    if [[ ! -f "$(env_get TWENTY_DATA_DIR ./data/twenty)/.crm-init-done" ]]; then
+    if [[ ! -f "$(expand_user_path "$(env_get TWENTY_DATA_DIR ./data/twenty)")/.crm-init-done" ]]; then
       warn "no local workspace yet — after make up, run make crm-init"
     fi
   fi

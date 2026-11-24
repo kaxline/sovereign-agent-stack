@@ -23,7 +23,7 @@ LOCAL_URL="http://twenty-server:3000"
 ADDONS="${ADDONS_DIR:-${ROOT}/addons}"
 # ASSISTANT_DATA_ROOT from the environment wins over the env file, as it does
 # for compose.
-DATA_ROOT="$(resolve_data_root_path "${ASSISTANT_DATA_ROOT:-$(env_get ASSISTANT_DATA_ROOT)}")"
+DATA_ROOT="$(resolve_data_root_path)"
 # The Twenty add-on's instance store (scripts/lib/addon_store.py): one
 # instances/<slug>.json per workspace, keys in secrets/<slug>.key_ro|key_rw.
 STORE="${DATA_ROOT}/addons/twenty"

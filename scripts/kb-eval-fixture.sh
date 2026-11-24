@@ -279,7 +279,7 @@ export_lr_env() {
 
 remove_inputs_copy() {
   local dest
-  dest="$(resolve_data_root_path "")/inputs/$(env_get WORKSPACE)/${FILE_SOURCE}"
+  dest="$(resolve_data_root_path)/inputs/$(env_get WORKSPACE)/${FILE_SOURCE}"
   if [[ -f "$dest" ]]; then
     rm -f "$dest"
     log "removed leftover inputs copy ${dest}"

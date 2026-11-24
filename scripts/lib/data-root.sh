@@ -13,6 +13,12 @@ data_root_env_get() {
   env_get_file "${ROOT}/.env" "$@"
 }
 
+# data_root_raw: ASSISTANT_DATA_ROOT as written. The environment wins over
+# ${ROOT}/.env, as in compose; default ./data.
+data_root_raw() {
+  printf '%s\n' "${ASSISTANT_DATA_ROOT:-$(data_root_env_get ASSISTANT_DATA_ROOT ./data)}"
+}
+
 # expand_user_path PATH: PATH as an absolute path, without touching the disk.
 # A leading ~ or ~/ becomes $HOME, a relative path is taken from ROOT (a leading
 # ./ dropped) and a trailing slash is dropped. Symlinks and .. are left alone.
@@ -43,11 +49,11 @@ resolve_dir_path() {
 
 # resolve_data_root_path [PATH]: expand_user_path, then resolve symlinks and ..
 # in PATH (or in its parent when PATH does not exist yet). Empty PATH means
-# ASSISTANT_DATA_ROOT from ${ROOT}/.env, default ./data.
+# the data root (data_root_raw).
 resolve_data_root_path() {
   local raw="${1:-}"
   if [[ -z "$raw" ]]; then
-    raw="$(data_root_env_get ASSISTANT_DATA_ROOT ./data)"
+    raw="$(data_root_raw)"
   fi
   raw="$(expand_user_path "$raw")"
   if [[ -d "$raw" ]]; then

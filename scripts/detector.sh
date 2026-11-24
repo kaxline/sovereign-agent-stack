@@ -20,7 +20,7 @@ source "${ROOT}/scripts/lib/data-root.sh"
 # shellcheck source=lib/secret.sh
 source "${ROOT}/scripts/lib/secret.sh"
 
-root="$(resolve_data_root_path "${ASSISTANT_DATA_ROOT:-}")"
+root="$(resolve_data_root_path)"
 validate_data_root_path "$root"
 secrets="${root}/addons/detector/secrets"
 token_file="${secrets}/http_token"

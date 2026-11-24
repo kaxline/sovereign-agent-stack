@@ -29,7 +29,7 @@ case "${1:-}" in
   *) printf 'usage: %s [--json]\n' "$0" >&2; exit 2 ;;
 esac
 
-projects="$(resolve_data_root_path "")/projects"
+projects="$(resolve_data_root_path)/projects"
 if [[ ! -d "$projects" ]]; then
   [[ ${#json[@]} -eq 0 ]] || echo '{"failed": [], "fresh": [], "hand_written": [], "refreshed": []}'
   exit 0

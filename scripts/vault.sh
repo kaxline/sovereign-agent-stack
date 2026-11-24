@@ -154,7 +154,7 @@ data_dir() {
 
 # ASSISTANT_DATA_ROOT from the environment wins over .env, as it does for
 # compose and addon.sh.
-data_root() { resolve_data_root_path "${ASSISTANT_DATA_ROOT:-}"; }
+data_root() { resolve_data_root_path; }
 
 # The add-on store's folder; the broker mounts its instances/ read-only.
 store_dir() { printf '%s/addons/bitwarden' "$(data_root)"; }
