@@ -44,8 +44,6 @@ import mail_imap_conn
 INDEX_SCHEMA_VERSION = 2
 SAVE_EVERY = 50  # messages fetched between commits, so a long first run can resume
 SOURCES = ("script", "store", "imap")
-# Defined in mail_imap_conn, which the Drafts app ships without mail_index.
-PLAIN_HOSTS = mail_imap_conn.PLAIN_HOSTS
 META_DB = "Envelope Index"
 MESSAGE_SUFFIXES = (".partial.emlx", ".emlx")
 # Left out of a "*" mailbox pattern; list them by name to include them.
@@ -95,13 +93,6 @@ class Config:
         return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()[:16]
 
 
-def _path(value, key: str, base: Path) -> Path:
-    if not isinstance(value, str) or not value.strip():
-        raise ConfigError(f"`{key}` is required and must be a path")
-    p = Path(os.path.expandvars(value)).expanduser()
-    return (base / p).resolve() if not p.is_absolute() else p.resolve()
-
-
 def load_config(path: Path) -> Config:
     path = Path(path)
     try:
@@ -133,8 +124,11 @@ def load_config(path: Path) -> Config:
             raise ConfigError("`store` is set but `source` isn't; add source = \"store\" to read"
                               " Mail's files (Full Disk Access), or remove `store` to use Mail.app")
         raise ConfigError("`store` is only used with source = \"store\"; remove it")
-    store = _path(raw.get("store"), "store", base) if uses_store else None
-    index = _path(raw.get("index"), "index", base)
+    try:
+        store = mail_imap_conn._path(raw.get("store"), "`store` is required and", base) if uses_store else None
+        index = mail_imap_conn._path(raw.get("index"), "`index` is required and", base)
+    except mail_imap_conn.ConfigError as exc:
+        raise ConfigError(str(exc)) from None
     if store is not None and (index == store or store in index.parents):
         raise ConfigError("`index` must be outside the Mail store")
 
@@ -761,28 +755,20 @@ class StoreSource:
         }
 
 
-def open_source(config: Config, runner=None):
-    """The adapter for config's accounts, which must all use one source.
-    `runner` replaces osascript for the script source (tests)."""
-    kinds = {a.source for a in config.accounts}
-    if len(kinds) != 1:
-        raise ConfigError("open_source() needs accounts that share one source; use open_sources()")
-    kind = kinds.pop()
-    if kind == "store":
-        return StoreSource(config)
-    if kind == "imap":
-        import mail_imap
-        return mail_imap.ImapSource(config)
-    import mail_script
-    return mail_script.ScriptSource(config, runner)
-
-
 def open_sources(config: Config, runner=None) -> list:
-    """One adapter per source the config's accounts use, each seeing only its own accounts."""
+    """One adapter per source the config's accounts use, each seeing only its
+    own accounts. `runner` replaces osascript for the script source (tests)."""
     out = []
     for kind in dict.fromkeys(a.source for a in config.accounts):
         part = replace(config, accounts=[a for a in config.accounts if a.source == kind])
-        out.append(open_source(part, runner))
+        if kind == "store":
+            out.append(StoreSource(part))
+        elif kind == "imap":
+            import mail_imap
+            out.append(mail_imap.ImapSource(part))
+        else:
+            import mail_script
+            out.append(mail_script.ScriptSource(part, runner))
     return out
 
 

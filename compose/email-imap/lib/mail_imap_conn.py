@@ -59,7 +59,6 @@ class Refused(RuntimeError):
 # --------------------------------------------------------------------------- config
 
 # Hosts where an account may use security = "plain", besides loopback addresses.
-# mail_index.PLAIN_HOSTS is the same set.
 PLAIN_HOSTS = frozenset({"localhost", "127.0.0.1", "host.docker.internal", "greenmail"})
 
 
