@@ -6,8 +6,10 @@ The agent runtime is one client; the [credential backend](credentials.md), which
 into a page, is another. The Hermes profile named `browser` (the WebUI chat identity) is not part
 of this category.
 
-The stack does not yet run the browser as a service of its own. This page states the interface a
-browser provider has to meet, then where the browser runs today.
+The stack ships a browser service of its own, `web-browser`, off by default
+(`WEB_BROWSER_ENABLED=0`). A Hermes profile with no `browser.cdp_url` uses the Chromium bundled in
+the Hermes image instead. This page states the interface a browser provider
+has to meet, then the browsers the stack can use today.
 
 ## Interface
 
@@ -18,10 +20,10 @@ A browser provider gives each client:
 | Endpoint | `ws://<host>:<port>/devtools/browser/<name>?token=<token>`, CDP at browser level. The `/devtools/browser/` path lets Hermes connect without `/json/version` discovery; a client must not need that route |
 | Authentication | A token per client, at least 128 bits, compared in constant time. A request with an `Origin` header is refused. The agent and the credential backend never share a token |
 | Concurrent clients | Several connections at once: a driver, a dialog supervisor and the credential backend. A CDP session one client creates is private to it; any client may attach to a page target by id |
-| Refused methods | Whole-jar cookie reads and writes (`Network.getAllCookies`, `Network.getCookies`, `Network.setCookie(s)`, `Storage.getCookies`, `Storage.setCookies`), `DOMStorage.*`, `IndexedDB.*`, `CacheStorage.*`, `Fetch.*`, `IO.read`, `Target.exposeDevToolsProtocol` and `Target.attachToBrowserTarget`. The refusal is a CDP error the agent can report |
-| `Fetch` exception | `Fetch.enable` and the calls that answer paused requests pass when every pattern is a URL under `http://hermes-dialog-bridge.invalid/` and auth interception is off; Hermes answers page dialogs through it. Hermes sends `http://hermes-dialog-bridge.invalid/*`, so a provider matches on the host prefix, not the exact string |
+| Refused methods | Whole-jar cookie reads, writes and clears (`Network.getAllCookies`, `Network.getCookies`, `Network.setCookie(s)`, `Network.deleteCookies`, `Network.clearBrowserCookies`, `Storage.getCookies`, `Storage.setCookies`, `Storage.clearCookies`), the storage clears `Storage.clearDataForOrigin` and `Storage.clearDataForStorageKey`, `DOMStorage.*`, `IndexedDB.*`, `CacheStorage.*`, `Fetch.*`, `IO.read`, `Target.exposeDevToolsProtocol` and `Target.attachToBrowserTarget`. The refusal is a CDP error the agent can report. The `web-browser` gateway's list is in `compose/web-browser/gateway/rules.py` |
+| `Fetch` exception | `Fetch.enable` passes when every pattern is a URL under `http://hermes-dialog-bridge.invalid/` and auth interception is off; `Fetch.disable` and the calls that answer a paused request (`Fetch.continueRequest`, `Fetch.continueResponse`, `Fetch.fulfillRequest`, `Fetch.failRequest`) pass. Hermes answers page dialogs through it. Hermes sends `http://hermes-dialog-bridge.invalid/*`, so a provider matches on the host prefix, not the exact string |
 | `Browser.close` | Disconnects that client only; the browser keeps running |
-| URLs | `file:` and browser-internal schemes (`chrome:`, `chrome-extension:`, `devtools:`) are refused for navigation and new targets |
+| URLs | `file:`, the browser-internal schemes (`chrome:`, `chrome-extension:`, `chrome-untrusted:`, `chrome-search:`, `chrome-devtools:`, `devtools:`) and `view-source:`, which wraps another URL, are refused for navigation and new targets |
 | Lifetime | The browser outlives agent restarts and sessions. A provider that isn't running refuses the connection rather than holding it open |
 
 Downloads and file uploads happen in the provider's own filesystem. A provider that supports them
