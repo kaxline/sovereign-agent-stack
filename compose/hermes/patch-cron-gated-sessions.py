@@ -8,18 +8,13 @@ wrapped at runtime, not edited.
 """
 from __future__ import annotations
 
-import os
-from pathlib import Path
+from overlay_patch import BOOTSTRAP, ROOT, SERVER_TAIL_ANCHOR, FileEdit, edit_files, install, install_tail
 
-from overlay_patch import ROOT, FileEdit, edit_files, install
-
-BOOTSTRAP = Path(os.environ.get("CRON_GATED_SESSIONS_BOOTSTRAP", "/bootstrap"))
 
 MARKER = "# assistant-stack: cron gated sessions"
 TAG = "[patch-cron-gated-sessions]"
 
 CRON_ANCHOR = "async def execute(authority, ref, row, policy):"
-SERVER_ANCHOR = "_m.register(sys.modules[__name__])\ndel _m\n"
 
 CRON_INSTALL = f'''
 
@@ -33,15 +28,8 @@ except Exception:
     _cgs_logging.getLogger(__name__).exception("cron gated sessions overlay failed to install")
 '''
 
-SERVER_INSTALL = f'''
-
-{MARKER}
-try:
-    from agent.cron_gated_sessions import install_gateway as _cgs_install
-    _cgs_install(sys.modules[__name__])
-except Exception:
-    logger.exception("cron read-only overlay failed to install")
-'''
+SERVER_INSTALL = install_tail(MARKER, "cron_gated_sessions", "cron read-only",
+                              func="install_gateway", alias="_cgs_install")
 
 
 def main() -> None:
@@ -50,7 +38,7 @@ def main() -> None:
         FileEdit(ROOT / "gateway" / "session_cron.py", label="session_cron install",
                  append=CRON_INSTALL, requires=[CRON_ANCHOR]),
         FileEdit(ROOT / "tui_gateway" / "server.py", label="server install",
-                 append=SERVER_INSTALL, requires=[SERVER_ANCHOR]),
+                 append=SERVER_INSTALL, requires=[SERVER_TAIL_ANCHOR]),
     ], MARKER, TAG)
 
 

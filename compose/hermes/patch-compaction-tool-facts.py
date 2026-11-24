@@ -7,13 +7,9 @@ See compaction_tool_facts.py for what the install wraps and why.
 """
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
-from overlay_patch import ROOT, edit, fail, install
+from overlay_patch import BOOTSTRAP, ROOT, edit, fail, install
 
 AGENT = ROOT / "agent"
-BOOTSTRAP = Path(os.environ.get("COMPACTION_TOOL_FACTS_BOOTSTRAP", "/bootstrap"))
 TAG = "[patch-compaction-tool-facts]"
 
 INSTALL_TAG = "# assistant-stack: compaction tool facts"

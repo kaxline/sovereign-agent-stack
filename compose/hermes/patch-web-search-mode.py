@@ -13,13 +13,9 @@ Run scripts/test-web-search-mode.py on Hermes bumps.
 """
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
-from overlay_patch import ROOT, edit, install
+from overlay_patch import BOOTSTRAP, ROOT, edit, install
 
 AGENT = ROOT / "agent"
-BOOTSTRAP = Path(os.environ.get("WEB_SEARCH_MODE_BOOTSTRAP", "/bootstrap"))
 TAG = "[patch-web-search-mode]"
 MARKER = "# assistant-stack: web search mode"
 

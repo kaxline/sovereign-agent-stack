@@ -11,12 +11,8 @@ for the upstream draft.
 """
 from __future__ import annotations
 
-import os
-from pathlib import Path
+from overlay_patch import BOOTSTRAP, ROOT, edit, install
 
-from overlay_patch import ROOT, edit, install
-
-BOOTSTRAP = Path(os.environ.get("HISTORY_TASK_IDS_BOOTSTRAP", "/bootstrap"))
 MARKER = "# assistant-stack: history task ids"
 TAG = "[patch-history-task-ids]"
 
