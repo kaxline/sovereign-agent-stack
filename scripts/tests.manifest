@@ -164,6 +164,7 @@ scripts/test-vault-capture-secret.py            ci image
 scripts/test-vault-create-login.py              ci image
 scripts/test-vault-sh.sh                        ci
 scripts/test-vikunja-token-scope.sh             ci
+scripts/test-vikunja-tokens.py                  ci
 scripts/test-vw-register.py                     docker
 scripts/test-web-browser-adapter.sh             ci image
 scripts/test-web-browser-compose-config.py      ci docker
