@@ -151,15 +151,14 @@ def _account_lines(slug: str, path: Path, secrets: Path, *, listing: bool) -> li
     return lines
 
 
-def render(config_dir: Path, instances_dir: Path, *, index_path: str, drafts_dir: str,
+def render(config_dir: Path, instances_dir: Path, *, index_path: str,
            listing: bool = False, account: str | None = None, skipped: dict[str, str] | None = None) -> str:
     """TOML in mail-index.toml format. Never holds a password: the mail
-    tools read those from MAIL_CREDENTIALS_DIR. drafts_dir is accepted for
-    symmetry with the outbox command and isn't part of the config. With
-    listing (the mailboxes command), a missing since becomes LISTING_SINCE.
-    With account, only that instance is rendered. An instance that fails its
-    checks raises ValueError, or, when skipped is a dict, is left out and its
-    reason stored under its slug."""
+    tools read those from MAIL_CREDENTIALS_DIR. With listing (the mailboxes
+    command), a missing since becomes LISTING_SINCE. With account, only that
+    instance is rendered. An instance that fails its checks raises ValueError,
+    or, when skipped is a dict, is left out and its reason stored under its
+    slug."""
     env = _setting_env(config_dir)
     lines = ['source = "imap"', f"index = {_q(index_path)}"]
     since = env.get("ADDON_EMAIL_SINCE") or (LISTING_SINCE if listing else None)
@@ -200,7 +199,7 @@ def _layout() -> dict:
 
 def _render_to_file(lay: dict, **kwargs) -> bool:
     """Write the config; True when it has at least one account. kwargs go to render."""
-    text = render(lay["config"], lay["instances"], index_path=lay["index"], drafts_dir=lay["drafts"], **kwargs)
+    text = render(lay["config"], lay["instances"], index_path=lay["index"], **kwargs)
     tmp = lay["out"].with_name(lay["out"].name + ".new")
     tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, lay["out"])
@@ -327,7 +326,7 @@ def status(lay: dict) -> tuple[dict, int]:
     Opens the index read-only; the indexer is its only writer."""
     skipped: dict[str, str] = {}
     try:
-        render(lay["config"], lay["instances"], index_path=lay["index"], drafts_dir=lay["drafts"], skipped=skipped)
+        render(lay["config"], lay["instances"], index_path=lay["index"], skipped=skipped)
     except (ValueError, OSError) as exc:
         return {"error": "bad_config", "message": str(exc)}, 2
     slugs = sorted(p.stem for p in Path(lay["instances"]).glob("*.json"))

@@ -16,56 +16,19 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 # shellcheck source=lib/env.sh
 source "${ROOT}/scripts/lib/env.sh"
+# shellcheck source=lib/triage-cron.sh
+source "${ROOT}/scripts/lib/triage-cron.sh"
 
-die() { printf 'mail-triage-cron: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '4,6p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
-
-[[ $# -ge 1 ]] || usage
-action="$1"; shift
-case "$action" in create|show|remove) ;; *) usage ;; esac
-
-schedule="every 15m"
-deliver=""
-prompt_file="compose/hermes/mail-triage-prompt.md"
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --schedule) schedule="${2:-}"; shift 2 ;;
-    --deliver) deliver="${2:-}"; shift 2 ;;
-    --prompt-file) prompt_file="${2:-}"; shift 2 ;;
-    *) usage ;;
-  esac
-done
-
-[[ -f .env ]] || die "no .env; run ./scripts/setup.sh first"
-if [[ "$action" == "create" ]]; then
+triage_cron_gate() {
   env_true MAIL_MCP_ENABLED || die "MAIL_MCP_ENABLED is off; run ./scripts/setup.sh --mail first"
   grep -qs 'mail-mcp:8000' data/hermes/config.yaml \
     || die "the default Hermes profile has no mail MCP; re-run hermes-api-bootstrap and hermes-browser-bootstrap"
-  [[ -f "$prompt_file" ]] || die "prompt file not found: $prompt_file"
-  if [[ -z "$deliver" ]]; then
-    if [[ -n "$(env_get SIGNAL_HOME_CHANNEL)" ]]; then deliver="signal"; else deliver="local"; fi
-  fi
-fi
-docker compose ps --status running hermes 2>/dev/null | grep -q hermes || die "hermes isn't running; make up"
-if [[ "$action" == "create" ]]; then
-  # The job's monitor polls this route; an old mail-mcp image doesn't have it,
-  # and every tick would then fail and send a failure notice.
+}
+# The job's monitor polls this route; an old mail-mcp image doesn't have it,
+# and every tick would then fail and send a failure notice.
+triage_cron_ready() {
   docker compose exec -T hermes python3 -c 'import urllib.request as u; u.urlopen("http://mail-mcp:8000/watermark", timeout=10)' >/dev/null 2>&1 \
     || die "hermes can't reach http://mail-mcp:8000/watermark; rebuild mail-mcp with: docker compose up -d --build mail-mcp"
-fi
+}
 
-request="$(python3 -c '
-import json, sys
-action, schedule, deliver, prompt_file = sys.argv[1:5]
-req = {"action": action}
-if action == "create":
-    req.update(schedule=schedule, deliver=deliver, prompt=open(prompt_file).read(),
-               monitor_url="http://mail-mcp:8000/watermark")
-print(json.dumps(req))
-' "$action" "$schedule" "$deliver" "$prompt_file")"
-
-docker compose exec -T -u hermes -w /tmp hermes /opt/hermes/.venv/bin/python - "$request" \
-  < scripts/lib/hermes_mail_triage.py
-if [[ "$action" == "create" && "$deliver" == "local" ]]; then
-  printf 'mail-triage-cron: reports stay in Hermes (deliver=local); set SIGNAL_HOME_CHANNEL or pass --deliver to get them sent to you\n' >&2
-fi
+triage_cron mail-triage mail mail-mcp "every 15m" compose/hermes/mail-triage-prompt.md "$@"

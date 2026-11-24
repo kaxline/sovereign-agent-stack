@@ -26,8 +26,8 @@ from typing import Iterator
 
 import mail_credentials
 import mail_index as mi
-from mail_imap_conn import (AuthFailed, Connection, ImapError, Mailbox, Refused, Unreachable,  # noqa: F401  (re-exported)
-                            decode_mutf7, encode_mutf7, fetch_items, flags_of, parse_list, quote, uid_of)
+from mail_imap_conn import (AuthFailed, Connection, ImapError, Mailbox, Refused, fetch_items, flags_of,
+                            quote, uid_of)
 import mail_imap_conn
 
 SUMMARY_BATCH = 500   # messages per summary FETCH
