@@ -16,12 +16,8 @@ See kanban_edit.py for the design and docs/extending.md for the contract.
 """
 from __future__ import annotations
 
-import os
-from pathlib import Path
+from overlay_patch import BOOTSTRAP, ROOT, edit, install
 
-from overlay_patch import ROOT, edit, install
-
-BOOTSTRAP = Path(os.environ.get("KANBAN_EDIT_BOOTSTRAP", "/bootstrap"))
 MARKER = "# assistant-stack: kanban edit"
 TAG = "[patch-kanban-edit]"
 

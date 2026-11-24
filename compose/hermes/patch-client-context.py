@@ -8,28 +8,15 @@ capability flags are installed at runtime, not edited.
 """
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
-from overlay_patch import ROOT, edit, fail, install
+from overlay_patch import BOOTSTRAP, ROOT, SERVER_TAIL_ANCHOR, edit, fail, install, install_tail
 
 AGENT = ROOT / "agent"
 GATEWAY = ROOT / "tui_gateway"
-BOOTSTRAP = Path(os.environ.get("CLIENT_CONTEXT_BOOTSTRAP", "/bootstrap"))
 
 MARKER = "# assistant-stack: client context"
 TAG = "[patch-client-context]"
-ANCHOR = "_m.register(sys.modules[__name__])\ndel _m\n"
 
-INSTALL = f'''
-
-{MARKER}
-try:
-    from agent.client_context import install as _client_context_install
-    _client_context_install(sys.modules[__name__])
-except Exception:
-    logger.exception("client context overlay failed to install")
-'''
+INSTALL = install_tail(MARKER, "client_context", "client context")
 
 
 def main() -> None:
@@ -37,7 +24,7 @@ def main() -> None:
     if not (GATEWAY / "contracts" / "registry.py").is_file():
         fail(TAG, "pre-v2026.9 gateway (no contracts/registry.py): not supported")
     edit(GATEWAY / "server.py", [], MARKER, TAG, label="server install", append=INSTALL,
-         requires=[ANCHOR])
+         requires=[SERVER_TAIL_ANCHOR])
 
 
 if __name__ == "__main__":

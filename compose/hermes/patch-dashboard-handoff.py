@@ -14,12 +14,8 @@ dashboard_handoff.py for the design and docs/extending.md for the contract.
 """
 from __future__ import annotations
 
-import os
-from pathlib import Path
+from overlay_patch import BOOTSTRAP, ROOT, edit, install
 
-from overlay_patch import ROOT, edit, install
-
-BOOTSTRAP = Path(os.environ.get("DASHBOARD_HANDOFF_BOOTSTRAP", "/bootstrap"))
 MARKER = "# assistant-stack: dashboard handoff"
 TAG = "[patch-dashboard-handoff]"
 AUTH = ROOT / "hermes_cli" / "dashboard_auth"

@@ -13,12 +13,8 @@ See kanban_wake.py for the design and docs/extending.md for the contract.
 """
 from __future__ import annotations
 
-import os
-from pathlib import Path
+from overlay_patch import BOOTSTRAP, ROOT, edit, install, one_of
 
-from overlay_patch import ROOT, edit, install, one_of
-
-BOOTSTRAP = Path(os.environ.get("KANBAN_WAKE_BOOTSTRAP", "/bootstrap"))
 MARKER = "# assistant-stack: kanban wake"
 TAG = "[patch-kanban-wake]"
 
