@@ -30,16 +30,21 @@ for.
 | `services` | One entry per compose service: `compose` (the service name), `port`, `when: {gate}`, and `mounts` for the instance store (below) |
 | `uses` | Stack services the add-on needs (`llm`, `search`, `storage`, `postgres`, `neo4j`, `redis`, `secrets`, `scheduler`) |
 | `permissions` | `reads` (personal-data classes), `writes`, `sends`, `exposesToAgent`, `egress`, and `cron` (`true`, `false` or `"ro"`) |
-| `mcp` | One server entry or a list: `name`, `service`, `path`, `transport`, `timeout`, `connectTimeout`, `tools`, `pin`, `writeTools`, `profiles`, `env`, `when` |
+| `mcp` | One server entry or a list: `name`, `title`, `service`, `path`, `transport`, `timeout`, `connectTimeout`, `tools`, `pin`, `writeTools`, `profiles`, `env`, `when`, and `auth` (`{header, scheme, env: {ro, rw}}`, the variable holding the token for each level) |
 | `mcp.instances` | In place of `service`, `path` and `name`: one server per stored instance, with `name` (`<prefix>{slug}`), a `url` template (`{setting:...}`, `{access}`, `{slug}`), and optional `access`, `auth` and `gate` |
 | `vaultBackend` | A login backend for the agent's browser vault: `name`, `plugin`, `toolset`, `tools`, `profiles` |
 | `settings` | The add-on's settings schema, each with a `type`, optional `default`, `label`, `optional` and, for a `bool`, a gate `flag` |
 | `instances` | `{name, settings}`: a settings schema stored once per instance slug, plus `optional`, `errors` and the `connect`/`disconnect` hooks |
 | `commands` | `{service, instance, argv}` entries that `addon.sh run` runs in a service |
-| `hooks` | `init` only, run by `addon.sh enable` |
+| `hooks` | `prepare`, run on the host by every `addon.sh enable` before any service starts, and `init`, run once after the services start (`--reinit` runs it again). Each is `{command}` (a `commands` entry without an instance) or `{script}` (a `scripts/<name>.sh` argv); `prepare` must be a script |
 | `data` | Bind-mount paths and compose volumes that `addon.sh remove --delete-data` deletes |
-| `backup` | Setting names listed for callers that offer a backup |
-| `host` | A part that runs on the host instead of in Docker; `email-local` uses it |
+| `backup` | `{secrets, recommended}`: lists of env var names that `addon.sh list --json` passes to callers that offer a backup |
+| `host` | A part that runs on the host instead of in Docker (`email-local` and `messages` use it); `addon.sh list --json` reports its `platform` |
+| `gateway` | `{platform, sync}`: the Hermes chat platform the add-on switches and the `scripts/<name>.sh` that seeds or clears it. A gateway add-on may have no `services` |
+| `share` | `{levels, forward, memberKeys, handout}`: whether and how one instance may be shared, with `levels` naming keys of `mcp.instances.auth.secret` |
+| `store` | Display facts for a store front; only `dataLeaves`, required when `permissions.egress` includes `internet` |
+| `web` | `{service, path}`: the page a person opens, on a service that has a `port` |
+| `generate` | `{env, encoding, bytes}` entries: `.env` secrets `addon.sh enable` writes when `.env` has none (`hex` or `base64`, 16 to 64 bytes) |
 
 Rules a reader of the plans can rely on, all enforced by `validate`:
 
@@ -67,22 +72,11 @@ rather than through a YAML merge key (`compose_oneshots()` in
 
 ## Instance store
 
-Each add-on has one directory, `data/addons/<short-id>/`
-(`scripts/lib/addon_store.py`):
+Each add-on keeps its settings, instances and secrets under
+`<data root>/addons/<short id>/`. The layout, file modes and write rules are on
+the storage page under [add-on store](storage.md#add-on-store).
 
-```text
-data/addons/<short-id>/
-  config/settings.env      ADDON_<SHORT>_<NAME>=value, shlex-quoted, no secrets
-  instances/<slug>.json    one instance's non-secret values, and its bind
-  secrets/<name>           a top-level secret setting, 0600
-  secrets/<slug>.<name>    an instance's secret setting, 0600
-  state.json               what the lifecycle recorded, such as the init run
-```
-
-Directories are 0700. Every file is written to a temporary name in its own
-directory and renamed, so a reader never sees a half-written file.
-
-An instance file may hold `bind`, the stack's per-instance binding: a map from
+An instance file (`instances/<slug>.json`) may hold `bind`, the stack's per-instance binding: a map from
 identity to `ro` or `rw` that replaces `mcp.profiles` for that instance. An
 identity it leaves out gets no entry. It may raise `ro` to `rw`, but never on
 `api-server`, the unattended identity. `addon_manifest.bind_problem()` has
@@ -130,15 +124,21 @@ skipped with a warning on stderr. Invalid manifests are reported on stderr.
 fixed `mcp` entry:
 
 ```text
-name|title|enabled|access|url|timeout|connect_timeout|transport|tools|pins|all_urls
+name|title|enabled|access|url|timeout|connect_timeout|transport|tools|pins|all_urls|keysrc|keyenv|header|scheme
 ```
 
 `enabled` is `1` or `0` from the entry's `when.gate` flag, else
 `builtin.flag`. `access` is `rw`, `ro`, or empty when the identity gets no
-entry. `tools`, `pins` and `all_urls` are space-separated. `all_urls` lists
-every URL the entry can register, so the adapter can drop the ones this
-identity must not keep. An invalid manifest still gets a line with
-`enabled` `0`, so its stale entries are dropped.
+entry. `tools`, `pins` and `all_urls` are space-separated, and at `ro` `tools`
+and `pins` leave out `writeTools`. `all_urls` lists every URL the entry can
+register, so the adapter can drop the ones this identity must not keep. For an
+entry with `auth`, `keysrc` is the variable holding the token for this
+identity's level (empty when the identity gets no entry), `keyenv` the
+variable the adapter copies it to (`instance_key_env()` of the name), and
+`header` and `scheme` come from `auth`. Without `auth` all four are empty. The
+plan never prints a token. An invalid manifest still gets a line with
+`enabled` `0` for each URL no valid manifest registers, so its stale entries
+are dropped.
 
 `addon_manifest.py instances-plan <addons-dir> <data-dir> <identity>` prints,
 for each `mcp.instances` entry, one line for the add-on and then one per
@@ -179,14 +179,19 @@ space-separated.
 add-on, one per line, whatever the flags and identities say. It registers
 nothing; it is for tuning entries that already exist.
 
-`cron_fence(addons_dir, data_dir=...)` is a function, not a subcommand. It
-returns the MCP server names and URLs to keep out of scheduled runs: every
-entry of every add-on whose `permissions.cron` is not `true`. With `cron`
-`"ro"`, `mcp.instances` entries stay at the level of the identity the run
-uses, and when the URL has `{access}` each instance's `rw` URL is fenced. An invalid
-manifest is fenced by whatever name it carries, and an `mcp.instances` entry
-by the name of each stored instance. `cron_fence_toolsets()` does the same for
-`vaultBackend` toolsets.
+`cron_fence(addons_dir, environ=os.environ, data_dir=None)` is a function, not
+a subcommand. It returns `(names, urls)`, the sorted MCP server names and URLs
+to keep out of scheduled runs: every entry of every add-on whose
+`permissions.cron` is not `true`. With `cron` `"ro"`, a fixed entry keeps its
+name and its `ro` URL and loses the others, and `mcp.instances` entries stay at
+the level of the identity the run uses, with each instance's `rw` URL fenced
+when the URL has `{access}`. An instance with a stored `endpoint` is fenced
+whatever `cron` says. An invalid manifest is fenced by whatever name it
+carries. For any other `cron` value, an `mcp.instances` URL with no
+placeholders is fenced as it is, and with `data_dir` each instance in
+`<data_dir>/<short id>/` is fenced by its name and URLs. `cron_fence_toolsets(addons_dir)` returns
+`(name, toolset)` pairs for the `vaultBackend` toolsets kept out the same
+way.
 
 ## Lifecycle CLI
 

@@ -17,6 +17,9 @@ install used it. Its last version is `compose/bitwarden-broker/secrets_sync.py` 
 | `<data root>/addons/<short id>/secrets/` (files at 0600, directory at 0700) | `scripts/addon.sh configure` and `connect`, through `scripts/lib/addon_store.py` | the add-on's services, through `services.<name>.mounts` |
 | `compose/postgres/services/<slug>.env` | `make db-service-add NAME=<slug>` | the shared Postgres provisioner and the integration using that schema |
 | Files named by `*_FILE` variables (`TWENTY_ENCRYPTION_KEY_FILE`, `TWENTY_DB_PASSWORD_FILE`, `LLM_PROXY_FALLBACKS_FILE`) | the user or setup | the service that variable belongs to |
+| Files named by `LLM_BINDING_API_KEY_FILE`, `LIGHTRAG_LLM_BINDING_API_KEY_FILE` and `EMBEDDING_BINDING_API_KEY_FILE`, in place of the matching `*_API_KEY` | the user | `llm-proxy`, at start and again on SIGHUP or `POST /admin/reload` |
+| `<data root>/web-browser/secrets/` (`agent`, `credentials` and `viewer` client tokens; `viewer` is also the noVNC viewer password; files at 0600, directory at 0700) | `scripts/web-browser-secrets.sh`, run by `setup.sh` and `make ensure-local`; an existing non-empty file is kept | `web-browser` (all three), the Hermes bootstrap containers (`agent`), `bitwarden-broker` (`credentials`) |
+| `broker-api/api-token` under `BITWARDEN_HOST_DATA_DIR` (default `./data/addons/bitwarden`) | `scripts/vault.sh api-token`, run by `setup.sh` and `make ensure-local` whether or not the Bitwarden add-on is on | `bitwarden-broker` and `hermes`, which mount the `broker-api/` folder read-only |
 
 ## Rules a secret source must follow
 
