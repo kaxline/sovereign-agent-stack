@@ -112,6 +112,8 @@ SQL
 # One file per integration: services/<slug>.env with DB_SERVICE_PASSWORD=...
 # (make db-service-add NAME=<slug> writes it). The slug is both the schema
 # name and the svc_<slug> role suffix, so it must be a plain SQL identifier.
+# The rule is db_slug_ok in scripts/lib/env.sh, which this container lacks;
+# scripts/test-db-slug.sh keeps the two in step.
 slugs=""
 if [ -d "$SERVICES_DIR" ]; then
   for file in "$SERVICES_DIR"/*.env; do

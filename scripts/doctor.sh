@@ -813,7 +813,7 @@ if has_profile db || [[ "$sql_on" -eq 1 || "$db_running" -eq 1 ]]; then
   for svc in compose/postgres/services/*.env; do
     [[ -f "$svc" ]] || continue
     slug="$(basename "$svc" .env)"
-    if [[ ! "$slug" =~ ^[a-z][a-z0-9_]{0,57}$ ]] || [[ "$slug" == agent || "$slug" == public ]]; then
+    if ! db_slug_ok "$slug"; then
       warn "compose/postgres/services/${slug}.env: invalid slug — db-provision skips it"
     elif ! grep -qE '^DB_SERVICE_PASSWORD=.+' "$svc"; then
       warn "compose/postgres/services/${slug}.env: DB_SERVICE_PASSWORD is empty — db-provision skips it"

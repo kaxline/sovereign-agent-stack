@@ -248,6 +248,10 @@ the stack under another app.
   exported in the shell, so with a custom folder the host helper missed the
   drafts `mail-drafts-mcp` queued. A value in the shell or on make's command
   line still wins.
+- `make doctor` warns about a `compose/postgres/services/<slug>.env` named
+  `information_schema` or `pg_*`, which `db-provision` already skipped. Before,
+  doctor only knew `agent` and `public` as reserved and reported those files as
+  registered.
 - An `ASSISTANT_DATA_ROOT` exported in the shell now wins over `.env` in every
   script and Makefile target, as it does in compose. Before, `backup.sh`,
   `corpus.sh`, `kb-eval-fixture.sh`, `project-index-refresh.sh` and the

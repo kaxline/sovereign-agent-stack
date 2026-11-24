@@ -71,6 +71,7 @@ scripts/test-cron-gated-sessions.py             ci image
 scripts/test-dashboard-handoff.py               ci image
 scripts/test-data-dir-sh.sh                     ci
 scripts/test-db-service-remove.sh               ci
+scripts/test-db-slug.sh                         ci
 scripts/test-detector.py                        ci
 scripts/test-digest-redaction.py                ci image
 scripts/test-doctor-checks.py                   ci
