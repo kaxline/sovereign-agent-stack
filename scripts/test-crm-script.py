@@ -71,6 +71,7 @@ class Stub:
         self.sign_in_error: str | None = None
         self.key_calls: list[dict] = []
         self.login_tokens: list[str] = []
+        self.accounts: set[str] = set()
 
     def answer(self, query: str, variables: dict) -> dict:
         m = OP.match(query)
@@ -89,6 +90,9 @@ class Stub:
         if op == "signUp":
             if self.sign_up_error:
                 return {"errors": [{"message": self.sign_up_error}]}
+            if variables.get("e") in self.accounts:
+                return {"errors": [{"message": "User already exists"}]}
+            self.accounts.add(variables.get("e"))
             return {"data": {"signUp": tokens}}
         if op == "signIn":
             avail = {"availableWorkspacesForSignIn": [
@@ -202,12 +206,21 @@ class CrmInit(unittest.TestCase):
             "TWENTY_USERNAME": "owner@crm.localhost",
             "TWENTY_PASSWORD": password,
             "TWENTY_MULTIWORKSPACE": multi,
-            "TWENTY_GRANT_ADMIN_CMD": str(self.hook),
         }
         if password_file:
             env["TWENTY_PASSWORD_FILE"] = password_file
-        proc = subprocess.run([sys.executable, "-I", str(ADMIN), "init", *args],
-                              env=env, capture_output=True, text=True)
+        # As crm.sh init runs it: an --owner-only pass, the server-admin grant
+        # (the hook stands in for crm.sh grant-admin), then the full pass.
+        cmd = [sys.executable, "-I", str(ADMIN), "init", *args]
+        proc = subprocess.run([*cmd, "--owner-only"], env=env, capture_output=True, text=True)
+        if proc.returncode == 0:
+            grant = subprocess.run([str(self.hook), "grant-admin", env["TWENTY_USERNAME"]],
+                                   capture_output=True, text=True)
+            proc = subprocess.CompletedProcess(cmd, grant.returncode, proc.stdout, proc.stderr)
+        if proc.returncode == 0:
+            full = subprocess.run(cmd, env=env, capture_output=True, text=True)
+            proc = subprocess.CompletedProcess(cmd, full.returncode, proc.stdout + full.stdout,
+                                               proc.stderr + full.stderr)
         out = proc.stdout + proc.stderr
         self.last_out = out
         secrets = ["SECRET", PASSWORD]
@@ -233,7 +246,7 @@ class CrmInit(unittest.TestCase):
         proc = self.run_init()
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(self.stub.ops, [
-            "signUp", "signUpInNewWorkspace", "getAuthTokensFromLoginToken", "activateWorkspace",
+            "signUp", "signUp", "signIn", "signUpInNewWorkspace", "getAuthTokensFromLoginToken", "activateWorkspace",
             "getRoles", "createOneRole", "createOneRole", "objects", "upsertObjectPermissions",
             "createApiKey", "generateApiKeyToken", "createApiKey", "generateApiKeyToken",
         ])
@@ -287,8 +300,7 @@ class CrmInit(unittest.TestCase):
         self.stub.sign_up_error = "User already exists"
         proc = self.run_init()
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(self.stub.ops[:3], ["signUp", "signIn", "signUpInNewWorkspace"])
-        self.assertEqual(self.stub.ops.count("signUp"), 1)
+        self.assertEqual(self.stub.ops[:5], ["signUp", "signIn", "signUp", "signIn", "signUpInNewWorkspace"])
         # The grant is idempotent and runs every time, so a failed first grant is repaired.
         self.assertEqual(self.hook_log.read_text(), "grant-admin owner@crm.localhost\n")
 
@@ -454,7 +466,7 @@ class CrmInit(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(pw_file.stat().st_mode), 0o600)
         generated = pw_file.read_text().strip()
         self.assertTrue(8 <= len(generated) <= 50)
-        self.assertEqual(self.stub.passwords, [generated])
+        self.assertEqual(set(self.stub.passwords), {generated})
         self.assertIn(str(pw_file), self.last_out.strip().splitlines()[-1])
         self.stub.sign_up_error = "User already exists"
         self.run_init("--rotate", password="", password_file=str(pw_file))
@@ -647,6 +659,26 @@ class CrmKey(unittest.TestCase):
         self.assertIn("TWENTY_OWNER_EMAIL", proc.stderr)
         self.assertIn("TWENTY_OWNER_PASSWORD", proc.stderr)
         self.assertEqual(self.stub.ops, [])
+
+    def test_main_owner_login_follows_init_rules(self):
+        # The same checks as init and login-link: not both password settings,
+        # and a password file must exist and hold something.
+        pw_file = self.tmp / "pw"
+        pw_file.write_text(PASSWORD + "\n")
+        proc = self.key("list", "--name", "Ada", TWENTY_PASSWORD_FILE=str(pw_file))
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("not both", proc.stderr)
+        empty = self.tmp / "empty"
+        empty.write_text("\n")
+        for path, why in ((empty, "is empty"), (self.tmp / "missing", "can't be read")):
+            proc = self.key("list", "--name", "Ada", TWENTY_PASSWORD="", TWENTY_PASSWORD_FILE=str(path))
+            self.assertEqual(proc.returncode, 1)
+            self.assertEqual(proc.stdout, "")
+            self.assertIn(why, proc.stderr)
+        self.assertFalse((self.tmp / "missing").exists())
+        self.assertEqual(self.stub.ops, [])
+        proc = self.key("list", "--name", "Ada", TWENTY_PASSWORD="", TWENTY_PASSWORD_FILE=str(pw_file))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
 
     def test_unknown_slug_is_a_usage_error(self):
         proc = self.key("list", "--name", "Ada", "--slug", "nope")

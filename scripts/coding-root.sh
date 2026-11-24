@@ -87,6 +87,7 @@ source "${ROOT}/scripts/lib/coding-roots.sh"
 jl_init
 
 die() { jl_fail bad_input "" "$*"; }
+busy() { jl_fail busy "" "$1" "" "${2:-}"; }
 
 # shellcheck source=lib/roots.sh
 source "${ROOT}/scripts/lib/roots.sh"
@@ -94,25 +95,12 @@ source "${ROOT}/scripts/lib/roots.sh"
 # Ownership is real only on Linux; Docker Desktop maps it. Tests set this.
 HOST_OS="${CODING_ROOT_UNAME:-$(uname -s)}"
 
+# path_covered PATH: true if PATH is under a coding root. With no primary
+# root, nothing is covered.
 path_covered() {
-  local candidate="$1"
-  local primary extras
+  local primary
   primary="$(env_get OPENCODE_WORKSPACE_HOST)"
-  extras="$(env_get CODING_EXTRA_ROOTS)"
-  [[ -n "$primary" ]] || return 1
-  if [[ "$candidate" == "$primary" || "$candidate" == "$primary"/* ]]; then
-    return 0
-  fi
-  local IFS=':'
-  local root
-  # shellcheck disable=SC2086
-  for root in $extras; do
-    [[ -z "$root" ]] && continue
-    if [[ "$candidate" == "$root" || "$candidate" == "$root"/* ]]; then
-      return 0
-    fi
-  done
-  return 1
+  [[ -n "$primary" ]] && path_under_roots "$1" "$primary" "$(env_get CODING_EXTRA_ROOTS)"
 }
 
 # recreate_services: what to recreate after a coding root change. The binds sit
@@ -247,20 +235,6 @@ apply_recreate() {
   APPLY_MEMBERS=",\"recreated\":${recreated},\"interrupted\":{\"tasks\":${APPLY_TASKS},\"liveTurns\":${APPLY_TURNS}},\"liveTurnsReason\":${APPLY_TURNS_REASON}"
 }
 
-# lock: takes the config lock until exit, or ends with busy.
-lock() {
-  local lockfile rc=0 who
-  lockfile="$(resolve_data_root_path)/addons/.lock"
-  stack_lock "$lockfile" || rc=$?
-  case "$rc" in
-    0) trap stack_unlock EXIT ;;
-    2) jl_fail busy "" "${lockfile} is not a lock symlink; remove it if no change is running" ;;
-    *)
-      who="$(stack_lock_busy_text)"
-      jl_fail busy "" "another config change is running${who:+ (${who})}" "" ",\"holder\":$(stack_lock_holder_json)" ;;
-  esac
-}
-
 require_env() {
   [[ -f "$ENV_FILE" ]] || die "missing $ENV_FILE — run ./scripts/setup.sh first"
 }
@@ -284,19 +258,14 @@ extras_with() {
 # drop_extra PATH: takes PATH out of CODING_EXTRA_ROOTS. Returns 1 when it
 # wasn't there.
 drop_extra() {
-  local extras kept="" root found=0
-  extras="$(env_get CODING_EXTRA_ROOTS)"
-  local IFS=':'
-  # shellcheck disable=SC2086
-  for root in $extras; do
-    [[ -z "$root" ]] && continue
+  local kept="" root found=0
+  while IFS= read -r root; do
     if [[ "$root" == "$1" ]]; then
       found=1
     else
       kept="${kept}:${root}"
     fi
-  done
-  unset IFS
+  done < <(split_roots "$(env_get CODING_EXTRA_ROOTS)")
   [[ "$found" == 1 ]] || return 1
   upsert_env "$ENV_FILE" CODING_EXTRA_ROOTS "$kept"
 }
@@ -347,18 +316,14 @@ cmd_list() {
       out="${out:+${out},}{\"kind\":\"$1\",\"id\":$(jl_str_or_null "$2"),\"hostPath\":$(jl_str "$3"),\"containerPath\":$(jl_str "$4"),\"bytes\":${bytes}}"
     }
     [[ -n "$primary" ]] && entry primary "" "$primary" "$primary"
-    local IFS=':'
-    # shellcheck disable=SC2086
-    for root in $extras; do
-      [[ -n "$root" ]] || continue
+    while IFS= read -r root; do
       IFS=$'\t' read -r id host <<< "$(printf '%s\n' "$rows" | awk -F'\t' -v p="$root" '$2 == p { print $1 "\t" $3; exit }')"
       if [[ -n "$id" ]]; then
         entry synced "$id" "$host" "$root"
       else
         entry extra "" "$root" "$root"
       fi
-    done
-    unset IFS
+    done < <(split_roots "$extras")
     # Registry rows whose container path isn't in CODING_EXTRA_ROOTS (an add
     # stopped halfway) are still synced roots; list them so remove can find them.
     while IFS=$'\t' read -r id container host _; do
@@ -376,14 +341,7 @@ cmd_list() {
   if [[ -z "$extras" || "$extras" == ":" ]]; then
     echo "  (none)"
   else
-    local IFS=':'
-    local root
-    # shellcheck disable=SC2086
-    for root in $extras; do
-      [[ -z "$root" ]] && continue
-      echo "  $root"
-    done
-    unset IFS
+    split_roots "$extras" | sed 's/^/  /'
   fi
   if [[ -n "$rows" ]]; then
     echo "Synced coding roots ($(coding_roots_dir)):"
