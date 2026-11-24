@@ -178,6 +178,8 @@ above.
   identities by Hermes profile name.
 
 A neutral client API, which Boundary would use in place of the dashboard
-WebSocket, and a browser service separate from the agent container are
-planned. The interface a browser provider has to meet is on the
+WebSocket, is planned. The browser runs outside the agent container when a
+profile's `browser.cdp_url` points at the opt-in `web-browser` service or at
+Boundary's agent browser; with none set, Hermes launches the Chromium bundled
+in its image. The interface a browser provider has to meet is on the
 [browser](browser.md) page.
