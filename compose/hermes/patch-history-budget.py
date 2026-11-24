@@ -11,15 +11,11 @@ history_budget_hook.install, from one call appended to tui_gateway/server.py.
 """
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
-from overlay_patch import ROOT, FileEdit, edit_files, fail, install
+from overlay_patch import BOOTSTRAP, ROOT, SERVER_TAIL_ANCHOR, FileEdit, edit_files, fail, install, install_tail
 
 TAG = "[patch-history-budget]"
 AGENT = ROOT / "agent"
 GATEWAY = ROOT / "tui_gateway"
-BOOTSTRAP = Path(os.environ.get("HISTORY_BUDGET_BOOTSTRAP", "/bootstrap"))
 
 
 SELECT_CONTEXT_HOOK = '''
@@ -40,16 +36,8 @@ ContextCompressor.select_context = _history_budget_select_context
 
 
 INSTALL_TAG = "# assistant-stack: history budget install"
-SERVER_TAIL = "_m.register(sys.modules[__name__])\ndel _m\n"
-INSTALL = f'''
-
-{INSTALL_TAG}
-try:
-    from agent.history_budget_hook import install as _history_budget_install
-    _history_budget_install(sys.modules[__name__])
-except Exception:
-    logger.exception("history budget overlay failed to install")
-'''
+INSTALL = install_tail(INSTALL_TAG, "history_budget_hook", "history budget",
+                       alias="_history_budget_install")
 
 
 def main() -> None:
@@ -283,7 +271,7 @@ def _(rid, params: dict) -> dict:
                  label="micro_compact db", marker="history budget — do not archive"),
         FileEdit(AGENT / "context_compressor.py", label="select_context", append=SELECT_CONTEXT_HOOK,
                  requires=["class ContextCompressor"], marker="_history_budget_select_context"),
-        FileEdit(GATEWAY / "server.py", label="server install", append=INSTALL, requires=[SERVER_TAIL],
+        FileEdit(GATEWAY / "server.py", label="server install", append=INSTALL, requires=[SERVER_TAIL_ANCHOR],
                  marker=INSTALL_TAG),
     ], INSTALL_TAG, TAG)
 

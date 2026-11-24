@@ -19,6 +19,9 @@ A missing anchor or target file raises SystemExit (exit 1) with one message
 shape naming the overlay and the anchor. The cont-init runners turn that exit
 into a ``warn:`` line and the container still starts (docs/contracts/upstreams.md).
 ``optional=True`` prints the same message as a skip and returns False instead.
+
+Gateway overlays that install at runtime append ``install_tail(...)`` to
+tui_gateway/server.py, with ``SERVER_TAIL_ANCHOR`` in ``requires``.
 """
 from __future__ import annotations
 
@@ -28,6 +31,29 @@ from pathlib import Path
 from typing import NamedTuple, Sequence
 
 ROOT = Path(os.environ.get("HERMES_ROOT", "/opt/hermes"))
+BOOTSTRAP = Path("/bootstrap")
+
+# The last lines of tui_gateway/server.py; an install_tail appended after them
+# runs once every handler is registered.
+SERVER_TAIL_ANCHOR = "_m.register(sys.modules[__name__])\ndel _m\n"
+
+
+def install_tail(marker: str, module: str, label: str, *, func: str = "install",
+                 alias: str | None = None) -> str:
+    """Text to append to server.py: import ``agent.<module>.<func>`` and call it on server.py.
+
+    A failure is logged as "<label> overlay failed to install" and the gateway starts without it.
+    """
+    alias = alias or f"_{module}_install"
+    return f'''
+
+{marker}
+try:
+    from agent.{module} import {func} as {alias}
+    {alias}(sys.modules[__name__])
+except Exception:
+    logger.exception("{label} overlay failed to install")
+'''
 
 
 class one_of(tuple):

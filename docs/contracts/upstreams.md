@@ -10,7 +10,7 @@ Before a patch to an upstream tool lands, it is filed upstream or the reason it 
 recorded. A patch over about 50 lines or touching more than one upstream file needs a decision
 first: accept the limitation, contribute upstream, or build the feature in the stack. Most
 Hermes overlays predate that rule and exceed it. The **Over cap** column below says `over` when
-an overlay's patch script and the modules it installs come to more than 50 lines together, or
+an overlay's patch script and the modules it installs come to more than about 50 lines together, or
 when it edits more than one upstream file, and `under` otherwise. The shared helper
 `compose/hermes/overlay_patch.py`, the vault actions' `compose/hermes/vault_prompt_slot.py` and
 the alias map `compose/hermes/stack_tool_aliases.py`, which `tool-call-flat-args` and
@@ -93,7 +93,7 @@ Overlays with no re-test command fail only as a warning in the container log.
 | `tool-search-always-include` | over | Honors `tools.tool_search.always_include` so stack MCP pins (SearXNG, LightRAG, OpenCode) stay eager. | upstream | not drafted | `docker compose exec hermes grep -F 'assistant-stack: honor always_include' /opt/hermes/tools/tool_search.py` (docs/hermes.md) |
 | `tool-loop-notes` | over | Queues loop warnings and halt notices on `plugin_live_notes` so they land outside `<untrusted_tool_result>`. | upstream | not drafted | `scripts/test-tool-loop-notes.py` |
 | `tool-loop-replay` | over | Counts stale replays per (tool, arguments) per turn; notes the second, halts the third (`stale_replay_halt`). | upstream | not drafted | `scripts/test-tool-loop-replay.py` |
-| `guardrail-halt-stream` | over | Streams the guardrail stop note through `_deliver_to_stream_callbacks`, so dashboard gateway clients get it as `message.delta`, not only in `message.complete`. | upstream | not drafted | `scripts/test-guardrail-halt-stream.py` |
+| `guardrail-halt-stream` | under | Streams the guardrail stop note through `_deliver_to_stream_callbacks`, so dashboard gateway clients get it as `message.delta`, not only in `message.complete`. | upstream | not drafted | `scripts/test-guardrail-halt-stream.py` |
 | `compaction-tool-facts` | over | Gives the compaction summarizer the original tool bodies (4,000 chars each, 60,000 total) instead of prune stubs; adds a `## Findings` section. | upstream | not drafted | `scripts/test-compaction-tool-facts.py` |
 | `tool-eval-trace` | over | JSONL turn traces for the tool-calling eval; records web rewrites. | adapter | stays in the adapter | `scripts/test-tool-eval-trace.py` |
 | `block-native-web-tools` | over | Rewrites hallucinated `web_search` / `web_extract` to the SearXNG MCP tools, or returns a terminal error. | adapter | stays in the adapter | none; `scripts/test-tool-eval-trace.py` logs the rewrite path |

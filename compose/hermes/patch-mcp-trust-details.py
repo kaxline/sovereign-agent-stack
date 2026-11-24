@@ -12,13 +12,9 @@ new ``details`` keyword, which merges it into the gateway approval entry. The
 """
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
-from overlay_patch import ROOT, FileEdit, edit_files, install
+from overlay_patch import BOOTSTRAP, ROOT, FileEdit, edit_files, install
 
 TOOLS = ROOT / "tools"
-BOOTSTRAP = Path(os.environ.get("MCP_TRUST_DETAILS_BOOTSTRAP", "/bootstrap"))
 HANDLERS = TOOLS / "mcp_tool_handlers.py"
 PROMPT = TOOLS / "approval_prompt.py"
 MARKER = "# assistant-stack: mcp trust details"
