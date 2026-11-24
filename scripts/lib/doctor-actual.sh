@@ -52,18 +52,8 @@ doctor_actual() {
   echo
   echo "--- Budget (Actual) ---"
 
-  if has_profile budget; then
-    ok "COMPOSE_PROFILES includes budget"
-  else
-    bad "ACTUAL_MCP_ENABLED=1 but 'budget' not in COMPOSE_PROFILES — run make ensure-local"
-  fi
-  if [[ "$local_on" -eq 1 ]]; then
-    if has_profile budget-local; then
-      ok "COMPOSE_PROFILES includes budget-local"
-    else
-      bad "ACTUAL_LOCAL_ENABLED=1 but 'budget-local' not in COMPOSE_PROFILES — run make ensure-local"
-    fi
-  fi
+  check_flag_profile ACTUAL_MCP_ENABLED budget
+  [[ "$local_on" -eq 0 ]] || check_flag_profile ACTUAL_LOCAL_ENABLED budget-local
   if [[ "$(uname -s)" == Linux && "$(id -u)" != 1000 ]] && actual_has_rows; then
     bad "on Linux the MCP containers read the connected budgets' secret files as uid 1000 (the image's node user), and this host runs as uid $(id -u); at mode 600 they can't open them"
   fi

@@ -252,6 +252,10 @@ the stack under another app.
   `information_schema` or `pg_*`, which `db-provision` already skipped. Before,
   doctor only knew `agent` and `public` as reserved and reported those files as
   registered.
+- `make doctor`'s Mail and Mail drafts sections word the flag lines as the
+  other add-on sections do: `MAIL_MCP_ENABLED=1` and `MAIL_DRAFTS_ENABLED=1`
+  where they printed the raw `.env` value (`=true`, say), and "is not 1" where
+  they said "is off".
 - An `ASSISTANT_DATA_ROOT` exported in the shell now wins over `.env` in every
   script and Makefile target, as it does in compose. Before, `backup.sh`,
   `corpus.sh`, `kb-eval-fixture.sh`, `project-index-refresh.sh` and the
