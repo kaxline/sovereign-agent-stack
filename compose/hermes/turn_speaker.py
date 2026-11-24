@@ -28,6 +28,11 @@ import logging
 import re
 from typing import Any, Callable
 
+try:  # installed beside the overlay in /opt/hermes/agent; on the host, from compose/hermes
+    from agent import gateway_overlay_kit as kit
+except ImportError:
+    import gateway_overlay_kit as kit
+
 logger = logging.getLogger(__name__)
 
 SPEAKER_INVALID = 4084
@@ -124,76 +129,34 @@ def wrap_db_flush_row(orig: Callable) -> Callable:
     return flush_row
 
 
-def _is_ok(response: Any) -> bool:
-    return isinstance(response, dict) and isinstance(response.get("result"), dict)
-
-
-def _uses_isolation(server: Any, session: dict) -> bool:
-    try:
-        return bool(server._session_uses_compute_host(
-            session, server._load_dashboard_process_isolation_config()))
-    except Exception:
-        return False
-
-
-_INTERNAL_SUBMIT_KEYS = ("_hosted_task", "_hosted_terminal_callback", "_turn_author")
-
-
 def wrap_prompt_submit(server: Any, orig: Callable) -> Callable:
-    def handler(rid, params: dict) -> dict:
-        if not isinstance(params, dict) or params.get("speaker") is None:
-            return orig(rid, params)
-        session = server._sessions.get(params.get("session_id") or "")
-        if session is None or any(params.get(k) is not None for k in _INTERNAL_SUBMIT_KEYS):
-            return orig(rid, params)
+    def check(params: dict, session: dict) -> dict[str, str] | None:
+        if params.get("speaker") is None or kit.is_internal_submit(params):
+            return None
         try:
             speaker = coerce_speaker(params.get("speaker"))
         except ValueError as exc:
-            return server._err(rid, SPEAKER_INVALID, str(exc))
-        if _uses_isolation(server, session):
-            return server._err(rid, SPEAKER_ISOLATED, "speaker is not supported on isolated compute-host turns")
-        if session.get("running"):
-            return server._err(
-                rid, SPEAKER_BUSY,
-                "session is busy; a prompt with a speaker cannot be queued, steered or redirected. "
-                "Resubmit after message.complete.")
+            raise kit.Refuse(SPEAKER_INVALID, str(exc)) from None
+        if kit.uses_isolation(server, session):
+            raise kit.Refuse(SPEAKER_ISOLATED, "speaker is not supported on isolated compute-host turns")
+        return speaker
 
-        session[TURN_KEY] = speaker
-        response = orig(rid, params)
-        status = response["result"].get("status") if _is_ok(response) else None
-        if status != "streaming" and session.get(TURN_KEY) is speaker:
-            session.pop(TURN_KEY, None)
-            if status is not None:
-                logger.warning(
-                    "speaker dropped: prompt.submit for session %s answered %r, not a new turn",
-                    params.get("session_id"), status)
-        return response
+    return kit.wrap_turn_scoped_submit(
+        server, orig, key=TURN_KEY, check=check, busy_code=SPEAKER_BUSY, busy_noun="a speaker",
+        label="speaker", logger=logger)
 
-    handler.__wrapped__ = orig
-    return handler
+
+def _apply_speaker(agent: Any, session: dict, speaker: dict[str, str] | None, result: Any) -> None:
+    # Every turn rebinds, so a cached agent never labels a later turn with an old speaker.
+    setattr(agent, AGENT_KEY, speaker if result is not None else None)
+    if speaker and result is not None:
+        kit.add_turn_note(agent, turn_note(speaker))
 
 
 def wrap_prepare_turn_input(orig: Callable) -> Callable:
     """Bind the turn's speaker (or none) to the turn's final agent."""
-
-    def prepare(sid, session, st, text, images):
-        speaker = session.pop(TURN_KEY, None) if isinstance(session, dict) else None
-        result = orig(sid, session, st, text, images)
-        agent = getattr(st, "agent", None) or (session.get("agent") if isinstance(session, dict) else None)
-        if agent is not None:
-            try:
-                # Every turn rebinds, so a cached agent never labels a later turn with an old speaker.
-                setattr(agent, AGENT_KEY, speaker if result is not None else None)
-                if speaker and result is not None:
-                    existing = getattr(agent, "_gateway_turn_context_notes", "") or ""
-                    notes = [n for n in (existing, turn_note(speaker)) if n]
-                    agent._gateway_turn_context_notes = "\n\n".join(notes)
-            except Exception:
-                logger.warning("speaker not applied for session %s", sid, exc_info=True)
-        return result
-
-    prepare.__wrapped__ = orig
-    return prepare
+    return kit.wrap_turn_scoped_prepare(
+        orig, key=TURN_KEY, apply=_apply_speaker, label="speaker", logger=logger)
 
 
 CAPABILITIES = {"turn_speaker": True}
@@ -213,23 +176,7 @@ def declare_contracts() -> None:
             speaker=(dict[str, JsonValue] | None, None))
         registry.METHODS["prompt.submit"] = registry.MethodContract(
             "prompt.submit", params, contract.result, contract.doc)
-    caps = registry.METHODS["gateway.capabilities"]
-    if not set(CAPABILITIES) <= set(caps.result.model_fields):
-        result = create_model(
-            caps.result.__name__, __base__=caps.result, __module__=__name__,
-            **{key: (bool, ...) for key in CAPABILITIES})
-        registry.METHODS[caps.name] = registry.MethodContract(caps.name, caps.params, result, caps.doc)
-
-
-def wrap_capabilities(handler: Callable) -> Callable:
-    def caps(rid, params: dict) -> dict:
-        response = handler(rid, params)
-        if _is_ok(response):
-            response["result"].update(CAPABILITIES)
-        return response
-
-    caps.__wrapped__ = handler
-    return caps
+    kit.extend_capabilities(dict.fromkeys(CAPABILITIES, bool), __name__)
 
 
 def install(server: Any) -> None:
@@ -240,7 +187,7 @@ def install(server: Any) -> None:
     declare_contracts()
     methods = server._methods
     methods["prompt.submit"] = wrap_prompt_submit(server, methods["prompt.submit"])
-    server.register_method("gateway.capabilities", wrap_capabilities(methods["gateway.capabilities"]))
+    server.register_method("gateway.capabilities", kit.wrap_capabilities(methods["gateway.capabilities"], CAPABILITIES))
     server._prepare_turn_input = wrap_prepare_turn_input(server._prepare_turn_input)
     # _db_flush_collect looks _db_flush_row up in its module globals at call time.
     session_persistence._db_flush_row = wrap_db_flush_row(session_persistence._db_flush_row)

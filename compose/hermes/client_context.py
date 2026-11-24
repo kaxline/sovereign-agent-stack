@@ -28,6 +28,11 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable
 
+try:  # installed beside the overlay in /opt/hermes/agent; on the host, from compose/hermes
+    from agent import gateway_overlay_kit as kit
+except ImportError:
+    import gateway_overlay_kit as kit
+
 logger = logging.getLogger(__name__)
 
 MAX_CONTEXT_CHARS = 16_000
@@ -91,18 +96,6 @@ def compose_ephemeral(agent: Any, block: str) -> None:
     agent._client_context_composed = composed
 
 
-def _is_ok(response: Any) -> bool:
-    return isinstance(response, dict) and isinstance(response.get("result"), dict)
-
-
-def _uses_isolation(server: Any, session: dict) -> bool:
-    try:
-        return bool(server._session_uses_compute_host(
-            session, server._load_dashboard_process_isolation_config()))
-    except Exception:
-        return False
-
-
 def _session_profile_name(server: Any, session: dict) -> str:
     try:
         from hermes_constants import profile_name_for_home
@@ -131,7 +124,7 @@ def wrap_session_open(server: Any, orig: Callable) -> Callable:
         except ValueError as exc:
             return server._err(rid, CONTEXT_INVALID, str(exc))
         response = orig(rid, params)
-        if has and _is_ok(response):
+        if has and kit.is_ok(response):
             sid = response["result"].get("session_id") or ""
             session = server._sessions.get(sid)
             if session is not None:
@@ -145,81 +138,42 @@ def wrap_session_open(server: Any, orig: Callable) -> Callable:
     return handler
 
 
-_INTERNAL_SUBMIT_KEYS = ("_hosted_task", "_hosted_terminal_callback", "_turn_author")
-
-
 def wrap_prompt_submit(server: Any, orig: Callable) -> Callable:
-    def handler(rid, params: dict) -> dict:
-        if not isinstance(params, dict):
-            return orig(rid, params)
-        session = server._sessions.get(params.get("session_id") or "")
-        if session is None:
-            return orig(rid, params)  # upstream answers 4001
-
-        internal = any(params.get(k) is not None for k in _INTERNAL_SUBMIT_KEYS)
+    def check(params: dict, session: dict) -> str | None:
         requested = str(params.get("profile") or "").strip()
-        if requested and not internal:
+        if requested and not kit.is_internal_submit(params):
             # Unknown profile raises ProfileUnavailableError; handle_request maps it to 4064.
             if not server._live_profile_matches(session, server._profile_home(requested)):
                 current = _session_profile_name(server, session)
-                return server._err(
-                    rid, PROFILE_MISMATCH,
+                raise kit.Refuse(
+                    PROFILE_MISMATCH,
                     f"profile '{requested}' does not match this session's profile '{current}'. "
                     "A session's profile is fixed at session.create / session.resume; "
                     "open a session on that profile instead.",
                     {"session_profile": current})
-
-        has = "context" in params
         try:
-            text = coerce_context(params.get("context")) if has else None
+            text = coerce_context(params.get("context")) if "context" in params else None
         except ValueError as exc:
-            return server._err(rid, CONTEXT_INVALID, str(exc))
-        if (text or session.get(SESSION_KEY)) and _uses_isolation(server, session):
-            return server._err(
-                rid, CONTEXT_ISOLATED, "client context is not supported on isolated compute-host turns")
-        if not text:
-            return orig(rid, params)
-        if session.get("running"):
-            return server._err(
-                rid, CONTEXT_BUSY,
-                "session is busy; a prompt with context cannot be queued, steered or redirected. "
-                "Resubmit after message.complete.")
+            raise kit.Refuse(CONTEXT_INVALID, str(exc)) from None
+        if (text or session.get(SESSION_KEY)) and kit.uses_isolation(server, session):
+            raise kit.Refuse(CONTEXT_ISOLATED, "client context is not supported on isolated compute-host turns")
+        return text
 
-        session[TURN_KEY] = text
-        response = orig(rid, params)
-        status = response["result"].get("status") if _is_ok(response) else None
-        if status != "streaming" and session.get(TURN_KEY) is text:
-            session.pop(TURN_KEY, None)
-            if status is not None:
-                logger.warning(
-                    "client context dropped: prompt.submit for session %s answered %r, not a new turn",
-                    params.get("session_id"), status)
-        return response
+    return kit.wrap_turn_scoped_submit(
+        server, orig, key=TURN_KEY, check=check, busy_code=CONTEXT_BUSY, busy_noun="context",
+        label="client context", logger=logger)
 
-    handler.__wrapped__ = orig
-    return handler
+
+def _apply_context(agent: Any, session: dict, turn_text: str | None, result: Any) -> None:
+    compose_ephemeral(agent, session_block(session.get(SESSION_KEY)))
+    if result is not None:
+        kit.add_turn_note(agent, turn_block(turn_text))
 
 
 def wrap_prepare_turn_input(orig: Callable) -> Callable:
     """Apply session and turn context once the turn's agent is final (after any model switch)."""
-
-    def prepare(sid, session, st, text, images):
-        turn_text = session.pop(TURN_KEY, None) if isinstance(session, dict) else None
-        result = orig(sid, session, st, text, images)
-        agent = getattr(st, "agent", None) or (session.get("agent") if isinstance(session, dict) else None)
-        if agent is not None:
-            try:
-                compose_ephemeral(agent, session_block(session.get(SESSION_KEY)))
-                if result is not None:
-                    existing = getattr(agent, "_gateway_turn_context_notes", "") or ""
-                    notes = [n for n in (existing, turn_block(turn_text)) if n]
-                    agent._gateway_turn_context_notes = "\n\n".join(notes)
-            except Exception:
-                logger.warning("client context not applied for session %s", sid, exc_info=True)
-        return result
-
-    prepare.__wrapped__ = orig
-    return prepare
+    return kit.wrap_turn_scoped_prepare(
+        orig, key=TURN_KEY, apply=_apply_context, label="client context", logger=logger)
 
 
 CONTEXT_METHODS = ("session.create", "session.resume", "prompt.submit")
@@ -240,23 +194,7 @@ def declare_contracts() -> None:
                 contract.params.__name__, __base__=contract.params, __module__=__name__,
                 context=(str | None, None))
             registry.METHODS[name] = registry.MethodContract(name, params, contract.result, contract.doc)
-    caps = registry.METHODS["gateway.capabilities"]
-    if not set(CAPABILITIES) <= set(caps.result.model_fields):
-        result = create_model(
-            caps.result.__name__, __base__=caps.result, __module__=__name__,
-            **{key: (bool, ...) for key in CAPABILITIES})
-        registry.METHODS[caps.name] = registry.MethodContract(caps.name, caps.params, result, caps.doc)
-
-
-def wrap_capabilities(handler: Callable) -> Callable:
-    def caps(rid, params: dict) -> dict:
-        response = handler(rid, params)
-        if _is_ok(response):
-            response["result"].update(CAPABILITIES)
-        return response
-
-    caps.__wrapped__ = handler
-    return caps
+    kit.extend_capabilities(dict.fromkeys(CAPABILITIES, bool), __name__)
 
 
 def install(server: Any) -> None:
@@ -267,7 +205,7 @@ def install(server: Any) -> None:
     for name in ("session.create", "session.resume"):
         methods[name] = wrap_session_open(server, methods[name])
     methods["prompt.submit"] = wrap_prompt_submit(server, methods["prompt.submit"])
-    server.register_method("gateway.capabilities", wrap_capabilities(methods["gateway.capabilities"]))
+    server.register_method("gateway.capabilities", kit.wrap_capabilities(methods["gateway.capabilities"], CAPABILITIES))
     # Split modules are rebound onto the server namespace, so _run_prompt_submit
     # resolves _prepare_turn_input here at call time.
     server._prepare_turn_input = wrap_prepare_turn_input(server._prepare_turn_input)
