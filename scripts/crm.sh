@@ -228,8 +228,6 @@ twenty_psql() {
   docker compose exec -T twenty-db psql -X -q -At -v ON_ERROR_STOP=1 -U twenty -d twenty "$@"
 }
 
-# Twenty limits creating workspaces to server admins, and an API signup isn't
-# one. Called by twenty_admin.py right after it creates the owner.
 cmd_grant_admin() {
   [[ -n "${1:-}" ]] || die "usage: crm.sh grant-admin EMAIL"
   twenty_psql -v email="$1" <<'SQL'
@@ -264,6 +262,44 @@ crm_admin() {
   ADDONS_DIR="$ADDONS" \
   TWENTY_DATA_DIR="$data" \
     stack_python "${opts[@]}" -I "${ROOT}/scripts/twenty_admin.py" "$@"
+}
+
+# Reads the owner login from .env into the caller's username, password and
+# password_file, which crm_admin passes on (bash's dynamic scope). Dies when
+# both password settings are set; with --require, also when there is no
+# username or no password setting.
+owner_env_check() {
+  username="$(env_get TWENTY_USERNAME)"
+  password="$(env_get TWENTY_PASSWORD)"
+  password_file="$(env_get TWENTY_PASSWORD_FILE)"
+  if [[ -n "$password" && -n "$password_file" ]]; then
+    die "set TWENTY_PASSWORD or TWENTY_PASSWORD_FILE in .env, not both"
+  fi
+  if [[ "${1:-}" == --require && ( -z "$username" || -z "${password}${password_file}" ) ]]; then
+    die "no owner account in ${ENV_PATH} — make crm-init"
+  fi
+}
+
+# Twenty limits creating workspaces to server admins, and an API signup isn't
+# one, so init grants it between twenty_admin.py's two passes. Prints the
+# step lines init_step turns into phases.
+grant_admin_step() {
+  printf '[crm] server admin: running\n'
+  cmd_grant_admin "$username" >/dev/null || return
+  printf '[crm] server admin: done\n'
+}
+
+# One step of init. With --json its "[crm] <step>: running|done" lines become
+# phase lines and a failure ends init with MESSAGE as the error; plain, the
+# lines print as they come and set -e ends init on a failure.
+init_step() { # init_step MESSAGE COMMAND...
+  local why="$1"
+  shift
+  if [[ -n "${JSON_MODE:-}" ]]; then
+    "$@" | to_phases || die "$why"
+  else
+    "$@"
+  fi
 }
 
 # Turns twenty_admin.py's "[crm] <step>: running|done ..." lines into setup
@@ -355,15 +391,10 @@ cmd_init() {
   DIE_ERROR=""
 
   local username password password_file
-  username="$(env_get TWENTY_USERNAME)"
-  password="$(env_get TWENTY_PASSWORD)"
-  password_file="$(env_get TWENTY_PASSWORD_FILE)"
+  owner_env_check
   if [[ -z "$username" ]]; then
     username="owner@crm.localhost"
     upsert_env "$ENV_PATH" TWENTY_USERNAME "$username"
-  fi
-  if [[ -n "$password" && -n "$password_file" ]]; then
-    die "set TWENTY_PASSWORD or TWENTY_PASSWORD_FILE in .env, not both"
   fi
   # With TWENTY_PASSWORD_FILE, twenty_admin.py reads or generates the file and
   # the password never goes into .env.
@@ -379,20 +410,10 @@ cmd_init() {
   [[ -n "$rotate" ]] && args+=("$rotate")
   # The server-admin grant runs here, between a pass that only creates or
   # signs in to the owner and the full one, because twenty_admin.py's
-  # container has no docker CLI. Both passes are safe to repeat.
-  if [[ -n "$json" ]]; then
-    crm_admin "${args[@]}" --owner-only | to_phases || die "owner account setup failed; see the log above"
-    phase running "server admin: running"
-    cmd_grant_admin "$username" >/dev/null || die "the server-admin grant failed"
-    phase "done" "server admin: done"
-    crm_admin "${args[@]}" | to_phases || die "workspace setup failed; see the log above"
-  else
-    crm_admin "${args[@]}" --owner-only
-    printf '[crm] server admin: running\n'
-    cmd_grant_admin "$username" >/dev/null
-    printf '[crm] server admin: done\n'
-    crm_admin "${args[@]}"
-  fi
+  # container has no docker CLI. Every step is safe to repeat.
+  init_step "owner account setup failed; see the log above" crm_admin "${args[@]}" --owner-only
+  init_step "the server-admin grant failed" grant_admin_step
+  init_step "workspace setup failed; see the log above" crm_admin "${args[@]}"
 
   if ! env_true TWENTY_MCP_ENABLED; then
     upsert_env "$ENV_PATH" TWENTY_MCP_ENABLED 1
@@ -715,11 +736,7 @@ cmd_login_link() {
   require_running >&2
 
   local username password password_file
-  username="$(env_get TWENTY_USERNAME)"
-  password="$(env_get TWENTY_PASSWORD)"
-  password_file="$(env_get TWENTY_PASSWORD_FILE)"
-  [[ -n "$username" && -n "${password}${password_file}" ]] \
-    || die "no owner account in ${ENV_PATH} — make crm-init"
+  owner_env_check --require
   crm_admin login-link --slug "$slug"
 }
 
@@ -773,11 +790,7 @@ cmd_key() {
   fi
   if [[ "$slug" == main ]]; then
     local username password password_file
-    username="$(env_get TWENTY_USERNAME)"
-    password="$(env_get TWENTY_PASSWORD)"
-    password_file="$(env_get TWENTY_PASSWORD_FILE)"
-    [[ -n "$username" && -n "${password}${password_file}" ]] \
-      || die "no owner account in ${ENV_PATH} — make crm-init"
+    owner_env_check --require
     crm_admin "${args[@]}"
     return
   fi

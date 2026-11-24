@@ -19,10 +19,10 @@ Environment:
   ASSISTANT_DATA_ROOT     the data root that holds addons/twenty/ (required)
   ADDONS_DIR              the add-on manifests (default: addons/ next to scripts/)
   TWENTY_DATA_DIR         where .crm-init-done is written
-  TWENTY_GRANT_ADMIN_CMD  executable run as `<cmd> grant-admin <email>` on every run
-                          (the grant is idempotent). Unset, the caller grants it
-                          between an --owner-only run and a full one, as crm.sh
-                          does when this runs in a container
+
+Twenty lets only server admins create workspaces, and this script can't grant
+that. crm.sh runs init --owner-only, grants the owner server admin, then runs
+init again.
 """
 
 from __future__ import annotations
@@ -32,7 +32,6 @@ import json
 import os
 import re
 import secrets
-import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -319,21 +318,36 @@ class Workspaces:
         return self.dir / "instances" / f"{slug}.json"
 
 
-def owner_password(env) -> tuple[str, str]:
-    """The owner password and where it is kept, for the summary line.
-
-    With TWENTY_PASSWORD_FILE set, the password lives only in that file: read
-    when present, generated (8 to 50 characters, Twenty's rule) when not.
-    """
+def owner_login(env) -> tuple[str, str, str]:
+    """TWENTY_USERNAME, TWENTY_PASSWORD and TWENTY_PASSWORD_FILE, checked:
+    a username, and one of the two password settings."""
+    email = env.get("TWENTY_USERNAME", "")
     value = env.get("TWENTY_PASSWORD", "")
     file_name = env.get("TWENTY_PASSWORD_FILE", "")
     if value and file_name:
         raise TwentyError("set TWENTY_PASSWORD or TWENTY_PASSWORD_FILE, not both")
+    if not email or not (value or file_name):
+        raise TwentyError("TWENTY_USERNAME and TWENTY_PASSWORD (or TWENTY_PASSWORD_FILE) must be set")
+    return email, value, file_name
+
+
+def owner_credentials(env, create: bool = False) -> tuple[str, str, str]:
+    """The owner's email, password, and where the password is kept (for
+    init's summary line).
+
+    With TWENTY_PASSWORD_FILE set, the password lives only in that file. A
+    missing file is generated (8 to 50 characters, Twenty's rule) when CREATE
+    is set, which only init does; otherwise it is an error.
+    """
+    email, value, file_name = owner_login(env)
     if not file_name:
-        return value, "TWENTY_PASSWORD in .env"
+        return email, value, "TWENTY_PASSWORD in .env"
     path = Path(file_name).expanduser()
-    if path.exists():
-        value = path.read_text().strip()
+    if path.exists() or not create:
+        try:
+            value = path.read_text().strip()
+        except OSError:
+            raise TwentyError(f"TWENTY_PASSWORD_FILE ({file_name}) can't be read; run make crm-init") from None
         if not value:
             raise TwentyError(f"TWENTY_PASSWORD_FILE ({path}) is empty")
     else:
@@ -343,7 +357,7 @@ def owner_password(env) -> tuple[str, str]:
         with os.fdopen(fd, "w") as fh:
             fh.write(value + "\n")
         step(f"owner password: generated in {path}")
-    return value, str(path)
+    return email, value, str(path)
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -351,11 +365,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     if not SLUG.match(slug):
         raise TwentyError(f"slug '{slug}' must use lowercase letters, digits and hyphens")
     env = os.environ
-    email = env.get("TWENTY_USERNAME", "")
-    if env.get("TWENTY_PASSWORD") and env.get("TWENTY_PASSWORD_FILE"):
-        raise TwentyError("set TWENTY_PASSWORD or TWENTY_PASSWORD_FILE, not both")
-    if not email or not (env.get("TWENTY_PASSWORD") or env.get("TWENTY_PASSWORD_FILE")):
-        raise TwentyError("TWENTY_USERNAME and TWENTY_PASSWORD (or TWENTY_PASSWORD_FILE) must be set")
+    owner_login(env)
     store = Workspaces(env)
     multi = truthy(env.get("TWENTY_MULTIWORKSPACE"))
 
@@ -373,7 +383,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         )
 
     # Resolved only once there is work to do, so a no-op run never creates the file.
-    password, password_where = owner_password(env)
+    email, password, password_where = owner_credentials(env, create=True)
     if not 8 <= len(password) <= 50:
         # Twenty's own rule (PASSWORD_REGEX); it reports both cases as "Password too weak".
         raise TwentyError("TWENTY_PASSWORD must be 8 to 50 characters")
@@ -392,14 +402,6 @@ def cmd_init(args: argparse.Namespace) -> int:
     if args.owner_only:
         # crm.sh grants server admin next, then runs init again, which signs in.
         return 0
-
-    if env.get("TWENTY_GRANT_ADMIN_CMD"):
-        # The owner creates further workspaces, which Twenty limits to server
-        # admins. Idempotent, so it runs every time and repairs a failed grant.
-        step("server admin: running")
-        subprocess.run([env["TWENTY_GRANT_ADMIN_CMD"], "grant-admin", email], check=True,
-                       stdout=subprocess.DEVNULL)
-        step("server admin: done")
 
     if stored is not None:
         # A complete workspace being rotated, or a partial one left by a failed run.
@@ -482,13 +484,7 @@ def cmd_login_link(args: argparse.Namespace) -> int:
     ws_url = values.get("workspace_url", "")
     if not ws_id or not ws_url:
         raise TwentyError(f"{store.where(slug)} has no workspace_id or workspace_url; run make crm-init")
-    email = env.get("TWENTY_USERNAME", "")
-    password_file = env.get("TWENTY_PASSWORD_FILE", "")
-    if password_file and not Path(password_file).expanduser().exists():
-        raise TwentyError(f"TWENTY_PASSWORD_FILE ({password_file}) doesn't exist; run make crm-init")
-    if not email or not (env.get("TWENTY_PASSWORD") or password_file):
-        raise TwentyError("TWENTY_USERNAME and TWENTY_PASSWORD (or TWENTY_PASSWORD_FILE) must be set")
-    password, _ = owner_password(env)
+    email, password, _ = owner_credentials(env)
     tw = Twenty(env.get("TWENTY_BASE_URL", "http://127.0.0.1:3000"))
     print(f"[crm] {slug}: signing in as {email}", file=sys.stderr, flush=True)
     _, available = sign_in(tw, email, password)
@@ -517,16 +513,10 @@ def owner_session(env, slug: str) -> tuple[Twenty, str]:
     if values is None:
         raise UsageError(f"no workspace '{slug}'")
     if slug == "main":
-        email = env.get("TWENTY_USERNAME", "")
-        password = env.get("TWENTY_PASSWORD", "")
-        password_file = env.get("TWENTY_PASSWORD_FILE", "")
-        if not password and password_file:
-            try:
-                password = Path(password_file).expanduser().read_text().strip()
-            except OSError:
-                raise UsageError(f"TWENTY_PASSWORD_FILE ({password_file}) can't be read; run make crm-init") from None
-        if not email or not password:
-            raise UsageError("TWENTY_USERNAME and TWENTY_PASSWORD (or TWENTY_PASSWORD_FILE) must be set")
+        try:
+            email, password, _ = owner_credentials(env)
+        except TwentyError as exc:
+            raise UsageError(str(exc)) from None
         base = env.get("TWENTY_BASE_URL", "http://127.0.0.1:3000")
         ws_id = values.get("workspace_id", "")
         origin = values.get("workspace_url", "")
@@ -711,7 +701,7 @@ def main(argv: list[str] | None = None) -> int:
     run = {"login-link": cmd_login_link, "list": cmd_list, "key": cmd_key}.get(args.cmd, cmd_init)
     try:
         return run(args)
-    except (TwentyError, addon_store.InputError, subprocess.CalledProcessError, OSError) as exc:
+    except (TwentyError, addon_store.InputError, OSError) as exc:
         print(f"[crm] ERROR: {exc}", file=sys.stderr)
         return 1
 

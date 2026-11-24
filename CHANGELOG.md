@@ -261,6 +261,18 @@ the stack under another app.
   `MESSAGES_INDEX_DIR`, `MESSAGES_EVENTS_DIR`, `DB_DATA_DIR` and
   `TWENTY_DATA_DIR`, as `setup.sh` does, and prints those folders as absolute
   paths.
+- `crm.sh key` on `main` and `crm.sh login-link` check the Twenty owner login
+  as `crm.sh init` does. With both `TWENTY_PASSWORD` and
+  `TWENTY_PASSWORD_FILE` in `.env`, they now stop with "set TWENTY_PASSWORD or
+  TWENTY_PASSWORD_FILE in .env, not both" and exit 1; before, `key` used
+  `TWENTY_PASSWORD`. A missing password file is reported as
+  "TWENTY_PASSWORD_FILE (PATH) can't be read; run make crm-init" by both, and
+  an empty one as "is empty" by `key` too. `crm.sh init --json` also prints
+  the `[crm] server admin: running` and `done` lines on stderr, as plain mode
+  does; its stdout is unchanged.
+- `twenty_admin.py` no longer reads `TWENTY_GRANT_ADMIN_CMD`. Callers run
+  `init --owner-only`, grant the owner server admin, then run `init`, as
+  `crm.sh init` does.
 
 ## v0.3.18 — 2026-11-21
 
