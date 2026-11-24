@@ -234,6 +234,12 @@ the stack under another app.
   own `enabled_toolsets` at the next bootstrap run, as the stack's
   `caldav-<slug>` entries already did. A job that names one in its own
   `enabled_toolsets` still gets it.
+- `make mail-drafts`, `mail-drafts-watch` and `mail-drafts-doctor` take
+  `MAIL_DRAFTS_DIR` from `.env`, as compose, `setup.sh` and `doctor.sh`
+  already did. Before, they used `./data/mail-drafts` unless the variable was
+  exported in the shell, so with a custom folder the host helper missed the
+  drafts `mail-drafts-mcp` queued. A value in the shell or on make's command
+  line still wins.
 
 ## v0.3.18 — 2026-11-21
 
