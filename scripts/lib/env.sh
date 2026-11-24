@@ -28,19 +28,25 @@ env_get_file() {
   fi
 }
 
-# env_true KEY [DEFAULT]: whether KEY's value (env_get, DEFAULT 0) is 1, true,
-# yes or on, in any case, ignoring spaces at either end. The rule of
-# addon_manifest.truthy, so a flag means the same to the scripts and the
-# add-on manifest.
-env_true() {
+# env_truthy VALUE: whether VALUE is 1, true, yes or on, in any case, ignoring
+# spaces at either end. The rule of addon_manifest.truthy, so a flag means the
+# same to the scripts and the add-on manifest. bootstrap-api-profile.sh
+# (is_true) and 06-buzz-localhost-proxy.sh run in the hermes container without
+# this file and carry copies; change them together.
+env_truthy() {
   local v
-  v="$(env_get "$1" "${2:-0}" | tr '[:upper:]' '[:lower:]')"
+  v="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
   v="${v#"${v%%[![:space:]]*}"}"
   v="${v%"${v##*[![:space:]]}"}"
   case "$v" in
     1 | true | yes | on) return 0 ;;
   esac
   return 1
+}
+
+# env_true KEY [DEFAULT]: env_truthy of KEY's value (env_get, DEFAULT 0).
+env_true() {
+  env_truthy "$(env_get "$1" "${2:-0}")"
 }
 
 # valid_slug SLUG: an add-on instance slug by addon_store.SLUG_RE's rule, a

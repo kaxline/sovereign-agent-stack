@@ -107,6 +107,26 @@ for k in A B C D E F G H I J; do
   sh=0; ENV_FILE="$t" env_true "$k" && sh=1
   [ "$py" = "$sh" ] || fail "env_true $k=[$v]: shell $sh, addon_manifest.truthy $py"
 done
+# env_truthy is the same rule on a value, and the hermes-container copies
+# (bootstrap is_true, its auto-title flag, the Buzz proxy) agree with it.
+for v in 1 on True ' 1 ' YES ' On ' 0 off no '' 't rue' nope; do
+  sh=0; env_truthy "$v" && sh=1
+  py="$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import addon_manifest as m; print(int(m.truthy(sys.argv[2])))' "${ROOT}/scripts/lib" "$v")"
+  [ "$py" = "$sh" ] || fail "env_truthy [$v]: shell $sh, addon_manifest.truthy $py"
+  bs=0; sh -c "$(fn_source "${ROOT}/compose/hermes/bootstrap-api-profile.sh" is_true)"'
+is_true "$1"' _ "$v" && bs=1
+  [ "$bs" = "$sh" ] || fail "bootstrap is_true [$v]: $bs, env_truthy $sh"
+  out="$(HERMES_BUZZ_ENABLED="$v" BUZZ_RELAY_URL=wss://relay.example.com bash "${ROOT}/compose/hermes/06-buzz-localhost-proxy.sh" 2>&1 || true)"
+  bz=1; case "$out" in *"HERMES_BUZZ_ENABLED off"*) bz=0 ;; esac
+  [ "$bz" = "$sh" ] || fail "06-buzz HERMES_BUZZ_ENABLED=[$v]: $bz, env_truthy $sh"
+done
+# The auto-title flag's on spellings are is_true's.
+# shellcheck disable=SC2016 # matches the literal "$_title" in the bootstrap
+title_case="$(sed -n '/case "\$_title" in/,/esac/p' "${ROOT}/compose/hermes/bootstrap-api-profile.sh")"
+case "$title_case" in *'1|true|yes|on) TITLE_ENABLED=true'*) ;; *) fail "bootstrap auto-title: on spellings differ from is_true" ;; esac
+# shellcheck disable=SC2016 # literal text in the bootstrap
+grep -q '_title="${_title#' "${ROOT}/compose/hermes/bootstrap-api-profile.sh" || fail "bootstrap auto-title: value not trimmed"
+
 # No inline copies of the rule left in doctor, the upgrade hooks or the
 # add-on scripts.
 # agent-create.sh is left out: its WITH=buzz|1|true|yes is an argument, not a

@@ -118,13 +118,6 @@ if [[ "${1:-}" == "--table" ]]; then
   exit 0
 fi
 
-truthy() {
-  case "$1" in
-    1 | [Tt][Rr][Uu][Ee] | [Yy][Ee][Ss] | [Oo][Nn]) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 # csv helpers (bash 3.2: no associative arrays)
 csv_has() {
   [[ ",$1," == *",$2,"* ]]
@@ -183,9 +176,9 @@ if [[ "${1:-}" == "--list" ]]; then
   while read -r flag profile _seed; do
     env_value "$flag"
     if csv_has "$profiles" "$profile"; then
-      if truthy "$value"; then state=on; else state="on (flag is ${value:-unset})"; fi
+      if env_truthy "$value"; then state=on; else state="on (flag is ${value:-unset})"; fi
     else
-      if truthy "$value"; then state="off (run make ensure-local)"; else state=off; fi
+      if env_truthy "$value"; then state="off (run make ensure-local)"; else state=off; fi
     fi
     printf '%-22s %-14s %s\n' "$flag" "$profile" "$state"
   done <<< "$SERVICES"
@@ -216,7 +209,7 @@ while read -r flag profile seed; do
   fi
 
   env_value "$flag"
-  if truthy "$value"; then
+  if env_truthy "$value"; then
     if ! csv_has "$profiles" "$profile"; then
       profiles="$(csv_add "$profiles" "$profile")"
       log "Added '${profile}' to COMPOSE_PROFILES (${flag}=1)"

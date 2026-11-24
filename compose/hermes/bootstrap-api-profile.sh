@@ -85,9 +85,15 @@ log() {
   printf '[hermes-api-bootstrap] %s\n' "$1"
 }
 
+# is_true VALUE: env_truthy in scripts/lib/env.sh, which isn't mounted here:
+# 1, true, yes or on, any case, ends trimmed. Change them together. Tests pull
+# this function out alone, so it stays self-contained.
 is_true() {
-  case "$1" in
-    1|true|TRUE|yes|YES) return 0 ;;
+  _it="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  _it="${_it#"${_it%%[![:space:]]*}"}"
+  _it="${_it%"${_it##*[![:space:]]}"}"
+  case "$_it" in
+    1|true|yes|on) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -2213,9 +2219,14 @@ log "Stale-stream timeout ${STALE_TIMEOUT}s for every profile (${UPSTREAM_KIND} 
 # server that runs one request at a time serves the title first, and the
 # reply waits behind it.
 if [ "$PROFILE" = "browser" ]; then
-  case "$BROWSER_AUTO_TITLE" in
-    1|true|TRUE|yes|YES) TITLE_ENABLED=true ;;
-    0|false|FALSE|no|NO) TITLE_ENABLED=false ;;
+  # On by is_true's rule, off by its mirror (0, false, no, off, any case,
+  # ends trimmed); anything else picks by upstream.
+  _title="$(printf '%s' "$BROWSER_AUTO_TITLE" | tr '[:upper:]' '[:lower:]')"
+  _title="${_title#"${_title%%[![:space:]]*}"}"
+  _title="${_title%"${_title##*[![:space:]]}"}"
+  case "$_title" in
+    1|true|yes|on) TITLE_ENABLED=true ;;
+    0|false|no|off) TITLE_ENABLED=false ;;
     *) if [ "$UPSTREAM_KIND" = local ]; then TITLE_ENABLED=false; else TITLE_ENABLED=true; fi ;;
   esac
   log "Setting auxiliary.title_generation.enabled=${TITLE_ENABLED} on browser (${UPSTREAM_KIND} upstream)"

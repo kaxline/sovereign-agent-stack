@@ -33,6 +33,15 @@ sync
 expect "flag on adds profile" COMPOSE_PROFILES core,rag
 expect "flag on marks profile managed" COMPOSE_PROFILES_MANAGED rag
 
+# env_truthy's spellings: any case, ends trimmed (quotes come off in env_get).
+for v in on True '" 1 "'; do
+  printf "COMPOSE_PROFILES=core\nLIGHTRAG_MCP_ENABLED=%s\n%b" "$v" "$keys" > "${tmp}/.env"
+  sync
+  expect "flag ${v} adds profile" COMPOSE_PROFILES core,rag
+done
+printf "COMPOSE_PROFILES=core\nLIGHTRAG_MCP_ENABLED=1\nMAIL_MCP_ENABLED=0\n%b" "$keys" > "${tmp}/.env"
+sync
+
 # Turning it off removes the profile it manages.
 sed -i.bak 's/^LIGHTRAG_MCP_ENABLED=1/LIGHTRAG_MCP_ENABLED=0/' "${tmp}/.env"
 sync
