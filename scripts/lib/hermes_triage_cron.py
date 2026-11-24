@@ -1,9 +1,9 @@
 """Create, show or remove a triage cron job inside the hermes container.
 
-Run by scripts/mail-triage-cron.sh (and scripts/messages-triage-cron.sh) as
-the hermes user with the venv Python, with one JSON argument. The job is
-mail-triage with the mail tools unless the request names another job and
-tool list (messages-triage with the messages tools). Uses Hermes's own
+Run by scripts/lib/triage-cron.sh (for mail-triage-cron.sh and
+messages-triage-cron.sh) as the hermes user with the venv Python, with one
+JSON argument naming the job and its tool list. A request without them gets
+mail-triage with the mail tools. Uses Hermes's own
 cronjob tool so the job record is exactly what Hermes would write, then reads
 it back and fails if the tool allowlist didn't stick. Prints job settings,
 never prompts of other jobs. See docs/email.md and docs/messages.md.

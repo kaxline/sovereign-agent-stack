@@ -62,10 +62,10 @@ KEYSTORE_PASSWORD = "synthetic-keystore"
 
 def test_mutf7() -> None:
     for text in ("INBOX", "Café", "日本語/Notes", "R&D", "Ünïcödé & more", "~peter/mail/台北"):
-        enc = mail_imap.encode_mutf7(text)
-        expect(enc.isascii() and mail_imap.decode_mutf7(enc) == text, f"modified UTF-7 round trip: {text!r}")
-    expect(mail_imap.decode_mutf7("Caf&AOk-") == "Café", "decodes a known name")
-    expect(mail_imap.encode_mutf7("R&D") == "R&-D", "& is escaped as &-")
+        enc = mail_imap_conn.encode_mutf7(text)
+        expect(enc.isascii() and mail_imap_conn.decode_mutf7(enc) == text, f"modified UTF-7 round trip: {text!r}")
+    expect(mail_imap_conn.decode_mutf7("Caf&AOk-") == "Café", "decodes a known name")
+    expect(mail_imap_conn.encode_mutf7("R&D") == "R&-D", "& is escaped as &-")
 
 
 def test_parse_list() -> None:
@@ -80,7 +80,7 @@ def test_parse_list() -> None:
         (b'(\\HasNoChildren) "/" {11}', b'Caf&AOk-/Q4'),
         b'(\\HasNoChildren) "/" "Quote \\"me\\""',
     ]
-    boxes = {b.path: b for b in mail_imap.parse_list(data)}
+    boxes = {b.path: b for b in mail_imap_conn.parse_list(data)}
     expect(set(boxes) == {"INBOX", "[Gmail]", "[Gmail]/All Mail", "[Gmail]/Spam", "Papierkorb",
                           "Projects/Alpha", "Archive", "Café/Q4", 'Quote "me"'}, f"LIST parsed: {sorted(boxes)}")
     expect(boxes["Projects/Alpha"].raw == "Projects.Alpha", "keeps the server's own name for EXAMINE")
@@ -267,7 +267,7 @@ class FakeReader:
         pass
 
     def list_mailboxes(self):
-        return mail_imap.parse_list([b'(\\HasNoChildren) "/" "INBOX"'])
+        return mail_imap_conn.parse_list([b'(\\HasNoChildren) "/" "INBOX"'])
 
     def examine(self, box) -> int:
         return 7
@@ -758,7 +758,7 @@ def admin(port: int, account: str) -> imaplib.IMAP4:
 
 
 def server_name(path: str) -> str:
-    return mail_imap.encode_mutf7(path.replace("/", "."))  # GreenMail separates levels with "."
+    return mail_imap_conn.encode_mutf7(path.replace("/", "."))  # GreenMail separates levels with "."
 
 
 def appended_at(epoch: int) -> str:
@@ -795,7 +795,7 @@ def server_state(port: int) -> dict:
     state = {}
     for account in USERS:
         conn = admin(port, account)
-        for box in mail_imap.parse_list(conn.list()[1]):
+        for box in mail_imap_conn.parse_list(conn.list()[1]):
             typ, _ = conn.select(mail_imap.quote(box.raw), readonly=True)
             if typ != "OK":
                 expect(not box.selectable, f"test connection can't open {box.path}")

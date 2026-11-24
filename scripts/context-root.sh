@@ -15,50 +15,20 @@ ENV_FILE="${ROOT}/.env"
 OVERRIDE="${ROOT}/docker-compose.override.yml"
 
 die() { echo "error: $*" >&2; exit 1; }
+busy() { die "$1"; }
 
 # shellcheck source=lib/roots.sh
 source "${ROOT}/scripts/lib/roots.sh"
 
-# True if candidate is under any already-mounted coding or context root.
+# path_visible PATH: true if PATH is under a coding or context root.
 path_visible() {
-  local candidate="$1"
-  local primary extras context
-  primary="$(env_get OPENCODE_WORKSPACE_HOST)"
-  extras="$(env_get CODING_EXTRA_ROOTS)"
-  context="$(env_get CONTEXT_EXTRA_ROOTS)"
-  if [[ -n "$primary" && ( "$candidate" == "$primary" || "$candidate" == "$primary"/* ) ]]; then
-    return 0
-  fi
-  local IFS=':'
-  local root
-  # shellcheck disable=SC2086
-  for root in $extras $context; do
-    [[ -z "$root" ]] && continue
-    if [[ "$candidate" == "$root" || "$candidate" == "$root"/* ]]; then
-      return 0
-    fi
-  done
-  return 1
+  path_under_roots "$1" "$(env_get OPENCODE_WORKSPACE_HOST)" \
+    "$(env_get CODING_EXTRA_ROOTS)" "$(env_get CONTEXT_EXTRA_ROOTS)"
 }
 
+# path_covered_by_coding PATH: true if PATH is under a coding root.
 path_covered_by_coding() {
-  local candidate="$1"
-  local primary extras
-  primary="$(env_get OPENCODE_WORKSPACE_HOST)"
-  extras="$(env_get CODING_EXTRA_ROOTS)"
-  if [[ -n "$primary" && ( "$candidate" == "$primary" || "$candidate" == "$primary"/* ) ]]; then
-    return 0
-  fi
-  local IFS=':'
-  local root
-  # shellcheck disable=SC2086
-  for root in $extras; do
-    [[ -z "$root" ]] && continue
-    if [[ "$candidate" == "$root" || "$candidate" == "$root"/* ]]; then
-      return 0
-    fi
-  done
-  return 1
+  path_under_roots "$1" "$(env_get OPENCODE_WORKSPACE_HOST)" "$(env_get CODING_EXTRA_ROOTS)"
 }
 
 cmd_list() {
@@ -68,13 +38,7 @@ cmd_list() {
   if [[ -z "$extras" || "$extras" == ":" ]]; then
     echo "  (none)"
   else
-    local IFS=':'
-    local root
-    # shellcheck disable=SC2086
-    for root in $extras; do
-      [[ -z "$root" ]] && continue
-      echo "  $root"
-    done
+    split_roots "$extras" | sed 's/^/  /'
   fi
   echo "Also visible via coding roots (writable — coding-root wins):"
   echo "  primary: $(env_get OPENCODE_WORKSPACE_HOST '(unset)')"
@@ -98,6 +62,7 @@ cmd_add() {
   [[ -f "$ENV_FILE" ]] || die "missing $ENV_FILE — run ./scripts/setup.sh first"
   local service
   service="$(terminal_service)"
+  lock
 
   if path_covered_by_coding "$path"; then
     echo "Already visible via a coding root (writable): $path"
@@ -117,9 +82,6 @@ cmd_add() {
   if [[ -z "$extras" || "$extras" == ":" ]]; then
     extras=":$path"
   else
-    case ":${extras#:}:" in
-      *:"$path":*) echo "Already in CONTEXT_EXTRA_ROOTS: $path"; cmd_list; return 0 ;;
-    esac
     extras="${extras}:$path"
   fi
   [[ "$extras" == :* ]] || extras=":$extras"

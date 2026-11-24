@@ -76,7 +76,7 @@ def build(root: Path, accounts: dict, settings: dict | None = None) -> tuple[Pat
 
 
 def render(cfg, inst) -> str:
-    return ea.render(cfg, inst, index_path="/data/index/index.sqlite", drafts_dir="/data/drafts")
+    return ea.render(cfg, inst, index_path="/data/index/index.sqlite")
 
 
 with tempfile.TemporaryDirectory() as tmp:
@@ -198,7 +198,7 @@ with tempfile.TemporaryDirectory() as tmp:
           parsed.get("accounts", []) == [] and parsed["bodies"] is False, str(parsed))
     check("without since, only the mailbox listing gets a placeholder since",
           "since" not in parsed
-          and str(tomllib.loads(ea.render(cfg, inst, index_path="/i", drafts_dir="/d", listing=True))["since"])
+          and str(tomllib.loads(ea.render(cfg, inst, index_path="/i", listing=True))["since"])
           == ea.LISTING_SINCE, str(parsed))
 
     # The entry point: nothing configured, one pass, exit 0.
@@ -254,11 +254,11 @@ with tempfile.TemporaryDirectory() as tmp:
     cfg, inst = run / "config", run / "instances"
 
     try:
-        parsed = tomllib.loads(ea.render(cfg, inst, index_path="/i", drafts_dir="/d", listing=True, account="nobox"))
+        parsed = tomllib.loads(ea.render(cfg, inst, index_path="/i", listing=True, account="nobox"))
         check("listing renders only the requested account, with a placeholder scope",
               [a["id"] for a in parsed["accounts"]] == ["nobox"] and parsed["accounts"][0]["mailboxes"] == ["*"],
               str(parsed))
-        (root / "list.toml").write_text(ea.render(cfg, inst, index_path=str(root / "i.sqlite"), drafts_dir="/d",
+        (root / "list.toml").write_text(ea.render(cfg, inst, index_path=str(root / "i.sqlite"),
                                                   listing=True, account="nobox"))
         mi.load_config(root / "list.toml")
         check("load_config accepts the listing config for an account with no mailboxes", True)

@@ -15,5 +15,6 @@ then the implementation the stack ships.
 | [browser](browser.md) | The browser the agent drives, and how the credential backend reaches it | CDP over WebSocket |
 | [upstreams](upstreams.md) | Every fork, vendored copy and overlay, with its pin and filing status | — |
 
-The browser, messaging channels and the client API Boundary uses are still Hermes-specific; the
-[agent](agent.md) page lists where.
+Messaging channels and the client API Boundary uses are still Hermes-specific. So is the browser,
+unless a profile uses the opt-in `web-browser` service or another provider; the [agent](agent.md)
+page lists where.

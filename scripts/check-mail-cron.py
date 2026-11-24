@@ -125,8 +125,8 @@ def check(home: Path) -> list[str]:
         servers = mcp_servers(path / "config.yaml")
         enabled_mcp = {n for n, s in servers.items() if s["enabled"]}
         kind = {n: k for n in enabled_mcp for url, k in READERS.items() if url in servers[n]["url"]}
-        mail = set(kind)
-        if not mail:
+        readers = set(kind)
+        if not readers:
             continue
         platform = cron_list(path / "config.yaml")
         try:
@@ -138,16 +138,16 @@ def check(home: Path) -> list[str]:
             if not isinstance(job, dict) or job.get("no_agent"):
                 continue
             mcp, native = effective(job, enabled_mcp, platform)
-            if not mcp & mail:
+            if not mcp & readers:
                 continue
-            others = sorted(mcp - mail)
+            others = sorted(mcp - readers)
             if native is None:
                 others.append("the profile's default tools")
             else:
                 others += sorted(native - SAFE_NATIVE)
             if others:
                 paused = "" if job.get("enabled", True) else " (paused)"
-                reads = " and ".join(sorted({kind[n] for n in mcp & mail}))
+                reads = " and ".join(sorted({kind[n] for n in mcp & readers}))
                 problems.append(f"{label}: cron job {job.get('id')} '{job.get('name')}'{paused} can read {reads}"
                                 f" alongside {', '.join(others)}")
     return problems
