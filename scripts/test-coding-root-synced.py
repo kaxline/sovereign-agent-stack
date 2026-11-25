@@ -68,7 +68,11 @@ def last_json(proc: subprocess.CompletedProcess[str]) -> dict:
 
 
 def main() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
+    # Not under the system tempdir: it is /tmp on Linux, which add refuses as a
+    # container path, and ws, plain and notes below double as container paths.
+    runs = ROOT / ".test-runs"
+    runs.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=runs) as tmp:
         base = Path(tmp).resolve()
         ws = base / "ws"
         plain = base / "plain"
