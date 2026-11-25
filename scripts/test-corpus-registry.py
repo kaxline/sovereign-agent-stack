@@ -113,6 +113,7 @@ with tempfile.TemporaryDirectory() as tmp:
     shutil.copy(ROOT / "scripts" / "corpus.sh", stack / "scripts")
     for f in ("env.sh", "data-root.sh", "corpus_registry.py"):
         shutil.copy(ROOT / "scripts" / "lib" / f, stack / "scripts" / "lib")
+    shutil.copytree(ROOT / "scripts" / "seed", stack / "scripts" / "seed")
     sdata = t / "sdata"
     (sdata / "inputs" / "hot").mkdir(parents=True)
     (stack / ".env").write_text(f"ASSISTANT_DATA_ROOT={sdata}\nWORKSPACE=hot\nEMBEDDING_MODEL=syn-embed\nEMBEDDING_DIM=768\n")

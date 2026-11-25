@@ -20,6 +20,7 @@ home="${tmp}/home"
 mkdir -p "${stack}/scripts/lib" "${stack}/data/hermes" "${tmp}/bin" "$home"
 cp "${ROOT}/scripts/data-dir.sh" "${stack}/scripts/"
 cp "${ROOT}/scripts/lib/env.sh" "${ROOT}/scripts/lib/data-root.sh" "${stack}/scripts/lib/"
+cp -R "${ROOT}/scripts/seed" "${stack}/scripts/"
 printf 'state\n' > "${stack}/data/hermes/state.txt"
 
 # --- expand_user_path ---

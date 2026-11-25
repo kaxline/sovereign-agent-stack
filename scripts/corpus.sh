@@ -58,26 +58,6 @@ refuse_backend_workspace_overrides() {
   fi
 }
 
-create_getting_started() {
-  local workspace="$1"
-  local dest="${DATA_ROOT}/inputs/${workspace}/getting-started.md"
-  [[ -f "$dest" ]] && return 0
-  cat > "$dest" <<EOF
-# Getting started
-
-Welcome to your local knowledge base (**${workspace}**).
-
-Drop documents into this folder — PDF, DOCX, MD, TXT, and more — then either:
-
-1. Upload via the LightRAG web UI at http://localhost:9621/webui/, or
-2. Run: make corpus-ingest SLUG=${workspace}
-   (after \`make corpus-use SLUG=${workspace}\`)
-
-After ingestion, explore the knowledge graph in the LightRAG UI or Neo4j Browser.
-EOF
-  log "Wrote $dest"
-}
-
 # registry CMD ARGS: scripts/lib/corpus_registry.py on REGISTRY.
 registry() { python3 "${ROOT}/scripts/lib/corpus_registry.py" "$REGISTRY" "$@"; }
 
@@ -111,7 +91,7 @@ cmd_create() {
     return 0
   fi
   mkdir -p "${DATA_ROOT}/inputs/${slug}" "${DATA_ROOT}/rag_storage/${slug}"
-  create_getting_started "$slug"
+  seed_file "${SEED_DIR}/getting-started.md" "${DATA_ROOT}/inputs/${slug}/getting-started.md" "WORKSPACE=${slug}"
   registry_add "$slug"
   log "Created corpus '${slug}'"
   log "  inputs:  ${DATA_ROOT}/inputs/${slug}/"

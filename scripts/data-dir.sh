@@ -69,114 +69,6 @@ copy_tree() {
   fi
 }
 
-seed_voice_readme() {
-  local dest="$1/voice/README.md"
-  [[ -f "$dest" ]] && return 0
-  cat > "$dest" <<'EOF'
-# Writing voices
-
-Each subdirectory here is one writing voice. Hermes reads them at `/opt/voice`.
-
-## Setup
-
-1. Create a voice and drop in samples:
-
-       mkdir -p voice/my-voice/samples
-       cp ~/writing/*.md voice/my-voice/samples/
-
-   (Paths are relative to ASSISTANT_DATA_ROOT. See docs/data-dir.md.)
-
-2. Calibrate in Hermes: `Calibrate the my-voice writing voice.`
-
-3. Write: `Write a 600-word post about pricing in the my-voice voice.`
-
-Full guide: docs/writing-voice.md in the assistant repo.
-EOF
-  log "Wrote $dest"
-}
-
-seed_projects_readme() {
-  local dest="$1/projects/README.md"
-  [[ -f "$dest" ]] && return 0
-  cat > "$dest" <<'EOF'
-# Projects
-
-Each subdirectory here is one project. Hermes reads them at `/opt/projects`.
-
-Scaffold from the assistant repo root:
-
-    make project-init PROJECT=my-project
-
-Select it in the WebUI workspace dropdown (library folders appear automatically),
-or name `/opt/projects/my-project` in a prompt.
-
-Full convention: docs/projects.md
-EOF
-  log "Wrote $dest"
-}
-
-seed_memory_readme() {
-  local root="$1"
-  local dest="$root/memory/README.md"
-  [[ -f "$dest" ]] && return 0
-  cat > "$dest" <<'EOF'
-# Curated memory
-
-Long-form notes at `/opt/memory`. Tiny facts stay in Hermes USER.md / MEMORY.md
-under ./data/hermes/memories/.
-
-Fill these files yourself or ask Hermes to remember and consolidate.
-
-Full guide: docs/memory.md
-EOF
-  log "Wrote $dest"
-}
-
-seed_memory_index() {
-  local dest="$1/memory/INDEX.md"
-  [[ -f "$dest" ]] && return 0
-  cat > "$dest" <<'EOF'
-# Memory index
-
-| File | What it holds |
-|---|---|
-| people.md | People, relationships, how you know them |
-| decisions.md | Decisions and why they superseded earlier ones |
-| preferences.md | Durable preferences that did not fit USER.md |
-| notes/ | One topic file per extra note |
-
-## Notes
-EOF
-  log "Wrote $dest"
-}
-
-seed_memory_stub() {
-  local dest="$1"
-  local title="$2"
-  local body="$3"
-  [[ -f "$dest" ]] && return 0
-  printf '# %s\n\n%s\n' "$title" "$body" > "$dest"
-  log "Wrote $dest"
-}
-
-ensure_user_data_layout() {
-  local root="$1"
-  mkdir -p \
-    "$root/projects" \
-    "$root/voice" \
-    "$root/memory/notes" \
-    "$root/inputs" \
-    "$root/rag_storage" \
-    "$root/corpora"
-  seed_voice_readme "$root"
-  seed_projects_readme "$root"
-  seed_memory_readme "$root"
-  seed_memory_index "$root"
-  seed_memory_stub "$root/memory/people.md" "People" "One section per person. Empty until something is remembered."
-  seed_memory_stub "$root/memory/decisions.md" "Decisions" "One section per decision. Empty until something is remembered."
-  seed_memory_stub "$root/memory/preferences.md" "Preferences" "Durable preferences that will not fit in USER.md."
-}
-
 root_has_user_content() {
   local root="$1"
   local name
@@ -224,7 +116,7 @@ cmd_set() {
   new="$(resolve_dir_arg "$raw")"
   validate_data_root_path "$new" || exit 1
 
-  ensure_user_data_layout "$new"
+  seed_data_root "$new"
   upsert_env "${ROOT}/.env" ASSISTANT_DATA_ROOT "$new"
   log "ASSISTANT_DATA_ROOT=$new"
 
@@ -297,7 +189,7 @@ cmd_migrate() {
     copy_tree "$src" "$dst"
   done
 
-  ensure_user_data_layout "$to"
+  seed_data_root "$to"
   upsert_env "${ROOT}/.env" ASSISTANT_DATA_ROOT "$to"
   log "ASSISTANT_DATA_ROOT=$to"
 
