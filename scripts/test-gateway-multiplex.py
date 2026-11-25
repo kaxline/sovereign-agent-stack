@@ -193,6 +193,10 @@ for name in ("api-server", "browser", "orchestrator"):
     c = safe_load((home / "profiles" / name / "config.yaml").read_text())
     assert "gateway" not in c and c["sessions"]["auto_prune"] is False, (name, c)
 
+c = safe_load((home / "config.yaml").read_text())
+assert c["dashboard"]["ws_ping_timeout"] == 120, c
+assert "dashboard" not in safe_load((home / "profiles" / "browser" / "config.yaml").read_text())
+
 # Unparked by hand (`hermes -p orchestrator gateway start` removes the marker): stays unparked.
 (home / "profiles" / "orchestrator" / "gateway.parked").unlink()
 second = run019()
@@ -202,6 +206,11 @@ assert (home / ".env").read_text().count("API_SERVER_KEY=") == 1, "key generated
 record = json.loads((home / "gateway_topology.json").read_text())
 assert record["parked_once"] == sorted(["api-server", "browser", "software-engineer", "orchestrator",
                                         "idle", "pinned"]), record
+
+# A ping timeout set by hand is kept.
+(home / "config.yaml").write_text("dashboard:\n  ws_ping_timeout: 45\n")
+assert "ws_ping_timeout" not in run019()
+assert safe_load((home / "config.yaml").read_text())["dashboard"]["ws_ping_timeout"] == 45
 
 # A key the operator set is kept; a missing .env gets one with mode 0600.
 (home / ".env").unlink()

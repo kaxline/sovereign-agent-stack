@@ -34,7 +34,15 @@
 # retention_days (90) at startup. Pinning it false keeps every session, which
 # session_search and the WebUI history rely on.
 #
-# Both pins are written only where the key is unset, so a value set by hand
+# The dashboard binds 0.0.0.0, so uvicorn pings each websocket every 20 s and
+# closes it with 1011 when the pong takes over 20 s. The ping runs on the
+# dashboard's event loop, which a running turn can keep busy that long, and
+# the close drops a healthy client-gateway or Boundary socket mid-turn.
+# dashboard.ws_ping_timeout: 120 in the default profile (the dashboard reads
+# only that config) keeps the ping, which still finds half-open sockets over
+# an SSH tunnel to a remote host, but tolerates a busy loop.
+#
+# All pins are written only where the key is unset, so a value set by hand
 # wins. HERMES_PIN_SESSIONS_KEEP=0 skips the sessions pin.
 set -u
 
@@ -91,7 +99,7 @@ def read_cfg(cfg_path: Path):
         return None
 
 
-def pin(profile: str, cfg_path: Path, key: str, value: bool) -> None:
+def pin(profile: str, cfg_path: Path, key: str, value) -> None:
     section, _, leaf = key.partition(".")
     cfg = read_cfg(cfg_path)
     if cfg is None:
@@ -168,6 +176,8 @@ for name, path in [("default", home)] + named:
                   "./scripts/gateway-topology.sh multiplex clears it")
     if enabled("HERMES_PIN_SESSIONS_KEEP"):
         pin(name, cfg_path, "sessions.auto_prune", False)
+    if name == "default":
+        pin(name, cfg_path, "dashboard.ws_ping_timeout", 120)
 
 if mode == "multiplex":
     ensure_default_key()

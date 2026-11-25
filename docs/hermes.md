@@ -86,6 +86,10 @@ v0.22 gateways also find each other through a control socket at `$HERMES_HOME/ga
 
 With `sessions.auto_prune: true`, Hermes deletes ended sessions that have been inactive for `sessions.retention_days` (90) when it starts. The default was `true` up to v0.22.2 and is `false` from v0.22.3, which instead asks once when the disk is low until the key is written. The same cont-init script writes `sessions.auto_prune: false` into the default profile and every named profile where the key is unset, so `session_search` and the WebUI keep all history. A value you set by hand is left alone. `HERMES_PIN_SESSIONS_KEEP=0` turns the pin off for new profiles.
 
+### Dashboard websocket ping
+
+The dashboard binds 0.0.0.0 in the container, so uvicorn pings each websocket client (the client gateway, Boundary) every `dashboard.ws_ping_interval` seconds and closes the socket with code 1011 when no pong arrives within `dashboard.ws_ping_timeout`. Both default to 20. The ping runs on the dashboard's event loop, which a running turn can hold that long on a loaded machine, and the close ends the turn for the client ("Hermes restarted during the turn" from the client gateway). The same cont-init script writes `dashboard.ws_ping_timeout: 120` into the default profile's `config.yaml` where the key is unset; only that file is read by the dashboard. The ping stays on because it is what notices a half-open socket over an SSH tunnel to a remote host. A value you set by hand is left alone, and `ws_ping_interval: 0` turns the ping off.
+
 Dashboard JSON-RPC clients (for example Boundary over the gateway WebSocket) can rely on this agent tag for:
 
 - `timestamp` and `row_id` on `session.history` / `session.resume` transcript rows

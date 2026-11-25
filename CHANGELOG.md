@@ -6,6 +6,16 @@ steps. Pin a tag, not a branch. See [docs/releasing.md](docs/releasing.md) for
 how releases are cut and [docs/extending.md](docs/extending.md) for running
 the stack under another app.
 
+## Unreleased
+
+### Changes
+
+- The `hermes` container writes `dashboard.ws_ping_timeout: 120` into the
+  default profile's `config.yaml` where the key is unset (was Hermes' 20 s).
+  A busy dashboard no longer closes client-gateway and Boundary websockets
+  mid-turn. Takes effect on the next Hermes start. See
+  [docs/hermes.md](docs/hermes.md#dashboard-websocket-ping).
+
 ## v0.3.19 — 2026-11-25
 
 ### Upgrade steps
