@@ -57,7 +57,6 @@ Options:
   --mail-drafts             Let Hermes queue email drafts that a host helper saves to Mail's Drafts; never sends (profile mail-drafts)
   --messages                Enable the read-only Messages (iMessage/SMS) MCP over a host-built index, with new-message alerts (profile messages)
   --ollama                  Bundle Ollama in Docker + demo model pulls (profile ollama)
-  --hermes                  Deprecated alias; core already includes Hermes
   --non-interactive         Fail if required values are missing
   -h, --help                Show this help
 
@@ -80,7 +79,6 @@ while [[ $# -gt 0 ]]; do
     --title) WEBUI_TITLE="$2"; shift 2 ;;
     --opencode-workspace) OPENCODE_WORKSPACE_HOST="$2"; shift 2 ;;
     --data-root) ASSISTANT_DATA_ROOT_ARG="$2"; shift 2 ;;
-    --hermes) shift ;; # deprecated alias; core already includes Hermes
     --rag) SETUP_RAG=1; shift ;;
     --neo4j) SETUP_NEO4J=1; shift ;;
     --automation) SETUP_AUTOMATION=1; shift ;;
@@ -165,26 +163,6 @@ set_env_if_placeholder() {
   esac
 }
 
-append_compose_profile() {
-  local profile="$1"
-  local current=""
-  current="$(env_get_file .env COMPOSE_PROFILES)"
-  # Migrate pre-core profile names to `core`.
-  current="${current//hermes-webui/}"
-  current="${current//hermes/}"
-  current="$(echo "$current" | tr ',' '\n' | sed '/^$/d' | paste -sd, -)"
-  if [[ -z "$current" ]]; then
-    upsert_env .env COMPOSE_PROFILES "$profile"
-    log "Set COMPOSE_PROFILES=$profile"
-  elif [[ ",${current}," != *",${profile},"* ]]; then
-    upsert_env .env COMPOSE_PROFILES "${current},${profile}"
-    log "Appended $profile to COMPOSE_PROFILES"
-  else
-    upsert_env .env COMPOSE_PROFILES "$current"
-    log "COMPOSE_PROFILES already includes $profile"
-  fi
-}
-
 set_env_if_missing() {
   local file="$1"
   local key="$2"
@@ -249,19 +227,16 @@ PY
 }
 
 setup_rag_profile() {
-  append_compose_profile rag
   upsert_env .env LIGHTRAG_MCP_ENABLED 1
   log "Enabled LightRAG MCP registration (LIGHTRAG_MCP_ENABLED=1)"
 }
 
 setup_neo4j_profile() {
-  append_compose_profile neo4j
   upsert_env .env NEO4J_ENABLED 1
   log "Enabled Neo4j (NEO4J_ENABLED=1)"
 }
 
 setup_calendar_profile() {
-  append_compose_profile calendar
   upsert_env .env CALDAV_MCP_ENABLED 1
   log "Enabled CalDAV MCP registration (CALDAV_MCP_ENABLED=1)"
   log "After make up, connect each account: scripts/addon.sh connect caldav --instance <slug> < account.json (docs/calendar.md)"
@@ -270,7 +245,6 @@ setup_calendar_profile() {
 # Shared Postgres + SQL MCP. The secrets are generated for every install (see
 # Secrets below), so this only turns the profile and the registration on.
 setup_db_profile() {
-  append_compose_profile db
   upsert_env .env SQL_MCP_ENABLED 1
   local db_dir
   db_dir="$(resolve_data_root_path "$(data_root_env_get DB_DATA_DIR ./data/db)")"
@@ -283,7 +257,6 @@ setup_db_profile() {
 # starts with it; SQL MCP registration stays with --db. Tokens need the stack
 # up, so they come from make todo-init afterwards.
 setup_todo_profile() {
-  append_compose_profile todo
   ./scripts/todo.sh prepare
   upsert_env .env VIKUNJA_MCP_ENABLED 1
   log "Enabled Vikunja (todo profile). After make up: make todo-init (account + MCP tokens). See docs/todo.md"
@@ -292,7 +265,6 @@ setup_todo_profile() {
 # Draft-only mail MCP. Requests queue in MAIL_DRAFTS_DIR; make mail-drafts (or
 # mail-drafts-watch) on the host saves them to Mail's Drafts. Nothing sends.
 setup_mail_drafts_profile() {
-  append_compose_profile mail-drafts
   upsert_env .env MAIL_DRAFTS_ENABLED 1
   local drafts_dir
   drafts_dir="$(resolve_data_root_path "$(data_root_env_get MAIL_DRAFTS_DIR ./data/mail-drafts)")"
@@ -309,7 +281,6 @@ setup_mail_drafts_profile() {
 # forwards them to the default profile's webhook route, signed with
 # MESSAGES_WEBHOOK_SECRET.
 setup_messages_profile() {
-  append_compose_profile messages
   upsert_env .env MESSAGES_MCP_ENABLED 1
   set_env_if_placeholder .env MESSAGES_WEBHOOK_SECRET "$(rand_hex 32)"
   local index_dir events_dir
@@ -332,7 +303,6 @@ setup_messages_profile() {
 # Read-only mail MCP. The index is built on the host by make mail-index, which
 # needs a filled-in mail-index.toml; nothing here touches the Mail store.
 setup_mail_profile() {
-  append_compose_profile mail
   upsert_env .env MAIL_MCP_ENABLED 1
   local index_dir
   index_dir="$(resolve_data_root_path "$(data_root_env_get MAIL_INDEX_DIR ./data/mail)")"
@@ -347,7 +317,6 @@ setup_mail_profile() {
 }
 
 setup_automation_profile() {
-  append_compose_profile automation
   upsert_env .env AUTOMATION_ENABLED 1
 }
 
@@ -396,13 +365,11 @@ sync_twenty_multiworkspace_bool() {
 }
 
 setup_research_profile() {
-  append_compose_profile research
   upsert_env .env GPTR_MCP_ENABLED 1
   log "Enabled GPT Researcher MCP registration (GPTR_MCP_ENABLED=1). Then: make up. See docs/gpt-researcher.md"
 }
 
 setup_coding_profile() {
-  append_compose_profile coding
   ensure_opencode_local_config
   upsert_env .env OPENCODE_MCP_ENABLED 1
   set_env_if_missing .env CODING_EXTRA_ROOTS ""
@@ -413,7 +380,6 @@ setup_coding_profile() {
 # Zero-config demo path: Ollama in Docker + small chat/embed models.
 # Rewrites LLM_* / EMBEDDING_* to the in-compose ollama service.
 setup_ollama_profile() {
-  append_compose_profile ollama
   upsert_env .env OLLAMA_ENABLED 1
   set_env_if_missing .env OLLAMA_CHAT_MODEL qwen2.5:7b-instruct
   set_env_if_missing .env OLLAMA_EMBED_MODEL nomic-embed-text
@@ -933,8 +899,14 @@ elif [[ -z "$(env_get_file .env COMPOSE_PROFILES)" ]]; then
   upsert_env .env COMPOSE_PROFILES core
   log "Set COMPOSE_PROFILES=core"
 else
-  # Ensure core is present when profiles already exist
-  append_compose_profile core
+  # Ensure core is present, replacing the pre-core hermes and hermes-webui names.
+  current="$(env_get_file .env COMPOSE_PROFILES | tr ',' '\n' | grep -vx -e hermes -e hermes-webui | sed '/^$/d' | paste -sd, - || true)"
+  if [[ -z "$current" ]]; then
+    current=core
+  elif [[ ",${current}," != *",core,"* ]]; then
+    current="${current},core"
+  fi
+  upsert_env .env COMPOSE_PROFILES "$current"
 fi
 
 # Hermes env files are required bind-mount sources for the core profile.

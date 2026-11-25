@@ -53,3 +53,61 @@ check_service_health() {
     *) bad "${1} is ${state} — docker compose logs ${1}" ;;
   esac
 }
+
+# check_flag_profile FLAG PROFILE [OKTEXT]: whether COMPOSE_PROFILES matches
+# an add-on's .env flag. One OK line when PROFILE is on (OKTEXT replaces the
+# default text), one FAIL line when FLAG is on and PROFILE is not, and nothing
+# when both are off. FLAG and PROFILE are a row of sync-profiles.sh --table;
+# test-doctor-kit.sh checks every call against it.
+check_flag_profile() {
+  if has_profile "$2"; then
+    ok "${3:-COMPOSE_PROFILES includes $2}"
+  elif env_true "$1"; then
+    bad "${1}=1 but '${2}' not in COMPOSE_PROFILES — run make ensure-local"
+  fi
+}
+
+# check_flag_set FLAG PROFILE NOTE: the other half of check_flag_profile. One
+# OK line when FLAG is on, else a WARN that PROFILE is on without it, ending
+# in NOTE (what Hermes misses).
+check_flag_set() {
+  if env_true "$1"; then
+    ok "${1}=1"
+  else
+    warn "${2} profile on but ${1} is not 1 — ${3}"
+  fi
+}
+
+# hermes_profile_config LABEL: the config.yaml of Hermes profile LABEL
+# (default, api-server, browser), relative to the repo root.
+hermes_profile_config() {
+  if [[ "$1" == default ]]; then
+    printf '%s\n' data/hermes/config.yaml
+  else
+    printf '%s\n' "data/hermes/profiles/${1}/config.yaml"
+  fi
+}
+
+# check_profile_registers LABEL PATTERN WHAT [MISSING]: whether Hermes profile
+# LABEL's config.yaml matches the extended regex PATTERN. An OK line naming
+# WHAT when it does; when it doesn't and MISSING is given, a WARN that the
+# profile has no MISSING entry. Nothing when the profile has no config.yaml.
+check_profile_registers() {
+  local cfg
+  cfg="$(hermes_profile_config "$1")"
+  [[ -f "$cfg" ]] || return 0
+  if grep -qE -- "$2" "$cfg"; then
+    ok "Hermes ${1} profile registers ${3}"
+  elif [[ -n "${4:-}" ]]; then
+    warn "Hermes ${1} profile has no ${4} entry — run make hermes-reload"
+  fi
+}
+
+# check_api_server_clean PATTERN MSG: a FAIL line with MSG when the api-server
+# profile's config.yaml matches the extended regex PATTERN, for MCP servers
+# unattended sessions must not have.
+check_api_server_clean() {
+  if grep -qsE -- "$1" "$(hermes_profile_config api-server)"; then
+    bad "$2"
+  fi
+}

@@ -259,6 +259,10 @@ the stack under another app.
   `information_schema` or `pg_*`, which `db-provision` already skipped. Before,
   doctor only knew `agent` and `public` as reserved and reported those files as
   registered.
+- `make doctor`'s Mail and Mail drafts sections word the flag lines as the
+  other add-on sections do: `MAIL_MCP_ENABLED=1` and `MAIL_DRAFTS_ENABLED=1`
+  where they printed the raw `.env` value (`=true`, say), and "is not 1" where
+  they said "is off".
 - An `ASSISTANT_DATA_ROOT` exported in the shell now wins over `.env` in every
   script and Makefile target, as it does in compose. Before, `backup.sh`,
   `corpus.sh`, `kb-eval-fixture.sh`, `project-index-refresh.sh` and the
@@ -280,6 +284,10 @@ the stack under another app.
 - `twenty_admin.py` no longer reads `TWENTY_GRANT_ADMIN_CMD`. Callers run
   `init --owner-only`, grant the owner server admin, then run `init`, as
   `crm.sh init` does.
+- `setup.sh` no longer accepts `--hermes`, a no-op since `core` took over
+  Hermes; passing it now stops with "Unknown option". Each add-on flag on
+  `setup.sh` sets its `*_ENABLED` key, and `sync-profiles.sh` writes
+  `COMPOSE_PROFILES` from those keys; the resulting profiles are unchanged.
 
 ## v0.3.18 — 2026-11-21
 
