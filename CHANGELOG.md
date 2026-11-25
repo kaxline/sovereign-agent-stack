@@ -303,6 +303,13 @@ the stack under another app.
   `.env`'s `SEARXNG_SECRET` (a placeholder one is replaced in `.env`), and a
   missing `opencode/opencode.local.json` has its providers pointed at
   llm-proxy. Files that exist are left as they are.
+- `scripts/data-dir.sh set` and `migrate` seed the data root's voice,
+  projects and memory READMEs, `memory/INDEX.md` and the memory stubs with
+  the same text `setup.sh` writes, from templates in `scripts/seed/`, instead
+  of shorter versions of their own. `getting-started.md` in a new corpus's
+  inputs folder now has one text from `setup.sh` and `corpus.sh create`,
+  listing upload, `make corpus-ingest` and the n8n scan workflow. Files that
+  exist are left as they are.
 
 ## v0.3.18 — 2026-11-21
 
