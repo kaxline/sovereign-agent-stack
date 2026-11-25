@@ -101,7 +101,6 @@ IMAGE_DRIVER = r'''
 import asyncio
 import json
 import os
-import subprocess
 import sys
 import threading
 import time
@@ -114,12 +113,9 @@ MODEL_PORT, MONITOR_PORT = 18767, 18768
 os.environ["HERMES_HOME"] = home
 os.makedirs(home, exist_ok=True)
 
-# Same order as 05-patch-tool-calling.sh.
-for patch in ("patch-history-budget.py", "patch-client-context.py", "patch-gateway-liveness.py",
-              "patch-turn-speaker.py", "patch-cron-gated-sessions.py") * 2:
-    out = subprocess.run([sys.executable, "/bootstrap/" + patch], capture_output=True, text=True)
-    if out.returncode != 0:
-        raise SystemExit(f"FAIL {patch}: {out.stdout}{out.stderr}")
+for _ in range(2):
+    run_patches(("patch-history-budget.py", "patch-client-context.py", "patch-gateway-liveness.py",
+                 "patch-turn-speaker.py", "patch-cron-gated-sessions.py"))
 for path in ("/opt/hermes/gateway/session_cron.py", "/opt/hermes/tui_gateway/server.py"):
     assert open(path).read().count("# assistant-stack: cron gated sessions") == 1, f"one install block in {path}"
 
@@ -298,7 +294,7 @@ def main() -> None:
     test_own_fire()
     test_settle()
     print("ok")
-    hermes_image.maybe_run(IMAGE_DRIVER)
+    hermes_image.maybe_run(hermes_image.PATCH_PRELUDE + IMAGE_DRIVER)
 
 
 if __name__ == "__main__":

@@ -3,20 +3,9 @@
 # agent-callable send_message, make tool_search see visible core tools,
 # and let cron deliver to Signal with the adapter disabled. WebUI (api_server)
 # jobs reach Signal through upstream's home-channel fallback (v0.22, #69304).
-# Individual patch scripts may skip on unknown Hermes shapes — continue so
-# later patches still run.
+# The overlays and their order: group 04 in overlays.list.
 set -u
-run_patch() {
-  script="$1"
-  if [ -f "$script" ]; then
-    python3 "$script" || echo "warn: $script exited $?"
-  fi
-}
-run_patch /bootstrap/patch-send-message-tool.py
-run_patch /bootstrap/patch-ensure-send-message-tools.py
-run_patch /bootstrap/patch-tool-search-visible.py
-run_patch /bootstrap/patch-tool-search-always-include.py
-run_patch /bootstrap/patch-cron-scheduler-delivery.py
+sh /bootstrap/run-overlays.sh 04 || echo "warn: run-overlays.sh 04 exited $?"
 
 # Drop stale discovery verdicts so the next gateway start re-scans AST.
 # A cached registers=False for send_message_tool.py skips the import entirely.

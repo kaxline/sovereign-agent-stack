@@ -94,7 +94,7 @@ LOGIN_USER = "canary@example.com"
 FLOWS = ("one_page", "two_step", "totp", "local_token", "idp")
 TASK = "signin-e2e"
 B32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
-# The overlays this test applies, which overlay_patches() must find in 05-patch-tool-calling.sh.
+# The overlays this test applies, which overlay_patches() must find in overlays.list.
 KNOWN_PATCHES = ("patch-browser-exec-hint.py", "patch-vault-create-login.py",
                  "patch-vault-capture-secret.py", "patch-digest-redaction.py",
                  "patch-bitwarden-broker-fill.py", "patch-bitwarden-signin.py")
@@ -110,16 +110,13 @@ def skip(reason: str) -> None:
 
 
 def overlay_patches() -> list[str]:
-    """The overlays to apply, in 05-patch-tool-calling.sh order.
+    """The overlays to apply, in overlays.list order.
 
-    Read out of the runner rather than listed here, so an overlay added later that also edits
+    Read out of the list rather than listed here, so an overlay added later that also edits
     tools/browser_vault_tool.py is applied by this test as it is in the real container. An
     overlay that stops being run, or stops editing that file, fails here instead.
     """
-    import re
-
-    runner = (HERMES_SRC / "05-patch-tool-calling.sh").read_text()
-    names = re.findall(r"run_patch\s+/bootstrap/([A-Za-z0-9._-]+\.py)", runner)
+    names = hermes_image.overlay_order(hermes_image.OVERLAY_LIST)
     found = []
     for name in names:
         script = HERMES_SRC / name
@@ -128,7 +125,7 @@ def overlay_patches() -> list[str]:
         if name in EXTRA_PATCHES or VAULT_TOOL in script.read_text():
             found.append(name)
     missing = [name for name in KNOWN_PATCHES if name not in found]
-    expect(not missing, f"05-patch-tool-calling.sh no longer runs {missing} on {VAULT_TOOL}")
+    expect(not missing, f"overlays.list no longer runs {missing} on {VAULT_TOOL}")
     return found
 
 
@@ -1102,7 +1099,7 @@ def main() -> None:
                          agent, PYTHON, f"/bootstrap/{name}", timeout=300)
             expect(out.returncode == 0 and "warn:" not in out.stdout,
                    f"{name}: exit {out.returncode}: {(out.stdout + out.stderr).strip()[-400:]}")
-        print(f"ok: the {len(patches)} overlays applied in 05-patch-tool-calling.sh order")
+        print(f"ok: the {len(patches)} overlays applied in overlays.list order")
         # The fill and sign-in code import the broker client from the installed bwbroker plugin.
         out = docker("exec", "-u", "0", agent, "sh", "/bootstrap/14-install-bwbroker-plugin.sh")
         expect(out.returncode == 0 and "warn:" not in out.stdout,

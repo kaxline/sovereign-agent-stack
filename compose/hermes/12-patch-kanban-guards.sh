@@ -1,20 +1,5 @@
 #!/bin/sh
-# Refuse kanban workspaces that can't be built, at filing; give up on final
-# workspace errors at once (see patch-kanban-guards.py). Change a task's
-# workspace in place; kanban_update / kanban_archive (patch-kanban-edit.py).
-# Deliver kanban events to dashboard sessions after compression, with a
-# give-up text that names the repair (patch-kanban-wake.py). Stop a run and
-# hold its task in one call (patch-kanban-hold.py).
+# Kanban overlays: workspace guards, in-place edits, wake after compression, hold.
+# The overlays and their order: group 12 in overlays.list.
 set -u
-if [ -f /bootstrap/patch-kanban-guards.py ]; then
-  python3 /bootstrap/patch-kanban-guards.py || echo "warn: patch-kanban-guards exited $?"
-fi
-if [ -f /bootstrap/patch-kanban-edit.py ]; then
-  python3 /bootstrap/patch-kanban-edit.py || echo "warn: patch-kanban-edit exited $?"
-fi
-if [ -f /bootstrap/patch-kanban-wake.py ]; then
-  python3 /bootstrap/patch-kanban-wake.py || echo "warn: patch-kanban-wake exited $?"
-fi
-if [ -f /bootstrap/patch-kanban-hold.py ]; then
-  python3 /bootstrap/patch-kanban-hold.py || echo "warn: patch-kanban-hold exited $?"
-fi
+sh /bootstrap/run-overlays.sh 12 || echo "warn: run-overlays.sh 12 exited $?"

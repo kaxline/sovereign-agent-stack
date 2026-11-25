@@ -119,7 +119,7 @@ The patch keeps the overlay's wire behaviour: same fields, same codes, same head
 2. If upstream renumbered the errors, update Boundary's handling first, then the docs.
 3. In this repo, on the branch that bumps the pin (`make hermes-upgrade AGENT=… WEBUI=…`):
    - Delete `compose/hermes/client_context.py`, `compose/hermes/patch-client-context.py` and `scripts/test-client-context.py`.
-   - Remove the two `client_context` bootstrap mounts from `docker-compose.yml`, the `patch-client-context.py` call from `compose/hermes/05-patch-tool-calling.sh`, and the CI step in `.github/workflows/ci.yml`.
+   - Remove the two `client_context` bootstrap mounts from `docker-compose.yml`, the `patch-client-context.py` line from `compose/hermes/overlays.list`, and the CI step in `.github/workflows/ci.yml`.
    - In `docs/hermes.md`, change "Client context" from "overlay, not upstream" to upstream behaviour, keep the error table (with upstream codes), and drop the overlay wording around `profile`.
    - Add a `CHANGELOG.md` entry noting that the behaviour is unchanged for clients but now comes from upstream, plus the minimum agent tag. If codes changed, make that an upgrade step for Boundary.
 4. Update the memory note `upstream-client-context-overlay` (gateway overlay pending upstreaming) to say the overlay is gone.

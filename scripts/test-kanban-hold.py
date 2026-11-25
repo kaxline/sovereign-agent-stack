@@ -35,12 +35,6 @@ import tempfile
 import threading
 from pathlib import Path
 
-def run_patch(name):
-    out = subprocess.run([sys.executable, f"/bootstrap/{name}"], capture_output=True, text=True)
-    if out.returncode != 0:
-        raise SystemExit(f"FAIL {name}: {out.stdout}{out.stderr}")
-    return out.stdout
-
 first = run_patch("patch-kanban-hold.py")
 assert "patched dashboard terminate" in first, first
 assert "already applied" in run_patch("patch-kanban-hold.py")
@@ -157,7 +151,7 @@ print("image ok")
 
 
 def main() -> None:
-    hermes_image.maybe_run(IMAGE_DRIVER)
+    hermes_image.maybe_run(hermes_image.PATCH_PRELUDE + IMAGE_DRIVER)
 
 
 if __name__ == "__main__":

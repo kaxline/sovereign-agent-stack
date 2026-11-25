@@ -277,9 +277,8 @@ def test_private_first_keeps_argument_errors_local() -> None:
 
 
 def test_overlay_order_and_env() -> None:
-    runner = (ROOT / "compose" / "hermes" / "05-patch-tool-calling.sh").read_text()
-    expect(runner.index("run_patch /bootstrap/patch-web-search-mode.py")
-           > runner.index("run_patch /bootstrap/patch-blocked-fetch-hint.py"),
+    order = hermes_image.overlay_order(hermes_image.OVERLAY_LIST)
+    expect(order.index("patch-web-search-mode.py") > order.index("patch-blocked-fetch-hint.py"),
            "runs after the blocked-fetch hint it imports")
     compose = (ROOT / "docker-compose.yml").read_text()
     expect("- HERMES_WEB_SEARCH_MODE=${HERMES_WEB_SEARCH_MODE:-private}" in compose, "env reaches hermes")

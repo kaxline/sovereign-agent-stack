@@ -29,19 +29,11 @@ IMAGE_DRIVER = r'''
 import json
 import os
 import pwd
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-def run_patch(name):
-    out = subprocess.run([sys.executable, f"/bootstrap/{name}"], capture_output=True, text=True)
-    if out.returncode != 0:
-        raise SystemExit(f"FAIL {name}: {out.stdout}{out.stderr}")
-    return out.stdout
-
-run_patch("patch-kanban-guards.py")
-first = run_patch("patch-kanban-edit.py")
+first = run_patches(("patch-kanban-guards.py", "patch-kanban-edit.py"))["patch-kanban-edit.py"]
 for label in ("dashboard PATCH", "core tool list", "kanban tools"):
     assert f"patched {label}" in first, first
 assert run_patch("patch-kanban-edit.py").count("already applied") == 3
@@ -199,7 +191,7 @@ print("image ok")
 
 
 def main() -> None:
-    hermes_image.maybe_run(IMAGE_DRIVER)
+    hermes_image.maybe_run(hermes_image.PATCH_PRELUDE + IMAGE_DRIVER)
 
 
 if __name__ == "__main__":

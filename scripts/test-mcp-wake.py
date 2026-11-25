@@ -60,7 +60,6 @@ import json
 import logging
 import os
 import socket
-import subprocess
 import sys
 import tempfile
 import threading
@@ -68,16 +67,10 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-def run_patch():
-    out = subprocess.run([sys.executable, "/bootstrap/patch-mcp-wake.py"], capture_output=True, text=True)
-    if out.returncode != 0:
-        raise SystemExit(f"FAIL patch: {out.stdout}{out.stderr}")
-    return out.stdout
-
-first = run_patch()
+first = run_patch("patch-mcp-wake.py")
 for label in ("parked retry interval", "wake watcher", "reconnect endpoint"):
     assert f"patched {label}" in first, first
-second = run_patch()
+second = run_patch("patch-mcp-wake.py")
 for label in ("parked retry interval", "wake watcher", "reconnect endpoint"):
     assert f"already applied ({label})" in second, second
 
@@ -223,7 +216,7 @@ def main() -> None:
     test_peer_parked()
     test_valid_name()
     print("ok")
-    hermes_image.maybe_run(IMAGE_DRIVER)
+    hermes_image.maybe_run(hermes_image.PATCH_PRELUDE + IMAGE_DRIVER)
 
 
 if __name__ == "__main__":

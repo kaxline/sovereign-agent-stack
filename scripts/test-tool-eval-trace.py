@@ -52,7 +52,7 @@ out = run("/bootstrap/patch-tool-eval-trace.py", ok=False)
 assert out.returncode != 0 and "update this patch" in out.stdout + out.stderr, out.stdout + out.stderr
 assert LOOP.read_text() == PRISTINE, "loop untouched without recovery"
 
-# Patch order from 05-patch-tool-calling.sh.
+# Patch order from overlays.list.
 run("/bootstrap/patch-text-tool-call-recovery.py")
 run("/bootstrap/patch-block-native-web-tools.py")
 out = run("/bootstrap/patch-tool-eval-trace.py").stdout

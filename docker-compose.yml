@@ -1962,6 +1962,9 @@ services:
       - ./compose/hermes/skills:/opt/skills:ro
       # Shared plumbing the patch-*.py overlays import (install, anchor checks).
       - ./compose/hermes/overlay_patch.py:/bootstrap/overlay_patch.py:ro
+      # The overlay order and the runner the numbered cont-init scripts call.
+      - ./compose/hermes/overlays.list:/bootstrap/overlays.list:ro
+      - ./compose/hermes/run-overlays.sh:/bootstrap/run-overlays.sh:ro
       # Relax intent-ack detection for browser/WebUI (LM Studio narration stalls).
       - ./compose/hermes/patch-intent-ack-continuation.py:/bootstrap/patch-intent-ack-continuation.py:ro
       - ./compose/hermes/03-patch-intent-ack.sh:/etc/cont-init.d/03-patch-intent-ack:ro

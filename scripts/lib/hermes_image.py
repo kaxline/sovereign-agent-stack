@@ -9,6 +9,7 @@ failure. scripts/lib/hermes-image.sh is the same gate for shell tests.
 
 from __future__ import annotations
 
+import inspect
 import os
 import re
 import shutil
@@ -32,6 +33,46 @@ def compose_default_tag() -> str:
         raise SystemExit("FAIL docker-compose.yml has no hermes-agent:${HERMES_AGENT_IMAGE_TAG:-...} pin")
     return m.group(1)
 
+
+def overlay_order(path, group=None) -> list[str]:
+    """Patch script names in overlays.list order, optionally only one cont-init group.
+
+    PATCH_PRELUDE copies this function's source into image drivers, so it needs no imports.
+    """
+    names = []
+    with open(path) as f:
+        for line in f:
+            fields = line.split("#", 1)[0].split()
+            if len(fields) >= 2 and (group is None or fields[0] == group):
+                names.append(fields[1])
+    return names
+
+
+OVERLAY_LIST = HERMES_DIR / "overlays.list"
+
+# Prelude for drivers that apply overlays. Defines ``run_patch(name)``, which
+# runs /bootstrap/<name> and fails the driver on a non-zero exit, returning its
+# stdout; ``run_patches(names)``, which runs each of ``names`` once in the
+# container's order (overlays.list) and returns {name: stdout}; and
+# ``overlay_order(path, group=None)``.
+PATCH_PRELUDE = inspect.getsource(overlay_order) + r'''
+import subprocess as _patch_subprocess
+import sys as _patch_sys
+
+def run_patch(name):
+    out = _patch_subprocess.run([_patch_sys.executable, "/bootstrap/" + name], capture_output=True, text=True)
+    if out.returncode != 0:
+        raise SystemExit(f"FAIL {name}: {out.stdout}{out.stderr}")
+    return out.stdout
+
+def run_patches(names):
+    order = overlay_order("/bootstrap/overlays.list")
+    unknown = [name for name in names if name not in order]
+    if unknown:
+        raise SystemExit(f"FAIL not in overlays.list: {unknown}")
+    return {name: run_patch(name) for name in order if name in names}
+
+'''
 
 
 # Prelude for drivers that call finish_text_response with a bare AIAgent.
