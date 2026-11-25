@@ -31,6 +31,11 @@ import os
 import time
 from typing import Any
 
+try:  # installed beside the overlay in /opt/hermes/agent; on the host, from compose/hermes
+    from agent import gateway_overlay_kit as kit
+except ImportError:
+    import gateway_overlay_kit as kit
+
 logger = logging.getLogger(__name__)
 
 HEARTBEAT_ENV = "HERMES_TURN_HEARTBEAT_S"
@@ -38,6 +43,8 @@ DEFAULT_HEARTBEAT_S = 30.0
 EVENT = "turn.heartbeat"
 METHOD = "session.live_status"
 TURNS_METHOD = "session.live_turns"
+CAPABILITY_FIELDS = {"turn_heartbeat": bool, "turn_heartbeat_s": float, "session_live_status": bool,
+                     "session_live_turns": bool}
 
 
 def heartbeat_interval() -> float:
@@ -154,17 +161,7 @@ def declare_contracts(server: Any) -> None:
         registry.event(
             EVENT, TurnHeartbeatPayload,
             doc="Sent at a fixed interval while a turn runs, never after message.complete (stack overlay).")
-    # Extend whatever result is registered now: other overlays add capabilities too, and the
-    # result model refuses fields it does not declare.
-    caps = registry.METHODS["gateway.capabilities"]
-    if "turn_heartbeat" not in caps.result.model_fields:
-        class GatewayCapabilitiesResult(caps.result):
-            turn_heartbeat: bool
-            turn_heartbeat_s: float
-            session_live_status: bool
-            session_live_turns: bool
-
-        registry.METHODS[caps.name] = registry.MethodContract(caps.name, caps.params, GatewayCapabilitiesResult, caps.doc)
+    kit.extend_capabilities(CAPABILITY_FIELDS, __name__)
 
 
 class _JoinBoth:
@@ -238,17 +235,10 @@ def live_turns_handler(server: Any):
     return handler
 
 
-def wrap_capabilities(server: Any, handler):
-    def _caps(rid, params: dict) -> dict:
-        response = handler(rid, params)
-        result = response.get("result") if isinstance(response, dict) else None
-        if isinstance(result, dict):
-            interval = heartbeat_interval()
-            result.update(turn_heartbeat=interval > 0, turn_heartbeat_s=interval, session_live_status=True,
-                          session_live_turns=True)
-        return response
-    _caps.__wrapped__ = handler
-    return _caps
+def capabilities() -> dict:
+    interval = heartbeat_interval()
+    return {"turn_heartbeat": interval > 0, "turn_heartbeat_s": interval, "session_live_status": True,
+            "session_live_turns": True}
 
 
 def install(server: Any) -> None:
@@ -260,5 +250,5 @@ def install(server: Any) -> None:
     server._start_usage_ticker = wrap_usage_ticker(server, server._start_usage_ticker)
     server.register_method(METHOD, live_status_handler(server))
     server.register_method(TURNS_METHOD, live_turns_handler(server))
-    server.register_method("gateway.capabilities", wrap_capabilities(server, server._methods["gateway.capabilities"]))
+    server.register_method("gateway.capabilities", kit.wrap_capabilities(server._methods["gateway.capabilities"], capabilities))
     server._gateway_liveness_installed = True

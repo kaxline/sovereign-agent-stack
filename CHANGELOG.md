@@ -48,6 +48,13 @@ the stack under another app.
 
 ### Changes
 
+- `patch-client-context.py`, `patch-turn-speaker.py` and
+  `patch-gateway-liveness.py` also install
+  `compose/hermes/gateway_overlay_kit.py`, mounted at
+  `/bootstrap/gateway_overlay_kit.py`. An app with its own compose file that
+  mounts overlay files one by one needs that mount, or the three overlays
+  exit 1 with `source missing`. Behaviour, error codes and capability flags
+  are unchanged.
 - Synced coding roots (CR 0046 R1, R2): `scripts/coding-root.sh add
   --container-path PATH --id ID [--json]` creates
   `<data root>/coding-roots/ID/` and binds it at `PATH` on the terminal
@@ -252,6 +259,10 @@ the stack under another app.
   `information_schema` or `pg_*`, which `db-provision` already skipped. Before,
   doctor only knew `agent` and `public` as reserved and reported those files as
   registered.
+- `make doctor`'s Mail and Mail drafts sections word the flag lines as the
+  other add-on sections do: `MAIL_MCP_ENABLED=1` and `MAIL_DRAFTS_ENABLED=1`
+  where they printed the raw `.env` value (`=true`, say), and "is not 1" where
+  they said "is off".
 - An `ASSISTANT_DATA_ROOT` exported in the shell now wins over `.env` in every
   script and Makefile target, as it does in compose. Before, `backup.sh`,
   `corpus.sh`, `kb-eval-fixture.sh`, `project-index-refresh.sh` and the

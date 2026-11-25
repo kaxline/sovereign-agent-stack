@@ -488,11 +488,7 @@ if has_profile automation; then
 fi
 if env_true GPTR_MCP_ENABLED; then gptr_on=1; else gptr_on=0; fi
 if [[ "$gptr_on" -eq 1 ]]; then
-  if has_profile research; then
-    ok "GPTR_MCP_ENABLED=1 and COMPOSE_PROFILES includes research"
-  else
-    bad "GPTR_MCP_ENABLED=1 but 'research' not in COMPOSE_PROFILES — run make ensure-local"
-  fi
+  check_flag_profile GPTR_MCP_ENABLED research "GPTR_MCP_ENABLED=1 and COMPOSE_PROFILES includes research"
   if docker info >/dev/null 2>&1; then
     if svc_running gptr-mcp; then
       ok "gptr-mcp container is running"
@@ -546,11 +542,7 @@ if [[ "$signal_enabled" -eq 1 ]]; then
   else
     bad "SIGNAL_CLI_DATA_DIR missing (${data_dir}) — link signal-cli on the host first"
   fi
-  if has_profile signal; then
-    ok "COMPOSE_PROFILES includes signal"
-  else
-    bad "HERMES_SIGNAL_ENABLED=1 but 'signal' not in COMPOSE_PROFILES — run make ensure-local"
-  fi
+  check_flag_profile HERMES_SIGNAL_ENABLED signal
   if [[ -f data/hermes/.env ]] && grep -q '^SIGNAL_HTTP_URL=http://signal-cli:8080' data/hermes/.env; then
     ok "data/hermes/.env has SIGNAL_HTTP_URL=http://signal-cli:8080"
   else
@@ -716,16 +708,8 @@ if env_true CALDAV_MCP_ENABLED; then caldav_on=1; else caldav_on=0; fi
 if [[ "$caldav_on" -eq 1 ]] || has_profile calendar; then
   echo
   echo "--- CalDAV calendar ---"
-  if has_profile calendar; then
-    ok "COMPOSE_PROFILES includes calendar"
-  else
-    bad "CALDAV_MCP_ENABLED=1 but 'calendar' not in COMPOSE_PROFILES — run make ensure-local"
-  fi
-  if [[ "$caldav_on" -eq 1 ]]; then
-    ok "CALDAV_MCP_ENABLED=1"
-  else
-    warn "calendar profile on but CALDAV_MCP_ENABLED is not 1 — Hermes will skip CalDAV MCP registration"
-  fi
+  check_flag_profile CALDAV_MCP_ENABLED calendar
+  check_flag_set CALDAV_MCP_ENABLED calendar "Hermes will skip CalDAV MCP registration"
   # Account files from before 0.3.15. Nothing reads them now.
   for acc in compose/caldav-mcp/accounts/*.env; do
     [[ -f "$acc" ]] || continue
@@ -782,11 +766,8 @@ fi
 if has_profile db || [[ "$sql_on" -eq 1 || "$db_running" -eq 1 ]]; then
   echo
   echo "--- Shared database ---"
-  if has_profile db; then
-    ok "COMPOSE_PROFILES includes db"
-  elif [[ "$sql_on" -eq 1 ]]; then
-    bad "SQL_MCP_ENABLED=1 but 'db' not in COMPOSE_PROFILES — run make ensure-local"
-  elif has_profile todo; then
+  check_flag_profile SQL_MCP_ENABLED db
+  if ! has_profile db && [[ "$sql_on" -eq 0 ]] && has_profile todo; then
     ok "shared Postgres started by the todo profile"
   fi
   if [[ "$sql_on" -eq 1 ]]; then
@@ -821,20 +802,11 @@ if has_profile db || [[ "$sql_on" -eq 1 || "$db_running" -eq 1 ]]; then
       ok "service schema ${slug} registered"
     fi
   done
-  if grep -qs 'sql-mcp-rw' data/hermes/profiles/api-server/config.yaml; then
-    bad "api-server profile has an MCP entry for sql-mcp-rw — run make hermes-reload (unattended sessions must stay read-only)"
-  fi
+  check_api_server_clean 'sql-mcp-rw' "api-server profile has an MCP entry for sql-mcp-rw — run make hermes-reload (unattended sessions must stay read-only)"
   if [[ "$sql_on" -eq 1 ]]; then
-    for pair in "default:data/hermes/config.yaml:sql-mcp-rw" \
-      "api-server:data/hermes/profiles/api-server/config.yaml:sql-mcp-ro" \
-      "browser:data/hermes/profiles/browser/config.yaml:sql-mcp-rw"; do
-      IFS=':' read -r label cfg want <<< "$pair"
-      [[ -f "$cfg" ]] || continue
-      if grep -q "$want" "$cfg"; then
-        ok "Hermes ${label} profile registers ${want}"
-      else
-        warn "Hermes ${label} profile has no ${want} MCP entry — run make hermes-reload"
-      fi
+    for pair in default:sql-mcp-rw api-server:sql-mcp-ro browser:sql-mcp-rw; do
+      want="${pair#*:}"
+      check_profile_registers "${pair%%:*}" "$want" "$want" "${want} MCP"
     done
   fi
   if docker info >/dev/null 2>&1; then
@@ -885,11 +857,7 @@ if env_true VIKUNJA_MCP_ENABLED; then vikunja_on=1; else vikunja_on=0; fi
 if has_profile todo || [[ "$vikunja_on" -eq 1 ]]; then
   echo
   echo "--- Todo lists (Vikunja) ---"
-  if has_profile todo; then
-    ok "COMPOSE_PROFILES includes todo"
-  else
-    bad "VIKUNJA_MCP_ENABLED=1 but 'todo' not in COMPOSE_PROFILES — run make ensure-local"
-  fi
+  check_flag_profile VIKUNJA_MCP_ENABLED todo
   vk_secret="$(env_get VIKUNJA_SECRET)"
   if [[ -z "$vk_secret" || "$vk_secret" == change-me* ]]; then
     bad "VIKUNJA_SECRET is unset — run ./scripts/setup.sh (otherwise every restart logs you out)"
@@ -904,11 +872,7 @@ if has_profile todo || [[ "$vikunja_on" -eq 1 ]]; then
   else
     ok "${vk_svc} has the database login"
   fi
-  if [[ "$vikunja_on" -eq 1 ]]; then
-    ok "VIKUNJA_MCP_ENABLED=1"
-  else
-    warn "todo profile on but VIKUNJA_MCP_ENABLED is not 1 — Hermes will not register the Vikunja tools"
-  fi
+  check_flag_set VIKUNJA_MCP_ENABLED todo "Hermes will not register the Vikunja tools"
   if [[ -n "$(env_get VIKUNJA_USERNAME)" && -n "$(env_get VIKUNJA_PASSWORD)" ]]; then
     ok "managed Vikunja account '$(env_get VIKUNJA_USERNAME)' is set (used by /login-local)"
   else
@@ -1007,11 +971,7 @@ if [[ "$bw_on" -eq 1 || "$bw_local" -eq 1 || "$bw_files" -gt 0 || "$bw_old" -gt 
     done
   done
   if [[ "$bw_local" -eq 1 ]]; then
-    if has_profile vault; then
-      ok "COMPOSE_PROFILES includes vault"
-    else
-      bad "BITWARDEN_LOCAL_ENABLED=1 but 'vault' not in COMPOSE_PROFILES — run make ensure-local"
-    fi
+    check_flag_profile BITWARDEN_LOCAL_ENABLED vault
     if [[ -r "${bw_data}/local/state" ]]; then
       bw_step="$(bw_get "${bw_data}/local/state" STEP)"
       [[ "$bw_step" == role ]] || warn "make vault-init has not finished (last step: ${bw_step:-none}) — run it again"
@@ -1117,21 +1077,12 @@ source "${ROOT}/scripts/lib/doctor-actual.sh"
 doctor_actual
 
 # --- Mail (read-only MCP over the host-built index) ---
-mail_enabled="$(env_get MAIL_MCP_ENABLED 0)"
 if env_true MAIL_MCP_ENABLED; then mail_on=1; else mail_on=0; fi
 if has_profile mail || [[ "$mail_on" -eq 1 ]]; then
   echo
   echo "--- Mail ---"
-  if has_profile mail; then
-    ok "COMPOSE_PROFILES includes mail"
-  else
-    bad "MAIL_MCP_ENABLED=${mail_enabled} but 'mail' not in COMPOSE_PROFILES — run make ensure-local"
-  fi
-  if [[ "$mail_on" -eq 1 ]]; then
-    ok "MAIL_MCP_ENABLED=${mail_enabled}"
-  else
-    warn "mail profile on but MAIL_MCP_ENABLED is off — Hermes will not register the mail tools"
-  fi
+  check_flag_profile MAIL_MCP_ENABLED mail
+  check_flag_set MAIL_MCP_ENABLED mail "Hermes will not register the mail tools"
   # Existence and permissions only; doctor never opens the index.
   mail_dir="$(expand_user_path "$(env_get MAIL_INDEX_DIR ./data/mail)")"
   mail_index="${mail_dir%/}/$(env_get MAIL_INDEX_FILE index.sqlite)"
@@ -1147,18 +1098,12 @@ if has_profile mail || [[ "$mail_on" -eq 1 ]]; then
     warn "no mail index at ${mail_index} — fill in mail-index.toml, then make mail-index-doctor && make mail-index"
   fi
   [[ -f mail-index.toml ]] || warn "mail-index.toml missing — cp mail-index.toml.example mail-index.toml"
-  for pair in "default:data/hermes/config.yaml" "browser:data/hermes/profiles/browser/config.yaml"; do
-    IFS=':' read -r label cfg <<< "$pair"
-    [[ -f "$cfg" ]] || continue
-    if grep -q 'mail-mcp:8000' "$cfg"; then
-      ok "Hermes ${label} profile registers the mail MCP"
-    elif [[ "$mail_on" -eq 1 ]]; then
-      warn "Hermes ${label} profile has no mail MCP entry — run make hermes-reload"
-    fi
+  missing=""
+  [[ "$mail_on" -eq 0 ]] || missing="mail MCP"
+  for label in default browser; do
+    check_profile_registers "$label" 'mail-mcp:8000' "the mail MCP" "$missing"
   done
-  if grep -qs 'mail-mcp:8000' data/hermes/profiles/api-server/config.yaml; then
-    bad "api-server registers the mail MCP — run make hermes-reload (unattended sessions must not read mail)"
-  fi
+  check_api_server_clean 'mail-mcp:8000' "api-server registers the mail MCP — run make hermes-reload (unattended sessions must not read mail)"
   # Cron runs unattended: a job that can read mail should have nothing else.
   if mail_cron="$(doctor_py scripts/check-mail-cron.py --hermes-home data/hermes 2>&1 < /dev/null)"; then
     ok "no cron job can read mail alongside other tools"
@@ -1189,16 +1134,8 @@ if env_true MESSAGES_MCP_ENABLED; then messages_on=1; else messages_on=0; fi
 if has_profile messages || [[ "$messages_on" -eq 1 ]]; then
   echo
   echo "--- Messages ---"
-  if has_profile messages; then
-    ok "COMPOSE_PROFILES includes messages"
-  else
-    bad "MESSAGES_MCP_ENABLED=1 but 'messages' not in COMPOSE_PROFILES — run make ensure-local"
-  fi
-  if [[ "$messages_on" -eq 1 ]]; then
-    ok "MESSAGES_MCP_ENABLED=1"
-  else
-    warn "messages profile on but MESSAGES_MCP_ENABLED is not 1 — Hermes will not register the messages tools"
-  fi
+  check_flag_profile MESSAGES_MCP_ENABLED messages
+  check_flag_set MESSAGES_MCP_ENABLED messages "Hermes will not register the messages tools"
   # Existence and permissions only; doctor never opens the index or reads events.
   msg_dir="$(expand_user_path "$(env_get MESSAGES_INDEX_DIR ./data/messages)")"
   msg_index="${msg_dir%/}/$(env_get MESSAGES_INDEX_FILE index.sqlite)"
@@ -1225,18 +1162,12 @@ if has_profile messages || [[ "$messages_on" -eq 1 ]]; then
   fi
   [[ -f messages-index.toml ]] || warn "messages-index.toml missing — ./scripts/setup.sh --messages creates it"
   [[ -n "$(env_get MESSAGES_WEBHOOK_SECRET '')" ]] || warn "MESSAGES_WEBHOOK_SECRET is empty — new-message alerts are off; re-run ./scripts/setup.sh --messages"
-  for pair in "default:data/hermes/config.yaml" "browser:data/hermes/profiles/browser/config.yaml"; do
-    IFS=':' read -r label cfg <<< "$pair"
-    [[ -f "$cfg" ]] || continue
-    if grep -q 'messages-mcp:8000' "$cfg"; then
-      ok "Hermes ${label} profile registers the messages MCP"
-    elif [[ "$messages_on" -eq 1 ]]; then
-      warn "Hermes ${label} profile has no messages MCP entry — run make hermes-reload"
-    fi
+  missing=""
+  [[ "$messages_on" -eq 0 ]] || missing="messages MCP"
+  for label in default browser; do
+    check_profile_registers "$label" 'messages-mcp:8000' "the messages MCP" "$missing"
   done
-  if grep -qs 'messages-mcp:8000' data/hermes/profiles/api-server/config.yaml; then
-    bad "api-server registers the messages MCP — run make hermes-reload (unattended sessions must not read messages)"
-  fi
+  check_api_server_clean 'messages-mcp:8000' "api-server registers the messages MCP — run make hermes-reload (unattended sessions must not read messages)"
   # Cron runs unattended: a job that can read messages should have nothing else.
   # The mail section runs the same check when mail is on.
   if ! { has_profile mail || [[ "$mail_on" -eq 1 ]]; }; then
@@ -1281,17 +1212,12 @@ if has_profile messages || [[ "$messages_on" -eq 1 ]]; then
 fi
 
 # --- Mail drafts (queue for the host helper; never sends) ---
-drafts_enabled="$(env_get MAIL_DRAFTS_ENABLED 0)"
 if env_true MAIL_DRAFTS_ENABLED; then drafts_on=1; else drafts_on=0; fi
 if has_profile mail-drafts || [[ "$drafts_on" -eq 1 ]]; then
   echo
   echo "--- Mail drafts ---"
-  if has_profile mail-drafts; then
-    ok "COMPOSE_PROFILES includes mail-drafts"
-  else
-    bad "MAIL_DRAFTS_ENABLED=${drafts_enabled} but 'mail-drafts' not in COMPOSE_PROFILES — run make ensure-local"
-  fi
-  [[ "$drafts_on" -eq 1 ]] || warn "mail-drafts profile on but MAIL_DRAFTS_ENABLED is off — Hermes will not register the draft tools"
+  check_flag_profile MAIL_DRAFTS_ENABLED mail-drafts
+  [[ "$drafts_on" -eq 1 ]] || warn "mail-drafts profile on but MAIL_DRAFTS_ENABLED is not 1 — Hermes will not register the draft tools"
   drafts_dir="$(expand_user_path "$(env_get MAIL_DRAFTS_DIR ./data/mail-drafts)")"
   if [[ -d "$drafts_dir" ]]; then
     drafts_mode="$(stat -c '%a' "$drafts_dir" 2>/dev/null || stat -f '%Lp' "$drafts_dir" 2>/dev/null || echo '?')"
@@ -1309,9 +1235,7 @@ if has_profile mail-drafts || [[ "$drafts_on" -eq 1 ]]; then
   else
     warn "${drafts_dir} missing — run ./scripts/setup.sh --mail-drafts"
   fi
-  if grep -qs 'mail-drafts-mcp:8000' data/hermes/profiles/api-server/config.yaml; then
-    bad "api-server registers the mail drafts MCP — run make hermes-reload"
-  fi
+  check_api_server_clean 'mail-drafts-mcp:8000' "api-server registers the mail drafts MCP — run make hermes-reload"
   if docker info >/dev/null 2>&1; then
     if svc_running mail-drafts-mcp; then
       ok "mail-drafts-mcp container is running"

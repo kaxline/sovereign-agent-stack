@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Turn heartbeat and one-session live status on the pinned Hermes gateway.
 
-Compatibility overlay (not upstream). Copies gateway_liveness.py into the agent
-package and appends one install call to tui_gateway/server.py. Contracts,
-handlers and the usage-ticker wrap are installed at runtime, not edited.
+Compatibility overlay (not upstream). Copies gateway_liveness.py and the
+shared gateway_overlay_kit.py into the agent package and appends one install
+call to tui_gateway/server.py. Contracts, handlers and the usage-ticker wrap
+are installed at runtime, not edited.
 """
 from __future__ import annotations
 
@@ -20,6 +21,7 @@ INSTALL = install_tail(MARKER, "gateway_liveness", "gateway liveness")
 
 def main() -> None:
     install(BOOTSTRAP / "gateway_liveness.py", AGENT / "gateway_liveness.py", TAG)
+    install(BOOTSTRAP / "gateway_overlay_kit.py", AGENT / "gateway_overlay_kit.py", TAG)
     if not (GATEWAY / "contracts" / "liveness.py").is_file():
         fail(TAG, "pre-v2026.9 gateway (no contracts/liveness.py): not supported")
     edit(GATEWAY / "server.py", [], MARKER, TAG, label="server install", append=INSTALL,

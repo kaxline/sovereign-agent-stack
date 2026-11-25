@@ -51,11 +51,7 @@ doctor_twenty() {
 
   twenty_port="$(env_get TWENTY_PORT 3000)"
   if [[ "$twenty_local" -eq 1 ]]; then
-    if has_profile crm; then
-      ok "COMPOSE_PROFILES includes crm"
-    else
-      bad "TWENTY_LOCAL_ENABLED=1 but 'crm' not in COMPOSE_PROFILES — run make ensure-local"
-    fi
+    check_flag_profile TWENTY_LOCAL_ENABLED crm
     for pair in TWENTY_ENCRYPTION_KEY TWENTY_DB_PASSWORD; do
       if [[ -n "$(env_get "$pair")" && -n "$(env_get "${pair}_FILE")" ]]; then
         bad "${pair} and ${pair}_FILE are both set — keep one (the containers refuse to start)"
@@ -84,7 +80,7 @@ doctor_twenty() {
 
   if [[ "$twenty_mcp" -eq 1 ]]; then
     ok "TWENTY_MCP_ENABLED=1"
-    local twenty_count=0 endpoint url access local_ rw_f has_ro has_rw why kind k base probe code label cfg env_key rw
+    local twenty_count=0 endpoint url access local_ rw_f has_ro has_rw why kind k base probe code label missing env_key rw
     local tools listed py=host
     # The tool list's Python follows doctor's choice (doctor_py): the host's
     # python3 unless doctor settled on the Hermes image.
@@ -182,16 +178,11 @@ doctor_twenty() {
           unknown\ *) warn "crm-${slug}: couldn't list its tools: ${tools#unknown }" ;;
         esac
       done
-      for pair in "default:data/hermes/config.yaml:data/hermes/.env" \
-        "api-server:data/hermes/profiles/api-server/config.yaml:data/hermes/profiles/api-server/.env" \
-        "browser:data/hermes/profiles/browser/config.yaml:data/hermes/profiles/browser/.env"; do
-        IFS=":" read -r label cfg _ <<< "$pair"
-        [[ -f "$cfg" ]] || continue
-        if grep -qE "^  crm-${slug}:" "$cfg"; then
-          ok "Hermes ${label} profile registers crm-${slug}"
-        elif [[ "$label" != api-server ]] || [[ "$has_ro" -eq 1 ]]; then
-          warn "Hermes ${label} profile has no crm-${slug} entry — run make hermes-reload"
-        fi
+      # api-server gets an entry only when the workspace has a read-only key.
+      for label in default api-server browser; do
+        missing="crm-${slug}"
+        [[ "$label" != api-server || "$has_ro" -eq 1 ]] || missing=""
+        check_profile_registers "$label" "^  crm-${slug}:" "crm-${slug}" "$missing"
       done
       env_key="CRM_$(printf '%s' "$slug" | tr '[:lower:]-' '[:upper:]_')_KEY"
       if [[ "$has_rw" -eq 1 ]]; then

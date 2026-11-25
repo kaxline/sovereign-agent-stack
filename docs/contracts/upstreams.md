@@ -12,9 +12,10 @@ first: accept the limitation, contribute upstream, or build the feature in the s
 Hermes overlays predate that rule and exceed it. The **Over cap** column below says `over` when
 an overlay's patch script and the modules it installs come to more than about 50 lines together, or
 when it edits more than one upstream file, and `under` otherwise. The shared helper
-`compose/hermes/overlay_patch.py`, the vault actions' `compose/hermes/vault_prompt_slot.py` and
+`compose/hermes/overlay_patch.py`, the vault actions' `compose/hermes/vault_prompt_slot.py`,
 the alias map `compose/hermes/stack_tool_aliases.py`, which `tool-call-flat-args` and
-`tool-eval-trace` both install, are in no row.
+`tool-eval-trace` both install, and `compose/hermes/gateway_overlay_kit.py`, which
+`client-context`, `turn-speaker` and `gateway-liveness` all install, are in no row.
 
 ## Vendored adapters
 
