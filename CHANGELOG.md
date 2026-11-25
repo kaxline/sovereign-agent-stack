@@ -20,6 +20,16 @@ the stack under another app.
   because they now read `LLM_MODEL`. Without `upgrade.sh`: `make
   hermes-reload`.
 
+- An app that runs the stack from its own compose file or scripts: mount
+  `compose/hermes/gateway_overlay_kit.py` at
+  `/bootstrap/gateway_overlay_kit.py` beside the other overlay files, or
+  `patch-client-context.py`, `patch-turn-speaker.py` and
+  `patch-gateway-liveness.py` exit 1 with `source missing`. Mount the new
+  overlay files too: `stack_tool_aliases.py`, and `cron_gated_sessions.py`,
+  `kanban_hold.py` and `history_task_ids.py` with their `patch-*.py`.
+  `docker-compose.yml` lists them all. Drop `--hermes` from `setup.sh` calls: it
+  now stops with "Unknown option".
+
 - With OpenCode on (`OPENCODE_MCP_ENABLED`), the hook rebuilds `opencode`
   and `opencode-mcp`. `opencode` now drops to `HERMES_UID:HERMES_GID`, and
   its state volumes move from `/root` to `/home/opencode`; the new entrypoint
