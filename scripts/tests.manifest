@@ -101,6 +101,7 @@ scripts/test-kanban-wake.py                     ci image
 scripts/test-lightrag-mcp-registration.sh       ci
 scripts/test-lint.sh                            docker
 scripts/test-llm-proxy.py                       ci
+scripts/test-local-files.sh                     ci
 scripts/test-mail-apps.py                       macos
 scripts/test-mail-cron.py
 scripts/test-mail-drafts-registration.sh

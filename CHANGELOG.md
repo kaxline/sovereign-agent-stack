@@ -277,6 +277,13 @@ the stack under another app.
   Hermes; passing it now stops with "Unknown option". Each add-on flag on
   `setup.sh` sets its `*_ENABLED` key, and `sync-profiles.sh` writes
   `COMPOSE_PROFILES` from those keys; the resulting profiles are unchanged.
+- `make up`, `make ensure-local` and `scripts/up.sh` create a missing
+  `compose/hermes/api-server.env` or `browser.env` with a generated
+  `API_SERVER_KEY`, as `setup.sh` does, instead of copying the example and
+  printing "set API_SERVER_KEY". A missing `searxng/settings.local.yml` gets
+  `.env`'s `SEARXNG_SECRET` (a placeholder one is replaced in `.env`), and a
+  missing `opencode/opencode.local.json` has its providers pointed at
+  llm-proxy. Files that exist are left as they are.
 
 ## v0.3.18 — 2026-11-21
 

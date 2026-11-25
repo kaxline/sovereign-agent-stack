@@ -12,6 +12,8 @@ source "${ROOT}/scripts/lib/data-root.sh"
 source "${ROOT}/scripts/lib/secret.sh"
 # shellcheck source=lib/python.sh
 source "${ROOT}/scripts/lib/python.sh"
+# shellcheck source=lib/local-files.sh
+source "${ROOT}/scripts/lib/local-files.sh"
 
 WORKSPACE=""
 WEBUI_TITLE=""
@@ -173,59 +175,6 @@ set_env_if_missing() {
   fi
 }
 
-# Write opencode/opencode.local.json (gitignored) and leave tracked
-# opencode.json as a placeholder template (provider "local", model
-# "your-chat-model"). Real model ids and baseURL belong in the local overlay
-# only. Compose mounts that overlay when it exists.
-ensure_opencode_local_config() {
-  local base="$ROOT/opencode/opencode.json"
-  local local_cfg="$ROOT/opencode/opencode.local.json"
-  [[ -f "$base" ]] || die "Missing $base"
-  if [[ ! -f "$local_cfg" ]]; then
-    cp "$base" "$local_cfg"
-    log "Created opencode/opencode.local.json from opencode.json (edit provider/model for your server)"
-  else
-    # Merge headless permission defaults from the template without clobbering
-    # provider/model settings the operator already tuned.
-    if stack_python - "$base" "$local_cfg" <<'PY'
-import json, sys
-from pathlib import Path
-base = json.loads(Path(sys.argv[1]).read_text())
-local_path = Path(sys.argv[2])
-local = json.loads(local_path.read_text())
-perm = base.get("permission")
-changed = False
-if perm and local.get("permission") != perm:
-    local["permission"] = perm
-    changed = True
-if changed:
-    local_path.write_text(json.dumps(local, indent=2) + "\n")
-PY
-    then
-      log "Ensured permission block in opencode.local.json"
-    fi
-  fi
-  stack_python - "$local_cfg" <<'PY'
-import json, sys
-from pathlib import Path
-path = Path(sys.argv[1])
-cfg = json.loads(path.read_text())
-proxy = "http://llm-proxy:4000/v1"
-providers = cfg.get("provider") or {}
-for block in providers.values():
-    if not isinstance(block, dict):
-        continue
-    options = block.get("options")
-    if not isinstance(options, dict):
-        options = {}
-        block["options"] = options
-    options["baseURL"] = proxy
-    options["apiKey"] = "local-llm"
-path.write_text(json.dumps(cfg, indent=2) + "\n")
-PY
-  log "Pointed OpenCode providers at llm-proxy"
-}
-
 setup_rag_profile() {
   upsert_env .env LIGHTRAG_MCP_ENABLED 1
   log "Enabled LightRAG MCP registration (LIGHTRAG_MCP_ENABLED=1)"
@@ -370,7 +319,6 @@ setup_research_profile() {
 }
 
 setup_coding_profile() {
-  ensure_opencode_local_config
   upsert_env .env OPENCODE_MCP_ENABLED 1
   set_env_if_missing .env CODING_EXTRA_ROOTS ""
   set_env_if_missing .env CONTEXT_EXTRA_ROOTS ""
@@ -424,59 +372,6 @@ ensure_hermes_worker_key() {
   fi
   chmod 600 "$key"
   chmod 644 "${key}.pub"
-}
-
-ensure_hermes_env_files() {
-  local hermes_env="$ROOT/compose/hermes/api-server.env"
-  local browser_env="$ROOT/compose/hermes/browser.env"
-  if [[ ! -f "$hermes_env" ]]; then
-    cp compose/hermes/api-server.env.example "$hermes_env"
-    upsert_env "$hermes_env" API_SERVER_KEY "$(rand_hex 32)"
-    log "Created compose/hermes/api-server.env"
-  else
-    log "Keeping existing compose/hermes/api-server.env"
-  fi
-  if [[ ! -f "$browser_env" ]]; then
-    cp compose/hermes/browser.env.example "$browser_env"
-    local browser_key
-    browser_key="$(rand_hex 32)"
-    upsert_env "$browser_env" API_SERVER_KEY "$browser_key"
-    upsert_env "$browser_env" HERMES_WEBUI_GATEWAY_API_KEY "$browser_key"
-    log "Created compose/hermes/browser.env"
-  else
-    # Keep an existing API_SERVER_KEY, but ensure the WebUI-preferred alias is
-    # present and matches. WebUI's _reload_dotenv overwrites API_SERVER_KEY from
-    # HERMES_HOME/.env; HERMES_WEBUI_GATEWAY_API_KEY survives that reload.
-    local existing
-    existing="$(env_get_file "$browser_env" API_SERVER_KEY)"
-    existing="${existing%% #*}"
-    existing="$(printf '%s' "$existing" | tr -d '\r')"
-    if [[ -n "$existing" ]]; then
-      upsert_env "$browser_env" HERMES_WEBUI_GATEWAY_API_KEY "$existing"
-    fi
-    log "Keeping existing compose/hermes/browser.env"
-  fi
-}
-
-# Write searxng/settings.local.yml (gitignored) from the tracked template.
-# Compose mounts the local file, which keeps setup from ever touching the
-# tracked settings.yml.
-sync_searxng_secret() {
-  local secret="$1"
-  local template="$ROOT/searxng/settings.yml"
-  local settings="$ROOT/searxng/settings.local.yml"
-  [[ -f "$template" ]] || die "Missing $template"
-  local tmp
-  tmp="$(mktemp "$(dirname "$settings")/.$(basename "$settings").XXXXXX")"
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    if [[ "$line" =~ ^[[:space:]]*secret_key:[[:space:]]* ]]; then
-      printf '  secret_key: "%s"\n' "$secret"
-    else
-      printf '%s\n' "$line"
-    fi
-  done < "$template" > "$tmp"
-  mv "$tmp" "$settings"
-  log "Synced SEARXNG_SECRET into searxng/settings.local.yml"
 }
 
 create_getting_started() {
@@ -812,12 +707,8 @@ if ! grep -qE '^TWENTY_DB_PASSWORD_FILE=.+' .env 2>/dev/null; then
   set_env_if_placeholder .env TWENTY_DB_PASSWORD "$(rand_hex 32)"
 fi
 
-SEARXNG_SECRET="$(env_get_file .env SEARXNG_SECRET)"
-if [[ -z "$SEARXNG_SECRET" || "$SEARXNG_SECRET" == change-me* ]]; then
-  SEARXNG_SECRET="$(rand_hex 24)"
-  upsert_env .env SEARXNG_SECRET "$SEARXNG_SECRET"
-  log "Set SEARXNG_SECRET"
-fi
+# Rewritten on every run from the tracked template; up.sh only creates it.
+SEARXNG_SECRET="$(searxng_secret)"
 sync_searxng_secret "$SEARXNG_SECRET"
 
 # --- OpenCode workspace host ---

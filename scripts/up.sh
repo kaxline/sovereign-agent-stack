@@ -4,8 +4,9 @@
 #
 #   scripts/up.sh [--prepare] [--build SERVICE]... [--reload-hermes]
 #
-# --prepare     only create the gitignored local configs and sync profiles
-#               (`make ensure-local`), and start nothing
+# --prepare     only create the missing gitignored local configs (the same
+#               files and generated keys setup.sh writes) and sync
+#               profiles (`make ensure-local`), and start nothing
 # --build S     rebuild service S's image and recreate it after the start
 # --reload-hermes
 #               after the start, run both Hermes bootstraps with
@@ -17,6 +18,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 # shellcheck source=lib/env.sh
 source "${ROOT}/scripts/lib/env.sh"
+# shellcheck source=lib/local-files.sh
+source "${ROOT}/scripts/lib/local-files.sh"
 
 PREPARE_ONLY=0
 RELOAD=0
@@ -30,18 +33,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-copy_example() {
-  [[ -f "$1" ]] && return 0
-  cp "$2" "$1"
-  [[ -z "${3:-}" ]] || printf '%s\n' "$3"
-}
-
-copy_example searxng/settings.local.yml searxng/settings.yml
-copy_example opencode/opencode.local.json opencode/opencode.json
-copy_example compose/hermes/api-server.env compose/hermes/api-server.env.example \
-  "Created compose/hermes/api-server.env — set API_SERVER_KEY"
-copy_example compose/hermes/browser.env compose/hermes/browser.env.example \
-  "Created compose/hermes/browser.env — set API_SERVER_KEY"
+ensure_local_files
 mkdir -p compose/postgres/services
 ./scripts/addon-dirs.sh
 ./scripts/web-browser-secrets.sh
