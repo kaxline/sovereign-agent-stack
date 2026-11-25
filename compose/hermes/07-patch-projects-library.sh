@@ -1,6 +1,5 @@
 #!/bin/sh
 # Treat /opt/projects children as discoverable Projects (see patch-projects-library.py).
+# The overlays and their order: group 07 in overlays.list.
 set -u
-if [ -f /bootstrap/patch-projects-library.py ]; then
-  python3 /bootstrap/patch-projects-library.py || echo "warn: patch-projects-library exited $?"
-fi
+sh /bootstrap/run-overlays.sh 07 || echo "warn: run-overlays.sh 07 exited $?"

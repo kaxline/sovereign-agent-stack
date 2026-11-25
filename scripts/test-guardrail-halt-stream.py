@@ -94,8 +94,8 @@ print("image ok")
 
 
 def test_wired() -> None:
-    runner = (ROOT / "compose" / "hermes" / "05-patch-tool-calling.sh").read_text()
-    assert "run_patch /bootstrap/patch-guardrail-halt-stream.py" in runner, "05-patch-tool-calling.sh runs the overlay"
+    order = hermes_image.overlay_order(hermes_image.OVERLAY_LIST)
+    assert "patch-guardrail-halt-stream.py" in order, "overlays.list runs the overlay"
     compose = (ROOT / "docker-compose.yml").read_text()
     assert "./compose/hermes/patch-guardrail-halt-stream.py:/bootstrap/patch-guardrail-halt-stream.py:ro" in compose, \
         "docker-compose.yml mounts the overlay"

@@ -1,0 +1,52 @@
+# The Hermes source overlays, in the order the container applies them.
+#
+# Each line: <group> <patch script in compose/hermes>  # what it does
+# The cont-init script compose/hermes/<group>-*.sh applies its group through
+# run-overlays.sh, in the order listed here. s6 runs cont-init scripts in name
+# order and the groups below follow it, so this file's order is apply order.
+# Image test drivers read this file too (hermes_image.PATCH_PRELUDE).
+# A patch whose anchor is missing exits non-zero; the runner logs a warning and
+# goes on with the next line.
+
+03 patch-intent-ack-continuation.py     # relax intent-ack continuation for browser/WebUI
+04 patch-send-message-tool.py           # Signal credentials with the adapter disabled; agent-callable send_message
+04 patch-ensure-send-message-tools.py   # force-import and ensure the send_message tools
+04 patch-tool-search-visible.py         # tool_search sees the visible core tools
+04 patch-tool-search-always-include.py  # tool_search always includes the core tools
+04 patch-cron-scheduler-delivery.py     # cron delivers to Signal with the adapter disabled
+05 patch-text-tool-call-recovery.py     # recover tool calls a weak model wrote as text
+05 patch-fabricated-result.py           # stop turns that claim a write without a tool call, or ask for a password in chat
+05 patch-block-native-web-tools.py      # rewrite native web_search/web_extract to MCP SearXNG
+05 patch-tool-call-flat-args.py         # normalise tool_call shapes: flat siblings, nested name, short MCP aliases
+05 patch-tool-eval-trace.py             # JSONL turn traces for tool-calling evals (after recovery and the web rewrite)
+05 patch-browser-exec-hint.py           # browser_exec result hints, trailing-expression echo, vault save next step
+05 patch-vault-create-login.py          # browser_vault create_login: a generated password the model never sees
+05 patch-vault-capture-secret.py        # browser_vault capture_secret: store a key the page shows, unseen by the model
+05 patch-tool-loop-notes.py             # tool-loop warnings outside the untrusted-data wrapper
+05 patch-tool-loop-replay.py            # halt a turn that re-runs calls it has seen, at any cycle length (after notes)
+05 patch-guardrail-halt-stream.py       # stream the guardrail stop note to gateway clients as message.delta
+05 patch-searxng-pause-browser.py       # while searxng is paused, say how to search with browser_exec
+05 patch-blocked-fetch-hint.py          # a refused web_url_read says to open the page in the browser
+05 patch-digest-redaction.py            # scrub values the Bitwarden broker filled, by digest
+05 patch-bitwarden-broker-fill.py       # bwbroker: fills go to the broker, which writes the page (after digest redaction)
+05 patch-bitwarden-signin.py            # browser_vault sign_in: the broker signs in and hands the session over (after the fill)
+05 patch-web-search-mode.py             # HERMES_WEB_SEARCH_MODE: SearXNG, the keyless ring, or one as fallback (after blocked-fetch)
+05 patch-browser-unresolvable-host.py   # a hostname that doesn't resolve says so, not "private address"
+05 patch-history-budget.py              # per-session history budget for DM threads
+05 patch-compaction-tool-facts.py       # compaction reads full tool results and keeps a Findings section
+05 patch-client-context.py              # client session/turn context on the dashboard /api/ws
+05 patch-gateway-liveness.py            # turn heartbeat and session.live_status on the dashboard /api/ws
+05 patch-turn-speaker.py                # speaker names on prompt.submit turns
+05 patch-cron-gated-sessions.py         # gated cron fires leave no empty chat (Boundary CR 0033)
+05 patch-history-task-ids.py            # kanban_create rows in session.history carry the task id (CR 0005 R3)
+05 patch-control-socket-tmp.py          # gateway control socket on /tmp, not virtiofs data/hermes
+05 patch-mirror-exclude.py              # profiles.create mirror_exclude: keys a mirrored .env leaves out
+05 patch-mcp-trust-details.py           # MCP trust-gate approvals carry redacted arguments and the tool call id
+07 patch-projects-library.py            # /opt/projects children are discoverable Projects
+10 patch-mcp-wake.py                    # wake parked MCP servers on request; per-server parked probe interval
+12 patch-kanban-guards.py               # refuse unbuildable kanban workspaces at filing; give up on final errors
+12 patch-kanban-edit.py                 # change a task's workspace in place; kanban_update and kanban_archive
+12 patch-kanban-wake.py                 # kanban events reach dashboard sessions after compression
+12 patch-kanban-hold.py                 # stop a run and hold its task in one call
+13 patch-dashboard-board.py             # kanban task links and ?embed=1
+13 patch-dashboard-handoff.py           # one-time sign-in links at /auth/handoff

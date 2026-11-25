@@ -157,8 +157,8 @@ above.
   [Kanban workspaces](../extending.md#kanban-workspaces),
   [dashboard links](../extending.md#dashboard-links) and
   [MCP approvals](../extending.md#mcp-approvals-for-untrusted-servers).
-  The cont-init scripts `compose/hermes/05-patch-tool-calling.sh`,
-  `12-patch-kanban-guards.sh` and `13-patch-dashboard.sh` apply them, and
+  `compose/hermes/overlays.list` names them in the order the cont-init
+  scripts apply them, and
   the liveness, speaker and client-context overlays advertise themselves in
   `gateway.capabilities`.
 - **The browser.** `browser_exec` and `browser_vault` run inside the `hermes`

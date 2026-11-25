@@ -100,9 +100,9 @@ print("image ok")
 
 
 def test_runs_after_notes() -> None:
-    runner = (ROOT / "compose" / "hermes" / "05-patch-tool-calling.sh").read_text()
-    notes = runner.index("run_patch /bootstrap/patch-tool-loop-notes.py")
-    replay = runner.index("run_patch /bootstrap/patch-tool-loop-replay.py")
+    order = hermes_image.overlay_order(hermes_image.OVERLAY_LIST)
+    notes = order.index("patch-tool-loop-notes.py")
+    replay = order.index("patch-tool-loop-replay.py")
     assert notes < replay, "replay overlay must run after the notes overlay"
 
 def main() -> None:

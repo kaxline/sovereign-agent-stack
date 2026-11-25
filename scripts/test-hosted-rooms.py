@@ -34,7 +34,6 @@ import hermes_image  # noqa: E402
 IMAGE_DRIVER = r'''
 import json
 import os
-import subprocess
 import sys
 import threading
 import time
@@ -45,14 +44,10 @@ orch_home = home + "/profiles/orchestrator"
 PORT = 18765
 os.environ["HERMES_HOME"] = home
 
-# Gateway overlays (05-patch-tool-calling.sh), then kanban (12-patch-kanban-guards.sh).
-for patch in (
+run_patches((
     "patch-history-budget.py", "patch-client-context.py", "patch-gateway-liveness.py", "patch-turn-speaker.py",
     "patch-kanban-guards.py", "patch-kanban-edit.py", "patch-kanban-wake.py",
-):
-    out = subprocess.run([sys.executable, "/bootstrap/" + patch], capture_output=True, text=True)
-    if out.returncode != 0:
-        raise SystemExit(f"FAIL {patch}: {out.stdout}{out.stderr}")
+))
 
 # Fake model. A member turn is told apart from auxiliary calls (titles) by its tools.
 turns = []  # (who, request body) for member turns only
@@ -271,7 +266,7 @@ os._exit(0)  # the room worker and fake model are daemon threads
 
 
 def main() -> None:
-    hermes_image.maybe_run(IMAGE_DRIVER)
+    hermes_image.maybe_run(hermes_image.PATCH_PRELUDE + IMAGE_DRIVER)
 
 
 if __name__ == "__main__":

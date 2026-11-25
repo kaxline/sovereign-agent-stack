@@ -79,7 +79,6 @@ def test_stamp() -> None:
 IMAGE_DRIVER = r'''
 import json
 import os
-import subprocess
 import sys
 import threading
 import time
@@ -90,12 +89,9 @@ PORT = 18766
 os.environ["HERMES_HOME"] = home
 os.makedirs(home, exist_ok=True)
 
-# Same order as 05-patch-tool-calling.sh.
-for patch in ("patch-history-budget.py", "patch-client-context.py", "patch-gateway-liveness.py",
-              "patch-turn-speaker.py") * 2:
-    out = subprocess.run([sys.executable, "/bootstrap/" + patch], capture_output=True, text=True)
-    if out.returncode != 0:
-        raise SystemExit(f"FAIL {patch}: {out.stdout}{out.stderr}")
+for _ in range(2):
+    run_patches(("patch-history-budget.py", "patch-client-context.py", "patch-gateway-liveness.py",
+                 "patch-turn-speaker.py"))
 src = open("/opt/hermes/tui_gateway/server.py").read()
 assert src.count("# assistant-stack: turn speaker") == 1, "one install block"
 
@@ -293,7 +289,7 @@ def main() -> None:
     test_strip()
     test_stamp()
     print("ok")
-    hermes_image.maybe_run(IMAGE_DRIVER)
+    hermes_image.maybe_run(hermes_image.PATCH_PRELUDE + IMAGE_DRIVER)
 
 
 if __name__ == "__main__":

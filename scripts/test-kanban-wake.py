@@ -44,19 +44,12 @@ def test_gave_up_text() -> None:
 
 IMAGE_DRIVER = r'''
 import os
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-def run_patch(name):
-    out = subprocess.run([sys.executable, f"/bootstrap/{name}"], capture_output=True, text=True)
-    if out.returncode != 0:
-        raise SystemExit(f"FAIL {name}: {out.stdout}{out.stderr}")
-    return out.stdout
-
-run_patch("patch-kanban-guards.py")
-assert "patched session notifications" in run_patch("patch-kanban-wake.py")
+applied = run_patches(("patch-kanban-guards.py", "patch-kanban-wake.py"))
+assert "patched session notifications" in applied["patch-kanban-wake.py"]
 assert "already applied" in run_patch("patch-kanban-wake.py")
 
 home = Path(tempfile.mkdtemp(prefix="kanban-wake-"))
@@ -123,7 +116,7 @@ os._exit(0)  # skip gateway thread teardown
 def main() -> None:
     test_gave_up_text()
     print("ok")
-    hermes_image.maybe_run(IMAGE_DRIVER)
+    hermes_image.maybe_run(hermes_image.PATCH_PRELUDE + IMAGE_DRIVER)
 
 
 if __name__ == "__main__":

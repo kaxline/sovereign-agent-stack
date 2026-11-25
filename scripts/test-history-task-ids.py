@@ -25,14 +25,7 @@ import hermes_image  # noqa: E402
 IMAGE_DRIVER = r'''
 import json
 import os
-import subprocess
 import sys
-
-def run_patch(name):
-    out = subprocess.run([sys.executable, f"/bootstrap/{name}"], capture_output=True, text=True)
-    if out.returncode != 0:
-        raise SystemExit(f"FAIL {name}: {out.stdout}{out.stderr}")
-    return out.stdout
 
 first = run_patch("patch-history-task-ids.py")
 assert "patched history tool rows" in first, first
@@ -80,7 +73,7 @@ os._exit(0)
 
 
 def main() -> None:
-    hermes_image.maybe_run(IMAGE_DRIVER)
+    hermes_image.maybe_run(hermes_image.PATCH_PRELUDE + IMAGE_DRIVER)
 
 
 if __name__ == "__main__":

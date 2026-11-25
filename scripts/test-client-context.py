@@ -65,7 +65,6 @@ def test_compose_ephemeral() -> None:
 
 IMAGE_DRIVER = r'''
 import os
-import subprocess
 import sys
 import threading
 from types import SimpleNamespace
@@ -74,11 +73,8 @@ home = "/tmp/hermes-home"
 os.makedirs(home + "/profiles/other", exist_ok=True)
 os.environ["HERMES_HOME"] = home
 
-# Same order as 05-patch-tool-calling.sh.
-for patch in ("patch-history-budget.py", "patch-client-context.py", "patch-gateway-liveness.py") * 2:
-    out = subprocess.run([sys.executable, "/bootstrap/" + patch], capture_output=True, text=True)
-    if out.returncode != 0:
-        raise SystemExit(f"FAIL {patch}: {out.stdout}{out.stderr}")
+for _ in range(2):
+    run_patches(("patch-history-budget.py", "patch-client-context.py", "patch-gateway-liveness.py"))
 for name in ("sessions.py", "prompt_voice.py"):
     src = open("/opt/hermes/tui_gateway/contracts/" + name).read()
     assert "client context" not in src, "contract files stay untouched"
@@ -222,7 +218,7 @@ def main() -> None:
     test_blocks()
     test_compose_ephemeral()
     print("ok")
-    hermes_image.maybe_run(IMAGE_DRIVER)
+    hermes_image.maybe_run(hermes_image.PATCH_PRELUDE + IMAGE_DRIVER)
 
 
 if __name__ == "__main__":

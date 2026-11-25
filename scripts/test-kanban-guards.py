@@ -52,15 +52,9 @@ import sys
 import tempfile
 from pathlib import Path
 
-def run_patch():
-    out = subprocess.run([sys.executable, "/bootstrap/patch-kanban-guards.py"], capture_output=True, text=True)
-    if out.returncode != 0:
-        raise SystemExit(f"FAIL patch: {out.stdout}{out.stderr}")
-    return out.stdout
-
-first = run_patch()
+first = run_patch("patch-kanban-guards.py")
 assert "patched create_task workspace check" in first and "patched dispatcher give-up" in first, first
-second = run_patch()
+second = run_patch("patch-kanban-guards.py")
 assert second.count("already applied") == 2, second
 
 # Drop to the gateway's user so permission bits apply, as they do in the stack.
@@ -237,7 +231,7 @@ print("image ok")
 def main() -> None:
     test_final_classification()
     print("ok")
-    hermes_image.maybe_run(IMAGE_DRIVER)
+    hermes_image.maybe_run(hermes_image.PATCH_PRELUDE + IMAGE_DRIVER)
 
 
 if __name__ == "__main__":

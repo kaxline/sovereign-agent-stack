@@ -10,7 +10,9 @@ Two checks, for each terminal backend's `docker compose config`:
   service that mounts it. Variable names are printed, never values.
 - Overlay wiring: the scripts skip a patch file that is not there without a
   word (`run_patch`, or `[ -f ... ]` before `python3`), so each patch a script
-  runs must be mounted on the same service, as must each helper module the patch names (a module from
+  runs must be mounted on the same service (a script that calls
+  `/bootstrap/run-overlays.sh GROUP` runs that group of overlays.list, and
+  needs the runner and the list mounted too), as must each helper module the patch names (a module from
   compose/hermes/ or one some service mounts under /bootstrap/). Every
   compose/hermes/patch-*.py must be run by some mounted cont-init script.
   The overlay tests check what each patch does, inside the Hermes image.
@@ -27,6 +29,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 import compose_config  # noqa: E402
+import hermes_image  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 CONT_INIT = "/etc/cont-init.d/"
@@ -35,6 +38,9 @@ VAR_RE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)")
 # A patch a script runs: `run_patch /bootstrap/patch-X.py` or `python3 /bootstrap/patch-X.py`.
 PATCH_RE = re.compile(r"/bootstrap/patch-[A-Za-z0-9_-]+\.py")
 MODULE_RE = re.compile(r"(?:/bootstrap/)?([A-Za-z0-9_]+\.py)")
+# A group of overlays.list a script runs: `sh /bootstrap/run-overlays.sh 05`.
+RUNNER_RE = re.compile(r"/bootstrap/run-overlays\.sh\s+([A-Za-z0-9_-]+)")
+RUNNER_FILES = ("/bootstrap/run-overlays.sh", "/bootstrap/overlays.list")
 
 
 def load_config(backend: str) -> dict:
@@ -97,18 +103,32 @@ def named_modules(patch_source: str, helpers: set[str]) -> set[str]:
     return found
 
 
-def patches_run(script: str) -> list[str]:
-    """The /bootstrap/patch-*.py paths a script names outside comments, in order."""
+def groups_run(script: str) -> list[str]:
+    """The overlays.list groups a script runs through run-overlays.sh, outside comments."""
+    return [g for line in script.splitlines() if not line.lstrip().startswith("#") for g in RUNNER_RE.findall(line)]
+
+
+def patches_run(script: str, overlay_list: Path = hermes_image.OVERLAY_LIST) -> list[str]:
+    """The /bootstrap/patch-*.py paths a script runs, named or through its overlays.list group, in order."""
     found: list[str] = []
     for line in script.splitlines():
-        if not line.lstrip().startswith("#"):
-            found += [p for p in PATCH_RE.findall(line) if p not in found]
+        if line.lstrip().startswith("#"):
+            continue
+        paths = PATCH_RE.findall(line)
+        for group in RUNNER_RE.findall(line):
+            paths += [f"/bootstrap/{name}" for name in hermes_image.overlay_order(overlay_list, group)]
+        found += [p for p in paths if p not in found]
     return found
 
 
 def wiring_problems(name: str, script: str, mounts: dict[str, Path], helpers: set[str]) -> list[str]:
     """One message per patch the script runs, or helper a patch names, that the service does not mount."""
     errors = []
+    for group in groups_run(script):
+        if not hermes_image.overlay_order(hermes_image.OVERLAY_LIST, group):
+            errors.append(f"{name} runs overlays.list group {group}, which has no overlays")
+        errors += [f"{name} runs group {group} through {f}, which is not mounted"
+                   for f in RUNNER_FILES if f not in mounts]
     for patch in patches_run(script):
         if patch not in mounts:
             errors.append(f"{name} runs {patch}, which is not mounted (the script would skip it silently)")
@@ -143,6 +163,13 @@ def self_test() -> list[str]:
         both = {**only_patch, "/bootstrap/demo_helper.py": patch}
         if wiring_problems("wired", script, both, helpers):
             errors.append("self-test: a fully mounted patch was flagged")
+        listed = Path(tmp) / "overlays.list"
+        listed.write_text("# comment\n01 patch-a.py  # a\n02 patch-b.py\n01 patch-c.py\n")
+        runner = "#!/bin/sh\n# sh /bootstrap/run-overlays.sh 02\nsh /bootstrap/run-overlays.sh 01 || echo warn\n"
+        if patches_run(runner, listed) != ["/bootstrap/patch-a.py", "/bootstrap/patch-c.py"]:
+            errors.append("self-test: a run-overlays.sh group did not expand to its overlays in list order")
+        if len(wiring_problems("no runner", runner, {}, helpers)) < 2:
+            errors.append("self-test: a group run without the runner and list mounted was not flagged")
     return errors
 
 
@@ -179,6 +206,11 @@ def main() -> None:
         errors += found
         total += seen
         run |= patches
+    groups = [line.split()[0] for line in hermes_image.OVERLAY_LIST.read_text().splitlines()
+              if line.split("#", 1)[0].strip()]
+    if groups != sorted(groups):
+        errors.append("compose/hermes/overlays.list: groups are out of cont-init name order, so file order "
+                      "is not apply order")
     if total == 0:
         errors.append("no /etc/cont-init.d bind mounts found; the check is not looking at the right config")
     # is_file: Docker leaves an empty directory where a bind mount's source was missing.

@@ -33,27 +33,27 @@ import hermes_image  # noqa: E402
 BROKER_SRC = ROOT / "compose" / "bitwarden-broker"
 
 
-# The other overlays that edit tools/browser_vault_tool.py, in 05-patch-tool-calling.sh order.
+# The other overlays that edit tools/browser_vault_tool.py, in overlays.list order.
 EARLIER_VAULT_OVERLAYS = ("/bootstrap/patch-browser-exec-hint.py", "/bootstrap/patch-vault-create-login.py",
                           "/bootstrap/patch-vault-capture-secret.py")
 
 
 def test_overlay_order() -> None:
-    runner = (ROOT / "compose" / "hermes" / "05-patch-tool-calling.sh").read_text()
-    expect(runner.index("patch-digest-redaction.py") < runner.index("patch-bitwarden-broker-fill.py"),
+    order = hermes_image.overlay_order(hermes_image.OVERLAY_LIST)
+    expect(order.index("patch-digest-redaction.py") < order.index("patch-bitwarden-broker-fill.py"),
            "the fill overlay runs after the digest overlay")
     # These also patch tools/browser_vault_tool.py and run first; the image driver applies them in this order.
-    for earlier in EARLIER_VAULT_OVERLAYS:
-        name = earlier.rsplit("/", 1)[1]
-        expect(f"run_patch {earlier}" in runner
-               and runner.index(name) < runner.index("patch-bitwarden-broker-fill.py"),
-               f"{name} runs before the fill overlay")
+    earlier = [path.rsplit("/", 1)[1] for path in EARLIER_VAULT_OVERLAYS]
+    expect(all(name in order for name in earlier)
+           and sorted(earlier, key=order.index) == earlier
+           and order.index(earlier[-1]) < order.index("patch-bitwarden-broker-fill.py"),
+           f"{earlier} run in this order, before the fill overlay")
     patch = (ROOT / "compose" / "hermes" / "patch-bitwarden-broker-fill.py").read_text()
     for name in ("_ensure_supervisor", "focus_page", "_page_session_id",
                  "return _fill_bound_page(backend, handle, meta, page_origin, effective_task_id)",
                  "return _fill_bound_page(backend, handle, meta, page_origin, effective_task_id, with_identifier)"):
         expect(name in patch, f"NEEDED names {name}")
-    expect(runner.index("patch-bitwarden-broker-fill.py") < runner.index("patch-bitwarden-signin.py"),
+    expect(order.index("patch-bitwarden-broker-fill.py") < order.index("patch-bitwarden-signin.py"),
            "the sign-in overlay runs after the fill overlay")
     compose = (ROOT / "docker-compose.yml").read_text()
     for name in ("patch-bitwarden-signin.py", "vault_bitwarden_signin.py"):
@@ -118,7 +118,7 @@ import json, logging, os, secrets, socket, string, subprocess, sys, tempfile, th
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 env = dict(os.environ, DIGEST_REDACTION_BOOTSTRAP="/broker-src/broker")
-# The overlays 05-patch-tool-calling.sh runs before ours on the same file, so the anchors are
+# The overlays the container runs before ours on the same file, so the anchors are
 # checked against the file as the container has it.
 for script in EARLIER_VAULT_OVERLAYS:
     out = subprocess.run([sys.executable, script], capture_output=True, text=True, env=env)

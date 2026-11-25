@@ -55,6 +55,14 @@ the stack under another app.
   mounts overlay files one by one needs that mount, or the three overlays
   exit 1 with `source missing`. Behaviour, error codes and capability flags
   are unchanged.
+- The overlay cont-init scripts (`compose/hermes/03-*.sh` to `13-*.sh`) no
+  longer name their patches. Each runs its group of
+  `compose/hermes/overlays.list` through `compose/hermes/run-overlays.sh`, so
+  Hermes needs two more mounts: `overlays.list` at `/bootstrap/overlays.list`
+  and `run-overlays.sh` at `/bootstrap/run-overlays.sh`. An app with its own
+  compose file that mounts overlay files one by one needs both, or every
+  overlay is skipped with a `warn:` line in the boot log. The cont-init file
+  names, the overlays and their order are unchanged.
 - Synced coding roots (CR 0046 R1, R2): `scripts/coding-root.sh add
   --container-path PATH --id ID [--json]` creates
   `<data root>/coding-roots/ID/` and binds it at `PATH` on the terminal
