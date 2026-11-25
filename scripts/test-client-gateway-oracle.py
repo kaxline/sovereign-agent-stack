@@ -31,6 +31,13 @@ STUB_PORT = 9000
 DASH_PORT = 9119
 DASH_USER, DASH_PASSWORD = "oracle", "oracle-password-" + "p" * 16
 REPLY = "STUB-REPLY: hello from the stub model."
+# The dashboard binds 0.0.0.0 (so its auth gate is on, as in the stack), which
+# turns on uvicorn's websocket keepalive: a ping every 20 s, and a 1011 close if
+# the pong takes over 20 s. The ping runs on the dashboard's busy event loop, so
+# under a loaded `make test` it dropped a healthy socket mid-turn and the cancel
+# case got "Hermes restarted during the turn". Interval 0 turns the ping off, as
+# Hermes does itself on loopback.
+DASH_NO_WS_PING = (("dashboard.ws_ping_interval", "0"),)
 
 
 def known_differences() -> set[str]:
@@ -38,14 +45,17 @@ def known_differences() -> set[str]:
     return set(re.findall(r"^- `([a-z0-9_.]+)`", KNOWN.read_text(), re.M))
 
 
-def hermes_home(path: str) -> dict:
+def hermes_home(path: str, extra: tuple = ()) -> dict:
     env = {**os.environ, "HERMES_HOME": path, "HOME": path}
     os.makedirs(path, exist_ok=True)
+    values = [
+        ("model.provider", "custom"), ("model.default", "stub-model"),
+        ("model.base_url", f"http://127.0.0.1:{STUB_PORT}/v1"), ("model.api_key", "sk-stub"), *extra,
+    ]
     code = (
         "import sys; sys.path.insert(0, '/opt/hermes')\n"
         "from hermes_cli.config import set_config_value\n"
-        f"for k, v in [('model.provider', 'custom'), ('model.default', 'stub-model'),\n"
-        f"             ('model.base_url', 'http://127.0.0.1:{STUB_PORT}/v1'), ('model.api_key', 'sk-stub')]:\n"
+        f"for k, v in {values!r}:\n"
         "    set_config_value(k, v)\n"
     )
     subprocess.run([sys.executable, "-c", code], env=env, check=True, stdout=subprocess.DEVNULL)
@@ -143,7 +153,7 @@ async def run_gateway() -> dict:
     from client_gateway.auth import Settings
     from client_gateway.hermes.backend import HermesBackend
 
-    env = hermes_home("/tmp/hh-gw")
+    env = hermes_home("/tmp/hh-gw", DASH_NO_WS_PING)
     env.update({
         "HERMES_DASHBOARD_BASIC_AUTH_USERNAME": DASH_USER,
         "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD": DASH_PASSWORD,
